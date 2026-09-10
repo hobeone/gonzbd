@@ -53,7 +53,6 @@ func TestBuildStages_StageOrder(t *testing.T) {
 		{"DeobfuscateStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.DeobfuscateStage); return ok }},
 		{"ExtensionCleanupStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.ExtensionCleanupStage); return ok }},
 		{"FinalizeStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.FinalizeStage); return ok }},
-		{"CleanupStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.CleanupStage); return ok }},
 		{"ScriptStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.ScriptStage); return ok }},
 	}
 
@@ -101,8 +100,10 @@ func TestBuildStages_PointersSameAsSlice(t *testing.T) {
 	if built.Stages[9] != built.Finalize {
 		t.Error("Finalize pointer != stages[9]")
 	}
-	if built.Stages[11] != built.Script {
-		t.Error("Script pointer != stages[11]")
+	// 10, not 11: the per-job admin cleanup stage that used to sit between
+	// finalize and script is gone along with the directory it removed.
+	if built.Stages[10] != built.Script {
+		t.Error("Script pointer != stages[10]")
 	}
 }
 

@@ -136,12 +136,6 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		return fmt.Errorf("repair: find par2 sets: %w", err)
 	}
 
-	vs := NewVerifiedSets(job.DownloadDir, log)
-	if vs.AllVerified() {
-		logf(ctx, log, job, slog.LevelInfo, "[repair] All sets previously verified — skipping")
-		return nil
-	}
-
 	var firstErr error
 	if len(sets) > 0 {
 		logf(ctx, log, job, slog.LevelInfo, "Found %d par2 set(s)", len(sets))
@@ -158,7 +152,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		logf(ctx, log, job, slog.LevelInfo, "Found %d non-par2 data file(s) for checksum matching", len(dataFiles))
 
 		for _, set := range sets {
-			if err := s.processPar2Set(ctx, log, job, set, dataFiles, par2Opts, vs, useGoPar2Val, goPar2FallbackVal); err != nil {
+			if err := s.processPar2Set(ctx, log, job, set, dataFiles, par2Opts, useGoPar2Val, goPar2FallbackVal); err != nil {
 				if firstErr == nil {
 					firstErr = err
 				}
@@ -180,16 +174,11 @@ func (s *RepairStage) processPar2Set(
 	set par2.Set,
 	dataFiles []string,
 	par2Opts par2.RunOptions,
-	vs *VerifiedSets,
 	useGoPar2Val, goPar2FallbackVal bool,
 ) error {
 	main := set.ParseFile()
 	if main == "" {
 		logf(ctx, log, job, slog.LevelInfo, "Skipped par2 set %q: no main file", set.Name)
-		return nil
-	}
-	if vs.IsVerified(set.Name) {
-		logf(ctx, log, job, slog.LevelInfo, "[repair] Skipping previously verified set: %s", set.Name)
 		return nil
 	}
 
@@ -208,7 +197,6 @@ func (s *RepairStage) processPar2Set(
 
 	if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
 		job.ParError = true
-		vs.MarkVerified(set.Name, false)
 		logf(ctx, log, job, slog.LevelWarn, "Error: pre-repair containment violation for %q: %v", set.Name, cErr)
 		return fmt.Errorf("repair %q: pre-repair containment check: %w", set.Name, cErr)
 	}
@@ -225,7 +213,7 @@ func (s *RepairStage) processPar2Set(
 		job.OutputLines = append(job.OutputLines, toolOutputLines(res.Output)...)
 	}
 
-	return s.handleRepairResult(ctx, log, job, set, vs, res, err)
+	return s.handleRepairResult(ctx, log, job, set, res, err)
 }
 
 // handleRepairResult evaluates the repair result: classifies errors, records failures,
@@ -235,27 +223,23 @@ func (s *RepairStage) handleRepairResult(
 	log *slog.Logger,
 	job *Job,
 	set par2.Set,
-	vs *VerifiedSets,
 	res par2.RepairResult,
 	err error,
 ) error {
 	if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
 		job.ParError = true
-		vs.MarkVerified(set.Name, false)
 		logf(ctx, log, job, slog.LevelWarn, "Error: containment violation after par2 repair %q: %v", set.Name, cErr)
 		return fmt.Errorf("repair %q: containment check: %w", set.Name, cErr)
 	}
 
 	if err != nil {
 		job.ParError = true
-		vs.MarkVerified(set.Name, false)
 		logf(ctx, log, job, slog.LevelWarn, "Error: par2 repair %q failed: %v", set.Name, err)
 		return fmt.Errorf("repair %q: %w", set.Name, err)
 	}
 
 	if !res.Success {
 		job.ParError = true
-		vs.MarkVerified(set.Name, false)
 
 		// I3: Not enough recovery blocks
 		if res.NeedMoreBlocks {
@@ -277,7 +261,7 @@ func (s *RepairStage) handleRepairResult(
 		return fmt.Errorf("repair %q: unsuccessful (exit=%d)", set.Name, res.ExitCode)
 	}
 
-	recordRepairSuccess(ctx, log, set, job, vs, res)
+	recordRepairSuccess(ctx, log, set, job, res)
 	return nil
 }
 
@@ -378,8 +362,7 @@ func nativeRepairReason(res par2.RepairResult, err error) string {
 // marks the set verified, records consumed par2 files, wires renames for
 // downstream deobfuscation, and protects joinables and repair sources from
 // premature cleanup deletion.
-func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, job *Job, vs *VerifiedSets, res par2.RepairResult) {
-	vs.MarkVerified(set.Name, true)
+func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, job *Job, res par2.RepairResult) {
 	logf(ctx, log, job, slog.LevelInfo, "Par2 repair %q succeeded", set.Name)
 
 	// M7: record par2 files as consumed for cleanup protection.
