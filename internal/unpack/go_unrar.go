@@ -257,10 +257,11 @@ func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, 
 
 	// No bomb-limit check here: rarengine enforces its own decompression-
 	// bomb limits internally (see rarengine.ErrRarBombDetected, surfaced via
-	// ClassifyRarEngineError), so r is passed through to writeEntrySafely
-	// unwrapped, unlike go_tar/go_sevenzip which wrap their reader in a
+	// ClassifyRarEngineError). r is wrapped in rarEntryReader to tolerate
+	// unverifiable checksums (e.g. BLAKE2sp/MAC), but is not wrapped in a
 	// boundReader before writing.
-	_, err := writeEntrySafely(ctx, root, destRel, destPath, rarEntryReader{r: r}, nil, true, mode, fh.ModificationTime, opts, fh.Name, "go_unrar", log, nil)
+	entryReader := &rarEntryReader{r: r}
+	_, err := writeEntrySafely(ctx, root, destRel, destPath, entryReader, nil, true, mode, fh.ModificationTime, opts, fh.Name, "go_unrar", log, nil)
 	return err
 }
 
