@@ -98,9 +98,11 @@ func TestUnpackStage_handleDirectUnpack(t *testing.T) {
 	job := &Job{
 		Job:         newQueueJob(t, "dujob", 0),
 		DownloadDir: dir,
-		// Non-nil: markOwned returns early on a nil OwnedFiles, so a nil map
-		// here would make the ownership assertion below pass for the wrong
-		// reason — it would be asserting nothing rather than asserting a miss.
+		// Non-nil: markOwned returns early on a nil OwnedFiles, so with nil
+		// nothing is recorded and the ownership assertion below fails. That
+		// failure would be about the fixture rather than about
+		// handleDirectUnpack, which is the reading a later maintainer would
+		// have to disprove before trusting the test.
 		OwnedFiles: map[string]struct{}{},
 		DirectUnpackSets: map[string]directunpack.SuccessSet{
 			"set-one": {

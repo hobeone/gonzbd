@@ -165,8 +165,13 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	return firstErr
 }
 
-// processPar2Set processes a single par2 set: checks verification status, dispatches the repair tool,
+// processPar2Set processes a single par2 set: dispatches the repair tool,
 // captures tool output, and handles repair failure/success records.
+//
+// Every set is verified on every run. There is no per-set skip and no record of
+// a previous verdict to consult — see "Verification state is derived, never
+// persisted" in docs/post-processing-contract.md for why the persisted one was
+// removed rather than guarded.
 func (s *RepairStage) processPar2Set(
 	ctx context.Context,
 	log *slog.Logger,
@@ -359,9 +364,10 @@ func nativeRepairReason(res par2.RepairResult, err error) string {
 }
 
 // recordRepairSuccess updates job state after a successful par2 repair:
-// marks the set verified, records consumed par2 files, wires renames for
-// downstream deobfuscation, and protects joinables and repair sources from
-// premature cleanup deletion.
+// records consumed par2 files, wires renames for downstream deobfuscation, and
+// protects joinables and repair sources from premature cleanup deletion.
+//
+// The verdict itself is not recorded anywhere that outlives the run.
 func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, job *Job, res par2.RepairResult) {
 	logf(ctx, log, job, slog.LevelInfo, "Par2 repair %q succeeded", set.Name)
 

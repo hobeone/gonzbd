@@ -134,14 +134,15 @@ Post-processing runs a chain of `Stage` implementations in order for each comple
 |-------|-------|---------|-------------|
 | 1 | `quickcheck` | `postproc` | CRC-verify assembled files against PAR2 metadata; relocate flat files into expected subdirectories |
 | 2 | `repair` | `par2` | PAR2 verification and repair (skipped when quickcheck passes) |
-| 3 | `unpack` | `unpack` | RAR, 7z extraction and split file joining |
-| 4 | `sample_cleanup` | `postproc` | Delete sample video files (when enabled) |
-| 5 | `par2names` | `postproc` | Recover original filenames from PAR2 metadata |
-| 6 | `par2_cleanup` | `postproc` | Delete `.par2` files after repair/rename (when enabled) |
-| 7 | `deobfuscate` | `deobfuscate` | Rename obfuscated files using NZB hints and PAR2 filenames |
-| 8 | `extension_cleanup` | `postproc` | Delete files matching the user's cleanup extension list |
-| 9 | `finalize` | `postproc` | Move job from incomplete to complete directory |
-| 10 | `script` | `postproc` | Run user-supplied post-processing script (see `docs/post-processing-scripts.md`) |
+| 3 | `rar_volume_recovery` | `postproc` | Reconstruct a missing RAR volume from PAR2 data before extraction |
+| 4 | `unpack` | `unpack` | RAR, 7z extraction and split file joining |
+| 5 | `sample_cleanup` | `postproc` | Delete sample video files (when enabled) |
+| 6 | `par2names` | `postproc` | Recover original filenames from PAR2 metadata |
+| 7 | `par2_cleanup` | `postproc` | Delete `.par2` files after repair/rename (when enabled) |
+| 8 | `deobfuscate` | `deobfuscate` | Rename obfuscated files using NZB hints and PAR2 filenames |
+| 9 | `extension_cleanup` | `postproc` | Delete files matching the user's cleanup extension list |
+| 10 | `finalize` | `postproc` | Move job from incomplete to complete directory |
+| 11 | `script` | `postproc` | Run user-supplied post-processing script (see `docs/post-processing-scripts.md`) |
 
 > **Note:** Sorting/renaming (TV, movie, date templates) is intentionally not implemented.
 > This functionality is handled by external tools such as Sonarr, Radarr, and similar media managers.

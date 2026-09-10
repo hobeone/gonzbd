@@ -108,10 +108,19 @@ or modify its behavior:
 
 ### Verification state is derived, never persisted (#533)
 
-**There is no per-job admin directory.** A job's download directory contains
-downloaded content and nothing else of ours, and `repair` recomputes which par2
-sets verify on every run rather than reading a record of the last one. A retried
-or crash-restarted job therefore re-verifies.
+**There is no per-job admin directory.** A job's download directory holds no
+state of ours that outlives a run, and `repair` recomputes which par2 sets
+verify on every run rather than reading a record of the last one. A retried or
+crash-restarted job therefore re-verifies.
+
+The qualifier is load-bearing. The extraction path does write into that
+directory transiently: `fsutil.RootedCreateTemp` puts a `.gonzbd-tmp-<16 hex>`
+file beside each entry it is about to rename into place, and the four `unpack`
+engines open their root at the same directory. Those are removed on the
+deferred path, so a crash or a kill mid-extraction can leave one behind. What
+does not exist any more is a file we later READ BACK and act on — which is the
+property that mattered, since it is the read that turns a forged write into a
+decision.
 
 This replaced a `__ADMIN__/__verified__` file, and the reasoning is worth keeping
 because the file looked cheap:
@@ -288,7 +297,7 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
 
 ### Landed
 - Single worker goroutine with `ppQueue` FIFO scheduling and safe cancellation (`Cancel`).
-- Complete 12-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
+- Complete 11-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
 - `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`) bypass logic & DirectUnpack zero-failure verification bypass.
 - `OwnedFiles` snapshotting and cleanup isolation (#3462) with in-place rename tracking (`markRenamed`).
 - Python-compatible 8-arg positional and `SAB_*` environment contract for user scripts with 512 KiB log caps, `RedactSecrets`, and `ScriptCanFail` runtime toggleability.

@@ -579,7 +579,7 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	} else {
 		// First time resolving this file. GetUniqueFilename appends ".1", ".2" etc.
 		// when the path already exists on disk (e.g. naming collisions).
-		// This is real disk I/O (a Stat loop) and must not run under p.mu.
+		// This is real disk I/O (an Lstat loop) and must not run under p.mu.
 		candidate := m.FileSubject(fileIdx)
 		path = fsutil.GetUniqueFilename(
 			fsutil.JoinSafe(jobDir, "", candidate, p.sanitize))
