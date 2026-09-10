@@ -68,8 +68,12 @@ func TestIdentify_RejectsAnEntryAtItsPar2PathWithTheWrongLength(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "Screens"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	// The same first 16 KB — so this is not rejected for its content — but
-	// truncated, which is exactly the shape a partial download leaves.
+	// Truncated, which is exactly the shape a partial download leaves, but
+	// with the first 16 KB intact. Pass 0 never reads content — it compares
+	// the recorded length — so the intact prefix is not for pass 0's benefit:
+	// it is what stops pass 2 from claiming the file by Hash16k and reporting
+	// the entry accounted for a reason this test is not about. The assertion
+	// below is on Identify as a whole, so every pass has to decline.
 	writeFile(t, filepath.Join(dir, "Screens"), "shot.jpg", body[:20*1024])
 
 	id := identifyIn(t, dir, sets)
@@ -239,6 +243,72 @@ func TestIdentify_DoesNotAccountAnEntryFromASymlink(t *testing.T) {
 	if len(id.Files) != 0 {
 		t.Errorf("identified %+v, want none", id.Files)
 	}
+}
+
+// TestRelocateFile_RefusesToMoveASymlink pins relocateFile's source-side Lstat
+// and regular-file requirement, which is the same pair pass 0 carries.
+//
+// Without it the two disagree about a symlink, and the disagreement is not
+// symmetric: relocateFile would stat THROUGH the link, find the target's size
+// matches, and move the link itself to the path par2 names — after which pass 0
+// refuses it as non-regular on every later assessment. internal/app assesses at
+// each file completion, so the entry reads unaccounted from then on and the job
+// re-fetches its whole recovery volume set each time. That is the
+// non-idempotency pass 0 was written to prevent, reached through relocation
+// rather than through scanning.
+//
+// The link is RELATIVE and points INSIDE the root, for the reason spelled out
+// on TestIdentify_DoesNotAccountAnEntryFromASymlink: an absolute target outside
+// the root is refused by os.Root under Stat as well, so the test would pass
+// without the Lstat doing any work.
+// The two subtests isolate the two guards, which otherwise mask each other: a
+// symlink's own Lstat size is the length of its target STRING, so with the
+// regular-file check removed the size comparison refuses it anyway — and with a
+// recorded size of 0 there is no size comparison to fall back on.
+func TestRelocateFile_RefusesToMoveASymlink(t *testing.T) {
+	t.Parallel()
+
+	// setup builds a link whose target is RELATIVE and INSIDE the root, for the
+	// reason spelled out on TestIdentify_DoesNotAccountAnEntryFromASymlink: an
+	// absolute target outside the root is refused by os.Root under Stat as
+	// well, so the test would pass without the Lstat doing any work.
+	setup := func(t *testing.T) (dir string, body []byte) {
+		t.Helper()
+		dir = t.TempDir()
+		body = payload(11, 4*1024)
+		writeFile(t, dir, "decoy.bin", body)
+		if err := os.Symlink("decoy.bin", filepath.Join(dir, "flat.bin")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		return dir, body
+	}
+
+	refused := func(t *testing.T, dir string, fd FileDesc) {
+		t.Helper()
+		if relocateIn(t, dir, "flat.bin", fd, nil) {
+			t.Error("relocateFile moved a symlink to the path par2 names; pass 0 then refuses it as " +
+				"non-regular, so the entry reads unaccounted on every later assessment")
+		}
+		if _, err := os.Lstat(filepath.Join(dir, "Screens", "shot.jpg")); err == nil {
+			t.Error("the symlink was relocated into the par2 path")
+		}
+	}
+
+	// Pins the Lstat. The recorded size is the TARGET's, so a Stat-based check
+	// is satisfied and the move proceeds.
+	t.Run("a recorded length the target satisfies", func(t *testing.T) {
+		t.Parallel()
+		dir, body := setup(t)
+		refused(t, dir, FileDesc{FileName: "Screens/shot.jpg", FileSize: uint64(len(body))})
+	})
+
+	// Pins the regular-file requirement. par2 records no length for this entry,
+	// so nothing else stands between the link and the rename.
+	t.Run("no recorded length", func(t *testing.T) {
+		t.Parallel()
+		dir, _ := setup(t)
+		refused(t, dir, FileDesc{FileName: "Screens/shot.jpg"})
+	})
 }
 
 // TestRelocateFile_RejectsTraversal is the counterpart: the guard must still

@@ -40,6 +40,37 @@ file internal/par2/fsops.go
 	if err := os.Rename(filepath.Join(root.Name(), flatName), filepath.Join(root.Name(), destRel)); err != nil {
 --- end
 
+# relocateFile's source-side Lstat. Stat follows a symlink at the final
+# component, so the link is judged on its TARGET's size and then moved -- as a
+# link -- to the path par2 names. Pass 0 refuses a non-regular file there on the
+# next assessment, so the entry reads unaccounted from then on.
+#
+# Unlike the MkdirAll/Rename pair below, this guard and the regular-file check
+# ARE separable, but only because the two subtests were built to separate them:
+# a symlink's own size is its target string's length, so with a recorded length
+# present the size comparison refuses it regardless of either guard.
+[relocateFile stats through a symlinked source]
+file internal/par2/fsops.go
+--- anchor
+	info, err := root.Lstat(flatName)
+--- replace
+	info, err := root.Stat(flatName)
+--- end
+
+# The regular-file requirement on the same stat, isolated by the subtest that
+# gives par2 no recorded length -- with a length present the size comparison
+# masks it.
+[relocateFile moves whatever is at the source name]
+file internal/par2/fsops.go
+--- anchor
+	if !info.Mode().IsRegular() {
+		log.Warn("quickcheck: source is not a regular file, skipping",
+			"file", flatName, "mode", info.Mode())
+		return false
+	}
+--- replace
+--- end
+
 # Pass 0's stat. Stat follows a symlink at the final component, so an entry
 # would be reported accounted from a link pointing at another file -- and
 # Accounted() is what the download path consults before deciding whether to

@@ -283,6 +283,15 @@ func ApplyRenames(dir string, a Assessment, log *slog.Logger) []Rename {
 	if log == nil {
 		log = slog.Default()
 	}
+	// Nothing to confine, so nothing to open. This is the ordinary flat job,
+	// and without the guard an OpenRoot failure would log "no renames applied"
+	// over a batch that planned none — a lost operation where there was no
+	// operation. It is the same lazily-opened policy pass 0 uses, for the same
+	// reason: the handle belongs to the work, not to the call.
+	if len(a.Renames) == 0 {
+		return nil
+	}
+
 	descOf := make(map[string]FileDesc, len(a.ID.Files))
 	for _, f := range a.ID.Files {
 		descOf[f.OnDisk] = f.Desc

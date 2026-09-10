@@ -90,26 +90,48 @@ func scanFlatFiles(dir string, log *slog.Logger) (map[string]os.DirEntry, error)
 // ordinary component, not a traversal — which the filepath.Rel + HasPrefix pair
 // that preceded PathWithin got wrong, refusing the file and then reporting it
 // unaccounted.
+//
+// One deliberate behaviour change comes with it: an ABSOLUTE fd.FileName is now
+// refused outright, where the lexical form silently accepted it. PathWithin was
+// handed filepath.Join(dir, fd.FileName), and Join("/dl/job", "/etc/passwd") is
+// "/dl/job/etc/passwd" — inside the directory, so the check passed and the file
+// was relocated under a rooted-looking name. Refusing it is the better answer
+// for a poster-controlled string, and such an entry is then reported
+// unaccounted rather than relocated.
 func relocateFile(root *os.Root, flatName string, fd FileDesc, log *slog.Logger) bool {
 	if log == nil {
 		log = slog.Default()
 	}
 	destRel := filepath.FromSlash(fd.FileName)
 
-	// Validate file size if we have par2 info and can stat the file.
-	if fd.FileSize > 0 {
-		info, err := root.Stat(flatName)
-		if err != nil {
-			log.Warn("quickcheck: cannot stat source file",
-				"file", flatName, "err", err)
-			return false
-		}
-		if uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
-			log.Info("quickcheck: size mismatch, skipping",
-				"file", flatName,
-				"have", info.Size(), "want", fd.FileSize)
-			return false
-		}
+	// Lstat, and a regular-file requirement, for the reason pass 0 of
+	// identification has the same pair: Stat follows a symlink at the final
+	// component, so a link planted by an external unpacker would be judged on
+	// its TARGET's size and then moved — as a link — to the path par2 names.
+	// Pass 0 refuses a non-regular file at that path on the next assessment,
+	// so the entry would be reported unaccounted from then on and the job
+	// would re-fetch its whole recovery set at every subsequent file
+	// completion. That is the non-idempotency pass 0 exists to prevent,
+	// reached by a different route.
+	//
+	// The check is separate from the size comparison and runs regardless of
+	// fd.FileSize, which is 0 for an entry par2 records no length for.
+	info, err := root.Lstat(flatName)
+	if err != nil {
+		log.Warn("quickcheck: cannot stat source file",
+			"file", flatName, "err", err)
+		return false
+	}
+	if !info.Mode().IsRegular() {
+		log.Warn("quickcheck: source is not a regular file, skipping",
+			"file", flatName, "mode", info.Mode())
+		return false
+	}
+	if fd.FileSize > 0 && uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
+		log.Info("quickcheck: size mismatch, skipping",
+			"file", flatName,
+			"have", info.Size(), "want", fd.FileSize)
+		return false
 	}
 
 	// Create subdirectory. Skipped for a flat name, where Dir is "." and the
