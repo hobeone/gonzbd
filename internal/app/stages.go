@@ -230,11 +230,6 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	finalizeStage.SetFolderRename(folderRename)
 	stages = append(stages, finalizeStage)
 
-	// Cleanup: remove admin sidecar data (__ADMIN__ dir) from the job dir.
-	cleanupAdminStage := postproc.NewCleanupStage()
-	cleanupAdminStage.Log = ppLog
-	stages = append(stages, cleanupAdminStage)
-
 	// Script stage: runs AFTER finalize so job.DownloadDir points to the
 	// final complete_dir, matching SABnzbd's $1 convention.
 	scriptStage := postproc.NewScriptStage(

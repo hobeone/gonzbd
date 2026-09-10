@@ -3,6 +3,7 @@ package par2
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 )
@@ -282,10 +283,31 @@ func ApplyRenames(dir string, a Assessment, log *slog.Logger) []Rename {
 	if log == nil {
 		log = slog.Default()
 	}
+	// Nothing to confine, so nothing to open. This is the ordinary flat job,
+	// and without the guard an OpenRoot failure would log "no renames applied"
+	// over a batch that planned none — a lost operation where there was no
+	// operation. It is the same lazily-opened policy pass 0 uses, for the same
+	// reason: the handle belongs to the work, not to the call.
+	if len(a.Renames) == 0 {
+		return nil
+	}
+
 	descOf := make(map[string]FileDesc, len(a.ID.Files))
 	for _, f := range a.ID.Files {
 		descOf[f.OnDisk] = f.Desc
 	}
+
+	// One root for the whole batch, opened above the loop rather than per move.
+	// Every relocation is confined to it, which is what stops a
+	// poster-controlled par2 name from naming a destination outside the job
+	// directory.
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		log.Warn("assess: cannot open job directory; no renames applied",
+			"dir", dir, "err", err)
+		return nil
+	}
+	defer root.Close() //nolint:errcheck // nothing is buffered through the root handle
 
 	applied := make([]Rename, 0, len(a.Renames))
 	for _, r := range a.Renames {
@@ -299,7 +321,7 @@ func ApplyRenames(dir string, a Assessment, log *slog.Logger) []Rename {
 				"from", r.From, "to", r.To)
 			continue
 		}
-		if relocateFile(dir, r.From, fd, log) {
+		if relocateFile(root, r.From, fd, log) {
 			applied = append(applied, r)
 		}
 	}

@@ -9,8 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-
-	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // Rename records a file relocation ApplyRenames performed.
@@ -73,53 +71,81 @@ func scanFlatFiles(dir string, log *slog.Logger) (map[string]os.DirEntry, error)
 	return flatFiles, nil
 }
 
-func relocateFile(dir, flatName string, fd FileDesc, log *slog.Logger) bool {
+// relocateFile moves flatName to the path fd records, confined to root.
+//
+// fd.FileName is poster-controlled — it comes out of parseFileDescBody with
+// only encoding correction applied — and it becomes a filesystem path here, so
+// Standing Design Rule 1's carve-out keeps a guard on it regardless of what
+// wrote the set.
+//
+// That guard is os.Root, and it replaces the lexical fsutil.PathWithin check
+// this used to carry. Its contract refuses any name whose components reference
+// a location outside the root: "..", an absolute path, and a symlinked
+// component pointing outward are all rejected by the Root methods themselves,
+// so there is no separate check to forget at a new call site. The lexical form
+// could only ever inspect the name; this inspects the resolved location, which
+// is where the property actually lives.
+//
+// It still accepts a name merely BEGINNING with two dots — "..config.txt" is an
+// ordinary component, not a traversal — which the filepath.Rel + HasPrefix pair
+// that preceded PathWithin got wrong, refusing the file and then reporting it
+// unaccounted.
+//
+// One deliberate behaviour change comes with it: an ABSOLUTE fd.FileName is now
+// refused outright, where the lexical form silently accepted it. PathWithin was
+// handed filepath.Join(dir, fd.FileName), and Join("/dl/job", "/etc/passwd") is
+// "/dl/job/etc/passwd" — inside the directory, so the check passed and the file
+// was relocated under a rooted-looking name. Refusing it is the better answer
+// for a poster-controlled string, and such an entry is then reported
+// unaccounted rather than relocated.
+func relocateFile(root *os.Root, flatName string, fd FileDesc, log *slog.Logger) bool {
 	if log == nil {
 		log = slog.Default()
 	}
-	src := filepath.Join(dir, flatName)
+	destRel := filepath.FromSlash(fd.FileName)
 
-	// Security: verify the par2 filename resolves within dir.
-	// Reject path traversal like "../../../etc/passwd".
+	// Lstat, and a regular-file requirement, for the reason pass 0 of
+	// identification has the same pair: Stat follows a symlink at the final
+	// component, so a link planted by an external unpacker would be judged on
+	// its TARGET's size and then moved — as a link — to the path par2 names.
+	// Pass 0 refuses a non-regular file at that path on the next assessment,
+	// so the entry would be reported unaccounted from then on and the job
+	// would re-fetch its whole recovery set at every subsequent file
+	// completion. That is the non-idempotency pass 0 exists to prevent,
+	// reached by a different route.
 	//
-	// fsutil.PathWithin rather than a filepath.Rel + HasPrefix("..") pair.
-	// That form rejects any name merely BEGINNING with two dots — Rel(dir,
-	// dir/"..custom.txt") is "..custom.txt" — so a legitimately-named file
-	// was refused relocation and then reported unaccounted. PathWithin tests
-	// for ".." as a whole path element, which is the actual escape.
-	targetPath := filepath.Join(dir, filepath.FromSlash(fd.FileName))
-	if !fsutil.PathWithin(dir, targetPath) {
-		log.Warn("quickcheck: rejected path traversal in par2 filename",
-			"par2name", fd.FileName)
+	// The check is separate from the size comparison and runs regardless of
+	// fd.FileSize, which is 0 for an entry par2 records no length for.
+	info, err := root.Lstat(flatName)
+	if err != nil {
+		log.Warn("quickcheck: cannot stat source file",
+			"file", flatName, "err", err)
+		return false
+	}
+	if !info.Mode().IsRegular() {
+		log.Warn("quickcheck: source is not a regular file, skipping",
+			"file", flatName, "mode", info.Mode())
+		return false
+	}
+	if fd.FileSize > 0 && uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
+		log.Info("quickcheck: size mismatch, skipping",
+			"file", flatName,
+			"have", info.Size(), "want", fd.FileSize)
 		return false
 	}
 
-	// Validate file size if we have par2 info and can stat the file.
-	if fd.FileSize > 0 {
-		info, err := os.Stat(src)
-		if err != nil {
-			log.Warn("quickcheck: cannot stat source file",
-				"file", flatName, "err", err)
+	// Create subdirectory. Skipped for a flat name, where Dir is "." and the
+	// root already exists.
+	if destDir := filepath.Dir(destRel); destDir != "." {
+		if err := root.MkdirAll(destDir, 0o750); err != nil {
+			log.Warn("quickcheck: failed to create directory",
+				"dir", destDir, "err", err)
 			return false
 		}
-		if uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
-			log.Info("quickcheck: size mismatch, skipping",
-				"file", flatName,
-				"have", info.Size(), "want", fd.FileSize)
-			return false
-		}
-	}
-
-	// Create subdirectory.
-	destDir := filepath.Dir(targetPath)
-	if err := os.MkdirAll(destDir, 0o750); err != nil {
-		log.Warn("quickcheck: failed to create directory",
-			"dir", destDir, "err", err)
-		return false
 	}
 
 	// Move the file.
-	if err := os.Rename(src, targetPath); err != nil {
+	if err := root.Rename(flatName, destRel); err != nil {
 		log.Warn("quickcheck: failed to rename file",
 			"from", flatName, "to", fd.FileName, "err", err)
 		return false

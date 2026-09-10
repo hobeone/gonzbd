@@ -51,9 +51,9 @@ single worker goroutine (`run`).
   being processed, `workerCtx` cancellation halts stage execution, preserving
   the job state so crash recovery re-enqueues it on next startup.
 
-## Full 12-Stage Execution Sequence
+## Full 11-Stage Execution Sequence
 
-The complete post-processing pipeline consists of 12 registered stages configured in
+The complete post-processing pipeline consists of 11 registered stages configured in
 `internal/app/stages.go` and executed sequentially for every job:
 
 ```
@@ -62,7 +62,7 @@ The complete post-processing pipeline consists of 12 registered stages configure
 [ 8. deobfuscate ] ◄── [ 7. par2_cleanup ] ◄── [ 6. recover_par2_names ] ◄── [ 5. sample_cleanup ]
        │
        ▼
-[ 9. extension_cleanup ] ──► [ 10. finalize ] ──► [ 11. cleanup ] ──► [ 12. script ]
+[ 9. extension_cleanup ] ──► [ 10. finalize ] ──► [ 11. script ]
 ```
 
 ### Stage Responsibilities & Self-Gating Matrix
@@ -83,7 +83,6 @@ or modify its behavior:
 | **`deobfuscate`** | Detects obfuscated file names and restores clean titles from job metadata. Also performs subtitle alignment (`.srt` renamed to match dominant video). | Skipped if disabled in config. | Renames files and subtitles in `DownloadDir` & `OwnedFiles`. |
 | **`extension_cleanup`** | Deletes unwanted file extensions (`.sfv`, `.nfo`, etc.) based on user config. Explicitly protects `.nzb` files (`SkipNZB = true`) and files in `ConsumedFiles`. Removes newly empty subdirectories. | Skipped if cleanup list empty. | Unlinks matching extensions from `OwnedFiles`. |
 | **`finalize`** | Moves processed files from `DownloadDir` to `FinalDir` (`CompleteDir/job_name`). When `job.ParError || job.UnpackError || job.FailMsg != ""`, skips moving to `FinalDir` and instead prepends `_FAILED_` to `DownloadDir` in place (when `folder_rename: true`), leaving files in incomplete download area for retry. | Always runs unless pre-check aborted job. | Populates `FinalDir` or renames `DownloadDir` with `_FAILED_` prefix; sets status to `StatusMoving`. |
-| **`cleanup`** | Deletes internal sidecar directories (`__ADMIN__`) from the output path. | Skipped if `ParError`, `UnpackError`, or `FailMsg != ""` is set (preserves sidecar data for debugging/retry). | Removes `__ADMIN__` directory. |
 | **`script`** | Executes user-defined post-processing script with full environment (`SAB_*` vars, including Go-specific `SAB_FINAL_PROCESSING_DIR`) and 8 positional args ($1–$8). Supports `RedactSecrets` (`SAB_API_KEY`/`SAB_PASSWORD` masked as `**REDACTED**`) and `ScriptCanFail` (non-zero exit logged as warning instead of error). | Skipped if no script configured for job/category. | Captures script exit code and stdout/stderr log (capped at 512 KiB). |
 
 > **`quickcheck` is a permanent stage (decided 2026-09-03).**
@@ -107,11 +106,61 @@ or modify its behavior:
 > The lifecycle rework's remaining obligation to this stage is a repoint of its
 > six `job.Queue` reads, not a deletion. See §1.2's second amendment, item 3.
 
+### Verification state is derived, never persisted (#533)
+
+**There is no per-job admin directory.** A job's download directory holds no
+state of ours that outlives a run, and `repair` recomputes which par2 sets
+verify on every run rather than reading a record of the last one. A retried or
+crash-restarted job therefore re-verifies.
+
+The qualifier is load-bearing. The extraction path does write into that
+directory transiently: `fsutil.RootedCreateTemp` puts a `.gonzbd-tmp-<16 hex>`
+file beside each entry it is about to rename into place, and the four `unpack`
+engines open their root at the same directory. Those are removed on the
+deferred path, so a crash or a kill mid-extraction can leave one behind. What
+does not exist any more is a file we later READ BACK and act on — which is the
+property that mattered, since it is the read that turns a forged write into a
+decision.
+
+This replaced a `__ADMIN__/__verified__` file, and the reasoning is worth keeping
+because the file looked cheap:
+
+- It was **inert on first runs.** Loading found nothing, so nothing was skipped.
+  The cleanup stage deleted the directory on success, so the record survived only
+  for jobs that had FAILED — its entire effect was letting a retry skip
+  re-verification.
+- It could be **stale in exactly that case.** `RetryHistoryJob` rebuilds from the
+  NZB and may re-download into the same directory, so the record could assert a
+  set verified whose files had since changed.
+- It could be **forged by the content it was vouching for.** It lived inside the
+  directory par2 relocation and archive extraction write into, so a
+  poster-controlled par2 filename or archive entry naming it made `repair` return
+  early on `AllVerified()` and skip verification for every set in the job, with
+  no `ParError` and no "Damaged" state.
+
+Sandboxing could not have fixed the third: `cmdutil`'s bwrap wrapper `--ro-bind`s
+`/` and `--bind`s the job download directory read-write, so the admin directory
+sat inside the sandbox's one writable root by construction. Nor could a
+reserved-name check on our own writers, because the external `unrar` and `7z`
+fallbacks are handed that directory and preserve archive paths themselves —
+their entry names never pass through `unpack.SanitizeArchivePath`.
+
+Standing Design Rule 2 states the general form: a derived value that is also
+persisted acquires a second source of truth, and the stored copy is the one that
+drifts. **Anything tempted back into the job directory as a sidecar inherits all
+three problems**, so the answer is SQLite or the per-instance
+`constants.AdminDirName`, not a new file next to the content.
+
+Relocation itself is confined by `os.Root` rather than by a lexical path check —
+see `par2.relocateFile`. That is a separate guarantee, and it survives
+independently of the above: it bounds where a poster-controlled par2 name can
+write at all, rather than protecting any particular file.
+
 ## Post-Processing (PP) Level Enforcement
 
 SABnzbd post-processing levels are cumulative integer masks on `job.Queue.PP`:
 
-- **PP = 0 (Download Only)**: Skips `quickcheck`, `repair`, and `unpack`. Runs cleanup, finalize, and script.
+- **PP = 0 (Download Only)**: Skips `quickcheck`, `repair`, and `unpack`. Runs the cleanup stages (`sample_cleanup`, `par2_cleanup`, `extension_cleanup`), finalize, and script.
 - **PP = 1 (Repair Only)**: Runs `quickcheck` and `repair`. Skips `unpack`.
 - **PP = 2 (Repair + Unpack)**: Runs `quickcheck`, `repair`, and `unpack`.
 - **PP = 3 (Repair + Unpack + Delete)**: Full processing including archive deletion.
@@ -133,8 +182,9 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
 
 1. **Non-aborting stage loop**: A stage returning a non-nil error records the error
    into `StageLogEntry.Err` but MUST NOT abort the pipeline loop. Subsequent
-   stages (`cleanup`, `finalize`, `script`) MUST still execute so directory hygiene
-   is maintained and user scripts receive the failure status code.
+   stages (the cleanup stages, `finalize`, `script`) MUST still execute so
+   directory hygiene is maintained and user scripts receive the failure status
+   code.
 2. **Pre-check abort**: If `job.FailMsg` is pre-populated (e.g. download health
    check failed) or `job.DownloadDir` is empty/missing, all processing stages are
    skipped. A synthetic `pre-check` entry is appended to `StageLog` and the job
@@ -334,7 +384,7 @@ recorded entirely through the fetch-policy discard, not through this field.
 
 ### Landed
 - Single worker goroutine with `ppQueue` FIFO scheduling and safe cancellation (`Cancel`).
-- Complete 12-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
+- Complete 11-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
 - `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`) bypass logic & DirectUnpack zero-failure verification bypass.
 - `OwnedFiles` snapshotting and cleanup isolation (#3462) with in-place rename tracking (`markRenamed`).
 - Python-compatible 8-arg positional and `SAB_*` environment contract for user scripts with 512 KiB log caps, `RedactSecrets`, and `ScriptCanFail` runtime toggleability.

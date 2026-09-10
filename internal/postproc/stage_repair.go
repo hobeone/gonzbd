@@ -136,43 +136,53 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		return fmt.Errorf("repair: find par2 sets: %w", err)
 	}
 
-	vs := NewVerifiedSets(job.DownloadDir, log)
-	if vs.AllVerified() {
-		logf(ctx, log, job, slog.LevelInfo, "[repair] All sets previously verified — skipping")
+	if len(sets) == 0 {
+		logf(ctx, log, job, slog.LevelInfo, "No par2 files found")
 		return nil
 	}
 
+	logf(ctx, log, job, slog.LevelInfo, "Found %d par2 set(s)", len(sets))
+
+	// Collect all non-par2 files in the download directory to pass as
+	// extra arguments. This lets par2 checksum-match files even when
+	// their names don't match the par2 set's expectations (e.g.
+	// obfuscated or renamed files).
+	dataFiles, scanErr := listNonPar2Files(job.DownloadDir)
+	if scanErr != nil {
+		job.ParError = true
+		return fmt.Errorf("repair: scan data files: %w", scanErr)
+	}
+	logf(ctx, log, job, slog.LevelInfo, "Found %d non-par2 data file(s) for checksum matching", len(dataFiles))
+
+	// A failing set does not stop the others: each par2 set is independent,
+	// and the first error is what the stage reports.
 	var firstErr error
-	if len(sets) > 0 {
-		logf(ctx, log, job, slog.LevelInfo, "Found %d par2 set(s)", len(sets))
-
-		// Collect all non-par2 files in the download directory to pass as
-		// extra arguments. This lets par2 checksum-match files even when
-		// their names don't match the par2 set's expectations (e.g.
-		// obfuscated or renamed files).
-		dataFiles, scanErr := listNonPar2Files(job.DownloadDir)
-		if scanErr != nil {
-			job.ParError = true
-			return fmt.Errorf("repair: scan data files: %w", scanErr)
-		}
-		logf(ctx, log, job, slog.LevelInfo, "Found %d non-par2 data file(s) for checksum matching", len(dataFiles))
-
-		for _, set := range sets {
-			if err := s.processPar2Set(ctx, log, job, set, dataFiles, par2Opts, vs, useGoPar2Val, goPar2FallbackVal); err != nil {
-				if firstErr == nil {
-					firstErr = err
-				}
+	for _, set := range sets {
+		if err := s.processPar2Set(ctx, log, job, set, dataFiles, par2Opts, useGoPar2Val, goPar2FallbackVal); err != nil {
+			if firstErr == nil {
+				firstErr = err
 			}
 		}
-	} else {
-		logf(ctx, log, job, slog.LevelInfo, "No par2 files found")
 	}
 
 	return firstErr
 }
 
-// processPar2Set processes a single par2 set: checks verification status, dispatches the repair tool,
+// processPar2Set processes a single par2 set: dispatches the repair tool,
 // captures tool output, and handles repair failure/success records.
+//
+// No set's verdict is read from a record an earlier run wrote. That is the
+// property #533 restored, and it is narrower than "everything is always
+// verified": a set reaching here is verified without consulting stored state,
+// but three branches decide it never reaches here at all. Run returns early for
+// QuickCheckClean and for QuickCheckNotRun with a clean DirectUnpack, and this
+// function skips a set whose ParseFile is empty. Each of those is computed from
+// THIS run's state, which is what makes it a different thing from trusting the
+// last run's.
+//
+// See "Verification state is derived, never persisted" in
+// docs/post-processing-contract.md for why the persisted record was removed
+// rather than guarded.
 func (s *RepairStage) processPar2Set(
 	ctx context.Context,
 	log *slog.Logger,
@@ -180,16 +190,11 @@ func (s *RepairStage) processPar2Set(
 	set par2.Set,
 	dataFiles []string,
 	par2Opts par2.RunOptions,
-	vs *VerifiedSets,
 	useGoPar2Val, goPar2FallbackVal bool,
 ) error {
 	main := set.ParseFile()
 	if main == "" {
 		logf(ctx, log, job, slog.LevelInfo, "Skipped par2 set %q: no main file", set.Name)
-		return nil
-	}
-	if vs.IsVerified(set.Name) {
-		logf(ctx, log, job, slog.LevelInfo, "[repair] Skipping previously verified set: %s", set.Name)
 		return nil
 	}
 
@@ -208,7 +213,6 @@ func (s *RepairStage) processPar2Set(
 
 	if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
 		job.ParError = true
-		vs.MarkVerified(set.Name, false)
 		logf(ctx, log, job, slog.LevelWarn, "Error: pre-repair containment violation for %q: %v", set.Name, cErr)
 		return fmt.Errorf("repair %q: pre-repair containment check: %w", set.Name, cErr)
 	}
@@ -225,7 +229,7 @@ func (s *RepairStage) processPar2Set(
 		job.OutputLines = append(job.OutputLines, toolOutputLines(res.Output)...)
 	}
 
-	return s.handleRepairResult(ctx, log, job, set, vs, res, err)
+	return s.handleRepairResult(ctx, log, job, set, res, err)
 }
 
 // handleRepairResult evaluates the repair result: classifies errors, records failures,
@@ -235,27 +239,23 @@ func (s *RepairStage) handleRepairResult(
 	log *slog.Logger,
 	job *Job,
 	set par2.Set,
-	vs *VerifiedSets,
 	res par2.RepairResult,
 	err error,
 ) error {
 	if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
 		job.ParError = true
-		vs.MarkVerified(set.Name, false)
 		logf(ctx, log, job, slog.LevelWarn, "Error: containment violation after par2 repair %q: %v", set.Name, cErr)
 		return fmt.Errorf("repair %q: containment check: %w", set.Name, cErr)
 	}
 
 	if err != nil {
 		job.ParError = true
-		vs.MarkVerified(set.Name, false)
 		logf(ctx, log, job, slog.LevelWarn, "Error: par2 repair %q failed: %v", set.Name, err)
 		return fmt.Errorf("repair %q: %w", set.Name, err)
 	}
 
 	if !res.Success {
 		job.ParError = true
-		vs.MarkVerified(set.Name, false)
 
 		// I3: Not enough recovery blocks
 		if res.NeedMoreBlocks {
@@ -277,7 +277,7 @@ func (s *RepairStage) handleRepairResult(
 		return fmt.Errorf("repair %q: unsuccessful (exit=%d)", set.Name, res.ExitCode)
 	}
 
-	recordRepairSuccess(ctx, log, set, job, vs, res)
+	recordRepairSuccess(ctx, log, set, job, res)
 	return nil
 }
 
@@ -375,11 +375,11 @@ func nativeRepairReason(res par2.RepairResult, err error) string {
 }
 
 // recordRepairSuccess updates job state after a successful par2 repair:
-// marks the set verified, records consumed par2 files, wires renames for
-// downstream deobfuscation, and protects joinables and repair sources from
-// premature cleanup deletion.
-func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, job *Job, vs *VerifiedSets, res par2.RepairResult) {
-	vs.MarkVerified(set.Name, true)
+// records consumed par2 files, wires renames for downstream deobfuscation, and
+// protects joinables and repair sources from premature cleanup deletion.
+//
+// The verdict itself is not recorded anywhere that outlives the run.
+func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, job *Job, res par2.RepairResult) {
 	logf(ctx, log, job, slog.LevelInfo, "Par2 repair %q succeeded", set.Name)
 
 	// M7: record par2 files as consumed for cleanup protection.

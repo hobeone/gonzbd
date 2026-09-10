@@ -713,17 +713,22 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 				}
 			}
 		}
-		if _, err := os.Stat(filepath.Join(downloadDir, name)); err == nil {
+		// Lstat, not Stat, for the reason given on fsutil.GetUniqueRelPath:
+		// this decides whether a job directory name is available to create,
+		// and a dangling symlink at that name reads as absent under Stat. The
+		// MkdirAll that follows would then resolve the link rather than make
+		// the directory we chose.
+		if _, err := os.Lstat(filepath.Join(downloadDir, name)); err == nil {
 			return true
 		}
-		if _, err := os.Stat(filepath.Join(completeDir, name)); err == nil {
+		if _, err := os.Lstat(filepath.Join(completeDir, name)); err == nil {
 			return true
 		}
 		for _, cat := range categories {
 			if cat.Dir == "" {
 				continue
 			}
-			if _, err := os.Stat(filepath.Join(completeDir, cat.Dir, name)); err == nil {
+			if _, err := os.Lstat(filepath.Join(completeDir, cat.Dir, name)); err == nil {
 				return true
 			}
 		}
@@ -2568,7 +2573,18 @@ func writeGzFile(path string, data []byte) error {
 func writeNZBBackup(nzbDir, filename string, rawNZB []byte) (string, error) {
 	base := filepath.Base(filename)
 	name := uniqueName(base, func(candidate string) bool {
-		_, err := os.Stat(filepath.Join(nzbDir, candidate+".gz"))
+		// Lstat, not Stat, for the reason given on fsutil.GetUniqueRelPath:
+		// this decides whether a name is free, and Stat answers about a link's
+		// target, so a dangling symlink here would hand back a name that is
+		// already occupied.
+		//
+		// Unlike the par2 and unpack sites, this one is not reachable from
+		// downloaded content — nzbDir is <AdminDir>/nzb, not the job download
+		// directory — and WriteGzAtomicBytes publishes by rename, which does
+		// not follow a final symlink. So the consequence is a clobbered link
+		// rather than a write through it. It is corrected because it is the
+		// same question, not because it carries the same risk.
+		_, err := os.Lstat(filepath.Join(nzbDir, candidate+".gz"))
 		return err == nil
 	}) + ".gz"
 	if err := writeGzFile(filepath.Join(nzbDir, name), rawNZB); err != nil {

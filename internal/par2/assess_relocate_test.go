@@ -9,6 +9,19 @@ import (
 	"testing"
 )
 
+// relocateIn opens a root at dir and relocates through it, which is how
+// ApplyRenames drives relocateFile in production. Tests share one helper so a
+// change to how the root is obtained lands in a single place.
+func relocateIn(t *testing.T, dir, flatName string, fd FileDesc, log *slog.Logger) bool {
+	t.Helper()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot(%s): %v", dir, err)
+	}
+	defer root.Close() //nolint:errcheck // nothing is buffered through the handle
+	return relocateFile(root, flatName, fd, log)
+}
+
 func TestAssess_BasenameMatch(t *testing.T) {
 	// Setup: create a download dir with a flat file and a par2 file whose
 	// manifest references the file in a subdirectory.
@@ -35,7 +48,7 @@ func TestAssess_BasenameMatch(t *testing.T) {
 	// we test the relocation logic through a helper approach.
 
 	// Create a minimal test by directly calling relocateFile.
-	ok := relocateFile(dir, "screenshot.jpg", manifest[0], nil)
+	ok := relocateIn(t, dir, "screenshot.jpg", manifest[0], nil)
 	if !ok {
 		t.Fatal("relocateFile returned false")
 	}
@@ -78,7 +91,7 @@ func TestAssess_FlattenedNameMatch(t *testing.T) {
 	}
 
 	// Phase 2: flattened name matches — test relocateFile directly.
-	ok := relocateFile(dir, "Screens_foo.jpg", fd, nil)
+	ok := relocateIn(t, dir, "Screens_foo.jpg", fd, nil)
 	if !ok {
 		t.Fatal("relocateFile returned false for flattened name")
 	}
@@ -121,7 +134,7 @@ func TestAssess_Hash16kMatch(t *testing.T) {
 	}
 
 	// Test relocateFile with the hash-matched entry.
-	ok := relocateFile(dir, "a1b2c3d4.dat", fd, nil)
+	ok := relocateIn(t, dir, "a1b2c3d4.dat", fd, nil)
 	if !ok {
 		t.Fatal("relocateFile returned false for hash16k match")
 	}
@@ -145,7 +158,7 @@ func TestAssess_PathTraversal(t *testing.T) {
 		FileSize: uint64(len(content)),
 	}
 
-	ok := relocateFile(dir, "evil.txt", fd, nil)
+	ok := relocateIn(t, dir, "evil.txt", fd, nil)
 	if ok {
 		t.Fatal("relocateFile should reject path traversal")
 	}
@@ -169,7 +182,7 @@ func TestAssess_SizeMismatch(t *testing.T) {
 		FileSize: 99999, // doesn't match actual size
 	}
 
-	ok := relocateFile(dir, "file.dat", fd, nil)
+	ok := relocateIn(t, dir, "file.dat", fd, nil)
 	if ok {
 		t.Fatal("relocateFile should skip on size mismatch")
 	}
@@ -268,7 +281,7 @@ func TestRelocateFile_CreatesNestedDirs(t *testing.T) {
 		FileSize: uint64(len(content)),
 	}
 
-	ok := relocateFile(dir, "pic.jpg", fd, nil)
+	ok := relocateIn(t, dir, "pic.jpg", fd, nil)
 	if !ok {
 		t.Fatal("relocateFile returned false for nested dirs")
 	}
@@ -343,7 +356,7 @@ func TestAssess_Phase4_CRCSizeFallback(t *testing.T) {
 		FileCRC32: expectedCRC,
 	}
 
-	ok := relocateFile(dir, obfuscatedName, fd, nil)
+	ok := relocateIn(t, dir, obfuscatedName, fd, nil)
 	if !ok {
 		t.Fatal("relocateFile should succeed for CRC+size match")
 	}

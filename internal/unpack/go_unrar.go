@@ -150,13 +150,8 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 		destPath := sp.Abs(outDir)
 
 		if opts.OneFolder && !opts.OverwriteFiles {
-			destPath = uniquePath(destPath)
-			// Recompute destRel and verify it stays inside outDir
-			rel, relErr := filepath.Rel(outDir, destPath)
-			if relErr != nil || !filepath.IsLocal(rel) {
-				return res, fmt.Errorf("go_unrar: uniquePath escaped outDir for %s", fh.Name)
-			}
-			destRel = rel
+			destRel = uniquePath(root, destRel)
+			destPath = filepath.Join(outDir, destRel)
 		}
 
 		if err := ExtractEntryRarengine(ctx, root, outDir, destRel, destPath, fh, sd, opts, log); err != nil {

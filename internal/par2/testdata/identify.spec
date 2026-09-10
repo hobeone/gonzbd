@@ -237,5 +237,8 @@ file internal/par2/assess.go
 		a.Renames = append(a.Renames, Rename{From: f.OnDisk, To: f.Desc.FileName})
 --- replace
 		a.Renames = append(a.Renames, Rename{From: f.OnDisk, To: f.Desc.FileName})
-		relocateFile(dir, f.OnDisk, f.Desc, log)
+		if injectedRoot, injectedErr := os.OpenRoot(dir); injectedErr == nil {
+			relocateFile(injectedRoot, f.OnDisk, f.Desc, log)
+			_ = injectedRoot.Close()
+		}
 --- end

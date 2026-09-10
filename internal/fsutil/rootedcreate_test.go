@@ -317,6 +317,43 @@ func TestGetUniqueRelPath_AllCases(t *testing.T) {
 		}
 	})
 
+	t.Run("dangling symlink occupies the name", func(t *testing.T) {
+		// Stat follows the link and fails on the missing target, which reads
+		// as "the name is free" — so the caller writes to the undecorated
+		// name and the write follows the link to wherever it points. Lstat
+		// answers about the link itself, which is what holds the name.
+		// The link target is RELATIVE and inside the root. An absolute target
+		// makes root.Stat fail with an escape error rather than ErrNotExist,
+		// which sends GetUniqueRelPath down its permission-error branch and
+		// yields the suffixed name for a reason that has nothing to do with
+		// the symlink following at issue here.
+		dir := t.TempDir()
+		if err := os.Symlink("no-such-target", filepath.Join(dir, "dangling.txt")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatalf("OpenRoot failed: %v", err)
+		}
+		defer root.Close()
+
+		got := fsutil.GetUniqueRelPath(root, "dangling.txt")
+		if got != "dangling.1.txt" {
+			t.Errorf("GetUniqueRelPath = %q; want %q — a dangling symlink still occupies the name", got, "dangling.1.txt")
+		}
+
+		// The suffix loop has its own existence test, and the check above
+		// never reaches it. Occupying the first candidate with a second
+		// dangling link is what puts the loop's own Lstat under test.
+		if err := os.Symlink("no-such-target", filepath.Join(dir, "dangling.1.txt")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if got := fsutil.GetUniqueRelPath(root, "dangling.txt"); got != "dangling.2.txt" {
+			t.Errorf("GetUniqueRelPath = %q; want %q — a dangling symlink occupies the first candidate too", got, "dangling.2.txt")
+		}
+	})
+
 	t.Run("conflicting permission on file", func(t *testing.T) {
 		dir := t.TempDir()
 		target := filepath.Join(dir, "restricted.txt")

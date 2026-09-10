@@ -190,12 +190,11 @@ func extractTarEntry(ctx context.Context, root *os.Root, outDir string, tr *tar.
 	destPath := sp.Abs(outDir)
 
 	if opts.OneFolder && !opts.OverwriteFiles {
-		destPath = uniquePath(destPath)
-		rel, relErr := filepath.Rel(outDir, destPath)
-		if relErr != nil || !filepath.IsLocal(rel) {
-			return false, fmt.Errorf("go_tar: uniquePath escaped outDir for %s", hdr.Name)
-		}
-		destRel = rel
+		// uniquePath works in root-relative terms, so there is no absolute
+		// path to convert back and no escape to re-check: the name it returns
+		// is destRel with a suffix on its base.
+		destRel = uniquePath(root, destRel)
+		destPath = filepath.Join(outDir, destRel)
 	}
 
 	if err := extractTarFile(ctx, root, destRel, destPath, tr, hdr, opts, arcSize, totalRead, log); err != nil {

@@ -229,19 +229,14 @@ func TestWarningCounters(t *testing.T) {
 }
 
 func TestPersistenceNames(t *testing.T) {
+	// Only the per-instance admin directory remains. The per-job sidecar names
+	// SABnzbd keeps inside the job folder are gone with the directory itself —
+	// see the comment where they used to be declared.
 	tests := map[string]string{
-		"AdminDirName":     AdminDirName,
-		"JobAdminDirName":  JobAdminDirName,
-		"VerifiedFileName": VerifiedFileName,
-		"RenamesFileName":  RenamesFileName,
-		"AttribFileName":   AttribFileName,
+		"AdminDirName": AdminDirName,
 	}
 	want := map[string]string{
-		"AdminDirName":     "admin",
-		"JobAdminDirName":  "__ADMIN__",
-		"VerifiedFileName": "__verified__",
-		"RenamesFileName":  "__renames__",
-		"AttribFileName":   "gonzbd_attrib",
+		"AdminDirName": "admin",
 	}
 	for name, got := range tests {
 		t.Run(name, func(t *testing.T) {

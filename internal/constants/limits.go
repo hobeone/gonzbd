@@ -138,16 +138,10 @@ const (
 	// data root. Python: DEF_ADMIN_DIR = "admin".
 	AdminDirName = "admin"
 
-	// JobAdminDirName is the per-job admin subdirectory.
-	// Python: JOB_ADMIN = "__ADMIN__".
-	JobAdminDirName = "__ADMIN__"
-
-	// VerifiedFileName marks a job whose files have been par2-verified.
-	VerifiedFileName = "__verified__"
-
-	// RenamesFileName records original->renamed file mappings for a job.
-	RenamesFileName = "__renames__"
-
-	// AttribFileName stores per-folder attribute metadata for a job.
-	AttribFileName = "gonzbd_attrib"
+	// The per-job sidecar names SABnzbd keeps under a "__ADMIN__" directory
+	// inside the job folder — JOB_ADMIN, __verified__, __renames__ and the
+	// attribute file — are deliberately absent. GoNZBD keeps no per-job admin
+	// directory: verification state is recomputed rather than persisted, and
+	// everything else that would live there is in SQLite or the per-instance
+	// AdminDirName above. See docs/post-processing-contract.md.
 )

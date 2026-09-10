@@ -704,10 +704,3 @@ func cleanupContainmentViolation(outDir string, extractedFiles []string, log *sl
 		}
 	}
 }
-
-// CleanupStage removes temporary admin data from the download directory after
-// post-processing completes. On successful jobs the __ADMIN__ directory
-// (containing verified sets, crash recovery data) is removed. On failed
-// jobs the data is preserved for debugging/retry.
-//
-// This corresponds to Python's nzo.purge_data() — spec §6.2 step 15.

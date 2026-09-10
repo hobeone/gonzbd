@@ -296,8 +296,8 @@ func TestCleanupPar2Backups_PreservesIfOriginalMissing(t *testing.T) {
 // handleRepairResult — focused unit tests for all 5 outcome branches
 // ---------------------------------------------------------------------------
 
-// repairJob creates a minimal Job wired to a real temp dir for VerifiedSets persistence.
-func repairJob(t *testing.T) (*Job, *VerifiedSets) {
+// repairJob creates a minimal Job wired to a real temp dir.
+func repairJob(t *testing.T) *Job {
 	t.Helper()
 	dir := t.TempDir()
 	qjob := newQueueJob(t, "rjob", 0)
@@ -306,20 +306,19 @@ func repairJob(t *testing.T) (*Job, *VerifiedSets) {
 		Job:         qjob,
 		DownloadDir: dir,
 	}
-	vs := NewVerifiedSets(dir, nil)
-	return job, vs
+	return job
 }
 
-// TestHandleRepairResult_ErrorPath verifies that a non-nil err sets ParError,
-// marks the set as not-verified, and returns an error wrapping the original.
+// TestHandleRepairResult_ErrorPath verifies that a non-nil err sets ParError
+// and returns an error wrapping the original.
 func TestHandleRepairResult_ErrorPath(t *testing.T) {
 	t.Parallel()
-	job, vs := repairJob(t)
+	job := repairJob(t)
 	set := par2.Set{Name: "testset", MainFile: "testset.par2"}
 	stage := &RepairStage{}
 
 	underlying := fmt.Errorf("par2 crashed with code 137")
-	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, vs, par2.RepairResult{}, underlying)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, par2.RepairResult{}, underlying)
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -330,18 +329,13 @@ func TestHandleRepairResult_ErrorPath(t *testing.T) {
 	if !job.ParError {
 		t.Error("ParError should be true after error")
 	}
-	// vs should record the set as not-verified (false), not simply absent.
-	vs.MarkVerified("testset", false)
-	if vs.IsVerified("testset") {
-		t.Error("set should not be verified after error")
-	}
 }
 
 // TestHandleRepairResult_NeedMoreBlocks verifies that NeedMoreBlocks=true
 // sets ParError and returns an error naming the block shortfall.
 func TestHandleRepairResult_NeedMoreBlocks(t *testing.T) {
 	t.Parallel()
-	job, vs := repairJob(t)
+	job := repairJob(t)
 	set := par2.Set{Name: "testset", MainFile: "testset.par2"}
 	stage := &RepairStage{}
 
@@ -350,7 +344,7 @@ func TestHandleRepairResult_NeedMoreBlocks(t *testing.T) {
 		NeedMoreBlocks: true,
 		BlocksNeeded:   42,
 	}
-	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, vs, res, nil)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, res, nil)
 
 	if err == nil {
 		t.Fatal("expected error for NeedMoreBlocks")
@@ -370,7 +364,7 @@ func TestHandleRepairResult_NeedMoreBlocks(t *testing.T) {
 // error distinct from NeedMoreBlocks.
 func TestHandleRepairResult_InvalidPar2(t *testing.T) {
 	t.Parallel()
-	job, vs := repairJob(t)
+	job := repairJob(t)
 	set := par2.Set{Name: "testset", MainFile: "testset.par2"}
 	stage := &RepairStage{}
 
@@ -378,7 +372,7 @@ func TestHandleRepairResult_InvalidPar2(t *testing.T) {
 		Success: false,
 		Parsed:  &par2.RepairOutput{Status: par2.StatusInvalidPar2},
 	}
-	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, vs, res, nil)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, res, nil)
 
 	if err == nil {
 		t.Fatal("expected error for InvalidPar2")
@@ -397,7 +391,7 @@ func TestHandleRepairResult_InvalidPar2(t *testing.T) {
 // path: ParError=true and a non-nil error naming the exit code.
 func TestHandleRepairResult_UnsuccessfulGeneric(t *testing.T) {
 	t.Parallel()
-	job, vs := repairJob(t)
+	job := repairJob(t)
 	set := par2.Set{Name: "testset", MainFile: "testset.par2"}
 	stage := &RepairStage{}
 
@@ -405,7 +399,7 @@ func TestHandleRepairResult_UnsuccessfulGeneric(t *testing.T) {
 		Success:  false,
 		ExitCode: 2,
 	}
-	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, vs, res, nil)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, res, nil)
 
 	if err == nil {
 		t.Fatal("expected error for generic unsuccessful repair")
@@ -425,7 +419,7 @@ func TestHandleRepairResult_UnsuccessfulGeneric(t *testing.T) {
 // ParError, marks the set verified, and returns no error.
 func TestHandleRepairResult_Success(t *testing.T) {
 	t.Parallel()
-	job, vs := repairJob(t)
+	job := repairJob(t)
 	set := par2.Set{
 		Name:       "testset",
 		MainFile:   "testset.par2",
@@ -434,16 +428,13 @@ func TestHandleRepairResult_Success(t *testing.T) {
 	stage := &RepairStage{}
 
 	res := par2.RepairResult{Success: true}
-	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, vs, res, nil)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, res, nil)
 
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
 	if job.ParError {
 		t.Error("ParError should be false on success")
-	}
-	if !vs.IsVerified("testset") {
-		t.Error("set should be marked verified after success")
 	}
 	// recordRepairSuccess should have added par2 files to ConsumedFiles.
 	if _, ok := job.ConsumedFiles["testset.par2"]; !ok {
@@ -595,7 +586,6 @@ func TestRepairHelpers(t *testing.T) {
 	// 1. Test recordRepairSuccess
 	t.Run("recordRepairSuccess", func(t *testing.T) {
 		job := &Job{ConsumedFiles: make(map[string]struct{})}
-		vs := NewVerifiedSets(t.TempDir(), nil)
 		set := par2.Set{
 			Name:       "testset",
 			MainFile:   "testset.par2",
@@ -608,10 +598,7 @@ func TestRepairHelpers(t *testing.T) {
 			},
 		}
 		job.DownloadDir = t.TempDir()
-		recordRepairSuccess(t.Context(), slog.Default(), set, job, vs, res)
-		if !vs.IsVerified("testset") {
-			t.Error("expected set to be verified")
-		}
+		recordRepairSuccess(t.Context(), slog.Default(), set, job, res)
 		if _, ok := job.ConsumedFiles["testset.par2"]; !ok {
 			t.Error("expected testset.par2 to be consumed")
 		}
@@ -699,13 +686,12 @@ func TestRepairHelpers(t *testing.T) {
 			ConsumedFiles: make(map[string]struct{}),
 			DownloadDir:   t.TempDir(),
 		}
-		vs := NewVerifiedSets(t.TempDir(), nil)
 		set := par2.Set{
 			Name: "empty",
 		}
 		// Empty set (no main file) should skip.
 		s := &RepairStage{}
-		err := s.processPar2Set(t.Context(), slog.Default(), job, set, nil, par2.RunOptions{}, vs, true, false)
+		err := s.processPar2Set(t.Context(), slog.Default(), job, set, nil, par2.RunOptions{}, true, false)
 		if err != nil {
 			t.Fatalf("processPar2Set: %v", err)
 		}
@@ -715,26 +701,6 @@ func TestRepairHelpers(t *testing.T) {
 			t.Errorf("OutputLines = %v; want single skip message mentioning no main file", job.OutputLines)
 		}
 
-		// Set already verified should skip.
-		vs.MarkVerified("verified-set", true)
-		set2 := par2.Set{
-			Name:       "verified-set",
-			MainFile:   "verified-set.par2",
-			ExtraFiles: []string{"verified-set.vol001.par2"},
-		}
-		job.OutputLines = nil
-		err = s.processPar2Set(t.Context(), slog.Default(), job, set2, nil, par2.RunOptions{}, vs, true, false)
-		if err != nil {
-			t.Fatalf("processPar2Set: %v", err)
-		}
-		if len(job.OutputLines) != 1 || !strings.Contains(job.OutputLines[0], "previously verified") {
-			t.Errorf("OutputLines = %v; want single skip message mentioning previously verified", job.OutputLines)
-		}
-		// recordRepairSuccess (which populates ConsumedFiles) must not have
-		// run for an already-verified set.
-		if len(job.ConsumedFiles) != 0 {
-			t.Errorf("ConsumedFiles = %v; want empty (repair tool must not run for verified set)", job.ConsumedFiles)
-		}
 	})
 }
 
@@ -760,10 +726,9 @@ func TestRepairStage_ContainmentViolation(t *testing.T) {
 		MainFile:   "bad_set.par2",
 		ExtraFiles: []string{"bad_set.vol001.par2"},
 	}
-	vs := NewVerifiedSets(outDir, slog.Default())
 
 	res := par2.RepairResult{Success: true}
-	err := s.handleRepairResult(t.Context(), slog.Default(), job, set, vs, res, nil)
+	err := s.handleRepairResult(t.Context(), slog.Default(), job, set, res, nil)
 	if err == nil {
 		t.Fatalf("expected containment violation error, got nil")
 	}
@@ -801,9 +766,8 @@ func TestRepairStage_PreRepairContainmentViolation(t *testing.T) {
 		Name:     "bad_set",
 		MainFile: "test.par2",
 	}
-	vs := NewVerifiedSets(outDir, slog.Default())
 
-	err := s.processPar2Set(t.Context(), slog.Default(), job, set, []string{}, par2.RunOptions{}, vs, false, false)
+	err := s.processPar2Set(t.Context(), slog.Default(), job, set, []string{}, par2.RunOptions{}, false, false)
 	if err == nil {
 		t.Fatalf("expected pre-repair containment violation error, got nil")
 	}

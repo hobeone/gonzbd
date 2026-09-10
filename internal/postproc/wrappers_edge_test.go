@@ -2,13 +2,10 @@ package postproc
 
 import (
 	"context"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // ---------- FinalizeStage edge cases ----------
@@ -425,93 +422,6 @@ func TestUnpackStage_SkipsOnParError(t *testing.T) {
 	}
 }
 
-// ---------- CleanupStage tests ----------
-
-func TestCleanupStage_Name(t *testing.T) {
-	t.Parallel()
-	if got := (&CleanupStage{}).Name(); got != "cleanup" {
-		t.Errorf("Name() = %q, want %q", got, "cleanup")
-	}
-}
-
-func TestCleanupStage_RemovesAdminDir(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	adminDir := filepath.Join(dir, "__ADMIN__")
-	os.MkdirAll(adminDir, 0o755)
-	os.WriteFile(filepath.Join(adminDir, "gonzbd_verified.json"), []byte(`{}`), 0o644)
-
-	job := &Job{
-		Job:         newQueueJob(t, "test-cleanup", 0),
-		DownloadDir: dir,
-	}
-	stage := NewCleanupStage()
-	if err := stage.Run(context.Background(), job); err != nil {
-		t.Fatalf("Run() = %v", err)
-	}
-
-	if _, err := os.Stat(adminDir); !os.IsNotExist(err) {
-		t.Error("expected admin dir to be removed after successful cleanup")
-	}
-}
-
-func TestCleanupStage_PreservesOnParError(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	adminDir := filepath.Join(dir, "__ADMIN__")
-	os.MkdirAll(adminDir, 0o755)
-	os.WriteFile(filepath.Join(adminDir, "gonzbd_verified.json"), []byte(`{}`), 0o644)
-
-	job := &Job{
-		Job:         newQueueJob(t, "test-cleanup-par", 0),
-		DownloadDir: dir,
-		ParError:    true,
-	}
-	stage := NewCleanupStage()
-	if err := stage.Run(context.Background(), job); err != nil {
-		t.Fatalf("Run() = %v", err)
-	}
-
-	if _, err := os.Stat(adminDir); os.IsNotExist(err) {
-		t.Error("expected admin dir to be preserved on ParError")
-	}
-}
-
-func TestCleanupStage_PreservesOnUnpackError(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	adminDir := filepath.Join(dir, "__ADMIN__")
-	os.MkdirAll(adminDir, 0o755)
-
-	job := &Job{
-		Job:         newQueueJob(t, "test-cleanup-unpack", 0),
-		DownloadDir: dir,
-		UnpackError: true,
-	}
-	stage := NewCleanupStage()
-	if err := stage.Run(context.Background(), job); err != nil {
-		t.Fatalf("Run() = %v", err)
-	}
-
-	if _, err := os.Stat(adminDir); os.IsNotExist(err) {
-		t.Error("expected admin dir to be preserved on UnpackError")
-	}
-}
-
-func TestCleanupStage_NoAdminDir(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	// No __ADMIN__ dir exists — should succeed gracefully.
-	job := &Job{
-		Job:         newQueueJob(t, "test-cleanup-none", 0),
-		DownloadDir: dir,
-	}
-	stage := NewCleanupStage()
-	if err := stage.Run(context.Background(), job); err != nil {
-		t.Fatalf("Run() = %v, expected nil", err)
-	}
-}
-
 func TestDeobfuscateStage_FullFlow(t *testing.T) {
 	t.Parallel()
 	job, dir := stageJob(t)
@@ -559,52 +469,6 @@ func TestDeobfuscateStage_FullFlow(t *testing.T) {
 	}
 	if !hasSubLog {
 		t.Errorf("expected 'Renamed 1 subtitle file(s)' in output, got: %v", job.OutputLines)
-	}
-}
-
-// Must stay non-parallel: SetRemoveBackoffsForTest mutates fsutil's shared
-// removeBackoffs package var, which is safe only while this test runs
-// serially (see the same note on TestSetRemoveBackoffsForTest).
-func TestCleanupStage_LogOnFailure(t *testing.T) {
-	restore := fsutil.SetRemoveBackoffsForTest(nil)
-	defer restore()
-
-	dir := t.TempDir()
-	adminDir := filepath.Join(dir, "__ADMIN__")
-	if err := os.MkdirAll(adminDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// Create a file inside __ADMIN__.
-	if err := os.WriteFile(filepath.Join(adminDir, "file.txt"), []byte("data"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	job := &Job{
-		Job:         newQueueJob(t, "test-cleanup-fail", 0),
-		DownloadDir: dir,
-	}
-
-	// Make __ADMIN__ directory non-writable/non-executable.
-	if err := os.Chmod(adminDir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		_ = os.Chmod(adminDir, 0o755)
-	}()
-
-	handler := &testLogHandler{}
-	stage := &CleanupStage{Log: slog.New(handler)}
-	if err := stage.Run(context.Background(), job); err != nil {
-		t.Fatalf("Run() = %v", err)
-	}
-
-	// Verify that warnings were logged because RemoveAll failed and directory still exists.
-	handler.mu.Lock()
-	warnLogged := handler.warnLogged
-	handler.mu.Unlock()
-
-	if !warnLogged {
-		t.Error("expected warnings to be logged on cleanup failure")
 	}
 }
 

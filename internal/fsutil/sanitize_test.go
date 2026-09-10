@@ -518,6 +518,47 @@ func TestTruncateOnRuneBoundary_Boundary(t *testing.T) {
 	}
 }
 
+// TestTrimTrailingDotAndSpace covers the helper directly. It was reached only
+// through SanitizeFilename and SanitizeFolderName — its three call sites are
+// sanitize.go:81 and :85 in the first and sanitize.go:103 in the second — where
+// a wrong result is a cosmetic difference in a name. check_test_alignment surfaced it as an
+// untested helper in a file this change touches, and a helper two exported
+// sanitizers depend on earns a direct test regardless of what prompted it.
+func TestTrimTrailingDotAndSpace(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		in, want string
+	}{
+		{"name", "name"},
+		{"name.", "name"},
+		{"name ", "name"},
+		{"name. . ", "name"},
+		{"name...", "name"},
+		// Any Unicode space, not just ASCII — this is the difference from a
+		// strings.TrimRight cut-set of "." and " ".
+		{"name ", "name"},
+		{"name\t", "name"},
+		{"name\n", "name"},
+		// Leading and interior are untouched; only the tail is trimmed.
+		{" name", " name"},
+		{".name", ".name"},
+		{"a. .b", "a. .b"},
+		{"..", ""},
+		{"   ", ""},
+		{"", ""},
+		// The extension-bearing common case must survive intact.
+		{"movie.mkv", "movie.mkv"},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			t.Parallel()
+			if got := trimTrailingDotAndSpace(tc.in); got != tc.want {
+				t.Errorf("trimTrailingDotAndSpace(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGetUniqueFilename_AllCases(t *testing.T) {
 	t.Parallel()
 
@@ -541,6 +582,35 @@ func TestGetUniqueFilename_AllCases(t *testing.T) {
 		got := GetUniqueFilename(target)
 		if got != expected {
 			t.Errorf("GetUniqueFilename(%q) = %q; want %q", target, got, expected)
+		}
+	})
+
+	t.Run("dangling symlink occupies the name", func(t *testing.T) {
+		// Same defect as GetUniqueRelPath and unpack's uniquePath: Stat
+		// answers about the link's target, so a link to a missing file reads
+		// as "the name is free" and the caller's write follows the link.
+		// This one is reached from the download path via
+		// internal/app/pipeline.go, which is where an assembled file's
+		// destination is resolved.
+		dir := t.TempDir()
+		target := filepath.Join(dir, "dangling.txt")
+		if err := os.Symlink(filepath.Join(dir, "no-such-target"), target); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+
+		expected := filepath.Join(dir, "dangling.1.txt")
+		if got := GetUniqueFilename(target); got != expected {
+			t.Errorf("GetUniqueFilename(%q) = %q; want %q — a dangling symlink still occupies the name", target, got, expected)
+		}
+
+		// The suffix loop has its own existence test that the check above
+		// never reaches; occupying the first candidate puts it under test.
+		if err := os.Symlink(filepath.Join(dir, "no-such-target"), expected); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		second := filepath.Join(dir, "dangling.2.txt")
+		if got := GetUniqueFilename(target); got != second {
+			t.Errorf("GetUniqueFilename(%q) = %q; want %q — a dangling symlink occupies the first candidate too", target, got, second)
 		}
 	})
 
