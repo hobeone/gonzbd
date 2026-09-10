@@ -211,12 +211,6 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 	// reaching this — opening eagerly would cost a handle on every assessment
 	// to serve the minority of sets carrying a subdirectory.
 	var pass0Root *os.Root
-	pass0RootUnavailable := false
-	defer func() {
-		if pass0Root != nil {
-			_ = pass0Root.Close()
-		}
-	}()
 
 	for ei, fd := range manifest {
 		slashed := filepath.ToSlash(fd.FileName)
@@ -224,18 +218,18 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 			continue
 		}
 		if pass0Root == nil {
-			if pass0RootUnavailable {
-				continue
-			}
 			r, oErr := os.OpenRoot(dir)
 			if oErr != nil {
 				// This pass is an optimisation against re-fetching recovery
-				// volumes, not a correctness requirement, so it is skipped
+				// volumes, not a correctness requirement, so it is abandoned
 				// rather than failing the whole assessment.
+				//
+				// break, not continue: the open failed for dir itself, so it
+				// will fail identically for every remaining entry. Continuing
+				// would re-derive the same verdict once per manifest entry.
 				log.Warn("identify: cannot open job directory; skipping subdirectory pass",
 					"dir", dir, "err", oErr)
-				pass0RootUnavailable = true
-				continue
+				break
 			}
 			pass0Root = r
 		}
@@ -260,6 +254,14 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 		}
 		claimedEntry[ei] = true
 		id.Files = append(id.Files, Identified{OnDisk: slashed, Desc: fd, By: MatchName})
+	}
+
+	// Closed here rather than deferred to the end of the function. Passes 1-3
+	// below hash candidate blocks and read whole files for CRC32, which on a
+	// large set is gigabytes of I/O; a deferred close would hold this directory
+	// handle open for all of it, to serve a pass that finished above.
+	if pass0Root != nil {
+		_ = pass0Root.Close()
 	}
 
 	// Pass 1 — every basename first, and only then every flattened form.

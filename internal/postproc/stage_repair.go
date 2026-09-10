@@ -136,30 +136,33 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		return fmt.Errorf("repair: find par2 sets: %w", err)
 	}
 
+	if len(sets) == 0 {
+		logf(ctx, log, job, slog.LevelInfo, "No par2 files found")
+		return nil
+	}
+
+	logf(ctx, log, job, slog.LevelInfo, "Found %d par2 set(s)", len(sets))
+
+	// Collect all non-par2 files in the download directory to pass as
+	// extra arguments. This lets par2 checksum-match files even when
+	// their names don't match the par2 set's expectations (e.g.
+	// obfuscated or renamed files).
+	dataFiles, scanErr := listNonPar2Files(job.DownloadDir)
+	if scanErr != nil {
+		job.ParError = true
+		return fmt.Errorf("repair: scan data files: %w", scanErr)
+	}
+	logf(ctx, log, job, slog.LevelInfo, "Found %d non-par2 data file(s) for checksum matching", len(dataFiles))
+
+	// A failing set does not stop the others: each par2 set is independent,
+	// and the first error is what the stage reports.
 	var firstErr error
-	if len(sets) > 0 {
-		logf(ctx, log, job, slog.LevelInfo, "Found %d par2 set(s)", len(sets))
-
-		// Collect all non-par2 files in the download directory to pass as
-		// extra arguments. This lets par2 checksum-match files even when
-		// their names don't match the par2 set's expectations (e.g.
-		// obfuscated or renamed files).
-		dataFiles, scanErr := listNonPar2Files(job.DownloadDir)
-		if scanErr != nil {
-			job.ParError = true
-			return fmt.Errorf("repair: scan data files: %w", scanErr)
-		}
-		logf(ctx, log, job, slog.LevelInfo, "Found %d non-par2 data file(s) for checksum matching", len(dataFiles))
-
-		for _, set := range sets {
-			if err := s.processPar2Set(ctx, log, job, set, dataFiles, par2Opts, useGoPar2Val, goPar2FallbackVal); err != nil {
-				if firstErr == nil {
-					firstErr = err
-				}
+	for _, set := range sets {
+		if err := s.processPar2Set(ctx, log, job, set, dataFiles, par2Opts, useGoPar2Val, goPar2FallbackVal); err != nil {
+			if firstErr == nil {
+				firstErr = err
 			}
 		}
-	} else {
-		logf(ctx, log, job, slog.LevelInfo, "No par2 files found")
 	}
 
 	return firstErr
@@ -168,10 +171,18 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 // processPar2Set processes a single par2 set: dispatches the repair tool,
 // captures tool output, and handles repair failure/success records.
 //
-// Every set is verified on every run. There is no per-set skip and no record of
-// a previous verdict to consult — see "Verification state is derived, never
-// persisted" in docs/post-processing-contract.md for why the persisted one was
-// removed rather than guarded.
+// No set's verdict is read from a record an earlier run wrote. That is the
+// property #533 restored, and it is narrower than "everything is always
+// verified": a set reaching here is verified without consulting stored state,
+// but three branches decide it never reaches here at all. Run returns early for
+// QuickCheckClean and for QuickCheckNotRun with a clean DirectUnpack, and this
+// function skips a set whose ParseFile is empty. Each of those is computed from
+// THIS run's state, which is what makes it a different thing from trusting the
+// last run's.
+//
+// See "Verification state is derived, never persisted" in
+// docs/post-processing-contract.md for why the persisted record was removed
+// rather than guarded.
 func (s *RepairStage) processPar2Set(
 	ctx context.Context,
 	log *slog.Logger,
