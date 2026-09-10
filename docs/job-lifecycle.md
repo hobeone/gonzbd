@@ -1287,18 +1287,18 @@ same articles, and runs a few percent lower. The two are not interchangeable.
 Routing the downloaded figure back through the durability record made every
 non-resident job overstate its remaining bytes by the encoding overhead.
 
-`job_files.bytes_downloaded` and `job_files.failed_bytes` are the two columns
-that summarise something, and both are **caches with a single writer** rather
-than second authorities: each is written by the one statement that updates the
-file's row, and each is superseded wholesale by `JobProgress.recompute` when a
-manifest is resident. That is what separates them from `write_cursor` and
-`max_written`, which were removed for being maintained in parallel with facts
-held elsewhere.
+Both figures live **only in memory**. `job_files` used to persist them, as
+`bytes_downloaded` and `failed_bytes`, defended as caches with a single writer
+rather than second authorities. Nothing ever read either column back, and the
+argument that `failed_bytes` was "the one per-file byte figure the durability
+record cannot supply" does not hold: `failed_articles` gives the set of failed
+article indices and the manifest gives each one's size via `m.ArticleBytes(i)`,
+which is exactly the sum `JobProgress.markFailed` performs. Both columns are
+gone.
 
-`failed_bytes` is the one per-file byte figure the durability record **cannot**
-supply: a permanently failed article never decodes, so nothing is written for
-it and no run covers it, and `failed_articles` records *which* articles failed
-and never how many bytes they were.
+They joined `write_cursor` and `max_written`, removed earlier for being
+maintained in parallel with facts held elsewhere. The difference is that those
+two had a live reader and these did not.
 
 `internal/history/migrations/001_initial.sql` records that reasoning at the
 schema, in `job_files`' own comment block.

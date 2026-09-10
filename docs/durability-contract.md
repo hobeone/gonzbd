@@ -177,14 +177,24 @@ names, so no grep anchored on the SQL text can see it (`git grep -n
 SELECT, and the history purge's table list — the plain table name also matches
 prose, which is why the pattern anchors on the SQL or the quoted literal).
 
-One consequence worth stating explicitly, because it has been got wrong:
-**neither record carries a failed-byte figure, and neither can.** No sum over
-runs can produce it, because a failed article has no run; and `failed_articles`
-carries an index, not a size, while the NZB-declared size behind it lives in
-the manifest a non-resident job does not hold. It is cached in
-`job_files.failed_bytes` instead.
-`internal/history/migrations/001_initial.sql` records that reasoning at the
-schema, in `job_files`' own comment block.
+One consequence worth stating explicitly: **neither record carries a
+failed-byte figure.** No sum over runs can produce it, because a failed article
+has no run, and `failed_articles` carries an index rather than a size.
+
+This used to continue "and neither can", and conclude that the figure must
+therefore be persisted in `job_files.failed_bytes`. That conclusion was wrong
+and the column has been removed. The size of article `i` is `m.ArticleBytes(i)`,
+which the manifest carries whether or not the article was ever fetched, and
+`failed_articles` supplies exactly the set of `i` — so the manifest crossed with
+this record IS sufficient. `JobProgress.markFailed` performs that sum, and
+`ApplyResolution` finishes by recomputing the whole figure through
+`JobProgress.recompute`.
+
+The premise that made the old conclusion look sound was "the manifest a
+non-resident job does not hold". No path constructs progress without a
+manifest: `appResidency.Hydrate` attaches it before reading any durability row.
+See `job_files`' comment block in
+`internal/history/migrations/001_initial.sql`.
 
 ### What changed against the previous contract
 
@@ -1825,7 +1835,7 @@ recorded here so the next reader does not mistake them for design.
    writer is the sole production implementation of `checkpoint.Store`, whose
    `SaveBatch` holds the only `INSERT INTO failed_articles` outside tests —
    `git grep -n 'INTO failed_articles' -- '*.go' ':!*_test.go'` returns the one
-   line, `internal/app/dispatcher_wiring.go:107`. Without that filter it
+   line, `internal/app/dispatcher_wiring.go:112`. Without that filter it
    returns nine, the other eight being test fixtures.
 
 7. **An exact-offset collision is PREVENTED only within one open-file episode;

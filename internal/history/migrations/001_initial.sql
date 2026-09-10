@@ -42,18 +42,22 @@
 --     so they were not an incidental API surface either; the mode=history
 --     response is built field by field and never mentioned them.
 --
--- That is what the audit FOUND, and it is not a clean bill of health for the
--- rest of the schema. The method that found these four is not strong enough to
--- have cleared job_files: it traced each column to a Go struct field and
--- looked for a reader of that field, and a field populated from the manifest
--- reads as live whether or not any query ever selects the column. Asking the
--- SQL instead --
+-- The first audit stopped there and should not have. Its method -- trace each
+-- column to a Go struct field, look for a reader of that field -- cannot clear
+-- a table whose columns duplicate the manifest, because a field populated from
+-- the manifest reads as live whether or not any query selects the column.
+--
+-- Asking the SQL instead is the stronger question, and it found six more:
 --   git grep -n 'FROM job_files' -- '*.go' ':!*_test.go'
--- returns one production read, internal/app/residency.go:108, and it selects
--- five columns. subject, date, bytes, is_par2_recovery, failed_bytes and
--- bytes_downloaded are written and never selected. Whether those are dead or
--- whether a read path is missing is a different question from this collapse,
--- and it is recorded here as found rather than guessed at.
+-- returns one production read, internal/app/residency.go:108, selecting five
+-- columns. subject, date, bytes, is_par2_recovery, failed_bytes and
+-- bytes_downloaded were written on every checkpoint and read by nothing. They
+-- are gone too; see job_files' own comment block below for why the argument
+-- that had been keeping the last two was wrong rather than merely stale.
+--
+-- The lesson is the method, not the count. "Which Go field reads this?" and
+-- "which query selects this?" are different questions, and for a table that
+-- mirrors another artifact only the second one is decisive.
 --
 -- The stated reason for keeping them was schema parity with the upstream
 -- Python implementation. Only `series` actually carried that annotation --
@@ -145,81 +149,81 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- +goose StatementEnd
 
 -- +goose StatementBegin
--- The per-file rows of a queued job's manifest.
+-- The per-file RESULTS of downloading a job: what each file turned out to be
+-- called, whether it finished, and what it hashed to.
 --
--- This table carries almost no derived progress columns. max_written and
--- write_cursor used to live here, each a value summarising facts stored
--- elsewhere and each maintained independently of them. That is the direct
--- cause of #337 (one member of a set stored while its siblings are derived)
--- and #311 (a cursor serving as cache, authority, and scheduling hint at
--- once).
+-- Read that description carefully, because it is narrower than the table used
+-- to be and the narrowing is the point. This is not a copy of the manifest.
+-- Anything the manifest already says -- a file's subject, its date, its
+-- NZB-declared size, whether it is a par2 volume -- does not belong here,
+-- because the manifest is on disk beside the database and is loaded before any
+-- of these rows are read.
 --
--- articles_done used to live here too, a per-article done/failed pair of
--- packed hex bitmaps rewritten wholesale on every job update. It was a third
--- copy of state the durability tables already held, and it is gone: article
--- resolution is now DERIVED -- done means covered by a durable_runs row,
--- failed means a failed_articles row, and neither means outstanding.
+-- WHAT IS ACTUALLY READ, which is the only test that matters:
+--   git grep -n 'FROM job_files' -- '*.go' ':!*_test.go'
+-- returns one production query, internal/app/residency.go:108, selecting
+-- file_index, filename, complete, assembled_crc32 and fetch_policy. Every one
+-- of those is a RESULT: discovered from the yEnc header, decided by the
+-- assembler, computed over the assembled bytes, or chosen by the on-demand
+-- par2 policy. None is recoverable from the manifest, which is why the table
+-- exists at all.
 --
--- failed_bytes and bytes_downloaded survived that removal. Both are written by
--- the same statement that writes the rest of this row, so neither can be
--- persisted out of step with it, and both are superseded wholesale on
--- promotion, where JobProgress.recompute ASSIGNS them from the manifest and
--- the restored runs.
+-- WHAT WAS REMOVED, AND WHY THE STATED REASON FOR IT WAS WRONG.
 --
--- NOTHING READS THEM BACK. The justification inherited from the pre-collapse
--- text said they "exist for the NON-resident path", which has no manifest to
--- recompute from and would otherwise report an inflated remaining figure --
--- but that names a read no query performs. The one production SELECT against
--- this table is internal/app/residency.go:108, and it takes file_index,
--- filename, complete, assembled_crc32 and fetch_policy. The writes are
--- internal/app/app.go:771 and internal/app/dispatcher_wiring.go:99.
+-- subject, date, bytes, is_par2_recovery, failed_bytes and bytes_downloaded
+-- were all written on every checkpoint and read by nothing. They are gone.
 --
--- The reasoning below is preserved because it explains what the columns were
--- FOR and would be the design if the read were restored. It is recorded as
--- rationale, not as a description of current behaviour, and the discrepancy is
--- left visible rather than papered over.
+-- The first four were manifest data, duplicated. The last two were defended at
+-- length, and the defence does not survive checking. It ran: failed_bytes is
+-- "the one per-file byte figure the durability record cannot supply", because
+-- failed_articles records WHICH articles failed and never how many bytes they
+-- were, and a permanently failed article never decodes so no durable run
+-- covers it either.
 --
--- failed_bytes has no home in the durability tables. failed_articles records
--- WHICH articles failed and never how many bytes they were, so no
--- recomputation from durable state can produce this figure. That was equally
--- true of the two-record store this replaced, for the same reason in different
--- words: a permanently failed article never decodes, so it never produced a
--- durability row at all.
+-- Both halves of that are true and the conclusion still does not follow. The
+-- byte count of a failed article is m.ArticleBytes(i) -- the manifest knows
+-- every article's size whether or not it was ever fetched -- and
+-- failed_articles supplies exactly the set of i. JobProgress.markFailed does
+-- precisely that sum at internal/job/progress.go:1047. Manifest crossed with
+-- failed_articles is sufficient, and the same holds for bytes_downloaded via
+-- markDone.
 --
--- bytes_downloaded could be derived from durable state, and was, until that
--- turned out to be the wrong QUANTITY rather than an unavailable one. The two
--- count different things. This column counts ENCODED bytes -- the NZB `bytes`
--- attribute summed over resolved articles -- because that is what it is
--- compared against, in the design these columns serve: a remaining figure of
--- this row's `bytes` minus this column minus failed_bytes, where `bytes` is
--- the encoded per-file total from the same NZB. (That subtraction is where the
--- columns were meant to be consumed; see the note above about the read that
--- does not currently happen.) A durable run's `length` counts DECODED payload bytes, the
--- lengths the assembler actually wrote, which run a few percent lower. Seeding
--- one from the other made a non-resident job overstate its remaining bytes by
--- that margin, breaking the residency parity both columns exist to provide.
+-- The deeper reason they could never have been read is structural. Both were
+-- said to "exist for the NON-resident path", which has no manifest to
+-- recompute from. There is no such path. Progress is only ever constructed
+-- with a manifest in hand: appResidency.Hydrate attaches the manifest FIRST
+-- and only then calls restoreJobFiles and restoreResolution, and
+-- ApplyResolution finishes by calling JobProgress.recompute(m), which rederives
+-- every per-file byte figure from the manifest and the resolution bitsets. At
+-- the one moment these columns could have been consulted, the authority they
+-- were caching is already loaded.
 --
--- Keeping these is not a reversal of the removals above. bytes_downloaded was
--- once removed because RestoreRetryProgress assigned it and recompute then
--- overwrote it -- two writers maintaining one fact in parallel, which is the
--- S5 violation behind #306. That path is gone. A single writer caching a sum
--- of the same row's resolution is a cache; two writers maintaining a value in
--- parallel is the defect.
+-- A job with no manifest has no JobProgress either, and reports its full size
+-- as remaining (internal/dispatch/registry.go:426). That is a real gap in what
+-- a restored, unhydrated job displays -- but these columns could not close it,
+-- because closing it means building a progress-without-manifest constructor
+-- that has never existed. Deleting them removes a cache; it does not remove a
+-- capability.
+--
+-- article_count is the survivor, and it is worth saying why it stayed, so the
+-- next audit does not re-derive this and delete it. No production code reads
+-- it. Its consumer is test/crash/harness.go, which reads this table with the
+-- daemon dead to check crash consistency, and deliberately re-implements the
+-- daemon's derivation rather than calling into it -- "borrowing the daemon's
+-- own decoder would let one bug hide itself in both places". It needs each
+-- file's article count to map global article indices onto file-local ordinals.
+-- Taking that from the manifest instead would hand the harness the same
+-- artifact the daemon trusts, which is the property it is built to avoid.
 CREATE TABLE job_files (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id           TEXT NOT NULL,
     file_index       INTEGER NOT NULL,
-    subject          TEXT NOT NULL,
-    date             INTEGER NOT NULL,
-    bytes            INTEGER NOT NULL,
-    is_par2_recovery INTEGER NOT NULL DEFAULT 0,
     complete         INTEGER NOT NULL DEFAULT 0,
     filename         TEXT,
     assembled_crc32  INTEGER DEFAULT 0,
+    -- Read by no production code. See the note above before removing it.
     article_count    INTEGER NOT NULL DEFAULT 0,
     fetch_policy     INTEGER NOT NULL DEFAULT 0 CHECK (fetch_policy BETWEEN 0 AND 2),
-    failed_bytes     INTEGER NOT NULL DEFAULT 0,
-    bytes_downloaded INTEGER NOT NULL DEFAULT 0,
     UNIQUE(job_id, file_index)
 );
 
@@ -275,7 +279,7 @@ CREATE TABLE durable_runs (
 -- the whole file rather than to the handful of articles the retry re-fetched.
 -- They are dropped with the history entry itself, in
 -- history.Repository.Delete, and also by RetryHistoryJob when it declines to
--- apply the retained progress (internal/app/app.go:2143 calling
+-- apply the retained progress (internal/app/app.go:2144 calling
 -- dropJobDurability). internal/app/durability.go:1387 enumerates the deleters
 -- in full; two named here are not the whole set.
 -- +goose StatementEnd
@@ -290,7 +294,7 @@ CREATE TABLE failed_articles (
 -- articles are outstanding?" without its manifest.
 --
 -- One production writer. `git grep -n 'INTO failed_articles' -- '*.go'
--- ':!*_test.go'` returns one line: internal/app/dispatcher_wiring.go:107, the
+-- ':!*_test.go'` returns one line: internal/app/dispatcher_wiring.go:112, the
 -- INSERT OR IGNORE prepared inside appCheckpointStore.SaveBatch -- the sole
 -- production implementation of the checkpoint.Store interface
 -- (declared at internal/checkpoint/checkpointer.go:24, its SaveBatch method on
@@ -298,7 +302,7 @@ CREATE TABLE failed_articles (
 --
 -- Deletion is deliberately not so narrow, and calling the table "solely owned"
 -- would misdescribe it. Rows are removed on the retry path
--- (internal/app/app.go:2149), by the durability sweep for a job that has left
+-- (internal/app/app.go:2150), by the durability sweep for a job that has left
 -- both the queue and history-as-FAILED (internal/app/durability.go:1410), and
 -- by history.Repository.Delete dropping a departed job's durability with it
 -- (internal/history/repository.go:400). Every one of those is a job-scoped
@@ -327,7 +331,7 @@ CREATE TABLE failed_articles (
 -- is_par2_recovery are absent because a retry rebuilds them by re-parsing the
 -- NZB. article_count is kept solely so the overlay can be refused when the
 -- re-parsed NZB does not line up with it: retainedMatchesManifest
--- (internal/app/app.go:2243) compares these rows' count against the re-parsed
+-- (internal/app/app.go:2244) compares these rows' count against the re-parsed
 -- manifest's file range, file by file. It does not consult durable_runs or
 -- failed_articles.
 --
@@ -426,7 +430,7 @@ CREATE TABLE dispatch_jobs (
     -- verbatim (internal/api/queue.go:479).
     --
     -- It is not merely carried, and not by one caller. The persisted integer
-    -- is handed into postproc.Job (internal/app/app.go:1973) and gates stages
+    -- is handed into postproc.Job (internal/app/app.go:1974) and gates stages
     -- there: postproc.go:459 skips a stage via shouldSkipForPP, and
     -- stage_script.go:149 passes it to user scripts as PPFlags.
     -- internal/app/directunpack_orchestrator.go:56 gates DirectUnpack on

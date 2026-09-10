@@ -119,50 +119,79 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		}
 	})
 
-	// job_files.failed_bytes is the one cached figure the durability record
-	// cannot supply. failed_articles records WHICH articles failed and never
-	// how many bytes they were, and a permanently failed article never decodes
-	// so no run covers it either. Both halves are asserted — present here,
-	// absent from the record's own tables below — because the pair is the
-	// decision. Checking only one half would let a future change satisfy it by
-	// adding a byte column to the record as well, which is the two-writer
-	// shape S5 forbids and the reason this figure lives here at all.
-	t.Run("job_files caches failed_bytes beside its authority", func(t *testing.T) {
-		var n int
-		if err := db.QueryRow(
-			`SELECT COUNT(*) FROM pragma_table_info('job_files') WHERE name = 'failed_bytes'`,
-		).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		if n != 1 {
-			t.Error("job_files.failed_bytes is missing — a non-resident job cannot report " +
-				"failed bytes without it, and failed_articles records only WHICH articles " +
-				"failed, never how many bytes they were")
+	// The inverse of what this used to assert.
+	//
+	// Two subtests here required job_files.failed_bytes and
+	// bytes_downloaded to EXIST, on the reasoning that failed_bytes was "the
+	// one per-file byte figure the durability record cannot supply" because
+	// failed_articles records which articles failed and never how many bytes
+	// they were.
+	//
+	// Both premises are true and the conclusion is false. A failed article's
+	// size is m.ArticleBytes(i); the manifest carries it whether or not the
+	// article was ever fetched, and failed_articles supplies exactly the set
+	// of i. JobProgress.markFailed performs that sum. Nothing ever read
+	// either column back, and nothing could have needed to: progress is only
+	// constructed with a manifest attached, and ApplyResolution finishes by
+	// recomputing both figures from it.
+	//
+	// Asserted absent rather than merely deleted, for the same reason the
+	// two-record tables below are: while a column exists, a change can
+	// reintroduce a writer for it, and a persisted copy of a derived figure is
+	// the second authority Rule 2 forbids.
+	t.Run("job_files carries no persisted byte figures", func(t *testing.T) {
+		for _, col := range []string{"failed_bytes", "bytes_downloaded"} {
+			var n int
+			if err := db.QueryRow(
+				`SELECT COUNT(*) FROM pragma_table_info('job_files') WHERE name = ?`, col,
+			).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 0 {
+				t.Errorf("job_files.%s is back — it is derivable from the manifest "+
+					"crossed with durable_runs and failed_articles, which is what "+
+					"JobProgress.recompute does at hydration, so a stored copy is a "+
+					"second authority for a figure that already has one", col)
+			}
 		}
 	})
 
-	// job_files.bytes_downloaded is the sibling cache, and it is here for a
-	// different reason than failed_bytes: the figure IS derivable from the
-	// durability record, but only in decoded bytes. This one counts ENCODED
-	// bytes, because it is subtracted from job_files.bytes to get a job's
-	// remaining figure and that column is the encoded NZB total. Deriving it
-	// from the record's lengths instead made every non-resident job overstate
-	// its remaining bytes by the encoding overhead (#365).
-	//
-	// Asserted here rather than only in the queue package because the column's
-	// existence is the decision — a queue-level test would go green again the
-	// moment someone re-derived the figure from the wrong table.
-	t.Run("job_files caches bytes_downloaded in encoded bytes", func(t *testing.T) {
-		var n int
-		if err := db.QueryRow(
-			`SELECT COUNT(*) FROM pragma_table_info('job_files') WHERE name = 'bytes_downloaded'`,
-		).Scan(&n); err != nil {
-			t.Fatal(err)
+	// The manifest's own fields, which this table used to duplicate. Each was
+	// written on every checkpoint and read by nothing: the manifest is loaded
+	// before any job_files row is, so a copy here could only ever be the stale
+	// one.
+	t.Run("job_files does not duplicate the manifest", func(t *testing.T) {
+		for _, col := range []string{"subject", "date", "bytes", "is_par2_recovery"} {
+			var n int
+			if err := db.QueryRow(
+				`SELECT COUNT(*) FROM pragma_table_info('job_files') WHERE name = ?`, col,
+			).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 0 {
+				t.Errorf("job_files.%s is back — the manifest already carries it and is "+
+					"resident before these rows are read", col)
+			}
 		}
-		if n != 1 {
-			t.Error("job_files.bytes_downloaded is missing — a non-resident job has no " +
-				"manifest to sum encoded article bytes from, and the durability record's " +
-				"lengths are the decoded quantity, not this one")
+	})
+
+	// What the table is actually for: results that exist nowhere else.
+	// filename is discovered from the yEnc header, assembled_crc32 computed
+	// over the assembled bytes, complete decided by the assembler, and
+	// fetch_policy chosen by the on-demand par2 policy. Losing any of them
+	// loses information no other artifact holds.
+	t.Run("job_files keeps the results nothing else records", func(t *testing.T) {
+		for _, col := range []string{"filename", "complete", "assembled_crc32", "fetch_policy"} {
+			var n int
+			if err := db.QueryRow(
+				`SELECT COUNT(*) FROM pragma_table_info('job_files') WHERE name = ?`, col,
+			).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 1 {
+				t.Errorf("job_files.%s is missing — it is a download RESULT, recoverable "+
+					"from no other artifact", col)
+			}
 		}
 	})
 

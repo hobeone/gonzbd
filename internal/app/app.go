@@ -766,19 +766,20 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	}
 	if app.historyRepo != nil && app.historyRepo.DB() != nil {
 		if m, err := j.Manifest(); err == nil && m != nil {
+			// Seeds one row per file with empty RESULTS, which the
+			// checkpointer then fills in as the download proceeds. Nothing
+			// about the manifest is copied here: subject, date, bytes and
+			// is_par2_recovery used to be, and were read by nothing, because
+			// the manifest is loaded before these rows ever are.
 			const qFiles = `
 INSERT INTO job_files
-  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, fetch_policy, filename, assembled_crc32, article_count, failed_bytes, bytes_downloaded)
-VALUES (?, ?, ?, ?, ?, ?, 0, 0, '', 0, ?, 0, 0)
+  (job_id, file_index, complete, fetch_policy, filename, assembled_crc32, article_count)
+VALUES (?, ?, 0, 0, '', 0, ?)
 ON CONFLICT(job_id, file_index) DO NOTHING`
 			for i := range m.NumFiles() {
-				isPar2 := 0
-				if m.FileIsPar2Recovery(i) {
-					isPar2 = 1
-				}
 				lo, hi := m.FileRange(i)
 				if _, err := app.historyRepo.DB().ExecContext(ctx, qFiles,
-					j.ID(), i, m.FileSubject(i), m.FileDate(i).Unix(), m.FileBytes(i), isPar2, hi-lo,
+					j.ID(), i, hi-lo,
 				); err != nil {
 					return fmt.Errorf("app: insert job_file %s index %d: %w", j.ID(), i, err)
 				}

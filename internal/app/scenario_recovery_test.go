@@ -124,9 +124,9 @@ func seedCompletedJob(t *testing.T, repo *history.Repository, adminDir, id, name
 		t.Fatalf("store.Save: %v", err)
 	}
 	_, err = repo.DB().ExecContext(t.Context(),
-		`INSERT INTO job_files (job_id, file_index, subject, date, bytes, complete, assembled_crc32, fetch_policy, filename)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		j.ID(), 0, "recovery.bin", 0, 100, 1, 0, int(job.FetchAlways), "recovery.bin",
+		`INSERT INTO job_files (job_id, file_index, complete, assembled_crc32, fetch_policy, filename)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		j.ID(), 0, 1, 0, int(job.FetchAlways), "recovery.bin",
 	)
 	if err != nil {
 		t.Fatalf("insert job_files: %v", err)

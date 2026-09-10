@@ -95,8 +95,13 @@ func (s *appCheckpointStore) SaveBatch(ctx context.Context, cps []job.Checkpoint
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// The two byte figures this used to write, failed_bytes and
+	// bytes_downloaded, are gone: nothing read them back, and both are
+	// rederived from the manifest and the resolution rows by
+	// JobProgress.recompute at hydration. Every checkpoint wrote them for
+	// every file of every active job.
 	stmtFiles, err := tx.PrepareContext(ctx,
-		`UPDATE job_files SET complete = ?, fetch_policy = ?, filename = ?, assembled_crc32 = ?, failed_bytes = ?, bytes_downloaded = ? WHERE job_id = ? AND file_index = ?`,
+		`UPDATE job_files SET complete = ?, fetch_policy = ?, filename = ?, assembled_crc32 = ? WHERE job_id = ? AND file_index = ?`,
 	)
 	if err != nil {
 		return fmt.Errorf("checkpoint: prepare job_files: %w", err)
@@ -121,7 +126,6 @@ func (s *appCheckpointStore) SaveBatch(ctx context.Context, cps []job.Checkpoint
 				fetch := int(cp.Progress.FileFetchPolicy(i))
 				if _, err := stmtFiles.ExecContext(ctx,
 					complete, fetch, cp.Progress.FileFilename(i), cp.Progress.FileAssembledCRC32(i),
-					cp.Progress.FileFailedBytes(i), cp.Progress.FileBytesDownloaded(i),
 					cp.ID, i,
 				); err != nil {
 					return fmt.Errorf("checkpoint: update job_file %s index %d: %w", cp.ID, i, err)
