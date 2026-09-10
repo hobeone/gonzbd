@@ -28,6 +28,16 @@ import (
 // not enqueue the job via Application.AddJob (callers may need to inspect
 // the constructed job, e.g. reject an empty manifest, before enqueueing).
 func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts types.FetchOptions, logger *slog.Logger) (*job.Job, dispatch.Header, error) {
+	// filename describes the source dirscanner/urlgrabber read, but by this
+	// point parsed already holds the decompressed NZB — so a ".gz"/".bz2"
+	// suffix here documents a format that no longer applies to hdr.Filename.
+	// Left unstripped, writeNZBBackup (which always gzips the backup fresh)
+	// appended a second ".gz", producing "movie.nzb.gz.gz" in admin/nzb/.
+	// Stripping it here, once, at the point every ingest source converges,
+	// mirrors SABnzbd's process_single_nzb
+	// (filename.replace(".nzb.gz", ".nzb")).
+	filename = stripCompressionSuffix(filename)
+
 	id := opts.JobID
 	if id == "" {
 		var err error
@@ -160,6 +170,23 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	}
 
 	return j, hdr, nil
+}
+
+// stripCompressionSuffix removes a trailing ".gz" or ".bz2" from a name that
+// still ends in ".nzb" once the suffix is gone (e.g. "movie.nzb.gz" ->
+// "movie.nzb"), leaving names with no such suffix untouched (e.g.
+// "bundle.zip"). Case-insensitive on the suffix; the returned prefix keeps
+// its original case.
+func stripCompressionSuffix(name string) string {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.HasSuffix(lower, ".nzb.gz"):
+		return name[:len(name)-len(".gz")]
+	case strings.HasSuffix(lower, ".nzb.bz2"):
+		return name[:len(name)-len(".bz2")]
+	default:
+		return name
+	}
 }
 
 // stripNZBExt removes .nzb, .nzb.gz, and .nzb.bz2 extensions from name.

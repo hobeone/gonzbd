@@ -151,6 +151,57 @@ func TestBuildIngestJob_PausedPriority(t *testing.T) {
 	}
 }
 
+// TestBuildIngestJob_FilenameCompressionSuffixStripped pins the fix for the
+// double-.gz backup bug: dirscanner and urlgrabber both hand BuildIngestJob
+// the on-disk filename of the (now-decompressed) source, which for a
+// gzip/bz2-compressed watch-folder drop still carries the compression
+// suffix (e.g. "movie.nzb.gz"). hdr.Filename feeds writeNZBBackup, which
+// always gzips the raw bytes for the admin/nzb/ backup and unconditionally
+// appends ".gz" — so an unstripped Filename produced "movie.nzb.gz.gz".
+// Mirrors SABnzbd's process_single_nzb, which strips the same suffix at the
+// equivalent convergence point (nzbparser.py: filename.replace(".nzb.gz", ".nzb")).
+func TestBuildIngestJob_FilenameCompressionSuffixStripped(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cases := []struct {
+		input, want string
+	}{
+		{"movie.nzb.gz", "movie.nzb"},
+		{"movie.nzb.bz2", "movie.nzb"},
+		{"movie.nzb", "movie.nzb"},
+		{"bundle.zip", "bundle.zip"},
+	}
+	for _, tc := range cases {
+		_, hdr, err := BuildIngestJob(cfg, multiVolumeNZB(), tc.input, types.FetchOptions{}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob(%q): %v", tc.input, err)
+		}
+		if hdr.Filename != tc.want {
+			t.Errorf("BuildIngestJob(%q) Filename = %q, want %q", tc.input, hdr.Filename, tc.want)
+		}
+	}
+}
+
+func TestStripCompressionSuffix(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		input, want string
+	}{
+		{"movie.nzb.gz", "movie.nzb"},
+		{"movie.nzb.bz2", "movie.nzb"},
+		{"MOVIE.NZB.GZ", "MOVIE.NZB"},
+		{"movie.nzb", "movie.nzb"},
+		{"bundle.zip", "bundle.zip"},
+		{"archive.tar.gz", "archive.tar.gz"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := stripCompressionSuffix(tc.input); got != tc.want {
+			t.Errorf("stripCompressionSuffix(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
 func TestDeriveName(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
