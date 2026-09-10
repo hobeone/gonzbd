@@ -77,11 +77,21 @@ func TestSetQueued(t *testing.T) {
 		want       bool
 	}{
 		{"queued behind others", []string{"a", "b"}, "cur", "b", true},
+		{"the first queued set", []string{"a", "b"}, "cur", "a", true},
 		{"the set currently extracting", nil, "cur", "cur", true},
 		{"neither queued nor current", []string{"a"}, "cur", "other", false},
 		{"nothing queued and nothing current", nil, "", "a", false},
-		{"the empty name matches an idle current set", nil, "", "", true},
+		{"queued while nothing is extracting", []string{"a"}, "", "a", true},
 	}
+
+	// setQueued("") is deliberately not a case here. Add returns before
+	// touching any state when AnalyzeRarFilename yields "" (directunpack.go,
+	// "not a RAR volume"), so "" never reaches nextSets or curSetname and the
+	// question is unreachable. It answers true on an idle unpacker only
+	// because `setname == d.curSetname` degenerates to `"" == ""`, which is
+	// the zero-value collision Standing Design Rule 2 names -- pinning it as
+	// intended behaviour would make a later guard against it look like a
+	// regression.
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -73,23 +73,39 @@ func ClassifyRarEngineError(err error) FailReason {
 	}
 }
 
-// CloseSkippedEntry closes an archive member the caller refused to extract and
-// reports the verdict, filtering the one verdict that carries no failure.
+// CloseMember closes an archive member and reports its verdict, filtering the
+// one verdict that carries no failure. It is the only place the two extraction
+// loops decide which CLOSE verdict matters: `git grep -n
+// 'Err[C]hecksumUnsupported' -- internal/unpack/go_unrar.go
+// internal/directunpack/directunpack.go` returns four lines — the check below,
+// two prose mentions, and rarEntryReader's separate Read-side filter, which
+// converts the same sentinel to io.EOF mid-member and is a different mechanism.
+// The pattern is bracket-escaped so this comment does not match itself.
 //
-// A refused member still has to be closed, and rarengine's Entry.Close is not a
-// drain: on an entry nothing has read it runs io.Copy(io.Discard, e), so the
-// member is decompressed and its verdict produced here rather than at any
-// earlier call. That makes the refusal path the first place a truncated volume
-// or a broken solid stream becomes visible. Discarding the verdict lets the
-// surrounding loop reach NextEntry, see ErrNoNextVolume, treat it as a clean
-// end of archive, and return a short extraction as a success.
+// Every member must be closed, including one the caller refused to extract for
+// an unsafe path. Where the verdict comes from depends on the member:
+//
+//   - A member nothing has read is decompressed by Close itself, which runs
+//     io.Copy(io.Discard, e). ErrTruncatedFile is produced there
+//     (rarengine entry.go:269), so for a refused member this call is where a
+//     short stream first becomes visible.
+//   - A member rarengine already refused arrives with its verdict pre-set:
+//     dispatch returns terminalEntry(fh, err), whose done field is filled in
+//     before NextEntry hands the entry over. ErrSolidStreamBroken and
+//     ErrRarBombDetected reach the caller this way, and Close only reports
+//     what NextEntry already decided.
+//
+// Either way the verdict reaches the caller only if this function returns it.
+// Discarding it lets the surrounding loop reach NextEntry, see ErrNoNextVolume,
+// treat it as a clean end of archive, and return a short extraction as a
+// success.
 //
 // ErrChecksumUnsupported is filtered because it reports that a digest could not
 // be checked, not that anything failed — rarengine returns it for a key-derived
 // MAC, a BLAKE2sp-only archive, or a header carrying no digest record, and the
 // bytes were delivered regardless. Every other verdict is returned to the
 // caller, which decides what it means for the archive.
-func CloseSkippedEntry(entry io.Closer) error {
+func CloseMember(entry io.Closer) error {
 	if err := entry.Close(); err != nil && !errors.Is(err, rarengine.ErrChecksumUnsupported) {
 		return err
 	}
@@ -185,7 +201,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			if opts.OnLine != nil {
 				opts.OnLine("Skipping bad path: " + entry.Header.Name)
 			}
-			if err := CloseSkippedEntry(entry); err != nil {
+			if err := CloseMember(entry); err != nil {
 				if ctx.Err() != nil {
 					return res, ctx.Err()
 				}
@@ -218,7 +234,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			return res, err
 		}
 
-		if err := entry.Close(); err != nil && !errors.Is(err, rarengine.ErrChecksumUnsupported) {
+		if err := CloseMember(entry); err != nil {
 			if ctx.Err() != nil {
 				return res, ctx.Err()
 			}

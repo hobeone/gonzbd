@@ -1046,12 +1046,12 @@ func (c *closeSpy) Close() error {
 	return c.err
 }
 
-// TestCloseSkippedEntry pins which verdicts from closing a refused member reach
-// the caller. The stream-level cases are the ones that matter: before they were
-// propagated, a refused member that hit a missing volume left the surrounding
-// loop to read ErrNoNextVolume from NextEntry, break out of it as if the archive
-// had ended cleanly, and report a short extraction as a success.
-func TestCloseSkippedEntry(t *testing.T) {
+// TestCloseMember pins which verdicts from closing a member reach the caller.
+// The stream-level cases are the ones that matter: before they were propagated
+// from the refusal branch, a refused member that hit a missing volume left the
+// surrounding loop to read ErrNoNextVolume from NextEntry, break out of it as if
+// the archive had ended cleanly, and report a short extraction as a success.
+func TestCloseMember(t *testing.T) {
 	errUnrecognised := errors.New("some verdict this test does not name")
 
 	tests := []struct {
@@ -1076,19 +1076,19 @@ func TestCloseSkippedEntry(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			spy := &closeSpy{err: tt.closeErr}
-			err := CloseSkippedEntry(spy)
+			err := CloseMember(spy)
 
 			if spy.calls != 1 {
 				t.Errorf("Close called %d times, want exactly 1", spy.calls)
 			}
 			if tt.wantErr == nil {
 				if err != nil {
-					t.Errorf("CloseSkippedEntry() = %v, want nil", err)
+					t.Errorf("CloseMember() = %v, want nil", err)
 				}
 				return
 			}
 			if !errors.Is(err, tt.wantErr) {
-				t.Errorf("CloseSkippedEntry() = %v, want %v", err, tt.wantErr)
+				t.Errorf("CloseMember() = %v, want %v", err, tt.wantErr)
 			}
 		})
 	}
