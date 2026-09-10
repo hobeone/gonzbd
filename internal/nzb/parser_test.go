@@ -226,6 +226,105 @@ func TestParseBzip2Envelope(t *testing.T) {
 	}
 }
 
+// gzipBytes gzip-compresses data once.
+func gzipBytes(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(data); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestIsEnvelopeMagic(t *testing.T) {
+	cases := []struct {
+		name  string
+		magic []byte
+		want  bool
+	}{
+		{"gzip", []byte{0x1f, 0x8b}, true},
+		{"bzip2", []byte("BZ"), true},
+		{"plain xml", []byte("<?"), false},
+		{"zip (unrelated container magic)", []byte("PK"), false},
+		{"too short", []byte{0x1f}, false},
+		{"empty", nil, false},
+	}
+	for _, tc := range cases {
+		if got := isEnvelopeMagic(tc.magic); got != tc.want {
+			t.Errorf("isEnvelopeMagic(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestStripEnvelope_SingleLayer pins the ordinary case: one gzip envelope
+// peeled to plain XML.
+func TestStripEnvelope_SingleLayer(t *testing.T) {
+	plain := loadFixture(t, "simple.nzb")
+	once := gzipBytes(t, plain)
+
+	got, err := StripEnvelope(once, ParserLimits{})
+	if err != nil {
+		t.Fatalf("StripEnvelope: %v", err)
+	}
+	if !bytes.Equal(got, plain) {
+		t.Errorf("StripEnvelope single layer = %q, want %q", got[:min(20, len(got))], plain[:min(20, len(plain))])
+	}
+}
+
+// TestStripEnvelope_DoubleLayer pins the fix for the double-gzip backup bug:
+// dirscanner.extractGZ peels exactly one gzip layer based on the ".nzb.gz"
+// extension, while Parse's own unwrapEnvelope separately peels one layer
+// based on content — so a source that is ACTUALLY gzip-wrapped twice under
+// one ".gz" suffix parses successfully (Parse peels the residual layer
+// dirscanner left) while the bytes archived as "the raw NZB" (dirscanner's
+// output, never re-checked) still carry one undetected envelope, which then
+// gets gzip-compressed AGAIN by writeNZBBackup. StripEnvelope replaces that
+// pair of independent single-shot guesses with one function that keeps
+// peeling until the content itself says it is plain, so whatever bytes get
+// archived are the same ones Parse would have used.
+func TestStripEnvelope_DoubleLayer(t *testing.T) {
+	plain := loadFixture(t, "simple.nzb")
+	twice := gzipBytes(t, gzipBytes(t, plain))
+
+	got, err := StripEnvelope(twice, ParserLimits{})
+	if err != nil {
+		t.Fatalf("StripEnvelope: %v", err)
+	}
+	if !bytes.Equal(got, plain) {
+		t.Errorf("StripEnvelope double layer did not fully unwrap: got %d bytes, want %d bytes matching fixture", len(got), len(plain))
+	}
+}
+
+// TestStripEnvelope_PlainPassesThrough verifies already-plain input is
+// returned unchanged rather than erroring for lack of an envelope.
+func TestStripEnvelope_PlainPassesThrough(t *testing.T) {
+	plain := loadFixture(t, "simple.nzb")
+	got, err := StripEnvelope(plain, ParserLimits{})
+	if err != nil {
+		t.Fatalf("StripEnvelope: %v", err)
+	}
+	if !bytes.Equal(got, plain) {
+		t.Errorf("StripEnvelope changed already-plain input")
+	}
+}
+
+// TestStripEnvelope_ExceedsMaxDepthRejected pins the decompression-bomb
+// bound: content nested deeper than maxEnvelopeDepth is rejected rather
+// than peeled indefinitely.
+func TestStripEnvelope_ExceedsMaxDepthRejected(t *testing.T) {
+	data := loadFixture(t, "simple.nzb")
+	for range maxEnvelopeDepth + 1 {
+		data = gzipBytes(t, data)
+	}
+	if _, err := StripEnvelope(data, ParserLimits{}); err == nil {
+		t.Fatalf("StripEnvelope: expected error for envelope depth beyond %d, got nil", maxEnvelopeDepth)
+	}
+}
+
 // TestEnvelopeSelection verifies unwrapEnvelope picks the right branch
 // for each magic sequence. Each case feeds a real, decodable body so the
 // returned reader is usable.

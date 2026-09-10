@@ -2571,6 +2571,19 @@ func writeGzFile(path string, data []byte) error {
 // for job names: this daemon is single-instance, and a lost race costs one
 // overwritten backup rather than any queue state.
 func writeNZBBackup(nzbDir, filename string, rawNZB []byte) (string, error) {
+	// Normalize before compressing: a caller's rawNZB is only guaranteed to
+	// be "whatever dirscanner's extension-driven single unwrap produced,"
+	// which can still carry an envelope layer nzb.Parse's own
+	// content-driven single unwrap silently peeled for parsing alone (see
+	// TestWriteNZBBackup_AlreadyEnvelopedInputIsNormalized). StripEnvelope
+	// is the one function both this and Parse rely on to answer "is this
+	// still compressed," so the two can't disagree about what plain means.
+	plain, err := nzb.StripEnvelope(rawNZB, nzb.ParserLimits{})
+	if err != nil {
+		return "", fmt.Errorf("normalize NZB before backup: %w", err)
+	}
+	rawNZB = plain
+
 	base := filepath.Base(filename)
 	name := uniqueName(base, func(candidate string) bool {
 		// Lstat, not Stat, for the reason given on fsutil.GetUniqueRelPath:
