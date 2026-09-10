@@ -2594,7 +2594,18 @@ func writeGzFile(path string, data []byte) error {
 func writeNZBBackup(nzbDir, filename string, rawNZB []byte) (string, error) {
 	base := filepath.Base(filename)
 	name := uniqueName(base, func(candidate string) bool {
-		_, err := os.Stat(filepath.Join(nzbDir, candidate+".gz"))
+		// Lstat, not Stat, for the reason given on fsutil.GetUniqueRelPath:
+		// this decides whether a name is free, and Stat answers about a link's
+		// target, so a dangling symlink here would hand back a name that is
+		// already occupied.
+		//
+		// Unlike the par2 and unpack sites, this one is not reachable from
+		// downloaded content — nzbDir is <AdminDir>/nzb, not the job download
+		// directory — and WriteGzAtomicBytes publishes by rename, which does
+		// not follow a final symlink. So the consequence is a clobbered link
+		// rather than a write through it. It is corrected because it is the
+		// same question, not because it carries the same risk.
+		_, err := os.Lstat(filepath.Join(nzbDir, candidate+".gz"))
 		return err == nil
 	}) + ".gz"
 	if err := writeGzFile(filepath.Join(nzbDir, name), rawNZB); err != nil {

@@ -1,5 +1,5 @@
 pkg ./internal/unpack/
-run TestUniquePath
+run TestUniquePath|TestGoTar_ADanglingSymlink
 
 # uniquePath answers "is this name taken?", and Stat answers about a link's
 # TARGET rather than the link. A symlink to a missing file therefore reads as
@@ -24,4 +24,17 @@ file internal/unpack/unique_path.go
 		if _, err := os.Lstat(candidate); err != nil {
 --- replace
 		if _, err := os.Stat(candidate); err != nil {
+--- end
+
+# A third site in this package, and this one is not about picking a unique
+# name: writeEntrySafely's OverwriteFiles=false skip check. Same
+# Stat-answers-about-the-target bug, different consequence -- the entry silently
+# replaces an existing dangling symlink instead of being skipped, which is not
+# what the flag promises.
+[the overwrite skip check follows the link]
+file internal/unpack/write_entry.go
+--- anchor
+		if _, statErr := root.Lstat(destRel); statErr == nil {
+--- replace
+		if _, statErr := root.Stat(destRel); statErr == nil {
 --- end

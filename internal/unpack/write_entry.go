@@ -154,7 +154,14 @@ func writeEntrySafely(
 	verify func() error,
 ) (bool, error) {
 	if !opts.OverwriteFiles {
-		if _, statErr := root.Stat(destRel); statErr == nil {
+		// Lstat, not Stat, for the reason given on fsutil.GetUniqueRelPath.
+		// This one is not a containment hole — the write goes to a temp file
+		// and root.Rename, which does not follow a final symlink — but Stat
+		// answers about a link's TARGET, so a dangling link left by an earlier
+		// entry reads as no file at all and the next entry of the same name
+		// replaces it instead of being skipped, which is not what
+		// OverwriteFiles=false promises.
+		if _, statErr := root.Lstat(destRel); statErr == nil {
 			log.Info("skipping existing file", "path", destPath)
 			if opts.OnLine != nil {
 				opts.OnLine("Skipping existing: " + entryName)

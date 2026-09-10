@@ -248,3 +248,39 @@ func TestWriteNZBBackup_PropagatesWriteError(t *testing.T) {
 		t.Fatal("writeNZBBackup succeeded against a nonexistent directory, want an error")
 	}
 }
+
+// TestWriteNZBBackup_ADanglingSymlinkOccupiesTheName pins the Lstat in the
+// uniqueness callback.
+//
+// Stat answers about a link's target, so a dangling symlink read as an unused
+// name and the backup took it — replacing the link. This is the same class as
+// the fsutil, unpack and par2 sites, but the weakest instance of it: nzbDir is
+// <AdminDir>/nzb rather than a job download directory, so downloaded content
+// cannot plant the link, and WriteGzAtomicBytes publishes by rename, which does
+// not follow a final symlink. It is fixed because it asks the same question,
+// not because it carries the same risk.
+func TestWriteNZBBackup_ADanglingSymlinkOccupiesTheName(t *testing.T) {
+	nzbDir := t.TempDir()
+
+	// Relative and dangling: Lstat sees the link, Stat sees nothing.
+	if err := os.Symlink("missing.gz", filepath.Join(nzbDir, "Show.S01E01.nzb.gz")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	name, err := writeNZBBackup(nzbDir, "Show.S01E01.nzb", []byte("<nzb>body</nzb>"))
+	if err != nil {
+		t.Fatalf("writeNZBBackup: %v", err)
+	}
+	if name == "Show.S01E01.nzb.gz" {
+		t.Error("the backup took a name already held by a dangling symlink; " +
+			"Stat answers about the link's target, so the name read as free")
+	}
+
+	info, err := os.Lstat(filepath.Join(nzbDir, "Show.S01E01.nzb.gz"))
+	if err != nil {
+		t.Fatalf("Lstat the symlink after the write: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("the pre-existing symlink was replaced by the backup")
+	}
+}

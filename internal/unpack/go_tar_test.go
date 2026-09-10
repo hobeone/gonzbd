@@ -1619,3 +1619,45 @@ func openTestRoot(t *testing.T) (string, *os.Root) {
 	})
 	return outDir, root
 }
+
+// TestGoTar_ADanglingSymlinkOccupiesTheName pins writeEntrySafely's Lstat.
+//
+// OverwriteFiles=false promises an existing file is skipped, and Stat answers
+// about a link's TARGET rather than the link, so a DANGLING symlink read as no
+// file at all and the entry replaced it. The link is reachable: the external
+// unrar/7z paths never go through writeEntrySafely and can extract a symlink
+// into the same output directory a later internal extraction writes to.
+//
+// This is not a containment hole — the write goes to a temp file and
+// root.Rename, which does not follow a final symlink — so what is at stake is
+// the flag's stated contract, not an escape.
+func TestGoTar_ADanglingSymlinkOccupiesTheName(t *testing.T) {
+	t.Parallel()
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+
+	tarPath := buildTar(t, srcDir, "skip.tar", []tarEntry{
+		{name: "payload.bin", content: []byte("from the archive")},
+	})
+
+	// Relative and dangling: nothing at the target, so Stat reports the name
+	// free while Lstat reports the link itself.
+	if err := os.Symlink("missing.bin", filepath.Join(outDir, "payload.bin")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
+	if _, err := GoTar(context.Background(), testLogger(), archive, outDir,
+		Options{OverwriteFiles: false}); err != nil {
+		t.Fatalf("GoTar: %v", err)
+	}
+
+	info, err := os.Lstat(filepath.Join(outDir, "payload.bin"))
+	if err != nil {
+		t.Fatalf("Lstat after extraction: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("the archive entry replaced an existing symlink though OverwriteFiles is false; " +
+			"Stat answers about the link's target, so a dangling link read as an unoccupied name")
+	}
+}
