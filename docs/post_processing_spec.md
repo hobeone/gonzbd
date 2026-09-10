@@ -1410,14 +1410,15 @@ func (p *PostProcessor) Process(ctx context.Context, j *Job) (*Result, error) {
     // Realized stage order (internal/app/stages.go buildStages):
     //  1. quickcheck        (par2 vs assembled CRC; relocate flat files)
     //  2. repair            (par2 verify/repair)
-    //  3. unpack            (filejoin → unrar → 7z, depth ≤ 3)
-    //  4. sample_cleanup    (remove samples if enabled)
-    //  5. par2names         (recover obfuscated names from par2)
-    //  6. par2_cleanup      (delete .par2 once no longer needed)
-    //  7. deobfuscate       (heuristic rename)
-    //  8. extension_cleanup (delete files matching cleanup list)
-    //  9. finalize          (move to complete dir) — runs BEFORE script
-    // 10. script            (user post-processing script; sees final dir)
+    //  3. rar_volume_recovery (rebuild a missing RAR volume from par2)
+    //  4. unpack            (filejoin → unrar → 7z, depth ≤ 3)
+    //  5. sample_cleanup    (remove samples if enabled)
+    //  6. par2names         (recover obfuscated names from par2)
+    //  7. par2_cleanup      (delete .par2 once no longer needed)
+    //  8. deobfuscate       (heuristic rename)
+    //  9. extension_cleanup (delete files matching cleanup list)
+    // 10. finalize          (move to complete dir) — runs BEFORE script
+    // 11. script            (user post-processing script; sees final dir)
     // Sorting (TV/movie templates) is NOT implemented — see §11.
     // Stage errors are recorded in the StageLog but do NOT abort the pipeline.
 }

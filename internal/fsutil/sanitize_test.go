@@ -519,8 +519,9 @@ func TestTruncateOnRuneBoundary_Boundary(t *testing.T) {
 }
 
 // TestTrimTrailingDotAndSpace covers the helper directly. It was reached only
-// through SanitizeFilename and SanitizeFolderName, where a wrong result is a
-// cosmetic difference in a name. check_test_alignment surfaced it as an
+// through SanitizeFilename and SanitizeFolderName — its three call sites are
+// sanitize.go:81 and :85 in the first and sanitize.go:103 in the second — where
+// a wrong result is a cosmetic difference in a name. check_test_alignment surfaced it as an
 // untested helper in a file this change touches, and a helper two exported
 // sanitizers depend on earns a direct test regardless of what prompted it.
 func TestTrimTrailingDotAndSpace(t *testing.T) {

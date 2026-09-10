@@ -206,9 +206,10 @@ func TestRelocateFile_RefusesASymlinkedComponentLeavingTheRoot(t *testing.T) {
 // deciding whether to fetch recovery volumes, so a wrong answer there is a
 // missing file reported present.
 //
-// The assembler writes only regular files, but the external unpackers can
-// extract a symlink into the job directory, so this is reachable rather than
-// theoretical.
+// The assembler writes only regular files — its single content write is the
+// os.OpenFile at internal/assembler/assembler.go:1630, and the package calls
+// os.Symlink nowhere — but the external unpackers can extract a symlink into
+// the job directory, so this is reachable rather than theoretical.
 func TestIdentify_DoesNotAccountAnEntryFromASymlink(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

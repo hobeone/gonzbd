@@ -309,8 +309,8 @@ func repairJob(t *testing.T) *Job {
 	return job
 }
 
-// TestHandleRepairResult_ErrorPath verifies that a non-nil err sets ParError,
-// marks the set as not-verified, and returns an error wrapping the original.
+// TestHandleRepairResult_ErrorPath verifies that a non-nil err sets ParError
+// and returns an error wrapping the original.
 func TestHandleRepairResult_ErrorPath(t *testing.T) {
 	t.Parallel()
 	job := repairJob(t)

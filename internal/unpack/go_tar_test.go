@@ -1626,7 +1626,10 @@ func openTestRoot(t *testing.T) (string, *os.Root) {
 // about a link's TARGET rather than the link, so a DANGLING symlink read as no
 // file at all and the entry replaced it. The link is reachable: the external
 // unrar/7z paths never go through writeEntrySafely and can extract a symlink
-// into the same output directory a later internal extraction writes to.
+// into the same output directory a later internal extraction writes to. Its
+// non-test callers are the three native engines — go_tar.go:231,
+// go_sevenzip.go:241 and go_unrar.go:210 — and neither unrar.go nor
+// sevenzip.go, which drive the external tools, is among them.
 //
 // This is not a containment hole — the write goes to a temp file and
 // root.Rename, which does not follow a final symlink — so what is at stake is
