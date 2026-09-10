@@ -325,6 +325,45 @@ func TestStripEnvelope_ExceedsMaxDepthRejected(t *testing.T) {
 	}
 }
 
+// TestStripEnvelope_ExactlyMaxDepthSucceeds pins the fix for an off-by-one
+// at the depth boundary: input nested in exactly maxEnvelopeDepth (4)
+// envelopes fully peels to plain XML on the 4th iteration, but the loop had
+// no way to notice that and fell through to the depth-exceeded error
+// unconditionally — rejecting well-formed input that happened to sit right
+// at the bound, silently capping real peeling to maxEnvelopeDepth-1 layers.
+func TestStripEnvelope_ExactlyMaxDepthSucceeds(t *testing.T) {
+	plain := loadFixture(t, "simple.nzb")
+	data := plain
+	for range maxEnvelopeDepth {
+		data = gzipBytes(t, data)
+	}
+	got, err := StripEnvelope(data, ParserLimits{})
+	if err != nil {
+		t.Fatalf("StripEnvelope with exactly %d envelopes: %v", maxEnvelopeDepth, err)
+	}
+	if !bytes.Equal(got, plain) {
+		t.Errorf("StripEnvelope with exactly %d envelopes did not fully unwrap", maxEnvelopeDepth)
+	}
+}
+
+// TestStripEnvelope_OversizedPayloadRejected pins the fix for a silent
+// truncation bug: unwrapEnvelope already caps its returned reader at the
+// given limit internally, so StripEnvelope's own "did this exceed the
+// limit" check — wrapped around unwrapEnvelope's already-capped output —
+// could never observe more than exactly the limit's worth of bytes, and so
+// could never fire. An oversized (or decompression-bomb) payload was
+// silently truncated to MaxNZBSize and returned as if it were the whole,
+// clean payload, rather than rejected.
+func TestStripEnvelope_OversizedPayloadRejected(t *testing.T) {
+	oversized := bytes.Repeat([]byte("A"), 100)
+	compressed := gzipBytes(t, oversized)
+
+	_, err := StripEnvelope(compressed, ParserLimits{MaxNZBSize: 10})
+	if err == nil {
+		t.Fatal("StripEnvelope: expected an error for a payload exceeding MaxNZBSize, got nil (silently truncated)")
+	}
+}
+
 // TestEnvelopeSelection verifies unwrapEnvelope picks the right branch
 // for each magic sequence. Each case feeds a real, decodable body so the
 // returned reader is usable.

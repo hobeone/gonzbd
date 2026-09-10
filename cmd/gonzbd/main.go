@@ -254,9 +254,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	grabber := urlgrabber.New(urlgrabber.Config{Logger: slog.Default().With("component", "urlgrabber")}, ingest)
 
 	// Directory scanner. Enabled only when DirscanDir is set.
-	if err := startDirScanner(ctx, cfg, adminDir, ingest, log); err != nil {
-		return err
-	}
+	startDirScanner(ctx, cfg, ingest, log)
 
 	apiSrv := buildAPIServer(cfg, configPath, application, histRepo, grabber, cancel, log, events)
 
@@ -524,14 +522,16 @@ func buildAPIServer(cfg *config.Config, configPath string, application *app.Appl
 
 // startDirScanner wires the watched-directory scanner when cfg.General.DirscanDir
 // is set. It's a goroutine that lives for the duration of ctx.
-func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h *ingestHandler, log *slog.Logger) error {
+//
+// dirscanner.NewStore's state is in-memory only (not persisted across
+// restarts) — see internal/dirscanner/state.go's doc comment for why that's
+// fine here: at most one extra scan interval before an in-flight file is
+// considered stable again.
+func startDirScanner(ctx context.Context, cfg *config.Config, h *ingestHandler, log *slog.Logger) {
 	if cfg.General.DirscanDir == "" {
-		return nil
+		return
 	}
-	store, err := dirscanner.OpenStore(filepath.Join(adminDir, "dirscan.json"))
-	if err != nil {
-		return fmt.Errorf("open dirscanner store: %w", err)
-	}
+	store := dirscanner.NewStore()
 	interval := time.Duration(cfg.General.DirscanSpeed) * time.Second
 	if interval <= 0 {
 		interval = 5 * time.Second
@@ -551,7 +551,6 @@ func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h
 		}
 	}()
 	log.Info("dirscanner started", "dir", cfg.General.DirscanDir, "interval", interval)
-	return nil
 }
 
 // startListeners — when cfg.General.HTTPSPort > 0 — first auto-provisions a

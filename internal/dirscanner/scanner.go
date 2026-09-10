@@ -130,13 +130,9 @@ func (s *Scanner) ScanOnce(ctx context.Context) (int, error) {
 	}
 	processed += subProcessed
 
-	// Remove entries from store that no longer exist on disk.
+	// Remove entries the store no longer needs to track (store is in-memory
+	// only; nothing here writes to disk).
 	s.pruneRemovedFiles(scannedDirs, currentScan)
-
-	// Persist updated state to disk.
-	if err := s.store.Save(); err != nil {
-		s.logger.Warn("failed to save state", "err", err)
-	}
 
 	return processed, nil
 }
@@ -172,8 +168,10 @@ func (s *Scanner) scanDir(ctx context.Context, dir, category string) (files map[
 		}
 
 		if !isValidExtension(entry.Name()) {
-			if state, ok := s.warnUnrecognizedOnce(path); ok {
-				currentScan[path] = state
+			// entry.Info() vanishing here means the file disappeared
+			// between ReadDir and now — nothing to warn about or track.
+			if info, err := entry.Info(); err == nil {
+				currentScan[path] = s.warnUnrecognizedOnce(path, info)
 			}
 			continue
 		}
@@ -340,22 +338,19 @@ func (s *Scanner) scanCategorySubdirs(
 // folder), so re-logging it every cycle forever would spam the log about
 // something already known, for as long as the file sits there.
 //
-// Returns the file's current state and whether it could be stat'd, so the
-// caller can still record it in currentScan (for pruneRemovedFiles) even on
-// a cycle where nothing new was logged. Returns (FileState{}, false) if the
-// file vanished between ReadDir and Stat — nothing to warn about or track.
-func (s *Scanner) warnUnrecognizedOnce(path string) (FileState, bool) {
-	stat, err := os.Stat(path)
-	if err != nil {
-		return FileState{}, false
-	}
-	state := FileState{Size: stat.Size(), MTime: stat.ModTime()}
+// Takes info rather than stat'ing path itself: the caller already has it
+// from os.ReadDir's DirEntry (via entry.Info(), which reuses the directory
+// read's own stat data rather than issuing a fresh syscall), and this
+// function runs once per unrecognized file per scan cycle — a background
+// tick is not the place to double that cost.
+func (s *Scanner) warnUnrecognizedOnce(path string, info os.FileInfo) FileState {
+	state := FileState{Size: info.Size(), MTime: info.ModTime()}
 	if prior, seen := s.warnedExtensions[path]; seen && prior.Size == state.Size && prior.MTime.Equal(state.MTime) {
-		return state, true
+		return state
 	}
 	s.warnedExtensions[path] = state
 	s.logger.Debug("skipping file with unrecognized extension", "path", path)
-	return state, true
+	return state
 }
 
 // pruneRemovedFiles scans the store for deleted files and watch folders to prune from state.
@@ -404,19 +399,28 @@ func isGoneFromScannedDir(storedPath string, scannedDirs map[string]bool) bool {
 // scanDir never descends into subdirectories it isn't told to treat as a
 // category (see the reserved-name guard in scanCategorySubdirs for the one
 // case that needs an explicit exception), so failedDirName is already
-// excluded from every future scan without further bookkeeping. Logs and
-// gives up on any error — this path already failed once and is not worth
-// blocking the rest of the scan over.
-func (s *Scanner) moveToFailedDir(path string) {
+// excluded from every future scan without further bookkeeping.
+//
+// Returns an error rather than swallowing one: the caller must not forget
+// this path (see TestProcessScannedFile_MoveToFailedDirErrorKeepsStoreEntry)
+// when the file is still sitting at its original location — forgetting it
+// would make the next scan treat an unmoved, still-failing file as newly
+// arrived and retry the doomed extraction forever, exactly the kind of
+// infinite loop this PR set out to stop.
+//
+// Uses fsutil.MoveFile rather than a bare os.Rename: the watch folder and
+// failedDirName can be on different filesystems (e.g. an NFS-mounted watch
+// dir), where a plain rename fails with EXDEV.
+func (s *Scanner) moveToFailedDir(path string) error {
 	failedDir := filepath.Join(filepath.Dir(path), failedDirName)
 	if err := os.MkdirAll(failedDir, 0o750); err != nil {
-		s.logger.Warn("failed to create failed/ directory", "dir", failedDir, "err", err)
-		return
+		return fmt.Errorf("create failed/ directory %s: %w", failedDir, err)
 	}
 	target := fsutil.GetUniqueFilename(filepath.Join(failedDir, filepath.Base(path)))
-	if err := os.Rename(path, target); err != nil {
-		s.logger.Warn("failed to move file to failed/ directory", "path", path, "target", target, "err", err)
+	if err := fsutil.MoveFile(path, target); err != nil {
+		return fmt.Errorf("move %s to %s: %w", path, target, err)
 	}
+	return nil
 }
 
 // processScannedFile checks if the file at path is stable and, if so,
@@ -469,8 +473,16 @@ func (s *Scanner) processScannedFile(
 		// rather than an in-place rename that scanDir would keep seeing
 		// (and, before this, re-logging) every cycle forever.
 		if _, ok := errors.AsType[*PartialError](err); !ok {
-			s.moveToFailedDir(path)
-			s.store.Delete(path)
+			if moveErr := s.moveToFailedDir(path); moveErr != nil {
+				// The file is still sitting at path. Keep its store entry —
+				// deleting it here would make the next scan treat this
+				// still-failing file as newly arrived and retry the doomed
+				// extraction forever.
+				s.logger.Warn("failed to move file to failed/ directory; will retry the move next scan",
+					"path", path, "err", moveErr)
+			} else {
+				s.store.Delete(path)
+			}
 		}
 		return false, err
 	}

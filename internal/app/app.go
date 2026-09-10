@@ -2575,9 +2575,11 @@ func writeNZBBackup(nzbDir, filename string, rawNZB []byte) (string, error) {
 	// be "whatever dirscanner's extension-driven single unwrap produced,"
 	// which can still carry an envelope layer nzb.Parse's own
 	// content-driven single unwrap silently peeled for parsing alone (see
-	// TestWriteNZBBackup_AlreadyEnvelopedInputIsNormalized). StripEnvelope
-	// is the one function both this and Parse rely on to answer "is this
-	// still compressed," so the two can't disagree about what plain means.
+	// TestWriteNZBBackup_AlreadyEnvelopedInputIsNormalized). Parse does not
+	// call StripEnvelope itself — it keeps its own single peel — but
+	// running rawNZB through StripEnvelope here, before compressing, means
+	// this function (the sole writer of admin/nzb/ backups) never persists
+	// less-plain bytes than what Parse actually consumed.
 	plain, err := nzb.StripEnvelope(rawNZB, nzb.ParserLimits{})
 	if err != nil {
 		return "", fmt.Errorf("normalize NZB before backup: %w", err)
