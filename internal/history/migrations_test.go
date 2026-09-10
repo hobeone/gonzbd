@@ -119,23 +119,13 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		}
 	})
 
-	// The inverse of what this used to assert.
+	// Both figures are derivable: a failed article's size is m.ArticleBytes(i),
+	// which the manifest carries whether or not the article was fetched, and
+	// failed_articles supplies the set of i. JobProgress.markFailed performs
+	// that sum and ApplyResolution recomputes both at hydration, where a
+	// manifest is always attached.
 	//
-	// Two subtests here required job_files.failed_bytes and
-	// bytes_downloaded to EXIST, on the reasoning that failed_bytes was "the
-	// one per-file byte figure the durability record cannot supply" because
-	// failed_articles records which articles failed and never how many bytes
-	// they were.
-	//
-	// Both premises are true and the conclusion is false. A failed article's
-	// size is m.ArticleBytes(i); the manifest carries it whether or not the
-	// article was ever fetched, and failed_articles supplies exactly the set
-	// of i. JobProgress.markFailed performs that sum. Nothing ever read
-	// either column back, and nothing could have needed to: progress is only
-	// constructed with a manifest attached, and ApplyResolution finishes by
-	// recomputing both figures from it.
-	//
-	// Asserted absent rather than merely deleted, for the same reason the
+	// Asserted absent rather than merely left out, for the same reason the
 	// two-record tables below are: while a column exists, a change can
 	// reintroduce a writer for it, and a persisted copy of a derived figure is
 	// the second authority Rule 2 forbids.
@@ -161,12 +151,11 @@ func TestMigrations_SchemaShape(t *testing.T) {
 	// before any job_files row is, so a copy here could only ever be the stale
 	// one.
 	t.Run("job_files does not duplicate the manifest", func(t *testing.T) {
-		// article_count is here rather than with the byte figures because it
-		// was manifest-derived too: the INSERT computed it as hi-lo of the
-		// manifest's FileRange. Its only reader was test/crash/harness.go,
-		// which now takes the count from the fixture it built and serves --
-		// a stronger comparison than reading back the daemon's own copy of a
-		// structure the test already knows.
+		// article_count is grouped here because it is manifest-derived too:
+		// hi-lo of the manifest's FileRange. The crash harness needs per-file
+		// counts and takes them from the fixture it builds and serves, which
+		// is a stronger comparison than reading back the daemon's own copy of
+		// a structure the test already knows.
 		for _, col := range []string{"subject", "date", "bytes", "is_par2_recovery", "article_count"} {
 			var n int
 			if err := db.QueryRow(

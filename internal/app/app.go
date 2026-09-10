@@ -767,10 +767,9 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	if app.historyRepo != nil && app.historyRepo.DB() != nil {
 		if m, err := j.Manifest(); err == nil && m != nil {
 			// Seeds one row per file with empty RESULTS, which the
-			// checkpointer then fills in as the download proceeds. Nothing
-			// about the manifest is copied here: subject, date, bytes and
-			// is_par2_recovery used to be, and were read by nothing, because
-			// the manifest is loaded before these rows ever are.
+			// checkpointer fills in as the download proceeds. Nothing from the
+			// manifest is copied here — it is loaded before these rows are
+			// read, so a copy could only ever be the stale one.
 			const qFiles = `
 INSERT INTO job_files
   (job_id, file_index, complete, fetch_policy, filename, assembled_crc32)

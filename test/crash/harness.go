@@ -867,9 +867,6 @@ func (h *harness) FailedArticles(db *sql.DB, jobID string) map[int32]bool {
 // per-ordinal assertion below would silently line up. Taking it from the
 // fixture makes the comparison what a black-box test's comparison should be:
 // against what was submitted, not against what was stored.
-//
-// job_files carried an article_count column for exactly this reader and no
-// other. It was removed once that was noticed.
 type jobFile struct {
 	FileIdx      int32
 	Filename     string

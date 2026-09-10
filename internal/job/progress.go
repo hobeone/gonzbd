@@ -90,9 +90,6 @@ type FileProgress struct {
 	// file is first seen so RemainingBytes derives from progress alone and
 	// keeps working after the manifest is evicted.
 	//
-	// It was also persisted, as job_files.bytes, "for when the manifest is not
-	// resident". Nothing read it: progress is only ever built with a manifest
-	// attached, so the copy could never be the source. The column is gone.
 	Bytes int64
 	// BytesDownloaded is the sum of Bytes over this file's resolved,
 	// non-failed articles. It is in the SAME unit as Bytes above — the
@@ -105,9 +102,8 @@ type FileProgress struct {
 	// why this is summed from the manifest's per-article bytes over the
 	// resolved set rather than read off the durability record.
 	//
-	// It was persisted as job_files.bytes_downloaded and read by nothing.
-	// markDone maintains it live and recompute rebuilds it at hydration, both
-	// from the manifest, so the stored copy was only ever the stale one.
+	// Maintained live by markDone and rebuilt by recompute at hydration, both
+	// from the manifest.
 	BytesDownloaded int64
 	// FailedBytes is the sum of bytes belonging to this file's permanently
 	// failed articles. Carried per file, not just job-wide, so remaining
@@ -115,19 +111,11 @@ type FileProgress struct {
 	// BytesDownloaded does not account for it, and without this the derivation
 	// would report its bytes as still to fetch forever.
 	//
-	// It had a persisted twin, job_files.failed_bytes, justified as "the one
-	// per-file byte figure the durability record cannot supply" — because
-	// failed_articles records WHICH articles failed and never how many bytes
-	// they were, and a permanently failed article never decodes so no run
-	// covers it either.
-	//
-	// Both of those are true and the conclusion did not follow. markFailed
-	// below computes this figure as m.ArticleBytes(i) summed over the failed
-	// set: the manifest knows an article's size whether or not it was ever
-	// fetched, and failed_articles supplies the set. The record plus the
-	// manifest is sufficient, the column was read by nothing, and it is gone.
-	// See internal/history/migrations/001_initial.sql and
-	// docs/durability-contract.md.
+	// Not persisted, and does not need to be: markFailed below computes it as
+	// m.ArticleBytes(i) summed over the failed set. The manifest knows an
+	// article's size whether or not it was ever fetched, and failed_articles
+	// supplies the set, so the durability record crossed with the manifest
+	// reproduces this figure exactly.
 	FailedBytes int64
 	// IsPar2 marks a par2 file — the index or a recovery volume — as opposed
 	// to content. Carried per file, like Bytes and FailedBytes, so
@@ -138,10 +126,6 @@ type FileProgress struct {
 	// it is not a recovery volume: it is fetched, so it can fail, and its
 	// failure is not damage. Classification is by subject, done once from the
 	// manifest when the file is first seen.
-	//
-	// job_files carried both a subject and an is_par2_recovery column, neither
-	// of them read; they duplicated manifest fields that are always loaded
-	// first, and have been removed.
 	IsPar2 bool
 	// There is deliberately no WriteCursor or MaxWritten here.
 	//
@@ -417,10 +401,8 @@ func (p *JobProgress) EarlyAborted() bool {
 // manifest's subject when the file was first seen, and the classification
 // stays on FileProgress.
 //
-// This used to say IsPar2 is classified "from job_files.subject when not
-// [resident]". That column existed and no code read it; it has been removed.
-// There is no residency at which progress exists without having had a manifest
-// to classify from.
+// There is no residency at which progress exists without having had a
+// manifest to classify from, so the classification is always available.
 func (p *JobProgress) ContentFailedBytes() int64 {
 	if p == nil {
 		return 0
