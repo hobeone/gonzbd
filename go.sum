@@ -27,8 +27,8 @@ github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs
 github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
 github.com/hobeone/par2engine v1.0.7 h1:TwhZ58dPjB6ZwkB9nAJYoJVqauWhccvPwjlxlyRoKBc=
 github.com/hobeone/par2engine v1.0.7/go.mod h1:7RO6LeiOTXaeg/nnqyKfG2JXIQUoq85GgGIGDEK4UC8=
-github.com/hobeone/rarengine v1.1.1 h1:e1JpYvQPbmHmhpnRdZYOS5nDm8IEJIn+7jUE6GdxyNM=
-github.com/hobeone/rarengine v1.1.1/go.mod h1:k62QSr+MwV/2YMve2gSbjkq5q+ZYgi5uiOhRH0PEbyg=
+github.com/hobeone/rarengine v1.2.0 h1:SIIIyEgWK3fonOTg0/IvjRze4FOaOHl6j0fE3lvbw/4=
+github.com/hobeone/rarengine v1.2.0/go.mod h1:S3xsQGeBdv/uH7s4tU0AusKF+diOTI7+CRwrFSc2mnk=
 github.com/klauspost/compress v1.20.0 h1:a3C1ke2ohxFymNlb2HWAHjDeKCI90scRskErZkR0ezA=
 github.com/klauspost/compress v1.20.0/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
 github.com/klauspost/cpuid/v2 v2.4.0 h1:S6Hrbc7+ywsr0r+RLapfGBHfyefhCTwEh3A0tV913Dw=
