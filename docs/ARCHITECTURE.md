@@ -187,7 +187,7 @@ are the containment model actually in effect for the shipped image.
 
 ### Persistence (`internal/history`, `internal/config`)
 
-- **SQLite History**: Completed jobs are stored in `history.db`. The schema is maintained via `goose` migrations and is designed to be byte-for-byte compatible with the original Python implementation's history database.
+- **SQLite History**: Completed jobs are stored in `history.db`. The schema is a single `goose` migration (`001_initial.sql`) that descends from the original Python implementation's history table and has diverged from it. It is deliberately not interchangeable: `history.Open` refuses any database this build's migrations did not write.
 - **YAML Configuration**: The application uses a YAML configuration (`gonzbd.yaml`). The `config` package handles loading, validation, and atomic saves (marshal under RLock, release lock, write to temp file, fsync, and rename). Environment variable expansion (`$VAR`, `${VAR}`) and `~` home-directory expansion are supported in **path-typed fields only** (e.g., `download_dir`, `admin_dir`, `script_dir`); non-path values (passwords, API keys) are intentionally left unexpanded to avoid corrupting values that contain `$`.
 
 ---

@@ -613,22 +613,28 @@ CREATE TABLE history (
     url_info        TEXT,
     bytes           INTEGER,
     meta            TEXT,
-    series          TEXT,
     md5sum          TEXT,
     password        TEXT,
-    duplicate_key   TEXT,              -- TV/movie identifier for smart dupes
     archive         INTEGER DEFAULT 0,
-    time_added      INTEGER
+    time_added      INTEGER,
+    nzb_backup      TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX idx_history_nzo_id ON history(nzo_id);
 CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 ```
 
-> Note: This column set is **identical** (column-for-column, in order) to the
-> upstream SABnzbd v5 schema in `sabnzbd/database.py`, so an existing
-> `history.db` can be opened by either daemon. GoNZBD relaxes a few constraints
-> (no `NOT NULL` on `completed`/`name`/`nzb_name`, `nzo_id` is `UNIQUE`, and two
-> covering indexes are added). An earlier draft of this spec listed
+> Note: this column set **descends from** the upstream SABnzbd v5 schema in
+> `sabnzbd/database.py` and has since diverged. It is not interchangeable with
+> it, and no attempt is made to be: `history.Open` refuses to open any database
+> whose recorded migration version this build did not write, so an upstream
+> `history.db` cannot be opened by GoNZBD at all. Standing Design Rule 1 is why
+> — GoNZBD targets fresh installations and is not a drop-in replacement.
+>
+> The divergences: `nzb_backup` is added; `report`, `series` and `duplicate_key`
+> are removed, having been carried for a migration that Rule 1 abolished and
+> read by nothing; several `NOT NULL` constraints are relaxed
+> (`completed`/`name`/`nzb_name`); `nzo_id` is `UNIQUE`; and two covering
+> indexes are added. An earlier draft of this spec listed
 > `status_text`/`nzo_info_pickle` columns — those never existed in SABnzbd v5
 > and are not in GoNZBD.
 

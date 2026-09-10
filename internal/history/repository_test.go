@@ -800,7 +800,7 @@ func (f fixedScanner) Scan(dest ...any) error {
 // NULL collapsing, and does it better — through a real row and the real driver
 // — so this deliberately does not restate it.
 //
-// It scans thirty-one columns into a positional dest list and then copies each
+// It scans twenty-eight columns into a positional dest list and then copies each
 // local into a named Entry field. Nothing about that is type-checked: swapping
 // two same-typed neighbours — status and nzo_id are both NullString, bytes and
 // archive both NullInt64 — compiles, passes every query test that only checks
@@ -810,13 +810,13 @@ func (f fixedScanner) Scan(dest ...any) error {
 // a representative sample.
 func TestScanEntry_MapsColumnsByPosition(t *testing.T) {
 	got, err := scanEntry(fixedScanner{at: map[int]any{
-		9:  "Failed",           // status
-		10: "SABnzbd_nzo_xyz",  // nzo_id, the NullString next to it
-		20: "par2 repair fail", // fail_message
-		21: "http://info",      // url_info, its NullString neighbour
-		22: int64(4242),        // bytes
-		28: int64(1),           // archive, the NullInt64 next to it
-		29: int64(1700000000),  // time_added
+		8:  "Failed",           // status
+		9:  "SABnzbd_nzo_xyz",  // nzo_id, the NullString next to it
+		19: "par2 repair fail", // fail_message
+		20: "http://info",      // url_info, its NullString neighbour
+		21: int64(4242),        // bytes
+		25: int64(1),           // archive, the next NullInt64 along
+		26: int64(1700000000),  // time_added, adjacent to archive
 	}})
 	if err != nil {
 		t.Fatalf("scanEntry: %v", err)

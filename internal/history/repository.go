@@ -45,7 +45,6 @@ type Entry struct {
 	Category     string
 	PP           string
 	Script       string
-	Report       string
 	URL          string
 	Status       string
 	NzoID        string
@@ -66,10 +65,8 @@ type Entry struct {
 	URLInfo      string
 	Bytes        int64
 	Meta         string
-	Series       string
 	MD5Sum       string
 	Password     string
-	DuplicateKey string
 	Archive      int64
 
 	// TimeAdded holds the unix timestamp of when the job was added to the queue.
@@ -120,23 +117,23 @@ func (r *Repository) DB() *sql.DB {
 func (r *Repository) AddTx(ctx context.Context, exec Execer, e Entry) error {
 	const q = `
 INSERT INTO history
-  (completed, name, nzb_name, category, pp, script, report, url, status,
+  (completed, name, nzb_name, category, pp, script, url, status,
    nzo_id, storage, path, script_log, script_line, download_time,
    postproc_time, stage_log, downloaded, completeness, fail_message,
-   url_info, bytes, meta, series, md5sum, password, duplicate_key,
+   url_info, bytes, meta, md5sum, password,
    archive, time_added, nzb_backup)
 VALUES
-  (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 
 	_, err := exec.ExecContext(ctx, q,
 		toUnix(e.Completed),
-		e.Name, e.NzbName, e.Category, e.PP, e.Script, e.Report,
+		e.Name, e.NzbName, e.Category, e.PP, e.Script,
 		e.URL, e.Status, e.NzoID, e.Storage, e.Path,
 		e.ScriptLog, e.ScriptLine,
 		e.DownloadTime, e.PostprocTime, e.StageLog,
 		e.Downloaded, e.Completeness, e.FailMessage, e.URLInfo,
-		e.Bytes, e.Meta, e.Series, e.MD5Sum, e.Password,
-		e.DuplicateKey, e.Archive, toUnix(e.TimeAdded), e.NZBBackup,
+		e.Bytes, e.Meta, e.MD5Sum, e.Password,
+		e.Archive, toUnix(e.TimeAdded), e.NZBBackup,
 	)
 	if err != nil {
 		return fmt.Errorf("history: add tx %q: %w", e.NzoID, err)
@@ -505,10 +502,10 @@ ORDER BY completed ASC`
 }
 
 // allColumns is the canonical SELECT column list, ordered to match scanEntry.
-const allColumns = `id, completed, name, nzb_name, category, pp, script, report,
+const allColumns = `id, completed, name, nzb_name, category, pp, script,
 url, status, nzo_id, storage, path, script_log, script_line, download_time,
 postproc_time, stage_log, downloaded, completeness, fail_message, url_info,
-bytes, meta, series, md5sum, password, duplicate_key, archive, time_added,
+bytes, meta, md5sum, password, archive, time_added,
 nzb_backup`
 
 // scanner abstracts over *sql.Row and *sql.Rows so scanEntry works for both.
@@ -531,23 +528,23 @@ type scanner interface {
 // documented on the Entry struct.
 func scanEntry(s scanner) (*Entry, error) {
 	var (
-		e                                                                    Entry
-		completed, timeAdded                                                 sql.NullInt64
-		name, nzbName, category, pp, script, report, urlField, status, nzoID sql.NullString
-		storage, path, scriptLine, stageLog, failMessage, urlInfo            sql.NullString
-		meta, series, md5sum, password, duplicateKey, nzbBackup              sql.NullString
-		downloadTime, postprocTime, downloaded, completeness                 sql.NullInt64
-		bytesVal, archive                                                    sql.NullInt64
+		e                                                            Entry
+		completed, timeAdded                                         sql.NullInt64
+		name, nzbName, category, pp, script, urlField, status, nzoID sql.NullString
+		storage, path, scriptLine, stageLog, failMessage, urlInfo    sql.NullString
+		meta, md5sum, password, nzbBackup                            sql.NullString
+		downloadTime, postprocTime, downloaded, completeness         sql.NullInt64
+		bytesVal, archive                                            sql.NullInt64
 	)
 	err := s.Scan(
 		&e.ID, &completed,
-		&name, &nzbName, &category, &pp, &script, &report,
+		&name, &nzbName, &category, &pp, &script,
 		&urlField, &status, &nzoID, &storage, &path,
 		&e.ScriptLog, &scriptLine,
 		&downloadTime, &postprocTime, &stageLog,
 		&downloaded, &completeness, &failMessage, &urlInfo,
-		&bytesVal, &meta, &series, &md5sum, &password,
-		&duplicateKey, &archive, &timeAdded, &nzbBackup,
+		&bytesVal, &meta, &md5sum, &password,
+		&archive, &timeAdded, &nzbBackup,
 	)
 	if err != nil {
 		return nil, err
@@ -559,7 +556,6 @@ func scanEntry(s scanner) (*Entry, error) {
 	e.Category = category.String
 	e.PP = pp.String
 	e.Script = script.String
-	e.Report = report.String
 	e.URL = urlField.String
 	e.Status = status.String
 	e.NzoID = nzoID.String
@@ -575,10 +571,8 @@ func scanEntry(s scanner) (*Entry, error) {
 	e.URLInfo = urlInfo.String
 	e.Bytes = bytesVal.Int64
 	e.Meta = meta.String
-	e.Series = series.String
 	e.MD5Sum = md5sum.String
 	e.Password = password.String
-	e.DuplicateKey = duplicateKey.String
 	e.Archive = archive.Int64
 	e.NZBBackup = nzbBackup.String
 	return &e, nil

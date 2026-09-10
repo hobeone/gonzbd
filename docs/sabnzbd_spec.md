@@ -285,7 +285,7 @@ Running, QuickCheck, Completed, Failed, Deleted, Idle
 ### 4.4 Queue Persistence
 
 - **Format** (SABnzbd): Python pickle + gzip. **GoNZBD**: SQLite database (`history.db`) + gzipped JSON manifests (`queue/manifests/<id>.json.gz`).
-- **Filename** (GoNZBD): `history.db` (SQLite store: job order, state, metadata, in the `jobs`, `job_files` and `queue_meta` tables, plus download durability in `durable_runs` and `failed_articles`) plus one `queue/manifests/<id>.json.gz` manifest per job, both under the admin directory. Queue state shares a single database file with history rather than having one of its own. (SABnzbd used a single `queue10.sab`.)
+- **Filename** (GoNZBD): `history.db` (SQLite store: job order, state, metadata, in the `dispatch_jobs` and `job_files` tables, plus download durability in `durable_runs` and `failed_articles`) plus one `queue/manifests/<id>.json.gz` manifest per job, both under the admin directory. Queue state shares a single database file with history rather than having one of its own. (SABnzbd used a single `queue10.sab`.)
 - **Postproc queue**: in-memory only in GoNZBD (not persisted; in-flight post-processing restarts from scratch after a crash). SABnzbd persisted `postproc2.sab`.
 - **Repair modes** (on startup):
   - Mode 0: Use existing queue as-is
@@ -1022,7 +1022,6 @@ CREATE TABLE history (
     category        TEXT,
     pp              TEXT,             -- PP flags string ("7", "3", etc.)
     script          TEXT,
-    report          TEXT,             -- Internal status/report string
     url             TEXT,             -- Source URL
     status          TEXT,             -- Final status (Completed, Failed, etc.)
     nzo_id          TEXT UNIQUE,
@@ -1039,14 +1038,22 @@ CREATE TABLE history (
     url_info        TEXT,             -- Additional source info
     bytes           INTEGER,          -- Total NZB size in bytes
     meta            TEXT,             -- JSON metadata dict
-    series          TEXT,             -- (deprecated; keep for migration)
     md5sum          TEXT,             -- MD5 of first 16 KB of first file
     password        TEXT,
-    duplicate_key   TEXT,
     archive         INTEGER DEFAULT 0, -- 0=active, 1=archived
-    time_added      INTEGER           -- Unix timestamp when NZB added
+    time_added      INTEGER,          -- Unix timestamp when NZB added
+    nzb_backup      TEXT NOT NULL DEFAULT ''  -- basename of the gzipped NZB backup
 );
+```
 
+`report`, `series` and `duplicate_key` were carried here for parity with the
+upstream Python schema and are gone. Nothing read them: each was written by the
+INSERT and scanned back, and no other code in the tree referenced the field. The
+annotation on `series` said "keep for migration", and Standing Design Rule 1
+abolishes that migration — `history.Open` refuses to open a database this
+build's migrations did not write, so there is no upgrade for them to serve.
+
+```sql
 CREATE UNIQUE INDEX idx_history_nzo_id ON history(nzo_id);
 CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 ```

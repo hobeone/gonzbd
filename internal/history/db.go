@@ -1,7 +1,19 @@
 // Package history manages the gonzbd download history database (history.db).
-// It provides a thin SQLite-backed store whose schema is byte-for-byte
-// compatible with the upstream Python implementation, so users can run the Go
-// daemon against an existing history file without a migration step.
+// It provides a thin SQLite-backed store whose `history` table descends from
+// the upstream Python implementation's and has since diverged from it.
+//
+// It is NOT interchangeable with an upstream history.db, and this package is
+// what makes that so: Open refuses any database whose recorded goose version
+// this build's migrations did not write (refuseUnknownSchema), which an
+// upstream file trivially is. Standing Design Rule 1 is the reason — gonzbd
+// targets fresh installations and is not a drop-in replacement — and the
+// divergences are listed in docs/sabnzbd_spec.md §11.2.
+//
+// This comment used to claim the schema was "byte-for-byte compatible with the
+// upstream Python implementation, so users can run the Go daemon against an
+// existing history file without a migration step". That was contradicted by
+// code in this same file, and the claim is what kept three unread columns
+// alive on the strength of a migration path that cannot happen.
 //
 // Concurrency model: a single *DB value is safe for concurrent use. All
 // exported methods on Repository accept a context.Context; callers may cancel

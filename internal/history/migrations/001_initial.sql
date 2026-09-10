@@ -23,6 +23,26 @@
 -- reader had no cause to open. Collapsing puts each claim beside the thing it
 -- explains, which is the only arrangement that keeps them checkable together.
 --
+-- WHAT THE COLLAPSE ALSO REMOVED
+--
+-- Auditing every column for a consumer turned up four with none, and they are
+-- gone rather than carried forward:
+--
+--   * queue_meta, a whole table. No .go file read it, wrote it, or named it.
+--     It survived the previous collapse as inertia.
+--   * history.report, history.series, history.duplicate_key. Each was declared
+--     on history.Entry, written by the INSERT, and scanned back -- and read by
+--     nothing. They round-tripped the zero value. Entry carries no JSON tags,
+--     so they were not an incidental API surface either; the mode=history
+--     response is built field by field and never mentioned them.
+--
+-- The stated reason for the three columns was schema parity with the upstream
+-- Python implementation, annotated in docs/sabnzbd_spec.md as "keep for
+-- migration". Standing Design Rule 1 abolishes that migration, and
+-- refuseUnknownSchema does not merely decline to perform it -- it refuses to
+-- OPEN a database this build's migrations did not write. A column kept for a
+-- path the same package forbids is not parity, it is residue.
+--
 -- WHY IT IS SAFE
 --
 -- Standing Design Rule 1: no installation is being upgraded. The on-disk
@@ -57,7 +77,6 @@ CREATE TABLE history (
     category        TEXT,
     pp              TEXT,
     script          TEXT,
-    report          TEXT,
     url             TEXT,
     status          TEXT,
     nzo_id          TEXT UNIQUE,
@@ -74,10 +93,8 @@ CREATE TABLE history (
     url_info        TEXT,
     bytes           INTEGER,
     meta            TEXT,
-    series          TEXT,
     md5sum          TEXT,
     password        TEXT,
-    duplicate_key   TEXT,
     archive         INTEGER DEFAULT 0,
     time_added      INTEGER,
     -- nzb_backup is the basename of the gzipped NZB backup under admin/nzb/,
@@ -94,13 +111,6 @@ CREATE TABLE history (
 
 CREATE UNIQUE INDEX idx_history_nzo_id ON history(nzo_id);
 CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
--- +goose StatementEnd
-
--- +goose StatementBegin
-CREATE TABLE queue_meta (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
 -- +goose StatementEnd
 
 -- +goose StatementBegin
@@ -245,7 +255,7 @@ CREATE TABLE failed_articles (
 -- (internal/app/app.go:2149), by the durability sweep for a job that has left
 -- both the queue and history-as-FAILED (internal/app/durability.go:1410), and
 -- by history.Repository.Delete dropping a departed job's durability with it
--- (internal/history/repository.go:403). Every one of those is a job-scoped
+-- (internal/history/repository.go:400). Every one of those is a job-scoped
 -- delete; none of them writes a row.
 --
 -- It is a table rather than a packed bitmap column on job_files because its
@@ -435,6 +445,5 @@ DROP TABLE history_job_files;
 DROP TABLE failed_articles;
 DROP TABLE durable_runs;
 DROP TABLE job_files;
-DROP TABLE queue_meta;
 DROP TABLE history;
 -- +goose StatementEnd
