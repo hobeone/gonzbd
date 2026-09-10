@@ -12,9 +12,9 @@ require (
 	github.com/mxschmitt/playwright-go v0.6201.1
 	github.com/pressly/goose/v3 v3.28.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/sys v0.47.0
-	golang.org/x/text v0.41.0
-	golang.org/x/time v0.15.0
+	golang.org/x/sys v0.48.0
+	golang.org/x/text v0.42.0
+	golang.org/x/time v0.16.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.58.0
 )
@@ -42,7 +42,7 @@ require (
 	github.com/ulikunitz/xz v0.5.16 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
-	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
 	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
