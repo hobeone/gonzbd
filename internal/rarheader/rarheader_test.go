@@ -214,9 +214,13 @@ func TestParseUnrarVtOutput(t *testing.T) {
 Name: file1.txt
 Type: File
 Flags: encrypted
+Name: path/to/dir1
+Type: Directory
+Attributes: drwxr-xr-x
 Name: file2.txt
 Type: File
-Flags: directory
+Name: path/to/empty
+Type: Directory
 Name: path/to/file3.txt
 Type: File
 Flags: encrypted, solid
@@ -226,13 +230,8 @@ Flags: encrypted, solid
 		t.Error("parseUnrarVtOutput did not detect encrypted flag")
 	}
 	want := []string{"file1.txt", "file2.txt", "file3.txt"}
-	if len(filenames) != len(want) {
-		t.Fatalf("got %d filenames, want %d", len(filenames), len(want))
-	}
-	for i, f := range filenames {
-		if f != want[i] {
-			t.Errorf("filenames[%d] = %q, want %q", i, f, want[i])
-		}
+	if !slices.Equal(filenames, want) {
+		t.Fatalf("parseUnrarVtOutput() = %v, want %v", filenames, want)
 	}
 }
 
@@ -323,27 +322,39 @@ func TestInspect_ValidRAR_Fixtures(t *testing.T) {
 	}
 }
 
-func TestInspect_RAR3Fixtures(t *testing.T) {
-	tests := []struct {
-		file      string
-		wantFiles []string
-	}{
-		{filepath.Join("testdata", "rar3-comment-plain.rar"), []string{"file1.txt", "file2.txt"}},
-		{filepath.Join("testdata", "rar3-subdirs.rar"), []string{"file2.txt", "long fn.txt", "file.txt", "file1.txt", "dir2", "with space", "empty", "üȵĩöḋè", "dir1", "sub"}},
+// TestInspect_RAR3_RoutesToUnrar proves Inspect() routes RAR3 archives to
+// inspectViaUnrar without calling the real external unrar binary in unit tests.
+func TestInspect_RAR3_RoutesToUnrar(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+
+	var capturedName string
+	var capturedArgs []string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		capturedName = name
+		capturedArgs = args
+		cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess_UnrarSuccess")
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		return cmd
 	}
-	for _, tt := range tests {
-		t.Run(tt.file, func(t *testing.T) {
-			info, err := Inspect(tt.file)
-			if err != nil {
-				t.Fatalf("Inspect(%s) error: %v", tt.file, err)
-			}
-			if info.Version != 3 {
-				t.Errorf("Version = %d, want 3", info.Version)
-			}
-			if !slices.Equal(info.Filenames, tt.wantFiles) {
-				t.Errorf("Filenames = %v, want %v", info.Filenames, tt.wantFiles)
-			}
-		})
+
+	rar3Path := filepath.Join("testdata", "rar3-comment-plain.rar")
+	info, err := Inspect(rar3Path)
+	if err != nil {
+		t.Fatalf("Inspect(%s) error: %v", rar3Path, err)
+	}
+	if info.Version != 3 {
+		t.Errorf("Version = %d, want 3", info.Version)
+	}
+	if capturedName != "unrar" {
+		t.Errorf("command = %q, want unrar", capturedName)
+	}
+	wantArgs := []string{"vt", "-p-", rar3Path}
+	if !slices.Equal(capturedArgs, wantArgs) {
+		t.Errorf("args = %v, want %v", capturedArgs, wantArgs)
+	}
+	if len(info.Filenames) != 1 || info.Filenames[0] != "movie.mkv" {
+		t.Errorf("unexpected filenames: %v", info.Filenames)
 	}
 }
 

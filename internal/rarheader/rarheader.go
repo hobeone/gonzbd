@@ -104,19 +104,15 @@ func Inspect(p string) (Info, error) {
 	}
 
 	if ver == 5 {
-		info, err := InspectRar5(p)
-		if err == nil {
+		if info, err := InspectRar5(p); err == nil {
 			return info, nil
 		}
-		// If it's encrypted header, rarengine will fail with bad header CRC.
-		// Fallback to unrar vt to be absolutely sure.
+		// If InspectRar5 fails (e.g. encrypted header or corrupt block),
+		// fall back to unrar vt.
 	}
 
-	if ver == 3 {
-		return inspectViaUnrar(p, ver)
-	}
-
-	// Fallback to unrar vt for RAR3/4 or if rarengine failed
+	// inspectViaUnrar handles RAR3 (unsupported by pure-Go rarengine) and
+	// RAR5 archives where InspectRar5 failed.
 	return inspectViaUnrar(p, ver)
 }
 
@@ -269,15 +265,38 @@ func isPasswordError(err error, stdout, stderr string) bool {
 }
 
 // parseUnrarVtOutput parses the stdout of 'unrar vt' to extract filenames
-// and encryption status.
+// and encryption status, filtering out directory entries.
 func parseUnrarVtOutput(output string) (filenames []string, encrypted bool) {
 	lines := strings.Split(output, "\n")
 	var currentName string
+	var isDir bool
+
+	flush := func() {
+		if currentName != "" && !isDir {
+			filenames = append(filenames, sanitizeName(currentName))
+		}
+		currentName = ""
+		isDir = false
+	}
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if after, ok := strings.CutPrefix(line, "Name:"); ok {
+			flush()
 			currentName = strings.TrimSpace(after)
-			filenames = append(filenames, sanitizeName(currentName))
+			if strings.HasSuffix(currentName, "/") || strings.HasSuffix(currentName, "\\") {
+				isDir = true
+			}
+		} else if after, ok := strings.CutPrefix(line, "Type:"); ok {
+			val := strings.TrimSpace(after)
+			if strings.EqualFold(val, "Directory") || strings.EqualFold(val, "Dir") {
+				isDir = true
+			}
+		} else if after, ok := strings.CutPrefix(line, "Attributes:"); ok {
+			attrs := strings.TrimSpace(after)
+			if strings.HasPrefix(attrs, "d") || strings.Contains(attrs, "D") {
+				isDir = true
+			}
 		} else if after, ok := strings.CutPrefix(line, "Flags:"); ok {
 			flags := strings.TrimSpace(after)
 			if strings.Contains(flags, "encrypted") {
@@ -285,6 +304,7 @@ func parseUnrarVtOutput(output string) (filenames []string, encrypted bool) {
 			}
 		}
 	}
+	flush()
 	return filenames, encrypted
 }
 
