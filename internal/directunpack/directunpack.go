@@ -674,7 +674,12 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader
 		sp, sanitizeErr := unpack.NewSanitizedPath(entry.Header.Name, d.opts.OneFolder)
 		if sanitizeErr != nil {
 			d.log.Warn("directunpack: skipping entry with bad path", "raw_name", entry.Header.Name, "err", sanitizeErr)
-			_ = entry.Close()
+			if err := unpack.CloseSkippedEntry(entry); err != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				return nil, fmt.Errorf("directunpack: verify %s: %w", entry.Header.Name, err)
+			}
 			continue
 		}
 

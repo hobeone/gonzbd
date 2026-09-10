@@ -1034,3 +1034,62 @@ func TestGoUnRAR_EncryptedHeader_OptsPasswords(t *testing.T) {
 		t.Fatal("GoUnRAR() extracted no files")
 	}
 }
+
+// closeSpy records how often Close was called and returns a fixed verdict.
+type closeSpy struct {
+	err   error
+	calls int
+}
+
+func (c *closeSpy) Close() error {
+	c.calls++
+	return c.err
+}
+
+// TestCloseSkippedEntry pins which verdicts from closing a refused member reach
+// the caller. The stream-level cases are the ones that matter: before they were
+// propagated, a refused member that hit a missing volume left the surrounding
+// loop to read ErrNoNextVolume from NextEntry, break out of it as if the archive
+// had ended cleanly, and report a short extraction as a success.
+func TestCloseSkippedEntry(t *testing.T) {
+	errUnrecognised := errors.New("some verdict this test does not name")
+
+	tests := []struct {
+		name     string
+		closeErr error
+		wantErr  error
+	}{
+		{"clean close reports nothing", nil, nil},
+		{"unverifiable digest is not a failure", rarengine.ErrChecksumUnsupported, nil},
+		{
+			"unverifiable digest is filtered through a wrap",
+			fmt.Errorf("member %q: %w", "bad/../path", rarengine.ErrChecksumUnsupported),
+			nil,
+		},
+		{"missing volume reaches the caller", rarengine.ErrNoNextVolume, rarengine.ErrNoNextVolume},
+		{"truncated member reaches the caller", rarengine.ErrTruncatedFile, rarengine.ErrTruncatedFile},
+		{"broken solid stream reaches the caller", rarengine.ErrSolidStreamBroken, rarengine.ErrSolidStreamBroken},
+		{"crc mismatch reaches the caller", rarengine.ErrCRCMismatch, rarengine.ErrCRCMismatch},
+		{"an unrecognised verdict is not swallowed", errUnrecognised, errUnrecognised},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spy := &closeSpy{err: tt.closeErr}
+			err := CloseSkippedEntry(spy)
+
+			if spy.calls != 1 {
+				t.Errorf("Close called %d times, want exactly 1", spy.calls)
+			}
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Errorf("CloseSkippedEntry() = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("CloseSkippedEntry() = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}

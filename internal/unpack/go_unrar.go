@@ -73,6 +73,29 @@ func ClassifyRarEngineError(err error) FailReason {
 	}
 }
 
+// CloseSkippedEntry closes an archive member the caller refused to extract and
+// reports the verdict, filtering the one verdict that carries no failure.
+//
+// A refused member still has to be closed, and rarengine's Entry.Close is not a
+// drain: on an entry nothing has read it runs io.Copy(io.Discard, e), so the
+// member is decompressed and its verdict produced here rather than at any
+// earlier call. That makes the refusal path the first place a truncated volume
+// or a broken solid stream becomes visible. Discarding the verdict lets the
+// surrounding loop reach NextEntry, see ErrNoNextVolume, treat it as a clean
+// end of archive, and return a short extraction as a success.
+//
+// ErrChecksumUnsupported is filtered because it reports that a digest could not
+// be checked, not that anything failed — rarengine returns it for a key-derived
+// MAC, a BLAKE2sp-only archive, or a header carrying no digest record, and the
+// bytes were delivered regardless. Every other verdict is returned to the
+// caller, which decides what it means for the archive.
+func CloseSkippedEntry(entry io.Closer) error {
+	if err := entry.Close(); err != nil && !errors.Is(err, rarengine.ErrChecksumUnsupported) {
+		return err
+	}
+	return nil
+}
+
 // GoUnRAREngine extracts a RAR archive using the pure-Go rarengine library.
 func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
 	err = cmdutil.SafeEngineRun("go_unrar: rarengine panic", func() error {
@@ -162,7 +185,16 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			if opts.OnLine != nil {
 				opts.OnLine("Skipping bad path: " + entry.Header.Name)
 			}
-			_ = entry.Close()
+			if err := CloseSkippedEntry(entry); err != nil {
+				if ctx.Err() != nil {
+					return res, ctx.Err()
+				}
+				res.Reason = ClassifyRarEngineError(err)
+				if opts.OnLine != nil {
+					opts.OnLine(fmt.Sprintf("ERROR: %s: %v", entry.Header.Name, err))
+				}
+				return res, err
+			}
 			continue
 		}
 
