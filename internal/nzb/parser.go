@@ -2,6 +2,7 @@ package nzb
 
 import (
 	"bufio"
+	"bytes"
 	"compress/bzip2"
 	"compress/gzip"
 	"crypto/md5" //nolint:gosec // MD5 is used for duplicate-job detection, not security
@@ -146,6 +147,83 @@ func unwrapEnvelope(br *bufio.Reader, magic []byte, maxSize ...int64) (io.Reader
 		return io.LimitReader(bzip2.NewReader(br), limit), nil, nil
 	}
 	return br, nil, nil
+}
+
+// maxEnvelopeDepth bounds how many nested gzip/bzip2 envelopes
+// StripEnvelope will peel before treating the input as malformed. A
+// well-formed NZB never nests more than one; the extra headroom exists only
+// to tolerate a source that is accidentally double-compressed (a real case:
+// see TestStripEnvelope_DoubleLayer), not to accommodate more of it — beyond
+// this bound the input is rejected rather than peeled indefinitely, which
+// would otherwise let a maliciously nested stream force unbounded work.
+const maxEnvelopeDepth = 4
+
+// isEnvelopeMagic reports whether the first two bytes indicate a gzip or
+// bzip2 envelope, using the same two magic sequences unwrapEnvelope checks.
+func isEnvelopeMagic(magic []byte) bool {
+	return len(magic) >= 2 &&
+		((magic[0] == 0x1f && magic[1] == 0x8b) || (magic[0] == 'B' && magic[1] == 'Z'))
+}
+
+// StripEnvelope returns data with every leading gzip/bzip2 envelope peeled,
+// using unwrapEnvelope's own magic-byte detection in a loop bounded by
+// maxEnvelopeDepth, rather than the single peel Parse performs internally.
+//
+// This exists because a caller that archives "the raw NZB" as canonical
+// bytes needs to know it agrees with what Parse actually consumed.
+// dirscanner.ExtractNZBs decides how many layers to peel from the file's
+// EXTENSION (exactly one, for ".nzb.gz"); Parse separately decides from the
+// CONTENT (also exactly one peel, via its own direct call to
+// unwrapEnvelope — Parse does not call StripEnvelope). When a source is
+// compressed twice under one ".gz" suffix, those two single-shot answers
+// silently disagree: dirscanner leaves one envelope in place, Parse peels
+// that residual layer for its own parse and discards the plain bytes it
+// derived, and whatever dirscanner returned — one envelope short of plain —
+// is what a caller backing up "the raw NZB" would persist, to then be
+// gzip-compressed AGAIN on top. writeNZBBackup is StripEnvelope's only
+// caller today (`git grep -n 'StripEnvelope('` outside this file and its
+// test): it runs rawNZB through this before compressing, so the backup
+// content agrees with what Parse actually derived, without requiring Parse
+// itself to change.
+func StripEnvelope(data []byte, limits ParserLimits) ([]byte, error) {
+	limits = limits.normalized()
+	for depth := range maxEnvelopeDepth {
+		if len(data) < 2 || !isEnvelopeMagic(data[:2]) {
+			return data, nil
+		}
+		// unwrapEnvelope already caps its returned reader at the limit it's
+		// given, so asking for exactly limits.MaxNZBSize here would make an
+		// oversized payload read as precisely limits.MaxNZBSize bytes with a
+		// clean EOF — indistinguishable from a payload that legitimately
+		// decompresses to exactly the limit. Asking for one more lets the
+		// length check below actually observe the overflow.
+		br := bufio.NewReader(bytes.NewReader(data))
+		src, closer, err := unwrapEnvelope(br, data[:2], limits.MaxNZBSize+1)
+		if err != nil {
+			return nil, err
+		}
+		out, err := io.ReadAll(io.LimitReader(src, limits.MaxNZBSize+1))
+		if closer != nil {
+			_ = closer() //nolint:errcheck // best-effort close of decompressor
+		}
+		if err != nil {
+			return nil, fmt.Errorf("nzb: decompress envelope at depth %d: %w", depth, err)
+		}
+		if int64(len(out)) > limits.MaxNZBSize {
+			return nil, fmt.Errorf("nzb: decompressed size exceeds maximum (%d > %d)", len(out), limits.MaxNZBSize)
+		}
+		data = out
+	}
+	// The loop peels up to maxEnvelopeDepth envelopes and stops — it does
+	// not itself notice reaching plain content on the final iteration, so
+	// input nested in exactly maxEnvelopeDepth envelopes exits the loop
+	// already fully peeled. Check here rather than exceeding-depth-always:
+	// only input that is STILL compressed after the full budget is spent
+	// is actually malformed/hostile.
+	if len(data) >= 2 && isEnvelopeMagic(data[:2]) {
+		return nil, fmt.Errorf("nzb: exceeded maximum compression envelope depth (%d)", maxEnvelopeDepth)
+	}
+	return data, nil
 }
 
 // xmlHead / xmlFile / xmlSegment are wire-format shims. They exist only

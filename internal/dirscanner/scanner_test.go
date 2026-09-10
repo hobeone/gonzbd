@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -47,11 +46,7 @@ func (m *MockHandler) HandleNZB(ctx context.Context, filename string, data []byt
 
 func TestStabilityDetection(t *testing.T) {
 	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-	store, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
 	handler := &MockHandler{failFor: make(map[string]error)}
 	scanner := New(tmpDir, store, handler, nil, nil)
@@ -107,11 +102,7 @@ func TestStabilityDetection(t *testing.T) {
 
 func TestStabilityResetOnChange(t *testing.T) {
 	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-	store, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
 	handler := &MockHandler{failFor: make(map[string]error)}
 	scanner := New(tmpDir, store, handler, nil, nil)
@@ -160,50 +151,9 @@ func TestStabilityResetOnChange(t *testing.T) {
 	}
 }
 
-func TestStatePersistence(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-
-	// Create and populate first store.
-	store1, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
-
-	testPath := "/some/test/file.nzb"
-	testTime := time.Now().Truncate(time.Millisecond) // JSON doesn't preserve nanoseconds.
-	testState := FileState{Size: 12345, MTime: testTime}
-	store1.Set(testPath, testState)
-
-	if err := store1.Save(); err != nil {
-		t.Fatalf("Save failed: %v", err)
-	}
-
-	// Reopen the store and verify state survived.
-	store2, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
-
-	state, ok := store2.Get(testPath)
-	if !ok {
-		t.Fatal("state not found after reopening")
-	}
-	if state.Size != testState.Size {
-		t.Errorf("size mismatch: expected %d, got %d", testState.Size, state.Size)
-	}
-	if !state.MTime.Equal(testTime) {
-		t.Errorf("mtime mismatch: expected %v, got %v", testTime, state.MTime)
-	}
-}
-
 func TestHandlerError(t *testing.T) {
 	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-	store, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
 	handler := &MockHandler{failFor: make(map[string]error)}
 	handler.failFor["test.nzb"] = fmt.Errorf("simulated handler failure")
@@ -229,16 +179,16 @@ func TestHandlerError(t *testing.T) {
 		t.Errorf("scan with handler error should not count as processed, got %d", count)
 	}
 
-	// On handler failure the scanner renames the file to .failed and removes
+	// On handler failure the scanner moves the file into failed/ and removes
 	// its state entry (not retried automatically).
-	failedPath := nzbPath + ".failed"
+	failedPath := filepath.Join(tmpDir, failedDirName, "test.nzb")
 	if _, err := os.Stat(failedPath); os.IsNotExist(err) {
-		t.Errorf("file should be renamed to .failed on handler error")
+		t.Errorf("file should be moved to failed/ on handler error")
 	}
 
-	// Original file should be gone (renamed).
+	// Original file should be gone (moved).
 	if _, err := os.Stat(nzbPath); !os.IsNotExist(err) {
-		t.Errorf("original file should not exist after handler error (it gets renamed)")
+		t.Errorf("original file should not exist after handler error (it gets moved to failed/)")
 	}
 
 	// State entry should be removed.
@@ -387,11 +337,7 @@ func TestDecompressZip_NoNZBFiles(t *testing.T) {
 
 func TestDotfilesSkipped(t *testing.T) {
 	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-	store, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
 	handler := &MockHandler{failFor: make(map[string]error)}
 	scanner := New(tmpDir, store, handler, nil, nil)
@@ -419,14 +365,17 @@ func TestDotfilesSkipped(t *testing.T) {
 
 func TestInvalidExtensionsSkipped(t *testing.T) {
 	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-	store, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
+	// A real logger, not nil, so the skip is observable — this is the
+	// regression the test pins: an unrecognized extension (e.g. a stray
+	// ".nzb.gz.gz") used to be silently dropped every scan cycle with no
+	// log line at any level, which is what made the underlying naming bug
+	// invisible even at log_level: debug.
+	lh := &testLogHandler{}
+	logger := slog.New(lh)
 	handler := &MockHandler{failFor: make(map[string]error)}
-	scanner := New(tmpDir, store, handler, nil, nil)
+	scanner := New(tmpDir, store, handler, nil, logger)
 
 	// Create a file with invalid extension.
 	invalidPath := filepath.Join(tmpDir, "test.txt")
@@ -446,15 +395,72 @@ func TestInvalidExtensionsSkipped(t *testing.T) {
 	if _, ok := store.Get(invalidPath); ok {
 		t.Errorf("invalid file should not be stored in state")
 	}
+
+	if !lh.hasMessage("skipping file with unrecognized extension") {
+		t.Errorf("expected a log line reporting the skipped file, got none")
+	}
+}
+
+// countMessages returns how many recorded log lines contain msg.
+func (h *testLogHandler) countMessages(msg string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, r := range h.records {
+		if strings.Contains(r.Message, msg) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestInvalidExtensionsSkipped_LogsOncePerUnchangedFile pins the fix for the
+// bug this exact log line caused: without dedup, a file the scanner will
+// never handle (wrong extension, e.g. left over from a corrupted watch-
+// folder drop) got re-logged every scan cycle forever, at whatever interval
+// dirscan_speed is set to. It must log once for a given size+mtime, stay
+// silent on unchanged rescans, and log again only if the file actually
+// changes.
+func TestInvalidExtensionsSkipped_LogsOncePerUnchangedFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewStore()
+	lh := &testLogHandler{}
+	logger := slog.New(lh)
+	scanner := New(tmpDir, store, &MockHandler{failFor: make(map[string]error)}, nil, logger)
+
+	invalidPath := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(invalidPath, []byte("content"), 0o644); err != nil {
+		t.Fatalf("failed to write invalid file: %v", err)
+	}
+
+	for range 3 {
+		if _, err := scanner.ScanOnce(t.Context()); err != nil {
+			t.Fatalf("ScanOnce: %v", err)
+		}
+	}
+	if got := lh.countMessages("skipping file with unrecognized extension"); got != 1 {
+		t.Errorf("logged %d times across 3 unchanged scans, want exactly 1", got)
+	}
+
+	// Touching the file (new mtime/size) should surface it again — the
+	// dedup tracks "have I warned about THIS content", not "have I ever
+	// warned about this path".
+	if err := os.WriteFile(invalidPath, []byte("different content, still wrong extension"), 0o644); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	if err := os.Chtimes(invalidPath, time.Now().Add(time.Hour), time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if _, err := scanner.ScanOnce(t.Context()); err != nil {
+		t.Fatalf("ScanOnce: %v", err)
+	}
+	if got := lh.countMessages("skipping file with unrecognized extension"); got != 2 {
+		t.Errorf("logged %d times after the file changed, want 2 (one before, one after)", got)
+	}
 }
 
 func TestStoreDelete(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-	store, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
 	testPath := "/some/path"
 	testState := FileState{Size: 100, MTime: time.Now()}
@@ -471,52 +477,13 @@ func TestStoreDelete(t *testing.T) {
 	}
 }
 
-func TestStoreSaveAndLoad(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-
-	store, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
-
-	// Add multiple entries.
-	for i := range 3 {
-		path := fmt.Sprintf("/path%d", i)
-		store.Set(path, FileState{Size: int64(i * 100), MTime: time.Now()})
-	}
-
-	if err := store.Save(); err != nil {
-		t.Fatalf("Save failed: %v", err)
-	}
-
-	// Verify JSON file was created.
-	data, err := os.ReadFile(stateFile)
-	if err != nil {
-		t.Fatalf("failed to read state file: %v", err)
-	}
-
-	var loaded map[string]FileState
-	if err := json.Unmarshal(data, &loaded); err != nil {
-		t.Fatalf("failed to parse state JSON: %v", err)
-	}
-
-	if len(loaded) != 3 {
-		t.Errorf("expected 3 entries, got %d", len(loaded))
-	}
-}
-
 func TestScanDirectoryNotFound(t *testing.T) {
-	stateFile := t.TempDir()
-	store, err := OpenStore(filepath.Join(stateFile, "state.json"))
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
 	handler := &MockHandler{failFor: make(map[string]error)}
 	scanner := New("/nonexistent/dir", store, handler, nil, nil)
 
-	_, err = scanner.ScanOnce(t.Context())
+	_, err := scanner.ScanOnce(t.Context())
 	if err == nil {
 		t.Errorf("expected error for nonexistent directory")
 	}
@@ -559,11 +526,7 @@ func TestDecompressSizeLimitGZ(t *testing.T) {
 
 func TestCategorySubdirectory(t *testing.T) {
 	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-	store, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
 	handler := &MockHandler{failFor: make(map[string]error)}
 	catFn := func() []string { return []string{"tv", "movies"} }
@@ -652,11 +615,7 @@ func TestCategorySubdirectory(t *testing.T) {
 
 func TestCategorySubdirStability(t *testing.T) {
 	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-	store, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
 	handler := &MockHandler{failFor: make(map[string]error)}
 	catFn := func() []string { return []string{"tv"} }
@@ -707,11 +666,7 @@ func TestCategorySubdirStability(t *testing.T) {
 
 func TestDynamicCategoryUpdate(t *testing.T) {
 	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-	store, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
 	handler := &MockHandler{failFor: make(map[string]error)}
 
@@ -767,11 +722,7 @@ func TestDynamicCategoryUpdate(t *testing.T) {
 
 func TestRarFilesIgnored(t *testing.T) {
 	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-	store, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
 	handler := &MockHandler{failFor: make(map[string]error)}
 	scanner := New(tmpDir, store, handler, nil, nil)
@@ -800,16 +751,14 @@ func TestRarFilesIgnored(t *testing.T) {
 	}
 }
 
-func TestCorruptedFileRenamedToFailed(t *testing.T) {
+func TestCorruptedFileMovedToFailedDir(t *testing.T) {
 	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-	store, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
+	lh := &testLogHandler{}
+	logger := slog.New(lh)
 	handler := &MockHandler{failFor: make(map[string]error)}
-	scanner := New(tmpDir, store, handler, nil, nil)
+	scanner := New(tmpDir, store, handler, nil, logger)
 
 	// Create a .zip file with corrupted contents.
 	corruptedFile := filepath.Join(tmpDir, "bad.zip")
@@ -824,7 +773,7 @@ func TestCorruptedFileRenamedToFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Scan 2: file is stable, extraction fails, should be renamed to .failed.
+	// Scan 2: file is stable, extraction fails, should move into failed/.
 	_, count, err := scanner.scanDir(ctx, tmpDir, "")
 	if err != nil {
 		t.Fatal(err)
@@ -833,21 +782,71 @@ func TestCorruptedFileRenamedToFailed(t *testing.T) {
 		t.Errorf("expected 0 processed for corrupted file, got %d", count)
 	}
 
-	// Verify original file is gone and .failed file exists.
+	// Verify original file is gone and it landed in failed/ under its
+	// original basename (no more path+".failed" in the same directory).
 	if _, err := os.Stat(corruptedFile); !os.IsNotExist(err) {
-		t.Error("corrupted file should have been renamed away")
+		t.Error("corrupted file should have been moved away")
 	}
-	if _, err := os.Stat(corruptedFile + ".failed"); err != nil {
-		t.Errorf("expected .failed file to exist: %v", err)
+	failedPath := filepath.Join(tmpDir, failedDirName, "bad.zip")
+	if _, err := os.Stat(failedPath); err != nil {
+		t.Errorf("expected failed/bad.zip to exist: %v", err)
 	}
 
-	// Scan 3: .failed file should NOT be picked up again.
-	_, count, err = scanner.scanDir(ctx, tmpDir, "")
-	if err != nil {
+	// Scan 3+4: the failed/ directory itself is never entered again — not
+	// re-picked-up as a file (it's a directory, always skipped) and not
+	// spamming the unrecognized-extension log either, because scanDir never
+	// lists its contents at all.
+	for i := range 2 {
+		_, count, err = scanner.scanDir(ctx, tmpDir, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Errorf("scan %d: expected 0 processed, got %d", i+3, count)
+		}
+	}
+	if lh.hasMessage("unrecognized extension") {
+		t.Error("failed/bad.zip should never surface as an unrecognized-extension warning — failed/ is never scanned")
+	}
+}
+
+// TestProcessScannedFile_MoveToFailedDirErrorKeepsStoreEntry pins the fix
+// for an infinite-retry loop this PR would otherwise have reintroduced: if
+// moveToFailedDir can't actually move a permanently-failed file (blocked
+// failed/ path, permission denied, ...), the file stays at its original
+// path — so deleting its store entry anyway made the next scan treat it as
+// newly arrived, re-run the doomed extraction, fail again, and repeat
+// forever. The store entry must survive when the move fails.
+func TestProcessScannedFile_MoveToFailedDirErrorKeepsStoreEntry(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Occupy the failed/ name with a plain file so moveToFailedDir's
+	// MkdirAll cannot create a directory there.
+	if err := os.WriteFile(filepath.Join(tmpDir, failedDirName), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 {
-		t.Errorf("expected 0 processed on third scan, got %d", count)
+
+	store := NewStore()
+	handler := &MockHandler{failFor: make(map[string]error)}
+	scanner := New(tmpDir, store, handler, nil, nil)
+
+	corruptedFile := filepath.Join(tmpDir, "bad.zip")
+	if err := os.WriteFile(corruptedFile, []byte("this is not a zip file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := t.Context()
+	if _, _, err := scanner.scanDir(ctx, tmpDir, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := scanner.scanDir(ctx, tmpDir, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(corruptedFile); err != nil {
+		t.Errorf("file should remain at its original path when the move fails: %v", err)
+	}
+	if _, ok := store.Get(corruptedFile); !ok {
+		t.Error("store entry should survive a failed move — deleting it would make the next scan treat this as a brand-new file and retry the doomed extraction forever")
 	}
 }
 
@@ -858,10 +857,7 @@ func TestCorruptedFileRenamedToFailed(t *testing.T) {
 // config specifies PP=7 or a non-default priority.
 func TestScanPassesInheritSentinels(t *testing.T) {
 	tmpDir := t.TempDir()
-	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+	store := NewStore()
 	handler := &MockHandler{failFor: make(map[string]error)}
 	scanner := New(tmpDir, store, handler, nil, nil)
 
@@ -897,10 +893,7 @@ func TestScanPassesInheritSentinels(t *testing.T) {
 
 func TestPruneRemovedFiles_PrunesFileInScannedDirWhenMissing(t *testing.T) {
 	tmpDir := t.TempDir()
-	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+	store := NewStore()
 	scanner := New(tmpDir, store, &MockHandler{failFor: make(map[string]error)}, nil, nil)
 
 	// Record a file as seen.
@@ -928,10 +921,7 @@ func TestPruneRemovedFiles_KeepsFileInUnscannedExistingDir(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+	store := NewStore()
 	scanner := New(tmpDir, store, &MockHandler{failFor: make(map[string]error)}, nil, nil)
 
 	filePath := filepath.Join(unscannedDir, "pending.nzb")
@@ -950,10 +940,7 @@ func TestPruneRemovedFiles_KeepsFileInUnscannedExistingDir(t *testing.T) {
 
 func TestPruneRemovedFiles_PrunesFileWhoseParentDirIsGone(t *testing.T) {
 	tmpDir := t.TempDir()
-	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+	store := NewStore()
 	scanner := New(tmpDir, store, &MockHandler{failFor: make(map[string]error)}, nil, nil)
 
 	// Record a file in a directory that no longer exists on disk.
@@ -974,10 +961,7 @@ func TestPruneRemovedFiles_PrunesFileWhoseParentDirIsGone(t *testing.T) {
 
 func TestPruneRemovedFiles_KeepsPresentFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+	store := NewStore()
 	scanner := New(tmpDir, store, &MockHandler{failFor: make(map[string]error)}, nil, nil)
 
 	filePath := filepath.Join(tmpDir, "present.nzb")
@@ -1001,13 +985,10 @@ func TestPruneRemovedFiles_KeepsPresentFile(t *testing.T) {
 
 // TestProcessScannedFile_PartialError verifies that when handleStableFile
 // returns a PartialError (some NZBs from an archive imported, some failed),
-// the source file is NOT renamed to .failed. The file is left for retry.
+// the source file is NOT moved into failed/. The file is left for retry.
 func TestProcessScannedFile_PartialError(t *testing.T) {
 	tmpDir := t.TempDir()
-	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+	store := NewStore()
 
 	// Build a ZIP archive containing 2 NZB files.
 	zipPath := filepath.Join(tmpDir, "batch.zip")
@@ -1052,12 +1033,12 @@ func TestProcessScannedFile_PartialError(t *testing.T) {
 		t.Error("processScannedFile should return false on partial error")
 	}
 
-	// CRITICAL: the source ZIP must NOT be renamed to .failed on PartialError.
+	// CRITICAL: the source ZIP must NOT be moved into failed/ on PartialError.
 	if _, err := os.Stat(zipPath); os.IsNotExist(err) {
-		t.Error("source ZIP was removed/renamed on PartialError — it should be kept for retry")
+		t.Error("source ZIP was removed/moved on PartialError — it should be kept for retry")
 	}
-	if _, err := os.Stat(zipPath + ".failed"); !os.IsNotExist(err) {
-		t.Error("source ZIP was renamed to .failed on PartialError — it should be kept for retry")
+	if _, err := os.Stat(filepath.Join(tmpDir, failedDirName, "batch.zip")); !os.IsNotExist(err) {
+		t.Error("source ZIP was moved into failed/ on PartialError — it should be kept for retry")
 	}
 }
 
@@ -1082,6 +1063,176 @@ func createZipWithNZBs(t *testing.T, path string, names []string) error {
 		}
 	}
 	return nil
+}
+
+func TestMoveToFailedDir(t *testing.T) {
+	t.Run("happy path", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		src := filepath.Join(tmpDir, "bad.zip")
+		if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s := &Scanner{logger: slog.Default()}
+
+		if err := s.moveToFailedDir(src); err != nil {
+			t.Fatalf("moveToFailedDir: %v", err)
+		}
+
+		if _, err := os.Stat(src); !os.IsNotExist(err) {
+			t.Error("source should be gone from its original location")
+		}
+		if _, err := os.Stat(filepath.Join(tmpDir, failedDirName, "bad.zip")); err != nil {
+			t.Errorf("expected failed/bad.zip to exist: %v", err)
+		}
+	})
+
+	t.Run("collision gets unique suffix", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		failedDir := filepath.Join(tmpDir, failedDirName)
+		if err := os.MkdirAll(failedDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(failedDir, "bad.zip"), []byte("existing"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		src := filepath.Join(tmpDir, "bad.zip")
+		if err := os.WriteFile(src, []byte("new"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s := &Scanner{logger: slog.Default()}
+
+		if err := s.moveToFailedDir(src); err != nil {
+			t.Fatalf("moveToFailedDir: %v", err)
+		}
+
+		got, err := os.ReadFile(filepath.Join(failedDir, "bad.zip"))
+		if err != nil || string(got) != "existing" {
+			t.Errorf("existing failed/bad.zip was overwritten: content=%q err=%v", got, err)
+		}
+		// fsutil.GetUniqueFilename inserts the suffix before the extension.
+		if _, err := os.Stat(filepath.Join(failedDir, "bad.1.zip")); err != nil {
+			t.Errorf("expected a uniquely-suffixed failed/bad.1.zip: %v", err)
+		}
+	})
+
+	t.Run("mkdir failure is returned and source is left in place", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		// Occupy the failed/ name with a plain file so MkdirAll cannot create
+		// a directory there.
+		if err := os.WriteFile(filepath.Join(tmpDir, failedDirName), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		src := filepath.Join(tmpDir, "bad.zip")
+		if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s := &Scanner{logger: slog.Default()}
+
+		if err := s.moveToFailedDir(src); err == nil {
+			t.Error("expected an error when failed/ can't be created")
+		}
+		if _, err := os.Stat(src); err != nil {
+			t.Error("source file should remain in place when failed/ can't be created")
+		}
+	})
+
+	t.Run("move failure is returned", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		missingSrc := filepath.Join(tmpDir, "gone.zip")
+		s := &Scanner{logger: slog.Default()}
+
+		if err := s.moveToFailedDir(missingSrc); err == nil {
+			t.Error("expected an error when the source file doesn't exist")
+		}
+	})
+}
+
+func TestWarnUnrecognizedOnce(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lh := &testLogHandler{}
+	s := &Scanner{logger: slog.New(lh), warnedExtensions: make(map[string]FileState)}
+
+	state := s.warnUnrecognizedOnce(path, info)
+	if state.Size == 0 {
+		t.Error("expected a nonzero size in the returned state")
+	}
+	if got := lh.countMessages("skipping file with unrecognized extension"); got != 1 {
+		t.Errorf("logged %d times on first sighting, want 1", got)
+	}
+
+	s.warnUnrecognizedOnce(path, info)
+	if got := lh.countMessages("skipping file with unrecognized extension"); got != 1 {
+		t.Errorf("logged %d times after an unchanged rescan, want still 1", got)
+	}
+
+	// A changed mtime/size (simulated directly, since info is normally
+	// whatever entry.Info() returned for the file's current on-disk state)
+	// must surface a new log line.
+	changed, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.warnUnrecognizedOnce(path, fakeFileInfo{FileInfo: changed, size: changed.Size() + 1})
+	if got := lh.countMessages("skipping file with unrecognized extension"); got != 2 {
+		t.Errorf("logged %d times after a changed size, want 2", got)
+	}
+}
+
+// fakeFileInfo overrides Size() on a real os.FileInfo, for exercising
+// warnUnrecognizedOnce's change-detection without needing to race an actual
+// file write against a fixed mtime.
+type fakeFileInfo struct {
+	os.FileInfo
+	size int64
+}
+
+func (f fakeFileInfo) Size() int64 { return f.size }
+
+func TestIsGoneFromScannedDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	existingDir := filepath.Join(tmpDir, "here")
+	if err := os.MkdirAll(existingDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name        string
+		path        string
+		scannedDirs map[string]bool
+		want        bool
+	}{
+		{
+			"directory was scanned and the file wasn't found in it",
+			filepath.Join(existingDir, "gone.nzb"),
+			map[string]bool{existingDir: true},
+			true,
+		},
+		{
+			"directory exists but wasn't scanned this cycle",
+			filepath.Join(existingDir, "gone.nzb"),
+			map[string]bool{},
+			false,
+		},
+		{
+			"directory no longer exists at all",
+			filepath.Join(tmpDir, "vanished", "gone.nzb"),
+			map[string]bool{},
+			true,
+		},
+	}
+	for _, tc := range cases {
+		if got := isGoneFromScannedDir(tc.path, tc.scannedDirs); got != tc.want {
+			t.Errorf("%s: isGoneFromScannedDir = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
 
 func TestScannerUnexportedHelpersDirect(t *testing.T) {
@@ -1205,7 +1356,7 @@ func (h *deleteFileHandler) HandleNZB(ctx context.Context, filename string, data
 func TestScanner_Run(t *testing.T) {
 	t.Run("success_processed", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
+		store := NewStore()
 		handler := &MockHandler{failFor: make(map[string]error)}
 
 		// Generous hang-guard: cancel() is triggered deterministically via the
@@ -1243,7 +1394,7 @@ func TestScanner_Run(t *testing.T) {
 	})
 
 	t.Run("scan_failed", func(t *testing.T) {
-		store, _ := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+		store := NewStore()
 		handler := &MockHandler{failFor: make(map[string]error)}
 
 		ctx, cancel := context.WithCancel(t.Context())
@@ -1271,7 +1422,7 @@ func TestScanner_Run(t *testing.T) {
 
 	t.Run("no_files_processed", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
+		store := NewStore()
 		handler := &MockHandler{failFor: make(map[string]error)}
 
 		// 50ms timeout with 5ms interval: allows 10 scan ticks on an empty dir
@@ -1297,7 +1448,7 @@ func TestScanner_Run(t *testing.T) {
 func TestScanner_LogWarnings(t *testing.T) {
 	t.Run("rename_failed", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
+		store := NewStore()
 
 		nzbPath := filepath.Join(tmpDir, "test.nzb")
 		os.WriteFile(nzbPath, []byte("<?xml version=\"1.0\" ?>"), 0o644)
@@ -1314,14 +1465,14 @@ func TestScanner_LogWarnings(t *testing.T) {
 		scanner.ScanOnce(t.Context())
 		scanner.ScanOnce(t.Context())
 
-		if !lh.hasMessage("failed to rename file") {
-			t.Error("expected failed to rename file warning message")
+		if !lh.hasMessage("failed to move file to failed/ directory") {
+			t.Error("expected failed to move file to failed/ directory warning message")
 		}
 	})
 
 	t.Run("rename_succeeds", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
+		store := NewStore()
 
 		nzbPath := filepath.Join(tmpDir, "test.nzb")
 		os.WriteFile(nzbPath, []byte("<?xml version=\"1.0\" ?>"), 0o644)
@@ -1339,14 +1490,14 @@ func TestScanner_LogWarnings(t *testing.T) {
 		scanner.ScanOnce(t.Context())
 		scanner.ScanOnce(t.Context())
 
-		if lh.hasMessage("failed to rename file") {
-			t.Error("did not expect failed to rename file warning message")
+		if lh.hasMessage("failed to move file to failed/ directory") {
+			t.Error("did not expect failed to move file to failed/ directory warning message")
 		}
 	})
 
 	t.Run("remove_failed", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
+		store := NewStore()
 
 		nzbPath := filepath.Join(tmpDir, "test.nzb")
 		os.WriteFile(nzbPath, []byte("<?xml version=\"1.0\" ?>"), 0o644)
@@ -1364,33 +1515,11 @@ func TestScanner_LogWarnings(t *testing.T) {
 			t.Error("expected failed to delete file warning message")
 		}
 	})
-
-	t.Run("save_failed", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
-
-		lh := &testLogHandler{}
-		logger := slog.New(lh)
-
-		scanner := New(tmpDir, store, &MockHandler{}, nil, logger)
-
-		store.path = "/nonexistent/path/state.json"
-		store.Set("somefile", FileState{})
-
-		scanner.ScanOnce(t.Context())
-
-		if !lh.hasMessage("failed to save state") {
-			t.Error("expected failed to save state warning message")
-		}
-	})
 }
 
 func TestScanOnce_CancellationPropagates(t *testing.T) {
 	tmpDir := t.TempDir()
-	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
 	handler := &MockHandler{failFor: make(map[string]error)}
 	scanner := New(tmpDir, store, handler, nil, nil)
@@ -1410,17 +1539,17 @@ func TestScanOnce_CancellationPropagates(t *testing.T) {
 	cancel()
 
 	// Second scan (file is stable): we run with cancelled context.
-	_, err = scanner.ScanOnce(ctx)
+	_, err := scanner.ScanOnce(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 
-	// Since it was cancelled (not a real failure), the file must NOT be renamed to .failed.
+	// Since it was cancelled (not a real failure), the file must NOT be moved into failed/.
 	if _, err := os.Stat(nzbPath); os.IsNotExist(err) {
 		t.Errorf("expected original file to remain, but it is missing")
 	}
-	if _, err := os.Stat(nzbPath + ".failed"); err == nil {
-		t.Errorf("did not expect file to be renamed to .failed")
+	if _, err := os.Stat(filepath.Join(tmpDir, failedDirName, "test.nzb")); err == nil {
+		t.Errorf("did not expect file to be moved into failed/")
 	}
 
 	// And its state entry in the store must NOT be deleted.
@@ -1431,10 +1560,7 @@ func TestScanOnce_CancellationPropagates(t *testing.T) {
 
 func TestScanOnce_SubdirCancellationPropagates(t *testing.T) {
 	tmpDir := t.TempDir()
-	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
 	handler := &MockHandler{failFor: make(map[string]error)}
 	catFn := func() []string { return []string{"tv"} }
@@ -1459,7 +1585,7 @@ func TestScanOnce_SubdirCancellationPropagates(t *testing.T) {
 	cancel()
 
 	// Second scan (stable): run with cancelled context.
-	_, err = scanner.ScanOnce(ctx)
+	_, err := scanner.ScanOnce(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
@@ -1468,11 +1594,7 @@ func TestScanOnce_SubdirCancellationPropagates(t *testing.T) {
 func TestScanCategorySubdirs_SubdirError(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-	store, err := OpenStore(stateFile)
-	if err != nil {
-		t.Fatalf("OpenStore failed: %v", err)
-	}
+	store := NewStore()
 
 	handler := &MockHandler{failFor: make(map[string]error)}
 	catFn := func() []string { return []string{"tv"} }

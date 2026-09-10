@@ -179,25 +179,21 @@ func TestExtractNZBs_UnknownType(t *testing.T) {
 	}
 }
 
-// ---------- Store (state persistence) ----------
+// ---------- Store (in-memory only; see state.go's doc comment for why it
+// isn't persisted) ----------
 
-func TestStore_OpenNew(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-
-	store, err := OpenStore(path)
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+func TestStore_NewIsEmpty(t *testing.T) {
+	store := NewStore()
 	if store == nil {
 		t.Fatal("store is nil")
+	}
+	if _, ok := store.Get("anything"); ok {
+		t.Error("a fresh store should have no entries")
 	}
 }
 
 func TestStore_GetSetDelete(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-	store, _ := OpenStore(path)
+	store := NewStore()
 
 	now := time.Now().Truncate(time.Second)
 	store.Set("file1.nzb", FileState{Size: 1234, MTime: now})
@@ -218,65 +214,10 @@ func TestStore_GetSetDelete(t *testing.T) {
 }
 
 func TestStore_DeleteNonexistent(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-	store, _ := OpenStore(path)
+	store := NewStore()
 
 	// Should not panic.
 	store.Delete("nonexistent")
-}
-
-func TestStore_SaveAndReload(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-	store, _ := OpenStore(path)
-
-	now := time.Now().Truncate(time.Second)
-	store.Set("file1.nzb", FileState{Size: 5678, MTime: now})
-
-	if err := store.Save(); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	// Reload.
-	store2, err := OpenStore(path)
-	if err != nil {
-		t.Fatalf("OpenStore reload: %v", err)
-	}
-	got, ok := store2.Get("file1.nzb")
-	if !ok {
-		t.Fatal("not found after reload")
-	}
-	if got.Size != 5678 {
-		t.Errorf("Size = %d, want 5678", got.Size)
-	}
-}
-
-func TestStore_SaveNotDirtyIsNoOp(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-	store, _ := OpenStore(path)
-
-	// No changes: save should be a no-op.
-	if err := store.Save(); err != nil {
-		t.Fatalf("Save (not dirty): %v", err)
-	}
-
-	// File should NOT exist since nothing was written.
-	if _, err := os.Stat(path); err == nil {
-		t.Error("file created even though store was not dirty")
-	}
-}
-
-func TestStore_OpenCorruptFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-	os.WriteFile(path, []byte("not json {{{"), 0644)
-
-	_, err := OpenStore(path)
-	if err == nil {
-		t.Error("expected error for corrupt JSON")
-	}
 }
 
 // ---------- Direct Decompress Helpers ----------

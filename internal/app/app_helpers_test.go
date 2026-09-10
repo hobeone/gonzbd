@@ -202,6 +202,46 @@ func TestWriteNZBBackup_WritesGzippedFileUsingBasename(t *testing.T) {
 	}
 }
 
+// TestWriteNZBBackup_AlreadyEnvelopedInputIsNormalized pins the fix for a
+// double-gzip backup bug: dirscanner.ExtractNZBs peels exactly one gzip
+// layer based on the ".nzb.gz" extension, while nzb.Parse's own envelope
+// detection separately peels one layer based on content — so a source that
+// is genuinely gzip-wrapped TWICE under one ".gz" suffix parses
+// successfully (Parse peels the residual layer dirscanner left behind)
+// while the bytes a caller hands to writeNZBBackup as "rawNZB" still carry
+// that one undetected layer, which this function's own gzip step then
+// compounds into a second (from writeNZBBackup's perspective, a third
+// overall) layer. writeNZBBackup must normalize its input through
+// nzb.StripEnvelope before compressing, so the persisted backup is exactly
+// one gzip layer around plain XML regardless of what its caller handed it.
+func TestWriteNZBBackup_AlreadyEnvelopedInputIsNormalized(t *testing.T) {
+	nzbDir := t.TempDir()
+	plain := []byte("<nzb>already enveloped</nzb>")
+
+	var onceBuf bytes.Buffer
+	gw := gzip.NewWriter(&onceBuf)
+	if _, err := gw.Write(plain); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	// alreadyEnveloped mimics what dirscanner would hand a caller for a
+	// source that was, on disk, gzip-wrapped twice: one layer already
+	// peeled off by extension-driven extraction, one layer still present.
+	alreadyEnveloped := onceBuf.Bytes()
+
+	name, err := writeNZBBackup(nzbDir, "Show.S01E01.nzb", alreadyEnveloped)
+	if err != nil {
+		t.Fatalf("writeNZBBackup: %v", err)
+	}
+
+	got := readGzFile(t, filepath.Join(nzbDir, name))
+	if !bytes.Equal(got, plain) {
+		t.Errorf("backup content after one gunzip = %q, want plain %q (an extra envelope layer survived)", got, plain)
+	}
+}
+
 // TestWriteNZBBackup_CollisionGetsUniqueSuffix pins that writing a backup
 // under a name that already exists does not overwrite it — it takes a
 // ".1"-style suffix instead, matching unique naming behaviour, so the

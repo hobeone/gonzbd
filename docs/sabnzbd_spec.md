@@ -1107,13 +1107,18 @@ Watches a configured directory for NZB files and automatically adds them to the 
 
 ### 12.3 Deduplication State
 
-Per file, tracked in `dirscan.json` (GoNZBD; SABnzbd used `watched_data2.sab`). GoNZBD's `FileState` records only:
+Per file, tracked in memory only (GoNZBD; SABnzbd persisted this to
+`watched_data2.sab`). GoNZBD's `FileState` records only:
 - `size`: File size in bytes
 - `mtime`: Modification timestamp
 
-(SABnzbd additionally tracked `inode` and `ctime`; GoNZBD's stability check needs only size + mtime.)
+(SABnzbd additionally tracked `inode` and `ctime`; GoNZBD's stability check
+needs only size + mtime.) Not persisting this across a restart costs at most
+one extra scan interval before a file that was mid-transfer at restart time
+is considered stable again — internal/dirscanner/state.go's doc comment has
+the full reasoning.
 
-A file is "stable" (ready to process) when its size, mtime, and ctime haven't changed between two consecutive scans.
+A file is "stable" (ready to process) when its size and mtime haven't changed between two consecutive scans.
 
 ### 12.4 Category/Priority Inference
 
@@ -1313,7 +1318,7 @@ These are the GoNZBD admin files (the SABnzbd originals are noted for reference)
 |------|----------|--------|------------------|
 | `history.db` + `queue/manifests/<id>.json.gz` | Download queue state, per-article durability facts, and immutable job manifests | SQLite + gzipped JSON | `queue10.sab` (pickle+gzip) |
 | _(none — in-memory only)_ | Post-processing queue | not persisted | `postproc2.sab` |
-| `dirscan.json` | Dir scanner state | JSON | `watched_data2.sab` (pickle+gzip) |
+| _(none — in-memory only)_ | Dir scanner state | not persisted | `watched_data2.sab` (pickle+gzip) |
 | `bpsmeter.json` | Bandwidth statistics | JSON | `bpsmeter.sab` (pickle+gzip) |
 | `history.db` | Completed job history | SQLite (goose migrations) | `history1.db` |
 | `gonzbd.yaml` | Configuration | YAML | `sabnzbd.ini` (INI/configobj) |
