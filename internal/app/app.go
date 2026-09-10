@@ -773,13 +773,12 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 			// the manifest is loaded before these rows ever are.
 			const qFiles = `
 INSERT INTO job_files
-  (job_id, file_index, complete, fetch_policy, filename, assembled_crc32, article_count)
-VALUES (?, ?, 0, 0, '', 0, ?)
+  (job_id, file_index, complete, fetch_policy, filename, assembled_crc32)
+VALUES (?, ?, 0, 0, '', 0)
 ON CONFLICT(job_id, file_index) DO NOTHING`
 			for i := range m.NumFiles() {
-				lo, hi := m.FileRange(i)
 				if _, err := app.historyRepo.DB().ExecContext(ctx, qFiles,
-					j.ID(), i, hi-lo,
+					j.ID(), i,
 				); err != nil {
 					return fmt.Errorf("app: insert job_file %s index %d: %w", j.ID(), i, err)
 				}

@@ -852,7 +852,24 @@ func (h *harness) FailedArticles(db *sql.DB, jobID string) map[int32]bool {
 	return out
 }
 
-// jobFile mirrors the job_files columns these tests read.
+// jobFile mirrors the job_files columns these tests read, plus the article
+// count.
+//
+// ArticleCount does NOT come from the database. It is len(h.MsgIDs[fileIdx]),
+// taken from the fixture this harness built and served, and that is a
+// deliberate strengthening rather than a convenience.
+//
+// The count is needed to turn the global article indices in durable_runs and
+// failed_articles into file-local ordinals. Reading it back from the daemon
+// would mean deriving those boundaries from the daemon's own copy of the
+// structure the test already knows — so a daemon that recorded the wrong
+// article count would be checked against its own mistake, and every
+// per-ordinal assertion below would silently line up. Taking it from the
+// fixture makes the comparison what a black-box test's comparison should be:
+// against what was submitted, not against what was stored.
+//
+// job_files carried an article_count column for exactly this reader and no
+// other. It was removed once that was noticed.
 type jobFile struct {
 	FileIdx      int32
 	Filename     string
@@ -872,7 +889,7 @@ type jobFile struct {
 func (h *harness) JobFiles(db *sql.DB, jobID string) []jobFile {
 	h.t.Helper()
 	rows, err := db.Query(
-		`SELECT file_index, COALESCE(filename,''), article_count, complete
+		`SELECT file_index, COALESCE(filename,''), complete
 		   FROM job_files WHERE job_id = ? ORDER BY file_index`, jobID)
 	if err != nil {
 		h.t.Fatalf("query job_files: %v", err)
@@ -882,10 +899,20 @@ func (h *harness) JobFiles(db *sql.DB, jobID string) []jobFile {
 	for rows.Next() {
 		var jf jobFile
 		var complete int
-		if err := rows.Scan(&jf.FileIdx, &jf.Filename, &jf.ArticleCount, &complete); err != nil {
+		if err := rows.Scan(&jf.FileIdx, &jf.Filename, &complete); err != nil {
 			h.t.Fatalf("scan job_files: %v", err)
 		}
 		jf.Complete = complete != 0
+		// From the fixture, not the row — see the type's doc comment.
+		// Indexed by file position, the same correspondence articleIDSet
+		// already relies on.
+		idx := int(jf.FileIdx)
+		if idx < 0 || idx >= len(h.MsgIDs) {
+			h.t.Fatalf("job_files row names file_index %d, but the fixture built %d "+
+				"files; the daemon invented a file the test never submitted",
+				jf.FileIdx, len(h.MsgIDs))
+		}
+		jf.ArticleCount = len(h.MsgIDs[idx])
 		out = append(out, jf)
 	}
 	if err := rows.Err(); err != nil {

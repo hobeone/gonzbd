@@ -205,15 +205,26 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- that has never existed. Deleting them removes a cache; it does not remove a
 -- capability.
 --
--- article_count is the survivor, and it is worth saying why it stayed, so the
--- next audit does not re-derive this and delete it. No production code reads
--- it. Its consumer is test/crash/harness.go, which reads this table with the
--- daemon dead to check crash consistency, and deliberately re-implements the
--- daemon's derivation rather than calling into it -- "borrowing the daemon's
--- own decoder would let one bug hide itself in both places". It needs each
--- file's article count to map global article indices onto file-local ordinals.
--- Taking that from the manifest instead would hand the harness the same
--- artifact the daemon trusts, which is the property it is built to avoid.
+-- article_count went the same way, and the reasoning is worth keeping because
+-- it was nearly kept for the wrong reason. It had no production reader either;
+-- its one consumer was test/crash/harness.go, which needs each file's article
+-- count to turn the global indices in durable_runs and failed_articles into
+-- file-local ordinals.
+--
+-- The first argument for keeping it was that the harness reads stable storage
+-- with the daemon dead and must not borrow the daemon's own decoder, so it
+-- could not be asked to read the manifest instead. That misapplies the
+-- harness's own rule, which is about not sharing DERIVATION LOGIC -- it
+-- re-implements the done/failed derivation rather than calling into it -- and
+-- says nothing about where structural input comes from.
+--
+-- The right answer was neither this column nor the manifest. The harness
+-- BUILDS the NZB it serves, so len(h.MsgIDs[fileIdx]) is the article count,
+-- known before the daemon starts. Reading the count back from here meant
+-- deriving file boundaries from the daemon's copy of a structure the test
+-- already knew, so a daemon that recorded the wrong count would have been
+-- checked against its own mistake. The harness now uses its fixture, which is
+-- a stronger test and leaves this column with no reader at all.
 CREATE TABLE job_files (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id           TEXT NOT NULL,
@@ -221,8 +232,6 @@ CREATE TABLE job_files (
     complete         INTEGER NOT NULL DEFAULT 0,
     filename         TEXT,
     assembled_crc32  INTEGER DEFAULT 0,
-    -- Read by no production code. See the note above before removing it.
-    article_count    INTEGER NOT NULL DEFAULT 0,
     fetch_policy     INTEGER NOT NULL DEFAULT 0 CHECK (fetch_policy BETWEEN 0 AND 2),
     UNIQUE(job_id, file_index)
 );

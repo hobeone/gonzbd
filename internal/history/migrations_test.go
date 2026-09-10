@@ -161,7 +161,13 @@ func TestMigrations_SchemaShape(t *testing.T) {
 	// before any job_files row is, so a copy here could only ever be the stale
 	// one.
 	t.Run("job_files does not duplicate the manifest", func(t *testing.T) {
-		for _, col := range []string{"subject", "date", "bytes", "is_par2_recovery"} {
+		// article_count is here rather than with the byte figures because it
+		// was manifest-derived too: the INSERT computed it as hi-lo of the
+		// manifest's FileRange. Its only reader was test/crash/harness.go,
+		// which now takes the count from the fixture it built and serves --
+		// a stronger comparison than reading back the daemon's own copy of a
+		// structure the test already knows.
+		for _, col := range []string{"subject", "date", "bytes", "is_par2_recovery", "article_count"} {
 			var n int
 			if err := db.QueryRow(
 				`SELECT COUNT(*) FROM pragma_table_info('job_files') WHERE name = ?`, col,
