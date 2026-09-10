@@ -305,8 +305,7 @@ never earned, leaving it as "held" instead.
 
 ### `par2_release_reason`
 
-Persisted in the `jobs` table (migration `004_par2_release_reason.sql`) and
-exposed via `Job.Par2ReleaseReason()` / `SetPar2ReleaseReason`. It is not a
+Persisted in the `dispatch_jobs` table and exposed via `Job.Par2ReleaseReason()` / `SetPar2ReleaseReason`. It is not a
 repair result and nothing branches on its text. **Only its emptiness is
 load-bearing**: `JobProgress.HasPar2Verdict()` is defined as
 `par2ReleaseReason != ""`, and that single predicate is what tells a job

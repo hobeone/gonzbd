@@ -93,13 +93,18 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// Refuse a database this build's migrations cannot describe, BEFORE
 	// running them.
 	//
-	// The 001-011 chain was collapsed into one migration, so goose sees a
-	// pre-existing database as already at version 1 and Up() applies nothing
-	// and returns nil. The daemon then came up clean with no durability tables
-	// at all: every barrier failed on its commit with a plain error rather
-	// than a *storagefault.Fault, so checkpointJob logged one Warn and did not
-	// stall, nothing was ever acked, no job completed, and the only signal was
-	// a last_barrier_unix that never advanced.
+	// The schema is one migration, and has twice been collapsed back to one
+	// after a chain grew. goose keys purely on version numbers, so a database
+	// written before any collapse reads as already at version 1: Up() applies
+	// nothing and returns nil against a schema that is missing whatever the
+	// discarded chain built.
+	//
+	// That failure is silent by construction, and it has been observed. The
+	// daemon came up clean with no durability tables at all: every barrier
+	// failed on its commit with a plain error rather than a
+	// *storagefault.Fault, so checkpointJob logged one Warn and did not stall,
+	// nothing was ever acked, no job completed, and the only signal was a
+	// last_barrier_unix that never advanced.
 	//
 	// Checked before Up rather than by looking for the tables afterwards,
 	// because this names the cause: the operator is told their database
@@ -176,12 +181,12 @@ func (d *DB) Ping(ctx context.Context) error {
 // ErrSchemaFromTheFuture reports a database recording migrations this build
 // does not ship.
 //
-// It is not a "downgrade" guard in the usual sense. The 001-011 chain was
-// collapsed into 001, and goose keys purely on version numbers — so a
-// database written by any pre-collapse build records versions 2..11 that no
-// longer exist, and Up() sees version 1 as already applied and does nothing
-// at all. The failure is silent by construction, which is why it is refused
-// rather than repaired.
+// It is not a "downgrade" guard in the usual sense. The schema is a single
+// migration that has twice absorbed a chain grown on top of it, and goose keys
+// purely on version numbers — so a database written by any pre-collapse build
+// records versions that no longer exist, while version 1 reads as already
+// applied and Up() does nothing at all. The failure is silent by construction,
+// which is why it is refused rather than repaired.
 var ErrSchemaFromTheFuture = errors.New("history: the database records migrations this build does not have")
 
 // refuseUnknownSchema fails when goose_db_version holds a version above the
@@ -204,7 +209,7 @@ func refuseUnknownSchema(ctx context.Context, db *sql.DB, migrations fs.FS) erro
 		return nil
 	}
 	return fmt.Errorf(
-		"%w: it is at version %d and this build ships up to %d. The 001-011 chain was "+
+		"%w: it is at version %d and this build ships up to %d. The migration chain was "+
 			"collapsed into 001 and there is no upgrade path from a pre-collapse database, "+
 			"so this database cannot be read: move it aside and let gonzbd create a new one",
 		ErrSchemaFromTheFuture, applied.Int64, highest)

@@ -1161,8 +1161,7 @@ on error, a legitimate retry would re-load the same rows and be refused with
 pair from them: `done` means "covered by a run", `failed` means "has a
 `failed_articles` row", and `failed` implies `done`. Storing a third copy
 beside the two records that already held the answer is exactly the second
-authority Rule 2 forbids, and it is dropped by
-`003_drop_legacy_durability.sql`.
+authority Rule 2 forbids, and the column that held it has been dropped.
 
 A non-resident job takes each file's article width from
 `job_files.article_count` — which exists so startup stays O(1) in manifest size
@@ -1301,8 +1300,8 @@ supply: a permanently failed article never decodes, so nothing is written for
 it and no run covers it, and `failed_articles` records *which* articles failed
 and never how many bytes they were.
 
-`internal/history/migrations/003_drop_legacy_durability.sql` records that
-reasoning at the schema.
+`internal/history/migrations/001_initial.sql` records that reasoning at the
+schema, in `job_files`' own comment block.
 
 ### Memory
 

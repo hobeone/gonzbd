@@ -36,8 +36,8 @@ bitmap beside the durability record, and "there is no evidence, so trust the
 column" was indistinguishable at runtime from a lost or truncated record —
 precisely the case #362 exists to catch: a partial file that was truncated or
 deleted out of band finishing as a complete file with a zero-filled hole in it,
-silently. The column is gone (`003_drop_legacy_durability.sql`), so the
-question no longer arises.
+silently. The column is gone, dropped when the two-record durability store
+was replaced, so the question no longer arises.
 
 Completed jobs, history, configuration and the queue's ordering are unaffected.
 Only in-progress downloads pay, and only once.
@@ -183,8 +183,8 @@ runs can produce it, because a failed article has no run; and `failed_articles`
 carries an index, not a size, while the NZB-declared size behind it lives in
 the manifest a non-resident job does not hold. It is cached in
 `job_files.failed_bytes` instead.
-`internal/history/migrations/003_drop_legacy_durability.sql` records that
-reasoning at the schema, superseding `001_initial.sql`'s version of it.
+`internal/history/migrations/001_initial.sql` records that reasoning at the
+schema, in `job_files`' own comment block.
 
 ### What changed against the previous contract
 
@@ -1822,9 +1822,9 @@ recorded here so the next reader does not mistake them for design.
    atomically rather than by repair, but it needs a schema change and makes the
    barrier write state the checkpointer owns — the line `durable_runs`' own doc
    draws when it says `failed_articles` has a single writer. Since the swap that
-   writer is `checkpoint.Store.SaveBatch`, which migration
-   `006_recovery_bytes_and_retire_jobs.sql` records as superseding the
-   designation `002_durable_runs.sql` made.
+   writer is the sole production implementation of `checkpoint.Store`, whose
+   `SaveBatch` holds the only `INSERT INTO failed_articles` in the tree
+   (`internal/app/dispatcher_wiring.go:107`).
 
 7. **An exact-offset collision is PREVENTED only within one open-file episode;
    across a boundary it is detected and reported after the fact.**

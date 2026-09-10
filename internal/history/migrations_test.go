@@ -251,15 +251,17 @@ func TestMigrations_SchemaShape(t *testing.T) {
 	})
 
 	t.Run("no stray migration files", func(t *testing.T) {
-		// This guarded a single 001_initial.sql until 002_durable_runs.sql
-		// added the replacement record, 003_drop_legacy_durability.sql
-		// dropped what it replaced, and 004_par2_release_reason.sql made the
-		// par2 verdict's reason durable. 005_dispatch_metadata.sql then moved
-		// that reason and the job metadata onto dispatch_jobs,
-		// 006_recovery_bytes_and_retire_jobs.sql added recovery_bytes and
-		// dropped the retired jobs table, and 007_persist_par2_recovered.sql
-		// added the last on-demand par2 field with no durable home. It still
-		// exists to catch an accidental extra file, just against a longer list.
+		// The schema is deliberately one file. A 002 appearing here is either
+		// an accident or a decision, and this test's job is to make the
+		// difference explicit: adding one means editing this list, which is
+		// where a reader gets told that history.Open's refuseUnknownSchema
+		// bound moves with it and that every pre-existing database becomes
+		// unreadable at that moment.
+		//
+		// It has guarded a single file twice now. A 002-007 chain grew here
+		// and was collapsed back in, which is what the list is defending
+		// against: each of those was individually reasonable and the set of
+		// them left the schema described in seven places at once.
 		entries, err := os.ReadDir("migrations")
 		if err != nil {
 			t.Fatal(err)
@@ -270,12 +272,7 @@ func TestMigrations_SchemaShape(t *testing.T) {
 				sqls = append(sqls, e.Name())
 			}
 		}
-		want := []string{
-			"001_initial.sql", "002_durable_runs.sql",
-			"003_drop_legacy_durability.sql", "004_par2_release_reason.sql",
-			"005_dispatch_metadata.sql", "006_recovery_bytes_and_retire_jobs.sql",
-			"007_persist_par2_recovered.sql",
-		}
+		want := []string{"001_initial.sql"}
 		if !slices.Equal(sqls, want) {
 			t.Errorf("migrations = %v, want exactly %v", sqls, want)
 		}
@@ -288,13 +285,18 @@ func TestMigrations_SchemaShape(t *testing.T) {
 // The subtests above pin the handful of properties this task's design turns
 // on. This pins everything else — every table and index's stored DDL, and
 // every foreign key — so that the constraints nothing else asserts cannot be
-// dropped silently: WITHOUT ROWID on the two new tables, article_facts's
-// covering index, job_files's UNIQUE(job_id, file_index) and its CASCADE to
-// jobs, the fetch_policy CHECK, the AUTOINCREMENT on job_files.id, and the
-// fact that history, jobs, and queue_meta came through the collapse of
-// migrations 001-011 unchanged. sqlite_sequence appears in the dump and is
-// deliberately not filtered out: SQLite creates it only for an AUTOINCREMENT
-// column, so its presence is the assertion that job_files.id still has one.
+// dropped silently: WITHOUT ROWID on durable_runs and failed_articles,
+// job_files's UNIQUE(job_id, file_index), the fetch_policy CHECK on both
+// job_files and history_job_files, and the AUTOINCREMENT on job_files.id.
+// sqlite_sequence appears in the dump and is deliberately not filtered out:
+// SQLite creates it only for an AUTOINCREMENT column, so its presence is the
+// assertion that job_files.id still has one.
+//
+// The foreign-key half currently asserts an ABSENCE: the golden records no
+// foreign keys, because the only one the schema ever had was job_files's
+// CASCADE to jobs, and jobs was retired. That is worth pinning rather than
+// dropping — every cross-table deletion here is now an explicit job-scoped
+// DELETE, and a cascade reappearing would silently change who owns removal.
 //
 // It matters more here than it usually would. The schema is one file now, so
 // there is no chain of ALTERs recording what each column was for, and a

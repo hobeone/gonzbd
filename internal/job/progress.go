@@ -114,7 +114,7 @@ type FileProgress struct {
 	// durability record cannot supply: failed_articles records WHICH articles
 	// failed and never how many bytes they were, and a permanently failed
 	// article never decodes so no run covers it either. See
-	// internal/history/migrations/003_drop_legacy_durability.sql and
+	// internal/history/migrations/001_initial.sql and
 	// docs/durability-contract.md.
 	FailedBytes int64
 	// IsPar2 marks a par2 file — the index or a recovery volume — as opposed

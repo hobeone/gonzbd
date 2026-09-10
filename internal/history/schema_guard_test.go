@@ -15,10 +15,14 @@ import (
 // TestOpen_RefusesADatabaseFromBeforeTheMigrationCollapse pins the loudest
 // possible failure for the one upgrade that cannot work.
 //
-// The 001-011 chain was collapsed into a single migration, and goose keys on
-// version numbers alone. A database written by any earlier build records
-// versions 2..11 that no longer exist, and goose sees version 1 as already
-// applied — so Up() applies nothing and returns nil.
+// The schema is a single migration that has twice absorbed a chain grown on
+// top of it, and goose keys on version numbers alone. A database written by
+// any earlier build records versions that no longer exist, while version 1
+// reads as already applied — so Up() applies nothing and returns nil.
+//
+// The fixture below uses the most recent such chain, 002-007, because that is
+// the state an actual installation is in when it meets this build. Any version
+// above the highest embedded migration exercises the same branch.
 //
 // The daemon then came up CLEAN with no durability tables at all. Every
 // barrier failed on its commit with a plain error rather than a
@@ -41,7 +45,7 @@ func TestOpen_RefusesADatabaseFromBeforeTheMigrationCollapse(t *testing.T) {
 	)`); err != nil {
 		t.Fatal(err)
 	}
-	for v := range 12 { // 0..11, as the chain that was collapsed left it
+	for v := range 8 { // 0..7, as the 002-007 chain left it
 		if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`, v); err != nil {
 			t.Fatal(err)
 		}
