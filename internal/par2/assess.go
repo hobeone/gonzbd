@@ -3,6 +3,7 @@ package par2
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 )
@@ -287,6 +288,18 @@ func ApplyRenames(dir string, a Assessment, log *slog.Logger) []Rename {
 		descOf[f.OnDisk] = f.Desc
 	}
 
+	// One root for the whole batch, opened above the loop rather than per move.
+	// Every relocation is confined to it, which is what stops a
+	// poster-controlled par2 name from naming a destination outside the job
+	// directory.
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		log.Warn("assess: cannot open job directory; no renames applied",
+			"dir", dir, "err", err)
+		return nil
+	}
+	defer root.Close() //nolint:errcheck // nothing is buffered through the root handle
+
 	applied := make([]Rename, 0, len(a.Renames))
 	for _, r := range a.Renames {
 		fd, ok := descOf[r.From]
@@ -299,7 +312,7 @@ func ApplyRenames(dir string, a Assessment, log *slog.Logger) []Rename {
 				"from", r.From, "to", r.To)
 			continue
 		}
-		if relocateFile(dir, r.From, fd, log) {
+		if relocateFile(root, r.From, fd, log) {
 			applied = append(applied, r)
 		}
 	}

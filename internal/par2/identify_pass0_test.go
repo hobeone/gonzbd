@@ -108,10 +108,11 @@ func TestComputeHash16k_EmptyFile(t *testing.T) {
 // TestRelocateFile_AcceptsALeadingDoubleDotName pins that the traversal guard
 // rejects escapes rather than names.
 //
-// The guard it replaced was filepath.Rel plus strings.HasPrefix(rel, ".."),
-// which rejects any name merely BEGINNING with two dots — Rel(dir,
-// dir/"..config.txt") is "..config.txt". fsutil.PathWithin tests ".." as a
-// whole path element, which is the actual escape.
+// The guard two revisions back was filepath.Rel plus
+// strings.HasPrefix(rel, ".."), which rejects any name merely BEGINNING with
+// two dots — Rel(dir, dir/"..config.txt") is "..config.txt". os.Root, which
+// replaced the lexical fsutil.PathWithin check that replaced that, refuses ".."
+// as a path COMPONENT, which is the actual escape.
 func TestRelocateFile_AcceptsALeadingDoubleDotName(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -120,7 +121,7 @@ func TestRelocateFile_AcceptsALeadingDoubleDotName(t *testing.T) {
 	writeFile(t, dir, "flat.bin", body)
 
 	fd := FileDesc{FileName: "..config.txt", FileSize: uint64(len(body))}
-	if !relocateFile(dir, "flat.bin", fd, nil) {
+	if !relocateIn(t, dir, "flat.bin", fd, nil) {
 		t.Fatal("relocateFile refused a legitimate filename beginning with two dots")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "..config.txt")); err != nil {
@@ -139,7 +140,7 @@ func TestRelocateFile_RefusesWhatItCannotVerify(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		fd := FileDesc{FileName: "target.bin", FileSize: 100}
-		if relocateFile(dir, "absent.bin", fd, nil) {
+		if relocateIn(t, dir, "absent.bin", fd, nil) {
 			t.Error("relocateFile reported success for a source file that does not exist")
 		}
 	})
@@ -153,7 +154,7 @@ func TestRelocateFile_RefusesWhatItCannotVerify(t *testing.T) {
 		// The same content, a different declared length: the shape a
 		// truncated download leaves behind.
 		fd := FileDesc{FileName: "target.bin", FileSize: uint64(len(body)) + 1}
-		if relocateFile(dir, "flat.bin", fd, nil) {
+		if relocateIn(t, dir, "flat.bin", fd, nil) {
 			t.Error("relocateFile moved a file whose length disagrees with par2; par2 repair is what fixes that, " +
 				"and renaming it first hides which file is short")
 		}
@@ -161,6 +162,83 @@ func TestRelocateFile_RefusesWhatItCannotVerify(t *testing.T) {
 			t.Error("the file was moved despite the length mismatch")
 		}
 	})
+}
+
+// TestRelocateFile_RefusesASymlinkedComponentLeavingTheRoot is the case the
+// lexical check could not see, and the reason os.Root replaced it.
+//
+// Every component of "link/evil.txt" is an ordinary name, so a check that
+// inspects the STRING accepts it. What matters is where it resolves: "link"
+// points outside the job directory, so the write lands there. os.Root refuses
+// it because Root methods reject a name whose components reference a location
+// outside the root, which is a property of the resolved path rather than of
+// the text.
+func TestRelocateFile_RefusesASymlinkedComponentLeavingTheRoot(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	outside := t.TempDir()
+
+	if err := os.Symlink(outside, filepath.Join(dir, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	body := payload(5, 4*1024)
+	writeFile(t, dir, "flat.bin", body)
+
+	fd := FileDesc{FileName: "link/evil.txt", FileSize: uint64(len(body))}
+	if relocateIn(t, dir, "flat.bin", fd, nil) {
+		t.Error("relocateFile moved a file through a symlinked component pointing out of the job directory")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "evil.txt")); err == nil {
+		t.Fatal("a file was written outside the download directory through a symlinked component")
+	}
+}
+
+// TestIdentify_DoesNotAccountAnEntryFromASymlink pins pass 0's Lstat and its
+// regular-file requirement.
+//
+// Stat follows a symlink at the final component, so an entry would be reported
+// accounted from a link pointing at some other file rather than from the
+// delivered file itself. Accounted() is what the download path consults before
+// deciding whether to fetch recovery volumes, so a wrong answer there is a
+// missing file reported present.
+//
+// The assembler writes only regular files, but the external unpackers can
+// extract a symlink into the job directory, so this is reachable rather than
+// theoretical.
+func TestIdentify_DoesNotAccountAnEntryFromASymlink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	body := payload(6, 40*1024)
+	sets := par2SetFor(t, dir, map[string][]byte{"Screens/shot.jpg": body})
+
+	// The link target is RELATIVE and INSIDE the job directory. An absolute
+	// target outside it would be refused by os.Root even under Stat, so the
+	// test would pass without Lstat doing any of the work — it would be
+	// exercising the containment guard rather than the follow-the-link
+	// question this test is about.
+	//
+	// The decoy matches the recorded LENGTH but not the content, so pass 0's
+	// size check passes on the followed link while the content passes cannot
+	// claim the decoy on its own merits. Identical content would let pass 2
+	// match it by Hash16k and the entry would be accounted for a reason that
+	// has nothing to do with pass 0.
+	writeFile(t, dir, "decoy.jpg", payload(7, len(body)))
+	if err := os.MkdirAll(filepath.Join(dir, "Screens"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "decoy.jpg"), filepath.Join(dir, "Screens", "shot.jpg")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	id := identifyIn(t, dir, sets)
+
+	if id.Accounted() {
+		t.Error("an entry was reported accounted from a symlink rather than a delivered file")
+	}
+	if len(id.Files) != 0 {
+		t.Errorf("identified %+v, want none", id.Files)
+	}
 }
 
 // TestRelocateFile_RejectsTraversal is the counterpart: the guard must still
@@ -176,7 +254,7 @@ func TestRelocateFile_RejectsTraversal(t *testing.T) {
 	writeFile(t, dir, "flat.bin", body)
 
 	fd := FileDesc{FileName: "../escaped.txt", FileSize: uint64(len(body))}
-	if relocateFile(dir, "flat.bin", fd, nil) {
+	if relocateIn(t, dir, "flat.bin", fd, nil) {
 		t.Fatal("relocateFile accepted a par2 name escaping the download directory")
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "escaped.txt")); err == nil {

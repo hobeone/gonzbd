@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-
-	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // MatchMethod records how a delivered file was matched to a par2 entry.
@@ -208,21 +206,50 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 	// Restricted to entries carrying a directory component because a flat
 	// entry's par2 path IS its basename, which pass 1 matches exactly; running
 	// this for those would only relabel the same match.
+	// The root is opened lazily and at most once. An ordinary job's par2 set is
+	// entirely flat, so every entry continues at the check above without ever
+	// reaching this — opening eagerly would cost a handle on every assessment
+	// to serve the minority of sets carrying a subdirectory.
+	var pass0Root *os.Root
+	pass0RootUnavailable := false
+	defer func() {
+		if pass0Root != nil {
+			_ = pass0Root.Close()
+		}
+	}()
+
 	for ei, fd := range manifest {
 		slashed := filepath.ToSlash(fd.FileName)
 		if !strings.Contains(slashed, "/") {
 			continue
 		}
-		// fd.FileName is poster-controlled, so containment is checked before
-		// it reaches a stat, on the same rule relocateFile applies before it
-		// reaches a rename.
-		target := filepath.Join(dir, filepath.FromSlash(slashed))
-		if !fsutil.PathWithin(dir, target) {
-			log.Warn("identify: rejected path traversal in par2 filename", "par2path", fd.FileName)
-			continue
+		if pass0Root == nil {
+			if pass0RootUnavailable {
+				continue
+			}
+			r, oErr := os.OpenRoot(dir)
+			if oErr != nil {
+				// This pass is an optimisation against re-fetching recovery
+				// volumes, not a correctness requirement, so it is skipped
+				// rather than failing the whole assessment.
+				log.Warn("identify: cannot open job directory; skipping subdirectory pass",
+					"dir", dir, "err", oErr)
+				pass0RootUnavailable = true
+				continue
+			}
+			pass0Root = r
 		}
-		info, sErr := os.Stat(target)
-		if sErr != nil || info.IsDir() {
+		// fd.FileName is poster-controlled, so containment is enforced before
+		// it reaches a stat, on the same rule relocateFile applies before it
+		// reaches a rename — and by the same mechanism, os.Root, which refuses
+		// a name whose components reference a location outside the root rather
+		// than merely inspecting the string.
+		//
+		// Lstat and a regular-file requirement, not Stat: Stat follows a
+		// symlink at the final component, which would let an entry be reported
+		// accounted from something that is not the delivered file.
+		info, sErr := pass0Root.Lstat(filepath.FromSlash(slashed))
+		if sErr != nil || !info.Mode().IsRegular() {
 			continue
 		}
 		// Same length rule as pass 2: being at the right path is not evidence
