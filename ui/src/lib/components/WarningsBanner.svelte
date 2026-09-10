@@ -12,13 +12,18 @@
 	// dropped exactly those jobs from this count — the ones with the most
 	// wrong with them.
 	//
-	// "(Forced)" is excluded because this banner's sentence is about jobs
-	// added in a PAUSED state, and a forced duplicate is deliberately not
-	// paused. Exact equality excluded it for free; a substring test has to
-	// say so.
+	// status === 'Paused' is required, not just inferred from "(Forced)"
+	// being absent: the backend never clears a job's Warning string once
+	// set (it's an append-only audit trail — see AddJob's detectDuplicateNZB
+	// caller), so a duplicate job the user has since resumed still carries
+	// "Duplicate NZB" forever. Without this check the banner named a
+	// resumed job as "added in paused state" and gave the user no way to
+	// make it go away — resuming (the only control offered) didn't change
+	// the count, because the count wasn't looking at pause state at all.
 	let duplicateCount = $derived(
 		getQueueSlots().filter(
-			(s) => s.warning?.includes('Duplicate NZB') && !s.warning.includes('(Forced)')
+			(s) =>
+				s.status === 'Paused' && s.warning?.includes('Duplicate NZB') && !s.warning.includes('(Forced)')
 		).length
 	);
 
