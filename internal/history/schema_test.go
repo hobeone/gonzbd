@@ -72,9 +72,9 @@ func TestAllColumns_CountMatchesScanEntry(t *testing.T) {
 		t.Errorf("Name = %q, want %q", got.Name, "test-name")
 	}
 
-	// The allColumns constant has 31 columns. Verify this as a safety net.
-	if colCount != 31 {
-		t.Errorf("allColumns has %d columns, expected 31 — did you add/remove a column without updating scanEntry?", colCount)
+	// The allColumns constant has 28 columns. Verify this as a safety net.
+	if colCount != 28 {
+		t.Errorf("allColumns has %d columns, expected 28 — did you add/remove a column without updating scanEntry?", colCount)
 	}
 }
 

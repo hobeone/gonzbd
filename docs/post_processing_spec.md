@@ -596,7 +596,6 @@ CREATE TABLE history (
     category        TEXT,
     pp              TEXT,              -- 'R'|'U'|'D'|'X'|''
     script          TEXT,
-    report          TEXT,
     url             TEXT,
     status          TEXT,              -- 'Completed' | 'Failed'
     nzo_id          TEXT UNIQUE,
@@ -613,28 +612,41 @@ CREATE TABLE history (
     url_info        TEXT,
     bytes           INTEGER,
     meta            TEXT,
-    series          TEXT,
     md5sum          TEXT,
     password        TEXT,
-    duplicate_key   TEXT,              -- TV/movie identifier for smart dupes
     archive         INTEGER DEFAULT 0,
-    time_added      INTEGER
+    time_added      INTEGER,
+    nzb_backup      TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX idx_history_nzo_id ON history(nzo_id);
 CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 ```
 
-> Note: This column set is **identical** (column-for-column, in order) to the
-> upstream SABnzbd v5 schema in `sabnzbd/database.py`, so an existing
-> `history.db` can be opened by either daemon. GoNZBD relaxes a few constraints
-> (no `NOT NULL` on `completed`/`name`/`nzb_name`, `nzo_id` is `UNIQUE`, and two
-> covering indexes are added). An earlier draft of this spec listed
+> Note: this column set **descends from** the upstream SABnzbd v5 schema in
+> `sabnzbd/database.py` and has since diverged. It is not interchangeable with
+> it, and no attempt is made to be: `history.Open` fails on an upstream
+> `history.db`, so it cannot be opened by GoNZBD at all. Standing Design Rule 1
+> is why — GoNZBD targets fresh installations and is not a drop-in replacement.
+>
+> Which mechanism rejects it is worth stating, because the natural guess is
+> wrong. `refuseUnknownSchema` compares goose migration versions, and an
+> upstream file records none — it has no `goose_db_version` table — so that
+> guard passes it through. The migration itself is what fails, on `CREATE TABLE
+> history` against a file that already has one.
+>
+> The divergences: `nzb_backup` is added; `report`, `series` and `duplicate_key`
+> are removed, having been carried for a migration that Rule 1 abolished and
+> read by nothing; several `NOT NULL` constraints are relaxed
+> (`completed`/`name`/`nzb_name`); `nzo_id` is `UNIQUE`; and two covering
+> indexes are added. An earlier draft of this spec listed
 > `status_text`/`nzo_info_pickle` columns — those never existed in SABnzbd v5
 > and are not in GoNZBD.
 
 `stage_log` format: `Stage:::action1;action2\r\nStage:::…`. Stage names:
 `Source`, `Download`, `Repair`, `Filejoin`, `Unpack`, `Servers`, `Script`,
-`Notification`. Use this verbatim for compatibility if users may migrate dbs.
+`Notification`. Use these names verbatim — not for database migration, which
+cannot happen (see the note above), but because `stage_log` is echoed into the
+`mode=history` response and API clients match on the stage names.
 
 ### 6.8 Tests (`tests/test_postproc.py`)
 

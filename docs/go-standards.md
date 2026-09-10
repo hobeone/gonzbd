@@ -47,7 +47,7 @@ If a new component needs coordination, document the choice (mutex vs channel vs 
 
 ### Persistence (Decided)
 
-- **Queue state**: active job metadata and progress in SQLite (`dispatch_jobs` and `job_files` tables — the legacy `jobs` table was dropped by migration `006_recovery_bytes_and_retire_jobs.sql`); immutable article manifests in gzip JSON (`adminDir/queue/manifests/<id>.json.gz`).
+- **Queue state**: active job metadata and progress in SQLite (`dispatch_jobs` and `job_files` tables — the legacy `jobs` table has been retired); immutable article manifests in gzip JSON (`adminDir/queue/manifests/<id>.json.gz`).
 - **History**: SQLite via `modernc.org/sqlite` (pure Go, no CGO).
 - **Config**: YAML via `gopkg.in/yaml.v3`.
 - **Atomic writes**: all file persistence uses temp file + fsync + rename; queue-to-history transitions execute atomically within a single database transaction.
