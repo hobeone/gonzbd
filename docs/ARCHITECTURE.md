@@ -141,8 +141,7 @@ Post-processing runs a chain of `Stage` implementations in order for each comple
 | 7 | `deobfuscate` | `deobfuscate` | Rename obfuscated files using NZB hints and PAR2 filenames |
 | 8 | `extension_cleanup` | `postproc` | Delete files matching the user's cleanup extension list |
 | 9 | `finalize` | `postproc` | Move job from incomplete to complete directory |
-| 10 | `cleanup` | `postproc` | Remove `__ADMIN__` sidecar directory from the job folder |
-| 11 | `script` | `postproc` | Run user-supplied post-processing script (see `docs/post-processing-scripts.md`) |
+| 10 | `script` | `postproc` | Run user-supplied post-processing script (see `docs/post-processing-scripts.md`) |
 
 > **Note:** Sorting/renaming (TV, movie, date templates) is intentionally not implemented.
 > This functionality is handled by external tools such as Sonarr, Radarr, and similar media managers.

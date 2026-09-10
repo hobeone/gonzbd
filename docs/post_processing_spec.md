@@ -499,21 +499,40 @@ return  # don't continue postproc this round
 
 ### 6.4 Persisted state for crash recovery
 
-- **`save_attribs()`**: `(cat, pp, script, priority, final_name, password, url)` →
-  GoNZBD writes `<downloadDir>/__ADMIN__/gonzbd_attrib` (SABnzbd used
-  `<admin>/SABnzbd_nzo_<id>/ATTRIB_FILE`).
+- **`save_attribs()`**: `(cat, pp, script, priority, final_name, password, url)`
+  → SABnzbd writes `<admin>/SABnzbd_nzo_<id>/ATTRIB_FILE`. GoNZBD keeps this in
+  SQLite and writes no per-job attribute file. (A `gonzbd_attrib` constant was
+  declared for one and never used by any code; it has been removed.)
 - **`__verified__`** map: per-set bool, written whenever a par2 set finishes
-  verification. On restart, sets with `True` are not re-verified. GoNZBD stores
-  this as a JSON file at `<downloadDir>/__ADMIN__/__verified__` (SABnzbd pickled
-  it).
+  verification. On restart, sets with `True` are not re-verified. **GoNZBD does
+  not persist this at all** — see the Go note below.
 - **PostProc queue snapshot**: `POSTPROC_QUEUE_FILE_NAME` (pickle v2) is the
   entire history list, written periodically.
 - **DirectUnpacker `success_sets`**: in-memory; on restart, already-extracted
   sets are detected by scanning the work dir and skipped by unrar (overwrite-
   protect).
 
-**Go note:** GoNZBD persists `__verified__` as a small JSON file (not pickle,
-not SQLite). Pickle is a landmine in a multi-version environment.
+**Go note:** GoNZBD keeps no per-job `__ADMIN__` directory and does not persist
+`__verified__` in any form. Verification status is derived by verifying, so a
+retried or crash-restarted job re-runs par2 verification rather than trusting an
+earlier attempt's record.
+
+The record was dropped rather than reimplemented (#533). It was inert on every
+first run — the file only survived for jobs that FAILED, since the cleanup stage
+deleted it on success — so its whole effect was to let a retry skip
+re-verification. Two things made that a bad trade. The retry path can
+re-download the files into the same directory, so the retained record could
+assert a set verified whose files had since changed; and because the record sat
+inside the directory downloaded content is extracted into, a par2 filename or
+archive entry naming it could forge a verified result and make repair skip the
+whole job. Standing Design Rule 2 covers the general form: a derived value that
+is also persisted acquires a second source of truth, and the stored copy is the
+one that drifts.
+
+SABnzbd pickles this file, which is also why their equivalent forgery escalated
+to code execution where ours could not. Pickle is a landmine in a multi-version
+environment; the lesson generalises past the format to whether the record needs
+to exist.
 
 ### 6.5 Script invocation contract
 
@@ -1398,8 +1417,7 @@ func (p *PostProcessor) Process(ctx context.Context, j *Job) (*Result, error) {
     //  7. deobfuscate       (heuristic rename)
     //  8. extension_cleanup (delete files matching cleanup list)
     //  9. finalize          (move to complete dir) — runs BEFORE script
-    // 10. cleanup           (remove __ADMIN__ and temp state)
-    // 11. script            (user post-processing script; sees final dir)
+    // 10. script            (user post-processing script; sees final dir)
     // Sorting (TV/movie templates) is NOT implemented — see §11.
     // Stage errors are recorded in the StageLog but do NOT abort the pipeline.
 }
