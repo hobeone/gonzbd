@@ -172,7 +172,7 @@ SABnzbd post-processing levels are cumulative integer masks on `job.Queue.PP`:
 
 `gonzbd` executes verification, repair, and archive decompression using native Go libraries by default:
 - **`go_par2`**: Native Reed-Solomon verification and repair engine (`UseGoPar2`).
-- **`go_rar`**: Pure-Go RAR5 extraction engine (`UseGoRAR`).
+- **`go_rar`**: Pure-Go RAR5 extraction engine (`UseGoRAR`; falls back to external `unrar` for RAR3 and unsupported formats).
 - **`go_7z`**: Pure-Go 7-Zip extraction engine (`UseGo7z`).
 - **`go_tar` / `filejoin`**: Native TAR extraction and split file joining.
 
