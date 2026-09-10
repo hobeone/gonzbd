@@ -20,11 +20,11 @@ import (
 )
 
 // errNotRAR is returned by extractSet when the first volume of a set isn't
-// a RAR archive rarengine can read (RAR3 or RAR5). It is handled specially
+// a RAR archive rarengine can read (RAR5 only). It is handled specially
 // by run(): the set is recorded as skipped (not failed) and logged at Info
 // level, since the normal unpack stage's external unrar handles other
 // formats correctly.
-var errNotRAR = errors.New("not a RAR3/RAR5 archive")
+var errNotRAR = errors.New("not a RAR5 archive")
 
 // SuccessSet records the outcome of a successfully extracted RAR set.
 type SuccessSet struct {
@@ -41,8 +41,8 @@ type FailedSet struct {
 }
 
 // SkippedSet records a set that DirectUnpack did not attempt because it
-// isn't a RAR3 or RAR5 archive. rarengine (the pure-Go decompressor used by
-// DirectUnpack) only supports RAR3/RAR5; other formats (e.g. legacy RAR2,
+// isn't a RAR5 archive. rarengine (the pure-Go decompressor used by
+// DirectUnpack) only supports RAR5; other formats (e.g. RAR3, legacy RAR2,
 // or non-RAR archives misidentified by filename) are handled correctly by
 // the normal unpack stage's external unrar fallback. This is expected, not
 // an error.
@@ -470,7 +470,7 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 			killed := d.killed
 			if !killed {
 				if errors.Is(err, errNotRAR) {
-					d.recordSkipped(setname, "not RAR3/RAR5; handled by normal unpack")
+					d.recordSkipped(setname, "not RAR5; handled by normal unpack")
 				} else {
 					d.recordFailure(setname, err.Error())
 				}
@@ -478,7 +478,7 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 			d.mu.Unlock()
 			if !killed {
 				if errors.Is(err, errNotRAR) {
-					d.log.Info("skipping set, not a RAR3/RAR5 archive", "set", setname)
+					d.log.Info("skipping set, not a RAR5 archive", "set", setname)
 				} else {
 					d.log.Error("extraction failed", "set", setname, "err", err)
 				}
@@ -530,23 +530,27 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) error {
 			maxVol = 100 // fallback safe bound
 		}
 
-		// rarengine supports RAR3 and RAR5. Check the first volume's magic bytes
-		// before streaming so other formats are skipped immediately rather than
-		// failing on the first header read.
+		// rarengine only supports RAR5 archives. Check the first volume's magic
+		// bytes before streaming so non-RAR5 formats (including RAR3) are
+		// skipped immediately and fall back to stage_unpack's external unrar.
 		ver, err := rarheader.Version(vol1Path)
-		if err != nil {
+		if err != nil || ver != 5 {
 			return errNotRAR
 		}
 		d.log.Info("starting extraction", "set", setname, "rar_version", ver)
 
 		volumesChan, feedErrChan := d.startVolumeFeed(ctx, setname, maxVol)
 
-		sd := rarengine.NewStreamDecompressor(volumesChan)
+		r := rarengine.NewReader(volumesChan)
+		defer r.Close() //nolint:errcheck // close open and queued volumes
+		stop := context.AfterFunc(ctx, func() { _ = r.Close() })
+		defer stop()
+
 		if d.opts.Password != "" {
-			sd.SetPassword(d.opts.Password)
+			r.SetPasswords([]string{d.opts.Password})
 		}
 
-		extractedFiles, err := d.extractEntries(ctx, sd)
+		extractedFiles, err := d.extractEntries(ctx, r)
 		if err != nil {
 			return err
 		}
@@ -628,13 +632,13 @@ func (d *DirectUnpacker) startVolumeFeed(ctx context.Context, setname string, ma
 	return volumesChan, feedErrChan
 }
 
-// extractEntries drives the rarengine decompressor header-by-header, writing
+// extractEntries drives the rarengine Reader entry-by-entry, writing
 // each archive entry to disk. It opens an os.Root anchored at d.extractDir
 // once for the entire session; all entry writes go through that rooted handle
 // so they cannot escape d.extractDir via "..", an absolute path, or a
 // symlinked path component. Returns the list of extracted file paths on
 // success, or the first error encountered.
-func (d *DirectUnpacker) extractEntries(ctx context.Context, sd *rarengine.StreamDecompressor) ([]string, error) {
+func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader) ([]string, error) {
 	root, err := os.OpenRoot(d.extractDir)
 	if err != nil {
 		return nil, fmt.Errorf("directunpack: open root %s: %w", d.extractDir, err)
@@ -656,18 +660,21 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, sd *rarengine.Strea
 			return nil, fmt.Errorf("killed")
 		}
 
-		fh, err := sd.Next()
+		entry, err := r.NextEntry()
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, rarengine.ErrNoNextVolume) {
 				break
 			}
+			if errors.Is(err, rarengine.ErrReaderClosed) && ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			return nil, fmt.Errorf("directunpack: read header: %w", err)
 		}
 
-		sp, sanitizeErr := unpack.NewSanitizedPath(fh.Name, d.opts.OneFolder)
+		sp, sanitizeErr := unpack.NewSanitizedPath(entry.Header.Name, d.opts.OneFolder)
 		if sanitizeErr != nil {
-			d.log.Warn("directunpack: skipping entry with bad path", "raw_name", fh.Name, "err", sanitizeErr)
-			_, _ = io.Copy(io.Discard, sd) // drain stream to skip bad entry
+			d.log.Warn("directunpack: skipping entry with bad path", "raw_name", entry.Header.Name, "err", sanitizeErr)
+			_ = entry.Close()
 			continue
 		}
 
@@ -679,15 +686,27 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, sd *rarengine.Strea
 			IgnoreUnrarDates: d.opts.IgnoreUnrarDates,
 			OnLine:           d.opts.OnLine,
 		}
-		if err := unpack.ExtractEntryRarengine(ctx, root, d.extractDir, destRel, destPath, fh, sd, unpackOpts, d.log); err != nil {
-			return nil, fmt.Errorf("directunpack: extract %s: %w", fh.Name, err)
+		if err := unpack.ExtractEntryRarengine(ctx, root, d.extractDir, destRel, destPath, entry.Header, entry, unpackOpts, d.log); err != nil {
+			_ = r.Close()
+			_ = entry.Close()
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fmt.Errorf("directunpack: extract %s: %w", entry.Header.Name, err)
 		}
 
-		if !fh.IsDir {
+		if err := entry.Close(); err != nil && !errors.Is(err, rarengine.ErrChecksumUnsupported) {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fmt.Errorf("directunpack: verify %s: %w", entry.Header.Name, err)
+		}
+
+		if !entry.Header.IsDir {
 			extractedFiles = append(extractedFiles, destPath)
 		}
 		if d.opts.OnLine != nil {
-			d.opts.OnLine("Extracting  " + fh.Name)
+			d.opts.OnLine("Extracting  " + entry.Header.Name)
 		}
 	}
 

@@ -1556,7 +1556,7 @@ articles or sparse regions.
    requested volume number appears in `completedVols`, and returns immediately if
    the set is in `corruptSets`.
 3. **Sequential volume feeding**: `startVolumeFeed()` opens completed volumes in
-   order and sends their `*os.File` handles to `rarengine.StreamDecompressor`.
+   order and sends their `*os.File` handles to `rarengine.NewReader(volumesChan)`.
 4. **Corrupt volume handling**: `MarkCorrupt(setname, reason)` is called by the
    queue when a volume was assembled from a download with missing or failed
    articles. Once marked, the set can never be reported as successfully
@@ -1567,8 +1567,8 @@ articles or sparse regions.
    volume's magic bytes. Any error — including I/O errors, not just format
    mismatches — yields `errNotRAR` and the set is recorded as `SkippedSet`, not
    failed; the normal unpack stage's external `unrar` handles it.
-6. **Format support**: `rarengine` (pure Go RAR3/RAR5). Other formats, legacy
-   RAR2, and non-RAR files identified by filename go to post-processing.
+6. **Format support**: `rarengine` (pure Go RAR5). Other formats, legacy
+   RAR2/RAR3, and non-RAR files identified by filename go to post-processing.
 7. **Abort/kill**: `Abort()` sets `killed`, records failures for the current and
    queued sets, clears success results, and signals the reader goroutine. If
    `run()` was never started it closes `done` directly.
