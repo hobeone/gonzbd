@@ -713,17 +713,22 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 				}
 			}
 		}
-		if _, err := os.Stat(filepath.Join(downloadDir, name)); err == nil {
+		// Lstat, not Stat, for the reason given on fsutil.GetUniqueRelPath:
+		// this decides whether a job directory name is available to create,
+		// and a dangling symlink at that name reads as absent under Stat. The
+		// MkdirAll that follows would then resolve the link rather than make
+		// the directory we chose.
+		if _, err := os.Lstat(filepath.Join(downloadDir, name)); err == nil {
 			return true
 		}
-		if _, err := os.Stat(filepath.Join(completeDir, name)); err == nil {
+		if _, err := os.Lstat(filepath.Join(completeDir, name)); err == nil {
 			return true
 		}
 		for _, cat := range categories {
 			if cat.Dir == "" {
 				continue
 			}
-			if _, err := os.Stat(filepath.Join(completeDir, cat.Dir, name)); err == nil {
+			if _, err := os.Lstat(filepath.Join(completeDir, cat.Dir, name)); err == nil {
 				return true
 			}
 		}

@@ -296,13 +296,8 @@ func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, 
 	// same basename. Auto-rename to avoid silent overwrites, matching
 	// 7z's -aou behavior. Skip when OverwriteFiles is true.
 	if opts.OneFolder && !opts.OverwriteFiles {
-		destPath = uniquePath(destPath)
-		// Recompute destRel after uniquePath adjusts the absolute path.
-		rel, relErr := filepath.Rel(outDir, destPath)
-		if relErr != nil || !filepath.IsLocal(rel) {
-			return false, fmt.Errorf("go_7z: uniquePath escaped outDir for %s", f.Name)
-		}
-		destRel = rel
+		destRel = uniquePath(root, destRel)
+		destPath = filepath.Join(outDir, destRel)
 	}
 
 	if f.FileInfo().IsDir() {
