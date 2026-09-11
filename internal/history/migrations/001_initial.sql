@@ -238,7 +238,25 @@ CREATE TABLE dispatch_jobs (
     intent      INTEGER NOT NULL DEFAULT 0,
 
     filename          TEXT NOT NULL DEFAULT '',
-    warning           TEXT NOT NULL DEFAULT '',
+    -- Five independent, single-owner facts replacing what used to be one
+    -- append-only `warning` string. Each is written by exactly one caller
+    -- and never combined with another: ingest_anomaly and duplicate_reason
+    -- describe the NZB as ingested and never change after (BuildIngestJob
+    -- and AddJob's detectDuplicateNZB, respectively); post_anomaly is set by
+    -- postAnomaly when the assembler or durability barrier finds a
+    -- byte-accounting collision after the job has started downloading
+    -- (#379); fail_reason is set by Fail when a permanent storage fault
+    -- stops the job (R20/R27), and is live only for the window before
+    -- finalization writes history.Entry.FailMessage; operational_error is
+    -- the one queue-management case, set by persistAndCommit when
+    -- dispatcher removal fails after finalization. No app build has ever
+    -- shipped the single `warning` column, so this is a straight field
+    -- split in the base migration rather than a follow-up one.
+    ingest_anomaly    TEXT NOT NULL DEFAULT '',
+    post_anomaly      TEXT NOT NULL DEFAULT '',
+    fail_reason       TEXT NOT NULL DEFAULT '',
+    duplicate_reason  TEXT NOT NULL DEFAULT '',
+    operational_error TEXT NOT NULL DEFAULT '',
     script            TEXT NOT NULL DEFAULT '',
     password          TEXT NOT NULL DEFAULT '',
     -- The unresolved upstream PP integer, kept because the API reports it back

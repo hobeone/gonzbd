@@ -136,6 +136,46 @@
 	let etaText = $derived(formatETA(slot.eta_seconds ?? 0));
 	let isDownloading = $derived(slot.current_stage === 'download');
 
+	// All the fields that replaced the single Warning string, combined into
+	// one badge rather than an {:else if} ladder — a ladder would silently
+	// hide every reason but the first-matched, recreating in Svelte the same
+	// clobbering the backend split was written to eliminate. duplicate_reason
+	// is included unconditionally rather than gated on isPaused: it names a
+	// permanent ingest-time fact ("this WAS a duplicate"), which stays true
+	// and worth showing whether or not the job is currently paused — unlike
+	// WarningsBanner's "added in paused state" headline, which is a claim
+	// about CURRENT state and does need that gate.
+	//
+	// Deduplicated by text: stall_reason and a redundant field can carry the
+	// identical sentence (e.g. a fixture, or a fault whose wording matches an
+	// unrelated anomaly), and showing the same sentence twice would look like
+	// two problems instead of one.
+	let anomalyEntries = $derived(
+		(
+			[
+				slot.stall_reason && { text: slot.stall_reason, severe: true, testid: 'stall-reason' },
+				slot.fail_reason && { text: slot.fail_reason, severe: true },
+				slot.post_anomaly && { text: slot.post_anomaly, severe: false },
+				slot.operational_error && { text: slot.operational_error, severe: false },
+				slot.duplicate_reason && { text: slot.duplicate_reason, severe: false },
+				slot.ingest_anomaly && { text: slot.ingest_anomaly, severe: false }
+			] as const
+		).filter((e): e is { text: string; severe: boolean; testid?: string } => Boolean(e))
+	);
+	let anomalyBadge = $derived.by(() => {
+		const seen = new Set<string>();
+		const unique = anomalyEntries.filter((e) => (seen.has(e.text) ? false : (seen.add(e.text), true)));
+		if (unique.length === 0) return null;
+		return {
+			text: unique.map((e) => e.text).join('; '),
+			title: unique.map((e) => e.text).join('\n'),
+			// destructive (red) when a stall or a permanent failure is among the
+			// entries — an ingest-time fact alone (duplicate/anomaly) stays amber.
+			severe: unique.some((e) => e.severe),
+			testid: unique.find((e) => e.testid)?.testid
+		};
+	});
+
 	// The durability window, spelled out rather than summed. bytes_pending is
 	// what a power loss would cost right now — written, accepted by the OS,
 	// not yet covered by an fsync — and adding it to bytes_durable would claim
@@ -448,23 +488,17 @@
 					</div>
 				{/if}
 			</div>
-			{#if slot.stall_reason}
-				<!-- The stall reason wins over slot.warning rather than being shown
-				     beside it: the backend sets both to the same text when it parks a
-				     job, and the reason survives the resume a re-evaluation performs
-				     while the warning does not. -->
+			{#if anomalyBadge}
 				<div
-					class="flex items-center text-destructive shrink-0 max-w-[140px]"
-					title={slot.stall_reason}
-					data-testid="stall-reason"
+					class={cn(
+						'flex items-center shrink-0 max-w-[140px]',
+						anomalyBadge.severe ? 'text-destructive' : 'text-amber-500'
+					)}
+					title={anomalyBadge.title}
+					data-testid={anomalyBadge.testid}
 				>
 					<AlertTriangle class="size-3.5 leading-none shrink-0" />
-					<span class="ml-1 text-xs font-bold truncate">{slot.stall_reason}</span>
-				</div>
-			{:else if slot.warning}
-				<div class="flex items-center text-amber-500 shrink-0 max-w-[100px]" title={slot.warning}>
-					<AlertTriangle class="size-3.5 leading-none shrink-0" />
-					<span class="ml-1 text-xs font-bold truncate">{slot.warning}</span>
+					<span class="ml-1 text-xs font-bold truncate">{anomalyBadge.text}</span>
 				</div>
 			{/if}
 			{#if hasFailed}

@@ -142,8 +142,8 @@ func TestFinalizer_RemoveError_ExhaustedRetry_SurfacesWarning(t *testing.T) {
 		t.Fatalf("expected job %s to remain registered in dispatcher, but Row returned false", j.ID())
 	}
 
-	if !strings.Contains(row.Header.Warning, "failed to remove finalized job from queue") {
-		t.Errorf("expected warning to contain %q, got %q", "failed to remove finalized job from queue", row.Header.Warning)
+	if !strings.Contains(row.Header.OperationalError, "failed to remove finalized job from queue") {
+		t.Errorf("expected operational error to contain %q, got %q", "failed to remove finalized job from queue", row.Header.OperationalError)
 	}
 
 	if !emitter.hasEventType("queue_updated") {

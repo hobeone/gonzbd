@@ -468,9 +468,9 @@ func TestResumeAllJobs_ShutdownDuringResumeIsNotAStorageFault(t *testing.T) {
 			"A stalled job is non-resident and is skipped by every future sweep, so this "+
 			"costs the job its seed permanently", row.Status())
 	}
-	if strings.HasPrefix(row.Header.Warning, "Stalled: ") {
+	if stallReason := f.app.StallReason(f.job.ID()).Reason; strings.HasPrefix(stallReason, "Stalled: ") {
 		t.Errorf("a shutdown during Resume was surfaced as a storage condition that never "+
-			"existed: warning = %q", row.Header.Warning)
+			"existed: stall reason = %q", stallReason)
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want it to carry context.Canceled — the sweep must report a "+
@@ -519,8 +519,8 @@ func TestResumeAllJobs_SeedsFilesResumedBeforeAFault(t *testing.T) {
 	if row.Status() != constants.StatusPaused {
 		t.Errorf("status = %q, want %q — the faulting file must still stall the job", row.Status(), constants.StatusPaused)
 	}
-	if !strings.HasPrefix(row.Header.Warning, "Stalled: ") {
-		t.Errorf("warning = %q, want a surfaced stall reason (R27)", row.Header.Warning)
+	if stallReason := f.app.StallReason(f.job.ID()).Reason; !strings.HasPrefix(stallReason, "Stalled: ") {
+		t.Errorf("stall reason = %q, want a surfaced stall reason (R27)", stallReason)
 	}
 }
 

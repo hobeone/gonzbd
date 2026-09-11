@@ -110,12 +110,13 @@ func TestStall_PausesTheJobAndSurfacesTheReason(t *testing.T) {
 		t.Errorf("status = %v after a retryable fault, want Paused — the job keeps "+
 			"dispatching articles into a device that cannot take them", row.Status())
 	}
-	if row.Header.Warning == "" {
-		t.Fatal("no warning was surfaced; the job is paused for no visible reason (R27)")
+	stallReason := application.StallReason(job.ID()).Reason
+	if stallReason == "" {
+		t.Fatal("no stall reason was surfaced; the job is paused for no visible reason (R27)")
 	}
 	for _, want := range []string{"/mnt/full/A.bin", "sync"} {
-		if !strings.Contains(row.Header.Warning, want) {
-			t.Errorf("warning %q does not mention %q; the user cannot act on it", row.Header.Warning, want)
+		if !strings.Contains(stallReason, want) {
+			t.Errorf("stall reason %q does not mention %q; the user cannot act on it", stallReason, want)
 		}
 	}
 	for i := range 2 {
@@ -148,8 +149,8 @@ func TestFail_SurfacesTheReasonAndStillFailsNoArticle(t *testing.T) {
 		// snapshot, so the reason is checked against history instead.
 		t.Skip("job left the dispatcher for history; see TestFail on a resident job")
 	}
-	if !strings.Contains(row.Header.Warning, "/mnt/ro/A.bin") {
-		t.Errorf("warning %q does not name the file (R27)", row.Header.Warning)
+	if !strings.Contains(row.Header.FailReason, "/mnt/ro/A.bin") {
+		t.Errorf("fail reason %q does not name the file (R27)", row.Header.FailReason)
 	}
 	for i := range 2 {
 		if job.Progress().ArticleFailed(i) {
@@ -534,8 +535,8 @@ func TestFinalizeCompletedFile_SkipsAFileTheAssemblerNoLongerHolds(t *testing.T)
 		t.Error("finalizing a file the assembler no longer holds paused the job; " +
 			"every completion drained during shutdown would stall its job")
 	}
-	if row.Header.Warning != "" {
-		t.Errorf("a stall reason %q was surfaced for an ordinary shutdown", row.Header.Warning)
+	if reason := application.StallReason(job.ID()).Reason; reason != "" {
+		t.Errorf("a stall reason %q was surfaced for an ordinary shutdown", reason)
 	}
 }
 
@@ -1091,7 +1092,7 @@ func TestHandleFileComplete_StallsRatherThanShippingAnUnfinalizedFile(t *testing
 		t.Errorf("status = %v, want Paused — the job carries on and completes with an "+
 			"untrimmed file", row.Status())
 	}
-	if row.Header.Warning == "" {
+	if application.StallReason(job.ID()).Reason == "" {
 		t.Error("no reason was surfaced; the job halts and the user is told nothing (R27)")
 	}
 	if job.Progress().ArticleFailed(0) || job.Progress().FailedBytes() != 0 {
@@ -1191,8 +1192,8 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 		if !ok {
 			t.Skip("the permanent failure carried the job straight out of the dispatcher")
 		}
-		if !strings.Contains(before.Header.Warning, "Failed:") {
-			t.Fatalf("Fail set warning %q; the fixture is not in the state this test is about", before.Header.Warning)
+		if !strings.Contains(before.Header.FailReason, "Failed:") {
+			t.Fatalf("Fail set fail reason %q; the fixture is not in the state this test is about", before.Header.FailReason)
 		}
 
 		// ...and then returns the fault as its error, MARKED as routed and
@@ -1207,12 +1208,12 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 		if !ok {
 			t.Fatal("the job left the dispatcher between the two reads")
 		}
-		if strings.Contains(after.Header.Warning, "Stalled:") {
-			t.Errorf("warning = %q — a permanent fault was re-routed as a stall, so the "+
-				"operator is told to wait out a read-only filesystem", after.Header.Warning)
+		if stallReason := application.StallReason(job.ID()).Reason; stallReason != "" {
+			t.Errorf("stall reason = %q — a permanent fault was re-routed as a stall, so the "+
+				"operator is told to wait out a read-only filesystem", stallReason)
 		}
-		if !strings.Contains(after.Header.Warning, "Failed:") {
-			t.Errorf("warning = %q, want the permanent reason Fail set to survive", after.Header.Warning)
+		if !strings.Contains(after.Header.FailReason, "Failed:") {
+			t.Errorf("fail reason = %q, want the permanent reason Fail set to survive", after.Header.FailReason)
 		}
 		// Two further assertions were tried here and removed, because neither
 		// could fire. "the warning still names the path" holds under the bug
@@ -1242,32 +1243,33 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 		}
 		application.Stall(job.ID(), fault)
 
-		before, ok := application.dispatcher.Row(job.ID())
+		_, ok := application.dispatcher.Row(job.ID())
 		if !ok {
 			t.Fatal("job left the dispatcher")
 		}
-		if !strings.Contains(before.Header.Warning, "on sync") {
+		beforeReason := application.StallReason(job.ID()).Reason
+		if !strings.Contains(beforeReason, "on sync") {
 			t.Fatalf("the barrier's own reason is %q; this subtest reads the operation "+
-				"name to tell a re-route from an untouched reason, so it needs one", before.Header.Warning)
+				"name to tell a re-route from an untouched reason, so it needs one", beforeReason)
 		}
 
 		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID(), 0,
 			fmt.Errorf("%w: %w", durability.ErrFaultRouted, fault))
 		application.routeFinalizeFailure(job.ID(), 0, path, err)
 
-		after, ok := application.dispatcher.Row(job.ID())
-		if !ok {
+		if _, ok := application.dispatcher.Row(job.ID()); !ok {
 			t.Fatal("job left the dispatcher")
 		}
-		if after.Header.Warning != before.Header.Warning {
+		afterReason := application.StallReason(job.ID()).Reason
+		if afterReason != beforeReason {
 			t.Errorf("the reason changed from %q to %q — the fault the barrier had "+
 				"already routed was routed a second time, rewrapping the operator's "+
 				"reason in a layer that describes this code path rather than the fault",
-				before.Header.Warning, after.Header.Warning)
+				beforeReason, afterReason)
 		}
-		if strings.Contains(after.Header.Warning, "on finalize") {
-			t.Errorf("warning = %q names this code path rather than the failing syscall; "+
-				"the barrier reported %q and it must survive intact", after.Header.Warning, before.Header.Warning)
+		if strings.Contains(afterReason, "on finalize") {
+			t.Errorf("stall reason = %q names this code path rather than the failing syscall; "+
+				"the barrier reported %q and it must survive intact", afterReason, beforeReason)
 		}
 		if job.Progress().ArticleFailed(0) || job.Progress().FailedBytes() != 0 {
 			t.Error("a storage condition was recorded as article damage (A1, R21)")
@@ -1292,9 +1294,9 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 			t.Errorf("status = %v, want Paused — an unrouted failure left the job running "+
 				"and it completes with an untrimmed file", snap.Status())
 		}
-		if !strings.Contains(snap.Header.Warning, path) {
-			t.Errorf("warning = %q does not name the file; the job halts with no reason "+
-				"the user can act on (R27)", snap.Header.Warning)
+		if stallReason := application.StallReason(job.ID()).Reason; !strings.Contains(stallReason, path) {
+			t.Errorf("stall reason = %q does not name the file; the job halts with no reason "+
+				"the user can act on (R27)", stallReason)
 		}
 	})
 
@@ -1327,8 +1329,8 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 		// calling back into the component that just failed to answer. The
 		// caller has it and fills it in; without that the operator is told a
 		// download halted and not which file.
-		if !strings.Contains(snap.Header.Warning, path) {
-			t.Errorf("warning = %q does not name the file (R27)", snap.Header.Warning)
+		if stallReason := application.StallReason(job.ID()).Reason; !strings.Contains(stallReason, path) {
+			t.Errorf("stall reason = %q does not name the file (R27)", stallReason)
 		}
 	})
 
@@ -1348,8 +1350,8 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 			t.Fatal("job left the dispatcher")
 		}
 		if snap.Status() == constants.StatusPaused {
-			t.Errorf("the job was parked for a condition that is not about storage: warning=%q",
-				snap.Header.Warning)
+			t.Errorf("the job was parked for a condition that is not about storage: stall reason=%q",
+				application.StallReason(job.ID()).Reason)
 		}
 		// Still owed, so the next re-evaluation retries it rather than the
 		// file being silently left untrimmed.
@@ -1406,15 +1408,14 @@ func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 		t.Fatal("handleFileComplete never returned")
 	}
 
-	snap, ok := application.dispatcher.Row(job.ID())
-	if !ok {
+	if _, ok := application.dispatcher.Row(job.ID()); !ok {
 		t.Fatal("job left the dispatcher")
 	}
-	if !strings.Contains(snap.Header.Warning, want.Path) {
-		t.Errorf("warning = %q does not name %q — the path was resolved after the "+
+	if stallReason := application.StallReason(job.ID()).Reason; !strings.Contains(stallReason, want.Path) {
+		t.Errorf("stall reason = %q does not name %q — the path was resolved after the "+
 			"finalize, by which point the job's FileInfo was gone, so the operator is "+
 			"told a download halted without being told which file or which mount",
-			snap.Header.Warning, want.Path)
+			stallReason, want.Path)
 	}
 }
 

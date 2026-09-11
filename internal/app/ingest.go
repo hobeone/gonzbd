@@ -156,17 +156,17 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	}
 
 	hdr := dispatch.Header{
-		Name:     name,
-		Filename: filename,
-		Category: opts.Category,
-		Priority: int(priority),
-		Bytes:    manifest.TotalBytes(),
-		Warning:  parseAnomalySummary(parsed),
-		Script:   script,
-		Password: opts.Password,
-		PP:       pp,
-		URL:      "",
-		MD5:      hex.EncodeToString(parsed.MD5[:]),
+		Name:          name,
+		Filename:      filename,
+		Category:      opts.Category,
+		Priority:      int(priority),
+		Bytes:         manifest.TotalBytes(),
+		IngestAnomaly: parseAnomalySummary(parsed),
+		Script:        script,
+		Password:      opts.Password,
+		PP:            pp,
+		URL:           "",
+		MD5:           hex.EncodeToString(parsed.MD5[:]),
 	}
 
 	return j, hdr, nil

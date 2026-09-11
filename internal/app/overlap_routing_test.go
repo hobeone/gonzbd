@@ -98,16 +98,15 @@ func overlapFixture(t *testing.T, ctx context.Context) (*Application, string) {
 }
 
 // assertOverlapWarned checks the message, not that a warning exists.
-// job.Warning is single-valued with at least five other writers — the stall
-// reason, two durability warnings, the claim-failure note, the queue removal
-// failure note — and both Application.Stall and Application.Fail set it and
-// are reachable from a barrier that failed inside the same call. A non-emptiness
-// assertion would pass on a fixture that faulted for an unrelated reason.
+// postAnomaly is Header.PostAnomaly's sole writer, but this still checks the
+// content rather than mere non-emptiness: a fixture that faulted for an
+// unrelated reason could otherwise pass by coincidence if PostAnomaly ever
+// grew another writer.
 func assertOverlapWarned(t *testing.T, application *Application, jobID, route string) {
 	t.Helper()
 	var warning string
 	if row, ok := application.dispatcher.Row(jobID); ok {
-		warning = row.Header.Warning
+		warning = row.Header.PostAnomaly
 	}
 	// The base name and the excess. Not the article indices: a run merges the
 	// articles that abut into one row, so by the time the record is written
@@ -128,10 +127,10 @@ func assertOverlapWarned(t *testing.T, application *Application, jobID, route st
 //
 // A single Run reports at most one overlap per file but iterates a job's files,
 // so a job with two malformed files yields two findings in one slice — and
-// because Job.Warning is a single string, only the last survives. That is a
-// deliberate accepted cost (see handlePostAnomaly), and pinning it here is what
-// makes it a decision rather than an accident: if the warning ever becomes a
-// list, this test fails and asks the question.
+// because Header.PostAnomaly is a single string, only the last survives. That
+// is a deliberate accepted cost (see handlePostAnomaly), and pinning it here
+// is what makes it a decision rather than an accident: if PostAnomaly ever
+// becomes a list, this test fails and asks the question.
 func TestReportPostAnomalies_WritesEveryFinding(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
@@ -143,8 +142,8 @@ func TestReportPostAnomalies_WritesEveryFinding(t *testing.T) {
 	if !ok {
 		t.Fatalf("job %s not found in dispatcher", jobID)
 	}
-	if w := row.Header.Warning; w != "" {
-		t.Fatalf("an empty finding list set the warning to %q", w)
+	if w := row.Header.PostAnomaly; w != "" {
+		t.Fatalf("an empty finding list set PostAnomaly to %q", w)
 	}
 
 	application.reportPostAnomalies(jobID, []durability.PostAnomaly{
@@ -152,9 +151,9 @@ func TestReportPostAnomalies_WritesEveryFinding(t *testing.T) {
 		{FileIdx: 1, Reason: "second file is malformed"},
 	})
 	row, _ = application.dispatcher.Row(jobID)
-	if w := row.Header.Warning; w != "second file is malformed" {
-		t.Errorf("job warning = %q, want the LAST finding — Job.Warning holds one "+
-			"string, so a second file's report overwrites the first's", w)
+	if w := row.Header.PostAnomaly; w != "second file is malformed" {
+		t.Errorf("PostAnomaly = %q, want the LAST finding — it holds one string, "+
+			"so a second file's report overwrites the first's", w)
 	}
 }
 

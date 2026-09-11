@@ -308,7 +308,7 @@ func TestFileWriter_NotePostAnomalyLatches(t *testing.T) {
 	}
 	if w.notePostAnomaly() {
 		t.Error("a second collision claimed the warning again, which is what overwrites " +
-			"job.Warning once per colliding segment")
+			"Header.PostAnomaly once per colliding segment")
 	}
 }
 

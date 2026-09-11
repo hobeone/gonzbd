@@ -26,7 +26,7 @@ func New(db *sql.DB) *Store { return &Store{db: db} }
 const columns = `id, sort_key, name, category, priority, bytes,
 	verify, repair, unpack, delete_ok,
 	state, next, activity, outcome, assessed, intent,
-	filename, warning, script, password, pp, nzb_backup, url, md5,
+	filename, ingest_anomaly, post_anomaly, fail_reason, duplicate_reason, operational_error, script, password, pp, nzb_backup, url, md5,
 	added, download_started, download_finished, par2_release_reason,
 	recovery_bytes, par2_recovered`
 
@@ -64,7 +64,9 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 			&p.Policy.Verify, &p.Policy.Repair, &p.Policy.Unpack, &p.Policy.Delete,
 			&p.State.State, &p.State.Next, &p.State.Activity, &p.State.Outcome,
 			&p.State.Assessed, &p.Intent,
-			&p.Header.Filename, &p.Header.Warning, &p.Header.Script, &p.Header.Password,
+			&p.Header.Filename, &p.Header.IngestAnomaly, &p.Header.PostAnomaly, &p.Header.FailReason,
+			&p.Header.DuplicateReason, &p.Header.OperationalError,
+			&p.Header.Script, &p.Header.Password,
 			&p.Header.PP, &p.Header.NZBBackup, &p.Header.URL, &p.Header.MD5,
 			&p.Header.Added, &p.DownloadStarted, &p.DownloadFinished, &p.Par2ReleaseReason,
 			&p.RecoveryBytes, &p.Par2Recovered,
@@ -89,7 +91,7 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO dispatch_jobs (`+columns+`)
-		 VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?,?,?, ?,?,?,?, ?,?)
+		 VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?, ?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   sort_key=excluded.sort_key, name=excluded.name,
 		   category=excluded.category, priority=excluded.priority,
@@ -99,7 +101,9 @@ func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 		   state=excluded.state, next=excluded.next,
 		   activity=excluded.activity, outcome=excluded.outcome,
 		   assessed=excluded.assessed, intent=excluded.intent,
-		   filename=excluded.filename, warning=excluded.warning,
+		   filename=excluded.filename, ingest_anomaly=excluded.ingest_anomaly,
+		   post_anomaly=excluded.post_anomaly, fail_reason=excluded.fail_reason,
+		   duplicate_reason=excluded.duplicate_reason, operational_error=excluded.operational_error,
 		   script=excluded.script, password=excluded.password,
 		   pp=excluded.pp, nzb_backup=excluded.nzb_backup,
 		   url=excluded.url, md5=excluded.md5,
@@ -112,7 +116,9 @@ func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 		p.Policy.Verify, p.Policy.Repair, p.Policy.Unpack, p.Policy.Delete,
 		p.State.State, p.State.Next, p.State.Activity, p.State.Outcome,
 		p.State.Assessed, p.Intent,
-		p.Header.Filename, p.Header.Warning, p.Header.Script, p.Header.Password,
+		p.Header.Filename, p.Header.IngestAnomaly, p.Header.PostAnomaly, p.Header.FailReason,
+		p.Header.DuplicateReason, p.Header.OperationalError,
+		p.Header.Script, p.Header.Password,
 		p.Header.PP, p.Header.NZBBackup, p.Header.URL, p.Header.MD5,
 		p.Header.Added, p.DownloadStarted, p.DownloadFinished, p.Par2ReleaseReason,
 		p.RecoveryBytes, p.Par2Recovered,

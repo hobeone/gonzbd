@@ -290,7 +290,7 @@ type Options struct {
 	// with no failover there is no cross-server evidence to support it.
 	//
 	// Fired once per file (see faultedArticle.firstCollision), because the
-	// caller's sink is a single overwritable job.Warning and an obfuscated
+	// caller's sink is a single overwritable Header.PostAnomaly and an obfuscated
 	// post can collide on every segment it has.
 	OnPostAnomaly func(jobID string, fileIdx int, reason string)
 

@@ -651,8 +651,8 @@ not have produced a successful fetch under any server.
 **A2b, A5 and A6 are counted and dispatched.** They are RFC violations that
 leave a requestable identifier, so rejecting them would fail articles that
 download today. Their counters share the reporting path A7 already built —
-`articleCounters` → `parseAnomalySummary` → `job.Warning` — so the cost of
-counting is a field, not a mechanism.
+`articleCounters` → `parseAnomalySummary` → `Header.IngestAnomaly` — so the
+cost of counting is a field, not a mechanism.
 
 **A1 stays, but it is no longer load-bearing.** It is still worth converting the
 silent drop into a counted rejection, because a silent drop is how #392's

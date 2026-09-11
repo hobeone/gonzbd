@@ -36,12 +36,31 @@ export interface QueueSlot {
 	remaining_bytes: number;
 	percentage: string;
 	pp: string;
-	warning?: string;
+	/** NZB segments the parser discarded as unusable at ingest time (rule 3:
+	 *  a bad article/segment costs only its own bytes). Set once, never
+	 *  cleared — it describes the ingested document, not runtime state. */
+	ingest_anomaly?: string;
+	/** A byte-accounting collision the assembler or durability barrier found
+	 *  after the job started downloading (#379) — distinct from
+	 *  ingest_anomaly's parse-time findings. Overwritten by a later finding;
+	 *  only the most recent is actionable. */
+	post_anomaly?: string;
 	/** Why the job is parked on a storage fault — a full disk, a wedged
 	 *  mount — or absent when it is not. Render it; the backend has already
 	 *  decided that the condition is one the user can act on, and it is
 	 *  re-evaluated on an interval and when the job is resumed. */
 	stall_reason?: string;
+	/** Why a permanent storage fault stopped the job (R20/R27). Live only
+	 *  for the brief window before the job finalizes into history. */
+	fail_reason?: string;
+	/** Set once at ingest when the NZB's MD5 or filename already existed in
+	 *  the queue, history, or the nzb backup dir. Immutable afterward — it
+	 *  stays true regardless of whether the job is later resumed, so pair it
+	 *  with live queue state (e.g. status) rather than reading it alone. */
+	duplicate_reason?: string;
+	/** A queue-management note — currently only "failed to remove finalized
+	 *  job from queue" when dispatcher removal fails after finalization. */
+	operational_error?: string;
 	/** Bytes a completed fsync covers, and bytes written since the current
 	 *  checkpoint window opened. NEVER sum them: the first survives a power
 	 *  loss and the second does not, so a total asserts the stronger claim

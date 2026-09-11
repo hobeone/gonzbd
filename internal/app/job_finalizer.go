@@ -71,7 +71,7 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // unlinking, and barrier state reset) is always attempted
 // regardless of history persistence success. If dispatcher.Remove returns an
 // error, it is retried once. If the retry also fails, the error is logged, a
-// warning is surfaced on the dispatcher row via SetWarning, and a
+// note is surfaced on the dispatcher row via SetOperationalError, and a
 // "queue_updated" event is emitted while the job remains registered for retry
 // or restart handling.
 // Sub-budgets within persistAndCommit are strictly partitioned against
@@ -179,7 +179,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			if err != nil {
 				log.Error("failed to remove job from dispatcher after post-proc retry; job remains in queue and history until restart",
 					"job", jobID, "err", err)
-				_ = app.dispatcher.SetWarning(jobID, "failed to remove finalized job from queue: "+err.Error())
+				_ = app.dispatcher.SetOperationalError(jobID, "failed to remove finalized job from queue: "+err.Error())
 				app.emit(Event{Type: "queue_updated"})
 			}
 		}

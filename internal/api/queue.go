@@ -128,8 +128,19 @@ type queueSlot struct {
 	Timeleft       string `json:"timeleft"`
 	ETA            string `json:"eta"`
 	PP             string `json:"pp"`
-	Warning        string `json:"warning,omitempty"`
-	FailedBytes    int64  `json:"failed_bytes"`
+	// IngestAnomaly, PostAnomaly, FailReason, DuplicateReason and
+	// OperationalError are Header's five single-owner replacements for what
+	// used to be one mutable Warning string — see dispatch.Header's field
+	// comments for who writes each and when. Sent verbatim; the client
+	// combines them with live queue state (e.g. Status) where that
+	// combination matters, rather than the server pre-joining them into
+	// prose.
+	IngestAnomaly    string `json:"ingest_anomaly,omitempty"`
+	PostAnomaly      string `json:"post_anomaly,omitempty"`
+	FailReason       string `json:"fail_reason,omitempty"`
+	DuplicateReason  string `json:"duplicate_reason,omitempty"`
+	OperationalError string `json:"operational_error,omitempty"`
+	FailedBytes      int64  `json:"failed_bytes"`
 	// RecoveryBytes/RecoveryFiles describe the job's par2 recovery volumes,
 	// excluding the always-downloaded par2 index. Not SABnzbd-Python fields —
 	// they have no counterpart in build_queue — so unlike the names above they
@@ -181,9 +192,9 @@ type queueSlot struct {
 	// field at all. It is the difference between a recoverable full disk and
 	// a job that appears to have silently stopped.
 	//
-	// Sourced from the application rather than from Warning, which the queue
-	// wipes on the Resume each re-evaluation performs — a user polling during
-	// one would watch the reason blink out and come back.
+	// Sourced from the application's in-memory stall map rather than from a
+	// Header field: R19's re-evaluation needs a list of every parked job,
+	// which only that map (not a per-row field) can provide.
 	StallReason string `json:"stall_reason"`
 
 	// BytesDurable is what a completed fsync covers. BytesPending is what has
@@ -477,7 +488,11 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		Timeleft:          timeleft,
 		ETA:               etaStr,
 		PP:                strconv.Itoa(r.Header.PP),
-		Warning:           r.Header.Warning,
+		IngestAnomaly:     r.Header.IngestAnomaly,
+		PostAnomaly:       r.Header.PostAnomaly,
+		FailReason:        r.Header.FailReason,
+		DuplicateReason:   r.Header.DuplicateReason,
+		OperationalError:  r.Header.OperationalError,
 		FailedBytes:       failedBytes,
 		RepairState:       repairState,
 		RecoveryBytes:     recoveryBytes,

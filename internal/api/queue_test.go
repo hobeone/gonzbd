@@ -2802,13 +2802,17 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 	row := dispatch.Row{
 		ID: j.ID(),
 		Header: dispatch.Header{
-			Name:     "large.file",
-			Filename: "large.file.nzb",
-			Bytes:    m.TotalBytes(),
-			PP:       3,
-			Password: "hunter2",
-			Script:   "post.py",
-			Warning:  "low disk space",
+			Name:             "large.file",
+			Filename:         "large.file.nzb",
+			Bytes:            m.TotalBytes(),
+			PP:               3,
+			Password:         "hunter2",
+			Script:           "post.py",
+			IngestAnomaly:    "1 empty message-id",
+			PostAnomaly:      "overlap at byte 0",
+			FailReason:       "Failed: input/output error",
+			DuplicateReason:  "Duplicate NZB",
+			OperationalError: "low disk space",
 		},
 		View: job.RenderView{
 			StateView: j.State(),
@@ -2843,8 +2847,20 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 	if slot.Script != "post.py" {
 		t.Errorf("Script = %q, want %q", slot.Script, "post.py")
 	}
-	if slot.Warning != "low disk space" {
-		t.Errorf("Warning = %q, want %q", slot.Warning, "low disk space")
+	if slot.IngestAnomaly != "1 empty message-id" {
+		t.Errorf("IngestAnomaly = %q, want %q", slot.IngestAnomaly, "1 empty message-id")
+	}
+	if slot.PostAnomaly != "overlap at byte 0" {
+		t.Errorf("PostAnomaly = %q, want %q", slot.PostAnomaly, "overlap at byte 0")
+	}
+	if slot.FailReason != "Failed: input/output error" {
+		t.Errorf("FailReason = %q, want %q", slot.FailReason, "Failed: input/output error")
+	}
+	if slot.DuplicateReason != "Duplicate NZB" {
+		t.Errorf("DuplicateReason = %q, want %q", slot.DuplicateReason, "Duplicate NZB")
+	}
+	if slot.OperationalError != "low disk space" {
+		t.Errorf("OperationalError = %q, want %q", slot.OperationalError, "low disk space")
 	}
 	if slot.FailedBytes == 0 {
 		t.Error("FailedBytes = 0, want > 0 after MarkArticleFailed")

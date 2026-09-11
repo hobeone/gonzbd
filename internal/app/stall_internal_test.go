@@ -290,9 +290,6 @@ func TestStallLost_ReplacesTheReasonWithTheOneActionLeft(t *testing.T) {
 		t.Errorf("reason = %q, want it to name the restart that recovers the job — the "+
 			"previous reason points at a mount the user has already fixed", got)
 	}
-	if row, ok := application.dispatcher.Row(job.ID()); !ok || !strings.Contains(row.Header.Warning, "restart") {
-		t.Errorf("dispatcher warning = %q, want the same reason; the listing is where the user looks", row.Header.Warning)
-	}
 }
 
 // TestRetryFinalize_ReportsRatherThanAssumesWhenItCannotAsk pins the

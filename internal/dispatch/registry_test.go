@@ -3,6 +3,7 @@ package dispatch
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -361,27 +362,62 @@ func TestDispatcherRow_ReturnsOneJobWithoutRenderingTheRest(t *testing.T) {
 	}
 }
 
-func TestDispatcher_SetWarning(t *testing.T) {
-	d := newTestDispatcher(t)
-	j := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
-		t.Fatalf("Add: %v", err)
+// TestDispatcher_HeaderStringSetters table-drives the three Header
+// string-field setters this PR added (SetPostAnomaly, SetFailReason,
+// SetOperationalError): each rejects an unknown job and, on a registered
+// one, writes only its own field.
+func TestDispatcher_HeaderStringSetters(t *testing.T) {
+	cases := []struct {
+		name   string
+		set    func(d *Dispatcher, id, val string) error
+		get    func(h Header) string
+		errTag string
+	}{
+		{
+			name:   "SetPostAnomaly",
+			set:    (*Dispatcher).SetPostAnomaly,
+			get:    func(h Header) string { return h.PostAnomaly },
+			errTag: "set post anomaly",
+		},
+		{
+			name:   "SetFailReason",
+			set:    (*Dispatcher).SetFailReason,
+			get:    func(h Header) string { return h.FailReason },
+			errTag: "set fail reason",
+		},
+		{
+			name:   "SetOperationalError",
+			set:    (*Dispatcher).SetOperationalError,
+			get:    func(h Header) string { return h.OperationalError },
+			errTag: "set operational error",
+		},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDispatcher(t)
+			j := job.New("j1", "Job 1", job.Policy{})
+			if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
 
-	if err := d.SetWarning("unknown", "warn"); err == nil {
-		t.Fatal("SetWarning on unknown job should error")
-	}
+			if err := tc.set(d, "unknown", "value"); err == nil {
+				t.Fatalf("%s on unknown job should error", tc.name)
+			} else if !strings.Contains(err.Error(), tc.errTag) {
+				t.Errorf("%s error = %q, want it to name the operation (%q)", tc.name, err, tc.errTag)
+			}
 
-	if err := d.SetWarning("j1", "disk low"); err != nil {
-		t.Fatalf("SetWarning: %v", err)
-	}
+			if err := tc.set(d, "j1", "the value"); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
 
-	row, ok := d.Row("j1")
-	if !ok {
-		t.Fatal("Row(j1) not found")
-	}
-	if row.Header.Warning != "disk low" {
-		t.Fatalf("Header.Warning = %q, want 'disk low'", row.Header.Warning)
+			row, ok := d.Row("j1")
+			if !ok {
+				t.Fatal("Row(j1) not found")
+			}
+			if got := tc.get(row.Header); got != "the value" {
+				t.Fatalf("%s wrote %q, want %q", tc.name, got, "the value")
+			}
+		})
 	}
 }
 

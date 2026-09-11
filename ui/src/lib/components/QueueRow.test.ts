@@ -178,13 +178,13 @@ describe('QueueRow', () => {
 
 	// ── Warning display ──
 
-	it('shows warning icon and text when slot.warning is set', () => {
-		const warnSlot = { ...baseSlot, warning: 'Missing articles' };
+	it('shows an icon and text when slot.ingest_anomaly is set', () => {
+		const warnSlot = { ...baseSlot, ingest_anomaly: 'Missing articles' };
 		const { container } = render(QueueRow, { slot: warnSlot, onremove: vi.fn() });
 		expect(container.textContent).toContain('Missing articles');
 	});
 
-	it('does not show warning icon when slot.warning is empty', () => {
+	it('does not show a warning icon when no anomaly/reason field is set', () => {
 		const { container } = render(QueueRow, { slot: baseSlot, onremove: vi.fn() });
 		// No warning text or icon.
 		expect(container.querySelector('.text-amber-600')).not.toBeInTheDocument();
@@ -635,15 +635,53 @@ describe('QueueRow', () => {
 			expect(screen.queryByTestId('stall-reason')).toBeNull();
 		});
 
-		it('prefers the stall reason over the generic warning', () => {
-			// The backend sets both to the same text when it parks a job, and the
-			// reason outlives the resume a re-evaluation performs. Rendering both
-			// duplicates the row's only free horizontal space.
+		it('deduplicates identical text shared by two fields', () => {
+			// A fixture (or a genuine coincidence) can give two independent
+			// fields the same sentence. It must render once, not twice — two
+			// identical badges reads as two problems instead of one.
 			render(QueueRow, {
-				slot: { ...baseSlot, warning: 'Stalled: disk full', stall_reason: 'Stalled: disk full' },
+				slot: {
+					...baseSlot,
+					ingest_anomaly: 'Stalled: disk full',
+					stall_reason: 'Stalled: disk full'
+				},
 				onremove: () => {}
 			});
 			expect(screen.getAllByText('Stalled: disk full')).toHaveLength(1);
+		});
+
+		it('combines distinct concurrent anomalies rather than hiding one', () => {
+			// The whole point of splitting Header.Warning into independent
+			// fields was that one finding must not silently suppress another.
+			// An {:else if} ladder in the template would recreate exactly that
+			// bug one layer up, so both must reach the DOM.
+			render(QueueRow, {
+				slot: {
+					...baseSlot,
+					status: 'Paused',
+					ingest_anomaly: '1 empty message-id',
+					duplicate_reason: 'Duplicate NZB'
+				},
+				onremove: () => {}
+			});
+			expect(screen.getByText(/1 empty message-id/)).toBeInTheDocument();
+			expect(screen.getByText(/Duplicate NZB/)).toBeInTheDocument();
+		});
+
+		it('shows the duplicate badge for an actively downloading forced duplicate', () => {
+			// A forced duplicate is admitted running, not paused. Gating the
+			// badge on Paused status hid this permanent, informational fact
+			// from the row for exactly the jobs a user most needs to notice it
+			// on — the ones now sharing download bandwidth with an original.
+			render(QueueRow, {
+				slot: {
+					...baseSlot,
+					status: 'Downloading',
+					duplicate_reason: 'Duplicate NZB (Forced)'
+				},
+				onremove: () => {}
+			});
+			expect(screen.getByText('Duplicate NZB (Forced)')).toBeInTheDocument();
 		});
 
 		it('reports durable and pending bytes as two figures, never a total', () => {
