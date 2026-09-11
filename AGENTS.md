@@ -155,8 +155,8 @@ about a set the reader cannot see, offered so that they do not have to go and
 look — which is why a wrong one is worse than no comment at all: it does not
 merely fail to help, it actively stops the check it replaced.
 
-No gate catches this. Comments are neither type-checked nor executed, `go vet`
-cannot read them, and `check_dup_comments` finds only copies.
+No gate catches this, and none could: see `docs/commit-cycle.md` § "Enumerate
+before asserting" for the eight that shipped.
 
 - **The enumeration is a command, not a recollection.** "I believe X is the
   only writer" and "`git grep -n 'X ='` returns three hits, two of which are
@@ -417,11 +417,10 @@ sentence is only half the sweep, and neither of these is caught by any gate.
   arithmetic on what is already written down, and it takes one line.
 
 **Sweep against the diff the commit will land as, not the diff that motivated
-the edit.** A reviewer names a stale sentence, the sentence is rewritten to
-describe the fix, and a clause the same fix also invalidated is carried forward
-untouched — the correction is real and the comment is still wrong. Re-read each
-comment you touched against `git diff --cached` at the end, as a reader who has
-not seen the finding that prompted it.
+the edit.** Re-read each comment you touched against `git diff --cached` at the
+end, as a reader who has not seen the finding that prompted it. This one has
+shipped three times on one branch; `docs/commit-cycle.md` § "Sweeping against
+the wrong diff" has the shape.
 
 Run `pr-review-toolkit:comment-analyzer` over the cumulative PR diff as well.
 It and the grep cover different things: the analyzer reads the comments you
@@ -547,9 +546,9 @@ Three rules follow:
 - **A green gate bounds nothing beyond its scope above.** State what was
   actually checked rather than that the gates passed.
 - **Distrust `check_coverage` attribution while you have uncommitted changes**
-  that shift a file's line count (issue #280). Committed hunks can land on the
-  wrong function, in both directions. If a reported function looks untouched by
-  your change, commit and re-run before writing a test for it.
+  that shift a file's line count (issue #280). If a reported function looks
+  untouched by your change, commit and re-run before writing a test for it —
+  `docs/commit-cycle.md` has why.
 
 Five further gates are **whole-repository**, not diff-scoped, and exist because
 build, vet, lint and the test suite are structurally blind to what they check —
