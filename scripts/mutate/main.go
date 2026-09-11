@@ -2,16 +2,14 @@
 // commit cycle mandates in step 2: revert the fix, watch the test fail, put
 // the fix back.
 //
-// That gate is the only one in the cycle with no runner. AGENTS.md says so
-// itself — "Neither has a tool that fails the build, which is exactly why both
-// have been skipped in practice while every scripted gate stayed green" — and
-// supplies a cp/trap/revert sketch to be re-derived per use. Re-derivation is
-// the problem this command exists to remove. One session produced eight
-// separate hand-rolled harnesses of this shape; all eight passed -count=1 and
-// restored from their own copy, both of which AGENTS.md gives as literal
-// copy-pasteable text, and seven of eight checked that the anchor matched
-// exactly once, which it gives only as prose. A rule re-typed from memory per
-// use has a per-use failure rate; the same rule in a runner has none.
+// That gate had no runner, and AGENTS.md supplied a cp/trap/revert sketch to
+// be re-derived per use. Re-derivation is the problem this command exists to
+// remove: one session produced eight separate hand-rolled harnesses of this
+// shape, and the invariant AGENTS.md stated only as prose — that the anchor
+// match exactly once — is the one that failed, in 1 of the 8. A rule re-typed
+// from memory per use has a per-use failure rate; the same rule in a runner
+// has none. docs/commit-cycle.md § "The red check" holds the measurement;
+// AGENTS.md now states the rule and defers the argument to both.
 //
 // Five verdicts, and the distinctions between them are the point:
 //
