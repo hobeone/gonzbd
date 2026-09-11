@@ -84,17 +84,12 @@ func TestMigrations_SchemaShape(t *testing.T) {
 	db := openMigratedTestDB(t)
 
 	t.Run("job_files carries no derived columns", func(t *testing.T) {
-		// failed_bytes and bytes_downloaded are deliberately NOT forbidden —
-		// see the sibling subtest below. The two named here are values
-		// maintained in parallel with the facts they summarise, which is the
-		// S5 violation; those two are caches of the same row's articles_done
-		// bits, with a single writer.
-		//
-		// bytes_downloaded was on this list, because the column of that name
-		// removed in #306 had a second writer. The name is reused; the shape
-		// is not. What makes a column legitimate here is the writer count, not
-		// the identifier, so the list has to shrink when the writer does —
-		// keeping it would forbid the fix rather than the defect.
+		// Both names here are values maintained in parallel with the facts
+		// they summarise, which is the S5 violation. The byte figures are
+		// forbidden too, by the sibling subtest below rather than this list,
+		// because they are excluded for a different reason — derivable from
+		// the manifest crossed with the durability record, rather than a
+		// second writer of a fact stored elsewhere.
 		forbidden := []string{"max_written", "write_cursor"}
 		rows, err := db.Query(`SELECT name FROM pragma_table_info('job_files')`)
 		if err != nil {

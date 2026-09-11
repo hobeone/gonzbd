@@ -1835,7 +1835,7 @@ recorded here so the next reader does not mistake them for design.
    writer is the sole production implementation of `checkpoint.Store`, whose
    `SaveBatch` holds the only `INSERT INTO failed_articles` outside tests —
    `git grep -n 'INTO failed_articles' -- '*.go' ':!*_test.go'` returns the one
-   line, `internal/app/dispatcher_wiring.go:112`. Without that filter it
+   line, `internal/app/dispatcher_wiring.go:107`. Without that filter it
    returns nine, the other eight being test fixtures.
 
 7. **An exact-offset collision is PREVENTED only within one open-file episode;
