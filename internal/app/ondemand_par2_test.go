@@ -387,8 +387,9 @@ func TestPar2Verdict_NothingIdentifiedIsNotACleanVerdict(t *testing.T) {
 	//
 	// Holding the volumes does NOT rescue the damaged case: nothing promotes
 	// a held volume after finalize (undeferRecovery has two callers, neither
-	// reachable post-finalize) and ResetForRetry downgrades FetchNever to
-	// FetchIfNeeded anyway. What the hold buys is an honest label — fileState
+	// reachable post-finalize) and a retry rebuilds the job from scratch
+	// through BuildIngestJob rather than inheriting either policy (#329).
+	// What the hold buys is an honest label — fileState
 	// renders FetchIfNeeded as "held" and FetchNever as "skipped"
 	// (internal/api/queue.go:327-329), and "skipped" claims a verdict that
 	// was never earned.

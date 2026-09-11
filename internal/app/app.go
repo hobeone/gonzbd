@@ -1642,9 +1642,11 @@ const (
 	// clean verdict.
 	//
 	// Holding the volumes does not rescue the damaged case: nothing promotes
-	// a held volume after the job finalizes, and ResetForRetry downgrades
-	// FetchNever to FetchIfNeeded anyway, so a retry behaves the same under
-	// either policy. What the hold buys is an honest label — fileState
+	// a held volume after the job finalizes, and a retry rebuilds the job
+	// from scratch through BuildIngestJob rather than inheriting either
+	// policy (#329), so a retry behaves the same under either policy for a
+	// stronger reason than before — neither one survives to be inherited.
+	// What the hold buys is an honest label — fileState
 	// renders FetchIfNeeded as "held" and FetchNever as "skipped"
 	// (internal/api/queue.go), and "skipped" would assert a verdict that was
 	// never earned.

@@ -540,6 +540,43 @@ func TestResetForRetry_ClearsDownloadStamps(t *testing.T) {
 	}
 }
 
+// TestResetForRetry_LeavesFetchNeverAlone pins that ResetForRetry no longer
+// carries a fetch-policy branch: a retained FetchNever (e.g. from a clean
+// par2 verdict on a retry path that inherited it) must not become
+// FetchIfNeeded here. Ownership of a fresh job's policy belongs to
+// BuildIngestJob's derivation, not to a repair branch in ResetForRetry — see
+// the plan for #329. After Task 1 nothing on the production retry path can
+// reach this branch with FetchNever any more (RestoreFileMeta no longer
+// restores the policy), so this must be an internal/job unit test that calls
+// ResetForRetry directly.
+func TestResetForRetry_LeavesFetchNeverAlone(t *testing.T) {
+	t.Parallel()
+
+	m := NewManifest([]JobFile{
+		{
+			Subject: "recovery.vol000+01.par2",
+			Bytes:   100,
+			Articles: []JobArticle{
+				{ID: "<a1@x>", Bytes: 100, Number: 1},
+			},
+		},
+	})
+	j := New("retry-fetch-never", "test.nzb", Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	if err := j.SetFileFetchPolicy(0, FetchNever); err != nil {
+		t.Fatalf("SetFileFetchPolicy: %v", err)
+	}
+
+	j.ResetForRetry()
+
+	if got := j.Progress().FileFetchPolicy(0); got != FetchNever {
+		t.Errorf("FileFetchPolicy(0) = %v after ResetForRetry, want FetchNever — "+
+			"ResetForRetry must not carry a fetch-policy branch", got)
+	}
+}
+
 // TestMarkDownloadFinished_FirstWins pins the first-wins guard on
 // MarkDownloadFinished / setDownloadFinishedOnce.
 func TestMarkDownloadFinished_FirstWins(t *testing.T) {

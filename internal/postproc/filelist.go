@@ -54,10 +54,11 @@ func buildDownloadFileList(j *Job) []string {
 	// The two expressions are not the same predicate. This one covers every
 	// file that is not FetchAlways; the loop above counts only recovery
 	// volumes. They agree because nothing but a recovery volume is ever moved
-	// off FetchAlways — a property of the callers (see Job.ResetForRetry and
-	// newJobProgress), not of JobProgress. If that ever changes, heldVols and
-	// heldBytes stop describing the same set and the line printing both goes
-	// wrong before anything else does.
+	// off FetchAlways — a property of the callers (see BuildIngestJob's
+	// derivation via Job.SetFileFetchPolicy, undeferRecovery and
+	// DiscardDeferredPar2), not of JobProgress. If that ever changes, heldVols
+	// and heldBytes stop describing the same set and the line printing both
+	// goes wrong before anything else does.
 	heldBytes := m.TotalBytes() - p.ExpectedBytes()
 
 	// Download duration header.

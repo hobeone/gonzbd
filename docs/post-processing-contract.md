@@ -311,11 +311,13 @@ source for this paragraph):
 
 `DiscardDeferredPar2` (`internal/job/content.go`) is the sole path from
 `FetchIfNeeded` to `FetchNever`: a walk over the file table setting the policy,
-with no file-set mutation, deletion, or renumbering involved. `ResetForRetry`
-is the only path back (`FetchNever → FetchIfNeeded`), so a retry re-derives the
+with no file-set mutation, deletion, or renumbering involved. There is no path
+back within a live job — a retry does not carry the previous attempt's policy
+forward at all. It rebuilds the job from scratch through `BuildIngestJob`
+(`internal/app/app.go`'s `rebuildJobFromNZB`), whose own classification
+re-derives `FetchIfNeeded` for a recovery volume, so a retry re-derives the
 verdict rather than trusting a downgrade computed against the previous
-download's damage profile; `FetchAlways` and `FetchIfNeeded` files are
-untouched by a retry.
+download's damage profile (#329).
 
 ### The verdict: identify, then verify
 

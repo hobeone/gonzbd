@@ -818,9 +818,6 @@ func (j *Job) ResetForRetry() {
 		if anyReset {
 			j.progress.files[fi].Complete = false
 		}
-		if j.progress.files[fi].Fetch == FetchNever {
-			j.progress.files[fi].Fetch = FetchIfNeeded
-		}
 	}
 	j.progress.recompute(j.manifest)
 }
