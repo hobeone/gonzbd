@@ -128,14 +128,16 @@ type queueSlot struct {
 	Timeleft       string `json:"timeleft"`
 	ETA            string `json:"eta"`
 	PP             string `json:"pp"`
-	// IngestAnomaly, PostAnomaly, DuplicateReason and OperationalError are
-	// Header's four single-owner replacements for what used to be one
-	// mutable Warning string — see dispatch.Header's field comments for who
-	// writes each and when. Sent verbatim; the client combines them with
-	// live queue state (e.g. Status) where that combination matters, rather
-	// than the server pre-joining them into prose.
+	// IngestAnomaly, PostAnomaly, FailReason, DuplicateReason and
+	// OperationalError are Header's five single-owner replacements for what
+	// used to be one mutable Warning string — see dispatch.Header's field
+	// comments for who writes each and when. Sent verbatim; the client
+	// combines them with live queue state (e.g. Status) where that
+	// combination matters, rather than the server pre-joining them into
+	// prose.
 	IngestAnomaly    string `json:"ingest_anomaly,omitempty"`
 	PostAnomaly      string `json:"post_anomaly,omitempty"`
+	FailReason       string `json:"fail_reason,omitempty"`
 	DuplicateReason  string `json:"duplicate_reason,omitempty"`
 	OperationalError string `json:"operational_error,omitempty"`
 	FailedBytes      int64  `json:"failed_bytes"`
@@ -488,6 +490,7 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		PP:                strconv.Itoa(r.Header.PP),
 		IngestAnomaly:     r.Header.IngestAnomaly,
 		PostAnomaly:       r.Header.PostAnomaly,
+		FailReason:        r.Header.FailReason,
 		DuplicateReason:   r.Header.DuplicateReason,
 		OperationalError:  r.Header.OperationalError,
 		FailedBytes:       failedBytes,

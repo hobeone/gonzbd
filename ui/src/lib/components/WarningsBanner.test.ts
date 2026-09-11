@@ -82,6 +82,20 @@ describe('WarningsBanner', () => {
 		expect(screen.getByText(/1 job added in paused state/)).toBeInTheDocument();
 	});
 
+	it('excludes a forced duplicate the user paused after the fact', () => {
+		// duplicate_reason is never cleared, so a forced duplicate the user
+		// later pauses (or a whole-queue pause) has status === 'Paused' with
+		// duplicate_reason still 'Duplicate NZB (Forced)'. Status alone can't
+		// tell that apart from a genuine "added in paused state" duplicate —
+		// only the exact reason text can.
+		vi.mocked(getQueueSlots).mockReturnValue([
+			{ nzo_id: '1', status: 'Paused', duplicate_reason: 'Duplicate NZB (Forced)' } as any
+		]);
+		render(WarningsBanner);
+
+		expect(screen.queryByText('Duplicate NZBs found:')).not.toBeInTheDocument();
+	});
+
 	it('stops counting a duplicate once the user resumes it', () => {
 		// duplicate_reason is never cleared once set, so resuming a
 		// duplicate-flagged job still carries it. The banner must key off

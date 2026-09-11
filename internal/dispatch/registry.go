@@ -23,6 +23,13 @@ var ErrNotFound = errors.New("dispatch: job not found")
 // name collision detection (internal/app/app.go), while downstream filesystem
 // paths and finalization read Job.Name(). SetName updates both under d.mu so the
 // two copies stay in lockstep.
+//
+// Below, a comment naming one function as a field's "only" or "sole" runtime
+// writer is scoped to that: Dispatcher.restore (dispatch.go) also populates
+// every field of a freshly-loaded job's Header at startup, via register's
+// `h: h` struct-literal assignment (registry.go) rather than any per-field
+// setter — but from the same value SQLite already holds, so it is
+// deserialization of existing state, not a second computation of it.
 type Header struct {
 	Name     string
 	Filename string
@@ -32,17 +39,18 @@ type Header struct {
 
 	// IngestAnomaly summarizes NZB segments the parser discarded as unusable
 	// while still accepting the job (rule 3: a bad article/segment costs
-	// only its own bytes). Set once by app.BuildIngestJob; nothing mutates
-	// it afterward, because it describes the ingested document rather than
-	// runtime state.
+	// only its own bytes). app.BuildIngestJob is the only runtime writer
+	// (restore aside, see above); nothing mutates it afterward, because it
+	// describes the ingested document rather than runtime state.
 	IngestAnomaly string
 
 	// PostAnomaly is set by app.postAnomaly when the assembler or the
 	// durability barrier detects a byte-accounting collision after the job
 	// has started downloading (#379) — a structural problem with what the
 	// servers served, distinct from IngestAnomaly's parse-time findings.
-	// It is the sole writer; a later anomaly simply overwrites an earlier
-	// one, since only the most recent is actionable.
+	// SetPostAnomaly is the only runtime writer (restore aside, see above);
+	// a later anomaly simply overwrites an earlier one, since only the most
+	// recent is actionable.
 	PostAnomaly string
 
 	// FailReason is set once by app.Fail when a permanent storage fault
@@ -50,14 +58,16 @@ type Header struct {
 	// dispatcher synchronously — enqueuePostProc hands it to the postproc
 	// queue, which can take a visible window to finalize — so this is the
 	// only live signal an operator sees until history.Entry.FailMessage
-	// exists. It is the sole writer.
+	// exists. SetFailReason is the only runtime writer (restore aside, see
+	// above).
 	FailReason string
 
 	// DuplicateReason is set once by app.AddJob's detectDuplicateNZB
 	// ("Duplicate NZB" / "Duplicate NZB (Forced)"), or "" if the job was
 	// not a duplicate at ingest. Immutable afterward for the same reason as
-	// IngestAnomaly: whether the job was a duplicate when it arrived does
-	// not change when the user later resumes it.
+	// IngestAnomaly (restore aside, see above): whether the job was a
+	// duplicate when it arrived does not change when the user later resumes
+	// it.
 	DuplicateReason string
 
 	// OperationalError is a free-text note set once by persistAndCommit
@@ -606,7 +616,8 @@ func (d *Dispatcher) Remove(ctx context.Context, id string) (err error) {
 }
 
 // SetPostAnomaly sets the mid-download anomaly note for a registered job.
-// It is the only writer of Header.PostAnomaly.
+// It is the only runtime writer of Header.PostAnomaly — see the field's doc
+// comment (and the Header struct comment) for the restore exception.
 func (d *Dispatcher) SetPostAnomaly(id, reason string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -619,7 +630,8 @@ func (d *Dispatcher) SetPostAnomaly(id, reason string) error {
 }
 
 // SetFailReason sets the permanent-failure reason for a registered job. It
-// is the only writer of Header.FailReason.
+// is the only runtime writer of Header.FailReason — see the field's doc
+// comment (and the Header struct comment) for the restore exception.
 func (d *Dispatcher) SetFailReason(id, reason string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -632,8 +644,9 @@ func (d *Dispatcher) SetFailReason(id, reason string) error {
 }
 
 // SetOperationalError sets the operational-error note for a registered job.
-// It is the only writer of Header.OperationalError — see the field's doc
-// comment on why it is not folded into IngestAnomaly or DuplicateReason.
+// It is the only runtime writer of Header.OperationalError (restore aside,
+// see the Header struct comment) — see the field's doc comment on why it is
+// not folded into IngestAnomaly or DuplicateReason.
 func (d *Dispatcher) SetOperationalError(id, msg string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

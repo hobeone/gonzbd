@@ -11,11 +11,17 @@
 	// of what happens to it afterward. So "added in paused state" is a claim
 	// about the CURRENT state, made by combining that immutable fact with
 	// live status: status === 'Paused' is what stops counting a job once the
-	// user resumes it, and it also excludes a forced duplicate on its own —
-	// a forced duplicate is left running, never Paused — so no separate
-	// "(Forced)" text check is needed.
+	// user resumes it.
+	//
+	// The "(Forced)" exclusion is still needed explicitly: a forced
+	// duplicate is added running, but the user can pause it (or the whole
+	// queue) afterward, which makes status === 'Paused' true for a job that
+	// was never "added in paused state" — status alone cannot tell "paused
+	// because it arrived that way" from "paused later by the user".
 	let duplicateCount = $derived(
-		getQueueSlots().filter((s) => s.status === 'Paused' && s.duplicate_reason).length
+		getQueueSlots().filter(
+			(s) => s.status === 'Paused' && s.duplicate_reason === 'Duplicate NZB'
+		).length
 	);
 
 	async function handleClear() {

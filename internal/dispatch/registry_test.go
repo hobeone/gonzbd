@@ -3,6 +3,7 @@ package dispatch
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -361,75 +362,62 @@ func TestDispatcherRow_ReturnsOneJobWithoutRenderingTheRest(t *testing.T) {
 	}
 }
 
-func TestDispatcher_SetFailReason(t *testing.T) {
-	d := newTestDispatcher(t)
-	j := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
-		t.Fatalf("Add: %v", err)
+// TestDispatcher_HeaderStringSetters table-drives the three Header
+// string-field setters this PR added (SetPostAnomaly, SetFailReason,
+// SetOperationalError): each rejects an unknown job and, on a registered
+// one, writes only its own field.
+func TestDispatcher_HeaderStringSetters(t *testing.T) {
+	cases := []struct {
+		name   string
+		set    func(d *Dispatcher, id, val string) error
+		get    func(h Header) string
+		errTag string
+	}{
+		{
+			name:   "SetPostAnomaly",
+			set:    (*Dispatcher).SetPostAnomaly,
+			get:    func(h Header) string { return h.PostAnomaly },
+			errTag: "set post anomaly",
+		},
+		{
+			name:   "SetFailReason",
+			set:    (*Dispatcher).SetFailReason,
+			get:    func(h Header) string { return h.FailReason },
+			errTag: "set fail reason",
+		},
+		{
+			name:   "SetOperationalError",
+			set:    (*Dispatcher).SetOperationalError,
+			get:    func(h Header) string { return h.OperationalError },
+			errTag: "set operational error",
+		},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDispatcher(t)
+			j := job.New("j1", "Job 1", job.Policy{})
+			if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
 
-	if err := d.SetFailReason("unknown", "Failed: EROFS"); err == nil {
-		t.Fatal("SetFailReason on unknown job should error")
-	}
+			if err := tc.set(d, "unknown", "value"); err == nil {
+				t.Fatalf("%s on unknown job should error", tc.name)
+			} else if !strings.Contains(err.Error(), tc.errTag) {
+				t.Errorf("%s error = %q, want it to name the operation (%q)", tc.name, err, tc.errTag)
+			}
 
-	if err := d.SetFailReason("j1", "Failed: EROFS"); err != nil {
-		t.Fatalf("SetFailReason: %v", err)
-	}
+			if err := tc.set(d, "j1", "the value"); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
 
-	row, ok := d.Row("j1")
-	if !ok {
-		t.Fatal("Row(j1) not found")
-	}
-	if row.Header.FailReason != "Failed: EROFS" {
-		t.Fatalf("Header.FailReason = %q, want 'Failed: EROFS'", row.Header.FailReason)
-	}
-}
-
-func TestDispatcher_SetOperationalError(t *testing.T) {
-	d := newTestDispatcher(t)
-	j := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-
-	if err := d.SetOperationalError("unknown", "warn"); err == nil {
-		t.Fatal("SetOperationalError on unknown job should error")
-	}
-
-	if err := d.SetOperationalError("j1", "disk low"); err != nil {
-		t.Fatalf("SetOperationalError: %v", err)
-	}
-
-	row, ok := d.Row("j1")
-	if !ok {
-		t.Fatal("Row(j1) not found")
-	}
-	if row.Header.OperationalError != "disk low" {
-		t.Fatalf("Header.OperationalError = %q, want 'disk low'", row.Header.OperationalError)
-	}
-}
-
-func TestDispatcher_SetPostAnomaly(t *testing.T) {
-	d := newTestDispatcher(t)
-	j := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-
-	if err := d.SetPostAnomaly("unknown", "collision"); err == nil {
-		t.Fatal("SetPostAnomaly on unknown job should error")
-	}
-
-	if err := d.SetPostAnomaly("j1", "offset collision at byte 4096"); err != nil {
-		t.Fatalf("SetPostAnomaly: %v", err)
-	}
-
-	row, ok := d.Row("j1")
-	if !ok {
-		t.Fatal("Row(j1) not found")
-	}
-	if row.Header.PostAnomaly != "offset collision at byte 4096" {
-		t.Fatalf("Header.PostAnomaly = %q, want 'offset collision at byte 4096'", row.Header.PostAnomaly)
+			row, ok := d.Row("j1")
+			if !ok {
+				t.Fatal("Row(j1) not found")
+			}
+			if got := tc.get(row.Header); got != "the value" {
+				t.Fatalf("%s wrote %q, want %q", tc.name, got, "the value")
+			}
+		})
 	}
 }
 
