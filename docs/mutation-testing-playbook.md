@@ -4,7 +4,7 @@ This playbook documents a repeatable process for using
 [go-gremlins](https://github.com/go-gremlins/gremlins) to find real test gaps
 in a package and close them with targeted, mutation-proven tests. It was
 developed while hardening `internal/par2` (mutation score 70.2% → 80.8%,
-commit `b8669fb`) and is meant to be followed by any agent asked to "run
+commit `94476c03`) and is meant to be followed by any agent asked to "run
 mutation testing on X and fix what it finds."
 
 > **Why mutation testing, not just coverage:** coverage tells you a line
@@ -87,7 +87,7 @@ gremlins; it is recorded here as an observation, not an explanation.
   `GREMLINS_DISK_MAX_MB`/`GREMLINS_TIMEOUT_SECS` (for a genuinely large
   package that needs more room, not a runaway).
 
-### Large packages (e.g. `internal/app`, 49 files) need `nohup` + polling, not a bare foreground run
+### Large packages (e.g. `internal/app`) need `nohup` + polling, not a bare foreground run
 
 A run scoped to a large package (as opposed to `./...`, which is forbidden
 above) can still take longer than a single tool call's timeout. This has now

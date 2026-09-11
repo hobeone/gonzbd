@@ -141,24 +141,26 @@ from outside its derivation, which broke the documented identity
 `remaining` forever. The comment saying `File.Bytes` was that sum did not stop
 it. `normalizeFileStruct` being the sole writer is what makes it true.
 
-Two smells this rule names, both present in the tree today:
+Two smells this rule names. Both were present in this tree, and F7 removed
+them; they are kept here because the shape recurs, not as open findings.
 
 - **Two constructors for one type.** `newManifest` and `Manifest.UnmarshalJSON`
-  populate the same eight fields by two independently-maintained code paths.
-  They have already diverged: `newManifest` *derives* `totalBytes` by summing
-  `f.Bytes`, while `UnmarshalJSON` *trusts* `mj.TotalBytes` from disk, and
-  nothing reconciles them. `recoveryFigures`' doc comment — "Both construction
-  paths … call it, so the two cannot disagree" — is a comment doing an owner's
-  job, and it only covers the two fields someone remembered.
+  populated the same eight fields by two independently-maintained code paths,
+  and had already diverged: `newManifest` *derived* `totalBytes` by summing
+  `f.Bytes`, while `UnmarshalJSON` *trusted* `mj.TotalBytes` from disk, with
+  nothing reconciling them. `recoveryFigures`' doc comment — "Both construction
+  paths … call it, so the two cannot disagree" — was a comment doing an owner's
+  job, and it covered only the two fields someone remembered.
 - **A derived value that is also persisted.** Anything recomputable from the
   articles (a file's byte total, recovery figures, article offsets) should be
   derived on load, not stored and trusted. Storing it creates a second source of
   truth that can disagree with the first, and under the no-backcompat rule there
   is no reason to keep the stored copy.
 
-The remedy for both is the same and is cheap here: `UnmarshalJSON` decodes to
-the public `[]JobFile` shape and delegates to `newManifest`. One derivation, one
-owner, and the persisted `TotalBytes` field stops being read at all.
+The remedy for both was the same and was cheap: `UnmarshalJSON` decodes to the
+public `[]JobFile` shape and delegates to `newManifest` — it ends
+`*m = *newManifest(files)` (`internal/job/manifest.go:358`). One derivation, one
+owner, and the persisted `TotalBytes` field is no longer read at all.
 
 > **When a check and an owner would both work, take the owner.** A check must be
 > called at every site that could violate the invariant, and the failure mode of
@@ -529,7 +531,8 @@ the rows.
 | E5 | UU body only satisfies a single-segment file | L3 | reject | — |
 | F1 | key `FileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
 | F2, F5 | structural (§5.F) | — | ✅ **implemented** — the state stops existing | — |
-| F3, F4 | structural (§5.F) | — | proposed — the state stops existing | — |
+| F3 | structural (§5.F) | — | ✅ **done** (`d4f92cee`) — the state stops existing | — |
+| F4 | structural (§5.F) | — | proposed — the state stops existing | — |
 | F6 | digest over accepted IDs (§5.F) | — | ✅ **implemented** | — |
 
 **Build order.** The F-items land first (§5.F), then the assertions:
@@ -568,8 +571,14 @@ the cancel path depends on that channel's FIFO ordering, so it is a larger chang
 than its row suggests and is not a prerequisite for anything.
 
 These are the assertions this contract proposes GoNZBD make. Each names the
-layer that owns it and its current status. Verified against the tree at
-`b2793dc1`; the ⚠ rows were confirmed by probe, not by reading.
+layer that owns it and its current status.
+
+**The last row-by-row verification was against the tree at `b2793dc1`
+(2026-08-17), now 324 commits behind**, and several items the table describes
+have landed since. Treat a row's status as a claim to re-check rather than as
+current fact; the ⚠ rows were confirmed by probe rather than by reading, which
+is the part that does not survive staleness gracefully. Re-pinning this line
+means re-running that verification, not editing the SHA.
 
 ### A. Message-ID (L0 — NZB parse)
 
@@ -1011,7 +1020,7 @@ already thrown away.
 |---|---|---|
 | F1 | ✅ **done** — key `FileWriter.seenDone`/`seenFailed` on `ArtIdx int32`, not `msgID string` | `resolvedUntracked`, `giveBackUntrackedPart`, the `resolvedUntracked` consult in `handleSuccessArticle`, and every `msgID == ""` early return in `fail` / `failPermanent` / `failDisplaced` — i.e. #392 |
 | F2 | ✅ **done** — call the by-index `MarkArticleEmittedByIdx` / `ClearArticleEmittedByIdx` everywhere | `Queue.MarkArticleEmitted`, `Queue.ClearArticleEmitted`, `Manifest.articleIndexByID`, `buildMessageIDIndex`, `dropMessageIDIndex`, the `messageIDIndex` field, three eager build sites |
-| F3 | key `dispatchTracker.tryList`/`.inFlight` on `(jobID, artIdx)`, not bare `messageID` | three `//nolint:unparam` directives, and the cross-job try-list aliasing bug |
+| F3 | ✅ **done** (`d4f92cee`) — key `dispatchTracker.tryList`/`.inFlight` on `(jobID, artIdx)`, not bare `messageID` | three `//nolint:unparam` directives, and the cross-job try-list aliasing bug |
 | F4 | split control messages out of `WriteRequest` | the `FileIdx` sentinels, the `JobID == ""` discrimination, the "control message convention" comment class |
 | F5 | ✅ **done** — carry the requested Message-ID on `pendingCmd` and match it in `runReader` | makes B1 structural rather than an assertion — see §5.B |
 | F6 | ✅ **done** — fold `NZB.MD5`'s digest over **accepted** article IDs, at the acceptance point | the digest-ordering rule, A1's carve-out, and the whole class "a new rejection silently changes every document's identity" — see §8, decision 1 |

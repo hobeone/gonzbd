@@ -35,7 +35,7 @@ All schema changes MUST be implemented as a new `goose` migration file in
 
 The architecture establishes specific concurrency patterns. Follow them:
 
-- **Dispatcher → Downloader signaling**: channel-based (`chan struct{}`, cap=1, non-blocking send — `Dispatcher.Notify` hands out the receive end, `Dispatcher.Wake` does the `select`/`default` send). NOT `sync.Cond`. Rationale in `docs/ARCHITECTURE.md` § Coordination Architecture.
+- **Dispatcher → Downloader signaling**: channel-based (`chan struct{}`, cap=1, non-blocking send — `Dispatcher.Notify` hands out the receive end, `Dispatcher.Wake` does the `select`/`default` send). NOT `sync.Cond` — the run loop `select`s over three sources and a `Cond` cannot be selected on. Rationale in `docs/dispatch-contract.md` § The tick.
 - **Dispatcher internal locking**: two mutexes with different disciplines, and they are not interchangeable.
     - `d.mu sync.Mutex` guards the per-job bookkeeping maps. Take it, touch one map, release — it must not be held across a call into `sched` or `Residency.Hydrate`, nor across any I/O.
     - `d.storeMu sync.Mutex` serializes store writes so a `Save` cannot race a `Delete` (`registry.go`, `tick.go`). It is *deliberately* held across blocking SQLite calls — that is its entire job, and `tick.go`'s `store.Save` carries a `//lockio:` waiver saying so — so the "touch one map, release" rule does not apply to it. What does apply: `storeMu` is the OUTER lock. `persistIfChanged` takes `storeMu` then `d.mu` to re-check the registry before writing; never invert that. Neither lock may be held across a call into `sched` or `Residency.Hydrate`.
@@ -287,7 +287,7 @@ These rules are distilled from real bugs found across dozens of audit and harden
 
 - **Never delete an archive on partial extraction failure.** If only some files fail to extract from a ZIP/RAR, preserve the archive for retry or manual recovery.
 
-- **Check directory containment before recursive delete.** Always verify `!strings.HasPrefix(targetDir, sourceDir)` before removing a directory tree. The worked example is historical — a sorting stage deleted its final directory when that directory sat inside the source directory. GoNZBD has no sorting stage today — `git grep -h '^type [A-Za-z]*Stage struct' -- internal/postproc/ ':!*_test.go'` returns the 10 concrete stages, and none of them sorts — so the rule is carried for the next stage that moves a tree, not for a caller that exists now.
+- **Check directory containment before recursive delete.** Always verify `!strings.HasPrefix(targetDir, sourceDir)` before removing a directory tree. The worked example is historical — a sorting stage deleted its final directory when that directory sat inside the source directory. GoNZBD has no sorting stage today — `git grep -h '^type [A-Za-z]*Stage struct' -- internal/postproc/ ':!*_test.go'` returns the 9 concrete stages, and none of them sorts — so the rule is carried for the next stage that moves a tree, not for a caller that exists now.
 
 - **Path length limits are per-component (NAME_MAX = 255 bytes), not per-path.** This is Linux-only software; do not import Windows MAX_PATH heuristics. When sanitizing folder + filename pairs, make the folder name a function of the job alone — never derive folder truncation from the filename, or files in the same job will scatter across multiple directories.
 

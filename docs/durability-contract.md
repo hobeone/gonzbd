@@ -571,7 +571,8 @@ now visibly unrouted rather than indistinguishable from a routed one.
 
 The one thing that must **not** go through `Stallable` is a bookkeeping defect —
 a run naming articles outside the file's own range in the manifest
-(`queue.runsCoverage`), an ack naming an index the manifest does not have. Those
+(`runsCoverage`, `internal/job/content.go`), an ack naming an index the manifest
+does not have. Those
 fail loudly as ordinary errors (A2, R28). Routing them through the fault path
 would blame storage for a numbering bug, which is the A1 conflation in reverse.
 
@@ -663,17 +664,34 @@ contradicts the record. That asymmetry is what makes the record trustworthy
 without reading a byte of it back.
 
 **State the bound on CONTENT, not on the table.** Deletion is performed from
-**five places outside the barrier's own merge**, and an earlier wording of this
+**three places outside the barrier's own merge**, and an earlier wording of this
 section said "and nothing else writes it", which its own document then
-contradicted where `SQLiteStore.Prune` appears in the memory budget:
+contradicted in the memory budget:
 
 | Deleter | When |
 |---|---|
-| `durability.Resumer` | a file shorter than its runs claim, or missing (§6) |
+| `durability.Resumer` | a file shorter than its runs claim, or missing (§6) — `discard` calls `RunStore.DeleteFile` (`internal/durability/resume.go:148`) |
 | `RunStore.DeleteJob` | a job leaving the queue, **or a retry re-parsing a manifest that changed shape** — `app.dropJobDurability` is reached from both |
-| `queue.SQLiteStore.removeCorrupt` | a job whose manifest is gone, so nothing can interpret the indices |
-| `queue.SQLiteStore.pruneDurabilityRows` | the crash-window backstop on every queue save |
-| `history.Repository.delete` | a history entry going away for good |
+| `history.Repository.delete` | a history entry going away for good (`internal/history/repository.go:330`) |
+
+The count was **five** until `internal/queue` was deleted (`b6651d43`). The two
+it named there — `SQLiteStore.removeCorrupt` and `SQLiteStore.pruneDurabilityRows`
+— went with the package, and **the second was the crash-window backstop: it ran
+on every queue save and removed rows whose job was in neither `jobs` nor
+history-as-`Failed`. Nothing replaced it.** Rows orphaned by a crash in the
+window between a job leaving the queue and its rows being deleted are therefore
+no longer swept. That is an open gap, not a design change — tracked as #549 —
+and it is recorded here rather than silently dropped from the table.
+
+The three above are the complete current set, but **no single grep proves it**,
+and the obvious one is misleading. `git grep -n 'DELETE FROM durable_runs\|DELETE
+FROM failed_articles' -- '*.go' ':!*_test.go'` returns five statements — three in
+`internal/durability/runstore_sqlite.go` (one of them `Commit`'s own merge,
+excluded below) and two deleting `failed_articles` per job, in `internal/app`.
+The third deleter is **not** among them: `history.Repository.delete` builds its
+statement by concatenation (`"DELETE FROM "+table`, `repository.go:402`), so the
+literal never appears. Read the grep as covering the first two only, and the
+enumeration as what a reader has to confirm by opening `repository.go`.
 
 A sixth deletes and is deliberately excluded from that count: `Commit`'s own
 `deleteRows` removes exactly the rows it just read, inside the merge's
@@ -1256,7 +1274,7 @@ nothing else recovers it. Three things about the shape are load-bearing:
   trim rather than deriving the flag, and a trim that fails withholds the flag.
 - **After `ReplaceFromRuns`, necessarily.** That call installs the Done bits
   this reads, and it clears `Complete` itself on any file whose bits it cleared.
-  It is also after §3.4's gate, so a file found short has already had its runs
+  It is also after §6's gate, so a file found short has already had its runs
   discarded and cannot be trimmed to a bound derived from rows that are gone.
 - **Not on the fault path.** The truncate is the only irreversible act in the
   whole sweep, and a job that raised a storage fault is about to be stalled. A
@@ -1599,7 +1617,7 @@ articles or sparse regions.
 | Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
 | Disk probe cache | one `probeState` per directory, evicted after 10 minutes; at most one outstanding `statfs` per directory. |
 | Per-job barrier state | `jobBarrierMu`, `jobBarrierBytes` and `lastBarrier` are dropped by `forgetJobBarrierState` when a job leaves the assembler's business — otherwise one entry per job ever downloaded, for the life of the process. The mutex's deletion is **deferred while anyone holds it**: dropping it let the next caller mint a second mutex for the same job, which serialises nothing, and the delete is reachable from inside a live barrier via `routeFault → Fail → maybeFinalize → enqueuePostProc`. |
-| Durability rows | `durable_runs` and `failed_articles`, deleted per job by `deleteJobDurability`. `removeCorrupt` and `history.Repository.delete` delete rows too — see §6's *The barrier is the only thing that puts CONTENT into the record* for the full five, and do not read this row as an enumeration. Neither table has a foreign key to the queue, so nothing removes them implicitly. `SQLiteStore.Prune` is the backstop: on every queue save it deletes rows whose job is in neither `jobs` nor history-as-`Failed`, which catches a crash in the window between a job leaving the queue and its rows being deleted. The `Failed` exception is load-bearing -- a retry bounds `FinalizeFile`'s truncate with those rows. |
+| Durability rows | `durable_runs` and `failed_articles`, deleted per job by `deleteJobDurability`. `history.Repository.delete` deletes rows too — see §6's *The barrier is the only thing that puts CONTENT into the record* for the enumeration, and do not read this row as one. Neither table has a foreign key to the queue, so nothing removes them implicitly, **and since `b6651d43` nothing sweeps rows orphaned by a crash between a job leaving the queue and its rows being deleted** (#549) — the `SQLiteStore.Prune` backstop that did so went with `internal/queue`. Growth is therefore bounded by crashes in that window rather than by a periodic sweep. |
 
 ## Failure & degradation rules
 
@@ -1793,7 +1811,7 @@ recorded here so the next reader does not mistake them for design.
    `Barrier.Run` acks articles *without* truncating — only `FinalizeFile`
    truncates. So the bits under-determine the flag, and a derived `Complete`
    would send untrimmed files into post-processing, which QuickCheck reads as a
-   missing file (§3.5) and works to reconstruct. Within this window the truncate
+   missing file (§4) and works to reconstruct. Within this window the truncate
    has in fact already run — `FinalizeFile` truncates before it commits and acks
    — but nothing in the bits distinguishes that file from one whose finalize has
    not started.
@@ -1938,8 +1956,10 @@ a green run does and does not bound.
   window it repairs and the residuals it leaves.
 - Storage-fault stall/fail with a surfaced, actionable reason and interval-based
   re-evaluation.
-- `durable_runs` and `failed_articles` tables (migrations `002`/`003`), which
-  replaced `article_facts`, `file_extents` and `job_files.articles_done`;
+- `durable_runs` and `failed_articles` tables (now in the single
+  `internal/history/migrations/001_initial.sql`, which the 002-007 chain was
+  collapsed into), which replaced `article_facts`, `file_extents` and
+  `job_files.articles_done`;
   `job_files.max_written` and `write_cursor` removed earlier.
 - The whole-file CRC threaded to `Job.SetFileCRC32FromRuns` by
   `Application.recordAssembledCRC`, for a file that collapses to one run

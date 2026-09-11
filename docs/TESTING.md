@@ -29,7 +29,7 @@ quality gates).
 **When to run:** Before every commit. Required to pass with `-race`.
 
 Standard Go unit tests across all packages. No external dependencies.
-Includes app-level scenario tests (`internal/app/scenario_*.go` — nine files;
+Includes app-level scenario tests (`internal/app/scenario_*.go` — ten files;
 see section 6) which use an in-process mock NNTP server to test
 download → assembly → post-processing flows without shelling out to real tools.
 
@@ -350,7 +350,7 @@ Failed tests automatically capture screenshots to `test/uitest/screenshots/`.
 
 **When to run:** These run as part of `go test ./...`. No special flags needed.
 
-**Location:** `internal/app/` — nine scenario files:
+**Location:** `internal/app/` — ten scenario files:
 
 | File | Focus |
 |------|-------|
@@ -360,6 +360,7 @@ Failed tests automatically capture screenshots to `test/uitest/screenshots/`.
 | `scenario_checkpoint_test.go` | Queue checkpoint / persistence under load |
 | `scenario_durability_test.go` | Durability across restarts |
 | `scenario_reload_test.go` | Config reload without restart |
+| `scenario_reload_checkpoint_test.go` | Reload inside the durability checkpoint window — a written but unacked article is not re-fetched |
 | `scenario_retry_reset_test.go` | Article retry and reset logic |
 | `scenario_decode_error_test.go` | Decoder error handling paths |
 | `scenario_dispatch_deadlock_test.go` | Dispatch deadlock detection |

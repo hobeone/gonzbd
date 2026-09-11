@@ -260,11 +260,13 @@ func (f failingDeleteRunStore) DeleteJob(context.Context, string) error { return
 // used it would enqueue the job with the stale rows still in place — the exact
 // state the mismatch branch exists to prevent, reached silently.
 //
-// Nothing else catches it. SQLiteStore.pruneDurabilityRows is the backstop for
-// orphaned rows, but it deliberately skips any job_id still present in `jobs`,
-// and queue.Add puts this job back there immediately. A row that survives the
-// deletion survives for the life of the job and bounds FinalizeFile's truncate
-// to articles that are somewhere else.
+// Nothing else catches it. There was once a backstop for orphaned rows —
+// SQLiteStore.pruneDurabilityRows — but it would not have caught this case
+// anyway, since it deliberately skipped any job_id still present in `jobs` and
+// the retry puts this job back there immediately; and it is gone regardless,
+// deleted with internal/queue in b6651d43. A row that survives the deletion
+// survives for the life of the job and bounds FinalizeFile's truncate to
+// articles that are somewhere else.
 //
 // So the deletion is fatal here, alone among its callers. The abort is clean
 // because it precedes every commit: the history entry is untouched and no job

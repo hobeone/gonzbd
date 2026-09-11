@@ -4,6 +4,15 @@ This is the canonical guidance file for any AI agent (Claude Code, Gemini, etc.)
 working in this repository. `CLAUDE.md` and `GEMINI.md` are symlinks to this
 file. It must be read and followed for every session.
 
+**This file states rules at the shortest form that can be acted on. The
+argument for a rule — the incident it came from, the measurement that set its
+shape, the worked example — lives wherever that argument can be checked**: a
+topic doc, or the package doc of the tool that enforces it. When a rule gains a
+runner, the prose arguing for it moves to the runner and leaves a command
+behind. This file was split down to 313 lines once before and regrew to three
+times that by accumulating postmortems; keeping the split is a standing
+obligation, not a one-off cleanup.
+
 ## Project Context
 
 GoNZBD is a high-performance Go reimplementation of [SABnzbd](https://sabnzbd.org),
@@ -29,16 +38,14 @@ implementation lives at `../sabnzbd/`.
 
 ## Standing Design Rules
 
-Four constraints that precede any specific design decision. They are stated
-here rather than in a topic doc because each has already been missed by work
-that never had cause to open the doc arguing for it, and each changes what the
-right answer is rather than merely how to write it down.
+Four constraints that precede any specific design decision. Each changes what
+the right answer is, not merely how to write it down, and each has already been
+missed by work that never had cause to open the doc arguing for it.
 
-`docs/article-validation-contract.md` carries the full argument for rules 1-3,
-the worked examples, and the article-validation consequences. Rule 4 is not
-from that document and has no topic doc: it is about what a comment may claim,
-so it applies to every file in the repository and its evidence is in this
-file's own commit cycle. This section is the rule.
+`docs/article-validation-contract.md` § "Ground rules" carries the full argument
+for rules 1-3 and their worked cases. `docs/commit-cycle.md` carries the
+evidence for rule 4. **These four statements are the rule; those documents are
+the argument.**
 
 ### 1. No backwards compatibility
 
@@ -51,8 +58,7 @@ single self-administered instance.
 Persisted manifests, queue rows, history entries and NZB backups written before
 a change may be assumed to satisfy the invariants that change introduces. There
 is no drain period, no dual-read path, no migration, and no "old jobs behave
-differently" caveat. Where an invariant is newly enforced at ingestion, it is
-simply true everywhere.
+differently" caveat.
 
 The rule's force is in what it forbids:
 
@@ -66,33 +72,24 @@ NNTP response stay untrusted regardless; on-disk corruption is a separate
 failure class that `docs/durability-contract.md` owns.
 
 **One carve-out, and it is narrow: the rule waives persistence FORMAT, not a
-security invariant.** Where trusting older persisted state could hand an
-attacker something — rather than produce a stale figure or a missing field —
-the guard stays. The test is what the value could *do*:
+security invariant.** The test is what the value could *do*:
 
 - A stale total, a missing counter, a figure from a superseded rule → the rule
   applies; delete the guard.
 - A value interpolated into a protocol, a path, a query, or a command → the
   rule does not apply; keep the guard and say why at the check.
 
-This was got wrong twice on one PR before it was written down: the rule was
-stretched to cover a Message-ID reaching an NNTP command line, which is a
-command injection rather than a formatting difference.
+The carve-out was stretched twice on one PR to cover a Message-ID reaching an
+NNTP command line, which is a command injection rather than a formatting
+difference.
 
 ### 2. State has one owner
-
-The rule that has retired the most defects here — #372 gave every `FileWriter`
-product a consumer, #378 gave the article accounting an owner, #385 made offset
-collisions exact.
 
 > **Every piece of derived state has exactly one function that computes it and
 > exactly one path that mutates it. Everything else reads.**
 
 A field whose value is *documented* as a function of other fields, but which
-any caller may assign, is not an invariant — it is a comment. `File.Bytes ==
-Σ Articles[].Bytes` holds because `normalizeFileStruct` is its sole writer, not
-because a comment says so; the one change that wrote it from elsewhere broke it
-and stranded bytes in `JobProgress`'s remaining count.
+any caller may assign, is not an invariant — it is a comment.
 
 > **When a check and an owner would both work, take the owner.** A check must be
 > called at every site that could violate the invariant, and the failure mode of
@@ -101,14 +98,13 @@ and stranded bytes in `JobProgress`'s remaining count.
 
 Three smells this names, all of which have been real here:
 
-- **Two constructors for one type.** `newManifest` and `Manifest.UnmarshalJSON`
-  populated the same eight fields by two independently-maintained paths and had
-  already diverged over `totalBytes`. A doc comment saying "both paths call
-  this, so they cannot disagree" is a comment doing an owner's job, and it
+- **Two constructors for one type.** Two independently-maintained paths
+  populating the same fields will diverge, and a doc comment saying "both paths
+  call this, so they cannot disagree" is a comment doing an owner's job — it
   covers only the fields someone remembered.
 - **A derived value that is also persisted.** Anything recomputable from its
-  parts should be derived on load, not stored and trusted. Storing it creates a
-  second source of truth, and the stored copy is the one that drifts.
+  parts should be derived on load, not stored and trusted. The stored copy is
+  the one that drifts.
 - **A type with a valid zero used as a key.** Re-keying a map from a string to
   an index trades a loud empty-key error for a silent alias to element 0. Where
   the substitute type has no invalid value, pair the change with an owner that
@@ -130,18 +126,6 @@ This is a bound on blast radius, not a licence to validate less. Reject fast and
 cheaply — the point is that being *wrong about which kind of bad an article is*
 must cost one article, so that precision stops being load-bearing.
 
-**It takes an injection carve-out, like rule 1 does.** The bound never justifies
-weakening a check whose absence would let a value reach a protocol, a path, a
-query or a command. Rule 1's carve-out and this one arrive there by different
-routes — that one asks whether trusting old persisted state hands an attacker
-something, this one asks whether the blast radius is really one article — but a
-Message-ID carrying CRLF fails both tests, and neither rule excuses it.
-
-It exists as a counterweight to §2 of the article-validation contract, which
-classifies every claim an NZB or article makes. That taxonomy is right and earns
-its place, but a table of claim classes makes every unfilled row look like work,
-and the pull toward completeness is invisible from inside it:
-
 > **Classification decides WHERE a check belongs, not WHETHER one is owed.**
 
 So before taking on article-validation work, ask what one instance costs when we
@@ -151,15 +135,12 @@ articles, or the whole file or job, it is a violation of this rule and it is
 real work.
 
 **A post with no par2 does not weaken this — it is the case that needs it
-most.** Those bytes are then unrecoverable, which is a risk the poster took, and
-the rule holds unchanged: one bad article still costs only its own bytes. What
-changes is the consequence to the user, and that is exactly why the blast radius
-must not be the whole file. Without this bound, a no-recovery post loses a
-download; with it, it loses a hole.
+most.** Without this bound, a no-recovery post loses a download; with it, it
+loses a hole.
 
-**This rule removes work.** Applied to the 19 open issues in this cluster, three
-survived as violations and ten were not article-validation work at all — see the
-contract's Ground rules for the triage.
+**It takes an injection carve-out, like rule 1 does.** The bound never justifies
+weakening a check whose absence would let a value reach a protocol, a path, a
+query or a command. A Message-ID carrying CRLF fails both tests.
 
 ### 4. Enumerate before asserting
 
@@ -169,78 +150,47 @@ contract's Ground rules for the triage.
 > moment you write the sentence.**
 
 The words that trigger this are *only*, *sole*, *solely*, *never*, *always*,
-*nothing else*, *the one place*, and every paraphrase of them. They are not
-stylistic. Each is a claim about a set the reader cannot see, offered so that
-they do not have to go and look — which is exactly why a wrong one is worse
-than no comment at all: it does not merely fail to help, it actively stops the
-check it replaced.
+*nothing else*, *the one place*, and every paraphrase of them. They are claims
+about a set the reader cannot see, offered so that they do not have to go and
+look — which is why a wrong one is worse than no comment at all: it does not
+merely fail to help, it actively stops the check it replaced.
 
-This rule exists because the failure is measured, not suspected. The
-durable-runs change shipped **eight** such overclaims. Every one was caught by
-a reviewer. **None** was caught by a gate, and none could have been: comments
-are neither type-checked nor executed, `go vet` cannot read them, and
-`check_dup_comments` finds only copies. One of the eight argued *for* a defect
-that had been fixed hours earlier, and would have been read as the reason to
-undo the fix.
-
-Three things make this specific rather than an exhortation to be careful:
+No gate catches this, and none could: see `docs/commit-cycle.md` § "Enumerate
+before asserting" for the eight that shipped.
 
 - **The enumeration is a command, not a recollection.** "I believe X is the
   only writer" and "`git grep -n 'X ='` returns three hits, two of which are
   tests" are different epistemic acts, and only the second is evidence. Run the
   grep even when — especially when — you are confident, and prefer
   grep-**then-read** over grep alone: the population you care about is usually
-  the set of *arguments*, and a paraphrase carries none of your tokens. This is
-  the same blindness `docs/*.md` has to a code identifier, in the other
-  direction.
+  the set of *arguments*, and a paraphrase carries none of your tokens.
 - **State the basis in the comment.** "Barrier is the only writer" becomes
   "Barrier is the only writer — `INSERT` appears once, at
-  `runstore_sqlite.go:233`". The citation is what lets the next reader
-  re-run your check in one command instead of re-deriving your confidence.
-- **Where the population is enumerable by a machine, write the test instead.**
-  A count of call sites, a set of writers of one field, the members of a
-  package-private door — these fail loudly when they move, where a comment
-  fails silently. `job.TestOutcomeWrites_MatchTheEnumerationStatedInProse`
-  (in `internal/job/outcome_writer_enumeration_test.go`) is the worked
-  example: the same enumeration had gone stale twice in two unlinked files,
-  and a grep from either one could not reach the other.
+  `runstore_sqlite.go:233`". The citation is what lets the next reader re-run
+  your check in one command instead of re-deriving your confidence.
+- **Where the population is enumerable by a machine, write the test instead.** A
+  count of call sites, a set of writers of one field, the members of a
+  package-private door — these fail loudly when they move, where a comment fails
+  silently.
 
-**A claim about BEHAVIOUR is scoped by the branch that makes it true.** The
-rule above governs a population of code and is settled by a command. A claim
-about what *happens* has neither: you cannot grep "is anything lost?", and what
-would settle it is a path through the code rather than a set of lines. It fails
-the same way — a sentence asserting more than was checked — so it belongs here,
-with a different check.
+**A claim about BEHAVIOUR is scoped by the branch that makes it true.** You
+cannot grep "is anything lost?", and what would settle it is a path through the
+code rather than a set of lines.
 
 > **Before writing that something holds, find the branch it depends on and name
 > it.** If the sentence would be false under some reachable configuration, say
 > which one it assumes.
 
-`CheckEarlyAbort`'s comment read "Nothing is lost by declining. The verdict is
-deferred, not discarded." True, and only while `q.store != nil`: `PromoteNext`
-guarded its `RestoreJobProgress` call on exactly that, and `newJobProgress`
-alone starts the counters at zero, so a store-less queue loses the failure rate
-across pause/resume and the abort never re-fires. The condition sat one branch
-away from the sentence and survived a full review round, because nothing in the
-claim pointed at it. Rule 4's trigger words did not fire either — "nothing is
-lost" quantifies over outcomes, not over writers or callers.
+Where a behavioural claim is pinned by a test, mutate the branch and require the
+test to die (see Step 2 below); where it lives only in a comment, name the
+branch in the sentence.
 
-**The same failure wears a second costume, in tests: an assertion that passes
-through a branch you did not mean to exercise.** #465's "does not restamp"
-subtest pinned `if job.PostProc { return false, nil }` rather than the `IsZero`
-guard it was written for, and was indistinguishable from a working test until a
-mutation SURVIVED. That half *is* machine-checkable, and `scripts/mutate` is
-the check — see "the red check is mechanical, not mental" below. Where a
-behavioural claim is pinned by a test, mutate the branch and require the test to
-die; where it lives only in a comment, name the branch in the sentence.
-
-**The narrowing half of this is already stated** under "Two checks on what you
-WROTE" in the commit cycle below — *narrowing a referent must not broaden a
-scope*. That clause governs a sentence a change **falsified**; this rule governs
-a sentence you are **writing for the first time**, which is where the other
-seven came from. When a claim you were about to write turns out to be false,
-the fix is to say what still holds and name what you checked, never to reach
-for a weaker universal.
+**The narrowing half of this is stated separately** under "Two checks on what
+you WROTE" below — *narrowing a referent must not broaden a scope*. That clause
+governs a sentence a change **falsified**; this rule governs a sentence you are
+**writing for the first time**. When a claim you were about to write turns out
+to be false, the fix is to say what still holds and name what you checked, never
+to reach for a weaker universal.
 
 ## Repository Layout
 
@@ -276,18 +226,22 @@ These are not loaded by default; read the relevant one before touching the
 area it covers, the same way you'd read `docs/ARCHITECTURE.md` before a
 design-level change.
 
-| Doc | Read before | Covers |
-|-----|-------------|--------|
-| [`docs/go-standards.md`](docs/go-standards.md) | Creating, editing, or refactoring any `.go` file | Idioms, anti-patterns, concurrency/persistence architecture, library selection, testing standards, the Go backend lessons-learned catalog |
-| [`docs/svelte-gotchas.md`](docs/svelte-gotchas.md) | Creating, editing, or refactoring any `.svelte`/`.svelte.ts` file | Svelte 5 reactivity gotchas (module-level `$state`, native `<dialog>`/`Modal.svelte` patterns, child component update patterns) |
-| [`docs/config-contract.md`](docs/config-contract.md) | Adding/renaming/removing a config field or a Svelte config `keyword=` prop | Keeping `gonzbd.yaml` comments, `docs/sabnzbd_spec.md` §9.x, and the config↔UI contract test in sync |
-| [`docs/article-validation-contract.md`](docs/article-validation-contract.md) | Touching `internal/nzb`, `internal/nntp`, `internal/decoder`, the decode/reconcile path in `internal/downloader`, or the accept path in `internal/assembler` | What GoNZBD asserts about a Usenet article and where each assertion belongs; the claim-class taxonomy and the layer ladder; the full argument behind Standing Design Rules 1-3 above (rule 4 is not from this document) |
-| [`docs/job-lifecycle.md`](docs/job-lifecycle.md) | Touching job residency, the state model, or `Manifest`/`JobProgress` access | What a job always carries and the header/progress/manifest tiers; State, Activity, Outcome and Intent as orthogonal axes; the reversibility boundary and `Cross` as its only door; the `Lease`; persistence and restart; byte accounting; the thirteen lifecycle scenarios `sched.TestEveryScenarioHasATest` pins |
-| [`docs/dispatch-contract.md`](docs/dispatch-contract.md) | Touching `internal/dispatch` or `internal/sched` | What each package owns and the dependency direction; the tick loop and the kick; manifest residency derived from pool membership; lock discipline across the dispatch→sched boundary; the read doors; the store interface; what neither package gets, and why |
-| [`docs/nntp-downloader-contract.md`](docs/nntp-downloader-contract.md) | Touching `internal/downloader` or `internal/nntp` | Connection pool lifecycle, dispatcher/worker/tracker tiers, sequential article try-lists, failure classification matrix, and disconnect-on-idle invariants |
-| [`docs/durability-contract.md`](docs/durability-contract.md) | Touching `internal/durability`, `internal/storagefault`, `internal/assembler`, or `internal/directunpack` | The `durable_runs` record and what may put content into it, the barrier and its proof, the checkpoint cadence, the startup resume sweep, storage-fault stall/fail, disk write caching, OS pre-allocation, sparse file writing, DirectUnpack streaming handoff, and NFS/SMB timeout bounds |
-| [`docs/post-processing-contract.md`](docs/post-processing-contract.md) | Touching `internal/postproc`, `internal/par2`, or `internal/unpack` | Stage execution loop, self-gating matrix, Fast/Slow queue priority, QuickCheck bypass guarantees, insufficient-blocks/`ParError` handling, and script isolation |
-| [`docs/mutation-testing-playbook.md`](docs/mutation-testing-playbook.md) | Running `gremlins` | The `run_gremlins.sh` wrapper, tuning, triaging `LIVED`/`NOT COVERED` mutants, the `--diff` known-bug workaround |
+| Doc | Read before |
+|-----|-------------|
+| [`docs/go-standards.md`](docs/go-standards.md) | Creating, editing, or refactoring any `.go` file |
+| [`docs/svelte-gotchas.md`](docs/svelte-gotchas.md) | Creating, editing, or refactoring any `.svelte`/`.svelte.ts` file |
+| [`docs/config-contract.md`](docs/config-contract.md) | Adding/renaming/removing a config field or a Svelte config `keyword=` prop |
+| [`docs/commit-cycle.md`](docs/commit-cycle.md) | Arguing that a commit-cycle or quality-gate rule does not apply to your change, or changing one |
+| [`docs/article-validation-contract.md`](docs/article-validation-contract.md) | Touching `internal/nzb`, `internal/nntp`, `internal/decoder`, the decode/reconcile path in `internal/downloader`, or the accept path in `internal/assembler` |
+| [`docs/job-lifecycle.md`](docs/job-lifecycle.md) | Touching job residency, the state model, or `Manifest`/`JobProgress` access |
+| [`docs/dispatch-contract.md`](docs/dispatch-contract.md) | Touching `internal/dispatch` or `internal/sched` |
+| [`docs/nntp-downloader-contract.md`](docs/nntp-downloader-contract.md) | Touching `internal/downloader` or `internal/nntp` |
+| [`docs/durability-contract.md`](docs/durability-contract.md) | Touching `internal/durability`, `internal/storagefault`, `internal/assembler`, or `internal/directunpack` |
+| [`docs/post-processing-contract.md`](docs/post-processing-contract.md) | Touching `internal/postproc`, `internal/par2`, or `internal/unpack` |
+| [`docs/mutation-testing-playbook.md`](docs/mutation-testing-playbook.md) | Running `gremlins` |
+
+Each doc's own header says what it covers; summarising it here creates a second
+copy that drifts. The trigger is the only column this table needs.
 
 ## Building and Running
 
@@ -344,8 +298,8 @@ Each logical change is a self-contained unit of work. The workflow is:
 1. **Read** the relevant spec/architecture sections.
 2. **Implement** the change. For a bug fix, write the failing test *first* and
    confirm it fails on the unpatched code before applying the fix (see
-   `docs/go-standards.md` § Red-Green Discipline, and the mechanical procedure
-   below — "confirm" means *observed*, not reasoned).
+   `docs/go-standards.md` § Red-Green Discipline, and Step 2 below — "confirm"
+   means *observed*, not reasoned).
 3. **Verify** all quality gates pass (see below).
 4. **Sweep** the comments and docs the change falsified (see below).
 5. **Commit** with a Conventional Commits message. Mention the plan step in the
@@ -357,16 +311,17 @@ Each commit must leave the repository in a working state
 #### Step 2 in practice: the red check is mechanical, not mental
 
 A test written to pin a fix is not a pin until that fix has been reverted and
-the test *observed* to fail. "Mentally reverting" is not sufficient — it is
-already what this file said, and pins that passed against unfixed code have
-shipped anyway. Two ways they slip through: an assertion that degenerates to a
-tautology, and an assertion on a value the code only produces under conditions
-the test never creates.
+the test *observed* to fail. "Mentally reverting" is not sufficient, and pins
+that passed against unfixed code have shipped anyway.
 
 **Use `scripts/mutate` rather than hand-rolling the revert.** Write a spec
 naming the package, the test, and each mutation; the tool applies them one at a
-time, requires each to produce a red result, and restores the file on every
-exit path including SIGINT.
+time, requires each to produce a red result, and restores the file on every exit
+path including SIGINT. It enforces `-count=1`, refuses an anchor that does not
+match exactly once, and distinguishes a compile error from a killed mutation —
+three invariants that a hand-rolled harness has to re-derive per use, and
+measurably fails to. `scripts/mutate/main.go`'s package doc is the reference for
+its five verdicts; `docs/commit-cycle.md` has the measurement.
 
 ```bash
 go run ./scripts/mutate path/to/the.spec     # exits non-zero unless every mutation is KILLED
@@ -385,54 +340,28 @@ file internal/job/progress.go
 --- end
 ```
 
-<!-- doccite:ok TestTheNewPin — a deliberate placeholder; the sentence above says it names no test -->
+<!-- doccite:ok TestTheNewPin — a deliberate placeholder; the sentence below says it names no test -->
 <!-- doccite:ok internal/pkg/target.go — the spec format's illustrative path, not a real file -->
 
-That anchor is a real line, and keeping it one is deliberate: an example
-anchored on text the tree no longer contains still reads as a working example,
-but every reader who runs it gets `ANCHOR — anchor matched no site` and has to
-work out whether the tool or the example is broken. This example used to name
-`internal/queue/queue.go`'s `if job.progress.downloadFinished.IsZero() {`,
-which is exactly what happened to it: #464 deleted that line when it gave the
-download timestamps a single owner. `internal/job/testdata/postproc_stamp.spec`
-is the same mutation against the line that replaced it, kept as a committed
-spec — so the mutation above is one this repository actually runs. Its `run`
-line is still a placeholder: `TestTheNewPin` names no test, and the committed
-spec runs `TestMarkDownloadFinished_FirstWins`.
+That anchor is a real line, and keeping it one is deliberate — an example
+anchored on text the tree no longer contains still reads as a working example.
+Its `run` line is a placeholder: `TestTheNewPin` names no test.
+`internal/job/testdata/postproc_stamp.spec` is the same mutation as a committed
+spec, and runs `TestMarkDownloadFinished_FirstWins`.
+`scripts/mutate/testdata/self.spec` is the tool's own red check, and running it
+is how you verify a change to the tool.
 
-`scripts/mutate/testdata/self.spec` is the worked example — it is the tool's own
-red check, and running it is how you verify a change to the tool.
+Two judgments the tool cannot make for you:
 
-The rest of this section is what the tool enforces, and is stated here because
-the reasons outlive the implementation. The tool exists because stating them was
-measurably not enough: one session produced **eight** hand-rolled harnesses of
-this shape, and of the three invariants below, the two that this file supplies
-as copy-pasteable text held in 8 of 8, while the one it supplies only as prose —
-anchor uniqueness — held in 7 of 8. A rule re-typed from memory per use has a
-per-use failure rate.
-
-**`-count=1` is not optional.** Go caches a successful test result keyed on the
-test binary and its inputs, and prints `(cached)` where it would have printed a
-duration. A mutation run without it can replay the *pre-mutation* pass and
-report `ok` — which reads as "the test does not discriminate" and is the exact
-opposite of the truth. This has already happened once in practice: a mutation
-check returned a cached `ok` and would have been recorded as evidence that a
-pin was inert, had the second run not been questioned. A cached `ok` is not an
-observation.
+- **Revert each half separately.** A fix with two call sites needs two reverts;
+  one half being pinned says nothing about the other.
+- **Prefer neutering a condition to deleting a block.** A compile error does not
+  demonstrate the test would have caught the behaviour.
 
 **Never `git stash`** — the stash stack is shared with any other session in this
 repo and a pop can take their work. Restore from your own copy rather than
 `git checkout -- <path>`, which also discards unrelated uncommitted edits in
-that file.
-
-- **Revert each half separately.** A fix with two call sites needs two reverts;
-  one half being pinned says nothing about the other.
-- **Prefer neutering a condition to deleting a block.** Deleting often breaks
-  the build instead of the test, and a compile error does not demonstrate the
-  test would have caught the behaviour.
-- **Confirm the mutation landed where you meant.** A scripted string-replace
-  can match an identical branch elsewhere in the file and produce a red result
-  that proves nothing. Anchor on text unique to the target.
+that file. (`scripts/mutate` already does both correctly.)
 
 Record the observed failure message in the commit body or PR. A red-green claim
 without the message it produced is an assertion, not evidence.
@@ -451,72 +380,22 @@ Take each claim the change invalidated and grep for its distinctive phrasing
 git grep -n 'bytes that reached disk'   # tracked files only, so no ui/dist or node_modules
 ```
 
-`git grep` rather than a path list, because the copies are not where you expect
-— they turn up in `cmd/`, `test/`, `ui/`, the root `AGENTS.md`, and this file.
-Restricting the search to `internal/` and `docs/` is how the first draft of this
-section missed that `docs/go-standards.md` still said to `git stash`, in the
-same change that added the rule against it.
+`git grep` rather than a path list, because the copies turn up in `cmd/`,
+`test/`, `ui/`, and this file.
 
-**`git grep` is blind to paraphrase, and the docs are where paraphrase
-lives.** A code comment usually repeats the symbol, so grepping the symbol
-finds it. A `docs/*.md` file restates the claim in prose and shares no token
-with the code: `docs/ARCHITECTURE.md` said "All message-IDs are validated
-before use to prevent NNTP command injection" and survived a sweep for
-`validateMessageID`, because it never names the function it is describing.
+Three things grep does not cover, each of which has shipped drift here
+(`docs/commit-cycle.md` § "The sweep" has the worked cases):
 
-**A table row is the same claim, compressed — and it is missed for the
-opposite reason.** The paragraph above is about a claim carrying none of your
-search tokens. A Markdown table row usually carries the token and gets missed
-anyway, because it is nowhere near the prose that explains it: you rewrite the
-paragraph you came for, and the row two hundred lines up still states the old
-version in four words. Nothing marks it as the same claim.
-
-This happened three times in one document on #401.
-`docs/article-validation-contract.md`'s §5.B prose was rewritten to say the
-response-identity check covers `BODY` 222, `ARTICLE` 220, `HEAD` 221 and
-`STAT` 223 — while both B1 table rows, and a row in the decidability table
-150 lines earlier, still said `222` alone. The document contradicted itself
-about its own scope. A reviewer found two of the three; the third only turned
-up because that finding prompted a grep for the rest of the class.
-
-So when a change alters a claim that is stated anywhere as a **literal** — a
-status code, a duration, a threshold, a limit, a field name — sweep for that
-literal from the repository root, not for the concept you were editing:
-
-```bash
-git grep -n '222'          # finds all three rows in one command
-git grep -n 'PenaltyUnknown'
-```
-
-No search for "the Message-ID check" would have found any of them. The concept
-is what you are thinking about; the literal is what is written down.
-
-**Two checks on what you WROTE, not on what you removed.** Finding the stale
-sentence is only half the sweep; both of these are about the replacement, and
-neither is caught by any gate — comments are neither type-checked nor executed,
-and `check_dup_comments` only finds copies.
-
-- **Narrowing a referent must not broaden a scope.** When a change deletes the
-  thing a justification named, the fix is to say what *still* holds, not to
-  assert a universal. "`internal/queue` no longer keys on X" is not "nothing
-  keys on X". This shipped: F2 deleted the queue's Message-ID lookup and the
-  rewritten comment claimed nothing downstream keyed on Message-ID, while
-  `internal/assembler`'s `seenDone`/`seenFailed` still do until F1 lands. That
-  sentence is the stated reason A7 drops duplicates document-wide, so acting on
-  it would have let a second segment be taken for a duplicate of the first —
-  buffer released, assembled file silently short, no error raised. If a
-  rewritten claim contains *nothing*, *never*, *always* or *only*, name what you
-  actually checked and scope the claim to it.
-
-- **Removing one term from a stated formula leaves the rest asserting
-  something false.** Recompute the stated result from the surviving terms. This
-  is arithmetic on what is already written down, not a re-derivation, and it
-  takes one line. `docs/job-lifecycle.md` read `~80 B + map` per article and
-  `~3.3 MB` per 20k-article job; deleting the `+ map` term left `80 x 20,000`
-  visibly failing to equal `3.3 MB`. Re-measuring showed the total had been
-  wrong all along (1.64 MB), which the composite form had been hiding. A
-  deliberate decision not to re-derive a figure is not a licence to leave a
-  visible contradiction behind.
+- **`git grep` is blind to paraphrase, and the docs are where paraphrase
+  lives.** A code comment usually repeats the symbol; a `docs/*.md` file
+  restates the claim in prose and shares no token with the code.
+- **A table row is the same claim, compressed** — and it carries the token but
+  sits nowhere near the prose that explains it, so rewriting the paragraph
+  leaves the row stating the old version in four words.
+- **A literal is what is written down; the concept is only what you were
+  thinking about.** When a change alters a status code, a duration, a
+  threshold, a limit or a field name, sweep for that literal from the root:
+  `git grep -n '222'`, not a search for "the Message-ID check".
 
 So when a change alters what a doc *describes* — a layer's responsibility, an
 enforced invariant, a security property, a data-flow direction — **read
@@ -525,35 +404,37 @@ the end**, rather than grepping them. That is two files and a few minutes, and
 it is the only pass that catches a sentence which is wrong without containing
 any of your keywords. Grep still covers the code.
 
-Run `pr-review-toolkit:comment-analyzer` over the cumulative PR diff as well.
-It and the grep cover different things: the analyzer reads the comments you
-changed, the grep finds the ones you didn't.
+**Two checks on what you WROTE, not on what you removed.** Finding the stale
+sentence is only half the sweep, and neither of these is caught by any gate.
 
-Do this **once, on the last round** of a review-fix loop, not on every round:
-each round's own fix creates fresh drift, so an early sweep goes stale.
+- **Narrowing a referent must not broaden a scope.** When a change deletes the
+  thing a justification named, the fix is to say what *still* holds, not to
+  assert a universal. "`internal/queue` no longer keys on X" is not "nothing
+  keys on X". If a rewritten claim contains *nothing*, *never*, *always* or
+  *only*, name what you actually checked and scope the claim to it.
+- **Removing one term from a stated formula leaves the rest asserting something
+  false.** Recompute the stated result from the surviving terms. This is
+  arithmetic on what is already written down, and it takes one line.
 
 **Sweep against the diff the commit will land as, not the diff that motivated
-the edit.** The failure is subtler than "comments drift", and it has now
-happened three times on this branch — twice shipping the drift in the *same*
-commit as the change that caused it. Each time the sweep ran against the state
-that *prompted* the correction: a reviewer names a stale sentence, the sentence
-is rewritten to describe the fix, and a clause the same fix also invalidated is
-carried forward untouched. The correction is real and the comment is still
-wrong. Re-read each comment you touched against `git diff --cached` at the end,
-as a reader who has not seen the finding that prompted it.
+the edit.** Re-read each comment you touched against `git diff --cached` at the
+end, as a reader who has not seen the finding that prompted it. This one has
+shipped three times on one branch; `docs/commit-cycle.md` § "Sweeping against
+the wrong diff" has the shape.
+
+Run `pr-review-toolkit:comment-analyzer` over the cumulative PR diff as well.
+It and the grep cover different things: the analyzer reads the comments you
+changed, the grep finds the ones you didn't. Do this **once, on the last round**
+of a review-fix loop — each round's own fix creates fresh drift, so an early
+sweep goes stale.
 
 **Migrations are the case that cannot be fixed later.** A wrong claim in an
 applied `goose` migration is frozen — the file must not be edited afterwards.
 Sweep any migration this change adds *before* it merges; if a stale claim is
 found in one already applied, correct it in a new migration's comment block and
-name the statement it supersedes, rather than editing the original.
-
-The schema is currently a single `001_initial.sql`, so there is no second
-migration to hold a correction: a wrong claim there can only be superseded by
-the next migration anyone adds. Sweep it especially carefully. Its
-`jobs.recovery_bytes` block is the worked example of a superseding comment —
-it states the corrected definition and why the derivation argument that
-preceded it was wrong.
+name the statement it supersedes. The schema is currently a single
+`001_initial.sql`, so there is no second migration to hold a correction. Its
+`jobs.recovery_bytes` block is the worked example of a superseding comment.
 
 ### Code Review Reception Protocol
 
@@ -600,11 +481,7 @@ go test -race ./...                   # Unit tests with the race detector
 golangci-lint run ./...               # Must pass (no new issues)
 ```
 
-Two gates in the Per-Change Commit Cycle above are not in that block, and
-neither runs on its own — but they are not optional: the **observed** red check
-(step 2) and the **claim sweep** (step 4). Both were skipped in practice while
-every scripted gate stayed green, which is why each now has a runner covering
-the part of it a machine can do:
+Plus the two gates that have a runner but no automatic trigger:
 
 ```bash
 go run ./scripts/mutate <spec>          # step 2 — every mutation must be KILLED
@@ -614,65 +491,36 @@ go run ./scripts/check_citations        # step 4 — the enumerations that carry
 **Neither runner makes its gate automatic.** `scripts/mutate` checks the
 mutations you thought to write, so it cannot tell you about the branch you did
 not think to mutate; `check_citations` reaches only claims that embed a command,
-and a claim about behaviour has none (see Rule 4). Both still have to be
-invoked, and choosing what to put in the spec remains the judgment the gate is
-actually made of.
+and a claim about behaviour has none (see Rule 4). Choosing what to put in the
+spec remains the judgment the gate is actually made of.
 
-`./scripts/run_tests.sh` runs the full Go and UI suites but **without** the race
-detector, so `go test -race ./...` is a separate, required step.
-Note: Standard `go test ./...` and `go test -race ./...` exclude files with `//go:build integration`. Whenever modifying files in `test/integration/` or changing startup wiring in `cmd/gonzbd/main.go` that integration tests consume, you MUST run `go test -tags=integration ./test/integration/... ./internal/par2/...` locally before committing or pushing.
+Notes on the gate block:
 
-**A tagged file is invisible to every default gate, and it rots silently.** The
-exclusion above is not specific to `integration`: `uitest` and `crash` are
-excluded the same way, and so is any path the mandated command does not
-name. A tagged `internal/app` integration test was uncompilable for six weeks (#475)
-because `app.New`'s signature changed under it — `go build`, `go vet` and
-`go test -race` all skipped it for being tagged, and the mandated integration
-command is scoped to `./test/integration/...`, which does not reach
-`internal/app`. Nothing failed; the test simply stopped existing.
-
-`go vet -tags=integration,uitest,crash ./...` closes that. It **compiles**
-those files without running any of them, needs none of the external tools the
-tagged suites need (par2, rar, unrar, 7z, Playwright, a live Usenet server),
-and is cheap enough to run unconditionally — measured at 6.9 s with a cold
-build cache and 0.24 s warm — which is why it is in the gate block above
-rather than in the conditional note here.
-
-**Scope it exactly, because the obvious summary of it is false.** It does not
-compile "every tagged file". It compiles files carrying one of the **three
-tags this repository defines** — `integration`, `uitest`, `crash` — built for
-the **host `GOOS`/`GOARCH`**. Files behind an OS constraint stay invisible:
-thirteen files carry an OS constraint (`git grep -c '^//go:build
-\(windows\|darwin\|!linux\|unix\|!unix\|linux\)$' -- '*.go'` returns 13
-matching lines) and the ones for other platforms are simply skipped here —
-`internal/fsutil/crossdevice_windows.go` does not compile under `GOOS=windows`
-at all (#480), and no gate in this repository notices. It also
-does not replace running the suites — it guarantees they can be built, not
-that they still assert anything.
-
-**`golangci-lint` now sees these files too.** `.golangci.yml`'s `run.build-tags`
-lists all three tags, so the default `golangci-lint run ./...` — both in
-`scripts/run_tests.sh` and in `ci.yml`'s `golangci-lint-action` step — lints
-the 27 tagged files the same as everything else, with no `--build-tags` flag
-needed at either call site. It was not always this way: before #481, the
-config carried no `build-tags` key, so `golangci-lint` loaded packages without
-tags and the 27 tagged files were linted by nothing, silently — a gap the vet
-gate above does not close, since it only proves the files compile.
-
-`e2e` is deliberately not in the tag list: `test/e2e` carries no build
-constraint and is gated at runtime by `E2E_CONFIG`, so `-tags=e2e` has never
-done anything. `crash` is Linux-only and its files say so (`//go:build crash &&
-linux`), which is what keeps this gate passing on macOS — before that
-constraint existed, `unix.Fadvise` made it fail there and took
-`scripts/run_tests.sh` down with it under `set -e`.
+- `./scripts/run_tests.sh` runs the full Go and UI suites but **without** the
+  race detector, so `go test -race ./...` is a separate, required step.
+- Standard `go test ./...` and `go test -race ./...` exclude files with
+  `//go:build integration`. Whenever modifying files in `test/integration/` or
+  changing startup wiring in `cmd/gonzbd/main.go` that integration tests
+  consume, you MUST run
+  `go test -tags=integration ./test/integration/... ./internal/par2/...`
+  locally before committing or pushing.
+- **A tagged file is invisible to every default gate, and it rots silently.**
+  `go vet -tags=integration,uitest,crash ./...` compiles the three tagged
+  suites without running them. Scope it exactly: it covers the three tags this
+  repository defines, built for the **host `GOOS`/`GOARCH`**, so files behind
+  an OS constraint stay invisible. It proves those files build; it does not
+  prove they still assert anything. (`docs/commit-cycle.md` § "Why the gates
+  are shaped the way they are" has the six-week regression that motivated it.)
+- `.golangci.yml`'s `run.build-tags` lists all three tags, so the default
+  `golangci-lint run ./...` lints the tagged files too, with no flag needed.
 
 If any gate fails, fix the underlying issue. **Do not skip, suppress, or bypass
 these checks** to make a commit go through. **Never insert dummy tests or dummy
 variable references (`var _ = helper`) simply to satisfy `check_test_alignment`
-or coverage numbers.** Write real unit tests validating the logic or use `//nocover: <reason>`
-for trivial exempted code (see `docs/go-standards.md`). If a lint rule genuinely needs to be
-disabled for a specific case, add a `//nolint:rulename // reason` comment
-explaining why.
+or coverage numbers.** Write real unit tests validating the logic or use
+`//nocover: <reason>` for trivial exempted code (see `docs/go-standards.md`). If
+a lint rule genuinely needs to be disabled for a specific case, add a
+`//nolint:rulename // reason` comment explaining why.
 
 ### Gate Semantics — what a failure means, and what a pass does not
 
@@ -698,11 +546,9 @@ Three rules follow:
 - **A green gate bounds nothing beyond its scope above.** State what was
   actually checked rather than that the gates passed.
 - **Distrust `check_coverage` attribution while you have uncommitted changes**
-  that shift a file's line count (issue #280). `gitscope.Diff()` unions the
-  committed and working-tree diffs, whose hunk headers are numbered against
-  different files, so committed hunks can land on the wrong function — in
-  both directions. If a reported function looks untouched by your change,
-  commit and re-run before writing a test for it.
+  that shift a file's line count (issue #280). If a reported function looks
+  untouched by your change, commit and re-run before writing a test for it —
+  `docs/commit-cycle.md` has why.
 
 Five further gates are **whole-repository**, not diff-scoped, and exist because
 build, vet, lint and the test suite are structurally blind to what they check —
@@ -718,30 +564,22 @@ go run ./scripts/check_test_doubles --all   # test doubles or test-named files l
 
 | Gate | What it catches | How to satisfy it |
 |------|-----------------|-------------------|
-| `check_dup_comments` | A multi-line `//` block appearing twice — usually a paste that still names the ORIGINAL declaration, so the copy authoritatively documents code it does not sit on | Rewrite the copy to describe what it sits on, or add `//dupcomment:ok <reason>` inside the block. The reason is mandatory, the marker must start the comment line, and a reason that wraps onto a second line must be closed by a blank `//` unless the marker is the block's last line — an unclosed wrapped reason is a hard exit-2 error, because guessing where it ends silently suppresses the finding on the *other* copy. Per-package copies of one helper file (same basename, distinct directories) are exempt automatically. |
-| `check_review_banner` | An audit snapshot under `docs/reviews/` that does not declare itself frozen, or does not name the commit it describes | Add a blockquote with the phrase `Frozen record` and a backticked commit SHA. The check is presence-only — it does not judge whether the review's claims are still true, only that the file admits they may not be. |
-| `check_citations` | A comment that embeds a backticked `grep` or `git grep` and states a count, where running the command no longer produces that count. This is Rule 4's enforcement arm: the rule requires the enumeration to be stated, and this runs it. | Re-run the command and correct the number, or correct the command so it means what the prose says — a count stated as "outside tests" whose command has no `\| grep -v _test.go` is the common case, as is a pattern that also matches its own comment or the declaration it describes. Where the population is real but not greppable ("the errors one function returns"), name it and do not dress it as a citation — and describe a historical command rather than backticking it, since a backticked example is indistinguishable from a live citation. Commands are parsed to argv, only `grep` and `git grep` are executed, quoted text is treated as literal rather than as shell syntax, and every file operand must resolve inside the repository — so a comment can be neither a code-execution surface nor a way to read files outside the tree. |
-| `check_doc_citations` | A cited file path that names nothing in the tree, or a `Test...` name cited as a guard that is declared nowhere. Complements `check_citations`, which reads only Go comments carrying an embedded `grep`; this reads Markdown too, and claims with no command behind them. The class is measured: `internal/queue` was deleted in `b6651d43` and ~400 references survived across 31 files, docs cited five migrations that were never applied, and five tests were named as the guard on an invariant while not existing | Correct the reference, or mark it deliberate with a reason — `//doccite:ok <token> — <why>` in Go, `<!-- doccite:ok <token> — <why> -->` in Markdown. A bare marker is itself an error. Prose that names something gone ON PURPOSE ("the test that stood here, X, was folded into Y") is recognised by its own vocabulary and needs no marker; `docs/reviews/` frozen records are skipped entirely, since their paths are supposed to be the ones that existed at the commit they name |
-| `check_test_doubles` | Test doubles (`Fake`, `Mock`, `Stub`, `Nop`, `*ForTesting`) or test-named files leaking into production builds without test build tags (`test`, `integration`, `uitest`, `crash`) | Add a recognized test build tag, move to a `*_test.go` file, or add `//testdouble:allow <reason>` on the declaration (or before `package` for filename exemptions). The reason is mandatory; a bare marker is flagged. |
+| `check_dup_comments` | A multi-line `//` block appearing twice — usually a paste that still names the ORIGINAL declaration, so the copy authoritatively documents code it does not sit on | Rewrite the copy to describe what it sits on, or add `//dupcomment:ok <reason>` inside the block. |
+| `check_review_banner` | An audit snapshot under `docs/reviews/` that does not declare itself frozen, or does not name the commit it describes | Add a blockquote with the phrase `Frozen record` and a backticked commit SHA. Presence-only — it does not judge whether the review's claims are still true. |
+| `check_citations` | A comment that embeds a backticked `grep` or `git grep` and states a count, where running the command no longer produces that count. Rule 4's enforcement arm. | Re-run the command and correct the number, or correct the command so it means what the prose says. Where the population is real but not greppable ("the errors one function returns"), name it and do not dress it as a citation. |
+| `check_doc_citations` | A cited file path that names nothing in the tree, a `Test...` name cited as a guard that is declared nowhere, or a `doc.md § Section` citation naming a heading that document does not have. Reads Markdown too, and claims with no command behind them. A bare `§3.4` names no document and is deliberately not checked. | Correct the reference, or mark it deliberate — `//doccite:ok <token> — <why>` in Go, `<!-- doccite:ok <token> — <why> -->` in Markdown. |
+| `check_test_doubles` | Test doubles (`Fake`, `Mock`, `Stub`, `Nop`, `*ForTesting`) or test-named files leaking into production builds without test build tags | Add a recognized test build tag, move to a `*_test.go` file, or add `//testdouble:allow <reason>` — on the declaration, or before `package` to exempt a whole test-named file. |
 
-All four are part of `ci.yml`, but `ci.yml` has no automatic trigger (see
-"Continuous Integration" below) — it runs only on `workflow_dispatch`. So in
-practice all four run when you run them locally, which is exactly what the
-block above is for; dispatching CI by hand is the other way to reach them. They were once
-absent from `ci.yml` entirely while the three diff-scoped gates were present,
-which is how a defect in `check_dup_comments`' own marker handling survived in
-the tree: nothing ever ran the tool that would have caught it. That failure
-mode now depends on the local block being run, not on a server.
+**Every marker's `<reason>` is mandatory — a bare marker is itself an error.**
+Each tool's package doc under `scripts/` owns the rest of its behaviour: what
+it scans, how markers wrap, and (for `check_citations`) why it parses to argv
+and never runs a shell. Read the tool when a finding looks wrong, rather than
+expecting this table to explain it.
 
-None of the four is diff-scoped, so any of them can fail on a file you did not
-touch. Each found a real defect on its first run against this repository: a
-package doc comment duplicated across two files of `scripts/nntpfaultproxy`; a
-fixture comment in the since-deleted `internal/queue`'s progress helpers that named
-`resetForReload` above a test of `clone`; and four wrong citations —
-`internal/sched/advance.go` claiming `parkLocked` had two call sites when it had
-three, two commands whose prose said "outside tests" while the command filtered
-nothing, and one in `internal/job/job.go` that could not run at all because it
-carried no path argument, so `grep` waited on stdin and reported zero.
+All five are in `ci.yml`, but `ci.yml` has no automatic trigger (see
+"Continuous Integration" below), so in practice they run when you run them
+locally. None is diff-scoped, so any of them can fail on a file you did not
+touch.
 
 ### Mutation Testing (periodic, not a per-commit gate)
 
@@ -823,7 +661,7 @@ test) moved to [`docs/config-contract.md`](docs/config-contract.md).
 
 ## Git Conventions
 
-- **Branch**: **work lands via pull request by default**, including single-commit fixes. This holds even though it is a solo private repo, for two concrete reasons: the PR is the review surface that CodeRabbit and human review comment on, and `.github/workflows/security.yml` triggers on `pull_request` — pushing straight to `main` skips review entirely and runs the security scan only after the fact, when it is too late to be a gate. (`ci.yml` no longer triggers on `pull_request`; see "Continuous Integration" below.) A direct push to `main` requires the user to say so for that specific change — their standing preference is still the PR route.
+- **Branch**: **work lands via pull request by default**, including single-commit fixes. This holds even though it is a solo private repo, for two concrete reasons: the PR is the review surface that CodeRabbit and human review comment on, and `.github/workflows/security.yml` triggers on `pull_request` — pushing straight to `main` skips review entirely and runs the security scan only after the fact, when it is too late to be a gate. A direct push to `main` requires the user to say so for that specific change — their standing preference is still the PR route.
 - **This is a convention, not an enforced gate.** There is no GitHub branch protection configured for this repository, so nothing on the server will reject a direct push to `main`. It holds because we follow it. Do not read "the push succeeded" as "the push was allowed."
 - **Worktrees**: for multi-step efforts, work in an isolated **git worktree** off `main`, then open a PR from that branch. Note a fresh worktree cannot build until you supply the UI bundle — `ui/dist/*` is gitignored, so `//go:embed all:dist` in `ui/embed.go` fails and `internal/web` reports `[setup failed]`. This is a worktree artifact, not a broken change:
   ```bash
@@ -841,64 +679,56 @@ Follows the global Conventional Commits 1.0.0 policy in `~/.claude/CLAUDE.md`
 Project-specific addition: **scope should be the Go package name or
 subsystem** — `fix(assembler)`, `refactor(queue)`, `feat(nntp)`.
 
-### Commit Hygiene (learned from real mistakes)
+### Commit Hygiene
 
-These rules exist because a batch of refactor commits violated them — the cost is misleading history that `git log <file>` and `git bisect` then propagate.
+These rules exist because a batch of refactor commits violated them — the cost
+is misleading history that `git log <file>` and `git bisect` then propagate.
+`docs/commit-cycle.md` § "Commit hygiene" has the cases.
 
-- **The subject line MUST describe what is actually in the diff.** Before committing, run `git diff --cached --stat` and confirm the scope and files match the message. A commit subjected `refactor(api): …` that actually changes `internal/assembler/` is a defect, not a typo — it makes the assembler change invisible to anyone searching api history.
-- **One logical change per commit — verify, don't assume.** When several edits accumulate in the working tree, do not `git add -A` and split by timing. Stage per logical unit (`git add <paths>`) and confirm each commit contains only that unit. Two unrelated extractions (e.g. an assembler refactor and an api/config helper) must be two commits.
-- **Per-path staging only works when the units own disjoint paths.** `git add <path>` stages the *working-tree* version of that file, not "the part of it belonging to this unit" — so if two logical units both touched `parser.go` and all the edits were made before the first commit, commit one silently gets both. This has happened: a commit subjected `refactor(nzb): fold the digest` carried an entire feature as well, and the rule above read as satisfied the whole time, because `git add -A` had been avoided. `git status` shows the file as staged either way.
-
-  Before committing, check whether any touched file carries hunks from more than one unit. If it does, per-path staging cannot produce an honest boundary, and the fix is to reconstruct the intermediate: check the file out at the base commit, re-apply only the first unit's edits, verify it builds and its tests pass in isolation, commit, then restore the final version for the second. (Interactive `git add -p` is not available in this harness.)
-
-  Verify with a **negative grep on the staged diff**, not by re-reading the message — `git diff --cached -- <path> | grep -c '<a-symbol-from-the-other-unit>'` must be `0`. This is also the two-commit-split rule's real purpose: not tidy history, but making the intermediate state exist so a red-green check is possible at all.
-- **After rewriting commit boundaries, prove only the boundaries moved.** `git diff <old-tip> HEAD --stat` must be empty, and every commit must build and vet independently:
+- **The subject line MUST describe what is actually in the diff.** Before
+  committing, run `git diff --cached --stat` and confirm the scope and files
+  match the message.
+- **One logical change per commit — verify, don't assume.** Stage per logical
+  unit (`git add <paths>`), never `git add -A` with a split by timing.
+- **Per-path staging only works when the units own disjoint paths.** `git add
+  <path>` stages the *working-tree* version of that file, so two units that both
+  touched one file collapse into the first commit. Before committing, check
+  whether any touched file carries hunks from more than one unit; if it does,
+  reconstruct the intermediate rather than pretending the boundary is honest.
+  Verify with a **negative grep on the staged diff**, not by re-reading the
+  message — `git diff --cached -- <path> | grep -c '<a-symbol-from-the-other-unit>'`
+  must be `0`.
+- **After rewriting commit boundaries, prove only the boundaries moved.**
+  `git diff <old-tip> HEAD --stat` must be empty, and every commit must build
+  and vet independently:
   ```bash
   for c in $(git rev-list --reverse <base>..HEAD); do
     git checkout -q --detach "$c" && go build ./... && go vet ./... || echo "BROKEN $c"
   done
   git checkout -q <branch>
   ```
-- **Quantitative claims in commit bodies MUST be measured, not estimated.** If you write "drops cyclomatic complexity from 24 to <5," you must have run the tool (`gocyclo`/`gocognit`) on the result. An extraction reduces the *parent's* complexity by construction, but the magnitude is not guessable — a real case dropped 24→12, not the claimed <5. State the measured number or omit the claim.
-- **Re-run `golangci-lint` on the final diff, not a mental model of it.** Refactors that convert control flow (e.g. fall-through `return` into boolean returns) can introduce *new* lint findings (`S1008`, `ifElseChain`) that did not exist in the original. The gate must be run against the code you are about to commit.
+- **Quantitative claims in commit bodies MUST be measured, not estimated.** If
+  you write "drops cyclomatic complexity from 24 to <5," you must have run
+  `gocyclo`/`gocognit` on the result. State the measured number or omit the claim.
+- **Re-run `golangci-lint` on the final diff, not a mental model of it.**
+  Refactors that convert control flow can introduce *new* findings that did not
+  exist in the original.
 
 ## Continuous Integration
 
 **`ci.yml` is intentionally disabled and this is not a misconfiguration.** It
 triggers on `workflow_dispatch` only — nothing runs automatically on push or on
 pull request. Every gate it contains is run locally before each push (see
-"Quality Gates" above), where the full suite completes in a fraction of the
-runner's wall-clock time.
-
-What this means in practice, for agents and humans alike:
+"Quality Gates" above).
 
 - **Do not wait for CI, poll for checks, or run `/watch-ci` on this repo.** A
   PR whose only checks are Security Scan and CodeQL is in the expected state.
-- **A PR with no CI run is not broken, not stuck, and not missing a step.** Do
-  not investigate it, do not re-push to "trigger" it, and do not ask whether it
-  is safe to proceed — it is.
+  A PR with no CI run is not broken, not stuck, and not missing a step.
 - **The gates did not go away, only the server did.** The local block under
   "Quality Gates" is now the *only* thing standing between a defect and `main`,
-  which raises rather than lowers the cost of skipping it. `go test -race ./...`
-  and the whole-repo checks (`check_dup_comments`, `check_review_banner`,
-  `check_citations`, `check_test_doubles`) are reached automatically nowhere — only by running them
-  locally, or by dispatching `ci.yml` by hand.
-- **`security.yml` still triggers on `push` and `pull_request`**, plus a weekly
-  cron. It is unaffected by any of the above, and a failure there is real.
-- **`codeql.yml` does too**, on the same two events plus a weekly cron, and a
-  failure there is real for the same reason. It replaced GitHub's default
-  code-scanning setup, which could not analyse Go at all: the extractor builds
-  with `GOTOOLCHAIN=local`, so it used the runner image's pre-installed Go and
-  failed against `go.mod`'s floor from the 1.27 bump onwards. That surfaced as
-  a failing `Analyze (go)` check with no findings — a startup error, which
-  reads as "nothing to report" and actually meant "did not run".
-
-  The general lesson outlives this instance: **raising the floor in `go.mod`
-  can silently disable any tool that pins its own toolchain**, and such a tool
-  fails by not starting rather than by reporting. The 1.27 bump took out both
-  CodeQL and `golangci-lint` this way, neither of which announced itself. After
-  a version bump, check every consumer that builds the module, not only the
-  ones whose config names a version.
+  which raises rather than lowers the cost of skipping it.
+- **`security.yml` and `codeql.yml` still trigger on `push` and
+  `pull_request`**, plus a weekly cron. A failure in either is real.
 
 To run CI deliberately — worth doing before a release, or when a change touches
 build tags, the workflow files, or anything whose local and runner behaviour
@@ -910,9 +740,8 @@ gh run list --workflow=ci.yml --limit 5 # find it
 gh run watch <run-id>                   # follow it
 ```
 
-To restore automatic runs, replace the `on:` block in
-`.github/workflows/ci.yml` with the `push`/`pull_request` triggers recorded in
-this file's git history, and delete this section.
+`docs/commit-cycle.md` § "Why CI is disabled" has the CodeQL/toolchain history
+and how to restore automatic runs.
 
 ## Reading Python for Reference
 

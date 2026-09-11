@@ -11,7 +11,7 @@ The root `gonzbd.yaml` contains inline comments above every directive documentin
 its purpose, valid values, and important considerations. When adding, renaming,
 or removing config fields in `internal/config/`, you MUST update the
 corresponding comments in `gonzbd.yaml` and `test/fixtures/gonzbd.yaml` to stay
-in sync. Also update `docs/sabnzbd_spec.md` §9.x tables.
+in sync. Also update the settings tables in `docs/sabnzbd_spec.md` §9.
 
 ## Config ↔ UI Contract Test
 

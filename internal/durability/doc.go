@@ -53,10 +53,12 @@
 // back.
 //
 // Do not read that as "only these two touch the table". Rows are deleted from
-// five places outside Commit's own merge: Resumer, RunStore.DeleteJob (a job
-// leaving the queue, or a retry re-parsing a changed manifest),
-// queue.SQLiteStore.removeCorrupt and pruneDurabilityRows, and
-// history.Repository.delete. The bound that actually holds — and the only one
+// three places outside Commit's own merge: Resumer, RunStore.DeleteJob (a job
+// leaving the queue, or a retry re-parsing a changed manifest), and
+// history.Repository.delete. It was five until b6651d43 deleted
+// internal/queue, taking SQLiteStore.removeCorrupt and the
+// pruneDurabilityRows backstop with it — see docs/durability-contract.md §6.
+// The bound that actually holds — and the only one
 // the trust argument needs — is on CONTENT: a delete can only ever take a
 // claim away, which is S3's safe direction.
 package durability

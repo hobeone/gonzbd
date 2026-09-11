@@ -86,9 +86,11 @@ or modify its behavior:
 | **`script`** | Executes user-defined post-processing script with full environment (`SAB_*` vars, including Go-specific `SAB_FINAL_PROCESSING_DIR`) and 8 positional args ($1–$8). Supports `RedactSecrets` (`SAB_API_KEY`/`SAB_PASSWORD` masked as `**REDACTED**`) and `ScriptCanFail` (non-zero exit logged as warning instead of error). | Skipped if no script configured for job/category. | Captures script exit code and stdout/stderr log (capped at 512 KiB). |
 
 > **`quickcheck` is a permanent stage (decided 2026-09-03).**
-> `2026-08-25-job-lifecycle-design.md` §15 listed it for deletion in plan 2 of
-> the job-lifecycle rework, on the premise that it duplicated the download
-> path's par2 verification. That premise was retired when #494/#495 gave both
+> The job-lifecycle rework's plan 2 listed it for deletion, on the premise that
+> it duplicated the download path's par2 verification. (The plan document that
+> said so was deleted with the rest of `docs/superpowers/plans/` in `6c1ca60a`;
+> the decision is recorded here because this is now its only home.) That
+> premise was retired when #494/#495 gave both
 > consumers one shared computation (`par2.Assess`) and #491 closed without a
 > unified `Verdict`: the two now read one assessment and answer different
 > questions — *fetch the deferred volumes?* versus *relocate, and may repair
@@ -103,8 +105,11 @@ or modify its behavior:
 > download path cannot host either — it *"decides; it never renames"*
 > (`docs/ARCHITECTURE.md`) and performs no I/O by design.
 >
-> The lifecycle rework's remaining obligation to this stage is a repoint of its
-> six `job.Queue` reads, not a deletion. See §1.2's second amendment, item 3.
+> The lifecycle rework's obligation to this stage was a repoint of its
+> `job.Queue` reads rather than a deletion, and that is discharged: the `Queue`
+> type is gone with `internal/queue` (`b6651d43`), and `git grep -n 'job\.Queue'
+> -- '*.go'` now matches only two historical comments in
+> `internal/postproc`'s tests.
 
 ### Verification state is derived, never persisted (#533)
 
@@ -158,7 +163,10 @@ write at all, rather than protecting any particular file.
 
 ## Post-Processing (PP) Level Enforcement
 
-SABnzbd post-processing levels are cumulative integer masks on `job.Queue.PP`:
+SABnzbd post-processing levels are cumulative integer masks on `postproc.Job.PP`
+(`internal/postproc/stages.go:137`) — post-processing's own job struct, not
+`internal/job.Job`. `PP` does not survive past App, which resolves it into a
+`job.Policy` before persistence (see `docs/dispatch-contract.md`):
 
 - **PP = 0 (Download Only)**: Skips `quickcheck`, `repair`, and `unpack`. Runs the cleanup stages (`sample_cleanup`, `par2_cleanup`, `extension_cleanup`), finalize, and script.
 - **PP = 1 (Repair Only)**: Runs `quickcheck` and `repair`. Skips `unpack`.
