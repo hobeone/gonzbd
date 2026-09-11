@@ -571,8 +571,14 @@ the cancel path depends on that channel's FIFO ordering, so it is a larger chang
 than its row suggests and is not a prerequisite for anything.
 
 These are the assertions this contract proposes GoNZBD make. Each names the
-layer that owns it and its current status. Verified against the tree at
-`b2793dc1`; the ⚠ rows were confirmed by probe, not by reading.
+layer that owns it and its current status.
+
+**The last row-by-row verification was against the tree at `b2793dc1`
+(2026-08-17), now 324 commits behind**, and several items the table describes
+have landed since. Treat a row's status as a claim to re-check rather than as
+current fact; the ⚠ rows were confirmed by probe rather than by reading, which
+is the part that does not survive staleness gracefully. Re-pinning this line
+means re-running that verification, not editing the SHA.
 
 ### A. Message-ID (L0 — NZB parse)
 

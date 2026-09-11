@@ -680,8 +680,8 @@ it named there — `SQLiteStore.removeCorrupt` and `SQLiteStore.pruneDurabilityR
 on every queue save and removed rows whose job was in neither `jobs` nor
 history-as-`Failed`. Nothing replaced it.** Rows orphaned by a crash in the
 window between a job leaving the queue and its rows being deleted are therefore
-no longer swept. That is an open gap, not a design change, and it is recorded
-here rather than silently dropped from the table.
+no longer swept. That is an open gap, not a design change — tracked as #549 —
+and it is recorded here rather than silently dropped from the table.
 
 The three above are the complete current set:
 `git grep -n 'DELETE FROM durable_runs\|DELETE FROM failed_articles' -- '*.go' ':!*_test.go'`
@@ -1613,7 +1613,7 @@ articles or sparse regions.
 | Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
 | Disk probe cache | one `probeState` per directory, evicted after 10 minutes; at most one outstanding `statfs` per directory. |
 | Per-job barrier state | `jobBarrierMu`, `jobBarrierBytes` and `lastBarrier` are dropped by `forgetJobBarrierState` when a job leaves the assembler's business — otherwise one entry per job ever downloaded, for the life of the process. The mutex's deletion is **deferred while anyone holds it**: dropping it let the next caller mint a second mutex for the same job, which serialises nothing, and the delete is reachable from inside a live barrier via `routeFault → Fail → maybeFinalize → enqueuePostProc`. |
-| Durability rows | `durable_runs` and `failed_articles`, deleted per job by `deleteJobDurability`. `history.Repository.delete` deletes rows too — see §6's *The barrier is the only thing that puts CONTENT into the record* for the enumeration, and do not read this row as one. Neither table has a foreign key to the queue, so nothing removes them implicitly, **and since `b6651d43` nothing sweeps rows orphaned by a crash between a job leaving the queue and its rows being deleted** — the `SQLiteStore.Prune` backstop that did so went with `internal/queue`. Growth is therefore bounded by crashes in that window rather than by a periodic sweep. |
+| Durability rows | `durable_runs` and `failed_articles`, deleted per job by `deleteJobDurability`. `history.Repository.delete` deletes rows too — see §6's *The barrier is the only thing that puts CONTENT into the record* for the enumeration, and do not read this row as one. Neither table has a foreign key to the queue, so nothing removes them implicitly, **and since `b6651d43` nothing sweeps rows orphaned by a crash between a job leaving the queue and its rows being deleted** (#549) — the `SQLiteStore.Prune` backstop that did so went with `internal/queue`. Growth is therefore bounded by crashes in that window rather than by a periodic sweep. |
 
 ## Failure & degradation rules
 
