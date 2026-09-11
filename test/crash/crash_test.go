@@ -57,10 +57,9 @@ func TestSIGKILL_NoArticleIsResolvedWithoutItsBytes(t *testing.T) {
 	servedAtKill := h.Server.ArticlesServed()
 
 	db := h.openDB()
+	// JobFiles itself now requires one row per submitted file at that file's
+	// own index, so the count check that stood here would be unreachable.
 	files := h.JobFiles(db, jobID)
-	if len(files) != len(h.opts.Files) {
-		t.Fatalf("job_files has %d rows, want %d", len(files), len(h.opts.Files))
-	}
 	runs := h.Runs(db, jobID)
 	durable := h.DurableOrdinals(jobID)
 

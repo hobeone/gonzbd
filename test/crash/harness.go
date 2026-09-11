@@ -916,6 +916,34 @@ func (h *harness) JobFiles(db *sql.DB, jobID string) []jobFile {
 		h.t.Fatalf("job_files rows: %v", err)
 	}
 
+	// The row set must be exactly one row per submitted file, at that file's
+	// own index. The per-row bounds check above is not enough: FileRanges sums
+	// ArticleCount in row order to get each file's base, so a set missing file
+	// 1 gives file 2 a base short by file 1's articles, and every done/failed
+	// ordinal below that base lands on the wrong file — silently, with the
+	// assertions still passing against the wrong rows. Since the seed writes
+	// every index in one transaction, a gap here is a daemon defect and this
+	// harness should report it rather than compute around it.
+	//
+	// The ordering clause is NOT exercised today, and is here as a precondition
+	// rather than a fix: every crash fixture submits a single file
+	// (`git grep -nE '\[\]fileSpec\{' -- test/crash` returns 3 lines, the two
+	// per-suite options and the default in newHarness, each a one-element
+	// literal), so no gap is constructible and FileRanges' base is always 0. It
+	// earns its place the day a multi-file fixture appears, which is the same
+	// day the misattribution would start happening silently.
+	if len(out) != len(h.MsgIDs) {
+		h.t.Fatalf("job_files has %d rows, but the fixture submitted %d files",
+			len(out), len(h.MsgIDs))
+	}
+	for i, jf := range out {
+		if int(jf.FileIdx) != i {
+			h.t.Fatalf("job_files row %d names file_index %d; the rows are ordered by "+
+				"file_index, so this is a gap or a duplicate and the article-index "+
+				"bases derived from them would be wrong", i, jf.FileIdx)
+		}
+	}
+
 	// Derived here rather than read, because that is what the daemon does now.
 	// Deliberately re-implemented against the raw rows instead of calling into
 	// internal/queue: this harness reads stable storage with the daemon dead,
