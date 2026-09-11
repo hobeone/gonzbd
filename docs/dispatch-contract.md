@@ -79,6 +79,30 @@ non-blocking send on a size-1 buffered channel (`wake`) to wake the loop
 early; `Add`, `Cancel`, `Retry`, `Pause`, `Resume`, `SetCaps`, `Finished` and
 `YieldedFor` all call it.
 
+**Why a channel and not a `sync.Cond`.** The two are interchangeable for
+"wake a waiter", and `sync.Cond` is the closer fit for the literal signalling
+pattern — which is why the question keeps coming back. The reason it loses is
+structural rather than stylistic: `run` does not wait for one condition, it
+`select`s over three sources — `d.stop`, `d.wake`, and the ticker — and
+**`sync.Cond` cannot participate in a `select`**. A `Cond` waiter blocks in
+`Wait` and can be woken by nothing else, so shutdown and the periodic tick
+would each need their own mechanism layered on top.
+
+Two properties fall out of the channel that would have to be rebuilt by hand
+around a `Cond`:
+
+- **A burst collapses.** The buffer is size 1 and the send is
+  `select`/`default`, so ten `Add`s in a row produce one wakeup, and a full
+  buffer means a wakeup is already pending. `Cond.Signal` on a non-waiting
+  goroutine is simply lost, which is the opposite failure.
+- **Shutdown can be given priority.** Because all three are channels, `run`
+  can drain `d.stop` in a non-blocking pass *before* the blocking `select`,
+  which is what stops a ready `d.stop` and a primed `d.wake` from being decided
+  by `select`'s uniform random choice. That fix has no expression in `Cond`.
+
+`Dispatcher.Notify` hands out the receive end of a second size-1 channel for
+external observers, on the same terms.
+
 The ticker alone is sufficient for correctness — deleting the kick would only
 add latency, not change what the system computes, because both routes call
 the same `run` iteration, which calls the same `tick`. A single goroutine

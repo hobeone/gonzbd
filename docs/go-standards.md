@@ -35,7 +35,7 @@ All schema changes MUST be implemented as a new `goose` migration file in
 
 The architecture establishes specific concurrency patterns. Follow them:
 
-- **Dispatcher → Downloader signaling**: channel-based (`chan struct{}`, cap=1, non-blocking send — `Dispatcher.Notify` hands out the receive end, `Dispatcher.Wake` does the `select`/`default` send). NOT `sync.Cond`. Rationale in `docs/ARCHITECTURE.md` § Coordination Architecture.
+- **Dispatcher → Downloader signaling**: channel-based (`chan struct{}`, cap=1, non-blocking send — `Dispatcher.Notify` hands out the receive end, `Dispatcher.Wake` does the `select`/`default` send). NOT `sync.Cond` — the run loop `select`s over three sources and a `Cond` cannot be selected on. Rationale in `docs/dispatch-contract.md` § The tick.
 - **Dispatcher internal locking**: two mutexes with different disciplines, and they are not interchangeable.
     - `d.mu sync.Mutex` guards the per-job bookkeeping maps. Take it, touch one map, release — it must not be held across a call into `sched` or `Residency.Hydrate`, nor across any I/O.
     - `d.storeMu sync.Mutex` serializes store writes so a `Save` cannot race a `Delete` (`registry.go`, `tick.go`). It is *deliberately* held across blocking SQLite calls — that is its entire job, and `tick.go`'s `store.Save` carries a `//lockio:` waiver saying so — so the "touch one map, release" rule does not apply to it. What does apply: `storeMu` is the OUTER lock. `persistIfChanged` takes `storeMu` then `d.mu` to re-check the registry before writing; never invert that. Neither lock may be held across a call into `sched` or `Residency.Hydrate`.
