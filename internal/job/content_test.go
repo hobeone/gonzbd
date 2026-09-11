@@ -305,6 +305,15 @@ func TestJob_AdditionalMethods(t *testing.T) {
 	if err := j.RestoreFileMeta(0, "f1.rar", true, 0x1234); err != nil {
 		t.Errorf("RestoreFileMeta: %v", err)
 	}
+	if err := j.RestoreFetchPolicy(0, FetchIfNeeded); err != nil {
+		t.Errorf("RestoreFetchPolicy: %v", err)
+	}
+	if got := j.Progress().FileFetchPolicy(0); got != FetchIfNeeded {
+		t.Errorf("FileFetchPolicy(0) after RestoreFetchPolicy = %v, want FetchIfNeeded", got)
+	}
+	if err := j.RestoreFetchPolicy(99, FetchIfNeeded); err == nil {
+		t.Error("RestoreFetchPolicy with an out-of-range file index should error")
+	}
 	if err := j.ApplyResolution([]RunRange{{First: 0, Last: 0}}, []int32{1}); err != nil {
 		t.Errorf("ApplyResolution: %v", err)
 	}
@@ -348,6 +357,9 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 
 	if err := j.SetFileFetchPolicy(0, FetchAlways); err == nil {
 		t.Error("SetFileFetchPolicy on unattached job should error")
+	}
+	if err := j.RestoreFetchPolicy(0, FetchAlways); err == nil {
+		t.Error("RestoreFetchPolicy on unattached job should error")
 	}
 	if err := j.MarkArticleDone(0, 100, "srv"); err == nil {
 		t.Error("MarkArticleDone on unattached job should error")
