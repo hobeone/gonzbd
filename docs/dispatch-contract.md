@@ -63,9 +63,13 @@ The Dispatcher additionally owns:
   removal-in-progress marker (`removing`, `occupiers` et al.) that makes
   teardown safe under concurrent callers.
 
-`internal/dispatch` is imported by exactly one production file today —
-`internal/app/app.go:375` calls `dispatch.New`, and `internal/app/reloader.go`
-calls `dispatch.(*Dispatcher).SetCaps`.
+`internal/dispatch` is **constructed** from exactly one production call site —
+`dispatch.New` appears once outside tests, at `internal/app/app.go:375`
+(`git grep -n 'dispatch\.New(' -- '*.go' ':!*_test.go'`). The package itself is
+imported far more widely: 12 non-test files, across `cmd/gonzbd`, `internal/api`,
+`internal/app`, `internal/downloader` and `internal/dispatch/store`. It is the
+single constructor that matters here, not a single importer — a `Dispatcher`
+nobody else can build is what makes its lifecycle statements hold.
 
 ## The tick: a ticker owns liveness, the kick is an optimisation
 

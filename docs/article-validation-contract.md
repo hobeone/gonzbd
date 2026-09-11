@@ -531,7 +531,8 @@ the rows.
 | E5 | UU body only satisfies a single-segment file | L3 | reject | — |
 | F1 | key `FileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
 | F2, F5 | structural (§5.F) | — | ✅ **implemented** — the state stops existing | — |
-| F3, F4 | structural (§5.F) | — | proposed — the state stops existing | — |
+| F3 | structural (§5.F) | — | ✅ **done** (`d4f92cee`) — the state stops existing | — |
+| F4 | structural (§5.F) | — | proposed — the state stops existing | — |
 | F6 | digest over accepted IDs (§5.F) | — | ✅ **implemented** | — |
 
 **Build order.** The F-items land first (§5.F), then the assertions:
@@ -1013,7 +1014,7 @@ already thrown away.
 |---|---|---|
 | F1 | ✅ **done** — key `FileWriter.seenDone`/`seenFailed` on `ArtIdx int32`, not `msgID string` | `resolvedUntracked`, `giveBackUntrackedPart`, the `resolvedUntracked` consult in `handleSuccessArticle`, and every `msgID == ""` early return in `fail` / `failPermanent` / `failDisplaced` — i.e. #392 |
 | F2 | ✅ **done** — call the by-index `MarkArticleEmittedByIdx` / `ClearArticleEmittedByIdx` everywhere | `Queue.MarkArticleEmitted`, `Queue.ClearArticleEmitted`, `Manifest.articleIndexByID`, `buildMessageIDIndex`, `dropMessageIDIndex`, the `messageIDIndex` field, three eager build sites |
-| F3 | key `dispatchTracker.tryList`/`.inFlight` on `(jobID, artIdx)`, not bare `messageID` | three `//nolint:unparam` directives, and the cross-job try-list aliasing bug |
+| F3 | ✅ **done** (`d4f92cee`) — key `dispatchTracker.tryList`/`.inFlight` on `(jobID, artIdx)`, not bare `messageID` | three `//nolint:unparam` directives, and the cross-job try-list aliasing bug |
 | F4 | split control messages out of `WriteRequest` | the `FileIdx` sentinels, the `JobID == ""` discrimination, the "control message convention" comment class |
 | F5 | ✅ **done** — carry the requested Message-ID on `pendingCmd` and match it in `runReader` | makes B1 structural rather than an assertion — see §5.B |
 | F6 | ✅ **done** — fold `NZB.MD5`'s digest over **accepted** article IDs, at the acceptance point | the digest-ordering rule, A1's carve-out, and the whole class "a new rejection silently changes every document's identity" — see §8, decision 1 |

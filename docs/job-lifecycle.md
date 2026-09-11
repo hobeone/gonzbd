@@ -1173,7 +1173,8 @@ always already in hand at the one moment they are needed.
 
 This is why there is no cheaper non-resident replay. A job that has not been
 hydrated has no `JobProgress` at all, so it reports its header's full byte count
-as remaining (`internal/dispatch/registry.go:425`) — a half-downloaded job shows
+as remaining (`internal/dispatch/registry.go:473` in `List`, and again at 504 in
+`Row` — the fallback is implemented independently in both) — a half-downloaded job shows
 as untouched after a restart until it is promoted. Closing that would mean
 constructing progress without a manifest, which nothing currently does; it is a
 missing constructor, not a missing column.
@@ -1307,8 +1308,10 @@ They joined `write_cursor` and `max_written`, removed earlier for being
 maintained in parallel with facts held elsewhere. The difference is that those
 two had a live reader and these did not.
 
-`internal/history/migrations/001_initial.sql` records that reasoning at the
-schema, in `job_files`' own comment block.
+That reasoning is recorded in commit `eb540a64`'s message, not in the schema:
+the same change that dropped the columns rewrote `001_initial.sql`'s `job_files`
+comment block to describe the surviving schema rather than its history, so the
+migration no longer mentions `bytes_downloaded` or `failed_bytes` at all.
 
 ### Memory
 
