@@ -69,7 +69,12 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- the stale one.
 --
 -- The fetch_policy CHECK is the only guard that value has -- neither
--- SetFileFetchPolicy nor RestoreFileMeta range-checks it.
+-- SetFileFetchPolicy nor RestoreFetchPolicy range-checks it. (#329 moved the
+-- persisted-policy restore off RestoreFileMeta and onto RestoreFetchPolicy,
+-- a dedicated door; the CHECK is still the only guard either way, so this
+-- correction is a name change, not a substance change -- see AGENTS.md's
+-- "No backwards compatibility" rule on why the file is corrected in place
+-- rather than superseded by a new migration.)
 --
 -- UNIQUE(job_id, file_index) is also the access path, which is why there is no
 -- separate index on job_id.

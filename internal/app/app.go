@@ -2223,6 +2223,45 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		}
 	}
 
+	// Seed any job_files rows this attempt is missing, then flush the
+	// checkpointer synchronously, both immediately before dispatcher.Add and
+	// after ResetForRetry and the barrier/assembler forget calls above — not
+	// merely after the restore loop. ResetForRetry clears Complete on every
+	// file whose failed articles it reset, and SaveBatch persists complete
+	// for every file of a marked job; flushing before ResetForRetry would
+	// write the pre-reset complete = 1, leave the job clean, and let an
+	// eviction hydrate files as complete that the retry had just
+	// un-completed. Before Add the dispatcher does not hold the job and no
+	// eviction is possible; after Add the tick loop can evict and re-hydrate
+	// concurrently, which is the window this closes (#329).
+	//
+	// seedJobFiles is INSERT ... ON CONFLICT DO NOTHING, so this only adds
+	// rows missing entirely (a shape-changed retry, or an original seed that
+	// failed outright) and cannot disturb a retained row — safe without a
+	// preceding DELETE.
+	if app.historyRepo != nil && app.historyRepo.DB() != nil && m != nil {
+		p := j.Progress()
+		if err := seedJobFiles(ctx, app.historyRepo.DB(), jobID, m.NumFiles(), p.FileFetchPolicy); err != nil {
+			return fmt.Errorf("app: retry %s: seed job_files: %w", jobID, err)
+		}
+	}
+	if app.checkpointer != nil {
+		app.checkpointer.Mark(j)
+		// context.Background(), matching saveQueueIfDirty, the shutdown
+		// flush and enqueuePostProc: a client disconnect mid-request must
+		// not abort a retry that has already mutated state. A Flush error
+		// aborts the retry rather than being discarded, matching
+		// dropJobDurability's existing rule that a cleanup failure aborts a
+		// retry — a discarded error would silently reopen the eviction
+		// window above. Flush writes every dirty job, not only this one, so
+		// an unrelated in-flight job's checkpoint failure can abort this
+		// retry too; that is accepted here as it is on enqueuePostProc's
+		// synchronous whole-map Flush.
+		if err := app.checkpointer.Flush(context.Background()); err != nil {
+			return fmt.Errorf("app: retry %s: flush checkpoint: %w", jobID, err)
+		}
+	}
+
 	if app.dispatcher != nil {
 		if err := app.dispatcher.Add(j, hdr); err != nil {
 			return err
