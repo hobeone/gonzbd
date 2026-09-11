@@ -1390,10 +1390,10 @@ func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 // queue's own entry point rather than by reaching into the table from here.
 //
 // The write bound is on content, not on deletion, and the distinction is not
-// pedantry: durable_runs rows are deleted from five places outside the
-// barrier's own merge — durability.Resumer, RunStore.DeleteJob (below),
-// queue.SQLiteStore.removeCorrupt and pruneDurabilityRows, and
-// history.Repository.delete. (A sixth, Commit's deleteRows, is part of the
+// pedantry: durable_runs rows are deleted from three places outside the
+// barrier's own merge — durability.Resumer, RunStore.DeleteJob (below), and
+// history.Repository.delete. (It was five until b6651d43 deleted
+// internal/queue; a fourth, Commit's deleteRows, is part of the
 // merge's read-modify-write rather than a separate deleter.) Content-only is
 // still exactly the property the trust argument needs — nothing can make the
 // record ASSERT bytes an fsync did not cover — and unlike "nothing else writes

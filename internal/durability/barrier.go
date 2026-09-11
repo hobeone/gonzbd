@@ -28,11 +28,13 @@ import (
 // writes anything: it deletes a file's runs when the file on disk contradicts
 // them and otherwise reads.
 //
-// The bound is on content, not on the table. Rows are DELETED from five places
-// outside Commit's own merge — Resumer, RunStore.DeleteJob,
-// queue.SQLiteStore.removeCorrupt and pruneDurabilityRows, and
+// The bound is on content, not on the table. Rows are DELETED from three places
+// outside Commit's own merge — Resumer, RunStore.DeleteJob and
 // history.Repository.delete — and none of them can make a row claim anything,
 // which is why the narrower statement is the one the trust argument needs.
+// (It was five until b6651d43 deleted internal/queue, taking
+// SQLiteStore.removeCorrupt and the pruneDurabilityRows backstop with it; see
+// docs/durability-contract.md §6 for the gap that left.)
 //
 // The queue's seeding entry points, which used to take a fully exported
 // FileExtent and reach markDone with no barrier and no proof, are gone with the
