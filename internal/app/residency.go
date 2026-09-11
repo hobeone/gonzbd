@@ -129,7 +129,10 @@ func (r *appResidency) restoreJobFiles(ctx context.Context, j *job.Job) {
 			r.log.Warn("residency: scan job_files", "job", j.ID(), "err", err)
 			continue
 		}
-		_ = j.RestoreFileMeta(fi, filename, complete != 0, crc, job.FetchPolicy(fetch)) //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
+		_ = j.RestoreFileMeta(fi, filename, complete != 0, crc)
+		// Hydration is the one case where the persisted policy is the current
+		// truth, so both restore calls happen adjacently here.
+		_ = j.RestoreFetchPolicy(fi, job.FetchPolicy(fetch)) //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
 	}
 	// rows.Next() returns false for "no more rows" AND for a mid-iteration
 	// fault, so without this a dropped connection reads as a complete result

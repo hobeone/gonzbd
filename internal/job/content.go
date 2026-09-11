@@ -591,8 +591,10 @@ func (j *Job) SetFileFilename(fileIdx int, filename string) error {
 	return nil
 }
 
-// RestoreFileMeta restores a file's persisted metadata from storage.
-func (j *Job) RestoreFileMeta(fileIdx int, filename string, complete bool, crc uint32, fetch FetchPolicy) error {
+// RestoreFileMeta restores a file's persisted metadata from storage. It does
+// not touch the fetch policy — that is RestoreFetchPolicy's door, called
+// separately by whichever caller actually wants the persisted value applied.
+func (j *Job) RestoreFileMeta(fileIdx int, filename string, complete bool, crc uint32) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	if j.progress == nil {
@@ -610,7 +612,27 @@ func (j *Job) RestoreFileMeta(fileIdx int, filename string, complete bool, crc u
 	if crc != 0 {
 		j.progress.files[fileIdx].AssembledCRC32 = crc
 	}
-	j.progress.files[fileIdx].Fetch = fetch
+	return nil
+}
+
+// RestoreFetchPolicy restores a file's persisted fetch policy from storage.
+// It is a separate door from RestoreFileMeta so a caller must ask for the
+// persisted policy by name rather than inheriting it as a side effect of
+// restoring the rest of a file's metadata — residency hydration is the one
+// caller for which the persisted value is the current truth; a rebuilt job
+// (e.g. a retry) must not call this and instead keeps the value its own
+// construction derived. The `job_files.fetch_policy` CHECK (0-2) is the only
+// range guard this value has; this door does not range-check it either.
+func (j *Job) RestoreFetchPolicy(fileIdx int, p FetchPolicy) error {
+	j.contentMu.Lock()
+	defer j.contentMu.Unlock()
+	if j.progress == nil {
+		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
+	}
+	if fileIdx < 0 || fileIdx >= len(j.progress.files) {
+		return fmt.Errorf("job %s: fileIdx %d out of range", j.id, fileIdx)
+	}
+	j.progress.files[fileIdx].Fetch = p
 	return nil
 }
 

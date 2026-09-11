@@ -302,7 +302,7 @@ func TestJob_AdditionalMethods(t *testing.T) {
 	}
 
 	// RestoreFileMeta & ApplyResolution
-	if err := j.RestoreFileMeta(0, "f1.rar", true, 0x1234, FetchAlways); err != nil {
+	if err := j.RestoreFileMeta(0, "f1.rar", true, 0x1234); err != nil {
 		t.Errorf("RestoreFileMeta: %v", err)
 	}
 	if err := j.ApplyResolution([]RunRange{{First: 0, Last: 0}}, []int32{1}); err != nil {

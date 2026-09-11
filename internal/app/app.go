@@ -2166,7 +2166,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 			}
 		}
 		for _, f := range retained {
-			_ = j.RestoreFileMeta(f.FileIndex, f.Filename, f.Complete, f.AssembledCRC32, f.Fetch)
+			_ = j.RestoreFileMeta(f.FileIndex, f.Filename, f.Complete, f.AssembledCRC32)
 		}
 	} else if len(retained) > 0 {
 		app.log.Info("no usable retained progress for retry; downloading from scratch",
@@ -2239,7 +2239,6 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 type retainedFile struct {
 	FileIndex      int
 	Complete       bool
-	Fetch          job.FetchPolicy
 	Filename       string
 	AssembledCRC32 uint32
 	ArticleCount   int
@@ -2250,7 +2249,7 @@ func (app *Application) historyFileProgress(ctx context.Context, jobID string) (
 		return nil, nil
 	}
 	const q = `
-SELECT file_index, complete, fetch_policy,
+SELECT file_index, complete,
        COALESCE(filename, ''), COALESCE(assembled_crc32, 0), article_count
 FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
 	rows, err := app.historyRepo.DB().QueryContext(ctx, q, jobID)
@@ -2262,13 +2261,12 @@ FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
 	var out []retainedFile
 	for rows.Next() {
 		var f retainedFile
-		var complete, fetch int
-		if err := rows.Scan(&f.FileIndex, &complete, &fetch,
+		var complete int
+		if err := rows.Scan(&f.FileIndex, &complete,
 			&f.Filename, &f.AssembledCRC32, &f.ArticleCount); err != nil {
 			return nil, fmt.Errorf("app: scan history_job_file %s: %w", jobID, err)
 		}
 		f.Complete = complete != 0
-		f.Fetch = job.FetchPolicy(fetch) //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
 		out = append(out, f)
 	}
 	return out, rows.Err()
