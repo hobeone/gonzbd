@@ -248,9 +248,8 @@ func TestRun_ReportsAnOverlapWhenNothingWasAcked(t *testing.T) {
 // An overlap is a property of the PERSISTED runs, so every checkpoint
 // re-derives the same finding from the same rows. Without the latch a job with
 // one malformed file raises it on every cycle for the rest of the download —
-// and because Job.SetWarning holds a single string, each re-raise also
-// overwrites whatever warning was written in between, so a stall reason set at
-// cycle N is gone by cycle N+1.
+// and because Header.PostAnomaly holds a single string, each re-raise also
+// overwrites whatever finding was recorded in between.
 func TestRun_RaisesEachOverlapOnce(t *testing.T) {
 	ctx := context.Background()
 	rs := NewSQLiteRunStore(openTestDB(t))

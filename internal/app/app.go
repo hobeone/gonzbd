@@ -689,15 +689,11 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		if !force {
 			_ = j.SetIntent(job.IntentPause)
 		}
-		// Appended rather than assigned: BuildIngestJob may already have
-		// recorded what the parser discarded, and a job can be both a
-		// duplicate and malformed. Overwriting would drop the parse warning
-		// silently, on exactly the jobs most likely to need it.
-		if hdr.Warning != "" {
-			hdr.Warning += "; " + warning
-		} else {
-			hdr.Warning = warning
-		}
+		// Its own field rather than appended to IngestAnomaly: BuildIngestJob
+		// may already have set that field, and a job can be both a duplicate
+		// and malformed. Two single-owner fields can't clobber each other the
+		// way one shared string could.
+		hdr.DuplicateReason = warning
 	}
 
 	snap := app.config.Snapshot()

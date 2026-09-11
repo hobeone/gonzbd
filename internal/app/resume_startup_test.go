@@ -452,9 +452,9 @@ func TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles(t *testing.T) 
 					"fail it or let it keep dispatching into a device that cannot be read",
 					row.Status(), constants.StatusPaused)
 			}
-			if !strings.HasPrefix(row.Header.Warning, "Stalled: ") {
-				t.Errorf("warning = %q, want a surfaced stall reason beginning \"Stalled: \" (R27); "+
-					"a \"Failed: \" reason here means the fault was routed as terminal", row.Header.Warning)
+			if stallReason := a.StallReason(f.jobID).Reason; !strings.HasPrefix(stallReason, "Stalled: ") {
+				t.Errorf("stall reason = %q, want a surfaced stall reason beginning \"Stalled: \" (R27); "+
+					"a \"Failed: \" reason here means the fault was routed as terminal", stallReason)
 			}
 			for i := range resumeArts {
 				if j.Progress().ArticleFailed(i) {

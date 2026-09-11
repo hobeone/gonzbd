@@ -45,7 +45,7 @@ func TestPostAnomaly_ReportedOncePerFileAlongsideEachRejection(t *testing.T) {
 			"unchanged by the job-level report", rejected)
 	}
 	if len(anomalies) != 1 {
-		t.Fatalf("OnPostAnomaly fired %d times, want 1: job.Warning is single-valued, "+
+		t.Fatalf("OnPostAnomaly fired %d times, want 1: Header.PostAnomaly is single-valued, "+
 			"so a post colliding on every segment would overwrite it repeatedly",
 			len(anomalies))
 	}
@@ -171,7 +171,7 @@ func TestFileWriter_FirstCollisionMarksOnlyTheFirst(t *testing.T) {
 	}
 	if rolled[1].firstCollision {
 		t.Error("a second collision on the same file is marked first, which is what " +
-			"overwrites job.Warning once per colliding segment")
+			"overwrites Header.PostAnomaly once per colliding segment")
 	}
 
 	// The detail the warning is built from has to survive the trip.

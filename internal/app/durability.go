@@ -135,13 +135,10 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 // handlePostAnomaly surfaces a structural fault in what the servers served, so
 // the user can tell a bad post from a bad disk or a bad connection (#379).
 //
-// It writes job.Warning, which QueueRow renders next to the job. That field is
-// single-valued and has other writers — the stall reason (which QueueRow shows
-// in PREFERENCE to it), the two durability warnings, the claim-failure note,
-// and the queue removal failure note — so this can be overwritten by a later
-// condition, and Resume/Retry clear it.
-// That is acceptable for a diagnostic: the log line in routeFaulted is the
-// durable record, and the warning is the thing that makes a user look.
+// It writes Header.PostAnomaly, whose sole writer this is — see the field's
+// doc comment. A later anomaly overwrites an earlier one, which is
+// acceptable for a diagnostic: the log line in routeFaulted is the durable
+// record, and the field is only what makes a user look.
 //
 // A failure to record it is logged and dropped. A job that has left the queue
 // has nothing to warn about, which is ordinary rather than a defect (A2).
@@ -180,7 +177,7 @@ func (app *Application) postAnomaly(jobID string, fileIdx int, source, reason st
 	app.log.Warn("post anomaly reported",
 		"job", jobID, "fileidx", fileIdx, "source", source, "reason", reason)
 	if app.dispatcher != nil {
-		_ = app.dispatcher.SetWarning(jobID, reason)
+		_ = app.dispatcher.SetPostAnomaly(jobID, reason)
 	}
 }
 
@@ -256,17 +253,15 @@ func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 			"job", jobID, "fault", f.Error())
 		return
 	}
-	reason := "Stalled: " + f.Error()
 	app.log.Warn("job stalled by a storage fault", "job", jobID, "fault", f.Error())
-	// Recorded BEFORE the pause, and kept after it. The queue's own warning is
-	// wiped by the Resume a re-evaluation performs, so it cannot be what the
-	// re-evaluation reads to know the job is parked — and R19 requires the
-	// condition to be re-evaluated at all, which needs a list of what is
-	// parked. See reevaluateStall.
+	// Recorded BEFORE the pause. R19 requires the condition to be
+	// re-evaluated at all, which needs a list of what is parked — the
+	// dispatcher row carries no separate copy of this reason (StallReason,
+	// read via app.StallReason, is the queue listing's source for it; see
+	// reevaluateStall).
 	app.noteStall(jobID, f)
 	if app.dispatcher != nil {
 		_ = app.dispatcher.PauseJob(jobID)
-		_ = app.dispatcher.SetWarning(jobID, reason)
 		_ = app.dispatcher.Yielded(jobID)
 	}
 	app.emit(Event{Type: "queue_updated", NzoID: jobID})
@@ -289,7 +284,11 @@ func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 	// re-evaluation resume a job that is on its way to history.
 	app.clearStall(jobID)
 	if app.dispatcher != nil {
-		_ = app.dispatcher.SetWarning(jobID, reason)
+		// enqueuePostProc hands the job to the postproc queue rather than
+		// removing it synchronously, so history.Entry.FailMessage (this
+		// reason's eventual permanent home) does not exist yet — this is
+		// the only live signal for the window until it does.
+		_ = app.dispatcher.SetFailReason(jobID, reason)
 	}
 	app.maybeFinalize(jobID, reason)
 }

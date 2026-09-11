@@ -162,9 +162,6 @@ func TestReevaluateStall_KeepsTheActionableReasonForALostFile(t *testing.T) {
 	if !ok {
 		t.Fatal("job not in queue")
 	}
-	if row.Header.Warning != reason {
-		t.Errorf("queue warning = %q, want it to match the surfaced reason %q", row.Header.Warning, reason)
-	}
 	if row.Status() != constants.StatusPaused {
 		t.Errorf("status = %v, want the job still Paused — a file that cannot be trimmed would "+
 			"otherwise be marked complete and fed to post-processing", row.Status())

@@ -56,8 +56,8 @@ type Barrier struct {
 	// An overlap is a property of the PERSISTED runs, so every checkpoint after
 	// the first re-derives the same finding from the same rows. Without a
 	// latch a job with one malformed file raises it on every cycle until the
-	// download ends — and because Job.SetWarning holds a single string, each
-	// re-raise also overwrites whatever warning was written in between.
+	// download ends — and because Header.PostAnomaly holds a single string,
+	// each re-raise also overwrites whatever finding was recorded in between.
 	//
 	// Keyed on job and file because Run's caller serialises per JOB, so two
 	// jobs genuinely do run here at once.

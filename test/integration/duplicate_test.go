@@ -99,8 +99,8 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 	if row2.Status() != constants.StatusPaused {
 		t.Errorf("duplicate job status = %q, want Paused", row2.Status())
 	}
-	if row2.Header.Warning != "Duplicate NZB" {
-		t.Errorf("duplicate job warning = %q, want 'Duplicate NZB'", row2.Header.Warning)
+	if row2.Header.DuplicateReason != "Duplicate NZB" {
+		t.Errorf("duplicate job DuplicateReason = %q, want 'Duplicate NZB'", row2.Header.DuplicateReason)
 	}
 
 	// A duplicate now gets a backup of its own, under a suffixed name.

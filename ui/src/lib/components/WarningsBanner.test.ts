@@ -29,10 +29,10 @@ describe('WarningsBanner', () => {
 		expect(container.querySelector('.rounded-lg')).toBeNull();
 	});
 
-	it('shows duplicate NZB banner when queue has duplicate warnings', () => {
+	it('shows duplicate NZB banner when queue has duplicate reasons', () => {
 		vi.mocked(getQueueSlots).mockReturnValue([
-			{ nzo_id: '1', status: 'Paused', warning: 'Duplicate NZB' } as any,
-			{ nzo_id: '2', status: 'Paused', warning: 'Duplicate NZB' } as any
+			{ nzo_id: '1', status: 'Paused', duplicate_reason: 'Duplicate NZB' } as any,
+			{ nzo_id: '2', status: 'Paused', duplicate_reason: 'Duplicate NZB' } as any
 		]);
 		render(WarningsBanner);
 
@@ -40,22 +40,21 @@ describe('WarningsBanner', () => {
 		expect(screen.getByText(/2 jobs added in paused state/)).toBeInTheDocument();
 	});
 
-	it('counts duplicates whose warning is combined with a parse warning', () => {
-		// The backend appends rather than overwrites, so a job that is both
-		// malformed and a duplicate carries both clauses in one string. An
-		// exact-equality count silently omitted these.
+	it('counts duplicates that are also malformed', () => {
+		// ingest_anomaly and duplicate_reason are independent fields now, so a
+		// job that is both must not be dropped from either count.
 		vi.mocked(getQueueSlots).mockReturnValue([
-			{ nzo_id: '1', status: 'Paused', warning: 'Duplicate NZB' } as any,
+			{ nzo_id: '1', status: 'Paused', duplicate_reason: 'Duplicate NZB' } as any,
 			{
 				nzo_id: '2',
 				status: 'Paused',
-				warning:
-					'NZB had malformed segments discarded at ingest: 1 unusable message-id; Duplicate NZB'
+				ingest_anomaly: 'NZB had malformed segments discarded at ingest: 1 unusable message-id',
+				duplicate_reason: 'Duplicate NZB'
 			} as any,
 			{
 				nzo_id: '3',
 				status: 'Paused',
-				warning: 'NZB had malformed segments discarded at ingest: 2 empty message-id'
+				ingest_anomaly: 'NZB had malformed segments discarded at ingest: 2 empty message-id'
 			} as any,
 			{ nzo_id: '4', status: 'Paused' } as any
 		]);
@@ -69,13 +68,13 @@ describe('WarningsBanner', () => {
 		// A forced duplicate is added and left running, so counting it under
 		// "added in paused state" would be a false statement about the queue.
 		vi.mocked(getQueueSlots).mockReturnValue([
-			{ nzo_id: '1', status: 'Paused', warning: 'Duplicate NZB' } as any,
-			{ nzo_id: '2', status: 'Downloading', warning: 'Duplicate NZB (Forced)' } as any,
+			{ nzo_id: '1', status: 'Paused', duplicate_reason: 'Duplicate NZB' } as any,
+			{ nzo_id: '2', status: 'Downloading', duplicate_reason: 'Duplicate NZB (Forced)' } as any,
 			{
 				nzo_id: '3',
 				status: 'Downloading',
-				warning:
-					'NZB had malformed segments discarded at ingest: 1 empty message-id; Duplicate NZB (Forced)'
+				ingest_anomaly: 'NZB had malformed segments discarded at ingest: 1 empty message-id',
+				duplicate_reason: 'Duplicate NZB (Forced)'
 			} as any
 		]);
 		render(WarningsBanner);
@@ -84,14 +83,13 @@ describe('WarningsBanner', () => {
 	});
 
 	it('stops counting a duplicate once the user resumes it', () => {
-		// The backend never clears a job's Warning string once set (it's an
-		// append-only audit trail), so resuming a duplicate-flagged job still
-		// leaves "Duplicate NZB" in its warning. The banner must key off pause
-		// state, not the warning text alone, or resuming never makes it go
-		// away — which was the reported bug: the only control offered
-		// (unpause) did nothing to this banner.
+		// duplicate_reason is never cleared once set, so resuming a
+		// duplicate-flagged job still carries it. The banner must key off
+		// pause state, not the field's presence alone, or resuming never
+		// makes it go away — which was the reported bug: the only control
+		// offered (unpause) did nothing to this banner.
 		vi.mocked(getQueueSlots).mockReturnValue([
-			{ nzo_id: '1', status: 'Downloading', warning: 'Duplicate NZB' } as any
+			{ nzo_id: '1', status: 'Downloading', duplicate_reason: 'Duplicate NZB' } as any
 		]);
 		const { container } = render(WarningsBanner);
 

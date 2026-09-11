@@ -72,27 +72,31 @@ func TestStore_RoundTripsEveryAxis(t *testing.T) {
 	}
 }
 
-// TestStore_AllHeaderFieldsAndTimestampsSurviveRoundTrip asserts all 8 Header fields,
-// 3 timestamps, and Par2ReleaseReason survive a save/load round trip.
+// TestStore_AllHeaderFieldsAndTimestampsSurviveRoundTrip asserts all 12 Header
+// fields, 3 timestamps, and Par2ReleaseReason survive a save/load round trip.
 func TestStore_AllHeaderFieldsAndTimestampsSurviveRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 	want := dispatch.Persisted{
 		ID:      "j-all-fields",
 		SortKey: 42,
 		Header: dispatch.Header{
-			Name:      "ubuntu.iso",
-			Filename:  "ubuntu.iso.nzb",
-			Category:  "linux",
-			Priority:  1,
-			Bytes:     2048576,
-			Warning:   "warning text",
-			Script:    "notify.sh",
-			Password:  "secret123",
-			PP:        3,
-			NZBBackup: "/backup/ubuntu.iso.nzb.gz",
-			URL:       "https://index.example.com/nzb/123",
-			MD5:       "0123456789abcdef0123456789abcdef",
-			Added:     1700000001,
+			Name:             "ubuntu.iso",
+			Filename:         "ubuntu.iso.nzb",
+			Category:         "linux",
+			Priority:         1,
+			Bytes:            2048576,
+			IngestAnomaly:    "1 empty message-id",
+			PostAnomaly:      "overlap at byte 0",
+			FailReason:       "Failed: input/output error",
+			DuplicateReason:  "Duplicate NZB",
+			OperationalError: "failed to remove finalized job from queue",
+			Script:           "notify.sh",
+			Password:         "secret123",
+			PP:               3,
+			NZBBackup:        "/backup/ubuntu.iso.nzb.gz",
+			URL:              "https://index.example.com/nzb/123",
+			MD5:              "0123456789abcdef0123456789abcdef",
+			Added:            1700000001,
 		},
 		Policy: job.Policy{Verify: true, Repair: true, Unpack: true, Delete: false},
 		State: job.StateView{

@@ -41,8 +41,8 @@ func TestStall_DoesNotParkAJobWhileTheProcessIsStopping(t *testing.T) {
 	}
 	if row.Status() == constants.StatusPaused {
 		t.Errorf("the job was paused because the process was stopping; that pause is "+
-			"persisted by the final queue save and nothing ever undoes it: warning=%q",
-			row.Header.Warning)
+			"persisted by the final queue save and nothing ever undoes it: stall reason=%q",
+			application.StallReason(j.ID()).Reason)
 	}
 }
 
@@ -76,7 +76,7 @@ func TestStall_StillParksOnTheSameErrorWhenNotStopping(t *testing.T) {
 		t.Fatal("a barrierOpTimeout against a wedged mount left the job running; it " +
 			"sits at N% with no reason the operator can act on")
 	}
-	if row.Header.Warning == "" {
+	if application.StallReason(j.ID()).Reason == "" {
 		t.Error("the job was parked with no reason attached (R27)")
 	}
 }
@@ -101,7 +101,8 @@ func TestRouteFinalizeFailure_DoesNotStallOnANonResidentJob(t *testing.T) {
 	}
 	if row.Status() == constants.StatusPaused {
 		t.Errorf("the job was stalled over a queue-residency condition, not a storage "+
-			"one; retryFinalize treats the same error as landed: warning=%q", row.Header.Warning)
+			"one; retryFinalize treats the same error as landed: stall reason=%q",
+			application.StallReason(j.ID()).Reason)
 	}
 }
 
@@ -123,7 +124,7 @@ func TestRouteFinalizeFailure_StillStallsOnARealStorageError(t *testing.T) {
 		t.Fatal("a real storage error did not stall the job; the file's bytes are not " +
 			"known to be correct and it must not ship")
 	}
-	if row.Header.Warning == "" {
+	if application.StallReason(j.ID()).Reason == "" {
 		t.Error("the job was stalled with no reason attached (R27)")
 	}
 }

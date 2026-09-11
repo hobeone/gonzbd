@@ -1426,7 +1426,7 @@ including every failure path.
     moving detection ahead of the cache separated them.
 
   Either way the first collision on a file raises `Options.OnPostAnomaly`, which
-  the app routes to `job.Warning`. That is diagnosis, not accounting: it states
+  the app routes to `Header.PostAnomaly`. That is diagnosis, not accounting: it states
   that two segments claim one byte **offset** without asserting the post is
   malformed, because a redundant posting and a server-mangled `=ypart begin=`
   produce the same observation and yEnc checksums the payload, never the header.
@@ -1440,7 +1440,7 @@ including every failure path.
   articles describe the same bytes (§4, which also records the blind spot in
   that comparison). It reports through
   `durability.PostAnomaly` on the barrier's return, and the app routes it to the
-  same `job.Warning`, at most once per `(jobID, fileIdx)`. The latch is in
+  same `Header.PostAnomaly`, at most once per `(jobID, fileIdx)`. The latch is in
   memory, so that bound is per process: a restart raises each finding once
   more, which is what a user who restarted to fix something would expect.
 

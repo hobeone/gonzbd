@@ -24,12 +24,50 @@ var ErrNotFound = errors.New("dispatch: job not found")
 // paths and finalization read Job.Name(). SetName updates both under d.mu so the
 // two copies stay in lockstep.
 type Header struct {
-	Name      string
-	Filename  string
-	Category  string
-	Priority  int
-	Bytes     int64
-	Warning   string
+	Name     string
+	Filename string
+	Category string
+	Priority int
+	Bytes    int64
+
+	// IngestAnomaly summarizes NZB segments the parser discarded as unusable
+	// while still accepting the job (rule 3: a bad article/segment costs
+	// only its own bytes). Set once by app.BuildIngestJob; nothing mutates
+	// it afterward, because it describes the ingested document rather than
+	// runtime state.
+	IngestAnomaly string
+
+	// PostAnomaly is set by app.postAnomaly when the assembler or the
+	// durability barrier detects a byte-accounting collision after the job
+	// has started downloading (#379) — a structural problem with what the
+	// servers served, distinct from IngestAnomaly's parse-time findings.
+	// It is the sole writer; a later anomaly simply overwrites an earlier
+	// one, since only the most recent is actionable.
+	PostAnomaly string
+
+	// FailReason is set once by app.Fail when a permanent storage fault
+	// stops a job (R20/R27). The job is not necessarily removed from the
+	// dispatcher synchronously — enqueuePostProc hands it to the postproc
+	// queue, which can take a visible window to finalize — so this is the
+	// only live signal an operator sees until history.Entry.FailMessage
+	// exists. It is the sole writer.
+	FailReason string
+
+	// DuplicateReason is set once by app.AddJob's detectDuplicateNZB
+	// ("Duplicate NZB" / "Duplicate NZB (Forced)"), or "" if the job was
+	// not a duplicate at ingest. Immutable afterward for the same reason as
+	// IngestAnomaly: whether the job was a duplicate when it arrived does
+	// not change when the user later resumes it.
+	DuplicateReason string
+
+	// OperationalError is a free-text note set once by persistAndCommit
+	// (internal/app/job_finalizer.go) when removing a finalized job from
+	// the dispatcher fails and it remains registered for retry or restart
+	// handling. Unlike IngestAnomaly/DuplicateReason it is not an ingest-time
+	// fact about the NZB — it can be set on any job — so it is kept in its
+	// own field rather than joined into one of them.
+	OperationalError string
+
 	Script    string
 	Password  string
 	PP        int
@@ -567,15 +605,43 @@ func (d *Dispatcher) Remove(ctx context.Context, id string) (err error) {
 	return nil
 }
 
-// SetWarning sets or updates the warning message for a registered job.
-func (d *Dispatcher) SetWarning(id, warning string) error {
+// SetPostAnomaly sets the mid-download anomaly note for a registered job.
+// It is the only writer of Header.PostAnomaly.
+func (d *Dispatcher) SetPostAnomaly(id, reason string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	e, ok := d.byID[id]
 	if !ok {
-		return fmt.Errorf("dispatch: set warning %s: %w", id, ErrNotFound)
+		return fmt.Errorf("dispatch: set post anomaly %s: %w", id, ErrNotFound)
 	}
-	e.h.Warning = warning
+	e.h.PostAnomaly = reason
+	return nil
+}
+
+// SetFailReason sets the permanent-failure reason for a registered job. It
+// is the only writer of Header.FailReason.
+func (d *Dispatcher) SetFailReason(id, reason string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byID[id]
+	if !ok {
+		return fmt.Errorf("dispatch: set fail reason %s: %w", id, ErrNotFound)
+	}
+	e.h.FailReason = reason
+	return nil
+}
+
+// SetOperationalError sets the operational-error note for a registered job.
+// It is the only writer of Header.OperationalError — see the field's doc
+// comment on why it is not folded into IngestAnomaly or DuplicateReason.
+func (d *Dispatcher) SetOperationalError(id, msg string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byID[id]
+	if !ok {
+		return fmt.Errorf("dispatch: set operational error %s: %w", id, ErrNotFound)
+	}
+	e.h.OperationalError = msg
 	return nil
 }
 

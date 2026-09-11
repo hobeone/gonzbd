@@ -173,14 +173,14 @@ func TestHandleArticleRejected_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
 	application.handleArticleRejected("job-that-never-existed", 0, 1, "negative offset")
 }
 
-// TestHandlePostAnomaly_ReachesTheJobWarning pins the app half of #379: the
+// TestHandlePostAnomaly_ReachesTheJobHeader pins the app half of #379: the
 // assembler observes a structural fault in what was served, and this is what
 // puts it somewhere the user will actually see it.
 //
 // Without it the anomaly exists only in the log, which is precisely the failure
 // the issue describes — a user watching a download fail with no way to tell a
 // bad post from a bad disk.
-func TestHandlePostAnomaly_ReachesTheJobWarning(t *testing.T) {
+func TestHandlePostAnomaly_ReachesTheJobHeader(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
@@ -191,14 +191,14 @@ func TestHandlePostAnomaly_ReachesTheJobWarning(t *testing.T) {
 	if !ok {
 		t.Fatal("row not found")
 	}
-	if got := row.Header.Warning; got != reason {
-		t.Errorf("job.Warning = %q, want %q — the anomaly reached the log but not the "+
+	if got := row.Header.PostAnomaly; got != reason {
+		t.Errorf("PostAnomaly = %q, want %q — the anomaly reached the log but not the "+
 			"queue row, so nothing surfaces it to the user", got, reason)
 	}
 }
 
 // TestHandlePostAnomaly_SurvivesAJobThatHasLeftTheQueue covers the branch where
-// SetWarning fails, on the same terms as the rejection path above: the
+// SetPostAnomaly fails, on the same terms as the rejection path above: the
 // assembler worker is a separate goroutine, so an anomaly can be reported after
 // its job has been cancelled or moved to history. Nothing is left to warn
 // about, which is ordinary — but not silent (A2).
@@ -241,7 +241,7 @@ func TestHandleWriteFault_DoesNotBlockTheAssemblerWorker(t *testing.T) {
 	// nothing at all.
 	application.wg.Wait()
 	row, ok := application.dispatcher.Row(job.ID())
-	if ok && row.Header.Warning == "" {
+	if ok && row.Header.FailReason == "" {
 		t.Error("the fault was never surfaced; the job halts with no reason (A2, R27)")
 	}
 }

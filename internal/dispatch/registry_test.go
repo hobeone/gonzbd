@@ -361,27 +361,75 @@ func TestDispatcherRow_ReturnsOneJobWithoutRenderingTheRest(t *testing.T) {
 	}
 }
 
-func TestDispatcher_SetWarning(t *testing.T) {
+func TestDispatcher_SetFailReason(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "Job 1", job.Policy{})
 	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
-	if err := d.SetWarning("unknown", "warn"); err == nil {
-		t.Fatal("SetWarning on unknown job should error")
+	if err := d.SetFailReason("unknown", "Failed: EROFS"); err == nil {
+		t.Fatal("SetFailReason on unknown job should error")
 	}
 
-	if err := d.SetWarning("j1", "disk low"); err != nil {
-		t.Fatalf("SetWarning: %v", err)
+	if err := d.SetFailReason("j1", "Failed: EROFS"); err != nil {
+		t.Fatalf("SetFailReason: %v", err)
 	}
 
 	row, ok := d.Row("j1")
 	if !ok {
 		t.Fatal("Row(j1) not found")
 	}
-	if row.Header.Warning != "disk low" {
-		t.Fatalf("Header.Warning = %q, want 'disk low'", row.Header.Warning)
+	if row.Header.FailReason != "Failed: EROFS" {
+		t.Fatalf("Header.FailReason = %q, want 'Failed: EROFS'", row.Header.FailReason)
+	}
+}
+
+func TestDispatcher_SetOperationalError(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := d.SetOperationalError("unknown", "warn"); err == nil {
+		t.Fatal("SetOperationalError on unknown job should error")
+	}
+
+	if err := d.SetOperationalError("j1", "disk low"); err != nil {
+		t.Fatalf("SetOperationalError: %v", err)
+	}
+
+	row, ok := d.Row("j1")
+	if !ok {
+		t.Fatal("Row(j1) not found")
+	}
+	if row.Header.OperationalError != "disk low" {
+		t.Fatalf("Header.OperationalError = %q, want 'disk low'", row.Header.OperationalError)
+	}
+}
+
+func TestDispatcher_SetPostAnomaly(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := d.SetPostAnomaly("unknown", "collision"); err == nil {
+		t.Fatal("SetPostAnomaly on unknown job should error")
+	}
+
+	if err := d.SetPostAnomaly("j1", "offset collision at byte 4096"); err != nil {
+		t.Fatalf("SetPostAnomaly: %v", err)
+	}
+
+	row, ok := d.Row("j1")
+	if !ok {
+		t.Fatal("Row(j1) not found")
+	}
+	if row.Header.PostAnomaly != "offset collision at byte 4096" {
+		t.Fatalf("Header.PostAnomaly = %q, want 'offset collision at byte 4096'", row.Header.PostAnomaly)
 	}
 }
 

@@ -45,10 +45,11 @@ func TestStall_TheStoppingGuardCoversTheCleanShutdownBarrier(t *testing.T) {
 		t.Fatal("row is missing")
 	}
 	if row.Status() == constants.StatusPaused {
-		t.Errorf("the job was parked by the clean-shutdown barrier: warning=%q. "+
+		t.Errorf("the job was parked by the clean-shutdown barrier: stall reason=%q. "+
 			"Shutdown's final checkpoint persists that pause, the stall list dies with "+
 			"the process, and the startup sweep skips a non-active job — so it comes "+
-			"back Paused forever after a slow but perfectly normal stop", row.Header.Warning)
+			"back Paused forever after a slow but perfectly normal stop",
+			application.StallReason(job.ID()).Reason)
 	}
 }
 

@@ -6,25 +6,16 @@
 	let expanded = $state(true);
 	let clearing = $state(false);
 
-	// Substring, not equality: a job can be both a duplicate and malformed,
-	// and the backend joins those into one warning string ("NZB had malformed
-	// segments discarded at ingest: ...; Duplicate NZB"). An exact match
-	// dropped exactly those jobs from this count — the ones with the most
-	// wrong with them.
-	//
-	// status === 'Paused' is required, not just inferred from "(Forced)"
-	// being absent: the backend never clears a job's Warning string once
-	// set (it's an append-only audit trail — see AddJob's detectDuplicateNZB
-	// caller), so a duplicate job the user has since resumed still carries
-	// "Duplicate NZB" forever. Without this check the banner named a
-	// resumed job as "added in paused state" and gave the user no way to
-	// make it go away — resuming (the only control offered) didn't change
-	// the count, because the count wasn't looking at pause state at all.
+	// duplicate_reason is set once at ingest and never cleared — it stays
+	// true forever that the job WAS a duplicate when it arrived, regardless
+	// of what happens to it afterward. So "added in paused state" is a claim
+	// about the CURRENT state, made by combining that immutable fact with
+	// live status: status === 'Paused' is what stops counting a job once the
+	// user resumes it, and it also excludes a forced duplicate on its own —
+	// a forced duplicate is left running, never Paused — so no separate
+	// "(Forced)" text check is needed.
 	let duplicateCount = $derived(
-		getQueueSlots().filter(
-			(s) =>
-				s.status === 'Paused' && s.warning?.includes('Duplicate NZB') && !s.warning.includes('(Forced)')
-		).length
+		getQueueSlots().filter((s) => s.status === 'Paused' && s.duplicate_reason).length
 	);
 
 	async function handleClear() {

@@ -7,10 +7,10 @@ import (
 	"github.com/hobeone/gonzbd/internal/nzb"
 )
 
-// The log line reaches an operator tailing the daemon; job.Warning reaches the
-// person looking at the queue, which is the audience that has to decide whether
-// a short download is worth re-adding from another indexer. A parse anomaly
-// that only ever appears in a log is invisible to them.
+// The log line reaches an operator tailing the daemon; Header.IngestAnomaly
+// reaches the person looking at the queue, which is the audience that has to
+// decide whether a short download is worth re-adding from another indexer. A
+// parse anomaly that only ever appears in a log is invisible to them.
 func TestParseAnomalySummary_NamesEachDiscardKind(t *testing.T) {
 	t.Parallel()
 	got := parseAnomalySummary(&nzb.NZB{

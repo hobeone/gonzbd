@@ -202,6 +202,25 @@ func TestStripCompressionSuffix(t *testing.T) {
 	}
 }
 
+func TestStripNZBExt(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		input, want string
+	}{
+		{"movie.nzb", "movie"},
+		{"movie.nzb.gz", "movie"},
+		{"movie.nzb.bz2", "movie"},
+		{"MOVIE.NZB.GZ", "MOVIE"},
+		{"bundle.zip", "bundle.zip"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := stripNZBExt(tc.input); got != tc.want {
+			t.Errorf("stripNZBExt(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
 func TestDeriveName(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

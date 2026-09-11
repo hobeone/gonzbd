@@ -1200,8 +1200,8 @@ func TestApplication_EdgeCases(t *testing.T) {
 	if !ok {
 		t.Fatalf("job2 not found in dispatcher")
 	}
-	if row2.View.Intent != jobpkg.IntentPause || row2.Header.Warning != "Duplicate NZB" {
-		t.Errorf("job2 Intent = %v, Warning = %v; want IntentPause, Duplicate NZB", row2.View.Intent, row2.Header.Warning)
+	if row2.View.Intent != jobpkg.IntentPause || row2.Header.DuplicateReason != "Duplicate NZB" {
+		t.Errorf("job2 Intent = %v, DuplicateReason = %v; want IntentPause, Duplicate NZB", row2.View.Intent, row2.Header.DuplicateReason)
 	}
 
 	// Add forced duplicate
@@ -1216,8 +1216,8 @@ func TestApplication_EdgeCases(t *testing.T) {
 	if !ok {
 		t.Fatalf("job3 not found in dispatcher")
 	}
-	if row3.Header.Warning != "Duplicate NZB (Forced)" {
-		t.Errorf("job3.Warning = %v; want Duplicate NZB (Forced)", row3.Header.Warning)
+	if row3.Header.DuplicateReason != "Duplicate NZB (Forced)" {
+		t.Errorf("job3.DuplicateReason = %v; want Duplicate NZB (Forced)", row3.Header.DuplicateReason)
 	}
 
 	// Test unique name collision in downloadDir

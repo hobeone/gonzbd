@@ -246,10 +246,11 @@ type StallInfo struct {
 
 // StallReason reports why a job is parked, for the queue listing (R26, R27).
 //
-// Read from here rather than from Job.Warning because the two have different
-// lifetimes: re-evaluation resumes the job to find out whether the condition
-// cleared, and Dispatcher.ResumeJob wipes the warning as it goes. A user polling the
-// queue during a re-evaluation would see the reason blink out and come back.
+// This in-memory map is the sole source, rather than a Header field: R19's
+// re-evaluation needs a list of every parked job to walk, which a
+// per-job Header field cannot provide, and clearStall/setStallReasonLocked
+// are this map's only writers, giving the reason a single owner independent
+// of anything Dispatcher does.
 func (app *Application) StallReason(jobID string) StallInfo {
 	app.stallMu.Lock()
 	defer app.stallMu.Unlock()
@@ -593,7 +594,4 @@ func (app *Application) stallLost(jobID string, fileIdx int) {
 				"restart gonzbd to resume this job from its recorded runs", path)
 	}
 	app.noteStallReason(jobID, reason)
-	if app.dispatcher != nil {
-		_ = app.dispatcher.SetWarning(jobID, reason)
-	}
 }

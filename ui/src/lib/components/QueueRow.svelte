@@ -449,10 +449,9 @@
 				{/if}
 			</div>
 			{#if slot.stall_reason}
-				<!-- The stall reason wins over slot.warning rather than being shown
-				     beside it: the backend sets both to the same text when it parks a
-				     job, and the reason survives the resume a re-evaluation performs
-				     while the warning does not. -->
+				<!-- stall_reason is live, re-evaluated state (app.StallReason) —
+				     it clears on its own once the condition resolves, unlike the
+				     fields below, so it takes priority whenever present. -->
 				<div
 					class="flex items-center text-destructive shrink-0 max-w-[140px]"
 					title={slot.stall_reason}
@@ -461,10 +460,39 @@
 					<AlertTriangle class="size-3.5 leading-none shrink-0" />
 					<span class="ml-1 text-xs font-bold truncate">{slot.stall_reason}</span>
 				</div>
-			{:else if slot.warning}
-				<div class="flex items-center text-amber-500 shrink-0 max-w-[100px]" title={slot.warning}>
+			{:else if slot.fail_reason}
+				<div class="flex items-center text-destructive shrink-0 max-w-[140px]" title={slot.fail_reason}>
 					<AlertTriangle class="size-3.5 leading-none shrink-0" />
-					<span class="ml-1 text-xs font-bold truncate">{slot.warning}</span>
+					<span class="ml-1 text-xs font-bold truncate">{slot.fail_reason}</span>
+				</div>
+			{:else if slot.post_anomaly}
+				<div class="flex items-center text-amber-500 shrink-0 max-w-[100px]" title={slot.post_anomaly}>
+					<AlertTriangle class="size-3.5 leading-none shrink-0" />
+					<span class="ml-1 text-xs font-bold truncate">{slot.post_anomaly}</span>
+				</div>
+			{:else if slot.operational_error}
+				<div
+					class="flex items-center text-amber-500 shrink-0 max-w-[100px]"
+					title={slot.operational_error}
+				>
+					<AlertTriangle class="size-3.5 leading-none shrink-0" />
+					<span class="ml-1 text-xs font-bold truncate">{slot.operational_error}</span>
+				</div>
+			{:else if slot.status === 'Paused' && slot.duplicate_reason}
+				<div
+					class="flex items-center text-amber-500 shrink-0 max-w-[100px]"
+					title={slot.duplicate_reason}
+				>
+					<AlertTriangle class="size-3.5 leading-none shrink-0" />
+					<span class="ml-1 text-xs font-bold truncate">{slot.duplicate_reason}</span>
+				</div>
+			{:else if slot.ingest_anomaly}
+				<div
+					class="flex items-center text-amber-500 shrink-0 max-w-[100px]"
+					title={slot.ingest_anomaly}
+				>
+					<AlertTriangle class="size-3.5 leading-none shrink-0" />
+					<span class="ml-1 text-xs font-bold truncate">{slot.ingest_anomaly}</span>
 				</div>
 			{/if}
 			{#if hasFailed}

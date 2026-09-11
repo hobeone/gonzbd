@@ -94,7 +94,7 @@ func (n NopApp) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, raw
 		for _, row := range n.Dispatcher.List() {
 			if (hdr.Filename != "" && (row.Header.Filename == hdr.Filename || row.Header.Name == hdr.Filename)) ||
 				(hdr.Name != "" && (row.Header.Name == hdr.Name || row.Header.Filename == hdr.Name)) {
-				hdr.Warning = "Duplicate NZB"
+				hdr.DuplicateReason = "Duplicate NZB"
 				if !force {
 					_ = j.SetIntent(job.IntentPause)
 				}

@@ -178,13 +178,13 @@ describe('QueueRow', () => {
 
 	// ── Warning display ──
 
-	it('shows warning icon and text when slot.warning is set', () => {
-		const warnSlot = { ...baseSlot, warning: 'Missing articles' };
+	it('shows an icon and text when slot.ingest_anomaly is set', () => {
+		const warnSlot = { ...baseSlot, ingest_anomaly: 'Missing articles' };
 		const { container } = render(QueueRow, { slot: warnSlot, onremove: vi.fn() });
 		expect(container.textContent).toContain('Missing articles');
 	});
 
-	it('does not show warning icon when slot.warning is empty', () => {
+	it('does not show a warning icon when no anomaly/reason field is set', () => {
 		const { container } = render(QueueRow, { slot: baseSlot, onremove: vi.fn() });
 		// No warning text or icon.
 		expect(container.querySelector('.text-amber-600')).not.toBeInTheDocument();
@@ -635,12 +635,16 @@ describe('QueueRow', () => {
 			expect(screen.queryByTestId('stall-reason')).toBeNull();
 		});
 
-		it('prefers the stall reason over the generic warning', () => {
-			// The backend sets both to the same text when it parks a job, and the
-			// reason outlives the resume a re-evaluation performs. Rendering both
-			// duplicates the row's only free horizontal space.
+		it('prefers the stall reason over an ingest anomaly', () => {
+			// stall_reason is live, re-evaluated state; ingest_anomaly is an
+			// immutable ingest-time fact. Rendering both duplicates the row's
+			// only free horizontal space, so the live one wins.
 			render(QueueRow, {
-				slot: { ...baseSlot, warning: 'Stalled: disk full', stall_reason: 'Stalled: disk full' },
+				slot: {
+					...baseSlot,
+					ingest_anomaly: 'Stalled: disk full',
+					stall_reason: 'Stalled: disk full'
+				},
 				onremove: () => {}
 			});
 			expect(screen.getAllByText('Stalled: disk full')).toHaveLength(1);
