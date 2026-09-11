@@ -1023,38 +1023,14 @@ SQLite. File: `history.db` in the admin directory.
 
 ### 11.2 Schema
 
-```sql
-CREATE TABLE history (
-    id              INTEGER PRIMARY KEY,
-    completed       INTEGER,          -- Unix timestamp of completion
-    name            TEXT,             -- Display name
-    nzb_name        TEXT,             -- Original NZB filename
-    category        TEXT,
-    pp              TEXT,             -- PP flags string ("7", "3", etc.)
-    script          TEXT,
-    url             TEXT,             -- Source URL
-    status          TEXT,             -- Final status (Completed, Failed, etc.)
-    nzo_id          TEXT UNIQUE,
-    storage         TEXT,             -- Filename/archive name for display
-    path            TEXT,             -- Final directory path
-    script_log      BLOB,             -- Compressed script stdout (gzip)
-    script_line     TEXT,             -- Last non-empty script output line
-    download_time   INTEGER,          -- Seconds to download
-    postproc_time   INTEGER,          -- Seconds for post-processing
-    stage_log       TEXT,             -- JSON: {stage_name: [log_lines]}
-    downloaded      INTEGER,          -- Bytes actually downloaded
-    completeness    INTEGER,          -- 0-100 percentage
-    fail_message    TEXT,
-    url_info        TEXT,             -- Additional source info
-    bytes           INTEGER,          -- Total NZB size in bytes
-    meta            TEXT,             -- JSON metadata dict
-    md5sum          TEXT,             -- MD5 of first 16 KB of first file
-    password        TEXT,
-    archive         INTEGER DEFAULT 0, -- 0=active, 1=archived
-    time_added      INTEGER,          -- Unix timestamp when NZB added
-    nzb_backup      TEXT NOT NULL DEFAULT ''  -- basename of the gzipped NZB backup
-);
-```
+The `history` table's DDL is maintained in
+[`docs/post_processing_spec.md`](post_processing_spec.md) § 6.7, which is where
+the post-processing pipeline that writes those rows is specified. It is not
+repeated here: two copies of one `CREATE TABLE` is two things to update when a
+column moves, and the copy nobody is looking at is the one that goes stale.
+
+What belongs here rather than there is the PARITY story — which SABnzbd
+columns GoNZBD does not carry, and why:
 
 `report`, `series` and `duplicate_key` were carried here for parity with the
 upstream Python schema and are gone. Nothing read them: each was written by the
@@ -1065,10 +1041,7 @@ adopting it, so there is no upgrade for them to serve. (It fails in the
 migration's own `CREATE TABLE history`, not in `refuseUnknownSchema`, which
 compares goose versions and an upstream file records none.)
 
-```sql
-CREATE UNIQUE INDEX idx_history_nzo_id ON history(nzo_id);
-CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
-```
+Its indexes are specified alongside it, in the same section.
 
 ### 11.3 History Entry Lifecycle
 
