@@ -39,7 +39,7 @@ The downloader pipeline operates across four isolated tiers of ownership:
 
 | Tier | Owned By | Responsibility | Lock / Synchronization |
 |---|---|---|---|
-| **Dispatcher** | Main loop (`run`) | Queue scanning, server selection, work fan-out via `workCh` sends | Queue `RLock`; `optsMu` RLock for pass options. Never blocks on I/O. |
+| **Dispatcher** | Main loop (`run`) | Queue scanning, server selection, work fan-out via `workCh` sends | `Dispatcher.List()` / `Dispatcher.Job()` under dispatcher mutex; `optsMu` RLock for pass options. Never blocks on I/O. |
 | **Tracker** | `dispatchTracker` | In-flight deduplication, per-article try-bitmaps (`serverMask`) | Internal `tracker.Mutex`. Lock-held periods bounded to O(1) bitmap ops. |
 | **Server state** | `Server` | Per-server penalty tracking, bad/good connection counters, optional-server auto-deactivation | `Server.mu` (RWMutex) for penalty/deactivation; atomic counters for bad/good. |
 | **Worker / Connection** | `connWorker` & `managedConn` | Pipelined NNTP network I/O (`nntp.Conn`), yEnc decoding, rate shaping, TLS | `managedConn.mu` for dial-coalescing only; `nntp.Conn` internal locks for pipelining. |

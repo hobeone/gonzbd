@@ -28,8 +28,12 @@ docs-only or UI-only change.
 
 ### Database Migrations
 
-All schema changes MUST be implemented as a new `goose` migration file in
-`internal/history/migrations/`. **Never modify existing migration files.**
+Prior to v1.0, per Standing Design Rule 1 (no backwards compatibility, fresh
+installs only), GoNZBD maintains a single canonical migration in
+`internal/history/migrations/001_initial.sql`. Breaking schema changes update
+`001_initial.sql` directly and update `internal/history/testdata/schema.golden`.
+Once released to production, schema changes will be implemented as new `goose`
+migrations without modifying existing files.
 
 ### Concurrency Architecture (Decided)
 

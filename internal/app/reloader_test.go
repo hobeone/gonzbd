@@ -275,8 +275,8 @@ func TestApplication_ReloadPostProcOptions_AppliesStrictSandboxToRunningStage(t 
 
 // TestDetectDuplicateNZB covers detectDuplicateNZB directly (extracted from
 // AddJob in OPT-9): the MD5-in-queue branch, and the force/!force asymmetry
-// (Status is only set by the caller when !force, but Warning differs either
-// way — detectDuplicateNZB itself only returns the warning text, so this
+// (Intent is only set by the caller when !force, but DuplicateReason differs either
+// way — detectDuplicateNZB itself only returns the duplicate reason text, so this
 // test asserts that contract).
 func TestDetectDuplicateNZB(t *testing.T) {
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())

@@ -29,9 +29,9 @@ implementation lives at `../sabnzbd/`.
     - **Language:** Go 1.27.0+
     - **Configuration:** YAML (`gopkg.in/yaml.v3`)
     - **Persistence:** SQLite (`modernc.org/sqlite`, pure Go) for both history
-      and queue state; gzip-JSON only for per-job manifests
-      (`manifests/<id>.json.gz`) and the NZB backups a retry re-parses
-      (`nzb/<filename>.gz`).
+      and queue state; gzip-JSON for per-job manifests
+      (`admin/queue/manifests/<id>.json.gz`) and gzipped XML for the NZB backups a retry re-parses
+      (`admin/nzb/<filename>.gz`).
     - **Logging:** Structured logging via `log/slog`.
     - **Concurrency:** Idiomatic goroutines + channels; `sync.RWMutex` for
       shared state.
@@ -428,13 +428,12 @@ changed, the grep finds the ones you didn't. Do this **once, on the last round**
 of a review-fix loop — each round's own fix creates fresh drift, so an early
 sweep goes stale.
 
-**Migrations are the case that cannot be fixed later.** A wrong claim in an
-applied `goose` migration is frozen — the file must not be edited afterwards.
-Sweep any migration this change adds *before* it merges; if a stale claim is
-found in one already applied, correct it in a new migration's comment block and
-name the statement it supersedes. The schema is currently a single
-`001_initial.sql`, so there is no second migration to hold a correction. Its
-`jobs.recovery_bytes` block is the worked example of a superseding comment.
+**Migrations are frozen once shipped to production.** Prior to v1.0, per Standing
+Design Rule 1, GoNZBD maintains a single canonical `001_initial.sql` (breaking
+schema edits modify `001_initial.sql` and `schema.golden` directly). Sweep any
+schema changes *before* committing: the migration must describe the current
+schema, not its history (commit `eb540a64`). Once released, schema changes will
+use new incremental `goose` migrations.
 
 ### Code Review Reception Protocol
 
@@ -646,7 +645,7 @@ Decisions that must be escalated:
 - Keeping a guard whose only justification is state an earlier build wrote, unless the security carve-out applies
 - Persistence format changes (file paths, schema, on-disk layout)
 - API behavior changes that affect compatibility with the existing Glitter web UI
-- Database schema changes (always add a new `goose` migration in `internal/history/migrations/` — never modify existing migration files)
+- Database schema changes (pre-v1.0 modifies `001_initial.sql` directly per Standing Design Rule 1; post-v1.0 adds a new `goose` migration in `internal/history/migrations/`)
 
 ## Go Coding Standards, Testing Standards, and Backend Lessons Learned
 

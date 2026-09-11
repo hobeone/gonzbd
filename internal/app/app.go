@@ -633,10 +633,10 @@ func (app *Application) Speed() float64 {
 
 // detectDuplicateNZB checks whether job's MD5 or filename already exists in
 // the active queue, history DB, or the admin/nzb/ backup directory. Returns
-// whether it's a duplicate and the Warning string AddJob should attach to
+// whether it's a duplicate and the DuplicateReason string AddJob should attach to
 // the job (empty if not a duplicate). Split out of AddJob to isolate the
 // duplicate-detection branching from queue insertion (OPT-9).
-func (app *Application) detectDuplicateNZB(ctx context.Context, md5, filename string, force bool, nzbDir string) (isDuplicate bool, warning string) {
+func (app *Application) detectDuplicateNZB(ctx context.Context, md5, filename string, force bool, nzbDir string) (isDuplicate bool, duplicateReason string) {
 	dupReason := ""
 	if app.dispatcher != nil && md5 != "" {
 		for _, row := range app.dispatcher.List() {
@@ -684,7 +684,7 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		return fmt.Errorf("app: mkdir admin nzb: %w", err)
 	}
 
-	isDuplicate, warning := app.detectDuplicateNZB(ctx, hdr.MD5, hdr.Filename, force, nzbDir)
+	isDuplicate, dupReason := app.detectDuplicateNZB(ctx, hdr.MD5, hdr.Filename, force, nzbDir)
 	if isDuplicate {
 		if !force {
 			_ = j.SetIntent(job.IntentPause)
@@ -693,7 +693,7 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		// may already have set that field, and a job can be both a duplicate
 		// and malformed. Two single-owner fields can't clobber each other the
 		// way one shared string could.
-		hdr.DuplicateReason = warning
+		hdr.DuplicateReason = dupReason
 	}
 
 	snap := app.config.Snapshot()
