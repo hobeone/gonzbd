@@ -108,6 +108,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"fmt"
 	"os"
 	"os/exec"
@@ -147,8 +148,46 @@ var testRE = regexp.MustCompile(`\bTest[A-Z][A-Za-z0-9_]{4,}\b`)
 // 100 files were surveyed when this check was written; none is inspected here,
 // deliberately, because a guess that lands on the wrong document reports a
 // correct citation as broken.
+// The unquoted alternative accepts a NUMBER as well as a capitalised name.
+// "docs/durability-contract.md §6" and "docs/post_processing_spec.md § 6.7"
+// are both fully qualified — they name their target — and were silently
+// skipped while the pattern demanded an initial [A-Z]. Three such citations
+// were live when this was fixed, one of them added by the same change that
+// introduced this check.
 var sectionRE = regexp.MustCompile(
-	"(?:^|[^A-Za-z0-9_./~-])([.~/]*(?:[A-Za-z0-9_.+-]+/)*[A-Za-z0-9_.+-]+\\.md)`?\\s*§\\s*(?:\"([^\"]{2,60})\"|`?([A-Z][A-Za-z0-9_&'` -]{2,60}))")
+	"(?:^|[^A-Za-z0-9_./~-])([.~/]*(?:[A-Za-z0-9_.+-]+/)*[A-Za-z0-9_.+-]+\\.md)`?\\s*§\\s*" +
+		"(?:\"([^\"]{2,60})\"|([0-9]+(?:\\.[0-9A-Za-z]+)*)\\b|`?([A-Z][A-Za-z0-9_&'` -]{2,60}))")
+
+// listItemRE matches a top-level ordered list item, which several contracts
+// use to number their invariants instead of ATX headings. Anchored at column
+// zero so nested/indented lists — which are ordinary prose enumerations, not
+// sections — are not mistaken for them.
+var listItemRE = regexp.MustCompile(`^(\d+)\.\s+(.*)$`)
+
+// sectionNumber returns the leading "1." / "10.4" / "5.B" / "3a." of a heading
+// or citation, without its trailing dot, and "" when there is none.
+//
+// The lowercase tail is not hypothetical: docs/TESTING.md has
+// "## 3a. Crash-Consistency Tests" and docs/durability-contract.md has
+// "### 9a. Only storage conditions reach Stallable". Rejecting lowercase left
+// the number in the word list, so a citation of the NAME could never match.
+func sectionNumber(s string) string {
+	i := strings.IndexByte(s, ' ')
+	first := s
+	if i > 0 {
+		first = s[:i]
+	}
+	if first == "" || !strings.ContainsAny(first, "0123456789") {
+		return ""
+	}
+	if strings.IndexFunc(first, func(r rune) bool {
+		return (r < '0' || r > '9') && r != '.' &&
+			(r < 'A' || r > 'Z') && (r < 'a' || r > 'z')
+	}) != -1 {
+		return ""
+	}
+	return strings.TrimSuffix(first, ".")
+}
 
 // headingWords normalises one heading or one cited section name to lowercase
 // words, dropping a leading section number and any markup. "### 1. Concurrency
@@ -158,12 +197,11 @@ func headingWords(s string) []string {
 	s = strings.ReplaceAll(s, "`", "")
 	s = strings.ReplaceAll(s, "*", "")
 	s = strings.TrimSpace(s)
-	// Drop a leading "1." / "10.4" / "5.B" section number.
-	if i := strings.IndexByte(s, ' '); i > 0 {
-		if first := s[:i]; strings.IndexFunc(first, func(r rune) bool {
-			return (r < '0' || r > '9') && r != '.' && (r < 'A' || r > 'Z')
-		}) == -1 && strings.ContainsAny(first, "0123456789") {
+	if num := sectionNumber(s); num != "" {
+		if i := strings.IndexByte(s, ' '); i > 0 {
 			s = s[i+1:]
+		} else {
+			s = ""
 		}
 	}
 	// Trailing punctuation is stripped per word so that a heading which
@@ -180,22 +218,50 @@ func headingWords(s string) []string {
 	return words
 }
 
-// headingCache memoises the headings of each target document.
-var headingCache = map[string][][]string{}
+// heading is one ATX heading, split into the parts a citation can name: its
+// section number ("6", "10.4", "3a") and its words.
+type heading struct {
+	num   string
+	words []string
+}
 
-// docHeadings returns every ATX heading in rel, normalised by headingWords.
-func docHeadings(root, rel string) [][]string {
+// headingCache memoises the headings of each target document.
+var headingCache = map[string][]heading{}
+
+// docHeadings returns every ATX heading in rel.
+//
+// A read failure is fatal rather than an empty result. Caching "no headings"
+// for a file that could not be opened turns an I/O error into a section
+// finding against every citation of that document — the tool would report a
+// documentation defect that is really a permissions or disk problem, which is
+// the one failure mode a gate must never invent.
+func docHeadings(root, rel string) []heading {
 	if hs, ok := headingCache[rel]; ok {
 		return hs
 	}
-	var hs [][]string
-	if body, err := os.ReadFile(filepath.Join(root, rel)); err == nil { //nolint:gosec // G304: rel resolved inside root by statInside
-		for line := range strings.SplitSeq(string(body), "\n") {
-			if strings.HasPrefix(line, "#") {
-				if w := headingWords(line); len(w) > 0 {
-					hs = append(hs, w)
-				}
+	body, err := os.ReadFile(filepath.Join(root, rel)) //nolint:gosec // G304: rel resolved inside root by statInside
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "check_doc_citations: reading %s for its headings: %v\n", rel, err)
+		os.Exit(2)
+	}
+	var hs []heading
+	for line := range strings.SplitSeq(string(body), "\n") {
+		if strings.HasPrefix(line, "#") {
+			raw := strings.TrimSpace(strings.TrimLeft(line, "#"))
+			if w := headingWords(line); len(w) > 0 || sectionNumber(raw) != "" {
+				hs = append(hs, heading{num: sectionNumber(raw), words: w})
 			}
+			continue
+		}
+		// A numbered SECTION is not always an ATX heading. Several contracts
+		// number their invariants as a top-level ordered list instead —
+		// docs/nntp-downloader-contract.md's "5. Emitted-is-transient
+		// durability contract" lives under a named "## Mandatory invariants"
+		// heading — and "§5" cites it exactly as it cites a numbered heading
+		// elsewhere. Treating only headings as anchors reported that live
+		// reference as broken.
+		if m := listItemRE.FindStringSubmatch(line); m != nil {
+			hs = append(hs, heading{num: m[1], words: headingWords(m[2])})
 		}
 	}
 	headingCache[rel] = hs
@@ -214,36 +280,67 @@ func docHeadings(root, rel string) [][]string {
 // the only question this gate asks; it deliberately does not police whether
 // the rest of the name is current.
 func sectionResolves(root, citing, target, name string) bool {
-	rel := target
-	if !statInside(root, rel) {
-		dir := filepath.Dir(citing)
-		for dir != "." && dir != string(filepath.Separator) {
-			if statInside(root, filepath.Join(dir, target)) {
-				rel = filepath.Join(dir, target)
-				break
-			}
-			dir = filepath.Dir(dir)
-		}
-	}
-	if !statInside(root, rel) {
+	rel, ok := resolveRelative(root, citing, target)
+	if !ok {
 		// The document itself is missing; pathRE already reports that, and
 		// reporting the section too would double-count one defect.
 		return true
 	}
+	hs := docHeadings(root, rel)
+
+	// A numeric citation names the heading's NUMBER, which headingWords
+	// strips, so it is matched on that rather than on words.
+	if num := sectionNumber(name); num != "" {
+		for _, h := range hs {
+			if h.num == num {
+				return true
+			}
+		}
+		return false
+	}
+
 	want := headingWords(name)
 	if len(want) == 0 {
 		return true
 	}
-	n := min(len(want), 2)
-	for _, h := range docHeadings(root, rel) {
-		if len(h) < n {
+	for _, h := range hs {
+		// Compare as many words as the SHORTER of the two carries. Taking
+		// min(len(want), 2) alone skipped every one-word heading — "# Basic",
+		// "### Directories", "#### History" all exist here — because an
+		// unquoted citation captures trailing prose, making len(want) >= 2
+		// while len(h) is 1, and `len(h) < n` then discarded the very heading
+		// that matched.
+		n := min(len(want), len(h.words), 2)
+		if n == 0 {
 			continue
 		}
-		if slices.Equal(h[:n], want[:n]) {
+		if slices.Equal(h.words[:n], want[:n]) {
 			return true
 		}
 	}
 	return false
+}
+
+// resolveRelative resolves a cited path the way a reader does: root-relative
+// first, then walking up from the citing file's own directory, because prose
+// abbreviates ("job/intent.go" for "internal/job/intent.go").
+//
+// Shared by resolves and sectionResolves so the two checks cannot disagree
+// about whether a document exists — a section reported broken because the
+// section check resolved the path differently from the path check would be a
+// finding with no defect behind it.
+func resolveRelative(root, citing, target string) (string, bool) {
+	if statInside(root, target) {
+		return target, true
+	}
+	dir := filepath.Dir(citing)
+	for dir != "." && dir != string(filepath.Separator) {
+		if p := filepath.Join(dir, target); statInside(root, p) {
+			return p, true
+		}
+		dir = filepath.Dir(dir)
+	}
+	return "", false
 }
 
 // declRE matches a test declaration. Benchmarks, fuzz targets and examples
@@ -373,12 +470,14 @@ func main() {
 				findings = append(findings, finding{file: file, line: i + 1, token: t, kind: "test"})
 			}
 			for _, m := range sectionRE.FindAllStringSubmatch(line, -1) {
-				target, name := m[1], m[2]
-				if name == "" {
-					name = m[3]
-				}
+				target, name := m[1], cmp.Or(m[2], m[3], m[4])
 				tok := target + " § " + name
-				if exempt[target] || exempt[name] || skipPath(target) {
+				// Keyed on the SECTION token, not on the document. Exempting
+				// a path says "this path names something absent on purpose";
+				// letting that also suppress every section citation into the
+				// same document would silently disable this check for the one
+				// file someone had a reason to annotate.
+				if exempt[tok] || exempt[name] || skipPath(target) {
 					continue
 				}
 				if sectionResolves(root, file, target, name) || isObituary(lines, i) {
@@ -510,17 +609,8 @@ func isPrefixOfDeclared(tok string, tests map[string]bool) bool {
 // them the way the reader does — and it stays strict where it matters, since
 // internal/queue/queue.go resolves from no ancestor of anything.
 func resolves(root, citing, p string) bool {
-	if statInside(root, p) {
-		return true
-	}
-	dir := filepath.Dir(citing)
-	for dir != "." && dir != string(filepath.Separator) {
-		if statInside(root, filepath.Join(dir, p)) {
-			return true
-		}
-		dir = filepath.Dir(dir)
-	}
-	return false
+	_, ok := resolveRelative(root, citing, p)
+	return ok
 }
 
 // statInside reports whether rel names something that exists AND sits inside

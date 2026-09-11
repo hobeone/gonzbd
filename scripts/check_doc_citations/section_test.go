@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"os"
 	"path/filepath"
 	"slices"
@@ -34,6 +35,16 @@ func TestSectionRE_RecognisesTheFormsTheTreeUses(t *testing.T) {
 			wantDoc: "AGENTS.md", wantSec: "Step 4 in practice",
 		},
 		{
+			name:    "fully-qualified numeric section",
+			line:    "see docs/durability-contract.md §6 for the gap that left",
+			wantDoc: "docs/durability-contract.md", wantSec: "6",
+		},
+		{
+			name:    "numeric section with a subsection",
+			line:    "maintained in `docs/post_processing_spec.md` § 6.7, which is where",
+			wantDoc: "docs/post_processing_spec.md", wantSec: "6.7",
+		},
+		{
 			name:    "no space after the section mark",
 			line:    "`docs/ARCHITECTURE.md` §Post-Processing covers it",
 			wantDoc: "docs/ARCHITECTURE.md", wantSec: "Post-Processing",
@@ -45,10 +56,7 @@ func TestSectionRE_RecognisesTheFormsTheTreeUses(t *testing.T) {
 			if m == nil {
 				t.Fatalf("sectionRE matched nothing in %q", c.line)
 			}
-			sec := m[2]
-			if sec == "" {
-				sec = m[3]
-			}
+			sec := cmp.Or(m[2], m[3], m[4])
 			if m[1] != c.wantDoc {
 				t.Errorf("doc = %q, want %q", m[1], c.wantDoc)
 			}
@@ -76,6 +84,12 @@ func TestHeadingWords_DropsMarkupAndSectionNumbers(t *testing.T) {
 		// A heading that continues past its name must still match a citation
 		// of the name alone; without the per-word trim this is "tick:".
 		{"## The tick: a ticker owns liveness", []string{"the", "tick", "a", "ticker", "owns", "liveness"}},
+		// Lowercase tails are real: docs/TESTING.md has "## 3a. Crash-Consistency
+		// Tests" and docs/durability-contract.md has "### 9a. ...". Rejecting
+		// them left the number in the list, so a citation of the NAME could
+		// never match.
+		{"## 3a. Crash-Consistency Tests", []string{"crash-consistency", "tests"}},
+		{"### 9a. Only storage conditions reach `Stallable`", []string{"only", "storage", "conditions", "reach", "stallable"}},
 	}
 	for _, c := range cases {
 		if got := headingWords(c.in); !slices.Equal(got, c.want) {
@@ -90,11 +104,17 @@ func TestSectionResolves(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body := "# Title\n\n## 1. Concurrency & Locking\n\ntext\n\n## The red check — why it must be observed\n\ntext\n"
+	body := "# Title\n\n## 1. Concurrency & Locking\n\ntext\n\n" +
+		"## The red check — why it must be observed\n\ntext\n\n" +
+		"# Overview\n\ntext\n\n## 6. The record is authoritative\n\ntext\n\n" +
+		"### 10.4 API Modes Reference\n\ntext\n\n" +
+		// Several contracts number their invariants as a top-level ordered
+		// list rather than as headings, and cite them as "§5" all the same.
+		"## Mandatory invariants\n\n5. **Emitted-is-transient** contract\n"
 	if err := os.WriteFile(filepath.Join(root, target), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	headingCache = map[string][][]string{}
+	headingCache = map[string][]heading{}
 
 	cases := []struct {
 		name, cited string
@@ -106,6 +126,15 @@ func TestSectionResolves(t *testing.T) {
 		{"heading does not exist", "Coordination Architecture", false},
 		{"right document, wrong section entirely", "Truncate Bound", false},
 		{"first word matches, second does not", "The truncate bound", false},
+		// A one-word heading was skipped outright: an unquoted citation
+		// captures trailing prose, so len(want) >= 2 while len(h) == 1, and
+		// the old `len(h) < n` guard discarded the heading that matched.
+		{"one-word heading, citation carries trailing prose", "Overview and then some prose", true},
+		{"one-word heading, cited alone", "Overview", true},
+		{"numeric citation matching a numbered heading", "6", true},
+		{"numeric citation with a subsection", "10.4", true},
+		{"numeric citation naming no heading", "42", false},
+		{"numeric citation naming a top-level ordered list item", "5", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -122,7 +151,7 @@ func TestSectionResolves(t *testing.T) {
 // on exactly the change that deletes a doc.
 func TestSectionResolves_DefersToThePathCheckWhenTheDocIsGone(t *testing.T) {
 	root := t.TempDir()
-	headingCache = map[string][][]string{}
+	headingCache = map[string][]heading{}
 	if !sectionResolves(root, "docs/other.md", "docs/absent.md", "Anything At All") {
 		t.Error("a section citation into a MISSING document was reported; pathRE already reports the document")
 	}

@@ -18,9 +18,25 @@ file scripts/check_doc_citations/main.go
 [the two-word comparison degenerates to one word, so a wrong section passes]
 file scripts/check_doc_citations/main.go
 --- anchor
-	n := min(len(want), 2)
+		n := min(len(want), len(h.words), 2)
 --- replace
-	n := min(len(want), 1)
+		n := min(len(want), len(h.words), 1)
+--- end
+
+[a numeric citation matches any numbered heading, not the one it names]
+file scripts/check_doc_citations/main.go
+--- anchor
+			if h.num == num {
+--- replace
+			if h.num != "" {
+--- end
+
+[a numbered list item is not treated as a section anchor]
+file scripts/check_doc_citations/main.go
+--- anchor
+		if m := listItemRE.FindStringSubmatch(line); m != nil {
+--- replace
+		if m := listItemRE.FindStringSubmatch(line); false {
 --- end
 
 [the leading section number is not stripped, so numbered headings never match]
