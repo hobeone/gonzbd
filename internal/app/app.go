@@ -766,26 +766,56 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	}
 	if app.historyRepo != nil && app.historyRepo.DB() != nil {
 		if m, err := j.Manifest(); err == nil && m != nil {
-			// Seeds one row per file with empty RESULTS, which the
-			// checkpointer fills in as the download proceeds. Nothing from the
-			// manifest is copied here — it is loaded before these rows are
-			// read, so a copy could only ever be the stale one.
-			const qFiles = `
-INSERT INTO job_files
-  (job_id, file_index, complete, fetch_policy, filename, assembled_crc32)
-VALUES (?, ?, 0, 0, '', 0)
-ON CONFLICT(job_id, file_index) DO NOTHING`
-			for i := range m.NumFiles() {
-				if _, err := app.historyRepo.DB().ExecContext(ctx, qFiles,
-					j.ID(), i,
-				); err != nil {
-					return fmt.Errorf("app: insert job_file %s index %d: %w", j.ID(), i, err)
-				}
+			if err := seedJobFiles(ctx, app.historyRepo.DB(), j.ID(), m.NumFiles()); err != nil {
+				return err
 			}
 		}
 	}
 	app.emit(Event{Type: "queue_updated"})
 	app.log.Info("job added", "name", hdr.Name, "id", j.ID())
+	return nil
+}
+
+// seedJobFiles creates one job_files row per file, holding empty RESULTS that
+// appCheckpointStore.SaveBatch fills in as the download proceeds. Nothing from
+// the manifest is copied: the manifest is loaded before these rows are read, so
+// a copy could only ever be the stale one.
+//
+// The seed is a precondition for the checkpointer, not merely an optimisation —
+// SaveBatch UPDATEs by (job_id, file_index) and an UPDATE matching no row is
+// not an error, so a file with no seed row silently persists no metadata at all
+// and hydrates with defaults. That is why the whole seed is one transaction:
+// partway through, the job is already registered with the dispatcher and about
+// to start downloading, and a per-row autocommit would leave the tail of the
+// file list in exactly that silent state.
+//
+// It is also where the cost is. Each autocommit is its own WAL commit, so an
+// NZB with a thousand files paid a thousand of them at submission.
+func seedJobFiles(ctx context.Context, db *sql.DB, jobID string, numFiles int) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("app: begin job_files seed %s: %w", jobID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO job_files
+  (job_id, file_index, complete, fetch_policy, filename, assembled_crc32)
+VALUES (?, ?, 0, 0, '', 0)
+ON CONFLICT(job_id, file_index) DO NOTHING`)
+	if err != nil {
+		return fmt.Errorf("app: prepare job_files seed %s: %w", jobID, err)
+	}
+	defer func() { _ = stmt.Close() }()
+
+	for i := range numFiles {
+		if _, err := stmt.ExecContext(ctx, jobID, i); err != nil {
+			return fmt.Errorf("app: insert job_file %s index %d: %w", jobID, i, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("app: commit job_files seed %s: %w", jobID, err)
+	}
 	return nil
 }
 
