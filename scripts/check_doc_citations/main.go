@@ -1,6 +1,7 @@
 // Command check_doc_citations reports references in prose that no longer
-// resolve: a file path that names nothing in the tree, and a Test function
-// cited as a guard that is not declared anywhere.
+// resolve: a file path that names nothing in the tree, a Test function cited
+// as a guard that is not declared anywhere, and a "doc.md § Section" citation
+// naming a heading that document does not have.
 //
 // It exists because the repository's existing gates are structurally blind to
 // this. check_citations runs `git ls-files *.go` and has never opened a
@@ -37,7 +38,7 @@
 //
 // # What it checks
 //
-// Two independent checks over every tracked .md file and every // comment in
+// Three independent checks over every tracked .md file and every // comment in
 // every tracked .go file.
 //
 // PATHS. A token that looks like a repository-relative path — it contains a
@@ -53,6 +54,22 @@
 // a FAMILY of tests by its shared stem — "TestAdvance covers §3.6" where the
 // declarations are TestAdvance_BranchOne_StartsANeverRunJob and its siblings —
 // and flagging that would produce noise with no defect behind it.
+//
+// SECTIONS. A citation naming both a document and a section in it —
+// "docs/go-standards.md § Concurrency & Locking" — must name a heading that
+// document actually has. This was added after two such citations were found
+// pointing at nothing, one of which had survived every gate since 0bbb5fc5
+// moved the section it named into another file. Path and Test citations were
+// checked; the half of the reference that names a heading was not, so
+// "AGENTS.md § <anything>" passed for as long as AGENTS.md existed.
+//
+// Only the form that names its target is checked. A bare "§3.4" is not
+// resolvable: it names no document, and 3.4 is a real heading in
+// docs/post_processing_spec.md and docs/sabnzbd_spec.md while
+// docs/durability-contract.md numbers its invariants flatly, so picking a
+// target would mean guessing. 320 bare refs across 100 files were surveyed
+// when this was written and none is inspected, because a guess that lands on
+// the wrong document reports a correct citation as broken.
 //
 // # Why identifiers in general are NOT checked
 //
@@ -96,6 +113,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -116,6 +134,117 @@ var pathRE = regexp.MustCompile(`(?:^|[^A-Za-z0-9_./~-])([.~/]*(?:[A-Za-z0-9_.+-
 // testRE matches a Go test function name as prose would write it. The {4,}
 // tail keeps it off short CamelCase words that merely begin with "Test".
 var testRE = regexp.MustCompile(`\bTest[A-Z][A-Za-z0-9_]{4,}\b`)
+
+// sectionRE matches a citation that names BOTH a document and a section in it:
+// "docs/go-standards.md § Concurrency & Locking", with or without backticks
+// and with or without quotes around the section name.
+//
+// Only this form is checkable. A bare "§3.4" names no document, and the
+// numbering is not unique across the tree — 3.4 and 3.5 are real headings in
+// docs/post_processing_spec.md and docs/sabnzbd_spec.md while
+// docs/durability-contract.md numbers its invariants flatly — so resolving one
+// would mean guessing which document the author meant. 320 bare refs across
+// 100 files were surveyed when this check was written; none is inspected here,
+// deliberately, because a guess that lands on the wrong document reports a
+// correct citation as broken.
+var sectionRE = regexp.MustCompile(
+	"(?:^|[^A-Za-z0-9_./~-])([.~/]*(?:[A-Za-z0-9_.+-]+/)*[A-Za-z0-9_.+-]+\\.md)`?\\s*§\\s*(?:\"([^\"]{2,60})\"|`?([A-Z][A-Za-z0-9_&'` -]{2,60}))")
+
+// headingWords normalises one heading or one cited section name to lowercase
+// words, dropping a leading section number and any markup. "### 1. Concurrency
+// & Locking" and "§ Concurrency & Locking" both become [concurrency & locking].
+func headingWords(s string) []string {
+	s = strings.TrimLeft(s, "#")
+	s = strings.ReplaceAll(s, "`", "")
+	s = strings.ReplaceAll(s, "*", "")
+	s = strings.TrimSpace(s)
+	// Drop a leading "1." / "10.4" / "5.B" section number.
+	if i := strings.IndexByte(s, ' '); i > 0 {
+		if first := s[:i]; strings.IndexFunc(first, func(r rune) bool {
+			return (r < '0' || r > '9') && r != '.' && (r < 'A' || r > 'Z')
+		}) == -1 && strings.ContainsAny(first, "0123456789") {
+			s = s[i+1:]
+		}
+	}
+	// Trailing punctuation is stripped per word so that a heading which
+	// continues past its name — "## The tick: a ticker owns liveness" — still
+	// matches a citation of the name alone, "§ The tick". Without this the
+	// comparison comes down to "tick:" against "tick" and reports a live
+	// reference as broken; that is how this gate's own first citation failed.
+	words := strings.Fields(strings.ToLower(strings.TrimSpace(s)))
+	for i, w := range words {
+		if t := strings.TrimRight(w, ":;,."); t != "" {
+			words[i] = t
+		}
+	}
+	return words
+}
+
+// headingCache memoises the headings of each target document.
+var headingCache = map[string][][]string{}
+
+// docHeadings returns every ATX heading in rel, normalised by headingWords.
+func docHeadings(root, rel string) [][]string {
+	if hs, ok := headingCache[rel]; ok {
+		return hs
+	}
+	var hs [][]string
+	if body, err := os.ReadFile(filepath.Join(root, rel)); err == nil { //nolint:gosec // G304: rel resolved inside root by statInside
+		for line := range strings.SplitSeq(string(body), "\n") {
+			if strings.HasPrefix(line, "#") {
+				if w := headingWords(line); len(w) > 0 {
+					hs = append(hs, w)
+				}
+			}
+		}
+	}
+	headingCache[rel] = hs
+	return hs
+}
+
+// sectionResolves reports whether the cited name matches a heading in the
+// target, comparing the first TWO normalised words.
+//
+// Two, not the whole string, because an unquoted citation runs into the
+// sentence around it — "AGENTS.md § Standing Design Rule 4 states the rule"
+// cites the section "Standing Design Rules" and carries four words of prose
+// past it, and a citation is routinely a prefix of a longer heading
+// ("§ The red check" for "The red check — why it must be observed"). Two words
+// is enough to separate a section that exists from one that does not, which is
+// the only question this gate asks; it deliberately does not police whether
+// the rest of the name is current.
+func sectionResolves(root, citing, target, name string) bool {
+	rel := target
+	if !statInside(root, rel) {
+		dir := filepath.Dir(citing)
+		for dir != "." && dir != string(filepath.Separator) {
+			if statInside(root, filepath.Join(dir, target)) {
+				rel = filepath.Join(dir, target)
+				break
+			}
+			dir = filepath.Dir(dir)
+		}
+	}
+	if !statInside(root, rel) {
+		// The document itself is missing; pathRE already reports that, and
+		// reporting the section too would double-count one defect.
+		return true
+	}
+	want := headingWords(name)
+	if len(want) == 0 {
+		return true
+	}
+	n := min(len(want), 2)
+	for _, h := range docHeadings(root, rel) {
+		if len(h) < n {
+			continue
+		}
+		if slices.Equal(h[:n], want[:n]) {
+			return true
+		}
+	}
+	return false
+}
 
 // declRE matches a test declaration. Benchmarks, fuzz targets and examples
 // count: prose cites them the same way and they fail the same way.
@@ -243,6 +372,20 @@ func main() {
 				}
 				findings = append(findings, finding{file: file, line: i + 1, token: t, kind: "test"})
 			}
+			for _, m := range sectionRE.FindAllStringSubmatch(line, -1) {
+				target, name := m[1], m[2]
+				if name == "" {
+					name = m[3]
+				}
+				tok := target + " § " + name
+				if exempt[target] || exempt[name] || skipPath(target) {
+					continue
+				}
+				if sectionResolves(root, file, target, name) || isObituary(lines, i) {
+					continue
+				}
+				findings = append(findings, finding{file: file, line: i + 1, token: tok, kind: "section"})
+			}
 		}
 	}
 
@@ -282,11 +425,14 @@ func report(findings, bare []finding) {
 			fmt.Printf("%s:%d: path %s does not exist\n", f.file, f.line, f.token)
 		case "test":
 			fmt.Printf("%s:%d: %s is cited but no such test is declared\n", f.file, f.line, f.token)
+		case "section":
+			fmt.Printf("%s:%d: %s — that document has no such heading\n", f.file, f.line, f.token)
 		}
 	}
 
 	if len(findings) == 0 && len(bare) == 0 {
-		fmt.Println("Status: every cited path resolves and every cited test is declared.")
+		fmt.Println("Status: every cited path resolves, every cited test is declared, " +
+			"and every cited section names a real heading.")
 		return
 	}
 	fmt.Printf("\nStatus: %d unresolved reference(s), %d unjustified exemption(s).\n",
