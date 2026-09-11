@@ -146,8 +146,8 @@ func TestFinalize_PreservesDurabilityWhenConflictingEntryIsFailed(t *testing.T) 
 	// 2. Seed durability rows (job_files, durable_runs, failed_articles).
 	seedDurability(t, application, job.ID())
 	if _, err := application.historyRepo.DB().ExecContext(ctx, `
-INSERT INTO job_files (job_id, file_index, subject, date, bytes, complete, fetch_policy, filename, assembled_crc32, article_count)
-VALUES (?, 0, "file.bin", 0, 1024, 0, 0, "file.bin", 0, 1)`, job.ID()); err != nil {
+INSERT INTO job_files (job_id, file_index, complete, fetch_policy, filename, assembled_crc32)
+VALUES (?, 0, 0, 0, "file.bin", 0)`, job.ID()); err != nil {
 		t.Fatalf("seed job_files: %v", err)
 	}
 
@@ -228,8 +228,8 @@ func TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError(t *testing.T)
 	// 1. Seed durability rows (job_files, durable_runs, failed_articles).
 	seedDurability(t, application, job.ID())
 	if _, err := application.historyRepo.DB().ExecContext(ctx, `
-INSERT INTO job_files (job_id, file_index, subject, date, bytes, complete, fetch_policy, filename, assembled_crc32, article_count)
-VALUES (?, 0, "file.bin", 0, 1024, 0, 0, "file.bin", 0, 1)`, job.ID()); err != nil {
+INSERT INTO job_files (job_id, file_index, complete, fetch_policy, filename, assembled_crc32)
+VALUES (?, 0, 0, 0, "file.bin", 0)`, job.ID()); err != nil {
 		t.Fatalf("seed job_files: %v", err)
 	}
 

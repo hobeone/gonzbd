@@ -1163,13 +1163,20 @@ pair from them: `done` means "covered by a run", `failed` means "has a
 beside the two records that already held the answer is exactly the second
 authority Rule 2 forbids, and the column that held it has been dropped.
 
-A non-resident job takes each file's article width from
-`job_files.article_count` — which exists so startup stays O(1) in manifest size
-rather than decompressing every manifest at boot — and places the bits at a
-global index derived from a running sum of the counts, which is what
-`Manifest.fileArticleOffsets` accumulates. Without this every article reads as
-still to fetch, and after a restart a half-downloaded job shows its FULL
-article count as remaining until it is promoted.
+Both records index articles **globally**, so replaying them needs the file
+boundaries. Those come from `Manifest.fileArticleOffsets`, the prefix sum
+`newManifest` builds over the manifest's own file list
+(`internal/job/manifest.go:104`). No per-file width is stored: `job_files`
+carries download results only, and `appResidency.restoreResolution` runs inside
+`Hydrate` after `readManifest` has attached the manifest, so the boundaries are
+always already in hand at the one moment they are needed.
+
+This is why there is no cheaper non-resident replay. A job that has not been
+hydrated has no `JobProgress` at all, so it reports its header's full byte count
+as remaining (`internal/dispatch/registry.go:425`) — a half-downloaded job shows
+as untouched after a restart until it is promoted. Closing that would mean
+constructing progress without a manifest, which nothing currently does; it is a
+missing constructor, not a missing column.
 
 `emitted` is deliberately **not** restored: it is transient per-process state
 about what a downloader has in flight, and nothing that survived a restart is.
@@ -1287,18 +1294,18 @@ same articles, and runs a few percent lower. The two are not interchangeable.
 Routing the downloaded figure back through the durability record made every
 non-resident job overstate its remaining bytes by the encoding overhead.
 
-`job_files.bytes_downloaded` and `job_files.failed_bytes` are the two columns
-that summarise something, and both are **caches with a single writer** rather
-than second authorities: each is written by the one statement that updates the
-file's row, and each is superseded wholesale by `JobProgress.recompute` when a
-manifest is resident. That is what separates them from `write_cursor` and
-`max_written`, which were removed for being maintained in parallel with facts
-held elsewhere.
+Both figures live **only in memory**. `job_files` used to persist them, as
+`bytes_downloaded` and `failed_bytes`, defended as caches with a single writer
+rather than second authorities. Nothing ever read either column back, and the
+argument that `failed_bytes` was "the one per-file byte figure the durability
+record cannot supply" does not hold: `failed_articles` gives the set of failed
+article indices and the manifest gives each one's size via `m.ArticleBytes(i)`,
+which is exactly the sum `JobProgress.markFailed` performs. Both columns are
+gone.
 
-`failed_bytes` is the one per-file byte figure the durability record **cannot**
-supply: a permanently failed article never decodes, so nothing is written for
-it and no run covers it, and `failed_articles` records *which* articles failed
-and never how many bytes they were.
+They joined `write_cursor` and `max_written`, removed earlier for being
+maintained in parallel with facts held elsewhere. The difference is that those
+two had a live reader and these did not.
 
 `internal/history/migrations/001_initial.sql` records that reasoning at the
 schema, in `job_files`' own comment block.

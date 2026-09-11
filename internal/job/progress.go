@@ -86,11 +86,10 @@ type FileProgress struct {
 	// Fetch records whether this file will be downloaded. See FetchPolicy.
 	Fetch   FetchPolicy
 	Pending int
-	// Bytes is the file's NZB-claimed size. Carried on progress rather than
-	// read from the manifest so RemainingBytes derives from progress alone,
-	// at any residency. Written from the manifest when resident and from
-	// job_files.bytes when not; the two agree because the column is written
-	// from the manifest.
+	// Bytes is the file's NZB-claimed size, copied from the manifest when the
+	// file is first seen so RemainingBytes derives from progress alone and
+	// keeps working after the manifest is evicted.
+	//
 	Bytes int64
 	// BytesDownloaded is the sum of Bytes over this file's resolved,
 	// non-failed articles. It is in the SAME unit as Bytes above — the
@@ -99,34 +98,34 @@ type FileProgress struct {
 	//
 	// That is not the unit durability works in. A durable run's Length is the
 	// DECODED payload an fsync proved, summed over the same set of articles,
-	// and runs a few percent lower. The two are not interchangeable; this one
-	// caches in job_files.bytes_downloaded rather than being derived from the
-	// record.
+	// and runs a few percent lower. The two are not interchangeable, which is
+	// why this is summed from the manifest's per-article bytes over the
+	// resolved set rather than read off the durability record.
+	//
+	// Maintained live by markDone and rebuilt by recompute at hydration, both
+	// from the manifest.
 	BytesDownloaded int64
 	// FailedBytes is the sum of bytes belonging to this file's permanently
 	// failed articles. Carried per file, not just job-wide, so remaining
-	// derives from progress alone at any residency: a failed article was
-	// never downloaded, so BytesDownloaded does not account for it, and
-	// without this the derivation would report its bytes as still to fetch
-	// forever. Recomputable from the article bitmaps when a manifest is
-	// resident, and read from job_files.failed_bytes when not — which is why
-	// that column exists at all. It is the one per-file byte figure the
-	// durability record cannot supply: failed_articles records WHICH articles
-	// failed and never how many bytes they were, and a permanently failed
-	// article never decodes so no run covers it either. See
-	// internal/history/migrations/001_initial.sql and
-	// docs/durability-contract.md.
+	// derives from progress alone: a failed article was never downloaded, so
+	// BytesDownloaded does not account for it, and without this the derivation
+	// would report its bytes as still to fetch forever.
+	//
+	// Not persisted, and does not need to be: markFailed below computes it as
+	// m.ArticleBytes(i) summed over the failed set. The manifest knows an
+	// article's size whether or not it was ever fetched, and failed_articles
+	// supplies the set, so the durability record crossed with the manifest
+	// reproduces this figure exactly.
 	FailedBytes int64
 	// IsPar2 marks a par2 file — the index or a recovery volume — as opposed
 	// to content. Carried per file, like Bytes and FailedBytes, so
 	// ContentFailedBytes derives from progress alone at any residency.
 	//
-	// Note this is broader than job_files.is_par2_recovery, which flags only
-	// volumes. The index matters here precisely because it is not a recovery
-	// volume: it is fetched, so it can fail, and its failure is not damage.
-	// Both construction paths classify by subject rather than reading a
-	// column, which is why no schema change is needed — job_files already
-	// stores the subject.
+	// Note this is broader than the manifest's own per-file par2-recovery
+	// flag, which marks only volumes. The index matters here precisely because
+	// it is not a recovery volume: it is fetched, so it can fail, and its
+	// failure is not damage. Classification is by subject, done once from the
+	// manifest when the file is first seen.
 	IsPar2 bool
 	// There is deliberately no WriteCursor or MaxWritten here.
 	//
@@ -397,9 +396,13 @@ func (p *JobProgress) EarlyAborted() bool {
 // as the capacity figure counted the index too, since the comparison then
 // weighed the index against itself and came out false by exact tie.
 //
-// Derives from per-file state, so it is correct at any residency: IsPar2 is
-// classified from the manifest when resident and from job_files.subject when
-// not.
+// Derives from per-file state rather than re-reading the manifest, so it stays
+// correct after the manifest is evicted — IsPar2 was classified from the
+// manifest's subject when the file was first seen, and the classification
+// stays on FileProgress.
+//
+// There is no residency at which progress exists without having had a
+// manifest to classify from, so the classification is always available.
 func (p *JobProgress) ContentFailedBytes() int64 {
 	if p == nil {
 		return 0

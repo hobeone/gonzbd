@@ -162,14 +162,14 @@ func TestAppCheckpointStore_SaveBatch_TransactionalRollback(t *testing.T) {
 		t.Fatalf("insert job-2: %v", err)
 	}
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO job_files (job_id, file_index, subject, date, bytes, complete) VALUES (?, ?, ?, ?, ?, ?)`,
-		"job-1", 0, "subject-1", 1700000000, 100, 0,
+		`INSERT INTO job_files (job_id, file_index, complete) VALUES (?, ?, ?)`,
+		"job-1", 0, 0,
 	); err != nil {
 		t.Fatalf("insert job_files job-1: %v", err)
 	}
 	if _, err := db.ExecContext(ctx,
-		`INSERT INTO job_files (job_id, file_index, subject, date, bytes, complete) VALUES (?, ?, ?, ?, ?, ?)`,
-		"job-2", 0, "subject-2", 1700000000, 200, 0,
+		`INSERT INTO job_files (job_id, file_index, complete) VALUES (?, ?, ?)`,
+		"job-2", 0, 0,
 	); err != nil {
 		t.Fatalf("insert job_files job-2: %v", err)
 	}
