@@ -311,9 +311,18 @@ source for this paragraph):
 
 `DiscardDeferredPar2` (`internal/job/content.go`) is the sole path from
 `FetchIfNeeded` to `FetchNever`: a walk over the file table setting the policy,
-with no file-set mutation, deletion, or renumbering involved. There is no path
-back within a live job — a retry does not carry the previous attempt's policy
-forward at all. It rebuilds the job from scratch through `BuildIngestJob`
+with no file-set mutation, deletion, or renumbering involved. A retry does not
+carry the previous attempt's policy forward at all.
+
+Within one live job there is one path back, and it is hydration rather than a
+verdict: `appResidency.Hydrate` restores every file's policy from `job_files`
+via `Job.RestoreFetchPolicy`, so an eviction and re-hydration moves the
+in-memory policy to whatever the row holds. That agrees with memory once the
+policy has been checkpointed, and `DiscardDeferredPar2` and
+`UndeferRecoveryVolumes` are not followed by a `checkpointer.Mark` — so between
+a verdict and the next thing that marks the job, the row is behind and a
+re-hydration moves the policy backwards. Pre-existing, and outside #329, which
+covers the policy up to the point a job becomes schedulable. It rebuilds the job from scratch through `BuildIngestJob`
 (`internal/app/app.go`'s `rebuildJobFromNZB`), whose own classification
 re-derives `FetchIfNeeded` for a recovery volume, so a retry re-derives the
 verdict rather than trusting a downgrade computed against the previous

@@ -130,8 +130,17 @@ func (r *appResidency) restoreJobFiles(ctx context.Context, j *job.Job) {
 			continue
 		}
 		_ = j.RestoreFileMeta(fi, filename, complete != 0, crc)
-		// Hydration is the one case where the persisted policy is the current
-		// truth, so both restore calls happen adjacently here.
+		// Hydration restores the persisted policy, unlike the retry path,
+		// which re-derives it. Both restore calls happen adjacently so a
+		// reader sees hydration puts back both halves.
+		//
+		// The persisted value is the current truth only once the last policy
+		// mutation has been flushed. DiscardDeferredPar2 and
+		// UndeferRecoveryVolumes are not followed by a checkpointer.Mark, so
+		// between a par2 verdict and whatever next marks the job the row is
+		// behind memory and a hydrate here moves the policy backwards. That
+		// window is pre-existing and out of #329's scope, which covers the
+		// policy up to the point a job becomes schedulable.
 		_ = j.RestoreFetchPolicy(fi, job.FetchPolicy(fetch)) //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
 	}
 	// rows.Next() returns false for "no more rows" AND for a mid-iteration

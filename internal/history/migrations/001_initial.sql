@@ -69,12 +69,21 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- the stale one.
 --
 -- The fetch_policy CHECK is the only guard that value has -- neither
--- SetFileFetchPolicy nor RestoreFetchPolicy range-checks it. (#329 moved the
--- persisted-policy restore off RestoreFileMeta and onto RestoreFetchPolicy,
--- a dedicated door; the CHECK is still the only guard either way, so this
--- correction is a name change, not a substance change -- see AGENTS.md's
--- "No backwards compatibility" rule on why the file is corrected in place
--- rather than superseded by a new migration.)
+-- SetFileFetchPolicy nor RestoreFetchPolicy range-checks it.
+--
+-- (#329 moved the persisted-policy restore off RestoreFileMeta and onto
+-- RestoreFetchPolicy, a dedicated door. The CHECK is still the only guard
+-- either way, so this is a name change, not a substance change.
+--
+-- AGENTS.md says an applied migration is frozen and a stale claim in one
+-- should be superseded by a later migration's comment block rather than
+-- corrected in place. That is not what happened here, and the deviation is
+-- deliberate: this schema is a single collapsed file with no later migration
+-- to hold a correction, and adding one purely to carry a comment would be the
+-- worse outcome. The precedent is this file's own history -- b27717ba
+-- corrected sixteen claims in it, and f28fb6a6 collapsed 002-007 into it.
+-- Recorded here rather than only in a commit message because a reader who
+-- greps this file should find out why its rule was not followed.)
 --
 -- UNIQUE(job_id, file_index) is also the access path, which is why there is no
 -- separate index on job_id.

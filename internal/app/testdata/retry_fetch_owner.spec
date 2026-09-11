@@ -36,6 +36,15 @@ file internal/app/residency.go
 # would need three anchors; appending one call after a surviving one is a single
 # contiguous anchor, compiles, and puts the wrong value where the wrong value
 # used to land.
+#
+# FetchNever is not an arbitrary choice. The configuration-honoured case seeds
+# exactly that value into history_job_files -- the one table the retry path
+# reads a policy from -- so for that case this mutation IS the pre-fix
+# behaviour rather than a stronger stand-in for it. An earlier draft seeded 0
+# there, which made the case inert: with on-demand par2 off the derived policy
+# is also FetchAlways, so the assertion agreed with the defect and passed
+# against it. The mutation looked KILLED either way, because another test in
+# the same run died first.
 [the retry path applies a policy it did not derive]
 file internal/app/app.go
 --- anchor
