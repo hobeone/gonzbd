@@ -150,7 +150,8 @@ correction is real and the comment is still wrong.
 
 ## Enumerate before asserting — the measured failure
 
-`AGENTS.md` § Standing Design Rule 4 states the rule. The numbers behind it:
+`AGENTS.md` § "4. Enumerate before asserting" states the rule. The numbers
+behind it:
 
 **The durable-runs change shipped eight overclaims** — comments quantifying over
 a population of code ("only", "sole", "never", "always", "nothing else", "the

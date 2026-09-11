@@ -683,11 +683,15 @@ window between a job leaving the queue and its rows being deleted are therefore
 no longer swept. That is an open gap, not a design change — tracked as #549 —
 and it is recorded here rather than silently dropped from the table.
 
-The three above are the complete current set:
-`git grep -n 'DELETE FROM durable_runs\|DELETE FROM failed_articles' -- '*.go' ':!*_test.go'`
-returns five statements — three in `internal/durability/runstore_sqlite.go`
-(one of them `Commit`'s own merge, excluded below) and two deleting
-`failed_articles` per job, in `internal/app`.
+The three above are the complete current set, but **no single grep proves it**,
+and the obvious one is misleading. `git grep -n 'DELETE FROM durable_runs\|DELETE
+FROM failed_articles' -- '*.go' ':!*_test.go'` returns five statements — three in
+`internal/durability/runstore_sqlite.go` (one of them `Commit`'s own merge,
+excluded below) and two deleting `failed_articles` per job, in `internal/app`.
+The third deleter is **not** among them: `history.Repository.delete` builds its
+statement by concatenation (`"DELETE FROM "+table`, `repository.go:402`), so the
+literal never appears. Read the grep as covering the first two only, and the
+enumeration as what a reader has to confirm by opening `repository.go`.
 
 A sixth deletes and is deliberately excluded from that count: `Commit`'s own
 `deleteRows` removes exactly the rows it just read, inside the merge's
