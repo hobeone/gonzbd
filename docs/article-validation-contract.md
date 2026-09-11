@@ -141,24 +141,26 @@ from outside its derivation, which broke the documented identity
 `remaining` forever. The comment saying `File.Bytes` was that sum did not stop
 it. `normalizeFileStruct` being the sole writer is what makes it true.
 
-Two smells this rule names, both present in the tree today:
+Two smells this rule names. Both were present in this tree, and F7 removed
+them; they are kept here because the shape recurs, not as open findings.
 
 - **Two constructors for one type.** `newManifest` and `Manifest.UnmarshalJSON`
-  populate the same eight fields by two independently-maintained code paths.
-  They have already diverged: `newManifest` *derives* `totalBytes` by summing
-  `f.Bytes`, while `UnmarshalJSON` *trusts* `mj.TotalBytes` from disk, and
-  nothing reconciles them. `recoveryFigures`' doc comment — "Both construction
-  paths … call it, so the two cannot disagree" — is a comment doing an owner's
-  job, and it only covers the two fields someone remembered.
+  populated the same eight fields by two independently-maintained code paths,
+  and had already diverged: `newManifest` *derived* `totalBytes` by summing
+  `f.Bytes`, while `UnmarshalJSON` *trusted* `mj.TotalBytes` from disk, with
+  nothing reconciling them. `recoveryFigures`' doc comment — "Both construction
+  paths … call it, so the two cannot disagree" — was a comment doing an owner's
+  job, and it covered only the two fields someone remembered.
 - **A derived value that is also persisted.** Anything recomputable from the
   articles (a file's byte total, recovery figures, article offsets) should be
   derived on load, not stored and trusted. Storing it creates a second source of
   truth that can disagree with the first, and under the no-backcompat rule there
   is no reason to keep the stored copy.
 
-The remedy for both is the same and is cheap here: `UnmarshalJSON` decodes to
-the public `[]JobFile` shape and delegates to `newManifest`. One derivation, one
-owner, and the persisted `TotalBytes` field stops being read at all.
+The remedy for both was the same and was cheap: `UnmarshalJSON` decodes to the
+public `[]JobFile` shape and delegates to `newManifest` — it ends
+`*m = *newManifest(files)` (`internal/job/manifest.go:358`). One derivation, one
+owner, and the persisted `TotalBytes` field is no longer read at all.
 
 > **When a check and an owner would both work, take the owner.** A check must be
 > called at every site that could violate the invariant, and the failure mode of
