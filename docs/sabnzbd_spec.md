@@ -670,7 +670,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 |-----|------|---------|-------------|
 | `bandwidth_max` | string | `` | Max bandwidth (e.g., `10M`, `1G`, `0`=unlimited) |
 | `bandwidth_perc` | int | `100` | Percentage of max to use |
-| `min_free_space` | int | `1024` | Min free disk space in MB before pause |
+| `min_free_space` | string (`ByteSize`) | `1G` | Min free disk space before pause (accepts K/M/G/T suffixes) |
 | `write_cache_size` | string | `64M` | Write coalescing buffer size (e.g., `64M`, `0`=disabled) |
 | `checkpoint_interval` | int | `30` | Seconds between durability checkpoints per job (`0`=default) |
 | `checkpoint_bytes` | string | `64M` | Bytes downloaded per job between durability checkpoints (`0`=default) |
@@ -848,26 +848,33 @@ Error:
 |------|-----------|----------|-------------|
 | `queue` | `start`, `limit`, `search`, `nzo_ids` | Queue object | Get queue; no sub-action |
 | `queue` + `name=delete` | `value=nzo_id[,...]` | status | Delete job(s) |
-| `queue` + `name=delete_nzf` | `value=nzo_id`, `value2=nzf_id` | status | Delete file from job |
+| `queue` + `name=delete_nzf` | `value=nzo_id`, `value2=nzf_id` | status | Delete file from job — **NOT IMPLEMENTED** |
 | `queue` + `name=rename` | `value=nzo_id`, `value2=name`, `value3=password` | status | Rename job |
 | `queue` + `name=pause` | `value=nzo_id` | status | Pause specific job |
 | `queue` + `name=resume` | `value=nzo_id` | status | Resume specific job |
 | `queue` + `name=priority` | `value=nzo_id`, `value2=priority` | priority int | Change priority |
-| `queue` + `name=sort` | `value=column`, `dir=asc/desc` | status | Sort queue |
+| `queue` + `name=sort` | `value=column`, `dir=asc/desc` | status | Sort queue — **NOT IMPLEMENTED** |
 | `queue` + `name=change_complete_action` | `value=action` | status | Post-queue action |
+| `queue` + `name=change_cat` | `value=nzo_id`, `value2=category` | status | Change category |
+| `queue` + `name=change_script` | `value=nzo_id`, `value2=script` | status | Change script |
+| `queue` + `name=change_opts` | `value=nzo_id`, `value2=pp_flags` | status | Change PP flags |
 | `queue` + `name=purge` | | status | Empty queue |
 | `addfile` | multipart: `nzbfile`, `cat`, `script`, `priority`, `pp`, `nzbname` | nzo_ids | Upload NZB |
 | `addlocalfile` | `name=filepath`, `cat`, `script`, `priority`, `pp`, `nzbname` | nzo_ids | Add local NZB |
 | `addurl` | `name=url`, `cat`, `script`, `priority`, `pp`, `nzbname` | nzo_ids | Add NZB URL |
-| `switch` | `value=nzo_id`, `value2=position` | result, priority | Move job in queue |
-| `change_cat` | `value=nzo_id`, `value2=category` | status | Change category |
-| `change_script` | `value=nzo_id`, `value2=script` | status | Change script |
-| `change_opts` | `value=nzo_id`, `value2=pp_flags` | status | Change PP flags |
-| `get_files` | `value=nzo_id` | files list | Get files in job |
-| `move_nzf_bulk` | `value=nzo_id`, `nzf_ids` | status | Move files between jobs |
-| `retry` | `value=nzo_id`, `password` | status | Retry failed job |
-| `retry_all` | | status | Retry all failed |
-| `cancel_pp` | `value=nzo_id` | status | Cancel post-processing |
+These six are SABnzbd top-level modes that GoNZBD does not register. A request
+for any of them is answered by `handleAPI`'s unknown-mode branch — they are
+recorded here as parity gaps, not as endpoints. (`change_cat`, `change_script`
+and `change_opts` are real, but as `queue` sub-actions; see the table above.)
+
+| Mode | Parameters | Response | Description |
+|------|-----------|----------|-------------|
+| `switch` | `value=nzo_id`, `value2=position` | result, priority | Move job in queue — **NOT IMPLEMENTED** |
+| `get_files` | `value=nzo_id` | files list | Get files in job — **NOT IMPLEMENTED** |
+| `move_nzf_bulk` | `value=nzo_id`, `nzf_ids` | status | Move files between jobs — **NOT IMPLEMENTED** |
+| `retry` | `value=nzo_id`, `password` | status | Retry failed job — **NOT IMPLEMENTED** |
+| `retry_all` | | status | Retry all failed — **NOT IMPLEMENTED** |
+| `cancel_pp` | `value=nzo_id` | status | Cancel post-processing — **NOT IMPLEMENTED** |
 
 #### Downloader Control
 
@@ -915,14 +922,17 @@ Error:
 |------|-----------|----------|-------------|
 | `get_config` | `section`, `keyword` | config value | Get one setting |
 | `set_config` | `section`, `keyword`, `value` | config value | Set one setting |
-| `set_config_default` | `keyword` | status | Reset to default |
+| `set_config_default` | `keyword` | status | Reset to default — **NOT IMPLEMENTED** |
 | `config` + `name=test_server` | server params | connection result | Test NNTP server |
 | `config` + `name=speedlimit` | `value` | status | Speed limit |
-| `config` + `name=set_apikey` | | new_apikey | Regenerate API key |
-| `config` + `name=set_nzbkey` | | new_nzbkey | Regenerate NZB key |
-| `config` + `name=regenerate_certs` | | status | Create HTTPS certs |
-| `config` + `name=create_backup` | | backup path | Backup config |
-| `config` + `name=purge_log_files` | | status | Delete log files |
+| `config` + `name=set_apikey` | | new_apikey | Regenerate API key — **NOT IMPLEMENTED** (400) |
+| `config` + `name=set_nzbkey` | | new_nzbkey | Regenerate NZB key — **NOT IMPLEMENTED** (400) |
+| `config` + `name=regenerate_certs` | | status | Create HTTPS certs — **NOT IMPLEMENTED** (400) |
+| `config` + `name=create_backup` | | backup path | Backup config — **NOT IMPLEMENTED** (501) |
+| `config` + `name=purge_log_files` | | status | Delete log files — **NOT IMPLEMENTED** (400) |
+
+Only `speedlimit` and `test_server` are handled; every other `name=` value falls
+to `modeConfig`'s default branch (`internal/api/config.go`).
 
 #### Miscellaneous
 
