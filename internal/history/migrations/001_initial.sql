@@ -70,6 +70,18 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 --
 -- The fetch_policy CHECK is the only guard that value has -- neither
 -- SetFileFetchPolicy nor RestoreFileMeta range-checks it.
+--
+-- UNIQUE(job_id, file_index) is also the access path, which is why there is no
+-- separate index on job_id.
+-- `git grep -nE 'INTO job_files|UPDATE job_files|FROM job_files' -- '*.go'
+-- ':!*_test.go'` returns five statements: the INSERT, UPDATE, DELETE and
+-- SELECT in internal/app, plus a SELECT in test/crash/harness.go, which that
+-- filter keeps because it is build-tagged rather than named _test.go. Every
+-- one keys on `job_id` or on `job_id AND file_index`, and both are prefixes of
+-- that index -- so a second B-tree on job_id alone would be maintained on
+-- every write to answer a lookup the first one already answers.
+-- history_job_files reaches the same arrangement through
+-- PRIMARY KEY (job_id, file_index).
 CREATE TABLE job_files (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id           TEXT NOT NULL,
@@ -80,8 +92,6 @@ CREATE TABLE job_files (
     fetch_policy     INTEGER NOT NULL DEFAULT 0 CHECK (fetch_policy BETWEEN 0 AND 2),
     UNIQUE(job_id, file_index)
 );
-
-CREATE INDEX idx_job_files_job_id ON job_files(job_id);
 -- +goose StatementEnd
 
 -- +goose StatementBegin

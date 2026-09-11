@@ -1,7 +1,6 @@
 index idx_dispatch_jobs_sort_key: CREATE INDEX idx_dispatch_jobs_sort_key ON dispatch_jobs(sort_key)
 index idx_history_archive_completed: CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC)
 index idx_history_nzo_id: CREATE UNIQUE INDEX idx_history_nzo_id ON history(nzo_id)
-index idx_job_files_job_id: CREATE INDEX idx_job_files_job_id ON job_files(job_id)
 index sqlite_autoindex_dispatch_jobs_1: (implicit)
 index sqlite_autoindex_history_1: (implicit)
 index sqlite_autoindex_history_job_files_1: (implicit)
