@@ -389,10 +389,11 @@ func orderVolumes(mainFile string, candidates []string) []string {
 // both volume-naming conventions Scan itself understands: new-style
 // ".partNN.rar" and legacy ".rar"/".r00"/".r01"/….
 func discoverRar5Volumes(mainFile string) ([]string, error) {
-	if strings.Contains(mainFile, ".part") {
+	base := filepath.Base(mainFile)
+	if strings.Contains(base, ".part") {
 		return discoverPartNNVolumes(mainFile)
 	}
-	if strings.HasSuffix(strings.ToLower(mainFile), ".rar") {
+	if strings.HasSuffix(strings.ToLower(base), ".rar") {
 		return discoverLegacyVolumes(mainFile)
 	}
 	return []string{mainFile}, nil
@@ -421,12 +422,13 @@ func discoverPartNNVolumes(mainFile string) ([]string, error) {
 	var numStr strings.Builder
 	var isZeroPadded bool
 
-	idx := strings.Index(mainFile, ".part")
+	dir, base := filepath.Split(mainFile)
+	idx := strings.LastIndex(base, ".part")
 	if idx == -1 {
 		return []string{mainFile}, nil
 	}
-	prefix = mainFile[:idx+5]
-	remaining := mainFile[idx+5:]
+	prefix = base[:idx+5]
+	remaining := base[idx+5:]
 
 	for i, c := range remaining {
 		if c >= '0' && c <= '9' {
@@ -446,12 +448,13 @@ func discoverPartNNVolumes(mainFile string) ([]string, error) {
 	var volumes []string
 	partNum := 1
 	for {
-		var volPath string
+		var volBase string
 		if isZeroPadded {
-			volPath = fmt.Sprintf("%s%0*d%s", prefix, len(numStr.String()), partNum, suffix)
+			volBase = fmt.Sprintf("%s%0*d%s", prefix, len(numStr.String()), partNum, suffix)
 		} else {
-			volPath = fmt.Sprintf("%s%d%s", prefix, partNum, suffix)
+			volBase = fmt.Sprintf("%s%d%s", prefix, partNum, suffix)
 		}
+		volPath := dir + volBase
 
 		if _, err := os.Stat(volPath); err != nil {
 			if os.IsNotExist(err) {

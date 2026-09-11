@@ -150,65 +150,89 @@ func TestDiscoverLegacyVolumes(t *testing.T) {
 //
 // The choice is made on the NAME, before any probing, so a misrouted main file
 // discovers nothing and the extraction proceeds with a single volume.
+// Volume discovery operates on the base name of the mainFile so that parent
+// directory components containing ".part" do not misroute discovery or corrupt
+// sibling volume paths.
 func TestDiscoverRar5Volumes(t *testing.T) {
 	t.Parallel()
 
-	// NOTE: these subtest names must not contain the literal ".part".
-	// t.TempDir() derives its directory from the test name, and
-	// discoverPartNNVolumes locates ".part" with strings.Index over the WHOLE
-	// path, so a subtest named for it matches in the directory component and
-	// the prober builds sibling names from the wrong prefix. That is a latent
-	// fragility in discoverPartNNVolumes rather than a test-only concern -- a
-	// job directory named for a release containing ".part" would hit it -- but
-	// it predates this change and is left alone here.
-	t.Run("a multipart name routes to the numbered-volume prober", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		for _, n := range []string{"show.part01.rar", "show.part02.rar"} {
-			if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil { //nolint:gosec // fixture
-				t.Fatal(err)
+	tests := []struct {
+		name     string
+		subdir   string
+		files    []string
+		mainFile string
+		want     []string
+	}{
+		{
+			name:     "a multipart name routes to the numbered-volume prober",
+			files:    []string{"show.part01.rar", "show.part02.rar"},
+			mainFile: "show.part01.rar",
+			want:     []string{"show.part01.rar", "show.part02.rar"},
+		},
+		{
+			name:     "when parent directory contains .part it correctly routes to numbered-volume prober",
+			subdir:   "release.part.1",
+			files:    []string{"show.part01.rar", "show.part02.rar"},
+			mainFile: "show.part01.rar",
+			want:     []string{"show.part01.rar", "show.part02.rar"},
+		},
+		{
+			name:     "a name with .rar but .part in directory path routes to legacy prober",
+			subdir:   "some.part",
+			files:    []string{"show.rar", "show.r00"},
+			mainFile: "show.rar",
+			want:     []string{"show.rar", "show.r00"},
+		},
+		{
+			name:     "multiple .part tokens in base name matches trailing volume part",
+			files:    []string{"Movie.part1.of.2.part01.rar", "Movie.part1.of.2.part02.rar"},
+			mainFile: "Movie.part1.of.2.part01.rar",
+			want:     []string{"Movie.part1.of.2.part01.rar", "Movie.part1.of.2.part02.rar"},
+		},
+		{
+			name:     "a plain .rar name routes to the legacy prober",
+			files:    []string{"show.rar", "show.r00"},
+			mainFile: "show.rar",
+			want:     []string{"show.rar", "show.r00"},
+		},
+		{
+			name:     "any other extension is treated as a single volume",
+			mainFile: "show.7z",
+			want:     []string{"show.7z"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if tt.subdir != "" {
+				dir = filepath.Join(dir, tt.subdir)
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
 			}
-		}
-
-		got, err := discoverRar5Volumes(filepath.Join(dir, "show.part01.rar"))
-		if err != nil {
-			t.Fatalf("discoverRar5Volumes: %v", err)
-		}
-		if len(got) != 2 {
-			t.Errorf("got %v, want both part volumes", got)
-		}
-	})
-
-	t.Run("a plain .rar name routes to the legacy prober", func(t *testing.T) {
-		t.Parallel()
-		dir := t.TempDir()
-		for _, n := range []string{"show.rar", "show.r00"} {
-			if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil { //nolint:gosec // fixture
-				t.Fatal(err)
+			for _, n := range tt.files {
+				if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil { //nolint:gosec // fixture
+					t.Fatal(err)
+				}
 			}
-		}
 
-		got, err := discoverRar5Volumes(filepath.Join(dir, "show.rar"))
-		if err != nil {
-			t.Fatalf("discoverRar5Volumes: %v", err)
-		}
-		if len(got) != 2 {
-			t.Errorf("got %v, want the main file and its .r00 sibling", got)
-		}
-	})
+			main := filepath.Join(dir, tt.mainFile)
+			got, err := discoverRar5Volumes(main)
+			if err != nil {
+				t.Fatalf("discoverRar5Volumes(%q): %v", main, err)
+			}
 
-	t.Run("any other extension is treated as a single volume", func(t *testing.T) {
-		t.Parallel()
-		main := filepath.Join(t.TempDir(), "show.7z")
-
-		got, err := discoverRar5Volumes(main)
-		if err != nil {
-			t.Fatalf("discoverRar5Volumes: %v", err)
-		}
-		if want := []string{main}; !slices.Equal(got, want) {
-			t.Errorf("got %v, want %v — no probing is attempted for an unrecognized name", got, want)
-		}
-	})
+			want := make([]string, len(tt.want))
+			for i, w := range tt.want {
+				want[i] = filepath.Join(dir, w)
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("discoverRar5Volumes(%q) = %v, want %v", main, got, want)
+			}
+		})
+	}
 }
 
 // TestVolumesForArchive pins which source of volumes wins.
