@@ -39,7 +39,7 @@ func markRenamed(job *Job, from, to string) {
 // currently under dir. Used to seed Job.OwnedFiles at the start of
 // processJob: since dir (job.DownloadDir) is exclusive to this job for its
 // entire lifetime (see the job-name uniqueness invariant enforced by
-// queue.Add / app.AddJob), every file present at that moment was produced by
+// app.AddJob), every file present at that moment was produced by
 // this job's own download — nothing else can have written there.
 func snapshotOwnedFiles(dir string) (map[string]struct{}, error) {
 	root, err := os.OpenRoot(dir)

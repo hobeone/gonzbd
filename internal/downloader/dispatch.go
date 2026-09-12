@@ -237,7 +237,7 @@ func (d *Downloader) hasDownloadableJobs() bool {
 // Sending is non-blocking: if the server's work channel is full, the
 // dispatcher skips to the next server for that article. If no server
 // can accept the article this pass, the article is simply left alone;
-// a future signalDispatch (worker completion) or queue.Notify (queue
+// a future signalDispatch (worker completion) or dispatcher.Notify (queue
 // mutation) will trigger another pass.
 func (d *Downloader) dispatchPass(ctx context.Context) {
 	if d.paused.Load() || d.dispatcher.Paused() {

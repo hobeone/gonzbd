@@ -432,7 +432,7 @@ sweep goes stale.
 Design Rule 1, GoNZBD maintains a single canonical `001_initial.sql` (breaking
 schema edits modify `001_initial.sql` and `schema.golden` directly). Sweep any
 schema changes *before* committing: the migration must describe the current
-schema, not its history (commit `eb540a64`). Once released, schema changes will
+schema, not its history (commit `ced7fb41`). Once released, schema changes will
 use new incremental `goose` migrations.
 
 ### Code Review Reception Protocol
