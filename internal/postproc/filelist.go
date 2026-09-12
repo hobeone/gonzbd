@@ -54,10 +54,15 @@ func buildDownloadFileList(j *Job) []string {
 	// The two expressions are not the same predicate. This one covers every
 	// file that is not FetchAlways; the loop above counts only recovery
 	// volumes. They agree because nothing but a recovery volume is ever moved
-	// off FetchAlways — a property of the callers (see Job.ResetForRetry and
-	// newJobProgress), not of JobProgress. If that ever changes, heldVols and
-	// heldBytes stop describing the same set and the line printing both goes
-	// wrong before anything else does.
+	// off FetchAlways — a property of the callers, not of JobProgress.
+	// `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' | grep -v _test.go` finds four
+	// writers: SetFileFetchPolicy (reached for a deferrable recovery volume at
+	// ingest, and by RestoreFetchPolicy replaying a row those same writers
+	// produced), DiscardDeferredPar2 (gated on FetchIfNeeded), undeferRecovery
+	// (gated on FetchIfNeeded, and moving files back ONTO FetchAlways), and
+	// newJobProgressSized, which otherwise leaves the FetchAlways zero. If that
+	// ever changes, heldVols and heldBytes stop describing the same set and the
+	// line printing both goes wrong before anything else does.
 	heldBytes := m.TotalBytes() - p.ExpectedBytes()
 
 	// Download duration header.

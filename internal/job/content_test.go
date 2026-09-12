@@ -302,8 +302,17 @@ func TestJob_AdditionalMethods(t *testing.T) {
 	}
 
 	// RestoreFileMeta & ApplyResolution
-	if err := j.RestoreFileMeta(0, "f1.rar", true, 0x1234, FetchAlways); err != nil {
+	if err := j.RestoreFileMeta(0, "f1.rar", true, 0x1234); err != nil {
 		t.Errorf("RestoreFileMeta: %v", err)
+	}
+	if err := j.RestoreFetchPolicy(0, FetchIfNeeded); err != nil {
+		t.Errorf("RestoreFetchPolicy: %v", err)
+	}
+	if got := j.Progress().FileFetchPolicy(0); got != FetchIfNeeded {
+		t.Errorf("FileFetchPolicy(0) after RestoreFetchPolicy = %v, want FetchIfNeeded", got)
+	}
+	if err := j.RestoreFetchPolicy(99, FetchIfNeeded); err == nil {
+		t.Error("RestoreFetchPolicy with an out-of-range file index should error")
 	}
 	if err := j.ApplyResolution([]RunRange{{First: 0, Last: 0}}, []int32{1}); err != nil {
 		t.Errorf("ApplyResolution: %v", err)
@@ -348,6 +357,9 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 
 	if err := j.SetFileFetchPolicy(0, FetchAlways); err == nil {
 		t.Error("SetFileFetchPolicy on unattached job should error")
+	}
+	if err := j.RestoreFetchPolicy(0, FetchAlways); err == nil {
+		t.Error("RestoreFetchPolicy on unattached job should error")
 	}
 	if err := j.MarkArticleDone(0, 100, "srv"); err == nil {
 		t.Error("MarkArticleDone on unattached job should error")
@@ -540,6 +552,43 @@ func TestResetForRetry_ClearsDownloadStamps(t *testing.T) {
 	}
 }
 
+// TestResetForRetry_LeavesFetchNeverAlone pins that ResetForRetry no longer
+// carries a fetch-policy branch: a retained FetchNever (e.g. from a clean
+// par2 verdict on a retry path that inherited it) must not become
+// FetchIfNeeded here. Ownership of a fresh job's policy belongs to
+// BuildIngestJob's derivation, not to a repair branch in ResetForRetry — see
+// the plan for #329. After Task 1 nothing on the production retry path can
+// reach this branch with FetchNever any more (RestoreFileMeta no longer
+// restores the policy), so this must be an internal/job unit test that calls
+// ResetForRetry directly.
+func TestResetForRetry_LeavesFetchNeverAlone(t *testing.T) {
+	t.Parallel()
+
+	m := NewManifest([]JobFile{
+		{
+			Subject: "recovery.vol000+01.par2",
+			Bytes:   100,
+			Articles: []JobArticle{
+				{ID: "<a1@x>", Bytes: 100, Number: 1},
+			},
+		},
+	})
+	j := New("retry-fetch-never", "test.nzb", Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	if err := j.SetFileFetchPolicy(0, FetchNever); err != nil {
+		t.Fatalf("SetFileFetchPolicy: %v", err)
+	}
+
+	j.ResetForRetry()
+
+	if got := j.Progress().FileFetchPolicy(0); got != FetchNever {
+		t.Errorf("FileFetchPolicy(0) = %v after ResetForRetry, want FetchNever — "+
+			"ResetForRetry must not carry a fetch-policy branch", got)
+	}
+}
+
 // TestMarkDownloadFinished_FirstWins pins the first-wins guard on
 // MarkDownloadFinished / setDownloadFinishedOnce.
 func TestMarkDownloadFinished_FirstWins(t *testing.T) {
@@ -716,5 +765,50 @@ func TestJob_ProgressAccessors(t *testing.T) {
 	j.SetRecoveryBytes(1234)
 	if got := j.RecoveryBytes(); got != 1234 {
 		t.Errorf("RecoveryBytes() = %d, want 1234", got)
+	}
+}
+
+// TestJobFileFetchPolicy_ReadsWithoutCloningProgress covers Job.FileFetchPolicy,
+// which exists so a caller wanting one file's policy does not clone the whole
+// JobProgress to get it.
+//
+// The two fallback branches are the point: a non-resident job and an
+// out-of-range index both answer FetchAlways rather than erroring, because the
+// zero policy means "fetch it". A caller that cannot learn the real answer
+// downloads the file, which wastes bytes; the opposite default would silently
+// skip a file the job needs.
+func TestJobFileFetchPolicy_ReadsWithoutCloningProgress(t *testing.T) {
+	unattached := New("unattached", "test", Policy{})
+	if got := unattached.FileFetchPolicy(0); got != FetchAlways {
+		t.Errorf("FileFetchPolicy(0) on a non-resident job = %v, want FetchAlways", got)
+	}
+
+	j := New("j1", "test", Policy{})
+	m := newManifest([]JobFile{
+		{Subject: "payload.bin", Bytes: 100, Articles: []JobArticle{{ID: "<a1@x>", Bytes: 100}}},
+		{Subject: "payload.vol000+01.par2", Bytes: 100, Articles: []JobArticle{{ID: "<r1@x>", Bytes: 100}}},
+	})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+
+	if got := j.FileFetchPolicy(0); got != FetchAlways {
+		t.Errorf("FileFetchPolicy(0) on a fresh job = %v, want the FetchAlways zero", got)
+	}
+	if err := j.SetFileFetchPolicy(1, FetchNever); err != nil {
+		t.Fatalf("SetFileFetchPolicy: %v", err)
+	}
+	if got := j.FileFetchPolicy(1); got != FetchNever {
+		t.Errorf("FileFetchPolicy(1) = %v after setting FetchNever, want FetchNever", got)
+	}
+	// Must agree with the accessor it replaced at the seed sites, or seeding
+	// would persist a different policy than SaveBatch later writes.
+	if got, want := j.FileFetchPolicy(1), j.Progress().FileFetchPolicy(1); got != want {
+		t.Errorf("Job.FileFetchPolicy(1) = %v but Progress().FileFetchPolicy(1) = %v; the two must not disagree", got, want)
+	}
+	for _, fi := range []int{-1, 2, 99} {
+		if got := j.FileFetchPolicy(fi); got != FetchAlways {
+			t.Errorf("FileFetchPolicy(%d) out of range = %v, want FetchAlways", fi, got)
+		}
 	}
 }

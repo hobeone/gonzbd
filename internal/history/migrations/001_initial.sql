@@ -1,11 +1,8 @@
 -- The complete gonzbd schema.
 --
--- This is the only migration. A second one is a decision rather than a routine
--- addition: history.Open refuses any database recording a version above the
+-- history.Open refuses any database recording a version above the
 -- highest migration shipped (refuseUnknownSchema, db.go), and that bound is
 -- read from these filenames, so adding a file changes which databases open.
--- Standing Design Rule 1 governs the rest -- no installation is upgraded,
--- there is no backfill anywhere below, and none is possible.
 --
 -- internal/history/testdata/schema.golden is a dump of what this file
 -- produces, down to every constraint and foreign key. It is the only thing
@@ -69,7 +66,7 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- the stale one.
 --
 -- The fetch_policy CHECK is the only guard that value has -- neither
--- SetFileFetchPolicy nor RestoreFileMeta range-checks it.
+-- SetFileFetchPolicy nor RestoreFetchPolicy range-checks it.
 --
 -- UNIQUE(job_id, file_index) is also the access path, which is why there is no
 -- separate index on job_id.

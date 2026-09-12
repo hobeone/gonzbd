@@ -577,6 +577,23 @@ func (j *Job) CountUnfinishedArticles(fileIdx int) (int, error) {
 	return count, nil
 }
 
+// FileFetchPolicy reads one file's fetch policy under the content lock.
+//
+// It exists so a caller that wants a single policy does not have to go through
+// Progress(), which returns a deep clone — every file, every bitset, every map
+// — to answer a question about one int. seedJobFiles asks exactly that
+// question, once per file.
+//
+// A non-resident job and an out-of-range index both read FetchAlways rather
+// than erroring, matching JobProgress.FileFetchPolicy: the zero policy is the
+// "fetch it" answer, so a caller that cannot learn otherwise downloads the
+// file instead of silently skipping it.
+func (j *Job) FileFetchPolicy(fi int) FetchPolicy {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	return j.progress.FileFetchPolicy(fi)
+}
+
 // SetFileFilename stores the resolved final filename on a file.
 func (j *Job) SetFileFilename(fileIdx int, filename string) error {
 	j.contentMu.Lock()
@@ -591,8 +608,10 @@ func (j *Job) SetFileFilename(fileIdx int, filename string) error {
 	return nil
 }
 
-// RestoreFileMeta restores a file's persisted metadata from storage.
-func (j *Job) RestoreFileMeta(fileIdx int, filename string, complete bool, crc uint32, fetch FetchPolicy) error {
+// RestoreFileMeta restores a file's persisted metadata from storage. It does
+// not touch the fetch policy — that is RestoreFetchPolicy's door, called
+// separately by whichever caller actually wants the persisted value applied.
+func (j *Job) RestoreFileMeta(fileIdx int, filename string, complete bool, crc uint32) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	if j.progress == nil {
@@ -610,8 +629,28 @@ func (j *Job) RestoreFileMeta(fileIdx int, filename string, complete bool, crc u
 	if crc != 0 {
 		j.progress.files[fileIdx].AssembledCRC32 = crc
 	}
-	j.progress.files[fileIdx].Fetch = fetch
 	return nil
+}
+
+// RestoreFetchPolicy restores a file's persisted fetch policy from storage.
+// It is a separate door from RestoreFileMeta so a caller must ask for the
+// persisted policy by name rather than inheriting it as a side effect of
+// restoring the rest of a file's metadata — residency hydration is the one
+// caller for which the persisted value is the current truth; a rebuilt job
+// (e.g. a retry) must not call this and instead keeps the value its own
+// construction derived.
+//
+// The door is a name, not a second writer: it delegates to
+// SetFileFetchPolicy rather than repeating the lock, the bounds check and the
+// assignment, so restoring a policy and setting one cannot drift apart.
+// SetFileFetchPolicy is the only entry point OUTSIDE this file that assigns
+// the field — `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' | grep -v _test.go`
+// finds four assignment sites, and the other three are package-internal:
+// newJobProgressSized (progress.go), undeferRecovery and DiscardDeferredPar2.
+// The `job_files.fetch_policy` CHECK (0-2) is the only range guard the value
+// has; neither door range-checks it.
+func (j *Job) RestoreFetchPolicy(fileIdx int, p FetchPolicy) error {
+	return j.SetFileFetchPolicy(fileIdx, p)
 }
 
 // SetFileCRC32FromRuns stores the assembled CRC32 on a file if runs prove it.
@@ -795,9 +834,6 @@ func (j *Job) ResetForRetry() {
 		}
 		if anyReset {
 			j.progress.files[fi].Complete = false
-		}
-		if j.progress.files[fi].Fetch == FetchNever {
-			j.progress.files[fi].Fetch = FetchIfNeeded
 		}
 	}
 	j.progress.recompute(j.manifest)

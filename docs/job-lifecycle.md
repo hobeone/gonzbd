@@ -1391,8 +1391,13 @@ file list, and neither changes shape again for the life of the job.
 `file_index` is therefore **stable for the job's entire life**: nothing after
 ingest removes a file, so nothing after ingest renumbers one.
 
-`DiscardDeferredPar2` is the only operation that changes a job's download
-intent after ingest, and it does not touch the file set to do it. A recovery
+`DiscardDeferredPar2` is the only *verdict* that changes a job's download
+intent after ingest, and it does not touch the file set to do it. It is not
+the only thing that moves `fetch_policy` there: `Job.undeferRecovery` reverses
+a hold back to `FetchAlways` when damage appears, and residency hydration
+re-applies whatever `job_files` holds through `Job.RestoreFetchPolicy` on every
+eviction and re-hydration (#329). None of the three touches the file set. A
+recovery
 volume proven unnecessary keeps its `job_files` row exactly where it was; only
 its `fetch_policy` column moves, from `FetchIfNeeded` to `FetchNever`. That
 write is residency-independent: the checkpoint batch writes each file's row

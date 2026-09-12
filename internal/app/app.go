@@ -760,16 +760,24 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		}
 	}
 
+	// Seed before handing the job to the dispatcher, the same order
+	// RetryHistoryJob uses. Not for an eviction race — Evict keeps
+	// JobProgress, and restoreJobFiles overlays only rows that exist, so a
+	// hydration inside the window would read nothing and leave the derived
+	// policy standing. The reason is the error path: registering first means a
+	// failed seed returns an error to the caller while the job is already in
+	// the dispatcher and downloading, with no job_files rows for SaveBatch to
+	// update, so the attempt runs unrecorded and reports as a failure to add.
+	if app.historyRepo != nil && app.historyRepo.DB() != nil {
+		if m, err := j.Manifest(); err == nil && m != nil {
+			if err := seedJobFiles(ctx, app.historyRepo.DB(), j.ID(), m.NumFiles(), j.FileFetchPolicy); err != nil {
+				return err
+			}
+		}
+	}
 	if app.dispatcher != nil {
 		if err := app.dispatcher.Add(j, hdr); err != nil {
 			return fmt.Errorf("app: add to dispatcher: %w", err)
-		}
-	}
-	if app.historyRepo != nil && app.historyRepo.DB() != nil {
-		if m, err := j.Manifest(); err == nil && m != nil {
-			if err := seedJobFiles(ctx, app.historyRepo.DB(), j.ID(), m.NumFiles()); err != nil {
-				return err
-			}
 		}
 	}
 	app.emit(Event{Type: "queue_updated"})
@@ -777,10 +785,14 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	return nil
 }
 
-// seedJobFiles creates one job_files row per file, holding empty RESULTS that
-// appCheckpointStore.SaveBatch fills in as the download proceeds. Nothing from
-// the manifest is copied: the manifest is loaded before these rows are read, so
-// a copy could only ever be the stale one.
+// seedJobFiles creates one job_files row per file. fetch_policy is authored
+// here at its derived value — fetch(i), the same Progress.FileFetchPolicy(i)
+// accessor SaveBatch already uses — because it is fully determined at
+// construction, before this is ever called; it is not a placeholder like
+// complete, filename and assembled_crc32, which hold empty RESULTS that
+// appCheckpointStore.SaveBatch fills in as the download proceeds. Nothing
+// else from the manifest is copied: the manifest is loaded before these rows
+// are read, so a copy could only ever be the stale one.
 //
 // The seed is a precondition for the checkpointer, not merely an optimisation —
 // SaveBatch UPDATEs by (job_id, file_index) and an UPDATE matching no row is
@@ -792,7 +804,7 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 //
 // It is also where the cost is. Each autocommit is its own WAL commit, so an
 // NZB with a thousand files paid a thousand of them at submission.
-func seedJobFiles(ctx context.Context, db *sql.DB, jobID string, numFiles int) error {
+func seedJobFiles(ctx context.Context, db *sql.DB, jobID string, numFiles int, fetch func(int) job.FetchPolicy) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("app: begin job_files seed %s: %w", jobID, err)
@@ -802,7 +814,7 @@ func seedJobFiles(ctx context.Context, db *sql.DB, jobID string, numFiles int) e
 	stmt, err := tx.PrepareContext(ctx, `
 INSERT INTO job_files
   (job_id, file_index, complete, fetch_policy, filename, assembled_crc32)
-VALUES (?, ?, 0, 0, '', 0)
+VALUES (?, ?, 0, ?, '', 0)
 ON CONFLICT(job_id, file_index) DO NOTHING`)
 	if err != nil {
 		return fmt.Errorf("app: prepare job_files seed %s: %w", jobID, err)
@@ -810,7 +822,7 @@ ON CONFLICT(job_id, file_index) DO NOTHING`)
 	defer func() { _ = stmt.Close() }()
 
 	for i := range numFiles {
-		if _, err := stmt.ExecContext(ctx, jobID, i); err != nil {
+		if _, err := stmt.ExecContext(ctx, jobID, i, int(fetch(i))); err != nil {
 			return fmt.Errorf("app: insert job_file %s index %d: %w", jobID, i, err)
 		}
 	}
@@ -1522,6 +1534,28 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 // par2 index, so the volumes are held rather than spent or discarded), or
 // un-deferral itself fails (in which case we fall through to finalize without
 // recovery volumes, matching the pre-on-demand-par2 behaviour).
+// markFetchPolicyDirty marks a job whose fetch policy a par2 verdict just
+// changed, so the job_files row catches up to memory.
+//
+// Without it the verdict lives only in JobProgress. Job.Evict keeps
+// JobProgress, but appResidency.restoreJobFiles re-applies the persisted row on
+// every hydration, so an eviction and re-hydration before the next flush moved
+// the policy back to whatever the row still held — undoing a discard, or
+// re-holding volumes a repair had just released. Nothing else marks the job at
+// this point: the verdict runs at download-complete, when the MarkFileComplete
+// path that would otherwise mark it has stopped firing, so "the next flush"
+// could be indefinitely far away or never come.
+//
+// Mark only, no Flush: the checkpointer's own cadence decides when to write,
+// and the window this closes is the one where nothing had marked the job at
+// all. A verdict is not a request for synchronous I/O.
+func (app *Application) markFetchPolicyDirty(j *job.Job) {
+	if app.checkpointer == nil || j == nil {
+		return
+	}
+	app.checkpointer.Mark(j)
+}
+
 func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID string) bool {
 	if ctx.Err() != nil {
 		return false
@@ -1580,6 +1614,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	case outcomeClean:
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
 		_ = j.DiscardDeferredPar2()
+		app.markFetchPolicyDirty(j)
 		return false
 	case outcomeUnknown:
 		j.SetPar2ReleaseReason(reason)
@@ -1596,6 +1631,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 			j.SetPar2ReleaseReason(failReason)
 			return false
 		}
+		app.markFetchPolicyDirty(j)
 		app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
 			"job", jobID, "volumes", len(idxs), "reason", reason)
 		app.emit(Event{Type: "queue_updated"})
@@ -1638,9 +1674,11 @@ const (
 	// clean verdict.
 	//
 	// Holding the volumes does not rescue the damaged case: nothing promotes
-	// a held volume after the job finalizes, and ResetForRetry downgrades
-	// FetchNever to FetchIfNeeded anyway, so a retry behaves the same under
-	// either policy. What the hold buys is an honest label — fileState
+	// a held volume after the job finalizes, and a retry rebuilds the job
+	// from scratch through BuildIngestJob rather than inheriting either
+	// policy (#329), so a retry behaves the same under either policy for a
+	// stronger reason than before — neither one survives to be inherited.
+	// What the hold buys is an honest label — fileState
 	// renders FetchIfNeeded as "held" and FetchNever as "skipped"
 	// (internal/api/queue.go), and "skipped" would assert a verdict that was
 	// never earned.
@@ -2162,7 +2200,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 			}
 		}
 		for _, f := range retained {
-			_ = j.RestoreFileMeta(f.FileIndex, f.Filename, f.Complete, f.AssembledCRC32, f.Fetch)
+			_ = j.RestoreFileMeta(f.FileIndex, f.Filename, f.Complete, f.AssembledCRC32)
 		}
 	} else if len(retained) > 0 {
 		app.log.Info("no usable retained progress for retry; downloading from scratch",
@@ -2212,6 +2250,44 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		}
 	}
 
+	// Seed any job_files rows this attempt is missing, then flush the
+	// checkpointer synchronously, both immediately before dispatcher.Add and
+	// after ResetForRetry and the barrier/assembler forget calls above — not
+	// merely after the restore loop. ResetForRetry clears Complete on every
+	// file whose failed articles it reset, and SaveBatch persists complete
+	// for every file of a marked job; flushing before ResetForRetry would
+	// write the pre-reset complete = 1, leave the job clean, and let an
+	// eviction hydrate files as complete that the retry had just
+	// un-completed. Before Add the dispatcher does not hold the job and no
+	// eviction is possible; after Add the tick loop can evict and re-hydrate
+	// concurrently, which is the window this closes (#329).
+	//
+	// seedJobFiles is INSERT ... ON CONFLICT DO NOTHING, so this only adds
+	// rows missing entirely (a shape-changed retry, or an original seed that
+	// failed outright) and cannot disturb a retained row — safe without a
+	// preceding DELETE.
+	if app.historyRepo != nil && app.historyRepo.DB() != nil && m != nil {
+		if err := seedJobFiles(ctx, app.historyRepo.DB(), jobID, m.NumFiles(), j.FileFetchPolicy); err != nil {
+			return fmt.Errorf("app: retry %s: seed job_files: %w", jobID, err)
+		}
+	}
+	if app.checkpointer != nil {
+		app.checkpointer.Mark(j)
+		// context.Background(), matching saveQueueIfDirty, the shutdown
+		// flush and enqueuePostProc: a client disconnect mid-request must
+		// not abort a retry that has already mutated state. A Flush error
+		// aborts the retry rather than being discarded, matching
+		// dropJobDurability's existing rule that a cleanup failure aborts a
+		// retry — a discarded error would silently reopen the eviction
+		// window above. Flush writes every dirty job, not only this one, so
+		// an unrelated in-flight job's checkpoint failure can abort this
+		// retry too; that is accepted here as it is on enqueuePostProc's
+		// synchronous whole-map Flush.
+		if err := app.checkpointer.Flush(context.Background()); err != nil {
+			return fmt.Errorf("app: retry %s: flush checkpoint: %w", jobID, err)
+		}
+	}
+
 	if app.dispatcher != nil {
 		if err := app.dispatcher.Add(j, hdr); err != nil {
 			return err
@@ -2235,7 +2311,6 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 type retainedFile struct {
 	FileIndex      int
 	Complete       bool
-	Fetch          job.FetchPolicy
 	Filename       string
 	AssembledCRC32 uint32
 	ArticleCount   int
@@ -2246,7 +2321,7 @@ func (app *Application) historyFileProgress(ctx context.Context, jobID string) (
 		return nil, nil
 	}
 	const q = `
-SELECT file_index, complete, fetch_policy,
+SELECT file_index, complete,
        COALESCE(filename, ''), COALESCE(assembled_crc32, 0), article_count
 FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
 	rows, err := app.historyRepo.DB().QueryContext(ctx, q, jobID)
@@ -2258,13 +2333,12 @@ FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
 	var out []retainedFile
 	for rows.Next() {
 		var f retainedFile
-		var complete, fetch int
-		if err := rows.Scan(&f.FileIndex, &complete, &fetch,
+		var complete int
+		if err := rows.Scan(&f.FileIndex, &complete,
 			&f.Filename, &f.AssembledCRC32, &f.ArticleCount); err != nil {
 			return nil, fmt.Errorf("app: scan history_job_file %s: %w", jobID, err)
 		}
 		f.Complete = complete != 0
-		f.Fetch = job.FetchPolicy(fetch) //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
 		out = append(out, f)
 	}
 	return out, rows.Err()

@@ -319,11 +319,27 @@ source for this paragraph):
 
 `DiscardDeferredPar2` (`internal/job/content.go`) is the sole path from
 `FetchIfNeeded` to `FetchNever`: a walk over the file table setting the policy,
-with no file-set mutation, deletion, or renumbering involved. `ResetForRetry`
-is the only path back (`FetchNever → FetchIfNeeded`), so a retry re-derives the
-verdict rather than trusting a downgrade computed against the previous
-download's damage profile; `FetchAlways` and `FetchIfNeeded` files are
-untouched by a retry.
+with no file-set mutation, deletion, or renumbering involved. A retry does not
+carry the previous attempt's policy forward at all.
+
+Within one live job there is one path back, and it is hydration rather than a
+verdict: `appResidency.Hydrate` restores every file's policy from `job_files`
+via `Job.RestoreFetchPolicy`, so an eviction and re-hydration moves the
+in-memory policy to whatever the row holds. That is only safe because every
+mutation of the policy marks the job for checkpointing: both verdicts reach
+`Application.markFetchPolicyDirty`, and ingest derives the policy before the row
+exists. A writer that changed the policy without marking would be undone by the
+next eviction, with no error anywhere — which is what made this a real defect
+before #329 rather than a theoretical one.
+
+A retry is not that path back. It rebuilds the job from scratch through
+`BuildIngestJob` (`internal/app/app.go`'s `rebuildJobFromNZB`), whose own
+classification re-derives the policy from the config in force *now* — a
+recovery volume becomes `FetchIfNeeded` while `downloads.on_demand_par2` is
+enabled and `FetchAlways` once it is disabled. So a retry neither trusts a
+downgrade computed against the previous download's damage profile, nor keeps
+honouring on-demand par2 after the user has turned it off
+(`TestRetryHistoryJob_ConfigurationIsHonoured`, #329).
 
 ### The verdict: identify, then verify
 

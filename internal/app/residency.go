@@ -129,7 +129,18 @@ func (r *appResidency) restoreJobFiles(ctx context.Context, j *job.Job) {
 			r.log.Warn("residency: scan job_files", "job", j.ID(), "err", err)
 			continue
 		}
-		_ = j.RestoreFileMeta(fi, filename, complete != 0, crc, job.FetchPolicy(fetch)) //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
+		_ = j.RestoreFileMeta(fi, filename, complete != 0, crc)
+		// Hydration restores the persisted policy, unlike the retry path,
+		// which re-derives it. Both restore calls happen adjacently so a
+		// reader sees hydration puts back both halves.
+		//
+		// This overwrites whatever the policy currently is in memory, which is
+		// only correct because every mutation of it marks the job: the two par2
+		// verdicts go through Application.markFetchPolicyDirty, and ingest
+		// derives the policy before the row exists. A future writer that
+		// changes the policy without marking would be re-read backwards here on
+		// the next eviction, silently.
+		_ = j.RestoreFetchPolicy(fi, job.FetchPolicy(fetch)) //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
 	}
 	// rows.Next() returns false for "no more rows" AND for a mid-iteration
 	// fault, so without this a dropped connection reads as a complete result
