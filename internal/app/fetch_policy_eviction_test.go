@@ -110,7 +110,14 @@ func seedJobFilesRowIn(t *testing.T, db *sql.DB, jobID string, fileIndex int, co
 // per-file progress historyFileProgress reads to build RetryHistoryJob's
 // overlay. articleCount must match the re-parsed NZB's file range or
 // retainedMatchesManifest rejects the whole overlay.
-func seedHistoryJobFilesRowIn(t *testing.T, db *sql.DB, jobID string, fileIndex int, complete bool, articleCount int) {
+//
+// fetch is a parameter rather than a literal, even though the retry path no
+// longer reads this column: a helper that writes a fixed policy hides the
+// seeded value from the call site, and a seed that happens to equal the
+// derived policy makes an assertion about policy agree with the defect it
+// names. That is not hypothetical — it is how the sibling seeder in
+// retry_fetch_policy_test.go made its own case inert.
+func seedHistoryJobFilesRowIn(t *testing.T, db *sql.DB, jobID string, fileIndex int, complete bool, articleCount int, fetch job.FetchPolicy) {
 	t.Helper()
 	c := 0
 	if complete {
@@ -118,8 +125,8 @@ func seedHistoryJobFilesRowIn(t *testing.T, db *sql.DB, jobID string, fileIndex 
 	}
 	if _, err := db.Exec(
 		`INSERT INTO history_job_files (job_id, file_index, complete, filename, assembled_crc32, article_count, fetch_policy)
-		 VALUES (?, ?, ?, '', 0, ?, 0)`,
-		jobID, fileIndex, c, articleCount); err != nil {
+		 VALUES (?, ?, ?, '', 0, ?, ?)`,
+		jobID, fileIndex, c, articleCount, int(fetch)); err != nil {
 		t.Fatalf("seed history_job_files row: %v", err)
 	}
 }
@@ -175,10 +182,13 @@ func TestRetryHistoryJob_SurvivesEviction(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
-	seedHistoryJobFilesRowIn(t, repo.DB(), id, 0, false, 2)
-	seedHistoryJobFilesRowIn(t, repo.DB(), id, 1, false, 1)
-	// The failed attempt's own job_files row: on-demand par2 was on and the
-	// recovery volume was held.
+	seedHistoryJobFilesRowIn(t, repo.DB(), id, 0, false, 2, job.FetchNever)
+	seedHistoryJobFilesRowIn(t, repo.DB(), id, 1, false, 1, job.FetchNever)
+	// The failed attempt's own job_files rows, carrying the pre-fix default
+	// rather than a policy anyone derived — which is the point: FetchAlways
+	// differs from the FetchIfNeeded this retry derives, so reapplying the
+	// stale row is visible in the assertion below. Seeding the derived value
+	// here would make the test agree with the defect.
 	seedJobFilesRowIn(t, repo.DB(), id, 0, false, job.FetchAlways)
 	seedJobFilesRowIn(t, repo.DB(), id, 1, false, job.FetchAlways)
 
