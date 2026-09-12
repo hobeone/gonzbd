@@ -322,11 +322,13 @@ policy has been checkpointed, and `DiscardDeferredPar2` and
 `UndeferRecoveryVolumes` are not followed by a `checkpointer.Mark` — so between
 a verdict and the next thing that marks the job, the row is behind and a
 re-hydration moves the policy backwards. Pre-existing, and outside #329, which
-covers the policy up to the point a job becomes schedulable. It rebuilds the job from scratch through `BuildIngestJob`
-(`internal/app/app.go`'s `rebuildJobFromNZB`), whose own classification
-re-derives `FetchIfNeeded` for a recovery volume, so a retry re-derives the
-verdict rather than trusting a downgrade computed against the previous
-download's damage profile (#329).
+covers the policy up to the point a job becomes schedulable.
+
+A retry is not that path back. It rebuilds the job from scratch through
+`BuildIngestJob` (`internal/app/app.go`'s `rebuildJobFromNZB`), whose own
+classification re-derives `FetchIfNeeded` for a recovery volume, so a retry
+re-derives the verdict rather than trusting a downgrade computed against the
+previous download's damage profile (#329).
 
 ### The verdict: identify, then verify
 
