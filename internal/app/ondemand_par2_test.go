@@ -575,6 +575,48 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 	})
 }
 
+// TestMarkFetchPolicyDirty_Guards covers markFetchPolicyDirty's own branches,
+// which the verdict path never reaches: a configured Application always has a
+// checkpointer and always passes a looked-up job.
+//
+// They are not dead weight. Application is constructed field by field rather
+// than through one constructor that guarantees a checkpointer — newTestApp
+// variants in this package leave it nil — so an unguarded Mark here would turn
+// a clean par2 verdict into a nil dereference in a test-only configuration, and
+// the panic would be blamed on the verdict rather than the wiring.
+func TestMarkFetchPolicyDirty_Guards(t *testing.T) {
+	t.Parallel()
+
+	j, _ := newPar2Job(t, "guard-job", "guard-name", []par2FileSpec{
+		{subject: "data.bin", bytes: 100},
+	})
+
+	t.Run("no checkpointer is a no-op", func(t *testing.T) {
+		app := &Application{}
+		app.markFetchPolicyDirty(j)
+	})
+
+	t.Run("nil job is a no-op", func(t *testing.T) {
+		app := newTestApplication(t)
+		before := app.checkpointer.DirtyCount()
+		app.markFetchPolicyDirty(nil)
+		if got := app.checkpointer.DirtyCount(); got != before {
+			t.Errorf("DirtyCount = %d after marking a nil job, want %d unchanged", got, before)
+		}
+	})
+
+	t.Run("a job is marked", func(t *testing.T) {
+		app := newTestApplication(t)
+		if err := app.checkpointer.Flush(t.Context()); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		app.markFetchPolicyDirty(j)
+		if got := app.checkpointer.DirtyCount(); got != 1 {
+			t.Errorf("DirtyCount = %d after marking one job, want 1", got)
+		}
+	})
+}
+
 // TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing pins that a
 // par2 verdict marks the job for checkpointing, for both outcomes that move a
 // fetch policy.
