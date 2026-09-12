@@ -764,17 +764,24 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		}
 	}
 
+	// Seed before handing the job to the dispatcher, the same order
+	// RetryHistoryJob uses. Not for an eviction race — Evict keeps
+	// JobProgress, and restoreJobFiles overlays only rows that exist, so a
+	// hydration inside the window would read nothing and leave the derived
+	// policy standing. The reason is the error path: registering first means a
+	// failed seed returns an error to the caller while the job is already in
+	// the dispatcher and downloading, with no job_files rows for SaveBatch to
+	// update, so the attempt runs unrecorded and reports as a failure to add.
+	if app.historyRepo != nil && app.historyRepo.DB() != nil {
+		if m, err := j.Manifest(); err == nil && m != nil {
+			if err := seedJobFiles(ctx, app.historyRepo.DB(), j.ID(), m.NumFiles(), j.FileFetchPolicy); err != nil {
+				return err
+			}
+		}
+	}
 	if app.dispatcher != nil {
 		if err := app.dispatcher.Add(j, hdr); err != nil {
 			return fmt.Errorf("app: add to dispatcher: %w", err)
-		}
-	}
-	if app.historyRepo != nil && app.historyRepo.DB() != nil {
-		if m, err := j.Manifest(); err == nil && m != nil {
-			p := j.Progress()
-			if err := seedJobFiles(ctx, app.historyRepo.DB(), j.ID(), m.NumFiles(), p.FileFetchPolicy); err != nil {
-				return err
-			}
 		}
 	}
 	app.emit(Event{Type: "queue_updated"})
@@ -1531,6 +1538,28 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 // par2 index, so the volumes are held rather than spent or discarded), or
 // un-deferral itself fails (in which case we fall through to finalize without
 // recovery volumes, matching the pre-on-demand-par2 behaviour).
+// markFetchPolicyDirty marks a job whose fetch policy a par2 verdict just
+// changed, so the job_files row catches up to memory.
+//
+// Without it the verdict lives only in JobProgress. Job.Evict keeps
+// JobProgress, but appResidency.restoreJobFiles re-applies the persisted row on
+// every hydration, so an eviction and re-hydration before the next flush moved
+// the policy back to whatever the row still held — undoing a discard, or
+// re-holding volumes a repair had just released. Nothing else marks the job at
+// this point: the verdict runs at download-complete, when the MarkFileComplete
+// path that would otherwise mark it has stopped firing, so "the next flush"
+// could be indefinitely far away or never come.
+//
+// Mark only, no Flush: the checkpointer's own cadence decides when to write,
+// and the window this closes is the one where nothing had marked the job at
+// all. A verdict is not a request for synchronous I/O.
+func (app *Application) markFetchPolicyDirty(j *job.Job) {
+	if app.checkpointer == nil || j == nil {
+		return
+	}
+	app.checkpointer.Mark(j)
+}
+
 func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID string) bool {
 	if ctx.Err() != nil {
 		return false
@@ -1589,6 +1618,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	case outcomeClean:
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
 		_ = j.DiscardDeferredPar2()
+		app.markFetchPolicyDirty(j)
 		return false
 	case outcomeUnknown:
 		j.SetPar2ReleaseReason(reason)
@@ -1605,6 +1635,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 			j.SetPar2ReleaseReason(failReason)
 			return false
 		}
+		app.markFetchPolicyDirty(j)
 		app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
 			"job", jobID, "volumes", len(idxs), "reason", reason)
 		app.emit(Event{Type: "queue_updated"})
@@ -2240,8 +2271,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	// failed outright) and cannot disturb a retained row — safe without a
 	// preceding DELETE.
 	if app.historyRepo != nil && app.historyRepo.DB() != nil && m != nil {
-		p := j.Progress()
-		if err := seedJobFiles(ctx, app.historyRepo.DB(), jobID, m.NumFiles(), p.FileFetchPolicy); err != nil {
+		if err := seedJobFiles(ctx, app.historyRepo.DB(), jobID, m.NumFiles(), j.FileFetchPolicy); err != nil {
 			return fmt.Errorf("app: retry %s: seed job_files: %w", jobID, err)
 		}
 	}

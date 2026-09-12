@@ -12,8 +12,10 @@ import (
 // TestRestoreJobFiles_RestoresNonDefaultFetchPolicy pins that hydrating a
 // resident job over default progress applies the persisted fetch_policy, not
 // just filename/complete/crc. Every existing test that inserts job_files rows
-// writes FetchAlways, which is why none of them would catch a dropped
-// RestoreFetchPolicy call (see the plan's Task 1 note on this).
+// wrote FetchAlways, which is why none of them would catch a dropped
+// RestoreFetchPolicy call: the persisted value matched the zero the restore
+// would have left behind. Tests added on this branch seed non-default policies
+// deliberately, so a grep for job_files inserts no longer shows one value.
 //
 // The job must hydrate over DEFAULT progress: Job.Evict nils only the
 // manifest and leaves JobProgress intact, so evicting and re-hydrating an

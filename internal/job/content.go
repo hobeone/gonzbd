@@ -577,6 +577,23 @@ func (j *Job) CountUnfinishedArticles(fileIdx int) (int, error) {
 	return count, nil
 }
 
+// FileFetchPolicy reads one file's fetch policy under the content lock.
+//
+// It exists so a caller that wants a single policy does not have to go through
+// Progress(), which returns a deep clone — every file, every bitset, every map
+// — to answer a question about one int. seedJobFiles asks exactly that
+// question, once per file.
+//
+// A non-resident job and an out-of-range index both read FetchAlways rather
+// than erroring, matching JobProgress.FileFetchPolicy: the zero policy is the
+// "fetch it" answer, so a caller that cannot learn otherwise downloads the
+// file instead of silently skipping it.
+func (j *Job) FileFetchPolicy(fi int) FetchPolicy {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	return j.progress.FileFetchPolicy(fi)
+}
+
 // SetFileFilename stores the resolved final filename on a file.
 func (j *Job) SetFileFilename(fileIdx int, filename string) error {
 	j.contentMu.Lock()
@@ -624,11 +641,14 @@ func (j *Job) RestoreFileMeta(fileIdx int, filename string, complete bool, crc u
 // construction derived.
 //
 // The door is a name, not a second writer: it delegates to
-// SetFileFetchPolicy, which stays the only function that assigns
-// JobProgress.files[i].Fetch. Duplicating the lock, the bounds check and the
-// assignment here would have put a second writer on the field this change
-// exists to give one owner. The `job_files.fetch_policy` CHECK (0-2) is the
-// only range guard the value has; neither door range-checks it.
+// SetFileFetchPolicy rather than repeating the lock, the bounds check and the
+// assignment, so restoring a policy and setting one cannot drift apart.
+// SetFileFetchPolicy is the only entry point OUTSIDE this file that assigns
+// the field — `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' | grep -v _test.go`
+// finds four assignment sites, and the other three are package-internal:
+// newJobProgressSized (progress.go), undeferRecovery and DiscardDeferredPar2.
+// The `job_files.fetch_policy` CHECK (0-2) is the only range guard the value
+// has; neither door range-checks it.
 func (j *Job) RestoreFetchPolicy(fileIdx int, p FetchPolicy) error {
 	return j.SetFileFetchPolicy(fileIdx, p)
 }

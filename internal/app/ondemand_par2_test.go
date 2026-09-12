@@ -574,3 +574,82 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		}
 	})
 }
+
+// TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing pins that a
+// par2 verdict marks the job for checkpointing, for both outcomes that move a
+// fetch policy.
+//
+// Without the mark the verdict lives only in JobProgress, which Job.Evict
+// keeps — but appResidency.restoreJobFiles re-applies the persisted row on
+// every hydration, so the next eviction and re-hydration would silently move
+// the policy back to whatever the row still held. Nothing else marks the job
+// here: the verdict runs at download-complete, after the MarkFileComplete path
+// has stopped firing, so waiting for "the next flush" is waiting for a mark
+// that never arrives (#329).
+//
+// DirtyCount rather than a job_files read: the claim is that the verdict marked
+// the job, and a row read would be satisfied just as well by some other path
+// having marked it for an unrelated reason.
+func TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	app := newTestApplication(t)
+	app.config.With(func(c *config.Config) {
+		c.General.DownloadDir = dir
+		c.Downloads.OnDemandPar2 = true
+	})
+	app.log = slog.New(slog.DiscardHandler)
+	// Paused so no tick marks a job concurrently, which would make DirtyCount
+	// below attributable to something other than the verdict.
+	app.PauseDownloads()
+	app.Dispatcher().Pause()
+
+	for _, tc := range []struct {
+		name    string
+		jobID   string
+		jobName string
+		crc     uint32
+	}{
+		// The seeded CRC decides the outcome: the fixture payload's real CRC
+		// reaches outcomeClean and DiscardDeferredPar2, a wrong one reaches
+		// outcomeRepair and UndeferRecoveryVolumes. Both move a policy, so both
+		// owe a mark.
+		{"clean verdict discards", "markclean", "markclean-name", 0x1068AFA6},
+		{"repair verdict undefers", "markrepair", "markrepair-name", 0xDEADBEEF},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			j, hdr := newPar2Job(t, tc.jobID, tc.jobName, []par2FileSpec{
+				{subject: "data.bin", bytes: 100},
+				{subject: "data.vol000+01.par2", bytes: 100},
+			})
+			seedFileCRC(t, j, 0, tc.crc)
+			if err := app.Dispatcher().Add(j, hdr); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+
+			jobDir := filepath.Join(dir, tc.jobName)
+			if err := os.MkdirAll(jobDir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			copyFixturePar2(t, jobDir)
+			copyFixturePayload(t, jobDir, "data.bin")
+
+			// Adding the job may itself mark it; clear the set so the count
+			// after the verdict is the verdict's own doing.
+			if err := app.checkpointer.Flush(t.Context()); err != nil {
+				t.Fatalf("Flush: %v", err)
+			}
+			if n := app.checkpointer.DirtyCount(); n != 0 {
+				t.Fatalf("precondition: DirtyCount = %d after a flush, want 0", n)
+			}
+
+			app.maybeReleaseRecoveryVolumes(t.Context(), tc.jobID)
+
+			if n := app.checkpointer.DirtyCount(); n == 0 {
+				t.Errorf("DirtyCount = 0 after a par2 verdict moved the fetch policy on job %s, want the job marked — "+
+					"the new policy is only in memory, so the next evict/re-hydrate restores the stale row over it", tc.jobID)
+			}
+		})
+	}
+}

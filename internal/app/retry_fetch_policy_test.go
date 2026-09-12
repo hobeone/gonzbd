@@ -82,13 +82,20 @@ func seedJobFilesRow(t *testing.T, db *sql.DB, jobID string, fileIndex int, comp
 // retainedMatchesManifest rejects the whole overlay before RestoreFileMeta
 // ever runs.
 //
-// fetch is a parameter, not a hardcoded 0, and that is load-bearing: this is
-// the ONLY table the retry path reads a policy from. An earlier draft of this
-// helper wrote 0 unconditionally, which made the configuration-honoured case
-// below inert — with on-demand par2 off the derived policy is also
-// FetchAlways, so the assertion agreed with the pre-fix defect and passed
-// against it. Seeding job_files instead does not substitute: nothing reads
-// that table before an eviction.
+// fetch is a parameter so each case states the policy the failed attempt had
+// recorded, which is the scenario under test. It does not drive current
+// behaviour: nothing in production reads history_job_files.fetch_policy any
+// more — `git grep -n 'fetch_policy' -- '*.go'` finds it only in this file's
+// INSERT, fetch_policy_eviction_test.go's, and internal/history's schema
+// tests — because the retry re-derives instead of retaining.
+//
+// It mattered against the ORIGINAL defect, which did read the column: with a
+// hardcoded 0 the retained policy equalled the derived one whenever on-demand
+// par2 was off, so the configuration-honoured case below asserted something
+// the defect already satisfied. The mutation in testdata/retry_fetch_owner.spec
+// applies a literal FetchNever and so kills that case whatever is seeded here
+// — checked by re-running it with this set to FetchAlways. Seeding the scenario
+// is documentation; the mutation is the proof.
 func seedHistoryJobFilesRow(
 	t *testing.T, db *sql.DB, jobID string, fileIndex int,
 	complete bool, articleCount int, fetch job.FetchPolicy,

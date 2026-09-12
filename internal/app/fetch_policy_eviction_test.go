@@ -1,12 +1,9 @@
 package app
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -68,26 +65,6 @@ func recoveryFileIndexIn(t *testing.T, m *job.Manifest) int {
 	return idx
 }
 
-// writeGzNZBFile gzips raw to adminDir/nzb/<name>.
-func writeGzNZBFile(t *testing.T, adminDir, name string, raw []byte) {
-	t.Helper()
-	nzbDir := filepath.Join(adminDir, "nzb")
-	if err := os.MkdirAll(nzbDir, 0o750); err != nil {
-		t.Fatalf("mkdir nzb: %v", err)
-	}
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	if _, err := gz.Write(raw); err != nil {
-		t.Fatalf("gzip write: %v", err)
-	}
-	if err := gz.Close(); err != nil {
-		t.Fatalf("gzip close: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(nzbDir, name), buf.Bytes(), 0o600); err != nil {
-		t.Fatalf("write gz nzb: %v", err)
-	}
-}
-
 // seedJobFilesRowIn inserts a job_files row directly, standing in for the row
 // a previously FAILED attempt left behind — job_finalizer.go's
 // shouldDeleteDurability keeps job_files for a failed job rather than
@@ -111,22 +88,20 @@ func seedJobFilesRowIn(t *testing.T, db *sql.DB, jobID string, fileIndex int, co
 // overlay. articleCount must match the re-parsed NZB's file range or
 // retainedMatchesManifest rejects the whole overlay.
 //
-// fetch is a parameter rather than a literal, even though the retry path no
-// longer reads this column: a helper that writes a fixed policy hides the
-// seeded value from the call site, and a seed that happens to equal the
-// derived policy makes an assertion about policy agree with the defect it
-// names. That is not hypothetical — it is how the sibling seeder in
-// retry_fetch_policy_test.go made its own case inert.
-func seedHistoryJobFilesRowIn(t *testing.T, db *sql.DB, jobID string, fileIndex int, complete bool, articleCount int, fetch job.FetchPolicy) {
+// fetch_policy is left at the schema default here, unlike the sibling seeder
+// in retry_fetch_policy_test.go which takes it as a parameter. These two tests
+// turn on job_files, seeded separately below; the retained history policy is
+// not part of either scenario, and nothing in production reads that column.
+func seedHistoryJobFilesRowIn(t *testing.T, db *sql.DB, jobID string, fileIndex int, complete bool, articleCount int) {
 	t.Helper()
 	c := 0
 	if complete {
 		c = 1
 	}
 	if _, err := db.Exec(
-		`INSERT INTO history_job_files (job_id, file_index, complete, filename, assembled_crc32, article_count, fetch_policy)
-		 VALUES (?, ?, ?, '', 0, ?, ?)`,
-		jobID, fileIndex, c, articleCount, int(fetch)); err != nil {
+		`INSERT INTO history_job_files (job_id, file_index, complete, filename, assembled_crc32, article_count)
+		 VALUES (?, ?, ?, '', 0, ?)`,
+		jobID, fileIndex, c, articleCount); err != nil {
 		t.Fatalf("seed history_job_files row: %v", err)
 	}
 }
@@ -170,7 +145,7 @@ func newEvictionTestApp(t *testing.T) (*Application, *history.Repository, string
 func TestRetryHistoryJob_SurvivesEviction(t *testing.T) {
 	application, repo, adminDir := newEvictionTestApp(t)
 
-	writeGzNZBFile(t, adminDir, "survivesevict.nzb.gz", evictNZBWithRecoveryVolume(2, 1))
+	writeRetryNZBBackup(t, adminDir, "survivesevict.nzb.gz", evictNZBWithRecoveryVolume(2, 1))
 
 	const id = "retrysurviveevict1"
 	if err := repo.Add(t.Context(), history.Entry{
@@ -182,8 +157,8 @@ func TestRetryHistoryJob_SurvivesEviction(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
-	seedHistoryJobFilesRowIn(t, repo.DB(), id, 0, false, 2, job.FetchNever)
-	seedHistoryJobFilesRowIn(t, repo.DB(), id, 1, false, 1, job.FetchNever)
+	seedHistoryJobFilesRowIn(t, repo.DB(), id, 0, false, 2)
+	seedHistoryJobFilesRowIn(t, repo.DB(), id, 1, false, 1)
 	// The failed attempt's own job_files rows, carrying the pre-fix default
 	// rather than a policy anyone derived — which is the point: FetchAlways
 	// differs from the FetchIfNeeded this retry derives, so reapplying the

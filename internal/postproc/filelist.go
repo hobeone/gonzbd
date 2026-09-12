@@ -60,7 +60,7 @@ func buildDownloadFileList(j *Job) []string {
 	// ingest, and by RestoreFetchPolicy replaying a row those same writers
 	// produced), DiscardDeferredPar2 (gated on FetchIfNeeded), undeferRecovery
 	// (gated on FetchIfNeeded, and moving files back ONTO FetchAlways), and
-	// JobProgress restore, which otherwise leaves the FetchAlways zero. If that
+	// newJobProgressSized, which otherwise leaves the FetchAlways zero. If that
 	// ever changes, heldVols and heldBytes stop describing the same set and the
 	// line printing both goes wrong before anything else does.
 	heldBytes := m.TotalBytes() - p.ExpectedBytes()
