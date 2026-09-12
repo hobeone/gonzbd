@@ -20,7 +20,7 @@ ON CONFLICT(job_id, file_index) DO UPDATE SET filename = ''`)
 [every row seeded at index 0 instead of the file's own index]
 file internal/app/app.go
 --- anchor
-		if _, err := stmt.ExecContext(ctx, jobID, i); err != nil {
+		if _, err := stmt.ExecContext(ctx, jobID, i, int(fetch(i))); err != nil {
 --- replace
-		if _, err := stmt.ExecContext(ctx, jobID, 0); err != nil {
+		if _, err := stmt.ExecContext(ctx, jobID, 0, int(fetch(i))); err != nil {
 --- end
