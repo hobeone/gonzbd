@@ -149,7 +149,7 @@ type Options struct {
 // Downloader orchestrates article dispatch across a set of NNTP
 // servers. A Downloader owns:
 //
-//   - a reference to the Queue, whose Notify channel it selects on
+//   - a reference to the Dispatcher, whose Notify channel it selects on
 //   - one or more *Server state records (each drives its own pool of
 //     connection-worker goroutines)
 //   - a main-loop goroutine that runs the dispatch pass

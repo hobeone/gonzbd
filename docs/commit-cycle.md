@@ -239,8 +239,9 @@ deleted in `b6651d43` and ~400 references survived across 31 files, docs cited
 five migrations that were never applied, and five tests were named as the guard
 on an invariant while not existing.
 
-**These four were once absent from `ci.yml` while the three diff-scoped gates
-were present**, which is how a defect in `check_dup_comments`' own marker
+**These whole-repository gates (originally four, now five with
+`check_doc_citations`) were once absent from `ci.yml` while the three diff-scoped
+gates were present**, which is how a defect in `check_dup_comments`' own marker
 handling survived in the tree: nothing ever ran the tool that would have caught
 it.
 

@@ -377,14 +377,14 @@ func (r *Repository) delete(ctx context.Context, dropDurability bool, nzoIDs ...
 		//
 		// That is what the conditional protects, for BOTH tables, and it is
 		// about ORDERING rather than about preserving any verdict: the retry
-		// path calls queue.Add and only then deletes the history entry
-		// (app.go:1881 and :1911), so an unconditional delete here would drop
+		// path calls app.dispatcher.Add and only then deletes the history entry
+		// (app.go:2216 and :2221), so an unconditional delete here would drop
 		// rows the re-enqueued job already owns. Do not read the retention as
 		// "a retry keeps what already failed" — it does not.
-		// RetryHistoryJob clears failed_articles on both of its branches
-		// BEFORE that Add (app.go:1843 and :1874), because those rows record a
-		// decision not to fetch and a retry exists to revisit it. A reader who
-		// inverts this reinstates #422's sibling defect.
+		// RetryHistoryJob clears failed_articles BEFORE that Add
+		// (app.go:2178-2181), because those rows record a decision not to fetch
+		// and a retry exists to revisit it. A reader who inverts this reinstates
+		// #422's sibling defect.
 		//
 		// An earlier version deleted unconditionally and justified it with
 		// "a completed job's rows are already gone, so this deletes nothing

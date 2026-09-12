@@ -1019,10 +1019,11 @@ The consequence is the point of the whole design: **every reporting path is
 infallible.** Only mutation paths take the fallible handle.
 
 **But `JobProgress` does not exist from ingest for a job restored at
-startup.** `dispatch.restore` rebuilds each job with `job.New` and no content,
-because `internal/dispatch` imports only `internal/job` and `internal/sched` —
-it has no database access, so it cannot read `job_files` for the article counts
-sizing would need. The record arrives later, at first hydration.
+startup.** `dispatch.restore` rebuilds each job with `job.New` and no content:
+manifest loading is deferred to `Residency.Hydrate` by architectural discipline
+(enforced by `TestDispatchNamesNoManifestType`), so the restore loop does not
+access manifests and does not have the file and article counts sizing needs.
+The record arrives later, at first hydration.
 `grep -n 'j\.progress == nil\|j\.progress != nil' internal/job/*.go | grep -v
 _test.go` finds 45 lines, so "no caller checks for their absence" describes an
 intent rather than the code.
@@ -1129,9 +1130,9 @@ need in order to be in any other state cannot be deserialized.
 
 **Pause takes the same path.** A paused job holds nothing, exactly like a
 restarted one; resume re-acquires and the manifest is re-read from
-`manifests/<id>.json.gz`. Pause/resume and crash/restart are one code path, and
-that is a property of the design rather than a coincidence: both are "this job
-holds nothing and its work is unfinished".
+`admin/queue/manifests/<id>.json.gz`. Pause/resume and crash/restart are one
+code path, and that is a property of the design rather than a coincidence: both
+are "this job holds nothing and its work is unfinished".
 
 ### Who writes what
 
@@ -1432,9 +1433,9 @@ damaged manifest blob.
 **It is not what detects `job_files` rows altered out of band.** The restore
 path fills the progress record by `file_index` under a bounds check and never
 resizes it, so rows deleted or renumbered outside this process still satisfy
-the size check and silently attach one file's per-article state to another
+the size check and silently attach one file's metadata and outcomes to another
 file's slot — no error, no log. What a manifest/`job_files` disagreement should
-do is open (§16).
+do is open (§17).
 
 ---
 

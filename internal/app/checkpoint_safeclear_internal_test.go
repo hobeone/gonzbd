@@ -112,7 +112,7 @@ func TestCheckpointJob_ReportsSafeAfterTheAssemblerStopped(t *testing.T) {
 // clearing as it does today.
 //
 // Unreachable in production — app.barrier is set unless the history repo or its
-// DB is nil (app.go:487-491), and cmd/gonzbd/main.go fails the whole start if
+// DB is nil (app.go:524-531), and cmd/gonzbd/main.go fails the whole start if
 // history.Open errors. Pinned so the test-only path does not silently start
 // stranding Emitted bits.
 func TestCheckpointJob_ReportsSafeWithoutABarrier(t *testing.T) {
