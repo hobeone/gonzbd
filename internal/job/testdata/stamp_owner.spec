@@ -47,9 +47,7 @@ func (p *JobProgress) clearDownloadStamps() {
 [restore stops filtering the started field]
 file internal/job/progress.go
 --- anchor
-	if isJobStamp(started) {
-		p.downloadStarted = started
-	}
+	p.downloadStarted = jobStampOrZero(started)
 --- replace
 	p.downloadStarted = started
 --- end
@@ -57,9 +55,7 @@ file internal/job/progress.go
 [restore stops filtering the finished field]
 file internal/job/progress.go
 --- anchor
-	if isJobStamp(finished) {
-		p.downloadFinished = finished
-	}
+	p.downloadFinished = jobStampOrZero(finished)
 --- replace
 	p.downloadFinished = finished
 --- end
