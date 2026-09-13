@@ -662,11 +662,18 @@ test) moved to [`docs/config-contract.md`](docs/config-contract.md).
 
 - **Branch**: **work lands via pull request by default**, including single-commit fixes. This holds even though it is a solo private repo, for two concrete reasons: the PR is the review surface that CodeRabbit and human review comment on, and `.github/workflows/security.yml` triggers on `pull_request` — pushing straight to `main` skips review entirely and runs the security scan only after the fact, when it is too late to be a gate. A direct push to `main` requires the user to say so for that specific change — their standing preference is still the PR route.
 - **This is a convention, not an enforced gate.** There is no GitHub branch protection configured for this repository, so nothing on the server will reject a direct push to `main`. It holds because we follow it. Do not read "the push succeeded" as "the push was allowed."
-- **Worktrees**: for multi-step efforts, work in an isolated **git worktree** off `main`, then open a PR from that branch. Note a fresh worktree cannot build until you supply the UI bundle — `ui/dist/*` is gitignored, so `//go:embed all:dist` in `ui/embed.go` fails and `internal/web` reports `[setup failed]`. This is a worktree artifact, not a broken change:
+- **Branch name**: `<type>/<issue#>-<slug>` — `fix/547-resume-fixture-vacuous`, `docs/519-clearallemitted`, `chore/<slug>` where there is no issue. The `<type>` matches the Conventional Commits type below, so a branch and the commits on it agree, and the `/` groups the namespace for `git branch --list 'fix/*'` and GitHub's branch list.
+- **Worktrees**: for multi-step efforts, work in an isolated **git worktree** off `main`, then open a PR from that branch. Worktrees live under `.claude/worktrees/<name>`: that is where the `EnterWorktree` harness tool places them, and the only location it will enter — a worktree created elsewhere, in `/tmp` or anywhere else, cannot be entered with it and so gets none of the isolation the rest of this section assumes. A fresh one cannot build or test until you supply two gitignored directories from the main checkout:
   ```bash
-  git worktree add /tmp/<lane> -b <lane>
-  cp -r <main-checkout>/ui/dist /tmp/<lane>/ui/dist   # or build the UI
+  cp -r <main-checkout>/ui/dist ui/dist                  # or build the UI
+  ln -s <main-checkout>/ui/node_modules ui/node_modules  # or `bun install` in ui/
   ```
+  Without `ui/dist`, `//go:embed all:dist` in `ui/embed.go` fails and `internal/web` reports `[setup failed]`. Without `ui/node_modules`, `scripts/run_tests.sh` aborts in its prerequisite check before running anything at all. Both are worktree artifacts, not broken changes.
+- **Push from a worktree with an explicit refspec.** `EnterWorktree` derives the branch from the worktree directory and prefixes it — asking for `fix/547-resume-fixture-vacuous` yields the branch `worktree-fix+547-resume-fixture-vacuous`. That is not the naming convention above, and the tool takes no parameter to change it. Map it at push time:
+  ```bash
+  git push -u origin HEAD:fix/547-resume-fixture-vacuous
+  ```
+  **Renaming the local branch instead is worse, and the reason is not cosmetic.** `git branch -m` works, and several branches took that route — but `ExitWorktree` recorded the original name and its unmerged-commit guard then reports commits on a branch that no longer exists. Every exit answers `Worktree has N commits ...` for a branch that is fully merged, so every exit demands `discard_changes: true`. That flag is the one control between a clean exit and discarding real work, and a workflow that requires it each time trains the reflex to pass it unread. The refspec puts the convention on `origin`, where it is load-bearing — PR titles, `gh pr list --head`, and `git branch --merged`, which cannot reason about a squash-merged branch at all — and leaves the tool's own bookkeeping intact.
 - **One step per commit** (or one logical sub-piece if a step is split).
 
 (Merge/close approval, force-push, and quality-gates-before-push are global policy — see `~/.claude/CLAUDE.md`; not restated here.)
