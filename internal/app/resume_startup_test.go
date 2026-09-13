@@ -502,21 +502,49 @@ func TestResumeAtStartup_LeavesTheRecordAloneWhenItAdopts(t *testing.T) {
 	}
 }
 
-// recordDoneAndComplete writes the queue-side state a PREVIOUS run would have
-// left behind: the named articles installed in its live progress, and the file
-// flagged complete in job_files.
+// recordComplete flags one of the job's files complete in job_files, which is
+// the queue-side state a PREVIOUS run would have left behind once its finalize
+// ran.
 //
-// The article half is now derived from the same runs the sweep reads, so it
-// adds nothing on its own. The COMPLETE flag is what this exists for: it lives
-// on job_files and nowhere else, nothing re-derives it, and a sweep that
-// disproved the file must clear it or the job goes to post-processing over a
-// hole.
+// It takes no article list. The per-article half of a previous run's state is
+// derived on hydration from the same durable_runs rows recordRuns writes, so
+// seeding it here would add nothing — and that is checked rather than assumed:
+// internal/app/testdata/resume_shortened_partial.spec mutates the sweep's
+// markNotDone call and the assertions go red on recordRuns alone.
 //
-// It goes through the real queue and store rather than an UPDATE, so what
-// lands in the row is what a real run would have written.
-func (f *resumeFixture) recordDoneAndComplete(done ...int) {
-	// In the new architecture, progress is re-derived on startup from durable_runs
-	// and disk state by resumeAllJobs. There is no separate job_files table.
+// The Complete flag is what this exists for. It lives on job_files and nowhere
+// else, nothing re-derives it — see the "Why it is a pass here rather than a
+// derived flag" section on completeStrandedFiles for why deriving it would be
+// wrong — and a sweep that disproved the file must clear it or the job goes to
+// post-processing over a hole.
+//
+// This writes the row directly rather than driving the real write path, which
+// is a weaker fixture than the one that stood here before 18f7ed74 and is
+// worth stating. That path is appCheckpointStore.SaveBatch in
+// dispatcher_wiring.go, unexported and in package app, so an external test
+// cannot reach it; the checkpointer that would call it does not exist until
+// f.start, which is after the state under test has to be on disk. What lands
+// in the row is one boolean, and the column and value below are the same ones
+// SaveBatch writes, so the gap is the statement rather than the value.
+func (f *resumeFixture) recordComplete(fileIdx int) {
+	f.t.Helper()
+	res, err := f.repo.DB().ExecContext(f.t.Context(),
+		`UPDATE job_files SET complete = 1 WHERE job_id = ? AND file_index = ?`,
+		f.jobID, fileIdx,
+	)
+	if err != nil {
+		f.t.Fatalf("mark file %d complete: %v", fileIdx, err)
+	}
+	// A silent zero-row UPDATE is the failure this helper existed to prevent:
+	// it restores the empty-stub behaviour, and the assertion it feeds passes
+	// either way.
+	n, err := res.RowsAffected()
+	if err != nil {
+		f.t.Fatalf("rows affected marking file %d complete: %v", fileIdx, err)
+	}
+	if n != 1 {
+		f.t.Fatalf("marking file %d complete updated %d job_files rows, want 1", fileIdx, n)
+	}
 }
 
 // TestResumeAtStartup_ShortenedPartialIsRefetched is #362 end to end through
@@ -540,7 +568,7 @@ func TestResumeAtStartup_ShortenedPartialIsRefetched(t *testing.T) {
 	f := newResumeFixture(t)
 	f.writePartial(0, 1, 2)
 	f.recordRuns(0, 1, 2)
-	f.recordDoneAndComplete(0, 1, 2)
+	f.recordComplete(0)
 	// Shortened to article 0 alone, which is 128 bytes below what the runs
 	// claim, so the gate discards them.
 	if err := os.Truncate(f.path, resumePartLen); err != nil {
