@@ -159,10 +159,17 @@ CREATE TABLE failed_articles (
 -- Per-file download progress retained for a FAILED job, so a retry refetches
 -- only the articles that did not make it.
 --
--- Separate from job_files because those rows do not outlive the
--- queue-to-history transition. No foreign key here either: the owning row is
--- history(nzo_id), and these are removed explicitly when it is deleted. Only
--- failed jobs get rows -- a job that succeeded has nothing to retry.
+-- Separate from job_files, whose rows belong to the queue and are removed when
+-- a job leaves it. That separation is about ownership rather than lifetime: a
+-- FAILED job keeps its job_files rows too, because finalizeJob skips
+-- deleteJobDurability for exactly that status, so for the one status this
+-- table exists to serve the two coexist. What distinguishes them is who may
+-- delete them -- job_files goes with the queue job, this goes with the history
+-- entry.
+--
+-- No foreign key here either: the owning row is history(nzo_id), and these are
+-- removed explicitly when it is deleted. Only failed jobs get rows -- a job
+-- that succeeded has nothing to retry.
 --
 -- A progress overlay, not a second manifest. article_count is the exception to
 -- that and is here for one purpose: retainedMatchesManifest compares it

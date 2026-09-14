@@ -597,16 +597,17 @@ func TestFinalizeCompletedFile_TrimsAndReleasesTheHandle(t *testing.T) {
 
 // ---------- job departure ----------
 
-// TestDeleteJobDurability_RemovesBothTables pins the removal that runs on a
-// job's way out. Both tables are keyed by job ID with no foreign key to the
-// queue, so without this a database accumulates one set of rows per job ever
-// downloaded until SQLiteStore.Prune's backstop happens to run -- and that
-// backstop deliberately spares history-as-FAILED, so it is not equivalent.
+// TestDeleteJobDurability_RemovesTheDepartedJobsRows pins the removal that
+// runs on a job's way out. Its tables are keyed by job ID with no foreign key
+// to dispatch_jobs, so without this a database accumulates one set of rows per
+// job ever downloaded until sweepOrphanedDurability reclaims them at the next
+// startup — and that sweep deliberately spares history-as-FAILED, so it is not
+// equivalent to removing them here.
 //
-// Both, and through their own OWNERS: durability.RunStore owns durable_runs
-// and checkpoint.Store.SaveBatch owns failed_articles. A cleanup that reached only one of them
-// would leave half a departed job's rows behind.
-func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
+// Through their own OWNERS: durability.RunStore owns durable_runs and
+// appCheckpointStore.SaveBatch owns failed_articles. A cleanup that reached
+// only one of them would leave part of a departed job's rows behind.
+func TestDeleteJobDurability_RemovesTheDepartedJobsRows(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
@@ -1879,9 +1880,9 @@ func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
 // queue removal that follows it, so it is the ONE removal that runs without
 // finalizeJob. It fetched the history entry, discarded it, removed the queue
 // row and stopped — leaving durable_runs and failed_articles behind, keyed by
-// job ID with no foreign key to jobs. SQLiteStore.Prune now collects what
-// escapes this path, but only for a job that is not in history as FAILED,
-// which is exactly the case the retention rule below is about.
+// job ID with no foreign key to dispatch_jobs. sweepOrphanedDurability now
+// reclaims what escapes this path, but only for a job that is not in history
+// as FAILED, which is exactly the case the retention rule below is about.
 //
 // Both directions matter and they fail differently. Retaining the rows for a
 // succeeded job leaks one set per crash, forever. Dropping them for a FAILED

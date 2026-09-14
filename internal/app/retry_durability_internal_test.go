@@ -48,23 +48,27 @@ func durabilityRowCounts(t *testing.T, application *Application, jobID string) (
 	return len(runs), failed
 }
 
-// TestDropJobDurability_ReportsBothOwnersFailures pins the difference between
+// TestDropJobDurability_ReportsTheOwnerThatFailed pins the difference between
 // this and deleteJobDurability, which share one implementation and differ only
-// in whether the caller is told.
+// in what their callers do with the result.
 //
 // The two entry points exist because their callers need opposite things. For a
-// DEPARTED job the rows are garbage: leaving them costs disk until Prune runs,
-// and there is no caller left to tell, so deleteJobDurability swallows. For a
-// job coming BACK the rows are about to be READ, and a stale one bounds
-// FinalizeFile's truncate to the wrong article range — so RetryHistoryJob
-// aborts on a failure here rather than requeueing (#422).
+// DEPARTED job the rows are garbage and there is no caller left to act, so
+// every call site logs. For a job coming BACK the rows are about to be READ,
+// and a stale one bounds FinalizeFile's truncate to the wrong article range —
+// so RetryHistoryJob aborts on a failure here rather than requeueing (#422).
 //
-// Both owners' errors are joined rather than the first winning, because they
-// are different stores: durability.RunStore owns durable_runs and
-// checkpoint.Store.SaveBatch owns failed_articles. A caller deciding whether to abort is better served by
-// the whole picture, and an early return would leave one owner's rows behind
-// for a job that is about to be re-downloaded over them.
-func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
+// The error names which owner failed, which is what the second assertion is
+// for. It used to join both owners' errors on the reasoning that a caller is
+// better served by the whole picture; #549 put the two statements in one
+// transaction, where the first failure has already poisoned the second and a
+// joined report would bury the cause under a rollback-in-progress error.
+//
+// Note what this does NOT pin, since the name used to claim it: it has never
+// asserted that two failures are both reported. failingRunStore fails the
+// first statement, so the second never runs — which is now the behaviour
+// rather than an omission.
+func TestDropJobDurability_ReportsTheOwnerThatFailed(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 	seedDurability(t, application, job.ID())

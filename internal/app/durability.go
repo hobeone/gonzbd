@@ -1310,10 +1310,10 @@ func (app *Application) shutdownCheckpoint() {
 // This used to remove the queue row and stop. The history entry it fetched was
 // discarded — the call read `_, err := ...Get(...)` — so the rule could not be
 // applied, and durable_runs and failed_articles stayed behind. They are keyed
-// by job ID with no foreign key to jobs. SQLiteStore.Prune now sweeps rows whose
-// job is in neither the queue nor history-as-FAILED, so they no longer survive
-// for the life of the installation -- but Prune is a backstop that runs on a
-// queue save, not a substitute for removing them on the way out.
+// by job ID with no foreign key to dispatch_jobs. sweepOrphanedDurability
+// reclaims rows whose job is in neither the queue nor history-as-FAILED, so
+// they no longer survive for the life of the installation — but it runs once
+// at startup, not as a substitute for removing them on the way out.
 func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID string) bool {
 	dbCtx, dbCancel := context.WithTimeout(ctx, 5*time.Second)
 	entry, err := app.historyRepo.Get(dbCtx, jobID)
@@ -1350,20 +1350,32 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 	return true
 }
 
-// deleteJobDurability drops a DEPARTED job's durable runs and failed-article
-// rows, logging a failure rather than reporting it.
+// deleteJobDurability drops a DEPARTED job's three tables — durable_runs,
+// failed_articles and job_files — in one transaction, and reports the outcome.
 //
-// Both are keyed by job ID with no foreign key to the queue, so nothing
-// removes them implicitly. SQLiteStore.Prune sweeps what escapes this call --
-// the crash window between a job leaving `jobs` and this running -- but it is
-// a backstop on a queue save, and a job that finished or was deleted must not
-// wait for one.
+// None has a foreign key to dispatch_jobs, so nothing removes them implicitly.
+// sweepOrphanedDurability reclaims what escapes this call, which is the crash
+// window between a job leaving dispatch_jobs and this running; but it runs once
+// at startup, and a job that finished or was deleted must not wait for a
+// reboot.
 //
-// Swallowing the error is right HERE and wrong for a retry, which is why the
-// two have separate entry points over one implementation. For a departed job
-// the rows are garbage: leaving them costs disk until Prune runs, and there is
-// no caller left to tell. A retry is the opposite case -- see
-// dropJobDurability.
+// # Why one transaction
+//
+// These were three independent autocommits, and job_files did not even check
+// its error. A failure part-way through committed the deletes that had already
+// run and stranded the rest, so the ordinary outcome of a partial failure was a
+// partial orphan (#549). One transaction makes the cleanup all-or-nothing, and
+// gives the caller one error rather than a joined set.
+//
+// # What the caller does with the error
+//
+// It is returned, but every current caller logs it at Error rather than
+// propagating. By the time any of them reaches this, the job has already left
+// the dispatcher; reporting failure would describe an operation that succeeded
+// and invite a retry that finds no job. What is left is unreachable rows, and
+// the sweep is what reclaims them. Each call site says so.
+//
+// A retry is the opposite case and must abort — see dropJobDurability.
 func (app *Application) deleteJobDurability(ctx context.Context, jobID string) error {
 	db := app.durabilityDB()
 	if db == nil {
@@ -1528,27 +1540,33 @@ func (app *Application) durabilityDB() *sql.DB {
 // beyond it (#422). That is the exact harm this PR exists to prevent, so a
 // cleanup that fails must abort the retry rather than proceed without it.
 //
-// Prune is no backstop for that case. Its sweep deliberately skips any job_id
-// still present in `jobs`, and a retry is re-added to `jobs` moments later --
-// so a row that survives this call survives for the life of the job.
+// sweepOrphanedDurability is no backstop for that case. It deliberately spares
+// any job_id still present in dispatch_jobs, and a retry is re-added there
+// moments later -- so a row that survives this call survives for the life of
+// the job.
 //
-// Both deletions are attempted even if the first fails, and both errors are
-// joined: removing one of the two tables is still progress, and a caller
-// deciding whether to abort is better served by the whole picture than by
-// whichever failure came first.
+// The two statements run in one transaction and stop at the first failure.
+// They used to be attempted independently with their errors joined, on the
+// reasoning that removing one of the two tables is still progress; inside a
+// transaction that reasoning does not hold, because the first failure has
+// already poisoned what follows and nothing will be committed either way.
+// Attempting the second then reports a second error about a rollback in
+// progress, burying the cause the caller needs.
 //
 // The two tables are durable_runs and failed_articles, and they are deleted
 // through different owners on purpose. durability.RunStore owns the first and
-// is the only thing that INSERTS OR AMENDS a run's content; queue.Store owns
-// the second, which is why a job's failed articles are dropped through the
-// queue's own entry point rather than by reaching into the table from here.
+// is the only thing that INSERTS OR AMENDS a run's content; the second is
+// written solely by appCheckpointStore.SaveBatch, which is why nothing here
+// writes to it either.
 //
 // The write bound is on content, not on deletion, and the distinction is not
 // pedantry: durable_runs rows are deleted from three places outside the
-// barrier's own merge — durability.Resumer, RunStore.DeleteJob (below), and
-// history.Repository.delete. (It was five until b6651d43 deleted
+// barrier's own merge — durability.Resumer, RunStore.DeleteJob/DeleteJobTx
+// (below), and history.Repository.delete. (It was five until b6651d43 deleted
 // internal/queue; a fourth, Commit's deleteRows, is part of the
-// merge's read-modify-write rather than a separate deleter.) Content-only is
+// merge's read-modify-write rather than a separate deleter. The startup orphan
+// sweep is not a fifth: it selects the orphaned job IDs and reuses the door
+// below, which is why it added no statement.) Content-only is
 // still exactly the property the trust argument needs — nothing can make the
 // record ASSERT bytes an fsync did not cover — and unlike "nothing else writes
 // it", it is true.
