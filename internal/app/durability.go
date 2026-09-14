@@ -1393,6 +1393,118 @@ func (app *Application) deleteJobDurability(ctx context.Context, jobID string) e
 	return nil
 }
 
+// sweepOrphanedDurability removes the rows of jobs that are in neither the
+// queue nor history-as-FAILED, and reports how many jobs it reclaimed.
+//
+// # What makes a row an orphan
+//
+// Every one of durable_runs, failed_articles and job_files is keyed by job ID
+// with no foreign key, so nothing removes a row implicitly. Removal is
+// explicit, from deleteJobDurability on the way out. A job that stops
+// executing between leaving dispatch_jobs and reaching that call leaves rows
+// no live path will revisit, because every reader is keyed on a job that is by
+// then gone.
+//
+// Four ways in, and only two of them are crashes:
+//
+//   - RemoveJob passes the API request's context all the way down, so a client
+//     that disconnects mid-removal cancels the delete.
+//   - The delete can exceed its timeout under contention.
+//   - A crash in RemoveJob's gap, which spans assembler.CancelJob.
+//   - A crash in the finalize gap.
+//
+// # Why a startup sweep rather than a periodic one
+//
+// An orphan can only be created by one of the four above, and the first two
+// are reported at Error by their call sites. Nothing produces orphans steadily
+// while the process runs, so a periodic sweep would pay on a live path for a
+// condition that cannot arise there. internal/queue's deleted
+// pruneDurabilityRows ran on every queue save for exactly that reason and it
+// is not a cadence worth restoring.
+//
+// # Why it reclaims per job rather than in one statement
+//
+// The SELECT below names dispatch_jobs and history, and the DELETEs are then
+// deleteJobDurability's — which is the point. A sweep that issued its own
+// `DELETE FROM durable_runs` would be a second deleter of a table
+// internal/durability owns, and docs/durability-contract.md maintains that
+// enumeration by hand precisely because no grep recovers it. Selecting the
+// orphaned IDs and reusing the job-scoped door costs one transaction per
+// orphan — of which there are normally zero — and adds no statement anywhere.
+//
+// # The FAILED exception
+//
+// A failed job's rows are retained deliberately: a retry reads them to bound
+// FinalizeFile's truncate to the whole partial file rather than to the few
+// articles it re-fetches. A sweep that ignored this would destroy exactly the
+// ground the retry path exists to preserve, and would do it silently.
+//
+// # Why NOT EXISTS rather than NOT IN
+//
+// SQLite permits NULL in a TEXT PRIMARY KEY, so dispatch_jobs.id and
+// history.nzo_id can both hold one. A single NULL anywhere in a NOT IN
+// subquery makes the predicate NULL for EVERY row, and the sweep then matches
+// nothing — silently, with no error, and indistinguishable from a database
+// that simply had no orphans. NOT EXISTS compares row by row and is unaffected.
+// The failure direction of that trap is retention rather than loss, which is
+// why it is worth naming: it would never surface as a bug, only as this
+// function quietly never working.
+func (app *Application) sweepOrphanedDurability(ctx context.Context) (int, error) {
+	db := app.durabilityDB()
+	if db == nil {
+		return 0, nil
+	}
+	const q = `
+SELECT job_id FROM (
+    SELECT job_id FROM durable_runs
+    UNION SELECT job_id FROM failed_articles
+    UNION SELECT job_id FROM job_files
+) AS owned
+ WHERE NOT EXISTS (SELECT 1 FROM dispatch_jobs d WHERE d.id = owned.job_id)
+   AND NOT EXISTS (SELECT 1 FROM history h
+                    WHERE h.nzo_id = owned.job_id AND h.status = ?)`
+	rows, err := db.QueryContext(ctx, q, string(constants.StatusFailed))
+	if err != nil {
+		return 0, fmt.Errorf("app: sweep orphaned durability rows: %w", err)
+	}
+	var orphans []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("app: sweep orphaned durability rows: scan: %w", err)
+		}
+		orphans = append(orphans, id)
+	}
+	// rows.Next() returns false for "no more rows" AND for a mid-iteration
+	// fault, so without this a dropped connection reads as an empty result and
+	// the sweep reports success having reclaimed nothing.
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, fmt.Errorf("app: sweep orphaned durability rows: iterate: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("app: sweep orphaned durability rows: close: %w", err)
+	}
+
+	// Collected before deleting rather than deleted during iteration: the
+	// DELETEs run against the same tables this cursor is reading.
+	var (
+		swept int
+		errs  []error
+	)
+	for _, id := range orphans {
+		if err := app.deleteJobDurability(ctx, id); err != nil {
+			// One unreclaimable job does not stop the rest — each is its own
+			// transaction, and the next startup tries again regardless.
+			errs = append(errs, fmt.Errorf("job %s: %w", id, err))
+			continue
+		}
+		swept++
+	}
+	return swept, errors.Join(errs...)
+}
+
 // durabilityDB returns the handle all three of a job's row-owning tables live
 // in, or nil when there is none.
 //

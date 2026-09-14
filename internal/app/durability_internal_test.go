@@ -644,6 +644,300 @@ func TestDeleteJobDurability_IsInertWithoutStores(t *testing.T) {
 	}
 }
 
+// seedDurabilityRowsFor gives one job a row in each of the three tables a
+// departing job must take with it.
+func seedDurabilityRowsFor(t *testing.T, application *Application, jobID string) {
+	t.Helper()
+	ctx := t.Context()
+	if _, err := application.runs.Commit(ctx, jobID, []durability.DurableArticle{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db := application.historyRepo.DB()
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO job_files (job_id, file_index, complete, fetch_policy, filename, assembled_crc32)
+		 VALUES (?, 0, 0, 0, '', 0)`, jobID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSweepOrphanedDurability_ReclaimsOnlyWhatNothingCanReach is the backstop
+// for the crash windows deleteJobDurability cannot close.
+//
+// The four fixtures are the whole predicate, and every one of them is needed:
+// dropping the live or failed case would let a sweep that deletes
+// indiscriminately pass, and dropping the completed case would let one that
+// spares every job with any history row pass. Only the orphan may go.
+//
+// The failed case is the one with teeth. Its rows are retained on purpose so a
+// retry can bound FinalizeFile's truncate to the whole partial file; a sweep
+// that took them would destroy exactly the ground the retry path preserves,
+// and would do it with no error and no log.
+func TestSweepOrphanedDurability_ReclaimsOnlyWhatNothingCanReach(t *testing.T) {
+	t.Parallel()
+	application, _ := newDurabilityTestApp(t, 1, 1)
+	ctx := t.Context()
+	db := application.historyRepo.DB()
+
+	for _, id := range []string{"orphan", "live", "failed", "completed"} {
+		seedDurabilityRowsFor(t, application, id)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO dispatch_jobs (id, sort_key, name) VALUES ('live', 1, 'live')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO history (nzo_id, status) VALUES (?, ?)`,
+		"failed", string(constants.StatusFailed)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO history (nzo_id, status) VALUES (?, ?)`,
+		"completed", string(constants.StatusCompleted)); err != nil {
+		t.Fatal(err)
+	}
+
+	swept, err := application.sweepOrphanedDurability(ctx)
+	if err != nil {
+		t.Fatalf("sweepOrphanedDurability: %v", err)
+	}
+
+	for _, tc := range []struct {
+		id      string
+		want    int
+		because string
+	}{
+		{"orphan", 0, "in neither the queue nor history, so nothing will ever read its rows again"},
+		{"live", 1, "still in dispatch_jobs — sweeping it would destroy a live download's recorded ground"},
+		{"failed", 1, "in history as FAILED, whose rows a retry reads to bound its truncate"},
+		{"completed", 0, "in history, but not as FAILED — nothing retries it, so its rows are garbage"},
+	} {
+		nr, nf := durabilityRowCounts(t, application, tc.id)
+		njf := jobFilesRowCount(t, application, tc.id)
+		if nr != tc.want || nf != tc.want || njf != tc.want {
+			t.Errorf("%s: runs=%d failed=%d job_files=%d, want %d each — %s",
+				tc.id, nr, nf, njf, tc.want, tc.because)
+		}
+	}
+	if swept != 2 {
+		t.Errorf("sweep reclaimed %d jobs, want 2 (orphan and completed)", swept)
+	}
+}
+
+// TestSweepOrphanedDurability_SparesEveryJobWhenAnIDIsNull pins the reason the
+// predicate uses NOT EXISTS rather than the NOT IN that reads more naturally.
+//
+// SQLite permits NULL in a TEXT PRIMARY KEY, so dispatch_jobs.id can hold one.
+// A single NULL anywhere in a NOT IN subquery makes the predicate NULL for
+// EVERY row, and the sweep then matches nothing at all — not an error, not a
+// partial result, just a function that silently stops working and is
+// indistinguishable from a database with no orphans.
+//
+// That is why this is a test and not a sentence. The failure direction is
+// retention, so it would never surface as a bug report; the only thing that
+// catches it is an assertion that a real orphan still goes.
+func TestSweepOrphanedDurability_SparesEveryJobWhenAnIDIsNull(t *testing.T) {
+	t.Parallel()
+	application, _ := newDurabilityTestApp(t, 1, 1)
+	ctx := t.Context()
+	db := application.historyRepo.DB()
+
+	seedDurabilityRowsFor(t, application, "orphan")
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO dispatch_jobs (id, sort_key, name) VALUES (NULL, 1, 'null-id')`); err != nil {
+		t.Skipf("this build refuses a NULL dispatch_jobs.id, so the trap is unreachable: %v", err)
+	}
+
+	swept, err := application.sweepOrphanedDurability(ctx)
+	if err != nil {
+		t.Fatalf("sweepOrphanedDurability: %v", err)
+	}
+	nr, nf := durabilityRowCounts(t, application, "orphan")
+	if njf := jobFilesRowCount(t, application, "orphan"); nr != 0 || nf != 0 || njf != 0 {
+		t.Errorf("with a NULL id present: runs=%d failed=%d job_files=%d, want 0 each — "+
+			"one NULL made the predicate NULL for every row, so the sweep matched "+
+			"nothing and reported success", nr, nf, njf)
+	}
+	if swept != 1 {
+		t.Errorf("sweep reclaimed %d jobs with a NULL id present, want 1", swept)
+	}
+}
+
+// TestDurabilityDB_ReportsWhetherThereIsAHandle pins the guard every
+// transaction on this path opens against. Without a history repository there
+// is no shared *sql.DB, and a nil returned here is what sends each caller down
+// its degraded branch rather than into a nil dereference.
+func TestDurabilityDB_ReportsWhetherThereIsAHandle(t *testing.T) {
+	t.Parallel()
+	if db := (&Application{}).durabilityDB(); db != nil {
+		t.Errorf("durabilityDB with no history repository = %v, want nil", db)
+	}
+	application, _ := newDurabilityTestApp(t, 1, 1)
+	if db := application.durabilityDB(); db == nil {
+		t.Error("durabilityDB with a history repository = nil, want the shared handle")
+	}
+}
+
+// TestDeleteJobDurability_WithoutAHandleStillDropsRuns pins the degraded
+// branch, which is not a no-op.
+//
+// durable_runs reaches its own store without the shared handle, so a build
+// with no history repository can still remove two-thirds of nothing — the one
+// table that is reachable. Removing what can be removed beats removing
+// nothing, and the caller is still told whether it worked.
+func TestDeleteJobDurability_WithoutAHandleStillDropsRuns(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		call func(*Application) error
+	}{
+		{"deleteJobDurability", func(a *Application) error {
+			return a.deleteJobDurability(context.Background(), "job-a")
+		}},
+		{"dropJobDurability", func(a *Application) error {
+			return a.dropJobDurability(context.Background(), "job-a")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rec := &recordingRunStore{}
+			application := &Application{log: slog.New(slog.DiscardHandler), runs: rec}
+			if err := tc.call(application); err != nil {
+				t.Fatalf("%s without a handle: %v", tc.name, err)
+			}
+			if len(rec.deleted) != 1 || rec.deleted[0] != "job-a" {
+				t.Errorf("%s deleted %v, want the job's runs dropped through the store "+
+					"that does not need the shared handle", tc.name, rec.deleted)
+			}
+		})
+	}
+}
+
+// TestDropJobDurabilityTx_StopsAtTheFirstFailure pins that the two statements
+// no longer join their errors and continue.
+//
+// Inside a transaction the first failure has already poisoned what follows, so
+// attempting the second write reports a second error about a transaction that
+// is rolling back either way — noise in place of the real cause. The
+// assertion is that exactly the first cause comes back.
+func TestDropJobDurabilityTx_StopsAtTheFirstFailure(t *testing.T) {
+	t.Parallel()
+	application, _ := newDurabilityTestApp(t, 1, 1)
+	ctx := t.Context()
+	db := application.historyRepo.DB()
+	seedDurabilityRowsFor(t, application, "job-a")
+
+	if _, err := db.ExecContext(ctx,
+		`CREATE TRIGGER fail_runs_delete BEFORE DELETE ON durable_runs
+		 BEGIN SELECT RAISE(ABORT, 'simulated runs failure'); END;`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	err = application.dropJobDurabilityTx(ctx, tx, "job-a")
+	if err == nil {
+		t.Fatal("dropJobDurabilityTx returned nil although durable_runs refused the delete")
+	}
+	if !strings.Contains(err.Error(), "durable runs") {
+		t.Errorf("error = %q, want the durable_runs cause", err)
+	}
+	if strings.Contains(err.Error(), "failed articles") {
+		t.Errorf("error = %q — the second statement was attempted and reported after the "+
+			"first had already poisoned the transaction", err)
+	}
+}
+
+// TestSweepOrphanedDurability_ReportsWhatItCouldNotReclaim pins that one
+// unreclaimable job does not stop the rest.
+//
+// Each orphan is its own transaction, so a job whose rows refuse to go is
+// reported while its neighbours are still reclaimed. The alternative — abandon
+// the sweep at the first failure — would let a single wedged job hold the
+// whole backstop hostage across every restart.
+func TestSweepOrphanedDurability_ReportsWhatItCouldNotReclaim(t *testing.T) {
+	t.Parallel()
+	application, _ := newDurabilityTestApp(t, 1, 1)
+	ctx := t.Context()
+	db := application.historyRepo.DB()
+
+	seedDurabilityRowsFor(t, application, "reclaimable")
+	seedDurabilityRowsFor(t, application, "stuck")
+	if _, err := db.ExecContext(ctx,
+		`CREATE TRIGGER fail_stuck BEFORE DELETE ON failed_articles
+		 WHEN OLD.job_id = 'stuck'
+		 BEGIN SELECT RAISE(ABORT, 'simulated delete failure'); END;`); err != nil {
+		t.Fatal(err)
+	}
+
+	swept, err := application.sweepOrphanedDurability(ctx)
+	if err == nil {
+		t.Error("sweepOrphanedDurability returned nil although one job's rows could not go")
+	} else if !strings.Contains(err.Error(), "stuck") {
+		t.Errorf("error = %q, want it to name the job it could not reclaim", err)
+	}
+	if swept != 1 {
+		t.Errorf("swept = %d, want 1 — the reclaimable job must still go when a "+
+			"neighbour refuses", swept)
+	}
+	if nr, nf := durabilityRowCounts(t, application, "reclaimable"); nr != 0 || nf != 0 {
+		t.Errorf("reclaimable: runs=%d failed=%d, want 0 — one wedged job stopped the sweep", nr, nf)
+	}
+	if nr, _ := durabilityRowCounts(t, application, "stuck"); nr != 1 {
+		t.Errorf("stuck: runs=%d, want 1 — its transaction must have rolled back whole", nr)
+	}
+}
+
+// TestSweepOrphanedDurability_ReportsAFailedQuery pins that a sweep which
+// could not even read reports it rather than returning a clean zero.
+//
+// A cancelled context is the reachable cause: the sweep runs inside Start, so
+// a shutdown arriving during startup cancels it mid-flight. Returning (0, nil)
+// there would be indistinguishable from a database with no orphans, which is
+// the same silent-success failure the NOT EXISTS choice avoids elsewhere in
+// this function.
+func TestSweepOrphanedDurability_ReportsAFailedQuery(t *testing.T) {
+	t.Parallel()
+	application, _ := newDurabilityTestApp(t, 1, 1)
+	seedDurabilityRowsFor(t, application, "orphan")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	swept, err := application.sweepOrphanedDurability(ctx)
+	if err == nil {
+		t.Error("sweepOrphanedDurability on a cancelled context returned nil; a sweep " +
+			"that could not read is not a sweep that found nothing")
+	}
+	if swept != 0 {
+		t.Errorf("swept = %d on a cancelled context, want 0", swept)
+	}
+	// The orphan is untouched, so the next startup still sees it.
+	if nr, _ := durabilityRowCounts(t, application, "orphan"); nr != 1 {
+		t.Errorf("orphan runs = %d after a failed sweep, want 1", nr)
+	}
+}
+
+// TestSweepOrphanedDurability_IsInertWithoutAHandle pins the degraded mode: no
+// history repository means no shared handle to query, and the sweep reports
+// nothing reclaimed rather than failing startup.
+func TestSweepOrphanedDurability_IsInertWithoutAHandle(t *testing.T) {
+	t.Parallel()
+	application := &Application{log: slog.New(slog.DiscardHandler)}
+	swept, err := application.sweepOrphanedDurability(context.Background())
+	if err != nil || swept != 0 {
+		t.Errorf("sweepOrphanedDurability with no handle = (%d, %v), want (0, nil)", swept, err)
+	}
+}
+
 // jobFilesRowCount counts one job's job_files rows — the third table a
 // departing job leaves behind, and the one that had no backstop at all before
 // #549 because the deleted sweep's predicate never named it.
