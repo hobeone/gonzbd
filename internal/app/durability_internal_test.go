@@ -639,7 +639,97 @@ func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
 func TestDeleteJobDurability_IsInertWithoutStores(t *testing.T) {
 	t.Parallel()
 	application := &Application{log: slog.New(slog.DiscardHandler)}
-	application.deleteJobDurability(context.Background(), "job-a")
+	if err := application.deleteJobDurability(context.Background(), "job-a"); err != nil {
+		t.Errorf("deleteJobDurability with no stores = %v, want nil", err)
+	}
+}
+
+// jobFilesRowCount counts one job's job_files rows — the third table a
+// departing job leaves behind, and the one that had no backstop at all before
+// #549 because the deleted sweep's predicate never named it.
+func jobFilesRowCount(t *testing.T, application *Application, jobID string) int {
+	t.Helper()
+	var n int
+	if err := application.historyRepo.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM job_files WHERE job_id = ?`, jobID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestDeleteJobDurability_IsAtomicAndReportsFailure pins the two properties the
+// three separate autocommits did not have.
+//
+// A departing job has rows in three tables, and they used to be removed by
+// three independent statements: job_files (whose error was discarded outright),
+// then durable_runs, then failed_articles. A failure part-way through therefore
+// committed the deletions that had already run and stranded the rest, with no
+// sweep to reclaim them and — for job_files — no log line either.
+//
+// The trigger aborts the LAST of the three, which is what makes this a test of
+// rollback rather than of ordering: both earlier deletes have already executed
+// inside the transaction when it fires, so all three rows may only survive if
+// the transaction actually rolls back. Against three autocommits, two of them
+// would be gone.
+//
+// The second half then removes the trigger and repeats, so a mutation that
+// makes the delete unconditionally fail cannot pass the first half alone.
+func TestDeleteJobDurability_IsAtomicAndReportsFailure(t *testing.T) {
+	t.Parallel()
+	application, j := newDurabilityTestApp(t, 1, 1)
+	ctx := t.Context()
+	db := application.historyRepo.DB()
+
+	if _, err := application.runs.Commit(ctx, j.ID(), []durability.DurableArticle{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)`, j.ID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO job_files (job_id, file_index, complete, fetch_policy, filename, assembled_crc32)
+		 VALUES (?, 0, 0, 0, '', 0)`, j.ID()); err != nil {
+		t.Fatal(err)
+	}
+
+	assertAllThreePresent := func(when string) {
+		t.Helper()
+		nr, nf := durabilityRowCounts(t, application, j.ID())
+		njf := jobFilesRowCount(t, application, j.ID())
+		if nr != 1 || nf != 1 || njf != 1 {
+			t.Errorf("%s: runs=%d failed=%d job_files=%d, want 1/1/1 — the delete was "+
+				"not atomic, so a failure part-way through stranded the rest with "+
+				"nothing to reclaim them", when, nr, nf, njf)
+		}
+	}
+	assertAllThreePresent("precondition")
+
+	if _, err := db.ExecContext(ctx,
+		`CREATE TRIGGER fail_failed_articles_delete BEFORE DELETE ON failed_articles
+		 BEGIN SELECT RAISE(ABORT, 'simulated delete failure'); END;`); err != nil {
+		t.Fatal(err)
+	}
+
+	err := application.deleteJobDurability(ctx, j.ID())
+	if err == nil {
+		t.Error("deleteJobDurability returned nil although the delete was refused; " +
+			"the caller cannot tell that the job's rows are still there")
+	}
+	assertAllThreePresent("after the refused delete")
+
+	if _, err := db.ExecContext(ctx, `DROP TRIGGER fail_failed_articles_delete`); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.deleteJobDurability(ctx, j.ID()); err != nil {
+		t.Fatalf("deleteJobDurability after the fault was removed: %v", err)
+	}
+	nr, nf := durabilityRowCounts(t, application, j.ID())
+	if njf := jobFilesRowCount(t, application, j.ID()); nr != 0 || nf != 0 || njf != 0 {
+		t.Errorf("after a clean delete: runs=%d failed=%d job_files=%d, want 0/0/0", nr, nf, njf)
+	}
 }
 
 // ---------- settings ----------
@@ -711,9 +801,19 @@ func (f failingRunStore) ForJob(context.Context, string) ([]durability.Run, erro
 func (f failingRunStore) DeleteFile(context.Context, string, int32) error { return f.err }
 func (f failingRunStore) DeleteJob(context.Context, string) error         { return f.err }
 
-// recordingRunStore notes whether DeleteJob was reached. The alternative —
-// comparing application.runs to a copy of itself taken two lines earlier — is
-// a tautology, which is what this replaces.
+func (f failingRunStore) DeleteJobTx(context.Context, durability.Execer, string) error {
+	return f.err
+}
+
+// recordingRunStore notes whether the job-scoped delete was reached. The
+// alternative — comparing application.runs to a copy of itself taken two lines
+// earlier — is a tautology, which is what this replaces.
+//
+// Both entry points record, because production reaches only DeleteJobTx now
+// (deleteJobDurability runs all three tables in one transaction) while other
+// callers still use DeleteJob. Recording in one alone would make this fake
+// observe nothing the day the caller switched, which is exactly the silent
+// failure it was written to prevent.
 type recordingRunStore struct{ deleted []string }
 
 func (r *recordingRunStore) Commit(context.Context, string, []durability.DurableArticle) ([]durability.Collision, error) {
@@ -730,7 +830,11 @@ func (r *recordingRunStore) ForJob(context.Context, string) ([]durability.Run, e
 
 func (r *recordingRunStore) DeleteFile(context.Context, string, int32) error { return nil }
 
-func (r *recordingRunStore) DeleteJob(_ context.Context, jobID string) error {
+func (r *recordingRunStore) DeleteJob(ctx context.Context, jobID string) error {
+	return r.DeleteJobTx(ctx, nil, jobID)
+}
+
+func (r *recordingRunStore) DeleteJobTx(_ context.Context, _ durability.Execer, jobID string) error {
 	r.deleted = append(r.deleted, jobID)
 	return nil
 }

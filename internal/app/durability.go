@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -1336,8 +1337,16 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 		return true
 	}
 	delCtx, delCancel := context.WithTimeout(ctx, 5*time.Second)
-	app.deleteJobDurability(delCtx, jobID)
+	err = app.deleteJobDurability(delCtx, jobID)
 	delCancel()
+	if err != nil {
+		// This runs inside the startup sweep already. A failure here is
+		// therefore not deferred to "the next startup" in any useful sense —
+		// it is this startup, and the orphan sweep in the same pass will have
+		// its own view of these rows.
+		app.log.Error("could not delete durability rows for a job already in history",
+			"job", jobID, "err", err)
+	}
 	return true
 }
 
@@ -1355,13 +1364,46 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 // the rows are garbage: leaving them costs disk until Prune runs, and there is
 // no caller left to tell. A retry is the opposite case -- see
 // dropJobDurability.
-func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
-	if app.historyRepo != nil && app.historyRepo.DB() != nil {
-		_, _ = app.historyRepo.DB().ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", jobID)
+func (app *Application) deleteJobDurability(ctx context.Context, jobID string) error {
+	db := app.durabilityDB()
+	if db == nil {
+		// No shared handle, so there is no transaction to open. durable_runs
+		// carries its own, and removing what can be removed beats removing
+		// nothing; the caller still learns whether it worked.
+		if app.runs == nil {
+			return nil
+		}
+		return app.runs.DeleteJob(ctx, jobID)
 	}
-	if err := app.dropJobDurability(ctx, jobID); err != nil {
-		app.log.Warn("delete durability rows for a departed job", "job", jobID, "err", err)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("app: delete durability rows %s: begin: %w", jobID, err)
 	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM job_files WHERE job_id = ?`, jobID); err != nil {
+		return fmt.Errorf("app: delete durability rows %s: job files: %w", jobID, err)
+	}
+	if err := app.dropJobDurabilityTx(ctx, tx, jobID); err != nil {
+		return fmt.Errorf("app: delete durability rows %s: %w", jobID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("app: delete durability rows %s: commit: %w", jobID, err)
+	}
+	return nil
+}
+
+// durabilityDB returns the handle all three of a job's row-owning tables live
+// in, or nil when there is none.
+//
+// They share one SQLite file — SQLiteRunStore is constructed over
+// history.Repository's own *sql.DB — which is what makes a single transaction
+// across the three possible at all.
+func (app *Application) durabilityDB() *sql.DB {
+	if app.historyRepo == nil {
+		return nil
+	}
+	return app.historyRepo.DB()
 }
 
 // dropJobDurability is the same deletion for a job that is coming BACK, where
@@ -1399,18 +1441,48 @@ func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 // record ASSERT bytes an fsync did not cover — and unlike "nothing else writes
 // it", it is true.
 func (app *Application) dropJobDurability(ctx context.Context, jobID string) error {
-	var errs []error
+	db := app.durabilityDB()
+	if db == nil {
+		if app.runs == nil {
+			return nil
+		}
+		return app.runs.DeleteJob(ctx, jobID)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("app: drop durability rows %s: begin: %w", jobID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := app.dropJobDurabilityTx(ctx, tx, jobID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("app: drop durability rows %s: commit: %w", jobID, err)
+	}
+	return nil
+}
+
+// dropJobDurabilityTx removes the two tables a RETURNING job must not carry
+// forward, against a caller-supplied transaction.
+//
+// Split from dropJobDurability so deleteJobDurability can add job_files to the
+// same transaction without a second copy of either statement. The two entry
+// points differ only in who owns the transaction.
+//
+// It no longer joins its errors and continues. Inside a transaction a failed
+// statement has already poisoned what follows, so attempting the second write
+// reports a second failure about a transaction that is going to roll back
+// either way — noise in place of the first, real cause.
+func (app *Application) dropJobDurabilityTx(ctx context.Context, tx *sql.Tx, jobID string) error {
 	if app.runs != nil {
-		if err := app.runs.DeleteJob(ctx, jobID); err != nil {
-			errs = append(errs, fmt.Errorf("durable runs: %w", err))
+		if err := app.runs.DeleteJobTx(ctx, tx, jobID); err != nil {
+			return fmt.Errorf("durable runs: %w", err)
 		}
 	}
-	if app.historyRepo != nil && app.historyRepo.DB() != nil {
-		if _, err := app.historyRepo.DB().ExecContext(ctx, `DELETE FROM failed_articles WHERE job_id = ?`, jobID); err != nil {
-			errs = append(errs, fmt.Errorf("failed articles: %w", err))
-		}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM failed_articles WHERE job_id = ?`, jobID); err != nil {
+		return fmt.Errorf("failed articles: %w", err)
 	}
-	return errors.Join(errs...)
+	return nil
 }
 
 var _ durability.Stallable = (*Application)(nil)

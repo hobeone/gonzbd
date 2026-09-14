@@ -889,11 +889,25 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	app.pipeline.forgetJob(id)
 	app.forgetJobBarrierState(id)
 	// The job is gone from the queue, so nothing will ever read its durable
-	// runs or its failed-article rows again. Both are keyed by job ID with no
-	// foreign key to anything, so this is the only thing that removes them —
-	// without it every deleted job leaves its rows behind for the life of
-	// the database.
-	app.deleteJobDurability(ctx, id)
+	// runs, its failed-article rows or its job_files rows again. None has a
+	// foreign key to anything, so nothing removes them implicitly.
+	//
+	// The error is logged rather than returned, and that is a decision rather
+	// than an omission. By this line the job has already left the dispatcher,
+	// its manifest is unlinked and its file handles are closed, so the removal
+	// the caller asked for has happened; returning an error here would report
+	// a failure for an operation that succeeded, and invite a retry that finds
+	// no job. What is left is unreachable rows, which sweepOrphanedDurability
+	// reclaims at the next startup.
+	//
+	// It is logged at Error, not Warn: ctx here is the API request's, so the
+	// most likely cause is a client that disconnected mid-removal, and that is
+	// a condition an operator should be able to find in a log rather than
+	// infer from a growing database.
+	if err := app.deleteJobDurability(ctx, id); err != nil {
+		app.log.Error("could not delete a removed job's durability rows; the startup sweep will reclaim them",
+			"job", id, "err", err)
+	}
 	if deleteFiles && name != "" {
 		downloadDir := app.config.GetGeneral().DownloadDir
 		path := filepath.Join(downloadDir, name)

@@ -239,12 +239,22 @@ func TestRetryHistoryJob_DiscardsRowsWhenTheManifestShapeChanged(t *testing.T) {
 	}
 }
 
-// failingDeleteRunStore delegates everything to a real RunStore except
-// DeleteJob.
+// failingDeleteRunStore delegates everything to a real RunStore except the
+// two job-scoped deletes.
 //
-// Embedding the interface rather than reimplementing it keeps the stub honest:
-// if the retry path grows a call to some other RunStore method, the real one
-// answers it and the test keeps testing what it says it tests.
+// Embedding the interface rather than reimplementing it keeps the stub honest
+// about methods it does not care about: if the retry path grows a call to some
+// unrelated RunStore method, the real one answers it and the test keeps
+// testing what it says it tests.
+//
+// **Both deletes must be overridden, and this is not belt-and-braces.** When
+// DeleteJobTx was added (#549) and dropJobDurability switched to it, embedding
+// meant the real store answered the new call and succeeded — so the injected
+// failure stopped firing and this test passed against a retry that had
+// silently stopped aborting. Embedding protects an override from an unrelated
+// new call; it does nothing when the overridden method gains a sibling that
+// does the same job, because then the real implementation is the wrong answer
+// rather than an acceptable one.
 type failingDeleteRunStore struct {
 	durability.RunStore
 	err error
@@ -252,21 +262,24 @@ type failingDeleteRunStore struct {
 
 func (f failingDeleteRunStore) DeleteJob(context.Context, string) error { return f.err }
 
+func (f failingDeleteRunStore) DeleteJobTx(context.Context, durability.Execer, string) error {
+	return f.err
+}
+
 // TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped is the other half of
 // the shape-mismatch gate, and the reason the gate is worth anything.
 //
-// Deciding to drop the stale rows is not the same as dropping them.
-// deleteJobDurability logs its failures and returns nothing, so a retry that
-// used it would enqueue the job with the stale rows still in place — the exact
-// state the mismatch branch exists to prevent, reached silently.
+// Deciding to drop the stale rows is not the same as dropping them. A retry
+// that ignored the deletion's outcome would enqueue the job with the stale
+// rows still in place — the exact state the mismatch branch exists to prevent,
+// reached silently.
 //
-// Nothing else catches it. There was once a backstop for orphaned rows —
-// SQLiteStore.pruneDurabilityRows — but it would not have caught this case
-// anyway, since it deliberately skipped any job_id still present in `jobs` and
-// the retry puts this job back there immediately; and it is gone regardless,
-// deleted with internal/queue in b6651d43. A row that survives the deletion
-// survives for the life of the job and bounds FinalizeFile's truncate to
-// articles that are somewhere else.
+// The orphan sweep is no backstop for this case, which is why the abort has to
+// be fatal here rather than deferred to it. sweepOrphanedDurability spares any
+// job still present in dispatch_jobs, and the retry puts this job back there
+// immediately; a row that survives the deletion therefore survives for the
+// life of the job and bounds FinalizeFile's truncate to articles that are
+// somewhere else.
 //
 // So the deletion is fatal here, alone among its callers. The abort is clean
 // because it precedes every commit: the history entry is untouched and no job

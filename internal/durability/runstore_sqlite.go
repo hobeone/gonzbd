@@ -418,7 +418,17 @@ func (s *SQLiteRunStore) DeleteFile(ctx context.Context, jobID string, fileIdx i
 // only durable_runs — failed_articles is owned and written solely by
 // checkpoint.Store.SaveBatch.
 func (s *SQLiteRunStore) DeleteJob(ctx context.Context, jobID string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM durable_runs WHERE job_id = ?`, jobID); err != nil {
+	return s.DeleteJobTx(ctx, s.db, jobID)
+}
+
+// DeleteJobTx is DeleteJob against a caller-supplied executor. See
+// RunStore.DeleteJobTx for why the transaction boundary belongs to the caller.
+//
+// DeleteJob delegates here rather than repeating the statement, so the
+// `DELETE FROM durable_runs` that the contract doc's enumeration counts stays
+// at one site. Two copies would drift the first time either grew a clause.
+func (s *SQLiteRunStore) DeleteJobTx(ctx context.Context, exec Execer, jobID string) error {
+	if _, err := exec.ExecContext(ctx, `DELETE FROM durable_runs WHERE job_id = ?`, jobID); err != nil {
 		return fmt.Errorf("durability: delete runs job=%s: %w", jobID, err)
 	}
 	return nil
