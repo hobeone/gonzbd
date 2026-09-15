@@ -141,9 +141,14 @@ CREATE TABLE durable_runs (
 -- One production writer -- `git grep -n 'INTO failed_articles' -- '*.go'
 -- ':!*_test.go'` returns one line, the INSERT OR IGNORE inside
 -- appCheckpointStore.SaveBatch. Deletion is wider and job-scoped: the retry
--- path, the durability sweep for a job that has left both the queue and
--- history-as-FAILED, and history.Repository.Delete. None of those writes a
--- row.
+-- path, a job leaving the queue, and history.Repository.Delete. None of those
+-- writes a row.
+--
+-- There is deliberately no sweep in that list. One existed --
+-- SQLiteStore.pruneDurabilityRows removed rows whose job was in neither the
+-- queue nor history-as-FAILED -- and it went with internal/queue in b6651d43
+-- with nothing replacing it, so rows a departing job fails to remove are not
+-- reclaimed at all. Tracked as #549.
 --
 -- A table rather than a bitmap column on job_files because its reversal is
 -- per-article and per-job, which a packed blob can only express by rewriting
@@ -159,10 +164,17 @@ CREATE TABLE failed_articles (
 -- Per-file download progress retained for a FAILED job, so a retry refetches
 -- only the articles that did not make it.
 --
--- Separate from job_files because those rows do not outlive the
--- queue-to-history transition. No foreign key here either: the owning row is
--- history(nzo_id), and these are removed explicitly when it is deleted. Only
--- failed jobs get rows -- a job that succeeded has nothing to retry.
+-- Separate from job_files, whose rows belong to the queue and go when a job
+-- leaves it. That separation is about ownership rather than lifetime: a FAILED
+-- job keeps its job_files rows too, because finalizeJob skips
+-- deleteJobDurability for exactly that status -- so for the one status this
+-- table exists to serve, the two coexist. What distinguishes them is who may
+-- delete them: job_files goes with the queue job, this goes with the history
+-- entry.
+--
+-- No foreign key here either: the owning row is history(nzo_id), and these are
+-- removed explicitly when it is deleted. Only failed jobs get rows -- a job
+-- that succeeded has nothing to retry.
 --
 -- A progress overlay, not a second manifest. article_count is the exception to
 -- that and is here for one purpose: retainedMatchesManifest compares it

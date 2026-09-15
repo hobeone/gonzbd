@@ -893,7 +893,30 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// foreign key to anything, so this is the only thing that removes them —
 	// without it every deleted job leaves its rows behind for the life of
 	// the database.
-	app.deleteJobDurability(ctx, id)
+	//
+	// Detached from the caller's context, which is the API request's
+	// (api/queue.go passes r.Context() into RemoveJob). The same detachment
+	// jobFinalizer.persistAndCommit applies to this exact delete
+	// (job_finalizer.go), and the two paths disagreed until now.
+	//
+	// Without it a client that disconnects mid-removal cancels the cleanup
+	// after the job has already left the dispatcher, and the rows are stranded
+	// with nothing to reclaim them (#549). It needs no crash: closing the
+	// browser tab during a large job's removal is enough, because the window
+	// between dispatcher.Remove and this line spans assembler.CancelJob
+	// closing every file handle.
+	//
+	// Detached from ctx rather than from app.ctx, unlike the finalizer. Both
+	// express "do not let the caller's cancellation abort this", and ctx is
+	// the one that cannot be nil: RemoveJob is reachable before Start has set
+	// app.ctx, and context.WithoutCancel(nil) panics. WithoutCancel keeps
+	// ctx's values and drops only its cancellation, which is the whole intent.
+	//
+	// Five seconds matches the sibling paths. A removal whose bookkeeping
+	// cannot finish in that has a sicker database than this call can fix.
+	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer delCancel()
+	app.deleteJobDurability(delCtx, id)
 	if deleteFiles && name != "" {
 		downloadDir := app.config.GetGeneral().DownloadDir
 		path := filepath.Join(downloadDir, name)
