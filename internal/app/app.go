@@ -1123,19 +1123,6 @@ func (app *Application) Start(ctx context.Context) error {
 		_ = app.assembler.Stop()
 		return err
 	}
-	// After resumeAllJobs, not before: that pass removes duplicate queue rows
-	// through dropJobAlreadyInHistory, so running first would evaluate the
-	// orphan predicate against a dispatch_jobs that is about to change.
-	//
-	// A failure here does not fail startup. The sweep reclaims unreachable
-	// rows; a database that keeps them is the state every release before this
-	// one shipped with, and refusing to start over it would turn a disk-space
-	// problem into an outage. The next startup tries again.
-	if swept, err := app.sweepOrphanedDurability(app.ctx); err != nil {
-		app.log.Error("could not reclaim orphaned durability rows", "swept", swept, "err", err)
-	} else if swept > 0 {
-		app.log.Info("reclaimed durability rows left by jobs that did not finish leaving", "jobs", swept)
-	}
 	// Snapshot app.downloader under app.mu once and reuse it below. started
 	// flips true (via CompareAndSwap) before this point, so a concurrent
 	// ReloadDownloader call could otherwise race an unguarded read of
@@ -1181,6 +1168,32 @@ func (app *Application) Start(ctx context.Context) error {
 				}
 			}
 		}
+	}
+
+	// Reclaim orphaned durability rows, after the reconciliation above and not
+	// before — for the same reason the history sweep below is.
+	//
+	// That loop is where dropJobAlreadyInHistory runs, and it is the last thing
+	// in startup that removes a row from dispatch_jobs. A sweep placed earlier
+	// evaluates its predicate against a dispatch_jobs that is about to shrink,
+	// so it skips exactly the jobs that loop is about to depart — and if their
+	// deleteJobDurability then fails, their rows wait for the NEXT startup.
+	// resumeAllJobs does not call dropJobAlreadyInHistory; an earlier version
+	// of this comment said it did, and put the sweep in the wrong place.
+	//
+	// Safe despite the post-processor now running: a job finalizing
+	// concurrently writes its history entry (job_finalizer.go:131) before
+	// dispatcher.Remove (job_finalizer.go:172), so it is never absent from both
+	// tables at once and the predicate cannot catch it mid-transition.
+	//
+	// A failure here does not fail startup. The sweep reclaims unreachable
+	// rows; a database that keeps them is the state every release before this
+	// one shipped with, and refusing to start over it would turn a disk-space
+	// problem into an outage. The next startup tries again.
+	if swept, err := app.sweepOrphanedDurability(app.ctx); err != nil {
+		app.log.Error("could not reclaim orphaned durability rows", "swept", swept, "err", err)
+	} else if swept > 0 {
+		app.log.Info("reclaimed durability rows left by jobs that did not finish leaving", "jobs", swept)
 	}
 
 	// Sweep expired history, after the reconciliation above and not before.

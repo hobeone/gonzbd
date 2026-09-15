@@ -53,8 +53,8 @@ func durabilityRowCounts(t *testing.T, application *Application, jobID string) (
 // in what their callers do with the result.
 //
 // The two entry points exist because their callers need opposite things. For a
-// DEPARTED job the rows are garbage and there is no caller left to act, so
-// every call site logs. For a job coming BACK the rows are about to be READ,
+// DEPARTED job the rows are garbage and there is no caller left to act, so the
+// three departure sites log. For a job coming BACK the rows are about to be READ,
 // and a stale one bounds FinalizeFile's truncate to the wrong article range —
 // so RetryHistoryJob aborts on a failure here rather than requeueing (#422).
 //

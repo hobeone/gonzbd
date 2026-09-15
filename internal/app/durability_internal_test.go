@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -673,7 +674,8 @@ func seedDurabilityRowsFor(t *testing.T, application *Application, jobID string)
 // The four fixtures are the whole predicate, and every one of them is needed:
 // dropping the live or failed case would let a sweep that deletes
 // indiscriminately pass, and dropping the completed case would let one that
-// spares every job with any history row pass. Only the orphan may go.
+// spares every job with any history row pass. Two may go — orphan and
+// completed — and two must stay.
 //
 // The failed case is the one with teeth. Its rows are retained on purpose so a
 // retry can bound FinalizeFile's truncate to the whole partial file; a sweep
@@ -766,6 +768,71 @@ func TestSweepOrphanedDurability_SparesEveryJobWhenAnIDIsNull(t *testing.T) {
 	}
 	if swept != 1 {
 		t.Errorf("sweep reclaimed %d jobs with a NULL id present, want 1", swept)
+	}
+}
+
+// TestWithDurabilityTx_NamesTheOperationAndRollsBack pins the shared
+// transaction wrapper both delete entry points go through.
+//
+// The two used to carry their own copy of this, and the copies had drifted:
+// one wrapped the inner error with the operation name and the other returned
+// it raw, so the same underlying failure read differently depending on which
+// door the caller came through. The first assertion is that the name is now
+// always there; the second is that a failing fn commits nothing.
+func TestWithDurabilityTx_NamesTheOperationAndRollsBack(t *testing.T) {
+	t.Parallel()
+	application, _ := newDurabilityTestApp(t, 1, 1)
+	ctx := t.Context()
+	seedDurabilityRowsFor(t, application, "job-a")
+
+	boom := errors.New("deliberate")
+	err := application.withDurabilityTx(ctx, "test operation", "job-a", func(tx *sql.Tx) error {
+		// A real write, so the rollback assertion below is about a
+		// transaction that had something to undo.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM job_files WHERE job_id = ?`, "job-a"); err != nil {
+			return err
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want it to wrap fn's failure", err)
+	}
+	if !strings.Contains(err.Error(), "test operation") || !strings.Contains(err.Error(), "job-a") {
+		t.Errorf("err = %q, want it to name the operation and the job", err)
+	}
+	if n := jobFilesRowCount(t, application, "job-a"); n != 1 {
+		t.Errorf("job_files rows = %d after a failing fn, want 1 — the write was committed "+
+			"rather than rolled back", n)
+	}
+}
+
+// TestDeleteJobDurability_ReportsAFailedJobFilesDelete pins the first statement
+// in the transaction, whose error was discarded outright before #549 — the
+// call read `_, _ = ...ExecContext(...)`, so job_files was the one table that
+// could fail to be cleaned with no error and no log line.
+func TestDeleteJobDurability_ReportsAFailedJobFilesDelete(t *testing.T) {
+	t.Parallel()
+	application, _ := newDurabilityTestApp(t, 1, 1)
+	ctx := t.Context()
+	seedDurabilityRowsFor(t, application, "job-a")
+
+	if _, err := application.historyRepo.DB().ExecContext(ctx,
+		`CREATE TRIGGER fail_job_files_delete BEFORE DELETE ON job_files
+		 BEGIN SELECT RAISE(ABORT, 'simulated job_files failure'); END;`); err != nil {
+		t.Fatal(err)
+	}
+
+	err := application.deleteJobDurability(ctx, "job-a")
+	if err == nil {
+		t.Fatal("deleteJobDurability returned nil although job_files refused the delete")
+	}
+	if !strings.Contains(err.Error(), "job files") {
+		t.Errorf("err = %q, want it to name job_files as the cause", err)
+	}
+	nr, nf := durabilityRowCounts(t, application, "job-a")
+	if njf := jobFilesRowCount(t, application, "job-a"); nr != 1 || nf != 1 || njf != 1 {
+		t.Errorf("runs=%d failed=%d job_files=%d, want 1 each — the failing first statement "+
+			"must roll back the whole transaction", nr, nf, njf)
 	}
 }
 
@@ -975,20 +1042,7 @@ func TestDeleteJobDurability_IsAtomicAndReportsFailure(t *testing.T) {
 	ctx := t.Context()
 	db := application.historyRepo.DB()
 
-	if _, err := application.runs.Commit(ctx, j.ID(), []durability.DurableArticle{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx,
-		`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)`, j.ID()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx,
-		`INSERT INTO job_files (job_id, file_index, complete, fetch_policy, filename, assembled_crc32)
-		 VALUES (?, 0, 0, 0, '', 0)`, j.ID()); err != nil {
-		t.Fatal(err)
-	}
+	seedDurabilityRowsFor(t, application, j.ID())
 
 	assertAllThreePresent := func(when string) {
 		t.Helper()

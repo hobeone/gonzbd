@@ -1337,9 +1337,8 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 		return true
 	}
 	delCtx, delCancel := context.WithTimeout(ctx, 5*time.Second)
-	err = app.deleteJobDurability(delCtx, jobID)
-	delCancel()
-	if err != nil {
+	defer delCancel()
+	if err := app.deleteJobDurability(delCtx, jobID); err != nil {
 		// This runs inside the startup sweep already. A failure here is
 		// therefore not deferred to "the next startup" in any useful sense —
 		// it is this startup, and the orphan sweep in the same pass will have
@@ -1369,19 +1368,44 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 //
 // # What the caller does with the error
 //
-// It is returned, but every current caller logs it at Error rather than
-// propagating. By the time any of them reaches this, the job has already left
-// the dispatcher; reporting failure would describe an operation that succeeded
-// and invite a retry that finds no job. What is left is unreachable rows, and
-// the sweep is what reclaims them. Each call site says so.
+// It is returned, and the four callers split two ways. The three job-departure
+// sites — RemoveJob, jobFinalizer.persistAndCommit and dropJobAlreadyInHistory
+// — log at Error and carry on: by the time any reaches this the job has
+// already left the dispatcher, so reporting failure would describe an
+// operation that succeeded and invite a retry that finds no job. Each says so
+// at the call site.
+//
+// sweepOrphanedDurability is the fourth and does propagate, to Start, which
+// logs. It has to: it is reclaiming rows on nobody's behalf, so a failure is
+// the whole result rather than a footnote to a successful removal. "The sweep
+// reclaims them" is not an answer for the sweep itself.
 //
 // A retry is the opposite case and must abort — see dropJobDurability.
 func (app *Application) deleteJobDurability(ctx context.Context, jobID string) error {
+	return app.withDurabilityTx(ctx, "delete durability rows", jobID, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM job_files WHERE job_id = ?`, jobID); err != nil {
+			return fmt.Errorf("job files: %w", err)
+		}
+		return app.dropJobDurabilityTx(ctx, tx, jobID)
+	})
+}
+
+// withDurabilityTx runs fn inside one transaction over the tables a job's rows
+// live in, and degrades to the run store alone when there is no shared handle.
+//
+// Both entry points had their own copy of this, which had already drifted:
+// one wrapped fn's error with the operation name and the other returned it
+// raw, so the same underlying failure read differently depending on which door
+// the caller came through. what is the operation name so a log still says
+// which one that was.
+//
+// The degraded branch is not a no-op. durable_runs reaches its own store
+// without the shared handle, so a build with no history repository still
+// removes the one table that is reachable, and the caller still learns whether
+// it worked.
+func (app *Application) withDurabilityTx(ctx context.Context, what, jobID string, fn func(*sql.Tx) error) error {
 	db := app.durabilityDB()
 	if db == nil {
-		// No shared handle, so there is no transaction to open. durable_runs
-		// carries its own, and removing what can be removed beats removing
-		// nothing; the caller still learns whether it worked.
 		if app.runs == nil {
 			return nil
 		}
@@ -1389,18 +1413,14 @@ func (app *Application) deleteJobDurability(ctx context.Context, jobID string) e
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("app: delete durability rows %s: begin: %w", jobID, err)
+		return fmt.Errorf("app: %s %s: begin: %w", what, jobID, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM job_files WHERE job_id = ?`, jobID); err != nil {
-		return fmt.Errorf("app: delete durability rows %s: job files: %w", jobID, err)
-	}
-	if err := app.dropJobDurabilityTx(ctx, tx, jobID); err != nil {
-		return fmt.Errorf("app: delete durability rows %s: %w", jobID, err)
+	if err := fn(tx); err != nil {
+		return fmt.Errorf("app: %s %s: %w", what, jobID, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("app: delete durability rows %s: commit: %w", jobID, err)
+		return fmt.Errorf("app: %s %s: commit: %w", what, jobID, err)
 	}
 	return nil
 }
@@ -1479,11 +1499,19 @@ SELECT job_id FROM (
 	if err != nil {
 		return 0, fmt.Errorf("app: sweep orphaned durability rows: %w", err)
 	}
+	// Deferred rather than closed on each exit path, replacing three manual
+	// calls that had to be kept in step with every return.
+	//
+	// On the normal path it is a no-op: database/sql closes Rows when Next
+	// returns false, so the cursor is already shut before the reclaim loop
+	// runs its DELETEs against the same tables. The defer is for the early
+	// returns — and for any added later, which is the case the manual version
+	// would have got wrong.
+	defer func() { _ = rows.Close() }()
 	var orphans []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			_ = rows.Close()
 			return 0, fmt.Errorf("app: sweep orphaned durability rows: scan: %w", err)
 		}
 		orphans = append(orphans, id)
@@ -1492,11 +1520,7 @@ SELECT job_id FROM (
 	// fault, so without this a dropped connection reads as an empty result and
 	// the sweep reports success having reclaimed nothing.
 	if err := rows.Err(); err != nil {
-		_ = rows.Close()
 		return 0, fmt.Errorf("app: sweep orphaned durability rows: iterate: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return 0, fmt.Errorf("app: sweep orphaned durability rows: close: %w", err)
 	}
 
 	// Collected before deleting rather than deleted during iteration: the
@@ -1506,6 +1530,15 @@ SELECT job_id FROM (
 		errs  []error
 	)
 	for _, id := range orphans {
+		// A shutdown arriving mid-sweep cancels every remaining BeginTx, so
+		// without this the loop turns one cancellation into one error per
+		// remaining orphan and joins them all. Stop on the first sign and
+		// report that instead; the next startup reclaims the rest.
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, fmt.Errorf("sweep abandoned after %d of %d: %w",
+				swept, len(orphans), err))
+			break
+		}
 		if err := app.deleteJobDurability(ctx, id); err != nil {
 			// One unreclaimable job does not stop the rest — each is its own
 			// transaction, and the next startup tries again regardless.
@@ -1571,25 +1604,9 @@ func (app *Application) durabilityDB() *sql.DB {
 // record ASSERT bytes an fsync did not cover — and unlike "nothing else writes
 // it", it is true.
 func (app *Application) dropJobDurability(ctx context.Context, jobID string) error {
-	db := app.durabilityDB()
-	if db == nil {
-		if app.runs == nil {
-			return nil
-		}
-		return app.runs.DeleteJob(ctx, jobID)
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("app: drop durability rows %s: begin: %w", jobID, err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := app.dropJobDurabilityTx(ctx, tx, jobID); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("app: drop durability rows %s: commit: %w", jobID, err)
-	}
-	return nil
+	return app.withDurabilityTx(ctx, "drop durability rows", jobID, func(tx *sql.Tx) error {
+		return app.dropJobDurabilityTx(ctx, tx, jobID)
+	})
 }
 
 // dropJobDurabilityTx removes the two tables a RETURNING job must not carry

@@ -671,7 +671,7 @@ contradicted in the memory budget:
 | Deleter | When |
 |---|---|
 | `durability.Resumer` | a file shorter than its runs claim, or missing (§6) — `discard` calls `RunStore.DeleteFile` (`internal/durability/resume.go:148`) |
-| `RunStore.DeleteJob` | a job leaving the queue, **or a retry re-parsing a manifest that changed shape** — `app.dropJobDurability` is reached from both |
+| `RunStore.DeleteJob` / `DeleteJobTx` | a job leaving the queue (`app.deleteJobDurability` → `dropJobDurabilityTx`), **or a retry re-parsing a manifest that changed shape** (`app.dropJobDurability` → the same `dropJobDurabilityTx`). One statement, reached through two entry points that differ in what their callers do with the error |
 | `history.Repository.delete` | a history entry going away for good (`internal/history/repository.go:330`) |
 
 The count was **five** until `internal/queue` was deleted (`b6651d43`). The two
@@ -686,7 +686,7 @@ with nothing to reclaim them (#549).
 not a fourth deleter.** It runs once at startup, selects the job IDs that hold
 rows while being in neither `dispatch_jobs` nor history-as-`Failed`, and then
 reclaims each through `deleteJobDurability` — which reaches `durable_runs`
-through `RunStore.DeleteJobTx`, the same door as row two of the table above. So
+through `RunStore.DeleteJobTx`, row two's statement. So
 the enumeration is unchanged: the sweep added no `DELETE FROM durable_runs`
 anywhere. That was the point of building it this way rather than as one
 statement, since this table is maintained by hand and no grep recovers it.

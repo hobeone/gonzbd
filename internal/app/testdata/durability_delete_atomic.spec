@@ -16,23 +16,17 @@ run TestDeleteJobDurability_IsAtomicAndReportsFailure
 [the three deletes revert to independent autocommits, as before #549]
 file internal/app/durability.go
 --- anchor
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("app: delete durability rows %s: begin: %w", jobID, err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM job_files WHERE job_id = ?`, jobID); err != nil {
-		return fmt.Errorf("app: delete durability rows %s: job files: %w", jobID, err)
-	}
-	if err := app.dropJobDurabilityTx(ctx, tx, jobID); err != nil {
-		return fmt.Errorf("app: delete durability rows %s: %w", jobID, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("app: delete durability rows %s: commit: %w", jobID, err)
-	}
-	return nil
+	return app.withDurabilityTx(ctx, "delete durability rows", jobID, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM job_files WHERE job_id = ?`, jobID); err != nil {
+			return fmt.Errorf("job files: %w", err)
+		}
+		return app.dropJobDurabilityTx(ctx, tx, jobID)
+	})
 --- replace
+	db := app.durabilityDB()
+	if db == nil {
+		return nil
+	}
 	_, _ = db.ExecContext(ctx, `DELETE FROM job_files WHERE job_id = ?`, jobID)
 	if app.runs != nil {
 		if err := app.runs.DeleteJob(ctx, jobID); err != nil {
@@ -48,11 +42,12 @@ file internal/app/durability.go
 [the delete's failure is swallowed again, so the caller is told nothing]
 file internal/app/durability.go
 --- anchor
-	if err := app.dropJobDurabilityTx(ctx, tx, jobID); err != nil {
-		return fmt.Errorf("app: delete durability rows %s: %w", jobID, err)
-	}
+			return fmt.Errorf("job files: %w", err)
+		}
+		return app.dropJobDurabilityTx(ctx, tx, jobID)
 --- replace
-	if err := app.dropJobDurabilityTx(ctx, tx, jobID); err != nil {
+			return fmt.Errorf("job files: %w", err)
+		}
+		_ = app.dropJobDurabilityTx(ctx, tx, jobID)
 		return nil
-	}
 --- end
