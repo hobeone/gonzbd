@@ -892,6 +892,22 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// runs, its failed-article rows or its job_files rows again. None has a
 	// foreign key to anything, so nothing removes them implicitly.
 	//
+	// Detached from the caller's context, which is the API request's — the
+	// same thing jobFinalizer.persistAndCommit does for this delete
+	// (job_finalizer.go:190) and for the two DB writes around it.
+	//
+	// Without it, a client that disconnects mid-removal cancels the cleanup
+	// after the job has already left the dispatcher, and the rows are stranded
+	// until the next restart. That was the most reachable of the four ways an
+	// orphan is made, and it needed no crash: closing the browser tab during a
+	// large job's removal was enough, because the window spans
+	// assembler.CancelJob closing every file handle.
+	//
+	// The bound is the same 5s the sibling paths use. A removal that cannot
+	// finish its bookkeeping in five seconds has a sicker database than this
+	// call can fix, and sweepOrphanedDurability is the backstop for that.
+	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 5*time.Second)
+	defer delCancel()
 	// The error is logged rather than returned, and that is a decision rather
 	// than an omission. By this line the job has already left the dispatcher,
 	// its manifest is unlinked and its file handles are closed, so the removal
@@ -899,12 +915,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// a failure for an operation that succeeded, and invite a retry that finds
 	// no job. What is left is unreachable rows, which sweepOrphanedDurability
 	// reclaims at the next startup.
-	//
-	// It is logged at Error, not Warn: ctx here is the API request's, so the
-	// most likely cause is a client that disconnected mid-removal, and that is
-	// a condition an operator should be able to find in a log rather than
-	// infer from a growing database.
-	if err := app.deleteJobDurability(ctx, id); err != nil {
+	if err := app.deleteJobDurability(delCtx, id); err != nil {
 		app.log.Error("could not delete a removed job's durability rows; the startup sweep will reclaim them",
 			"job", id, "err", err)
 	}

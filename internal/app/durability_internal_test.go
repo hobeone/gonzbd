@@ -836,6 +836,44 @@ func TestDeleteJobDurability_ReportsAFailedJobFilesDelete(t *testing.T) {
 	}
 }
 
+// TestDeleteJobDurabilityTx_ClearsSeveralJobsInOneTransaction pins the
+// property the sweep is built on: the per-job deletion composes, so N jobs can
+// share one transaction instead of opening N.
+//
+// Called directly rather than through deleteJobDurability, because what is
+// being pinned is exactly that the caller may own the transaction — the reason
+// this exists as a separate function at all.
+func TestDeleteJobDurabilityTx_ClearsSeveralJobsInOneTransaction(t *testing.T) {
+	t.Parallel()
+	application, _ := newDurabilityTestApp(t, 1, 1)
+	ctx := t.Context()
+	ids := []string{"job-a", "job-b", "job-c"}
+	for _, id := range ids {
+		seedDurabilityRowsFor(t, application, id)
+	}
+
+	tx, err := application.historyRepo.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, id := range ids {
+		if err := application.deleteJobDurabilityTx(ctx, tx, id); err != nil {
+			t.Fatalf("deleteJobDurabilityTx(%s): %v", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	for _, id := range ids {
+		nr, nf := durabilityRowCounts(t, application, id)
+		if njf := jobFilesRowCount(t, application, id); nr != 0 || nf != 0 || njf != 0 {
+			t.Errorf("%s: runs=%d failed=%d job_files=%d, want 0 each", id, nr, nf, njf)
+		}
+	}
+}
+
 // TestDurabilityDB_ReportsWhetherThereIsAHandle pins the guard every
 // transaction on this path opens against. Without a history repository there
 // is no shared *sql.DB, and a nil returned here is what sends each caller down
@@ -924,14 +962,20 @@ func TestDropJobDurabilityTx_StopsAtTheFirstFailure(t *testing.T) {
 	}
 }
 
-// TestSweepOrphanedDurability_ReportsWhatItCouldNotReclaim pins that one
-// unreclaimable job does not stop the rest.
+// TestSweepOrphanedDurability_RollsBackWholeWhenOneJobRefuses pins the cost of
+// reclaiming every orphan in ONE transaction.
 //
-// Each orphan is its own transaction, so a job whose rows refuse to go is
-// reported while its neighbours are still reclaimed. The alternative — abandon
-// the sweep at the first failure — would let a single wedged job hold the
-// whole backstop hostage across every restart.
-func TestSweepOrphanedDurability_ReportsWhatItCouldNotReclaim(t *testing.T) {
+// An earlier shape opened a transaction per job, so a wedged job was reported
+// while its neighbours still went. One transaction trades that for a single
+// BeginTx and Commit, and the trade is deliberate: the realistic causes of a
+// failed DELETE here — a cancelled context, a locked database — fail every job
+// in the batch anyway, so per-job isolation only ever bought partial progress
+// against a corrupt or trigger-guarded row.
+//
+// What must not change is that the failure is REPORTED and the rows are left
+// intact for the next startup. A sweep that rolled back and returned nil would
+// look exactly like a sweep that found nothing to do.
+func TestSweepOrphanedDurability_RollsBackWholeWhenOneJobRefuses(t *testing.T) {
 	t.Parallel()
 	application, _ := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
@@ -948,19 +992,26 @@ func TestSweepOrphanedDurability_ReportsWhatItCouldNotReclaim(t *testing.T) {
 
 	swept, err := application.sweepOrphanedDurability(ctx)
 	if err == nil {
-		t.Error("sweepOrphanedDurability returned nil although one job's rows could not go")
-	} else if !strings.Contains(err.Error(), "stuck") {
+		t.Fatal("sweepOrphanedDurability returned nil although one job's rows could not go; " +
+			"a rolled-back sweep that reports success is indistinguishable from one " +
+			"that found no orphans")
+	}
+	if !strings.Contains(err.Error(), "stuck") {
 		t.Errorf("error = %q, want it to name the job it could not reclaim", err)
 	}
-	if swept != 1 {
-		t.Errorf("swept = %d, want 1 — the reclaimable job must still go when a "+
-			"neighbour refuses", swept)
+	if swept != 0 {
+		t.Errorf("swept = %d, want 0 — the transaction rolled back, so nothing was "+
+			"reclaimed and the count must not claim otherwise", swept)
 	}
-	if nr, nf := durabilityRowCounts(t, application, "reclaimable"); nr != 0 || nf != 0 {
-		t.Errorf("reclaimable: runs=%d failed=%d, want 0 — one wedged job stopped the sweep", nr, nf)
-	}
-	if nr, _ := durabilityRowCounts(t, application, "stuck"); nr != 1 {
-		t.Errorf("stuck: runs=%d, want 1 — its transaction must have rolled back whole", nr)
+	// Both survive, including the one whose own deletes succeeded before the
+	// refusal. That is the rollback, and it is what makes the next startup's
+	// sweep see the same work rather than a half-done one.
+	for _, id := range []string{"reclaimable", "stuck"} {
+		nr, nf := durabilityRowCounts(t, application, id)
+		if njf := jobFilesRowCount(t, application, id); nr != 1 || nf != 1 || njf != 1 {
+			t.Errorf("%s: runs=%d failed=%d job_files=%d, want 1 each — the whole "+
+				"transaction must roll back", id, nr, nf, njf)
+		}
 	}
 }
 

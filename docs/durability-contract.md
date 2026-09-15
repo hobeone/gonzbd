@@ -685,11 +685,18 @@ with nothing to reclaim them (#549).
 **`Application.sweepOrphanedDurability` closes that gap, and is deliberately
 not a fourth deleter.** It runs once at startup, selects the job IDs that hold
 rows while being in neither `dispatch_jobs` nor history-as-`Failed`, and then
-reclaims each through `deleteJobDurability` — which reaches `durable_runs`
-through `RunStore.DeleteJobTx`, row two's statement. So
-the enumeration is unchanged: the sweep added no `DELETE FROM durable_runs`
-anywhere. That was the point of building it this way rather than as one
-statement, since this table is maintained by hand and no grep recovers it.
+reclaims every one of them inside a single transaction through
+`deleteJobDurabilityTx` — the same three statements a departing job uses, so
+`durable_runs` still goes through `RunStore.DeleteJobTx`, row two's statement.
+The enumeration is unchanged: the sweep issues no `DELETE FROM durable_runs` of
+its own. Writing the predicate into three set-based `DELETE`s would have been
+the obvious shape and would have added exactly that.
+
+The single transaction makes the reclaim all-or-nothing, which is the deliberate
+trade. Per-job transactions would keep one wedged job from blocking the rest,
+but the realistic causes of a failed delete here — a cancelled context, a locked
+database — fail every job in the batch anyway, so the isolation only ever paid
+against a corrupt or trigger-guarded row.
 
 Two details of the sweep that a later change must not quietly drop. It spares
 history-as-`Failed`, because those rows are what bound a retry's

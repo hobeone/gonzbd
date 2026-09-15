@@ -17,10 +17,7 @@ run TestDeleteJobDurability_IsAtomicAndReportsFailure
 file internal/app/durability.go
 --- anchor
 	return app.withDurabilityTx(ctx, "delete durability rows", jobID, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM job_files WHERE job_id = ?`, jobID); err != nil {
-			return fmt.Errorf("job files: %w", err)
-		}
-		return app.dropJobDurabilityTx(ctx, tx, jobID)
+		return app.deleteJobDurabilityTx(ctx, tx, jobID)
 	})
 --- replace
 	db := app.durabilityDB()
@@ -42,12 +39,12 @@ file internal/app/durability.go
 [the delete's failure is swallowed again, so the caller is told nothing]
 file internal/app/durability.go
 --- anchor
-			return fmt.Errorf("job files: %w", err)
-		}
-		return app.dropJobDurabilityTx(ctx, tx, jobID)
+		return fmt.Errorf("job files: %w", err)
+	}
+	return app.dropJobDurabilityTx(ctx, tx, jobID)
 --- replace
-			return fmt.Errorf("job files: %w", err)
-		}
-		_ = app.dropJobDurabilityTx(ctx, tx, jobID)
-		return nil
+		return fmt.Errorf("job files: %w", err)
+	}
+	_ = app.dropJobDurabilityTx(ctx, tx, jobID)
+	return nil
 --- end
