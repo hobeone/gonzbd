@@ -1315,6 +1315,13 @@ func (app *Application) shutdownCheckpoint() {
 // they no longer survive for the life of the installation — but it runs once
 // at startup, not as a substitute for removing them on the way out.
 func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID string) bool {
+	// Cancelled inline rather than deferred, unlike delCtx below, and the two
+	// differ for a reason rather than by oversight. Everything after this line
+	// — the dispatcher removal, the manifest unlink, the whole delete
+	// transaction — is work this timer has nothing to do with, so deferring
+	// would keep it and its context alive across all of it for a query that
+	// finished here. delCtx is two statements from the return, where defer
+	// costs nothing and covers a panic.
 	dbCtx, dbCancel := context.WithTimeout(ctx, 5*time.Second)
 	entry, err := app.historyRepo.Get(dbCtx, jobID)
 	dbCancel()
