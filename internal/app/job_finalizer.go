@@ -203,7 +203,16 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			}
 		}
 		if shouldDeleteDurability {
-			app.deleteJobDurability(delCtx, ppJob.Job.ID())
+			// Logged rather than folded into the returned error: persistErr
+			// below reports whether the job reached history, which is what the
+			// caller acts on. A failure here leaves unreachable rows that
+			// sweepOrphanedDurability reclaims at the next startup, and
+			// reporting it as a finalize failure would retry a finalize that
+			// already succeeded.
+			if err := app.deleteJobDurability(delCtx, ppJob.Job.ID()); err != nil {
+				log.Error("could not delete a finalized job's durability rows; the startup sweep will reclaim them",
+					"job", ppJob.Job.ID(), "err", err)
+			}
 		}
 		app.forgetJobBarrierState(ppJob.Job.ID())
 		if persistErr != nil {

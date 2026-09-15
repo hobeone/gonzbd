@@ -29,12 +29,14 @@ import (
 // them and otherwise reads.
 //
 // The bound is on content, not on the table. Rows are DELETED from three places
-// outside Commit's own merge — Resumer, RunStore.DeleteJob and
+// outside Commit's own merge — Resumer, RunStore.DeleteJob/DeleteJobTx and
 // history.Repository.delete — and none of them can make a row claim anything,
 // which is why the narrower statement is the one the trust argument needs.
 // (It was five until b6651d43 deleted internal/queue, taking
-// SQLiteStore.removeCorrupt and the pruneDurabilityRows backstop with it; see
-// docs/durability-contract.md §6 for the gap that left.)
+// SQLiteStore.removeCorrupt and the pruneDurabilityRows backstop with it. The
+// orphan gap that left is closed by a startup sweep in internal/app, which
+// adds no deleter here: it selects the orphaned job IDs and reuses
+// DeleteJobTx. See docs/durability-contract.md §6.)
 //
 // The queue's seeding entry points, which used to take a fully exported
 // FileExtent and reach markDone with no barrier and no proof, are gone with the

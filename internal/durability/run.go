@@ -1,6 +1,21 @@
 package durability
 
-import "context"
+import (
+	"context"
+	"database/sql"
+)
+
+// Execer is the subset of *sql.DB and *sql.Tx this package needs in order to
+// run one statement, so a caller can hand either to a *Tx method below.
+//
+// Declared here rather than imported from internal/history, which has an
+// identical three-line interface: internal/durability does not depend on
+// internal/history today, and acquiring the dependency for this would be the
+// larger change. Go's interfaces are structural, so the same concrete types
+// satisfy both.
+type Execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
 
 // DurableArticle is one article a completed Drain reported as fsynced,
 // carrying exactly what durable_runs needs to place it: which file, which
@@ -153,4 +168,19 @@ type RunStore interface {
 	// touches only durable_runs — failed_articles is owned and written
 	// solely by checkpoint.Store.SaveBatch, and this store never writes to it.
 	DeleteJob(ctx context.Context, jobID string) error
+
+	// DeleteJobTx is DeleteJob against a caller-supplied executor, so the
+	// deletion can join a transaction that also removes the job's rows from
+	// tables this package does not own.
+	//
+	// A departing job has rows in three tables — durable_runs here,
+	// failed_articles and job_files in internal/app — and they were removed
+	// by three independent autocommits. A failure part-way through stranded
+	// whichever subset had not run yet, with nothing to sweep it (#549).
+	//
+	// The statement stays in this package so the deleter enumeration in
+	// docs/durability-contract.md still finds it by reading one file; only
+	// the transaction boundary belongs to the caller, which is the only
+	// layer that can see all three tables.
+	DeleteJobTx(ctx context.Context, exec Execer, jobID string) error
 }

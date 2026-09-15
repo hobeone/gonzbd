@@ -59,6 +59,9 @@ func (stubRunStore) DeleteFile(context.Context, string, int32) error {
 func (stubRunStore) DeleteJob(context.Context, string) error {
 	return nil
 }
+func (stubRunStore) DeleteJobTx(context.Context, durability.Execer, string) error {
+	return nil
+}
 
 // mintProof produces a DurableProof the way production does: by running a real
 // durability.Barrier over a stub target and capturing what it emits.

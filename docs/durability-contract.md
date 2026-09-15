@@ -671,17 +671,43 @@ contradicted in the memory budget:
 | Deleter | When |
 |---|---|
 | `durability.Resumer` | a file shorter than its runs claim, or missing (§6) — `discard` calls `RunStore.DeleteFile` (`internal/durability/resume.go:148`) |
-| `RunStore.DeleteJob` | a job leaving the queue, **or a retry re-parsing a manifest that changed shape** — `app.dropJobDurability` is reached from both |
+| `RunStore.DeleteJob` / `DeleteJobTx` | a job leaving the queue (`app.deleteJobDurability` → `dropJobDurabilityTx`), **or a retry re-parsing a manifest that changed shape** (`app.dropJobDurability` → the same `dropJobDurabilityTx`). One statement, reached through two entry points that differ in what their callers do with the error |
 | `history.Repository.delete` | a history entry going away for good (`internal/history/repository.go:330`) |
 
 The count was **five** until `internal/queue` was deleted (`b6651d43`). The two
 it named there — `SQLiteStore.removeCorrupt` and `SQLiteStore.pruneDurabilityRows`
-— went with the package, and **the second was the crash-window backstop: it ran
+— went with the package, and the second was the crash-window backstop: it ran
 on every queue save and removed rows whose job was in neither `jobs` nor
-history-as-`Failed`. Nothing replaced it.** Rows orphaned by a crash in the
-window between a job leaving the queue and its rows being deleted are therefore
-no longer swept. That is an open gap, not a design change — tracked as #549 —
-and it is recorded here rather than silently dropped from the table.
+history-as-`Failed`. Nothing replaced it for a while, and rows orphaned in the
+window between a job leaving the queue and its rows being deleted accumulated
+with nothing to reclaim them (#549).
+
+**`Application.sweepOrphanedDurability` closes that gap, and is deliberately
+not a fourth deleter.** It runs once at startup, selects the job IDs that hold
+rows while being in neither `dispatch_jobs` nor history-as-`Failed`, and then
+reclaims every one of them inside a single transaction through
+`deleteJobDurabilityTx` — the same three statements a departing job uses, so
+`durable_runs` still goes through `RunStore.DeleteJobTx`, row two's statement.
+The enumeration is unchanged: the sweep issues no `DELETE FROM durable_runs` of
+its own. Writing the predicate into three set-based `DELETE`s would have been
+the obvious shape and would have added exactly that.
+
+The single transaction makes the reclaim all-or-nothing, which is the deliberate
+trade. Per-job transactions would keep one wedged job from blocking the rest,
+but the realistic causes of a failed delete here — a cancelled context, a locked
+database — fail every job in the batch anyway, so the isolation only ever paid
+against a corrupt or trigger-guarded row.
+
+Two details of the sweep that a later change must not quietly drop. It spares
+history-as-`Failed`, because those rows are what bound a retry's
+`FinalizeFile` truncate to the whole partial file. And its predicate uses
+`NOT EXISTS` rather than `NOT IN`: SQLite permits NULL in a TEXT PRIMARY KEY,
+and one NULL anywhere in a `NOT IN` subquery makes the predicate NULL for every
+row, so the sweep would match nothing at all — silently, and
+indistinguishably from a database with no orphans.
+`app.TestSweepOrphanedDurability_SparesEveryJobWhenAnIDIsNull` is the guard on
+that, written as a test rather than a sentence because the failure direction is
+retention and would never arrive as a bug report.
 
 The three above are the complete current set, but **no single grep proves it**,
 and the obvious one is misleading. `git grep -n 'DELETE FROM durable_runs\|DELETE
@@ -1617,7 +1643,7 @@ articles or sparse regions.
 | Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
 | Disk probe cache | one `probeState` per directory, evicted after 10 minutes; at most one outstanding `statfs` per directory. |
 | Per-job barrier state | `jobBarrierMu`, `jobBarrierBytes` and `lastBarrier` are dropped by `forgetJobBarrierState` when a job leaves the assembler's business — otherwise one entry per job ever downloaded, for the life of the process. The mutex's deletion is **deferred while anyone holds it**: dropping it let the next caller mint a second mutex for the same job, which serialises nothing, and the delete is reachable from inside a live barrier via `routeFault → Fail → maybeFinalize → enqueuePostProc`. |
-| Durability rows | `durable_runs` and `failed_articles`, deleted per job by `deleteJobDurability`. `history.Repository.delete` deletes rows too — see §6's *The barrier is the only thing that puts CONTENT into the record* for the enumeration, and do not read this row as one. Neither table has a foreign key to the queue, so nothing removes them implicitly, **and since `b6651d43` nothing sweeps rows orphaned by a crash between a job leaving the queue and its rows being deleted** (#549) — the `SQLiteStore.Prune` backstop that did so went with `internal/queue`. Growth is therefore bounded by crashes in that window rather than by a periodic sweep. |
+| Durability rows | `durable_runs`, `failed_articles` and `job_files`, deleted per job by `deleteJobDurability` in one transaction. `history.Repository.delete` deletes rows too — see §6's *The barrier is the only thing that puts CONTENT into the record* for the enumeration, and do not read this row as one. None has a foreign key to the queue, so nothing removes them implicitly; rows orphaned by a job that did not finish leaving are reclaimed by `Application.sweepOrphanedDurability` at the next startup, sparing history-as-`Failed`. Growth is therefore bounded by how often the process restarts, not by a periodic sweep. |
 
 ## Failure & degradation rules
 

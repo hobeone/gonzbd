@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -1309,11 +1310,18 @@ func (app *Application) shutdownCheckpoint() {
 // This used to remove the queue row and stop. The history entry it fetched was
 // discarded — the call read `_, err := ...Get(...)` — so the rule could not be
 // applied, and durable_runs and failed_articles stayed behind. They are keyed
-// by job ID with no foreign key to jobs. SQLiteStore.Prune now sweeps rows whose
-// job is in neither the queue nor history-as-FAILED, so they no longer survive
-// for the life of the installation -- but Prune is a backstop that runs on a
-// queue save, not a substitute for removing them on the way out.
+// by job ID with no foreign key to dispatch_jobs. sweepOrphanedDurability
+// reclaims rows whose job is in neither the queue nor history-as-FAILED, so
+// they no longer survive for the life of the installation — but it runs once
+// at startup, not as a substitute for removing them on the way out.
 func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID string) bool {
+	// Cancelled inline rather than deferred, unlike delCtx below, and the two
+	// differ for a reason rather than by oversight. Everything after this line
+	// — the dispatcher removal, the manifest unlink, the whole delete
+	// transaction — is work this timer has nothing to do with, so deferring
+	// would keep it and its context alive across all of it for a query that
+	// finished here. delCtx is two statements from the return, where defer
+	// costs nothing and covers a panic.
 	dbCtx, dbCancel := context.WithTimeout(ctx, 5*time.Second)
 	entry, err := app.historyRepo.Get(dbCtx, jobID)
 	dbCancel()
@@ -1336,32 +1344,271 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 		return true
 	}
 	delCtx, delCancel := context.WithTimeout(ctx, 5*time.Second)
-	app.deleteJobDurability(delCtx, jobID)
-	delCancel()
+	defer delCancel()
+	if err := app.deleteJobDurability(delCtx, jobID); err != nil {
+		// This runs inside the startup sweep already. A failure here is
+		// therefore not deferred to "the next startup" in any useful sense —
+		// it is this startup, and the orphan sweep in the same pass will have
+		// its own view of these rows.
+		app.log.Error("could not delete durability rows for a job already in history",
+			"job", jobID, "err", err)
+	}
 	return true
 }
 
-// deleteJobDurability drops a DEPARTED job's durable runs and failed-article
-// rows, logging a failure rather than reporting it.
+// deleteJobDurability drops a DEPARTED job's three tables — durable_runs,
+// failed_articles and job_files — in one transaction, and reports the outcome.
 //
-// Both are keyed by job ID with no foreign key to the queue, so nothing
-// removes them implicitly. SQLiteStore.Prune sweeps what escapes this call --
-// the crash window between a job leaving `jobs` and this running -- but it is
-// a backstop on a queue save, and a job that finished or was deleted must not
-// wait for one.
+// None has a foreign key to dispatch_jobs, so nothing removes them implicitly.
+// sweepOrphanedDurability reclaims what escapes this call, which is the crash
+// window between a job leaving dispatch_jobs and this running; but it runs once
+// at startup, and a job that finished or was deleted must not wait for a
+// reboot.
 //
-// Swallowing the error is right HERE and wrong for a retry, which is why the
-// two have separate entry points over one implementation. For a departed job
-// the rows are garbage: leaving them costs disk until Prune runs, and there is
-// no caller left to tell. A retry is the opposite case -- see
-// dropJobDurability.
-func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
-	if app.historyRepo != nil && app.historyRepo.DB() != nil {
-		_, _ = app.historyRepo.DB().ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", jobID)
+// # Why one transaction
+//
+// These were three independent autocommits, and job_files did not even check
+// its error. A failure part-way through committed the deletes that had already
+// run and stranded the rest, so the ordinary outcome of a partial failure was a
+// partial orphan (#549). One transaction makes the cleanup all-or-nothing, and
+// gives the caller one error rather than a joined set.
+//
+// # What the caller does with the error
+//
+// It is returned, and the four callers split two ways. The three job-departure
+// sites — RemoveJob, jobFinalizer.persistAndCommit and dropJobAlreadyInHistory
+// — log at Error and carry on: by the time any reaches this the job has
+// already left the dispatcher, so reporting failure would describe an
+// operation that succeeded and invite a retry that finds no job. Each says so
+// at the call site.
+//
+// sweepOrphanedDurability is the fourth and does propagate, to Start, which
+// logs. It has to: it is reclaiming rows on nobody's behalf, so a failure is
+// the whole result rather than a footnote to a successful removal. "The sweep
+// reclaims them" is not an answer for the sweep itself.
+//
+// A retry is the opposite case and must abort — see dropJobDurability.
+func (app *Application) deleteJobDurability(ctx context.Context, jobID string) error {
+	return app.withDurabilityTx(ctx, "delete durability rows", jobID, func(tx *sql.Tx) error {
+		return app.deleteJobDurabilityTx(ctx, tx, jobID)
+	})
+}
+
+// deleteJobDurabilityTx removes one departed job's three tables against a
+// transaction the caller owns.
+//
+// Split out so sweepOrphanedDurability can reclaim every orphan inside ONE
+// transaction rather than opening one per job, while still deleting through
+// exactly this path — durable_runs via RunStore.DeleteJobTx, so the deleter
+// enumeration in docs/durability-contract.md stays at three and the sweep adds
+// no statement of its own.
+func (app *Application) deleteJobDurabilityTx(ctx context.Context, tx *sql.Tx, jobID string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM job_files WHERE job_id = ?`, jobID); err != nil {
+		return fmt.Errorf("job files: %w", err)
 	}
-	if err := app.dropJobDurability(ctx, jobID); err != nil {
-		app.log.Warn("delete durability rows for a departed job", "job", jobID, "err", err)
+	return app.dropJobDurabilityTx(ctx, tx, jobID)
+}
+
+// withDurabilityTx runs fn inside one transaction over the tables a job's rows
+// live in, and degrades to the run store alone when there is no shared handle.
+//
+// Both entry points had their own copy of this, which had already drifted:
+// one wrapped fn's error with the operation name and the other returned it
+// raw, so the same underlying failure read differently depending on which door
+// the caller came through. what is the operation name so a log still says
+// which one that was.
+//
+// The degraded branch is not a no-op. durable_runs reaches its own store
+// without the shared handle, so a build with no history repository still
+// removes the one table that is reachable, and the caller still learns whether
+// it worked.
+func (app *Application) withDurabilityTx(ctx context.Context, what, jobID string, fn func(*sql.Tx) error) error {
+	db := app.durabilityDB()
+	if db == nil {
+		if app.runs == nil {
+			return nil
+		}
+		return app.runs.DeleteJob(ctx, jobID)
 	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("app: %s %s: begin: %w", what, jobID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := fn(tx); err != nil {
+		return fmt.Errorf("app: %s %s: %w", what, jobID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("app: %s %s: commit: %w", what, jobID, err)
+	}
+	return nil
+}
+
+// sweepOrphanedDurability removes the rows of jobs that are in neither the
+// queue nor history-as-FAILED, and reports how many jobs it reclaimed.
+//
+// # What makes a row an orphan
+//
+// Every one of durable_runs, failed_articles and job_files is keyed by job ID
+// with no foreign key, so nothing removes a row implicitly. Removal is
+// explicit, from deleteJobDurability on the way out. A job that stops
+// executing between leaving dispatch_jobs and reaching that call leaves rows
+// no live path will revisit, because every reader is keyed on a job that is by
+// then gone.
+//
+// Four ways in, and only two of them are crashes:
+//
+//   - RemoveJob passes the API request's context all the way down, so a client
+//     that disconnects mid-removal cancels the delete.
+//   - The delete can exceed its timeout under contention.
+//   - A crash in RemoveJob's gap, which spans assembler.CancelJob.
+//   - A crash in the finalize gap.
+//
+// # Why a startup sweep rather than a periodic one
+//
+// Two of the four are crashes, which only a restart can follow. The other two
+// can happen while the process runs, so a daemon up for months can strand rows
+// and hold them until it is restarted — this sweep does not bound that, and
+// saying it does would be wrong. What bounds it is removing the causes: the
+// timeout is the residual one, and RemoveJob no longer hands the delete a
+// context its caller can cancel.
+//
+// A periodic sweep would shorten that window at the cost of running this query
+// against a live database forever, for a condition that arises only when a
+// delete has already failed and said so at Error. internal/queue's deleted
+// pruneDurabilityRows ran on every queue save and is not a cadence worth
+// restoring; if the runtime window turns out to matter, the answer is to find
+// the remaining cause rather than to sweep more often.
+//
+// # Why the DELETEs are deleteJobDurabilityTx's
+//
+// The SELECT below names dispatch_jobs and history, tables internal/durability
+// has no business knowing. The deletes are then the ordinary per-job ones, run
+// against this function's own transaction — so durable_runs still goes through
+// RunStore.DeleteJobTx, the sweep issues no `DELETE FROM durable_runs` of its
+// own, and the hand-maintained deleter enumeration in
+// docs/durability-contract.md stays at three.
+//
+// One transaction covers every orphan. An earlier version opened one per job,
+// which bought per-job isolation that the realistic failure modes do not
+// reward: a cancelled context or a locked database fails the whole batch
+// regardless.
+//
+// # The FAILED exception
+//
+// A failed job's rows are retained deliberately: a retry reads them to bound
+// FinalizeFile's truncate to the whole partial file rather than to the few
+// articles it re-fetches. A sweep that ignored this would destroy exactly the
+// ground the retry path exists to preserve, and would do it silently.
+//
+// # Why NOT EXISTS rather than NOT IN
+//
+// SQLite permits NULL in a TEXT PRIMARY KEY, so dispatch_jobs.id and
+// history.nzo_id can both hold one. A single NULL anywhere in a NOT IN
+// subquery makes the predicate NULL for EVERY row, and the sweep then matches
+// nothing — silently, with no error, and indistinguishable from a database
+// that simply had no orphans. NOT EXISTS compares row by row and is unaffected.
+// The failure direction of that trap is retention rather than loss, which is
+// why it is worth naming: it would never surface as a bug, only as this
+// function quietly never working.
+func (app *Application) sweepOrphanedDurability(ctx context.Context) (int, error) {
+	db := app.durabilityDB()
+	if db == nil {
+		return 0, nil
+	}
+	const q = `
+SELECT job_id FROM (
+    SELECT job_id FROM durable_runs
+    UNION SELECT job_id FROM failed_articles
+    UNION SELECT job_id FROM job_files
+) AS owned
+ WHERE NOT EXISTS (SELECT 1 FROM dispatch_jobs d WHERE d.id = owned.job_id)
+   AND NOT EXISTS (SELECT 1 FROM history h
+                    WHERE h.nzo_id = owned.job_id AND h.status = ?)`
+	rows, err := db.QueryContext(ctx, q, string(constants.StatusFailed))
+	if err != nil {
+		return 0, fmt.Errorf("app: sweep orphaned durability rows: %w", err)
+	}
+	// Deferred rather than closed on each exit path, replacing three manual
+	// calls that had to be kept in step with every return.
+	//
+	// On the normal path it is a no-op: database/sql closes Rows when Next
+	// returns false, so the cursor is already shut before the reclaim loop
+	// runs its DELETEs against the same tables. The defer is for the early
+	// returns — and for any added later, which is the case the manual version
+	// would have got wrong.
+	defer func() { _ = rows.Close() }()
+	var orphans []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return 0, fmt.Errorf("app: sweep orphaned durability rows: scan: %w", err)
+		}
+		orphans = append(orphans, id)
+	}
+	// rows.Next() returns false for "no more rows" AND for a mid-iteration
+	// fault, so without this a dropped connection reads as an empty result and
+	// the sweep reports success having reclaimed nothing.
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("app: sweep orphaned durability rows: iterate: %w", err)
+	}
+
+	// Collected before deleting rather than deleted during iteration: the
+	// DELETEs run against the same tables this cursor is reading.
+	if len(orphans) == 0 {
+		return 0, nil
+	}
+
+	// One transaction for the whole reclaim, not one per orphan.
+	//
+	// Each job still goes through deleteJobDurabilityTx, the same three
+	// statements a departing job uses, so this adds no DELETE of its own and
+	// durable_runs is still reached through RunStore. What changes is only the
+	// transaction boundary: N jobs cost one BeginTx and one Commit rather than
+	// N of each.
+	//
+	// The trade is that the reclaim is now all-or-nothing. A single
+	// undeletable row rolls back every other job's cleanup, where one
+	// transaction per job would have kept them. That is the right way round
+	// here: the realistic causes of a failed DELETE — a cancelled context, a
+	// locked database — fail every job in the batch anyway, so per-job
+	// isolation would buy partial progress only against a corrupt or
+	// trigger-guarded row, and the next startup retries either way.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("app: sweep orphaned durability rows: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for i, id := range orphans {
+		// Checked per job because the transaction now spans all of them: a
+		// cancellation arriving mid-loop would otherwise keep issuing
+		// statements against a transaction that cannot commit, turning one
+		// cancellation into one failure per remaining orphan.
+		if err := ctx.Err(); err != nil {
+			return 0, fmt.Errorf("app: sweep orphaned durability rows: abandoned after %d of %d: %w",
+				i, len(orphans), err)
+		}
+		if err := app.deleteJobDurabilityTx(ctx, tx, id); err != nil {
+			return 0, fmt.Errorf("app: sweep orphaned durability rows: job %s: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("app: sweep orphaned durability rows: commit: %w", err)
+	}
+	return len(orphans), nil
+}
+
+// durabilityDB returns the handle all three of a job's row-owning tables live
+// in, or nil when there is none.
+//
+// They share one SQLite file — SQLiteRunStore is constructed over
+// history.Repository's own *sql.DB — which is what makes a single transaction
+// across the three possible at all.
+func (app *Application) durabilityDB() *sql.DB {
+	if app.historyRepo == nil {
+		return nil
+	}
+	return app.historyRepo.DB()
 }
 
 // dropJobDurability is the same deletion for a job that is coming BACK, where
@@ -1374,43 +1621,63 @@ func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 // beyond it (#422). That is the exact harm this PR exists to prevent, so a
 // cleanup that fails must abort the retry rather than proceed without it.
 //
-// Prune is no backstop for that case. Its sweep deliberately skips any job_id
-// still present in `jobs`, and a retry is re-added to `jobs` moments later --
-// so a row that survives this call survives for the life of the job.
+// sweepOrphanedDurability is no backstop for that case. It deliberately spares
+// any job_id still present in dispatch_jobs, and a retry is re-added there
+// moments later -- so a row that survives this call survives for the life of
+// the job.
 //
-// Both deletions are attempted even if the first fails, and both errors are
-// joined: removing one of the two tables is still progress, and a caller
-// deciding whether to abort is better served by the whole picture than by
-// whichever failure came first.
+// The two statements run in one transaction and stop at the first failure.
+// They used to be attempted independently with their errors joined, on the
+// reasoning that removing one of the two tables is still progress; inside a
+// transaction that reasoning does not hold, because the first failure has
+// already poisoned what follows and nothing will be committed either way.
+// Attempting the second then reports a second error about a rollback in
+// progress, burying the cause the caller needs.
 //
 // The two tables are durable_runs and failed_articles, and they are deleted
 // through different owners on purpose. durability.RunStore owns the first and
-// is the only thing that INSERTS OR AMENDS a run's content; queue.Store owns
-// the second, which is why a job's failed articles are dropped through the
-// queue's own entry point rather than by reaching into the table from here.
+// is the only thing that INSERTS OR AMENDS a run's content; the second is
+// written solely by appCheckpointStore.SaveBatch, which is why nothing here
+// writes to it either.
 //
 // The write bound is on content, not on deletion, and the distinction is not
 // pedantry: durable_runs rows are deleted from three places outside the
-// barrier's own merge — durability.Resumer, RunStore.DeleteJob (below), and
-// history.Repository.delete. (It was five until b6651d43 deleted
+// barrier's own merge — durability.Resumer, RunStore.DeleteJob/DeleteJobTx
+// (below), and history.Repository.delete. (It was five until b6651d43 deleted
 // internal/queue; a fourth, Commit's deleteRows, is part of the
-// merge's read-modify-write rather than a separate deleter.) Content-only is
+// merge's read-modify-write rather than a separate deleter. The startup orphan
+// sweep is not a fifth: it selects the orphaned job IDs and reuses the door
+// below, which is why it added no statement.) Content-only is
 // still exactly the property the trust argument needs — nothing can make the
 // record ASSERT bytes an fsync did not cover — and unlike "nothing else writes
 // it", it is true.
 func (app *Application) dropJobDurability(ctx context.Context, jobID string) error {
-	var errs []error
+	return app.withDurabilityTx(ctx, "drop durability rows", jobID, func(tx *sql.Tx) error {
+		return app.dropJobDurabilityTx(ctx, tx, jobID)
+	})
+}
+
+// dropJobDurabilityTx removes the two tables a RETURNING job must not carry
+// forward, against a caller-supplied transaction.
+//
+// Split from dropJobDurability so deleteJobDurability can add job_files to the
+// same transaction without a second copy of either statement. The two entry
+// points differ only in who owns the transaction.
+//
+// It no longer joins its errors and continues. Inside a transaction a failed
+// statement has already poisoned what follows, so attempting the second write
+// reports a second failure about a transaction that is going to roll back
+// either way — noise in place of the first, real cause.
+func (app *Application) dropJobDurabilityTx(ctx context.Context, tx *sql.Tx, jobID string) error {
 	if app.runs != nil {
-		if err := app.runs.DeleteJob(ctx, jobID); err != nil {
-			errs = append(errs, fmt.Errorf("durable runs: %w", err))
+		if err := app.runs.DeleteJobTx(ctx, tx, jobID); err != nil {
+			return fmt.Errorf("durable runs: %w", err)
 		}
 	}
-	if app.historyRepo != nil && app.historyRepo.DB() != nil {
-		if _, err := app.historyRepo.DB().ExecContext(ctx, `DELETE FROM failed_articles WHERE job_id = ?`, jobID); err != nil {
-			errs = append(errs, fmt.Errorf("failed articles: %w", err))
-		}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM failed_articles WHERE job_id = ?`, jobID); err != nil {
+		return fmt.Errorf("failed articles: %w", err)
 	}
-	return errors.Join(errs...)
+	return nil
 }
 
 var _ durability.Stallable = (*Application)(nil)
