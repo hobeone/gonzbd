@@ -53,8 +53,9 @@ func durabilityRowCounts(t *testing.T, application *Application, jobID string) (
 // in whether the caller is told.
 //
 // The two entry points exist because their callers need opposite things. For a
-// DEPARTED job the rows are garbage: leaving them costs disk until Prune runs,
-// and there is no caller left to tell, so deleteJobDurability swallows. For a
+// DEPARTED job the rows are garbage and there is no caller left to tell, so
+// deleteJobDurability swallows -- which costs the disk permanently while no
+// backstop exists (#549), not merely until one runs. For a
 // job coming BACK the rows are about to be READ, and a stale one bounds
 // FinalizeFile's truncate to the wrong article range — so RetryHistoryJob
 // aborts on a failure here rather than requeueing (#422).

@@ -1309,10 +1309,13 @@ func (app *Application) shutdownCheckpoint() {
 // This used to remove the queue row and stop. The history entry it fetched was
 // discarded — the call read `_, err := ...Get(...)` — so the rule could not be
 // applied, and durable_runs and failed_articles stayed behind. They are keyed
-// by job ID with no foreign key to jobs. SQLiteStore.Prune now sweeps rows whose
-// job is in neither the queue nor history-as-FAILED, so they no longer survive
-// for the life of the installation -- but Prune is a backstop that runs on a
-// queue save, not a substitute for removing them on the way out.
+// by job ID with no foreign key to dispatch_jobs.
+//
+// There is NO backstop behind this call. SQLiteStore.pruneDurabilityRows was
+// one -- it ran on every queue save and removed rows whose job was in neither
+// the queue nor history-as-FAILED -- and it went with internal/queue in
+// b6651d43 with nothing replacing it, so a row this path fails to remove
+// survives for the life of the installation. Tracked as #549.
 func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID string) bool {
 	dbCtx, dbCancel := context.WithTimeout(ctx, 5*time.Second)
 	entry, err := app.historyRepo.Get(dbCtx, jobID)
@@ -1344,16 +1347,18 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 // deleteJobDurability drops a DEPARTED job's durable runs and failed-article
 // rows, logging a failure rather than reporting it.
 //
-// Both are keyed by job ID with no foreign key to the queue, so nothing
-// removes them implicitly. SQLiteStore.Prune sweeps what escapes this call --
-// the crash window between a job leaving `jobs` and this running -- but it is
-// a backstop on a queue save, and a job that finished or was deleted must not
-// wait for one.
+// Both are keyed by job ID with no foreign key to dispatch_jobs, so nothing
+// removes them implicitly, and nothing sweeps what escapes this call. The
+// backstop that used to -- SQLiteStore.pruneDurabilityRows -- went with
+// internal/queue in b6651d43 and has no replacement (#549), so the crash
+// window between a job leaving dispatch_jobs and this running strands rows
+// permanently.
 //
 // Swallowing the error is right HERE and wrong for a retry, which is why the
 // two have separate entry points over one implementation. For a departed job
-// the rows are garbage: leaving them costs disk until Prune runs, and there is
-// no caller left to tell. A retry is the opposite case -- see
+// the rows are garbage and there is no caller left to tell -- but note what
+// that costs while no backstop exists: the disk they occupy is not reclaimed
+// later, it is not reclaimed at all. A retry is the opposite case -- see
 // dropJobDurability.
 func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 	if app.historyRepo != nil && app.historyRepo.DB() != nil {
@@ -1374,9 +1379,11 @@ func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 // beyond it (#422). That is the exact harm this PR exists to prevent, so a
 // cleanup that fails must abort the retry rather than proceed without it.
 //
-// Prune is no backstop for that case. Its sweep deliberately skips any job_id
-// still present in `jobs`, and a retry is re-added to `jobs` moments later --
-// so a row that survives this call survives for the life of the job.
+// No backstop covers that case, and none would even if one existed. The
+// deleted sweep deliberately skipped any job_id still present in the queue,
+// and a retry is re-added to dispatch_jobs moments later -- so a row that
+// survives this call survives for the life of the job. That is why the
+// deletion is fatal here and merely logged for a departed job.
 //
 // Both deletions are attempted even if the first fails, and both errors are
 // joined: removing one of the two tables is still progress, and a caller
