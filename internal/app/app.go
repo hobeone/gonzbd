@@ -876,11 +876,42 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 		app.log.Debug("could not unlink manifest for removed job", "job", id, "err", rmErr)
 	}
 
+	// Past dispatcher.Remove the job is gone from dispatch_jobs, and every
+	// step below is cleanup that nothing else will ever perform. None of it
+	// may be abandoned because the CALLER's context ended: api/queue.go passes
+	// r.Context() into RemoveJob, so that context ends when a client closes a
+	// browser tab. It needs no crash — a large job's removal spends real time
+	// here, waiting on the assembler to close its file handles.
+	//
+	// Detached from ctx rather than from app.ctx, unlike
+	// jobFinalizer.persistAndCommit, which applies the same detachment to the
+	// same delete. Both express "do not let the caller's cancellation abort
+	// this", and ctx is the one that cannot be nil: RemoveJob is reachable
+	// before Start has set app.ctx, and context.WithoutCancel(nil) panics.
+	// WithoutCancel keeps ctx's values and drops only its cancellation, which
+	// is the whole intent.
+	//
+	// Each step still takes its own deadline, because detaching removes the
+	// caller's cancellation and nothing else replaces it.
+	cleanupCtx := context.WithoutCancel(ctx)
+
 	disposition := assembler.KeepFiles
 	if deleteFiles {
 		disposition = assembler.DeleteFiles
 	}
-	if err := app.assembler.CancelJob(ctx, id, disposition); err != nil {
+	// On a cancellable context this is where a disconnect did its damage.
+	// CancelJob returns ctx.Err() before enqueueing anything when its context
+	// is already done — deliberately, so that a cancelled caller cannot be
+	// told "handles closed" by a racing select (assembler.go) — so the
+	// worker's descriptors for this job were never closed and leaked for the
+	// life of the process, and safeDeleteDir below then unlinked the directory
+	// out from under them.
+	//
+	// Thirty seconds matches removeCtx above, which bounds the comparable wait
+	// on the same worker.
+	cancelCtx, cancelCancel := context.WithTimeout(cleanupCtx, 30*time.Second)
+	defer cancelCancel()
+	if err := app.assembler.CancelJob(cancelCtx, id, disposition); err != nil {
 		app.log.Warn("assembler cancel job did not confirm file handles closed",
 			"job", id, "error", err)
 	}
@@ -889,32 +920,18 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	app.pipeline.forgetJob(id)
 	app.forgetJobBarrierState(id)
 	// The job is gone from the queue, so nothing will ever read its durable
-	// runs or its failed-article rows again. Both are keyed by job ID with no
-	// foreign key to anything, so this is the only thing that removes them —
-	// without it every deleted job leaves its rows behind for the life of
-	// the database.
+	// runs, its failed-article rows or its per-file progress again. All three
+	// tables — durable_runs, failed_articles and job_files — are keyed by job
+	// ID with no foreign key to anything, so this is the only thing that
+	// removes them: without it every deleted job leaves its rows behind for
+	// the life of the database (#549).
 	//
-	// Detached from the caller's context, which is the API request's
-	// (api/queue.go passes r.Context() into RemoveJob). The same detachment
-	// jobFinalizer.persistAndCommit applies to this exact delete
-	// (job_finalizer.go), and the two paths disagreed until now.
-	//
-	// Without it a client that disconnects mid-removal cancels the cleanup
-	// after the job has already left the dispatcher, and the rows are stranded
-	// with nothing to reclaim them (#549). It needs no crash: closing the
-	// browser tab during a large job's removal is enough, because the window
-	// between dispatcher.Remove and this line spans assembler.CancelJob
-	// closing every file handle.
-	//
-	// Detached from ctx rather than from app.ctx, unlike the finalizer. Both
-	// express "do not let the caller's cancellation abort this", and ctx is
-	// the one that cannot be nil: RemoveJob is reachable before Start has set
-	// app.ctx, and context.WithoutCancel(nil) panics. WithoutCancel keeps
-	// ctx's values and drops only its cancellation, which is the whole intent.
-	//
-	// Five seconds matches the sibling paths. A removal whose bookkeeping
-	// cannot finish in that has a sicker database than this call can fix.
-	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	// Five seconds matches dropJobAlreadyInHistory, the other path that drops
+	// these rows for a job that DEPARTED rather than finished.
+	// jobFinalizer.persistAndCommit uses three, sized to fit inside the
+	// shutdown budget. A removal whose bookkeeping cannot finish in five has a
+	// sicker database than this call can fix.
+	delCtx, delCancel := context.WithTimeout(cleanupCtx, 5*time.Second)
 	defer delCancel()
 	app.deleteJobDurability(delCtx, id)
 	if deleteFiles && name != "" {

@@ -164,13 +164,19 @@ CREATE TABLE failed_articles (
 -- Per-file download progress retained for a FAILED job, so a retry refetches
 -- only the articles that did not make it.
 --
--- Separate from job_files, whose rows belong to the queue and go when a job
--- leaves it. That separation is about ownership rather than lifetime: a FAILED
--- job keeps its job_files rows too, because finalizeJob skips
--- deleteJobDurability for exactly that status -- so for the one status this
--- table exists to serve, the two coexist. What distinguishes them is who may
--- delete them: job_files goes with the queue job, this goes with the history
--- entry.
+-- Separate from job_files, and for the FAILED job this table exists to serve
+-- the two coexist: finalizeJob skips deleteJobDurability for exactly that
+-- status, so the job_files rows stay behind as well.
+--
+-- What is NOT true is that each then goes with its own owner. These rows do --
+-- history.Repository.delete removes them with the entry. job_files has no such
+-- deleter: `git grep -n 'DELETE FROM job_files WHERE' -- '*.go'` returns 1 hit, in
+-- Application.deleteJobDurability, which is the call finalizeJob skipped. So a
+-- FAILED job's job_files rows are removed by neither the queue job nor the
+-- history entry, and survive until a retry puts the job back in the queue for
+-- a later departure to clean up -- or forever, if the entry is deleted from
+-- history instead. #560 is the issue for settling that ownership; do not read
+-- this paragraph as describing an intended design.
 --
 -- No foreign key here either: the owning row is history(nzo_id), and these are
 -- removed explicitly when it is deleted. Only failed jobs get rows -- a job

@@ -17,6 +17,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -597,16 +599,30 @@ func TestFinalizeCompletedFile_TrimsAndReleasesTheHandle(t *testing.T) {
 
 // ---------- job departure ----------
 
-// TestDeleteJobDurability_RemovesBothTables pins the removal that runs on a
-// job's way out. Both tables are keyed by job ID with no foreign key to
+// jobFilesCount reports how many per-file progress rows a job still has.
+func jobFilesCount(t *testing.T, application *Application, jobID string) int {
+	t.Helper()
+	var n int
+	if err := application.historyRepo.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM job_files WHERE job_id = ?`, jobID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestDeleteJobDurability_RemovesAllThreeTables pins the removal that runs on a
+// job's way out. All three tables are keyed by job ID with no foreign key to
 // dispatch_jobs, and nothing sweeps what this misses (#549), so without it a
 // database accumulates one set of rows per job ever downloaded and keeps them
 // for the life of the installation.
 //
-// Both, and through their own OWNERS: durability.RunStore owns durable_runs
-// and appCheckpointStore.SaveBatch owns failed_articles. A cleanup that
-// reached only one of them would leave half a departed job's rows behind.
-func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
+// Three, and reached differently: durability.RunStore owns durable_runs and
+// the delete goes through its DeleteJob, while failed_articles and job_files
+// have no owning type and are deleted with raw SQL here. A cleanup that
+// reached only some of them would leave part of a departed job's rows behind
+// -- and job_files is the part with no second deleter anywhere, so it is the
+// part that would stay forever.
+func TestDeleteJobDurability_RemovesAllThreeTables(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
@@ -620,6 +636,12 @@ func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
 		if _, err := application.historyRepo.DB().ExecContext(ctx, "INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)", id); err != nil {
 			t.Fatal(err)
 		}
+		// Seeded explicitly rather than relied on from the fixture, so that
+		// "other-job" -- which was never ingested -- has a row to keep.
+		if _, err := application.historyRepo.DB().ExecContext(ctx,
+			`INSERT OR REPLACE INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`, id); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	application.deleteJobDurability(ctx, job.ID())
@@ -627,11 +649,17 @@ func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
 	if nr, nf := durabilityRowCounts(t, application, job.ID()); nr != 0 || nf != 0 {
 		t.Errorf("%d runs and %d failed rows survive the job's departure", nr, nf)
 	}
+	if n := jobFilesCount(t, application, job.ID()); n != 0 {
+		t.Errorf("%d job_files rows survive the job's departure", n)
+	}
 	// Scoped to the departing job: deleting every job's rows would throw away
 	// a live download's recorded ground.
 	if nr, nf := durabilityRowCounts(t, application, "other-job"); nr != 1 || nf != 1 {
 		t.Errorf("another job has %d runs and %d failed rows, want 1 and 1 — the "+
 			"delete was not scoped", nr, nf)
+	}
+	if n := jobFilesCount(t, application, "other-job"); n != 1 {
+		t.Errorf("another job has %d job_files rows, want 1 — the delete was not scoped", n)
 	}
 }
 
@@ -1471,6 +1499,66 @@ func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
 	if got.PendingBytes != 4096 {
 		t.Errorf("PendingBytes = %d, want 4096 — a window that was never closed was zeroed, so "+
 			"the bytes at risk read as none", got.PendingBytes)
+	}
+}
+
+// TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability is
+// the startup reconcile's copy of RemoveJob's detachment pin, and it exists
+// separately because the two are separate call sites of the same fix: reverting
+// one says nothing about the other.
+//
+// The context here is the startup context rather than an API request's, so what
+// cancels it is a SIGINT or a startup deadline rather than a browser tab —
+// a restart interrupted by another restart. Past dispatcher.Remove the outcome
+// is identical either way: the queue row is gone, and rows this call fails to
+// remove have nothing behind them (#549).
+//
+// Note which steps are NOT detached. The history Get and dispatcher.Remove run
+// on the caller's context on purpose, because a cancellation there destroys
+// nothing and the next startup reconciles the job again.
+func TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability(t *testing.T) {
+	t.Parallel()
+	application, repo, _ := newLifecycleTestApp(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	d := dispatch.New(
+		1, 1, time.Second, time.Now,
+		&appWorkers{app: application},
+		application.residency,
+		disconnectingStore{Store: store.New(repo.DB()), cancel: cancel},
+		application.runner,
+	)
+	application.dispatcher = d
+	application.pipeline.dispatcher = d
+	application.runner.report = d
+
+	j, _ := removeJobFixture(t, application, "reconciled")
+
+	// COMPLETED, so the retention rule says the rows go. A FAILED entry would
+	// keep them and the assertion below could not tell a working detachment
+	// from the retention.
+	if err := application.historyRepo.Add(ctx, history.Entry{
+		NzoID: j.ID(), Name: "reconciled", Status: string(constants.StatusCompleted),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedDurability(t, application, j.ID())
+	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
+		t.Fatalf("fixture recorded %d runs and %d failed rows, want 1 and 1; "+
+			"the test would pass vacuously", nr, nf)
+	}
+
+	if !application.dropJobAlreadyInHistory(ctx, j.ID()) {
+		t.Fatal("dropJobAlreadyInHistory reported no removal for a job that is in history")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("the store never cancelled, so this never entered the window under test")
+	}
+
+	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 0 || nf != 0 {
+		t.Errorf("%d durable runs and %d failed-article rows survive a reconcile that was "+
+			"cancelled after the job left the dispatcher", nr, nf)
 	}
 }
 

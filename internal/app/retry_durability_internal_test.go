@@ -16,9 +16,10 @@ import (
 // article, standing in for a run that got some of the file onto disk and lost
 // one article for good.
 //
-// Both tables, because they have different owners and the retention rules have
-// to agree about them: durability.RunStore owns durable_runs and
-// checkpoint.Store.SaveBatch owns failed_articles.
+// Both tables, because they are written through different paths and the
+// retention rules have to agree about them: durability.RunStore writes
+// durable_runs, and appCheckpointStore.SaveBatch writes failed_articles with
+// raw SQL.
 func seedDurability(t *testing.T, application *Application, jobID string) {
 	t.Helper()
 	if _, err := application.runs.Commit(t.Context(), jobID, []durability.DurableArticle{
@@ -60,11 +61,12 @@ func durabilityRowCounts(t *testing.T, application *Application, jobID string) (
 // FinalizeFile's truncate to the wrong article range — so RetryHistoryJob
 // aborts on a failure here rather than requeueing (#422).
 //
-// Both owners' errors are joined rather than the first winning, because they
-// are different stores: durability.RunStore owns durable_runs and
-// checkpoint.Store.SaveBatch owns failed_articles. A caller deciding whether to abort is better served by
-// the whole picture, and an early return would leave one owner's rows behind
-// for a job that is about to be re-downloaded over them.
+// Both errors are joined rather than the first winning, because the two
+// deletions are independent: durable_runs goes through durability.RunStore,
+// and failed_articles -- which appCheckpointStore.SaveBatch writes and no type
+// owns the deletion of -- goes through raw SQL. A caller deciding whether to
+// abort is better served by the whole picture, and an early return would leave
+// one table's rows behind for a job that is about to be re-downloaded over them.
 func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)

@@ -1338,21 +1338,42 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 	if entry != nil && entry.Status == string(constants.StatusFailed) {
 		return true
 	}
-	delCtx, delCancel := context.WithTimeout(ctx, 5*time.Second)
+	// Detached, for the reason RemoveJob's own cleanup is: the queue row is
+	// already gone, so a cancellation landing here strands the rows with
+	// nothing to reclaim them. ctx is the startup context, which ends on
+	// SIGINT and on the startup deadline, and reconciling a crashed job is
+	// exactly the work a restart-interrupted-by-a-restart would abandon.
+	//
+	// The two steps above are NOT detached, and the asymmetry is the point.
+	// The history Get and dispatcher.Remove are allowed to fail: nothing has
+	// been destroyed yet, and the next startup reconciles the job again.
+	// Past dispatcher.Remove there is no next time.
+	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	app.deleteJobDurability(delCtx, jobID)
 	delCancel()
 	return true
 }
 
-// deleteJobDurability drops a DEPARTED job's durable runs and failed-article
-// rows, logging a failure rather than reporting it.
+// deleteJobDurability drops a DEPARTED job's per-file progress, durable runs
+// and failed-article rows, logging a failure rather than reporting it.
 //
-// Both are keyed by job ID with no foreign key to dispatch_jobs, so nothing
-// removes them implicitly, and nothing sweeps what escapes this call. The
-// backstop that used to -- SQLiteStore.pruneDurabilityRows -- went with
-// internal/queue in b6651d43 and has no replacement (#549), so the crash
-// window between a job leaving dispatch_jobs and this running strands rows
-// permanently.
+// Three tables, not two: job_files here, and durable_runs and failed_articles
+// through dropJobDurability below. All three are keyed by job ID with no
+// foreign key to dispatch_jobs, so nothing removes them implicitly, and
+// nothing sweeps what escapes this call. The backstop that used to --
+// SQLiteStore.pruneDurabilityRows -- went with internal/queue in b6651d43 and
+// has no replacement (#549), so the crash window between a job leaving
+// dispatch_jobs and this running strands rows permanently.
+//
+// job_files is the narrowest of the three. Its deleters are
+// `git grep -n 'DELETE FROM job_files WHERE' -- '*.go'`, which outside this
+// comment returns the statement below alone -- so a row that escapes here has
+// no second deleter of any kind.
+// history.Repository.delete cleans up
+// history_job_files, durable_runs and failed_articles when an entry goes, and
+// job_files is not on that list -- which is why a FAILED job, whose job_files
+// rows finalizeJob deliberately keeps, has no path that ever removes them
+// short of a retry putting it back in the queue. Tracked in #560.
 //
 // Swallowing the error is right HERE and wrong for a retry, which is why the
 // two have separate entry points over one implementation. For a departed job
@@ -1361,10 +1382,24 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 // later, it is not reclaimed at all. A retry is the opposite case -- see
 // dropJobDurability.
 func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
+	var errs []error
 	if app.historyRepo != nil && app.historyRepo.DB() != nil {
-		_, _ = app.historyRepo.DB().ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", jobID)
+		// Reported rather than discarded, for the reason stated above: with no
+		// sweep behind this call, a failure here is the moment the rows become
+		// permanent, and `_, _ =` made that the one deletion of the three that
+		// could fail without leaving any trace at all.
+		if _, err := app.historyRepo.DB().ExecContext(ctx,
+			"DELETE FROM job_files WHERE job_id = ?", jobID); err != nil {
+			errs = append(errs, fmt.Errorf("job files: %w", err))
+		}
 	}
+	// Attempted even if job_files failed, and both failures reported together
+	// -- the same rule dropJobDurability applies to its own two tables, for
+	// the same reason: removing two of the three is still progress.
 	if err := app.dropJobDurability(ctx, jobID); err != nil {
+		errs = append(errs, err)
+	}
+	if err := errors.Join(errs...); err != nil {
 		app.log.Warn("delete durability rows for a departed job", "job", jobID, "err", err)
 	}
 }
@@ -1390,11 +1425,19 @@ func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 // deciding whether to abort is better served by the whole picture than by
 // whichever failure came first.
 //
-// The two tables are durable_runs and failed_articles, and they are deleted
-// through different owners on purpose. durability.RunStore owns the first and
-// is the only thing that INSERTS OR AMENDS a run's content; queue.Store owns
-// the second, which is why a job's failed articles are dropped through the
-// queue's own entry point rather than by reaching into the table from here.
+// The two tables are durable_runs and failed_articles, and they are reached
+// differently because only one of them has an owner to reach through.
+// durability.RunStore owns durable_runs and is the only thing that INSERTS OR
+// AMENDS a run's content, so the deletion goes through its DeleteJob.
+// failed_articles has no such type: appCheckpointStore.SaveBatch writes it
+// with raw SQL and owns no deletion at all, so the delete below is raw SQL
+// against historyRepo.DB() for want of anywhere better to put it.
+//
+// This asymmetry USED to be principled -- queue.Store owned failed_articles
+// and the deletion went through its entry point -- and the sentence saying so
+// outlived internal/queue, which b6651d43 deleted. It is now a description of
+// how the tables ended up, not of a design. #560 is the issue for settling who
+// should own them.
 //
 // The write bound is on content, not on deletion, and the distinction is not
 // pedantry: durable_runs rows are deleted from three places outside the
