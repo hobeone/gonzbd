@@ -276,8 +276,9 @@ func TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability(t *testi
 	//
 	// Asserted through the warning rather than through the handles themselves,
 	// because internal/app has no view of them -- Assembler exports no
-	// open-handle accessor, and syncTargetFor is nil by this point since
-	// forgetJobBarrierState has already run. The warning is the only place
+	// open-handle accessor, and syncTargetFor is nil by this point because it
+	// resolves through app.dispatcher.Job, which dispatcher.Remove has already
+	// made return false (durability.go). The warning is the only place
 	// RemoveJob records whether the close was confirmed, which makes it the
 	// observable the production code actually offers.
 	if s := logs.String(); strings.Contains(s, "assembler cancel job did not confirm") {

@@ -867,10 +867,11 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	if app.checkpointer != nil {
 		app.checkpointer.Prune(id)
 	}
-	removeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if err := app.dispatcher.Remove(removeCtx, id); err != nil {
-		return err
+	removeCtx, removeCancel := context.WithTimeout(ctx, 30*time.Second)
+	rmErr := app.dispatcher.Remove(removeCtx, id)
+	removeCancel()
+	if rmErr != nil {
+		return rmErr
 	}
 	if rmErr := removeManifestIn(manifestDir(app.config.GetGeneral().AdminDir), id); rmErr != nil && !os.IsNotExist(rmErr) {
 		app.log.Debug("could not unlink manifest for removed job", "job", id, "err", rmErr)
@@ -907,14 +908,16 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// life of the process, and safeDeleteDir below then unlinked the directory
 	// out from under them.
 	//
-	// Thirty seconds matches removeCtx above, which bounds the comparable wait
-	// on the same worker.
+	// Thirty seconds matches removeCtx above. They wait on DIFFERENT workers --
+	// removeCtx on the dispatcher's launch latches and occupancy leases
+	// (registry.go), this on the assembler's own worker goroutine -- so the
+	// number is shared because the shape of the wait is comparable, not
+	// because it is the same wait.
 	//
-	// Released inline rather than deferred, here and for delCtx below, because
-	// real work follows both: a deferred release keeps each timer armed
-	// through safeDeleteDir's recursive unlink and the NNTP disconnect at the
-	// end of this function. dropJobAlreadyInHistory releases inline for the
-	// same reason.
+	// Released inline rather than deferred, as removeCtx and delCtx also are,
+	// because real work follows each: a deferred release keeps every timer
+	// armed through safeDeleteDir's recursive unlink and the NNTP disconnect
+	// at the end of this function. dropJobAlreadyInHistory does the same.
 	cancelCtx, cancelCancel := context.WithTimeout(cleanupCtx, 30*time.Second)
 	err := app.assembler.CancelJob(cancelCtx, id, disposition)
 	cancelCancel()

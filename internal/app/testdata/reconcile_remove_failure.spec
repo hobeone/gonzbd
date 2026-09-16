@@ -8,22 +8,24 @@ run TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails
 file internal/app/durability.go
 --- anchor
 				"manifest and durability rows for the next startup to reconcile",
-				"jobID", jobID, "err", rmErr)
+				"job", jobID, "err", rmErr)
 			return true
 --- replace
 				"manifest and durability rows for the next startup to reconcile",
-				"jobID", jobID, "err", rmErr)
+				"job", jobID, "err", rmErr)
 --- end
 
 [the abort reports "not handled", so the caller falls through to the state check and files a complete job a second time]
 file internal/app/durability.go
 --- anchor
-				"jobID", jobID, "err", rmErr)
+				"manifest and durability rows for the next startup to reconcile",
+				"job", jobID, "err", rmErr)
 			return true
 		}
 	}
 --- replace
-				"jobID", jobID, "err", rmErr)
+				"manifest and durability rows for the next startup to reconcile",
+				"job", jobID, "err", rmErr)
 			return false
 		}
 	}

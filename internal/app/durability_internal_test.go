@@ -1641,6 +1641,58 @@ func TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails(t *
 	}
 }
 
+// TestDropJobAlreadyInHistory_SkipsTheJobWhenTheHistoryLookupFails pins the
+// difference between "not in history" and "could not find out".
+//
+// Both are errors from the same call, and collapsing them onto one return
+// value is what makes the second dangerous: false asserts the job is not
+// filed, and the caller acts on that by finalizing it -- so a job that IS
+// already filed is post-processed and written to history a second time.
+//
+// True costs one startup. The job is skipped, nothing is deleted, and the next
+// startup asks again. jobFinalizer.persistAndCommit makes the same trade when
+// its own history lookup fails.
+func TestDropJobAlreadyInHistory_SkipsTheJobWhenTheHistoryLookupFails(t *testing.T) {
+	t.Parallel()
+	application, repo, adminDir := newLifecycleTestApp(t)
+	ctx := t.Context()
+
+	j, _ := removeJobFixture(t, application, "unlookupable")
+	seedDurability(t, application, j.ID())
+	mpath := filepath.Join(manifestDir(adminDir), j.ID()+".json.gz")
+	if err := os.MkdirAll(manifestDir(adminDir), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mpath, []byte("manifest"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A lookup failure that is not ErrNotFound. Taking the table away is the
+	// available lever: historyRepo.Get runs SQL against a real database and
+	// there is no seam to inject at.
+	if _, err := repo.DB().ExecContext(ctx,
+		`ALTER TABLE history RENAME TO history_hidden`); err != nil {
+		t.Fatalf("hide history: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = repo.DB().ExecContext(context.WithoutCancel(ctx),
+			`ALTER TABLE history_hidden RENAME TO history`)
+	})
+
+	if !application.dropJobAlreadyInHistory(ctx, j.ID()) {
+		t.Error("reported false when the history lookup ERRORED; false means 'not in " +
+			"history', so the caller finalizes a job that may already be filed and " +
+			"writes a duplicate history entry")
+	}
+	if _, err := os.Stat(mpath); err != nil {
+		t.Errorf("the manifest was deleted although nothing was established about the "+
+			"job (stat: %v)", err)
+	}
+	if _, ok := application.Dispatcher().Job(j.ID()); !ok {
+		t.Error("the job left the dispatcher on a lookup that established nothing")
+	}
+}
+
 // TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule pins the startup
 // reconcile's half of the durability-row cleanup, in both directions.
 //
@@ -1673,9 +1725,22 @@ func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
 			application, job := newDurabilityTestApp(t, 1, 2)
 
 			seedDurability(t, application, job.ID())
+			// job_files seeded alongside, because the rule governs all three
+			// tables and seedDurability writes only two. Without this the
+			// job_files half of the rule reads 0 before and 0 after, which
+			// asserts nothing in either direction.
+			if _, err := application.historyRepo.DB().ExecContext(t.Context(),
+				`INSERT OR REPLACE INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`,
+				job.ID()); err != nil {
+				t.Fatalf("seed job files: %v", err)
+			}
 			if nr, nf := durabilityRowCounts(t, application, job.ID()); nr != 1 || nf != 1 {
 				t.Fatalf("fixture recorded %d runs and %d failed rows, want 1 and 1; "+
 					"the test would pass vacuously", nr, nf)
+			}
+			if n := jobFilesCount(t, application, job.ID()); n != 1 {
+				t.Fatalf("fixture recorded %d job_files rows, want 1; the test would "+
+					"pass vacuously", n)
 			}
 
 			if err := application.historyRepo.Add(t.Context(), history.Entry{
@@ -1697,6 +1762,19 @@ func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
 				} else {
 					t.Error("a finished job's durability rows survived its removal; nothing " +
 						"else collects them, so they accumulate one set per crash of this kind")
+				}
+			}
+			// job_files follows the same rule, through the same call, and is
+			// the table with no second deleter anywhere -- so a FAILED job
+			// that keeps them here keeps them until a retry, and a completed
+			// one that does not lose them loses them for good (#560).
+			if kept := jobFilesCount(t, application, job.ID()) > 0; kept != tc.wantKept {
+				if tc.wantKept {
+					t.Error("a FAILED job's job_files rows were dropped; its retry re-seeds " +
+						"them empty and loses the per-file results the first attempt recorded")
+				} else {
+					t.Error("a finished job's job_files rows survived its removal; no other " +
+						"deleter exists, so they stay for the life of the installation")
 				}
 			}
 		})

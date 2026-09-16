@@ -1297,10 +1297,12 @@ func (app *Application) shutdownCheckpoint() {
 // dropJobAlreadyInHistory removes a queue job that has already been filed in
 // history, reporting whether the caller should skip it.
 //
-// The return value is NOT "the removal succeeded". True means "this job is a
-// duplicate of a history entry, do not process it", which stays true when the
-// removal itself failed -- and the caller depends on that reading, because
+// The return value is NOT "the removal succeeded". True means "do not process
+// this job", which is also the right answer when the removal failed and when
+// the history lookup did -- and the caller depends on that reading, because
 // false sends a complete job on to maybeFinalize to be filed a second time.
+// False is reserved for the one case that is positive knowledge the job is not
+// in history: history.ErrNotFound.
 //
 // Reached at startup by a job that crashed between MoveToHistory and the queue
 // removal that follows it. The queue row is a duplicate of an entry that is
@@ -1327,12 +1329,27 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 	entry, err := app.historyRepo.Get(dbCtx, jobID)
 	dbCancel()
 	if err != nil {
+		// ErrNotFound and "the lookup failed" are different answers and must
+		// not share a return value. Not-found is knowledge: the job is not in
+		// history, so false is right and the caller should go on to finalize
+		// it. A timeout, a lock or an I/O error is the absence of knowledge,
+		// and false there asserts "not in history" on no evidence -- sending a
+		// job that may ALREADY be filed into maybeFinalize to be filed a
+		// second time.
+		//
+		// True on doubt costs one startup: the job is skipped, its manifest
+		// and rows are untouched, and the next startup asks again. That is the
+		// same trade jobFinalizer.persistAndCommit makes when its own history
+		// lookup fails -- "preserving durability rows on doubt" (job_finalizer.go).
 		if !errors.Is(err, history.ErrNotFound) {
-			app.log.Error("failed to check history for job", "jobID", jobID, "err", err)
+			app.log.Error("history lookup failed; skipping this job's reconciliation "+
+				"rather than risk finalizing one that is already filed",
+				"job", jobID, "err", err)
+			return true
 		}
 		return false
 	}
-	app.log.Info("found completed job in history but still in queue, removing", "jobID", jobID)
+	app.log.Info("found completed job in history but still in queue, removing", "job", jobID)
 	// #376's ordering, which RemoveJob has had since then and this path did
 	// not: the step that CAN fail runs before the steps that cannot be undone.
 	// A failed Remove leaves the queue row in place, so deleting the manifest
@@ -1362,12 +1379,12 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 		if rmErr != nil {
 			app.log.Error("failed to remove duplicate job from dispatcher; leaving its "+
 				"manifest and durability rows for the next startup to reconcile",
-				"jobID", jobID, "err", rmErr)
+				"job", jobID, "err", rmErr)
 			return true
 		}
 	}
 	if rmErr := removeManifestIn(manifestDir(app.config.GetGeneral().AdminDir), jobID); rmErr != nil && !os.IsNotExist(rmErr) {
-		app.log.Debug("could not unlink manifest for duplicate job", "jobID", jobID, "err", rmErr)
+		app.log.Debug("could not unlink manifest for duplicate job", "job", jobID, "err", rmErr)
 	}
 	if entry != nil && entry.Status == string(constants.StatusFailed) {
 		return true
