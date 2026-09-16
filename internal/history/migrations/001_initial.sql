@@ -170,7 +170,8 @@ CREATE TABLE failed_articles (
 --
 -- What is NOT true is that each then goes with its own owner. These rows do --
 -- history.Repository.delete removes them with the entry. job_files has no such
--- deleter: `git grep -n 'DELETE FROM job_files WHERE' -- '*.go'` returns 1 hit, in
+-- deleter: `git grep -n 'DELETE FROM job_files WHERE' -- '*.go'` returns, outside
+-- the comments that quote the command itself, one statement -- in
 -- Application.deleteJobDurability, which is the call finalizeJob skipped. So a
 -- FAILED job's job_files rows are removed by neither the queue job nor the
 -- history entry, and survive until a retry puts the job back in the queue for

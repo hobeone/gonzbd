@@ -253,6 +253,10 @@ func TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability(t *testi
 		`INSERT INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`, j.ID()); err != nil {
 		t.Fatalf("seed job files: %v", err)
 	}
+	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
+		t.Fatalf("fixture recorded %d runs and %d failed rows, want 1 and 1; "+
+			"the test would pass vacuously", nr, nf)
+	}
 	if n := jobFilesCount(t, application, j.ID()); n == 0 {
 		t.Fatal("no job_files rows to delete, so this test would pass vacuously")
 	}

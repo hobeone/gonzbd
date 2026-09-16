@@ -1544,9 +1544,16 @@ func TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability(t 
 		t.Fatal(err)
 	}
 	seedDurability(t, application, j.ID())
+	if _, err := repo.DB().ExecContext(ctx,
+		`INSERT OR REPLACE INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`, j.ID()); err != nil {
+		t.Fatalf("seed job files: %v", err)
+	}
 	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
 		t.Fatalf("fixture recorded %d runs and %d failed rows, want 1 and 1; "+
 			"the test would pass vacuously", nr, nf)
+	}
+	if n := jobFilesCount(t, application, j.ID()); n == 0 {
+		t.Fatal("no job_files rows to delete, so this test would pass vacuously")
 	}
 
 	if !application.dropJobAlreadyInHistory(ctx, j.ID()) {
@@ -1559,6 +1566,78 @@ func TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability(t 
 	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 0 || nf != 0 {
 		t.Errorf("%d durable runs and %d failed-article rows survive a reconcile that was "+
 			"cancelled after the job left the dispatcher", nr, nf)
+	}
+	if n := jobFilesCount(t, application, j.ID()); n != 0 {
+		t.Errorf("%d job_files rows survive a reconcile that was cancelled after the job "+
+			"left the dispatcher", n)
+	}
+}
+
+// TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails pins
+// #376's ordering on the reconcile path, which had it on neither side.
+//
+// The failing step ran, was logged, and execution carried on to delete the
+// manifest and every durability row -- leaving a queue row that had outlived
+// its own state, and nothing for the next startup to reconcile it against.
+//
+// The return value is the other half. False routes the caller into the state
+// check beneath it, where a complete job reaches maybeFinalize and is filed a
+// SECOND time; true says "duplicate, skip", which is still accurate when all
+// that failed was the cleanup.
+func TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails(t *testing.T) {
+	t.Parallel()
+	application, repo, adminDir := newLifecycleTestApp(t)
+	ctx := t.Context()
+
+	d := dispatch.New(
+		1, 1, time.Second, time.Now,
+		&appWorkers{app: application},
+		application.residency,
+		removeRefusingStore{Store: store.New(repo.DB())},
+		application.runner,
+	)
+	application.dispatcher = d
+	application.pipeline.dispatcher = d
+	application.runner.report = d
+
+	j, _ := removeJobFixture(t, application, "unremovable")
+
+	if err := application.historyRepo.Add(ctx, history.Entry{
+		NzoID: j.ID(), Name: "unremovable", Status: string(constants.StatusCompleted),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedDurability(t, application, j.ID())
+	if _, err := repo.DB().ExecContext(ctx,
+		`INSERT OR REPLACE INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`, j.ID()); err != nil {
+		t.Fatalf("seed job files: %v", err)
+	}
+	mpath := filepath.Join(manifestDir(adminDir), j.ID()+".json.gz")
+	if err := os.MkdirAll(manifestDir(adminDir), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mpath, []byte("manifest"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if !application.dropJobAlreadyInHistory(ctx, j.ID()) {
+		t.Error("reported false after a failed Remove; the caller then falls through to the " +
+			"state check and a complete job is filed a second time")
+	}
+
+	if _, err := os.Stat(mpath); err != nil {
+		t.Errorf("the manifest was deleted although the job is still in the queue (stat: %v); "+
+			"the next startup has nothing to reconcile it against", err)
+	}
+	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
+		t.Errorf("%d durable runs and %d failed-article rows left after a failed Remove, "+
+			"want 1 and 1 — the row outlived its own state", nr, nf)
+	}
+	if n := jobFilesCount(t, application, j.ID()); n != 1 {
+		t.Errorf("%d job_files rows left after a failed Remove, want 1", n)
+	}
+	if _, ok := application.Dispatcher().Job(j.ID()); !ok {
+		t.Error("the job left the dispatcher although its store delete failed")
 	}
 }
 

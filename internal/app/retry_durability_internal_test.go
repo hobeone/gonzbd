@@ -50,8 +50,9 @@ func durabilityRowCounts(t *testing.T, application *Application, jobID string) (
 }
 
 // TestDropJobDurability_ReportsBothOwnersFailures pins the difference between
-// this and deleteJobDurability, which share one implementation and differ only
-// in whether the caller is told.
+// this and deleteJobDurability, which calls it. They differ in two ways now:
+// whether the caller is told, and job_files -- deleteJobDurability drops it
+// too, and this deliberately does not, because a retry re-reads those rows.
 //
 // The two entry points exist because their callers need opposite things. For a
 // DEPARTED job the rows are garbage and there is no caller left to tell, so

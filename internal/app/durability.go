@@ -1295,7 +1295,12 @@ func (app *Application) shutdownCheckpoint() {
 }
 
 // dropJobAlreadyInHistory removes a queue job that has already been filed in
-// history, reporting whether it did.
+// history, reporting whether the caller should skip it.
+//
+// The return value is NOT "the removal succeeded". True means "this job is a
+// duplicate of a history entry, do not process it", which stays true when the
+// removal itself failed -- and the caller depends on that reading, because
+// false sends a complete job on to maybeFinalize to be filed a second time.
 //
 // Reached at startup by a job that crashed between MoveToHistory and the queue
 // removal that follows it. The queue row is a duplicate of an entry that is
@@ -1327,9 +1332,26 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 		return false
 	}
 	app.log.Info("found completed job in history but still in queue, removing", "jobID", jobID)
+	// #376's ordering, which RemoveJob has had since then and this path did
+	// not: the step that CAN fail runs before the steps that cannot be undone.
+	// A failed Remove leaves the queue row in place, so deleting the manifest
+	// and the durability rows anyway produces a row that has outlived its own
+	// state -- and the next startup, which would otherwise reconcile it
+	// cleanly, arrives to find nothing left to reconcile with.
+	//
+	// Returns TRUE rather than false, and the difference is not cosmetic. The
+	// caller reads false as "not handled" and falls through to the state check
+	// beneath it, which can route a complete job into maybeFinalize and file
+	// it a SECOND time -- the hazard the startup sweep's own ordering comment
+	// warns about a few lines further down. True means "this is a duplicate,
+	// skip it", which stays true: it IS a duplicate of an entry that is
+	// already the record, and all that failed was cleaning it up.
 	if app.dispatcher != nil {
 		if rmErr := app.dispatcher.Remove(ctx, jobID); rmErr != nil {
-			app.log.Error("failed to remove duplicate job from dispatcher", "jobID", jobID, "err", rmErr)
+			app.log.Error("failed to remove duplicate job from dispatcher; leaving its "+
+				"manifest and durability rows for the next startup to reconcile",
+				"jobID", jobID, "err", rmErr)
+			return true
 		}
 	}
 	if rmErr := removeManifestIn(manifestDir(app.config.GetGeneral().AdminDir), jobID); rmErr != nil && !os.IsNotExist(rmErr) {
@@ -1345,9 +1367,10 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 	// exactly the work a restart-interrupted-by-a-restart would abandon.
 	//
 	// The two steps above are NOT detached, and the asymmetry is the point.
-	// The history Get and dispatcher.Remove are allowed to fail: nothing has
-	// been destroyed yet, and the next startup reconciles the job again.
-	// Past dispatcher.Remove there is no next time.
+	// The history Get and dispatcher.Remove are allowed to fail because both
+	// return early on failure, before anything is destroyed, and the next
+	// startup reconciles the job again. Past a SUCCESSFUL dispatcher.Remove
+	// there is no next time, which is why this one is detached instead.
 	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	app.deleteJobDurability(delCtx, jobID)
 	delCancel()
@@ -1376,7 +1399,12 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 // short of a retry putting it back in the queue. Tracked in #560.
 //
 // Swallowing the error is right HERE and wrong for a retry, which is why the
-// two have separate entry points over one implementation. For a departed job
+// two are separate entry points. They are no longer the same deletion over one
+// implementation either, and the difference is job_files: this drops all three
+// tables, dropJobDurability drops the two a retry needs cleared and leaves
+// job_files alone on purpose. RetryHistoryJob keeps those rows -- it re-seeds
+// with INSERT ... ON CONFLICT DO NOTHING so a retained row survives, and
+// applies it through RestoreFileMeta (app.go). For a departed job
 // the rows are garbage and there is no caller left to tell -- but note what
 // that costs while no backstop exists: the disk they occupy is not reclaimed
 // later, it is not reclaimed at all. A retry is the opposite case -- see
@@ -1404,8 +1432,9 @@ func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 	}
 }
 
-// dropJobDurability is the same deletion for a job that is coming BACK, where
-// a failure must stop the caller.
+// dropJobDurability is the two-table half of that deletion -- durable_runs and
+// failed_articles, never job_files -- for a job that is coming BACK, where a
+// failure must stop the caller.
 //
 // RetryHistoryJob calls this when the re-parsed manifest changed shape, so the
 // retained rows describe articles that are no longer at those indices. They are

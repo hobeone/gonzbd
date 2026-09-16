@@ -913,7 +913,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	defer cancelCancel()
 	if err := app.assembler.CancelJob(cancelCtx, id, disposition); err != nil {
 		app.log.Warn("assembler cancel job did not confirm file handles closed",
-			"job", id, "error", err)
+			"job", id, "err", err)
 	}
 	// Forget the pipeline's cached file info now that no more articles can
 	// be dispatched for this job.
