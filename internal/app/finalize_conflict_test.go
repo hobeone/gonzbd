@@ -2,12 +2,15 @@ package app
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
@@ -181,6 +184,68 @@ VALUES (?, 0, 0, 0, "file.bin", 0)`, job.ID()); err != nil {
 	}
 	if jobFilesCount != 1 {
 		t.Errorf("job_files rows were deleted on conflict with failed entry: count=%d, want 1", jobFilesCount)
+	}
+}
+
+// TestFinalize_KeepsTheManifestWhenTheDispatcherRemoveFails pins #376's
+// ordering on the finalizer, which had it on neither side.
+//
+// The failure is already known to the code: it logs "job remains in queue and
+// history until restart". It then unlinked that still-queued job's manifest
+// and dropped its durability rows. appResidency.hydrate reads the manifest
+// from disk and returns an error without it, so the row became one that could
+// not be loaded at all -- and the operational error beside it says the removal
+// failed, not that.
+//
+// Milder than the reconcile path's version of this, and the difference is
+// worth keeping straight: the job IS in history here, so the next startup's
+// dropJobAlreadyInHistory removes the row and its rows with it. The window
+// this closes is the one until then, not a permanent leak.
+func TestFinalize_KeepsTheManifestWhenTheDispatcherRemoveFails(t *testing.T) {
+	t.Parallel()
+	application, repo, adminDir := newLifecycleTestApp(t)
+	ctx := t.Context()
+	application.ctx = ctx
+
+	d := dispatch.New(
+		1, 1, time.Second, time.Now,
+		&appWorkers{app: application},
+		application.residency,
+		removeRefusingStore{Store: store.New(repo.DB())},
+		application.runner,
+	)
+	application.dispatcher = d
+	application.pipeline.dispatcher = d
+	application.runner.report = d
+
+	j, _ := removeJobFixture(t, application, "unfinalizable")
+	seedDurability(t, application, j.ID())
+
+	mpath := filepath.Join(manifestDir(adminDir), j.ID()+".json.gz")
+	if err := os.MkdirAll(manifestDir(adminDir), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mpath, []byte("manifest"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	newJobFinalizer(application).finalize(&postproc.Job{
+		Job:         j,
+		FinalDir:    t.TempDir(),
+		DownloadDir: t.TempDir(),
+	})
+
+	if _, ok := application.Dispatcher().Job(j.ID()); !ok {
+		t.Fatal("the job left the dispatcher although its store delete failed; the rest " +
+			"of this test asserts nothing about the case it is named for")
+	}
+	if _, err := os.Stat(mpath); err != nil {
+		t.Errorf("the manifest was unlinked although the job is still in the queue "+
+			"(stat: %v); appResidency.hydrate cannot load the row without it", err)
+	}
+	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
+		t.Errorf("%d durable runs and %d failed-article rows left for a job that is still "+
+			"queued, want 1 and 1", nr, nf)
 	}
 }
 

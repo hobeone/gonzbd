@@ -166,6 +166,24 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		if app.checkpointer != nil && ppJob != nil && ppJob.Job != nil {
 			app.checkpointer.Prune(ppJob.Job.ID())
 		}
+		// Whether the queue row actually went. The two steps below destroy
+		// state the queue row still needs, so neither may run when it did
+		// not -- #376's ordering, the same rule dropJobAlreadyInHistory
+		// applies to its own Remove.
+		//
+		// The log line below already says the job "remains in queue"; before
+		// this flag existed the next two statements then unlinked its manifest
+		// and dropped its durability rows anyway. appResidency.hydrate reads
+		// that manifest from disk and returns an error without it
+		// (residency.go), so the job could no longer be hydrated at all --
+		// a queue row that cannot be loaded, alongside the operational error
+		// that says why the removal failed but not that.
+		//
+		// Not fatal, unlike the reconcile path's version: this job IS in
+		// history, so the next startup's dropJobAlreadyInHistory removes the
+		// row and the rows with it. What this protects is the window until
+		// then.
+		removedFromQueue := true
 		if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
 			jobID := ppJob.Job.ID()
 			removeCtx, removeCancel := context.WithTimeout(occupyCtx, 3*time.Second)
@@ -177,19 +195,20 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				retryCancel()
 			}
 			if err != nil {
-				log.Error("failed to remove job from dispatcher after post-proc retry; job remains in queue and history until restart",
+				log.Error("failed to remove job from dispatcher after post-proc retry; job remains in queue and history until restart, with its manifest and durability rows left in place for the next startup to reconcile",
 					"job", jobID, "err", err)
 				_ = app.dispatcher.SetOperationalError(jobID, "failed to remove finalized job from queue: "+err.Error())
 				app.emit(Event{Type: "queue_updated"})
+				removedFromQueue = false
 			}
 		}
-		if ppJob != nil && ppJob.Job != nil {
+		if removedFromQueue && ppJob != nil && ppJob.Job != nil {
 			_ = removeManifestIn(mdir, ppJob.Job.ID())
 		}
 
 		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 3*time.Second)
 		defer delCancel()
-		shouldDeleteDurability := entry.Status != string(constants.StatusFailed)
+		shouldDeleteDurability := removedFromQueue && entry.Status != string(constants.StatusFailed)
 		if shouldDeleteDurability && persistErr != nil && app.historyRepo != nil && app.historyRepo.DB() != nil {
 			existing, err := app.historyRepo.Get(delCtx, ppJob.Job.ID())
 			if err == nil {
