@@ -52,7 +52,9 @@ func durabilityRowCounts(t *testing.T, application *Application, jobID string) (
 // TestDropJobDurability_ReportsBothOwnersFailures pins the difference between
 // this and deleteJobDurability, which calls it. They differ in two ways now:
 // whether the caller is told, and job_files -- deleteJobDurability drops it
-// too, and this deliberately does not, because a retry re-reads those rows.
+// too, and this does not, leaving RetryHistoryJob's re-seed to settle those
+// rows. (A retry's retained PROGRESS comes from history_job_files, not from
+// job_files -- see dropJobDurability's own comment.)
 //
 // The two entry points exist because their callers need opposite things. For a
 // DEPARTED job the rows are garbage and there is no caller left to tell, so

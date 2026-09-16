@@ -1646,7 +1646,8 @@ func TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails(t *
 //
 // This path is reached by a job that crashed between MoveToHistory and the
 // queue removal that follows it, so it is the ONE removal that runs without
-// finalizeJob. It fetched the history entry, discarded it, removed the queue
+// jobFinalizer.persistAndCommit. It fetched the history entry, discarded it,
+// removed the queue
 // row and stopped — leaving durable_runs and failed_articles behind, keyed by
 // job ID with no foreign key to dispatch_jobs. Nothing collects what escapes
 // this path (#549), so applying the rule here is the only thing that keeps a

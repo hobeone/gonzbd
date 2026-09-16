@@ -909,9 +909,16 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	//
 	// Thirty seconds matches removeCtx above, which bounds the comparable wait
 	// on the same worker.
+	//
+	// Released inline rather than deferred, here and for delCtx below, because
+	// real work follows both: a deferred release keeps each timer armed
+	// through safeDeleteDir's recursive unlink and the NNTP disconnect at the
+	// end of this function. dropJobAlreadyInHistory releases inline for the
+	// same reason.
 	cancelCtx, cancelCancel := context.WithTimeout(cleanupCtx, 30*time.Second)
-	defer cancelCancel()
-	if err := app.assembler.CancelJob(cancelCtx, id, disposition); err != nil {
+	err := app.assembler.CancelJob(cancelCtx, id, disposition)
+	cancelCancel()
+	if err != nil {
 		app.log.Warn("assembler cancel job did not confirm file handles closed",
 			"job", id, "err", err)
 	}
@@ -932,8 +939,8 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// shutdown budget. A removal whose bookkeeping cannot finish in five has a
 	// sicker database than this call can fix.
 	delCtx, delCancel := context.WithTimeout(cleanupCtx, 5*time.Second)
-	defer delCancel()
 	app.deleteJobDurability(delCtx, id)
+	delCancel()
 	if deleteFiles && name != "" {
 		downloadDir := app.config.GetGeneral().DownloadDir
 		path := filepath.Join(downloadDir, name)

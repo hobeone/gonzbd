@@ -1307,7 +1307,8 @@ func (app *Application) shutdownCheckpoint() {
 // already the record.
 //
 // The durability rows go with it, under the same rule the ordinary transition
-// applies in finalizeJob: unless the entry is FAILED, in which case a retry
+// applies in jobFinalizer.persistAndCommit: unless the entry is FAILED, in
+// which case a retry
 // reuses them to bound FinalizeFile's truncate to the whole partial file
 // rather than to the few articles that run re-fetches.
 //
@@ -1342,12 +1343,23 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 	// Returns TRUE rather than false, and the difference is not cosmetic. The
 	// caller reads false as "not handled" and falls through to the state check
 	// beneath it, which can route a complete job into maybeFinalize and file
-	// it a SECOND time -- the hazard the startup sweep's own ordering comment
-	// warns about a few lines further down. True means "this is a duplicate,
-	// skip it", which stays true: it IS a duplicate of an entry that is
-	// already the record, and all that failed was cleaning it up.
+	// it a SECOND time -- the hazard Application.Start's own comment on the
+	// history sweep's ordering warns about (app.go, the paragraph beginning
+	// "Sweep expired history, after the reconciliation above"). True means
+	// "this is a duplicate, skip it", which stays true: it IS a duplicate of
+	// an entry that is already the record, and all that failed was cleaning
+	// it up.
+	//
+	// Bounded, because the caller's context is not. Start receives a
+	// signal.NotifyContext with no deadline (cmd/gonzbd/main.go), and Remove
+	// waits on worker launch, on live leases and on the store -- so an
+	// unbounded call here blocks startup until an operator sends a signal.
+	// Thirty seconds matches the bound RemoveJob puts on this same call.
 	if app.dispatcher != nil {
-		if rmErr := app.dispatcher.Remove(ctx, jobID); rmErr != nil {
+		rmCtx, rmCancel := context.WithTimeout(ctx, 30*time.Second)
+		rmErr := app.dispatcher.Remove(rmCtx, jobID)
+		rmCancel()
+		if rmErr != nil {
 			app.log.Error("failed to remove duplicate job from dispatcher; leaving its "+
 				"manifest and durability rows for the next startup to reconcile",
 				"jobID", jobID, "err", rmErr)
@@ -1395,16 +1407,20 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 // history.Repository.delete cleans up
 // history_job_files, durable_runs and failed_articles when an entry goes, and
 // job_files is not on that list -- which is why a FAILED job, whose job_files
-// rows finalizeJob deliberately keeps, has no path that ever removes them
+// rows jobFinalizer.persistAndCommit deliberately keeps, has no path that
+// ever removes them
 // short of a retry putting it back in the queue. Tracked in #560.
 //
 // Swallowing the error is right HERE and wrong for a retry, which is why the
 // two are separate entry points. They are no longer the same deletion over one
 // implementation either, and the difference is job_files: this drops all three
 // tables, dropJobDurability drops the two a retry needs cleared and leaves
-// job_files alone on purpose. RetryHistoryJob keeps those rows -- it re-seeds
-// with INSERT ... ON CONFLICT DO NOTHING so a retained row survives, and
-// applies it through RestoreFileMeta (app.go). For a departed job
+// job_files alone. That sparing is safe rather than load-bearing --
+// RetryHistoryJob re-seeds with INSERT ... ON CONFLICT DO NOTHING, so a
+// surviving row is undisturbed and a missing one is replaced. The retained
+// PROGRESS a retry applies comes from history_job_files, read by
+// historyFileProgress and applied through RestoreFileMeta; job_files is not
+// read on that path at all. For a departed job
 // the rows are garbage and there is no caller left to tell -- but note what
 // that costs while no backstop exists: the disk they occupy is not reclaimed
 // later, it is not reclaimed at all. A retry is the opposite case -- see
@@ -1433,8 +1449,8 @@ func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 }
 
 // dropJobDurability is the two-table half of that deletion -- durable_runs and
-// failed_articles, never job_files -- for a job that is coming BACK, where a
-// failure must stop the caller.
+// failed_articles, never job_files, which RetryHistoryJob re-seeds instead --
+// for a job that is coming BACK, where a failure must stop the caller.
 //
 // RetryHistoryJob calls this when the re-parsed manifest changed shape, so the
 // retained rows describe articles that are no longer at those indices. They are
