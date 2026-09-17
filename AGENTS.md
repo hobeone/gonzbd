@@ -9,9 +9,8 @@ argument for a rule — the incident it came from, the measurement that set its
 shape, the worked example — lives wherever that argument can be checked**: a
 topic doc, or the package doc of the tool that enforces it. When a rule gains a
 runner, the prose arguing for it moves to the runner and leaves a command
-behind. This file was split down to 313 lines once before and regrew to three
-times that by accumulating postmortems; keeping the split is a standing
-obligation, not a one-off cleanup.
+behind. A file like this grows by accumulating postmortems, so keeping it short
+is a standing obligation, not a one-off cleanup.
 
 ## Project Context
 
@@ -79,9 +78,9 @@ security invariant.** The test is what the value could *do*:
 - A value interpolated into a protocol, a path, a query, or a command → the
   rule does not apply; keep the guard and say why at the check.
 
-The carve-out was stretched twice on one PR to cover a Message-ID reaching an
-NNTP command line, which is a command injection rather than a formatting
-difference.
+The carve-out is easy to stretch the wrong way: a Message-ID reaching an NNTP
+command line is a command injection, not a formatting difference, so the rule
+never waives the guard on it.
 
 ### 2. State has one owner
 
@@ -173,6 +172,14 @@ before asserting" for the eight that shipped.
   package-private door — these fail loudly when they move, where a comment fails
   silently.
 
+**A fix justified by a rule is a claim about every site that rule governs.**
+"Cleanup past the point of no return must not be abandonable" names a set, and
+fixing the call that prompted it says nothing about the others. **Before the
+first push, list every site the rule applies to and record each in the PR
+body** as fixed, checked and already sound, or rejected with the reason. A
+reviewer who finds a second site has found the enumeration that was skipped.
+`docs/commit-cycle.md` § "Fixing one site of a rule" has examples.
+
 **A claim about BEHAVIOUR is scoped by the branch that makes it true.** You
 cannot grep "is anything lost?", and what would settle it is a path through the
 code rather than a set of lines.
@@ -191,6 +198,14 @@ governs a sentence a change **falsified**; this rule governs a sentence you are
 **writing for the first time**. When a claim you were about to write turns out
 to be false, the fix is to say what still holds and name what you checked, never
 to reach for a weaker universal.
+
+**Every sentence in a comment is a claim this rule applies to, so write fewer of
+them.** A comment states the invariant, what would break it, and where it is
+enforced. Why the change was made, what else was considered, and how the line
+got here belong in the commit body or the PR, which describe the change as of
+when it was made and do not go stale in the tree. An aside nobody needed — "five
+seconds matches the sibling paths" — is still a claim somebody has to verify.
+`docs/commit-cycle.md` § "Comment volume is claim volume" has examples.
 
 ## Repository Layout
 
@@ -418,21 +433,24 @@ sentence is only half the sweep, and neither of these is caught by any gate.
 
 **Sweep against the diff the commit will land as, not the diff that motivated
 the edit.** Re-read each comment you touched against `git diff --cached` at the
-end, as a reader who has not seen the finding that prompted it. This one has
-shipped three times on one branch; `docs/commit-cycle.md` § "Sweeping against
-the wrong diff" has the shape.
+end, as a reader who has not seen the finding that prompted it.
+`docs/commit-cycle.md` § "Sweeping against the wrong diff" has the shape.
 
 Run `pr-review-toolkit:comment-analyzer` over the cumulative PR diff as well.
 It and the grep cover different things: the analyzer reads the comments you
-changed, the grep finds the ones you didn't. Do this **once, on the last round**
-of a review-fix loop — each round's own fix creates fresh drift, so an early
-sweep goes stale.
+changed, the grep finds the ones you didn't. **When a new review arrives after
+every push, run it before every push** — that review reads the same comments
+regardless, only one round later and after the drift is already on the PR.
+Otherwise do it once, on the last round of a review-fix loop, since each round's
+own fix creates fresh drift and an early sweep goes stale.
+`docs/commit-cycle.md` § "A review after every push is already the analyzer"
+has the reasoning.
 
 **Migrations are frozen once shipped to production.** Prior to v1.0, per Standing
 Design Rule 1, GoNZBD maintains a single canonical `001_initial.sql` (breaking
 schema edits modify `001_initial.sql` and `schema.golden` directly). Sweep any
 schema changes *before* committing: the migration must describe the current
-schema, not its history (commit `ced7fb41`). Once released, schema changes will
+schema, not its history. Once released, schema changes will
 use new incremental `goose` migrations.
 
 ### Code Review Reception Protocol
@@ -509,7 +527,7 @@ Notes on the gate block:
   repository defines, built for the **host `GOOS`/`GOARCH`**, so files behind
   an OS constraint stay invisible. It proves those files build; it does not
   prove they still assert anything. (`docs/commit-cycle.md` § "Why the gates
-  are shaped the way they are" has the six-week regression that motivated it.)
+  are shaped the way they are" has the regression that motivated it.)
 - `.golangci.yml`'s `run.build-tags` lists all three tags, so the default
   `golangci-lint run ./...` lints the tagged files too, with no flag needed.
 
@@ -545,7 +563,7 @@ Three rules follow:
 - **A green gate bounds nothing beyond its scope above.** State what was
   actually checked rather than that the gates passed.
 - **Distrust `check_coverage` attribution while you have uncommitted changes**
-  that shift a file's line count (issue #280). If a reported function looks
+  that shift a file's line count. If a reported function looks
   untouched by your change, commit and re-run before writing a test for it —
   `docs/commit-cycle.md` has why.
 
@@ -662,18 +680,18 @@ test) moved to [`docs/config-contract.md`](docs/config-contract.md).
 
 - **Branch**: **work lands via pull request by default**, including single-commit fixes. This holds even though it is a solo private repo, for two concrete reasons: the PR is the review surface that CodeRabbit and human review comment on, and `.github/workflows/security.yml` triggers on `pull_request` — pushing straight to `main` skips review entirely and runs the security scan only after the fact, when it is too late to be a gate. A direct push to `main` requires the user to say so for that specific change — their standing preference is still the PR route.
 - **This is a convention, not an enforced gate.** There is no GitHub branch protection configured for this repository, so nothing on the server will reject a direct push to `main`. It holds because we follow it. Do not read "the push succeeded" as "the push was allowed."
-- **Branch name**: `<type>/<issue#>-<slug>` — `fix/547-resume-fixture-vacuous`, `docs/519-clearallemitted`, `chore/<slug>` where there is no issue. The `<type>` matches the Conventional Commits type below, so a branch and the commits on it agree, and the `/` groups the namespace for `git branch --list 'fix/*'` and GitHub's branch list.
+- **Branch name**: `<type>/<issue#>-<slug>` — `fix/123-short-slug`, `docs/456-another-slug`, `chore/<slug>` where there is no issue. The `<type>` matches the Conventional Commits type below, so a branch and the commits on it agree, and the `/` groups the namespace for `git branch --list 'fix/*'` and GitHub's branch list.
 - **Worktrees**: for multi-step efforts, work in an isolated **git worktree** off `main`, then open a PR from that branch. Worktrees live under `.claude/worktrees/<name>`: that is where the `EnterWorktree` harness tool places them, and the only location it will enter — a worktree created elsewhere, in `/tmp` or anywhere else, cannot be entered with it and so gets none of the isolation the rest of this section assumes. A fresh one cannot build or test until you supply two gitignored directories from the main checkout:
   ```bash
   cp -r <main-checkout>/ui/dist ui/dist                  # or build the UI
   ln -s <main-checkout>/ui/node_modules ui/node_modules  # or `bun install` in ui/
   ```
   Without `ui/dist`, `//go:embed all:dist` in `ui/embed.go` fails and `internal/web` reports `[setup failed]`. Without `ui/node_modules`, `scripts/run_tests.sh` aborts in its prerequisite check before running anything at all. Both are worktree artifacts, not broken changes.
-- **Push from a worktree with an explicit refspec.** `EnterWorktree` derives the branch from the worktree directory and prefixes it — asking for `fix/547-resume-fixture-vacuous` yields the branch `worktree-fix+547-resume-fixture-vacuous`. That is not the naming convention above, and the tool takes no parameter to change it. Map it at push time:
+- **Push from a worktree with an explicit refspec.** `EnterWorktree` derives the branch from the worktree directory and prefixes it — asking for `fix/123-short-slug` yields the branch `worktree-fix+123-short-slug`. That is not the naming convention above, and the tool takes no parameter to change it. Map it at push time:
   ```bash
-  git push -u origin HEAD:fix/547-resume-fixture-vacuous
+  git push -u origin HEAD:fix/123-short-slug
   ```
-  **Renaming the local branch instead is worse, and the reason is not cosmetic.** `git branch -m` works, and several branches took that route — but `ExitWorktree` recorded the original name and its unmerged-commit guard then reports commits on a branch that no longer exists. Every exit answers `Worktree has N commits ...` for a branch that is fully merged, so every exit demands `discard_changes: true`. That flag is the one control between a clean exit and discarding real work, and a workflow that requires it each time trains the reflex to pass it unread. The refspec puts the convention on `origin`, where it is load-bearing — PR titles, `gh pr list --head`, and `git branch --merged`, which cannot reason about a squash-merged branch at all — and leaves the tool's own bookkeeping intact.
+  **Renaming the local branch instead is worse, and the reason is not cosmetic.** `git branch -m` works — but `ExitWorktree` records the original name and its unmerged-commit guard then reports commits on a branch that no longer exists. Every exit answers `Worktree has N commits ...` for a branch that is fully merged, so every exit demands `discard_changes: true`. That flag is the one control between a clean exit and discarding real work, and a workflow that requires it each time trains the reflex to pass it unread. The refspec puts the convention on `origin`, where it is load-bearing — PR titles, `gh pr list --head`, and `git branch --merged`, which cannot reason about a squash-merged branch at all — and leaves the tool's own bookkeeping intact.
 - **One step per commit** (or one logical sub-piece if a step is split).
 
 (Merge/close approval, force-push, and quality-gates-before-push are global policy — see `~/.claude/CLAUDE.md`; not restated here.)
@@ -687,8 +705,8 @@ subsystem** — `fix(assembler)`, `refactor(queue)`, `feat(nntp)`.
 
 ### Commit Hygiene
 
-These rules exist because a batch of refactor commits violated them — the cost
-is misleading history that `git log <file>` and `git bisect` then propagate.
+Violating these rules costs misleading history, which `git log <file>` and
+`git bisect` then propagate.
 `docs/commit-cycle.md` § "Commit hygiene" has the cases.
 
 - **The subject line MUST describe what is actually in the diff.** Before
