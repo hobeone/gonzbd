@@ -873,8 +873,8 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	if rmErr != nil {
 		return rmErr
 	}
-	if rmErr := removeManifestIn(manifestDir(app.config.GetGeneral().AdminDir), id); rmErr != nil && !os.IsNotExist(rmErr) {
-		app.log.Debug("could not unlink manifest for removed job", "job", id, "err", rmErr)
+	if manifestErr := removeManifestIn(manifestDir(app.config.GetGeneral().AdminDir), id); manifestErr != nil && !os.IsNotExist(manifestErr) {
+		app.log.Debug("could not unlink manifest for removed job", "job", id, "err", manifestErr)
 	}
 
 	// Past dispatcher.Remove the job is gone from dispatch_jobs, and every
@@ -1193,7 +1193,7 @@ func (app *Application) Start(ctx context.Context) error {
 
 	if app.dispatcher != nil {
 		for _, row := range app.dispatcher.List() {
-			if app.historyRepo != nil && app.dropJobAlreadyInHistory(ctx, row.ID) {
+			if app.dropJobAlreadyInHistory(ctx, row.ID) {
 				continue
 			}
 			if row.View.State == job.Fetching || row.View.State == job.StateUnset {

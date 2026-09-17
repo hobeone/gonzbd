@@ -1325,6 +1325,14 @@ func (app *Application) shutdownCheckpoint() {
 // b6651d43 with nothing replacing it, so a row this path fails to remove
 // survives for the life of the installation. Tracked as #549.
 func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID string) bool {
+	// With no history database there is no history, so "not in history" is
+	// knowledge rather than doubt and false is the right answer. The check
+	// lives here rather than at Start's call site, which used to carry it, so
+	// the method answers correctly for any caller instead of relying on each
+	// one to remember.
+	if app.historyRepo == nil || app.historyRepo.DB() == nil {
+		return false
+	}
 	dbCtx, dbCancel := context.WithTimeout(ctx, 5*time.Second)
 	entry, err := app.historyRepo.Get(dbCtx, jobID)
 	dbCancel()
@@ -1349,7 +1357,8 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 		}
 		return false
 	}
-	app.log.Info("found completed job in history but still in queue, removing", "job", jobID)
+	app.log.Info("found job already in history but still in queue, removing",
+		"job", jobID, "status", entry.Status)
 	// #376's ordering, which RemoveJob has had since then and this path did
 	// not: the step that CAN fail runs before the steps that cannot be undone.
 	// A failed Remove leaves the queue row in place, so deleting the manifest
@@ -1383,8 +1392,8 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 			return true
 		}
 	}
-	if rmErr := removeManifestIn(manifestDir(app.config.GetGeneral().AdminDir), jobID); rmErr != nil && !os.IsNotExist(rmErr) {
-		app.log.Debug("could not unlink manifest for duplicate job", "job", jobID, "err", rmErr)
+	if manifestErr := removeManifestIn(manifestDir(app.config.GetGeneral().AdminDir), jobID); manifestErr != nil && !os.IsNotExist(manifestErr) {
+		app.log.Debug("could not unlink manifest for duplicate job", "job", jobID, "err", manifestErr)
 	}
 	if entry != nil && entry.Status == string(constants.StatusFailed) {
 		return true
@@ -1417,10 +1426,12 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 // has no replacement (#549), so the crash window between a job leaving
 // dispatch_jobs and this running strands rows permanently.
 //
-// job_files is the narrowest of the three. Its deleters are
-// `git grep -n 'DELETE FROM job_files WHERE' -- '*.go'`, which outside this
-// comment returns the statement below alone -- so a row that escapes here has
-// no second deleter of any kind.
+// job_files is the narrowest of the three. Grepping the Go sources for a
+// DELETE against that table finds the statement below and nothing else, so a
+// row that escapes here has no second deleter of any kind. (Deliberately not
+// quoted as a backticked command: a comment containing the searched-for SQL
+// matches its own search, and this one used to inflate both its own count and
+// the job_files enumeration in 001_initial.sql.)
 // history.Repository.delete cleans up
 // history_job_files, durable_runs and failed_articles when an entry goes, and
 // job_files is not on that list -- which is why a FAILED job, whose job_files

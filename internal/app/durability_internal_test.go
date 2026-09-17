@@ -670,6 +670,19 @@ func TestDeleteJobDurability_IsInertWithoutStores(t *testing.T) {
 	application.deleteJobDurability(context.Background(), "job-a")
 }
 
+// TestDropJobAlreadyInHistory_AnswersFalseWithoutAHistoryDatabase pins the
+// guard that moved inside the method from Start's call site. With no history
+// database there is no history, so false is knowledge rather than doubt --
+// and without the guard the call dereferences a nil repository.
+func TestDropJobAlreadyInHistory_AnswersFalseWithoutAHistoryDatabase(t *testing.T) {
+	t.Parallel()
+	application := &Application{log: slog.New(slog.DiscardHandler)}
+	if application.dropJobAlreadyInHistory(t.Context(), "job-a") {
+		t.Error("reported the job as handled with no history database to find it in; " +
+			"Start would skip a job that nothing has filed")
+	}
+}
+
 // ---------- settings ----------
 
 // TestCheckpointSettings_SubstitutesDefaultsForUnsetBounds pins that neither

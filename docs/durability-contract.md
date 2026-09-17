@@ -1853,8 +1853,10 @@ recorded here so the next reader does not mistake them for design.
    writer is the sole production implementation of `checkpoint.Store`, whose
    `SaveBatch` holds the only `INSERT INTO failed_articles` outside tests —
    `git grep -n 'INTO failed_articles' -- '*.go' ':!*_test.go'` returns the one
-   line, `internal/app/dispatcher_wiring.go:107`. Without that filter it
-   returns nine, the other eight being test fixtures.
+   line, `internal/app/dispatcher_wiring.go:107`. Without that filter it also
+   returns test fixtures, whose number is deliberately not stated here: it
+   grows with every test that seeds a row, nothing checks a count in Markdown,
+   and the claim this paragraph needs is the filtered one.
 
 7. **An exact-offset collision is PREVENTED only within one open-file episode;
    across a boundary it is detected and reported after the fact.**
