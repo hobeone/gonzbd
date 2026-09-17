@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -16,9 +17,10 @@ import (
 // article, standing in for a run that got some of the file onto disk and lost
 // one article for good.
 //
-// Both tables, because they have different owners and the retention rules have
-// to agree about them: durability.RunStore owns durable_runs and
-// checkpoint.Store.SaveBatch owns failed_articles.
+// Both tables, because they are written through different paths and the
+// retention rules have to agree about them: durability.RunStore writes
+// durable_runs, and appCheckpointStore.SaveBatch writes failed_articles with
+// raw SQL.
 func seedDurability(t *testing.T, application *Application, jobID string) {
 	t.Helper()
 	if _, err := application.runs.Commit(t.Context(), jobID, []durability.DurableArticle{
@@ -49,21 +51,26 @@ func durabilityRowCounts(t *testing.T, application *Application, jobID string) (
 }
 
 // TestDropJobDurability_ReportsBothOwnersFailures pins the difference between
-// this and deleteJobDurability, which share one implementation and differ only
-// in whether the caller is told.
+// this and deleteJobDurability, which calls it. They differ in two ways now:
+// whether the caller is told, and job_files -- deleteJobDurability drops it
+// too, and this does not, leaving RetryHistoryJob's re-seed to settle those
+// rows. (A retry's retained PROGRESS comes from history_job_files, not from
+// job_files -- see dropJobDurability's own comment.)
 //
 // The two entry points exist because their callers need opposite things. For a
-// DEPARTED job the rows are garbage: leaving them costs disk until Prune runs,
-// and there is no caller left to tell, so deleteJobDurability swallows. For a
+// DEPARTED job the rows are garbage and there is no caller left to tell, so
+// deleteJobDurability swallows -- which costs the disk permanently while no
+// backstop exists (#549), not merely until one runs. For a
 // job coming BACK the rows are about to be READ, and a stale one bounds
 // FinalizeFile's truncate to the wrong article range — so RetryHistoryJob
 // aborts on a failure here rather than requeueing (#422).
 //
-// Both owners' errors are joined rather than the first winning, because they
-// are different stores: durability.RunStore owns durable_runs and
-// checkpoint.Store.SaveBatch owns failed_articles. A caller deciding whether to abort is better served by
-// the whole picture, and an early return would leave one owner's rows behind
-// for a job that is about to be re-downloaded over them.
+// Both errors are joined rather than the first winning, because the two
+// deletions are independent: durable_runs goes through durability.RunStore,
+// and failed_articles -- which appCheckpointStore.SaveBatch writes and no type
+// owns the deletion of -- goes through raw SQL. A caller deciding whether to
+// abort is better served by the whole picture, and an early return would leave
+// one table's rows behind for a job that is about to be re-downloaded over them.
 func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
@@ -78,8 +85,14 @@ func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
 		t.Fatalf("%d runs and %d failed rows survive the drop", nr, nf)
 	}
 
+	// Re-seed BEFORE the failing store goes in: the success path above emptied
+	// both tables, and seedDurability writes durable_runs through
+	// application.runs, which is about to start refusing everything.
+	seedDurability(t, application, job.ID())
+
 	boom := errors.New("database is locked")
 	application.runs = failingRunStore{err: boom}
+
 	err := application.dropJobDurability(t.Context(), job.ID())
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the run store's failure — RetryHistoryJob "+
@@ -87,6 +100,43 @@ func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "durable runs") {
 		t.Errorf("err = %q, want it to name which owner failed", err)
+	}
+	// The independence the doc claims, asserted rather than described: the
+	// second deletion runs even though the first failed. Without this the
+	// test passes against a dropJobDurability that returns on the first
+	// error, which is the shape the comment above exists to rule out.
+	// Queried directly rather than through durabilityRowCounts, whose run count
+	// goes through application.runs -- now the refusing store.
+	var nf int
+	if err := application.historyRepo.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM failed_articles WHERE job_id = ?`, job.ID()).Scan(&nf); err != nil {
+		t.Fatal(err)
+	}
+	if nf != 0 {
+		t.Errorf("%d failed-article rows survive a drop whose RUN deletion failed; the "+
+			"second deletion was skipped, so a retry downloads over rows nothing cleared", nf)
+	}
+
+	// Both failing at once. The failed_articles DELETE is raw SQL against a
+	// real database, so the failure is injected by taking the table away
+	// rather than through an interface -- there is no seam to inject at,
+	// which is itself part of what #560 is about.
+	if _, err := application.historyRepo.DB().ExecContext(t.Context(),
+		`ALTER TABLE failed_articles RENAME TO failed_articles_hidden`); err != nil {
+		t.Fatalf("hide failed_articles: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = application.historyRepo.DB().ExecContext(context.WithoutCancel(t.Context()),
+			`ALTER TABLE failed_articles_hidden RENAME TO failed_articles`)
+	})
+
+	both := application.dropJobDurability(t.Context(), job.ID())
+	if !errors.Is(both, boom) {
+		t.Errorf("err = %v, want it to still wrap the run store's failure when both fail", both)
+	}
+	if !strings.Contains(both.Error(), "failed articles") {
+		t.Errorf("err = %q, want it to name the failed-article deletion too — a caller "+
+			"deciding whether to abort is told about one failure, not both", both)
 	}
 }
 

@@ -867,33 +867,83 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	if app.checkpointer != nil {
 		app.checkpointer.Prune(id)
 	}
-	removeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if err := app.dispatcher.Remove(removeCtx, id); err != nil {
-		return err
+	removeCtx, removeCancel := context.WithTimeout(ctx, 30*time.Second)
+	rmErr := app.dispatcher.Remove(removeCtx, id)
+	removeCancel()
+	if rmErr != nil {
+		return rmErr
 	}
-	if rmErr := removeManifestIn(manifestDir(app.config.GetGeneral().AdminDir), id); rmErr != nil && !os.IsNotExist(rmErr) {
-		app.log.Debug("could not unlink manifest for removed job", "job", id, "err", rmErr)
+	if manifestErr := removeManifestIn(manifestDir(app.config.GetGeneral().AdminDir), id); manifestErr != nil && !os.IsNotExist(manifestErr) {
+		app.log.Debug("could not unlink manifest for removed job", "job", id, "err", manifestErr)
 	}
+
+	// Past dispatcher.Remove the job is gone from dispatch_jobs, and every
+	// step below is cleanup that nothing else will ever perform. None of it
+	// may be abandoned because the CALLER's context ended: api/queue.go passes
+	// r.Context() into RemoveJob, so that context ends when a client closes a
+	// browser tab. It needs no crash — a large job's removal spends real time
+	// here, waiting on the assembler to close its file handles.
+	//
+	// Detached from ctx rather than from app.ctx, unlike
+	// jobFinalizer.persistAndCommit, which applies the same detachment to the
+	// same delete. Both express "do not let the caller's cancellation abort
+	// this", and ctx is the one that cannot be nil: RemoveJob is reachable
+	// before Start has set app.ctx, and context.WithoutCancel(nil) panics.
+	// WithoutCancel keeps ctx's values and drops only its cancellation, which
+	// is the whole intent.
+	//
+	// Each step still takes its own deadline, because detaching removes the
+	// caller's cancellation and nothing else replaces it.
+	cleanupCtx := context.WithoutCancel(ctx)
 
 	disposition := assembler.KeepFiles
 	if deleteFiles {
 		disposition = assembler.DeleteFiles
 	}
-	if err := app.assembler.CancelJob(ctx, id, disposition); err != nil {
+	// On a cancellable context this is where a disconnect did its damage.
+	// CancelJob returns ctx.Err() before enqueueing anything when its context
+	// is already done — deliberately, so that a cancelled caller cannot be
+	// told "handles closed" by a racing select (assembler.go) — so the
+	// worker's descriptors for this job were never closed and leaked for the
+	// life of the process, and safeDeleteDir below then unlinked the directory
+	// out from under them.
+	//
+	// Thirty seconds matches removeCtx above. They wait on DIFFERENT workers --
+	// removeCtx on the dispatcher's launch latches and occupancy leases
+	// (registry.go), this on the assembler's own worker goroutine -- so the
+	// number is shared because the shape of the wait is comparable, not
+	// because it is the same wait.
+	//
+	// Released inline rather than deferred, as removeCtx and delCtx also are,
+	// because real work follows each: a deferred release keeps every timer
+	// armed through safeDeleteDir's recursive unlink and the NNTP disconnect
+	// at the end of this function. dropJobAlreadyInHistory does the same.
+	cancelCtx, cancelCancel := context.WithTimeout(cleanupCtx, 30*time.Second)
+	err := app.assembler.CancelJob(cancelCtx, id, disposition)
+	cancelCancel()
+	if err != nil {
 		app.log.Warn("assembler cancel job did not confirm file handles closed",
-			"job", id, "error", err)
+			"job", id, "err", err)
 	}
 	// Forget the pipeline's cached file info now that no more articles can
 	// be dispatched for this job.
 	app.pipeline.forgetJob(id)
 	app.forgetJobBarrierState(id)
 	// The job is gone from the queue, so nothing will ever read its durable
-	// runs or its failed-article rows again. Both are keyed by job ID with no
-	// foreign key to anything, so this is the only thing that removes them —
-	// without it every deleted job leaves its rows behind for the life of
-	// the database.
-	app.deleteJobDurability(ctx, id)
+	// runs, its failed-article rows or its per-file progress again. All three
+	// tables — durable_runs, failed_articles and job_files — are keyed by job
+	// ID with no foreign key to anything, so this is the only thing that
+	// removes them: without it every deleted job leaves its rows behind for
+	// the life of the database (#549).
+	//
+	// Five seconds matches dropJobAlreadyInHistory, the other path that drops
+	// these rows for a job that DEPARTED rather than finished.
+	// jobFinalizer.persistAndCommit uses three, sized to fit inside the
+	// shutdown budget. A removal whose bookkeeping cannot finish in five has a
+	// sicker database than this call can fix.
+	delCtx, delCancel := context.WithTimeout(cleanupCtx, 5*time.Second)
+	app.deleteJobDurability(delCtx, id)
+	delCancel()
 	if deleteFiles && name != "" {
 		downloadDir := app.config.GetGeneral().DownloadDir
 		path := filepath.Join(downloadDir, name)
@@ -1143,7 +1193,7 @@ func (app *Application) Start(ctx context.Context) error {
 
 	if app.dispatcher != nil {
 		for _, row := range app.dispatcher.List() {
-			if app.historyRepo != nil && app.dropJobAlreadyInHistory(ctx, row.ID) {
+			if app.dropJobAlreadyInHistory(ctx, row.ID) {
 				continue
 			}
 			if row.View.State == job.Fetching || row.View.State == job.StateUnset {

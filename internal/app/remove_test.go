@@ -1,16 +1,21 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/dispatch/store"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -153,6 +158,141 @@ func TestRemoveJob_StoreDeleteFailureLeavesTheJobsFilesOnDisk(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("the job's file is gone after a failed RemoveJob (stat: %v)", err)
+	}
+}
+
+// disconnectingStore cancels a context at the instant the real store delete
+// succeeds. That instant is the reachable half of #549: past it the job is
+// gone from dispatch_jobs, so nothing will read its durability rows again and
+// nothing will remove them either.
+//
+// Deterministic rather than timing-dependent, and the reason is a property of
+// Dispatcher.Remove rather than of this type: Remove does not re-check its
+// context after store.Delete returns (registry.go), so a cancellation landing
+// here cannot make Remove fail and send RemoveJob down its early return. It
+// lands in the window and only in the window, on every run.
+type disconnectingStore struct {
+	dispatch.Store
+	cancel context.CancelFunc
+}
+
+func (s disconnectingStore) Delete(ctx context.Context, id string) error {
+	if err := s.Store.Delete(ctx, id); err != nil {
+		return err
+	}
+	s.cancel()
+	return nil
+}
+
+// lockedBuffer is a slog destination safe to read while background goroutines
+// are still writing to it. app.log is shared with the dispatcher and pipeline,
+// so a bare bytes.Buffer here is a data race under -race rather than a
+// theoretical one.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability pins the
+// detachment. RemoveJob is handed r.Context() by api/queue.go, so the context
+// this cancels is exactly the one a closed browser tab cancels.
+//
+// Without context.WithoutCancel the three deletes below run on a context that
+// is already done, every one of them fails, deleteJobDurability logs and
+// returns, and the rows are stranded for the life of the database -- no crash
+// required.
+func TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability(t *testing.T) {
+	t.Parallel()
+	application, repo, _ := newLifecycleTestApp(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	d := dispatch.New(
+		1, 1, time.Second, time.Now,
+		&appWorkers{app: application},
+		application.residency,
+		disconnectingStore{Store: store.New(repo.DB()), cancel: cancel},
+		application.runner,
+	)
+	application.dispatcher = d
+	application.pipeline.dispatcher = d
+	application.runner.report = d
+
+	j, _ := removeJobFixture(t, application, "disconnected")
+
+	logs := &lockedBuffer{}
+	application.log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	// All three seeded explicitly. removeJobFixture goes through
+	// Dispatcher().Add rather than the ingest path, so it writes no job_files
+	// row of its own -- the guard below is what caught that, and it stays
+	// because a fixture that silently stops seeding turns this into a test
+	// that asserts nothing (#547).
+	if _, err := application.runs.Commit(ctx, j.ID(), []durability.DurableArticle{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
+	}); err != nil {
+		t.Fatalf("seed durable runs: %v", err)
+	}
+	if _, err := repo.DB().ExecContext(ctx,
+		`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)`, j.ID()); err != nil {
+		t.Fatalf("seed failed articles: %v", err)
+	}
+	if _, err := repo.DB().ExecContext(ctx,
+		`INSERT INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`, j.ID()); err != nil {
+		t.Fatalf("seed job files: %v", err)
+	}
+	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
+		t.Fatalf("fixture recorded %d runs and %d failed rows, want 1 and 1; "+
+			"the test would pass vacuously", nr, nf)
+	}
+	if n := jobFilesCount(t, application, j.ID()); n == 0 {
+		t.Fatal("no job_files rows to delete, so this test would pass vacuously")
+	}
+
+	if err := application.RemoveJob(ctx, j.ID(), false); err != nil {
+		t.Fatalf("RemoveJob: %v", err)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("the store never cancelled, so the removal never entered the window under test")
+	}
+
+	// The assembler's cancel is detached for the same reason and pinned here
+	// rather than in its own test, because it is the same window: CancelJob
+	// returns ctx.Err() before enqueueing anything when its context is already
+	// done, so on a cancellable context the worker never closes this job's
+	// handles and they leak for the life of the process.
+	//
+	// Asserted through the warning rather than through the handles themselves,
+	// because internal/app has no view of them -- Assembler exports no
+	// open-handle accessor, and syncTargetFor is nil by this point because it
+	// resolves through app.dispatcher.Job, which dispatcher.Remove has already
+	// made return false (durability.go). The warning is the only place
+	// RemoveJob records whether the close was confirmed, which makes it the
+	// observable the production code actually offers.
+	if s := logs.String(); strings.Contains(s, "assembler cancel job did not confirm") {
+		t.Errorf("RemoveJob reported unconfirmed file handles after a caller "+
+			"disconnect; log was:\n%s", s)
+	}
+
+	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 0 || nf != 0 {
+		t.Errorf("%d durable runs and %d failed-article rows survive a removal whose "+
+			"caller disconnected after the job left the dispatcher", nr, nf)
+	}
+	if n := jobFilesCount(t, application, j.ID()); n != 0 {
+		t.Errorf("%d job_files rows survive a removal whose caller disconnected after "+
+			"the job left the dispatcher", n)
 	}
 }
 

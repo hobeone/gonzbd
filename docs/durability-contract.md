@@ -1617,7 +1617,7 @@ articles or sparse regions.
 | Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
 | Disk probe cache | one `probeState` per directory, evicted after 10 minutes; at most one outstanding `statfs` per directory. |
 | Per-job barrier state | `jobBarrierMu`, `jobBarrierBytes` and `lastBarrier` are dropped by `forgetJobBarrierState` when a job leaves the assembler's business — otherwise one entry per job ever downloaded, for the life of the process. The mutex's deletion is **deferred while anyone holds it**: dropping it let the next caller mint a second mutex for the same job, which serialises nothing, and the delete is reachable from inside a live barrier via `routeFault → Fail → maybeFinalize → enqueuePostProc`. |
-| Durability rows | `durable_runs` and `failed_articles`, deleted per job by `deleteJobDurability`. `history.Repository.delete` deletes rows too — see §6's *The barrier is the only thing that puts CONTENT into the record* for the enumeration, and do not read this row as one. Neither table has a foreign key to the queue, so nothing removes them implicitly, **and since `b6651d43` nothing sweeps rows orphaned by a crash between a job leaving the queue and its rows being deleted** (#549) — the `SQLiteStore.Prune` backstop that did so went with `internal/queue`. Growth is therefore bounded by crashes in that window rather than by a periodic sweep. |
+| Durability rows | `durable_runs`, `failed_articles` and `job_files`, all three deleted per job by `deleteJobDurability`. `history.Repository.delete` deletes rows too, but only from the first two — see §6's *The barrier is the only thing that puts CONTENT into the record* for the enumeration, and do not read this row as one. None of the three has a foreign key to the queue, so nothing removes them implicitly, **and since `b6651d43` nothing sweeps rows orphaned by a crash between a job leaving the queue and its rows being deleted** (#549) — the `SQLiteStore.Prune` backstop that did so went with `internal/queue`. Growth is therefore bounded by crashes in that window rather than by a periodic sweep. `job_files` is the one with no second deleter at all, which is why a FAILED job — whose `deleteJobDurability` `jobFinalizer.persistAndCommit` deliberately skips — keeps its rows until a retry re-enqueues it, or forever if the entry is deleted from history instead (#560). |
 
 ## Failure & degradation rules
 
@@ -1853,8 +1853,10 @@ recorded here so the next reader does not mistake them for design.
    writer is the sole production implementation of `checkpoint.Store`, whose
    `SaveBatch` holds the only `INSERT INTO failed_articles` outside tests —
    `git grep -n 'INTO failed_articles' -- '*.go' ':!*_test.go'` returns the one
-   line, `internal/app/dispatcher_wiring.go:107`. Without that filter it
-   returns nine, the other eight being test fixtures.
+   line, `internal/app/dispatcher_wiring.go:107`. Without that filter it also
+   returns test fixtures, whose number is deliberately not stated here: it
+   grows with every test that seeds a row, nothing checks a count in Markdown,
+   and the claim this paragraph needs is the filtered one.
 
 7. **An exact-offset collision is PREVENTED only within one open-file episode;
    across a boundary it is detected and reported after the fact.**

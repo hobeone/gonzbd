@@ -141,9 +141,14 @@ CREATE TABLE durable_runs (
 -- One production writer -- `git grep -n 'INTO failed_articles' -- '*.go'
 -- ':!*_test.go'` returns one line, the INSERT OR IGNORE inside
 -- appCheckpointStore.SaveBatch. Deletion is wider and job-scoped: the retry
--- path, the durability sweep for a job that has left both the queue and
--- history-as-FAILED, and history.Repository.Delete. None of those writes a
--- row.
+-- path, a job leaving the queue, and history.Repository.Delete. None of those
+-- writes a row.
+--
+-- There is deliberately no sweep in that list. One existed --
+-- SQLiteStore.pruneDurabilityRows removed rows whose job was in neither the
+-- queue nor history-as-FAILED -- and it went with internal/queue in b6651d43
+-- with nothing replacing it, so rows a departing job fails to remove are not
+-- reclaimed at all. Tracked as #549.
 --
 -- A table rather than a bitmap column on job_files because its reversal is
 -- per-article and per-job, which a packed blob can only express by rewriting
@@ -159,10 +164,25 @@ CREATE TABLE failed_articles (
 -- Per-file download progress retained for a FAILED job, so a retry refetches
 -- only the articles that did not make it.
 --
--- Separate from job_files because those rows do not outlive the
--- queue-to-history transition. No foreign key here either: the owning row is
--- history(nzo_id), and these are removed explicitly when it is deleted. Only
--- failed jobs get rows -- a job that succeeded has nothing to retry.
+-- Separate from job_files, and for the FAILED job this table exists to serve
+-- the two coexist: jobFinalizer.persistAndCommit skips deleteJobDurability
+-- for exactly that
+-- status, so the job_files rows stay behind as well.
+--
+-- What is NOT true is that each then goes with its own owner. These rows do --
+-- history.Repository.delete removes them with the entry. job_files has no such
+-- deleter: `git grep -n 'DELETE FROM job_files WHERE' -- '*.go'` returns, outside
+-- the comments that quote the command itself, one statement -- in
+-- Application.deleteJobDurability, which is the call the finalizer skipped. So a
+-- FAILED job's job_files rows are removed by neither the queue job nor the
+-- history entry, and survive until a retry puts the job back in the queue for
+-- a later departure to clean up -- or forever, if the entry is deleted from
+-- history instead. #560 is the issue for settling that ownership; do not read
+-- this paragraph as describing an intended design.
+--
+-- No foreign key here either: the owning row is history(nzo_id), and these are
+-- removed explicitly when it is deleted. Only failed jobs get rows -- a job
+-- that succeeded has nothing to retry.
 --
 -- A progress overlay, not a second manifest. article_count is the exception to
 -- that and is here for one purpose: retainedMatchesManifest compares it

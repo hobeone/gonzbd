@@ -17,6 +17,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -597,16 +599,30 @@ func TestFinalizeCompletedFile_TrimsAndReleasesTheHandle(t *testing.T) {
 
 // ---------- job departure ----------
 
-// TestDeleteJobDurability_RemovesBothTables pins the removal that runs on a
-// job's way out. Both tables are keyed by job ID with no foreign key to the
-// queue, so without this a database accumulates one set of rows per job ever
-// downloaded until SQLiteStore.Prune's backstop happens to run -- and that
-// backstop deliberately spares history-as-FAILED, so it is not equivalent.
+// jobFilesCount reports how many per-file progress rows a job still has.
+func jobFilesCount(t *testing.T, application *Application, jobID string) int {
+	t.Helper()
+	var n int
+	if err := application.historyRepo.DB().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM job_files WHERE job_id = ?`, jobID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestDeleteJobDurability_RemovesAllThreeTables pins the removal that runs on a
+// job's way out. All three tables are keyed by job ID with no foreign key to
+// dispatch_jobs, and nothing sweeps what this misses (#549), so without it a
+// database accumulates one set of rows per job ever downloaded and keeps them
+// for the life of the installation.
 //
-// Both, and through their own OWNERS: durability.RunStore owns durable_runs
-// and checkpoint.Store.SaveBatch owns failed_articles. A cleanup that reached only one of them
-// would leave half a departed job's rows behind.
-func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
+// Three, and reached differently: durability.RunStore owns durable_runs and
+// the delete goes through its DeleteJob, while failed_articles and job_files
+// have no owning type and are deleted with raw SQL here. A cleanup that
+// reached only some of them would leave part of a departed job's rows behind
+// -- and job_files is the part with no second deleter anywhere, so it is the
+// part that would stay forever.
+func TestDeleteJobDurability_RemovesAllThreeTables(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
@@ -620,6 +636,12 @@ func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
 		if _, err := application.historyRepo.DB().ExecContext(ctx, "INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)", id); err != nil {
 			t.Fatal(err)
 		}
+		// Seeded explicitly rather than relied on from the fixture, so that
+		// "other-job" -- which was never ingested -- has a row to keep.
+		if _, err := application.historyRepo.DB().ExecContext(ctx,
+			`INSERT OR REPLACE INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`, id); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	application.deleteJobDurability(ctx, job.ID())
@@ -627,11 +649,17 @@ func TestDeleteJobDurability_RemovesBothTables(t *testing.T) {
 	if nr, nf := durabilityRowCounts(t, application, job.ID()); nr != 0 || nf != 0 {
 		t.Errorf("%d runs and %d failed rows survive the job's departure", nr, nf)
 	}
+	if n := jobFilesCount(t, application, job.ID()); n != 0 {
+		t.Errorf("%d job_files rows survive the job's departure", n)
+	}
 	// Scoped to the departing job: deleting every job's rows would throw away
 	// a live download's recorded ground.
 	if nr, nf := durabilityRowCounts(t, application, "other-job"); nr != 1 || nf != 1 {
 		t.Errorf("another job has %d runs and %d failed rows, want 1 and 1 — the "+
 			"delete was not scoped", nr, nf)
+	}
+	if n := jobFilesCount(t, application, "other-job"); n != 1 {
+		t.Errorf("another job has %d job_files rows, want 1 — the delete was not scoped", n)
 	}
 }
 
@@ -640,6 +668,19 @@ func TestDeleteJobDurability_IsInertWithoutStores(t *testing.T) {
 	t.Parallel()
 	application := &Application{log: slog.New(slog.DiscardHandler)}
 	application.deleteJobDurability(context.Background(), "job-a")
+}
+
+// TestDropJobAlreadyInHistory_AnswersFalseWithoutAHistoryDatabase pins the
+// guard that moved inside the method from Start's call site. With no history
+// database there is no history, so false is knowledge rather than doubt --
+// and without the guard the call dereferences a nil repository.
+func TestDropJobAlreadyInHistory_AnswersFalseWithoutAHistoryDatabase(t *testing.T) {
+	t.Parallel()
+	application := &Application{log: slog.New(slog.DiscardHandler)}
+	if application.dropJobAlreadyInHistory(t.Context(), "job-a") {
+		t.Error("reported the job as handled with no history database to find it in; " +
+			"Start would skip a job that nothing has filed")
+	}
 }
 
 // ---------- settings ----------
@@ -1474,16 +1515,208 @@ func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
 	}
 }
 
+// TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability is
+// the startup reconcile's copy of RemoveJob's detachment pin, and it exists
+// separately because the two are separate call sites of the same fix: reverting
+// one says nothing about the other.
+//
+// The context here is the startup context rather than an API request's, so what
+// cancels it is a SIGINT or a startup deadline rather than a browser tab —
+// a restart interrupted by another restart. Past dispatcher.Remove the outcome
+// is identical either way: the queue row is gone, and rows this call fails to
+// remove have nothing behind them (#549).
+//
+// Note which steps are NOT detached. The history Get and dispatcher.Remove run
+// on the caller's context on purpose, because a cancellation there destroys
+// nothing and the next startup reconciles the job again.
+func TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability(t *testing.T) {
+	t.Parallel()
+	application, repo, _ := newLifecycleTestApp(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	d := dispatch.New(
+		1, 1, time.Second, time.Now,
+		&appWorkers{app: application},
+		application.residency,
+		disconnectingStore{Store: store.New(repo.DB()), cancel: cancel},
+		application.runner,
+	)
+	application.dispatcher = d
+	application.pipeline.dispatcher = d
+	application.runner.report = d
+
+	j, _ := removeJobFixture(t, application, "reconciled")
+
+	// COMPLETED, so the retention rule says the rows go. A FAILED entry would
+	// keep them and the assertion below could not tell a working detachment
+	// from the retention.
+	if err := application.historyRepo.Add(ctx, history.Entry{
+		NzoID: j.ID(), Name: "reconciled", Status: string(constants.StatusCompleted),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedDurability(t, application, j.ID())
+	if _, err := repo.DB().ExecContext(ctx,
+		`INSERT OR REPLACE INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`, j.ID()); err != nil {
+		t.Fatalf("seed job files: %v", err)
+	}
+	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
+		t.Fatalf("fixture recorded %d runs and %d failed rows, want 1 and 1; "+
+			"the test would pass vacuously", nr, nf)
+	}
+	if n := jobFilesCount(t, application, j.ID()); n == 0 {
+		t.Fatal("no job_files rows to delete, so this test would pass vacuously")
+	}
+
+	if !application.dropJobAlreadyInHistory(ctx, j.ID()) {
+		t.Fatal("dropJobAlreadyInHistory reported no removal for a job that is in history")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("the store never cancelled, so this never entered the window under test")
+	}
+
+	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 0 || nf != 0 {
+		t.Errorf("%d durable runs and %d failed-article rows survive a reconcile that was "+
+			"cancelled after the job left the dispatcher", nr, nf)
+	}
+	if n := jobFilesCount(t, application, j.ID()); n != 0 {
+		t.Errorf("%d job_files rows survive a reconcile that was cancelled after the job "+
+			"left the dispatcher", n)
+	}
+}
+
+// TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails pins
+// #376's ordering on the reconcile path, which had it on neither side.
+//
+// The failing step ran, was logged, and execution carried on to delete the
+// manifest and every durability row -- leaving a queue row that had outlived
+// its own state, and nothing for the next startup to reconcile it against.
+//
+// The return value is the other half. False routes the caller into the state
+// check beneath it, where a complete job reaches maybeFinalize and is filed a
+// SECOND time; true says "duplicate, skip", which is still accurate when all
+// that failed was the cleanup.
+func TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails(t *testing.T) {
+	t.Parallel()
+	application, repo, adminDir := newLifecycleTestApp(t)
+	ctx := t.Context()
+
+	d := dispatch.New(
+		1, 1, time.Second, time.Now,
+		&appWorkers{app: application},
+		application.residency,
+		removeRefusingStore{Store: store.New(repo.DB())},
+		application.runner,
+	)
+	application.dispatcher = d
+	application.pipeline.dispatcher = d
+	application.runner.report = d
+
+	j, _ := removeJobFixture(t, application, "unremovable")
+
+	if err := application.historyRepo.Add(ctx, history.Entry{
+		NzoID: j.ID(), Name: "unremovable", Status: string(constants.StatusCompleted),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedDurability(t, application, j.ID())
+	if _, err := repo.DB().ExecContext(ctx,
+		`INSERT OR REPLACE INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`, j.ID()); err != nil {
+		t.Fatalf("seed job files: %v", err)
+	}
+	mpath := filepath.Join(manifestDir(adminDir), j.ID()+".json.gz")
+	if err := os.MkdirAll(manifestDir(adminDir), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mpath, []byte("manifest"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if !application.dropJobAlreadyInHistory(ctx, j.ID()) {
+		t.Error("reported false after a failed Remove; the caller then falls through to the " +
+			"state check and a complete job is filed a second time")
+	}
+
+	if _, err := os.Stat(mpath); err != nil {
+		t.Errorf("the manifest was deleted although the job is still in the queue (stat: %v); "+
+			"the next startup has nothing to reconcile it against", err)
+	}
+	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
+		t.Errorf("%d durable runs and %d failed-article rows left after a failed Remove, "+
+			"want 1 and 1 — the row outlived its own state", nr, nf)
+	}
+	if n := jobFilesCount(t, application, j.ID()); n != 1 {
+		t.Errorf("%d job_files rows left after a failed Remove, want 1", n)
+	}
+	if _, ok := application.Dispatcher().Job(j.ID()); !ok {
+		t.Error("the job left the dispatcher although its store delete failed")
+	}
+}
+
+// TestDropJobAlreadyInHistory_SkipsTheJobWhenTheHistoryLookupFails pins the
+// difference between "not in history" and "could not find out".
+//
+// Both are errors from the same call, and collapsing them onto one return
+// value is what makes the second dangerous: false asserts the job is not
+// filed, and the caller acts on that by finalizing it -- so a job that IS
+// already filed is post-processed and written to history a second time.
+//
+// True costs one startup. The job is skipped, nothing is deleted, and the next
+// startup asks again. jobFinalizer.persistAndCommit makes the same trade when
+// its own history lookup fails.
+func TestDropJobAlreadyInHistory_SkipsTheJobWhenTheHistoryLookupFails(t *testing.T) {
+	t.Parallel()
+	application, repo, adminDir := newLifecycleTestApp(t)
+	ctx := t.Context()
+
+	j, _ := removeJobFixture(t, application, "unlookupable")
+	seedDurability(t, application, j.ID())
+	mpath := filepath.Join(manifestDir(adminDir), j.ID()+".json.gz")
+	if err := os.MkdirAll(manifestDir(adminDir), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mpath, []byte("manifest"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A lookup failure that is not ErrNotFound. Taking the table away is the
+	// available lever: historyRepo.Get runs SQL against a real database and
+	// there is no seam to inject at.
+	if _, err := repo.DB().ExecContext(ctx,
+		`ALTER TABLE history RENAME TO history_hidden`); err != nil {
+		t.Fatalf("hide history: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = repo.DB().ExecContext(context.WithoutCancel(ctx),
+			`ALTER TABLE history_hidden RENAME TO history`)
+	})
+
+	if !application.dropJobAlreadyInHistory(ctx, j.ID()) {
+		t.Error("reported false when the history lookup ERRORED; false means 'not in " +
+			"history', so the caller finalizes a job that may already be filed and " +
+			"writes a duplicate history entry")
+	}
+	if _, err := os.Stat(mpath); err != nil {
+		t.Errorf("the manifest was deleted although nothing was established about the "+
+			"job (stat: %v)", err)
+	}
+	if _, ok := application.Dispatcher().Job(j.ID()); !ok {
+		t.Error("the job left the dispatcher on a lookup that established nothing")
+	}
+}
+
 // TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule pins the startup
 // reconcile's half of the durability-row cleanup, in both directions.
 //
 // This path is reached by a job that crashed between MoveToHistory and the
 // queue removal that follows it, so it is the ONE removal that runs without
-// finalizeJob. It fetched the history entry, discarded it, removed the queue
+// jobFinalizer.persistAndCommit. It fetched the history entry, discarded it,
+// removed the queue
 // row and stopped — leaving durable_runs and failed_articles behind, keyed by
-// job ID with no foreign key to jobs. SQLiteStore.Prune now collects what
-// escapes this path, but only for a job that is not in history as FAILED,
-// which is exactly the case the retention rule below is about.
+// job ID with no foreign key to dispatch_jobs. Nothing collects what escapes
+// this path (#549), so applying the rule here is the only thing that keeps a
+// crash in that window from leaking a set of rows permanently.
 //
 // Both directions matter and they fail differently. Retaining the rows for a
 // succeeded job leaks one set per crash, forever. Dropping them for a FAILED
@@ -1505,9 +1738,22 @@ func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
 			application, job := newDurabilityTestApp(t, 1, 2)
 
 			seedDurability(t, application, job.ID())
+			// job_files seeded alongside, because the rule governs all three
+			// tables and seedDurability writes only two. Without this the
+			// job_files half of the rule reads 0 before and 0 after, which
+			// asserts nothing in either direction.
+			if _, err := application.historyRepo.DB().ExecContext(t.Context(),
+				`INSERT OR REPLACE INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`,
+				job.ID()); err != nil {
+				t.Fatalf("seed job files: %v", err)
+			}
 			if nr, nf := durabilityRowCounts(t, application, job.ID()); nr != 1 || nf != 1 {
 				t.Fatalf("fixture recorded %d runs and %d failed rows, want 1 and 1; "+
 					"the test would pass vacuously", nr, nf)
+			}
+			if n := jobFilesCount(t, application, job.ID()); n != 1 {
+				t.Fatalf("fixture recorded %d job_files rows, want 1; the test would "+
+					"pass vacuously", n)
 			}
 
 			if err := application.historyRepo.Add(t.Context(), history.Entry{
@@ -1529,6 +1775,19 @@ func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
 				} else {
 					t.Error("a finished job's durability rows survived its removal; nothing " +
 						"else collects them, so they accumulate one set per crash of this kind")
+				}
+			}
+			// job_files follows the same rule, through the same call, and is
+			// the table with no second deleter anywhere -- so a FAILED job
+			// that keeps them here keeps them until a retry, and a completed
+			// one that does not lose them loses them for good (#560).
+			if kept := jobFilesCount(t, application, job.ID()) > 0; kept != tc.wantKept {
+				if tc.wantKept {
+					t.Error("a FAILED job's job_files rows were dropped; its retry re-seeds " +
+						"them empty and loses the per-file results the first attempt recorded")
+				} else {
+					t.Error("a finished job's job_files rows survived its removal; no other " +
+						"deleter exists, so they stay for the life of the installation")
 				}
 			}
 		})
