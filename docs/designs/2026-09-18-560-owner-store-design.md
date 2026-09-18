@@ -168,10 +168,19 @@ type JobProgress struct {
 	FailedArticles []int
 }
 
-// PerJobTables is the machine-readable list of the tables this package owns,
+// PerJobTable names an owned per-job table and its job-ID key column,
 // for test fixtures and for a completeness test over Reclaim (8.2).
 // Adopted from design B.
-var PerJobTables = []string{"durable_runs", "failed_articles", "job_files"}
+type PerJobTable struct {
+	Name        string
+	JobIDColumn string
+}
+
+var PerJobTables = []PerJobTable{
+	{Name: "durable_runs", JobIDColumn: "job_id"},
+	{Name: "failed_articles", JobIDColumn: "job_id"},
+	{Name: "job_files", JobIDColumn: "job_id"},
+}
 
 // Admit seeds one job_files row per file, fetch[i] being file i's policy.
 // Moves seedJobFiles's SQL: same single transaction, same ON CONFLICT DO NOTHING.
@@ -181,11 +190,13 @@ func (s *Store) Admit(ctx context.Context, jobID string, fetch []uint8) error
 // liveness guard (3.5). One transaction for the whole batch.
 func (s *Store) SaveProgress(ctx context.Context, batch []JobProgress) error
 
-// Reads that today are raw SQL in residency.go:108,158,179.
+// Reads that today are raw SQL in residency.go:108,158,179, plus Resumer's
+// per-file content invalidation (resumer.go:42).
 func (s *Store) FileRows(ctx context.Context, jobID string) ([]FileRow, error)
 func (s *Store) FailedArticles(ctx context.Context, jobID string) ([]int, error)
 func (s *Store) ForJob(ctx context.Context, jobID string) ([]Run, error)
 func (s *Store) ForFile(ctx context.Context, jobID string, fileIdx int32) ([]Run, error)
+func (s *Store) DeleteFile(ctx context.Context, jobID string, fileIdx int32) error
 
 // DiscardRuns invalidates a job's durable record — the retry's
 // "!progressApplied" case (app.go:2261). Content management, not lifecycle.
