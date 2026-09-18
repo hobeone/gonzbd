@@ -83,18 +83,47 @@ func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 ### 3.2 The owner — `durability.Store`
 
 `SQLiteRunStore` grows into `durability.Store`, a concrete type owning three
-tables. Its methods are lifecycle events, not CRUD:
+tables. Its methods are lifecycle events, not CRUD.
+
+**The API takes plain types only.** `internal/job` imports
+`internal/durability` (`go list -f '{{join .Imports "\n"}}' ./internal/job`),
+so `durability` cannot name `job.FetchPolicy` or `job.Checkpoint`, and cannot
+implement `checkpoint.Store`, whose method takes `[]job.Checkpoint`.
+`appCheckpointStore` therefore stays in `internal/app` as a thin adapter:
+it maps each `job.Checkpoint` to a `durability.JobProgress` and calls
+`SaveProgress`. (Revision after cross-critique: the first version of this
+section gave `durability.Store` `job`-typed signatures, which is an import
+cycle. Design B's plain-type API was correct.)
 
 ```go
 type Store struct{ db *sql.DB }
 
-// Admit seeds one job_files row per file. Moves seedJobFiles; same SQL,
-// same single transaction, same ON CONFLICT DO NOTHING.
-func (s *Store) Admit(ctx context.Context, jobID string, numFiles int, fetch func(int) job.FetchPolicy) error
+type FileProgress struct {
+	FileIndex      int
+	Complete       bool
+	FetchPolicy    uint8 // job.FetchPolicy's underlying type
+	Filename       string
+	AssembledCRC32 uint32
+}
 
-// SaveBatch implements checkpoint.Store. Moves appCheckpointStore.SaveBatch,
-// adding the liveness guard (3.5).
-func (s *Store) SaveBatch(ctx context.Context, cps []job.Checkpoint) error
+type JobProgress struct {
+	JobID          string
+	Files          []FileProgress
+	FailedArticles []int
+}
+
+// PerJobTables is the machine-readable list of the tables this package owns,
+// for test fixtures and for a completeness test over Reclaim (8.2).
+// Adopted from design B.
+var PerJobTables = []string{"durable_runs", "failed_articles", "job_files"}
+
+// Admit seeds one job_files row per file, fetch[i] being file i's policy.
+// Moves seedJobFiles's SQL: same single transaction, same ON CONFLICT DO NOTHING.
+func (s *Store) Admit(ctx context.Context, jobID string, fetch []uint8) error
+
+// SaveProgress moves appCheckpointStore.SaveBatch's SQL, adding the
+// liveness guard (3.5). One transaction for the whole batch.
+func (s *Store) SaveProgress(ctx context.Context, batch []JobProgress) error
 
 // Reads that today are raw SQL in residency.go:108,158,179.
 func (s *Store) FileRows(ctx context.Context, jobID string) ([]FileRow, error)
@@ -184,7 +213,7 @@ because the rule never deletes anything reachable.
 
 ### 3.5 #561 — a liveness guard owned by the store
 
-`SaveBatch` inserts a failed article only while the job is live **to the
+`SaveProgress` inserts a failed article only while the job is live **to the
 store**, using its own table as the marker:
 
 ```sql
@@ -219,8 +248,9 @@ SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM job_files WHERE job_id = ?1)
 
 ### 3.7 What is deleted
 
-`deleteJobDurability`, `dropJobDurability`, `appCheckpointStore`,
-`seedJobFiles` (moved), the three raw reads in `residency.go`, retry's raw
+`deleteJobDurability`, `dropJobDurability`, `appCheckpointStore`'s SQL (the
+type remains as the `job`→`durability` mapping adapter, 3.2), `seedJobFiles`
+(moved), the three raw reads in `residency.go`, retry's raw
 `failed_articles` delete (`app.go:2267`), `shouldDeleteDurability` and its
 history re-read, `DeleteKeepingDurability`, `history.delete`'s concatenated
 deletes, and — relative to #557 — `Execer`, `RunStore.DeleteJobTx` and the
@@ -280,8 +310,9 @@ Each step builds, passes the gates, and is independently revertable.
    `Add(ctx, …)`, callers pass a detached bounded context, deregister on
    persist failure. Regression pin: the crash test (below).
 2. **`refactor(durability): make one store own job_files and failed_articles`**
-   — move `seedJobFiles`, `SaveBatch`, the residency reads and `DeleteJob` into
-   `durability.Store`; unexport `commit`. Behaviour-neutral; the existing suite
+   — move the SQL of `seedJobFiles` and `SaveBatch`, the residency reads and
+   `DeleteJob` into `durability.Store` behind the plain-type API of 3.2, leaving
+   `appCheckpointStore` as the mapping adapter; unexport `commit`. Behaviour-neutral; the existing suite
    is the check.
 3. **`fix(app): reclaim a job's rows by one rule instead of four`** — `Reclaim`
    plus `app.reclaim`, every call site in 3.4, startup `Reclaim()`; delete the
@@ -312,6 +343,9 @@ A job in each state, against the real schema, then `Reclaim()`:
 | failed in history only | gone | gone | **kept** |
 | completed in history | gone | gone | gone |
 | in neither | gone | gone | gone |
+
+The table's columns are generated from `PerJobTables`, not written out, so a
+fourth owned table fails this test until `Reclaim` covers it.
 
 Mutations (`scripts/mutate` spec), each must be KILLED:
 - drop the history clause from the `durable_runs` delete → "failed in history
