@@ -50,7 +50,8 @@ transaction per orphan" but its code runs one for the whole sweep.
 ### 3.1 Prerequisite P1 — the queue row exists before `Add` returns
 
 `Dispatcher.Add` gains a context and persists synchronously, through the same
-function the tick uses:
+function the tick uses — and **no job launches until its queue row has been
+written**:
 
 ```go
 func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
@@ -61,13 +62,42 @@ func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 	// The row the tick would write moments later, written now, so that a
 	// caller acknowledging the job has a durable reason to.
 	if err := d.persistIfChanged(ctx, j); err != nil {
+		// Safe: claimLaunched refuses an unwritten job, so no worker or
+		// occupier can exist for it yet (deregister's precondition).
 		d.deregister(j.ID())
 		return fmt.Errorf("dispatch: Add: persist %s: %w", j.ID(), err)
 	}
 	return nil
 }
+
+func (d *Dispatcher) claimLaunched(id string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.admitsLocked(id) {
+		return false
+	}
+	if _, ok := d.written[id]; !ok { // the launch gate: read under the held d.mu,
+		return false                  // not via lastWritten, which takes d.mu itself
+	}
+	// ... unchanged ...
+}
 ```
 
+- **Why the gate is required, not optional.** `register` calls `d.kick()`
+  (`internal/dispatch/registry.go:205`), and the woken tick calls `d.launch(j)`
+  *before* its own `persistIfChanged` (`internal/dispatch/tick.go`). Without the
+  gate, a job can be downloading when a failed persist calls `deregister`, whose
+  contract requires launched workers to be drained first
+  (`internal/dispatch/registry.go:264-265`) — the #552 shape, reported as a
+  failure to add while it downloads. (Revision after cross-critique: design B
+  found this.)
+- The gate costs nothing on the normal path: `Add` has written the row before
+  it returns, and jobs restored at startup are marked written as they load
+  (`internal/dispatch/dispatch.go:716`). A tick that runs between `register` and
+  `Add`'s persist skips the launch and writes the row itself; `storeMu`
+  serialises the two writes, and the second finds nothing changed.
+- It turns "a job's queue row exists before any of its bytes are fetched" from
+  a property of call order into one `claimLaunched` enforces.
 - `dispatch_jobs` keeps exactly one writer function; nothing new acquires
   `storeMu` or `d.mu` differently (`register` releases `d.mu` before returning,
   and `persistIfChanged` already runs under `storeMu`).
@@ -135,9 +165,16 @@ func (s *Store) ForFile(ctx context.Context, jobID string, fileIdx int32) ([]Run
 // "!progressApplied" case (app.go:2261). Content management, not lifecycle.
 func (s *Store) DiscardRuns(ctx context.Context, jobID string) error
 
-// Reclaim applies the reclaim rule to the named jobs, or to every job when
-// ids is empty. One transaction. See 3.3.
-func (s *Store) Reclaim(ctx context.Context, ids ...string) error
+// Reclaim applies the reclaim rule to the named jobs. At least one id is
+// required by the signature, so a runtime caller cannot reach the
+// every-job form by passing nothing. One transaction. See 3.3.
+func (s *Store) Reclaim(ctx context.Context, id string, more ...string) error
+
+// SweepOrphans applies the same rule to every job. Startup only, before the
+// API and dir scanner start (main.go:223 vs :257): a job between Admit and Add
+// has job_files but no queue row yet, and the rule would reclaim it.
+// (Revision after cross-critique: design B found the race.)
+func (s *Store) SweepOrphans(ctx context.Context) error
 
 // commit is unexported: only package durability can write run content.
 func (s *Store) commit(ctx context.Context, jobID string, arts []DurableArticle) ([]Collision, error)
@@ -154,7 +191,8 @@ read-modify-write delete stay in-package as content operations, which is what
 ### 3.3 The reclaim rule — stated once
 
 ```sql
--- One transaction. :filter is either "AND job_id = ?" per id, or empty (startup).
+-- One transaction. :filter is "AND job_id = ?" per id for Reclaim, and empty
+-- for SweepOrphans. The two share these statements, so the rule has one text.
 DELETE FROM job_files
  WHERE NOT EXISTS (SELECT 1 FROM dispatch_jobs d WHERE d.id = job_files.job_id) :filter;
 
@@ -191,10 +229,12 @@ What this buys:
 ### 3.4 Call sites — the enumeration
 
 Every event that can make a job unreachable, and what calls `Reclaim` after it.
-Manifest unlink rides along in one app helper, `app.reclaim(ctx, ids...)`:
-`store.Reclaim` first, then unlink the manifest of each id with no queue row
-(a manifest's lifetime is exactly the queue row's: finalize unlinks it on
-removal, retry writes a fresh one).
+Manifest unlink rides along in two app helpers: `app.reclaim(ctx, id, more...)`
+runs `store.Reclaim` and then unlinks the manifest of each named id with no
+queue row; `app.sweepOrphans(ctx)` runs `store.SweepOrphans` and then unlinks
+every manifest in the manifests directory with no queue row. A manifest's
+lifetime is exactly the queue row's: finalize unlinks it on removal, and retry
+writes a fresh one.
 
 | Event | Site today | Change |
 |---|---|---|
@@ -202,11 +242,11 @@ removal, retry writes a fresh one).
 | Tick evicts a cancelled never-run job | `tick.go` `evictCancelledNeverRun` | covered by the row above; its only trigger is `RemoveJob`'s `Cancel` |
 | Finalize (done or failed) | `persistAndCommit` `job_finalizer.go:218-229` | `app.reclaim(id)` unconditionally; `shouldDeleteDurability` and the history re-read go |
 | Startup reconciliation | `dropJobAlreadyInHistory` `durability.go:1386,1419` | `app.reclaim(id)`; its FAILED rule goes |
-| Delete history entries | `app.go:1046` | `app.reclaim(ids...)` after the delete |
+| Delete history entries | `app.go:1046` | `app.reclaim` over the deleted ids, after the delete |
 | Retry | `app.go:2347` | `history.Delete` (plain); `Reclaim` after it is a no-op by P1, called anyway |
 | Mark completed | `internal/api/history.go:284` → repo | route through an app method that calls `app.reclaim(id)` (E9) |
 | `AddJob` / retry fails after `Admit` | `app.go:779`, `:2342` | `app.reclaim(id)` on the error path |
-| Anything missed, or a crash between an event and its reclaim | — | `app.reclaim()` (all) at startup, before the API and dir scanner start (`main.go:223` vs `:257`) |
+| Anything missed, or a crash between an event and its reclaim | — | `app.sweepOrphans()` at startup, before the API and dir scanner start (`main.go:223` vs `:257`) — and never at runtime (3.2) |
 
 A missed call site costs disk until the next start. It cannot cost data,
 because the rule never deletes anything reachable.
@@ -232,6 +272,29 @@ SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM job_files WHERE job_id = ?1)
 - Cost: one indexed probe (`UNIQUE(job_id, file_index)` prefix), only when a
   job has failed articles; hoistable to once per job per batch.
 
+**Paired with `Checkpointer.Prune` waiting for an in-flight flush.** The guard
+cannot tell two uses of one job ID apart: a batch captured before a failure
+that commits after the retry's `Admit` passes it and writes stale failed marks.
+So `Prune(id)` also waits on `flushMu` when `id` is in `inFlight`, and a
+departure's `Reclaim` always follows its `Prune` (`RemoveJob`,
+`persistAndCommit`). No batch holding a departed job can then commit after the
+reclaim.
+
+- This **changes `Prune`'s contract**. Its doc says today that "a write batch
+  already handed to the store still completes"
+  (`internal/checkpoint/checkpointer.go:64-66`), and #561 is that sentence's
+  consequence. The doc changes with the code.
+- The two mechanisms cover **different windows**, which is why neither is a
+  second enforcement point for the other. `Prune`'s wait covers a batch already
+  in flight at departure. The guard covers a `Mark` arriving *after* `Prune`,
+  which `Prune` cannot see: `Mark` has 8 production call sites, including
+  download workers in `internal/app/pipeline.go`, and nothing yet shows a
+  straggler cannot reach it.
+- The wait blocks only when the race is live: `inFlight` holds `id` only during
+  a flush whose batch contains it.
+
+(Revision after cross-critique: design B proposed the `Prune` wait.)
+
 ### 3.6 `history_job_files` — the entry's child
 
 - `REFERENCES history(nzo_id) ON DELETE CASCADE` — the "smaller item" #560
@@ -254,7 +317,8 @@ type remains as the `job`→`durability` mapping adapter, 3.2), `seedJobFiles`
 `failed_articles` delete (`app.go:2267`), `shouldDeleteDurability` and its
 history re-read, `DeleteKeepingDurability`, `history.delete`'s concatenated
 deletes, and — relative to #557 — `Execer`, `RunStore.DeleteJobTx` and the
-separate sweep: the startup sweep *is* `Reclaim()`.
+separate sweep: the startup sweep is `SweepOrphans`, which shares `Reclaim`'s
+statements.
 
 ## 4. Scored against the agreed criteria
 
@@ -269,16 +333,19 @@ separate sweep: the startup sweep *is* `Reclaim()`.
 
 ## 5. Residual risks — attack these
 
-1. **Reused job ID across a retry.** A `SaveBatch` whose batch was captured
-   before the job failed, and which commits after the retry's `Admit`, passes
-   the guard and writes stale failed marks. Needs a flush spanning failure,
-   user retry and re-admit. Options: accept; make `Checkpointer.Prune` wait for
-   an in-flight flush (#561's own suggestion — but that is a second enforcement
-   point for the same invariant); or an attempt generation on `job_files`.
-2. **The row window stays open until restart.** A daemon up for months
-   keeps whatever a crash stranded between an event and its reclaim. The same
-   bound as #557, reached with far fewer mechanisms. A periodic `Reclaim()` is
-   cheap if this matters.
+1. **Reused job ID across a retry — narrowed, not closed.** `Prune`'s wait
+   (3.5) closes the in-flight batch. What remains is a straggling `Mark` of the
+   *old* job object that lands after the retry's `Admit`: the guard passes, and
+   stale failed marks are written. An attempt generation on `job_files` would
+   close it at the cost of a column; whether a straggler can reach `Mark` after
+   departure at all is unestablished.
+2. **The row window stays open until restart.** A daemon up for months keeps
+   whatever a crash stranded between an event and its reclaim. The same bound
+   as #557, reached with far fewer mechanisms. **A periodic sweep is not
+   available as a fix:** an unfiltered pass would reclaim any job between
+   `Admit` and `Add`, which is why `SweepOrphans` is startup-only (3.2).
+   (An earlier version of this item called a periodic sweep "cheap"; design B
+   showed it is unsafe.)
 3. **Power loss.** `synchronous(NORMAL)` with WAL can lose recent commits on
    power loss (not on process crash), so P1's guarantee is "survives a crash",
    not "survives a power cut". Same for every candidate.
@@ -289,6 +356,13 @@ separate sweep: the startup sweep *is* `Reclaim()`.
 5. **Schema coupling.** If `history.status` values or `dispatch_jobs.id`
    change, the rule silently changes meaning. Pin it with a test that
    exercises each branch against the real schema (8.2).
+6. **Deleting a failed entry while retrying it.** A user who deletes a failed
+   history entry during its own retry — after the retry's `Admit`, before its
+   `Add` persists — makes the delete's `Reclaim(id)` see a job with neither a
+   queue row nor a history row, and it reclaims the retry's fresh `job_files`
+   and the `durable_runs` the retry is about to read. Two concurrent user
+   actions on one entry; accepted rather than designed around, but a per-job
+   lock around retry and history delete would close it.
 
 ## 6. What this design does not do
 
@@ -307,19 +381,22 @@ separate sweep: the startup sweep *is* `Reclaim()`.
 Each step builds, passes the gates, and is independently revertable.
 
 1. **`fix(dispatch): persist a job's queue row before Add returns`** — P1,
-   `Add(ctx, …)`, callers pass a detached bounded context, deregister on
-   persist failure. Regression pin: the crash test (below).
+   `Add(ctx, …)`, the launch gate in `claimLaunched`, callers pass a detached
+   bounded context, deregister on persist failure. Regression pins: the crash
+   test and the launch-gate test (8.1).
 2. **`refactor(durability): make one store own job_files and failed_articles`**
    — move the SQL of `seedJobFiles` and `SaveBatch`, the residency reads and
    `DeleteJob` into `durability.Store` behind the plain-type API of 3.2, leaving
    `appCheckpointStore` as the mapping adapter; unexport `commit`. Behaviour-neutral; the existing suite
    is the check.
 3. **`fix(app): reclaim a job's rows by one rule instead of four`** — `Reclaim`
-   plus `app.reclaim`, every call site in 3.4, startup `Reclaim()`; delete the
+   and `SweepOrphans` plus their app helpers, every call site in 3.4, startup
+   `SweepOrphans`; delete the
    list in 3.7. Behaviour change: a failed job's `job_files` and
    `failed_articles` go at departure (E6/E7).
-4. **`fix(durability): stop a late flush resurrecting a removed job's rows`**
-   — the 3.5 guard. Closes #561.
+4. **`fix(checkpoint,durability): stop a late flush resurrecting a removed job's rows`**
+   — the 3.5 guard, and `Prune` waiting for an in-flight flush that holds the
+   job, with `Prune`'s doc changed to match. Closes #561.
 5. **`refactor(history): make retained file progress a child of its entry`**
    — FK + write in `history.Add`'s transaction; `history` sheds all
    durability clauses. Pre-v1.0, so `001_initial.sql` and `schema.golden` are
@@ -333,8 +410,14 @@ the job is present. Observed red today in 10/15; the positive control (kill
 after 1.5s) is 5/5 green. Source in Appendix A. Run with
 `-count` ≥ 10, since it is a race.
 
+Launch gate: a `dispatch.Store` wrapper whose `Save` fails, then `Add` — assert
+`Add` returns the error, no worker was ever launched for the job (count
+launches through the runner), and the job is absent from `List()`. Mutation:
+delete the `d.written` check in `claimLaunched` → a launch is observed.
+
 ### 8.2 Reclaim rule — one table-driven test, every branch
-A job in each state, against the real schema, then `Reclaim()`:
+A job in each state, against the real schema, through both `SweepOrphans` and
+`Reclaim(id)` per job — the two share their statements, and the test proves it:
 
 | State | job_files | failed_articles | durable_runs |
 |---|---|---|---|
@@ -369,6 +452,10 @@ Deterministic interleaving through a store wrapper (the `dispatch.Store`
 injection pattern from #559): capture a batch, `Reclaim`, then commit the
 batch → zero `failed_articles`. Mutation: remove the `EXISTS` → rows
 resurrected.
+
+`Prune` wait: hold a flush mid-`SaveBatch` whose batch contains the job, call
+`Prune` from another goroutine, and assert it has not returned until the flush
+commits. Mutation: drop the wait → `Prune` returns first.
 
 ### 8.5 §6
 A compile-time check is the pin: code outside `internal/durability` calling
