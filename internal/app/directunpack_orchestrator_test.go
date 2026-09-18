@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"testing"
 
@@ -59,7 +60,7 @@ func duFixtureLogged(t *testing.T, threads int) (*directUnpackOrchestrator, *dis
 	app.config = cfg
 	app.pipeline.downloadDir = dir
 
-	if err := app.dispatcher.Add(j, hdr); err != nil {
+	if err := app.dispatcher.Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 

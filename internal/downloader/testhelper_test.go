@@ -46,7 +46,7 @@ func addTestJob(t *testing.T, disp *dispatch.Dispatcher, j *job.Job, m *job.Mani
 	if t != nil {
 		t.Helper()
 	}
-	if err := disp.Add(j, dispatch.Header{Name: j.ID()}); err != nil {
+	if err := disp.Add(context.Background(), j, dispatch.Header{Name: j.ID()}); err != nil {
 		if t != nil {
 			t.Fatalf("disp.Add: %v", err)
 		}

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -57,7 +58,7 @@ func TestPipeline_MultiFile_ArtIdx_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob failed: %v", err)
 	}
-	if err := disp.Add(j, hdr); err != nil {
+	if err := disp.Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("disp.Add failed: %v", err)
 	}
 

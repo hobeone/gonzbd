@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -35,7 +36,7 @@ func TestMaybeReleaseRecoveryVolumes_NoIndexFindError(t *testing.T) {
 		{subject: "data.vol000+01.par2", bytes: 100},
 	})
 	seedFileCRC(t, qjob, 0, 0x1068AFA6)
-	if err := app.Dispatcher().Add(qjob, hdr); err != nil {
+	if err := app.Dispatcher().Add(context.Background(), qjob, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -89,7 +90,7 @@ func TestMaybeReleaseRecoveryVolumes_Unknown(t *testing.T) {
 		{subject: "data.bin", bytes: 100},
 		{subject: "data.vol000+01.par2", bytes: 100},
 	})
-	if err := app.Dispatcher().Add(qjob, hdr); err != nil {
+	if err := app.Dispatcher().Add(context.Background(), qjob, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -144,7 +145,7 @@ func TestMaybeReleaseRecoveryVolumes_RepairUndeferFails(t *testing.T) {
 		{subject: "data.vol000+01.par2", bytes: 100},
 	})
 	seedFileCRC(t, qjob, 0, 0xDEADBEEF)
-	if err := app.Dispatcher().Add(qjob, hdr); err != nil {
+	if err := app.Dispatcher().Add(context.Background(), qjob, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 

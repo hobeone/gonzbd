@@ -54,7 +54,7 @@ func TestStart_RetentionDoesNotDefeatCrashReconciliation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.Dispatcher().Add(j, hdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	// IsComplete keys on the per-file Complete flag, which the assembler

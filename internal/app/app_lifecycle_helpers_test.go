@@ -392,7 +392,7 @@ func TestHasDownloadableJobs_Branches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := appReal.Dispatcher().Add(j, hdr); err != nil {
+	if err := appReal.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 

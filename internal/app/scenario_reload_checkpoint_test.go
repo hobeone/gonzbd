@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,7 +72,7 @@ func TestReload_DoesNotReFetchAWrittenButUnackedArticle(t *testing.T) {
 		},
 	}}}
 	job, hdr := buildTestJob(t, h.cfg, parsed, types.FetchOptions{NzbName: "reload-unacked"})
-	if err := h.app.Dispatcher().Add(job, hdr); err != nil {
+	if err := h.app.Dispatcher().Add(context.Background(), job, hdr); err != nil {
 		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 

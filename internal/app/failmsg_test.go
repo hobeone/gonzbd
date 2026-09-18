@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -40,7 +41,7 @@ func buildFailMsgJob(t *testing.T, files []failMsgFile, failIdx ...int) *job.Job
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := app.Dispatcher().Add(j, hdr); err != nil {
+	if err := app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	for _, i := range failIdx {

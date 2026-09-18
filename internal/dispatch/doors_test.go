@@ -17,7 +17,7 @@ func TestCancel_NoJobReturnsError(t *testing.T) {
 func TestCancel_LatchesAndKicksForARegisteredJob(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	<-d.wake // Add's own kick
@@ -45,7 +45,7 @@ func TestRetry_NoJobReturnsError(t *testing.T) {
 func TestRetry_ReopensASettledJobAndKicks(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.tick(context.Background())

@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -50,7 +51,7 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 
 	parsed := &nzb.NZB{Files: files}
 	job, hdr := buildTestJob(t, h.cfg, parsed, types.FetchOptions{NzbName: "reload-test"})
-	if err := h.app.Dispatcher().Add(job, hdr); err != nil {
+	if err := h.app.Dispatcher().Add(context.Background(), job, hdr); err != nil {
 		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 

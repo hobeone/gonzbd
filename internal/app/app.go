@@ -776,7 +776,10 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		}
 	}
 	if app.dispatcher != nil {
-		if err := app.dispatcher.Add(j, hdr); err != nil {
+		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		err := app.dispatcher.Add(addCtx, j, hdr)
+		addCancel()
+		if err != nil {
 			return fmt.Errorf("app: add to dispatcher: %w", err)
 		}
 	}
@@ -2339,7 +2342,10 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	}
 
 	if app.dispatcher != nil {
-		if err := app.dispatcher.Add(j, hdr); err != nil {
+		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		err := app.dispatcher.Add(addCtx, j, hdr)
+		addCancel()
+		if err != nil {
 			return err
 		}
 	}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -109,7 +110,7 @@ func newOnDemandPar2Job(t *testing.T) (*dispatch.Dispatcher, *job.Job) {
 		t.Fatalf("SetFileFetchPolicy: %v", err)
 	}
 	disp := newTestAPIDispatcher(t)
-	if err := disp.Add(j, dispatch.Header{
+	if err := disp.Add(context.Background(), j, dispatch.Header{
 		Name:     "par2.nzb",
 		Filename: "par2.nzb",
 		Bytes:    m.TotalBytes(),

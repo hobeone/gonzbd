@@ -59,7 +59,7 @@ func helperJob(t *testing.T, app *Application, name string, nFiles, nArticles in
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := app.Dispatcher().Add(j, hdr); err != nil {
+	if err := app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	return app.Dispatcher(), j

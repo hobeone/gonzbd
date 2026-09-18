@@ -67,7 +67,7 @@ func TestWorkerExit_ClearsTheLaunchedClaimSoALaterTickCanRelaunch(t *testing.T) 
 			runner := &fakeRunner{}
 			d := newTestDispatcher(t, withRunner(runner))
 			j := job.New("j1", "n", job.Policy{})
-			if err := d.Add(j, Header{}); err != nil {
+			if err := d.Add(context.Background(), j, Header{}); err != nil {
 				t.Fatalf("Add: %v", err)
 			}
 			d.tick(context.Background())

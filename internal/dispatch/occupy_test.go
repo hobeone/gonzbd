@@ -13,7 +13,7 @@ import (
 func TestOccupy_BasicLifecycleAndIsOccupied(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "test", job.Policy{})
-	if err := d.Add(j, Header{Name: "test"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -57,7 +57,7 @@ func TestOccupy_ReturnsNotFoundForUnknownJob(t *testing.T) {
 func TestOccupy_RemoveInsideOccupyBypassesWaitLive(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "test", job.Policy{})
-	if err := d.Add(j, Header{Name: "test"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -79,7 +79,7 @@ func TestOccupy_RemoveInsideOccupyBypassesWaitLive(t *testing.T) {
 func TestOccupy_RemoveBypassesSelfDeadlock(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("job-1", "test", job.Policy{})
-	if err := d.Add(j, Header{Name: "test"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.markResident("job-1")
@@ -105,7 +105,7 @@ func TestOccupy_RemoveBypassesSelfDeadlock(t *testing.T) {
 func TestOccupy_ExternalRemoveWaitsForOccupancyToDrain(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "test", job.Policy{})
-	if err := d.Add(j, Header{Name: "test"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestOccupy_ExternalRemoveWaitsForOccupancyToDrain(t *testing.T) {
 func TestOccupy_RemoveErrorsWhenWaitLiveExpires(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "test", job.Policy{})
-	if err := d.Add(j, Header{Name: "test"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -189,7 +189,7 @@ func TestOccupy_StopSkipsParkAndEvictOnOccupancyTimeout(t *testing.T) {
 	d.SetStopTimeout(50 * time.Millisecond)
 
 	j := job.New("j1", "test", job.Policy{})
-	if err := d.Add(j, Header{Name: "test"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -229,7 +229,7 @@ func TestOccupy_StopSkipsParkAndEvictOnOccupancyTimeout(t *testing.T) {
 func TestWaitLive_DirectAssertions(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "test", job.Policy{})
-	if err := d.Add(j, Header{Name: "test"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -273,7 +273,7 @@ func TestWaitLive_DirectAssertions(t *testing.T) {
 func TestOccupy_RejectedWhenJobBeingRemoved(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "test", job.Policy{})
-	if err := d.Add(j, Header{Name: "test"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -299,7 +299,7 @@ func TestOccupy_RejectedWhenJobBeingRemoved(t *testing.T) {
 func TestOccupy_ConcurrentOccupiers_RemoveWaitsForOtherOccupier(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "test", job.Policy{})
-	if err := d.Add(j, Header{Name: "test"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -360,7 +360,7 @@ func TestOccupy_ConcurrentOccupiers_RemoveWaitsForOtherOccupier(t *testing.T) {
 func TestOccupy_StaleContext_CannotBypassWaitLive(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "test", job.Policy{})
-	if err := d.Add(j, Header{Name: "test"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -403,7 +403,7 @@ func TestOccupy_StaleContext_CannotBypassWaitLive(t *testing.T) {
 func TestWaitLiveExcept_DirectReference(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "test", job.Policy{})
-	if err := d.Add(j, Header{Name: "test"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -481,7 +481,7 @@ func TestWaitLiveExcept_DirectReference(t *testing.T) {
 func TestWaitLiveExcept_DoneArm_RequiresCallerPresence(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "test", job.Policy{})
-	if err := d.Add(j, Header{Name: "test"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
