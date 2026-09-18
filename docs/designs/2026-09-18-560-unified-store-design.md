@@ -9,7 +9,7 @@
 
 ## 1. The design in one paragraph
 
-Consolidate the persistence, queries, atomic deletion, and orphan reclamation of all three active download tables (`durable_runs`, `failed_articles`, `job_files`) into `internal/durability` under a unified `durability.Store`, evicting all ten ad-hoc raw SQL statements from `internal/app` and `internal/history`. `durability.Barrier` becomes the **compiler-enforced** exclusive writer of `durable_runs` content (§6) by unexporting `Store.commit`, while typed methods using primitive records (`SeedJobFiles`, `SaveProgressBatch`, `LoadJobFiles`) manage `job_files` and `failed_articles` without creating an import cycle with `internal/job`. Deletion across all three tables is unified into a single state-derived operation, `Store.Reclaim(ctx, id, moreIDs...)`, which deletes `job_files` and `failed_articles` whenever a job is absent from `dispatch_jobs`, and deletes `durable_runs` whenever the job is absent from both `dispatch_jobs` and `history(status='Failed')`. Prerequisite P1 persists `dispatch_jobs` synchronously inside `Dispatcher.Add` **before** `d.kick()` makes the job launchable, closing E2 and E5 without leaking phantom background downloads on persist failure. Issue 561 is eliminated by combining the SQL `WHERE EXISTS (SELECT 1 FROM job_files ...)` liveness guard with `Checkpointer.Prune` synchronizing against `inFlight` flushes. Exported `durability.PerJobTables` provides the machine-readable enumeration mandated by Standing Design Rule 4, and `history_job_files` gains `FOREIGN KEY (job_id) REFERENCES history(nzo_id) ON DELETE CASCADE` written atomically inside `history.Add`.
+Consolidate the persistence, queries, atomic deletion, and orphan reclamation of all three active download tables (`durable_runs`, `failed_articles`, `job_files`) into `internal/durability` under a unified `durability.Store`, evicting all ten ad-hoc raw SQL statements from `internal/app` and `internal/history`. `durability.Barrier` becomes the **compiler-enforced** exclusive writer of `durable_runs` content (§6) by unexporting `Store.commit`, while typed methods using primitive records (`SeedJobFiles`, `SaveProgressBatch`, `LoadJobFiles`) manage `job_files` and `failed_articles` without creating an import cycle with `internal/job`. Deletion across all three tables is unified into a single state-derived operation, `Store.Reclaim(ctx, id, moreIDs...)`, which deletes `job_files` and `failed_articles` whenever a job is absent from `dispatch_jobs`, and deletes `durable_runs` whenever the job is absent from both `dispatch_jobs` and `history(status='Failed')`. Prerequisite P1 persists `dispatch_jobs` synchronously inside `Dispatcher.Add` **before** `d.kick()` and gates unwritten jobs in `snapshotOrder()`, closing E2 and E5 without leaking scheduler leases or background workers on persist failure. Issue 561 is eliminated by combining the SQL `WHERE EXISTS (SELECT 1 FROM job_files ...)` liveness guard with `Checkpointer.Prune` synchronizing against `inFlight` flushes. Exported `durability.PerJobTables` provides the machine-readable enumeration mandated by Standing Design Rule 4, and `history_job_files` stays owned by `internal/history` (written inside `history.Add`'s transaction and deleted inside `history.Repository.delete`'s transaction, with zero DDL changes and no schema-enforced cascades).
 
 ---
 
@@ -21,7 +21,7 @@ Facts established at `f83c366d` relied on by this design:
 |---|---|---|---|
 | E1 | `dispatch_jobs` has one writer, reached only from the dispatcher tick and `Stop`. `Dispatcher.Add` writes nothing to disk. | Verified (`internal/dispatch/store/store.go:93`, `internal/dispatch/tick.go:119`) | Fixed by P1: `Dispatcher.Add` calls `persistIfChanged` synchronously *before* `d.kick()`. |
 | E2 | A job accepted by the API is lost if killed right after `mode=addfile` returns 200, orphaning `job_files` rows and manifest. | Verified (`test/crash/` reproduction: 10/15 lost) | Closed by P1; any crash between `SeedJobFiles` and `Add` is reclaimed at startup by `SweepOrphans`. |
-| E3 | The E2 window lasts until the woken tick persists the row; within a tick, `launch` runs before `persistIfChanged`. | Verified (`registry.go:205`, `dispatch.go:454-455`, `tick.go:29-63`) | Proves `register` must NOT call `d.kick()` before `persistIfChanged` succeeds in P1. |
+| E3 | The E2 window lasts until the woken tick persists the row; within a tick, `launch` runs before `persistIfChanged`. | Verified (`registry.go:205`, `dispatch.go:454-455`, `tick.go:29-63`) | Proves `register` must NOT call `d.kick()` and `snapshotOrder` must skip unwritten jobs in P1. |
 | E4 | To the user, E2 means the job is lost; dir scanner removes source; manual resubmit matches `admin/nzb` backup and is added paused. | Verified (`internal/dirscanner/scanner.go`, `internal/app/app.go:657-667`) | Closed by P1 + startup `SweepOrphans`. |
 | E5 | `RetryHistoryJob` deletes the history row after an in-memory `Add` and before any tick writes `dispatch_jobs`. | Verified (`internal/app/app.go:2342`, `:2347`) | Closed by P1: `dispatch_jobs` row is durable before `Add` returns, preceding `history.Delete`. |
 | E6 | Only `durable_runs` must be read across queue $\to$ history handoff for a failed job; `job_files` has no reader for a job in history. `failed_articles` must be absent at retry. | Verified (`internal/app/residency.go:108,158,179`, `app.go:2324-2338`, `app.go:2266`) | Enables `Reclaim` to delete `job_files` and `failed_articles` immediately when a job fails, keeping *only* `durable_runs`. |
@@ -30,10 +30,10 @@ Facts established at `f83c366d` relied on by this design:
 | E9 | `MarkCompleted` turns a Failed history entry into Completed with a bare `UPDATE`, stranding retained rows. | Verified (`internal/history/repository.go:429`, `internal/api/history.go:284`) | Fixed: `MarkCompleted` invokes `Reclaim(ctx, nzoID)`, purging `durable_runs`. |
 | E10 | `RunStore.Commit`'s only production callers are `durability.Barrier`. | Verified (`internal/durability/barrier.go:282, 628`) | Upgraded to a compile-time guarantee by unexporting `Store.commit`. |
 | E11 | Ten raw-SQL statement sites touch `job_files`, `failed_articles`, or `durable_runs` outside `internal/durability`. | Verified (`app.go:815,2267`, `dispatcher_wiring.go:99,107`, `durability.go:1464,1532`, `residency.go:108,158,179`, `repository.go:400`) | All 10 sites are evicted and replaced with calls on `durability.Store`. |
-| E12 | All tables share one `*sql.DB` with `_pragma=foreign_keys(1)` and `_txlock=immediate`. | Verified (`app.go:357,525`, `internal/history/db.go:79-80`) | Serialises `SaveProgressBatch` against `Reclaim` and enforces `history_job_files` cascade. |
+| E12 | All tables share one `*sql.DB` with `_txlock=immediate`. | Verified (`app.go:357,525`, `internal/history/db.go:79-80`) | Serialises `SaveProgressBatch` against `Reclaim` inside one SQLite database. |
 | E13 | `seedJobFiles` must run before `Add` (issue 552 fix); `RetryHistoryJob` uses the same order. | Verified (`app.go:762-768`, `app.go:2306-2320`) | Requires runtime `Reclaim` to take explicit job IDs so it never races an in-flight `SeedJobFiles`. |
 | E14 | `internal/job/content.go:8` imports `internal/durability` for `DurableProof`. | Verified (`internal/job/content.go:8, 196`) | Forbids `internal/durability` from importing `internal/job` (prevents Go compile cycle). |
-| E15 | `d.register` calls `d.kick()` at `registry.go:205`; `deregister` requires callers to drain launched workers first (`registry.go:264-265`). | Verified (`internal/dispatch/registry.go:191-207, 261-268`) | Requires P1 to run `persistIfChanged` *before* `d.kick()` and launch eligibility. |
+| E15 | `d.register` calls `d.kick()` at `registry.go:205`; `deregister` requires callers to drain launched workers first (`registry.go:264-265`) and is called solely by `removal.end` (`registry.go:404-412`). | Verified (`internal/dispatch/registry.go:191-207, 261-268, 404-412`) | Requires P1 to skip unwritten jobs in `snapshotOrder()`, call `d.kick()` after `persistIfChanged`, and unwind via `beginRemoval` $\to$ `rm.end()`. |
 | E16 | 33 raw `INSERT` statements across 15 test files lack a shared table enumeration across `package app` and `package app_test`. | Verified (`issue 560 comments 5721839944, 5721847476`) | Resolved by exporting `durability.PerJobTables` in non-test code. |
 
 ---
@@ -90,27 +90,12 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 
 ---
 
-### 3.2 Schema changes (DDL) & `history.Add` Atomicity
+### 3.2 `history_job_files` Ownership & `history.Add` Atomicity (Zero Schema Changes)
 
-In `internal/history/migrations/001_initial.sql`, `history_job_files` becomes a cascading child of `history(nzo_id)`:
-
-```sql
--- +goose StatementBegin
-CREATE TABLE history_job_files (
-    job_id           TEXT NOT NULL,
-    file_index       INTEGER NOT NULL,
-    complete         INTEGER NOT NULL DEFAULT 0,
-    filename         TEXT,
-    assembled_crc32  INTEGER DEFAULT 0,
-    article_count    INTEGER NOT NULL DEFAULT 0,
-    fetch_policy     INTEGER NOT NULL DEFAULT 0 CHECK (fetch_policy BETWEEN 0 AND 2),
-    PRIMARY KEY (job_id, file_index),
-    FOREIGN KEY (job_id) REFERENCES history(nzo_id) ON DELETE CASCADE
-);
--- +goose StatementEnd
-```
-
-`history.Repository.Add` writes `history_job_files` inside the same transaction as the `history` entry, replacing the separate `_, _ =` statements in `job_finalizer.go`. `internal/history` removes all `durable_runs` and `failed_articles` SQL and drops `DeleteKeepingDurability`.
+Per the 2026-09-18 lifecycle ruling, no foreign keys or `ON DELETE CASCADE` clauses are used in the schema (avoiding split lifecycle logic between Go and DDL):
+- `history.Repository.Add` writes `history_job_files` inside the same transaction as the `history` entry, replacing the separate `_, _ =` statements in `job_finalizer.go`.
+- `history.Repository.delete` keeps its existing `DELETE FROM history_job_files WHERE job_id IN (...)` inside the same transaction as `DELETE FROM history` (`internal/history/repository.go:363`).
+- `internal/history` removes all `durable_runs` and `failed_articles` SQL and drops `DeleteKeepingDurability`.
 
 ---
 
@@ -244,9 +229,9 @@ DELETE FROM durable_runs
 |---|---|---|---|
 | 1 | **Crash window** | **Closed for Jobs; Self-Healing for Rows** | **Jobs (E2, E5):** Closed outright by P1 (`Dispatcher.Add` persists synchronously while `snapshotOrder` gates unwritten jobs from the 1s ticker and wake loop until `d.written[id]` is set).<br>**Rows (#549):** Partial departures closed by single-transaction `Reclaim`. Any row stranded by a hard `SIGKILL` between departure and `Reclaim` cannot cause wrong behaviour (rule is state-derived) and is swept deterministically at startup by `SweepOrphans`. |
 | 2 | **§6 exclusive-writer** | **Strengthened (Compiler-Enforced)** | `Store.commit` is unexported inside `package durability`. No package outside `internal/durability` can compile a call that writes `durable_runs` content; within the package, `durability.Barrier` is the sole caller (E10). |
-| 3 | **Rule 2** | **Single Owner Package & One Reclaim Rule** | `internal/durability` is the sole owner of `durable_runs`, `failed_articles`, and `job_files`. Lifecycle deletion has one rule (`Reclaim`/`SweepOrphans`). `history_job_files` is written once in `history.Add` and deleted by SQLite `ON DELETE CASCADE`. Raw SQL sites outside `internal/durability` drop from 10 to 0. Exported `PerJobTables` unifies all test fixtures. |
+| 3 | **Rule 2** | **Single Owner Package & One Reclaim Rule** | `internal/durability` is the sole owner of `durable_runs`, `failed_articles`, and `job_files`. Lifecycle deletion has one rule (`Reclaim`/`SweepOrphans`). `history_job_files` is written once in `history.Add` and deleted once in `history.Repository.delete` (in the entry's own transaction). Raw SQL sites outside `internal/durability` drop from 10 to 0. Exported `PerJobTables` unifies all test fixtures. |
 | 4 | **Issue 561** | **Fixed (In-Flight Closed; Post-Prune Residual Scoped)** | Guarded by `WHERE EXISTS (SELECT 1 FROM job_files ...)` in `SaveProgressBatch` AND `Checkpointer.Prune` waiting on `flushMu` when `id` is in `c.inFlight`. See §5.3 for the narrow post-`Prune` straggler `Mark` residual on a reused ID. |
-| 5 | **Simplicity** | **High (Minimal Coupling)** | Added tables: **0**. Leaked `Execer` interfaces: **0**. Go import cycles: **0**. Trade-offs explicitly accepted: `job_files` presence doubles as the liveness witness for `SaveProgressBatch`, and `Reclaim` reads `dispatch_jobs.id` and `history(nzo_id, status)` (§5.2). |
+| 5 | **Simplicity** | **High (Minimal Coupling)** | Added tables: **0**. Schema/DDL changes: **0**. Leaked `Execer` interfaces: **0**. Go import cycles: **0**. Trade-offs explicitly accepted: `job_files` presence doubles as the liveness witness for `SaveProgressBatch`, and `Reclaim` reads `dispatch_jobs.id` and `history(nzo_id, status)` (§5.2). |
 | 6 | **Runtime cost** | **Minimal** | `Add`: one synchronous row write the tick would perform milliseconds later. `SaveProgressBatch`: one indexed prefix probe per job with failed articles. Departure: one transaction with three indexed `NOT EXISTS` deletes. |
 
 ---
@@ -264,7 +249,7 @@ DELETE FROM durable_runs
 
 ## 6. What this design does not do
 
-1. **Does not add foreign keys between `dispatch_jobs` and active durability tables:** Avoids E13 ordering hazards and `history_durable_runs` reparenting copies.
+1. **Does not use foreign keys or `ON DELETE CASCADE` anywhere:** Avoids splitting lifecycle rules between Go and SQLite DDL, E13 ordering hazards, and `history_durable_runs` reparenting copies.
 2. **Does not import `internal/job` into `internal/durability`:** Preserves the clean acyclic package graph.
 
 ---
@@ -275,7 +260,7 @@ DELETE FROM durable_runs
 2. **`refactor(durability): consolidate job_files and failed_articles into Store and export PerJobTables`** — Add `durability.Store` with primitive types, unexport `commit`, export `PerJobTables`, move `seedJobFiles`, `SaveBatch`, and residency reads.
 3. **`fix(app,durability): replace four deletion rules with state-derived Reclaim and startup SweepOrphans`** — Wire `app.reclaim(ctx, id, ...)` across all 6 departure/error sites: (1) `RemoveJob` (including `ErrNotFound` for E8), (2) `jobFinalizer`, (3) `MarkCompleted` (E9), (4) `DeleteHistory` (`history.Delete` then `app.reclaim`), (5) `AddJob`/`RetryHistoryJob` failure after `SeedJobFiles` (calls `app.reclaim(ctx, j.ID())`), and (6) startup `dropJobAlreadyInHistory` (subsumed because startup reconciliation runs before `app.sweepOrphans(ctx)`).
 4. **`fix(checkpoint,durability): guard failed_articles on job_files liveness and sync Prune with inFlight`** — Update `Checkpointer.Prune` contract & doc (`checkpointer.go:64-66`) to wait on `flushMu` when `id` is in `inFlight`, and add `WHERE EXISTS` in `SaveProgressBatch`.
-5. **`refactor(history): cascade history_job_files from history and write inside history.Add`** — Edit `001_initial.sql` and `schema.golden`; remove durability SQL and `DeleteKeepingDurability` from `internal/history`.
+5. **`refactor(history): write history_job_files in history.Add transaction and drop durability SQL`** — Write `history_job_files` inside `history.Add`'s transaction; keep `history_job_files` delete in `history.Repository.delete`; remove all `durable_runs` and `failed_articles` SQL and `DeleteKeepingDurability` from `internal/history`. Zero DDL changes.
 6. **`test(app,durability): modernize per-job test fixtures with PerJobTables`** — Replace scattered raw-SQL test counts with helpers derived from `durability.PerJobTables`.
 
 ---
