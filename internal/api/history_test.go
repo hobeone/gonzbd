@@ -665,7 +665,7 @@ func TestHistoryList_PostProcJobsNotInjected(t *testing.T) {
 
 	// Add an active post-processing job to the dispatcher.
 	ppJob := job.New("j-pp", "PostProc Job", job.Policy{})
-	if err := d.Add(ppJob, dispatch.Header{
+	if err := d.Add(context.Background(), ppJob, dispatch.Header{
 		Name:     "PostProc Job",
 		Filename: "postproc.nzb",
 	}); err != nil {

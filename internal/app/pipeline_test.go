@@ -102,7 +102,7 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 		{Subject: "movie.mkv", Bytes: 1100, Articles: articles},
 	}}
 	j, hdr, _ := BuildIngestJob(app.config, parsed, "m.nzb", types.FetchOptions{NzbName: "m.nzb"}, nil)
-	_ = app.Dispatcher().Add(j, hdr)
+	_ = app.Dispatcher().Add(context.Background(), j, hdr)
 
 	failIDs := make([]string, 0, 9)
 	for i := range 9 {
@@ -178,7 +178,7 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 		}},
 	}}
 	j, hdr, _ := BuildIngestJob(app.config, parsed, "m.nzb", types.FetchOptions{NzbName: "m.nzb"}, nil)
-	_ = app.Dispatcher().Add(j, hdr)
+	_ = app.Dispatcher().Add(context.Background(), j, hdr)
 
 	a := assembler.New(assembler.Options{
 		FileInfo: func(jobID string, fileIdx int) (assembler.FileInfo, error) {
@@ -251,7 +251,7 @@ func TestRegisterFile_ErrorPaths(t *testing.T) {
 		t.Parallel()
 		app := newTestApplication(t)
 		j, hdr := newBareJob(t, app, "reg-nomanifest", "md5-reg-nomanifest")
-		if err := app.Dispatcher().Add(j, hdr); err != nil {
+		if err := app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 		j.Evict()
@@ -270,7 +270,7 @@ func TestRegisterFile_ErrorPaths(t *testing.T) {
 		t.Parallel()
 		app := newTestApplication(t)
 		j, hdr := newBareJob(t, app, "reg-range", "md5-reg-range")
-		if err := app.Dispatcher().Add(j, hdr); err != nil {
+		if err := app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 		m := mustManifest(t, j)

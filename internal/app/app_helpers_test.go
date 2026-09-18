@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -122,7 +123,7 @@ func buildFailArticleJob(t *testing.T) (*dispatch.Dispatcher, *job.Job) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := app.Dispatcher().Add(j, hdr); err != nil {
+	if err := app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	return app.Dispatcher(), j
@@ -165,7 +166,7 @@ func TestHasFailedArticle_RespectsFileBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := app.Dispatcher().Add(j, hdr); err != nil {
+	if err := app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	ackFailed(t, app.Dispatcher(), j.ID(), "a@t")

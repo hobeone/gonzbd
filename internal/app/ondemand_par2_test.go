@@ -424,7 +424,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		{subject: "data.bin", bytes: 100},
 		{subject: "data.vol000+01.par2", bytes: 100},
 	})
-	if err := app.Dispatcher().Add(qjob, hdr); err != nil {
+	if err := app.Dispatcher().Add(context.Background(), qjob, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	seedFileCRC(t, qjob, 0, 0x1068AFA6)
@@ -482,7 +482,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 			{subject: "data.vol000+01.par2", bytes: 100},
 		})
 		seedFileCRC(t, jobCorrupt, 0, 0xDEADBEEF)
-		if err := app.Dispatcher().Add(jobCorrupt, hdrCorrupt); err != nil {
+		if err := app.Dispatcher().Add(context.Background(), jobCorrupt, hdrCorrupt); err != nil {
 			t.Fatal(err)
 		}
 
@@ -522,7 +522,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 			{subject: "data.vol000+01.par2", bytes: 100},
 		})
 		seedFileCRC(t, noIdx, 0, 0x1068AFA6)
-		if err := app.Dispatcher().Add(noIdx, hdrNoIdx); err != nil {
+		if err := app.Dispatcher().Add(context.Background(), noIdx, hdrNoIdx); err != nil {
 			t.Fatal(err)
 		}
 
@@ -547,7 +547,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 			{subject: "data.vol000+01.par2", bytes: 100},
 		})
 		seedFileCRC(t, obfJob, 0, 0x1068AFA6)
-		if err := app.Dispatcher().Add(obfJob, hdrObf); err != nil {
+		if err := app.Dispatcher().Add(context.Background(), obfJob, hdrObf); err != nil {
 			t.Fatal(err)
 		}
 
@@ -666,7 +666,7 @@ func TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing(t *testing.T
 				{subject: "data.vol000+01.par2", bytes: 100},
 			})
 			seedFileCRC(t, j, 0, tc.crc)
-			if err := app.Dispatcher().Add(j, hdr); err != nil {
+			if err := app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 				t.Fatalf("Add: %v", err)
 			}
 

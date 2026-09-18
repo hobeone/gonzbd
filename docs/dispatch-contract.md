@@ -210,9 +210,9 @@ that shipped kept it as the config-facing name for that knob instead.)
 ## Lock discipline across the dispatch → sched boundary
 
 **The dispatcher never holds its own lock (`d.mu`) across a call into
-`sched`.** `Dispatcher.tick` copies the registry under `d.mu` via
-`snapshotOrder`, releases the lock, and only then calls `sched.Queue.Advance`
-per job (`internal/dispatch/tick.go`). Every other call into `d.q` —
+`sched`.** `Dispatcher.tick` copies the written registry entries (`d.written`)
+under `d.mu` via `snapshotOrder`, releases the lock, and only then calls
+`sched.Queue.Advance` per job (`internal/dispatch/tick.go`). Every other call into `d.q` —
 `Cancel`, `Retry`, `Pause`, `Resume`, `SetCaps`, `Park` in `Stop`'s sweep,
 `Render`/`RenderAll` in `List`/`Row`/`reconcileResidency`/`launch`, `Settle`
 in `Finished`/`reconcileResidency`, `Park` in `YieldedFor` — is likewise made
@@ -275,8 +275,10 @@ obligations:
 - **`Load(ctx) ([]Persisted, error)`** — read the whole queue once, at
   `Dispatcher.Start`.
 - **`Save(ctx, Persisted) error`** and **`Delete(ctx, id) error`** — write a
-  job's four axes (`State`, `Intent`, plus header/policy/progress fields)
-  when they move, and delete a row when the job is removed or evicted.
+  job's row synchronously in `Dispatcher.Add` before `Add` returns (while
+  `snapshotOrder` withholds the unwritten entry from `tick` via `d.written`) and
+  whenever its four axes (`State`, `Intent`, plus header/policy/progress fields)
+  move, and delete a row when the job is removed or evicted.
 
 `internal/dispatch/store` implements this against SQLite; `internal/dispatch`
 itself stays free of a SQL driver. `Persisted` deliberately omits a
@@ -288,7 +290,9 @@ SABnzbd `PP` integer it derives from, because `PP` "does not exist past App"
 and persisting it would carry external vocabulary back inside the internal
 layer.
 
-`Dispatcher.restore` rebuilds every job by replaying it forward through
+`Dispatcher.restore` skips any stored row equal to `d.lastWritten(p.ID)` that
+was already written by a pre-`Start` `Dispatcher.Add` on the same instance, and
+rebuilds every other job by replaying it forward through
 `job.Job`'s own doors (`reconstruct`, `internal/dispatch/dispatch.go`) —
 `job.New` followed by `BeginAttempt` and a canonical hop sequence
 (`replayPath`) to the persisted `State` — rather than through a second

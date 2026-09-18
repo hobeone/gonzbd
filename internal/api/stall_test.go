@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -59,7 +60,7 @@ func addTestDispatcherJob(t *testing.T, disp *dispatch.Dispatcher, name string) 
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}
-	if err := disp.Add(j, dispatch.Header{
+	if err := disp.Add(context.Background(), j, dispatch.Header{
 		Name:     name,
 		Filename: name + ".nzb",
 		Bytes:    m.TotalBytes(),

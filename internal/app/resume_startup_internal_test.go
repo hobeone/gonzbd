@@ -65,7 +65,7 @@ func newResumeUnitFixture(t *testing.T) *resumeUnitFixture {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.dispatcher.Add(j, hdr); err != nil {
+	if err := application.dispatcher.Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if err := j.BeginAttempt(time.Now()); err != nil {
@@ -252,7 +252,7 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := f.app.dispatcher.Add(other, hdr); err != nil {
+	if err := f.app.dispatcher.Add(context.Background(), other, hdr); err != nil {
 		t.Fatalf("Add(other): %v", err)
 	}
 	if err := other.BeginAttempt(time.Now()); err != nil {

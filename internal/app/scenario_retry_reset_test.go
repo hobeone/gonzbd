@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	hdr.Name = "retry-reset"
 	hdr.NZBBackup = "retry-reset.nzb.gz"
 
-	if err := h.app.Dispatcher().Add(seeded, hdr); err != nil {
+	if err := h.app.Dispatcher().Add(context.Background(), seeded, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	_ = seeded.BeginAttempt(started)

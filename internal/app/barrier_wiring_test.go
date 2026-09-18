@@ -87,7 +87,7 @@ func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.Dispatcher().Add(j, hdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if err := application.pipeline.registerFile(j.ID(), 0); err != nil {

@@ -699,6 +699,13 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 		}
 	}()
 	for _, p := range rows {
+		// An Add before Start already registered its job and wrote p into
+		// d.written; skip the row only when it matches what this process
+		// wrote prior to restore, so a different stored row for the same ID
+		// still reaches register and fails loudly.
+		if w, ok := d.lastWritten(p.ID); ok && w == p && !slices.Contains(registered, p.ID) {
+			continue
+		}
 		j, err := reconstruct(p.ID, p.Header.Name, p.Policy, p.State, p.Intent, now)
 		if err != nil {
 			return fmt.Errorf("dispatch: restore: job %s at %+v: %w", p.ID, p.State, err)

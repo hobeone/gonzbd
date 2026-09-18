@@ -23,7 +23,7 @@ func TestTick_PromotesWithoutAKick(t *testing.T) {
 	d.Tick(context.Background())
 
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	// Drain the kick Add queued, so only the tick itself can promote.
@@ -45,7 +45,7 @@ func TestTick_WalksInQueueOrder(t *testing.T) {
 	first := job.New("first", "n", job.Policy{})
 	second := job.New("second", "n", job.Policy{})
 	for _, j := range []*job.Job{first, second} {
-		if err := d.Add(j, Header{}); err != nil {
+		if err := d.Add(context.Background(), j, Header{}); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}
@@ -122,7 +122,7 @@ func TestStart_AfterStopReturnsAnErrorRatherThanPanicking(t *testing.T) {
 func TestStop_ParksHoldersRatherThanSettlingThem(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.tick(context.Background())
@@ -202,7 +202,7 @@ func TestTick_LogsAndSkipsAJobWhoseAdvanceErrors(t *testing.T) {
 	j := job.New("j1", "n", job.Policy{})
 
 	d1 := newTestDispatcher(t, withCaps(2, 2))
-	if err := d1.Add(j, Header{}); err != nil {
+	if err := d1.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("d1.Add: %v", err)
 	}
 	d1.tick(context.Background()) // branch 1: begins the attempt at Fetching
@@ -226,14 +226,14 @@ func TestTick_LogsAndSkipsAJobWhoseAdvanceErrors(t *testing.T) {
 	var buf bytes.Buffer
 	d2 := newTestDispatcher(t, withCaps(2, 2))
 	d2.log = captureLogger(&buf)
-	if err := d2.Add(j, Header{}); err != nil {
+	if err := d2.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("d2.Add: %v", err)
 	}
 	// Registered AFTER the failing job, so it is reached only if the walk
 	// carries on past the error. Without it the test observes the log and
 	// nothing else, and tick's `continue` could be a `return` unnoticed.
 	later := job.New("j2", "n", job.Policy{})
-	if err := d2.Add(later, Header{}); err != nil {
+	if err := d2.Add(context.Background(), later, Header{}); err != nil {
 		t.Fatalf("d2.Add(later): %v", err)
 	}
 
@@ -302,7 +302,7 @@ func TestNew_BuildsAWorkingDispatcher(t *testing.T) {
 	runner := &fakeRunner{}
 	d := New(2, 2, time.Hour, testClock, &stubWorkers{}, &fakeResidency{}, &fakeStore{}, runner)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.tick(context.Background())
@@ -344,7 +344,7 @@ func TestRun_AdvancesOnAWakeAndStopsOnContextCancel(t *testing.T) {
 	}
 
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil { // Add's kick wakes run
+	if err := d.Add(context.Background(), j, Header{}); err != nil { // Add's kick wakes run
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -472,7 +472,10 @@ type blockingSaveStore struct {
 
 func (b *blockingSaveStore) Load(context.Context) ([]Persisted, error) { return nil, nil }
 func (b *blockingSaveStore) Delete(context.Context, string) error      { return nil }
-func (b *blockingSaveStore) Save(context.Context, Persisted) error {
+func (b *blockingSaveStore) Save(_ context.Context, p Persisted) error {
+	if p.State.State == job.StateUnset {
+		return nil
+	}
 	b.once.Do(func() {
 		close(b.entered)
 		<-b.release
@@ -499,7 +502,7 @@ func TestStop_ConcurrentStopsBothWaitForTheInFlightTick(t *testing.T) {
 	if err := d.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	<-bs.entered // a tick is now parked inside run, mid-walk
@@ -616,9 +619,12 @@ func TestRun_ShutdownBeatsAPrimedWake(t *testing.T) {
 	for range trials {
 		cs := &countingStore{}
 		d := newTestDispatcher(t, withStore(cs))
-		if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+		if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{}); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
+		cs.mu.Lock()
+		cs.saves = 0
+		cs.mu.Unlock()
 		// Add primed d.wake. Close d.stop so both cases are ready before run
 		// ever reaches its select.
 		close(d.stop)
@@ -645,14 +651,14 @@ func TestStop_ParkErrorAggregatesAllErrors(t *testing.T) {
 	j1 := job.New("j1", "Job 1", job.Policy{})
 	_ = j1.BeginAttempt(testClock())
 	j1.Grant(job.NewLease(9991))
-	if err := d.Add(j1, Header{Name: "Job 1"}); err != nil {
+	if err := d.Add(context.Background(), j1, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add(j1): %v", err)
 	}
 
 	j2 := job.New("j2", "Job 2", job.Policy{})
 	_ = j2.BeginAttempt(testClock())
 	j2.Grant(job.NewLease(9992))
-	if err := d.Add(j2, Header{Name: "Job 2"}); err != nil {
+	if err := d.Add(context.Background(), j2, Header{Name: "Job 2"}); err != nil {
 		t.Fatalf("Add(j2): %v", err)
 	}
 
@@ -669,7 +675,7 @@ func TestStop_ParkErrorAggregatesAllErrors(t *testing.T) {
 }
 
 func TestPersistIfChanged_Coverage(t *testing.T) {
-	st := &fakeStore{saveErr: errors.New("save fail")}
+	st := &fakeStore{}
 	d := newTestDispatcher(t, withStore(st))
 
 	j := job.New("j1", "Job 1", job.Policy{})
@@ -678,15 +684,16 @@ func TestPersistIfChanged_Coverage(t *testing.T) {
 		Bytes:    1000,
 		Articles: []job.JobArticle{{ID: "a1", Bytes: 1000}},
 	}})
-	j.RestoreProgressState("test reason", time.Unix(100, 0), time.Unix(200, 0), false)
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}
 
-	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
+	j.RestoreProgressState("test reason", time.Unix(100, 0), time.Unix(200, 0), false)
+	st.saveErr = errors.New("save fail")
 	d.persistIfChanged(context.Background(), j)
 
 	// Now with succeeding store
@@ -713,8 +720,8 @@ func TestRemovingState_SuppressesPersistAndResidency(t *testing.T) {
 	d := newTestDispatcher(t, withStore(fs))
 
 	j := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
-		t.Fatalf("Add: %v", err)
+	if err := d.register(j, Header{Name: "Job 1"}, seqNext); err != nil {
+		t.Fatalf("register: %v", err)
 	}
 
 	// A real in-progress removal rather than a hand-set marker: beginRemoval
@@ -776,7 +783,7 @@ func TestRemove_ConcurrentPersistDoesNotResurrectRowOrResidency(t *testing.T) {
 
 		id := fmt.Sprintf("j-%d", trial)
 		j := job.New(id, "Job", job.Policy{})
-		if err := d.Add(j, Header{Name: "Job"}); err != nil {
+		if err := d.Add(context.Background(), j, Header{Name: "Job"}); err != nil {
 			t.Fatalf("trial %d: Add: %v", trial, err)
 		}
 
@@ -860,7 +867,7 @@ func TestRemove_InFlightPersistBlockedByStoreMuDoesNotResurrect(t *testing.T) {
 	d := newTestDispatcher(t, withStore(hs))
 
 	j := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.persistIfChanged(context.Background(), j)
@@ -907,7 +914,7 @@ func TestEvictCancelledNeverRun_SkipsWhenLiveOrLaunched(t *testing.T) {
 	st := &fakeStore{}
 	d := newTestDispatcher(t, withStore(st))
 	j := job.New("j1", "test", job.Policy{})
-	if err := d.Add(j, Header{Name: "test"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if err := j.SetIntent(job.IntentCancel); err != nil {

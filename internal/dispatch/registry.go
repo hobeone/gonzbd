@@ -120,15 +120,17 @@ type entry struct {
 	// reorder a caller, and it needs a whole-queue resequence that is atomic
 	// in the store rather than a per-job Save — a partial rewrite leaves the
 	// queue in an order no user asked for. Recorded on #454.
-	seq int64
+	seq    int64
+	adding bool
 }
 
-// Add registers a job at the end of the queue and wakes the tick.
+// Add registers a job at the end of the queue, persists its initial queue row
+// synchronously, and wakes the tick.
 //
 // A duplicate ID is an error rather than an overwrite: the registry is the only
 // route by which a job's resources are returned, so replacing an entry would
 // strand whatever the displaced job held, with nothing left to release it.
-func (d *Dispatcher) Add(j *job.Job, h Header) error {
+func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 	// The two refusals live here rather than in register, because register is
 	// also restore's door and restore runs during exactly the window the
 	// second one closes.
@@ -156,7 +158,23 @@ func (d *Dispatcher) Add(j *job.Job, h Header) error {
 	}
 	j.SetAdded(time.Unix(h.Added, 0).UTC())
 
-	return d.register(j, h, seqNext)
+	if err := d.register(j, h, seqNext); err != nil {
+		return err
+	}
+	// The first row, written here rather than by a tick, so that a caller
+	// acknowledging the job has a durable reason to.
+	if err := d.persistIfChanged(ctx, j); err != nil {
+		// Nothing but the registry holds this job: the tick has not seen it
+		// (snapshotOrder), so there is no lease, no residency and no worker.
+		// Unwind through the removal gatekeeper, the only path to deregister.
+		if rm, ok := d.beginRemoval(j.ID()); ok {
+			rm.end()
+		}
+		return fmt.Errorf("dispatch: Add: persist %s: %w", j.ID(), err)
+	}
+	d.finishAdding(j.ID())
+	d.kick() // register skips its kick for seqNext while j is unwritten; wake the tick now that d.written admits j
+	return nil
 }
 
 // seqNext tells register to allocate the next unused sequence itself. It is a
@@ -194,16 +212,27 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: register: job %q is already registered", j.ID())
 	}
-	if seq == seqNext {
+	added := seq == seqNext
+	if added {
 		seq = d.nextSeq
 	}
-	d.byID[j.ID()] = &entry{j: j, h: h, seq: seq}
+	d.byID[j.ID()] = &entry{j: j, h: h, seq: seq, adding: added}
 	d.order = append(d.order, j.ID())
 	d.nextSeq = max(d.nextSeq, seq+1)
 	d.mu.Unlock()
 
-	d.kick()
+	if !added {
+		d.kick()
+	}
 	return nil
+}
+
+func (d *Dispatcher) finishAdding(id string) {
+	d.mu.Lock()
+	if e, ok := d.byID[id]; ok {
+		e.adding = false
+	}
+	d.mu.Unlock()
 }
 
 // sortKeyOf reports a registered job's queue-order sequence, or -1 if it is not
@@ -244,16 +273,30 @@ func (d *Dispatcher) entryFor(id string) (Header, int64, bool) {
 	return e.h, e.seq, true
 }
 
-// snapshotOrder copies the registry in queue order. The copy exists so the tick
-// can release d.mu before calling into sched: D-B9 forbids holding d.mu across
-// such a call, because Workers.Abort runs inside Queue.mu and an Abort that
-// took d.mu would deadlock ABBA against a concurrent Cancel.
+// snapshotOrder returns the registered jobs that have a written queue row, in
+// queue order. It is the tick's and Stop's only view of the registry (called
+// at tick.go:25,152 and dispatch.go:479), so an unwritten job is never
+// advanced, hydrated, launched or persisted by either. Registry callers that
+// bypass snapshotOrder (Remove, Cancel, beginRemoval/beginRemovalForEviction,
+// List/Row/Job, SetPostAnomaly/SetFailReason) operate on d.byID directly; if a
+// concurrent Remove begins during Add's Save (so markWritten skips d.written
+// under admitsLocked) and then aborts, finishAdding clears e.adding once
+// persistIfChanged returns so the job remains visible here.
+//
+// The copy exists so the tick can release d.mu before calling into sched: D-B9
+// forbids holding d.mu across such a call, because Workers.Abort runs inside
+// Queue.mu and an Abort that took d.mu would deadlock ABBA against a concurrent
+// Cancel.
 func (d *Dispatcher) snapshotOrder() []*job.Job {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	out := make([]*job.Job, 0, len(d.order))
 	for _, id := range d.order {
-		out = append(out, d.byID[id].j)
+		e := d.byID[id]
+		if _, ok := d.written[id]; !ok && e.adding { // read under the held d.mu
+			continue
+		}
+		out = append(out, e.j)
 	}
 	return out
 }

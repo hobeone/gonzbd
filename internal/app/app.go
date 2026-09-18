@@ -776,7 +776,10 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		}
 	}
 	if app.dispatcher != nil {
-		if err := app.dispatcher.Add(j, hdr); err != nil {
+		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
+		err := app.dispatcher.Add(addCtx, j, hdr)
+		addCancel()
+		if err != nil {
 			return fmt.Errorf("app: add to dispatcher: %w", err)
 		}
 	}
@@ -784,6 +787,13 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	app.log.Info("job added", "name", hdr.Name, "id", j.ID())
 	return nil
 }
+
+// addPersistTimeout bounds the detached context AddJob and RetryHistoryJob hand
+// to Dispatcher.Add once on-disk artifacts (NZB backup, manifest, job_files)
+// have already been committed. Two SQLite busy_timeout windows (2 * 5s, see
+// internal/history/db.go): Add's Save serializes on d.storeMu behind an
+// in-flight tick Save before its own busy_timeout begins.
+const addPersistTimeout = 10 * time.Second
 
 // seedJobFiles creates one job_files row per file. fetch_policy is authored
 // here at its derived value — fetch(i), the same Progress.FileFetchPolicy(i)
@@ -2339,7 +2349,10 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	}
 
 	if app.dispatcher != nil {
-		if err := app.dispatcher.Add(j, hdr); err != nil {
+		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
+		err := app.dispatcher.Add(addCtx, j, hdr)
+		addCancel()
+		if err != nil {
 			return err
 		}
 	}
