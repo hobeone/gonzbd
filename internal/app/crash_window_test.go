@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"hash/crc32"
 	"os"
@@ -62,7 +63,7 @@ func newCrashWindowFixture(t *testing.T, recordArts ...int32) *crashWindowFixtur
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.dispatcher.Add(j, hdr); err != nil {
+	if err := application.dispatcher.Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	application.dispatcher.Tick(t.Context())

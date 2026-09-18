@@ -161,7 +161,7 @@ func (h *scenarioHarness) AddSimpleJob(name string, raw []byte) *job.Job {
 	if err != nil {
 		h.t.Fatalf("scenario: BuildIngestJob: %v", err)
 	}
-	if err := h.app.Dispatcher().Add(j, hdr); err != nil {
+	if err := h.app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		h.t.Fatalf("scenario: Dispatcher.Add: %v", err)
 	}
 	return j

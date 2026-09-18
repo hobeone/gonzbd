@@ -531,7 +531,7 @@ func TestQueuePersistenceAcrossRestart(t *testing.T) {
 			}},
 		}
 		job, hdr := buildTestJob(t, appCfg, parsed, types.FetchOptions{NzbName: "persist-test"})
-		if err := application.Dispatcher().Add(job, hdr); err != nil {
+		if err := application.Dispatcher().Add(context.Background(), job, hdr); err != nil {
 			t.Fatalf("Dispatcher.Add: %v", err)
 		}
 
@@ -1130,7 +1130,7 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 		}},
 	}
 	job, hdr := buildTestJob(t, application.GetConfig(), parsed, types.FetchOptions{NzbName: "du-test", Category: "movies", PP: 3})
-	_ = application.Dispatcher().Add(job, hdr)
+	_ = application.Dispatcher().Add(context.Background(), job, hdr)
 
 	// Trigger buildDirectUnpackOpts
 	_ = application.TriggerBuildDirectUnpackOpts()
@@ -1149,7 +1149,7 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 		}},
 	}
 	job2, hdr2 := buildTestJob(t, application.GetConfig(), parsed2, types.FetchOptions{NzbName: "du-test-txt", Category: "movies", PP: 3})
-	_ = application.Dispatcher().Add(job2, hdr2)
+	_ = application.Dispatcher().Add(context.Background(), job2, hdr2)
 	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job2.ID(), FileIdx: 0})
 
 	// Trigger maybeDirectUnpack with valid job and valid RAR filename (resolves but fails resolveFileInfo)
@@ -1186,7 +1186,7 @@ func TestApplication_EdgeCases(t *testing.T) {
 	hdr.Filename = "dup-test.nzb"
 
 	// Add it to queue
-	_ = application.Dispatcher().Add(job, hdr)
+	_ = application.Dispatcher().Add(context.Background(), job, hdr)
 
 	// Try adding the SAME job (Duplicate check: active queue MD5 check)
 	job2, hdr2 := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "dup-test-2"})
@@ -1278,7 +1278,7 @@ func TestApplication_EdgeCases(t *testing.T) {
 		})
 	})
 	jobFlat, hdrFlat := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "flat-test", Category: "flatcat", PP: 3})
-	_ = application.Dispatcher().Add(jobFlat, hdrFlat)
+	_ = application.Dispatcher().Add(context.Background(), jobFlat, hdrFlat)
 
 	// Inject a dummy direct unpacker to test enqueuePostProc direct unpack handoff
 	duEdge := directunpack.New(slog.Default(), jobFlat.ID(), t.TempDir(), t.TempDir(), directunpack.Options{})
@@ -1302,7 +1302,7 @@ func TestApplication_EdgeCases(t *testing.T) {
 	_ = jobPostProc.BeginAttempt(time.Now())
 	_ = jobPostProc.SetNext(jobpkg.Assessing)
 	_ = jobPostProc.Transition(jobpkg.Assessing)
-	_ = application.Dispatcher().Add(jobPostProc, hdrPostProc)
+	_ = application.Dispatcher().Add(context.Background(), jobPostProc, hdrPostProc)
 	application.TriggerHandleFileComplete(t.Context(), app.FileComplete{JobID: jobPostProc.ID(), FileIdx: 0})
 
 	// 5. Test drainCompletions case branch (channel has entry)
@@ -1336,16 +1336,16 @@ func TestApplication_EdgeCases(t *testing.T) {
 		},
 	}
 	jobRar, hdrRar := buildTestJob(t, cfg, parsedRar, types.FetchOptions{NzbName: "rar-job", PP: 3})
-	_ = application.Dispatcher().Add(jobRar, hdrRar)
+	_ = application.Dispatcher().Add(context.Background(), jobRar, hdrRar)
 
 	// Low PP (returns early)
 	jobNoPP, hdrNoPP := buildTestJob(t, cfg, parsedRar, types.FetchOptions{NzbName: "no-pp-job", PP: 1})
-	_ = application.Dispatcher().Add(jobNoPP, hdrNoPP)
+	_ = application.Dispatcher().Add(context.Background(), jobNoPP, hdrNoPP)
 	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobNoPP.ID(), FileIdx: 0})
 
 	// Password set (returns early)
 	jobPwd, hdrPwd := buildTestJob(t, cfg, parsedRar, types.FetchOptions{NzbName: "pwd-job", PP: 3, Password: "foo"})
-	_ = application.Dispatcher().Add(jobPwd, hdrPwd)
+	_ = application.Dispatcher().Add(context.Background(), jobPwd, hdrPwd)
 	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobPwd.ID(), FileIdx: 0})
 
 	// Invalid file index (returns early)
@@ -1399,7 +1399,7 @@ func TestApplication_PersistAndCommitError(t *testing.T) {
 		}},
 	}
 	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "persist-err-test"})
-	_ = application.Dispatcher().Add(qJob, qHdr)
+	_ = application.Dispatcher().Add(context.Background(), qJob, qHdr)
 
 	// Construct a postproc.Job wrapping the *job.Job
 	ppJob := &postproc.Job{
@@ -1538,7 +1538,7 @@ func TestApp_EventLoopStarvation(t *testing.T) {
 	// 1. Add job1 (will use DirectUnpack and block on vol 2)
 	parsed1 := nzb.NZB{Files: []nzb.File{{Subject: "multi_new.part01.rar", Bytes: 1024}}}
 	job1, hdr1 := buildTestJob(t, cfg, &parsed1, types.FetchOptions{NzbName: "job1-du", PP: 3})
-	if err := application.Dispatcher().Add(job1, hdr1); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), job1, hdr1); err != nil {
 		t.Fatalf("add job1: %v", err)
 	}
 	_ = job1.BeginAttempt(time.Now())
@@ -1552,7 +1552,7 @@ func TestApp_EventLoopStarvation(t *testing.T) {
 	// 2. Add job2 (normal job without DirectUnpack)
 	parsed2 := nzb.NZB{Files: []nzb.File{{Subject: "normal.txt", Bytes: 100}}}
 	job2, hdr2 := buildTestJob(t, cfg, &parsed2, types.FetchOptions{NzbName: "job2-normal", PP: 3})
-	if err := application.Dispatcher().Add(job2, hdr2); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), job2, hdr2); err != nil {
 		t.Fatalf("add job2: %v", err)
 	}
 	_ = job2.BeginAttempt(time.Now())
@@ -1643,7 +1643,7 @@ func TestApp_ShutdownContextInheritance(t *testing.T) {
 		}},
 	}
 	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "persist-ctx-test"})
-	_ = application.Dispatcher().Add(qJob, qHdr)
+	_ = application.Dispatcher().Add(context.Background(), qJob, qHdr)
 	ppJob := &postproc.Job{
 		Job: qJob,
 	}
@@ -1769,7 +1769,7 @@ func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 		Bytes:    100,
 	}}}
 	job, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "wedged-test"})
-	if err := application.Dispatcher().Add(job, hdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), job, hdr); err != nil {
 		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 

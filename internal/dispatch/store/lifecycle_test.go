@@ -68,8 +68,20 @@ func waitFor(t *testing.T, s *store.Store, what string, pred func([]dispatch.Per
 	return nil
 }
 
-func rowCount(n int) func([]dispatch.Persisted) bool {
-	return func(rows []dispatch.Persisted) bool { return len(rows) == n }
+// ticked holds once every named job has a row past StateUnset. Add writes a
+// job's first row itself, at StateUnset, so a row merely existing proves no
+// tick ran; the tick's Advance is what moves it on.
+func ticked(ids ...string) func([]dispatch.Persisted) bool {
+	return func(rows []dispatch.Persisted) bool {
+		for _, id := range ids {
+			if !slices.ContainsFunc(rows, func(p dispatch.Persisted) bool {
+				return p.ID == id && p.State.State != job.StateUnset
+			}) {
+				return false
+			}
+		}
+		return true
+	}
 }
 
 // wantJob is one expected queue entry. It is a named type rather than an
@@ -120,7 +132,7 @@ func TestDispatcher_RoundTripsThroughRealSQLite(t *testing.T) {
 		t.Fatalf("first Start: %v", err)
 	}
 	for _, w := range want {
-		if err := d1.Add(job.New(w.id, w.hdr.Name, w.pol), w.hdr); err != nil {
+		if err := d1.Add(context.Background(), job.New(w.id, w.hdr.Name, w.pol), w.hdr); err != nil {
 			t.Fatalf("Add(%s): %v", w.id, err)
 		}
 	}
@@ -130,7 +142,11 @@ func TestDispatcher_RoundTripsThroughRealSQLite(t *testing.T) {
 	// never-run job would otherwise render as Queued forever), and asserting
 	// it here is what puts Store.Delete on a real driver rather than only on
 	// the fake.
-	waitFor(t, st, "all three jobs persisted", rowCount(len(want)))
+	ids := make([]string, 0, len(want))
+	for _, w := range want {
+		ids = append(ids, w.id)
+	}
+	waitFor(t, st, "a tick to persist all three jobs", ticked(ids...))
 
 	// Cancel one so a non-zero Intent has to survive the round trip. A queue
 	// where every axis holds its zero value would round-trip cleanly through a
@@ -234,11 +250,11 @@ func TestDispatcher_QuietRestartWritesNothing(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	for _, id := range ids {
-		if err := d1.Add(job.New(id, id, job.Policy{}), dispatch.Header{Name: id}); err != nil {
+		if err := d1.Add(context.Background(), job.New(id, id, job.Policy{}), dispatch.Header{Name: id}); err != nil {
 			t.Fatalf("Add(%s): %v", id, err)
 		}
 	}
-	afterFirst := waitFor(t, st, "the initial queue to persist", rowCount(len(ids)))
+	afterFirst := waitFor(t, st, "a tick to persist the initial queue", ticked(ids...))
 	if err := d1.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -246,24 +262,23 @@ func TestDispatcher_QuietRestartWritesNothing(t *testing.T) {
 	// Two more full restarts. If restore and persistIfChanged disagree about
 	// what is stored, the keys drift on each one.
 	//
-	// Each restart adds a probe job and waits for IT to appear. Waiting on the
-	// original row count would be vacuous: those rows are already on disk
-	// before Start is called, so the predicate holds on the first poll and the
-	// test would stop the dispatcher without a single tick having run — proving
-	// nothing about what a tick does to restored rows. The probe only appears
-	// once persistIfChanged has actually executed.
+	// Each restart adds a probe job and waits for a tick to advance IT. Waiting
+	// on the original rows would be vacuous: they are already on disk before
+	// Start is called, so the predicate holds on the first poll and the test
+	// would stop the dispatcher without a single tick having run — proving
+	// nothing about what a tick does to restored rows. Add writes the probe's
+	// row itself, so the wait is on the row leaving StateUnset, not on it
+	// appearing.
 	for i := range 2 {
 		probe := fmt.Sprintf("probe%d", i)
 		d := newDispatcher()
 		if err := d.Start(t.Context()); err != nil {
 			t.Fatalf("restart Start: %v", err)
 		}
-		if err := d.Add(job.New(probe, probe, job.Policy{}), dispatch.Header{Name: probe}); err != nil {
+		if err := d.Add(context.Background(), job.New(probe, probe, job.Policy{}), dispatch.Header{Name: probe}); err != nil {
 			t.Fatalf("Add(%s): %v", probe, err)
 		}
-		waitFor(t, st, "the probe job to persist, proving a tick ran", func(rows []dispatch.Persisted) bool {
-			return slices.ContainsFunc(rows, func(p dispatch.Persisted) bool { return p.ID == probe })
-		})
+		waitFor(t, st, "a tick to persist the probe job", ticked(probe))
 		if err := d.Stop(); err != nil {
 			t.Fatalf("restart Stop: %v", err)
 		}

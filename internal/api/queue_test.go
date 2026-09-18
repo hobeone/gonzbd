@@ -49,7 +49,8 @@ func makeTestNZB(t *testing.T) []byte {
 }
 
 type testQueueWrapper struct {
-	disp *dispatch.Dispatcher
+	disp   *dispatch.Dispatcher
+	runner *apiStubRunner
 }
 
 type testJob struct {
@@ -184,7 +185,7 @@ func (w *testQueueWrapper) SnapshotJob(id string) *testJobSnapshot {
 
 func newTestQueueBridgeWithApp(t *testing.T, cfg *config.Config, makeApp func(disp *dispatch.Dispatcher) AppServices) (*Server, *testQueueWrapper) {
 	t.Helper()
-	disp := newTestAPIDispatcher(t)
+	disp, runner := newTestAPIDispatcherAndRunner(t)
 	var application AppServices
 	if makeApp != nil {
 		application = makeApp(disp)
@@ -197,7 +198,7 @@ func newTestQueueBridgeWithApp(t *testing.T, cfg *config.Config, makeApp func(di
 		Dispatcher: disp,
 		App:        application,
 	})
-	return s, &testQueueWrapper{disp: disp}
+	return s, &testQueueWrapper{disp: disp, runner: runner}
 }
 
 func newTestQueueBridge(t *testing.T, cfg *config.Config, speed float64) (*Server, *testQueueWrapper) {
@@ -254,7 +255,7 @@ func addTestJob(t *testing.T, q *testQueueWrapper, opts testAddOptions) *testJob
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := q.disp.Add(j, hdr); err != nil {
+	if err := q.disp.Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("disp.Add: %v", err)
 	}
 	return &testJob{ID: j.ID(), job: j}
@@ -493,11 +494,7 @@ func TestQueueList_NotPausedKeepsDownloadingStatus(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
 	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
-
-	// Simulate the dispatcher having marked this job as Downloading.
-	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
-		t.Fatalf("SetStatusIf: %v", err)
-	}
+	q.runner.waitStarted(t, job.ID)
 
 	// Queue is NOT paused — status should remain Downloading.
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
@@ -567,7 +564,7 @@ func addLargeTestJob(t *testing.T, q *testQueueWrapper, numSegs int) *testJob {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := q.disp.Add(j, hdr); err != nil {
+	if err := q.disp.Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("disp.Add: %v", err)
 	}
 	return &testJob{ID: j.ID(), job: j}
@@ -855,7 +852,7 @@ func TestQueueDetail_FileStateClassification(t *testing.T) {
 			m := makeJobManifest(t, []string{"f"}, []int64{1000}, [][]int64{{500, 500}}, [][]string{{"a0@t", "a1@t"}})
 			j := job.New("j_class", "f.nzb", job.Policy{})
 			_ = j.AttachContent(m)
-			_ = disp.Add(j, dispatch.Header{Name: "f.nzb", Bytes: 1000})
+			_ = disp.Add(context.Background(), j, dispatch.Header{Name: "f.nzb", Bytes: 1000})
 
 			tt.setup(t, disp, "j_class", j)
 			if got := fileState(m, j.Progress(), 0); got != tt.want {
@@ -869,18 +866,13 @@ func TestQueuePause(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
 	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
+	q.runner.waitStarted(t, job.ID)
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=pause&value="+job.ID+"&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rr.Code)
 	}
-	j := q.SnapshotJob(job.ID)
-	if j == nil {
-		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
-	}
-	if j.Status != constants.StatusPaused {
-		t.Errorf("status = %q; want Paused", j.Status)
-	}
+	waitPaused(t, q.disp, job.ID)
 }
 
 func TestQueueResume(t *testing.T) {

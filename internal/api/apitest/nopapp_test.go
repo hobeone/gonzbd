@@ -16,9 +16,14 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-type stubWorkers struct{}
+// stubWorkers yields an aborted job, as a real worker does when its context
+// ends. Add's kick can launch the job before the test removes it, and the
+// removal waits for that yield.
+type stubWorkers struct{ disp *dispatch.Dispatcher }
 
-func (w *stubWorkers) Abort(*job.Job) {}
+func (w *stubWorkers) Abort(j *job.Job) {
+	go func() { _ = w.disp.YieldedJob(j) }()
+}
 
 type stubResidency struct{}
 
@@ -37,7 +42,9 @@ func (r *stubRunner) Run(context.Context, string, job.State) {}
 
 func newTestDispatcher(t *testing.T) *dispatch.Dispatcher {
 	t.Helper()
-	d := dispatch.New(2, 2, time.Hour, time.Now, &stubWorkers{}, &stubResidency{}, &stubStore{}, &stubRunner{})
+	workers := &stubWorkers{}
+	d := dispatch.New(2, 2, time.Hour, time.Now, workers, &stubResidency{}, &stubStore{}, &stubRunner{})
+	workers.disp = d
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("dispatcher.Start: %v", err)
 	}
@@ -143,7 +150,7 @@ func TestNopApp_Contract(t *testing.T) {
 	// 4. Wired Dispatcher and History delegation
 	disp := newTestDispatcher(t)
 	j := job.New("job1", "Test Job", job.Policy{})
-	if err := disp.Add(j, dispatch.Header{Name: "Test Job"}); err != nil {
+	if err := disp.Add(context.Background(), j, dispatch.Header{Name: "Test Job"}); err != nil {
 		t.Fatalf("disp.Add failed: %v", err)
 	}
 

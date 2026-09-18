@@ -62,7 +62,7 @@ func TestRemoveJob(t *testing.T) {
 
 	parsed := &nzb.NZB{}
 	j, hdr, _ := BuildIngestJob(a.config, parsed, "to-delete.nzb", types.FetchOptions{NzbName: "to-delete"}, nil)
-	_ = a.Dispatcher().Add(j, hdr)
+	_ = a.Dispatcher().Add(context.Background(), j, hdr)
 
 	// Create a dummy download directory
 	jobDir := filepath.Join(downloadDir, "to-delete")
@@ -84,7 +84,7 @@ func TestRemoveJob(t *testing.T) {
 
 	// 2. Add again and remove
 	j2, hdr2, _ := BuildIngestJob(a.config, parsed, "to-delete-files.nzb", types.FetchOptions{NzbName: "to-delete-files"}, nil)
-	_ = a.Dispatcher().Add(j2, hdr2)
+	_ = a.Dispatcher().Add(context.Background(), j2, hdr2)
 	jobDir2 := filepath.Join(downloadDir, "to-delete-files")
 	_ = os.MkdirAll(jobDir2, 0o750)
 
@@ -108,7 +108,7 @@ func TestRemoveJob_NilDownloader(t *testing.T) {
 
 	parsed := &nzb.NZB{}
 	j, hdr, _ := BuildIngestJob(a.config, parsed, "to-delete.nzb", types.FetchOptions{NzbName: "to-delete"}, nil)
-	_ = a.Dispatcher().Add(j, hdr)
+	_ = a.Dispatcher().Add(context.Background(), j, hdr)
 
 	if err := a.RemoveJob(t.Context(), j.ID(), false); err != nil {
 		t.Fatalf("RemoveJob with nil downloader: %v", err)
@@ -318,7 +318,7 @@ func removeJobFixture(t *testing.T, application *Application, name string) (*job
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.Dispatcher().Add(j, hdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	writeFixtureArticle(t, application, j.ID(), 0, 0)

@@ -196,7 +196,7 @@ func buildRunnerJob(t *testing.T, app *Application, files []failMsgFile, failIdx
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := app.Dispatcher().Add(j, hdr); err != nil {
+	if err := app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	for _, i := range failIdx {

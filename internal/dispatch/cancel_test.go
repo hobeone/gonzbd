@@ -28,7 +28,7 @@ func (f *failingDeleteStore) Delete(context.Context, string) error {
 func TestCancelledNeverRunJob_IsRemovedFromTheListing(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if err := d.Cancel(j.ID()); err != nil {
@@ -49,7 +49,7 @@ func TestCancelledNeverRunJob_IsDeletedFromTheStore(t *testing.T) {
 	st := &fakeStore{}
 	d := newTestDispatcher(t, withStore(st))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if err := d.Cancel(j.ID()); err != nil {
@@ -72,7 +72,7 @@ func TestCancelledNeverRunJob_StoreFailure_StaysRegistered(t *testing.T) {
 	st := &failingDeleteStore{}
 	d := newTestDispatcher(t, withStore(st))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if err := d.Cancel(j.ID()); err != nil {
@@ -97,7 +97,7 @@ func TestEvictCancelledNeverRun_CalledDirectly(t *testing.T) {
 	st := &fakeStore{}
 	d := newTestDispatcher(t, withStore(st))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if err := j.SetIntent(job.IntentCancel); err != nil {
@@ -138,7 +138,7 @@ func TestEvictCancelledNeverRun_CalledDirectly(t *testing.T) {
 func TestCancelledRunningJob_IsNotEvicted(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.tick(context.Background())
@@ -187,22 +187,25 @@ func TestEvictCancelledNeverRun_DeleteFailureDoesNotResurrectTheRow(t *testing.T
 	st := &fakeStore{delErr: errors.New("disk is angry")}
 	d := newTestDispatcher(t, withStore(st))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if err := d.Cancel(j.ID()); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
+	// Add wrote the job's first row, so the row existing proves nothing; what
+	// must not happen is a Save from the tick.
+	savesBefore := st.saveCount()
 
 	d.tick(context.Background())
 
 	if got := d.q.Render(j).State; got != job.StateUnset {
 		t.Fatalf("setup: State = %v, want StateUnset — this must be the never-run case", got)
 	}
-	if _, ok := st.row("j1"); ok {
-		t.Error("the store holds a row for a cancelled never-run job whose " +
-			"Delete failed — the tick walked on to persistIfChanged and wrote " +
-			"back the row it had just failed to remove")
+	if got := st.saveCount() - savesBefore; got != 0 {
+		t.Errorf("the tick made %d Save(s) for a cancelled never-run job whose "+
+			"Delete failed — it walked on to persistIfChanged and wrote back "+
+			"the row it had just failed to remove", got)
 	}
 	if got := len(d.List()); got != 1 {
 		t.Errorf("List has %d rows, want 1 — the job must stay registered so a "+

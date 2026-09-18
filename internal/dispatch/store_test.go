@@ -100,7 +100,7 @@ func TestPersist_WritesWhenTheAxesMove(t *testing.T) {
 	st := &fakeStore{}
 	d := newTestDispatcher(t, withStore(st))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func TestPersist_QuietTickWritesNothing(t *testing.T) {
 	st := &fakeStore{}
 	d := newTestDispatcher(t, withStore(st))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -368,7 +368,7 @@ func TestPersistIfChanged_WritesHeaderFromTheRegistry(t *testing.T) {
 	d := newTestDispatcher(t, withStore(st))
 	j := job.New("j1", "n", job.Policy{})
 	h := Header{Name: "n", Category: "movies", Priority: 1, Bytes: 42, Added: 1700000000}
-	if err := d.Add(j, h); err != nil {
+	if err := d.Add(context.Background(), j, h); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -405,8 +405,10 @@ func TestPersistIfChanged_SkipsAnUnregisteredJob(t *testing.T) {
 // ID that was never written must report ok == false.
 func TestLastWrittenAndMarkWritten_RoundTrip(t *testing.T) {
 	d := newTestDispatcher(t)
-	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
-		t.Fatalf("Add: %v", err)
+	// register, not Add: Add writes the row before returning, and this needs a
+	// registered job that has not been written yet.
+	if err := d.register(job.New("j1", "n", job.Policy{}), Header{Name: "n"}, seqNext); err != nil {
+		t.Fatalf("register: %v", err)
 	}
 
 	if _, ok := d.lastWritten("j1"); ok {
@@ -436,7 +438,7 @@ func TestLastWrittenAndMarkWritten_RoundTrip(t *testing.T) {
 func TestEntryFor_RoundTrip(t *testing.T) {
 	d := newTestDispatcher(t)
 	h := Header{Name: "n", Category: "tv", Added: 1700000000}
-	if err := d.Add(job.New("j1", "n", job.Policy{}), h); err != nil {
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), h); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -647,7 +649,7 @@ func TestRestore_PreservesSortKeyAndResumesAbove(t *testing.T) {
 			t.Errorf("restored %s sortKey = %d, want %d — restore reassigned it", id, got, want)
 		}
 	}
-	if err := d.Add(job.New("fresh", "fresh", job.Policy{}), Header{Name: "fresh"}); err != nil {
+	if err := d.Add(context.Background(), job.New("fresh", "fresh", job.Policy{}), Header{Name: "fresh"}); err != nil {
 		t.Fatalf("Add after restore: %v", err)
 	}
 	if got := d.sortKeyOf("fresh"); got <= 100 {

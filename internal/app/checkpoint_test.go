@@ -74,7 +74,7 @@ func TestCheckpointFires_AfterMutation(t *testing.T) {
 	defer application.Shutdown() //nolint:errcheck
 
 	// Add the job so the dispatcher has something to track.
-	if err := application.Dispatcher().Add(j, hdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 
@@ -109,7 +109,7 @@ func TestCheckpointSkips_WhenClean(t *testing.T) {
 	// Pause before adding: mock 430s every article, so an unpaused job fails
 	// and leaves the queue for history — taking with it the row this test needs to watch.
 	application.Dispatcher().Pause()
-	if err := application.Dispatcher().Add(j, hdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 	application.Checkpointer().Mark(j)

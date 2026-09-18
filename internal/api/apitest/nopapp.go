@@ -103,7 +103,7 @@ func (n NopApp) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, raw
 				break
 			}
 		}
-		return n.Dispatcher.Add(j, hdr)
+		return n.Dispatcher.Add(ctx, j, hdr)
 	}
 	return nil
 }

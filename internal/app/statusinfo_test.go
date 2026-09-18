@@ -112,7 +112,10 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 	t.Parallel()
 	dlDir := t.TempDir()
 	cfg := testConfig(dlDir, t.TempDir(), t.TempDir())
-	app, err := New(cfg, nil)
+	// The fake downloader completes nothing unless told to, so the job below
+	// stays in Fetching; a real one fails its article at once and the job
+	// leaves Fetching before the stall check can see it.
+	app, err := New(cfg, nil, WithDownloader(newFakeDownloader()))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -151,15 +154,18 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 		Bytes:    100,
 		Articles: []nzb.Article{{ID: "a@t", Bytes: 100, Number: 1}},
 	}}}, "job1.nzb", types.FetchOptions{NzbName: "job1"}, nil)
-	if err := app.Dispatcher().Add(j, hdr); err != nil {
+	if err := app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("dispatcher Add: %v", err)
 	}
 
 	// Wait for dispatcher tick to transition to Fetching
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	for {
 		if row, ok := app.Dispatcher().Row(j.ID()); ok && row.View.State == job.Fetching {
 			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the job never reached Fetching; the stall check below would test an idle queue")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

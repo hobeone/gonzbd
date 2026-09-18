@@ -43,7 +43,7 @@ func newTestEnvWithServer(t *testing.T) *testEnv {
 		t.Fatal("ui/dist/index.html not found — run 'cd ui && bun run build' first")
 	}
 
-	d := newTestDispatcher(t)
+	d, _ := newTestDispatcher(t)
 	ma := apitest.NopApp{
 		Dispatcher: d,
 		ServerSnapshotsVal: []downloader.ServerSnapshot{

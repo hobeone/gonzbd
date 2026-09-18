@@ -77,6 +77,12 @@ const (
 	// paces a config change, and a user waiting on a settings save is a
 	// different tolerance from a process on its way out.
 	reloadCheckpointTimeout = 10 * time.Second
+
+	// addPersistTimeout bounds the queue-row write dispatcher.Add makes before
+	// it returns. It is twice the database's busy_timeout (5s,
+	// internal/history/db.go), since the write can queue behind a tick's own
+	// contended write before starting its own busy wait.
+	addPersistTimeout = 10 * time.Second
 )
 
 // Downloader defines the lifecycle and control interface for the Usenet
@@ -776,7 +782,13 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		}
 	}
 	if app.dispatcher != nil {
-		if err := app.dispatcher.Add(j, hdr); err != nil {
+		// Detached from the request: once the manifest and job_files rows
+		// exist, a client disconnect must not abandon the queue-row write
+		// that makes them reachable.
+		addCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
+		err := app.dispatcher.Add(addCtx, j, hdr)
+		cancel()
+		if err != nil {
 			return fmt.Errorf("app: add to dispatcher: %w", err)
 		}
 	}
@@ -2339,7 +2351,12 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	}
 
 	if app.dispatcher != nil {
-		if err := app.dispatcher.Add(j, hdr); err != nil {
+		// Detached for the same reason as the flush above, and because the
+		// history delete below is only safe once this row exists.
+		addCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
+		err := app.dispatcher.Add(addCtx, j, hdr)
+		cancel()
+		if err != nil {
 			return err
 		}
 	}
