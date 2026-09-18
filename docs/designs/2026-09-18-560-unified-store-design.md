@@ -175,7 +175,7 @@ func (s *Store) SweepOrphans(ctx context.Context) (int, error)
 
 ---
 
-### 3.5 The State-Derived Reclaim Rule
+### 3.5 The State-Derived Reclaim Rule & Manifest Cleanup
 
 Inside `Store.Reclaim(ctx, id, moreIDs...)` (scoped to `job_id IN (...)`) and `Store.SweepOrphans(ctx)` (unfiltered at startup), one SQLite transaction runs:
 
@@ -194,6 +194,9 @@ DELETE FROM durable_runs
                     WHERE h.nzo_id = durable_runs.job_id AND h.status = 'Failed')
    AND job_id IN (?);
 ```
+
+- **Orphaned Manifest Unlinking (E2, E8):** `app.reclaim(ctx, id, moreIDs...)` calls `durabilityStore.Reclaim(ctx, id, moreIDs...)` and unlinks `admin/queue/manifests/<id>.json.gz` for each `id` absent from `dispatch.GetJob(id)`. At startup, after `resumeAllJobs` and `durabilityStore.SweepOrphans(ctx)`, `app` scans `admin/queue/manifests/` and unlinks any `<id>.json.gz` not present in the dispatcher, collecting manifests from any crash between `manifestStore.Save` (`app.go:753`) and `Dispatcher.Add`.
+- **History Deletion Ordering:** In `DeleteHistory`, `history.Delete` (`DELETE FROM history`) executes **before** `app.reclaim(ctx, ids...)`. If a crash occurs between the two calls, the history row is already gone, so startup `SweepOrphans` reclaims the remaining `durable_runs` rather than stranding a retryable `Failed` history entry whose `durable_runs` were prematurely deleted.
 
 ---
 
