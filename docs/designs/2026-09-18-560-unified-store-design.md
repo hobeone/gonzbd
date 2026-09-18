@@ -69,6 +69,23 @@ func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 	d.kick()
 	return nil
 }
+
+func (d *Dispatcher) snapshotOrder() []*job.Job {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]*job.Job, 0, len(d.order))
+	for _, id := range d.order {
+		// Gate: an unwritten job is invisible to tick() (including the 1s
+		// ticker at dispatch.go:423), so d.q.Advance, reconcileResidency,
+		// and claimLaunched cannot touch it until Add's Save marks d.written[id].
+		// Read d.written[id] directly under the held d.mu (lastWritten takes d.mu).
+		if _, ok := d.written[id]; !ok {
+			continue
+		}
+		out = append(out, d.byID[id].j)
+	}
+	return out
+}
 ```
 
 ---
@@ -208,7 +225,7 @@ DELETE FROM durable_runs
 
 ---
 
-### 3.6 Complete Closure of Issue 561 (Liveness Guard + `Prune` In-Flight Sync)
+### 3.6 Closure of Issue 561 (Liveness Guard + `Prune` In-Flight Sync)
 
 1. **SQL Liveness Guard in `SaveProgressBatch`:**
    ```sql
@@ -216,8 +233,8 @@ DELETE FROM durable_runs
    SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM job_files WHERE job_id = ?1)
    ```
    Prevents a late flush from resurrecting `failed_articles` after `Reclaim` deleted `job_files`, while allowing sibling active jobs in the same batch transaction to commit cleanly.
-2. **Closing Residual Risk 1 (Retry Re-Seed Race):**  
-   In `Checkpointer.Prune(id)`, if `id` is currently present in `c.inFlight`, `Prune` waits on `c.flushMu` before returning. Because `c.inFlight` holds `id` only for the duration of an active SQLite `SaveBatch` transaction containing `id`, `Prune` blocks only when the race is actively occurring. Once `Prune(id)` returns, no stale batch from the previous attempt is in flight when a retry calls `SeedJobFiles`.
+2. **Contract Change on `Checkpointer.Prune` (`inFlight` Sync):**  
+   `Checkpointer.Prune`'s current doc (`internal/checkpoint/checkpointer.go:64-66`) states `"(A write batch already handed to the store still completes.)"`, which is the root cause of issue 561's in-flight window. We change `Prune`'s contract and doc comment so that if `id` is currently present in `c.inFlight`, `Prune(id)` waits on `c.flushMu` before returning. Because `c.inFlight` holds `id` only for the duration of an active SQLite `SaveBatch` transaction containing `id`, `Prune` blocks only when the race is actively occurring. Once `Prune(id)` returns, no batch captured before `Prune(id)` is in flight when a retry calls `SeedJobFiles`.
 
 ---
 
@@ -225,11 +242,11 @@ DELETE FROM durable_runs
 
 | # | Criterion | Score | Detailed Verdict & Analysis |
 |---|---|---|---|
-| 1 | **Crash window** | **Closed for Jobs; Self-Healing for Rows** | **Jobs (E2, E5):** Closed outright by P1 (`Dispatcher.Add` persists synchronously before `d.kick()`).<br>**Rows (#549):** Partial departures closed by single-transaction `Reclaim`. Any row stranded by a hard `SIGKILL` between departure and `Reclaim` cannot cause wrong behaviour (rule is state-derived) and is swept deterministically at startup by `SweepOrphans`. |
+| 1 | **Crash window** | **Closed for Jobs; Self-Healing for Rows** | **Jobs (E2, E5):** Closed outright by P1 (`Dispatcher.Add` persists synchronously while `snapshotOrder` gates unwritten jobs from the 1s ticker and wake loop until `d.written[id]` is set).<br>**Rows (#549):** Partial departures closed by single-transaction `Reclaim`. Any row stranded by a hard `SIGKILL` between departure and `Reclaim` cannot cause wrong behaviour (rule is state-derived) and is swept deterministically at startup by `SweepOrphans`. |
 | 2 | **§6 exclusive-writer** | **Strengthened (Compiler-Enforced)** | `Store.commit` is unexported inside `package durability`. No package outside `internal/durability` can compile a call that writes `durable_runs` content; within the package, `durability.Barrier` is the sole caller (E10). |
 | 3 | **Rule 2** | **Single Owner Package & One Reclaim Rule** | `internal/durability` is the sole owner of `durable_runs`, `failed_articles`, and `job_files`. Lifecycle deletion has one rule (`Reclaim`/`SweepOrphans`). `history_job_files` is written once in `history.Add` and deleted by SQLite `ON DELETE CASCADE`. Raw SQL sites outside `internal/durability` drop from 10 to 0. Exported `PerJobTables` unifies all test fixtures. |
-| 4 | **Issue 561** | **Fixed (Zero Residual Race)** | Guarded by `WHERE EXISTS (SELECT 1 FROM job_files ...)` in `SaveProgressBatch` AND `Checkpointer.Prune` waiting on `flushMu` when `id` is in `c.inFlight`, eliminating both post-removal resurrection and cross-retry corruption. |
-| 5 | **Simplicity** | **High (Zero Contortions)** | Added tables: **0**. Leaked `Execer` interfaces: **0**. Go import cycles: **0**. Split signature (`Reclaim(ctx, id, ...)` vs. startup `SweepOrphans(ctx)`) prevents runtime sweeps from racing `SeedJobFiles`. |
+| 4 | **Issue 561** | **Fixed (In-Flight Closed; Post-Prune Residual Scoped)** | Guarded by `WHERE EXISTS (SELECT 1 FROM job_files ...)` in `SaveProgressBatch` AND `Checkpointer.Prune` waiting on `flushMu` when `id` is in `c.inFlight`. See §5.3 for the narrow post-`Prune` straggler `Mark` residual on a reused ID. |
+| 5 | **Simplicity** | **High (Minimal Coupling)** | Added tables: **0**. Leaked `Execer` interfaces: **0**. Go import cycles: **0**. Trade-offs explicitly accepted: `job_files` presence doubles as the liveness witness for `SaveProgressBatch`, and `Reclaim` reads `dispatch_jobs.id` and `history(nzo_id, status)` (§5.2). |
 | 6 | **Runtime cost** | **Minimal** | `Add`: one synchronous row write the tick would perform milliseconds later. `SaveProgressBatch`: one indexed prefix probe per job with failed articles. Departure: one transaction with three indexed `NOT EXISTS` deletes. |
 
 ---
@@ -237,9 +254,11 @@ DELETE FROM durable_runs
 ## 5. Residual risks — attack these
 
 1. **Power loss under `synchronous=NORMAL`:**  
-   SQLite WAL with `synchronous(NORMAL)` survives process crashes (`SIGKILL`) but can roll back the lastfew milliseconds of commits on physical power loss. Identical across all candidates.
-2. **Schema coupling in `Reclaim`:**  
-   `Reclaim` reads `dispatch_jobs.id` and `history(nzo_id, status)`. Reading across tables in the same SQLite database is permitted by Rule 2 (no mutations), and is pinned by table-driven integration tests against the real schema.
+   SQLite WAL with `synchronous(NORMAL)` survives process crashes (`SIGKILL`) but can roll back the last few milliseconds of commits on physical power loss. Identical across all candidates.
+2. **Schema coupling & implicit liveness witness in `Reclaim` / `SaveProgressBatch`:**  
+   `Reclaim` reads `dispatch_jobs.id` and `history(nzo_id, status)`, and `SaveProgressBatch` uses `job_files` presence as its liveness witness. Reading across tables in the same SQLite database is permitted by Rule 2 (no mutations), and is pinned by table-driven integration tests against the real schema.
+3. **Post-`Prune` straggler `Mark` on a reused retry ID:**  
+   `Prune` waiting on `c.inFlight` closes any batch already in flight when `Prune` runs, and `Dispatcher.Remove` drains workers before `job_finalizer` calls `Prune`. However, if any of the 8 production `Mark` call sites could be reached by a straggler holding the old job reference *after* `Prune` and *after* a reused-ID retry calls `SeedJobFiles`, the `job_files` guard would pass. An attempt generation column on `job_files` would close that unconditionally if needed.
 
 ---
 
@@ -252,10 +271,10 @@ DELETE FROM durable_runs
 
 ## 7. Implementation sketch
 
-1. **`fix(dispatch): persist a job's queue row in Add before waking the tick`** — Implement race-free P1 (`registerUnwritten` $\to$ `persistIfChanged` $\to$ `kick`). Pin with crash test.
+1. **`fix(dispatch): persist a job's queue row in Add before waking the tick`** — Implement race-free P1 (`registerUnwritten` $\to$ `persistIfChanged` $\to$ `kick`, plus `snapshotOrder` skipping unwritten jobs). Pin with crash test and `snapshotOrder` mutation test.
 2. **`refactor(durability): consolidate job_files and failed_articles into Store and export PerJobTables`** — Add `durability.Store` with primitive types, unexport `commit`, export `PerJobTables`, move `seedJobFiles`, `SaveBatch`, and residency reads.
-3. **`fix(app,durability): replace four deletion rules with state-derived Reclaim and startup SweepOrphans`** — Wire `Reclaim(ctx, id, ...)` across `RemoveJob` (including `ErrNotFound` for E8), `jobFinalizer`, `MarkCompleted` (E9), and `DeleteHistory`; run `SweepOrphans` at startup.
-4. **`fix(checkpoint,durability): guard failed_articles on job_files liveness and sync Prune with inFlight`** — Close issue 561 and cross-retry race.
+3. **`fix(app,durability): replace four deletion rules with state-derived Reclaim and startup SweepOrphans`** — Wire `app.reclaim(ctx, id, ...)` across all 6 departure/error sites: (1) `RemoveJob` (including `ErrNotFound` for E8), (2) `jobFinalizer`, (3) `MarkCompleted` (E9), (4) `DeleteHistory` (`history.Delete` then `app.reclaim`), (5) `AddJob`/`RetryHistoryJob` failure after `SeedJobFiles` (calls `app.reclaim(ctx, j.ID())`), and (6) startup `dropJobAlreadyInHistory` (subsumed because startup reconciliation runs before `app.sweepOrphans(ctx)`).
+4. **`fix(checkpoint,durability): guard failed_articles on job_files liveness and sync Prune with inFlight`** — Update `Checkpointer.Prune` contract & doc (`checkpointer.go:64-66`) to wait on `flushMu` when `id` is in `inFlight`, and add `WHERE EXISTS` in `SaveProgressBatch`.
 5. **`refactor(history): cascade history_job_files from history and write inside history.Add`** — Edit `001_initial.sql` and `schema.golden`; remove durability SQL and `DeleteKeepingDurability` from `internal/history`.
 6. **`test(app,durability): modernize per-job test fixtures with PerJobTables`** — Replace scattered raw-SQL test counts with helpers derived from `durability.PerJobTables`.
 
@@ -263,14 +282,14 @@ DELETE FROM durable_runs
 
 ## 8. Test plan and red checks
 
-1. **P1 Crash & Error-Path Tests:**  
+1. **P1 Crash & Error-Path Tests (`scripts/mutate`):**  
    - `TestSIGKILL_AddThenImmediateKill` in `test/crash`: assert job survives immediate `SIGKILL` after HTTP 200.  
-   - `TestAdd_PersistFailureDoesNotLaunchWorkers`: inject store failure in `Add`, assert zero workers launched and `deregister` leaves clean state.
+   - `TestAdd_PersistFailureDoesNotAdvanceOrLaunch`: inject `Save` failure in `Add` while a concurrent `tick()` runs; assert `Add` returns the error, zero leases (`d.q.Advance`), residency hydrations, or worker launches occurred, and `List()` is empty. **Mutation:** remove the `if _, ok := d.written[id]; !ok { continue }` gate in `snapshotOrder()` $\to$ test fails (**KILLED**).
 2. **Reclaim State Matrix (`scripts/mutate`):**  
-   Table-driven test covering all 5 states (`in queue`, `in queue + failed in history`, `failed in history only`, `completed in history`, `in neither`). Every mutation (dropping `dispatch_jobs` clause, dropping `history` clause, flipping `'Failed'` to `'Completed'`, relaxing `NOT EXISTS` to `NOT IN` with NULL key) must be **KILLED**.
+   Table-driven test covering all 5 states (`in queue`, `in queue + failed in history`, `failed in history only`, `completed in history`, `in neither`) with columns generated from `durability.PerJobTables`. Every mutation (dropping `dispatch_jobs` clause, dropping `history` clause, flipping `'Failed'` to `'Completed'`, relaxing `NOT EXISTS` to `NOT IN` with NULL key) must be **KILLED**.
 3. **Issue 561 & Cross-Retry Interleaving (`scripts/mutate`):**  
-   - Capture batch, `Reclaim`, commit batch $\to$ 0 `failed_articles`. Mutation removing `WHERE EXISTS` must be **KILLED**.  
-   - Capture batch, fail job, retry job (`SeedJobFiles`), verify `Prune` synchronized with `inFlight` so stale batch does not pollute retry.
+   - Capture batch, `Reclaim`, commit batch $\to$ 0 `failed_articles`. **Mutation:** remove `WHERE EXISTS` $\to$ **KILLED**.  
+   - Hold a flush mid-`SaveProgressBatch` whose batch contains `id`, call `Prune(id)` concurrently, and assert `Prune(id)` blocks until the flush commits. **Mutation:** remove the `c.inFlight` wait in `Prune` $\to$ `Prune` returns before flush commits (**KILLED**).
 4. **Compiler §6 Pin:**  
    Verify `Store.commit` is unexported and no exported method on `durability.Store` inserts into `durable_runs`.
 
