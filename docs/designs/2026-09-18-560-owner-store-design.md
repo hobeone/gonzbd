@@ -51,8 +51,8 @@ transaction per orphan" but its code runs one for the whole sweep.
 ### 3.1 Prerequisite P1 — the queue row exists before `Add` returns
 
 `Dispatcher.Add` gains a context and persists synchronously, through the same
-function the tick uses — and **no job launches until its queue row has been
-written**:
+function the tick uses — and **the tick does not see a job until its queue row
+has been written**:
 
 ```go
 func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
@@ -60,45 +60,70 @@ func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 	if err := d.register(j, h, seqNext); err != nil {
 		return err
 	}
-	// The row the tick would write moments later, written now, so that a
-	// caller acknowledging the job has a durable reason to.
+	// The first row, written here rather than by a tick, so that a caller
+	// acknowledging the job has a durable reason to.
 	if err := d.persistIfChanged(ctx, j); err != nil {
-		// Safe: claimLaunched refuses an unwritten job, so no worker or
-		// occupier can exist for it yet (deregister's precondition).
-		d.deregister(j.ID())
+		// Nothing but the registry holds this job: the tick has not seen it
+		// (snapshotOrder), so there is no lease, no residency and no worker.
+		// Unwind through the removal gatekeeper, the only path to deregister.
+		if rm, ok := d.beginRemoval(j.ID()); ok {
+			rm.end()
+		}
 		return fmt.Errorf("dispatch: Add: persist %s: %w", j.ID(), err)
 	}
+	d.kick() // register's kick may have been spent on a tick that skipped j
 	return nil
 }
 
-func (d *Dispatcher) claimLaunched(id string) bool {
+// snapshotOrder returns the registered jobs that have a written queue row.
+// It is the tick's and Stop's only view of the registry, so an unwritten job
+// is never advanced, hydrated, launched or persisted by either.
+func (d *Dispatcher) snapshotOrder() []*job.Job {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.admitsLocked(id) {
-		return false
+	out := make([]*job.Job, 0, len(d.order))
+	for _, id := range d.order {
+		if _, ok := d.written[id]; !ok { // read under the held d.mu
+			continue
+		}
+		out = append(out, d.byID[id].j)
 	}
-	if _, ok := d.written[id]; !ok { // the launch gate: read under the held d.mu,
-		return false                  // not via lastWritten, which takes d.mu itself
-	}
-	// ... unchanged ...
+	return out
 }
 ```
 
-- **Why the gate is required, not optional.** `register` calls `d.kick()`
-  (`internal/dispatch/registry.go:205`), and the woken tick calls `d.launch(j)`
-  *before* its own `persistIfChanged` (`internal/dispatch/tick.go`). Without the
-  gate, a job can be downloading when a failed persist calls `deregister`, whose
-  contract requires launched workers to be drained first
-  (`internal/dispatch/registry.go:264-265`) — the #552 shape, reported as a
-  failure to add while it downloads. (Revision after cross-critique: design B
-  found this.)
-- The gate costs nothing on the normal path: `Add` has written the row before
-  it returns, and jobs restored at startup are marked written as they load
-  (`internal/dispatch/dispatch.go:716`). A tick that runs between `register` and
-  `Add`'s persist skips the launch and writes the row itself; `storeMu`
-  serialises the two writes, and the second finds nothing changed.
-- It turns "a job's queue row exists before any of its bytes are fetched" from
-  a property of call order into one `claimLaunched` enforces.
+- **Why the gate sits at the top of the tick, not at launch.** `register`
+  kicks the tick (`internal/dispatch/registry.go:205`), and the tick acts on a
+  job well before it launches it (`internal/dispatch/tick.go:30-62`). The
+  first tick runs `Advance`, whose never-run branch calls `BeginAttempt`, and
+  then `persistIfChanged`. The next runs `Advance`'s resume branch, which takes
+  a lease through `grantFor`, and `reconcileResidency`, which hydrates once the
+  job holds one. A synchronous persist can span several ticks, since
+  `busy_timeout(5000)` lets a contended write wait five seconds
+  (`internal/history/db.go:80`). So a gate only at `claimLaunched` still lets
+  a failed `Add` leak a scheduler lease and a hydrated manifest. Worse, a tick
+  that persists the job after `Add`'s write has failed but before `Add` unwinds
+  leaves a row that the unwind does not delete. The job then reappears at the
+  next start, after the caller was told the add failed.
+  Filtering in `snapshotOrder` keeps the tick away from the job entirely, and
+  makes `Add` the only writer of a job's first row.
+- **The unwind goes through `beginRemoval` → `removal.end`.** `removal.end`
+  is `deregister`'s only caller, which is the #513 gatekeeper
+  (`internal/dispatch/registry.go:404-412`). A bare `deregister` in `Add` would
+  be the first caller to bypass it.
+- **`Add` kicks after the persist.** `register`'s kick can be consumed by a
+  tick that runs while `Add` is still writing, which then skips the job. Without
+  a second kick, the job waits for the next tick of the one-second ticker.
+- **One enforcement point.** Only the tick launches (`d.launch` is called only
+  at `internal/dispatch/tick.go:61`), so the gate in `snapshotOrder` makes a
+  second check in `claimLaunched` redundant, and there is none.
+- Nothing changes on the normal path for existing jobs: those restored at
+  startup are marked written as they load (`internal/dispatch/dispatch.go:716`),
+  before the tick starts.
+- (Revision after cross-critique, twice: design B found both that a failed
+  persist could deregister a launched job, and that a launch-only gate leaves
+  the lease, residency and removal-gatekeeper problems above. The orphaned-row
+  case follows from the same gate.)
 - `dispatch_jobs` keeps exactly one writer function; nothing new acquires
   `storeMu` or `d.mu` differently (`register` releases `d.mu` before returning,
   and `persistIfChanged` already runs under `storeMu`).
@@ -387,9 +412,10 @@ statements.
 Each step builds, passes the gates, and is independently revertable.
 
 1. **`fix(dispatch): persist a job's queue row before Add returns`** — P1,
-   `Add(ctx, …)`, the launch gate in `claimLaunched`, callers pass a detached
-   bounded context, deregister on persist failure. Regression pins: the crash
-   test and the launch-gate test (8.1).
+   `Add(ctx, …)`, the written-row filter in `snapshotOrder`, the unwind through
+   `beginRemoval`/`removal.end`, the post-persist kick, and callers passing a
+   detached bounded context. Regression pins: the crash test and the
+   unwritten-job test (8.1).
 2. **`refactor(durability): make one store own job_files and failed_articles`**
    — move the SQL of `seedJobFiles` and `SaveBatch`, the residency reads and
    `DeleteJob` into `durability.Store` behind the plain-type API of 3.2, leaving
@@ -416,10 +442,15 @@ the job is present. Observed red today in 10/15; the positive control (kill
 after 1.5s) is 5/5 green. Source in Appendix A. Run with
 `-count` ≥ 10, since it is a race.
 
-Launch gate: a `dispatch.Store` wrapper whose `Save` fails, then `Add` — assert
-`Add` returns the error, no worker was ever launched for the job (count
-launches through the runner), and the job is absent from `List()`. Mutation:
-delete the `d.written` check in `claimLaunched` → a launch is observed.
+Unwritten job: a `dispatch.Store` wrapper whose `Save` blocks until released,
+then fails. While it blocks, drive several ticks (the pattern `tick_test.go`
+already uses). Once it fails, assert that `Add` returns the error, that the job
+never began an attempt, holds no lease and was never hydrated, that no worker
+launched and no row was saved, and that the job is absent from `List()`.
+Mutation: remove the `d.written` filter from `snapshotOrder` → `BeginAttempt`,
+a lease or a save is observed. A second mutation drops `Add`'s post-persist
+`kick`; a success-path test that consumes the wake during the blocked `Save`
+must then see the launch wait for the ticker.
 
 ### 8.2 Reclaim rule — one table-driven test, every branch
 A job in each state, against the real schema, through both `SweepOrphans` and
