@@ -50,7 +50,7 @@ func overlapFixture(t *testing.T, ctx context.Context) (*Application, string) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.dispatcher.Add(j, hdr); err != nil {
+	if err := application.dispatcher.Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if err := application.pipeline.registerFile(j.ID(), 0); err != nil {

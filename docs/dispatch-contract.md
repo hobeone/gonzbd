@@ -275,8 +275,10 @@ obligations:
 - **`Load(ctx) ([]Persisted, error)`** — read the whole queue once, at
   `Dispatcher.Start`.
 - **`Save(ctx, Persisted) error`** and **`Delete(ctx, id) error`** — write a
-  job's four axes (`State`, `Intent`, plus header/policy/progress fields)
-  when they move, and delete a row when the job is removed or evicted.
+  job's row synchronously in `Dispatcher.Add` before `Add` returns (while
+  `snapshotOrder` withholds the unwritten entry from `tick` via `d.written`) and
+  whenever its four axes (`State`, `Intent`, plus header/policy/progress fields)
+  move, and delete a row when the job is removed or evicted.
 
 `internal/dispatch/store` implements this against SQLite; `internal/dispatch`
 itself stays free of a SQL driver. `Persisted` deliberately omits a

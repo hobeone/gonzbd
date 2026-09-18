@@ -244,7 +244,7 @@ func (e *testEnv) seedQueue(t *testing.T, n int) {
 		if err != nil {
 			t.Fatalf("BuildIngestJob: %v", err)
 		}
-		if err := e.Dispatcher.Add(j, hdr); err != nil {
+		if err := e.Dispatcher.Add(context.Background(), j, hdr); err != nil {
 			t.Fatalf("Dispatcher.Add: %v", err)
 		}
 		ackDone(t, e.Dispatcher, id, fmt.Sprintf("test-job-%04d-a@t", i))

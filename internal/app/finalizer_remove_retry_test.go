@@ -61,7 +61,7 @@ func newAppWithCustomDispatchStore(t *testing.T, failCount int) (*Application, *
 		Name:  "test-job",
 		Bytes: 100,
 	}
-	if err := application.dispatcher.Add(j, hdr); err != nil {
+	if err := application.dispatcher.Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	return application, j, s

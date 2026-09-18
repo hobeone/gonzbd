@@ -112,7 +112,7 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 	t.Parallel()
 	dlDir := t.TempDir()
 	cfg := testConfig(dlDir, t.TempDir(), t.TempDir())
-	app, err := New(cfg, nil)
+	app, err := New(cfg, nil, WithDownloader(downloaderOnly{}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 		Bytes:    100,
 		Articles: []nzb.Article{{ID: "a@t", Bytes: 100, Number: 1}},
 	}}}, "job1.nzb", types.FetchOptions{NzbName: "job1"}, nil)
-	if err := app.Dispatcher().Add(j, hdr); err != nil {
+	if err := app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("dispatcher Add: %v", err)
 	}
 

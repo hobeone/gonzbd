@@ -699,6 +699,9 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 		}
 	}()
 	for _, p := range rows {
+		if d.isAdded(p.ID) {
+			continue
+		}
 		j, err := reconstruct(p.ID, p.Header.Name, p.Policy, p.State, p.Intent, now)
 		if err != nil {
 			return fmt.Errorf("dispatch: restore: job %s at %+v: %w", p.ID, p.State, err)

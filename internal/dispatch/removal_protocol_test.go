@@ -38,7 +38,7 @@ import (
 func cancelledNeverRun(t *testing.T, d *Dispatcher, id string) *job.Job {
 	t.Helper()
 	j := job.New(id, "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if err := j.SetIntent(job.IntentCancel); err != nil {

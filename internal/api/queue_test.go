@@ -254,7 +254,7 @@ func addTestJob(t *testing.T, q *testQueueWrapper, opts testAddOptions) *testJob
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := q.disp.Add(j, hdr); err != nil {
+	if err := q.disp.Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("disp.Add: %v", err)
 	}
 	return &testJob{ID: j.ID(), job: j}
@@ -567,7 +567,7 @@ func addLargeTestJob(t *testing.T, q *testQueueWrapper, numSegs int) *testJob {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := q.disp.Add(j, hdr); err != nil {
+	if err := q.disp.Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("disp.Add: %v", err)
 	}
 	return &testJob{ID: j.ID(), job: j}
@@ -855,7 +855,7 @@ func TestQueueDetail_FileStateClassification(t *testing.T) {
 			m := makeJobManifest(t, []string{"f"}, []int64{1000}, [][]int64{{500, 500}}, [][]string{{"a0@t", "a1@t"}})
 			j := job.New("j_class", "f.nzb", job.Policy{})
 			_ = j.AttachContent(m)
-			_ = disp.Add(j, dispatch.Header{Name: "f.nzb", Bytes: 1000})
+			_ = disp.Add(context.Background(), j, dispatch.Header{Name: "f.nzb", Bytes: 1000})
 
 			tt.setup(t, disp, "j_class", j)
 			if got := fileState(m, j.Progress(), 0); got != tt.want {

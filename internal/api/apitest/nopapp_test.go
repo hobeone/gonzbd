@@ -143,7 +143,7 @@ func TestNopApp_Contract(t *testing.T) {
 	// 4. Wired Dispatcher and History delegation
 	disp := newTestDispatcher(t)
 	j := job.New("job1", "Test Job", job.Policy{})
-	if err := disp.Add(j, dispatch.Header{Name: "Test Job"}); err != nil {
+	if err := disp.Add(context.Background(), j, dispatch.Header{Name: "Test Job"}); err != nil {
 		t.Fatalf("disp.Add failed: %v", err)
 	}
 

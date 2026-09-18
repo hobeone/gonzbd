@@ -14,7 +14,7 @@ func TestResidency_HydratesWhenAJobAcquiresResources(t *testing.T) {
 	res := &fakeResidency{}
 	d := newTestDispatcher(t, withResidency(res))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -30,7 +30,7 @@ func TestResidency_EvictsWhenAJobReleasesResources(t *testing.T) {
 	res := &fakeResidency{}
 	d := newTestDispatcher(t, withResidency(res))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.tick(context.Background())
@@ -57,7 +57,7 @@ func TestReconcileResidency_CalledDirectlyHydrates(t *testing.T) {
 	res := &fakeResidency{}
 	d := newTestDispatcher(t, withResidency(res))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if err := d.q.Advance(j); err != nil { // begins the attempt
@@ -81,7 +81,7 @@ func TestReconcileResidency_CalledDirectlyHydrates(t *testing.T) {
 // markResident and markNotResident.
 func TestResidentBookkeeping_MarksAndClears(t *testing.T) {
 	d := newTestDispatcher(t)
-	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -104,7 +104,7 @@ func TestResidency_HydrationFailureSettlesFailedAndReturnsBothPools(t *testing.T
 	res := &fakeResidency{failOn: map[string]error{"j1": errors.New("manifest unreadable")}}
 	d := newTestDispatcher(t, withResidency(res))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -143,7 +143,7 @@ func TestResidency_HydrationCancelledDoesNotSettleTheJob(t *testing.T) {
 			res := &fakeResidency{failOn: map[string]error{"j1": tc.err}}
 			d := newTestDispatcher(t, withResidency(res))
 			j := job.New("j1", "n", job.Policy{})
-			if err := d.Add(j, Header{}); err != nil {
+			if err := d.Add(context.Background(), j, Header{}); err != nil {
 				t.Fatalf("Add: %v", err)
 			}
 
@@ -178,7 +178,7 @@ func TestResidency_HydrationFailureIsPersisted(t *testing.T) {
 	res := &fakeResidency{failOn: map[string]error{"j1": errors.New("manifest is corrupt")}}
 	d := newTestDispatcher(t, withResidency(res), withStore(st))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -215,7 +215,7 @@ func TestResidency_DoesNotHydrateANeverStartedJob(t *testing.T) {
 	d := newTestDispatcher(t, withResidency(res))
 	d.Pause()
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func TestReconcileResidency_NeverStartedJobDoesNotAttemptASettle(t *testing.T) {
 	d := newTestDispatcher(t, withResidency(res))
 	d.Pause()
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -276,7 +276,7 @@ func TestResidency_CancelledContextDoesNotSettleOnANonContextError(t *testing.T)
 	res := &fakeResidency{failOn: map[string]error{"j1": errors.New("read manifest: unexpected EOF")}}
 	d := newTestDispatcher(t, withResidency(res))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.tick(context.Background()) // open the attempt
@@ -289,7 +289,7 @@ func TestResidency_CancelledContextDoesNotSettleOnANonContextError(t *testing.T)
 	res2 := &fakeResidency{failOn: map[string]error{"j2": errors.New("read manifest: unexpected EOF")}}
 	d2 := newTestDispatcher(t, withResidency(res2))
 	j2 := job.New("j2", "n", job.Policy{})
-	if err := d2.Add(j2, Header{}); err != nil {
+	if err := d2.Add(context.Background(), j2, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d2.tick(context.Background()) // opens the attempt at Fetching; no lease yet
@@ -321,7 +321,7 @@ func TestResidency_HydrationFailureSettleError(t *testing.T) {
 	res := &fakeResidency{failOn: map[string]error{"j1": errors.New("corrupt")}}
 	d := newTestDispatcher(t, withResidency(res))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.tick(context.Background()) // opens the attempt at Fetching; no lease yet

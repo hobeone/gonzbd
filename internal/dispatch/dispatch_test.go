@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -14,7 +15,7 @@ import (
 func TestLookup_FindsRegisteredJobsAndReportsMissingOnes(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -31,7 +32,7 @@ func TestLookup_FindsRegisteredJobsAndReportsMissingOnes(t *testing.T) {
 func TestSnapshotOrder_CopiesInQueueOrder(t *testing.T) {
 	d := newTestDispatcher(t)
 	for _, id := range []string{"c", "a", "b"} {
-		if err := d.Add(job.New(id, id, job.Policy{}), Header{Name: id}); err != nil {
+		if err := d.Add(context.Background(), job.New(id, id, job.Policy{}), Header{Name: id}); err != nil {
 			t.Fatalf("Add(%s): %v", id, err)
 		}
 	}
