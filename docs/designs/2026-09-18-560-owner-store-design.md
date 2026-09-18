@@ -1,7 +1,9 @@
-# Issue 560, design A: one owner and one reclaim rule for per-job rows
+# Issue 560: one owner and one reclaim rule for per-job rows
 
 Tree: `f83c366d` (main). Line numbers are against that commit unless marked.
-Status: design A of a two-design cross-critique, 2026-09-18. Nothing here is implemented.
+Status: **accepted design**, 2026-09-18. Chosen after two independently
+written designs critiqued each other (PRs 564 and 565), and adopting the parts
+of the second that held up (Appendix B). Nothing here is implemented yet.
 
 ## 1. The design in one paragraph
 
@@ -18,6 +20,31 @@ but can never make one wrong. One prerequisite makes the rule's inputs exact:
 the dispatcher writes a job's queue row **before `Add` returns**.
 `history_job_files` stays with `internal/history`, written and deleted in the
 same transactions as its entry. No lifecycle is enforced by the schema.
+
+## Decision record
+
+Issue 560 asked for three outputs. They are:
+
+1. **Write ownership.** `internal/durability` owns the writes to `job_files`
+   and `failed_articles` and all lifecycle deletion of all three tables. The
+   *content* of `durable_runs` keeps one writer, the barrier, and that
+   exclusivity becomes compiler-enforced rather than conventional: `commit` is
+   unexported, so no code outside the package can write run content (3.2).
+   The §6 invariant is strengthened, not traded away.
+2. **The approach.** Candidate 1, reshaped: one owner package and one reclaim
+   rule (3.3). Candidate 2, database-enforced lifecycle through foreign keys,
+   is ruled out: a cascade splits the lifecycle between the Go code and the
+   schema, so no single place states it. Candidate 3's startup sweep survives as
+   `SweepOrphans`, which shares the reclaim rule's statements; its
+   cross-package transaction plumbing (`Execer`, `RunStore.DeleteJobTx`) is not
+   adopted.
+3. **The `history_job_files` foreign key does not land**, for the same reason.
+   `internal/history` owns the entry and its retained file progress, and deletes
+   them together in one transaction (3.6).
+
+Prerequisite P1 (3.1) fixes a defect that stands regardless of issue 560:
+an accepted job can be lost by a crash just after it is added (E2, reproduced).
+It can land first, alone.
 
 ## 2. Evidence base
 
@@ -120,10 +147,6 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 - Nothing changes on the normal path for existing jobs: those restored at
   startup are marked written as they load (`internal/dispatch/dispatch.go:716`),
   before the tick starts.
-- (Revision after cross-critique, twice: design B found both that a failed
-  persist could deregister a launched job, and that a launch-only gate leaves
-  the lease, residency and removal-gatekeeper problems above. The orphaned-row
-  case follows from the same gate.)
 - `dispatch_jobs` keeps exactly one writer function; nothing new acquires
   `storeMu` or `d.mu` differently (`register` releases `d.mu` before returning,
   and `persistIfChanged` already runs under `storeMu`).
@@ -147,9 +170,7 @@ so `durability` cannot name `job.FetchPolicy` or `job.Checkpoint`, and cannot
 implement `checkpoint.Store`, whose method takes `[]job.Checkpoint`.
 `appCheckpointStore` therefore stays in `internal/app` as a thin adapter:
 it maps each `job.Checkpoint` to a `durability.JobProgress` and calls
-`SaveProgress`. (Revision after cross-critique: the first version of this
-section gave `durability.Store` `job`-typed signatures, which is an import
-cycle. Design B's plain-type API was correct.)
+`SaveProgress`.
 
 ```go
 type Store struct{ db *sql.DB }
@@ -170,7 +191,6 @@ type JobProgress struct {
 
 // PerJobTable names an owned per-job table and its job-ID key column,
 // for test fixtures and for a completeness test over Reclaim (8.2).
-// Adopted from design B.
 type PerJobTable struct {
 	Name        string
 	JobIDColumn string
@@ -190,13 +210,18 @@ func (s *Store) Admit(ctx context.Context, jobID string, fetch []uint8) error
 // liveness guard (3.5). One transaction for the whole batch.
 func (s *Store) SaveProgress(ctx context.Context, batch []JobProgress) error
 
-// Reads that today are raw SQL in residency.go:108,158,179, plus Resumer's
-// per-file content invalidation (resumer.go:42).
+// Reads that today are raw SQL in residency.go:108,158,179.
 func (s *Store) FileRows(ctx context.Context, jobID string) ([]FileRow, error)
 func (s *Store) FailedArticles(ctx context.Context, jobID string) ([]int, error)
 func (s *Store) ForJob(ctx context.Context, jobID string) ([]Run, error)
 func (s *Store) ForFile(ctx context.Context, jobID string, fileIdx int32) ([]Run, error)
-func (s *Store) DeleteFile(ctx context.Context, jobID string, fileIdx int32) error
+
+// deleteFile is Resumer's per-file content invalidation: the resume gate
+// discards a file whose bytes contradict its runs (internal/durability/resume.go:148,
+// today RunStore.DeleteFile). Unexported because its only caller is in this
+// package; exported, it would be a delete of durable_runs reachable from
+// outside the owner, beside Reclaim.
+func (s *Store) deleteFile(ctx context.Context, jobID string, fileIdx int32) error
 
 // DiscardRuns invalidates a job's durable record — the retry's
 // "!progressApplied" case (app.go:2261). Content management, not lifecycle.
@@ -210,7 +235,6 @@ func (s *Store) Reclaim(ctx context.Context, id string, more ...string) error
 // SweepOrphans applies the same rule to every job. Startup only, before the
 // API and dir scanner start (main.go:223 vs :257): a job between Admit and Add
 // has job_files but no queue row yet, and the rule would reclaim it.
-// (Revision after cross-critique: design B found the race.)
 func (s *Store) SweepOrphans(ctx context.Context) error
 
 // commit is unexported: only package durability can write run content.
@@ -221,9 +245,11 @@ func (s *Store) commit(ctx context.Context, jobID string, arts []DurableArticle)
 convention: `Application` holds the same `RunStore` the barrier does and could
 call `Commit` (`app.go:164,525`). With `commit` unexported, only code in
 package `durability` can write run content, and the barrier is that code.
-`Resumer`'s per-file discard (`resume.go:148`) and `commit`'s own
+`Resumer`'s per-file discard (`deleteFile`) and `commit`'s own
 read-modify-write delete stay in-package as content operations, which is what
-§6 already says they are.
+§6 already says they are. The one content invalidation reachable from outside
+is `DiscardRuns`, because its caller — the retry, when retained progress
+cannot be applied — lives in `internal/app`.
 
 ### 3.3 The reclaim rule — stated once
 
@@ -330,8 +356,6 @@ reclaim.
 - The wait blocks only when the race is live: `inFlight` holds `id` only during
   a flush whose batch contains it.
 
-(Revision after cross-critique: design B proposed the `Prune` wait.)
-
 ### 3.6 `history_job_files` — the entry's child
 
 - **No foreign key.** Ruled out on 2026-09-18 along with every other
@@ -366,12 +390,12 @@ statements.
 |---|---|
 | 1. Crash window | **Narrowed and made safe, not closed.** No crash can cause a wrong deletion (the rule is re-derived). A crash between a state change and its reclaim leaves rows until the next start. P1 separately closes the two windows that lost *jobs* (E2, E5). An FK cascade would close the row window at the database; this design does not, and trades that for having no ordering constraints at the call sites. |
 | 2. §6 | **Strengthened**: compiler-enforced at package granularity (`commit` unexported). |
-| 3. Rule 2 | Three tables: writers and readers in one package; one lifecycle deleter (`Reclaim`); content invalidation (`commit`'s merge, `Resumer`, `DiscardRuns`) in-package. `history_job_files`: one writer (`history.Add`), one deleter (`history.Repository.delete`, in the entry's transaction). Raw SQL statement sites on these tables outside `internal/durability` (production, excluding `test/`): 10 → 0 — nine in `internal/app` (E11) plus `repository.go:400`. |
+| 3. Rule 2 | Three tables: writers and readers in one package; one lifecycle deleter (`Reclaim`, with `SweepOrphans` sharing its statements); content invalidation in-package (`commit`'s merge, `deleteFile`) except `DiscardRuns`, exported for the retry's one call. `history_job_files`: one writer (`history.Add`), one deleter (`history.Repository.delete`, in the entry's transaction). Raw SQL statement sites on these tables outside `internal/durability` (production, excluding `test/`): 10 → 0 — nine in `internal/app` (E11) plus `repository.go:400`. |
 | 4. #561 | **Fixed** by 3.5; residual below. |
 | 5. Contortions | (a) The guard uses `job_files` presence as the liveness marker — correct, but implicit; an explicit marker would be a table added only for this. (b) The rule reads two tables another package owns (`dispatch_jobs`, `history.status`): reading is permitted by Rule 2, but it couples the rule to their schema. (c) Manifest unlink is outside the transaction (a file); idempotent and caught at startup. None exists solely to satisfy another criterion except arguably (a). |
 | 6. Runtime | `Add`: one synchronous row write the tick would have done milliseconds later. Departure: one transaction, three indexed anti-join deletes. `SaveBatch`: one indexed probe per job with failed articles. Startup: three anti-join deletes plus a manifest-directory scan. |
 
-## 5. Residual risks — attack these
+## 5. Residual risks
 
 1. **Reused job ID across a retry — narrowed, not closed.** `Prune`'s wait
    (3.5) closes the in-flight batch. What remains is a straggling `Mark` of the
@@ -384,8 +408,6 @@ statements.
    as #557, reached with far fewer mechanisms. **A periodic sweep is not
    available as a fix:** an unfiltered pass would reclaim any job between
    `Admit` and `Add`, which is why `SweepOrphans` is startup-only (3.2).
-   (An earlier version of this item called a periodic sweep "cheap"; design B
-   showed it is unsafe.)
 3. **Power loss.** `synchronous(NORMAL)` with WAL can lose recent commits on
    power loss (not on process crash), so P1's guarantee is "survives a crash",
    not "survives a power cut". Same for every candidate.
@@ -510,17 +532,28 @@ A compile-time check is the pin: code outside `internal/durability` calling
 `commit` does not build. Keep one `go vet`-level test asserting `Store` has no
 exported method that writes `durable_runs` content.
 
-## 9. Questions for the critique
+## 9. Resolved questions
 
-1. ~~Is re-deriving the rule on every departure, instead of cascading, the
-   simpler system — or only the smaller diff?~~ Settled 2026-09-18: no
-   cascades (3.6, section 6).
-2. Is `job_files` presence an acceptable liveness marker, or is the implicit
-   marker a contortion that an explicit one should replace?
-3. Should the store own the manifest file too?
-4. Does any departure path exist that 3.4 misses? (Rule 4: enumerate from
-   source, `git grep` for `store.Delete`, `dispatcher.Remove`, history
-   deletes and status updates.)
+1. **Re-derive, or cascade?** Re-derive. Cascades are ruled out (Decision
+   record, 3.6, section 6).
+2. **Is `job_files` presence an acceptable liveness marker?** Yes. An explicit
+   marker would be a table that exists only to serve the guard, which is a
+   contortion by this design's own criteria. `job_files` is already the
+   store's per-job row set: it is seeded before `Add` (E13) and before the
+   retry's flush, and removed by the same reclaim rule. So "has `job_files`"
+   is the store's definition of live, not a proxy for it. 8.4's mutation pins
+   the guard.
+3. **Should the store own the manifest?** No. The manifest is residency's
+   input and is written in `internal/app` (by `AddJob` and the retry). The
+   reclaim helpers unlink it (3.4), and the startup scan catches orphans.
+   Moving it would make the durability package own a file directory unrelated
+   to durability.
+4. **Does any departure path escape 3.4?** Not that either design's review
+   found; those reviews are what added E8, E9 and the add-failure row. The
+   tree will have moved by implementation time, so the implementation PR
+   re-derives the list from source before its first push and records each site
+   in its body (AGENTS.md Rule 4). The search covers `store.Delete`,
+   `dispatcher.Remove`, history deletes and history status updates.
 
 ## Appendix A — crash-test reproduction of E2
 
@@ -529,7 +562,7 @@ exported method that writes `durable_runs` content.
 <!-- doccite:ok TestSIGKILL_AddThenImmediateKill_LosesTheJob — proposed test, source below; not in the tree yet -->
 
 ```go
-// Reproduction of F2 (accepted job lost by SIGKILL before the dispatcher's
+// Reproduction of E2 (accepted job lost by SIGKILL before the dispatcher's
 // woken tick persists its dispatch_jobs row). Throwaway spike; keep as the
 // starting point for the regression test of the real fix.
 //
@@ -614,3 +647,36 @@ func TestSIGKILL_AddThenImmediateKill_LosesTheJob(t *testing.T) {
 	}
 }
 ```
+
+## Appendix B — provenance
+
+This design was written as design A of two, and the two critiqued each
+other's review threads on PRs 564 and 565. Those threads are the full record.
+What each side changed in the other:
+
+**From design B, adopted here:**
+- **The plain-type `durability.Store` API**, with the mapping adapter left in
+  `internal/app`. Design A's first sketch took `job` types, which is an import
+  cycle, because `internal/job` imports `internal/durability`.
+- **`PerJobTables`**, typed as `PerJobTable{Name, JobIDColumn}`.
+- **P1's safety.** First: a failed persist could deregister a job the tick had
+  already launched. Then, in a follow-up: a launch-only gate is too late,
+  because the tick advances, leases, hydrates and persists a job before it
+  launches it. That follow-up also brought the unwind through the #513 removal
+  gatekeeper and the post-persist kick.
+- **The split reclaim API.** An unfiltered runtime sweep races the span between
+  `Admit` and `Add`. Design A had suggested a periodic sweep.
+- **`Checkpointer.Prune` waiting for an in-flight flush.**
+
+**From design A, adopted by design B in its own revision:**
+- the reclaim rule;
+- P1;
+- compiler-enforced §6;
+- manifest cleanup on reclaim and at startup;
+- deleting the history row before reclaiming.
+
+**Rejected during the critique:** design B's first version folded the retry's
+`failed_articles` clear into a call that also deletes `durable_runs`. That
+reintroduces #422 on the branch where retained progress is applied, because
+`FinalizeFile` reads those runs back to bound its truncate
+(`internal/durability/barrier.go:574`).
