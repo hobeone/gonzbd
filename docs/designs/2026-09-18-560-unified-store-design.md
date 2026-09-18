@@ -42,22 +42,30 @@ Facts established at `f83c366d` relied on by this design:
 
 ### 3.1 Prerequisite P1 (Race-Free Synchronous `Dispatcher.Add`)
 
-To close E2 and E5 without violating `deregister`'s worker-drain contract (E15), `register` is split so `persistIfChanged` executes **before** `d.kick()` wakes the tick and **before** `claimLaunched` can launch workers:
+To close E2 and E5 without violating `deregister`'s worker/lease drain contract (`registry.go:264-265`), leaking a scheduler lease in `d.q.Advance` (`tick.go:31`), or bypassing the `#513` single-caller gatekeeper on `deregister` (`registry.go:404-412`):
+- `register` inserts the job without calling `d.kick()`,
+- `snapshotOrder()` skips any job where `_, ok := d.written[id]` is `false` (so an concurrent tick cannot call `d.q.Advance`, `reconcileResidency`, or `d.launch` before the initial `Save` completes), and
+- `Add` calls `d.kick()` only after `persistIfChanged` marks `d.written[id]`, unwinding via `beginRemoval` $\to$ `rm.end()` on error:
 
 ```go
 func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
-	// 1. Allocate sequence and insert into registry with launch withheld until written.
+	seqNext := d.seq.Add(1)
+	// 1. Insert into registry without kicking; snapshotOrder skips unwritten jobs.
 	if err := d.registerUnwritten(j, h, seqNext); err != nil {
 		return err
 	}
 	// 2. Persist synchronously under storeMu before waking the tick.
 	if err := d.persistIfChanged(ctx, j); err != nil {
-		// Safe: d.kick() has not run and claimLaunched requires d.isWritten(id),
-		// so zero workers or external occupiers can exist for j.
-		d.deregister(j.ID())
+		// Safe: snapshotOrder skipped j while unwritten, so d.q.Advance,
+		// reconcileResidency, and claimLaunched never touched j.
+		// Unwind via beginRemoval -> rm.end() so removal.end stays the
+		// sole caller of d.deregister (registry.go:404-412).
+		if rm, ok := d.beginRemoval(j.ID()); ok {
+			rm.end()
+		}
 		return fmt.Errorf("dispatch: Add: persist %s: %w", j.ID(), err)
 	}
-	// 3. Mark written and wake the tick to launch.
+	// 3. Row is now in d.written[id]; wake the tick to advance and launch.
 	d.kick()
 	return nil
 }
