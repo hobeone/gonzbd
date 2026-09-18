@@ -299,36 +299,6 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 	return out
 }
 
-// deregister deletes a job from EVERY per-job structure — d.byID, d.order,
-// d.written, d.adding, d.resident, d.launched, d.removing, d.occupiers, d.occupancyTokens,
-// d.occupyDrained and d.occupyStep — under one d.mu span. It is the single
-// internal registry eraser. External callers drain launched workers and external
-// occupiers before calling, while the finalizer's own Remove proceeds with its
-// own lease token active. See the Dispatcher struct's per-job map comment
-// (dispatch.go) for why "every" is the rule here rather than "the ones this
-// caller happens to care about".
-//
-// It preserves the relative order of the remaining entries: queue order is
-// the priority policy sched consults, and a swap-with-last deletion would
-// silently reorder jobs behind the removed one. evictCancelledNeverRun
-// (tick.go) is the first caller — it guards against launched workers or active
-// occupiers before calling, and this method makes no such assumption itself.
-//
-// What each prune buys, since none of them is obviously load-bearing on its
-// own and all three were omitted at least once:
-//
-//   - d.written: a job removed from the registry would keep its last-Persisted
-//     entry forever, and a reused job ID's first persistIfChanged would
-//     compare against the dead job's stale row and wrongly suppress a Save.
-//   - d.resident: a stale true entry makes reconcileResidency take neither
-//     branch (its hydrate arm requires !d.isResident(id)), so a reused ID
-//     never hydrates and runs without its manifest.
-//   - d.launched: a stale true entry makes claimLaunched return false
-//     forever, so a reused ID is permanently unlaunchable.
-//   - d.occupiers / d.occupancyTokens / d.occupyDrained / d.occupyStep: a stale
-//     entry leaves callers waiting on waitLive forever or reports false
-//     occupancy.
-//
 // admitsLocked reports whether job id may take on new work: it is registered,
 // and no teardown is outstanding against it. Caller must hold d.mu.
 //
@@ -441,6 +411,35 @@ func (r *removal) end() {
 }
 
 // deregister erases every trace of a job from the registry.
+//
+// It deletes the job from EVERY per-job structure — d.byID, d.order,
+// d.written, d.adding, d.resident, d.removing, d.occupiers, d.occupancyTokens,
+// d.occupyDrained and d.occupyStep under one d.mu span, then d.launched
+// through clearLaunched. See the Dispatcher struct's per-job map comment
+// (dispatch.go) for why "every" is the rule here rather than "the ones this
+// caller happens to care about".
+//
+// It preserves the relative order of the remaining entries: queue order is
+// the priority policy sched consults, and a swap-with-last deletion would
+// silently reorder jobs behind the removed one. It assumes nothing about
+// launched workers or occupiers; evictCancelledNeverRun (tick.go) reaches it
+// through beginRemovalIfIdle, which is where that check lives.
+//
+// What each prune buys:
+//
+//   - d.adding: a stale entry makes snapshotOrder skip a reused ID, so the
+//     tick never reaches it.
+//   - d.written: a job removed from the registry would keep its last-Persisted
+//     entry forever, and a reused job ID's first persistIfChanged would
+//     compare against the dead job's stale row and wrongly suppress a Save.
+//   - d.resident: a stale true entry makes reconcileResidency take neither
+//     branch (its hydrate arm requires !d.isResident(id)), so a reused ID
+//     never hydrates and runs without its manifest.
+//   - d.launched: a stale true entry makes claimLaunched return false
+//     forever, so a reused ID is permanently unlaunchable.
+//   - d.occupiers / d.occupancyTokens / d.occupyDrained / d.occupyStep: a stale
+//     entry leaves callers waiting on waitLive forever or reports false
+//     occupancy.
 //
 // removal.end is its only caller, which is what makes the marker impossible
 // to skip: `git grep -n 'deregister(r\.id)' -- 'internal/dispatch/*.go'` finds
