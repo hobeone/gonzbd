@@ -152,6 +152,7 @@ func TestQueueJobPauseResume(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 	env.seedQueue(t, 1)
+	env.Runner.waitStarted(t, "test-job-0000")
 
 	page := env.newPage(t)
 	screenshotOnFailure(t, page)

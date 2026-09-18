@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"context"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -27,7 +28,7 @@ func TestAdmitsLocked_TruthTable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newTestDispatcher(t)
 			if tc.registered {
-				if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+				if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{}); err != nil {
 					t.Fatalf("Add: %v", err)
 				}
 			}
@@ -61,7 +62,7 @@ func TestBeginRemovalIfIdle_Outcomes(t *testing.T) {
 
 	t.Run("idle mints a token and marks", func(t *testing.T) {
 		d := newTestDispatcher(t)
-		if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+		if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{}); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 		rm, live := d.beginRemovalIfIdle("j1")
@@ -78,7 +79,7 @@ func TestBeginRemovalIfIdle_Outcomes(t *testing.T) {
 
 	t.Run("launched refuses and leaves no marker", func(t *testing.T) {
 		d := newTestDispatcher(t)
-		if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+		if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{}); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 		if !d.claimLaunched("j1") {
@@ -116,12 +117,13 @@ func TestBeginRemovalIfIdle_Outcomes(t *testing.T) {
 // on.
 func TestDeregister_IsTotal(t *testing.T) {
 	d := newTestDispatcher(t)
-	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
 	d.mu.Lock()
 	d.written["j1"] = Persisted{ID: "j1"}
+	d.adding["j1"] = struct{}{}
 	d.resident["j1"] = true
 	d.removing["j1"] = 1
 	d.occupiers["j1"] = 1
@@ -141,6 +143,7 @@ func TestDeregister_IsTotal(t *testing.T) {
 	}{
 		{"byID", d.byID["j1"] != nil},
 		{"written", func() bool { _, ok := d.written["j1"]; return ok }()},
+		{"adding", func() bool { _, ok := d.adding["j1"]; return ok }()},
 		{"resident", func() bool { _, ok := d.resident["j1"]; return ok }()},
 		{"removing", func() bool { _, ok := d.removing["j1"]; return ok }()},
 		{"occupiers", func() bool { _, ok := d.occupiers["j1"]; return ok }()},
@@ -167,7 +170,7 @@ func TestDeregister_IsTotal(t *testing.T) {
 // that let newManifest and UnmarshalJSON diverge over totalBytes.
 func TestBeginRemovalLocked_IsTheSoleConstructor(t *testing.T) {
 	d := newTestDispatcher(t)
-	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 

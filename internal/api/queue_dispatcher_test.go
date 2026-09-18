@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,20 +41,103 @@ func (s *apiStubStore) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 func (s *apiStubStore) Save(ctx context.Context, p dispatch.Persisted) error   { return nil }
 func (s *apiStubStore) Delete(ctx context.Context, id string) error            { return nil }
 
-type apiStubRunner struct{}
+// apiStubRunner's worker does no work and yields on the two signals a real
+// one honours: its job's pause intent, polled as a downloader would at an
+// article boundary, and its context ending. Without the yield, the per-job
+// pause test would depend on the job never having been launched.
+type apiStubRunner struct {
+	disp *dispatch.Dispatcher
 
-func (r *apiStubRunner) Run(ctx context.Context, id string, state job.State) {}
+	mu      sync.Mutex
+	started map[string]bool
+}
+
+// waitStarted returns once the dispatcher has launched a worker for id, waking
+// the tick until it does: the ticker here is an hour, so a launch otherwise
+// depends on how Add's kicks happened to collapse. The pause tests need it,
+// because a pause arriving between the lease grant and the launch strands the
+// lease with no worker to yield it.
+func (r *apiStubRunner) waitStarted(t *testing.T, id string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		r.mu.Lock()
+		ok := r.started[id]
+		r.mu.Unlock()
+		if ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no worker was launched for %s", id)
+		}
+		r.disp.Wake()
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// waitPaused returns once id renders as Paused. A launched job pauses only
+// when its worker yields, so a status read straight after the request would
+// race the worker.
+func waitPaused(t *testing.T, d *dispatch.Dispatcher, id string) {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		row, ok := d.Row(id)
+		if ok && row.Status() == constants.StatusPaused {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s status = %v; want Paused", id, row.Status())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func (r *apiStubRunner) Run(ctx context.Context, id string, _ job.State) {
+	r.mu.Lock()
+	if r.started == nil {
+		r.started = map[string]bool{}
+	}
+	r.started[id] = true
+	r.mu.Unlock()
+	go func() {
+		t := time.NewTicker(10 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				_ = r.disp.Yielded(id)
+				return
+			case <-t.C:
+			}
+			row, ok := r.disp.Row(id)
+			if !ok {
+				return
+			}
+			if row.View.Intent == job.IntentPause {
+				_ = r.disp.Yielded(id)
+				return
+			}
+		}
+	}()
+}
 
 func newTestAPIDispatcher(t *testing.T) *dispatch.Dispatcher {
 	t.Helper()
+	d, _ := newTestAPIDispatcherAndRunner(t)
+	return d
+}
+
+func newTestAPIDispatcherAndRunner(t *testing.T) (*dispatch.Dispatcher, *apiStubRunner) {
+	t.Helper()
 	workers := &apiStubWorkers{}
-	d := dispatch.New(2, 2, time.Hour, time.Now, workers, &apiStubResidency{}, &apiStubStore{}, &apiStubRunner{})
+	runner := &apiStubRunner{}
+	d := dispatch.New(2, 2, time.Hour, time.Now, workers, &apiStubResidency{}, &apiStubStore{}, runner)
 	workers.disp = d
+	runner.disp = d
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("dispatcher.Start: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Stop() })
-	return d
+	return d, runner
 }
 
 func testDispatcherServer(t *testing.T, d *dispatch.Dispatcher, cats ...config.CategoryConfig) *Server {
@@ -90,7 +174,7 @@ func TestQueueList_Dispatcher(t *testing.T) {
 		Priority: 0,
 		Bytes:    1000,
 	}
-	if err := d.Add(j1, h1); err != nil {
+	if err := d.Add(context.Background(), j1, h1); err != nil {
 		t.Fatalf("Add(j1): %v", err)
 	}
 
@@ -102,7 +186,7 @@ func TestQueueList_Dispatcher(t *testing.T) {
 		Priority: 1,
 		Bytes:    2000,
 	}
-	if err := d.Add(j2, h2); err != nil {
+	if err := d.Add(context.Background(), j2, h2); err != nil {
 		t.Fatalf("Add(j2): %v", err)
 	}
 
@@ -146,30 +230,28 @@ func TestQueueList_Dispatcher(t *testing.T) {
 
 func TestQueuePauseAndResume_Dispatcher(t *testing.T) {
 	t.Parallel()
-	d := newTestAPIDispatcher(t)
+	d, runner := newTestAPIDispatcherAndRunner(t)
 	s := testDispatcherServer(t, d)
 
 	j1 := job.New("j1", "Ubuntu 22.04", job.Policy{})
-	if err := d.Add(j1, dispatch.Header{Name: "Ubuntu 22.04", Bytes: 1000}); err != nil {
+	if err := d.Add(context.Background(), j1, dispatch.Header{Name: "Ubuntu 22.04", Bytes: 1000}); err != nil {
 		t.Fatalf("Add(j1): %v", err)
 	}
+	runner.waitStarted(t, "j1")
 
 	// 1. Pause job j1
 	w := apiGet(t, s.Handler(), "/api?mode=queue&name=pause&value=j1&apikey="+testAPIKey)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", w.Code)
 	}
-	row, ok := d.Row("j1")
-	if !ok || row.Status() != constants.StatusPaused {
-		t.Errorf("j1 status = %v; want Paused", row.Status())
-	}
+	waitPaused(t, d, "j1")
 
 	// 2. Resume job j1
 	w = apiGet(t, s.Handler(), "/api?mode=queue&name=resume&value=j1&apikey="+testAPIKey)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", w.Code)
 	}
-	row, ok = d.Row("j1")
+	row, ok := d.Row("j1")
 	if !ok || row.Status() == constants.StatusPaused {
 		t.Errorf("j1 status after resume = %v; want not paused", row.Status())
 	}
@@ -217,7 +299,7 @@ func TestQueueMutators_Dispatcher(t *testing.T) {
 	s := testDispatcherServer(t, d)
 
 	j1 := job.New("j1", "Test Job", job.Policy{})
-	if err := d.Add(j1, dispatch.Header{Name: "Test Job", Bytes: 1000}); err != nil {
+	if err := d.Add(context.Background(), j1, dispatch.Header{Name: "Test Job", Bytes: 1000}); err != nil {
 		t.Fatalf("Add(j1): %v", err)
 	}
 
@@ -280,8 +362,8 @@ func TestQueueDelete_Dispatcher(t *testing.T) {
 
 	j1 := job.New("j1", "Job 1", job.Policy{})
 	j2 := job.New("j2", "Job 2", job.Policy{})
-	_ = d.Add(j1, dispatch.Header{Name: "Job 1"})
-	_ = d.Add(j2, dispatch.Header{Name: "Job 2"})
+	_ = d.Add(context.Background(), j1, dispatch.Header{Name: "Job 1"})
+	_ = d.Add(context.Background(), j2, dispatch.Header{Name: "Job 2"})
 
 	// Delete j1
 	w := apiGet(t, s.Handler(), "/api?mode=queue&name=delete&value=j1&apikey="+testAPIKey)
@@ -308,7 +390,7 @@ func TestStatus_Dispatcher(t *testing.T) {
 	s := testDispatcherServer(t, d)
 
 	j1 := job.New("j1", "Job 1", job.Policy{})
-	_ = d.Add(j1, dispatch.Header{Name: "Job 1"})
+	_ = d.Add(context.Background(), j1, dispatch.Header{Name: "Job 1"})
 
 	w := apiGet(t, s.Handler(), "/api?mode=fullstatus&output=json&apikey="+testAPIKey)
 	if w.Code != http.StatusOK {

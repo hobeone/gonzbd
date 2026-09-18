@@ -4,6 +4,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -549,7 +550,7 @@ func addJobToQueue(t *testing.T, srv *api.Server, rawNZB []byte, name string) st
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := srv.Dispatcher().Add(j, hdr); err != nil {
+	if err := srv.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 	srv.Dispatcher().Tick(t.Context())

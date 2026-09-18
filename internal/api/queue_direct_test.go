@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
@@ -61,7 +62,7 @@ func TestFirstIncompleteFile(t *testing.T) {
 		m := makeJobManifest(t, []string{"f1.rar"}, []int64{1024}, [][]int64{{1024}}, [][]string{{"test-article-id-001@example.com"}})
 		j := job.New("j1", "job.nzb", job.Policy{})
 		_ = j.AttachContent(m)
-		_ = disp.Add(j, dispatch.Header{Name: "job.nzb", Bytes: 1024})
+		_ = disp.Add(context.Background(), j, dispatch.Header{Name: "job.nzb", Bytes: 1024})
 		_ = j.MarkFileComplete(0)
 		if got := firstIncompleteFile(j); got != "" {
 			t.Errorf("firstIncompleteFile = %q; want empty when every file is complete", got)
@@ -74,7 +75,7 @@ func TestFirstIncompleteFile(t *testing.T) {
 		m := makeJobManifest(t, []string{"file0.rar", "file1.rar"}, []int64{500, 500}, [][]int64{{500}, {500}}, [][]string{{"a0@t"}, {"a1@t"}})
 		j := job.New("j2", "f.nzb", job.Policy{})
 		_ = j.AttachContent(m)
-		_ = disp.Add(j, dispatch.Header{Name: "f.nzb", Bytes: 1000})
+		_ = disp.Add(context.Background(), j, dispatch.Header{Name: "f.nzb", Bytes: 1000})
 		_ = j.MarkFileComplete(0)
 		if got := firstIncompleteFile(j); got != "file1.rar" {
 			t.Errorf("firstIncompleteFile = %q; want file1.rar", got)
@@ -104,7 +105,7 @@ func TestBuildQueueFiles(t *testing.T) {
 			[][]string{{"s1@t", "s2@t", "s3@t", "s4@t"}})
 		j := job.New("j_large", "large.nzb", job.Policy{})
 		_ = j.AttachContent(m)
-		_ = disp.Add(j, dispatch.Header{Name: "large.nzb", Bytes: 4 * segSize})
+		_ = disp.Add(context.Background(), j, dispatch.Header{Name: "large.nzb", Bytes: 4 * segSize})
 		ackDone(t, disp, "j_large", "s1@t", "s2@t")
 
 		files := buildQueueFiles(j)
@@ -297,6 +298,7 @@ func TestQueueSetPaused_Direct(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
 		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
+		q.runner.waitStarted(t, job.ID)
 
 		// A nonexistent ID is included alongside a real one to exercise the
 		// silently-ignored not-found branch without failing the request.
@@ -307,13 +309,7 @@ func TestQueueSetPaused_Direct(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 		}
-		updated := q.SnapshotJob(job.ID)
-		if updated == nil {
-			t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
-		}
-		if updated.Status != constants.StatusPaused {
-			t.Errorf("Status = %q; want %q", updated.Status, constants.StatusPaused)
-		}
+		waitPaused(t, q.disp, job.ID)
 	})
 
 	t.Run("missing value parameter is a 400", func(t *testing.T) {
@@ -333,6 +329,7 @@ func TestQueuePauseJobs_Direct(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
 	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
+	q.runner.waitStarted(t, job.ID)
 
 	// A nonexistent ID is included alongside a real one, mirroring
 	// queueSetPaused's lenient bulk semantics (not-found IDs are silently
@@ -344,13 +341,7 @@ func TestQueuePauseJobs_Direct(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 	}
-	updated := q.SnapshotJob(job.ID)
-	if updated == nil {
-		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
-	}
-	if updated.Status != constants.StatusPaused {
-		t.Errorf("Status = %q; want %q", updated.Status, constants.StatusPaused)
-	}
+	waitPaused(t, q.disp, job.ID)
 }
 
 func TestQueueResumeJobs_Direct(t *testing.T) {

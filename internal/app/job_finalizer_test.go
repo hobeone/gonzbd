@@ -49,7 +49,7 @@ func TestFinalizer_PersistError_ReleasesDispatcherResources(t *testing.T) {
 		}},
 	}
 	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "finalizer-test"})
-	if err := application.Dispatcher().Add(qJob, qHdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), qJob, qHdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -143,7 +143,7 @@ func TestFinalizer_ShutdownContext_PersistSucceeds(t *testing.T) {
 		}},
 	}
 	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "shutdown-drain-test"})
-	if err := application.Dispatcher().Add(qJob, qHdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), qJob, qHdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -205,7 +205,7 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 		}},
 	}
 	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "cleanup-on-error-test"})
-	if err := application.Dispatcher().Add(qJob, qHdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), qJob, qHdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -319,7 +319,7 @@ func TestFinalizer_PostProcessorTimeout_OccupiedJobSkipsEviction(t *testing.T) {
 		}},
 	}
 	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "occupy-inflight-test"})
-	if err := application.Dispatcher().Add(qJob, qHdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), qJob, qHdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -444,7 +444,7 @@ func TestFinalizer_FailedJob_NonResidentManifest_WritesHistoryJobFiles(t *testin
 		t.Fatalf("WriteGzAtomicBytes manifest: %v", err)
 	}
 
-	if err := application.Dispatcher().Add(qJob, qHdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), qJob, qHdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 

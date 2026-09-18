@@ -61,7 +61,7 @@ func TestFinalize_RemovesJobFromQueueWhenHistoryWriteFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.Dispatcher().Add(job, hdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), job, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestFinalize_PreservesDurabilityWhenConflictingEntryIsFailed(t *testing.T) 
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.Dispatcher().Add(job, hdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), job, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -286,7 +286,7 @@ func TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError(t *testing.T)
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.Dispatcher().Add(job, hdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), job, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 

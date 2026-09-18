@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,6 +49,7 @@ type testEnv struct {
 	Server     *httptest.Server
 	BaseURL    string
 	Dispatcher *dispatch.Dispatcher
+	Runner     *uiStubRunner
 	APISrv     *api.Server
 	HistDB     *history.DB
 	HistR      *history.Repository
@@ -76,20 +78,82 @@ func (uiStubStore) Load(context.Context) ([]dispatch.Persisted, error) { return 
 func (uiStubStore) Save(context.Context, dispatch.Persisted) error     { return nil }
 func (uiStubStore) Delete(context.Context, string) error               { return nil }
 
-type uiStubRunner struct{}
+// uiStubRunner stands in for a worker that downloads nothing but, like a real
+// one, yields when its job is paused (a real worker checks at each article
+// boundary) or when its context ends. A worker that never yielded would leave
+// a launched job running forever, so a per-job pause could never take effect.
+type uiStubRunner struct {
+	disp *dispatch.Dispatcher
 
-func (uiStubRunner) Run(context.Context, string, job.State) {}
+	mu      sync.Mutex
+	started map[string]bool
+}
 
-func newTestDispatcher(t *testing.T) *dispatch.Dispatcher {
+// waitStarted blocks until a worker has been launched for id, waking the tick
+// while it waits, since with an hour-long ticker a launch otherwise depends on
+// whether Add's two kicks collapsed into one tick. A test that pauses a job
+// first waits here: a pause landing after the dispatcher grants the lease but
+// before it launches the worker leaves the lease held with no worker to yield
+// it.
+func (r *uiStubRunner) waitStarted(t *testing.T, id string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r.mu.Lock()
+		ok := r.started[id]
+		r.mu.Unlock()
+		if ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no worker was launched for %s", id)
+		}
+		r.disp.Wake()
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func (r *uiStubRunner) Run(ctx context.Context, id string, _ job.State) {
+	r.mu.Lock()
+	if r.started == nil {
+		r.started = map[string]bool{}
+	}
+	r.started[id] = true
+	r.mu.Unlock()
+	go func() {
+		t := time.NewTicker(10 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				_ = r.disp.Yielded(id)
+				return
+			case <-t.C:
+			}
+			row, ok := r.disp.Row(id)
+			if !ok {
+				return
+			}
+			if row.View.Intent == job.IntentPause {
+				_ = r.disp.Yielded(id)
+				return
+			}
+		}
+	}()
+}
+
+func newTestDispatcher(t *testing.T) (*dispatch.Dispatcher, *uiStubRunner) {
 	t.Helper()
 	workers := &uiStubWorkers{}
-	d := dispatch.New(10, 10, time.Hour, time.Now, workers, uiStubResidency{}, uiStubStore{}, uiStubRunner{})
+	runner := &uiStubRunner{}
+	d := dispatch.New(10, 10, time.Hour, time.Now, workers, uiStubResidency{}, uiStubStore{}, runner)
 	workers.disp = d
+	runner.disp = d
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("dispatcher.Start: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Stop() })
-	return d
+	return d, runner
 }
 
 // newTestEnv starts a test HTTP server serving both API and SPA, plus a
@@ -102,7 +166,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatal("ui/dist/index.html not found — run 'cd ui && bun run build' first")
 	}
 
-	d := newTestDispatcher(t)
+	d, runner := newTestDispatcher(t)
 	ma := apitest.NopApp{Dispatcher: d}
 
 	// In-memory history database.
@@ -167,6 +231,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Server:     ts,
 		BaseURL:    ts.URL,
 		Dispatcher: d,
+		Runner:     runner,
 		APISrv:     apiSrv,
 		HistDB:     histDB,
 		HistR:      histR,
@@ -244,7 +309,7 @@ func (e *testEnv) seedQueue(t *testing.T, n int) {
 		if err != nil {
 			t.Fatalf("BuildIngestJob: %v", err)
 		}
-		if err := e.Dispatcher.Add(j, hdr); err != nil {
+		if err := e.Dispatcher.Add(context.Background(), j, hdr); err != nil {
 			t.Fatalf("Dispatcher.Add: %v", err)
 		}
 		ackDone(t, e.Dispatcher, id, fmt.Sprintf("test-job-%04d-a@t", i))

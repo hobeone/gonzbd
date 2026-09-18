@@ -59,7 +59,7 @@ The Dispatcher additionally owns:
 - **The tick loop** (`run`/`tick` in `internal/dispatch/tick.go`).
 - **Worker lifecycle**: `launched`, the `Runner` interface, and the
   `Finished`/`Yielded` exit doors (`internal/dispatch/worker.go`).
-- **Persistence bookkeeping** (`written`, the `Store` interface) and the
+- **Persistence bookkeeping** (`written`, `adding`, the `Store` interface) and the
   removal-in-progress marker (`removing`, `occupiers` et al.) that makes
   teardown safe under concurrent callers.
 
@@ -210,8 +210,8 @@ that shipped kept it as the config-facing name for that knob instead.)
 ## Lock discipline across the dispatch → sched boundary
 
 **The dispatcher never holds its own lock (`d.mu`) across a call into
-`sched`.** `Dispatcher.tick` copies the registry under `d.mu` via
-`snapshotOrder`, releases the lock, and only then calls `sched.Queue.Advance`
+`sched`.** `Dispatcher.tick` copies the registry, less jobs still being added, under `d.mu`
+via `snapshotOrder`, releases the lock, and only then calls `sched.Queue.Advance`
 per job (`internal/dispatch/tick.go`). Every other call into `d.q` —
 `Cancel`, `Retry`, `Pause`, `Resume`, `SetCaps`, `Park` in `Stop`'s sweep,
 `Render`/`RenderAll` in `List`/`Row`/`reconcileResidency`/`launch`, `Settle`
@@ -277,6 +277,30 @@ obligations:
 - **`Save(ctx, Persisted) error`** and **`Delete(ctx, id) error`** — write a
   job's four axes (`State`, `Intent`, plus header/policy/progress fields)
   when they move, and delete a row when the job is removed or evicted.
+
+**A job's first row is written by `Dispatcher.Add`, before it returns.** A
+caller that acknowledges a job — the API's `addfile` 200, a retry that then
+deletes the history entry — does so with the row already durable, because
+`restore` rebuilds the registry from `Load` and nothing else. The tick and
+`Stop` see a job only once `Add` has finished that write: `register` marks the
+job in `adding` in the same `d.mu` span that inserts it, `snapshotOrder` skips
+every job so marked, and `Add` clears the mark when the write returns. A job
+whose first write is in flight is therefore never advanced, hydrated, launched
+or persisted by either, and a failed first write holds no lease, residency or
+worker; `Add` removes its registry entry through the removal protocol before
+returning the error.
+
+The gate is `adding`, not the absence of a `written` entry. A removal that
+overlaps the write stops `markWritten` recording it, and if that removal then
+aborts — `Remove` does when its delete fails — a job hidden until `written`
+appeared would stay registered and unreachable for the life of the process.
+`TestAdd_AbortedRemovalDuringTheWriteLeavesTheJobVisible` pins it. All four `persistIfChanged`
+callers — `Add`, the tick's two, and `Stop` — take `storeMu` across `Save`,
+so a tick queues behind an `Add` whose write is contended.
+
+`restore` skips a stored row identical to the one this process already wrote
+for a registered job — an `Add` before `Start`. Registering it again would
+fail `Start` on the duplicate; a stored row that differs is still refused.
 
 `internal/dispatch/store` implements this against SQLite; `internal/dispatch`
 itself stays free of a SQL driver. `Persisted` deliberately omits a

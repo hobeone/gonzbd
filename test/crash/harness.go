@@ -927,7 +927,7 @@ func (h *harness) JobFiles(db *sql.DB, jobID string) []jobFile {
 	//
 	// The ordering clause is NOT exercised today, and is here as a precondition
 	// rather than a fix: every crash fixture submits a single file
-	// (`git grep -nE '\[\]fileSpec\{' -- test/crash` returns 3 lines, the two
+	// (`git grep -nE '\[\]fileSpec\{' -- test/crash` returns 4 lines, the three
 	// per-suite options and the default in newHarness, each a one-element
 	// literal), so no gap is constructible and FileRanges' base is always 0. It
 	// earns its place the day a multi-file fixture appears, which is the same

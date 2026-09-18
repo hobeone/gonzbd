@@ -21,7 +21,7 @@ func TestCancelledWorker_SettlesRatherThanReAbortingForever(t *testing.T) {
 	w := &stubWorkers{}
 	d := newTestDispatcher(t, withWorkers(w))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.tick(context.Background())
@@ -54,7 +54,7 @@ func TestCancelledWorker_SettlesRatherThanReAbortingForever(t *testing.T) {
 func TestYielded_UnderPauseReturnsTheLease(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.tick(context.Background())
@@ -78,7 +78,7 @@ func TestYielded_UnderPauseReturnsTheLease(t *testing.T) {
 func TestFinished_SucceedsForARunningJob(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.tick(context.Background())
@@ -101,7 +101,7 @@ func TestFinished_SucceedsForARunningJob(t *testing.T) {
 func TestFinished_PropagatesASettleError(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	// No tick: the job never opened an attempt.
@@ -114,7 +114,7 @@ func TestFinished_PropagatesASettleError(t *testing.T) {
 func TestFinished_RefusesCancelledAsAnOutcome(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.tick(context.Background())
@@ -131,7 +131,7 @@ func TestFinished_RefusesCancelledAsAnOutcome(t *testing.T) {
 func TestClaimLaunched_ClaimsOnce(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if !d.claimLaunched("j1") {
@@ -153,7 +153,7 @@ func TestLaunch_DirectCallStartsWhenRunningAndClaimable(t *testing.T) {
 	runner := &fakeRunner{}
 	d := newTestDispatcher(t, withRunner(runner))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.tick(context.Background())
@@ -183,7 +183,7 @@ func TestLaunch_DirectCallSkipsWhenNotRunning(t *testing.T) {
 	runner := &fakeRunner{}
 	d := newTestDispatcher(t, withRunner(runner))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -199,7 +199,7 @@ func TestLaunch_SkippedWhenIntentTurnedToCancelDuringHydration(t *testing.T) {
 	res := &fakeResidency{}
 	d := newTestDispatcher(t, withResidency(res), withRunner(runner))
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	// Cancel lands while the manifest read is in flight.
@@ -325,7 +325,7 @@ func TestWorkerExits_RejectAnUnknownID(t *testing.T) {
 func TestClaimLaunched_GuardsAgainstRemovingAndEvictedJobs(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -380,7 +380,7 @@ func TestClaimLaunched_GuardsAgainstRemovingAndEvictedJobs(t *testing.T) {
 func TestRemove_RefcountsConcurrentRemovals(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -445,7 +445,7 @@ func TestRemove_RefcountsConcurrentRemovals(t *testing.T) {
 func TestWaitLaunched_PrefersClosedChannelOverCancelledContext(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -481,7 +481,7 @@ func TestWaitLaunched_PrefersClosedChannelOverCancelledContext(t *testing.T) {
 func TestYieldedFor_JobMismatch_NoOpsAndPreservesNewAttempt(t *testing.T) {
 	d := newTestDispatcher(t)
 	j1 := job.New("j1", "first", job.Policy{})
-	if err := d.Add(j1, Header{}); err != nil {
+	if err := d.Add(context.Background(), j1, Header{}); err != nil {
 		t.Fatalf("Add(j1): %v", err)
 	}
 
@@ -499,7 +499,7 @@ func TestYieldedFor_JobMismatch_NoOpsAndPreservesNewAttempt(t *testing.T) {
 
 	// New attempt under the same ID is registered
 	j2 := job.New("j1", "second", job.Policy{})
-	if err := d.Add(j2, Header{}); err != nil {
+	if err := d.Add(context.Background(), j2, Header{}); err != nil {
 		t.Fatalf("Add(j2): %v", err)
 	}
 
@@ -532,7 +532,7 @@ func TestYieldedJob(t *testing.T) {
 	}
 
 	j := job.New("j1", "test", job.Policy{})
-	if err := d.Add(j, Header{}); err != nil {
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add(j): %v", err)
 	}
 	if !d.claimLaunched("j1") {

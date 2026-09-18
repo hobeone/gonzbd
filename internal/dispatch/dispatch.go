@@ -28,7 +28,7 @@ type Dispatcher struct {
 	byID  map[string]*entry
 	order []string
 
-	// resident, launched, written, removing, occupiers, occupancyTokens,
+	// resident, launched, written, adding, removing, occupiers, occupancyTokens,
 	// occupyDrained and occupyStep are the dispatcher's own per-job bookkeeping,
 	// all guarded by mu. None may be held across a call into sched or into
 	// Residency.Hydrate — take mu, read or write one map, release.
@@ -43,11 +43,12 @@ type Dispatcher struct {
 	// is never launchable).
 	//
 	// The teardowns, enumerated from source rather than remembered —
-	// `git grep -n 'delete(d\.\|delete(r\.d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 15 lines:
+	// `git grep -n 'delete(d\.\|delete(r\.d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 17 lines:
 	//
-	//   - deregister (registry.go), eight lines: byID, written, resident,
+	//   - deregister (registry.go), nine lines: byID, written, adding, resident,
 	//     removing, occupiers, occupancyTokens, occupyDrained, occupyStep. launched is cleared via clearLaunched. d.order is pruned by
 	//     the loop below those rather than by a delete, so it does not appear.
+	//   - Add (registry.go), one line: adding, once its write has returned.
 	//   - removal.abort (registry.go), one line: removing, when a teardown
 	//     releases its marker instead of finishing. This was five lines until
 	//     #513 gave Remove a single deferred rollback — and it is why the
@@ -63,9 +64,15 @@ type Dispatcher struct {
 	// accessors; it deliberately leaves byID, order and written intact,
 	// because a Stopped Dispatcher is still inspectable and its jobs still
 	// exist. deregister is the only site that must be total.
-	resident        map[string]bool
-	launched        map[string]chan struct{}
-	written         map[string]Persisted
+	resident map[string]bool
+	launched map[string]chan struct{}
+	written  map[string]Persisted
+	// adding holds the jobs whose Add has not yet returned from writing their
+	// first row. snapshotOrder skips them, so the tick and Stop never act on a
+	// job whose write is in flight. It is not derived from written: a write
+	// under a concurrent removal marker leaves no written entry, and a job
+	// hidden until one appeared would be stranded if that removal aborted.
+	adding          map[string]struct{}
 	removing        map[string]int
 	occupiers       map[string]int
 	occupancyTokens map[string]map[any]struct{}
@@ -273,6 +280,7 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 		resident:        map[string]bool{},
 		launched:        map[string]chan struct{}{},
 		written:         map[string]Persisted{},
+		adding:          map[string]struct{}{},
 		removing:        make(map[string]int),
 		occupiers:       make(map[string]int),
 		occupancyTokens: make(map[string]map[any]struct{}),
@@ -612,7 +620,8 @@ func (d *Dispatcher) Stop() error {
 	return d.stopErr
 }
 
-// restore registers everything the store holds, before the first tick.
+// restore registers everything the store holds, before the first tick,
+// except a row an Add before Start already registered (see the loop).
 //
 // It runs synchronously inside Start, before the ticker goroutine launches —
 // `go d.run(ctx)` is Start's next line once this call succeeds — so it needs
@@ -699,6 +708,13 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 		}
 	}()
 	for _, p := range rows {
+		// An Add before Start registered this job and wrote this exact row, so
+		// the registry already holds it; registering it again would refuse the
+		// duplicate and fail Start. A row that differs from what this process
+		// wrote is not skipped, and register still refuses it.
+		if w, ok := d.lastWritten(p.ID); ok && w == p {
+			continue
+		}
 		j, err := reconstruct(p.ID, p.Header.Name, p.Policy, p.State, p.Intent, now)
 		if err != nil {
 			return fmt.Errorf("dispatch: restore: job %s at %+v: %w", p.ID, p.State, err)

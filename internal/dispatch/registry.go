@@ -123,12 +123,21 @@ type entry struct {
 	seq int64
 }
 
-// Add registers a job at the end of the queue and wakes the tick.
+// Add registers a job at the end of the queue, writes its queue row, and wakes
+// the tick. The row is written before Add returns, because restore rebuilds
+// the registry from Store.Load and nothing else: a job acknowledged before its
+// row existed would not survive a crash.
+//
+// The tick does not see the job until that write lands (snapshotOrder), so a
+// failed write leaves nothing but the registry entry, which Add removes before
+// returning the error. ctx bounds the write. A caller answering a request
+// should detach it from the request, so that a client disconnect cannot fail
+// an add the caller has otherwise completed.
 //
 // A duplicate ID is an error rather than an overwrite: the registry is the only
 // route by which a job's resources are returned, so replacing an entry would
 // strand whatever the displaced job held, with nothing left to release it.
-func (d *Dispatcher) Add(j *job.Job, h Header) error {
+func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 	// The two refusals live here rather than in register, because register is
 	// also restore's door and restore runs during exactly the window the
 	// second one closes.
@@ -156,7 +165,26 @@ func (d *Dispatcher) Add(j *job.Job, h Header) error {
 	}
 	j.SetAdded(time.Unix(h.Added, 0).UTC())
 
-	return d.register(j, h, seqNext)
+	if err := d.register(j, h, seqNext); err != nil {
+		return err
+	}
+	if err := d.persistIfChanged(ctx, j); err != nil {
+		// The tick has not seen the job (it is still in d.adding), so it holds
+		// no lease, no residency and no worker; only the registry entry needs
+		// undoing, and that goes through the removal gatekeeper like every
+		// other deregistration. deregister prunes d.adding with the rest.
+		if rm, ok := d.beginRemoval(j.ID()); ok {
+			rm.end()
+		}
+		return fmt.Errorf("dispatch: Add: persist %s: %w", j.ID(), err)
+	}
+	d.mu.Lock()
+	delete(d.adding, j.ID())
+	d.mu.Unlock()
+	// register's kick can be spent by a tick that ran during the write and
+	// skipped the job as still being added.
+	d.kick()
+	return nil
 }
 
 // seqNext tells register to allocate the next unused sequence itself. It is a
@@ -188,6 +216,9 @@ const seqNext int64 = -1
 // Advancing d.nextSeq past seq here, rather than at the call sites, is what
 // makes "the next Add sorts after everything restored" true without a separate
 // step anyone could forget.
+//
+// For Add's seqNext it also marks the job as being added, in the same d.mu
+// span as the insert, so no tick can see the job between the two.
 func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 	d.mu.Lock()
 	if _, dup := d.byID[j.ID()]; dup {
@@ -196,6 +227,7 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 	}
 	if seq == seqNext {
 		seq = d.nextSeq
+		d.adding[j.ID()] = struct{}{}
 	}
 	d.byID[j.ID()] = &entry{j: j, h: h, seq: seq}
 	d.order = append(d.order, j.ID())
@@ -244,22 +276,31 @@ func (d *Dispatcher) entryFor(id string) (Header, int64, bool) {
 	return e.h, e.seq, true
 }
 
-// snapshotOrder copies the registry in queue order. The copy exists so the tick
-// can release d.mu before calling into sched: D-B9 forbids holding d.mu across
-// such a call, because Workers.Abort runs inside Queue.mu and an Abort that
-// took d.mu would deadlock ABBA against a concurrent Cancel.
+// snapshotOrder copies, in queue order, the registered jobs that are not still
+// being added. The copy exists so the tick can release d.mu before calling
+// into sched: D-B9 forbids holding d.mu across such a call, because
+// Workers.Abort runs inside Queue.mu and an Abort that took d.mu would deadlock
+// ABBA against a concurrent Cancel.
+//
+// The filter is what makes Add the writer of a job's first row. The tick and
+// Stop are this function's two callers, so a job whose Add is still writing is
+// never advanced, hydrated, launched or persisted by either — and a failed
+// write in Add has no lease, residency or worker to unwind.
 func (d *Dispatcher) snapshotOrder() []*job.Job {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	out := make([]*job.Job, 0, len(d.order))
 	for _, id := range d.order {
+		if _, ok := d.adding[id]; ok {
+			continue
+		}
 		out = append(out, d.byID[id].j)
 	}
 	return out
 }
 
 // deregister deletes a job from EVERY per-job structure — d.byID, d.order,
-// d.written, d.resident, d.launched, d.removing, d.occupiers, d.occupancyTokens,
+// d.written, d.adding, d.resident, d.launched, d.removing, d.occupiers, d.occupancyTokens,
 // d.occupyDrained and d.occupyStep — under one d.mu span. It is the single
 // internal registry eraser. External callers drain launched workers and external
 // occupiers before calling, while the finalizer's own Remove proceeds with its
@@ -421,6 +462,7 @@ func (d *Dispatcher) deregister(id string) {
 	d.mu.Lock()
 	delete(d.byID, id)
 	delete(d.written, id)
+	delete(d.adding, id)
 	delete(d.resident, id)
 	delete(d.removing, id)
 	delete(d.occupiers, id)
