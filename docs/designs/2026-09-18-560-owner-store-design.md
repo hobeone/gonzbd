@@ -14,9 +14,10 @@ its `durable_runs` and nothing else.* Every departure calls `Reclaim` after
 changing the state it depends on; startup calls it for everything. Because the
 rule is re-derived from the database's current truth rather than from a
 decision a call site remembered, a crash or a missed call can delay a reclaim
-but can never make one wrong. Two prerequisites make the rule's inputs exact:
-the dispatcher writes a job's queue row **before `Add` returns**, and
-`history_job_files` becomes a cascading child of its history entry.
+but can never make one wrong. One prerequisite makes the rule's inputs exact:
+the dispatcher writes a job's queue row **before `Add` returns**.
+`history_job_files` stays with `internal/history`, written and deleted in the
+same transactions as its entry. No lifecycle is enforced by the schema.
 
 ## 2. Evidence base
 
@@ -297,16 +298,19 @@ reclaim.
 
 ### 3.6 `history_job_files` — the entry's child
 
-- `REFERENCES history(nzo_id) ON DELETE CASCADE` — the "smaller item" #560
-  already rates viable today: `nzo_id` is `TEXT UNIQUE`, and these rows exist
-  only for entries already in history.
+- **No foreign key.** Ruled out on 2026-09-18 along with every other
+  schema-enforced lifecycle: a cascade splits the lifecycle between the Go code
+  and the schema, so no one place states it. `internal/history` owns both the
+  entry and its retained file progress, so it deletes them together — as
+  `history.Repository.delete` already does, in the same transaction as the
+  history row (`internal/history/repository.go:363`).
 - Written inside `history.Add`'s transaction (the entry carries its file
   progress) instead of as separate `_, _ =` statements after it
   (`job_finalizer.go`, discarded errors today). An entry and its retained
   progress then land or fail together.
-- `history.Repository.delete` loses every per-job clause: no
-  `history_job_files` delete (cascade), no `durable_runs`/`failed_articles`
-  delete (`Reclaim`), no `dropDurability` flag, no `DeleteKeepingDurability`.
+- `history.Repository.delete` keeps its `history_job_files` delete and loses
+  every durability clause: no `durable_runs`/`failed_articles` delete
+  (`Reclaim`), no `dropDurability` flag, no `DeleteKeepingDurability`.
   `internal/history` stops knowing the durability tables exist.
 
 ### 3.7 What is deleted
@@ -326,7 +330,7 @@ statements.
 |---|---|
 | 1. Crash window | **Narrowed and made safe, not closed.** No crash can cause a wrong deletion (the rule is re-derived). A crash between a state change and its reclaim leaves rows until the next start. P1 separately closes the two windows that lost *jobs* (E2, E5). An FK cascade would close the row window at the database; this design does not, and trades that for having no ordering constraints at the call sites. |
 | 2. §6 | **Strengthened**: compiler-enforced at package granularity (`commit` unexported). |
-| 3. Rule 2 | Three tables: writers and readers in one package; one lifecycle deleter (`Reclaim`); content invalidation (`commit`'s merge, `Resumer`, `DiscardRuns`) in-package. `history_job_files`: one writer (`history.Add`), deleted by cascade. Raw SQL statement sites on these tables outside `internal/durability` (production, excluding `test/`): 10 → 0 — nine in `internal/app` (E11) plus `repository.go:400`. |
+| 3. Rule 2 | Three tables: writers and readers in one package; one lifecycle deleter (`Reclaim`); content invalidation (`commit`'s merge, `Resumer`, `DiscardRuns`) in-package. `history_job_files`: one writer (`history.Add`), one deleter (`history.Repository.delete`, in the entry's transaction). Raw SQL statement sites on these tables outside `internal/durability` (production, excluding `test/`): 10 → 0 — nine in `internal/app` (E11) plus `repository.go:400`. |
 | 4. #561 | **Fixed** by 3.5; residual below. |
 | 5. Contortions | (a) The guard uses `job_files` presence as the liveness marker — correct, but implicit; an explicit marker would be a table added only for this. (b) The rule reads two tables another package owns (`dispatch_jobs`, `history.status`): reading is permitted by Rule 2, but it couples the rule to their schema. (c) Manifest unlink is outside the transaction (a file); idempotent and caught at startup. None exists solely to satisfy another criterion except arguably (a). |
 | 6. Runtime | `Add`: one synchronous row write the tick would have done milliseconds later. Departure: one transaction, three indexed anti-join deletes. `SaveBatch`: one indexed probe per job with failed articles. Startup: three anti-join deletes plus a manifest-directory scan. |
@@ -366,8 +370,10 @@ statements.
 
 ## 6. What this design does not do
 
-- It does not make the database enforce the lifecycle. That is the other
-  candidate's strongest point, and the honest comparison is E-for-E: FKs close
+- It does not make the database enforce the lifecycle — **decided on
+  2026-09-18**: foreign keys are ruled out because they split the lifecycle
+  logic between Go and the schema. For the record, the comparison that stood
+  against them E-for-E: FKs close
   the row window but need P1 anyway (the spike's single root cause was E1), a
   reparenting copy for `durable_runs` (two copies: out at failure, back at
   retry), and a copy-before-cascade ordering at every site that removes a queue
@@ -397,10 +403,10 @@ Each step builds, passes the gates, and is independently revertable.
 4. **`fix(checkpoint,durability): stop a late flush resurrecting a removed job's rows`**
    — the 3.5 guard, and `Prune` waiting for an in-flight flush that holds the
    job, with `Prune`'s doc changed to match. Closes #561.
-5. **`refactor(history): make retained file progress a child of its entry`**
-   — FK + write in `history.Add`'s transaction; `history` sheds all
-   durability clauses. Pre-v1.0, so `001_initial.sql` and `schema.golden` are
-   edited directly (Rule 1).
+5. **`refactor(history): write retained file progress in its entry's transaction`**
+   — `history.Add` writes `history_job_files` in its own transaction;
+   `history.Repository.delete` keeps deleting them with the entry and sheds all
+   durability clauses. No schema change.
 
 ## 8. Test plan and red checks
 
@@ -444,8 +450,8 @@ Mutations (`scripts/mutate` spec), each must be KILLED:
   `ErrNotFound` → survives.
 - `MarkCompleted` on a failed entry → `durable_runs` gone.
 - Finalize FAILED → only `durable_runs` remain; finalize done → nothing.
-- History delete of a failed entry → `durable_runs` gone,
-  `history_job_files` gone by cascade.
+- History delete of a failed entry → `durable_runs` gone (via `Reclaim`),
+  `history_job_files` gone in the entry's own transaction.
 
 ### 8.4 #561
 Deterministic interleaving through a store wrapper (the `dispatch.Store`
@@ -464,8 +470,9 @@ exported method that writes `durable_runs` content.
 
 ## 9. Questions for the critique
 
-1. Is re-deriving the rule on every departure, instead of cascading, the
-   simpler system — or only the smaller diff?
+1. ~~Is re-deriving the rule on every departure, instead of cascading, the
+   simpler system — or only the smaller diff?~~ Settled 2026-09-18: no
+   cascades (3.6, section 6).
 2. Is `job_files` presence an acceptable liveness marker, or is the implicit
    marker a contortion that an explicit one should replace?
 3. Should the store own the manifest file too?
