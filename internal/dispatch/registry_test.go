@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -15,10 +16,10 @@ import (
 func TestAdd_RejectsADuplicateID(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(j, Header{Name: "n"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "n"}); err != nil {
 		t.Fatalf("first Add: %v", err)
 	}
-	if err := d.Add(job.New("j1", "other", job.Policy{}), Header{Name: "other"}); err == nil {
+	if err := d.Add(context.Background(), job.New("j1", "other", job.Policy{}), Header{Name: "other"}); err == nil {
 		t.Fatal("second Add with the same ID returned nil, want an error — the registry is keyed by ID and a silent overwrite would strand the first job's resources")
 	}
 }
@@ -26,7 +27,7 @@ func TestAdd_RejectsADuplicateID(t *testing.T) {
 func TestList_PreservesInsertionOrder(t *testing.T) {
 	d := newTestDispatcher(t)
 	for _, id := range []string{"c", "a", "b"} {
-		if err := d.Add(job.New(id, id, job.Policy{}), Header{Name: id}); err != nil {
+		if err := d.Add(context.Background(), job.New(id, id, job.Policy{}), Header{Name: id}); err != nil {
 			t.Fatalf("Add(%s): %v", id, err)
 		}
 	}
@@ -46,7 +47,7 @@ func TestList_CarriesTheHeaderAndTheView(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "n", job.Policy{})
 	h := Header{Name: "movie", Category: "tv", Priority: 2, Bytes: 4096, Added: 1700000000}
-	if err := d.Add(j, h); err != nil {
+	if err := d.Add(context.Background(), j, h); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	got := d.List()
@@ -68,7 +69,7 @@ func TestList_CarriesTheHeaderAndTheView(t *testing.T) {
 func TestRemove_PreservesOrderOfRemainingEntries(t *testing.T) {
 	d := newTestDispatcher(t)
 	for _, id := range []string{"a", "b", "c", "d"} {
-		if err := d.Add(job.New(id, id, job.Policy{}), Header{Name: id}); err != nil {
+		if err := d.Add(context.Background(), job.New(id, id, job.Policy{}), Header{Name: id}); err != nil {
 			t.Fatalf("Add(%s): %v", id, err)
 		}
 	}
@@ -94,7 +95,7 @@ func TestRemove_PreservesOrderOfRemainingEntries(t *testing.T) {
 // row.
 func TestRemove_PrunesTheWrittenRecord(t *testing.T) {
 	d := newTestDispatcher(t)
-	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.markWritten(Persisted{ID: "j1", Header: Header{Name: "n"}, State: job.StateView{State: job.Fetching}})
@@ -121,7 +122,7 @@ func TestRemove_PrunesTheWrittenRecord(t *testing.T) {
 // storage.
 func TestRemove_PrunesTheResidentAndLaunchedFlags(t *testing.T) {
 	d := newTestDispatcher(t)
-	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	d.markResident("j1")
@@ -142,7 +143,7 @@ func TestRemove_PrunesTheResidentAndLaunchedFlags(t *testing.T) {
 	}
 
 	// Re-add to simulate ID reuse: must be launchable.
-	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
 		t.Fatalf("re-add j1: %v", err)
 	}
 	if !d.claimLaunched("j1") {
@@ -177,7 +178,7 @@ func TestList_EmptyRegistryReturnsEmptyNonNil(t *testing.T) {
 func TestSortKey_ReproducesQueueOrderAcrossRemoval(t *testing.T) {
 	d := newTestDispatcher(t)
 	for _, id := range []string{"a", "b", "c", "d"} {
-		if err := d.Add(job.New(id, id, job.Policy{}), Header{Name: id}); err != nil {
+		if err := d.Add(context.Background(), job.New(id, id, job.Policy{}), Header{Name: id}); err != nil {
 			t.Fatalf("Add(%s): %v", id, err)
 		}
 	}
@@ -224,7 +225,7 @@ func TestRegister_TakesTheSequenceItIsGivenAndAdvancesPast(t *testing.T) {
 	if err := d.register(job.New("b", "b", job.Policy{}), Header{Name: "b"}, 7); err != nil {
 		t.Fatalf("register(7): %v", err)
 	}
-	if err := d.Add(job.New("c", "c", job.Policy{}), Header{Name: "c"}); err != nil {
+	if err := d.Add(context.Background(), job.New("c", "c", job.Policy{}), Header{Name: "c"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if got := d.sortKeyOf("c"); got != 43 {
@@ -252,7 +253,7 @@ func TestAdd_ConcurrentCallsGetDistinctSortKeys(t *testing.T) {
 	for i := range n {
 		wg.Go(func() {
 			id := fmt.Sprintf("j%02d", i)
-			if err := d.Add(job.New(id, id, job.Policy{}), Header{Name: id}); err != nil {
+			if err := d.Add(context.Background(), job.New(id, id, job.Policy{}), Header{Name: id}); err != nil {
 				t.Errorf("Add(%s): %v", id, err)
 			}
 		})
@@ -287,7 +288,7 @@ func TestAdd_RefusedOnAStoppedDispatcher(t *testing.T) {
 	if err := d.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err == nil {
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err == nil {
 		t.Fatal("Add on a stopped dispatcher returned nil; the job would be registered with no loop to run it")
 	}
 	if got := len(d.List()); got != 0 {
@@ -310,7 +311,7 @@ func TestAdd_RefusedWhileRestoring(t *testing.T) {
 
 	var addErr error
 	st.loadHook = func() {
-		addErr = d.Add(job.New("intruder", "n", job.Policy{}), Header{Name: "n"})
+		addErr = d.Add(context.Background(), job.New("intruder", "n", job.Policy{}), Header{Name: "n"})
 	}
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -332,10 +333,10 @@ func TestAdd_RefusedWhileRestoring(t *testing.T) {
 // agrees with List, so the two cannot drift.
 func TestDispatcherRow_ReturnsOneJobWithoutRenderingTheRest(t *testing.T) {
 	d := newTestDispatcher(t)
-	if err := d.Add(job.New("a", "Job A", job.Policy{}), Header{Name: "Job A"}); err != nil {
+	if err := d.Add(context.Background(), job.New("a", "Job A", job.Policy{}), Header{Name: "Job A"}); err != nil {
 		t.Fatalf("Add(a): %v", err)
 	}
-	if err := d.Add(job.New("b", "Job B", job.Policy{}), Header{Name: "Job B"}); err != nil {
+	if err := d.Add(context.Background(), job.New("b", "Job B", job.Policy{}), Header{Name: "Job B"}); err != nil {
 		t.Fatalf("Add(b): %v", err)
 	}
 
@@ -396,7 +397,7 @@ func TestDispatcher_HeaderStringSetters(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newTestDispatcher(t)
 			j := job.New("j1", "Job 1", job.Policy{})
-			if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+			if err := d.Add(context.Background(), j, Header{Name: "Job 1"}); err != nil {
 				t.Fatalf("Add: %v", err)
 			}
 
@@ -424,7 +425,7 @@ func TestDispatcher_HeaderStringSetters(t *testing.T) {
 func TestDispatcher_Mutators(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j, Header{Name: "Job 1", Filename: "file1.nzb"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "Job 1", Filename: "file1.nzb"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -490,7 +491,7 @@ func TestDispatcher_Mutators(t *testing.T) {
 func TestSetPriority_Validation(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "test-job", job.Policy{})
-	if err := d.Add(j, Header{Name: "test-job"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "test-job"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -516,7 +517,7 @@ func TestAdd_NormalizesZeroOrNegativeAdded(t *testing.T) {
 
 	// Zero Added
 	j1 := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j1, Header{Name: "Job 1", Added: 0}); err != nil {
+	if err := d.Add(context.Background(), j1, Header{Name: "Job 1", Added: 0}); err != nil {
 		t.Fatalf("Add(j1): %v", err)
 	}
 	if j1.Added().Unix() < before {
@@ -525,7 +526,7 @@ func TestAdd_NormalizesZeroOrNegativeAdded(t *testing.T) {
 
 	// Negative Added
 	j2 := job.New("j2", "Job 2", job.Policy{})
-	if err := d.Add(j2, Header{Name: "Job 2", Added: -100}); err != nil {
+	if err := d.Add(context.Background(), j2, Header{Name: "Job 2", Added: -100}); err != nil {
 		t.Fatalf("Add(j2): %v", err)
 	}
 	if j2.Added().Unix() < before {

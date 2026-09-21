@@ -675,9 +675,12 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 	})
 
 	now := time.Now()
-	var registered []string
+	// A set, not a slice: the membership test below runs once per stored row
+	// against everything registered so far, which is quadratic in queue size
+	// on a slice. Rollback order does not matter — every entry is deregistered.
+	registered := map[string]struct{}{}
 	defer func() {
-		for _, id := range registered {
+		for id := range registered {
 			// This rollback does not NEED the removal protocol: it runs
 			// inside Start before the tick goroutine launches, so no
 			// occupier, worker or store write can exist for a job it is
@@ -699,6 +702,15 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 		}
 	}()
 	for _, p := range rows {
+		// An Add before Start already registered its job and wrote p into
+		// d.written; skip the row only when it matches what this process
+		// wrote prior to restore, so a different stored row for the same ID
+		// still reaches register and fails loudly.
+		if w, ok := d.lastWritten(p.ID); ok && w == p {
+			if _, mine := registered[p.ID]; !mine {
+				continue
+			}
+		}
 		j, err := reconstruct(p.ID, p.Header.Name, p.Policy, p.State, p.Intent, now)
 		if err != nil {
 			return fmt.Errorf("dispatch: restore: job %s at %+v: %w", p.ID, p.State, err)
@@ -712,10 +724,10 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 		if err := d.register(j, p.Header, p.SortKey); err != nil {
 			return fmt.Errorf("dispatch: restore: register %s: %w", p.ID, err)
 		}
-		registered = append(registered, p.ID)
+		registered[p.ID] = struct{}{}
 		d.markWritten(p)
 	}
-	registered = nil // every row landed; the deferred rollback becomes a no-op
+	clear(registered) // every row landed; the deferred rollback becomes a no-op
 	return nil
 }
 
@@ -915,8 +927,11 @@ func restoreJobMetadata(j *job.Job, p Persisted) {
 	j.SetRecoveryBytes(p.RecoveryBytes)
 }
 
-// lastWritten and markWritten are persistIfChanged's two touches of d.written,
-// each taking d.mu for one map operation and releasing it immediately. D-B9
+// markWritten is the only writer of d.written, and deregister the only
+// deleter; lastWritten and snapshotOrder read it. Nothing else touches the map:
+// `git grep -n 'd\.written\[\|delete(d\.written' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 4 lines.
+//
+// Each takes d.mu for one map operation and releases it immediately. D-B9
 // forbids holding d.mu across the Render/Save calls between them — see
 // persistIfChanged (tick.go).
 func (d *Dispatcher) lastWritten(id string) (Persisted, bool) {
@@ -926,10 +941,20 @@ func (d *Dispatcher) lastWritten(id string) (Persisted, bool) {
 	return p, ok
 }
 
+// markWritten gates on registration alone, NOT on admitsLocked: an outstanding
+// removal must not suppress the record, because persistIfChanged calls this
+// inside the storeMu span that already wrote the row. Refusing here left
+// d.written silent about a row that was on disk, and a removal that then
+// aborted stranded the job — snapshotOrder would never admit it again.
+//
+// The registration check stays, and is the narrower invariant deregister's
+// doc states: d.written must hold no entry for an unregistered id, or a reused
+// job ID's first persistIfChanged compares against the dead job's stale row and
+// wrongly suppresses a Save.
 func (d *Dispatcher) markWritten(p Persisted) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.admitsLocked(p.ID) {
+	if d.byID[p.ID] == nil {
 		return
 	}
 	d.written[p.ID] = p

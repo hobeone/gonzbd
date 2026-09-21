@@ -16,7 +16,7 @@ import (
 func TestDispatcherControlSurface_PerJobDoors(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("a", "Job A", job.PolicyFromPP(3))
-	if err := d.Add(j, Header{Name: "Job A"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "Job A"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -77,11 +77,11 @@ func TestDispatcherRemove_IsIdempotentAndReturnsResources(t *testing.T) {
 		}()
 	}
 	jA := job.New("a", "Job A", job.PolicyFromPP(3))
-	if err := d.Add(jA, Header{Name: "Job A"}); err != nil {
+	if err := d.Add(context.Background(), jA, Header{Name: "Job A"}); err != nil {
 		t.Fatalf("Add(a): %v", err)
 	}
 	jB := job.New("b", "Job B", job.PolicyFromPP(3))
-	if err := d.Add(jB, Header{Name: "Job B"}); err != nil {
+	if err := d.Add(context.Background(), jB, Header{Name: "Job B"}); err != nil {
 		t.Fatalf("Add(b): %v", err)
 	}
 
@@ -117,7 +117,7 @@ func TestDispatcherRemove_IsIdempotentAndReturnsResources(t *testing.T) {
 	stErr := &fakeStore{delErr: errors.New("disk is angry")}
 	dErr := newTestDispatcher(t, withStore(stErr))
 	jErr := job.New("e", "Job E", job.PolicyFromPP(3))
-	if err := dErr.Add(jErr, Header{Name: "Job E"}); err != nil {
+	if err := dErr.Add(context.Background(), jErr, Header{Name: "Job E"}); err != nil {
 		t.Fatalf("Add(e): %v", err)
 	}
 	if err := dErr.Remove(context.Background(), "e"); err == nil {
@@ -152,7 +152,7 @@ func TestRemove_WaitsForActiveWorkerBeforeEvicting(t *testing.T) {
 	runner.d = d
 
 	j := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -229,7 +229,7 @@ func TestStop_WaitsForActiveWorkersBeforeEviction(t *testing.T) {
 	runner.d = d
 
 	j := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -291,7 +291,7 @@ func TestStop_WorkerTimeout_SkipsEvictionAndAggregatesErrors(t *testing.T) {
 	d.stopTimeout = 50 * time.Millisecond
 
 	j := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -354,7 +354,7 @@ func TestStart_PropagatesContextCancellation(t *testing.T) {
 	defer d.Stop() //nolint:errcheck
 
 	j := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -444,8 +444,11 @@ func TestStop_PersistTimeoutIsolatedFromStopCtx(t *testing.T) {
 	d.SetStopTimeout(300 * time.Millisecond)
 
 	j := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add: %v", err)
+	}
+	if err := d.PauseJob("j1"); err != nil {
+		t.Fatalf("PauseJob: %v", err)
 	}
 
 	if err := d.Stop(); err != nil {
@@ -471,11 +474,11 @@ func TestStop_PerJobBudgetIsolation_SubsequentJobsNotStarved(t *testing.T) {
 	d := newTestDispatcher(t, withResidency(res), withStore(st))
 
 	j1 := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j1, Header{Name: "Job 1"}); err != nil {
+	if err := d.Add(context.Background(), j1, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add j1: %v", err)
 	}
 	j2 := job.New("j2", "Job 2", job.Policy{})
-	if err := d.Add(j2, Header{Name: "Job 2"}); err != nil {
+	if err := d.Add(context.Background(), j2, Header{Name: "Job 2"}); err != nil {
 		t.Fatalf("Add j2: %v", err)
 	}
 
@@ -540,15 +543,17 @@ func TestStop_PerJobBudgetIsolation_SubsequentJobsNotStarved(t *testing.T) {
 }
 
 func TestStop_PersistErrorAggregatedIntoStopErr(t *testing.T) {
-	st := &fakeStore{
-		saveErr: errors.New("simulated disk full"),
-	}
+	st := &fakeStore{}
 	d := newTestDispatcher(t, withStore(st))
 
 	j := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j, Header{Name: "Job 1"}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
+	if err := d.PauseJob("j1"); err != nil {
+		t.Fatalf("PauseJob: %v", err)
+	}
+	st.saveErr = errors.New("simulated disk full")
 
 	err := d.Stop()
 	if err == nil {
@@ -575,11 +580,11 @@ func TestStop_TailJobPersistedWhenEarlierJobsExhaustStopTimeout(t *testing.T) {
 	d := newTestDispatcher(t, withStore(st))
 
 	j1 := job.New("j1", "Job 1", job.Policy{})
-	if err := d.Add(j1, Header{Name: "Job 1"}); err != nil {
+	if err := d.Add(context.Background(), j1, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add j1: %v", err)
 	}
 	j2 := job.New("j2", "Job 2", job.Policy{})
-	if err := d.Add(j2, Header{Name: "Job 2"}); err != nil {
+	if err := d.Add(context.Background(), j2, Header{Name: "Job 2"}); err != nil {
 		t.Fatalf("Add j2: %v", err)
 	}
 

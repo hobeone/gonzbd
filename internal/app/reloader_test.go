@@ -300,7 +300,7 @@ func TestDetectDuplicateNZB(t *testing.T) {
 
 	t.Run("duplicate via MD5 already in queue, not forced", func(t *testing.T) {
 		existing, hdr := newBareJob(t, a, "existing-not-forced", "dup-md5-queue")
-		if err := a.Dispatcher().Add(existing, hdr); err != nil {
+		if err := a.Dispatcher().Add(context.Background(), existing, hdr); err != nil {
 			t.Fatalf("dispatcher.Add: %v", err)
 		}
 
@@ -315,7 +315,7 @@ func TestDetectDuplicateNZB(t *testing.T) {
 
 	t.Run("duplicate via MD5 already in queue, forced", func(t *testing.T) {
 		existing, hdr := newBareJob(t, a, "existing-forced", "dup-md5-forced")
-		if err := a.Dispatcher().Add(existing, hdr); err != nil {
+		if err := a.Dispatcher().Add(context.Background(), existing, hdr); err != nil {
 			t.Fatalf("dispatcher.Add: %v", err)
 		}
 

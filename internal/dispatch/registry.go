@@ -123,12 +123,13 @@ type entry struct {
 	seq int64
 }
 
-// Add registers a job at the end of the queue and wakes the tick.
+// Add registers a job at the end of the queue, persists its initial queue row
+// synchronously, and wakes the tick.
 //
 // A duplicate ID is an error rather than an overwrite: the registry is the only
 // route by which a job's resources are returned, so replacing an entry would
 // strand whatever the displaced job held, with nothing left to release it.
-func (d *Dispatcher) Add(j *job.Job, h Header) error {
+func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 	// The two refusals live here rather than in register, because register is
 	// also restore's door and restore runs during exactly the window the
 	// second one closes.
@@ -156,8 +157,46 @@ func (d *Dispatcher) Add(j *job.Job, h Header) error {
 	}
 	j.SetAdded(time.Unix(h.Added, 0).UTC())
 
-	return d.register(j, h, seqNext)
+	if err := d.register(j, h, seqNext); err != nil {
+		return err
+	}
+	// The first row, written here rather than by a tick, so that a caller
+	// acknowledging the job has a durable reason to.
+	err := d.persistIfChanged(ctx, j)
+	if err == nil {
+		// A nil is not by itself evidence of a row: persistIfChanged returns
+		// early, without writing, when a removal is outstanding by the time it
+		// takes storeMu. Reporting success there would tell the caller a job
+		// is durable with nothing written, and snapshotOrder gates on
+		// d.written alone, so an aborted removal would leave it registered and
+		// invisible to every later tick.
+		if _, ok := d.lastWritten(j.ID()); !ok {
+			err = errPreemptedByRemoval
+		}
+	}
+	if err != nil {
+		// Nothing but the registry holds this job: the tick has not seen it
+		// (snapshotOrder), so there is no lease, no residency and no worker.
+		// Unwind through the removal gatekeeper, the only path to deregister.
+		if rm, ok := d.beginRemoval(j.ID()); ok {
+			rm.end()
+		}
+		return fmt.Errorf("dispatch: Add: persist %s: %w", j.ID(), err)
+	}
+	d.kick() // register skips its kick for seqNext while j is unwritten; wake the tick now that d.written admits j
+	return nil
 }
+
+// errPreemptedByRemoval reports that an outstanding removal owns this ID.
+//
+// Two sites return it, for the same reason at different moments: register,
+// when a removal's marker already stands as the job asks to be admitted, and
+// Add, when one was raised between registration and the first write and so
+// made persistIfChanged skip the Save. Either way nothing of the job is left
+// registered, and a retry keeps getting this error until the removal that
+// preempted it finishes — its marker is a refcount and outlives the unwind's
+// own deregister.
+var errPreemptedByRemoval = errors.New("a concurrent removal preempted the first write")
 
 // seqNext tells register to allocate the next unused sequence itself. It is a
 // sentinel rather than Add reading d.nextSeq and passing the value, because
@@ -194,7 +233,19 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: register: job %q is already registered", j.ID())
 	}
-	if seq == seqNext {
+	// An ID is free only when BOTH maps say so. deregister is total — it
+	// clears d.byID even when it merely decremented a refcount another
+	// removal still holds — so d.byID alone reports an ID free from the
+	// moment an Add unwinds until the removal that preempted it ends. A job
+	// admitted in that span is reachable by that removal's own Cancel and
+	// end, which would latch IntentCancel onto it and then deregister it.
+	// TestRegister_RefusesWhileARemovalIsOutstanding pins this.
+	if d.removing[j.ID()] > 0 {
+		d.mu.Unlock()
+		return fmt.Errorf("dispatch: register: %s: %w", j.ID(), errPreemptedByRemoval)
+	}
+	added := seq == seqNext
+	if added {
 		seq = d.nextSeq
 	}
 	d.byID[j.ID()] = &entry{j: j, h: h, seq: seq}
@@ -202,7 +253,9 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 	d.nextSeq = max(d.nextSeq, seq+1)
 	d.mu.Unlock()
 
-	d.kick()
+	if !added {
+		d.kick()
+	}
 	return nil
 }
 
@@ -244,16 +297,30 @@ func (d *Dispatcher) entryFor(id string) (Header, int64, bool) {
 	return e.h, e.seq, true
 }
 
-// snapshotOrder copies the registry in queue order. The copy exists so the tick
-// can release d.mu before calling into sched: D-B9 forbids holding d.mu across
-// such a call, because Workers.Abort runs inside Queue.mu and an Abort that
-// took d.mu would deadlock ABBA against a concurrent Cancel.
+// snapshotOrder returns the registered jobs that have a written queue row, in
+// queue order. It is the tick's and Stop's only view of the registry, so an
+// unwritten job is never advanced, hydrated, launched or persisted by either.
+//
+// d.written is the whole gate, and that is the point: presence of a row is one
+// fact with one owner (markWritten, under the storeMu span that wrote it), so
+// there is no second flag here to disagree with it. Registry callers that
+// bypass snapshotOrder (Remove, Cancel, beginRemoval/beginRemovalIfIdle,
+// List/Row/Job, SetPostAnomaly/SetFailReason) operate on d.byID directly.
+//
+// The copy exists so the tick can release d.mu before calling into sched: D-B9
+// forbids holding d.mu across such a call, because Workers.Abort runs inside
+// Queue.mu and an Abort that took d.mu would deadlock ABBA against a concurrent
+// Cancel.
 func (d *Dispatcher) snapshotOrder() []*job.Job {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	out := make([]*job.Job, 0, len(d.order))
 	for _, id := range d.order {
-		out = append(out, d.byID[id].j)
+		e := d.byID[id]
+		if _, ok := d.written[id]; !ok { // read under the held d.mu
+			continue
+		}
+		out = append(out, e.j)
 	}
 	return out
 }
@@ -293,10 +360,14 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 //
 // This is the single read side of the removal marker, and it is one function
 // rather than a repeated expression for the reason Standing Design Rule 2
-// gives: the predicate had five copies (Occupy, claimLaunched,
-// persistIfChanged, markResident, markWritten), and a sixth reader that got it
-// subtly wrong — or a new field the invariant grows — would be invisible at
-// the other five.
+// gives: the predicate had a copy at each reader, and one that got it subtly
+// wrong — or a new field the invariant grows — would be invisible at the
+// others. Its readers are Occupy, persistIfChanged, markResident and
+// claimLaunched: `git grep -n 'd\.admitsLocked(' -- 'internal/dispatch/*.go'
+// ':!*_test.go'` returns 4 lines.
+//
+// markWritten is deliberately NOT among them — see its own doc for why an
+// outstanding removal must not suppress a record of a row already on disk.
 func (d *Dispatcher) admitsLocked(id string) bool {
 	return d.byID[id] != nil && d.removing[id] == 0
 }
@@ -417,12 +488,25 @@ func (r *removal) end() {
 // TestDeregister_IsTotal does exactly that, because the property worth
 // pinning here is that this clears EVERY per-job map, and reaching it through
 // the token would test end instead.
+//
+// "Clears" holds for every map but d.removing, which is a refcount and so is
+// decremented — see the line itself. With one removal outstanding, the only
+// shape TestDeregister_IsTotal builds, that still erases the entry.
 func (d *Dispatcher) deregister(id string) {
 	d.mu.Lock()
 	delete(d.byID, id)
 	delete(d.written, id)
 	delete(d.resident, id)
-	delete(d.removing, id)
+	// Decremented, not deleted: concurrent removals for one ID are legal, and
+	// this call answers for ONE of them. Wiping the marker let an ID be
+	// re-registered while another removal was still walking to its Delete,
+	// which then deleted the new job's row and deregistered it — the caller
+	// having been told it was added.
+	// TestDeregister_LeavesAnotherRemovalsMarkerStanding pins that.
+	d.removing[id]--
+	if d.removing[id] <= 0 {
+		delete(d.removing, id)
+	}
 	delete(d.occupiers, id)
 	delete(d.occupancyTokens, id)
 	if ch, ok := d.occupyDrained[id]; ok {

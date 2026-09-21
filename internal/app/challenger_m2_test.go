@@ -166,7 +166,7 @@ func TestReloadDownloadOptions_PromotionLimitBehavior(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to build ingest job: %v", err)
 		}
-		if err := disp.Add(j, hdr); err != nil {
+		if err := disp.Add(context.Background(), j, hdr); err != nil {
 			t.Fatalf("failed to add job: %v", err)
 		}
 		jobs[i-1] = j

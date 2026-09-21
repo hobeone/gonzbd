@@ -90,7 +90,7 @@ func TestQueueList_Dispatcher(t *testing.T) {
 		Priority: 0,
 		Bytes:    1000,
 	}
-	if err := d.Add(j1, h1); err != nil {
+	if err := d.Add(context.Background(), j1, h1); err != nil {
 		t.Fatalf("Add(j1): %v", err)
 	}
 
@@ -102,7 +102,7 @@ func TestQueueList_Dispatcher(t *testing.T) {
 		Priority: 1,
 		Bytes:    2000,
 	}
-	if err := d.Add(j2, h2); err != nil {
+	if err := d.Add(context.Background(), j2, h2); err != nil {
 		t.Fatalf("Add(j2): %v", err)
 	}
 
@@ -150,7 +150,7 @@ func TestQueuePauseAndResume_Dispatcher(t *testing.T) {
 	s := testDispatcherServer(t, d)
 
 	j1 := job.New("j1", "Ubuntu 22.04", job.Policy{})
-	if err := d.Add(j1, dispatch.Header{Name: "Ubuntu 22.04", Bytes: 1000}); err != nil {
+	if err := d.Add(context.Background(), j1, dispatch.Header{Name: "Ubuntu 22.04", Bytes: 1000}); err != nil {
 		t.Fatalf("Add(j1): %v", err)
 	}
 
@@ -217,7 +217,7 @@ func TestQueueMutators_Dispatcher(t *testing.T) {
 	s := testDispatcherServer(t, d)
 
 	j1 := job.New("j1", "Test Job", job.Policy{})
-	if err := d.Add(j1, dispatch.Header{Name: "Test Job", Bytes: 1000}); err != nil {
+	if err := d.Add(context.Background(), j1, dispatch.Header{Name: "Test Job", Bytes: 1000}); err != nil {
 		t.Fatalf("Add(j1): %v", err)
 	}
 
@@ -280,8 +280,8 @@ func TestQueueDelete_Dispatcher(t *testing.T) {
 
 	j1 := job.New("j1", "Job 1", job.Policy{})
 	j2 := job.New("j2", "Job 2", job.Policy{})
-	_ = d.Add(j1, dispatch.Header{Name: "Job 1"})
-	_ = d.Add(j2, dispatch.Header{Name: "Job 2"})
+	_ = d.Add(context.Background(), j1, dispatch.Header{Name: "Job 1"})
+	_ = d.Add(context.Background(), j2, dispatch.Header{Name: "Job 2"})
 
 	// Delete j1
 	w := apiGet(t, s.Handler(), "/api?mode=queue&name=delete&value=j1&apikey="+testAPIKey)
@@ -308,7 +308,7 @@ func TestStatus_Dispatcher(t *testing.T) {
 	s := testDispatcherServer(t, d)
 
 	j1 := job.New("j1", "Job 1", job.Policy{})
-	_ = d.Add(j1, dispatch.Header{Name: "Job 1"})
+	_ = d.Add(context.Background(), j1, dispatch.Header{Name: "Job 1"})
 
 	w := apiGet(t, s.Handler(), "/api?mode=fullstatus&output=json&apikey="+testAPIKey)
 	if w.Code != http.StatusOK {

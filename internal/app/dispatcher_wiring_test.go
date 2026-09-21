@@ -77,7 +77,7 @@ func TestAppWorkers_Abort(t *testing.T) {
 	w := &appWorkers{app: app}
 
 	j := job.New("job-abort", "Test Job", job.PolicyFromPP(3))
-	if err := app.dispatcher.Add(j, dispatch.Header{Name: "Test Job"}); err != nil {
+	if err := app.dispatcher.Add(context.Background(), j, dispatch.Header{Name: "Test Job"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -110,7 +110,7 @@ func TestAppWorkers_Abort_DelayedGoroutine_DoesNotDisruptNewAttempt(t *testing.T
 	w := &appWorkers{app: app}
 
 	j1 := job.New("job-reuse", "First Attempt", job.Policy{})
-	if err := app.dispatcher.Add(j1, dispatch.Header{Name: "First Attempt"}); err != nil {
+	if err := app.dispatcher.Add(context.Background(), j1, dispatch.Header{Name: "First Attempt"}); err != nil {
 		t.Fatalf("Add(j1): %v", err)
 	}
 
@@ -121,7 +121,7 @@ func TestAppWorkers_Abort_DelayedGoroutine_DoesNotDisruptNewAttempt(t *testing.T
 
 	// Register a new attempt under the same ID.
 	j2 := job.New("job-reuse", "Second Attempt", job.Policy{})
-	if err := app.dispatcher.Add(j2, dispatch.Header{Name: "Second Attempt"}); err != nil {
+	if err := app.dispatcher.Add(context.Background(), j2, dispatch.Header{Name: "Second Attempt"}); err != nil {
 		t.Fatalf("Add(j2): %v", err)
 	}
 

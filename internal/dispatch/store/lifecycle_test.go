@@ -40,9 +40,10 @@ func (r *yieldRunner) Run(ctx context.Context, id string, _ job.State) {
 }
 
 // tickEvery is short because these tests drive the dispatcher through its
-// EXPORTED surface, and persistIfChanged only runs on a tick. internal/dispatch's
-// own tests call the unexported tick directly and so can use an hour; from
-// outside the package the loop has to actually run.
+// EXPORTED surface, so state transitions after Add (Advance, Cancel eviction)
+// depend on the tick loop running. internal/dispatch's own tests call the
+// unexported tick directly and so can use an hour; from outside the package
+// the loop has to actually run.
 const tickEvery = 5 * time.Millisecond
 
 // waitFor polls the store until pred holds, or fails. It polls rather than
@@ -66,10 +67,6 @@ func waitFor(t *testing.T, s *store.Store, what string, pred func([]dispatch.Per
 	}
 	t.Fatalf("timed out waiting for %s; store holds %d rows: %+v", what, len(last), last)
 	return nil
-}
-
-func rowCount(n int) func([]dispatch.Persisted) bool {
-	return func(rows []dispatch.Persisted) bool { return len(rows) == n }
 }
 
 // wantJob is one expected queue entry. It is a named type rather than an
@@ -120,7 +117,7 @@ func TestDispatcher_RoundTripsThroughRealSQLite(t *testing.T) {
 		t.Fatalf("first Start: %v", err)
 	}
 	for _, w := range want {
-		if err := d1.Add(job.New(w.id, w.hdr.Name, w.pol), w.hdr); err != nil {
+		if err := d1.Add(t.Context(), job.New(w.id, w.hdr.Name, w.pol), w.hdr); err != nil {
 			t.Fatalf("Add(%s): %v", w.id, err)
 		}
 	}
@@ -130,14 +127,29 @@ func TestDispatcher_RoundTripsThroughRealSQLite(t *testing.T) {
 	// never-run job would otherwise render as Queued forever), and asserting
 	// it here is what puts Store.Delete on a real driver rather than only on
 	// the fake.
-	waitFor(t, st, "all three jobs persisted", rowCount(len(want)))
+	// Waiting for rows to EXIST is not enough: Add writes a job's first row
+	// itself, at StateUnset, before any tick has seen it. A Cancel landing
+	// before the tick opens an attempt makes "second" a cancelled never-run
+	// job, which the next tick evicts, row and all. Waiting for Fetching is
+	// what makes "the tick has opened an attempt" true rather than likely.
+	waitFor(t, st, "the tick to advance all three jobs to Fetching", func(rows []dispatch.Persisted) bool {
+		if len(rows) != len(want) {
+			return false
+		}
+		for _, r := range rows {
+			if r.State.State != job.Fetching {
+				return false
+			}
+		}
+		return true
+	})
 
 	// Cancel one so a non-zero Intent has to survive the round trip. A queue
 	// where every axis holds its zero value would round-trip cleanly through a
 	// completely broken column mapping, which is worth nothing.
 	//
 	// This does NOT evict: eviction is for a cancelled job that has never run,
-	// and by now the tick has opened an attempt on all three. The eviction path
+	// and the wait above established that all three have run. The eviction path
 	// is covered by TestStore_DeleteRemovesARow against the same driver.
 	if err := d1.Cancel("second"); err != nil {
 		t.Fatalf("Cancel: %v", err)
@@ -234,11 +246,21 @@ func TestDispatcher_QuietRestartWritesNothing(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	for _, id := range ids {
-		if err := d1.Add(job.New(id, id, job.Policy{}), dispatch.Header{Name: id}); err != nil {
+		if err := d1.Add(t.Context(), job.New(id, id, job.Policy{}), dispatch.Header{Name: id}); err != nil {
 			t.Fatalf("Add(%s): %v", id, err)
 		}
 	}
-	afterFirst := waitFor(t, st, "the initial queue to persist", rowCount(len(ids)))
+	afterFirst := waitFor(t, st, "the initial tick to advance all jobs to Fetching", func(rows []dispatch.Persisted) bool {
+		if len(rows) != len(ids) {
+			return false
+		}
+		for _, r := range rows {
+			if r.State.State != job.Fetching {
+				return false
+			}
+		}
+		return true
+	})
 	if err := d1.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -246,23 +268,23 @@ func TestDispatcher_QuietRestartWritesNothing(t *testing.T) {
 	// Two more full restarts. If restore and persistIfChanged disagree about
 	// what is stored, the keys drift on each one.
 	//
-	// Each restart adds a probe job and waits for IT to appear. Waiting on the
-	// original row count would be vacuous: those rows are already on disk
-	// before Start is called, so the predicate holds on the first poll and the
-	// test would stop the dispatcher without a single tick having run — proving
-	// nothing about what a tick does to restored rows. The probe only appears
-	// once persistIfChanged has actually executed.
+	// Each restart adds a probe job and waits for it to reach Fetching. Add
+	// persists the probe synchronously at StateUnset, and only a tick's Advance
+	// (BeginAttempt) plus persistIfChanged moves it to Fetching — after walking
+	// the restored rows ahead of it in queue order.
 	for i := range 2 {
 		probe := fmt.Sprintf("probe%d", i)
 		d := newDispatcher()
 		if err := d.Start(t.Context()); err != nil {
 			t.Fatalf("restart Start: %v", err)
 		}
-		if err := d.Add(job.New(probe, probe, job.Policy{}), dispatch.Header{Name: probe}); err != nil {
+		if err := d.Add(t.Context(), job.New(probe, probe, job.Policy{}), dispatch.Header{Name: probe}); err != nil {
 			t.Fatalf("Add(%s): %v", probe, err)
 		}
-		waitFor(t, st, "the probe job to persist, proving a tick ran", func(rows []dispatch.Persisted) bool {
-			return slices.ContainsFunc(rows, func(p dispatch.Persisted) bool { return p.ID == probe })
+		waitFor(t, st, "the probe job to advance to Fetching, proving a tick ran", func(rows []dispatch.Persisted) bool {
+			return slices.ContainsFunc(rows, func(p dispatch.Persisted) bool {
+				return p.ID == probe && p.State.State == job.Fetching
+			})
 		})
 		if err := d.Stop(); err != nil {
 			t.Fatalf("restart Stop: %v", err)

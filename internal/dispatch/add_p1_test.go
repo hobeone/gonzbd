@@ -1,0 +1,499 @@
+package dispatch
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/hobeone/gonzbd/internal/job"
+)
+
+type p1BlockingSaveStore struct {
+	fakeStore
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (s *p1BlockingSaveStore) Save(ctx context.Context, p Persisted) error {
+	if s.calls.Add(1) == 1 {
+		close(s.entered)
+		<-s.release
+	}
+	return s.fakeStore.Save(ctx, p)
+}
+
+func TestAdd_PersistFailureUnwindsWithoutTickTouchingJob(t *testing.T) {
+	wantErr := errors.New("simulated sqlite disk full")
+	st := &p1BlockingSaveStore{
+		saveErr: wantErr,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	res := &fakeResidency{}
+	runner := &fakeRunner{}
+	d := newTestDispatcher(t, withStore(st), withResidency(res), withRunner(runner))
+
+	j := job.New("unwritten-1", "Unwritten Job", job.Policy{})
+	addErrCh := make(chan error, 1)
+	go func() {
+		addErrCh <- d.Add(t.Context(), j, Header{Name: "Unwritten Job"})
+	}()
+
+	// Wait until Add has registered j and blocked inside persistIfChanged's Save
+	// (which holds d.storeMu).
+	<-st.entered
+
+	// Drive multiple ticks while Save is blocked. Because snapshotOrder filters
+	// on d.written, none of these ticks may call Advance (BeginAttempt / grantFor),
+	// reconcileResidency (Hydrate), launch, or persistIfChanged on j.
+	// Run in a goroutine because if snapshotOrder's d.written filter is removed,
+	// tick() advances j and then blocks on d.storeMu inside its own persistIfChanged.
+	var releaseOnce sync.Once
+	releaseSave := func() { releaseOnce.Do(func() { close(st.release) }) }
+	t.Cleanup(releaseSave)
+
+	ticksDone := make(chan struct{})
+	go func() {
+		defer close(ticksDone)
+		for range 3 {
+			d.tick(t.Context())
+		}
+	}()
+
+	select {
+	case <-ticksDone:
+	case <-time.After(50 * time.Millisecond):
+		// A tick entered persistIfChanged and blocked on d.storeMu while Save
+		// was still in flight; release Save so the tick can finish and our
+		// state/lease/residency assertions below report what the tick did.
+		releaseSave()
+		<-ticksDone
+	}
+
+	if snap := j.Snapshot(); snap.State.State != job.StateUnset {
+		t.Fatalf("job state during blocked Save = %v, want StateUnset (tick must not advance unwritten job)", snap.State.State)
+	}
+	if j.HoldsLease() {
+		t.Fatal("job holds a scheduler lease during blocked Save; tick must not grant leases to an unwritten job")
+	}
+	if res.resident("unwritten-1") || d.isResident("unwritten-1") {
+		t.Fatal("job was hydrated during blocked Save; tick must not hydrate an unwritten job")
+	}
+	if runner.started("unwritten-1") {
+		t.Fatal("worker was launched during blocked Save")
+	}
+
+	// Now release Save (which returns wantErr) and wait for Add to unwind.
+	releaseSave()
+	err := <-addErrCh
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Add error = %v, want %v", err, wantErr)
+	}
+
+	// Drive another tick after the failed Add to confirm nothing remained.
+	d.tick(t.Context())
+
+	if snap := j.Snapshot(); snap.State.State != job.StateUnset {
+		t.Fatalf("job state after failed Add = %v, want StateUnset", snap.State.State)
+	}
+	if j.HoldsLease() {
+		t.Fatal("job holds a scheduler lease after failed Add")
+	}
+	if res.resident("unwritten-1") || d.isResident("unwritten-1") {
+		t.Fatal("job is resident after failed Add")
+	}
+	if runner.started("unwritten-1") {
+		t.Fatal("worker was launched after failed Add")
+	}
+	if got := st.saveCount(); got != 0 {
+		t.Fatalf("saved row count after failed Add = %d, want 0", got)
+	}
+	if rows := d.List(); len(rows) != 0 {
+		t.Fatalf("List() after failed Add = %v, want empty", rows)
+	}
+	if _, ok := d.Job("unwritten-1"); ok {
+		t.Fatal("Job(unwritten-1) still present in registry after failed Add")
+	}
+}
+
+func TestAdd_PostPersistKickWakesTickAfterBlockedSave(t *testing.T) {
+	st := &p1BlockingSaveStore{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	runner := &fakeRunner{}
+	// newTestDispatcher uses a 1-hour ticker interval, so the background run loop
+	// only advances within our 250ms timeout when woken via d.wake (d.kick()).
+	d := newTestDispatcher(t, withStore(st), withRunner(runner))
+	runner.d = d
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = d.Yielded("delayed-save-1")
+		_ = d.Stop()
+	})
+
+	var releaseOnce sync.Once
+	releaseSave := func() { releaseOnce.Do(func() { close(st.release) }) }
+	t.Cleanup(releaseSave)
+
+	j := job.New("delayed-save-1", "Delayed Save Job", job.Policy{})
+	if err := j.BeginAttempt(testClock()); err != nil {
+		t.Fatalf("BeginAttempt: %v", err)
+	}
+	addErrCh := make(chan error, 1)
+	go func() {
+		addErrCh <- d.Add(t.Context(), j, Header{Name: "Delayed Save Job"})
+	}()
+
+	<-st.entered
+	// Wait briefly for the background run loop to consume register's kick while
+	// Save is still blocked and j is still unwritten.
+	waitDeadline := time.Now().Add(50 * time.Millisecond)
+	for len(d.wake) > 0 && time.Now().Before(waitDeadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if runner.started("delayed-save-1") {
+		releaseSave()
+		t.Fatal("worker launched while unwritten")
+	}
+
+	// Release Save; Add marks j written and must call d.kick() so the run loop
+	// wakes immediately instead of waiting for the 1-hour ticker.
+	releaseSave()
+	if err := <-addErrCh; err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if runner.started("delayed-save-1") {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("job was not launched promptly after Save completed; Add did not kick after persisting")
+}
+
+// TestAdd_AbortedRemovalDuringTheWriteLeavesTheJobVisible covers a removal that
+// begins while Add's write is in flight and then aborts (as Remove does when
+// its store delete fails). markWritten runs inside d.storeMu and checks
+// membership in d.byID, so the written row is recorded in d.written and the
+// tick continues to reach the job after the removal aborts.
+func TestAdd_AbortedRemovalDuringTheWriteLeavesTheJobVisible(t *testing.T) {
+	st := &p1BlockingSaveStore{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	d := newTestDispatcher(t, withStore(st))
+	j := job.New("j1", "n", job.Policy{})
+
+	addErr := make(chan error, 1)
+	go func() { addErr <- d.Add(t.Context(), j, Header{Name: "n"}) }()
+	<-st.entered
+	rm, ok := d.beginRemoval("j1")
+	if !ok {
+		t.Fatal("setup: j1 is not registered")
+	}
+	close(st.release)
+	if err := <-addErr; err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	rm.abort()
+
+	d.tick(t.Context())
+
+	if s := j.Snapshot().State.State; s == job.StateUnset {
+		t.Error("the tick never reached j1 after the removal aborted; a registered job " +
+			"is stranded, never advanced, evicted or persisted again")
+	}
+}
+
+// TestRemove_OverlappingAddWithTransientDeleteErrorIsRetriedByTick drives a
+// real Remove concurrently with Add's Save when Store.Delete fails once (e.g.
+// transient SQLite lock), then verifies that subsequent ticks see j1 via
+// snapshotOrder, evictCancelledNeverRun retries the delete, and a restart does
+// not resurrect j1.
+func TestRemove_OverlappingAddWithTransientDeleteErrorIsRetriedByTick(t *testing.T) {
+	st := &p1BlockingSaveStore{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	st.delErr = errors.New("database is locked")
+	d := newTestDispatcher(t, withStore(st))
+	j := job.New("j1", "n", job.Policy{})
+
+	addErr := make(chan error, 1)
+	go func() { addErr <- d.Add(t.Context(), j, Header{Name: "n"}) }()
+	<-st.entered
+
+	rmErr := make(chan error, 1)
+	go func() { rmErr <- d.Remove(t.Context(), "j1") }()
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		d.mu.Lock()
+		began := d.removing["j1"] > 0
+		d.mu.Unlock()
+		if began {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Remove never began")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(st.release)
+	if err := <-addErr; err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := <-rmErr; err == nil {
+		t.Fatal("setup: Remove succeeded; want its Delete to fail")
+	}
+
+	st.mu.Lock()
+	st.delErr = nil
+	st.mu.Unlock()
+	for range 5 {
+		d.tick(t.Context())
+	}
+	if _, ok := st.row("j1"); ok {
+		t.Fatal("j1 row still in store after transient Delete error cleared and ticks ran")
+	}
+
+	d2 := newTestDispatcher(t, withStore(&st.fakeStore))
+	if err := d2.Start(t.Context()); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	t.Cleanup(func() { _ = d2.Stop() })
+	if r, ok := d2.Row("j1"); ok && r.View.Intent == job.IntentRun {
+		t.Errorf("restart restored j1 with IntentRun: a job the user removed came back runnable")
+	}
+}
+
+// TestStart_RefusesARowThatDiffersFromTheOneAddWrote pins that restore's skip
+// of a pre-Start Add is narrow: a stored row for a registered job that differs
+// from the row Add wrote is still refused.
+func TestStart_RefusesARowThatDiffersFromTheOneAddWrote(t *testing.T) {
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withStore(st))
+	if err := d.Add(t.Context(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	p, _ := st.row("j1")
+	p.Header.Name = "someone else's"
+	st.seed([]Persisted{p})
+
+	if err := d.Start(t.Context()); err == nil {
+		t.Fatal("Start registered a stored row that differs from the one Add wrote for the same job")
+	}
+}
+
+// TestAdd_SingleKickOnlyAfterPersist pins that register does not kick d.wake
+// while Add's Save is in flight, and Add kicks d.wake once after Save succeeds.
+func TestAdd_SingleKickOnlyAfterPersist(t *testing.T) {
+	st := &p1BlockingSaveStore{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	d := newTestDispatcher(t, withStore(st))
+
+	addErr := make(chan error, 1)
+	go func() { addErr <- d.Add(t.Context(), job.New("j1", "n", job.Policy{}), Header{}) }()
+	<-st.entered
+	select {
+	case <-d.wake:
+		t.Fatal("register kicked d.wake while j1 was still unwritten")
+	default:
+	}
+	close(st.release)
+	if err := <-addErr; err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	select {
+	case <-d.wake:
+	default:
+		t.Error("no wake is pending after Add returned; the job waits for the next ticker tick")
+	}
+}
+
+// TestAdd_WritesUnderTheCallersContext pins that the first write is bounded by
+// the context Add is given, which is what lets a caller bound it — and that a
+// write refused by that context unwinds the registration rather than leaving a
+// job the tick can never see.
+func TestAdd_WritesUnderTheCallersContext(t *testing.T) {
+	d := newTestDispatcher(t, withStore(&contextAwareStore{}))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := d.Add(ctx, job.New("j1", "n", job.Policy{}), Header{Name: "n"})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Add under a cancelled context = %v, want context.Canceled", err)
+	}
+	if n := d.Len(); n != 0 {
+		t.Errorf("Len = %d after a failed Add, want 0", n)
+	}
+}
+
+// TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess pins the other half of
+// Add's guarantee. persistIfChanged returns nil WITHOUT writing when a removal
+// is outstanding by the time it takes storeMu, so a nil from it is not by
+// itself evidence of a row. Add reporting success there told the caller a job
+// was durable when nothing had been written, and — because snapshotOrder gates
+// on d.written alone — an aborted removal then left the job registered and
+// invisible to every tick, never advanced, persisted or evicted again.
+//
+// The interleaving is deterministic rather than raced: j0's Save holds storeMu,
+// so once j1 is registered it is necessarily still blocked at persistIfChanged's
+// storeMu.Lock, ahead of the admitsLocked check the removal has to beat.
+func TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess(t *testing.T) {
+	st := &p1BlockingSaveStore{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	d := newTestDispatcher(t, withStore(st))
+
+	go func() { _ = d.Add(context.Background(), job.New("j0", "n", job.Policy{}), Header{Name: "n"}) }()
+	<-st.entered
+
+	addErr := make(chan error, 1)
+	go func() {
+		addErr <- d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"})
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for d.sortKeyOf("j1") == -1 {
+		if time.Now().After(deadline) {
+			t.Fatal("setup: j1 never registered")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	rm, ok := d.beginRemoval("j1")
+	if !ok {
+		t.Fatal("setup: j1 is not registered")
+	}
+	close(st.release)
+
+	err := <-addErr
+	if err == nil {
+		t.Fatal("Add reported success although the removal suppressed its write; " +
+			"the caller was told a job was durable with no row in the store")
+	}
+	if _, written := st.row("j1"); written {
+		t.Error("setup is not exercising the suppressed-write path: a row was written")
+	}
+
+	// The unwind must leave nothing behind, so an aborted removal has no
+	// registered-but-unwritten job to strand.
+	rm.abort()
+	if k := d.sortKeyOf("j1"); k != -1 {
+		t.Errorf("j1 still registered at sortKey %d after a failed Add; an aborted "+
+			"removal now leaves a job no tick can ever see", k)
+	}
+}
+
+// TestDeregister_LeavesAnotherRemovalsMarkerStanding pins that an unwind does
+// not clear a removal marker it did not raise.
+//
+// Add's unwind takes the removal door like any other teardown, so while a real
+// Remove is in flight there are two tokens for one ID. deregister wiping the
+// marker outright let the next Add register, write its row, and then be
+// destroyed by the tail of the Remove that preempted the first one — the
+// caller was told the job was added, and the store row went with it.
+//
+// With the marker refcounted, the retry is refused instead — by register,
+// which reads the same marker, so nothing is admitted and nothing is written.
+// This test asserts only the outcome Add reports; the door itself is
+// TestRegister_RefusesWhileARemovalIsOutstanding.
+func TestDeregister_LeavesAnotherRemovalsMarkerStanding(t *testing.T) {
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withStore(st))
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	saves := st.saveCount()
+
+	inFlight, ok := d.beginRemoval("j1") // a real Remove, not yet at its Delete
+	if !ok {
+		t.Fatal("setup: beginRemoval")
+	}
+
+	// Add's unwind, verbatim from Add.
+	if rm, ok := d.beginRemoval("j1"); ok {
+		rm.end()
+	}
+
+	retry := job.New("j1", "n", job.Policy{})
+	err := d.Add(context.Background(), retry, Header{Name: "n"})
+	if err == nil {
+		t.Fatal("a retry was admitted while a Remove for the same ID was still in flight; " +
+			"its row is about to be deleted by that Remove's tail")
+	}
+	if !errors.Is(err, errPreemptedByRemoval) {
+		t.Errorf("retry Add error = %v, want errPreemptedByRemoval", err)
+	}
+	if n := st.saveCount(); n != saves {
+		t.Errorf("the refused retry wrote %d row(s) for the in-flight Remove to delete", n-saves)
+	}
+
+	// Once the in-flight Remove finishes, the ID is free again.
+	inFlight.end()
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+		t.Errorf("Add after the removal completed = %v, want nil", err)
+	}
+}
+
+// TestRegister_RefusesWhileARemovalIsOutstanding pins the door itself.
+//
+// deregister is total — it clears d.byID even when it only decremented a
+// refcount another removal still holds. So between an Add unwinding and the
+// removal that preempted it reaching its own end(), the ID looks free to
+// d.byID while d.removing still stands. register holds the only assignment
+// to d.byID, so it is the one place that can refuse: `git grep -n 'd\.byID\[j\.ID()\] =' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 1 line.
+//
+// Reached directly rather than through Add, for the same reason
+// TestDeregister_IsTotal reaches deregister directly: Add's own landed-write
+// check unwinds the retry a moment later either way, which hides whether the
+// job was ever admitted. What matters is that it was not — a job in d.byID is
+// reachable by the in-flight Remove's Cancel, which would latch IntentCancel
+// onto a job instance that removal has nothing to do with.
+func TestRegister_RefusesWhileARemovalIsOutstanding(t *testing.T) {
+	d := newTestDispatcher(t, withStore(&fakeStore{}))
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	inFlight, ok := d.beginRemoval("j1") // a real Remove, not yet at its Delete
+	if !ok {
+		t.Fatal("setup: beginRemoval")
+	}
+	// Add's unwind, verbatim from Add: decrements to 1, and clears d.byID.
+	if rm, ok := d.beginRemoval("j1"); ok {
+		rm.end()
+	}
+
+	retry := job.New("j1", "n", job.Policy{})
+	err := d.register(retry, Header{Name: "n"}, seqNext)
+	if err == nil {
+		t.Fatal("register admitted a job while a removal for the same ID was still outstanding")
+	}
+	if !errors.Is(err, errPreemptedByRemoval) {
+		t.Errorf("register error = %v, want errPreemptedByRemoval", err)
+	}
+	d.mu.Lock()
+	admitted := d.byID["j1"] != nil
+	d.mu.Unlock()
+	if admitted {
+		t.Error("the refused job is in d.byID, where the in-flight Remove's Cancel can latch IntentCancel onto it")
+	}
+
+	// Once that removal finishes, the ID is free again.
+	inFlight.end()
+	if err := d.register(job.New("j1", "n", job.Policy{}), Header{Name: "n"}, seqNext); err != nil {
+		t.Errorf("register after the removal completed = %v, want nil", err)
+	}
+}

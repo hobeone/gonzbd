@@ -52,7 +52,7 @@ func newDurabilityTestApp(t *testing.T, nFiles, nArts int) (*Application, *job.J
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if err := application.Dispatcher().Add(j, hdr); err != nil {
+	if err := application.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	return application, j

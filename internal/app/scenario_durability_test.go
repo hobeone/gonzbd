@@ -61,7 +61,7 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 	go drainAny(ctx, a.PostProcComplete())
 
 	job, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "durability-job.nzb"})
-	if err := a.Dispatcher().Add(job, hdr); err != nil {
+	if err := a.Dispatcher().Add(context.Background(), job, hdr); err != nil {
 		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestDurability_AcceptedIsNotDone(t *testing.T) {
 	go drainAny(ctx, a.PostProcComplete())
 
 	job, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "accepted-not-done.nzb"})
-	if err := a.Dispatcher().Add(job, hdr); err != nil {
+	if err := a.Dispatcher().Add(context.Background(), job, hdr); err != nil {
 		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 	awaitFirstArticle(t, a, job.ID())
@@ -231,7 +231,7 @@ func TestBarrierFiresOnByteBound(t *testing.T) {
 	go drainAny(ctx, a.PostProcComplete())
 
 	job, hdr := buildTestJob(t, cfg, &nzb.NZB{Files: files}, types.FetchOptions{NzbName: "byte-bound.nzb"})
-	if err := a.Dispatcher().Add(job, hdr); err != nil {
+	if err := a.Dispatcher().Add(context.Background(), job, hdr); err != nil {
 		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 
@@ -275,7 +275,7 @@ func TestBarrierFiresOnTimeBound(t *testing.T) {
 	go drainAny(ctx, a.PostProcComplete())
 
 	job, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "time-bound.nzb"})
-	if err := a.Dispatcher().Add(job, hdr); err != nil {
+	if err := a.Dispatcher().Add(context.Background(), job, hdr); err != nil {
 		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 
@@ -319,7 +319,7 @@ func TestBarrierRunsOnCleanShutdown(t *testing.T) {
 	go drainAny(ctx, a.PostProcComplete())
 
 	job, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "shutdown-barrier.nzb"})
-	if err := a.Dispatcher().Add(job, hdr); err != nil {
+	if err := a.Dispatcher().Add(context.Background(), job, hdr); err != nil {
 		t.Fatalf("Dispatcher.Add: %v", err)
 	}
 	awaitFirstArticle(t, a, job.ID())

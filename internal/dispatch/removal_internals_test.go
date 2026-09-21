@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"context"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -27,7 +28,7 @@ func TestAdmitsLocked_TruthTable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newTestDispatcher(t)
 			if tc.registered {
-				if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+				if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{}); err != nil {
 					t.Fatalf("Add: %v", err)
 				}
 			}
@@ -61,7 +62,7 @@ func TestBeginRemovalIfIdle_Outcomes(t *testing.T) {
 
 	t.Run("idle mints a token and marks", func(t *testing.T) {
 		d := newTestDispatcher(t)
-		if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+		if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{}); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 		rm, live := d.beginRemovalIfIdle("j1")
@@ -78,7 +79,7 @@ func TestBeginRemovalIfIdle_Outcomes(t *testing.T) {
 
 	t.Run("launched refuses and leaves no marker", func(t *testing.T) {
 		d := newTestDispatcher(t)
-		if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+		if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{}); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 		if !d.claimLaunched("j1") {
@@ -116,7 +117,7 @@ func TestBeginRemovalIfIdle_Outcomes(t *testing.T) {
 // on.
 func TestDeregister_IsTotal(t *testing.T) {
 	d := newTestDispatcher(t)
-	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -167,7 +168,7 @@ func TestDeregister_IsTotal(t *testing.T) {
 // that let newManifest and UnmarshalJSON diverge over totalBytes.
 func TestBeginRemovalLocked_IsTheSoleConstructor(t *testing.T) {
 	d := newTestDispatcher(t)
-	if err := d.Add(job.New("j1", "n", job.Policy{}), Header{}); err != nil {
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -33,7 +34,7 @@ func buildHistoryTestJob(t *testing.T, id, name string, added time.Time, nArticl
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
 	j.SetAdded(added)
-	if err := app.Dispatcher().Add(j, hdr); err != nil {
+	if err := app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	return app.Dispatcher(), j
@@ -233,7 +234,7 @@ func TestBuildHistoryEntry_DownloadedExcludesDeferredPar2(t *testing.T) {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
 
-	if err := app.Dispatcher().Add(qjob, hdr); err != nil {
+	if err := app.Dispatcher().Add(context.Background(), qjob, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if !qjob.HasDeferredPar2() {
