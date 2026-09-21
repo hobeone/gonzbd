@@ -927,16 +927,13 @@ func restoreJobMetadata(j *job.Job, p Persisted) {
 	j.SetRecoveryBytes(p.RecoveryBytes)
 }
 
-// lastWritten and markWritten are the only touches of d.written outside
-// deregister, each taking d.mu for one map operation and releasing it
-// immediately. D-B9 forbids holding d.mu across the Render/Save calls between
-// them — see persistIfChanged (tick.go).
+// markWritten is the only writer of d.written, and deregister the only
+// deleter; lastWritten and snapshotOrder read it. Nothing else touches the map:
+// `git grep -n 'd\.written\[\|delete(d\.written' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 4 lines.
 //
-// They have two callers each, not one: persistIfChanged, and restore, which
-// reads a row it already wrote to decide whether a pre-Start Add covered it
-// and records each row it registers. Add reads lastWritten too, to check its
-// own write landed. `git grep -n 'd\.lastWritten(\|d\.markWritten(' --
-// 'internal/dispatch/*.go' ':!*_test.go'` returns 5 lines.
+// Each takes d.mu for one map operation and releases it immediately. D-B9
+// forbids holding d.mu across the Render/Save calls between them — see
+// persistIfChanged (tick.go).
 func (d *Dispatcher) lastWritten(id string) (Persisted, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
