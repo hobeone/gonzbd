@@ -98,3 +98,11 @@ file internal/durability/barrier.go
 		return run()
 	}
 --- end
+
+[DiscardRuns is not scoped to its job]
+file internal/durability/store.go
+--- anchor
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM durable_runs WHERE job_id = ?`, jobID); err != nil {
+--- replace
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM durable_runs WHERE ? IS NOT NULL`, jobID); err != nil {
+--- end
