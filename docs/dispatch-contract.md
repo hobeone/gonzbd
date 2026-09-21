@@ -280,6 +280,18 @@ obligations:
   whenever its four axes (`State`, `Intent`, plus header/policy/progress fields)
   move, and delete a row when the job is removed or evicted.
 
+`d.written` is the whole of `snapshotOrder`'s gate, and there is deliberately no
+second flag beside it: presence of a row is one fact, owned by `markWritten`,
+which `persistIfChanged` calls inside the `storeMu` span that wrote the row.
+
+**`markWritten` gates on registration alone, never on `admitsLocked`.** An
+outstanding removal must not suppress the record, because the row is already on
+disk by then and every `store.Delete` takes `storeMu` first. Suppressing it left
+`d.written` silent about a real row, so a removal that then *aborted* stranded
+the job — registered, persisted, and invisible to `snapshotOrder` forever.
+Refusing a Save while a removal is outstanding is `persistIfChanged`'s job, and
+is the single enforcement point for it.
+
 `internal/dispatch/store` implements this against SQLite; `internal/dispatch`
 itself stays free of a SQL driver. `Persisted` deliberately omits a
 `crossed` field: it is derivable from `State` via

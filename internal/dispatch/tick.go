@@ -121,8 +121,14 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) error {
 		d.logStoreError(j.ID(), err)
 		return err
 	}
-	d.storeMu.Unlock()
+	// Recorded inside the Save's own storeMu span, so no delete can intervene:
+	// every delete takes storeMu first — `git grep -n 'd\.store\.Delete('
+	// -- 'internal/dispatch/*.go' ':!*_test.go'` returns 2 lines, both inside
+	// one. Recording after the unlock is not known to be observably different,
+	// since deregister would prune a record the delete outran; the span keeps
+	// the argument local instead of resting on that repair.
 	d.markWritten(p)
+	d.storeMu.Unlock()
 	return nil
 }
 

@@ -746,10 +746,19 @@ func TestRemovingState_SuppressesPersistAndResidency(t *testing.T) {
 		t.Fatal("markResident set resident while job was marked removing")
 	}
 
-	// markWritten must not record in d.written while removing.
+	// markWritten DOES record a registered job that is marked removing, and
+	// that is the contract rather than an oversight: persistIfChanged calls it
+	// only inside the storeMu span in which store.Save succeeded, and every
+	// delete takes storeMu, so the row it records is on disk no matter what a
+	// concurrent removal goes on to do. Suppressing it here instead left
+	// d.written silent about a real row, and an aborted removal then stranded
+	// the job — snapshotOrder gates on d.written alone.
+	//
+	// Suppression while removing is persistIfChanged's, asserted above: it is
+	// the one enforcement point, so there is no second copy to drift.
 	d.markWritten(Persisted{ID: "j1"})
-	if _, ok := d.lastWritten("j1"); ok {
-		t.Fatal("markWritten recorded job while marked removing")
+	if _, ok := d.lastWritten("j1"); !ok {
+		t.Fatal("markWritten refused a registered job because a removal was outstanding")
 	}
 
 	// claimLaunched must not launch while removing.

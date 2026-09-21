@@ -1,10 +1,10 @@
 pkg ./internal/dispatch/
-run TestAdd_PersistFailureUnwindsWithoutTickTouchingJob|TestAdd_PostPersistKickWakesTickAfterBlockedSave|TestAdd_AbortedRemovalDuringTheWriteLeavesTheJobVisible|TestRemove_OverlappingAddWithTransientDeleteErrorIsRetriedByTick|TestStart_RefusesARowThatDiffersFromTheOneAddWrote|TestAdd_SingleKickOnlyAfterPersist
+run TestAdd_PersistFailureUnwindsWithoutTickTouchingJob|TestAdd_PostPersistKickWakesTickAfterBlockedSave|TestAdd_AbortedRemovalDuringTheWriteLeavesTheJobVisible|TestRemove_OverlappingAddWithTransientDeleteErrorIsRetriedByTick|TestStart_RefusesARowThatDiffersFromTheOneAddWrote|TestAdd_SingleKickOnlyAfterPersist|TestAdd_WritesUnderTheCallersContext|TestRemovingState_SuppressesPersistAndResidency
 
 [snapshotOrder written gate neutered]
 file internal/dispatch/registry.go
 --- anchor
-		if _, ok := d.written[id]; !ok && e.adding { // read under the held d.mu
+		if _, ok := d.written[id]; !ok { // read under the held d.mu
 			continue
 		}
 --- replace
@@ -13,16 +13,28 @@ file internal/dispatch/registry.go
 		}
 --- end
 
-[snapshotOrder aborted-removal e.adding check neutered]
-file internal/dispatch/registry.go
+[markWritten re-gated on admitsLocked, so an outstanding removal suppresses it]
+file internal/dispatch/dispatch.go
 --- anchor
-		if _, ok := d.written[id]; !ok && e.adding { // read under the held d.mu
-			continue
-		}
+	if d.byID[p.ID] == nil {
+		return
+	}
 --- replace
-		if _, ok := d.written[id]; !ok {
-			continue
-		}
+	if !d.admitsLocked(p.ID) {
+		return
+	}
+--- end
+
+[markWritten's registration check neutered, so a deregistered id can be recorded]
+file internal/dispatch/dispatch.go
+--- anchor
+	if d.byID[p.ID] == nil {
+		return
+	}
+--- replace
+	if false {
+		return
+	}
 --- end
 
 [Add unwind gatekeeper neutered]

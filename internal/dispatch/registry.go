@@ -120,8 +120,7 @@ type entry struct {
 	// reorder a caller, and it needs a whole-queue resequence that is atomic
 	// in the store rather than a per-job Save — a partial rewrite leaves the
 	// queue in an order no user asked for. Recorded on #454.
-	seq    int64
-	adding bool
+	seq int64
 }
 
 // Add registers a job at the end of the queue, persists its initial queue row
@@ -172,7 +171,6 @@ func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 		}
 		return fmt.Errorf("dispatch: Add: persist %s: %w", j.ID(), err)
 	}
-	d.finishAdding(j.ID())
 	d.kick() // register skips its kick for seqNext while j is unwritten; wake the tick now that d.written admits j
 	return nil
 }
@@ -216,7 +214,7 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 	if added {
 		seq = d.nextSeq
 	}
-	d.byID[j.ID()] = &entry{j: j, h: h, seq: seq, adding: added}
+	d.byID[j.ID()] = &entry{j: j, h: h, seq: seq}
 	d.order = append(d.order, j.ID())
 	d.nextSeq = max(d.nextSeq, seq+1)
 	d.mu.Unlock()
@@ -225,14 +223,6 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 		d.kick()
 	}
 	return nil
-}
-
-func (d *Dispatcher) finishAdding(id string) {
-	d.mu.Lock()
-	if e, ok := d.byID[id]; ok {
-		e.adding = false
-	}
-	d.mu.Unlock()
 }
 
 // sortKeyOf reports a registered job's queue-order sequence, or -1 if it is not
@@ -274,14 +264,14 @@ func (d *Dispatcher) entryFor(id string) (Header, int64, bool) {
 }
 
 // snapshotOrder returns the registered jobs that have a written queue row, in
-// queue order. It is the tick's and Stop's only view of the registry (called
-// at tick.go:25,152 and dispatch.go:479), so an unwritten job is never
-// advanced, hydrated, launched or persisted by either. Registry callers that
+// queue order. It is the tick's and Stop's only view of the registry, so an
+// unwritten job is never advanced, hydrated, launched or persisted by either.
+//
+// d.written is the whole gate, and that is the point: presence of a row is one
+// fact with one owner (markWritten, under the storeMu span that wrote it), so
+// there is no second flag here to disagree with it. Registry callers that
 // bypass snapshotOrder (Remove, Cancel, beginRemoval/beginRemovalForEviction,
-// List/Row/Job, SetPostAnomaly/SetFailReason) operate on d.byID directly; if a
-// concurrent Remove begins during Add's Save (so markWritten skips d.written
-// under admitsLocked) and then aborts, finishAdding clears e.adding once
-// persistIfChanged returns so the job remains visible here.
+// List/Row/Job, SetPostAnomaly/SetFailReason) operate on d.byID directly.
 //
 // The copy exists so the tick can release d.mu before calling into sched: D-B9
 // forbids holding d.mu across such a call, because Workers.Abort runs inside
@@ -293,7 +283,7 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 	out := make([]*job.Job, 0, len(d.order))
 	for _, id := range d.order {
 		e := d.byID[id]
-		if _, ok := d.written[id]; !ok && e.adding { // read under the held d.mu
+		if _, ok := d.written[id]; !ok { // read under the held d.mu
 			continue
 		}
 		out = append(out, e.j)
@@ -336,10 +326,14 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 //
 // This is the single read side of the removal marker, and it is one function
 // rather than a repeated expression for the reason Standing Design Rule 2
-// gives: the predicate had five copies (Occupy, claimLaunched,
-// persistIfChanged, markResident, markWritten), and a sixth reader that got it
-// subtly wrong — or a new field the invariant grows — would be invisible at
-// the other five.
+// gives: the predicate had a copy at each reader, and one that got it subtly
+// wrong — or a new field the invariant grows — would be invisible at the
+// others. Its readers are Occupy, persistIfChanged, markResident and
+// claimLaunched: `git grep -n 'd\.admitsLocked(' -- 'internal/dispatch/*.go'
+// ':!*_test.go'` returns 4 lines.
+//
+// markWritten is deliberately NOT among them — see its own doc for why an
+// outstanding removal must not suppress a record of a row already on disk.
 func (d *Dispatcher) admitsLocked(id string) bool {
 	return d.byID[id] != nil && d.removing[id] == 0
 }

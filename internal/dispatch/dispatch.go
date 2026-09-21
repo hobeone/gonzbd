@@ -933,10 +933,20 @@ func (d *Dispatcher) lastWritten(id string) (Persisted, bool) {
 	return p, ok
 }
 
+// markWritten gates on registration alone, NOT on admitsLocked: an outstanding
+// removal must not suppress the record, because persistIfChanged calls this
+// inside the storeMu span that already wrote the row. Refusing here left
+// d.written silent about a row that was on disk, and a removal that then
+// aborted stranded the job — snapshotOrder would never admit it again.
+//
+// The registration check stays, and is the narrower invariant deregister's
+// doc states: d.written must hold no entry for an unregistered id, or a reused
+// job ID's first persistIfChanged compares against the dead job's stale row and
+// wrongly suppresses a Save.
 func (d *Dispatcher) markWritten(p Persisted) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.admitsLocked(p.ID) {
+	if d.byID[p.ID] == nil {
 		return
 	}
 	d.written[p.ID] = p

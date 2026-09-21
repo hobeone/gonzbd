@@ -319,3 +319,22 @@ func TestAdd_SingleKickOnlyAfterPersist(t *testing.T) {
 		t.Error("no wake is pending after Add returned; the job waits for the next ticker tick")
 	}
 }
+
+// TestAdd_WritesUnderTheCallersContext pins that the first write is bounded by
+// the context Add is given, which is what lets a caller bound it — and that a
+// write refused by that context unwinds the registration rather than leaving a
+// job the tick can never see.
+func TestAdd_WritesUnderTheCallersContext(t *testing.T) {
+	d := newTestDispatcher(t, withStore(&contextAwareStore{}))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := d.Add(ctx, job.New("j1", "n", job.Policy{}), Header{Name: "n"})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Add under a cancelled context = %v, want context.Canceled", err)
+	}
+	if n := d.Len(); n != 0 {
+		t.Errorf("Len = %d after a failed Add, want 0", n)
+	}
+}
