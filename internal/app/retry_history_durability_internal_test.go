@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/postproc"
@@ -239,18 +238,18 @@ func TestRetryHistoryJob_DiscardsRowsWhenTheManifestShapeChanged(t *testing.T) {
 	}
 }
 
-// failingDeleteRunStore delegates everything to a real RunStore except
-// DeleteJob.
+// failingDeleteRunStore delegates everything to the real store except
+// DiscardRuns.
 //
 // Embedding the interface rather than reimplementing it keeps the stub honest:
-// if the retry path grows a call to some other RunStore method, the real one
+// if the retry path grows a call to some other store method, the real one
 // answers it and the test keeps testing what it says it tests.
 type failingDeleteRunStore struct {
-	durability.RunStore
+	durabilityStore
 	err error
 }
 
-func (f failingDeleteRunStore) DeleteJob(context.Context, string) error { return f.err }
+func (f failingDeleteRunStore) DiscardRuns(context.Context, string) error { return f.err }
 
 // TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped is the other half of
 // the shape-mismatch gate, and the reason the gate is worth anything.
@@ -283,7 +282,7 @@ func TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped(t *testing.T) {
 	writeRetryNZBBackup(t, adminDir, job.ID()+".nzb.gz", retryFixtureNZB(nArticles+2))
 
 	wantErr := errors.New("disk on fire")
-	application.runs = failingDeleteRunStore{RunStore: application.runs, err: wantErr}
+	application.durable = failingDeleteRunStore{durabilityStore: application.durable, err: wantErr}
 
 	// Assert the pre-state rather than assume it. If the job were somehow
 	// still queued here, the "not queued" assertion below would pass for the

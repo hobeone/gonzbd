@@ -44,18 +44,19 @@
 //
 // # One writer of content, and several deleters
 //
-// Barrier is the only thing that puts CONTENT into a row: RunStore.Commit is
-// called from Run and from FinalizeFile, both inside the transaction that
-// precedes the ack, and nowhere else. Resumer never writes. Its whole job at
+// Barrier is the only thing that puts CONTENT into a row: Store.commit is
+// unexported, and its one caller is Barrier.commit, which Run and FinalizeFile
+// go through, both inside the transaction that precedes the ack. Resumer never writes. Its whole job at
 // startup is one stat per file — if the file on disk is shorter than its runs
 // claim, it DELETES those runs and the articles are fetched again (§3.4). That
 // asymmetry is what makes the record trustworthy without reading a byte of it
 // back.
 //
 // Do not read that as "only these two touch the table". Rows are deleted from
-// three places outside Commit's own merge: Resumer, RunStore.DeleteJob (a job
-// leaving the queue, or a retry re-parsing a changed manifest), and
-// history.Repository.delete. It was five until b6651d43 deleted
+// three places outside commit's own merge: Resumer (through Store.deleteFile),
+// Store.DiscardRuns (a job leaving the queue, or a retry re-parsing a changed
+// manifest), and history.Repository.delete.
+// `git grep -nE 'DELETE FROM durable_[r]uns|"durable_[r]uns"' -- '*.go' ':!*_test.go'` returns 4 lines: those three, and commit's own. It was five until b6651d43 deleted
 // internal/queue, taking SQLiteStore.removeCorrupt and the
 // pruneDurabilityRows backstop with it — see docs/durability-contract.md §6.
 // The bound that actually holds — and the only one

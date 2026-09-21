@@ -240,11 +240,9 @@ func TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability(t *testi
 	// row of its own -- the guard below is what caught that, and it stays
 	// because a fixture that silently stops seeding turns this into a test
 	// that asserts nothing (#547).
-	if _, err := application.runs.Commit(ctx, j.ID(), []durability.DurableArticle{
+	commitRuns(t, realStore(t, application), j.ID(), []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
-	}); err != nil {
-		t.Fatalf("seed durable runs: %v", err)
-	}
+	})
 	if _, err := repo.DB().ExecContext(ctx,
 		`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)`, j.ID()); err != nil {
 		t.Fatalf("seed failed articles: %v", err)

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
@@ -59,12 +60,10 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	_ = seeded.BeginAttempt(started)
 	_ = seeded.RecordDownload("mock", 123456)
 	_ = seeded.MarkArticleDone(0, 100, "mock")
-	if _, err := durability.NewSQLiteRunStore(h.repo.DB()).Commit(ctx, jobID,
+	app.CommitRuns(t, durability.NewStore(h.repo.DB()), jobID,
 		[]durability.DurableArticle{
 			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
-		}); err != nil {
-		t.Fatalf("record the durable run: %v", err)
-	}
+		})
 	_ = seeded.MarkArticleFailed(1)
 	_, _ = seeded.Finish(job.OutcomeFailed, finished)
 

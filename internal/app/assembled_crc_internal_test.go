@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"errors"
 	"hash/crc32"
 	"testing"
@@ -12,9 +11,7 @@ import (
 // recordRuns commits arts as durable runs for jobID.
 func recordRuns(t *testing.T, application *Application, jobID string, arts ...durability.DurableArticle) {
 	t.Helper()
-	if _, err := application.runs.Commit(context.Background(), jobID, arts); err != nil {
-		t.Fatalf("record runs: %v", err)
-	}
+	commitRuns(t, realStore(t, application), jobID, arts)
 }
 
 // TestRecordAssembledCRC_WithholdsWhenAnExactOffsetDuplicateWasDropped pins
@@ -35,7 +32,7 @@ func TestRecordAssembledCRC_WithholdsWhenAnExactOffsetDuplicateWasDropped(t *tes
 		t.Errorf("collision = %+v, want offset 0 keeping article 0 and dropping article 2", cols[0])
 	}
 
-	runs, err := application.runs.ForFile(t.Context(), job.ID(), 0)
+	runs, err := application.durable.ForFile(t.Context(), job.ID(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,11 +55,7 @@ func TestRecordAssembledCRC_WithholdsWhenAnExactOffsetDuplicateWasDropped(t *tes
 // store dropped, for the tests whose subject is the drop itself.
 func recordRunsReportingCollisions(t *testing.T, application *Application, jobID string, arts ...durability.DurableArticle) []durability.Collision {
 	t.Helper()
-	cols, err := application.runs.Commit(context.Background(), jobID, arts)
-	if err != nil {
-		t.Fatalf("record runs: %v", err)
-	}
-	return cols
+	return commitRuns(t, realStore(t, application), jobID, arts)
 }
 
 // TestRecordAssembledCRC_ThreadsAWholeFileCRCToTheQueue pins the last link in
@@ -105,7 +98,7 @@ func TestRecordAssembledCRC_RecordsNothingForAHoledFile(t *testing.T) {
 		durability.DurableArticle{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100, CRC32: 0x22},
 	)
 
-	runs, err := application.runs.ForFile(t.Context(), job.ID(), 0)
+	runs, err := application.durable.ForFile(t.Context(), job.ID(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +129,7 @@ func TestRecordAssembledCRC_RecordsNothingForAnOverlappedFile(t *testing.T) {
 		durability.DurableArticle{FileIdx: 0, ArtIdx: 2, Offset: 150, Length: 50, CRC32: 0x33},
 	)
 
-	runs, err := application.runs.ForFile(t.Context(), job.ID(), 0)
+	runs, err := application.durable.ForFile(t.Context(), job.ID(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,9 +184,9 @@ func TestRecordAssembledCRC_ToleratesAMissingRecord(t *testing.T) {
 	t.Parallel()
 	t.Run("no run store configured", func(t *testing.T) {
 		application, job := newDurabilityTestApp(t, 1, 2)
-		saved := application.runs
-		application.runs = nil
-		t.Cleanup(func() { application.runs = saved })
+		saved := application.durable
+		application.durable = nil
+		t.Cleanup(func() { application.durable = saved })
 
 		application.recordAssembledCRC(t.Context(), job.ID(), 0)
 
@@ -209,9 +202,9 @@ func TestRecordAssembledCRC_ToleratesAMissingRecord(t *testing.T) {
 	t.Run("the record cannot be read", func(t *testing.T) {
 		application, job := newDurabilityTestApp(t, 1, 2)
 
-		saved := application.runs
-		application.runs = failingRunStore{err: errors.New("database is locked")}
-		t.Cleanup(func() { application.runs = saved })
+		saved := application.durable
+		application.durable = failingRunStore{durabilityStore: saved, err: errors.New("database is locked")}
+		t.Cleanup(func() { application.durable = saved })
 
 		application.recordAssembledCRC(t.Context(), job.ID(), 0)
 

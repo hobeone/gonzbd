@@ -180,9 +180,7 @@ func (f *resumeFixture) recordRuns(durableArts ...int) {
 			CRC32:   crc32.ChecksumIEEE(f.parts[i]),
 		})
 	}
-	if _, err := durability.NewSQLiteRunStore(f.repo.DB()).Commit(f.t.Context(), f.jobID, arts); err != nil {
-		f.t.Fatalf("RunStore.Commit: %v", err)
-	}
+	app.CommitRuns(f.t, durability.NewStore(f.repo.DB()), f.jobID, arts)
 }
 
 // stall parks the named articles forever, holding their connections open.
@@ -520,12 +518,11 @@ func TestResumeAtStartup_LeavesTheRecordAloneWhenItAdopts(t *testing.T) {
 //
 // This writes the row directly rather than driving the real write path, which
 // is a weaker fixture than the one that stood here before 18f7ed74 and is
-// worth stating. That path is appCheckpointStore.SaveBatch in
-// dispatcher_wiring.go, unexported and in package app, so an external test
-// cannot reach it; the checkpointer that would call it does not exist until
-// f.start, which is after the state under test has to be on disk. What lands
-// in the row is one boolean, and the column and value below are the same ones
-// SaveBatch writes, so the gap is the statement rather than the value.
+// worth stating. That path ends in durability.Store.SaveProgress, which writes
+// every column of a file's row, and this fixture must set one boolean and leave
+// the rest as the ingest seed wrote them. The column and value below are the
+// ones SaveProgress writes for it, so the gap is the statement rather than the
+// value.
 func (f *resumeFixture) recordComplete(fileIdx int) {
 	f.t.Helper()
 	res, err := f.repo.DB().ExecContext(f.t.Context(),

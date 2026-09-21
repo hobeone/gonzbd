@@ -9,19 +9,19 @@ run TestDropJobDurability_ReportsBothOwnersFailures
 [an early return on the run-store failure, so failed_articles is never reached]
 file internal/app/durability.go
 --- anchor
-		if err := app.runs.DeleteJob(ctx, jobID); err != nil {
-			errs = append(errs, fmt.Errorf("durable runs: %w", err))
-		}
+	if err := app.durable.DiscardRuns(ctx, jobID); err != nil {
+		errs = append(errs, fmt.Errorf("durable runs: %w", err))
+	}
 --- replace
-		if err := app.runs.DeleteJob(ctx, jobID); err != nil {
-			return fmt.Errorf("durable runs: %w", err)
-		}
+	if err := app.durable.DiscardRuns(ctx, jobID); err != nil {
+		return fmt.Errorf("durable runs: %w", err)
+	}
 --- end
 
 [the second failure dropped on the floor, so a caller is told about one of two]
 file internal/app/durability.go
 --- anchor
-			errs = append(errs, fmt.Errorf("failed articles: %w", err))
+		errs = append(errs, fmt.Errorf("failed articles: %w", err))
 --- replace
-			_ = err
+		_ = err
 --- end

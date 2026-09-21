@@ -1,12 +1,13 @@
 pkg ./internal/app/
 run TestRestoreResolution_KeepsRunsWhenFailedArticleScanFails
 
-[the failed_articles scan error returns instead of breaking]
+[a partial failed_articles read is abandoned instead of applied]
 file internal/app/residency.go
 --- anchor
-			r.log.Warn("residency: scan failed_articles", "job", j.ID(), "err", err)
-			break
+		r.log.Warn("residency: read failed_articles", "job", j.ID(), "err", err)
 --- replace
-			r.log.Warn("residency: scan failed_articles", "job", j.ID(), "err", err)
+		r.log.Warn("residency: read failed_articles", "job", j.ID(), "err", err)
+		if err != nil {
 			return
+		}
 --- end

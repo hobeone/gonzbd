@@ -2,6 +2,8 @@ package durability
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -116,17 +118,17 @@ func TestMergeAdjacentRuns_KeepsAnInteriorOverlapAsItsOwnRow(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_HelpersDirectly exercises queryBracketing, insertRuns,
+// TestStore_HelpersDirectly exercises queryBracketing, insertRuns,
 // deleteRows, and commitFile against a live transaction, the way Commit
 // itself calls them. Commit's own tests exercise the same code paths
 // end-to-end; this pins each helper's own contract in isolation — in
 // particular that deleteRows only removes the exact (job_id, file_idx,
 // offset) rows it is given, and that queryBracketing's maxEnd bound excludes
 // a row starting past it.
-func TestSQLiteRunStore_HelpersDirectly(t *testing.T) {
+func TestStore_HelpersDirectly(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
-	rs := NewSQLiteRunStore(db)
+	rs := NewStore(db)
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -178,13 +180,13 @@ func TestSQLiteRunStore_HelpersDirectly(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_ForJobReturnsAllFilesOrdered pins ForJob's whole-job
+// TestStore_ForJobReturnsAllFilesOrdered pins ForJob's whole-job
 // read: every file's runs, ordered by FileIdx then Offset.
-func TestSQLiteRunStore_ForJobReturnsAllFilesOrdered(t *testing.T) {
+func TestStore_ForJobReturnsAllFilesOrdered(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
-	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{
+	if _, err := rs.commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 1, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 0x1},
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 0x2},
 		{FileIdx: 0, ArtIdx: 5, Offset: 200, Length: 10, CRC32: 0x3},
@@ -207,17 +209,17 @@ func TestSQLiteRunStore_ForJobReturnsAllFilesOrdered(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_ForJobIsScopedToJob pins that ForJob never returns
+// TestStore_ForJobIsScopedToJob pins that ForJob never returns
 // another job's rows.
-func TestSQLiteRunStore_ForJobIsScopedToJob(t *testing.T) {
+func TestStore_ForJobIsScopedToJob(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	art := DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 0x1}
-	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{art}); err != nil {
+	if _, err := rs.commit(ctx, "job-1", []DurableArticle{art}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rs.Commit(ctx, "job-2", []DurableArticle{art}); err != nil {
+	if _, err := rs.commit(ctx, "job-2", []DurableArticle{art}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -230,22 +232,22 @@ func TestSQLiteRunStore_ForJobIsScopedToJob(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_DeleteJobIsScoped pins that DeleteJob removes exactly
+// TestStore_DeleteJobIsScoped pins that DeleteJob removes exactly
 // one job's rows and leaves every other job's rows — including a second
 // file within the deleted job — untouched.
-func TestSQLiteRunStore_DeleteJobIsScoped(t *testing.T) {
+func TestStore_DeleteJobIsScoped(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	art := DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 0x1}
-	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{art}); err != nil {
+	if _, err := rs.commit(ctx, "job-1", []DurableArticle{art}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rs.Commit(ctx, "job-2", []DurableArticle{art}); err != nil {
+	if _, err := rs.commit(ctx, "job-2", []DurableArticle{art}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := rs.DeleteJob(ctx, "job-1"); err != nil {
+	if err := rs.DiscardRuns(ctx, "job-1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -253,78 +255,78 @@ func TestSQLiteRunStore_DeleteJobIsScoped(t *testing.T) {
 		t.Errorf("job-1 has %d runs after DeleteJob, want 0", len(got))
 	}
 	if got, _ := rs.ForJob(ctx, "job-2"); len(got) != 1 {
-		t.Errorf("DeleteJob(job-1) removed job-2's runs")
+		t.Errorf("DiscardRuns(job-1) removed job-2's runs")
 	}
 }
 
-// TestSQLiteRunStore_CommitEmptyIsNoop pins that an empty batch neither
+// TestStore_CommitEmptyIsNoop pins that an empty batch neither
 // errors nor opens a transaction against a store that has nothing else to
 // give it a schema — a closed DB would otherwise surface a BeginTx error
 // even though there is nothing to commit.
-func TestSQLiteRunStore_CommitEmptyIsNoop(t *testing.T) {
+func TestStore_CommitEmptyIsNoop(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	rs := NewSQLiteRunStore(db)
-	if _, err := rs.Commit(ctx, "job-1", nil); err != nil {
+	rs := NewStore(db)
+	if _, err := rs.commit(ctx, "job-1", nil); err != nil {
 		t.Fatalf("Commit(nil) on a closed DB = %v, want nil (nothing to do)", err)
 	}
 }
 
-// TestSQLiteRunStore_CommitErrorsOnClosedDB covers the BeginTx error path.
-func TestSQLiteRunStore_CommitErrorsOnClosedDB(t *testing.T) {
+// TestStore_CommitErrorsOnClosedDB covers the BeginTx error path.
+func TestStore_CommitErrorsOnClosedDB(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	rs := NewSQLiteRunStore(db)
-	_, err := rs.Commit(ctx, "job-1", []DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1}})
+	rs := NewStore(db)
+	_, err := rs.commit(ctx, "job-1", []DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1}})
 	if err == nil {
 		t.Fatal("Commit on a closed DB returned nil, want an error")
 	}
 }
 
-// TestSQLiteRunStore_DeleteJobErrorsOnClosedDB covers DeleteJob's error path.
-func TestSQLiteRunStore_DeleteJobErrorsOnClosedDB(t *testing.T) {
+// TestStore_DeleteJobErrorsOnClosedDB covers DeleteJob's error path.
+func TestStore_DeleteJobErrorsOnClosedDB(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	rs := NewSQLiteRunStore(db)
-	if err := rs.DeleteJob(ctx, "job-1"); err == nil {
+	rs := NewStore(db)
+	if err := rs.DiscardRuns(ctx, "job-1"); err == nil {
 		t.Fatal("DeleteJob on a closed DB returned nil, want an error")
 	}
 }
 
-// TestSQLiteRunStore_DeleteFileIsScopedAndReportsAFailure covers the file-
+// TestStore_DeleteFileIsScopedAndReportsAFailure covers the file-
 // scoped deletion Resumer's gate performs.
 //
 // Both halves are the point. The SCOPE is what stops one disproved partial
 // from costing a job its other files' records; the ERROR is what stops the
 // sweep reporting a discard that did not reach the store, which would leave
 // the next start adopting runs the file has already contradicted.
-func TestSQLiteRunStore_DeleteFileIsScopedAndReportsAFailure(t *testing.T) {
+func TestStore_DeleteFileIsScopedAndReportsAFailure(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
-	rs := NewSQLiteRunStore(db)
-	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{
+	rs := NewStore(db)
+	if _, err := rs.commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 		{FileIdx: 1, ArtIdx: 5, Offset: 0, Length: 100, CRC32: 2},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// Another job's file 0, so the delete's job scoping is exercised too.
-	if _, err := rs.Commit(ctx, "job-2", []DurableArticle{
+	if _, err := rs.commit(ctx, "job-2", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 3},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := rs.DeleteFile(ctx, "job-1", 0); err != nil {
+	if err := rs.deleteFile(ctx, "job-1", 0); err != nil {
 		t.Fatalf("DeleteFile: %v", err)
 	}
 	if got, err := rs.ForFile(ctx, "job-1", 0); err != nil || len(got) != 0 {
@@ -341,21 +343,21 @@ func TestSQLiteRunStore_DeleteFileIsScopedAndReportsAFailure(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := rs.DeleteFile(ctx, "job-1", 1); err == nil {
+	if err := rs.deleteFile(ctx, "job-1", 1); err == nil {
 		t.Fatal("DeleteFile on a closed DB returned nil; the sweep would report a discard " +
 			"that never reached the store, and the next start adopts the runs the file " +
 			"has already contradicted")
 	}
 }
 
-// TestSQLiteRunStore_InsertFailureMidBatchRollsBack pins insertRuns' error
+// TestStore_InsertFailureMidBatchRollsBack pins insertRuns' error
 // path and the transaction's atomicity together: a trigger fails the second
 // insert, and the first file's already-computed merge must not survive
 // partially — Commit is per-call atomic across every file it touches.
-func TestSQLiteRunStore_InsertFailureMidBatchRollsBack(t *testing.T) {
+func TestStore_InsertFailureMidBatchRollsBack(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
-	rs := NewSQLiteRunStore(db)
+	rs := NewStore(db)
 
 	if _, err := db.ExecContext(ctx, `
 		CREATE TRIGGER abort_file_1 BEFORE INSERT ON durable_runs
@@ -363,7 +365,7 @@ func TestSQLiteRunStore_InsertFailureMidBatchRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := rs.Commit(ctx, "job-1", []DurableArticle{
+	_, err := rs.commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1},
 		{FileIdx: 1, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 2},
 	})
@@ -380,17 +382,17 @@ func TestSQLiteRunStore_InsertFailureMidBatchRollsBack(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_DeleteFailureMidBatchRollsBack pins deleteRows' error
+// TestStore_DeleteFailureMidBatchRollsBack pins deleteRows' error
 // path: a trigger fails the delete of a stored row a merge consumed, and the
 // whole commit — including the insert of the merged replacement — must not
 // land.
-func TestSQLiteRunStore_DeleteFailureMidBatchRollsBack(t *testing.T) {
+func TestStore_DeleteFailureMidBatchRollsBack(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
-	rs := NewSQLiteRunStore(db)
+	rs := NewStore(db)
 
 	first := []byte("AAAA")
-	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{
+	if _, err := rs.commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: int32(len(first)), CRC32: crcOf(first)},
 	}); err != nil {
 		t.Fatal(err)
@@ -403,7 +405,7 @@ func TestSQLiteRunStore_DeleteFailureMidBatchRollsBack(t *testing.T) {
 	}
 
 	second := []byte("BBBB")
-	_, err := rs.Commit(ctx, "job-1", []DurableArticle{
+	_, err := rs.commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 1, Offset: int64(len(first)), Length: int32(len(second)), CRC32: crcOf(second)},
 	})
 	if err == nil {
@@ -416,5 +418,66 @@ func TestSQLiteRunStore_DeleteFailureMidBatchRollsBack(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].CRC32 != crcOf(first) {
 		t.Fatalf("stored row changed after a rolled-back commit: %+v, want the original 'AAAA' row untouched", got)
+	}
+}
+
+// TestStore_NoExportedMethodWritesRunContent is design §8.5's pin for §6: the
+// barrier is the only writer of durable_runs content, and the compiler keeps
+// it so only while no exported method of Store can put content into a row.
+//
+// It lists every exported method and what it may do to durable_runs, and fails
+// on any method it does not list. A new method therefore cannot arrive without
+// someone deciding which row it belongs in — and "writes run content" is not a
+// row this table has.
+func TestStore_NoExportedMethodWritesRunContent(t *testing.T) {
+	durableRuns := map[string]string{
+		"ForFile":               "reads",
+		"ForJob":                "reads",
+		"DiscardRuns":           "deletes",
+		"Admit":                 "untouched",
+		"SaveProgress":          "untouched",
+		"FileRows":              "untouched",
+		"FailedArticles":        "untouched",
+		"DiscardFileRows":       "untouched",
+		"DiscardFailedArticles": "untouched",
+	}
+	st := reflect.TypeFor[*Store]()
+	seen := map[string]bool{}
+	for method := range st.Methods() {
+		name := method.Name
+		seen[name] = true
+		if _, ok := durableRuns[name]; !ok {
+			t.Errorf("Store has an exported method %s that this test does not classify. "+
+				"If it writes durable_runs content, it reopens §6: only the barrier may, "+
+				"through the unexported commit", name)
+		}
+	}
+	for name := range durableRuns {
+		if !seen[name] {
+			t.Errorf("the table lists %s, which Store no longer exports; remove it", name)
+		}
+	}
+}
+
+// TestStore_ForJobReportsAnUnscannableRowAsAFailure pins the half of ForJob's
+// read contract that residency depends on: a row that cannot be scanned
+// returns nothing, and the error does NOT claim the result is partial, so the
+// caller abandons the read rather than applying an empty one.
+func TestStore_ForJobReportsAnUnscannableRowAsAFailure(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	if _, err := db.Exec(`INSERT INTO durable_runs (job_id, file_idx, first_art_idx, last_art_idx, offset, length, crc32) VALUES ('job-1', 0, 'x', 0, 0, 100, 0)`); err != nil {
+		t.Fatal(err)
+	}
+
+	runs, err := NewStore(db).ForJob(ctx, "job-1")
+	if err == nil {
+		t.Fatal("ForJob over an unscannable row returned no error")
+	}
+	if errors.Is(err, ErrIncomplete) {
+		t.Errorf("err = %v claims a partial read; a scan failure returns nothing usable", err)
+	}
+	if runs != nil {
+		t.Errorf("runs = %+v, want nil", runs)
 	}
 }

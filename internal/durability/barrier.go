@@ -23,13 +23,14 @@ import (
 //
 // It is also, since the durable-runs change, the only thing that puts CONTENT
 // into the durability record — the only path by which a durable_runs row comes
-// to assert anything. RunStore.Commit is called from exactly two places, both
-// below, both inside the transaction that precedes the ack. Resumer no longer
+// to assert anything. Store.commit is unexported and reached only through
+// Barrier.commit, which Run and FinalizeFile call, both inside the transaction
+// that precedes the ack. Resumer no longer
 // writes anything: it deletes a file's runs when the file on disk contradicts
 // them and otherwise reads.
 //
 // The bound is on content, not on the table. Rows are DELETED from three places
-// outside Commit's own merge — Resumer, RunStore.DeleteJob and
+// outside commit's own merge — Resumer, Store.DiscardRuns and
 // history.Repository.delete — and none of them can make a row claim anything,
 // which is why the narrower statement is the one the trust argument needs.
 // (It was five until b6651d43 deleted internal/queue, taking
@@ -45,10 +46,11 @@ import (
 // defect was refiled twice (#355, #356). One place is the whole point;
 // adding a second caller of newProof silently undoes it.
 type Barrier struct {
-	runs  RunStore
+	runs  runStore
 	ack   Acker
 	stall Stallable
 	log   *slog.Logger
+	wrap  CommitWrap
 
 	// reportedMu guards reported and nothing else. It is never held across
 	// any of this type's I/O — see NewBarrier.
@@ -85,11 +87,41 @@ type overlapKey struct {
 // and released around a map probe on the report latch, below every collaborator
 // call. Run and FinalizeFile do I/O throughout and the project bans I/O under a
 // lock, so nothing else here may grow a lock without moving the I/O first.
-func NewBarrier(rs RunStore, ack Acker, stall Stallable, log *slog.Logger) *Barrier {
-	return &Barrier{
+func NewBarrier(rs runStore, ack Acker, stall Stallable, log *slog.Logger, opts ...BarrierOption) *Barrier {
+	b := &Barrier{
 		runs: rs, ack: ack, stall: stall, log: log,
 		reported: make(map[overlapKey]struct{}),
 	}
+	for _, o := range opts {
+		o(b)
+	}
+	return b
+}
+
+// BarrierOption configures a Barrier at construction.
+type BarrierOption func(*Barrier)
+
+// CommitWrap runs around each of a barrier's commits. It is handed the commit
+// as a closure over the barrier's own articles, so it can delay the commit,
+// fail it, or observe it — and nothing else: it never sees the articles, so
+// it cannot make the record assert anything the barrier did not fsync. That
+// is what lets code outside this package inject a commit fault (tests of the
+// barrier's callers do) without reopening §6, which unexporting commit closed.
+type CommitWrap func(ctx context.Context, jobID string, commit func() ([]Collision, error)) ([]Collision, error)
+
+// WithCommitWrap installs w around every commit the barrier makes.
+func WithCommitWrap(w CommitWrap) BarrierOption {
+	return func(b *Barrier) { b.wrap = w }
+}
+
+// commit is the barrier's one route to the store's commit, so that a
+// CommitWrap covers Run and FinalizeFile alike.
+func (b *Barrier) commit(ctx context.Context, jobID string, arts []DurableArticle) ([]Collision, error) {
+	run := func() ([]Collision, error) { return b.runs.commit(ctx, jobID, arts) }
+	if b.wrap == nil {
+		return run()
+	}
+	return b.wrap(ctx, jobID, run)
 }
 
 // admit filters classified findings down to the ones not yet raised for their
@@ -156,14 +188,14 @@ func (b *Barrier) ForgetJob(jobID string) {
 //
 // The order is the invariant (S1). Nothing before the fsync may be claimed,
 // and nothing is claimed at all if any step fails (R7): a failed barrier acks
-// nothing and leaves the stored runs wholly intact, because RunStore.Commit is
+// nothing and leaves the stored runs wholly intact, because Store.commit is
 // atomic and is the last thing that can fail before the ack.
 //
 // The barrier hands Commit the ARTICLES the drain reported and does not group
 // them. Deciding which of them form a run is derived state and it has exactly
 // one owner, the store — which is also the only place the dedup against an
 // at-least-once redelivery can be correct, because it has to subtract already
-// stored art_idx values BEFORE grouping. See RunStore.Commit and the design
+// stored art_idx values BEFORE grouping. See runStore.commit and the design
 // doc's §6 for the worked example that ordering prevents.
 //
 // Run does not schedule itself. The cadence in R6 — a time bound, a byte
@@ -279,7 +311,7 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 	// Phase 4 — commit the runs atomically, then and only then ack. Nothing
 	// between these two statements may fail, and nothing may be inserted
 	// between them: the commit is what makes the proof true after a crash.
-	collisions, err := b.runs.Commit(ctx, jobID, arts)
+	collisions, err := b.commit(ctx, jobID, arts)
 	if err != nil {
 		return nil, fmt.Errorf("durability: barrier commit for %s: %w", jobID, err)
 	}
@@ -625,7 +657,7 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 		return nil, b.raise(jobID, "stat", t.Path(idx), err)
 	}
 
-	collisions, err := b.runs.Commit(ctx, jobID, arts)
+	collisions, err := b.commit(ctx, jobID, arts)
 	if err != nil {
 		return nil, fmt.Errorf("durability: finalize commit for %s file %d: %w", jobID, idx, err)
 	}

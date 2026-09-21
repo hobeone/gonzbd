@@ -325,7 +325,7 @@ type barrierLock struct {
 // and one job's slow mount must not park every other job's checkpoint.
 //
 // FinalizeFile takes it too. It is a barrier by another name — same drain,
-// same RunStore.Commit — so it races Run for exactly the same reason.
+// same store commit — so it races Run for exactly the same reason.
 func (app *Application) jobBarrierLock(jobID string) *sync.Mutex {
 	app.barrierMu.Lock()
 	defer app.barrierMu.Unlock()
@@ -395,7 +395,7 @@ func (app *Application) forgetJobBarrierState(jobID string) {
 	// re-wording of the old one. The mutex used to guard a read-modify-write
 	// of the file's extent, where the second commit overwrote the first and
 	// the loser's acked articles were durable with no bit to say so. That is
-	// closed structurally now: RunStore.Commit does its whole read-merge-write
+	// closed structurally now: the store's commit does its whole read-merge-write
 	// inside ONE SQLite transaction, so two of them serialise rather than
 	// interleave. What the mutex still guards is upstream of the store — Drain
 	// hands each article to exactly one caller, so two concurrent barriers
@@ -1167,10 +1167,10 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 // today's behaviour, so a failure here must not fail the finalize that has
 // already committed the runs and acked the articles.
 func (app *Application) recordAssembledCRC(ctx context.Context, jobID string, fileIdx int) {
-	if app.runs == nil {
+	if app.durable == nil {
 		return
 	}
-	runs, err := app.runs.ForFile(ctx, jobID, int32(fileIdx)) //nolint:gosec // G115: file counts are far below int32
+	runs, err := app.durable.ForFile(ctx, jobID, int32(fileIdx)) //nolint:gosec // G115: file counts are far below int32
 	if err != nil {
 		app.log.Debug("load the durable runs to record the assembled CRC", "job", jobID, "err", err)
 		return
@@ -1455,13 +1455,12 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 // dropJobDurability.
 func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 	var errs []error
-	if app.historyRepo != nil && app.historyRepo.DB() != nil {
+	if app.durable != nil {
 		// Reported rather than discarded, for the reason stated above: with no
 		// sweep behind this call, a failure here is the moment the rows become
 		// permanent, and `_, _ =` made that the one deletion of the three that
 		// could fail without leaving any trace at all.
-		if _, err := app.historyRepo.DB().ExecContext(ctx,
-			"DELETE FROM job_files WHERE job_id = ?", jobID); err != nil {
+		if err := app.durable.DiscardFileRows(ctx, jobID); err != nil {
 			errs = append(errs, fmt.Errorf("job files: %w", err))
 		}
 	}
@@ -1498,45 +1497,44 @@ func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
 // deciding whether to abort is better served by the whole picture than by
 // whichever failure came first.
 //
-// The two tables are durable_runs and failed_articles, and they are reached
-// differently because only one of them has an owner to reach through.
-// durability.RunStore owns durable_runs and is the only thing that INSERTS OR
-// AMENDS a run's content, so the deletion goes through its DeleteJob.
-// failed_articles has no such type: appCheckpointStore.SaveBatch writes it
-// with raw SQL and owns no deletion at all, so the delete below is raw SQL
-// against historyRepo.DB() for want of anywhere better to put it.
-//
-// This asymmetry USED to be principled -- queue.Store owned failed_articles
-// and the deletion went through its entry point -- and the sentence saying so
-// outlived internal/queue, which b6651d43 deleted. It is now a description of
-// how the tables ended up, not of a design. #560 is the issue for settling who
-// should own them.
-//
-// The write bound is on content, not on deletion, and the distinction is not
-// pedantry: durable_runs rows are deleted from three places outside the
-// barrier's own merge — durability.Resumer, RunStore.DeleteJob (below), and
-// history.Repository.delete. (It was five until b6651d43 deleted
-// internal/queue; a fourth, Commit's deleteRows, is part of the
-// merge's read-modify-write rather than a separate deleter.) Content-only is
-// still exactly the property the trust argument needs — nothing can make the
-// record ASSERT bytes an fsync did not cover — and unlike "nothing else writes
-// it", it is true.
+// Both tables belong to durability.Store, one discard each. Deleting run rows
+// here does not weaken the barrier's exclusive-writer bound, which is on
+// CONTENT: nothing outside the barrier can make the record assert bytes an
+// fsync did not cover, and a delete only takes a claim away. internal/durability's
+// package doc lists every deleter of durable_runs.
 func (app *Application) dropJobDurability(ctx context.Context, jobID string) error {
-	var errs []error
-	if app.runs != nil {
-		if err := app.runs.DeleteJob(ctx, jobID); err != nil {
-			errs = append(errs, fmt.Errorf("durable runs: %w", err))
-		}
+	if app.durable == nil {
+		return nil
 	}
-	if app.historyRepo != nil && app.historyRepo.DB() != nil {
-		if _, err := app.historyRepo.DB().ExecContext(ctx, `DELETE FROM failed_articles WHERE job_id = ?`, jobID); err != nil {
-			errs = append(errs, fmt.Errorf("failed articles: %w", err))
-		}
+	var errs []error
+	if err := app.durable.DiscardRuns(ctx, jobID); err != nil {
+		errs = append(errs, fmt.Errorf("durable runs: %w", err))
+	}
+	if err := app.durable.DiscardFailedArticles(ctx, jobID); err != nil {
+		errs = append(errs, fmt.Errorf("failed articles: %w", err))
 	}
 	return errors.Join(errs...)
 }
 
 var _ durability.Stallable = (*Application)(nil)
+
+// durabilityStore is what Application calls on durability.Store: reads of the
+// run record, the job_files seed, and the per-table discards the departure and
+// retry paths are built from. It is declared here, at its consumer, so a test
+// can substitute a store that fails or records.
+//
+// It has no method that writes run content, and cannot gain one: the store's
+// commit is unexported, so no type outside internal/durability can offer it.
+type durabilityStore interface {
+	ForJob(ctx context.Context, jobID string) ([]durability.Run, error)
+	ForFile(ctx context.Context, jobID string, fileIdx int32) ([]durability.Run, error)
+	Admit(ctx context.Context, jobID string, fetch []uint8) error
+	DiscardRuns(ctx context.Context, jobID string) error
+	DiscardFileRows(ctx context.Context, jobID string) error
+	DiscardFailedArticles(ctx context.Context, jobID string) error
+}
+
+var _ durabilityStore = (*durability.Store)(nil)
 
 // checkpointSettings resolves the two bounds from config, substituting the
 // defaults for unset or nonsensical values.

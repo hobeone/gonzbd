@@ -75,7 +75,7 @@ func TestBarrier_ACloseAfterTheDrainDropsOnlyThatFile(t *testing.T) {
 			stall := &recordingStall{}
 			ack := &recordingAcker{}
 			db := openTestDB(t)
-			b := NewBarrier(NewSQLiteRunStore(db),
+			b := NewBarrier(NewStore(db),
 				ack, stall, slog.New(slog.DiscardHandler))
 
 			tgt := &lateCloseTarget{closeAt: closeAt}
@@ -186,10 +186,10 @@ func TestFinalizeFile_HonoursTheCloseSentinelAtEveryStep(t *testing.T) {
 	for _, closeOn := range []string{"sync", "stat", "truncate"} {
 		t.Run("closed on "+closeOn, func(t *testing.T) {
 			stall := &recordingStall{}
-			rs := NewSQLiteRunStore(openTestDB(t))
+			rs := NewStore(openTestDB(t))
 			// A stored run, so the truncate bound is non-zero and the
 			// truncate arm is actually reached.
-			if _, err := rs.Commit(context.Background(), "job-1", []DurableArticle{
+			if _, err := rs.commit(context.Background(), "job-1", []DurableArticle{
 				{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1},
 			}); err != nil {
 				t.Fatal(err)
@@ -230,7 +230,7 @@ func TestFinalizeFile_HonoursTheCloseSentinelAtEveryStep(t *testing.T) {
 func TestBarrier_ARoutedFaultSaysSo(t *testing.T) {
 	stall := &recordingStall{}
 	db := openTestDB(t)
-	b := NewBarrier(NewSQLiteRunStore(db),
+	b := NewBarrier(NewStore(db),
 		&recordingAcker{}, stall, slog.New(slog.DiscardHandler))
 
 	tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, syncErr: syscall.ENOSPC}

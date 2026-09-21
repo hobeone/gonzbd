@@ -17,17 +17,13 @@ import (
 // article, standing in for a run that got some of the file onto disk and lost
 // one article for good.
 //
-// Both tables, because they are written through different paths and the
-// retention rules have to agree about them: durability.RunStore writes
-// durable_runs, and appCheckpointStore.SaveBatch writes failed_articles with
-// raw SQL.
+// Both tables, because the retention rules have to agree about them: the
+// barrier writes durable_runs, and the checkpointer writes failed_articles.
 func seedDurability(t *testing.T, application *Application, jobID string) {
 	t.Helper()
-	if _, err := application.runs.Commit(t.Context(), jobID, []durability.DurableArticle{
+	commitRuns(t, realStore(t, application), jobID, []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 7},
-	}); err != nil {
-		t.Fatalf("seed runs: %v", err)
-	}
+	})
 	if _, err := application.historyRepo.DB().ExecContext(t.Context(),
 		`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)`, jobID); err != nil {
 		t.Fatalf("seed failed articles: %v", err)
@@ -38,7 +34,7 @@ func seedDurability(t *testing.T, application *Application, jobID string) {
 // job still has.
 func durabilityRowCounts(t *testing.T, application *Application, jobID string) (int, int) {
 	t.Helper()
-	runs, err := application.runs.ForJob(t.Context(), jobID)
+	runs, err := application.durable.ForJob(t.Context(), jobID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,11 +62,9 @@ func durabilityRowCounts(t *testing.T, application *Application, jobID string) (
 // aborts on a failure here rather than requeueing (#422).
 //
 // Both errors are joined rather than the first winning, because the two
-// deletions are independent: durable_runs goes through durability.RunStore,
-// and failed_articles -- which appCheckpointStore.SaveBatch writes and no type
-// owns the deletion of -- goes through raw SQL. A caller deciding whether to
-// abort is better served by the whole picture, and an early return would leave
-// one table's rows behind for a job that is about to be re-downloaded over them.
+// deletions are independent calls. A caller deciding whether to abort is
+// better served by the whole picture, and an early return would leave one
+// table's rows behind for a job that is about to be re-downloaded over them.
 func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
@@ -87,11 +81,11 @@ func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
 
 	// Re-seed BEFORE the failing store goes in: the success path above emptied
 	// both tables, and seedDurability writes durable_runs through
-	// application.runs, which is about to start refusing everything.
+	// application.durable, which is about to start refusing run operations.
 	seedDurability(t, application, job.ID())
 
 	boom := errors.New("database is locked")
-	application.runs = failingRunStore{err: boom}
+	application.durable = failingRunStore{durabilityStore: application.durable, err: boom}
 
 	err := application.dropJobDurability(t.Context(), job.ID())
 	if !errors.Is(err, boom) {
@@ -106,7 +100,7 @@ func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
 	// test passes against a dropJobDurability that returns on the first
 	// error, which is the shape the comment above exists to rule out.
 	// Queried directly rather than through durabilityRowCounts, whose run count
-	// goes through application.runs -- now the refusing store.
+	// goes through application.durable -- now the refusing store.
 	var nf int
 	if err := application.historyRepo.DB().QueryRowContext(t.Context(),
 		`SELECT COUNT(*) FROM failed_articles WHERE job_id = ?`, job.ID()).Scan(&nf); err != nil {
@@ -117,10 +111,9 @@ func TestDropJobDurability_ReportsBothOwnersFailures(t *testing.T) {
 			"second deletion was skipped, so a retry downloads over rows nothing cleared", nf)
 	}
 
-	// Both failing at once. The failed_articles DELETE is raw SQL against a
-	// real database, so the failure is injected by taking the table away
-	// rather than through an interface -- there is no seam to inject at,
-	// which is itself part of what #560 is about.
+	// Both failing at once. failingRunStore passes DiscardFailedArticles
+	// through to the real store, so that failure is injected by taking the
+	// table away, and it is the real delete that fails.
 	if _, err := application.historyRepo.DB().ExecContext(t.Context(),
 		`ALTER TABLE failed_articles RENAME TO failed_articles_hidden`); err != nil {
 		t.Fatalf("hide failed_articles: %v", err)

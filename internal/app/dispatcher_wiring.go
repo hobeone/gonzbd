@@ -2,12 +2,11 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"fmt"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -80,67 +79,42 @@ func (nopDispatchStore) Load(context.Context) ([]dispatch.Persisted, error) { re
 func (nopDispatchStore) Save(context.Context, dispatch.Persisted) error     { return nil }
 func (nopDispatchStore) Delete(context.Context, string) error               { return nil }
 
+// appCheckpointStore is checkpoint.Store over durability.Store. It only
+// translates: durability cannot name job.Checkpoint (internal/job imports it),
+// so each checkpoint is mapped here to the store's plain types, and the store
+// does the writing. A nil store makes it a no-op, which is the no-history-
+// database mode.
 type appCheckpointStore struct {
-	db *sql.DB
+	store *durability.Store
 }
 
 func (s *appCheckpointStore) SaveBatch(ctx context.Context, cps []job.Checkpoint) error {
-	if s.db == nil || len(cps) == 0 {
+	if s.store == nil || len(cps) == 0 {
 		return nil
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("checkpoint: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	stmtFiles, err := tx.PrepareContext(ctx,
-		`UPDATE job_files SET complete = ?, fetch_policy = ?, filename = ?, assembled_crc32 = ? WHERE job_id = ? AND file_index = ?`,
-	)
-	if err != nil {
-		return fmt.Errorf("checkpoint: prepare job_files: %w", err)
-	}
-	defer func() { _ = stmtFiles.Close() }()
-
-	stmtFailed, err := tx.PrepareContext(ctx,
-		`INSERT OR IGNORE INTO failed_articles (job_id, art_idx) VALUES (?, ?)`,
-	)
-	if err != nil {
-		return fmt.Errorf("checkpoint: prepare failed_articles: %w", err)
-	}
-	defer func() { _ = stmtFailed.Close() }()
-
+	batch := make([]durability.JobProgress, 0, len(cps))
 	for _, cp := range cps {
-		if cp.Progress != nil {
-			for i := range cp.Progress.NumFiles() {
-				complete := 0
-				if cp.Progress.FileComplete(i) {
-					complete = 1
-				}
-				fetch := int(cp.Progress.FileFetchPolicy(i))
-				if _, err := stmtFiles.ExecContext(ctx,
-					complete, fetch, cp.Progress.FileFilename(i), cp.Progress.FileAssembledCRC32(i),
-					cp.ID, i,
-				); err != nil {
-					return fmt.Errorf("checkpoint: update job_file %s index %d: %w", cp.ID, i, err)
+		jp := durability.JobProgress{JobID: cp.ID}
+		if p := cp.Progress; p != nil {
+			jp.Files = make([]durability.FileRow, p.NumFiles())
+			for i := range jp.Files {
+				jp.Files[i] = durability.FileRow{
+					FileIndex:      i,
+					Complete:       p.FileComplete(i),
+					FetchPolicy:    uint8(p.FileFetchPolicy(i)),
+					Filename:       p.FileFilename(i),
+					AssembledCRC32: p.FileAssembledCRC32(i),
 				}
 			}
-
-			if cp.Progress.ArticlesFailed() > 0 {
-				for artIdx := range cp.Progress.TotalArticles() {
-					if cp.Progress.ArticleFailed(artIdx) {
-						if _, err := stmtFailed.ExecContext(ctx, cp.ID, artIdx); err != nil {
-							return fmt.Errorf("checkpoint: insert failed_article %s index %d: %w", cp.ID, artIdx, err)
-						}
+			if p.ArticlesFailed() > 0 {
+				for artIdx := range p.TotalArticles() {
+					if p.ArticleFailed(artIdx) {
+						jp.FailedArticles = append(jp.FailedArticles, artIdx)
 					}
 				}
 			}
 		}
+		batch = append(batch, jp)
 	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("checkpoint: commit: %w", err)
-	}
-	return nil
+	return s.store.SaveProgress(ctx, batch)
 }

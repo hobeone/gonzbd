@@ -41,7 +41,7 @@ func (s *closedFileTarget) Confirm(context.Context, int32)    {}
 // sync before closing, so there is nothing left for this barrier to do.
 func TestBarrier_ADeliberatelyClosedFileDoesNotStallTheJob(t *testing.T) {
 	stall := &recordingStall{}
-	b := NewBarrier(NewSQLiteRunStore(openTestDB(t)),
+	b := NewBarrier(NewStore(openTestDB(t)),
 		&recordingAcker{}, stall, slog.New(slog.DiscardHandler))
 
 	tgt := &closedFileTarget{}

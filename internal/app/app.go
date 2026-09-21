@@ -8,7 +8,6 @@ package app
 import (
 	"compress/gzip"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -157,11 +156,11 @@ type Application struct {
 	// history database, in which case nothing acks and every restart
 	// re-downloads — see New.
 	barrier *durability.Barrier
-	// runs is the durability record itself. The barrier is its only writer;
-	// everything here READS it — recordAssembledCRC for the whole-file CRC,
-	// seedFromCommittedRuns for a stall recovery's replay — or deletes a
-	// departed job's rows.
-	runs    durability.RunStore
+	// durable is the store that owns a job's per-job rows: durable_runs,
+	// job_files and failed_articles. Nil when there is no history database.
+	// The barrier is the only writer of run content, and this handle cannot
+	// write it — durability.Store's commit is unexported.
+	durable durabilityStore
 	resumer fileResumer
 
 	// checkpointBytes is B1's volume bound. checkpointInterval above is its
@@ -351,11 +350,13 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 
 	var dispatchStore dispatch.Store = nopDispatchStore{}
-	var checkpointStore checkpoint.Store = &appCheckpointStore{}
+	var durStore *durability.Store
 	if repo != nil && repo.DB() != nil {
 		dispatchStore = dispatchstore.New(repo.DB())
-		checkpointStore = &appCheckpointStore{db: repo.DB()}
+		durStore = durability.NewStore(repo.DB())
+		app.durable = durStore
 	}
+	checkpointStore := &appCheckpointStore{store: durStore}
 	leaseCap := maxActiveJobs
 	if leaseCap <= 0 {
 		leaseCap = 4
@@ -366,11 +367,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	mdir := manifestDir(adminDir)
 	app.checkpointer = checkpoint.New(checkpointStore, 5*time.Second, log)
-	var historyDB *sql.DB
-	if repo != nil {
-		historyDB = repo.DB()
-	}
-	app.residency = newAppResidency(app.lookupJob, mdir, historyDB, log)
+	app.residency = newAppResidency(app.lookupJob, mdir, durStore, log)
 	app.runner = newAppRunner(app)
 	app.dispatcher = dispatch.New(
 		leaseCap,
@@ -521,10 +518,9 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	// thing that can mint a DurableProof, so nothing acks, and every restart
 	// re-downloads everything. It is logged loudly for that reason. Only
 	// tests that never download reach it.
-	if repo != nil && repo.DB() != nil {
-		app.runs = durability.NewSQLiteRunStore(repo.DB())
-		app.resumer = durability.NewResumer(app.runs, log)
-		app.barrier = durability.NewBarrier(app.runs, app, app, log)
+	if durStore != nil {
+		app.resumer = durability.NewResumer(durStore, log)
+		app.barrier = durability.NewBarrier(durStore, app, app, log)
 	} else {
 		log.Warn("no history database: durability barrier disabled, " +
 			"no article will be acked and every restart re-downloads the whole queue")
@@ -781,9 +777,9 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	// failed seed returns an error to the caller while the job is already in
 	// the dispatcher and downloading, with no job_files rows for SaveBatch to
 	// update, so the attempt runs unrecorded and reports as a failure to add.
-	if app.historyRepo != nil && app.historyRepo.DB() != nil {
+	if app.durable != nil {
 		if m, err := j.Manifest(); err == nil && m != nil {
-			if err := seedJobFiles(ctx, app.historyRepo.DB(), j.ID(), m.NumFiles(), j.FileFetchPolicy); err != nil {
+			if err := seedJobFiles(ctx, app.durable, j.ID(), m.NumFiles(), j.FileFetchPolicy); err != nil {
 				return err
 			}
 		}
@@ -863,51 +859,16 @@ func (app *Application) removeNZBBackupIn(dir, jobID, nzbBackup string) {
 // in-flight tick Save before its own busy_timeout begins.
 const addPersistTimeout = 10 * time.Second
 
-// seedJobFiles creates one job_files row per file. fetch_policy is authored
-// here at its derived value — fetch(i), the same Progress.FileFetchPolicy(i)
-// accessor SaveBatch already uses — because it is fully determined at
-// construction, before this is ever called; it is not a placeholder like
-// complete, filename and assembled_crc32, which hold empty RESULTS that
-// appCheckpointStore.SaveBatch fills in as the download proceeds. Nothing
-// else from the manifest is copied: the manifest is loaded before these rows
-// are read, so a copy could only ever be the stale one.
-//
-// The seed is a precondition for the checkpointer, not merely an optimisation —
-// SaveBatch UPDATEs by (job_id, file_index) and an UPDATE matching no row is
-// not an error, so a file with no seed row silently persists no metadata at all
-// and hydrates with defaults. That is why the whole seed is one transaction:
-// partway through, the job is already registered with the dispatcher and about
-// to start downloading, and a per-row autocommit would leave the tail of the
-// file list in exactly that silent state.
-//
-// It is also where the cost is. Each autocommit is its own WAL commit, so an
-// NZB with a thousand files paid a thousand of them at submission.
-func seedJobFiles(ctx context.Context, db *sql.DB, jobID string, numFiles int, fetch func(int) job.FetchPolicy) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("app: begin job_files seed %s: %w", jobID, err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	stmt, err := tx.PrepareContext(ctx, `
-INSERT INTO job_files
-  (job_id, file_index, complete, fetch_policy, filename, assembled_crc32)
-VALUES (?, ?, 0, ?, '', 0)
-ON CONFLICT(job_id, file_index) DO NOTHING`)
-	if err != nil {
-		return fmt.Errorf("app: prepare job_files seed %s: %w", jobID, err)
-	}
-	defer func() { _ = stmt.Close() }()
-
+// seedJobFiles seeds a job's job_files rows through the durability store,
+// translating each file's job.FetchPolicy to the store's plain type. See
+// durability.Store.Admit for why the seed must exist before the first
+// checkpoint, and why it is one transaction.
+func seedJobFiles(ctx context.Context, st durabilityStore, jobID string, numFiles int, fetch func(int) job.FetchPolicy) error {
+	policies := make([]uint8, numFiles)
 	for i := range numFiles {
-		if _, err := stmt.ExecContext(ctx, jobID, i, int(fetch(i))); err != nil {
-			return fmt.Errorf("app: insert job_file %s index %d: %w", jobID, i, err)
-		}
+		policies[i] = uint8(fetch(i))
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("app: commit job_files seed %s: %w", jobID, err)
-	}
-	return nil
+	return st.Admit(ctx, jobID, policies)
 }
 
 // RemoveJob cancels and removes a job from the queue.
@@ -2310,8 +2271,8 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	}
 	m, _ := j.Manifest()
 	if len(retained) > 0 && m != nil && retainedMatchesManifest(retained, m) {
-		if app.runs != nil {
-			runs, runErr := app.runs.ForJob(ctx, jobID)
+		if app.durable != nil {
+			runs, runErr := app.durable.ForJob(ctx, jobID)
 			if runErr != nil {
 				return fmt.Errorf("app: retry %s: load runs: %w", jobID, runErr)
 			}
@@ -2336,9 +2297,8 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 			return fmt.Errorf("app: retry %s: drop stale durability rows: %w", jobID, err)
 		}
 	}
-	if app.historyRepo != nil && app.historyRepo.DB() != nil {
-		if _, err := app.historyRepo.DB().ExecContext(ctx,
-			"DELETE FROM failed_articles WHERE job_id = ?", jobID); err != nil {
+	if app.durable != nil {
+		if err := app.durable.DiscardFailedArticles(ctx, jobID); err != nil {
 			app.log.Warn("could not clear failed_articles for retry", "job", jobID, "err", err)
 		}
 	}
@@ -2408,8 +2368,8 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	// rows missing entirely (a shape-changed retry, or an original seed that
 	// failed outright) and cannot disturb a retained row — safe without a
 	// preceding DELETE.
-	if app.historyRepo != nil && app.historyRepo.DB() != nil && m != nil {
-		if err := seedJobFiles(ctx, app.historyRepo.DB(), jobID, m.NumFiles(), j.FileFetchPolicy); err != nil {
+	if app.durable != nil && m != nil {
+		if err := seedJobFiles(ctx, app.durable, jobID, m.NumFiles(), j.FileFetchPolicy); err != nil {
 			return fmt.Errorf("app: retry %s: seed job_files: %w", jobID, err)
 		}
 	}

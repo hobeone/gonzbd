@@ -24,7 +24,7 @@ import (
 // test hook. The property is not "some code sets the bit in the right place";
 // it is "by the time the bit is set, a completed fsync covers the bytes", and
 // only the real chain — assembler write cache, barrier drain, fsync,
-// RunStore commit, AckDurable — can demonstrate that. The previous version
+// store commit, AckDurable — can demonstrate that. The previous version
 // of this test replaced the whole ack path with a hook it supplied itself,
 // which meant it pinned its own fixture.
 //
@@ -99,7 +99,7 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 
 	// The bit must reach the database too: an in-memory Done that never lands is
 	// exactly the state a restart cannot use.
-	runStore := durability.NewSQLiteRunStore(repo.DB())
+	runStore := durability.NewStore(repo.DB())
 	runs, err := runStore.ForJob(t.Context(), job.ID())
 	if err != nil {
 		t.Fatalf("runStore.ForJob: %v", err)
@@ -338,7 +338,7 @@ func TestBarrierRunsOnCleanShutdown(t *testing.T) {
 
 	// And the ack it produced is on disk, not just in memory: Shutdown persists
 	// runs to durable_runs in SQLite.
-	runStore := durability.NewSQLiteRunStore(repo.DB())
+	runStore := durability.NewStore(repo.DB())
 	runs, err := runStore.ForJob(t.Context(), job.ID())
 	if err != nil {
 		t.Fatalf("runStore.ForJob: %v", err)

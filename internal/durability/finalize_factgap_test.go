@@ -65,7 +65,7 @@ func (s *factGapTarget) Confirm(_ context.Context, idx int32) { s.confirmed = ap
 // and §3.4's resume gate are stated against.
 func TestFinalizeFile_PostTruncateStatFaultNamesTheFile(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	// One article covering [0, 100) of a 200-byte file, so a truncate to 100
 	// is both correct and reached — the stat under test only runs after one.
