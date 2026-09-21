@@ -1,5 +1,5 @@
 pkg ./internal/dispatch/
-run TestDeregister_LeavesAnotherRemovalsMarkerStanding|TestDeregister_IsTotal|TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess|TestAdd_PersistFailureUnwindsWithoutTickTouchingJob|TestAdd_PostPersistKickWakesTickAfterBlockedSave|TestAdd_AbortedRemovalDuringTheWriteLeavesTheJobVisible|TestRemove_OverlappingAddWithTransientDeleteErrorIsRetriedByTick|TestStart_RefusesARowThatDiffersFromTheOneAddWrote|TestAdd_SingleKickOnlyAfterPersist|TestAdd_WritesUnderTheCallersContext|TestRemovingState_SuppressesPersistAndResidency
+run TestDeregister_LeavesAnotherRemovalsMarkerStanding|TestDeregister_IsTotal|TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess|TestAdd_PersistFailureUnwindsWithoutTickTouchingJob|TestAdd_PostPersistKickWakesTickAfterBlockedSave|TestAdd_AbortedRemovalDuringTheWriteLeavesTheJobVisible|TestRemove_OverlappingAddWithTransientDeleteErrorIsRetriedByTick|TestStart_RefusesARowThatDiffersFromTheOneAddWrote|TestAdd_SingleKickOnlyAfterPersist|TestAdd_WritesUnderTheCallersContext|TestRemovingState_SuppressesPersistAndResidency|TestRegister_RefusesWhileARemovalIsOutstanding
 
 [snapshotOrder written gate neutered]
 file internal/dispatch/registry.go
@@ -98,4 +98,18 @@ file internal/dispatch/registry.go
 	}
 --- replace
 	delete(d.removing, id)
+--- end
+
+[register's outstanding-removal refusal neutered]
+file internal/dispatch/registry.go
+--- anchor
+	if d.removing[j.ID()] > 0 {
+		d.mu.Unlock()
+		return fmt.Errorf("dispatch: register: %s: %w", j.ID(), errPreemptedByRemoval)
+	}
+--- replace
+	if false {
+		d.mu.Unlock()
+		return fmt.Errorf("dispatch: register: %s: %w", j.ID(), errPreemptedByRemoval)
+	}
 --- end

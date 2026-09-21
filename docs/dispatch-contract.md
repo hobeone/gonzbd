@@ -292,6 +292,15 @@ the job — registered, persisted, and invisible to `snapshotOrder` forever.
 Refusing a Save while a removal is outstanding is `persistIfChanged`'s job, and
 is the single enforcement point for it.
 
+**`d.removing` is a refcount, so it also gates admission.** `deregister` is
+total — it clears `d.byID` even when it only decremented a marker another
+removal still holds — so between an `Add` unwinding and the removal that
+preempted it reaching its own `end()`, `d.byID` reports the ID free while
+`d.removing` does not. `register` therefore refuses an ID with an outstanding
+removal, returning `errPreemptedByRemoval`. Without that, a job admitted in
+that span is reachable by a removal it has nothing to do with: that removal's
+`Cancel` latches `IntentCancel` onto it, and its `end()` deregisters it.
+
 `internal/dispatch/store` implements this against SQLite; `internal/dispatch`
 itself stays free of a SQL driver. `Persisted` deliberately omits a
 `crossed` field: it is derivable from `State` via

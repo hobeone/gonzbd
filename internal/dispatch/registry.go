@@ -187,11 +187,15 @@ func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 	return nil
 }
 
-// errPreemptedByRemoval is what Add returns when a removal that began before
-// its first write made persistIfChanged skip the Save. Nothing of the job is
-// left registered. A retry with the same ID is refused with this same error
-// until the removal that preempted it finishes, because its marker outlives
-// the unwind's own deregister.
+// errPreemptedByRemoval reports that an outstanding removal owns this ID.
+//
+// Two sites return it, for the same reason at different moments: register,
+// when a removal's marker already stands as the job asks to be admitted, and
+// Add, when one was raised between registration and the first write and so
+// made persistIfChanged skip the Save. Either way nothing of the job is left
+// registered, and a retry keeps getting this error until the removal that
+// preempted it finishes — its marker is a refcount and outlives the unwind's
+// own deregister.
 var errPreemptedByRemoval = errors.New("a concurrent removal preempted the first write")
 
 // seqNext tells register to allocate the next unused sequence itself. It is a
@@ -228,6 +232,17 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 	if _, dup := d.byID[j.ID()]; dup {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: register: job %q is already registered", j.ID())
+	}
+	// An ID is free only when BOTH maps say so. deregister is total — it
+	// clears d.byID even when it merely decremented a refcount another
+	// removal still holds — so d.byID alone reports an ID free from the
+	// moment an Add unwinds until the removal that preempted it ends. A job
+	// admitted in that span is reachable by that removal's own Cancel and
+	// end, which would latch IntentCancel onto it and then deregister it.
+	// TestRegister_RefusesWhileARemovalIsOutstanding pins this.
+	if d.removing[j.ID()] > 0 {
+		d.mu.Unlock()
+		return fmt.Errorf("dispatch: register: %s: %w", j.ID(), errPreemptedByRemoval)
 	}
 	added := seq == seqNext
 	if added {

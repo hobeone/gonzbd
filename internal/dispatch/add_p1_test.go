@@ -405,16 +405,17 @@ func TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess(t *testing.T) {
 // destroyed by the tail of the Remove that preempted the first one — the
 // caller was told the job was added, and the store row went with it.
 //
-// With the marker refcounted, the retry is refused instead: persistIfChanged
-// still sees an outstanding removal, so it writes nothing, and Add unwinds on
-// its own check rather than leaving a row for the Remove to delete.
+// With the marker refcounted, the retry is refused instead — by register,
+// which reads the same marker, so nothing is admitted and nothing is written.
+// This test asserts only the outcome Add reports; the door itself is
+// TestRegister_RefusesWhileARemovalIsOutstanding.
 func TestDeregister_LeavesAnotherRemovalsMarkerStanding(t *testing.T) {
-	st := &p1SaveCountingStore{}
+	st := &fakeStore{}
 	d := newTestDispatcher(t, withStore(st))
 	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	saves := st.saves.Load()
+	saves := st.saveCount()
 
 	inFlight, ok := d.beginRemoval("j1") // a real Remove, not yet at its Delete
 	if !ok {
@@ -435,7 +436,7 @@ func TestDeregister_LeavesAnotherRemovalsMarkerStanding(t *testing.T) {
 	if !errors.Is(err, errPreemptedByRemoval) {
 		t.Errorf("retry Add error = %v, want errPreemptedByRemoval", err)
 	}
-	if n := st.saves.Load(); n != saves {
+	if n := st.saveCount(); n != saves {
 		t.Errorf("the refused retry wrote %d row(s) for the in-flight Remove to delete", n-saves)
 	}
 
@@ -446,15 +447,53 @@ func TestDeregister_LeavesAnotherRemovalsMarkerStanding(t *testing.T) {
 	}
 }
 
-// p1SaveCountingStore counts Save calls so a test can assert that a refused
-// Add wrote nothing, which a row lookup cannot show when an earlier Add for
-// the same ID already left one.
-type p1SaveCountingStore struct {
-	fakeStore
-	saves atomic.Int32
-}
+// TestRegister_RefusesWhileARemovalIsOutstanding pins the door itself.
+//
+// deregister is total — it clears d.byID even when it only decremented a
+// refcount another removal still holds. So between an Add unwinding and the
+// removal that preempted it reaching its own end(), the ID looks free to
+// d.byID while d.removing still stands. register holds the only assignment
+// to d.byID, so it is the one place that can refuse: `git grep -n 'd\.byID\[j\.ID()\] =' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 1 line.
+//
+// Reached directly rather than through Add, for the same reason
+// TestDeregister_IsTotal reaches deregister directly: Add's own landed-write
+// check unwinds the retry a moment later either way, which hides whether the
+// job was ever admitted. What matters is that it was not — a job in d.byID is
+// reachable by the in-flight Remove's Cancel, which would latch IntentCancel
+// onto a job instance that removal has nothing to do with.
+func TestRegister_RefusesWhileARemovalIsOutstanding(t *testing.T) {
+	d := newTestDispatcher(t, withStore(&fakeStore{}))
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 
-func (s *p1SaveCountingStore) Save(ctx context.Context, p Persisted) error {
-	s.saves.Add(1)
-	return s.fakeStore.Save(ctx, p)
+	inFlight, ok := d.beginRemoval("j1") // a real Remove, not yet at its Delete
+	if !ok {
+		t.Fatal("setup: beginRemoval")
+	}
+	// Add's unwind, verbatim from Add: decrements to 1, and clears d.byID.
+	if rm, ok := d.beginRemoval("j1"); ok {
+		rm.end()
+	}
+
+	retry := job.New("j1", "n", job.Policy{})
+	err := d.register(retry, Header{Name: "n"}, seqNext)
+	if err == nil {
+		t.Fatal("register admitted a job while a removal for the same ID was still outstanding")
+	}
+	if !errors.Is(err, errPreemptedByRemoval) {
+		t.Errorf("register error = %v, want errPreemptedByRemoval", err)
+	}
+	d.mu.Lock()
+	admitted := d.byID["j1"] != nil
+	d.mu.Unlock()
+	if admitted {
+		t.Error("the refused job is in d.byID, where the in-flight Remove's Cancel can latch IntentCancel onto it")
+	}
+
+	// Once that removal finishes, the ID is free again.
+	inFlight.end()
+	if err := d.register(job.New("j1", "n", job.Policy{}), Header{Name: "n"}, seqNext); err != nil {
+		t.Errorf("register after the removal completed = %v, want nil", err)
+	}
 }
