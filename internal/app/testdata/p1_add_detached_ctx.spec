@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestAddJob_DisconnectDuringDispatcherSaveStillPersistsQueueRow|TestRetryHistoryJob_DisconnectDuringDispatcherSaveStillPersistsQueueRow|TestAddJob_FailedAddLeavesNoOrphanArtifacts|TestAddJob_FailedSeedLeavesNoOrphanArtifacts|TestRetryHistoryJob_FailedAddRemovesTheQueueManifest|TestDiscardUnaddedJobArtifacts_SurvivesRemovalFailures
+run TestAddJob_DisconnectDuringDispatcherSaveStillPersistsQueueRow|TestRetryHistoryJob_DisconnectDuringDispatcherSaveStillPersistsQueueRow|TestAddJob_FailedAddLeavesNoOrphanArtifacts|TestAddJob_FailedSeedLeavesNoOrphanArtifacts|TestRetryHistoryJob_FailedAddRemovesTheQueueManifest|TestDiscardUnaddedJobArtifacts_SurvivesRemovalFailures|TestRetryHistoryJob_FailedFlushRemovesTheQueueManifest
 
 [AddJob WithoutCancel neutered]
 file internal/app/app.go
@@ -24,13 +24,15 @@ file internal/app/app.go
 		err := app.dispatcher.Add(addCtx, j, hdr)
 		addCancel()
 		if err != nil {
-			// The manifest written above is this retry's, and the job stays in
+			return err
+		}
 --- replace
 		addCtx, addCancel := context.WithTimeout(ctx, addPersistTimeout)
 		err := app.dispatcher.Add(addCtx, j, hdr)
 		addCancel()
 		if err != nil {
-			// The manifest written above is this retry's, and the job stays in
+			return err
+		}
 --- end
 
 [AddJob's deferred cleanup neutered]
@@ -48,17 +50,29 @@ file internal/app/app.go
 [AddJob's cleanup narrowed back to the dispatcher's failure alone]
 file internal/app/app.go
 --- anchor
+	// happens to be last.
 	admitted := false
 --- replace
+	// happens to be last.
 	admitted := true
 --- end
 
-[RetryHistoryJob leaves its queue manifest on a failed Add]
+[RetryHistoryJob's deferred manifest cleanup neutered]
 file internal/app/app.go
 --- anchor
 			if rmErr := removeManifestIn(mdir, jobID); rmErr != nil && !os.IsNotExist(rmErr) {
 --- replace
 			if rmErr := error(nil); rmErr != nil && !os.IsNotExist(rmErr) {
+--- end
+
+[RetryHistoryJob's cleanup narrowed back to the dispatcher's failure alone]
+file internal/app/app.go
+--- anchor
+	}
+	admitted := false
+--- replace
+	}
+	admitted := true
 --- end
 
 [RetryHistoryJob history delete re-attached to the caller's context]

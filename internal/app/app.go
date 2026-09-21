@@ -828,14 +828,22 @@ func (app *Application) discardUnaddedJobArtifacts(ctx context.Context, jobID, n
 }
 
 // removeNZBBackupIn deletes one job's NZB backup from dir, confined the way
-// removeManifestIn is. The name reaches here from a history row rather than
-// from the daemon, so it is resolved against an open handle on dir: a Base of
-// "." or ".." would otherwise name dir itself or its parent.
+// removeManifestIn is: the name is resolved against an open handle on dir, so
+// it cannot name anything outside it. filepath.Base alone does not settle
+// that — Base("..") is "..", which names dir's parent.
+//
+// It is the only place that unlinks a backup, which is what makes the
+// confinement hold for both provenances rather than for whichever caller
+// someone remembered: `git grep -n 'app\.removeNZBBackupIn(' -- 'internal/app/*.go' ':!*_test.go'` returns 2 lines.
+// discardUnaddedJobArtifacts passes a name the daemon just minted in
+// writeNZBBackup; deleteHistoryEntries passes one read back out of a history
+// row. Only the second is untrusted, and having one owner means that does not
+// have to be re-decided per call site.
 func (app *Application) removeNZBBackupIn(dir, jobID, nzbBackup string) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			app.log.Warn("failed to open NZB backup directory for a job that was never added",
+			app.log.Warn("failed to open the NZB backup directory",
 				"job", jobID, "dir", dir, "err", err)
 		}
 		return
@@ -843,7 +851,7 @@ func (app *Application) removeNZBBackupIn(dir, jobID, nzbBackup string) {
 	defer func() { _ = root.Close() }()
 	name := filepath.Base(nzbBackup)
 	if err := root.Remove(name); err != nil && !os.IsNotExist(err) {
-		app.log.Warn("failed to remove NZB backup for a job that was never added",
+		app.log.Warn("failed to remove NZB backup",
 			"job", jobID, "backup", name, "err", err)
 	}
 }
@@ -1105,11 +1113,7 @@ func (app *Application) deleteHistoryEntries(ctx context.Context, entries []hist
 	ids := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if entry.NZBBackup != "" {
-			backupPath := filepath.Join(nzbDir, filepath.Base(entry.NZBBackup))
-			if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
-				app.log.Warn("failed to remove NZB backup for deleted history entry",
-					"path", backupPath, "err", err)
-			}
+			app.removeNZBBackupIn(nzbDir, entry.NzoID, entry.NZBBackup)
 		}
 		ids = append(ids, entry.NzoID)
 	}
@@ -2356,6 +2360,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	if err := os.MkdirAll(mdir, 0o750); err != nil {
 		return fmt.Errorf("app: retry %s: mkdir manifests: %w", jobID, err)
 	}
+	admitted := false
 	if m, err := j.Manifest(); err == nil && m != nil {
 		data, mErr := json.Marshal(m)
 		if mErr != nil {
@@ -2368,6 +2373,23 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		if err := fsutil.WriteGzAtomicBytes(mpath, data); err != nil {
 			return fmt.Errorf("app: retry %s: write manifest: %w", jobID, err)
 		}
+		// Armed where the file appears, so every return between here and the
+		// admission below takes it with it. Pinning only the dispatcher.Add
+		// branch was the earlier mistake: seedJobFiles and checkpointer.Flush
+		// return in this span too, and a retry that never entered the queue
+		// leaves a manifest no finalized job has and no sweep walks.
+		defer func() {
+			if admitted {
+				return
+			}
+			// The NZB backup and job_files rows are NOT this call's to
+			// remove — the history entry still owns them, and a later retry
+			// reads the backup to rebuild the job.
+			if rmErr := removeManifestIn(mdir, jobID); rmErr != nil && !os.IsNotExist(rmErr) {
+				app.log.Warn("retry failed to enter the queue and its manifest could not be removed",
+					"job", jobID, "err", rmErr)
+			}
+		}()
 	}
 
 	// Seed any job_files rows this attempt is missing, then flush the
@@ -2413,18 +2435,10 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		err := app.dispatcher.Add(addCtx, j, hdr)
 		addCancel()
 		if err != nil {
-			// The manifest written above is this retry's, and the job stays in
-			// history: a finalized job has no queue manifest, so leaving one
-			// behind is a file nothing refers to. The NZB backup and job_files
-			// rows are NOT this call's to remove — history still owns them,
-			// and a later retry needs them.
-			if rmErr := removeManifestIn(mdir, jobID); rmErr != nil && !os.IsNotExist(rmErr) {
-				app.log.Warn("retry failed to enter the queue and its manifest could not be removed",
-					"job", jobID, "err", rmErr)
-			}
 			return err
 		}
 	}
+	admitted = true
 
 	// Detached for the same reason Add is, and separately bounded so Add's
 	// budget is not shared: the job is in dispatch_jobs by now, and a client

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/checkpoint"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -344,5 +345,69 @@ func TestRemoveNZBBackupIn_MissingDirectoryIsNotAnError(t *testing.T) {
 
 	if _, err := os.Stat(missing); !os.IsNotExist(err) {
 		t.Errorf("the missing directory was created by a delete (stat err = %v)", err)
+	}
+}
+
+// failingSaveBatchStore makes checkpointer.Flush fail, which is the last of
+// RetryHistoryJob's steps between writing the queue manifest and reaching
+// dispatcher.Add.
+type failingSaveBatchStore struct{ err error }
+
+func (s failingSaveBatchStore) SaveBatch(context.Context, []job.Checkpoint) error { return s.err }
+
+// TestRetryHistoryJob_FailedFlushRemovesTheQueueManifest covers the steps
+// BETWEEN the manifest write and dispatcher.Add.
+//
+// TestRetryHistoryJob_FailedAddRemovesTheQueueManifest pins the Add itself,
+// and pinning only that was the mistake: the rule is "a retry that never
+// enters the queue leaves no queue manifest", and it governs every return
+// between the write and the admission, not the one that prompted the fix.
+// seedJobFiles and checkpointer.Flush both sit in that span. Flush is the
+// reachable one here — it takes an injected store, where seedJobFiles goes
+// straight to the history DB this app is otherwise using.
+func TestRetryHistoryJob_FailedFlushRemovesTheQueueManifest(t *testing.T) {
+	t.Parallel()
+	application, repo, _ := newLifecycleTestApp(t)
+	application.checkpointer = checkpoint.New(
+		failingSaveBatchStore{err: os.ErrPermission}, time.Hour, application.log)
+
+	adminDir := application.config.GetGeneral().AdminDir
+	nzbBackupDir := filepath.Join(adminDir, "nzb")
+	if err := os.MkdirAll(nzbBackupDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll nzb backup: %v", err)
+	}
+	const jobID = "feedface87654321"
+	const nzbBackup = "p1-retry-flush.nzb.gz"
+	rawNZB := []byte(`<?xml version="1.0" encoding="utf-8"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file poster="test" date="1700000000" subject="p1-retry-flush.bin yEnc (1/1)">
+    <groups><group>alt.binaries.test</group></groups>
+    <segments><segment bytes="100" number="1">p1-retry-flush-0@t</segment></segments>
+  </file>
+</nzb>`)
+	if err := fsutil.WriteGzAtomicBytes(filepath.Join(nzbBackupDir, nzbBackup), rawNZB); err != nil {
+		t.Fatalf("WriteGzAtomicBytes: %v", err)
+	}
+	if err := repo.Add(t.Context(), history.Entry{
+		NzoID: jobID, Name: "p1-retry-flush", NzbName: "p1-retry-flush.nzb",
+		NZBBackup: nzbBackup, Category: "*", Status: "Failed", Completed: time.Now(),
+	}); err != nil {
+		t.Fatalf("repo.Add: %v", err)
+	}
+
+	if err := application.RetryHistoryJob(t.Context(), jobID); err == nil {
+		t.Fatal("RetryHistoryJob returned nil although the checkpointer's Flush always fails")
+	}
+
+	mpath, err := manifestPath(adminDir, jobID)
+	if err != nil {
+		t.Fatalf("manifestPath: %v", err)
+	}
+	if _, err := os.Stat(mpath); !os.IsNotExist(err) {
+		t.Errorf("queue manifest %s survived a retry that never entered the queue (stat err = %v)", mpath, err)
+	}
+	// The backup belongs to the history entry, which is still there.
+	if _, err := os.Stat(filepath.Join(nzbBackupDir, nzbBackup)); err != nil {
+		t.Errorf("NZB backup was removed although the history entry still owns it: %v", err)
 	}
 }
