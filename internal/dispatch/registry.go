@@ -188,8 +188,10 @@ func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 }
 
 // errPreemptedByRemoval is what Add returns when a removal that began before
-// its first write made persistIfChanged skip the Save. The job is unwound, so
-// the caller may retry with a fresh Add; nothing of it is left registered.
+// its first write made persistIfChanged skip the Save. Nothing of the job is
+// left registered. A retry with the same ID is refused with this same error
+// until the removal that preempted it finishes, because its marker outlives
+// the unwind's own deregister.
 var errPreemptedByRemoval = errors.New("a concurrent removal preempted the first write")
 
 // seqNext tells register to allocate the next unused sequence itself. It is a
@@ -471,12 +473,25 @@ func (r *removal) end() {
 // TestDeregister_IsTotal does exactly that, because the property worth
 // pinning here is that this clears EVERY per-job map, and reaching it through
 // the token would test end instead.
+//
+// "Clears" holds for every map but d.removing, which is a refcount and so is
+// decremented — see the line itself. With one removal outstanding, the only
+// shape TestDeregister_IsTotal builds, that still erases the entry.
 func (d *Dispatcher) deregister(id string) {
 	d.mu.Lock()
 	delete(d.byID, id)
 	delete(d.written, id)
 	delete(d.resident, id)
-	delete(d.removing, id)
+	// Decremented, not deleted: concurrent removals for one ID are legal, and
+	// this call answers for ONE of them. Wiping the marker let an ID be
+	// re-registered while another removal was still walking to its Delete,
+	// which then deleted the new job's row and deregistered it — the caller
+	// having been told it was added.
+	// TestDeregister_LeavesAnotherRemovalsMarkerStanding pins that.
+	d.removing[id]--
+	if d.removing[id] <= 0 {
+		delete(d.removing, id)
+	}
 	delete(d.occupiers, id)
 	delete(d.occupancyTokens, id)
 	if ch, ok := d.occupyDrained[id]; ok {

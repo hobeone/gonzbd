@@ -239,3 +239,110 @@ func TestDiscardUnaddedJobArtifacts_SurvivesRemovalFailures(t *testing.T) {
 		}
 	}
 }
+
+// TestAddJob_FailedSeedLeavesNoOrphanArtifacts pins that the cleanup covers
+// every failure after the first artifact is written, not only the dispatcher's.
+// seedJobFiles runs after the NZB backup and the manifest, so a failure there
+// used to return with both still on disk and nothing left to refer to them.
+func TestAddJob_FailedSeedLeavesNoOrphanArtifacts(t *testing.T) {
+	t.Parallel()
+	application, repo, _ := newLifecycleTestApp(t)
+
+	// Drop the table seedJobFiles writes, so it fails after the manifest and
+	// the NZB backup are on disk.
+	if _, err := repo.DB().ExecContext(t.Context(), "DROP TABLE job_files"); err != nil {
+		t.Fatalf("drop job_files: %v", err)
+	}
+
+	parsed := &nzb.NZB{Files: []nzb.File{{
+		Subject:  "p1-seedfail.bin",
+		Bytes:    100,
+		Articles: []nzb.Article{{ID: "p1-seedfail-0@t", Bytes: 100, Number: 1}},
+	}}}
+	j, hdr, rawNZB := buildTestIngestJob(t, application, parsed, "p1-seedfail")
+
+	if err := application.AddJob(t.Context(), j, hdr, rawNZB, false); err == nil {
+		t.Fatal("AddJob returned nil although job_files does not exist")
+	}
+
+	adminDir := application.config.GetGeneral().AdminDir
+	mpath, err := manifestPath(adminDir, j.ID())
+	if err != nil {
+		t.Fatalf("manifestPath: %v", err)
+	}
+	if _, err := os.Stat(mpath); !os.IsNotExist(err) {
+		t.Errorf("manifest %s survived a failed seed (stat err = %v)", mpath, err)
+	}
+}
+
+// TestRetryHistoryJob_FailedAddRemovesTheQueueManifest pins that a retry the
+// dispatcher refuses does not leave a queue manifest behind. A finalized job
+// has none — jobFinalizer deletes it — so one written by a retry that never
+// entered the queue is a file nothing refers to.
+func TestRetryHistoryJob_FailedAddRemovesTheQueueManifest(t *testing.T) {
+	t.Parallel()
+	application, repo, _ := newLifecycleTestApp(t)
+	application.dispatcher = dispatch.New(
+		1, 1, time.Second, time.Now,
+		&appWorkers{app: application},
+		application.residency,
+		failingSaveStore{Store: store.New(repo.DB()), err: os.ErrPermission},
+		application.runner,
+	)
+
+	adminDir := application.config.GetGeneral().AdminDir
+	nzbBackupDir := filepath.Join(adminDir, "nzb")
+	if err := os.MkdirAll(nzbBackupDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll nzb backup: %v", err)
+	}
+	const jobID = "feedface12345678"
+	const nzbBackup = "p1-retry-fail.nzb.gz"
+	rawNZB := []byte(`<?xml version="1.0" encoding="utf-8"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file poster="test" date="1700000000" subject="p1-retry-fail.bin yEnc (1/1)">
+    <groups><group>alt.binaries.test</group></groups>
+    <segments><segment bytes="100" number="1">p1-retry-fail-0@t</segment></segments>
+  </file>
+</nzb>`)
+	if err := fsutil.WriteGzAtomicBytes(filepath.Join(nzbBackupDir, nzbBackup), rawNZB); err != nil {
+		t.Fatalf("WriteGzAtomicBytes: %v", err)
+	}
+	if err := repo.Add(t.Context(), history.Entry{
+		NzoID: jobID, Name: "p1-retry-fail", NzbName: "p1-retry-fail.nzb",
+		NZBBackup: nzbBackup, Category: "*", Status: "Failed", Completed: time.Now(),
+	}); err != nil {
+		t.Fatalf("repo.Add: %v", err)
+	}
+
+	if err := application.RetryHistoryJob(t.Context(), jobID); err == nil {
+		t.Fatal("RetryHistoryJob returned nil although the dispatcher's Save always fails")
+	}
+
+	mpath, err := manifestPath(adminDir, jobID)
+	if err != nil {
+		t.Fatalf("manifestPath: %v", err)
+	}
+	if _, err := os.Stat(mpath); !os.IsNotExist(err) {
+		t.Errorf("queue manifest %s survived a retry that never entered the queue (stat err = %v)", mpath, err)
+	}
+	// The backup belongs to the history entry, which is still there.
+	if _, err := os.Stat(filepath.Join(nzbBackupDir, nzbBackup)); err != nil {
+		t.Errorf("NZB backup was removed although the history entry still owns it: %v", err)
+	}
+}
+
+// TestRemoveNZBBackupIn_MissingDirectoryIsNotAnError pins the quiet half of
+// the confined delete: AddJob writes no backup when the NZB had no filename,
+// and on that path admin/nzb need not exist at all. An absent directory is the
+// artifact already being gone, not a failure to report.
+func TestRemoveNZBBackupIn_MissingDirectoryIsNotAnError(t *testing.T) {
+	t.Parallel()
+	application, _, _ := newLifecycleTestApp(t)
+	missing := filepath.Join(application.config.GetGeneral().AdminDir, "no-such-nzb-dir")
+
+	application.removeNZBBackupIn(missing, "cafef00d00000001", "whatever.nzb.gz")
+
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Errorf("the missing directory was created by a delete (stat err = %v)", err)
+	}
+}

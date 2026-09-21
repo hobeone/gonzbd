@@ -732,6 +732,19 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	})
 	j.SetName(hdr.Name)
 
+	// Everything from here on writes something the job owns — NZB backup,
+	// manifest, job_files rows — and none of it is reachable from any later
+	// sweep unless the job reaches dispatch_jobs, because the only pass that
+	// walks them is built from that table. So every failure between here and
+	// admitted must take its own artifacts with it, not just the Add that
+	// happens to be last.
+	admitted := false
+	defer func() {
+		if !admitted {
+			app.discardUnaddedJobArtifacts(ctx, j.ID(), hdr.NZBBackup)
+		}
+	}()
+
 	if hdr.Filename != "" && len(rawNZB) > 0 {
 		name, err := writeNZBBackup(nzbDir, hdr.Filename, rawNZB)
 		if err != nil {
@@ -780,16 +793,10 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		err := app.dispatcher.Add(addCtx, j, hdr)
 		addCancel()
 		if err != nil {
-			// Everything above this line is already on disk: the NZB backup,
-			// the manifest and the job_files rows. Add unwinds its own
-			// registration, so nothing refers to them any more, and the only
-			// sweep that could find them later walks dispatcher.List() —
-			// which is built from dispatch_jobs, where this job has no row.
-			// Unowned by construction, so remove them here.
-			app.discardUnaddedJobArtifacts(ctx, j.ID(), hdr.NZBBackup)
 			return fmt.Errorf("app: add to dispatcher: %w", err)
 		}
 	}
+	admitted = true
 	app.emit(Event{Type: "queue_updated"})
 	app.log.Info("job added", "name", hdr.Name, "id", j.ID())
 	return nil
@@ -802,20 +809,43 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 // not a wrong answer.
 func (app *Application) discardUnaddedJobArtifacts(ctx context.Context, jobID, nzbBackup string) {
 	adminDir := app.config.GetGeneral().AdminDir
-	if mpath, err := manifestPath(adminDir, jobID); err == nil {
-		if err := os.Remove(mpath); err != nil && !os.IsNotExist(err) {
-			app.log.Warn("failed to remove manifest for a job that was never added",
-				"job", jobID, "path", mpath, "err", err)
-		}
+	// removeManifestIn, not manifestPath + os.Remove: manifestPath is the
+	// WRITE path's alone, and a delete confines at the syscall through an
+	// os.Root instead of by inspecting a string.
+	if err := removeManifestIn(manifestDir(adminDir), jobID); err != nil && !os.IsNotExist(err) {
+		app.log.Warn("failed to remove manifest for a job that was never added",
+			"job", jobID, "err", err)
 	}
 	if nzbBackup != "" {
-		backupPath := filepath.Join(adminDir, "nzb", filepath.Base(nzbBackup))
-		if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
-			app.log.Warn("failed to remove NZB backup for a job that was never added",
-				"job", jobID, "path", backupPath, "err", err)
-		}
+		app.removeNZBBackupIn(filepath.Join(adminDir, "nzb"), jobID, nzbBackup)
 	}
-	app.deleteJobDurability(context.WithoutCancel(ctx), jobID)
+	// Bounded like every other deleteJobDurability caller: an unbounded
+	// context here would let SQLite lock contention hang the AddJob that is
+	// already failing.
+	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer delCancel()
+	app.deleteJobDurability(delCtx, jobID)
+}
+
+// removeNZBBackupIn deletes one job's NZB backup from dir, confined the way
+// removeManifestIn is. The name reaches here from a history row rather than
+// from the daemon, so it is resolved against an open handle on dir: a Base of
+// "." or ".." would otherwise name dir itself or its parent.
+func (app *Application) removeNZBBackupIn(dir, jobID, nzbBackup string) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			app.log.Warn("failed to open NZB backup directory for a job that was never added",
+				"job", jobID, "dir", dir, "err", err)
+		}
+		return
+	}
+	defer func() { _ = root.Close() }()
+	name := filepath.Base(nzbBackup)
+	if err := root.Remove(name); err != nil && !os.IsNotExist(err) {
+		app.log.Warn("failed to remove NZB backup for a job that was never added",
+			"job", jobID, "backup", name, "err", err)
+	}
 }
 
 // addPersistTimeout bounds the detached context AddJob and RetryHistoryJob hand
@@ -2383,6 +2413,15 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		err := app.dispatcher.Add(addCtx, j, hdr)
 		addCancel()
 		if err != nil {
+			// The manifest written above is this retry's, and the job stays in
+			// history: a finalized job has no queue manifest, so leaving one
+			// behind is a file nothing refers to. The NZB backup and job_files
+			// rows are NOT this call's to remove — history still owns them,
+			// and a later retry needs them.
+			if rmErr := removeManifestIn(mdir, jobID); rmErr != nil && !os.IsNotExist(rmErr) {
+				app.log.Warn("retry failed to enter the queue and its manifest could not be removed",
+					"job", jobID, "err", rmErr)
+			}
 			return err
 		}
 	}

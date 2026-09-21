@@ -395,3 +395,66 @@ func TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess(t *testing.T) {
 			"removal now leaves a job no tick can ever see", k)
 	}
 }
+
+// TestDeregister_LeavesAnotherRemovalsMarkerStanding pins that an unwind does
+// not clear a removal marker it did not raise.
+//
+// Add's unwind takes the removal door like any other teardown, so while a real
+// Remove is in flight there are two tokens for one ID. deregister wiping the
+// marker outright let the next Add register, write its row, and then be
+// destroyed by the tail of the Remove that preempted the first one — the
+// caller was told the job was added, and the store row went with it.
+//
+// With the marker refcounted, the retry is refused instead: persistIfChanged
+// still sees an outstanding removal, so it writes nothing, and Add unwinds on
+// its own check rather than leaving a row for the Remove to delete.
+func TestDeregister_LeavesAnotherRemovalsMarkerStanding(t *testing.T) {
+	st := &p1SaveCountingStore{}
+	d := newTestDispatcher(t, withStore(st))
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	saves := st.saves.Load()
+
+	inFlight, ok := d.beginRemoval("j1") // a real Remove, not yet at its Delete
+	if !ok {
+		t.Fatal("setup: beginRemoval")
+	}
+
+	// Add's unwind, verbatim from Add.
+	if rm, ok := d.beginRemoval("j1"); ok {
+		rm.end()
+	}
+
+	retry := job.New("j1", "n", job.Policy{})
+	err := d.Add(context.Background(), retry, Header{Name: "n"})
+	if err == nil {
+		t.Fatal("a retry was admitted while a Remove for the same ID was still in flight; " +
+			"its row is about to be deleted by that Remove's tail")
+	}
+	if !errors.Is(err, errPreemptedByRemoval) {
+		t.Errorf("retry Add error = %v, want errPreemptedByRemoval", err)
+	}
+	if n := st.saves.Load(); n != saves {
+		t.Errorf("the refused retry wrote %d row(s) for the in-flight Remove to delete", n-saves)
+	}
+
+	// Once the in-flight Remove finishes, the ID is free again.
+	inFlight.end()
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+		t.Errorf("Add after the removal completed = %v, want nil", err)
+	}
+}
+
+// p1SaveCountingStore counts Save calls so a test can assert that a refused
+// Add wrote nothing, which a row lookup cannot show when an earlier Add for
+// the same ID already left one.
+type p1SaveCountingStore struct {
+	fakeStore
+	saves atomic.Int32
+}
+
+func (s *p1SaveCountingStore) Save(ctx context.Context, p Persisted) error {
+	s.saves.Add(1)
+	return s.fakeStore.Save(ctx, p)
+}

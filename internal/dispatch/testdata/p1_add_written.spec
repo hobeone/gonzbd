@@ -1,5 +1,5 @@
 pkg ./internal/dispatch/
-run TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess|TestAdd_PersistFailureUnwindsWithoutTickTouchingJob|TestAdd_PostPersistKickWakesTickAfterBlockedSave|TestAdd_AbortedRemovalDuringTheWriteLeavesTheJobVisible|TestRemove_OverlappingAddWithTransientDeleteErrorIsRetriedByTick|TestStart_RefusesARowThatDiffersFromTheOneAddWrote|TestAdd_SingleKickOnlyAfterPersist|TestAdd_WritesUnderTheCallersContext|TestRemovingState_SuppressesPersistAndResidency
+run TestDeregister_LeavesAnotherRemovalsMarkerStanding|TestDeregister_IsTotal|TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess|TestAdd_PersistFailureUnwindsWithoutTickTouchingJob|TestAdd_PostPersistKickWakesTickAfterBlockedSave|TestAdd_AbortedRemovalDuringTheWriteLeavesTheJobVisible|TestRemove_OverlappingAddWithTransientDeleteErrorIsRetriedByTick|TestStart_RefusesARowThatDiffersFromTheOneAddWrote|TestAdd_SingleKickOnlyAfterPersist|TestAdd_WritesUnderTheCallersContext|TestRemovingState_SuppressesPersistAndResidency
 
 [snapshotOrder written gate neutered]
 file internal/dispatch/registry.go
@@ -87,4 +87,15 @@ file internal/dispatch/registry.go
 		if false {
 			err = errPreemptedByRemoval
 		}
+--- end
+
+[deregister wipes the removal marker instead of decrementing it]
+file internal/dispatch/registry.go
+--- anchor
+	d.removing[id]--
+	if d.removing[id] <= 0 {
+		delete(d.removing, id)
+	}
+--- replace
+	delete(d.removing, id)
 --- end
