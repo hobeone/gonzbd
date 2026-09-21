@@ -69,10 +69,6 @@ func waitFor(t *testing.T, s *store.Store, what string, pred func([]dispatch.Per
 	return nil
 }
 
-func rowCount(n int) func([]dispatch.Persisted) bool {
-	return func(rows []dispatch.Persisted) bool { return len(rows) == n }
-}
-
 // wantJob is one expected queue entry. It is a named type rather than an
 // anonymous struct so the eviction below can filter the slice.
 type wantJob struct {
@@ -131,14 +127,29 @@ func TestDispatcher_RoundTripsThroughRealSQLite(t *testing.T) {
 	// never-run job would otherwise render as Queued forever), and asserting
 	// it here is what puts Store.Delete on a real driver rather than only on
 	// the fake.
-	waitFor(t, st, "all three jobs persisted", rowCount(len(want)))
+	// Waiting for rows to EXIST is not enough: Add writes a job's first row
+	// itself, at StateUnset, before any tick has seen it. A Cancel landing
+	// before the tick opens an attempt makes "second" a cancelled never-run
+	// job, which the next tick evicts, row and all. Waiting for Fetching is
+	// what makes "the tick has opened an attempt" true rather than likely.
+	waitFor(t, st, "the tick to advance all three jobs to Fetching", func(rows []dispatch.Persisted) bool {
+		if len(rows) != len(want) {
+			return false
+		}
+		for _, r := range rows {
+			if r.State.State != job.Fetching {
+				return false
+			}
+		}
+		return true
+	})
 
 	// Cancel one so a non-zero Intent has to survive the round trip. A queue
 	// where every axis holds its zero value would round-trip cleanly through a
 	// completely broken column mapping, which is worth nothing.
 	//
 	// This does NOT evict: eviction is for a cancelled job that has never run,
-	// and by now the tick has opened an attempt on all three. The eviction path
+	// and the wait above established that all three have run. The eviction path
 	// is covered by TestStore_DeleteRemovesARow against the same driver.
 	if err := d1.Cancel("second"); err != nil {
 		t.Fatalf("Cancel: %v", err)
