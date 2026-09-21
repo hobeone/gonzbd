@@ -66,7 +66,11 @@ func_body() {
 # `d.deregister("j1")`), and counting them would fail a correct tree.
 prod_count() {
     local pattern="$1"; shift
-    git grep -nE -- "$pattern" -- "$@" ':!*_test.go' \
+    # `|| true` because git grep exits 1 on no matches, and under
+    # `set -o pipefail` that aborted the whole script at the first check whose
+    # PASSING condition is zero matches (S11) — taking S12-S14 and every
+    # dynamic check with it, silently, on exactly the trees that were correct.
+    { git grep -nE -- "$pattern" -- "$@" ':!*_test.go' || true; } \
         | awk -F: '{ line = $0; sub(/^[^:]*:[^:]*:/, "", line); if (line !~ /^[[:space:]]*\/\//) n++ } END { print n + 0 }'
 }
 
