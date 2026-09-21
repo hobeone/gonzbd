@@ -285,7 +285,13 @@ func TestCheckpointJob_KeepsAJobAtRiskWhileItsBarrierIsInFlight(t *testing.T) {
 	done := make(chan bool, 1)
 	go func() { done <- application.checkpointJob(t.Context(), job.ID()) }()
 
-	<-blocked.entered
+	// Bounded, so a barrier that never reaches its commit wrap fails this test
+	// rather than hanging it until go test's own timeout.
+	select {
+	case <-blocked.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the barrier never reached its commit wrap")
+	}
 	// The barrier is parked mid-run. Its bytes are on disk but not durable, and
 	// this is precisely when a concurrent reload would consult jobsAtRisk.
 	if _, ok := application.jobsAtRisk()[job.ID()]; !ok {

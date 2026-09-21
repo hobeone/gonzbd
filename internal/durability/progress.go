@@ -132,7 +132,7 @@ func (s *Store) SaveProgress(ctx context.Context, batch []JobProgress) error {
 	return nil
 }
 
-// FileRows returns a job's job_files rows.
+// FileRows returns a job's job_files rows, ordered by file index.
 //
 // A row that fails to scan is skipped and the rest are still returned, with
 // the error wrapping ErrIncomplete: that file keeps whatever default the
@@ -140,7 +140,7 @@ func (s *Store) SaveProgress(ctx context.Context, batch []JobProgress) error {
 // whole job's file metadata for one bad row.
 func (s *Store) FileRows(ctx context.Context, jobID string) ([]FileRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT file_index, filename, complete, assembled_crc32, fetch_policy FROM job_files WHERE job_id = ?`, jobID)
+		`SELECT file_index, filename, complete, assembled_crc32, fetch_policy FROM job_files WHERE job_id = ? ORDER BY file_index`, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("durability: load job_files %s: %w", jobID, err)
 	}
@@ -168,13 +168,14 @@ func (s *Store) FileRows(ctx context.Context, jobID string) ([]FileRow, error) {
 	return out, errors.Join(errs...)
 }
 
-// FailedArticles returns the article indices marked failed for a job.
+// FailedArticles returns the article indices marked failed for a job, in
+// ascending order.
 //
 // It stops at the first row that fails to scan, and returns the indices read
 // before it with an error wrapping ErrIncomplete.
 func (s *Store) FailedArticles(ctx context.Context, jobID string) ([]int32, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT art_idx FROM failed_articles WHERE job_id = ?`, jobID)
+		`SELECT art_idx FROM failed_articles WHERE job_id = ? ORDER BY art_idx`, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("durability: query failed_articles %s: %w", jobID, err)
 	}

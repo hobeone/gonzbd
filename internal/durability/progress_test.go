@@ -50,7 +50,6 @@ func TestStore_AdmitSeedsAndKeepsExistingRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FileRows: %v", err)
 	}
-	slices.SortFunc(rows, func(a, b FileRow) int { return a.FileIndex - b.FileIndex })
 	want := []FileRow{
 		{FileIndex: 0, Complete: true, FetchPolicy: 1, Filename: "a.bin", AssembledCRC32: 9},
 		{FileIndex: 1, FetchPolicy: 2},
@@ -87,7 +86,6 @@ func TestStore_SaveProgressUpdatesFilesAndAddsFailedMarks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FailedArticles: %v", err)
 	}
-	slices.Sort(got)
 	if !slices.Equal(got, []int32{3, 5}) {
 		t.Errorf("failed articles = %v, want [3 5]", got)
 	}
@@ -131,7 +129,7 @@ func TestStore_FailedArticlesStopsAtARowItCannotScan(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	st := NewStore(db)
-	// The primary key orders the rows, so 1 is read before the text value.
+	// ORDER BY art_idx sorts the integer before the text value, so 1 is read first.
 	if _, err := db.Exec(`INSERT INTO failed_articles (job_id, art_idx) VALUES ('job-a', 1), ('job-a', 'x')`); err != nil {
 		t.Fatal(err)
 	}
