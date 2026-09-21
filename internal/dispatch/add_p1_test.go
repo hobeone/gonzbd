@@ -338,3 +338,60 @@ func TestAdd_WritesUnderTheCallersContext(t *testing.T) {
 		t.Errorf("Len = %d after a failed Add, want 0", n)
 	}
 }
+
+// TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess pins the other half of
+// Add's guarantee. persistIfChanged returns nil WITHOUT writing when a removal
+// is outstanding by the time it takes storeMu, so a nil from it is not by
+// itself evidence of a row. Add reporting success there told the caller a job
+// was durable when nothing had been written, and — because snapshotOrder gates
+// on d.written alone — an aborted removal then left the job registered and
+// invisible to every tick, never advanced, persisted or evicted again.
+//
+// The interleaving is deterministic rather than raced: j0's Save holds storeMu,
+// so once j1 is registered it is necessarily still blocked at persistIfChanged's
+// storeMu.Lock, ahead of the admitsLocked check the removal has to beat.
+func TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess(t *testing.T) {
+	st := &p1BlockingSaveStore{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	d := newTestDispatcher(t, withStore(st))
+
+	go func() { _ = d.Add(context.Background(), job.New("j0", "n", job.Policy{}), Header{Name: "n"}) }()
+	<-st.entered
+
+	addErr := make(chan error, 1)
+	go func() {
+		addErr <- d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"})
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for d.sortKeyOf("j1") == -1 {
+		if time.Now().After(deadline) {
+			t.Fatal("setup: j1 never registered")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	rm, ok := d.beginRemoval("j1")
+	if !ok {
+		t.Fatal("setup: j1 is not registered")
+	}
+	close(st.release)
+
+	err := <-addErr
+	if err == nil {
+		t.Fatal("Add reported success although the removal suppressed its write; " +
+			"the caller was told a job was durable with no row in the store")
+	}
+	if _, written := st.row("j1"); written {
+		t.Error("setup is not exercising the suppressed-write path: a row was written")
+	}
+
+	// The unwind must leave nothing behind, so an aborted removal has no
+	// registered-but-unwritten job to strand.
+	rm.abort()
+	if k := d.sortKeyOf("j1"); k != -1 {
+		t.Errorf("j1 still registered at sortKey %d after a failed Add; an aborted "+
+			"removal now leaves a job no tick can ever see", k)
+	}
+}

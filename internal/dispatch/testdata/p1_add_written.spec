@@ -1,5 +1,5 @@
 pkg ./internal/dispatch/
-run TestAdd_PersistFailureUnwindsWithoutTickTouchingJob|TestAdd_PostPersistKickWakesTickAfterBlockedSave|TestAdd_AbortedRemovalDuringTheWriteLeavesTheJobVisible|TestRemove_OverlappingAddWithTransientDeleteErrorIsRetriedByTick|TestStart_RefusesARowThatDiffersFromTheOneAddWrote|TestAdd_SingleKickOnlyAfterPersist|TestAdd_WritesUnderTheCallersContext|TestRemovingState_SuppressesPersistAndResidency
+run TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess|TestAdd_PersistFailureUnwindsWithoutTickTouchingJob|TestAdd_PostPersistKickWakesTickAfterBlockedSave|TestAdd_AbortedRemovalDuringTheWriteLeavesTheJobVisible|TestRemove_OverlappingAddWithTransientDeleteErrorIsRetriedByTick|TestStart_RefusesARowThatDiffersFromTheOneAddWrote|TestAdd_SingleKickOnlyAfterPersist|TestAdd_WritesUnderTheCallersContext|TestRemovingState_SuppressesPersistAndResidency
 
 [snapshotOrder written gate neutered]
 file internal/dispatch/registry.go
@@ -72,11 +72,19 @@ file internal/dispatch/registry.go
 [restore value equality check neutered]
 file internal/dispatch/dispatch.go
 --- anchor
-		if w, ok := d.lastWritten(p.ID); ok && w == p && !slices.Contains(registered, p.ID) {
-			continue
+		if w, ok := d.lastWritten(p.ID); ok && w == p {
+--- replace
+		if _, ok := d.lastWritten(p.ID); ok {
+--- end
+
+[Add's check that its own write landed neutered]
+file internal/dispatch/registry.go
+--- anchor
+		if _, ok := d.lastWritten(j.ID()); !ok {
+			err = errPreemptedByRemoval
 		}
 --- replace
-		if _, ok := d.lastWritten(p.ID); ok && !slices.Contains(registered, p.ID) {
-			continue
+		if false {
+			err = errPreemptedByRemoval
 		}
 --- end

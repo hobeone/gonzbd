@@ -780,12 +780,42 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		err := app.dispatcher.Add(addCtx, j, hdr)
 		addCancel()
 		if err != nil {
+			// Everything above this line is already on disk: the NZB backup,
+			// the manifest and the job_files rows. Add unwinds its own
+			// registration, so nothing refers to them any more, and the only
+			// sweep that could find them later walks dispatcher.List() —
+			// which is built from dispatch_jobs, where this job has no row.
+			// Unowned by construction, so remove them here.
+			app.discardUnaddedJobArtifacts(ctx, j.ID(), hdr.NZBBackup)
 			return fmt.Errorf("app: add to dispatcher: %w", err)
 		}
 	}
 	app.emit(Event{Type: "queue_updated"})
 	app.log.Info("job added", "name", hdr.Name, "id", j.ID())
 	return nil
+}
+
+// discardUnaddedJobArtifacts removes the on-disk trail of a job whose
+// Dispatcher.Add failed: the gzipped manifest, the NZB backup, and the
+// job_files rows. Best effort and logged rather than returned — the caller is
+// already returning the error that matters, and a failure here leaves a leak,
+// not a wrong answer.
+func (app *Application) discardUnaddedJobArtifacts(ctx context.Context, jobID, nzbBackup string) {
+	adminDir := app.config.GetGeneral().AdminDir
+	if mpath, err := manifestPath(adminDir, jobID); err == nil {
+		if err := os.Remove(mpath); err != nil && !os.IsNotExist(err) {
+			app.log.Warn("failed to remove manifest for a job that was never added",
+				"job", jobID, "path", mpath, "err", err)
+		}
+	}
+	if nzbBackup != "" {
+		backupPath := filepath.Join(adminDir, "nzb", filepath.Base(nzbBackup))
+		if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
+			app.log.Warn("failed to remove NZB backup for a job that was never added",
+				"job", jobID, "path", backupPath, "err", err)
+		}
+	}
+	app.deleteJobDurability(context.WithoutCancel(ctx), jobID)
 }
 
 // addPersistTimeout bounds the detached context AddJob and RetryHistoryJob hand
@@ -2357,9 +2387,17 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		}
 	}
 
-	if _, err := app.historyRepo.DeleteKeepingDurability(ctx, jobID); err != nil {
+	// Detached for the same reason Add is, and separately bounded so Add's
+	// budget is not shared: the job is in dispatch_jobs by now, and a client
+	// that disconnected during that write must not leave the old history row
+	// behind. history.nzo_id is UNIQUE and the finalize path plain-INSERTs
+	// (Repository.AddTx), so a surviving row does not get overwritten — this
+	// attempt's finalization fails to persist instead.
+	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
+	defer delCancel()
+	if _, err := app.historyRepo.DeleteKeepingDurability(delCtx, jobID); err != nil {
 		app.log.Warn("retry requeued but its history entry could not be deleted; "+
-			"the entry is stale until this attempt finalizes over it",
+			"this attempt's finalization will fail to write history over the stale entry",
 			"job", jobID, "err", err)
 	}
 	app.emit(Event{Type: "queue_updated"})

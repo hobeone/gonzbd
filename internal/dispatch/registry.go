@@ -162,7 +162,19 @@ func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 	}
 	// The first row, written here rather than by a tick, so that a caller
 	// acknowledging the job has a durable reason to.
-	if err := d.persistIfChanged(ctx, j); err != nil {
+	err := d.persistIfChanged(ctx, j)
+	if err == nil {
+		// A nil is not by itself evidence of a row: persistIfChanged returns
+		// early, without writing, when a removal is outstanding by the time it
+		// takes storeMu. Reporting success there would tell the caller a job
+		// is durable with nothing written, and snapshotOrder gates on
+		// d.written alone, so an aborted removal would leave it registered and
+		// invisible to every later tick.
+		if _, ok := d.lastWritten(j.ID()); !ok {
+			err = errPreemptedByRemoval
+		}
+	}
+	if err != nil {
 		// Nothing but the registry holds this job: the tick has not seen it
 		// (snapshotOrder), so there is no lease, no residency and no worker.
 		// Unwind through the removal gatekeeper, the only path to deregister.
@@ -174,6 +186,11 @@ func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 	d.kick() // register skips its kick for seqNext while j is unwritten; wake the tick now that d.written admits j
 	return nil
 }
+
+// errPreemptedByRemoval is what Add returns when a removal that began before
+// its first write made persistIfChanged skip the Save. The job is unwound, so
+// the caller may retry with a fresh Add; nothing of it is left registered.
+var errPreemptedByRemoval = errors.New("a concurrent removal preempted the first write")
 
 // seqNext tells register to allocate the next unused sequence itself. It is a
 // sentinel rather than Add reading d.nextSeq and passing the value, because
@@ -270,7 +287,7 @@ func (d *Dispatcher) entryFor(id string) (Header, int64, bool) {
 // d.written is the whole gate, and that is the point: presence of a row is one
 // fact with one owner (markWritten, under the storeMu span that wrote it), so
 // there is no second flag here to disagree with it. Registry callers that
-// bypass snapshotOrder (Remove, Cancel, beginRemoval/beginRemovalForEviction,
+// bypass snapshotOrder (Remove, Cancel, beginRemoval/beginRemovalIfIdle,
 // List/Row/Job, SetPostAnomaly/SetFailReason) operate on d.byID directly.
 //
 // The copy exists so the tick can release d.mu before calling into sched: D-B9

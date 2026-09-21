@@ -675,9 +675,12 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 	})
 
 	now := time.Now()
-	var registered []string
+	// A set, not a slice: the membership test below runs once per stored row
+	// against everything registered so far, which is quadratic in queue size
+	// on a slice. Rollback order does not matter — every entry is deregistered.
+	registered := map[string]struct{}{}
 	defer func() {
-		for _, id := range registered {
+		for id := range registered {
 			// This rollback does not NEED the removal protocol: it runs
 			// inside Start before the tick goroutine launches, so no
 			// occupier, worker or store write can exist for a job it is
@@ -703,8 +706,10 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 		// d.written; skip the row only when it matches what this process
 		// wrote prior to restore, so a different stored row for the same ID
 		// still reaches register and fails loudly.
-		if w, ok := d.lastWritten(p.ID); ok && w == p && !slices.Contains(registered, p.ID) {
-			continue
+		if w, ok := d.lastWritten(p.ID); ok && w == p {
+			if _, mine := registered[p.ID]; !mine {
+				continue
+			}
 		}
 		j, err := reconstruct(p.ID, p.Header.Name, p.Policy, p.State, p.Intent, now)
 		if err != nil {
@@ -719,10 +724,10 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 		if err := d.register(j, p.Header, p.SortKey); err != nil {
 			return fmt.Errorf("dispatch: restore: register %s: %w", p.ID, err)
 		}
-		registered = append(registered, p.ID)
+		registered[p.ID] = struct{}{}
 		d.markWritten(p)
 	}
-	registered = nil // every row landed; the deferred rollback becomes a no-op
+	clear(registered) // every row landed; the deferred rollback becomes a no-op
 	return nil
 }
 
@@ -922,10 +927,16 @@ func restoreJobMetadata(j *job.Job, p Persisted) {
 	j.SetRecoveryBytes(p.RecoveryBytes)
 }
 
-// lastWritten and markWritten are persistIfChanged's two touches of d.written,
-// each taking d.mu for one map operation and releasing it immediately. D-B9
-// forbids holding d.mu across the Render/Save calls between them — see
-// persistIfChanged (tick.go).
+// lastWritten and markWritten are the only touches of d.written outside
+// deregister, each taking d.mu for one map operation and releasing it
+// immediately. D-B9 forbids holding d.mu across the Render/Save calls between
+// them — see persistIfChanged (tick.go).
+//
+// They have two callers each, not one: persistIfChanged, and restore, which
+// reads a row it already wrote to decide whether a pre-Start Add covered it
+// and records each row it registers. Add reads lastWritten too, to check its
+// own write landed. `git grep -n 'd\.lastWritten(\|d\.markWritten(' --
+// 'internal/dispatch/*.go' ':!*_test.go'` returns 5 lines.
 func (d *Dispatcher) lastWritten(id string) (Persisted, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
