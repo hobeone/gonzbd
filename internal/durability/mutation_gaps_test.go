@@ -28,7 +28,7 @@ import (
 func TestResume_AdoptsARunEndingExactlyAtEndOfFile(t *testing.T) {
 	ctx := context.Background()
 	path := writePartial(t, t.TempDir(), "f.bin", 100)
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 	storeRuns(t, rs, "job-1",
 		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1})
 	r := NewResumer(rs, testLogger(t))
@@ -60,8 +60,8 @@ func TestResume_AdoptsARunEndingExactlyAtEndOfFile(t *testing.T) {
 // which is exactly why nothing else covers this input.
 func TestFinalizeFile_ARunAtOffsetZeroOfZeroLengthDoesNotTruncate(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
-	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{
+	rs := NewStore(openTestDB(t))
+	if _, err := rs.commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 0, CRC32: 0},
 	}); err != nil {
 		t.Fatal(err)

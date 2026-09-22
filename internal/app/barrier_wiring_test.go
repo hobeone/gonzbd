@@ -14,10 +14,9 @@ import (
 )
 
 // overlapDetector observes whether two barriers for one job are ever inside
-// the store's read-modify-write at the same time.
+// the store's read-modify-write at the same time. Its wrap is installed as the
+// barrier's CommitWrap.
 type overlapDetector struct {
-	durability.RunStore
-
 	mu         sync.Mutex
 	open       int
 	overlapped bool
@@ -26,11 +25,11 @@ type overlapDetector struct {
 	second     chan struct{}
 }
 
-func newOverlapDetector(inner durability.RunStore) *overlapDetector {
-	return &overlapDetector{RunStore: inner, second: make(chan struct{})}
+func newOverlapDetector() *overlapDetector {
+	return &overlapDetector{second: make(chan struct{})}
 }
 
-func (g *overlapDetector) Commit(ctx context.Context, jobID string, arts []durability.DurableArticle) ([]durability.Collision, error) {
+func (g *overlapDetector) wrap(ctx context.Context, _ string, commit func() ([]durability.Collision, error)) ([]durability.Collision, error) {
 	g.mu.Lock()
 	g.open++
 	open := g.open
@@ -48,7 +47,7 @@ func (g *overlapDetector) Commit(ctx context.Context, jobID string, arts []durab
 		case <-ctx.Done():
 		}
 	}
-	cols, err := g.RunStore.Commit(ctx, jobID, arts)
+	cols, err := commit()
 
 	g.mu.Lock()
 	g.open--
@@ -100,10 +99,10 @@ func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
 		}
 	}
 
-	inner := durability.NewSQLiteRunStore(repo.DB())
-	detector := newOverlapDetector(inner)
+	detector := newOverlapDetector()
 	application.barrier = durability.NewBarrier(
-		detector, application, application, slog.New(slog.DiscardHandler))
+		durability.NewStore(repo.DB()), application, application, slog.New(slog.DiscardHandler),
+		durability.WithCommitWrap(detector.wrap))
 
 	var wg sync.WaitGroup
 	for range 2 {
@@ -117,7 +116,7 @@ func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
 	if detector.sawOverlap() {
 		t.Error("two barriers for one job were inside the store's read-modify-write at the same time")
 	}
-	runs, err := inner.ForFile(ctx, j.ID(), 0)
+	runs, err := durability.NewStore(repo.DB()).ForFile(ctx, j.ID(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

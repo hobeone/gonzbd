@@ -307,7 +307,7 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 // interval, forever — contradicting the reason Stall pauses at all.
 //
 // The ack is the ONLY part that needs residency, and it is also the only part
-// that is recoverable afterwards: RunStore.Commit runs before it, so a
+// that is recoverable afterwards: the barrier's commit runs before it, so a
 // finalize that fails at the ack has already put those articles on stable
 // record. Phase 3 replays them with SeedFromRuns, exactly as the startup sweep
 // does. So a residency error is treated as the finalize having landed, and
@@ -471,10 +471,10 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 // would discard every ack this process made since the last commit, which is
 // exactly the ground the phase exists to preserve. See SeedFromRuns.
 func (app *Application) seedFromCommittedRuns(ctx context.Context, jobID string) {
-	if app.runs == nil {
+	if app.durable == nil {
 		return
 	}
-	runs, err := app.runs.ForJob(ctx, jobID)
+	runs, err := app.durable.ForJob(ctx, jobID)
 	if err != nil {
 		app.log.Warn("stall re-evaluation: could not load the committed durable runs; the job will re-fetch",
 			"job", jobID, "err", err)
@@ -520,7 +520,7 @@ func (app *Application) recoveryFiles(jobID string) map[int]finalizeState {
 // instruction that helps.
 //
 // A residency error is the one failure treated as success, and the ordering
-// inside FinalizeFile is why: RunStore.Commit runs before AckDurable, so an
+// inside FinalizeFile is why: the barrier's commit runs before AckDurable, so an
 // ack that could not reach a non-resident job left those articles on stable
 // record anyway. The caller replays them. The handle is released here rather
 // than by finalizeCompletedFile's own defer, which sees only a non-nil error

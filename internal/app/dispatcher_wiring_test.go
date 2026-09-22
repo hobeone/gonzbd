@@ -9,6 +9,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -212,7 +213,7 @@ func TestAppCheckpointStore_SaveBatch_TransactionalRollback(t *testing.T) {
 	}
 	cp2 := j2.Checkpoint()
 
-	store := &appCheckpointStore{db: db}
+	store := &appCheckpointStore{store: durability.NewStore(db)}
 
 	// SaveBatch with [cp1, cp2] must fail mid-batch and roll back everything.
 	if saveErr := store.SaveBatch(ctx, []job.Checkpoint{cp1, cp2}); saveErr == nil {
@@ -264,7 +265,7 @@ func TestAppCheckpointStore_SaveBatch_TransactionalRollback(t *testing.T) {
 }
 
 func TestAppCheckpointStore_SaveBatch_NilOrEmpty(t *testing.T) {
-	sNil := &appCheckpointStore{db: nil}
+	sNil := &appCheckpointStore{store: nil}
 	if err := sNil.SaveBatch(t.Context(), []job.Checkpoint{{ID: "x"}}); err != nil {
 		t.Errorf("nil db should return nil, got %v", err)
 	}
@@ -274,7 +275,7 @@ func TestAppCheckpointStore_SaveBatch_NilOrEmpty(t *testing.T) {
 	}
 	defer hdb.Close()
 	repo := history.NewRepository(hdb)
-	s := &appCheckpointStore{db: repo.DB()}
+	s := &appCheckpointStore{store: durability.NewStore(repo.DB())}
 	if err := s.SaveBatch(t.Context(), nil); err != nil {
 		t.Errorf("empty slice should return nil, got %v", err)
 	}

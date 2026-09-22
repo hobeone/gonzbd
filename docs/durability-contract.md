@@ -162,18 +162,19 @@ reconcile them: `verifiedPrefix`, the abutment walk, `durableAt`, the durable
 `Bitmap`, and both of `FinalizeFile`'s guards.
 
 The second table is **`failed_articles`** — `{job_id, art_idx}`, one row per
-permanently failed article. It is not a durability record and `internal/durability`
-never touches it: a failed article never decodes, so nothing was ever written
-for it and no run could cover it. Its rows are inserted only by
-`checkpoint.Store.SaveBatch` and deleted by three paths: the two job-cleanup
-DELETEs in `internal/app` (retry clear and job cleanup), and the history purge
-in `internal/history`, which drops retained `durable_runs` and `failed_articles`
-rows together when a history entry goes. That third one is the reason the
+permanently failed article. It is not a durability record, though
+`durability.Store` owns its SQL: a failed article never decodes, so nothing was
+ever written for it and no run could cover it. Its rows are inserted only by
+`Store.SaveProgress`, on behalf of the checkpointer, and deleted by two
+statements: `Store.DiscardFailedArticles`, which `internal/app` calls from the
+retry clear and from job cleanup, and the history purge in `internal/history`,
+which drops retained `durable_runs` and `failed_articles` rows together when a
+history entry goes. That second one is the reason the
 pattern below carries a bare-quoted alternative: the history purge builds its
 statement as `"DELETE FROM "+table+" WHERE ..."` over a `[]string{...}` of table
 names, so no grep anchored on the SQL text can see it (`git grep -n
 'failed_articles (job_id\|failed_articles WHERE\|"failed_articles"' --
-'internal/**/*.go' ':!*_test.go'` finds 5 lines: one INSERT, two DELETEs, one
+'internal/**/*.go' ':!*_test.go'` finds 4 lines: one INSERT, one DELETE, one
 SELECT, and the history purge's table list — the plain table name also matches
 prose, which is why the pattern anchors on the SQL or the quoted literal).
 
@@ -337,7 +338,7 @@ evidence about disk. That is why the same defect kept being refiled.
   phase 1: Drain every open file          — no claim of any kind yet
   phase 2: Sync  every open file          — only now may anything be claimed
   phase 3: Stat  every open file          — collect the drained articles + sizes
-  phase 4: RunStore.Commit (atomic)       — then, and only then, AckDurable
+  phase 4: Store.commit (atomic)          — then, and only then, AckDurable
 ```
 
 Every file is synced before anything is collected, so a barrier that fails on
@@ -359,13 +360,13 @@ file. Subtracting covered `art_idx` values first leaves `[10,12]`, which is the
 truth. One owner, one order: **subtract, then sort, then group, then merge.**
 
 **A failed barrier claims nothing** (R7). It acks no article and leaves the
-stored rows wholly intact, because `RunStore.Commit` is atomic and is the last
+stored rows wholly intact, because `Store.commit` is atomic and is the last
 thing that can fail before the ack.
 
 ### 3. A drain is at-least-once, and a report survives a failed sync
 
 `SyncTarget.Drain` may re-report an article a previous `Drain` already returned,
-and `RunStore.Commit` absorbs the duplicate (R12): an article whose `ArtIdx` a
+and `Store.commit` absorbs the duplicate (R12): an article whose `ArtIdx` a
 stored row already covers is dropped before grouping, so it is never inserted
 twice and never widens `Σ length`. See §2 for why that subtraction has to
 happen at article granularity rather than per run.
@@ -658,7 +659,11 @@ and it needed a no-merge rule and a `(0,0)` sentinel stamp to work.
 
 `writeBack` is deleted. `durability.Barrier` is the only thing that **inserts
 or amends the content** of a `durable_runs` row, from `Run` and from
-`FinalizeFile`, both inside the transaction that precedes the ack.
+`FinalizeFile`, both inside the transaction that precedes the ack. The compiler
+holds this, not convention: `durability.Store`'s `commit` is unexported, so no
+code outside `internal/durability` can call it, and
+`TestStore_NoExportedMethodWritesRunContent` fails if `Store` gains an exported
+method it has not classified.
 `durability.Resumer` can only delete, and only when the file on disk
 contradicts the record. That asymmetry is what makes the record trustworthy
 without reading a byte of it back.
@@ -670,8 +675,8 @@ contradicted in the memory budget:
 
 | Deleter | When |
 |---|---|
-| `durability.Resumer` | a file shorter than its runs claim, or missing (§6) — `discard` calls `RunStore.DeleteFile` (`internal/durability/resume.go:148`) |
-| `RunStore.DeleteJob` | a job leaving the queue, **or a retry re-parsing a manifest that changed shape** — `app.dropJobDurability` is reached from both |
+| `durability.Resumer` | a file shorter than its runs claim, or missing (§6) — `discard` calls `Store.deleteFile` (`internal/durability/resume.go:148`) |
+| `Store.DiscardRuns` | a job leaving the queue, **or a retry re-parsing a manifest that changed shape** — `app.dropJobDurability` is reached from both |
 | `history.Repository.delete` | a history entry going away for good (`internal/history/repository.go:330`) |
 
 The count was **five** until `internal/queue` was deleted (`b6651d43`). The two
@@ -685,21 +690,22 @@ and it is recorded here rather than silently dropped from the table.
 
 The three above are the complete current set, but **no single grep proves it**,
 and the obvious one is misleading. `git grep -n 'DELETE FROM durable_runs\|DELETE
-FROM failed_articles' -- '*.go' ':!*_test.go'` returns five statements — three in
-`internal/durability/runstore_sqlite.go` (one of them `Commit`'s own merge,
-excluded below) and two deleting `failed_articles` per job, in `internal/app`.
+FROM failed_articles' -- '*.go' ':!*_test.go'` returns four statements, all in
+`internal/durability`: three against `durable_runs` in `store.go` (one of them
+`commit`'s own merge, excluded below) and `Store.DiscardFailedArticles` in
+`progress.go`.
 The third deleter is **not** among them: `history.Repository.delete` builds its
 statement by concatenation (`"DELETE FROM "+table`, `repository.go:402`), so the
 literal never appears. Read the grep as covering the first two only, and the
 enumeration as what a reader has to confirm by opening `repository.go`.
 
-A sixth deletes and is deliberately excluded from that count: `Commit`'s own
+A fourth deletes and is deliberately excluded from that count: `commit`'s own
 `deleteRows` removes exactly the rows it just read, inside the merge's
 read-modify-write and inside the same transaction as the insert that replaces
 them. It is part of writing content rather than a separate deleter, which is
 why the count is stated as *outside the barrier's own merge* rather than bare.
 
-None of the five can make the record *assert* anything — a delete only ever
+None of them can make the record *assert* anything — a delete only ever
 removes a claim, which is S3's safe direction. So the content bound is the whole
 of what §6's trust argument needs, and unlike the wider claim it is true.
 
@@ -779,7 +785,7 @@ a restart recovers them.
 The lock is **per job**, not global: a barrier is a few dozen fsyncs, and one
 job's slow mount must not park every other job's checkpoint. `FinalizeFile` takes
 it too — it is a barrier by another name, same drain, same
-`RunStore.Commit`.
+`Store.commit`.
 
 ### 9a. Only storage conditions reach `Stallable` — the `SyncTarget` boundary rule
 
@@ -1171,7 +1177,7 @@ durability record. See §6, which states the content-writer invariant; this sect
 records what the resume may do instead, and why the machinery the write-back
 needed is gone with it.
 
-The resume's whole mutation budget is `RunStore.DeleteFile`, and it is reached
+The resume's whole mutation budget is `Store.deleteFile`, and it is reached
 in exactly two cases:
 
 - **The file is missing.** Absence is the strongest disproof a resume can
@@ -1483,7 +1489,7 @@ including every failure path.
   prevents the write; see #387 for what detection here does not cover.
 
   That exact-offset pair reaches the user by a **third** path, not by the sum
-  above. `RunStore.Commit` must discard one of the two — the primary key admits
+  above. `Store.commit` must discard one of the two — the primary key admits
   one row per offset — and returns the discard as a `durability.Collision`,
   which the barrier renders as a `PostAnomaly` naming both articles and the
   contested offset. It has to come from the commit: the dropped row contributes
@@ -1848,12 +1854,11 @@ recorded here so the next reader does not mistake them for design.
    barrier's own transaction, so it lands with the runs and a restart
    reconstructs it from the same authority. That would close the window
    atomically rather than by repair, but it needs a schema change and makes the
-   barrier write state the checkpointer owns — the line `durable_runs`' own doc
-   draws when it says `failed_articles` has a single writer. Since the swap that
-   writer is the sole production implementation of `checkpoint.Store`, whose
-   `SaveBatch` holds the only `INSERT INTO failed_articles` outside tests —
+   barrier write state the checkpointer owns. The checkpointer's writes reach
+   `failed_articles` through `durability.Store.SaveProgress`, which holds the
+   only `INSERT INTO failed_articles` outside tests —
    `git grep -n 'INTO failed_articles' -- '*.go' ':!*_test.go'` returns the one
-   line, `internal/app/dispatcher_wiring.go:107`. Without that filter it also
+   line, `internal/durability/progress.go:103`. Without that filter it also
    returns test fixtures, whose number is deliberately not stated here: it
    grows with every test that seeds a row, nothing checks a count in Markdown,
    and the claim this paragraph needs is the filtered one.
@@ -1870,7 +1875,7 @@ recorded here so the next reader does not mistake them for design.
    earlier. The file then completes *wrong*.
 
    **The bound is that both outcomes are diagnosed and repairable.** Across the
-   boundary `RunStore.Commit` must discard one of the two rows, returns it as a
+   boundary `Store.commit` must discard one of the two rows, returns it as a
    `durability.Collision`, and the barrier raises a `PostAnomaly` naming both
    articles and the contested offset (§4). The whole-file CRC is withheld either
    way, because the record cannot cover the discarded article's index. So par2
@@ -1938,7 +1943,7 @@ a green run does and does not bound.
 ### Landed
 
 - `internal/durability`: `Barrier` (checkpoint and `FinalizeFile`), `Resumer`,
-  `DurableProof`, and the SQLite `RunStore` behind `durable_runs`.
+  `DurableProof`, and the SQLite `durability.Store` behind `durable_runs`.
 - `internal/storagefault`: classification into retryable/permanent with the
   operation and path attached.
 - Compiler-enforced ack path: `Job.AckDurable(durability.DurableProof)` —

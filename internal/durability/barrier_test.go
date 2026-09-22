@@ -90,7 +90,7 @@ func (r *recordingStall) Fail(_ string, f *storagefault.Fault)  { r.failed = app
 
 // newBarrierWithStore is the common wiring for the tests that need no error
 // injection in the store itself.
-func newBarrierWithStore(t *testing.T, rs RunStore, ack Acker, stall Stallable) *Barrier {
+func newBarrierWithStore(t *testing.T, rs runStore, ack Acker, stall Stallable) *Barrier {
 	t.Helper()
 	return NewBarrier(rs, ack, stall, testLogger(t))
 }
@@ -104,7 +104,7 @@ func TestBarrier_SyncPrecedesCommitAndAck(t *testing.T) {
 		size:    100,
 	}
 	ack := &recordingAcker{}
-	b := newBarrierWithStore(t, NewSQLiteRunStore(openTestDB(t)), ack, &recordingStall{})
+	b := newBarrierWithStore(t, NewStore(openTestDB(t)), ack, &recordingStall{})
 
 	if _, err := b.Run(ctx, "job-1", tgt); err != nil {
 		t.Fatal(err)
@@ -130,8 +130,8 @@ func TestBarrier_SyncPrecedesCommitAndAck(t *testing.T) {
 // and leaves the stored runs intact.
 func TestBarrier_SyncFailureAcksNothing(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
-	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{
+	rs := NewStore(openTestDB(t))
+	if _, err := rs.commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1111},
 	}); err != nil {
 		t.Fatal(err)
@@ -177,7 +177,7 @@ func TestBarrier_PermanentFaultFailsRatherThanStalls(t *testing.T) {
 	ctx := context.Background()
 	tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, syncErr: syscall.EROFS}
 	stall := &recordingStall{}
-	b := newBarrierWithStore(t, NewSQLiteRunStore(openTestDB(t)), &recordingAcker{}, stall)
+	b := newBarrierWithStore(t, NewStore(openTestDB(t)), &recordingAcker{}, stall)
 
 	if _, err := b.Run(ctx, "job-1", tgt); err == nil {
 		t.Fatal("Run returned nil after EROFS")
@@ -215,7 +215,7 @@ func TestBarrier_DrainAndStatFaultsRouteThroughA1(t *testing.T) {
 			ctx := context.Background()
 			stall := &recordingStall{}
 			ack := &recordingAcker{}
-			b := newBarrierWithStore(t, NewSQLiteRunStore(openTestDB(t)), ack, stall)
+			b := newBarrierWithStore(t, NewStore(openTestDB(t)), ack, stall)
 
 			_, err := b.Run(ctx, "job-1", tt.tgt)
 			if err == nil {
@@ -253,11 +253,11 @@ func TestBarrier_DrainAndStatFaultsRouteThroughA1(t *testing.T) {
 // errStore fails Commit so the ack-after-commit ordering can be pinned from
 // the commit side as well as the sync side.
 type errStore struct {
-	RunStore
+	runStore
 	err error
 }
 
-func (e *errStore) Commit(context.Context, string, []DurableArticle) ([]Collision, error) {
+func (e *errStore) commit(context.Context, string, []DurableArticle) ([]Collision, error) {
 	return nil, e.err
 }
 
@@ -266,7 +266,7 @@ func (e *errStore) Commit(context.Context, string, []DurableArticle) ([]Collisio
 func TestBarrier_CommitFailureAcksNothing(t *testing.T) {
 	ctx := context.Background()
 	boom := errors.New("commit exploded")
-	rs := &errStore{RunStore: NewSQLiteRunStore(openTestDB(t)), err: boom}
+	rs := &errStore{runStore: NewStore(openTestDB(t)), err: boom}
 	tgt := &fakeTarget{
 		written: map[int32][]WrittenArticle{0: {{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100}}},
 	}
@@ -291,7 +291,7 @@ func TestBarrier_CommitFailureAcksNothing(t *testing.T) {
 // and a cycle that landed without confirming would re-report it forever.
 func TestBarrier_NothingDrainedAcksNothing(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 	tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, size: 7}
 	ack := &recordingAcker{}
 	b := newBarrierWithStore(t, rs, ack, &recordingStall{})
@@ -324,7 +324,7 @@ func TestBarrier_AckFailurePropagates(t *testing.T) {
 	tgt := &fakeTarget{
 		written: map[int32][]WrittenArticle{0: {{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100}}},
 	}
-	b := newBarrierWithStore(t, NewSQLiteRunStore(openTestDB(t)), ack, &recordingStall{})
+	b := newBarrierWithStore(t, NewStore(openTestDB(t)), ack, &recordingStall{})
 
 	if _, err := b.Run(ctx, "job-1", tgt); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the ack failure", err)
@@ -336,7 +336,7 @@ func TestBarrier_AckFailurePropagates(t *testing.T) {
 // on the second file's sync has claimed nothing about the first either.
 func TestBarrier_MultipleFilesSyncAllBeforeAnyClaim(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 	tgt := &fakeTarget{
 		files: []int32{0, 1},
 		written: map[int32][]WrittenArticle{
@@ -398,7 +398,7 @@ func TestBarrier_ConfirmsOnlyAfterTheCommitAndAck(t *testing.T) {
 	drain := map[int32][]WrittenArticle{0: {{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100}}}
 
 	t.Run("a successful cycle confirms", func(t *testing.T) {
-		b := newBarrierWithStore(t, NewSQLiteRunStore(openTestDB(t)),
+		b := newBarrierWithStore(t, NewStore(openTestDB(t)),
 			&recordingAcker{}, &recordingStall{})
 		tgt := &fakeTarget{written: drain, size: 100}
 		if _, err := b.Run(ctx, "job-1", tgt); err != nil {
@@ -411,7 +411,7 @@ func TestBarrier_ConfirmsOnlyAfterTheCommitAndAck(t *testing.T) {
 	})
 
 	t.Run("a failed ack does not confirm", func(t *testing.T) {
-		b := newBarrierWithStore(t, NewSQLiteRunStore(openTestDB(t)),
+		b := newBarrierWithStore(t, NewStore(openTestDB(t)),
 			&recordingAcker{err: errors.New("job not resident")}, &recordingStall{})
 		tgt := &fakeTarget{written: drain, size: 100}
 		if _, err := b.Run(ctx, "job-1", tgt); err == nil {
@@ -432,7 +432,7 @@ func TestBarrier_ConfirmsOnlyAfterTheCommitAndAck(t *testing.T) {
 // that lands has made claims about all of them. Confirming only some would
 // leave the rest re-reporting forever.
 func TestConfirmAll_ReleasesEveryFileOfTheJob(t *testing.T) {
-	b := newBarrierWithStore(t, NewSQLiteRunStore(openTestDB(t)),
+	b := newBarrierWithStore(t, NewStore(openTestDB(t)),
 		&recordingAcker{}, &recordingStall{})
 	tgt := &fakeTarget{}
 
@@ -495,4 +495,58 @@ func TestNewProof(t *testing.T) {
 	if len(proof.Articles()) != 3 {
 		t.Errorf("Articles len = %d, want 3", len(proof.Articles()))
 	}
+}
+
+// TestBarrier_CommitWrapCanFailOrObserveTheCommit pins what a CommitWrap can
+// do: withhold the commit and fail it, which acks nothing and writes nothing,
+// or run it and see the job it belongs to. Tests outside this package inject
+// commit faults this way, since they cannot implement the store's interface.
+func TestBarrier_CommitWrapCanFailOrObserveTheCommit(t *testing.T) {
+	ctx := context.Background()
+	newTarget := func() *fakeTarget {
+		return &fakeTarget{
+			written: map[int32][]WrittenArticle{0: {{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100}}},
+			size:    100,
+		}
+	}
+
+	t.Run("a wrap that fails the commit", func(t *testing.T) {
+		rs := NewStore(openTestDB(t))
+		ack := &recordingAcker{}
+		boom := errors.New("database is locked")
+		b := NewBarrier(rs, ack, &recordingStall{}, testLogger(t),
+			WithCommitWrap(func(context.Context, string, func() ([]Collision, error)) ([]Collision, error) {
+				return nil, boom
+			}))
+
+		if _, err := b.Run(ctx, "job-1", newTarget()); !errors.Is(err, boom) {
+			t.Fatalf("Run = %v, want the wrap's failure", err)
+		}
+		if len(ack.proofs) != 0 {
+			t.Errorf("acked %d proofs past a failed commit", len(ack.proofs))
+		}
+		if runs, _ := rs.ForJob(ctx, "job-1"); len(runs) != 0 {
+			t.Errorf("a withheld commit wrote %d runs", len(runs))
+		}
+	})
+
+	t.Run("a wrap that runs the commit", func(t *testing.T) {
+		rs := NewStore(openTestDB(t))
+		var sawJob string
+		b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, testLogger(t),
+			WithCommitWrap(func(_ context.Context, jobID string, commit func() ([]Collision, error)) ([]Collision, error) {
+				sawJob = jobID
+				return commit()
+			}))
+
+		if _, err := b.Run(ctx, "job-1", newTarget()); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if sawJob != "job-1" {
+			t.Errorf("wrap saw job %q, want job-1", sawJob)
+		}
+		if runs, _ := rs.ForJob(ctx, "job-1"); len(runs) != 1 {
+			t.Errorf("the wrapped commit wrote %d runs, want 1", len(runs))
+		}
+	})
 }

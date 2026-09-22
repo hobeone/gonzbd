@@ -521,11 +521,9 @@ func TestSeedFromCommittedRuns_InstallsWhatTheRetryCouldNotAck(t *testing.T) {
 			"distinguish a replay from the starting state")
 	}
 
-	if _, err := application.runs.Commit(ctx, job.ID(), []durability.DurableArticle{
+	commitRuns(t, realStore(t, application), job.ID(), []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
-	}); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
+	})
 
 	application.seedFromCommittedRuns(ctx, job.ID())
 
@@ -547,7 +545,7 @@ func TestSeedFromCommittedRuns_InstallsWhatTheRetryCouldNotAck(t *testing.T) {
 func TestSeedFromCommittedRuns_IsInertWithoutARunStore(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	application.runs = nil
+	application.durable = nil
 
 	application.seedFromCommittedRuns(t.Context(), job.ID())
 
@@ -564,11 +562,9 @@ func TestSeedFromCommittedRuns_ReportsAJobItCannotSeed(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
-	if _, err := application.runs.Commit(ctx, job.ID(), []durability.DurableArticle{
+	commitRuns(t, realStore(t, application), job.ID(), []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
-	}); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
+	})
 	job.Evict()
 
 	application.seedFromCommittedRuns(ctx, job.ID())
@@ -586,11 +582,9 @@ func TestSeedFromCommittedRuns_ReportsAJobItCannotSeed(t *testing.T) {
 func TestSeedFromCommittedRuns_ReportsAFailedLoad(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	if _, err := application.runs.Commit(t.Context(), job.ID(), []durability.DurableArticle{
+	commitRuns(t, realStore(t, application), job.ID(), []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
-	}); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
+	})
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
@@ -662,11 +656,9 @@ func TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade(t *testing.T) {
 		t.Fatal("article 0 is already done, so the replay cannot be shown to have run at all")
 	}
 
-	if _, err := application.runs.Commit(ctx, job.ID(), []durability.DurableArticle{
+	commitRuns(t, realStore(t, application), job.ID(), []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
-	}); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
+	})
 
 	application.seedFromCommittedRuns(ctx, job.ID())
 

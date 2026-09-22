@@ -8,7 +8,7 @@ import "context"
 // WrittenArticle's fields deliberately rather than inventing a parallel
 // vocabulary — WrittenArticle is what the barrier drains, and a
 // DurableArticle is the same fact after the fsync that makes it durable, so
-// RunStore.Commit's callers build these directly from what Drain returned.
+// Barrier builds these directly from what Drain returned, for Store.commit.
 type DurableArticle struct {
 	// FileIdx is the target file within the job.
 	FileIdx int32
@@ -79,8 +79,13 @@ type Collision struct {
 	Dropped int32
 }
 
-// RunStore is the durability record, described in
-// docs/durability-contract.md.
+// runStore is what Barrier and Resumer need from the durability record,
+// described in docs/durability-contract.md. Store is its implementation.
+//
+// It is unexported, and so is commit, which is what makes §6 a property of the
+// compiler rather than of convention: no package but this one can name the
+// interface, implement it, or call commit on a Store. Barrier.commit is the
+// only production caller: `git grep -n 'runs\.commit(' -- 'internal/durability/*.go' ':!*_test.go'` returns 2 lines, both in it.
 //
 // One record, written only after the fsync that makes it true (S1, S2), and
 // grouped into runs rather than kept per article. It replaced a pairing of two
@@ -89,8 +94,8 @@ type Collision struct {
 // puts CONTENT into a row; Resumer only ever deletes, as do the four other
 // deletion paths listed in this package's doc comment. None of them can make a
 // row assert anything, which is the bound §3.4's trust argument rests on.
-type RunStore interface {
-	// Commit takes ARTICLES, not runs — the caller hands over what a
+type runStore interface {
+	// commit takes ARTICLES, not runs — the caller hands over what a
 	// completed Drain reported, and the store is the one place a run is
 	// ever constructed from them. A caller that pre-built runs would put
 	// that derived value's construction at two independently-maintained
@@ -131,26 +136,17 @@ type RunStore interface {
 	// Collisions are returned rather than raised: a commit that hits one
 	// has still succeeded, the transaction still lands, and the file is
 	// still repairable. See Collision.
-	Commit(ctx context.Context, jobID string, arts []DurableArticle) ([]Collision, error)
+	commit(ctx context.Context, jobID string, arts []DurableArticle) ([]Collision, error)
 
 	// ForFile returns every stored run for one file, ordered by Offset.
 	ForFile(ctx context.Context, jobID string, fileIdx int32) ([]Run, error)
 
-	// ForJob returns every stored run for a job, across all its files,
-	// ordered by FileIdx then Offset.
-	ForJob(ctx context.Context, jobID string) ([]Run, error)
-
-	// DeleteFile removes every run for ONE file of a job.
+	// deleteFile removes every run for ONE file of a job.
 	//
 	// It exists for Resumer, whose whole mutation budget is this: a file
 	// shorter than its runs claim has disproved them, and the response is
 	// to drop them so the file is fetched again (§3.4). Scoped to a file
 	// rather than a job because a resume proves nothing about the job's
 	// other files — it stat'ed one path.
-	DeleteFile(ctx context.Context, jobID string, fileIdx int32) error
-
-	// DeleteJob removes every run for a job that has left the queue. It
-	// touches only durable_runs — failed_articles is owned and written
-	// solely by checkpoint.Store.SaveBatch, and this store never writes to it.
-	DeleteJob(ctx context.Context, jobID string) error
+	deleteFile(ctx context.Context, jobID string, fileIdx int32) error
 }

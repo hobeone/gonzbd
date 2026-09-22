@@ -97,14 +97,11 @@ func newResumeUnitFixture(t *testing.T) *resumeUnitFixture {
 	// File 1 has a run of its own that must NOT reach the work set: with no
 	// resolved name there is no path the gate could have stat'ed, and adopting
 	// it would mark an article Done on the strength of the record alone.
-	if _, err := durability.NewSQLiteRunStore(repo.DB()).Commit(t.Context(), j.ID(),
-		[]durability.DurableArticle{
-			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
-				CRC32: crc32.ChecksumIEEE(f.articles[0])},
-			{FileIdx: 1, ArtIdx: 2, Offset: 0, Length: unitArtLen, CRC32: 7},
-		}); err != nil {
-		t.Fatalf("RunStore.Commit: %v", err)
-	}
+	commitRuns(t, durability.NewStore(repo.DB()), j.ID(), []durability.DurableArticle{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
+			CRC32: crc32.ChecksumIEEE(f.articles[0])},
+		{FileIdx: 1, ArtIdx: 2, Offset: 0, Length: unitArtLen, CRC32: 7},
+	})
 	return f
 }
 
@@ -208,7 +205,7 @@ func TestResumeJobFiles_SkipsFilesWithNoResolvedName(t *testing.T) {
 	}
 	// File 1's run is still on stable storage: the sweep neither adopted it
 	// nor discarded it, because it never looked.
-	stored, err := f.app.runs.ForFile(t.Context(), f.job.ID(), 1)
+	stored, err := f.app.durable.ForFile(t.Context(), f.job.ID(), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,11 +271,8 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 	if err := os.WriteFile(otherPath, otherBytes, 0o600); err != nil {
 		t.Fatalf("write(other): %v", err)
 	}
-	if _, err := durability.NewSQLiteRunStore(f.repo.DB()).Commit(t.Context(), other.ID(),
-		[]durability.DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
-			CRC32: crc32.ChecksumIEEE(otherBytes)}}); err != nil {
-		t.Fatalf("RunStore.Commit(other): %v", err)
-	}
+	commitRuns(t, durability.NewStore(f.repo.DB()), other.ID(), []durability.DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
+		CRC32: crc32.ChecksumIEEE(otherBytes)}})
 	other.Evict()
 	if other.Resident() {
 		t.Fatal("evict did not evict the second job's manifest, so it is resident and " +
@@ -561,12 +555,10 @@ func (f *resumeUnitFixture) replacedUnderneath(t *testing.T) {
 	// Both articles recorded and both installed, so the state the sweep would
 	// destroy is a complete one. The fixture's own commit covers article 0
 	// only; this adds article 1.
-	if _, err := f.app.runs.Commit(t.Context(), f.job.ID(), []durability.DurableArticle{
+	commitRuns(t, realStore(t, f.app), f.job.ID(), []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 1, Offset: unitArtLen, Length: unitArtLen,
 			CRC32: crc32.ChecksumIEEE(f.articles[1])},
-	}); err != nil {
-		t.Fatalf("RunStore.Commit: %v", err)
-	}
+	})
 	if err := f.job.ReplaceFromRuns([]int32{0}, []durability.Run{
 		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: 2 * unitArtLen},
 	}); err != nil {

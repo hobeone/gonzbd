@@ -230,7 +230,7 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		// reason it reports.
 		//
 		// Offset is the third column and that ordering is load-bearing:
-		// SQLiteRunStore.queryBracketing scans the key range by offset within
+		// Store.queryBracketing scans the key range by offset within
 		// a (job_id, file_idx) prefix, so a key that put offset anywhere else
 		// would turn every commit into a full-file read.
 		want := map[string]int{"job_id": 1, "file_idx": 2, "offset": 3}

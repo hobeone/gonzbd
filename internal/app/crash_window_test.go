@@ -98,9 +98,7 @@ func newCrashWindowFixture(t *testing.T, recordArts ...int32) *crashWindowFixtur
 			CRC32:   crc32.ChecksumIEEE(onDisk[int(a)*crashArtLen : (int(a)+1)*crashArtLen]),
 		})
 	}
-	if _, err := durability.NewSQLiteRunStore(repo.DB()).Commit(t.Context(), j.ID(), arts); err != nil {
-		t.Fatalf("RunStore.Commit: %v", err)
-	}
+	commitRuns(t, durability.NewStore(repo.DB()), j.ID(), arts)
 	return f
 }
 

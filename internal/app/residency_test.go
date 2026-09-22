@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -120,7 +121,7 @@ func TestAppResidency_RestoreResolution(t *testing.T) {
 			return j, true
 		}
 		return nil, false
-	}, dir, db, nil)
+	}, dir, durability.NewStore(db), nil)
 
 	if err := r.Hydrate(context.Background(), "j1"); err != nil {
 		t.Fatalf("Hydrate: %v", err)
@@ -150,7 +151,7 @@ func TestAppResidency_RestoreResolution(t *testing.T) {
 			return jFailed, true
 		}
 		return nil, false
-	}, dir, db, nil)
+	}, dir, durability.NewStore(db), nil)
 	if err := rFailed.Hydrate(context.Background(), "j_failed"); err != nil {
 		t.Fatalf("Hydrate: %v", err)
 	}

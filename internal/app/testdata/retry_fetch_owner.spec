@@ -23,9 +23,9 @@ run TestRestoreJobFiles_RestoresNonDefaultFetchPolicy|TestRetryHistoryJob_Config
 [hydration does not restore the persisted policy]
 file internal/app/residency.go
 --- anchor
-		_ = j.RestoreFetchPolicy(fi, job.FetchPolicy(fetch)) //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
+		_ = j.RestoreFetchPolicy(f.FileIndex, job.FetchPolicy(f.FetchPolicy))
 --- replace
-		_ = job.FetchPolicy(fetch) //nolint:gosec // G115: fetch_policy is 0-2, fits in uint8
+		_ = job.FetchPolicy(f.FetchPolicy)
 --- end
 
 # The retry path must NOT apply the retained policy: it is the failed attempt's
@@ -106,13 +106,13 @@ file internal/app/app.go
 # in memory, so the row disagreed from the moment it existed -- for every
 # on-demand-par2 job, with no retry involved.
 #
-# The argument expression is mutated, NOT the VALUES literal. Changing the
-# placeholder count produces a SQLite argument-count error, which is red for a
-# reason that proves nothing about the test.
+# The policy handed to the store is mutated, NOT the SQL. Changing the
+# statement's placeholder count produces a SQLite argument-count error, which
+# is red for a reason that proves nothing about the test.
 [the seed writes the default instead of the derived policy]
 file internal/app/app.go
 --- anchor
-		if _, err := stmt.ExecContext(ctx, jobID, i, int(fetch(i))); err != nil {
+		policies[i] = uint8(fetch(i))
 --- replace
-		if _, err := stmt.ExecContext(ctx, jobID, i, 0); err != nil {
+		policies[i] = 0
 --- end

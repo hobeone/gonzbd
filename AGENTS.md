@@ -165,7 +165,7 @@ before asserting" for the eight that shipped.
   the set of *arguments*, and a paraphrase carries none of your tokens.
 - **State the basis in the comment.** "Barrier is the only writer" becomes
   "Barrier is the only writer — `INSERT` appears once, at
-  `runstore_sqlite.go:233`". The citation is what lets the next reader re-run
+  `store.go:357`". The citation is what lets the next reader re-run
   your check in one command instead of re-deriving your confidence.
 - **Where the population is enumerable by a machine, write the test instead.** A
   count of call sites, a set of writers of one field, the members of a

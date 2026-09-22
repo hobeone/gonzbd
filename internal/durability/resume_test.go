@@ -20,9 +20,9 @@ func writePartial(t *testing.T, dir, name string, n int) string {
 }
 
 // storeRun commits one article as a run and returns the store.
-func storeRuns(t *testing.T, rs RunStore, jobID string, arts ...DurableArticle) {
+func storeRuns(t *testing.T, rs runStore, jobID string, arts ...DurableArticle) {
 	t.Helper()
-	if _, err := rs.Commit(context.Background(), jobID, arts); err != nil {
+	if _, err := rs.commit(context.Background(), jobID, arts); err != nil {
 		t.Fatalf("commit runs: %v", err)
 	}
 }
@@ -46,7 +46,7 @@ func TestResume_AdoptsWhenTheFileIsLongEnough(t *testing.T) {
 			ctx := context.Background()
 			dir := t.TempDir()
 			path := writePartial(t, dir, "f.bin", tt.size)
-			rs := NewSQLiteRunStore(openTestDB(t))
+			rs := NewStore(openTestDB(t))
 			storeRuns(t, rs, "job-1",
 				DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 				DurableArticle{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 200, CRC32: 2},
@@ -95,7 +95,7 @@ func TestResume_ShortFileDiscardsItsRuns(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := writePartial(t, dir, "f.bin", 299)
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 	storeRuns(t, rs, "job-1",
 		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 		DurableArticle{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 200, CRC32: 2},
@@ -130,7 +130,7 @@ func TestResume_DiscardIsScopedToTheFile(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := writePartial(t, dir, "f0.bin", 10)
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 	storeRuns(t, rs, "job-1",
 		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 		DurableArticle{FileIdx: 1, ArtIdx: 5, Offset: 0, Length: 100, CRC32: 2},
@@ -161,7 +161,7 @@ func TestResume_DiscardIsScopedToTheFile(t *testing.T) {
 // adopts articles this process never wrote.
 func TestResume_MissingFileRestarts(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 	storeRuns(t, rs, "job-1",
 		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1})
 	r := NewResumer(rs, testLogger(t))
@@ -190,7 +190,7 @@ func TestResume_MissingFileRestarts(t *testing.T) {
 func TestResume_FileWithNoRunsAdopts(t *testing.T) {
 	ctx := context.Background()
 	path := writePartial(t, t.TempDir(), "f.bin", 0)
-	r := NewResumer(NewSQLiteRunStore(openTestDB(t)), testLogger(t))
+	r := NewResumer(NewStore(openTestDB(t)), testLogger(t))
 
 	res, err := r.Resume(ctx, "job-1", 0, path)
 	if err != nil {
@@ -224,7 +224,7 @@ func TestResume_StatErrorIsReturned(t *testing.T) {
 		t.Skip("running as root: the directory mode does not deny the stat")
 	}
 
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 	storeRuns(t, rs, "job-1",
 		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1})
 	r := NewResumer(rs, testLogger(t))
@@ -239,7 +239,7 @@ func TestResume_StatErrorIsReturned(t *testing.T) {
 
 // errRunStore fails ForFile so the read-failure path can be pinned.
 type errRunStore struct {
-	RunStore
+	runStore
 	err error
 }
 
@@ -253,7 +253,7 @@ func (e *errRunStore) ForFile(context.Context, string, int32) ([]Run, error) {
 func TestResume_RunReadFailureIsReturned(t *testing.T) {
 	boom := errors.New("run store unreadable")
 	path := writePartial(t, t.TempDir(), "f.bin", 100)
-	r := NewResumer(&errRunStore{RunStore: NewSQLiteRunStore(openTestDB(t)), err: boom}, testLogger(t))
+	r := NewResumer(&errRunStore{runStore: NewStore(openTestDB(t)), err: boom}, testLogger(t))
 
 	if _, err := r.Resume(context.Background(), "job-1", 0, path); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the read failure", err)
@@ -262,11 +262,11 @@ func TestResume_RunReadFailureIsReturned(t *testing.T) {
 
 // delErrStore fails DeleteFile so the discard's own failure can be pinned.
 type delErrStore struct {
-	RunStore
+	runStore
 	err error
 }
 
-func (d *delErrStore) DeleteFile(context.Context, string, int32) error { return d.err }
+func (d *delErrStore) deleteFile(context.Context, string, int32) error { return d.err }
 
 // TestResume_SurfacesADiscardFailure pins that a discard which could not be
 // made durable is REPORTED rather than swallowed.
@@ -276,8 +276,8 @@ func (d *delErrStore) DeleteFile(context.Context, string, int32) error { return 
 // file has already contradicted, and finishes it with holes.
 func TestResume_SurfacesADiscardFailure(t *testing.T) {
 	boom := errors.New("delete rejected")
-	rs := &delErrStore{RunStore: NewSQLiteRunStore(openTestDB(t)), err: boom}
-	storeRuns(t, rs.RunStore, "job-1",
+	rs := &delErrStore{runStore: NewStore(openTestDB(t)), err: boom}
+	storeRuns(t, rs.runStore, "job-1",
 		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1})
 	r := NewResumer(rs, testLogger(t))
 
@@ -296,7 +296,7 @@ func TestResume_SurfacesADiscardFailure(t *testing.T) {
 // partial the next start is about to adopt anyway.
 func TestDiscard_NamesTheJobAndFile(t *testing.T) {
 	boom := errors.New("delete rejected")
-	r := NewResumer(&delErrStore{RunStore: NewSQLiteRunStore(openTestDB(t)), err: boom}, testLogger(t))
+	r := NewResumer(&delErrStore{runStore: NewStore(openTestDB(t)), err: boom}, testLogger(t))
 
 	err := r.discard(context.Background(), "job-7", 3)
 	if !errors.Is(err, boom) {
@@ -310,7 +310,7 @@ func TestDiscard_NamesTheJobAndFile(t *testing.T) {
 
 	// The success path returns nil rather than an error built from a nil
 	// cause, which a naive wrap would produce.
-	ok := NewResumer(NewSQLiteRunStore(openTestDB(t)), testLogger(t))
+	ok := NewResumer(NewStore(openTestDB(t)), testLogger(t))
 	if err := ok.discard(context.Background(), "job-7", 3); err != nil {
 		t.Errorf("discarding a file with no runs returned %v, want nil", err)
 	}

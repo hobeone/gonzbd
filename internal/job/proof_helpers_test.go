@@ -3,9 +3,11 @@ package job
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/durability"
+	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -41,23 +43,18 @@ type noopStallable struct{}
 func (noopStallable) Stall(string, *storagefault.Fault) {}
 func (noopStallable) Fail(string, *storagefault.Fault)  {}
 
-// stubRunStore satisfies durability.RunStore without needing SQLite or disk I/O.
-type stubRunStore struct{}
-
-func (stubRunStore) Commit(context.Context, string, []durability.DurableArticle) ([]durability.Collision, error) {
-	return nil, nil
-}
-func (stubRunStore) ForFile(context.Context, string, int32) ([]durability.Run, error) {
-	return nil, nil
-}
-func (stubRunStore) ForJob(context.Context, string) ([]durability.Run, error) {
-	return nil, nil
-}
-func (stubRunStore) DeleteFile(context.Context, string, int32) error {
-	return nil
-}
-func (stubRunStore) DeleteJob(context.Context, string) error {
-	return nil
+// proofStore is a durability.Store over a fresh migrated database. It cannot
+// be a stub: NewBarrier takes the store's unexported interface, which no type
+// outside internal/durability can implement, and that is the point — only the
+// real store's commit can sit under a barrier.
+func proofStore(t *testing.T) *durability.Store {
+	t.Helper()
+	db, err := history.Open(context.Background(), filepath.Join(t.TempDir(), "proof.db"))
+	if err != nil {
+		t.Fatalf("proofStore: open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return durability.NewStore(history.NewRepository(db).DB())
 }
 
 // mintProof produces a DurableProof the way production does: by running a real
@@ -85,7 +82,7 @@ func mintProof(t *testing.T, jobID string, arts []int32) durability.DurableProof
 	captured := ackerFunc(func(p durability.DurableProof) error { got = p; return nil })
 
 	b := durability.NewBarrier(
-		stubRunStore{},
+		proofStore(t),
 		captured,
 		noopStallable{},
 		slog.New(slog.DiscardHandler),

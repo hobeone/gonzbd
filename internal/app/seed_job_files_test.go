@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -17,8 +18,8 @@ import (
 // policy is written.
 func fetchAlwaysForAll(int) job.FetchPolicy { return job.FetchAlways }
 
-// openSeedTestDB returns a migrated history database for the seed tests.
-func openSeedTestDB(t *testing.T) *sql.DB {
+// openHistoryTestDB returns a migrated history database.
+func openHistoryTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := history.Open(t.Context(), filepath.Join(t.TempDir(), "history.db"))
 	if err != nil {
@@ -54,7 +55,7 @@ func countSeeded(t *testing.T, db *sql.DB, jobID string) int {
 // correct outcome for a recovery volume, not "results already set" — the
 // pre-#329 shape this test used to pin.
 func TestSeedJobFiles_OneRowPerFile(t *testing.T) {
-	db := openSeedTestDB(t)
+	db := openHistoryTestDB(t)
 
 	derived := map[int]job.FetchPolicy{2: job.FetchIfNeeded}
 	fetch := func(i int) job.FetchPolicy {
@@ -64,7 +65,7 @@ func TestSeedJobFiles_OneRowPerFile(t *testing.T) {
 		return job.FetchAlways
 	}
 
-	if err := seedJobFiles(t.Context(), db, "job-a", 4, fetch); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-a", 4, fetch); err != nil {
 		t.Fatalf("seedJobFiles: %v", err)
 	}
 
@@ -111,9 +112,9 @@ func TestSeedJobFiles_OneRowPerFile(t *testing.T) {
 // checkpointer has already written — DO NOTHING rather than an upsert, because
 // an upsert would reset a completed file's filename and CRC back to empty.
 func TestSeedJobFiles_IsIdempotent(t *testing.T) {
-	db := openSeedTestDB(t)
+	db := openHistoryTestDB(t)
 
-	if err := seedJobFiles(t.Context(), db, "job-b", 3, fetchAlwaysForAll); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-b", 3, fetchAlwaysForAll); err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
 	if _, err := db.Exec(
@@ -122,7 +123,7 @@ func TestSeedJobFiles_IsIdempotent(t *testing.T) {
 	); err != nil {
 		t.Fatalf("simulate checkpoint: %v", err)
 	}
-	if err := seedJobFiles(t.Context(), db, "job-b", 3, fetchAlwaysForAll); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-b", 3, fetchAlwaysForAll); err != nil {
 		t.Fatalf("second seed: %v", err)
 	}
 
@@ -156,7 +157,7 @@ func TestSeedJobFiles_IsIdempotent(t *testing.T) {
 // inside SQLite is a truer stand-in for the real failures here (a disk error, a
 // busy timeout) than a Go-side hook would be.
 func TestSeedJobFiles_IsAllOrNothing(t *testing.T) {
-	db := openSeedTestDB(t)
+	db := openHistoryTestDB(t)
 
 	if _, err := db.Exec(`
 CREATE TRIGGER fail_on_index_three BEFORE INSERT ON job_files
@@ -165,7 +166,7 @@ BEGIN SELECT RAISE(ABORT, 'injected fault'); END`); err != nil {
 		t.Fatalf("create trigger: %v", err)
 	}
 
-	err := seedJobFiles(t.Context(), db, "job-c", 6, fetchAlwaysForAll)
+	err := seedJobFiles(t.Context(), durability.NewStore(db), "job-c", 6, fetchAlwaysForAll)
 	if err == nil {
 		t.Fatal("seedJobFiles returned nil, want the injected fault reported")
 	}
@@ -179,9 +180,9 @@ BEGIN SELECT RAISE(ABORT, 'injected fault'); END`); err != nil {
 // an error. The loop body never runs, so this reaches Commit with an empty
 // transaction, which is the one path the other three tests never take.
 func TestSeedJobFiles_ZeroFilesCommits(t *testing.T) {
-	db := openSeedTestDB(t)
+	db := openHistoryTestDB(t)
 
-	if err := seedJobFiles(t.Context(), db, "job-d", 0, fetchAlwaysForAll); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-d", 0, fetchAlwaysForAll); err != nil {
 		t.Fatalf("seedJobFiles with no files: %v", err)
 	}
 	if n := countSeeded(t, db, "job-d"); n != 0 {
@@ -191,12 +192,12 @@ func TestSeedJobFiles_ZeroFilesCommits(t *testing.T) {
 
 // TestSeedJobFiles_CancelledContextSeedsNothing pins the BeginTx error path.
 func TestSeedJobFiles_CancelledContextSeedsNothing(t *testing.T) {
-	db := openSeedTestDB(t)
+	db := openHistoryTestDB(t)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	if err := seedJobFiles(ctx, db, "job-e", 3, fetchAlwaysForAll); err == nil {
+	if err := seedJobFiles(ctx, durability.NewStore(db), "job-e", 3, fetchAlwaysForAll); err == nil {
 		t.Fatal("seedJobFiles returned nil for a cancelled context, want an error")
 	}
 	if n := countSeeded(t, db, "job-e"); n != 0 {

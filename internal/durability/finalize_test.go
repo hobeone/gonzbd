@@ -60,11 +60,11 @@ func (s *truncTarget) Confirm(_ context.Context, idx int32) { s.confirmed = appe
 // between two rows, and the maximum is taken over both.
 func TestFinalizeFile_TruncatesToTheHighestRecordedEnd(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	// What earlier runs recorded: articles 0 and 1 tile [0,200), and article 4
 	// sits above the hole at [400,500).
-	if _, err := rs.Commit(ctx, "job-1", []DurableArticle{
+	if _, err := rs.commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x11},
 		{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100, CRC32: 0x22},
 		{FileIdx: 0, ArtIdx: 4, Offset: 400, Length: 100, CRC32: 0x44},
@@ -101,7 +101,7 @@ func TestFinalizeFile_TruncatesToTheHighestRecordedEnd(t *testing.T) {
 // zeros is a visible, repairable cost.
 func TestFinalizeFile_NothingRecordedDoesNotTruncate(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 	tgt := &truncTarget{}
 
 	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
@@ -168,7 +168,7 @@ func TestFinalizeFile_StorageFaultsStallRatherThanFailArticles(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			rs := NewSQLiteRunStore(openTestDB(t))
+			rs := NewStore(openTestDB(t))
 			ack := &recordingAcker{}
 			stall := &recordingStall{}
 			b := NewBarrier(rs, ack, stall, slog.New(slog.DiscardHandler))

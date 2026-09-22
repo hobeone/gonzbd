@@ -72,7 +72,7 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- separate index on job_id.
 -- `git grep -nE 'INTO job_files|UPDATE job_files|FROM job_files' -- '*.go'
 -- ':!*_test.go'` returns five statements: the INSERT, UPDATE, DELETE and
--- SELECT in internal/app, plus a SELECT in test/crash/harness.go, which that
+-- SELECT in internal/durability, plus a SELECT in test/crash/harness.go, which that
 -- filter keeps because it is build-tagged rather than named _test.go. Every
 -- one keys on `job_id` or on `job_id AND file_index`, and both are prefixes of
 -- that index -- so a second B-tree on job_id alone would be maintained on
@@ -109,9 +109,10 @@ CREATE TABLE job_files (
 -- crc32util.Combine, so a file that collapses to one row starting at offset 0
 -- has its whole-file CRC in that row -- no walk, no prefix state.
 --
--- Runs are built in one place: RunStore.Commit takes individual articles
--- rather than runs, so there is no second caller able to construct one. See
--- internal/durability/run.go.
+-- Runs are built in one place: durability.Store's commit takes individual
+-- articles rather than runs, and is unexported, so no package outside
+-- internal/durability can call it; its one production caller is
+-- Barrier.commit. See internal/durability/run.go.
 --
 -- Keyed by job_id with no foreign key, so rows are removed deliberately rather
 -- than by cascade. A job leaving the queue drops them, EXCEPT a job that
@@ -140,7 +141,7 @@ CREATE TABLE durable_runs (
 --
 -- One production writer -- `git grep -n 'INTO failed_articles' -- '*.go'
 -- ':!*_test.go'` returns one line, the INSERT OR IGNORE inside
--- appCheckpointStore.SaveBatch. Deletion is wider and job-scoped: the retry
+-- durability.Store.SaveProgress, which the checkpointer writes through. Deletion is wider and job-scoped: the retry
 -- path, a job leaving the queue, and history.Repository.Delete. None of those
 -- writes a row.
 --
@@ -173,7 +174,8 @@ CREATE TABLE failed_articles (
 -- history.Repository.delete removes them with the entry. job_files has no such
 -- deleter: `git grep -n 'DELETE FROM job_files WHERE' -- '*.go'` returns, outside
 -- the comments that quote the command itself, one statement -- in
--- Application.deleteJobDurability, which is the call the finalizer skipped. So a
+-- durability.Store.DiscardFileRows, which only Application.deleteJobDurability
+-- calls, and that is the call the finalizer skipped. So a
 -- FAILED job's job_files rows are removed by neither the queue job nor the
 -- history entry, and survive until a retry puts the job back in the queue for
 -- a later departure to clean up -- or forever, if the entry is deleted from

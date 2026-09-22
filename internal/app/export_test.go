@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"log/slog"
+	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
@@ -12,6 +13,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/postproc"
 )
@@ -251,4 +253,12 @@ func (a *Application) SetPostProcessorStopHook(fn func() error) {
 // SetShutdownStepTimeout sets the shutdownStepTimeout for testing.
 func (a *Application) SetShutdownStepTimeout(d time.Duration) {
 	a.shutdownStepTimeout = d
+}
+
+// CommitRuns is commitRuns for the external test package: it records arts in
+// durable_runs through a real barrier, the only route outside
+// internal/durability that can write run content.
+func CommitRuns(t *testing.T, st *durability.Store, jobID string, arts []durability.DurableArticle) []durability.Collision {
+	t.Helper()
+	return commitRuns(t, st, jobID, arts)
 }

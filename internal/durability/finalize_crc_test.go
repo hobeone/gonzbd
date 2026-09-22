@@ -27,7 +27,7 @@ import (
 // overlapped file this mechanism must keep at more than one row.
 func TestFinalizeFile_CollapsesACleanFileToOneRunCarryingTheWholeFileCRC(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	a0 := bytes.Repeat([]byte{0x01}, 100)
 	a1 := bytes.Repeat([]byte{0x02}, 100)
@@ -71,7 +71,7 @@ func TestFinalizeFile_CollapsesACleanFileToOneRunCarryingTheWholeFileCRC(t *test
 // predicate withholds the CRC with nothing to remember.
 func TestFinalizeFile_AHoleKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	// Article 1 permanently failed: nothing was ever written for [100,200).
 	tgt := &factGapTarget{
@@ -118,7 +118,7 @@ func TestFinalizeFile_AHoleKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 // This test pins that the mechanism really does leave a second row to see.
 func TestFinalizeFile_AnOverlapKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	tgt := &factGapTarget{
 		size: 200,

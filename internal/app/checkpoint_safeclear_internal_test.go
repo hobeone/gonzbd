@@ -238,15 +238,14 @@ func TestJobsAtRisk_NamesOnlyTheJobsHoldingUnackedBytes(t *testing.T) {
 // the fsync and the stat — so a test can observe the accumulator at the one
 // moment that matters: the run is genuinely in flight and nothing is durable.
 type blockingCommitStore struct {
-	durability.RunStore
 	entered chan struct{}
 	release chan struct{}
 }
 
-func (s blockingCommitStore) Commit(ctx context.Context, jobID string, arts []durability.DurableArticle) ([]durability.Collision, error) {
+func (s blockingCommitStore) wrap(_ context.Context, _ string, commit func() ([]durability.Collision, error)) ([]durability.Collision, error) {
 	close(s.entered)
 	<-s.release
-	return s.RunStore.Commit(ctx, jobID, arts)
+	return commit()
 }
 
 // TestCheckpointJob_KeepsAJobAtRiskWhileItsBarrierIsInFlight is the pin for the
@@ -273,12 +272,12 @@ func TestCheckpointJob_KeepsAJobAtRiskWhileItsBarrierIsInFlight(t *testing.T) {
 	}
 
 	blocked := blockingCommitStore{
-		RunStore: application.runs,
-		entered:  make(chan struct{}),
-		release:  make(chan struct{}),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
 	}
 	application.barrier = durability.NewBarrier(
-		blocked, application, application, slog.New(slog.DiscardHandler),
+		realStore(t, application), application, application, slog.New(slog.DiscardHandler),
+		durability.WithCommitWrap(blocked.wrap),
 	)
 
 	application.noteJobBytes(job.ID(), 4096)
@@ -286,7 +285,13 @@ func TestCheckpointJob_KeepsAJobAtRiskWhileItsBarrierIsInFlight(t *testing.T) {
 	done := make(chan bool, 1)
 	go func() { done <- application.checkpointJob(t.Context(), job.ID()) }()
 
-	<-blocked.entered
+	// Bounded, so a barrier that never reaches its commit wrap fails this test
+	// rather than hanging it until go test's own timeout.
+	select {
+	case <-blocked.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the barrier never reached its commit wrap")
+	}
 	// The barrier is parked mid-run. Its bytes are on disk but not durable, and
 	// this is precisely when a concurrent reload would consult jobsAtRisk.
 	if _, ok := application.jobsAtRisk()[job.ID()]; !ok {

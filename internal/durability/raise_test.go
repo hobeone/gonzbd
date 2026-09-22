@@ -23,7 +23,7 @@ func TestRaise(t *testing.T) {
 
 	newBarrier := func(s *recordingStall) *Barrier {
 		db := openTestDB(t)
-		return NewBarrier(NewSQLiteRunStore(db),
+		return NewBarrier(NewStore(db),
 			&recordingAcker{}, s, slog.New(slog.DiscardHandler))
 	}
 

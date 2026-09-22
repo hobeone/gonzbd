@@ -14,12 +14,12 @@ import (
 // call look identical to a correct one.
 func crcOf(b []byte) uint32 { return crc32.ChecksumIEEE(b) }
 
-// TestSQLiteRunStore_MergesAbuttingInBothOffsetAndIndex pins the core merge
+// TestStore_MergesAbuttingInBothOffsetAndIndex pins the core merge
 // rule: two articles whose offsets and article indices are both contiguous
 // collapse into one row, with the combined CRC.
-func TestSQLiteRunStore_MergesAbuttingInBothOffsetAndIndex(t *testing.T) {
+func TestStore_MergesAbuttingInBothOffsetAndIndex(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	a := []byte("hello, ")
 	b := []byte("world!!!")
@@ -28,7 +28,7 @@ func TestSQLiteRunStore_MergesAbuttingInBothOffsetAndIndex(t *testing.T) {
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: int32(len(a)), CRC32: crcOf(a)},
 		{FileIdx: 0, ArtIdx: 1, Offset: int64(len(a)), Length: int32(len(b)), CRC32: crcOf(b)},
 	}
-	if _, err := rs.Commit(ctx, "job-1", arts); err != nil {
+	if _, err := rs.commit(ctx, "job-1", arts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -49,18 +49,18 @@ func TestSQLiteRunStore_MergesAbuttingInBothOffsetAndIndex(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_OffsetAbutsIndexDoesNot pins that offset contiguity
+// TestStore_OffsetAbutsIndexDoesNot pins that offset contiguity
 // alone is not enough: a gap in article index (a missing article between
 // them) must keep the rows separate even though their bytes are adjacent.
-func TestSQLiteRunStore_OffsetAbutsIndexDoesNot(t *testing.T) {
+func TestStore_OffsetAbutsIndexDoesNot(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	arts := []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1111},
 		{FileIdx: 0, ArtIdx: 5, Offset: 100, Length: 50, CRC32: 0x2222}, // index gap: 1..4 missing
 	}
-	if _, err := rs.Commit(ctx, "job-1", arts); err != nil {
+	if _, err := rs.commit(ctx, "job-1", arts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -73,18 +73,18 @@ func TestSQLiteRunStore_OffsetAbutsIndexDoesNot(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_IndexAbutsOffsetDoesNot pins the mirror case: article
+// TestStore_IndexAbutsOffsetDoesNot pins the mirror case: article
 // index contiguity alone is not enough when the byte offsets leave a gap —
 // e.g. a hole from a still-unwritten neighbour.
-func TestSQLiteRunStore_IndexAbutsOffsetDoesNot(t *testing.T) {
+func TestStore_IndexAbutsOffsetDoesNot(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	arts := []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1111},
 		{FileIdx: 0, ArtIdx: 1, Offset: 150, Length: 50, CRC32: 0x2222}, // offset gap: 100..150
 	}
-	if _, err := rs.Commit(ctx, "job-1", arts); err != nil {
+	if _, err := rs.commit(ctx, "job-1", arts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -97,19 +97,19 @@ func TestSQLiteRunStore_IndexAbutsOffsetDoesNot(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_RedeliveredArticleIsDropped pins that a re-delivery of
+// TestStore_RedeliveredArticleIsDropped pins that a re-delivery of
 // an article a stored run already covers is dropped entirely, not inserted
 // as a second row — Commit must be idempotent against the barrier's
 // at-least-once redelivery.
-func TestSQLiteRunStore_RedeliveredArticleIsDropped(t *testing.T) {
+func TestStore_RedeliveredArticleIsDropped(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	first := []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 500, CRC32: 0xAAAA},
 		{FileIdx: 0, ArtIdx: 1, Offset: 500, Length: 500, CRC32: 0xBBBB},
 	}
-	if _, err := rs.Commit(ctx, "job-1", first); err != nil {
+	if _, err := rs.commit(ctx, "job-1", first); err != nil {
 		t.Fatal(err)
 	}
 	before, err := rs.ForFile(ctx, "job-1", 0)
@@ -122,7 +122,7 @@ func TestSQLiteRunStore_RedeliveredArticleIsDropped(t *testing.T) {
 	redelivered := []DurableArticle{
 		{FileIdx: 0, ArtIdx: 1, Offset: 500, Length: 500, CRC32: 0xBBBB},
 	}
-	if _, err := rs.Commit(ctx, "job-1", redelivered); err != nil {
+	if _, err := rs.commit(ctx, "job-1", redelivered); err != nil {
 		t.Fatal(err)
 	}
 
@@ -138,7 +138,7 @@ func TestSQLiteRunStore_RedeliveredArticleIsDropped(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_RedeliveredAdjacentToNewIsNotAFalseOverlap pins the
+// TestStore_RedeliveredAdjacentToNewIsNotAFalseOverlap pins the
 // design doc's §6 worked example: articles 5-9 are re-delivered alongside
 // genuinely new articles 10-12. Grouping before subtracting would form one
 // run [5,12] that no stored row covers, inserting it beside the stored
@@ -146,9 +146,9 @@ func TestSQLiteRunStore_RedeliveredArticleIsDropped(t *testing.T) {
 // true size). Subtracting first must leave only the true new work, [10,12],
 // which sits adjacent to the stored row and so merges into it — giving one
 // row [0,12] whose Σ length equals the file's real size.
-func TestSQLiteRunStore_RedeliveredAdjacentToNewIsNotAFalseOverlap(t *testing.T) {
+func TestStore_RedeliveredAdjacentToNewIsNotAFalseOverlap(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	const artLen = 100 // bytes per article, uniform for simplicity
 
@@ -164,13 +164,13 @@ func TestSQLiteRunStore_RedeliveredAdjacentToNewIsNotAFalseOverlap(t *testing.T)
 	}
 
 	// First commit: articles 0-9 land and merge into one stored row.
-	if _, err := rs.Commit(ctx, "job-1", mkArts(0, 9)); err != nil {
+	if _, err := rs.commit(ctx, "job-1", mkArts(0, 9)); err != nil {
 		t.Fatal(err)
 	}
 
 	// Second commit: a redelivery of 5-9 arrives alongside genuinely new
 	// 10-12, in one batch — exactly the shape that breaks whole-run dedup.
-	if _, err := rs.Commit(ctx, "job-1", mkArts(5, 12)); err != nil {
+	if _, err := rs.commit(ctx, "job-1", mkArts(5, 12)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -191,10 +191,10 @@ func TestSQLiteRunStore_RedeliveredAdjacentToNewIsNotAFalseOverlap(t *testing.T)
 	}
 }
 
-// TestSQLiteRunStore_MergeIsOrderIndependent pins that the same set of
+// TestStore_MergeIsOrderIndependent pins that the same set of
 // articles produces the same stored rows regardless of the order they
 // arrive in within one Commit call.
-func TestSQLiteRunStore_MergeIsOrderIndependent(t *testing.T) {
+func TestStore_MergeIsOrderIndependent(t *testing.T) {
 	ctx := context.Background()
 
 	forward := []DurableArticle{
@@ -204,8 +204,8 @@ func TestSQLiteRunStore_MergeIsOrderIndependent(t *testing.T) {
 	}
 	reversed := []DurableArticle{forward[2], forward[0], forward[1]}
 
-	rsFwd := NewSQLiteRunStore(openTestDB(t))
-	if _, err := rsFwd.Commit(ctx, "job-1", forward); err != nil {
+	rsFwd := NewStore(openTestDB(t))
+	if _, err := rsFwd.commit(ctx, "job-1", forward); err != nil {
 		t.Fatal(err)
 	}
 	gotFwd, err := rsFwd.ForFile(ctx, "job-1", 0)
@@ -213,8 +213,8 @@ func TestSQLiteRunStore_MergeIsOrderIndependent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rsRev := NewSQLiteRunStore(openTestDB(t))
-	if _, err := rsRev.Commit(ctx, "job-1", reversed); err != nil {
+	rsRev := NewStore(openTestDB(t))
+	if _, err := rsRev.commit(ctx, "job-1", reversed); err != nil {
 		t.Fatal(err)
 	}
 	gotRev, err := rsRev.ForFile(ctx, "job-1", 0)
@@ -230,14 +230,14 @@ func TestSQLiteRunStore_MergeIsOrderIndependent(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_CRCMatchesRealBytes pins associativity against actual
+// TestStore_CRCMatchesRealBytes pins associativity against actual
 // data: for N articles written contiguously, the merged row's CRC32 must
 // equal crc32.ChecksumIEEE of the real concatenated bytes — not merely some
 // value crc32util.Combine happens to produce. Everything durable_runs
 // asserts about a whole file's integrity rests on this equality.
-func TestSQLiteRunStore_CRCMatchesRealBytes(t *testing.T) {
+func TestStore_CRCMatchesRealBytes(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	chunks := [][]byte{
 		[]byte("the quick brown fox "),
@@ -256,7 +256,7 @@ func TestSQLiteRunStore_CRCMatchesRealBytes(t *testing.T) {
 		offset += int64(len(c))
 	}
 
-	if _, err := rs.Commit(ctx, "job-1", arts); err != nil {
+	if _, err := rs.commit(ctx, "job-1", arts); err != nil {
 		t.Fatal(err)
 	}
 	got, err := rs.ForFile(ctx, "job-1", 0)
@@ -272,7 +272,7 @@ func TestSQLiteRunStore_CRCMatchesRealBytes(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_MergesTwoMultiArticleRunsAcrossCommits pins that two
+// TestStore_MergesTwoMultiArticleRunsAcrossCommits pins that two
 // runs which are each already multi-article BEFORE they meet — one from an
 // earlier Commit, one grouped fresh within the current Commit — still fold
 // into one correct row. Each entry in the fold (run.go's mergeAdjacentRuns)
@@ -283,10 +283,10 @@ func TestSQLiteRunStore_CRCMatchesRealBytes(t *testing.T) {
 // article": every fold here happens to have a single-article run as the
 // right-hand operand (see mergeAdjacentRuns), so r.Length and "one article's
 // length" agree throughout. That distinguishing case is
-// TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle below.
-func TestSQLiteRunStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
+// TestStore_CombineUsesWholeRunLengthNotOneArticle below.
+func TestStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	left1 := []byte("AAAA")
 	left2 := []byte("BBBB")
@@ -298,7 +298,7 @@ func TestSQLiteRunStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: int32(len(left1)), CRC32: crcOf(left1)},
 		{FileIdx: 0, ArtIdx: 1, Offset: int64(len(left1)), Length: int32(len(left2)), CRC32: crcOf(left2)},
 	}
-	if _, err := rs.Commit(ctx, "job-1", firstBatch); err != nil {
+	if _, err := rs.commit(ctx, "job-1", firstBatch); err != nil {
 		t.Fatal(err)
 	}
 
@@ -308,7 +308,7 @@ func TestSQLiteRunStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
 		{FileIdx: 0, ArtIdx: 2, Offset: int64(len(left1) + len(left2)), Length: int32(len(right1)), CRC32: crcOf(right1)},
 		{FileIdx: 0, ArtIdx: 3, Offset: int64(len(left1) + len(left2) + len(right1)), Length: int32(len(right2)), CRC32: crcOf(right2)},
 	}
-	if _, err := rs.Commit(ctx, "job-1", secondBatch); err != nil {
+	if _, err := rs.commit(ctx, "job-1", secondBatch); err != nil {
 		t.Fatal(err)
 	}
 
@@ -327,7 +327,7 @@ func TestSQLiteRunStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle pins the
+// TestStore_CombineUsesWholeRunLengthNotOneArticle pins the
 // specific arithmetic trap the design doc's Step 2 calls out: Combine's
 // len2 argument must be the incoming run's WHOLE length, not one article's.
 //
@@ -338,7 +338,7 @@ func TestSQLiteRunStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
 // stored multi-article run can only ever appear as the RIGHT-hand operand
 // (`r`) of a fold — never the left (`cur`). A fold whose new articles land
 // AFTER the stored run (as in
-// TestSQLiteRunStore_MergesTwoMultiArticleRunsAcrossCommits above) never
+// TestStore_MergesTwoMultiArticleRunsAcrossCommits above) never
 // puts a multi-article run on the right, so it cannot exercise this: r is a
 // single new article at every step there, and "r.Length" and "one article's
 // length" are the same number throughout. Landing new articles BEFORE the
@@ -355,9 +355,9 @@ func TestSQLiteRunStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
 // Confirmed empirically: with that mutation applied, this test alone fails;
 // every other test in the package stays green. See the fix report for the
 // observed failure and the restored green run.
-func TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
+func TestStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	left1 := []byte("AAAA")
 	left2 := []byte("BBBB")
@@ -371,7 +371,7 @@ func TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 		{FileIdx: 0, ArtIdx: 2, Offset: int64(len(left1) + len(left2)), Length: int32(len(right1)), CRC32: crcOf(right1)},
 		{FileIdx: 0, ArtIdx: 3, Offset: int64(len(left1) + len(left2) + len(right1)), Length: int32(len(right2)), CRC32: crcOf(right2)},
 	}
-	if _, err := rs.Commit(ctx, "job-1", firstBatch); err != nil {
+	if _, err := rs.commit(ctx, "job-1", firstBatch); err != nil {
 		t.Fatal(err)
 	}
 
@@ -383,7 +383,7 @@ func TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: int32(len(left1)), CRC32: crcOf(left1)},
 		{FileIdx: 0, ArtIdx: 1, Offset: int64(len(left1)), Length: int32(len(left2)), CRC32: crcOf(left2)},
 	}
-	if _, err := rs.Commit(ctx, "job-1", secondBatch); err != nil {
+	if _, err := rs.commit(ctx, "job-1", secondBatch); err != nil {
 		t.Fatal(err)
 	}
 
@@ -402,7 +402,7 @@ func TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 	}
 }
 
-// TestSQLiteRunStore_SameOffsetKeepsTheLongerRow pins the exact-offset
+// TestStore_SameOffsetKeepsTheLongerRow pins the exact-offset
 // collision, which merging alone cannot resolve: two entries at the SAME
 // offset never abut (r.Offset == cur.Offset+cur.Length is false for a
 // non-empty cur), so both reach insertRuns, and both address the one primary
@@ -427,7 +427,7 @@ func TestSQLiteRunStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 // short row stored first the sort's FirstArtIdx tiebreak decides which of two
 // equal-length entries at offset 0 becomes the fold's accumulator — pick the
 // wrong one and articles 1-9 no longer abut it, leaving two rows.
-func TestSQLiteRunStore_SameOffsetKeepsTheLongerRow(t *testing.T) {
+func TestStore_SameOffsetKeepsTheLongerRow(t *testing.T) {
 	const artLen = 100
 
 	// tiling is articles 0-9, each 100 bytes, covering [0,1000) — they merge
@@ -459,12 +459,12 @@ func TestSQLiteRunStore_SameOffsetKeepsTheLongerRow(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := context.Background()
-			rs := NewSQLiteRunStore(openTestDB(t))
+			rs := NewStore(openTestDB(t))
 
-			if _, err := rs.Commit(ctx, "job-1", c.first); err != nil {
+			if _, err := rs.commit(ctx, "job-1", c.first); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := rs.Commit(ctx, "job-1", c.second); err != nil {
+			if _, err := rs.commit(ctx, "job-1", c.second); err != nil {
 				t.Fatal(err)
 			}
 

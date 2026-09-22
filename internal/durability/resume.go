@@ -45,14 +45,14 @@ type ResumeResult struct {
 // record. Both are gone with the two-record design; see Resume for what
 // replaced them and what that trade gives up.
 type Resumer struct {
-	runs RunStore
+	runs runStore
 	log  *slog.Logger
 }
 
 // NewResumer wires a resumer. It owns none of its collaborators' lifecycles
 // and holds no lock: Resume does I/O throughout, is per-file, and shares no
 // state between calls, which is how it stays off other jobs' way (R15).
-func NewResumer(rs RunStore, log *slog.Logger) *Resumer {
+func NewResumer(rs runStore, log *slog.Logger) *Resumer {
 	return &Resumer{runs: rs, log: log}
 }
 
@@ -145,7 +145,7 @@ func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path 
 // The only mutation this type performs. See the Resumer type doc for why that
 // direction is the one a resume is entitled to.
 func (r *Resumer) discard(ctx context.Context, jobID string, fileIdx int32) error {
-	if err := r.runs.DeleteFile(ctx, jobID, fileIdx); err != nil {
+	if err := r.runs.deleteFile(ctx, jobID, fileIdx); err != nil {
 		return fmt.Errorf("durability: resume discard runs job=%s file=%d: %w", jobID, fileIdx, err)
 	}
 	return nil

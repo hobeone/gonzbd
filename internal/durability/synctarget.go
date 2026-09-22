@@ -24,7 +24,7 @@ type WrittenArticle struct {
 	// CRC32 is the decoded article's CRC32, the same value the decoder
 	// validated against the yEnc trailer. It is carried here so the durable
 	// run record is built from confirmed-written articles without re-deriving
-	// the checksum: Barrier hands it to RunStore.Commit, which combines the
+	// the checksum: Barrier hands it to Store.commit, which combines the
 	// CRCs of the articles that abut into the run's own.
 	CRC32 uint32
 }

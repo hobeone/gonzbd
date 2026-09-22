@@ -36,7 +36,7 @@ func overlapTarget() *factGapTarget {
 // over each other, and the excess is exactly how many bytes were lost.
 func TestFinalizeFile_ReportsOverlappingDurableArticles(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 	tgt := overlapTarget()
 
 	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
@@ -81,7 +81,7 @@ func TestFinalizeFile_ReportsOverlappingDurableArticles(t *testing.T) {
 // that lost.
 func TestFinalizeFile_ReportsAnExactOffsetDuplicate(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	// A0 and A2 both at offset 0; A1 abuts A0. 200 bytes of surviving record
 	// over a 200-byte file, so Σ Length EQUALS the size and the overlap check
@@ -150,7 +150,7 @@ func TestFinalizeFile_ReportsAnExactOffsetDuplicate(t *testing.T) {
 // malformed post would put a warning on essentially every job in the queue.
 func TestFinalizeFile_DoesNotReportAHoleAsAnOverlap(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 
 	// A0 [0,100) then A2 [200,300) — nothing covers [100,200).
 	tgt := &factGapTarget{
@@ -218,7 +218,7 @@ func TestFinalizeFile_ReportsAnOverlapAboveAPermanentHole(t *testing.T) {
 // because the first Run already reported.
 func TestRun_ReportsAnOverlapWhenNothingWasAcked(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 	tgt := overlapTarget()
 
 	first := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
@@ -252,7 +252,7 @@ func TestRun_ReportsAnOverlapWhenNothingWasAcked(t *testing.T) {
 // overwrites whatever finding was recorded in between.
 func TestRun_RaisesEachOverlapOnce(t *testing.T) {
 	ctx := context.Background()
-	rs := NewSQLiteRunStore(openTestDB(t))
+	rs := NewStore(openTestDB(t))
 	tgt := overlapTarget()
 
 	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))

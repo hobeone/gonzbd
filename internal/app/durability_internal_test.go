@@ -616,23 +616,19 @@ func jobFilesCount(t *testing.T, application *Application, jobID string) int {
 // database accumulates one set of rows per job ever downloaded and keeps them
 // for the life of the installation.
 //
-// Three, and reached differently: durability.RunStore owns durable_runs and
-// the delete goes through its DeleteJob, while failed_articles and job_files
-// have no owning type and are deleted with raw SQL here. A cleanup that
-// reached only some of them would leave part of a departed job's rows behind
-// -- and job_files is the part with no second deleter anywhere, so it is the
-// part that would stay forever.
+// Three tables, one discard each. A cleanup that reached only some of them
+// would leave part of a departed job's rows behind -- and job_files is the
+// part with no second deleter anywhere, so it is the part that would stay
+// forever.
 func TestDeleteJobDurability_RemovesAllThreeTables(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	ctx := t.Context()
 
 	for _, id := range []string{job.ID(), "other-job"} {
-		if _, err := application.runs.Commit(ctx, id, []durability.DurableArticle{
+		commitRuns(t, realStore(t, application), id, []durability.DurableArticle{
 			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
-		}); err != nil {
-			t.Fatal(err)
-		}
+		})
 		if _, err := application.historyRepo.DB().ExecContext(ctx, "INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)", id); err != nil {
 			t.Fatal(err)
 		}
@@ -734,12 +730,13 @@ func TestCheckpointSettings_SubstitutesDefaultsForUnsetBounds(t *testing.T) {
 
 // ---------- error paths ----------
 
-// failingRunStore is a RunStore whose every operation fails, for the paths
-// that must degrade to a re-fetch rather than to a wrong answer.
-type failingRunStore struct{ err error }
-
-func (f failingRunStore) Commit(context.Context, string, []durability.DurableArticle) ([]durability.Collision, error) {
-	return nil, f.err
+// failingRunStore fails every read and delete of durable_runs, for the paths
+// that must degrade to a re-fetch rather than to a wrong answer. The other two
+// tables' operations reach the embedded real store, so a test can still watch
+// those rows go while the run record refuses.
+type failingRunStore struct {
+	durabilityStore
+	err error
 }
 
 func (f failingRunStore) ForFile(context.Context, string, int32) ([]durability.Run, error) {
@@ -749,31 +746,21 @@ func (f failingRunStore) ForFile(context.Context, string, int32) ([]durability.R
 func (f failingRunStore) ForJob(context.Context, string) ([]durability.Run, error) {
 	return nil, f.err
 }
-func (f failingRunStore) DeleteFile(context.Context, string, int32) error { return f.err }
-func (f failingRunStore) DeleteJob(context.Context, string) error         { return f.err }
 
-// recordingRunStore notes whether DeleteJob was reached. The alternative —
-// comparing application.runs to a copy of itself taken two lines earlier — is
-// a tautology, which is what this replaces.
-type recordingRunStore struct{ deleted []string }
+func (f failingRunStore) DiscardRuns(context.Context, string) error { return f.err }
 
-func (r *recordingRunStore) Commit(context.Context, string, []durability.DurableArticle) ([]durability.Collision, error) {
-	return nil, nil
+// recordingRunStore notes whether DiscardRuns was reached, and passes every
+// call through to the real store. The alternative — comparing the store field
+// to a copy of itself taken two lines earlier — is a tautology, which is what
+// this replaces.
+type recordingRunStore struct {
+	durabilityStore
+	deleted []string
 }
 
-func (r *recordingRunStore) ForFile(context.Context, string, int32) ([]durability.Run, error) {
-	return nil, nil
-}
-
-func (r *recordingRunStore) ForJob(context.Context, string) ([]durability.Run, error) {
-	return nil, nil
-}
-
-func (r *recordingRunStore) DeleteFile(context.Context, string, int32) error { return nil }
-
-func (r *recordingRunStore) DeleteJob(_ context.Context, jobID string) error {
+func (r *recordingRunStore) DiscardRuns(ctx context.Context, jobID string) error {
 	r.deleted = append(r.deleted, jobID)
-	return nil
+	return r.durabilityStore.DiscardRuns(ctx, jobID)
 }
 
 // TestStall_ReportsRatherThanPanicsOnAJobThatHasLeft pins the case a storage
@@ -820,35 +807,34 @@ func TestSyncTargetFor_IsNilWhenTheManifestCannotBeRead(t *testing.T) {
 // leaving all of them, because the surviving half describes a job that no
 // longer exists.
 //
-// The two stores have different OWNERS, which is why the "one must not stop
-// the other" half matters here rather than being a tidiness rule:
-// durability.RunStore owns durable_runs and checkpoint.Store.SaveBatch owns failed_articles, so
-// a single early return would leave one owner's rows for a departed job while
-// the other's were collected.
+// The discards are independent calls, which is why the "one must not stop the
+// other" half matters here rather than being a tidiness rule: a single early
+// return would leave one table's rows for a departed job while the others'
+// were collected.
 func TestDeleteJobDurability_ReportsAFailedDelete(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	boom := errors.New("database is locked")
 
-	rec := &recordingRunStore{}
-	application.runs = rec
+	rec := &recordingRunStore{durabilityStore: application.durable}
+	application.durable = rec
 	application.deleteJobDurability(t.Context(), "job-a")
 
-	// The load-bearing assertion: the run store's DeleteJob really ran. This
+	// The load-bearing assertion: the run store's DiscardRuns really ran. This
 	// replaces a comparison of the field to a copy of itself taken two lines
 	// earlier, with nothing in between that could change it. It could not
 	// fail.
 	if !slices.Equal(rec.deleted, []string{"job-a"}) {
-		t.Fatalf("run store DeleteJob calls = %v, want [job-a]", rec.deleted)
+		t.Fatalf("run store DiscardRuns calls = %v, want [job-a]", rec.deleted)
 	}
 
 	// A failing run store must not panic, must not abort, and must not stop
 	// the queue-owned half from being cleared either.
-	application.runs = failingRunStore{err: boom}
+	application.durable = failingRunStore{durabilityStore: rec.durabilityStore, err: boom}
 	application.deleteJobDurability(t.Context(), "job-a")
 
 	// And with no run store at all — the degraded no-history-database mode.
-	application.runs = nil
+	application.durable = nil
 	application.deleteJobDurability(t.Context(), "job-a")
 }
 
