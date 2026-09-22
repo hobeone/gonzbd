@@ -886,6 +886,14 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	}
 	j, ok := app.dispatcher.Job(id)
 	if !ok {
+		// The job left the queue before this call, and its rows and manifest
+		// can still be here: a Remove that failed leaves the job registered
+		// and cancelled, and the next tick evicts it, with no concurrency
+		// needed. Reclaim before reporting, because the rule keeps whatever
+		// something still reaches and this is the one call that asks.
+		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		app.reclaim(delCtx, id)
+		delCancel()
 		return fmt.Errorf("job %q not found", id)
 	}
 	name := j.Name()

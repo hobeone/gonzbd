@@ -37,9 +37,17 @@ file internal/durability/reclaim.go
 [Reclaim ignores its id filter]
 file internal/durability/reclaim.go
 --- anchor
-   AND job_id IN (SELECT value FROM json_each(?))`
+	if n > 0 {
 --- replace
-   AND ? IS NOT NULL`
+	if false {
+--- end
+
+[Reclaim names only the first chunk of ids]
+file internal/durability/reclaim.go
+--- anchor
+		for chunk := range slices.Chunk(ids, reclaimChunk) {
+--- replace
+		for chunk := range slices.Chunk(ids[:min(len(ids), reclaimChunk)], reclaimChunk) {
 --- end
 
 [perJobTables drops a table]

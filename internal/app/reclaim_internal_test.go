@@ -145,6 +145,27 @@ func TestRemoveJob_ReclaimsAJobSomeoneElseRemoved(t *testing.T) {
 	}
 }
 
+// TestRemoveJob_ReclaimsAJobThatLeftTheQueueBeforeTheCall is the other half of
+// E8. A Remove that fails leaves the job registered and cancelled; the next
+// tick evicts it, and a user who asks again finds no job. The rows and the
+// manifest are still there, and this call is what asks for them.
+func TestRemoveJob_ReclaimsAJobThatLeftTheQueueBeforeTheCall(t *testing.T) {
+	t.Parallel()
+	application, _, _ := newLifecycleTestApp(t)
+	const gone = "departed0000000"
+	seedDurability(t, application, gone)
+	manifest := placeManifest(t, application, gone)
+
+	err := application.RemoveJob(t.Context(), gone, false)
+	if err == nil {
+		t.Error("RemoveJob = nil for a job that is not in the queue; the caller is told it removed one")
+	}
+	assertRowsGone(t, application, gone, "a job that had already left the queue")
+	if fileExists(t, manifest) {
+		t.Error("the manifest of a job that had already left the queue survived")
+	}
+}
+
 // TestMarkHistoryCompleted_ReclaimsTheFailedEntrysRuns is E9. A FAILED entry
 // keeps its job's durable_runs for a retry; once it is marked completed there
 // is no retry, and nothing else would ever remove them.

@@ -3,8 +3,9 @@ package durability
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/hobeone/gonzbd/internal/constants"
 )
@@ -36,29 +37,29 @@ var perJobTables = []perJobTable{
 //
 // NOT EXISTS rather than NOT IN: NOT IN over a subquery that yields a NULL is
 // never true, so a NULL id would reclaim nothing, silently.
-func ruleStatement(t perJobTable, filtered bool) string {
+func ruleStatement(t perJobTable, n int) string {
 	q := `DELETE FROM ` + t.name + `
  WHERE NOT EXISTS (SELECT 1 FROM dispatch_jobs d WHERE d.id = ` + t.name + `.job_id)`
 	if t.keptForFailedEntry {
 		q += `
    AND NOT EXISTS (SELECT 1 FROM history h WHERE h.nzo_id = ` + t.name + `.job_id AND h.status = ?)`
 	}
-	if filtered {
-		// One JSON parameter, not one placeholder per id, so a large history
-		// delete cannot exceed SQLite's host-parameter limit.
+	if n > 0 {
+		// One placeholder per id, so SQLite plans a plain index search on
+		// job_id. Callers chunk to stay under its host-parameter limit.
 		q += `
-   AND job_id IN (SELECT value FROM json_each(?))`
+   AND job_id IN (` + strings.TrimSuffix(strings.Repeat("?,", n), ",") + `)`
 	}
 	return q
 }
 
-func ruleArgs(t perJobTable, ids []byte) []any {
-	var args []any
+func ruleArgs(t perJobTable, ids []string) []any {
+	args := make([]any, 0, len(ids)+1)
 	if t.keptForFailedEntry {
 		args = append(args, string(constants.StatusFailed))
 	}
-	if ids != nil {
-		args = append(args, string(ids))
+	for _, id := range ids {
+		args = append(args, id)
 	}
 	return args
 }
@@ -71,12 +72,23 @@ func ruleArgs(t perJobTable, ids []byte) []any {
 // At least one id is required by the signature, so a caller cannot reach the
 // every-job form by passing nothing; that form is SweepOrphans.
 func (s *Store) Reclaim(ctx context.Context, id string, more ...string) error {
-	ids, err := json.Marshal(append([]string{id}, more...))
-	if err != nil {
-		return fmt.Errorf("durability: reclaim: encode ids: %w", err)
-	}
-	return s.inTx(ctx, "reclaim", func(tx *sql.Tx) error { return applyRule(ctx, tx, ids) })
+	ids := append([]string{id}, more...)
+	return s.inTx(ctx, "reclaim", func(tx *sql.Tx) error {
+		// Chunked so a bulk history delete cannot exceed SQLite's
+		// host-parameter limit; one transaction covers every chunk.
+		for chunk := range slices.Chunk(ids, reclaimChunk) {
+			if err := applyRule(ctx, tx, chunk); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
+
+// reclaimChunk bounds how many ids one statement names. SQLite's default
+// SQLITE_MAX_VARIABLE_NUMBER is 32766; this leaves room for the status
+// parameter and any future clause.
+const reclaimChunk = 500
 
 // SweepOrphans applies the reclaim rule to every job, in one transaction.
 //
@@ -102,10 +114,10 @@ func (s *Store) inTx(ctx context.Context, op string, fn func(*sql.Tx) error) err
 }
 
 // applyRule runs the rule over every per-job table, filtered to ids when ids
-// is non-nil.
-func applyRule(ctx context.Context, tx *sql.Tx, ids []byte) error {
+// is non-empty.
+func applyRule(ctx context.Context, tx *sql.Tx, ids []string) error {
 	for _, t := range perJobTables {
-		if _, err := tx.ExecContext(ctx, ruleStatement(t, ids != nil), ruleArgs(t, ids)...); err != nil {
+		if _, err := tx.ExecContext(ctx, ruleStatement(t, len(ids)), ruleArgs(t, ids)...); err != nil {
 			return fmt.Errorf("durability: reclaim %s: %w", t.name, err)
 		}
 	}

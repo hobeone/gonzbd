@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -195,20 +196,56 @@ func TestPerJobTables_CoversEveryJobKeyedTable(t *testing.T) {
 // for every table, Reclaim's statement is SweepOrphans' with the id filter
 // appended, and its arguments are SweepOrphans' with the ids appended.
 func TestRuleStatement_TheFilterIsTheOnlyDifference(t *testing.T) {
-	ids := []byte(`["a"]`)
+	ids := []string{"a", "b"}
 	for _, table := range perJobTables {
-		sweep, reclaim := ruleStatement(table, false), ruleStatement(table, true)
-		if !strings.HasPrefix(reclaim, sweep) || !strings.Contains(reclaim[len(sweep):], "json_each(?)") {
+		sweep, reclaim := ruleStatement(table, 0), ruleStatement(table, len(ids))
+		if !strings.HasPrefix(reclaim, sweep) || !strings.Contains(reclaim[len(sweep):], "job_id IN (?,?)") {
 			t.Errorf("%s: Reclaim's statement is not SweepOrphans' plus the id filter:\n%s\n---\n%s",
 				table.name, sweep, reclaim)
 		}
 		sweepArgs, reclaimArgs := ruleArgs(table, nil), ruleArgs(table, ids)
-		if len(reclaimArgs) != len(sweepArgs)+1 || reclaimArgs[len(reclaimArgs)-1] != string(ids) {
+		if len(reclaimArgs) != len(sweepArgs)+len(ids) {
 			t.Errorf("%s: args %v and %v differ by more than the ids", table.name, sweepArgs, reclaimArgs)
 		}
-		if got := strings.Count(reclaim, "?"); got != len(reclaimArgs) {
-			t.Errorf("%s: %d placeholders for %d arguments", table.name, got, len(reclaimArgs))
+		// One placeholder per argument, in both forms: a mismatch is a bound
+		// parameter landing in the wrong clause.
+		for _, q := range []struct {
+			sql  string
+			args []any
+		}{{sweep, sweepArgs}, {reclaim, reclaimArgs}} {
+			if got := strings.Count(q.sql, "?"); got != len(q.args) {
+				t.Errorf("%s: %d placeholders for %d arguments in:\n%s", table.name, got, len(q.args), q.sql)
+			}
 		}
+	}
+}
+
+// TestReclaim_ChunksLargeIDLists pins that a bulk history delete stays under
+// SQLite's host-parameter limit: more ids than one statement may name, in one
+// transaction, and every unreachable one is reclaimed.
+func TestReclaim_ChunksLargeIDLists(t *testing.T) {
+	ctx := context.Background()
+	db := seedReclaimStates(t)
+	st := NewStore(db)
+	ids := make([]string, 0, reclaimChunk*2+3)
+	for i := range reclaimChunk*2 + 2 {
+		ids = append(ids, fmt.Sprintf("bulk-%04d", i))
+	}
+	if err := st.Admit(ctx, ids[0], []uint8{0}); err != nil {
+		t.Fatal(err)
+	}
+	ids = append(ids, "neither")
+
+	if err := st.Reclaim(ctx, ids[0], ids[1:]...); err != nil {
+		t.Fatalf("Reclaim over %d ids: %v", len(ids), err)
+	}
+	for _, id := range []string{ids[0], "neither"} {
+		if n := countRows(t, db, "job_files", id); n != 0 {
+			t.Errorf("%s has %d job_files rows after a chunked reclaim, want 0", id, n)
+		}
+	}
+	if n := countRows(t, db, "job_files", "queued"); n != 1 {
+		t.Errorf("a queued job lost its rows to a chunked reclaim (%d left)", n)
 	}
 }
 

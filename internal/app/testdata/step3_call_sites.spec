@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestReclaim_|TestRemoveJob_ReclaimsAJobSomeoneElseRemoved|TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability|TestPersistAndCommit_|TestFinalize_|TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule|TestRemoveHistoryJob_ReclaimsTheFailedEntrysRuns|TestMarkHistoryCompleted_|TestAddJob_FailedAddLeavesNoOrphanArtifacts|TestRetryHistoryJob_|TestStart_SweepsWhatNoDepartureReclaimed|TestSweepOrphans_
+run TestReclaim_|TestRemoveJob_Reclaims|TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability|TestPersistAndCommit_|TestFinalize_|TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule|TestRemoveHistoryJob_ReclaimsTheFailedEntrysRuns|TestMarkHistoryCompleted_|TestAddJob_FailedAddLeavesNoOrphanArtifacts|TestRetryHistoryJob_|TestStart_SweepsWhatNoDepartureReclaimed|TestSweepOrphans_
 timeout 5m
 
 [RemoveJob skips the reclaim when someone else removed the job]
@@ -203,4 +203,15 @@ file internal/app/durability.go
 --- replace
 		if true {
 			app.log.Warn("startup sweep could not list the manifests", "err", err)
+--- end
+
+[RemoveJob skips the reclaim for a job that had already left the queue]
+file internal/app/app.go
+--- anchor
+		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		app.reclaim(delCtx, id)
+		delCancel()
+		return fmt.Errorf("job %q not found", id)
+--- replace
+		return fmt.Errorf("job %q not found", id)
 --- end
