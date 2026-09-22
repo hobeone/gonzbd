@@ -2296,8 +2296,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		if err := app.dropJobDurability(ctx, jobID); err != nil {
 			return fmt.Errorf("app: retry %s: drop stale durability rows: %w", jobID, err)
 		}
-	}
-	if app.durable != nil {
+	} else if app.durable != nil {
 		if err := app.durable.DiscardFailedArticles(ctx, jobID); err != nil {
 			app.log.Warn("could not clear failed_articles for retry", "job", jobID, "err", err)
 		}

@@ -16,11 +16,11 @@ file internal/app/residency.go
 file internal/durability/barrier.go
 --- anchor
 	if b.wrap == nil {
-		return run()
+		return b.runs.commit(ctx, jobID, arts)
 	}
 --- replace
 	if true {
-		return run()
+		return b.runs.commit(ctx, jobID, arts)
 	}
 --- end
 

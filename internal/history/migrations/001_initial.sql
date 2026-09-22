@@ -110,8 +110,9 @@ CREATE TABLE job_files (
 -- has its whole-file CRC in that row -- no walk, no prefix state.
 --
 -- Runs are built in one place: durability.Store's commit takes individual
--- articles rather than runs, and is unexported, so there is no second caller
--- able to construct one. See internal/durability/run.go.
+-- articles rather than runs, and is unexported, so no package outside
+-- internal/durability can call it; its one production caller is
+-- Barrier.commit. See internal/durability/run.go.
 --
 -- Keyed by job_id with no foreign key, so rows are removed deliberately rather
 -- than by cascade. A job leaving the queue drops them, EXCEPT a job that

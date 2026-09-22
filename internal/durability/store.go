@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/hobeone/gonzbd/internal/crc32util"
@@ -64,14 +65,8 @@ func (s *Store) commit(ctx context.Context, jobID string, arts []DurableArticle)
 	// Sorting the file indices makes the write order deterministic, which
 	// costs nothing here and keeps this method's behaviour reproducible
 	// under a test that inspects the transaction's statement sequence.
-	fileIdxs := make([]int32, 0, len(byFile))
-	for fi := range byFile {
-		fileIdxs = append(fileIdxs, fi)
-	}
-	slices.Sort(fileIdxs)
-
 	var collisions []Collision
-	for _, fi := range fileIdxs {
+	for _, fi := range slices.Sorted(maps.Keys(byFile)) {
 		found, err := s.commitFile(ctx, tx, jobID, fi, byFile[fi])
 		if err != nil {
 			return nil, err
@@ -370,7 +365,10 @@ func (s *Store) insertRuns(ctx context.Context, tx *sql.Tx, jobID string, runs [
 	return nil
 }
 
-// ForFile returns every stored run for one file, ordered by Offset.
+// ForFile returns every stored run for one file, ordered by Offset. Any
+// failure returns nothing, so a partial set can never be taken for the whole:
+// FinalizeFile and the resume bound the file by these runs, and a partial set
+// would be a shorter bound than the bytes on disk.
 func (s *Store) ForFile(ctx context.Context, jobID string, fileIdx int32) ([]Run, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT file_idx, first_art_idx, last_art_idx, offset, length, crc32
@@ -388,7 +386,10 @@ func (s *Store) ForFile(ctx context.Context, jobID string, fileIdx int32) ([]Run
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("durability: iterate runs job=%s file=%d: %w", jobID, fileIdx, err)
+	}
+	return out, nil
 }
 
 // ForJob returns every stored run for a job, ordered by FileIdx then Offset.

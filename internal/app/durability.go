@@ -1427,8 +1427,10 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 // dispatch_jobs and this running strands rows permanently.
 //
 // job_files is the narrowest of the three. Grepping the Go sources for a
-// DELETE against that table finds the statement below and nothing else, so a
-// row that escapes here has no second deleter of any kind. (Deliberately not
+// DELETE against that table finds one statement, in
+// durability.Store.DiscardFileRows, and the one production call of that method
+// is the one below, so a row that escapes here has no second deleter of any
+// kind. (Deliberately not
 // quoted as a backticked command: a comment containing the searched-for SQL
 // matches its own search, and this one used to inflate both its own count and
 // the job_files enumeration in 001_initial.sql.)

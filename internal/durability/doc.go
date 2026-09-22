@@ -1,7 +1,9 @@
-// Package durability owns the persistence of download progress.
+// Package durability owns the persistence of download progress. Store runs
+// the production SQL on durable_runs, job_files and failed_articles, apart
+// from history.Repository.delete's purge (listed below).
 //
-// It records ONE fact about a download, in one table, whose content is put
-// there by one writer at one moment, per
+// Of those, durable_runs is the durability record: ONE fact about a download,
+// whose content is put there by one writer at one moment, per
 // docs/durability-contract.md:
 //
 //	durable_runs(job_id, file_idx, first_art_idx, last_art_idx,
@@ -45,8 +47,9 @@
 // # One writer of content, and several deleters
 //
 // Barrier is the only thing that puts CONTENT into a row: Store.commit is
-// unexported, and its one caller is Barrier.commit, which Run and FinalizeFile
-// go through, both inside the transaction that precedes the ack. Resumer never writes. Its whole job at
+// unexported, and its one production caller is Barrier.commit, which Run and
+// FinalizeFile go through, both inside the transaction that precedes the ack.
+// Resumer never writes. Its whole job at
 // startup is one stat per file — if the file on disk is shorter than its runs
 // claim, it DELETES those runs and the articles are fetched again (§3.4). That
 // asymmetry is what makes the record trustworthy without reading a byte of it

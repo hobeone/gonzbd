@@ -232,15 +232,15 @@ func TestStore_ForJobIsScopedToJob(t *testing.T) {
 	}
 }
 
-// TestStore_DeleteJobIsScoped pins that DeleteJob removes exactly
-// one job's rows and leaves every other job's rows — including a second
-// file within the deleted job — untouched.
-func TestStore_DeleteJobIsScoped(t *testing.T) {
+// TestStore_DiscardRunsIsScoped pins that DiscardRuns removes every file's
+// rows for one job and leaves every other job's rows untouched.
+func TestStore_DiscardRunsIsScoped(t *testing.T) {
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
 	art := DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 0x1}
-	if _, err := rs.commit(ctx, "job-1", []DurableArticle{art}); err != nil {
+	second := DurableArticle{FileIdx: 1, ArtIdx: 1, Offset: 0, Length: 10, CRC32: 0x2}
+	if _, err := rs.commit(ctx, "job-1", []DurableArticle{art, second}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := rs.commit(ctx, "job-2", []DurableArticle{art}); err != nil {
@@ -252,7 +252,7 @@ func TestStore_DeleteJobIsScoped(t *testing.T) {
 	}
 
 	if got, _ := rs.ForJob(ctx, "job-1"); len(got) != 0 {
-		t.Errorf("job-1 has %d runs after DeleteJob, want 0", len(got))
+		t.Errorf("job-1 has %d runs after DiscardRuns, want 0", len(got))
 	}
 	if got, _ := rs.ForJob(ctx, "job-2"); len(got) != 1 {
 		t.Errorf("DiscardRuns(job-1) removed job-2's runs")
@@ -289,8 +289,8 @@ func TestStore_CommitErrorsOnClosedDB(t *testing.T) {
 	}
 }
 
-// TestStore_DeleteJobErrorsOnClosedDB covers DeleteJob's error path.
-func TestStore_DeleteJobErrorsOnClosedDB(t *testing.T) {
+// TestStore_DiscardRunsErrorsOnClosedDB covers DiscardRuns' error path.
+func TestStore_DiscardRunsErrorsOnClosedDB(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	if err := db.Close(); err != nil {
@@ -298,7 +298,7 @@ func TestStore_DeleteJobErrorsOnClosedDB(t *testing.T) {
 	}
 	rs := NewStore(db)
 	if err := rs.DiscardRuns(ctx, "job-1"); err == nil {
-		t.Fatal("DeleteJob on a closed DB returned nil, want an error")
+		t.Fatal("DiscardRuns on a closed DB returned nil, want an error")
 	}
 }
 
@@ -479,5 +479,36 @@ func TestStore_ForJobReportsAnUnscannableRowAsAFailure(t *testing.T) {
 	}
 	if runs != nil {
 		t.Errorf("runs = %+v, want nil", runs)
+	}
+}
+
+// TestStore_ForFileReturnsNothingOnAFailure pins ForFile's read contract: a
+// failed query and an unscannable row each return no runs, since FinalizeFile
+// and the resume would bound the file by whatever came back.
+func TestStore_ForFileReturnsNothingOnAFailure(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	// A good row ahead of the bad one, so that returning what was read before
+	// the failure would show up as a non-nil result.
+	if _, err := db.Exec(`INSERT INTO durable_runs (job_id, file_idx, first_art_idx, last_art_idx, offset, length, crc32) VALUES
+		('job-1', 0, 0, 0, 0, 100, 0),
+		('job-1', 0, 'x', 1, 100, 100, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	st := NewStore(db)
+
+	runs, err := st.ForFile(ctx, "job-1", 0)
+	if err == nil {
+		t.Fatal("ForFile over an unscannable row returned no error")
+	}
+	if runs != nil {
+		t.Errorf("runs = %+v after a scan failure, want nil", runs)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if runs, err := st.ForFile(ctx, "job-1", 0); err == nil || runs != nil {
+		t.Errorf("ForFile on a closed DB = %+v, %v; want nil and an error", runs, err)
 	}
 }

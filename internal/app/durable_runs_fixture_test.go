@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"testing"
 
@@ -15,7 +16,7 @@ import (
 //
 // It goes through a real durability.Barrier because nothing else outside
 // internal/durability can write run content: Store.commit is unexported, and
-// the barrier is its one caller. A fixture that wrote rows with SQL instead
+// the barrier is its one production caller. A fixture that wrote rows with SQL instead
 // would have to re-implement the commit's dedup, merge and CRC combine, and a
 // test built on that copy would pass against the copy.
 func commitRuns(t *testing.T, st *durability.Store, jobID string, arts []durability.DurableArticle) []durability.Collision {
@@ -62,12 +63,7 @@ func newWrittenTarget(arts []durability.DurableArticle) *writtenTarget {
 }
 
 func (w *writtenTarget) Files() []int32 {
-	files := make([]int32, 0, len(w.byFile))
-	for fi := range w.byFile {
-		files = append(files, fi)
-	}
-	slices.Sort(files)
-	return files
+	return slices.Sorted(maps.Keys(w.byFile))
 }
 
 func (w *writtenTarget) Path(int32) string { return "/downloads/fixture.bin" }

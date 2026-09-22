@@ -2,13 +2,10 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"log/slog"
-	"path/filepath"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -21,7 +18,7 @@ import (
 // single unreadable failed_articles row costs the job its entire durable
 // resolution and every recorded byte range is re-fetched.
 func TestRestoreResolution_KeepsRunsWhenFailedArticleScanFails(t *testing.T) {
-	db := newResolutionTestDB(t)
+	db := openHistoryTestDB(t)
 
 	j := job.New("j1", "test", job.Policy{})
 	m := job.NewManifest([]job.JobFile{{
@@ -61,23 +58,13 @@ func TestRestoreResolution_KeepsRunsWhenFailedArticleScanFails(t *testing.T) {
 	}
 }
 
-func newResolutionTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	hdb, err := history.Open(t.Context(), filepath.Join(t.TempDir(), "res.db"))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = hdb.Close() })
-	return history.NewRepository(hdb).DB()
-}
-
 // TestRestoreResolution_AppliesNothingWhenARunCannotBeScanned pins the other
 // half of the read policy: a durable_runs row that cannot be scanned abandons
 // the resolution, failed marks included, rather than applying the failed
 // articles against no runs at all. Only a partial read — one wrapping
 // durability.ErrIncomplete — is applied.
 func TestRestoreResolution_AppliesNothingWhenARunCannotBeScanned(t *testing.T) {
-	db := newResolutionTestDB(t)
+	db := openHistoryTestDB(t)
 
 	j := job.New("j1", "test", job.Policy{})
 	m := job.NewManifest([]job.JobFile{{

@@ -91,11 +91,11 @@ file internal/durability/store.go
 file internal/durability/barrier.go
 --- anchor
 	if b.wrap == nil {
-		return run()
+		return b.runs.commit(ctx, jobID, arts)
 	}
 --- replace
 	if true {
-		return run()
+		return b.runs.commit(ctx, jobID, arts)
 	}
 --- end
 
@@ -105,4 +105,20 @@ file internal/durability/store.go
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM durable_runs WHERE job_id = ?`, jobID); err != nil {
 --- replace
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM durable_runs WHERE ? IS NOT NULL`, jobID); err != nil {
+--- end
+
+[DiscardRuns deletes only one of the job's files]
+file internal/durability/store.go
+--- anchor
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM durable_runs WHERE job_id = ?`, jobID); err != nil {
+--- replace
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM durable_runs WHERE job_id = ? AND file_idx = 0`, jobID); err != nil {
+--- end
+
+[ForFile returns what it read before a bad row]
+file internal/durability/store.go
+--- anchor
+			return nil, fmt.Errorf("durability: scan run job=%s file=%d: %w", jobID, fileIdx, err)
+--- replace
+			return out, fmt.Errorf("durability: scan run job=%s file=%d: %w", jobID, fileIdx, err)
 --- end

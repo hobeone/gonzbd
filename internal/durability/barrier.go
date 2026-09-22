@@ -107,6 +107,9 @@ type BarrierOption func(*Barrier)
 // it cannot make the record assert anything the barrier did not fsync. That
 // is what lets code outside this package inject a commit fault (tests of the
 // barrier's callers do) without reopening §6, which unexporting commit closed.
+//
+// The barrier acks on the wrap's result, so a wrap that returns a nil error
+// without calling commit acks articles nothing recorded.
 type CommitWrap func(ctx context.Context, jobID string, commit func() ([]Collision, error)) ([]Collision, error)
 
 // WithCommitWrap installs w around every commit the barrier makes.
@@ -117,11 +120,10 @@ func WithCommitWrap(w CommitWrap) BarrierOption {
 // commit is the barrier's one route to the store's commit, so that a
 // CommitWrap covers Run and FinalizeFile alike.
 func (b *Barrier) commit(ctx context.Context, jobID string, arts []DurableArticle) ([]Collision, error) {
-	run := func() ([]Collision, error) { return b.runs.commit(ctx, jobID, arts) }
 	if b.wrap == nil {
-		return run()
+		return b.runs.commit(ctx, jobID, arts)
 	}
-	return b.wrap(ctx, jobID, run)
+	return b.wrap(ctx, jobID, func() ([]Collision, error) { return b.runs.commit(ctx, jobID, arts) })
 }
 
 // admit filters classified findings down to the ones not yet raised for their

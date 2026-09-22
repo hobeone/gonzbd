@@ -85,7 +85,7 @@ type Collision struct {
 // It is unexported, and so is commit, which is what makes §6 a property of the
 // compiler rather than of convention: no package but this one can name the
 // interface, implement it, or call commit on a Store. Barrier.commit is the
-// only production caller: `git grep -n 'runs\.commit(' -- 'internal/durability/*.go' ':!*_test.go'` returns 1 line.
+// only production caller: `git grep -n 'runs\.commit(' -- 'internal/durability/*.go' ':!*_test.go'` returns 2 lines, both in it.
 //
 // One record, written only after the fsync that makes it true (S1, S2), and
 // grouped into runs rather than kept per article. It replaced a pairing of two

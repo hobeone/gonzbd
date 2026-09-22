@@ -139,6 +139,8 @@ func (r *appResidency) restoreResolution(ctx context.Context, j *job.Job) {
 	}
 	stored, err := r.store.ForJob(ctx, j.ID())
 	if err != nil {
+		// A partial read is applied: each run it holds is a durable fact, and
+		// a run it misses only leaves those articles to be fetched again.
 		r.log.Warn("residency: read durable_runs", "job", j.ID(), "err", err)
 		if !errors.Is(err, durability.ErrIncomplete) {
 			return
