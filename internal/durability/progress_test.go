@@ -143,56 +143,16 @@ func TestStore_FailedArticlesStopsAtARowItCannotScan(t *testing.T) {
 	}
 }
 
-// TestStore_DiscardsAreScopedToOneJob pins that each discard removes one
-// table's rows for one job and nothing else.
-func TestStore_DiscardsAreScopedToOneJob(t *testing.T) {
-	ctx := context.Background()
-	db := openTestDB(t)
-	st := NewStore(db)
-	for _, id := range []string{"job-a", "job-b"} {
-		if err := st.Admit(ctx, id, []uint8{0}); err != nil {
-			t.Fatal(err)
-		}
-		if err := st.SaveProgress(ctx, []JobProgress{{JobID: id, FailedArticles: []int{4}}}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if err := st.DiscardFileRows(ctx, "job-a"); err != nil {
-		t.Fatalf("DiscardFileRows: %v", err)
-	}
-	if n := countRows(t, db, "job_files", "job-a"); n != 0 {
-		t.Errorf("job-a has %d job_files rows after the discard", n)
-	}
-	if n := countRows(t, db, "failed_articles", "job-a"); n != 1 {
-		t.Errorf("job-a has %d failed_articles rows, want 1 — DiscardFileRows reached another table", n)
-	}
-
-	if err := st.DiscardFailedArticles(ctx, "job-a"); err != nil {
-		t.Fatalf("DiscardFailedArticles: %v", err)
-	}
-	if n := countRows(t, db, "failed_articles", "job-a"); n != 0 {
-		t.Errorf("job-a has %d failed_articles rows after the discard", n)
-	}
-	for _, table := range []string{"job_files", "failed_articles"} {
-		if n := countRows(t, db, table, "job-b"); n != 1 {
-			t.Errorf("job-b has %d %s rows, want 1 — a discard was not scoped to its job", n, table)
-		}
-	}
-}
-
 // TestStore_ProgressMethodsReportAClosedDatabase covers every method's first
 // failure path: none may swallow an error its caller has to act on.
 func TestStore_ProgressMethodsReportAClosedDatabase(t *testing.T) {
 	ctx := context.Background()
 	st := closedStore(t)
 	calls := map[string]func() error{
-		"Admit":                 func() error { return st.Admit(ctx, "j", []uint8{0}) },
-		"SaveProgress":          func() error { return st.SaveProgress(ctx, []JobProgress{{JobID: "j"}}) },
-		"DiscardFileRows":       func() error { return st.DiscardFileRows(ctx, "j") },
-		"DiscardFailedArticles": func() error { return st.DiscardFailedArticles(ctx, "j") },
-		"FileRows":              func() error { _, err := st.FileRows(ctx, "j"); return err },
-		"FailedArticles":        func() error { _, err := st.FailedArticles(ctx, "j"); return err },
+		"Admit":          func() error { return st.Admit(ctx, "j", []uint8{0}) },
+		"SaveProgress":   func() error { return st.SaveProgress(ctx, []JobProgress{{JobID: "j"}}) },
+		"FileRows":       func() error { _, err := st.FileRows(ctx, "j"); return err },
+		"FailedArticles": func() error { _, err := st.FailedArticles(ctx, "j"); return err },
 	}
 	for name, call := range calls {
 		err := call()

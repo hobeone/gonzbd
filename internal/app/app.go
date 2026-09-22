@@ -245,6 +245,11 @@ type Application struct {
 	// postProcStopHook, when non-nil, overrides postProcessor.Stop during Shutdown.
 	postProcStopHook func() error
 
+	// removeJobHook, when non-nil, runs in RemoveJob just before
+	// dispatcher.Remove, where the tick can evict the job RemoveJob has just
+	// cancelled. Same discipline as checkpointHook.
+	removeJobHook func(id string)
+
 	shutdownStepTimeout time.Duration
 	closeHandlesTimeout time.Duration
 	metricsPushInterval time.Duration
@@ -729,11 +734,10 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	j.SetName(hdr.Name)
 
 	// Everything from here on writes something the job owns — NZB backup,
-	// manifest, job_files rows — and none of it is reachable from any later
-	// sweep unless the job reaches dispatch_jobs, because the only pass that
-	// walks them is built from that table. So every failure between here and
-	// admitted must take its own artifacts with it, not just the Add that
-	// happens to be last.
+	// manifest, job_files rows — and until the job reaches dispatch_jobs only
+	// the startup sweep would reclaim the last two, and nothing the first. So
+	// every failure between here and admitted must take its own artifacts with
+	// it, not just the Add that happens to be last.
 	admitted := false
 	defer func() {
 		if !admitted {
@@ -798,29 +802,20 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	return nil
 }
 
-// discardUnaddedJobArtifacts removes the on-disk trail of a job whose
-// Dispatcher.Add failed: the gzipped manifest, the NZB backup, and the
-// job_files rows. Best effort and logged rather than returned — the caller is
-// already returning the error that matters, and a failure here leaves a leak,
-// not a wrong answer.
+// discardUnaddedJobArtifacts removes the trail of a job whose Dispatcher.Add
+// failed: its NZB backup, and through reclaim its manifest and the job_files
+// rows Admit seeded. Best effort and logged rather than returned — the caller
+// is already returning the error that matters, and a failure here leaves a
+// leak for the startup sweep, not a wrong answer.
 func (app *Application) discardUnaddedJobArtifacts(ctx context.Context, jobID, nzbBackup string) {
-	adminDir := app.config.GetGeneral().AdminDir
-	// removeManifestIn, not manifestPath + os.Remove: manifestPath is the
-	// WRITE path's alone, and a delete confines at the syscall through an
-	// os.Root instead of by inspecting a string.
-	if err := removeManifestIn(manifestDir(adminDir), jobID); err != nil && !os.IsNotExist(err) {
-		app.log.Warn("failed to remove manifest for a job that was never added",
-			"job", jobID, "err", err)
-	}
 	if nzbBackup != "" {
-		app.removeNZBBackupIn(filepath.Join(adminDir, "nzb"), jobID, nzbBackup)
+		app.removeNZBBackupIn(filepath.Join(app.config.GetGeneral().AdminDir, "nzb"), jobID, nzbBackup)
 	}
-	// Bounded like every other deleteJobDurability caller: an unbounded
-	// context here would let SQLite lock contention hang the AddJob that is
-	// already failing.
+	// Bounded: an unbounded context would let SQLite lock contention hang the
+	// AddJob that is already failing.
 	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer delCancel()
-	app.deleteJobDurability(delCtx, jobID)
+	app.reclaim(delCtx, jobID)
 }
 
 // removeNZBBackupIn deletes one job's NZB backup from dir, confined the way
@@ -882,7 +877,7 @@ func seedJobFiles(ctx context.Context, st durabilityStore, jobID string, numFile
 // What deleteFiles=false leaves behind is a partial: files preallocated to
 // their expected size with holes where articles never arrived, in a directory
 // nothing will reclaim, with no manifest or durable-run record left to
-// interpret them (see deleteJobDurability below). That is the meaning of
+// interpret them (reclaim takes both, below). That is the meaning of
 // asking to keep a removed job's bytes — the caller wanted the data, not a
 // resumable job.
 func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
@@ -906,14 +901,26 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	if app.checkpointer != nil {
 		app.checkpointer.Prune(id)
 	}
+	if app.removeJobHook != nil {
+		app.removeJobHook(id)
+	}
 	removeCtx, removeCancel := context.WithTimeout(ctx, 30*time.Second)
 	rmErr := app.dispatcher.Remove(removeCtx, id)
 	removeCancel()
+	if errors.Is(rmErr, dispatch.ErrNotFound) {
+		// Removed by someone else between Job and Remove: the tick evicts a
+		// cancelled job that never ran, which the Cancel above makes of a
+		// queued one (E8), and a finalize files a job that completed. Whoever
+		// removed it owns its files. What can be left is its rows and its
+		// manifest, and reclaim takes them only if nothing reaches the job.
+		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		app.reclaim(delCtx, id)
+		delCancel()
+		app.emit(Event{Type: "queue_updated"})
+		return nil
+	}
 	if rmErr != nil {
 		return rmErr
-	}
-	if manifestErr := removeManifestIn(manifestDir(app.config.GetGeneral().AdminDir), id); manifestErr != nil && !os.IsNotExist(manifestErr) {
-		app.log.Debug("could not unlink manifest for removed job", "job", id, "err", manifestErr)
 	}
 
 	// Past dispatcher.Remove the job is gone from dispatch_jobs, and every
@@ -968,20 +975,10 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// be dispatched for this job.
 	app.pipeline.forgetJob(id)
 	app.forgetJobBarrierState(id)
-	// The job is gone from the queue, so nothing will ever read its durable
-	// runs, its failed-article rows or its per-file progress again. All three
-	// tables — durable_runs, failed_articles and job_files — are keyed by job
-	// ID with no foreign key to anything, so this is the only thing that
-	// removes them: without it every deleted job leaves its rows behind for
-	// the life of the database (#549).
-	//
-	// Five seconds matches dropJobAlreadyInHistory, the other path that drops
-	// these rows for a job that DEPARTED rather than finished.
-	// jobFinalizer.persistAndCommit uses three, sized to fit inside the
-	// shutdown budget. A removal whose bookkeeping cannot finish in five has a
-	// sicker database than this call can fix.
+	// Five seconds matches dropJobAlreadyInHistory, the other path that
+	// reclaims a job that DEPARTED rather than finished.
 	delCtx, delCancel := context.WithTimeout(cleanupCtx, 5*time.Second)
-	app.deleteJobDurability(delCtx, id)
+	app.reclaim(delCtx, id)
 	delCancel()
 	if deleteFiles && name != "" {
 		downloadDir := app.config.GetGeneral().DownloadDir
@@ -1078,7 +1075,32 @@ func (app *Application) deleteHistoryEntries(ctx context.Context, entries []hist
 		}
 		ids = append(ids, entry.NzoID)
 	}
-	return app.historyRepo.Delete(ctx, ids...)
+	n, err := app.historyRepo.Delete(ctx, ids...)
+	if err != nil {
+		return n, err
+	}
+	// A FAILED entry kept its job's durable_runs for a retry; with the entry
+	// gone nothing reaches them.
+	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer delCancel()
+	app.reclaim(delCtx, ids[0], ids[1:]...)
+	return n, nil
+}
+
+// MarkHistoryCompleted marks a history entry completed. A FAILED entry kept
+// its job's durable_runs for a retry, and a completed one has nothing to
+// retry, so they are reclaimed.
+func (app *Application) MarkHistoryCompleted(ctx context.Context, id string) error {
+	if app.historyRepo == nil {
+		return errors.New("history repository not wired")
+	}
+	if err := app.historyRepo.MarkCompleted(ctx, id); err != nil {
+		return err
+	}
+	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer delCancel()
+	app.reclaim(delCtx, id)
+	return nil
 }
 
 // PruneHistory removes history entries past the configured retention
@@ -1260,6 +1282,10 @@ func (app *Application) Start(ctx context.Context) error {
 	if _, err := app.PruneHistory(app.ctx); err != nil {
 		app.log.Warn("history retention sweep failed at startup", "err", err)
 	}
+
+	// Last, so it sees every departure above, and inside Start, so it runs
+	// before the API or the dir scanner can Admit a job it would reclaim.
+	app.sweepOrphans(app.ctx)
 
 	succeeded = true
 	return nil
@@ -2292,13 +2318,24 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 			"job", jobID)
 	}
 
-	if !progressApplied {
-		if err := app.dropJobDurability(ctx, jobID); err != nil {
-			return fmt.Errorf("app: retry %s: drop stale durability rows: %w", jobID, err)
-		}
-	} else if app.durable != nil {
-		if err := app.durable.DiscardFailedArticles(ctx, jobID); err != nil {
+	if app.durable != nil {
+		// Failed marks can outlive the failed departure that should have
+		// reclaimed them: that reclaim may have failed, and a checkpoint flush
+		// in flight at the departure can write after it (#561). A retry would
+		// read them back as permanent and never re-attempt those articles, so
+		// the rule runs again here. The entry is still FAILED, so it keeps the
+		// runs.
+		if err := app.durable.Reclaim(ctx, jobID); err != nil {
 			app.log.Warn("could not clear failed_articles for retry", "job", jobID, "err", err)
+		}
+		// Unapplied retained runs describe a manifest this retry no longer
+		// has, and a stale run bounds FinalizeFile's truncate, which destroys
+		// the partial file beyond it (#422). So a discard that fails aborts
+		// the retry.
+		if !progressApplied {
+			if err := app.durable.DiscardRuns(ctx, jobID); err != nil {
+				return fmt.Errorf("app: retry %s: drop stale durable runs: %w", jobID, err)
+			}
 		}
 	}
 	j.ResetForRetry()
@@ -2336,18 +2373,18 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		// admission below takes it with it. Pinning only the dispatcher.Add
 		// branch was the earlier mistake: seedJobFiles and checkpointer.Flush
 		// return in this span too, and a retry that never entered the queue
-		// leaves a manifest no finalized job has and no sweep walks.
+		// would leave a manifest no finalized job has until the next start.
 		defer func() {
 			if admitted {
 				return
 			}
-			// The NZB backup and job_files rows are NOT this call's to
-			// remove — the history entry still owns them, and a later retry
-			// reads the backup to rebuild the job.
-			if rmErr := removeManifestIn(mdir, jobID); rmErr != nil && !os.IsNotExist(rmErr) {
-				app.log.Warn("retry failed to enter the queue and its manifest could not be removed",
-					"job", jobID, "err", rmErr)
-			}
+			// Not the NZB backup: the history entry still owns it, and a later
+			// retry reads it to rebuild the job. reclaim takes the manifest
+			// and the job_files rows seeded below; the entry is still FAILED,
+			// so the rule keeps its durable_runs.
+			delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer delCancel()
+			app.reclaim(delCtx, jobID)
 		}()
 	}
 
@@ -2363,10 +2400,11 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	// eviction is possible; after Add the tick loop can evict and re-hydrate
 	// concurrently, which is the window this closes (#329).
 	//
-	// seedJobFiles is INSERT ... ON CONFLICT DO NOTHING, so this only adds
-	// rows missing entirely (a shape-changed retry, or an original seed that
-	// failed outright) and cannot disturb a retained row — safe without a
-	// preceding DELETE.
+	// A failed job's job_files rows are reclaimed when it leaves the queue, so
+	// the seed normally writes every row fresh; one a failed reclaim left is
+	// kept by ON CONFLICT DO NOTHING and overwritten by the flush. Either way
+	// the progress the retry keeps is the retained history_job_files applied
+	// through RestoreFileMeta above, and the flush is what writes it here.
 	if app.durable != nil && m != nil {
 		if err := seedJobFiles(ctx, app.durable, jobID, m.NumFiles(), j.FileFetchPolicy); err != nil {
 			return fmt.Errorf("app: retry %s: seed job_files: %w", jobID, err)
@@ -2377,10 +2415,9 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		// context.Background(), matching saveQueueIfDirty, the shutdown
 		// flush and enqueuePostProc: a client disconnect mid-request must
 		// not abort a retry that has already mutated state. A Flush error
-		// aborts the retry rather than being discarded, matching
-		// dropJobDurability's existing rule that a cleanup failure aborts a
-		// retry — a discarded error would silently reopen the eviction
-		// window above. Flush writes every dirty job, not only this one, so
+		// aborts the retry rather than being discarded, as a failed
+		// DiscardRuns above does — a discarded error would silently reopen
+		// the eviction window above. Flush writes every dirty job, not only this one, so
 		// an unrelated in-flight job's checkpoint failure can abort this
 		// retry too; that is accepted here as it is on enqueuePostProc's
 		// synchronous whole-map Flush.
@@ -2407,7 +2444,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	// attempt's finalization fails to persist instead.
 	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
 	defer delCancel()
-	if _, err := app.historyRepo.DeleteKeepingDurability(delCtx, jobID); err != nil {
+	if _, err := app.historyRepo.Delete(delCtx, jobID); err != nil {
 		app.log.Warn("retry requeued but its history entry could not be deleted; "+
 			"this attempt's finalization will fail to write history over the stale entry",
 			"job", jobID, "err", err)

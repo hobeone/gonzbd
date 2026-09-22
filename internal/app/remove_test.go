@@ -163,8 +163,8 @@ func TestRemoveJob_StoreDeleteFailureLeavesTheJobsFilesOnDisk(t *testing.T) {
 
 // disconnectingStore cancels a context at the instant the real store delete
 // succeeds. That instant is the reachable half of #549: past it the job is
-// gone from dispatch_jobs, so nothing will read its durability rows again and
-// nothing will remove them either.
+// gone from dispatch_jobs, so nothing will read its durability rows again, and
+// only RemoveJob's own reclaim or the next start's sweep removes them.
 //
 // Deterministic rather than timing-dependent, and the reason is a property of
 // Dispatcher.Remove rather than of this type: Remove does not re-check its
@@ -209,10 +209,9 @@ func (b *lockedBuffer) String() string {
 // detachment. RemoveJob is handed r.Context() by api/queue.go, so the context
 // this cancels is exactly the one a closed browser tab cancels.
 //
-// Without context.WithoutCancel the three deletes below run on a context that
-// is already done, every one of them fails, deleteJobDurability logs and
-// returns, and the rows are stranded for the life of the database -- no crash
-// required.
+// Without context.WithoutCancel the reclaim runs on a context that is already
+// done, fails, and is only logged, so the rows wait for the next start's sweep
+// -- no crash required.
 func TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability(t *testing.T) {
 	t.Parallel()
 	application, repo, _ := newLifecycleTestApp(t)

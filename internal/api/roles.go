@@ -24,6 +24,7 @@ type JobManager interface {
 	RemoveJob(ctx context.Context, id string, deleteFiles bool) error
 	RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error
 	RetryHistoryJob(ctx context.Context, jobID string) error
+	MarkHistoryCompleted(ctx context.Context, id string) error
 }
 
 // DownloaderControl covers live control of the downloader: speed/bandwidth

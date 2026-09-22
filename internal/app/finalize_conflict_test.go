@@ -94,12 +94,12 @@ func TestFinalize_RemovesJobFromQueueWhenHistoryWriteFails(t *testing.T) {
 	}
 }
 
-// TestFinalize_PreservesDurabilityWhenConflictingEntryIsFailed pins that when
+// TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed pins that when
 // finalization collides with a pre-existing Failed history entry (e.g. following
 // a crash between history commit and Dispatcher.Remove), teardown removes the
-// job from the dispatcher to prevent leaks, but preserves its durability rows
-// so that a subsequent history retry does not have its partial state destroyed.
-func TestFinalize_PreservesDurabilityWhenConflictingEntryIsFailed(t *testing.T) {
+// job from the dispatcher, and the rows it leaves are the ones that entry's
+// retry reads: its durable_runs, and nothing else.
+func TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed(t *testing.T) {
 	adminDir := t.TempDir()
 	cfg := testConfigInternal(t, adminDir)
 
@@ -148,11 +148,6 @@ func TestFinalize_PreservesDurabilityWhenConflictingEntryIsFailed(t *testing.T) 
 
 	// 2. Seed durability rows (job_files, durable_runs, failed_articles).
 	seedDurability(t, application, job.ID())
-	if _, err := application.historyRepo.DB().ExecContext(ctx, `
-INSERT INTO job_files (job_id, file_index, complete, fetch_policy, filename, assembled_crc32)
-VALUES (?, 0, 0, 0, "file.bin", 0)`, job.ID()); err != nil {
-		t.Fatalf("seed job_files: %v", err)
-	}
 
 	nf, ne := durabilityRowCounts(t, application, job.ID())
 	if nf != 1 || ne != 1 {
@@ -171,19 +166,14 @@ VALUES (?, 0, 0, 0, "file.bin", 0)`, job.ID()); err != nil {
 		t.Error("job remained in dispatcher; expected teardown to remove it")
 	}
 
-	// 5. Verify durability rows are NOT deleted.
+	// 5. Verify the failed entry's runs survive, and only them.
 	nfAfter, neAfter := durabilityRowCounts(t, application, job.ID())
-	if nfAfter != 1 || neAfter != 1 {
-		t.Errorf("durability rows were deleted on conflict with failed entry: runs=%d, failed=%d, want 1 and 1",
+	if nfAfter != 1 || neAfter != 0 {
+		t.Errorf("after a conflict with a failed entry: runs=%d, failed=%d, want 1 and 0",
 			nfAfter, neAfter)
 	}
-	var jobFilesCount int
-	if err := application.historyRepo.DB().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM job_files WHERE job_id = ?`, job.ID()).Scan(&jobFilesCount); err != nil {
-		t.Fatalf("count job_files: %v", err)
-	}
-	if jobFilesCount != 1 {
-		t.Errorf("job_files rows were deleted on conflict with failed entry: count=%d, want 1", jobFilesCount)
+	if n := jobFilesCount(t, application, job.ID()); n != 0 {
+		t.Errorf("job_files rows survive a conflict with a failed entry: count=%d, want 0", n)
 	}
 }
 
@@ -249,10 +239,10 @@ func TestFinalize_KeepsTheManifestWhenTheDispatcherRemoveFails(t *testing.T) {
 	}
 }
 
-// TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError pins that when
-// history persistence fails and historyRepo.Get returns an unexpected error
-// (e.g. SQLite error or context canceled, anything other than history.ErrNotFound),
-// durability rows are preserved on doubt rather than deleted.
+// TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError pins that a
+// reclaim which cannot read history deletes nothing. The rule's durable_runs
+// statement reads history, so when it fails its transaction takes back the
+// deletes that ran before it, and every row is kept for the next attempt.
 func TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError(t *testing.T) {
 	adminDir := t.TempDir()
 	cfg := testConfigInternal(t, adminDir)
@@ -292,33 +282,27 @@ func TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError(t *testing.T)
 
 	// 1. Seed durability rows (job_files, durable_runs, failed_articles).
 	seedDurability(t, application, job.ID())
-	if _, err := application.historyRepo.DB().ExecContext(ctx, `
-INSERT INTO job_files (job_id, file_index, complete, fetch_policy, filename, assembled_crc32)
-VALUES (?, 0, 0, 0, "file.bin", 0)`, job.ID()); err != nil {
-		t.Fatalf("seed job_files: %v", err)
-	}
 
 	nf, ne := durabilityRowCounts(t, application, job.ID())
 	if nf != 1 || ne != 1 {
 		t.Fatalf("fixture seeded %d runs and %d failed rows, want 1 and 1", nf, ne)
 	}
 
-	// 2. Corrupt the history schema so historyRepo.Add and historyRepo.Get both fail
-	// with a table missing / SQLite query error (not ErrNotFound).
+	// 2. Corrupt the history schema so historyRepo.Add and the reclaim rule's
+	// read of history both fail.
 	if _, err := application.historyRepo.DB().ExecContext(ctx, `DROP TABLE history`); err != nil {
 		t.Fatalf("drop history table: %v", err)
 	}
 
-	// 3. Finalize the job with non-failed status. History write will fail because
-	// history table is gone. Then history lookup will fail with an error
-	// (sqlite table not found, which is NOT history.ErrNotFound).
+	// 3. Finalize the job with non-failed status. The history write fails
+	// because the table is gone, and so does the reclaim that follows it.
 	newJobFinalizer(application).finalize(&postproc.Job{
 		Job:         job,
 		FinalDir:    t.TempDir(),
 		DownloadDir: t.TempDir(),
 	})
 
-	// 4. Verify durability rows are NOT deleted (preserved on doubt).
+	// 4. Verify durability rows are NOT deleted.
 	nfAfter, neAfter := durabilityRowCounts(t, application, job.ID())
 	if nfAfter != 1 || neAfter != 1 {
 		t.Errorf("durability rows were deleted when history lookup failed with error: runs=%d, failed=%d, want 1 and 1",

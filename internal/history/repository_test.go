@@ -1,7 +1,6 @@
 package history
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -705,63 +704,6 @@ func TestRepository_DB(t *testing.T) {
 	_, repo := openTestDB(t)
 	if repo.DB() == nil {
 		t.Error("expected non-nil sql.DB from repo.DB()")
-	}
-}
-
-// TestDelete_SweepsRetainedDurabilityRows pins the bound on the retention that
-// keeps a retry from truncating away its own partial file.
-//
-// A failed job's durable_runs and failed_articles survive MoveToHistory on
-// purpose: a retry reuses the job ID and needs the runs to bound its truncate
-// to the whole partial rather than to the articles it re-fetched, and the
-// failed rows to avoid re-attempting what already failed permanently. From
-// that point they are owned by the history entry, and like history_job_files
-// they have no foreign key to cascade from, so nothing else would ever remove
-// them. Without this they accumulate one set per failed job for the life of
-// the database.
-func TestDelete_SweepsRetainedDurabilityRows(t *testing.T) {
-	ctx := context.Background()
-	db, repo := openTestDB(t)
-
-	if err := repo.Add(ctx, Entry{NzoID: "job-a", Name: "a", Status: "Failed"}); err != nil {
-		t.Fatal(err)
-	}
-	for _, q := range []string{
-		`INSERT INTO durable_runs (job_id, file_idx, first_art_idx, last_art_idx, offset, length, crc32)
-		   VALUES ('job-a',0,0,0,0,100,7)`,
-		`INSERT INTO failed_articles (job_id, art_idx) VALUES ('job-a',1)`,
-	} {
-		if _, err := db.db.ExecContext(ctx, q); err != nil {
-			t.Fatalf("seed: %v", err)
-		}
-	}
-
-	count := func(table string) int {
-		t.Helper()
-		var n int
-		if err := db.db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM "+table+" WHERE job_id = 'job-a'").Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-	// Grounding: the seed must have landed, or the assertions below hold
-	// against an empty table for a reason unrelated to the sweep.
-	if count("durable_runs") != 1 || count("failed_articles") != 1 {
-		t.Fatalf("fixture seeded %d runs and %d failed rows, want 1 and 1",
-			count("durable_runs"), count("failed_articles"))
-	}
-
-	if _, err := repo.Delete(ctx, "job-a"); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-
-	if n := count("durable_runs"); n != 0 {
-		t.Errorf("%d durable_runs rows survive their history entry; nothing else "+
-			"removes them, so they accumulate one set per failed job forever", n)
-	}
-	if n := count("failed_articles"); n != 0 {
-		t.Errorf("%d failed_articles rows survive their history entry", n)
 	}
 }
 

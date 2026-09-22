@@ -57,11 +57,10 @@
 //
 // Do not read that as "only these two touch the table". Rows are deleted from
 // three places outside commit's own merge: Resumer (through Store.deleteFile),
-// Store.DiscardRuns (a job leaving the queue, or a retry re-parsing a changed
-// manifest), and history.Repository.delete.
-// `git grep -nE 'DELETE FROM durable_[r]uns|"durable_[r]uns"' -- '*.go' ':!*_test.go'` returns 4 lines: those three, and commit's own. It was five until b6651d43 deleted
-// internal/queue, taking SQLiteStore.removeCorrupt and the
-// pruneDurabilityRows backstop with it — see docs/durability-contract.md §6.
+// Store.DiscardRuns (a retry re-parsing a manifest that changed shape), and the
+// reclaim rule (Store.Reclaim and Store.SweepOrphans, reclaim.go), which is
+// the only lifecycle deleter.
+// `git grep -nE 'DELETE FROM durable_[r]uns|"durable_[r]uns"' -- '*.go' ':!*_test.go'` returns 4 lines: those three, the rule's by its perJobTables entry, and commit's own.
 // The bound that actually holds — and the only one
 // the trust argument needs — is on CONTENT: a delete can only ever take a
 // claim away, which is S3's safe direction.

@@ -326,6 +326,16 @@ func TestRetryHistoryJob_FailedAddRemovesTheQueueManifest(t *testing.T) {
 	if _, err := os.Stat(mpath); !os.IsNotExist(err) {
 		t.Errorf("queue manifest %s survived a retry that never entered the queue (stat err = %v)", mpath, err)
 	}
+	// The retry seeded job_files before its Add failed. The entry is still
+	// FAILED, and a failed entry keeps its runs and nothing else.
+	var n int
+	if err := repo.DB().QueryRowContext(t.Context(),
+		"SELECT COUNT(*) FROM job_files WHERE job_id = ?", jobID).Scan(&n); err != nil {
+		t.Fatalf("count job_files: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("job_files rows = %d after a retry that never entered the queue, want 0", n)
+	}
 	// The backup belongs to the history entry, which is still there.
 	if _, err := os.Stat(filepath.Join(nzbBackupDir, nzbBackup)); err != nil {
 		t.Errorf("NZB backup was removed although the history entry still owns it: %v", err)

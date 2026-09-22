@@ -50,19 +50,21 @@ file internal/app/app.go
 [AddJob's cleanup narrowed back to the dispatcher's failure alone]
 file internal/app/app.go
 --- anchor
-	// happens to be last.
+	// it, not just the Add that happens to be last.
 	admitted := false
 --- replace
-	// happens to be last.
+	// it, not just the Add that happens to be last.
 	admitted := true
 --- end
 
 [RetryHistoryJob's deferred manifest cleanup neutered]
 file internal/app/app.go
 --- anchor
-			if rmErr := removeManifestIn(mdir, jobID); rmErr != nil && !os.IsNotExist(rmErr) {
+			app.reclaim(delCtx, jobID)
+		}()
 --- replace
-			if rmErr := error(nil); rmErr != nil && !os.IsNotExist(rmErr) {
+			_ = delCtx
+		}()
 --- end
 
 [RetryHistoryJob's cleanup narrowed back to the dispatcher's failure alone]

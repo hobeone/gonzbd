@@ -37,8 +37,11 @@ func manifestName(jobID string) (string, error) {
 	if !jobIDIsPathSafe(jobID) {
 		return "", fmt.Errorf("app: manifest: unsafe job ID %q", jobID)
 	}
-	return jobID + ".json.gz", nil
+	return jobID + manifestSuffix, nil
 }
+
+// manifestSuffix ends every manifest's file name after its job ID.
+const manifestSuffix = ".json.gz"
 
 // manifestPath returns the absolute path of one job's manifest.
 //

@@ -100,12 +100,6 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // also executes completion notifications and asynchronous history pruning
 // under its own 30s context outside of persistAndCommit.
 //
-// Durability rows for a failed job are owned by the retry path and must never
-// be deleted here. Furthermore, if history persistence fails against a
-// pre-existing failed history entry (such as after a crash between commit and
-// Dispatcher.Remove), those durability rows belong to the existing failed entry
-// and are preserved for retry.
-//
 // Returns a non-nil error if persistence failed (the error is already logged;
 // callers can simply return).
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, ppJob *postproc.Job) error {
@@ -166,24 +160,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		if app.checkpointer != nil && ppJob != nil && ppJob.Job != nil {
 			app.checkpointer.Prune(ppJob.Job.ID())
 		}
-		// Whether the queue row actually went. The two steps below destroy
-		// state the queue row still needs, so neither may run when it did
-		// not -- #376's ordering, the same rule dropJobAlreadyInHistory
-		// applies to its own Remove.
-		//
-		// The log line below already says the job "remains in queue"; before
-		// this flag existed the next two statements then unlinked its manifest
-		// and dropped its durability rows anyway. appResidency.hydrate reads
-		// that manifest from disk and returns an error without it
-		// (residency.go), so the job could no longer be hydrated at all --
-		// a queue row that cannot be loaded, alongside the operational error
-		// that says why the removal failed but not that.
-		//
 		// Not fatal, unlike the reconcile path's version: this job IS in
 		// history, so the next startup's dropJobAlreadyInHistory removes the
-		// row and the rows with it. What this protects is the window until
-		// then.
-		removedFromQueue := true
+		// queue row. reclaim below leaves the manifest and rows of a job the
+		// dispatcher still holds, which is what keeps that row loadable until
+		// then (#376: appResidency.hydrate fails without the manifest).
 		if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
 			jobID := ppJob.Job.ID()
 			removeCtx, removeCancel := context.WithTimeout(occupyCtx, 3*time.Second)
@@ -199,30 +180,17 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 					"job", jobID, "err", err)
 				_ = app.dispatcher.SetOperationalError(jobID, "failed to remove finalized job from queue: "+err.Error())
 				app.emit(Event{Type: "queue_updated"})
-				removedFromQueue = false
 			}
-		}
-		if removedFromQueue && ppJob != nil && ppJob.Job != nil {
-			_ = removeManifestIn(mdir, ppJob.Job.ID())
 		}
 
+		// Unconditional: the rule decides from the queue and history as they
+		// now are, so a job still queued keeps everything, a FAILED entry
+		// keeps its durable_runs for a retry, and a persist that failed
+		// against an existing FAILED entry keeps them for that entry.
 		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 3*time.Second)
 		defer delCancel()
-		shouldDeleteDurability := removedFromQueue && entry.Status != string(constants.StatusFailed)
-		if shouldDeleteDurability && persistErr != nil && app.historyRepo != nil && app.historyRepo.DB() != nil {
-			existing, err := app.historyRepo.Get(delCtx, ppJob.Job.ID())
-			if err == nil {
-				if existing.Status == string(constants.StatusFailed) {
-					shouldDeleteDurability = false
-				}
-			} else if !errors.Is(err, history.ErrNotFound) {
-				log.Warn("history lookup failed during finalize conflict check; preserving durability rows on doubt",
-					"job", ppJob.Job.ID(), "err", err)
-				shouldDeleteDurability = false
-			}
-		}
-		if shouldDeleteDurability {
-			app.deleteJobDurability(delCtx, ppJob.Job.ID())
+		if ppJob != nil && ppJob.Job != nil {
+			app.reclaim(delCtx, ppJob.Job.ID())
 		}
 		app.forgetJobBarrierState(ppJob.Job.ID())
 		if persistErr != nil {

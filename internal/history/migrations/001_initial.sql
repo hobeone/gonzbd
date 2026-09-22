@@ -115,13 +115,12 @@ CREATE TABLE job_files (
 -- Barrier.commit. See internal/durability/run.go.
 --
 -- Keyed by job_id with no foreign key, so rows are removed deliberately rather
--- than by cascade. A job leaving the queue drops them, EXCEPT a job that
--- FAILED: those are retained beside its history_job_files row, because a retry
--- reuses the job ID over the same partial file and the retained runs bound the
--- completion truncate to the whole file rather than to the handful of articles
--- the retry re-fetched. history.Repository.Delete drops them with the history
--- entry, and RetryHistoryJob drops them when it declines to apply the retained
--- progress.
+-- than by cascade, by the reclaim rule in internal/durability/reclaim.go: a
+-- job's rows go when nothing reaches it, EXCEPT that a FAILED history entry
+-- keeps these, because a retry reuses the job ID over the same partial file and
+-- the retained runs bound the completion truncate to the whole file rather than
+-- to the handful of articles the retry re-fetched. RetryHistoryJob also drops
+-- them when it declines to apply the retained progress.
 CREATE TABLE durable_runs (
     job_id        TEXT    NOT NULL,
     file_idx      INTEGER NOT NULL,
@@ -141,15 +140,9 @@ CREATE TABLE durable_runs (
 --
 -- One production writer -- `git grep -n 'INTO failed_articles' -- '*.go'
 -- ':!*_test.go'` returns one line, the INSERT OR IGNORE inside
--- durability.Store.SaveProgress, which the checkpointer writes through. Deletion is wider and job-scoped: the retry
--- path, a job leaving the queue, and history.Repository.Delete. None of those
--- writes a row.
---
--- There is deliberately no sweep in that list. One existed --
--- SQLiteStore.pruneDurabilityRows removed rows whose job was in neither the
--- queue nor history-as-FAILED -- and it went with internal/queue in b6651d43
--- with nothing replacing it, so rows a departing job fails to remove are not
--- reclaimed at all. Tracked as #549.
+-- durability.Store.SaveProgress, which the checkpointer writes through. Deleted
+-- by the reclaim rule alone (internal/durability/reclaim.go) once the job has
+-- left the queue, failed or not; a retry also runs the rule before it seeds.
 --
 -- A table rather than a bitmap column on job_files because its reversal is
 -- per-article and per-job, which a packed blob can only express by rewriting
@@ -165,22 +158,9 @@ CREATE TABLE failed_articles (
 -- Per-file download progress retained for a FAILED job, so a retry refetches
 -- only the articles that did not make it.
 --
--- Separate from job_files, and for the FAILED job this table exists to serve
--- the two coexist: jobFinalizer.persistAndCommit skips deleteJobDurability
--- for exactly that
--- status, so the job_files rows stay behind as well.
---
--- What is NOT true is that each then goes with its own owner. These rows do --
--- history.Repository.delete removes them with the entry. job_files has no such
--- deleter: `git grep -n 'DELETE FROM job_files WHERE' -- '*.go'` returns, outside
--- the comments that quote the command itself, one statement -- in
--- durability.Store.DiscardFileRows, which only Application.deleteJobDurability
--- calls, and that is the call the finalizer skipped. So a
--- FAILED job's job_files rows are removed by neither the queue job nor the
--- history entry, and survive until a retry puts the job back in the queue for
--- a later departure to clean up -- or forever, if the entry is deleted from
--- history instead. #560 is the issue for settling that ownership; do not read
--- this paragraph as describing an intended design.
+-- Separate from job_files, which the reclaim rule takes when a FAILED job
+-- leaves the queue: these rows are what a retry restores its file progress
+-- from, and history.Repository.Delete removes them with their entry.
 --
 -- No foreign key here either: the owning row is history(nzo_id), and these are
 -- removed explicitly when it is deleted. Only failed jobs get rows -- a job

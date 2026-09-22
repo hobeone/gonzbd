@@ -90,3 +90,61 @@ func TestOpenManifestIn_RefusesSymlinkEscapingTheDirectory(t *testing.T) {
 		t.Fatal("openManifestIn followed a symlink out of the manifest directory")
 	}
 }
+
+// TestJobIDIsPathSafe_AcceptsOnlyASinglePathElement pins the predicate every
+// manifest path goes through, case by case.
+func TestJobIDIsPathSafe_AcceptsOnlyASinglePathElement(t *testing.T) {
+	t.Parallel()
+	for id, want := range map[string]bool{
+		"0123456789abcdef": true,
+		"":                 false,
+		".":                false,
+		"..":               false,
+		"a/b":              false,
+		`a\b`:              false,
+		"/abs":             false,
+	} {
+		if got := jobIDIsPathSafe(id); got != want {
+			t.Errorf("jobIDIsPathSafe(%q) = %v, want %v", id, got, want)
+		}
+	}
+}
+
+// TestManifestName_EndsInTheManifestSuffix pins the name the startup sweep
+// strips back to a job ID: the two agree only while both use manifestSuffix.
+func TestManifestName_EndsInTheManifestSuffix(t *testing.T) {
+	t.Parallel()
+	name, err := manifestName("0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "0123456789abcdef"+manifestSuffix {
+		t.Errorf("manifestName = %q, want the ID followed by %q", name, manifestSuffix)
+	}
+	if _, err := manifestName("../x"); err == nil {
+		t.Error("manifestName accepted a traversal")
+	}
+}
+
+// TestRemoveManifestIn_RemovesOneManifestAndRefusesAnUnsafeID pins the
+// confined delete reclaim uses.
+func TestRemoveManifestIn_RemovesOneManifestAndRefusesAnUnsafeID(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "0123456789abcdef"+manifestSuffix)
+	if err := os.WriteFile(path, []byte("m"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeManifestIn(dir, "0123456789abcdef"); err != nil {
+		t.Fatalf("removeManifestIn: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the manifest survived its removal (stat: %v)", err)
+	}
+	if err := removeManifestIn(dir, "0123456789abcdef"); !os.IsNotExist(err) {
+		t.Errorf("removing a missing manifest = %v, want a not-exist error the callers can ignore", err)
+	}
+	if err := removeManifestIn(dir, ".."); err == nil {
+		t.Error("removeManifestIn accepted an unsafe ID")
+	}
+}

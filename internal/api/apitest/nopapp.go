@@ -125,6 +125,14 @@ func (n NopApp) RemoveHistoryJob(ctx context.Context, id string, deleteFiles boo
 	return nil
 }
 
+// MarkHistoryCompleted forwards to the wired repository if present.
+func (n NopApp) MarkHistoryCompleted(ctx context.Context, id string) error {
+	if n.History != nil {
+		return n.History.MarkCompleted(ctx, id)
+	}
+	return nil
+}
+
 // DirectUnpackStatus is a stub.
 func (n NopApp) DirectUnpackStatus(jobID string) (directunpack.Status, bool) {
 	return directunpack.Status{}, false

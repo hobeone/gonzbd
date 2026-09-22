@@ -165,18 +165,15 @@ The second table is **`failed_articles`** — `{job_id, art_idx}`, one row per
 permanently failed article. It is not a durability record, though
 `durability.Store` owns its SQL: a failed article never decodes, so nothing was
 ever written for it and no run could cover it. Its rows are inserted only by
-`Store.SaveProgress`, on behalf of the checkpointer, and deleted by two
-statements: `Store.DiscardFailedArticles`, which `internal/app` calls from the
-retry clear and from job cleanup, and the history purge in `internal/history`,
-which drops retained `durable_runs` and `failed_articles` rows together when a
-history entry goes. That second one is the reason the
-pattern below carries a bare-quoted alternative: the history purge builds its
-statement as `"DELETE FROM "+table+" WHERE ..."` over a `[]string{...}` of table
-names, so no grep anchored on the SQL text can see it (`git grep -n
+`Store.SaveProgress`, on behalf of the checkpointer, and deleted only by the
+reclaim rule (`internal/durability/reclaim.go`), which builds its statements
+from a list of table names rather than writing each one out. That is why the
+pattern below carries a bare-quoted alternative: no grep anchored on the SQL
+text can see the rule's delete (`git grep -n
 'failed_articles (job_id\|failed_articles WHERE\|"failed_articles"' --
-'internal/**/*.go' ':!*_test.go'` finds 4 lines: one INSERT, one DELETE, one
-SELECT, and the history purge's table list — the plain table name also matches
-prose, which is why the pattern anchors on the SQL or the quoted literal).
+'internal/**/*.go' ':!*_test.go'` finds 3 lines: one INSERT, one SELECT, and
+the rule's table list — the plain table name also matches prose, which is why
+the pattern anchors on the SQL or the quoted literal).
 
 One consequence worth stating explicitly: **neither record carries a
 failed-byte figure.** No sum over runs can produce it, because a failed article
@@ -676,28 +673,22 @@ contradicted in the memory budget:
 | Deleter | When |
 |---|---|
 | `durability.Resumer` | a file shorter than its runs claim, or missing (§6) — `discard` calls `Store.deleteFile` (`internal/durability/resume.go:148`) |
-| `Store.DiscardRuns` | a job leaving the queue, **or a retry re-parsing a manifest that changed shape** — `app.dropJobDurability` is reached from both |
-| `history.Repository.delete` | a history entry going away for good (`internal/history/repository.go:330`) |
+| `Store.DiscardRuns` | a retry re-parsing a manifest that changed shape (`RetryHistoryJob`) |
+| the reclaim rule | `Store.Reclaim` after every departure, and `Store.SweepOrphans` at startup: a job's rows go once nothing reaches it, and a FAILED history entry keeps its `durable_runs` for a retry (`internal/durability/reclaim.go`) |
 
-The count was **five** until `internal/queue` was deleted (`b6651d43`). The two
-it named there — `SQLiteStore.removeCorrupt` and `SQLiteStore.pruneDurabilityRows`
-— went with the package, and **the second was the crash-window backstop: it ran
-on every queue save and removed rows whose job was in neither `jobs` nor
-history-as-`Failed`. Nothing replaced it.** Rows orphaned by a crash in the
-window between a job leaving the queue and its rows being deleted are therefore
-no longer swept. That is an open gap, not a design change — tracked as #549 —
-and it is recorded here rather than silently dropped from the table.
+The reclaim rule is the only lifecycle deleter of `durable_runs`,
+`failed_articles` and `job_files`, and it re-derives its answer from the queue
+and history as they are, so a crash or a missed call can delay a reclaim but
+never make one wrong. What a crash strands between a departure and its reclaim
+waits for the next start's `SweepOrphans`.
 
-The three above are the complete current set, but **no single grep proves it**,
-and the obvious one is misleading. `git grep -n 'DELETE FROM durable_runs\|DELETE
-FROM failed_articles' -- '*.go' ':!*_test.go'` returns four statements, all in
-`internal/durability`: three against `durable_runs` in `store.go` (one of them
-`commit`'s own merge, excluded below) and `Store.DiscardFailedArticles` in
-`progress.go`.
-The third deleter is **not** among them: `history.Repository.delete` builds its
-statement by concatenation (`"DELETE FROM "+table`, `repository.go:402`), so the
-literal never appears. Read the grep as covering the first two only, and the
-enumeration as what a reader has to confirm by opening `repository.go`.
+**No single grep proves that set.** `git grep -n 'DELETE FROM durable_runs\|DELETE
+FROM failed_articles' -- '*.go' ':!*_test.go'` returns three statements, all
+against `durable_runs` in `internal/durability/store.go`: `commit`'s own merge
+(excluded below), `deleteFile` and `DiscardRuns`. The reclaim rule is **not**
+among them: it builds each statement from a table name (`"DELETE FROM " +
+t.name`), so the literal never appears. Read the grep as covering the first two
+only, and the rule as what a reader confirms by opening `reclaim.go`.
 
 A fourth deletes and is deliberately excluded from that count: `commit`'s own
 `deleteRows` removes exactly the rows it just read, inside the merge's
@@ -1623,7 +1614,7 @@ articles or sparse regions.
 | Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
 | Disk probe cache | one `probeState` per directory, evicted after 10 minutes; at most one outstanding `statfs` per directory. |
 | Per-job barrier state | `jobBarrierMu`, `jobBarrierBytes` and `lastBarrier` are dropped by `forgetJobBarrierState` when a job leaves the assembler's business — otherwise one entry per job ever downloaded, for the life of the process. The mutex's deletion is **deferred while anyone holds it**: dropping it let the next caller mint a second mutex for the same job, which serialises nothing, and the delete is reachable from inside a live barrier via `routeFault → Fail → maybeFinalize → enqueuePostProc`. |
-| Durability rows | `durable_runs`, `failed_articles` and `job_files`, all three deleted per job by `deleteJobDurability`. `history.Repository.delete` deletes rows too, but only from the first two — see §6's *The barrier is the only thing that puts CONTENT into the record* for the enumeration, and do not read this row as one. None of the three has a foreign key to the queue, so nothing removes them implicitly, **and since `b6651d43` nothing sweeps rows orphaned by a crash between a job leaving the queue and its rows being deleted** (#549) — the `SQLiteStore.Prune` backstop that did so went with `internal/queue`. Growth is therefore bounded by crashes in that window rather than by a periodic sweep. `job_files` is the one with no second deleter at all, which is why a FAILED job — whose `deleteJobDurability` `jobFinalizer.persistAndCommit` deliberately skips — keeps its rows until a retry re-enqueues it, or forever if the entry is deleted from history instead (#560). |
+| Durability rows | `durable_runs`, `failed_articles` and `job_files`, all three deleted by the reclaim rule (`internal/durability/reclaim.go`) once nothing reaches the job; a FAILED history entry keeps its `durable_runs` for a retry and nothing else. See §6's *The barrier is the only thing that puts CONTENT into the record* for the full deleter enumeration, and do not read this row as one. None of the three has a foreign key to the queue, so nothing removes them implicitly. A crash between a departure and its reclaim strands rows until the next start, whose `SweepOrphans` takes them; there is no periodic sweep, because one would reclaim a job between `Admit` and `Dispatcher.Add`. |
 
 ## Failure & degradation rules
 

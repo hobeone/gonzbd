@@ -8,8 +8,8 @@ run TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability
 file internal/app/durability.go
 --- anchor
 	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	app.deleteJobDurability(delCtx, jobID)
+	app.reclaim(delCtx, jobID)
 --- replace
 	delCtx, delCancel := context.WithTimeout(ctx, 5*time.Second)
-	app.deleteJobDurability(delCtx, jobID)
+	app.reclaim(delCtx, jobID)
 --- end
