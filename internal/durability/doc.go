@@ -60,7 +60,10 @@
 // Store.DiscardRuns (a retry re-parsing a manifest that changed shape), and the
 // reclaim rule (Store.Reclaim and Store.SweepOrphans, reclaim.go), which is
 // the only lifecycle deleter.
-// `git grep -nE 'DELETE FROM durable_[r]uns|"durable_[r]uns"' -- '*.go' ':!*_test.go'` returns 4 lines: those three, the rule's by its perJobTables entry, and commit's own.
+// `git grep -nE 'DELETE FROM durable_[r]uns|"durable_[r]uns"' -- '*.go' ':!*_test.go'` returns 4 lines.
+// Three are statements — commit's merge, deleteFile's, DiscardRuns' — and the
+// fourth is the rule's perJobTables entry, since it builds its statement by
+// concatenation and no literal to match ever appears.
 // The bound that actually holds — and the only one
 // the trust argument needs — is on CONTENT: a delete can only ever take a
 // claim away, which is S3's safe direction.
