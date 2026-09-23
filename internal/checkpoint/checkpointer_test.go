@@ -276,6 +276,31 @@ func TestCheckpointer_PruneRemovesFromDirtySet(t *testing.T) {
 	}
 }
 
+// waitUntilNotInFlight blocks until id has left the in-flight set, which is
+// the first thing Prune does. It waits on the real state rather than on a
+// duration, so the interleaving it establishes is the same on a loaded machine.
+func waitUntilNotInFlight(t *testing.T, c *Checkpointer, id string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c.mu.Lock()
+		_, carried := c.inFlight[id]
+		c.mu.Unlock()
+		if !carried {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job %q was still in flight after 5s; Prune never reached its "+
+				"delete, so the interleaving this test needs never happened", id)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestCheckpointer_PruneDuringFlushIsNotReMergedOnFailure drives the prune from
+// another goroutine, which is where every production one comes from: Prune now
+// waits for a flush that carries the job, so a prune called on the flush's own
+// goroutine would wait for itself.
 func TestCheckpointer_PruneDuringFlushIsNotReMergedOnFailure(t *testing.T) {
 	st := &failingStore{failsLeft: 1}
 	c := New(st, time.Hour, nil)
@@ -283,13 +308,19 @@ func TestCheckpointer_PruneDuringFlushIsNotReMergedOnFailure(t *testing.T) {
 	a := job.New("a", "A", job.PolicyFromPP(3))
 	c.Mark(a)
 
+	pruned := make(chan struct{})
 	st.beforeFail = func() {
-		c.Prune("a")
+		go func() {
+			c.Prune("a")
+			close(pruned)
+		}()
+		waitUntilNotInFlight(t, c, "a")
 	}
 
 	if err := c.Flush(context.Background()); !errors.Is(err, errSaveBatchFailed) {
 		t.Fatalf("Flush: got %v, want errSaveBatchFailed", err)
 	}
+	<-pruned
 
 	if got := c.DirtyCount(); got != 0 {
 		t.Fatalf("DirtyCount after Prune during failed Flush = %d, want 0 (pruned job must not be re-merged)", got)
