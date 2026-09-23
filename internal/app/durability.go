@@ -1407,8 +1407,15 @@ func (app *Application) reclaim(ctx context.Context, id string, more ...string) 
 				"job", id, "more", len(more), "err", err)
 		}
 	}
+	app.unlinkDepartedManifests(append([]string{id}, more...))
+}
+
+// unlinkDepartedManifests unlinks the manifest of each named job the dispatcher
+// no longer holds, which is the disk half of the rule: a manifest's lifetime is
+// exactly its queue row's.
+func (app *Application) unlinkDepartedManifests(ids []string) {
 	dir := manifestDir(app.config.GetGeneral().AdminDir)
-	for _, jobID := range append([]string{id}, more...) {
+	for _, jobID := range ids {
 		if app.dispatcher != nil {
 			if _, held := app.dispatcher.Job(jobID); held {
 				continue
@@ -1445,16 +1452,16 @@ func (app *Application) sweepOrphans(ctx context.Context) {
 			ids = append(ids, jobID)
 		}
 	}
-	if len(ids) > 0 {
-		app.reclaim(ctx, ids[0], ids[1:]...)
-	}
+	// The manifests only. SweepOrphans above already applied the rule to every
+	// job in the database, so reclaiming these ids again would delete nothing.
+	app.unlinkDepartedManifests(ids)
 }
 
 var _ durability.Stallable = (*Application)(nil)
 
 // durabilityStore is what Application calls on durability.Store: reads of the
-// run record, the job_files seed, and the per-table discards the departure and
-// retry paths are built from. It is declared here, at its consumer, so a test
+// run record, the job_files seed, the reclaim rule the departure paths are
+// built from, and the retry's own discard of stale runs. It is declared here, at its consumer, so a test
 // can substitute a store that fails or records.
 //
 // It has no method that writes run content, and cannot gain one: the store's

@@ -915,19 +915,13 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	removeCtx, removeCancel := context.WithTimeout(ctx, 30*time.Second)
 	rmErr := app.dispatcher.Remove(removeCtx, id)
 	removeCancel()
-	if errors.Is(rmErr, dispatch.ErrNotFound) {
-		// Removed by someone else between Job and Remove: the tick evicts a
-		// cancelled job that never ran, which the Cancel above makes of a
-		// queued one (E8), and a finalize files a job that completed. Whoever
-		// removed it owns its files. What can be left is its rows and its
-		// manifest, and reclaim takes them only if nothing reaches the job.
-		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		app.reclaim(delCtx, id)
-		delCancel()
-		app.emit(Event{Type: "queue_updated"})
-		return nil
-	}
-	if rmErr != nil {
+	// ErrNotFound means someone else took the row between Job and Remove: the
+	// tick evicts a cancelled job that never ran, which the Cancel above makes
+	// of a queued one (E8), and a finalize files a job that completed. The row
+	// is all they took. The cleanup below is this call's own — and deleteFiles
+	// is a request no one else carries — so the removal continues rather than
+	// reporting, and the rule decides the rows either way.
+	if rmErr != nil && !errors.Is(rmErr, dispatch.ErrNotFound) {
 		return rmErr
 	}
 
@@ -1108,6 +1102,7 @@ func (app *Application) MarkHistoryCompleted(ctx context.Context, id string) err
 	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer delCancel()
 	app.reclaim(delCtx, id)
+	app.emit(Event{Type: "history_updated"})
 	return nil
 }
 
@@ -2333,8 +2328,13 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		// read them back as permanent and never re-attempt those articles, so
 		// the rule runs again here. The entry is still FAILED, so it keeps the
 		// runs.
+		//
+		// A failure aborts the retry, unlike app.reclaim's log-only departure
+		// calls: those have nothing left to tell, and this one would hand the
+		// user a retry that hydration has already marked Failed+Done for the
+		// articles it exists to re-attempt.
 		if err := app.durable.Reclaim(ctx, jobID); err != nil {
-			app.log.Warn("could not clear failed_articles for retry", "job", jobID, "err", err)
+			return fmt.Errorf("app: retry %s: clear stale failed articles: %w", jobID, err)
 		}
 		// Unapplied retained runs describe a manifest this retry no longer
 		// has, and a stale run bounds FinalizeFile's truncate, which destroys

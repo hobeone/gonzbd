@@ -207,7 +207,7 @@ and one is new. Each change is argued at the section named.
 | **S4** — a recomputation beats the stored record | the done-set was rebuilt from the per-article facts plus a disk read, and the stored record was *never* authoritative | **INVERTED.** The record is authoritative, gated on one `stat`. See §6 — this is the change most likely to be misread. |
 | **S7** — the validity stamp | `(size, mtime)`; a mismatch fell through to a recomputation | **narrowed to size**, and `ModTimeNs` is deleted. See §6 for why the *response* to a mismatch, not the stamp, decides this. |
 | **S5** — no second copy to drift | two records, two `FinalizeFile` guards | **improved.** One record; both guards and `file_extents` gone (§4). |
-| **Writers of record CONTENT** | **two** — the barrier's commit, and `Resumer.writeBack` | **one** — the barrier. The resume only *deletes*, and so do four other paths, none of which can make a row assert anything (§6). |
+| **Writers of record CONTENT** | **two** — the barrier's commit, and `Resumer.writeBack` | **one** — the barrier. The resume only *deletes*, and so do `Store.DiscardRuns` and the reclaim rule, neither of which can make a row assert anything (§6). |
 | **S1, S2, S6, R3** | — | unchanged. R3 is now the routine cost of an unclean shutdown rather than an edge case. |
 
 ## The state of an article

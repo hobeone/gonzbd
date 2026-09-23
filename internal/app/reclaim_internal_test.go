@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -175,11 +176,18 @@ func TestMarkHistoryCompleted_ReclaimsTheFailedEntrysRuns(t *testing.T) {
 	application, j := newDurabilityTestApp(t, 1, nArticles)
 	seedDurability(t, application, j.ID())
 	failJobIntoHistory(t, application, j, nArticles)
+	rec := &recordingEmitter{}
+	application.emitter = rec
 
 	if err := application.MarkHistoryCompleted(t.Context(), j.ID()); err != nil {
 		t.Fatalf("MarkHistoryCompleted: %v", err)
 	}
 	assertRowsGone(t, application, j.ID(), "a failed entry marked completed")
+	if !slices.ContainsFunc(rec.events, func(e Event) bool { return e.Type == "history_updated" }) {
+		t.Errorf("events = %+v, want a history_updated among them; the UI re-reads history "+
+			"on that event alone (ui/src/lib/stores/history.svelte.ts), so without it the "+
+			"entry stays Failed on screen until the page is reloaded", rec.events)
+	}
 	entry, err := application.historyRepo.Get(t.Context(), j.ID())
 	if err != nil {
 		t.Fatal(err)
@@ -356,4 +364,35 @@ func TestSweepOrphans_ReportsWhatItCouldNotSweep(t *testing.T) {
 			t.Errorf("a missing manifests directory was reported as a failure; log = %q", logged.String())
 		}
 	})
+}
+
+// TestUnlinkDepartedManifests_TakesOnlyWhatTheDispatcherLetGo pins the disk
+// half of the rule directly, because both callers reach it and neither can
+// show its "nothing to unlink" branches: reclaim always runs the rows first,
+// and the sweep only ever passes ids it read off disk.
+func TestUnlinkDepartedManifests_TakesOnlyWhatTheDispatcherLetGo(t *testing.T) {
+	t.Parallel()
+	application, queued := newDurabilityTestApp(t, 1, 1)
+	held := placeManifest(t, application, queued.ID())
+	departed := placeManifest(t, application, "departed0000000")
+	var logged bytes.Buffer
+	application.log = slog.New(slog.NewTextHandler(&logged, nil))
+
+	// "nosuchjob0000000" has no manifest: a job whose departure already
+	// unlinked it, which the sweep cannot distinguish from one that never had
+	// one. Neither may be reported as a failure.
+	application.unlinkDepartedManifests([]string{queued.ID(), "departed0000000", "nosuchjob0000000"})
+
+	if !fileExists(t, held) {
+		t.Errorf("the manifest of %s went while the dispatcher still holds the job; the "+
+			"next tick writes its progress to a job whose manifest is gone", queued.ID())
+	}
+	if fileExists(t, departed) {
+		t.Error("a departed job's manifest survived, so the admin directory keeps growing " +
+			"with jobs no queue row reaches")
+	}
+	if strings.Contains(logged.String(), "could not unlink") {
+		t.Errorf("a manifest that was already gone was reported as a failure; log = %q",
+			logged.String())
+	}
 }

@@ -2,18 +2,12 @@ pkg ./internal/app/
 run TestReclaim_|TestRemoveJob_Reclaims|TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability|TestPersistAndCommit_|TestFinalize_|TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule|TestRemoveHistoryJob_ReclaimsTheFailedEntrysRuns|TestMarkHistoryCompleted_|TestAddJob_FailedAddLeavesNoOrphanArtifacts|TestRetryHistoryJob_|TestStart_SweepsWhatNoDepartureReclaimed|TestSweepOrphans_
 timeout 5m
 
-[RemoveJob skips the reclaim when someone else removed the job]
+[RemoveJob reports instead of cleaning up after someone else removed the job]
 file internal/app/app.go
 --- anchor
-		app.reclaim(delCtx, id)
-		delCancel()
-		app.emit(Event{Type: "queue_updated"})
-		return nil
+	if rmErr != nil && !errors.Is(rmErr, dispatch.ErrNotFound) {
 --- replace
-		_ = delCtx
-		delCancel()
-		app.emit(Event{Type: "queue_updated"})
-		return nil
+	if rmErr != nil {
 --- end
 
 [RemoveJob skips the reclaim after its own Remove]
@@ -97,9 +91,15 @@ file internal/app/app.go
 file internal/app/app.go
 --- anchor
 		if err := app.durable.Reclaim(ctx, jobID); err != nil {
-			app.log.Warn("could not clear failed_articles for retry", "job", jobID, "err", err)
 --- replace
 		if err := error(nil); err != nil {
+--- end
+
+[the retry proceeds after a clear it could not make]
+file internal/app/app.go
+--- anchor
+			return fmt.Errorf("app: retry %s: clear stale failed articles: %w", jobID, err)
+--- replace
 			app.log.Warn("could not clear failed_articles for retry", "job", jobID, "err", err)
 --- end
 
@@ -113,11 +113,11 @@ file internal/app/app.go
 [the sweep leaves stranded manifests]
 file internal/app/durability.go
 --- anchor
-	if len(ids) > 0 {
-		app.reclaim(ctx, ids[0], ids[1:]...)
-	}
+	app.unlinkDepartedManifests(ids)
+}
 --- replace
 	_ = ids
+}
 --- end
 
 [reclaim unlinks the manifest of a job the dispatcher still holds]
@@ -140,11 +140,9 @@ file internal/app/durability.go
 [reclaim leaves manifests when the rows could not be reclaimed]
 file internal/app/durability.go
 --- anchor
-	dir := manifestDir(app.config.GetGeneral().AdminDir)
-	for _, jobID := range append([]string{id}, more...) {
+	for _, jobID := range ids {
 --- replace
-	dir := manifestDir(app.config.GetGeneral().AdminDir)
-	for _, jobID := range append([]string{id}, more...)[:0] {
+	for _, jobID := range ids[:0] {
 --- end
 
 [the retry ignores its retained file progress]
@@ -214,4 +212,13 @@ file internal/app/app.go
 		return fmt.Errorf("job %q not found", id)
 --- replace
 		return fmt.Errorf("job %q not found", id)
+--- end
+
+[mark-completed tells nobody]
+file internal/app/app.go
+--- anchor
+	app.reclaim(delCtx, id)
+	app.emit(Event{Type: "history_updated"})
+--- replace
+	app.reclaim(delCtx, id)
 --- end

@@ -304,8 +304,11 @@ func (r *Repository) Count(ctx context.Context, opts SearchOptions) (int, error)
 // ignored). Large batches are chunked to stay under SQLite's
 // SQLITE_MAX_VARIABLE_NUMBER limit.
 //
-// A job's durability rows are not this package's: the caller reclaims them
-// through durability.Store.Reclaim once the entry is gone.
+// A job's durability rows are not this package's. Of the two callers
+// (`git grep -n 'historyRepo.Delete(' -- 'internal/app/*.go' ':!*_test.go'`
+// returns 2 lines), deleteHistoryEntries reclaims them through durability.Store.Reclaim
+// once the entry is gone, and RetryHistoryJob deliberately does not: it has
+// just put the job back in the queue, which is what the rule reads.
 func (r *Repository) Delete(ctx context.Context, nzoIDs ...string) (int, error) {
 	if len(nzoIDs) == 0 {
 		return 0, nil

@@ -214,6 +214,45 @@ func TestRetryHistoryJob_DiscardsRowsWhenTheManifestShapeChanged(t *testing.T) {
 	}
 }
 
+// failingReclaimStore delegates everything to the real store except Reclaim,
+// for the same reason failingDeleteRunStore below does for DiscardRuns.
+type failingReclaimStore struct {
+	durabilityStore
+	err error
+}
+
+func (f failingReclaimStore) Reclaim(context.Context, string, ...string) error { return f.err }
+
+// TestRetryHistoryJob_AbortsWhenStaleFailedMarksCannotBeCleared is the sibling
+// of TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped, for the other
+// delete the retry makes. A reclaim that silently fails hands back a job whose
+// stray failed_articles rows the next hydration re-reads as permanent, so the
+// retry never re-attempts the articles it exists to re-attempt.
+func TestRetryHistoryJob_AbortsWhenStaleFailedMarksCannotBeCleared(t *testing.T) {
+	t.Parallel()
+	const nArticles = 3
+	application, job := newDurabilityTestApp(t, 1, nArticles)
+	seedDurability(t, application, job.ID())
+	failJobIntoHistory(t, application, job, nArticles)
+
+	wantErr := errors.New("database is locked")
+	application.durable = failingReclaimStore{durabilityStore: application.durable, err: wantErr}
+
+	err := application.RetryHistoryJob(t.Context(), job.ID())
+	if err == nil {
+		t.Fatal("the retry reported success while the stale failed marks it decided to " +
+			"clear are still in place; hydration re-reads them and marks those articles " +
+			"Failed+Done, so the retry silently declines to fetch them")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("error does not wrap the cause: got %v, want it to wrap %v", err, wantErr)
+	}
+	if _, queued := application.dispatcher.Job(job.ID()); queued {
+		t.Error("the retry aborted but still enqueued the job, so the download proceeds " +
+			"against failed marks the abort declared untrustworthy")
+	}
+}
+
 // failingDeleteRunStore delegates everything to the real store except
 // DiscardRuns.
 //
