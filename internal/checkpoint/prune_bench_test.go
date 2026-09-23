@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,4 +44,44 @@ func BenchmarkPrune_InFlightCompleted(b *testing.B) {
 		b.StartTimer()
 		c.Prune("a")
 	}
+}
+
+// BenchmarkPrune_InFlightActive is Agent B's shape, taken during the bake-off:
+// a real flush goroutine running concurrently, so the measurement includes the
+// scheduling a live wait actually costs rather than a receive on an already
+// closed channel.
+func BenchmarkPrune_InFlightActive(b *testing.B) {
+	for b.Loop() {
+		b.StopTimer()
+		st := &releasableStore{released: make(chan struct{})}
+		c := New(st, time.Hour, nil)
+		c.Mark(job.New("a", "A", job.PolicyFromPP(3)))
+		flushed := make(chan struct{})
+		go func() { _ = c.Flush(context.Background()); close(flushed) }()
+		<-st.entered()
+		go func() { close(st.released) }()
+		b.StartTimer()
+		c.Prune("a")
+		b.StopTimer()
+		<-flushed
+		b.StartTimer()
+	}
+}
+
+// releasableStore blocks one SaveBatch until released.
+type releasableStore struct {
+	once     sync.Once
+	in       chan struct{}
+	released chan struct{}
+}
+
+func (s *releasableStore) entered() chan struct{} {
+	s.once.Do(func() { s.in = make(chan struct{}) })
+	return s.in
+}
+
+func (s *releasableStore) SaveBatch(context.Context, []job.Checkpoint) error {
+	close(s.entered())
+	<-s.released
+	return nil
 }
