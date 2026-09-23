@@ -139,6 +139,9 @@ func TestNopApp_Contract(t *testing.T) {
 	if err := app.RemoveHistoryJob(ctx, "job1", false); err != nil {
 		t.Errorf("RemoveHistoryJob(nil history) = %v, want nil", err)
 	}
+	if err := app.MarkHistoryCompleted(ctx, "job1"); err != nil {
+		t.Errorf("MarkHistoryCompleted(nil history) = %v, want nil", err)
+	}
 
 	// 4. Wired Dispatcher and History delegation
 	disp := newTestDispatcher(t)
@@ -169,6 +172,13 @@ func TestNopApp_Contract(t *testing.T) {
 	}
 	if _, ok := disp.Job("job1"); ok {
 		t.Error("job1 still in dispatcher after wired RemoveJob()")
+	}
+
+	if err := wiredApp.MarkHistoryCompleted(ctx, "hjob1"); err != nil {
+		t.Errorf("wired MarkHistoryCompleted() = %v, want nil", err)
+	}
+	if e, err := repo.Get(ctx, "hjob1"); err != nil || e.Status != "Completed" {
+		t.Errorf("hjob1 after wired MarkHistoryCompleted() = %+v, %v; want status Completed", e, err)
 	}
 
 	if err := wiredApp.RemoveHistoryJob(ctx, "hjob1", false); err != nil {

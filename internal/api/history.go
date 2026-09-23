@@ -281,7 +281,7 @@ func (s *Server) historyMarkCompleted(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.history.MarkCompleted(r.Context(), nzoID); err != nil {
+	if err := s.jobs.MarkHistoryCompleted(r.Context(), nzoID); err != nil {
 		s.respondError(w, http.StatusInternalServerError, "mark completed: "+err.Error())
 		return
 	}

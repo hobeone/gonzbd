@@ -81,34 +81,19 @@ func failJobIntoHistory(t *testing.T, application *Application, job *job.Job, nA
 	if err := application.TriggerPersistAndCommit(slog.Default(), entry, &postproc.Job{Job: job}); err != nil {
 		t.Fatalf("persistAndCommit: %v", err)
 	}
-	if nf, ne := durabilityRowCounts(t, application, job.ID()); nf != 1 || ne != 1 {
-		t.Fatalf("fixture: persistAndCommit left %d runs and %d failed rows, want 1 and 1 "+
-			"(a failed job must keep both, which is what this test then checks the retry does not undo)", nf, ne)
+	if nf, ne := durabilityRowCounts(t, application, job.ID()); nf != 1 || ne != 0 {
+		t.Fatalf("fixture: persistAndCommit left %d runs and %d failed rows, want 1 and 0 "+
+			"(a failed job keeps its runs and nothing else)", nf, ne)
 	}
 }
 
-// TestRetryHistoryJob_KeepsTheDurabilityRows is #422.
-//
-// job_finalizer.go retains a FAILED job's durability rows and states exactly
-// what for: a retry reuses the job ID, resolves the same filename over the
-// same partial file, and re-fetches only the articles that failed, so the
-// retained rows are what bound FinalizeFile's truncate to the whole file
-// rather than to this run's few articles. Without them the bound is the end
-// offset of the re-fetched articles alone and the rest of the partial is
-// destroyed silently.
-//
-// RetryHistoryJob then deleted them at the start of every retry, because
-// history.Repository.Delete drops both tables unconditionally. The retention
-// had no consumer on the only route that reaches it, and the silent data loss
-// it exists to prevent was live on every retry.
-//
-// Nothing pinned that. TestPersistAndCommit_KeepsDurabilityForAFailedJob pins
-// that persistAndCommit RETAINS the rows; nothing pinned what the retry then
-// did to them, which is how the two halves diverged without a failure.
-//
-// Scoped to durable_runs. failed_articles is retained by the same finalizer
-// and must NOT survive the retry, for the opposite-facing reason — see
-// TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset.
+// TestRetryHistoryJob_KeepsTheDurabilityRows is #422: a retry reuses the job
+// ID, resolves the same filename over the same partial file and re-fetches
+// only the articles that failed, so the retained runs are what bound
+// FinalizeFile's truncate to the whole file rather than to this run's few
+// articles. TestPersistAndCommit_KeepsOnlyRunsForAFailedJob pins that the
+// failed departure keeps them; this pins that the retry does not then drop
+// them.
 func TestRetryHistoryJob_KeepsTheDurabilityRows(t *testing.T) {
 	t.Parallel()
 	const nArticles = 3
@@ -128,34 +113,20 @@ func TestRetryHistoryJob_KeepsTheDurabilityRows(t *testing.T) {
 	}
 }
 
-// TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset is the half of the
-// retention that runs the OTHER way, and it is the third of Step 10's three
-// reversal sites.
+// TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset pins that a retry
+// re-attempts the articles that failed, even when failed_articles rows
+// outlived the failed departure that should have reclaimed them — a reclaim
+// that failed, or a checkpoint flush that wrote after it (#561).
 //
-// The two tables are retained for opposite-facing reasons and the test above
-// only covers one of them. durable_runs describes bytes that are still on
-// disk, so a retry over the same partial file needs them. failed_articles
-// describes a DECISION not to fetch — and a retry exists precisely to revisit
-// that decision. Job.ResetForRetry clears every failed bit in memory; nothing
-// on this path cleared the rows behind them.
+// failed_articles records a decision not to fetch, and a retry exists to
+// revisit it. Job.ResetForRetry clears the failed bits in memory, but the next
+// hydration re-derives per-article state from durable_runs and failed_articles
+// and re-marks exactly those articles Failed+Done, so a surviving row undoes
+// the reset.
 //
-// The undo is immediate rather than restart-only. Dispatcher.Add writes no
-// resolution, and hydration would call Store.RestoreJobProgress,
-// which re-derives the per-article state from durable_runs and
-// failed_articles and re-marks exactly those articles Failed+Done. So the very
-// next promotion restores the state the reset just cleared and the retry never
-// re-attempts the articles it was asked to.
-//
-// It is a regression rather than a latent gap: job_files.articles_done was
-// re-serialised wholesale by the insert Add performs, so the reset corrected
-// the stored copy as a side effect. A separate table has no wholesale rewrite.
-//
-// The fixture must reach the progressApplied branch — the other one already
-// clears both tables through dropJobDurability, and pinning it would pin the
-// opposite of the defect. failJobIntoHistory routes through persistAndCommit
-// so history_job_files is populated and RestoreRetryProgress reports applied;
-// the surviving durable run asserted below is the observable proof, because
-// the !progressApplied branch would have dropped it.
+// The fixture must reach the progressApplied branch, whose runs survive: the
+// surviving run asserted below is the proof, because the other branch
+// discards them.
 func TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset(t *testing.T) {
 	t.Parallel()
 	const nArticles = 3
@@ -163,6 +134,11 @@ func TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset(t *testing.T) {
 	// Article 0 is covered by a durable run; article 1 is permanently failed.
 	seedDurability(t, application, job.ID())
 	failJobIntoHistory(t, application, job, nArticles)
+	// The stray row: what a late flush writes after the departure's reclaim.
+	if _, err := application.historyRepo.DB().ExecContext(t.Context(),
+		`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)`, job.ID()); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := application.RetryHistoryJob(t.Context(), job.ID()); err != nil {
 		t.Fatalf("RetryHistoryJob: %v", err)
@@ -170,9 +146,9 @@ func TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset(t *testing.T) {
 
 	nf, ne := durabilityRowCounts(t, application, job.ID())
 	if nf == 0 {
-		t.Fatal("fixture: the retry took the !progressApplied branch, which drops both " +
-			"tables through dropJobDurability. This test pins the OTHER branch, so " +
-			"the assertions below would pass for the wrong reason")
+		t.Fatal("fixture: the retry took the !progressApplied branch, which discards " +
+			"the runs. This test pins the OTHER branch, so the assertions below would " +
+			"pass for the wrong reason")
 	}
 	if ne != 0 {
 		t.Errorf("%d failed-article rows survive the retry. Job.ResetForRetry cleared "+
@@ -238,6 +214,45 @@ func TestRetryHistoryJob_DiscardsRowsWhenTheManifestShapeChanged(t *testing.T) {
 	}
 }
 
+// failingReclaimStore delegates everything to the real store except Reclaim,
+// for the same reason failingDeleteRunStore below does for DiscardRuns.
+type failingReclaimStore struct {
+	durabilityStore
+	err error
+}
+
+func (f failingReclaimStore) Reclaim(context.Context, string, ...string) error { return f.err }
+
+// TestRetryHistoryJob_AbortsWhenStaleFailedMarksCannotBeCleared is the sibling
+// of TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped, for the other
+// delete the retry makes. A reclaim that silently fails hands back a job whose
+// stray failed_articles rows the next hydration re-reads as permanent, so the
+// retry never re-attempts the articles it exists to re-attempt.
+func TestRetryHistoryJob_AbortsWhenStaleFailedMarksCannotBeCleared(t *testing.T) {
+	t.Parallel()
+	const nArticles = 3
+	application, job := newDurabilityTestApp(t, 1, nArticles)
+	seedDurability(t, application, job.ID())
+	failJobIntoHistory(t, application, job, nArticles)
+
+	wantErr := errors.New("database is locked")
+	application.durable = failingReclaimStore{durabilityStore: application.durable, err: wantErr}
+
+	err := application.RetryHistoryJob(t.Context(), job.ID())
+	if err == nil {
+		t.Fatal("the retry reported success while the stale failed marks it decided to " +
+			"clear are still in place; hydration re-reads them and marks those articles " +
+			"Failed+Done, so the retry silently declines to fetch them")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("error does not wrap the cause: got %v, want it to wrap %v", err, wantErr)
+	}
+	if _, queued := application.dispatcher.Job(job.ID()); queued {
+		t.Error("the retry aborted but still enqueued the job, so the download proceeds " +
+			"against failed marks the abort declared untrustworthy")
+	}
+}
+
 // failingDeleteRunStore delegates everything to the real store except
 // DiscardRuns.
 //
@@ -254,20 +269,14 @@ func (f failingDeleteRunStore) DiscardRuns(context.Context, string) error { retu
 // TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped is the other half of
 // the shape-mismatch gate, and the reason the gate is worth anything.
 //
-// Deciding to drop the stale rows is not the same as dropping them.
-// deleteJobDurability logs its failures and returns nothing, so a retry that
-// used it would enqueue the job with the stale rows still in place — the exact
-// state the mismatch branch exists to prevent, reached silently.
-//
-// Nothing else catches it. There was once a backstop for orphaned rows —
-// SQLiteStore.pruneDurabilityRows — but it would not have caught this case
-// anyway, since it deliberately skipped any job_id still present in `jobs` and
-// the retry puts this job back there immediately; and it is gone regardless,
-// deleted with internal/queue in b6651d43. A row that survives the deletion
-// survives for the life of the job and bounds FinalizeFile's truncate to
+// Deciding to drop the stale rows is not the same as dropping them. A retry
+// that logged the failure and carried on would enqueue the job with the stale
+// rows still in place — the exact state the mismatch branch exists to prevent,
+// reached silently. The job is back in the queue at once, so the reclaim rule
+// never reaches those rows either: they bound FinalizeFile's truncate to
 // articles that are somewhere else.
 //
-// So the deletion is fatal here, alone among its callers. The abort is clean
+// So the discard is fatal. The abort is clean
 // because it precedes every commit: the history entry is untouched and no job
 // enters the queue, which is what the second assertion pins.
 func TestRetryHistoryJob_AbortsWhenStaleRowsCannotBeDropped(t *testing.T) {

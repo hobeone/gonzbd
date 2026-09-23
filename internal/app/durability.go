@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
-	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -1308,22 +1308,8 @@ func (app *Application) shutdownCheckpoint() {
 // removal that follows it. The queue row is a duplicate of an entry that is
 // already the record.
 //
-// The durability rows go with it, under the same rule the ordinary transition
-// applies in jobFinalizer.persistAndCommit: unless the entry is FAILED, in
-// which case a retry
-// reuses them to bound FinalizeFile's truncate to the whole partial file
-// rather than to the few articles that run re-fetches.
-//
-// This used to remove the queue row and stop. The history entry it fetched was
-// discarded — the call read `_, err := ...Get(...)` — so the rule could not be
-// applied, and durable_runs and failed_articles stayed behind. They are keyed
-// by job ID with no foreign key to dispatch_jobs.
-//
-// There is NO backstop behind this call. SQLiteStore.pruneDurabilityRows was
-// one -- it ran on every queue save and removed rows whose job was in neither
-// the queue nor history-as-FAILED -- and it went with internal/queue in
-// b6651d43 with nothing replacing it, so a row this path fails to remove
-// survives for the life of the installation. Tracked as #549.
+// Its rows and manifest go through reclaim, which keeps a FAILED entry's
+// durable_runs for a retry the way every departure does.
 func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID string) bool {
 	// With no history database there is no history, so "not in history" is
 	// knowledge rather than doubt and false is the right answer. The check
@@ -1346,9 +1332,7 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 		// second time.
 		//
 		// True on doubt costs one startup: the job is skipped, its manifest
-		// and rows are untouched, and the next startup asks again. That is the
-		// same trade jobFinalizer.persistAndCommit makes when its own history
-		// lookup fails -- "preserving durability rows on doubt" (job_finalizer.go).
+		// and rows are untouched, and the next startup asks again.
 		if !errors.Is(err, history.ErrNotFound) {
 			app.log.Error("history lookup failed; skipping this job's reconciliation "+
 				"rather than risk finalizing one that is already filed",
@@ -1359,12 +1343,9 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 	}
 	app.log.Info("found job already in history but still in queue, removing",
 		"job", jobID, "status", entry.Status)
-	// #376's ordering, which RemoveJob has had since then and this path did
-	// not: the step that CAN fail runs before the steps that cannot be undone.
-	// A failed Remove leaves the queue row in place, so deleting the manifest
-	// and the durability rows anyway produces a row that has outlived its own
-	// state -- and the next startup, which would otherwise reconcile it
-	// cleanly, arrives to find nothing left to reconcile with.
+	// A failed Remove leaves the queue row in place, and the reclaim below
+	// then keeps the manifest and every row: the dispatcher still holds the
+	// job and the rule sees its row (#376). The next startup reconciles it.
 	//
 	// Returns TRUE rather than false, and the difference is not cosmetic. The
 	// caller reads false as "not handled" and falls through to the state check
@@ -1389,140 +1370,98 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 			app.log.Error("failed to remove duplicate job from dispatcher; leaving its "+
 				"manifest and durability rows for the next startup to reconcile",
 				"job", jobID, "err", rmErr)
-			return true
 		}
-	}
-	if manifestErr := removeManifestIn(manifestDir(app.config.GetGeneral().AdminDir), jobID); manifestErr != nil && !os.IsNotExist(manifestErr) {
-		app.log.Debug("could not unlink manifest for duplicate job", "job", jobID, "err", manifestErr)
-	}
-	if entry != nil && entry.Status == string(constants.StatusFailed) {
-		return true
 	}
 	// Detached, for the reason RemoveJob's own cleanup is: the queue row is
 	// already gone, so a cancellation landing here strands the rows with
-	// nothing to reclaim them. ctx is the startup context, which ends on
-	// SIGINT and on the startup deadline, and reconciling a crashed job is
-	// exactly the work a restart-interrupted-by-a-restart would abandon.
+	// nothing to reclaim them until the next start. ctx is the startup
+	// context, which ends on SIGINT and on the startup deadline.
 	//
 	// The two steps above are NOT detached, and the asymmetry is the point.
-	// The history Get and dispatcher.Remove are allowed to fail because both
-	// return early on failure, before anything is destroyed, and the next
-	// startup reconciles the job again. Past a SUCCESSFUL dispatcher.Remove
-	// there is no next time, which is why this one is detached instead.
+	// The history Get and dispatcher.Remove are allowed to fail because a
+	// failure destroys nothing, and the next startup reconciles the job
+	// again. Past a SUCCESSFUL dispatcher.Remove there is no next time, which
+	// is why this one is detached instead.
 	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	app.deleteJobDurability(delCtx, jobID)
+	app.reclaim(delCtx, jobID)
 	delCancel()
 	return true
 }
 
-// deleteJobDurability drops a DEPARTED job's per-file progress, durable runs
-// and failed-article rows, logging a failure rather than reporting it.
+// reclaim applies durability's reclaim rule to the named jobs, then unlinks
+// the manifest of each one the dispatcher no longer holds. Call it after the
+// state change a departure depends on: the rule reads the queue and history as
+// they are, so it cannot reclaim a job something still reaches, and calling it
+// after a departure that failed or was made by someone else is harmless.
 //
-// Three tables, not two: job_files here, and durable_runs and failed_articles
-// through dropJobDurability below. All three are keyed by job ID with no
-// foreign key to dispatch_jobs, so nothing removes them implicitly, and
-// nothing sweeps what escapes this call. The backstop that used to --
-// SQLiteStore.pruneDurabilityRows -- went with internal/queue in b6651d43 and
-// has no replacement (#549), so the crash window between a job leaving
-// dispatch_jobs and this running strands rows permanently.
+// Logged, not returned. Every caller has either already departed, with no one
+// left to tell, or is already returning the error that matters. A failure
+// leaves rows and manifests for the startup sweep (sweepOrphans).
 //
-// job_files is the narrowest of the three. Grepping the Go sources for a
-// DELETE against that table finds one statement, in
-// durability.Store.DiscardFileRows, and the one production call of that method
-// is the one below, so a row that escapes here has no second deleter of any
-// kind. (Deliberately not
-// quoted as a backticked command: a comment containing the searched-for SQL
-// matches its own search, and this one used to inflate both its own count and
-// the job_files enumeration in 001_initial.sql.)
-// history.Repository.delete cleans up
-// history_job_files, durable_runs and failed_articles when an entry goes, and
-// job_files is not on that list -- which is why a FAILED job, whose job_files
-// rows jobFinalizer.persistAndCommit deliberately keeps, has no path that
-// ever removes them
-// short of a retry putting it back in the queue. Tracked in #560.
-//
-// Swallowing the error is right HERE and wrong for a retry, which is why the
-// two are separate entry points. They are no longer the same deletion over one
-// implementation either, and the difference is job_files: this drops all three
-// tables, dropJobDurability drops the two a retry needs cleared and leaves
-// job_files alone. That sparing is safe rather than load-bearing --
-// RetryHistoryJob re-seeds with INSERT ... ON CONFLICT DO NOTHING, so a
-// surviving row is undisturbed and a missing one is replaced. The retained
-// PROGRESS a retry applies comes from history_job_files, read by
-// historyFileProgress and applied through RestoreFileMeta; job_files is not
-// read on that path at all. For a departed job
-// the rows are garbage and there is no caller left to tell -- but note what
-// that costs while no backstop exists: the disk they occupy is not reclaimed
-// later, it is not reclaimed at all. A retry is the opposite case -- see
-// dropJobDurability.
-func (app *Application) deleteJobDurability(ctx context.Context, jobID string) {
-	var errs []error
+// ctx is the caller's, and should be detached and bounded: past a departure,
+// nothing retries this call before the next startup.
+func (app *Application) reclaim(ctx context.Context, id string, more ...string) {
 	if app.durable != nil {
-		// Reported rather than discarded, for the reason stated above: with no
-		// sweep behind this call, a failure here is the moment the rows become
-		// permanent, and `_, _ =` made that the one deletion of the three that
-		// could fail without leaving any trace at all.
-		if err := app.durable.DiscardFileRows(ctx, jobID); err != nil {
-			errs = append(errs, fmt.Errorf("job files: %w", err))
+		if err := app.durable.Reclaim(ctx, id, more...); err != nil {
+			app.log.Warn("could not reclaim a departed job's rows; the next startup's sweep will",
+				"job", id, "more", len(more), "err", err)
 		}
 	}
-	// Attempted even if job_files failed, and both failures reported together
-	// -- the same rule dropJobDurability applies to its own two tables, for
-	// the same reason: removing two of the three is still progress.
-	if err := app.dropJobDurability(ctx, jobID); err != nil {
-		errs = append(errs, err)
-	}
-	if err := errors.Join(errs...); err != nil {
-		app.log.Warn("delete durability rows for a departed job", "job", jobID, "err", err)
+	app.unlinkDepartedManifests(append([]string{id}, more...))
+}
+
+// unlinkDepartedManifests unlinks the manifest of each named job the dispatcher
+// no longer holds, which is the disk half of the rule: a manifest's lifetime is
+// exactly its queue row's.
+func (app *Application) unlinkDepartedManifests(ids []string) {
+	dir := manifestDir(app.config.GetGeneral().AdminDir)
+	for _, jobID := range ids {
+		if app.dispatcher != nil {
+			if _, held := app.dispatcher.Job(jobID); held {
+				continue
+			}
+		}
+		if err := removeManifestIn(dir, jobID); err != nil && !os.IsNotExist(err) {
+			app.log.Warn("could not unlink a departed job's manifest", "job", jobID, "err", err)
+		}
 	}
 }
 
-// dropJobDurability is the two-table half of that deletion -- durable_runs and
-// failed_articles, never job_files, which RetryHistoryJob re-seeds instead --
-// for a job that is coming BACK, where a failure must stop the caller.
+// sweepOrphans reclaims what every missed or crash-interrupted departure left:
+// the rows of every unreachable job, and the manifest of every job the
+// dispatcher does not hold.
 //
-// RetryHistoryJob calls this when the re-parsed manifest changed shape, so the
-// retained rows describe articles that are no longer at those indices. They are
-// not garbage there -- they are about to be read, and a stale row bounds
-// FinalizeFile's truncate, which silently destroys the part of the partial file
-// beyond it (#422). That is the exact harm this PR exists to prevent, so a
-// cleanup that fails must abort the retry rather than proceed without it.
-//
-// No backstop covers that case, and none would even if one existed. The
-// deleted sweep deliberately skipped any job_id still present in the queue,
-// and a retry is re-added to dispatch_jobs moments later -- so a row that
-// survives this call survives for the life of the job. That is why the
-// deletion is fatal here and merely logged for a departed job.
-//
-// Both deletions are attempted even if the first fails, and both errors are
-// joined: removing one of the two tables is still progress, and a caller
-// deciding whether to abort is better served by the whole picture than by
-// whichever failure came first.
-//
-// Both tables belong to durability.Store, one discard each. Deleting run rows
-// here does not weaken the barrier's exclusive-writer bound, which is on
-// CONTENT: nothing outside the barrier can make the record assert bytes an
-// fsync did not cover, and a delete only takes a claim away. internal/durability's
-// package doc lists every deleter of durable_runs.
-func (app *Application) dropJobDurability(ctx context.Context, jobID string) error {
-	if app.durable == nil {
-		return nil
+// Startup only, after the dispatcher has restored the queue and before
+// anything can call Admit (durability.Store.SweepOrphans says why).
+func (app *Application) sweepOrphans(ctx context.Context) {
+	if app.durable != nil {
+		if err := app.durable.SweepOrphans(ctx); err != nil {
+			app.log.Warn("startup sweep of unreachable durability rows failed", "err", err)
+		}
 	}
-	var errs []error
-	if err := app.durable.DiscardRuns(ctx, jobID); err != nil {
-		errs = append(errs, fmt.Errorf("durable runs: %w", err))
+	entries, err := os.ReadDir(manifestDir(app.config.GetGeneral().AdminDir))
+	if err != nil {
+		if !os.IsNotExist(err) {
+			app.log.Warn("startup sweep could not list the manifests", "err", err)
+		}
+		return
 	}
-	if err := app.durable.DiscardFailedArticles(ctx, jobID); err != nil {
-		errs = append(errs, fmt.Errorf("failed articles: %w", err))
+	var ids []string
+	for _, e := range entries {
+		if jobID, ok := strings.CutSuffix(e.Name(), manifestSuffix); ok && !e.IsDir() {
+			ids = append(ids, jobID)
+		}
 	}
-	return errors.Join(errs...)
+	// The manifests only. SweepOrphans above already applied the rule to every
+	// job in the database, so reclaiming these ids again would delete nothing.
+	app.unlinkDepartedManifests(ids)
 }
 
 var _ durability.Stallable = (*Application)(nil)
 
 // durabilityStore is what Application calls on durability.Store: reads of the
-// run record, the job_files seed, and the per-table discards the departure and
-// retry paths are built from. It is declared here, at its consumer, so a test
+// run record, the job_files seed, the reclaim rule the departure paths are
+// built from, and the retry's own discard of stale runs. It is declared here, at its consumer, so a test
 // can substitute a store that fails or records.
 //
 // It has no method that writes run content, and cannot gain one: the store's
@@ -1532,8 +1471,8 @@ type durabilityStore interface {
 	ForFile(ctx context.Context, jobID string, fileIdx int32) ([]durability.Run, error)
 	Admit(ctx context.Context, jobID string, fetch []uint8) error
 	DiscardRuns(ctx context.Context, jobID string) error
-	DiscardFileRows(ctx context.Context, jobID string) error
-	DiscardFailedArticles(ctx context.Context, jobID string) error
+	Reclaim(ctx context.Context, id string, more ...string) error
+	SweepOrphans(ctx context.Context) error
 }
 
 var _ durabilityStore = (*durability.Store)(nil)

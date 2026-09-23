@@ -4,13 +4,13 @@ run TestStore_|TestBarrier_CommitWrapCanFailOrObserveTheCommit
 [an exported Commit reappears on Store]
 file internal/durability/progress.go
 --- anchor
-// DiscardFileRows deletes a job's job_files rows.
+// FileRow is one job_files row: a file's persisted download progress.
 --- replace
 func (s *Store) Commit(ctx context.Context, jobID string, arts []DurableArticle) ([]Collision, error) {
 	return s.commit(ctx, jobID, arts)
 }
 
-// DiscardFileRows deletes a job's job_files rows.
+// FileRow is one job_files row: a file's persisted download progress.
 --- end
 
 [Admit overwrites a row that already exists]
@@ -53,22 +53,6 @@ file internal/durability/progress.go
 			return out, fmt.Errorf("durability: scan failed_articles %s: %w: %w", jobID, ErrIncomplete, err)
 --- replace
 			return out, fmt.Errorf("durability: scan failed_articles %s: %w", jobID, err)
---- end
-
-[DiscardFileRows is not scoped to its job]
-file internal/durability/progress.go
---- anchor
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM job_files WHERE job_id = ?`, jobID); err != nil {
---- replace
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM job_files WHERE ? IS NOT NULL`, jobID); err != nil {
---- end
-
-[DiscardFailedArticles is not scoped to its job]
-file internal/durability/progress.go
---- anchor
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM failed_articles WHERE job_id = ?`, jobID); err != nil {
---- replace
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM failed_articles WHERE ? IS NOT NULL`, jobID); err != nil {
 --- end
 
 [a failed query claims to be a partial read]

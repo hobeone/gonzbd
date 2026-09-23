@@ -298,36 +298,18 @@ func (r *Repository) Count(ctx context.Context, opts SearchOptions) (int, error)
 	return count, nil
 }
 
-// Delete removes the entries identified by nzoIDs, and with them everything
-// the entry owned: its retained per-file progress and its durability rows. It
-// returns the number of rows actually deleted (IDs not present in the database
-// are silently ignored). When multiple IDs are supplied the deletion is atomic.
-// Large batches are chunked to stay under SQLite's SQLITE_MAX_VARIABLE_NUMBER
-// limit.
+// Delete removes the entries identified by nzoIDs, and with them their
+// retained per-file progress, in one transaction. It returns the number of
+// rows actually deleted (IDs not present in the database are silently
+// ignored). Large batches are chunked to stay under SQLite's
+// SQLITE_MAX_VARIABLE_NUMBER limit.
 //
-// Use DeleteKeepingDurability when the job is going back into the queue.
+// A job's durability rows are not this package's. Of the two callers
+// (`git grep -n 'historyRepo.Delete(' -- 'internal/app/*.go' ':!*_test.go'`
+// returns 2 lines), deleteHistoryEntries reclaims them through durability.Store.Reclaim
+// once the entry is gone, and RetryHistoryJob deliberately does not: it has
+// just put the job back in the queue, which is what the rule reads.
 func (r *Repository) Delete(ctx context.Context, nzoIDs ...string) (int, error) {
-	return r.delete(ctx, true, nzoIDs...)
-}
-
-// DeleteKeepingDurability removes the entries but leaves durable_runs and
-// failed_articles in place.
-//
-// It exists for exactly one caller: a retry, which re-enqueues the job under
-// the SAME ID. Those rows are what bound the retry's truncate to the whole
-// partial file rather than to the handful of articles it re-fetches, and
-// deleting them is #422 — the retention job_finalizer.go maintains, destroyed
-// by the one path that was supposed to consume it.
-//
-// It is a separate method rather than a bool on Delete because every other
-// caller is deleting an entry that is GONE, and for those the rows must go
-// too or they accumulate one set per download ever performed. A bool would
-// put that decision at each call site; a name puts it in the type.
-func (r *Repository) DeleteKeepingDurability(ctx context.Context, nzoIDs ...string) (int, error) {
-	return r.delete(ctx, false, nzoIDs...)
-}
-
-func (r *Repository) delete(ctx context.Context, dropDurability bool, nzoIDs ...string) (int, error) {
 	if len(nzoIDs) == 0 {
 		return 0, nil
 	}
@@ -362,47 +344,6 @@ func (r *Repository) delete(ctx context.Context, dropDurability bool, nzoIDs ...
 		if _, err := tx.ExecContext(ctx,
 			"DELETE FROM history_job_files WHERE job_id IN ("+placeholders+")", args...); err != nil { //nolint:gosec // placeholders is only "?,?,?" — no user data
 			return 0, fmt.Errorf("history: delete retained job files: %w", err)
-		}
-
-		// A failed job's durable runs are retained so a retry can bound its
-		// truncate to the whole partial file rather than to the articles it
-		// re-fetched. Ownership passes to the history entry
-		// while the job sits there, and they share its lack of a foreign key
-		// to cascade from, so an entry that is going away for good takes them
-		// with it — every such deletion path gets the cleanup without having
-		// to remember it.
-		//
-		// Ownership passes BACK to the job when it re-enters the queue, which
-		// is why this is conditional and why DeleteKeepingDurability exists.
-		//
-		// That is what the conditional protects, for BOTH tables, and it is
-		// about ORDERING rather than about preserving any verdict: the retry
-		// path calls app.dispatcher.Add and only then deletes the history entry
-		// (app.go:2216 and :2221), so an unconditional delete here would drop
-		// rows the re-enqueued job already owns. Do not read the retention as
-		// "a retry keeps what already failed" — it does not.
-		// RetryHistoryJob clears failed_articles BEFORE that Add
-		// (app.go:2178-2181), because those rows record a decision not to fetch
-		// and a retry exists to revisit it. A reader who inverts this reinstates
-		// #422's sibling defect.
-		//
-		// An earlier version deleted unconditionally and justified it with
-		// "a completed job's rows are already gone, so this deletes nothing
-		// for it" — true of the completed case and silent about the failed
-		// one, which is the only case the retention was for. The retry called
-		// straight through here and destroyed the rows it needed (#422).
-		//
-		// Still unconditional on STATUS within this branch: a completed job's
-		// rows are already gone, so making status explicit here would mean
-		// this cleanup and the one that wrote them had to agree about it
-		// forever.
-		if dropDurability {
-			for _, table := range []string{"durable_runs", "failed_articles"} {
-				if _, err := tx.ExecContext(ctx,
-					"DELETE FROM "+table+" WHERE job_id IN ("+placeholders+")", args...); err != nil { //nolint:gosec // table is a literal from the slice above; placeholders is only "?,?,?"
-					return 0, fmt.Errorf("history: delete retained durability rows from %s: %w", table, err)
-				}
-			}
 		}
 
 		res, err := tx.ExecContext(ctx,

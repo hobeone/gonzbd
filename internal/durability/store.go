@@ -428,9 +428,9 @@ func (s *Store) deleteFile(ctx context.Context, jobID string, fileIdx int32) err
 	return nil
 }
 
-// DiscardRuns deletes a job's durable_runs rows and no others. Each table has
-// its own discard, and the callers in internal/app choose which of them a
-// departure or a retry needs.
+// DiscardRuns deletes a job's durable_runs rows and no others. It is the
+// retry's, for a manifest whose shape changed: a departure takes no table of
+// its own, but Reclaim, which decides all three by one rule.
 func (s *Store) DiscardRuns(ctx context.Context, jobID string) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM durable_runs WHERE job_id = ?`, jobID); err != nil {
 		return fmt.Errorf("durability: delete runs job=%s: %w", jobID, err)

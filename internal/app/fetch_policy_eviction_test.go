@@ -65,10 +65,9 @@ func recoveryFileIndexIn(t *testing.T, m *job.Manifest) int {
 	return idx
 }
 
-// seedJobFilesRowIn inserts a job_files row directly, standing in for the row
-// a previously FAILED attempt left behind — job_finalizer.go's
-// shouldDeleteDurability keeps job_files for a failed job rather than
-// deleting it, so this is the state a retry actually finds on disk.
+// seedJobFilesRowIn inserts a job_files row directly, standing in for a row a
+// failed job's reclaim did not take — a reclaim that failed, or a checkpoint
+// flush that wrote after it. The retry reclaims such rows before it seeds.
 func seedJobFilesRowIn(t *testing.T, db *sql.DB, jobID string, fileIndex int, complete bool, fetch job.FetchPolicy) {
 	t.Helper()
 	c := 0

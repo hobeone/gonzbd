@@ -431,15 +431,15 @@ func TestStore_DeleteFailureMidBatchRollsBack(t *testing.T) {
 // row this table has.
 func TestStore_NoExportedMethodWritesRunContent(t *testing.T) {
 	durableRuns := map[string]string{
-		"ForFile":               "reads",
-		"ForJob":                "reads",
-		"DiscardRuns":           "deletes",
-		"Admit":                 "untouched",
-		"SaveProgress":          "untouched",
-		"FileRows":              "untouched",
-		"FailedArticles":        "untouched",
-		"DiscardFileRows":       "untouched",
-		"DiscardFailedArticles": "untouched",
+		"ForFile":        "reads",
+		"ForJob":         "reads",
+		"DiscardRuns":    "deletes",
+		"Reclaim":        "deletes",
+		"SweepOrphans":   "deletes",
+		"Admit":          "untouched",
+		"SaveProgress":   "untouched",
+		"FileRows":       "untouched",
+		"FailedArticles": "untouched",
 	}
 	st := reflect.TypeFor[*Store]()
 	seen := map[string]bool{}

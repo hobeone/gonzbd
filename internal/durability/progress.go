@@ -194,19 +194,3 @@ func (s *Store) FailedArticles(ctx context.Context, jobID string) ([]int32, erro
 	}
 	return out, nil
 }
-
-// DiscardFileRows deletes a job's job_files rows.
-func (s *Store) DiscardFileRows(ctx context.Context, jobID string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM job_files WHERE job_id = ?`, jobID); err != nil {
-		return fmt.Errorf("durability: delete job_files %s: %w", jobID, err)
-	}
-	return nil
-}
-
-// DiscardFailedArticles deletes a job's failed_articles rows.
-func (s *Store) DiscardFailedArticles(ctx context.Context, jobID string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM failed_articles WHERE job_id = ?`, jobID); err != nil {
-		return fmt.Errorf("durability: delete failed_articles %s: %w", jobID, err)
-	}
-	return nil
-}

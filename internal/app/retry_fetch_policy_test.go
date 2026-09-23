@@ -58,10 +58,9 @@ func recoveryFileIndex(t *testing.T, m *job.Manifest) int {
 	return idx
 }
 
-// seedJobFilesRow inserts a job_files row directly, standing in for the row
-// a previously FAILED attempt left behind: job_finalizer.go's
-// shouldDeleteDurability keeps job_files for a failed job rather than
-// deleting it, so this is the state a retry actually finds on disk.
+// seedJobFilesRow inserts a job_files row directly, standing in for a row a
+// failed job's reclaim did not take — a reclaim that failed, or a checkpoint
+// flush that wrote after it. The retry reclaims such rows before it seeds.
 func seedJobFilesRow(t *testing.T, db *sql.DB, jobID string, fileIndex int, complete bool, fetch job.FetchPolicy) {
 	t.Helper()
 	c := 0
@@ -209,6 +208,57 @@ func TestRetryHistoryJob_PriorRulingDoesNotSurvive(t *testing.T) {
 		t.Errorf("FileFetchPolicy(%d) = %v after retry, want FetchIfNeeded — the job_files row's "+
 			"retained FetchAlways (a damage-release verdict against the failed attempt's contents) "+
 			"survived into the retry instead of being re-derived", idx, got)
+	}
+}
+
+// TestRetryHistoryJob_ResumesCompletedFilesFromRetainedProgress pins where a
+// retry's file progress comes from. A failed job's job_files rows are
+// reclaimed when it leaves the queue, so the retry must resume from
+// history_job_files alone — and persist it, or the next eviction re-hydrates
+// the file from a freshly seeded row as incomplete and re-fetches it.
+func TestRetryHistoryJob_ResumesCompletedFilesFromRetainedProgress(t *testing.T) {
+	t.Parallel()
+	application, repo, adminDir := newRetryTestApp(t)
+
+	writeGzNZB(t, adminDir, "resumes.nzb.gz", retryNZBWithRecoveryVolume(2, 1))
+
+	const id = "retryresumes0001"
+	if err := repo.Add(t.Context(), history.Entry{
+		NzoID:     id,
+		Name:      "resumes",
+		NzbName:   "resumes.nzb",
+		NZBBackup: "resumes.nzb.gz",
+		Status:    string(constants.StatusFailed),
+	}); err != nil {
+		t.Fatalf("repo.Add: %v", err)
+	}
+	seedHistoryJobFilesRow(t, repo.DB(), id, 0, false, 2, job.FetchAlways)
+	seedHistoryJobFilesRow(t, repo.DB(), id, 1, true, 1, job.FetchAlways)
+
+	if err := application.RetryHistoryJob(t.Context(), id); err != nil {
+		t.Fatalf("RetryHistoryJob: %v", err)
+	}
+
+	j, ok := application.Dispatcher().Job(id)
+	if !ok {
+		t.Fatal("retried job is not in the queue")
+	}
+	m, err := j.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+	idx := recoveryFileIndex(t, m)
+	if !j.Progress().FileComplete(idx) {
+		t.Errorf("FileComplete(%d) = false after retry, want true", idx)
+	}
+	var complete int
+	if err := repo.DB().QueryRowContext(t.Context(),
+		`SELECT complete FROM job_files WHERE job_id = ? AND file_index = ?`, id, idx).Scan(&complete); err != nil {
+		t.Fatalf("read job_files: %v", err)
+	}
+	if complete != 1 {
+		t.Errorf("job_files.complete = %d for file %d after retry, want 1 — the next hydration "+
+			"would restore it as incomplete and re-fetch a file already on disk", complete, idx)
 	}
 }
 

@@ -30,12 +30,9 @@ import (
 // them and otherwise reads.
 //
 // The bound is on content, not on the table. Rows are DELETED from three places
-// outside commit's own merge — Resumer, Store.DiscardRuns and
-// history.Repository.delete — and none of them can make a row claim anything,
-// which is why the narrower statement is the one the trust argument needs.
-// (It was five until b6651d43 deleted internal/queue, taking
-// SQLiteStore.removeCorrupt and the pruneDurabilityRows backstop with it; see
-// docs/durability-contract.md §6 for the gap that left.)
+// outside commit's own merge — Resumer, Store.DiscardRuns and the reclaim rule
+// (doc.go lists them) — and none of them can make a row claim anything, which
+// is why the narrower statement is the one the trust argument needs.
 //
 // The queue's seeding entry points, which used to take a fully exported
 // FileExtent and reach markDone with no barrier and no proof, are gone with the
@@ -162,10 +159,9 @@ func (b *Barrier) admit(jobID string, cands []PostAnomaly) []PostAnomaly {
 //
 // Called when a job re-enters the queue under an ID it has already used — a
 // retry reuses the job ID, and its durable runs are usually retained across it:
-// job_finalizer declines to delete them for a FAILED job, and RetryHistoryJob
-// uses DeleteKeepingDurability. They are dropped deliberately when the
-// re-parsed manifest changes shape, because a run names articles by art_idx
-// and a renumbering makes it describe other articles.
+// the reclaim rule keeps them for a FAILED history entry. They are dropped
+// deliberately when the re-parsed manifest changes shape, because a run names
+// articles by art_idx and a renumbering makes it describe other articles.
 //
 // Without this the retried job's overlaps match the latch from the previous
 // attempt and are dropped, silencing the warning permanently rather than once.
