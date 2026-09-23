@@ -49,7 +49,11 @@ func TestRemoveJob_WaitsForACheckpointThatIsWritingTheJob(t *testing.T) {
 	case err := <-removed:
 		t.Fatalf("RemoveJob returned (%v) while a checkpoint was still writing this job; "+
 			"its reclaim deletes rows the in-flight batch is about to re-insert", err)
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(100 * time.Millisecond):
+		// Enough by five orders of magnitude: without the wait RemoveJob
+		// returns in microseconds. Kept short because this test holds a real
+		// flush blocked, and internal/app is full of wall-clock tests that a
+		// -count=N run puts in parallel with it.
 	}
 
 	close(st.release)
