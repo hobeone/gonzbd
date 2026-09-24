@@ -37,9 +37,14 @@ type Checkpointer struct {
 	dirty    map[string]*job.Job
 	inFlight map[string]*job.Job
 	// flushDone is non-nil exactly while a flush holds a batch, and is closed
-	// when that flush's write has returned. It is set and read under mu with
-	// inFlight, so a job found in flight always yields its own flush's channel.
+	// when that flush's write has returned. flushing is that flush's batch.
+	//
+	// Both are written only by Flush, which is what makes a second Prune of
+	// one job correct: inFlight answers "may a failing flush re-merge this?"
+	// and Prune clears it, so it cannot also answer "is a flush writing this?"
+	// for a caller that arrives while another Prune is already waiting.
 	flushDone chan struct{}
+	flushing  map[string]*job.Job
 }
 
 // New constructs a Checkpointer. every is the batch cadence.
@@ -82,10 +87,9 @@ func (c *Checkpointer) Mark(j *job.Job) {
 func (c *Checkpointer) Prune(id string) {
 	c.mu.Lock()
 	delete(c.dirty, id)
-	_, carried := c.inFlight[id]
 	delete(c.inFlight, id)
 	var done chan struct{}
-	if carried {
+	if _, carried := c.flushing[id]; carried {
 		done = c.flushDone
 	}
 	c.mu.Unlock()
@@ -122,10 +126,12 @@ func (c *Checkpointer) Flush(ctx context.Context) error {
 	maps.Copy(c.inFlight, batch)
 	done := make(chan struct{})
 	c.flushDone = done
+	c.flushing = batch
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		c.flushDone = nil
+		c.flushing = nil
 		c.mu.Unlock()
 		close(done)
 	}()

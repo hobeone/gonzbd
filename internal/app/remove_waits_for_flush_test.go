@@ -35,6 +35,11 @@ func TestRemoveJob_WaitsForACheckpointThatIsWritingTheJob(t *testing.T) {
 	t.Parallel()
 	application, j := newDurabilityTestApp(t, 1, 2)
 	st := &heldSaveBatchStore{entered: make(chan struct{}), release: make(chan struct{})}
+	// Registered before the assertions below, which end the test through
+	// runtime.Goexit: without it a t.Fatal leaves the flush goroutine blocked
+	// in SaveBatch for the rest of the run.
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(st.release) }) })
 	application.checkpointer = checkpoint.New(st, time.Hour, application.log)
 	application.checkpointer.Mark(j)
 
@@ -56,7 +61,7 @@ func TestRemoveJob_WaitsForACheckpointThatIsWritingTheJob(t *testing.T) {
 		// -count=N run puts in parallel with it.
 	}
 
-	close(st.release)
+	release.Do(func() { close(st.release) })
 	if err := <-removed; err != nil {
 		t.Errorf("RemoveJob: %v", err)
 	}

@@ -79,6 +79,8 @@ func (s *w2Store) SaveBatch(_ context.Context, cps []job.Checkpoint) error {
 // and asserts the retried run inherits nothing.
 func TestCheckpointer_W2_RetryDoesNotInheritStaleMarks(t *testing.T) {
 	st := newW2Store()
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(st.releaseBatch) }) })
 	c := New(st, time.Hour, nil)
 
 	// Initial run: admit job "a" and mark it dirty.
@@ -112,7 +114,7 @@ func TestCheckpointer_W2_RetryDoesNotInheritStaleMarks(t *testing.T) {
 	}
 
 	// Release SaveBatch.
-	close(st.releaseBatch)
+	release.Do(func() { close(st.releaseBatch) })
 
 	select {
 	case <-departureAndRetryDone:
