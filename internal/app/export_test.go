@@ -15,6 +15,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/postproc"
 )
 
@@ -261,4 +262,19 @@ func (a *Application) SetShutdownStepTimeout(d time.Duration) {
 func CommitRuns(t *testing.T, st *durability.Store, jobID string, arts []durability.DurableArticle) []durability.Collision {
 	t.Helper()
 	return commitRuns(t, st, jobID, arts)
+}
+
+// WriteJobManifest persists a job's manifest the way AddJob does.
+//
+// A test that puts a job in through Dispatcher().Add bypasses AddJob, and so
+// bypasses this write — see writeJobManifest's doc for what the next tick then
+// does to the job.
+func WriteJobManifest(adminDir string, j *job.Job) error {
+	return writeJobManifest(adminDir, j)
+}
+
+// ManifestPath is manifestPath for the external test package, so a test can
+// name the file without repeating the layout manifestpath.go owns.
+func ManifestPath(adminDir, jobID string) (string, error) {
+	return manifestPath(adminDir, jobID)
 }

@@ -755,22 +755,8 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		}
 	}
 
-	mdir := manifestDir(adminDir)
-	if err := os.MkdirAll(mdir, 0o750); err != nil {
-		return fmt.Errorf("app: mkdir manifests: %w", err)
-	}
-	if m, err := j.Manifest(); err == nil && m != nil {
-		data, mErr := json.Marshal(m)
-		if mErr != nil {
-			return fmt.Errorf("app: marshal manifest: %w", mErr)
-		}
-		mpath, pErr := manifestPath(adminDir, j.ID())
-		if pErr != nil {
-			return fmt.Errorf("app: write manifest: %w", pErr)
-		}
-		if err := fsutil.WriteGzAtomicBytes(mpath, data); err != nil {
-			return fmt.Errorf("app: write manifest: %w", err)
-		}
+	if err := writeJobManifest(adminDir, j); err != nil {
+		return fmt.Errorf("app: %w", err)
 	}
 
 	// Seed before handing the job to the dispatcher, the same order
