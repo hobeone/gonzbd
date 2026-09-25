@@ -70,6 +70,7 @@ func (s *lateCloseTarget) Confirm(_ context.Context, idx int32) {
 // handle can be noticed — phase 3's own Stat rather than phase 1's Drain or
 // phase 2's Sync.
 func TestBarrier_ACloseAfterTheDrainDropsOnlyThatFile(t *testing.T) {
+	t.Parallel()
 	for _, closeAt := range []string{"sync", "stat"} {
 		t.Run("closed at "+closeAt, func(t *testing.T) {
 			stall := &recordingStall{}
@@ -183,6 +184,7 @@ func (s *finalizeCloseTarget) Confirm(context.Context, int32) {}
 // pinning one says nothing about the others — which is exactly how three of
 // the four came to be missing.
 func TestFinalizeFile_HonoursTheCloseSentinelAtEveryStep(t *testing.T) {
+	t.Parallel()
 	for _, closeOn := range []string{"sync", "stat", "truncate"} {
 		t.Run("closed on "+closeOn, func(t *testing.T) {
 			stall := &recordingStall{}
@@ -228,6 +230,7 @@ func TestFinalizeFile_HonoursTheCloseSentinelAtEveryStep(t *testing.T) {
 // thing that let a fault escape. The SyncTarget boundary now mints its own,
 // and one of those read as already-handled was silently swallowed.
 func TestBarrier_ARoutedFaultSaysSo(t *testing.T) {
+	t.Parallel()
 	stall := &recordingStall{}
 	db := openTestDB(t)
 	b := NewBarrier(NewStore(db),

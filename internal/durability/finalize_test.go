@@ -59,6 +59,7 @@ func (s *truncTarget) Confirm(_ context.Context, idx int32) { s.confirmed = appe
 // A run record spans a hole with no special case: the hole is simply a gap
 // between two rows, and the maximum is taken over both.
 func TestFinalizeFile_TruncatesToTheHighestRecordedEnd(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -100,6 +101,7 @@ func TestFinalizeFile_TruncatesToTheHighestRecordedEnd(t *testing.T) {
 // declining to shrink is always the safe direction; leaving pre-allocation's
 // zeros is a visible, repairable cost.
 func TestFinalizeFile_NothingRecordedDoesNotTruncate(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 	tgt := &truncTarget{}
@@ -150,6 +152,7 @@ func (s *faultyTruncTarget) Truncate(ctx context.Context, idx int32, bound int64
 // It also pins that a fault records nothing: R7 requires a failed barrier to
 // leave the stored runs wholly intact.
 func TestFinalizeFile_StorageFaultsStallRatherThanFailArticles(t *testing.T) {
+	t.Parallel()
 	drained := []WrittenArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x11}}
 
 	for _, tc := range []struct {

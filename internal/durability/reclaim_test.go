@@ -91,6 +91,7 @@ func assertReclaimed(t *testing.T, db *sql.DB, via string) {
 // this is what shows it. The columns are perJobTables itself, so a table added
 // there is checked here with no change to this test.
 func TestReclaim_AppliesTheRuleToEveryState(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("SweepOrphans", func(t *testing.T) {
@@ -116,6 +117,7 @@ func TestReclaim_AppliesTheRuleToEveryState(t *testing.T) {
 // TestReclaim_TouchesOnlyTheNamedJobs pins the filter: reclaiming one
 // unreachable job leaves another unreachable job's rows alone.
 func TestReclaim_TouchesOnlyTheNamedJobs(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := seedReclaimStates(t)
 	if err := NewStore(db).Reclaim(ctx, "neither"); err != nil {
@@ -132,6 +134,7 @@ func TestReclaim_TouchesOnlyTheNamedJobs(t *testing.T) {
 // dispatch_jobs (the column is a TEXT primary key, which SQLite lets be NULL)
 // makes every NOT IN false, so the rule would reclaim nothing.
 func TestReclaim_IgnoresANullQueueID(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := seedReclaimStates(t)
 	if _, err := db.Exec(`INSERT INTO dispatch_jobs (id, sort_key, name) VALUES (NULL, 0, 'null')`); err != nil {
@@ -146,6 +149,7 @@ func TestReclaim_IgnoresANullQueueID(t *testing.T) {
 // TestReclaim_ReportsAClosedDatabase covers both entry points' failure path:
 // a departure that could not reclaim must be able to say so.
 func TestReclaim_ReportsAClosedDatabase(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := closedStore(t)
 	if err := st.Reclaim(ctx, "j"); err == nil {
@@ -160,6 +164,7 @@ func TestReclaim_ReportsAClosedDatabase(t *testing.T) {
 // table keyed by job_id that the reclaim rule does not cover. history_job_files
 // is the one exception: internal/history owns it and deletes it with its entry.
 func TestPerJobTables_CoversEveryJobKeyedTable(t *testing.T) {
+	t.Parallel()
 	db := openTestDB(t)
 	rows, err := db.Query(`
 		SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) c
@@ -196,6 +201,7 @@ func TestPerJobTables_CoversEveryJobKeyedTable(t *testing.T) {
 // for every table, Reclaim's statement is SweepOrphans' with the id filter
 // appended, and its arguments are SweepOrphans' with the ids appended.
 func TestRuleStatement_TheFilterIsTheOnlyDifference(t *testing.T) {
+	t.Parallel()
 	ids := []string{"a", "b"}
 	for _, table := range perJobTables {
 		sweep, reclaim := ruleStatement(table, 0), ruleStatement(table, len(ids))
@@ -224,6 +230,7 @@ func TestRuleStatement_TheFilterIsTheOnlyDifference(t *testing.T) {
 // SQLite's host-parameter limit: more ids than one statement may name, in one
 // transaction, and every unreachable one is reclaimed.
 func TestReclaim_ChunksLargeIDLists(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := seedReclaimStates(t)
 	st := NewStore(db)
@@ -253,6 +260,7 @@ func TestReclaim_ChunksLargeIDLists(t *testing.T) {
 // statement that fails takes back the ones that ran before it, so a rule that
 // cannot read history deletes nothing rather than some tables' rows.
 func TestInTx_RollsBackWhenTheRuleFails(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := seedReclaimStates(t)
 	st := NewStore(db)
@@ -276,6 +284,7 @@ func TestInTx_RollsBackWhenTheRuleFails(t *testing.T) {
 // departure most plausibly meets mid-rule: the durable_runs statement reads
 // history, and when it cannot, Reclaim reports it and deletes nothing.
 func TestReclaim_ReportsAStatementThatCannotReadHistory(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := seedReclaimStates(t)
 	if _, err := db.Exec(`DROP TABLE history`); err != nil {

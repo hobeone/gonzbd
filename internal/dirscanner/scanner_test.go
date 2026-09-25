@@ -490,6 +490,10 @@ func TestScanDirectoryNotFound(t *testing.T) {
 }
 
 func TestDecompressSizeLimitGZ(t *testing.T) {
+	oldLimit := MaxDecompressSize
+	MaxDecompressSize = 1024
+	defer func() { MaxDecompressSize = oldLimit }()
+
 	tmpDir := t.TempDir()
 
 	// Create a gzip file that decompresses to more than MaxDecompressSize.
@@ -503,7 +507,7 @@ func TestDecompressSizeLimitGZ(t *testing.T) {
 
 		gz := gzip.NewWriter(file)
 
-		// Write a large chunk of data.
+		// Write a chunk of data that exceeds MaxDecompressSize.
 		largeData := make([]byte, MaxDecompressSize+1)
 		for i := range largeData {
 			largeData[i] = 'x'
@@ -517,8 +521,8 @@ func TestDecompressSizeLimitGZ(t *testing.T) {
 	}
 
 	_, err := ExtractNZBs(gzPath)
-	if err == nil {
-		t.Errorf("expected error for oversized gzip file")
+	if err == nil || !strings.Contains(err.Error(), "decompressed size exceeds maximum") {
+		t.Errorf("expected decompress size limit error, got: %v", err)
 	}
 }
 

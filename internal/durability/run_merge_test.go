@@ -18,6 +18,7 @@ func crcOf(b []byte) uint32 { return crc32.ChecksumIEEE(b) }
 // rule: two articles whose offsets and article indices are both contiguous
 // collapse into one row, with the combined CRC.
 func TestStore_MergesAbuttingInBothOffsetAndIndex(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -53,6 +54,7 @@ func TestStore_MergesAbuttingInBothOffsetAndIndex(t *testing.T) {
 // alone is not enough: a gap in article index (a missing article between
 // them) must keep the rows separate even though their bytes are adjacent.
 func TestStore_OffsetAbutsIndexDoesNot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -77,6 +79,7 @@ func TestStore_OffsetAbutsIndexDoesNot(t *testing.T) {
 // index contiguity alone is not enough when the byte offsets leave a gap —
 // e.g. a hole from a still-unwritten neighbour.
 func TestStore_IndexAbutsOffsetDoesNot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -102,6 +105,7 @@ func TestStore_IndexAbutsOffsetDoesNot(t *testing.T) {
 // as a second row — Commit must be idempotent against the barrier's
 // at-least-once redelivery.
 func TestStore_RedeliveredArticleIsDropped(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -147,6 +151,7 @@ func TestStore_RedeliveredArticleIsDropped(t *testing.T) {
 // which sits adjacent to the stored row and so merges into it — giving one
 // row [0,12] whose Σ length equals the file's real size.
 func TestStore_RedeliveredAdjacentToNewIsNotAFalseOverlap(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -195,6 +200,7 @@ func TestStore_RedeliveredAdjacentToNewIsNotAFalseOverlap(t *testing.T) {
 // articles produces the same stored rows regardless of the order they
 // arrive in within one Commit call.
 func TestStore_MergeIsOrderIndependent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	forward := []DurableArticle{
@@ -236,6 +242,7 @@ func TestStore_MergeIsOrderIndependent(t *testing.T) {
 // value crc32util.Combine happens to produce. Everything durable_runs
 // asserts about a whole file's integrity rests on this equality.
 func TestStore_CRCMatchesRealBytes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -285,6 +292,7 @@ func TestStore_CRCMatchesRealBytes(t *testing.T) {
 // length" agree throughout. That distinguishing case is
 // TestStore_CombineUsesWholeRunLengthNotOneArticle below.
 func TestStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -356,6 +364,7 @@ func TestStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
 // every other test in the package stays green. See the fix report for the
 // observed failure and the restored green run.
 func TestStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -428,6 +437,7 @@ func TestStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 // equal-length entries at offset 0 becomes the fold's accumulator — pick the
 // wrong one and articles 1-9 no longer abut it, leaving two rows.
 func TestStore_SameOffsetKeepsTheLongerRow(t *testing.T) {
+	t.Parallel()
 	const artLen = 100
 
 	// tiling is articles 0-9, each 100 bytes, covering [0,1000) — they merge

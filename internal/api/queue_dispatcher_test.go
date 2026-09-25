@@ -40,19 +40,34 @@ func (s *apiStubStore) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 func (s *apiStubStore) Save(ctx context.Context, p dispatch.Persisted) error   { return nil }
 func (s *apiStubStore) Delete(ctx context.Context, id string) error            { return nil }
 
-type apiStubRunner struct{}
+type apiStubRunner struct {
+	disp *dispatch.Dispatcher
+}
 
-func (r *apiStubRunner) Run(ctx context.Context, id string, state job.State) {}
+func (r *apiStubRunner) Run(ctx context.Context, id string, _ job.State) {
+	if r.disp != nil {
+		go func() {
+			<-ctx.Done()
+			_ = r.disp.Yielded(id)
+		}()
+	}
+}
 
 func newTestAPIDispatcher(t *testing.T) *dispatch.Dispatcher {
 	t.Helper()
 	workers := &apiStubWorkers{}
-	d := dispatch.New(2, 2, time.Hour, time.Now, workers, &apiStubResidency{}, &apiStubStore{}, &apiStubRunner{})
+	runner := &apiStubRunner{}
+	d := dispatch.New(2, 2, time.Hour, time.Now, workers, &apiStubResidency{}, &apiStubStore{}, runner)
 	workers.disp = d
+	runner.disp = d
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("dispatcher.Start: %v", err)
 	}
-	t.Cleanup(func() { _ = d.Stop() })
+	t.Cleanup(func() {
+		if err := d.Stop(); err != nil {
+			t.Errorf("d.Stop: %v", err)
+		}
+	})
 	return d
 }
 

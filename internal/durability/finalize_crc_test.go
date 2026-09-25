@@ -26,6 +26,7 @@ import (
 // Application.recordAssembledCRC and is pinned there, including against the
 // overlapped file this mechanism must keep at more than one row.
 func TestFinalizeFile_CollapsesACleanFileToOneRunCarryingTheWholeFileCRC(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -70,6 +71,7 @@ func TestFinalizeFile_CollapsesACleanFileToOneRunCarryingTheWholeFileCRC(t *test
 // definition, so such a file cannot collapse to one, so the row-count
 // predicate withholds the CRC with nothing to remember.
 func TestFinalizeFile_AHoleKeepsTheFileAtMoreThanOneRun(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -117,6 +119,7 @@ func TestFinalizeFile_AHoleKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 // app.TestRecordAssembledCRC_WithholdsWhenAnExactOffsetDuplicateWasDropped.
 // This test pins that the mechanism really does leave a second row to see.
 func TestFinalizeFile_AnOverlapKeepsTheFileAtMoreThanOneRun(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 

@@ -19,6 +19,7 @@ import (
 // two-file collision is not constructible without a fixture larger than the
 // property being checked.
 func TestCollisionFindings_GroupsPerFile(t *testing.T) {
+	t.Parallel()
 	path := func(idx int32) string {
 		return map[int32]string{0: "/d/first.rar", 1: "/d/second.rar"}[idx]
 	}
@@ -61,6 +62,7 @@ func TestCollisionFindings_GroupsPerFile(t *testing.T) {
 // which drops nothing — costs no allocation and, more importantly, raises no
 // warning. Every checkpoint of every healthy job takes this path.
 func TestCollisionFindings_EmptyReportsNothing(t *testing.T) {
+	t.Parallel()
 	called := false
 	got := collisionFindings(nil, func(int32) string {
 		called = true
@@ -86,6 +88,7 @@ func TestCollisionFindings_EmptyReportsNothing(t *testing.T) {
 // commoner case — a multi-part UU post — and asserting nothing would leave the
 // user with an unexplained repair.
 func TestCollisionReason_SaysRepairableNotCorrupt(t *testing.T) {
+	t.Parallel()
 	got := collisionReason("/downloads/job/data.rar", []Collision{
 		{FileIdx: 0, Offset: 0, Kept: 4, Dropped: 7},
 	})

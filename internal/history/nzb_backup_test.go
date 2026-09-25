@@ -12,6 +12,7 @@ import (
 // admin/nzb/<basename> to recover the article message-IDs, so an entry that
 // loses this field is unretryable while looking entirely intact.
 func TestEntry_NZBBackupRoundTrip(t *testing.T) {
+	t.Parallel()
 	db, err := history.Open(t.Context(), filepath.Join(t.TempDir(), "history.db"))
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)

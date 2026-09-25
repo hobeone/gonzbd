@@ -98,6 +98,7 @@ func newBarrierWithStore(t *testing.T, rs runStore, ack Acker, stall Stallable) 
 // TestBarrier_SyncPrecedesCommitAndAck is the pin for S1 and R9. If the
 // commit or the ack happens before the fsync, this fails.
 func TestBarrier_SyncPrecedesCommitAndAck(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tgt := &fakeTarget{
 		written: map[int32][]WrittenArticle{0: {{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100}}},
@@ -129,6 +130,7 @@ func TestBarrier_SyncPrecedesCommitAndAck(t *testing.T) {
 // TestBarrier_SyncFailureAcksNothing pins R7: a failed barrier acks nothing
 // and leaves the stored runs intact.
 func TestBarrier_SyncFailureAcksNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 	if _, err := rs.commit(ctx, "job-1", []DurableArticle{
@@ -174,6 +176,7 @@ func TestBarrier_SyncFailureAcksNothing(t *testing.T) {
 
 // TestBarrier_PermanentFaultFailsRatherThanStalls pins R20.
 func TestBarrier_PermanentFaultFailsRatherThanStalls(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, syncErr: syscall.EROFS}
 	stall := &recordingStall{}
@@ -194,6 +197,7 @@ func TestBarrier_PermanentFaultFailsRatherThanStalls(t *testing.T) {
 // either side of the fsync classify their own failures rather than
 // returning a bare error, and that neither marks an article failed (A1).
 func TestBarrier_DrainAndStatFaultsRouteThroughA1(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		tgt     *fakeTarget
@@ -264,6 +268,7 @@ func (e *errStore) commit(context.Context, string, []DurableArticle) ([]Collisio
 // TestBarrier_CommitFailureAcksNothing pins the second half of phase 4: the
 // ack is downstream of the commit, so a commit that fails must ack nothing.
 func TestBarrier_CommitFailureAcksNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	boom := errors.New("commit exploded")
 	rs := &errStore{runStore: NewStore(openTestDB(t)), err: boom}
@@ -290,6 +295,7 @@ func TestBarrier_CommitFailureAcksNothing(t *testing.T) {
 // files are all already durable drains an empty report on every checkpoint,
 // and a cycle that landed without confirming would re-report it forever.
 func TestBarrier_NothingDrainedAcksNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 	tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, size: 7}
@@ -318,6 +324,7 @@ func TestBarrier_NothingDrainedAcksNothing(t *testing.T) {
 // TestBarrier_AckFailurePropagates pins that a rejected ack is returned
 // rather than swallowed (A2).
 func TestBarrier_AckFailurePropagates(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	boom := errors.New("queue rejected the proof")
 	ack := &recordingAcker{err: boom}
@@ -335,6 +342,7 @@ func TestBarrier_AckFailurePropagates(t *testing.T) {
 // drained and fsynced before ANY of them is claimed, so a barrier that fails
 // on the second file's sync has claimed nothing about the first either.
 func TestBarrier_MultipleFilesSyncAllBeforeAnyClaim(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 	tgt := &fakeTarget{
@@ -394,6 +402,7 @@ func TestBarrier_MultipleFilesSyncAllBeforeAnyClaim(t *testing.T) {
 // TestBarrier_ConfirmsOnlyAfterTheCommitAndAck pins where the drain report is
 // released: below both, never on the fsync.
 func TestBarrier_ConfirmsOnlyAfterTheCommitAndAck(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	drain := map[int32][]WrittenArticle{0: {{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100}}}
 
@@ -432,6 +441,7 @@ func TestBarrier_ConfirmsOnlyAfterTheCommitAndAck(t *testing.T) {
 // that lands has made claims about all of them. Confirming only some would
 // leave the rest re-reporting forever.
 func TestConfirmAll_ReleasesEveryFileOfTheJob(t *testing.T) {
+	t.Parallel()
 	b := newBarrierWithStore(t, NewStore(openTestDB(t)),
 		&recordingAcker{}, &recordingStall{})
 	tgt := &fakeTarget{}
@@ -452,6 +462,7 @@ func TestConfirmAll_ReleasesEveryFileOfTheJob(t *testing.T) {
 // returned, so a caller that ignores Stallable still cannot read a storage
 // fault as success.
 func TestRouteFault(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		err         error
@@ -502,6 +513,7 @@ func TestNewProof(t *testing.T) {
 // or run it and see the job it belongs to. Tests outside this package inject
 // commit faults this way, since they cannot implement the store's interface.
 func TestBarrier_CommitWrapCanFailOrObserveTheCommit(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	newTarget := func() *fakeTarget {
 		return &fakeTarget{

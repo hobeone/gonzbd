@@ -11,6 +11,7 @@ import (
 // redelivered articles: it must treat each stored run's span as inclusive on
 // both ends and report false for a gap between two stored runs.
 func TestCoveredByAny(t *testing.T) {
+	t.Parallel()
 	stored := []Run{
 		{FirstArtIdx: 0, LastArtIdx: 4},
 		{FirstArtIdx: 10, LastArtIdx: 12},
@@ -31,6 +32,7 @@ func TestCoveredByAny(t *testing.T) {
 // TestMergeAdjacentRuns pins the fold itself, independent of SQL storage:
 // empty input, a single run, and a three-way chain that must fold into one.
 func TestMergeAdjacentRuns(t *testing.T) {
+	t.Parallel()
 	if got, cols := mergeAdjacentRuns(nil); got != nil || cols != nil {
 		t.Errorf("mergeAdjacentRuns(nil) = %+v, %+v, want nil, nil", got, cols)
 	}
@@ -82,6 +84,7 @@ func TestMergeAdjacentRuns(t *testing.T) {
 // the entry would make Σ length equal the size, silence that warning, and
 // return the article to Outstanding to be re-fetched and collide again.
 func TestMergeAdjacentRuns_KeepsAnInteriorOverlapAsItsOwnRow(t *testing.T) {
+	t.Parallel()
 	// A0 [0,100) and A1 [100,200) abut and fold together; A2 then claims
 	// A1's offset, after A1 has already been absorbed.
 	out, cols := mergeAdjacentRuns([]Run{
@@ -126,6 +129,7 @@ func TestMergeAdjacentRuns_KeepsAnInteriorOverlapAsItsOwnRow(t *testing.T) {
 // offset) rows it is given, and that queryBracketing's maxEnd bound excludes
 // a row starting past it.
 func TestStore_HelpersDirectly(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
 	rs := NewStore(db)
@@ -183,6 +187,7 @@ func TestStore_HelpersDirectly(t *testing.T) {
 // TestStore_ForJobReturnsAllFilesOrdered pins ForJob's whole-job
 // read: every file's runs, ordered by FileIdx then Offset.
 func TestStore_ForJobReturnsAllFilesOrdered(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -212,6 +217,7 @@ func TestStore_ForJobReturnsAllFilesOrdered(t *testing.T) {
 // TestStore_ForJobIsScopedToJob pins that ForJob never returns
 // another job's rows.
 func TestStore_ForJobIsScopedToJob(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -235,6 +241,7 @@ func TestStore_ForJobIsScopedToJob(t *testing.T) {
 // TestStore_DiscardRunsIsScoped pins that DiscardRuns removes every file's
 // rows for one job and leaves every other job's rows untouched.
 func TestStore_DiscardRunsIsScoped(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -264,6 +271,7 @@ func TestStore_DiscardRunsIsScoped(t *testing.T) {
 // give it a schema — a closed DB would otherwise surface a BeginTx error
 // even though there is nothing to commit.
 func TestStore_CommitEmptyIsNoop(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
 	if err := db.Close(); err != nil {
@@ -277,6 +285,7 @@ func TestStore_CommitEmptyIsNoop(t *testing.T) {
 
 // TestStore_CommitErrorsOnClosedDB covers the BeginTx error path.
 func TestStore_CommitErrorsOnClosedDB(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
 	if err := db.Close(); err != nil {
@@ -291,6 +300,7 @@ func TestStore_CommitErrorsOnClosedDB(t *testing.T) {
 
 // TestStore_DiscardRunsErrorsOnClosedDB covers DiscardRuns' error path.
 func TestStore_DiscardRunsErrorsOnClosedDB(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
 	if err := db.Close(); err != nil {
@@ -310,6 +320,7 @@ func TestStore_DiscardRunsErrorsOnClosedDB(t *testing.T) {
 // sweep reporting a discard that did not reach the store, which would leave
 // the next start adopting runs the file has already contradicted.
 func TestStore_DeleteFileIsScopedAndReportsAFailure(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
 	rs := NewStore(db)
@@ -355,6 +366,7 @@ func TestStore_DeleteFileIsScopedAndReportsAFailure(t *testing.T) {
 // insert, and the first file's already-computed merge must not survive
 // partially — Commit is per-call atomic across every file it touches.
 func TestStore_InsertFailureMidBatchRollsBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
 	rs := NewStore(db)
@@ -387,6 +399,7 @@ func TestStore_InsertFailureMidBatchRollsBack(t *testing.T) {
 // whole commit — including the insert of the merged replacement — must not
 // land.
 func TestStore_DeleteFailureMidBatchRollsBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
 	rs := NewStore(db)
@@ -430,6 +443,7 @@ func TestStore_DeleteFailureMidBatchRollsBack(t *testing.T) {
 // someone deciding which row it belongs in — and "writes run content" is not a
 // row this table has.
 func TestStore_NoExportedMethodWritesRunContent(t *testing.T) {
+	t.Parallel()
 	durableRuns := map[string]string{
 		"ForFile":        "reads",
 		"ForJob":         "reads",
@@ -464,6 +478,7 @@ func TestStore_NoExportedMethodWritesRunContent(t *testing.T) {
 // returns nothing, and the error does NOT claim the result is partial, so the
 // caller abandons the read rather than applying an empty one.
 func TestStore_ForJobReportsAnUnscannableRowAsAFailure(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
 	if _, err := db.Exec(`INSERT INTO durable_runs (job_id, file_idx, first_art_idx, last_art_idx, offset, length, crc32) VALUES ('job-1', 0, 'x', 0, 0, 100, 0)`); err != nil {
@@ -486,6 +501,7 @@ func TestStore_ForJobReportsAnUnscannableRowAsAFailure(t *testing.T) {
 // failed query and an unscannable row each return no runs, since FinalizeFile
 // and the resume would bound the file by whatever came back.
 func TestStore_ForFileReturnsNothingOnAFailure(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
 	// A good row ahead of the bad one, so that returning what was read before

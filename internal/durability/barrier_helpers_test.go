@@ -17,6 +17,7 @@ import (
 // truncating to it destroys them. The fixture makes the two maxima different
 // numbers so neither mistake can pass.
 func TestBoundOver_TakesTheMaximumAcrossBothSources(t *testing.T) {
+	t.Parallel()
 	stored := []Run{{Offset: 0, Length: 100}, {Offset: 400, Length: 100}}
 	arts := []DurableArticle{{Offset: 100, Length: 100}}
 
@@ -44,6 +45,7 @@ func TestBoundOver_TakesTheMaximumAcrossBothSources(t *testing.T) {
 // a zero CRC32 hashes to zero rather than reading as "unknown", and a zero
 // Offset places the run at the start of the file.
 func TestDurableArticle_CarriesEveryFieldTheRunNeeds(t *testing.T) {
+	t.Parallel()
 	got := durableArticle(7, WrittenArticle{
 		FileIdx: 99, ArtIdx: 12, Offset: 4096, Length: 100, CRC32: 0xC0FFEE,
 	})
@@ -67,6 +69,7 @@ func TestDurableArticle_CarriesEveryFieldTheRunNeeds(t *testing.T) {
 // rows on stable storage, and the next committing checkpoint asks the same
 // question of the same rows.
 func TestOverlapFindings_SurvivesAnUnreadableRecord(t *testing.T) {
+	t.Parallel()
 	b := NewBarrier(&errRunStore{err: errors.New("unreadable")}, nil, nil, testLogger(t))
 
 	got := b.overlapFindings(context.Background(), "job-1", []int32{0, 1},
@@ -87,6 +90,7 @@ func TestOverlapFindings_SurvivesAnUnreadableRecord(t *testing.T) {
 // first would silence every file after it for the life of the process, since
 // admit latches per file.
 func TestOverlapFindings_ReportsOnePerOverlappedFile(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 	// File 0 overlaps: 150 bytes recorded over a 100-byte file. File 1 is

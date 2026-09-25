@@ -43,6 +43,7 @@ import (
 // field is covered the moment it exists, and the test fails loudly rather than
 // silently under-testing if a type it cannot generate a value for appears.
 func TestAddGetRoundTrip_EveryFieldDistinct(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 

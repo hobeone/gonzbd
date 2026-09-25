@@ -64,6 +64,7 @@ func TestAppNew_MaxActiveJobsInitialization(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(fmt.Sprintf("MaxActiveJobs_%d", tc.configuredMax), func(t *testing.T) {
+			t.Parallel()
 			application, _ := createTestApp(t, tc.configuredMax)
 			actualMax := application.Dispatcher().LeaseCap()
 			if actualMax != tc.expectedMax {

@@ -1103,6 +1103,7 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 	const path = "/mnt/ro/movie.rar"
 
 	t.Run("permanent", func(t *testing.T) {
+		t.Parallel()
 		application, job := newDurabilityTestApp(t, 1, 1)
 
 		// Exactly what Barrier.routeFault does for a permanent fault.
@@ -1159,6 +1160,7 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 	// finalize" and wraps the original inside. So the reason growing a second
 	// layer is the observable, and it is the only one.
 	t.Run("retryable", func(t *testing.T) {
+		t.Parallel()
 		application, job := newDurabilityTestApp(t, 1, 1)
 
 		fault := storagefault.Classify("sync", path, syscall.ENOSPC)
@@ -1201,6 +1203,7 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 	})
 
 	t.Run("never routed", func(t *testing.T) {
+		t.Parallel()
 		application, job := newDurabilityTestApp(t, 1, 1)
 
 		// An OpenFiles timeout, or a target that cannot truncate: these never
@@ -1233,6 +1236,7 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 	// job was left running, its completed file was never trimmed, and it
 	// shipped pre-allocation's trailing zeros to par2 as damage.
 	t.Run("an unrouted fault from the target boundary", func(t *testing.T) {
+		t.Parallel()
 		application, job := newDurabilityTestApp(t, 1, 1)
 
 		fault := storagefault.Classify("list", "", errors.New("the assembler worker did not answer"))
@@ -1263,6 +1267,7 @@ func TestRouteFinalizeFailure_DoesNotReRouteWhatTheBarrierAlreadyRouted(t *testi
 	// assembler, a caller that stopped waiting — parking on one of these named
 	// a disk that did not fail and offered an action that does not exist.
 	t.Run("not a storage condition", func(t *testing.T) {
+		t.Parallel()
 		application, job := newDurabilityTestApp(t, 1, 1)
 
 		err := fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, job.ID(), 0,

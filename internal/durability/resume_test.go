@@ -34,6 +34,7 @@ func storeRuns(t *testing.T, rs runStore, jobID string, arts ...DurableArticle) 
 // A file that is LONGER is the ordinary pre-allocated case and must adopt too,
 // which is the second subtest.
 func TestResume_AdoptsWhenTheFileIsLongEnough(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		size int
@@ -92,6 +93,7 @@ func TestResume_AdoptsWhenTheFileIsLongEnough(t *testing.T) {
 // installs the result into the live queue, but the next restart reads the
 // store directly, so a withheld-but-stored run comes back.
 func TestResume_ShortFileDiscardsItsRuns(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := writePartial(t, dir, "f.bin", 299)
@@ -127,6 +129,7 @@ func TestResume_ShortFileDiscardsItsRuns(t *testing.T) {
 // the job's other files; deleting theirs would turn one replaced partial into
 // a full re-download of the job.
 func TestResume_DiscardIsScopedToTheFile(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := writePartial(t, dir, "f0.bin", 10)
@@ -160,6 +163,7 @@ func TestResume_DiscardIsScopedToTheFile(t *testing.T) {
 // recreates the file, the next barrier records over them, and the next start
 // adopts articles this process never wrote.
 func TestResume_MissingFileRestarts(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 	storeRuns(t, rs, "job-1",
@@ -188,6 +192,7 @@ func TestResume_MissingFileRestarts(t *testing.T) {
 // The distinction is not cosmetic. Restart is what the caller reads as "this
 // file was disproved"; a file nobody ever wrote a run for was not disproved.
 func TestResume_FileWithNoRunsAdopts(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	path := writePartial(t, t.TempDir(), "f.bin", 0)
 	r := NewResumer(NewStore(openTestDB(t)), testLogger(t))
@@ -209,6 +214,7 @@ func TestResume_FileWithNoRunsAdopts(t *testing.T) {
 // missing file would discard the runs of a partial whose bytes are still
 // there (A2).
 func TestResume_StatErrorIsReturned(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
 	sub := filepath.Join(dir, "locked")
@@ -251,6 +257,7 @@ func (e *errRunStore) ForFile(context.Context, string, int32) ([]Run, error) {
 // resume rather than yielding an empty run set — which would read as "nothing
 // is recorded" and re-download an intact file.
 func TestResume_RunReadFailureIsReturned(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("run store unreadable")
 	path := writePartial(t, t.TempDir(), "f.bin", 100)
 	r := NewResumer(&errRunStore{runStore: NewStore(openTestDB(t)), err: boom}, testLogger(t))
@@ -275,6 +282,7 @@ func (d *delErrStore) deleteFile(context.Context, string, int32) error { return 
 // recorded. It is not: the next start reads the store, adopts the runs the
 // file has already contradicted, and finishes it with holes.
 func TestResume_SurfacesADiscardFailure(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("delete rejected")
 	rs := &delErrStore{runStore: NewStore(openTestDB(t)), err: boom}
 	storeRuns(t, rs.runStore, "job-1",
@@ -295,6 +303,7 @@ func TestResume_SurfacesADiscardFailure(t *testing.T) {
 // would leave the operator, and the sweep's own log line, unable to say which
 // partial the next start is about to adopt anyway.
 func TestDiscard_NamesTheJobAndFile(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("delete rejected")
 	r := NewResumer(&delErrStore{runStore: NewStore(openTestDB(t)), err: boom}, testLogger(t))
 
