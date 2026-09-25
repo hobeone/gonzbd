@@ -268,7 +268,7 @@ func (e *testEnv) seedHistory(t *testing.T, n int, status string) {
 		if status == "Failed" {
 			entry.FailMessage = fmt.Sprintf("Unpacking failed for item %d", i)
 		}
-		if err := e.HistR.Add(t.Context(), entry); err != nil {
+		if err := e.HistR.Add(t.Context(), entry, nil); err != nil {
 			t.Fatalf("history.Add: %v", err)
 		}
 	}
@@ -293,7 +293,7 @@ func (e *testEnv) seedHistoryWithPrefix(t *testing.T, n int, status, prefix stri
 		if status == "Failed" {
 			entry.FailMessage = fmt.Sprintf("Unpacking failed for %s item %d", prefix, i)
 		}
-		if err := e.HistR.Add(t.Context(), entry); err != nil {
+		if err := e.HistR.Add(t.Context(), entry, nil); err != nil {
 			t.Fatalf("history.Add: %v", err)
 		}
 	}

@@ -15,7 +15,7 @@ func TestDelete_TakesRetainedProgressAndLeavesDurabilityRows(t *testing.T) {
 	ctx := context.Background()
 	db, repo := openTestDB(t)
 
-	if err := repo.Add(ctx, Entry{NzoID: "job-1", Name: "job-1", Status: "Failed"}); err != nil {
+	if err := repo.Add(ctx, Entry{NzoID: "job-1", Name: "job-1", Status: "Failed"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, q := range []string{

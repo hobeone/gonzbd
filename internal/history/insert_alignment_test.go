@@ -47,7 +47,7 @@ func TestAddGetRoundTrip_EveryFieldDistinct(t *testing.T) {
 	ctx := t.Context()
 
 	want := distinctEntry(t)
-	if err := repo.Add(ctx, want); err != nil {
+	if err := repo.Add(ctx, want, nil); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	got, err := repo.Get(ctx, want.NzoID)

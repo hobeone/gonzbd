@@ -141,11 +141,106 @@ VALUES
 	return nil
 }
 
-// Add inserts e into the history table. It returns an error (wrapping a
-// SQLite unique-constraint violation) if an entry with the same nzo_id already
-// exists.
-func (r *Repository) Add(ctx context.Context, e Entry) error {
-	return r.AddTx(ctx, r.db, e)
+// FileProgress is one file's retained download progress: what a retry needs to
+// resume the file instead of re-fetching it.
+//
+// Every field is written by Add and read back by RetainedFiles, so none of them
+// is populated only on one of those paths.
+type FileProgress struct {
+	FileIndex      int
+	Complete       bool
+	FetchPolicy    uint8
+	Filename       string
+	AssembledCRC32 uint32
+	ArticleCount   int
+}
+
+// Add inserts e and its retained per-file progress in one transaction. It
+// returns an error (wrapping a SQLite unique-constraint violation) if an entry
+// with the same nzo_id already exists.
+//
+// Both land or neither does. An entry whose progress did not land sends a retry
+// back to re-fetch every article the failed attempt had already written, since
+// these rows are the only surviving record of it once the job's manifest is
+// gone — and a retry reads them through RetainedFiles.
+//
+// The rows take their job_id from e.NzoID rather than from a second argument,
+// so an entry and its progress cannot be filed under different ids.
+func (r *Repository) Add(ctx context.Context, e Entry, files []FileProgress) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("history: add %q: begin: %w", e.NzoID, err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // superseded by Commit error
+
+	if err := r.AddTx(ctx, tx, e); err != nil {
+		return err
+	}
+	if err := addFileProgressTx(ctx, tx, e.NzoID, files); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("history: add %q: commit: %w", e.NzoID, err)
+	}
+	return nil
+}
+
+// addFileProgressTx writes one row per file.
+//
+// A plain INSERT, not INSERT OR REPLACE. Rows for this job_id exist only
+// alongside an entry with the same nzo_id, which delete removes in one
+// transaction with them — and if such an entry were present, AddTx above would
+// already have failed on the UNIQUE nzo_id and this would not be reached. What
+// is left for the PRIMARY KEY (job_id, file_index) to catch is a caller passing
+// one file index twice, which a replace would silently absorb.
+func addFileProgressTx(ctx context.Context, exec Execer, jobID string, files []FileProgress) error {
+	const q = `
+INSERT INTO history_job_files
+  (job_id, file_index, complete, fetch_policy, filename, assembled_crc32, article_count)
+VALUES (?, ?, ?, ?, ?, ?, ?)`
+	for _, f := range files {
+		complete := 0
+		if f.Complete {
+			complete = 1
+		}
+		if _, err := exec.ExecContext(ctx, q,
+			jobID, f.FileIndex, complete, int(f.FetchPolicy),
+			f.Filename, f.AssembledCRC32, f.ArticleCount,
+		); err != nil {
+			return fmt.Errorf("history: add retained progress %q file %d: %w", jobID, f.FileIndex, err)
+		}
+	}
+	return nil
+}
+
+// RetainedFiles returns the per-file progress Add stored with jobID's entry,
+// ordered by file index. An entry with none yields no rows and no error.
+func (r *Repository) RetainedFiles(ctx context.Context, jobID string) ([]FileProgress, error) {
+	const q = `
+SELECT file_index, complete, fetch_policy,
+       COALESCE(filename, ''), COALESCE(assembled_crc32, 0), article_count
+FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
+	rows, err := r.db.QueryContext(ctx, q, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("history: retained files %q: %w", jobID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []FileProgress
+	for rows.Next() {
+		var f FileProgress
+		var complete int
+		if err := rows.Scan(&f.FileIndex, &complete, &f.FetchPolicy,
+			&f.Filename, &f.AssembledCRC32, &f.ArticleCount); err != nil {
+			return nil, fmt.Errorf("history: scan retained file %q: %w", jobID, err)
+		}
+		f.Complete = complete != 0
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("history: retained files %q: %w", jobID, err)
+	}
+	return out, nil
 }
 
 // Get fetches the entry with the given nzo_id. It returns ErrNotFound (via

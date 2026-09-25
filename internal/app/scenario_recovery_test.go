@@ -275,7 +275,7 @@ func TestRecovery_DuplicateJobInHistory(t *testing.T) {
 		Status:    "Completed",
 		Completed: time.Now(),
 	}
-	if err := repo.Add(t.Context(), entry); err != nil {
+	if err := repo.Add(t.Context(), entry, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 

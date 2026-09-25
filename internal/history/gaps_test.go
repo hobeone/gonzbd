@@ -11,9 +11,9 @@ func TestListIDs_ReturnsAll(t *testing.T) {
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
-	repo.Add(ctx, sampleEntry("nzo_1", "Job1", "Completed", "TV"))
-	repo.Add(ctx, sampleEntry("nzo_2", "Job2", "Failed", "Movies"))
-	repo.Add(ctx, sampleEntry("nzo_3", "Job3", "Completed", "TV"))
+	repo.Add(ctx, sampleEntry("nzo_1", "Job1", "Completed", "TV"), nil)
+	repo.Add(ctx, sampleEntry("nzo_2", "Job2", "Failed", "Movies"), nil)
+	repo.Add(ctx, sampleEntry("nzo_3", "Job3", "Completed", "TV"), nil)
 
 	ids, err := repo.ListIDs(ctx, SearchOptions{})
 	if err != nil {
@@ -28,8 +28,8 @@ func TestListIDs_Filtered(t *testing.T) {
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
-	repo.Add(ctx, sampleEntry("nzo_a", "A", "Completed", "TV"))
-	repo.Add(ctx, sampleEntry("nzo_b", "B", "Failed", "Movies"))
+	repo.Add(ctx, sampleEntry("nzo_a", "A", "Completed", "TV"), nil)
+	repo.Add(ctx, sampleEntry("nzo_b", "B", "Failed", "Movies"), nil)
 
 	ids, err := repo.ListIDs(ctx, SearchOptions{Status: "Failed"})
 	if err != nil {
@@ -62,9 +62,9 @@ func TestCount_All(t *testing.T) {
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
-	repo.Add(ctx, sampleEntry("nzo_1", "J1", "Completed", "TV"))
-	repo.Add(ctx, sampleEntry("nzo_2", "J2", "Failed", "Movies"))
-	repo.Add(ctx, sampleEntry("nzo_3", "J3", "Completed", "TV"))
+	repo.Add(ctx, sampleEntry("nzo_1", "J1", "Completed", "TV"), nil)
+	repo.Add(ctx, sampleEntry("nzo_2", "J2", "Failed", "Movies"), nil)
+	repo.Add(ctx, sampleEntry("nzo_3", "J3", "Completed", "TV"), nil)
 
 	count, err := repo.Count(ctx, SearchOptions{})
 	if err != nil {
@@ -79,8 +79,8 @@ func TestCount_Filtered(t *testing.T) {
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
-	repo.Add(ctx, sampleEntry("nzo_1", "J1", "Completed", "TV"))
-	repo.Add(ctx, sampleEntry("nzo_2", "J2", "Failed", "Movies"))
+	repo.Add(ctx, sampleEntry("nzo_1", "J1", "Completed", "TV"), nil)
+	repo.Add(ctx, sampleEntry("nzo_2", "J2", "Failed", "Movies"), nil)
 
 	count, err := repo.Count(ctx, SearchOptions{Status: "Completed"})
 	if err != nil {
@@ -95,9 +95,9 @@ func TestCount_Category(t *testing.T) {
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
-	repo.Add(ctx, sampleEntry("nzo_1", "J1", "Completed", "TV"))
-	repo.Add(ctx, sampleEntry("nzo_2", "J2", "Completed", "Movies"))
-	repo.Add(ctx, sampleEntry("nzo_3", "J3", "Completed", "TV"))
+	repo.Add(ctx, sampleEntry("nzo_1", "J1", "Completed", "TV"), nil)
+	repo.Add(ctx, sampleEntry("nzo_2", "J2", "Completed", "Movies"), nil)
+	repo.Add(ctx, sampleEntry("nzo_3", "J3", "Completed", "TV"), nil)
 
 	count, err := repo.Count(ctx, SearchOptions{Category: "TV"})
 	if err != nil {
@@ -129,11 +129,11 @@ func TestSearch_ArchiveOnly(t *testing.T) {
 
 	e1 := sampleEntry("nzo_1", "Normal", "Completed", "TV")
 	e1.Archive = 0
-	repo.Add(ctx, e1)
+	repo.Add(ctx, e1, nil)
 
 	e2 := sampleEntry("nzo_2", "Archived", "Completed", "TV")
 	e2.Archive = 1
-	repo.Add(ctx, e2)
+	repo.Add(ctx, e2, nil)
 
 	results, err := repo.Search(ctx, SearchOptions{ArchiveOnly: true})
 	if err != nil {
@@ -153,11 +153,11 @@ func TestSearch_MD5Sum(t *testing.T) {
 
 	e1 := sampleEntry("nzo_1", "J1", "Completed", "TV")
 	e1.MD5Sum = "abc123"
-	repo.Add(ctx, e1)
+	repo.Add(ctx, e1, nil)
 
 	e2 := sampleEntry("nzo_2", "J2", "Completed", "TV")
 	e2.MD5Sum = "def456"
-	repo.Add(ctx, e2)
+	repo.Add(ctx, e2, nil)
 
 	results, err := repo.Search(ctx, SearchOptions{MD5Sum: "abc123"})
 	if err != nil {
@@ -178,7 +178,7 @@ func TestSearch_Pagination(t *testing.T) {
 	for i := range 5 {
 		e := sampleEntry("nzo_"+string(rune('a'+i)), "Job", "Completed", "TV")
 		e.Completed = time.Now().Add(-time.Duration(i) * time.Hour).Truncate(time.Second).UTC()
-		repo.Add(ctx, e)
+		repo.Add(ctx, e, nil)
 	}
 
 	// Get page 2 (start=2, limit=2).
@@ -198,7 +198,7 @@ func TestSearch_OffsetWithoutLimit(t *testing.T) {
 	for i := range 3 {
 		e := sampleEntry("nzo_"+string(rune('a'+i)), "Job", "Completed", "TV")
 		e.Completed = time.Now().Add(-time.Duration(i) * time.Hour).Truncate(time.Second).UTC()
-		repo.Add(ctx, e)
+		repo.Add(ctx, e, nil)
 	}
 
 	// Offset 1, no limit (should return 2 results).

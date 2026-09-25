@@ -106,7 +106,7 @@ func TestRetryHistoryJob_DisconnectDuringDispatcherSaveStillPersistsQueueRow(t *
 		Category:  "*",
 		Status:    "Failed",
 		Completed: time.Now(),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
@@ -311,7 +311,7 @@ func TestRetryHistoryJob_FailedAddRemovesTheQueueManifest(t *testing.T) {
 	if err := repo.Add(t.Context(), history.Entry{
 		NzoID: jobID, Name: "p1-retry-fail", NzbName: "p1-retry-fail.nzb",
 		NZBBackup: nzbBackup, Category: "*", Status: "Failed", Completed: time.Now(),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
@@ -401,7 +401,7 @@ func TestRetryHistoryJob_FailedFlushRemovesTheQueueManifest(t *testing.T) {
 	if err := repo.Add(t.Context(), history.Entry{
 		NzoID: jobID, Name: "p1-retry-flush", NzbName: "p1-retry-flush.nzb",
 		NZBBackup: nzbBackup, Category: "*", Status: "Failed", Completed: time.Now(),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 

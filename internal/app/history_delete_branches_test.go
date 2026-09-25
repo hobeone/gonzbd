@@ -75,7 +75,7 @@ func TestRemoveHistoryJob_DeletesFilesWhenAsked(t *testing.T) {
 			}
 			if err := repo.Add(t.Context(), history.Entry{
 				NzoID: "withfiles0000001", Name: "finished-job", Status: "Completed", Path: jobDir,
-			}); err != nil {
+			}, nil); err != nil {
 				t.Fatalf("repo.Add: %v", err)
 			}
 
@@ -109,7 +109,7 @@ func TestRemoveHistoryJob_RefusesPathOutsideManagedDirs(t *testing.T) {
 	}
 	if err := repo.Add(t.Context(), history.Entry{
 		NzoID: "outsidepath00001", Name: "outside", Status: "Failed", Path: outside,
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
@@ -144,7 +144,7 @@ func TestRemoveHistoryJob_UndeletableBackupStillRemovesEntry(t *testing.T) {
 	}
 	if err := repo.Add(t.Context(), history.Entry{
 		NzoID: "blockedbackup001", Name: "blocked", Status: "Failed", NZBBackup: "blocked.nzb.gz",
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 

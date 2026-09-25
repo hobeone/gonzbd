@@ -87,7 +87,7 @@ func TestRetryHistoryJob_RebuildsFromNZBBackup(t *testing.T) {
 		NzbName:   "retryme.nzb",
 		NZBBackup: "retryme.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func TestRetryHistoryJob_PreservesJobOptions(t *testing.T) {
 		PP:        "3",
 		Script:    "notify.sh",
 		Password:  "hunter2",
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
@@ -176,7 +176,7 @@ func TestBuildHistoryEntry_RecordsJobOptions(t *testing.T) {
 		Script:   "s.sh",
 		Password: "pw",
 	}
-	if err := repo.Add(t.Context(), entry); err != nil {
+	if err := repo.Add(t.Context(), entry, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	got, err := repo.Get(t.Context(), "optsroundtrip001")
@@ -203,7 +203,7 @@ func TestRetryHistoryJob_RefusesCompletedEntry(t *testing.T) {
 		Name:      "donejob",
 		NZBBackup: "donejob.nzb.gz",
 		Status:    string(constants.StatusCompleted),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
@@ -233,7 +233,7 @@ func TestRetryHistoryJob_ReportsMissingBackup(t *testing.T) {
 		Name:      "nobackup",
 		NZBBackup: "",
 		Status:    string(constants.StatusFailed),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 

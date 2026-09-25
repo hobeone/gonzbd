@@ -63,7 +63,7 @@ func seedReclaimStates(t *testing.T) *sql.DB {
 			}
 		}
 		if s.history != "" {
-			if err := repo.Add(ctx, history.Entry{NzoID: s.id, Name: s.id, Status: string(s.history)}); err != nil {
+			if err := repo.Add(ctx, history.Entry{NzoID: s.id, Name: s.id, Status: string(s.history)}, nil); err != nil {
 				t.Fatal(err)
 			}
 		}

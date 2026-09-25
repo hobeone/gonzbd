@@ -117,44 +117,28 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 
 		var persistErr error
 		if app.historyRepo != nil && app.historyRepo.DB() != nil {
+			// Gathered before the write, because Add stores the entry and this
+			// progress in one transaction, and its doc says what rests on that.
+			var files []history.FileProgress
+			if entry.Status == string(constants.StatusFailed) && ppJob != nil && ppJob.Job != nil {
+				files = retainedProgressFor(ppJob.Job, mdir, log)
+			}
+			// The write's deadline starts AFTER that gather, and the order is
+			// load-bearing. retainedProgressFor reads and inflates a manifest
+			// from disk, which on a wedged mount is unbounded; a deadline
+			// started before it would be spent by the time Add ran. Add failing
+			// is not recoverable here: the teardown below removes the queue row,
+			// and where that removal succeeds the reclaim rule sees neither a
+			// queue row nor a FAILED entry and takes durable_runs with it
+			// (internal/durability/reclaim.go ruleStatement), leaving a failed
+			// job with nothing to retry from. A slow read costs its own
+			// progress, which Add tolerates; it must not cost the entry.
 			dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 4*time.Second)
 			defer dbCancel()
-			if err := app.historyRepo.Add(dbCtx, entry); err != nil {
+			if err := app.historyRepo.Add(dbCtx, entry, files); err != nil {
 				log.Error("failed to add history entry; registry and filesystem teardown completed but history entry failed to persist",
 					"job", ppJob.Job.ID(), "err", err)
 				persistErr = err
-			} else if entry.Status == string(constants.StatusFailed) && ppJob != nil && ppJob.Job != nil {
-				p := ppJob.Job.Progress()
-				m, mErr := ppJob.Job.Manifest()
-				if mErr != nil && errors.Is(mErr, job.ErrNotResident) {
-					if f, oErr := openManifestIn(mdir, ppJob.Job.ID()); oErr == nil {
-						if diskM, dErr := decodeManifest(f); dErr == nil {
-							m = diskM
-							mErr = nil
-						}
-					}
-				}
-				if mErr != nil {
-					log.Error("failed to load manifest for failed job files; history_job_files not populated",
-						"job", ppJob.Job.ID(), "err", mErr)
-				} else if p != nil && m != nil {
-					for fi := range m.NumFiles() {
-						lo, hi := m.FileRange(fi)
-						artCount := hi - lo
-						filename := p.FileFilename(fi)
-						complete := 0
-						if p.FileComplete(fi) {
-							complete = 1
-						}
-						crc := p.FileAssembledCRC32(fi)
-						fetch := int(p.FileFetchPolicy(fi))
-						_, _ = app.historyRepo.DB().ExecContext(dbCtx, `
-INSERT OR REPLACE INTO history_job_files
-  (job_id, file_index, complete, fetch_policy, filename, assembled_crc32, article_count)
-VALUES (?, ?, ?, ?, ?, ?, ?)`,
-							ppJob.Job.ID(), fi, complete, fetch, filename, crc, artCount)
-					}
-				}
 			}
 		}
 		if app.checkpointer != nil && ppJob != nil && ppJob.Job != nil {
@@ -244,4 +228,46 @@ func (f *jobFinalizer) fireCompletionNotification(entry history.Entry) {
 		JobName:   entry.Name,
 		Timestamp: time.Now(),
 	})
+}
+
+// retainedProgressFor renders the per-file progress a failed job's history entry
+// carries, so a retry can resume its files instead of re-fetching them.
+//
+// The manifest is what turns a file index into an article count, and it is read
+// from disk when the job is no longer resident. Returning nil is a real answer
+// rather than a failure: without a manifest there is no article count to state,
+// and a row asserting the wrong one is rejected wholesale by
+// retainedMatchesManifest at retry time — costing the retry every file's
+// progress instead of one file's.
+func retainedProgressFor(j *job.Job, mdir string, log *slog.Logger) []history.FileProgress {
+	p := j.Progress()
+	m, mErr := j.Manifest()
+	if mErr != nil && errors.Is(mErr, job.ErrNotResident) {
+		if f, oErr := openManifestIn(mdir, j.ID()); oErr == nil {
+			if diskM, dErr := decodeManifest(f); dErr == nil {
+				m, mErr = diskM, nil
+			}
+		}
+	}
+	if mErr != nil {
+		log.Error("failed to load manifest for failed job files; retained file progress not recorded",
+			"job", j.ID(), "err", mErr)
+		return nil
+	}
+	if p == nil || m == nil {
+		return nil
+	}
+	files := make([]history.FileProgress, 0, m.NumFiles())
+	for fi := range m.NumFiles() {
+		lo, hi := m.FileRange(fi)
+		files = append(files, history.FileProgress{
+			FileIndex:      fi,
+			Complete:       p.FileComplete(fi),
+			FetchPolicy:    uint8(p.FileFetchPolicy(fi)),
+			Filename:       p.FileFilename(fi),
+			AssembledCRC32: p.FileAssembledCRC32(fi),
+			ArticleCount:   hi - lo,
+		})
+	}
+	return files
 }

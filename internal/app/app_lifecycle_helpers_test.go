@@ -71,7 +71,7 @@ func TestDeleteHistoryEntries_RemovesRowAndBackup(t *testing.T) {
 		t.Fatalf("write backup: %v", err)
 	}
 	entry := history.Entry{NzoID: "deleteentry00001", Name: "job", Status: "Failed", NZBBackup: "job.nzb.gz"}
-	if err := repo.Add(t.Context(), entry); err != nil {
+	if err := repo.Add(t.Context(), entry, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestDeleteHistoryEntries_ToleratesMissingBackup(t *testing.T) {
 	t.Parallel()
 	application, repo, _ := newLifecycleTestApp(t)
 	entry := history.Entry{NzoID: "deleteentry00002", Name: "job2", Status: "Failed", NZBBackup: "gone.nzb.gz"}
-	if err := repo.Add(t.Context(), entry); err != nil {
+	if err := repo.Add(t.Context(), entry, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
@@ -130,7 +130,7 @@ func TestDeleteHistoryEntries_PropagatesRepoError(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	entry := history.Entry{NzoID: "deleteentry00003", Name: "job3", Status: "Failed"}
-	if err := repo.Add(t.Context(), entry); err != nil {
+	if err := repo.Add(t.Context(), entry, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -425,7 +425,7 @@ func TestRetainedMatchesManifest_Branches(t *testing.T) {
 		t.Fatalf("Manifest: %v", err)
 	}
 
-	retainedBadIdx := []retainedFile{
+	retainedBadIdx := []history.FileProgress{
 		{FileIndex: 1, ArticleCount: 2},
 		{FileIndex: 1, ArticleCount: 2},
 		{FileIndex: 2, ArticleCount: 1},
@@ -434,7 +434,7 @@ func TestRetainedMatchesManifest_Branches(t *testing.T) {
 		t.Error("retainedMatchesManifest with bad file index should be false")
 	}
 
-	retainedBadCount := []retainedFile{
+	retainedBadCount := []history.FileProgress{
 		{FileIndex: 0, ArticleCount: 99},
 		{FileIndex: 1, ArticleCount: 2},
 		{FileIndex: 2, ArticleCount: 1},

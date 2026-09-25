@@ -233,7 +233,7 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 		NzoID: qJob.ID(),
 		Name:  "already-exists",
 	}
-	if err := repo.Add(t.Context(), existing); err != nil {
+	if err := repo.Add(t.Context(), existing, nil); err != nil {
 		t.Fatalf("repo.Add existing: %v", err)
 	}
 

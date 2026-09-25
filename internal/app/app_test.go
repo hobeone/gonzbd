@@ -420,7 +420,7 @@ func TestRetryHistoryJob(t *testing.T) {
 		NZBBackup: "retry-test.nzb.gz",
 		Status:    string(constants.StatusFailed),
 	}
-	_ = repo.Add(ctx, entry)
+	_ = repo.Add(ctx, entry, nil)
 
 	// Pause downloads so the retried job sits at Queued long enough to
 	// inspect without racing the downloader/post-processor pipeline. This

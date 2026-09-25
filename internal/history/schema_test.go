@@ -59,7 +59,7 @@ func TestAllColumns_CountMatchesScanEntry(t *testing.T) {
 		Name:   "test-name",
 		Status: "Completed",
 	}
-	if err := repo.Add(ctx, entry); err != nil {
+	if err := repo.Add(ctx, entry, nil); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
