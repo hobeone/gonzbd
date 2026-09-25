@@ -5,6 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // TestManifestPath_RejectsUnsafeJobID pins the guard that keeps an API-supplied
@@ -146,5 +151,85 @@ func TestRemoveManifestIn_RemovesOneManifestAndRefusesAnUnsafeID(t *testing.T) {
 	}
 	if err := removeManifestIn(dir, ".."); err == nil {
 		t.Error("removeManifestIn accepted an unsafe ID")
+	}
+}
+
+// writeJobManifestFixture builds a job whose manifest writeJobManifest can
+// persist. jobID is passed through so a test can hand it an ID the path guard
+// must refuse.
+func writeJobManifestFixture(t *testing.T, jobID string) *job.Job {
+	t.Helper()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("config.Default: %v", err)
+	}
+	parsed := &nzb.NZB{Files: []nzb.File{{
+		Subject:  "a.bin",
+		Bytes:    1,
+		Articles: []nzb.Article{{ID: "a@t", Bytes: 1, Number: 1}},
+	}}}
+	j, _, err := BuildIngestJob(cfg, parsed, "x.nzb",
+		types.FetchOptions{NzbName: "x", JobID: jobID}, nil)
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	return j
+}
+
+// TestWriteJobManifest_WritesTheFileTheHydratorReads covers the success path.
+// Without this file a tick that hydrates the job settles it Failed, which is
+// permanent — see the function's own doc.
+func TestWriteJobManifest_WritesTheFileTheHydratorReads(t *testing.T) {
+	admin := t.TempDir()
+	j := writeJobManifestFixture(t, "")
+
+	if err := writeJobManifest(admin, j); err != nil {
+		t.Fatalf("writeJobManifest: %v", err)
+	}
+	path, err := manifestPath(admin, j.ID())
+	if err != nil {
+		t.Fatalf("manifestPath: %v", err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if st.Size() == 0 {
+		t.Error("the manifest is empty, so a hydrate would fail on it as surely as on a missing one")
+	}
+}
+
+// TestWriteJobManifest_ReportsADirectoryItCannotCreate pins that the mkdir
+// failure is returned rather than swallowed: a caller that admitted the job
+// anyway would leave one no tick can hydrate.
+func TestWriteJobManifest_ReportsADirectoryItCannotCreate(t *testing.T) {
+	// A regular file as the parent makes MkdirAll fail with ENOTDIR, which
+	// needs no permission changes and so behaves the same for root.
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := writeJobManifest(filepath.Join(blocker, "admin"), writeJobManifestFixture(t, ""))
+	if err == nil {
+		t.Fatal("writeJobManifest reported success for an admin dir it could not create")
+	}
+	if !strings.Contains(err.Error(), "mkdir manifests") {
+		t.Errorf("err = %v, want it to name the mkdir that failed", err)
+	}
+}
+
+// TestWriteJobManifest_RefusesAnUnsafeJobID pins that the path guard is reached
+// through this writer too, not only through manifestPath's direct callers.
+func TestWriteJobManifest_RefusesAnUnsafeJobID(t *testing.T) {
+	admin := t.TempDir()
+	j := writeJobManifestFixture(t, "../evil")
+
+	err := writeJobManifest(admin, j)
+	if err == nil {
+		t.Fatal("writeJobManifest accepted a job ID that escapes the manifest directory")
+	}
+	if !strings.Contains(err.Error(), "unsafe job ID") {
+		t.Errorf("err = %v, want it to name the unsafe ID", err)
 	}
 }

@@ -155,14 +155,14 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 		t.Fatalf("dispatcher Add: %v", err)
 	}
 
-	// Wait for dispatcher tick to transition to Fetching
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if row, ok := app.Dispatcher().Row(j.ID()); ok && row.View.State == job.Fetching {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// A precondition, not a nicety: the stalled-pipeline assertion below only
+	// means anything while some job is Fetching, because with none
+	// IsPipelineHealthy takes its idle branch, refreshes the heartbeat and
+	// returns true.
+	waitFor(t, func() bool {
+		row, ok := app.Dispatcher().Row(j.ID())
+		return ok && row.View.State == job.Fetching
+	})
 
 	// Set heartbeat to 3 minutes ago
 	app.lastHeartbeat.Store(time.Now().Add(-3 * time.Minute).Unix())

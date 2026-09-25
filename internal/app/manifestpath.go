@@ -1,10 +1,14 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // manifestDir returns the directory holding one gzipped JSON manifest per job.
@@ -16,6 +20,36 @@ import (
 // own, whether the job ID reaching it was safe to put in a path.
 func manifestDir(adminDir string) string {
 	return filepath.Join(adminDir, "queue", "manifests")
+}
+
+// writeJobManifest persists j's manifest under adminDir, creating the manifest
+// directory if it is absent. A job with no manifest writes nothing and is not
+// an error.
+//
+// Persisting it is what lets the job survive an eviction. A tick hydrates any
+// job that holds resources but is not resident, and a manifest that will not
+// read settles the job Failed — permanently, because Outcome is write-once
+// (reconcileResidency, internal/dispatch/tick.go).
+func writeJobManifest(adminDir string, j *job.Job) error {
+	if err := os.MkdirAll(manifestDir(adminDir), 0o750); err != nil {
+		return fmt.Errorf("mkdir manifests: %w", err)
+	}
+	// Written only when the job has a manifest to write, and a job that cannot
+	// produce one is not an error here — the shape AddJob has always had.
+	if m, mErr := j.Manifest(); mErr == nil && m != nil {
+		data, err := json.Marshal(m)
+		if err != nil {
+			return fmt.Errorf("marshal manifest: %w", err)
+		}
+		mpath, err := manifestPath(adminDir, j.ID())
+		if err != nil {
+			return fmt.Errorf("write manifest: %w", err)
+		}
+		if err := fsutil.WriteGzAtomicBytes(mpath, data); err != nil {
+			return fmt.Errorf("write manifest: %w", err)
+		}
+	}
+	return nil
 }
 
 // manifestName returns the file name — not a path — for a job's manifest, or an
@@ -45,7 +79,9 @@ const manifestSuffix = ".json.gz"
 
 // manifestPath returns the absolute path of one job's manifest.
 //
-// Only the atomic WRITE path uses it. Writes go through fsutil.WriteGzAtomic,
+// Production uses it only on the atomic WRITE path; export_test.go's
+// ManifestPath also hands it to a test that needs to name the file without
+// repeating this layout. Writes go through fsutil.WriteGzAtomic,
 // whose temp-file → fsync → close → rename sequence is what
 // docs/durability-contract.md relies on; reimplementing that inside an os.Root
 // would trade a durability guarantee for a confinement one the write path does

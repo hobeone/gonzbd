@@ -322,7 +322,7 @@ func TestBarrierRunsOnCleanShutdown(t *testing.T) {
 	if err := a.Dispatcher().Add(context.Background(), job, hdr); err != nil {
 		t.Fatalf("Dispatcher.Add: %v", err)
 	}
-	awaitFirstArticle(t, a, job.ID())
+	awaitUnackedWrittenBytes(t, a, job.ID())
 
 	if before := a.BarrierRuns(); before != 0 {
 		t.Fatalf("%d barriers ran before shutdown despite the cadence being pinned open; "+
@@ -377,6 +377,28 @@ func heldFile(t *testing.T, server *nntptest.Scripted, name string, payload []by
 		},
 		Bytes: total,
 	}}}
+}
+
+// awaitUnackedWrittenBytes blocks until the job has bytes a barrier would have
+// something to do about: written through the assembler and not yet acked.
+//
+// awaitFirstArticle is the wrong signal for that, for the reason its own doc
+// below gives. A Shutdown landing in that window finds no open file for the
+// job, so the barrier returns before it counts a run and the assertion reads as
+// "shutdown ran no barrier" when nothing had been written yet.
+//
+// The accumulator is the signal the barrier itself keys on: noteJobBytes is
+// wired to the assembler's onArticleWritten (app.go), and with the cadence
+// pinned open nothing clears it before shutdown.
+func awaitUnackedWrittenBytes(t *testing.T, a *app.Application, jobID string) {
+	t.Helper()
+	if !waitUntil(10*time.Second, func() bool {
+		hasBytes, _, _ := a.JobBarrierState(jobID)
+		return hasBytes
+	}) {
+		t.Fatal("no article was written through the assembler, so shutdown has nothing to " +
+			"barrier and the assertion below would not be about the cadence")
+	}
 }
 
 // awaitFirstArticle blocks until the job has recorded downloaded bytes.
