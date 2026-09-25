@@ -117,14 +117,24 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 
 		var persistErr error
 		if app.historyRepo != nil && app.historyRepo.DB() != nil {
-			dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 4*time.Second)
-			defer dbCancel()
-			// Gathered BEFORE the write: Add stores the entry and this
+			// Gathered before the write, because Add stores the entry and this
 			// progress in one transaction, and its doc says what rests on that.
 			var files []history.FileProgress
 			if entry.Status == string(constants.StatusFailed) && ppJob != nil && ppJob.Job != nil {
 				files = retainedProgressFor(ppJob.Job, mdir, log)
 			}
+			// The write's deadline starts AFTER that gather, and the order is
+			// load-bearing. retainedProgressFor reads and inflates a manifest
+			// from disk, which on a wedged mount is unbounded; a deadline
+			// started before it would be spent by the time Add ran. Add failing
+			// is not recoverable here: the teardown below removes the queue row,
+			// and where that removal succeeds the reclaim rule sees neither a
+			// queue row nor a FAILED entry and takes durable_runs with it
+			// (internal/durability/reclaim.go ruleStatement), leaving a failed
+			// job with nothing to retry from. A slow read costs its own
+			// progress, which Add tolerates; it must not cost the entry.
+			dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 4*time.Second)
+			defer dbCancel()
 			if err := app.historyRepo.Add(dbCtx, entry, files); err != nil {
 				log.Error("failed to add history entry; registry and filesystem teardown completed but history entry failed to persist",
 					"job", ppJob.Job.ID(), "err", err)
