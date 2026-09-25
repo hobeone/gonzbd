@@ -153,7 +153,7 @@ func TestRetryHistoryJob_SurvivesEviction(t *testing.T) {
 		NzbName:   "survivesevict.nzb",
 		NZBBackup: "survivesevict.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	seedHistoryJobFilesRowIn(t, repo.DB(), id, 0, false, 2)

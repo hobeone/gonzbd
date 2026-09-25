@@ -54,7 +54,7 @@ func seedEntry(t *testing.T, repo *history.Repository, adminDir, id, status stri
 		Status:    status,
 		NZBBackup: backup,
 		Completed: time.Now().AddDate(0, 0, -ageDays),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	return path

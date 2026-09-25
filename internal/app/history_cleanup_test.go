@@ -48,7 +48,7 @@ func writeBackupFor(t *testing.T, repo *history.Repository, adminDir, nzoID, bac
 		Status:    "Failed",
 		NzbName:   "cleanup-job.nzb",
 		NZBBackup: backup,
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	return path

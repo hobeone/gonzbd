@@ -1436,7 +1436,7 @@ func TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability(t 
 	// from the retention.
 	if err := application.historyRepo.Add(ctx, history.Entry{
 		NzoID: j.ID(), Name: "reconciled", Status: string(constants.StatusCompleted),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	seedDurability(t, application, j.ID())
@@ -1498,7 +1498,7 @@ func TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails(t *
 
 	if err := application.historyRepo.Add(ctx, history.Entry{
 		NzoID: j.ID(), Name: "unremovable", Status: string(constants.StatusCompleted),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	seedDurability(t, application, j.ID())
@@ -1616,7 +1616,7 @@ func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
 
 			if err := application.historyRepo.Add(t.Context(), history.Entry{
 				NzoID: job.ID(), Name: "reconciled", Status: string(tc.status),
-			}); err != nil {
+			}, nil); err != nil {
 				t.Fatal(err)
 			}
 

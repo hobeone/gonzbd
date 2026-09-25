@@ -26,7 +26,7 @@ func TestEntry_NZBBackupRoundTrip(t *testing.T) {
 		NZBBackup: "Show.S01E01.nzb.1.gz",
 		Status:    "Failed",
 	}
-	if err := repo.Add(t.Context(), entry); err != nil {
+	if err := repo.Add(t.Context(), entry, nil); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 

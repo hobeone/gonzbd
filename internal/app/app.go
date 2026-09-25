@@ -2452,43 +2452,21 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	return nil
 }
 
-type retainedFile struct {
-	FileIndex      int
-	Complete       bool
-	Filename       string
-	AssembledCRC32 uint32
-	ArticleCount   int
-}
-
-func (app *Application) historyFileProgress(ctx context.Context, jobID string) ([]retainedFile, error) {
+// historyFileProgress reads a job's retained per-file progress, or nothing when
+// this installation has no history database.
+//
+// The absent-repo case is the only part of the read that belongs here: the rows
+// and their columns are internal/history's, so the query lives there
+// (Repository.RetainedFiles) and this decides whether there is a database to
+// ask at all.
+func (app *Application) historyFileProgress(ctx context.Context, jobID string) ([]history.FileProgress, error) {
 	if app.historyRepo == nil || app.historyRepo.DB() == nil {
 		return nil, nil
 	}
-	const q = `
-SELECT file_index, complete,
-       COALESCE(filename, ''), COALESCE(assembled_crc32, 0), article_count
-FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
-	rows, err := app.historyRepo.DB().QueryContext(ctx, q, jobID)
-	if err != nil {
-		return nil, fmt.Errorf("app: query history file progress %s: %w", jobID, err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []retainedFile
-	for rows.Next() {
-		var f retainedFile
-		var complete int
-		if err := rows.Scan(&f.FileIndex, &complete,
-			&f.Filename, &f.AssembledCRC32, &f.ArticleCount); err != nil {
-			return nil, fmt.Errorf("app: scan history_job_file %s: %w", jobID, err)
-		}
-		f.Complete = complete != 0
-		out = append(out, f)
-	}
-	return out, rows.Err()
+	return app.historyRepo.RetainedFiles(ctx, jobID)
 }
 
-func retainedMatchesManifest(retained []retainedFile, m *job.Manifest) bool {
+func retainedMatchesManifest(retained []history.FileProgress, m *job.Manifest) bool {
 	if len(retained) != m.NumFiles() {
 		return false
 	}

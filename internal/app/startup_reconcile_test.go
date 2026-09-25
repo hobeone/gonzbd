@@ -72,7 +72,7 @@ func TestStart_RetentionDoesNotDefeatCrashReconciliation(t *testing.T) {
 		Name:      "reconcile",
 		Status:    string(constants.StatusCompleted),
 		Completed: time.Now().AddDate(0, 0, -30),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("seed history entry: %v", err)
 	}
 

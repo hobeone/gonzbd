@@ -72,7 +72,7 @@ func TestFinalize_RemovesJobFromQueueWhenHistoryWriteFails(t *testing.T) {
 		Name:      "already-there",
 		Status:    string(constants.StatusCompleted),
 		Completed: time.Now(),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("seed conflicting entry: %v", err)
 	}
 
@@ -142,7 +142,7 @@ func TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed(t *testing.T) {
 		Name:      "existing-failed-job",
 		Status:    string(constants.StatusFailed),
 		Completed: time.Now(),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("seed conflicting failed entry: %v", err)
 	}
 

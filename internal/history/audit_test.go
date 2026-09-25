@@ -41,7 +41,7 @@ func TestPrune_MixedAgesAndStatuses(t *testing.T) {
 	for _, tc := range entries {
 		e := sampleEntry(tc.id, "show-"+tc.id, tc.status, "TV")
 		e.Completed = now.AddDate(0, 0, -tc.age)
-		if err := repo.Add(ctx, e); err != nil {
+		if err := repo.Add(ctx, e, nil); err != nil {
 			t.Fatalf("Add %s: %v", tc.id, err)
 		}
 	}
@@ -91,7 +91,7 @@ func TestPrune_OnlyNonFailedRetention(t *testing.T) {
 	e2.Completed = ancient
 
 	for _, e := range []Entry{e1, e2} {
-		if err := repo.Add(ctx, e); err != nil {
+		if err := repo.Add(ctx, e, nil); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}
@@ -124,7 +124,7 @@ func TestPrune_OnlyFailedRetention(t *testing.T) {
 	e2.Completed = ancient
 
 	for _, e := range []Entry{e1, e2} {
-		if err := repo.Add(ctx, e); err != nil {
+		if err := repo.Add(ctx, e, nil); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}
@@ -159,7 +159,7 @@ func TestDelete_ChunkedDeletion(t *testing.T) {
 		id := fmt.Sprintf("chunk_%04d", i)
 		ids[i] = id
 		e := sampleEntry(id, "show", "Completed", "TV")
-		if err := repo.Add(ctx, e); err != nil {
+		if err := repo.Add(ctx, e, nil); err != nil {
 			t.Fatalf("Add %s: %v", id, err)
 		}
 	}
@@ -207,7 +207,7 @@ func TestDelete_ChunkedPartialMatch(t *testing.T) {
 		id := fmt.Sprintf("real_%04d", i)
 		ids = append(ids, id)
 		e := sampleEntry(id, "show", "Completed", "TV")
-		if err := repo.Add(ctx, e); err != nil {
+		if err := repo.Add(ctx, e, nil); err != nil {
 			t.Fatalf("Add %s: %v", id, err)
 		}
 	}
@@ -234,7 +234,7 @@ func TestDelete_ZeroIDs(t *testing.T) {
 
 	// Insert one record to prove the no-op doesn't delete anything.
 	e := sampleEntry("survivor", "show", "Completed", "TV")
-	if err := repo.Add(ctx, e); err != nil {
+	if err := repo.Add(ctx, e, nil); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -267,7 +267,7 @@ func TestMarkCompleted_StateChange(t *testing.T) {
 	e := sampleEntry("mc_audit", "My Failed Show", "Failed", "TV")
 	e.Completed = time.Time{} // zero — not yet completed
 	e.FailMessage = "connection timed out"
-	if err := repo.Add(ctx, e); err != nil {
+	if err := repo.Add(ctx, e, nil); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -315,7 +315,7 @@ func TestMarkCompleted_AlreadyCompleted(t *testing.T) {
 
 	e := sampleEntry("mc_idem", "Already Done", "Completed", "TV")
 	e.Completed = time.Now().Add(-24 * time.Hour).Truncate(time.Second).UTC()
-	if err := repo.Add(ctx, e); err != nil {
+	if err := repo.Add(ctx, e, nil); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 

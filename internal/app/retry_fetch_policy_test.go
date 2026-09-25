@@ -137,7 +137,7 @@ func TestRetryHistoryJob_ConfigurationIsHonoured(t *testing.T) {
 		NzbName:   "cfgoff.nzb",
 		NZBBackup: "cfgoff.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	seedHistoryJobFilesRow(t, repo.DB(), id, 0, false, 2, job.FetchAlways)
@@ -183,7 +183,7 @@ func TestRetryHistoryJob_PriorRulingDoesNotSurvive(t *testing.T) {
 		NzbName:   "priorruling.nzb",
 		NZBBackup: "priorruling.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	seedHistoryJobFilesRow(t, repo.DB(), id, 0, false, 2, job.FetchAlways)
@@ -229,7 +229,7 @@ func TestRetryHistoryJob_ResumesCompletedFilesFromRetainedProgress(t *testing.T)
 		NzbName:   "resumes.nzb",
 		NZBBackup: "resumes.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	seedHistoryJobFilesRow(t, repo.DB(), id, 0, false, 2, job.FetchAlways)
@@ -282,7 +282,7 @@ func TestRetryHistoryJob_CompletedVolumeKeepsBytes(t *testing.T) {
 		NzbName:   "keepsbytes.nzb",
 		NZBBackup: "keepsbytes.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	seedHistoryJobFilesRow(t, repo.DB(), id, 0, false, 2, job.FetchAlways)
