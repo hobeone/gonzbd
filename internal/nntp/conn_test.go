@@ -128,6 +128,7 @@ func makeCfg(addr string) config.ServerConfig {
 }
 
 func TestDialAndFetch(t *testing.T) {
+	t.Parallel()
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
 		c.expect("CAPABILITIES")
@@ -164,6 +165,7 @@ func TestDialAndFetch(t *testing.T) {
 }
 
 func TestDialAuthSuccess(t *testing.T) {
+	t.Parallel()
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
 		c.expect("AUTHINFO USER alice")
@@ -189,6 +191,7 @@ func TestDialAuthSuccess(t *testing.T) {
 }
 
 func TestDialAuthRejected(t *testing.T) {
+	t.Parallel()
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
 		c.expect("AUTHINFO USER alice")
@@ -209,6 +212,7 @@ func TestDialAuthRejected(t *testing.T) {
 }
 
 func TestDialOneShotAuth(t *testing.T) {
+	t.Parallel()
 	// Some servers grant auth in one step with 281 after USER only.
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
@@ -230,6 +234,7 @@ func TestDialOneShotAuth(t *testing.T) {
 }
 
 func TestFetchNoArticle(t *testing.T) {
+	t.Parallel()
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
 		c.expect("CAPABILITIES")
@@ -252,6 +257,7 @@ func TestFetchNoArticle(t *testing.T) {
 }
 
 func TestStat(t *testing.T) {
+	t.Parallel()
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
 		c.expect("CAPABILITIES")
@@ -278,6 +284,7 @@ func TestStat(t *testing.T) {
 }
 
 func TestPipelinedFetches(t *testing.T) {
+	t.Parallel()
 	const n = 5
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
@@ -326,6 +333,7 @@ func TestPipelinedFetches(t *testing.T) {
 }
 
 func TestFetchContextCancel(t *testing.T) {
+	t.Parallel()
 	// Server accepts the BODY command but replies slowly; the
 	// caller's ctx cancels before the response arrives. The next
 	// Fetch on the connection must still work — the reader drains
@@ -391,6 +399,7 @@ func TestFetchContextCancel(t *testing.T) {
 }
 
 func TestGreetingRejected(t *testing.T) {
+	t.Parallel()
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("502 service permanently unavailable")
 	})
@@ -410,6 +419,7 @@ func TestGreetingRejected(t *testing.T) {
 // reason other than an explicit Close() call, rather than the generic
 // ErrClosed.
 func TestFetchStatAfterReaderError(t *testing.T) {
+	t.Parallel()
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
 		c.expect("CAPABILITIES")
@@ -442,6 +452,7 @@ func TestFetchStatAfterReaderError(t *testing.T) {
 }
 
 func TestFetchAfterClose(t *testing.T) {
+	t.Parallel()
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
 		c.expect("CAPABILITIES")
@@ -463,6 +474,7 @@ func TestFetchAfterClose(t *testing.T) {
 }
 
 func TestStateTransitions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		from State
@@ -490,6 +502,7 @@ func TestStateTransitions(t *testing.T) {
 }
 
 func TestStateString(t *testing.T) {
+	t.Parallel()
 	tests := map[State]string{
 		StateDisconnected:  "disconnected",
 		StateConnected:     "connected",
@@ -506,6 +519,7 @@ func TestStateString(t *testing.T) {
 }
 
 func TestBuildTLSConfigLevels(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		verify        config.SSLVerify
@@ -544,6 +558,7 @@ func TestBuildTLSConfigLevels(t *testing.T) {
 }
 
 func TestBuildTLSConfigCiphers(t *testing.T) {
+	t.Parallel()
 	// Known cipher should parse; unknown should fail; custom cipher
 	// forces MaxVersion to TLS 1.2 per spec §3.3.
 	cfg, err := buildTLSConfig("h", config.SSLVerifyHostname,
@@ -564,6 +579,7 @@ func TestBuildTLSConfigCiphers(t *testing.T) {
 }
 
 func TestParseCapabilities(t *testing.T) {
+	t.Parallel()
 	caps := parseCapabilities("VERSION 2\r\nREADER\r\nPOST\r\nSTAT\r\n")
 	if !caps.HasBody || !caps.HasStat {
 		t.Errorf("READER caps should yield HasBody+HasStat, got %+v", caps)
@@ -580,6 +596,7 @@ func TestParseCapabilities(t *testing.T) {
 }
 
 func TestReadDotStuffedBody(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		wire string
@@ -607,6 +624,7 @@ func TestReadDotStuffedBody(t *testing.T) {
 // TestReadDotStuffedBody_ExceedsMaxSize verifies that readDotStuffedBody
 // returns an error when the total body exceeds maxBodySize (10 MB).
 func TestReadDotStuffedBody_ExceedsMaxSize(t *testing.T) {
+	t.Parallel()
 	// Build a reader that produces lines of ~1000 bytes each, exceeding 10 MB
 	// total without a dot-terminator before the limit.
 	lineLen := 1000
@@ -647,6 +665,7 @@ func (l *blockLimiter) Wait(ctx context.Context, n int) error {
 }
 
 func TestCloseUnblocksRateLimiter(t *testing.T) {
+	t.Parallel()
 	mockDone := make(chan struct{})
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
@@ -767,6 +786,7 @@ func TestFetch_AfterReaderError(t *testing.T) {
 }
 
 func TestStat_Errors(t *testing.T) {
+	t.Parallel()
 	// 1. State != StateReady
 	{
 		conn := &Conn{} // state is StateInit (0), not StateReady
@@ -789,6 +809,7 @@ func TestStat_Errors(t *testing.T) {
 }
 
 func TestStat_ServerErrors(t *testing.T) {
+	t.Parallel()
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
 		c.expect("CAPABILITIES")
@@ -855,6 +876,7 @@ func TestStat_ServerErrors(t *testing.T) {
 // desynced. The server deliberately sends only the one response, so the
 // test never depends on a write to an already-closed socket.
 func TestFetchMessageIDMismatch(t *testing.T) {
+	t.Parallel()
 	const n = 2
 	serverDone := make(chan struct{})
 	t.Cleanup(func() { close(serverDone) })
@@ -931,6 +953,7 @@ func TestFetchMessageIDMismatch(t *testing.T) {
 // drop, the reader would sail on and the SECOND Stat would succeed —
 // answered, unnoticed, by a response belonging to the first.
 func TestStatMessageIDMismatchDropsConnection(t *testing.T) {
+	t.Parallel()
 	const n = 2
 	serverDone := make(chan struct{})
 	t.Cleanup(func() { close(serverDone) })
@@ -1076,6 +1099,7 @@ func (blockingLimiter) Wait(ctx context.Context, n int) error {
 // dopts.dialer.Timeout even though every socket read itself completes
 // fine.
 func TestDialAggregateHandshakeTimeoutAppliesToLimiterWait(t *testing.T) {
+	t.Parallel()
 	const idleTimeoutSeconds = 1
 	waitWindow := time.Duration(idleTimeoutSeconds)*time.Second + 2*time.Second
 
@@ -1139,6 +1163,7 @@ func TestDialAggregateHandshakeTimeoutAppliesToLimiterWait(t *testing.T) {
 // best-effort), so handshake still reports success — with the deadline
 // poisoned unless Dial resets it.
 func TestDialResetsSocketDeadlineAfterSuccessfulHandshake(t *testing.T) {
+	t.Parallel()
 	const (
 		idleTimeoutSeconds = 1
 		trickleInterval    = 400 * time.Millisecond

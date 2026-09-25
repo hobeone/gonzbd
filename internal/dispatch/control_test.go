@@ -340,18 +340,27 @@ func TestStart_PropagatesContextCancellation(t *testing.T) {
 	parentCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	var d *Dispatcher
 	workerCtxSeen := make(chan context.Context, 1)
 	runner := &inspectingRunner{
 		onRun: func(ctx context.Context, id string, state job.State) {
 			workerCtxSeen <- ctx
+			go func() {
+				<-ctx.Done()
+				_ = d.Yielded(id)
+			}()
 		},
 	}
-	d := newTestDispatcher(t, withRunner(runner))
+	d = newTestDispatcher(t, withRunner(runner))
 
 	if err := d.Start(parentCtx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer d.Stop() //nolint:errcheck
+	defer func() {
+		if err := d.Stop(); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	}()
 
 	j := job.New("j1", "Job 1", job.Policy{})
 	if err := d.Add(context.Background(), j, Header{Name: "Job 1"}); err != nil {

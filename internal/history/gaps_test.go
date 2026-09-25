@@ -8,6 +8,7 @@ import (
 // ---------- ListIDs ----------
 
 func TestListIDs_ReturnsAll(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -25,6 +26,7 @@ func TestListIDs_ReturnsAll(t *testing.T) {
 }
 
 func TestListIDs_Filtered(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -44,6 +46,7 @@ func TestListIDs_Filtered(t *testing.T) {
 }
 
 func TestListIDs_Empty(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -59,6 +62,7 @@ func TestListIDs_Empty(t *testing.T) {
 // ---------- Count ----------
 
 func TestCount_All(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -76,6 +80,7 @@ func TestCount_All(t *testing.T) {
 }
 
 func TestCount_Filtered(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -92,6 +97,7 @@ func TestCount_Filtered(t *testing.T) {
 }
 
 func TestCount_Category(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -109,6 +115,7 @@ func TestCount_Category(t *testing.T) {
 }
 
 func TestCount_Empty(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -124,6 +131,7 @@ func TestCount_Empty(t *testing.T) {
 // ---------- Search edge cases ----------
 
 func TestSearch_ArchiveOnly(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -148,6 +156,7 @@ func TestSearch_ArchiveOnly(t *testing.T) {
 }
 
 func TestSearch_MD5Sum(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -172,6 +181,7 @@ func TestSearch_MD5Sum(t *testing.T) {
 }
 
 func TestSearch_Pagination(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -192,6 +202,7 @@ func TestSearch_Pagination(t *testing.T) {
 }
 
 func TestSearch_OffsetWithoutLimit(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -253,6 +264,7 @@ func TestToUnix_RoundTrip(t *testing.T) {
 // ---------- MarkCompleted for missing entry ----------
 
 func TestMarkCompleted_NotFound(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 

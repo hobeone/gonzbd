@@ -40,6 +40,7 @@ func (s *closedFileTarget) Confirm(context.Context, int32)    {}
 // entering post-processing. All three are deliberate, and all three drain and
 // sync before closing, so there is nothing left for this barrier to do.
 func TestBarrier_ADeliberatelyClosedFileDoesNotStallTheJob(t *testing.T) {
+	t.Parallel()
 	stall := &recordingStall{}
 	b := NewBarrier(NewStore(openTestDB(t)),
 		&recordingAcker{}, stall, slog.New(slog.DiscardHandler))

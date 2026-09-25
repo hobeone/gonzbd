@@ -12,6 +12,7 @@ import (
 // after the entry is gone, and a Delete that took them would be a second
 // deleter deciding the same rows by a different rule.
 func TestDelete_TakesRetainedProgressAndLeavesDurabilityRows(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db, repo := openTestDB(t)
 

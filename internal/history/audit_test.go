@@ -15,6 +15,7 @@ import (
 // statuses, prunes with both retainDays and retainFailedDays, and verifies
 // that only the expected records survive.
 func TestPrune_MixedAgesAndStatuses(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -77,6 +78,7 @@ func TestPrune_MixedAgesAndStatuses(t *testing.T) {
 // TestPrune_OnlyNonFailedRetention verifies that when only retainDays is set
 // (retainFailedDays = 0), failed entries are kept forever regardless of age.
 func TestPrune_OnlyNonFailedRetention(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -112,6 +114,7 @@ func TestPrune_OnlyNonFailedRetention(t *testing.T) {
 // TestPrune_OnlyFailedRetention verifies that when only retainFailedDays is
 // set (retainDays = 0), non-failed entries are kept forever.
 func TestPrune_OnlyFailedRetention(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -150,19 +153,16 @@ func TestPrune_OnlyFailedRetention(t *testing.T) {
 // single call to verify that the chunked deletion logic (chunkSize = 999)
 // correctly processes multiple batches within one transaction.
 func TestDelete_ChunkedDeletion(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
 	const total = 1005
 	ids := make([]string, total)
 	for i := range total {
-		id := fmt.Sprintf("chunk_%04d", i)
-		ids[i] = id
-		e := sampleEntry(id, "show", "Completed", "TV")
-		if err := repo.Add(ctx, e, nil); err != nil {
-			t.Fatalf("Add %s: %v", id, err)
-		}
+		ids[i] = fmt.Sprintf("chunk_%04d", i)
 	}
+	seedEntries(t, repo, ids)
 
 	// Verify all records were inserted.
 	count, err := repo.Count(ctx, SearchOptions{})
@@ -196,21 +196,19 @@ func TestDelete_ChunkedDeletion(t *testing.T) {
 // the batch don't exist. The returned count should reflect only rows actually
 // deleted.
 func TestDelete_ChunkedPartialMatch(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
 	const realCount = 500
-	ids := make([]string, 0, 1200)
-
-	// Insert 500 real records.
+	realIDs := make([]string, realCount)
 	for i := range realCount {
-		id := fmt.Sprintf("real_%04d", i)
-		ids = append(ids, id)
-		e := sampleEntry(id, "show", "Completed", "TV")
-		if err := repo.Add(ctx, e, nil); err != nil {
-			t.Fatalf("Add %s: %v", id, err)
-		}
+		realIDs[i] = fmt.Sprintf("real_%04d", i)
 	}
+	seedEntries(t, repo, realIDs)
+
+	ids := make([]string, 0, 1200)
+	ids = append(ids, realIDs...)
 
 	// Add 700 ghost IDs that don't exist in the DB.
 	for i := range 700 {
@@ -229,6 +227,7 @@ func TestDelete_ChunkedPartialMatch(t *testing.T) {
 // TestDelete_ZeroIDs verifies that Delete with an empty slice is a no-op
 // that returns (0, nil) without touching the database.
 func TestDelete_ZeroIDs(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -259,6 +258,7 @@ func TestDelete_ZeroIDs(t *testing.T) {
 // TestMarkCompleted_StateChange inserts a Failed record, marks it completed,
 // and verifies both the status change and the completed timestamp update.
 func TestMarkCompleted_StateChange(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -310,6 +310,7 @@ func TestMarkCompleted_StateChange(t *testing.T) {
 // TestMarkCompleted_AlreadyCompleted verifies that marking an already-completed
 // entry updates the completed timestamp without error.
 func TestMarkCompleted_AlreadyCompleted(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -341,6 +342,7 @@ func TestMarkCompleted_AlreadyCompleted(t *testing.T) {
 // TestMarkCompleted_MissingID verifies that marking a nonexistent nzo_id
 // returns ErrNotFound.
 func TestMarkCompleted_MissingID(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 

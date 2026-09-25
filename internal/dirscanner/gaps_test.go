@@ -239,13 +239,17 @@ func TestExtractPlainNZB_Direct(t *testing.T) {
 	}
 
 	// Exceed max size
+	oldLimit := MaxDecompressSize
+	MaxDecompressSize = 1024
+	defer func() { MaxDecompressSize = oldLimit }()
+
 	largePath := filepath.Join(tmp, "large.nzb")
 	largeData := make([]byte, MaxDecompressSize+100)
 	if err := os.WriteFile(largePath, largeData, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := extractPlainNZB(largePath); err == nil {
-		t.Error("expected error for file exceeding MaxDecompressSize")
+	if _, err := extractPlainNZB(largePath); err == nil || !strings.Contains(err.Error(), "NZB file exceeds maximum size") {
+		t.Errorf("expected NZB size limit error, got: %v", err)
 	}
 }
 

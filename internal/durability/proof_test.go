@@ -8,6 +8,7 @@ import "testing"
 // the absence, because newProof is reachable from anywhere in this package.
 // It is enforced at the package boundary by the compiler.
 func TestDurableProof_CarriesItsPayload(t *testing.T) {
+	t.Parallel()
 	p := newProof("job-1", []int32{3, 7, 11})
 	if p.JobID() != "job-1" {
 		t.Errorf("JobID() = %q, want %q", p.JobID(), "job-1")
@@ -20,6 +21,7 @@ func TestDurableProof_CarriesItsPayload(t *testing.T) {
 // TestDurableProof_ArticlesIsNotAliased pins that a caller mutating the
 // returned slice cannot corrupt the proof, which the barrier may still hold.
 func TestDurableProof_ArticlesIsNotAliased(t *testing.T) {
+	t.Parallel()
 	p := newProof("job-1", []int32{3, 7, 11})
 	got := p.Articles()
 	got[0] = 99

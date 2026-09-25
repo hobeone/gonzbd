@@ -19,6 +19,7 @@ import (
 // untouched. Asserting that from a call site means asserting the absence of an
 // effect, which passes when raise is never reached at all.
 func TestRaise(t *testing.T) {
+	t.Parallel()
 	const path = "/downloads/a.bin"
 
 	newBarrier := func(s *recordingStall) *Barrier {

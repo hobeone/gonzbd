@@ -64,6 +64,7 @@ func (s *factGapTarget) Confirm(_ context.Context, idx int32) { s.confirmed = ap
 // post-truncate stat survives, and it is the value both §3.3's overlap check
 // and §3.4's resume gate are stated against.
 func TestFinalizeFile_PostTruncateStatFaultNamesTheFile(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 

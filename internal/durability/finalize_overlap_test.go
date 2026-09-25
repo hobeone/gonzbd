@@ -20,6 +20,7 @@ import (
 // complete overlap detector has to be able to see that it is not one: a hole
 // of N bytes and an overlap of N bytes cancel and land exactly here.
 func TestOverlapFrom_OnlyASurplusIsAFinding(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		runs     []Run
@@ -75,6 +76,7 @@ func TestOverlapFrom_OnlyASurplusIsAFinding(t *testing.T) {
 // resolved string would pay that on every file of every checkpoint while
 // almost every call returns false.
 func TestOverlapFrom_ResolvesThePathOnlyWhenItReports(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	pathFn := func() string { calls++; return "/d/f.bin" }
 

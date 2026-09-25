@@ -30,6 +30,7 @@ func countRows(t *testing.T, db *sql.DB, table, jobID string) int {
 // per file at its fetch policy with empty results, and ON CONFLICT DO NOTHING,
 // which is what lets a retry re-seed a job without erasing retained progress.
 func TestStore_AdmitSeedsAndKeepsExistingRows(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
 	st := NewStore(db)
@@ -65,6 +66,7 @@ func TestStore_AdmitSeedsAndKeepsExistingRows(t *testing.T) {
 // updates seeded rows and only ever ADDS failed marks: a second batch without
 // an article does not clear the mark the first one wrote.
 func TestStore_SaveProgressUpdatesFilesAndAddsFailedMarks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
 	st := NewStore(db)
@@ -102,6 +104,7 @@ func TestStore_SaveProgressUpdatesFilesAndAddsFailedMarks(t *testing.T) {
 // is skipped, the others are returned, and the error says the result is
 // incomplete rather than failed.
 func TestStore_FileRowsSkipsARowItCannotScan(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
 	st := NewStore(db)
@@ -126,6 +129,7 @@ func TestStore_FileRowsSkipsARowItCannotScan(t *testing.T) {
 // partial contract: what was read before the bad row comes back, marked
 // incomplete.
 func TestStore_FailedArticlesStopsAtARowItCannotScan(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
 	st := NewStore(db)
@@ -146,6 +150,7 @@ func TestStore_FailedArticlesStopsAtARowItCannotScan(t *testing.T) {
 // TestStore_ProgressMethodsReportAClosedDatabase covers every method's first
 // failure path: none may swallow an error its caller has to act on.
 func TestStore_ProgressMethodsReportAClosedDatabase(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := closedStore(t)
 	calls := map[string]func() error{

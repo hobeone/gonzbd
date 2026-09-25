@@ -34,6 +34,7 @@ func sizeOf(t *testing.T, path string) int64 {
 // permanently failed article's hole instead of stopping at it — a sum over
 // these two rows would answer 200 and cut away 100 bytes that are on disk.
 func TestTrimToRuns_CutsPreallocationsTail(t *testing.T) {
+	t.Parallel()
 	path := writeTrimFixture(t, 500)
 
 	bound, err := TrimToRuns(path, []Run{
@@ -60,6 +61,7 @@ func TestTrimToRuns_CutsPreallocationsTail(t *testing.T) {
 // this unreachable — it establishes size >= max(Offset+Length) before adopting
 // a file — but this function does not get to assume its caller ran that gate.
 func TestTrimToRuns_NeverGrowsAFile(t *testing.T) {
+	t.Parallel()
 	path := writeTrimFixture(t, 100)
 
 	bound, err := TrimToRuns(path, []Run{
@@ -86,6 +88,7 @@ func TestTrimToRuns_NeverGrowsAFile(t *testing.T) {
 // opposite of conservative — the same reason FinalizeFile guards its own
 // truncate on bound > 0.
 func TestTrimToRuns_NoRunsTrimsNothing(t *testing.T) {
+	t.Parallel()
 	path := writeTrimFixture(t, 250)
 
 	bound, err := TrimToRuns(path, nil)
@@ -105,6 +108,7 @@ func TestTrimToRuns_NoRunsTrimsNothing(t *testing.T) {
 // second start after the repair has already run once, so it must be cheap and
 // silent rather than logged as a repair every time.
 func TestTrimToRuns_ExactSizeIsANoOp(t *testing.T) {
+	t.Parallel()
 	path := writeTrimFixture(t, 200)
 
 	bound, err := TrimToRuns(path, []Run{
@@ -125,6 +129,7 @@ func TestTrimToRuns_ExactSizeIsANoOp(t *testing.T) {
 // reported rather than swallowed. The caller marks the file complete on a nil
 // error, so a silent success here would claim a file that does not exist.
 func TestTrimToRuns_MissingFileIsAnError(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "gone.bin")
 
 	if _, err := TrimToRuns(path, []Run{

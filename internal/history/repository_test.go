@@ -50,7 +50,29 @@ func sampleEntry(nzoID, name, status, category string) Entry {
 	}
 }
 
+// seedEntries inserts one sampleEntry per ID in a single transaction.
+func seedEntries(t *testing.T, repo *Repository, ids []string) {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := repo.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, id := range ids {
+		e := sampleEntry(id, "show", "Completed", "TV")
+		if err := repo.AddTx(ctx, tx, e); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+}
+
 func TestAddGetRoundTrip(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -94,6 +116,7 @@ func TestAddGetRoundTrip(t *testing.T) {
 }
 
 func TestAddDuplicateNzoIDErrors(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -113,6 +136,7 @@ func TestAddDuplicateNzoIDErrors(t *testing.T) {
 // always writes concrete zero values) must round-trip through Get/Search
 // without erroring, with NULL coalescing to the Go zero value.
 func TestScanEntry_NullColumnsRoundTrip(t *testing.T) {
+	t.Parallel()
 	db, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -159,6 +183,7 @@ func TestScanEntry_NullColumnsRoundTrip(t *testing.T) {
 }
 
 func TestGetMissingReturnsErrNotFound(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -169,6 +194,7 @@ func TestGetMissingReturnsErrNotFound(t *testing.T) {
 }
 
 func TestSearchByStatus(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -207,6 +233,7 @@ func TestSearchByStatus(t *testing.T) {
 }
 
 func TestSearchByCategory(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -230,6 +257,7 @@ func TestSearchByCategory(t *testing.T) {
 }
 
 func TestSearchBySubstring(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -269,6 +297,7 @@ func TestSearchBySubstring(t *testing.T) {
 // wildcards (%, _) in user search input are treated as literal characters
 // rather than pattern metacharacters.
 func TestSearchBySubstring_LIKEWildcardEscaping(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -307,6 +336,7 @@ func TestSearchBySubstring_LIKEWildcardEscaping(t *testing.T) {
 }
 
 func TestSearchPagination(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -353,6 +383,7 @@ func TestSearchPagination(t *testing.T) {
 // (nothing appended beyond the initial make), so it uses an empty DB and
 // checks cap() of the returned (empty) slice.
 func TestSearch_PreallocationCapBounded(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -379,6 +410,7 @@ func TestSearch_PreallocationCapBounded(t *testing.T) {
 }
 
 func TestDeleteSingle(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -402,6 +434,7 @@ func TestDeleteSingle(t *testing.T) {
 }
 
 func TestDeleteMultiple(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -428,6 +461,7 @@ func TestDeleteMultiple(t *testing.T) {
 }
 
 func TestDeleteUnknownIDsReturnsZero(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -441,6 +475,7 @@ func TestDeleteUnknownIDsReturnsZero(t *testing.T) {
 }
 
 func TestDeleteNoIDsIsNoop(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -454,6 +489,7 @@ func TestDeleteNoIDsIsNoop(t *testing.T) {
 }
 
 func TestMarkCompleted(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -481,6 +517,7 @@ func TestMarkCompleted(t *testing.T) {
 }
 
 func TestMarkCompletedMissingReturnsErrNotFound(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -491,6 +528,7 @@ func TestMarkCompletedMissingReturnsErrNotFound(t *testing.T) {
 }
 
 func TestPruneRespectsRetainDays(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -519,6 +557,7 @@ func TestPruneRespectsRetainDays(t *testing.T) {
 }
 
 func TestPruneRespectsRetainFailedDays(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -554,6 +593,7 @@ func TestPruneRespectsRetainFailedDays(t *testing.T) {
 }
 
 func TestPruneZeroZeroIsNoop(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -574,6 +614,7 @@ func TestPruneZeroZeroIsNoop(t *testing.T) {
 }
 
 func TestEscapeLike(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input string
 		want  string
@@ -595,6 +636,7 @@ func TestEscapeLike(t *testing.T) {
 }
 
 func TestDBConnectionSettings(t *testing.T) {
+	t.Parallel()
 	db, _ := openTestDB(t)
 	if got := db.db.Stats().MaxOpenConnections; got != 25 {
 		t.Errorf("MaxOpenConnections = %d, want 25", got)
@@ -602,6 +644,7 @@ func TestDBConnectionSettings(t *testing.T) {
 }
 
 func TestDeleteChunked(t *testing.T) {
+	t.Parallel()
 	db, repo := openTestDB(t)
 	ctx := t.Context()
 
@@ -633,6 +676,7 @@ func TestDeleteChunked(t *testing.T) {
 }
 
 func TestOpen_Error(t *testing.T) {
+	t.Parallel()
 	// Attempting to open a directory as a SQLite file should fail
 	_, err := Open(t.Context(), t.TempDir())
 	if err == nil {
@@ -641,6 +685,7 @@ func TestOpen_Error(t *testing.T) {
 }
 
 func TestOpen_ReadOnlyError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "readonly.db")
 
@@ -666,6 +711,7 @@ func TestOpen_ReadOnlyError(t *testing.T) {
 }
 
 func TestOpen_GooseError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "goose_error.db")
 
@@ -689,6 +735,7 @@ func TestOpen_GooseError(t *testing.T) {
 }
 
 func TestRepository_Ping(t *testing.T) {
+	t.Parallel()
 	var nilRepo *Repository
 	if err := nilRepo.Ping(t.Context()); err == nil {
 		t.Error("expected error from nil repository Ping, got nil")
@@ -701,6 +748,7 @@ func TestRepository_Ping(t *testing.T) {
 }
 
 func TestRepository_DB(t *testing.T) {
+	t.Parallel()
 	_, repo := openTestDB(t)
 	if repo.DB() == nil {
 		t.Error("expected non-nil sql.DB from repo.DB()")
@@ -751,6 +799,7 @@ func (f fixedScanner) Scan(dest ...any) error {
 // The columns asserted here are deliberately same-typed neighbours rather than
 // a representative sample.
 func TestScanEntry_MapsColumnsByPosition(t *testing.T) {
+	t.Parallel()
 	got, err := scanEntry(fixedScanner{at: map[int]any{
 		8:  "Failed",           // status
 		9:  "SABnzbd_nzo_xyz",  // nzo_id, the NullString next to it
@@ -782,6 +831,7 @@ func TestScanEntry_MapsColumnsByPosition(t *testing.T) {
 // TestScanEntry_PropagatesAScanError pins that a driver error is returned
 // rather than yielding a half-filled Entry the caller would treat as real.
 func TestScanEntry_PropagatesAScanError(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("column count mismatch")
 	got, err := scanEntry(fixedScanner{err: boom})
 	if !errors.Is(err, boom) {

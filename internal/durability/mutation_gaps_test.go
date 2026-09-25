@@ -26,6 +26,7 @@ import (
 // deliberately generous and its discard case is one byte short, which leaves
 // exactly this value untested by either.
 func TestResume_AdoptsARunEndingExactlyAtEndOfFile(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	path := writePartial(t, t.TempDir(), "f.bin", 100)
 	rs := NewStore(openTestDB(t))
@@ -59,6 +60,7 @@ func TestResume_AdoptsARunEndingExactlyAtEndOfFile(t *testing.T) {
 // counting rows. A zero-length article is not a state the downloader produces,
 // which is exactly why nothing else covers this input.
 func TestFinalizeFile_ARunAtOffsetZeroOfZeroLengthDoesNotTruncate(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 	if _, err := rs.commit(ctx, "job-1", []DurableArticle{

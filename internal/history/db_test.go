@@ -11,6 +11,7 @@ import (
 )
 
 func TestOpen(t *testing.T) {
+	t.Parallel()
 	t.Run("successful open and close", func(t *testing.T) {
 		dir := t.TempDir()
 		dbPath := filepath.Join(dir, "history.db")
@@ -81,6 +82,7 @@ func TestOpen(t *testing.T) {
 }
 
 func TestDB_Ping(t *testing.T) {
+	t.Parallel()
 	t.Run("nil db returns error", func(t *testing.T) {
 		var db *DB
 		if err := db.Ping(context.Background()); err == nil {
@@ -104,6 +106,7 @@ func TestDB_Ping(t *testing.T) {
 }
 
 func TestDB_Close_Nil(t *testing.T) {
+	t.Parallel()
 	var nilDB *DB
 	if err := nilDB.Close(); err != nil {
 		t.Errorf("expected nil error from nil DB Close, got: %v", err)

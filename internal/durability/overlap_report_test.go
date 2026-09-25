@@ -35,6 +35,7 @@ func overlapTarget() *factGapTarget {
 // adjacent extents: Σ Length greater than the file's size means articles wrote
 // over each other, and the excess is exactly how many bytes were lost.
 func TestFinalizeFile_ReportsOverlappingDurableArticles(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 	tgt := overlapTarget()
@@ -80,6 +81,7 @@ func TestFinalizeFile_ReportsOverlappingDurableArticles(t *testing.T) {
 // one that never had a rival: no gap, no excess, no index naming the article
 // that lost.
 func TestFinalizeFile_ReportsAnExactOffsetDuplicate(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -149,6 +151,7 @@ func TestFinalizeFile_ReportsAnExactOffsetDuplicate(t *testing.T) {
 // Σ Length BELOW the size is exactly that case, and reporting it as a
 // malformed post would put a warning on essentially every job in the queue.
 func TestFinalizeFile_DoesNotReportAHoleAsAnOverlap(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 
@@ -198,6 +201,7 @@ func TestFinalizeFile_DoesNotReportAHoleAsAnOverlap(t *testing.T) {
 // them would need the structural comparison this design deleted, along with
 // the per-article record it walked.
 func TestFinalizeFile_ReportsAnOverlapAboveAPermanentHole(t *testing.T) {
+	t.Parallel()
 	t.Skip("known detection gap: a 100-byte hole and a 50-byte overlap cancel under " +
 		"Σ Length, which lands below the file size and reads as the ordinary " +
 		"incomplete case. See this test's doc for why the outcome is still bounded.")
@@ -217,6 +221,7 @@ func TestFinalizeFile_ReportsAnOverlapAboveAPermanentHole(t *testing.T) {
 // latch, which is what a new process has, so this test cannot pass merely
 // because the first Run already reported.
 func TestRun_ReportsAnOverlapWhenNothingWasAcked(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 	tgt := overlapTarget()
@@ -251,6 +256,7 @@ func TestRun_ReportsAnOverlapWhenNothingWasAcked(t *testing.T) {
 // and because Header.PostAnomaly holds a single string, each re-raise also
 // overwrites whatever finding was recorded in between.
 func TestRun_RaisesEachOverlapOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rs := NewStore(openTestDB(t))
 	tgt := overlapTarget()
@@ -284,6 +290,7 @@ func TestRun_RaisesEachOverlapOnce(t *testing.T) {
 // first job's file 0 silence every other job's file 0 for the life of the
 // process. Nothing about that failure is visible from a single-job test.
 func TestAdmit_LatchesPerJobAndFile(t *testing.T) {
+	t.Parallel()
 	b := NewBarrier(nil, nil, nil, slog.New(slog.DiscardHandler))
 
 	if got := b.admit("job-1", nil); got != nil {
@@ -316,6 +323,7 @@ func TestAdmit_LatchesPerJobAndFile(t *testing.T) {
 // and silence is indistinguishable from a healthy download, which is the
 // failure mode the warning exists to prevent.
 func TestForgetJob_LetsARetryWarnAgain(t *testing.T) {
+	t.Parallel()
 	b := NewBarrier(nil, nil, nil, slog.New(slog.DiscardHandler))
 	one := []PostAnomaly{{FileIdx: 0, Reason: "malformed"}}
 
@@ -355,6 +363,7 @@ func TestForgetJob_LetsARetryWarnAgain(t *testing.T) {
 // the articles that abut into one row, so by the time the record is written
 // there is no pair left to name; the excess byte count is what survives.
 func TestOverlapReason_StatesTheExcessAndTheFile(t *testing.T) {
+	t.Parallel()
 	got := overlapReason("/downloads/movie/vol042.rar", 250, 200)
 	for _, want := range []string{"vol042.rar", "250", "200", "50 bytes"} {
 		if !strings.Contains(got, want) {
