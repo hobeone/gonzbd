@@ -100,7 +100,7 @@ func (s *Store) SaveProgress(ctx context.Context, batch []JobProgress) error {
 	defer func() { _ = stmtFiles.Close() }()
 
 	stmtFailed, err := tx.PrepareContext(ctx,
-		`INSERT OR IGNORE INTO failed_articles (job_id, art_idx) VALUES (?, ?)`,
+		`INSERT OR IGNORE INTO failed_articles (job_id, art_idx) SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM job_files WHERE job_id = ?1)`,
 	)
 	if err != nil {
 		return fmt.Errorf("durability: prepare failed_articles: %w", err)

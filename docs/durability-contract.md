@@ -167,7 +167,21 @@ permanently failed article. It is not a durability record, though
 ever written for it and no run could cover it. Its rows are inserted only by
 `Store.SaveProgress`, on behalf of the checkpointer, and deleted only by the
 reclaim rule (`internal/durability/reclaim.go`), which builds its statements
-from a list of table names rather than writing each one out. That is why the
+from a list of table names rather than writing each one out.
+
+**The insert is conditional on the job still having `job_files`**, which is the
+store's own marker of a live job: `Admit` seeds those rows before the job is
+added, and the reclaim rule takes them at departure. A checkpoint batch captured
+before a departure and committing after it therefore inserts nothing (#561),
+rather than resurrecting rows nothing can reach. `dispatch_jobs` would be the
+wrong marker — a job between `launch` and its first persist has no queue row
+yet, and guarding on one would drop its legitimate failure marks.
+
+That closes the window for as long as the job stays departed. It cannot tell two
+uses of one job ID apart, so it is paired with `Checkpointer.Prune` waiting for
+a flush that carries the job: a departure's reclaim always follows its prune, so
+no batch holding the job can still be in the store when the rows go, and a retry
+that re-seeds `job_files` cannot inherit the previous run's marks. That is why the
 pattern below carries a bare-quoted alternative: no grep anchored on the SQL
 text can see the rule's delete (`git grep -n
 'failed_articles (job_id\|failed_articles WHERE\|"failed_articles"' --

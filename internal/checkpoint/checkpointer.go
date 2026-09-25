@@ -36,6 +36,15 @@ type Checkpointer struct {
 	mu       sync.Mutex
 	dirty    map[string]*job.Job
 	inFlight map[string]*job.Job
+	// flushDone is non-nil exactly while a flush holds a batch, and is closed
+	// when that flush's write has returned. flushing is that flush's batch.
+	//
+	// Both are written only by Flush, which is what makes a second Prune of
+	// one job correct: inFlight answers "may a failing flush re-merge this?"
+	// and Prune clears it, so it cannot also answer "is a flush writing this?"
+	// for a caller that arrives while another Prune is already waiting.
+	flushDone chan struct{}
+	flushing  map[string]*job.Job
 }
 
 // New constructs a Checkpointer. every is the batch cadence.
@@ -61,14 +70,32 @@ func (c *Checkpointer) Mark(j *job.Job) {
 	c.mu.Unlock()
 }
 
-// Prune removes a job from both the dirty set and any in-flight flush batch
-// so a pruned job is not re-merged into dirty by a failing flush. (A write
-// batch already handed to the store still completes.)
+// Prune removes a job from both the dirty set and any in-flight flush batch,
+// and does not return until a flush that was carrying the job has finished
+// writing. A departure reclaims the job's rows once Prune returns, so a batch
+// still in the store at that moment would re-insert what the reclaim took
+// (#561).
+//
+// The wait is the whole point, so it is not bounded: returning early would
+// hand the caller exactly the state the wait exists to prevent. It only
+// happens when the job is in flight, which is only for the duration of one
+// SaveBatch.
+//
+// A Mark arriving AFTER this returns is not covered here and does not need to
+// be: durability.SaveProgress refuses to insert a failed article for a job
+// whose job_files are gone.
 func (c *Checkpointer) Prune(id string) {
 	c.mu.Lock()
 	delete(c.dirty, id)
 	delete(c.inFlight, id)
+	var done chan struct{}
+	if _, carried := c.flushing[id]; carried {
+		done = c.flushDone
+	}
 	c.mu.Unlock()
+	if done != nil {
+		<-done
+	}
 }
 
 // DirtyCount returns the number of jobs currently marked dirty awaiting flush.
@@ -97,7 +124,17 @@ func (c *Checkpointer) Flush(ctx context.Context) error {
 	batch := c.dirty
 	c.dirty = make(map[string]*job.Job)
 	maps.Copy(c.inFlight, batch)
+	done := make(chan struct{})
+	c.flushDone = done
+	c.flushing = batch
 	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.flushDone = nil
+		c.flushing = nil
+		c.mu.Unlock()
+		close(done)
+	}()
 
 	cps := make([]job.Checkpoint, 0, len(batch))
 	for _, j := range batch {
