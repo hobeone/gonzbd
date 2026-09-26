@@ -11,15 +11,13 @@ import (
 )
 
 // TestManifestPath_HasOneProductionCaller pins writeJobManifest as the only
-// production code that builds a queue-manifest path to write, so it is the
-// only writer of the file hydration reads back after an eviction.
+// production function that references manifestPath — a call, or the function
+// taken as a value — across this package's non-test files. Reads go through
+// openManifestIn and deletes through removeManifestIn, so a second function
+// here would be a second writer of the queue manifest.
 //
-// It names the functions whose bodies reference manifestPath at all — a call,
-// or the function taken as a value — across this package's non-test files.
-// Reads go through openManifestIn and deletes through removeManifestIn, so a
-// reference to manifestPath is a write. A second writer is the shape that
-// drifted before: AddJob and RetryHistoryJob each carried one, and a cleanup
-// fix applied to the first was missed in the second (992d745f).
+// It sees only writers that go through manifestPath. One that joined
+// manifestDir and manifestName itself would not appear.
 func TestManifestPath_HasOneProductionCaller(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {

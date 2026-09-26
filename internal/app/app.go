@@ -2355,7 +2355,9 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	//
 	// Unconditional because the write above always produces a file here: j was
 	// rebuilt by BuildIngestJob, which attaches its manifest or fails, and
-	// nothing can evict it before dispatcher.Add registers it.
+	// nothing can evict it before dispatcher.Add registers it. Job.Evict's one
+	// production call is appResidency.Evict, which finds jobs through the
+	// dispatcher: `git grep -n '[a-z]\.Evict()' -- '*.go' ':!*_test.go'` returns 1 line.
 	admitted := false
 	defer func() {
 		if admitted {
