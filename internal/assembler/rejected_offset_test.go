@@ -60,6 +60,9 @@ func TestRejectedOffsetIsFailedAndStillCompletesTheFile(t *testing.T) {
 	if _, ok := f.w.seenDone[7]; ok {
 		t.Error("a rejected article is recorded as done; nothing wrote its bytes")
 	}
+	// A redelivery is a new fetch and decode, so it arrives in its own buffer.
+	// Reusing req.Data would release one slice twice (#574).
+	req.Data = []byte("x")
 	if a.handleSuccessArticle(f, req) {
 		t.Error("a redelivery of the rejected article was counted again")
 	}
