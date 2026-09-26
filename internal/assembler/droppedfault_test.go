@@ -130,3 +130,79 @@ func TestProcessRequest_RoutesAFailedOpen(t *testing.T) {
 			"Emitted bit and the article is stranded", gotArt)
 	}
 }
+
+// TestProcessRequest_FailedOpenReleasesTheBufferOnce pins #574.
+//
+// openTargetFile released req.Data on each of its three failure returns, and
+// processRequest released it again on the error it got back. Two releases of
+// one slice put one backing array into decoder's pool twice, so two later
+// GetBuffer calls handed it to two connWorkers, which decoded into it
+// concurrently — the race #574 reported from decoder.sub42Span, whose stacks
+// named the victims rather than this site.
+//
+// One case per failure return, because each carried its own release: a fix to
+// one would leave the other two pinned by nothing.
+func TestProcessRequest_FailedOpenReleasesTheBufferOnce(t *testing.T) {
+	dir := t.TempDir()
+	notADir := filepath.Join(dir, "plain-file")
+	if err := os.WriteFile(notADir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	isADir := filepath.Join(dir, "a-directory")
+	if err := os.Mkdir(isADir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name     string
+		resolver func(string, int) (FileInfo, error)
+	}{
+		{"resolve fails", func(string, int) (FileInfo, error) {
+			return FileInfo{}, os.ErrNotExist
+		}},
+		{"mkdir fails", func(string, int) (FileInfo, error) {
+			// The parent is a regular file, so MkdirAll reports ENOTDIR.
+			return FileInfo{Path: filepath.Join(notADir, "sub", "f.bin")}, nil
+		}},
+		{"open fails", func(string, int) (FileInfo, error) {
+			// The target is a directory, so OpenFile(O_WRONLY) reports EISDIR.
+			return FileInfo{Path: isADir}, nil
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newHelperAssembler()
+			a.opts.FileInfo = tc.resolver
+			var faults int
+			a.opts.OnWriteFault = func(string, int, *storagefault.Fault) { faults++ }
+			a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
+			var released [][]byte
+			a.putBuffer = func(b []byte) { released = append(released, b) }
+
+			data := []byte("AAAA")
+			a.processRequest(WriteRequest{
+				JobID: "job1", FileIdx: 0, ArtIdx: 9, MessageID: "m1",
+				Offset: 0, Data: data,
+			}, map[fileKey]*openFile{}, map[fileKey]struct{}{}, newWriteCache(0))
+
+			// Guards the fixture: without a routed fault the open did not
+			// fail, and a count of one would prove nothing about this path.
+			if faults != 1 {
+				t.Fatalf("routed %d faults, want 1; the open did not fail the way this case needs", faults)
+			}
+			switch {
+			case len(released) == 0:
+				t.Fatal("released the buffer 0 times, want exactly 1; nothing else " +
+					"owns it after a failed open, so the pool leaks one buffer per " +
+					"article the file refuses")
+			case len(released) > 1:
+				t.Fatalf("released the buffer %d times, want exactly 1; a second release "+
+					"puts one backing array in decoder's pool twice, and two connWorkers "+
+					"then decode into it concurrently (#574)", len(released))
+			}
+			if &released[0][:1][0] != &data[:1][0] {
+				t.Errorf("released a different buffer than the request carried")
+			}
+		})
+	}
+}

@@ -245,11 +245,13 @@ func DecodeArticleBuf(body, scratch []byte) (Article, error) {
 	// article alongside their error.
 	//
 	// This used to say callers "especially PAR2 repair" can still use the
-	// decoded data when it is corrupt. No caller does: decodePayload in
-	// internal/downloader is the only caller of DecodeArticle, and it releases
-	// the buffer to the pool on every error branch. Reading the old comment as
-	// a contract — that invalid data survives for a repair step to consume —
-	// would have been reading a use-after-free as a feature.
+	// decoded data when it is corrupt. No caller does. The non-test callers are
+	// decodePayload in internal/downloader and three sites in scripts/nzbprobe:
+	// `git grep -n 'decoder\.DecodeArticle(' -- '*.go' ':!*_test.go'` returns 4 lines.
+	// Each stops reading the article on any error, and decodePayload releases
+	// the buffer to the pool first. Reading the old comment as a contract —
+	// that invalid data survives for a repair step to consume — would have
+	// been reading a use-after-free as a feature.
 	//
 	// Note also that the CRC check below is gated on trailer.valid, which is
 	// false whenever the poster omitted pcrc32. Reaching the assembler

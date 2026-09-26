@@ -1610,28 +1610,24 @@ func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
 // there was a path. It is retryable by default under R18's "anything
 // unrecognised is retryable" rule, which is the correct direction: a resolver
 // failure is usually a job whose manifest is momentarily non-resident.
+//
+// It never releases req.Data, on any return: it reads req only for the
+// article's identity, and its caller owns the buffer throughout. It used to
+// release on each failure return while processRequest released on the error it
+// got back, putting one backing array in decoder's pool twice (#574).
 func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileKey]*openFile, wc *writeCache) (*openFile, error) {
 	info, err := a.opts.FileInfo(req.JobID, req.FileIdx)
 	if err != nil {
-		if req.Data != nil {
-			a.releaseBuffer(req.Data)
-		}
 		return nil, storagefault.Classify("resolve", "", err)
 	}
 
 	dir := filepath.Dir(info.Path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		if req.Data != nil {
-			a.releaseBuffer(req.Data)
-		}
 		return nil, storagefault.Classify("mkdir", info.Path, err)
 	}
 	//nolint:gosec // G304: path is caller-supplied from FileInfo resolver, which is responsible for safe derivation
 	fh, err := os.OpenFile(info.Path, os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
-		if req.Data != nil {
-			a.releaseBuffer(req.Data)
-		}
 		return nil, storagefault.Classify("open", info.Path, err)
 	}
 	if info.ExpectedSize > 0 {
