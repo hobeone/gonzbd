@@ -78,13 +78,13 @@ file internal/app/app.go
 [a retry that never entered the queue skips the reclaim]
 file internal/app/app.go
 --- anchor
-			defer delCancel()
-			app.reclaim(delCtx, jobID)
-		}()
+		defer delCancel()
+		app.reclaim(delCtx, jobID)
+	}()
 --- replace
-			defer delCancel()
-			_ = delCtx
-		}()
+		defer delCancel()
+		_ = delCtx
+	}()
 --- end
 
 [the retry leaves stray failed marks]
