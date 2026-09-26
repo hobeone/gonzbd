@@ -8,7 +8,6 @@ package app
 import (
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -2345,42 +2344,31 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		}
 	}
 
-	adminDir := app.config.GetGeneral().AdminDir
-	mdir := manifestDir(adminDir)
-	if err := os.MkdirAll(mdir, 0o750); err != nil {
-		return fmt.Errorf("app: retry %s: mkdir manifests: %w", jobID, err)
+	if err := writeJobManifest(app.config.GetGeneral().AdminDir, j); err != nil {
+		return fmt.Errorf("app: retry %s: %w", jobID, err)
 	}
+	// Armed once the manifest is on disk, so every return between here and the
+	// admission below takes it with it: seedJobFiles and checkpointer.Flush
+	// return in this span as well as dispatcher.Add, and a retry that never
+	// entered the queue would otherwise leave a manifest no queued job owns
+	// until the next start's sweep.
+	//
+	// Unconditional because the write above always produces a file here: j was
+	// rebuilt by BuildIngestJob, which attaches its manifest or fails, and
+	// nothing can evict it before dispatcher.Add registers it.
 	admitted := false
-	if m, err := j.Manifest(); err == nil && m != nil {
-		data, mErr := json.Marshal(m)
-		if mErr != nil {
-			return fmt.Errorf("app: retry %s: marshal manifest: %w", jobID, mErr)
+	defer func() {
+		if admitted {
+			return
 		}
-		mpath, pErr := manifestPath(adminDir, j.ID())
-		if pErr != nil {
-			return fmt.Errorf("app: retry %s: write manifest: %w", jobID, pErr)
-		}
-		if err := fsutil.WriteGzAtomicBytes(mpath, data); err != nil {
-			return fmt.Errorf("app: retry %s: write manifest: %w", jobID, err)
-		}
-		// Armed where the file appears, so every return between here and the
-		// admission below takes it with it. Pinning only the dispatcher.Add
-		// branch was the earlier mistake: seedJobFiles and checkpointer.Flush
-		// return in this span too, and a retry that never entered the queue
-		// would leave a manifest no finalized job has until the next start.
-		defer func() {
-			if admitted {
-				return
-			}
-			// Not the NZB backup: the history entry still owns it, and a later
-			// retry reads it to rebuild the job. reclaim takes the manifest
-			// and the job_files rows seeded below; the entry is still FAILED,
-			// so the rule keeps its durable_runs.
-			delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			defer delCancel()
-			app.reclaim(delCtx, jobID)
-		}()
-	}
+		// Not the NZB backup: the history entry still owns it, and a later
+		// retry reads it to rebuild the job. reclaim takes the manifest and the
+		// job_files rows seeded below; the entry is still FAILED, so the rule
+		// keeps its durable_runs.
+		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer delCancel()
+		app.reclaim(delCtx, jobID)
+	}()
 
 	// Seed any job_files rows this attempt is missing, then flush the
 	// checkpointer synchronously, both immediately before dispatcher.Add and

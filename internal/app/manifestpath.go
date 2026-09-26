@@ -79,9 +79,10 @@ const manifestSuffix = ".json.gz"
 
 // manifestPath returns the absolute path of one job's manifest.
 //
-// Production uses it only on the atomic WRITE path; export_test.go's
-// ManifestPath also hands it to a test that needs to name the file without
-// repeating this layout. Writes go through fsutil.WriteGzAtomic,
+// Its only production caller is writeJobManifest, the one writer of the queue
+// manifest — pinned by TestManifestPath_HasOneProductionCaller.
+// export_test.go's ManifestPath also hands it to a test that needs to name the
+// file without repeating this layout. Writes go through fsutil.WriteGzAtomic,
 // whose temp-file → fsync → close → rename sequence is what
 // docs/durability-contract.md relies on; reimplementing that inside an os.Root
 // would trade a durability guarantee for a confinement one the write path does
