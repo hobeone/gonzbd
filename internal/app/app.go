@@ -2366,7 +2366,9 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		// A concurrent retry of this job that won dispatcher.Add is registered
 		// before its first queue row is written, and the reclaim rule reads
 		// only that row, so reclaiming here would delete job_files the winner
-		// is about to run with.
+		// is about to run with. This retry's own failed Add never leaves the
+		// ID held: register refuses a duplicate before inserting it, and a
+		// failed persist deregisters before Add returns.
 		if app.dispatcher != nil {
 			if _, held := app.dispatcher.Job(jobID); held {
 				return

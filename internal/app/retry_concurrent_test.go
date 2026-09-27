@@ -12,9 +12,9 @@ import (
 )
 
 // blockingSaveStore holds the first Save until release is closed, reporting
-// through entered that the caller is inside it. It is the only way to hold a
-// job in the window between Dispatcher.Add registering it and its first queue
-// row reaching dispatch_jobs.
+// through entered that the caller is inside it, which holds a job in the
+// window between Dispatcher.Add registering it and its first queue row
+// reaching dispatch_jobs.
 type blockingSaveStore struct {
 	dispatch.Store
 	once    sync.Once
@@ -36,9 +36,9 @@ func (s *blockingSaveStore) Save(ctx context.Context, p dispatch.Persisted) erro
 //
 // The winner registers with the dispatcher before its first queue row is
 // written. A second retry that reaches dispatcher.Add inside that window fails
-// on the duplicate ID, and its abandon-cleanup reclaims the job's rows — and
-// the reclaim rule reads only persisted dispatch_jobs, so it sees no queue row
-// and deletes job_files the winner is about to run with.
+// on the duplicate ID. Its abandon-cleanup must leave the job's rows alone:
+// the reclaim rule reads only persisted dispatch_jobs, so it would see no
+// queue row and delete job_files the winner is about to run with.
 func TestRetryHistoryJob_LosingConcurrentRetryKeepsTheWinnersRows(t *testing.T) {
 	application, repo, adminDir := newLifecycleTestApp(t)
 	blk := &blockingSaveStore{
