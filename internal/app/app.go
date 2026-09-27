@@ -2363,6 +2363,15 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		if admitted {
 			return
 		}
+		// A concurrent retry of this job that won dispatcher.Add is registered
+		// before its first queue row is written, and the reclaim rule reads
+		// only that row, so reclaiming here would delete job_files the winner
+		// is about to run with.
+		if app.dispatcher != nil {
+			if _, held := app.dispatcher.Job(jobID); held {
+				return
+			}
+		}
 		// Not the NZB backup: the history entry still owns it, and a later
 		// retry reads it to rebuild the job. reclaim takes the manifest and the
 		// job_files rows seeded below; the entry is still FAILED, so the rule
