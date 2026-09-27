@@ -60,21 +60,23 @@ file internal/app/app.go
 [RetryHistoryJob's deferred manifest cleanup neutered]
 file internal/app/app.go
 --- anchor
-			app.reclaim(delCtx, jobID)
-		}()
+		app.reclaim(delCtx, jobID)
+	}()
 --- replace
-			_ = delCtx
-		}()
+		_ = delCtx
+	}()
 --- end
 
 [RetryHistoryJob's cleanup narrowed back to the dispatcher's failure alone]
 file internal/app/app.go
 --- anchor
-	}
 	admitted := false
+	defer func() {
+		if admitted {
 --- replace
-	}
 	admitted := true
+	defer func() {
+		if admitted {
 --- end
 
 [RetryHistoryJob history delete re-attached to the caller's context]
