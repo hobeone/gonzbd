@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 )
 
@@ -22,25 +21,11 @@ import (
 // database lives directly under the admin directory.
 func TestRetryHistoryJob_UnwritableManifestDirLeavesTheEntryRetryable(t *testing.T) {
 	t.Parallel()
-	application, repo, _ := newLifecycleTestApp(t)
+	application, repo, adminDir := newLifecycleTestApp(t)
 
-	adminDir := application.config.GetGeneral().AdminDir
-	nzbBackupDir := filepath.Join(adminDir, "nzb")
-	if err := os.MkdirAll(nzbBackupDir, 0o750); err != nil {
-		t.Fatalf("MkdirAll nzb backup: %v", err)
-	}
 	const jobID = "feedface0000beef"
 	const nzbBackup = "retry-unwritable.nzb.gz"
-	rawNZB := []byte(`<?xml version="1.0" encoding="utf-8"?>
-<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
-  <file poster="test" date="1700000000" subject="retry-unwritable.bin yEnc (1/1)">
-    <groups><group>alt.binaries.test</group></groups>
-    <segments><segment bytes="100" number="1">retry-unwritable-0@t</segment></segments>
-  </file>
-</nzb>`)
-	if err := fsutil.WriteGzAtomicBytes(filepath.Join(nzbBackupDir, nzbBackup), rawNZB); err != nil {
-		t.Fatalf("WriteGzAtomicBytes: %v", err)
-	}
+	writeRetryNZBBackup(t, adminDir, nzbBackup, retryFixtureNZB(1))
 	if err := repo.Add(t.Context(), history.Entry{
 		NzoID: jobID, Name: "retry-unwritable", NzbName: "retry-unwritable.nzb",
 		NZBBackup: nzbBackup, Category: "*", Status: "Failed", Completed: time.Now(),
@@ -49,9 +34,6 @@ func TestRetryHistoryJob_UnwritableManifestDirLeavesTheEntryRetryable(t *testing
 	}
 
 	mdir := manifestDir(adminDir)
-	if err := os.RemoveAll(mdir); err != nil {
-		t.Fatalf("RemoveAll %s: %v", mdir, err)
-	}
 	if err := os.MkdirAll(filepath.Dir(mdir), 0o750); err != nil {
 		t.Fatalf("MkdirAll %s: %v", filepath.Dir(mdir), err)
 	}
@@ -79,7 +61,7 @@ func TestRetryHistoryJob_UnwritableManifestDirLeavesTheEntryRetryable(t *testing
 		t.Error("the dispatcher holds a job whose manifest was never written; the first " +
 			"eviction settles it Failed permanently")
 	}
-	if _, err := os.Stat(filepath.Join(nzbBackupDir, nzbBackup)); err != nil {
+	if _, err := os.Stat(filepath.Join(adminDir, "nzb", nzbBackup)); err != nil {
 		t.Errorf("NZB backup was removed although the history entry still owns it: %v", err)
 	}
 }
