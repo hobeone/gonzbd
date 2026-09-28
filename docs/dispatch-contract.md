@@ -59,7 +59,7 @@ The Dispatcher additionally owns:
   interface (`Hydrate`/`Evict`) that does the actual I/O.
 - **The tick loop** (`run`/`tick` in `internal/dispatch/tick.go`).
 - **Worker lifecycle**: `launched`, the `Runner` interface, and the
-  `Finished`/`Yielded`/`AdvanceFrom` exit doors
+  `Finished`/`Yielded`/`AdvanceFrom`/`YieldedFrom` exit doors
   (`internal/dispatch/worker.go`).
 - **Persistence bookkeeping** (`written`, the `Store` interface) and the
   removal-in-progress marker (`removing`, `occupiers` et al.) that makes
@@ -79,7 +79,7 @@ A single goroutine (`Dispatcher.run`) walks the registry on a `time.Ticker`
 and calls `sched.Queue.Advance` on each job. `Dispatcher.kick` performs a
 non-blocking send on a size-1 buffered channel (`wake`) to wake the loop
 early; `Add`, `Cancel`, `Retry`, `Pause`, `Resume`, `SetCaps`, `Finished`,
-`YieldedFor` and `AdvanceFrom` all call it.
+`YieldedFor`, and `handoff` for `AdvanceFrom` and `YieldedFrom` all call it.
 
 **Why a channel and not a `sync.Cond`.** The two are interchangeable for
 "wake a waiter", and `sync.Cond` is the closer fit for the literal signalling
@@ -166,6 +166,15 @@ cleared its claim, so the next tick launched the same state again.
 `TestAdvanceFrom_LateReportLeavesTheNextStatesWorkerAlone` and
 `TestAdvanceFrom_UnlaunchedReportLaunchesTheNextStateOnce` pin it.
 
+`Dispatcher.YieldedFrom(j, from)` is the same door with no verdict: it parks
+and clears the claim only while the job is open at `from`. `Application.Stall`
+uses it with `Fetching`. A storage fault can reach a job that has moved to
+`Assessing`, because the checkpoint still covers its open handles, and a
+by-ID `Yielded` there took the live assess worker's slot and claim, so a
+resume launched a second one. Stall now latches the pause at any state and
+releases only a `Fetching` worker; any other worker finishes and reports, and
+the pause gates the move. `TestStall_LeavesALiveAssessingWorkerAlone` pins it.
+
 On worker exit, the runner (or an external caller) must call exactly one of:
 
 - **`Dispatcher.Finished(id, outcome)`** — the worker finished the state's
@@ -174,11 +183,18 @@ On worker exit, the runner (or an external caller) must call exactly one of:
   refuses it too, via `ErrCancelReserved`), then calls `sched.Queue.Settle`.
 - **`Dispatcher.AdvanceFrom(j, from, next)`** — the worker finished the
   work of `from` and the job continues to `next`. It calls
-  `sched.Queue.Handoff`, which parks even when `SetNext` refuses `next`,
-  because the worker has exited either way.
+  `sched.Queue.Handoff`. A `next` that `SetNext` refuses settles the job
+  `OutcomeFailed` rather than parking it, which would relaunch `from` to
+  report the same verdict again; no caller reaches that today.
+- **`Dispatcher.YieldedFrom(j, from)`** — the worker for `from` stopped
+  without finishing, and the job may since have moved on. It calls
+  `sched.Queue.Handoff` with no verdict.
 - **`Dispatcher.Yielded(id)` / `YieldedFor(id, expected)`** — the worker
   stopped without finishing: a pause yield at an article boundary, an abort,
-  a shutdown, a dead connection. It calls `sched.Queue.Park`.
+  a shutdown, a dead connection. It calls `sched.Queue.Park`, whatever state
+  the job is at, so it suits only a caller for whom the job cannot have left
+  the worker's state: one holding that worker's launch claim, or one that
+  latched cancel or a global pause first.
 
 `Park` is unconditional and total for every shape it can be handed — a
 never-run job, an already-parked job, a settled job, a job mid-crossing —
@@ -194,10 +210,16 @@ Queue state hasn't moved yet) with the claim already free, and start a
 second worker on resources the first has not yet released; clearing via
 `defer` would let `kick` wake the tick before the claim clears, letting the
 woken tick consume the wake without launching and leave the job unworked
-until the next timer tick. `AdvanceFrom` clears it inside `Handoff`'s
-`Queue.mu` span instead, and only for the instance it reports on. The job
-cannot leave `from` inside that span, so the claim cleared is never one a
-later state's worker took.
+until the next timer tick. `AdvanceFrom` and `YieldedFrom` clear it inside
+`Handoff`'s `Queue.mu` span instead, and only for the instance they report
+on. That placement is defence in depth. While the claim taken for `from` is
+held, `claimLaunched` already refuses `next`'s worker until the clear. The
+span matters only when no such claim is held at the clear, either because
+none was taken (after a stall's resume, or at startup) or because another
+by-ID clearer released it in between. A tick could then launch `next`, and a
+clear made after the span would drop that worker's claim. Inside the span
+the job cannot leave `from`. No test pins the placement, because no seam
+can interleave a tick there.
 
 ## Manifest residency is derived from pool membership
 
@@ -255,7 +277,7 @@ under `d.mu` via `snapshotOrder`, releases the lock, and only then calls
 `Cancel`, `Retry`, `Pause`, `Resume`, `SetCaps`, `Park` in `Stop`'s sweep,
 `Render`/`RenderAll` in `List`/`Row`/`reconcileResidency`/`launch`, `Settle`
 in `Finished`/`reconcileResidency`, `Park` in `YieldedFor`, `Handoff` in
-`AdvanceFrom` — is likewise made
+`handoff` (for `AdvanceFrom` and `YieldedFrom`) — is likewise made
 outside any `d.mu` span (verified: `grep -n 'd\.q\.' internal/dispatch/*.go
 | grep -v _test.go` shows none of these calls nested inside a
 `d.mu.Lock()`/`Unlock()` pair).
@@ -272,7 +294,7 @@ ABBA against the tick's `Advance` call holding `d.mu` and waiting on
 `Job.mu` — never held simultaneously in that first arrow.
 
 The one nesting in the other direction is `Queue.mu` → `dispatch.mu`:
-`AdvanceFrom` passes `Handoff` a callback that clears the launch claim, and
+`handoff` (for `AdvanceFrom` and `YieldedFrom`) passes `Handoff` a callback that clears the launch claim, and
 `Handoff` runs it inside its `Queue.mu` span. It is held to `Abort`'s rule,
 and meets it for the same reason: `d.mu` is never held across a call into
 `sched`, so no holder of `d.mu` can be waiting on `Queue.mu`.

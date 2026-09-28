@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -110,10 +111,10 @@ func TestAdvanceFrom_RecordedNextIsStale(t *testing.T) {
 	}
 }
 
-// TestAdvanceFrom_RefusedVerdictStillReleasesTheWorker pins that the report
-// is an exit even when the verdict is refused: the job is parked and its claim
-// cleared, so the tick can relaunch the state rather than strand it.
-func TestAdvanceFrom_RefusedVerdictStillReleasesTheWorker(t *testing.T) {
+// TestAdvanceFrom_RefusedVerdictSettlesFailed pins that a refused verdict ends
+// the job rather than relaunching the state to report it again: the job
+// settles Failed, its claim is cleared, and no later tick launches it.
+func TestAdvanceFrom_RefusedVerdictSettlesFailed(t *testing.T) {
 	runner := &stateRunner{}
 	d := newTestDispatcher(t, withRunner(runner))
 	j := job.New("j1", "n", job.Policy{})
@@ -127,12 +128,68 @@ func TestAdvanceFrom_RefusedVerdictStillReleasesTheWorker(t *testing.T) {
 	if !errors.Is(err, job.ErrIllegalTransition) {
 		t.Errorf("AdvanceFrom = %v, want the SetNext refusal", err)
 	}
+	if got := j.Snapshot().State.Outcome; got != job.OutcomeFailed {
+		t.Errorf("outcome = %v, want Failed", got)
+	}
 	if claimHeld(d, j.ID()) {
-		t.Error("the claim survived a report that parked the job")
+		t.Error("the claim survived a report that ended the job")
 	}
 	d.tick(context.Background())
-	if got, want := runner.ran(), []job.State{job.Fetching, job.Fetching}; !slices.Equal(got, want) {
+	if got, want := runner.ran(), []job.State{job.Fetching}; !slices.Equal(got, want) {
 		t.Errorf("runs = %v, want %v", got, want)
+	}
+}
+
+// TestAdvanceFrom_NoVerdictIsRefused pins that AdvanceFrom will not stand in
+// for YieldedFrom: a StateUnset verdict is refused before anything moves.
+func TestAdvanceFrom_NoVerdictIsRefused(t *testing.T) {
+	d := newTestDispatcher(t, withRunner(&stateRunner{}))
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.tick(context.Background())
+	d.tick(context.Background()) // launches Fetching
+
+	if err := d.AdvanceFrom(j, job.Fetching, job.StateUnset); !errors.Is(err, job.ErrIllegalTransition) {
+		t.Errorf("AdvanceFrom(StateUnset) = %v, want ErrIllegalTransition", err)
+	}
+	if !claimHeld(d, j.ID()) || !j.HoldsLease() {
+		t.Error("a refused StateUnset verdict released the worker")
+	}
+}
+
+// TestYieldedFrom_ReleasesOnlyTheNamedState pins YieldedFrom's scope: at from
+// it parks and clears the claim without recording a verdict, and at any other
+// state it returns ErrStaleReport and leaves that state's worker alone.
+func TestYieldedFrom_ReleasesOnlyTheNamedState(t *testing.T) {
+	runner := &stateRunner{}
+	d := newTestDispatcher(t, withRunner(runner))
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.tick(context.Background())
+	d.tick(context.Background()) // launches Fetching
+
+	if err := d.YieldedFrom(j, job.Assessing); !errors.Is(err, ErrStaleReport) {
+		t.Errorf("YieldedFrom(Assessing) at Fetching = %v, want ErrStaleReport", err)
+	}
+	if !claimHeld(d, j.ID()) || !j.HoldsLease() {
+		t.Fatal("a yield for another state released the Fetching worker")
+	}
+
+	if err := d.YieldedFrom(j, job.Fetching); err != nil {
+		t.Fatalf("YieldedFrom(Fetching): %v", err)
+	}
+	if claimHeld(d, j.ID()) || j.HoldsLease() {
+		t.Error("YieldedFrom at from left the claim or the lease")
+	}
+	if got := j.Snapshot().State.Next; got != job.StateUnset {
+		t.Errorf("a yield recorded next %v", got)
+	}
+	if err := d.YieldedFrom(nil, job.Fetching); !errors.Is(err, ErrNotFound) {
+		t.Errorf("YieldedFrom(nil) = %v, want ErrNotFound", err)
 	}
 }
 
@@ -192,5 +249,30 @@ func TestClearLaunchedFor_LeavesALaterInstancesClaim(t *testing.T) {
 	d.clearLaunchedFor(j2)
 	if claimHeld(d, "j1") {
 		t.Error("clearLaunchedFor(registered instance) left its claim")
+	}
+}
+
+// TestDispatcherHandoff_NamesItsDoorAndRefusesStaleReports pins handoff, the
+// shared body of AdvanceFrom and YieldedFrom, directly: every refusal names
+// the door that was called, and a report for a state the job is not at
+// returns ErrStaleReport without touching it.
+func TestDispatcherHandoff_NamesItsDoorAndRefusesStaleReports(t *testing.T) {
+	d := newTestDispatcher(t, withRunner(&stateRunner{}))
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.tick(context.Background())
+	d.tick(context.Background()) // launches Fetching
+
+	if err := d.handoff("Door", nil, job.Fetching, job.Assessing); !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "Door") {
+		t.Errorf("handoff(nil) = %v, want ErrNotFound naming Door", err)
+	}
+	err := d.handoff("Door", j, job.Repairing, job.Assessing)
+	if !errors.Is(err, ErrStaleReport) || !strings.Contains(err.Error(), "Door(j1") {
+		t.Errorf("handoff at the wrong state = %v, want ErrStaleReport naming Door", err)
+	}
+	if !claimHeld(d, j.ID()) || !j.HoldsLease() {
+		t.Error("a stale handoff released the worker")
 	}
 }

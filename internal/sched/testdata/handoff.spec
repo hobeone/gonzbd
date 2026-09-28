@@ -1,7 +1,8 @@
 pkg ./internal/sched/
-run ^(TestHandoff_AtFromRecordsNextParksAndCallsHanded|TestHandoff_StaleReportTouchesNothing|TestHandoff_ParksEvenWhenSetNextRefuses|TestHandoff_HandedRunsInsideTheQueueLock|TestHandoff_NilHandedIsAllowed)$
+run ^(TestHandoff_AtFromRecordsNextParksAndCallsHanded|TestHandoff_StaleReportTouchesNothing|TestHandoff_RefusedVerdictSettlesFailed|TestHandoff_NoVerdictParksWithoutRecordingNext|TestHandoff_HandedRunsInsideTheQueueLock|TestHandoff_NilHandedIsAllowed)$
 
-# Handoff's state check, its park on a refused verdict, and the one q.mu span
+# Handoff's state check, its Failed settle on a refused verdict, its park for a
+# yield with no verdict, and the one q.mu span
 # its handed callback runs in. Each clause of the check is reverted on its own.
 
 [a settled or never-run attempt is not refused]
@@ -28,17 +29,28 @@ file internal/sched/advance.go
 	if !s.IsOpen() || s.State.State != from {
 --- end
 
-[a refused verdict returns before the park]
+[a refused verdict parks instead of settling Failed]
 file internal/sched/advance.go
 --- anchor
-	err := j.SetNext(next)
-	if perr := q.parkLocked(j); perr != nil {
+			if serr := q.settleLocked(j, job.OutcomeFailed, j.Snapshot()); serr != nil {
+				err = errors.Join(err, serr)
+			}
 --- replace
-	err := j.SetNext(next)
-	if err != nil {
-		return true, err
+			if serr := q.parkLocked(j); serr != nil {
+				err = errors.Join(err, serr)
+			}
+--- end
+
+[a yield with no verdict does not park]
+file internal/sched/advance.go
+--- anchor
+	if err == nil {
+		err = q.parkLocked(j)
 	}
-	if perr := q.parkLocked(j); perr != nil {
+--- replace
+	if err == nil && next != job.StateUnset {
+		err = q.parkLocked(j)
+	}
 --- end
 
 [handed runs after q.mu is released]

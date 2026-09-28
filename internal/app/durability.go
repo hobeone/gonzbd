@@ -262,7 +262,14 @@ func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 	app.noteStall(jobID, f)
 	if app.dispatcher != nil {
 		_ = app.dispatcher.PauseJob(jobID)
-		_ = app.dispatcher.Yielded(jobID)
+		// The pause is latched whatever the state; the release is scoped to
+		// Fetching, the worker whose writes the fault interrupts. A job that
+		// has moved on — Assessing, whose open handles the checkpoint still
+		// reaches — keeps its worker and its resources. That worker finishes
+		// and reports through AdvanceFrom, and the pause then gates the move.
+		if j, ok := app.dispatcher.Job(jobID); ok {
+			_ = app.dispatcher.YieldedFrom(j, job.Fetching)
+		}
 	}
 	app.emit(Event{Type: "queue_updated", NzoID: jobID})
 }

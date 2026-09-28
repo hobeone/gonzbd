@@ -52,21 +52,25 @@ func (q *Queue) Park(j *job.Job) error {
 	return q.parkLocked(j)
 }
 
-// Handoff is the door a dispatcher calls when its worker has finished the work
-// of state from and the job continues to next. Under one q.mu span it records
-// next, parks the job and calls handed, so Advance never sees the verdict
-// without the park: a job whose next is set does not read as running, and an
-// Advance between the two would move it and grant the next state resources a
-// later park would strip from that state's worker.
+// Handoff is the door a dispatcher calls when its worker for state from has
+// exited. With next set, the worker finished from's work and the job continues
+// to next; with next == StateUnset, the worker stopped without finishing and
+// no verdict is recorded. Under one q.mu span it records next if there is one,
+// parks the job and calls handed, so Advance never sees the verdict without
+// the park: a job whose next is set does not read as running, and an Advance
+// between the two would move it and grant the next state resources a later
+// park would strip from that state's worker.
 //
 // It acts only when the job's attempt is open, at from, with no next recorded,
 // and returns false otherwise, touching nothing. A report that arrives after
 // the job has moved on describes a worker that is gone, and parking would take
 // the resources of the worker that replaced it.
 //
-// Once it acts it parks even when SetNext refuses next, and returns that
-// refusal: the worker has exited either way, and Park's precondition is that
-// exit, not the verdict.
+// When SetNext refuses next, the job settles OutcomeFailed instead of parking,
+// and the refusal is returned. No caller reaches this today: every verdict
+// the app reports is a legal edge from its from, and the check above excludes
+// a recorded next. Parking there would relaunch from's worker to report the
+// same refused verdict again, forever.
 //
 // handed runs inside q.mu's span, so it is bound by what Workers.Abort is: it
 // must not block, must not call into Queue, and must not take a lock a caller
@@ -78,9 +82,16 @@ func (q *Queue) Handoff(j *job.Job, from, next job.State, handed func()) (bool, 
 	if !s.IsOpen() || s.State.State != from || s.State.Next != job.StateUnset {
 		return false, nil
 	}
-	err := j.SetNext(next)
-	if perr := q.parkLocked(j); perr != nil {
-		err = errors.Join(err, perr)
+	var err error
+	if next != job.StateUnset {
+		if err = j.SetNext(next); err != nil {
+			if serr := q.settleLocked(j, job.OutcomeFailed, j.Snapshot()); serr != nil {
+				err = errors.Join(err, serr)
+			}
+		}
+	}
+	if err == nil {
+		err = q.parkLocked(j)
 	}
 	if handed != nil {
 		handed()
