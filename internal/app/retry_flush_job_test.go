@@ -11,7 +11,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-var errUnrelatedCheckpoint = errors.New("unrelated job's checkpoint write failed")
+var errJobCheckpoint = errors.New("checkpoint write failed for the chosen job")
 
 // failForJobStore fails every checkpoint batch that carries failID and passes
 // the rest to the store production uses.
@@ -23,10 +23,41 @@ type failForJobStore struct {
 func (s failForJobStore) SaveBatch(ctx context.Context, cps []job.Checkpoint) error {
 	for _, cp := range cps {
 		if cp.ID == s.failID {
-			return errUnrelatedCheckpoint
+			return errJobCheckpoint
 		}
 	}
 	return s.Store.SaveBatch(ctx, cps)
+}
+
+// TestRetryHistoryJob_FailedFlushLeavesNothingMarked: a retry whose own
+// checkpoint write fails gives up the job it built, so no later flush writes
+// that abandoned attempt's state over rows its reclaim took.
+func TestRetryHistoryJob_FailedFlushLeavesNothingMarked(t *testing.T) {
+	t.Parallel()
+	application, repo, adminDir := newRetryTestApp(t)
+	const id = "retryflushfails1"
+	application.WrapCheckpointStore(func(s checkpoint.Store) checkpoint.Store {
+		return failForJobStore{Store: s, failID: id}
+	})
+
+	writeGzNZB(t, adminDir, "flushfails.nzb.gz", retryNZBWithRecoveryVolume(2, 1))
+	if err := repo.Add(t.Context(), history.Entry{
+		NzoID:     id,
+		Name:      "flushfails",
+		NzbName:   "flushfails.nzb",
+		NZBBackup: "flushfails.nzb.gz",
+		Status:    string(constants.StatusFailed),
+	}, nil); err != nil {
+		t.Fatalf("repo.Add: %v", err)
+	}
+
+	if err := application.RetryHistoryJob(t.Context(), id); !errors.Is(err, errJobCheckpoint) {
+		t.Fatalf("RetryHistoryJob = %v, want the checkpoint write's error", err)
+	}
+	if got := application.Checkpointer().DirtyCount(); got != 0 {
+		t.Fatalf("DirtyCount = %d after the retry gave up, want 0: the abandoned attempt is "+
+			"still marked, and the next flush writes it", got)
+	}
 }
 
 // TestRetryHistoryJob_AnotherJobsCheckpointFailureDoesNotFailTheRetry: the

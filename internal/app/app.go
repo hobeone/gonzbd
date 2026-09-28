@@ -2517,6 +2517,14 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		// retry reads it to rebuild the job. reclaim takes the manifest and the
 		// job_files rows seeded below; the entry is still FAILED, so the rule
 		// keeps its durable_runs.
+		//
+		// Pruned before the reclaim, as every departure that prunes orders
+		// it: a failed FlushJob leaves j marked, and a later flush writing it
+		// after a new retry of this ID re-seeded job_files would hand that
+		// retry this attempt's state.
+		if app.checkpointer != nil {
+			app.checkpointer.Prune(j)
+		}
 		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer delCancel()
 		app.reclaim(delCtx, jobID)

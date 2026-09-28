@@ -204,15 +204,19 @@ func (c *Checkpointer) Flush(ctx context.Context) error {
 // for the next Flush, so a caller that needs one job's rows on disk neither
 // writes nor fails on anyone else's. It writes only when the dirty set holds
 // this instance of j: a later instance under the same ID is left to the next
-// Flush, and a pruned instance is never there to take. The dirty set's writers
-// are Mark, Flush's swap and write's failed-flush re-merge; Prune takes the
-// instance out of the dirty set and out of a failing flush's re-merge, and Mark
-// refuses to put it back.
+// Flush, and a pruned instance is never there to take: Prune takes it out of
+// the dirty set and out of a failing flush's re-merge, and Mark refuses to put
+// it back.
 //
-// It is synchronous in the same sense as Flush: when it returns nil, j's state
-// as of its last Mark is on disk. That holds even when a concurrent Flush took
-// j first, because FlushJob waits on flushMu for that Flush to finish, and a
-// failed one re-merges j into the dirty set for FlushJob to write. Sharing the
+// It is synchronous in the same sense as Flush, for an instance that is
+// unpruned and is still the latest Mark under its ID: when FlushJob returns
+// nil, j's state as of that Mark is on disk. For an instance a later one under
+// the same ID has replaced, or one pruned, unpruned and not marked again, nil
+// means only that the dirty set held nothing of j's to write.
+//
+// The guarantee holds even when a concurrent Flush took j first, because
+// FlushJob waits on flushMu for that Flush to finish, and a failed one
+// re-merges j into the dirty set for FlushJob to write. Sharing the
 // lock also keeps one batch in flushing at a time, which is what Prune's wait
 // reads. The cost is that FlushJob waits out any write already holding the
 // lock, a whole-set one included; its own write carries one checkpoint.
