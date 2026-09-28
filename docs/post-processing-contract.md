@@ -52,9 +52,17 @@ single worker goroutine (`run`).
   the job finish still ends in `OnJobDone`, and a shutdown fires neither; the
   `Options.OnJobCancelled` doc has the full set. The app wires that callback to
   `jobFinalizer.cancelled`, which releases the job's dispatcher launch claim.
-  For `Extracting`/`Finalizing`, releasing it only after the stage returns is
-  what keeps `RemoveJob` from tearing down files a stage is still using; a
-  `Repairing` job's claim is released earlier, by the dispatcher's abort (#586).
+  Releasing it only after the stage returns is what keeps `RemoveJob` from
+  tearing down files a stage is still using. That holds for `Repairing` as
+  well as `Extracting`/`Finalizing`: the dispatcher's cancel aborts a running
+  `Repairing` job, and `appWorkers.Abort` does not yield a job the
+  post-processor holds. Its claim is released on the post-processor's way
+  out instead: by this callback, by `jobFinalizer.persistAndCommit` through
+  `OnJobDone` for a job that finished, or by `Shutdown`'s yield after a stop.
+  `RemoveJob` cancels in the dispatcher before it cancels here, so a job the
+  runner hands over after the abort looked is still stopped by this `Cancel`,
+  though the abort has already released its claim and `RemoveJob` does not
+  wait for its stage to return.
 - **Crash recovery handoff**: Jobs whose download completed have `PostProc=true`
   persisted in SQLite history. If the daemon crashes or shuts down while a job is
   being processed, `workerCtx` cancellation halts stage execution, preserving

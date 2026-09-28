@@ -253,6 +253,12 @@ type Application struct {
 	// cancelled. Same discipline as checkpointHook.
 	removeJobHook func(id string)
 
+	// removeCancelGapHook, when non-nil, runs in RemoveJob between its
+	// dispatcher cancel and its post-processing cancel, where a job the runner
+	// is still handing over can reach the post-processor. Same discipline as
+	// checkpointHook.
+	removeCancelGapHook func(id string)
+
 	shutdownStepTimeout time.Duration
 	closeHandlesTimeout time.Duration
 	metricsPushInterval time.Duration
@@ -903,11 +909,19 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// Abort any active DirectUnpacker for this job before removing files.
 	app.duOrch.abortJob(id)
 
-	// Cancel in-flight post-processing before any file is removed, so the PP
-	// is not left operating on a directory that is being deleted.
-	app.postProcessor.Cancel(id)
-
+	// The dispatcher cancel comes first. Its abort releases the launch claim
+	// of a running job the post-processor does not hold, and leaves one it
+	// holds to post-processing's release. The post-processing cancel follows,
+	// before any file is removed. It is what stops a job the runner handed
+	// over after that abort looked: the abort released that job's claim, so
+	// dispatcher.Remove does not wait for its stage to return. The other
+	// order let such a job run its whole pipeline uncancelled while
+	// dispatcher.Remove waited on a claim nothing released until it ended.
 	_ = app.dispatcher.Cancel(id)
+	if app.removeCancelGapHook != nil {
+		app.removeCancelGapHook(id)
+	}
+	app.postProcessor.Cancel(id)
 	if app.checkpointer != nil {
 		app.checkpointer.Prune(id)
 	}

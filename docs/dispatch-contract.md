@@ -245,7 +245,7 @@ wait inside the dispatcher: `Dispatcher.Remove` waits on the job's launch
 claim. So nothing may wait for that lock while holding something the
 dispatcher waits on. The finalizer is the site that runs holding one —
 post-processing's launch claim — so it takes the lock after its own
-`Yielded`, which clears that claim; every other site takes it before its
+`YieldedJob`, which clears that claim; every other site takes it before its
 dispatcher calls. `jobFinalizer.cancelled`, which releases the claim of a
 job `PostProcessor.Cancel` took, also runs holding it but takes no
 transition lock at all.

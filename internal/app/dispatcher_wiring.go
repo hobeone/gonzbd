@@ -36,6 +36,23 @@ type appWorkers struct {
 // tracking records (tryList and inFlight) for the given jobID before yielding
 // the job on the dispatcher. Note that CancelJob clears tracking records; it
 // does not cancel or drain active NNTP worker goroutines.
+//
+// It does not yield a job the post-processor holds, queued or running. A
+// running stage stops only once it next checks its context, and the launch
+// claim is what holds RemoveJob back from the job's files. The claim is
+// released instead once the post-processor lets the job go:
+// jobFinalizer.cancelled (OnJobCancelled) for a job its Cancel took,
+// persistAndCommit (OnJobDone) for one it finished, and, for one a stop
+// dropped, Shutdown's yield of every Repairing, Extracting or Finalizing
+// row. Shutdown yields only when PostProcessor.Stop returned within its step
+// timeout; otherwise nothing releases the claim, and Dispatcher.Stop gives up
+// waiting on it after its per-job timeout, as it does for any worker still
+// running.
+//
+// pp.Has takes q.mu and busyMu, and no span of either calls out of
+// internal/postproc, so it keeps the lock rule sched.Workers places on Abort.
+// `git grep -n 'q\.mu\.Lock()\|busyMu\.Lock()' -- internal/postproc/postproc.go internal/postproc/queue.go`
+// returns 13 lines, the spans that claim covers.
 func (w *appWorkers) Abort(j *job.Job) {
 	if w.app == nil || j == nil {
 		return
@@ -46,6 +63,7 @@ func (w *appWorkers) Abort(j *job.Job) {
 	disp := w.app.dispatcher
 	log := w.app.log
 	w.app.mu.Unlock()
+	pp := w.app.postProcessor
 
 	if dl != nil {
 		if c, ok := dl.(interface{ CancelJob(string) }); ok {
@@ -54,6 +72,9 @@ func (w *appWorkers) Abort(j *job.Job) {
 		if wk, ok := dl.(interface{ Wake() }); ok {
 			wk.Wake()
 		}
+	}
+	if pp != nil && pp.Has(jobID) {
+		return
 	}
 	if disp != nil {
 		// Yield asynchronously: Abort is invoked inside sched.Queue.mu's lock span
