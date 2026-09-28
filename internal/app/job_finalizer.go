@@ -35,8 +35,8 @@ type jobFinalizer struct {
 // post-processing worker behind a slow holder.
 const finalizeTransitionWait = 5 * time.Second
 
-// errFinalizedJobRemoved reports a finalization abandoned because, once the
-// finalizer held the job's transition lock, the job was no longer queued.
+// errFinalizedJobRemoved reports a finalization abandoned because a RemoveJob
+// took the job first (jobTransitions.markRemoved).
 var errFinalizedJobRemoved = errors.New("the job was removed before it could be finalized")
 
 func newJobFinalizer(app *Application) *jobFinalizer {
@@ -78,8 +78,8 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // from the dispatcher, and broadcasts the finalization events. Registry and
 // filesystem teardown (checkpointer prune, dispatcher removal, manifest
 // unlinking, and barrier state reset) is attempted regardless of history
-// persistence success, and skipped with the rest when the job was removed
-// while this waited (errFinalizedJobRemoved). If dispatcher.Remove returns an
+// persistence success, and skipped with the rest when a RemoveJob took the job
+// first (errFinalizedJobRemoved). If dispatcher.Remove returns an
 // error, it is retried once. If the retry also fails, the error is logged, a
 // note is surfaced on the dispatcher row via SetOperationalError, and a
 // "queue_updated" event is emitted while the job remains registered for retry
@@ -114,9 +114,9 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // also executes completion notifications and asynchronous history pruning
 // under its own 30s context outside of persistAndCommit.
 //
-// Returns a non-nil error if persistence failed, or errFinalizedJobRemoved if,
-// once it holds the job's transition lock, the dispatcher no longer holds the
-// job (either is already logged; callers can simply return).
+// Returns a non-nil error if persistence failed, or errFinalizedJobRemoved if
+// a RemoveJob took this job instance before it was committed (either is
+// already logged; callers can simply return).
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, ppJob *postproc.Job) error {
 	app := f.app
 	if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
@@ -135,20 +135,16 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 				"job", ppJob.Job.ID(), "err", err)
 		} else {
 			defer claim.release()
-			// Under the lock, a job the dispatcher no longer holds as this
-			// instance was taken by a RemoveJob that held it first and tore
-			// down what this would commit. Of the other paths to
-			// removal.end, Dispatcher.Remove's remaining caller
-			// (dropJobAlreadyInHistory) runs at startup, as does Start's
-			// restore rollback; Add's unwind drops a job that never
-			// registered; evictCancelledNeverRun takes only StateUnset jobs.
-			if app.dispatcher != nil {
-				if cur, ok := app.dispatcher.Job(ppJob.Job.ID()); !ok || cur != ppJob.Job {
-					log.Info("finalize: the job was removed while this waited for it; not filing it",
-						"job", ppJob.Job.ID())
-					return errFinalizedJobRemoved
-				}
-			}
+		}
+		// A RemoveJob took this instance and has not given it back, and is
+		// tearing down or has torn down what this would commit. Only its mark
+		// says so: a job merely gone from the dispatcher may be a never-run
+		// job the tick evicted after the Cancel above, and that one is still
+		// filed, through Occupy's fallback below.
+		if app.transitions.wasRemoved(ppJob.Job) {
+			log.Info("finalize: the job was removed while this waited for it; not filing it",
+				"job", ppJob.Job.ID())
+			return errFinalizedJobRemoved
 		}
 	}
 

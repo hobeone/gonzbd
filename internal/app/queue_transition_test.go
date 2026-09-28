@@ -83,8 +83,9 @@ func TestFinalize_WaitsForAnInFlightTransition(t *testing.T) {
 }
 
 // TestFinalize_DoesNotFileAJobRemovedWhileItWaited: a finalizer that waits out
-// a RemoveJob of its job finds the job gone once it holds the lock, and files
-// nothing: the job the user removed must not reappear in history.
+// a RemoveJob of its job finds that instance marked removed once it holds the
+// lock, and files nothing: the job the user removed must not reappear in
+// history.
 func TestFinalize_DoesNotFileAJobRemovedWhileItWaited(t *testing.T) {
 	t.Parallel()
 	application, j := newDurabilityTestApp(t, 1, 2)
@@ -106,6 +107,75 @@ func TestFinalize_DoesNotFileAJobRemovedWhileItWaited(t *testing.T) {
 	}
 	if _, err := application.historyRepo.Get(t.Context(), j.ID()); !errors.Is(err, history.ErrNotFound) {
 		t.Errorf("history.Get err = %v, want ErrNotFound: the finalizer filed a job the user removed", err)
+	}
+}
+
+// TestFinalize_DoesNotFileAJobRemovedWithoutTheLock: a finalizer that proceeds
+// without the lock, because the process is stopping, while a RemoveJob of its
+// job is under way files nothing either.
+func TestFinalize_DoesNotFileAJobRemovedWithoutTheLock(t *testing.T) {
+	t.Parallel()
+	application, j := newDurabilityTestApp(t, 1, 2)
+	stopping, stop := context.WithCancel(t.Context())
+	stop()
+	application.ctx = stopping
+
+	var finalizeErr error
+	application.removeJobHook = func(string) {
+		finalizeErr = application.finalizer.persistAndCommit(slog.Default(), completedEntryFor(j), &postproc.Job{Job: j})
+	}
+	if err := application.RemoveJob(t.Context(), j.ID(), false); err != nil {
+		t.Fatalf("RemoveJob: %v", err)
+	}
+
+	if !errors.Is(finalizeErr, errFinalizedJobRemoved) {
+		t.Errorf("persistAndCommit err = %v, want errFinalizedJobRemoved", finalizeErr)
+	}
+	if _, err := application.historyRepo.Get(t.Context(), j.ID()); !errors.Is(err, history.ErrNotFound) {
+		t.Errorf("history.Get err = %v, want ErrNotFound: the finalizer filed a job the user removed", err)
+	}
+}
+
+// TestFinalize_FilesAJobThatLeftTheQueueWithoutARemoval: a job gone from the
+// dispatcher that no RemoveJob took is still filed. The tick evicts a
+// never-run job once the finalizer's own Cancel has marked it cancelled, and
+// the retry of a complete job and startup both finalize never-run jobs.
+func TestFinalize_FilesAJobThatLeftTheQueueWithoutARemoval(t *testing.T) {
+	t.Parallel()
+	application, j := newDurabilityTestApp(t, 1, 2)
+	application.ctx = t.Context()
+	if err := application.dispatcher.Remove(t.Context(), j.ID()); err != nil {
+		t.Fatalf("the eviction stand-in: %v", err)
+	}
+
+	if err := application.finalizer.persistAndCommit(slog.Default(), completedEntryFor(j), &postproc.Job{Job: j}); err != nil {
+		t.Fatalf("persistAndCommit: %v", err)
+	}
+	if _, err := application.historyRepo.Get(t.Context(), j.ID()); err != nil {
+		t.Errorf("the job is not in history: %v; a completed job that left the queue without a removal was lost", err)
+	}
+}
+
+// TestFinalize_FilesAJobWhoseRemovalFailed: a RemoveJob whose dispatcher.Remove
+// fails leaves the job registered, so its mark must not outlive the call: the
+// finalizer that runs next is the only thing left that files the job.
+func TestFinalize_FilesAJobWhoseRemovalFailed(t *testing.T) {
+	t.Parallel()
+	application, j, _ := newAppWithCustomDispatchStore(t, 1)
+	application.ctx = t.Context()
+
+	if err := application.RemoveJob(t.Context(), j.ID(), false); err == nil {
+		t.Fatal("RemoveJob succeeded; the store was set to fail its first delete")
+	}
+	if _, held := application.dispatcher.Job(j.ID()); !held {
+		t.Fatal("the failed removal took the job out of the queue")
+	}
+
+	if err := application.finalizer.persistAndCommit(slog.Default(), completedEntryFor(j), &postproc.Job{Job: j}); err != nil {
+		t.Fatalf("persistAndCommit: %v; a job whose removal failed was not filed", err)
+	}
+	if _, err := application.historyRepo.Get(t.Context(), j.ID()); err != nil {
+		t.Errorf("the job is not in history: %v", err)
 	}
 }
 

@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestJobTransitions_(TryAcquireTakesTheFreeIDsAndSkipsTheHeld|AWokenWaiterRechecksBeforeTakingTheID|ReleaseRemovesTheIDs)$
+run TestJobTransitions_(TryAcquireTakesTheFreeIDsAndSkipsTheHeld|AWokenWaiterRechecksBeforeTakingTheID|ReleaseRemovesTheIDs|RemovedForgetsACollectedJob)$
 
 # jobTransitions' own exclusion, separately from its call sites
 # (transition_lock.spec). The run line leaves out the several-waiters test,
@@ -29,4 +29,14 @@ file internal/app/transition.go
 		delete(c.t.held, id)
 --- replace
 		delete(c.t.held, "mut-"+id)
+--- end
+
+[a removal mark outlives its job]
+file internal/app/transition.go
+--- anchor
+	defer t.mu.Unlock()
+	delete(t.removed, key)
+--- replace
+	defer t.mu.Unlock()
+	_ = key
 --- end

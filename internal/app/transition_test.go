@@ -3,9 +3,12 @@ package app
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 func TestJobTransitions_TryAcquireTakesTheFreeIDsAndSkipsTheHeld(t *testing.T) {
@@ -196,4 +199,47 @@ func TestJobTransitions_ASecondReleasePanics(t *testing.T) {
 		}
 	}()
 	c.release()
+}
+
+// A removal mark belongs to the job instance it was made on, not its ID: a
+// later job under the same ID is not affected.
+func TestJobTransitions_RemovedMarksTheInstance(t *testing.T) {
+	t.Parallel()
+	var tr jobTransitions
+	removed := job.New("x", "x", job.Policy{})
+	later := job.New("x", "x", job.Policy{})
+	if tr.wasRemoved(removed) {
+		t.Fatal("an unmarked job reads as removed")
+	}
+	tr.markRemoved(removed)
+	tr.markRemoved(removed)
+	if !tr.wasRemoved(removed) {
+		t.Error("a marked job does not read as removed")
+	}
+	if tr.wasRemoved(later) {
+		t.Error("a later job under the same ID reads as removed")
+	}
+}
+
+// The record does not outlive the job: once nothing references a marked job,
+// its entry goes, so the record does not grow with every job ever removed.
+func TestJobTransitions_RemovedForgetsACollectedJob(t *testing.T) {
+	t.Parallel()
+	var tr jobTransitions
+	tr.markRemoved(job.New("gone", "gone", job.Policy{}))
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		runtime.GC()
+		tr.mu.Lock()
+		n := len(tr.removed)
+		tr.mu.Unlock()
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d removal marks remain after the job was collected", n)
+		}
+		runtime.Gosched()
+	}
 }

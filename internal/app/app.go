@@ -893,6 +893,9 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 		delCancel()
 		return fmt.Errorf("job %q not found", id)
 	}
+	// Before anything is torn down, so a finalizer of this instance that
+	// could not wait for the lock still sees it (jobFinalizer.persistAndCommit).
+	app.transitions.markRemoved(j)
 	name := j.Name()
 
 	// Abort any active DirectUnpacker for this job before removing files.
@@ -919,6 +922,9 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// is a request no one else carries — so the removal continues rather than
 	// reporting, and the rule decides the rows either way.
 	if rmErr != nil && !errors.Is(rmErr, dispatch.ErrNotFound) {
+		// The job stays registered, so a finalizer of it must not read this
+		// mark as a removal.
+		app.transitions.unmarkRemoved(j)
 		return rmErr
 	}
 

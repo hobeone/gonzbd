@@ -3,7 +3,11 @@ package app
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
+	"weak"
+
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // jobTransitions admits one actor at a time to the state keyed by a job ID:
@@ -29,11 +33,63 @@ import (
 // launch claim, which its own Yielded clears — so it takes the lock only after
 // that call.
 //
-// mu is never held across I/O or a wait: it guards held and each claim's
-// released flag.
+// removed records the job instances a RemoveJob has taken and not given back
+// (a RemoveJob whose dispatcher.Remove fails withdraws its mark), so a finalizer can
+// tell that case from a job leaving the dispatcher any other way (the tick
+// evicts a never-run job the finalizer's own Cancel made evictable, and that
+// one must still be filed). Keyed by instance, not ID, so a later job under
+// the same ID is not affected; weakly, so a removed job is not kept alive by
+// this record, and its entry goes when the job is collected.
+//
+// mu is never held across I/O or a wait: it guards held, removed and each
+// claim's released flag.
 type jobTransitions struct {
-	mu   sync.Mutex
-	held map[string]chan struct{} // an ID is present only while claimed; its channel closes on release
+	mu      sync.Mutex
+	held    map[string]chan struct{} // an ID is present only while claimed; its channel closes on release
+	removed map[weak.Pointer[job.Job]]runtime.Cleanup
+}
+
+// markRemoved records that a RemoveJob has taken j. TestJobTransitions_RemovedSites
+// pins RemoveJob as its only caller.
+func (t *jobTransitions) markRemoved(j *job.Job) {
+	key := weak.Make(j)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.removed[key]; ok {
+		return
+	}
+	if t.removed == nil {
+		t.removed = make(map[weak.Pointer[job.Job]]runtime.Cleanup)
+	}
+	t.removed[key] = runtime.AddCleanup(j, t.forgetRemoved, key)
+}
+
+// unmarkRemoved withdraws markRemoved's record, for a RemoveJob that gave up
+// with j still registered. TestJobTransitions_RemovedSites pins RemoveJob as
+// its only caller.
+func (t *jobTransitions) unmarkRemoved(j *job.Job) {
+	key := weak.Make(j)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if cleanup, ok := t.removed[key]; ok {
+		cleanup.Stop()
+		delete(t.removed, key)
+	}
+}
+
+func (t *jobTransitions) forgetRemoved(key weak.Pointer[job.Job]) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.removed, key)
+}
+
+// wasRemoved reports whether a RemoveJob has taken j.
+func (t *jobTransitions) wasRemoved(j *job.Job) bool {
+	key := weak.Make(j)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.removed[key]
+	return ok
 }
 
 // errJobInTransition refuses an action on a job ID another actor holds.

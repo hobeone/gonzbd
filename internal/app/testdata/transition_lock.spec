@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestRetryHistoryJob_(RefusesWhileAnotherHolderHasTheID|RefusesAJobTheDispatcherHolds)$|TestRemoveHistoryJob_ActsOnAFreshReadAfterAnInFlightRetry|TestMarkHistoryCompleted_WaitsForAnInFlightRetry|TestDeleteHistoryEntries_RefusesAnIDOutsideItsClaim|TestPruneHistory_SkipsAJobInTransition|TestRemoveJob_WaitsForAnInFlightTransition|TestFinalize_(WaitsForAnInFlightTransition|ProceedsWithoutTheLockOnceTheProcessIsStopping|DoesNotFileAJobRemovedWhileItWaited)$|TestStillExpired_KeepsOnlyHeldEntriesUnchangedSinceTheScan
+run TestRetryHistoryJob_(RefusesWhileAnotherHolderHasTheID|RefusesAJobTheDispatcherHolds)$|TestRemoveHistoryJob_ActsOnAFreshReadAfterAnInFlightRetry|TestMarkHistoryCompleted_WaitsForAnInFlightRetry|TestDeleteHistoryEntries_RefusesAnIDOutsideItsClaim|TestPruneHistory_SkipsAJobInTransition|TestRemoveJob_WaitsForAnInFlightTransition|TestFinalize_(WaitsForAnInFlightTransition|ProceedsWithoutTheLockOnceTheProcessIsStopping|DoesNotFileAJobRemovedWhileItWaited|DoesNotFileAJobRemovedWithoutTheLock|FilesAJobThatLeftTheQueueWithoutARemoval|FilesAJobWhoseRemovalFailed)$|TestStillExpired_KeepsOnlyHeldEntriesUnchangedSinceTheScan
 
 # The transition lock's sites, each removed on its own. A claim site is
 # neutered by claiming a different key, not by skipping the claim: that leaves
@@ -110,12 +110,36 @@ file internal/app/job_finalizer.go
 		claim, err := app.transitions.acquire(waitCtx, "mut-"+ppJob.Job.ID())
 --- end
 
-[the finalizer files a job removed while it waited]
+[a queue removal marks some other job instance removed]
+file internal/app/app.go
+--- anchor
+	app.transitions.markRemoved(j)
+--- replace
+	app.transitions.markRemoved(job.New(id, id, job.Policy{}))
+--- end
+
+[the finalizer files a job a RemoveJob took]
 file internal/app/job_finalizer.go
 --- anchor
-				if cur, ok := app.dispatcher.Job(ppJob.Job.ID()); !ok || cur != ppJob.Job {
+		if app.transitions.wasRemoved(ppJob.Job) {
 --- replace
-				if cur, ok := app.dispatcher.Job(ppJob.Job.ID()); (!ok || cur != ppJob.Job) && false {
+		if false {
+--- end
+
+[a RemoveJob that gave up keeps its mark]
+file internal/app/app.go
+--- anchor
+		app.transitions.unmarkRemoved(j)
+--- replace
+		app.transitions.unmarkRemoved(job.New(id, id, job.Policy{}))
+--- end
+
+[the finalizer drops a job that left the queue without a removal]
+file internal/app/job_finalizer.go
+--- anchor
+		if app.transitions.wasRemoved(ppJob.Job) {
+--- replace
+		if true {
 --- end
 
 # Dies on the elapsed-time assertion: the mutant waits out the whole cap.
