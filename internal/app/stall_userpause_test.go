@@ -17,7 +17,7 @@ import (
 // Queued and cleared the warning, with no log saying so.
 //
 // It also could not settle. Handles stay open through a pause —
-// CloseJobHandles runs only from maybeFinalize — so the next checkpoint fails
+// CloseJobHandles runs only from enqueuePostProc — so the next checkpoint fails
 // the same way and the record is recreated as fast as it is cleared.
 func TestReevaluateStall_DoesNotUndoAUserPause(t *testing.T) {
 	t.Parallel()

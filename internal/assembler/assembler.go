@@ -736,15 +736,18 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string, disposition Fil
 // CloseJobHandles sends a control message to the worker goroutine to close all
 // open file handles for the given job without deleting the files from disk,
 // and blocks until the worker has actually done so. This is called when a job
-// enters post-processing or Par2 repair, ensuring no open handles remain that
-// would trigger NFS silly-rename (.nfs*) leaks when post-processing unlinks files.
+// enters post-processing, ensuring no open handles remain that would trigger
+// NFS silly-rename (.nfs*) leaks when post-processing unlinks files. The worker
+// also tombstones the whole job, so no later article for it is written until
+// ForgetJob.
 // Its error can be a *storagefault.Fault about a FILE, not only a submit or
 // timeout error about the call — a caller matching on it has to expect both.
 // That reports at least one of the job's files failing its close-time Drain,
-// Sync or Close, which matters because the only production caller is
-// maybeFinalize: it is about to hand this job to par2, unrar and cleanup, and
-// a file whose close-time drain failed has buffered bytes that never reached
-// the platter.
+// Sync or Close, which matters because the only production caller, app's
+// enqueuePostProc, is about to hand this job to par2, unrar and cleanup, and a
+// file whose close-time drain failed has buffered bytes that never reached the
+// platter. `git grep -n 'assembler\.CloseJobHandles(' -- '*.go' ':!*_test.go'`
+// finds 1 line, that call.
 func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 	// A context that is ALREADY cancelled resolves here, before the selects
 	// below, and that is a correctness requirement rather than a fast path.
@@ -807,7 +810,7 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 		// Captured, not discarded. The arm computes closeErr from every
 		// drainAndClose it performs and sends it here precisely so this
 		// returns it; reading `<-ack` and returning nil made the send side
-		// dead code and handed maybeFinalize a job whose buffered bytes never
+		// dead code and handed enqueuePostProc a job whose buffered bytes never
 		// reached the platter, with only a Warn inside drainAndClose as a
 		// trace. That is the defect this arm's own tombstone comment describes
 		// as fixed — it was fixed on the send side only.
@@ -852,9 +855,9 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 // flag precisely so its failed articles can be re-fetched, and this is what
 // lets those articles land.
 //
-// cancelledJobs is dropped too. An article for a cancelled job is discarded
-// before it reaches processRequest, so a retry of a job that was cancelled
-// would otherwise have every article silently dropped rather than written.
+// cancelledJobs is dropped too. An article for a job the cancel or close-handles
+// arm tombstoned is discarded before it reaches processRequest, so a retry of
+// such a job would otherwise have every article silently dropped rather than written.
 //
 // Open handles are deliberately left alone. This says nothing about a file
 // being written right now; it only forgets that one was finished earlier.
@@ -926,7 +929,7 @@ func (a *Assembler) worker() {
 
 	open := make(map[fileKey]*openFile)
 	completed := make(map[fileKey]struct{})    // tombstone set for finished files
-	cancelledJobs := make(map[string]struct{}) // tombstone set for cancelled jobs
+	cancelledJobs := make(map[string]struct{}) // tombstone set for cancelled and closed jobs
 	reqCount := 0
 	wc := newWriteCache(a.opts.WriteCacheBytes)
 
@@ -1008,7 +1011,7 @@ mainLoop:
 
 // dispatchRequest handles a single request from the channel. It processes the
 // control messages — each a non-nil ackCh (or syncOp) plus a FileIdx sentinel —
-// skips articles for already-cancelled jobs, and delegates normal write
+// skips articles for jobs the cancel or close-handles arm tombstoned, and delegates normal write
 // requests to processRequest. Returns 1 if a normal request was processed (for
 // reqCount tracking), 0 otherwise.
 //
@@ -1089,7 +1092,15 @@ func (a *Assembler) dispatchRequest(
 	}
 	if req.ackCh != nil && req.FileIdx == fileIdxCloseHandles {
 		// Control message: close all open file handles for a job without deleting files.
+		//
+		// The job-level tombstone refuses every later article for the job,
+		// including one for a file it never opened, which openTargetFile would
+		// otherwise create under the post-processor with an fd nothing closes.
+		// Dispatch stops at the hand-off (downloader Options.HandedOff), but an
+		// article already in flight still arrives. ForgetJob clears it for a
+		// retry. TestCloseJobHandles_TombstonesTheWholeJob is the pin.
 		targetID := req.MessageID
+		cancelledJobs[targetID] = struct{}{}
 		var closeErr error
 		for k, f := range open {
 			if k.jobID != targetID {
@@ -1097,29 +1108,17 @@ func (a *Assembler) dispatchRequest(
 			}
 			cerr := a.drainAndClose(f)
 			if cerr != nil {
-				// Recorded on the ack, not swallowed. maybeFinalize is about
+				// Recorded on the ack, not swallowed. enqueuePostProc is about
 				// to hand this job to par2, unrar and cleanup, and a file
 				// whose close-time drain failed has buffered bytes that never
 				// reached the platter.
 				closeErr = errors.Join(closeErr, cerr)
 			}
 			delete(open, k)
-			// Tombstoned unconditionally, including on failure, and that is
-			// deliberate. An earlier version of this gated the tombstone on
-			// cerr == nil, on the theory that a re-dispatched article should
-			// be able to reopen the file. It cannot be re-dispatched — this
-			// arm's only production caller is maybeFinalize, which sets
-			// PostProc first, and ForEachUnfinishedArticle skips a PostProc
-			// job — so the gate bought nothing and cost a great deal: the key
-			// was then in NEITHER map, so an article already in flight when
-			// the fault hit missed both guards and fell into openTargetFile,
-			// which re-creates and re-preallocates a file the job has already
-			// handed to post-processing. The fd it opens is never closed
-			// (this control message is one-shot behind SetPostProcStarted),
-			// so the job reappears in OpenJobIDs, the checkpoint loop
-			// barriers a job in post-processing, and on NFS the handle held
-			// across the unlink is the silly-rename this function exists to
-			// prevent.
+			// Tombstoned per file too, unconditionally including on a failed
+			// close, as the cancel arm does. Nothing re-dispatches the job to
+			// reopen it: the caller, enqueuePostProc, admits the job to
+			// post-processing first, and an admitted job is not dispatched.
 			completed[k] = struct{}{}
 			// drainFile retains the per-file cache entry to preserve its
 			// write cursor, so a drain alone leaves the cache holding a key
@@ -1158,7 +1157,7 @@ func (a *Assembler) dispatchRequest(
 		}
 		return 0
 	}
-	// Skip articles for cancelled jobs.
+	// Skip articles for cancelled and closed jobs.
 	if _, cancelled := cancelledJobs[req.JobID]; cancelled {
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
@@ -1190,7 +1189,9 @@ func (a *Assembler) dispatchRequest(
 // and that was only ever true of the worker-exit caller, where the next start
 // begins with them clear because emitted is never persisted. On the
 // CloseJobHandles path the process keeps running, and nothing resets them
-// until it stops or a downloader reload clears them in-process.
+// until it stops or a downloader reload clears them in-process. A cleared bit
+// there re-fetches nothing, because the downloader does not dispatch a job
+// admitted to post-processing (Options.HandedOff).
 //
 // That costs nothing in the ordinary case. A clean stop runs
 // Application.shutdownCheckpoint — a full barrier, ack included — while the
@@ -1220,9 +1221,11 @@ func (a *Assembler) dispatchRequest(
 //     fault built here carries no marker and reaches Stallable directly, so a
 //     wedged mount that already stalled the job through the barrier's own Drain
 //     stalls it again when the same file is closed.
-//   - On the CloseJobHandles path the job is already StatusVerifying, which is
-//     a phase neither Stall nor Fail can act on: Verifying → Paused is not a
-//     legal status edge, and maybeFinalize is a no-op once PostProc is set.
+//   - On the CloseJobHandles path the job is already admitted to
+//     post-processing (app's postProcAdmissions). Fail cannot hand it over
+//     again — enqueuePostProc refuses an admitted job, at most attaching the
+//     reason to the admitted run — and Stall would pause a job whose files
+//     post-processing is using.
 //   - On the opClose path, whether the fault matters depends on whether a
 //     barrier ran first, and only the caller knows. After a finalize that
 //     committed, routing a fault from the redundant second fsync would race

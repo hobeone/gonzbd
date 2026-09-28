@@ -70,7 +70,7 @@ type stallRecord struct {
 	// and noteNeedsSeed creates one. The user's pause was then undone within
 	// one interval, with no log saying so — and recreated as fast as it was
 	// cleared, because handles stay open through a pause (CloseJobHandles runs
-	// only from maybeFinalize), so the next checkpoint fails the same way.
+	// only from enqueuePostProc), so the next checkpoint fails the same way.
 	//
 	// Only a record this application parked may be resumed by it.
 	parked bool
@@ -401,7 +401,7 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	// returns job.ErrNotResident and creates a stall record; resuming here
 	// would unpause a user-paused job every thirty seconds, and recreate the
 	// record as fast as it was cleared, because handles stay open through a
-	// pause (CloseJobHandles runs only from maybeFinalize).
+	// pause (CloseJobHandles runs only from enqueuePostProc).
 	//
 	// Phase 2 used to do that: it resumed unconditionally. The user's pause
 	// was then undone within one interval, and recreated as fast as it was
