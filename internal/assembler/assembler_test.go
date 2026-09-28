@@ -762,13 +762,25 @@ func TestAssembler_HelperMethods(t *testing.T) {
 
 	t.Run("handleFatalArticle", func(t *testing.T) {
 		a := newHelperAssembler()
+		var released [][]byte
+		a.putBuffer = func(b []byte) { released = append(released, b) }
 		dir := t.TempDir()
 		f := newHelperFile(t, dir, "fatal.dat", 0)
+
+		// Data is set on every case below to pin handleFatalArticle's
+		// ownership contract: it releases req.Data on every return, matching
+		// handleSuccessArticle and FileWriter.Accept, so a caller never has to
+		// reason about who frees it. This is a contract pin, not a production
+		// reproduction — `git grep -n 'FatalErr:' -- '*.go' ':!*_test.go'`
+		// returns one hit, internal/app/pipeline.go:376, and its request
+		// carries no Data (handleFailureResult releases the decoder buffer
+		// itself before constructing it).
 		req := WriteRequest{
 			JobID:     "job1",
 			ArtIdx:    0,
 			MessageID: "msg1",
 			FatalErr:  fmt.Errorf("article error"),
+			Data:      []byte("first"),
 		}
 
 		// First-time failure.
@@ -778,17 +790,30 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if _, ok := f.w.seenFailed[0]; !ok {
 			t.Error("expected seenFailed to contain artidx 0")
 		}
+		if len(released) != 1 {
+			t.Errorf("released the buffer %d times after the first failure, want 1", len(released))
+		}
 
-		// Duplicate failure.
+		// Duplicate failure: admitPermanentFailure's dup return.
+		req.Data = []byte("duplicate")
 		if a.handleFatalArticle(f, req) {
 			t.Error("expected handleFatalArticle to return false for duplicate failure")
+		}
+		if len(released) != 2 {
+			t.Errorf("released the buffer %d times after the duplicate failure, want 2 — "+
+				"the false return must not leave the buffer unreleased", len(released))
 		}
 
 		// Cross-check: already counted as success.
 		f.w.seenFailed = make(map[int32]struct{})
 		f.w.seenDone[0] = struct{}{}
+		req.Data = []byte("already-counted")
 		if a.handleFatalArticle(f, req) {
 			t.Error("expected handleFatalArticle to return false when already counted as success")
+		}
+		if len(released) != 3 {
+			t.Fatalf("released the buffer %d times after the already-counted return, want 3 — "+
+				"the false return must not leave the buffer unreleased", len(released))
 		}
 	})
 
