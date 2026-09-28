@@ -178,10 +178,19 @@ wrong marker — a job between `launch` and its first persist has no queue row
 yet, and guarding on one would drop its legitimate failure marks.
 
 That closes the window for as long as the job stays departed. It cannot tell two
-uses of one job ID apart, so it is paired with `Checkpointer.Prune` waiting for
-a flush that carries the job: a departure's reclaim always follows its prune, so
-no batch holding the job can still be in the store when the rows go, and a retry
-that re-seeds `job_files` cannot inherit the previous run's marks. That is why the
+uses of one job ID apart, so it is paired with two things `Checkpointer.Prune`
+does. It waits for a flush that carries the job: a departure's reclaim always
+follows its prune, so no batch holding the job can still be in the store when
+the rows go. And it makes the checkpointer refuse every later `Mark` of that
+job instance: a late result can still mark the departed instance after its
+prune, and a flush landing after a retry has re-seeded `job_files` would pass
+the gate and write the previous run's marks onto the retry. The refusal is
+keyed by instance, so the retry's own job marks normally; it is held through a
+weak pointer, so it lasts only while the departed instance is reachable, which
+is exactly as long as something could still mark it. A `RemoveJob` whose queue
+removal fails withdraws it (`Checkpointer.Unprune`), since that job stays
+registered. Together these mean a retry that re-seeds `job_files` cannot
+inherit the previous run's marks. That is why the
 pattern below carries a bare-quoted alternative: no grep anchored on the SQL
 text can see the rule's delete (`git grep -n
 'failed_articles (job_id\|failed_articles WHERE\|"failed_articles"' --

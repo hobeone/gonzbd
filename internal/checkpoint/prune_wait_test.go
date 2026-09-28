@@ -46,7 +46,8 @@ func TestPrune_WaitsForAFlushCarryingTheJob(t *testing.T) {
 	var release sync.Once
 	t.Cleanup(func() { release.Do(func() { close(st.release) }) })
 	c := New(st, time.Hour, nil)
-	c.Mark(job.New("a", "A", job.PolicyFromPP(3)))
+	a := job.New("a", "A", job.PolicyFromPP(3))
+	c.Mark(a)
 
 	flushed := make(chan error, 1)
 	go func() { flushed <- c.Flush(context.Background()) }()
@@ -54,7 +55,7 @@ func TestPrune_WaitsForAFlushCarryingTheJob(t *testing.T) {
 
 	pruned := make(chan struct{})
 	go func() {
-		c.Prune("a")
+		c.Prune(a)
 		close(pruned)
 	}()
 	// Prune has done its bookkeeping and everything after it is the wait.
@@ -87,7 +88,8 @@ func TestPrune_DoesNotWaitForAFlushThatDoesNotCarryTheJob(t *testing.T) {
 	var release sync.Once
 	t.Cleanup(func() { release.Do(func() { close(st.release) }) })
 	c := New(st, time.Hour, nil)
-	c.Mark(job.New("a", "A", job.PolicyFromPP(3)))
+	a := job.New("a", "A", job.PolicyFromPP(3))
+	c.Mark(a)
 
 	flushed := make(chan error, 1)
 	go func() { flushed <- c.Flush(context.Background()) }()
@@ -95,7 +97,7 @@ func TestPrune_DoesNotWaitForAFlushThatDoesNotCarryTheJob(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		c.Prune("b") // not in this batch
+		c.Prune(job.New("b", "B", job.PolicyFromPP(3))) // not in this batch
 		close(done)
 	}()
 	select {
@@ -124,7 +126,8 @@ func TestPrune_SecondDepartureOfOneJobAlsoWaits(t *testing.T) {
 	var once sync.Once
 	t.Cleanup(func() { once.Do(func() { close(st.release) }) })
 	c := New(st, time.Hour, nil)
-	c.Mark(job.New("a", "A", job.PolicyFromPP(3)))
+	a := job.New("a", "A", job.PolicyFromPP(3))
+	c.Mark(a)
 
 	flushed := make(chan error, 1)
 	go func() { flushed <- c.Flush(context.Background()) }()
@@ -132,14 +135,14 @@ func TestPrune_SecondDepartureOfOneJobAlsoWaits(t *testing.T) {
 
 	first := make(chan struct{})
 	go func() {
-		c.Prune("a")
+		c.Prune(a)
 		close(first)
 	}()
 	waitUntilNotInFlight(t, c, "a") // the first prune has done its bookkeeping
 
 	second := make(chan struct{})
 	go func() {
-		c.Prune("a")
+		c.Prune(a)
 		close(second)
 	}()
 

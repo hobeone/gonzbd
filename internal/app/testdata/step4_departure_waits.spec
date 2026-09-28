@@ -6,17 +6,17 @@ timeout 2m
 file internal/app/app.go
 --- anchor
 	if app.checkpointer != nil {
-		app.checkpointer.Prune(id)
+		app.checkpointer.Prune(j)
 	}
 --- replace
 	if app.checkpointer != nil {
-		_ = id
+		_ = j
 	}
 --- end
 
 [finalize does not prune the checkpointer]
 file internal/app/job_finalizer.go
 --- anchor
-			app.checkpointer.Prune(ppJob.Job.ID())
+			app.checkpointer.Prune(ppJob.Job)
 --- replace
 --- end

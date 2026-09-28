@@ -19,7 +19,10 @@ func BenchmarkPrune_NotInFlight(b *testing.B) {
 	c := New(noopStore{}, time.Hour, nil)
 	c.Mark(job.New("other", "O", job.PolicyFromPP(3)))
 	for b.Loop() {
-		c.Prune("a")
+		b.StopTimer()
+		a := job.New("a", "A", job.PolicyFromPP(3))
+		b.StartTimer()
+		c.Prune(a)
 	}
 }
 
@@ -37,11 +40,12 @@ func BenchmarkPrune_InFlightCompleted(b *testing.B) {
 	for b.Loop() {
 		b.StopTimer()
 		c.mu.Lock()
-		c.inFlight["a"] = job.New("a", "A", job.PolicyFromPP(3))
+		a := job.New("a", "A", job.PolicyFromPP(3))
+		c.inFlight["a"] = a
 		c.flushDone = finished
 		c.mu.Unlock()
 		b.StartTimer()
-		c.Prune("a")
+		c.Prune(a)
 	}
 }
 

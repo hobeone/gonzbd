@@ -923,7 +923,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	}
 	app.postProcessor.Cancel(id)
 	if app.checkpointer != nil {
-		app.checkpointer.Prune(id)
+		app.checkpointer.Prune(j)
 	}
 	if app.removeJobHook != nil {
 		app.removeJobHook(id)
@@ -939,8 +939,11 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// reporting, and the rule decides the rows either way.
 	if rmErr != nil && !errors.Is(rmErr, dispatch.ErrNotFound) {
 		// The job stays registered, so a finalizer of it must not read this
-		// mark as a removal.
+		// mark as a removal, and its checkpoints must be written again.
 		app.transitions.unmarkRemoved(j)
+		if app.checkpointer != nil {
+			app.checkpointer.Unprune(j)
+		}
 		return rmErr
 	}
 
