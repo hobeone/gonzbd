@@ -115,6 +115,14 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		// that runs after unpack.
 		logf(ctx, log, job, slog.LevelInfo, "[repair] Skipped: QuickCheck already verified all file CRCs")
 		return nil
+	case QuickCheckUnidentified:
+		// Quickcheck judged the par2 set to protect files unpack has not
+		// produced yet (a heuristic; see QuickCheckUnidentified for its basis
+		// and gaps). A repair then has nothing delivered to verify, and the
+		// ParError of a failed one would stop unpack from producing them.
+		logf(ctx, log, job, slog.LevelInfo,
+			"[repair] Skipped: QuickCheck judged the par2 set to protect the archive's extracted contents rather than any delivered file")
+		return nil
 	case QuickCheckDamaged, QuickCheckInconclusive:
 		// Repair runs. Damaged has a verdict to act on; Inconclusive has
 		// none, which is the reason to look rather than a reason not to.
@@ -174,10 +182,10 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 // No set's verdict is read from a record an earlier run wrote. That is the
 // property #533 restored, and it is narrower than "everything is always
 // verified": a set reaching here is verified without consulting stored state,
-// but three branches decide it never reaches here at all. Run returns early for
-// QuickCheckClean and for QuickCheckNotRun with a clean DirectUnpack, and this
-// function skips a set whose ParseFile is empty. Each of those is computed from
-// THIS run's state, which is what makes it a different thing from trusting the
+// but four branches decide it never reaches here at all. Run returns early for
+// QuickCheckClean, for QuickCheckUnidentified, and for QuickCheckNotRun with a
+// clean DirectUnpack, and this function skips a set whose ParseFile is empty.
+// Each of those is computed from THIS run's state, which is what makes it a different thing from trusting the
 // last run's.
 //
 // See "Verification state is derived, never persisted" in

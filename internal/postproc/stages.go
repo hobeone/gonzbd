@@ -51,8 +51,8 @@ const (
 	// may well exist and nothing has checked them.
 	//
 	// It is also the default the stage adopts the moment it knows par2 sets
-	// exist, narrowing to Clean or Damaged only where verification actually
-	// happened (#314). So the causes are "anything that did not earn a
+	// exist, narrowing to Clean, Damaged or Unidentified only where
+	// identification or verification actually happened (#314). So the causes are "anything that did not earn a
 	// verdict", and only one of them involves the manifest — do not go
 	// looking for a manifest problem first:
 	//   - the par2 scan itself failed, so whether the job has par2 sets is
@@ -64,6 +64,20 @@ const (
 	//   - par2 sets were found and no assembled CRC was available for any of
 	//     them, so the comparison had nothing on either side.
 	QuickCheckInconclusive
+
+	// QuickCheckUnidentified is the stage's judgement that a job is a Layout
+	// B post — par2 protecting what an archive extracts to, rather than the
+	// archive — so that repair, which runs before unpack, has nothing
+	// delivered to verify. Repair declines, unpack extracts, and par2_cleanup
+	// keeps the par2 set.
+	//
+	// It is a heuristic, not an observation of Layout B. Its basis is the
+	// conditions in looksLikeLayoutB: nothing delivered was identified as any
+	// par2 entry, unpack will run, no entry is named as an archive, and every
+	// entry is a member of a delivered RAR or 7z archive. What then checks the
+	// extracted files is only the archive's own per-member checksums, with
+	// the gaps archivesHoldEntries names; par2 is never run against them.
+	QuickCheckUnidentified
 )
 
 // AllQuickCheckOutcomes returns every declared outcome, so a test can assert
@@ -82,6 +96,7 @@ func AllQuickCheckOutcomes() []QuickCheckOutcome {
 		QuickCheckClean,
 		QuickCheckDamaged,
 		QuickCheckInconclusive,
+		QuickCheckUnidentified,
 	}
 }
 
@@ -97,6 +112,8 @@ func (o QuickCheckOutcome) String() string {
 		return "damaged"
 	case QuickCheckInconclusive:
 		return "inconclusive"
+	case QuickCheckUnidentified:
+		return "unidentified"
 	default:
 		return "unknown"
 	}

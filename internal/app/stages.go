@@ -191,6 +191,8 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	unpackStage.Apply(unpackConfigFromPP(pp, probe, cmdCfg, extraUnrarArgs))
 	unpackStage.SetEnabled(pp.EnableUnrar || pp.Enable7zip || pp.EnableFileJoin || pp.EnableTar)
 	stages = append(stages, unpackStage)
+	// Quickcheck lets repair defer to unpack only when unpack will run.
+	qcStage.Unpack = unpackStage
 
 	// Sample cleanup runs after unpack so it sees both raw and extracted files.
 	sampleStage := postproc.NewSampleCleanupStage()

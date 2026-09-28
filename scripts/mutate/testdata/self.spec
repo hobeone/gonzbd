@@ -230,11 +230,27 @@ file scripts/mutate/main.go
 file scripts/mutate/runfilter.go
 --- anchor
 	if strings.HasPrefix(s, "^(") && strings.HasSuffix(s, ")$") {
-		s = s[2 : len(s)-2]
-	}
 --- replace
 	if false && strings.HasPrefix(s, "^(") && strings.HasSuffix(s, ")$") {
-		s = s[2 : len(s)-2]
+--- end
+
+[a run filter wrapped in ^(...)$ is treated as unanchored]
+file scripts/mutate/runfilter.go
+--- anchor
+		anchored = true
+--- replace
+		anchored = false
+--- end
+
+[an unanchored alternative must equal a test name, so a prefix is refused]
+file scripts/mutate/runfilter.go
+--- anchor
+	if anchored {
+		return slices.Contains(listed, alt)
+	}
+--- replace
+	if true {
+		return slices.Contains(listed, alt)
 	}
 --- end
 
@@ -249,9 +265,9 @@ var testNameRe = regexp.MustCompile(`^Test[A-Za-z0-9_]*`)
 [a run filter alternative that matches a real test is reported dead, and vice versa]
 file scripts/mutate/runfilter.go
 --- anchor
-		if !slices.Contains(listed, alt) {
+		if !selects(listed, alt, anchored) {
 --- replace
-		if slices.Contains(listed, alt) {
+		if selects(listed, alt, anchored) {
 --- end
 
 [-check accepts an anchor that does not resolve to exactly one site]

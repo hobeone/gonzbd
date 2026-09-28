@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestPar2Verdict|TestMaybeReleaseRecoveryVolumes|TestApplyPar2Names|TestRecordPar2Names
+run TestPar2Verdict|TestMaybeReleaseRecoveryVolumes
 
 # The behavioural claims of the identify-then-verify wiring, at the two places
 # it acts: the fetch decision, and the rename recorder.
@@ -26,7 +26,7 @@ file internal/app/app.go
 [the layout B exemption swallows partially accounted jobs too]
 file internal/app/app.go
 --- anchor
-	if !id.Accounted() && len(id.Files) == 0 {
+	if id.NothingIdentified() {
 --- replace
 	if !id.Accounted() {
 --- end
@@ -37,7 +37,7 @@ file internal/app/app.go
 [the layout B exemption never fires]
 file internal/app/app.go
 --- anchor
-	if !id.Accounted() && len(id.Files) == 0 {
+	if id.NothingIdentified() {
 --- replace
 	if false {
 --- end

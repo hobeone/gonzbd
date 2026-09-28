@@ -37,21 +37,25 @@ func TestPlainAlternation_SplitsAndStripsCapturingAnchoring(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		run  string
-		want []string
+		run      string
+		want     []string
+		anchored bool
 	}{
-		{"TestA|TestB", []string{"TestA", "TestB"}},
-		{"^(TestA|TestB|TestC)$", []string{"TestA", "TestB", "TestC"}},
-		{"TestOnlyOne", []string{"TestOnlyOne"}},
+		{"TestA|TestB", []string{"TestA", "TestB"}, false},
+		{"^(TestA|TestB|TestC)$", []string{"TestA", "TestB", "TestC"}, true},
+		{"TestOnlyOne", []string{"TestOnlyOne"}, false},
 	}
 	for _, tc := range cases {
-		got, ok := plainAlternation(tc.run)
+		got, anchored, ok := plainAlternation(tc.run)
 		if !ok {
 			t.Errorf("plainAlternation(%q) ok = false, want true", tc.run)
 			continue
 		}
 		if !slices.Equal(got, tc.want) {
 			t.Errorf("plainAlternation(%q) = %v, want %v", tc.run, got, tc.want)
+		}
+		if anchored != tc.anchored {
+			t.Errorf("plainAlternation(%q) anchored = %v, want %v", tc.run, anchored, tc.anchored)
 		}
 	}
 }
@@ -65,7 +69,7 @@ func TestPlainAlternation_FallsBackForAnythingThatIsNotABareNameList(t *testing.
 	// than the `|` alternation this check understands, and a single name
 	// anchored the ^…$ way rather than the ^(…)$ way this check strips.
 	for _, run := range []string{"", "TestFoo/subcase", "TestFoo.*", "^TestFoo$", "TestFoo|TestBar.*"} {
-		if _, ok := plainAlternation(run); ok {
+		if _, _, ok := plainAlternation(run); ok {
 			t.Errorf("plainAlternation(%q) ok = true, want false", run)
 		}
 	}
@@ -118,6 +122,39 @@ func TestDeadRunFilterNames_ReportsNothingWhenEveryAlternativeExists(t *testing.
 	}
 	if got != nil {
 		t.Errorf("deadRunFilterNames = %v, want nil", got)
+	}
+}
+
+func TestDeadRunFilterNames_AcceptsAnUnanchoredPrefixOfARealTest(t *testing.T) {
+	t.Parallel()
+
+	// go test -run matches unanchored, so a prefix of a declared test's name
+	// selects that test and is a live alternative, not a dead one.
+	root := mustModule(t, selectedPasses+omittedPasses)
+	sp := &spec{pkg: "./...", run: "TestSel|TestOmitted"}
+
+	got, err := deadRunFilterNames(root, sp)
+	if err != nil {
+		t.Fatalf("deadRunFilterNames: %v", err)
+	}
+	if got != nil {
+		t.Errorf("deadRunFilterNames = %v, want nil: an unanchored prefix selects a real test", got)
+	}
+}
+
+func TestDeadRunFilterNames_AnchoredPrefixSelectsNothing(t *testing.T) {
+	t.Parallel()
+
+	// Wrapped in ^(…)$, TestSel must equal a test name, and none is.
+	root := mustModule(t, selectedPasses+omittedPasses)
+	sp := &spec{pkg: "./...", run: "^(TestSel|TestOmitted)$"}
+
+	got, err := deadRunFilterNames(root, sp)
+	if err != nil {
+		t.Fatalf("deadRunFilterNames: %v", err)
+	}
+	if !slices.Equal(got, []string{"TestSel"}) {
+		t.Errorf("deadRunFilterNames = %v, want [TestSel]", got)
 	}
 }
 

@@ -494,8 +494,14 @@ conservative branch (`outcomeRepair`), *provided the file was identified
 against the par2 index at all*. A file `Identify` cannot match against
 anything — indistinguishable from a Layout B post whose par2 set protects
 extracted contents that do not exist yet — reads `outcomeUnknown` instead: the
-volumes are held rather than fetched or discarded, so nothing still ships
-unrepaired, but the mechanism is holding, not the `outcomeRepair` fetch path.
+volumes are held rather than fetched or discarded. Holding is the whole of
+the download path's part; it repairs nothing. In post-processing the job
+stays `Damaged` and `repair` runs with whatever volumes are on disk, unless
+quickcheck judges it a Layout B post (`QuickCheckUnidentified`, whose
+conditions and gaps `docs/post-processing-contract.md` § Core Pipeline
+Invariants lists). Then `repair` is skipped, and the only check left on the
+extracted files is the archive's own per-member checksum, where the extractor
+can check it.
 
 **The predicate has three conditions: one row, at offset 0, covering every
 article of the file.** All three, and each closes a shape the others do not.
@@ -1062,6 +1068,17 @@ because its phase is no longer active — so a healthy job comes back Paused
 forever after a slow but perfectly normal stop. The guard used to test
 `app.ctx.Err()`, which `app.cancel()` sets two steps *later*, so it was inert on
 exactly this path.
+
+**A permanent fault still fails the job**, and `Application.Fail` has no
+stopping guard because nothing it persists positions the job for
+post-processing. It advances no position, and its post-processing hand-off is
+held in memory: a post-processor still running files the job as Failed, and one
+that stops first takes the hand-off with it, so the job restarts at the state it
+was in, its outstanding articles offered again. Of the fields `Fail` writes,
+`Header.FailReason` is the persisted one, and a restarted job keeps it until it
+leaves the queue.
+`TestFail_InTheCleanShutdownBarrier_DoesNotPersistAPartialJobForPostProcessing`
+drives both outcomes.
 
 ## File completion and the handoff
 
