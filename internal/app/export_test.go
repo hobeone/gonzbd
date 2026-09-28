@@ -19,6 +19,10 @@ import (
 	"github.com/hobeone/gonzbd/internal/postproc"
 )
 
+// ErrFinalizedJobRemoved exposes errFinalizedJobRemoved to the external test
+// package.
+var ErrFinalizedJobRemoved = errFinalizedJobRemoved
+
 // ForceAssemblerStopped starts then stops the assembler so it is in a
 // permanently-stopped state. A subsequent app.Start will fail at the
 // assembler.Start step (assembler returns ErrStopped). Used to test that a

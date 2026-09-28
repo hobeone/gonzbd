@@ -30,6 +30,15 @@ type jobFinalizer struct {
 	app *Application
 }
 
+// finalizeTransitionWait caps how long a finalizer waits for another actor to
+// release its job. On expiry it proceeds without the lock rather than hold a
+// post-processing worker behind a slow holder.
+const finalizeTransitionWait = 5 * time.Second
+
+// errFinalizedJobRemoved reports a finalization abandoned because a RemoveJob
+// took the job first (jobTransitions.markRemoved).
+var errFinalizedJobRemoved = errors.New("the job was removed before it could be finalized")
+
 func newJobFinalizer(app *Application) *jobFinalizer {
 	return &jobFinalizer{
 		app: app,
@@ -68,8 +77,9 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // persistAndCommit writes the history entry to the database, removes the job
 // from the dispatcher, and broadcasts the finalization events. Registry and
 // filesystem teardown (checkpointer prune, dispatcher removal, manifest
-// unlinking, and barrier state reset) is always attempted
-// regardless of history persistence success. If dispatcher.Remove returns an
+// unlinking, and barrier state reset) is attempted regardless of history
+// persistence success, and skipped with the rest when a RemoveJob took the job
+// first (errFinalizedJobRemoved). If dispatcher.Remove returns an
 // error, it is retried once. If the retry also fails, the error is logged, a
 // note is surfaced on the dispatcher row via SetOperationalError, and a
 // "queue_updated" event is emitted while the job remains registered for retry
@@ -91,6 +101,10 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // delCtx), which fits within the 15s shutdown step timeout (stepTimeout)
 // under waitBounded when terminating post-processing.
 //
+// The job's transition lock is waited for before finalCtx starts, for at most
+// finalizeTransitionWait and only until app.ctx ends, so it is outside that
+// 13s: Shutdown cancels app.ctx before it stops post-processing.
+//
 // Because dbCtx, removeCtx, and delCtx are independently derived, a slow SQLite
 // write cannot starve dispatcher removal or durability cleanup. Prune operates
 // in memory. removeManifestIn unlinks the queue manifest on the filesystem
@@ -100,13 +114,38 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // also executes completion notifications and asynchronous history pruning
 // under its own 30s context outside of persistAndCommit.
 //
-// Returns a non-nil error if persistence failed (the error is already logged;
-// callers can simply return).
+// Returns a non-nil error if persistence failed, or errFinalizedJobRemoved if
+// a RemoveJob took this job instance before it was committed (either is
+// already logged; callers can simply return).
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, ppJob *postproc.Job) error {
 	app := f.app
 	if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
 		_ = app.dispatcher.Cancel(ppJob.Job.ID())
 		_ = app.dispatcher.Yielded(ppJob.Job.ID())
+	}
+	// Taken after Yielded, which clears post-processing's launch claim on the
+	// job: a RemoveJob holding this lock waits on that claim in
+	// dispatcher.Remove.
+	if ppJob != nil && ppJob.Job != nil {
+		waitCtx, waitCancel := context.WithTimeout(app.ctx, finalizeTransitionWait)
+		claim, err := app.transitions.acquire(waitCtx, ppJob.Job.ID())
+		waitCancel()
+		if err != nil {
+			log.Warn("finalize did not get the job's transition lock in time; proceeding without it",
+				"job", ppJob.Job.ID(), "err", err)
+		} else {
+			defer claim.release()
+		}
+		// A RemoveJob took this instance and has not given it back, and is
+		// tearing down or has torn down what this would commit. Only its mark
+		// says so: a job merely gone from the dispatcher may be a never-run
+		// job the tick evicted after the Cancel above, and that one is still
+		// filed, through Occupy's fallback below.
+		if app.transitions.wasRemoved(ppJob.Job) {
+			log.Info("finalize: the job was removed while this waited for it; not filing it",
+				"job", ppJob.Job.ID())
+			return errFinalizedJobRemoved
+		}
 	}
 
 	finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 12*time.Second)

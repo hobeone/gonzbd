@@ -236,6 +236,19 @@ ABBA against the tick's `Advance` call holding `d.mu` and waiting on
 inside `Snapshot` or a mutator), never the reverse — enforced structurally
 by `internal/job` importing nothing from `internal/sched`.
 
+Above the dispatcher, `internal/app` keeps a per-job transition lock
+(`jobTransitions`, `internal/app/transition.go`) that admits one retry,
+finalization, queue removal or history change of a job at a time, except that
+a finalizer proceeds without it after a bounded wait, or at once when the
+application is stopping. A holder may
+wait inside the dispatcher: `Dispatcher.Remove` waits on the job's launch
+claim. So nothing may wait for that lock while holding something the
+dispatcher waits on. The finalizer is the site that runs holding one —
+post-processing's launch claim — so it takes the lock after its own
+`Yielded`, which clears that claim; every other site takes it before its
+dispatcher calls.
+`TestJobTransitions_LockSites` pins the set of functions that take the lock.
+
 ## The read doors: Render and RenderAll
 
 `sched.Queue.Render(j)` composes a `job.RenderView` for one job under a
