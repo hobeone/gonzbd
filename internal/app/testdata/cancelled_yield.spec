@@ -23,16 +23,20 @@ file internal/app/app.go
 [the handback does not release the launch claim]
 file internal/app/job_finalizer.go
 --- anchor
+	warnUnlessGone(app.log, "postproc cancel: releasing the job's launch claim failed", id,
 		app.dispatcher.YieldedJob(ppJob.Job))
 --- replace
+	warnUnlessGone(app.log, "postproc cancel: releasing the job's launch claim failed", id,
 		error(nil))
 --- end
 
 [the handback cancels whatever instance holds the ID]
 file internal/app/job_finalizer.go
 --- anchor
+	warnUnlessGone(app.log, "postproc cancel: cancelling the job failed", id,
 		app.dispatcher.CancelJob(ppJob.Job))
 --- replace
+	warnUnlessGone(app.log, "postproc cancel: cancelling the job failed", id,
 		app.dispatcher.Cancel(id))
 --- end
 
