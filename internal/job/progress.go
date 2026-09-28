@@ -642,10 +642,10 @@ func jobStampOrZero(t time.Time) time.Time {
 // arriving afterwards is still the first mark.
 func (p *JobProgress) setDownloadStartedOnce(t time.Time) bool {
 	// The downloadFinished test is the ordering half of the rule: a start may
-	// not be recorded once a finish is. Without it a job whose first 10
-	// articles all fail early-aborts with no start recorded, stamps a finish
-	// through SetPostProcStarted, and an article still in flight then stamps a
-	// start that post-dates it — a negative duration in the history record.
+	// not be recorded once a finish is. Without it a job with a finish and no
+	// start — one that early-aborted before any article landed — could take a
+	// start from an article still in flight that post-dates the finish, a
+	// negative duration in the history record.
 	// See TestSetDownloadStartedOnce_RefusesAStartAfterTheFinish.
 	if !isJobStamp(t) || !p.downloadStarted.IsZero() || !p.downloadFinished.IsZero() {
 		return false

@@ -2375,3 +2375,54 @@ func TestHasDownloadableJobs_SkipsNonFetchingJob(t *testing.T) {
 		t.Error("hasDownloadableJobs() = true for Assessing job, want false")
 	}
 }
+
+// TestBuildDispatchPlan_SkipsAHandedOffJob: a job handed to post-processing
+// keeps a Fetching, IntentRun row until the finalizer cancels it, so the row
+// cannot be what stops its dispatch.
+func TestBuildDispatchPlan_SkipsAHandedOffJob(t *testing.T) {
+	t.Parallel()
+	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
+	j, m := makeJobWithArticles(t, []string{"a@h"})
+	addTestJob(t, d.dispatcher, j, m)
+	opts := defaultOpts(d.servers)
+
+	d.opts.HandedOff = func(x *job.Job) bool { return x == j }
+	if plan := d.buildDispatchPlan(context.Background(), opts); plan.dispatched != 0 {
+		t.Errorf("dispatched = %d for a job handed to post-processing, want 0", plan.dispatched)
+	}
+
+	d.opts.HandedOff = nil
+	if plan := d.buildDispatchPlan(context.Background(), opts); plan.dispatched != 1 {
+		t.Fatalf("dispatched = %d once the job is no longer handed off, want 1 — the "+
+			"fixture could not dispatch it either way", plan.dispatched)
+	}
+}
+
+// TestHandedOff_NilOptionHandsOffNothing: a downloader built without the
+// option dispatches every job its row allows.
+func TestHandedOff_NilOptionHandsOffNothing(t *testing.T) {
+	t.Parallel()
+	d := newDispatchDownloader(nil)
+	j, _ := makeJobWithArticles(t, []string{"a@h"})
+	if d.handedOff(j) {
+		t.Error("handedOff = true with no HandedOff option")
+	}
+	d.opts.HandedOff = func(x *job.Job) bool { return x == j }
+	if !d.handedOff(j) {
+		t.Error("handedOff = false although the option reports the job handed off")
+	}
+}
+
+func TestHasDownloadableJobs_SkipsAHandedOffJob(t *testing.T) {
+	t.Parallel()
+	d := newDispatchDownloader(nil)
+	j, m := makeJobWithArticles(t, []string{"a@h"})
+	addTestJob(t, d.dispatcher, j, m)
+	if !d.hasDownloadableJobs() {
+		t.Fatal("hasDownloadableJobs() = false before the hand-off; the fixture proves nothing")
+	}
+	d.opts.HandedOff = func(x *job.Job) bool { return x == j }
+	if d.hasDownloadableJobs() {
+		t.Error("hasDownloadableJobs() = true for a job handed to post-processing, want false")
+	}
+}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
 	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // ErrAlreadyStarted is returned by Start when called twice without an
@@ -156,6 +157,12 @@ type Options struct {
 	// PropagationDelay is the minimum age a job must have before its
 	// articles are dispatched. Zero means no delay.
 	PropagationDelay time.Duration
+
+	// HandedOff reports whether j has been handed to post-processing. Such a
+	// job is neither dispatched nor counted as downloadable, whatever its row
+	// says: a job handed off from Fetching keeps IntentRun at Fetching until
+	// the finalizer cancels it, and its file handles are already closed. nil means no job is handed off.
+	HandedOff func(j *job.Job) bool
 }
 
 // Downloader orchestrates article dispatch across a set of NNTP

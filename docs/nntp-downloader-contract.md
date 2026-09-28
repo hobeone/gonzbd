@@ -217,6 +217,14 @@ of their failure ratio.
 
    See `docs/durability-contract.md` for the assembler and barrier side of this.
 
+6. **A job handed to post-processing is not dispatched**: `buildDispatchPlan`
+   and `hasDownloadableJobs` skip a job `Options.HandedOff` reports, whatever
+   its row says. The row alone is not enough: a job the app hands over from
+   `Fetching` keeps `IntentRun` at `Fetching` until the finalizer cancels it,
+   and its file handles are already closed. The app wires the option to its
+   post-processing admission record; `docs/post-processing-contract.md` has
+   the rest.
+
 ## `nntp.Conn` pipelining contract
 
 Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
