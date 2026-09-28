@@ -552,6 +552,74 @@ func TestResetForRetry_ClearsDownloadStamps(t *testing.T) {
 	}
 }
 
+// TestResetForRetry_UncompletesAFileWithUndoneArticles: a file restored as
+// Complete while one of its articles is not done loses Complete and its
+// assembled CRC, so the article is dispatched again; a Complete file whose
+// articles are all done keeps both.
+func TestResetForRetry_UncompletesAFileWithUndoneArticles(t *testing.T) {
+	t.Parallel()
+
+	m := NewManifest([]JobFile{
+		{
+			Subject: "short.rar",
+			Bytes:   200,
+			Articles: []JobArticle{
+				{ID: "<s1@x>", Bytes: 100, Number: 1},
+				{ID: "<s2@x>", Bytes: 100, Number: 2},
+			},
+		},
+		{
+			Subject: "whole.rar",
+			Bytes:   100,
+			Articles: []JobArticle{
+				{ID: "<w1@x>", Bytes: 100, Number: 1},
+			},
+		},
+	})
+	j := New("retry-short-file", "test.nzb", Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	// Article 1 and file 1's only article are done; article 0 is not.
+	if err := j.ApplyResolution([]RunRange{{First: 1, Last: 2}}, nil); err != nil {
+		t.Fatalf("ApplyResolution: %v", err)
+	}
+	for fi, crc := range []uint32{0xAAAA, 0xBBBB} {
+		if err := j.RestoreFileMeta(fi, "", true, crc); err != nil {
+			t.Fatalf("RestoreFileMeta(%d): %v", fi, err)
+		}
+	}
+
+	j.ResetForRetry()
+
+	p := j.Progress()
+	if p.FileComplete(0) {
+		t.Error("file 0 is still Complete after ResetForRetry although article 0 is not done")
+	}
+	if got := p.FileAssembledCRC32(0); got != 0 {
+		t.Errorf("file 0 AssembledCRC32 = %#x after ResetForRetry, want 0", got)
+	}
+	if !p.FileComplete(1) {
+		t.Error("file 1 lost Complete although every article of it is done")
+	}
+	if got := p.FileAssembledCRC32(1); got != 0xBBBB {
+		t.Errorf("file 1 AssembledCRC32 = %#x after ResetForRetry, want 0xbbbb", got)
+	}
+	if j.IsComplete() {
+		t.Error("IsComplete() = true with article 0 undone")
+	}
+	var dispatched []int32
+	if err := j.ForEachUnfinishedArticle(func(_ int, artIdx int32, _ string, _, _ int, _ string) bool {
+		dispatched = append(dispatched, artIdx)
+		return true
+	}); err != nil {
+		t.Fatalf("ForEachUnfinishedArticle: %v", err)
+	}
+	if len(dispatched) != 1 || dispatched[0] != 0 {
+		t.Errorf("unfinished articles = %v, want [0]", dispatched)
+	}
+}
+
 // TestResetForRetry_LeavesFetchNeverAlone pins that ResetForRetry no longer
 // carries a fetch-policy branch: a retained FetchNever (e.g. from a clean
 // par2 verdict on a retry path that inherited it) must not become

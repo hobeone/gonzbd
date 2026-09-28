@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -37,6 +39,28 @@ func writeNZBFile(b *strings.Builder, filename, idPrefix string, nArticles int) 
 		fmt.Fprintf(b, `<segment bytes="1024" number="%d">%s%d@t</segment>`+"\n", i, idPrefix, i)
 	}
 	b.WriteString("</segments>\n</file>\n")
+}
+
+// seedCompletedFile records file fileIdx of a FAILED history entry as complete
+// in history_job_files, together with a durable run for each of its articles
+// [firstArt, firstArt+n). The runs are the half a retry needs to believe it: a
+// file restored as complete while any of its articles is not done is
+// re-fetched (Job.ResetForRetry), and a FAILED entry keeps its durable_runs
+// for exactly this read.
+func seedCompletedFile(t *testing.T, db *sql.DB, jobID string, fileIdx, firstArt, n int32) {
+	t.Helper()
+	seedHistoryJobFilesRow(t, db, jobID, int(fileIdx), true, int(n), job.FetchAlways)
+	arts := make([]durability.DurableArticle, n)
+	for i := range n {
+		arts[i] = durability.DurableArticle{
+			FileIdx: fileIdx,
+			ArtIdx:  firstArt + i,
+			Offset:  int64(i) * 1024,
+			Length:  1024,
+			CRC32:   1,
+		}
+	}
+	app.CommitRuns(t, durability.NewStore(db), jobID, arts)
 }
 
 // recoveryFileIndex returns the one manifest index FileIsPar2Recovery
@@ -233,7 +257,7 @@ func TestRetryHistoryJob_ResumesCompletedFilesFromRetainedProgress(t *testing.T)
 		t.Fatalf("repo.Add: %v", err)
 	}
 	seedHistoryJobFilesRow(t, repo.DB(), id, 0, false, 2, job.FetchAlways)
-	seedHistoryJobFilesRow(t, repo.DB(), id, 1, true, 1, job.FetchAlways)
+	seedCompletedFile(t, repo.DB(), id, 1, 2, 1)
 
 	if err := application.RetryHistoryJob(t.Context(), id); err != nil {
 		t.Fatalf("RetryHistoryJob: %v", err)
@@ -289,7 +313,7 @@ func TestRetryHistoryJob_CompletedVolumeKeepsBytes(t *testing.T) {
 	// The recovery volume already finished downloading before the rest of
 	// the job failed — released to FetchAlways by a damage verdict, then
 	// completed.
-	seedHistoryJobFilesRow(t, repo.DB(), id, 1, true, 1, job.FetchAlways)
+	seedCompletedFile(t, repo.DB(), id, 1, 2, 1)
 	seedJobFilesRow(t, repo.DB(), id, 0, false, job.FetchAlways)
 	seedJobFilesRow(t, repo.DB(), id, 1, true, job.FetchAlways)
 
