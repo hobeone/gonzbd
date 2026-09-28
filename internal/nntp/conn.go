@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -191,6 +193,13 @@ type dialOptions struct {
 
 	// handshakeStartedHook is test-only; see Conn.handshakeStartedHook.
 	handshakeStartedHook func()
+
+	// handshakeFailedHook, when non-nil, runs in Dial right after a failed
+	// handshake's cleanup and before the ctxErr/errors.Is check below decides
+	// whether to wrap. Test-only same-package seam: it lets a test end ctx in
+	// that exact window to exercise the check deterministically instead of
+	// racing real wall-clock timing against it.
+	handshakeFailedHook func()
 }
 
 // newDialOptions derives the per-dial knobs from a ServerConfig,
@@ -255,10 +264,13 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 //
 // On any error during handshake the socket is closed before the error
 // is returned; the caller does not need to Close a *Conn that never
-// escaped Dial. If the handshake failed because ctx ended (cancellation or
-// either deadline above), the returned error satisfies errors.Is against
-// context.Canceled or context.DeadlineExceeded as appropriate, alongside the
-// underlying socket error (https://github.com/hobeone/gonzbd/issues/500).
+// escaped Dial. If the handshake's pending read or write failed because
+// setupHandshakeDeadline force-unblocked it when ctx ended, the returned
+// error additionally satisfies errors.Is against context.Canceled or
+// context.DeadlineExceeded as appropriate, alongside the underlying socket
+// error. A handshake failure the server itself produced (an unexpected
+// status, a rejected credential) is returned unchanged even if ctx has since
+// ended.
 func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Conn, error) {
 	dopts, err := newDialOptions(cfg)
 	if err != nil {
@@ -338,16 +350,23 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 		l.Debug("handshake failed", "error", err)
 		cancelConn()   // release context resources on handshake failure
 		_ = nc.Close() //nolint:errcheck // handshake failed; socket is being torn down regardless
-		if ctxErr := handshakeCtx.Err(); ctxErr != nil {
-			// setupHandshakeDeadline's watcher stamps a past socket deadline
-			// once ctx ends, so the raw error above (usually a *net.OpError
-			// wrapping os.ErrDeadlineExceeded) is that force-unblock firing,
-			// not the socket failing on its own — a non-nil handshakeCtx.Err()
-			// here is exactly that signal. Wrap it alongside the raw error so
-			// errors.Is(err, context.Canceled) / errors.Is(err,
-			// context.DeadlineExceeded) reach the caller, while the original
-			// cause stays in the chain and in the message.
-			// https://github.com/hobeone/gonzbd/issues/500
+		if dopts.handshakeFailedHook != nil {
+			dopts.handshakeFailedHook()
+		}
+		// handshakeCtx.Err() alone is not causal: ctx can end at the same
+		// instant the server sends a genuine rejection (a *ServerError,
+		// ErrAuthRejected), and that failure has nothing to do with ctx.
+		// setupHandshakeDeadline's only effect on the socket is
+		// SetDeadline(time.Now()), which fails the pending read or write with
+		// an error satisfying errors.Is(err, os.ErrDeadlineExceeded) — so
+		// requiring that alongside a non-nil handshakeCtx.Err() ties the wrap
+		// to the force-unblock actually firing, not merely to ctx having
+		// ended by the time this runs.
+		if ctxErr := handshakeCtx.Err(); ctxErr != nil && errors.Is(err, os.ErrDeadlineExceeded) {
+			// Wrap ctxErr alongside the raw error so errors.Is(err,
+			// context.Canceled) / errors.Is(err, context.DeadlineExceeded)
+			// reach the caller, while the original cause stays in the chain
+			// and in the message.
 			err = fmt.Errorf("nntp: handshake aborted: %w: %w", ctxErr, err)
 		}
 		return nil, err

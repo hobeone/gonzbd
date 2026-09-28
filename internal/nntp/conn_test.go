@@ -1224,8 +1224,7 @@ func withHandshakeStartedHook(fn func()) DialOption {
 	}
 }
 
-// TestDialHandshakeCtxCancelSurfacesAsContextCanceled pins
-// https://github.com/hobeone/gonzbd/issues/500: setupHandshakeDeadline
+// TestDialHandshakeCtxCancelSurfacesAsContextCanceled pins: setupHandshakeDeadline
 // force-unblocks a pending handshake read by stamping a past socket
 // deadline once ctx ends, and the resulting raw *net.OpError (wrapping
 // os.ErrDeadlineExceeded) used to reach the caller verbatim — so a caller
@@ -1307,5 +1306,54 @@ func TestDialHandshakeCtxDeadlineSurfacesAsDeadlineExceeded(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Dial did not return after ctx's own deadline elapsed")
+	}
+}
+
+// withHandshakeFailedHook registers fn to run in Dial right after a failed
+// handshake's cleanup, before the ctxErr/errors.Is check decides whether to
+// wrap — the exact window in which ctx ending at the same instant as a
+// genuine protocol rejection would otherwise be misattributed. Test-only.
+func withHandshakeFailedHook(fn func()) DialOption {
+	return func(o *dialOptions) {
+		o.handshakeFailedHook = fn
+	}
+}
+
+// TestDialHandshakeServerRejectionNotWrappedWhenCtxEndsBeforeTheCheck pins the
+// fix's discriminator: a genuine protocol rejection from the server must
+// never be reported as errors.Is(err, context.Canceled) /
+// context.DeadlineExceeded merely because ctx happened to end by the time
+// Dial checks handshakeCtx.Err() — a *ServerError has nothing to do with ctx
+// even when the two coincide.
+//
+// The mock server sends "502" immediately, so expectGreeting returns a
+// *ServerError without ever blocking — nothing here is a timing race on its
+// own. What IS raced deterministically, via withHandshakeFailedHook, is ctx
+// ending in the exact window between handshake() returning that error and
+// Dial's ctxErr check: the hook fires there and cancels ctx, reproducing the
+// coincidence a wall-clock version of this test could otherwise only hope to
+// hit.
+func TestDialHandshakeServerRejectionNotWrappedWhenCtxEndsBeforeTheCheck(t *testing.T) {
+	t.Parallel()
+
+	ms := newMockServer(t, func(mc *mockConn) {
+		mc.send("502 no permission")
+	})
+
+	cfg := makeCfg(ms.addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	_, err := Dial(ctx, cfg, withHandshakeFailedHook(cancel))
+	if err == nil {
+		t.Fatal("Dial succeeded against a server that rejected the greeting, want an error")
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("Dial err = %v, want it NOT to satisfy errors.Is(err, context.Canceled) — "+
+			"ctx ending after a genuine server rejection must not be misattributed to ctx", err)
+	}
+	var se *ServerError
+	if !errors.As(err, &se) || se.Code != 502 {
+		t.Fatalf("Dial err = %v (%T), want a *ServerError{Code: 502}", err, err)
 	}
 }
