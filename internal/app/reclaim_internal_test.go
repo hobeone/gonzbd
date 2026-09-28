@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -274,6 +275,45 @@ func TestStart_SweepsWhatNoDepartureReclaimed(t *testing.T) {
 	}
 	if !fileExists(t, queuedManifest) {
 		t.Error("the startup sweep unlinked a queued job's manifest")
+	}
+}
+
+// TestStart_SweepPreservesAFailedHistoryEntrysRuns pins the startup sweep's
+// other exception: an orphan whose job is recorded as a FAILED history entry
+// must not lose the durable_runs a retry bounds FinalizeFile's truncate from
+// (internal/durability/reclaim.go's keptForFailedEntry).
+// TestStart_SweepsWhatNoDepartureReclaimed above already pins that the
+// startup sweep takes a plain orphan and leaves a queued job alone; this is
+// the third state, exercised through the same Start() path rather than
+// Store.SweepOrphans directly.
+func TestStart_SweepPreservesAFailedHistoryEntrysRuns(t *testing.T) {
+	application, _, _ := newLifecycleTestApp(t)
+	const failedID = "failedhist00000"
+	seedDurability(t, application, failedID)
+	if err := application.historyRepo.Add(t.Context(), history.Entry{
+		NzoID: failedID, Name: failedID, Status: string(constants.StatusFailed),
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Shutdown() })
+
+	nr, nf := durabilityRowCounts(t, application, failedID)
+	if nr != 1 {
+		t.Errorf("a FAILED history entry's durable_runs = %d after the startup sweep, want 1: "+
+			"a retry bounds FinalizeFile's truncate from these rows", nr)
+	}
+	if nf != 0 {
+		t.Errorf("a FAILED history entry's failed_articles = %d after the startup sweep, want 0: "+
+			"only durable_runs is kept for a FAILED entry", nf)
+	}
+	if nj := jobFilesCount(t, application, failedID); nj != 0 {
+		t.Errorf("a FAILED history entry's job_files = %d after the startup sweep, want 0", nj)
 	}
 }
 
