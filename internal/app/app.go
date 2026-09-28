@@ -1735,10 +1735,11 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 		if app.checkpointer != nil {
 			app.checkpointer.Mark(j)
 		}
+		// The Fetching worker's exit report. A stale one is a repeat for a
+		// job that has already moved on, and must leave its next state alone.
 		if j.IsComplete() {
-			_ = j.SetNext(job.Assessing)
-			if err := app.dispatcher.Yielded(fc.JobID); err != nil {
-				app.dispatcher.Wake()
+			if err := app.dispatcher.AdvanceFrom(j, job.Fetching, job.Assessing); err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
+				app.logQueueWriteFailure("report download complete", fc.JobID, fc.FileIdx, err)
 			}
 		}
 	}

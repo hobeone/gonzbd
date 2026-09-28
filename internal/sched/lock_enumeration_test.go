@@ -260,7 +260,7 @@ func queueMethodFuncs(t *testing.T) map[string]*ast.FuncDecl {
 // through a reassignment (`j2 := j; j2.Foo()`) or a *job.Job stored into a
 // struct field or composite literal and read back. Rather than state in prose
 // that no body does either — a claim that would go stale silently, leaving the
-// seven-of-ten assertion green while the analysis under-reported — it records
+// eight-of-fourteen assertion green while the analysis under-reported — it records
 // every such flow in *unsupported, and the caller fails the test on any entry.
 // The failure mode is then "this check no longer knows enough", which is loud,
 // instead of "this door does not reach a *job.Job", which is wrong.
@@ -388,7 +388,7 @@ func reachesJobMethod(fd *ast.FuncDecl, jobVars map[string]bool, jobSliceVars ma
 // doorsReachingJobMethod reports, for every exported *Queue door, whether its
 // body — transitively, through this package's own unexported helpers —
 // reaches a call on a *job.Job value. It is the machine check
-// internal/job/job.go's seven-of-ten prose split names as its own
+// internal/job/job.go's eight-of-fourteen prose split names as its own
 // enforcement: see TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse
 // below.
 func doorsReachingJobMethod(t *testing.T) map[string]bool {
@@ -421,7 +421,7 @@ func doorsReachingJobMethod(t *testing.T) map[string]bool {
 			"It matches names and argument positions, not types, so an alias or a "+
 			"value parked in a struct field escapes the walk. Left alone, such a "+
 			"flow makes this analysis report a door as NOT reaching *job.Job when "+
-			"it does, and the seven-of-ten assertion below stays green while being "+
+			"it does, and the eight-of-fourteen assertion below stays green while being "+
 			"wrong. Extend reachesJobMethod to follow the flow, or rewrite the body "+
 			"to pass the job directly — do not delete this check.",
 			len(unsupported), strings.Join(unsupported, "\n  "))
@@ -441,24 +441,24 @@ func doorsReachingJobMethod(t *testing.T) map[string]bool {
 // hand-maintained copy of the same list.
 func TestQueueMuLockers_MatchTheEnumerationStatedInProse(t *testing.T) {
 	got := scanQMuLockers(t)
-	// The thirteen names doc.go, queue.go and pool.go's comments state, sorted —
+	// The fourteen names doc.go, queue.go and pool.go's comments state, sorted —
 	// spelled out explicitly rather than derived, since a silently-wrong
 	// `want` would defeat the whole point of this test.
-	want := []string{"Advance", "Cancel", "LeaseCap", "Park", "Pause", "Paused", "Render", "RenderAll", "Resume", "Retry", "SetCaps", "Settle", "SlotCap"}
+	want := []string{"Advance", "Cancel", "Handoff", "LeaseCap", "Park", "Pause", "Paused", "Render", "RenderAll", "Resume", "Retry", "SetCaps", "Settle", "SlotCap"}
 	if !slices.Equal(got, want) {
 		t.Errorf("methods calling q.mu.Lock() = %v, want %v\n\n"+
 			"internal/sched/queue.go's own mu comment, internal/sched/pool.go's "+
 			"leasePool comment, and internal/job/job.go's Snapshot comment all "+
-			"claim these thirteen methods, and only these thirteen, take q.mu. If a "+
+			"claim these fourteen methods, and only these fourteen, take q.mu. If a "+
 			"different set is correct, update all three comments AND this list "+
-			"together — a comment that still names the old thirteen once another "+
+			"together — a comment that still names the old fourteen once another "+
 			"exists (or one is removed/renamed) is worse than no comment at all.",
 			got, want)
 	}
 }
 
 // TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse pins the
-// seven-of-thirteen split that internal/job/job.go states in prose. That comment
+// eight-of-fourteen split that internal/job/job.go states in prose. That comment
 // was explicitly "a reviewed property, not a machine-checked one", and adding
 // RenderAll moved it from six-of-nine to seven-of-ten — a change no gate in
 // this repository would have caught, since
@@ -466,7 +466,7 @@ func TestQueueMuLockers_MatchTheEnumerationStatedInProse(t *testing.T) {
 // only.
 func TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse(t *testing.T) {
 	want := map[string]bool{
-		"Cancel": true, "Park": true, "Retry": true, "Advance": true,
+		"Cancel": true, "Park": true, "Handoff": true, "Retry": true, "Advance": true,
 		"Settle": true, "Render": true, "RenderAll": true,
 		"Pause": false, "Resume": false, "Paused": false,
 		"SetCaps": false, "LeaseCap": false, "SlotCap": false,

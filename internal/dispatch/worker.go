@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -123,6 +124,50 @@ func (d *Dispatcher) YieldedFor(id string, expected *job.Job) error {
 	return nil
 }
 
+// ErrStaleReport is AdvanceFrom's refusal of a report about a state the job is
+// no longer working: it has moved on, settled, or already recorded where it
+// goes next.
+var ErrStaleReport = errors.New("dispatch: report is for a state the job is not working")
+
+// AdvanceFrom records that j's worker finished the work of state from and that
+// the job continues to next. It is the exit report for finished work; Yielded
+// is the one for work that stopped unfinished.
+//
+// The verdict, the park and the release of the launch claim happen in one
+// sched.Queue.Handoff span, which is what makes the report atomic against the
+// tick. Recording next and then yielding as two calls let a tick land between
+// them: it moved the job to next and launched that state's worker, and the
+// yield that followed parked that worker's resources and cleared its claim, so
+// the next tick launched the state a second time.
+//
+// It changes nothing and returns ErrStaleReport unless the job is still open
+// at from with no next recorded, so a late or repeated report cannot touch the
+// state that replaced from. It returns ErrNotFound when j is not the instance
+// registered under its ID.
+//
+// The claim is cleared inside Handoff's q.mu span, which takes d.mu under
+// Queue.mu. That keeps the lock rule, because d.mu is never held across a call
+// into sched. Inside that span the job cannot leave from, because Advance
+// needs Queue.mu to move it, so any claim cleared there was taken for from.
+func (d *Dispatcher) AdvanceFrom(j *job.Job, from, next job.State) error {
+	if j == nil {
+		return fmt.Errorf("dispatch: AdvanceFrom: nil job: %w", ErrNotFound)
+	}
+	id := j.ID()
+	if _, ok := d.lookupFor(id, j); !ok {
+		return fmt.Errorf("dispatch: AdvanceFrom: no job %q: %w", id, ErrNotFound)
+	}
+	handed, err := d.q.Handoff(j, from, next, func() { d.clearLaunchedFor(j) })
+	if !handed {
+		return fmt.Errorf("dispatch: AdvanceFrom(%s, %s -> %s): %w", id, from, next, ErrStaleReport)
+	}
+	d.kick()
+	if err != nil {
+		return fmt.Errorf("dispatch: AdvanceFrom(%s, %s -> %s): %w", id, from, next, err)
+	}
+	return nil
+}
+
 // launch starts a worker if the job is runnable and still wanted.
 //
 // It re-reads the snapshot rather than trusting the one the tick took: between
@@ -132,15 +177,16 @@ func (d *Dispatcher) YieldedFor(id string, expected *job.Job) error {
 // work the user already cancelled and pays a further tick to stop it.
 //
 // The Running check is repeated after the claim, and only the second one
-// decides. An exit report (Finished or Yielded) that lands between the first
-// check and the claim moves the job and clears a claim that does not exist
-// yet; a claim taken after it has no report left to clear it, so the job is
-// not launched again until a removal or Stop clears it. Checked after the
-// claim, that report is visible, and any report after the claim clears it.
-// That rests on two branches:
+// decides. An exit report (Finished, Yielded or AdvanceFrom) that lands
+// between the first check and the claim moves the job and clears a claim that
+// does not exist yet; a claim taken after it has no report left to clear it,
+// so the job is not launched again until a removal or Stop clears it. Checked
+// after the claim, that report is visible, and any report after the claim
+// clears it. That rests on two branches:
 //   - a report changes Render before it clears the claim: Finished's Settle
-//     closes the attempt and YieldedFor's Park drops the lease or slot, each
-//     ahead of clearLaunched, so the re-check reads Running false;
+//     closes the attempt, YieldedFor's Park drops the lease or slot, and
+//     AdvanceFrom's Handoff records next and parks, each ahead of
+//     clearLaunched, so the re-check reads Running false;
 //   - nothing can re-grant the job between that report and the re-check,
 //     because Advance and launch both run only from tick (tick.go), which
 //     never overlaps itself.
@@ -170,10 +216,10 @@ func (d *Dispatcher) launch(j *job.Job) {
 
 // claimLaunched sets launched[id] under d.mu and reports whether this call was
 // the one that set it, so a later tick does not start a second worker for a
-// job already being worked. Finished, YieldedFor, Stop's sweep and deregister are its four
-// exit-path clearers, and launch clears a claim it took for a job that stopped
-// running before the claim — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
-// grep -v _test.go` finds five lines, one per site.
+// job already being worked. Finished, YieldedFor, AdvanceFrom, Stop's sweep and
+// deregister are its five exit-path clearers, and launch clears a claim it took
+// for a job that stopped running before the claim — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
+// grep -v _test.go` finds six lines, one per site.
 func (d *Dispatcher) claimLaunched(id string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -187,6 +233,20 @@ func (d *Dispatcher) claimLaunched(id string) bool {
 	return true
 }
 
+// clearLaunchedFor clears the launch claim under j's ID only while j is the
+// instance registered there. A deregistered instance's claim went with it, and
+// the ID may by then carry a later instance's claim.
+//
+// The lookup and the clear are two d.mu spans. AdvanceFrom calls this inside
+// Handoff's Queue.mu span. A later instance registered between the two spans
+// would need Advance, and so Queue.mu, to become Running, so launch cannot
+// take its claim before the clear.
+func (d *Dispatcher) clearLaunchedFor(j *job.Job) {
+	if _, ok := d.lookupFor(j.ID(), j); ok {
+		d.clearLaunched(j.ID())
+	}
+}
+
 func (d *Dispatcher) clearLaunched(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -197,7 +257,8 @@ func (d *Dispatcher) clearLaunched(id string) {
 }
 
 // waitLaunched waits for the job's launch claim latch to be cleared (by a call
-// to Finished or Yielded). Returns nil immediately if no worker is launched.
+// to Finished, Yielded or AdvanceFrom). Returns nil immediately if no worker
+// is launched.
 func (d *Dispatcher) waitLaunched(ctx context.Context, id string) error {
 	d.mu.Lock()
 	ch := d.launched[id]

@@ -7,8 +7,8 @@ import (
 // Render composes a job.RenderView for ONE job — the view job.ToSABnzbd
 // consumes. RenderAll (below) composes the same view for many under a single
 // lock; between them they are the package's two rendering doors. `grep -n '^func (q \*Queue) [A-Z]' internal/sched/*.go
-// | grep -v _test.go` finds 13 exported methods: Advance, Cancel, Park,
-// Retry and Settle (advance.go, cancel.go, settle.go) write or gate; Pause and
+// | grep -v _test.go` finds 14 exported methods: Advance, Cancel, Park,
+// Handoff, Retry and Settle (advance.go, cancel.go, settle.go) write or gate; Pause and
 // Resume (queue.go) write the pause flag; Paused (queue.go) is a pure getter
 // of q.paused; SetCaps, LeaseCap and SlotCap (queue.go) manage pool capacities;
 // and Render and RenderAll (below) compose RenderViews.

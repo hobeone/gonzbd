@@ -52,15 +52,50 @@ func (q *Queue) Park(j *job.Job) error {
 	return q.parkLocked(j)
 }
 
+// Handoff is the door a dispatcher calls when its worker has finished the work
+// of state from and the job continues to next. Under one q.mu span it records
+// next, parks the job and calls handed, so Advance never sees the verdict
+// without the park: a job whose next is set does not read as running, and an
+// Advance between the two would move it and grant the next state resources a
+// later park would strip from that state's worker.
+//
+// It acts only when the job's attempt is open, at from, with no next recorded,
+// and returns false otherwise, touching nothing. A report that arrives after
+// the job has moved on describes a worker that is gone, and parking would take
+// the resources of the worker that replaced it.
+//
+// Once it acts it parks even when SetNext refuses next, and returns that
+// refusal: the worker has exited either way, and Park's precondition is that
+// exit, not the verdict.
+//
+// handed runs inside q.mu's span, so it is bound by what Workers.Abort is: it
+// must not block, must not call into Queue, and must not take a lock a caller
+// could hold across a call into Queue.
+func (q *Queue) Handoff(j *job.Job, from, next job.State, handed func()) (bool, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	s := j.Snapshot()
+	if !s.IsOpen() || s.State.State != from || s.State.Next != job.StateUnset {
+		return false, nil
+	}
+	err := j.SetNext(next)
+	if perr := q.parkLocked(j); perr != nil {
+		err = errors.Join(err, perr)
+	}
+	if handed != nil {
+		handed()
+	}
+	return true, err
+}
+
 // parkLocked is Park's body, for a caller that already holds q.mu.
 //
-// `grep -n 'q\.parkLocked(' internal/sched/advance.go` finds exactly three lines: Park's own
-// delegation, and Advance's branch 2 and branch 3 gated arms. Advance is the
-// sole PRODUCTION caller that reaches it without going through park — the two
-// arms sit inside Advance's own q.mu span, which is the whole reason this split
-// exists. The qualifier is load-bearing: advance_test.go calls parkLocked
-// directly, so an unqualified "sole caller" is false, and that pattern above
-// searches advance.go only.
+// `grep -n 'q\.parkLocked(' internal/sched/advance.go` finds exactly four lines: Park's own
+// delegation, Handoff's park, and Advance's branch 2 and branch 3 gated arms.
+// Handoff and Advance are the PRODUCTION callers that reach it without going
+// through Park — each call sits inside its caller's own q.mu span, which is the
+// whole reason this split exists. The qualifier is load-bearing: advance_test.go
+// calls parkLocked directly, and that pattern above searches advance.go only.
 // An earlier version of this comment said "Advance is the sole production
 // caller" and stated two lines, which was wrong the moment park was written to
 // delegate here.

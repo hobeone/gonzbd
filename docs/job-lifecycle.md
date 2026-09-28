@@ -270,7 +270,11 @@ that derived both jumped a partially-downloaded job straight into verification
 on resume.
 
 Who writes it: **the worker that completes a state's work**, as the last act of
-that work.
+that work. The app's `Fetching` and `Assessing` workers record it through
+`Dispatcher.AdvanceFrom(j, from, next)`, which sets `next` and parks the job in
+one `sched.Queue.Handoff` span. A report for a state the job has already left
+changes nothing (`docs/dispatch-contract.md` § "Worker lifecycle: the
+dispatcher launches every worker and observes every exit").
 
 | State completes | Writes |
 |---|---|

@@ -14,8 +14,8 @@
 //
 // internal/dispatch (Half B2.3) is this package's first caller: it
 // constructs the one *Queue a process runs (sched.New) and drives every job
-// through Advance, Cancel, Park, Retry, Settle, Pause, Resume, Paused, Render
-// and RenderAll. `git grep -n '"github.com/hobeone/gonzbd/internal/sched"'
+// through Advance, Cancel, Park, Handoff, Retry, Settle, Pause, Resume, Paused,
+// Render and RenderAll. `git grep -n '"github.com/hobeone/gonzbd/internal/sched"'
 // -- '*.go' ':!internal/sched/*' | grep -v _test.go` returns exactly one
 // line, dispatch.go's import — the two dispatch test files import it too,
 // which the filter drops.
@@ -23,13 +23,13 @@
 // # What this package exports, and what B2 still owes it
 //
 // `grep -n '^func (q \*Queue) [A-Z]' internal/sched/*.go | grep -v
-// _test.go` finds 13 lines: Advance, Cancel, Park, Retry and Settle
+// _test.go` finds 14 lines: Advance, Cancel, Park, Handoff, Retry and Settle
 // (advance.go, cancel.go, settle.go) write or gate; Pause and Resume (queue.go)
 // write the pause flag; Paused (queue.go) reads it back; SetCaps, LeaseCap and
 // SlotCap (queue.go) manage pool capacities; and Render and RenderAll
 // (render.go) are the doors that compose a job.RenderView.
 // Acquisition happens only in grantFor; return happens only through reclaim
-// and releaseFor, which Settle, Park and Cancel all route through.
+// and releaseFor, which Settle, Park, Handoff and Cancel all route through.
 //
 // Half B2 owed this package two things it could not supply for itself. Both are
 // closed:

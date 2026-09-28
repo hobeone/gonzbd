@@ -101,8 +101,8 @@ func TestWorkerExit_ClearsTheLaunchedClaimSoALaterTickCanRelaunch(t *testing.T) 
 }
 
 // stateRunner is a Runner that records the state each Run was handed and never
-// reports an exit itself, like the app's Fetching runner, whose Yielded comes
-// from the completion path rather than from the goroutine Run starts.
+// reports an exit itself, like the app's Fetching runner, whose exit report
+// comes from the completion path rather than from the goroutine Run starts.
 type stateRunner struct {
 	mu   sync.Mutex
 	runs []job.State
@@ -122,8 +122,8 @@ func (r *stateRunner) ran() []job.State {
 
 // TestLaunch_ReportBeforeClaimLeavesNoStrandedClaim pins launch against an
 // exit report that lands after its Running check and before its claim. The
-// report is the one a completed download makes: SetNext(Assessing), then
-// Yielded, which parks the job and clears a claim that does not exist yet.
+// report is the one a completed download makes, AdvanceFrom(Fetching,
+// Assessing), which parks the job and clears a claim that does not exist yet.
 // A launch that claims anyway starts a Fetching worker for a job that has
 // already left Fetching; nothing will report for it, so the claim is never
 // cleared and the job is never launched at Assessing.
@@ -142,11 +142,8 @@ func TestLaunch_ReportBeforeClaimLeavesNoStrandedClaim(t *testing.T) {
 			return
 		}
 		fired = true
-		if err := j.SetNext(job.Assessing); err != nil {
-			t.Errorf("SetNext(Assessing): %v", err)
-		}
-		if err := d.Yielded(id); err != nil {
-			t.Errorf("Yielded: %v", err)
+		if err := d.AdvanceFrom(j, job.Fetching, job.Assessing); err != nil {
+			t.Errorf("AdvanceFrom(%s): %v", id, err)
 		}
 	}
 	d.tick(context.Background()) // branch 2 grants the lease; launch runs the seam
