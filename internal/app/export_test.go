@@ -24,6 +24,9 @@ import (
 // package.
 var ErrFinalizedJobRemoved = errFinalizedJobRemoved
 
+// ErrJobInTransition exposes errJobInTransition to the external test package.
+var ErrJobInTransition = errJobInTransition
+
 // ForceAssemblerStopped starts then stops the assembler so it is in a
 // permanently-stopped state. A subsequent app.Start will fail at the
 // assembler.Start step (assembler returns ErrStopped). Used to test that a

@@ -125,8 +125,20 @@ func TestRetryHistoryJob_InProcessRetryDownloads(t *testing.T) {
 		t.Fatalf("the first run fetched the article %d time(s); the retry has nothing left to prove", n)
 	}
 
-	if err := a.RetryHistoryJob(t.Context(), id); err != nil {
-		t.Fatalf("RetryHistoryJob: %v", err)
+	// The history entry and the dispatcher removal both land inside the
+	// finalizer's persistAndCommit, which holds the job's transition lock
+	// until it returns, so a retry here can be refused as errJobInTransition.
+	// That refusal is taken before RetryHistoryJob acts on anything, and the
+	// lock has no other observable, so poll it until the finalizer lets go.
+	var retryErr error
+	if !waitUntil(recoveryLiveness, func() bool {
+		retryErr = a.RetryHistoryJob(t.Context(), id)
+		return !errors.Is(retryErr, app.ErrJobInTransition)
+	}) {
+		t.Fatalf("the finalizer never released the job's transition lock: %v", retryErr)
+	}
+	if retryErr != nil {
+		t.Fatalf("RetryHistoryJob: %v", retryErr)
 	}
 	a.Dispatcher().Resume()
 	waitStatus(constants.StatusCompleted)
