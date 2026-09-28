@@ -24,7 +24,7 @@ func preallocateFile(f *os.File, size int64) error {
 	// ENOTSUP / EOPNOTSUPP: filesystem doesn't support fallocate
 	// (e.g. NFS, tmpfs, older FUSE mounts). Fall back to ftruncate
 	// which creates a sparse file on most filesystems. growFile never
-	// shrinks an already-larger file (#388).
+	// shrinks an already-larger file.
 	if err == unix.ENOTSUP || err == unix.EOPNOTSUPP {
 		return growFile(f, size)
 	}

@@ -1326,7 +1326,7 @@ is already at least `size` bytes; `growFile` (`preallocate.go`) is the shared
 grow-only guard both call. This is the opposite direction from `FileWriter.Truncate`'s
 S6 (§4), which only ever shrinks — pre-allocation reserves space ahead of
 writes, the completion trim removes the encoded/decoded slack once writing is
-done, and neither may perform the other's mutation (#388).
+done, and neither may perform the other's mutation.
 
 `SupportsSparse()` (`sparse.go`) probes whether the target filesystem supports
 sparse files by creating a temporary file, truncating it to 1 MiB and checking
