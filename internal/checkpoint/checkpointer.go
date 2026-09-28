@@ -6,8 +6,8 @@
 // transition (git grep -n 'store\.Update(' -- internal/queue/ ':!*_test.go'
 // returned 6 lines before the swap). Five of those transitions are deleted by
 // the swap; the sixth, ReplaceFromRuns' cleared Complete/CRC, survives because
-// §10.1 keeps resumeAllJobs — and it is served here by Flush rather than by a
-// second writer.
+// §10.1 keeps resumeAllJobs — and it is served here, by that sweep's Mark and
+// FlushJob, rather than by a second writer.
 package checkpoint
 
 import (
@@ -180,9 +180,9 @@ func (c *Checkpointer) DirtyCount() int {
 	return len(c.dirty)
 }
 
-// Flush writes every marked job now and clears the set. It is synchronous
-// because ReplaceFromRuns needs the row on disk before re-hydration can read
-// it — the one read-after-write window the swap does not delete.
+// Flush writes every marked job now and clears the set. It is synchronous: when
+// it returns nil, every job the set held when Flush took it is on disk. A job
+// that was never marked is not written, however its state moved.
 //
 // A failed SaveBatch does not lose the jobs it was carrying: Flush swaps in a
 // fresh map before writing so marks arriving during the write land in the new

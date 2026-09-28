@@ -176,8 +176,17 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 				app.log.Warn("resume sweep could not fully apply a job's recomputation",
 					"job", row.ID, "err", replaceErr)
 			}
+			// ReplaceFromRuns changes Complete and the CRC in memory only, and
+			// hydration re-applies job_files unconditionally, so the row must
+			// be written before the job can be evicted. A failed write is
+			// logged like a failed replace: the mark stays pending for the
+			// next periodic flush, and the sweep carries on.
 			if app.checkpointer != nil {
-				_ = app.checkpointer.Flush(ctx)
+				app.checkpointer.Mark(j)
+				if err := app.checkpointer.FlushJob(ctx, j); err != nil {
+					app.log.Warn("resume sweep could not persist a job's recomputation",
+						"job", row.ID, "err", err)
+				}
 			}
 			if fault == nil && replaceErr == nil {
 				app.completeStrandedFiles(ctx, row.ID, m, swept, runs)
