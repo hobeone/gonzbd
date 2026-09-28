@@ -134,6 +134,32 @@ not a correctness failure — the next tick's `Advance` routes the cancel
 through `finishCancel` and aborts it — but it starts work the user has
 already cancelled.
 
+The `Running` check that decides is the one made **after** `claimLaunched`
+succeeds; a failed re-check clears the claim and launches nothing. An exit
+report that has fully landed between a check and the claim has already parked
+the job and cleared a claim that did not yet exist, so a claim taken on the
+strength of the earlier check has no report left to clear it: the job holds
+its resources with no worker, and no tick launches it again until a removal
+or `Stop` clears the claim. The check before the claim only saves a tick from
+claiming and releasing every job that is not running.
+`TestLaunch_ReportBeforeClaimLeavesNoStrandedClaim` pins it.
+
+The re-check is sound on two branches. Every exit report changes what
+`Render` returns before it calls `clearLaunched` (`Settle` closes the
+attempt, `Park` drops the lease or slot), so a report that landed before the
+re-check reads as not `Running`. And `Advance` and `launch` both run only
+from `tick`, which never overlaps itself, so nothing re-grants the job
+between that report and the re-check.
+
+A report can also be half-landed. The app's download-complete report is two
+calls, `SetNext(Assessing)` then `Yielded`, in `completeFinalizedFile`
+(`internal/app/app.go`). A re-check that sees only the `SetNext` reads
+`Next` set, so not `Running`, and releases the claim, and the `Yielded` that
+follows parks a job nobody is working. **Known gap (#624):** if that
+`Yielded` is delayed until a later tick has moved the job to `Assessing` and
+launched its worker, it parks that live worker's resources and clears its
+claim, and the next tick launches a second worker for the same state.
+
 On worker exit, the runner (or an external caller) must call exactly one of:
 
 - **`Dispatcher.Finished(id, outcome)`** — the worker finished the state's

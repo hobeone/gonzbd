@@ -134,3 +134,61 @@ func TestPauseResumePaused_DelegateToTheQueue(t *testing.T) {
 		t.Error("Resume did not kick the tick")
 	}
 }
+
+// TestLookupFor_MatchesByInstanceOnlyWhenAsked pins the identity rule the
+// instance-scoped doors share: a nil expected matches whatever is registered
+// under the ID, and a non-nil one matches only that exact instance.
+func TestLookupFor_MatchesByInstanceOnlyWhenAsked(t *testing.T) {
+	d := newTestDispatcher(t)
+	registered := job.New("j1", "n", job.Policy{})
+	if err := d.Add(context.Background(), registered, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	other := job.New("j1", "n", job.Policy{})
+
+	tests := []struct {
+		name     string
+		id       string
+		expected *job.Job
+		want     *job.Job
+	}{
+		{"unregistered ID", "missing", nil, nil},
+		{"any instance", "j1", nil, registered},
+		{"the registered instance", "j1", registered, registered},
+		{"another instance under the same ID", "j1", other, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := d.lookupFor(tc.id, tc.expected)
+			if got != tc.want || ok != (tc.want != nil) {
+				t.Errorf("lookupFor(%q) = (%p, %v), want (%p, %v)", tc.id, got, ok, tc.want, tc.want != nil)
+			}
+		})
+	}
+}
+
+// TestCancelFor_LatchesOnlyTheJobItFinds: a miss is ErrNotFound and latches
+// nothing, and a hit latches IntentCancel on the registered job.
+func TestCancelFor_LatchesOnlyTheJobItFinds(t *testing.T) {
+	d := newTestDispatcher(t)
+	registered := job.New("j1", "n", job.Policy{})
+	if err := d.Add(context.Background(), registered, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := d.cancelFor("missing", nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("cancelFor(missing) = %v, want ErrNotFound", err)
+	}
+	if err := d.cancelFor("j1", job.New("j1", "n", job.Policy{})); !errors.Is(err, ErrNotFound) {
+		t.Errorf("cancelFor(another instance) = %v, want ErrNotFound", err)
+	}
+	if got := registered.Snapshot().Intent; got == job.IntentCancel {
+		t.Fatal("a cancelFor that missed latched IntentCancel on the registered job")
+	}
+	if err := d.cancelFor("j1", nil); err != nil {
+		t.Fatalf("cancelFor(j1): %v", err)
+	}
+	if got := registered.Snapshot().Intent; got != job.IntentCancel {
+		t.Errorf("cancelFor(j1) left intent %v, want IntentCancel", got)
+	}
+}
