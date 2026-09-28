@@ -54,9 +54,18 @@ single worker goroutine (`run`).
   the callback tail after the worker clears its busy marker. Ending it does not
   deregister the instance, so one the dispatcher still holds after a failed
   removal can be admitted again. It is keyed by job instance, so a retry
-  registered under the ID of a job still being finalized is admitted. Two
-  admissions are never ended: a run a shutdown interrupts, and a job removed
-  during a DirectUnpack wait that never finishes.
+  registered under the ID of a job still being finalized is admitted. An
+  admission a shutdown interrupts is never ended.
+- **A removed job is not handed over**: `enqueuePostProc` calls `Process`
+  only after `postProcAdmissions.beginHandOver`, which refuses a job instance
+  `RemoveJob` has marked removed (`jobTransitions.markRemoved`); a refused
+  enqueue ends its admission and runs nothing. After marking, `RemoveJob`
+  calls `postProcAdmissions.withdraw`, which ends a DirectUnpack wait the
+  enqueue is in — `duOrch.abortJob` cannot reach an unpacker `duOrch.collect`
+  has already taken — and waits for a hand-over already past the check, so
+  the `Cancel` it makes afterwards finds that job queued or running. A
+  `RemoveJob` whose `dispatcher.Remove` fails withdraws its mark, and a
+  hand-over that begins after that is not refused.
 - **Which copy's information wins**: a refused call hands nothing over. The
   admitted call keeps everything it gathered, including the DirectUnpack
   results, which `duOrch.collect` hands out only once. The history entry's

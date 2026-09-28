@@ -72,18 +72,19 @@ file internal/app/job_finalizer.go
 [the post-processor is handed the reason the admitting call carried, not the admission's]
 file internal/app/app.go
 --- anchor
-		admittedFailMsg := app.postProcAdmissions.seal(j)
+		admittedFailMsg, handing := app.postProcAdmissions.beginHandOver(j, &app.transitions)
 --- replace
-		admittedFailMsg := failMsg + app.postProcAdmissions.seal(j)[:0]
+		admittedMsg, handing := app.postProcAdmissions.beginHandOver(j, &app.transitions)
+		admittedFailMsg := failMsg + admittedMsg[:0]
 --- end
 
 [the enqueue does not seal, so a late reason becomes the run's]
 file internal/app/postproc_admission.go
 --- anchor
 	cur.sealed = true
-	return cur.failMsg
+	cur.handing = make(chan struct{})
 --- replace
-	return cur.failMsg
+	cur.handing = make(chan struct{})
 --- end
 
 [admissions keyed by job ID rather than instance]
