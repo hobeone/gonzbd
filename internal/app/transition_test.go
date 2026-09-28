@@ -86,6 +86,23 @@ func TestJobTransitions_AcquireGivesUpWithItsContext(t *testing.T) {
 	}
 }
 
+// An ended context does not stop acquire taking a free id: a finalizer on a
+// stopping process still takes a lock no one holds.
+func TestJobTransitions_AcquireTakesAFreeIDOnAnEndedContext(t *testing.T) {
+	t.Parallel()
+	var tr jobTransitions
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c, err := tr.acquire(ctx, "x")
+	if err != nil {
+		t.Fatalf("acquire err = %v on a free id, want a claim", err)
+	}
+	if !c.holds("x") {
+		t.Fatal("the claim does not hold the free id")
+	}
+	c.release()
+}
+
 // A waiter woken by its holder's release must re-check before taking the id:
 // here the release and a second claim of the id happen in one critical
 // section, so by the time the waiter runs, the id is held again.

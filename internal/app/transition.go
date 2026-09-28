@@ -34,8 +34,9 @@ import (
 // that call.
 //
 // removed records the job instances a RemoveJob has taken and not given back
-// (a RemoveJob whose dispatcher.Remove fails withdraws its mark), so a finalizer can
-// tell that case from a job leaving the dispatcher any other way (the tick
+// (a RemoveJob whose dispatcher.Remove fails withdraws its mark), so a
+// finalizer can tell a removal from the other ways a job leaves the
+// dispatcher (the tick
 // evicts a never-run job the finalizer's own Cancel made evictable, and that
 // one must still be filed). Keyed by instance, not ID, so a later job under
 // the same ID is not affected; weakly, so a removed job is not kept alive by
@@ -117,8 +118,11 @@ func (t *jobTransitions) tryAcquire(ids ...string) *transitionClaim {
 	return c
 }
 
-// acquire claims id, waiting while another claim holds it. If ctx ends first
-// it returns ctx.Err() and holds nothing.
+// acquire claims id, waiting while another claim holds it. If ctx ends while
+// it waits, it returns ctx.Err() and holds nothing. A free id is claimed
+// without consulting ctx, even one that has already ended — a contract
+// golang.org/x/sync/semaphore.Weighted.Acquire also permits — so a finalizer
+// on a stopping process still takes a lock no one holds.
 func (t *jobTransitions) acquire(ctx context.Context, id string) (*transitionClaim, error) {
 	for {
 		holder := t.claimOrHolder(id)

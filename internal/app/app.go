@@ -870,8 +870,9 @@ func seedJobFiles(ctx context.Context, st durabilityStore, jobID string, numFile
 // asking to keep a removed job's bytes — the caller wanted the data, not a
 // resumable job.
 //
-// It waits while another actor holds the job, and gives up with ctx's error
-// before acting on anything.
+// It waits while another actor holds the job. If ctx ends during that wait it
+// returns ctx's error before acting on anything; a job no one holds is taken
+// even on an ended ctx.
 func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
 	if app.dispatcher == nil {
 		return fmt.Errorf("job %q not found", id)

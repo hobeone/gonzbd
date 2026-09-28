@@ -1,10 +1,21 @@
 pkg ./internal/app/
-run TestJobTransitions_(TryAcquireTakesTheFreeIDsAndSkipsTheHeld|AWokenWaiterRechecksBeforeTakingTheID|ReleaseRemovesTheIDs|RemovedForgetsACollectedJob)$
+run TestJobTransitions_(TryAcquireTakesTheFreeIDsAndSkipsTheHeld|AWokenWaiterRechecksBeforeTakingTheID|ReleaseRemovesTheIDs|RemovedForgetsACollectedJob|AcquireTakesAFreeIDOnAnEndedContext)$
 
 # jobTransitions' own exclusion, separately from its call sites
 # (transition_lock.spec). The run line leaves out the several-waiters test,
 # which a re-check mutant kills by closing a nil channel rather than on an
 # assertion.
+
+[an ended context refuses a free id]
+file internal/app/transition.go
+--- anchor
+		holder := t.claimOrHolder(id)
+--- replace
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		holder := t.claimOrHolder(id)
+--- end
 
 [a claim takes an id another claim holds]
 file internal/app/transition.go
