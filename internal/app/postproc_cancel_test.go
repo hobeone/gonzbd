@@ -18,9 +18,9 @@ import (
 // so a stranded launch claim fails the test in seconds rather than minutes.
 const removeBudget = 5 * time.Second
 
-// cancelHonouringStage stands in for an unpack or a move: it reports which job
-// it started, then returns once its context is cancelled and, if release is
-// non-nil, once the test closes release.
+// cancelHonouringStage stands in for a repair, an unpack or a move: it reports
+// which job it started, then returns once its context is cancelled and, if
+// release is non-nil, once the test closes release.
 type cancelHonouringStage struct {
 	entered chan string
 	release chan struct{}
@@ -88,11 +88,11 @@ func removeWithin(t *testing.T, a *app.Application, id string) {
 }
 
 // TestRemoveJob_ReleasesARunningPostProcessingJob: removing a job whose
-// extraction or finalization is running returns once the stage has stopped,
-// rather than waiting out dispatcher.Remove's budget on a launch claim that
-// nothing releases.
+// repair, extraction or finalization is running returns once the stage has
+// stopped, rather than waiting out dispatcher.Remove's budget on a launch
+// claim that nothing releases.
 func TestRemoveJob_ReleasesARunningPostProcessingJob(t *testing.T) {
-	for _, state := range []job.State{job.Extracting, job.Finalizing} {
+	for _, state := range []job.State{job.Repairing, job.Extracting, job.Finalizing} {
 		t.Run(state.String(), func(t *testing.T) {
 			t.Parallel()
 			const id = "feedface00584a01"
@@ -127,10 +127,18 @@ func TestRemoveJob_ReleasesAQueuedPostProcessingJob(t *testing.T) {
 // running. The launch claim is what holds it back, so it must not be released
 // before the stage returns.
 func TestRemoveJob_WaitsForTheCancelledStageToStop(t *testing.T) {
-	t.Parallel()
+	for _, state := range []job.State{job.Repairing, job.Extracting, job.Finalizing} {
+		t.Run(state.String(), func(t *testing.T) {
+			t.Parallel()
+			removeWaitsForStage(t, state)
+		})
+	}
+}
+
+func removeWaitsForStage(t *testing.T, state job.State) {
 	const id = "feedface00584c01"
 	stage := cancelHonouringStage{entered: make(chan string, 1), release: make(chan struct{})}
-	a := startPostProcApp(t, job.Extracting, stage, id)
+	a := startPostProcApp(t, state, stage, id)
 	// Registered after startPostProcApp's Shutdown, so it runs first: a failing
 	// test must still let the held stage return.
 	var releaseOnce sync.Once

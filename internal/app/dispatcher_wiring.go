@@ -36,6 +36,17 @@ type appWorkers struct {
 // tracking records (tryList and inFlight) for the given jobID before yielding
 // the job on the dispatcher. Note that CancelJob clears tracking records; it
 // does not cancel or drain active NNTP worker goroutines.
+//
+// It does not yield a job the post-processor holds, queued or running. A
+// running stage stops only once it next checks its context, and the launch
+// claim is what holds RemoveJob back from the job's files. The claim is
+// released instead once the post-processor lets the job go:
+// jobFinalizer.cancelled (OnJobCancelled) for a job its Cancel took,
+// persistAndCommit (OnJobDone) for one it finished, and Shutdown's yield,
+// after PostProcessor.Stop returns, for one a stop dropped.
+//
+// pp.Has takes only the post-processor's own locks, whose spans make no
+// outward call, so it keeps the lock rule sched.Workers places on Abort.
 func (w *appWorkers) Abort(j *job.Job) {
 	if w.app == nil || j == nil {
 		return
@@ -46,6 +57,7 @@ func (w *appWorkers) Abort(j *job.Job) {
 	disp := w.app.dispatcher
 	log := w.app.log
 	w.app.mu.Unlock()
+	pp := w.app.postProcessor
 
 	if dl != nil {
 		if c, ok := dl.(interface{ CancelJob(string) }); ok {
@@ -54,6 +66,9 @@ func (w *appWorkers) Abort(j *job.Job) {
 		if wk, ok := dl.(interface{ Wake() }); ok {
 			wk.Wake()
 		}
+	}
+	if pp != nil && pp.Has(jobID) {
+		return
 	}
 	if disp != nil {
 		// Yield asynchronously: Abort is invoked inside sched.Queue.mu's lock span
