@@ -313,8 +313,8 @@ func TestPostProcAdmissions_KeepsTheFirstFailureReason(t *testing.T) {
 	if got := a.admit(j, "second"); got != refused {
 		t.Errorf("admit repeating a noted reason = %v, want refused", got)
 	}
-	if got := a.seal(j); got != "first" {
-		t.Errorf("seal = %q, want %q", got, "first")
+	if got := handOverReason(&a, j); got != "first" {
+		t.Errorf("hand-over reason = %q, want %q", got, "first")
 	}
 	if got := a.notes(j); len(got) != 1 || got[0] != "second" {
 		t.Errorf("notes = %q, want [second]", got)
@@ -322,14 +322,14 @@ func TestPostProcAdmissions_KeepsTheFirstFailureReason(t *testing.T) {
 
 	sealed := job.New("sealed", "sealed", job.Policy{})
 	a.admit(sealed, "")
-	if got := a.seal(sealed); got != "" {
-		t.Errorf("seal = %q, want empty", got)
+	if got := handOverReason(&a, sealed); got != "" {
+		t.Errorf("hand-over reason = %q, want empty", got)
 	}
 	if got := a.admit(sealed, "late"); got != refusedReasonNoted {
 		t.Errorf("admit with a reason after seal = %v, want refusedReasonNoted", got)
 	}
-	if got := a.seal(sealed); got != "" {
-		t.Errorf("seal after a late reason = %q, want empty", got)
+	if got := handOverReason(&a, sealed); got != "" {
+		t.Errorf("hand-over reason after a late reason = %q, want empty", got)
 	}
 	if got := a.notes(sealed); len(got) != 1 || got[0] != "late" {
 		t.Errorf("notes after a late reason = %q, want [late]", got)

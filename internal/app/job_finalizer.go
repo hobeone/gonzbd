@@ -51,7 +51,8 @@ func newJobFinalizer(app *Application) *jobFinalizer {
 }
 
 // cancelled is called by the post-processor (OnJobCancelled) for a job its
-// Cancel took out of the queue or interrupted, once no stage runs for it. The
+// Cancel took out of the queue or interrupted, once no stage runs for it, and
+// by enqueuePostProc for a job its hand-over refused as removed. The
 // job is not finalized: it releases the job's launch claim, which
 // dispatcher.Remove waits on and which persistAndCommit and Shutdown release
 // on their own paths, and ends the job's post-processing admission.

@@ -34,7 +34,7 @@ func TestAwaitDirectUnpackOrAbort_NaturalCompletion(t *testing.T) {
 	f := newFakeDirectUnpack()
 	f.finish() // unpack already done before we wait
 
-	if !awaitDirectUnpackOrAbort(context.Background(), f) {
+	if !awaitDirectUnpackOrAbort(context.Background(), nil, f) {
 		t.Error("expected true (natural completion), got false")
 	}
 	if f.aborted.Load() {
@@ -56,7 +56,7 @@ func TestAwaitDirectUnpackOrAbort_CancelAbortsAndReturns(t *testing.T) {
 	// The deadline is a hang-detection window only — the success path returns
 	// immediately, so it never adds latency in the normal case.
 	result := make(chan bool, 1)
-	go func() { result <- awaitDirectUnpackOrAbort(ctx, f) }()
+	go func() { result <- awaitDirectUnpackOrAbort(ctx, nil, f) }()
 	select {
 	case got := <-result:
 		if got {
