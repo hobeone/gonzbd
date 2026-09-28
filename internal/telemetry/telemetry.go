@@ -62,6 +62,7 @@ const (
 	ErrClassDMCARemoved           = "dmca_removed"
 	ErrClassDecodeBodyTooLarge    = "decode_body_too_large"
 	ErrClassDecodeFailed          = "decode_failed"
+	ErrClassUUMultipart           = "uu_multipart"
 	ErrClassExhaustedAllServers   = "exhausted_all_servers"
 	ErrClassDiskWriteError        = "disk_write_error"
 )

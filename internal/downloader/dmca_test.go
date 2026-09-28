@@ -73,7 +73,7 @@ func TestDecodePayload_DMCA(t *testing.T) {
 	// A body that is neither yEnc nor UU, but contains DMCA keywords.
 	body := []byte("This article has been removed due to a DMCA takedown request.\r\n")
 
-	_, err := decodePayload(body)
+	_, err := decodePayload(body, 1)
 	if err == nil {
 		t.Fatal("expected error for DMCA body, got nil")
 	}
@@ -88,7 +88,7 @@ func TestDecodePayload_NonDMCA_NonYenc(t *testing.T) {
 	// A body that is neither yEnc nor UU and contains no DMCA keywords.
 	body := []byte("Just some random data that is not encoded.\r\n")
 
-	_, err := decodePayload(body)
+	_, err := decodePayload(body, 1)
 	if err == nil {
 		t.Fatal("expected error for non-encoded body, got nil")
 	}
@@ -118,7 +118,7 @@ func TestDecodePayload_UUYieldsACRCOverTheDecodedBytes(t *testing.T) {
 	const payload = "Hello"
 	body := []byte("begin 644 test.bin\n%2&5L;&\\`\n`\nend\n")
 
-	got, err := decodePayload(body)
+	got, err := decodePayload(body, 1)
 	if err != nil {
 		t.Fatalf("decodePayload: %v", err)
 	}

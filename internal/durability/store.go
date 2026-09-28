@@ -147,9 +147,12 @@ func (s *Store) commitFile(ctx context.Context, tx *sql.Tx, jobID string, fileId
 	// All three keys are load-bearing and none is a stylistic preference.
 	//
 	// Offset is the fold's precondition. The other two exist because entries
-	// can share an offset — a multi-part UU post asserts offset 0 for every
-	// segment (internal/downloader/dispatch.go's UU block) — and two entries
-	// at one offset never abut, so both survive the fold and both address the
+	// can share an offset — historically a multi-part UU post, whose later
+	// segments all asserted offset 0 until decodePayload started rejecting
+	// them (#346); a duplicate or malformed yEnc declaration is the route
+	// that remains open, since D1-D3 (docs/article-validation-contract.md)
+	// only warn on it. Two entries at one offset never abut, so both
+	// survive the fold and both address the
 	// one primary key (job_id, file_idx, offset). Under a bare Offset
 	// comparison the sort is free to order them either way — slices.SortFunc
 	// is not stable, exactly as sort.Slice was not — and INSERT OR REPLACE

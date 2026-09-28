@@ -418,11 +418,14 @@ func TestStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 // key (job_id, file_idx, offset). INSERT OR REPLACE then keeps whichever was
 // written last.
 //
-// The case is reachable, and dispatch.go's UU block documents how: a
-// multi-part UU post yields several articles that all assert offset 0.
-// FileWriter.acceptedAt resolves that within one open-file episode, but it is
-// per-open-episode residency, so across a restart or a close-handles cycle a
-// second article at offset 0 reaches the run store beside the stored row.
+// The case is reachable: historically a multi-part UU post, whose later
+// segments all asserted offset 0 until decodePayload started rejecting them
+// (#346); a duplicate or malformed yEnc declaration is the route that
+// remains open, since D1-D3 (docs/article-validation-contract.md) only warn
+// on it. FileWriter.acceptedAt resolves that within one open-file episode,
+// but it is per-open-episode residency, so across a restart or a
+// close-handles cycle a second article at the same offset reaches the run
+// store beside the stored row.
 //
 // What must not be lost is the LONGER row. FinalizeFile computes its truncate
 // bound from the stored runs, so if the 100-byte row survives and the
@@ -452,8 +455,8 @@ func TestStore_SameOffsetKeepsTheLongerRow(t *testing.T) {
 		}
 		return out
 	}
-	// intruder is a second article asserting offset 0, as a multi-part UU
-	// post's later segment does.
+	// intruder is a second article asserting offset 0, as a duplicate or
+	// malformed yEnc declaration can (see the comment above this test).
 	intruder := []DurableArticle{
 		{FileIdx: 0, ArtIdx: 10, Offset: 0, Length: artLen, CRC32: crcOf([]byte{0xAA})},
 	}

@@ -33,7 +33,7 @@ func yencPart(n int, payload string) []byte {
 // decoder boundary. parseHeader tested =ybegin part= only for emptiness and
 // threw the value away, so nothing downstream could have compared it.
 func TestDecodePayload_CarriesTheServedPartNumber(t *testing.T) {
-	got, err := decodePayload(yencPart(3, "Hello"))
+	got, err := decodePayload(yencPart(3, "Hello"), 3)
 	if err != nil {
 		t.Fatalf("decodePayload: %v", err)
 	}
