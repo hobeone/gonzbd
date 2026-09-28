@@ -230,10 +230,11 @@ func TestRetryHistoryJob_ResumesInTheFailedDirectory(t *testing.T) {
 				s.restart()
 			}
 			partialTotal := int64(len(s.partial[0]) + len(s.partial[1]))
+			keptFetches := s.srv.FetchCount(s.keptIDs[0])
+			missedFetches := s.srv.FetchCount(s.partialIDs[1])
 			s.srv.AddArticle(s.partialIDs[1],
 				yencMultiPart("partial.bin", s.partial[1], 2, 2, partialTotal))
 			s.fail.Store(false)
-			keptFetches := s.srv.FetchCount(s.keptIDs[0])
 
 			if err := s.retry(); err != nil {
 				t.Fatalf("RetryHistoryJob: %v", err)
@@ -252,19 +253,18 @@ func TestRetryHistoryJob_ResumesInTheFailedDirectory(t *testing.T) {
 				t.Errorf("kept.bin is %d bytes (%d of them zero), want the %d bytes the first "+
 					"attempt downloaded", len(got), bytes.Count(got, []byte{0}), len(keptWant))
 			}
-			// partial.bin must hold the article the first attempt fetched at
-			// offset 0. Whether the retry also refetches the one that attempt
-			// missed turns on ResetForRetry reopening a file finalized short,
-			// which this test does not pin; if it did, the file is both
-			// articles in order.
+			if n := s.srv.FetchCount(s.partialIDs[1]); n == missedFetches {
+				t.Errorf("the retry never fetched the article the first attempt missed "+
+					"(fetch count still %d)", n)
+			}
+			// partial.bin is the first attempt's article followed by the one
+			// only the retry fetched, with no hole where either belongs.
 			partialWant := append(append([]byte{}, s.partial[0]...), s.partial[1]...)
 			if got, err := os.ReadFile(filepath.Join(finalDir, "partial.bin")); err != nil {
 				t.Errorf("read partial.bin: %v", err)
-			} else if !bytes.HasPrefix(got, s.partial[0]) ||
-				(len(got) > len(s.partial[0]) && !bytes.Equal(got, partialWant)) {
-				t.Errorf("partial.bin is %d bytes (%d of them zero), want its first article's "+
-					"%d bytes, then its second article's %d if the retry fetched it",
-					len(got), bytes.Count(got, []byte{0}), len(s.partial[0]), len(s.partial[1]))
+			} else if !bytes.Equal(got, partialWant) {
+				t.Errorf("partial.bin is %d bytes (%d of them zero), want the %d bytes of both "+
+					"articles", len(got), bytes.Count(got, []byte{0}), len(partialWant))
 			}
 			if _, err := os.Lstat(filepath.Join(s.downloadDir, "_FAILED_"+s.name)); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("the _FAILED_ directory outlived the retry (Lstat err %v)", err)
