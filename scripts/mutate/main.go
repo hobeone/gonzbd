@@ -11,7 +11,7 @@
 // has none. docs/commit-cycle.md § "The red check" holds the measurement;
 // AGENTS.md now states the rule and defers the argument to both.
 //
-// Five verdicts, and the distinctions between them are the point:
+// Six verdicts, and the distinctions between them are the point:
 //
 //   - KILLED        the test failed, and the failure is quoted so the commit
 //     body can record it as AGENTS.md requires
@@ -23,10 +23,29 @@
 //   - COMPILE_ERROR the mutated tree does not build, which AGENTS.md warns
 //     "does not demonstrate the test would have caught the
 //     behaviour" — it is a red result that is not evidence
+//   - RUNFILTER     the spec's `run` line names, as one alternative of a
+//     plain alternation, a test that does not exist in the
+//     package — refused before the baseline, for the same
+//     reason ANCHOR is refused before a mutation is applied
 //
 // COMPILE_ERROR is the verdict a hand-rolled script does not have. Reported as
 // KILLED it is a false green for the pin: a mutation that breaks the build
 // tells you the compiler noticed, never that the test would have.
+//
+// # A run filter that names no test
+//
+// `go test -run 'A|B|C'` treats each `|`-separated alternative as an
+// independent filter, and an alternative that matches nothing is dropped
+// silently — the remaining alternatives still select real tests, the
+// baseline still passes, and the phantom name reads as though it were part
+// of the pin. Before the baseline runs, deadRunFilterNames lists the
+// package's declared tests with `go test -list` and checks every alternative
+// of a plain `run` line — one that is nothing but test names joined by `|`,
+// optionally wrapped in `^(`…`)$` — against that list. A `run` line that is
+// not a plain alternation (a single name, or one carrying other regexp
+// syntax) falls back to the baseline's existing ranNothing check, which
+// already refuses a filter that matches nothing at all; what RUNFILTER adds
+// is catching the *partial* miss that ranNothing cannot see.
 //
 // EXCLUDED separates the two reasons a mutation can pass. `run` is a claim
 // about which tests bear on the mutations below it, and it is as live a
@@ -92,6 +111,7 @@ const (
 	excluded     verdict = "EXCLUDED"
 	anchorFail   verdict = "ANCHOR"
 	compileError verdict = "COMPILE_ERROR"
+	runFilter    verdict = "RUNFILTER"
 )
 
 // survivedEvidence is the evidence column for a genuine SURVIVED. It is a
@@ -161,6 +181,12 @@ func main() {
 	sp, err := parseSpec(flag.Arg(0))
 	if err != nil {
 		fatal("%s: %v", flag.Arg(0), err)
+	}
+
+	if dead, err := deadRunFilterNames(root, sp); err != nil {
+		fatal("%v", err)
+	} else if len(dead) > 0 {
+		os.Exit(reportRunFilter(sp.pkg, dead))
 	}
 
 	installSignalRestore()

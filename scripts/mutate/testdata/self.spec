@@ -225,3 +225,31 @@ file scripts/mutate/main.go
 --- replace
 		return "", err
 --- end
+
+[a run filter's ^(...)$ anchoring is never stripped]
+file scripts/mutate/runfilter.go
+--- anchor
+	if strings.HasPrefix(s, "^(") && strings.HasSuffix(s, ")$") {
+		s = s[2 : len(s)-2]
+	}
+--- replace
+	if false && strings.HasPrefix(s, "^(") && strings.HasSuffix(s, ")$") {
+		s = s[2 : len(s)-2]
+	}
+--- end
+
+[a test name pattern matches a subtest path too]
+file scripts/mutate/runfilter.go
+--- anchor
+var testNameRe = regexp.MustCompile(`^Test[A-Za-z0-9_]*$`)
+--- replace
+var testNameRe = regexp.MustCompile(`^Test[A-Za-z0-9_]*`)
+--- end
+
+[a run filter alternative that matches a real test is reported dead, and vice versa]
+file scripts/mutate/runfilter.go
+--- anchor
+		if !slices.Contains(listed, alt) {
+--- replace
+		if slices.Contains(listed, alt) {
+--- end
