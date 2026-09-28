@@ -2,6 +2,8 @@ package dispatch
 
 import (
 	"context"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -95,5 +97,72 @@ func TestWorkerExit_ClearsTheLaunchedClaimSoALaterTickCanRelaunch(t *testing.T) 
 				t.Error("job never relaunched after exiting — the launched claim was stranded")
 			}
 		})
+	}
+}
+
+// stateRunner is a Runner that records the state each Run was handed and never
+// reports an exit itself, like the app's Fetching runner, whose Yielded comes
+// from the completion path rather than from the goroutine Run starts.
+type stateRunner struct {
+	mu   sync.Mutex
+	runs []job.State
+}
+
+func (r *stateRunner) Run(_ context.Context, _ string, s job.State) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.runs = append(r.runs, s)
+}
+
+func (r *stateRunner) ran() []job.State {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.runs)
+}
+
+// TestLaunch_ReportBeforeClaimLeavesNoStrandedClaim pins launch against an
+// exit report that lands after its Running check and before its claim. The
+// report is the one a completed download makes: SetNext(Assessing), then
+// Yielded, which parks the job and clears a claim that does not exist yet.
+// A launch that claims anyway starts a Fetching worker for a job that has
+// already left Fetching; nothing will report for it, so the claim is never
+// cleared and the job is never launched at Assessing.
+func TestLaunch_ReportBeforeClaimLeavesNoStrandedClaim(t *testing.T) {
+	runner := &stateRunner{}
+	d := newTestDispatcher(t, withRunner(runner))
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.tick(context.Background()) // branch 1: BeginAttempt at Fetching
+
+	fired := false
+	d.beforeClaim = func(id string) {
+		if fired {
+			return
+		}
+		fired = true
+		if err := j.SetNext(job.Assessing); err != nil {
+			t.Errorf("SetNext(Assessing): %v", err)
+		}
+		if err := d.Yielded(id); err != nil {
+			t.Errorf("Yielded: %v", err)
+		}
+	}
+	d.tick(context.Background()) // branch 2 grants the lease; launch runs the seam
+	if !fired {
+		t.Fatal("setup: launch never reached the claim for the Fetching job")
+	}
+
+	d.mu.Lock()
+	_, claimed := d.launched[j.ID()]
+	d.mu.Unlock()
+	if claimed {
+		t.Errorf("launch claim held for %s after launch, with no worker that will ever report; runs = %v", j.ID(), runner.ran())
+	}
+
+	d.tick(context.Background()) // branch 3 moves to Assessing and launches
+	if got := runner.ran(); !slices.Contains(got, job.Assessing) {
+		t.Errorf("job never launched at Assessing: runs = %v, state = %+v", got, j.State())
 	}
 }

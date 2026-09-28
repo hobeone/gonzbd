@@ -118,6 +118,11 @@ type Dispatcher struct {
 	stopErr     error
 	stopTimeout time.Duration
 
+	// beforeClaim is a test seam, nil outside tests. launch calls it between
+	// its first Running check and claimLaunched, the window in which a
+	// worker's exit report can land before the claim exists.
+	beforeClaim func(id string)
+
 	log *slog.Logger
 }
 

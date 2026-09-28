@@ -130,24 +130,42 @@ func (d *Dispatcher) YieldedFor(id string, expected *job.Job) error {
 // (D-B8) and a concurrent Cancel may have latched IntentCancel. Launching
 // anyway is not a correctness failure — the next tick aborts it — but it starts
 // work the user already cancelled and pays a further tick to stop it.
+//
+// The Running check is repeated after the claim, and only the second one
+// decides. An exit report (Finished or Yielded) that lands between the first
+// check and the claim moves the job and clears a claim that does not exist
+// yet; a claim taken after it has no report left to clear it, so the job is
+// not launched again until a removal or Stop clears it. Checked after the
+// claim, that report is visible, and any report after the claim clears it.
+// The first check only keeps a tick from taking and dropping a claim for
+// every job that is not running.
 func (d *Dispatcher) launch(j *job.Job) {
-	v := d.q.Render(j)
-	if !v.Running || v.Intent != job.IntentRun {
+	if v := d.q.Render(j); !v.Running || v.Intent != job.IntentRun {
 		return
 	}
-	if d.claimLaunched(j.ID()) {
-		d.mu.Lock()
-		runCtx := d.ctx
-		d.mu.Unlock()
-		d.runner.Run(runCtx, j.ID(), v.State)
+	if d.beforeClaim != nil {
+		d.beforeClaim(j.ID())
 	}
+	if !d.claimLaunched(j.ID()) {
+		return
+	}
+	v := d.q.Render(j)
+	if !v.Running || v.Intent != job.IntentRun {
+		d.clearLaunched(j.ID())
+		return
+	}
+	d.mu.Lock()
+	runCtx := d.ctx
+	d.mu.Unlock()
+	d.runner.Run(runCtx, j.ID(), v.State)
 }
 
 // claimLaunched sets launched[id] under d.mu and reports whether this call was
 // the one that set it, so a later tick does not start a second worker for a
 // job already being worked. Finished, YieldedFor, Stop's sweep and deregister are its four
-// exit-path clearers — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
-// grep -v _test.go` finds four lines, one per site.
+// exit-path clearers, and launch clears a claim it took for a job that stopped
+// running before the claim — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
+// grep -v _test.go` finds five lines, one per site.
 func (d *Dispatcher) claimLaunched(id string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()

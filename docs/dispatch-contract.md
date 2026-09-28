@@ -134,6 +134,16 @@ not a correctness failure — the next tick's `Advance` routes the cancel
 through `finishCancel` and aborts it — but it starts work the user has
 already cancelled.
 
+The `Running` check that decides is the one made **after** `claimLaunched`
+succeeds; a failed re-check clears the claim and launches nothing. An exit
+report that lands between a check and the claim has already parked the job
+and cleared a claim that did not yet exist, so a claim taken on the strength
+of the earlier check has no report left to clear it: the job holds its
+resources with no worker, and no tick launches it again until a removal or
+`Stop` clears the claim. The check before
+the claim only saves a tick from claiming and releasing every job that is not
+running. `TestLaunch_ReportBeforeClaimLeavesNoStrandedClaim` pins it.
+
 On worker exit, the runner (or an external caller) must call exactly one of:
 
 - **`Dispatcher.Finished(id, outcome)`** — the worker finished the state's
