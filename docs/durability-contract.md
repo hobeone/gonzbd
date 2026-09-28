@@ -1316,6 +1316,18 @@ damage on a download that was perfectly healthy. The trim bound comes from the
 durable runs (§4), never from a high-water mark the assembler maintained — there
 is no longer any such figure, and `openFile` records no resume state at all.
 
+Every first open in an open episode calls `preallocateFile` again, including a
+reopen of an existing partial (the handle is `O_WRONLY|O_CREATE`, never
+`O_TRUNC`), and a file can legitimately already be larger than `ExpectedSize` —
+`offsetOutOfRange`'s slack allows a decoded write up to
+`1 + 1/offsetSlackDivisor` of it. The `ftruncate` path (both the Linux fallback
+and the only mechanism on other platforms) therefore never shrinks a file that
+is already at least `size` bytes; `growFile` (`preallocate.go`) is the shared
+grow-only guard both call. This is the opposite direction from `FileWriter.Truncate`'s
+S6 (§4), which only ever shrinks — pre-allocation reserves space ahead of
+writes, the completion trim removes the encoded/decoded slack once writing is
+done, and neither may perform the other's mutation (#388).
+
 `SupportsSparse()` (`sparse.go`) probes whether the target filesystem supports
 sparse files by creating a temporary file, truncating it to 1 MiB and checking
 `st_blocks * 512 < apparent_size`. It is an **informational probe** used at
