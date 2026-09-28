@@ -31,6 +31,41 @@ func TestPreallocateFile(t *testing.T) {
 	}
 }
 
+func TestGrowFileNeverShrinks(t *testing.T) {
+	// Reopening a partial file that has already grown past FileInfo.ExpectedSize
+	// must not discard its tail. growFile is the ftruncate-based path shared by
+	// preallocate_linux.go's ENOTSUP/EOPNOTSUPP fallback and
+	// preallocate_other.go's only mechanism — tested directly so this does not
+	// depend on the host filesystem's fallocate support (Linux CI's ext4/tmpfs
+	// never take the fallback path preallocateFile itself would exercise).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resumed.dat")
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer f.Close()
+
+	const grownSize = 1200 // e.g. a decoded write inside offsetOutOfRange's slack
+	if _, err := f.Write(make([]byte, grownSize)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	const expectedSize int64 = 1000 // FileInfo.ExpectedSize on reopen
+	if err := growFile(f, expectedSize); err != nil {
+		t.Fatalf("growFile: %v", err)
+	}
+
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Size() < grownSize {
+		t.Errorf("file size = %d, want >= %d (growFile must never shrink)", info.Size(), grownSize)
+	}
+}
+
 func TestPreallocateFileZeroSize(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "zero.dat")
