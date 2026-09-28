@@ -1,8 +1,9 @@
 pkg ./internal/app/
-run Test(Fail_WhilePostProcessing_EnqueuesNoSecondCopy|RunPostProc_DuringTheFinalizerTail_EnqueuesNoSecondCopy|Enqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy|RemoveJob_EndsThePostProcessingAdmission|PostProcAdmissions_AdmitsEachInstanceOnce|PostProcAdmissions_KeepsTheFirstFailureReason)$
+run Test(Fail_WhilePostProcessing_IsNotedAndLeavesTheStatusToTheStages|RunPostProc_DuringTheFinalizerTail_EnqueuesNoSecondCopy|Enqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy|RemoveJob_EndsThePostProcessingAdmission|JobFinalizerCancelled_EndsTheAdmissionWithoutADispatcher|PostProcAdmissions_AdmitsEachInstanceOnce|PostProcAdmissions_KeepsTheFirstFailureReason|WithFailureNotes_LeavesThePostProcessorsJobAlone)$
 
-# enqueuePostProc admitting each job instance to post-processing once, and
-# the failure reason a refused call offers reaching the admitted run.
+# enqueuePostProc admitting at most one post-processing run of a job instance
+# at a time; a refused call's failure reason reaching the run only before the
+# seal, and otherwise noted without changing the history status.
 
 [enqueuePostProc ignores a refused admission]
 file internal/app/app.go
@@ -16,31 +17,47 @@ file internal/app/app.go
 file internal/app/job_finalizer.go
 --- anchor
 		defer app.postProcAdmissions.release(ppJob.Job)
-		if msg := app.postProcAdmissions.seal(ppJob.Job); ppJob.FailMsg == "" && msg != "" {
-			ppJob.FailMsg = msg
-		}
+		if app.finalizeHook != nil {
 --- replace
-		if msg := app.postProcAdmissions.seal(ppJob.Job); ppJob.FailMsg == "" && msg != "" {
-			ppJob.FailMsg = msg
-		}
 		app.postProcAdmissions.release(ppJob.Job)
+		if app.finalizeHook != nil {
 --- end
 
 [finalize never ends the admission]
 file internal/app/job_finalizer.go
 --- anchor
 		defer app.postProcAdmissions.release(ppJob.Job)
-		if msg := app.postProcAdmissions.seal(ppJob.Job); ppJob.FailMsg == "" && msg != "" {
+		if app.finalizeHook != nil {
 --- replace
-		if msg := app.postProcAdmissions.seal(ppJob.Job); ppJob.FailMsg == "" && msg != "" {
+		if app.finalizeHook != nil {
 --- end
 
-[finalize ignores a reason a refused call left]
+[finalize drops the noted reasons]
 file internal/app/job_finalizer.go
 --- anchor
-		if msg := app.postProcAdmissions.seal(ppJob.Job); ppJob.FailMsg == "" && msg != "" {
+		notes = app.postProcAdmissions.notes(ppJob.Job)
 --- replace
-		if msg := app.postProcAdmissions.seal(ppJob.Job); false && msg != "" {
+		_ = app.postProcAdmissions.notes(ppJob.Job)
+--- end
+
+[a late reason overrides the status the stages decided]
+file internal/app/history_helper.go
+--- anchor
+	cp := *ppJob
+--- replace
+	cp := *ppJob
+	cp.FailMsg = notes[0]
+--- end
+
+[the notes are written onto the post-processor's own job]
+file internal/app/history_helper.go
+--- anchor
+	cp := *ppJob
+	cp.StageLog = append(slices.Clone(ppJob.StageLog), postproc.StageLogEntry{
+--- replace
+	cp := *ppJob
+	ppJob.StageLog = append(ppJob.StageLog, postproc.StageLogEntry{})
+	cp.StageLog = append(slices.Clone(ppJob.StageLog[:len(ppJob.StageLog)-1]), postproc.StageLogEntry{
 --- end
 
 [a cancelled job keeps its admission]
@@ -55,9 +72,18 @@ file internal/app/job_finalizer.go
 [the post-processor is handed the reason the admitting call carried, not the admission's]
 file internal/app/app.go
 --- anchor
-			FailMsg:              admittedFailMsg,
+		admittedFailMsg := app.postProcAdmissions.seal(j)
 --- replace
-			FailMsg:              failMsg + admittedFailMsg[:0],
+		admittedFailMsg := failMsg + app.postProcAdmissions.seal(j)[:0]
+--- end
+
+[the enqueue does not seal, so a late reason becomes the run's]
+file internal/app/postproc_admission.go
+--- anchor
+	cur.sealed = true
+	return cur.failMsg
+--- replace
+	return cur.failMsg
 --- end
 
 [admissions keyed by job ID rather than instance]
@@ -77,16 +103,15 @@ file internal/app/postproc_admission.go
 		if failMsg == "" || failMsg == cur.failMsg {
 --- end
 
-[a refused call's reason is never kept]
+[a refused call's reason never becomes the run's]
 file internal/app/postproc_admission.go
 --- anchor
-		cur.failMsg = failMsg
-		return refusedReasonKept
+		if cur.failMsg == "" && !cur.sealed {
 --- replace
-		return refusedReasonKept
+		if false {
 --- end
 
-[a repeated reason is reported as a dropped one]
+[a repeated reason is noted again]
 file internal/app/postproc_admission.go
 --- anchor
 		if failMsg == "" || failMsg == cur.failMsg {
@@ -94,10 +119,10 @@ file internal/app/postproc_admission.go
 		if failMsg == "" {
 --- end
 
-[a reason arriving after the seal is kept]
+[a repeated note is noted again]
 file internal/app/postproc_admission.go
 --- anchor
-		if cur.failMsg != "" || cur.sealed {
+		if slices.Contains(cur.notes, failMsg) {
 --- replace
-		if cur.failMsg != "" {
+		if false && slices.Contains(cur.notes, failMsg) {
 --- end

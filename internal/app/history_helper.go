@@ -27,6 +27,26 @@ func downloadCompleteness(totalBytes, failedBytes int64) int64 {
 	return int64(float64(totalBytes-failedBytes) / float64(totalBytes) * 100)
 }
 
+// withFailureNotes returns ppJob, or when notes is non-empty a shallow copy of
+// it whose StageLog ends with one warning entry listing them. The copy leaves
+// the post-processor's own ppJob unwritten, since its History snapshots it.
+func withFailureNotes(ppJob *postproc.Job, notes []string) *postproc.Job {
+	if len(notes) == 0 {
+		return ppJob
+	}
+	lines := make([]string, 0, len(notes))
+	for _, n := range notes {
+		lines = append(lines, "Warning: failure reported during post-processing, not applied: "+n)
+	}
+	cp := *ppJob
+	cp.StageLog = append(slices.Clone(ppJob.StageLog), postproc.StageLogEntry{
+		Stage:   "warnings",
+		Started: time.Now(),
+		Lines:   lines,
+	})
+	return &cp
+}
+
 // buildHistoryEntry is a pure function that computes the history.Entry for a
 // completed post-processing job. It reads only from ppJob and produces no side
 // effects, making it independently testable.

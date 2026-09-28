@@ -199,8 +199,8 @@ type Application struct {
 	// jobTransitions for who takes it. Its zero value is ready to use.
 	transitions jobTransitions
 
-	// postProcAdmissions admits each job instance to post-processing once; see
-	// enqueuePostProc. Its zero value is ready to use.
+	// postProcAdmissions admits at most one post-processing run of a job
+	// instance at a time; see enqueuePostProc. Its zero value is ready to use.
 	postProcAdmissions postProcAdmissions
 
 	// stallKick carries R19's "on user action" re-evaluation request from an
@@ -268,6 +268,11 @@ type Application struct {
 	// is still handing over can reach the post-processor. Same discipline as
 	// checkpointHook.
 	removeCancelGapHook func(id string)
+
+	// finalizeHook, when non-nil, runs in jobFinalizer.finalize once the
+	// post-processor has let the job go and before its admission ends. Same
+	// discipline as checkpointHook.
+	finalizeHook func(*postproc.Job)
 
 	// startedTransitionHook, when non-nil, runs in Start right after started
 	// flips true. Same discipline as checkpointHook.
@@ -2165,9 +2170,9 @@ func awaitDirectUnpackOrAbort(ctx context.Context, du directUnpackWaiter) bool {
 	}
 }
 
-// enqueuePostProc hands j to the post-processor, unless this instance is
-// already admitted (postProcAdmissions), in which case it does nothing but
-// offer failMsg to the admitted one.
+// enqueuePostProc hands j to the post-processor unless a post-processing run of
+// this instance is already admitted (postProcAdmissions). In that case it does
+// nothing but offer failMsg to the admitted run.
 func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg string) {
 	switch app.postProcAdmissions.admit(j, failMsg) {
 	case admitted:
@@ -2177,11 +2182,11 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 		app.log.Debug("postproc: job already admitted; not enqueuing it again", "job", j.ID())
 		return
 	case refusedReasonKept:
-		app.log.Info("postproc: job already admitted; its failure reason is recorded on the admitted run",
+		app.log.Info("postproc: job already admitted; its failure reason becomes the admitted run's",
 			"job", j.ID(), "fail_msg", failMsg)
 		return
-	case refusedReasonDropped:
-		app.log.Warn("postproc: job already admitted with another failure reason or past building its history entry; this reason is not recorded",
+	case refusedReasonNoted:
+		app.log.Warn("postproc: job already admitted with another failure reason or already handed over; this reason is noted in its history entry's stage log and does not change its status",
 			"job", j.ID(), "fail_msg", failMsg)
 		return
 	}
@@ -2278,9 +2283,11 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	du := app.duOrch.collect(j.ID())
 
 	enqueue := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
-		// Read now rather than taken from failMsg: an enqueuePostProc refused
-		// during the DirectUnpack wait may have added a reason.
-		admittedFailMsg := app.postProcAdmissions.failMsg(j)
+		// Sealed now rather than taken from failMsg: an enqueuePostProc
+		// refused during the DirectUnpack wait may have added a reason. A
+		// reason arriving after the seal cannot reach the stages, so it is
+		// only noted.
+		admittedFailMsg := app.postProcAdmissions.seal(j)
 		app.postProcessor.Process(&postproc.Job{
 			Job:                  j,
 			Filename:             hdr.Filename,

@@ -1,13 +1,17 @@
 package app
 
 import (
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/storagefault"
@@ -39,10 +43,49 @@ func awaitFinalized(t *testing.T, application *Application, id string) {
 	})
 }
 
-// TestFail_WhilePostProcessing_EnqueuesNoSecondCopy: a permanent storage fault
-// on a job whose post-processing is running does not hand the job to the
-// post-processor again, and its reason still reaches the job's history entry.
-func TestFail_WhilePostProcessing_EnqueuesNoSecondCopy(t *testing.T) {
+// admissionsHeld counts the admissions a has not ended.
+func admissionsHeld(a *postProcAdmissions) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.jobs)
+}
+
+// historyEntry reads id's history entry.
+func historyEntry(t *testing.T, application *Application, id string) *history.Entry {
+	t.Helper()
+	entry, err := application.historyRepo.Get(t.Context(), id)
+	if err != nil {
+		t.Fatalf("history Get: %v", err)
+	}
+	return entry
+}
+
+// stageLogLines returns every line of the entry's stage log whose stage is
+// named stage.
+func stageLogLines(t *testing.T, entry *history.Entry, stage string) []string {
+	t.Helper()
+	var log []struct {
+		Stage string
+		Lines []string
+	}
+	if err := json.Unmarshal([]byte(entry.StageLog), &log); err != nil {
+		t.Fatalf("decode StageLog: %v", err)
+	}
+	var lines []string
+	for _, e := range log {
+		if e.Stage == stage {
+			lines = append(lines, e.Lines...)
+		}
+	}
+	return lines
+}
+
+// TestFail_WhilePostProcessing_IsNotedAndLeavesTheStatusToTheStages: a
+// permanent storage fault on a job whose stages are running does not hand the
+// job to the post-processor again. Its reason arrived too late for the stages
+// to act on, so the history entry reports what the stages did and carries the
+// reason as a warning.
+func TestFail_WhilePostProcessing_IsNotedAndLeavesTheStatusToTheStages(t *testing.T) {
 	t.Parallel()
 	stage := gatedStage{entered: make(chan string, 4), finish: make(chan struct{})}
 	application, j := admittedApp(t, stage)
@@ -59,21 +102,15 @@ func TestFail_WhilePostProcessing_EnqueuesNoSecondCopy(t *testing.T) {
 	if n := len(application.postProcessor.History()); n != 1 {
 		t.Errorf("the post-processor finished %d copies of the job, want 1", n)
 	}
-	entry, err := application.historyRepo.Get(t.Context(), id)
-	if err != nil {
-		t.Fatalf("history Get: %v", err)
+	entry := historyEntry(t, application, id)
+	if entry.Status != "Completed" || entry.FailMessage != "" {
+		t.Errorf("history Status, FailMessage = %q, %q, want Completed with no message", entry.Status, entry.FailMessage)
 	}
-	if want := "Failed: " + fault.Error(); entry.FailMessage != want {
-		t.Errorf("history FailMessage = %q, want %q", entry.FailMessage, want)
+	warnings := stageLogLines(t, entry, "warnings")
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "Failed: "+fault.Error()) {
+		t.Errorf("warnings stage lines = %q, want one naming the fault", warnings)
 	}
 	waitFor(t, func() bool { return admissionsHeld(&application.postProcAdmissions) == 0 })
-}
-
-// admissionsHeld counts the admissions a has not ended.
-func admissionsHeld(a *postProcAdmissions) int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return len(a.jobs)
 }
 
 // TestRemoveJob_EndsThePostProcessingAdmission: a job removed while its
@@ -120,20 +157,29 @@ func TestRunPostProc_DuringTheFinalizerTail_EnqueuesNoSecondCopy(t *testing.T) {
 	application, j := admittedApp(t, stage)
 	id := j.ID()
 
+	// Only the first finalize waits, so a second copy fails the assertions
+	// below rather than hanging the test.
+	inTail := make(chan struct{})
+	leaveTail := make(chan struct{})
+	var finalizes atomic.Int32
+	application.finalizeHook = func(*postproc.Job) {
+		if finalizes.Add(1) == 1 {
+			close(inTail)
+			<-leaveTail
+		}
+	}
+
 	application.maybeFinalize(id, "")
 	awaitStage(t, stage.entered)
-
-	// The finalizer waits on this lock after the worker lets the job go.
-	claim, err := application.transitions.acquire(t.Context(), id)
-	if err != nil {
-		t.Fatalf("acquire: %v", err)
-	}
 	close(stage.finish)
-	waitFor(t, func() bool { return !application.postProcessor.Has(id) })
+	<-inTail
+	if application.postProcessor.Has(id) {
+		t.Fatal("the post-processor still reports the job inside OnJobDone, so this would not test the tail")
+	}
 
 	newAppRunner(application).runPostProc(t.Context(), id, job.Repairing)
 	queuedAgain := application.postProcessor.Has(id)
-	claim.release()
+	close(leaveTail)
 	awaitFinalized(t, application, id)
 
 	if queuedAgain {
@@ -147,7 +193,8 @@ func TestRunPostProc_DuringTheFinalizerTail_EnqueuesNoSecondCopy(t *testing.T) {
 // TestEnqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy: while the
 // admitted enqueue waits for the job's DirectUnpack, the post-processor has not
 // been given the job. A launch or a Fail then must not hand it over, and the
-// Fail's reason must reach the admitted copy before its stages run.
+// Fail's reason, arriving before the run's reason is sealed, must reach the
+// admitted run before its stages and fail its history entry.
 func TestEnqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy(t *testing.T) {
 	t.Parallel()
 	stage := gatedStage{entered: make(chan string, 4), finish: make(chan struct{})}
@@ -189,12 +236,9 @@ func TestEnqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy(t *testing.T) {
 	if n := len(stage.entered); n != 0 {
 		t.Errorf("the stages ran %d times for a job the Fail had already failed, want 0", n)
 	}
-	entry, err := application.historyRepo.Get(t.Context(), id)
-	if err != nil {
-		t.Fatalf("history Get: %v", err)
-	}
-	if want := "Failed: " + fault.Error(); entry.FailMessage != want {
-		t.Errorf("history FailMessage = %q, want %q", entry.FailMessage, want)
+	entry := historyEntry(t, application, id)
+	if want := "Failed: " + fault.Error(); entry.Status != "Failed" || entry.FailMessage != want {
+		t.Errorf("history Status, FailMessage = %q, %q, want Failed, %q", entry.Status, entry.FailMessage, want)
 	}
 }
 
@@ -225,8 +269,9 @@ func TestPostProcAdmissions_AdmitsEachInstanceOnce(t *testing.T) {
 	}
 }
 
-// TestPostProcAdmissions_KeepsTheFirstFailureReason: a refused admission's
-// reason is kept only while the admission has none and is not sealed.
+// TestPostProcAdmissions_KeepsTheFirstFailureReason: a refused call's reason
+// becomes the run's only while the admission has none and is not sealed; any
+// other new reason is noted once.
 func TestPostProcAdmissions_KeepsTheFirstFailureReason(t *testing.T) {
 	t.Parallel()
 	var a postProcAdmissions
@@ -238,11 +283,17 @@ func TestPostProcAdmissions_KeepsTheFirstFailureReason(t *testing.T) {
 	if got := a.admit(j, "first"); got != refused {
 		t.Errorf("admit repeating the kept reason = %v, want refused", got)
 	}
-	if got := a.admit(j, "second"); got != refusedReasonDropped {
-		t.Errorf("admit with a second reason = %v, want refusedReasonDropped", got)
+	if got := a.admit(j, "second"); got != refusedReasonNoted {
+		t.Errorf("admit with a second reason = %v, want refusedReasonNoted", got)
 	}
-	if got := a.failMsg(j); got != "first" {
-		t.Errorf("failMsg = %q, want %q", got, "first")
+	if got := a.admit(j, "second"); got != refused {
+		t.Errorf("admit repeating a noted reason = %v, want refused", got)
+	}
+	if got := a.seal(j); got != "first" {
+		t.Errorf("seal = %q, want %q", got, "first")
+	}
+	if got := a.notes(j); len(got) != 1 || got[0] != "second" {
+		t.Errorf("notes = %q, want [second]", got)
 	}
 
 	sealed := job.New("sealed", "sealed", job.Policy{})
@@ -250,10 +301,38 @@ func TestPostProcAdmissions_KeepsTheFirstFailureReason(t *testing.T) {
 	if got := a.seal(sealed); got != "" {
 		t.Errorf("seal = %q, want empty", got)
 	}
-	if got := a.admit(sealed, "late"); got != refusedReasonDropped {
-		t.Errorf("admit with a reason after seal = %v, want refusedReasonDropped", got)
+	if got := a.admit(sealed, "late"); got != refusedReasonNoted {
+		t.Errorf("admit with a reason after seal = %v, want refusedReasonNoted", got)
 	}
 	if got := a.seal(sealed); got != "" {
 		t.Errorf("seal after a late reason = %q, want empty", got)
+	}
+	if got := a.notes(sealed); len(got) != 1 || got[0] != "late" {
+		t.Errorf("notes after a late reason = %q, want [late]", got)
+	}
+	if got := a.notes(job.New("absent", "absent", job.Policy{})); got != nil {
+		t.Errorf("notes of an unadmitted job = %q, want nil", got)
+	}
+}
+
+// TestWithFailureNotes_LeavesThePostProcessorsJobAlone: notes are added to a
+// copy's stage log, never to the post-processor's own job, and change no
+// field buildHistoryEntry derives the status from.
+func TestWithFailureNotes_LeavesThePostProcessorsJobAlone(t *testing.T) {
+	t.Parallel()
+	ppJob := &postproc.Job{StageLog: []postproc.StageLogEntry{{Stage: "repair"}}}
+	if got := withFailureNotes(ppJob, nil); got != ppJob {
+		t.Error("withFailureNotes without notes did not return its argument")
+	}
+	got := withFailureNotes(ppJob, []string{"late"})
+	if len(ppJob.StageLog) != 1 {
+		t.Errorf("the original's StageLog has %d entries, want 1", len(ppJob.StageLog))
+	}
+	if n := len(got.StageLog); n != 2 || got.StageLog[1].Stage != "warnings" ||
+		len(got.StageLog[1].Lines) != 1 || !strings.HasSuffix(got.StageLog[1].Lines[0], "late") {
+		t.Errorf("copy's StageLog = %+v, want the original plus one warnings entry naming the note", got.StageLog)
+	}
+	if got.FailMsg != "" {
+		t.Errorf("copy's FailMsg = %q, want empty", got.FailMsg)
 	}
 }

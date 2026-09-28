@@ -160,7 +160,7 @@ func (p *PostProcessor) Stop() error {
 }
 
 // Process enqueues job for post-processing. It does not refuse a job whose ID
-// is already queued or running; the caller admits each job once.
+// is already queued or running; that is left to the caller.
 func (p *PostProcessor) Process(job *Job) {
 	p.log.Info("postproc: enqueuing job", "job", job.JobID())
 	p.q.Push(job)

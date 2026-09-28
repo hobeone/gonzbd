@@ -93,19 +93,21 @@ func warnUnlessGone(log *slog.Logger, msg, id string, err error) {
 // finalize is called by the post-processor (OnJobDone) when a job is done
 // (success or failure).
 //
-// It ends the job's post-processing admission on return, and before building
-// the history entry takes the failure reason a refused admission may have left
-// (postProcAdmissions). ppJob is safe to write here: the worker calls this on
-// its own goroutine once the stages have returned.
+// It ends the job's post-processing admission on return. The failure reasons
+// the admission noted, those that did not become the run's FailMsg, are added
+// to the history entry's stage log as warnings. They do not change the entry's status, which reflects what
+// the stages did (postProcAdmissions).
 func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 	app := f.app
+	var notes []string
 	if ppJob.Job != nil {
 		defer app.postProcAdmissions.release(ppJob.Job)
-		if msg := app.postProcAdmissions.seal(ppJob.Job); ppJob.FailMsg == "" && msg != "" {
-			ppJob.FailMsg = msg
+		if app.finalizeHook != nil {
+			app.finalizeHook(ppJob)
 		}
+		notes = app.postProcAdmissions.notes(ppJob.Job)
 	}
-	entry := buildHistoryEntry(ppJob)
+	entry := buildHistoryEntry(withFailureNotes(ppJob, notes))
 	if err := f.persistAndCommit(app.log, entry, ppJob); err != nil {
 		return
 	}
