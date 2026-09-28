@@ -197,8 +197,10 @@ func (r *appRunner) runPostProc(_ context.Context, id string, _ job.State) {
 		return
 	}
 
-	if !r.app.postProcessor.Has(id) {
-		failMsg := failMsgForJob(j)
-		r.app.enqueuePostProc(j, hdr, failMsg)
-	}
+	// No yield when enqueuePostProc refuses the job as already admitted. The
+	// admitted run releases the launch claim on the paths item 3 of
+	// appRunner's doc lists. For a job cancelled during the admitted run's
+	// DirectUnpack wait, where Has is still false, appWorkers.Abort releases it
+	// instead.
+	r.app.enqueuePostProc(j, hdr, failMsgForJob(j))
 }

@@ -54,15 +54,20 @@ func newJobFinalizer(app *Application) *jobFinalizer {
 // Cancel took out of the queue or interrupted, once no stage runs for it. The
 // job is not finalized: it releases the job's launch claim, which
 // dispatcher.Remove waits on and which persistAndCommit and Shutdown release
-// on their own paths.
+// on their own paths, and ends the job's post-processing admission.
 //
 // For a queued job this runs inside RemoveJob, which holds the job's
-// transition lock. Neither call below takes it: the one path back into this
-// package is sched's cancel calling appWorkers.Abort, which takes app.mu, and
-// neither is among the lock's sites (TestJobTransitions_LockSites).
+// transition lock. None of the calls below takes it: the one path back into
+// this package is sched's cancel calling appWorkers.Abort, which takes app.mu,
+// the admission release takes only postProcAdmissions.mu, and none of these is
+// among the lock's sites (TestJobTransitions_LockSites).
 func (f *jobFinalizer) cancelled(ppJob *postproc.Job) {
 	app := f.app
-	if app.dispatcher == nil || ppJob == nil || ppJob.Job == nil {
+	if ppJob == nil || ppJob.Job == nil {
+		return
+	}
+	defer app.postProcAdmissions.release(ppJob.Job)
+	if app.dispatcher == nil {
 		return
 	}
 	// Cancel first, so the tick cannot relaunch the job between the yield and
@@ -87,9 +92,22 @@ func warnUnlessGone(log *slog.Logger, msg, id string, err error) {
 
 // finalize is called by the post-processor (OnJobDone) when a job is done
 // (success or failure).
+//
+// It ends the job's post-processing admission on return. The failure reasons
+// the admission noted, those that did not become the run's FailMsg, are added
+// to the history entry's stage log as warnings. They do not change the entry's status, which reflects what
+// the stages did (postProcAdmissions).
 func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 	app := f.app
-	entry := buildHistoryEntry(ppJob)
+	var notes []string
+	if ppJob.Job != nil {
+		defer app.postProcAdmissions.release(ppJob.Job)
+		if app.finalizeHook != nil {
+			app.finalizeHook(ppJob)
+		}
+		notes = app.postProcAdmissions.notes(ppJob.Job)
+	}
+	entry := buildHistoryEntry(withFailureNotes(ppJob, notes))
 	if err := f.persistAndCommit(app.log, entry, ppJob); err != nil {
 		return
 	}

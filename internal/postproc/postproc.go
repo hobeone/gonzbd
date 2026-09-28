@@ -159,7 +159,8 @@ func (p *PostProcessor) Stop() error {
 	return nil
 }
 
-// Process enqueues job for post-processing.
+// Process enqueues job for post-processing. It does not refuse a job whose ID
+// is already queued or running; that is left to the caller.
 func (p *PostProcessor) Process(job *Job) {
 	p.log.Info("postproc: enqueuing job", "job", job.JobID())
 	p.q.Push(job)
@@ -213,10 +214,9 @@ func (p *PostProcessor) Empty() bool {
 }
 
 // Has reports whether a job with jobID is either pending in the queue or
-// currently being processed by the worker. Callers use this as a
-// deduplication gate when bypassing the regular handoff path (e.g. the
-// Application startup rescan for jobs whose PostProc flag persisted
-// across a crash).
+// currently being processed by the worker. It stops reporting a job when the
+// worker clears its busy marker, which is before OnJobDone or OnJobCancelled
+// runs, so it cannot serve as a gate against handing the job over twice.
 //
 // The queue read and the busy read happen under one q.mu -> busyMu critical
 // section (via ppQueue.withLock), for the same reason given on Empty above.
