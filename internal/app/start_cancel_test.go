@@ -106,3 +106,86 @@ func TestShutdown_NoOpsWhenStartFailed(t *testing.T) {
 			"Shutdown cannot compensate because its started guard returns early")
 	}
 }
+
+// TestStart_StartedNeverTrueBeforeCtxAssigned pins the ordering that closes
+// the window this fixes: started must never be observable true while
+// app.cancel is still nil or app.ctx is still New's context.Background()
+// placeholder, because Shutdown gates on started and then calls
+// app.cancel() — the one reader of started that would nil-deref in that
+// window. (reloader.go's ReloadDownloader and statusinfo.go's
+// IsPipelineHealthy also gate on started, but neither touches app.cancel or
+// app.ctx, so they are not at risk from this specific ordering.)
+//
+// app.ctx is never a nil interface — New seeds it with context.Background()
+// so field reads before Start never crash — so a nil check on it would pass
+// trivially whether the fix holds or not. context.Background().Done() is the
+// one observable difference: it always returns a nil channel, where
+// context.WithCancel's result never does. That is what sawCtx checks: not
+// "assigned", but "assigned to the real lifecycle context, not the leftover
+// placeholder".
+//
+// A goroutine racing Start to catch this window is not a reliable pin — the
+// window, if reintroduced, is a handful of instructions wide, and a test that
+// only sometimes catches a regression is not a pin. startedTransitionHook
+// fires synchronously in Start's own goroutine at the exact point started
+// flips true, so the check below is deterministic: it runs at the one point
+// in program order the invariant needs to hold, every time.
+func TestStart_StartedNeverTrueBeforeCtxAssigned(t *testing.T) {
+	t.Parallel()
+	application := newFailingStartApp(t, nil)
+
+	var hookRan, sawStarted, sawCtx, sawCancel bool
+	application.startedTransitionHook = func() {
+		hookRan = true
+		sawStarted = application.started.Load()
+		sawCtx = application.ctx != nil && application.ctx.Done() != nil
+		sawCancel = application.cancel != nil
+	}
+
+	if err := application.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Shutdown() })
+
+	if !hookRan {
+		t.Fatal("startedTransitionHook never ran; this test is not exercising the path it claims to")
+	}
+	if !sawStarted {
+		t.Error("started was not yet true when startedTransitionHook ran")
+	}
+	if !sawCtx {
+		t.Error("app.ctx was still New's context.Background() placeholder when started flipped true")
+	}
+	if !sawCancel {
+		t.Error("app.cancel was nil when started flipped true")
+	}
+}
+
+// TestStart_SecondCallLeaksNothing pins that a second Start call is rejected
+// by the starting CAS before any context is created, so it can never clobber
+// or leak the first call's app.ctx/app.cancel.
+func TestStart_SecondCallLeaksNothing(t *testing.T) {
+	t.Parallel()
+	application := newFailingStartApp(t, nil)
+
+	if err := application.Start(t.Context()); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Shutdown() })
+
+	ctxBefore := application.ctx
+
+	if err := application.Start(t.Context()); !errors.Is(err, ErrAlreadyStarted) {
+		t.Fatalf("second Start = %v, want ErrAlreadyStarted", err)
+	}
+
+	if application.ctx != ctxBefore {
+		t.Error("the rejected second Start call replaced app.ctx — the running " +
+			"instance's real context (and whatever cancel func it captured) is " +
+			"now orphaned and leaked")
+	}
+	if ctxBefore.Err() != nil {
+		t.Error("the rejected second Start call cancelled the running instance's " +
+			"context; its background goroutines will now exit early")
+	}
+}
