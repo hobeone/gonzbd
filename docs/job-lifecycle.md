@@ -209,7 +209,10 @@ Three things follow:
 
 - **Retry costs nothing structurally.** Job identity is stable, so the
   durability record, the manifest path and the partial file on disk are all
-  still keyed correctly.
+  still keyed correctly. The file's directory is keyed by job name rather than
+  identity, and `folder_rename` renames a failed job's; `RetryHistoryJob`
+  renames it back before queuing the retry (`docs/post-processing-contract.md`
+  § "Failure & Degradation Rules").
 - **`Outcome` stays genuinely write-once.** A verdict is never revised, only
   superseded by the next attempt's.
 - **"Never started" is exact.** `HasRun()` is `len(attempts) != 0`.

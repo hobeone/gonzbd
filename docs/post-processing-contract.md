@@ -138,7 +138,7 @@ or modify its behavior:
 | **`par2_cleanup`** | Deletes `.par2` files and orphaned `.1`, `.2`, etc. backup files created during `par2 repair` after repair, unpack, and rename stages have finished. | Skipped if `ParError` or `UnpackError` set (preserves par2 files for manual repair), or if `QuickCheck == Unidentified` (the set protects extracted files par2 never checked). | Unlinks `.par2` and `.1`/`.2` backup files. |
 | **`deobfuscate`** | Detects obfuscated file names and restores clean titles from job metadata. Also performs subtitle alignment (`.srt` renamed to match dominant video). | Skipped if disabled in config. | Renames files and subtitles in `DownloadDir` & `OwnedFiles`. |
 | **`extension_cleanup`** | Deletes unwanted file extensions (`.sfv`, `.nfo`, etc.) based on user config. Explicitly protects `.nzb` files (`SkipNZB = true`) and files in `ConsumedFiles`. Removes newly empty subdirectories. | Skipped if cleanup list empty. | Unlinks matching extensions from `OwnedFiles`. |
-| **`finalize`** | Moves processed files from `DownloadDir` to `FinalDir` (`CompleteDir/job_name`). When `job.ParError || job.UnpackError || job.FailMsg != ""`, skips moving to `FinalDir` and instead prepends `_FAILED_` to `DownloadDir` in place (when `folder_rename: true`), leaving files in incomplete download area for retry. | Always runs unless pre-check aborted job. | Populates `FinalDir` or renames `DownloadDir` with `_FAILED_` prefix; sets status to `StatusMoving`. |
+| **`finalize`** | Moves processed files from `DownloadDir` to `FinalDir` (`CompleteDir/job_name`). When `job.ParError || job.UnpackError || job.FailMsg != ""`, skips moving to `FinalDir` and instead prepends `_FAILED_` to `DownloadDir` in place (when `folder_rename: true`), leaving files in incomplete download area for retry; `RetryHistoryJob` moves it back first (see Failure & Degradation Rules). | Always runs unless pre-check aborted job. | Populates `FinalDir` or renames `DownloadDir` with `_FAILED_` prefix; sets status to `StatusMoving`. |
 | **`script`** | Executes user-defined post-processing script with full environment (`SAB_*` vars, including Go-specific `SAB_FINAL_PROCESSING_DIR`) and 8 positional args ($1–$8). Supports `RedactSecrets` (`SAB_API_KEY`/`SAB_PASSWORD` masked as `**REDACTED**`) and `ScriptCanFail` (non-zero exit logged as warning instead of error). | Skipped if no script configured for job/category. | Captures script exit code and stdout/stderr log (capped at 512 KiB). |
 
 > **`quickcheck` is a permanent stage (decided 2026-09-03).**
@@ -509,6 +509,17 @@ recorded entirely through the fetch-policy discard, not through this field.
 ## Failure & Degradation Rules
 
 - **PAR2 Repair Failure (`ParError = true`)**: `unpack` is skipped unconditionally when `ParError = true`. `finalize` skips moving files to `FinalDir` and instead prepends `_FAILED_` to `DownloadDir` (when `folder_rename: true`), leaving files in the incomplete download directory so retries can find them.
+  The history entry records the `_FAILED_` path. A retry writes to, and
+  post-processing reads, `DownloadDir/<name>`, so `RetryHistoryJob` renames
+  the `_FAILED_` directory back to it before queuing the job
+  (`restoreFailedDir`, `internal/app/retry_failed_dir.go`), and back again if
+  the retry aborts before the job is queued. It refuses the retry, moving
+  nothing, when `DownloadDir/<name>` already exists, when another queued job
+  has that name, or when the `_FAILED_` directory is gone but
+  `DownloadDir/<name>` exists — each is a directory that may not be this
+  job's. `TestRetryHistoryJob_ResumesInTheFailedDirectory` runs the real
+  `finalize` stage through a failure and a retry, in process and after a
+  restart.
 - **Unpack Failure (`UnpackError = true`)**: Extraction errors (bad password,
   corrupt archive) set `UnpackError = true`. Original archive files and `.par2` recovery files are
   preserved in `DownloadDir` for manual recovery.
