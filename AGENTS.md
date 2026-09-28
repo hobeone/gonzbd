@@ -567,7 +567,7 @@ Three rules follow:
   untouched by your change, commit and re-run before writing a test for it —
   `docs/commit-cycle.md` has why.
 
-Five further gates are **whole-repository**, not diff-scoped, and exist because
+Six further gates are **whole-repository**, not diff-scoped, and exist because
 build, vet, lint and the test suite are structurally blind to what they check —
 comments and Markdown are neither type-checked nor executed:
 
@@ -577,6 +577,7 @@ go run ./scripts/check_review_banner        # docs/reviews/*.md frozen-record ba
 go run ./scripts/check_citations            # embedded grep / git grep claims whose count has moved
 go run ./scripts/check_doc_citations        # cited paths and Test names that resolve to nothing
 go run ./scripts/check_test_doubles --all   # test doubles or test-named files leaking into production builds
+go run ./scripts/mutate --check-all         # every spec's anchors resolve to exactly one site
 ```
 
 | Gate | What it catches | How to satisfy it |
@@ -586,6 +587,7 @@ go run ./scripts/check_test_doubles --all   # test doubles or test-named files l
 | `check_citations` | A comment that embeds a backticked `grep` or `git grep` and states a count, where running the command no longer produces that count. Rule 4's enforcement arm. | Re-run the command and correct the number, or correct the command so it means what the prose says. Where the population is real but not greppable ("the errors one function returns"), name it and do not dress it as a citation. |
 | `check_doc_citations` | A cited file path that names nothing in the tree, a `Test...` name cited as a guard that is declared nowhere, or a `doc.md § Section` citation naming a heading that document does not have. Reads Markdown too, and claims with no command behind them. A bare `§3.4` names no document and is deliberately not checked. | Correct the reference, or mark it deliberate — `//doccite:ok <token> — <why>` in Go, `<!-- doccite:ok <token> — <why> -->` in Markdown. |
 | `check_test_doubles` | Test doubles (`Fake`, `Mock`, `Stub`, `Nop`, `*ForTesting`) or test-named files leaking into production builds without test build tags | Add a recognized test build tag, move to a `*_test.go` file, or add `//testdouble:allow <reason>` — on the declaration, or before `package` to exempt a whole test-named file. |
+| `mutate --check-all` | A spec's anchor that now matches zero sites (stale — the change it pins moved or was refactored away) or several (ambiguous — a mutation would land somewhere nobody chose). Reads every anchor without compiling, running a test, or writing anything, so it is cheap enough to run before the full spec suite. Discovers specs the same way `scripts/run_tests.sh` does: `git ls-files --cached --others --exclude-standard -- '*testdata/*.spec'` — never `find` or `filepath.Walk`, both of which descend into the gitignored `.claude/worktrees/` and would check a sibling branch's specs against this tree's source. | Fix the anchor to match the code's current shape, or delete the mutation if the invariant it pinned no longer exists. |
 
 **Every marker's `<reason>` is mandatory — a bare marker is itself an error.**
 Each tool's package doc under `scripts/` owns the rest of its behaviour: what
@@ -593,7 +595,7 @@ it scans, how markers wrap, and (for `check_citations`) why it parses to argv
 and never runs a shell. Read the tool when a finding looks wrong, rather than
 expecting this table to explain it.
 
-All five are in `ci.yml`, but `ci.yml` has no automatic trigger (see
+All six are in `ci.yml`, but `ci.yml` has no automatic trigger (see
 "Continuous Integration" below), so in practice they run when you run them
 locally. None is diff-scoped, so any of them can fail on a file you did not
 touch.

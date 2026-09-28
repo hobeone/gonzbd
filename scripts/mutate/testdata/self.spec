@@ -253,3 +253,33 @@ file scripts/mutate/runfilter.go
 --- replace
 		if slices.Contains(listed, alt) {
 --- end
+
+[-check accepts an anchor that does not resolve to exactly one site]
+file scripts/mutate/check.go
+--- anchor
+		if n := strings.Count(content, m.anchor); n != 1 {
+--- replace
+		if n := strings.Count(content, m.anchor); false {
+--- end
+
+[-check reports issues but still exits 0]
+file scripts/mutate/check.go
+--- anchor
+	if len(issues) > 0 {
+		fmt.Printf("\nStatus: %d anchor(s) across %d spec(s) do not resolve to exactly one site.\n", len(issues), len(actual))
+		ok = false
+	}
+--- replace
+	if len(issues) > 0 {
+		fmt.Printf("\nStatus: %d anchor(s) across %d spec(s) do not resolve to exactly one site.\n", len(issues), len(actual))
+		ok = true
+	}
+--- end
+
+[-check-all discovers nothing: the git ls-files pathspec is wrong]
+file scripts/mutate/check.go
+--- anchor
+	cmd := exec.Command("git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*testdata/*.spec")
+--- replace
+	cmd := exec.Command("git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*nonexistent-pattern*.spec")
+--- end
