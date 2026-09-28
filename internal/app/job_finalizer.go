@@ -40,6 +40,10 @@ const finalizeTransitionWait = 5 * time.Second
 // took the job first (jobTransitions.markRemoved).
 var errFinalizedJobRemoved = errors.New("the job was removed before it could be finalized")
 
+// errFinalizedJobSuperseded reports a finalization abandoned because another
+// instance of the job is registered under its ID: a retry owns the ID now.
+var errFinalizedJobSuperseded = errors.New("a later instance of the job holds its ID")
+
 func newJobFinalizer(app *Application) *jobFinalizer {
 	return &jobFinalizer{
 		app: app,
@@ -150,14 +154,19 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // also executes completion notifications and asynchronous history pruning
 // under its own 30s context outside of persistAndCommit.
 //
-// Returns a non-nil error if persistence failed, or errFinalizedJobRemoved if
-// a RemoveJob took this job instance before it was committed (either is
-// already logged; callers can simply return).
+// Returns a non-nil error if persistence failed, errFinalizedJobRemoved if
+// a RemoveJob took this job instance before it was committed, or
+// errFinalizedJobSuperseded if a later instance holds the job's ID; the last
+// two skip the teardown too. Each is already logged; callers can simply
+// return.
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, ppJob *postproc.Job) error {
 	app := f.app
 	if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
-		_ = app.dispatcher.Cancel(ppJob.Job.ID())
-		_ = app.dispatcher.Yielded(ppJob.Job.ID())
+		id := ppJob.Job.ID()
+		warnUnlessGone(log, "finalize: cancelling the job failed", id,
+			app.dispatcher.CancelJob(ppJob.Job))
+		warnUnlessGone(log, "finalize: releasing the job's launch claim failed", id,
+			app.dispatcher.YieldedJob(ppJob.Job))
 	}
 	// Taken after Yielded, which clears post-processing's launch claim on the
 	// job: a RemoveJob holding this lock waits on that claim in
@@ -181,6 +190,22 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 			log.Info("finalize: the job was removed while this waited for it; not filing it",
 				"job", ppJob.Job.ID())
 			return errFinalizedJobRemoved
+		}
+		// Everything below acts by ID, so a later instance registered under
+		// this job's ID must stop it: filing would put this run in history
+		// under the retry's ID, and the teardown would deregister the retry.
+		// `git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
+		// finds 2 production registrations. RetryHistoryJob's reuses an ID, through the
+		// FetchOptions.JobID it sets, and takes the transition lock; AddJob's
+		// jobs are built by BuildIngestJob, which mints a newJobID when no
+		// JobID is set. So while this holds the lock the answer cannot change
+		// underneath.
+		if app.dispatcher != nil {
+			if cur, ok := app.dispatcher.Job(ppJob.Job.ID()); ok && cur != ppJob.Job {
+				log.Warn("finalize: a later instance of the job holds its ID; not filing this run",
+					"job", ppJob.Job.ID())
+				return errFinalizedJobSuperseded
+			}
 		}
 	}
 
