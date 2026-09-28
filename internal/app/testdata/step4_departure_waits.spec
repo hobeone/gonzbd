@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestRemoveJob_WaitsForACheckpointThatIsWritingTheJob|TestFinalize_PrunesTheCheckpointer|TestFinalizer_PersistError_CleanupExecutes
+run ^(TestRemoveJob_WaitsForACheckpointThatIsWritingTheJob|TestFinalizer_PersistError_CleanupExecutes)$
 timeout 2m
 
 [RemoveJob does not prune the checkpointer]

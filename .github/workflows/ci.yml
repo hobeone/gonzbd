@@ -108,8 +108,9 @@ jobs:
           # Discovery goes through git, not `find`: a spec is only meaningful
           # against the tree it was written for, and `scripts/mutate` roots
           # itself on the CWD's repository rather than on the spec's location.
-          # Kept in step with scripts/run_tests.sh, which explains the failure
-          # this prevents (a nested worktree's specs run against this tree).
+          # Spec discovery pattern is shared with scripts/run_tests.sh, which
+          # explains the failure this prevents (a nested worktree's specs run
+          # against this tree; CI runs them sequentially in its checkout).
           git ls-files --cached --others --exclude-standard -- '*testdata/*.spec' | sort -u | while read -r spec; do
             go run ./scripts/mutate "$spec"
           done
