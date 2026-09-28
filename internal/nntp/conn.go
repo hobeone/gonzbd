@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,6 +94,13 @@ type Conn struct {
 	// the connection is torn down. Prevents runReader from blocking
 	// indefinitely on silently-dead connections.
 	readTimeout time.Duration
+
+	// handshakeStartedHook, when non-nil, runs inside handshake once
+	// setupHandshakeDeadline has armed its ctx watcher — the earliest point
+	// at which cancelling ctx is guaranteed to reach the handshake's read
+	// rather than race the TCP dial in Dial. Same-package test seam as
+	// internal/app's checkpointHook; production Dial never sets it.
+	handshakeStartedHook func()
 }
 
 // State returns the current lifecycle state. The value is a snapshot;
@@ -181,6 +190,16 @@ type dialOptions struct {
 	recorder       ByteRecorder
 	recorderServer string
 	log            *slog.Logger
+
+	// handshakeStartedHook is test-only; see Conn.handshakeStartedHook.
+	handshakeStartedHook func()
+
+	// handshakeFailedHook, when non-nil, runs in Dial right after a failed
+	// handshake's cleanup and before the ctxErr/errors.Is check below decides
+	// whether to wrap. Test-only same-package seam: it lets a test end ctx in
+	// that exact window to exercise the check deterministically instead of
+	// racing real wall-clock timing against it.
+	handshakeFailedHook func()
 }
 
 // newDialOptions derives the per-dial knobs from a ServerConfig,
@@ -245,7 +264,13 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 //
 // On any error during handshake the socket is closed before the error
 // is returned; the caller does not need to Close a *Conn that never
-// escaped Dial.
+// escaped Dial. If the handshake's pending read or write failed because
+// setupHandshakeDeadline force-unblocked it when ctx ended, the returned
+// error additionally satisfies errors.Is against context.Canceled or
+// context.DeadlineExceeded as appropriate, alongside the underlying socket
+// error. A handshake failure the server itself produced (an unexpected
+// status, a rejected credential) is returned unchanged even if ctx has since
+// ended.
 func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Conn, error) {
 	dopts, err := newDialOptions(cfg)
 	if err != nil {
@@ -311,6 +336,8 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 		ctx:         ctxConn,
 		cancel:      cancelConn,
 		readTimeout: dopts.dialer.Timeout, // kept for reference; actual idle enforced by idleTimeoutReader
+
+		handshakeStartedHook: dopts.handshakeStartedHook,
 	}
 
 	if tc, ok := nc.(*tls.Conn); ok {
@@ -323,6 +350,25 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 		l.Debug("handshake failed", "error", err)
 		cancelConn()   // release context resources on handshake failure
 		_ = nc.Close() //nolint:errcheck // handshake failed; socket is being torn down regardless
+		if dopts.handshakeFailedHook != nil {
+			dopts.handshakeFailedHook()
+		}
+		// handshakeCtx.Err() alone is not causal: ctx can end at the same
+		// instant the server sends a genuine rejection (a *ServerError,
+		// ErrAuthRejected), and that failure has nothing to do with ctx.
+		// setupHandshakeDeadline's only effect on the socket is
+		// SetDeadline(time.Now()), which fails the pending read or write with
+		// an error satisfying errors.Is(err, os.ErrDeadlineExceeded) — so
+		// requiring that alongside a non-nil handshakeCtx.Err() ties the wrap
+		// to the force-unblock actually firing, not merely to ctx having
+		// ended by the time this runs.
+		if ctxErr := handshakeCtx.Err(); ctxErr != nil && errors.Is(err, os.ErrDeadlineExceeded) {
+			// Wrap ctxErr alongside the raw error so errors.Is(err,
+			// context.Canceled) / errors.Is(err, context.DeadlineExceeded)
+			// reach the caller, while the original cause stays in the chain
+			// and in the message.
+			err = fmt.Errorf("nntp: handshake aborted: %w: %w", ctxErr, err)
+		}
 		return nil, err
 	}
 
@@ -350,6 +396,10 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 func (c *Conn) handshake(ctx context.Context, cfg config.ServerConfig) error {
 	cleanup := c.setupHandshakeDeadline(ctx)
 	defer cleanup()
+
+	if c.handshakeStartedHook != nil {
+		c.handshakeStartedHook()
+	}
 
 	if err := c.expectGreeting(); err != nil {
 		return err
