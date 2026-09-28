@@ -196,9 +196,11 @@ does not undo a finalizer's prune of the same instance.
 
 Together these keep a departed instance's marks off a retry that re-seeds
 `job_files`, provided every departure that lets an instance go prunes it before
-its reclaim or is one no result can reach. The two that prune are `RemoveJob`
-and the finalizer's `persistAndCommit` (`git grep -n 'checkpointer\.Prune(' --
-'*.go' ':!*_test.go'` finds 2 lines); the tick's eviction of a cancelled job
+its reclaim or is one no result can reach. The three that prune are
+`RemoveJob`, the finalizer's `persistAndCommit`, and `RetryHistoryJob`'s
+cleanup of an attempt it abandoned before admission, which a failed
+`FlushJob` leaves marked (`git grep -n 'checkpointer\.Prune(' -- '*.go'
+':!*_test.go'` finds 3 lines); the tick's eviction of a cancelled job
 that never ran and startup's `dropJobAlreadyInHistory` do not, on the
 assumption that nothing has marked a job that never ran and that no result
 precedes startup's drop. What they do not cover is a withdrawn prune: after

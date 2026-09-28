@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -42,6 +43,27 @@ func (a *Application) GetConfig() *config.Config {
 // Checkpointer returns the application's checkpointer for testing.
 func (a *Application) Checkpointer() *checkpoint.Checkpointer {
 	return a.checkpointer
+}
+
+// WrapCheckpointStore rebuilds the application's checkpointer over wrap of the
+// store production gives it, and hands the new one to the pipeline too, for a
+// test that needs some checkpoint writes to fail. It mirrors the construction
+// in app.go that builds app.checkpointer over an appCheckpointStore.
+//
+// Call it before Start: Start launches the goroutines that read
+// app.checkpointer, and swapping it under them is a data race. It panics when
+// the durability store has been replaced by a double, since the rebuilt
+// checkpointer would otherwise write nothing and pass for the wrong reason.
+func (a *Application) WrapCheckpointStore(wrap func(checkpoint.Store) checkpoint.Store) {
+	if a.started.Load() {
+		panic("WrapCheckpointStore called after Start")
+	}
+	ds, ok := a.durable.(*durability.Store)
+	if !ok || ds == nil {
+		panic(fmt.Sprintf("WrapCheckpointStore: durable store is %T, want *durability.Store", a.durable))
+	}
+	a.checkpointer = checkpoint.New(wrap(&appCheckpointStore{store: ds}), time.Hour, a.log)
+	a.pipeline.checkpointer = a.checkpointer
 }
 
 // TriggerMaybeDirectUnpack drives the DirectUnpack orchestrator's start path.

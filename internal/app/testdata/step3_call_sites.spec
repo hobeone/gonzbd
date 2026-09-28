@@ -160,7 +160,7 @@ file internal/app/app.go
 [the retry never persists the progress it restored]
 file internal/app/app.go
 --- anchor
-		if err := app.checkpointer.Flush(context.Background()); err != nil {
+		if err := app.checkpointer.FlushJob(context.Background(), j); err != nil {
 			return fmt.Errorf("app: retry %s: flush checkpoint: %w", jobID, err)
 --- replace
 		if err := error(nil); err != nil {
