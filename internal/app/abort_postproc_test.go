@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	dispatchstore "github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -48,6 +51,135 @@ func repairingJob(t *testing.T, application *Application, name string) (*job.Job
 		}
 	}
 	return j, hdr
+}
+
+// gatedStage reports which job it started, then returns ctx.Err() once its
+// context is cancelled, or nil once the test closes finish.
+type gatedStage struct {
+	entered chan string
+	finish  chan struct{}
+}
+
+func (gatedStage) Name() string { return "gated" }
+
+func (s gatedStage) Run(ctx context.Context, j *postproc.Job) error {
+	s.entered <- j.JobID()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.finish:
+		return nil
+	}
+}
+
+// heldRepairingApp starts an application whose post-processor runs only stage,
+// and launches one Repairing job under a holdingRunner, so the job holds its
+// launch claim and the post-processor has not been given it. The returned
+// postproc.Job is what handing it over would enqueue.
+func heldRepairingApp(t *testing.T, stage postproc.Stage) (*Application, *job.Job, *postproc.Job) {
+	t.Helper()
+	application, repo, _ := newLifecycleTestApp(t, WithPostProcStages([]postproc.Stage{stage}))
+	// persistAndCommit and finalize derive their deadlines from app.ctx,
+	// which only Start sets.
+	application.ctx = t.Context()
+	runner := holdingRunner{launched: make(chan string, 1)}
+	d := dispatch.New(
+		1, 1, 10*time.Millisecond, time.Now,
+		&appWorkers{app: application},
+		application.residency,
+		dispatchstore.New(repo.DB()),
+		runner,
+	)
+	application.dispatcher = d
+	application.pipeline.dispatcher = d
+
+	j, hdr := repairingJob(t, application, "held")
+	if err := d.Add(t.Context(), j, hdr); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Stop() })
+	if err := application.postProcessor.Start(t.Context()); err != nil {
+		t.Fatalf("postProcessor.Start: %v", err)
+	}
+	// Registered after d.Stop, so it runs first and a stage the test left
+	// blocked returns before the dispatcher stops.
+	t.Cleanup(func() { _ = application.postProcessor.Stop() })
+
+	select {
+	case <-runner.launched:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Repairing job was never launched")
+	}
+	// A non-empty download directory: an empty one skips every stage.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "held.bin"), make([]byte, 100), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return application, j, &postproc.Job{Job: j, DownloadDir: dir}
+}
+
+func awaitStage(t *testing.T, entered <-chan string) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the post-processing stage never started")
+	}
+}
+
+func removeWithinBudget(t *testing.T, application *Application, id string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := application.RemoveJob(ctx, id, false); err != nil {
+		t.Fatalf("RemoveJob: %v", err)
+	}
+	if _, ok := application.dispatcher.Job(id); ok {
+		t.Error("the job is still registered after RemoveJob returned")
+	}
+}
+
+// TestRemoveJob_CancelsAJobThatReachesPostProcessingBetweenItsCancels: a job
+// the runner hands to the post-processor while RemoveJob is between its two
+// cancels is still stopped, and RemoveJob returns. Whichever cancel comes
+// second has to see it, so the dispatcher's must come first: had the job been
+// in post-processing when the abort looked, the abort would have left its
+// claim to post-processing, and with the post-processing cancel already past,
+// nothing would end the stage that claim waits on.
+func TestRemoveJob_CancelsAJobThatReachesPostProcessingBetweenItsCancels(t *testing.T) {
+	t.Parallel()
+	stage := gatedStage{entered: make(chan string, 1), finish: make(chan struct{})}
+	application, j, ppJob := heldRepairingApp(t, stage)
+	application.removeCancelGapHook = func(string) {
+		application.postProcessor.Process(ppJob)
+		awaitStage(t, stage.entered)
+	}
+	removeWithinBudget(t, application, j.ID())
+}
+
+// TestRemoveJob_ReleasesAJobPostProcessingFinishesAfterTheAbort: when the abort
+// leaves the claim to post-processing and the job then finishes rather than
+// being cancelled, RemoveJob still returns. Two releases cover this, so no one
+// mutation fails it: the finalizer's (persistAndCommit), and the abort of
+// dispatcher.Remove's own cancel, which yields once post-processing has let
+// the job go.
+func TestRemoveJob_ReleasesAJobPostProcessingFinishesAfterTheAbort(t *testing.T) {
+	t.Parallel()
+	stage := gatedStage{entered: make(chan string, 1), finish: make(chan struct{})}
+	application, j, ppJob := heldRepairingApp(t, stage)
+	application.postProcessor.Process(ppJob)
+	awaitStage(t, stage.entered)
+	// Past the dispatcher cancel, whose abort found the job in
+	// post-processing. Finishing the stage and waiting for the worker to let
+	// go leaves the post-processing cancel nothing to take.
+	application.removeCancelGapHook = func(id string) {
+		close(stage.finish)
+		waitFor(t, func() bool { return !application.postProcessor.Has(id) })
+	}
+	removeWithinBudget(t, application, j.ID())
 }
 
 // TestRemoveJob_ReleasesARepairingJobPostProcessingDoesNotHold: a Repairing

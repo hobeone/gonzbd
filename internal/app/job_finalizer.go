@@ -168,7 +168,7 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 		warnUnlessGone(log, "finalize: releasing the job's launch claim failed", id,
 			app.dispatcher.YieldedJob(ppJob.Job))
 	}
-	// Taken after Yielded, which clears post-processing's launch claim on the
+	// Taken after YieldedJob, which clears post-processing's launch claim on the
 	// job: a RemoveJob holding this lock waits on that claim in
 	// dispatcher.Remove.
 	if ppJob != nil && ppJob.Job != nil {

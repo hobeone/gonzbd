@@ -55,8 +55,14 @@ single worker goroutine (`run`).
   Releasing it only after the stage returns is what keeps `RemoveJob` from
   tearing down files a stage is still using. That holds for `Repairing` as
   well as `Extracting`/`Finalizing`: the dispatcher's cancel aborts a running
-  `Repairing` job, and `appWorkers.Abort` leaves the claim of a job the
-  post-processor holds to this callback rather than yielding it.
+  `Repairing` job, and `appWorkers.Abort` does not yield a job the
+  post-processor holds. Its claim is released on the post-processor's way
+  out instead: by this callback, by `jobFinalizer.persistAndCommit` through
+  `OnJobDone` for a job that finished, or by `Shutdown`'s yield after a stop.
+  `RemoveJob` cancels in the dispatcher before it cancels here, so a job the
+  runner hands over after the abort looked is still stopped by this `Cancel`,
+  though the abort has already released its claim and `RemoveJob` does not
+  wait for its stage to return.
 - **Crash recovery handoff**: Jobs whose download completed have `PostProc=true`
   persisted in SQLite history. If the daemon crashes or shuts down while a job is
   being processed, `workerCtx` cancellation halts stage execution, preserving
