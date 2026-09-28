@@ -732,12 +732,8 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	completeDir := gen.CompleteDir
 	categories := snap.Categories
 	hdr.Name = uniqueName(hdr.Name, func(name string) bool {
-		if app.dispatcher != nil {
-			for _, row := range app.dispatcher.List() {
-				if row.Header.Name == name {
-					return true
-				}
-			}
+		if app.queuedName(name) {
+			return true
 		}
 		// Lstat, not Stat, for the reason given on fsutil.GetUniqueRelPath:
 		// this decides whether a job directory name is available to create,
@@ -2472,7 +2468,9 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 //
 // It refuses, before acting on anything, a job ID another actor holds
 // (errJobInTransition) and, for a FAILED entry, a job the dispatcher already
-// holds (errJobAlreadyQueued).
+// holds (errJobAlreadyQueued). It then refuses, before changing any state, a
+// job whose _FAILED_ download directory cannot be moved back to the path the
+// retry writes to (errRetryDirConflict; see restoreFailedDir).
 //
 // The history entry is deleted on success.
 func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
@@ -2505,6 +2503,25 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	if err != nil {
 		return err
 	}
+
+	// The retry writes to, and post-processing reads, downloadDir/<name>; a
+	// failed attempt the finalize stage renamed left its bytes under _FAILED_.
+	downloadDir := app.downloadDir()
+	restoredFrom, err := restoreFailedDir(entry.Path, downloadDir, j.Name(), app.queuedName)
+	if err != nil {
+		return fmt.Errorf("app: retry %s: restore download directory: %w", jobID, err)
+	}
+	restoreKept := false
+	defer func() {
+		if restoreKept {
+			return
+		}
+		if err := undoRestoreFailedDir(restoredFrom, downloadDir, j.Name()); err != nil {
+			app.log.Warn("retry aborted and its download directory could not be moved back "+
+				"to the path its history entry records", "job", jobID, "path", restoredFrom, "err", err)
+		}
+	}()
+
 	var progressApplied bool
 	retained, rErr := app.historyFileProgress(ctx, jobID)
 	if rErr != nil {
@@ -2654,6 +2671,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		}
 	}
 	admitted = true
+	restoreKept = true
 
 	// Detached for the same reason Add is, and separately bounded so Add's
 	// budget is not shared: the job is in dispatch_jobs by now, and a client

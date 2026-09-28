@@ -83,7 +83,7 @@ func (f *FinalizeStage) handleFailure(ctx context.Context, log *slog.Logger, job
 	// it. The files stay in the incomplete/download area (NOT moved
 	// to complete) so that retry can find them.
 	if folderRename && job.DownloadDir != "" {
-		failedDir := prefixDirName(job.DownloadDir, "_FAILED_")
+		failedDir := FailedDir(job.DownloadDir)
 		if err := os.Rename(job.DownloadDir, failedDir); err == nil {
 			logf(ctx, log, job, slog.LevelInfo, "Renamed to %s", failedDir)
 			job.DownloadDir = failedDir
@@ -178,6 +178,12 @@ func (f *FinalizeStage) moveFileByFile(ctx context.Context, log *slog.Logger, jo
 
 	return nil
 }
+
+// FailedDir returns the path the finalize stage renames a failed job's
+// download directory to when folder rename is enabled: dir with its last
+// component prefixed by "_FAILED_". A retry of that job uses it to find the
+// bytes the failed attempt left.
+func FailedDir(dir string) string { return prefixDirName(dir, "_FAILED_") }
 
 // prefixDirName prepends a prefix to the last path component of dir.
 // Example: prefixDirName("/complete/movies/MyRelease", "_UNPACK_")
