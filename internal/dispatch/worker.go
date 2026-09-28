@@ -137,6 +137,14 @@ func (d *Dispatcher) YieldedFor(id string, expected *job.Job) error {
 // yet; a claim taken after it has no report left to clear it, so the job is
 // not launched again until a removal or Stop clears it. Checked after the
 // claim, that report is visible, and any report after the claim clears it.
+// That rests on two branches:
+//   - a report changes Render before it clears the claim: Finished's Settle
+//     closes the attempt and YieldedFor's Park drops the lease or slot, each
+//     ahead of clearLaunched, so the re-check reads Running false;
+//   - nothing can re-grant the job between that report and the re-check,
+//     because Advance and launch both run only from tick (tick.go), which
+//     never overlaps itself.
+//
 // The first check only keeps a tick from taking and dropping a claim for
 // every job that is not running.
 func (d *Dispatcher) launch(j *job.Job) {
