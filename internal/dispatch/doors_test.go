@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -32,6 +33,44 @@ func TestCancel_LatchesAndKicksForARegisteredJob(t *testing.T) {
 	case <-d.wake:
 	default:
 		t.Error("Cancel did not kick the tick")
+	}
+}
+
+func TestCancelJob_NilJobReturnsErrNotFound(t *testing.T) {
+	d := newTestDispatcher(t)
+	if err := d.CancelJob(nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("CancelJob(nil) = %v, want ErrNotFound", err)
+	}
+}
+
+// TestCancelJob_LeavesALaterInstanceAlone: a cancel carrying a removed
+// instance does not latch the attempt since registered under the same ID,
+// while one carrying the registered instance does.
+func TestCancelJob_LeavesALaterInstanceAlone(t *testing.T) {
+	d := newTestDispatcher(t)
+	j1 := job.New("j1", "first", job.Policy{})
+	if err := d.Add(context.Background(), j1, Header{}); err != nil {
+		t.Fatalf("Add(j1): %v", err)
+	}
+	if err := d.Remove(context.Background(), "j1"); err != nil {
+		t.Fatalf("Remove(j1): %v", err)
+	}
+	j2 := job.New("j1", "second", job.Policy{})
+	if err := d.Add(context.Background(), j2, Header{}); err != nil {
+		t.Fatalf("Add(j2): %v", err)
+	}
+
+	if err := d.CancelJob(j1); !errors.Is(err, ErrNotFound) {
+		t.Errorf("CancelJob(removed instance) = %v, want ErrNotFound", err)
+	}
+	if got := j2.Snapshot().Intent; got == job.IntentCancel {
+		t.Fatal("CancelJob with the removed instance latched IntentCancel on the later one")
+	}
+	if err := d.CancelJob(j2); err != nil {
+		t.Fatalf("CancelJob(registered instance): %v", err)
+	}
+	if got := j2.Snapshot().Intent; got != job.IntentCancel {
+		t.Errorf("CancelJob with the registered instance left intent %v, want IntentCancel", got)
 	}
 }
 

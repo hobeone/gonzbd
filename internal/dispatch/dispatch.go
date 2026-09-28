@@ -121,15 +121,22 @@ type Dispatcher struct {
 	log *slog.Logger
 }
 
-// lookup returns the registered job for an ID. Its production callers are
-// Cancel and Retry below, the only two non-test call sites in this package;
-// declared here because it is registry-shaped scaffolding, not tick
-// behaviour.
+// lookup returns the registered job for an ID; declared here because it is
+// registry-shaped scaffolding, not tick behaviour.
 func (d *Dispatcher) lookup(id string) (*job.Job, bool) {
+	return d.lookupFor(id, nil)
+}
+
+// lookupFor returns the job registered under id. When expected is non-nil it
+// reports a miss unless the registered job is expected, by pointer identity,
+// so a caller holding a removed instance is never handed a later attempt
+// registered under the same ID. Callers act on the job it returns rather than
+// looking the ID up again.
+func (d *Dispatcher) lookupFor(id string, expected *job.Job) (*job.Job, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	e, ok := d.byID[id]
-	if !ok {
+	if !ok || (expected != nil && e.j != expected) {
 		return nil, false
 	}
 	return e.j, true
@@ -143,9 +150,24 @@ func (d *Dispatcher) lookup(id string) (*job.Job, bool) {
 // itself runs later in the same tick, from evictCancelledNeverRun (tick.go);
 // here Cancel only latches the intent through sched and kicks.
 func (d *Dispatcher) Cancel(id string) error {
-	j, ok := d.lookup(id)
+	return d.cancelFor(id, nil)
+}
+
+// CancelJob is Cancel for one instance of a job: it latches only if j is the
+// job registered under j.ID(), and otherwise no-ops with ErrNotFound, so a
+// caller still holding a removed instance cannot cancel a later attempt
+// registered under the same ID.
+func (d *Dispatcher) CancelJob(j *job.Job) error {
+	if j == nil {
+		return fmt.Errorf("dispatch: CancelJob: nil job: %w", ErrNotFound)
+	}
+	return d.cancelFor(j.ID(), j)
+}
+
+func (d *Dispatcher) cancelFor(id string, expected *job.Job) error {
+	j, ok := d.lookupFor(id, expected)
 	if !ok {
-		return fmt.Errorf("dispatch: Cancel: no job %q", id)
+		return fmt.Errorf("dispatch: Cancel: no job %q: %w", id, ErrNotFound)
 	}
 	if err := d.q.Cancel(j); err != nil {
 		return fmt.Errorf("dispatch: Cancel(%s): %w", id, err)

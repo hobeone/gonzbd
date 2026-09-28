@@ -41,7 +41,9 @@ type reporter interface {
 //     repairable, or deferred recovery) or Finished(OutcomeFailed) (hopeless).
 //  3. Repairing/Extracting/Finalizing: hands off to postProcessor.Process
 //     (enqueuePostProc). Post-processing completes and yields via
-//     jobFinalizer.persistAndCommit (`git grep -n 'func (f \*jobFinalizer) persistAndCommit' internal/app/`) or Shutdown (`git grep -n 'func (app \*Application) Shutdown' internal/app/`).
+//     jobFinalizer.persistAndCommit (`git grep -n 'func (f \*jobFinalizer) persistAndCommit' internal/app/`),
+//     via jobFinalizer.cancelled (`git grep -n 'func (f \*jobFinalizer) cancelled' internal/app/`)
+//     for a job postProcessor.Cancel took, or via Shutdown (`git grep -n 'func (app \*Application) Shutdown' internal/app/`).
 //  4. Guard branches (missing app, missing job, app.stopping, unhandled states):
 //     discharges synchronously via immediate Yielded.
 type appRunner struct {
