@@ -264,6 +264,20 @@ func testServer(t *testing.T, name, addr string, opts ...func(*config.ServerConf
 	return NewServer(cfg)
 }
 
+// yencBody encodes payload as a yEnc article that always carries a genuine
+// =ypart line, so decoder.Article.HasOffset is true regardless of which NZB
+// segment number a test's job assigns the article — bypassing decodePayload's
+// E5 guard (assertion E5 of docs/article-validation-contract.md), which
+// otherwise rejects a no-=ypart decode for any segment other than the first.
+//
+// These tests exercise dispatch/retry/pipelining machinery, not offset
+// correctness, and never assert on ArticleResult.Offset, so the =ypart
+// values themselves (partNum=1, offset=0) are placeholders, not claims about
+// the article's real position.
+func yencBody(filename string, payload []byte) []byte {
+	return mocknntp.EncodeYEncPart(filename, 1, 1, int64(len(payload)), 0, payload)
+}
+
 // collect reads up to n results from ch or errors after timeout.
 func collect(t *testing.T, ch <-chan *ArticleResult, n int, timeout time.Duration) []*ArticleResult {
 	t.Helper()
@@ -283,9 +297,9 @@ func collect(t *testing.T, ch <-chan *ArticleResult, n int, timeout time.Duratio
 
 func TestDownloaderHappyPath(t *testing.T) {
 	ms := newMockNNTP(t)
-	ms.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a"))))
-	ms.addArticle("b@h", string(mocknntp.EncodeYEnc("b.bin", []byte("body-b"))))
-	ms.addArticle("c@h", string(mocknntp.EncodeYEnc("c.bin", []byte("body-c"))))
+	ms.addArticle("a@h", string(yencBody("a.bin", []byte("body-a"))))
+	ms.addArticle("b@h", string(yencBody("b.bin", []byte("body-b"))))
+	ms.addArticle("c@h", string(yencBody("c.bin", []byte("body-c"))))
 
 	disp := newTestDispatcher(t)
 	j, m := makeJobWithArticles(t, []string{"a@h", "b@h", "c@h"})
@@ -334,8 +348,8 @@ func TestDownloaderHappyPath(t *testing.T) {
 
 func TestDownloaderTryListCleanedOnSuccess(t *testing.T) {
 	ms := newMockNNTP(t)
-	ms.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a"))))
-	ms.addArticle("b@h", string(mocknntp.EncodeYEnc("b.bin", []byte("body-b"))))
+	ms.addArticle("a@h", string(yencBody("a.bin", []byte("body-a"))))
+	ms.addArticle("b@h", string(yencBody("b.bin", []byte("body-b"))))
 
 	disp := newTestDispatcher(t)
 	j, m := makeJobWithArticles(t, []string{"a@h", "b@h"})
@@ -389,12 +403,12 @@ func TestDownloaderFallbackServer(t *testing.T) {
 	// Primary rejects 'a@h'; backup has it. Downloader should flip
 	// to backup via the try-list.
 	primary := newMockNNTP(t)
-	primary.addArticle("b@h", string(mocknntp.EncodeYEnc("b.bin", []byte("body-b")))) // primary has b only
-	primary.rejectArticle("a@h")                                                      // simulate article missing
+	primary.addArticle("b@h", string(yencBody("b.bin", []byte("body-b")))) // primary has b only
+	primary.rejectArticle("a@h")                                           // simulate article missing
 
 	backup := newMockNNTP(t)
-	backup.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a-backup"))))
-	backup.addArticle("b@h", string(mocknntp.EncodeYEnc("b.bin", []byte("body-b-backup"))))
+	backup.addArticle("a@h", string(yencBody("a.bin", []byte("body-a-backup"))))
+	backup.addArticle("b@h", string(yencBody("b.bin", []byte("body-b-backup"))))
 
 	disp := newTestDispatcher(t)
 	j, m := makeJobWithArticles(t, []string{"a@h", "b@h"})
@@ -460,7 +474,7 @@ func TestDownloaderNoSpeculativeFallback(t *testing.T) {
 	primary.rejectArticle("a@h")
 
 	backup := newMockNNTP(t)
-	backup.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a-backup"))))
+	backup.addArticle("a@h", string(yencBody("a.bin", []byte("body-a-backup"))))
 
 	disp := newTestDispatcher(t)
 	j, m := makeJobWithArticles(t, []string{"a@h"})
@@ -519,7 +533,7 @@ func TestDownloaderNoSpeculativeFallback(t *testing.T) {
 
 func TestDownloaderPauseResume(t *testing.T) {
 	ms := newMockNNTP(t)
-	ms.addArticle("p@h", string(mocknntp.EncodeYEnc("p.bin", []byte("body-p"))))
+	ms.addArticle("p@h", string(yencBody("p.bin", []byte("body-p"))))
 
 	disp := newTestDispatcher(t)
 	d := New(disp, []*Server{testServer(t, "s", ms.addr)}, nil, Options{}, nil)
@@ -559,7 +573,7 @@ func TestDownloaderPerJobPauseResume(t *testing.T) {
 	for i := range ids {
 		id := fmt.Sprintf("art%d@h", i)
 		ids[i] = id
-		ms.addArticle(id, string(mocknntp.EncodeYEnc(
+		ms.addArticle(id, string(yencBody(
 			fmt.Sprintf("f%d.bin", i), fmt.Appendf(nil, "body-%d", i))))
 	}
 
@@ -678,7 +692,7 @@ func TestDownloaderDialFailure(t *testing.T) {
 
 func TestDownloaderAuth(t *testing.T) {
 	ms := newMockNNTP(t, withAuth("alice", "secret"))
-	ms.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a"))))
+	ms.addArticle("a@h", string(yencBody("a.bin", []byte("body-a"))))
 
 	disp := newTestDispatcher(t)
 	j, m := makeJobWithArticles(t, []string{"a@h"})
@@ -707,7 +721,7 @@ func TestDownloaderAuth(t *testing.T) {
 func TestDownloaderGracefulShutdown(t *testing.T) {
 	ms := newMockNNTP(t)
 	for i := range 10 {
-		ms.addArticle(fmt.Sprintf("a%d@h", i), string(mocknntp.EncodeYEnc("a.bin", fmt.Appendf(nil, "body-%d", i))))
+		ms.addArticle(fmt.Sprintf("a%d@h", i), string(yencBody("a.bin", fmt.Appendf(nil, "body-%d", i))))
 	}
 	disp := newTestDispatcher(t)
 	ids := make([]string, 10)
@@ -759,7 +773,7 @@ func TestDownloaderGracefulShutdown(t *testing.T) {
 
 func TestDownloaderSetSpeedLimit(t *testing.T) {
 	ms := newMockNNTP(t)
-	ms.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a"))))
+	ms.addArticle("a@h", string(yencBody("a.bin", []byte("body-a"))))
 
 	disp := newTestDispatcher(t)
 	j, m := makeJobWithArticles(t, []string{"a@h"})
@@ -820,7 +834,7 @@ func TestDownloaderPipeliningConcurrency(t *testing.T) {
 	for i := range 5 {
 		msgid := fmt.Sprintf("pipe%d@h", i)
 		articles = append(articles, msgid)
-		ms.addArticle(msgid, string(mocknntp.EncodeYEnc("a.bin", []byte("body"))))
+		ms.addArticle(msgid, string(yencBody("a.bin", []byte("body"))))
 	}
 
 	disp := newTestDispatcher(t)

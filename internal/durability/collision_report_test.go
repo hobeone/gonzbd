@@ -85,8 +85,12 @@ func TestCollisionFindings_EmptyReportsNothing(t *testing.T) {
 // completes SHORT and is benign; unresolved across a close-handles cycle or a
 // restart the later write overwrites the earlier and the file completes WRONG.
 // Only the second is corruption. Asserting corruption would be wrong on the
-// commoner case — a multi-part UU post — and asserting nothing would leave the
-// user with an unexplained repair.
+// benign case — historically a multi-part UU post or a yEnc body with no
+// =ypart line, both now closed by decodePayload rejecting them (assertion E5
+// of docs/article-validation-contract.md), leaving a yEnc =ypart declaration
+// that duplicates another article's offset as the route this layer still
+// can't distinguish from — and asserting nothing would leave the user with
+// an unexplained repair.
 func TestCollisionReason_SaysRepairableNotCorrupt(t *testing.T) {
 	t.Parallel()
 	got := collisionReason("/downloads/job/data.rar", []Collision{
@@ -106,7 +110,7 @@ func TestCollisionReason_SaysRepairableNotCorrupt(t *testing.T) {
 		if strings.Contains(strings.ToLower(got), forbidden) {
 			t.Errorf("reason = %q contains %q; this layer cannot tell a short file "+
 				"from an overwritten one, and the in-episode case — an ordinary "+
-				"multi-part UU post — is neither corrupt nor failed", got, forbidden)
+				"duplicate or malformed yEnc declaration — is neither corrupt nor failed", got, forbidden)
 		}
 	}
 }

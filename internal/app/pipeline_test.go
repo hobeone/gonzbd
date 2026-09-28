@@ -64,6 +64,14 @@ func TestIsRetryableDownloaderError(t *testing.T) {
 		{"ErrAuthRejected", nntp.ErrAuthRejected, false},
 		{"generic error", errors.New("some internal error"), false},
 		{"io.EOF", io.EOF, false},
+		// ErrOffsetUnknownForPart (assertion E5 of
+		// docs/article-validation-contract.md): the same server would serve
+		// the same misleading decode again, so retrying buys nothing — pins
+		// the terminal half of
+		// TestProcessFetchedArticle_OffsetUnknownForPartIsTerminal in
+		// internal/downloader, which cannot call this unexported function
+		// itself.
+		{"downloader.ErrOffsetUnknownForPart", downloader.ErrOffsetUnknownForPart, false},
 	}
 
 	for _, tc := range cases {

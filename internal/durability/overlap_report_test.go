@@ -74,7 +74,9 @@ func TestFinalizeFile_ReportsOverlappingDurableArticles(t *testing.T) {
 // dropped bytes contribute nothing to Σ Length and it never exceeds the file's
 // size: overlapFrom has no evidence and correctly reports nothing. Before the
 // commit began returning its drops, that made this case invisible everywhere —
-// dispatch.go's UU block describes it, and no code path told anyone.
+// a duplicate offset declaration produced it (historically including
+// multi-part UU and a yEnc body with no =ypart line, both closed by assertion
+// E5 of docs/article-validation-contract.md), and no code path told anyone.
 //
 // The report has to come from the commit because the commit is the last moment
 // the collision exists. Afterwards the surviving row is indistinguishable from

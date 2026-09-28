@@ -1,8 +1,8 @@
 # Article Validation Contract
 
-> **Status: in progress; dispositions settled.** F1, F3, A7, F6, F2, F5/B1 and the
+> **Status: in progress; dispositions settled.** F1, F3, A7, F6, F2, F5/B1, E5 and the
 > whole A-block have landed, and E3's detection half has (#387: the durability
-> layer classifies a range overlap and warns the user); C5, E4, E5 and F4 remain
+> layer classifies a range overlap and warns the user); C5, E4 and F4 remain
 > proposed, as does any E3 PREVENTION. §8 is no longer open — what each class of violation
 > produces has been decided and is binding on the work that follows. This
 > document defines what GoNZBD asserts about a Usenet article, where each
@@ -528,7 +528,7 @@ the rows.
 | E1–E2 | bounds, exact-offset collision | L4 | ✅ already enforced | — |
 | E3 | range overlap | L4 detects nothing; the durability layer detects it by comparing the recorded runs' summed lengths against the file's size | **post anomaly** (user warning), after the write | A7 **and** E5 |
 | E4 | part tiling / gaps | L0 + L4 | warn at ingestion | — |
-| E5 | UU body only satisfies a single-segment file | L3 | reject | — |
+| E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | L3 | ✅ **implemented** — reject (#346) | — |
 | F1 | key `FileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
 | F2, F5 | structural (§5.F) | — | ✅ **implemented** — the state stops existing | — |
 | F3 | structural (§5.F) | — | ✅ **done** (`d4f92cee`) — the state stops existing | — |
@@ -537,7 +537,7 @@ the rows.
 
 **Build order.** The F-items land first (§5.F), then the assertions:
 
-> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → E5 → ~~F1a~~ (fixture `ArtIdx`) → ~~F1b~~ (flip the key) → E3 (detection ~~landed~~; prevention open) / E4
+> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → ~~E5~~ → ~~F1a~~ (fixture `ArtIdx`) → ~~F1b~~ (flip the key) → E3 (detection ~~landed~~; prevention open) / E4
 
 Struck items have landed. F3 led because it was the smallest instance of the
 pattern and the cheapest place to learn its cost; doing it first is what
@@ -937,53 +937,42 @@ remains advisory everywhere it is already advisory.
 | E3 | no two articles' ranges **overlap** | ⚠ **not prevented**; detected after the fact (#387) |
 | E4 | the parts tile `[0, size)` with no gap | ⚠ **absent** at L4; also undetected at L0 |
 
-| E5 | a UU-decoded body only satisfies a single-segment file | ⚠ **absent** (#346) |
+| E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | ✅ **implemented** (#346) — `decodePayload` rejects `ErrOffsetUnknownForPart` |
 
 **E3 lands as an after-the-fact warning, not a hot-path guard** (§8, decision
-3), but that
-decision rests on A7 *plus* E5, not on A7 alone. A7 does not close the UU route,
-and that route is live today:
+3), conditional on both A7 and E5, not on A7 alone. Both are now in place, so
+the condition holds — for the route E5 governs; see the paragraph after next
+for the route that remains outside it.
 
-`decodePayload`'s yEnc-failure fallback returns `offset: 0` unconditionally,
-which is a true statement about the *format* standing in for a check on *this
-request*. If a server answers segment 5 of a multi-part file with a body that
-fails yEnc parsing but succeeds at UU, those bytes claim offset 0, which
-belongs to segment 1 — a **different** article, which A7 cannot touch because
-no Message-ID is repeated.
+E5 is what closed the route that made the conditional necessary, across both
+decode shapes that produce it. `decodePayload`'s UU fallback can only assert
+offset 0, and so can its yEnc path when the body carries no `=ypart` line
+(`decoder.Article.HasOffset` false) — a bare `=ybegin part=N` does not save
+it, since that field is server-declared and unvalidated (D1 only counts a
+disagreement against it). Offset 0 is correct for segment 1 of a file and
+belongs to no other segment. Before this fix, a server answering, say,
+segment 5 of a multi-part file with either shape of body could claim segment
+1's offset, and A7 could not touch it — no Message-ID is repeated.
+`decodePayload` now refuses either decode (`ErrOffsetUnknownForPart`)
+whenever `requestedPartNumber > 1`, before a result claiming offset 0 can
+exist at all, so the two-articles-claim-the-same-offset scenario this section
+used to describe cannot arise from either shape of missing-offset decode.
 
-**Within one open-file episode the consequence is no longer silent, and that is
-a change since this section was written.** The assembler detects the offset
-collision (#383, #385) and resolves one of the two articles permanently failed,
-so the file completes short rather than completing wrong. Which article loses
-depends on whether the incumbent has been reported written: `acceptArticle`
-refuses the *arrival* against a settled offset, `FileWriter.Accept` displaces
-the *incumbent* against an unsettled one. The accounting is identical either
-way — see `offsetSettledBy`, which says so — and only the disposition differs.
+**One cost this buys, worth naming rather than leaving implicit:** the parser
+keeps NZB segment numbers verbatim (`internal/nzb/parser.go` never renumbers
+them), so a file whose sole segment happens to be numbered anything other
+than 1 has that segment rejected by E5 even though it is, in fact, the whole
+file. That is a real loss, but it is Rule-3-compliant: the file in that case
+consists of exactly the one article E5 rejects, so the cost is bounded to
+that article's own bytes, same as any other E5 rejection.
 
-**Across a restart or a close-handles cycle it still is silent, in the sense
-that matters.** `FileWriter.acceptedAt` is per-open-episode residency by
-design, so a segment arriving in a later episode finds offset 0 unowned and
-overwrites what is there: the file completes **wrong**, not short, and no
-article is failed for it. E3 does report the overlap from the durable runs,
-which persist (#413) — but E3 is a warning, which is exactly the property
-decision 3 below is conditional on. Note the bound E3 now carries: `Σ length`
-is a sum, so an N-byte overlap and an N-byte hole cancel to equality and the
-check reports no evidence of an overlap on a file holding both.
-
-**Neither case is E5.** In both, the request is still not refused, the article
-count is still satisfied by a body that answers a different segment, and
-nothing in the diagnosis names UU. The in-episode collision path narrows the
-damage without touching the claim that causes it, which is why it changes the
-severity of this row and not its status. Decision 3's conditional on E5 has not
-been re-argued here and stands as written.
-
-E5 is decidable at L3 with no new data: the requested segment number is already
-on `articleRequest`, and a UU decode that satisfies a request for part > 1 is
-refusable on the spot. **Take E5 before relying on decision 3.**
-
-With A7 and E5 both in place, what remains does not justify a range query on
-every accept. Warn on overlaps and revisit only if the residual population is
-one neither explains. This also defers #387's design choice — the interval
+A distinct route is NOT closed by E5: two articles that both carry a genuine
+`=ypart` line, whose `begin=` values happen to collide. Nothing at L3 rejects
+that — it is not a missing-offset decode, so E5 does not see it, and D1–D3
+do not compare one article's declared offset against another's. With A7 and
+E5 both in place, that residual route does not justify a range query on every
+accept. Warn on overlaps and revisit only if the residual population is one
+neither explains. This also defers #387's design choice — the interval
 structure it debates is only worth building if that population justifies it.
 
 An earlier version of this paragraph said to **count** overlaps and gated the
@@ -1226,16 +1215,16 @@ later reader can tell a decision from an oversight.
    names both claims and the file. This covers D1–D3 and E3's warning.
 
 3. **Overlap detection warns; it does not guard.** E3 warns the user and does
-   not gate the accept path. **Conditional on both A7 and E5**, not A7 alone:
-   the UU fallback claims offset 0 for any segment (#346) and repeats no
-   Message-ID, so A7 cannot see it. Within one open-file episode the
-   assembler's collision path now resolves that claim rather than letting the
-   bytes land, but across a restart or close-handles cycle it does not, and
-   there E3's warning is all there is — see §5.E. With both in place the
-   residual population
-   is unknown and presumed small, and #387's interval-structure design is
-   deferred until the warning rate justifies it. **If E5 is not taken, this
-   decision does not hold** and E3 must be a guard.
+   not gate the accept path. **Conditional on both A7 and E5**, not A7 alone,
+   and both are now in place — see §5.E: E5 (#346) rejects a decode (UU, or
+   yEnc with no `=ypart`) that would default to claiming offset 0 for a
+   segment other than the first, closing the route by which such a decode
+   could claim an offset without a repeated Message-ID for A7 to catch. A
+   distinct route remains open — two articles each carrying a genuine
+   `=ypart` declaration whose `begin=` values happen to collide — which
+   neither A7 nor E5 addresses; the residual population below is presumed to
+   include it. #387's interval-structure design is deferred until the
+   warning rate justifies it.
 
    As shipped there is **no counter**, which earlier drafts of this section
    promised twice. What exists is a job warning raised at most once per
@@ -1244,10 +1233,9 @@ later reader can tell a decision from an oversight.
    not a rate anyone can aggregate, so deciding whether the deferral above is
    justified needs telemetry that does not yet exist.
 
-   **E5 is still absent, so the condition this decision rests on is unmet.**
-   Detection shipping does not discharge it. Read the decision as: prevention
-   is deferred *and* the argument for deferring it is incomplete until E5
-   lands, at which point this should be re-read rather than assumed settled.
+   **E5 has landed (#346), so the condition this decision rests on is met.**
+   Prevention of the general E3 overlap case is still deferred, and that
+   deferral now rests on both A7 and E5 rather than on an incomplete argument.
 
 4. **The NZB's `bytes` gains no authority.** It stays advisory. D3 observes
    disagreement without acting on it, `offsetOutOfRange` keeps its 12.5% slack

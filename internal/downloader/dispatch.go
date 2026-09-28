@@ -755,7 +755,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	name := srv.Cfg().Name
 	// Decoding (Step 3: Parallelize Decoding): Decode article payload
 	// directly in the connection goroutine to utilize all CPU cores.
-	payload, err := decodePayload(body)
+	payload, err := decodePayload(body, req.partNumber)
 	if err != nil {
 		if payload.data != nil {
 			decoder.PutBuffer(payload.data)
@@ -1013,12 +1013,18 @@ func (m *managedConn) DropIfMatches(c *nntp.Conn, d *Downloader, workerID string
 // dual-fallback failure is a joined error (see decodePayload) and isn't
 // reliably sub-classifiable further, so it falls into a single
 // "decode_failed" bucket alongside any other unrecognized decode error.
+// ErrOffsetUnknownForPart gets its own class rather than joining that
+// bucket: unlike the joined failure, its cause is a single, named condition
+// (assertion E5 of docs/article-validation-contract.md), and a class that
+// bucket-mixed it with unrelated decode failures could not be acted on.
 func classifyDecodeError(err error) string {
 	switch {
 	case errors.Is(err, ErrArticleRemoved):
 		return telemetry.ErrClassDMCARemoved
 	case errors.Is(err, decoder.ErrBodyTooLarge):
 		return telemetry.ErrClassDecodeBodyTooLarge
+	case errors.Is(err, ErrOffsetUnknownForPart):
+		return telemetry.ErrClassPartOffsetUnknown
 	default:
 		return telemetry.ErrClassDecodeFailed
 	}
@@ -1026,6 +1032,12 @@ func classifyDecodeError(err error) string {
 
 // decodePayload decodes an article body using yEnc first, with a
 // fallback to UU decoding if the payload is not yEnc encoded.
+// requestedPartNumber is the NZB segment number the caller asked for
+// (articleRequest.partNumber). A successful decode of either shape that
+// carries no genuine offset — a yEnc body with no =ypart line
+// (!article.HasOffset), or any UU body — is rejected with
+// ErrOffsetUnknownForPart when requestedPartNumber > 1, rather than
+// asserting the offset 0 default for a segment it does not belong to.
 //
 // When neither yEnc nor UU decoding succeeds, the raw body is scanned
 // for DMCA/takedown keywords. If found, ErrArticleRemoved is returned
@@ -1047,10 +1059,28 @@ type decodedPayload struct {
 	partNumber int
 }
 
-func decodePayload(body []byte) (decodedPayload, error) {
+func decodePayload(body []byte, requestedPartNumber int) (decodedPayload, error) {
 	article, decErr := decoder.DecodeArticle(body)
 	switch {
 	case decErr == nil:
+		// !article.HasOffset means no =ypart line was present, so
+		// article.Offset is the format's zero-value default rather than a
+		// genuine position — correct only for segment 1 of a file.
+		// requestedPartNumber is the NZB segment number, always >= 1
+		// (internal/nzb/parser.go rejects s.Number <= 0 at parse time), so
+		// > 1 unambiguously means "not the first segment" — assertion E5 of
+		// docs/article-validation-contract.md rejects this decode rather
+		// than letting it claim segment 1's offset. article.PartNumber
+		// (from a bare =ybegin part=, with no =ypart) does not save it:
+		// that field is server-declared and unvalidated, not derived from
+		// requestedPartNumber, and D1 only counts a disagreement rather
+		// than acting on it.
+		if !article.HasOffset && requestedPartNumber > 1 {
+			if article.Data != nil {
+				decoder.PutBuffer(article.Data)
+			}
+			return decodedPayload{}, ErrOffsetUnknownForPart
+		}
 		return decodedPayload{
 			data:       article.Data,
 			offset:     article.Offset,
@@ -1064,68 +1094,20 @@ func decodePayload(body []byte) (decodedPayload, error) {
 		// Fallback to UU decoding.
 		data, _, uuErr := decoder.DecodeUU(body)
 		if uuErr == nil {
-			// UU carries no offset and no checksum of its own. The CRC is
-			// computed here rather than read from the article; the offset is
-			// asserted to be 0, which is CORRECT ONLY FOR A SINGLE-PART FILE
-			// and is not enforced anywhere.
-			//
-			// Do not restate this as "single-part by construction". Nothing
-			// constructs that: an NZB with two UU segments yields two articles
-			// that both claim offset 0, and the belief that UU cannot be
-			// multi-part is the reason this went unnoticed.
-			//
-			// WITHIN ONE OPEN-FILE EPISODE the collision is caught: the
-			// assembler resolves one of the two articles permanently failed,
-			// so an N-part UU file completes short by N-1 parts and reaches
-			// par2 as an ordinary shortfall. Which article loses differs —
-			// acceptArticle refuses the ARRIVAL if the incumbent has been
-			// reported written, FileWriter.Accept displaces the INCUMBENT if
-			// it has not (see offsetSettledBy) — and the accounting is the
-			// same either way.
-			//
-			// ACROSS a restart or a close-handles cycle it is not. FileWriter
-			// .acceptedAt is per-open-episode residency by design, so a later
-			// segment finds offset 0 unowned and overwrites what is there. The
-			// file then completes WRONG rather than short.
-			//
-			// The durability record DOES report that, but by neither of the
-			// two mechanisms a reader would reach for, and an earlier draft
-			// of this comment naming one of them was simply wrong. Two runs
-			// asserting the SAME offset never abut, so they never merge;
-			// mergeAdjacentRuns keeps the longer of the two and drops the
-			// other, which is what stops a later FinalizeFile from bounding
-			// its truncate to the shorter. The dropped row then contributes
-			// nothing to Σ length, so overlapFrom's comparison against the
-			// file's stat size (#413) sees no evidence and raises nothing —
-			// #413 catches the PARTIAL overlaps, which do leave two rows
-			// tiling past the file's end. And §3.5's row count does not
-			// withhold the whole-file CRC either, because one row is exactly
-			// what survives.
-			//
-			// What catches it is Commit RETURNING the drop, which the barrier
-			// turns into a PostAnomaly naming both articles and the contested
-			// offset (durability.Collision). The commit is the last moment the
-			// collision exists: afterwards the surviving row is
-			// indistinguishable from one that never had a rival. And what
-			// withholds the CRC is §3.5's ARTICLE-COVERAGE half — the dropped
-			// article's index is in no run's span, so the survivor cannot
-			// cover the file's whole article range. Both were added because
-			// this shape defeats every check stated in bytes.
-			//
-			// Either way nothing in the diagnosis names UU as the cause. That
-			// is #346, and it is a gap in this offset, not in the collision
-			// handling that partly absorbs it.
-			//
-			// That is not a weaker guarantee than yEnc's. The yEnc trailer's
-			// crc32 is a transfer check the decoder has already enforced
-			// (ErrCRCMismatch) before the bytes reach this point, and the
-			// value returned above is likewise the decoder's own checksum
-			// over the decoded output. The fact log uses it to verify OUR
-			// bytes on disk after a restart, not to validate the sender, so
-			// the format's silence about checksums does not matter — what
-			// matters is that every decoded article carries one. Returning 0
-			// here made UU articles unverifiable on resume and therefore
-			// re-fetched forever.
+			// UU carries no offset of its own, so the same E5 guard as
+			// above applies unconditionally rather than on !HasOffset: see
+			// the case decErr == nil branch for the requestedPartNumber
+			// invariant this relies on.
+			if requestedPartNumber > 1 {
+				decoder.PutBuffer(data)
+				return decodedPayload{}, ErrOffsetUnknownForPart
+			}
+
+			// The CRC is computed here rather than read from the article: UU
+			// carries no checksum of its own, but the fact log uses this value
+			// to verify OUR decoded bytes on disk after a restart, not to
+			// validate the sender, so the format's silence doesn't matter —
+			// what matters is that every decoded article carries one.
 			return decodedPayload{data: data, crc: crc32.ChecksumIEEE(data)}, nil
 		}
 		if data != nil {
