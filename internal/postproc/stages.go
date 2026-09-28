@@ -65,20 +65,18 @@ const (
 	//     them, so the comparison had nothing on either side.
 	QuickCheckInconclusive
 
-	// QuickCheckUnidentified means par2 sets were found but no delivered file
-	// is anything they describe, by name or by content, and the delivered
-	// files include a RAR or 7z archive. That is a Layout B post: par2
-	// protects what the archive extracts to, which does not exist until
-	// unpack has run, so a repair before unpack has nothing delivered to
-	// verify, and the ParError of a failed one would skip unpack. Repair
-	// declines, and the per-entry checksums the archive records, checked as
-	// unpack extracts, verify the content instead — where the extractor can
-	// check them; see hasSelfVerifyingArchive.
+	// QuickCheckUnidentified is the stage's judgement that a job is a Layout
+	// B post — par2 protecting what an archive extracts to, rather than the
+	// archive — so that repair, which runs before unpack, has nothing
+	// delivered to verify. Repair declines, unpack extracts, and par2_cleanup
+	// keeps the par2 set.
 	//
-	// The archive is what makes declining defensible. The same "nothing
-	// matched" signature is also an obfuscated file damaged inside its first
-	// 16 KB, and without an archive nothing downstream checks that file — so
-	// without one the stage records Damaged instead, and repair runs.
+	// It is a heuristic, not an observation of Layout B. Its basis is the
+	// conditions in looksLikeLayoutB: nothing delivered was identified as any
+	// par2 entry, unpack will run, no entry is named as an archive, and every
+	// entry is a member of a delivered RAR or 7z archive. What then checks the
+	// extracted files is only the archive's own per-member checksums, with
+	// the gaps archivesHoldEntries names; par2 is never run against them.
 	QuickCheckUnidentified
 )
 

@@ -116,11 +116,12 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		logf(ctx, log, job, slog.LevelInfo, "[repair] Skipped: QuickCheck already verified all file CRCs")
 		return nil
 	case QuickCheckUnidentified:
-		// par2 describes files unpack has not produced yet, so a repair here
-		// has nothing delivered to verify, and the ParError of a failed one
-		// would stop unpack from producing them. The archive's own checksums
-		// verify the extraction instead; see QuickCheckUnidentified.
-		logf(ctx, log, job, slog.LevelInfo, "[repair] Skipped: par2 protects the archive's extracted contents, not any delivered file")
+		// Quickcheck judged the par2 set to protect files unpack has not
+		// produced yet (a heuristic; see QuickCheckUnidentified for its basis
+		// and gaps). A repair then has nothing delivered to verify, and the
+		// ParError of a failed one would stop unpack from producing them.
+		logf(ctx, log, job, slog.LevelInfo,
+			"[repair] Skipped: QuickCheck judged the par2 set to protect the archive's extracted contents rather than any delivered file")
 		return nil
 	case QuickCheckDamaged, QuickCheckInconclusive:
 		// Repair runs. Damaged has a verdict to act on; Inconclusive has

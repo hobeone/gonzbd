@@ -22,9 +22,17 @@ Used to test par2 verify and repair operations.
 `par2/layout_b/` is a Layout B post: `release.rar` (RAR5, compressed) is the
 only payload, and `feature.par2` + `feature.vol0+1.par2` protect
 `feature.bin`, the file it extracts to, which is not delivered.
+`release.7z` is the same content as a 7z archive.
 `feature.bin.sha256` holds the SHA-256 of the extracted file. The archive is
 compressed on purpose: a stored (`-m0`) archive carries the protected file's
 bytes verbatim, and par2's block scan would find them inside it.
+
+`par2/layout_a/` protects an archive. `Real.Name.par2` +
+`Real.Name.vol0+2.par2` were created over `Real.Name.rar` (a RAR5 of the
+same `feature.bin`), which is not committed. `d8f7a6.rar` is that archive
+under an obfuscated name with four bytes overwritten at offset 600, inside
+its first 16 KB, which the recovery volume repairs. `outer.rar` is a RAR
+whose one member is `Real.Name.rar`.
 
 ### `split/`
 A 3 KB file split into three 1 KB parts (`sample.001`, `.002`, `.003`).
@@ -60,7 +68,16 @@ par2 create -r10 -n1 data.par2 data.bin
 seq 1 7000 | awk '{print "line " $1 " of the Layout B fixture payload"}' | head -c 40000 > feature.bin
 rar a -m5 -ma5 release.rar feature.bin
 par2 create -s4000 -r10 -n1 feature.par2 feature.bin
-sha256sum feature.bin > feature.bin.sha256 && rm feature.bin
+7z a -mx=9 release.7z feature.bin
+sha256sum feature.bin > feature.bin.sha256
+
+# par2/layout_a (requires rar and par2), from the same feature.bin
+rar a -m5 -ma5 Real.Name.rar feature.bin
+par2 create -s256 -r30 -n1 Real.Name.par2 Real.Name.rar
+cp Real.Name.rar d8f7a6.rar
+printf '\xff\xff\xff\xff' | dd of=d8f7a6.rar bs=1 seek=600 conv=notrunc
+rar a -m5 -ma5 outer.rar Real.Name.rar
+rm feature.bin Real.Name.rar
 
 # split (coreutils)
 split -b 1024 -d -a 3 source.bin sample.

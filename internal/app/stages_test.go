@@ -166,6 +166,21 @@ func TestBuildStages_QuickCheckDefaultEnabled(t *testing.T) {
 	}
 }
 
+// Quickcheck lets repair defer to unpack only when it can see that unpack
+// will run; left unwired it never can, and every Layout B post fails again.
+func TestBuildStages_QuickCheckSeesThePipelinesUnpackStage(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{DownloadDir: t.TempDir(), CompleteDir: t.TempDir()}
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
+	if err != nil {
+		t.Fatalf("buildStages: %v", err)
+	}
+	if built.QuickCheck.Unpack != built.Unpack {
+		t.Errorf("QuickCheck.Unpack = %p, want the pipeline's unpack stage %p", built.QuickCheck.Unpack, built.Unpack)
+	}
+}
+
 func TestBuildStages_SkipQuickCheckDisablesStage(t *testing.T) {
 	t.Parallel()
 

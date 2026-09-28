@@ -121,7 +121,7 @@ or modify its behavior:
 | **`unpack`** | Decompresses archives (`RAR`, `7z`, `TAR`, `split join`) up to `maxUnpackDepth = 3` recursive passes using native pure-Go engines (`go_rar`, `go_7z`, `go_tar`, `filejoin`) with optional external CLI fallbacks (`unrar`, `7z`). Respects `DirectUnpackSets` to skip already-extracted archives. | Skipped if `PP < 2` OR `ParError == true` (skips extraction unconditionally on repair failure). | Sets `UnpackError`. |
 | **`sample_cleanup`** | Deletes sample video and proof files matching `(?i)(^|[\W_])(sample|proof)`. Includes a false-positive guard where all files match the pattern. | Skipped if disabled in config or if every file in the directory matches the sample pattern. | Unlinks sample files from `OwnedFiles`. |
 | **`recover_par2_names`** | Restores original filenames by scanning `.par2` files on disk for 16KB MD5 hashes via `deobfuscate.Par2Rename`. | Runs unconditionally after unpack. | Renames files in `DownloadDir` & `OwnedFiles`. |
-| **`par2_cleanup`** | Deletes `.par2` files and orphaned `.1`, `.2`, etc. backup files created during `par2 repair` after repair, unpack, and rename stages have finished. | Skipped if `ParError` or `UnpackError` set (preserves par2 files for manual repair). | Unlinks `.par2` and `.1`/`.2` backup files. |
+| **`par2_cleanup`** | Deletes `.par2` files and orphaned `.1`, `.2`, etc. backup files created during `par2 repair` after repair, unpack, and rename stages have finished. | Skipped if `ParError` or `UnpackError` set (preserves par2 files for manual repair), or if `QuickCheck == Unidentified` (the set protects extracted files par2 never checked). | Unlinks `.par2` and `.1`/`.2` backup files. |
 | **`deobfuscate`** | Detects obfuscated file names and restores clean titles from job metadata. Also performs subtitle alignment (`.srt` renamed to match dominant video). | Skipped if disabled in config. | Renames files and subtitles in `DownloadDir` & `OwnedFiles`. |
 | **`extension_cleanup`** | Deletes unwanted file extensions (`.sfv`, `.nfo`, etc.) based on user config. Explicitly protects `.nzb` files (`SkipNZB = true`) and files in `ConsumedFiles`. Removes newly empty subdirectories. | Skipped if cleanup list empty. | Unlinks matching extensions from `OwnedFiles`. |
 | **`finalize`** | Moves processed files from `DownloadDir` to `FinalDir` (`CompleteDir/job_name`). When `job.ParError || job.UnpackError || job.FailMsg != ""`, skips moving to `FinalDir` and instead prepends `_FAILED_` to `DownloadDir` in place (when `folder_rename: true`), leaving files in incomplete download area for retry. | Always runs unless pre-check aborted job. | Populates `FinalDir` or renames `DownloadDir` with `_FAILED_` prefix; sets status to `StatusMoving`. |
@@ -141,7 +141,7 @@ or modify its behavior:
 > The two responsibilities in the row above are the ones that make it
 > permanent, and neither is a verification decision:
 > `par2.ApplyRenames` has exactly one caller in the tree
-> (`stage_quickcheck.go:95`), paired with `markRenamed` so relocation does not
+> (`stage_quickcheck.go:99`), paired with `markRenamed` so relocation does not
 > strand a file's old path in `OwnedFiles`; and `QuickCheckClean` is the only
 > verdict that lets `repair` skip spawning par2 on a set it has checked
 > (`stage_repair.go:111`). The
@@ -246,29 +246,51 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    NotRun`, or when `QuickCheck == Unidentified`. The first two eliminate
    multi-minute disk reads for healthy downloads.
 
-   The third is not a verdict that the data is intact; it is a finding that
-   par2 has nothing here to check. `Unidentified` means no delivered file is
-   any entry the par2 sets name, by name or by content
-   (`par2.Identification.NothingIdentified`, the same predicate
-   `app.par2Verdict` reads for `outcomeUnknown`), **and** the directory holds a
-   RAR or 7z archive. That is a Layout B post: par2 protects what the archive
-   extracts to, which does not exist until `unpack` runs, so a repair here has
-   nothing delivered to verify — and the `ParError` of a failed one would skip
-   the `unpack` that produces the files. The archive stands in for par2: RAR
-   and 7z record a checksum per entry, and a mismatch the extractor checks
-   fails the extraction and sets `UnpackError`. Two gaps bound that: `go_rar`
-   cannot check a BLAKE2sp-only or MAC digest (`unpack.CloseMember` filters
-   `ErrChecksumUnsupported`), and `go_7z` skips an entry that records no CRC.
-   A split join and a tar check nothing, so they do not count,
-   and neither does a payload with no archive at all — that is the other case
-   the same signature describes, an obfuscated file damaged inside its first
-   16 KB, and it stays `Damaged` so `repair` runs. Only an archive that
-   `unpack.Scan` recognises by name counts; obfuscated volumes that
-   `rar_volume_recovery` would rename later are not seen, and such a job stays
-   `Damaged`. Nothing verifies the extracted files against the par2 set:
-   `stage_repair.go` holds every call to `par2.GoRepair` and `par2.RepairWith`
-   (`git grep -n 'par2\.GoRepair(\|par2\.RepairWith(' -- '*.go' ':!*_test.go'`
-   finds 3 lines, all there), and `repair` runs before `unpack`.
+   The third is not a verdict that the data is intact. `Unidentified` is a
+   heuristic judgement that the job is a Layout B post — par2 protecting what
+   an archive extracts to, which does not exist until `unpack` runs — so that
+   a repair here has nothing delivered to verify, and the `ParError` of a
+   failed one would skip the `unpack` that produces the files. Its basis is
+   four conditions (`looksLikeLayoutB` in `stage_quickcheck.go`), and a job
+   that fails any of them stays `Damaged`, so `repair` runs:
+
+   - nothing delivered was identified as any par2 entry, by name or by content
+     (`par2.Identification.NothingIdentified`, the predicate `app.par2Verdict`
+     also reads for `outcomeUnknown`);
+   - `unpack` will run for the job: the stage is enabled and the job's PP is at
+     least `PPUnpack` (`shouldSkipForPP`). At PP=1, or with unpack disabled,
+     `repair` is the only check the job gets;
+   - no unaccounted entry is itself named as an archive (`unpack.Classify`).
+     par2 names are the poster's real names, so such a set protects archives
+     (Layout A), and an obfuscated archive damaged inside its first 16 KB is
+     what matches nothing there;
+   - every unaccounted entry's base name is a member of a RAR or 7z archive in
+     the directory, read from headers (`unpack.MemberBaseNames`; for RAR only
+     the first volume). An archive that names none of them — a `Subs.rar`
+     beside a damaged obfuscated `Movie.mkv` — shows nothing about them, and
+     a listing error counts as not held.
+
+   What checks the extracted files under `Unidentified` is only the archive's
+   own per-member checksum, where the extractor can check it: a mismatch
+   fails the extraction and sets `UnpackError`, which fails the job. That
+   check has gaps — `go_rar` cannot check a BLAKE2sp-only or MAC digest
+   (`unpack.CloseMember` filters `ErrChecksumUnsupported`), and `go_7z` skips
+   a member that records no CRC — so `par2_cleanup` keeps the par2 set for an
+   `Unidentified` job: it is the only thing that could still check those
+   files. Nothing in the pipeline does: `stage_repair.go` holds every call to
+   `par2.GoRepair` and `par2.RepairWith` (`git grep -n
+   'par2\.GoRepair(\|par2\.RepairWith(' -- '*.go' ':!*_test.go'` finds 3
+   lines, all there), and `repair` runs before `unpack`.
+
+   Known gaps, tracked in #618: par2 is not run against the extracted files
+   after `unpack`; a job where par2 identifies a sidecar (an `.nfo` it also
+   protects) is not "nothing identified", so it stays `Damaged` and the
+   Layout B failure recurs; identification is aggregated across every par2
+   set in the job, so one Layout B set beside an ordinary one is not
+   recognised. Also by construction: archives are found by name
+   (`unpack.Scan`), so obfuscated volumes that `rar_volume_recovery` renames
+   later are not seen, and a member whose header starts in a later RAR
+   volume is not listed; both leave the job `Damaged`.
 
    The second clause requires exactly `NotRun` — the stage was disabled or
    found no par2 sets, so there is no verification to be had and DirectUnpack's
@@ -446,13 +468,14 @@ read the same because identification found literally nothing to work with;
 holding rather than discarding avoids asserting a verdict ("skipped") that was
 never earned, leaving it as "held" instead.
 
-Post-processing reads the same signature and resolves the ambiguity with one
-more fact the download path does not look at: whether a RAR or 7z archive was
-delivered. With one, `quickcheck` records `Unidentified` and `repair`
-declines, so `unpack` extracts and the archive's own checksums verify the
-result; without one, the job stays `Damaged` and `repair` runs as before (see Core
-Pipeline Invariant 3). Neither outcome spends the held volumes, so the hold
-above is unchanged.
+Post-processing reads the same signature and narrows the ambiguity with facts
+the download path does not look at: whether unpack will run, whether the
+par2 entries are named as archives, and whether every entry is a member of a
+delivered RAR or 7z archive. When all hold, `quickcheck` records
+`Unidentified` and `repair` declines, so `unpack` extracts and only the
+archive's own checksums check the result; otherwise the job stays `Damaged`
+and `repair` runs as before (see Core Pipeline Invariant 3). Neither outcome
+spends the held volumes, so the hold above is unchanged.
 
 ### `par2_release_reason`
 

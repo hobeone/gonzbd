@@ -494,12 +494,14 @@ conservative branch (`outcomeRepair`), *provided the file was identified
 against the par2 index at all*. A file `Identify` cannot match against
 anything — indistinguishable from a Layout B post whose par2 set protects
 extracted contents that do not exist yet — reads `outcomeUnknown` instead: the
-volumes are held rather than fetched or discarded, so nothing still ships
-unrepaired, but the mechanism is holding, not the `outcomeRepair` fetch path. In
-post-processing the same file skips `repair` when a RAR or 7z archive was
-delivered (`QuickCheckUnidentified`), and the archive's own checksum, where
-the extractor can check it, is then what reports the damage, as
-`UnpackError`.
+volumes are held rather than fetched or discarded. Holding is the whole of
+the download path's part; it repairs nothing. In post-processing the job
+stays `Damaged` and `repair` runs with whatever volumes are on disk, unless
+quickcheck judges it a Layout B post (`QuickCheckUnidentified`, whose
+conditions and gaps `docs/post-processing-contract.md` § Core Pipeline
+Invariants lists). Then `repair` is skipped, and the only check left on the
+extracted files is the archive's own per-member checksum, where the extractor
+can check it.
 
 **The predicate has three conditions: one row, at offset 0, covering every
 article of the file.** All three, and each closes a shape the others do not.

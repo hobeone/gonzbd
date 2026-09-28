@@ -18,6 +18,10 @@ type QuickCheckStage struct {
 	ParseOpts par2.ParseOptions
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
+	// Unpack is the pipeline's unpack stage, read to learn whether it will
+	// run for a job before repair is allowed to defer to it. Nil means it
+	// will not; see unpackWillRun.
+	Unpack *UnpackStage
 }
 
 // NewQuickCheckStage constructs a QuickCheckStage with default settings.
@@ -241,11 +245,12 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	}
 
 	switch {
-	case a.ID.NothingIdentified() && hasSelfVerifyingArchive(ctx, log, job):
+	case q.looksLikeLayoutB(ctx, log, job, a.ID):
 		job.QuickCheck = QuickCheckUnidentified
 		logf(ctx, log, job, slog.LevelInfo,
-			"[quickcheck] No delivered file is any of the %d par2-tracked file(s), and a RAR/7z archive is present — "+
-				"par2 protects what unpack will extract, so repair is skipped and the archive's own checksums verify it",
+			"[quickcheck] No delivered file is any of the %d par2-tracked file(s), and each of them is named inside a "+
+				"delivered RAR/7z archive — treating par2 as protecting what unpack will extract: repair is skipped, the "+
+				"par2 files are kept, and the archive's own checksums are the only check on the extracted files",
 			len(a.ID.Unaccounted))
 	case unverifiable > 0:
 		job.QuickCheck = QuickCheckDamaged
@@ -268,27 +273,92 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	return nil
 }
 
-// hasSelfVerifyingArchive reports whether the download directory holds a RAR
-// or 7z archive, by name (unpack.Scan), so an obfuscated volume that
-// rar_volume_recovery would rename later is not seen. Those are the formats
-// whose extraction checks an entry against a checksum the archive records,
-// with two gaps: go_rar cannot check a BLAKE2sp-only or MAC digest
-// (unpack.CloseMember filters ErrChecksumUnsupported), and go_7z skips an
-// entry that records no CRC. A mismatch it does check fails the extraction.
-// A file join and a tar check nothing, so they do not count. A scan error
-// counts as no archive, which leaves the job Damaged.
-func hasSelfVerifyingArchive(ctx context.Context, log *slog.Logger, job *Job) bool {
+// looksLikeLayoutB decides QuickCheckUnidentified. It is a heuristic, and
+// each condition below narrows it; every one that fails leaves the caller to
+// record Damaged, so repair runs.
+//
+//  1. Nothing delivered was identified as any par2 entry. One identified file
+//     means the set describes this download.
+//  2. Unpack will run for this job. Declining repair hands verification to
+//     the archive's extraction, so a job unpack will skip — PP below
+//     PPUnpack, or the stage disabled — must keep repair.
+//  3. No unaccounted entry is itself named as an archive (unpack.Classify).
+//     par2 names are the poster's real names, so an entry called
+//     "Release.part01.rar" says the set protects archives — Layout A, where
+//     an obfuscated volume damaged in its first 16 KB matches nothing and
+//     repair is exactly what it needs.
+//  4. Every unaccounted entry's base name is a member of a RAR or 7z archive
+//     in the directory (archivesHoldEntries). An archive the entries do not
+//     name says nothing about them.
+func (q *QuickCheckStage) looksLikeLayoutB(ctx context.Context, log *slog.Logger, job *Job, id par2.Identification) bool {
+	if !id.NothingIdentified() {
+		return false
+	}
+	if !q.unpackWillRun(job) {
+		logf(ctx, log, job, slog.LevelInfo,
+			"[quickcheck] Nothing delivered matches the par2 set, and unpack will not run for this job — repair will run")
+		return false
+	}
+	for _, fd := range id.Unaccounted {
+		if unpack.Classify(unpack.MemberBaseName(fd.FileName)) != unpack.UnknownArchive {
+			logf(ctx, log, job, slog.LevelInfo,
+				"[quickcheck] par2 protects an archive (%s) that nothing delivered matches — repair will run", fd.FileName)
+			return false
+		}
+	}
+	return archivesHoldEntries(ctx, log, job, id.Unaccounted)
+}
+
+// unpackWillRun reports whether the unpack stage will run for job: it is
+// wired, enabled, and not skipped by the job's PP level (shouldSkipForPP, the
+// rule processJob applies). Unwired counts as not running.
+func (q *QuickCheckStage) unpackWillRun(job *Job) bool {
+	return q.Unpack != nil && q.Unpack.IsEnabled() && !shouldSkipForPP(q.Unpack.Name(), job.PP)
+}
+
+// archivesHoldEntries reports whether every entry's base name is a member of
+// some RAR or 7z archive in the download directory. Archives are found by
+// name (unpack.Scan), so an obfuscated volume that rar_volume_recovery would
+// rename later is not seen, and members are read from headers only
+// (unpack.MemberBaseNames, which for RAR reads the first volume). A scan or
+// listing error counts as not held.
+//
+// RAR and 7z are the formats whose extraction checks an entry against a
+// checksum the archive records, with gaps: go_rar cannot check a BLAKE2sp-only
+// or MAC digest (unpack.CloseMember filters ErrChecksumUnsupported), and go_7z
+// skips an entry that records no CRC. A file join and a tar check nothing, so
+// they are not consulted.
+func archivesHoldEntries(ctx context.Context, log *slog.Logger, job *Job, entries []par2.FileDesc) bool {
 	archives, err := unpack.Scan(job.DownloadDir)
 	if err != nil {
 		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Archive scan failed: %v", err)
 		return false
 	}
+	want := make(map[string]bool, len(entries))
+	for _, fd := range entries {
+		want[unpack.MemberBaseName(fd.FileName)] = true
+	}
+	held := make(map[string]bool, len(want))
 	for _, a := range archives {
-		if a.Type == unpack.RarArchive || a.Type == unpack.SevenZipArchive {
-			return true
+		if a.Type != unpack.RarArchive && a.Type != unpack.SevenZipArchive {
+			continue
+		}
+		found, err := unpack.MemberBaseNames(a, want)
+		if err != nil {
+			logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Cannot list archive members: %v — repair will run", err)
+			return false
+		}
+		for name := range found {
+			held[name] = true
 		}
 	}
-	return false
+	if len(held) < len(want) {
+		logf(ctx, log, job, slog.LevelInfo,
+			"[quickcheck] %d of %d par2-tracked file(s) are named in no delivered archive — repair will run",
+			len(want)-len(held), len(want))
+		return false
+	}
+	return true
 }
 
 // RepairStage runs par2 verify+repair against every par2 set it finds in
