@@ -989,7 +989,9 @@ var ErrNotFinalized = errors.New("app: completed file was not finalized")
 // On the two nil returns before the barrier runs — no barrier, no sync target —
 // nothing has drained or synced the file, so the deferred CloseFile is its
 // only flush, and a fault from it comes back as ErrNotFinalized like any other
-// failed finalize. After them, the close either follows a finalize that
+// failed finalize. The exception is a close that answered ErrAssemblerStopped:
+// the worker did not run it, and its exit drain flushes and closes every open
+// file instead, so it is read as closed elsewhere. After them, the close either follows a finalize that
 // committed or finds the file already closed by another path, and its fault is
 // logged at Debug: acting on a redundant second fsync would race the
 // completion it is part of, and on a permanent errno would carry a fully acked
@@ -999,8 +1001,16 @@ var ErrNotFinalized = errors.New("app: completed file was not finalized")
 // opClose arm deletes it whether or not the close failed. A retryable fault is
 // recorded for retry by routeFinalizeFailure; the retry finds no handle, and
 // stallLost surfaces the restart that recovers the file. A permanent one fails
-// the job. A close whose wait ended before it was queued to the worker leaves
-// the handle open, and the retry finalizes it as usual.
+// the job.
+//
+// A close whose wait ended before it was queued to the worker leaves the
+// handle open, and what the retry does with it depends on which return the
+// close followed. After the no-barrier return, retryFinalize answers
+// errFinalizeUnrecoverable without looking, so stallLost surfaces the restart
+// as above. After the nil-target return, retryFinalize refuses while the job
+// has no resident manifest, and a job Stall paused has none, so every
+// re-evaluation re-stalls it until a user Resume makes it resident; only then
+// does the retry finalize the file through the barrier.
 //
 // On every other error the handle is RETAINED, reversing the earlier decision
 // to close it there. That decision rested on a premise that no longer holds:
@@ -1057,7 +1067,7 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 		if cerr == nil {
 			return
 		}
-		if !closeIsFirstFlush {
+		if !closeIsFirstFlush || errors.Is(cerr, assembler.ErrAssemblerStopped) {
 			app.log.Debug("close completed file handle", "job", jobID, "fileidx", fileIdx, "err", cerr)
 			return
 		}
@@ -1078,19 +1088,22 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 		// checkpointJob's stamp was — so it needs an argument rather than an
 		// assurance.
 		//
-		// It is safe HERE, on the first attempt, because a nil target implies
-		// the completion below is refused anyway. syncTargetFor is the WEAKER
-		// requirement of the two: it is satisfied by any job whose manifest
-		// can be hydrated, including a paused one, while MarkFileComplete
-		// needs the LIVE job resident. So nil means the job has left the
-		// queue or its manifest cannot be read, and MarkFileComplete answers
-		// dispatch.ErrNotFound or job.ErrNotResident to both. Nothing downstream acts on
-		// the file.
+		// A nil target means the job has left the queue or has no resident
+		// manifest, so the completion that follows is refused: MarkFileComplete
+		// needs the live job resident, and completeFinalizedFile answers
+		// job.ErrNotResident first when the dispatcher no longer has the job.
 		//
-		// It is NOT safe on a retry, where the completion is queued behind
-		// this call and can be delivered on a later cycle once the job is
-		// resident again — by then the file would be recorded finalizeDone
-		// without ever having been trimmed. retryFinalize guards it there.
+		// The refusal does not end it. handleFileComplete records any refused
+		// completion with noteUndeliveredCompletion, as finalizeDone, and phase
+		// 4 of reevaluateStall delivers it once the job is resident again. For
+		// a job still in the queue that marks complete — and hands to
+		// DirectUnpack — a file this path never trimmed, whose last drain was
+		// flushed only by the close and never committed or acked. That
+		// redelivery is what this return leaves open. A job that has left the
+		// queue is cleared by the re-evaluation instead.
+		//
+		// retryFinalize refuses a nil target outright rather than returning
+		// here, so the retry path does not reach this return except by a race.
 		return nil
 	}
 	trunc, ok := tgt.(durability.Truncator)

@@ -1076,8 +1076,9 @@ and it reads the fault one of two ways:
 
 - **The close is the file's only flush** on the two `nil` returns before the
   barrier runs: `app.barrier == nil`, and a nil sync target. Nothing has
-  drained, synced or trimmed the file, so a close-time fault is logged at
-  `Warn` and returned as `ErrNotFinalized`, and `handleFileComplete` stops the
+  drained, synced or trimmed the file, so a close-time fault — other than a
+  stopped assembler, below — is logged at `Warn` and returned as
+  `ErrNotFinalized`, and `handleFileComplete` stops the
   completion exactly as for a failed barrier.
 - **The close is redundant** on every `nil` return after them: a finalize that
   committed, or a file some other path closed first (the worker's exit drain
@@ -1102,9 +1103,23 @@ and `stallLost` surfaces the restart that re-derives the file from its
 recorded runs. A permanent one fails the job (R20) — `routeFinalizeFailure`
 dispatches an unrouted permanent fault to `Fail`, as `Barrier.routeFault` does
 a routed one, because a stall records no retry for it and the next
-re-evaluation would resume a job whose file can never complete. A close whose
-wait ended before it was queued to the worker leaves the handle open, and the
-retry finalizes it as usual.
+re-evaluation would resume a job whose file can never complete.
+
+A close whose wait ended before it was queued to the worker leaves the handle
+open, and what happens next depends on which return the close followed:
+
+- **No barrier:** `retryFinalize` answers `errFinalizeUnrecoverable` without
+  looking at the handle, so `stallLost` surfaces the restart as above.
+- **Nil sync target:** `retryFinalize` refuses while the job has no resident
+  manifest, and a job `Stall` paused has none (a paused job holds nothing —
+  `docs/job-lifecycle.md`). Every re-evaluation re-stalls it with "no readable
+  manifest" until a user Resume makes it resident; only then does the retry
+  finalize the file through the barrier.
+
+A close that answered `ErrAssemblerStopped` was not run by the worker, whose
+exit drain (`drainAndCloseAll`) flushes and closes every open file instead, so
+it is read as closed elsewhere and logged at `Debug` on either path, rather than stopping every completion
+drained during shutdown.
 
 The close-time fault is **not** routed to `Stallable` from inside the
 assembler — it carries no `ErrFaultRouted` marker, so routing it would park the

@@ -187,8 +187,39 @@ func TestRouteFinalizeFailure_FailsTheJobOnAPermanentFaultNothingRouted(t *testi
 	if application.hasPendingFinalize(job.ID(), 0) {
 		t.Error("a permanent fault was recorded for retry")
 	}
-	if row, ok := application.dispatcher.Row(job.ID()); ok &&
-		!strings.Contains(row.Header.FailReason, "Failed:") {
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
+		t.Fatal("the job left the dispatcher, so the fail reason cannot be read")
+	}
+	if !strings.Contains(row.Header.FailReason, "Failed:") {
 		t.Errorf("fail reason = %q, want the permanent fault's reason", row.Header.FailReason)
+	}
+}
+
+// TestFinalizeCompletedFile_AStoppedAssemblerIsNotAFailedFirstFlush pins the
+// shutdown case of the strict paths. Every completion drained after the
+// assembler stops meets a close that answers ErrAssemblerStopped; the worker
+// never ran it, and its exit drain flushed and closed the file instead.
+// Reading that as a failed first flush stopped each of those completions and
+// logged a Warn and an Error for every one, at every shutdown.
+func TestFinalizeCompletedFile_AStoppedAssemblerIsNotAFailedFirstFlush(t *testing.T) {
+	t.Parallel()
+	application, job := newDurabilityTestApp(t, 1, 1)
+	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.barrier = nil
+	if err := application.assembler.Stop(); err != nil {
+		t.Fatalf("assembler.Stop: %v", err)
+	}
+	logs := closeFaultLogs(application)
+
+	if err := application.finalizeCompletedFile(t.Context(), job.ID(), 0); err != nil {
+		t.Fatalf("finalizeCompletedFile after an ordinary stop = %v, want nil — the close "+
+			"never ran, so it is not a failed flush", err)
+	}
+	// Grounding: the close must actually have answered the stop, or this
+	// passes whatever the defer does with one.
+	if !strings.Contains(logs.String(), "level=DEBUG msg=\"close completed file handle\"") ||
+		!strings.Contains(logs.String(), "stopped") {
+		t.Fatalf("the close did not answer ErrAssemblerStopped; logs:\n%s", logs.String())
 	}
 }

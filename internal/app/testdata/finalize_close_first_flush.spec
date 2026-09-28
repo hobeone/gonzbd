@@ -1,12 +1,12 @@
 pkg ./internal/app/
-run TestFinalizeCompletedFile_(WithoutABarrier_ACloseFaultStopsTheCompletion|WithNoSyncTarget_ACloseFaultStopsTheCompletion|ACloseFaultAfterACommittedFinalizeIsTolerated|SkipsAFileTheAssemblerNoLongerHolds)$|TestHandleFileComplete_AFailedFirstFlushIsNotShipped$|TestRouteFinalizeFailure_FailsTheJobOnAPermanentFaultNothingRouted$
+run TestFinalizeCompletedFile_(WithoutABarrier_ACloseFaultStopsTheCompletion|WithNoSyncTarget_ACloseFaultStopsTheCompletion|ACloseFaultAfterACommittedFinalizeIsTolerated|AStoppedAssemblerIsNotAFailedFirstFlush|SkipsAFileTheAssemblerNoLongerHolds)$|TestHandleFileComplete_AFailedFirstFlushIsNotShipped$|TestRouteFinalizeFailure_FailsTheJobOnAPermanentFaultNothingRouted$
 
 [a first-flush close fault read as post-hoc]
 file internal/app/durability.go
 --- anchor
-		if !closeIsFirstFlush {
+		if !closeIsFirstFlush || errors.Is(cerr, assembler.ErrAssemblerStopped) {
 --- replace
-		if true || !closeIsFirstFlush {
+		if true || !closeIsFirstFlush || errors.Is(cerr, assembler.ErrAssemblerStopped) {
 --- end
 
 [a first-flush close fault logged but not returned]
@@ -56,12 +56,20 @@ file internal/app/durability.go
 [the nil-target return read as post-hoc]
 file internal/app/durability.go
 --- anchor
-		// without ever having been trimmed. retryFinalize guards it there.
+		// here, so the retry path does not reach this return except by a race.
 		return nil
 --- replace
-		// without ever having been trimmed. retryFinalize guards it there.
+		// here, so the retry path does not reach this return except by a race.
 		closeIsFirstFlush = false
 		return nil
+--- end
+
+[a stopped assembler's unrun close read as a failed first flush]
+file internal/app/durability.go
+--- anchor
+		if !closeIsFirstFlush || errors.Is(cerr, assembler.ErrAssemblerStopped) {
+--- replace
+		if !closeIsFirstFlush || false {
 --- end
 
 [an unrouted permanent fault stalled rather than failed]

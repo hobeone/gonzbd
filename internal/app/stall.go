@@ -306,12 +306,15 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 // device that has just refused them, for the length of every retry, every
 // interval, forever — contradicting the reason Stall pauses at all.
 //
-// The ack is the ONLY part that needs residency, and it is also the only part
-// that is recoverable afterwards: the barrier's commit runs before it, so a
-// finalize that fails at the ack has already put those articles on stable
-// record. Phase 3 replays them with SeedFromRuns, exactly as the startup sweep
-// does. So a residency error is treated as the finalize having landed, and
-// everything else keeps the job parked without it ever dispatching.
+// A residency failure is NOT treated as the finalize having landed. Phase 1
+// counts it as blocked like any other failure: retryFinalize refuses a job
+// with no resident manifest before running the barrier ("no readable
+// manifest"), and a finalize whose ack meets job.ErrNotResident comes back as
+// an error that routeFinalizeFailure records for retry. A job Stall paused
+// holds no manifest, so it stays parked on those retries until something —
+// in practice a user Resume — makes it resident. When a retry does land,
+// phase 3 replays the committed runs with SeedFromRuns, exactly as the startup
+// sweep does. Every failure keeps the job parked without it ever dispatching.
 //
 // That last claim is about THIS function, not about the whole system. A user
 // Resume is outside it by design: the API's queue resume handlers unpause the
