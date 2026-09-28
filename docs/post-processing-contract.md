@@ -41,6 +41,25 @@ single worker goroutine (`run`).
 - **Queue primitive (`ppQueue`)**: A mutex-protected FIFO slice of `*Job` items.
   `Process(job)` appends to the queue; the single worker dequeues items via
   `q.Pop(ctx)`.
+- **One admission per job instance**: `Process` accepts any job, including
+  one whose ID is already queued or running. The app hands each job instance
+  over once, in `Application.enqueuePostProc`, which keeps the admission
+  record (`postProcAdmissions`). It has two callers: `appRunner.runPostProc`,
+  and `maybeFinalize`, which the downloader's and the pipeline's hopeless
+  callbacks, `runAssess`, `Application.Fail`, `RetryHistoryJob` and startup
+  reconciliation call. An admission starts before the DirectUnpack wait and
+  ends once `jobFinalizer.finalize` or `jobFinalizer.cancelled` has run, so it
+  covers the two windows `Has` does not see: the wait before `Process`, and
+  the callback tail after the worker clears its busy marker. It is keyed by
+  job instance, so a retry registered under the ID of a job still being
+  finalized is admitted.
+- **Which copy's information wins**: a refused call hands nothing over. The
+  admitted call keeps everything it gathered, including the DirectUnpack
+  results, which `duOrch.collect` hands out only once. A refused call's failure
+  reason is kept only if the admission has none yet. It reaches the stages
+  when it arrives before `Process`. It reaches the history entry when it
+  arrives before `finalize` reads it. A reason that differs from the kept one,
+  or that arrives after `finalize` read it, is logged at warn and dropped.
 - **In-flight tracking & cancellation**: `PostProcessor` tracks the active job's
   ID (`currentJobID`) and an independent job context (`currentJobCancel`).
   Calling `Cancel(jobID)` either removes a pending job from `ppQueue` or cancels
@@ -425,6 +444,7 @@ recorded entirely through the fetch-policy discard, not through this field.
 
 ### Landed
 - Single worker goroutine with `ppQueue` FIFO scheduling and safe cancellation (`Cancel`).
+- One post-processing admission per job instance (`postProcAdmissions`), with a refused call's failure reason carried to the admitted one.
 - Complete 11-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
 - `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`) bypass logic & DirectUnpack zero-failure verification bypass.
 - `OwnedFiles` snapshotting and cleanup isolation (#3462) with in-place rename tracking (`markRenamed`).

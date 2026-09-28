@@ -199,6 +199,10 @@ type Application struct {
 	// jobTransitions for who takes it. Its zero value is ready to use.
 	transitions jobTransitions
 
+	// postProcAdmissions admits each job instance to post-processing once; see
+	// enqueuePostProc. Its zero value is ready to use.
+	postProcAdmissions postProcAdmissions
+
 	// stallKick carries R19's "on user action" re-evaluation request from an
 	// HTTP handler to the checkpoint loop. Buffered and sent to
 	// non-blockingly, for the same reason barrierKick is.
@@ -2161,7 +2165,27 @@ func awaitDirectUnpackOrAbort(ctx context.Context, du directUnpackWaiter) bool {
 	}
 }
 
+// enqueuePostProc hands j to the post-processor, unless this instance is
+// already admitted (postProcAdmissions), in which case it does nothing but
+// offer failMsg to the admitted one.
 func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg string) {
+	switch app.postProcAdmissions.admit(j, failMsg) {
+	case admitted:
+	case refused:
+		// Debug: the downloader's hopeless callback repeats on every dispatch
+		// pass until the finalizer cancels the job.
+		app.log.Debug("postproc: job already admitted; not enqueuing it again", "job", j.ID())
+		return
+	case refusedReasonKept:
+		app.log.Info("postproc: job already admitted; its failure reason is recorded on the admitted run",
+			"job", j.ID(), "fail_msg", failMsg)
+		return
+	case refusedReasonDropped:
+		app.log.Warn("postproc: job already admitted with another failure reason or past building its history entry; this reason is not recorded",
+			"job", j.ID(), "fail_msg", failMsg)
+		return
+	}
+
 	// Close any open assembler file handles for this job so post-processing
 	// operations (Par2 repair, unpack, cleanup) don't trigger NFS silly-rename
 	// (.nfsXXXX) artifacts on open files.
@@ -2254,6 +2278,9 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	du := app.duOrch.collect(j.ID())
 
 	enqueue := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
+		// Read now rather than taken from failMsg: an enqueuePostProc refused
+		// during the DirectUnpack wait may have added a reason.
+		admittedFailMsg := app.postProcAdmissions.failMsg(j)
 		app.postProcessor.Process(&postproc.Job{
 			Job:                  j,
 			Filename:             hdr.Filename,
@@ -2266,7 +2293,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			DownloadDir:          downloadDir,
 			FinalDir:             finalDir,
 			Sanitize:             sanitize,
-			FailMsg:              failMsg,
+			FailMsg:              admittedFailMsg,
 			DirectUnpackSets:     duResults,
 			DirectUnpackFailures: duFailures,
 			DirectUnpackSkipped:  duSkipped,

@@ -197,8 +197,8 @@ func (r *appRunner) runPostProc(_ context.Context, id string, _ job.State) {
 		return
 	}
 
-	if !r.app.postProcessor.Has(id) {
-		failMsg := failMsgForJob(j)
-		r.app.enqueuePostProc(j, hdr, failMsg)
-	}
+	// No yield when enqueuePostProc refuses the job as already admitted: the
+	// admitted run releases the launch claim, on the paths item 3 of
+	// appRunner's doc lists.
+	r.app.enqueuePostProc(j, hdr, failMsgForJob(j))
 }
