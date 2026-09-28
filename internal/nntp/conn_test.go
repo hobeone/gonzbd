@@ -1209,3 +1209,103 @@ func TestDialResetsSocketDeadlineAfterSuccessfulHandshake(t *testing.T) {
 			" on success", elapsed)
 	}
 }
+
+// withHandshakeStartedHook registers fn to run once setupHandshakeDeadline
+// has armed its ctx watcher inside handshake — the earliest point at which
+// ending ctx is guaranteed to reach the handshake's blocked read rather than
+// race the TCP dial that precedes it in Dial. Test-only: it lets the cancel
+// test below end ctx from inside Dial's own call stack instead of guessing
+// at scheduling from a second goroutine, which a run against the real mock
+// server showed was genuinely racy (~50% flake either way) when driven by a
+// server-side "connection accepted" signal instead.
+func withHandshakeStartedHook(fn func()) DialOption {
+	return func(o *dialOptions) {
+		o.handshakeStartedHook = fn
+	}
+}
+
+// TestDialHandshakeCtxCancelSurfacesAsContextCanceled pins
+// https://github.com/hobeone/gonzbd/issues/500: setupHandshakeDeadline
+// force-unblocks a pending handshake read by stamping a past socket
+// deadline once ctx ends, and the resulting raw *net.OpError (wrapping
+// os.ErrDeadlineExceeded) used to reach the caller verbatim — so a caller
+// checking errors.Is(err, context.Canceled) after Dial never matched, even
+// though cancellation is exactly why the handshake aborted.
+//
+// The mock server accepts the connection and then never writes a
+// greeting, so expectGreeting's read blocks until either the socket dies
+// or ctx ends — the exact race setupHandshakeDeadline exists to resolve.
+func TestDialHandshakeCtxCancelSurfacesAsContextCanceled(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	ms := newMockServer(t, func(mc *mockConn) {
+		<-release // held until the test releases it, after Dial returns
+	})
+	t.Cleanup(func() { close(release) })
+
+	cfg := makeCfg(ms.addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Dial(ctx, cfg, withHandshakeStartedHook(cancel))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Dial succeeded against a server that never sent a greeting, want an error")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Dial err = %v (%T), want errors.Is(err, context.Canceled)", err, err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Dial did not return after its handshakeStartedHook cancelled ctx")
+	}
+}
+
+// TestDialHandshakeCtxDeadlineSurfacesAsDeadlineExceeded is the deadline
+// counterpart to TestDialHandshakeCtxCancelSurfacesAsContextCanceled: an
+// outer caller's own context.WithTimeout (e.g. the admin test-connection
+// handler) elapsing mid-handshake, rather than explicit cancellation. Dial's
+// own context.WithTimeout wrap only tightens the bound (see Dial's doc
+// comment), so the outer deadline is the one that fires here.
+//
+// No handshakeStartedHook is needed: a loopback TCP dial completes in
+// microseconds, so the 50ms deadline below cannot elapse before Dial has
+// long since moved on to the handshake's blocked read — unlike explicit
+// cancellation above, there is no scheduling race to close.
+func TestDialHandshakeCtxDeadlineSurfacesAsDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	ms := newMockServer(t, func(mc *mockConn) {
+		<-release
+	})
+	t.Cleanup(func() { close(release) })
+
+	cfg := makeCfg(ms.addr) // cfg.Timeout is 5s; ctx's own 50ms deadline is the tighter bound
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	t.Cleanup(cancel)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Dial(ctx, cfg)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Dial succeeded against a server that never sent a greeting, want an error")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Dial err = %v (%T), want errors.Is(err, context.DeadlineExceeded)", err, err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Dial did not return after ctx's own deadline elapsed")
+	}
+}

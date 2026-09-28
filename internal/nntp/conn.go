@@ -92,6 +92,13 @@ type Conn struct {
 	// the connection is torn down. Prevents runReader from blocking
 	// indefinitely on silently-dead connections.
 	readTimeout time.Duration
+
+	// handshakeStartedHook, when non-nil, runs inside handshake once
+	// setupHandshakeDeadline has armed its ctx watcher — the earliest point
+	// at which cancelling ctx is guaranteed to reach the handshake's read
+	// rather than race the TCP dial in Dial. Same-package test seam as
+	// internal/app's checkpointHook; production Dial never sets it.
+	handshakeStartedHook func()
 }
 
 // State returns the current lifecycle state. The value is a snapshot;
@@ -181,6 +188,9 @@ type dialOptions struct {
 	recorder       ByteRecorder
 	recorderServer string
 	log            *slog.Logger
+
+	// handshakeStartedHook is test-only; see Conn.handshakeStartedHook.
+	handshakeStartedHook func()
 }
 
 // newDialOptions derives the per-dial knobs from a ServerConfig,
@@ -245,7 +255,10 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 //
 // On any error during handshake the socket is closed before the error
 // is returned; the caller does not need to Close a *Conn that never
-// escaped Dial.
+// escaped Dial. If the handshake failed because ctx ended (cancellation or
+// either deadline above), the returned error satisfies errors.Is against
+// context.Canceled or context.DeadlineExceeded as appropriate, alongside the
+// underlying socket error (https://github.com/hobeone/gonzbd/issues/500).
 func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Conn, error) {
 	dopts, err := newDialOptions(cfg)
 	if err != nil {
@@ -311,6 +324,8 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 		ctx:         ctxConn,
 		cancel:      cancelConn,
 		readTimeout: dopts.dialer.Timeout, // kept for reference; actual idle enforced by idleTimeoutReader
+
+		handshakeStartedHook: dopts.handshakeStartedHook,
 	}
 
 	if tc, ok := nc.(*tls.Conn); ok {
@@ -323,6 +338,18 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 		l.Debug("handshake failed", "error", err)
 		cancelConn()   // release context resources on handshake failure
 		_ = nc.Close() //nolint:errcheck // handshake failed; socket is being torn down regardless
+		if ctxErr := handshakeCtx.Err(); ctxErr != nil {
+			// setupHandshakeDeadline's watcher stamps a past socket deadline
+			// once ctx ends, so the raw error above (usually a *net.OpError
+			// wrapping os.ErrDeadlineExceeded) is that force-unblock firing,
+			// not the socket failing on its own — a non-nil handshakeCtx.Err()
+			// here is exactly that signal. Wrap it alongside the raw error so
+			// errors.Is(err, context.Canceled) / errors.Is(err,
+			// context.DeadlineExceeded) reach the caller, while the original
+			// cause stays in the chain and in the message.
+			// https://github.com/hobeone/gonzbd/issues/500
+			err = fmt.Errorf("nntp: handshake aborted: %w: %w", ctxErr, err)
+		}
 		return nil, err
 	}
 
@@ -350,6 +377,10 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 func (c *Conn) handshake(ctx context.Context, cfg config.ServerConfig) error {
 	cleanup := c.setupHandshakeDeadline(ctx)
 	defer cleanup()
+
+	if c.handshakeStartedHook != nil {
+		c.handshakeStartedHook()
+	}
 
 	if err := c.expectGreeting(); err != nil {
 		return err
