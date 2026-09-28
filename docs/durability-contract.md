@@ -1152,8 +1152,11 @@ job a second time for a condition the barrier had already routed, and on the
 post-processing: `Fail` cannot hand that job over again, and `Stall` would
 pause a job whose files post-processing is using.
 
-**A job whose handles `CloseJobHandles` closed is not downloaded again in this
-process.** Its written-but-unacked articles keep their Emitted bits, and a
+**A job instance whose handles `CloseJobHandles` closed is not downloaded
+again.** A retry under the same ID is a new instance and does download, once
+`RetryHistoryJob`'s `ForgetJob` has cleared the assembler's tombstones — a
+retry whose `ForgetJob` fails is aborted rather than left to stall. The
+instance's written-but-unacked articles keep their Emitted bits, and a
 downloader reload may clear them, which re-fetches nothing: `enqueuePostProc`
 admits the job to post-processing before closing, and the downloader skips an
 admitted job (`downloader.Options.HandedOff`) whatever its row says. That

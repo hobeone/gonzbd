@@ -810,7 +810,7 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 		// Captured, not discarded. The arm computes closeErr from every
 		// drainAndClose it performs and sends it here precisely so this
 		// returns it; reading `<-ack` and returning nil made the send side
-		// dead code and handed maybeFinalize a job whose buffered bytes never
+		// dead code and handed enqueuePostProc a job whose buffered bytes never
 		// reached the platter, with only a Warn inside drainAndClose as a
 		// trace. That is the defect this arm's own tombstone comment describes
 		// as fixed — it was fixed on the send side only.
@@ -1108,7 +1108,7 @@ func (a *Assembler) dispatchRequest(
 			}
 			cerr := a.drainAndClose(f)
 			if cerr != nil {
-				// Recorded on the ack, not swallowed. maybeFinalize is about
+				// Recorded on the ack, not swallowed. enqueuePostProc is about
 				// to hand this job to par2, unrar and cleanup, and a file
 				// whose close-time drain failed has buffered bytes that never
 				// reached the platter.

@@ -67,7 +67,7 @@ func TestCloseJobHandles_TombstonesEvenWhenTheDrainFailed(t *testing.T) {
 
 // TestCloseJobHandles_ArmSendsTheCloseTimeFaultOnTheAck is the other half.
 // The arm once acked with a bare close, so the fault it had just computed was
-// never sent and maybeFinalize handed the job to par2, unrar and cleanup over
+// never sent and enqueuePostProc handed the job to par2, unrar and cleanup over
 // a file whose buffered bytes never reached the platter. The only trace was a
 // Warn inside drainAndClose.
 //
@@ -102,7 +102,7 @@ func TestCloseJobHandles_ArmSendsTheCloseTimeFaultOnTheAck(t *testing.T) {
 
 	err := <-ack
 	if _, ok := errors.AsType[*storagefault.Fault](err); !ok {
-		t.Fatalf("the ack carried %v, want the close-time fault — maybeFinalize is "+
+		t.Fatalf("the ack carried %v, want the close-time fault — enqueuePostProc is "+
 			"about to hand this job to par2, unrar and cleanup over bytes that never "+
 			"reached the platter", err)
 	}
