@@ -14,12 +14,12 @@ import (
 var testNameRe = regexp.MustCompile(`^Test[A-Za-z0-9_]*$`)
 
 // plainAlternation splits a spec's `run` line into its alternatives when it
-// is nothing but test names joined by `|`, optionally wrapped in `^(`…`)$`.
-// It reports ok=false for anything else — a single unanchored name, a
-// pattern carrying other regexp syntax such as `.` or a subtest `/` — and
-// those fall back to the baseline's existing ranNothing check, which already
-// refuses a `run` that matches nothing at all.
-func plainAlternation(run string) (alts []string, ok bool) {
+// is nothing but test names joined by `|`, optionally wrapped in `^(`…`)$`,
+// and reports whether that wrapping anchored them. It reports ok=false for
+// anything else — a pattern carrying other regexp syntax such as `.` or a
+// subtest `/` — and those fall back to the baseline's existing ranNothing
+// check, which already refuses a `run` that matches nothing at all.
+func plainAlternation(run string) (alts []string, anchored, ok bool) {
 	// No explicit run == "" guard: splitting "" on "|" yields [""], and
 	// testNameRe never matches the empty string, so the loop below already
 	// returns false for it — a separate check here would be dead code that no
@@ -27,14 +27,29 @@ func plainAlternation(run string) (alts []string, ok bool) {
 	s := run
 	if strings.HasPrefix(s, "^(") && strings.HasSuffix(s, ")$") {
 		s = s[2 : len(s)-2]
+		anchored = true
 	}
 	parts := strings.Split(s, "|")
 	for _, p := range parts {
 		if !testNameRe.MatchString(p) {
-			return nil, false
+			return nil, false, false
 		}
 	}
-	return parts, true
+	return parts, anchored, true
+}
+
+// selects reports whether go test's -run would select at least one listed
+// test for alt. -run matches unanchored, so an unwrapped alternative selects
+// every test whose name contains it, so a prefix of a real test's name is
+// live. alt holds no regexp metacharacters (testNameRe),
+// so containment is exactly the unanchored match.
+func selects(listed []string, alt string, anchored bool) bool {
+	if anchored {
+		return slices.Contains(listed, alt)
+	}
+	return slices.ContainsFunc(listed, func(name string) bool {
+		return strings.Contains(name, alt)
+	})
 }
 
 // listArgs builds the argv for listing a package's declared tests, honouring
@@ -72,11 +87,11 @@ func listTests(root string, sp *spec) ([]string, error) {
 }
 
 // deadRunFilterNames names every alternative of a plain `run` line that
-// matches no test `go test -list` reports for the spec's package. It returns
+// selects no test `go test -list` reports for the spec's package. It returns
 // nil, nil for a `run` that is not a plain alternation (see
 // plainAlternation) or that names none at all.
 func deadRunFilterNames(root string, sp *spec) ([]string, error) {
-	alts, ok := plainAlternation(sp.run)
+	alts, anchored, ok := plainAlternation(sp.run)
 	if !ok {
 		return nil, nil
 	}
@@ -86,7 +101,7 @@ func deadRunFilterNames(root string, sp *spec) ([]string, error) {
 	}
 	var dead []string
 	for _, alt := range alts {
-		if !slices.Contains(listed, alt) {
+		if !selects(listed, alt, anchored) {
 			dead = append(dead, alt)
 		}
 	}
@@ -104,7 +119,7 @@ func reportRunFilter(pkg string, dead []string) int {
 	for _, name := range dead {
 		fmt.Printf("%-13s  %s does not name a test in %s\n", runFilter, name, pkg)
 	}
-	fmt.Printf("\nStatus: %d name(s) in `run` match no test.\n"+
+	fmt.Printf("\nStatus: %d name(s) in `run` select no test.\n"+
 		"go test drops a dead alternative of a `|`-separated filter silently\n"+
 		"rather than erroring, so the remaining alternatives still select real\n"+
 		"tests and the baseline still passes. Fix the spelling or remove the\n"+

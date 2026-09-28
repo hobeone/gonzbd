@@ -23,9 +23,9 @@
 //   - COMPILE_ERROR the mutated tree does not build, which AGENTS.md warns
 //     "does not demonstrate the test would have caught the
 //     behaviour" — it is a red result that is not evidence
-//   - RUNFILTER     the spec's `run` line names, as one alternative of a
-//     plain alternation, a test that does not exist in the
-//     package — refused before the baseline, for the same
+//   - RUNFILTER     one alternative of the spec's plain-alternation `run`
+//     line selects no test in the package — refused before
+//     the baseline, for the same
 //     reason ANCHOR is refused before a mutation is applied
 //
 // COMPILE_ERROR is the verdict a hand-rolled script does not have. Reported as
@@ -41,9 +41,11 @@
 // of the pin. Before the baseline runs, deadRunFilterNames lists the
 // package's declared tests with `go test -list` and checks every alternative
 // of a plain `run` line — one that is nothing but test names joined by `|`,
-// optionally wrapped in `^(`…`)$` — against that list. A `run` line that is
-// not a plain alternation (a single name, or one carrying other regexp
-// syntax) falls back to the baseline's existing ranNothing check, which
+// optionally wrapped in `^(`…`)$` — against that list, matching the way -run
+// does: an unwrapped alternative is live when some test name contains it, a
+// wrapped one only when a test name equals it. A `run` line that is not a
+// plain alternation (one carrying other regexp syntax, or a subtest path)
+// falls back to the baseline's existing ranNothing check, which
 // already refuses a filter that matches nothing at all; what RUNFILTER adds
 // is catching the *partial* miss that ranNothing cannot see.
 //
