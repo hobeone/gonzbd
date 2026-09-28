@@ -29,6 +29,16 @@ type Options struct {
 	// job, with the full StageLog populated.  May be nil.
 	OnJobDone func(*Job)
 
+	// OnJobCancelled is called once per enqueue that Cancel removed from the
+	// queue or whose in-flight processing Cancel interrupted, and never
+	// together with OnJobDone for the same enqueue. For an in-flight job it is
+	// called in the worker goroutine after the stage pipeline has returned; for
+	// a queued job, synchronously in Cancel's caller, after Cancel's locks are
+	// released. A Cancel that returns true does not always end here: one that
+	// lands after the worker has seen the job finish ends in OnJobDone, and a
+	// shutdown skips both. May be nil.
+	OnJobCancelled func(*Job)
+
 	// OnOutput is called when a subprocess emits a line of output during
 	// post-processing. Parameters: jobID, tool name, output line.
 	OnOutput func(jobID, tool, line string)
@@ -44,11 +54,12 @@ type Options struct {
 // Use New to construct; Start to launch the worker; Stop to shut it down
 // gracefully.  All public methods are safe for concurrent use.
 type PostProcessor struct {
-	stages    []Stage
-	onEmpty   func()
-	onJobDone func(*Job)
-	onOutput  func(jobID, tool, line string)
-	log       *slog.Logger
+	stages         []Stage
+	onEmpty        func()
+	onJobDone      func(*Job)
+	onJobCancelled func(*Job)
+	onOutput       func(jobID, tool, line string)
+	log            *slog.Logger
 
 	q *ppQueue
 
@@ -87,12 +98,13 @@ func New(opts Options) *PostProcessor {
 	}
 	log := lg.With("component", "postproc")
 	return &PostProcessor{
-		stages:    opts.Stages,
-		onEmpty:   opts.OnEmpty,
-		onJobDone: opts.OnJobDone,
-		onOutput:  opts.OnOutput,
-		log:       log,
-		q:         newPPQueue(),
+		stages:         opts.Stages,
+		onEmpty:        opts.OnEmpty,
+		onJobDone:      opts.OnJobDone,
+		onJobCancelled: opts.OnJobCancelled,
+		onOutput:       opts.OnOutput,
+		log:            log,
+		q:              newPPQueue(),
 	}
 }
 
@@ -158,8 +170,12 @@ func (p *PostProcessor) Process(job *Job) {
 // stage observes ctx.Done() and returns promptly. Stages must respect
 // ctx.Done() for this to take effect during execution.
 // Returns true if the job was found pending or in-flight.
+//
+// A pending job is handed to OnJobCancelled before Cancel returns: nothing
+// runs for it, so it can be handed back at once. An in-flight job is handed
+// back by the worker once its stage returns (see run).
 func (p *PostProcessor) Cancel(jobID string) bool {
-	removed := p.q.Cancel(jobID)
+	queued, removed := p.q.Cancel(jobID)
 
 	p.busyMu.Lock()
 	inFlight := p.currentJobID == jobID && p.currentJobCancel != nil
@@ -168,6 +184,9 @@ func (p *PostProcessor) Cancel(jobID string) bool {
 
 	if inFlight {
 		cancel()
+	}
+	if removed && p.onJobCancelled != nil {
+		p.onJobCancelled(queued)
 	}
 	return removed || inFlight
 }
@@ -255,6 +274,13 @@ func (p *PostProcessor) run() {
 		// between the job leaving the queue and busy being set (see popJob).
 		p.processJob(jobCtx, job)
 
+		// Read jobCtx before workerCtx. jobCtx is workerCtx's child, and a
+		// context records its own error before cancelling its children, so a
+		// job a shutdown cancelled always shows workerCtx.Err() below. Read the
+		// other way round, a Stop landing between the two reads would pass for a
+		// Cancel and hand a job that should be recovered to onJobCancelled.
+		jobCancelled := jobCtx.Err() != nil
+
 		// If the worker context was cancelled (shutdown), the job was only
 		// partially processed. Skip onJobDone so it remains in the active
 		// queue. On the next startup, crash recovery will find it with
@@ -268,13 +294,17 @@ func (p *PostProcessor) run() {
 
 		// jobCtx is cancelled independently of workerCtx by Cancel() when
 		// this specific job is removed mid-processing. Unlike a shutdown,
-		// the job is gone for good (the caller, e.g. app.RemoveJob, owns
-		// its cleanup) -- drop it without recording history or firing
-		// onJobDone, and keep serving the rest of the queue.
-		if jobCtx.Err() != nil {
+		// the job is gone for good: record no history and do not fire
+		// onJobDone. Hand it back through onJobCancelled, which runs only
+		// now that processJob has returned, so its caller can release what
+		// the job held without a stage still using it.
+		if jobCancelled {
 			p.setBusyWithJob(false, "", nil)
 			p.log.Info("postproc: job cancelled mid-processing, dropping",
 				"job", job.JobID())
+			if p.onJobCancelled != nil {
+				p.onJobCancelled(job)
+			}
 			continue
 		}
 

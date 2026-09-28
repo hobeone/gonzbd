@@ -473,9 +473,9 @@ func TestCancelQueuedJob(t *testing.T) {
 // queue. Before this fix, Cancel only removed pending jobs; an in-progress
 // job's stage kept running to completion (holding open files / subprocesses
 // in its job directory) even though the caller (e.g. app.RemoveJob) may
-// concurrently delete that directory. The cancelled job must also be
-// dropped silently -- not finalized via OnJobDone -- since the canceller
-// owns its cleanup.
+// concurrently delete that directory. The cancelled job must also not be
+// finalized via OnJobDone; it is handed back through OnJobCancelled instead
+// (TestCancel_InFlightJobFiresOnJobCancelledAfterStageReturns).
 func TestCancelInProgressJob(t *testing.T) {
 	block := make(chan struct{}) // never closed: only ctx cancellation should unblock the stage
 	blocker := &recordStage{name: "blocker", block: block}
@@ -522,7 +522,7 @@ func TestCancelInProgressJob(t *testing.T) {
 	}, 2*time.Second, "worker to become idle after cancelled job")
 
 	if onJobDoneCalled.Load() {
-		t.Error("OnJobDone fired for a job cancelled mid-processing; it should be dropped silently")
+		t.Error("OnJobDone fired for a job cancelled mid-processing")
 	}
 }
 
@@ -617,7 +617,7 @@ func TestPPQueueCancel(t *testing.T) {
 	q := newPPQueue()
 	q.Push(&Job{Job: newQueueJob(t, "a", 0)})
 	q.Push(&Job{Job: newQueueJob(t, "b", 0)})
-	if !q.Cancel("a") {
+	if _, ok := q.Cancel("a"); !ok {
 		t.Error("Cancel('a') = false, want true")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
@@ -627,7 +627,7 @@ func TestPPQueueCancel(t *testing.T) {
 		t.Errorf("expected 'b', got ok=%v job=%v", ok, job)
 	}
 
-	if q.Cancel("does-not-exist") {
+	if _, ok := q.Cancel("does-not-exist"); ok {
 		t.Error("Cancel of non-existent job returned true")
 	}
 }
