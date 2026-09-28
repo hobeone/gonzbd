@@ -1977,9 +1977,9 @@ recorded here so the next reader does not mistake them for design.
    permanently failed — which works because that article is not yet `Done`, and
    `markFailed` early-returns on one that is. The file then completes *short*.
    That map lives on the `FileWriter`, so it is forgotten when the file closes:
-   a **restart**, or a **retry** of a failed job whose file was incomplete,
-   reopens the file with an empty map, and the later write overwrites the
-   earlier. The file then completes *wrong*.
+   a **restart**, or a **retry** of a failed job whose file was incomplete or
+   finalized short, reopens the file with an empty map, and the later write
+   overwrites the earlier. The file then completes *wrong*.
 
    **The bound is that both outcomes are diagnosed and repairable.** Across the
    boundary `Store.commit` must discard one of the two rows, returns it as a

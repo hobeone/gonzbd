@@ -85,7 +85,7 @@ func TestRetryHistoryJob_AnotherJobsCheckpointFailureDoesNotFailTheRetry(t *test
 		t.Fatalf("repo.Add: %v", err)
 	}
 	seedHistoryJobFilesRow(t, repo.DB(), id, 0, false, 2, job.FetchAlways)
-	seedHistoryJobFilesRow(t, repo.DB(), id, 1, true, 1, job.FetchAlways)
+	seedCompletedFile(t, repo.DB(), id, 1, 2, 1)
 
 	if err := application.RetryHistoryJob(t.Context(), id); err != nil {
 		t.Fatalf("RetryHistoryJob: %v — another job's checkpoint failure failed this retry", err)

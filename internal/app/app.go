@@ -2462,9 +2462,9 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 // the only place the article message-IDs survive once the manifest is
 // unlinked at finalization — and then overlaid with the per-file progress
 // retained for failed jobs, so only the articles that did not succeed are
-// refetched. Where every article already resolved and only post-processing
-// failed, the overlay is what sends the job straight back to post-processing
-// instead of re-downloading it in full.
+// refetched. Where every article was already downloaded and only
+// post-processing failed, the overlay is what sends the job straight back to
+// post-processing instead of re-downloading it in full.
 //
 // Only failed entries are retryable, matching SABnzbd, whose
 // get_incomplete_path returns a path only for status = Failed. A completed
@@ -2613,7 +2613,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	// checkpointer synchronously, both immediately before dispatcher.Add and
 	// after ResetForRetry and the barrier/assembler forget calls above — not
 	// merely after the restore loop. ResetForRetry clears Complete on every
-	// file whose failed articles it reset, and SaveBatch persists complete
+	// file with an article that is not done, and SaveBatch persists complete
 	// for every file of a marked job; flushing before ResetForRetry would
 	// write the pre-reset complete = 1, leave the job clean, and let an
 	// eviction hydrate files as complete that the retry had just

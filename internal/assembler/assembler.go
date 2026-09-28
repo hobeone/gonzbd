@@ -852,8 +852,8 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 // any file the assembler already completed, and a restart is the only thing
 // that clears it, because the map dies with the process. A file that finalized
 // SHORT is the case that matters most — Job.ResetForRetry clears its Complete
-// flag precisely so its failed articles can be re-fetched, and this is what
-// lets those articles land.
+// flag precisely so the articles it is missing can be re-fetched, and this is
+// what lets those articles land.
 //
 // cancelledJobs is dropped too. An article for a job the cancel or close-handles
 // arm tombstoned is discarded before it reaches processRequest, so a retry of

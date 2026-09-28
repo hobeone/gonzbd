@@ -13,19 +13,23 @@ run TestResetForRetry
 # restoring the branch is a no-op there -- an app-side spec would report
 # SURVIVED while proving nothing.
 #
-# Anchored on the anyReset block plus the loop close: "Complete = false" alone
-# appears twice in this file, and an ambiguous anchor is refused rather than
-# run.
+# Anchored on the unresolved block plus the loop close: "Complete = false"
+# alone appears twice in this file, and an ambiguous anchor is refused rather
+# than run.
 [ResetForRetry downgrades a discarded volume back to held]
 file internal/job/content.go
 --- anchor
-		if anyReset {
-			j.progress.files[fi].Complete = false
+		if unresolved {
+			fp := &j.progress.files[fi]
+			fp.Complete = false
+			fp.AssembledCRC32 = 0
 		}
 	}
 --- replace
-		if anyReset {
-			j.progress.files[fi].Complete = false
+		if unresolved {
+			fp := &j.progress.files[fi]
+			fp.Complete = false
+			fp.AssembledCRC32 = 0
 		}
 		if j.progress.files[fi].Fetch == FetchNever {
 			j.progress.files[fi].Fetch = FetchIfNeeded
