@@ -125,6 +125,7 @@ var closureLockMethods = map[string]bool{
 	"Pop":                      true,
 	"tryPop":                   true,
 	"withLock":                 true,
+	"write":                    true,
 }
 
 // jobClosureMethods specifies the closureLockMethods that execute under a

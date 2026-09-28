@@ -225,3 +225,77 @@ file scripts/mutate/main.go
 --- replace
 		return "", err
 --- end
+
+[a run filter's ^(...)$ anchoring is never stripped]
+file scripts/mutate/runfilter.go
+--- anchor
+	if strings.HasPrefix(s, "^(") && strings.HasSuffix(s, ")$") {
+--- replace
+	if false && strings.HasPrefix(s, "^(") && strings.HasSuffix(s, ")$") {
+--- end
+
+[a run filter wrapped in ^(...)$ is treated as unanchored]
+file scripts/mutate/runfilter.go
+--- anchor
+		anchored = true
+--- replace
+		anchored = false
+--- end
+
+[an unanchored alternative must equal a test name, so a prefix is refused]
+file scripts/mutate/runfilter.go
+--- anchor
+	if anchored {
+		return slices.Contains(listed, alt)
+	}
+--- replace
+	if true {
+		return slices.Contains(listed, alt)
+	}
+--- end
+
+[a test name pattern matches a subtest path too]
+file scripts/mutate/runfilter.go
+--- anchor
+var testNameRe = regexp.MustCompile(`^Test[A-Za-z0-9_]*$`)
+--- replace
+var testNameRe = regexp.MustCompile(`^Test[A-Za-z0-9_]*`)
+--- end
+
+[a run filter alternative that matches a real test is reported dead, and vice versa]
+file scripts/mutate/runfilter.go
+--- anchor
+		if !selects(listed, alt, anchored) {
+--- replace
+		if selects(listed, alt, anchored) {
+--- end
+
+[-check accepts an anchor that does not resolve to exactly one site]
+file scripts/mutate/check.go
+--- anchor
+		if n := strings.Count(content, m.anchor); n != 1 {
+--- replace
+		if n := strings.Count(content, m.anchor); false {
+--- end
+
+[-check reports issues but still exits 0]
+file scripts/mutate/check.go
+--- anchor
+	if len(issues) > 0 {
+		fmt.Printf("\nStatus: %d anchor(s) across %d spec(s) do not resolve to exactly one site.\n", len(issues), len(actual))
+		ok = false
+	}
+--- replace
+	if len(issues) > 0 {
+		fmt.Printf("\nStatus: %d anchor(s) across %d spec(s) do not resolve to exactly one site.\n", len(issues), len(actual))
+		ok = true
+	}
+--- end
+
+[-check-all discovers nothing: the git ls-files pathspec is wrong]
+file scripts/mutate/check.go
+--- anchor
+	cmd := exec.Command("git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*testdata/*.spec")
+--- replace
+	cmd := exec.Command("git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*nonexistent-pattern*.spec")
+--- end

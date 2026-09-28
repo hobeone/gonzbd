@@ -178,7 +178,7 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 
 	// Invariants assertions
 	// 1. Every added job reaches history (checked above)
-	// 2. No job stays in the queue with PostProc=true for > 60s
+	// 2. No job stays in the queue once it has reached history
 	if _, ok := application.Dispatcher().Row(j.ID()); ok {
 		t.Errorf("job still in queue after completion")
 	}

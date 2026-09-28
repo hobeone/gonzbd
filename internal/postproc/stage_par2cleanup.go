@@ -12,7 +12,9 @@ import (
 
 // Par2CleanupStage deletes .par2 files and par2-created backup files from
 // the job's download directory. It runs after unpack and only proceeds when
-// both repair and unpack succeeded (no ParError, no UnpackError). This
+// both repair and unpack succeeded (no ParError, no UnpackError) and
+// quickcheck did not judge the set to protect extracted files
+// (QuickCheckUnidentified). This
 // preserves par2 files for debugging when extraction fails — previously
 // they were deleted inside RepairStage before unpack even ran.
 type Par2CleanupStage struct {
@@ -41,7 +43,8 @@ func (s *Par2CleanupStage) CleanupEnabled() bool { return s.cleanup.Load() }
 func (*Par2CleanupStage) Name() string { return "par2_cleanup" }
 
 // Run deletes all par2 files and par2 backup files from job.DownloadDir.
-// Skipped when Cleanup is false, or when repair or unpack has failed.
+// Skipped when Cleanup is false, when repair or unpack has failed, or when
+// QuickCheck is Unidentified.
 func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	log := s.Log
 	if log == nil {
@@ -59,6 +62,13 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	}
 	if job.UnpackError {
 		logf(ctx, log, job, slog.LevelInfo, "Keeping par2 files (unpack failed)")
+		return nil
+	}
+	if job.QuickCheck == QuickCheckUnidentified {
+		// The set protects the extracted files, which nothing here verified
+		// against it — repair was skipped, and the archive's checksums have
+		// gaps (see archivesHoldEntries). It is the one thing that still can.
+		logf(ctx, log, job, slog.LevelInfo, "Keeping par2 files (they protect the extracted files, which par2 has not verified)")
 		return nil
 	}
 

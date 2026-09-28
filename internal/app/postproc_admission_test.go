@@ -269,6 +269,30 @@ func TestPostProcAdmissions_AdmitsEachInstanceOnce(t *testing.T) {
 	}
 }
 
+// TestPostProcAdmissions_HasIsPerInstance: has is the downloader's HandedOff,
+// so it answers for the instance, and stops answering once the admission ends.
+func TestPostProcAdmissions_HasIsPerInstance(t *testing.T) {
+	t.Parallel()
+	var a postProcAdmissions
+	first := job.New("same-id", "first", job.Policy{})
+	retry := job.New("same-id", "retry", job.Policy{})
+
+	if a.has(first) {
+		t.Fatal("has(first) = true before any admission")
+	}
+	a.admit(first, "")
+	if !a.has(first) {
+		t.Error("has(first) = false for an admitted instance; the downloader would dispatch it")
+	}
+	if a.has(retry) {
+		t.Error("has(retry) = true for another instance under the same ID; a retry would never download")
+	}
+	a.release(first)
+	if a.has(first) {
+		t.Error("has(first) = true after its admission ended")
+	}
+}
+
 // TestPostProcAdmissions_KeepsTheFirstFailureReason: a refused call's reason
 // becomes the run's only while the admission has none and is not sealed; any
 // other new reason is noted once.

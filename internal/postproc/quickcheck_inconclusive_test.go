@@ -63,6 +63,7 @@ func TestQuickCheckOutcome_String(t *testing.T) {
 		QuickCheckClean:        "clean",
 		QuickCheckDamaged:      "damaged",
 		QuickCheckInconclusive: "inconclusive",
+		QuickCheckUnidentified: "unidentified",
 	}
 	for outcome, s := range want {
 		if got := outcome.String(); got != s {

@@ -188,6 +188,16 @@ func (a *postProcAdmissions) notes(j *job.Job) []string {
 	return append([]string(nil), cur.notes...)
 }
 
+// has reports whether j is admitted. It is the downloader's HandedOff: an
+// admitted job is not dispatched, because enqueuePostProc admits before it
+// closes the job's file handles.
+func (a *postProcAdmissions) has(j *job.Job) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.jobs[j]
+	return ok
+}
+
 // release ends j's admission. It also ends a step still in progress: a job the
 // post-processor finishes before its enqueue reaches endStep is released
 // first, and a withdraw waiting on that step must not wait for an admission

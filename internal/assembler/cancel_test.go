@@ -292,8 +292,7 @@ func TestCancelJob_KeepFilesFlushesCachedArticles(t *testing.T) {
 // that were never opened, and openTargetFile performs no queue-membership
 // check before creating and preallocating one. Keeping a job's bytes does not
 // make its articles wanted again — so a late article is dropped under both
-// dispositions, and this is what makes routing KeepFiles through
-// CloseJobHandles (which sets no tombstone) the wrong shape.
+// dispositions.
 func TestCancelJob_KeepFilesStillTombstonesTheWholeJob(t *testing.T) {
 	dir := t.TempDir()
 	files := make(map[string]FileInfo)

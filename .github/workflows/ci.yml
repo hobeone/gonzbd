@@ -103,6 +103,12 @@ jobs:
       - name: Test double leakage check
         run: go run scripts/check_test_doubles/main.go --all
 
+      - name: Mutation anchor check
+        # Resolves every anchor in every spec without compiling, running a
+        # test, or writing anything, so a stale or ambiguous anchor fails
+        # fast, before the much slower per-spec mutation run below.
+        run: go run ./scripts/mutate --check-all
+
       - name: Mutation specs check
         run: |
           # Discovery goes through git, not `find`: a spec is only meaningful

@@ -276,6 +276,20 @@ func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 // maybeFinalize is how every other terminal condition leaves the queue — the
 // job carries its reason into history rather than sitting in the queue in a
 // state nothing will move it out of.
+//
+// # No stopping guard, unlike Stall
+//
+// Stall declines while stopping because its pause is persisted and nothing that
+// could undo it outlives the process. Fail advances no position: neither it nor
+// enqueuePostProc calls SetNext, Transition, Cross or Finish, and on this route
+// the job is settled by the finalizer once the post-processor has run it. The
+// hand-off itself is held in memory. So a Fail during shutdown either files the
+// job through a post-processor that is still running, or the hand-off dies with
+// the process and the job restarts at the state it was in, its outstanding
+// articles offered again. Of the fields Fail writes, Header.FailReason is the
+// persisted one, and a restarted job keeps it until it leaves the queue.
+// TestFail_InTheCleanShutdownBarrier_DoesNotPersistAPartialJobForPostProcessing
+// drives both outcomes.
 func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 	reason := "Failed: " + f.Error()
 	app.log.Error("job failed by a permanent storage fault", "job", jobID, "fault", f.Error())
@@ -587,9 +601,14 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 		// whole set rather than deleting from it. Each is safe for its own
 		// reason:
 		//
-		//   - CloseJobHandles: the job is already StatusVerifying, and
-		//     ForEachUnfinishedArticle skips a PostProc job, so its Emitted
-		//     bits cannot produce a re-fetch whether cleared or not.
+		//   - CloseJobHandles: enqueuePostProc admits the job to
+		//     post-processing before calling it, and the downloader does not
+		//     dispatch an admitted job (downloader Options.HandedOff, wired to
+		//     postProcAdmissions.has), so its Emitted bits cannot produce a
+		//     re-fetch whether cleared or not. This does NOT rest on the job's
+		//     state: one handed off from Fetching (Fail, a hopeless callback)
+		//     stays at Fetching with IntentRun until the finalizer's CancelJob,
+		//     which precedes the admission's release on both of its paths.
 		//   - CancelJob: the job is deregistered, so the reload loop that calls
 		//     Job.ClearEmittedForReload never reaches it. The iteration is the
 		//     CALLER's — the method is per-job — so a deregistered job is
@@ -892,10 +911,9 @@ func (app *Application) checkpointAllWithBudget(ctx context.Context, budget func
 	// the reload loop calls Job.ClearEmittedForReload for every registered job
 	// (a non-resident one returns early, having no manifest or progress), so
 	// the set is a subset. That is not an unclosed instance of #417. A resident job with no
-	// open file either never wrote anything, or had its handles closed by
-	// CloseJobHandles, which runs only on a job already at StatusVerifying;
-	// ForEachUnfinishedArticle skips a PostProc job, so its Emitted bits
-	// cannot produce a re-fetch whether they are cleared or not.
+	// open file either never wrote anything, or lost its files by one of the
+	// four paths checkpointJob's len(open) == 0 arm lists, each safe for the
+	// reason given there.
 	if app.barrier == nil {
 		return app.jobsAtRisk()
 	}
