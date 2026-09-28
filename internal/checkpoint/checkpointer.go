@@ -28,12 +28,16 @@ type Store interface {
 }
 
 // Checkpointer batches job-state writes. Mark records that a job moved; the
-// ticker and Flush are the only things that write.
+// only writers are Flush, which the ticker drives, and FlushJob, both through
+// write.
 type Checkpointer struct {
 	store Store
 	every time.Duration
 	log   *slog.Logger
 
+	// flushMu is held across each of Flush's and FlushJob's writes, so at most
+	// one batch is in flight: flushDone and flushing below hold one, and
+	// inFlight is that batch's copy.
 	flushMu  sync.Mutex
 	mu       sync.Mutex
 	dirty    map[string]*job.Job
@@ -41,7 +45,7 @@ type Checkpointer struct {
 	// flushDone is non-nil exactly while a flush holds a batch, and is closed
 	// when that flush's write has returned. flushing is that flush's batch.
 	//
-	// Both are written only by Flush, which is what makes a second Prune of
+	// Both are written only by write, which is what makes a second Prune of
 	// one job correct: inFlight answers "may a failing flush re-merge this?"
 	// and Prune clears it, so it cannot also answer "is a flush writing this?"
 	// for a caller that arrives while another Prune is already waiting.
@@ -186,14 +190,59 @@ func (c *Checkpointer) DirtyCount() int {
 func (c *Checkpointer) Flush(ctx context.Context) error {
 	c.flushMu.Lock()
 	defer c.flushMu.Unlock()
+	return c.write(ctx, func() map[string]*job.Job {
+		if len(c.dirty) == 0 {
+			return nil
+		}
+		batch := c.dirty
+		c.dirty = make(map[string]*job.Job)
+		return batch
+	})
+}
 
+// FlushJob writes j's pending checkpoint now and leaves every other job's mark
+// for the next Flush, so a caller that needs one job's rows on disk neither
+// writes nor fails on anyone else's. It writes only when the dirty set holds
+// this instance of j: a later instance under the same ID is left to the next
+// Flush, and a pruned instance is never there to take. The dirty set's writers
+// are Mark, Flush's swap and write's failed-flush re-merge; Prune takes the
+// instance out of the dirty set and out of a failing flush's re-merge, and Mark
+// refuses to put it back.
+//
+// It is synchronous in the same sense as Flush: when it returns nil, j's state
+// as of its last Mark is on disk. That holds even when a concurrent Flush took
+// j first, because FlushJob waits on flushMu for that Flush to finish, and a
+// failed one re-merges j into the dirty set for FlushJob to write. Sharing the
+// lock also keeps one batch in flushing at a time, which is what Prune's wait
+// reads. The cost is that FlushJob waits out any write already holding the
+// lock, a whole-set one included; its own write carries one checkpoint.
+//
+// Its batch goes through the same bookkeeping as Flush's: Prune waits for it,
+// and a failed write puts j back unless it was re-marked or pruned meanwhile.
+func (c *Checkpointer) FlushJob(ctx context.Context, j *job.Job) error {
+	id := j.ID()
+	c.flushMu.Lock()
+	defer c.flushMu.Unlock()
+	return c.write(ctx, func() map[string]*job.Job {
+		if c.dirty[id] != j {
+			return nil
+		}
+		delete(c.dirty, id)
+		return map[string]*job.Job{id: j}
+	})
+}
+
+// write takes a batch out of the dirty set with take, which runs under c.mu in
+// the same critical section that publishes the batch to inFlight and flushing
+// — so no Prune can fall between the two — and writes it. An empty batch
+// writes nothing. The caller holds flushMu.
+func (c *Checkpointer) write(ctx context.Context, take func() map[string]*job.Job) error {
 	c.mu.Lock()
-	if len(c.dirty) == 0 {
+	batch := take()
+	if len(batch) == 0 {
 		c.mu.Unlock()
 		return nil
 	}
-	batch := c.dirty
-	c.dirty = make(map[string]*job.Job)
 	maps.Copy(c.inFlight, batch)
 	done := make(chan struct{})
 	c.flushDone = done

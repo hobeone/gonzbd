@@ -64,12 +64,12 @@ file internal/app/app.go
 # them, so without a synchronous flush an eviction between the retry and the
 # first checkpoint restores the failed attempt's value.
 #
-# Only the Flush is neutered, not the Mark. Marking without flushing is exactly
+# Only the FlushJob is neutered, not the Mark. Marking without flushing is exactly
 # the pre-fix state: the job is dirty, and nothing has written the row yet.
 [the retry does not flush the corrected row before requeueing]
 file internal/app/app.go
 --- anchor
-		if err := app.checkpointer.Flush(context.Background()); err != nil {
+		if err := app.checkpointer.FlushJob(context.Background(), j); err != nil {
 			return fmt.Errorf("app: retry %s: flush checkpoint: %w", jobID, err)
 		}
 --- replace

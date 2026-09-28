@@ -358,7 +358,7 @@ func TestRemoveNZBBackupIn_MissingDirectoryIsNotAnError(t *testing.T) {
 	}
 }
 
-// failingSaveBatchStore makes checkpointer.Flush fail, which is the last of
+// failingSaveBatchStore makes checkpointer.FlushJob fail, which is the last of
 // RetryHistoryJob's steps between writing the queue manifest and reaching
 // dispatcher.Add.
 type failingSaveBatchStore struct{ err error }
@@ -372,7 +372,7 @@ func (s failingSaveBatchStore) SaveBatch(context.Context, []job.Checkpoint) erro
 // and pinning only that was the mistake: the rule is "a retry that never
 // enters the queue leaves no queue manifest", and it governs every return
 // between the write and the admission, not the one that prompted the fix.
-// seedJobFiles and checkpointer.Flush both sit in that span. Flush is the
+// seedJobFiles and checkpointer.FlushJob both sit in that span. FlushJob is the
 // reachable one here — it takes an injected store, where seedJobFiles goes
 // straight to the history DB this app is otherwise using.
 func TestRetryHistoryJob_FailedFlushRemovesTheQueueManifest(t *testing.T) {

@@ -64,7 +64,7 @@ func TestCheckpointer_FlushIsSynchronous(t *testing.T) {
 	c.Mark(j)
 
 	if len(st.batches) != 0 {
-		t.Fatal("Mark must not write; only Flush and the ticker write")
+		t.Fatal("Mark must not write; only a flush writes")
 	}
 	if err := c.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush: %v", err)

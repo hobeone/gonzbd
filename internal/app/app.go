@@ -2498,7 +2498,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		return fmt.Errorf("app: retry %s: %w", jobID, err)
 	}
 	// Armed once the manifest is on disk, so every return between here and the
-	// admission below takes it with it: seedJobFiles and checkpointer.Flush
+	// admission below takes it with it: seedJobFiles and checkpointer.FlushJob
 	// return in this span as well as dispatcher.Add, and a retry that never
 	// entered the queue would otherwise leave a manifest no queued job owns
 	// until the next start's sweep.
@@ -2548,14 +2548,12 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		app.checkpointer.Mark(j)
 		// context.Background(), matching saveQueueIfDirty, the shutdown
 		// flush and enqueuePostProc: a client disconnect mid-request must
-		// not abort a retry that has already mutated state. A Flush error
+		// not abort a retry that has already mutated state. A FlushJob error
 		// aborts the retry rather than being discarded, as a failed
 		// DiscardRuns above does — a discarded error would silently reopen
-		// the eviction window above. Flush writes every dirty job, not only this one, so
-		// an unrelated in-flight job's checkpoint failure can abort this
-		// retry too; that is accepted here as it is on enqueuePostProc's
-		// synchronous whole-map Flush.
-		if err := app.checkpointer.Flush(context.Background()); err != nil {
+		// the eviction window above. FlushJob writes this job alone, so
+		// another job's checkpoint failure cannot abort the retry.
+		if err := app.checkpointer.FlushJob(context.Background(), j); err != nil {
 			return fmt.Errorf("app: retry %s: flush checkpoint: %w", jobID, err)
 		}
 	}

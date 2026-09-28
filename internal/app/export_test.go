@@ -44,6 +44,15 @@ func (a *Application) Checkpointer() *checkpoint.Checkpointer {
 	return a.checkpointer
 }
 
+// WrapCheckpointStore rebuilds the application's checkpointer over wrap of the
+// store production gives it, and hands the new one to the pipeline too, for a
+// test that needs some checkpoint writes to fail.
+func (a *Application) WrapCheckpointStore(wrap func(checkpoint.Store) checkpoint.Store) {
+	ds, _ := a.durable.(*durability.Store)
+	a.checkpointer = checkpoint.New(wrap(&appCheckpointStore{store: ds}), time.Hour, a.log)
+	a.pipeline.checkpointer = a.checkpointer
+}
+
 // TriggerMaybeDirectUnpack drives the DirectUnpack orchestrator's start path.
 func (a *Application) TriggerMaybeDirectUnpack(fc FileComplete) {
 	a.duOrch.maybeStart(fc)
