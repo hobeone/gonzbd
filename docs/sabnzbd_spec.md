@@ -1060,7 +1060,11 @@ Its indexes are specified alongside it, in the same section.
   its `admin/nzb/<name>.gz` backup. A pruned job can no longer be retried.
 - The sweep runs at startup and after each job finalizes. Both thresholds at
   0 makes it a no-op.
-- VACUUM run on startup to reclaim space
+- No VACUUM runs on startup or after a prune: SQLite reuses the pages a
+  deletion frees for later writes without one, and a VACUUM needs the whole
+  file to itself, costs disk and time proportional to database size, and
+  used to turn a transient failure into a fatal `Open` error on every daemon
+  start.
 
 The names differ from SABnzbd's `history_retention_option` /
 `history_retention_number`, and so does the model: upstream selects among

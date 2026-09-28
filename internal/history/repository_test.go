@@ -689,13 +689,18 @@ func TestOpen_ReadOnlyError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "readonly.db")
 
-	// Create and initialize a valid SQLite file
-	db, err := Open(t.Context(), path)
+	// An empty file, never migrated. A fully-migrated, already-WAL-mode
+	// database has nothing left for a re-Open to write, so re-opening one
+	// read-only now succeeds (Open no longer VACUUMs on every start). What
+	// still requires a write on a read-only file is going from nothing to a
+	// schema at all: enabling WAL mode has to touch the file's header, and
+	// that touch is what read-only permissions must block.
+	f, err := os.Create(path)
 	if err != nil {
-		t.Fatalf("Open setup: %v", err)
+		t.Fatalf("create empty file: %v", err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("Close setup: %v", err)
+	if err := f.Close(); err != nil {
+		t.Fatalf("close empty file: %v", err)
 	}
 
 	// Make the file read-only
@@ -703,10 +708,11 @@ func TestOpen_ReadOnlyError(t *testing.T) {
 		t.Fatalf("Chmod: %v", err)
 	}
 
-	// Open again. Ping should succeed, but Exec(WAL) or Exec(VACUUM) should fail.
+	// Ping should succeed against the empty file, but enabling WAL mode
+	// should fail: that pragma writes the file's header.
 	_, err = Open(t.Context(), path)
 	if err == nil {
-		t.Error("expected error opening read-only database, got nil")
+		t.Error("expected error opening a read-only, unmigrated database, got nil")
 	}
 }
 

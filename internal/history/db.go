@@ -51,8 +51,16 @@ type DB struct {
 }
 
 // Open opens (or creates) the SQLite database at path, applies the schema if
-// the file is new, enables WAL mode and foreign keys, and runs VACUUM to
-// reclaim free pages from prior deletes (spec §11.4).
+// the file is new, and enables WAL mode and foreign keys.
+//
+// Open does not VACUUM. A VACUUM needs the file to itself, costs disk and
+// time proportional to database size, and a startup path is the worst place
+// to pay an unbounded, unmeasured cost on every restart, or to let a
+// transient failure (such as no free space for its temporary copy) turn
+// fatal. Nothing here sets page_size or enables auto_vacuum, so there is no
+// vacuum this build depends on for correctness: SQLite reuses freed pages
+// for later writes without one, and pruning (spec §11.4) does not need the
+// file to shrink between restarts to keep working.
 //
 // The returned *DB must be closed when the caller is done with it.
 func Open(ctx context.Context, path string) (*DB, error) {
@@ -161,11 +169,6 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, fmt.Errorf("history: run migrations: %w", err)
 	}
 
-	if _, err := sqlDB.ExecContext(ctx, "VACUUM"); err != nil {
-		_ = sqlDB.Close() // superseded by vacuum error
-		return nil, fmt.Errorf("history: VACUUM: %w", err)
-	}
-
 	// 25 is deliberate headroom, not a measured figure: actual API
 	// concurrency here is single-digit, and SQLite permits one writer at a
 	// time regardless of pool size, so a wider pool buys queueing rather
@@ -185,10 +188,11 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	//
 	// This is the pool's only bound (#302): an earlier commit also capped it
 	// at 4 immediately after sql.Open, on the reasoning that a narrow pool
-	// suits the startup work above (ping, WAL, migrations, VACUUM). That
-	// reasoning does not hold: startup runs sequentially on one connection
-	// regardless of the cap, so the 4-wide bound never had any effect to
-	// begin with and has been deleted rather than kept as a second bound.
+	// suits the sequential startup work (ping, WAL, migrations, and — at the
+	// time — a startup VACUUM since removed). That reasoning does not hold:
+	// startup runs sequentially on one connection regardless of the cap, so
+	// the 4-wide bound never had any effect to begin with and has been
+	// deleted rather than kept as a second bound.
 	sqlDB.SetMaxOpenConns(25)
 	sqlDB.SetMaxIdleConns(25)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
