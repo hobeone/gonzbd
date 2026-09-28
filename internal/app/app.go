@@ -214,6 +214,12 @@ type Application struct {
 	ctx    context.Context //nolint:containedctx // ctx is the app's lifecycle context, stored by design
 	cancel context.CancelFunc
 
+	// starting is Start's entry gate, CAS'd true before app.ctx/app.cancel
+	// exist, so a second Start call fails fast without ever leaking a context.
+	starting atomic.Bool
+
+	// started is true only once app.ctx/app.cancel are assigned; Shutdown
+	// gates on it and then calls app.cancel().
 	started atomic.Bool
 	stopped atomic.Bool
 
@@ -258,6 +264,10 @@ type Application struct {
 	// is still handing over can reach the post-processor. Same discipline as
 	// checkpointHook.
 	removeCancelGapHook func(id string)
+
+	// startedTransitionHook, when non-nil, runs in Start right after started
+	// flips true. Same discipline as checkpointHook.
+	startedTransitionHook func()
 
 	shutdownStepTimeout time.Duration
 	closeHandlesTimeout time.Duration
@@ -1254,14 +1264,20 @@ func (app *Application) PostProcComplete() <-chan PostProcComplete { return app.
 // supported retry contract.
 //
 // Invariant: ReloadDownloader must not be called until Start has returned.
-// started flips true (via CompareAndSwap) before this method finishes
-// constructing the pipeline, and a ReloadDownloader call that raced in
-// during that window could Stop the same downloader instance this method is
-// concurrently Starting. This is safe today because the only caller
-// (the config-reload HTTP handler) can't run until the API server starts
-// listening, which happens after Start returns — see cmd/gonzbd/main.go.
+// started flips true, via a plain Store once app.ctx/app.cancel are already
+// assigned (see below), before this method finishes constructing the
+// pipeline, and a ReloadDownloader call that raced in during that window
+// could Stop the same downloader instance this method is concurrently
+// Starting. This is safe today because the only caller (the config-reload
+// HTTP handler) can't run until the API server starts listening, which
+// happens after Start returns — see cmd/gonzbd/main.go.
+//
+// Ordering: starting is CAS'd true first, purely for mutual exclusion, before
+// app.ctx/app.cancel exist; started only flips true once those two fields are
+// already assigned, so Shutdown can never observe it true while app.cancel is
+// still nil.
 func (app *Application) Start(ctx context.Context) error {
-	if !app.started.CompareAndSwap(false, true) {
+	if !app.starting.CompareAndSwap(false, true) {
 		return ErrAlreadyStarted
 	}
 	// Leave the object in a clean rather than half-armed state on failure
@@ -1289,12 +1305,17 @@ func (app *Application) Start(ctx context.Context) error {
 			app.cancel()
 		}
 		app.started.Store(false)
+		app.starting.Store(false)
 	}()
 
 	//nolint:gosec // G118: cancel is stored on the struct rather than a local,
 	// so gosec cannot see the calls. It is invoked by Shutdown on the success
 	// path and by the failure defer above on every error return.
 	app.ctx, app.cancel = context.WithCancel(ctx)
+	app.started.Store(true)
+	if app.startedTransitionHook != nil {
+		app.startedTransitionHook()
+	}
 	if app.dispatcher != nil {
 		if err := app.dispatcher.Start(app.ctx); err != nil {
 			return fmt.Errorf("app: start dispatcher: %w", err)
