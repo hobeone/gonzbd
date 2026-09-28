@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/history"
 )
 
@@ -248,21 +247,8 @@ func TestStillExpired_ReportsAFailedReRead(t *testing.T) {
 // takes it once it is free.
 func TestPruneHistory_SkipsAJobInTransition(t *testing.T) {
 	t.Parallel()
-	adminDir := t.TempDir()
-	cfg := testConfig(t.TempDir(), t.TempDir(), adminDir, config.ServerConfig{
-		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false,
-	})
-	cfg.General.HistoryFailedRetentionDays = 30
-	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
-	if err != nil {
-		t.Fatalf("history.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	repo := history.NewRepository(db)
-	application, err := New(cfg, repo)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	application, repo, _ := newLifecycleTestApp(t)
+	application.config.General.HistoryFailedRetentionDays = 30
 	const held, free = "feedface0000b004", "feedface0000b005"
 	for _, id := range []string{held, free} {
 		if err := repo.Add(t.Context(), history.Entry{
