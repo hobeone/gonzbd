@@ -48,7 +48,7 @@ func newLifecycleTestApp(t *testing.T, opts ...func(*Application)) (*Application
 func TestDeleteHistoryEntries_EmptyIsNoOp(t *testing.T) {
 	t.Parallel()
 	application := &Application{}
-	n, err := application.deleteHistoryEntries(t.Context(), nil)
+	n, err := application.deleteHistoryEntries(t.Context(), nil, nil)
 	if err != nil {
 		t.Errorf("err = %v, want nil", err)
 	}
@@ -75,7 +75,7 @@ func TestDeleteHistoryEntries_RemovesRowAndBackup(t *testing.T) {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
-	n, err := application.deleteHistoryEntries(t.Context(), []history.Entry{entry})
+	n, err := application.deleteHistoryEntries(t.Context(), application.transitions.tryAcquire(entry.NzoID), []history.Entry{entry})
 	if err != nil {
 		t.Fatalf("deleteHistoryEntries: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestDeleteHistoryEntries_ToleratesMissingBackup(t *testing.T) {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
-	n, err := application.deleteHistoryEntries(t.Context(), []history.Entry{entry})
+	n, err := application.deleteHistoryEntries(t.Context(), application.transitions.tryAcquire(entry.NzoID), []history.Entry{entry})
 	if err != nil {
 		t.Fatalf("deleteHistoryEntries with missing backup: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestDeleteHistoryEntries_PropagatesRepoError(t *testing.T) {
 		t.Fatalf("db.Close: %v", err)
 	}
 
-	if _, err := application.deleteHistoryEntries(t.Context(), []history.Entry{entry}); err == nil {
+	if _, err := application.deleteHistoryEntries(t.Context(), application.transitions.tryAcquire(entry.NzoID), []history.Entry{entry}); err == nil {
 		t.Fatal("deleteHistoryEntries succeeded against a closed database, want an error")
 	}
 }

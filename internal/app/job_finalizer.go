@@ -30,6 +30,11 @@ type jobFinalizer struct {
 	app *Application
 }
 
+// finalizeTransitionWait caps how long a finalizer waits for another actor to
+// release its job. On expiry it proceeds without the lock rather than hold a
+// post-processing worker behind a slow holder.
+const finalizeTransitionWait = 5 * time.Second
+
 func newJobFinalizer(app *Application) *jobFinalizer {
 	return &jobFinalizer{
 		app: app,
@@ -91,6 +96,10 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // delCtx), which fits within the 15s shutdown step timeout (stepTimeout)
 // under waitBounded when terminating post-processing.
 //
+// The job's transition lock is waited for before finalCtx starts, for at most
+// finalizeTransitionWait and only until app.ctx ends, so it is outside that
+// 13s: Shutdown cancels app.ctx before it stops post-processing.
+//
 // Because dbCtx, removeCtx, and delCtx are independently derived, a slow SQLite
 // write cannot starve dispatcher removal or durability cleanup. Prune operates
 // in memory. removeManifestIn unlinks the queue manifest on the filesystem
@@ -107,6 +116,20 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
 		_ = app.dispatcher.Cancel(ppJob.Job.ID())
 		_ = app.dispatcher.Yielded(ppJob.Job.ID())
+	}
+	// Taken after Yielded, which clears post-processing's launch claim on the
+	// job: a RemoveJob holding this lock waits on that claim in
+	// dispatcher.Remove.
+	if ppJob != nil && ppJob.Job != nil {
+		waitCtx, waitCancel := context.WithTimeout(app.ctx, finalizeTransitionWait)
+		claim, err := app.transitions.acquire(waitCtx, ppJob.Job.ID())
+		waitCancel()
+		if err != nil {
+			log.Warn("finalize did not get the job's transition lock in time; proceeding without it",
+				"job", ppJob.Job.ID(), "err", err)
+		} else {
+			defer claim.release()
+		}
 	}
 
 	finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 12*time.Second)

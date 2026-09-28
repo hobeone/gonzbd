@@ -195,6 +195,10 @@ type Application struct {
 	stallMu sync.Mutex
 	stalls  map[string]*stallRecord
 
+	// transitions admits one actor at a time to a job ID's state; see
+	// jobTransitions for who takes it. Its zero value is ready to use.
+	transitions jobTransitions
+
 	// stallKick carries R19's "on user action" re-evaluation request from an
 	// HTTP handler to the checkpoint loop. Buffered and sent to
 	// non-blockingly, for the same reason barrierKick is.
@@ -865,10 +869,18 @@ func seedJobFiles(ctx context.Context, st durabilityStore, jobID string, numFile
 // interpret them (reclaim takes both, below). That is the meaning of
 // asking to keep a removed job's bytes — the caller wanted the data, not a
 // resumable job.
+//
+// It waits while another actor holds the job, and gives up with ctx's error
+// before acting on anything.
 func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
 	if app.dispatcher == nil {
 		return fmt.Errorf("job %q not found", id)
 	}
+	claim, err := app.transitions.acquire(ctx, id)
+	if err != nil {
+		return fmt.Errorf("app: remove job %s: %w", id, err)
+	}
+	defer claim.release()
 	j, ok := app.dispatcher.Job(id)
 	if !ok {
 		// The job left the queue before this call, and its rows and manifest
@@ -952,7 +964,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// armed through safeDeleteDir's recursive unlink and the NNTP disconnect
 	// at the end of this function. dropJobAlreadyInHistory does the same.
 	cancelCtx, cancelCancel := context.WithTimeout(cleanupCtx, 30*time.Second)
-	err := app.assembler.CancelJob(cancelCtx, id, disposition)
+	err = app.assembler.CancelJob(cancelCtx, id, disposition)
 	cancelCancel()
 	if err != nil {
 		app.log.Warn("assembler cancel job did not confirm file handles closed",
@@ -1006,10 +1018,19 @@ func (app *Application) hasDownloadableJobs() bool {
 
 // RemoveHistoryJob deletes a completed job from history. If deleteFiles is true,
 // the job's output directory is also removed.
+//
+// It waits, for as long as ctx allows, while another actor holds the job, and
+// reads the entry only once it holds it: a retry that ran meanwhile has
+// requeued the job, and the entry this call would have acted on is gone.
 func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error {
 	if app.historyRepo == nil {
 		return errors.New("history repository not wired")
 	}
+	claim, err := app.transitions.acquire(ctx, id)
+	if err != nil {
+		return fmt.Errorf("app: remove history %s: %w", id, err)
+	}
+	defer claim.release()
 	entry, err := app.historyRepo.Get(ctx, id)
 	if err != nil {
 		return fmt.Errorf("app: get history: %w", err)
@@ -1024,7 +1045,7 @@ func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteF
 			app.log.Warn("failed to delete history job directory", "path", entry.Path, "err", err)
 		}
 	}
-	if _, err := app.deleteHistoryEntries(ctx, []history.Entry{*entry}); err != nil {
+	if _, err := app.deleteHistoryEntries(ctx, claim, []history.Entry{*entry}); err != nil {
 		return err
 	}
 	app.emit(Event{Type: "history_updated"})
@@ -1036,16 +1057,28 @@ func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteF
 // The retained per-file progress is cleaned up inside Repository.Delete, in
 // the same transaction as the rows. The backups cannot be: they are files,
 // and the history package has no business touching the admin directory. So
-// this is the app-level choke point that every history deletion must route
-// through — the SQL half closes by construction, this half by convention.
+// this is the app-level choke point that every history deletion releasing a
+// backup must route through — the SQL half closes by construction, this half
+// by convention. The one other history delete is RetryHistoryJob's, whose
+// requeued job keeps the backup; history.Repository.Delete's doc carries the
+// command that enumerates both.
+//
+// claim must hold every entry's job ID, so no other actor on those jobs
+// interleaves; an entry outside it refuses the whole batch before anything is
+// touched.
 //
 // A missing or unnamed backup is not an error. Entries written before the
 // name was recorded have none, and the download itself never depended on it.
 // Neither is it a reason to keep the entry: a stranded file must not outvote
 // an operator asking for the row to go.
-func (app *Application) deleteHistoryEntries(ctx context.Context, entries []history.Entry) (int, error) {
+func (app *Application) deleteHistoryEntries(ctx context.Context, claim *transitionClaim, entries []history.Entry) (int, error) {
 	if len(entries) == 0 {
 		return 0, nil
+	}
+	for _, entry := range entries {
+		if !claim.holds(entry.NzoID) {
+			return 0, fmt.Errorf("app: delete history %s: the caller does not hold the job", entry.NzoID)
+		}
 	}
 	// Backups are unlinked before the rows go, not after.
 	//
@@ -1076,11 +1109,17 @@ func (app *Application) deleteHistoryEntries(ctx context.Context, entries []hist
 
 // MarkHistoryCompleted marks a history entry completed. A FAILED entry kept
 // its job's durable_runs for a retry, and a completed one has nothing to
-// retry, so they are reclaimed.
+// retry, so they are reclaimed. It waits, for as long as ctx allows, while
+// another actor holds the job.
 func (app *Application) MarkHistoryCompleted(ctx context.Context, id string) error {
 	if app.historyRepo == nil {
 		return errors.New("history repository not wired")
 	}
+	claim, err := app.transitions.acquire(ctx, id)
+	if err != nil {
+		return fmt.Errorf("app: mark history %s completed: %w", id, err)
+	}
+	defer claim.release()
 	if err := app.historyRepo.MarkCompleted(ctx, id); err != nil {
 		return err
 	}
@@ -1111,7 +1150,22 @@ func (app *Application) PruneHistory(ctx context.Context) (int, error) {
 	if len(expired) == 0 {
 		return 0, nil
 	}
-	n, err := app.deleteHistoryEntries(ctx, expired)
+	// A job another actor holds is left for a later sweep rather than waited
+	// on: the finalizer calls this after every job it files.
+	ids := make([]string, 0, len(expired))
+	for _, e := range expired {
+		ids = append(ids, e.NzoID)
+	}
+	claim := app.transitions.tryAcquire(ids...)
+	defer claim.release()
+	current, err := app.stillExpired(ctx, claim, expired)
+	if err != nil {
+		return 0, err
+	}
+	if len(current) == 0 {
+		return 0, nil
+	}
+	n, err := app.deleteHistoryEntries(ctx, claim, current)
 	if err != nil {
 		return 0, fmt.Errorf("app: history retention delete: %w", err)
 	}
@@ -1120,6 +1174,30 @@ func (app *Application) PruneHistory(ctx context.Context) (int, error) {
 		"retain_failed_days", gen.HistoryFailedRetentionDays)
 	app.emit(Event{Type: "history_updated"})
 	return n, nil
+}
+
+// stillExpired re-reads each of expired that claim holds and returns the
+// current entries, dropping the ones no longer there. An entry whose Completed
+// differs from expired's was filed again since expired was read — a retry that
+// failed again writes a new entry under the same ID — so it is dropped too.
+func (app *Application) stillExpired(ctx context.Context, claim *transitionClaim, expired []history.Entry) ([]history.Entry, error) {
+	current := make([]history.Entry, 0, len(expired))
+	for _, e := range expired {
+		if !claim.holds(e.NzoID) {
+			continue
+		}
+		cur, err := app.historyRepo.Get(ctx, e.NzoID)
+		if errors.Is(err, history.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("app: history retention: re-read %s: %w", e.NzoID, err)
+		}
+		if cur.Completed.Equal(e.Completed) {
+			current = append(current, *cur)
+		}
+	}
+	return current, nil
 }
 
 // GetHistory retrieves a single history entry by ID.
@@ -2249,6 +2327,12 @@ func (app *Application) rebuildJobFromNZB(entry history.Entry) (*job.Job, dispat
 	return j, hdr, nil
 }
 
+// errJobAlreadyQueued refuses a retry of a job the dispatcher holds although a
+// FAILED history entry for it exists — a retry that requeued the job without
+// deleting the entry leaves both, as does a finalizer that filed the entry but
+// could not remove the job.
+var errJobAlreadyQueued = errors.New("this job is already in the queue")
+
 // RetryHistoryJob re-enqueues a failed history job for re-download.
 //
 // The job is rebuilt by re-parsing the NZB recorded on its history entry —
@@ -2263,8 +2347,23 @@ func (app *Application) rebuildJobFromNZB(entry history.Entry) (*job.Job, dispat
 // get_incomplete_path returns a path only for status = Failed. A completed
 // job has nothing to retry.
 //
+// It refuses, before acting on anything, a job ID another actor holds
+// (errJobInTransition) and, for a FAILED entry, a job the dispatcher already
+// holds (errJobAlreadyQueued).
+//
 // The history entry is deleted on success.
 func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
+	// Held for the whole call, so no other lock holder on this job ID
+	// interleaves with any step below; see jobTransitions for the finalizer's
+	// bounded exception. A retry never waits for it: a second retry of the
+	// same job, or one racing that job's finalization or removal, is refused.
+	key := jobID
+	claim := app.transitions.tryAcquire(key)
+	defer claim.release()
+	if !claim.holds(key) {
+		return fmt.Errorf("app: retry %s: %w", jobID, errJobInTransition)
+	}
+
 	entry, err := app.historyRepo.Get(ctx, jobID)
 	if err != nil {
 		return err
@@ -2272,6 +2371,11 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	if entry.Status != string(constants.StatusFailed) {
 		return fmt.Errorf("app: retry %s: only failed jobs can be retried, this one is %q",
 			jobID, entry.Status)
+	}
+	if app.dispatcher != nil {
+		if _, held := app.dispatcher.Job(jobID); held {
+			return fmt.Errorf("app: retry %s: %w", jobID, errJobAlreadyQueued)
+		}
 	}
 
 	j, hdr, err := app.rebuildJobFromNZB(*entry)
@@ -2362,17 +2466,6 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	defer func() {
 		if admitted {
 			return
-		}
-		// A concurrent retry of this job that won dispatcher.Add is registered
-		// before its first queue row is written, and the reclaim rule reads
-		// only that row, so reclaiming here would delete job_files the winner
-		// is about to run with. This retry's own failed Add never leaves the
-		// ID held: register refuses a duplicate before inserting it, and a
-		// failed persist deregisters before Add returns.
-		if app.dispatcher != nil {
-			if _, held := app.dispatcher.Job(jobID); held {
-				return
-			}
 		}
 		// Not the NZB backup: the history entry still owns it, and a later
 		// retry reads it to rebuild the job. reclaim takes the manifest and the
