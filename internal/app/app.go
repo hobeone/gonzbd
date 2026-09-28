@@ -1658,9 +1658,9 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 	//
 	//   - the ordinary path reached it, since finalizeCompletedFile returns
 	//     nil and its caller comes straight here;
-	//   - stall recovery did not. retryFinalize swallows job.ErrNotResident —
-	//     the ack cannot mark a paused job — and returns before the CRC, then
-	//     Phase 4 arrives here having marked the file finalizeDone, and
+	//   - stall recovery did not. retryFinalize swallowed job.ErrNotResident —
+	//     the ack cannot mark a paused job — and returned before the CRC, then
+	//     Phase 4 arrived here having marked the file finalizeDone, and
 	//     nothing retried it;
 	//   - the startup repair did not, because completeStrandedFiles has no
 	//     barrier call to hang it off at all.

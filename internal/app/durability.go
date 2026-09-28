@@ -646,8 +646,8 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 		// articles are on stable record while the live work set still calls
 		// them Outstanding — and nothing replayed them, because this
 		// failure never went through routeFault and so never put the job on
-		// the stall list. retryFinalize treats the identical error as
-		// recoverable and documents the replay; this path did not.
+		// the stall list. routeFinalizeFailure records the identical error
+		// from a finalize for retry; this path did not.
 		if errors.Is(err, job.ErrNotResident) {
 			app.log.Info("checkpoint recorded its durable runs but could not ack a non-resident job; "+
 				"recorded for replay from the durability record", "job", jobID)
@@ -984,7 +984,25 @@ var ErrNotFinalized = errors.New("app: completed file was not finalized")
 // damage on a download that was perfectly healthy. That is #350 arriving by a
 // different route, and it was silent.
 //
-// The handle is RETAINED on the failing path, reversing the earlier decision
+// # The deferred close, and when its fault counts
+//
+// On the two nil returns before the barrier runs — no barrier, no sync target —
+// nothing has drained or synced the file, so the deferred CloseFile is its
+// only flush, and a fault from it comes back as ErrNotFinalized like any other
+// failed finalize. After them, the close either follows a finalize that
+// committed or finds the file already closed by another path, and its fault is
+// logged at Debug: acting on a redundant second fsync would race the
+// completion it is part of, and on a permanent errno would carry a fully acked
+// job into history as failed.
+//
+// A failed first flush can come back after the handle has gone: handleSyncOp's
+// opClose arm deletes it whether or not the close failed. A retryable fault is
+// recorded for retry by routeFinalizeFailure; the retry finds no handle, and
+// stallLost surfaces the restart that recovers the file. A permanent one fails
+// the job. A close whose wait ended before it was queued to the worker leaves
+// the handle open, and the retry finalizes it as usual.
+//
+// On every other error the handle is RETAINED, reversing the earlier decision
 // to close it there. That decision rested on a premise that no longer holds:
 // "no path re-triggers a finalize for a file whose parts have all arrived".
 // Application.reevaluateStall is now that path, and every operation it needs —
@@ -1023,6 +1041,10 @@ var ErrNotFinalized = errors.New("app: completed file was not finalized")
 // job does not reach post-processing. CancelJob, CloseJobHandles and the
 // assembler's own shutdown drain all still release the handles.
 func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string, fileIdx int) (err error) {
+	// closeIsFirstFlush says whether the deferred close is the file's only
+	// drain and sync. It starts true, so a nil return is held to the strict
+	// reading unless it comes after the assignment below that clears it.
+	closeIsFirstFlush := true
 	defer func() {
 		if err != nil {
 			// The handle stays open on the failing path, so the retry in
@@ -1031,9 +1053,21 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 			// assembler has tombstoned.
 			return
 		}
-		if cerr := app.assembler.CloseFile(ctx, jobID, int32(fileIdx)); cerr != nil { //nolint:gosec // G115: file counts are far below int32
-			app.log.Debug("close completed file handle", "job", jobID, "fileidx", fileIdx, "err", cerr)
+		cerr := app.assembler.CloseFile(ctx, jobID, int32(fileIdx)) //nolint:gosec // G115: file counts are far below int32
+		if cerr == nil {
+			return
 		}
+		if !closeIsFirstFlush {
+			app.log.Debug("close completed file handle", "job", jobID, "fileidx", fileIdx, "err", cerr)
+			return
+		}
+		// Nothing before this close drained or synced the file, so its fault
+		// is the only report of bytes that may not be on disk, and the
+		// completion stops here like any other failed finalize.
+		app.log.Warn("completed file's only flush failed at close; the completion is stopped",
+			"job", jobID, "fileidx", fileIdx, "err", cerr)
+		err = fmt.Errorf("%w: job %s file %d: the close was its only flush: %w",
+			ErrNotFinalized, jobID, fileIdx, cerr)
 	}()
 	if app.barrier == nil {
 		return nil
@@ -1068,6 +1102,12 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 		return fmt.Errorf("%w: job %s file %d: the assembler sync target cannot truncate",
 			ErrNotFinalized, jobID, fileIdx)
 	}
+	// Every nil return below follows either a finalize the barrier ran — it
+	// drained, synced and committed the file — or a close some other path made
+	// first: the worker's exit drain, CloseJobHandles, or CancelJob on a job
+	// that has left the queue. In neither case is the close below the file's
+	// flush, so its fault does not decide whether the completion proceeds.
+	closeIsFirstFlush = false
 
 	// Ask the assembler directly rather than through SyncTarget.Files, which
 	// reports an error as "no files" because the barrier has nothing useful to
@@ -1089,9 +1129,9 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 			ErrNotFinalized, jobID, fileIdx, err)
 	}
 	if !slices.Contains(open, int32(fileIdx)) { //nolint:gosec // G115: file counts are far below int32
-		// Some other path closed it first — CancelJob, or CloseJobHandles on
-		// a job entering post-processing. Both are deliberate and both drain
-		// and sync before closing.
+		// Some other path closed it first — CloseJobHandles on a job entering
+		// post-processing, which drains and syncs before closing, or CancelJob
+		// on a job that has already left the queue.
 		app.log.Debug("completed file is no longer open; nothing to finalize",
 			"job", jobID, "fileidx", fileIdx)
 		return nil
@@ -1571,10 +1611,10 @@ func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path str
 		return
 	}
 	//
-	// A non-resident job is a queue-residency condition. retryFinalize already
-	// treats this as landed and says why — the runs are recorded, so the
-	// articles are replayed from the record once the job resumes — and the
-	// first attempt has no reason to answer differently.
+	// A non-resident job is a queue-residency condition, not a storage one.
+	// The barrier commits before it acks, so the runs are recorded; the
+	// finalize is recorded for retry, and the re-evaluation's seed phase
+	// replays those runs into the work set once the retry lands.
 	if errors.Is(err, job.ErrNotResident) {
 		app.log.Debug("finalize recorded its durable runs but could not ack a non-resident job; "+
 			"the articles are replayed from the record after the resume",
@@ -1604,8 +1644,14 @@ func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path str
 	if f.Path == "" {
 		f.Path = path
 	}
-	app.Stall(jobID, f)
-	if !f.Permanent {
-		app.notePendingFinalize(jobID, fileIdx)
+	// Dispatched as Barrier.routeFault dispatches a fault of its own (R20). A
+	// stall records no retry for a permanent fault, so the next re-evaluation
+	// would find nothing blocking and resume a job whose file can never
+	// complete.
+	if f.Permanent {
+		app.Fail(jobID, f)
+		return
 	}
+	app.Stall(jobID, f)
+	app.notePendingFinalize(jobID, fileIdx)
 }

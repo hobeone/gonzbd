@@ -1223,9 +1223,11 @@ func (a *Assembler) dispatchRequest(
 //   - On the CloseJobHandles path the job is already StatusVerifying, which is
 //     a phase neither Stall nor Fail can act on: Verifying → Paused is not a
 //     legal status edge, and maybeFinalize is a no-op once PostProc is set.
-//   - On the opClose path the barrier has already drained, synced, truncated,
-//     committed the runs and acked the articles. A fault from the redundant
-//     second fsync would race the completion it is part of.
+//   - On the opClose path, whether the fault matters depends on whether a
+//     barrier ran first, and only the caller knows. After a finalize that
+//     committed, routing a fault from the redundant second fsync would race
+//     the completion it is part of; where this close is the file's only
+//     flush, the caller stops the completion on the returned error itself.
 //
 // A permanent fault is preferred over the first one when they differ, because
 // only the permanent one preserves R20. ENOSPC on the drain followed by EROFS

@@ -519,12 +519,12 @@ func (app *Application) recoveryFiles(jobID string) map[int]finalizeState {
 // its own reason; classifying it as a storage fault is what erased the one
 // instruction that helps.
 //
-// A residency error is the one failure treated as success, and the ordering
-// inside FinalizeFile is why: the barrier's commit runs before AckDurable, so an
-// ack that could not reach a non-resident job left those articles on stable
-// record anyway. The caller replays them. The handle is released here rather
-// than by finalizeCompletedFile's own defer, which sees only a non-nil error
-// and keeps it for a retry that is no longer needed.
+// This function closes nothing itself. The handle is released by
+// finalizeCompletedFile's deferred close, which runs only on that call's nil
+// paths. The checks here leave its no-barrier return unreachable, and its
+// nil-target return reachable only if the target goes nil between the check
+// below and the call — where a close fault stops the retry exactly as it
+// stops a first attempt.
 func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx int) error {
 	if app.assembler == nil || app.barrier == nil {
 		return fmt.Errorf("%w: job %s file %d: no barrier in this process",
