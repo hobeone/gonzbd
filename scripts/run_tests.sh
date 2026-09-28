@@ -178,10 +178,16 @@ echo -e "${GREEN}✓ Review-Banner Check Passed${NC}"
 # scope: tracked-only discovery would silently skip the spec you just wrote,
 # which is the failure mode this check exists to prevent.
 echo -e "\nRunning Mutation Specs Check..."
+MUTATE_BIN=$(mktemp -t gonzbd-mutate.XXXXXX)
+go build -o "$MUTATE_BIN" ./scripts/mutate
+cleanup_mutate() { rm -f "$MUTATE_BIN"; }
+trap cleanup_mutate EXIT INT TERM
 git ls-files --cached --others --exclude-standard -- '*testdata/*.spec' | sort -u | while read -r spec; do
     echo "Running mutation spec: $spec"
-    go run ./scripts/mutate "$spec"
+    "$MUTATE_BIN" "$spec"
 done
+cleanup_mutate
+trap - EXIT INT TERM
 echo -e "${GREEN}✓ All Mutation Specs Killed${NC}"
 
 # 3. Go Integration Tests
