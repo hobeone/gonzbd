@@ -122,9 +122,9 @@ type Dispatcher struct {
 }
 
 // lookup returns the registered job for an ID. Its production callers are
-// Cancel and Retry below, the only two non-test call sites in this package;
-// declared here because it is registry-shaped scaffolding, not tick
-// behaviour.
+// Retry below and Finished (worker.go) — `git grep -n 'd\.lookup(' -- 'internal/dispatch/*.go' ':!*_test.go'`
+// returns those two; declared here because it is registry-shaped
+// scaffolding, not tick behaviour.
 func (d *Dispatcher) lookup(id string) (*job.Job, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -143,10 +143,24 @@ func (d *Dispatcher) lookup(id string) (*job.Job, bool) {
 // itself runs later in the same tick, from evictCancelledNeverRun (tick.go);
 // here Cancel only latches the intent through sched and kicks.
 func (d *Dispatcher) Cancel(id string) error {
-	j, ok := d.lookup(id)
-	if !ok {
-		return fmt.Errorf("dispatch: Cancel: no job %q", id)
+	return d.CancelFor(id, nil)
+}
+
+// CancelFor is Cancel for one instance of a job. When expected is non-nil it
+// latches only if the job registered under id is expected, by pointer
+// identity, and otherwise no-ops with ErrNotFound, so a caller still holding a
+// removed instance cannot cancel a later attempt registered under the same ID.
+// Like YieldedFor, it acts on the instance it matched, never on a second
+// lookup by ID.
+func (d *Dispatcher) CancelFor(id string, expected *job.Job) error {
+	d.mu.Lock()
+	e, ok := d.byID[id]
+	if !ok || (expected != nil && e.j != expected) {
+		d.mu.Unlock()
+		return fmt.Errorf("dispatch: Cancel: no job %q: %w", id, ErrNotFound)
 	}
+	j := e.j
+	d.mu.Unlock()
 	if err := d.q.Cancel(j); err != nil {
 		return fmt.Errorf("dispatch: Cancel(%s): %w", id, err)
 	}
