@@ -185,12 +185,25 @@ the rows go. And it makes the checkpointer refuse every later `Mark` of that
 job instance: a late result can still mark the departed instance after its
 prune, and a flush landing after a retry has re-seeded `job_files` would pass
 the gate and write the previous run's marks onto the retry. The refusal is
-keyed by instance, so the retry's own job marks normally; it is held through a
-weak pointer, so it lasts only while the departed instance is reachable, which
-is exactly as long as something could still mark it. A `RemoveJob` whose queue
-removal fails withdraws it (`Checkpointer.Unprune`), since that job stays
-registered. Together these mean a retry that re-seeds `job_files` cannot
-inherit the previous run's marks. That is why the
+keyed by instance, so the retry's own job marks normally, and pruning the
+departed instance leaves the retry's pending and in-flight checkpoints alone. It
+is held through a weak pointer, so it lasts at most while the departed instance
+is reachable, which is exactly as long as something could still mark it.
+`RemoveJob` withdraws its own prune (`Checkpointer.Unprune`) when
+`dispatcher.Remove` fails with an error other than `dispatch.ErrNotFound`, since
+that job stays registered; the refusal is counted per prune, so that withdrawal
+does not undo a finalizer's prune of the same instance.
+
+Together these keep a departed instance's marks off a retry that re-seeds
+`job_files`, provided every departure that lets an instance go prunes it before
+its reclaim or is one no result can reach. The two that prune are `RemoveJob`
+and the finalizer's `persistAndCommit` (`git grep -n 'checkpointer\.Prune(' --
+'*.go' ':!*_test.go'` finds 2 lines); the tick's eviction of a cancelled job
+that never ran and startup's `dropJobAlreadyInHistory` do not, on the
+assumption that nothing has marked a job that never ran and that no result
+precedes startup's drop. What they do not cover is a withdrawn prune: after
+`RemoveJob`'s `Unprune` the job is still registered, and its marks are live ones
+until a later departure prunes it again. That is why the
 pattern below carries a bare-quoted alternative: no grep anchored on the SQL
 text can see the rule's delete (`git grep -n
 'failed_articles (job_id\|failed_articles WHERE\|"failed_articles"' --

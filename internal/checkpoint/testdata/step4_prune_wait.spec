@@ -47,14 +47,16 @@ file internal/checkpoint/checkpointer.go
 [Prune answers "is a flush writing this" from the map it just cleared]
 file internal/checkpoint/checkpointer.go
 --- anchor
-	delete(c.dirty, id)
-	delete(c.inFlight, id)
+	if c.inFlight[id] == j {
+		delete(c.inFlight, id)
+	}
 	var done chan struct{}
 	if _, carried := c.flushing[id]; carried {
 --- replace
-	delete(c.dirty, id)
 	_, wasInFlight := c.inFlight[id]
-	delete(c.inFlight, id)
+	if c.inFlight[id] == j {
+		delete(c.inFlight, id)
+	}
 	var done chan struct{}
 	if carried := wasInFlight; carried {
 --- end

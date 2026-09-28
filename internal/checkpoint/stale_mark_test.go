@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"testing"
 	"time"
@@ -107,7 +108,99 @@ func TestForgetPruned_DropsOnlyThatInstance(t *testing.T) {
 	runtime.KeepAlive(b)
 }
 
-// TestPrune_ForgetsACollectedInstance:the refusal does not outlive the job, so
+// TestUnprune_WithdrawsOnlyItsOwnPrune: two departures can prune one instance —
+// a RemoveJob and a finalizer that proceeded without the transition lock — and
+// the RemoveJob's Unprune after a failed queue removal must not withdraw the
+// refusal the finalizer's prune still needs once its own removal succeeded.
+func TestUnprune_WithdrawsOnlyItsOwnPrune(t *testing.T) {
+	t.Parallel()
+	c := New(&recordingStore{}, time.Hour, nil)
+	j := job.New("a", "A", job.PolicyFromPP(3))
+
+	c.Prune(j) // RemoveJob
+	c.Prune(j) // the finalizer
+	c.Unprune(j)
+	c.Mark(j)
+
+	if got := c.DirtyCount(); got != 0 {
+		t.Fatalf("DirtyCount = %d, want 0: one Unprune withdrew both departures' "+
+			"refusals, so a late mark of an instance the finalizer removed is kept", got)
+	}
+
+	c.Unprune(j)
+	c.Mark(j)
+	if got := c.DirtyCount(); got != 1 {
+		t.Fatalf("DirtyCount = %d, want 1 once every prune is withdrawn", got)
+	}
+}
+
+// TestPrune_LeavesALaterInstancesPendingMark: pruning a departed instance must
+// not drop the pending mark of a later instance under the same ID.
+func TestPrune_LeavesALaterInstancesPendingMark(t *testing.T) {
+	t.Parallel()
+	c := New(&recordingStore{}, time.Hour, nil)
+	old := job.New("a", "Old", job.PolicyFromPP(3))
+	retry := job.New("a", "Retry", job.PolicyFromPP(3))
+
+	c.Mark(retry)
+	c.Prune(old)
+
+	if got := c.DirtyCount(); got != 1 {
+		t.Fatalf("DirtyCount = %d, want 1: pruning the departed instance dropped "+
+			"the retry's pending mark", got)
+	}
+}
+
+// waitUntilPruned blocks until j is in the refusal set, which Prune records
+// under the same lock acquisition as its deletions.
+func waitUntilPruned(t *testing.T, c *Checkpointer, j *job.Job) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c.mu.Lock()
+		_, ok := c.pruned[weak.Make(j)]
+		c.mu.Unlock()
+		if ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Prune never recorded the instance")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestPrune_LeavesALaterInstanceInFlight: pruning a departed instance while a
+// failing flush carries a later instance under the same ID must not stop that
+// flush re-merging the later instance.
+func TestPrune_LeavesALaterInstanceInFlight(t *testing.T) {
+	t.Parallel()
+	st := &failingStore{failsLeft: 1}
+	c := New(st, time.Hour, nil)
+	old := job.New("a", "Old", job.PolicyFromPP(3))
+	retry := job.New("a", "Retry", job.PolicyFromPP(3))
+	c.Mark(retry)
+
+	pruned := make(chan struct{})
+	st.beforeFail = func() {
+		go func() {
+			c.Prune(old)
+			close(pruned)
+		}()
+		waitUntilPruned(t, c, old)
+	}
+	if err := c.Flush(context.Background()); !errors.Is(err, errSaveBatchFailed) {
+		t.Fatalf("Flush: got %v, want errSaveBatchFailed", err)
+	}
+	<-pruned
+
+	if got := c.DirtyCount(); got != 1 {
+		t.Fatalf("DirtyCount = %d, want 1: pruning the departed instance took the "+
+			"retry out of the failed flush's re-merge", got)
+	}
+}
+
+// TestPrune_ForgetsACollectedInstance: the refusal does not outlive the job, so
 // the record does not grow with every job ever pruned.
 func TestPrune_ForgetsACollectedInstance(t *testing.T) {
 	t.Parallel()

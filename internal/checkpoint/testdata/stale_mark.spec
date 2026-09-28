@@ -1,5 +1,5 @@
 pkg ./internal/checkpoint/
-run TestMark_|TestUnprune_|TestPrune_ForgetsACollectedInstance
+run TestMark_|TestUnprune_|TestPrune_ForgetsACollectedInstance|TestPrune_LeavesALater|TestForgetPruned_
 timeout 2m
 
 [Mark does not consult the refusal, so a pruned instance's late mark is kept]
@@ -10,31 +10,59 @@ file internal/checkpoint/checkpointer.go
 	if _, gone := c.pruned[key]; gone && false {
 --- end
 
-[Prune does not record the instance, so nothing refuses its later marks]
+[Prune records nothing, so nothing refuses its later marks]
 file internal/checkpoint/checkpointer.go
 --- anchor
-	if _, ok := c.pruned[key]; !ok {
-		c.pruned[key] = runtime.AddCleanup(j, c.forgetPruned, key)
-	}
+		c.pruned[key] = rec
 --- replace
-	if _, ok := c.pruned[key]; !ok && false {
-		c.pruned[key] = runtime.AddCleanup(j, c.forgetPruned, key)
-	}
+		_ = rec
 --- end
 
 [Unprune leaves the refusal in place]
 file internal/checkpoint/checkpointer.go
 --- anchor
-		cleanup.Stop()
+		rec.cleanup.Stop()
 		delete(c.pruned, key)
 --- replace
-		cleanup.Stop()
+		rec.cleanup.Stop()
+--- end
+
+[one Unprune withdraws every Prune of the instance]
+file internal/checkpoint/checkpointer.go
+--- anchor
+	if rec.prunes <= 0 {
+--- replace
+	if true {
+--- end
+
+[a second Prune of one instance is not counted]
+file internal/checkpoint/checkpointer.go
+--- anchor
+	rec.prunes++
+--- replace
+	rec.prunes = 1
 --- end
 
 [a collected instance's refusal is never forgotten, so the record grows with every prune]
 file internal/checkpoint/checkpointer.go
 --- anchor
-		c.pruned[key] = runtime.AddCleanup(j, c.forgetPruned, key)
+		rec = &pruneRecord{cleanup: runtime.AddCleanup(j, c.forgetPruned, key)}
 --- replace
-		c.pruned[key] = runtime.Cleanup{}
+		rec = &pruneRecord{}
+--- end
+
+[Prune drops a later instance's pending mark under the same ID]
+file internal/checkpoint/checkpointer.go
+--- anchor
+	if c.dirty[id] == j {
+--- replace
+	if true {
+--- end
+
+[Prune takes a later instance under the same ID out of a failing flush's re-merge]
+file internal/checkpoint/checkpointer.go
+--- anchor
+	if c.inFlight[id] == j {
+--- replace
+	if true {
 --- end
