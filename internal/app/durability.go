@@ -276,6 +276,20 @@ func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 // maybeFinalize is how every other terminal condition leaves the queue — the
 // job carries its reason into history rather than sitting in the queue in a
 // state nothing will move it out of.
+//
+// # No stopping guard, unlike Stall
+//
+// Stall declines while stopping because its pause is persisted and nothing that
+// could undo it outlives the process. Fail advances no position: neither it nor
+// enqueuePostProc calls SetNext, Transition, Cross or Finish, and on this route
+// the job is settled by the finalizer once the post-processor has run it. The
+// hand-off itself is held in memory. So a Fail during shutdown either files the
+// job through a post-processor that is still running, or the hand-off dies with
+// the process and the job restarts at the state it was in, its outstanding
+// articles offered again. Of the fields Fail writes, Header.FailReason is the
+// persisted one, and a restarted job keeps it until it leaves the queue.
+// TestFail_InTheCleanShutdownBarrier_DoesNotPersistAPartialJobForPostProcessing
+// drives both outcomes.
 func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 	reason := "Failed: " + f.Error()
 	app.log.Error("job failed by a permanent storage fault", "job", jobID, "fault", f.Error())

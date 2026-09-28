@@ -1063,6 +1063,17 @@ forever after a slow but perfectly normal stop. The guard used to test
 `app.ctx.Err()`, which `app.cancel()` sets two steps *later*, so it was inert on
 exactly this path.
 
+**A permanent fault still fails the job**, and `Application.Fail` has no
+stopping guard because nothing it persists positions the job for
+post-processing. It advances no position, and its post-processing hand-off is
+held in memory: a post-processor still running files the job as Failed, and one
+that stops first takes the hand-off with it, so the job restarts at the state it
+was in, its outstanding articles offered again. Of the fields `Fail` writes,
+`Header.FailReason` is the persisted one, and a restarted job keeps it until it
+leaves the queue.
+`TestFail_InTheCleanShutdownBarrier_DoesNotPersistAPartialJobForPostProcessing`
+drives both outcomes.
+
 ## File completion and the handoff
 
 The assembler **no longer closes a file when its last part arrives**. It
