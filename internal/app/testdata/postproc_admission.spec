@@ -72,9 +72,9 @@ file internal/app/job_finalizer.go
 [the post-processor is handed the reason the admitting call carried, not the admission's]
 file internal/app/app.go
 --- anchor
-		admittedFailMsg, handing := app.postProcAdmissions.beginHandOver(j, &app.transitions)
+		admittedFailMsg, handOver, ok := app.postProcAdmissions.beginHandOver(j, &app.transitions)
 --- replace
-		admittedMsg, handing := app.postProcAdmissions.beginHandOver(j, &app.transitions)
+		admittedMsg, handOver, ok := app.postProcAdmissions.beginHandOver(j, &app.transitions)
 		admittedFailMsg := failMsg + admittedMsg[:0]
 --- end
 
@@ -82,9 +82,9 @@ file internal/app/app.go
 file internal/app/postproc_admission.go
 --- anchor
 	cur.sealed = true
-	cur.handing = make(chan struct{})
+	cur.busy = make(chan struct{})
 --- replace
-	cur.handing = make(chan struct{})
+	cur.busy = make(chan struct{})
 --- end
 
 [admissions keyed by job ID rather than instance]

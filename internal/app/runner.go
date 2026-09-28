@@ -43,7 +43,7 @@ type reporter interface {
 //     (enqueuePostProc). Post-processing completes and yields via
 //     jobFinalizer.persistAndCommit (`git grep -n 'func (f \*jobFinalizer) persistAndCommit' internal/app/`),
 //     via jobFinalizer.cancelled (`git grep -n 'func (f \*jobFinalizer) cancelled' internal/app/`)
-//     for a job postProcessor.Cancel took, or via Shutdown (`git grep -n 'func (app \*Application) Shutdown' internal/app/`).
+//     for a job postProcessor.Cancel took or the hand-over refused as removed, or via Shutdown (`git grep -n 'func (app \*Application) Shutdown' internal/app/`).
 //  4. Guard branches (missing app, missing job, app.stopping, unhandled states):
 //     discharges synchronously via immediate Yielded.
 type appRunner struct {
@@ -199,8 +199,11 @@ func (r *appRunner) runPostProc(_ context.Context, id string, _ job.State) {
 
 	// No yield when enqueuePostProc refuses the job as already admitted. The
 	// admitted run releases the launch claim on the paths item 3 of
-	// appRunner's doc lists. For a job cancelled during the admitted run's
-	// DirectUnpack wait, where Has is still false, appWorkers.Abort releases it
-	// instead.
+	// appRunner's doc lists. Before the admitted run hands the job over, Has
+	// is false: a dispatcher cancel at Repairing reaches appWorkers.Abort,
+	// which then releases the claim, and one at Extracting or Finalizing does
+	// not interrupt the run, which hands the job over as usual. A job a
+	// RemoveJob took is refused at the hand-over, and jobFinalizer.cancelled
+	// releases its claim.
 	r.app.enqueuePostProc(j, hdr, failMsgForJob(j))
 }

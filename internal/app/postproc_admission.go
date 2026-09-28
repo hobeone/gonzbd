@@ -19,10 +19,14 @@ import (
 // A removed job's post-processing does not start. RemoveJob marks the instance
 // removed (jobTransitions.markRemoved) and then calls withdraw, and
 // beginHandOver, which enqueuePostProc passes before PostProcessor.Process,
-// refuses an instance with that mark. withdraw also ends a DirectUnpack wait
-// the enqueue is in, which duOrch.abortJob cannot reach once duOrch.collect has
-// taken the unpacker, and waits out a hand-over already past the check, so the
-// PostProcessor.Cancel RemoveJob makes next finds the job.
+// refuses an instance with that mark. The enqueue's two steps, the DirectUnpack
+// wait (beginWait) and the hand-over (beginHandOver), each hold the admission
+// busy until endStep. withdraw signals the wait to abort its unpacker, which
+// duOrch.abortJob cannot reach once duOrch.collect has taken it, and returns
+// only once the step in progress has ended: the unpacker has stopped writing
+// into the download directory RemoveJob goes on to delete, and a job whose
+// hand-over had begun is queued or running for the PostProcessor.Cancel
+// RemoveJob makes next.
 //
 // An admission a shutdown interrupts is never ended.
 //
@@ -52,8 +56,9 @@ type postProcAdmission struct {
 	notes []string
 	// removed is closed by withdraw.
 	removed chan struct{}
-	// handing is non-nil from beginHandOver until endHandOver closes it.
-	handing chan struct{}
+	// busy is the token of the step in progress, from beginWait or
+	// beginHandOver until endStep or release closes it; nil between steps.
+	busy chan struct{}
 }
 
 // admitOutcome is what admit did with a call.
@@ -99,42 +104,60 @@ func (a *postProcAdmissions) admit(j *job.Job, failMsg string) admitOutcome {
 	return admitted
 }
 
+// beginWait starts the DirectUnpack wait of j's enqueue. It returns the
+// channel withdraw closes, on which the wait aborts its unpacker, and the
+// step's token for endStep. Both are nil when j is not admitted.
+func (a *postProcAdmissions) beginWait(j *job.Job) (removed <-chan struct{}, token chan struct{}) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cur, ok := a.jobs[j]
+	if !ok {
+		return nil, nil
+	}
+	cur.busy = make(chan struct{})
+	return cur.removed, cur.busy
+}
+
 // beginHandOver starts handing j to the post-processor. It refuses, returning
 // false, when j is not admitted or t records j as removed. Otherwise it seals
 // the admission, turning any later reason into a note, and returns the run's
-// FailMsg; the caller hands the job over and then calls endHandOver.
+// FailMsg and the step's token; the caller hands the job over and then calls
+// endStep with the token.
 //
-// The removal mark is read under mu, which withdraw takes only after the mark
-// is set, so withdraw's caller sees either this call refuse or its hand-over
-// end. t.mu is taken inside mu, and jobTransitions holds t.mu across no I/O,
-// no wait and no lock of this package (transition.go).
-func (a *postProcAdmissions) beginHandOver(j *job.Job, t *jobTransitions) (string, bool) {
+// The removal mark is read under mu, and withdraw takes mu only after the mark
+// is set. So a withdraw that takes mu first makes this call refuse, and one
+// that takes it later finds this step's token and returns once endStep or
+// release has closed it. t.mu is taken inside mu; jobTransitions holds t.mu
+// across no I/O, no wait and no lock of this package (transition.go).
+func (a *postProcAdmissions) beginHandOver(j *job.Job, t *jobTransitions) (failMsg string, token chan struct{}, ok bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	cur, ok := a.jobs[j]
 	if !ok || t.wasRemoved(j) {
-		return "", false
+		return "", nil, false
 	}
 	cur.sealed = true
-	cur.handing = make(chan struct{})
-	return cur.failMsg, true
+	cur.busy = make(chan struct{})
+	return cur.failMsg, cur.busy, true
 }
 
-// endHandOver ends the hand-over beginHandOver started, releasing a withdraw
-// waiting for it.
-func (a *postProcAdmissions) endHandOver(j *job.Job) {
+// endStep ends the step whose token beginWait or beginHandOver returned,
+// releasing a withdraw waiting for it. It closes the token only while it is
+// still j's current step: a release has already closed it, and a later
+// admission of j holds a token of its own.
+func (a *postProcAdmissions) endStep(j *job.Job, token chan struct{}) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if cur, ok := a.jobs[j]; ok && cur.handing != nil {
-		close(cur.handing)
-		cur.handing = nil
+	if cur, ok := a.jobs[j]; ok && token != nil && cur.busy == token {
+		close(cur.busy)
+		cur.busy = nil
 	}
 }
 
 // withdraw is RemoveJob's notice that j is removed, given after
-// jobTransitions.markRemoved. It closes the channel removal returns and, while
-// a hand-over of j is in progress, waits for endHandOver. It does nothing for
-// a job that is not admitted.
+// jobTransitions.markRemoved. It closes the channel beginWait returned and, if
+// a step of j's enqueue is in progress, waits until that step ends. It does
+// nothing for a job that is not admitted.
 func (a *postProcAdmissions) withdraw(j *job.Job) {
 	a.mu.Lock()
 	cur, ok := a.jobs[j]
@@ -147,22 +170,11 @@ func (a *postProcAdmissions) withdraw(j *job.Job) {
 	default:
 		close(cur.removed)
 	}
-	handing := cur.handing
+	busy := cur.busy
 	a.mu.Unlock()
-	if handing != nil {
-		<-handing
+	if busy != nil {
+		<-busy
 	}
-}
-
-// removal returns the channel withdraw closes for j, or nil when j is not
-// admitted.
-func (a *postProcAdmissions) removal(j *job.Job) <-chan struct{} {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if cur, ok := a.jobs[j]; ok {
-		return cur.removed
-	}
-	return nil
 }
 
 // notes returns a copy of the reasons j's admission kept as notes.
@@ -176,15 +188,15 @@ func (a *postProcAdmissions) notes(j *job.Job) []string {
 	return append([]string(nil), cur.notes...)
 }
 
-// release ends j's admission. It also ends a hand-over still open: a job the
-// post-processor finishes before its enqueue reaches endHandOver is released
-// first, and a withdraw waiting on that hand-over must not wait for an
-// admission that no longer exists.
+// release ends j's admission. It also ends a step still in progress: a job the
+// post-processor finishes before its enqueue reaches endStep is released
+// first, and a withdraw waiting on that step must not wait for an admission
+// that no longer exists.
 func (a *postProcAdmissions) release(j *job.Job) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if cur, ok := a.jobs[j]; ok && cur.handing != nil {
-		close(cur.handing)
+	if cur, ok := a.jobs[j]; ok && cur.busy != nil {
+		close(cur.busy)
 	}
 	delete(a.jobs, j)
 }

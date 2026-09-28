@@ -59,13 +59,20 @@ single worker goroutine (`run`).
 - **A removed job is not handed over**: `enqueuePostProc` calls `Process`
   only after `postProcAdmissions.beginHandOver`, which refuses a job instance
   `RemoveJob` has marked removed (`jobTransitions.markRemoved`); a refused
-  enqueue ends its admission and runs nothing. After marking, `RemoveJob`
-  calls `postProcAdmissions.withdraw`, which ends a DirectUnpack wait the
-  enqueue is in — `duOrch.abortJob` cannot reach an unpacker `duOrch.collect`
-  has already taken — and waits for a hand-over already past the check, so
-  the `Cancel` it makes afterwards finds that job queued or running. A
-  `RemoveJob` whose `dispatcher.Remove` fails withdraws its mark, and a
-  hand-over that begins after that is not refused.
+  enqueue runs nothing and hands the job to `jobFinalizer.cancelled`, which
+  releases its launch claim and ends its admission. The claim is that
+  enqueue's to release: at `Extracting` and `Finalizing` the dispatcher's
+  cancel does not interrupt the job, so `appWorkers.Abort` never runs for it.
+  After marking, `RemoveJob` calls `postProcAdmissions.withdraw`, which
+  signals a DirectUnpack wait the enqueue is in to abort its unpacker —
+  `duOrch.abortJob` cannot reach one `duOrch.collect` has already taken — and
+  returns only once that wait has ended, so nothing `RemoveJob` deletes is
+  still being written. It likewise waits for a hand-over already past the
+  check, so the `Cancel` it makes afterwards finds that job queued or
+  running. A `RemoveJob` whose `dispatcher.Remove` fails withdraws its mark,
+  and a hand-over that begins after that is not refused; its job reaches
+  post-processing with the DirectUnpack the withdraw aborted, whose sets are
+  recorded as failed.
 - **Which copy's information wins**: a refused call hands nothing over. The
   admitted call keeps everything it gathered, including the DirectUnpack
   results, which `duOrch.collect` hands out only once. The history entry's

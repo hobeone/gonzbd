@@ -1,15 +1,121 @@
 package app
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/dispatch"
+	dispatchstore "github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/postproc"
+	"github.com/hobeone/gonzbd/internal/types"
 )
+
+// postProcStates are the states a launched job hands to enqueuePostProc from.
+// A dispatcher cancel interrupts only the first, so only there does
+// appWorkers.Abort release the launch claim.
+var postProcStates = []job.State{job.Repairing, job.Extracting, job.Finalizing}
+
+// jobAt builds a one-file job whose attempt stands at state.
+func jobAt(t *testing.T, application *Application, name string, state job.State) (*job.Job, dispatch.Header) {
+	t.Helper()
+	parsed := &nzb.NZB{Files: []nzb.File{{
+		Subject:  name + ".bin",
+		Bytes:    100,
+		Articles: []nzb.Article{{ID: name + "0@t", Bytes: 100, Number: 1}},
+	}}}
+	j, hdr, err := BuildIngestJob(application.config, parsed, name+".nzb", types.FetchOptions{NzbName: name}, nil)
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	if err := j.BeginAttempt(time.Now()); err != nil {
+		t.Fatalf("BeginAttempt: %v", err)
+	}
+	step := func(s job.State) {
+		t.Helper()
+		if err := j.SetNext(s); err != nil {
+			t.Fatalf("SetNext(%s): %v", s, err)
+		}
+		if err := j.Transition(s); err != nil {
+			t.Fatalf("Transition(%s): %v", s, err)
+		}
+	}
+	step(job.Assessing)
+	if state == job.Repairing {
+		step(job.Repairing)
+		return j, hdr
+	}
+	if err := j.SetNext(job.Extracting); err != nil {
+		t.Fatalf("SetNext(Extracting): %v", err)
+	}
+	if _, err := j.Cross(job.Extracting); err != nil {
+		t.Fatalf("Cross(Extracting): %v", err)
+	}
+	if state == job.Finalizing {
+		step(job.Finalizing)
+	}
+	return j, hdr
+}
+
+// launchedAppAt is admittedApp with the job at state: launched under a
+// holdingRunner, so it holds its launch claim and the post-processor has not
+// been given it, with a non-empty download directory at the path
+// enqueuePostProc derives.
+func launchedAppAt(t *testing.T, stage postproc.Stage, state job.State) (*Application, *job.Job) {
+	t.Helper()
+	application, repo, _ := newLifecycleTestApp(t, WithPostProcStages([]postproc.Stage{stage}))
+	application.ctx = t.Context()
+	runner := holdingRunner{launched: make(chan string, 1)}
+	d := dispatch.New(
+		1, 1, 10*time.Millisecond, time.Now,
+		&appWorkers{app: application},
+		application.residency,
+		dispatchstore.New(repo.DB()),
+		runner,
+	)
+	application.dispatcher = d
+	application.pipeline.dispatcher = d
+
+	j, hdr := jobAt(t, application, "held", state)
+	if err := d.Add(t.Context(), j, hdr); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Stop() })
+	if err := application.postProcessor.Start(t.Context()); err != nil {
+		t.Fatalf("postProcessor.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = application.postProcessor.Stop() })
+	select {
+	case <-runner.launched:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the %s job was never launched", state)
+	}
+	dir := filepath.Join(application.config.GetGeneral().DownloadDir, j.Name())
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "held.bin"), make([]byte, 100), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return application, j
+}
+
+// finishedStage is a gatedStage that returns as soon as it starts.
+func finishedStage() gatedStage {
+	stage := gatedStage{entered: make(chan string, 4), finish: make(chan struct{})}
+	close(stage.finish)
+	return stage
+}
 
 // waitingDirectUnpack registers a DirectUnpacker for id that has the first of
 // two volumes and waits for the second, which never arrives.
@@ -61,21 +167,91 @@ func assertNeverPostProcessed(t *testing.T, application *Application, stage gate
 
 // TestRemoveJob_DuringTheDirectUnpackWait_PostProcessingDoesNotRun: a job
 // removed while its admitted enqueue waits for its DirectUnpack is not handed
-// to the post-processor once the wait ends.
+// to the post-processor, and RemoveJob returns with the job deregistered, in
+// every state a launch hands to enqueuePostProc from.
 func TestRemoveJob_DuringTheDirectUnpackWait_PostProcessingDoesNotRun(t *testing.T) {
 	t.Parallel()
-	stage := gatedStage{entered: make(chan string, 4), finish: make(chan struct{})}
-	close(stage.finish)
-	application, j := admittedApp(t, stage)
+	for _, state := range postProcStates {
+		t.Run(state.String(), func(t *testing.T) {
+			t.Parallel()
+			stage := finishedStage()
+			application, j := launchedAppAt(t, stage, state)
+			id := j.ID()
+			waitingDirectUnpack(t, application, id)
+
+			application.maybeFinalize(id, "")
+			removeWithinBudget(t, application, id)
+			awaitAdmissionsEnded(t, application)
+
+			assertNeverPostProcessed(t, application, stage)
+		})
+	}
+}
+
+// TestRemoveJob_WaitsForTheDirectUnpackToStop: RemoveJob deletes nothing
+// while the DirectUnpacker the enqueue collected still runs; duOrch.abortJob
+// cannot reach it, so the removal waits for the enqueue's wait to abort it.
+func TestRemoveJob_WaitsForTheDirectUnpackToStop(t *testing.T) {
+	t.Parallel()
+	stage := finishedStage()
+	application, j := launchedAppAt(t, stage, job.Extracting)
 	id := j.ID()
 	du := waitingDirectUnpack(t, application, id)
+	running := make(chan bool, 1)
+	application.removeJobHook = func(string) {
+		select {
+		case <-du.Done():
+			running <- false
+		default:
+			running <- true
+		}
+	}
 
 	application.maybeFinalize(id, "")
 	removeWithinBudget(t, application, id)
-	du.Abort()
-	awaitAdmissionsEnded(t, application)
+	if <-running {
+		t.Error("RemoveJob went on to its cleanup while the DirectUnpacker was still running")
+	}
+}
 
-	assertNeverPostProcessed(t, application, stage)
+// TestEnqueuePostProc_RemovedBeforeItsHandOver_ReleasesTheJob: an enqueue with
+// no DirectUnpack that a RemoveJob overtakes before its hand-over, as while it
+// closes the job's handles, or that looked the job up before the removal and
+// is admitted after it, runs nothing, and RemoveJob returns with the job
+// deregistered. At Extracting and Finalizing nothing but the refused
+// hand-over releases the launch claim dispatcher.Remove waits on.
+func TestEnqueuePostProc_RemovedBeforeItsHandOver_ReleasesTheJob(t *testing.T) {
+	t.Parallel()
+	for _, state := range postProcStates {
+		t.Run(state.String(), func(t *testing.T) {
+			t.Parallel()
+			stage := finishedStage()
+			application, j := launchedAppAt(t, stage, state)
+			id := j.ID()
+			row, ok := application.dispatcher.Row(id)
+			if !ok {
+				t.Fatal("the job is not registered")
+			}
+
+			removed := make(chan error, 1)
+			go func() {
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				removed <- application.RemoveJob(ctx, id, false)
+			}()
+			waitFor(t, func() bool { return application.transitions.wasRemoved(j) })
+			application.enqueuePostProc(j, row.Header, "")
+
+			if err := <-removed; err != nil {
+				t.Fatalf("RemoveJob: %v", err)
+			}
+			if _, ok := application.dispatcher.Job(id); ok {
+				t.Error("the job is still registered after RemoveJob returned")
+			}
+			awaitAdmissionsEnded(t, application)
+			assertNeverPostProcessed(t, application, stage)
+		})
+	}
 }
 
 // TestRemoveJob_InterruptsTheDirectUnpackWait: the removal itself ends the
@@ -83,8 +259,7 @@ func TestRemoveJob_DuringTheDirectUnpackWait_PostProcessingDoesNotRun(t *testing
 // enqueue has collected the unpacker.
 func TestRemoveJob_InterruptsTheDirectUnpackWait(t *testing.T) {
 	t.Parallel()
-	stage := gatedStage{entered: make(chan string, 4), finish: make(chan struct{})}
-	close(stage.finish)
+	stage := finishedStage()
 	application, j := admittedApp(t, stage)
 	id := j.ID()
 	waitingDirectUnpack(t, application, id)
@@ -96,35 +271,12 @@ func TestRemoveJob_InterruptsTheDirectUnpackWait(t *testing.T) {
 	assertNeverPostProcessed(t, application, stage)
 }
 
-// TestEnqueuePostProc_AfterRemoveJob_DoesNotHandOver: an enqueue that looked
-// the job up before a RemoveJob took it, and reaches its admission only after,
-// does not hand it to the post-processor. The same check covers an enqueue
-// with no DirectUnpack that a removal overtakes while it closes the job's
-// handles.
-func TestEnqueuePostProc_AfterRemoveJob_DoesNotHandOver(t *testing.T) {
-	t.Parallel()
-	stage := gatedStage{entered: make(chan string, 4), finish: make(chan struct{})}
-	close(stage.finish)
-	application, j := admittedApp(t, stage)
-	id := j.ID()
-	row, ok := application.dispatcher.Row(id)
-	if !ok {
-		t.Fatal("the job is not registered")
-	}
-
-	removeWithinBudget(t, application, id)
-	application.enqueuePostProc(j, row.Header, "")
-	awaitAdmissionsEnded(t, application)
-
-	assertNeverPostProcessed(t, application, stage)
-}
-
 // handOverReason seals j's admission through a hand-over no removal refuses,
 // and returns the run's FailMsg.
 func handOverReason(a *postProcAdmissions, j *job.Job) string {
 	var none jobTransitions
-	msg, _ := a.beginHandOver(j, &none)
-	a.endHandOver(j)
+	msg, token, _ := a.beginHandOver(j, &none)
+	a.endStep(j, token)
 	return msg
 }
 
@@ -141,13 +293,13 @@ func TestPostProcAdmissions_HandOverRefusesARemovedInstance(t *testing.T) {
 	a.admit(retry, "")
 	tr.markRemoved(removed)
 
-	if _, ok := a.beginHandOver(removed, &tr); ok {
+	if _, _, ok := a.beginHandOver(removed, &tr); ok {
 		t.Error("beginHandOver handed over a removed instance")
 	}
-	if _, ok := a.beginHandOver(retry, &tr); !ok {
+	if _, _, ok := a.beginHandOver(retry, &tr); !ok {
 		t.Error("beginHandOver refused an instance no RemoveJob marked")
 	}
-	if _, ok := a.beginHandOver(job.New("absent", "absent", job.Policy{}), &tr); ok {
+	if _, _, ok := a.beginHandOver(job.New("absent", "absent", job.Policy{}), &tr); ok {
 		t.Error("beginHandOver handed over an instance that is not admitted")
 	}
 }
@@ -168,44 +320,94 @@ func returnsWithin(d time.Duration, fn func()) (<-chan struct{}, bool) {
 	}
 }
 
-// TestPostProcAdmissions_WithdrawWaitsOutAHandOver: withdraw closes the
-// removal channel at once, but returns only once a hand-over in progress
-// ends, so the PostProcessor.Cancel after it finds the job. A job the
-// post-processor finishes first ends the hand-over through its release.
-func TestPostProcAdmissions_WithdrawWaitsOutAHandOver(t *testing.T) {
+// TestPostProcAdmissions_WithdrawWaitsOutAStep: withdraw closes the removal
+// channel at once but returns only once the enqueue's step in progress, its
+// DirectUnpack wait or its hand-over, has ended, through endStep or, for a
+// job the post-processor finished first, through release.
+func TestPostProcAdmissions_WithdrawWaitsOutAStep(t *testing.T) {
 	t.Parallel()
-	for _, end := range []string{"endHandOver", "release"} {
-		t.Run(end, func(t *testing.T) {
-			t.Parallel()
-			var a postProcAdmissions
-			var tr jobTransitions
-			j := job.New("handing", "handing", job.Policy{})
-			a.admit(j, "")
-			removal := a.removal(j)
-			if _, ok := a.beginHandOver(j, &tr); !ok {
-				t.Fatal("beginHandOver refused")
-			}
+	for _, step := range []string{"wait", "hand-over"} {
+		for _, end := range []string{"endStep", "release"} {
+			t.Run(step+"/"+end, func(t *testing.T) {
+				t.Parallel()
+				var a postProcAdmissions
+				var tr jobTransitions
+				j := job.New("stepping", "stepping", job.Policy{})
+				a.admit(j, "")
+				removal, token := a.beginWait(j)
+				if step == "hand-over" {
+					a.endStep(j, token)
+					var ok bool
+					if _, token, ok = a.beginHandOver(j, &tr); !ok {
+						t.Fatal("beginHandOver refused")
+					}
+				}
 
-			done, returned := returnsWithin(50*time.Millisecond, func() { a.withdraw(j) })
-			if returned {
-				t.Fatal("withdraw returned while the hand-over was in progress")
-			}
-			select {
-			case <-removal:
-			case <-time.After(5 * time.Second):
-				t.Fatal("withdraw did not close the removal channel")
-			}
-			if end == "endHandOver" {
-				a.endHandOver(j)
-			} else {
-				a.release(j)
-			}
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("withdraw did not return after %s", end)
-			}
-		})
+				var ended atomic.Bool
+				var endedFirst atomic.Bool
+				done, _ := returnsWithin(0, func() {
+					a.withdraw(j)
+					endedFirst.Store(ended.Load())
+				})
+				select {
+				case <-removal:
+				case <-time.After(5 * time.Second):
+					t.Fatal("withdraw did not close the removal channel")
+				}
+				// withdraw has taken the step's token under the lock by the
+				// time the channel is closed; a withdraw that does not wait
+				// returns within microseconds of it.
+				select {
+				case <-done:
+					t.Fatalf("withdraw returned while the %s was in progress", step)
+				case <-time.After(100 * time.Millisecond):
+				}
+				ended.Store(true)
+				if end == "endStep" {
+					a.endStep(j, token)
+				} else {
+					a.release(j)
+				}
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Fatalf("withdraw did not return after %s", end)
+				}
+				if !endedFirst.Load() {
+					t.Errorf("withdraw returned before the %s ended", step)
+				}
+			})
+		}
+	}
+}
+
+// TestPostProcAdmissions_AStaleTokenEndsNoStep: an enqueue's step token ends
+// only its own step. After its admission was released and the instance
+// admitted again, a late endStep with the old token must not release a
+// withdraw waiting on the new admission's step.
+func TestPostProcAdmissions_AStaleTokenEndsNoStep(t *testing.T) {
+	t.Parallel()
+	var a postProcAdmissions
+	var tr jobTransitions
+	j := job.New("stale", "stale", job.Policy{})
+	a.admit(j, "")
+	_, stale, _ := a.beginHandOver(j, &tr)
+	a.release(j)
+	a.admit(j, "")
+	_, current := a.beginWait(j)
+
+	done, _ := returnsWithin(0, func() { a.withdraw(j) })
+	a.endStep(j, stale)
+	select {
+	case <-done:
+		t.Fatal("a stale token ended the current step")
+	case <-time.After(100 * time.Millisecond):
+	}
+	a.endStep(j, current)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("withdraw did not return after the current step ended")
 	}
 }
 
@@ -222,8 +424,8 @@ func TestPostProcAdmissions_WithdrawIsSafeToRepeat(t *testing.T) {
 			t.Fatalf("withdraw %d did not return", i)
 		}
 	}
-	if a.removal(absent) != nil {
-		t.Error("removal of a job that is not admitted is not nil")
+	if removal, token := a.beginWait(absent); removal != nil || token != nil {
+		t.Error("beginWait of a job that is not admitted returned a channel")
 	}
 }
 

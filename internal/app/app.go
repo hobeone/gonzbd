@@ -928,9 +928,10 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// Abort any active DirectUnpacker for this job before removing files.
 	app.duOrch.abortJob(id)
 	// After markRemoved, so an enqueue that has not yet handed the job over
-	// refuses it and a DirectUnpack wait duOrch.abortJob could not reach ends,
-	// and before the post-processing cancel below, which then finds a job
-	// whose hand-over had already begun (postProcAdmissions).
+	// refuses it. It returns once a DirectUnpack wait duOrch.abortJob could not
+	// reach has aborted its unpacker, before any file below is deleted, and
+	// once a hand-over that had already begun has queued the job for the
+	// post-processing cancel below (postProcAdmissions).
 	app.postProcAdmissions.withdraw(j)
 
 	// The dispatcher cancel comes first. Its abort releases the launch claim
@@ -2292,21 +2293,32 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	// When du != nil, Wait() is executed inside an asynchronous worker
 	// goroutine on app.wg so the completion event consumer (watchCompletions)
 	// never blocks waiting for disk unpacking to finish.
+	//
+	// The wait step begins before the collect: from the collect on,
+	// duOrch.abortJob cannot reach du, so a RemoveJob's withdraw must already
+	// find the step to wait on. A withdraw before this point leaves du in the
+	// orchestrator, where RemoveJob's duOrch.abortJob aborts it.
+	removed, wait := app.postProcAdmissions.beginWait(j)
 	du := app.duOrch.collect(j.ID())
+	if du == nil {
+		app.postProcAdmissions.endStep(j, wait)
+	}
 
 	enqueue := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
 		// Sealed now rather than taken from failMsg: an enqueuePostProc
 		// refused during the DirectUnpack wait may have added a reason. A
 		// reason arriving after the seal cannot reach the stages, so it is
 		// only noted.
-		admittedFailMsg, handing := app.postProcAdmissions.beginHandOver(j, &app.transitions)
-		if !handing {
-			// A RemoveJob took the job. Its launch claim, if it holds one, is
-			// the removal's to release: RemoveJob's dispatcher cancel reaches
-			// appWorkers.Abort, which yields a job the post-processor does not
-			// hold, and this one it never will.
+		admittedFailMsg, handOver, ok := app.postProcAdmissions.beginHandOver(j, &app.transitions)
+		if !ok {
+			// A RemoveJob took the job. It is handed back as a job the
+			// post-processor's Cancel took would be: jobFinalizer.cancelled
+			// releases its launch claim, which dispatcher.Remove waits on, and
+			// ends the admission. RemoveJob's own dispatcher cancel does not
+			// release the claim at Extracting or Finalizing, where it does not
+			// interrupt the job.
 			app.log.Info("postproc: job was removed before it was handed to post-processing; not running it", "job", j.ID())
-			app.postProcAdmissions.release(j)
+			app.finalizer.cancelled(&postproc.Job{Job: j})
 			return
 		}
 		app.postProcessor.Process(&postproc.Job{
@@ -2326,7 +2338,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			DirectUnpackFailures: duFailures,
 			DirectUnpackSkipped:  duSkipped,
 		})
-		app.postProcAdmissions.endHandOver(j)
+		app.postProcAdmissions.endStep(j, handOver)
 		select {
 		case app.jobComplete <- JobComplete{JobID: j.ID()}:
 		default:
@@ -2342,8 +2354,11 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			// arrives), which would hang Shutdown() at app.wg.Wait(). Watch the
 			// lifecycle context and the admission's removal, and Abort() the du
 			// on either so Wait() returns; skip dispatch on the first, since we
-			// are tearing down.
-			if !awaitDirectUnpackOrAbort(app.ctx, app.postProcAdmissions.removal(j), du) {
+			// are tearing down. The wait step ends only once du has stopped, so
+			// a withdrawing RemoveJob deletes nothing du is still writing.
+			finished := awaitDirectUnpackOrAbort(app.ctx, removed, du)
+			app.postProcAdmissions.endStep(j, wait)
+			if !finished {
 				return
 			}
 			duResults := du.Results()
