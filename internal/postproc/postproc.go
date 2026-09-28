@@ -283,8 +283,9 @@ func (p *PostProcessor) run() {
 
 		// If the worker context was cancelled (shutdown), the job was only
 		// partially processed. Skip onJobDone so it remains in the active
-		// queue. On the next startup, crash recovery will find it with
-		// PostProc=true and re-enqueue it for post-processing.
+		// queue. Nothing is persisted here: the next startup resumes the job
+		// from its persisted dispatcher state, which for a job handed over
+		// from Fetching is Fetching.
 		if p.workerCtx.Err() != nil {
 			p.setBusyWithJob(false, "", nil)
 			p.log.Info("postproc: shutdown interrupted job, preserving for recovery",

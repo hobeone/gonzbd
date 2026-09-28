@@ -1148,8 +1148,19 @@ drained during shutdown.
 The close-time fault is **not** routed to `Stallable` from inside the
 assembler — it carries no `ErrFaultRouted` marker, so routing it would park the
 job a second time for a condition the barrier had already routed, and on the
-`CloseJobHandles` path it would arrive at `StatusVerifying`, which neither
-`Stall` nor `Fail` can act on.
+`CloseJobHandles` path it would arrive for a job already admitted to
+post-processing: `Fail` cannot hand that job over again, and `Stall` would
+pause a job whose files post-processing is using.
+
+**A job whose handles `CloseJobHandles` closed is not downloaded again in this
+process.** Its written-but-unacked articles keep their Emitted bits, and a
+downloader reload may clear them, which re-fetches nothing: `enqueuePostProc`
+admits the job to post-processing before closing, and the downloader skips an
+admitted job (`downloader.Options.HandedOff`) whatever its row says. That
+matters because a job handed over from `Fetching` — `Application.Fail`, the
+hopeless callbacks — stays at `Fetching` with `IntentRun` until the finalizer's
+`CancelJob`. An article already in flight at the hand-off is dropped by the
+assembler's whole-job tombstone, which `ForgetJob` clears for a retry.
 
 **A failed finalize stops the completion.** The file is not marked complete,
 DirectUnpack is not fed it, and the job does not finalize — because none of those
@@ -1184,7 +1195,7 @@ exists for reasons that involve no pause of ours: a *user* pause evicts the job,
 the next checkpoint's `AckDurable` fails with `ErrJobNotResident`, and
 `noteNeedsSeed` creates one. Resuming on that undid the user's pause within one
 interval with no log saying so — and it could not settle, because handles stay
-open through a pause (`CloseJobHandles` runs only from `maybeFinalize`), so the
+open through a pause (`CloseJobHandles` runs only from `enqueuePostProc`), so the
 next checkpoint failed the same way and recreated the record as fast as it was
 cleared. `stallRecord.parked` is set only by the paths that pause the job
 themselves.
@@ -1591,7 +1602,7 @@ the encoding, and the names are what the code reads.
 | Control | Encoding | Worker behaviour |
 |---|---|---|
 | **CancelJob** | `JobID=""`, `FileIdx=fileIdxCancelJob` (-1), `MessageID=jobID`, `disposition` | closes all open files for the job and *deletes* them under `DeleteFiles` or leaves them on disk under `KeepFiles` (draining the cache first, so a kept file holds every byte that arrived — written, not fsynced, so a crash can still lose them); tombstones the job in `cancelledJobs` and discards cached articles under **both**; closes `ackCh` |
-| **CloseJobHandles** | `JobID=""`, `FileIdx=fileIdxCloseHandles` (-2), `MessageID=jobID` | drains, `Sync`s and `Close`s handles *without deleting*, tombstones the files, **sends any close-time fault on `ackCh`** and closes it. Used when a job enters post-processing or par2 repair |
+| **CloseJobHandles** | `JobID=""`, `FileIdx=fileIdxCloseHandles` (-2), `MessageID=jobID` | drains, `Sync`s and `Close`s handles *without deleting*, tombstones the files and the job in `cancelledJobs`, **sends any close-time fault on `ackCh`** and closes it. Used when a job enters post-processing |
 | **Barrier op** | `JobID=""`, `FileIdx=fileIdxSyncOp` (-3), `syncOp` payload | `Files`, `Jobs`, `Drain`, `Sync`, `Stat`, `Truncate`, `Close` on one file, on the worker goroutine |
 
 The barrier-op indirection is invariant X1, not ceremony. One goroutine owns all

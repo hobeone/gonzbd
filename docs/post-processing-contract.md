@@ -57,6 +57,16 @@ single worker goroutine (`run`).
   registered under the ID of a job still being finalized is admitted. Two
   admissions are never ended: a run a shutdown interrupts, and a job removed
   during a DirectUnpack wait that never finishes.
+- **An admitted job is not downloaded**: `maybeFinalize` moves no persisted
+  position, so a job it hands over from `Fetching` — `Fail`, the hopeless
+  callbacks, startup reconciliation, a retry — keeps a dispatchable row
+  (`IntentRun`, at or bound for `Fetching`) until the finalizer's `CancelJob`. The
+  downloader skips it anyway: `downloader.Options.HandedOff` is wired to the
+  admission record, and `enqueuePostProc` admits before it calls
+  `CloseJobHandles`. An article already in flight at the hand-off is dropped
+  by the assembler's whole-job tombstone, which `CloseJobHandles` sets and
+  `ForgetJob` clears for a retry. `TestFail_AJobInPostProcessingIsNotDispatched`
+  and `TestCloseJobHandles_TombstonesTheWholeJob` are the pins.
 - **Which copy's information wins**: a refused call hands nothing over. The
   admitted call keeps everything it gathered, including the DirectUnpack
   results, which `duOrch.collect` hands out only once. The history entry's
@@ -88,10 +98,14 @@ single worker goroutine (`run`).
   runner hands over after the abort looked is still stopped by this `Cancel`,
   though the abort has already released its claim and `RemoveJob` does not
   wait for its stage to return.
-- **Crash recovery handoff**: Jobs whose download completed have `PostProc=true`
-  persisted in SQLite history. If the daemon crashes or shuts down while a job is
-  being processed, `workerCtx` cancellation halts stage execution, preserving
-  the job state so crash recovery re-enqueues it on next startup.
+- **Crash recovery handoff**: nothing marks a job as in post-processing on
+  disk. If the daemon crashes or shuts down while a job is being processed,
+  `workerCtx` cancellation halts stage execution and the job stays in the
+  queue, and the next startup resumes it from its persisted dispatcher state.
+  A job at `Repairing`, `Extracting` or `Finalizing` is post-processed again;
+  one handed over from `Fetching` is back at `Fetching`, where
+  `Application.Start` re-finalizes it if it is complete and it downloads again
+  otherwise.
 
 ## Full 11-Stage Execution Sequence
 

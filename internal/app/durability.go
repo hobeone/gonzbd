@@ -587,9 +587,14 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 		// whole set rather than deleting from it. Each is safe for its own
 		// reason:
 		//
-		//   - CloseJobHandles: the job is already StatusVerifying, and
-		//     ForEachUnfinishedArticle skips a PostProc job, so its Emitted
-		//     bits cannot produce a re-fetch whether cleared or not.
+		//   - CloseJobHandles: enqueuePostProc admits the job to
+		//     post-processing before calling it, and the downloader does not
+		//     dispatch an admitted job (downloader Options.HandedOff, wired to
+		//     postProcAdmissions.has), so its Emitted bits cannot produce a
+		//     re-fetch whether cleared or not. This does NOT rest on the job's
+		//     state: one handed off from Fetching (Fail, a hopeless callback)
+		//     stays at Fetching with IntentRun until the finalizer's CancelJob,
+		//     which precedes the admission's release on both of its paths.
 		//   - CancelJob: the job is deregistered, so the reload loop that calls
 		//     Job.ClearEmittedForReload never reaches it. The iteration is the
 		//     CALLER's — the method is per-job — so a deregistered job is
@@ -892,10 +897,9 @@ func (app *Application) checkpointAllWithBudget(ctx context.Context, budget func
 	// the reload loop calls Job.ClearEmittedForReload for every registered job
 	// (a non-resident one returns early, having no manifest or progress), so
 	// the set is a subset. That is not an unclosed instance of #417. A resident job with no
-	// open file either never wrote anything, or had its handles closed by
-	// CloseJobHandles, which runs only on a job already at StatusVerifying;
-	// ForEachUnfinishedArticle skips a PostProc job, so its Emitted bits
-	// cannot produce a re-fetch whether they are cleared or not.
+	// open file either never wrote anything, or lost its files by one of the
+	// four paths checkpointJob's len(open) == 0 arm lists, each safe for the
+	// reason given there.
 	if app.barrier == nil {
 		return app.jobsAtRisk()
 	}

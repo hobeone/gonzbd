@@ -2177,8 +2177,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	switch app.postProcAdmissions.admit(j, failMsg) {
 	case admitted:
 	case refused:
-		// Debug: the downloader's hopeless callback repeats on every dispatch
-		// pass until the finalizer cancels the job.
+		// Debug: a refusal that brings no reason loses nothing.
 		app.log.Debug("postproc: job already admitted; not enqueuing it again", "job", j.ID())
 		return
 	case refusedReasonKept:
@@ -2194,6 +2193,12 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	// Close any open assembler file handles for this job so post-processing
 	// operations (Par2 repair, unpack, cleanup) don't trigger NFS silly-rename
 	// (.nfsXXXX) artifacts on open files.
+	//
+	// The admission above is what stops the job being dispatched from here on
+	// (downloader Options.HandedOff), and it must precede the close: a job
+	// handed off from Fetching keeps a dispatchable row until the finalizer's
+	// CancelJob. An article already in flight that arrives after the close
+	// is dropped by the assembler's whole-job tombstone.
 	closeTimeout := app.closeHandlesTimeout
 	if closeTimeout <= 0 {
 		closeTimeout = closeHandlesTimeout
@@ -2692,6 +2697,7 @@ func (app *Application) buildDownloaderOptions() downloader.Options {
 			}
 			app.maybeFinalize(jobID, msg)
 		},
+		HandedOff: app.postProcAdmissions.has,
 	}
 }
 

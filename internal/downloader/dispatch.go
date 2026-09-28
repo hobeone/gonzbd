@@ -83,7 +83,7 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 		}
 
 		j, ok := d.dispatcher.Job(row.ID)
-		if !ok || !j.Resident() {
+		if !ok || !j.Resident() || d.handedOff(j) {
 			continue
 		}
 
@@ -207,6 +207,11 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 	}
 }
 
+// handedOff applies Options.HandedOff. opts is set once, in New.
+func (d *Downloader) handedOff(j *job.Job) bool {
+	return d.opts.HandedOff != nil && d.opts.HandedOff(j)
+}
+
 // hasDownloadableJobs reports whether any job in the queue is actively downloading
 // or waiting to download (i.e. in Fetching or queued to fetch, not paused, and not settled).
 func (d *Downloader) hasDownloadableJobs() bool {
@@ -217,6 +222,9 @@ func (d *Downloader) hasDownloadableJobs() bool {
 		// != IntentRun, not == IntentPause: a cancelled job (IntentCancel)
 		// must not count as downloadable either.
 		if row.View.Intent != job.IntentRun || row.View.Outcome.IsSettled() {
+			continue
+		}
+		if j, ok := d.dispatcher.Job(row.ID); ok && d.handedOff(j) {
 			continue
 		}
 		if row.View.State == job.Fetching || (row.View.State == job.StateUnset && row.View.Next == job.Fetching) {
