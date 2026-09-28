@@ -51,8 +51,8 @@ const (
 	// may well exist and nothing has checked them.
 	//
 	// It is also the default the stage adopts the moment it knows par2 sets
-	// exist, narrowing to Clean or Damaged only where verification actually
-	// happened (#314). So the causes are "anything that did not earn a
+	// exist, narrowing to Clean, Damaged or Unidentified only where
+	// identification or verification actually happened (#314). So the causes are "anything that did not earn a
 	// verdict", and only one of them involves the manifest — do not go
 	// looking for a manifest problem first:
 	//   - the par2 scan itself failed, so whether the job has par2 sets is
@@ -64,6 +64,22 @@ const (
 	//   - par2 sets were found and no assembled CRC was available for any of
 	//     them, so the comparison had nothing on either side.
 	QuickCheckInconclusive
+
+	// QuickCheckUnidentified means par2 sets were found but no delivered file
+	// is anything they describe, by name or by content, and the delivered
+	// files include a RAR or 7z archive. That is a Layout B post: par2
+	// protects what the archive extracts to, which does not exist until
+	// unpack has run, so a repair before unpack has nothing delivered to
+	// verify, and the ParError of a failed one would skip unpack. Repair
+	// declines, and the per-entry checksums the archive records, checked as
+	// unpack extracts, verify the content instead — where the extractor can
+	// check them; see hasSelfVerifyingArchive.
+	//
+	// The archive is what makes declining defensible. The same "nothing
+	// matched" signature is also an obfuscated file damaged inside its first
+	// 16 KB, and without an archive nothing downstream checks that file — so
+	// without one the stage records Damaged instead, and repair runs.
+	QuickCheckUnidentified
 )
 
 // AllQuickCheckOutcomes returns every declared outcome, so a test can assert
@@ -82,6 +98,7 @@ func AllQuickCheckOutcomes() []QuickCheckOutcome {
 		QuickCheckClean,
 		QuickCheckDamaged,
 		QuickCheckInconclusive,
+		QuickCheckUnidentified,
 	}
 }
 
@@ -97,6 +114,8 @@ func (o QuickCheckOutcome) String() string {
 		return "damaged"
 	case QuickCheckInconclusive:
 		return "inconclusive"
+	case QuickCheckUnidentified:
+		return "unidentified"
 	default:
 		return "unknown"
 	}

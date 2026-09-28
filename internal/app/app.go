@@ -1981,7 +1981,7 @@ func par2Verdict(a par2.Assessment, log *slog.Logger) (outcome par2Outcome, reas
 	// were zero whether the payload was pristine or shredded — the CRC was
 	// never compared to anything. A real release reaching it was measured
 	// (#492).
-	if !id.Accounted() && len(id.Files) == 0 {
+	if id.NothingIdentified() {
 		// Nothing delivered matched ANY entry, by name or by content. That is
 		// the Layout B signature — par2 protecting the EXTRACTED contents
 		// rather than the delivered archives, so every entry names a file

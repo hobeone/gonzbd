@@ -115,8 +115,8 @@ or modify its behavior:
 
 | Stage Name | Responsibilities | Skip / Gating Condition | Key Flags Updated |
 |---|---|---|---|
-| **`quickcheck`** | Relocates flat files into expected subdirs; verifies file CRC32s against par2 headers without executing `par2`. | Skipped if disabled or `PP < 1`. | Sets `QuickCheck` to one of `NotRun` / `Clean` / `Damaged` / `Inconclusive`. |
-| **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted. | Skipped if `PP < 1`, `QuickCheck == Clean`, OR DirectUnpack extracted all archives without errors **and** `QuickCheck == NotRun`. | Sets `ParError` and `Par2Renames`. |
+| **`quickcheck`** | Relocates flat files into expected subdirs; verifies file CRC32s against par2 headers without executing `par2`. | Skipped if disabled or `PP < 1`. | Sets `QuickCheck` to one of `NotRun` / `Clean` / `Damaged` / `Inconclusive` / `Unidentified`. |
+| **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted. | Skipped if `PP < 1`, `QuickCheck == Clean`, `QuickCheck == Unidentified`, OR DirectUnpack extracted all archives without errors **and** `QuickCheck == NotRun`. | Sets `ParError` and `Par2Renames`. |
 | **`rar_volume_recovery`** | Renames obfuscated volume files (e.g. `abc.001` → `abc.part001.rar`) using RAR5 header volume sequencing if standard filename parsing found no RAR sets. | Skipped if disabled, standard RAR sets already detected, or volume indexing is ambiguous. | Renames volume files in `DownloadDir` & `OwnedFiles`. |
 | **`unpack`** | Decompresses archives (`RAR`, `7z`, `TAR`, `split join`) up to `maxUnpackDepth = 3` recursive passes using native pure-Go engines (`go_rar`, `go_7z`, `go_tar`, `filejoin`) with optional external CLI fallbacks (`unrar`, `7z`). Respects `DirectUnpackSets` to skip already-extracted archives. | Skipped if `PP < 2` OR `ParError == true` (skips extraction unconditionally on repair failure). | Sets `UnpackError`. |
 | **`sample_cleanup`** | Deletes sample video and proof files matching `(?i)(^|[\W_])(sample|proof)`. Includes a false-positive guard where all files match the pattern. | Skipped if disabled in config or if every file in the directory matches the sample pattern. | Unlinks sample files from `OwnedFiles`. |
@@ -141,9 +141,10 @@ or modify its behavior:
 > The two responsibilities in the row above are the ones that make it
 > permanent, and neither is a verification decision:
 > `par2.ApplyRenames` has exactly one caller in the tree
-> (`stage_quickcheck.go:94`), paired with `markRenamed` so relocation does not
+> (`stage_quickcheck.go:95`), paired with `markRenamed` so relocation does not
 > strand a file's old path in `OwnedFiles`; and `QuickCheckClean` is the only
-> thing that lets `repair` skip spawning par2 (`stage_repair.go:111`). The
+> verdict that lets `repair` skip spawning par2 on a set it has checked
+> (`stage_repair.go:111`). The
 > download path cannot host either — it *"decides; it never renames"*
 > (`docs/ARCHITECTURE.md`) and performs no I/O by design.
 >
@@ -206,7 +207,7 @@ write at all, rather than protecting any particular file.
 ## Post-Processing (PP) Level Enforcement
 
 SABnzbd post-processing levels are cumulative integer masks on `postproc.Job.PP`
-(`internal/postproc/stages.go:137`) — post-processing's own job struct, not
+(`internal/postproc/stages.go:154`) — post-processing's own job struct, not
 `internal/job.Job`. `PP` does not survive past App, which resolves it into a
 `job.Policy` before persistence (see `docs/dispatch-contract.md`):
 
@@ -242,7 +243,32 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
 3. **Verification bypass guarantees**: `repair` bypasses `par2` execution when
    `QuickCheck == Clean` (verification already confirmed every CRC), or when
    DirectUnpack extracted all archives without errors **and** `QuickCheck ==
-   NotRun`. This eliminates multi-minute disk reads for healthy downloads.
+   NotRun`, or when `QuickCheck == Unidentified`. The first two eliminate
+   multi-minute disk reads for healthy downloads.
+
+   The third is not a verdict that the data is intact; it is a finding that
+   par2 has nothing here to check. `Unidentified` means no delivered file is
+   any entry the par2 sets name, by name or by content
+   (`par2.Identification.NothingIdentified`, the same predicate
+   `app.par2Verdict` reads for `outcomeUnknown`), **and** the directory holds a
+   RAR or 7z archive. That is a Layout B post: par2 protects what the archive
+   extracts to, which does not exist until `unpack` runs, so a repair here has
+   nothing delivered to verify — and the `ParError` of a failed one would skip
+   the `unpack` that produces the files. The archive stands in for par2: RAR
+   and 7z record a checksum per entry, and a mismatch the extractor checks
+   fails the extraction and sets `UnpackError`. Two gaps bound that: `go_rar`
+   cannot check a BLAKE2sp-only or MAC digest (`unpack.CloseMember` filters
+   `ErrChecksumUnsupported`), and `go_7z` skips an entry that records no CRC.
+   A split join and a tar check nothing, so they do not count,
+   and neither does a payload with no archive at all — that is the other case
+   the same signature describes, an obfuscated file damaged inside its first
+   16 KB, and it stays `Damaged` so `repair` runs. Only an archive that
+   `unpack.Scan` recognises by name counts; obfuscated volumes that
+   `rar_volume_recovery` would rename later are not seen, and such a job stays
+   `Damaged`. Nothing verifies the extracted files against the par2 set:
+   `stage_repair.go` holds every call to `par2.GoRepair` and `par2.RepairWith`
+   (`git grep -n 'par2\.GoRepair(\|par2\.RepairWith(' -- '*.go' ':!*_test.go'`
+   finds 3 lines, all there), and `repair` runs before `unpack`.
 
    The second clause requires exactly `NotRun` — the stage was disabled or
    found no par2 sets, so there is no verification to be had and DirectUnpack's
@@ -309,8 +335,9 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    an identified file's `NoCRC` finding.
 
    `Inconclusive` is also the **default** the quickcheck stage adopts as soon
-   as it knows par2 sets exist, narrowing to `Clean` or `Damaged` only on
-   paths that actually verified something (#314). This inverts which state is
+   as it knows par2 sets exist, narrowing to `Clean`, `Damaged` or
+   `Unidentified` only on paths that actually identified or verified
+   something (#314). This inverts which state is
    free: the zero value used to be the permissive one, so any early `return`
    that forgot to assign handed repair consent to skip par2 — and one did, the
    guard in `recordVerdict` for a job whose manifest describes no files. With
@@ -419,6 +446,14 @@ read the same because identification found literally nothing to work with;
 holding rather than discarding avoids asserting a verdict ("skipped") that was
 never earned, leaving it as "held" instead.
 
+Post-processing reads the same signature and resolves the ambiguity with one
+more fact the download path does not look at: whether a RAR or 7z archive was
+delivered. With one, `quickcheck` records `Unidentified` and `repair`
+declines, so `unpack` extracts and the archive's own checksums verify the
+result; without one, the job stays `Damaged` and `repair` runs as before (see Core
+Pipeline Invariant 3). Neither outcome spends the held volumes, so the hold
+above is unchanged.
+
 ### `par2_release_reason`
 
 Persisted in the `dispatch_jobs` table and exposed via `Job.Par2ReleaseReason()` / `SetPar2ReleaseReason`. It is not a
@@ -452,7 +487,7 @@ recorded entirely through the fetch-policy discard, not through this field.
 - Single worker goroutine with `ppQueue` FIFO scheduling and safe cancellation (`Cancel`).
 - At most one post-processing run of a job instance at a time (`postProcAdmissions`); a failure reason reported before the run is handed over fails it, and a later one is recorded as a stage-log warning.
 - Complete 11-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
-- `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`) bypass logic & DirectUnpack zero-failure verification bypass.
+- `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`/`Unidentified`) bypass logic & DirectUnpack zero-failure verification bypass.
 - `OwnedFiles` snapshotting and cleanup isolation (#3462) with in-place rename tracking (`markRenamed`).
 - Python-compatible 8-arg positional and `SAB_*` environment contract for user scripts with 512 KiB log caps, `RedactSecrets`, and `ScriptCanFail` runtime toggleability.
 - Native Go engine dispatch (`go_par2`, `go_rar`, `go_7z`, `go_tar`, `filejoin`) with external CLI fallbacks.

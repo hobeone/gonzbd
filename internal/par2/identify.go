@@ -99,6 +99,18 @@ type Identification struct {
 // FileDesc.FileCRC32; see the identify-then-verify design note.
 func (id Identification) Accounted() bool { return len(id.Unaccounted) == 0 }
 
+// NothingIdentified reports whether the par2 sets name at least one file and
+// no delivered file was matched to any of them, by name or by content.
+//
+// That is the signature of a Layout B post, whose par2 set protects what an
+// archive extracts to rather than the archive itself. It is equally an
+// obfuscated file damaged inside its first 16 KB, which defeats every
+// identification pass at once; this value cannot tell the two apart, and each
+// caller has to decide what that ambiguity costs it.
+func (id Identification) NothingIdentified() bool {
+	return len(id.Files) == 0 && len(id.Unaccounted) > 0
+}
+
 // ignoredExtensions are the sidecars excluded from CONTENT-based matching —
 // passes 2 and 3. They are not excluded from a name match, and the difference
 // is deliberate.

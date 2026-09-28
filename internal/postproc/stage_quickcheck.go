@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/hobeone/gonzbd/internal/par2"
+	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // QuickCheckStage relocates flat-downloaded files into the subdirectory structure expected by par2.
@@ -61,8 +62,8 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 
 	// Past this line the job has par2 sets, so QuickCheckNotRun — "there was
 	// nothing to verify" — is no longer a true thing to leave behind. Claim
-	// nothing by default and narrow to Clean or Damaged only where the work
-	// was actually done (#314).
+	// nothing by default and narrow to Clean, Damaged or Unidentified only
+	// where the work was actually done (#314).
 	//
 	// This inverts which state is free. The zero value used to be the
 	// permissive one, so every early return that forgot to assign handed the
@@ -240,6 +241,12 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	}
 
 	switch {
+	case a.ID.NothingIdentified() && hasSelfVerifyingArchive(ctx, log, job):
+		job.QuickCheck = QuickCheckUnidentified
+		logf(ctx, log, job, slog.LevelInfo,
+			"[quickcheck] No delivered file is any of the %d par2-tracked file(s), and a RAR/7z archive is present — "+
+				"par2 protects what unpack will extract, so repair is skipped and the archive's own checksums verify it",
+			len(a.ID.Unaccounted))
 	case unverifiable > 0:
 		job.QuickCheck = QuickCheckDamaged
 		logf(ctx, log, job, slog.LevelInfo,
@@ -259,6 +266,29 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] No CRC data available — par2 repair will run")
 	}
 	return nil
+}
+
+// hasSelfVerifyingArchive reports whether the download directory holds a RAR
+// or 7z archive, by name (unpack.Scan), so an obfuscated volume that
+// rar_volume_recovery would rename later is not seen. Those are the formats
+// whose extraction checks an entry against a checksum the archive records,
+// with two gaps: go_rar cannot check a BLAKE2sp-only or MAC digest
+// (unpack.CloseMember filters ErrChecksumUnsupported), and go_7z skips an
+// entry that records no CRC. A mismatch it does check fails the extraction.
+// A file join and a tar check nothing, so they do not count. A scan error
+// counts as no archive, which leaves the job Damaged.
+func hasSelfVerifyingArchive(ctx context.Context, log *slog.Logger, job *Job) bool {
+	archives, err := unpack.Scan(job.DownloadDir)
+	if err != nil {
+		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Archive scan failed: %v", err)
+		return false
+	}
+	for _, a := range archives {
+		if a.Type == unpack.RarArchive || a.Type == unpack.SevenZipArchive {
+			return true
+		}
+	}
+	return false
 }
 
 // RepairStage runs par2 verify+repair against every par2 set it finds in

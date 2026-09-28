@@ -495,7 +495,11 @@ against the par2 index at all*. A file `Identify` cannot match against
 anything — indistinguishable from a Layout B post whose par2 set protects
 extracted contents that do not exist yet — reads `outcomeUnknown` instead: the
 volumes are held rather than fetched or discarded, so nothing still ships
-unrepaired, but the mechanism is holding, not the `outcomeRepair` fetch path.
+unrepaired, but the mechanism is holding, not the `outcomeRepair` fetch path. In
+post-processing the same file skips `repair` when a RAR or 7z archive was
+delivered (`QuickCheckUnidentified`), and the archive's own checksum, where
+the extractor can check it, is then what reports the damage, as
+`UnpackError`.
 
 **The predicate has three conditions: one row, at offset 0, covering every
 article of the file.** All three, and each closes a shape the others do not.
