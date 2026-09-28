@@ -598,6 +598,162 @@ func TestCommentPrefix(t *testing.T) {
 	}
 }
 
+// TestSelfMatchNote_NamesTheCitationsOwnMatch pins issue #563's core case: a
+// citation's own backticked command text is itself a candidate match,
+// because the pattern it searches for appears verbatim inside the backticks
+// that quote it. pkg/*.go resolves to exactly one file here, so the matched
+// lines carry no path prefix — the "sole target" branch of selfMatchNote.
+func TestSelfMatchNote_NamesTheCitationsOwnMatch(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "pkg")
+	if err := os.MkdirAll(pkg, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	src := "package pkg\n" +
+		"// Acquired here: `grep -n 'takeLock' pkg/*.go` finds exactly one line.\n" +
+		"func takeLock() {}\n"
+	if err := os.WriteFile(filepath.Join(pkg, "x.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cits := extract("pkg/x.go", src)
+	if len(cits) != 1 {
+		t.Fatalf("extract found %d citations, want 1", len(cits))
+	}
+	c := cits[0]
+
+	got, lines, err := runCitation(dir, c)
+	if err != nil {
+		t.Fatalf("runCitation: %v", err)
+	}
+	// Two real lines match 'takeLock': the comment quoting the pattern, and
+	// the func declaration the comment is actually citing. The citation
+	// states one, so this is a genuine mismatch, not a test bug.
+	if got != 2 {
+		t.Fatalf("got = %d matches, want 2 (fixture assumption): %q", got, lines)
+	}
+
+	note := selfMatchNote(dir, c, lines)
+	if !strings.Contains(note, "1 of these matches is this citation's own comment") {
+		t.Errorf("selfMatchNote = %q, want it to name exactly one self-match", note)
+	}
+}
+
+// TestSelfMatchNote_RealMatchBesideTheCommentIsNotFlagged pins the negative
+// case that motivated leaving the window unpadded: the func declaration the
+// citation in the fixture above is actually about sits on the very next
+// line, and counting it as a self-match would misreport a real match as
+// noise. Isolated here from the mismatch test above so a future change to
+// that fixture cannot silently stop exercising this half.
+func TestSelfMatchNote_RealMatchBesideTheCommentIsNotFlagged(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "pkg")
+	if err := os.MkdirAll(pkg, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	src := "package pkg\n" +
+		"// Acquired here: `grep -n 'takeLock' pkg/*.go` finds exactly one line.\n" +
+		"func takeLock() {}\n"
+	if err := os.WriteFile(filepath.Join(pkg, "x.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cits := extract("pkg/x.go", src)
+	c := cits[0]
+	_, lines, err := runCitation(dir, c)
+	if err != nil {
+		t.Fatalf("runCitation: %v", err)
+	}
+
+	note := selfMatchNote(dir, c, lines)
+	if strings.Contains(note, "2 of these") {
+		t.Errorf("selfMatchNote = %q, counted the real match on the adjacent line as a self-match", note)
+	}
+}
+
+// TestSelfMatchNote_NoNoteWithoutASelfMatch pins that an ordinary mismatch —
+// two genuine matches in a file OTHER than the citing one — produces no note
+// at all. Any citation whose target set includes the citing file necessarily
+// self-matches (the pattern is always present, verbatim, inside its own
+// backticks), so the negative case has to name a different file, the way a
+// bare-filename citation naming a sibling does in the real corpus.
+func TestSelfMatchNote_NoNoteWithoutASelfMatch(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "pkg")
+	if err := os.MkdirAll(pkg, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	citing := "package pkg\n" +
+		"// Both call sites: `grep -n 'target()' y.go` finds exactly one line.\n" +
+		"func f() {}\n"
+	if err := os.WriteFile(filepath.Join(pkg, "x.go"), []byte(citing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := "package pkg\n" +
+		"func a() { target() }\n" +
+		"func b() { target() }\n"
+	if err := os.WriteFile(filepath.Join(pkg, "y.go"), []byte(target), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cits := extract("pkg/x.go", citing)
+	if len(cits) != 1 {
+		t.Fatalf("extract found %d citations, want 1", len(cits))
+	}
+	c := cits[0]
+
+	got, lines, err := runCitation(dir, c)
+	if err != nil {
+		t.Fatalf("runCitation: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("got = %d matches, want 2 (fixture assumption): %q", got, lines)
+	}
+
+	if note := selfMatchNote(dir, c, lines); note != "" {
+		t.Errorf("selfMatchNote = %q, want none: the matches are in a different file entirely", note)
+	}
+}
+
+// TestSelfMatchNote_GitGrepNeverTreatedAsSoleTarget pins that git grep, which
+// always prefixes its output with a path, is never routed through the
+// no-prefix "sole target" branch — a citation using git grep against a
+// pattern that happens to appear in its own comment must still be matched by
+// path, not skipped because gitGrep short-circuits before resolvedTargets.
+func TestSelfMatchNote_GitGrepNeverTreatedAsSoleTarget(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "pkg")
+	if err := os.MkdirAll(pkg, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	gitInit(t, dir)
+	src := "package pkg\n" +
+		"// Acquired here: `git grep -n 'takeLock' pkg` finds exactly one line.\n" +
+		"func takeLock() {}\n"
+	if err := os.WriteFile(filepath.Join(pkg, "x.go"), []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitAddAll(t, dir)
+
+	cits := extract("pkg/x.go", src)
+	if len(cits) != 1 {
+		t.Fatalf("extract found %d citations, want 1", len(cits))
+	}
+	c := cits[0]
+
+	got, lines, err := runCitation(dir, c)
+	if err != nil {
+		t.Fatalf("runCitation: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("got = %d matches, want 2 (fixture assumption): %q", got, lines)
+	}
+
+	note := selfMatchNote(dir, c, lines)
+	if !strings.Contains(note, "1 of these matches is this citation's own comment") {
+		t.Errorf("selfMatchNote = %q, want it to name exactly one self-match via git grep's path-prefixed output", note)
+	}
+}
+
 // TestCitableFiles_DiscoversGoAndSQL pins issue #562's discovery half: a git
 // ls-files call missing "*.sql" would silently drop the .sql half again, the
 // same way the tool dropped it before this file existed.

@@ -38,6 +38,20 @@
 // fail the run — the tool is meant to be adoptable against comments written
 // before it existed, and tightening that is a separate decision.
 //
+// # A citation that matches itself
+//
+// A citation's grep runs against the tree with no exclusion of the file the
+// comment lives in — deliberately: a citation about a population that
+// genuinely includes the citing file should count it, so excluding the file
+// outright would trade a confusing answer for a wrong one. But the citation's
+// own backticked command text is itself a candidate match — `grep -n
+// 'takeLock' pkg/*.go` contains the literal string "takeLock" — so a pattern
+// that matches its own quoted text inflates its own count by one, and
+// narrowing the pattern cannot fix it: narrowing the pattern narrows the
+// quoted text in lockstep. On a count mismatch, a matched line that falls on
+// one of the physical lines the citation's own backtick span occupies is
+// named in a note instead of being left for the reader to notice.
+//
 // # Why it skips its own package
 //
 // This program's own comments quote citation syntax in order to document it,
@@ -85,6 +99,7 @@ import (
 type citation struct {
 	file    string
 	line    int    // 1-based source line the command's opening backtick sits on
+	endLine int    // 1-based source line the command's closing backtick sits on
 	cmd     string // the command text, rejoined across comment lines
 	want    int
 	hasWant bool
@@ -173,6 +188,9 @@ func main() {
 					c.file, c.line, c.want, got, c.cmd)
 				for _, l := range lines {
 					fmt.Printf("        %s\n", l)
+				}
+				if note := selfMatchNote(root, c, lines); note != "" {
+					fmt.Printf("        %s\n", note)
 				}
 				continue
 			}
@@ -332,7 +350,11 @@ func citationsIn(file string, b commentBlock) []citation {
 		if sp.open < len(b.lines) {
 			line = b.lines[sp.open]
 		}
-		c := citation{file: file, line: line, cmd: inner}
+		endLine := line
+		if sp.end < len(b.lines) {
+			endLine = b.lines[sp.end]
+		}
+		c := citation{file: file, line: line, endLine: endLine, cmd: inner}
 		c.want, c.hasWant = statedCount(runes, sp.open, sp.end, lo, hi)
 		out = append(out, c)
 	}
@@ -433,6 +455,117 @@ func runCitation(root string, c citation) (matches int, lines []string, err erro
 	}
 	ls := strings.Split(out, "\n")
 	return len(ls), ls, nil
+}
+
+// selfMatchLineRe recognizes grep's own "[path:]line:" prefix on a matched
+// line: "12:content" when exactly one file was searched, "path.go:12:content"
+// when more than one was (or with git grep, which always prefixes). Content
+// that happens to start with digits and a colon is a false positive this
+// cannot rule out from text alone; selfMatchNote is advisory, not a gate, so
+// that risk is accepted rather than re-deriving grep's own flag semantics to
+// rule it out exactly.
+var selfMatchLineRe = regexp.MustCompile(`^(?:([^:\n]+):)?(\d+):`)
+
+// selfMatchNote reports, for a mismatch's matched lines, how many are the
+// citation's own comment rather than a genuine match elsewhere — and if any
+// are, names it. See the package doc's "A citation that matches itself".
+//
+// A match counts as the citation's own only when it is in the citing file, on
+// one of the physical lines the command's own backtick span occupies
+// (c.line..c.endLine — more than one line for a wrapped command). That window
+// is deliberately NOT padded to neighbouring lines: padding by one line
+// flagged a genuine match in the line of code the comment sits beside during
+// this function's own development, which is exactly the false positive this
+// note exists to not create.
+func selfMatchNote(root string, c citation, lines []string) string {
+	stages, err := parsePipeline(c.cmd)
+	if err != nil || len(stages) == 0 {
+		return ""
+	}
+	st := stages[0]
+	cwd := citationDir(root, c, st)
+
+	sole, hasSole := "", false
+	if !st.gitGrep {
+		if targets := resolvedTargets(cwd, st); len(targets) == 1 {
+			abs := filepath.Clean(filepath.Join(cwd, targets[0]))
+			if rel, err := filepath.Rel(root, abs); err == nil {
+				sole, hasSole = filepath.ToSlash(rel), true
+			}
+		}
+	}
+
+	n := 0
+	for _, l := range lines {
+		m := selfMatchLineRe.FindStringSubmatch(l)
+		if m == nil {
+			continue
+		}
+		var isCitingFile bool
+		switch path := m[1]; {
+		case path != "":
+			isCitingFile = sameFile(root, cwd, path, c.file)
+		case hasSole:
+			isCitingFile = sole == c.file
+		default:
+			// No path prefix and more than one resolved target: grep would
+			// have prefixed every line in that case, so this shape should not
+			// occur. Do not guess which file it is.
+		}
+		if !isCitingFile {
+			continue
+		}
+		lineno, err := strconv.Atoi(m[2])
+		if err != nil || lineno < c.line || lineno > c.endLine {
+			continue
+		}
+		n++
+	}
+	if n == 0 {
+		return ""
+	}
+	verb := "is"
+	if n > 1 {
+		verb = "are"
+	}
+	return fmt.Sprintf("note: %d of these matches %s this citation's own comment — "+
+		"a pattern that appears verbatim in the prose quoting it inflates its own count", n, verb)
+}
+
+// resolvedTargets expands a stage's glob operands into concrete cwd-relative
+// paths, the same way expandArgs does for the argv it hands to grep — but
+// returning just the path list. selfMatchNote only needs each operand's
+// identity, not its position in argv, so it does not reuse expandArgs.
+func resolvedTargets(cwd string, st stage) []string {
+	var out []string
+	for _, p := range st.paths {
+		if !strings.ContainsAny(p, "*?[") {
+			out = append(out, p)
+			continue
+		}
+		matches, err := filepath.Glob(filepath.Join(cwd, p))
+		if err != nil || len(matches) == 0 {
+			out = append(out, p)
+			continue
+		}
+		for _, m := range matches {
+			if rel, err := filepath.Rel(cwd, m); err == nil {
+				out = append(out, rel)
+			}
+		}
+	}
+	return out
+}
+
+// sameFile reports whether a grep-reported path (relative to cwd) resolves to
+// the same repository file as a citation's citing file (root-relative).
+func sameFile(root, cwd, reported, citingFile string) bool {
+	abs := filepath.Clean(filepath.Join(cwd, reported))
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return false
+	}
+	return filepath.ToSlash(rel) == citingFile
 }
 
 // citationDir picks the directory a citation's paths are relative to.
