@@ -71,11 +71,15 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- UNIQUE(job_id, file_index) is also the access path, which is why there is no
 -- separate index on job_id.
 -- `git grep -nE 'INTO job_files|UPDATE job_files|FROM job_files' -- '*.go'
--- ':!*_test.go'` returns four statements: the INSERT, UPDATE and SELECT in
--- internal/durability, plus a SELECT in test/crash/harness.go, which that
--- filter keeps because it is build-tagged rather than named _test.go. The
--- reclaim rule's DELETE is a fifth statement the grep cannot see, because it
--- builds it from a table name (internal/durability/reclaim.go). Every one keys
+-- ':!*_test.go'` returns five lines: the INSERT, UPDATE and SELECT in
+-- internal/durability that read or write job_files directly, a fourth line
+-- in the same package where SaveProgress's failed_articles INSERT guards
+-- itself with a `FROM job_files` EXISTS check
+-- (internal/durability/progress.go), and a SELECT in test/crash/harness.go,
+-- which that filter keeps because it is build-tagged rather than named
+-- _test.go. The reclaim rule's DELETE is a sixth statement the grep cannot
+-- see, because it builds it from a table name
+-- (internal/durability/reclaim.go). Every one keys
 -- on `job_id` or on `job_id AND file_index`, and both are prefixes of that
 -- index -- so a second B-tree on job_id alone would be maintained on every
 -- write to answer a lookup the first one already answers.

@@ -1,5 +1,6 @@
-// Command check_citations runs the `grep` commands that Go comments embed as
-// evidence, and reports the ones whose stated count no longer matches reality.
+// Command check_citations runs the `grep` commands that Go and SQL comments
+// embed as evidence, and reports the ones whose stated count no longer
+// matches reality.
 //
 // It exists because AGENTS.md's Standing Design Rule 4 requires a comment
 // quantifying over a population — every writer, every caller, the one place —
@@ -26,10 +27,11 @@
 //
 // # What it checks
 //
-// A citation is a backtick-quoted command inside a // comment whose first word
-// is grep. The command may wrap across comment lines, including mid-token, so
-// the lines are rejoined before parsing. The count is read from the prose
-// around it: "finds four", "returns exactly one line", "returns nothing".
+// A citation is a backtick-quoted command inside a line comment — // in Go,
+// -- in SQL — whose first word is grep. The command may wrap across comment
+// lines, including mid-token, so the lines are rejoined before parsing. The
+// count is read from the prose around it: "finds four", "returns exactly one
+// line", "returns nothing".
 //
 // A stated count that disagrees with the command's real output is an error. A
 // citation whose count cannot be parsed is reported as unverified and does not
@@ -135,7 +137,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "check_citations: %v\n", err)
 		os.Exit(2)
 	}
-	files, err := goFiles(root, flag.Args())
+	files, err := citableFiles(root, flag.Args())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "check_citations: %v\n", err)
 		os.Exit(2)
@@ -195,7 +197,11 @@ func repoRoot() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func goFiles(root string, args []string) ([]string, error) {
+// citableFiles lists every tracked file whose comments this tool can carry a
+// citation in: Go source and SQL migrations, the two extensions
+// commentPrefix recognizes. Named goFiles until SQL joined Go as a second
+// extension, at which point the name stopped being accurate.
+func citableFiles(root string, args []string) ([]string, error) {
 	if len(args) > 0 {
 		return args, nil
 	}
@@ -203,7 +209,7 @@ func goFiles(root string, args []string) ([]string, error) {
 	// subdirectory both scopes the listing to that subdirectory and prints
 	// paths relative to it, so an unanchored call silently skips every other
 	// package AND makes main's filepath.Join(root, f) resolve to nothing.
-	cmd := exec.Command("git", "ls-files", "*.go")
+	cmd := exec.Command("git", "ls-files", "*.go", "*.sql")
 	cmd.Dir = root
 	out, err := cmd.Output()
 	if err != nil {
@@ -234,16 +240,17 @@ type commentBlock struct {
 func extract(file, src string) []citation {
 	var out []citation
 	lines := strings.Split(src, "\n")
+	prefix := commentPrefix(file)
 
 	for i := 0; i < len(lines); i++ {
-		if !isCommentLine(lines[i]) {
+		if !isCommentLine(lines[i], prefix) {
 			continue
 		}
 		j := i
 		var b strings.Builder
 		var origin []int
-		for ; j < len(lines) && isCommentLine(lines[j]); j++ {
-			body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[j]), "//"))
+		for ; j < len(lines) && isCommentLine(lines[j], prefix); j++ {
+			body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[j]), prefix))
 			if b.Len() > 0 {
 				b.WriteByte(' ')
 				origin = append(origin, j+1)
@@ -259,8 +266,19 @@ func extract(file, src string) []citation {
 	return out
 }
 
-func isCommentLine(l string) bool {
-	return strings.HasPrefix(strings.TrimSpace(l), "//")
+// commentPrefix returns the line-comment marker for a citable file's
+// language: // for Go, -- for SQL. citableFiles only ever returns files with
+// one of those two extensions; anything else falls back to //, matching this
+// tool's behaviour before SQL was recognized.
+func commentPrefix(file string) string {
+	if filepath.Ext(file) == ".sql" {
+		return "--"
+	}
+	return "//"
+}
+
+func isCommentLine(l, prefix string) bool {
+	return strings.HasPrefix(strings.TrimSpace(l), prefix)
 }
 
 // citationsIn pulls every backticked grep command out of one rejoined block.

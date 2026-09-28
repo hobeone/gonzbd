@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -494,5 +495,154 @@ func TestStatedCount_BareNoIsNotACount(t *testing.T) {
 	}
 	if got[0].hasWant {
 		t.Errorf("count = %d parsed from \"have no reader\", want none", got[0].want)
+	}
+}
+
+// TestExtract_RecognizesSQLLineComments pins issue #562: a .sql file's `--`
+// comments carry citations the same way a .go file's `//` comments do.
+func TestExtract_RecognizesSQLLineComments(t *testing.T) {
+	src := "-- Row ownership stated here: `grep -n 'DeleteWidget' store.go`\n" +
+		"-- finds exactly one line.\n" +
+		"CREATE TABLE widgets (id INTEGER PRIMARY KEY);\n"
+
+	got := extract("schema.sql", src)
+	if len(got) != 1 {
+		t.Fatalf("extract found %d citations, want 1", len(got))
+	}
+	want := `grep -n 'DeleteWidget' store.go`
+	if got[0].cmd != want {
+		t.Errorf("cmd = %q, want %q", got[0].cmd, want)
+	}
+	if !got[0].hasWant || got[0].want != 1 {
+		t.Errorf("count = (%d, %v), want (1, true)", got[0].want, got[0].hasWant)
+	}
+}
+
+// TestExtract_SQLDoesNotTreatSlashSlashAsAComment pins that commentPrefix
+// keys off the file's extension, not off the line's own text. A // line
+// inside a .sql file is not a citation, and (by the mirrored case) a -- line
+// inside a .go file is not either — TestExtract_IgnoresBackticksThatAreNotCommands
+// and every other .go-fixture test in this file already pins that a .go file
+// still uses //, since none of them use `--`.
+func TestExtract_SQLDoesNotTreatSlashSlashAsAComment(t *testing.T) {
+	src := "// `grep -n 'x' y.go` finds exactly one line.\n" +
+		"CREATE TABLE t (id INTEGER);\n"
+	if got := extract("schema.sql", src); len(got) != 0 {
+		t.Errorf("extract found %d citations from a // line in a .sql file, want 0: %+v", len(got), got)
+	}
+}
+
+// TestRunCitation_SQLCitationAgrees and TestRunCitation_SQLCitationDisagrees
+// are the end-to-end half of #562: a real .sql citation, run for real,
+// reporting a true count as true and a false one as false — the same
+// guarantee TestRunCitation_CountsAndReportsMatches gives .go citations.
+func TestRunCitation_SQLCitationAgrees(t *testing.T) {
+	dir := t.TempDir()
+	body := "package p\nfunc a() { deleteWidget() }\n"
+	if err := os.WriteFile(filepath.Join(dir, "store.go"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := "-- Row ownership stated here: `grep -n 'deleteWidget' store.go`\n" +
+		"-- finds exactly one line.\n" +
+		"CREATE TABLE widgets (id INTEGER PRIMARY KEY);\n"
+	cits := extract("schema.sql", src)
+	if len(cits) != 1 {
+		t.Fatalf("extract found %d citations, want 1", len(cits))
+	}
+
+	got, _, err := runCitation(dir, cits[0])
+	if err != nil {
+		t.Fatalf("runCitation: %v", err)
+	}
+	if got != cits[0].want {
+		t.Errorf("got = %d, want %d (the citation should agree)", got, cits[0].want)
+	}
+}
+
+func TestRunCitation_SQLCitationDisagrees(t *testing.T) {
+	dir := t.TempDir()
+	body := "package p\nfunc a() { deleteWidget() }\nfunc b() { deleteWidget() }\n"
+	if err := os.WriteFile(filepath.Join(dir, "store.go"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := "-- Row ownership stated here: `grep -n 'deleteWidget' store.go`\n" +
+		"-- finds exactly one line.\n" +
+		"CREATE TABLE widgets (id INTEGER PRIMARY KEY);\n"
+	cits := extract("schema.sql", src)
+	if len(cits) != 1 {
+		t.Fatalf("extract found %d citations, want 1", len(cits))
+	}
+
+	got, _, err := runCitation(dir, cits[0])
+	if err != nil {
+		t.Fatalf("runCitation: %v", err)
+	}
+	if got == cits[0].want {
+		t.Fatalf("fixture should disagree: got %d, stated %d", got, cits[0].want)
+	}
+}
+
+// TestCommentPrefix pins the extension-to-marker mapping directly, since it
+// is the one place a third language would need a new case.
+func TestCommentPrefix(t *testing.T) {
+	cases := []struct{ file, want string }{
+		{"x.go", "//"},
+		{"internal/history/migrations/001_initial.sql", "--"},
+		{"x.sql", "--"},
+		{"README.md", "//"}, // never returned by citableFiles; // is the safe fallback
+	}
+	for _, tc := range cases {
+		if got := commentPrefix(tc.file); got != tc.want {
+			t.Errorf("commentPrefix(%q) = %q, want %q", tc.file, got, tc.want)
+		}
+	}
+}
+
+// TestCitableFiles_DiscoversGoAndSQL pins issue #562's discovery half: a git
+// ls-files call missing "*.sql" would silently drop the .sql half again, the
+// same way the tool dropped it before this file existed.
+func TestCitableFiles_DiscoversGoAndSQL(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	for _, f := range []string{"a.go", "b.sql", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitAddAll(t, dir)
+
+	got, err := citableFiles(dir, nil)
+	if err != nil {
+		t.Fatalf("citableFiles: %v", err)
+	}
+	want := map[string]bool{"a.go": true, "b.sql": true}
+	if len(got) != len(want) {
+		t.Fatalf("citableFiles = %q, want exactly %v", got, want)
+	}
+	for _, f := range got {
+		if !want[f] {
+			t.Errorf("citableFiles returned %q, which is neither .go nor .sql", f)
+		}
+	}
+}
+
+func gitInit(t *testing.T, dir string) {
+	t.Helper()
+	runGit(t, dir, "init", "-q")
+	runGit(t, dir, "config", "user.email", "test@example.com")
+	runGit(t, dir, "config", "user.name", "test")
+}
+
+func gitAddAll(t *testing.T, dir string) {
+	t.Helper()
+	runGit(t, dir, "add", "-A")
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 }
