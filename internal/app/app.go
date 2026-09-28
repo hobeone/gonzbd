@@ -2524,12 +2524,14 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	if app.barrier != nil {
 		app.barrier.ForgetJob(jobID)
 	}
+	// A failure aborts the retry. The job-level tombstone the close-handles
+	// arm set when this job entered post-processing drops every article of
+	// the retry without resolving it, so a retry that kept it would sit at
+	// Fetching making no progress. ErrNotStarted is the one exception: a
+	// worker that never ran holds no tombstones.
 	if app.assembler != nil {
-		if err := app.assembler.ForgetJob(ctx, jobID); err != nil {
-			app.log.Warn("could not clear the assembler's completed-file tombstones for a "+
-				"retry; articles for files this process already finished will be refused "+
-				"as late duplicates until a restart",
-				"job", jobID, "err", err)
+		if err := app.assembler.ForgetJob(ctx, jobID); err != nil && !errors.Is(err, assembler.ErrNotStarted) {
+			return fmt.Errorf("app: retry %s: clear the assembler's tombstones: %w", jobID, err)
 		}
 	}
 
