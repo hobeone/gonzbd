@@ -257,7 +257,7 @@ func TestCheckpointer_PruneRemovesFromDirtySet(t *testing.T) {
 		t.Fatalf("DirtyCount before Prune = %d, want 2", got)
 	}
 
-	c.Prune("a")
+	c.Prune(a)
 	if got := c.DirtyCount(); got != 1 {
 		t.Fatalf("DirtyCount after Prune = %d, want 1", got)
 	}
@@ -311,7 +311,7 @@ func TestCheckpointer_PruneDuringFlushIsNotReMergedOnFailure(t *testing.T) {
 	pruned := make(chan struct{})
 	st.beforeFail = func() {
 		go func() {
-			c.Prune("a")
+			c.Prune(a)
 			close(pruned)
 		}()
 		waitUntilNotInFlight(t, c, "a")

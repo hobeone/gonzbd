@@ -242,7 +242,7 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 			}
 		}
 		if app.checkpointer != nil && ppJob != nil && ppJob.Job != nil {
-			app.checkpointer.Prune(ppJob.Job.ID())
+			app.checkpointer.Prune(ppJob.Job)
 		}
 		// Not fatal, unlike the reconcile path's version: this job IS in
 		// history, so the next startup's dropJobAlreadyInHistory removes the

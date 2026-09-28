@@ -14,8 +14,10 @@ import (
 	"context"
 	"log/slog"
 	"maps"
+	"runtime"
 	"sync"
 	"time"
+	"weak"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -45,6 +47,20 @@ type Checkpointer struct {
 	// for a caller that arrives while another Prune is already waiting.
 	flushDone chan struct{}
 	flushing  map[string]*job.Job
+	// pruned holds the job instances Prune has taken and Unprune has not
+	// given back; Mark refuses them. Keyed by instance, not ID, so a later
+	// job under the same ID still marks; weakly, so the entry goes when the
+	// job is collected, which is also when the last Mark of it becomes
+	// impossible.
+	pruned map[weak.Pointer[job.Job]]*pruneRecord
+}
+
+// pruneRecord is one instance's refusal. prunes counts the Prunes not yet
+// withdrawn, because two departures can prune one instance and one of them
+// withdrawing must not withdraw the other's.
+type pruneRecord struct {
+	prunes  int
+	cleanup runtime.Cleanup
 }
 
 // New constructs a Checkpointer. every is the batch cadence.
@@ -58,36 +74,65 @@ func New(store Store, every time.Duration, log *slog.Logger) *Checkpointer {
 		log:      log,
 		dirty:    map[string]*job.Job{},
 		inFlight: map[string]*job.Job{},
+		pruned:   map[weak.Pointer[job.Job]]*pruneRecord{},
 	}
 }
 
 // Mark records that a job's state has moved and should be written at the next
 // batch. It is cheap and never writes: coalescing repeated marks for one job
 // into one row is the whole point.
+//
+// A mark of an instance Prune has taken is dropped. A late result can mark an
+// instance after its Prune — AckDurable, for one, looks the job up and marks
+// it with nothing spanning a departure between the two — and left in, that
+// mark would be written by whichever flush came next, where a retry that had
+// re-seeded job_files under the same ID would satisfy SaveProgress's job_files
+// gate for it.
 func (c *Checkpointer) Mark(j *job.Job) {
+	key := weak.Make(j)
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, gone := c.pruned[key]; gone {
+		return
+	}
 	c.dirty[j.ID()] = j
-	c.mu.Unlock()
 }
 
-// Prune removes a job from both the dirty set and any in-flight flush batch,
-// and does not return until a flush that was carrying the job has finished
-// writing. A departure reclaims the job's rows once Prune returns, so a batch
-// still in the store at that moment would re-insert what the reclaim took
-// (#561).
+// Prune removes this instance of a job from both the dirty set and any
+// in-flight flush batch, refuses every later Mark of it, and does not return
+// until a flush that was carrying the job's ID has finished writing. A later
+// instance under the same ID keeps its pending and in-flight entries. A departure
+// reclaims the job's rows once Prune returns, so a batch still in the store at
+// that moment would re-insert what the reclaim took (#561).
 //
 // The wait is the whole point, so it is not bounded: returning early would
 // hand the caller exactly the state the wait exists to prevent. It only
 // happens when the job is in flight, which is only for the duration of one
 // SaveBatch.
 //
-// A Mark arriving AFTER this returns is not covered here and does not need to
-// be: durability.SaveProgress refuses to insert a failed article for a job
-// whose job_files are gone.
-func (c *Checkpointer) Prune(id string) {
+// The refusal is what covers a Mark arriving AFTER this returns.
+// durability.SaveProgress's job_files gate covers it only until a retry of the
+// same ID re-seeds those rows, and a flush landing after that seed would write
+// this instance's failed articles onto the retry. The refusal is keyed by
+// instance, so the retry's own job still marks, and it lasts until every Prune
+// of the instance is withdrawn by Unprune or the instance is collected (see
+// pruned).
+func (c *Checkpointer) Prune(j *job.Job) {
+	id := j.ID()
+	key := weak.Make(j)
 	c.mu.Lock()
-	delete(c.dirty, id)
-	delete(c.inFlight, id)
+	rec, ok := c.pruned[key]
+	if !ok {
+		rec = &pruneRecord{cleanup: runtime.AddCleanup(j, c.forgetPruned, key)}
+		c.pruned[key] = rec
+	}
+	rec.prunes++
+	if c.dirty[id] == j {
+		delete(c.dirty, id)
+	}
+	if c.inFlight[id] == j {
+		delete(c.inFlight, id)
+	}
 	var done chan struct{}
 	if _, carried := c.flushing[id]; carried {
 		done = c.flushDone
@@ -96,6 +141,32 @@ func (c *Checkpointer) Prune(id string) {
 	if done != nil {
 		<-done
 	}
+}
+
+// Unprune withdraws one Prune of j, for a departure that gave up with j still
+// registered; a caller withdraws only its own Prune. j's marks are accepted
+// again once every Prune of it is withdrawn. A checkpoint carries the job's
+// whole state, so the next Mark of j also writes whatever the prune dropped
+// from the dirty set.
+func (c *Checkpointer) Unprune(j *job.Job) {
+	key := weak.Make(j)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rec, ok := c.pruned[key]
+	if !ok {
+		return
+	}
+	rec.prunes--
+	if rec.prunes <= 0 {
+		rec.cleanup.Stop()
+		delete(c.pruned, key)
+	}
+}
+
+func (c *Checkpointer) forgetPruned(key weak.Pointer[job.Job]) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.pruned, key)
 }
 
 // DirtyCount returns the number of jobs currently marked dirty awaiting flush.

@@ -98,7 +98,7 @@ func TestCheckpointer_W2_RetryDoesNotInheritStaleMarks(t *testing.T) {
 	// Departure sequence runs: Prune("a"), Reclaim("a"), then retry Admit("a").
 	departureAndRetryDone := make(chan struct{})
 	go func() {
-		c.Prune("a")
+		c.Prune(a)
 		st.Reclaim("a")
 		st.Admit("a") // retry arrives
 		close(departureAndRetryDone)
