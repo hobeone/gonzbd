@@ -225,10 +225,15 @@ type Application struct {
 	// started is true only once app.ctx/app.cancel are already assigned:
 	// Start stores it (a plain Store, not a CAS — starting above already
 	// provides exclusivity) right after building them. Shutdown gates on
-	// started and then calls app.cancel() — the one reader of started that
-	// would nil-deref in the window this closes. reloader.go's
-	// ReloadDownloader and statusinfo.go's IsPipelineHealthy also gate on
-	// started, but neither reads app.cancel/app.ctx.
+	// started and then calls app.cancel() directly — the one reader of
+	// started that would nil-deref in the window this closes.
+	// statusinfo.go's IsPipelineHealthy also gates on started but never
+	// touches app.cancel/app.ctx. reloader.go's ReloadDownloader does read
+	// app.ctx, well after its own started check, but that check cannot be
+	// racing this window in the first place: Start's doc comment already
+	// documents that ReloadDownloader must not run until Start has
+	// returned, so by the time it reads app.ctx, Start finished assigning
+	// it long ago.
 	started atomic.Bool
 	stopped atomic.Bool
 
@@ -1288,9 +1293,8 @@ func (app *Application) PostProcComplete() <-chan PostProcComplete { return app.
 // already assigned. That keeps the two properties — "reject a second caller"
 // and "promise ctx/cancel are non-nil" — on separate flags, so Shutdown,
 // which gates on started and then calls app.cancel(), can never observe it
-// true while app.cancel is still nil. See the field docs on started/starting
-// for the other two readers, which gate on started but do not touch
-// app.cancel/app.ctx.
+// true while app.cancel is still nil. See the field doc on started for the
+// other two readers of that flag.
 func (app *Application) Start(ctx context.Context) error {
 	if !app.starting.CompareAndSwap(false, true) {
 		return ErrAlreadyStarted

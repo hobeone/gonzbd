@@ -112,9 +112,11 @@ func TestShutdown_NoOpsWhenStartFailed(t *testing.T) {
 // app.cancel is still nil or app.ctx is still New's context.Background()
 // placeholder, because Shutdown gates on started and then calls
 // app.cancel() — the one reader of started that would nil-deref in that
-// window. (reloader.go's ReloadDownloader and statusinfo.go's
-// IsPipelineHealthy also gate on started, but neither touches app.cancel or
-// app.ctx, so they are not at risk from this specific ordering.)
+// window. (statusinfo.go's IsPipelineHealthy also gates on started but
+// never touches app.cancel/app.ctx. reloader.go's ReloadDownloader does
+// read app.ctx, but only after a separate, already-documented invariant —
+// it cannot run until Start has returned — takes it out of this window
+// entirely; see the field doc on started.)
 //
 // app.ctx is never a nil interface — New seeds it with context.Background()
 // so field reads before Start never crash — so a nil check on it would pass
