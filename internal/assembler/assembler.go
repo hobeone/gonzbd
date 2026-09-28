@@ -1456,9 +1456,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	// permanently, and partsWritten >= TotalParts became unreachable.
 	var admitted bool
 	if req.FatalErr != nil {
-		if admitted = a.handleFatalArticle(f, req); admitted && req.Data != nil {
-			a.releaseBuffer(req.Data)
-		}
+		admitted = a.handleFatalArticle(f, req)
 	} else {
 		admitted = a.handleSuccessArticle(f, req)
 	}
@@ -1678,6 +1676,13 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 // handleFatalArticle counts a permanently failed article toward the file's
 // part total without writing anything.
 //
+// It takes ownership of req.Data and releases it before returning, on every
+// path, matching handleSuccessArticle and FileWriter.Accept's contract: the
+// caller never has to reason about who frees it. Safe here because this
+// function writes nothing to disk on any path, so it never needs the bytes to
+// survive the call — unlike Accept, which must hold them until they are
+// buffered or written before it can let go.
+//
 // It records no ack. A permanent failure is the queue's to record via
 // Job.MarkArticleFailed (R10), and this package no longer has an ack path in
 // either direction. The dedup that keeps partsWritten from overshooting
@@ -1688,7 +1693,11 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 	a.log.Debug("counting failed article toward completion (skipping disk write)",
 		"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", req.FatalErr)
-	return f.w.admitPermanentFailure(req.ArtIdx)
+	admitted := f.w.admitPermanentFailure(req.ArtIdx)
+	if req.Data != nil {
+		a.releaseBuffer(req.Data)
+	}
+	return admitted
 }
 
 // handleSuccessArticle hands one article's bytes to the file's writer.
