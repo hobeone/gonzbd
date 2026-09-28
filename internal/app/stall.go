@@ -306,12 +306,15 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 // device that has just refused them, for the length of every retry, every
 // interval, forever — contradicting the reason Stall pauses at all.
 //
-// The ack is the ONLY part that needs residency, and it is also the only part
-// that is recoverable afterwards: the barrier's commit runs before it, so a
-// finalize that fails at the ack has already put those articles on stable
-// record. Phase 3 replays them with SeedFromRuns, exactly as the startup sweep
-// does. So a residency error is treated as the finalize having landed, and
-// everything else keeps the job parked without it ever dispatching.
+// A residency failure is NOT treated as the finalize having landed. Phase 1
+// counts it as blocked like any other failure: retryFinalize refuses a job
+// with no resident manifest before running the barrier ("no readable
+// manifest"), and a finalize whose ack meets job.ErrNotResident comes back as
+// an error that routeFinalizeFailure records for retry. A job Stall paused
+// holds no manifest, so it stays parked on those retries until something —
+// in practice a user Resume — makes it resident. When a retry does land,
+// phase 3 replays the committed runs with SeedFromRuns, exactly as the startup
+// sweep does. Every failure keeps the job parked without it ever dispatching.
 //
 // That last claim is about THIS function, not about the whole system. A user
 // Resume is outside it by design: the API's queue resume handlers unpause the
@@ -519,12 +522,12 @@ func (app *Application) recoveryFiles(jobID string) map[int]finalizeState {
 // its own reason; classifying it as a storage fault is what erased the one
 // instruction that helps.
 //
-// A residency error is the one failure treated as success, and the ordering
-// inside FinalizeFile is why: the barrier's commit runs before AckDurable, so an
-// ack that could not reach a non-resident job left those articles on stable
-// record anyway. The caller replays them. The handle is released here rather
-// than by finalizeCompletedFile's own defer, which sees only a non-nil error
-// and keeps it for a retry that is no longer needed.
+// This function closes nothing itself. The handle is released by
+// finalizeCompletedFile's deferred close, which runs only on that call's nil
+// paths. The checks here leave its no-barrier return unreachable, and its
+// nil-target return reachable only if the target goes nil between the check
+// below and the call — where a close fault stops the retry exactly as it
+// stops a first attempt.
 func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx int) error {
 	if app.assembler == nil || app.barrier == nil {
 		return fmt.Errorf("%w: job %s file %d: no barrier in this process",

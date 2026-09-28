@@ -519,12 +519,11 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *wri
 			// bytes were not all on disk. opDrain, opSync and opTruncate all
 			// answer their caller; this one now does too.
 			//
-			// The callers still only LOG it, deliberately. By the time the
-			// barrier closes a file it has drained, synced, truncated,
-			// committed the runs and acked the articles, so a fault from
-			// this redundant second fsync is post-hoc: acting on it would race
-			// the completion it is part of. Reporting it is what makes it
-			// visible; deciding what it means belongs to the caller.
+			// What it means depends on what ran before the close, which only
+			// the caller knows: after a finalize that committed, this is a
+			// redundant second fsync, while a close with no barrier before it
+			// is the file's only flush. Reporting it is this arm's job;
+			// deciding what it means belongs to the caller.
 			r.err = a.drainAndClose(f)
 			delete(open, key)
 			wc.forget(key)

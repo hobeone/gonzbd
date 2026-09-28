@@ -1088,33 +1088,66 @@ The sequence is:
                           └─ DirectUnpack handoff
 ```
 
-**`CloseFile` now answers, and the answer is logged rather than acted on.** Its
-`opClose` arm used to leave the reply error `nil`, so a close whose `Drain`,
-`Sync` or `Close` had failed reported success and the file was marked complete
-and fed to DirectUnpack and post-processing with bytes that were not all on
-disk. It reports the failure now — preferring a permanent errno over the first
-one, so an `ENOSPC` drain followed by an `EROFS` close is not described as a
-condition that waiting can clear.
+**`CloseFile` answers, and what the answer means depends on what ran before
+it.** Its `opClose` arm reports a failed `Drain`, `Sync` or `Close` —
+preferring a permanent errno over the first one, so an `ENOSPC` drain followed
+by an `EROFS` close is not described as a condition that waiting can clear.
+`finalizeCompletedFile`'s deferred close is the only production caller
+(`git grep -n '\.CloseFile(' -- '*.go' ':!*_test.go'` returns that one line),
+and it reads the fault one of two ways:
 
-Both callers still log rather than act on it, but the reason is narrower than
-"post-hoc" and the first draft of this paragraph overstated it. On the path the
-argument describes — a finalize that ran to completion — the barrier has
-drained, synced, truncated, committed the runs and acked the articles, so
-acting on the redundant second fsync's fault would race the completion it is
-part of, and on a permanent errno would carry a 100%-complete, fully acked job
-into history as failed.
+- **The close is the file's only flush** on the two `nil` returns before the
+  barrier runs: `app.barrier == nil`, and a nil sync target. Nothing has
+  drained, synced or trimmed the file, so a close-time fault — other than a
+  stopped assembler, below — is logged at `Warn` and returned as
+  `ErrNotFinalized`, and `handleFileComplete` stops the
+  completion exactly as for a failed barrier.
+- **The close is redundant** on every `nil` return after them: a finalize that
+  committed, or a file some other path closed first (the worker's exit drain
+  on a stopped assembler, `CloseJobHandles`, `CancelJob`). The fault is logged
+  at `Debug`. After a committed finalize the barrier has drained, synced,
+  truncated, committed the runs and acked the articles, so acting on the
+  second fsync's fault would race the completion it is part of, and on a
+  permanent errno would carry a fully acked job into history as failed.
 
-That is **not** every entry path. `finalizeCompletedFile`'s defer also runs
-after `app.barrier == nil`, after a nil sync target, and after the
-assembler-stopped and not-in-`open` early returns; and `retryFinalize` reaches
-it on a job whose runs were committed but never acked. On all of those the
-close-time `Drain` is the file's FIRST flush and the fault is not post-hoc at
-all. `Warn` is the floor there, not `Debug`, and the completion should not
-proceed past it — see #374. The close-time fault is
-also **not** routed to `Stallable` from inside the assembler — it carries no
-`ErrFaultRouted` marker, so routing it would park the job a second time for a
-condition the barrier had already routed, and on the `CloseJobHandles` path it
-would arrive at `StatusVerifying`, which neither `Stall` nor `Fail` can act on.
+`closeIsFirstFlush` carries the distinction into the defer. It starts true and
+is cleared once, after the nil-target check, so a `nil` return added above that
+line is held to the strict reading by default.
+
+`retryFinalize` has no close of its own. Its checks make the no-barrier return
+unreachable and leave the nil-target return reachable only if the target goes
+nil between its check and the call, where the same rule applies.
+
+**A stopped completion on a failed first flush has usually lost its handle**:
+the `opClose` arm deletes it whether or not the close failed. A retryable
+fault is routed as a stall and recorded for retry; the retry finds no handle,
+and `stallLost` surfaces the restart that re-derives the file from its
+recorded runs. A permanent one fails the job (R20) — `routeFinalizeFailure`
+dispatches an unrouted permanent fault to `Fail`, as `Barrier.routeFault` does
+a routed one, because a stall records no retry for it and the next
+re-evaluation would resume a job whose file can never complete.
+
+A close whose wait ended before it was queued to the worker leaves the handle
+open, and what happens next depends on which return the close followed:
+
+- **No barrier:** `retryFinalize` answers `errFinalizeUnrecoverable` without
+  looking at the handle, so `stallLost` surfaces the restart as above.
+- **Nil sync target:** `retryFinalize` refuses while the job has no resident
+  manifest, and a job `Stall` paused has none (a paused job holds nothing —
+  `docs/job-lifecycle.md`). Every re-evaluation re-stalls it with "no readable
+  manifest" until a user Resume makes it resident; only then does the retry
+  finalize the file through the barrier.
+
+A close that answered `ErrAssemblerStopped` was not run by the worker, whose
+exit drain (`drainAndCloseAll`) flushes and closes every open file instead, so
+it is read as closed elsewhere and logged at `Debug` on either path, rather than stopping every completion
+drained during shutdown.
+
+The close-time fault is **not** routed to `Stallable` from inside the
+assembler — it carries no `ErrFaultRouted` marker, so routing it would park the
+job a second time for a condition the barrier had already routed, and on the
+`CloseJobHandles` path it would arrive at `StatusVerifying`, which neither
+`Stall` nor `Fail` can act on.
 
 **A failed finalize stops the completion.** The file is not marked complete,
 DirectUnpack is not fed it, and the job does not finalize — because none of those
@@ -1125,7 +1158,8 @@ finalize"; the second must never proceed, or a `barrierOpTimeout` on a wedged
 mount ships a file with pre-allocation's trailing zeros intact and par2 reports a
 healthy download as damaged.
 
-**The handle is retained on the failing path.** `Application.reevaluateStall`
+**The handle is retained when the finalize itself fails** — every failing path
+but the failed first flush above. `Application.reevaluateStall`
 retries the finalize on an interval and on user resume, and every operation it
 needs goes through that handle; nothing reopens a file the assembler has
 tombstoned. Closing it there would leave the stall unable to clear for the rest of
@@ -1623,8 +1657,9 @@ articles or sparse regions.
    sees it, because `handleFileComplete` runs `finalizeCompletedFile` *before*
    handing the event to the orchestrator. That ordering is load-bearing: unrar
    reading a file that still carried pre-allocation's trailing zeros would see a
-   corrupt volume. When the finalize fails, DirectUnpack is not reached at all
-   and the handle is not closed (see the handoff section above).
+   corrupt volume. When the finalize fails — including a failed close that was
+   the file's only flush — DirectUnpack is not reached at all, and the handle
+   is kept unless that close released it (see the handoff section above).
 2. **Volume waiting**: `waitForVolume()` blocks on `volumeReady` until the
    requested volume number appears in `completedVols`, and returns immediately if
    the set is in `corruptSets`.

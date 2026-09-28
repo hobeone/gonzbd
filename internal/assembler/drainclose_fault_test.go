@@ -168,11 +168,9 @@ func TestDrainAndClose_PrefersAPermanentFaultOverTheFirstOne(t *testing.T) {
 // this change that a caller actually observes.
 //
 // handleSyncOp's opClose arm used to leave the reply error nil, so CloseFile
-// reported success for a close whose Drain, Sync or Close had failed. Both
-// production callers — finalizeCompletedFile's defer and retryFinalize — log
-// at Debug and continue, so the file was marked complete and fed to
-// DirectUnpack and post-processing while its bytes were not all on disk. Every
-// other fallible op in that switch answers its caller.
+// reported success for a close whose Drain, Sync or Close had failed, and a
+// caller for which the close is the file's only flush could not stop the
+// completion on it. Every other fallible op in that switch answers its caller.
 func TestCloseFile_ReportsACloseTimeFailure(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()

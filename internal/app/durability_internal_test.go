@@ -877,7 +877,20 @@ func (w *wedgeOnFile) resolve(jobID string, fileIdx int) (assembler.FileInfo, er
 // swap one.
 func newWedgedApp(t *testing.T) (*Application, *job.Job, func()) {
 	t.Helper()
-	application, job := newDurabilityTestApp(t, 2, 1)
+	application, job, arm, release := newArmableWedgedApp(t)
+	arm()
+	return application, job, release
+}
+
+// newArmableWedgedApp is newWedgedApp with the wedge deferred: file 0 is open
+// and the worker is healthy until arm is called, which parks the worker inside
+// file 1's open and cuts the assembler's barrier-op bound to 20ms.
+//
+// arm may be called from inside a barrier callback, which is what lets a test
+// wedge the worker AFTER a finalize's own operations have all been answered.
+func newArmableWedgedApp(t *testing.T) (application *Application, j *job.Job, arm, release func()) {
+	t.Helper()
+	application, j = newDurabilityTestApp(t, 2, 1)
 	ctx := t.Context()
 
 	// Stop the assembler New built and replace it with one whose resolver
@@ -892,8 +905,7 @@ func newWedgedApp(t *testing.T) (*Application, *job.Job, func()) {
 		inner:   application.pipeline.resolveFileInfo,
 	}
 	application.assembler = assembler.New(assembler.Options{
-		FileInfo:         wedge.resolve,
-		BarrierOpTimeout: 20 * time.Millisecond,
+		FileInfo: wedge.resolve,
 	}, slog.New(slog.DiscardHandler))
 	application.closeHandlesTimeout = 20 * time.Millisecond
 	application.pipeline.assembler = application.assembler
@@ -905,29 +917,36 @@ func newWedgedApp(t *testing.T) (*Application, *job.Job, func()) {
 	// other way round the test deadlocks in its own teardown.
 	t.Cleanup(func() { _ = application.assembler.Stop() })
 	var once sync.Once
-	release := func() { once.Do(func() { close(wedge.release) }) }
+	release = func() { once.Do(func() { close(wedge.release) }) }
 	t.Cleanup(release)
 
 	// File 0 opens normally and stays open.
-	writeFixtureArticle(t, application, job.ID(), 0, 0)
-	// File 1's open parks the worker, so no control message can be answered.
-	if err := application.pipeline.registerFile(job.ID(), 1); err != nil {
-		t.Fatalf("registerFile 1: %v", err)
+	writeFixtureArticle(t, application, j.ID(), 0, 0)
+
+	arm = func() {
+		application.assembler.SetBarrierOpTimeout(20 * time.Millisecond)
+		// File 1's open parks the worker, so no control message can be answered.
+		if err := application.pipeline.registerFile(j.ID(), 1); err != nil {
+			t.Errorf("registerFile 1: %v", err)
+			return
+		}
+		// File 1 explicitly: sending this to file 0 would never reach the
+		// wedge. It is not routed through writeFixtureArticle because that
+		// waits for the file to open, and the whole point here is that the
+		// open never returns.
+		ref, req := assemblerWrite(j.ID(), 1, 1, 0)
+		if err := application.assembler.WriteArticle(ctx, ref, req); err != nil {
+			t.Errorf("WriteArticle 1: %v", err)
+			return
+		}
+		select {
+		case <-wedge.entered:
+		case <-time.After(5 * time.Second):
+			t.Error("the worker never reached the wedge; the fixture is not wedged and the " +
+				"assertions that follow would pass against a healthy assembler")
+		}
 	}
-	// File 1 explicitly: sending this to file 0 would never reach the wedge.
-	// It is not routed through writeFixtureArticle because that waits for the
-	// file to open, and the whole point here is that the open never returns.
-	ref, req := assemblerWrite(job.ID(), 1, 1, 0)
-	if err := application.assembler.WriteArticle(ctx, ref, req); err != nil {
-		t.Fatalf("WriteArticle 1: %v", err)
-	}
-	select {
-	case <-wedge.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the worker never reached the wedge; the fixture is not wedged and the " +
-			"assertions below would pass against a healthy assembler")
-	}
-	return application, job, release
+	return application, j, arm, release
 }
 
 // TestFinalizeCompletedFile_RefusesToShipAFileItCouldNotFinalize pins the
