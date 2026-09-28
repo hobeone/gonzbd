@@ -802,6 +802,12 @@ func (j *Job) ClearEmittedForReload(skipEmitted bool) (cleared, retained []int32
 // ResetForRetry returns a failed job to a downloadable state, preserving
 // what it already fetched.
 //
+// A file is left Complete only if every one of its articles is still done once
+// the failed ones are reset. ForEachUnfinishedArticle skips a Complete file and
+// IsComplete trusts the flag, and app.RetryHistoryJob restores it from the
+// retained history row: a file an earlier attempt finalized short arrives
+// Complete while the articles that attempt could not fetch are not done.
+//
 // It clears the progress-tier par2 state but not the Job-level restored*
 // fields, and the branch that makes that safe is that a retried job is always a
 // fresh object: the only production caller is app.RetryHistoryJob, which
@@ -822,18 +828,21 @@ func (j *Job) ResetForRetry() {
 
 	m := j.manifest
 	for fi := range m.NumFiles() {
-		anyReset := false
+		unresolved := false
 		lo, hi := m.FileRange(fi)
 		for i := lo; i < hi; i++ {
-			if !j.progress.failed.Get(i) {
-				continue
+			if j.progress.failed.Get(i) {
+				j.progress.done.Clear(i)
+				j.progress.failed.Clear(i)
 			}
-			j.progress.done.Clear(i)
-			j.progress.failed.Clear(i)
-			anyReset = true
+			if !j.progress.done.Get(i) {
+				unresolved = true
+			}
 		}
-		if anyReset {
-			j.progress.files[fi].Complete = false
+		if unresolved {
+			fp := &j.progress.files[fi]
+			fp.Complete = false
+			fp.AssembledCRC32 = 0
 		}
 	}
 	j.progress.recompute(j.manifest)
