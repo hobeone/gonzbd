@@ -11,7 +11,7 @@
 // has none. docs/commit-cycle.md § "The red check" holds the measurement;
 // AGENTS.md now states the rule and defers the argument to both.
 //
-// Five verdicts, and the distinctions between them are the point:
+// Six verdicts, and the distinctions between them are the point:
 //
 //   - KILLED        the test failed, and the failure is quoted so the commit
 //     body can record it as AGENTS.md requires
@@ -23,10 +23,29 @@
 //   - COMPILE_ERROR the mutated tree does not build, which AGENTS.md warns
 //     "does not demonstrate the test would have caught the
 //     behaviour" — it is a red result that is not evidence
+//   - RUNFILTER     the spec's `run` line names, as one alternative of a
+//     plain alternation, a test that does not exist in the
+//     package — refused before the baseline, for the same
+//     reason ANCHOR is refused before a mutation is applied
 //
 // COMPILE_ERROR is the verdict a hand-rolled script does not have. Reported as
 // KILLED it is a false green for the pin: a mutation that breaks the build
 // tells you the compiler noticed, never that the test would have.
+//
+// # A run filter that names no test
+//
+// `go test -run 'A|B|C'` treats each `|`-separated alternative as an
+// independent filter, and an alternative that matches nothing is dropped
+// silently — the remaining alternatives still select real tests, the
+// baseline still passes, and the phantom name reads as though it were part
+// of the pin. Before the baseline runs, deadRunFilterNames lists the
+// package's declared tests with `go test -list` and checks every alternative
+// of a plain `run` line — one that is nothing but test names joined by `|`,
+// optionally wrapped in `^(`…`)$` — against that list. A `run` line that is
+// not a plain alternation (a single name, or one carrying other regexp
+// syntax) falls back to the baseline's existing ranNothing check, which
+// already refuses a filter that matches nothing at all; what RUNFILTER adds
+// is catching the *partial* miss that ranNothing cannot see.
 //
 // EXCLUDED separates the two reasons a mutation can pass. `run` is a claim
 // about which tests bear on the mutations below it, and it is as live a
@@ -42,6 +61,18 @@
 // already failing produces a KILLED for every mutation, and every one of them
 // is meaningless — the whole method rests on the test passing on the fixed
 // code first. No hand-rolled script in that session of eight checked this.
+//
+// # Checking anchors without running anything
+//
+// -check parses one or more specs, resolves every anchor with the same
+// strings.Count checkAnchor uses, and reports any that do not match exactly
+// one site — without compiling, running a test, or writing to the working
+// tree. -check-all does the same over every spec this checkout has, found
+// the way scripts/run_tests.sh finds them: `git ls-files --cached --others
+// --exclude-standard -- '*testdata/*.spec'`, never `find` or filepath.Walk —
+// both descend into the gitignored `.claude/worktrees/` and would check a
+// sibling branch's specs against this tree's source (see run_tests.sh's own
+// comment on this, which this command's discovery matches on purpose).
 //
 // # Restoring
 //
@@ -92,6 +123,7 @@ const (
 	excluded     verdict = "EXCLUDED"
 	anchorFail   verdict = "ANCHOR"
 	compileError verdict = "COMPILE_ERROR"
+	runFilter    verdict = "RUNFILTER"
 )
 
 // survivedEvidence is the evidence column for a genuine SURVIVED. It is a
@@ -146,21 +178,60 @@ var pending struct {
 
 func main() {
 	verbose := flag.Bool("v", false, "print the full go test output for every mutation")
+	check := flag.Bool("check", false, "parse the given spec(s), resolve every anchor, and report any that "+
+		"match zero or several sites, without running any test")
+	checkAll := flag.Bool("check-all", false, "like -check, but discovers every spec belonging to this "+
+		"checkout with git ls-files instead of taking spec paths as arguments")
 	flag.Usage = usage
 	flag.Parse()
-	if flag.NArg() != 1 {
-		flag.Usage()
-		os.Exit(2)
-	}
 
 	root, err := repoRoot()
 	if err != nil {
 		fatal("%v", err)
 	}
 
-	sp, err := parseSpec(flag.Arg(0))
+	switch {
+	case *checkAll:
+		if flag.NArg() != 0 {
+			fmt.Fprintln(os.Stderr, "mutate: -check-all takes no spec arguments; it discovers them itself")
+			os.Exit(2)
+		}
+		specs, err := discoverSpecs(root)
+		if err != nil {
+			fatal("%v", err)
+		}
+		abs := make([]string, len(specs))
+		for i, s := range specs {
+			abs[i] = filepath.Join(root, s)
+		}
+		os.Exit(runCheck(root, specs, abs))
+	case *check:
+		if flag.NArg() == 0 {
+			flag.Usage()
+			os.Exit(2)
+		}
+		os.Exit(runCheck(root, flag.Args(), flag.Args()))
+	default:
+		if flag.NArg() != 1 {
+			flag.Usage()
+			os.Exit(2)
+		}
+		runSpec(root, flag.Arg(0), *verbose)
+	}
+}
+
+// runSpec is the command's original behaviour: apply every mutation in one
+// spec, in turn, and require each to produce KILLED.
+func runSpec(root, path string, verbose bool) {
+	sp, err := parseSpec(path)
 	if err != nil {
-		fatal("%s: %v", flag.Arg(0), err)
+		fatal("%s: %v", path, err)
+	}
+
+	if dead, err := deadRunFilterNames(root, sp); err != nil {
+		fatal("%v", err)
+	} else if len(dead) > 0 {
+		os.Exit(reportRunFilter(sp.pkg, dead))
 	}
 
 	installSignalRestore()
@@ -196,7 +267,7 @@ func main() {
 
 	results := make([]result, 0, len(sp.mutations))
 	for _, m := range sp.mutations {
-		results = append(results, run(root, sp, m, *verbose))
+		results = append(results, run(root, sp, m, verbose))
 	}
 
 	confirmed, err := confirmExclusions(root, sp, results)
@@ -785,9 +856,20 @@ func fatal(format string, args ...any) {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v] <spec-file>
+       go run ./scripts/mutate -check <spec-file>...
+       go run ./scripts/mutate -check-all
 
 Runs AGENTS.md's observed red check: apply each mutation, require the test to
 fail, restore the file. Exits non-zero unless every mutation is KILLED.
+
+-check parses the given spec(s) and reports every anchor that resolves to
+zero or several sites, without compiling anything, running a test, or writing
+to the working tree. -check-all does the same over every spec this checkout
+has, discovered with 'git ls-files --cached --others --exclude-standard --
+*testdata/*.spec' — the same command scripts/run_tests.sh uses, and for the
+same reason: 'find' and filepath.Walk both descend into the gitignored
+.claude/worktrees/ and would check a sibling branch's specs against this
+tree's source.
 
 Spec format — line-oriented, so multi-line tab-indented Go needs no escaping:
 

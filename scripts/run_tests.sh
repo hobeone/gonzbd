@@ -248,6 +248,19 @@ trap 'cleanup_mutate; exit 143' TERM
 
 go build -o "$MUTATE_BIN" ./scripts/mutate
 
+# Anchor check: resolves every spec's anchors against the current source
+# without compiling, running a test, or writing anything, so a stale or
+# ambiguous anchor fails here in a file scan rather than minutes into the
+# parallel mutation run below.
+echo -e "\nRunning Mutation Anchor Check (--check-all)..."
+if ! "$MUTATE_BIN" --check-all; then
+    echo -e "${RED}ERROR: one or more mutation spec anchors do not resolve to exactly one site.${NC}" >&2
+    cleanup_mutate
+    trap - EXIT INT TERM
+    exit 1
+fi
+echo -e "${GREEN}✓ Mutation Anchor Check Passed${NC}"
+
 mapfile -t SPECS < <(git ls-files --cached --others --exclude-standard -- '*testdata/*.spec' | sort -u)
 NUM_SPECS=${#SPECS[@]}
 
