@@ -1399,7 +1399,9 @@ func TestApplication_PersistAndCommitError(t *testing.T) {
 		}},
 	}
 	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "persist-err-test"})
-	_ = application.Dispatcher().Add(context.Background(), qJob, qHdr)
+	if err := application.Dispatcher().Add(context.Background(), qJob, qHdr); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 
 	// Construct a postproc.Job wrapping the *job.Job
 	ppJob := &postproc.Job{
@@ -1416,8 +1418,8 @@ func TestApplication_PersistAndCommitError(t *testing.T) {
 
 	// Trigger persistAndCommit — it should fail because DB is closed
 	err = application.TriggerPersistAndCommit(slog.Default(), entry, ppJob)
-	if err == nil {
-		t.Error("expected persistAndCommit to fail when DB is closed")
+	if err == nil || errors.Is(err, app.ErrFinalizedJobRemoved) {
+		t.Errorf("persistAndCommit err = %v, want the history write's failure on a closed DB", err)
 	}
 
 	// Verify the gz payload was deleted/cleaned up

@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestRetryHistoryJob_(RefusesWhileAnotherHolderHasTheID|RefusesAJobTheDispatcherHolds)$|TestRemoveHistoryJob_ActsOnAFreshReadAfterAnInFlightRetry|TestMarkHistoryCompleted_WaitsForAnInFlightRetry|TestDeleteHistoryEntries_RefusesAnIDOutsideItsClaim|TestPruneHistory_SkipsAJobInTransition|TestRemoveJob_WaitsForAnInFlightTransition|TestFinalize_(WaitsForAnInFlightTransition|ProceedsWithoutTheLockOnceTheProcessIsStopping)$|TestStillExpired_KeepsOnlyHeldEntriesUnchangedSinceTheScan
+run TestRetryHistoryJob_(RefusesWhileAnotherHolderHasTheID|RefusesAJobTheDispatcherHolds)$|TestRemoveHistoryJob_ActsOnAFreshReadAfterAnInFlightRetry|TestMarkHistoryCompleted_WaitsForAnInFlightRetry|TestDeleteHistoryEntries_RefusesAnIDOutsideItsClaim|TestPruneHistory_SkipsAJobInTransition|TestRemoveJob_WaitsForAnInFlightTransition|TestFinalize_(WaitsForAnInFlightTransition|ProceedsWithoutTheLockOnceTheProcessIsStopping|DoesNotFileAJobRemovedWhileItWaited)$|TestStillExpired_KeepsOnlyHeldEntriesUnchangedSinceTheScan
 
 # The transition lock's sites, each removed on its own. A claim site is
 # neutered by claiming a different key, not by skipping the claim: that leaves
@@ -108,6 +108,14 @@ file internal/app/job_finalizer.go
 		claim, err := app.transitions.acquire(waitCtx, ppJob.Job.ID())
 --- replace
 		claim, err := app.transitions.acquire(waitCtx, "mut-"+ppJob.Job.ID())
+--- end
+
+[the finalizer files a job removed while it waited]
+file internal/app/job_finalizer.go
+--- anchor
+				if cur, ok := app.dispatcher.Job(ppJob.Job.ID()); !ok || cur != ppJob.Job {
+--- replace
+				if cur, ok := app.dispatcher.Job(ppJob.Job.ID()); (!ok || cur != ppJob.Job) && false {
 --- end
 
 # Dies on the elapsed-time assertion: the mutant waits out the whole cap.

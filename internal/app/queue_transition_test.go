@@ -82,6 +82,33 @@ func TestFinalize_WaitsForAnInFlightTransition(t *testing.T) {
 	}
 }
 
+// TestFinalize_DoesNotFileAJobRemovedWhileItWaited: a finalizer that waits out
+// a RemoveJob of its job finds the job gone once it holds the lock, and files
+// nothing: the job the user removed must not reappear in history.
+func TestFinalize_DoesNotFileAJobRemovedWhileItWaited(t *testing.T) {
+	t.Parallel()
+	application, j := newDurabilityTestApp(t, 1, 2)
+	application.ctx = t.Context()
+
+	committed := make(chan error, 1)
+	application.removeJobHook = func(string) {
+		go func() {
+			committed <- application.finalizer.persistAndCommit(slog.Default(), completedEntryFor(j), &postproc.Job{Job: j})
+		}()
+		requireStillWaiting(t, committed, "persistAndCommit")
+	}
+	if err := application.RemoveJob(t.Context(), j.ID(), false); err != nil {
+		t.Fatalf("RemoveJob: %v", err)
+	}
+
+	if err := receiveWithin(t, committed, "persistAndCommit"); !errors.Is(err, errFinalizedJobRemoved) {
+		t.Errorf("persistAndCommit err = %v, want errFinalizedJobRemoved for a job removed while it waited", err)
+	}
+	if _, err := application.historyRepo.Get(t.Context(), j.ID()); !errors.Is(err, history.ErrNotFound) {
+		t.Errorf("history.Get err = %v, want ErrNotFound: the finalizer filed a job the user removed", err)
+	}
+}
+
 // TestFinalize_ProceedsWithoutTheLockOnceTheProcessIsStopping pins the wait's
 // bound: it ends with app.ctx, so a finalizer running during shutdown does not
 // spend any of its step's budget on a holder, and still commits the job.
