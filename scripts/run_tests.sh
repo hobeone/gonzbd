@@ -177,12 +177,225 @@ echo -e "${GREEN}✓ Review-Banner Check Passed${NC}"
 # `--others --exclude-standard` keeps a newly written, not-yet-staged spec in
 # scope: tracked-only discovery would silently skip the spec you just wrote,
 # which is the failure mode this check exists to prevent.
+#
+# To minimize wall-clock time, specs are executed in parallel across isolated
+# detached Git worktrees. Each worktree is created from an ephemeral snapshot
+# commit of the full working tree (staged, unstaged, untracked, and deleted
+# files via a temporary git index), giving complete filesystem isolation without
+# touching the real index or stash. `ui/dist` is copied into each worktree to
+# satisfy `//go:embed all:dist` (which rejects symlinks).
 echo -e "\nRunning Mutation Specs Check..."
-git ls-files --cached --others --exclude-standard -- '*testdata/*.spec' | sort -u | while read -r spec; do
-    echo "Running mutation spec: $spec"
-    go run ./scripts/mutate "$spec"
-done
-echo -e "${GREEN}✓ All Mutation Specs Killed${NC}"
+REPO_ROOT=$(pwd)
+
+# Prune any stale mutation worktrees left over from previously hard-killed runs.
+TMP_DIR="${TMPDIR:-/tmp}"
+while IFS= read -r line; do
+    case "$line" in
+        worktree\ *)
+            wt_path="${line#worktree }"
+            case "$wt_path" in
+                "$TMP_DIR"/gonzbd-mutate-wt.*)
+                    base_dir="${wt_path%/wt-*}"
+                    if [ -f "$base_dir/owner.pid" ]; then
+                        owner_pid=$(cat "$base_dir/owner.pid" 2>/dev/null || true)
+                        if [ -n "$owner_pid" ] && kill -0 "$owner_pid" 2>/dev/null; then
+                            continue
+                        fi
+                    fi
+                    git worktree remove --force "$wt_path" >/dev/null 2>&1 || true
+                    ;;
+            esac
+            ;;
+    esac
+done < <(git worktree list --porcelain)
+git worktree prune >/dev/null 2>&1 || true
+
+MUTATE_BIN=$(mktemp -t gonzbd-mutate.XXXXXX)
+WORKTREE_BASE=""
+SNAP_INDEX=""
+PIDS=()
+
+cleanup_mutate() {
+    # Terminate worker process groups if still running
+    if [ "${#PIDS[@]}" -gt 0 ]; then
+        for p in "${PIDS[@]}"; do
+            kill -TERM -- "-$p" 2>/dev/null || true
+        done
+        for p in "${PIDS[@]}"; do
+            wait "$p" 2>/dev/null || true
+        done
+        PIDS=()
+    fi
+    if [ -n "$SNAP_INDEX" ] && [ -f "$SNAP_INDEX" ]; then
+        rm -f "$SNAP_INDEX"
+    fi
+    if [ -n "$MUTATE_BIN" ] && [ -f "$MUTATE_BIN" ]; then
+        rm -f "$MUTATE_BIN"
+    fi
+    if [ -n "$WORKTREE_BASE" ] && [ -d "$WORKTREE_BASE" ]; then
+        if [ -n "${WORKERS:-}" ]; then
+            for ((w=0; w<WORKERS; w++)); do
+                git worktree remove --force "$WORKTREE_BASE/wt-$w" >/dev/null 2>&1 || true
+            done
+        fi
+        rm -rf "$WORKTREE_BASE"
+        git worktree prune >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup_mutate EXIT
+trap 'cleanup_mutate; exit 130' INT
+trap 'cleanup_mutate; exit 143' TERM
+
+go build -o "$MUTATE_BIN" ./scripts/mutate
+
+mapfile -t SPECS < <(git ls-files --cached --others --exclude-standard -- '*testdata/*.spec' | sort -u)
+NUM_SPECS=${#SPECS[@]}
+
+if [ "$NUM_SPECS" -eq 0 ]; then
+    echo "No mutation specs found."
+    cleanup_mutate
+    trap - EXIT INT TERM
+    echo -e "${GREEN}✓ No Mutation Specs Found${NC}"
+else
+    if [ -n "${MUTATE_PARALLEL_WORKERS:-}" ]; then
+        if ! [[ "$MUTATE_PARALLEL_WORKERS" =~ ^[0-9]+$ ]] || [ "$MUTATE_PARALLEL_WORKERS" -lt 1 ]; then
+            echo -e "${RED}ERROR: MUTATE_PARALLEL_WORKERS must be a positive integer, got '$MUTATE_PARALLEL_WORKERS'${NC}" >&2
+            exit 1
+        fi
+        WORKERS="$MUTATE_PARALLEL_WORKERS"
+    else
+        NUM_CPUS=$(nproc 2>/dev/null || echo 4)
+        WORKERS=$(( NUM_CPUS > 8 ? 8 : NUM_CPUS ))
+    fi
+    if [ "$WORKERS" -gt "$NUM_SPECS" ]; then WORKERS="$NUM_SPECS"; fi
+
+    # Compute per-worker CPU budget to prevent oversubscription timeouts
+    NUM_CPUS=$(nproc 2>/dev/null || echo 4)
+    CPU_BUDGET=$(( NUM_CPUS / WORKERS ))
+    if [ "$CPU_BUDGET" -lt 1 ]; then CPU_BUDGET=1; fi
+
+    WORKTREE_BASE=$(mktemp -d -t gonzbd-mutate-wt.XXXXXX)
+    echo "$$" > "$WORKTREE_BASE/owner.pid"
+    mkdir -p "$WORKTREE_BASE/logs"
+
+    QUEUE_FILE="$WORKTREE_BASE/queue.txt"
+    QUEUE_LOCK="$WORKTREE_BASE/queue.lock"
+    RESULTS_FILE="$WORKTREE_BASE/results.txt"
+    touch "$QUEUE_LOCK" "$RESULTS_FILE"
+    printf "%s\n" "${SPECS[@]}" > "$QUEUE_FILE"
+
+    echo "Running $NUM_SPECS mutation specs in parallel across $WORKERS git worktrees..."
+
+    # Create snapshot commit from a temporary index
+    SNAP_INDEX=$(mktemp -t gonzbd-index.XXXXXX)
+    cp "$(git rev-parse --git-path index)" "$SNAP_INDEX"
+    GIT_INDEX_FILE="$SNAP_INDEX" git add -A
+    SNAP_TREE=$(GIT_INDEX_FILE="$SNAP_INDEX" git write-tree)
+    SNAP_COMMIT=$(git commit-tree "$SNAP_TREE" -p HEAD -m "mutation-worktree-snapshot")
+    rm -f "$SNAP_INDEX"
+    SNAP_INDEX=""
+
+    for ((w=0; w<WORKERS; w++)); do
+        wt="$WORKTREE_BASE/wt-$w"
+        git worktree add -q --detach "$wt" "$SNAP_COMMIT"
+        if [ -d "$REPO_ROOT/ui/dist" ]; then
+            cp -a "$REPO_ROOT/ui/dist" "$wt/ui/dist"
+        fi
+    done
+
+    # Pop next spec atomically from shared queue
+    pop_spec() {
+        (
+            flock -x 200
+            if [ -s "$QUEUE_FILE" ]; then
+                head -n 1 "$QUEUE_FILE"
+                sed -i '1d' "$QUEUE_FILE"
+            fi
+        ) 200>"$QUEUE_LOCK"
+    }
+
+    # Enable job control so each worker subshell runs in its own process group
+    set -m
+    for ((w=0; w<WORKERS; w++)); do
+        (
+            export GOMAXPROCS="$CPU_BUDGET"
+            export GOFLAGS="${GOFLAGS:+$GOFLAGS }-p=$CPU_BUDGET"
+            set -o pipefail
+            cd "$WORKTREE_BASE/wt-$w"
+            while true; do
+                spec=$(pop_spec)
+                [ -n "$spec" ] || break
+                log_file="$WORKTREE_BASE/logs/$(echo "$spec" | tr '/' '_').log"
+                echo "[$w/$WORKERS] Running mutation spec: $spec"
+                if ! "$MUTATE_BIN" "$spec" 2>&1 | tee "$log_file" | sed -u "s|^|[$spec] |"; then
+                    echo -e "${RED}[$w/$WORKERS] FAILED: $spec${NC}" >&2
+                    echo -e "${RED}--- Failure output for $spec ---${NC}" >&2
+                    cat "$log_file" >&2
+                    echo "$spec FAILED" >> "$RESULTS_FILE"
+                    exit 1
+                fi
+                echo "$spec PASSED" >> "$RESULTS_FILE"
+            done
+        ) &
+        PIDS+=($!)
+    done
+    set +m
+
+    # Wait for workers using wait -n to catch failures immediately
+    ACTIVE_PIDS=("${PIDS[@]}")
+    FAILED=0
+    while [ "${#ACTIVE_PIDS[@]}" -gt 0 ]; do
+        wait_status=0
+        wait -n -p done_pid "${ACTIVE_PIDS[@]}" || wait_status=$?
+        NEW_ACTIVE=()
+        for p in "${ACTIVE_PIDS[@]}"; do
+            if [ "$p" -ne "$done_pid" ]; then
+                NEW_ACTIVE+=("$p")
+            fi
+        done
+        ACTIVE_PIDS=("${NEW_ACTIVE[@]}")
+
+        if [ "$wait_status" -ne 0 ]; then
+            FAILED=1
+            for p in "${ACTIVE_PIDS[@]}"; do
+                kill -TERM -- "-$p" 2>/dev/null || true
+            done
+            for p in "${ACTIVE_PIDS[@]}"; do
+                wait "$p" 2>/dev/null || true
+            done
+            break
+        fi
+    done
+
+    if [ "$FAILED" -ne 0 ]; then
+        echo -e "${RED}ERROR: One or more mutation specs failed.${NC}" >&2
+        echo "Unrun / interrupted specs:" >&2
+        for spec in "${SPECS[@]}"; do
+            if ! grep -q "^$spec " "$RESULTS_FILE" 2>/dev/null; then
+                echo "  [not run] $spec" >&2
+            fi
+        done
+        cleanup_mutate
+        trap - EXIT INT TERM
+        exit 1
+    fi
+
+    # Assert that all expected specs passed via set equality
+    PASSED_SPECS=$(sed -n 's/ PASSED$//p' "$RESULTS_FILE" | sort -u)
+    EXPECTED_SPECS=$(printf '%s\n' "${SPECS[@]}" | sort -u)
+    if [ "$PASSED_SPECS" != "$EXPECTED_SPECS" ]; then
+        echo -e "${RED}ERROR: Executed specs do not match expected spec list.${NC}" >&2
+        cleanup_mutate
+        trap - EXIT INT TERM
+        exit 1
+    fi
+    RUN_COUNT=$(printf '%s\n' "$PASSED_SPECS" | grep -c . || echo 0)
+
+    cleanup_mutate
+    trap - EXIT INT TERM
+
+    echo -e "${GREEN}✓ All Mutation Specs Killed ($RUN_COUNT/$NUM_SPECS)${NC}"
+fi
 
 # 3. Go Integration Tests
 echo -e "\n[3/7] Running Go Integration Tests..."

@@ -23,8 +23,7 @@ func TestRaise(t *testing.T) {
 	const path = "/downloads/a.bin"
 
 	newBarrier := func(s *recordingStall) *Barrier {
-		db := openTestDB(t)
-		return NewBarrier(NewStore(db),
+		return NewBarrier(nil,
 			&recordingAcker{}, s, slog.New(slog.DiscardHandler))
 	}
 

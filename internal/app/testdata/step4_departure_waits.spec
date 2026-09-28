@@ -1,6 +1,6 @@
 pkg ./internal/app/
-run .
-timeout 10m
+run ^(TestRemoveJob_WaitsForACheckpointThatIsWritingTheJob|TestFinalizer_PersistError_CleanupExecutes)$
+timeout 2m
 
 [RemoveJob does not prune the checkpointer]
 file internal/app/app.go
