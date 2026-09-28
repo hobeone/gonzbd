@@ -246,7 +246,9 @@ claim. So nothing may wait for that lock while holding something the
 dispatcher waits on. The finalizer is the site that runs holding one —
 post-processing's launch claim — so it takes the lock after its own
 `Yielded`, which clears that claim; every other site takes it before its
-dispatcher calls.
+dispatcher calls. `jobFinalizer.cancelled`, which releases the claim of a
+job `PostProcessor.Cancel` took, also runs holding it but takes no
+transition lock at all.
 `TestJobTransitions_LockSites` pins the set of functions that take the lock.
 
 ## The read doors: Render and RenderAll
@@ -429,7 +431,8 @@ directly rather than being parked).
 - **No per-job cancellation surface in `internal/downloader`.** Cancel's
   interrupt arm calls `Workers.Abort`, whose production implementation is
   `appWorkers` (`internal/app/dispatcher_wiring.go`); `internal/postproc`
-  already exposes `PostProcessor.Cancel(jobID)` for `Assessing`/`Repairing`,
+  already exposes `PostProcessor.Cancel(jobID)` for jobs in post-processing
+  (`Repairing`/`Extracting`/`Finalizing`),
   but a `Fetching` worker has no equivalent per-job stop today (only global
   pause/stop/disconnect on the downloader).
 

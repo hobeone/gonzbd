@@ -45,7 +45,16 @@ single worker goroutine (`run`).
   ID (`currentJobID`) and an independent job context (`currentJobCancel`).
   Calling `Cancel(jobID)` either removes a pending job from `ppQueue` or cancels
   the active job's context mid-stage so the running tool returns promptly without
-  stopping the worker itself.
+  stopping the worker itself. A job `Cancel` removed or interrupted is handed
+  to `OnJobCancelled` rather than `OnJobDone` — synchronously, before `Cancel`
+  returns, for a pending job, and by the worker once the stage pipeline has
+  returned, for the active one. A `Cancel` that lands after the worker has seen
+  the job finish still ends in `OnJobDone`, and a shutdown fires neither; the
+  `Options.OnJobCancelled` doc has the full set. The app wires that callback to
+  `jobFinalizer.cancelled`, which releases the job's dispatcher launch claim.
+  For `Extracting`/`Finalizing`, releasing it only after the stage returns is
+  what keeps `RemoveJob` from tearing down files a stage is still using; a
+  `Repairing` job's claim is released earlier, by the dispatcher's abort (#586).
 - **Crash recovery handoff**: Jobs whose download completed have `PostProc=true`
   persisted in SQLite history. If the daemon crashes or shuts down while a job is
   being processed, `workerCtx` cancellation halts stage execution, preserving

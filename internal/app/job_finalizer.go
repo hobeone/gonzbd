@@ -45,6 +45,29 @@ func newJobFinalizer(app *Application) *jobFinalizer {
 	}
 }
 
+// cancelled is called by the post-processor (OnJobCancelled) for a job its
+// Cancel took out of the queue or interrupted, once no stage runs for it. The
+// job is not finalized: it releases the job's launch claim, which
+// dispatcher.Remove waits on and which persistAndCommit and Shutdown release
+// on their own paths.
+//
+// For a queued job this runs inside RemoveJob, which holds the job's
+// transition lock. Neither call below takes it: the one path back into this
+// package is sched's cancel calling appWorkers.Abort, which takes app.mu, and
+// neither is among the lock's sites (TestJobTransitions_LockSites).
+func (f *jobFinalizer) cancelled(ppJob *postproc.Job) {
+	app := f.app
+	if app.dispatcher == nil || ppJob == nil || ppJob.Job == nil {
+		return
+	}
+	id := ppJob.Job.ID()
+	// Cancel first, so the tick cannot relaunch the job between the yield and
+	// the cancel intent. Both calls carry this instance, so a callback for a
+	// removed instance leaves alone a retry registered since under the same ID.
+	_ = app.dispatcher.CancelFor(id, ppJob.Job) // an error means this instance is gone; nothing to cancel
+	_ = app.dispatcher.YieldedJob(ppJob.Job)    // an error means this instance is gone; its claim went with it
+}
+
 // finalize is called by the post-processor (OnJobDone) when a job is done
 // (success or failure).
 func (f *jobFinalizer) finalize(ppJob *postproc.Job) {

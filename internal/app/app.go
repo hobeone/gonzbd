@@ -482,8 +482,9 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 				Line:  line,
 			})
 		},
-		OnJobDone: app.finalizer.finalize,
-		Logger:    log,
+		OnJobDone:      app.finalizer.finalize,
+		OnJobCancelled: app.finalizer.cancelled,
+		Logger:         log,
 	})
 	app.postProcessor = pp
 

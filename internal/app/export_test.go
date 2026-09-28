@@ -250,6 +250,12 @@ func (a *Application) JobBarrierState(jobID string) (hasBytes bool, hasMu bool, 
 	return
 }
 
+// PostProcessorHas reports whether post-processing holds jobID, queued or in
+// flight.
+func (a *Application) PostProcessorHas(jobID string) bool {
+	return a.postProcessor.Has(jobID)
+}
+
 // SetPostProcessorStopHook overrides postProcessor.Stop behavior during testing.
 func (a *Application) SetPostProcessorStopHook(fn func() error) {
 	a.postProcStopHook = fn
