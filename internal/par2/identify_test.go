@@ -311,3 +311,29 @@ func TestIdentify_DoesNotTouchTheFilesystem(t *testing.T) {
 		}
 	}
 }
+
+// NothingIdentified is the Layout B signature, and it must be exactly that:
+// entries exist, and not one was matched. One identified file means the set
+// describes this download, and a set that names nothing is not a signature
+// of anything.
+func TestIdentification_NothingIdentified(t *testing.T) {
+	t.Parallel()
+
+	entry := FileDesc{FileName: "feature.bin"}
+	found := Identified{OnDisk: "feature.bin", Desc: entry}
+	cases := []struct {
+		name string
+		id   Identification
+		want bool
+	}{
+		{"entries and no matches", Identification{Unaccounted: []FileDesc{entry}}, true},
+		{"one entry matched, one not", Identification{Files: []Identified{found}, Unaccounted: []FileDesc{entry}}, false},
+		{"every entry matched", Identification{Files: []Identified{found}}, false},
+		{"no entries at all", Identification{}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.id.NothingIdentified(); got != tc.want {
+			t.Errorf("%s: NothingIdentified() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
