@@ -154,9 +154,11 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // also executes completion notifications and asynchronous history pruning
 // under its own 30s context outside of persistAndCommit.
 //
-// Returns a non-nil error if persistence failed, or errFinalizedJobRemoved if
-// a RemoveJob took this job instance before it was committed (either is
-// already logged; callers can simply return).
+// Returns a non-nil error if persistence failed, errFinalizedJobRemoved if
+// a RemoveJob took this job instance before it was committed, or
+// errFinalizedJobSuperseded if a later instance holds the job's ID; the last
+// two skip the teardown too. Each is already logged; callers can simply
+// return.
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, ppJob *postproc.Job) error {
 	app := f.app
 	if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
@@ -192,8 +194,12 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 		// Everything below acts by ID, so a later instance registered under
 		// this job's ID must stop it: filing would put this run in history
 		// under the retry's ID, and the teardown would deregister the retry.
-		// RetryHistoryJob, which is what reuses an ID, takes the transition
-		// lock, so while this holds it the answer cannot change underneath.
+		// `git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
+		// finds 2 production registrations. RetryHistoryJob's reuses an ID, through the
+		// FetchOptions.JobID it sets, and takes the transition lock; AddJob's
+		// jobs are built by BuildIngestJob, which mints a newJobID when no
+		// JobID is set. So while this holds the lock the answer cannot change
+		// underneath.
 		if app.dispatcher != nil {
 			if cur, ok := app.dispatcher.Job(ppJob.Job.ID()); ok && cur != ppJob.Job {
 				log.Warn("finalize: a later instance of the job holds its ID; not filing this run",
