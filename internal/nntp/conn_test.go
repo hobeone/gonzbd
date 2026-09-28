@@ -1357,3 +1357,48 @@ func TestDialHandshakeServerRejectionNotWrappedWhenCtxEndsBeforeTheCheck(t *test
 		t.Fatalf("Dial err = %v (%T), want a *ServerError{Code: 502}", err, err)
 	}
 }
+
+// TestIdleTimeoutReaderForcesDeadlineWhenHandshakeCtxAlreadyDone pins
+// idleTimeoutReader.Read's ordering directly, deterministically, without
+// racing wall-clock scheduling the way
+// TestDialHandshakeCtxCancelSurfacesAsContextCanceled has to: it re-creates
+// the exact window the flake lived in — handshakeCtx already done (as if
+// setupHandshakeDeadline's AfterFunc had already run and stamped a past
+// deadline) by the time Read's own re-arm runs — and requires Read to
+// still return promptly rather than block for the idle timeout.
+//
+// The reader end of a net.Pipe blocks forever on Read until a deadline or
+// a write arrives; nothing here ever writes, so an hour-long idle timeout
+// stands in for "no ctx check would block until the timeout expires."
+func TestIdleTimeoutReaderForcesDeadlineWhenHandshakeCtxAlreadyDone(t *testing.T) {
+	t.Parallel()
+
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already done before Read runs, as if the AfterFunc goroutine had already fired
+
+	r := &idleTimeoutReader{nc: client, timeout: time.Hour, handshakeCtx: ctx}
+
+	done := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 1)
+		_, err := r.Read(buf)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Read succeeded against a pipe nothing wrote to, want a deadline error")
+		}
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Fatalf("Read err = %v (%T), want a deadline/timeout error", err, err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read did not return promptly for an already-done handshakeCtx — " +
+			"the idle re-arm was left free to overwrite the forced deadline")
+	}
+}

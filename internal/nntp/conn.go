@@ -303,9 +303,11 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, dopts.dialer.Timeout)
 	defer cancelHandshake()
 
+	var itr *idleTimeoutReader
 	var br io.Reader = nc
 	if dopts.dialer.Timeout > 0 {
-		br = &idleTimeoutReader{nc: nc, timeout: dopts.dialer.Timeout}
+		itr = &idleTimeoutReader{nc: nc, timeout: dopts.dialer.Timeout, handshakeCtx: handshakeCtx}
+		br = itr
 	}
 	// lr is nil unless a limiter or recorder is configured; when non-nil
 	// its ctx starts as handshakeCtx so a RateLimiter.Wait blocked on
@@ -374,6 +376,9 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 
 	if lr != nil {
 		lr.ctx = ctxConn // handshake done; steady-state reads use the connection's own lifetime, not the handshake's bound
+	}
+	if itr != nil {
+		itr.handshakeCtx = nil // handshake done; idle reads no longer force-unblock on the handshake's ctx
 	}
 
 	// setupHandshakeDeadline's AfterFunc can fire concurrently with
@@ -705,9 +710,33 @@ func (c *Conn) Close() error {
 type idleTimeoutReader struct {
 	nc      net.Conn
 	timeout time.Duration
+
+	// handshakeCtx, while non-nil, is the handshake's own aggregate-bound
+	// context (Dial's local handshakeCtx). Read checks it after re-arming
+	// the idle deadline below, so a cancellation racing
+	// setupHandshakeDeadline's AfterFunc goroutine against that re-arm
+	// cannot have its forced-past deadline silently overwritten by a
+	// longer one: when ctx is already done, Read forces the deadline back
+	// into the past itself before reading, and a cancellation that lands
+	// after the re-arm is still caught because the AfterFunc then fires
+	// later and is not overwritten by anything.
+	//
+	// Dial sets this field before the handshake's first read and clears
+	// it before starting the reader goroutine with a plain `go`
+	// statement, which establishes a happens-before edge (Go memory
+	// model, goroutine creation) — so the field needs no lock or atomic.
+	handshakeCtx context.Context
 }
 
 func (r *idleTimeoutReader) Read(p []byte) (int, error) {
 	_ = r.nc.SetReadDeadline(time.Now().Add(r.timeout)) //nolint:errcheck // best-effort; actual idle enforced by Read
+	if ctx := r.handshakeCtx; ctx != nil {
+		if err := ctx.Err(); err != nil {
+			// ctx ended at or before this point: force the pending read
+			// to unblock now instead of trusting the AfterFunc goroutine
+			// to still overwrite the re-arm above before Read blocks.
+			_ = r.nc.SetReadDeadline(time.Now()) //nolint:errcheck // best-effort unblock, mirrors setupHandshakeDeadline
+		}
+	}
 	return r.nc.Read(p)
 }
