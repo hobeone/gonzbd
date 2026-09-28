@@ -6,15 +6,11 @@ timeout 5m
 file internal/app/app.go
 --- anchor
 	app.ctx, app.cancel = context.WithCancel(ctx)
-	// started flips true only here, after app.ctx/app.cancel are already
-	// assigned above — see the ordering note in this method's doc comment.
 	app.started.Store(true)
 	if app.startedTransitionHook != nil {
 		app.startedTransitionHook()
 	}
 --- replace
-	// started flips true only here, after app.ctx/app.cancel are already
-	// assigned above — see the ordering note in this method's doc comment.
 	app.started.Store(true)
 	if app.startedTransitionHook != nil {
 		app.startedTransitionHook()

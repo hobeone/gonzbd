@@ -214,26 +214,12 @@ type Application struct {
 	ctx    context.Context //nolint:containedctx // ctx is the app's lifecycle context, stored by design
 	cancel context.CancelFunc
 
-	// starting is Start's entry gate: CompareAndSwap'd true before app.ctx/
-	// app.cancel are assigned, so a concurrent second Start call fails fast
-	// (ErrAlreadyStarted) without ever creating a context to leak. Nothing
-	// outside Start reads it — started (below) is what everything else gates
-	// on, and it only flips true once ctx/cancel already exist. See Start's
-	// doc comment.
+	// starting is Start's entry gate, CAS'd true before app.ctx/app.cancel
+	// exist, so a second Start call fails fast without ever leaking a context.
 	starting atomic.Bool
 
-	// started is true only once app.ctx/app.cancel are already assigned:
-	// Start stores it (a plain Store, not a CAS — starting above already
-	// provides exclusivity) right after building them. Shutdown gates on
-	// started and then calls app.cancel() directly — the one reader of
-	// started that would nil-deref in the window this closes.
-	// statusinfo.go's IsPipelineHealthy also gates on started but never
-	// touches app.cancel/app.ctx. reloader.go's ReloadDownloader does read
-	// app.ctx, well after its own started check, but that check cannot be
-	// racing this window in the first place: Start's doc comment already
-	// documents that ReloadDownloader must not run until Start has
-	// returned, so by the time it reads app.ctx, Start finished assigning
-	// it long ago.
+	// started is true only once app.ctx/app.cancel are assigned; Shutdown
+	// gates on it and then calls app.cancel().
 	started atomic.Bool
 	stopped atomic.Bool
 
@@ -279,12 +265,8 @@ type Application struct {
 	// checkpointHook.
 	removeCancelGapHook func(id string)
 
-	// startedTransitionHook, when non-nil, runs synchronously in Start
-	// immediately after started flips true — i.e. after app.ctx/app.cancel
-	// are already assigned. Same discipline as checkpointHook: a same-package
-	// test seam, set once before Start is called. It exists to pin the
-	// started/ctx ordering deterministically, without relying on goroutine
-	// timing to catch a regression that reintroduces the race.
+	// startedTransitionHook, when non-nil, runs in Start right after started
+	// flips true. Same discipline as checkpointHook.
 	startedTransitionHook func()
 
 	shutdownStepTimeout time.Duration
@@ -1287,14 +1269,10 @@ func (app *Application) PostProcComplete() <-chan PostProcComplete { return app.
 // HTTP handler) can't run until the API server starts listening, which
 // happens after Start returns — see cmd/gonzbd/main.go.
 //
-// Ordering: starting (not started) is what a concurrent second Start call is
-// rejected by. It is CAS'd true first, purely for mutual exclusion, before
+// Ordering: starting is CAS'd true first, purely for mutual exclusion, before
 // app.ctx/app.cancel exist; started only flips true once those two fields are
-// already assigned. That keeps the two properties — "reject a second caller"
-// and "promise ctx/cancel are non-nil" — on separate flags, so Shutdown,
-// which gates on started and then calls app.cancel(), can never observe it
-// true while app.cancel is still nil. See the field doc on started for the
-// other two readers of that flag.
+// already assigned, so Shutdown can never observe it true while app.cancel is
+// still nil.
 func (app *Application) Start(ctx context.Context) error {
 	if !app.starting.CompareAndSwap(false, true) {
 		return ErrAlreadyStarted
@@ -1331,8 +1309,6 @@ func (app *Application) Start(ctx context.Context) error {
 	// so gosec cannot see the calls. It is invoked by Shutdown on the success
 	// path and by the failure defer above on every error return.
 	app.ctx, app.cancel = context.WithCancel(ctx)
-	// started flips true only here, after app.ctx/app.cancel are already
-	// assigned above — see the ordering note in this method's doc comment.
 	app.started.Store(true)
 	if app.startedTransitionHook != nil {
 		app.startedTransitionHook()
