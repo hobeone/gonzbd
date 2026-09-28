@@ -4,9 +4,11 @@ run TestResumeAtStartup_ShortenedPartialIsRefetched
 [the sweep no longer clears the Complete flag it disproved]
 file internal/job/content.go
 --- anchor
+			fp := &j.progress.files[f]
 			fp.Complete = false
 			fp.AssembledCRC32 = 0
 --- replace
+			fp := &j.progress.files[f]
 			fp.AssembledCRC32 = 0
 --- end
 

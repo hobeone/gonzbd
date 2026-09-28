@@ -923,6 +923,12 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 
 	// Abort any active DirectUnpacker for this job before removing files.
 	app.duOrch.abortJob(id)
+	// After markRemoved, so an enqueue that has not yet handed the job over
+	// refuses it. It returns once a DirectUnpack wait duOrch.abortJob could not
+	// reach has aborted its unpacker, before any file below is deleted, and
+	// once a hand-over that had already begun has queued the job for the
+	// post-processing cancel below (postProcAdmissions).
+	app.postProcAdmissions.withdraw(j)
 
 	// The dispatcher cancel comes first. Its abort releases the launch claim
 	// of a running job the post-processor does not hold, and leaves one it
@@ -2141,16 +2147,19 @@ type directUnpackWaiter interface {
 	Abort()
 }
 
-// awaitDirectUnpackOrAbort blocks until du finishes or ctx is cancelled. On
-// natural completion it returns true. On cancellation it calls du.Abort() —
-// which makes du.Wait() return — waits for the wait goroutine to exit, and
-// returns false so the caller can skip post-processing during shutdown.
+// awaitDirectUnpackOrAbort blocks until du finishes, ctx is cancelled, or
+// removed is closed. On natural completion it returns true. On cancellation it
+// calls du.Abort() — which makes du.Wait() return — waits for the wait
+// goroutine to exit, and returns false so the caller can skip post-processing
+// during shutdown. On removal it aborts du the same way and returns true,
+// leaving the caller's hand-over to refuse the job (beginHandOver).
 //
 // This exists because a du handed to the async completion goroutine has already
 // been removed from the orchestrator's unpackers map (via duOrch.collect), so
-// Shutdown()'s abortAll cannot reach it; without this, a du.Wait() that blocks
-// forever would hang app.wg.Wait() during shutdown.
-func awaitDirectUnpackOrAbort(ctx context.Context, du directUnpackWaiter) bool {
+// neither Shutdown()'s abortAll nor RemoveJob's duOrch.abortJob can reach it;
+// without this, a du.Wait() that blocks forever would hang app.wg.Wait() during
+// shutdown, and hold a removed job's admission until then.
+func awaitDirectUnpackOrAbort(ctx context.Context, removed <-chan struct{}, du directUnpackWaiter) bool {
 	waited := make(chan struct{})
 	go func() {
 		du.Wait()
@@ -2158,6 +2167,10 @@ func awaitDirectUnpackOrAbort(ctx context.Context, du directUnpackWaiter) bool {
 	}()
 	select {
 	case <-waited:
+		return true
+	case <-removed:
+		du.Abort()
+		<-waited
 		return true
 	case <-ctx.Done():
 		du.Abort()
@@ -2281,14 +2294,34 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	// When du != nil, Wait() is executed inside an asynchronous worker
 	// goroutine on app.wg so the completion event consumer (watchCompletions)
 	// never blocks waiting for disk unpacking to finish.
+	//
+	// The wait step begins before the collect: from the collect on,
+	// duOrch.abortJob cannot reach du, so a RemoveJob's withdraw must already
+	// find the step to wait on. A withdraw before this point leaves du in the
+	// orchestrator, where RemoveJob's duOrch.abortJob aborts it.
+	removed, wait := app.postProcAdmissions.beginWait(j)
 	du := app.duOrch.collect(j.ID())
+	if du == nil {
+		app.postProcAdmissions.endStep(j, wait)
+	}
 
 	enqueue := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
 		// Sealed now rather than taken from failMsg: an enqueuePostProc
 		// refused during the DirectUnpack wait may have added a reason. A
 		// reason arriving after the seal cannot reach the stages, so it is
 		// only noted.
-		admittedFailMsg := app.postProcAdmissions.seal(j)
+		admittedFailMsg, handOver, ok := app.postProcAdmissions.beginHandOver(j, &app.transitions)
+		if !ok {
+			// A RemoveJob took the job. It is handed back as a job the
+			// post-processor's Cancel took would be: jobFinalizer.cancelled
+			// releases its launch claim, which dispatcher.Remove waits on, and
+			// ends the admission. RemoveJob's own dispatcher cancel does not
+			// release the claim at Extracting or Finalizing, where it does not
+			// interrupt the job.
+			app.log.Info("postproc: job was removed before it was handed to post-processing; not running it", "job", j.ID())
+			app.finalizer.cancelled(&postproc.Job{Job: j})
+			return
+		}
 		app.postProcessor.Process(&postproc.Job{
 			Job:                  j,
 			Filename:             hdr.Filename,
@@ -2306,6 +2339,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			DirectUnpackFailures: duFailures,
 			DirectUnpackSkipped:  duSkipped,
 		})
+		app.postProcAdmissions.endStep(j, handOver)
 		select {
 		case app.jobComplete <- JobComplete{JobID: j.ID()}:
 		default:
@@ -2315,13 +2349,17 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	if du != nil {
 		app.wg.Go(func() {
 			// du has already been removed from the orchestrator's unpackers map
-			// above (via duOrch.collect), so Shutdown()'s abortAll can no longer
-			// reach it. du.Wait() can
+			// above (via duOrch.collect), so neither Shutdown()'s abortAll nor
+			// RemoveJob's duOrch.abortJob can reach it. du.Wait() can
 			// block indefinitely (e.g. waiting on a RAR volume that never
 			// arrives), which would hang Shutdown() at app.wg.Wait(). Watch the
-			// lifecycle context and Abort() the du on cancellation so Wait()
-			// returns; skip dispatch since we are tearing down.
-			if !awaitDirectUnpackOrAbort(app.ctx, du) {
+			// lifecycle context and the admission's removal, and Abort() the du
+			// on either so Wait() returns; skip dispatch on the first, since we
+			// are tearing down. The wait step ends only once du has stopped, so
+			// a withdrawing RemoveJob deletes nothing du is still writing.
+			finished := awaitDirectUnpackOrAbort(app.ctx, removed, du)
+			app.postProcAdmissions.endStep(j, wait)
+			if !finished {
 				return
 			}
 			duResults := du.Results()
@@ -2420,9 +2458,9 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 // the only place the article message-IDs survive once the manifest is
 // unlinked at finalization — and then overlaid with the per-file progress
 // retained for failed jobs, so only the articles that did not succeed are
-// refetched. Where every article already resolved and only post-processing
-// failed, the overlay is what sends the job straight back to post-processing
-// instead of re-downloading it in full.
+// refetched. Where every article was already downloaded and only
+// post-processing failed, the overlay is what sends the job straight back to
+// post-processing instead of re-downloading it in full.
 //
 // Only failed entries are retryable, matching SABnzbd, whose
 // get_incomplete_path returns a path only for status = Failed. A completed
@@ -2592,7 +2630,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	// checkpointer synchronously, both immediately before dispatcher.Add and
 	// after ResetForRetry and the barrier/assembler forget calls above — not
 	// merely after the restore loop. ResetForRetry clears Complete on every
-	// file whose failed articles it reset, and SaveBatch persists complete
+	// file with an article that is not done, and SaveBatch persists complete
 	// for every file of a marked job; flushing before ResetForRetry would
 	// write the pre-reset complete = 1, leave the job clean, and let an
 	// eviction hydrate files as complete that the retry had just

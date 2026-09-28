@@ -54,9 +54,25 @@ single worker goroutine (`run`).
   the callback tail after the worker clears its busy marker. Ending it does not
   deregister the instance, so one the dispatcher still holds after a failed
   removal can be admitted again. It is keyed by job instance, so a retry
-  registered under the ID of a job still being finalized is admitted. Two
-  admissions are never ended: a run a shutdown interrupts, and a job removed
-  during a DirectUnpack wait that never finishes.
+  registered under the ID of a job still being finalized is admitted. An
+  admission a shutdown interrupts is never ended.
+- **A removed job is not handed over**: `enqueuePostProc` calls `Process`
+  only after `postProcAdmissions.beginHandOver`, which refuses a job instance
+  `RemoveJob` has marked removed (`jobTransitions.markRemoved`); a refused
+  enqueue runs nothing and hands the job to `jobFinalizer.cancelled`, which
+  releases its launch claim and ends its admission. The claim is that
+  enqueue's to release: at `Extracting` and `Finalizing` the dispatcher's
+  cancel does not interrupt the job, so `appWorkers.Abort` never runs for it.
+  After marking, `RemoveJob` calls `postProcAdmissions.withdraw`, which
+  signals a DirectUnpack wait the enqueue is in to abort its unpacker —
+  `duOrch.abortJob` cannot reach one `duOrch.collect` has already taken — and
+  returns only once that wait has ended, so nothing `RemoveJob` deletes is
+  still being written. It likewise waits for a hand-over already past the
+  check, so the `Cancel` it makes afterwards finds that job queued or
+  running. A `RemoveJob` whose `dispatcher.Remove` fails withdraws its mark,
+  and a hand-over that begins after that is not refused; its job reaches
+  post-processing with the DirectUnpack the withdraw aborted, whose sets are
+  recorded as failed.
 - **An admitted job is not downloaded**: `maybeFinalize` moves no persisted
   position, so a job it hands over from `Fetching` — `Fail`, the hopeless
   callbacks, startup reconciliation, a retry — keeps a dispatchable row
