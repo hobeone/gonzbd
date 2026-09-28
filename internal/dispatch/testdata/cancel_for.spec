@@ -1,18 +1,15 @@
 pkg ./internal/dispatch/
-run TestCancelFor_LeavesALaterInstanceAlone$|TestCancel_(NoJobReturnsError|LatchesAndKicksForARegisteredJob)$
+run TestCancelJob_(LeavesALaterInstanceAlone|NilJobReturnsErrNotFound)$|TestCancel_(NoJobReturnsError|LatchesAndKicksForARegisteredJob)$|TestYieldedFor_JobMismatch_NoOpsAndPreservesNewAttempt$
 
-# CancelFor's instance check, and the latch it guards, each removed on its own.
+# lookupFor's instance check, which CancelJob and YieldedFor both rely on, and
+# the latch CancelJob guards, each removed on its own.
 
-[a removed instance still cancels the later one]
+[a removed instance still matches the later one]
 file internal/dispatch/dispatch.go
 --- anchor
 	if !ok || (expected != nil && e.j != expected) {
-		d.mu.Unlock()
-		return fmt.Errorf("dispatch: Cancel: no job %q: %w", id, ErrNotFound)
 --- replace
 	if !ok {
-		d.mu.Unlock()
-		return fmt.Errorf("dispatch: Cancel: no job %q: %w", id, ErrNotFound)
 --- end
 
 [the matched instance is not latched]

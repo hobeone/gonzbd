@@ -107,14 +107,10 @@ func (d *Dispatcher) YieldedJob(j *job.Job) error {
 // Running (Park has not yet released it) with the claim already free, and start
 // a second worker on resources the first has not yet surrendered.
 func (d *Dispatcher) YieldedFor(id string, expected *job.Job) error {
-	d.mu.Lock()
-	e, ok := d.byID[id]
-	if !ok || (expected != nil && e.j != expected) {
-		d.mu.Unlock()
+	j, ok := d.lookupFor(id, expected)
+	if !ok {
 		return fmt.Errorf("dispatch: Yielded: no job %q: %w", id, ErrNotFound)
 	}
-	j := e.j
-	d.mu.Unlock()
 
 	err := d.q.Park(j)
 	// After Park, before kick — see Finished above for why the ordering is

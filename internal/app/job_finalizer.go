@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/notifier"
@@ -60,12 +61,24 @@ func (f *jobFinalizer) cancelled(ppJob *postproc.Job) {
 	if app.dispatcher == nil || ppJob == nil || ppJob.Job == nil {
 		return
 	}
-	id := ppJob.Job.ID()
 	// Cancel first, so the tick cannot relaunch the job between the yield and
 	// the cancel intent. Both calls carry this instance, so a callback for a
 	// removed instance leaves alone a retry registered since under the same ID.
-	_ = app.dispatcher.CancelFor(id, ppJob.Job) // an error means this instance is gone; nothing to cancel
-	_ = app.dispatcher.YieldedJob(ppJob.Job)    // an error means this instance is gone; its claim went with it
+	id := ppJob.Job.ID()
+	warnUnlessGone(app.log, "postproc cancel: cancelling the job failed", id,
+		app.dispatcher.CancelJob(ppJob.Job))
+	warnUnlessGone(app.log, "postproc cancel: releasing the job's launch claim failed", id,
+		app.dispatcher.YieldedJob(ppJob.Job))
+}
+
+// warnUnlessGone logs err at Warn unless it is nil or dispatch.ErrNotFound,
+// which from an instance-bound dispatcher call means the instance is no
+// longer registered and its launch claim went with it.
+func warnUnlessGone(log *slog.Logger, msg, id string, err error) {
+	if err == nil || errors.Is(err, dispatch.ErrNotFound) {
+		return
+	}
+	log.Warn(msg, "job", id, "err", err)
 }
 
 // finalize is called by the post-processor (OnJobDone) when a job is done

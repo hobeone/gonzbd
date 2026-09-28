@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestRemoveJob_(ReleasesARunningPostProcessingJob|ReleasesAQueuedPostProcessingJob|WaitsForTheCancelledStageToStop)$|TestJobFinalizerCancelled_LeavesALaterInstanceAlone$
+run TestRemoveJob_(ReleasesARunningPostProcessingJob|ReleasesAQueuedPostProcessingJob|WaitsForTheCancelledStageToStop)$|TestJobFinalizerCancelled_(LeavesALaterInstanceAlone|LogsACancelFailure)$|TestWarnUnlessGone$
 
 # The release of a cancelled post-processing job's launch claim
 # (jobFinalizer.cancelled), each part removed on its own. Two properties have
@@ -23,15 +23,31 @@ file internal/app/app.go
 [the handback does not release the launch claim]
 file internal/app/job_finalizer.go
 --- anchor
-	_ = app.dispatcher.YieldedJob(ppJob.Job)
+		app.dispatcher.YieldedJob(ppJob.Job))
 --- replace
-	_ = ppJob.Job
+		error(nil))
 --- end
 
 [the handback cancels whatever instance holds the ID]
 file internal/app/job_finalizer.go
 --- anchor
-	_ = app.dispatcher.CancelFor(id, ppJob.Job)
+		app.dispatcher.CancelJob(ppJob.Job))
 --- replace
-	_ = app.dispatcher.CancelFor(id, nil)
+		app.dispatcher.Cancel(id))
+--- end
+
+[a vanished instance is reported as a failure]
+file internal/app/job_finalizer.go
+--- anchor
+	if err == nil || errors.Is(err, dispatch.ErrNotFound) {
+--- replace
+	if err == nil || (false && errors.Is(err, dispatch.ErrNotFound)) {
+--- end
+
+[a failure is not logged]
+file internal/app/job_finalizer.go
+--- anchor
+	log.Warn(msg, "job", id, "err", err)
+--- replace
+	_, _, _, _ = log, msg, id, err
 --- end
