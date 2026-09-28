@@ -1013,17 +1013,18 @@ func (m *managedConn) DropIfMatches(c *nntp.Conn, d *Downloader, workerID string
 // dual-fallback failure is a joined error (see decodePayload) and isn't
 // reliably sub-classifiable further, so it falls into a single
 // "decode_failed" bucket alongside any other unrecognized decode error.
-// ErrUUMultipart gets its own class rather than joining that bucket: unlike
-// the joined failure, its cause is known precisely, and #346 found that the
-// generic bucket hid it.
+// ErrOffsetUnknownForPart gets its own class rather than joining that
+// bucket: unlike the joined failure, its cause is a single, named condition
+// (assertion E5 of docs/article-validation-contract.md), and a class that
+// bucket-mixed it with unrelated decode failures could not be acted on.
 func classifyDecodeError(err error) string {
 	switch {
 	case errors.Is(err, ErrArticleRemoved):
 		return telemetry.ErrClassDMCARemoved
 	case errors.Is(err, decoder.ErrBodyTooLarge):
 		return telemetry.ErrClassDecodeBodyTooLarge
-	case errors.Is(err, ErrUUMultipart):
-		return telemetry.ErrClassUUMultipart
+	case errors.Is(err, ErrOffsetUnknownForPart):
+		return telemetry.ErrClassPartOffsetUnknown
 	default:
 		return telemetry.ErrClassDecodeFailed
 	}
@@ -1032,9 +1033,11 @@ func classifyDecodeError(err error) string {
 // decodePayload decodes an article body using yEnc first, with a
 // fallback to UU decoding if the payload is not yEnc encoded.
 // requestedPartNumber is the NZB segment number the caller asked for
-// (articleRequest.partNumber); a successful UU decode for any segment other
-// than the first is rejected with ErrUUMultipart rather than asserting an
-// offset UU cannot carry (#346).
+// (articleRequest.partNumber). A successful decode of either shape that
+// carries no genuine offset — a yEnc body with no =ypart line
+// (!article.HasOffset), or any UU body — is rejected with
+// ErrOffsetUnknownForPart when requestedPartNumber > 1, rather than
+// asserting the offset 0 default for a segment it does not belong to.
 //
 // When neither yEnc nor UU decoding succeeds, the raw body is scanned
 // for DMCA/takedown keywords. If found, ErrArticleRemoved is returned
@@ -1060,6 +1063,24 @@ func decodePayload(body []byte, requestedPartNumber int) (decodedPayload, error)
 	article, decErr := decoder.DecodeArticle(body)
 	switch {
 	case decErr == nil:
+		// !article.HasOffset means no =ypart line was present, so
+		// article.Offset is the format's zero-value default rather than a
+		// genuine position — correct only for segment 1 of a file.
+		// requestedPartNumber is the NZB segment number, always >= 1
+		// (internal/nzb/parser.go rejects s.Number <= 0 at parse time), so
+		// > 1 unambiguously means "not the first segment" — assertion E5 of
+		// docs/article-validation-contract.md rejects this decode rather
+		// than letting it claim segment 1's offset. article.PartNumber
+		// (from a bare =ybegin part=, with no =ypart) does not save it:
+		// that field is server-declared and unvalidated, not derived from
+		// requestedPartNumber, and D1 only counts a disagreement rather
+		// than acting on it.
+		if !article.HasOffset && requestedPartNumber > 1 {
+			if article.Data != nil {
+				decoder.PutBuffer(article.Data)
+			}
+			return decodedPayload{}, ErrOffsetUnknownForPart
+		}
 		return decodedPayload{
 			data:       article.Data,
 			offset:     article.Offset,
@@ -1073,17 +1094,13 @@ func decodePayload(body []byte, requestedPartNumber int) (decodedPayload, error)
 		// Fallback to UU decoding.
 		data, _, uuErr := decoder.DecodeUU(body)
 		if uuErr == nil {
-			// UU carries no offset of its own: decodePayload can only assert
-			// offset 0, which is correct for segment 1 of a file and wrong for
-			// every other segment (#346). requestedPartNumber is the NZB
-			// segment number, always >= 1 (internal/nzb/parser.go rejects
-			// s.Number <= 0 at parse time), so > 1 unambiguously means "not
-			// the first segment" — assertion E5 of
-			// docs/article-validation-contract.md rejects it here rather than
-			// letting it claim segment 1's offset.
+			// UU carries no offset of its own, so the same E5 guard as
+			// above applies unconditionally rather than on !HasOffset: see
+			// the case decErr == nil branch for the requestedPartNumber
+			// invariant this relies on.
 			if requestedPartNumber > 1 {
 				decoder.PutBuffer(data)
-				return decodedPayload{}, ErrUUMultipart
+				return decodedPayload{}, ErrOffsetUnknownForPart
 			}
 
 			// The CRC is computed here rather than read from the article: UU

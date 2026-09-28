@@ -71,6 +71,12 @@ type yencHeader struct {
 	name   string
 	isPart bool
 	part   int // part ordinal from =ybegin part=, 0 when absent
+
+	// hasYPart is true only when a =ypart line was present, i.e. only when
+	// offset is a genuine derived value rather than the zero-value default.
+	// isPart is a broader signal — it also goes true from a bare =ybegin
+	// part= with no =ypart — so it cannot stand in for this.
+	hasYPart bool
 }
 
 // yencTrailer holds the fields parsed from a =yend line.
@@ -96,8 +102,17 @@ type Article struct {
 	Filename string
 
 	// Offset is the byte position of this part within the assembled file.
-	// Derived from the =ypart begin-1 field (yEnc uses 1-based indexing).
+	// Derived from the =ypart begin-1 field (yEnc uses 1-based indexing) when
+	// HasOffset is true; the format's zero-value default otherwise, which is
+	// a real claim only for a file's first segment. See HasOffset.
 	Offset int64
+
+	// HasOffset is true only when the article carried a =ypart line, i.e.
+	// only when Offset above is a genuine derived value rather than the
+	// zero-value default. A =ybegin part= alone, with no =ypart, still
+	// leaves this false: PartNumber below can be nonzero while HasOffset is
+	// false, and callers must not read Offset as position data in that case.
+	HasOffset bool
 
 	// TotalSize is the assembled file's size in bytes as DECLARED by the
 	// poster in =ybegin size=. The same value is declared on every part of a
@@ -260,6 +275,7 @@ func DecodeArticleBuf(body, scratch []byte) (Article, error) {
 	art := Article{
 		Filename:   hdr.name,
 		Offset:     hdr.offset,
+		HasOffset:  hdr.hasYPart,
 		TotalSize:  hdr.size,
 		Data:       decoded,
 		CRC:        computedCRC,
@@ -498,6 +514,7 @@ func parseHeader(body []byte) (yencHeader, int, error) {
 			hdr.offset = beginVal - 1
 		}
 		hdr.isPart = true
+		hdr.hasYPart = true
 		bodyStart += ypartEnd + 1
 	}
 

@@ -29,14 +29,16 @@ var ErrNoServersLeft = errors.New("downloader: article failed on all servers")
 // backup servers — the content is definitively unavailable.
 var ErrArticleRemoved = errors.New("downloader: article removed (DMCA/takedown)")
 
-// ErrUUMultipart is emitted when a UU decode succeeds for an article whose
-// NZB segment number is not 1 — assertion E5 of docs/article-validation-contract.md.
-// UU carries no offset of its own, so decodePayload can only assert offset 0,
-// which is correct for a single-segment file and wrong for every other
-// segment of a multi-segment one (#346). Like ErrArticleRemoved, this is not
-// retried on backup servers: the article's content is the same regardless of
-// which server serves it.
-var ErrUUMultipart = errors.New("downloader: UU-encoded body used by a multi-part file")
+// ErrOffsetUnknownForPart is emitted when a decode that carries no genuine
+// offset of its own is used to satisfy a request for an NZB segment number
+// other than 1 — assertion E5 of docs/article-validation-contract.md. Two
+// decode shapes produce this: a UU body, which has no offset field at all,
+// and a yEnc body with no =ypart line (decoder.Article.HasOffset false). In
+// both, decodePayload can only assert offset 0, which is correct for a
+// file's first segment and wrong for every other one. Like ErrArticleRemoved,
+// this is not retried on backup servers: the article's content is the same
+// regardless of which server serves it.
+var ErrOffsetUnknownForPart = errors.New("downloader: decode carries no offset for a non-first NZB segment")
 
 // errServerPenalized is used internally when dialing a penalized server.
 var errServerPenalized = errors.New("server penalized")
@@ -71,12 +73,12 @@ type ArticleResult struct {
 	// Offset is the byte position within the target file where Data should
 	// be written.
 	//
-	// For yEnc it is derived from the =ypart begin= field. UU carries no
-	// offset field at all, so decodePayload asserts 0 — which is correct,
-	// because it only reaches here for the first segment of a file: a UU
-	// decode satisfying a request for any other segment is rejected before
-	// producing a result (#346, assertion E5 of
-	// docs/article-validation-contract.md).
+	// For yEnc it is derived from the =ypart begin= field, when present.
+	// Otherwise — that field absent, or a UU decode, neither of which
+	// carries real offset data — offset 0 is only asserted for segment 1:
+	// decodePayload rejects a decode of either shape that satisfies a
+	// request for any other segment before producing a result (assertion
+	// E5 of docs/article-validation-contract.md).
 	Offset int64
 
 	// CRC is the CRC32 of the decoded article data. It travels with the

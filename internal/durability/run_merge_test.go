@@ -418,14 +418,15 @@ func TestStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 // key (job_id, file_idx, offset). INSERT OR REPLACE then keeps whichever was
 // written last.
 //
-// The case is reachable: historically a multi-part UU post, whose later
-// segments all asserted offset 0 until decodePayload started rejecting them
-// (#346); a duplicate or malformed yEnc declaration is the route that
-// remains open, since D1-D3 (docs/article-validation-contract.md) only warn
-// on it. FileWriter.acceptedAt resolves that within one open-file episode,
-// but it is per-open-episode residency, so across a restart or a
-// close-handles cycle a second article at the same offset reaches the run
-// store beside the stored row.
+// The case is reachable: historically a multi-part UU post or a yEnc body
+// with no =ypart line, both of which asserted offset 0 for every non-first
+// segment until decodePayload started rejecting them (assertion E5 of
+// docs/article-validation-contract.md); a yEnc =ypart declaration that
+// duplicates another article's offset is the route that remains open, since
+// nothing at L3 rejects it. FileWriter.acceptedAt resolves that within one
+// open-file episode, but it is per-open-episode residency, so across a
+// restart or a close-handles cycle a second article at the same offset
+// reaches the run store beside the stored row.
 //
 // What must not be lost is the LONGER row. FinalizeFile computes its truncate
 // bound from the stored runs, so if the 100-byte row survives and the
