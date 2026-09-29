@@ -1106,8 +1106,10 @@ The sequence is:
                     │     │                          re-sync, re-stat, commit, ack)
                     │     └─ Assembler.CloseFile    (ONLY on success)
                     └─ completeFinalizedFile
+                          ├─ DirectUnpack handoff
                           ├─ Job.MarkFileComplete
-                          └─ DirectUnpack handoff
+                          └─ Dispatcher.AdvanceFrom (Fetching → Assessing,
+                                                     once Job.IsComplete)
 ```
 
 **`CloseFile` answers, and what the answer means depends on what ran before
@@ -1700,6 +1702,13 @@ articles or sparse regions.
    corrupt volume. When the finalize fails — including a failed close that was
    the file's only flush — DirectUnpack is not reached at all, and the handle
    is kept unless that close released it (see the handoff section above).
+   `completeFinalizedFile` then feeds the volume before it marks the file
+   complete, and so before the download-finished report
+   (`Dispatcher.AdvanceFrom`) from which the tick can launch the job's
+   post-processing, whose `enqueuePostProc` collects the unpacker. A feed
+   after that collect would start a second unpacker that nothing collects,
+   and the collected one would wait for the volume
+   (`TestCompleteFinalizedFile_FeedsTheLastVolumeBeforeReportingTheDownload`).
 2. **Volume waiting**: `waitForVolume()` blocks on `volumeReady` until the
    requested volume number appears in `completedVols`, and returns immediately if
    the set is in `corruptSets`.

@@ -288,6 +288,12 @@ type Application struct {
 	// flips true. Same discipline as checkpointHook.
 	startedTransitionHook func()
 
+	// downloadReportedHook, when non-nil, runs in completeFinalizedFile right
+	// after the report that the job's download finished, where the tick can
+	// already have launched the job's post-processing. Same discipline as
+	// checkpointHook.
+	downloadReportedHook func(id string)
+
 	shutdownStepTimeout time.Duration
 	closeHandlesTimeout time.Duration
 	metricsPushInterval time.Duration
@@ -1700,7 +1706,7 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 // interrupts the completion between the two halves, and
 // Application.reevaluateStall has to resume it from exactly there — the
 // finalize retried on its own, then this. Inlining it would have meant a
-// second copy of the mark-complete/DirectUnpack/finalize sequence, free to
+// second copy of the DirectUnpack/mark-complete/finalize sequence, free to
 // drift from this one (S5).
 //
 // It returns an error only so the retry can tell whether the queue accepted
@@ -1739,6 +1745,15 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 			return err
 		}
+		// DirectUnpack is fed the volume before the file is marked complete,
+		// and so before the download-finished report below. From that report
+		// the tick can launch the job's post-processing, whose enqueuePostProc
+		// collects the unpacker and waits for its volumes: a feed after the
+		// collect would start a second unpacker that nothing collects, and the
+		// wait would not end.
+		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar {
+			app.duOrch.maybeStart(fc)
+		}
 		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
 			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 			return err
@@ -1752,19 +1767,12 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 			if err := app.dispatcher.AdvanceFrom(j, job.Fetching, job.Assessing); err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
 				app.logQueueWriteFailure("report download complete", fc.JobID, fc.FileIdx, err)
 			}
+			if app.downloadReportedHook != nil {
+				app.downloadReportedHook(fc.JobID)
+			}
 		}
 	}
 	app.emit(Event{Type: "queue_updated"})
-
-	// DirectUnpack: feed completed RAR volumes to the unpacker for
-	// streaming extraction during download.
-	pp := app.config.GetPostProc()
-	directUnpack := pp.DirectUnpack
-	enableUnrar := pp.EnableUnrar
-	if directUnpack && enableUnrar {
-		app.duOrch.maybeStart(fc)
-	}
-
 	return nil
 }
 
