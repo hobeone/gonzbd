@@ -242,9 +242,9 @@ func TestEnqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy(t *testing.T) {
 	}
 }
 
-// TestPostProcAdmissions_AdmitsEachInstanceOnce: an instance is admitted once
-// until its admission is released, and a second instance under the same ID
-// is a different job with an admission of its own.
+// TestPostProcAdmissions_AdmitsEachInstanceOnce: an instance is admitted once,
+// and not again after its admission is released, and a second instance under
+// the same ID is a different job with an admission of its own.
 func TestPostProcAdmissions_AdmitsEachInstanceOnce(t *testing.T) {
 	t.Parallel()
 	var a postProcAdmissions
@@ -264,8 +264,11 @@ func TestPostProcAdmissions_AdmitsEachInstanceOnce(t *testing.T) {
 	if got := a.admit(retry, ""); got != refused {
 		t.Errorf("admit(retry) after releasing first = %v, want refused", got)
 	}
-	if got := a.admit(first, ""); got != admitted {
-		t.Errorf("admit(first) after its release = %v, want admitted", got)
+	if got := a.admit(first, "late reason"); got != refusedEnded {
+		t.Errorf("admit(first) after its release = %v, want refusedEnded", got)
+	}
+	if a.has(first) {
+		t.Error("has(first) = true after a refused admit of a released instance")
 	}
 }
 

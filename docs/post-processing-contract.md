@@ -41,9 +41,9 @@ single worker goroutine (`run`).
 - **Queue primitive (`ppQueue`)**: A mutex-protected FIFO slice of `*Job` items.
   `Process(job)` appends to the queue; the single worker dequeues items via
   `q.Pop(ctx)`.
-- **At most one run of a job instance at a time**: `Process` accepts any job,
+- **At most one run of a job instance**: `Process` accepts any job,
   including one whose ID is already queued or running. The app admits at most
-  one post-processing run of a job instance at a time, in
+  one post-processing run of a job instance, ever, in
   `Application.enqueuePostProc`, which keeps the admission record
   (`postProcAdmissions`). It has two callers: `appRunner.runPostProc`, and
   `maybeFinalize`, which the downloader's and the pipeline's hopeless
@@ -52,8 +52,11 @@ single worker goroutine (`run`).
   ends once `jobFinalizer.finalize` or `jobFinalizer.cancelled` has run, so it
   covers the two windows `HasJob` does not see: the wait before `Process`, and
   the callback tail after the worker clears its busy marker. Ending it does not
-  deregister the instance, so one the dispatcher still holds after a failed
-  removal can be admitted again. It is keyed by job instance, so a retry
+  deregister the instance: the dispatcher still holds one whose removal
+  failed. So an ended admission leaves the instance recorded, held weakly
+  until the job is collected, and a later call for it is refused rather than
+  start a second run whose finalize would file the job in history again. It
+  is keyed by job instance, so a retry
   registered under the ID of a job still being finalized is admitted. An
   admission a shutdown interrupts is never ended.
 - **A removed job is not handed over**: `enqueuePostProc` calls `Process`
@@ -566,7 +569,7 @@ recorded entirely through the fetch-policy discard, not through this field.
 
 ### Landed
 - Single worker goroutine with `ppQueue` FIFO scheduling and safe cancellation (`Cancel`).
-- At most one post-processing run of a job instance at a time (`postProcAdmissions`); a failure reason reported before the run is handed over fails it, and a later one is recorded as a stage-log warning.
+- At most one post-processing run of a job instance, including after that run has ended (`postProcAdmissions`); a failure reason reported before the run is handed over fails it, and a later one is recorded as a stage-log warning.
 - Complete 11-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
 - `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`/`Unidentified`) bypass logic & DirectUnpack zero-failure verification bypass.
 - `OwnedFiles` snapshotting and cleanup isolation (#3462) with in-place rename tracking (`markRenamed`).
