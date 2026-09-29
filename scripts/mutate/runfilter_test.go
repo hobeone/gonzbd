@@ -37,16 +37,21 @@ func TestPlainAlternation_SplitsAndStripsCapturingAnchoring(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		run      string
-		want     []string
-		anchored bool
+		run           string
+		want          []string
+		startAnchored bool
+		endAnchored   bool
 	}{
-		{"TestA|TestB", []string{"TestA", "TestB"}, false},
-		{"^(TestA|TestB|TestC)$", []string{"TestA", "TestB", "TestC"}, true},
-		{"TestOnlyOne", []string{"TestOnlyOne"}, false},
+		{"TestA|TestB", []string{"TestA", "TestB"}, false, false},
+		{"^(TestA|TestB|TestC)$", []string{"TestA", "TestB", "TestC"}, true, true},
+		{"TestOnlyOne", []string{"TestOnlyOne"}, false, false},
+		// The shared-prefix shape issue #633 added: the group does not span
+		// the whole line, so the prefix is prepended to each alternative.
+		{"Test(A|B)$", []string{"TestA", "TestB"}, false, true},
+		{"^Test(A|B)$", []string{"TestA", "TestB"}, true, true},
 	}
 	for _, tc := range cases {
-		got, anchored, ok := plainAlternation(tc.run)
+		got, startAnchored, endAnchored, ok := plainAlternation(tc.run)
 		if !ok {
 			t.Errorf("plainAlternation(%q) ok = false, want true", tc.run)
 			continue
@@ -54,8 +59,9 @@ func TestPlainAlternation_SplitsAndStripsCapturingAnchoring(t *testing.T) {
 		if !slices.Equal(got, tc.want) {
 			t.Errorf("plainAlternation(%q) = %v, want %v", tc.run, got, tc.want)
 		}
-		if anchored != tc.anchored {
-			t.Errorf("plainAlternation(%q) anchored = %v, want %v", tc.run, anchored, tc.anchored)
+		if startAnchored != tc.startAnchored || endAnchored != tc.endAnchored {
+			t.Errorf("plainAlternation(%q) startAnchored,endAnchored = %v,%v, want %v,%v",
+				tc.run, startAnchored, endAnchored, tc.startAnchored, tc.endAnchored)
 		}
 	}
 }
@@ -66,10 +72,15 @@ func TestPlainAlternation_FallsBackForAnythingThatIsNotABareNameList(t *testing.
 	// Each of these must fall back to the baseline's existing ranNothing
 	// check rather than being split: an empty run, a subtest path (go test
 	// -list never reports subtests), a regexp carrying metacharacters other
-	// than the `|` alternation this check understands, and a single name
-	// anchored the ^…$ way rather than the ^(…)$ way this check strips.
-	for _, run := range []string{"", "TestFoo/subcase", "TestFoo.*", "^TestFoo$", "TestFoo|TestBar.*"} {
-		if _, _, ok := plainAlternation(run); ok {
+	// than the `|` alternation this check understands, a single name
+	// anchored the ^…$ way rather than a `(`…`)$` group, a leading `^` with
+	// no group at all, a prefixed group whose expansion is not a valid test
+	// name, and a group missing its closing `)$`.
+	for _, run := range []string{
+		"", "TestFoo/subcase", "TestFoo.*", "^TestFoo$", "TestFoo|TestBar.*",
+		"^TestFoo", "Test.(A|B)$", "Test(A|B",
+	} {
+		if _, _, _, ok := plainAlternation(run); ok {
 			t.Errorf("plainAlternation(%q) ok = true, want false", run)
 		}
 	}
@@ -122,6 +133,102 @@ func TestDeadRunFilterNames_ReportsNothingWhenEveryAlternativeExists(t *testing.
 	}
 	if got != nil {
 		t.Errorf("deadRunFilterNames = %v, want nil", got)
+	}
+}
+
+// The next several tests name fixture test functions — TestSelected,
+// TestWrapTestSelected, TestSelectedFoo — that exist only as text inside a
+// mustModule string literal (a throwaway module built at test time), never as
+// a top-level declaration check_doc_citations' line-anchored scanner can see.
+//
+//doccite:ok TestSelected — mustModule fixture text (see selectedPasses), not a top-level declaration
+//doccite:ok TestWrapTestSelected — mustModule fixture text below, not a top-level declaration
+//doccite:ok TestSelectedFoo — mustModule fixture text below, not a top-level declaration
+
+func TestDeadRunFilterNames_PrefixedGroupNamesEachAlternativeLive(t *testing.T) {
+	t.Parallel()
+
+	// The shape issue #633 added: the shared "Test" prefix sits outside the
+	// group, as it does in the six specs the issue found.
+	root := mustModule(t, selectedPasses+omittedPasses) // declares TestSelected and TestOmitted
+	sp := &spec{pkg: "./...", run: "Test(Selected|Omitted)$"}
+
+	got, err := deadRunFilterNames(root, sp)
+	if err != nil {
+		t.Fatalf("deadRunFilterNames: %v", err)
+	}
+	if got != nil {
+		t.Errorf("deadRunFilterNames = %v, want nil", got)
+	}
+}
+
+func TestDeadRunFilterNames_PrefixedGroupNamesTheDeadAlternative(t *testing.T) {
+	t.Parallel()
+
+	root := mustModule(t, selectedPasses+omittedPasses)
+	sp := &spec{pkg: "./...", run: "Test(Selected|DoesNotExist)$"}
+
+	got, err := deadRunFilterNames(root, sp)
+	if err != nil {
+		t.Fatalf("deadRunFilterNames: %v", err)
+	}
+	if !slices.Equal(got, []string{"TestDoesNotExist"}) {
+		t.Errorf("deadRunFilterNames = %v, want [TestDoesNotExist]", got)
+	}
+}
+
+func TestDeadRunFilterNames_PrefixedGroupWithoutCaretMatchesALongerTestNameBySuffix(t *testing.T) {
+	t.Parallel()
+
+	// "Test(Selected)$" has no leading ^, so it only end-anchors: the
+	// expanded alternative "TestSelected" is live because
+	// TestWrapTestSelected ends with it, even though no test is named
+	// exactly "TestSelected".
+	root := mustModule(t, "func TestWrapTestSelected(t *testing.T) {}\n")
+	sp := &spec{pkg: "./...", run: "Test(Selected)$"}
+
+	got, err := deadRunFilterNames(root, sp)
+	if err != nil {
+		t.Fatalf("deadRunFilterNames: %v", err)
+	}
+	if got != nil {
+		t.Errorf("deadRunFilterNames = %v, want nil: an end-anchored-only match is a suffix, not equality", got)
+	}
+}
+
+func TestDeadRunFilterNames_PrefixedGroupEndAnchorRejectsAPrefixOfALongerName(t *testing.T) {
+	t.Parallel()
+
+	// "Test(Selected)$" end-anchors: TestSelectedFoo has "TestSelected" as a
+	// prefix of its name, not a suffix, so it must NOT count as a match —
+	// unlike the bare, unanchored form where containment anywhere is enough.
+	root := mustModule(t, "func TestSelectedFoo(t *testing.T) {}\n")
+	sp := &spec{pkg: "./...", run: "Test(Selected)$"}
+
+	got, err := deadRunFilterNames(root, sp)
+	if err != nil {
+		t.Fatalf("deadRunFilterNames: %v", err)
+	}
+	if !slices.Equal(got, []string{"TestSelected"}) {
+		t.Errorf("deadRunFilterNames = %v, want [TestSelected]: $ requires the match to reach the end", got)
+	}
+}
+
+func TestDeadRunFilterNames_LeadingCaretOnAPrefixedGroupRequiresExactEquality(t *testing.T) {
+	t.Parallel()
+
+	// Same package as above, but the leading ^ anchors the start too:
+	// TestWrapTestSelected no longer counts, since it is not literally equal
+	// to "TestSelected".
+	root := mustModule(t, "func TestWrapTestSelected(t *testing.T) {}\n")
+	sp := &spec{pkg: "./...", run: "^Test(Selected)$"}
+
+	got, err := deadRunFilterNames(root, sp)
+	if err != nil {
+		t.Fatalf("deadRunFilterNames: %v", err)
+	}
+	if !slices.Equal(got, []string{"TestSelected"}) {
+		t.Errorf("deadRunFilterNames = %v, want [TestSelected]: leading ^ requires exact equality", got)
 	}
 }
 
