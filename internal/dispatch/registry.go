@@ -362,7 +362,7 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 // rather than a repeated expression for the reason Standing Design Rule 2
 // gives: the predicate had a copy at each reader, and one that got it subtly
 // wrong — or a new field the invariant grows — would be invisible at the
-// others. Its readers are Occupy, persistIfChanged, markResident and
+// others. Its readers are occupyFor, persistIfChanged, markResident and
 // claimLaunched: `git grep -n 'd\.admitsLocked(' -- 'internal/dispatch/*.go'
 // ':!*_test.go'` returns 4 lines.
 //
@@ -403,9 +403,17 @@ type removal struct {
 // finish. Reports false if the job is not registered, in which case there is
 // nothing to remove and no marker was set.
 func (d *Dispatcher) beginRemoval(id string) (*removal, bool) {
+	return d.beginRemovalFor(id, nil)
+}
+
+// beginRemovalFor is beginRemoval for one instance: when expected is non-nil
+// it also reports false, setting no marker, unless expected is the job
+// registered under id, by pointer identity.
+func (d *Dispatcher) beginRemovalFor(id string, expected *job.Job) (*removal, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.byID[id] == nil {
+	e := d.byID[id]
+	if e == nil || (expected != nil && e.j != expected) {
 		return nil, false
 	}
 	return d.beginRemovalLocked(id), true
@@ -655,14 +663,33 @@ func (d *Dispatcher) ResumeJob(id string) error {
 // Retry contract: If Remove returns an error (e.g. context cancellation while
 // waiting for worker, or store failure), the job remains cancelled and
 // registered, allowing the caller to retry Remove safely.
-// The named return is what lets the marker be released in ONE place. Every
-// error path here leaves the job registered and retryable, so every error path
-// owed an identical decrement — five copies of it before #513, which is the
-// shape Rule 2 calls a second enforcement point for one invariant. The defer
-// below is the enforcement point; adding a sixth error path now costs nothing
-// and cannot forget.
-func (d *Dispatcher) Remove(ctx context.Context, id string) (err error) {
-	rm, ok := d.beginRemoval(id)
+func (d *Dispatcher) Remove(ctx context.Context, id string) error {
+	return d.removeFor(ctx, id, nil)
+}
+
+// RemoveJob is Remove for one instance of a job: it removes only if j is the
+// job registered under j.ID(), and otherwise returns ErrNotFound having done
+// nothing, so a caller still holding a removed instance cannot cancel or
+// deregister a later attempt registered under the same ID.
+//
+// The instance is checked once, where the removal marker is raised. From then
+// until the removal ends, register refuses the ID (removing > 0), so the
+// by-ID steps that follow can reach no other instance.
+func (d *Dispatcher) RemoveJob(ctx context.Context, j *job.Job) error {
+	if j == nil {
+		return fmt.Errorf("dispatch: RemoveJob: nil job: %w", ErrNotFound)
+	}
+	return d.removeFor(ctx, j.ID(), j)
+}
+
+// removeFor is Remove and RemoveJob. The named return is what lets the marker
+// be released in ONE place. Every error path here leaves the job registered
+// and retryable, so every error path owed an identical decrement — five copies
+// of it before #513, which is the shape Rule 2 calls a second enforcement
+// point for one invariant. The defer below is the enforcement point; adding a
+// sixth error path now costs nothing and cannot forget.
+func (d *Dispatcher) removeFor(ctx context.Context, id string, expected *job.Job) (err error) {
+	rm, ok := d.beginRemovalFor(id, expected)
 	if !ok {
 		return fmt.Errorf("dispatch: remove %s: %w", id, ErrNotFound)
 	}
