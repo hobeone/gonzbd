@@ -51,10 +51,11 @@ type fileResumer interface {
 //
 // # Why a startup sweep, and why that is complete
 //
-// It runs once, synchronously, as the beforeFirstTick step of
-// Dispatcher.StartWith, which Application.Start calls before starting the
-// assembler and the downloader: every stored row is registered, and nothing
-// has ticked. The ordering is load-bearing three times over, and only the
+// It runs once, synchronously, in the beforeFirstTick step of
+// Dispatcher.StartWith (reconcileBeforeFirstTick, after it drops the jobs
+// already in history), which Application.Start calls before starting the
+// assembler and the downloader: every stored row the drop kept is registered,
+// and nothing has ticked. The ordering is load-bearing three times over, and only the
 // first is about re-fetching:
 //
 //   - A seed that lands after dispatch has begun still marks the right

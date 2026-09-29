@@ -1192,8 +1192,9 @@ about what a downloader has in flight, and nothing that survived a restart is.
 
 ### The startup sweep
 
-`Application.resumeAllJobs` runs once, synchronously, inside `Start` — as the
-`beforeFirstTick` step of `Dispatcher.StartWith`, after the dispatcher restores
+`Application.resumeAllJobs` runs once, synchronously, inside `Start` — in the
+`beforeFirstTick` step of `Dispatcher.StartWith` (`reconcileBeforeFirstTick`,
+after it drops any queued job already filed in history), after the dispatcher restores
 the queue and **before** its first tick and the downloader's first dispatch. It
 stats each
 downloading job's files, has `durability.Resumer` **delete** the runs of any

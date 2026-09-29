@@ -1,34 +1,31 @@
 package app
 
-import "github.com/hobeone/gonzbd/internal/job"
+import (
+	"context"
+	"fmt"
+)
 
-// startupHandOffs returns the IDs of the complete jobs that Start hands to
-// post-processing itself. A job qualifies when it has never run, or is at
-// Fetching with no Next recorded. Its download-complete report was lost or
-// never made, and the dispatcher keeps it at Fetching until one arrives.
+// reconcileBeforeFirstTick is Application.Start's beforeFirstTick step for
+// Dispatcher.StartWith. It drops every restored job that is already filed in
+// history, then runs the resume sweep (resumeAllJobs, which has its own
+// argument for this placement).
 //
-// It runs in Dispatcher.StartWith's beforeFirstTick step, after
-// resumeAllJobs. No tick has run yet, and Application.Start starts the
-// downloader only after StartWith returns. So the state and the completeness
-// it reads are what was restored, plus what the resume sweep repaired.
-//
-// A job at Fetching with Next recorded does not qualify. The first unpaused
-// tick moves it to Assessing (Advance's branch 3), and it reaches
-// post-processing from there, through runAssess. A hand-off from Start as
-// well would run the assess worker beside an admitted post-processing run.
-func (app *Application) startupHandOffs() map[string]bool {
-	out := make(map[string]bool)
-	if app.dispatcher == nil {
-		return out
-	}
-	for _, row := range app.dispatcher.List() {
-		v := row.View
-		if v.Next != job.StateUnset || (v.State != job.StateUnset && v.State != job.Fetching) {
-			continue
-		}
-		if j, ok := app.dispatcher.Job(row.ID); ok && j.IsComplete() {
-			out[row.ID] = true
+// The drop is placed before the first tick because a tick routes a restored
+// job onward. A job at Repairing, Extracting or Finalizing is launched into
+// post-processing, and one at Fetching that is complete is reported
+// download-complete by its Fetching worker (appRunner.runFetch) and then
+// assessed. A duplicate of a history entry that got that far would be
+// post-processed again, and its finalize would try to file it a second time.
+// Nothing ticks while this runs, and Start starts the downloader and the
+// post-processor only after StartWith returns.
+func (app *Application) reconcileBeforeFirstTick(ctx context.Context) error {
+	if app.dispatcher != nil {
+		for _, row := range app.dispatcher.List() {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("app: startup reconciliation aborted: %w", err)
+			}
+			app.dropJobAlreadyInHistory(ctx, row.ID)
 		}
 	}
-	return out
+	return app.resumeAllJobs(ctx)
 }

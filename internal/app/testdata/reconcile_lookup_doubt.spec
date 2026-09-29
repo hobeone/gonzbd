@@ -1,19 +1,24 @@
 pkg ./internal/app/
-run TestDropJobAlreadyInHistory_SkipsTheJobWhenTheHistoryLookupFails
+run TestDropJobAlreadyInHistory_KeepsTheJobWhenTheHistoryLookupFails
 
-# One mutation: doubt answered the way not-found is, which is the shape this
-# branch was in before. Mutating the RETURN rather than the errors.Is, because
-# neutering the condition leaves the history import unused and a compile error
-# says nothing about whether the test would have caught the behaviour.
+# One mutation: doubt answered the way a found entry is, so the job is removed
+# on a lookup that established nothing. Mutating the branch rather than the
+# errors.Is, because neutering the condition leaves the history import unused
+# and a compile error says nothing about whether the test would have caught
+# the behaviour.
 
-[doubt reports "not in history", so the caller finalizes a job that may already be filed]
+[doubt is treated as "in history", so a job that may not be filed is removed]
 file internal/app/durability.go
 --- anchor
-				"rather than risk finalizing one that is already filed",
 				"job", jobID, "err", err)
-			return true
+		}
+		return
+	}
 --- replace
-				"rather than risk finalizing one that is already filed",
 				"job", jobID, "err", err)
-			return false
+			entry = &history.Entry{}
+		} else {
+			return
+		}
+	}
 --- end
