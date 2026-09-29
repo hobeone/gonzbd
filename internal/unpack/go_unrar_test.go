@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -572,9 +571,6 @@ func TestExtractEntryRarengine_Normal(t *testing.T) {
 }
 
 func TestExtractEntryRarengine_TempFileUnlinkedMidWrite(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping test that relies on POSIX unlink-while-open semantics")
-	}
 	outDir := t.TempDir()
 	root, err := os.OpenRoot(outDir)
 	if err != nil {

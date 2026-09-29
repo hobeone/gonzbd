@@ -76,9 +76,11 @@ go vet ./...
 #
 # What it covers, exactly: files carrying one of those three tags, built for
 # the HOST GOOS/GOARCH. It says nothing about files behind an OS constraint
-# (internal/fsutil/crossdevice_windows.go and eight others are invisible on
-# Linux, and crossdevice_windows.go does not currently compile under
-# GOOS=windows -- see #480).
+# (e.g. `//go:build linux` in internal/cmdutil/sandbox_linux.go) -- those
+# for other platforms are simply skipped on this host. GoNZBD is POSIX-only
+# (see AGENTS.md), so this script does not need a foreign-GOOS pass; run
+# `GOOS=darwin go vet ./...` / `GOOS=freebsd go vet ./...` by hand when a
+# change touches an OS-constrained file.
 #
 # Why it is needed at all: the tagged suites below are each path-scoped (step 3
 # to ./test/integration/... and ./internal/par2/..., step 4 to ./test/crash/,

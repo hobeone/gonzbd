@@ -3,7 +3,6 @@ package postproc
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -255,9 +254,6 @@ func TestPar2CleanupStage_DisabledByConfig(t *testing.T) {
 
 // P22: ScriptStage with ScriptCanFail=true swallows non-zero exit errors.
 func TestScriptStage_ScriptCanFail(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 	job, _ := stageJob(t)
 	job.Script = "fail.sh"
@@ -394,9 +390,6 @@ func TestScriptStage_EmptyScriptSkipped(t *testing.T) {
 }
 
 func TestScriptStage_SuccessfulScript(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 	job, _ := stageJob(t)
 	job.Script = "ok.sh"
@@ -412,9 +405,6 @@ func TestScriptStage_SuccessfulScript(t *testing.T) {
 }
 
 func TestScriptStage_FailingScript(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 	job, _ := stageJob(t)
 	job.Script = "fail.sh"
@@ -435,9 +425,6 @@ func TestScriptStage_FailingScript(t *testing.T) {
 
 func TestScriptStage_StatusFlagsFromJob(t *testing.T) {
 	// Verifies job.ParError / UnpackError / FailMsg translate to pp_status=1.
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "capture.sh")
@@ -464,9 +451,6 @@ func TestScriptStage_StatusFlagsFromJob(t *testing.T) {
 }
 
 func TestScriptStage_AbsolutePathOverridesScriptDir(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 	job, _ := stageJob(t)
 

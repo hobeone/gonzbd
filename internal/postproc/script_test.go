@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -18,9 +17,6 @@ import (
 // skipIfNoShell skips the test when /bin/sh is not available (e.g. Windows).
 func skipIfNoShell(t *testing.T) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script tests not supported on Windows")
-	}
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skipf("skipping: /bin/sh not available: %v", err)
 	}

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -1053,9 +1052,6 @@ func (u *unlinkingContext) Err() error {
 }
 
 func TestExtractSevenZipFile_TempFileUnlinkedMidWrite(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping test that relies on POSIX unlink-while-open semantics")
-	}
 	td := sevenZipTestdata(t)
 	r, err := sevenzip.OpenReader(filepath.Join(td, "lzma2.7z"))
 	if err != nil {

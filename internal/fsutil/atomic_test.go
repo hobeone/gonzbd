@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -155,9 +154,6 @@ func TestWriteAtomic_SyncError(t *testing.T) {
 
 func TestWriteAtomicBytesPerm_SetsPermission(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not meaningful on windows")
-	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "perm.bin")
 
@@ -182,9 +178,6 @@ func TestWriteAtomicBytesPerm_SetsPermission(t *testing.T) {
 
 func TestWriteAtomicBytesPerm_OverwritesPermission(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not meaningful on windows")
-	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "perm2.bin")
 
