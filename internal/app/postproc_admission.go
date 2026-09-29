@@ -198,6 +198,19 @@ func (a *postProcAdmissions) has(j *job.Job) bool {
 	return ok
 }
 
+// unlessAdmitted runs fn unless j is admitted, and reports whether it ran. mu is
+// held across fn, so no admission of j begins while fn runs: fn must not call
+// into a, and must not block.
+func (a *postProcAdmissions) unlessAdmitted(j *job.Job, fn func()) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, ok := a.jobs[j]; ok {
+		return false
+	}
+	fn()
+	return true
+}
+
 // release ends j's admission. It also ends a step still in progress: a job the
 // post-processor finishes before its enqueue reaches endStep is released
 // first, and a withdraw waiting on that step must not wait for an admission

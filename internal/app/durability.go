@@ -916,8 +916,8 @@ func (app *Application) checkpointAllWithBudget(ctx context.Context, budget func
 	// from the accumulator and visit no OpenJobIDs result at all. On that
 	// path: this sweep visits OpenJobIDs — jobs holding an open file — while
 	// the reload loop calls Job.ClearEmittedForReload for every registered job
-	// (a non-resident one returns early, having no manifest or progress), so
-	// the set is a subset. That is not an unclosed instance of #417. A resident job with no
+	// not admitted to post-processing (a non-resident one returns early, having
+	// no manifest or progress), so the set is a subset. That is not an unclosed instance of #417. A resident job with no
 	// open file either never wrote anything, or lost its files by one of the
 	// four paths checkpointJob's len(open) == 0 arm lists, each safe for the
 	// reason given there.

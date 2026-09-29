@@ -945,7 +945,10 @@ row. This was #417.
 
 So `checkpointAllShare` returns the jobs it could **not** protect, and
 the reload loop calls `Job.ClearEmittedForReload(skipEmitted: true)` for each of
-those jobs, withholding their Emitted bits.
+those jobs, withholding their Emitted bits. A job admitted to
+post-processing gets no call at all: the downloader does not dispatch it, and
+un-failing its articles would change the figures its post-processing reads
+(`docs/post-processing-contract.md`).
 `checkpointJob`'s bool answers "does this job hold written-but-unacked articles
 that clearing Emitted would strand?" — which is not the same question as "did a
 barrier run": a job with no open files ran none and is still safe, while a job
@@ -1716,7 +1719,14 @@ articles or sparse regions.
    RAR2/RAR3, and non-RAR files identified by filename go to post-processing.
 7. **Abort/kill**: `Abort()` sets `killed`, records failures for the current and
    queued sets, clears success results, and signals the reader goroutine. If
-   `run()` was never started it closes `done` directly.
+   `run()` was never started it closes `done` directly. `enqueuePostProc`
+   aborts the unpacker of a job handed to post-processing before its download
+   finished (`Job.IsComplete` false: `Application.Fail`, a hopeless
+   callback), because the downloader no longer fetches an admitted job and
+   `waitForVolume` would wait for its missing volumes forever. A job whose
+   download finished has every volume, so its unpacker is awaited
+   (`TestFail_FromFetching_AbortsTheDirectUnpack`,
+   `TestHandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults`).
 8. **Path traversal safety**: `extractEntries` opens an `os.Root` anchored at
    `extractDir` and writes every entry through it, so archive entries with `..`
    components, absolute paths, or symlinked path components cannot escape.
@@ -1763,7 +1773,7 @@ articles or sparse regions.
   no `emitted` field (`internal/job/progress.go`), so nothing has to run for it
   to hold. `ClearEmittedForReload` is reached only from `ReloadDownloader`
   now — `git grep -n 'j\.ClearEmittedForReload(' -- '*.go' ':!*_test.go'` finds
-  1 line, `internal/app/reloader.go:257`. For the two things that clear an
+  1 line, `internal/app/reloader.go:262`. For the two things that clear an
   Emitted bit, and why neither is on the write-fault path, see
   `Options.OnArticlesUnwritten`'s comment in `internal/assembler/assembler.go`.
 

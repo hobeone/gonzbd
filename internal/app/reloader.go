@@ -250,11 +250,16 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 			"barrier acks them",
 			"jobs", len(unprotected), "jobids", slices.Sorted(maps.Keys(unprotected)))
 	}
+	// A job admitted to post-processing is skipped. The downloader does not
+	// dispatch it, so the clear re-offers nothing, and its un-failing would
+	// rewrite the failed-byte figures its post-processing run and history entry
+	// read. unlessAdmitted holds the admission lock across the clear, so an
+	// admission cannot begin part-way through it.
 	if app.dispatcher != nil {
 		for _, row := range app.dispatcher.List() {
 			if j, ok := app.dispatcher.Job(row.ID); ok {
 				_, skip := unprotected[row.ID]
-				j.ClearEmittedForReload(skip)
+				app.postProcAdmissions.unlessAdmitted(j, func() { j.ClearEmittedForReload(skip) })
 			}
 		}
 	}

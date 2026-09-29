@@ -82,7 +82,23 @@ single worker goroutine (`run`).
   `CloseJobHandles`. An article already in flight at the hand-off is dropped
   by the assembler's whole-job tombstone, which `CloseJobHandles` sets and
   `ForgetJob` clears for a retry. `TestFail_AJobInPostProcessingIsNotDispatched`
-  and `TestCloseJobHandles_TombstonesTheWholeJob` are the pins.
+  and `TestCloseJobHandles_TombstonesTheWholeJob` are the pins. A downloader
+  reload leaves an admitted job's progress alone: `ReloadDownloader` runs
+  `Job.ClearEmittedForReload` under `postProcAdmissions.unlessAdmitted`, so
+  it neither un-fails the articles whose failed bytes the run and its history
+  entry read, nor overlaps an admission that begins during the reload
+  (`TestReloadDownloader_LeavesAnAdmittedJobsProgressAlone`). Since no more
+  files arrive for it, a job admitted before its download finished
+  (`Job.IsComplete` false) has its DirectUnpacker aborted rather than awaited;
+  see `docs/durability-contract.md` § "DirectUnpack streaming contract".
+  Such a job keeps its pool-A lease until the finalizer's `CancelJob`, as a
+  `Repairing` job waiting in the queue does (`needsLease`,
+  `internal/sched/requirements.go`). Giving it back early is not a saving:
+  a job parked at `Fetching` with `IntentRun` is granted a lease and launched
+  again on the next tick, and while it holds none the dispatcher evicts its
+  manifest (`docs/dispatch-contract.md` § "Manifest residency is derived from
+  pool membership"), which the run's download listing
+  (`buildDownloadFileList`) and the finalizer's `retainedProgressFor` read.
 - **Which copy's information wins**: a refused call hands nothing over. The
   admitted call keeps everything it gathered, including the DirectUnpack
   results, which `duOrch.collect` hands out only once. The history entry's

@@ -293,6 +293,31 @@ func TestPostProcAdmissions_HasIsPerInstance(t *testing.T) {
 	}
 }
 
+// TestPostProcAdmissions_UnlessAdmitted: fn runs only for an instance that is
+// not admitted, and with the admission lock held, so that no admission of it
+// can begin while fn runs.
+func TestPostProcAdmissions_UnlessAdmitted(t *testing.T) {
+	t.Parallel()
+	var a postProcAdmissions
+	first := job.New("same-id", "first", job.Policy{})
+	retry := job.New("same-id", "retry", job.Policy{})
+	a.admit(first, "")
+
+	if a.unlessAdmitted(first, func() { t.Error("fn ran for an admitted instance") }) {
+		t.Error("unlessAdmitted(first) = true for an admitted instance")
+	}
+	ran := false
+	if !a.unlessAdmitted(retry, func() {
+		ran = true
+		if a.mu.TryLock() {
+			a.mu.Unlock()
+			t.Error("fn ran without the admission lock held; an admission could begin part-way through it")
+		}
+	}) || !ran {
+		t.Errorf("unlessAdmitted(retry) did not run fn (ran = %v) for an instance that is not admitted", ran)
+	}
+}
+
 // TestPostProcAdmissions_KeepsTheFirstFailureReason: a refused call's reason
 // becomes the run's only while the admission has none and is not sealed; any
 // other new reason is noted once.
