@@ -463,6 +463,37 @@ func TestDispatcher_AddPostAnomaly_AppendsRatherThanOverwrites(t *testing.T) {
 	}
 }
 
+// TestAppendPostAnomaly calls appendPostAnomaly directly, pinning its dedup
+// boundaries: it drops only an exact repeat of the LAST joined element, and
+// the suffix check that finds that element requires the "; " separator —
+// text that merely ends with the same characters as next, without being a
+// whole element on its own, must still be appended.
+func TestAppendPostAnomaly(t *testing.T) {
+	cases := []struct {
+		name     string
+		existing string
+		next     string
+		want     string
+	}{
+		{"empty next leaves existing unchanged", "existing", "", "existing"},
+		{"empty existing becomes next", "", "next", "next"},
+		{"existing equal to next is unchanged", "same", "same", "same"},
+		{"a repeat of the last joined element is dropped", "a; b", "b", "a; b"},
+		{"a repeat of an earlier element is appended — dedup is last-only",
+			"a; b", "a", "a; b; a"},
+		{"text merely ending in next, not a whole element, is appended",
+			"file 0 bad", "0 bad", "file 0 bad; 0 bad"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := appendPostAnomaly(tc.existing, tc.next); got != tc.want {
+				t.Errorf("appendPostAnomaly(%q, %q) = %q, want %q",
+					tc.existing, tc.next, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDispatcher_Mutators(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "Job 1", job.Policy{})
