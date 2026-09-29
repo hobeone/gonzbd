@@ -289,9 +289,10 @@ type Options struct {
 	// accused the post, on the strength of every eligible server agreeing;
 	// with no failover there is no cross-server evidence to support it.
 	//
-	// Fired once per file (see faultedArticle.firstCollision), because the
-	// caller's sink is a single overwritable Header.PostAnomaly and an obfuscated
-	// post can collide on every segment it has.
+	// Fired once per file (see faultedArticle.firstCollision), because
+	// Header.PostAnomaly accumulates findings rather than replacing them,
+	// and an obfuscated post can collide on every segment it has — without
+	// the latch, one file would append the same sentence once per segment.
 	OnPostAnomaly func(jobID string, fileIdx int, reason string)
 
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.

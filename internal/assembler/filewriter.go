@@ -230,9 +230,9 @@ type faultedArticle struct {
 
 	// firstCollision marks the one record per file that should raise the
 	// job-level warning, so an obfuscated post with N colliding segments
-	// reports once rather than overwriting Header.PostAnomaly N times with the same
-	// sentence. The per-ARTICLE report is unaffected — every displaced article
-	// still goes to OnArticleRejected.
+	// reports once rather than appending the same sentence to
+	// Header.PostAnomaly N times. The per-ARTICLE report is unaffected —
+	// every displaced article still goes to OnArticleRejected.
 	firstCollision bool
 }
 
