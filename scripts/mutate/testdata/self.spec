@@ -226,32 +226,62 @@ file scripts/mutate/main.go
 		return "", err
 --- end
 
-[a run filter's ^(...)$ anchoring is never stripped]
+[a leading caret is never stripped]
 file scripts/mutate/runfilter.go
 --- anchor
-	if strings.HasPrefix(s, "^(") && strings.HasSuffix(s, ")$") {
+	if strings.HasPrefix(s, "^") {
 --- replace
-	if false && strings.HasPrefix(s, "^(") && strings.HasSuffix(s, ")$") {
+	if false {
 --- end
 
-[a run filter wrapped in ^(...)$ is treated as unanchored]
+[a leading caret is recorded as unanchored]
 file scripts/mutate/runfilter.go
 --- anchor
-		anchored = true
+		startAnchored = true
 --- replace
-		anchored = false
+		startAnchored = false
 --- end
 
-[an unanchored alternative must equal a test name, so a prefix is refused]
+[a prefixed group's trailing $ is not required]
 file scripts/mutate/runfilter.go
 --- anchor
-	if anchored {
-		return slices.Contains(listed, alt)
-	}
+	if idx := strings.IndexByte(s, '('); idx >= 0 && strings.HasSuffix(s, ")$") {
 --- replace
-	if true {
-		return slices.Contains(listed, alt)
-	}
+	if idx := strings.IndexByte(s, '('); idx >= 0 {
+--- end
+
+[a prefixed group's alternatives forget their shared prefix]
+file scripts/mutate/runfilter.go
+--- anchor
+			name := prefix + p
+--- replace
+			name := p + prefix[:0]
+--- end
+
+[an invalid expansion of a prefixed group is accepted]
+file scripts/mutate/runfilter.go
+--- anchor
+			if !testNameRe.MatchString(name) {
+--- replace
+			if false {
+--- end
+
+[a prefixed group is never marked end-anchored]
+file scripts/mutate/runfilter.go
+--- anchor
+		endAnchored = true
+--- replace
+		endAnchored = false
+--- end
+
+[a leading caret without a group is accepted instead of falling back]
+file scripts/mutate/runfilter.go
+--- anchor
+	if startAnchored {
+		// A leading `^` with no `(`…`)$` group — e.g. the single-name
+--- replace
+	if false {
+		// A leading `^` with no `(`…`)$` group — e.g. the single-name
 --- end
 
 [a test name pattern matches a subtest path too]
@@ -262,12 +292,46 @@ var testNameRe = regexp.MustCompile(`^Test[A-Za-z0-9_]*$`)
 var testNameRe = regexp.MustCompile(`^Test[A-Za-z0-9_]*`)
 --- end
 
+[selects ignores the end anchor]
+file scripts/mutate/runfilter.go
+--- anchor
+	if endAnchored {
+		pat += "$"
+	}
+--- replace
+	if false && endAnchored {
+		pat += "$"
+	}
+--- end
+
+[selects ignores the start anchor]
+file scripts/mutate/runfilter.go
+--- anchor
+	if startAnchored {
+		pat = "^" + pat
+	}
+--- replace
+	if false && startAnchored {
+		pat = "^" + pat
+	}
+--- end
+
+[selects never matches anything]
+file scripts/mutate/runfilter.go
+--- anchor
+	re := regexp.MustCompile(pat)
+	return slices.ContainsFunc(listed, re.MatchString)
+--- replace
+	re := regexp.MustCompile(pat)
+	return slices.ContainsFunc(listed, re.MatchString) && false
+--- end
+
 [a run filter alternative that matches a real test is reported dead, and vice versa]
 file scripts/mutate/runfilter.go
 --- anchor
-		if !selects(listed, alt, anchored) {
+		if !selects(listed, alt, startAnchored, endAnchored) {
 --- replace
-		if selects(listed, alt, anchored) {
+		if selects(listed, alt, startAnchored, endAnchored) {
 --- end
 
 [-check accepts an anchor that does not resolve to exactly one site]

@@ -41,13 +41,19 @@
 // of the pin. Before the baseline runs, deadRunFilterNames lists the
 // package's declared tests with `go test -list` and checks every alternative
 // of a plain `run` line — one that is nothing but test names joined by `|`,
-// optionally wrapped in `^(`…`)$` — against that list, matching the way -run
-// does: an unwrapped alternative is live when some test name contains it, a
-// wrapped one only when a test name equals it. A `run` line that is not a
-// plain alternation (one carrying other regexp syntax, or a subtest path)
-// falls back to the baseline's existing ranNothing check, which
-// already refuses a filter that matches nothing at all; what RUNFILTER adds
-// is catching the *partial* miss that ranNothing cannot see.
+// in one of three shapes: bare (`A|B`), the whole thing wrapped
+// (`^(A|B)$`), or a shared prefix sitting outside the group
+// (`<prefix>(A|B)$`, optionally with the leading `^`) — against that list.
+// plainAlternation expands each alternative to its full name and reports
+// which end(s) the `^`/`$` anchor; selects rebuilds the single-alternative
+// pattern -run would have evaluated (prefix+alt, with `^`/`$` added back per
+// those flags) and asks the regexp package itself, rather than re-deriving
+// containment/equality by hand: unanchored is a substring match, `$` alone
+// is a suffix match, and `^`…`$` together is exact equality. A `run` line
+// that is not a plain alternation (one carrying other regexp syntax, or a
+// subtest path) falls back to the baseline's existing ranNothing check,
+// which already refuses a filter that matches nothing at all; what
+// RUNFILTER adds is catching the *partial* miss that ranNothing cannot see.
 //
 // EXCLUDED separates the two reasons a mutation can pass. `run` is a claim
 // about which tests bear on the mutations below it, and it is as live a

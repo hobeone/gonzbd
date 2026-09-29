@@ -14,42 +14,78 @@ import (
 var testNameRe = regexp.MustCompile(`^Test[A-Za-z0-9_]*$`)
 
 // plainAlternation splits a spec's `run` line into its alternatives when it
-// is nothing but test names joined by `|`, optionally wrapped in `^(`…`)$`,
-// and reports whether that wrapping anchored them. It reports ok=false for
-// anything else — a pattern carrying other regexp syntax such as `.` or a
-// subtest `/` — and those fall back to the baseline's existing ranNothing
-// check, which already refuses a `run` that matches nothing at all.
-func plainAlternation(run string) (alts []string, anchored, ok bool) {
+// is nothing but test names joined by `|`, in one of three shapes:
+//
+//   - a bare list, `A|B` — unanchored on both ends
+//   - the whole thing wrapped, `^(A|B)$` — a degenerate case of the next
+//     shape with an empty prefix
+//   - a shared prefix outside the group, `<prefix>(A|B)$`, optionally with a
+//     leading `^` — `prefix` is prepended to every alternative before it is
+//     validated and returned, so `Test(A|B)$` yields `TestA`, `TestB`
+//
+// It reports which end(s) the trailing `$`/leading `^` anchor, for selects to
+// rebuild the per-alternative pattern with. It reports ok=false for anything
+// else — a pattern carrying other regexp syntax such as `.` or a subtest
+// `/`, or an unbalanced/malformed use of `(`/`^`/`$` — and those fall back to
+// the baseline's existing ranNothing check, which already refuses a `run`
+// that matches nothing at all.
+func plainAlternation(run string) (alts []string, startAnchored, endAnchored, ok bool) {
 	// No explicit run == "" guard: splitting "" on "|" yields [""], and
 	// testNameRe never matches the empty string, so the loop below already
 	// returns false for it — a separate check here would be dead code that no
 	// mutation could discriminate.
 	s := run
-	if strings.HasPrefix(s, "^(") && strings.HasSuffix(s, ")$") {
-		s = s[2 : len(s)-2]
-		anchored = true
+	if strings.HasPrefix(s, "^") {
+		startAnchored = true
+		s = s[1:]
+	}
+	if idx := strings.IndexByte(s, '('); idx >= 0 && strings.HasSuffix(s, ")$") {
+		prefix := s[:idx]
+		endAnchored = true
+		parts := strings.Split(s[idx+1:len(s)-2], "|")
+		alts = make([]string, 0, len(parts))
+		for _, p := range parts {
+			name := prefix + p
+			if !testNameRe.MatchString(name) {
+				return nil, false, false, false
+			}
+			alts = append(alts, name)
+		}
+		return alts, startAnchored, endAnchored, true
+	}
+	if startAnchored {
+		// A leading `^` with no `(`…`)$` group — e.g. the single-name
+		// "^TestFoo$", or a bare alternation with a stray leading anchor —
+		// is not one of the three shapes above, so it falls back rather than
+		// being guessed at.
+		return nil, false, false, false
 	}
 	parts := strings.Split(s, "|")
 	for _, p := range parts {
 		if !testNameRe.MatchString(p) {
-			return nil, false, false
+			return nil, false, false, false
 		}
 	}
-	return parts, anchored, true
+	return parts, false, false, true
 }
 
 // selects reports whether go test's -run would select at least one listed
-// test for alt. -run matches unanchored, so an unwrapped alternative selects
-// every test whose name contains it, so a prefix of a real test's name is
-// live. alt holds no regexp metacharacters (testNameRe),
-// so containment is exactly the unanchored match.
-func selects(listed []string, alt string, anchored bool) bool {
-	if anchored {
-		return slices.Contains(listed, alt)
+// test for alt, by rebuilding the exact single-alternative pattern -run
+// would have evaluated — alt with a leading `^` and/or trailing `$` added
+// back per startAnchored/endAnchored — and asking the regexp package itself,
+// rather than re-deriving containment/equality by hand. alt holds no regexp
+// metacharacters (every return path through plainAlternation validated it
+// against testNameRe), so this compiles unconditionally.
+func selects(listed []string, alt string, startAnchored, endAnchored bool) bool {
+	pat := alt
+	if endAnchored {
+		pat += "$"
 	}
-	return slices.ContainsFunc(listed, func(name string) bool {
-		return strings.Contains(name, alt)
-	})
+	if startAnchored {
+		pat = "^" + pat
+	}
+	re := regexp.MustCompile(pat)
+	return slices.ContainsFunc(listed, re.MatchString)
 }
 
 // listArgs builds the argv for listing a package's declared tests, honouring
@@ -91,7 +127,7 @@ func listTests(root string, sp *spec) ([]string, error) {
 // nil, nil for a `run` that is not a plain alternation (see
 // plainAlternation) or that names none at all.
 func deadRunFilterNames(root string, sp *spec) ([]string, error) {
-	alts, anchored, ok := plainAlternation(sp.run)
+	alts, startAnchored, endAnchored, ok := plainAlternation(sp.run)
 	if !ok {
 		return nil, nil
 	}
@@ -101,7 +137,7 @@ func deadRunFilterNames(root string, sp *spec) ([]string, error) {
 	}
 	var dead []string
 	for _, alt := range alts {
-		if !selects(listed, alt, anchored) {
+		if !selects(listed, alt, startAnchored, endAnchored) {
 			dead = append(dead, alt)
 		}
 	}
