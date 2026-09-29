@@ -1343,11 +1343,18 @@ func (app *Application) Start(ctx context.Context) error {
 	if app.startedTransitionHook != nil {
 		app.startedTransitionHook()
 	}
-	// The resume sweep runs inside the dispatcher's start, between restoring
-	// the registry and the first tick. resumeAllJobs has that placement's
-	// argument.
+	// The resume sweep, and then the choice of which jobs Start hands to
+	// post-processing, run between restoring the registry and the first tick.
+	// resumeAllJobs and startupHandOffs have that placement's argument.
+	var handOffs map[string]bool
 	if app.dispatcher != nil {
-		if err := app.dispatcher.StartWith(app.ctx, app.resumeAllJobs); err != nil {
+		if err := app.dispatcher.StartWith(app.ctx, func(ctx context.Context) error {
+			if err := app.resumeAllJobs(ctx); err != nil {
+				return err
+			}
+			handOffs = app.startupHandOffs()
+			return nil
+		}); err != nil {
 			return fmt.Errorf("app: start dispatcher: %w", err)
 		}
 	}
@@ -1386,17 +1393,25 @@ func (app *Application) Start(ctx context.Context) error {
 
 	app.log.Info("application started")
 
+	// The ticker is running here, so the hand-off choice is not re-read from
+	// this List. It was made before the first tick, by startupHandOffs. A job
+	// in handOffs is complete and has no Next, and a tick moves it on from
+	// Fetching only once a Next is recorded (Advance's branch 3). The report
+	// that records one at Fetching is completeFinalizedFile's AdvanceFrom —
+	// `git grep -n 'AdvanceFrom(j, job\.Fetching' -- 'internal/*.go' ':!*_test.go'`
+	// returns 1 line — and it follows a file completion. A complete job gets
+	// no file completion here: ForEachUnfinishedArticle skips every Complete
+	// file, so the downloader sends it no article.
 	if app.dispatcher != nil {
 		for _, row := range app.dispatcher.List() {
 			if app.dropJobAlreadyInHistory(ctx, row.ID) {
 				continue
 			}
-			if row.View.State == job.Fetching || row.View.State == job.StateUnset {
-				j, ok := app.dispatcher.Job(row.ID)
-				if ok && j.IsComplete() {
-					failMsg := failMsgForJob(j)
-					app.maybeFinalize(row.ID, failMsg)
-				}
+			if !handOffs[row.ID] {
+				continue
+			}
+			if j, ok := app.dispatcher.Job(row.ID); ok {
+				app.maybeFinalize(row.ID, failMsgForJob(j))
 			}
 		}
 	}

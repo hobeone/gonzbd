@@ -5,7 +5,13 @@ timeout 5m
 [the resume sweep runs after the dispatcher's ticker has started, as it did before]
 file internal/app/app.go
 --- anchor
-		if err := app.dispatcher.StartWith(app.ctx, app.resumeAllJobs); err != nil {
+		if err := app.dispatcher.StartWith(app.ctx, func(ctx context.Context) error {
+			if err := app.resumeAllJobs(ctx); err != nil {
+				return err
+			}
+			handOffs = app.startupHandOffs()
+			return nil
+		}); err != nil {
 			return fmt.Errorf("app: start dispatcher: %w", err)
 		}
 	}
@@ -24,4 +30,5 @@ file internal/app/app.go
 		_ = app.assembler.Stop()
 		return err
 	}
+	handOffs = app.startupHandOffs()
 --- end
