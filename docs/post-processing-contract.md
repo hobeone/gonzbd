@@ -50,7 +50,7 @@ single worker goroutine (`run`).
   callbacks, `runAssess`, `Application.Fail`, `RetryHistoryJob` and startup
   reconciliation call. An admission starts before the DirectUnpack wait and
   ends once `jobFinalizer.finalize` or `jobFinalizer.cancelled` has run, so it
-  covers the two windows `Has` does not see: the wait before `Process`, and
+  covers the two windows `HasJob` does not see: the wait before `Process`, and
   the callback tail after the worker clears its busy marker. Ending it does not
   deregister the instance, so one the dispatcher still holds after a failed
   removal can be admitted again. It is keyed by job instance, so a retry
@@ -108,8 +108,8 @@ single worker goroutine (`run`).
   reason yet; the stages then skip, and the entry is Failed with that reason.
   Any other new reason is logged at warn and added to the entry's stage log as
   a `warnings` line, without changing its status.
-- **In-flight tracking & cancellation**: `PostProcessor` tracks the active job's
-  ID (`currentJobID`) and an independent job context (`currentJobCancel`).
+- **In-flight tracking & cancellation**: `PostProcessor` tracks the active job
+  (`currentJob`) and an independent job context (`currentJobCancel`).
   Calling `Cancel(jobID)` either removes a pending job from `ppQueue` or cancels
   the active job's context mid-stage so the running tool returns promptly without
   stopping the worker itself. A job `Cancel` removed or interrupted is handed
@@ -122,8 +122,9 @@ single worker goroutine (`run`).
   Releasing it only after the stage returns is what keeps `RemoveJob` from
   tearing down files a stage is still using. That holds for `Repairing` as
   well as `Extracting`/`Finalizing`: the dispatcher's cancel aborts a running
-  `Repairing` job, and `appWorkers.Abort` does not yield a job the
-  post-processor holds. Its claim is released on the post-processor's way
+  `Repairing` job, and `appWorkers.Abort` does not yield a job instance the
+  post-processor holds (`HasJob`, which compares instances, so an earlier
+  instance of the job still in post-processing does not count). Its claim is released on the post-processor's way
   out instead: by this callback, by `jobFinalizer.persistAndCommit` through
   `OnJobDone` for a job that finished, or by `Shutdown`'s yield after a stop.
   `RemoveJob` cancels in the dispatcher before it cancels here, so a job the

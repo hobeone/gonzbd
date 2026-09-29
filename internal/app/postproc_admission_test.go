@@ -173,12 +173,12 @@ func TestRunPostProc_DuringTheFinalizerTail_EnqueuesNoSecondCopy(t *testing.T) {
 	awaitStage(t, stage.entered)
 	close(stage.finish)
 	<-inTail
-	if application.postProcessor.Has(id) {
+	if application.postProcessor.HasJob(j) {
 		t.Fatal("the post-processor still reports the job inside OnJobDone, so this would not test the tail")
 	}
 
 	newAppRunner(application).runPostProc(t.Context(), id, job.Repairing)
-	queuedAgain := application.postProcessor.Has(id)
+	queuedAgain := application.postProcessor.HasJob(j)
 	close(leaveTail)
 	awaitFinalized(t, application, id)
 
@@ -222,7 +222,7 @@ func TestEnqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy(t *testing.T) {
 	fault := storagefault.Classify("write", "/mnt/ro/held.bin", syscall.EROFS)
 	application.Fail(id, fault)
 	newAppRunner(application).runPostProc(t.Context(), id, job.Repairing)
-	handedOver := application.postProcessor.Has(id)
+	handedOver := application.postProcessor.HasJob(j)
 
 	du.Abort()
 	awaitFinalized(t, application, id)

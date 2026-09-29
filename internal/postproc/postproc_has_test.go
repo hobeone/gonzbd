@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// ---------- Has ----------
+// ---------- HasJob ----------
 
 func TestHas_CurrentJob(t *testing.T) {
 	block := make(chan struct{})
@@ -15,7 +15,8 @@ func TestHas_CurrentJob(t *testing.T) {
 	defer close(block)
 
 	p := startProcessor(t, Options{Stages: []Stage{blocker}})
-	p.Process(makeJob(t, "running"))
+	running := makeJob(t, "running")
+	p.Process(running)
 
 	waitUntil(t, func() bool {
 		p.busyMu.Lock()
@@ -24,8 +25,35 @@ func TestHas_CurrentJob(t *testing.T) {
 		return b
 	}, 2*time.Second, "worker busy")
 
-	if !p.Has("running") {
-		t.Error("Has('running') = false while job is being processed")
+	if !p.HasJob(running.Job) {
+		t.Error("HasJob(running) = false while job is being processed")
+	}
+}
+
+// TestHasJob_AnotherInstanceUnderTheSameID: a queued or in-flight job does not
+// make HasJob report a different instance registered under the same ID.
+func TestHasJob_AnotherInstanceUnderTheSameID(t *testing.T) {
+	block := make(chan struct{})
+	blocker := &recordStage{name: "blocker", block: block}
+	defer close(block)
+
+	p := startProcessor(t, Options{Stages: []Stage{blocker}})
+	running := makeJob(t, "same-id")
+	p.Process(running)
+	waitUntil(t, func() bool {
+		p.busyMu.Lock()
+		b := p.busy
+		p.busyMu.Unlock()
+		return b
+	}, 2*time.Second, "worker busy")
+	queued := makeJob(t, "queued")
+	p.Process(queued)
+
+	if other := newQueueJob(t, running.JobID(), 0); p.HasJob(other) {
+		t.Error("HasJob = true for another instance under the in-flight job's ID")
+	}
+	if other := newQueueJob(t, queued.JobID(), 0); p.HasJob(other) {
+		t.Error("HasJob = true for another instance under the queued job's ID")
 	}
 }
 
@@ -44,16 +72,20 @@ func TestHas_QueuedJob(t *testing.T) {
 		return b
 	}, 2*time.Second, "worker busy")
 
-	p.Process(makeJob(t, "queued"))
-	if !p.Has("queued") {
-		t.Error("Has('queued') = false for a queued job")
+	queued := makeJob(t, "queued")
+	p.Process(queued)
+	if !p.HasJob(queued.Job) {
+		t.Error("HasJob(queued) = false for a queued job")
 	}
 }
 
 func TestHas_NotPresent(t *testing.T) {
 	p := startProcessor(t, Options{})
-	if p.Has("nonexistent") {
-		t.Error("Has('nonexistent') = true for non-existent job")
+	if p.HasJob(newQueueJob(t, "nonexistent", 0)) {
+		t.Error("HasJob = true for a job never processed")
+	}
+	if p.HasJob(nil) {
+		t.Error("HasJob(nil) = true")
 	}
 }
 

@@ -11,10 +11,10 @@ import (
 // post-processing and not yet handed back, so that at most one
 // post-processing run of an instance is in progress at a time.
 //
-// An admission spans more than PostProcessor.Has does: it starts before the
+// An admission spans more than PostProcessor.HasJob does: it starts before the
 // DirectUnpack wait, when the post-processor has not been given the job yet,
 // and ends only after jobFinalizer.finalize or jobFinalizer.cancelled has run
-// for it, where Has stops reporting the job before either callback runs.
+// for it, where HasJob stops reporting the job before either callback runs.
 //
 // A removed job's post-processing does not start. RemoveJob marks the instance
 // removed (jobTransitions.markRemoved) and then calls withdraw, and
