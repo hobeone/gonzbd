@@ -364,9 +364,12 @@ func TestDispatcherRow_ReturnsOneJobWithoutRenderingTheRest(t *testing.T) {
 }
 
 // TestDispatcher_HeaderStringSetters table-drives the three Header
-// string-field setters this PR added (SetPostAnomaly, SetFailReason,
+// string-field mutators this PR added (AddPostAnomaly, SetFailReason,
 // SetOperationalError): each rejects an unknown job and, on a registered
-// one, writes only its own field.
+// one with nothing recorded yet, writes only its own field. AddPostAnomaly's
+// append-rather-than-overwrite behavior on a SECOND call is not this test's
+// concern — TestDispatcher_AddPostAnomaly_AppendsRatherThanOverwrites covers
+// that directly.
 func TestDispatcher_HeaderStringSetters(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -375,10 +378,10 @@ func TestDispatcher_HeaderStringSetters(t *testing.T) {
 		errTag string
 	}{
 		{
-			name:   "SetPostAnomaly",
-			set:    (*Dispatcher).SetPostAnomaly,
+			name:   "AddPostAnomaly",
+			set:    (*Dispatcher).AddPostAnomaly,
 			get:    func(h Header) string { return h.PostAnomaly },
-			errTag: "set post anomaly",
+			errTag: "add post anomaly",
 		},
 		{
 			name:   "SetFailReason",
@@ -417,6 +420,75 @@ func TestDispatcher_HeaderStringSetters(t *testing.T) {
 			}
 			if got := tc.get(row.Header); got != "the value" {
 				t.Fatalf("%s wrote %q, want %q", tc.name, got, "the value")
+			}
+		})
+	}
+}
+
+// TestDispatcher_AddPostAnomaly_AppendsRatherThanOverwrites pins the shape a
+// job with several malformed files needs: each distinct finding survives a
+// later one, joined with "; ", and an exact repeat of the last-appended
+// finding is not joined again.
+func TestDispatcher_AddPostAnomaly_AppendsRatherThanOverwrites(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(context.Background(), j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := d.AddPostAnomaly("j1", "file 0 is malformed"); err != nil {
+		t.Fatalf("AddPostAnomaly (first): %v", err)
+	}
+	if err := d.AddPostAnomaly("j1", "file 1 is malformed"); err != nil {
+		t.Fatalf("AddPostAnomaly (second): %v", err)
+	}
+	row, ok := d.Row("j1")
+	if !ok {
+		t.Fatal("Row(j1) not found")
+	}
+	const want = "file 0 is malformed; file 1 is malformed"
+	if got := row.Header.PostAnomaly; got != want {
+		t.Fatalf("PostAnomaly = %q, want %q — the second finding must join the first, "+
+			"not replace it", got, want)
+	}
+
+	// A repeat of the most recently appended finding must not duplicate.
+	if err := d.AddPostAnomaly("j1", "file 1 is malformed"); err != nil {
+		t.Fatalf("AddPostAnomaly (repeat): %v", err)
+	}
+	row, _ = d.Row("j1")
+	if got := row.Header.PostAnomaly; got != want {
+		t.Fatalf("PostAnomaly = %q, want %q — an exact repeat of the last finding must "+
+			"not be joined again", got, want)
+	}
+}
+
+// TestAppendPostAnomaly calls appendPostAnomaly directly, pinning its dedup
+// boundaries: it drops only an exact repeat of the LAST joined element, and
+// the suffix check that finds that element requires the "; " separator —
+// text that merely ends with the same characters as next, without being a
+// whole element on its own, must still be appended.
+func TestAppendPostAnomaly(t *testing.T) {
+	cases := []struct {
+		name     string
+		existing string
+		next     string
+		want     string
+	}{
+		{"empty next leaves existing unchanged", "existing", "", "existing"},
+		{"empty existing becomes next", "", "next", "next"},
+		{"existing equal to next is unchanged", "same", "same", "same"},
+		{"a repeat of the last joined element is dropped", "a; b", "b", "a; b"},
+		{"a repeat of an earlier element is appended — dedup is last-only",
+			"a; b", "a", "a; b; a"},
+		{"text merely ending in next, not a whole element, is appended",
+			"file 0 bad", "0 bad", "file 0 bad; 0 bad"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := appendPostAnomaly(tc.existing, tc.next); got != tc.want {
+				t.Errorf("appendPostAnomaly(%q, %q) = %q, want %q",
+					tc.existing, tc.next, got, tc.want)
 			}
 		})
 	}

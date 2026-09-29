@@ -42,8 +42,9 @@ export interface QueueSlot {
 	ingest_anomaly?: string;
 	/** A byte-accounting collision the assembler or durability barrier found
 	 *  after the job started downloading (#379) — distinct from
-	 *  ingest_anomaly's parse-time findings. Overwritten by a later finding;
-	 *  only the most recent is actionable. */
+	 *  ingest_anomaly's parse-time findings. A later finding for a different
+	 *  file is appended, joined with "; ", so several malformed files each
+	 *  keep their own finding. */
 	post_anomaly?: string;
 	/** Why the job is parked on a storage fault — a full disk, a wedged
 	 *  mount — or absent when it is not. Render it; the backend has already

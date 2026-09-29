@@ -198,7 +198,7 @@ func TestHandlePostAnomaly_ReachesTheJobHeader(t *testing.T) {
 }
 
 // TestHandlePostAnomaly_SurvivesAJobThatHasLeftTheQueue covers the branch where
-// SetPostAnomaly fails, on the same terms as the rejection path above: the
+// AddPostAnomaly fails, on the same terms as the rejection path above: the
 // assembler worker is a separate goroutine, so an anomaly can be reported after
 // its job has been cancelled or moved to history. Nothing is left to warn
 // about, which is ordinary — but not silent (A2).

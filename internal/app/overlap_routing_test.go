@@ -122,16 +122,14 @@ func assertOverlapWarned(t *testing.T, application *Application, jobID, route st
 	}
 }
 
-// TestReportPostAnomalies_WritesEveryFinding exercises the routing helper
+// TestReportPostAnomalies_KeepsEveryFinding exercises the routing helper
 // directly, over the shapes the two end-to-end tests above cannot produce.
 //
-// A single Run reports at most one overlap per file but iterates a job's files,
-// so a job with two malformed files yields two findings in one slice — and
-// because Header.PostAnomaly is a single string, only the last survives. That
-// is a deliberate accepted cost (see handlePostAnomaly), and pinning it here
-// is what makes it a decision rather than an accident: if PostAnomaly ever
-// becomes a list, this test fails and asks the question.
-func TestReportPostAnomalies_WritesEveryFinding(t *testing.T) {
+// A single Run reports at most one overlap per file but iterates a job's
+// files, so a job with two malformed files yields two findings in one slice.
+// AddPostAnomaly appends rather than overwrites, so both must survive in
+// order — a user whose post has two malformed files is told about both.
+func TestReportPostAnomalies_KeepsEveryFinding(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	jobID := addStallTestJob(t, application, "warnable").ID()
@@ -151,9 +149,10 @@ func TestReportPostAnomalies_WritesEveryFinding(t *testing.T) {
 		{FileIdx: 1, Reason: "second file is malformed"},
 	})
 	row, _ = application.dispatcher.Row(jobID)
-	if w := row.Header.PostAnomaly; w != "second file is malformed" {
-		t.Errorf("PostAnomaly = %q, want the LAST finding — it holds one string, "+
-			"so a second file's report overwrites the first's", w)
+	const want = "first file is malformed; second file is malformed"
+	if w := row.Header.PostAnomaly; w != want {
+		t.Errorf("PostAnomaly = %q, want %q — both findings must survive, not just "+
+			"the last one written", w, want)
 	}
 }
 

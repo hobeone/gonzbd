@@ -135,10 +135,11 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 // handlePostAnomaly surfaces a structural fault in what the servers served, so
 // the user can tell a bad post from a bad disk or a bad connection (#379).
 //
-// It writes Header.PostAnomaly, whose sole writer this is — see the field's
-// doc comment. A later anomaly overwrites an earlier one, which is
-// acceptable for a diagnostic: the log line in routeFaulted is the durable
-// record, and the field is only what makes a user look.
+// It writes Header.PostAnomaly, whose sole writer this is (through
+// AddPostAnomaly) — see the field's doc comment. A later anomaly for a
+// different file is appended rather than overwritten, so a job whose
+// several files are each malformed keeps every finding instead of only the
+// last.
 //
 // A failure to record it is logged and dropped. A job that has left the queue
 // has nothing to warn about, which is ordinary rather than a defect (A2).
@@ -177,7 +178,7 @@ func (app *Application) postAnomaly(jobID string, fileIdx int, source, reason st
 	app.log.Warn("post anomaly reported",
 		"job", jobID, "fileidx", fileIdx, "source", source, "reason", reason)
 	if app.dispatcher != nil {
-		_ = app.dispatcher.SetPostAnomaly(jobID, reason)
+		_ = app.dispatcher.AddPostAnomaly(jobID, reason)
 	}
 }
 

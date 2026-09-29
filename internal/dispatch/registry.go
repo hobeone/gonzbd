@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -48,9 +49,10 @@ type Header struct {
 	// durability barrier detects a byte-accounting collision after the job
 	// has started downloading (#379) — a structural problem with what the
 	// servers served, distinct from IngestAnomaly's parse-time findings.
-	// SetPostAnomaly is the only runtime writer (restore aside, see above);
-	// a later anomaly simply overwrites an earlier one, since only the most
-	// recent is actionable.
+	// AddPostAnomaly is the only runtime writer (restore aside, see above);
+	// each new finding is appended to what the job has already recorded,
+	// joined with "; ", so a job whose several files are each malformed
+	// keeps every finding instead of only the last one written.
 	PostAnomaly string
 
 	// FailReason is set once by app.Fail when a permanent storage fault
@@ -305,7 +307,7 @@ func (d *Dispatcher) entryFor(id string) (Header, int64, bool) {
 // fact with one owner (markWritten, under the storeMu span that wrote it), so
 // there is no second flag here to disagree with it. Registry callers that
 // bypass snapshotOrder (Remove, Cancel, beginRemoval/beginRemovalIfIdle,
-// List/Row/Job, SetPostAnomaly/SetFailReason) operate on d.byID directly.
+// List/Row/Job, AddPostAnomaly/SetFailReason) operate on d.byID directly.
 //
 // The copy exists so the tick can release d.mu before calling into sched: D-B9
 // forbids holding d.mu across such a call, because Workers.Abort runs inside
@@ -699,18 +701,41 @@ func (d *Dispatcher) Remove(ctx context.Context, id string) (err error) {
 	return nil
 }
 
-// SetPostAnomaly sets the mid-download anomaly note for a registered job.
-// It is the only runtime writer of Header.PostAnomaly — see the field's doc
-// comment (and the Header struct comment) for the restore exception.
-func (d *Dispatcher) SetPostAnomaly(id, reason string) error {
+// AddPostAnomaly appends a mid-download anomaly finding to a registered
+// job's PostAnomaly note, joining it to what the job has already recorded
+// with "; " rather than replacing it. It is the only runtime writer of
+// Header.PostAnomaly — see the field's doc comment (and the Header struct
+// comment) for the restore exception.
+func (d *Dispatcher) AddPostAnomaly(id, reason string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	e, ok := d.byID[id]
 	if !ok {
-		return fmt.Errorf("dispatch: set post anomaly %s: %w", id, ErrNotFound)
+		return fmt.Errorf("dispatch: add post anomaly %s: %w", id, ErrNotFound)
 	}
-	e.h.PostAnomaly = reason
+	e.h.PostAnomaly = appendPostAnomaly(e.h.PostAnomaly, reason)
 	return nil
+}
+
+// appendPostAnomaly joins a new finding onto existing ones with "; " — the
+// same separator ui/src/lib/components/QueueRow.svelte's anomalyBadge
+// already uses to combine PostAnomaly with its sibling anomaly fields, so
+// nesting one join inside the other still reads as one flat list. An exact
+// repeat of the most recently appended finding is dropped rather than
+// joined again, since Barrier.reported (internal/durability/barrier.go)
+// already latches each (job, file) to at most one report — a repeat here
+// can only come from a retry or a caller passing the same text twice.
+func appendPostAnomaly(existing, next string) string {
+	if next == "" || existing == next {
+		return existing
+	}
+	if existing == "" {
+		return next
+	}
+	if strings.HasSuffix(existing, "; "+next) {
+		return existing
+	}
+	return existing + "; " + next
 }
 
 // SetFailReason sets the permanent-failure reason for a registered job. It
