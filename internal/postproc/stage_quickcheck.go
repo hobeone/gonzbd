@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
+	"slices"
 
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/unpack"
@@ -186,11 +188,21 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 		return fmt.Errorf("quickcheck: cannot verify CRCs without the manifest: %w", mErr)
 	}
 
-	// Read the verdict the assessment already reached. Nothing is recomputed
-	// here, and nothing is re-matched: the CRCs were compared against the
-	// entries identification proved each file to be, before any of the moves
-	// above happened.
-	crcResult := a.CRC
+	// Sets whose files do not exist until unpack runs are verified after it,
+	// by extracted_repair, so the verdict below is read over the other sets
+	// only. Nothing is re-matched: CRCExcluding reads the same pre-rename
+	// identification, and the CRCs were compared against the entries
+	// identification proved each file to be, before any of the moves above
+	// happened.
+	deferred := q.deferredSets(ctx, log, job, a.ID)
+	job.DeferredPar2Sets = deferred
+	skip := make(map[string]bool, len(deferred))
+	for _, name := range deferred {
+		skip[name] = true
+		logf(ctx, log, job, slog.LevelInfo,
+			"[quickcheck] par2 set %q protects files a delivered archive holds — it is verified after unpack, not before", name)
+	}
+	crcResult := a.CRCExcluding(skip, log)
 	unverifiable := crcResult.NoCRC + crcResult.Unverified + crcResult.Mismatched
 
 	if crcResult.Checked > 0 {
@@ -245,13 +257,11 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	}
 
 	switch {
-	case q.looksLikeLayoutB(ctx, log, job, a.ID):
+	case len(deferred) > 0 && len(deferred) == len(setsWithEntries(a.ID)):
 		job.QuickCheck = QuickCheckUnidentified
 		logf(ctx, log, job, slog.LevelInfo,
-			"[quickcheck] No delivered file is any of the %d par2-tracked file(s), and each of them is named inside a "+
-				"delivered RAR/7z archive — treating par2 as protecting what unpack will extract: repair is skipped, the "+
-				"par2 files are kept, and the archive's own checksums are the only check on the extracted files",
-			len(a.ID.Unaccounted))
+			"[quickcheck] Every par2 set protects files a delivered RAR/7z archive holds — repair is skipped, and par2 "+
+				"verifies the extracted files after unpack")
 	case unverifiable > 0:
 		job.QuickCheck = QuickCheckDamaged
 		logf(ctx, log, job, slog.LevelInfo,
@@ -273,40 +283,96 @@ func (q *QuickCheckStage) recordVerdict(ctx context.Context, log *slog.Logger, j
 	return nil
 }
 
-// looksLikeLayoutB decides QuickCheckUnidentified. It is a heuristic, and
-// each condition below narrows it; every one that fails leaves the caller to
-// record Damaged, so repair runs.
+// deferredSets returns, sorted, the par2 sets whose verification waits for
+// unpack: sets judged to protect files a delivered archive will extract
+// (Layout B), which a repair before unpack has nothing to verify against and
+// whose failure would skip the unpack that produces them. It is a heuristic,
+// judged per set on the entries identification did not account for, and a
+// set that fails any condition is repaired before unpack as usual.
 //
-//  1. Nothing delivered was identified as any par2 entry. One identified file
-//     means the set describes this download.
-//  2. Unpack will run for this job. Declining repair hands verification to
-//     the archive's extraction, so a job unpack will skip — PP below
-//     PPUnpack, or the stage disabled — must keep repair.
-//  3. No unaccounted entry is itself named as an archive (unpack.Classify).
+//  1. Unpack will run for this job. Deferring hands the set to
+//     extracted_repair, which runs only after unpack, so a job unpack will
+//     skip — PP below PPUnpack, or the stage disabled — defers nothing.
+//  2. The set has an entry no delivered file was identified as. A set with
+//     every entry accounted for has everything it protects on disk now.
+//     Entries it did identify — a sidecar .nfo it also protects — are
+//     verified with the rest after unpack.
+//  3. None of those entries is itself named as an archive (unpack.Classify).
 //     par2 names are the poster's real names, so an entry called
 //     "Release.part01.rar" says the set protects archives — Layout A, where
 //     an obfuscated volume damaged in its first 16 KB matches nothing and
 //     repair is exactly what it needs.
-//  4. Every unaccounted entry's base name is a member of a RAR or 7z archive
-//     in the directory (archivesHoldEntries). An archive the entries do not
-//     name says nothing about them.
-func (q *QuickCheckStage) looksLikeLayoutB(ctx context.Context, log *slog.Logger, job *Job, id par2.Identification) bool {
-	if !id.NothingIdentified() {
-		return false
+//  4. Each of those entries' base name is a member of a RAR or 7z archive in
+//     the directory (heldArchiveMembers). An archive the entries do not name
+//     says nothing about them.
+func (q *QuickCheckStage) deferredSets(ctx context.Context, log *slog.Logger, job *Job, id par2.Identification) []string {
+	unaccounted := make(map[string][]par2.FileDesc)
+	for _, fd := range id.Unaccounted {
+		unaccounted[fd.Set] = append(unaccounted[fd.Set], fd)
+	}
+	if len(unaccounted) == 0 {
+		return nil
 	}
 	if !q.unpackWillRun(job) {
 		logf(ctx, log, job, slog.LevelInfo,
-			"[quickcheck] Nothing delivered matches the par2 set, and unpack will not run for this job — repair will run")
-		return false
+			"[quickcheck] par2 names files nothing delivered matches, and unpack will not run for this job — repair will run")
+		return nil
+	}
+
+	var candidates []string
+	var entries []par2.FileDesc
+	for _, set := range slices.Sorted(maps.Keys(unaccounted)) {
+		fds := unaccounted[set]
+		named := slices.IndexFunc(fds, func(fd par2.FileDesc) bool {
+			return unpack.Classify(unpack.MemberBaseName(fd.FileName)) != unpack.UnknownArchive
+		})
+		if named >= 0 {
+			logf(ctx, log, job, slog.LevelInfo,
+				"[quickcheck] par2 set %q protects an archive (%s) that nothing delivered matches — repair will run",
+				set, fds[named].FileName)
+			continue
+		}
+		candidates = append(candidates, set)
+		entries = append(entries, fds...)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	held, ok := heldArchiveMembers(ctx, log, job, entries)
+	if !ok {
+		return nil
+	}
+
+	var deferred []string
+	for _, set := range candidates {
+		missing := 0
+		for _, fd := range unaccounted[set] {
+			if !held[unpack.MemberBaseName(fd.FileName)] {
+				missing++
+			}
+		}
+		if missing > 0 {
+			logf(ctx, log, job, slog.LevelInfo,
+				"[quickcheck] par2 set %q: %d of %d unmatched file(s) are named in no delivered archive — repair will run",
+				set, missing, len(unaccounted[set]))
+			continue
+		}
+		deferred = append(deferred, set)
+	}
+	return deferred
+}
+
+// setsWithEntries returns the par2 sets that contributed any entry to id,
+// identified or not. A set whose index could not be read contributes none.
+func setsWithEntries(id par2.Identification) map[string]bool {
+	sets := make(map[string]bool)
+	for _, f := range id.Files {
+		sets[f.Desc.Set] = true
 	}
 	for _, fd := range id.Unaccounted {
-		if unpack.Classify(unpack.MemberBaseName(fd.FileName)) != unpack.UnknownArchive {
-			logf(ctx, log, job, slog.LevelInfo,
-				"[quickcheck] par2 protects an archive (%s) that nothing delivered matches — repair will run", fd.FileName)
-			return false
-		}
+		sets[fd.Set] = true
 	}
-	return archivesHoldEntries(ctx, log, job, id.Unaccounted)
+	return sets
 }
 
 // unpackWillRun reports whether the unpack stage will run for job: it is
@@ -316,29 +382,24 @@ func (q *QuickCheckStage) unpackWillRun(job *Job) bool {
 	return q.Unpack != nil && q.Unpack.IsEnabled() && !shouldSkipForPP(q.Unpack.Name(), job.PP)
 }
 
-// archivesHoldEntries reports whether every entry's base name is a member of
-// some RAR or 7z archive in the download directory. Archives are found by
-// name (unpack.Scan), so an obfuscated volume that rar_volume_recovery would
-// rename later is not seen, and members are read from headers only
-// (unpack.MemberBaseNames, which for RAR reads the first volume). A scan or
-// listing error counts as not held.
-//
-// RAR and 7z are the formats whose extraction checks an entry against a
-// checksum the archive records, with gaps: go_rar cannot check a BLAKE2sp-only
-// or MAC digest (unpack.CloseMember filters ErrChecksumUnsupported), and go_7z
-// skips an entry that records no CRC. A file join and a tar check nothing, so
-// they are not consulted.
-func archivesHoldEntries(ctx context.Context, log *slog.Logger, job *Job, entries []par2.FileDesc) bool {
+// heldArchiveMembers returns which of entries' base names are members of some
+// RAR or 7z archive in the download directory. Archives are found by name
+// (unpack.Scan), so an obfuscated volume that rar_volume_recovery would rename
+// later is not seen, and members are read from headers only
+// (unpack.MemberBaseNames, which for RAR reads the first volume, and lists
+// only RAR and 7z). ok is false after a scan or listing error, which the
+// caller reads as nothing held.
+func heldArchiveMembers(ctx context.Context, log *slog.Logger, job *Job, entries []par2.FileDesc) (held map[string]bool, ok bool) {
 	archives, err := unpack.Scan(job.DownloadDir)
 	if err != nil {
-		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Archive scan failed: %v", err)
-		return false
+		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Archive scan failed: %v — repair will run", err)
+		return nil, false
 	}
 	want := make(map[string]bool, len(entries))
 	for _, fd := range entries {
 		want[unpack.MemberBaseName(fd.FileName)] = true
 	}
-	held := make(map[string]bool, len(want))
+	held = make(map[string]bool, len(want))
 	for _, a := range archives {
 		if a.Type != unpack.RarArchive && a.Type != unpack.SevenZipArchive {
 			continue
@@ -346,22 +407,11 @@ func archivesHoldEntries(ctx context.Context, log *slog.Logger, job *Job, entrie
 		found, err := unpack.MemberBaseNames(a, want)
 		if err != nil {
 			logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Cannot list archive members: %v — repair will run", err)
-			return false
+			return nil, false
 		}
 		for name := range found {
 			held[name] = true
 		}
 	}
-	if len(held) < len(want) {
-		logf(ctx, log, job, slog.LevelInfo,
-			"[quickcheck] %d of %d par2-tracked file(s) are named in no delivered archive — repair will run",
-			len(want)-len(held), len(want))
-		return false
-	}
-	return true
+	return held, true
 }
-
-// RepairStage runs par2 verify+repair against every par2 set it finds in
-// the job's DownloadDir. A set with status RepairNotPossible or an exec
-// failure sets job.ParError; the pipeline continues (unpack may still
-// succeed on an intact archive).

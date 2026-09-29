@@ -24,8 +24,9 @@ func emptyProbe() binaryProbe {
 
 // TestBuildStages_StageOrder verifies the documented pipeline order:
 //
-//	quickcheck → repair → rarvolrecovery → unpack → sample → par2names →
-//	par2cleanup → deobfuscate → extcleanup → finalize → cleanup → script
+//	quickcheck → repair → rarvolrecovery → unpack → extractedrepair →
+//	sample → par2names → par2cleanup → deobfuscate → extcleanup → finalize →
+//	script
 //
 // This is the highest-value assertion for stages.go: a silent reorder would
 // cause post-processing failures (e.g. cleanup running before rename).
@@ -47,6 +48,7 @@ func TestBuildStages_StageOrder(t *testing.T) {
 		{"RepairStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.RepairStage); return ok }},
 		{"RarVolumeRecoveryStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.RarVolumeRecoveryStage); return ok }},
 		{"UnpackStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.UnpackStage); return ok }},
+		{"ExtractedRepairStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.ExtractedRepairStage); return ok }},
 		{"SampleCleanupStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.SampleCleanupStage); return ok }},
 		{"RecoverPar2NamesStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.RecoverPar2NamesStage); return ok }},
 		{"Par2CleanupStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.Par2CleanupStage); return ok }},
@@ -88,22 +90,39 @@ func TestBuildStages_PointersSameAsSlice(t *testing.T) {
 	if built.Stages[3] != built.Unpack {
 		t.Error("Unpack pointer != stages[3]")
 	}
-	if built.Stages[4] != built.SampleCleanup {
-		t.Error("SampleCleanup pointer != stages[4]")
+	if built.Stages[5] != built.SampleCleanup {
+		t.Error("SampleCleanup pointer != stages[5]")
 	}
-	if built.Stages[6] != built.Par2Cleanup {
-		t.Error("Par2Cleanup pointer != stages[6]")
+	if built.Stages[7] != built.Par2Cleanup {
+		t.Error("Par2Cleanup pointer != stages[7]")
 	}
-	if built.Stages[7] != built.Deobfuscate {
-		t.Error("Deobfuscate pointer != stages[7]")
+	if built.Stages[8] != built.Deobfuscate {
+		t.Error("Deobfuscate pointer != stages[8]")
 	}
-	if built.Stages[9] != built.Finalize {
-		t.Error("Finalize pointer != stages[9]")
+	if built.Stages[10] != built.Finalize {
+		t.Error("Finalize pointer != stages[10]")
 	}
-	// 10, not 11: the per-job admin cleanup stage that used to sit between
-	// finalize and script is gone along with the directory it removed.
-	if built.Stages[10] != built.Script {
-		t.Error("Script pointer != stages[10]")
+	if built.Stages[11] != built.Script {
+		t.Error("Script pointer != stages[11]")
+	}
+}
+
+// extracted_repair must repair with the pipeline's own repair stage, so a
+// runtime change to the repair settings reaches both passes.
+func TestBuildStages_ExtractedRepairUsesThePipelinesRepairStage(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{DownloadDir: t.TempDir(), CompleteDir: t.TempDir()}
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
+	if err != nil {
+		t.Fatalf("buildStages: %v", err)
+	}
+	extracted, ok := built.Stages[4].(*postproc.ExtractedRepairStage)
+	if !ok {
+		t.Fatalf("stages[4] = %T, want *postproc.ExtractedRepairStage", built.Stages[4])
+	}
+	if extracted.Repair != built.Repair {
+		t.Errorf("ExtractedRepairStage.Repair = %p, want the pipeline's repair stage %p", extracted.Repair, built.Repair)
 	}
 }
 

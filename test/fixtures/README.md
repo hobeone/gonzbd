@@ -26,6 +26,17 @@ only payload, and `feature.par2` + `feature.vol0+1.par2` protect
 `feature.bin.sha256` holds the SHA-256 of the extracted file. The archive is
 compressed on purpose: a stored (`-m0`) archive carries the protected file's
 bytes verbatim, and par2's block scan would find them inside it.
+`damaged_b2.rar` is a stored RAR5 of the same `feature.bin` that records only
+a BLAKE2sp digest (`-htb`), with four bytes of the member overwritten at
+archive offset 20000. `go_rar` cannot check that digest, so it extracts the
+damage without an error; the recovery block in `feature.vol0+1.par2` repairs
+it.
+
+`par2/layout_b_mixed/` holds two more par2 sets for mixed identification.
+`withnfo.par2` + `withnfo.vol0+1.par2` protect `feature.bin` (the Layout B
+payload above, not committed here) and the delivered sidecar `feature.nfo`.
+`extras.par2` + `extras.vol0+1.par2` protect `extras.txt`, an ordinary
+delivered file.
 
 `par2/layout_a/` protects an archive. `Real.Name.par2` +
 `Real.Name.vol0+2.par2` were created over `Real.Name.rar` (a RAR5 of the
@@ -70,6 +81,14 @@ rar a -m5 -ma5 release.rar feature.bin
 par2 create -s4000 -r10 -n1 feature.par2 feature.bin
 7z a -mx=9 release.7z feature.bin
 sha256sum feature.bin > feature.bin.sha256
+rar a -m0 -ma5 -htb damaged_b2.rar feature.bin
+printf '\xff\xff\xff\xff' | dd of=damaged_b2.rar bs=1 seek=20000 conv=notrunc
+
+# par2/layout_b_mixed (requires par2), from the same feature.bin
+printf 'Feature release notes.\nSource: fixture.\n' > feature.nfo
+par2 create -s4000 -r10 -n1 withnfo.par2 feature.bin feature.nfo
+printf 'extras payload, protected by its own par2 set\n' > extras.txt
+par2 create -s64 -r10 -n1 extras.par2 extras.txt
 
 # par2/layout_a (requires rar and par2), from the same feature.bin
 rar a -m5 -ma5 Real.Name.rar feature.bin

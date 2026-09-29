@@ -46,6 +46,11 @@ type FileDesc struct {
 	FileSize     uint64
 	FileCRC32    uint32 // reconstructed from IFSC slices (0 if no IFSC data)
 	HasDuplicate bool   // true if another FileDesc shares this Hash16k
+	// Set is the Name of the par2 Set this entry was read from, so an
+	// Identification over several sets can be judged set by set. It is set
+	// by collectManifestsWithOptions, which is how Identify reads entries;
+	// ParseFileDescriptions leaves it empty.
+	Set string
 }
 
 // ParsedSet aggregates all information parsed from a PAR2 file's packets.

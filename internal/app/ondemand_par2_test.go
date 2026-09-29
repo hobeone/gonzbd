@@ -227,10 +227,9 @@ func TestPar2Verdict(t *testing.T) {
 	// must NOT conflate. They differ only in whether anything else matched.
 
 	// Zero of N: no delivered file matches any entry. That is Layout B — par2
-	// protecting the extracted contents — and the volumes cannot be spent,
-	// because RepairStage is registered before UnpackStage (internal/app/
-	// stages.go) with no second repair pass, so the only repair this pipeline
-	// runs executes while the protected files do not yet exist.
+	// protecting the extracted contents — and nothing can say the volumes are
+	// needed until unpack has produced the protected files, which is after
+	// the download has finished.
 	//
 	// Telling this apart from a healthy obfuscated release is safe only
 	// because identification is by CONTENT. Under the name-only matching this

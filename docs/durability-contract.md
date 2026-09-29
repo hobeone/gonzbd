@@ -497,11 +497,10 @@ extracted contents that do not exist yet — reads `outcomeUnknown` instead: the
 volumes are held rather than fetched or discarded. Holding is the whole of
 the download path's part; it repairs nothing. In post-processing the job
 stays `Damaged` and `repair` runs with whatever volumes are on disk, unless
-quickcheck judges it a Layout B post (`QuickCheckUnidentified`, whose
-conditions and gaps `docs/post-processing-contract.md` § Core Pipeline
-Invariants lists). Then `repair` is skipped, and the only check left on the
-extracted files is the archive's own per-member checksum, where the extractor
-can check it.
+quickcheck defers its par2 set as a Layout B set (whose conditions and limits
+`docs/post-processing-contract.md` § Core Pipeline Invariants lists). Then
+`repair` skips the set, and `extracted_repair` runs par2 against the
+extracted files after `unpack`, with whatever volumes are on disk.
 
 **The predicate has three conditions: one row, at offset 0, covering every
 article of the file.** All three, and each closes a shape the others do not.

@@ -194,6 +194,14 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	// Quickcheck lets repair defer to unpack only when unpack will run.
 	qcStage.Unpack = unpackStage
 
+	// Extracted repair: par2 verify+repair of the sets quickcheck deferred
+	// until unpack had produced the files they protect. Runs with the repair
+	// stage's configuration, and before sample_cleanup, which could delete a
+	// file those sets protect.
+	extractedRepairStage := postproc.NewExtractedRepairStage(repairStage)
+	extractedRepairStage.Log = ppLog
+	stages = append(stages, extractedRepairStage)
+
 	// Sample cleanup runs after unpack so it sees both raw and extracted files.
 	sampleStage := postproc.NewSampleCleanupStage()
 	sampleStage.Log = ppLog
