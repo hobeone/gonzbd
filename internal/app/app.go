@@ -269,6 +269,16 @@ type Application struct {
 	// checkpointHook.
 	removeCancelGapHook func(id string)
 
+	// directUnpackWaitEndHook, when non-nil, runs in enqueuePostProc's
+	// DirectUnpack-wait goroutine right after its wait step ends (endStep).
+	// It runs from that same goroutine, after the awaitDirectUnpackOrAbort
+	// call that precedes endStep, so a test reading the DirectUnpacker's own
+	// state from inside the hook observes the two in the order this
+	// goroutine actually executed them — no race against another goroutine's
+	// unrelated work, unlike a hook that fires from RemoveJob's caller. Same
+	// discipline as checkpointHook.
+	directUnpackWaitEndHook func(id string)
+
 	// finalizeHook, when non-nil, runs in jobFinalizer.finalize once the
 	// post-processor has let the job go and before its admission ends. Same
 	// discipline as checkpointHook.
@@ -2359,6 +2369,9 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			// a withdrawing RemoveJob deletes nothing du is still writing.
 			finished := awaitDirectUnpackOrAbort(app.ctx, removed, du)
 			app.postProcAdmissions.endStep(j, wait)
+			if app.directUnpackWaitEndHook != nil {
+				app.directUnpackWaitEndHook(j.ID())
+			}
 			if !finished {
 				return
 			}
