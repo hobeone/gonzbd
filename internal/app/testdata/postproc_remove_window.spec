@@ -120,8 +120,14 @@ file internal/app/app.go
 --- anchor
 			finished := awaitDirectUnpackOrAbort(app.ctx, removed, du)
 			app.postProcAdmissions.endStep(j, wait)
+			if app.directUnpackWaitEndHook != nil {
+				app.directUnpackWaitEndHook(j.ID())
+			}
 --- replace
 			app.postProcAdmissions.endStep(j, wait)
+			if app.directUnpackWaitEndHook != nil {
+				app.directUnpackWaitEndHook(j.ID())
+			}
 			finished := awaitDirectUnpackOrAbort(app.ctx, removed, du)
 --- end
 

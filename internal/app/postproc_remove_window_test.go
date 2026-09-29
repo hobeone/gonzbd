@@ -191,26 +191,71 @@ func TestRemoveJob_DuringTheDirectUnpackWait_PostProcessingDoesNotRun(t *testing
 // TestRemoveJob_WaitsForTheDirectUnpackToStop: RemoveJob deletes nothing
 // while the DirectUnpacker the enqueue collected still runs; duOrch.abortJob
 // cannot reach it, so the removal waits for the enqueue's wait to abort it.
+//
+// It checks du.Done() from two hooks, because each pins a different way that
+// guarantee can break and neither alone is both sound and complete:
+//
+//   - removeJobHook fires from RemoveJob's own goroutine, once withdraw
+//     returns. It catches a withdraw that returns before du has stopped for
+//     any reason reachable from RemoveJob's side, including a step ended
+//     before the DirectUnpack wait ever begins. But withdraw returning is
+//     not RemoveJob's next line: dispatcher.Cancel, postProcessor.Cancel and
+//     checkpointer.Prune run first, and that is real time for the
+//     DirectUnpack-wait goroutine to finish stopping du for real even when
+//     its own endStep call ran before its own awaitDirectUnpackOrAbort call —
+//     which is the one bug this signal cannot be trusted to catch, since
+//     catching it is a race against unrelated work rather than against the
+//     bug itself.
+//   - directUnpackWaitEndHook fires from the DirectUnpack-wait goroutine
+//     itself, immediately after its own endStep call — the same goroutine
+//     that runs awaitDirectUnpackOrAbort, so du.Done() reflects only that
+//     goroutine's two statements in whatever order they actually ran, with no
+//     other goroutine's timing involved. That makes it deterministic for the
+//     bug removeJobHook cannot reliably catch, but it says nothing about a
+//     step ended earlier, outside this goroutine, before either statement
+//     runs — removeJobHook is the only signal for that.
 func TestRemoveJob_WaitsForTheDirectUnpackToStop(t *testing.T) {
 	t.Parallel()
 	stage := finishedStage()
 	application, j := launchedAppAt(t, stage, job.Extracting)
 	id := j.ID()
 	du := waitingDirectUnpack(t, application, id)
-	running := make(chan bool, 1)
+	fromRemoveJob := make(chan bool, 1)
 	application.removeJobHook = func(string) {
 		select {
 		case <-du.Done():
-			running <- false
+			fromRemoveJob <- false
 		default:
-			running <- true
+			fromRemoveJob <- true
+		}
+	}
+	fromWaitEnd := make(chan bool, 1)
+	application.directUnpackWaitEndHook = func(string) {
+		select {
+		case <-du.Done():
+			fromWaitEnd <- false
+		default:
+			fromWaitEnd <- true
 		}
 	}
 
 	application.maybeFinalize(id, "")
 	removeWithinBudget(t, application, id)
-	if <-running {
-		t.Error("RemoveJob went on to its cleanup while the DirectUnpacker was still running")
+	select {
+	case stillRunning := <-fromRemoveJob:
+		if stillRunning {
+			t.Error("RemoveJob went on to its cleanup while the DirectUnpacker was still running")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RemoveJob never reached its cleanup")
+	}
+	select {
+	case stillRunning := <-fromWaitEnd:
+		if stillRunning {
+			t.Error("the wait step ended while the DirectUnpacker was still running")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the DirectUnpack wait step never ended")
 	}
 }
 
