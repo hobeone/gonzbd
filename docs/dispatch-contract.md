@@ -356,7 +356,8 @@ not a second translation.
 obligations:
 
 - **`Load(ctx) ([]Persisted, error)`** — read the whole queue once, at
-  `Dispatcher.Start`.
+  `Dispatcher.Start` (or `Dispatcher.StartWith`, which runs one caller-supplied
+  step after the restore and before the ticker launches).
 - **`Save(ctx, Persisted) error`** and **`Delete(ctx, id) error`** — write a
   job's row synchronously in `Dispatcher.Add` before `Add` returns (while
   `snapshotOrder` withholds the unwritten entry from `tick` via `d.written`) and

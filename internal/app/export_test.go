@@ -316,3 +316,18 @@ func WriteJobManifest(adminDir string, j *job.Job) error {
 func ManifestPath(adminDir, jobID string) (string, error) {
 	return manifestPath(adminDir, jobID)
 }
+
+// ResumeFunc is the resume sweep's per-file seam as a function, so the
+// external test package can wrap it without naming fileResumer.
+type ResumeFunc func(ctx context.Context, jobID string, fileIdx int32, path string) (durability.ResumeResult, error)
+
+// Resume calls f.
+func (f ResumeFunc) Resume(ctx context.Context, jobID string, fileIdx int32, path string) (durability.ResumeResult, error) {
+	return f(ctx, jobID, fileIdx, path)
+}
+
+// WrapResumer replaces the resume sweep's per-file resumer with wrap applied to
+// the current one. Call it before Start.
+func (a *Application) WrapResumer(wrap func(next ResumeFunc) ResumeFunc) {
+	a.resumer = wrap(a.resumer.Resume)
+}

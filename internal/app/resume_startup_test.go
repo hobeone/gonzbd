@@ -66,6 +66,7 @@ type resumeFixture struct {
 	path    string
 	msgIDs  [resumeArts]string
 	parts   [resumeArts][]byte
+	row     dispatch.Persisted
 }
 
 func newResumeFixture(t *testing.T) *resumeFixture {
@@ -140,6 +141,7 @@ func newResumeFixture(t *testing.T) *resumeFixture {
 		t.Fatalf("insert job_files: %v", err)
 	}
 
+	f.row = p
 	f.jobID = j.ID()
 	f.jobName = j.Name()
 	f.dir = filepath.Join(downloadDir, j.Name())
@@ -201,16 +203,26 @@ func (f *resumeFixture) stall(arts ...int) {
 // bounds are pinned far out of reach so no barrier runs during the test.
 func (f *resumeFixture) start(conns int) *app.Application {
 	f.t.Helper()
+	return f.startWith(conns, []postproc.Stage{noOpStage{}}, nil)
+}
+
+// startWith is start with the post-processing stages chosen by the caller, and
+// beforeStart run on the built application before Start is called.
+func (f *resumeFixture) startWith(conns int, stages []postproc.Stage, beforeStart func(*app.Application)) *app.Application {
+	f.t.Helper()
 	srvCfg := f.server.ServerConfig("resume", conns)
 	srvCfg.Timeout = 120 // a stall must outlast the assertions
 	a, err := app.New(testConfig(f.downloadDir, f.completeDir, f.adminDir, srvCfg),
 		f.repo,
-		app.WithPostProcStages([]postproc.Stage{noOpStage{}}),
+		app.WithPostProcStages(stages),
 		app.WithCheckpointInterval(time.Hour),
 		app.WithCheckpointBytes(1<<40),
 	)
 	if err != nil {
 		f.t.Fatalf("app.New: %v", err)
+	}
+	if beforeStart != nil {
+		beforeStart(a)
 	}
 	ctx, cancel := context.WithCancel(f.t.Context())
 	f.t.Cleanup(func() {

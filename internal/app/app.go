@@ -1337,16 +1337,15 @@ func (app *Application) Start(ctx context.Context) error {
 	if app.startedTransitionHook != nil {
 		app.startedTransitionHook()
 	}
+	// The resume sweep runs inside the dispatcher's start, between restoring
+	// the registry and the first tick. resumeAllJobs has that placement's
+	// argument.
 	if app.dispatcher != nil {
-		if err := app.dispatcher.Start(app.ctx); err != nil {
+		if err := app.dispatcher.StartWith(app.ctx, app.resumeAllJobs); err != nil {
 			return fmt.Errorf("app: start dispatcher: %w", err)
 		}
 	}
 	if err := app.assembler.Start(app.ctx); err != nil {
-		return err
-	}
-	if err := app.resumeAllJobs(app.ctx); err != nil {
-		_ = app.assembler.Stop()
 		return err
 	}
 	// Snapshot app.downloader under app.mu once and reuse it below. started

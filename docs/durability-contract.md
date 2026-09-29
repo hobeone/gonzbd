@@ -1235,10 +1235,14 @@ silly-rename because a parked job does not reach post-processing.
 
 ## Restart
 
-`Application.resumeAllJobs` runs **once, synchronously, inside `Start`** — after
-`queue.Load` and **before the downloader can dispatch**. The ordering is the whole
-point: a seed that lands after dispatch has begun still marks the right articles
-done, but the request for them is already on the wire.
+`Application.resumeAllJobs` runs **once, synchronously, inside `Start`** — as
+the `beforeFirstTick` step of `Dispatcher.StartWith`, after the dispatcher has
+restored every row and **before its first tick**, the assembler's start, and the
+downloader's first dispatch. The ordering is the whole point: a seed that lands
+after dispatch has begun still marks the right articles done, but the request
+for them is already on the wire. And a tick can move a job restored at
+`Fetching{next: Assessing}` to `Assessing`, out of the sweep's bound, before the
+stranded-file repair has run for it.
 
 For each job it sweeps, per file:
 

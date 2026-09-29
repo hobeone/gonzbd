@@ -20,7 +20,8 @@ type methodInfo struct {
 // but deliberately do not hold the lock across the closure callback (or are
 // otherwise excluded from closureLockMethods), with the mandatory reason.
 var closureMethodExclusions = map[string]string{
-	"Occupy": "d.mu is acquired only to increment and decrement occupancy refcounts; it is released before fn(occupyCtx) is invoked and re-acquired in defer",
+	"Occupy":    "d.mu is acquired only to increment and decrement occupancy refcounts; it is released before fn(occupyCtx) is invoked and re-acquired in defer",
+	"StartWith": "d.mu guards only the started/stopped latches and is released before beforeFirstTick(ctx) is invoked; the step runs unlocked, like restore",
 }
 
 // TestClosureLockMethods_MatchEnumeration asserts that closureLockMethods in

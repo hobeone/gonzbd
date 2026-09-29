@@ -348,6 +348,31 @@ func (d *Dispatcher) Tick(ctx context.Context) {
 // matches net/http.Server, whose Shutdown is documented as making the server
 // unusable for future calls.
 func (d *Dispatcher) Start(ctx context.Context) error {
+	return d.StartWith(ctx, nil)
+}
+
+// StartWith is Start with one step between restoring the registry and the
+// first tick: beforeFirstTick, when non-nil, runs synchronously after every
+// stored row is registered and before the ticker goroutine launches.
+//
+// It exists for work that must see each restored job at the position it was
+// persisted at. A tick moves a job restored with a verdict already recorded —
+// Advance takes Fetching{next: Assessing} to Assessing whenever the job is
+// not gated and a compute slot is free — and the ticker's first pass runs at
+// once, because restore's registrations prime the wake. A caller that ran the
+// same step after Start returned would be racing that pass rather than
+// preceding it.
+//
+// Nothing ticks while it runs: `go d.run(ctx)` is below it in this function.
+// `git grep -n 'd\.tick(' -- 'internal/dispatch/*.go' ':!*_test.go'` returns
+// 2 lines, run and Tick, and Tick has no production caller. A door that kicks
+// the ticker during it — Add, PauseJob, AdvanceFrom — only primes the wake,
+// so its pass runs once the ticker starts.
+//
+// An error from it fails Start exactly as a failed restore does — the ticker
+// never launches and a later Stop returns — except that the registered rows
+// stay registered, since restore's rollback covers only its own failure.
+func (d *Dispatcher) StartWith(ctx context.Context, beforeFirstTick func(context.Context) error) error {
 	d.mu.Lock()
 	if d.stopped {
 		d.mu.Unlock()
@@ -361,7 +386,11 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	d.ctx, d.cancel = context.WithCancel(ctx)
 	d.mu.Unlock()
 
-	if err := d.restore(ctx); err != nil {
+	err := d.restore(ctx)
+	if err == nil && beforeFirstTick != nil {
+		err = beforeFirstTick(ctx)
+	}
+	if err != nil {
 		// The goroutine never launches on this path, so run's deferred
 		// close(d.done) never runs. Leaving d.started true here would make a
 		// LATER Stop() read wasStarted true, close d.stop, and then block
@@ -371,8 +400,9 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 		//
 		// Clearing started is not enough for a Stop that is ALREADY waiting.
 		// restore does Store I/O and D-B9 forbids holding d.mu across it, so
-		// the whole of restore runs unlocked and a concurrent Stop can pass
-		// through its own critical section in that window: it reads
+		// the whole of restore runs unlocked — as does beforeFirstTick, which
+		// is the caller's code — and a concurrent Stop can pass through its
+		// own critical section in that window: it reads
 		// wasStarted true (this Start set it), latches stopped, closes d.stop
 		// and blocks on <-d.done. Nothing else will ever close d.done. So
 		// this path closes it when — and only when — it observes that latch.
@@ -386,7 +416,7 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 		//     succeeding-restore path below closes d.done when it finds
 		//     stopped latched — so "restore returned nil" no longer implies
 		//     run was launched. They stay disjoint: this branch runs only on
-		//     a non-nil restore and that one only on a nil restore, and that
+		//     a non-nil err and that one only on a nil err, and that
 		//     one returns BEFORE `go d.run(ctx)` when it closes. Start
 		//     therefore takes exactly one of the three per call.
 		//  2. This branch cannot run twice. stopped is a one-way latch (Stop
@@ -410,10 +440,11 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 		return fmt.Errorf("dispatch: Start: %w", err)
 	}
 
-	// restore ran unlocked, so a Stop can have landed inside it. Without this
-	// check Start would launch run and return nil for a Dispatcher that is
-	// already stopped — naming a success that did not happen, and handing run
-	// a d.stop that is ALREADY closed. That last part is the sharp end: Add's
+	// restore and beforeFirstTick ran unlocked, so a Stop can have landed
+	// inside either. Without this check Start would launch run and return nil
+	// for a Dispatcher that is already stopped — naming a success that did
+	// not happen, and handing run a d.stop that is ALREADY closed. That last
+	// part is the sharp end: Add's
 	// kick may have primed d.wake, and run's select would then have two ready
 	// cases, which Go chooses between uniformly at random. It could take the
 	// wake, tick, and launch workers after shutdown.
@@ -644,9 +675,10 @@ func (d *Dispatcher) Stop() error {
 
 // restore registers everything the store holds, before the first tick.
 //
-// It runs synchronously inside Start, before the ticker goroutine launches —
-// `go d.run(ctx)` is Start's next line once this call succeeds — so it needs
-// no locking against a concurrent tick: there is not one yet.
+// It runs synchronously inside StartWith, before the ticker goroutine
+// launches — `go d.run(ctx)` follows it there, after beforeFirstTick and the
+// stop check — so it needs no locking against a concurrent tick: there is not
+// one yet.
 //
 // Every job comes back holding nothing, whatever position it was persisted
 // at. The pools are process-local: there is no lease or slot from a previous

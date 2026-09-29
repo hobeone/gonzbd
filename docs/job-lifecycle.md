@@ -1192,21 +1192,26 @@ about what a downloader has in flight, and nothing that survived a restart is.
 
 ### The startup sweep
 
-`Application.resumeAllJobs` runs once, synchronously, inside `Start` — after
-the queue is loaded and **before** the downloader dispatches. It stats each
+`Application.resumeAllJobs` runs once, synchronously, inside `Start` — as the
+`beforeFirstTick` step of `Dispatcher.StartWith`, after the dispatcher restores
+the queue and **before** its first tick and the downloader's first dispatch. It
+stats each
 downloading job's files, has `durability.Resumer` **delete** the runs of any
 file shorter than they claim, and installs what survives through
 `Job.ReplaceFromRuns` — which clears a bit no surviving run covers as well as
 setting the ones that are covered. The restored state is what the runs said
 before the stat; the sweep's finding supersedes it.
 
-The ordering is load-bearing twice over, and only the first half is about
+The ordering is load-bearing three times over, and only the first is about
 re-fetching. A seed that lands after dispatch has begun still marks the right
-articles done, but the request is already on the wire. And the gate itself
+articles done, but the request is already on the wire. The gate itself
 depends on it: `Resumer` compares a file's size against what its runs claim, so
 if the assembler had already re-created and pre-allocated a deleted partial,
 that comparison would run against a file of zeros and pass. Nothing inside
 `Resumer` can notice, so moving the sweep later breaks the guarantee silently.
+And the bound below reads each job at its restored position: a tick moves a job
+restored at `Fetching{next: Assessing}` to `Assessing`, so a sweep racing the
+ticker could skip the stranded-file repair that job still needs.
 
 **It is bounded to jobs at `Fetching`**, and that word is the guard rather than
 a description of it. In any other position something other than the assembler
