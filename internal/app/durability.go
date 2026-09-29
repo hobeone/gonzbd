@@ -1382,10 +1382,12 @@ func (app *Application) shutdownCheckpoint() {
 // (reconcileBeforeFirstTick), so a duplicate it removes is never routed
 // onward.
 //
-// A job it cannot establish either way stays queued, and the tick routes it
-// like any other. Only history.ErrNotFound establishes that the job is not in
-// history; a failed lookup is logged and the job is left alone, with its
-// manifest and rows, for the next startup to ask about again.
+// Only history.ErrNotFound establishes that the job is not in history, and
+// the tick then routes it like any other. A failed lookup establishes
+// nothing, so the job is paused with an operational error rather than
+// routed: a tick would otherwise post-process a job that may already be
+// filed, and its finalize would try to file it again. The pause keeps its
+// manifest and rows, and lasts until an operator resumes it.
 //
 // Its rows and manifest go through reclaim, which keeps a FAILED entry's
 // durable_runs for a retry the way every departure does.
@@ -1402,11 +1404,9 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 	if err != nil {
 		// ErrNotFound and "the lookup failed" are different answers. A
 		// timeout, a lock or an I/O error is the absence of knowledge, so
-		// nothing is deleted on it.
+		// nothing is deleted on it, and nothing is routed on it either.
 		if !errors.Is(err, history.ErrNotFound) {
-			app.log.Error("history lookup failed; this job may already be filed, "+
-				"and it stays queued until a later startup can tell",
-				"job", jobID, "err", err)
+			app.holdUnreconciledJob(jobID, err)
 		}
 		return
 	}
@@ -1447,6 +1447,27 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	app.reclaim(delCtx, jobID)
 	delCancel()
+}
+
+// holdUnreconciledJob pauses a job whose history lookup failed, so that no
+// tick routes it onward, and records why on the job for the operator.
+//
+// A PauseJob error leaves the job unpaused. The one it can return for a
+// registered job is ErrIntentLatched, and a cancelled job is not routed onward
+// either.
+func (app *Application) holdUnreconciledJob(jobID string, lookupErr error) {
+	app.log.Error("history lookup failed; pausing this job, which may already be filed, "+
+		"until an operator resumes it", "job", jobID, "err", lookupErr)
+	if app.dispatcher == nil {
+		return
+	}
+	if err := app.dispatcher.PauseJob(jobID); err != nil {
+		app.log.Error("failed to pause a job whose history lookup failed",
+			"job", jobID, "err", err)
+		return
+	}
+	_ = app.dispatcher.SetOperationalError(jobID, "history lookup failed at startup: "+
+		"this job may already be in history; resume it only once it is known not to be")
 }
 
 // reclaim applies durability's reclaim rule to the named jobs, then unlinks

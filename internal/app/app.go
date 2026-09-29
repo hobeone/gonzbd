@@ -1725,7 +1725,8 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 	// fourth path from being added without one.
 	//
 	// Before MarkFileComplete, so the value is on the progress record by the
-	// time maybeFinalize below can hand the job to post-processing.
+	// time the download-complete report below lets the job reach
+	// post-processing through Assessing.
 	app.recordAssembledCRC(ctx, fc.JobID, fc.FileIdx)
 	if app.dispatcher != nil {
 		j, ok := app.dispatcher.Job(fc.JobID)

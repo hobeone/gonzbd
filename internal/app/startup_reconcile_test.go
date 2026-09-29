@@ -9,6 +9,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/types"
 )
@@ -22,7 +23,14 @@ func TestReconcileBeforeFirstTick_StopsOnACancelledContext(t *testing.T) {
 		t.Errorf("no dispatcher: err = %v, want nil", err)
 	}
 
-	application, err := New(testConfigInternal(t, t.TempDir()), nil)
+	adminDir := t.TempDir()
+	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+	application, err := New(testConfigInternal(t, adminDir), repo)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -38,10 +46,26 @@ func TestReconcileBeforeFirstTick_StopsOnACancelledContext(t *testing.T) {
 	if err := application.Dispatcher().Add(t.Context(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
+	// Filed in history, so a reconcile that reached the job would act on it:
+	// drop it, or, since its lookup runs on the cancelled context and fails,
+	// pause it.
+	if err := repo.Add(t.Context(), history.Entry{
+		NzoID: j.ID(), Name: "cancelled",
+		Status: string(constants.StatusCompleted), Completed: time.Now(),
+	}, nil); err != nil {
+		t.Fatalf("seed history entry: %v", err)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if err := application.reconcileBeforeFirstTick(ctx); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled context: err = %v, want context.Canceled", err)
+	}
+	if _, ok := application.Dispatcher().Job(j.ID()); !ok {
+		t.Fatal("a cancelled reconcile dropped the job")
+	}
+	if got := j.Intent(); got != job.IntentRun {
+		t.Errorf("intent = %s after a cancelled reconcile, want %s: the step reached the job",
+			got, job.IntentRun)
 	}
 }
 

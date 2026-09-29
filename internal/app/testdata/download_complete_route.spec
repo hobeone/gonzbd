@@ -94,3 +94,27 @@ file internal/app/startup_reconcile.go
 				_ = fmt.Errorf("app: startup reconciliation aborted: %w", err)
 			}
 --- end
+
+[a cancelled startup reaches one more job before it stops]
+file internal/app/startup_reconcile.go
+--- anchor
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("app: startup reconciliation aborted: %w", err)
+			}
+			app.dropJobAlreadyInHistory(ctx, row.ID)
+--- replace
+			app.dropJobAlreadyInHistory(ctx, row.ID)
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("app: startup reconciliation aborted: %w", err)
+			}
+--- end
+
+[an application with no dispatcher is reconciled anyway]
+file internal/app/startup_reconcile.go
+--- anchor
+	if app.dispatcher != nil {
+		for _, row := range app.dispatcher.List() {
+--- replace
+	if true {
+		for _, row := range app.dispatcher.List() {
+--- end

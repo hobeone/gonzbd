@@ -616,8 +616,16 @@ func jobFilesCount(t *testing.T, application *Application, jobID string) int {
 // repository.
 func TestDropJobAlreadyInHistory_DoesNothingWithoutAHistoryDatabase(t *testing.T) {
 	t.Parallel()
-	application := &Application{log: slog.New(slog.DiscardHandler)}
-	application.dropJobAlreadyInHistory(t.Context(), "job-a")
+	for name, repo := range map[string]*history.Repository{
+		"no repository":           nil,
+		"repository, no database": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			application := &Application{historyRepo: repo, log: slog.New(slog.DiscardHandler)}
+			application.dropJobAlreadyInHistory(t.Context(), "job-a")
+		})
+	}
 }
 
 // ---------- settings ----------
@@ -1555,8 +1563,9 @@ func TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails(t *
 }
 
 // TestDropJobAlreadyInHistory_KeepsTheJobWhenTheHistoryLookupFails pins that a
-// lookup which establishes nothing deletes nothing: the job, its manifest and
-// its rows stay, and the next startup asks again.
+// lookup which establishes nothing deletes nothing and routes nothing: the
+// job, its manifest and its rows stay, and the job is paused with an
+// operational error so that no tick post-processes it.
 func TestDropJobAlreadyInHistory_KeepsTheJobWhenTheHistoryLookupFails(t *testing.T) {
 	t.Parallel()
 	application, repo, adminDir := newLifecycleTestApp(t)
@@ -1591,6 +1600,45 @@ func TestDropJobAlreadyInHistory_KeepsTheJobWhenTheHistoryLookupFails(t *testing
 	}
 	if _, ok := application.Dispatcher().Job(j.ID()); !ok {
 		t.Error("the job left the dispatcher on a lookup that established nothing")
+	}
+	if got := j.Intent(); got != job.IntentPause {
+		t.Errorf("intent = %s after a failed lookup, want %s: the first tick would "+
+			"post-process a job that may already be filed", got, job.IntentPause)
+	}
+	row, ok := application.Dispatcher().Row(j.ID())
+	if !ok {
+		t.Fatal("Row: job not registered")
+	}
+	if !strings.Contains(row.Header.OperationalError, "history lookup failed") {
+		t.Errorf("operational error = %q, want it to say the history lookup failed",
+			row.Header.OperationalError)
+	}
+}
+
+// TestHoldUnreconciledJob_LeavesACancelledJobAlone pins the two cases the
+// hold cannot pause: with no dispatcher there is nothing to pause, and a
+// cancelled job's intent is latched. Neither is routed onward, and a job the
+// hold did not pause gets no note saying it did.
+func TestHoldUnreconciledJob_LeavesACancelledJobAlone(t *testing.T) {
+	t.Parallel()
+	(&Application{log: slog.New(slog.DiscardHandler)}).holdUnreconciledJob("job-a", errors.New("lookup failed"))
+
+	application, _, _ := newLifecycleTestApp(t)
+	j, _ := removeJobFixture(t, application, "cancelledhold")
+	if err := application.Dispatcher().Cancel(j.ID()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	application.holdUnreconciledJob(j.ID(), errors.New("lookup failed"))
+	if got := j.Intent(); got != job.IntentCancel {
+		t.Errorf("intent = %s, want %s", got, job.IntentCancel)
+	}
+	row, ok := application.Dispatcher().Row(j.ID())
+	if !ok {
+		t.Fatal("Row: job not registered")
+	}
+	if row.Header.OperationalError != "" {
+		t.Errorf("operational error = %q on a job the hold could not pause, want none",
+			row.Header.OperationalError)
 	}
 }
 
