@@ -3,6 +3,9 @@ package par2
 import (
 	"bytes"
 	"context"
+	"crypto/md5" //nolint:gosec // par2 spec mandates MD5, not security-sensitive
+	"encoding/binary"
+	"hash/crc32"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -522,5 +525,183 @@ func TestGoRepair_RepairNotPossible(t *testing.T) {
 	}
 	if res.BlocksNeeded == 0 {
 		t.Error("expected BlocksNeeded > 0")
+	}
+}
+
+// buildMinimalPar2Index writes a par2 index (Main + FileDesc + IFSC packets
+// only, no recovery volume) protecting one file of content, sliced at
+// sliceSize bytes. It exists so the regression test below controls the
+// slice size and payload precisely, rather than depending on the shared
+// data.bin fixture's fixed 4065-byte size, which does not evenly divide its
+// own slice size and so exercises a second, unrelated candidate-file
+// last-partial-block quirk in par2engine's scanner. len(content) must be an
+// exact multiple of sliceSize.
+func buildMinimalPar2Index(t *testing.T, dir, filename string, content []byte, sliceSize uint64) string {
+	t.Helper()
+	if len(content) == 0 || uint64(len(content))%sliceSize != 0 {
+		t.Fatalf("buildMinimalPar2Index: len(content)=%d must be a nonzero multiple of sliceSize=%d", len(content), sliceSize)
+	}
+
+	var setID [16]byte
+	setID[0] = 0x51
+
+	hash16k := hash16kOf(content)
+	fullHash := md5.Sum(content) //nolint:gosec // par2 mandates MD5, not security-sensitive
+	byteCount := uint64(len(content))
+
+	// The FileID is not caller-chosen: par2engine's ParseFileDescPacket
+	// recomputes it from (Hash16k, ByteCount, filename) and rejects the
+	// packet if it disagrees — the real PAR2 spec binding gonzbd's own
+	// parser (parser.go) does not enforce.
+	idHash := md5.New() //nolint:gosec // par2 spec FileID derivation, not security-sensitive
+	idHash.Write(hash16k[:])
+	var byteCountLE [8]byte
+	binary.LittleEndian.PutUint64(byteCountLE[:], byteCount)
+	idHash.Write(byteCountLE[:])
+	idHash.Write([]byte(filename))
+	var fileID [16]byte
+	copy(fileID[:], idHash.Sum(nil))
+
+	ifscSlices := make([]ifscSlice, 0, len(content)/int(sliceSize))
+	for off := 0; off < len(content); off += int(sliceSize) {
+		slice := content[off : off+int(sliceSize)]
+		ifscSlices = append(ifscSlices, ifscSlice{
+			md5Hash: md5.Sum(slice), //nolint:gosec // par2 spec, not security-sensitive
+			crc32:   crc32.ChecksumIEEE(slice),
+		})
+	}
+
+	mainPkt := buildPacket(setID, typeMain, buildMainBodyWithCount(sliceSize, 1, fileID))
+	fileDescPkt := buildPacket(setID, typeFileDesc, buildFileDescBody(fileID, fullHash, hash16k, byteCount, filename))
+	ifscPkt := buildPacket(setID, typeIFSC, buildIFSCBody(fileID, ifscSlices))
+
+	pkts := make([]byte, 0, len(mainPkt)+len(fileDescPkt)+len(ifscPkt))
+	pkts = append(pkts, mainPkt...)
+	pkts = append(pkts, fileDescPkt...)
+	pkts = append(pkts, ifscPkt...)
+
+	path := filepath.Join(dir, "set.par2")
+	if err := os.WriteFile(path, pkts, 0o600); err != nil {
+		t.Fatalf("write par2 index: %v", err)
+	}
+	return path
+}
+
+// TestGoRepair_MissingFileFoundElsewhere_DoesNotReportSuccess pins the fix for
+// a par2engine bug report: its block scanner locates a missing protected
+// file's shards wherever their bytes happen to sit in another on-disk file
+// (e.g. a stored, uncompressed archive member). Its own detectRenameCandidate
+// correctly declines to treat that as a same-file rename, because the shards
+// are not found at the candidate's own offset 0, so the file stays Missing —
+// but the shard locations it already recorded are still counted as usable
+// data in the final tally, so RepairNeeded() is false and GoRepair reports
+// Success=true even though the protected file was never written to disk.
+func TestGoRepair_MissingFileFoundElsewhere_DoesNotReportSuccess(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	const sliceSize = 16
+	payload := bytes.Repeat([]byte{0x37}, sliceSize*3) // 3 whole slices, no partial tail
+	mainFile := buildMinimalPar2Index(t, dir, "missing.bin", payload, sliceSize)
+
+	// "missing.bin" is never written under its own name — it is genuinely
+	// missing — but its exact bytes sit inside another on-disk file, preceded
+	// by a header, mimicking a stored (uncompressed) archive member whose
+	// entry starts partway through the container. None of its slices land at
+	// their "missing.bin"-relative offset 0, so detectRenameCandidate
+	// correctly refuses to call this a rename.
+	container := append([]byte("HEADER-NOT-PART-OF-PAYLOAD-"), payload...)
+	if err := os.WriteFile(filepath.Join(dir, "container.bin"), container, 0o600); err != nil {
+		t.Fatalf("write container.bin: %v", err)
+	}
+
+	res, err := GoRepair(context.Background(), discardLogger(), mainFile, dir, nil)
+	if err != nil {
+		t.Fatalf("GoRepair: %v", err)
+	}
+	if res.Success {
+		t.Errorf("Success = true; want false — missing.bin does not exist on disk\nOutput: %s", res.Output)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "missing.bin")); statErr == nil {
+		t.Error("missing.bin exists on disk but nothing should have created it")
+	}
+}
+
+// ---------- verifyProtectedFilesExist ----------
+
+// TestVerifyProtectedFilesExist_AllPresent verifies that the post-repair
+// existence check leaves a Success result untouched when every protected
+// file is actually on disk.
+func TestVerifyProtectedFilesExist_AllPresent(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	const sliceSize = 16
+	payload := bytes.Repeat([]byte{0x11}, sliceSize*2)
+	mainFile := buildMinimalPar2Index(t, dir, "present.bin", payload, sliceSize)
+	if err := os.WriteFile(filepath.Join(dir, "present.bin"), payload, 0o600); err != nil {
+		t.Fatalf("write present.bin: %v", err)
+	}
+
+	res := RepairResult{Success: true}
+	if err := verifyProtectedFilesExist(&res, mainFile, nil); err != nil {
+		t.Fatalf("verifyProtectedFilesExist: %v", err)
+	}
+	if !res.Success {
+		t.Error("Success flipped to false though the protected file exists on disk")
+	}
+	if res.Output != "" {
+		t.Errorf("Output = %q; want no diagnostic appended when nothing is missing", res.Output)
+	}
+}
+
+// TestVerifyProtectedFilesExist_MissingFile_FlipsSuccessFalse is the direct
+// unit test for the guard TestGoRepair_MissingFileFoundElsewhere_DoesNotReportSuccess
+// pins end-to-end through GoRepair: given a RepairResult that already claims
+// Success, a protected file absent from disk must flip it back to false and
+// name the file in both Output and the onLine callback.
+func TestVerifyProtectedFilesExist_MissingFile_FlipsSuccessFalse(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	const sliceSize = 16
+	payload := bytes.Repeat([]byte{0x22}, sliceSize*2)
+	mainFile := buildMinimalPar2Index(t, dir, "absent.bin", payload, sliceSize)
+	// absent.bin is deliberately never written to dir.
+
+	var lines []string
+	res := RepairResult{Success: true}
+	if err := verifyProtectedFilesExist(&res, mainFile, func(l string) { lines = append(lines, l) }); err != nil {
+		t.Fatalf("verifyProtectedFilesExist: %v", err)
+	}
+	if res.Success {
+		t.Error("Success stayed true though the protected file is missing from disk")
+	}
+	if !strings.Contains(res.Output, "absent.bin") {
+		t.Errorf("Output = %q; want it to name the missing file", res.Output)
+	}
+	if len(lines) == 0 {
+		t.Error("onLine was never called with the missing-file diagnostic")
+	}
+}
+
+// TestVerifyProtectedFilesExist_ParseFailure_LeavesSuccessUntouched verifies
+// that an index the check cannot even read reports an error without
+// asserting anything about the RepairResult it was handed — "the check could
+// not run" is a different condition from "the check ran and found a file
+// absent", and only the second should ever flip Success.
+func TestVerifyProtectedFilesExist_ParseFailure_LeavesSuccessUntouched(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	missingIndex := filepath.Join(dir, "does-not-exist.par2")
+
+	res := RepairResult{Success: true}
+	if err := verifyProtectedFilesExist(&res, missingIndex, nil); err == nil {
+		t.Fatal("verifyProtectedFilesExist: expected an error for an unreadable par2 index")
+	}
+	if !res.Success {
+		t.Error("Success was flipped to false by a parse failure; it should have been left untouched")
 	}
 }
