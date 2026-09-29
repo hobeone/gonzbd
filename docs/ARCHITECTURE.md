@@ -4,7 +4,7 @@ This document provides a detailed overview of the architecture, design, and impl
 
 ## Project Overview
 
-GoNZBD is designed as a long-running daemon that automates the Usenet download lifecycle: ingestion (NZB files), downloading (NNTP), decoding (yEnc), assembly, and post-processing. It emphasizes high performance, modern Go idioms, and a self-contained binary (including the web UI).
+GoNZBD is designed as a long-running daemon that automates the Usenet download lifecycle: ingestion (NZB files), downloading (NNTP), decoding (yEnc), assembly, and post-processing. It emphasizes high performance, modern Go idioms, and a self-contained binary (including the web UI). GoNZBD is POSIX-only (Linux, macOS, FreeBSD); Windows is not a supported target.
 
 ---
 

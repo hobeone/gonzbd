@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/testutil"
@@ -28,9 +27,6 @@ func writeScript(t *testing.T, path string, content []byte) {
 // contains "Cannot create" AND "Attempting to correct" AND files were
 // extracted, the error is downgraded and res.Err is cleared.
 func TestUnRAR_CannotCreateAutoFix(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -87,9 +83,6 @@ exit 1
 // TestUnRAR_CannotCreateNoAutoFix verifies that "Cannot create"
 // WITHOUT "Attempting to correct" keeps the error.
 func TestUnRAR_CannotCreateNoAutoFix(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -122,9 +115,6 @@ exit 1
 }
 
 func TestUnRAR_CannotCreateNoAutoFix_ZeroFiles(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 
 	dir := t.TempDir()

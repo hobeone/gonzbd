@@ -20,9 +20,7 @@ import (
 // the filesystem that contains dir. It uses syscall.Statfs, which is available
 // on Linux, macOS, and other Unix-like systems.
 //
-// Windows is not implemented — this step is Linux/macOS-only. A build-tagged
-// Windows implementation (using syscall.GetDiskFreeSpaceEx) can be added later
-// without changing the API.
+// GoNZBD is POSIX-only, so this step needs no OS-constrained variant.
 //
 // syscall.Statfs has no timeout of its own and can block in an
 // uninterruptible sleep for as long as a stuck network mount (NFS/SMB)

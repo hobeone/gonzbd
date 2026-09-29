@@ -10,8 +10,8 @@ import (
 )
 
 // MoveFile moves src to dst. If os.Rename fails with a cross-device error
-// (EXDEV on Unix, ERROR_NOT_SAME_DEVICE on Windows), it falls back to
-// copy+chmod+remove, preserving the source file's permissions.
+// (EXDEV), it falls back to copy+chmod+remove, preserving the source
+// file's permissions.
 func MoveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
@@ -23,8 +23,7 @@ func MoveFile(src, dst string) error {
 }
 
 // IsCrossDeviceError reports whether err (or any error in its chain)
-// indicates a cross-device rename failure (EXDEV on Unix,
-// ERROR_NOT_SAME_DEVICE on Windows).
+// indicates a cross-device rename failure (EXDEV).
 func IsCrossDeviceError(err error) bool {
 	return errors.Is(err, crossDeviceErr())
 }

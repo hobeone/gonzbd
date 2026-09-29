@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -12,9 +11,6 @@ import (
 )
 
 func TestScriptStage_PathTraversalRejected(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 	job, _ := stageJob(t)
 
@@ -39,9 +35,6 @@ func TestScriptStage_PathTraversalRejected(t *testing.T) {
 }
 
 func TestScriptStage_SymlinkEscapeRejected(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 	job, _ := stageJob(t)
 
@@ -68,9 +61,6 @@ func TestScriptStage_SymlinkEscapeRejected(t *testing.T) {
 }
 
 func TestScriptStage_AbsolutePathRejected(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 	job, _ := stageJob(t)
 
@@ -90,9 +80,6 @@ func TestScriptStage_AbsolutePathRejected(t *testing.T) {
 }
 
 func TestScriptStage_EmptyScriptDirRejected(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 	job, _ := stageJob(t)
 
@@ -127,9 +114,6 @@ func TestScriptStage_CaseInsensitiveNoneAndDefault(t *testing.T) {
 // job.FailMsg is set so buildSummaryEntry records Status="Failed".
 // Without this, a failed script produces a "Completed" history entry.
 func TestScriptStage_CanFailFalse_SetsFailMsg(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 	job, _ := stageJob(t)
 
@@ -160,9 +144,6 @@ func TestScriptStage_CanFailFalse_SetsFailMsg(t *testing.T) {
 // ScriptCanFail is true and the script exits non-zero, job.FailMsg
 // is NOT set (the failure is swallowed as a warning).
 func TestScriptStage_CanFailTrue_NoFailMsg(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 	job, _ := stageJob(t)
 
@@ -192,9 +173,6 @@ func TestScriptStage_CanFailTrue_NoFailMsg(t *testing.T) {
 // buildHistoryEntry already reports for the same job (see
 // internal/app/history_helper.go).
 func TestScriptStage_BytesExcludesDiscardedPar2(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 
 	j := job.New("bytes-test", "bytes-test.nzb", job.Policy{})
@@ -247,9 +225,6 @@ func TestScriptStage_BytesExcludesDiscardedPar2(t *testing.T) {
 }
 
 func TestScriptStage_ValidScriptAllowed(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script test not portable to Windows")
-	}
 	t.Parallel()
 	job, _ := stageJob(t)
 

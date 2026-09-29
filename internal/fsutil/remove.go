@@ -82,7 +82,7 @@ func isBusyOrNotEmpty(err error) bool {
 }
 
 // RemoveAll is like os.RemoveAll, but implements a 2-tier protocol for
-// network filesystems (NFS, SMB) and Windows:
+// network filesystems (NFS, SMB):
 //  1. Retries up to 5 times with exponential backoff on EBUSY/ENOTEMPTY.
 //  2. If deletion still fails, checks if the remaining items are solely
 //     silly-rename files (.nfs*). If so, logs an informational warning and

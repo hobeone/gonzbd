@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -200,9 +199,6 @@ func TestRootedCreateTemp_MkdirAllFailure(t *testing.T) {
 // failure other than a name collision (fs.ErrExist) is returned immediately
 // rather than retried as if it were a collision.
 func TestRootedCreateTemp_OpenFileNonExistError(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not meaningful on windows")
-	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root bypasses permission checks")
 	}
