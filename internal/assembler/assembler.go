@@ -140,13 +140,11 @@ type FileInfo struct {
 	// additional sandbox checks.
 	Path string
 
-	// TotalParts is the total number of distinct articles expected for this file.
-	// When the assembler has counted TotalParts articles, it closes the file
-	// handle and fires OnFileComplete. A repeated ArtIdx is dropped without
-	// incrementing the counter. A duplicate offset — two articles claiming the
-	// same file range — is detected and the arriving article is rejected as
-	// permanently failed. TotalParts thus counts only articles the assembler
-	// will actually accept.
+	// TotalParts is the number of manifest segments in this file. Each segment
+	// counts toward it once, when it is accounted for: accepted, or resolved
+	// permanently failed (which includes the loser of two segments claiming one
+	// offset). A repeated ArtIdx is not counted again. When the count reaches
+	// TotalParts, the assembler closes the file handle and fires OnFileComplete.
 	TotalParts int
 
 	// ExpectedSize is the NZB's declared *encoded* byte count for this file
@@ -175,7 +173,7 @@ type Options struct {
 	FileInfo func(jobID string, fileIdx int) (FileInfo, error)
 
 	// OnFileComplete, if non-nil, is called on the worker goroutine when all
-	// TotalParts for a file have been written.
+	// TotalParts for a file have been accounted for.
 	//
 	// The handle is still OPEN at that point, and stays open until the caller
 	// releases it with CloseFile. That is the handoff durability.Barrier's
