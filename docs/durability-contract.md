@@ -945,7 +945,10 @@ row. This was #417.
 
 So `checkpointAllShare` returns the jobs it could **not** protect, and
 the reload loop calls `Job.ClearEmittedForReload(skipEmitted: true)` for each of
-those jobs, withholding their Emitted bits.
+those jobs, withholding their Emitted bits. A job admitted to
+post-processing gets no call at all: the downloader does not dispatch it, and
+un-failing its articles would change the figures its post-processing reads
+(`docs/post-processing-contract.md`).
 `checkpointJob`'s bool answers "does this job hold written-but-unacked articles
 that clearing Emitted would strand?" — which is not the same question as "did a
 barrier run": a job with no open files ran none and is still safe, while a job
@@ -1759,7 +1762,7 @@ articles or sparse regions.
   no `emitted` field (`internal/job/progress.go`), so nothing has to run for it
   to hold. `ClearEmittedForReload` is reached only from `ReloadDownloader`
   now — `git grep -n 'j\.ClearEmittedForReload(' -- '*.go' ':!*_test.go'` finds
-  1 line, `internal/app/reloader.go:257`. For the two things that clear an
+  1 line, `internal/app/reloader.go:262`. For the two things that clear an
   Emitted bit, and why neither is on the write-fault path, see
   `Options.OnArticlesUnwritten`'s comment in `internal/assembler/assembler.go`.
 

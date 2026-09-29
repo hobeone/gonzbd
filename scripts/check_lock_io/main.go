@@ -127,6 +127,7 @@ var closureLockMethods = map[string]bool{
 	"withLock":                 true,
 	"write":                    true,
 	"Handoff":                  true,
+	"unlessAdmitted":           true,
 }
 
 // jobClosureMethods specifies the closureLockMethods that execute under a
