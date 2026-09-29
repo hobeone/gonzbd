@@ -140,14 +140,13 @@ type FileInfo struct {
 	// additional sandbox checks.
 	Path string
 
-	// TotalParts is the total number of WriteRequests expected for this file.
-	// When the assembler has written TotalParts distinct requests, it closes
-	// the file handle and fires OnFileComplete.
-	//
-	// Duplicate offsets: the assembler trusts the caller not to submit the same
-	// offset twice. A duplicate increments the parts-written counter, causing it
-	// to overshoot TotalParts and suppressing the completion callback. The queue
-	// layer (Step 4.1) deduplicates via the article Done flag before enqueuing.
+	// TotalParts is the total number of distinct articles expected for this file.
+	// When the assembler has counted TotalParts articles, it closes the file
+	// handle and fires OnFileComplete. A repeated ArtIdx is dropped without
+	// incrementing the counter. A duplicate offset — two articles claiming the
+	// same file range — is detected and the arriving article is rejected as
+	// permanently failed. TotalParts thus counts only articles the assembler
+	// will actually accept.
 	TotalParts int
 
 	// ExpectedSize is the NZB's declared *encoded* byte count for this file
