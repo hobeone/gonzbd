@@ -76,9 +76,13 @@ single worker goroutine (`run`).
 - **An admitted job is not downloaded**: `maybeFinalize` moves no persisted
   position, so a job it hands over from `Fetching` — `Fail`, the hopeless
   callbacks, startup reconciliation, a retry — keeps a dispatchable row
-  (`IntentRun`, at or bound for `Fetching`) until the finalizer's `CancelJob`. The
-  downloader skips it anyway: `downloader.Options.HandedOff` is wired to the
-  admission record, and `enqueuePostProc` admits before it calls
+  (`IntentRun`, at or bound for `Fetching`) until the finalizer's `CancelJob`.
+  Startup reconciliation hands over only a complete job that has never run or
+  is at `Fetching` with no `Next`, chosen before the first tick
+  (`Application.startupHandOffs`). A job restored with its download-complete
+  report recorded reaches post-processing through `Assessing`, as a live one
+  does. The downloader skips an admitted job anyway:
+  `downloader.Options.HandedOff` is wired to the admission record, and `enqueuePostProc` admits before it calls
   `CloseJobHandles`. An article already in flight at the hand-off is dropped
   by the assembler's whole-job tombstone, which `CloseJobHandles` sets and
   `ForgetJob` clears for a retry. `TestFail_AJobInPostProcessingIsNotDispatched`
