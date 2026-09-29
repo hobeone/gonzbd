@@ -2315,6 +2315,12 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	if du == nil {
 		app.postProcAdmissions.endStep(j, wait)
 	}
+	// A job handed over before its download finished (Fail, a hopeless
+	// callback) gets no more files: the downloader skips an admitted job. Its
+	// unpacker would wait for a volume that never arrives, so it is aborted
+	// rather than awaited. Read after the admission, which is what stops the
+	// download.
+	downloadFinished := j.IsComplete()
 
 	enqueue := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
 		// Sealed now rather than taken from failMsg: an enqueuePostProc
@@ -2368,6 +2374,9 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			// on either so Wait() returns; skip dispatch on the first, since we
 			// are tearing down. The wait step ends only once du has stopped, so
 			// a withdrawing RemoveJob deletes nothing du is still writing.
+			if !downloadFinished {
+				du.Abort()
+			}
 			finished := awaitDirectUnpackOrAbort(app.ctx, removed, du)
 			app.postProcAdmissions.endStep(j, wait)
 			if app.directUnpackWaitEndHook != nil {

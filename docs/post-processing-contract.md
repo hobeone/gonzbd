@@ -87,7 +87,10 @@ single worker goroutine (`run`).
   `Job.ClearEmittedForReload` under `postProcAdmissions.unlessAdmitted`, so
   it neither un-fails the articles whose failed bytes the run and its history
   entry read, nor overlaps an admission that begins during the reload
-  (`TestReloadDownloader_LeavesAnAdmittedJobsProgressAlone`).
+  (`TestReloadDownloader_LeavesAnAdmittedJobsProgressAlone`). Since no more
+  files arrive for it, a job admitted before its download finished
+  (`Job.IsComplete` false) has its DirectUnpacker aborted rather than awaited;
+  see `docs/durability-contract.md` § "DirectUnpack streaming contract".
 - **Which copy's information wins**: a refused call hands nothing over. The
   admitted call keeps everything it gathered, including the DirectUnpack
   results, which `duOrch.collect` hands out only once. The history entry's

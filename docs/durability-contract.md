@@ -1715,7 +1715,14 @@ articles or sparse regions.
    RAR2/RAR3, and non-RAR files identified by filename go to post-processing.
 7. **Abort/kill**: `Abort()` sets `killed`, records failures for the current and
    queued sets, clears success results, and signals the reader goroutine. If
-   `run()` was never started it closes `done` directly.
+   `run()` was never started it closes `done` directly. `enqueuePostProc`
+   aborts the unpacker of a job handed to post-processing before its download
+   finished (`Job.IsComplete` false: `Application.Fail`, a hopeless
+   callback), because the downloader no longer fetches an admitted job and
+   `waitForVolume` would wait for its missing volumes forever. A job whose
+   download finished has every volume, so its unpacker is awaited
+   (`TestFail_FromFetching_AbortsTheDirectUnpack`,
+   `TestHandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults`).
 8. **Path traversal safety**: `extractEntries` opens an `os.Root` anchored at
    `extractDir` and writes every entry through it, so archive entries with `..`
    components, absolute paths, or symlinked path components cannot escape.

@@ -23,7 +23,9 @@ import (
 // appWorkers.Abort release the launch claim.
 var postProcStates = []job.State{job.Repairing, job.Extracting, job.Finalizing}
 
-// jobAt builds a one-file job whose attempt stands at state.
+// jobAt builds a one-file job whose attempt stands at state. Past Fetching its
+// file is Complete, as a job's are once it leaves Fetching; at Fetching it is
+// not, so the job's download is unfinished.
 func jobAt(t *testing.T, application *Application, name string, state job.State) (*job.Job, dispatch.Header) {
 	t.Helper()
 	parsed := &nzb.NZB{Files: []nzb.File{{
@@ -37,6 +39,12 @@ func jobAt(t *testing.T, application *Application, name string, state job.State)
 	}
 	if err := j.BeginAttempt(time.Now()); err != nil {
 		t.Fatalf("BeginAttempt: %v", err)
+	}
+	if state == job.Fetching {
+		return j, hdr
+	}
+	if err := j.MarkFileComplete(0); err != nil {
+		t.Fatalf("MarkFileComplete: %v", err)
 	}
 	step := func(s job.State) {
 		t.Helper()

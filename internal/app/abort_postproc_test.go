@@ -27,7 +27,8 @@ func (r holdingRunner) Run(_ context.Context, id string, _ job.State) {
 	r.launched <- id
 }
 
-// repairingJob builds a one-file job whose attempt stands at Repairing.
+// repairingJob builds a one-file job whose attempt stands at Repairing. Its
+// file is Complete, as a job's are once it leaves Fetching.
 func repairingJob(t *testing.T, application *Application, name string) (*job.Job, dispatch.Header) {
 	t.Helper()
 	parsed := &nzb.NZB{Files: []nzb.File{{
@@ -38,6 +39,9 @@ func repairingJob(t *testing.T, application *Application, name string) (*job.Job
 	j, hdr, err := BuildIngestJob(application.config, parsed, name+".nzb", types.FetchOptions{NzbName: name}, nil)
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	if err := j.MarkFileComplete(0); err != nil {
+		t.Fatalf("MarkFileComplete: %v", err)
 	}
 	if err := j.BeginAttempt(time.Now()); err != nil {
 		t.Fatalf("BeginAttempt: %v", err)
