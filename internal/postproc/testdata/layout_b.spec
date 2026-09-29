@@ -1,28 +1,22 @@
 pkg ./internal/postproc/
-run TestLayoutB_ArchiveExtractsDespitePar2NamingItsContents|TestLayoutB_DamagedArchiveFailsTheJob|TestQuickCheckStage_UnidentifiedNeedsEveryCondition|TestLayoutB_RepairOnlyJobKeepsRepair|TestLayoutA_ObfuscatedDamagedArchiveIsRepaired|TestQuickCheckStage_IdentifiedEntryStaysDamaged|TestArchivesHoldEntries_ScanErrorIsNotHeld|TestArchivesHoldEntries_ListingErrorIsNotHeld|TestRepairStage_DeclinesWhenQuickCheckUnidentified|TestRepairStage_HandlesEveryQuickCheckOutcome
+run TestLayoutB_ArchiveExtractsDespitePar2NamingItsContents|TestLayoutB_DamagedArchiveFailsTheJob|TestQuickCheckStage_UnidentifiedNeedsEveryCondition|TestLayoutB_RepairOnlyJobKeepsRepair|TestLayoutA_ObfuscatedDamagedArchiveIsRepaired|TestQuickCheckStage_IdentifiedEntryStaysDamaged|TestHeldArchiveMembers_ScanErrorIsNotHeld|TestHeldArchiveMembers_ListingErrorIsNotHeld|TestRepairStage_DeclinesWhenQuickCheckUnidentified|TestRepairStage_HandlesEveryQuickCheckOutcome
 
 # The classification itself. Without it a Layout B post is Damaged, repair
 # runs against files unpack has not produced, and ParError skips unpack.
 [the unidentified classification is neutered]
 file internal/postproc/stage_quickcheck.go
 --- anchor
-	case q.looksLikeLayoutB(ctx, log, job, a.ID):
+	case len(deferred) > 0 && len(deferred) == len(setsWithEntries(a.ID)):
 --- replace
 	case false:
 --- end
 
-# Condition 1. Dropped, any job carrying an archive that names the entries
-# would skip repair, including one whose par2 set identified a file.
-[the nothing-identified condition is dropped]
-file internal/postproc/stage_quickcheck.go
---- anchor
-	if !id.NothingIdentified() {
-		return false
-	}
---- replace
---- end
+# deferredSets' condition 2 — the set has an entry nothing delivered was
+# identified as — has no branch to neuter: the candidate sets are drawn from
+# id.Unaccounted. TestQuickCheckStage_IdentifiedEntryStaysDamaged and
+# TestDeferredSets_FullyAccountedSetIsNot pin its outcome.
 
-# Condition 2, whole. Dropped, a PP=1 job or one with unpack disabled skips
+# Condition 1, whole. Dropped, a PP=1 job or one with unpack disabled skips
 # repair, skips unpack, and succeeds with nothing verified.
 [the unpack-will-run condition is dropped]
 file internal/postproc/stage_quickcheck.go
@@ -32,7 +26,7 @@ file internal/postproc/stage_quickcheck.go
 	if false {
 --- end
 
-# Condition 2, each term.
+# Condition 1, each term.
 [unpackWillRun ignores the PP level]
 file internal/postproc/stage_quickcheck.go
 --- anchor
@@ -55,9 +49,9 @@ file internal/postproc/stage_quickcheck.go
 [the archive-named-entry condition is dropped]
 file internal/postproc/stage_quickcheck.go
 --- anchor
-		if unpack.Classify(unpack.MemberBaseName(fd.FileName)) != unpack.UnknownArchive {
+			return unpack.Classify(unpack.MemberBaseName(fd.FileName)) != unpack.UnknownArchive
 --- replace
-		if false {
+			return false
 --- end
 
 # Condition 4, whole: any RAR/7z present would do, including one that names
@@ -65,9 +59,9 @@ file internal/postproc/stage_quickcheck.go
 [the member-coverage condition is dropped]
 file internal/postproc/stage_quickcheck.go
 --- anchor
-	if len(held) < len(want) {
+			if !held[unpack.MemberBaseName(fd.FileName)] {
 --- replace
-	if false {
+			if !held[unpack.MemberBaseName(fd.FileName)] && false {
 --- end
 
 # Condition 4's type filter widened: a split join or tar is listed, which
@@ -85,7 +79,7 @@ file internal/postproc/stage_quickcheck.go
 file internal/postproc/stage_quickcheck.go
 --- anchor
 			logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Cannot list archive members: %v — repair will run", err)
-			return false
+			return nil, false
 --- replace
 			logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Cannot list archive members: %v — repair will run", err)
 			continue
@@ -94,11 +88,11 @@ file internal/postproc/stage_quickcheck.go
 [a failed archive scan counts as held]
 file internal/postproc/stage_quickcheck.go
 --- anchor
-		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Archive scan failed: %v", err)
-		return false
+		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Archive scan failed: %v — repair will run", err)
+		return nil, false
 --- replace
-		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Archive scan failed: %v", err)
-		return true
+		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Archive scan failed: %v — repair will run", err)
+		return nil, true
 --- end
 
 # The repair stage's arm. Without it Unidentified falls to the default arm
@@ -112,11 +106,11 @@ file internal/postproc/stage_repair.go
 --- end
 
 # The par2-keep rule: without it the only thing that could check the
-# extracted files against par2 is deleted.
-[par2_cleanup deletes an unidentified job's par2 set]
+# extracted files against par2 is deleted before it has.
+[par2_cleanup deletes an unverified deferred set]
 file internal/postproc/stage_par2cleanup.go
 --- anchor
-	if job.QuickCheck == QuickCheckUnidentified {
+	if len(job.DeferredPar2Sets) > 0 && !job.DeferredPar2Verified {
 --- replace
 	if false {
 --- end

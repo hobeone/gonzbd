@@ -2027,10 +2027,11 @@ func par2Verdict(a par2.Assessment, log *slog.Logger) (outcome par2Outcome, reas
 		//
 		// The volumes are held (SetPar2ReleaseReason without discarding or
 		// un-deferring, at the call site) rather than spent or dropped: for
-		// Layout B they cannot be spent usefully — the branch that makes that
-		// true is the STAGE ORDER, not anything about par2 (RepairStage runs
-		// before UnpackStage, internal/app/stages.go, with no second repair
-		// pass) — and for the damaged case, holding does not rescue it either.
+		// Layout B nothing can say they are needed until unpack has produced
+		// the files par2 protects (postproc's extracted_repair then runs par2
+		// with whatever volumes are on disk), so fetching them here would
+		// spend them on every healthy Layout B post — and for the damaged
+		// case, holding does not rescue it either.
 		// What holding buys is that the fetch policy stays FetchIfNeeded
 		// ("held") instead of being marked FetchNever ("skipped"), so the
 		// on-disk state does not assert a verdict that was never earned.

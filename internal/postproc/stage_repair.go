@@ -73,16 +73,10 @@ func NewRepairStageWith(par2Opts par2.RunOptions) *RepairStage {
 // Name returns the stage identifier.
 func (*RepairStage) Name() string { return "repair" }
 
-// Run finds par2 sets in job.DownloadDir and repairs each. No-op when the
-// job has no par2 files.
+// Run finds par2 sets in job.DownloadDir and repairs each one quickcheck did
+// not defer until after unpack (Job.DeferredPar2Sets). No-op when the job has
+// no par2 files.
 func (s *RepairStage) Run(ctx context.Context, job *Job) error {
-	s.mu.RLock()
-	par2Opts := s.Par2Opts
-	parseOpts := s.ParseOpts
-	useGoPar2Val := s.UseGoPar2
-	goPar2FallbackVal := s.GoPar2Fallback
-	s.mu.RUnlock()
-
 	log := s.Log
 	if log == nil {
 		log = slog.Default()
@@ -116,12 +110,13 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		logf(ctx, log, job, slog.LevelInfo, "[repair] Skipped: QuickCheck already verified all file CRCs")
 		return nil
 	case QuickCheckUnidentified:
-		// Quickcheck judged the par2 set to protect files unpack has not
-		// produced yet (a heuristic; see QuickCheckUnidentified for its basis
-		// and gaps). A repair then has nothing delivered to verify, and the
-		// ParError of a failed one would stop unpack from producing them.
+		// Quickcheck judged every par2 set to protect files unpack has not
+		// produced yet (a heuristic; see deferredSets for its basis). A repair
+		// now has nothing to verify, and the ParError of a failed one would
+		// stop unpack from producing them; extracted_repair runs the sets
+		// after unpack instead.
 		logf(ctx, log, job, slog.LevelInfo,
-			"[repair] Skipped: QuickCheck judged the par2 set to protect the archive's extracted contents rather than any delivered file")
+			"[repair] Skipped: QuickCheck judged every par2 set to protect the archive's extracted contents; they are verified after unpack")
 		return nil
 	case QuickCheckDamaged, QuickCheckInconclusive:
 		// Repair runs. Damaged has a verdict to act on; Inconclusive has
@@ -136,17 +131,49 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		logf(ctx, log, job, slog.LevelWarn, "[repair] Running: unhandled QuickCheck outcome %s", job.QuickCheck)
 	}
 
+	_, err := s.repairSets(ctx, log, job, false)
+	return err
+}
+
+// repairSets runs par2 verify+repair on the par2 sets in job.DownloadDir whose
+// deferral (Job.par2Deferred) equals deferred, and returns how many it ran:
+// repair passes false for the sets it may verify before unpack, and
+// extracted_repair passes true for the ones that waited for it. A failing set
+// sets job.ParError and does not stop the others; the first error is
+// returned.
+func (s *RepairStage) repairSets(ctx context.Context, log *slog.Logger, job *Job, deferred bool) (int, error) {
+	s.mu.RLock()
+	par2Opts := s.Par2Opts
+	parseOpts := s.ParseOpts
+	useGoPar2Val := s.UseGoPar2
+	goPar2FallbackVal := s.GoPar2Fallback
+	s.mu.RUnlock()
+
 	logf(ctx, log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)
 
-	sets, err := par2.FindPar2Files(job.DownloadDir, parseOpts)
+	found, err := par2.FindPar2Files(job.DownloadDir, parseOpts)
 	if err != nil {
 		job.ParError = true
-		return fmt.Errorf("repair: find par2 sets: %w", err)
+		return 0, fmt.Errorf("repair: find par2 sets: %w", err)
 	}
 
-	if len(sets) == 0 {
+	if len(found) == 0 {
 		logf(ctx, log, job, slog.LevelInfo, "No par2 files found")
-		return nil
+		return 0, nil
+	}
+
+	sets := found[:0:0]
+	for _, set := range found {
+		if job.par2Deferred(set.Name) != deferred {
+			if !deferred {
+				logf(ctx, log, job, slog.LevelInfo, "Skipped par2 set %q: it is verified after unpack", set.Name)
+			}
+			continue
+		}
+		sets = append(sets, set)
+	}
+	if len(sets) == 0 {
+		return 0, nil
 	}
 
 	logf(ctx, log, job, slog.LevelInfo, "Found %d par2 set(s)", len(sets))
@@ -158,7 +185,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	dataFiles, scanErr := listNonPar2Files(job.DownloadDir)
 	if scanErr != nil {
 		job.ParError = true
-		return fmt.Errorf("repair: scan data files: %w", scanErr)
+		return 0, fmt.Errorf("repair: scan data files: %w", scanErr)
 	}
 	logf(ctx, log, job, slog.LevelInfo, "Found %d non-par2 data file(s) for checksum matching", len(dataFiles))
 
@@ -173,7 +200,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		}
 	}
 
-	return firstErr
+	return len(sets), firstErr
 }
 
 // processPar2Set processes a single par2 set: dispatches the repair tool,
@@ -182,11 +209,13 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 // No set's verdict is read from a record an earlier run wrote. That is the
 // property #533 restored, and it is narrower than "everything is always
 // verified": a set reaching here is verified without consulting stored state,
-// but four branches decide it never reaches here at all. Run returns early for
+// but five branches decide it never reaches here at all. Run returns early for
 // QuickCheckClean, for QuickCheckUnidentified, and for QuickCheckNotRun with a
-// clean DirectUnpack, and this function skips a set whose ParseFile is empty.
-// Each of those is computed from THIS run's state, which is what makes it a different thing from trusting the
-// last run's.
+// clean DirectUnpack; repairSets passes over a set on the other side of
+// quickcheck's deferral from the one it was asked for; and this function skips
+// a set whose ParseFile is empty. Each of those is computed from THIS run's
+// state, which is what makes it a different thing from trusting the last
+// run's.
 //
 // See "Verification state is derived, never persisted" in
 // docs/post-processing-contract.md for why the persisted record was removed

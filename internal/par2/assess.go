@@ -55,6 +55,36 @@ type Assessment struct {
 	// identifications where NeedsRename() is true appear here, so an ordinary
 	// flat job yields none rather than a self-move per file.
 	Renames []Rename
+
+	// files is the assembled-file list CRC was verified against, kept so
+	// CRCExcluding verifies a subset against the same list.
+	files []AssembledFile
+}
+
+// CRCExcluding is the CRC verdict over every entry that was not read from one
+// of the named par2 sets (FileDesc.Set), computed from the same pre-rename
+// identification and the same assembled CRCs as a.CRC. With no sets named it
+// is a.CRC.
+//
+// A caller that has decided some sets cannot be verified yet — their files do
+// not exist until unpack runs — reads the verdict on the rest here, rather
+// than subtracting those sets' files from a.CRC by name.
+func (a Assessment) CRCExcluding(sets map[string]bool, log *slog.Logger) CRCVerifyResult {
+	if len(sets) == 0 {
+		return a.CRC
+	}
+	var kept Identification
+	for _, f := range a.ID.Files {
+		if !sets[f.Desc.Set] {
+			kept.Files = append(kept.Files, f)
+		}
+	}
+	for _, fd := range a.ID.Unaccounted {
+		if !sets[fd.Set] {
+			kept.Unaccounted = append(kept.Unaccounted, fd)
+		}
+	}
+	return verifyIdentified(kept, a.files, log)
 }
 
 // Assess identifies the files in dir against the par2 sets, verifies the
@@ -82,7 +112,7 @@ func AssessWithOptions(dir string, sets []Set, files []AssembledFile, log *slog.
 		return Assessment{}, err
 	}
 
-	a := Assessment{ID: id, CRC: verifyIdentified(id, files, log)}
+	a := Assessment{ID: id, CRC: verifyIdentified(id, files, log), files: files}
 	for _, f := range id.Files {
 		if !f.NeedsRename() {
 			continue

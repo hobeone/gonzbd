@@ -98,8 +98,8 @@ func runQuickCheck(t *testing.T, qc *QuickCheckStage, job *Job) {
 // A Layout B post is healthy and extractable, and the pipeline must extract
 // it. Its par2 set describes files that do not exist until unpack has run, so
 // a repair attempted before unpack fails on this compressed archive — and a
-// failed repair skips unpack unconditionally. The par2 set is kept, since it
-// is the only thing that could still check the extracted file against it.
+// failed repair skips unpack unconditionally. With no extracted_repair in
+// these stages to verify the extracted file, par2_cleanup keeps the par2 set.
 func TestLayoutB_ArchiveExtractsDespitePar2NamingItsContents(t *testing.T) {
 	t.Parallel()
 
@@ -134,14 +134,15 @@ func TestLayoutB_ArchiveExtractsDespitePar2NamingItsContents(t *testing.T) {
 	}
 	for _, name := range layoutBPar2 {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-			t.Errorf("par2_cleanup deleted %s from an unidentified job: %v", name, err)
+			t.Errorf("par2_cleanup deleted %s, whose deferred set nothing verified: %v", name, err)
 		}
 	}
 }
 
 // The load-bearing case for declining repair: the archive's own checksums
-// are what stand in for par2, so a damaged archive under Unidentified has to
-// end the job Failed through UnpackError — never a clean success.
+// are the first check on the extraction, so a damaged archive under
+// Unidentified has to end the job Failed through UnpackError — never a clean
+// success.
 func TestLayoutB_DamagedArchiveFailsTheJob(t *testing.T) {
 	t.Parallel()
 
@@ -345,19 +346,19 @@ func TestQuickCheckStage_UnpackWillRun(t *testing.T) {
 	}
 }
 
-// looksLikeLayoutB answers nothing for a set that identified a file, without
+// deferredSets defers nothing when every entry was identified, without
 // looking at the directory at all: the job here has no directory.
-func TestLooksLikeLayoutB_IdentifiedSetIsNot(t *testing.T) {
+func TestDeferredSets_FullyAccountedSetIsNot(t *testing.T) {
 	t.Parallel()
 
 	qc, _, _ := layoutStages()
 	job, _ := stageJob(t)
 	job.PP = types.PPDelete
 	job.DownloadDir = filepath.Join(t.TempDir(), "absent")
-	entry := par2.FileDesc{FileName: "feature.bin"}
+	entry := par2.FileDesc{FileName: "feature.bin", Set: "feature"}
 	id := par2.Identification{Files: []par2.Identified{{OnDisk: "feature.bin", Desc: entry}}}
-	if qc.looksLikeLayoutB(t.Context(), slog.New(slog.DiscardHandler), job, id) {
-		t.Error("a set that identified a delivered file was judged Layout B")
+	if got := qc.deferredSets(t.Context(), slog.New(slog.DiscardHandler), job, id); len(got) != 0 {
+		t.Errorf("deferredSets = %v for a set that identified every entry, want none", got)
 	}
 	for _, line := range job.OutputLines {
 		if strings.Contains(line, "Archive scan failed") {
@@ -367,18 +368,18 @@ func TestLooksLikeLayoutB_IdentifiedSetIsNot(t *testing.T) {
 }
 
 // A directory the archive scan cannot read shows no archive holding anything.
-func TestArchivesHoldEntries_ScanErrorIsNotHeld(t *testing.T) {
+func TestHeldArchiveMembers_ScanErrorIsNotHeld(t *testing.T) {
 	t.Parallel()
 
 	job, dir := stageJob(t)
 	job.DownloadDir = filepath.Join(dir, "does-not-exist")
-	if archivesHoldEntries(t.Context(), slog.New(slog.DiscardHandler), job, nil) {
+	if _, ok := heldArchiveMembers(t.Context(), slog.New(slog.DiscardHandler), job, nil); ok {
 		t.Error("an unreadable directory was reported as holding the entries")
 	}
 }
 
 // An archive whose members cannot be listed shows nothing about them.
-func TestArchivesHoldEntries_ListingErrorIsNotHeld(t *testing.T) {
+func TestHeldArchiveMembers_ListingErrorIsNotHeld(t *testing.T) {
 	t.Parallel()
 
 	job, dir := layoutBJob(t, "release.rar")

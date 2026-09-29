@@ -43,6 +43,9 @@ func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions
 		}
 		log.Info("quickcheck: par2 manifest entries",
 			"file", filepath.Base(parFile), "entries", len(descs))
+		for i := range descs {
+			descs[i].Set = set.Name
+		}
 		manifest = append(manifest, descs...)
 	}
 	return manifest

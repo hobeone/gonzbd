@@ -7,6 +7,7 @@ package postproc
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -65,18 +66,17 @@ const (
 	//     them, so the comparison had nothing on either side.
 	QuickCheckInconclusive
 
-	// QuickCheckUnidentified is the stage's judgement that a job is a Layout
-	// B post — par2 protecting what an archive extracts to, rather than the
-	// archive — so that repair, which runs before unpack, has nothing
-	// delivered to verify. Repair declines, unpack extracts, and par2_cleanup
-	// keeps the par2 set.
+	// QuickCheckUnidentified is the stage's judgement that every par2 set in
+	// the job that describes any file is a Layout B set — par2 protecting
+	// what an archive extracts to, rather than the archive — so that repair,
+	// which runs before unpack, has no set to work on. Repair declines, unpack
+	// extracts, and extracted_repair runs par2 against what it extracted.
 	//
-	// It is a heuristic, not an observation of Layout B. Its basis is the
-	// conditions in looksLikeLayoutB: nothing delivered was identified as any
-	// par2 entry, unpack will run, no entry is named as an archive, and every
-	// entry is a member of a delivered RAR or 7z archive. What then checks the
-	// extracted files is only the archive's own per-member checksums, with
-	// the gaps archivesHoldEntries names; par2 is never run against them.
+	// The judgement is made set by set, and it is a heuristic, not an
+	// observation of Layout B. Its basis is the conditions in deferredSets.
+	// A job where only some sets are deferred records the verdict on the
+	// others instead, and repair skips the deferred ones
+	// (Job.DeferredPar2Sets).
 	QuickCheckUnidentified
 )
 
@@ -186,6 +186,20 @@ type Job struct {
 	// this job's file CRCs. See QuickCheckOutcome.
 	QuickCheck QuickCheckOutcome
 
+	// DeferredPar2Sets names the par2 sets (par2.Set.Name) that quickcheck
+	// judged to protect files unpack has yet to extract (deferredSets).
+	// repair skips them and extracted_repair runs them once unpack has
+	// finished. QuickCheckStage.recordVerdict is its only writer:
+	// `git grep -n '[.]DeferredPar2Sets =' -- '*.go' ':!*_test.go'` finds 1 line.
+	DeferredPar2Sets []string
+
+	// DeferredPar2Verified reports that extracted_repair verified, or
+	// repaired, every set in DeferredPar2Sets against the extracted files.
+	// par2_cleanup keeps the par2 files of a job with deferred sets until
+	// this is true. ExtractedRepairStage.Run is its only writer:
+	// `git grep -n '[.]DeferredPar2Verified =' -- '*.go' ':!*_test.go'` finds 1 line.
+	DeferredPar2Verified bool
+
 	// OutputLines is a scratch buffer that stages populate with tool output
 	// lines (e.g. par2 stdout, unrar output). processJob moves these into
 	// StageLogEntry.Lines after each stage runs and clears the buffer.
@@ -289,6 +303,12 @@ func (e StageLogEntry) MarshalJSON() ([]byte, error) {
 // HasRecord reports whether this post-processing job wraps a download job record.
 func (j *Job) HasRecord() bool {
 	return j.Job != nil
+}
+
+// par2Deferred reports whether quickcheck deferred the named par2 set until
+// after unpack.
+func (j *Job) par2Deferred(set string) bool {
+	return slices.Contains(j.DeferredPar2Sets, set)
 }
 
 // JobID returns the job identifier.
