@@ -47,8 +47,9 @@ single worker goroutine (`run`).
   `Application.enqueuePostProc`, which keeps the admission record
   (`postProcAdmissions`). It has two callers: `appRunner.runPostProc`, and
   `maybeFinalize`, which the downloader's and the pipeline's hopeless
-  callbacks, `runAssess`, `Application.Fail`, `RetryHistoryJob` and startup
-  reconciliation call. An admission starts before the DirectUnpack wait and
+  callbacks, `runAssess` and `Application.Fail` call
+  (`git grep -n 'maybeFinalize(' -- 'internal/*.go' ':!*_test.go'` returns
+  those 4 call sites and the definition). An admission starts before the DirectUnpack wait and
   ends once `jobFinalizer.finalize` or `jobFinalizer.cancelled` has run, so it
   covers the two windows `HasJob` does not see: the wait before `Process`, and
   the callback tail after the worker clears its busy marker. Ending it does not
@@ -78,14 +79,11 @@ single worker goroutine (`run`).
   recorded as failed.
 - **An admitted job is not downloaded**: `maybeFinalize` moves no persisted
   position, so a job it hands over from `Fetching` — `Fail`, the hopeless
-  callbacks, startup reconciliation, a retry — keeps a dispatchable row
-  (`IntentRun`, at or bound for `Fetching`) until the finalizer's `CancelJob`.
-  Startup reconciliation hands over only a complete job that has never run or
-  is at `Fetching` with no `Next`, chosen before the first tick
-  (`Application.startupHandOffs`). A job restored with its download-complete
-  report recorded reaches post-processing through `Assessing`, as a live one
-  does. The downloader skips an admitted job anyway:
-  `downloader.Options.HandedOff` is wired to the admission record, and `enqueuePostProc` admits before it calls
+  callbacks — keeps a dispatchable row (`IntentRun`, at `Fetching`) until the
+  finalizer's `CancelJob`. The downloader skips an admitted job anyway, and a
+  Fetching worker does not report one download-complete (`appRunner.runFetch`):
+  both read the admission record (`postProcAdmissions.has`, which is
+  `downloader.Options.HandedOff`), and `enqueuePostProc` admits before it calls
   `CloseJobHandles`. An article already in flight at the hand-off is dropped
   by the assembler's whole-job tombstone, which `CloseJobHandles` sets and
   `ForgetJob` clears for a retry. `TestFail_AJobInPostProcessingIsNotDispatched`
@@ -143,9 +141,14 @@ single worker goroutine (`run`).
   `workerCtx` cancellation halts stage execution and the job stays in the
   queue, and the next startup resumes it from its persisted dispatcher state.
   A job at `Repairing`, `Extracting` or `Finalizing` is post-processed again;
-  one handed over from `Fetching` is back at `Fetching`, where
-  `Application.Start` re-finalizes it if it is complete and it downloads again
-  otherwise.
+  one handed over from `Fetching` is back at `Fetching`, where it downloads
+  again if it is incomplete. If it is complete, its Fetching worker reports it
+  download-complete (`appRunner.runFetch`) and it reaches post-processing
+  through `Assessing`, as a job whose last file completes in the process does.
+  `Application.Start` hands no job to post-processing itself. Before the first
+  tick it drops a queued job already filed in history
+  (`Application.reconcileBeforeFirstTick`), so such a duplicate is not routed
+  onward.
 
 ## Full 12-Stage Execution Sequence
 

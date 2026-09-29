@@ -33,11 +33,11 @@ file internal/app/durability.go
 --- anchor
 	app.reclaim(delCtx, jobID)
 	delCancel()
-	return true
+}
 --- replace
 	_ = delCtx
 	delCancel()
-	return true
+}
 --- end
 
 [a history delete skips the reclaim]

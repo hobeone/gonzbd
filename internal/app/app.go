@@ -1343,18 +1343,15 @@ func (app *Application) Start(ctx context.Context) error {
 	if app.startedTransitionHook != nil {
 		app.startedTransitionHook()
 	}
-	// The resume sweep, and then the choice of which jobs Start hands to
-	// post-processing, run between restoring the registry and the first tick.
-	// resumeAllJobs and startupHandOffs have that placement's argument.
-	var handOffs map[string]bool
+	// Dropping the jobs already in history, and the resume sweep, run inside
+	// the dispatcher's start, between restoring the registry and the first
+	// tick. reconcileBeforeFirstTick and resumeAllJobs have that placement's
+	// argument. Start hands no job to post-processing itself: a complete job
+	// restored at Fetching, or never run, is reported download-complete by its
+	// Fetching worker (appRunner.runFetch) and reaches post-processing through
+	// Assessing.
 	if app.dispatcher != nil {
-		if err := app.dispatcher.StartWith(app.ctx, func(ctx context.Context) error {
-			if err := app.resumeAllJobs(ctx); err != nil {
-				return err
-			}
-			handOffs = app.startupHandOffs()
-			return nil
-		}); err != nil {
+		if err := app.dispatcher.StartWith(app.ctx, app.reconcileBeforeFirstTick); err != nil {
 			return fmt.Errorf("app: start dispatcher: %w", err)
 		}
 	}
@@ -1393,38 +1390,15 @@ func (app *Application) Start(ctx context.Context) error {
 
 	app.log.Info("application started")
 
-	// The ticker is running here, so the hand-off choice is not re-read from
-	// this List. It was made before the first tick, by startupHandOffs. A job
-	// in handOffs is complete and has no Next, and a tick moves it on from
-	// Fetching only once a Next is recorded (Advance's branch 3). The report
-	// that records one at Fetching is completeFinalizedFile's AdvanceFrom —
-	// `git grep -n 'AdvanceFrom(j, job\.Fetching' -- 'internal/*.go' ':!*_test.go'`
-	// returns 1 line — and it follows a file completion. A complete job gets
-	// no file completion here: ForEachUnfinishedArticle skips every Complete
-	// file, so the downloader sends it no article.
-	if app.dispatcher != nil {
-		for _, row := range app.dispatcher.List() {
-			if app.dropJobAlreadyInHistory(ctx, row.ID) {
-				continue
-			}
-			if !handOffs[row.ID] {
-				continue
-			}
-			if j, ok := app.dispatcher.Job(row.ID); ok {
-				app.maybeFinalize(row.ID, failMsgForJob(j))
-			}
-		}
-	}
-
-	// Sweep expired history, after the reconciliation above and not before.
+	// Sweep expired history, after reconcileBeforeFirstTick and not before.
 	//
-	// That loop identifies a crash between the history commit and
-	// Dispatcher.Remove by looking a still-queued completed job up in history,
-	// and the entry is the only evidence the job already finished. Pruning
-	// first can delete it out from under the lookup, which turns into
-	// ErrNotFound and sends the job to maybeFinalize to be post-processed
-	// and filed a second time. The trigger is ordinary: a crash, a daemon
-	// down past the threshold, a restart.
+	// That step identifies a crash between the history commit and
+	// Dispatcher.Remove by looking a still-queued job up in history, and the
+	// entry is the only evidence the job already finished. Pruning first can
+	// delete it out from under the lookup, which turns into ErrNotFound and
+	// leaves the job queued, to be post-processed and filed a second time.
+	// The trigger is ordinary: a crash, a daemon down past the threshold, a
+	// restart.
 	//
 	// A startup sweep is needed at all because the other trigger is job
 	// finalization, matching upstream (sabnzbd/postproc.py calls
@@ -1751,7 +1725,8 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 	// fourth path from being added without one.
 	//
 	// Before MarkFileComplete, so the value is on the progress record by the
-	// time maybeFinalize below can hand the job to post-processing.
+	// time the download-complete report below lets the job reach
+	// post-processing through Assessing.
 	app.recordAssembledCRC(ctx, fc.JobID, fc.FileIdx)
 	if app.dispatcher != nil {
 		j, ok := app.dispatcher.Job(fc.JobID)
@@ -2510,8 +2485,10 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 // unlinked at finalization — and then overlaid with the per-file progress
 // retained for failed jobs, so only the articles that did not succeed are
 // refetched. Where every article was already downloaded and only
-// post-processing failed, the overlay is what sends the job straight back to
-// post-processing instead of re-downloading it in full.
+// post-processing failed, the overlay leaves the job complete, and its
+// Fetching worker reports it download-complete (appRunner.runFetch) instead
+// of re-downloading it in full. It reaches post-processing through Assessing,
+// as every downloaded job does.
 //
 // Only failed entries are retryable, matching SABnzbd, whose
 // get_incomplete_path returns a path only for status = Failed. A completed
@@ -2739,10 +2716,6 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	}
 	app.emit(Event{Type: "queue_updated"})
 	app.emit(Event{Type: "history_updated"})
-	if j.IsComplete() {
-		msg := failMsgForJob(j)
-		app.maybeFinalize(jobID, msg)
-	}
 	return nil
 }
 

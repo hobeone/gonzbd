@@ -1,19 +1,15 @@
 pkg ./internal/app/
 run TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails
 
-# A failed Remove must be reported as handled. What it keeps is reclaim's to
-# decide, and step3_call_sites.spec pins that.
+# A duplicate whose removal fails must still be cancelled, which Remove does
+# before the step that fails, so the tick does not route it onward. What it
+# keeps is reclaim's to decide, and step3_call_sites.spec pins that.
 
-[a failed Remove reports "not handled", so the caller falls through to the state check and files a complete job a second time]
+[the duplicate is never handed to Dispatcher.Remove, so it stays runnable]
 file internal/app/durability.go
 --- anchor
-	app.reclaim(delCtx, jobID)
-	delCancel()
-	return true
-}
+		rmErr := app.dispatcher.Remove(rmCtx, jobID)
 --- replace
-	app.reclaim(delCtx, jobID)
-	delCancel()
-	return false
-}
+		var rmErr error
+		_ = rmCtx
 --- end

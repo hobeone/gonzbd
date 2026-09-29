@@ -610,16 +610,21 @@ func jobFilesCount(t *testing.T, application *Application, jobID string) int {
 	return n
 }
 
-// TestDropJobAlreadyInHistory_AnswersFalseWithoutAHistoryDatabase pins the
-// guard that moved inside the method from Start's call site. With no history
-// database there is no history, so false is knowledge rather than doubt --
-// and without the guard the call dereferences a nil repository.
-func TestDropJobAlreadyInHistory_AnswersFalseWithoutAHistoryDatabase(t *testing.T) {
+// TestDropJobAlreadyInHistory_DoesNothingWithoutAHistoryDatabase pins the
+// guard inside the method. With no history database there is no history to
+// find the job in, and without the guard the call dereferences a nil
+// repository.
+func TestDropJobAlreadyInHistory_DoesNothingWithoutAHistoryDatabase(t *testing.T) {
 	t.Parallel()
-	application := &Application{log: slog.New(slog.DiscardHandler)}
-	if application.dropJobAlreadyInHistory(t.Context(), "job-a") {
-		t.Error("reported the job as handled with no history database to find it in; " +
-			"Start would skip a job that nothing has filed")
+	for name, repo := range map[string]*history.Repository{
+		"no repository":           nil,
+		"repository, no database": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			application := &Application{historyRepo: repo, log: slog.New(slog.DiscardHandler)}
+			application.dropJobAlreadyInHistory(t.Context(), "job-a")
+		})
 	}
 }
 
@@ -1476,8 +1481,9 @@ func TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability(t 
 		t.Fatal("no job_files rows to delete, so this test would pass vacuously")
 	}
 
-	if !application.dropJobAlreadyInHistory(ctx, j.ID()) {
-		t.Fatal("dropJobAlreadyInHistory reported no removal for a job that is in history")
+	application.dropJobAlreadyInHistory(ctx, j.ID())
+	if _, ok := application.Dispatcher().Job(j.ID()); ok {
+		t.Fatal("the job is still in the dispatcher although it is in history")
 	}
 	if ctx.Err() == nil {
 		t.Fatal("the store never cancelled, so this never entered the window under test")
@@ -1496,12 +1502,8 @@ func TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability(t 
 // TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails pins
 // #376's ordering on the reconcile path: a Remove that fails leaves the queue
 // row, and the manifest and every durability row stay with it, so the next
-// startup can reconcile the job against them.
-//
-// The return value is the other half. False routes the caller into the state
-// check beneath it, where a complete job reaches maybeFinalize and is filed a
-// SECOND time; true says "duplicate, skip", which is still accurate when all
-// that failed was the cleanup.
+// startup can reconcile the job against them. The job stays cancelled, so the
+// dispatcher does not route it onward in the meantime.
 func TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails(t *testing.T) {
 	t.Parallel()
 	application, repo, adminDir := newLifecycleTestApp(t)
@@ -1538,9 +1540,10 @@ func TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails(t *
 		t.Fatal(err)
 	}
 
-	if !application.dropJobAlreadyInHistory(ctx, j.ID()) {
-		t.Error("reported false after a failed Remove; the caller then falls through to the " +
-			"state check and a complete job is filed a second time")
+	application.dropJobAlreadyInHistory(ctx, j.ID())
+	if got := j.Intent(); got != job.IntentCancel {
+		t.Errorf("intent = %v after a failed Remove, want IntentCancel; a job that is "+
+			"already filed would be routed onward and post-processed again", got)
 	}
 
 	if _, err := os.Stat(mpath); err != nil {
@@ -1559,18 +1562,11 @@ func TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails(t *
 	}
 }
 
-// TestDropJobAlreadyInHistory_SkipsTheJobWhenTheHistoryLookupFails pins the
-// difference between "not in history" and "could not find out".
-//
-// Both are errors from the same call, and collapsing them onto one return
-// value is what makes the second dangerous: false asserts the job is not
-// filed, and the caller acts on that by finalizing it -- so a job that IS
-// already filed is post-processed and written to history a second time.
-//
-// True costs one startup. The job is skipped, nothing is deleted, and the next
-// startup asks again. jobFinalizer.persistAndCommit makes the same trade when
-// its own history lookup fails.
-func TestDropJobAlreadyInHistory_SkipsTheJobWhenTheHistoryLookupFails(t *testing.T) {
+// TestDropJobAlreadyInHistory_KeepsTheJobWhenTheHistoryLookupFails pins that a
+// lookup which establishes nothing deletes nothing and routes nothing: the
+// job, its manifest and its rows stay, and the job is paused with an
+// operational error so that no tick post-processes it.
+func TestDropJobAlreadyInHistory_KeepsTheJobWhenTheHistoryLookupFails(t *testing.T) {
 	t.Parallel()
 	application, repo, adminDir := newLifecycleTestApp(t)
 	ctx := t.Context()
@@ -1597,17 +1593,52 @@ func TestDropJobAlreadyInHistory_SkipsTheJobWhenTheHistoryLookupFails(t *testing
 			`ALTER TABLE history_hidden RENAME TO history`)
 	})
 
-	if !application.dropJobAlreadyInHistory(ctx, j.ID()) {
-		t.Error("reported false when the history lookup ERRORED; false means 'not in " +
-			"history', so the caller finalizes a job that may already be filed and " +
-			"writes a duplicate history entry")
-	}
+	application.dropJobAlreadyInHistory(ctx, j.ID())
 	if _, err := os.Stat(mpath); err != nil {
 		t.Errorf("the manifest was deleted although nothing was established about the "+
 			"job (stat: %v)", err)
 	}
 	if _, ok := application.Dispatcher().Job(j.ID()); !ok {
 		t.Error("the job left the dispatcher on a lookup that established nothing")
+	}
+	if got := j.Intent(); got != job.IntentPause {
+		t.Errorf("intent = %s after a failed lookup, want %s: the first tick would "+
+			"post-process a job that may already be filed", got, job.IntentPause)
+	}
+	row, ok := application.Dispatcher().Row(j.ID())
+	if !ok {
+		t.Fatal("Row: job not registered")
+	}
+	if !strings.Contains(row.Header.OperationalError, "history lookup failed") {
+		t.Errorf("operational error = %q, want it to say the history lookup failed",
+			row.Header.OperationalError)
+	}
+}
+
+// TestHoldUnreconciledJob_LeavesACancelledJobAlone pins the two cases the
+// hold cannot pause: with no dispatcher there is nothing to pause, and a
+// cancelled job's intent is latched. Neither is routed onward, and a job the
+// hold did not pause gets no note saying it did.
+func TestHoldUnreconciledJob_LeavesACancelledJobAlone(t *testing.T) {
+	t.Parallel()
+	(&Application{log: slog.New(slog.DiscardHandler)}).holdUnreconciledJob("job-a", errors.New("lookup failed"))
+
+	application, _, _ := newLifecycleTestApp(t)
+	j, _ := removeJobFixture(t, application, "cancelledhold")
+	if err := application.Dispatcher().Cancel(j.ID()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	application.holdUnreconciledJob(j.ID(), errors.New("lookup failed"))
+	if got := j.Intent(); got != job.IntentCancel {
+		t.Errorf("intent = %s, want %s", got, job.IntentCancel)
+	}
+	row, ok := application.Dispatcher().Row(j.ID())
+	if !ok {
+		t.Fatal("Row: job not registered")
+	}
+	if row.Header.OperationalError != "" {
+		t.Errorf("operational error = %q on a job the hold could not pause, want none",
+			row.Header.OperationalError)
 	}
 }
 
@@ -1644,8 +1675,9 @@ func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if !application.dropJobAlreadyInHistory(t.Context(), job.ID()) {
-				t.Fatal("dropJobAlreadyInHistory reported no removal for a job that is in history")
+			application.dropJobAlreadyInHistory(t.Context(), job.ID())
+			if _, ok := application.Dispatcher().Job(job.ID()); ok {
+				t.Fatal("the job is still in the dispatcher although it is in history")
 			}
 
 			nr, nf := durabilityRowCounts(t, application, job.ID())

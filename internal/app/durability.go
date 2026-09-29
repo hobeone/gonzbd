@@ -1374,67 +1374,50 @@ func (app *Application) shutdownCheckpoint() {
 }
 
 // dropJobAlreadyInHistory removes a queue job that has already been filed in
-// history, reporting whether the caller should skip it.
-//
-// The return value is NOT "the removal succeeded". True means "do not process
-// this job", which is also the right answer when the removal failed and when
-// the history lookup did -- and the caller depends on that reading, because
-// false sends a complete job on to maybeFinalize to be filed a second time.
-// False is reserved for the one case that is positive knowledge the job is not
-// in history: history.ErrNotFound.
+// history.
 //
 // Reached at startup by a job that crashed between MoveToHistory and the queue
 // removal that follows it. The queue row is a duplicate of an entry that is
-// already the record.
+// already the record. It runs before the dispatcher's first tick
+// (reconcileBeforeFirstTick), so a duplicate it removes is never routed
+// onward.
+//
+// Only history.ErrNotFound establishes that the job is not in history, and
+// the tick then routes it like any other. A failed lookup establishes
+// nothing, so the job is paused with an operational error rather than
+// routed: a tick would otherwise post-process a job that may already be
+// filed, and its finalize would try to file it again. The pause keeps its
+// manifest and rows, and lasts until an operator resumes it.
 //
 // Its rows and manifest go through reclaim, which keeps a FAILED entry's
 // durable_runs for a retry the way every departure does.
-func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID string) bool {
-	// With no history database there is no history, so "not in history" is
-	// knowledge rather than doubt and false is the right answer. The check
-	// lives here rather than at Start's call site, which used to carry it, so
-	// the method answers correctly for any caller instead of relying on each
-	// one to remember.
+func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID string) {
+	// With no history database there is no history to find the job in. The
+	// check lives here rather than at the call site, so the method answers
+	// correctly for any caller instead of relying on each one to remember.
 	if app.historyRepo == nil || app.historyRepo.DB() == nil {
-		return false
+		return
 	}
 	dbCtx, dbCancel := context.WithTimeout(ctx, 5*time.Second)
 	entry, err := app.historyRepo.Get(dbCtx, jobID)
 	dbCancel()
 	if err != nil {
-		// ErrNotFound and "the lookup failed" are different answers and must
-		// not share a return value. Not-found is knowledge: the job is not in
-		// history, so false is right and the caller should go on to finalize
-		// it. A timeout, a lock or an I/O error is the absence of knowledge,
-		// and false there asserts "not in history" on no evidence -- sending a
-		// job that may ALREADY be filed into maybeFinalize to be filed a
-		// second time.
-		//
-		// True on doubt costs one startup: the job is skipped, its manifest
-		// and rows are untouched, and the next startup asks again.
+		// ErrNotFound and "the lookup failed" are different answers. A
+		// timeout, a lock or an I/O error is the absence of knowledge, so
+		// nothing is deleted on it, and nothing is routed on it either.
 		if !errors.Is(err, history.ErrNotFound) {
-			app.log.Error("history lookup failed; skipping this job's reconciliation "+
-				"rather than risk finalizing one that is already filed",
-				"job", jobID, "err", err)
-			return true
+			app.holdUnreconciledJob(jobID, err)
 		}
-		return false
+		return
 	}
 	app.log.Info("found job already in history but still in queue, removing",
 		"job", jobID, "status", entry.Status)
 	// A failed Remove leaves the queue row in place, and the reclaim below
 	// then keeps the manifest and every row: the dispatcher still holds the
 	// job and the rule sees its row (#376). The next startup reconciles it.
-	//
-	// Returns TRUE rather than false, and the difference is not cosmetic. The
-	// caller reads false as "not handled" and falls through to the state check
-	// beneath it, which can route a complete job into maybeFinalize and file
-	// it a SECOND time -- the hazard Application.Start's own comment on the
-	// history sweep's ordering warns about (app.go, the paragraph beginning
-	// "Sweep expired history, after the reconciliation above"). True means
-	// "this is a duplicate, skip it", which stays true: it IS a duplicate of
-	// an entry that is already the record, and all that failed was cleaning
-	// it up.
+	// A Remove that fails after its Cancel leaves the job cancelled and
+	// registered (Dispatcher.Remove's retry contract), so the tick does not
+	// route it onward.
 	//
 	// Bounded, because the caller's context is not. Start receives a
 	// signal.NotifyContext with no deadline (cmd/gonzbd/main.go), and Remove
@@ -1464,7 +1447,27 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	app.reclaim(delCtx, jobID)
 	delCancel()
-	return true
+}
+
+// holdUnreconciledJob pauses a job whose history lookup failed, so that no
+// tick routes it onward, and records why on the job for the operator.
+//
+// A PauseJob error leaves the job unpaused. The one it can return for a
+// registered job is ErrIntentLatched, and a cancelled job is not routed onward
+// either.
+func (app *Application) holdUnreconciledJob(jobID string, lookupErr error) {
+	app.log.Error("history lookup failed; pausing this job, which may already be filed, "+
+		"until an operator resumes it", "job", jobID, "err", lookupErr)
+	if app.dispatcher == nil {
+		return
+	}
+	if err := app.dispatcher.PauseJob(jobID); err != nil {
+		app.log.Error("failed to pause a job whose history lookup failed",
+			"job", jobID, "err", err)
+		return
+	}
+	_ = app.dispatcher.SetOperationalError(jobID, "history lookup failed at startup: "+
+		"this job may already be in history; resume it only once it is known not to be")
 }
 
 // reclaim applies durability's reclaim rule to the named jobs, then unlinks
