@@ -43,9 +43,9 @@ func TestPopJob_EmptyQueueReturnsFalseWhenWorkerContextDone(t *testing.T) {
 
 // TestPopJob_DequeuesAndMarksBusy pins the success path: a pushed job is
 // returned, a jobCtx derived from workerCtx comes back independently
-// cancellable, and busy/currentJobID/currentJobCancel are all set before
+// cancellable, and busy/currentJob/currentJobCancel are all set before
 // popJob returns — the atomicity setBusyWithJob's own doc comment claims
-// ("so Has()/Empty() never see the intermediate state").
+// ("so HasJob()/Empty() never see the intermediate state").
 func TestPopJob_DequeuesAndMarksBusy(t *testing.T) {
 	t.Parallel()
 
@@ -72,13 +72,13 @@ func TestPopJob_DequeuesAndMarksBusy(t *testing.T) {
 	}
 
 	p.busyMu.Lock()
-	busy, currentID, currentCancel := p.busy, p.currentJobID, p.currentJobCancel
+	busy, current, currentCancel := p.busy, p.currentJob, p.currentJobCancel
 	p.busyMu.Unlock()
 	if !busy {
 		t.Error("popJob must leave busy=true after a successful pop")
 	}
-	if currentID != jobID {
-		t.Errorf("currentJobID = %q, want %q", currentID, jobID)
+	if current != want {
+		t.Errorf("currentJob = %p, want the popped job %p", current, want)
 	}
 	if currentCancel == nil {
 		t.Fatal("currentJobCancel is nil after a successful pop")
@@ -98,10 +98,10 @@ func TestPopJob_DequeuesAndMarksBusy(t *testing.T) {
 }
 
 // TestSetBusyWithJob_MutatesAllThreeFieldsAtomically pins what
-// setBusyWithJob actually mutates: exactly busy, currentJobID and
+// setBusyWithJob actually mutates: exactly busy, currentJob and
 // currentJobCancel, read back through the same busyMu it documents itself
 // as using. It is a plain three-field setter with no branching, but it is
-// the sole writer of state Has/Empty/Cancel all read (see their doc
+// the sole writer of state HasJob/Empty/Cancel all read (see their doc
 // comments), so a defect here — e.g. one field silently left stale — is not
 // otherwise pinned anywhere.
 func TestSetBusyWithJob_MutatesAllThreeFieldsAtomically(t *testing.T) {
@@ -112,13 +112,14 @@ func TestSetBusyWithJob_MutatesAllThreeFieldsAtomically(t *testing.T) {
 	cancelCalls := 0
 	cancel := context.CancelFunc(func() { cancelCalls++ })
 
-	p.setBusyWithJob(true, "job-a", cancel)
+	a := &Job{Job: job.New("job-a", "job-a", job.Policy{})}
+	p.setBusyWithJob(true, a, cancel)
 	p.busyMu.Lock()
 	if !p.busy {
 		t.Error("busy = false, want true after setBusyWithJob(true, ...)")
 	}
-	if p.currentJobID != "job-a" {
-		t.Errorf("currentJobID = %q, want %q", p.currentJobID, "job-a")
+	if p.currentJob != a {
+		t.Errorf("currentJob = %p, want %p", p.currentJob, a)
 	}
 	if p.currentJobCancel == nil {
 		t.Fatal("currentJobCancel is nil after setBusyWithJob with a non-nil cancel func")
@@ -133,15 +134,15 @@ func TestSetBusyWithJob_MutatesAllThreeFieldsAtomically(t *testing.T) {
 	}
 
 	// Clearing busy must clear all three fields together, matching how
-	// run() calls it: setBusyWithJob(false, "", nil) after each job.
-	p.setBusyWithJob(false, "", nil)
+	// run() calls it: setBusyWithJob(false, nil, nil) after each job.
+	p.setBusyWithJob(false, nil, nil)
 	p.busyMu.Lock()
 	defer p.busyMu.Unlock()
 	if p.busy {
-		t.Error("busy = true, want false after setBusyWithJob(false, \"\", nil)")
+		t.Error("busy = true, want false after setBusyWithJob(false, nil, nil)")
 	}
-	if p.currentJobID != "" {
-		t.Errorf("currentJobID = %q, want empty after clearing", p.currentJobID)
+	if p.currentJob != nil {
+		t.Errorf("currentJob = %p, want nil after clearing", p.currentJob)
 	}
 	if p.currentJobCancel != nil {
 		t.Error("currentJobCancel must be nil after clearing")
@@ -149,9 +150,9 @@ func TestSetBusyWithJob_MutatesAllThreeFieldsAtomically(t *testing.T) {
 }
 
 // TestSetBusyWithJob_ObservableThroughHasAndEmpty pins the reason
-// setBusyWithJob exists at all (its own doc comment: "so Has and Cancel can
+// setBusyWithJob exists at all (its own doc comment: "so HasJob and Cancel can
 // observe the in-flight job... without racing the busy flag") by driving it
-// through PostProcessor.Has and Empty rather than only reading the raw
+// through PostProcessor.HasJob and Empty rather than only reading the raw
 // fields, so a change that broke that contract while leaving the fields
 // themselves correct would still be caught.
 func TestSetBusyWithJob_ObservableThroughHasAndEmpty(t *testing.T) {
@@ -159,25 +160,26 @@ func TestSetBusyWithJob_ObservableThroughHasAndEmpty(t *testing.T) {
 
 	p := New(Options{})
 	const jobID = "observable-busy"
+	current := &Job{Job: job.New(jobID, jobID, job.Policy{})}
 
-	if p.Has(jobID) {
-		t.Fatal("fixture guard: Has must be false before setBusyWithJob runs")
+	if p.HasJob(current.Job) {
+		t.Fatal("fixture guard: HasJob must be false before setBusyWithJob runs")
 	}
 	if !p.Empty() {
 		t.Fatal("fixture guard: Empty must be true before setBusyWithJob runs")
 	}
 
-	p.setBusyWithJob(true, jobID, func() {})
-	if !p.Has(jobID) {
-		t.Error("Has(jobID) = false while setBusyWithJob marked it current and busy")
+	p.setBusyWithJob(true, current, func() {})
+	if !p.HasJob(current.Job) {
+		t.Error("HasJob = false while setBusyWithJob marked it current and busy")
 	}
 	if p.Empty() {
 		t.Error("Empty() = true while busy is set")
 	}
 
-	p.setBusyWithJob(false, "", nil)
-	if p.Has(jobID) {
-		t.Error("Has(jobID) = true after setBusyWithJob cleared the current job")
+	p.setBusyWithJob(false, nil, nil)
+	if p.HasJob(current.Job) {
+		t.Error("HasJob = true after setBusyWithJob cleared the current job")
 	}
 	if !p.Empty() {
 		t.Error("Empty() = false after setBusyWithJob cleared busy and the queue is empty")

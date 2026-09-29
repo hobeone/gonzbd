@@ -3,6 +3,8 @@ package dispatch
 import (
 	"context"
 	"fmt"
+
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 type occupyContextKey struct{}
@@ -30,8 +32,24 @@ type occupyToken struct {
 // Returns ErrNotFound if the job is not currently registered or if Remove is
 // actively removing it.
 func (d *Dispatcher) Occupy(ctx context.Context, id string, fn func(ctx context.Context)) error {
+	return d.occupyFor(ctx, id, nil, fn)
+}
+
+// OccupyJob is Occupy for one instance of a job: it also returns ErrNotFound,
+// without running fn, unless j is the job registered under j.ID(), so a caller
+// still holding a removed instance cannot occupy a later attempt registered
+// under the same ID. While fn runs, j stays registered under its ID until a
+// Remove of it ends, and register refuses the ID while it is registered.
+func (d *Dispatcher) OccupyJob(ctx context.Context, j *job.Job, fn func(ctx context.Context)) error {
+	if j == nil {
+		return fmt.Errorf("dispatch: OccupyJob: nil job: %w", ErrNotFound)
+	}
+	return d.occupyFor(ctx, j.ID(), j, fn)
+}
+
+func (d *Dispatcher) occupyFor(ctx context.Context, id string, expected *job.Job, fn func(ctx context.Context)) error {
 	d.mu.Lock()
-	if !d.admitsLocked(id) {
+	if !d.admitsLocked(id) || (expected != nil && d.byID[id].j != expected) {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: Occupy %s: %w", id, ErrNotFound)
 	}

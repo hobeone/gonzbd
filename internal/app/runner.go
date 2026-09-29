@@ -215,6 +215,9 @@ func (r *appRunner) runPostProc(_ context.Context, id string, _ job.State) {
 	// which then releases the claim, and one at Extracting or Finalizing does
 	// not interrupt the run, which hands the job over as usual. A job a
 	// RemoveJob took is refused at the hand-over, and jobFinalizer.cancelled
-	// releases its claim.
+	// releases its claim. Nor when the instance's admission has ended:
+	// finalize and cancelled each latch the cancel (CancelJob) and yield
+	// before they end it, so a launch that took its claim before the cancel
+	// had it cleared by that yield, and no later launch starts.
 	r.app.enqueuePostProc(j, hdr, failMsgForJob(j))
 }

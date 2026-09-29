@@ -9,10 +9,10 @@ import (
 // TestPopJob_HasAndEmptyBlockDuringTransition is the regression test for the
 // popJob window described in popJob's doc comment: a job popped from the
 // queue must never be observable, even momentarily, as absent from BOTH the
-// queue (ppQueue.Has) and the busy state (PostProcessor.busy /
-// currentJobID). Before the fix, p.q.Pop(p.workerCtx) released q.mu and
-// returned the job to popJob's caller before p.setBusyWithJob ran, so a
-// concurrent Has/Empty call landing in that window saw the job nowhere.
+// queue and the busy state (PostProcessor.busy / currentJob). Before the
+// fix, p.q.Pop(p.workerCtx) released q.mu and returned the job to popJob's
+// caller before p.setBusyWithJob ran, so a concurrent HasJob/Empty call
+// landing in that window saw the job nowhere.
 //
 // The real window is a handful of nanoseconds inside a single function
 // call, entirely too small to reproduce by racing free-running goroutines
@@ -52,7 +52,8 @@ func TestPopJob_HasAndEmptyBlockDuringTransition(t *testing.T) {
 	p.workerCtx = ctx
 
 	const jobID = "torn-check"
-	p.q.Push(&Job{Job: newQueueJob(t, jobID, 0)})
+	pushed := &Job{Job: newQueueJob(t, jobID, 0)}
+	p.q.Push(pushed)
 
 	// Block setBusyWithJob's busyMu.Lock() so the transition halts
 	// mid-flight, under our control.
@@ -78,14 +79,14 @@ func TestPopJob_HasAndEmptyBlockDuringTransition(t *testing.T) {
 	}, 2*time.Second, "ppQueue.tryPop to be holding q.mu while mark blocks on busyMu")
 
 	// q.mu is held. On the fixed code the job is already removed from the
-	// slice (tryPop does that before invoking mark) and busy/currentJobID
+	// slice (tryPop does that before invoking mark) and busy/currentJob
 	// are not yet published (mark's setBusyWithJob call is the thing
 	// blocked on busyMu right now) -- exactly the torn state Has/Empty must
 	// never answer from. Prove they don't: launch both and confirm neither
 	// returns while q.mu stays held.
 	hasDone := make(chan bool, 1)
 	emptyDone := make(chan bool, 1)
-	go func() { hasDone <- p.Has(jobID) }()
+	go func() { hasDone <- p.HasJob(pushed.Job) }()
 	go func() { emptyDone <- p.Empty() }()
 
 	select {
@@ -102,7 +103,7 @@ func TestPopJob_HasAndEmptyBlockDuringTransition(t *testing.T) {
 	}
 
 	// Let the transition complete: mark finishes (publishing busy=true,
-	// currentJobID=jobID), tryPop releases q.mu, popJob returns, and the
+	// currentJob=pushed), tryPop releases q.mu, popJob returns, and the
 	// blocked Has/Empty calls can now proceed to a consistent answer.
 	p.busyMu.Unlock()
 
@@ -209,12 +210,13 @@ func TestHas_RequiresQueueLockEvenForCurrentJob(t *testing.T) {
 
 	p := New(Options{})
 	const jobID = "current-job"
-	p.setBusyWithJob(true, jobID, nil)
+	current := &Job{Job: newQueueJob(t, jobID, 0)}
+	p.setBusyWithJob(true, current, nil)
 
 	p.q.mu.Lock()
 
 	done := make(chan bool, 1)
-	go func() { done <- p.Has(jobID) }()
+	go func() { done <- p.HasJob(current.Job) }()
 
 	select {
 	case v := <-done:
@@ -246,7 +248,7 @@ func TestEmpty_RequiresQueueLockEvenWhenBusy(t *testing.T) {
 	t.Parallel()
 
 	p := New(Options{})
-	p.setBusyWithJob(true, "x", nil)
+	p.setBusyWithJob(true, &Job{Job: newQueueJob(t, "x", 0)}, nil)
 
 	p.q.mu.Lock()
 

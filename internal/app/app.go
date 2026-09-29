@@ -200,7 +200,7 @@ type Application struct {
 	transitions jobTransitions
 
 	// postProcAdmissions admits at most one post-processing run of a job
-	// instance at a time; see enqueuePostProc. Its zero value is ready to use.
+	// instance; see enqueuePostProc. Its zero value is ready to use.
 	postProcAdmissions postProcAdmissions
 
 	// stallKick carries R19's "on user action" re-evaluation request from an
@@ -2214,8 +2214,9 @@ func awaitDirectUnpackOrAbort(ctx context.Context, removed <-chan struct{}, du d
 }
 
 // enqueuePostProc hands j to the post-processor unless a post-processing run of
-// this instance is already admitted (postProcAdmissions). In that case it does
-// nothing but offer failMsg to the admitted run.
+// this instance is already admitted, or has been and ended
+// (postProcAdmissions). In the first case it does nothing but offer failMsg to
+// the admitted run; in the second, nothing.
 func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg string) {
 	switch app.postProcAdmissions.admit(j, failMsg) {
 	case admitted:
@@ -2229,6 +2230,10 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 		return
 	case refusedReasonNoted:
 		app.log.Warn("postproc: job already admitted with another failure reason or already handed over; this reason is noted in its history entry's stage log and does not change its status",
+			"job", j.ID(), "fail_msg", failMsg)
+		return
+	case refusedEnded:
+		app.log.Warn("postproc: this job instance's post-processing has already ended; not running it again",
 			"job", j.ID(), "fail_msg", failMsg)
 		return
 	}

@@ -17,7 +17,7 @@ run TestRemoveJob_(WaitsForTheCancelledStageToStop|ReleasesARunningPostProcessin
 [the abort yields a job the post-processor is still running]
 file internal/app/dispatcher_wiring.go
 --- anchor
-	if pp != nil && pp.Has(jobID) {
+	if pp != nil && pp.HasJob(j) {
 --- replace
 	if pp != nil && false {
 --- end
@@ -25,7 +25,7 @@ file internal/app/dispatcher_wiring.go
 [the abort decides on the job's state instead of the post-processor holding it]
 file internal/app/dispatcher_wiring.go
 --- anchor
-	if pp != nil && pp.Has(jobID) {
+	if pp != nil && pp.HasJob(j) {
 --- replace
 	if pp != nil && j.Snapshot().State.State == job.Repairing {
 --- end
@@ -33,7 +33,7 @@ file internal/app/dispatcher_wiring.go
 [the abort never yields]
 file internal/app/dispatcher_wiring.go
 --- anchor
-	if pp != nil && pp.Has(jobID) {
+	if pp != nil && pp.HasJob(j) {
 --- replace
 	if pp != nil {
 --- end

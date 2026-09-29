@@ -37,7 +37,10 @@ type appWorkers struct {
 // the job on the dispatcher. Note that CancelJob clears tracking records; it
 // does not cancel or drain active NNTP worker goroutines.
 //
-// It does not yield a job the post-processor holds, queued or running. A
+// It does not yield a job the post-processor holds, queued or running. The
+// question is asked of this instance (HasJob), not of the job's ID: the
+// post-processor releases only the instance it holds, so an earlier instance
+// still there says nothing about who releases this one's claim. A
 // running stage stops only once it next checks its context, and the launch
 // claim is what holds RemoveJob back from the job's files. The claim is
 // released instead once the post-processor lets the job go:
@@ -49,9 +52,9 @@ type appWorkers struct {
 // waiting on it after its per-job timeout, as it does for any worker still
 // running.
 //
-// pp.Has takes q.mu and busyMu, and no span of either calls out of
+// pp.HasJob takes q.mu and busyMu, and no span of either calls out of
 // internal/postproc, so it keeps the lock rule sched.Workers places on Abort.
-// `git grep -n 'q\.mu\.Lock()\|busyMu\.Lock()' -- internal/postproc/postproc.go internal/postproc/queue.go`
+// `git grep -n 'q\.mu\.Lock()\|busyMu\.Lock()' -- internal/postproc/postproc.go internal/postproc/queue.go internal/postproc/has.go`
 // returns 13 lines, the spans that claim covers.
 func (w *appWorkers) Abort(j *job.Job) {
 	if w.app == nil || j == nil {
@@ -73,7 +76,7 @@ func (w *appWorkers) Abort(j *job.Job) {
 			wk.Wake()
 		}
 	}
-	if pp != nil && pp.Has(jobID) {
+	if pp != nil && pp.HasJob(j) {
 		return
 	}
 	if disp != nil {

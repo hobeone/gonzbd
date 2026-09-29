@@ -1,20 +1,22 @@
 package app
 
 import (
+	"runtime"
 	"slices"
 	"sync"
+	"weak"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // postProcAdmissions records which job instances have been handed to
-// post-processing and not yet handed back, so that at most one
-// post-processing run of an instance is in progress at a time.
+// post-processing and not yet handed back, and which have been handed back,
+// so that an instance has at most one post-processing run.
 //
-// An admission spans more than PostProcessor.Has does: it starts before the
+// An admission spans more than PostProcessor.HasJob does: it starts before the
 // DirectUnpack wait, when the post-processor has not been given the job yet,
 // and ends only after jobFinalizer.finalize or jobFinalizer.cancelled has run
-// for it, where Has stops reporting the job before either callback runs.
+// for it, where HasJob stops reporting the job before either callback runs.
 //
 // A removed job's post-processing does not start. RemoveJob marks the instance
 // removed (jobTransitions.markRemoved) and then calls withdraw, and
@@ -30,9 +32,20 @@ import (
 //
 // An admission a shutdown interrupts is never ended.
 //
-// Ending an admission does not deregister the instance. If the dispatcher still
-// holds it afterwards, because a removal failed, a later call can admit it
-// again.
+// An instance is admitted at most once. Ending an admission does not
+// deregister the instance: the dispatcher still holds it when the finalizer's
+// removal or a RemoveJob's fails. So release leaves the instance in ended, and
+// admit refuses it from then on, rather than start a second run whose finalize
+// would file the job in history again. Nothing re-runs an instance whose
+// admission ended. release runs from finalize, once the run is done, and from
+// cancelled: `git grep -n 'postProcAdmissions\.release(' -- 'internal/app/*.go' ':!*_test.go'`
+// returns 2 lines. cancelled follows a RemoveJob, through its
+// PostProcessor.Cancel or the hand-over refusing a removed job
+// (`git grep -n 'postProcessor\.Cancel(' -- 'internal/app/*.go' ':!*_test.go'`
+// returns 1 line, in RemoveJob), and latches the instance's cancel intent
+// before it releases. A retry or a restart registers a new
+// instance. ended holds each instance weakly, so its entry goes when the job
+// is collected.
 //
 // It is keyed by instance, not by ID: a retry registered under the ID of a job
 // whose finalizer is still running is a different job, and is admitted.
@@ -44,8 +57,9 @@ import (
 // run's FailMsg. Any other reason is kept as a note, which finalize adds to
 // the history entry's stage log without changing its status.
 type postProcAdmissions struct {
-	mu   sync.Mutex
-	jobs map[*job.Job]*postProcAdmission
+	mu    sync.Mutex
+	jobs  map[*job.Job]*postProcAdmission
+	ended map[weak.Pointer[job.Job]]runtime.Cleanup
 }
 
 type postProcAdmission struct {
@@ -75,14 +89,21 @@ const (
 	// refusedReasonNoted: already admitted; the caller's reason is kept as a
 	// note, because the admission has a different reason or is sealed.
 	refusedReasonNoted
+	// refusedEnded: j's admission has ended. The caller's reason has no run
+	// left to reach.
+	refusedEnded
 )
 
-// admit admits j unless it is already admitted. A refused call's failMsg
-// becomes the admission's reason if it has none and is not sealed, and is
-// otherwise kept as a note unless it repeats the reason or a note.
+// admit admits j unless it is admitted or its admission has ended. A call
+// refused as already admitted has its failMsg become the admission's reason if
+// it has none and is not sealed, and otherwise kept as a note unless it
+// repeats the reason or a note.
 func (a *postProcAdmissions) admit(j *job.Job, failMsg string) admitOutcome {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if _, ok := a.ended[weak.Make(j)]; ok {
+		return refusedEnded
+	}
 	if cur, ok := a.jobs[j]; ok {
 		if failMsg == "" || failMsg == cur.failMsg {
 			return refused
@@ -143,8 +164,8 @@ func (a *postProcAdmissions) beginHandOver(j *job.Job, t *jobTransitions) (failM
 
 // endStep ends the step whose token beginWait or beginHandOver returned,
 // releasing a withdraw waiting for it. It closes the token only while it is
-// still j's current step: a release has already closed it, and a later
-// admission of j holds a token of its own.
+// still j's current step: a release has already closed it, and a later step
+// of the admission holds a token of its own.
 func (a *postProcAdmissions) endStep(j *job.Job, token chan struct{}) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -211,15 +232,31 @@ func (a *postProcAdmissions) unlessAdmitted(j *job.Job, fn func()) bool {
 	return true
 }
 
-// release ends j's admission. It also ends a step still in progress: a job the
-// post-processor finishes before its enqueue reaches endStep is released
-// first, and a withdraw waiting on that step must not wait for an admission
-// that no longer exists.
+// release ends j's admission, and records j in ended so admit refuses it from
+// now on. It also ends a step still in progress: a job the post-processor
+// finishes before its enqueue reaches endStep is released first, and a
+// withdraw waiting on that step must not wait for an admission that no longer
+// exists.
 func (a *postProcAdmissions) release(j *job.Job) {
+	key := weak.Make(j)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if cur, ok := a.jobs[j]; ok && cur.busy != nil {
 		close(cur.busy)
 	}
 	delete(a.jobs, j)
+	if _, ok := a.ended[key]; ok {
+		return
+	}
+	if a.ended == nil {
+		a.ended = make(map[weak.Pointer[job.Job]]runtime.Cleanup)
+	}
+	a.ended[key] = runtime.AddCleanup(j, a.forgetEnded, key)
+}
+
+// forgetEnded drops a collected job's entry from ended.
+func (a *postProcAdmissions) forgetEnded(key weak.Pointer[job.Job]) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.ended, key)
 }

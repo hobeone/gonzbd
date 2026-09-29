@@ -435,19 +435,18 @@ func TestPostProcAdmissions_WithdrawWaitsOutAStep(t *testing.T) {
 }
 
 // TestPostProcAdmissions_AStaleTokenEndsNoStep: an enqueue's step token ends
-// only its own step. After its admission was released and the instance
-// admitted again, a late endStep with the old token must not release a
-// withdraw waiting on the new admission's step.
+// only its own step. Once the wait step has ended and the hand-over begun, a
+// late endStep with the wait's token must not release a withdraw waiting on
+// the hand-over.
 func TestPostProcAdmissions_AStaleTokenEndsNoStep(t *testing.T) {
 	t.Parallel()
 	var a postProcAdmissions
 	var tr jobTransitions
 	j := job.New("stale", "stale", job.Policy{})
 	a.admit(j, "")
-	_, stale, _ := a.beginHandOver(j, &tr)
-	a.release(j)
-	a.admit(j, "")
-	_, current := a.beginWait(j)
+	_, stale := a.beginWait(j)
+	a.endStep(j, stale)
+	_, current, _ := a.beginHandOver(j, &tr)
 
 	done, _ := returnsWithin(0, func() { a.withdraw(j) })
 	a.endStep(j, stale)

@@ -179,9 +179,9 @@ func TestRemoveJob_ReleasesAJobPostProcessingFinishesAfterTheAbort(t *testing.T)
 	// Past the dispatcher cancel, whose abort found the job in
 	// post-processing. Finishing the stage and waiting for the worker to let
 	// go leaves the post-processing cancel nothing to take.
-	application.removeCancelGapHook = func(id string) {
+	application.removeCancelGapHook = func(string) {
 		close(stage.finish)
-		waitFor(t, func() bool { return !application.postProcessor.Has(id) })
+		waitFor(t, func() bool { return !application.postProcessor.HasJob(j) })
 	}
 	removeWithinBudget(t, application, j.ID())
 }
@@ -218,7 +218,7 @@ func TestRemoveJob_ReleasesARepairingJobPostProcessingDoesNotHold(t *testing.T) 
 	case <-time.After(10 * time.Second):
 		t.Fatal("the Repairing job was never launched")
 	}
-	if application.postProcessor.Has(j.ID()) {
+	if application.postProcessor.HasJob(j) {
 		t.Fatal("post-processing holds the job, so this would not test an unheld one")
 	}
 
