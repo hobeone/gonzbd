@@ -236,7 +236,76 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 
 		return nil
 	})
+
+	if err == nil && res.Success {
+		if verifyErr := verifyProtectedFilesExist(&res, parfile, onLine); verifyErr != nil {
+			log.Warn("go_par2: post-repair existence check failed", "parfile", parfile, "err", verifyErr)
+		}
+	}
+
 	return res, err
+}
+
+// verifyProtectedFilesExist re-parses the par2 index independently of
+// par2engine's own bookkeeping and confirms that every file it protects
+// exists on disk at its recorded name, downgrading res.Success to false and
+// recording a diagnostic line when one does not.
+//
+// This exists because par2engine's block scanner can locate a missing
+// protected file's shards wherever their bytes happen to sit inside another
+// on-disk file — an uncompressed, stored archive member is the case that
+// reaches this in practice — and its final shard tally counts a located
+// shard as usable regardless of whether the file that owns it was ever
+// found. RepairNeeded() then comes back false, and a file that was never
+// written is reported as a success. Re-deriving "does the file exist" from
+// an independent parse of the same on-disk index, rather than trusting the
+// engine's internal Missing bookkeeping, is what catches that.
+//
+// An error parsing the index is reported to the caller but does not itself
+// flip Success: that failure means the check could not run, which is a
+// different condition from the check running and finding a file absent, and
+// conflating the two would turn "the check was inconclusive" into a false
+// repair failure.
+func verifyProtectedFilesExist(res *RepairResult, parfile string, onLine func(string)) error {
+	descs, err := ParseFileDescriptions(parfile)
+	if err != nil {
+		return fmt.Errorf("parse par2 index for post-repair existence check: %w", err)
+	}
+	if len(descs) == 0 {
+		return nil
+	}
+
+	dir := filepath.Dir(parfile)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return fmt.Errorf("open %s for post-repair existence check: %w", dir, err)
+	}
+	defer root.Close() //nolint:errcheck // read-only
+
+	var missing []string
+	for _, fd := range descs {
+		// fd.FileName is poster-controlled, so confinement is os.Root rather
+		// than a lexical join — see relocateFile's doc comment in fsops.go
+		// for the argument. Lstat, not Stat, for the same reason relocateFile
+		// checks the source with Lstat: a symlink planted at the expected
+		// path should not read as "the file exists" on its target's say-so.
+		info, statErr := root.Lstat(filepath.FromSlash(fd.FileName))
+		if statErr != nil || !info.Mode().IsRegular() {
+			missing = append(missing, fd.FileName)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	res.Success = false
+	msg := fmt.Sprintf("[go_par2] Repair reported success but %d protected file(s) are still missing: %s",
+		len(missing), strings.Join(missing, ", "))
+	res.Output += msg + "\n"
+	if onLine != nil {
+		onLine(msg)
+	}
+	return nil
 }
 
 // addCandidateFiles reads dir and registers every non-directory, non-par2 file
