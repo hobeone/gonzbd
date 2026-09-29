@@ -140,11 +140,11 @@ func (q *ppQueue) tryPop(mark func(*Job)) *Job {
 }
 
 // withLock runs fn while holding q.mu, passing it the live q.jobs slice. It
-// exists so PostProcessor.Has and PostProcessor.Empty can read the queue and
+// exists so PostProcessor.HasJob and PostProcessor.Empty can read the queue and
 // the busyMu-guarded fields under one consistent q.mu -> busyMu lock order
 // (the same order tryPop's mark callback uses to publish busy state),
 // instead of taking and releasing each lock independently -- which is what
-// let the two reads tear and made Has/Empty observe the job as absent from
+// let the two reads tear and made HasJob/Empty observe the job as absent from
 // both.
 //
 // Passing jobs as a parameter rather than letting fn reach into q.jobs

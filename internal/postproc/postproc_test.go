@@ -493,7 +493,7 @@ func TestCancelInProgressJob(t *testing.T) {
 
 	waitUntil(t, func() bool {
 		p.busyMu.Lock()
-		b := p.busy && p.currentJobID == "running"
+		b := p.busy && p.currentJob == job
 		p.busyMu.Unlock()
 		return b
 	}, 2*time.Second, "worker to be busy on running job")

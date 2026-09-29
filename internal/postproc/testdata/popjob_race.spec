@@ -19,7 +19,7 @@ func (p *PostProcessor) popJob() (*Job, context.Context, bool) {
 	job, ok := p.q.Pop(p.workerCtx, func(j *Job) {
 		var jobCancel context.CancelFunc
 		jobCtx, jobCancel = context.WithCancel(p.workerCtx)
-		p.setBusyWithJob(true, j.JobID(), jobCancel) //lockio: q.mu -> busyMu is intentional acyclic order
+		p.setBusyWithJob(true, j, jobCancel) //lockio: q.mu -> busyMu is intentional acyclic order
 	})
 	if !ok {
 		return nil, nil, false
@@ -33,7 +33,7 @@ func (p *PostProcessor) popJob() (*Job, context.Context, bool) {
 		return nil, nil, false
 	}
 	jobCtx, jobCancel := context.WithCancel(p.workerCtx)
-	p.setBusyWithJob(true, job.JobID(), jobCancel)
+	p.setBusyWithJob(true, job, jobCancel)
 	return job, jobCtx, true
 }
 --- end
@@ -56,37 +56,71 @@ file internal/postproc/queue.go
 	}
 --- end
 
-# Has reverted to the pre-fix sequential form: busyMu taken and released as
+# HasJob reverted to the pre-fix sequential form: busyMu taken and released as
 # its own critical section, then p.q.Has (which takes q.mu itself)
 # consulted only as a fallback. With the test's job already the current
 # busy job, this mutant answers straight from the busyMu step and never
 # touches q.mu at all -- it returns almost immediately even though the
 # test holds q.mu, instead of blocking for the full 100ms window.
-[Has's combined q.mu -> busyMu critical section split back into two]
-file internal/postproc/postproc.go
+[HasJob's combined q.mu -> busyMu critical section split back into two]
+file internal/postproc/has.go
 --- anchor
-func (p *PostProcessor) Has(jobID string) bool {
+import (
+	"slices"
+
+	"github.com/hobeone/gonzbd/internal/job"
+)
+
+// HasJob reports whether j, this instance rather than any job with its ID, is
+// either pending in the queue or currently being processed by the worker. It
+// stops reporting a job when the worker clears its busy marker, which is
+// before OnJobDone or OnJobCancelled runs, so it cannot serve as a gate
+// against handing the job over twice.
+//
+// The queue read and the busy read happen under one q.mu -> busyMu critical
+// section (via ppQueue.withLock), for the same reason given on
+// PostProcessor.Empty.
+func (p *PostProcessor) HasJob(j *job.Job) bool {
+	if j == nil {
+		return false
+	}
 	var found bool
 	p.q.withLock(func(jobs []*Job) {
-		if findJob(jobs, jobID) >= 0 {
-			found = true
+		found = slices.ContainsFunc(jobs, func(queued *Job) bool { return queued.Job == j })
+		if found {
 			return
 		}
 		p.busyMu.Lock() //lockio: q.mu -> busyMu is intentional acyclic order
-		found = p.currentJobID == jobID
+		found = p.currentJob != nil && p.currentJob.Job == j
 		p.busyMu.Unlock()
 	})
 	return found
 }
 --- replace
-func (p *PostProcessor) Has(jobID string) bool {
+import (
+	"github.com/hobeone/gonzbd/internal/job"
+)
+
+// HasJob reports whether j, this instance rather than any job with its ID, is
+// either pending in the queue or currently being processed by the worker. It
+// stops reporting a job when the worker clears its busy marker, which is
+// before OnJobDone or OnJobCancelled runs, so it cannot serve as a gate
+// against handing the job over twice.
+//
+// The queue read and the busy read happen under one q.mu -> busyMu critical
+// section (via ppQueue.withLock), for the same reason given on
+// PostProcessor.Empty.
+func (p *PostProcessor) HasJob(j *job.Job) bool {
+	if j == nil {
+		return false
+	}
 	p.busyMu.Lock()
-	current := p.currentJobID
+	current := p.currentJob
 	p.busyMu.Unlock()
-	if current == jobID {
+	if current != nil && current.Job == j {
 		return true
 	}
-	return p.q.Has(jobID)
+	return p.q.Has(j.ID())
 }
 --- end
 

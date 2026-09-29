@@ -71,17 +71,17 @@ type PostProcessor struct {
 	wg sync.WaitGroup
 
 	// busy is true while a job's stages are executing.
-	// currentJobID is the ID of the in-flight job (empty when not busy).
+	// currentJob is the in-flight job (nil when not busy).
 	// currentJobCancel cancels the in-flight job's derived context (see
 	// popJob); Cancel calls it to abort a job that is actively being
 	// processed, distinct from workerCancel which aborts everything.
 	// started guards against double Start calls.
-	// All four are guarded by busyMu so Has can atomically observe the
+	// All four are guarded by busyMu so HasJob can atomically observe the
 	// "queued-or-running" set.
 	busyMu           sync.Mutex
 	busy             bool
 	started          bool
-	currentJobID     string
+	currentJob       *Job
 	currentJobCancel context.CancelFunc
 
 	// history tracks all completed jobs for the UI.
@@ -179,7 +179,7 @@ func (p *PostProcessor) Cancel(jobID string) bool {
 	queued, removed := p.q.Cancel(jobID)
 
 	p.busyMu.Lock()
-	inFlight := p.currentJobID == jobID && p.currentJobCancel != nil
+	inFlight := p.currentJob != nil && p.currentJob.JobID() == jobID && p.currentJobCancel != nil
 	cancel := p.currentJobCancel
 	p.busyMu.Unlock()
 
@@ -211,27 +211,6 @@ func (p *PostProcessor) Empty() bool {
 		p.busyMu.Unlock()
 	})
 	return empty
-}
-
-// Has reports whether a job with jobID is either pending in the queue or
-// currently being processed by the worker. It stops reporting a job when the
-// worker clears its busy marker, which is before OnJobDone or OnJobCancelled
-// runs, so it cannot serve as a gate against handing the job over twice.
-//
-// The queue read and the busy read happen under one q.mu -> busyMu critical
-// section (via ppQueue.withLock), for the same reason given on Empty above.
-func (p *PostProcessor) Has(jobID string) bool {
-	var found bool
-	p.q.withLock(func(jobs []*Job) {
-		if findJob(jobs, jobID) >= 0 {
-			found = true
-			return
-		}
-		p.busyMu.Lock() //lockio: q.mu -> busyMu is intentional acyclic order
-		found = p.currentJobID == jobID
-		p.busyMu.Unlock()
-	})
-	return found
 }
 
 // History returns a deep-copy snapshot of all jobs that have passed through
@@ -287,7 +266,7 @@ func (p *PostProcessor) run() {
 		// from its persisted dispatcher state, which for a job handed over
 		// from Fetching is Fetching.
 		if p.workerCtx.Err() != nil {
-			p.setBusyWithJob(false, "", nil)
+			p.setBusyWithJob(false, nil, nil)
 			p.log.Info("postproc: shutdown interrupted job, preserving for recovery",
 				"job", job.JobID())
 			return
@@ -300,7 +279,7 @@ func (p *PostProcessor) run() {
 		// now that processJob has returned, so its caller can release what
 		// the job held without a stage still using it.
 		if jobCancelled {
-			p.setBusyWithJob(false, "", nil)
+			p.setBusyWithJob(false, nil, nil)
 			p.log.Info("postproc: job cancelled mid-processing, dropping",
 				"job", job.JobID())
 			if p.onJobCancelled != nil {
@@ -310,7 +289,7 @@ func (p *PostProcessor) run() {
 		}
 
 		p.addHistory(job)
-		p.setBusyWithJob(false, "", nil)
+		p.setBusyWithJob(false, nil, nil)
 
 		if p.onJobDone != nil {
 			p.onJobDone(job)
@@ -332,9 +311,9 @@ func (p *PostProcessor) run() {
 //
 // The mark callback passed to q.Pop runs inside ppQueue.tryPop while q.mu is
 // still held, immediately after the job is removed from the slice -- so
-// setBusyWithJob publishes "in flight" before any caller of Has/Empty can
+// setBusyWithJob publishes "in flight" before any caller of HasJob/Empty can
 // observe the job as removed from the queue. There is no window where the
-// job is in neither place: Has and Empty read the queue and busy state
+// job is in neither place: HasJob and Empty read the queue and busy state
 // under that same q.mu -> busyMu order (see their doc comments), so they
 // see one consistent snapshot rather than two independent reads.
 func (p *PostProcessor) popJob() (*Job, context.Context, bool) {
@@ -342,7 +321,7 @@ func (p *PostProcessor) popJob() (*Job, context.Context, bool) {
 	job, ok := p.q.Pop(p.workerCtx, func(j *Job) {
 		var jobCancel context.CancelFunc
 		jobCtx, jobCancel = context.WithCancel(p.workerCtx)
-		p.setBusyWithJob(true, j.JobID(), jobCancel) //lockio: q.mu -> busyMu is intentional acyclic order
+		p.setBusyWithJob(true, j, jobCancel) //lockio: q.mu -> busyMu is intentional acyclic order
 	})
 	if !ok {
 		return nil, nil, false
@@ -642,14 +621,14 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 	job.StageLog = append(job.StageLog, buildSummaryEntry(job))
 }
 
-// setBusyWithJob updates busy, currentJobID, and currentJobCancel
-// atomically. Used by the worker around each processJob call so Has and
+// setBusyWithJob updates busy, currentJob, and currentJobCancel
+// atomically. Used by the worker around each processJob call so HasJob and
 // Cancel can observe the in-flight job (and abort it) without racing the
-// busy flag. cancel should be nil when v is false.
-func (p *PostProcessor) setBusyWithJob(v bool, jobID string, cancel context.CancelFunc) {
+// busy flag. j and cancel should be nil when v is false.
+func (p *PostProcessor) setBusyWithJob(v bool, j *Job, cancel context.CancelFunc) {
 	p.busyMu.Lock()
 	p.busy = v
-	p.currentJobID = jobID
+	p.currentJob = j
 	p.currentJobCancel = cancel
 	p.busyMu.Unlock()
 }

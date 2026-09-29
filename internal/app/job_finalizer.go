@@ -138,8 +138,8 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // filesystem teardown (checkpointer prune, dispatcher removal, manifest
 // unlinking, and barrier state reset) is attempted regardless of history
 // persistence success, and skipped with the rest when a RemoveJob took the job
-// first (errFinalizedJobRemoved). If dispatcher.Remove returns an
-// error, it is retried once. If the retry also fails, the error is logged, a
+// first (errFinalizedJobRemoved). If dispatcher.RemoveJob returns an
+// error other than ErrNotFound, it is retried once. If the retry also fails, the error is logged, a
 // note is surfaced on the dispatcher row via SetOperationalError, and a
 // "queue_updated" event is emitted while the job remains registered for retry
 // or restart handling.
@@ -149,7 +149,7 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 //     context.WithoutCancel(app.ctx).
 //   - Dispatcher removal: 3s removeCtx (with an additional 3s retryCtx on
 //     failure if occupyCtx is unexpired), derived from occupyCtx to retain the
-//     occupancy lease token for bypass in Dispatcher.Remove.
+//     occupancy lease token for bypass in Dispatcher.RemoveJob.
 //   - Durability check & delete: 3s delCtx, derived from
 //     context.WithoutCancel(app.ctx).
 //
@@ -204,27 +204,11 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 		// tearing down or has torn down what this would commit. Only its mark
 		// says so: a job merely gone from the dispatcher may be a never-run
 		// job the tick evicted after the Cancel above, and that one is still
-		// filed, through Occupy's fallback below.
+		// filed, through OccupyJob's fallback below.
 		if app.transitions.wasRemoved(ppJob.Job) {
 			log.Info("finalize: the job was removed while this waited for it; not filing it",
 				"job", ppJob.Job.ID())
 			return errFinalizedJobRemoved
-		}
-		// Everything below acts by ID, so a later instance registered under
-		// this job's ID must stop it: filing would put this run in history
-		// under the retry's ID, and the teardown would deregister the retry.
-		// `git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
-		// finds 2 production registrations. RetryHistoryJob's reuses an ID, through the
-		// FetchOptions.JobID it sets, and takes the transition lock; AddJob's
-		// jobs are built by BuildIngestJob, which mints a newJobID when no
-		// JobID is set. So while this holds the lock the answer cannot change
-		// underneath.
-		if app.dispatcher != nil {
-			if cur, ok := app.dispatcher.Job(ppJob.Job.ID()); ok && cur != ppJob.Job {
-				log.Warn("finalize: a later instance of the job holds its ID; not filing this run",
-					"job", ppJob.Job.ID())
-				return errFinalizedJobSuperseded
-			}
 		}
 	}
 
@@ -268,17 +252,23 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 		// queue row. reclaim below leaves the manifest and rows of a job the
 		// dispatcher still holds, which is what keeps that row loadable until
 		// then (#376: appResidency.hydrate fails without the manifest).
+		//
+		// dispatcher.RemoveJob rather than Remove by ID: on the fallback below this
+		// instance is not occupied, and without the transition lock a retry
+		// can register under the ID meanwhile. ErrNotFound means this
+		// instance is not registered, so there is nothing to remove, retry or
+		// mark.
 		if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
 			jobID := ppJob.Job.ID()
 			removeCtx, removeCancel := context.WithTimeout(occupyCtx, 3*time.Second)
-			err := app.dispatcher.Remove(removeCtx, jobID)
+			err := app.dispatcher.RemoveJob(removeCtx, ppJob.Job)
 			removeCancel()
-			if err != nil && occupyCtx.Err() == nil {
+			if err != nil && !errors.Is(err, dispatch.ErrNotFound) && occupyCtx.Err() == nil {
 				retryCtx, retryCancel := context.WithTimeout(occupyCtx, 3*time.Second)
-				err = app.dispatcher.Remove(retryCtx, jobID)
+				err = app.dispatcher.RemoveJob(retryCtx, ppJob.Job)
 				retryCancel()
 			}
-			if err != nil {
+			if err != nil && !errors.Is(err, dispatch.ErrNotFound) {
 				log.Error("failed to remove job from dispatcher after post-proc retry; job remains in queue and history until restart, with its manifest and durability rows left in place for the next startup to reconcile",
 					"job", jobID, "err", err)
 				_ = app.dispatcher.SetOperationalError(jobID, "failed to remove finalized job from queue: "+err.Error())
@@ -310,12 +300,33 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 		return nil
 	}
 
+	// OccupyJob runs the commit only while this instance is registered, and
+	// no other instance can be registered under its ID until the commit's own
+	// dispatcher.RemoveJob ends. It fails when the instance is not registered, when a
+	// removal of it is in progress, or when a later instance holds the ID.
+	//
+	// The last must stop the finalizer: filing would put this run in history
+	// under the retry's ID. `git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
+	// finds 2 production registrations. RetryHistoryJob's reuses an ID,
+	// through the FetchOptions.JobID it sets, and takes the transition lock;
+	// AddJob's jobs are built by BuildIngestJob, which mints a newJobID when
+	// no JobID is set. So while this holds the lock the answer cannot change
+	// underneath. Without it, a retry can register during the fallback: this
+	// run's history write still goes ahead, and dispatcher.RemoveJob is what
+	// leaves the retry registered.
 	if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
 		var runErr error
-		if err := app.dispatcher.Occupy(finalCtx, ppJob.Job.ID(), func(occupyCtx context.Context) {
+		if err := app.dispatcher.OccupyJob(finalCtx, ppJob.Job, func(occupyCtx context.Context) {
 			runErr = runCommit(occupyCtx)
 		}); err != nil {
-			// If Occupy fails (e.g. ErrNotFound if already removed), fallback to running without occupy wrapper.
+			if cur, ok := app.dispatcher.Job(ppJob.Job.ID()); ok && cur != ppJob.Job {
+				log.Warn("finalize: a later instance of the job holds its ID; not filing this run",
+					"job", ppJob.Job.ID())
+				return errFinalizedJobSuperseded
+			}
+			// This instance is not registered, such as a never-run job the
+			// tick evicted after the Cancel above, or a removal of it is in
+			// progress. It is still filed, without the occupancy.
 			log.Warn("occupy failed during finalize; proceeding with fallback teardown", "job", ppJob.Job.ID(), "err", err)
 			return runCommit(finalCtx)
 		}
