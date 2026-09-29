@@ -550,7 +550,7 @@ introduced — diagnose before assuming your change caused it.
 | Gate | Scope of a reported finding | Consequence |
 |------|-----------------------------|-------------|
 | `check_coverage` | Any function containing at least one changed line, measured **whole-function** against the 80% bar | Touching one line of a large, thinly covered function puts all of its branches on the bar. Extracting a helper counts as touching every call site. |
-| `check_test_alignment` | Every unexported helper in a **touched file**, not just changed ones | A one-line fix to a hot file (`sqlite_store.go`, `app.go`) can surface a long-standing untested helper. There is no diff-scoped mode. |
+| `check_test_alignment` | Every unexported helper in a **touched file**, not just changed ones, whose estimated complexity is at least the `--min-complexity` floor | A one-line fix to a hot file (`sqlite_store.go`, `app.go`) can surface a long-standing untested helper. There is no diff-scoped mode. `scripts/run_tests.sh` and `ci.yml` gate at `--min-complexity=8`; the bare command defaults to 0 and also reports smaller helpers, so a review that runs it bare can flag a helper the local suite passed. |
 | `check_lock_io` | A locked span plus **one** level of call-graph descent into a `*Locked`-named callee | Callee descent is *only* into callees with the `*Locked` suffix naming convention. Un-suffixed callees (e.g. `reallyQuery`, `flushRow`) are not inspected even at depth 1, and I/O under a lock at callee depth >= 2 is invisible to the tool. A clean run is not proof; check callees by hand when narrowing or widening a lock. |
 
 Three rules follow:
