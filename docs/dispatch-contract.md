@@ -21,11 +21,12 @@ A `sched.Queue` holds two admission pools and a pause flag: `mu`, `paused`,
 (`internal/sched/queue.go`). It holds no jobs, no registry, and no way to
 enumerate what is resident. Its exported surface —
 `git grep -n '^func (q \*Queue) [A-Z]' internal/sched/*.go | grep -v _test.go`
-returns 13 lines — is `Advance`, `Cancel`, `Park`, `Retry`, `Settle` (write or
-gate), `Pause`, `Resume`, `Paused`, `SetCaps`, `LeaseCap`, `SlotCap` (pool
-management), and `Render`, `RenderAll` (the two rendering doors). Of those
-13, 7 reach a `*job.Job` method call — `internal/job/job.go`'s comment
-enumerates them (Cancel, Park, Retry, Advance, Settle, Render, RenderAll) and
+returns 14 lines — is `Advance`, `Cancel`, `Park`, `Handoff`, `Retry`, `Settle`
+(write or gate), `Pause`, `Resume`, `Paused`, `SetCaps`, `LeaseCap`, `SlotCap`
+(pool management), and `Render`, `RenderAll` (the two rendering doors). Of
+those 14, 8 reach a `*job.Job` method call — `internal/job/job.go`'s comment
+enumerates them (Cancel, Park, Handoff, Retry, Advance, Settle, Render,
+RenderAll) and
 `TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse`
 (`internal/sched/lock_enumeration_test.go`) checks it; the remaining six
 (`Pause`, `Resume`, `Paused`, `SetCaps`, `LeaseCap`, `SlotCap`) touch only the
@@ -35,8 +36,8 @@ Every decision is a function of a `job.Snapshot` — a value taken once under
 `Job.mu` — so no decision can acquire a resource as a side effect of being
 asked. Resource acquisition happens in exactly one place, `grantFor`;
 resource return happens only through `reclaim` (pool A, the sole reclaimer)
-and `releaseFor` (pool B, the sole releaser), both of which `Settle`, `Park`
-and `Cancel` route through.
+and `releaseFor` (pool B, the sole releaser), both of which `Settle`, `Park`,
+`Handoff` and `Cancel` route through.
 
 ## What dispatch owns
 
@@ -58,7 +59,8 @@ The Dispatcher additionally owns:
   interface (`Hydrate`/`Evict`) that does the actual I/O.
 - **The tick loop** (`run`/`tick` in `internal/dispatch/tick.go`).
 - **Worker lifecycle**: `launched`, the `Runner` interface, and the
-  `Finished`/`Yielded` exit doors (`internal/dispatch/worker.go`).
+  `Finished`/`Yielded`/`AdvanceFrom`/`YieldedFrom` exit doors
+  (`internal/dispatch/worker.go`).
 - **Persistence bookkeeping** (`written`, the `Store` interface) and the
   removal-in-progress marker (`removing`, `occupiers` et al.) that makes
   teardown safe under concurrent callers.
@@ -76,8 +78,8 @@ nobody else can build is what makes its lifecycle statements hold.
 A single goroutine (`Dispatcher.run`) walks the registry on a `time.Ticker`
 and calls `sched.Queue.Advance` on each job. `Dispatcher.kick` performs a
 non-blocking send on a size-1 buffered channel (`wake`) to wake the loop
-early; `Add`, `Cancel`, `Retry`, `Pause`, `Resume`, `SetCaps`, `Finished` and
-`YieldedFor` all call it.
+early; `Add`, `Cancel`, `Retry`, `Pause`, `Resume`, `SetCaps`, `Finished`,
+`YieldedFor`, and `handoff` for `AdvanceFrom` and `YieldedFrom` all call it.
 
 **Why a channel and not a `sync.Cond`.** The two are interchangeable for
 "wake a waiter", and `sync.Cond` is the closer fit for the literal signalling
@@ -146,19 +148,32 @@ claiming and releasing every job that is not running.
 
 The re-check is sound on two branches. Every exit report changes what
 `Render` returns before it calls `clearLaunched` (`Settle` closes the
-attempt, `Park` drops the lease or slot), so a report that landed before the
-re-check reads as not `Running`. And `Advance` and `launch` both run only
-from `tick`, which never overlaps itself, so nothing re-grants the job
-between that report and the re-check.
+attempt, `Park` drops the lease or slot, `Handoff` records `Next` and parks),
+so a report that landed before the re-check reads as not `Running`. And
+`Advance` and `launch` both run only from `tick`, which never overlaps itself,
+so nothing re-grants the job between that report and the re-check.
 
-A report can also be half-landed. The app's download-complete report is two
-calls, `SetNext(Assessing)` then `Yielded`, in `completeFinalizedFile`
-(`internal/app/app.go`). A re-check that sees only the `SetNext` reads
-`Next` set, so not `Running`, and releases the claim, and the `Yielded` that
-follows parks a job nobody is working. **Known gap (#624):** if that
-`Yielded` is delayed until a later tick has moved the job to `Assessing` and
-launched its worker, it parks that live worker's resources and clears its
-claim, and the next tick launches a second worker for the same state.
+**A report of finished work is one call, scoped to the state it reports
+from.** `Dispatcher.AdvanceFrom(j, from, next)` records `Next`, parks the job
+and clears its claim inside one `sched.Queue.Handoff` span, and does nothing
+(`ErrStaleReport`) unless the job is still open at `from` with no `Next`. The
+app's two such reports use it: download complete (`Fetching → Assessing`, in
+`completeFinalizedFile`, `internal/app/app.go`) and `runAssess`'s verdict
+(`internal/app/runner.go`). As two calls, `SetNext` then `Yielded` by ID, a
+tick could land between them: it moved the job to `next` and launched that
+state's worker, and the late `Yielded` parked that worker's resources and
+cleared its claim, so the next tick launched the same state again.
+`TestAdvanceFrom_LateReportLeavesTheNextStatesWorkerAlone` and
+`TestAdvanceFrom_UnlaunchedReportLaunchesTheNextStateOnce` pin it.
+
+`Dispatcher.YieldedFrom(j, from)` is the same door with no verdict: it parks
+and clears the claim only while the job is open at `from`. `Application.Stall`
+uses it with `Fetching`. A storage fault can reach a job that has moved to
+`Assessing`, because the checkpoint still covers its open handles, and a
+by-ID `Yielded` there took the live assess worker's slot and claim, so a
+resume launched a second one. Stall now latches the pause at any state and
+releases only a `Fetching` worker; any other worker finishes and reports, and
+the pause gates the move. `TestStall_LeavesALiveAssessingWorkerAlone` pins it.
 
 On worker exit, the runner (or an external caller) must call exactly one of:
 
@@ -166,9 +181,20 @@ On worker exit, the runner (or an external caller) must call exactly one of:
   work, terminally. It rejects `job.OutcomeCancelled` before touching the
   Queue (only the cancel latch may produce that outcome — `sched.Settle`
   refuses it too, via `ErrCancelReserved`), then calls `sched.Queue.Settle`.
+- **`Dispatcher.AdvanceFrom(j, from, next)`** — the worker finished the
+  work of `from` and the job continues to `next`. It calls
+  `sched.Queue.Handoff`. A `next` that `SetNext` refuses settles the job
+  `OutcomeFailed` rather than parking it, which would relaunch `from` to
+  report the same verdict again; no caller reaches that today.
+- **`Dispatcher.YieldedFrom(j, from)`** — the worker for `from` stopped
+  without finishing, and the job may since have moved on. It calls
+  `sched.Queue.Handoff` with no verdict.
 - **`Dispatcher.Yielded(id)` / `YieldedFor(id, expected)`** — the worker
   stopped without finishing: a pause yield at an article boundary, an abort,
-  a shutdown, a dead connection. It calls `sched.Queue.Park`.
+  a shutdown, a dead connection. It calls `sched.Queue.Park`, whatever state
+  the job is at, so it suits only a caller for whom the job cannot have left
+  the worker's state: one holding that worker's launch claim, or one that
+  latched cancel or a global pause first.
 
 `Park` is unconditional and total for every shape it can be handed — a
 never-run job, an already-parked job, a settled job, a job mid-crossing —
@@ -184,7 +210,16 @@ Queue state hasn't moved yet) with the claim already free, and start a
 second worker on resources the first has not yet released; clearing via
 `defer` would let `kick` wake the tick before the claim clears, letting the
 woken tick consume the wake without launching and leave the job unworked
-until the next timer tick.
+until the next timer tick. `AdvanceFrom` and `YieldedFrom` clear it inside
+`Handoff`'s `Queue.mu` span instead, and only for the instance they report
+on. That placement is defence in depth. While the claim taken for `from` is
+held, `claimLaunched` already refuses `next`'s worker until the clear. The
+span matters only when no such claim is held at the clear, either because
+none was taken (after a stall's resume, or at startup) or because another
+by-ID clearer released it in between. A tick could then launch `next`, and a
+clear made after the span would drop that worker's claim. Inside the span
+the job cannot leave `from`. No test pins the placement, because no seam
+can interleave a tick there.
 
 ## Manifest residency is derived from pool membership
 
@@ -241,7 +276,8 @@ under `d.mu` via `snapshotOrder`, releases the lock, and only then calls
 `sched.Queue.Advance` per job (`internal/dispatch/tick.go`). Every other call into `d.q` —
 `Cancel`, `Retry`, `Pause`, `Resume`, `SetCaps`, `Park` in `Stop`'s sweep,
 `Render`/`RenderAll` in `List`/`Row`/`reconcileResidency`/`launch`, `Settle`
-in `Finished`/`reconcileResidency`, `Park` in `YieldedFor` — is likewise made
+in `Finished`/`reconcileResidency`, `Park` in `YieldedFor`, `Handoff` in
+`handoff` (for `AdvanceFrom` and `YieldedFrom`) — is likewise made
 outside any `d.mu` span (verified: `grep -n 'd\.q\.' internal/dispatch/*.go
 | grep -v _test.go` shows none of these calls nested inside a
 `d.mu.Lock()`/`Unlock()` pair).
@@ -256,6 +292,12 @@ concurrent `Cancel` calling `Abort` from inside `Queue.mu` would deadlock
 ABBA against the tick's `Advance` call holding `d.mu` and waiting on
 `Queue.mu`. Lock order overall: `dispatch.mu` → (released) → `Queue.mu` →
 `Job.mu` — never held simultaneously in that first arrow.
+
+The one nesting in the other direction is `Queue.mu` → `dispatch.mu`:
+`handoff` (for `AdvanceFrom` and `YieldedFrom`) passes `Handoff` a callback that clears the launch claim, and
+`Handoff` runs it inside its `Queue.mu` span. It is held to `Abort`'s rule,
+and meets it for the same reason: `d.mu` is never held across a call into
+`sched`, so no holder of `d.mu` can be waiting on `Queue.mu`.
 
 `sched.Queue`'s own lock order is stated in `internal/sched/queue.go`:
 `Queue.mu` is taken before any call into a `*job.Job` method (`Job.mu`
@@ -438,8 +480,10 @@ must never interrupt work (`Workers.Abort` is `Cancel`'s alone). The
 contract this places on the dispatcher: after `Pause`, a caller awaits its
 workers' yields and calls `Park` per job as they arrive: a `Fetching`
 worker checks `Paused()` at an article boundary and yields; a worker in any
-other state runs its stage to completion, sets `Next`, and `Advance`'s
-branch 3 gates and parks it unaided on the next tick (Finalizing has no
+other state runs its stage to completion and sets `Next`, and `Advance`'s
+branch 3 gates it rather than moving it on the next tick. A worker that
+reports through `AdvanceFrom` is parked by that report; one that sets `Next`
+any other way is parked by branch 3 (Finalizing has no
 outbound edges and never sets `Next`, so a Finalizing worker always settles
 directly rather than being parked).
 

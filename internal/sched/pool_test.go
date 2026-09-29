@@ -84,3 +84,21 @@ func TestSlotPool_TracksHolds(t *testing.T) {
 		t.Errorf("acquire(job-b) = false after job-a released its slot, want true")
 	}
 }
+
+// TestPools_SetCapacityFloorsAtOne pins both pools' setCapacity: a requested
+// capacity below one is raised to one, so a reload cannot stop every job from
+// ever being granted, and any other value is taken as given.
+func TestPools_SetCapacityFloorsAtOne(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{{-3, 1}, {0, 1}, {1, 1}, {7, 7}} {
+		lp := newLeasePool(2)
+		lp.setCapacity(tc.in)
+		if lp.capacity != tc.want {
+			t.Errorf("leasePool.setCapacity(%d): capacity = %d, want %d", tc.in, lp.capacity, tc.want)
+		}
+		sp := newSlotPool(2)
+		sp.setCapacity(tc.in)
+		if sp.capacity != tc.want {
+			t.Errorf("slotPool.setCapacity(%d): capacity = %d, want %d", tc.in, sp.capacity, tc.want)
+		}
+	}
+}

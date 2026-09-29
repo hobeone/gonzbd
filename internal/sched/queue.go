@@ -19,9 +19,10 @@ type Workers interface {
 	//
 	// Abort MUST NOT block, and MUST NOT acquire any lock that a caller could
 	// hold across a call into Queue. cancel.go calls Abort from inside
-	// Queue.mu's span — it is the only outward call this package makes while
-	// holding that lock, and check_lock_io cannot see through an interface
-	// method implemented in another package. If a B2 dispatcher takes its own
+	// Queue.mu's span — it and Handoff's handed callback (advance.go) are the
+	// two outward calls this package makes while holding that lock, and
+	// check_lock_io cannot see through an interface method or a func value
+	// supplied by another package. If a B2 dispatcher takes its own
 	// lock on a tick and calls Queue.Advance (which takes Queue.mu), an Abort
 	// implementation that takes that same dispatcher lock deadlocks ABBA
 	// against a concurrent Cancel. This is a precondition B2's implementation
@@ -37,8 +38,8 @@ type Workers interface {
 // its first locker during this package's build order (queue.go landed before
 // advance.go so that reclaim and releaseFor — which finishCancel needs —
 // existed for Cancel to call), but it is no longer the only one: `grep -n
-// 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds thirteen production
-// lockers — Cancel (cancel.go), Park, Retry and Advance (advance.go), Settle
+// 'q\.mu\.Lock' internal/sched/*.go | grep -v _test.go` finds fourteen production
+// lockers — Cancel (cancel.go), Park, Handoff, Retry and Advance (advance.go), Settle
 // (settle.go), Render and RenderAll (render.go), and Pause, Resume, Paused,
 // SetCaps, LeaseCap and SlotCap (this file) — plus this sentence's own mention
 // of the pattern, written as q.mu.Loc[k]() (the same self-matching workaround
@@ -48,7 +49,7 @@ type Workers interface {
 // take the locks in the other order.
 //
 // The grep above proves the COUNT; it says nothing about whether these are
-// the same thirteen NAMES this comment lists, so a rename this pattern still
+// the same fourteen NAMES this comment lists, so a rename this pattern still
 // matches (or a new locker under an old name) would leave the citation green
 // while the prose went wrong.
 // TestQueueMuLockers_MatchTheEnumerationStatedInProse

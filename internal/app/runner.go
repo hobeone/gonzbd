@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
@@ -14,6 +15,7 @@ import (
 type reporter interface {
 	Finished(id string, o job.Outcome) error
 	Yielded(id string) error
+	AdvanceFrom(j *job.Job, from, next job.State) error
 }
 
 // appRunner routes a job at one state to the subsystem that does that state's
@@ -25,19 +27,20 @@ type reporter interface {
 // and worker drains are owned by their respective Stop methods during
 // Application.Shutdown.
 //
-// Every branch must end in exactly one Finished or Yielded, on some goroutine.
-// Returning without either strands the job's lease and compute slot: the Queue
+// Every branch must end in exactly one Finished, Yielded or AdvanceFrom, on
+// some goroutine.
+// Returning without one strands the job's lease and compute slot: the Queue
 // cannot distinguish "holding and working" from "holding and yielded", so
 // nothing else can return them (ports.go, Runner).
 //
 // The obligation is discharged either synchronously within the runner or via
 // four documented downstream pipeline handoffs:
 //  1. Fetching: hands off to downloader (dl.Wake()). Downloader work completes
-//     and yields via handleFileComplete (`git grep -n 'func (app \*Application) handleFileComplete' internal/app/`) on download completion,
-//     noteStall (`git grep -n 'func (app \*Application) noteStall' internal/app/`) on stall, appWorkers.Abort
+//     and reports via completeFinalizedFile's AdvanceFrom (`git grep -n 'func (app \*Application) completeFinalizedFile' internal/app/`) on download completion,
+//     and yields via Stall (`git grep -n 'func (app \*Application) Stall(' internal/app/`) on stall, appWorkers.Abort
 //     (`git grep -n 'func (w \*appWorkers) Abort' internal/app/`) on cancellation, or stopWorkers (`git grep -n 'func (app \*Application) stopWorkers' internal/app/`)
 //     on shutdown.
-//  2. Assessing: discharges directly within runAssess via Yielded (intact,
+//  2. Assessing: discharges directly within runAssess via AdvanceFrom (intact,
 //     repairable, or deferred recovery) or Finished(OutcomeFailed) (hopeless).
 //  3. Repairing/Extracting/Finalizing: hands off to postProcessor.Process
 //     (enqueuePostProc). Post-processing completes and yields via
@@ -120,8 +123,8 @@ func (r *appRunner) runFetch(_ context.Context, id string) {
 }
 
 // runAssess executes assessment work synchronously in-goroutine and passes ctx
-// to maybeReleaseRecoveryVolumes(ctx, id). It directly reports completion or
-// state transition via Yielded or Finished.
+// to maybeReleaseRecoveryVolumes(ctx, id). It directly reports completion via
+// Finished or its verdict via AdvanceFrom.
 func (r *appRunner) runAssess(ctx context.Context, id string) {
 	if r.app == nil {
 		if r.report != nil {
@@ -141,10 +144,7 @@ func (r *appRunner) runAssess(ctx context.Context, id string) {
 	}
 
 	if r.app.maybeReleaseRecoveryVolumes(ctx, id) {
-		_ = j.SetNext(job.Fetching)
-		if r.report != nil {
-			_ = r.report.Yielded(id)
-		}
+		r.advance(j, job.Fetching)
 		return
 	}
 
@@ -159,16 +159,27 @@ func (r *appRunner) runAssess(ctx context.Context, id string) {
 	}
 
 	if repairState == job.RepairPossible || repairState == job.RepairUnknown {
-		_ = j.SetNext(job.Repairing)
-		if r.report != nil {
-			_ = r.report.Yielded(id)
-		}
+		r.advance(j, job.Repairing)
 		return
 	}
 
-	_ = j.SetNext(job.Extracting)
-	if r.report != nil {
-		_ = r.report.Yielded(id)
+	r.advance(j, job.Extracting)
+}
+
+// advance reports runAssess's verdict. The report records next and releases
+// the job in one dispatcher call, so no tick can move the job between the two.
+func (r *appRunner) advance(j *job.Job, next job.State) {
+	if r.report == nil {
+		return
+	}
+	err := r.report.AdvanceFrom(j, job.Assessing, next)
+	switch {
+	case err == nil:
+	case errors.Is(err, dispatch.ErrStaleReport) || errors.Is(err, dispatch.ErrNotFound):
+		// Cancelled or removed while assessing; the cancel path released it.
+		r.log.Debug("runner: assess verdict not recorded", "job", j.ID(), "next", next, "error", err)
+	default:
+		r.log.Warn("runner: assess verdict not recorded", "job", j.ID(), "next", next, "error", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/hobeone/gonzbd/internal/job"
@@ -123,6 +124,79 @@ func (d *Dispatcher) YieldedFor(id string, expected *job.Job) error {
 	return nil
 }
 
+// ErrStaleReport is AdvanceFrom's and YieldedFrom's refusal of a report about a state the job is
+// no longer working: it has moved on, settled, or already recorded where it
+// goes next.
+var ErrStaleReport = errors.New("dispatch: report is for a state the job is not working")
+
+// AdvanceFrom records that j's worker finished the work of state from and that
+// the job continues to next. It is the exit report for finished work; Yielded
+// is the one for work that stopped unfinished.
+//
+// The verdict, the park and the release of the launch claim happen in one
+// sched.Queue.Handoff span, which is what makes the report atomic against the
+// tick. Recording next and then yielding as two calls let a tick land between
+// them: it moved the job to next and launched that state's worker, and the
+// yield that followed parked that worker's resources and cleared its claim, so
+// the next tick launched the state a second time.
+//
+// It changes nothing and returns ErrStaleReport unless the job is still open
+// at from with no next recorded, so a late or repeated report cannot touch the
+// state that replaced from. It returns ErrNotFound when j is not the instance
+// registered under its ID. A verdict SetNext refuses settles the job
+// OutcomeFailed (sched.Queue.Handoff); next == StateUnset is refused before
+// anything is touched, since YieldedFrom is the door for a report with no
+// verdict.
+func (d *Dispatcher) AdvanceFrom(j *job.Job, from, next job.State) error {
+	if next == job.StateUnset {
+		return fmt.Errorf("dispatch: AdvanceFrom: %w: StateUnset is not a verdict", job.ErrIllegalTransition)
+	}
+	return d.handoff("AdvanceFrom", j, from, next)
+}
+
+// YieldedFrom records that j's worker for state from stopped without finishing
+// its work. It is Yielded scoped to one state: it parks the job and clears the
+// claim only while the job is still open at from with no next recorded, and
+// otherwise returns ErrStaleReport and leaves alone whatever worker the job has
+// now. It returns ErrNotFound when j is not the instance registered under its
+// ID.
+func (d *Dispatcher) YieldedFrom(j *job.Job, from job.State) error {
+	return d.handoff("YieldedFrom", j, from, job.StateUnset)
+}
+
+// handoff is AdvanceFrom's and YieldedFrom's body: the instance check, then
+// one sched.Queue.Handoff span that records next (if any), parks, and clears
+// the launch claim.
+//
+// The claim is cleared inside that span, which takes d.mu under Queue.mu. That
+// keeps the lock rule, because d.mu is never held across a call into sched.
+// This is defence in depth rather than what stops a double launch today: while
+// the claim taken for from is held, launch's claimLaunched refuses next's
+// worker until the clear anyway. It matters when no claim for from is held at
+// the clear — one never taken, as after a stall's resume or at startup, or one
+// another by-ID clearer released between the span and a later clear — because
+// a tick could then launch next and have its claim dropped by the late clear.
+// Inside the span the job cannot leave from, because Advance needs Queue.mu to
+// move it. No test pins the placement: no seam can interleave a tick there.
+func (d *Dispatcher) handoff(door string, j *job.Job, from, next job.State) error {
+	if j == nil {
+		return fmt.Errorf("dispatch: %s: nil job: %w", door, ErrNotFound)
+	}
+	id := j.ID()
+	if _, ok := d.lookupFor(id, j); !ok {
+		return fmt.Errorf("dispatch: %s: no job %q: %w", door, id, ErrNotFound)
+	}
+	handed, err := d.q.Handoff(j, from, next, func() { d.clearLaunchedFor(j) })
+	if !handed {
+		return fmt.Errorf("dispatch: %s(%s, %s -> %s): %w", door, id, from, next, ErrStaleReport)
+	}
+	d.kick()
+	if err != nil {
+		return fmt.Errorf("dispatch: %s(%s, %s -> %s): %w", door, id, from, next, err)
+	}
+	return nil
+}
+
 // launch starts a worker if the job is runnable and still wanted.
 //
 // It re-reads the snapshot rather than trusting the one the tick took: between
@@ -132,15 +206,16 @@ func (d *Dispatcher) YieldedFor(id string, expected *job.Job) error {
 // work the user already cancelled and pays a further tick to stop it.
 //
 // The Running check is repeated after the claim, and only the second one
-// decides. An exit report (Finished or Yielded) that lands between the first
-// check and the claim moves the job and clears a claim that does not exist
-// yet; a claim taken after it has no report left to clear it, so the job is
-// not launched again until a removal or Stop clears it. Checked after the
-// claim, that report is visible, and any report after the claim clears it.
-// That rests on two branches:
+// decides. An exit report (Finished, Yielded, AdvanceFrom or YieldedFrom) that lands
+// between the first check and the claim moves the job and clears a claim that
+// does not exist yet; a claim taken after it has no report left to clear it,
+// so the job is not launched again until a removal or Stop clears it. Checked
+// after the claim, that report is visible, and any report after the claim
+// clears it. That rests on two branches:
 //   - a report changes Render before it clears the claim: Finished's Settle
-//     closes the attempt and YieldedFor's Park drops the lease or slot, each
-//     ahead of clearLaunched, so the re-check reads Running false;
+//     closes the attempt, YieldedFor's Park drops the lease or slot, and
+//     AdvanceFrom's and YieldedFrom's Handoff parks, each ahead of
+//     clearLaunched, so the re-check reads Running false;
 //   - nothing can re-grant the job between that report and the re-check,
 //     because Advance and launch both run only from tick (tick.go), which
 //     never overlaps itself.
@@ -170,10 +245,11 @@ func (d *Dispatcher) launch(j *job.Job) {
 
 // claimLaunched sets launched[id] under d.mu and reports whether this call was
 // the one that set it, so a later tick does not start a second worker for a
-// job already being worked. Finished, YieldedFor, Stop's sweep and deregister are its four
-// exit-path clearers, and launch clears a claim it took for a job that stopped
-// running before the claim — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
-// grep -v _test.go` finds five lines, one per site.
+// job already being worked. Finished, YieldedFor, clearLaunchedFor (for
+// AdvanceFrom and YieldedFrom), Stop's sweep and deregister are its five
+// exit-path clearers, and launch clears a claim it took
+// for a job that stopped running before the claim — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
+// grep -v _test.go` finds six lines, one per site.
 func (d *Dispatcher) claimLaunched(id string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -187,6 +263,20 @@ func (d *Dispatcher) claimLaunched(id string) bool {
 	return true
 }
 
+// clearLaunchedFor clears the launch claim under j's ID only while j is the
+// instance registered there. A deregistered instance's claim went with it, and
+// the ID may by then carry a later instance's claim.
+//
+// The lookup and the clear are two d.mu spans. handoff calls this inside
+// Handoff's Queue.mu span. A later instance registered between the two spans
+// would need Advance, and so Queue.mu, to become Running, so launch cannot
+// take its claim before the clear.
+func (d *Dispatcher) clearLaunchedFor(j *job.Job) {
+	if _, ok := d.lookupFor(j.ID(), j); ok {
+		d.clearLaunched(j.ID())
+	}
+}
+
 func (d *Dispatcher) clearLaunched(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -197,7 +287,8 @@ func (d *Dispatcher) clearLaunched(id string) {
 }
 
 // waitLaunched waits for the job's launch claim latch to be cleared (by a call
-// to Finished or Yielded). Returns nil immediately if no worker is launched.
+// to Finished, Yielded, AdvanceFrom or YieldedFrom). Returns nil immediately if no worker
+// is launched.
 func (d *Dispatcher) waitLaunched(ctx context.Context, id string) error {
 	d.mu.Lock()
 	ch := d.launched[id]

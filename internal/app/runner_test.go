@@ -16,6 +16,7 @@ type reportRecorder struct {
 	mu       sync.Mutex
 	total    int
 	outcomes map[string]job.Outcome
+	advances map[string][2]job.State
 }
 
 func (r *reportRecorder) Finished(id string, o job.Outcome) error {
@@ -40,6 +41,24 @@ func (r *reportRecorder) Yielded(_ string) error {
 	defer r.mu.Unlock()
 	r.total++
 	return nil
+}
+
+func (r *reportRecorder) AdvanceFrom(j *job.Job, from, next job.State) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.total++
+	if r.advances == nil {
+		r.advances = make(map[string][2]job.State)
+	}
+	r.advances[j.ID()] = [2]job.State{from, next}
+	return nil
+}
+
+// advance returns the from and next of the AdvanceFrom reported for id.
+func (r *reportRecorder) advance(id string) [2]job.State {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.advances[id]
 }
 
 func (r *reportRecorder) calls() int {
@@ -250,8 +269,8 @@ func TestAppRunner_RunAssessBranches(t *testing.T) {
 		{subject: "movie.vol01+02.par2", bytes: 200},
 	}, 0)
 	r.runAssess(context.Background(), jRepair.ID())
-	if jRepair.Checkpoint().State.Next != job.Repairing {
-		t.Errorf("jRepair.Checkpoint().State.Next = %v, want Repairing", jRepair.Checkpoint().State.Next)
+	if got, want := rec.advance(jRepair.ID()), [2]job.State{job.Assessing, job.Repairing}; got != want {
+		t.Errorf("jRepair reported AdvanceFrom %v, want %v", got, want)
 	}
 
 	// 3. Deferred recovery volume release (maybeReleaseRecoveryVolumes == true)
@@ -261,8 +280,8 @@ func TestAppRunner_RunAssessBranches(t *testing.T) {
 	})
 	_ = jDeferred.SetFileFetchPolicy(1, job.FetchIfNeeded)
 	r.runAssess(context.Background(), jDeferred.ID())
-	if jDeferred.Checkpoint().State.Next != job.Fetching {
-		t.Errorf("jDeferred.Checkpoint().State.Next = %v, want Fetching", jDeferred.Checkpoint().State.Next)
+	if got, want := rec.advance(jDeferred.ID()), [2]job.State{job.Assessing, job.Fetching}; got != want {
+		t.Errorf("jDeferred reported AdvanceFrom %v, want %v", got, want)
 	}
 
 	// 4. Intact job
@@ -270,7 +289,7 @@ func TestAppRunner_RunAssessBranches(t *testing.T) {
 		{subject: "movie.rar", bytes: 100},
 	})
 	r.runAssess(context.Background(), jClean.ID())
-	if jClean.Checkpoint().State.Next != job.Extracting {
-		t.Errorf("jClean.Checkpoint().State.Next = %v, want Extracting", jClean.Checkpoint().State.Next)
+	if got, want := rec.advance(jClean.ID()), [2]job.State{job.Assessing, job.Extracting}; got != want {
+		t.Errorf("jClean reported AdvanceFrom %v, want %v", got, want)
 	}
 }
