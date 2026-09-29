@@ -705,3 +705,218 @@ func TestVerifyProtectedFilesExist_ParseFailure_LeavesSuccessUntouched(t *testin
 		t.Error("Success was flipped to false by a parse failure; it should have been left untouched")
 	}
 }
+
+// ---------- newDecoderForDir ----------
+
+// TestNewDecoderForDir_ValidParfile_RegistersCandidatesAndReturnsDecoder
+// verifies the success path: a valid index opens, the directory's one
+// non-par2 file is registered as a candidate, and onInfo (not onWarn) is
+// called with the registered count.
+func TestNewDecoderForDir_ValidParfile_RegistersCandidatesAndReturnsDecoder(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+
+	var warnMsgs, infoMsgs, uiLines []string
+	d, err := newDecoderForDir(context.Background(), discardLogger(), mainFile, dir,
+		func(s string) { warnMsgs = append(warnMsgs, s) },
+		func(s string) { infoMsgs = append(infoMsgs, s) },
+		func(s string) { uiLines = append(uiLines, s) },
+	)
+	if err != nil {
+		t.Fatalf("newDecoderForDir: %v", err)
+	}
+	defer d.Close() //nolint:errcheck // read-only
+
+	if d == nil {
+		t.Fatal("expected a non-nil decoder")
+	}
+	if len(warnMsgs) != 0 {
+		t.Errorf("unexpected onWarn calls: %v", warnMsgs)
+	}
+	var sawCount bool
+	for _, m := range infoMsgs {
+		if strings.Contains(m, "registered candidate files count=1") {
+			sawCount = true
+		}
+	}
+	if !sawCount {
+		t.Errorf("expected an onInfo message reporting 1 registered candidate file, got: %v", infoMsgs)
+	}
+}
+
+// TestNewDecoderForDir_EmptyCandidateDir_SkipsRegistration verifies that an
+// empty candidateDir ("") — the documented way to opt out of candidate
+// registration — never calls addCandidateFiles at all, so neither callback
+// fires.
+func TestNewDecoderForDir_EmptyCandidateDir_SkipsRegistration(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+
+	var warnMsgs, infoMsgs []string
+	d, err := newDecoderForDir(context.Background(), discardLogger(), mainFile, "",
+		func(s string) { warnMsgs = append(warnMsgs, s) },
+		func(s string) { infoMsgs = append(infoMsgs, s) },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("newDecoderForDir: %v", err)
+	}
+	defer d.Close() //nolint:errcheck // read-only
+
+	if len(warnMsgs) != 0 || len(infoMsgs) != 0 {
+		t.Errorf("expected no candidate-registration callbacks with an empty candidateDir, got warn=%v info=%v", warnMsgs, infoMsgs)
+	}
+}
+
+// TestNewDecoderForDir_UnreadableCandidateDir_WarnsButStillReturnsDecoder
+// verifies that a candidateDir addCandidateFiles cannot read is reported
+// through onWarn rather than failing the whole call — the decoder itself
+// opened fine, so the caller still gets it back.
+func TestNewDecoderForDir_UnreadableCandidateDir_WarnsButStillReturnsDecoder(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+
+	var warnMsgs []string
+	d, err := newDecoderForDir(context.Background(), discardLogger(), mainFile, filepath.Join(dir, "nonexistent"),
+		func(s string) { warnMsgs = append(warnMsgs, s) },
+		func(s string) {},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("newDecoderForDir: %v", err)
+	}
+	defer d.Close() //nolint:errcheck // read-only
+
+	if len(warnMsgs) == 0 {
+		t.Error("expected an onWarn call when the candidate directory cannot be read")
+	}
+}
+
+// TestNewDecoderForDir_InvalidParfile_ReturnsError verifies the failure path:
+// an unparseable index returns an error and a nil decoder, regardless of
+// candidateDir.
+func TestNewDecoderForDir_InvalidParfile_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "bad.par2")
+	if err := os.WriteFile(bad, []byte("not a par2 file"), 0o600); err != nil {
+		t.Fatalf("write bad.par2: %v", err)
+	}
+
+	d, err := newDecoderForDir(context.Background(), discardLogger(), bad, dir, nil, nil, nil)
+	if err == nil {
+		if d != nil {
+			d.Close() //nolint:errcheck // read-only
+		}
+		t.Fatal("expected an error for an invalid par2 file")
+	}
+	if d != nil {
+		t.Error("expected a nil decoder on error")
+	}
+}
+
+// ---------- addCandidateFiles ----------
+
+// TestAddCandidateFiles_RegistersNonPar2FilesAndSkipsPar2 is the direct
+// counterpart to TestAddCandidateFiles_SkipsPar2Files, which only pins the
+// fixture layout addCandidateFiles's filtering assumes. This test calls
+// addCandidateFiles itself, against a real *par2engine.Decoder, and checks
+// the returned count includes every non-.par2 file and excludes every
+// .par2 file.
+func TestAddCandidateFiles_RegistersNonPar2FilesAndSkipsPar2(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+	// A second non-par2 file distinguishes "registered" from "the fixture
+	// happens to have exactly one".
+	if err := os.WriteFile(filepath.Join(dir, "extra.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write extra.txt: %v", err)
+	}
+
+	d, err := par2engine.NewDecoder(context.Background(), mainFile, par2engine.DecoderOptions{Logger: discardLogger()})
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	defer d.Close() //nolint:errcheck // read-only
+
+	n, err := addCandidateFiles(d, dir)
+	if err != nil {
+		t.Fatalf("addCandidateFiles: %v", err)
+	}
+	// data.bin (fixture payload) and extra.txt; data.par2 and
+	// data.vol000+102.par2 are both skipped.
+	if n != 2 {
+		t.Errorf("addCandidateFiles registered %d file(s), want 2 (data.bin, extra.txt)", n)
+	}
+}
+
+// TestAddCandidateFiles_UnreadableDir_ReturnsError verifies the ReadDir
+// failure path returns a non-nil error and a zero count.
+func TestAddCandidateFiles_UnreadableDir_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+
+	d, err := par2engine.NewDecoder(context.Background(), mainFile, par2engine.DecoderOptions{Logger: discardLogger()})
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	defer d.Close() //nolint:errcheck // read-only
+
+	n, err := addCandidateFiles(d, filepath.Join(dir, "nonexistent"))
+	if err == nil {
+		t.Error("expected an error reading a nonexistent candidate directory")
+	}
+	if n != 0 {
+		t.Errorf("count = %d, want 0 on a ReadDir failure", n)
+	}
+}
+
+// ---------- monitorProgress ----------
+
+// TestMonitorProgress_FormatsUpdatesAndStopIsIdempotent verifies that the
+// monitor goroutine formats each Progress value with the given label, and
+// that stop() both drains/terminates the goroutine and tolerates being
+// called more than once — the property runWithProgress relies on by
+// deferring it and then also calling it inline.
+func TestMonitorProgress_FormatsUpdatesAndStopIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var got []string
+	progress, stop := monitorProgress("Testing", func(s string) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, s)
+	})
+
+	progress <- par2engine.Progress{Percent: 12.5}
+	progress <- par2engine.Progress{Percent: 100}
+
+	// stop is documented as idempotent and safe to call more than once; it
+	// must also not return before the formatting goroutine has drained the
+	// channel, or the assertions below would race the goroutine.
+	stop()
+	stop()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("got %d formatted updates, want 2: %v", len(got), got)
+	}
+	if got[0] != "[go_par2] Testing... 12.5%" {
+		t.Errorf("got[0] = %q, want a formatted label/percent line", got[0])
+	}
+	if got[1] != "[go_par2] Testing... 100.0%" {
+		t.Errorf("got[1] = %q, want a formatted label/percent line", got[1])
+	}
+}
