@@ -51,9 +51,11 @@ type fileResumer interface {
 //
 // # Why a startup sweep, and why that is complete
 //
-// It runs once, synchronously, inside Start — after queue.Load has produced
-// app.queue and BEFORE the downloader begins dispatching. The ordering is
-// load-bearing TWICE over, and only the first half is about re-fetching:
+// It runs once, synchronously, as the beforeFirstTick step of
+// Dispatcher.StartWith, which Application.Start calls before starting the
+// assembler and the downloader: every stored row is registered, and nothing
+// has ticked. The ordering is load-bearing three times over, and only the
+// first is about re-fetching:
 //
 //   - A seed that lands after dispatch has begun still marks the right
 //     articles Done, but the request for them is already on the wire, which is
@@ -64,6 +66,15 @@ type fileResumer interface {
 //     run against a file of zeros and pass. Nothing inside Resumer can notice
 //     that, so moving this sweep later breaks the guarantee silently. See
 //     Resumer.Resume, which says the same thing from the other side.
+//   - The State check below reads each job at its restored position. A row
+//     restored at Fetching{next: Assessing} — a crash after the queue save
+//     that recorded the verdict and before the job_files flush that records
+//     the last file's Complete flag — still needs completeStrandedFiles, and a
+//     tick moves it to Assessing. Had the ticker been running, a tick before
+//     the List below would have made the sweep skip the job, leaving the file
+//     untrimmed and incomplete; a tick during the sweep would have launched
+//     the assess worker on files the sweep was still repairing.
+//     TestResumeAtStartup_RestoredVerdictDoesNotOutrunTheSweep pins it.
 //
 // Running only at startup is nonetheless complete. A job admitted later has no
 // runs to seed from, and a job's runs cannot GAIN content while it is not
