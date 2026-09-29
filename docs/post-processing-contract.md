@@ -147,7 +147,7 @@ single worker goroutine (`run`).
   `Application.Start` re-finalizes it if it is complete and it downloads again
   otherwise.
 
-## Full 11-Stage Execution Sequence
+## Full 12-Stage Execution Sequence
 
 The complete post-processing pipeline consists of 12 registered stages configured in
 `internal/app/stages.go` and executed sequentially for every job:
