@@ -222,18 +222,35 @@ func (d *Dispatcher) handoff(door string, j *job.Job, from, next job.State) erro
 //
 // The first check only keeps a tick from taking and dropping a claim for
 // every job that is not running.
+//
+// A job that reads as running holds what Advance granted it, and every path
+// that declines to launch it gives that back through parkUnlaunched: sched
+// cannot tell a granted job from a working one, so a job that holds with no
+// worker is never parked by a later Advance, and the worker that would
+// report for it was never started.
 func (d *Dispatcher) launch(j *job.Job) {
-	if v := d.q.Render(j); !v.Running || v.Intent != job.IntentRun {
+	v := d.q.Render(j)
+	if !v.Running {
+		return
+	}
+	if v.Intent != job.IntentRun {
+		d.parkUnlaunched(j)
 		return
 	}
 	if d.beforeClaim != nil {
 		d.beforeClaim(j.ID())
 	}
 	if !d.claimLaunched(j.ID()) {
+		d.parkUnlaunched(j)
 		return
 	}
-	v := d.q.Render(j)
+	v = d.q.Render(j)
 	if !v.Running || v.Intent != job.IntentRun {
+		// This call holds the claim, so no worker exists. Parked before the
+		// claim is cleared, in YieldedFor's order.
+		if v.Running {
+			d.parkGrant(j)
+		}
 		d.clearLaunched(j.ID())
 		return
 	}
@@ -241,6 +258,34 @@ func (d *Dispatcher) launch(j *job.Job) {
 	runCtx := d.ctx
 	d.mu.Unlock()
 	d.runner.Run(runCtx, j.ID(), v.State)
+}
+
+// parkUnlaunched gives back what Advance granted a job that launch is not
+// starting, unless a worker holds the job's launch claim and so its
+// resources.
+//
+// A claim absent here stays absent until the park: the only claimLaunched
+// call is in launch, and launch runs only from tick (`git grep -n
+// 'd\.launch(' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 1 line),
+// which never overlaps itself. The claim is read before Render, because an
+// exit report parks before it clears the claim: a claim already cleared by
+// one means Render sees that park.
+func (d *Dispatcher) parkUnlaunched(j *job.Job) {
+	d.mu.Lock()
+	_, claimed := d.launched[j.ID()]
+	d.mu.Unlock()
+	if claimed || !d.q.Render(j).Running {
+		return
+	}
+	d.parkGrant(j)
+}
+
+// parkGrant parks a job that holds resources with no worker.
+func (d *Dispatcher) parkGrant(j *job.Job) {
+	if err := d.q.Park(j); err != nil {
+		d.log.Error("failed to return the resources of a job that was not launched",
+			"job", j.ID(), "err", err)
+	}
 }
 
 // claimLaunched sets launched[id] under d.mu and reports whether this call was

@@ -153,6 +153,22 @@ so a report that landed before the re-check reads as not `Running`. And
 `Advance` and `launch` both run only from `tick`, which never overlaps itself,
 so nothing re-grants the job between that report and the re-check.
 
+**A launch that is declined gives back what `Advance` granted.** A job that
+reads as `Running` holds its lease or slot, and `sched` cannot tell a job that
+was granted from one that is working, so no later `Advance` parks it. When a
+cancel, a pause or a removal lands between the grant and the start of the
+worker, `launch` declines the job with no worker to report for it. It parks the
+job in the same call, at each of its three refusals:
+- the first check, when the intent is no longer `IntentRun` and no claim is
+  held;
+- a refused claim, when a removal has begun and no claim is held;
+- the failed re-check, whose claim proves no worker exists.
+
+A held claim means a worker owns the grant, and it is left alone. Once parked,
+a cancelled job settles `Cancelled` on the next tick's `finishCancel`, as any
+non-running job does after the boundary. `TestLaunch_DeclinedLaunchReturnsTheGrant`
+and `TestLaunch_DeclinedLaunchLeavesALiveWorkersGrant` pin it.
+
 **A report of finished work is one call, scoped to the state it reports
 from.** `Dispatcher.AdvanceFrom(j, from, next)` records `Next`, parks the job
 and clears its claim inside one `sched.Queue.Handoff` span, and does nothing
