@@ -1,6 +1,10 @@
 package postproc
 
-import "github.com/hobeone/gonzbd/internal/job"
+import (
+	"slices"
+
+	"github.com/hobeone/gonzbd/internal/job"
+)
 
 // HasJob reports whether j, this instance rather than any job with its ID, is
 // either pending in the queue or currently being processed by the worker. It
@@ -17,11 +21,9 @@ func (p *PostProcessor) HasJob(j *job.Job) bool {
 	}
 	var found bool
 	p.q.withLock(func(jobs []*Job) {
-		for _, queued := range jobs {
-			if queued.Job == j {
-				found = true
-				return
-			}
+		found = slices.ContainsFunc(jobs, func(queued *Job) bool { return queued.Job == j })
+		if found {
+			return
 		}
 		p.busyMu.Lock() //lockio: q.mu -> busyMu is intentional acyclic order
 		found = p.currentJob != nil && p.currentJob.Job == j

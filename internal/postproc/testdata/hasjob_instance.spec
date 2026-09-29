@@ -7,9 +7,9 @@ run TestHasJob_AnotherInstanceUnderTheSameID$
 [a queued job answers for any instance under its ID]
 file internal/postproc/has.go
 --- anchor
-			if queued.Job == j {
+		found = slices.ContainsFunc(jobs, func(queued *Job) bool { return queued.Job == j })
 --- replace
-			if queued.JobID() == j.ID() {
+		found = slices.ContainsFunc(jobs, func(queued *Job) bool { return queued.JobID() == j.ID() })
 --- end
 
 [the in-flight job answers for any instance under its ID]
