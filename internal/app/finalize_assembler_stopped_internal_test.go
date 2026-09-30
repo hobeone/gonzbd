@@ -14,26 +14,28 @@ import (
 
 // drainCompletionAfterStop drives a completion through handleFileComplete the
 // way Shutdown reaches it for a job the tick has not evicted: the queue is
-// paused, the job's Fetching lease yielded, the assembler stopped — its exit
-// drain flushes and closes the file without trimming it — and only then does
-// watchCompletions deliver the completion.
+// paused, checkpoint runs R6's clean-shutdown barrier, the job's Fetching
+// lease is yielded, the assembler stopped — its exit drain flushes and closes
+// the file without trimming it — and only then does watchCompletions deliver
+// the completion.
 //
-// checkpoint runs R6's clean-shutdown barrier between the yield and the stop,
-// as stopWorkers does, so the file's articles are committed and acked before
-// the completion arrives. Without it the file has no durable runs at all.
+// checkpoint runs before the yield, as stopWorkers does: a yield parks the
+// job's lease and kicks the tick, whose reconcileResidency evicts the job,
+// and the barrier skips a job with no resident manifest. Without the
+// checkpoint the file has no durable runs at all.
 func drainCompletionAfterStop(t *testing.T, application *Application, j *job.Job, checkpoint bool) *lockedBuffer {
 	t.Helper()
 	logs := closeFaultLogs(application)
 	application.dispatcher.Pause()
-	if err := application.dispatcher.Yielded(j.ID()); err != nil {
-		t.Fatal(err)
-	}
 	if checkpoint {
 		application.shutdownCheckpoint()
 		if !j.Progress().ArticleDone(0) {
 			t.Fatal("the shutdown checkpoint did not ack the article; this fixture needs " +
 				"its runs committed")
 		}
+	}
+	if err := application.dispatcher.Yielded(j.ID()); err != nil {
+		t.Fatal(err)
 	}
 	if application.syncTargetFor(j.ID()) == nil {
 		t.Fatal("the job has no sync target; this test is about a job still resident, which " +
@@ -191,6 +193,10 @@ func TestStopWorkers_TheShutdownBarrierCoversAJobTheYieldWouldEvict(t *testing.T
 	if !j.Progress().ArticleDone(0) {
 		t.Error("the clean-shutdown barrier did not ack the job's written article; the " +
 			"yield let the tick evict the job first, and the next start fetches it again")
+	}
+	if j.HoldsLease() {
+		t.Error("the Fetching job still holds its lease after stopWorkers; the yield loop " +
+			"after the barrier did not run")
 	}
 }
 

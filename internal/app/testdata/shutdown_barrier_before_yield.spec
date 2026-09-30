@@ -31,3 +31,11 @@ file internal/app/app.go
 		app.shutdownCheckpoint()
 	}
 --- end
+
+[the Fetching yield loop never runs, so the barrier's coverage is never handed off]
+file internal/app/app.go
+--- anchor
+	if dl != nil && dlErr == nil && app.dispatcher != nil {
+--- replace
+	if false && dl != nil && dlErr == nil && app.dispatcher != nil {
+--- end
