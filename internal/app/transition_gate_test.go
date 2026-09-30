@@ -66,10 +66,11 @@ func TestJobTransitions_LockSites(t *testing.T) {
 }
 
 // TestJobTransitions_FinalizingSites pins the finalizing record to one writer,
-// the finalizer, and its one reader outside tryAcquire, RetryHistoryJob's
-// check before it registers. A second writer would refuse retries no
-// finalizer excludes; a reader dropped would let a retry that took the lock
-// first register under a finalizer's teardown.
+// the finalizer, and its one reader outside tryAcquire, RetryHistoryJob,
+// which checks it after its registration check and again before it
+// registers. A second writer would refuse retries no finalizer excludes; a
+// reader dropped would let a retry that took the lock first change state, or
+// register, under a finalizer's teardown.
 func TestJobTransitions_FinalizingSites(t *testing.T) {
 	if sites, want := productionCallers(t, "beginFinalize"), []string{"job_finalizer.go:persistAndCommit"}; !slices.Equal(sites, want) {
 		t.Errorf("functions writing the finalizing record = %v, want %v", sites, want)
