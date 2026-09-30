@@ -47,28 +47,6 @@ func TestPPQueueNotify_Coalesces(t *testing.T) {
 	}
 }
 
-// TestFindJob pins findJob's contract directly: the index of the job with
-// the given ID, including a non-first position, -1 when absent, and -1 on
-// an empty (nil) slice.
-func TestFindJob(t *testing.T) {
-	if idx := findJob(nil, "x"); idx != -1 {
-		t.Errorf("findJob(nil, \"x\") = %d, want -1", idx)
-	}
-
-	jobs := []*Job{
-		{Job: newQueueJob(t, "a", 0)},
-		{Job: newQueueJob(t, "b", 0)},
-		{Job: newQueueJob(t, "c", 0)},
-	}
-
-	if idx := findJob(jobs, "b"); idx != 1 {
-		t.Errorf("findJob(jobs, \"b\") = %d, want 1 (non-first position)", idx)
-	}
-	if idx := findJob(jobs, "missing"); idx != -1 {
-		t.Errorf("findJob(jobs, \"missing\") = %d, want -1", idx)
-	}
-}
-
 // TestTryPop pins tryPop's contract directly: nil on an empty queue, FIFO
 // order on a non-empty one (verified rather than assumed), the mark
 // callback receiving the popped job while q.mu is held, and tolerance of a

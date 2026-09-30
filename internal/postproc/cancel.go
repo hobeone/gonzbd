@@ -43,9 +43,9 @@ func (q *ppQueue) CancelJob(j *job.Job) (*Job, bool) {
 	defer q.mu.Unlock()
 	if idx := slices.IndexFunc(q.jobs, func(queued *Job) bool { return queued.Job == j }); idx >= 0 {
 		removed := q.jobs[idx]
-		copy(q.jobs[idx:], q.jobs[idx+1:])
-		q.jobs[len(q.jobs)-1] = nil // allow GC
-		q.jobs = q.jobs[:len(q.jobs)-1]
+		// slices.Delete zeroes the vacated tail slot, so the backing array
+		// does not keep the removed job reachable.
+		q.jobs = slices.Delete(q.jobs, idx, idx+1)
 		return removed, true
 	}
 	return nil, false

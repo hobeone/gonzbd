@@ -56,25 +56,6 @@ func (q *ppQueue) Empty() bool {
 	return len(q.jobs) == 0
 }
 
-// Has reports whether a job with the given ID is currently queued.
-// Does not inspect the in-flight job (if any); callers that need to
-// know about the active job should check that separately.
-func (q *ppQueue) Has(jobID string) bool {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return findJob(q.jobs, jobID) >= 0
-}
-
-// findJob returns the index of the job with the given ID, or -1.
-func findJob(jobs []*Job, id string) int {
-	for i, j := range jobs {
-		if j.JobID() == id {
-			return i
-		}
-	}
-	return -1
-}
-
 // Pop blocks until a job is available or ctx is done.
 // Returns the next job and true, or nil and false when ctx is cancelled.
 //

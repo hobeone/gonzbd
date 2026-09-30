@@ -57,7 +57,7 @@ file internal/postproc/queue.go
 --- end
 
 # HasJob reverted to the pre-fix sequential form: busyMu taken and released as
-# its own critical section, then p.q.Has (which takes q.mu itself)
+# its own critical section, then a queue scan that takes q.mu itself
 # consulted only as a fallback. With the test's job already the current
 # busy job, this mutant answers straight from the busyMu step and never
 # touches q.mu at all -- it returns almost immediately even though the
@@ -98,6 +98,8 @@ func (p *PostProcessor) HasJob(j *job.Job) bool {
 }
 --- replace
 import (
+	"slices"
+
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -120,7 +122,9 @@ func (p *PostProcessor) HasJob(j *job.Job) bool {
 	if current != nil && current.Job == j {
 		return true
 	}
-	return p.q.Has(j.ID())
+	p.q.mu.Lock()
+	defer p.q.mu.Unlock()
+	return slices.ContainsFunc(p.q.jobs, func(queued *Job) bool { return queued.Job == j })
 }
 --- end
 
