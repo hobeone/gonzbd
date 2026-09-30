@@ -101,17 +101,6 @@ func TestPPQueue_Len(t *testing.T) {
 	}
 }
 
-func TestPPQueue_Has(t *testing.T) {
-	q := newPPQueue()
-	q.Push(&Job{Job: newQueueJob(t, "x", 0)})
-	if !q.Has("x") {
-		t.Error("Has('x') = false")
-	}
-	if q.Has("y") {
-		t.Error("Has('y') = true for absent job")
-	}
-}
-
 // ---------- OnEmpty ----------
 
 func TestOnEmpty_CalledWhenQueueDrains(t *testing.T) {

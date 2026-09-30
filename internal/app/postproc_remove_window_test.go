@@ -207,7 +207,7 @@ func TestRemoveJob_DuringTheDirectUnpackWait_PostProcessingDoesNotRun(t *testing
 //     returns. It catches a withdraw that returns before du has stopped for
 //     any reason reachable from RemoveJob's side, including a step ended
 //     before the DirectUnpack wait ever begins. But withdraw returning is
-//     not RemoveJob's next line: dispatcher.Cancel, postProcessor.Cancel and
+//     not RemoveJob's next line: dispatcher.Cancel, postProcessor.CancelJob and
 //     checkpointer.Prune run first, and that is real time for the
 //     DirectUnpack-wait goroutine to finish stopping du for real even when
 //     its own endStep call ran before its own awaitDirectUnpackOrAbort call —
