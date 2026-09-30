@@ -23,7 +23,9 @@ import (
 // needs to target a specific article; full Job state stays behind
 // the job's lock.
 type UnfinishedArticle struct {
-	JobID       string
+	// Job is the instance the dispatch pass took from the dispatcher. It
+	// travels on the request and the result, see ArticleResult.Job.
+	Job         *job.Job
 	JobAdded    time.Time
 	FileIdx     int
 	ArtIdx      int32 // Global article index within Manifest
@@ -114,7 +116,7 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 		stopAll := false
 		_ = j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
 			a := UnfinishedArticle{
-				JobID:       j.ID(),
+				Job:         j,
 				JobAdded:    jobAdded,
 				FileIdx:     fi,
 				ArtIdx:      artIdx,
@@ -127,7 +129,7 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 			handled, exReq := d.tryDispatch(ctx, a, opts) //lockio: tracker lock is leaf under contentMu
 			if handled {
 				plan.dispatched++
-				plan.activeJobs[a.JobID] = struct{}{}
+				plan.activeJobs[j.ID()] = struct{}{}
 			}
 			if exReq != nil {
 				plan.exhausted = append(plan.exhausted, exReq)
@@ -180,12 +182,8 @@ func (d *Downloader) allServersFull(serverCfgs []config.ServerConfig) bool {
 // drains exhausted articles, handles hopeless jobs, and triggers idle disconnect.
 func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, opts dispatchOpts) {
 	for _, req := range plan.exhausted {
-		if j, ok := d.dispatcher.Job(req.jobID); ok {
-			if err := j.MarkArticleEmitted(int(req.artIdx)); err != nil {
-				d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
-			}
-		}
-		d.clearTried(req.jobID, req.artIdx)
+		d.markEmitted(req)
+		d.clearTried(req.jobID(), req.artIdx)
 		telemetry.PipelineErrors.Add(telemetry.ErrClassExhaustedAllServers, 1)
 		d.emitResult(ctx, req, "", nil, 0, 0, ErrNoServersLeft)
 	}
@@ -314,7 +312,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 // A future dispatchReady signal from any worker will bring us back to
 // re-try articles that returned (false, nil).
 func (d *Downloader) tryDispatch(ctx context.Context, a UnfinishedArticle, opts dispatchOpts) (bool, *articleRequest) {
-	key := articleKey{jobID: a.JobID, artIdx: a.ArtIdx}
+	key := articleKey{jobID: a.Job.ID(), artIdx: a.ArtIdx}
 
 	d.tracker.Lock()
 
@@ -326,7 +324,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, a UnfinishedArticle, opts 
 	// Allocate the request only after confirming the article is not
 	// already in flight — avoids heap churn for the common skip path.
 	req := &articleRequest{
-		jobID:     a.JobID,
+		job:       a.Job,
 		messageID: a.MessageID,
 		fileIdx:   a.FileIdx,
 		artIdx:    a.ArtIdx,
@@ -353,7 +351,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, a UnfinishedArticle, opts 
 		tries := mask.count()
 		d.tracker.Unlock()
 		// --- No lock held below this line ---
-		d.log.Warn("article exceeded max retries", "msgid", a.MessageID, "job", a.JobID, "tries", tries, "max", opts.maxArtTries)
+		d.log.Warn("article exceeded max retries", "msgid", a.MessageID, "job", a.Job.ID(), "tries", tries, "max", opts.maxArtTries)
 		return true, req
 	}
 
@@ -378,7 +376,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, a UnfinishedArticle, opts 
 	if idx == -1 {
 		d.tracker.Unlock()
 		// --- No lock held below this line ---
-		d.log.Warn("article failed on all servers", "msgid", a.MessageID, "job", a.JobID)
+		d.log.Warn("article failed on all servers", "msgid", a.MessageID, "job", a.Job.ID())
 		return true, req
 	}
 	d.tracker.Unlock()
@@ -609,7 +607,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 	d.setConnActivity(workerID, req)
 	defer d.clearConnActivity(workerID, req)
 	defer d.signalDispatch()
-	defer d.clearInFlight(req.jobID, req.artIdx)
+	defer d.clearInFlight(req.jobID(), req.artIdx)
 
 	done := func() {}
 	if wireDone != nil {
@@ -641,11 +639,14 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 	// the user clicked pause or cancel on this specific job. Check now before
 	// starting any network I/O. != IntentRun rather than == IntentPause:
 	// a cancelled job must drop its in-flight article too.
-	if j, ok := d.dispatcher.Job(req.jobID); !ok || j.Intent() != job.IntentRun {
-		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
-		if ok {
-			_ = j.ClearArticleEmitted(int(req.artIdx))
-		}
+	//
+	// A request whose instance is no longer the one registered under its ID
+	// is dropped too: after a retry the pipeline would discard its result, so
+	// fetching it only spends bandwidth. The intent is read off the request's
+	// own instance for the same reason.
+	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun {
+		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 		return nil, false
 	}
 
@@ -653,16 +654,14 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 	// The pauseCtx cancellation aborts in-flight reads, but articles
 	// sitting in the workCh buffer still need to be drained.
 	if d.paused.Load() || d.dispatcher.Paused() {
-		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
-		if j, ok := d.dispatcher.Job(req.jobID); ok {
-			_ = j.ClearArticleEmitted(int(req.artIdx))
-		}
+		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 		return nil, false
 	}
 
 	c, err := mc.Get(fetchCtx, d, srv, workerID)
 	if err != nil {
-		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
+		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
 		if errors.Is(err, errServerPenalized) {
 			// Don't emit a result — the article is returned to the
 			// dispatch pool silently. The deferred signalDispatch
@@ -675,9 +674,11 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 			//
 			// Nothing needs clearing here, and the reason is worth stating
 			// because the old comment claimed the opposite: this article has
-			// no Emitted bit set. All three MarkArticleEmittedByIdx sites run
-			// at RESULT-emission time (:145, :697, :720), after the fetch —
-			// what keeps the dispatcher off an article mid-fetch is the
+			// no Emitted bit set. Every mark goes through markEmitted, whose
+			// callers are applyDispatchPlan's exhausted-try-list loop and
+			// processFetchedArticle's terminal-decode and success paths
+			// (`git grep -n 'd[.]markEmitted[(]req[)]' -- internal/downloader/dispatch.go` finds 3),
+			// all at RESULT-emission time, after the fetch — what keeps the dispatcher off an article mid-fetch is the
 			// in-flight tracker (tryDispatch's InFlightLocked guard), and
 			// handleRequest's deferred clearInFlight releases it.
 			//
@@ -743,7 +744,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 				}
 			}
 		}
-		d.unmarkTried(req.jobID, req.artIdx, serverIdx)
+		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
 		// Don't emit a result for connection-level failures. The
 		// article is returned to the dispatch pool via unmarkTried;
 		// the deferred signalDispatch triggers retry on another
@@ -783,12 +784,8 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 		d.log.Warn("decode error", "msgid", req.messageID, "err", err)
 		// Non-CRC decode errors are terminal failures — mark Emitted so
 		// the dispatcher never re-picks this article, then clear the tryList.
-		if j, ok := d.dispatcher.Job(req.jobID); ok {
-			if markErr := j.MarkArticleEmitted(int(req.artIdx)); markErr != nil {
-				d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", markErr)
-			}
-		}
-		d.clearTried(req.jobID, req.artIdx)
+		d.markEmitted(req)
+		d.clearTried(req.jobID(), req.artIdx)
 		telemetry.PipelineErrors.Add(classifyDecodeError(err), 1)
 		d.emitResult(ctx, req, name, nil, 0, 0, err)
 		return
@@ -808,12 +805,8 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	// So Done means a completed fsync covered the bytes, not merely that they
 	// reached WriteAt. See nntp-downloader-contract.md §5 and
 	// docs/durability-contract.md.
-	if j, ok := d.dispatcher.Job(req.jobID); ok {
-		if err := j.MarkArticleEmitted(int(req.artIdx)); err != nil {
-			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
-		}
-	}
-	d.clearTried(req.jobID, req.artIdx)
+	d.markEmitted(req)
+	d.clearTried(req.jobID(), req.artIdx)
 	d.notePartNumberDisagreement(req, payload.partNumber)
 	d.emitResult(ctx, req, name, payload.data, payload.offset, payload.crc, nil)
 }
@@ -844,13 +837,13 @@ func (d *Downloader) notePartNumberDisagreement(req *articleRequest, served int)
 	telemetry.PartNumberMismatches.Add(1)
 	d.log.Warn("served part number disagrees with the NZB segment number; "+
 		"counting it, taking no action",
-		"job", req.jobID, "msgid", req.messageID,
+		"job", req.jobID(), "msgid", req.messageID,
 		"served", served, "expected", req.partNumber)
 }
 
 func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server string, data []byte, offset int64, crc uint32, err error) {
 	res := &ArticleResult{
-		JobID:      req.jobID,
+		Job:        req.job,
 		FileIdx:    req.fileIdx,
 		ArtIdx:     req.artIdx,
 		MessageID:  req.messageID,
@@ -870,10 +863,10 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		// Job.MarkArticleEmitted means "a result for this article is on its
 		// way to the pipeline" — it is what stops the dispatcher re-picking
 		// the article between emission and the barrier that acks it. Three
-		// callers set it and then call this function: the exhausted-try-list
-		// path (:145), the terminal-decode-error path (:697), and the ordinary
-		// success path (:720). When the send loses the race to cancellation,
-		// no result arrives.
+		// callers set it through markEmitted and then call this function:
+		// applyDispatchPlan's exhausted-try-list loop, and
+		// processFetchedArticle's terminal-decode-error and success paths.
+		// When the send loses the race to cancellation, no result arrives.
 		//
 		// What that USED to cost, stated in the past tense because the clear
 		// below is what ended it: nothing downstream cleared the bit,
@@ -887,15 +880,27 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		// have (#417). Clearing here is precise, and it costs the withheld set
 		// nothing.
 		//
-		// Unconditional because it is a no-op where no bit was set: the
-		// ErrNoArticle paths (:616, :636) and the CRC-mismatch path (:691)
-		// reach here without marking.
-		if j, ok := d.dispatcher.Job(req.jobID); ok {
-			if err := j.ClearArticleEmitted(int(req.artIdx)); err != nil {
-				d.log.Warn("clear the emitted bit for a dropped result",
-					"job", req.jobID, "msgid", req.messageID, "err", err)
-			}
+		// Unconditional because it is a no-op where no bit was set:
+		// fetchArticle's two ErrNoArticle paths (the PreCheck STAT and the
+		// BODY fetch) and processFetchedArticle's CRC-mismatch path reach here
+		// without marking.
+		//
+		// On the request's own instance: a later instance under the same ID
+		// set its bit for a fetch of its own, whose result is still coming.
+		if err := req.job.ClearArticleEmitted(int(req.artIdx)); err != nil {
+			d.log.Warn("clear the emitted bit for a dropped result",
+				"job", req.jobID(), "msgid", req.messageID, "err", err)
 		}
+	}
+}
+
+// markEmitted records, on the instance req was dispatched for, that a result
+// for the article is on its way to the pipeline. Not on the instance
+// registered under the ID now: after a retry that is a later instance, the
+// pipeline drops the result as stale, and nothing would ever clear its bit.
+func (d *Downloader) markEmitted(req *articleRequest) {
+	if err := req.job.MarkArticleEmitted(int(req.artIdx)); err != nil {
+		d.log.Warn("mark article emitted failed", "job", req.jobID(), "msgid", req.messageID, "err", err)
 	}
 }
 

@@ -172,7 +172,7 @@ func TestProcessFetchedArticle_OffsetUnknownForPartIsTerminal(t *testing.T) {
 	}
 	srv := NewServer(config.ServerConfig{Name: "test-server"})
 	req := &articleRequest{
-		jobID: j.ID(), fileIdx: 0, artIdx: artIdx, messageID: "msg1@h", partNumber: 2,
+		job: j, fileIdx: 0, artIdx: artIdx, messageID: "msg1@h", partNumber: 2,
 	}
 
 	d.processFetchedArticle(t.Context(), srv, req, []byte(uuBody))

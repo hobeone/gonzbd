@@ -225,6 +225,27 @@ of their failure ratio.
    post-processing admission record; `docs/post-processing-contract.md` has
    the rest.
 
+7. **A result belongs to the instance it was dispatched for**: a retry
+   registers a new `*job.Job` under the same ID, and a fetch can outlive its
+   instance's failure, finalization and that retry. So the ID alone does not
+   say which instance a result is for. `UnfinishedArticle.Job`, the private
+   `articleRequest.job` and `ArticleResult.Job` carry the instance from the
+   dispatch pass to the pipeline, and `ArticleResult.JobID()` is derived from
+   it.
+
+   The downloader's own job mutations for a request — `markEmitted` after a
+   fetch or an exhausted try-list, the `Job.ClearArticleEmitted` calls when a
+   request is drained or its result dropped, and the per-job intent read in
+   `fetchArticle` — act on that instance, never on a by-ID lookup. Before any
+   network I/O, `fetchArticle` also drops a request whose instance is not the
+   one `Dispatcher.Job` returns for its ID, since the pipeline would discard
+   its result.
+
+   The app pipeline's `handleResult` drops a result whose `Job` is not the
+   instance `Dispatcher.Job` returns for its ID, before any failure marking,
+   early-abort accounting, stats, file registration or assembler write, and
+   the handlers after it act on `res.Job`.
+
 ## `nntp.Conn` pipelining contract
 
 Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
@@ -390,8 +411,9 @@ a server that intermittently succeeds will never trigger auto-deactivation.
   `ClearDeactivation` on any server whose penalty has passed.
 
 - **Global pause / Job pause**: Before initiating network I/O in `fetchArticle`,
-  workers check both per-job pause (`queue.GetJobStatus(jobID) == StatusPaused`)
-  and global pause (`d.paused.Load() || queue.IsPaused()`). Pausing also cancels
+  workers check both the per-job intent of the request's own instance
+  (anything but `IntentRun` drops it, so a paused or cancelled job's requests
+  are drained) and global pause (`d.paused.Load() || dispatcher.Paused()`). Pausing also cancels
   `pauseCtx`, aborting in-flight socket reads immediately. Buffered requests
   in `workCh` are drained without I/O, calling `unmarkTried` and
   `Job.ClearArticleEmitted` so articles re-dispatch cleanly on resume.
@@ -435,4 +457,28 @@ a server that intermittently succeeds will never trigger auto-deactivation.
 - `PreCheck` STAT probe support before BODY fetch.
 
 ### Open Gaps
-No open gaps. All contract invariants are implemented and tested.
+- The Tracker is keyed on `(jobID, artIdx)`, not on the instance (#665).
+  `CancelJob` clears a job's entries, but a fetch still running for a removed
+  instance updates the Tracker on its way out, and after a retry registers a
+  new instance under the same ID those entries are the retry's:
+  - `handleRequest`'s deferred `clearInFlight` decrements the retry's
+    in-flight count;
+  - `fetchArticle`'s `unmarkTried` calls (the pre-fetch drop,
+    a dial failure, a connection failure) unmark a server from the retry's
+    try-list;
+  - `processFetchedArticle`'s `clearTried` calls (terminal decode error and
+    success) delete the retry's try-list entry.
+
+  The try-list damage costs retries: the retry may try a server it already
+  tried, and `maxArtTries` undercounts. The in-flight damage is worse:
+  invariant 2 can admit a second concurrent fetch of the retry's article, and
+  both fetches carry the retry instance, so invariant 7 separates neither
+  from the other. If one succeeds and the other then returns a retryable
+  failure, the pipeline clears the Emitted bit of an article whose bytes the
+  assembler already has, and the article is fetched again; if one succeeds
+  and the other fails terminally, the article is both written and marked
+  failed; and a download is credited to `ServerStats` once per fetch.
+
+  Scope: only a retry registered while an earlier instance under the same ID
+  still has a fetch running. Invariant 7 still keeps the earlier instance's
+  own result off the retry.

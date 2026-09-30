@@ -67,7 +67,11 @@ func fileFixtureArticleID(f, a int) string {
 // offset the fixture's uniform 100-byte articles imply.
 func writeFixtureArticle(t *testing.T, application *Application, jobID string, fileIdx, globalArt int) {
 	t.Helper()
-	if err := application.pipeline.registerFile(jobID, fileIdx); err != nil {
+	j, ok := application.dispatcher.Job(jobID)
+	if !ok {
+		t.Fatalf("job %s not in the dispatcher", jobID)
+	}
+	if err := application.pipeline.registerFile(j, fileIdx); err != nil {
 		t.Fatalf("registerFile %d: %v", fileIdx, err)
 	}
 	// Offset 0: this helper writes one article at the start of its file, so
@@ -931,7 +935,7 @@ func newArmableWedgedApp(t *testing.T) (application *Application, j *job.Job, ar
 	arm = func() {
 		application.assembler.SetBarrierOpTimeout(20 * time.Millisecond)
 		// File 1's open parks the worker, so no control message can be answered.
-		if err := application.pipeline.registerFile(j.ID(), 1); err != nil {
+		if err := application.pipeline.registerFile(j, 1); err != nil {
 			t.Errorf("registerFile 1: %v", err)
 			return
 		}

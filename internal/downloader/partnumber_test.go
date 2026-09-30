@@ -74,7 +74,7 @@ func TestNotePartNumberDisagreement(t *testing.T) {
 			d := &Downloader{log: slog.New(slog.DiscardHandler)}
 
 			d.notePartNumberDisagreement(&articleRequest{
-				jobID: "j", messageID: "m", partNumber: tc.expected,
+				job: bareJob("j"), messageID: "m", partNumber: tc.expected,
 			}, tc.served)
 
 			want := int64(0)
@@ -111,7 +111,7 @@ func TestProcessFetchedArticle_PartNumberDisagreementChangesNothing(t *testing.T
 		}
 		srv := NewServer(config.ServerConfig{Name: "s"})
 		req := &articleRequest{
-			jobID: "job1", fileIdx: 0, messageID: "msg1", partNumber: expected,
+			job: bareJob("job1"), fileIdx: 0, messageID: "msg1", partNumber: expected,
 		}
 
 		d.processFetchedArticle(t.Context(), srv, req, yencPart(served, "Hello"))
