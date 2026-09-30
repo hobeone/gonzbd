@@ -105,9 +105,9 @@ file internal/app/app.go
 [the finalizer claims a key no other actor uses]
 file internal/app/job_finalizer.go
 --- anchor
-		claim, err := app.transitions.acquire(waitCtx, ppJob.Job.ID())
+	claim, err := app.transitions.acquire(waitCtx, ppJob.Job.ID())
 --- replace
-		claim, err := app.transitions.acquire(waitCtx, "mut-"+ppJob.Job.ID())
+	claim, err := app.transitions.acquire(waitCtx, "mut-"+ppJob.Job.ID())
 --- end
 
 [a queue removal marks some other job instance removed]
@@ -121,9 +121,9 @@ file internal/app/app.go
 [the finalizer files a job a RemoveJob took]
 file internal/app/job_finalizer.go
 --- anchor
-		if app.transitions.wasRemoved(ppJob.Job) {
+	if app.transitions.wasRemoved(ppJob.Job) {
 --- replace
-		if false {
+	if false {
 --- end
 
 [a RemoveJob that gave up keeps its mark]
@@ -137,16 +137,16 @@ file internal/app/app.go
 [the finalizer drops a job that left the queue without a removal]
 file internal/app/job_finalizer.go
 --- anchor
-		if app.transitions.wasRemoved(ppJob.Job) {
+	if app.transitions.wasRemoved(ppJob.Job) {
 --- replace
-		if true {
+	if true {
 --- end
 
 # Dies on the elapsed-time assertion: the mutant waits out the whole cap.
 [the finalizer's wait outlives a stopping process]
 file internal/app/job_finalizer.go
 --- anchor
-		waitCtx, waitCancel := context.WithTimeout(app.ctx, finalizeTransitionWait)
+	waitCtx, waitCancel := context.WithTimeout(app.ctx, finalizeTransitionWait)
 --- replace
-		waitCtx, waitCancel := context.WithTimeout(context.WithoutCancel(app.ctx), finalizeTransitionWait)
+	waitCtx, waitCancel := context.WithTimeout(context.WithoutCancel(app.ctx), finalizeTransitionWait)
 --- end
