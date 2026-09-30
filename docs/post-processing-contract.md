@@ -84,10 +84,16 @@ single worker goroutine (`run`).
   Fetching worker does not report one download-complete (`appRunner.runFetch`):
   both read the admission record (`postProcAdmissions.has`, which is
   `downloader.Options.HandedOff`), and `enqueuePostProc` admits before it calls
-  `CloseJobHandles`. An article already in flight at the hand-off is dropped
-  by the assembler's whole-job tombstone, which `CloseJobHandles` sets and
-  `ForgetJob` clears for a retry. `TestFail_AJobInPostProcessingIsNotDispatched`
-  and `TestCloseJobHandles_TombstonesTheWholeJob` are the pins. A downloader
+  `CloseJobHandles`. "The downloader skips an admitted job anyway" bounds
+  what dispatches a *new* article; it does not by itself stop one already
+  queued before the hand-off — `fetchArticle`'s own per-request check
+  (`docs/nntp-downloader-contract.md` invariant 6/7) is what drops that one
+  before any network I/O. An article already in flight (past that check,
+  mid-fetch) at the hand-off is dropped by the assembler's whole-job
+  tombstone, which `CloseJobHandles` sets and `ForgetJob` clears for a
+  retry. `TestFail_AJobInPostProcessingIsNotDispatched`,
+  `TestCloseJobHandles_TombstonesTheWholeJob`, and (for the per-request check
+  itself) `TestFetchArticle_HandedOffJobIsNotFetched` are the pins. A downloader
   reload leaves an admitted job's progress alone: `ReloadDownloader` runs
   `Job.ClearEmittedForReload` under `postProcAdmissions.unlessAdmitted`, so
   it neither un-fails the articles whose failed bytes the run and its history
