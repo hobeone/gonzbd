@@ -115,12 +115,14 @@ single worker goroutine (`run`).
   a `warnings` line, without changing its status.
 - **In-flight tracking & cancellation**: `PostProcessor` tracks the active job
   (`currentJob`) and an independent job context (`currentJobCancel`).
-  Calling `Cancel(jobID)` either removes a pending job from `ppQueue` or cancels
+  Calling `CancelJob(j)` either removes a pending job from `ppQueue` or cancels
   the active job's context mid-stage so the running tool returns promptly without
-  stopping the worker itself. A job `Cancel` removed or interrupted is handed
-  to `OnJobCancelled` rather than `OnJobDone` — synchronously, before `Cancel`
+  stopping the worker itself. It matches `j` by instance, as `HasJob` does, so
+  it leaves alone another instance of the job under the same ID. A job
+  `CancelJob` removed or interrupted is handed
+  to `OnJobCancelled` rather than `OnJobDone` — synchronously, before `CancelJob`
   returns, for a pending job, and by the worker once the stage pipeline has
-  returned, for the active one. A `Cancel` that lands after the worker has seen
+  returned, for the active one. A `CancelJob` that lands after the worker has seen
   the job finish still ends in `OnJobDone`, and a shutdown fires neither; the
   `Options.OnJobCancelled` doc has the full set. The app wires that callback to
   `jobFinalizer.cancelled`, which releases the job's dispatcher launch claim.
@@ -133,7 +135,7 @@ single worker goroutine (`run`).
   out instead: by this callback, by `jobFinalizer.persistAndCommit` through
   `OnJobDone` for a job that finished, or by `Shutdown`'s yield after a stop.
   `RemoveJob` cancels in the dispatcher before it cancels here, so a job the
-  runner hands over after the abort looked is still stopped by this `Cancel`,
+  runner hands over after the abort looked is still stopped by this `CancelJob`,
   though the abort has already released its claim and `RemoveJob` does not
   wait for its stage to return.
 - **Crash recovery handoff**: nothing marks a job as in post-processing on

@@ -56,21 +56,6 @@ func (q *ppQueue) Empty() bool {
 	return len(q.jobs) == 0
 }
 
-// Cancel removes a job with the given ID from the queue and returns it, or
-// returns nil, false if no queued job has that ID.
-func (q *ppQueue) Cancel(jobID string) (*Job, bool) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if idx := findJob(q.jobs, jobID); idx >= 0 {
-		job := q.jobs[idx]
-		copy(q.jobs[idx:], q.jobs[idx+1:])
-		q.jobs[len(q.jobs)-1] = nil // allow GC
-		q.jobs = q.jobs[:len(q.jobs)-1]
-		return job, true
-	}
-	return nil, false
-}
-
 // Has reports whether a job with the given ID is currently queued.
 // Does not inspect the in-flight job (if any); callers that need to
 // know about the active job should check that separately.

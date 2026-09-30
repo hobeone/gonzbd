@@ -958,7 +958,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	if app.removeCancelGapHook != nil {
 		app.removeCancelGapHook(id)
 	}
-	app.postProcessor.Cancel(id)
+	app.postProcessor.CancelJob(j)
 	if app.checkpointer != nil {
 		app.checkpointer.Prune(j)
 	}
