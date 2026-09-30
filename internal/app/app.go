@@ -2503,11 +2503,14 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 // get_incomplete_path returns a path only for status = Failed. A completed
 // job has nothing to retry.
 //
-// It refuses, before acting on anything, a job ID another actor holds
-// (errJobInTransition) and, for a FAILED entry, a job the dispatcher already
-// holds (errJobAlreadyQueued). It then refuses, before changing any state, a
-// job whose _FAILED_ download directory cannot be moved back to the path the
-// retry writes to (errRetryDirConflict; see restoreFailedDir).
+// It refuses, before acting on anything, a job ID another actor holds or a
+// finalizer is committing (errJobInTransition) and, for a FAILED entry, a job
+// the dispatcher already holds (errJobAlreadyQueued). It then refuses, before
+// changing any state, a job whose _FAILED_ download directory cannot be moved
+// back to the path the retry writes to (errRetryDirConflict; see
+// restoreFailedDir). It refuses again, before registering the job and undoing
+// what it did, when a finalizer of the ID started while it ran
+// (errJobInTransition; see jobTransitions).
 //
 // The history entry is deleted on success.
 func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
@@ -2699,6 +2702,12 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		}
 	}
 
+	// A finalizer of this ID that started after the claim above proceeds
+	// without the lock, and its teardown acts on the ID; registering now would
+	// put this job under that teardown (jobTransitions).
+	if app.transitions.isFinalizing(jobID) {
+		return fmt.Errorf("app: retry %s: a finalizer is committing it: %w", jobID, errJobInTransition)
+	}
 	if app.dispatcher != nil {
 		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
 		err := app.dispatcher.Add(addCtx, j, hdr)

@@ -60,7 +60,11 @@ single worker goroutine (`run`).
   until the job is collected, and a later call for it is refused rather than
   start a second run whose finalize would file the job in history again. It
   is keyed by job instance, so a retry
-  registered under the ID of a job still being finalized is admitted. An
+  registered under the ID of a job still being finalized is admitted. Such a
+  retry registers only once `jobFinalizer.persistAndCommit` has returned,
+  in the finalize tail that runs before the admission ends: while
+  `persistAndCommit` commits, `RetryHistoryJob` refuses the ID, with or
+  without the transition lock (`jobTransitions`). An
   admission a shutdown interrupts is never ended.
 - **A removed job is not handed over**: `enqueuePostProc` calls `Process`
   only after `postProcAdmissions.beginHandOver`, which refuses a job instance
