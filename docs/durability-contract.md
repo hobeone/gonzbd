@@ -500,7 +500,9 @@ stays `Damaged` and `repair` runs with whatever volumes are on disk, unless
 quickcheck defers its par2 set as a Layout B set (whose conditions and limits
 `docs/post-processing-contract.md` § Core Pipeline Invariants lists). Then
 `repair` skips the set, and `extracted_repair` runs par2 against the
-extracted files after `unpack`, with whatever volumes are on disk.
+extracted files after `unpack`, with whatever volumes are on disk. Either
+failing with the volumes still held has the finalizer retry the job with
+them released (`docs/post-processing-contract.md` § "On-Demand Par2: Fetch Policy and Verdict").
 
 **The predicate has three conditions: one row, at offset 0, covering every
 article of the file.** All three, and each closes a shape the others do not.
@@ -1120,10 +1122,10 @@ by an `EROFS` close is not described as a condition that waiting can clear.
 and it reads the fault one of two ways:
 
 - **The close is the file's only flush** on the two `nil` returns before the
-  barrier runs: `app.barrier == nil`, and a nil sync target. Nothing has
-  drained, synced or trimmed the file, so a close-time fault — other than a
-  stopped assembler, below — is logged at `Warn` and returned as
-  `ErrNotFinalized`, and `handleFileComplete` stops the
+  barrier runs: `app.barrier == nil`, and a nil sync target for a job that has
+  left the queue. Nothing has drained, synced or trimmed the file, so a
+  close-time fault — other than a stopped assembler, below — is logged at
+  `Warn` and returned as `ErrNotFinalized`, and `handleFileComplete` stops the
   completion exactly as for a failed barrier.
 - **The close is redundant** on every `nil` return after them: a finalize that
   committed, or a file some other path closed first (the worker's exit drain
@@ -1137,9 +1139,22 @@ and it reads the fault one of two ways:
 is cleared once, after the nil-target check, so a `nil` return added above that
 line is held to the strict reading by default.
 
-`retryFinalize` has no close of its own. Its checks make the no-barrier return
-unreachable and leave the nil-target return reachable only if the target goes
-nil between its check and the call, where the same rule applies.
+**A nil sync target for a job still in the queue is not a `nil` return.** The
+job has lost its manifest — `Dispatcher.reconcileResidency` evicted it between
+the file's last write and its finalize, for example after a user pause or a
+`Stall` on another of its files — and can be resident again before anything
+delivers the completion. No barrier ran, so the file is untrimmed and its last
+drain uncommitted. `finalizeCompletedFile` returns `ErrNotFinalized` wrapping
+`job.ErrNotResident`: the defer's error arm keeps the handle, and
+`routeFinalizeFailure` answers `job.ErrNotResident` ahead of its `Error` log by
+recording the file pending, without parking the job. The completion is
+delivered once a retry's barrier has committed. Which of the two nil-target
+returns runs is decided by `Dispatcher.Job(jobID)`: found means still queued.
+
+`retryFinalize` has no close of its own, and makes no residency decision of its
+own: its checks make the no-barrier return unreachable, and it leaves the
+nil-target decision to `finalizeCompletedFile`, so a retry and a first attempt
+are answered by the same branch.
 
 **A stopped completion on a failed first flush has usually lost its handle**:
 the `opClose` arm deletes it whether or not the close failed. A retryable
@@ -1155,16 +1170,39 @@ open, and what happens next depends on which return the close followed:
 
 - **No barrier:** `retryFinalize` answers `errFinalizeUnrecoverable` without
   looking at the handle, so `stallLost` surfaces the restart as above.
-- **Nil sync target:** `retryFinalize` refuses while the job has no resident
-  manifest, and a job `Stall` paused has none (a paused job holds nothing —
-  `docs/job-lifecycle.md`). Every re-evaluation re-stalls it with "no readable
-  manifest" until a user Resume makes it resident; only then does the retry
-  finalize the file through the barrier.
+- **Nil sync target, job left the queue:** nothing retries. The re-evaluation
+  forgets a job that has left the queue.
+
+**The retry of a non-resident job waits without parking it.**
+`finalizeCompletedFile` answers a retry for a queued job with no resident
+manifest exactly as it answers a first attempt, so the refusal is recorded for
+the next pass rather than stalled. A job that was only evicted is retried each
+pass until the dispatcher promotes it again. A job `Stall` paused has no
+manifest either (a paused job holds nothing — `docs/job-lifecycle.md`), so it
+stays parked under its original reason until a user Resume makes it resident;
+only then does the retry finalize the file through the barrier. A job removed
+between `reevaluateStall`'s own queue check and the retry takes the departed-job
+return: its handle is released, phase 4 refuses its completion, and the next
+re-evaluation forgets it.
+
+**At shutdown** the same return is ordinary, and routine. Once the downloader
+has stopped cleanly, `stopWorkers` calls `Dispatcher.Yielded` for every
+`Fetching` job. That parks the job's lease and kicks the tick, whose
+`reconcileResidency` evicts a job that no longer holds what its position
+requires — and nothing orders that eviction after `Assembler.Stop` or the
+`watchCompletions` drain, which follow. A completion drained for a job the tick
+has already evicted is recorded pending in memory, logged at `Info`, and not
+marked complete; the note dies with the process. The next start's
+`resumeAllJobs` re-derives the file from its durable runs:
+`completeStrandedFiles` trims and completes it when the runs resolve every
+article, and `ReplaceFromRuns` leaves any article they do not cover Outstanding
+to be fetched again
+(`TestHandleFileComplete_ANonResidentCompletionDrainedAtShutdown`).
 
 A close that answered `ErrAssemblerStopped` was not run by the worker, whose
 exit drain (`drainAndCloseAll`) flushes and closes every open file instead, so
-it is read as closed elsewhere and logged at `Debug` on either path, rather than stopping every completion
-drained during shutdown.
+it is read as closed elsewhere and logged at `Debug` on either path, rather
+than stopping every completion drained during shutdown.
 
 The close-time fault is **not** routed to `Stallable` from inside the
 assembler — it carries no `ErrFaultRouted` marker, so routing it would park the
@@ -1208,6 +1246,11 @@ The retained set is **cumulative**, not the concurrently-open set: one fd per
 completed-but-unfinalized file. Its ceiling is the files that had already
 completed, or were already queued on `internalFileComplete` (cap 128), when the
 fault hit.
+
+A job evicted while its completions were in flight retains a handle for each
+of them without being parked. That set grows only by completions that meet
+the job non-resident, and drains at the first re-evaluation after the job is
+promoted again, when each retry whose barrier succeeds releases its handle.
 
 **That bound, and the claim that a job is never unpaused while a finalize is
 failing, hold while the job is parked.** `reevaluateStall` does not resume a job

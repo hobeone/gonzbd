@@ -26,16 +26,21 @@ func downloadCompleteness(totalBytes, failedBytes int64) int64 {
 	return int64(float64(totalBytes-failedBytes) / float64(totalBytes) * 100)
 }
 
-// withFailureNotes returns ppJob, or when notes is non-empty a shallow copy of
-// it whose StageLog ends with one warning entry listing them. The copy leaves
-// the post-processor's own ppJob unwritten, since its History snapshots it.
-func withFailureNotes(ppJob *postproc.Job, notes []string) *postproc.Job {
-	if len(notes) == 0 {
+// withFailureNotes returns ppJob, or when notes or extra is non-empty a shallow
+// copy of it whose StageLog ends with one warning entry listing them: each
+// note as a failure reported and not applied, then each extra line as given.
+// The copy leaves the post-processor's own ppJob unwritten, since its History
+// snapshots it.
+func withFailureNotes(ppJob *postproc.Job, notes []string, extra ...string) *postproc.Job {
+	if len(notes) == 0 && len(extra) == 0 {
 		return ppJob
 	}
-	lines := make([]string, 0, len(notes))
+	lines := make([]string, 0, len(notes)+len(extra))
 	for _, n := range notes {
 		lines = append(lines, "Warning: failure reported during post-processing, not applied: "+n)
+	}
+	for _, e := range extra {
+		lines = append(lines, "Warning: "+e)
 	}
 	cp := *ppJob
 	cp.StageLog = append(slices.Clone(ppJob.StageLog), postproc.StageLogEntry{

@@ -154,7 +154,9 @@ func buildDownloadFileList(j *Job) []string {
 		// (`git grep -n '\.UnmarshalJSON(' -- 'internal/job/*.go'
 		// ':!*_test.go'` finds no lines), so the durable round-trip this arm
 		// depends on is the store one, not that one (#504). undeferRecovery has callers in Job.UndeferRecoveryVolumes
-		// (reached from app.go's maybeReleaseRecoveryVolumes;
+		// (reached from internal/app's releaseRecoveryVolumes, which
+		// maybeReleaseRecoveryVolumes and the finalizer's retry of a par2
+		// failure call;
 		// `git grep -n 'func (j \*Job) UndeferRecoveryVolumes' internal/job/` finds one line)
 		// and Job.MarkArticleFailed (`git grep -n 'func (j \*Job) MarkArticleFailed' internal/job/`
 		// finds one line). Both pass
