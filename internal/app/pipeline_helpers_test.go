@@ -22,7 +22,7 @@ import (
 func TestRefFor_CarriesEveryIdentityField(t *testing.T) {
 	t.Parallel()
 	res := &downloader.ArticleResult{
-		JobID:     "job-7",
+		Job:       job.New("job-7", "job-7.nzb", job.Policy{}),
 		FileIdx:   4,
 		ArtIdx:    11,
 		MessageID: "a@b",
@@ -88,7 +88,7 @@ func TestResolveFileInfo(t *testing.T) {
 	})
 
 	t.Run("returns the registered entry", func(t *testing.T) {
-		if err := p.registerFile(j.ID(), 0); err != nil {
+		if err := p.registerFile(j, 0); err != nil {
 			t.Fatalf("registerFile: %v", err)
 		}
 		info, err := p.resolveFileInfo(j.ID(), 0)
@@ -113,7 +113,7 @@ func TestForgetJob(t *testing.T) {
 	dispA, jobA := helperJob(t, app, "forgetA", 2, 1)
 	p := helperPipeline(t, dispA)
 	for fi := range 2 {
-		if err := p.registerFile(jobA.ID(), fi); err != nil {
+		if err := p.registerFile(jobA, fi); err != nil {
 			t.Fatalf("registerFile: %v", err)
 		}
 	}
@@ -167,7 +167,7 @@ func TestHandleResult_RoutesOnError(t *testing.T) {
 	t.Run("an error takes the failure path", func(t *testing.T) {
 		p, j := newCase(t, "route-fail")
 		p.handleResult(t.Context(), &downloader.ArticleResult{
-			JobID:     j.ID(),
+			Job:       j,
 			FileIdx:   0,
 			MessageID: "route-fail-f0-a0@x",
 			Err:       downloader.ErrNoServersLeft,
@@ -184,7 +184,7 @@ func TestHandleResult_RoutesOnError(t *testing.T) {
 	t.Run("no error takes the success path", func(t *testing.T) {
 		p, j := newCase(t, "route-ok")
 		p.handleResult(t.Context(), &downloader.ArticleResult{
-			JobID:     j.ID(),
+			Job:       j,
 			FileIdx:   0,
 			MessageID: "route-ok-f0-a0@x",
 			Subject:   "file0.rar",
@@ -200,7 +200,7 @@ func TestHandleResult_RoutesOnError(t *testing.T) {
 		var beats int
 		p.onHeartbeat = func() { beats++ }
 		p.handleResult(t.Context(), &downloader.ArticleResult{
-			JobID: j.ID(), FileIdx: 0, MessageID: "beat-fail-f0-a0@x",
+			Job: j, FileIdx: 0, MessageID: "beat-fail-f0-a0@x",
 			Err: downloader.ErrNoServersLeft, Subject: "file0.rar",
 		})
 		if beats != 1 {
@@ -213,7 +213,7 @@ func TestHandleResult_RoutesOnError(t *testing.T) {
 		var beats int
 		p.onHeartbeat = func() { beats++ }
 		p.handleResult(t.Context(), &downloader.ArticleResult{
-			JobID: j.ID(), FileIdx: 0, MessageID: "beat-ok-f0-a0@x",
+			Job: j, FileIdx: 0, MessageID: "beat-ok-f0-a0@x",
 			Subject: "file0.rar", Data: []byte("payload"),
 		})
 		if beats != 1 {
@@ -251,8 +251,11 @@ func TestSetCompletions_WaitsForQueuedWritesNotJustTheChannel(t *testing.T) {
 	const perResult = 5 * time.Millisecond
 
 	var handled atomic.Int64
+	// Never registered, so each result is dropped once its heartbeat fires.
+	unregistered := job.New("no-such-job", "no-such-job.nzb", job.Policy{})
 	p := &pipeline{
 		log:        slog.New(slog.DiscardHandler),
+		dispatcher: newTestApplication(t).Dispatcher(),
 		fileInfo:   make(map[fileKey]assembler.FileInfo),
 		updateCh:   make(chan completionSwap, 1),
 		numWorkers: 1,
@@ -268,7 +271,7 @@ func TestSetCompletions_WaitsForQueuedWritesNotJustTheChannel(t *testing.T) {
 	comp := make(chan *downloader.ArticleResult, results)
 	for i := range results {
 		comp <- &downloader.ArticleResult{
-			JobID:  "no-such-job",
+			Job:    unregistered,
 			ArtIdx: int32(i), //nolint:gosec // loop bound is 16
 			Err:    nntp.ErrNoArticle,
 		}

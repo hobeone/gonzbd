@@ -23,7 +23,7 @@ const shortArticleBytes = 60
 // worker to have opened the file.
 func writeShortArticle(t *testing.T, application *Application, j *job.Job) {
 	t.Helper()
-	if err := application.pipeline.registerFile(j.ID(), 0); err != nil {
+	if err := application.pipeline.registerFile(j, 0); err != nil {
 		t.Fatalf("registerFile: %v", err)
 	}
 	ref := assembler.ArticleRef{JobID: j.ID(), FileIdx: 0, ArtIdx: 0, MessageID: fileFixtureArticleID(0, 0)}

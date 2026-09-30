@@ -142,9 +142,10 @@ report that has fully landed between a check and the claim has already parked
 the job and cleared a claim that did not yet exist, so a claim taken on the
 strength of the earlier check has no report left to clear it: the job holds
 its resources with no worker, and no tick launches it again until a removal
-or `Stop` clears the claim. The check before the claim only saves a tick from
-claiming and releasing every job that is not running.
-`TestLaunch_ReportBeforeClaimLeavesNoStrandedClaim` pins it.
+or `Stop` clears the claim. For a job that is not running, the check before
+the claim only saves a tick from claiming and releasing it; for a running job
+whose intent is no longer `IntentRun`, it is also where the grant is returned
+(below). `TestLaunch_ReportBeforeClaimLeavesNoStrandedClaim` pins the re-check.
 
 The re-check is sound on two branches. Every exit report changes what
 `Render` returns before it calls `clearLaunched` (`Settle` closes the
@@ -152,6 +153,25 @@ attempt, `Park` drops the lease or slot, `Handoff` records `Next` and parks),
 so a report that landed before the re-check reads as not `Running`. And
 `Advance` and `launch` both run only from `tick`, which never overlaps itself,
 so nothing re-grants the job between that report and the re-check.
+
+**A grant with no worker is given back.** A job that reads as `Running` holds
+its lease or slot, and `sched` cannot tell a job that was granted from one
+that is working, so no later `Advance` parks it. A cancel, a per-job pause or
+a removal that lands between the grant and the start of the worker leaves the
+job holding with no worker to report for it. Two points return that grant:
+- `launch`'s first check, for a running job whose intent is no longer
+  `IntentRun` and which holds no launch claim. A cancel or pause landing after
+  that check is caught by it on the next tick.
+- `removeFor`, after `waitLaunched` and `waitLive` and before deregistering.
+  A removed job is visited by no later tick, and the removal can also land
+  where the tick never reaches `launch`, as when `reconcileResidency` fails.
+
+A held claim means a worker owns the grant, and it is left alone. Once parked,
+a cancelled job settles `Cancelled` on the next tick's `finishCancel`, as any
+non-running job does after the boundary. A queue-wide pause leaves every
+job's intent at `IntentRun`, so it declines no launch.
+`TestLaunch_DeclinedLaunchReturnsTheGrant` and
+`TestLaunch_DeclinedLaunchLeavesALiveWorkersGrant` pin it.
 
 **A report of finished work is one call, scoped to the state it reports
 from.** `Dispatcher.AdvanceFrom(j, from, next)` records `Next`, parks the job
@@ -279,7 +299,8 @@ under `d.mu` via `snapshotOrder`, releases the lock, and only then calls
 `sched.Queue.Advance` per job (`internal/dispatch/tick.go`). Every other call into `d.q` —
 `Cancel`, `Retry`, `Pause`, `Resume`, `SetCaps`, `Park` in `Stop`'s sweep,
 `Render`/`RenderAll` in `List`/`Row`/`reconcileResidency`/`launch`, `Settle`
-in `Finished`/`reconcileResidency`, `Park` in `YieldedFor`, `Handoff` in
+in `Finished`/`reconcileResidency`, `Park` in `YieldedFor` and in `parkGrant`
+(for `launch` and `removeFor`), `Handoff` in
 `handoff` (for `AdvanceFrom` and `YieldedFrom`) — is likewise made
 outside any `d.mu` span (verified: `grep -n 'd\.q\.' internal/dispatch/*.go
 | grep -v _test.go` shows none of these calls nested inside a

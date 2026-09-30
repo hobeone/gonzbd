@@ -329,7 +329,7 @@ func TestDownloaderHappyPath(t *testing.T) {
 				continue
 			}
 			got[r.MessageID] = string(r.Data)
-			ackDone(t, disp, r.JobID, r.MessageID)
+			ackDone(t, disp, r.JobID(), r.MessageID)
 		case <-deadline:
 			t.Fatalf("timeout waiting for completions; got=%d", len(got))
 		}
@@ -369,7 +369,7 @@ func TestDownloaderTryListCleanedOnSuccess(t *testing.T) {
 		if r.Err != nil {
 			t.Fatalf("unexpected err for %s: %v", r.MessageID, r.Err)
 		}
-		ackDone(t, disp, r.JobID, r.MessageID)
+		ackDone(t, disp, r.JobID(), r.MessageID)
 	}
 
 	// After all articles are successfully processed, tryList and
@@ -860,7 +860,7 @@ func TestDownloaderPipeliningConcurrency(t *testing.T) {
 			if res.Err != nil {
 				t.Errorf("unexpected error for %s: %v", res.MessageID, res.Err)
 			}
-			ackDone(t, disp, res.JobID, res.MessageID)
+			ackDone(t, disp, res.JobID(), res.MessageID)
 		}
 		close(done)
 	}()
@@ -935,7 +935,7 @@ func TestConnActivity_SetAndClear(t *testing.T) {
 
 	// Set activity.
 	req := &articleRequest{
-		jobID:     "job1",
+		job:       bareJob("job1"),
 		messageID: "art@example.com",
 		subject:   "My File.rar",
 		bytes:     5000,
