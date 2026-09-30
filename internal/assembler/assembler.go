@@ -741,11 +741,12 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string, disposition Fil
 // Its error can be a *storagefault.Fault about a FILE, not only a submit or
 // timeout error about the call — a caller matching on it has to expect both.
 // That reports at least one of the job's files failing its close-time Drain,
-// Sync or Close, which matters because the only production caller, app's
-// enqueuePostProc, is about to hand this job to par2, unrar and cleanup, and a
-// file whose close-time drain failed has buffered bytes that never reached the
-// platter. `git grep -n 'assembler\.CloseJobHandles(' -- '*.go' ':!*_test.go'`
-// finds 1 line, that call.
+// Sync or Close: a file whose close-time drain failed has buffered bytes that
+// never reached the platter. The production caller, app's enqueuePostProc,
+// fails the post-processing run on a permanent fault and runs the stages
+// after any other error, a timeout included.
+// `git grep -n 'closeJobHandles := app\.assembler\.CloseJobHandles' -- '*.go' ':!*_test.go'`
+// finds 1 line, that caller.
 func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 	// A context that is ALREADY cancelled resolves here, before the selects
 	// below, and that is a correctness requirement rather than a fast path.
@@ -1106,10 +1107,10 @@ func (a *Assembler) dispatchRequest(
 			}
 			cerr := a.drainAndClose(f)
 			if cerr != nil {
-				// Recorded on the ack, not swallowed. enqueuePostProc is about
-				// to hand this job to par2, unrar and cleanup, and a file
-				// whose close-time drain failed has buffered bytes that never
-				// reached the platter.
+				// Recorded on the ack, not swallowed: a file whose close-time
+				// drain failed has buffered bytes that never reached the
+				// platter, and enqueuePostProc fails the post-processing run
+				// on a permanent fault.
 				closeErr = errors.Join(closeErr, cerr)
 			}
 			delete(open, k)
@@ -1222,7 +1223,8 @@ func (a *Assembler) dispatchRequest(
 //   - On the CloseJobHandles path the job is already admitted to
 //     post-processing (app's postProcAdmissions). Fail cannot hand it over
 //     again — enqueuePostProc refuses an admitted job, at most attaching the
-//     reason to the admitted run — and Stall would pause a job whose files
+//     reason to the admitted run, which is what enqueuePostProc does itself
+//     with a permanent fault this returns — and Stall would pause a job whose files
 //     post-processing is using.
 //   - On the opClose path, whether the fault matters depends on whether a
 //     barrier ran first, and only the caller knows. After a finalize that

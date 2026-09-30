@@ -37,6 +37,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -299,6 +300,12 @@ type Application struct {
 	// already have launched the job's post-processing. Same discipline as
 	// checkpointHook.
 	downloadReportedHook func(id string)
+
+	// closeJobHandlesHook, when non-nil, overrides assembler.CloseJobHandles in
+	// enqueuePostProc. It exists because no seam reaches a started
+	// assembler's open file to fault its close. Same discipline as
+	// checkpointHook.
+	closeJobHandlesHook func(ctx context.Context, jobID string) error
 
 	shutdownStepTimeout time.Duration
 	closeHandlesTimeout time.Duration
@@ -2221,6 +2228,27 @@ func awaitDirectUnpackOrAbort(ctx context.Context, removed <-chan struct{}, du d
 	}
 }
 
+// permanentFaultIn returns a permanent *storagefault.Fault from anywhere in
+// err's tree, or nil. errors.AsType stops at the first Fault it meets, and a
+// joined error can carry a retryable fault ahead of a permanent one, as
+// CloseJobHandles' does with one error per file.
+func permanentFaultIn(err error) *storagefault.Fault {
+	if f, ok := err.(*storagefault.Fault); ok && f.Permanent { //nolint:errorlint // walks the tree itself, one node at a time
+		return f
+	}
+	switch u := err.(type) { //nolint:errorlint // walks the tree itself, one node at a time
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			if f := permanentFaultIn(e); f != nil {
+				return f
+			}
+		}
+	case interface{ Unwrap() error }:
+		return permanentFaultIn(u.Unwrap())
+	}
+	return nil
+}
+
 // enqueuePostProc hands j to the post-processor unless a post-processing run of
 // this instance is already admitted, or has been and ended
 // (postProcAdmissions). In the first case it does nothing but offer failMsg to
@@ -2259,11 +2287,33 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	if closeTimeout <= 0 {
 		closeTimeout = closeHandlesTimeout
 	}
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), closeTimeout)
-	if err := app.assembler.CloseJobHandles(closeCtx, j.ID()); err != nil {
-		app.log.Warn("enqueuePostProc: failed to close assembler job handles", "job", j.ID(), "err", err)
+	closeJobHandles := app.assembler.CloseJobHandles
+	if app.closeJobHandlesHook != nil {
+		closeJobHandles = app.closeJobHandlesHook
 	}
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), closeTimeout)
+	closeErr := closeJobHandles(closeCtx, j.ID())
 	closeCancel()
+	// A permanent fault on a file's close-time drain, sync or close can leave
+	// bytes that never reached the platter, so it fails the run (R20). It is
+	// offered to the admission as any other reason is, and the admission is
+	// sealed only after this, by the beginHandOver in enqueue below — its one
+	// call site: `git grep -n 'beginHandOver(' -- '*.go' ':!*_test.go'`
+	// returns 3 lines: that call, the definition, and this one. The reason becomes the
+	// run's FailMsg unless the admission already has a different one, in
+	// which case it is noted.
+	//
+	// Any other error is logged and the run goes on. On a timeout the
+	// control message may not have reached the worker yet, or may reach it
+	// later, so the job's handles can still be open while the stages run.
+	if f := permanentFaultIn(closeErr); f != nil {
+		app.log.Error("enqueuePostProc: closing the job's file handles hit a permanent storage fault; the post-processing run fails with it",
+			"job", j.ID(), "err", closeErr)
+		app.postProcAdmissions.admit(j, permanentFaultReason(f))
+	} else if closeErr != nil {
+		app.log.Warn("enqueuePostProc: failed to close assembler job handles; post-processing runs anyway, and on a timeout with the handles possibly still open",
+			"job", j.ID(), "err", closeErr)
+	}
 	if app.checkpointer != nil {
 		if err := app.checkpointer.Flush(context.Background()); err != nil {
 			app.log.Warn("forced checkpoint flush on job completion failed", "job", j.ID(), "err", err)
@@ -2359,8 +2409,9 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	downloadFinished := j.IsComplete()
 
 	enqueue := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
-		// Sealed now rather than taken from failMsg: an enqueuePostProc
-		// refused during the DirectUnpack wait may have added a reason. A
+		// Sealed now rather than taken from failMsg: the close fault above,
+		// or an enqueuePostProc refused since the admission, such as during
+		// the DirectUnpack wait, may have added a reason. A
 		// reason arriving after the seal cannot reach the stages, so it is
 		// only noted.
 		admittedFailMsg, handOver, ok := app.postProcAdmissions.beginHandOver(j, &app.transitions)

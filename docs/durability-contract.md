@@ -862,7 +862,8 @@ post-processing — and every one of them drains and syncs first, so there is
 nothing left to checkpoint when they succeed. A close-time drain CAN fail, and
 then `Close` discards the writer's retained report: the file leaves the open set
 with articles written but never acked, and nothing can checkpoint them. That is
-reported on the ack now rather than swallowed, but it is a hole in the
+reported on the ack now rather than swallowed, and on the `CloseJobHandles`
+path a permanent one fails the post-processing run, but it is a hole in the
 "nothing left" claim, not covered by it. The race is structural rather than exotic:
 `finalizeCompletedFile` releases the per-job barrier mutex before its deferred
 `CloseFile`, so a checkpoint can hold the lock, take the file from `Files()`,
@@ -1236,6 +1237,18 @@ job a second time for a condition the barrier had already routed, and on the
 `CloseJobHandles` path it would arrive for a job already admitted to
 post-processing: `Fail` cannot hand that job over again, and `Stall` would
 pause a job whose files post-processing is using.
+
+**`enqueuePostProc` reads the close-time fault `CloseJobHandles` returns.** A
+permanent `*storagefault.Fault` anywhere in the joined error becomes the run's
+failure reason (R20): it is offered to the admission (`postProcAdmissions.admit`)
+before `beginHandOver` seals it, so the run's `FailMsg` carries it unless the
+admission already has a reason, and the stages skip and the job is filed
+Failed. Any other error — a retryable fault, or the call's `closeHandlesTimeout`
+expiring — is logged at `Warn` and the run goes on. After a timeout the
+control message may not have reached the worker, or may reach it later, so
+the job's handles can still be open while the stages run
+(`TestEnqueuePostProc_APermanentCloseFaultFailsTheRun`,
+`TestEnqueuePostProc_ACloseTimeoutRunsTheStages`).
 
 **A job instance whose handles `CloseJobHandles` closed is not downloaded
 again.** A retry under the same ID is a new instance and does download, once
