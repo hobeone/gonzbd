@@ -2,6 +2,7 @@ package history
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,13 +16,24 @@ import (
 // package does changes page_size or enables auto_vacuum, so there is no
 // vacuum-dependent behavior to preserve.
 //
-// TestOpen_DoesNotBlockBehindAWriter checks this structurally rather than by
-// reading the source: a VACUUM needs an exclusive lock, so if Open ran one
-// it would queue behind a writer holding an uncommitted write open
-// elsewhere on the same file, and wait out Open's own busy_timeout(5000ms)
-// before failing. Open must instead return promptly regardless of that
-// writer.
-func TestOpen_DoesNotBlockBehindAWriter(t *testing.T) {
+// TestOpen_DoesNotVacuum below checks this directly, on the one signal a
+// VACUUM and Open's writability check cannot produce alike: whether Open
+// reclaims free pages. That used to be checked structurally instead, through
+// TestOpen_WritabilityCheckIsBoundedByBusyTimeout's setup: since Open made no
+// write at all once a database was already migrated and in WAL mode, it
+// returned near-instant regardless of any concurrent writer, and a
+// re-introduced VACUUM — needing an exclusive lock — would have queued behind
+// one instead. That discriminator broke on purpose: Open's writability check
+// (db.go, a PRAGMA user_version round-trip added for issue #661) is itself a
+// write, so it now queues behind a held writer exactly as a VACUUM would
+// have, and a test built on "which one blocks" can no longer tell them
+// apart. TestOpen_WritabilityCheckIsBoundedByBusyTimeout keeps that setup for
+// what it can still show: the write Open now makes is one ordinary, bounded
+// one like any other in this package — it fails once busy_timeout elapses
+// rather than hanging forever or silently succeeding past a writer it never
+// actually reached. Telling that write apart from a VACUUM is
+// TestOpen_DoesNotVacuum's job.
+func TestOpen_WritabilityCheckIsBoundedByBusyTimeout(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "history.db")
@@ -35,8 +47,8 @@ func TestOpen_DoesNotBlockBehindAWriter(t *testing.T) {
 	}
 
 	// Hold an uncommitted write open on the same file from a second,
-	// independent connection. A VACUUM issued by the Open under test would
-	// have to wait behind it.
+	// independent connection. Open's writability check has to queue behind
+	// it.
 	blocker, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatalf("open blocker: %v", err)
@@ -52,21 +64,103 @@ func TestOpen_DoesNotBlockBehindAWriter(t *testing.T) {
 	}
 
 	start := time.Now()
-	db2, err := Open(t.Context(), path)
+	_, err = Open(t.Context(), path)
 	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Open succeeded while a writer held the file locked the whole time; " +
+			"want the writability check to fail once busy_timeout elapses")
+	}
+	if elapsed < 4*time.Second {
+		t.Errorf("Open's writability check returned after %s; want it to wait out "+
+			"busy_timeout(5000ms) rather than give up immediately", elapsed)
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("Open's writability check took %s; want it bounded near "+
+			"busy_timeout(5000ms), not unbounded", elapsed)
+	}
+}
+
+// TestOpen_DoesNotVacuum pins the same invariant as
+// TestOpen_WritabilityCheckIsBoundedByBusyTimeout — no startup VACUUM — on a
+// signal that survives Open's writability check being a write too: free
+// pages. A VACUUM reclaims a database's freelist and shrinks its page count;
+// an ordinary write, including the PRAGMA user_version round-trip Open now
+// performs, does neither. The database is left with free pages by adding and
+// then deleting entries — deleting does not by itself prove anything, since a
+// pruning DELETE runs in this package on every retention sweep without ever
+// reclaiming space — and Open under test must leave both counts exactly as
+// they were.
+func TestOpen_DoesNotVacuum(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.db")
+
+	db, repo := openTestDBAt(t, path)
+	ctx := t.Context()
+
+	const n = 300
+	ids := make([]string, n)
+	for i := range n {
+		id := fmt.Sprintf("vacuum-probe-%d", i)
+		ids[i] = id
+		e := sampleEntry(id, "name", "Completed", "movies")
+		e.ScriptLog = make([]byte, 4096) // pad rows across enough pages to free some on delete
+		if err := repo.Add(ctx, e, nil); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	if _, err := repo.Delete(ctx, ids...); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	pageCountBefore := pragmaInt(t, db.db, "page_count")
+	freelistBefore := pragmaInt(t, db.db, "freelist_count")
+	if freelistBefore == 0 {
+		t.Fatal("setup did not produce any free pages; the property under test is not exercised")
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	db2, err := Open(ctx, path)
 	if err != nil {
-		t.Fatalf("Open with a concurrent writer held open: %v (after %s) — "+
-			"a startup VACUUM would block behind that writer and fail once "+
-			"Open's own busy_timeout(5000ms) elapses", err, elapsed)
+		t.Fatalf("Open: %v", err)
 	}
-	if err := db2.Close(); err != nil {
-		t.Fatalf("second Close: %v", err)
+	t.Cleanup(func() { _ = db2.Close() })
+
+	pageCountAfter := pragmaInt(t, db2.db, "page_count")
+	freelistAfter := pragmaInt(t, db2.db, "freelist_count")
+
+	if pageCountAfter != pageCountBefore {
+		t.Errorf("page_count = %d after Open, want unchanged %d — Open shrank the file, which only a VACUUM does",
+			pageCountAfter, pageCountBefore)
 	}
-	if elapsed > time.Second {
-		t.Errorf("Open took %s with a concurrent writer held open; want near-instant — "+
-			"this magnitude of delay is what a startup VACUUM queued behind that writer "+
-			"would produce", elapsed)
+	if freelistAfter != freelistBefore {
+		t.Errorf("freelist_count = %d after Open, want unchanged %d — Open reclaimed free pages, which only a VACUUM does",
+			freelistAfter, freelistBefore)
 	}
+}
+
+// openTestDBAt is openTestDB with a caller-chosen path, needed where the test
+// re-Opens the same file rather than letting t.TempDir() pick a fresh one.
+func openTestDBAt(t *testing.T, path string) (*DB, *Repository) {
+	t.Helper()
+	db, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	return db, NewRepository(db)
+}
+
+// pragmaInt reads a single-column integer PRAGMA.
+func pragmaInt(t *testing.T, db *sql.DB, pragma string) int64 {
+	t.Helper()
+	var v int64
+	if err := db.QueryRowContext(t.Context(), "PRAGMA "+pragma).Scan(&v); err != nil {
+		t.Fatalf("PRAGMA %s: %v", pragma, err)
+	}
+	return v
 }
 
 // TestOpenClose_MultipleRounds verifies that Open+Close can be called

@@ -169,6 +169,23 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, fmt.Errorf("history: run migrations: %w", err)
 	}
 
+	// A database that is already fully migrated and already in WAL mode has
+	// no header write left in the path above this point — WAL mode and the
+	// schema are both already on disk — so a file whose mode is 0400 in an
+	// otherwise-writable directory would open and migrate cleanly and only
+	// fail on the caller's first real write, far from here and without this
+	// context. Round-tripping PRAGMA user_version forces a write that
+	// changes nothing, so an unwritable file is refused here instead.
+	var userVersion int64
+	if err := sqlDB.QueryRowContext(ctx, "PRAGMA user_version").Scan(&userVersion); err != nil {
+		_ = sqlDB.Close() // superseded by read error
+		return nil, fmt.Errorf("history: read user_version: %w", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", userVersion)); err != nil {
+		_ = sqlDB.Close() // superseded by write error
+		return nil, fmt.Errorf("history: database is not writable: %w", err)
+	}
+
 	// 25 is deliberate headroom, not a measured figure: actual API
 	// concurrency here is single-digit, and SQLite permits one writer at a
 	// time regardless of pool size, so a wider pool buys queueing rather

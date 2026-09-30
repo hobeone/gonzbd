@@ -689,12 +689,12 @@ func TestOpen_ReadOnlyError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "readonly.db")
 
-	// An empty file, never migrated. A fully-migrated, already-WAL-mode
-	// database has nothing left for a re-Open to write, so re-opening one
-	// read-only now succeeds (Open no longer VACUUMs on every start). What
-	// still requires a write on a read-only file is going from nothing to a
-	// schema at all: enabling WAL mode has to touch the file's header, and
-	// that touch is what read-only permissions must block.
+	// An empty file, never migrated. Going from nothing to a schema at all
+	// fails here before Open reaches its writability check: enabling WAL
+	// mode has to touch the file's header, and that touch is what read-only
+	// permissions block. TestOpen_ReadOnlyError_Migrated covers the
+	// already-migrated case, which now also fails, via that writability
+	// check.
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatalf("create empty file: %v", err)
@@ -713,6 +713,42 @@ func TestOpen_ReadOnlyError(t *testing.T) {
 	_, err = Open(t.Context(), path)
 	if err == nil {
 		t.Error("expected error opening a read-only, unmigrated database, got nil")
+	}
+}
+
+// TestOpen_ReadOnlyError_Migrated pins the case an empty, unmigrated file
+// does not cover: a database that is already fully migrated and already in
+// WAL mode has no header write left in the path Open ran before its
+// writability check was added, so a 0400 file in an otherwise-writable
+// directory used to open and migrate cleanly and only fail on the caller's
+// first real write. Open's post-migration PRAGMA user_version round-trip
+// forces that failure here instead.
+func TestOpen_ReadOnlyError_Migrated(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "readonly_migrated.db")
+
+	db, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("Open (initial): %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// The directory stays writable; only the database file is made
+	// read-only.
+	if err := os.Chmod(path, 0400); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: the file mode does not deny the write")
+	}
+
+	_, err = Open(t.Context(), path)
+	if err == nil {
+		t.Error("expected error opening an already-migrated, read-only database, got nil")
 	}
 }
 
