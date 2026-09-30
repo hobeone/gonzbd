@@ -1,11 +1,11 @@
 pkg ./internal/app/
-run TestPersistAndCommit_RefusesARetryWhileItCommits$|TestRetryHistoryJob_RefusesWhenAFinalizerStartsDuringIt$|TestPruneHistory_SkipsAJobBeingFinalized$
+run TestPersistAndCommit_RefusesARetryWhileItCommits$|TestRetryHistoryJob_RefusesWhenAFinalizerStartsDuringIt$|TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState$|TestPruneHistory_SkipsAJobBeingFinalized$
 
 # The finalizing record that keeps a retry off an ID while its finalizer
 # commits, each part neutered on its own. RetryHistoryJob meets the record
-# twice, at tryAcquire and before it registers, so a retry that starts during
-# the commit is refused by both; the tryAcquire refusal is killed by the
-# retention sweep, its other caller.
+# three times: at tryAcquire, after its registration check, and before it
+# registers. TestPersistAndCommit_RefusesARetryWhileItCommits asserts the
+# retry never claims the ID, so it kills the tryAcquire mutation itself.
 
 [the finalizer never records its ID]
 file internal/app/job_finalizer.go
@@ -35,10 +35,22 @@ file internal/app/transition.go
 		}
 --- end
 
-[a retry that claimed the ID first registers under the finalizer]
+[a retry that claimed the ID first changes state under the finalizer]
 file internal/app/app.go
 --- anchor
+	// filing; see jobTransitions for why this check is late enough.
 	if app.transitions.isFinalizing(jobID) {
 --- replace
+	// filing; see jobTransitions for why this check is late enough.
+	if false {
+--- end
+
+[a retry registers under a finalizer that began during it]
+file internal/app/app.go
+--- anchor
+	// does not depend on that ordering holding.
+	if app.transitions.isFinalizing(jobID) {
+--- replace
+	// does not depend on that ordering holding.
 	if false {
 --- end

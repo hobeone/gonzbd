@@ -52,12 +52,17 @@ func TestPersistAndCommit_RefusesARetryWhileItCommits(t *testing.T) {
 		}
 	}()
 	var during error
+	// The retry must be refused at its claim, not later: the checks further
+	// in are for a finalizer that starts after the claim.
+	claimedDuring := false
 	log := slog.New(onMessage{
 		msg: "occupy failed during finalize; proceeding with fallback teardown",
 		fn: func() {
 			claim.release()
 			released = true
+			application.retryClaimedHook = func(string) { claimedDuring = true }
 			during = application.RetryHistoryJob(context.Background(), id)
+			application.retryClaimedHook = nil
 		},
 	})
 
@@ -68,6 +73,9 @@ func TestPersistAndCommit_RefusesARetryWhileItCommits(t *testing.T) {
 	}
 	if !errors.Is(during, errJobInTransition) {
 		t.Errorf("RetryHistoryJob while the finalizer commits = %v, want errJobInTransition", during)
+	}
+	if claimedDuring {
+		t.Error("the retry claimed the ID while its finalizer was committing it")
 	}
 
 	if err := application.RetryHistoryJob(context.Background(), id); err != nil {
@@ -95,6 +103,69 @@ func TestRetryHistoryJob_RefusesWhenAFinalizerStartsDuringIt(t *testing.T) {
 	}
 
 	end()
+	if err := application.RetryHistoryJob(context.Background(), id); err != nil {
+		t.Errorf("RetryHistoryJob after the finalizer ended = %v, want the retry admitted", err)
+	}
+}
+
+// TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState: a retry
+// that claimed the ID before a finalizer of it started finds no instance
+// registered, since the finalizer's own CancelJob lets the tick evict a
+// never-run job. It must stop before it changes anything, or its manifest
+// write, job_files seed and the reclaim its refusal runs take the state the
+// finalizer is about to read and file.
+func TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState(t *testing.T) {
+	t.Parallel()
+	application, repo, adminDir := newLifecycleTestApp(t)
+	const id = "feedface00649a04"
+	addRetryableEntry(t, repo, adminDir, id, "")
+
+	// The finalizer's job: its manifest and job_files rows, and no
+	// registration, as after the tick evicted it.
+	j1, _ := newPar2Job(t, id, "finalizing", []par2FileSpec{
+		{subject: "a.bin", bytes: 100},
+		{subject: "b.bin", bytes: 100},
+		{subject: "c.bin", bytes: 100},
+	})
+	if err := writeJobManifest(adminDir, j1); err != nil {
+		t.Fatalf("writeJobManifest: %v", err)
+	}
+	m, err := j1.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+	if err := seedJobFiles(t.Context(), application.durable, id, m.NumFiles(), j1.FileFetchPolicy); err != nil {
+		t.Fatalf("seedJobFiles: %v", err)
+	}
+	rows := jobFilesCount(t, application, id)
+
+	var end func()
+	application.retryClaimedHook = func(string) {
+		end = application.transitions.beginFinalize(id)
+	}
+	err = application.RetryHistoryJob(context.Background(), id)
+	if end == nil {
+		t.Fatal("fixture guard: the retry never claimed the ID")
+	}
+	if !errors.Is(err, errJobInTransition) {
+		t.Errorf("RetryHistoryJob with a finalizer started after its claim = %v, want errJobInTransition", err)
+	}
+	f, oErr := openManifestIn(manifestDir(adminDir), id)
+	if oErr != nil {
+		t.Errorf("the finalizer's manifest is gone after the refused retry: %v", oErr)
+	} else {
+		disk, dErr := decodeManifest(f)
+		_ = f.Close()
+		if dErr != nil || disk.NumFiles() != m.NumFiles() {
+			t.Errorf("the finalizer's manifest was rewritten by the refused retry: %d files (err %v), want %d", disk.NumFiles(), dErr, m.NumFiles())
+		}
+	}
+	if got := jobFilesCount(t, application, id); got != rows {
+		t.Errorf("job_files rows = %d after the refused retry, want the finalizer's %d", got, rows)
+	}
+
+	end()
+	application.retryClaimedHook = nil
 	if err := application.RetryHistoryJob(context.Background(), id); err != nil {
 		t.Errorf("RetryHistoryJob after the finalizer ended = %v, want the retry admitted", err)
 	}

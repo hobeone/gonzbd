@@ -284,6 +284,12 @@ type Application struct {
 	// discipline as checkpointHook.
 	finalizeHook func(*postproc.Job)
 
+	// retryClaimedHook, when non-nil, runs in RetryHistoryJob once it holds
+	// the job's transition lock and before it reads anything, where a
+	// finalizer of the ID can start without that lock. Same discipline as
+	// checkpointHook.
+	retryClaimedHook func(id string)
+
 	// startedTransitionHook, when non-nil, runs in Start right after started
 	// flips true. Same discipline as checkpointHook.
 	startedTransitionHook func()
@@ -2508,9 +2514,9 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 // the dispatcher already holds (errJobAlreadyQueued). It then refuses, before
 // changing any state, a job whose _FAILED_ download directory cannot be moved
 // back to the path the retry writes to (errRetryDirConflict; see
-// restoreFailedDir). It refuses again, before registering the job and undoing
-// what it did, when a finalizer of the ID started while it ran
-// (errJobInTransition; see jobTransitions).
+// restoreFailedDir). A finalizer of the ID that starts after the claim is
+// checked for after the registration check, before any state changes, and
+// again before registering the job (errJobInTransition; see jobTransitions).
 //
 // The history entry is deleted on success.
 func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
@@ -2523,6 +2529,9 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	defer claim.release()
 	if !claim.holds(key) {
 		return fmt.Errorf("app: retry %s: %w", jobID, errJobInTransition)
+	}
+	if app.retryClaimedHook != nil {
+		app.retryClaimedHook(jobID)
 	}
 
 	entry, err := app.historyRepo.Get(ctx, jobID)
@@ -2537,6 +2546,13 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		if _, held := app.dispatcher.Job(jobID); held {
 			return fmt.Errorf("app: retry %s: %w", jobID, errJobAlreadyQueued)
 		}
+	}
+	// After the registration check and before anything below changes state.
+	// A finalizer that started after the claim above proceeds without the
+	// lock, and the instance the check found gone may be the one it is
+	// filing; see jobTransitions for why this check is late enough.
+	if app.transitions.isFinalizing(jobID) {
+		return fmt.Errorf("app: retry %s: a finalizer is committing it: %w", jobID, errJobInTransition)
 	}
 
 	j, hdr, err := app.rebuildJobFromNZB(*entry)
@@ -2702,9 +2718,10 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		}
 	}
 
-	// A finalizer of this ID that started after the claim above proceeds
-	// without the lock, and its teardown acts on the ID; registering now would
-	// put this job under that teardown (jobTransitions).
+	// Checked again before registering: a finalizer of the ID that began
+	// after the check above is for an instance a RemoveJob took, which
+	// returns before acting on the ID (jobTransitions), so this refusal
+	// does not depend on that ordering holding.
 	if app.transitions.isFinalizing(jobID) {
 		return fmt.Errorf("app: retry %s: a finalizer is committing it: %w", jobID, errJobInTransition)
 	}

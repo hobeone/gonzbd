@@ -338,9 +338,13 @@ finalization, queue removal or history change of a job at a time, except that
 a finalizer proceeds without it after a bounded wait, or at once when the
 application is stopping. Even then a retry of the job is refused for as long
 as the finalizer commits: it records the job's ID for its whole run, and
-`RetryHistoryJob` refuses a recorded ID when it claims the lock and again
-before it registers the job, so no later instance takes the ID under the
-finalizer's by-ID teardown (`TestPersistAndCommit_RefusesARetryWhileItCommits`).
+`RetryHistoryJob` refuses a recorded ID when it claims the lock, again once it
+has found no instance registered under the ID and before it changes anything,
+and again before it registers the job. So no later instance takes the ID under
+the finalizer's by-ID teardown, and a refused retry leaves the state the
+finalizer is filing untouched
+(`TestPersistAndCommit_RefusesARetryWhileItCommits`,
+`TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState`).
 A holder may
 wait inside the dispatcher: `Dispatcher.Remove` waits on the job's launch
 claim. So nothing may wait for that lock while holding something the

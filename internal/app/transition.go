@@ -23,17 +23,21 @@ import (
 // has ended (jobFinalizer.persistAndCommit). A retry is still excluded from
 // it. persistAndCommit records its ID in finalizing (beginFinalize) before it
 // does anything, and releases it on return. While the ID is recorded,
-// tryAcquire does not claim it, and RetryHistoryJob refuses before it
-// registers the job (isFinalizing). The second check covers a retry that took
-// the lock before the recording and is still running when the finalizer
-// proceeds without it. Such a retry registers only if it found no instance
-// under the ID, and before the recording that means a RemoveJob took the
-// instance, whose mark the finalizer reads before any by-ID step: the other
-// cancels and removals are the finalizer's own, cancelled's for a job a
-// RemoveJob took, and startup's before the first tick
+// tryAcquire does not claim it, and a RetryHistoryJob that claimed it first
+// refuses (isFinalizing) once it has found no instance registered under the
+// ID and before it changes anything.
+//
+// That check is late enough because the record precedes the finalizer's
+// CancelJob, and an instance no RemoveJob took leaves the dispatcher only
+// after a cancel: the other cancels and removals are the finalizer's own,
+// cancelled's for a job a RemoveJob took, and startup's before the first tick
 // (`git grep -n 'dispatcher\.\(Cancel\|CancelJob\|Remove\|RemoveJob\)(' -- 'internal/app/*.go' ':!*_test.go'`
-// finds 7 lines). A retry is the one way a later instance takes
-// an ID (`git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
+// finds 7 lines). So a retry that finds the finalizer's instance gone either
+// sees the record, or a RemoveJob took the instance and the finalizer reads
+// that mark before any by-ID step. The retry checks again before it
+// registers, which does not depend on this ordering. A retry is the one way a
+// later instance takes an ID
+// (`git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
 // finds 2 lines: RetryHistoryJob's reuses an ID, and AddJob's mints one), so
 // no other instance can register under the ID while its finalizer commits.
 //
@@ -70,7 +74,7 @@ type jobTransitions struct {
 
 // beginFinalize records that a finalizer is committing id, and returns the
 // call that ends the record. TestJobTransitions_FinalizingSites pins
-// persistAndCommit as its only caller, which defers the end.
+// persistAndCommit as its only caller.
 func (t *jobTransitions) beginFinalize(id string) (end func()) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
