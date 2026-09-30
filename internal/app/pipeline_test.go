@@ -16,6 +16,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/telemetry"
@@ -141,7 +142,7 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	}
 
 	resTerminal := &downloader.ArticleResult{
-		JobID:     j.ID(),
+		Job:       j,
 		FileIdx:   0,
 		MessageID: "a1@x",
 		Err:       downloader.ErrNoServersLeft,
@@ -159,7 +160,7 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	retriesBefore := telemetry.ArticlesRetried.Value()
 
 	resRetryable := &downloader.ArticleResult{
-		JobID:     j.ID(),
+		Job:       j,
 		FileIdx:   0,
 		MessageID: "a1@x",
 		Err:       nntp.ErrTransient,
@@ -207,7 +208,7 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 	writtenBefore := telemetry.ArticlesWritten.Value()
 
 	resSuccess := &downloader.ArticleResult{
-		JobID:      j.ID(),
+		Job:        j,
 		FileIdx:    0,
 		MessageID:  "a1@x",
 		Data:       []byte("some data"),
@@ -245,16 +246,6 @@ func TestRegisterFile_ErrorPaths(t *testing.T) {
 		}
 	}
 
-	t.Run("job not in the dispatcher", func(t *testing.T) {
-		t.Parallel()
-		app := newTestApplication(t)
-		p := newPipeline(app.Dispatcher())
-		err := p.registerFile("no-such-job", 0)
-		if err == nil || !strings.Contains(err.Error(), "not found") {
-			t.Errorf("registerFile = %v, want a not-found error", err)
-		}
-	})
-
 	t.Run("manifest unavailable", func(t *testing.T) {
 		t.Parallel()
 		app := newTestApplication(t)
@@ -265,7 +256,7 @@ func TestRegisterFile_ErrorPaths(t *testing.T) {
 		j.Evict()
 
 		p := newPipeline(app.Dispatcher())
-		err := p.registerFile(j.ID(), 0)
+		err := p.registerFile(j, 0)
 		if err == nil {
 			t.Fatal("registerFile returned nil with no manifest")
 		}
@@ -285,7 +276,7 @@ func TestRegisterFile_ErrorPaths(t *testing.T) {
 
 		for _, idx := range []int{-1, m.NumFiles()} {
 			p := newPipeline(app.Dispatcher())
-			err := p.registerFile(j.ID(), idx)
+			err := p.registerFile(j, idx)
 			if err == nil || !strings.Contains(err.Error(), "out of range") {
 				t.Errorf("registerFile(%d) = %v, want an out-of-range error", idx, err)
 			}
@@ -293,7 +284,7 @@ func TestRegisterFile_ErrorPaths(t *testing.T) {
 	})
 }
 
-func TestHandleSuccessResult_AbandonsTheArticleWhenTheJobIsGone(t *testing.T) {
+func TestHandleResult_AbandonsTheArticleWhenTheJobIsGone(t *testing.T) {
 	t.Parallel()
 	app := newTestApplication(t)
 
@@ -311,10 +302,13 @@ func TestHandleSuccessResult_AbandonsTheArticleWhenTheJobIsGone(t *testing.T) {
 		fileInfo:   make(map[fileKey]assembler.FileInfo),
 	}
 
-	p.handleSuccessResult(t.Context(), &downloader.ArticleResult{
-		JobID: "gone", FileIdx: 0, ArtIdx: 0, MessageID: "a@x",
+	p.handleResult(t.Context(), &downloader.ArticleResult{
+		Job: job.New("gone", "gone.nzb", job.Policy{}), FileIdx: 0, ArtIdx: 0, MessageID: "a@x",
 		Data: []byte("payload"), ServerName: "s1",
 	})
+	if len(p.fileInfo) != 0 {
+		t.Errorf("a result for a job not in the dispatcher registered %d files", len(p.fileInfo))
+	}
 }
 
 func TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered(t *testing.T) {
@@ -336,7 +330,7 @@ func TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered(t *t
 
 	// File 9 does not exist in a one-file job, so registerFile fails.
 	p.handleSuccessResult(t.Context(), &downloader.ArticleResult{
-		JobID: j.ID(), FileIdx: 9, ArtIdx: 0, MessageID: "regfail-f0-a0@x",
+		Job: j, FileIdx: 9, ArtIdx: 0, MessageID: "regfail-f0-a0@x",
 		Data: []byte("payload"), ServerName: "s1",
 	})
 
@@ -378,7 +372,7 @@ func TestHandleSuccessResult_RecordsNothingDurableAndReportsTheBytes(t *testing.
 
 	payload := []byte("decoded article bytes")
 	p.handleSuccessResult(t.Context(), &downloader.ArticleResult{
-		JobID: j.ID(), FileIdx: 0, ArtIdx: 0, MessageID: "happy-f0-a0@x",
+		Job: j, FileIdx: 0, ArtIdx: 0, MessageID: "happy-f0-a0@x",
 		Offset: 4096, Data: payload, CRC: 0xC0FFEE, ServerName: "s1",
 	})
 

@@ -655,12 +655,13 @@ func (d *Dispatcher) ResumeJob(id string) error {
 }
 
 // Remove cancels a job, waits for its launch claim latch to be cleared via
-// waitLaunched, deletes its persisted row and deregisters it.
+// waitLaunched, parks it, deletes its persisted row and deregisters it.
 //
-// The order is deliberate: Cancel first so sched reclaims the lease and the
-// compute slot while the job is still registered. Deregistering first would
-// strand both -- the tick only walks registered jobs, so nothing would ever
-// return them.
+// The order is deliberate: the job's lease and compute slot are returned
+// while it is still registered, by Cancel where sched interrupts, by the
+// worker's exit report, and otherwise by the park once no worker is left.
+// Deregistering first would strand both -- the tick only walks registered
+// jobs, so nothing would ever return them.
 //
 // Retry contract: If Remove returns an error (e.g. context cancellation while
 // waiting for worker, or store failure), the job remains cancelled and
@@ -715,6 +716,14 @@ func (d *Dispatcher) removeFor(ctx context.Context, id string, expected *job.Job
 		if err := d.waitLive(ctx, id); err != nil {
 			return fmt.Errorf("dispatch: remove %s: wait live: %w", id, err)
 		}
+	}
+	// No worker and no occupier is left, and the removal marker keeps any
+	// launch from claiming the job, so what it still holds is a grant with
+	// no worker: a job Advance granted and launch never started. After the
+	// grant sched gates rather than interrupts a cancel, so Cancel above
+	// left it held, and no later tick visits a deregistered job.
+	if j, ok := d.lookupFor(id, expected); ok {
+		d.parkGrant(j)
 	}
 	d.storeMu.Lock()
 	delErr := d.store.Delete(ctx, id)

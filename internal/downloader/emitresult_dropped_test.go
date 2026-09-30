@@ -41,7 +41,7 @@ func TestEmitResult_ClearsTheEmittedBitWhenTheResultIsDropped(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	req := &articleRequest{jobID: j.ID(), artIdx: artIdx, messageID: "a@h"}
+	req := &articleRequest{job: j, artIdx: artIdx, messageID: "a@h"}
 	d.emitResult(ctx, req, "srv", []byte("payload"), 0, 0, nil)
 
 	// The consequence, not the bit: the article must be dispatchable again.
@@ -70,7 +70,7 @@ func TestEmitResult_LeavesTheEmittedBitWhenTheResultIsDelivered(t *testing.T) {
 		t.Fatalf("MarkArticleEmitted: %v", err)
 	}
 
-	req := &articleRequest{jobID: j.ID(), artIdx: artIdx, messageID: "a@h"}
+	req := &articleRequest{job: j, artIdx: artIdx, messageID: "a@h"}
 	d.emitResult(t.Context(), req, "srv", []byte("payload"), 0, 0, nil)
 
 	if got := <-d.Completions(); got.ArtIdx != artIdx {
@@ -99,7 +99,7 @@ func TestEmitResult_ReportsAFailureToClearRatherThanSwallowingIt(t *testing.T) {
 	cancel()
 
 	// Out of range for a one-article job, so the clear fails.
-	req := &articleRequest{jobID: j.ID(), artIdx: 4096, messageID: "a@h"}
+	req := &articleRequest{job: j, artIdx: 4096, messageID: "a@h"}
 	d.emitResult(ctx, req, "srv", nil, 0, 0, nil)
 
 	if !strings.Contains(logged.String(), "clear the emitted bit for a dropped result") {

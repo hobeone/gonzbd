@@ -1,5 +1,5 @@
 pkg ./internal/history/
-run TestOpen_DoesNotBlockBehindAWriter
+run TestOpen_DoesNotVacuum
 
 [a startup VACUUM reintroduced after migrations]
 file internal/history/db.go

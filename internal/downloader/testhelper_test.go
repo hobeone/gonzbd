@@ -63,6 +63,10 @@ func addTestJob(t *testing.T, disp *dispatch.Dispatcher, j *job.Job, m *job.Mani
 	return j
 }
 
+// bareJob is a job instance with no content and no registration, for a request
+// whose job a test never consults.
+func bareJob(id string) *job.Job { return job.New(id, id+".nzb", job.Policy{}) }
+
 func makeJobWithArticles(t *testing.T, msgIDs []string) (*job.Job, *job.Manifest) {
 	if t != nil {
 		t.Helper()
