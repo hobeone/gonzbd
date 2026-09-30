@@ -2542,8 +2542,10 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 // changing any state, a job whose _FAILED_ download directory cannot be moved
 // back to the path the retry writes to (errRetryDirConflict; see
 // restoreFailedDir). A finalizer of the ID that starts after the claim is
-// checked for after the registration check, before any state changes, and
-// again before registering the job (errJobInTransition; see jobTransitions).
+// checked for once, after the registration check and before any state
+// changes (errJobInTransition). One starting later is of an instance a
+// RemoveJob marked removed, and persistAndCommit refuses to file it under the
+// ID on its own (see jobTransitions).
 //
 // The history entry is deleted on success.
 func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
@@ -2762,11 +2764,6 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, prepa
 		}
 	}
 
-	// Checked again before registering: a retry is not registered under an
-	// ID a finalizer is committing (jobTransitions).
-	if app.transitions.isFinalizing(jobID) {
-		return fmt.Errorf("app: retry %s: a finalizer is committing it: %w", jobID, errJobInTransition)
-	}
 	if app.retryRegisteringHook != nil {
 		app.retryRegisteringHook(jobID)
 	}

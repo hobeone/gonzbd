@@ -146,10 +146,10 @@ func requireRetryRegisteredWithItsState(t *testing.T, application *Application, 
 // whose dispatcher.Remove fails leaves the instance registered and cancelled,
 // and the tick evicts it as a cancelled job that never ran. A retry of the ID
 // then finds it free, and a finalizer of that instance can begin and end,
-// without the lock, while the retry is between its two finalizing checks. It
-// must act on nothing under the ID: the retry registers with the manifest and
-// rows it wrote. The instance the retry registers is filed by its own
-// finalizer.
+// without the lock, while the retry is past its one finalizing check and
+// still short of registering. It must act on nothing under the ID: the retry
+// registers with the manifest and rows it wrote. The instance the retry
+// registers is filed by its own finalizer.
 //
 // The FAILED entry beside a live instance, which in production is left by an
 // earlier retry whose history delete failed, is seeded directly.
@@ -160,8 +160,8 @@ func TestRetryHistoryJob_AFinalizerBetweenItsChecksLeavesItsState(t *testing.T) 
 	addRetryableEntry(t, repo, adminDir, id, "")
 	j1 := failedRemovalEvicted(t, application, id)
 
-	// Held in its job_files seed: past its early finalizing check and its
-	// manifest write, before the check before it registers.
+	// Held in its job_files seed: past its finalizing check and its
+	// manifest write, before it registers.
 	retry, blk := startBlockedRetry(t, application, id)
 	finErr := finalizeWithoutTheLock(t, application, j1)
 	close(blk.release)
@@ -208,29 +208,6 @@ func TestRetryHistoryJob_AFinalizerAfterItsLastCheckLeavesItsState(t *testing.T)
 		t.Errorf("the finalizer of the instance whose removal failed = %v, want errFinalizedJobRemoved", finErr)
 	}
 	requireRetryRegisteredWithItsState(t, application, adminDir, id, j1, retryErr)
-}
-
-// TestRetryHistoryJob_RefusedByAFinalizingRecordBeforeItRegisters: a retry
-// does not register under an ID a finalizer began committing after the
-// retry's early finalizing check, and a refused retry leaves nothing queued.
-func TestRetryHistoryJob_RefusedByAFinalizingRecordBeforeItRegisters(t *testing.T) {
-	t.Parallel()
-	application, repo, adminDir := newLifecycleTestApp(t)
-	const id = "feedface00682a03"
-	addRetryableEntry(t, repo, adminDir, id, "")
-
-	retry, blk := startBlockedRetry(t, application, id)
-	end := application.transitions.beginFinalize(id)
-	close(blk.release)
-	err := receiveWithin(t, retry, "the retry")
-	end()
-
-	if !errors.Is(err, errJobInTransition) {
-		t.Errorf("RetryHistoryJob with a finalizer begun after its early check = %v, want errJobInTransition", err)
-	}
-	if _, queued := application.dispatcher.Job(id); queued {
-		t.Error("the refused retry registered the job")
-	}
 }
 
 // TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState: a retry

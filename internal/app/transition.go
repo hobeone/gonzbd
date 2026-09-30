@@ -40,12 +40,14 @@ import (
 // instance. That RemoveJob marked the instance before its Cancel and keeps
 // the mark whether or not its Remove succeeds (see removed below), and the
 // finalizer reads the mark before any by-ID step. So a finalizer of that
-// instance that begins after the retry's early check, whether before the
-// retry registers or after, files nothing and acts on nothing under the ID
+// instance that begins after the retry's one finalizing check, whether
+// before the retry registers or after, files nothing and acts on nothing
+// under the ID
 // (TestRetryHistoryJob_AFinalizerBetweenItsChecksLeavesItsState,
-// TestRetryHistoryJob_AFinalizerAfterItsLastCheckLeavesItsState). The retry
-// also checks the record again before it registers. A retry is the one way a
-// later instance takes an ID
+// TestRetryHistoryJob_AFinalizerAfterItsLastCheckLeavesItsState); a second
+// check before registering would guard no state the first does not already
+// cover, so retryHistoryJob checks the record only once, right after the
+// registration check. A retry is the one way a later instance takes an ID
 // (`git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
 // finds 2 lines: retryHistoryJob's reuses an ID, and AddJob's mints one), so
 // no other instance can register under the ID while its finalizer commits.

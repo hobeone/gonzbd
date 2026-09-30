@@ -390,12 +390,12 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	// FetchOptions.JobID it sets, and takes the transition lock;
 	// AddJob's jobs are built by BuildIngestJob, which mints a newJobID when
 	// no JobID is set. So while this holds the lock the answer cannot change
-	// underneath. Without it, retryHistoryJob's checks of the finalizing
-	// record this function set at its start refuse a retry at the points
-	// jobTransitions lists. A retry that passed its last check before that
-	// record began found no instance under the ID, so a RemoveJob marked this
-	// one (jobTransitions says why), and this function has already returned
-	// at the wasRemoved check above.
+	// underneath. Without it, retryHistoryJob's check of the finalizing
+	// record this function set at its start refuses a retry at the point
+	// jobTransitions lists. A retry that passed that check before the record
+	// began found no instance under the ID, so a RemoveJob marked this one
+	// (jobTransitions says why), and this function has already returned at
+	// the wasRemoved check above.
 	if app.dispatcher != nil {
 		var runErr error
 		if err := app.dispatcher.OccupyJob(finalCtx, ppJob.Job, func(occupyCtx context.Context) {

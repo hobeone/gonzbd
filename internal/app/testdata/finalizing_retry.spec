@@ -1,11 +1,11 @@
 pkg ./internal/app/
-run TestPersistAndCommit_RefusesARetryWhileItCommits$|TestRetryHistoryJob_AFinalizerBetweenItsChecksLeavesItsState$|TestRetryHistoryJob_AFinalizerAfterItsLastCheckLeavesItsState$|TestRetryHistoryJob_RefusedByAFinalizingRecordBeforeItRegisters$|TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState$|TestPruneHistory_SkipsAJobBeingFinalized$|TestFinalize_ParErrorWithHeldVolumesRetriesWithThemReleased$|TestFinalize_SkipsAJobWhoseRemovalFailed$
+run TestPersistAndCommit_RefusesARetryWhileItCommits$|TestRetryHistoryJob_AFinalizerBetweenItsChecksLeavesItsState$|TestRetryHistoryJob_AFinalizerAfterItsLastCheckLeavesItsState$|TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState$|TestPruneHistory_SkipsAJobBeingFinalized$|TestFinalize_ParErrorWithHeldVolumesRetriesWithThemReleased$|TestFinalize_SkipsAJobWhoseRemovalFailed$
 
 # The finalizing record that keeps a retry off an ID while its finalizer
 # commits, each part neutered on its own. retryHistoryJob meets the record
-# three times: at tryAcquire, after its registration check, and before it
-# registers. TestPersistAndCommit_RefusesARetryWhileItCommits asserts the
-# retry never claims the ID, so it kills the tryAcquire mutation itself.
+# twice: at tryAcquire, and after its registration check.
+# TestPersistAndCommit_RefusesARetryWhileItCommits asserts the retry never
+# claims the ID, so it kills the tryAcquire mutation itself.
 # TestFinalize_ParErrorWithHeldVolumesRetriesWithThemReleased is here for the
 # finalizer's own retry, which must be admitted once the record has ended.
 
@@ -47,21 +47,11 @@ file internal/app/app.go
 	if false {
 --- end
 
-[a retry registers under an ID a finalizer is committing]
-file internal/app/app.go
---- anchor
-	// ID a finalizer is committing (jobTransitions).
-	if app.transitions.isFinalizing(jobID) {
---- replace
-	// ID a finalizer is committing (jobTransitions).
-	if false {
---- end
-
 # The removal mark a RemoveJob keeps when its dispatcher.Remove fails,
 # withdrawn on that path instead. A finalizer of the instance then
-# takes its fallback teardown by ID, whether it runs between the retry's two
-# finalizing checks or after the last, and the retry registers without the
-# manifest and rows it wrote.
+# takes its fallback teardown by ID, whether it runs shortly after the
+# retry's one finalizing check or right up to the retry's registration, and
+# the retry registers without the manifest and rows it wrote.
 
 [a RemoveJob whose Remove failed gives its mark back]
 file internal/app/app.go
