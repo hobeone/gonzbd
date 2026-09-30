@@ -299,3 +299,33 @@ func TestUndeferRecovery(t *testing.T) {
 		}
 	})
 }
+
+// TestMarkArticleFailed_RespectsRepairPolicy pins the live-download half of
+// the fetch-decision policy gate: a permanent article failure must not
+// release a job's deferred recovery volumes when the job's Policy.Repair is
+// false (PP=0). Repairing never runs for such a job, so releasing them here
+// — during an active download, not only at the Assessing verdict — would
+// still spend bandwidth nothing uses.
+func TestMarkArticleFailed_RespectsRepairPolicy(t *testing.T) {
+	m := NewManifest([]JobFile{
+		{Subject: "data", Bytes: 100, Articles: []JobArticle{{ID: "<d0@x>", Bytes: 100, Number: 1}}},
+		{Subject: "vol01+02.par2", Bytes: 100, IsPar2Recovery: true,
+			Articles: []JobArticle{{ID: "<p0@x>", Bytes: 100, Number: 1}}},
+	})
+	j := New("j", "j", Policy{}) // zero value: Repair == false, matching PP=0
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	j.progress.files[1].Fetch = FetchIfNeeded
+
+	if err := j.MarkArticleFailed(0); err != nil {
+		t.Fatalf("MarkArticleFailed: %v", err)
+	}
+	if got := j.progress.files[1].Fetch; got != FetchIfNeeded {
+		t.Errorf("recovery volume fetch policy = %v, want FetchIfNeeded (still held); a PP=0 job's live-download "+
+			"article failure released it despite Policy.Repair == false", got)
+	}
+	if j.progress.Par2Recovered() {
+		t.Error("Par2Recovered = true after a PP=0 job's article failure; nothing was actually released")
+	}
+}

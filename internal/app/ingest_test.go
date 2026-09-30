@@ -68,6 +68,28 @@ func TestBuildIngestJob_HappyPath(t *testing.T) {
 	}
 }
 
+// TestBuildIngestJob_PolicyMatchesPolicyFromPP pins that the Policy
+// BuildIngestJob attaches to the job must equal job.PolicyFromPP(pp)
+// for the resolved PP, field for field — including Verify, which a prior
+// version of this function left at its zero value (false) regardless of pp.
+// A caller such as runAssess that started gating the on-demand par2 fetch
+// decision on Policy.Verify or Policy.Repair would otherwise see Verify
+// false even for a PP>=1 job.
+func TestBuildIngestJob_PolicyMatchesPolicyFromPP(t *testing.T) {
+	t.Parallel()
+	for _, pp := range []int{types.PPNone, types.PPRepair, types.PPUnpack, types.PPDelete} {
+		j, _, err := BuildIngestJob(&config.Config{}, multiVolumeNZB(), "movie.nzb",
+			types.FetchOptions{PP: pp}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob(pp=%d): %v", pp, err)
+		}
+		want := job.PolicyFromPP(pp)
+		if got := j.Policy(); got != want {
+			t.Errorf("BuildIngestJob(pp=%d).Policy() = %+v, want %+v (job.PolicyFromPP(%d))", pp, got, want, pp)
+		}
+	}
+}
+
 // TestBuildIngestJob_CategoryPriorityInherit pins the bug fixed by this
 // consolidation: the one-shot CLI path previously passed a nil Categories
 // slice, so a custom Default category's Priority (and PP/Script) were

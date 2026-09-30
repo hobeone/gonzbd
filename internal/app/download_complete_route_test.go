@@ -210,7 +210,10 @@ func TestRestart_CompleteJobPassesThroughAssessing(t *testing.T) {
 			adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 			cfg := testConfig(downloadDir, completeDir, adminDir)
 			cfg.With(func(c *config.Config) { c.Downloads.OnDemandPar2 = true })
-			j, hdr := buildTestJob(t, cfg, deferredVolumeNZB("route"), types.FetchOptions{NzbName: "restart-route"})
+			// PPRepair: assertAssessed waits for the verdict to release the
+			// recovery volume, which is gated on Policy.Repair. A PP=0 job
+			// (the zero FetchOptions.PP) never releases it, by design.
+			j, hdr := buildTestJob(t, cfg, deferredVolumeNZB("route"), types.FetchOptions{NzbName: "restart-route", PP: types.PPRepair})
 			if !j.HasDeferredPar2() {
 				t.Fatal("setup: the recovery volume is not deferred")
 			}

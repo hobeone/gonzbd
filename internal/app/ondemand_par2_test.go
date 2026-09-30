@@ -100,8 +100,20 @@ type par2FileSpec struct {
 	bytes   int64
 }
 
-// newPar2Job builds a real, not-yet-added *job.Job with OnDemandPar2 enabled.
+// newPar2Job builds a real, not-yet-added *job.Job with OnDemandPar2 enabled
+// and PP=1 (repair permitted), which is what every pre-existing caller here
+// actually exercises: whether the CRC verdict fetches recovery volumes, not
+// whether the job's policy permits repair at all. A policy-specific job
+// (e.g. PP=0) is built with newPar2JobPP directly.
 func newPar2Job(t *testing.T, id, name string, specs []par2FileSpec) (*job.Job, dispatch.Header) {
+	t.Helper()
+	return newPar2JobPP(t, id, name, types.PPRepair, specs)
+}
+
+// newPar2JobPP is newPar2Job with an explicit PP level, for tests that pin
+// behaviour gated on the job's resolved Policy rather than on the CRC
+// verdict alone.
+func newPar2JobPP(t *testing.T, id, name string, pp int, specs []par2FileSpec) (*job.Job, dispatch.Header) {
 	t.Helper()
 	parsed := &nzb.NZB{}
 	for i, f := range specs {
@@ -120,7 +132,7 @@ func newPar2Job(t *testing.T, id, name string, specs []par2FileSpec) (*job.Job, 
 		t.Fatalf("config.Default: %v", err)
 	}
 	cfg.Downloads.OnDemandPar2 = true
-	j, hdr, err := BuildIngestJob(cfg, parsed, "t.nzb", types.FetchOptions{JobID: id, NzbName: name}, nil)
+	j, hdr, err := BuildIngestJob(cfg, parsed, "t.nzb", types.FetchOptions{JobID: id, NzbName: name, PP: pp}, nil)
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
@@ -571,6 +583,70 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 				"doing it here cannot be recorded truthfully for a subdirectory target")
 		}
 	})
+}
+
+// TestMaybeReleaseRecoveryVolumes_RespectsRepairPolicy pins that a job
+// whose Policy.Repair is false (PP=0, download-only) must not have its
+// deferred recovery volumes un-deferred even when the CRC verdict says
+// repair is needed — Repairing never runs for such a job, so fetching the
+// volumes only spends bandwidth on bytes nothing will use.
+//
+// This reads state directly (the file's FetchPolicy and HasDeferredPar2)
+// rather than timing or a mock, per Standing Design Rule 4's ban on
+// re-deriving a claim from memory: the assertion is what the job actually
+// holds after the call, not what the call returned.
+func TestMaybeReleaseRecoveryVolumes_RespectsRepairPolicy(t *testing.T) {
+	t.Parallel()
+	log := slog.New(slog.DiscardHandler)
+	dir := t.TempDir()
+
+	app := newTestApplication(t)
+	app.config.With(func(c *config.Config) {
+		c.General.DownloadDir = dir
+		c.Downloads.OnDemandPar2 = true
+	})
+	app.log = log
+
+	const jobID = "pp0-corrupt"
+	qjob, hdr := newPar2JobPP(t, jobID, "pp0-corrupt-name", types.PPNone, []par2FileSpec{
+		{subject: "data.bin", bytes: 100},
+		{subject: "data.vol000+01.par2", bytes: 100},
+	})
+	if got := qjob.Policy().Repair; got {
+		t.Fatalf("fixture guard: PP=0 job must resolve Policy.Repair=false, got %v", got)
+	}
+	seedFileCRC(t, qjob, 0, 0xDEADBEEF) // wrong CRC: the fixture payload is damaged
+	if err := app.Dispatcher().Add(context.Background(), qjob, hdr); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if !qjob.HasDeferredPar2() {
+		t.Fatal("fixture guard: the job must arrive with a deferred volume")
+	}
+
+	jobDir := filepath.Join(dir, "pp0-corrupt-name")
+	if err := os.MkdirAll(jobDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	copyFixturePar2(t, jobDir)
+	copyFixturePayload(t, jobDir, "data.bin")
+
+	if app.maybeReleaseRecoveryVolumes(t.Context(), qjob) {
+		t.Error("maybeReleaseRecoveryVolumes must return false for a PP=0 job even when the data is damaged; " +
+			"Repairing never runs for it, so fetching the volumes wastes bandwidth")
+	}
+	if !qjob.HasDeferredPar2() {
+		t.Error("a PP=0 job's recovery volume was un-deferred despite Policy.Repair == false")
+	}
+	m := mustManifest(t, qjob)
+	for fi := range m.NumFiles() {
+		if !m.FileIsPar2Recovery(fi) {
+			continue
+		}
+		if got := qjob.Progress().FileFetchPolicy(fi); got != job.FetchIfNeeded {
+			t.Errorf("recovery file %d fetch policy = %v, want FetchIfNeeded (still held), not fetched by a "+
+				"PP=0 verdict", fi, got)
+		}
+	}
 }
 
 // TestMarkFetchPolicyDirty_Guards covers markFetchPolicyDirty's own branches,

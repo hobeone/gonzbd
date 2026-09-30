@@ -1872,6 +1872,18 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 			"job", jobID, "reason", reason)
 		return false
 	case outcomeRepair:
+		if !j.Policy().Repair {
+			// Repairing never runs for this job (Policy.Repair == false, a
+			// PP=0 download-only job), so fetching the volumes would only
+			// spend bandwidth nothing will use. A verdict WAS reached — it
+			// is simply not acted on — so the release reason is still
+			// recorded, matching HasPar2Verdict's "a verdict was reached"
+			// meaning rather than "still awaiting one".
+			j.SetPar2ReleaseReason(reason)
+			app.log.Info("on-demand par2: repair needed but the job's policy forbids repair; holding the volumes and finalizing",
+				"job", jobID, "reason", reason)
+			return false
+		}
 		n, err := app.releaseRecoveryVolumes(j, reason)
 		if err != nil {
 			app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
