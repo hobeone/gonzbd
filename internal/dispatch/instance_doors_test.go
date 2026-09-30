@@ -111,7 +111,7 @@ func TestInstanceBoundHelpers_ExpectedSelectsTheInstance(t *testing.T) {
 				if err := j2.BeginAttempt(time.Now()); err != nil {
 					t.Fatalf("BeginAttempt(j2): %v", err)
 				}
-				err := d.finishedFor("j1", tc.expected(j1, j2), job.OutcomeFailed)
+				err := d.finishedFor("FinishedJob", "j1", tc.expected(j1, j2), job.OutcomeFailed)
 				if (err == nil) != tc.want {
 					t.Errorf("finishedFor err = %v, want success %v", err, tc.want)
 				}

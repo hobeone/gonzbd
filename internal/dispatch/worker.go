@@ -33,7 +33,7 @@ import (
 // changes) has already changed, while still being unconditional on Settle's
 // outcome.
 func (d *Dispatcher) Finished(id string, o job.Outcome) error {
-	return d.finishedFor(id, nil, o)
+	return d.finishedFor("Finished", id, nil, o)
 }
 
 // FinishedJob is Finished for one instance of a job: it settles and clears the
@@ -45,14 +45,15 @@ func (d *Dispatcher) FinishedJob(j *job.Job, o job.Outcome) error {
 	if j == nil {
 		return fmt.Errorf("dispatch: FinishedJob: nil job: %w", ErrNotFound)
 	}
-	return d.finishedFor(j.ID(), j, o)
+	return d.finishedFor("FinishedJob", j.ID(), j, o)
 }
 
-// finishedFor is Finished and FinishedJob; expected is as for lookupFor.
-func (d *Dispatcher) finishedFor(id string, expected *job.Job, o job.Outcome) error {
+// finishedFor is Finished and FinishedJob; door names the caller in its
+// errors, and expected is as for lookupFor.
+func (d *Dispatcher) finishedFor(door, id string, expected *job.Job, o job.Outcome) error {
 	j, ok := d.lookupFor(id, expected)
 	if !ok {
-		return fmt.Errorf("dispatch: Finished: no job %q: %w", id, ErrNotFound)
+		return fmt.Errorf("dispatch: %s: no job %q: %w", door, id, ErrNotFound)
 	}
 	// One clearLaunched call, on every path: the rejection below and a failed
 	// Settle both still have to release the claim, and a second call site
@@ -60,9 +61,9 @@ func (d *Dispatcher) finishedFor(id string, expected *job.Job, o job.Outcome) er
 	// these, one per exit door.
 	var err error
 	if o == job.OutcomeCancelled {
-		err = fmt.Errorf("dispatch: Finished(%s): OutcomeCancelled is reserved for the cancel latch", id)
+		err = fmt.Errorf("dispatch: %s(%s): OutcomeCancelled is reserved for the cancel latch", door, id)
 	} else if serr := d.q.Settle(j, o); serr != nil {
-		err = fmt.Errorf("dispatch: Finished(%s): %w", id, serr)
+		err = fmt.Errorf("dispatch: %s(%s): %w", door, id, serr)
 	}
 	// Cleared AFTER Settle and BEFORE kick, and unconditional on Settle's
 	// outcome. A defer satisfied the first and third and broke the second:
@@ -298,11 +299,12 @@ func (d *Dispatcher) parkGrant(j *job.Job) {
 
 // claimLaunched sets launched[id] under d.mu and reports whether this call was
 // the one that set it, so a later tick does not start a second worker for a
-// job already being worked. Finished, YieldedFor, clearLaunchedFor (for
-// AdvanceFrom and YieldedFrom), Stop's sweep and deregister are its five
-// exit-path clearers, and launch clears a claim it took for a job that
-// stopped running, or stopped being wanted, before the claim — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
-// grep -v _test.go` finds six lines, one per site.
+// job already being worked. finishedFor (for Finished and FinishedJob),
+// YieldedFor, clearLaunchedFor (for AdvanceFrom and YieldedFrom), Stop's sweep
+// and deregister are its five exit-path clearers, and launch clears a claim it
+// took for a job that stopped running, or stopped being wanted, before the
+// claim — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go | grep -v _test.go`
+// finds six lines, one per site.
 func (d *Dispatcher) claimLaunched(id string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()

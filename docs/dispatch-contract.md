@@ -302,8 +302,9 @@ that shipped kept it as the config-facing name for that knob instead.)
 under `d.mu` via `snapshotOrder`, releases the lock, and only then calls
 `sched.Queue.Advance` per job (`internal/dispatch/tick.go`). Every other call into `d.q` —
 `Cancel`, `Retry`, `Pause`, `Resume`, `SetCaps`, `Park` in `Stop`'s sweep,
-`Render`/`RenderAll` in `List`/`Row`/`reconcileResidency`/`launch`, `Settle`
-in `Finished`/`reconcileResidency`, `Park` in `YieldedFor` and in `parkGrant`
+`Render`/`RenderAll` in `List`/`rowFor` (for `Row` and
+`RowJob`)/`reconcileResidency`/`launch`, `Settle` in `finishedFor` (for
+`Finished` and `FinishedJob`)/`reconcileResidency`, `Park` in `YieldedFor` and in `parkGrant`
 (for `launch` and `removeFor`), `Handoff` in
 `handoff` (for `AdvanceFrom` and `YieldedFrom`) — is likewise made
 outside any `d.mu` span (verified: `grep -n 'd\.q\.' internal/dispatch/*.go
@@ -373,9 +374,9 @@ would yield a listing that was true at no single instant (job 3 rendered
 once). `Dispatcher.List` (`internal/dispatch/registry.go`) calls
 `RenderAll` exactly once per listing for this reason.
 
-`Dispatcher.Row(id)` — the single-job lookup used where a caller needs one
-job's status without paying for a full listing walk — calls the per-job
-`Render` instead, deliberately: using `List` for a single lookup would trade
+`Dispatcher.Row(id)` and its instance-bound form `RowJob(j)` — the
+single-job lookups used where a caller needs one job's status without paying
+for a full listing walk — call the per-job `Render` instead, deliberately: using `List` for a single lookup would trade
 one manifest-free `RenderAll` call for an O(n) walk over the whole registry.
 
 `RenderView` (`internal/job/render.go`) carries `StateView` plus `Running`,
