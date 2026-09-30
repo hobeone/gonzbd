@@ -518,7 +518,7 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 	// assembler still holds handles for a job the dispatcher has dropped, so
 	// checkpointAll keeps listing it — and a manifest that cannot be read at all.
 	//
-	// TestCheckpointJob_DoesNotStampABarrierThatNeverRan uses the first, and
+	// TestCheckpointJob_DoesNotStampABarrierThatNeverRan uses the second, and
 	// asserts both halves of the fixture: no target, and the assembler still
 	// listing the job.
 	tgt := app.syncTargetFor(jobID)
@@ -1639,12 +1639,12 @@ func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path str
 	// not a halt: the job is not parked for it. It is ordinary whenever the
 	// dispatcher evicts a job while one of its completions is in flight —
 	// including at shutdown, which is why it is answered before the Error
-	// below. It arrives from finalizeCompletedFile's nil-target return and
-	// retryFinalize's refusal, where no barrier ran, and from a barrier that
-	// committed the runs and then could not ack them. Each is recorded for
-	// retry: the retry runs the barrier once the job is resident, and the
-	// re-evaluation's seed phase replays committed runs into the work set
-	// after it lands.
+	// below. It arrives from finalizeCompletedFile's nil-target return for a
+	// queued job, on a first attempt or a retry, where no barrier ran, and from
+	// a barrier that committed the runs and then could not ack them. Each is
+	// recorded for retry: the retry runs the barrier once the job is resident,
+	// and the re-evaluation's seed phase replays committed runs into the work
+	// set after it lands.
 	if errors.Is(err, job.ErrNotResident) {
 		app.log.Info("completed file was not finalized because its job is not resident; "+
 			"the finalize is retried once it is",

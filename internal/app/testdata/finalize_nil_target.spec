@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestHandleFileComplete_ANonResident(JobsFileIsNotDeliveredUntrimmed|CompletionDrainedAtShutdown)$
+run TestHandleFileComplete_ANonResident(JobsFileIsNotDeliveredUntrimmed|CompletionDrainedAtShutdown)$|TestRetryFinalize_(ADepartedJobIsNotAnsweredAsNonResident|RefusesAJobWithNoReadableManifest)$
 
 [a queued job's nil-target finalize answered nil]
 file internal/app/durability.go
@@ -9,12 +9,20 @@ file internal/app/durability.go
 			if _, queued := app.dispatcher.Job(jobID); false && queued {
 --- end
 
-[the retry's nil-target refusal not marked non-resident]
-file internal/app/stall.go
+[a departed job's nil-target finalize answered as non-resident]
+file internal/app/durability.go
 --- anchor
-			"can be run over it: %w", ErrNotFinalized, jobID, fileIdx, job.ErrNotResident)
+			if _, queued := app.dispatcher.Job(jobID); queued {
 --- replace
-			"can be run over it: %v", ErrNotFinalized, jobID, fileIdx, job.ErrNotResident)
+			if _, queued := app.dispatcher.Job(jobID); true || queued {
+--- end
+
+[the nil-target refusal not marked non-resident]
+file internal/app/durability.go
+--- anchor
+				return fmt.Errorf("%w: job %s file %d: no barrier can run over it: %w",
+--- replace
+				return fmt.Errorf("%w: job %s file %d: no barrier can run over it: %v",
 --- end
 
 [a non-resident finalize routed as a storage fault]

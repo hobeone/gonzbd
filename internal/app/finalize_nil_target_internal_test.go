@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -154,8 +155,26 @@ func TestHandleFileComplete_ANonResidentJobsFileIsNotDeliveredUntrimmed(t *testi
 // Outstanding to be fetched again.
 func TestHandleFileComplete_ANonResidentCompletionDrainedAtShutdown(t *testing.T) {
 	t.Parallel()
-	application, j, _, _ := newEvictedCompletionApp(t)
+	application, j := newDurabilityTestApp(t, 1, 1)
+	writeShortArticle(t, application, j)
 	logs := closeFaultLogs(application)
+
+	// Shutdown's order, from the queue pause to the drain: Shutdown pauses the
+	// queue, stopWorkers yields every Fetching job once the downloader has
+	// stopped, and the tick that yield kicks evicts the job, whose parked
+	// lease no longer holds its manifest — which can land before the assembler
+	// stops and watchCompletions drains. This fixture's job never took a lease
+	// through a tick, so the dispatcher does not count it resident and a tick
+	// would not evict it; the eviction reconcileResidency makes is called
+	// directly instead.
+	application.dispatcher.Pause()
+	if err := application.dispatcher.Yielded(j.ID()); err != nil {
+		t.Fatal(err)
+	}
+	application.residency.Evict(j.ID())
+	if application.syncTargetFor(j.ID()) != nil {
+		t.Fatal("the job still has a sync target; this test is about the nil-target return")
+	}
 	if err := application.assembler.Stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -173,8 +192,41 @@ func TestHandleFileComplete_ANonResidentCompletionDrainedAtShutdown(t *testing.T
 	if j.Progress().ArticleDone(0) {
 		t.Error("the article was marked done although no barrier committed it")
 	}
-	if row, ok := application.dispatcher.Row(j.ID()); !ok || row.Status() == constants.StatusPaused {
-		t.Errorf("status = %v, want the job left as it was — not paused for a residency "+
-			"condition", row.Status())
+	// The queue itself is paused here, so the row's status cannot say whether
+	// the job was stalled; the stall record can.
+	if got := application.StallReason(j.ID()).Reason; got != "" || application.weParked(j.ID()) {
+		t.Errorf("stall reason = %q, parked = %v; want the job not stalled for a residency "+
+			"condition", got, application.weParked(j.ID()))
+	}
+}
+
+// TestRetryFinalize_ADepartedJobIsNotAnsweredAsNonResident pins the retry for a
+// job that leaves the queue between reevaluateStall's Dispatcher.Job check and
+// the retry itself.
+//
+// A job that has left the queue has nothing left to finalize. Answered as
+// job.ErrNotResident, routeFinalizeFailure would record the file pending again
+// and the retry would keep its handle, for a job no promotion will ever make
+// resident.
+func TestRetryFinalize_ADepartedJobIsNotAnsweredAsNonResident(t *testing.T) {
+	t.Parallel()
+	application, j := newDurabilityTestApp(t, 1, 1)
+	writeShortArticle(t, application, j)
+	if err := application.dispatcher.Remove(t.Context(), j.ID()); err != nil {
+		t.Fatal(err)
+	}
+
+	err := application.retryFinalize(t.Context(), j.ID(), 0)
+
+	if errors.Is(err, job.ErrNotResident) {
+		t.Errorf("retryFinalize = %v for a job that has left the queue; routeFinalizeFailure "+
+			"records it pending for a promotion that cannot happen", err)
+	}
+	open, oerr := application.assembler.OpenFiles(t.Context(), j.ID())
+	if oerr != nil {
+		t.Fatal(oerr)
+	}
+	if slices.Contains(open, 0) {
+		t.Error("the retry kept the handle of a job that has left the queue")
 	}
 }

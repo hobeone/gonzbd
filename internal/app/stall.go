@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -308,16 +307,15 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 // interval, forever — contradicting the reason Stall pauses at all.
 //
 // A residency failure is NOT treated as the finalize having landed. Phase 1
-// counts it as blocked like any other failure: retryFinalize refuses a job
-// with no resident manifest before running the barrier ("no resident
-// manifest"), and a finalize whose ack meets job.ErrNotResident comes back as
-// an error that routeFinalizeFailure records for retry without parking the
-// job for it. A job Stall paused holds no manifest, so it
+// counts it as blocked like any other failure: finalizeCompletedFile refuses
+// a queued job with no resident manifest before running the barrier, and a
+// finalize whose ack meets job.ErrNotResident comes back the same way. Both
+// wrap job.ErrNotResident, which routeFinalizeFailure records for retry
+// without parking the job for it. A job Stall paused holds no manifest, so it
 // stays parked on those retries until something — in practice a user Resume —
 // makes it resident; a job that was only evicted is retried each pass until
-// the dispatcher promotes it again. When a retry does land,
-// phase 3 replays the committed runs with SeedFromRuns, exactly as the startup
-// sweep does. Every failure keeps the job parked without it ever dispatching.
+// the dispatcher promotes it again. When a retry does land, phase 3 replays
+// the committed runs with SeedFromRuns, exactly as the startup sweep does. Every failure keeps the job parked without it ever dispatching.
 //
 // That last claim is about THIS function, not about the whole system. A user
 // Resume is outside it by design: the API's queue resume handlers unpause the
@@ -525,12 +523,18 @@ func (app *Application) recoveryFiles(jobID string) map[int]finalizeState {
 // its own reason; classifying it as a storage fault is what erased the one
 // instruction that helps.
 //
+// Whether the job can be finalized at all is left to finalizeCompletedFile,
+// which owns the nil-sync-target decision. A job still in the queue comes back
+// as job.ErrNotResident with its handle kept, so routeFinalizeFailure records
+// it for the next pass without parking it. A job that has left the queue —
+// including one removed after reevaluateStall's own check — comes back nil
+// with its handle released; phase 4 then refuses its completion, because
+// completeFinalizedFile answers job.ErrNotResident when the dispatcher no
+// longer has the job, and the next re-evaluation forgets it.
+//
 // This function closes nothing itself. The handle is released by
 // finalizeCompletedFile's deferred close, which runs only on that call's nil
-// paths. The checks here leave its no-barrier return unreachable, and its
-// nil-target returns reachable only if the target goes nil between the check
-// below and the call — where a job still in the queue keeps its handle and is
-// retried again, and one that has left it is forgotten by the re-evaluation.
+// paths. The checks here leave its no-barrier return unreachable.
 func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx int) error {
 	if app.assembler == nil || app.barrier == nil {
 		return fmt.Errorf("%w: job %s file %d: no barrier in this process",
@@ -543,17 +547,6 @@ func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx
 	}
 	if !slices.Contains(open, int32(fileIdx)) { //nolint:gosec // G115: file counts are far below int32
 		return fmt.Errorf("%w: job %s file %d", errFinalizeUnrecoverable, jobID, fileIdx)
-	}
-	// Checked here as well as inside finalizeCompletedFile, whose nil-target
-	// return answers nil for a job that has left the queue. On a retry that
-	// nil would be recorded finalizeDone for a file no barrier ran over.
-	//
-	// Wraps job.ErrNotResident so routeFinalizeFailure records it for the next
-	// pass without parking the job: a job that is merely unpromoted becomes
-	// resident again on its own, and parking it would stop that happening.
-	if app.syncTargetFor(jobID) == nil {
-		return fmt.Errorf("%w: job %s file %d: the job has no resident manifest, so no barrier "+
-			"can be run over it: %w", ErrNotFinalized, jobID, fileIdx, job.ErrNotResident)
 	}
 	return app.finalizeCompletedFile(ctx, jobID, fileIdx)
 }

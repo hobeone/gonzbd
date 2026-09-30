@@ -1149,9 +1149,10 @@ recording the file pending, without parking the job. The completion is
 delivered once a retry's barrier has committed. Which of the two nil-target
 returns runs is decided by `Dispatcher.Job(jobID)`: found means still queued.
 
-`retryFinalize` has no close of its own. Its checks make the no-barrier return
-unreachable and leave the nil-target returns reachable only if the target goes
-nil between its check and the call, where the same rules apply.
+`retryFinalize` has no close of its own, and makes no residency decision of its
+own: its checks make the no-barrier return unreachable, and it leaves the
+nil-target decision to `finalizeCompletedFile`, so a retry and a first attempt
+are answered by the same branch.
 
 **A stopped completion on a failed first flush has usually lost its handle**:
 the `opClose` arm deletes it whether or not the close failed. A retryable
@@ -1170,23 +1171,27 @@ open, and what happens next depends on which return the close followed:
 - **Nil sync target, job left the queue:** nothing retries. The re-evaluation
   forgets a job that has left the queue.
 
-**The retry of a non-resident job waits without parking it.** `retryFinalize`
-refuses while the job has no resident manifest, and wraps `job.ErrNotResident`
-so the refusal is recorded for the next pass rather than stalled. A job that was
-only evicted is retried each pass until the dispatcher promotes it again. A job
-`Stall` paused has no manifest either (a paused job holds nothing —
-`docs/job-lifecycle.md`), so it stays parked under its original reason until a
-user Resume makes it resident; only then does the retry finalize the file
-through the barrier.
+**The retry of a non-resident job waits without parking it.**
+`finalizeCompletedFile` answers a retry for a queued job with no resident
+manifest exactly as it answers a first attempt, so the refusal is recorded for
+the next pass rather than stalled. A job that was only evicted is retried each
+pass until the dispatcher promotes it again. A job `Stall` paused has no
+manifest either (a paused job holds nothing — `docs/job-lifecycle.md`), so it
+stays parked under its original reason until a user Resume makes it resident;
+only then does the retry finalize the file through the barrier. A job removed
+between `reevaluateStall`'s own queue check and the retry takes the departed-job
+return: its handle is released, phase 4 refuses its completion, and the next
+re-evaluation forgets it.
 
-**At shutdown** the same return is ordinary. `Shutdown` stops the assembler
-(`stopWorkers`), cancels the context, and only then waits for
-`watchCompletions` to drain, and `Dispatcher.Stop` runs after that wait — so
-its eviction sweep meets a drained completion only if the wait's bound
-expired first. A completion drained for a job already non-resident is recorded
-pending in memory, logged at `Info`, and not marked complete; the note dies
-with the process. The next start's `resumeAllJobs` re-derives the file from
-its durable runs:
+**At shutdown** the same return is ordinary, and routine. Once the downloader
+has stopped cleanly, `stopWorkers` calls `Dispatcher.Yielded` for every
+`Fetching` job. That parks the job's lease and kicks the tick, whose
+`reconcileResidency` evicts a job that no longer holds what its position
+requires — and nothing orders that eviction after `Assembler.Stop` or the
+`watchCompletions` drain, which follow. A completion drained for a job the tick
+has already evicted is recorded pending in memory, logged at `Info`, and not
+marked complete; the note dies with the process. The next start's
+`resumeAllJobs` re-derives the file from its durable runs:
 `completeStrandedFiles` trims and completes it when the runs resolve every
 article, and `ReplaceFromRuns` leaves any article they do not cover Outstanding
 to be fetched again
@@ -1194,8 +1199,8 @@ to be fetched again
 
 A close that answered `ErrAssemblerStopped` was not run by the worker, whose
 exit drain (`drainAndCloseAll`) flushes and closes every open file instead, so
-it is read as closed elsewhere and logged at `Debug` on either path, rather than stopping every completion
-drained during shutdown.
+it is read as closed elsewhere and logged at `Debug` on either path, rather
+than stopping every completion drained during shutdown.
 
 The close-time fault is **not** routed to `Stallable` from inside the
 assembler — it carries no `ErrFaultRouted` marker, so routing it would park the
