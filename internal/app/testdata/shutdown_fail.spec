@@ -25,10 +25,10 @@ file internal/app/app.go
 [Fail declines while the process is stopping]
 file internal/app/durability.go
 --- anchor
-	reason := permanentFaultReason(f)
+	reason := faultReason(f)
 --- replace
 	if app.stopping.Load() {
 		return
 	}
-	reason := permanentFaultReason(f)
+	reason := faultReason(f)
 --- end

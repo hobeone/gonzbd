@@ -125,10 +125,10 @@ single worker goroutine (`run`).
   reason yet; the stages then skip, and the entry is Failed with that reason.
   Any other new reason is logged at warn and added to the entry's stage log as
   a `warnings` line, without changing its status. The admitted call offers
-  one reason of its own the same way: a permanent storage fault from its
-  `CloseJobHandles`, which it offers before the seal; see
-  `docs/durability-contract.md` for what a close-time fault and a close
-  timeout mean there.
+  one reason of its own the same way: any storage fault from its
+  `CloseJobHandles`, permanent or retryable, which it offers before the seal;
+  see `docs/durability-contract.md` for what a close-time fault and a close
+  timeout with no fault observed mean there.
 - **In-flight tracking & cancellation**: `PostProcessor` tracks the active job
   (`currentJob`) and an independent job context (`currentJobCancel`).
   Calling `CancelJob(j)` either removes a pending job from `ppQueue` or cancels

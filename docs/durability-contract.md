@@ -95,7 +95,7 @@ proposed the durability record redesign, since superseded by this contract.
 | S6 | Metadata may shrink a file's truncate bound, never grow it. |
 | S7 | Adoption of a cached/stored value for a partial file requires a validity check against the file as it exists now. **Narrowed here** — see §6: the check is size alone, `mtime` is not compared. |
 | A1 | A storage fault is never recorded as an article fault, nor the reverse. |
-| A2 | Every failure has a subject and a disposition; no path may log-and-continue. |
+| A2 | Every failure has a subject and a disposition; no path may log-and-continue. **One named exception** — see *File completion and the handoff*: `enqueuePostProc`'s close-time `CloseJobHandles` call (`internal/app/app.go`), on a timeout with no fault observed, logs and continues, because no fault was observed and the handles may still flush later. |
 | B1 | Bounded rework after power loss: default 30s or 64 MiB per job, whichever comes first. |
 | B2 | Bounded memory: held for in-flight/cached article data, independent of job size, file size, and job count. |
 | B4 | Bounded blocking: every storage syscall on the critical path is timeout-bounded. |
@@ -862,9 +862,9 @@ post-processing — and every one of them drains and syncs first, so there is
 nothing left to checkpoint when they succeed. A close-time drain CAN fail, and
 then `Close` discards the writer's retained report: the file leaves the open set
 with articles written but never acked, and nothing can checkpoint them. That is
-reported on the ack now rather than swallowed, and on the `CloseJobHandles`
-path a permanent one fails the post-processing run, but it is a hole in the
-"nothing left" claim, not covered by it. The race is structural rather than exotic:
+reported on the acknowledgement path, and on the `CloseJobHandles` path any
+fault fails the post-processing run, but it is a hole in the "nothing left"
+claim, not covered by it. The race is structural rather than exotic:
 `finalizeCompletedFile` releases the per-job barrier mutex before its deferred
 `CloseFile`, so a checkpoint can hold the lock, take the file from `Files()`,
 and have the close processed before its own `Drain`.
@@ -1238,16 +1238,21 @@ job a second time for a condition the barrier had already routed, and on the
 post-processing: `Fail` cannot hand that job over again, and `Stall` would
 pause a job whose files post-processing is using.
 
-**`enqueuePostProc` reads the close-time fault `CloseJobHandles` returns.** A
-permanent `*storagefault.Fault` anywhere in the joined error becomes the run's
-failure reason (R20): it is offered to the admission (`postProcAdmissions.admit`)
-before `beginHandOver` seals it, so the run's `FailMsg` carries it unless the
-admission already has a reason, and the stages skip and the job is filed
-Failed. Any other error — a retryable fault, or the call's `closeHandlesTimeout`
-expiring — is logged at `Warn` and the run goes on. After a timeout the
-control message may not have reached the worker, or may reach it later, so
-the job's handles can still be open while the stages run
-(`TestEnqueuePostProc_APermanentCloseFaultFailsTheRun`,
+**`enqueuePostProc` reads the close-time fault `CloseJobHandles` returns.** Any
+`*storagefault.Fault` anywhere in the joined error, permanent or retryable,
+becomes the run's failure reason: this close arm tombstones the handle either
+way, so nothing ever retries a fault observed here, and the lost bytes would
+otherwise reach par2/unrar as a hole. It is offered to the admission
+(`postProcAdmissions.admit`) before `beginHandOver` seals it, so the run's
+`FailMsg` carries it unless the admission already has a reason, and the stages
+skip and the job is filed Failed. Any other error — the call's
+`closeHandlesTimeout` expiring with no fault observed — is logged at `Warn` and
+the run goes on. This is A2's one named exception: no fault was observed, and
+the handles may still flush later. After such a timeout the control message
+may not have reached the worker, or may reach it later, so the job's handles
+can still be open while the stages run
+(`TestEnqueuePostProc_ACloseFaultFailsTheRun`,
+`TestEnqueuePostProc_ACloseFaultIsNotedBehindAnEarlierReason`,
 `TestEnqueuePostProc_ACloseTimeoutRunsTheStages`).
 
 **A job instance whose handles `CloseJobHandles` closed is not downloaded

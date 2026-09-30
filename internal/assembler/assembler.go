@@ -743,8 +743,9 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string, disposition Fil
 // That reports at least one of the job's files failing its close-time Drain,
 // Sync or Close: a file whose close-time drain failed has buffered bytes that
 // never reached the platter. The production caller, app's enqueuePostProc,
-// fails the post-processing run on a permanent fault and runs the stages
-// after any other error, a timeout included.
+// fails the post-processing run on any fault this returns, permanent or
+// retryable, and runs the stages after any other error — a timeout with no
+// fault observed.
 // `git grep -n 'closeJobHandles := app\.assembler\.CloseJobHandles' -- '*.go' ':!*_test.go'`
 // finds 1 line, that caller.
 func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
@@ -1110,7 +1111,7 @@ func (a *Assembler) dispatchRequest(
 				// Recorded on the ack, not swallowed: a file whose close-time
 				// drain failed has buffered bytes that never reached the
 				// platter, and enqueuePostProc fails the post-processing run
-				// on a permanent fault.
+				// on any fault this is, permanent or retryable.
 				closeErr = errors.Join(closeErr, cerr)
 			}
 			delete(open, k)
@@ -1224,8 +1225,8 @@ func (a *Assembler) dispatchRequest(
 //     post-processing (app's postProcAdmissions). Fail cannot hand it over
 //     again — enqueuePostProc refuses an admitted job, at most attaching the
 //     reason to the admitted run, which is what enqueuePostProc does itself
-//     with a permanent fault this returns — and Stall would pause a job whose files
-//     post-processing is using.
+//     with any fault this returns, permanent or retryable — and Stall would
+//     pause a job whose files post-processing is using.
 //   - On the opClose path, whether the fault matters depends on whether a
 //     barrier ran first, and only the caller knows. After a finalize that
 //     committed, routing a fault from the redundant second fsync would race
