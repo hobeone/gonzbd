@@ -60,6 +60,66 @@ func TestFetchArticle_HandedOffJobIsNotFetched(t *testing.T) {
 	}
 }
 
+// TestFetchArticle_HandedOffJobClearsTriedMark: fetchArticle's per-job check
+// must clear the try-list entry for a handed-off job's dropped article, the
+// same way it does for a paused, cancelled, or superseded-instance job.
+// Without the unmarkTried call, the article's tried mask keeps every server
+// it was ever dispatched to, which starves a later instance of the same ID
+// (or, before #665, a retry under this ID) of servers it never actually
+// tried.
+//
+// This reads the tracker's try-list entry directly rather than inferring the
+// clear from a download count, which is what made
+// TestDownloaderPerJobPauseResume an unreliable pin for this: that test sees
+// the missing clear only through how many articles a pause/resume cycle
+// collects, a count sensitive to scheduling under load (#676).
+func TestFetchArticle_HandedOffJobClearsTriedMark(t *testing.T) {
+	t.Parallel()
+
+	ms := newMockNNTP(t)
+	ms.addArticle("a@h", string(yencBody("a.bin", []byte("payload"))))
+
+	srv := testServer(t, "s", ms.addr)
+	d := &Downloader{
+		dispatcher:  newTestDispatcher(t),
+		tracker:     newDispatchTracker(),
+		log:         slog.New(slog.DiscardHandler),
+		completions: make(chan *ArticleResult, 1),
+		limiter:     bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	j, m := makeJobWithArticles(t, []string{"a@h"})
+	addTestJob(t, d.dispatcher, j, m)
+	d.opts.HandedOff = func(x *job.Job) bool { return x == j }
+
+	artIdx := artIdxFor(t, d.dispatcher, j.ID(), "a@h")
+	req := &articleRequest{job: j, artIdx: artIdx, messageID: "a@h"}
+
+	// Pre-mark the article as tried on server 0, the way a real dispatch
+	// pass would before offering it to fetchArticle.
+	key := articleKey{jobID: j.ID(), artIdx: artIdx}
+	var mask serverMask
+	mask.set(0)
+	d.tracker.Lock()
+	d.tracker.SetTriedLocked(key, mask)
+	d.tracker.Unlock()
+
+	mc := &managedConn{}
+	defer mc.Close(d, "worker1")
+	if body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1"); ok || body != nil {
+		t.Fatalf("fetchArticle = (%v, %v), want (nil, false) for a handed-off job", body, ok)
+	}
+
+	d.tracker.Lock()
+	_, stillTried := d.tracker.TryListLocked(key)
+	d.tracker.Unlock()
+	if stillTried {
+		t.Errorf("try-list entry for article %d still present after a handed-off job's request was dropped, want it cleared", artIdx)
+	}
+}
+
 // TestBuildDispatchPlan_HandOffDuringTheArticleLoop: Options.HandedOff is
 // consulted once per job, before buildDispatchPlan's article loop
 // (dispatch.go:88). A hand-off that lands after that gate but before the

@@ -1,12 +1,14 @@
 pkg ./internal/downloader/
-run Test(FetchArticle_HandedOffJobIsNotFetched|BuildDispatchPlan_HandOffDuringTheArticleLoop|DownloaderPerJobPauseResume)$
+run Test(FetchArticle_HandedOffJobIsNotFetched|BuildDispatchPlan_HandOffDuringTheArticleLoop|FetchArticle_HandedOffJobClearsTriedMark)$
 
 # fetchArticle's per-job check must drop a handed-off job's article before
 # any network I/O, the same way it drops a paused/cancelled/superseded one.
-# TestDownloaderPerJobPauseResume is the existing test that pins the
-# unmarkTried call in the second mutation below — it is shared by every
-# trigger of this block, and this is the only trigger (pause) a resumed job
-# can observe it through. TestFetchArticle_HandedOffJobIsNotFetched pre-marks
+# TestFetchArticle_HandedOffJobClearsTriedMark pins the unmarkTried call in
+# the second mutation below by reading the tracker's try-list entry directly
+# after the drop, rather than inferring the clear from a pause/resume
+# download count (TestDownloaderPerJobPauseResume, the prior pin here, saw it
+# only through timing-sensitive article counts — #676).
+# TestFetchArticle_HandedOffJobIsNotFetched pre-marks
 # its article emitted so the third mutation's ClearArticleEmitted removal is
 # observable through it.
 
