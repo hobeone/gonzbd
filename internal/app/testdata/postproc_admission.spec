@@ -16,28 +16,29 @@ file internal/app/app.go
 [finalize ends the admission before its tail rather than after it]
 file internal/app/job_finalizer.go
 --- anchor
-		defer app.postProcAdmissions.release(ppJob.Job)
-		if app.finalizeHook != nil {
+	defer app.postProcAdmissions.release(ppJob.Job)
+	if app.finalizeHook != nil {
 --- replace
-		app.postProcAdmissions.release(ppJob.Job)
-		if app.finalizeHook != nil {
+	app.postProcAdmissions.release(ppJob.Job)
+	if app.finalizeHook != nil {
 --- end
 
 [finalize never ends the admission]
 file internal/app/job_finalizer.go
 --- anchor
-		defer app.postProcAdmissions.release(ppJob.Job)
-		if app.finalizeHook != nil {
+	defer app.postProcAdmissions.release(ppJob.Job)
+	if app.finalizeHook != nil {
 --- replace
-		if app.finalizeHook != nil {
+	if app.finalizeHook != nil {
 --- end
 
 [finalize drops the noted reasons]
 file internal/app/job_finalizer.go
 --- anchor
-		notes = app.postProcAdmissions.notes(ppJob.Job)
+	notes := app.postProcAdmissions.notes(ppJob.Job)
 --- replace
-		_ = app.postProcAdmissions.notes(ppJob.Job)
+	notes := []string(nil)
+	_ = app.postProcAdmissions.notes(ppJob.Job)
 --- end
 
 [a late reason overrides the status the stages decided]
