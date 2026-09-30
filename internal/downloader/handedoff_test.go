@@ -17,6 +17,19 @@ import (
 // job is fetched over NNTP and then discarded by the assembler's whole-job
 // tombstone (docs/post-processing-contract.md "An admitted job is not
 // downloaded").
+//
+// The same gate (dispatch.go:646-658) also unmarks the server the dropped
+// request was tried on. That is not specific to a hand-off: the gate is
+// shared with the pause/cancel/superseded-instance checks above it, and it
+// exists so that a job paused mid-fetch and later resumed does not find the
+// server its drained request never reached permanently marked tried
+// (TestDownloaderPerJobPauseResume exercises that resume path directly; this
+// test pins the clear itself by reading the tracker). Pre-marking servers 0
+// and 1 tried and asserting that only server 0 — the one the dropped request
+// was on — clears, while server 1 stays marked, is what a single marked
+// server cannot do: with one bit set, unmarkTried (clear that one server)
+// and clearTried (clear the whole entry) leave the same empty result, so a
+// mutation from one to the other would pass unnoticed.
 func TestFetchArticle_HandedOffJobIsNotFetched(t *testing.T) {
 	t.Parallel()
 
@@ -46,6 +59,17 @@ func TestFetchArticle_HandedOffJobIsNotFetched(t *testing.T) {
 	// article starts unemitted, so checking ArticleEmitted without this
 	// would pass whether or not the drop path clears anything.
 	markEmittedOn(t, j, artIdx)
+
+	// Pre-mark the article as tried on servers 0 and 1, the way a real
+	// dispatch pass would before offering it to fetchArticle.
+	key := testArticleKey(j, artIdx)
+	var mask serverMask
+	mask.set(0)
+	mask.set(1)
+	d.tracker.Lock()
+	d.tracker.SetTriedLocked(key, mask)
+	d.tracker.Unlock()
+
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 	body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1")
@@ -58,65 +82,18 @@ func TestFetchArticle_HandedOffJobIsNotFetched(t *testing.T) {
 	if j.Progress().ArticleEmitted(int(artIdx)) {
 		t.Errorf("article %d is still marked emitted after a handed-off job's request was dropped", artIdx)
 	}
-}
-
-// TestFetchArticle_HandedOffJobClearsTriedMark: fetchArticle's per-job check
-// must clear the try-list entry for a handed-off job's dropped article, the
-// same way it does for a paused, cancelled, or superseded-instance job.
-// Without the unmarkTried call, the article's tried mask keeps every server
-// it was ever dispatched to, which starves a later instance of the same ID
-// (or, before #665, a retry under this ID) of servers it never actually
-// tried.
-//
-// This reads the tracker's try-list entry directly rather than inferring the
-// clear from a download count, which is what made
-// TestDownloaderPerJobPauseResume an unreliable pin for this: that test sees
-// the missing clear only through how many articles a pause/resume cycle
-// collects, a count sensitive to scheduling under load (#676).
-func TestFetchArticle_HandedOffJobClearsTriedMark(t *testing.T) {
-	t.Parallel()
-
-	ms := newMockNNTP(t)
-	ms.addArticle("a@h", string(yencBody("a.bin", []byte("payload"))))
-
-	srv := testServer(t, "s", ms.addr)
-	d := &Downloader{
-		dispatcher:  newTestDispatcher(t),
-		tracker:     newDispatchTracker(),
-		log:         slog.New(slog.DiscardHandler),
-		completions: make(chan *ArticleResult, 1),
-		limiter:     bpsmeter.NewLimiter(0),
-	}
-	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
-	defer d.pauseCancel()
-
-	j, m := makeJobWithArticles(t, []string{"a@h"})
-	addTestJob(t, d.dispatcher, j, m)
-	d.opts.HandedOff = func(x *job.Job) bool { return x == j }
-
-	artIdx := artIdxFor(t, d.dispatcher, j.ID(), "a@h")
-	req := &articleRequest{job: j, artIdx: artIdx, messageID: "a@h"}
-
-	// Pre-mark the article as tried on server 0, the way a real dispatch
-	// pass would before offering it to fetchArticle.
-	key := articleKey{jobID: j.ID(), artIdx: artIdx}
-	var mask serverMask
-	mask.set(0)
-	d.tracker.Lock()
-	d.tracker.SetTriedLocked(key, mask)
-	d.tracker.Unlock()
-
-	mc := &managedConn{}
-	defer mc.Close(d, "worker1")
-	if body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1"); ok || body != nil {
-		t.Fatalf("fetchArticle = (%v, %v), want (nil, false) for a handed-off job", body, ok)
-	}
 
 	d.tracker.Lock()
-	_, stillTried := d.tracker.TryListLocked(key)
+	gotMask, stillTried := d.tracker.TryListLocked(key)
 	d.tracker.Unlock()
-	if stillTried {
-		t.Errorf("try-list entry for article %d still present after a handed-off job's request was dropped, want it cleared", artIdx)
+	if !stillTried {
+		t.Fatalf("try-list entry for article %d is gone after the drop, want server 1 still marked tried", artIdx)
+	}
+	if gotMask.has(0) {
+		t.Errorf("server 0 is still marked tried after fetchArticle dropped the request that was dispatched to it")
+	}
+	if !gotMask.has(1) {
+		t.Errorf("server 1's tried mark was cleared by a drop dispatched to server 0, want only server 0's mark cleared")
 	}
 }
 

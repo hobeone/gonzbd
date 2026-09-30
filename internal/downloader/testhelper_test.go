@@ -67,6 +67,14 @@ func addTestJob(t *testing.T, disp *dispatch.Dispatcher, j *job.Job, m *job.Mani
 // whose job a test never consults.
 func bareJob(id string) *job.Job { return job.New(id, id+".nzb", job.Policy{}) }
 
+// testArticleKey builds the tracker key for j's artIdx. Kept in one place so
+// that whichever of #678 (which introduces keyFor(j, artIdx) as the tracker
+// key's sole constructor) and a test that still builds the key by hand
+// merges second only has to change this helper, not every call site.
+func testArticleKey(j *job.Job, artIdx int32) articleKey {
+	return articleKey{jobID: j.ID(), artIdx: artIdx}
+}
+
 func makeJobWithArticles(t *testing.T, msgIDs []string) (*job.Job, *job.Manifest) {
 	if t != nil {
 		t.Helper()
