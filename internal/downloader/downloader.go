@@ -123,7 +123,8 @@ type articleRequest struct {
 	// downloader's job mutations for this request act on it: after a retry,
 	// a lookup of its ID finds a different instance.
 	// `git grep -n 'dispatcher[.]Job[(]req' -- 'internal/downloader/*.go'` finds 1,
-	// fetchArticle's registration check, which mutates nothing.
+	// fetchArticle's pre-fetch check, which compares the registered instance
+	// with this one and mutates nothing.
 	job       *job.Job
 	messageID string
 	fileIdx   int

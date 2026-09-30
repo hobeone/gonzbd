@@ -640,11 +640,11 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 	// starting any network I/O. != IntentRun rather than == IntentPause:
 	// a cancelled job must drop its in-flight article too.
 	//
-	// The intent is read off the request's own instance, not the one
-	// registered under its ID now: Dispatcher.removeFor cancels an instance
-	// before it deregisters it, so a request for a removed instance is dropped
-	// here even while a retry under the same ID is running.
-	if _, ok := d.dispatcher.Job(req.jobID()); !ok || req.job.Intent() != job.IntentRun {
+	// A request whose instance is no longer the one registered under its ID
+	// is dropped too: after a retry the pipeline would discard its result, so
+	// fetching it only spends bandwidth. The intent is read off the request's
+	// own instance for the same reason.
+	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun {
 		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 		return nil, false
@@ -674,9 +674,11 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 			//
 			// Nothing needs clearing here, and the reason is worth stating
 			// because the old comment claimed the opposite: this article has
-			// no Emitted bit set. All three MarkArticleEmittedByIdx sites run
-			// at RESULT-emission time (:145, :697, :720), after the fetch —
-			// what keeps the dispatcher off an article mid-fetch is the
+			// no Emitted bit set. Every mark goes through markEmitted, whose
+			// callers are applyDispatchPlan's exhausted-try-list loop and
+			// processFetchedArticle's terminal-decode and success paths
+			// (`git grep -n 'd[.]markEmitted[(]req[)]' -- internal/downloader/dispatch.go` finds 3),
+			// all at RESULT-emission time, after the fetch — what keeps the dispatcher off an article mid-fetch is the
 			// in-flight tracker (tryDispatch's InFlightLocked guard), and
 			// handleRequest's deferred clearInFlight releases it.
 			//
@@ -861,10 +863,10 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		// Job.MarkArticleEmitted means "a result for this article is on its
 		// way to the pipeline" — it is what stops the dispatcher re-picking
 		// the article between emission and the barrier that acks it. Three
-		// callers set it and then call this function: the exhausted-try-list
-		// path (:145), the terminal-decode-error path (:697), and the ordinary
-		// success path (:720). When the send loses the race to cancellation,
-		// no result arrives.
+		// callers set it through markEmitted and then call this function:
+		// applyDispatchPlan's exhausted-try-list loop, and
+		// processFetchedArticle's terminal-decode-error and success paths.
+		// When the send loses the race to cancellation, no result arrives.
 		//
 		// What that USED to cost, stated in the past tense because the clear
 		// below is what ended it: nothing downstream cleared the bit,
@@ -878,9 +880,10 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		// have (#417). Clearing here is precise, and it costs the withheld set
 		// nothing.
 		//
-		// Unconditional because it is a no-op where no bit was set: the
-		// ErrNoArticle paths (:616, :636) and the CRC-mismatch path (:691)
-		// reach here without marking.
+		// Unconditional because it is a no-op where no bit was set:
+		// fetchArticle's two ErrNoArticle paths (the PreCheck STAT and the
+		// BODY fetch) and processFetchedArticle's CRC-mismatch path reach here
+		// without marking.
 		//
 		// On the request's own instance: a later instance under the same ID
 		// set its bit for a fetch of its own, whose result is still coming.

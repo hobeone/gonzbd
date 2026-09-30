@@ -236,7 +236,10 @@ of their failure ratio.
    The downloader's own job mutations for a request — `markEmitted` after a
    fetch or an exhausted try-list, the `Job.ClearArticleEmitted` calls when a
    request is drained or its result dropped, and the per-job intent read in
-   `fetchArticle` — act on that instance, never on a by-ID lookup.
+   `fetchArticle` — act on that instance, never on a by-ID lookup. Before any
+   network I/O, `fetchArticle` also drops a request whose instance is not the
+   one `Dispatcher.Job` returns for its ID, since the pipeline would discard
+   its result.
 
    The app pipeline's `handleResult` drops a result whose `Job` is not the
    instance `Dispatcher.Job` returns for its ID, before any failure marking,
@@ -454,9 +457,28 @@ a server that intermittently succeeds will never trigger auto-deactivation.
 - `PreCheck` STAT probe support before BODY fetch.
 
 ### Open Gaps
-- The Tracker is keyed on `(jobID, artIdx)`, not on the instance.
+- The Tracker is keyed on `(jobID, artIdx)`, not on the instance (#665).
   `CancelJob` clears a job's entries, but a fetch still running for a removed
-  instance decrements the in-flight count on its way out, and after a retry
-  that count may be the later instance's. Invariant 2 can then admit a second
-  concurrent fetch of one of the retry's articles: a wasted fetch, not a
-  wrong write, since invariant 7 drops the earlier instance's result.
+  instance updates the Tracker on its way out, and after a retry registers a
+  new instance under the same ID those entries are the retry's:
+  - `handleRequest`'s deferred `clearInFlight` decrements the retry's
+    in-flight count;
+  - `fetchArticle`'s `unmarkTried` calls (the pre-fetch drop,
+    a dial failure, a connection failure) unmark a server from the retry's
+    try-list;
+  - `processFetchedArticle`'s `clearTried` calls (terminal decode error and
+    success) delete the retry's try-list entry.
+
+  The try-list damage costs retries: the retry may try a server it already
+  tried, and `maxArtTries` undercounts. The in-flight damage is worse:
+  invariant 2 can admit a second concurrent fetch of the retry's article, and
+  both fetches carry the retry instance, so invariant 7 separates neither
+  from the other. If one succeeds and the other then returns a retryable
+  failure, the pipeline clears the Emitted bit of an article whose bytes the
+  assembler already has, and the article is fetched again; if one succeeds
+  and the other fails terminally, the article is both written and marked
+  failed; and a download is credited to `ServerStats` once per fetch.
+
+  Scope: only a retry registered while an earlier instance under the same ID
+  still has a fetch running. Invariant 7 still keeps the earlier instance's
+  own result off the retry.
