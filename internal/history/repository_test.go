@@ -689,12 +689,12 @@ func TestOpen_ReadOnlyError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "readonly.db")
 
-	// An empty file, never migrated. A fully-migrated, already-WAL-mode
-	// database has nothing left for a re-Open to write, so re-opening one
-	// read-only now succeeds (Open no longer VACUUMs on every start). What
-	// still requires a write on a read-only file is going from nothing to a
-	// schema at all: enabling WAL mode has to touch the file's header, and
-	// that touch is what read-only permissions must block.
+	// An empty file, never migrated. Going from nothing to a schema at all
+	// fails here before Open reaches its writability check: enabling WAL
+	// mode has to touch the file's header, and that touch is what read-only
+	// permissions block. TestOpen_ReadOnlyError_Migrated covers the
+	// already-migrated case, which now also fails, via that writability
+	// check.
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatalf("create empty file: %v", err)
@@ -708,11 +708,101 @@ func TestOpen_ReadOnlyError(t *testing.T) {
 		t.Fatalf("Chmod: %v", err)
 	}
 
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: the file mode does not deny the write")
+	}
+
 	// Ping should succeed against the empty file, but enabling WAL mode
 	// should fail: that pragma writes the file's header.
 	_, err = Open(t.Context(), path)
 	if err == nil {
 		t.Error("expected error opening a read-only, unmigrated database, got nil")
+	}
+}
+
+// TestOpen_ReadOnlyError_Migrated pins the case an empty, unmigrated file
+// does not cover: a database that is already fully migrated and already in
+// WAL mode has no header write left in the path Open ran before its
+// writability check was added, so a 0400 file in an otherwise-writable
+// directory used to open and migrate cleanly and only fail on the caller's
+// first real write. Open's post-migration PRAGMA user_version round-trip
+// forces that failure here instead.
+func TestOpen_ReadOnlyError_Migrated(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "readonly_migrated.db")
+
+	db, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("Open (initial): %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// The directory stays writable; only the database file is made
+	// read-only.
+	if err := os.Chmod(path, 0400); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: the file mode does not deny the write")
+	}
+
+	_, err = Open(t.Context(), path)
+	if err == nil {
+		t.Error("expected error opening an already-migrated, read-only database, got nil")
+	}
+}
+
+// TestOpen_PreservesUserVersion pins that Open's writability check is a
+// round-trip and not merely a write: goose tracks its own migration version
+// in the goose_db_version table (see refuseUnknownSchema), never in this
+// pragma, so user_version is free for the check to use, but nothing pins
+// that the check restores the value it read rather than overwriting it with
+// something else — a mutation that writes userVersion+1 instead of
+// userVersion would pass every other test in this file, since they all
+// start from the pragma's zero default and never read it back.
+func TestOpen_PreservesUserVersion(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "user_version.db")
+
+	db, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+
+	// Set a non-zero user_version directly, bypassing Open, so a mutation
+	// that changes rather than restores the value is observable.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	const want = 42
+	if _, err := raw.ExecContext(t.Context(), fmt.Sprintf("PRAGMA user_version = %d", want)); err != nil {
+		t.Fatalf("set user_version: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	db2, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db2.Close(); err != nil {
+			t.Errorf("second Close: %v", err)
+		}
+	})
+
+	if got := pragmaInt(t, db2.db, "user_version"); got != want {
+		t.Errorf("user_version = %d after Open, want unchanged %d — the writability check must round-trip the value, not overwrite it", got, want)
 	}
 }
 
