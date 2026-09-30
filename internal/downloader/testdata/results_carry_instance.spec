@@ -53,11 +53,11 @@ file internal/downloader/dispatch.go
 file internal/downloader/dispatch.go
 --- anchor
 	if d.paused.Load() || d.dispatcher.Paused() {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 --- replace
 	if d.paused.Load() || d.dispatcher.Paused() {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		_ = req.job.ClearArticleEmitted(-1)
 --- end
 
@@ -73,11 +73,11 @@ file internal/downloader/dispatch.go
 file internal/downloader/dispatch.go
 --- anchor
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 --- replace
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		if ok {
 			_ = cur.ClearArticleEmitted(int(req.artIdx))
 		}
@@ -87,10 +87,10 @@ file internal/downloader/dispatch.go
 file internal/downloader/dispatch.go
 --- anchor
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 --- replace
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		_ = req.job.ClearArticleEmitted(-1)
 --- end

@@ -1054,6 +1054,13 @@ the last barrier is re-fetched on the next start: up to a full checkpoint window
 thrown away on every deliberate restart, which is the cost B1 bounds for a crash
 and nobody should pay for a clean stop.
 
+It also runs **before `stopWorkers` yields the `Fetching` jobs**. A yield parks
+the job's lease and kicks the dispatcher's tick, whose `reconcileResidency`
+evicts a job that no longer holds its lease, and `syncTargetFor` answers nil for
+a job with no resident manifest — so a barrier after the yield skipped every job
+the tick reached first
+(`TestStopWorkers_TheShutdownBarrierCoversAJobTheYieldWouldEvict`).
+
 Its budget is **divided**, not repeated. Passing `shutdownCheckpointTimeout` as
 both the sweep's context and each job's budget looks per-job and is not:
 `context.WithTimeout` cannot exceed its parent, so a first job consuming most of
@@ -1129,7 +1136,8 @@ and it reads the fault one of two ways:
   completion exactly as for a failed barrier.
 - **The close is redundant** on every `nil` return after them: a finalize that
   committed, or a file some other path closed first (the worker's exit drain
-  on a stopped assembler, `CloseJobHandles`, `CancelJob`). The fault is logged
+  on a stopped assembler, for a job removed during the finalize;
+  `CloseJobHandles`; `CancelJob`). The fault is logged
   at `Debug`. After a committed finalize the barrier has drained, synced,
   truncated, committed the runs and acked the articles, so acting on the
   second fsync's fault would race the completion it is part of, and on a
@@ -1149,7 +1157,8 @@ drain uncommitted. `finalizeCompletedFile` returns `ErrNotFinalized` wrapping
 `routeFinalizeFailure` answers `job.ErrNotResident` ahead of its `Error` log by
 recording the file pending, without parking the job. The completion is
 delivered once a retry's barrier has committed. Which of the two nil-target
-returns runs is decided by `Dispatcher.Job(jobID)`: found means still queued.
+returns runs is decided by `withholdUntrimmed`'s `Dispatcher.Job(jobID)`:
+found means still queued.
 
 `retryFinalize` has no close of its own, and makes no residency decision of its
 own: its checks make the no-barrier return unreachable, and it leaves the
@@ -1185,24 +1194,41 @@ between `reevaluateStall`'s own queue check and the retry takes the departed-job
 return: its handle is released, phase 4 refuses its completion, and the next
 re-evaluation forgets it.
 
-**At shutdown** the same return is ordinary, and routine. Once the downloader
-has stopped cleanly, `stopWorkers` calls `Dispatcher.Yielded` for every
-`Fetching` job. That parks the job's lease and kicks the tick, whose
-`reconcileResidency` evicts a job that no longer holds what its position
-requires — and nothing orders that eviction after `Assembler.Stop` or the
-`watchCompletions` drain, which follow. A completion drained for a job the tick
-has already evicted is recorded pending in memory, logged at `Info`, and not
-marked complete; the note dies with the process. The next start's
-`resumeAllJobs` re-derives the file from its durable runs:
-`completeStrandedFiles` trims and completes it when the runs resolve every
-article, and `ReplaceFromRuns` leaves any article they do not cover Outstanding
-to be fetched again
-(`TestHandleFileComplete_ANonResidentCompletionDrainedAtShutdown`).
+**At shutdown, a completion drained after `Assembler.Stop` is not marked
+complete** — in a process with a barrier; the no-barrier return above has no
+trim to withhold for. `watchCompletions` drains its pending completions after
+`Assembler.Stop`, and the worker's exit drain (`drainAndCloseAll`) flushed,
+fsynced and closed each file without trimming it. Once the downloader has
+stopped cleanly, `stopWorkers` calls
+`Dispatcher.Yielded` for every `Fetching` job, which parks its lease and kicks
+the tick, whose `reconcileResidency` evicts it; nothing orders that eviction
+before or after `Assembler.Stop`. So a drained completion meets one of two
+returns, and `withholdUntrimmed` answers both for a job still in the queue:
+
+- **The tick evicted the job:** the nil-target return, `ErrNotFinalized`
+  wrapping `job.ErrNotResident`
+  (`TestHandleFileComplete_ANonResidentCompletionDrainedAtShutdown`).
+- **The job is still resident:** `OpenFiles` answers `ErrAssemblerStopped`,
+  and the return is `ErrNotFinalized` wrapping it. `MarkFileComplete` would
+  accept a resident job's file, and the queue save would persist `Complete` on
+  a file that still carries pre-allocation's trailing bytes.
+  `ReplaceFromRuns` clears `Complete` only on a file whose Done bits it clears,
+  so the flag survived the next start
+  (`TestHandleFileComplete_ACompletionDrainedAfterTheAssemblerStopsIsWithheld`).
+
+`routeFinalizeFailure` answers each ahead of its `Error` log: the file is
+recorded pending in memory, logged at `Info`, and the job is not parked; the
+note dies with the process. The next start's `resumeAllJobs` re-derives the
+file from its durable runs: `completeStrandedFiles` trims and completes it when
+the runs resolve every article — the clean-shutdown barrier committed and acked
+them for a job it covered — and `ReplaceFromRuns` leaves any article they do not
+cover Outstanding to be fetched again
+(`TestResume_ACompletionDrainedAfterTheAssemblerStopsIsRederived`).
 
 A close that answered `ErrAssemblerStopped` was not run by the worker, whose
-exit drain (`drainAndCloseAll`) flushes and closes every open file instead, so
-it is read as closed elsewhere and logged at `Debug` on either path, rather
-than stopping every completion drained during shutdown.
+exit drain flushes and closes every open file instead, so it is read as closed
+elsewhere and logged at `Debug` on either path. What withholds a drained
+completion is the finalize's own return above, not its close.
 
 The close-time fault is **not** routed to `Stallable` from inside the
 assembler — it carries no `ErrFaultRouted` marker, so routing it would park the

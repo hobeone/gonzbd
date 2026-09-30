@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -35,6 +36,88 @@ func TestJobTransitions_TryAcquireTakesTheFreeIDsAndSkipsTheHeld(t *testing.T) {
 		t.Error("b was not free after its holder released it")
 	}
 	again.release()
+}
+
+// TestJobTransitions_FinalizingRecordIsCountedAndSkippedByTryAcquire: an ID
+// stays recorded until every finalizer of it has ended, tryAcquire skips it
+// meanwhile, and acquire, which a finalizer and a removal use, does not.
+func TestJobTransitions_FinalizingRecordIsCountedAndSkippedByTryAcquire(t *testing.T) {
+	t.Parallel()
+	var tr jobTransitions
+	end1 := tr.beginFinalize("a")
+	end2 := tr.beginFinalize("a")
+	if !tr.isFinalizing("a") || tr.isFinalizing("b") {
+		t.Fatalf("isFinalizing(a, b) = (%v, %v), want (true, false)", tr.isFinalizing("a"), tr.isFinalizing("b"))
+	}
+	c := tr.tryAcquire("a", "b")
+	if c.holds("a") || !c.holds("b") {
+		t.Errorf("claim = %v, want b taken and a skipped", c.ids)
+	}
+	c.release()
+	w, err := tr.acquire(t.Context(), "a")
+	if err != nil {
+		t.Fatalf("acquire(a) while it is recorded: %v", err)
+	}
+	w.release()
+
+	end1()
+	if !tr.isFinalizing("a") {
+		t.Error("a unrecorded while a second finalizer of it runs")
+	}
+	end2()
+	if tr.isFinalizing("a") {
+		t.Error("a still recorded after every finalizer of it ended")
+	}
+	again := tr.tryAcquire("a")
+	if !again.holds("a") {
+		t.Error("tryAcquire skipped a after its finalizers ended")
+	}
+	again.release()
+}
+
+// TestJobTransitions_ClaimHelpers: claimLocked takes a free ID once, and
+// claimOrHolder claims a free ID or hands back the holder's channel, which
+// closes when the holder releases.
+func TestJobTransitions_ClaimHelpers(t *testing.T) {
+	t.Parallel()
+	var tr jobTransitions
+	tr.mu.Lock()
+	first, second := tr.claimLocked("a"), tr.claimLocked("a")
+	tr.mu.Unlock()
+	if !first || second {
+		t.Errorf("claimLocked(a) twice = (%v, %v), want (true, false)", first, second)
+	}
+	holder := tr.claimOrHolder("a")
+	if holder == nil {
+		t.Fatal("claimOrHolder(a) claimed an ID another claim holds")
+	}
+	if ch := tr.claimOrHolder("b"); ch != nil {
+		t.Error("claimOrHolder(b) did not claim a free ID")
+	}
+	(&transitionClaim{t: &tr, ids: map[string]struct{}{"a": {}}}).release()
+	select {
+	case <-holder:
+	default:
+		t.Error("the holder's channel stayed open after it released")
+	}
+}
+
+// TestJobTransitions_RemovedMarkWithdrawnAndForgotten: unmarkRemoved withdraws
+// a mark, and forgetRemoved, the collection cleanup, drops one.
+func TestJobTransitions_RemovedMarkWithdrawnAndForgotten(t *testing.T) {
+	t.Parallel()
+	var tr jobTransitions
+	j := job.New("a", "a", job.Policy{})
+	tr.markRemoved(j)
+	tr.unmarkRemoved(j)
+	if tr.wasRemoved(j) {
+		t.Error("the mark stayed after unmarkRemoved")
+	}
+	tr.markRemoved(j)
+	tr.forgetRemoved(weak.Make(j))
+	if tr.wasRemoved(j) {
+		t.Error("the mark stayed after forgetRemoved")
+	}
 }
 
 func TestJobTransitions_AcquireWaitsForTheHolder(t *testing.T) {

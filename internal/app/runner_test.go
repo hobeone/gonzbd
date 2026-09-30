@@ -19,14 +19,14 @@ type reportRecorder struct {
 	advances map[string][2]job.State
 }
 
-func (r *reportRecorder) Finished(id string, o job.Outcome) error {
+func (r *reportRecorder) FinishedJob(j *job.Job, o job.Outcome) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.total++
 	if r.outcomes == nil {
 		r.outcomes = make(map[string]job.Outcome)
 	}
-	r.outcomes[id] = o
+	r.outcomes[j.ID()] = o
 	return nil
 }
 
@@ -133,7 +133,7 @@ func TestAppRunner_EveryStateReportsExactlyOnce(t *testing.T) {
 // 1. When the application is stopping, every state yields immediately.
 // 2. For an unregistered job, every state yields immediately.
 // 3. For a registered job:
-//   - Assessing discharges directly via report.Yielded or report.Finished.
+//   - Assessing discharges directly via report.Yielded or report.FinishedJob.
 //   - Default/unhandled states discharge directly via report.Yielded.
 //   - Fetching hands off to downloader (dl.Wake).
 //   - Repairing/Extracting/Finalizing hands off to postProcessor.

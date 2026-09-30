@@ -512,15 +512,16 @@ func TestShutdownCheckpoint_CheckpointsAndSaves(t *testing.T) {
 
 // ---------- completion ----------
 
-// TestFinalizeCompletedFile_SkipsAFileTheAssemblerNoLongerHolds pins the guard
+// TestHandleFileComplete_AStoppedAssemblerDoesNotStallTheJob pins the guard
 // that keeps shutdown from stalling every job on its way out.
 //
 // watchCompletions drains its pending completions after the assembler has
 // stopped, and every barrier operation against a stopped worker returns an
 // error the barrier cannot distinguish from a storage fault — so without the
 // guard each drained completion would classify that error, stall its job and
-// pause it.
-func TestFinalizeCompletedFile_SkipsAFileTheAssemblerNoLongerHolds(t *testing.T) {
+// pause it. The completion is withheld, because nothing trimmed the file, but
+// withholding it is not a halt.
+func TestHandleFileComplete_AStoppedAssemblerDoesNotStallTheJob(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID(), 0, 0)
@@ -528,10 +529,12 @@ func TestFinalizeCompletedFile_SkipsAFileTheAssemblerNoLongerHolds(t *testing.T)
 		t.Fatalf("assembler.Stop: %v", err)
 	}
 
-	if err := application.finalizeCompletedFile(t.Context(), job.ID(), 0); err != nil {
-		t.Fatalf("finalizing after an ordinary assembler stop = %v, want nil — every "+
-			"completion drained during shutdown would stall its job", err)
+	err := application.finalizeCompletedFile(t.Context(), job.ID(), 0)
+	if !errors.Is(err, ErrNotFinalized) || !errors.Is(err, assembler.ErrAssemblerStopped) {
+		t.Fatalf("finalizing after an ordinary assembler stop = %v, want ErrNotFinalized "+
+			"wrapping assembler.ErrAssemblerStopped — nothing trimmed the file", err)
 	}
+	application.handleFileComplete(t.Context(), FileComplete{JobID: job.ID(), FileIdx: 0})
 
 	row, ok := application.dispatcher.Row(job.ID())
 	if !ok {

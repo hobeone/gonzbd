@@ -45,9 +45,9 @@ file internal/app/app.go
 	if app.removeCancelGapHook != nil {
 		app.removeCancelGapHook(id)
 	}
-	app.postProcessor.Cancel(id)
+	app.postProcessor.CancelJob(j)
 --- replace
-	app.postProcessor.Cancel(id)
+	app.postProcessor.CancelJob(j)
 	if app.removeCancelGapHook != nil {
 		app.removeCancelGapHook(id)
 	}

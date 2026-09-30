@@ -183,7 +183,7 @@ func (d *Downloader) allServersFull(serverCfgs []config.ServerConfig) bool {
 func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, opts dispatchOpts) {
 	for _, req := range plan.exhausted {
 		d.markEmitted(req)
-		d.clearTried(req.jobID(), req.artIdx)
+		d.clearTried(req)
 		telemetry.PipelineErrors.Add(telemetry.ErrClassExhaustedAllServers, 1)
 		d.emitResult(ctx, req, "", nil, 0, 0, ErrNoServersLeft)
 	}
@@ -312,7 +312,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 // A future dispatchReady signal from any worker will bring us back to
 // re-try articles that returned (false, nil).
 func (d *Downloader) tryDispatch(ctx context.Context, a UnfinishedArticle, opts dispatchOpts) (bool, *articleRequest) {
-	key := articleKey{jobID: a.Job.ID(), artIdx: a.ArtIdx}
+	key := keyFor(a.Job, a.ArtIdx)
 
 	d.tracker.Lock()
 
@@ -607,7 +607,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 	d.setConnActivity(workerID, req)
 	defer d.clearConnActivity(workerID, req)
 	defer d.signalDispatch()
-	defer d.clearInFlight(req.jobID(), req.artIdx)
+	defer d.clearInFlight(req)
 
 	done := func() {}
 	if wireDone != nil {
@@ -652,7 +652,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 	// emitted bit does not matter here, since a handed-off job gets no
 	// further dispatch pass to read it.
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 		return nil, false
 	}
@@ -661,14 +661,14 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 	// The pauseCtx cancellation aborts in-flight reads, but articles
 	// sitting in the workCh buffer still need to be drained.
 	if d.paused.Load() || d.dispatcher.Paused() {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 		return nil, false
 	}
 
 	c, err := mc.Get(fetchCtx, d, srv, workerID)
 	if err != nil {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		if errors.Is(err, errServerPenalized) {
 			// Don't emit a result — the article is returned to the
 			// dispatch pool silently. The deferred signalDispatch
@@ -751,7 +751,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 				}
 			}
 		}
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		// Don't emit a result for connection-level failures. The
 		// article is returned to the dispatch pool via unmarkTried;
 		// the deferred signalDispatch triggers retry on another
@@ -792,7 +792,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 		// Non-CRC decode errors are terminal failures — mark Emitted so
 		// the dispatcher never re-picks this article, then clear the tryList.
 		d.markEmitted(req)
-		d.clearTried(req.jobID(), req.artIdx)
+		d.clearTried(req)
 		telemetry.PipelineErrors.Add(classifyDecodeError(err), 1)
 		d.emitResult(ctx, req, name, nil, 0, 0, err)
 		return
@@ -813,7 +813,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	// reached WriteAt. See nntp-downloader-contract.md §5 and
 	// docs/durability-contract.md.
 	d.markEmitted(req)
-	d.clearTried(req.jobID(), req.artIdx)
+	d.clearTried(req)
 	d.notePartNumberDisagreement(req, payload.partNumber)
 	d.emitResult(ctx, req, name, payload.data, payload.offset, payload.crc, nil)
 }
@@ -911,28 +911,32 @@ func (d *Downloader) markEmitted(req *articleRequest) {
 	}
 }
 
+// The three helpers below update the tracker for req's article on the
+// instance req was dispatched for, so a completion for a removed instance
+// leaves a retry's entries under the same ID alone (see articleKey).
+
 // clearInFlight decrements the in-flight counter for an article.
 // Called from handleRequest's defer, before signalDispatch, so the
 // next dispatch pass observes the cleared state and can fan out to
 // a fallback server if the try-list allows.
-func (d *Downloader) clearInFlight(jobID string, artIdx int32) {
-	d.tracker.DecrementInFlight(articleKey{jobID: jobID, artIdx: artIdx})
+func (d *Downloader) clearInFlight(req *articleRequest) {
+	d.tracker.DecrementInFlight(keyFor(req.job, req.artIdx))
 }
 
 // unmarkTried removes serverIdx from an article's try-list, used
 // after a retryable failure (dial error, mid-stream disconnect) so
 // the dispatcher can hand the article back to the same server once
 // it recovers, or bounce it to another.
-func (d *Downloader) unmarkTried(jobID string, artIdx int32, serverIdx int) {
-	d.tracker.UnmarkTried(articleKey{jobID: jobID, artIdx: artIdx}, serverIdx)
+func (d *Downloader) unmarkTried(req *articleRequest, serverIdx int) {
+	d.tracker.UnmarkTried(keyFor(req.job, req.artIdx), serverIdx)
 }
 
 // clearTried removes an article's entire try-list entry, freeing
 // memory. Called when an article reaches a terminal state (success,
 // decode error, or ErrNoServersLeft) and will never be dispatched
 // again.
-func (d *Downloader) clearTried(jobID string, artIdx int32) {
-	d.tracker.ClearTried(articleKey{jobID: jobID, artIdx: artIdx})
+func (d *Downloader) clearTried(req *articleRequest) {
+	d.tracker.ClearTried(keyFor(req.job, req.artIdx))
 }
 
 // managedConn encapsulates an NNTP connection and the synchronization

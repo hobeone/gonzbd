@@ -27,7 +27,7 @@ import (
 // duOrch.abortJob cannot reach once duOrch.collect has taken it, and returns
 // only once the step in progress has ended: the unpacker has stopped writing
 // into the download directory RemoveJob goes on to delete, and a job whose
-// hand-over had begun is queued or running for the PostProcessor.Cancel
+// hand-over had begun is queued or running for the PostProcessor.CancelJob
 // RemoveJob makes next.
 //
 // An admission a shutdown interrupts is never ended.
@@ -40,8 +40,8 @@ import (
 // admission ended. release runs from finalize, once the run is done, and from
 // cancelled: `git grep -n 'postProcAdmissions\.release(' -- 'internal/app/*.go' ':!*_test.go'`
 // returns 2 lines. cancelled follows a RemoveJob, through its
-// PostProcessor.Cancel or the hand-over refusing a removed job
-// (`git grep -n 'postProcessor\.Cancel(' -- 'internal/app/*.go' ':!*_test.go'`
+// PostProcessor.CancelJob or the hand-over refusing a removed job
+// (`git grep -n 'postProcessor\.CancelJob(' -- 'internal/app/*.go' ':!*_test.go'`
 // returns 1 line, in RemoveJob), and latches the instance's cancel intent
 // before it releases. A retry or a restart registers a new
 // instance. ended holds each instance weakly, so its entry goes when the job

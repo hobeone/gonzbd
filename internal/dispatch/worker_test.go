@@ -214,7 +214,8 @@ func TestLaunch_SkippedWhenIntentTurnedToCancelDuringHydration(t *testing.T) {
 }
 
 // TestWorkerExits_ClearTheLaunchClaimBeforeKicking pins the call ORDER inside
-// Finished and YieldedFor: clearLaunched must precede kick.
+// finishedFor (the body of Finished and FinishedJob) and YieldedFor:
+// clearLaunched must precede kick.
 //
 // Why this is a source-order check and not a behavioural one. The consequence
 // is real but the window is nanoseconds — between kick() returning and a
@@ -235,7 +236,7 @@ func TestWorkerExits_ClearTheLaunchClaimBeforeKicking(t *testing.T) {
 		t.Fatalf("parse worker.go: %v", err)
 	}
 
-	want := map[string]bool{"Finished": false, "YieldedFor": false}
+	want := map[string]bool{"finishedFor": false, "YieldedFor": false}
 	for _, decl := range file.Decls {
 		fd, ok := decl.(*ast.FuncDecl)
 		if !ok || fd.Body == nil {

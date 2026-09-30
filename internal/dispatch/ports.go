@@ -70,21 +70,20 @@ type Persisted struct {
 // the dispatcher calls it from the tick goroutine, and a Runner that blocks
 // stalls every other job's advance.
 //
-// The runner reports terminal completion by calling Dispatcher.Finished,
-// finished work that continues to another state by calling
-// Dispatcher.AdvanceFrom, and any other exit by calling Dispatcher.Yielded.
-// Not calling one of them strands the job's resources: the Queue cannot tell
-// "holding and working" from "holding and yielded", so nothing else can
-// return them.
+// The runner reports terminal completion by calling Dispatcher.Finished, or
+// Dispatcher.FinishedJob with the instance it resolved, finished work that
+// continues to another state by calling Dispatcher.AdvanceFrom, and any other
+// exit by calling Dispatcher.Yielded, Dispatcher.YieldedJob or
+// Dispatcher.YieldedFrom. Not calling one of them strands the job's resources:
+// the Queue cannot tell "holding and working" from "holding and yielded", so
+// nothing else can return them.
 //
 // AdvanceFrom takes the *job.Job, which Dispatcher.Job returns, because it
 // must not act on a later instance registered under the same ID. Finished and
-// Yielded take the job ID this method is handed, which is what makes that
-// contract satisfiable from outside this package. They took a *job.Job until
-// B2.3's review: lookup is unexported and the Row that List returns carries a
-// job.RenderView rather than a pointer, so an external Runner had no way to
-// obtain one and could not report at all. Taking the ID also matches
-// Dispatcher.Cancel and Dispatcher.Retry, which resolve the same way.
+// Yielded take the job ID Run is handed and act on whichever instance is
+// registered under it; FinishedJob and YieldedJob take the instance a runner
+// resolved with Dispatcher.Job and act only while it is still the one
+// registered.
 type Runner interface {
 	Run(ctx context.Context, id string, state job.State)
 }

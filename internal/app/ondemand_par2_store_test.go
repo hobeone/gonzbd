@@ -53,7 +53,7 @@ func TestMaybeReleaseRecoveryVolumes_WithStore(t *testing.T) {
 
 	// Data verifies clean, so the recovery volumes are not needed and must be
 	// discarded rather than fetched — the saving the feature exists for.
-	if app.maybeReleaseRecoveryVolumes(t.Context(), jobID) {
+	if app.maybeReleaseRecoveryVolumes(t.Context(), qjob) {
 		t.Error("maybeReleaseRecoveryVolumes returned true on clean data; the recovery volumes would be downloaded for nothing")
 	}
 
@@ -107,7 +107,7 @@ func TestMaybeReleaseRecoveryVolumes_WithStore_CorruptData(t *testing.T) {
 	copyFixturePar2(t, jobDir)
 	copyFixturePayload(t, jobDir, "data.bin")
 
-	if !app.maybeReleaseRecoveryVolumes(t.Context(), jobID) {
+	if !app.maybeReleaseRecoveryVolumes(t.Context(), qjob) {
 		t.Fatal("maybeReleaseRecoveryVolumes returned false on damaged data; the recovery volumes needed for repair are never fetched")
 	}
 	if qjob.HasDeferredPar2() {
@@ -151,7 +151,7 @@ func TestMaybeReleaseRecoveryVolumes_UnreadableManifest(t *testing.T) {
 	var logBuf bytes.Buffer
 	app.log = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	if got := app.maybeReleaseRecoveryVolumes(t.Context(), jobID); got {
+	if got := app.maybeReleaseRecoveryVolumes(t.Context(), qjob); got {
 		t.Errorf("maybeReleaseRecoveryVolumes = true, want false: the un-defer cannot succeed while the job is non-resident")
 	}
 	logged := logBuf.String()

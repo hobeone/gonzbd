@@ -29,12 +29,12 @@ type Options struct {
 	// job, with the full StageLog populated.  May be nil.
 	OnJobDone func(*Job)
 
-	// OnJobCancelled is called once per enqueue that Cancel removed from the
-	// queue or whose in-flight processing Cancel interrupted, and never
+	// OnJobCancelled is called once per enqueue that CancelJob removed from
+	// the queue or whose in-flight processing CancelJob interrupted, and never
 	// together with OnJobDone for the same enqueue. For an in-flight job it is
 	// called in the worker goroutine after the stage pipeline has returned; for
-	// a queued job, synchronously in Cancel's caller, after Cancel's locks are
-	// released. A Cancel that returns true does not always end here: one that
+	// a queued job, synchronously in CancelJob's caller, after its locks are
+	// released. A CancelJob that returns true does not always end here: one that
 	// lands after the worker has seen the job finish ends in OnJobDone, and a
 	// shutdown skips both. May be nil.
 	OnJobCancelled func(*Job)
@@ -73,7 +73,7 @@ type PostProcessor struct {
 	// busy is true while a job's stages are executing.
 	// currentJob is the in-flight job (nil when not busy).
 	// currentJobCancel cancels the in-flight job's derived context (see
-	// popJob); Cancel calls it to abort a job that is actively being
+	// popJob); CancelJob calls it to abort a job that is actively being
 	// processed, distinct from workerCancel which aborts everything.
 	// started guards against double Start calls.
 	// All four are guarded by busyMu so HasJob can atomically observe the
@@ -166,32 +166,6 @@ func (p *PostProcessor) Process(job *Job) {
 	p.q.Push(job)
 }
 
-// Cancel removes job with jobID from the pending queue, or, if it is
-// currently being processed, cancels its derived context so the active
-// stage observes ctx.Done() and returns promptly. Stages must respect
-// ctx.Done() for this to take effect during execution.
-// Returns true if the job was found pending or in-flight.
-//
-// A pending job is handed to OnJobCancelled before Cancel returns: nothing
-// runs for it, so it can be handed back at once. An in-flight job is handed
-// back by the worker once its stage returns (see run).
-func (p *PostProcessor) Cancel(jobID string) bool {
-	queued, removed := p.q.Cancel(jobID)
-
-	p.busyMu.Lock()
-	inFlight := p.currentJob != nil && p.currentJob.JobID() == jobID && p.currentJobCancel != nil
-	cancel := p.currentJobCancel
-	p.busyMu.Unlock()
-
-	if inFlight {
-		cancel()
-	}
-	if removed && p.onJobCancelled != nil {
-		p.onJobCancelled(queued)
-	}
-	return removed || inFlight
-}
-
 // Empty returns true when the queue is empty and no job is currently being
 // processed.
 //
@@ -257,7 +231,7 @@ func (p *PostProcessor) run() {
 		// context records its own error before cancelling its children, so a
 		// job a shutdown cancelled always shows workerCtx.Err() below. Read the
 		// other way round, a Stop landing between the two reads would pass for a
-		// Cancel and hand a job that should be recovered to onJobCancelled.
+		// CancelJob and hand a job that should be recovered to onJobCancelled.
 		jobCancelled := jobCtx.Err() != nil
 
 		// If the worker context was cancelled (shutdown), the job was only
@@ -303,10 +277,10 @@ func (p *PostProcessor) run() {
 }
 
 // popJob pops the next job from the queue and sets up its derived,
-// independently-cancellable context (see Cancel).
+// independently-cancellable context (see CancelJob).
 // Returns (job, jobCtx, true) on success, (nil, nil, false) when the worker
 // context is done. jobCtx is derived from workerCtx and is independently
-// cancellable via Cancel, so a single in-flight job can be aborted without
+// cancellable via CancelJob, so a single in-flight job can be aborted without
 // affecting any other job or the worker itself.
 //
 // The mark callback passed to q.Pop runs inside ppQueue.tryPop while q.mu is
@@ -516,7 +490,7 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	}
 
 	// If ctx was cancelled mid-stage (worker shutdown or this job being
-	// individually cancelled via Cancel), stop running further stages —
+	// individually cancelled via CancelJob), stop running further stages —
 	// the stage itself should have returned early, but we don't force it
 	// to. Context cancellation is the ONLY reason to abort.
 	select {
@@ -623,7 +597,7 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 
 // setBusyWithJob updates busy, currentJob, and currentJobCancel
 // atomically. Used by the worker around each processJob call so HasJob and
-// Cancel can observe the in-flight job (and abort it) without racing the
+// CancelJob can observe the in-flight job (and abort it) without racing the
 // busy flag. j and cancel should be nil when v is false.
 func (p *PostProcessor) setBusyWithJob(v bool, j *Job, cancel context.CancelFunc) {
 	p.busyMu.Lock()

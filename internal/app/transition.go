@@ -20,7 +20,37 @@ import (
 //
 // One exception is bounded rather than excluded: a finalizer proceeds without
 // the lock once it has waited finalizeTransitionWait, or at once when app.ctx
-// has ended (jobFinalizer.persistAndCommit).
+// has ended (jobFinalizer.persistAndCommit). A retry is still excluded from
+// it. persistAndCommit records its ID in finalizing (beginFinalize) before it
+// does anything, and releases it on return. While the ID is recorded,
+// tryAcquire does not claim it, and a retryHistoryJob that claimed it first
+// refuses (isFinalizing) once it has found no instance registered under the
+// ID and before it changes anything. The finalizer's own retry of a job it
+// filed (jobFinalizer.retryWithHeldVolumes) is called from finalize after
+// persistAndCommit has returned, so the record has ended by then.
+//
+// That check covers a finalizer that began before it, because the record
+// precedes the finalizer's CancelJob and an instance leaves the dispatcher
+// only after a cancel. The cancels and removals
+// (`git grep -n 'dispatcher\.\(Cancel\|CancelJob\|Remove\|RemoveJob\)(' -- 'internal/app/*.go' ':!*_test.go'`
+// finds 7 lines) are the finalizer's own, cancelled's for a job a RemoveJob
+// took, startup's before the first tick, and RemoveJob's Cancel and Remove,
+// whose removeFor cancels again. So a retry that finds the finalizer's
+// instance gone either sees the record, or a RemoveJob cancelled the
+// instance. While that RemoveJob's mark stands, the finalizer reads it before
+// any by-ID step. A RemoveJob whose Remove fails gives the mark back
+// (unmarkRemoved) and leaves the instance registered and cancelled, and the
+// tick evicts it if it never ran; a finalizer of that instance can then begin
+// after the early check and take its fallback teardown by ID. The check
+// before registering refuses the retry while such a finalizer commits
+// (TestRetryHistoryJob_RefusedByAFinalizerOfAGivenBackRemoval). Neither check
+// sees such a finalizer if it begins and ends between them, or begins after
+// the retry's last check; its by-ID steps can then act on what the retry has
+// written, or on the instance it registers (#682). A retry is the one way a
+// later instance takes an ID
+// (`git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
+// finds 2 lines: retryHistoryJob's reuses an ID, and AddJob's mints one), so
+// no other instance can register under the ID while its finalizer commits.
 //
 // A channel per held ID rather than a mutex per ID, because a waiter has to be
 // able to give up when its context ends and sync.Mutex.Lock cannot. It is the
@@ -44,12 +74,42 @@ import (
 // the same ID is not affected; weakly, so a removed job is not kept alive by
 // this record, and its entry goes when the job is collected.
 //
-// mu is never held across I/O or a wait: it guards held, removed and each
-// claim's released flag.
+// mu is never held across I/O or a wait: it guards held, removed, finalizing
+// and each claim's released flag.
 type jobTransitions struct {
 	mu      sync.Mutex
 	held    map[string]chan struct{} // an ID is present only while claimed; its channel closes on release
 	removed map[weak.Pointer[job.Job]]runtime.Cleanup
+	// finalizing counts the finalizers committing each ID; an ID is present
+	// only while one is.
+	finalizing map[string]int
+}
+
+// beginFinalize records that a finalizer is committing id, and returns the
+// call that ends the record. TestJobTransitions_FinalizingSites pins
+// persistAndCommit as its only caller.
+func (t *jobTransitions) beginFinalize(id string) (end func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.finalizing == nil {
+		t.finalizing = make(map[string]int)
+	}
+	t.finalizing[id]++
+	return func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		t.finalizing[id]--
+		if t.finalizing[id] <= 0 {
+			delete(t.finalizing, id)
+		}
+	}
+}
+
+// isFinalizing reports whether a finalizer is committing id.
+func (t *jobTransitions) isFinalizing(id string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.finalizing[id] > 0
 }
 
 // markRemoved records that a RemoveJob has taken j. TestJobTransitions_RemovedSites
@@ -106,13 +166,17 @@ type transitionClaim struct {
 	released bool // guarded by t.mu
 }
 
-// tryAcquire claims every one of ids that no one holds, skips the rest, and
-// never waits. The claim is never nil; holds says which ids it took.
+// tryAcquire claims every one of ids that no one holds and no finalizer is
+// committing, skips the rest, and never waits. The claim is never nil; holds
+// says which ids it took.
 func (t *jobTransitions) tryAcquire(ids ...string) *transitionClaim {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	c := &transitionClaim{t: t, ids: make(map[string]struct{}, len(ids))}
 	for _, id := range ids {
+		if t.finalizing[id] > 0 {
+			continue
+		}
 		if t.claimLocked(id) {
 			c.ids[id] = struct{}{}
 		}
