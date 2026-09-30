@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/history"
-	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/postproc"
 )
 
@@ -53,14 +52,11 @@ func withFailureNotes(ppJob *postproc.Job, notes []string) *postproc.Job {
 func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
 	stageLogJSON, _ := json.Marshal(ppJob.StageLog)
 
-	var p *job.JobProgress
 	var expectedBytes, downloaded, completeness int64
 	var downloadDuration int64
 	var serverStatsParts []string
 
-	if ppJob.Job != nil {
-		p = ppJob.Job.Progress()
-	}
+	p := ppJob.Job.Progress()
 
 	if p != nil {
 		expected, _, failed := p.ProgressFigures()
@@ -107,18 +103,9 @@ func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
 		}
 	}
 
-	jobID := ""
-	jobName := ""
-	var timeAdded time.Time
-	if ppJob.Job != nil {
-		jobID = ppJob.Job.ID()
-		jobName = ppJob.Job.Name()
-		timeAdded = ppJob.Job.Added()
-	}
-
 	entry := history.Entry{
 		Completed:    time.Now(),
-		Name:         jobName,
+		Name:         ppJob.Job.Name(),
 		NzbName:      ppJob.Filename,
 		NZBBackup:    ppJob.NZBBackup,
 		Category:     ppJob.Category,
@@ -126,7 +113,7 @@ func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
 		Script:       ppJob.Script,
 		Password:     ppJob.Password,
 		Status:       "Completed",
-		NzoID:        jobID,
+		NzoID:        ppJob.Job.ID(),
 		Storage:      ppJob.FinalDir,
 		Path:         ppJob.FinalDir,
 		DownloadTime: downloadDuration,
@@ -135,7 +122,7 @@ func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
 		Bytes:        expectedBytes,
 		Downloaded:   downloaded,
 		Completeness: completeness,
-		TimeAdded:    timeAdded,
+		TimeAdded:    ppJob.Job.Added(),
 		URLInfo:      repairSummary,
 		Meta:         strings.Join(serverStatsParts, ", "),
 	}
