@@ -336,7 +336,7 @@ path including SIGINT. It enforces `-count=1`, refuses an anchor that does not
 match exactly once, and distinguishes a compile error from a killed mutation —
 three invariants that a hand-rolled harness has to re-derive per use, and
 measurably fails to. `scripts/mutate/main.go`'s package doc is the reference for
-its five verdicts; `docs/commit-cycle.md` has the measurement.
+its seven verdicts; `docs/commit-cycle.md` has the measurement.
 
 ```bash
 go run ./scripts/mutate path/to/the.spec     # exits non-zero unless every mutation is KILLED

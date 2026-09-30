@@ -122,6 +122,27 @@ func listTests(root string, sp *spec) ([]string, error) {
 	return names, nil
 }
 
+// filterMatchesName reports whether go test's `-run` pattern would select a
+// top-level test named name: split the pattern on the first `/` — a top-level
+// name is never itself matched against anything past that slash — and match
+// the remaining segment unanchored, the way `go test` matches an unanchored
+// regexp at each level of a test's name.
+//
+// Unlike plainAlternation/selects above, this classifies one already-observed
+// failing test name against the spec's `run` line as written; it does not
+// require `run` to be a plain alternation of test names first.
+func filterMatchesName(run, name string) bool {
+	seg, _, _ := strings.Cut(run, "/")
+	re, err := regexp.Compile(seg)
+	if err != nil {
+		// A fragment go test's own flag parsing would have rejected cannot
+		// have selected anything; report non-selecting rather than panicking
+		// on a `run` line that was never a valid regexp to begin with.
+		return false
+	}
+	return re.MatchString(name)
+}
+
 // deadRunFilterNames names every alternative of a plain `run` line that
 // selects no test `go test -list` reports for the spec's package. It returns
 // nil, nil for a `run` that is not a plain alternation (see

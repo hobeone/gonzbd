@@ -71,6 +71,12 @@ assertion never ran". The usual cause is a `run` alternation that did not grow a
 term when a test was added beside it. `scripts/mutate` separates this case out
 as `EXCLUDED`.
 
+**A package-wide failure can also name a test the filter already selects.**
+That is not a missing term — widening `run` changes nothing, since the test
+was already going to run. `scripts/mutate` reports this as `FLAKY` rather than
+`EXCLUDED`, so the reader chases that test's own determinism instead of
+editing a `run` line that was never the problem.
+
 **The example anchor in `AGENTS.md` is kept a real line on purpose.** An example
 anchored on text the tree no longer contains still reads as a working example,
 but every reader who runs it gets `ANCHOR — anchor matched no site` and has to

@@ -203,7 +203,10 @@ The required order for any fix:
    that check — which is why a mutation that survives the filter is re-run
    package-wide and reported as `EXCLUDED`, naming the test the filter left
    out, rather than as `SURVIVED`. `EXCLUDED` is a defect in the spec, not in
-   the pin: add the missing term and re-run.
+   the pin: add the missing term and re-run. When the package-wide run instead
+   fails a test the filter already selects, the runner reports `FLAKY`
+   instead: widening `run` would change nothing, so the defect to chase is
+   that test's own determinism, not the spec.
 3. **Apply the fix**, confirm the test now passes, and confirm the rest of the
    suite stays green.
 

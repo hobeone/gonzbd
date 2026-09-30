@@ -60,6 +60,7 @@ func mustModule(t *testing.T, body string) string {
 
 const (
 	selectedPasses = "func TestSelected(t *testing.T) {}\n"
+	selectedFails  = "func TestSelected(t *testing.T) { t.Fatal(\"selected and unselected disagree\") }\n"
 	omittedFails   = "func TestOmitted(t *testing.T) { t.Fatal(\"the mutation is caught here\") }\n"
 	omittedPasses  = "func TestOmitted(t *testing.T) {}\n"
 )
@@ -75,6 +76,52 @@ func TestWidenOnPass_NamesTheTestTheRunFilterLeavesOut(t *testing.T) {
 	}
 	if !strings.Contains(got.evidence, "TestOmitted") {
 		t.Errorf("evidence = %q, want it to name the excluded test", got.evidence)
+	}
+}
+
+// The next several tests name fixture test functions — TestSelected,
+// TestOmitted — that exist only as text inside a mustModule string literal (a
+// throwaway module built at test time), never as a top-level declaration
+// check_doc_citations' line-anchored scanner can see.
+//
+//doccite:ok TestSelected — mustModule fixture text (see selectedPasses/selectedFails), not a top-level declaration
+//doccite:ok TestOmitted — mustModule fixture text (see omittedPasses/omittedFails), not a top-level declaration
+
+func TestWidenOnPass_ReportsFlakyWhenTheSelectedTestIsWhatDisagrees(t *testing.T) {
+	t.Parallel()
+
+	// TestSelected is the only test in the package, and `run` selects it by
+	// name — so a package-wide failure here cannot be `run` leaving anything
+	// out. It is the same test disagreeing with itself between the two runs.
+	root := mustModule(t, selectedFails)
+	got := widenOnPass(root, &spec{pkg: "./...", run: "TestSelected"}, mutation{name: "m"}, false)
+
+	if got.verdict != flaky {
+		t.Fatalf("verdict = %s, want FLAKY; a selected test's own inconsistency was reported as a spec defect", got.verdict)
+	}
+	if !strings.Contains(got.evidence, "TestSelected") {
+		t.Errorf("evidence = %q, want it to name the selected test", got.evidence)
+	}
+}
+
+func TestWidenOnPass_MixedFailuresReportExcludedForTheOmittedName(t *testing.T) {
+	t.Parallel()
+
+	// Both TestSelected (selected by `run`) and TestOmitted (not) fail in the
+	// package-wide run. TestOmitted's absence from `run` is a real spec gap
+	// regardless of what else also failed, so the ruling is EXCLUDED, and the
+	// evidence names only the test `run` is missing.
+	root := mustModule(t, selectedFails+omittedFails)
+	got := widenOnPass(root, &spec{pkg: "./...", run: "TestSelected"}, mutation{name: "m"}, false)
+
+	if got.verdict != excluded {
+		t.Fatalf("verdict = %s, want EXCLUDED; a mixed failure was reported as the selected test's own fault", got.verdict)
+	}
+	if !strings.Contains(got.evidence, "TestOmitted") {
+		t.Errorf("evidence = %q, want it to name the excluded test", got.evidence)
+	}
+	if strings.Contains(got.evidence, "TestSelected") {
+		t.Errorf("evidence = %q, want it to name only the excluded test, not the selected one too", got.evidence)
 	}
 }
 
@@ -131,6 +178,48 @@ func excludedResult() []result {
 		verdict:  excluded,
 		evidence: "`run` excludes TestOmitted, which kills this",
 	}}
+}
+
+func flakyResult() []result {
+	return []result{{
+		name:     "m",
+		verdict:  flaky,
+		evidence: "TestSelected is selected by `run` and killed this mutation in the package-wide run but not in the filtered run — a determinism problem in the test, not the spec",
+	}}
+}
+
+func TestConfirmExclusions_DowngradesFlakyWhenThePackageIsRedUnmutated(t *testing.T) {
+	t.Parallel()
+
+	// The same confirming run applies to a FLAKY claim as to an EXCLUDED one:
+	// a package that is red even without the mutation was not made red by it,
+	// so neither a spec defect nor a test's determinism is actually at issue.
+	root := mustModule(t, selectedFails)
+	got, err := confirmExclusions(root, &spec{pkg: "./...", run: "TestSelected"}, flakyResult())
+	if err != nil {
+		t.Fatalf("confirmExclusions: %v", err)
+	}
+
+	if got[0].verdict != survived {
+		t.Fatalf("verdict = %s, want SURVIVED; an unrelated failure was reported as a flaky test", got[0].verdict)
+	}
+	if !strings.Contains(got[0].evidence, "red unmutated too") {
+		t.Errorf("evidence = %q, want it to say the package was already red", got[0].evidence)
+	}
+}
+
+func TestConfirmExclusions_KeepsFlakyWhenTheUnmutatedPackageIsGreen(t *testing.T) {
+	t.Parallel()
+
+	root := mustModule(t, selectedPasses)
+	got, err := confirmExclusions(root, &spec{pkg: "./...", run: "TestSelected"}, flakyResult())
+	if err != nil {
+		t.Fatalf("confirmExclusions: %v", err)
+	}
+
+	if got[0].verdict != flaky {
+		t.Errorf("verdict = %s, want FLAKY to stand when the package is green unmutated", got[0].verdict)
+	}
 }
 
 func TestConfirmExclusions_DowngradesWhenThePackageIsRedUnmutated(t *testing.T) {
@@ -200,6 +289,9 @@ func TestNeedsConfirmation_OnlyWhenSomethingClaimedAnExclusion(t *testing.T) {
 	if !needsConfirmation([]result{killedRow, survivedRow, excludedResult()[0]}) {
 		t.Error("an EXCLUDED row would be reported without ever being confirmed")
 	}
+	if !needsConfirmation([]result{killedRow, survivedRow, flakyResult()[0]}) {
+		t.Error("a FLAKY row would be reported without ever being confirmed")
+	}
 	if needsConfirmation(nil) {
 		t.Error("an empty result set asked for a confirming run")
 	}
@@ -216,5 +308,23 @@ func TestNote_TellsTheSpecDefectApartFromTheInertAssertion(t *testing.T) {
 	}
 	if n == note(result{verdict: survived}) {
 		t.Error("EXCLUDED and SURVIVED share a note; the verdicts are then only cosmetically distinct")
+	}
+}
+
+func TestNote_TellsFlakyApartFromExcludedAndSurvived(t *testing.T) {
+	t.Parallel()
+
+	// FLAKY points the reader at the test's own determinism, not at `run` and
+	// not at "the assertion never ran". A note that reused either of those
+	// other two notes would send the reader to fix the wrong thing.
+	n := note(result{verdict: flaky})
+	if !strings.Contains(n, "determinism") {
+		t.Errorf("note(FLAKY) = %q, want it to name the test's determinism", n)
+	}
+	if n == note(result{verdict: excluded}) {
+		t.Error("FLAKY and EXCLUDED share a note; the verdicts are then only cosmetically distinct")
+	}
+	if n == note(result{verdict: survived}) {
+		t.Error("FLAKY and SURVIVED share a note; the verdicts are then only cosmetically distinct")
 	}
 }

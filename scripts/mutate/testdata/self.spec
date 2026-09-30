@@ -196,9 +196,9 @@ file scripts/mutate/main.go
 [the confirmation runs whether or not anything claimed an exclusion]
 file scripts/mutate/main.go
 --- anchor
-	return slices.ContainsFunc(results, func(r result) bool { return r.verdict == excluded })
+	return slices.ContainsFunc(results, func(r result) bool { return r.verdict == excluded || r.verdict == flaky })
 --- replace
-	return true || slices.ContainsFunc(results, func(r result) bool { return r.verdict == excluded })
+	return true || slices.ContainsFunc(results, func(r result) bool { return r.verdict == excluded || r.verdict == flaky })
 --- end
 
 [an exclusion is trusted without confirming the package is green unmutated]
@@ -362,4 +362,52 @@ file scripts/mutate/check.go
 	cmd := exec.Command("git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*testdata/*.spec")
 --- replace
 	cmd := exec.Command("git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*nonexistent-pattern*.spec")
+--- end
+
+[a real spec gap is never reported once any failure is FLAKY-shaped]
+file scripts/mutate/main.go
+--- anchor
+	if len(left) > 0 {
+--- replace
+	if true {
+--- end
+
+[an excluded test's gap is hidden behind a FLAKY verdict]
+file scripts/mutate/main.go
+--- anchor
+	if len(left) > 0 {
+--- replace
+	if false {
+--- end
+
+[every failing test is treated as already selected by `run`]
+file scripts/mutate/main.go
+--- anchor
+		if filterMatchesName(run, n) {
+--- replace
+		if true {
+--- end
+
+[every failing test is treated as excluded, so FLAKY is never reached]
+file scripts/mutate/main.go
+--- anchor
+		if filterMatchesName(run, n) {
+--- replace
+		if false {
+--- end
+
+[a FLAKY row is never confirmed against the unmutated package]
+file scripts/mutate/main.go
+--- anchor
+		if results[i].verdict == excluded || results[i].verdict == flaky {
+--- replace
+		if results[i].verdict == excluded {
+--- end
+
+[a spec with only a FLAKY row skips the confirming run]
+file scripts/mutate/main.go
+--- anchor
+	return slices.ContainsFunc(results, func(r result) bool { return r.verdict == excluded || r.verdict == flaky })
+--- replace
+	return slices.ContainsFunc(results, func(r result) bool { return r.verdict == excluded })
 --- end

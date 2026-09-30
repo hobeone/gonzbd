@@ -284,6 +284,42 @@ func TestDeadRunFilterNames_SkipsANonPlainAlternationRunWithoutListingTests(t *t
 	}
 }
 
+func TestFilterMatchesName_UnanchoredSubstringLikeGoTest(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		run, name string
+		want      bool
+	}{
+		{"TestSelected", "TestSelected", true},
+		{"TestSelected", "TestOmitted", false},
+		// go test -run matches unanchored, so a prefix of a declared test's
+		// name still selects it.
+		{"TestSel", "TestSelected", true},
+		{"TestSelected|TestOther", "TestOther", true},
+		{"TestSelected|TestOther", "TestOmitted", false},
+		{"^TestSelected$", "TestSelected", true},
+		{"^TestSelected$", "TestSelectedFoo", false},
+		// Only the first slash-separated segment governs a top-level name.
+		{"TestSelected/subcase", "TestSelected", true},
+	}
+	for _, tc := range cases {
+		if got := filterMatchesName(tc.run, tc.name); got != tc.want {
+			t.Errorf("filterMatchesName(%q, %q) = %v, want %v", tc.run, tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestFilterMatchesName_InvalidRegexpIsNonSelecting(t *testing.T) {
+	t.Parallel()
+
+	// "(" is not a fragment go test's own flag parsing would have accepted
+	// either; this must report false rather than panicking.
+	if filterMatchesName("Test(", "TestSelected") {
+		t.Error("filterMatchesName with an invalid regexp fragment = true, want false")
+	}
+}
+
 func TestReportRunFilter_NamesTheDeadAlternativeAndReturnsNonZero(t *testing.T) {
 	var code int
 	out := captureStdout(t, func() {

@@ -11,13 +11,17 @@
 // has none. docs/commit-cycle.md § "The red check" holds the measurement;
 // AGENTS.md now states the rule and defers the argument to both.
 //
-// Six verdicts, and the distinctions between them are the point:
+// Seven verdicts, and the distinctions between them are the point:
 //
 //   - KILLED        the test failed, and the failure is quoted so the commit
 //     body can record it as AGENTS.md requires
 //   - SURVIVED      the test passed; the assertion does not discriminate
 //   - EXCLUDED      the test passed, but a package-wide run kills the mutation
 //     — so the `run` filter leaves out the test that pins it
+//   - FLAKY         the test passed, but a package-wide run kills the
+//     mutation by failing a test that `run` DOES select — so the
+//     inconsistency is that test's own determinism, not a
+//     filter leaving anything out
 //   - ANCHOR        the anchor matched zero or several sites, so the mutation
 //     is refused rather than applied to a place nobody chose
 //   - COMPILE_ERROR the mutated tree does not build, which AGENTS.md warns
@@ -64,6 +68,12 @@
 // as "the assertion is inert" when the truth is "the assertion never ran".
 // Both times this happened here, the spec was an alternation that had not
 // grown a term when a test was added beside it.
+//
+// FLAKY is the other way a package-wide run can fail without naming a
+// missing term: the test that killed the mutation there is one `run` already
+// selects. Reporting that as EXCLUDED sends the reader to widen a filter that
+// is not the problem; the filtered run and the package-wide run disagreed
+// about the same test, which is a question about that test's determinism.
 //
 // The baseline is checked before any mutation is applied. A test that is
 // already failing produces a KILLED for every mutation, and every one of them
@@ -129,6 +139,7 @@ const (
 	killed       verdict = "KILLED"
 	survived     verdict = "SURVIVED"
 	excluded     verdict = "EXCLUDED"
+	flaky        verdict = "FLAKY"
 	anchorFail   verdict = "ANCHOR"
 	compileError verdict = "COMPILE_ERROR"
 	runFilter    verdict = "RUNFILTER"
@@ -342,7 +353,9 @@ func run(root string, sp *spec, m mutation, verbose bool) result {
 }
 
 // widenOnPass asks why the mutation passed: because nothing pins the
-// behaviour, or because the spec's `run` filter excludes the test that does.
+// behaviour, because the spec's `run` filter excludes the test that does, or
+// because a test `run` DOES select disagreed with itself between the two
+// runs.
 //
 // Re-running the same mutation with no filter answers it directly. A package
 // that goes red without the filter and green with it holds a test that
@@ -371,26 +384,59 @@ func widenOnPass(root string, sp *spec, m mutation, verbose bool) result {
 		return result{mutation: m, verdict: survived, evidence: survivedEvidence}
 	}
 
-	ev := "the package-wide run fails, so `run` excludes a test that kills this"
-	if names := failingTests(out); len(names) > 0 {
-		ev = fmt.Sprintf("`run` excludes %s, which kills this", strings.Join(names, ", "))
-	}
-	return result{mutation: m, verdict: excluded, evidence: ev}
+	v, ev := classifyWiderFailure(sp.run, out)
+	return result{mutation: m, verdict: v, evidence: ev}
 }
 
-// confirmExclusions checks the other half of what an EXCLUDED row claims.
+// classifyWiderFailure turns the package-wide run's failing tests into a
+// verdict. A name `run` does not select is a spec defect (EXCLUDED); a name
+// `run` DOES select disagreeing with the filtered run it just passed is a
+// determinism problem in that test, not in the spec (FLAKY).
+//
+// Failures split between the two kinds still name a real gap in `run` — the
+// excluded test would be missed on every future run of this spec, flaky or
+// not — so a mix is reported EXCLUDED, naming only the excluded test(s); a
+// FLAKY row would send the reader to look at a test that is not the one
+// missing from `run`.
+func classifyWiderFailure(run, out string) (v verdict, evidence string) {
+	names := failingTests(out)
+	if len(names) == 0 {
+		return excluded, "the package-wide run fails, so `run` excludes a test that kills this"
+	}
+
+	var selected, left []string
+	for _, n := range names {
+		if filterMatchesName(run, n) {
+			selected = append(selected, n)
+		} else {
+			left = append(left, n)
+		}
+	}
+
+	if len(left) > 0 {
+		return excluded, fmt.Sprintf("`run` excludes %s, which kills this", strings.Join(left, ", "))
+	}
+	return flaky, fmt.Sprintf(
+		"%s is selected by `run` and killed this mutation in the package-wide run but not in the filtered run — a determinism problem in the test, not the spec",
+		strings.Join(selected, ", "))
+}
+
+// confirmExclusions checks the other half of what an EXCLUDED or FLAKY row
+// claims.
 //
 // widenOnPass observes that the package is red WITH the mutation. That alone
 // does not mean the mutation caused it: a package carrying an unrelated
 // failure — a flake, a pre-existing break in a file the spec never names — is
 // red either way, and the baseline cannot have caught it, because the baseline
 // runs only the filter. So the claim is confirmed against an unmutated,
-// unfiltered run, and downgraded to SURVIVED when it does not hold.
+// unfiltered run, and downgraded to SURVIVED when it does not hold — a FLAKY
+// row this way as much as an EXCLUDED one, since both are read off the same
+// possibly-unrelated red package.
 //
 // It runs once per invocation rather than once per mutation, and only when
-// something claimed an exclusion, so a clean spec pays nothing for it. It runs
-// after the mutation loop, when every restore has already happened and the
-// tree is its real self again.
+// something claimed an exclusion or a flake, so a clean spec pays nothing for
+// it. It runs after the mutation loop, when every restore has already happened
+// and the tree is its real self again.
 //
 // A confirming run that never STARTS is an error rather than a verdict. It is
 // not evidence the package is red — nothing was observed at all — and the two
@@ -413,7 +459,7 @@ func confirmExclusions(root string, sp *spec, results []result) ([]result, error
 	}
 
 	for i := range results {
-		if results[i].verdict == excluded {
+		if results[i].verdict == excluded || results[i].verdict == flaky {
 			results[i].verdict = survived
 			results[i].evidence = survivedEvidence + " (the package is red unmutated too)"
 		}
@@ -421,15 +467,15 @@ func confirmExclusions(root string, sp *spec, results []result) ([]result, error
 	return results, nil
 }
 
-// needsConfirmation reports whether any row claims an exclusion, and is what
-// keeps a spec with none from paying for the confirming run.
+// needsConfirmation reports whether any row claims an exclusion or a flake,
+// and is what keeps a spec with neither from paying for the confirming run.
 //
 // It is a named predicate rather than an inline condition because that is the
 // only part of the early return a test can observe: confirmExclusions returns
 // the rows unchanged whether it skipped the run or made one and found nothing
 // to downgrade, so a behavioural test of the skip passes for the wrong reason.
 func needsConfirmation(results []result) bool {
-	return slices.ContainsFunc(results, func(r result) bool { return r.verdict == excluded })
+	return slices.ContainsFunc(results, func(r result) bool { return r.verdict == excluded || r.verdict == flaky })
 }
 
 // failingTestRe matches the banner `go test` prints for a failing test. It
@@ -815,11 +861,12 @@ func report(results []result) int {
 
 // note explains a verdict whose meaning is not carried by the evidence column.
 //
-// The three it speaks to are the three that get misread. A SURVIVED result is
+// The four it speaks to are the four that get misread. A SURVIVED result is
 // about the test, not the code: the mutated behaviour is real and unpinned. An
-// EXCLUDED result is about the spec, not the test. A COMPILE_ERROR is a red
-// result that is not evidence, and reading it as a dead mutant is how a pin
-// that discriminates nothing gets recorded as proven.
+// EXCLUDED result is about the spec, not the test. A FLAKY result is about
+// neither — it is the selected test's own determinism. A COMPILE_ERROR is a
+// red result that is not evidence, and reading it as a dead mutant is how a
+// pin that discriminates nothing gets recorded as proven.
 func note(r result) string {
 	switch r.verdict {
 	case survived:
@@ -831,6 +878,11 @@ func note(r result) string {
 			"  kills this mutation and the filter does not select the test that does.\n" +
 			"  Add the missing term to `run` and re-run — until then this mutation was\n" +
 			"  evaluated against tests that never executed it."
+	case flaky:
+		return "the test named in the evidence column is already selected by `run` —\n" +
+			"  widening the filter changes nothing. It killed this mutation once and\n" +
+			"  passed on it once, so the inconsistency is in the test, not the spec.\n" +
+			"  Investigate that test's determinism before trusting either run of it."
 	case compileError:
 		return "the mutated tree does not build, so this run says nothing about the\n" +
 			"  test. Neuter the condition rather than deleting the block, then re-run."
