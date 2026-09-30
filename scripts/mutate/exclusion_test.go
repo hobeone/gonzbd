@@ -65,6 +65,24 @@ const (
 	omittedPasses  = "func TestOmitted(t *testing.T) {}\n"
 )
 
+func TestClassifyWiderFailure_NoFailBannerReportsExcludedNotFlaky(t *testing.T) {
+	t.Parallel()
+
+	// panicOutput (declared in main_test.go) carries no `--- FAIL:` banner at
+	// all — the package died to a panic rather than a test assertion, so
+	// failingTests(out) is empty. That is what the `len(names) == 0` guard
+	// exists for: without it, the empty `names` slice falls through into the
+	// `flaky` return with nothing in `strings.Join(names, ", ")`, reporting
+	// FLAKY for a test that was never even named.
+	v, ev := classifyWiderFailure("TestSelected", panicOutput)
+	if v != excluded {
+		t.Fatalf("verdict = %s, want EXCLUDED; a banner-less package failure must not read as this test's own flakiness", v)
+	}
+	if !strings.Contains(ev, "excludes a test") {
+		t.Errorf("evidence = %q, want it to say `run` excludes a test", ev)
+	}
+}
+
 func TestWidenOnPass_NamesTheTestTheRunFilterLeavesOut(t *testing.T) {
 	t.Parallel()
 
@@ -122,6 +140,30 @@ func TestWidenOnPass_MixedFailuresReportExcludedForTheOmittedName(t *testing.T) 
 	}
 	if strings.Contains(got.evidence, "TestSelected") {
 		t.Errorf("evidence = %q, want it to name only the excluded test, not the selected one too", got.evidence)
+	}
+}
+
+func TestWidenOnPass_SubtestFilterReportsExcludedForAnUnselectedSibling(t *testing.T) {
+	t.Parallel()
+
+	// `run` restricts execution to TestSelected/subA, which passes on its
+	// own. subB is the sibling the filter leaves out, and it is subB that
+	// kills the mutation in the package-wide run. Folding the package-wide
+	// failure to its parent name ("TestSelected") before matching against
+	// `run` used to read the /subA restriction as selecting the whole
+	// parent — including subB — and misreport this as FLAKY.
+	body := "func TestSelected(t *testing.T) {\n" +
+		"\tt.Run(\"subA\", func(t *testing.T) {})\n" +
+		"\tt.Run(\"subB\", func(t *testing.T) { t.Fatal(\"kills mutation\") })\n" +
+		"}\n"
+	root := mustModule(t, body)
+	got := widenOnPass(root, &spec{pkg: "./...", run: "TestSelected/subA"}, mutation{name: "m"}, false)
+
+	if got.verdict != excluded {
+		t.Fatalf("verdict = %s, want EXCLUDED; an unselected sibling subtest was reported as this test's own flakiness", got.verdict)
+	}
+	if !strings.Contains(got.evidence, "TestSelected") {
+		t.Errorf("evidence = %q, want it to name the excluded test", got.evidence)
 	}
 }
 
@@ -278,13 +320,14 @@ func TestNeedsConfirmation_OnlyWhenSomethingClaimedAnExclusion(t *testing.T) {
 
 	// This is the predicate rather than the behaviour on purpose.
 	// confirmExclusions returns the rows unchanged either way — it skipped the
-	// run, or it made one and found no EXCLUDED row to downgrade — so a test
-	// that asserts the verdicts are unchanged passes without the skip existing.
+	// run, or it made one and found no EXCLUDED or FLAKY row to downgrade —
+	// so a test that asserts the verdicts are unchanged passes without the
+	// skip existing.
 	killedRow := result{name: "a", verdict: killed, evidence: "x_test.go:1: boom"}
 	survivedRow := result{name: "b", verdict: survived, evidence: survivedEvidence}
 
 	if needsConfirmation([]result{killedRow, survivedRow}) {
-		t.Error("a spec with no exclusion would pay for the confirming package-wide run")
+		t.Error("a spec with no exclusion or flake would pay for the confirming package-wide run")
 	}
 	if !needsConfirmation([]result{killedRow, survivedRow, excludedResult()[0]}) {
 		t.Error("an EXCLUDED row would be reported without ever being confirmed")

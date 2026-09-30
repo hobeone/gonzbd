@@ -123,24 +123,36 @@ func listTests(root string, sp *spec) ([]string, error) {
 }
 
 // filterMatchesName reports whether go test's `-run` pattern would select a
-// top-level test named name: split the pattern on the first `/` — a top-level
-// name is never itself matched against anything past that slash — and match
-// the remaining segment unanchored, the way `go test` matches an unanchored
-// regexp at each level of a test's name.
+// test named name — a bare top-level name or a `/`-separated subtest path —
+// the way `go test` itself does: split both run and name on `/` and match
+// each level's segment against the corresponding name segment, unanchored.
+// name may have more segments than run (a subtest under a top-level name
+// `run` selects by name alone; the unconstrained levels select too, which is
+// why only min(len(runParts), len(nameParts)) levels are checked) or fewer
+// (a bare top-level failure against a deeper `run` line still has its one
+// segment checked).
 //
 // Unlike plainAlternation/selects above, this classifies one already-observed
 // failing test name against the spec's `run` line as written; it does not
 // require `run` to be a plain alternation of test names first.
 func filterMatchesName(run, name string) bool {
-	seg, _, _ := strings.Cut(run, "/")
-	re, err := regexp.Compile(seg)
-	if err != nil {
-		// A fragment go test's own flag parsing would have rejected cannot
-		// have selected anything; report non-selecting rather than panicking
-		// on a `run` line that was never a valid regexp to begin with.
-		return false
+	runParts := strings.Split(run, "/")
+	nameParts := strings.Split(name, "/")
+	n := min(len(runParts), len(nameParts))
+	for i := range n {
+		re, err := regexp.Compile(runParts[i])
+		if err != nil {
+			// A fragment go test's own flag parsing would have rejected cannot
+			// have selected anything; report non-selecting rather than
+			// panicking on a `run` line that was never a valid regexp to
+			// begin with.
+			return false
+		}
+		if !re.MatchString(nameParts[i]) {
+			return false
+		}
 	}
-	return re.MatchString(name)
+	return true
 }
 
 // deadRunFilterNames names every alternative of a plain `run` line that

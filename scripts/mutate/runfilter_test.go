@@ -300,8 +300,18 @@ func TestFilterMatchesName_UnanchoredSubstringLikeGoTest(t *testing.T) {
 		{"TestSelected|TestOther", "TestOmitted", false},
 		{"^TestSelected$", "TestSelected", true},
 		{"^TestSelected$", "TestSelectedFoo", false},
-		// Only the first slash-separated segment governs a top-level name.
+		// name has fewer segments than run: only the levels name actually
+		// has are checked, so a bare top-level failure is still selected by
+		// a deeper `run` line that constrains its first segment the same way.
 		{"TestSelected/subcase", "TestSelected", true},
+		// run has fewer segments than name: a top-level `run` selects every
+		// subtest beneath it.
+		{"TestSelected", "TestSelected/subA", true},
+		// Both have subtest segments: each level is checked against its own
+		// counterpart, so `run` restricting to one subtest does not select a
+		// sibling subtest that also failed.
+		{"TestSelected/subA", "TestSelected/subA", true},
+		{"TestSelected/subA", "TestSelected/subB", false},
 	}
 	for _, tc := range cases {
 		if got := filterMatchesName(tc.run, tc.name); got != tc.want {

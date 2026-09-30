@@ -359,11 +359,13 @@ func run(root string, sp *spec, m mutation, verbose bool) result {
 //
 // Re-running the same mutation with no filter answers it directly. A package
 // that goes red without the filter and green with it holds a test that
-// discriminates and was not selected, which is a defect in the spec rather
-// than in the pin — and the two are indistinguishable from the SURVIVED row
-// alone. The extra run costs nothing on the path that matters: every mutation
-// reaching here has already failed the command, so this only ever lengthens a
-// run that was going to exit non-zero.
+// discriminates, and classifyWiderFailure sorts which of the two ways: a test
+// `run` excludes (a defect in the spec, EXCLUDED) or a test `run` already
+// selects disagreeing with itself between the two runs (a defect in that
+// test's own determinism, FLAKY) — both indistinguishable from the SURVIVED
+// row alone. The extra run costs nothing on the path that matters: every
+// mutation reaching here has already failed the command, so this only ever
+// lengthens a run that was going to exit non-zero.
 func widenOnPass(root string, sp *spec, m mutation, verbose bool) result {
 	if sp.run == "" {
 		// The command already ran the whole package; there is no wider run to
@@ -404,11 +406,24 @@ func classifyWiderFailure(run, out string) (v verdict, evidence string) {
 		return excluded, "the package-wide run fails, so `run` excludes a test that kills this"
 	}
 
-	var selected, left []string
+	// The selection decision is made on the UN-folded path — `run` can
+	// restrict to one subtest (`TestX/subA`), and a sibling subtest
+	// (`TestX/subB`) that also failed is excluded even though both fold to
+	// the same top-level name. Matching the folded name alone (as a prior
+	// version of this function did) reads a `run` line's subtest restriction
+	// as selecting the whole parent, and misreports the excluded sibling as
+	// this test's own flakiness.
+	excludedTop := map[string]bool{}
+	for _, p := range failingTestPaths(out) {
+		if !filterMatchesName(run, p) {
+			top, _, _ := strings.Cut(p, "/")
+			excludedTop[top] = true
+		}
+	}
+
+	var left []string
 	for _, n := range names {
-		if filterMatchesName(run, n) {
-			selected = append(selected, n)
-		} else {
+		if excludedTop[n] {
 			left = append(left, n)
 		}
 	}
@@ -418,7 +433,7 @@ func classifyWiderFailure(run, out string) (v verdict, evidence string) {
 	}
 	return flaky, fmt.Sprintf(
 		"%s is selected by `run` and killed this mutation in the package-wide run but not in the filtered run — a determinism problem in the test, not the spec",
-		strings.Join(selected, ", "))
+		strings.Join(names, ", "))
 }
 
 // confirmExclusions checks the other half of what an EXCLUDED or FLAKY row
@@ -490,8 +505,26 @@ var failingTestRe = regexp.MustCompile(`(?m)^\s*--- FAIL: (\S+)`)
 // therefore the term the spec is missing.
 func failingTests(out string) []string {
 	var names []string
+	for _, p := range failingTestPaths(out) {
+		name, _, _ := strings.Cut(p, "/")
+		if name == "" || slices.Contains(names, name) {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// failingTestPaths names every test — top-level or subtest — that failed, as
+// `go test` printed it (a subtest keeps its full `Parent/child` path),
+// deduplicated and in the order reported. classifyWiderFailure needs this
+// un-folded form: matching `run` against the folded parent name alone cannot
+// tell "run selects this subtest" apart from "run selects a sibling
+// subtest", which is exactly the distinction between FLAKY and EXCLUDED.
+func failingTestPaths(out string) []string {
+	var names []string
 	for _, m := range failingTestRe.FindAllStringSubmatch(out, -1) {
-		name, _, _ := strings.Cut(m[1], "/")
+		name := m[1]
 		if name == "" || slices.Contains(names, name) {
 			continue
 		}
@@ -861,12 +894,14 @@ func report(results []result) int {
 
 // note explains a verdict whose meaning is not carried by the evidence column.
 //
-// The four it speaks to are the four that get misread. A SURVIVED result is
+// The five it speaks to are the five that get misread. A SURVIVED result is
 // about the test, not the code: the mutated behaviour is real and unpinned. An
 // EXCLUDED result is about the spec, not the test. A FLAKY result is about
 // neither — it is the selected test's own determinism. A COMPILE_ERROR is a
 // red result that is not evidence, and reading it as a dead mutant is how a
-// pin that discriminates nothing gets recorded as proven.
+// pin that discriminates nothing gets recorded as proven. An ANCHOR result
+// means nothing was written at all, which a reader skimming for a red result
+// could otherwise mistake for one.
 func note(r result) string {
 	switch r.verdict {
 	case survived:

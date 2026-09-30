@@ -396,7 +396,7 @@ func TestNote_ExplainsOnlyTheVerdictsThatGetMisread(t *testing.T) {
 	if n := note(result{verdict: killed, evidence: "x"}); n != "" {
 		t.Errorf("note(KILLED) = %q, want empty", n)
 	}
-	for _, v := range []verdict{survived, compileError, anchorFail} {
+	for _, v := range []verdict{survived, excluded, flaky, compileError, anchorFail} {
 		if note(result{verdict: v}) == "" {
 			t.Errorf("note(%s) is empty; this verdict is the one that gets misread", v)
 		}
