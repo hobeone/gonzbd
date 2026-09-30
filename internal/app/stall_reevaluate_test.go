@@ -233,12 +233,11 @@ func TestReevaluateStall_RetriesEveryInterruptedFinalizeInOnePass(t *testing.T) 
 // TestRetryFinalize_RefusesAJobWithNoReadableManifest pins the second
 // success-lookalike, the one retryFinalize's open-handle check does not cover.
 //
-// finalizeCompletedFile answers nil for a nil sync target. On a first attempt
-// that is safe, because MarkFileComplete refuses the completion for the same
-// reason. On a RETRY the completion is queued behind this call and delivered
-// on a LATER cycle, by which time the job can be resident again — so the file
-// would be recorded finalizeDone without ever having been trimmed, and shipped
-// with pre-allocation's trailing zeros for par2 to read as damage.
+// finalizeCompletedFile answers nil for a nil sync target when the job has
+// left the queue, as it has here. On a RETRY the file would then be recorded
+// finalizeDone without ever having been trimmed, and a completion delivered on
+// a later cycle would ship pre-allocation's trailing zeros for par2 to read as
+// damage.
 //
 // The handle is deliberately still open here, so the earlier guard cannot be
 // what produces the refusal.

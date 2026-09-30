@@ -1384,12 +1384,9 @@ func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 // written since the last real barrier is.
 //
 // The fixture removes the job from the queue while the assembler still holds
-// its file open, because that is what actually produces a nil target.
-// Eviction does NOT: syncTargetFor goes through Queue.SnapshotJob, which
-// hydrates one job's manifest from disk, so a merely paused job still has a
-// target. The reachable nil cases are a job that has left the queue between
-// checkpointAll's OpenJobIDs and this call, and a manifest that cannot be
-// read.
+// its file open, which is one way to produce a nil target. The other is a
+// job still in the queue whose manifest has been evicted: syncTargetFor reads
+// the resident manifest and hydrates nothing.
 func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -308,11 +309,13 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 //
 // A residency failure is NOT treated as the finalize having landed. Phase 1
 // counts it as blocked like any other failure: retryFinalize refuses a job
-// with no resident manifest before running the barrier ("no readable
+// with no resident manifest before running the barrier ("no resident
 // manifest"), and a finalize whose ack meets job.ErrNotResident comes back as
-// an error that routeFinalizeFailure records for retry. A job Stall paused
-// holds no manifest, so it stays parked on those retries until something —
-// in practice a user Resume — makes it resident. When a retry does land,
+// an error that routeFinalizeFailure records for retry without parking the
+// job for it. A job Stall paused holds no manifest, so it
+// stays parked on those retries until something — in practice a user Resume —
+// makes it resident; a job that was only evicted is retried each pass until
+// the dispatcher promotes it again. When a retry does land,
 // phase 3 replays the committed runs with SeedFromRuns, exactly as the startup
 // sweep does. Every failure keeps the job parked without it ever dispatching.
 //
@@ -525,9 +528,9 @@ func (app *Application) recoveryFiles(jobID string) map[int]finalizeState {
 // This function closes nothing itself. The handle is released by
 // finalizeCompletedFile's deferred close, which runs only on that call's nil
 // paths. The checks here leave its no-barrier return unreachable, and its
-// nil-target return reachable only if the target goes nil between the check
-// below and the call — where a close fault stops the retry exactly as it
-// stops a first attempt.
+// nil-target returns reachable only if the target goes nil between the check
+// below and the call — where a job still in the queue keeps its handle and is
+// retried again, and one that has left it is forgotten by the re-evaluation.
 func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx int) error {
 	if app.assembler == nil || app.barrier == nil {
 		return fmt.Errorf("%w: job %s file %d: no barrier in this process",
@@ -541,20 +544,16 @@ func (app *Application) retryFinalize(ctx context.Context, jobID string, fileIdx
 	if !slices.Contains(open, int32(fileIdx)) { //nolint:gosec // G115: file counts are far below int32
 		return fmt.Errorf("%w: job %s file %d", errFinalizeUnrecoverable, jobID, fileIdx)
 	}
-	// The second success-lookalike, and the reason it is checked here rather
-	// than trusted. finalizeCompletedFile answers nil for a nil sync target,
-	// which is safe on a first attempt because MarkFileComplete then refuses
-	// the completion too. On a retry the completion is queued behind this
-	// call and delivered on a LATER cycle, by which time the job may be
-	// resident again — so the file would be recorded finalizeDone, never
-	// having been trimmed, and shipped with pre-allocation's zeros.
+	// Checked here as well as inside finalizeCompletedFile, whose nil-target
+	// return answers nil for a job that has left the queue. On a retry that
+	// nil would be recorded finalizeDone for a file no barrier ran over.
 	//
-	// Retryable rather than terminal: a manifest that cannot be read now may
-	// be readable after the mount comes back, and a job that is merely
-	// unpromoted becomes resident again on its own.
+	// Wraps job.ErrNotResident so routeFinalizeFailure records it for the next
+	// pass without parking the job: a job that is merely unpromoted becomes
+	// resident again on its own, and parking it would stop that happening.
 	if app.syncTargetFor(jobID) == nil {
-		return fmt.Errorf("%w: job %s file %d: the job has no readable manifest, so no barrier "+
-			"can be run over it", ErrNotFinalized, jobID, fileIdx)
+		return fmt.Errorf("%w: job %s file %d: the job has no resident manifest, so no barrier "+
+			"can be run over it: %w", ErrNotFinalized, jobID, fileIdx, job.ErrNotResident)
 	}
 	return app.finalizeCompletedFile(ctx, jobID, fileIdx)
 }
