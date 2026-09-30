@@ -57,9 +57,12 @@ func toExtractingReport(t *testing.T, d *Dispatcher, j1 *job.Job) {
 // stayed with it, and after a removal with its ID, until a restart. The
 // assertion is that a second job then gets that slot at Assessing.
 //
-// Each case runs in two windows: before launch's first check, where the tick
-// would run evictCancelledNeverRun and reconcileResidency, and between that
-// check and the claim.
+// Each case runs in three windows: before launch's first check, where the
+// tick would run evictCancelledNeverRun and reconcileResidency; between that
+// check and the claim; and with no launch at all, as when reconcileResidency
+// fails and the tick moves on. A removal must return the grant before Remove
+// returns, since no later tick visits a deregistered job; a cancel or pause
+// must return it by the next tick.
 func TestLaunch_DeclinedLaunchReturnsTheGrant(t *testing.T) {
 	hits := []struct {
 		name string
@@ -84,11 +87,7 @@ func TestLaunch_DeclinedLaunchReturnsTheGrant(t *testing.T) {
 			}
 		}},
 	}
-	for _, beforeClaim := range []bool{false, true} {
-		window := "before first check"
-		if beforeClaim {
-			window = "before claim"
-		}
+	for _, window := range []string{"before first check", "before claim", "no launch"} {
 		for _, h := range hits {
 			t.Run(window+"/"+h.name, func(t *testing.T) {
 				ctx := context.Background()
@@ -97,7 +96,8 @@ func TestLaunch_DeclinedLaunchReturnsTheGrant(t *testing.T) {
 				j1 := job.New("j1", "n", job.Policy{})
 				toExtractingReport(t, d, j1)
 
-				if beforeClaim {
+				switch window {
+				case "before claim":
 					fired := false
 					d.beforeClaim = func(id string) {
 						if id != j1.ID() || fired {
@@ -111,22 +111,25 @@ func TestLaunch_DeclinedLaunchReturnsTheGrant(t *testing.T) {
 					if !fired {
 						t.Fatalf("setup: launch never reached the claim for j1 at Extracting; runs = %v", runner.runs)
 					}
-				} else {
+				default:
 					// The tick's own order, with the hit between its Advance and
-					// its launch.
+					// its launch, or in place of the launch.
 					if err := d.q.Advance(j1); err != nil {
 						t.Fatalf("Advance: %v", err)
 					}
 					h.hit(t, d, j1.ID())
-					d.launch(j1)
+					if window == "before first check" {
+						d.launch(j1)
+					}
 				}
 				if runner.ran(j1.ID(), job.Extracting) {
 					t.Fatal("setup: j1's Extracting worker was launched despite the " + h.name)
 				}
-				// In the declining call itself, not a tick later: a removal
-				// deregisters the job, and no later tick visits it.
+				if h.name != "remove" {
+					d.tick(ctx)
+				}
 				if v := d.q.Render(j1); v.Holds {
-					t.Errorf("j1 still holds its grant after launch declined it for a %s: view %+v", h.name, v)
+					t.Errorf("j1 still holds its grant after a %s declined its launch: view %+v", h.name, v)
 				}
 
 				j2 := job.New("j2", "n", job.Policy{})
@@ -175,8 +178,33 @@ func TestParkGrant_LogsARefusedPark(t *testing.T) {
 	d := newTestDispatcher(t)
 	d.log = captureLogger(&buf)
 	d.parkGrant(j)
-	if !strings.Contains(buf.String(), "failed to return the resources") {
+	if !strings.Contains(buf.String(), "failed to return the resources") || !strings.Contains(buf.String(), "job_id=j1") {
 		t.Errorf("a refused park was not logged; log = %q", buf.String())
+	}
+}
+
+// TestParkUnlaunched_ParksOnlyWithoutAClaim pins the helper's one decision:
+// with no launch claim the job's grant is returned, and with one it is left
+// to the worker the claim stands for.
+func TestParkUnlaunched_ParksOnlyWithoutAClaim(t *testing.T) {
+	for _, claimed := range []bool{false, true} {
+		ctx := context.Background()
+		d := newTestDispatcher(t, withRunner(&idStateRunner{}))
+		j := job.New("j1", "n", job.Policy{})
+		if err := d.Add(ctx, j, Header{}); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		d.tick(ctx)
+		if err := d.q.Advance(j); err != nil { // lease granted, not launched
+			t.Fatalf("Advance: %v", err)
+		}
+		if claimed && !d.claimLaunched(j.ID()) {
+			t.Fatal("setup: claimLaunched refused")
+		}
+		d.parkUnlaunched(j)
+		if got, want := d.q.Render(j).Holds, claimed; got != want {
+			t.Errorf("claimed=%v: Holds = %v after parkUnlaunched, want %v", claimed, got, want)
+		}
 	}
 }
 

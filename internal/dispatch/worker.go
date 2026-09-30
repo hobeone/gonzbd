@@ -220,14 +220,13 @@ func (d *Dispatcher) handoff(door string, j *job.Job, from, next job.State) erro
 //     because Advance and launch both run only from tick (tick.go), which
 //     never overlaps itself.
 //
-// The first check only keeps a tick from taking and dropping a claim for
-// every job that is not running.
-//
-// A job that reads as running holds what Advance granted it, and every path
-// that declines to launch it gives that back through parkUnlaunched: sched
-// cannot tell a granted job from a working one, so a job that holds with no
-// worker is never parked by a later Advance, and the worker that would
-// report for it was never started.
+// The first check keeps a tick from taking and dropping a claim for every
+// job that is not running, and gives back the grant of a running job whose
+// intent is no longer IntentRun and which has no worker (parkUnlaunched).
+// sched cannot tell a granted job from a working one, so no later Advance
+// parks such a job. A cancel or per-job pause that lands after this check
+// is caught by it on the next tick; a removal parks the job itself
+// (removeFor), because a removed job is visited by no later tick.
 func (d *Dispatcher) launch(j *job.Job) {
 	v := d.q.Render(j)
 	if !v.Running {
@@ -241,16 +240,10 @@ func (d *Dispatcher) launch(j *job.Job) {
 		d.beforeClaim(j.ID())
 	}
 	if !d.claimLaunched(j.ID()) {
-		d.parkUnlaunched(j)
 		return
 	}
 	v = d.q.Render(j)
 	if !v.Running || v.Intent != job.IntentRun {
-		// This call holds the claim, so no worker exists. Parked before the
-		// claim is cleared, in YieldedFor's order.
-		if v.Running {
-			d.parkGrant(j)
-		}
 		d.clearLaunched(j.ID())
 		return
 	}
@@ -267,24 +260,22 @@ func (d *Dispatcher) launch(j *job.Job) {
 // A claim absent here stays absent until the park: the only claimLaunched
 // call is in launch, and launch runs only from tick (`git grep -n
 // 'd\.launch(' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 1 line),
-// which never overlaps itself. The claim is read before Render, because an
-// exit report parks before it clears the claim: a claim already cleared by
-// one means Render sees that park.
+// which never overlaps itself.
 func (d *Dispatcher) parkUnlaunched(j *job.Job) {
 	d.mu.Lock()
 	_, claimed := d.launched[j.ID()]
 	d.mu.Unlock()
-	if claimed || !d.q.Render(j).Running {
-		return
+	if !claimed {
+		d.parkGrant(j)
 	}
-	d.parkGrant(j)
 }
 
-// parkGrant parks a job that holds resources with no worker.
+// parkGrant parks a job that holds resources with no worker. Park is total
+// (see YieldedFor), so a job that holds nothing is left as it was.
 func (d *Dispatcher) parkGrant(j *job.Job) {
 	if err := d.q.Park(j); err != nil {
-		d.log.Error("failed to return the resources of a job that was not launched",
-			"job", j.ID(), "err", err)
+		d.log.Error("failed to return the resources of a job with no worker",
+			"job_id", j.ID(), "err", err)
 	}
 }
 
@@ -292,8 +283,8 @@ func (d *Dispatcher) parkGrant(j *job.Job) {
 // the one that set it, so a later tick does not start a second worker for a
 // job already being worked. Finished, YieldedFor, clearLaunchedFor (for
 // AdvanceFrom and YieldedFrom), Stop's sweep and deregister are its five
-// exit-path clearers, and launch clears a claim it took
-// for a job that stopped running before the claim — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
+// exit-path clearers, and launch clears a claim it took for a job that
+// stopped running, or stopped being wanted, before the claim — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
 // grep -v _test.go` finds six lines, one per site.
 func (d *Dispatcher) claimLaunched(id string) bool {
 	d.mu.Lock()

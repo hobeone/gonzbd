@@ -1,10 +1,10 @@
 pkg ./internal/dispatch/
-run ^(TestLaunch_DeclinedLaunchReturnsTheGrant|TestLaunch_DeclinedLaunchLeavesALiveWorkersGrant|TestParkGrant_LogsARefusedPark)$
+run ^(TestLaunch_DeclinedLaunchReturnsTheGrant|TestLaunch_DeclinedLaunchLeavesALiveWorkersGrant|TestParkGrant_LogsARefusedPark|TestParkUnlaunched_ParksOnlyWithoutAClaim)$
 
-# Every path on which launch declines a job that holds what Advance granted it
-# gives that grant back, and the claim is what spares a live worker's grant.
-# Each park is neutered on its own: the three paths are reached by different
-# windows, so one being pinned says nothing about the others.
+# A grant with no worker is returned at two points: launch's first check, for
+# a job whose intent is no longer IntentRun, and removeFor, for a job about to
+# be deregistered. Each is neutered on its own, since they are reached by
+# different events; the claim is what spares a live worker's grant.
 
 [the first check declines a cancelled or paused job and keeps its grant]
 file internal/dispatch/worker.go
@@ -19,31 +19,6 @@ file internal/dispatch/worker.go
 	}
 --- end
 
-[a refused claim keeps the grant of a job being removed]
-file internal/dispatch/worker.go
---- anchor
-	if !d.claimLaunched(j.ID()) {
-		d.parkUnlaunched(j)
-		return
-	}
---- replace
-	if !d.claimLaunched(j.ID()) {
-		return
-	}
---- end
-
-[the failed re-check clears its claim and keeps the grant]
-file internal/dispatch/worker.go
---- anchor
-		if v.Running {
-			d.parkGrant(j)
-		}
---- replace
-		if false {
-			d.parkGrant(j)
-		}
---- end
-
 [a live worker's grant is parked out from under it]
 file internal/dispatch/worker.go
 --- anchor
@@ -53,12 +28,24 @@ file internal/dispatch/worker.go
 	claimed = false
 --- end
 
+[a removal deregisters a job that still holds a grant]
+file internal/dispatch/registry.go
+--- anchor
+	if j, ok := d.lookupFor(id, expected); ok {
+		d.parkGrant(j)
+	}
+--- replace
+	if j, ok := d.lookupFor(id, expected); ok && false {
+		d.parkGrant(j)
+	}
+--- end
+
 [a refused park is dropped silently]
 file internal/dispatch/worker.go
 --- anchor
 	if err := d.q.Park(j); err != nil {
-		d.log.Error("failed to return the resources of a job that was not launched",
+		d.log.Error("failed to return the resources of a job with no worker",
 --- replace
 	if err := d.q.Park(j); false && err != nil {
-		d.log.Error("failed to return the resources of a job that was not launched",
+		d.log.Error("failed to return the resources of a job with no worker",
 --- end
