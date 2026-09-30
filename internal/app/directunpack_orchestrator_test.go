@@ -66,7 +66,7 @@ func duFixtureLogged(t *testing.T, threads int) (*directUnpackOrchestrator, *dis
 
 	// resolveFileInfo reads this map; without an entry maybeStart returns
 	// before ever reaching the orchestrator's own logic.
-	if err := app.pipeline.registerFile(j.ID(), 0); err != nil {
+	if err := app.pipeline.registerFile(j, 0); err != nil {
 		t.Fatalf("registerFile: %v", err)
 	}
 

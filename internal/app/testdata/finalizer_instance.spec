@@ -1,12 +1,8 @@
 pkg ./internal/app/
-run TestPersistAndCommit_LeavesALaterInstanceAlone$
+run TestPersistAndCommit_(LeavesALaterInstanceAlone|LeavesALaterInstancesLaunchClaimAlone)$
 
 # persistAndCommit acting only on its own instance of a job, each half removed
-# on its own. The yield's instance check (YieldedJob rather than Yielded by
-# ID) has no mutation here: the later instance never holds a launch claim,
-# which only a launched worker takes, so parking it by ID changes nothing the
-# test can see. YieldedFor's own check is pinned in internal/dispatch by
-# yielded_job_identity.spec.
+# on its own.
 
 [a later instance holding the ID does not stop the finalizer]
 file internal/app/job_finalizer.go
@@ -24,4 +20,14 @@ file internal/app/job_finalizer.go
 --- replace
 			app.dispatcher.Cancel(id))
 		warnUnlessGone(log, "finalize: releasing
+--- end
+
+[the finalizer yields by ID instead of by instance]
+file internal/app/job_finalizer.go
+--- anchor
+		warnUnlessGone(log, "finalize: releasing the job's launch claim failed", id,
+			app.dispatcher.YieldedJob(ppJob.Job))
+--- replace
+		warnUnlessGone(log, "finalize: releasing the job's launch claim failed", id,
+			app.dispatcher.Yielded(id))
 --- end
