@@ -1777,16 +1777,6 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 	return nil
 }
 
-// maybeReleaseRecoveryVolumes checks whether a completed job with deferred par2
-// recovery volumes needs repair. If so it un-defers the volumes, broadcasts a
-// queue update, and returns true — the caller must not finalize yet (the
-// downloader will fetch the volumes and trigger another completion event).
-//
-// Returns false when: there are no deferred volumes, the data verifies clean,
-// the verdict is unknown (nothing on disk could be identified against the
-// par2 index, so the volumes are held rather than spent or discarded), or
-// un-deferral itself fails (in which case we fall through to finalize without
-// recovery volumes, matching the pre-on-demand-par2 behaviour).
 // markFetchPolicyDirty marks a job whose fetch policy a par2 verdict just
 // changed, so the job_files row catches up to memory.
 //

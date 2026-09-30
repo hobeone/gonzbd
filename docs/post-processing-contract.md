@@ -621,7 +621,7 @@ instance (`postProcAdmissions`) both hold.
   cancelled `app.ctx`, so a sink that honours the context may not deliver
   it. Retrying the entry heals the job: the retry is rebuilt
   through `BuildIngestJob`, which holds the volumes back again while
-  `downloads.on_demand_par2` is on (`internal/app/ingest.go:151`), so its
+  `downloads.on_demand_par2` is on (`internal/app/ingest.go:146`), so its
   par2 failure is retried automatically with them released.
 - **Loop bound**: the retry releases every volume it holds before job_files,
   which hydration restores the policy from, is seeded; and only ingest sets

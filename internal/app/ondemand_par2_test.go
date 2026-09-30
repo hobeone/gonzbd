@@ -637,6 +637,15 @@ func TestMaybeReleaseRecoveryVolumes_RespectsRepairPolicy(t *testing.T) {
 	if !qjob.HasDeferredPar2() {
 		t.Error("a PP=0 job's recovery volume was un-deferred despite Policy.Repair == false")
 	}
+	// A verdict WAS reached even though the policy blocks acting on it, so
+	// the release reason must still be recorded (matching HasPar2Verdict's
+	// "a verdict was reached" meaning rather than "still awaiting one").
+	if reason := qjob.Par2ReleaseReason(); reason == "" {
+		t.Error("Par2ReleaseReason() is empty; a PP=0 outcomeRepair verdict must still record why the volumes are held")
+	}
+	if !qjob.Progress().HasPar2Verdict() {
+		t.Error("HasPar2Verdict() = false after a PP=0 outcomeRepair verdict; a verdict was reached")
+	}
 	m := mustManifest(t, qjob)
 	for fi := range m.NumFiles() {
 		if !m.FileIsPar2Recovery(fi) {

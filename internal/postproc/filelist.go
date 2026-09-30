@@ -100,15 +100,19 @@ func buildDownloadFileList(j *Job) []string {
 	case heldVols > 0 && !p.Par2Recovered() && p.HasPar2Verdict():
 		// A verdict was reached (HasPar2Verdict) but the volumes were never
 		// un-deferred (!Par2Recovered) and are still held (heldVols > 0).
-		// That combination covers two situations this method cannot tell
+		// That combination covers three situations this method cannot tell
 		// apart: outcomeUnknown (nothing on disk could be identified against
-		// the par2 index, so verification never ran) and an outcomeRepair
+		// the par2 index, so verification never ran), an outcomeRepair
 		// verdict whose UndeferRecoveryVolumes call failed (verification DID
-		// find damage, but the volumes could not be fetched). Reporting
-		// either as "verified clean" would be the mislabel this case exists
-		// to remove, so both get the same non-committal headline; the
-		// release reason in the parenthetical is what carries the real
-		// explanation for whichever one actually happened.
+		// find damage, but the volumes could not be fetched), and an
+		// outcomeRepair verdict the job's Policy.Repair forbids acting on
+		// (PP=0: repair found damage, but Repairing never runs for this job,
+		// so the volumes are held deliberately, not because fetching them
+		// failed). Reporting any of the three as "verified clean" would be
+		// the mislabel this case exists to remove, so all three get the same
+		// non-committal headline; the release reason in the parenthetical is
+		// what carries the real explanation for whichever one actually
+		// happened.
 		// HasPar2Verdict() is true in this arm (the switch guards on it
 		// directly), and HasPar2Verdict is defined as Par2ReleaseReason() !=
 		// "" (`git grep -n 'func (p \*JobProgress) HasPar2Verdict' internal/job/`), so the reason is always
