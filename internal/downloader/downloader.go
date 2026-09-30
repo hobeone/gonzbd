@@ -50,8 +50,21 @@ var errServerPenalized = errors.New("server penalized")
 // dispatch loop makes no ordering promises across articles or
 // servers.
 type ArticleResult struct {
-	// JobID and MessageID identify the article in the queue.
-	JobID     string
+	// Job is the instance the fetch was dispatched for. A retry registers a
+	// new instance under the same ID, so the ID alone cannot tell a result
+	// for the running instance from one a fetch that outlived an earlier
+	// instance produced; consumers compare this pointer against the
+	// instance the dispatcher holds instead.
+	//
+	// Never nil in production, and JobID dereferences it rather than guard:
+	// `git grep -n '&ArticleResult[{]' -- 'internal/*.go' ':(exclude)*_test.go'` finds 1,
+	// emitResult's, which copies it from the request. tryDispatch builds the
+	// request from an UnfinishedArticle, and
+	// `git grep -n 'UnfinishedArticle[{]' -- 'internal/*.go' ':(exclude)*_test.go'` finds 1,
+	// buildDispatchPlan's, which sets it to an instance the dispatcher returned.
+	Job *job.Job
+
+	// MessageID identifies the article within the job.
 	MessageID string
 
 	// FileIdx is the index into the owning job's Files slice.
@@ -98,11 +111,20 @@ type ArticleResult struct {
 	Err error
 }
 
+// JobID is the ID of the instance the fetch was dispatched for. It is derived
+// from Job rather than stored beside it, so the two cannot disagree.
+func (r *ArticleResult) JobID() string { return r.Job.ID() }
+
 // articleRequest is the unit of work flowing from the dispatcher to
 // a per-server worker. Kept small because these are allocated every
 // dispatch pass; heap churn shows up in benchmarks.
 type articleRequest struct {
-	jobID     string
+	// job is the instance the article was dispatched for, and the
+	// downloader's job mutations for this request act on it: after a retry,
+	// a lookup of its ID finds a different instance.
+	// `git grep -n 'dispatcher[.]Job[(]req' -- 'internal/downloader/*.go'` finds 1,
+	// fetchArticle's registration check, which mutates nothing.
+	job       *job.Job
 	messageID string
 	fileIdx   int
 	artIdx    int32
@@ -113,6 +135,10 @@ type articleRequest struct {
 	// acts on a disagreement — see notePartNumberDisagreement.
 	partNumber int
 }
+
+// jobID is the ID of the instance the request was dispatched for, the key of
+// its try-list and in-flight tracking.
+func (r *articleRequest) jobID() string { return r.job.ID() }
 
 // Options tunes Downloader behavior. Defaults (zero values) are
 // sensible; callers rarely need to set fields explicitly.

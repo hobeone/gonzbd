@@ -63,7 +63,7 @@ func fakeSrv(name string, priority int, enabled bool) *Server {
 // must give them distinct indices.
 func fakeArticle(msgID string) UnfinishedArticle {
 	return UnfinishedArticle{
-		JobID:     "j1",
+		Job:       bareJob("j1"),
 		JobAdded:  time.Now().Add(-time.Hour),
 		MessageID: msgID,
 		FileIdx:   0,
@@ -142,9 +142,9 @@ func TestTryDispatch_TwoJobsSharingAMessageIDAreTrackedSeparately(t *testing.T) 
 	opts := defaultOpts(d.servers)
 
 	a := fakeArticle("shared@h")
-	a.JobID = "jobA"
+	a.Job = bareJob("jobA")
 	b := fakeArticle("shared@h")
-	b.JobID = "jobB"
+	b.Job = bareJob("jobB")
 
 	handled, exReq := d.tryDispatch(context.Background(), a, opts)
 	if !handled || exReq != nil {
@@ -731,7 +731,7 @@ func BenchmarkDownloader_Dispatch(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		// Teardown state directly on the maps to avoid any tracker method/lock overhead.
-		k := articleKey{jobID: a.JobID, artIdx: a.ArtIdx}
+		k := articleKey{jobID: a.Job.ID(), artIdx: a.ArtIdx}
 		delete(d.tracker.inFlight, k)
 		delete(d.tracker.tryList, k)
 		select {
@@ -765,7 +765,7 @@ func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
 
 	plan := dispatchPlan{
 		exhausted: []*articleRequest{{
-			jobID:     j.ID(),
+			job:       j,
 			messageID: "msg1@h",
 			bytes:     100,
 		}},
@@ -954,7 +954,7 @@ func TestDownloader_ProcessFetchedArticle_Coverage(t *testing.T) {
 	srv := NewServer(cfg)
 
 	req := &articleRequest{
-		jobID:     "job1",
+		job:       bareJob("job1"),
 		fileIdx:   0,
 		messageID: "msg1",
 	}
@@ -1038,7 +1038,7 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 	addTestJob(t, disp, j, m)
 
 	req := &articleRequest{
-		jobID:     j.ID(),
+		job:       j,
 		fileIdx:   0,
 		messageID: "msg1",
 	}
@@ -1054,7 +1054,7 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 	d.paused.Store(false)
 	_ = disp.PauseJob(j.ID())
 
-	req.jobID = j.ID()
+	req.job = j
 	body, ok = d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
 	if ok || body != nil {
 		t.Error("expected fetchArticle to return nil, false on paused job")
@@ -1072,7 +1072,7 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 	}
 
 	req3 := &articleRequest{
-		jobID:     j3.ID(),
+		job:       j3,
 		fileIdx:   0,
 		artIdx:    0,
 		messageID: "msg-cancel",
@@ -1115,7 +1115,7 @@ func TestFetchArticle_PausedJobEvictedMidFlight(t *testing.T) {
 	}
 	j.Evict()
 
-	req := &articleRequest{jobID: j.ID(), fileIdx: 0, messageID: "inflight@h", artIdx: artIdx}
+	req := &articleRequest{job: j, fileIdx: 0, messageID: "inflight@h", artIdx: artIdx}
 	body, ok := d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
 	if ok || body != nil {
 		t.Errorf("fetchArticle = (%v, %v), want (nil, false) for a paused job", body, ok)
@@ -1186,7 +1186,7 @@ func TestFetchArticle_NoPenaltiesClampsPenaltyDuration(t *testing.T) {
 	j, m := makeJobWithArticles(t, []string{"msg1"})
 	addTestJob(t, d.dispatcher, j, m)
 
-	req := &articleRequest{jobID: j.ID(), messageID: "msg1"}
+	req := &articleRequest{job: j, messageID: "msg1"}
 	before := time.Now()
 	body, ok := d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
 	if ok || body != nil {
@@ -1339,7 +1339,7 @@ func TestFetchArticle_PreCheckSkipsFetchOnMissingArticle(t *testing.T) {
 	j, m := makeJobWithArticles(t, []string{"missing@h"})
 	addTestJob(t, d.dispatcher, j, m)
 
-	req := &articleRequest{jobID: j.ID(), messageID: "missing@h"}
+	req := &articleRequest{job: j, messageID: "missing@h"}
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1") // avoid leaving the conn open for the mock's idle-timeout to close (slows the test)
 	body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1")
@@ -1392,7 +1392,7 @@ func TestFetchArticle_PreCheckCountsNNTPNoArticle(t *testing.T) {
 	j, m := makeJobWithArticles(t, []string{"missing@h"})
 	addTestJob(t, d.dispatcher, j, m)
 
-	req := &articleRequest{jobID: j.ID(), messageID: "missing@h"}
+	req := &articleRequest{job: j, messageID: "missing@h"}
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 	if body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1"); ok || body != nil {
@@ -1428,7 +1428,7 @@ func TestFetchArticle_FetchCountsNNTPNoArticle(t *testing.T) {
 	j, m := makeJobWithArticles(t, []string{"missing@h"})
 	addTestJob(t, d.dispatcher, j, m)
 
-	req := &articleRequest{jobID: j.ID(), messageID: "missing@h"}
+	req := &articleRequest{job: j, messageID: "missing@h"}
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 	if body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1"); ok || body != nil {
@@ -1471,7 +1471,7 @@ func TestFetchArticle_DialFailureCountsConnError(t *testing.T) {
 	j, m := makeJobWithArticles(t, []string{"msg1"})
 	addTestJob(t, d.dispatcher, j, m)
 
-	req := &articleRequest{jobID: j.ID(), messageID: "msg1"}
+	req := &articleRequest{job: j, messageID: "msg1"}
 	if body, ok := d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1"); ok || body != nil {
 		t.Fatalf("expected fetchArticle to fail against a closed listener")
 	}
@@ -1507,7 +1507,7 @@ func TestFetchArticle_FetchFailureAppliesClampedPenalty(t *testing.T) {
 	j, m := makeJobWithArticles(t, []string{"hangup@h"})
 	addTestJob(t, d.dispatcher, j, m)
 
-	req := &articleRequest{jobID: j.ID(), messageID: "hangup@h"}
+	req := &articleRequest{job: j, messageID: "hangup@h"}
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 	before := time.Now()
@@ -1557,7 +1557,7 @@ func TestFetchArticle_FetchFailureCountsConnError(t *testing.T) {
 	j, m := makeJobWithArticles(t, []string{"hangup@h"})
 	addTestJob(t, d.dispatcher, j, m)
 
-	req := &articleRequest{jobID: j.ID(), messageID: "hangup@h"}
+	req := &articleRequest{job: j, messageID: "hangup@h"}
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 	if body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1"); ok || body != nil {
@@ -1605,7 +1605,7 @@ func TestFetchArticle_FetchFailureDuringShutdownSuppressesTelemetry(t *testing.T
 	j, m := makeJobWithArticles(t, []string{"hangup@h"})
 	addTestJob(t, d.dispatcher, j, m)
 
-	req := &articleRequest{jobID: j.ID(), messageID: "hangup@h"}
+	req := &articleRequest{job: j, messageID: "hangup@h"}
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 	if body, ok := d.fetchArticle(cancelledCtx, srv, 0, mc, req, "worker1"); ok || body != nil {
@@ -1663,8 +1663,8 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 
-	req1 := &articleRequest{jobID: j.ID(), artIdx: 1, messageID: "hangup1@h"}
-	req2 := &articleRequest{jobID: j.ID(), artIdx: 2, messageID: "hangup2@h"}
+	req1 := &articleRequest{job: j, artIdx: 1, messageID: "hangup1@h"}
+	req2 := &articleRequest{job: j, artIdx: 2, messageID: "hangup2@h"}
 
 	started := make(chan struct{}, 2)
 	var wg sync.WaitGroup
@@ -1751,8 +1751,8 @@ func TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle(t *testi
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 
-	req1 := &articleRequest{jobID: j2.ID(), artIdx: 1, messageID: "hangup1@h"}
-	req2 := &articleRequest{jobID: j2.ID(), artIdx: 2, messageID: "hangup2@h"}
+	req1 := &articleRequest{job: j2, artIdx: 1, messageID: "hangup1@h"}
+	req2 := &articleRequest{job: j2, artIdx: 2, messageID: "hangup2@h"}
 
 	started := make(chan struct{}, 2)
 	var wg sync.WaitGroup
@@ -2178,7 +2178,7 @@ func TestEmitResult_DeliversTheOutcomeToCompletions(t *testing.T) {
 
 	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
 	req := &articleRequest{
-		jobID: "j1", fileIdx: 3, artIdx: 7,
+		job: bareJob("j1"), fileIdx: 3, artIdx: 7,
 		messageID: "a@h", subject: "movie.bin",
 	}
 	data := []byte("decoded")
@@ -2187,7 +2187,7 @@ func TestEmitResult_DeliversTheOutcomeToCompletions(t *testing.T) {
 
 	select {
 	case res := <-d.completions:
-		if res.JobID != "j1" || res.FileIdx != 3 || res.ArtIdx != 7 ||
+		if res.JobID() != "j1" || res.FileIdx != 3 || res.ArtIdx != 7 ||
 			res.MessageID != "a@h" || res.Subject != "movie.bin" {
 			t.Errorf("result identity = %+v, want the request's", res)
 		}
@@ -2214,7 +2214,7 @@ func TestEmitResult_CarriesTheFailureRatherThanDroppingIt(t *testing.T) {
 	t.Parallel()
 
 	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
-	req := &articleRequest{jobID: "j1", messageID: "a@h"}
+	req := &articleRequest{job: bareJob("j1"), messageID: "a@h"}
 
 	d.emitResult(t.Context(), req, "s1", nil, 0, 0, ErrNoServersLeft)
 
@@ -2248,7 +2248,7 @@ func TestEmitResult_ReturnsWhenTheContextIsDoneRatherThanBlocking(t *testing.T) 
 
 	done := make(chan struct{})
 	go func() {
-		d.emitResult(ctx, &articleRequest{messageID: "a@h"}, "s1", nil, 0, 0, nil)
+		d.emitResult(ctx, &articleRequest{job: bareJob("j1"), messageID: "a@h"}, "s1", nil, 0, 0, nil)
 		close(done)
 	}()
 	select {

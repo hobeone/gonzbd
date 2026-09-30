@@ -165,7 +165,7 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 
 	// Push article completion result
 	fd.completions <- &downloader.ArticleResult{
-		JobID:     j.ID(),
+		Job:       j,
 		MessageID: "msg1@example.com",
 		FileIdx:   0,
 		Subject:   "test.bin",

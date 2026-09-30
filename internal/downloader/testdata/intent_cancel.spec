@@ -20,7 +20,7 @@ file internal/downloader/dispatch.go
 [fetchArticle keeps fetching a cancelled job's in-flight article]
 file internal/downloader/dispatch.go
 --- anchor
-	if j, ok := d.dispatcher.Job(req.jobID); !ok || j.Intent() != job.IntentRun {
+	if _, ok := d.dispatcher.Job(req.jobID()); !ok || req.job.Intent() != job.IntentRun {
 --- replace
-	if j, ok := d.dispatcher.Job(req.jobID); ok && j.Intent() == job.IntentPause {
+	if _, ok := d.dispatcher.Job(req.jobID()); ok && req.job.Intent() == job.IntentPause {
 --- end
