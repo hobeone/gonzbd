@@ -23,9 +23,9 @@ file internal/app/app.go
 [finalize skips the reclaim]
 file internal/app/job_finalizer.go
 --- anchor
-			app.reclaim(delCtx, ppJob.Job.ID())
+		app.reclaim(delCtx, ppJob.Job.ID())
 --- replace
-			_ = delCtx
+		_ = delCtx
 --- end
 
 [startup reconciliation skips the reclaim]

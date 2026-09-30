@@ -12,17 +12,17 @@ run TestPersistAndCommit_RefusesARetryWhileItCommits$|TestRetryHistoryJob_Refuse
 [the finalizer never records its ID]
 file internal/app/job_finalizer.go
 --- anchor
-		defer app.transitions.beginFinalize(ppJob.Job.ID())()
+	defer app.transitions.beginFinalize(ppJob.Job.ID())()
 --- replace
-		defer func() {}()
+	defer func() {}()
 --- end
 
 [the finalizer never ends its record]
 file internal/app/job_finalizer.go
 --- anchor
-		defer app.transitions.beginFinalize(ppJob.Job.ID())()
+	defer app.transitions.beginFinalize(ppJob.Job.ID())()
 --- replace
-		app.transitions.beginFinalize(ppJob.Job.ID())
+	app.transitions.beginFinalize(ppJob.Job.ID())
 --- end
 
 [tryAcquire claims an ID a finalizer is committing]
