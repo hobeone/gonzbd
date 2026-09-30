@@ -290,6 +290,11 @@ type Application struct {
 	// checkpointHook.
 	retryClaimedHook func(id string)
 
+	// retryRegisteringHook, when non-nil, runs in retryHistoryJob after its
+	// last finalizing check and before dispatcher.Add registers the rebuilt
+	// job. Same discipline as checkpointHook.
+	retryRegisteringHook func(id string)
+
 	// startedTransitionHook, when non-nil, runs in Start right after started
 	// flips true. Same discipline as checkpointHook.
 	startedTransitionHook func()
@@ -981,9 +986,13 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// is a request no one else carries — so the removal continues rather than
 	// reporting, and the rule decides the rows either way.
 	if rmErr != nil && !errors.Is(rmErr, dispatch.ErrNotFound) {
-		// The job stays registered, so a finalizer of it must not read this
-		// mark as a removal, and its checkpoints must be written again.
-		app.transitions.unmarkRemoved(j)
+		// The job stays registered and cancelled, so its checkpoints must be
+		// written again. The mark stays: a hand-over of this instance is
+		// refused (beginHandOver) and a finalizer of it files nothing and
+		// takes none of its by-ID steps (persistAndCommit), so no teardown of
+		// this instance can act on a retry registered under the ID once the
+		// tick has evicted it. The cost is that this instance is never filed
+		// in history. A later RemoveJob of it proceeds as this one would have.
 		if app.checkpointer != nil {
 			app.checkpointer.Unprune(j)
 		}
@@ -2533,8 +2542,10 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 // changing any state, a job whose _FAILED_ download directory cannot be moved
 // back to the path the retry writes to (errRetryDirConflict; see
 // restoreFailedDir). A finalizer of the ID that starts after the claim is
-// checked for after the registration check, before any state changes, and
-// again before registering the job (errJobInTransition; see jobTransitions).
+// checked for once, after the registration check and before any state
+// changes (errJobInTransition). One starting later is of an instance a
+// RemoveJob marked removed, and persistAndCommit refuses to file it under the
+// ID on its own (see jobTransitions).
 //
 // The history entry is deleted on success.
 func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
@@ -2753,12 +2764,8 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, prepa
 		}
 	}
 
-	// Checked again before registering. A finalizer can begin after the
-	// check above for an instance a failed RemoveJob gave back and the tick
-	// then evicted; its fallback teardown acts on the ID, so a retry
-	// registered under it would be both queued and filed (jobTransitions).
-	if app.transitions.isFinalizing(jobID) {
-		return fmt.Errorf("app: retry %s: a finalizer is committing it: %w", jobID, errJobInTransition)
+	if app.retryRegisteringHook != nil {
+		app.retryRegisteringHook(jobID)
 	}
 	if app.dispatcher != nil {
 		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)

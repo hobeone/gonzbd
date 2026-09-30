@@ -79,10 +79,12 @@ single worker goroutine (`run`).
   returns only once that wait has ended, so nothing `RemoveJob` deletes is
   still being written. It likewise waits for a hand-over already past the
   check, so the `Cancel` it makes afterwards finds that job queued or
-  running. A `RemoveJob` whose `dispatcher.Remove` fails withdraws its mark,
-  and a hand-over that begins after that is not refused; its job reaches
-  post-processing with the DirectUnpack the withdraw aborted, whose sets are
-  recorded as failed.
+  running. A `RemoveJob` whose `dispatcher.Remove` fails keeps its mark, so
+  every later hand-over of that instance is refused too, and a finalizer of
+  it files nothing: the job is not filed in history, and the finalizer's own
+  dispatcher removal is among the steps it skips. A later `RemoveJob` of the
+  instance proceeds as the failed one would have
+  (`TestFinalize_SkipsAJobWhoseRemovalFailed`).
 - **An admitted job is not downloaded**: `maybeFinalize` moves no persisted
   position, so a job it hands over from `Fetching` — `Fail`, the hopeless
   callbacks — keeps a dispatchable row (`IntentRun`, at `Fetching`) until the

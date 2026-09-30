@@ -274,11 +274,12 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	} else {
 		defer claim.release()
 	}
-	// A RemoveJob took this instance and has not given it back, and is
-	// tearing down or has torn down what this would commit. Only its mark
-	// says so: a job merely gone from the dispatcher may be a never-run
-	// job the tick evicted after the Cancel above, and that one is still
-	// filed, through OccupyJob's fallback below.
+	// A RemoveJob took this instance. Its teardown owns what this would
+	// commit, and if its dispatcher.Remove failed the instance is filed
+	// nowhere and none of the by-ID steps below run for it. Only the mark
+	// says so: a job merely gone from the dispatcher may be a never-run job
+	// the tick evicted after the Cancel above, and that one is still filed,
+	// through OccupyJob's fallback below.
 	if app.transitions.wasRemoved(ppJob.Job) {
 		log.Info("finalize: the job was removed while this waited for it; not filing it",
 			"job", ppJob.Job.ID())
@@ -334,8 +335,9 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 		// nothing to remove, retry or mark. The by-ID steps from here on, the
 		// operational error, reclaim and forgetJobBarrierState, act on this
 		// job's ID. The finalizing record beginFinalize set refuses a retry
-		// that would register under it at the points jobTransitions lists;
-		// the interleavings it does not cover are stated there (#682).
+		// that would register under it at the points jobTransitions lists,
+		// and jobTransitions says why no retry can be registering under it
+		// once those checks have passed.
 		if app.dispatcher != nil {
 			jobID := ppJob.Job.ID()
 			removeCtx, removeCancel := context.WithTimeout(occupyCtx, 3*time.Second)
@@ -388,11 +390,12 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	// FetchOptions.JobID it sets, and takes the transition lock;
 	// AddJob's jobs are built by BuildIngestJob, which mints a newJobID when
 	// no JobID is set. So while this holds the lock the answer cannot change
-	// underneath. Without it, retryHistoryJob's checks of the finalizing
-	// record this function set at its start refuse a retry at the points
-	// jobTransitions lists; a retry that passed its last check before that
-	// record began can still register during the fallback (#682), and
-	// dispatcher.RemoveJob is what leaves such a retry registered.
+	// underneath. Without it, retryHistoryJob's check of the finalizing
+	// record this function set at its start refuses a retry at the point
+	// jobTransitions lists. A retry that passed that check before the record
+	// began found no instance under the ID, so a RemoveJob marked this one
+	// (jobTransitions says why), and this function has already returned at
+	// the wasRemoved check above.
 	if app.dispatcher != nil {
 		var runErr error
 		if err := app.dispatcher.OccupyJob(finalCtx, ppJob.Job, func(occupyCtx context.Context) {

@@ -339,17 +339,20 @@ finalization, queue removal or history change of a job at a time, except that
 a finalizer proceeds without it after a bounded wait, or at once when the
 application is stopping. Even then a retry of the job is refused for as long
 as the finalizer commits: it records the job's ID for its whole run, and
-`RetryHistoryJob` refuses a recorded ID when it claims the lock, again once it
-has found no instance registered under the ID and before it changes anything,
-and again before it registers the job. So a retry is refused while a finalizer
-of its ID commits at any of those points, and a refused retry leaves the state
-the finalizer is filing untouched
-(`TestPersistAndCommit_RefusesARetryWhileItCommits`,
-`TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState`,
-`TestRetryHistoryJob_RefusedByAFinalizerOfAGivenBackRemoval`). A finalizer
-that begins and ends between the last two checks, or begins after the last,
-is not seen; the `jobTransitions` doc says how one can arise, and #682 tracks
-it.
+`RetryHistoryJob` refuses a recorded ID when it claims the lock, and again
+once it has found no instance registered under the ID and before it changes
+anything. So a retry is refused while a finalizer of its ID commits at either
+of those points, and a refused retry leaves the state the finalizer is filing
+untouched (`TestPersistAndCommit_RefusesARetryWhileItCommits`,
+`TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState`). A
+finalizer that begins after the second of those checks is a finalizer of an
+instance a `RemoveJob` marked removed: `RemoveJob` keeps that mark on its
+instance even when its `dispatcher.Remove` fails, and the finalizer returns
+`errFinalizedJobRemoved` before any step that acts on the ID, so the retry
+needs no later check of its own to stay clear of it. The `jobTransitions` doc
+carries the argument
+(`TestRetryHistoryJob_AFinalizerBetweenItsChecksLeavesItsState`,
+`TestRetryHistoryJob_AFinalizerAfterItsLastCheckLeavesItsState`).
 A holder may
 wait inside the dispatcher: `Dispatcher.Remove` waits on the job's launch
 claim. So nothing may wait for that lock while holding something the
