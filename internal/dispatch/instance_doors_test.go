@@ -98,6 +98,27 @@ func TestInstanceBoundHelpers_ExpectedSelectsTheInstance(t *testing.T) {
 					t.Errorf("occupyFor ran = %v, err = %v; want ran %v", ran, err, tc.want)
 				}
 			})
+			t.Run("rowFor", func(t *testing.T) {
+				d := newTestDispatcher(t)
+				j1, j2 := laterInstance(t, d)
+				if _, ok := d.rowFor("j1", tc.expected(j1, j2)); ok != tc.want {
+					t.Errorf("rowFor ok = %v, want %v", ok, tc.want)
+				}
+			})
+			t.Run("finishedFor", func(t *testing.T) {
+				d := newTestDispatcher(t)
+				j1, j2 := laterInstance(t, d)
+				if err := j2.BeginAttempt(time.Now()); err != nil {
+					t.Fatalf("BeginAttempt(j2): %v", err)
+				}
+				err := d.finishedFor("j1", tc.expected(j1, j2), job.OutcomeFailed)
+				if (err == nil) != tc.want {
+					t.Errorf("finishedFor err = %v, want success %v", err, tc.want)
+				}
+				if settled := j2.Snapshot().State.Outcome.IsSettled(); settled != tc.want {
+					t.Errorf("registered instance settled = %v after finishedFor, want %v", settled, tc.want)
+				}
+			})
 			t.Run("removeFor", func(t *testing.T) {
 				d := newTestDispatcher(t)
 				j1, j2 := laterInstance(t, d)
