@@ -57,7 +57,7 @@ func TestJobTransitions_LockSites(t *testing.T) {
 		"app.go:PruneHistory",
 		"app.go:RemoveHistoryJob",
 		"app.go:RemoveJob",
-		"app.go:RetryHistoryJob",
+		"app.go:retryHistoryJob",
 		"job_finalizer.go:persistAndCommit",
 	}
 	if sites := productionCallers(t, "acquire", "tryAcquire"); !slices.Equal(sites, want) {

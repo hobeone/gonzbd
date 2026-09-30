@@ -500,7 +500,9 @@ stays `Damaged` and `repair` runs with whatever volumes are on disk, unless
 quickcheck defers its par2 set as a Layout B set (whose conditions and limits
 `docs/post-processing-contract.md` § Core Pipeline Invariants lists). Then
 `repair` skips the set, and `extracted_repair` runs par2 against the
-extracted files after `unpack`, with whatever volumes are on disk.
+extracted files after `unpack`, with whatever volumes are on disk. Either
+failing with the volumes still held has the finalizer retry the job with
+them released (`docs/post-processing-contract.md` § "On-Demand Par2: Fetch Policy and Verdict").
 
 **The predicate has three conditions: one row, at offset 0, covering every
 article of the file.** All three, and each closes a shape the others do not.

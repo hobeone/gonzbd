@@ -78,8 +78,9 @@ file internal/app/app.go
 
 # A verdict that moves the policy without marking the job is undone by the next
 # eviction, because restoreJobFiles re-applies the row unconditionally. The two
-# call sites are mutated separately: they sit in different switch arms, and one
-# being pinned says nothing about the other.
+# call sites are mutated separately: the clean verdict's sits in its switch arm
+# and the repair verdict's in releaseRecoveryVolumes, and one being pinned says
+# nothing about the other.
 #
 # The verdict call is left in place and only the mark removed, which is exactly
 # the pre-fix state -- the policy moves in memory and nothing records it.
@@ -95,10 +96,10 @@ file internal/app/app.go
 [the repair verdict does not mark the job for checkpointing]
 file internal/app/app.go
 --- anchor
-		app.markFetchPolicyDirty(j)
-		app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
+	app.markFetchPolicyDirty(j)
+	return len(idxs), nil
 --- replace
-		app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
+	return len(idxs), nil
 --- end
 
 # The ingest path's instance, and the unconditional one: seedJobFiles wrote a

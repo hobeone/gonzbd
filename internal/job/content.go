@@ -804,13 +804,15 @@ func (j *Job) ClearEmittedForReload(skipEmitted bool) (cleared, retained []int32
 //
 // A file is left Complete only if every one of its articles is still done once
 // the failed ones are reset. ForEachUnfinishedArticle skips a Complete file and
-// IsComplete trusts the flag, and app.RetryHistoryJob restores it from the
+// IsComplete trusts the flag, and app.retryHistoryJob restores it from the
 // retained history row: a file an earlier attempt finalized short arrives
 // Complete while the articles that attempt could not fetch are not done.
 //
 // It clears the progress-tier par2 state but not the Job-level restored*
 // fields, and the branch that makes that safe is that a retried job is always a
-// fresh object: the only production caller is app.RetryHistoryJob, which
+// fresh object: the only production caller is app.retryHistoryJob
+// (`git grep -n '[j]\.ResetForRetry()' -- '*.go' ':!*_test.go'` returns 1 line),
+// the body of RetryHistoryJob and of the finalizer's automatic retry, which
 // rebuilds the job through BuildIngestJob's job.New + AttachContent rather than
 // reusing the restored one, so restored* is already zero. A caller that
 // retried a restored, never-hydrated job in place would return early here on
