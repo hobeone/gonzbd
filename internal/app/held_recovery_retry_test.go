@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -258,6 +261,69 @@ func TestRetryHistoryJob_PrepareErrorAbortsTheRetry(t *testing.T) {
 	}
 	if _, err := repo.Get(t.Context(), id); err != nil {
 		t.Errorf("a retry whose prepare failed deleted the Failed entry: %v", err)
+	}
+}
+
+// A retry that releases its held volumes, which marks the job in the
+// checkpointer, and then aborts leaves nothing marked, so no later flush
+// writes the aborted attempt's rows over a later retry's. Two aborts: the
+// queue manifest cannot be written, and a step after the release fails.
+func TestRetryHistoryJob_AbortedAfterTheReleaseLeavesNothingMarked(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name             string
+		blockManifest    bool
+		failAfterRelease bool
+	}{
+		{"manifest unwritable", true, false},
+		{"a step after the release fails", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			application, repo, adminDir := newLifecycleTestApp(t)
+			if application.checkpointer == nil {
+				t.Fatal("fixture guard: no checkpointer, so nothing could be marked")
+			}
+			const id = "feedface0651a00b"
+			backup := id + ".nzb.gz"
+			writeRetryNZBBackup(t, adminDir, backup, heldRecoveryNZB())
+			if err := repo.Add(t.Context(), history.Entry{
+				NzoID: id, Name: "held-" + id, NzbName: id + ".nzb",
+				NZBBackup: backup, Category: "*", Status: "Failed", Completed: time.Now(),
+			}, nil); err != nil {
+				t.Fatalf("repo.Add: %v", err)
+			}
+			if tc.blockManifest {
+				mdir := manifestDir(adminDir)
+				if err := os.MkdirAll(filepath.Dir(mdir), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(mdir, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			released := 0
+			err := application.retryHistoryJob(t.Context(), id, func(j *job.Job) error {
+				n, err := application.releaseRecoveryVolumes(j, "test")
+				released = n
+				if err == nil && tc.failAfterRelease {
+					err = errors.New("a later step failed")
+				}
+				return err
+			})
+
+			if err == nil {
+				t.Fatal("fixture guard: the retry succeeded")
+			}
+			if tc.failAfterRelease && released == 0 {
+				t.Fatal("fixture guard: nothing was released, so nothing was marked")
+			}
+			if n := application.checkpointer.DirtyCount(); n != 0 {
+				t.Errorf("DirtyCount = %d after a retry that aborted (released %d volume(s)), want 0: "+
+					"a later flush would write the aborted job's rows", n, released)
+			}
+		})
 	}
 }
 

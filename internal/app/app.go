@@ -2624,14 +2624,6 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, prepa
 		}
 	}
 	j.ResetForRetry()
-	// After ResetForRetry, which clears the par2 release reason, and before
-	// seedJobFiles and the flush below, which persist the fetch policy the
-	// prepare may change.
-	if prepare != nil {
-		if err := prepare(j); err != nil {
-			return fmt.Errorf("app: retry %s: prepare the rebuilt job: %w", jobID, err)
-		}
-	}
 	if app.barrier != nil {
 		app.barrier.ForgetJob(jobID)
 	}
@@ -2650,10 +2642,10 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, prepa
 		return fmt.Errorf("app: retry %s: %w", jobID, err)
 	}
 	// Armed once the manifest is on disk, so every return between here and the
-	// admission below takes it with it: seedJobFiles and checkpointer.FlushJob
-	// return in this span as well as dispatcher.Add, and a retry that never
-	// entered the queue would otherwise leave a manifest no queued job owns
-	// until the next start's sweep.
+	// admission below takes it with it: the prepare, seedJobFiles and
+	// checkpointer.FlushJob return in this span as well as dispatcher.Add, and
+	// a retry that never entered the queue would otherwise leave a manifest no
+	// queued job owns until the next start's sweep.
 	//
 	// Unconditional because the write above always produces a file here: j was
 	// rebuilt by BuildIngestJob, which attaches its manifest or fails, and
@@ -2681,6 +2673,16 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, prepa
 		defer delCancel()
 		app.reclaim(delCtx, jobID)
 	}()
+
+	// Inside the defer's scope, because a prepare may mark j in the
+	// checkpointer (releaseRecoveryVolumes does), and an abort must prune that
+	// mark. Before seedJobFiles and the flush below, which persist the fetch
+	// policy a prepare may change.
+	if prepare != nil {
+		if err := prepare(j); err != nil {
+			return fmt.Errorf("app: retry %s: prepare the rebuilt job: %w", jobID, err)
+		}
+	}
 
 	// Seed any job_files rows this attempt is missing, then flush the
 	// checkpointer synchronously, both immediately before dispatcher.Add and
