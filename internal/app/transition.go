@@ -44,8 +44,9 @@ import (
 // after the early check and take its fallback teardown by ID. The check
 // before registering refuses the retry while such a finalizer commits
 // (TestRetryHistoryJob_RefusedByAFinalizerOfAGivenBackRemoval). Neither check
-// sees one that begins and ends between them, whose by-ID steps can act on
-// what the retry has written so far (#682). A retry is the one way a
+// sees such a finalizer if it begins and ends between them, or begins after
+// the retry's last check; its by-ID steps can then act on what the retry has
+// written, or on the instance it registers (#682). A retry is the one way a
 // later instance takes an ID
 // (`git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
 // finds 2 lines: retryHistoryJob's reuses an ID, and AddJob's mints one), so
