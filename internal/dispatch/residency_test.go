@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -338,5 +340,136 @@ func TestResidency_HydrationFailureSettleError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "and settle failed") {
 		t.Errorf("error = %q; should not report settle failure when settle succeeded", err)
+	}
+}
+
+// removeDuringHydrate drives a Remove that begins inside reconcileResidency's
+// Hydrate for j1 and is still outstanding when that Hydrate returns: the hook
+// starts Remove on its own goroutine and returns only once Remove is inside
+// store.Delete, which it holds open until reconcileResidency has returned.
+// delErr is what that Delete then returns.
+//
+// It returns Remove's result, read after the delete has been released.
+func removeDuringHydrate(t *testing.T, delErr error) (*Dispatcher, *fakeResidency, *fakeStore, error) {
+	t.Helper()
+	fs := &fakeStore{}
+	res := &fakeResidency{}
+	deleteStarted := make(chan struct{})
+	release := make(chan struct{})
+	hs := &hookStore{
+		Store: fs,
+		beforeDelete: func(string) {
+			close(deleteStarted)
+			<-release
+		},
+	}
+	d := newTestDispatcher(t, withResidency(res), withStore(hs))
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.tick(context.Background()) // opens the attempt; no lease yet
+
+	removed := make(chan error, 1)
+	var once sync.Once
+	res.onHydrate = func(string) {
+		once.Do(func() {
+			go func() { removed <- d.Remove(context.Background(), "j1") }()
+			select {
+			case <-deleteStarted:
+			case <-time.After(5 * time.Second):
+				t.Error("timed out waiting for Remove to reach store.Delete")
+			}
+		})
+	}
+	fs.mu.Lock()
+	fs.delErr = delErr
+	fs.mu.Unlock()
+
+	// The grant and the reconcile a tick would make, taken as separate steps:
+	// the rest of a tick, persistIfChanged, waits on the storeMu the held
+	// Delete owns.
+	if err := d.q.Advance(j); err != nil {
+		t.Fatalf("Advance (grant): %v", err)
+	}
+	if err := d.reconcileResidency(context.Background(), j); err != nil {
+		t.Fatalf("reconcileResidency: %v", err)
+	}
+	if !res.resident("j1") {
+		t.Fatal("setup: the racing Hydrate did not load the manifest")
+	}
+
+	close(release)
+	select {
+	case err := <-removed:
+		return d, res, fs, err
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for Remove to return")
+	}
+	return nil, nil, nil, nil
+}
+
+// TestResidency_AbortedRemoveDuringHydrateIsEvictedByTheNextTick pins that a
+// hydration completing while a removal is outstanding is recorded, so that
+// when the removal aborts the tick's own eviction branch reclaims the
+// manifest. Unrecorded, the job reads as not resident, the tick evicts only a
+// resident job, and the manifest stays in memory until a restart.
+func TestResidency_AbortedRemoveDuringHydrateIsEvictedByTheNextTick(t *testing.T) {
+	d, res, _, err := removeDuringHydrate(t, errors.New("store delete failed"))
+	if err == nil {
+		t.Fatal("setup: Remove succeeded, want the store failure to abort it")
+	}
+	if _, ok := d.Job("j1"); !ok {
+		t.Fatal("setup: an aborted Remove must leave the job registered")
+	}
+	if !d.isResident("j1") {
+		t.Error("isResident(j1) = false after a Hydrate that completed during a removal — " +
+			"the manifest is loaded, and an unrecorded load is one no tick will evict")
+	}
+
+	d.tick(context.Background())
+
+	if res.resident("j1") {
+		t.Error("manifest still loaded one tick after the aborted Remove — the job holds " +
+			"nothing, so the tick's eviction branch must reclaim what the racing Hydrate loaded")
+	}
+	if d.isResident("j1") {
+		t.Error("isResident(j1) = true after the tick evicted the manifest")
+	}
+}
+
+// TestResidency_SuccessfulRemoveDuringHydrateLeavesNothingResident is the
+// other outcome of the same race: when the removal succeeds, its own Evict
+// and deregister must leave neither a manifest nor a residency record, even
+// though the racing Hydrate's load was recorded while the removal was
+// outstanding.
+func TestResidency_SuccessfulRemoveDuringHydrateLeavesNothingResident(t *testing.T) {
+	d, res, fs, err := removeDuringHydrate(t, nil)
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if !fs.deleted("j1") {
+		t.Fatal("setup: the store row was not deleted")
+	}
+	if _, ok := d.Job("j1"); ok {
+		t.Fatal("setup: a successful Remove must deregister the job")
+	}
+	if res.resident("j1") {
+		t.Error("manifest still loaded after a successful Remove — Remove's own Evict must take it")
+	}
+	d.mu.Lock()
+	_, recorded := d.resident["j1"]
+	d.mu.Unlock()
+	if recorded {
+		t.Error("d.resident still holds j1 after a successful Remove — a reused ID would " +
+			"read as already resident and never hydrate")
 	}
 }

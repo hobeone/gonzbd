@@ -303,10 +303,21 @@ func (d *Dispatcher) isResident(id string) bool {
 	return d.resident[id]
 }
 
+// markResident gates on registration alone, NOT on admitsLocked: it records a
+// load that has already happened, so an outstanding removal must not suppress
+// it. A removal that succeeds takes the manifest with its own Evict and the
+// record with deregister; one that aborts leaves the job registered, resident
+// and holding nothing, which is the case reconcileResidency's eviction branch
+// reclaims. Unrecorded, that branch never fires for the job, because it
+// evicts only what isResident reports.
+//
+// The registration check stays for the reason deregister's doc gives for
+// pruning d.resident: an entry for an unregistered id makes a reused ID read
+// as already resident, so it never hydrates.
 func (d *Dispatcher) markResident(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.admitsLocked(id) {
+	if d.byID[id] == nil {
 		return
 	}
 	d.resident[id] = true

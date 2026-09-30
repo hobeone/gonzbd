@@ -715,7 +715,7 @@ func (h *hookStore) Delete(ctx context.Context, id string) error {
 	return h.Store.Delete(ctx, id)
 }
 
-func TestRemovingState_SuppressesPersistAndResidency(t *testing.T) {
+func TestRemovingState_SuppressesPersistAndLaunch(t *testing.T) {
 	fs := &fakeStore{}
 	d := newTestDispatcher(t, withStore(fs))
 
@@ -740,10 +740,14 @@ func TestRemovingState_SuppressesPersistAndResidency(t *testing.T) {
 		t.Fatal("persistIfChanged updated d.written while job was marked removing")
 	}
 
-	// markResident must not set resident while removing.
+	// markResident DOES record a registered job that is marked removing: it
+	// records a manifest already loaded, and an aborted removal leaves that
+	// manifest for the tick's eviction branch, which acts only on a recorded
+	// load. TestResidency_AbortedRemoveDuringHydrateIsEvictedByTheNextTick
+	// pins the consequence.
 	d.markResident("j1")
-	if d.isResident("j1") {
-		t.Fatal("markResident set resident while job was marked removing")
+	if !d.isResident("j1") {
+		t.Fatal("markResident refused a registered job because a removal was outstanding")
 	}
 
 	// markWritten DOES record a registered job that is marked removing, and
