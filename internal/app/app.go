@@ -2333,7 +2333,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 		admittedFailMsg, handOver, ok := app.postProcAdmissions.beginHandOver(j, &app.transitions)
 		if !ok {
 			// A RemoveJob took the job. It is handed back as a job the
-			// post-processor's Cancel took would be: jobFinalizer.cancelled
+			// post-processor's CancelJob took would be: jobFinalizer.cancelled
 			// releases its launch claim, which dispatcher.Remove waits on, and
 			// ends the admission. RemoveJob's own dispatcher cancel does not
 			// release the claim at Extracting or Finalizing, where it does not

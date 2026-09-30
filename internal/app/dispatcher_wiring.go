@@ -44,7 +44,7 @@ type appWorkers struct {
 // running stage stops only once it next checks its context, and the launch
 // claim is what holds RemoveJob back from the job's files. The claim is
 // released instead once the post-processor lets the job go:
-// jobFinalizer.cancelled (OnJobCancelled) for a job its Cancel took,
+// jobFinalizer.cancelled (OnJobCancelled) for a job its CancelJob took,
 // persistAndCommit (OnJobDone) for one it finished, and, for one a stop
 // dropped, Shutdown's yield of every Repairing, Extracting or Finalizing
 // row. Shutdown yields only when PostProcessor.Stop returned within its step
@@ -54,7 +54,7 @@ type appWorkers struct {
 //
 // pp.HasJob takes q.mu and busyMu, and no span of either calls out of
 // internal/postproc, so it keeps the lock rule sched.Workers places on Abort.
-// `git grep -n 'q\.mu\.Lock()\|busyMu\.Lock()' -- internal/postproc/postproc.go internal/postproc/queue.go internal/postproc/has.go`
+// `git grep -n 'q\.mu\.Lock()\|busyMu\.Lock()' -- internal/postproc/postproc.go internal/postproc/queue.go internal/postproc/has.go internal/postproc/cancel.go`
 // returns 13 lines, the spans that claim covers.
 func (w *appWorkers) Abort(j *job.Job) {
 	if w.app == nil || j == nil {
