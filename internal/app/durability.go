@@ -997,14 +997,15 @@ var ErrNotFinalized = errors.New("app: completed file was not finalized")
 //
 // nil means the file's bytes on disk are as correct as this process can make
 // them: either it was finalized, or there was legitimately nothing to finalize
-// (the assembler has stopped, or the job has left the queue — both ordinary,
-// and in both cases nothing downstream will act on the file either).
+// (the job has left the queue, so nothing downstream will act on the file
+// either, or another path closed the file first).
 //
-// A job still in the queue whose manifest is not resident is NOT one of those.
-// No barrier can run over it, so the file is untrimmed, and the job can be
-// resident again by the time anything delivers the completion. That return is
-// ErrNotFinalized wrapping job.ErrNotResident, with the handle kept for the
-// retry.
+// A job still in the queue whose file no barrier can trim is NOT one of those:
+// one whose manifest is not resident, and one whose completion arrives after
+// the assembler stopped. The worker's exit drain flushes and closes the file
+// without trimming it, and a resident job's MarkFileComplete would accept it.
+// withholdUntrimmed answers both with ErrNotFinalized, wrapping
+// job.ErrNotResident or assembler.ErrAssemblerStopped.
 //
 // ErrNotFinalized means the opposite of nil, and the caller MUST NOT treat the
 // file as complete. It used to return nothing at all, and the caller proceeded
@@ -1117,21 +1118,9 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 	if tgt == nil {
 		// A job still in the queue has lost its manifest but not its place,
 		// and can be resident again before anything delivers this completion.
-		// No barrier ran, so the file is untrimmed and its last drain
-		// uncommitted: the completion must wait for a retry that runs one.
-		// Returned as an error so the deferred close keeps the handle that
-		// retry needs, and so handleFileComplete records the file pending
-		// rather than finalized.
-		if app.dispatcher != nil {
-			if _, queued := app.dispatcher.Job(jobID); queued {
-				return fmt.Errorf("%w: job %s file %d: no barrier can run over it: %w",
-					ErrNotFinalized, jobID, fileIdx, job.ErrNotResident)
-			}
-		}
-		// A job that has left the queue: completeFinalizedFile refuses its
-		// completion (the dispatcher no longer has the job), and the stall
-		// re-evaluation forgets the note handleFileComplete makes of that.
-		return nil
+		// The error keeps the handle the retry needs.
+		return app.withholdUntrimmed(jobID, fileIdx,
+			fmt.Errorf("no barrier can run over it: %w", job.ErrNotResident))
 	}
 	trunc, ok := tgt.(durability.Truncator)
 	if !ok {
@@ -1151,19 +1140,23 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 
 	// Ask the assembler directly rather than through SyncTarget.Files, which
 	// reports an error as "no files" because the barrier has nothing useful to
-	// do with one. Here the difference decides whether a file ships: a stopped
-	// assembler means there is nothing to finalize, while a timeout means we
-	// do not know, and only one of those may proceed.
+	// do with one. Here the difference decides how a file that cannot ship is
+	// answered: a stopped assembler is the ordinary end of the process, while
+	// a timeout means we do not know whether the file is still open.
 	open, err := app.assembler.OpenFiles(ctx, jobID)
 	switch {
 	case errors.Is(err, assembler.ErrAssemblerStopped):
 		// The ordinary end of every process. watchCompletions drains its
-		// pending completions after the assembler has stopped, so every
-		// completion still in flight arrives here — and each is a file the
-		// assembler already drained, fsynced and closed on its way out.
-		app.log.Debug("completed file arrived after the assembler stopped; nothing to finalize",
-			"job", jobID, "fileidx", fileIdx)
-		return nil
+		// pending completions after the assembler has stopped, so a
+		// completion still in flight for a resident job arrives here. The
+		// worker's exit drain (drainAndCloseAll) flushed, fsynced and closed
+		// the file, but did not trim it, and no barrier can run now.
+		//
+		// syncTargetFor has just found the job in the queue, so a departed
+		// job takes the nil-target return above; withholdUntrimmed answers
+		// nil here only for a removal between that lookup and its own.
+		return app.withholdUntrimmed(jobID, fileIdx,
+			fmt.Errorf("the assembler stopped before it was trimmed: %w", err))
 	case err != nil:
 		return fmt.Errorf("%w: job %s file %d: cannot tell whether it is still open: %w",
 			ErrNotFinalized, jobID, fileIdx, err)
@@ -1201,6 +1194,30 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 	// does not: a stall recovery whose ack found the job non-resident returns
 	// above, and the startup repair never calls this function at all. See that
 	// function for the two paths this placement used to miss.
+	return nil
+}
+
+// withholdUntrimmed answers a completion whose file no barrier could trim: the
+// nil-sync-target return and the stopped-assembler return of
+// finalizeCompletedFile.
+//
+// Dispatcher.Job decides. A job still in the queue gets ErrNotFinalized
+// wrapping why, so the completion is not delivered: MarkFileComplete would
+// accept a resident job's untrimmed file, and the queue save would persist the
+// flag. routeFinalizeFailure records it pending without parking the job, and
+// why says which of its branches answers: job.ErrNotResident, or
+// assembler.ErrAssemblerStopped. A job that has left the queue gets nil:
+// completeFinalizedFile refuses its completion because the dispatcher no
+// longer has the job, and the stall re-evaluation forgets the note
+// handleFileComplete makes of that. Only the nil-target return meets a departed
+// job other than by a race, because the stopped-assembler return follows a
+// syncTargetFor that found the job.
+func (app *Application) withholdUntrimmed(jobID string, fileIdx int, why error) error {
+	if app.dispatcher != nil {
+		if _, queued := app.dispatcher.Job(jobID); queued {
+			return fmt.Errorf("%w: job %s file %d: %w", ErrNotFinalized, jobID, fileIdx, why)
+		}
+	}
 	return nil
 }
 
@@ -1652,6 +1669,18 @@ func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path str
 		app.notePendingFinalize(jobID, fileIdx)
 		return
 	}
+	// A stopped assembler is the end of the process, not a halt. Three lines
+	// stop it — Start's two failure exits and stopWorkers:
+	// `git grep -n 'assembler\.Stop' -- '*.go' ':!*_test.go'` finds 3 lines.
+	// The note dies with the process, and the next start's resume sweep
+	// re-derives the file from its durable runs.
+	if errors.Is(err, assembler.ErrAssemblerStopped) {
+		app.log.Info("completed file was not finalized because the assembler has stopped; "+
+			"the next start re-derives it from its durable runs",
+			"job", jobID, "fileidx", fileIdx, "err", err)
+		app.notePendingFinalize(jobID, fileIdx)
+		return
+	}
 	app.log.Error("completed file was not finalized; the job is halted rather than "+
 		"shipping a file whose bytes are not known to be correct",
 		"job", jobID, "fileidx", fileIdx, "err", err)
@@ -1671,10 +1700,10 @@ func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path str
 		return
 	}
 	// Not a storage condition, so the job is not parked for it: a deliberate
-	// close, a stopped assembler, or a caller that stopped waiting. Parking a
-	// job here named a disk that did not fail and offered an operator action
-	// that does not exist (A1). The finalize is still owed, so it is recorded
-	// for the retry that the next re-evaluation runs.
+	// close, or a caller that stopped waiting (a stopped assembler is answered
+	// above). Parking a job here named a disk that did not fail and offered an
+	// operator action that does not exist (A1). The finalize is still owed, so
+	// it is recorded for the retry that the next re-evaluation runs.
 	if errors.Is(err, durability.ErrTargetUnavailable) {
 		app.log.Info("completed file was not finalized, for a reason that is not a storage "+
 			"condition; the job is not parked and the finalize is retried",
