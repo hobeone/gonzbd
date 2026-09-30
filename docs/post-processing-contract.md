@@ -578,10 +578,16 @@ instance (`postProcAdmissions`) both hold.
   ID another actor holds — leaves the failure as filed: the Failed entry
   stays, the notification is sent, and a warning names the error.
 - **Loop bound**: the retry releases every volume it holds before job_files,
-  which hydration restores the policy from, is seeded; and only ingest
-  assigns `FetchIfNeeded` (`git grep -n 'job\.FetchIfNeeded)' -- '*.go'
-  ':!*_test.go'` returns 1 line, in `internal/app/ingest.go`). So the
-  retried instance does not satisfy
+  which hydration restores the policy from, is seeded; and only ingest sets
+  a volume to `FetchIfNeeded`. The policy field has four writers
+  (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 4
+  lines): the setter, the release, the discard, and construction, which
+  starts every file at `FetchAlways`. The setter's two callers are ingest,
+  passing `FetchIfNeeded`, and hydration
+  (`git grep -nE 'SetFileFetchPolicy\(|RestoreFetchPolicy\(' -- '*.go'
+  ':!*_test.go'` returns 5 lines: those two calls, the two declarations, and
+  the restore delegating to the setter). So the retried instance does not
+  satisfy
   `HasDeferredPar2` and its own failure is final
   (`TestFinalize_RetriedJobIsNotRetriedAgain`). A retry the user starts is
   rebuilt by ingest and holds the volumes again, so it gets one automatic

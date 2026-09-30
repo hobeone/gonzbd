@@ -152,12 +152,17 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // ParError also covers failures the volumes cannot fix, such as a containment
 // violation. Those cost one retry. The retry does not trigger another: it
 // releases every volume its rebuilt job holds before seeding job_files, which
-// hydration restores the policy from, and the one assignment of
-// FetchIfNeeded is ingest's
-// (`git grep -n 'job\.FetchIfNeeded)' -- '*.go' ':!*_test.go'` returns 1
-// line, in ingest.go), so its failure is filed as final. A user's retry of
-// that entry is rebuilt by ingest again, and so gets one automatic retry of
-// its own.
+// hydration restores the policy from, and nothing else sets a volume to
+// FetchIfNeeded. The policy field is written in four places
+// (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 4 lines):
+// the policy setter, the release (to FetchAlways), the discard (to
+// FetchNever), and construction, which starts every file at FetchAlways. The
+// setter is called from ingest, with FetchIfNeeded, and from hydration
+// (`git grep -nE 'SetFileFetchPolicy\(|RestoreFetchPolicy\(' -- '*.go' ':!*_test.go'`
+// returns 5 lines: those two calls, the two declarations, and the restore
+// delegating to the setter). So its failure is filed as final. A user's
+// retry of that entry is rebuilt by ingest again, and so gets one automatic
+// retry of its own.
 func heldVolumesMightRepair(ppJob *postproc.Job) bool {
 	return ppJob.Job != nil && ppJob.ParError && ppJob.Job.HasDeferredPar2()
 }
@@ -357,8 +362,9 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	//
 	// The last must stop the finalizer: filing would put this run in history
 	// under the retry's ID. `git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
-	// finds 2 production registrations. RetryHistoryJob's reuses an ID,
-	// through the FetchOptions.JobID it sets, and takes the transition lock;
+	// finds 2 production registrations. retryHistoryJob's, the body of
+	// RetryHistoryJob and of retryWithHeldVolumes, reuses an ID through the
+	// FetchOptions.JobID it sets, and takes the transition lock;
 	// AddJob's jobs are built by BuildIngestJob, which mints a newJobID when
 	// no JobID is set. So while this holds the lock the answer cannot change
 	// underneath. Without it, a retry can register during the fallback: this

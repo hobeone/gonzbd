@@ -1121,7 +1121,7 @@ func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteF
 // and the history package has no business touching the admin directory. So
 // this is the app-level choke point that every history deletion releasing a
 // backup must route through — the SQL half closes by construction, this half
-// by convention. The one other history delete is RetryHistoryJob's, whose
+// by convention. The one other history delete is retryHistoryJob's, whose
 // requeued job keeps the backup; history.Repository.Delete's doc carries the
 // command that enumerates both.
 //

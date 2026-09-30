@@ -66,8 +66,9 @@ func testHistoryRepo(t *testing.T) *history.Repository {
 // filesystem for sparse support to test one nil check.
 //
 // What this does NOT establish, stated because the obvious reading is wrong:
-// it is not a caller fallback. retryHistoryJob, RetryHistoryJob's body and
-// the only caller, opens with
+// it is not a caller fallback. retryHistoryJob, the only caller
+// (`git grep -n 'historyFileProgress(' -- '*.go' ':!*_test.go'` returns 2
+// lines, the call and the declaration), opens with
 // `app.historyRepo.Get(ctx, jobID)` (app.go) and would panic on a nil repo
 // long before reaching historyFileProgress. The guard is defence inside the
 // helper, unreachable from production today.
