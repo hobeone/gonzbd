@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run Test(Finalize_ParErrorWithHeldVolumesRetriesWithThemReleased|Finalize_RetriedJobIsNotRetriedAgain|Finalize_RetryThatCannotStartLeavesTheFailureVisible|Finalize_RetriesOnlyAParErrorWithHeldVolumes|RetryHistoryJob_PrepareErrorAbortsTheRetry|RetryHistoryJob_AbortedAfterTheReleaseLeavesNothingMarked)$
+run Test(Finalize_ParErrorWithHeldVolumesRetriesWithThemReleased|Finalize_RetriedJobIsNotRetriedAgain|Finalize_RetryThatCannotStartLeavesTheFailureVisible|Finalize_RetriesOnlyAParErrorWithHeldVolumes|RetryHistoryJob_PrepareErrorAbortsTheRetry|RetryHistoryJob_AbortedAfterTheReleaseLeavesNothingMarked|Finalize_HeldVolumesEntryCarriesTheRetryNote)$
 
 # #651: a par2 failure while recovery volumes were held back retries the job
 # with them released. Each clause of the trigger, the release in the retry,
@@ -72,4 +72,14 @@ file internal/app/app.go
 		if admitted {
 --- replace
 		if admitted || prepare != nil {
+--- end
+
+# A retry that cannot start, as at shutdown, leaves the Failed entry, and its
+# note is what tells the user a retry fetches the held volumes.
+[the entry of a job the finalizer retries carries no note]
+file internal/app/job_finalizer.go
+--- anchor
+		extra = append(extra, heldVolumesRetryNote)
+--- replace
+		_ = heldVolumesRetryNote
 --- end

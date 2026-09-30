@@ -576,7 +576,24 @@ instance (`postProcAdmissions`) both hold.
   does.
 - **A retry that cannot start** — no NZB backup, a directory conflict, a job
   ID another actor holds — leaves the failure as filed: the Failed entry
-  stays, the notification is sent, and a warning names the error.
+  stays, the notification is sent, and a warning names the error and says
+  the job can be retried to fetch its recovery volumes. The entry of every
+  job the finalizer retries carries a stage-log warning saying so
+  (`heldVolumesRetryNote`, added through `withFailureNotes` like the
+  admission's notes). A retry that starts deletes the entry and the note
+  with it, so the note is seen only beside a retry that could not start.
+- **Shutdown**: a finalize already running when `Application.Shutdown`
+  starts cannot start its retry. By then the assembler is stopped and
+  `app.ctx` cancelled, so `retryHistoryJob` fails. (A run that finishes
+  after the cancel never reaches the finalizer: the post-processor's worker
+  context derives from `app.ctx`, and it leaves that run for recovery.) This
+  is accepted rather than worked around. The user sees a Failed entry
+  carrying the note. Its failure notification is sent under the same
+  cancelled `app.ctx`, so a sink that honours the context may not deliver
+  it. Retrying the entry heals the job: the retry is rebuilt
+  through `BuildIngestJob`, which holds the volumes back again while
+  `downloads.on_demand_par2` is on (`internal/app/ingest.go:151`), so its
+  par2 failure is retried automatically with them released.
 - **Loop bound**: the retry releases every volume it holds before job_files,
   which hydration restores the policy from, is seeded; and only ingest sets
   a volume to `FetchIfNeeded`. The policy field has four writers

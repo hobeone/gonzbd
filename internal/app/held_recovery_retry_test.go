@@ -242,6 +242,33 @@ func TestFinalize_RetryThatCannotStartLeavesTheFailureVisible(t *testing.T) {
 	}
 }
 
+// The entry filed for a job the finalizer will retry says the recovery volumes
+// were held back and that a retry fetches them. When the automatic retry
+// cannot start (here, no NZB backup; at shutdown, a cancelled context and a
+// stopped assembler), that note is what stands beside the Failed status.
+func TestFinalize_HeldVolumesEntryCarriesTheRetryNote(t *testing.T) {
+	t.Parallel()
+	const id = "feedface0651a00c"
+	h := newHeldRecoveryApp(t, id)
+	run := h.failedPar2Run(h.job)
+	run.NZBBackup = ""
+
+	h.app.finalizer.finalize(run)
+
+	entry, err := h.repo.Get(t.Context(), id)
+	if err != nil {
+		t.Fatalf("history entry: %v", err)
+	}
+	if !strings.Contains(entry.StageLog, heldVolumesRetryNote) {
+		t.Errorf("the Failed entry does not carry the held-volumes note %q; stage log:\n%s",
+			heldVolumesRetryNote, entry.StageLog)
+	}
+	if !strings.Contains(h.logged.String(), "retry it to fetch its recovery volumes") {
+		t.Errorf("the failed start's warning does not say the job can be retried to fetch its volumes:\n%s",
+			h.logged.String())
+	}
+}
+
 // A prepare that fails aborts the retry before it registers anything, and the
 // Failed entry stays for a later retry.
 func TestRetryHistoryJob_PrepareErrorAbortsTheRetry(t *testing.T) {
