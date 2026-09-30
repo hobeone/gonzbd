@@ -212,6 +212,26 @@ func trackOn(d *Downloader, j *job.Job) {
 	d.tracker.Unlock()
 }
 
+// trackTryOnly records server 0 in j's try-list for its article 0, and
+// leaves it with no in-flight entry at all, as an instance settled at
+// Fetching whose one fetch already completed does.
+func trackTryOnly(d *Downloader, j *job.Job) {
+	var mask serverMask
+	mask.set(0)
+	d.tracker.Lock()
+	d.tracker.SetTriedLocked(keyFor(j, 0), mask)
+	d.tracker.Unlock()
+}
+
+// trackInFlightOnly records one fetch in flight for j's article 0, and
+// leaves it with no try-list entry at all, as an instance whose first try is
+// still outstanding does.
+func trackInFlightOnly(d *Downloader, j *job.Job) {
+	d.tracker.Lock()
+	d.tracker.IncrementInFlightLocked(keyFor(j, 0))
+	d.tracker.Unlock()
+}
+
 // TestDownloader_CancelJobReapsTheTracker: a cancel drops the entries of the
 // instance under the cancelled ID, and of every instance no longer registered
 // under its own ID, and keeps those of an instance that is.
@@ -223,29 +243,41 @@ func trackOn(d *Downloader, j *job.Job) {
 //   - "j3": registered, given entries, then removed without an abort. A job
 //     settled at Fetching is removed the same way: sched's Cancel of a
 //     settled job does not call Abort.
+//   - "j4": like j3, but tracked with trackTryOnly, so Instances finds it
+//     only through the try-list loop.
+//   - "j5": like j3, but tracked with trackInFlightOnly, so Instances finds
+//     it only through the in-flight loop.
 func TestDownloader_CancelJobReapsTheTracker(t *testing.T) {
 	disp, req, retry := staleRequest(t)
 	d := New(disp, []*Server{unreachableServer()}, nil, Options{}, slog.New(slog.DiscardHandler))
 	aborted := bareJob("j2")
 	addTestJob(t, disp, aborted, nil)
 	settled := bareJob("j3")
+	tryOnly := bareJob("j4")
+	inFlightOnly := bareJob("j5")
 	// Not ticked, as in staleRequest: a launched instance's removal waits for
 	// a worker this fixture does not run.
-	if err := disp.Add(context.Background(), settled, dispatch.Header{Name: settled.ID()}); err != nil {
-		t.Fatalf("Add(j3): %v", err)
+	for _, j := range []*job.Job{settled, tryOnly, inFlightOnly} {
+		if err := disp.Add(context.Background(), j, dispatch.Header{Name: j.ID()}); err != nil {
+			t.Fatalf("Add(%s): %v", j.ID(), err)
+		}
 	}
 
 	removed := req.job
 	for _, j := range []*job.Job{removed, retry, aborted, settled} {
 		trackOn(d, j)
 	}
+	trackTryOnly(d, tryOnly)
+	trackInFlightOnly(d, inFlightOnly)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := disp.Remove(ctx, settled.ID()); err != nil {
-		t.Fatalf("Remove(j3): %v", err)
+	for _, j := range []*job.Job{settled, tryOnly, inFlightOnly} {
+		if err := disp.Remove(ctx, j.ID()); err != nil {
+			t.Fatalf("Remove(%s): %v", j.ID(), err)
+		}
 	}
-	if tryLen, inLen := d.tracker.Len(); tryLen != 4 || inLen != 4 {
-		t.Fatalf("fixture: try-list=%d in-flight=%d entries, want 4 and 4", tryLen, inLen)
+	if tryLen, inLen := d.tracker.Len(); tryLen != 5 || inLen != 5 {
+		t.Fatalf("fixture: try-list=%d in-flight=%d entries, want 5 and 5", tryLen, inLen)
 	}
 
 	d.CancelJob("j2")
@@ -259,6 +291,8 @@ func TestDownloader_CancelJobReapsTheTracker(t *testing.T) {
 		{"a registered instance not aborted", retry, true},
 		{"a removed instance under a registered ID", removed, false},
 		{"an instance removed without an abort", settled, false},
+		{"an instance found only through the try-list loop", tryOnly, false},
+		{"an instance found only through the in-flight loop", inFlightOnly, false},
 	} {
 		n, _, tried := trackerState(d, c.j, 0)
 		switch {
@@ -267,5 +301,33 @@ func TestDownloader_CancelJobReapsTheTracker(t *testing.T) {
 		case !c.kept && (n != 0 || tried):
 			t.Errorf("%s: in-flight=%d try-list present=%v after CancelJob(j2), want 0 and false", c.name, n, tried)
 		}
+	}
+}
+
+// collectedRef builds an instanceRef for a job instance nothing else refers
+// to once it returns, so the weak pointer it carries is collectible.
+//
+//go:noinline
+func collectedRef(jobID string) instanceRef {
+	j := bareJob(jobID)
+	return instanceRef{jobID: jobID, inst: weak.Make(j)}
+}
+
+// TestDownloader_RegisteredRejectsACollectedUnregisteredInstance pins the
+// `ok &&` conjunct in registered: for an instance whose ID has no entry in
+// the dispatcher, ref.inst.Value() being nil (the instance was collected)
+// must not make it compare equal to the dispatcher's (nil, false) miss.
+func TestDownloader_RegisteredRejectsACollectedUnregisteredInstance(t *testing.T) {
+	d := New(newTestDispatcher(t), []*Server{unreachableServer()}, nil, Options{}, slog.New(slog.DiscardHandler))
+
+	ref := collectedRef("gone")
+	runtime.GC()
+	runtime.GC()
+	if ref.inst.Value() != nil {
+		t.Fatal("fixture: instance still reachable after GC")
+	}
+
+	if d.registered(ref) {
+		t.Error("registered reported a collected, unregistered instance as registered")
 	}
 }

@@ -1,5 +1,5 @@
 pkg ./internal/downloader/
-run TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries|TestTracker_TwoInstancesUnderOneIDAreTrackedSeparately|TestTracker_AnEntryDoesNotKeepItsInstanceReachable|TestDownloader_CancelJobReapsTheTracker
+run TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries|TestTracker_TwoInstancesUnderOneIDAreTrackedSeparately|TestTracker_AnEntryDoesNotKeepItsInstanceReachable|TestDownloader_CancelJobReapsTheTracker|TestDownloader_RegisteredRejectsACollectedUnregisteredInstance
 
 # The tracker keys its entries on the instance a request was dispatched for
 # (#665). The first mutation drops the instance from the key at its one
@@ -10,9 +10,16 @@ run TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries|TestTracke
 # instance's own entries. The eleventh holds the instance strongly, so an entry
 # left behind keeps its job and manifest in memory.
 #
+# The next two make Instances skip one of its two maps, so a stale instance
+# whose only entry is in the skipped map is never offered to the reap.
+# TestDownloader_CancelJobReapsTheTracker's "j4" and "j5" each have an entry
+# in only one map, so each mutation is caught by exactly one of them.
+#
 # The rest neuter the reap CancelJob runs, one condition at a time: the
 # aborted ID's clause, the registration clause, a registration check that
-# answers by ID alone, one that reaps every instance, and each of
+# answers by ID alone, a registration check that answers by instance identity
+# alone (so a collected, unregistered instance's nil instance compares equal
+# to the dispatcher's nil miss), one that reaps every instance, and each of
 # DropInstances's two map sweeps.
 #
 # Every mutation is killed by a test that reads the tracker's state directly.
@@ -147,6 +154,28 @@ func keyFor(j *job.Job, artIdx int32) articleKey {
 }
 --- end
 
+[Instances ignores tryList]
+file internal/downloader/tracker.go
+--- anchor
+	for k := range m.tryList {
+		add(k)
+	}
+--- replace
+	for range m.tryList {
+	}
+--- end
+
+[Instances ignores inFlight]
+file internal/downloader/tracker.go
+--- anchor
+	for k := range m.inFlight {
+		add(k)
+	}
+--- replace
+	for range m.inFlight {
+	}
+--- end
+
 [the reap spares the aborted ID]
 file internal/downloader/downloader.go
 --- anchor
@@ -170,6 +199,15 @@ file internal/downloader/downloader.go
 --- replace
 	_ = cur
 	return ok
+--- end
+
+[registration ignores whether the ID is even registered]
+file internal/downloader/downloader.go
+--- anchor
+	return ok && cur == ref.inst.Value()
+--- replace
+	_ = ok
+	return cur == ref.inst.Value()
 --- end
 
 [the reap takes every instance]

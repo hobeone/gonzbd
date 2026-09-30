@@ -73,7 +73,8 @@ a removed instance has been parked, so the instance `Abort` names is the one
 registered under its ID (`TestCancel_AnInstanceHoldingNoLeaseIsNotAborted`).
 `DropInstances` is the tracker's one deleter of whole instances' entries, and
 the reap is its one caller: `git grep -n 'DropInstances(' -- '*.go' ':!*_test.go'`
-finds the declaration and that call.
+finds 3 lines: the declaration, that call, and the line in `tracker.go` quoting
+the pattern back at itself.
 
 ## State machines
 
