@@ -284,6 +284,52 @@ func TestDeadRunFilterNames_SkipsANonPlainAlternationRunWithoutListingTests(t *t
 	}
 }
 
+func TestFilterMatchesName_UnanchoredSubstringLikeGoTest(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		run, name string
+		want      bool
+	}{
+		{"TestSelected", "TestSelected", true},
+		{"TestSelected", "TestOmitted", false},
+		// go test -run matches unanchored, so a prefix of a declared test's
+		// name still selects it.
+		{"TestSel", "TestSelected", true},
+		{"TestSelected|TestOther", "TestOther", true},
+		{"TestSelected|TestOther", "TestOmitted", false},
+		{"^TestSelected$", "TestSelected", true},
+		{"^TestSelected$", "TestSelectedFoo", false},
+		// name has fewer segments than run: only the levels name actually
+		// has are checked, so a bare top-level failure is still selected by
+		// a deeper `run` line that constrains its first segment the same way.
+		{"TestSelected/subcase", "TestSelected", true},
+		// run has fewer segments than name: a top-level `run` selects every
+		// subtest beneath it.
+		{"TestSelected", "TestSelected/subA", true},
+		// Both have subtest segments: each level is checked against its own
+		// counterpart, so `run` restricting to one subtest does not select a
+		// sibling subtest that also failed.
+		{"TestSelected/subA", "TestSelected/subA", true},
+		{"TestSelected/subA", "TestSelected/subB", false},
+	}
+	for _, tc := range cases {
+		if got := filterMatchesName(tc.run, tc.name); got != tc.want {
+			t.Errorf("filterMatchesName(%q, %q) = %v, want %v", tc.run, tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestFilterMatchesName_InvalidRegexpIsNonSelecting(t *testing.T) {
+	t.Parallel()
+
+	// "(" is not a fragment go test's own flag parsing would have accepted
+	// either; this must report false rather than panicking.
+	if filterMatchesName("Test(", "TestSelected") {
+		t.Error("filterMatchesName with an invalid regexp fragment = true, want false")
+	}
+}
+
 func TestReportRunFilter_NamesTheDeadAlternativeAndReturnsNonZero(t *testing.T) {
 	var code int
 	out := captureStdout(t, func() {

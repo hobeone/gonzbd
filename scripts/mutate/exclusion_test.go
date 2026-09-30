@@ -60,9 +60,28 @@ func mustModule(t *testing.T, body string) string {
 
 const (
 	selectedPasses = "func TestSelected(t *testing.T) {}\n"
+	selectedFails  = "func TestSelected(t *testing.T) { t.Fatal(\"selected and unselected disagree\") }\n"
 	omittedFails   = "func TestOmitted(t *testing.T) { t.Fatal(\"the mutation is caught here\") }\n"
 	omittedPasses  = "func TestOmitted(t *testing.T) {}\n"
 )
+
+func TestClassifyWiderFailure_NoFailBannerReportsExcludedNotFlaky(t *testing.T) {
+	t.Parallel()
+
+	// panicOutput (declared in main_test.go) carries no `--- FAIL:` banner at
+	// all — the package died to a panic rather than a test assertion, so
+	// failingTests(out) is empty. That is what the `len(names) == 0` guard
+	// exists for: without it, the empty `names` slice falls through into the
+	// `flaky` return with nothing in `strings.Join(names, ", ")`, reporting
+	// FLAKY for a test that was never even named.
+	v, ev := classifyWiderFailure("TestSelected", panicOutput)
+	if v != excluded {
+		t.Fatalf("verdict = %s, want EXCLUDED; a banner-less package failure must not read as this test's own flakiness", v)
+	}
+	if !strings.Contains(ev, "excludes a test") {
+		t.Errorf("evidence = %q, want it to say `run` excludes a test", ev)
+	}
+}
 
 func TestWidenOnPass_NamesTheTestTheRunFilterLeavesOut(t *testing.T) {
 	t.Parallel()
@@ -74,6 +93,76 @@ func TestWidenOnPass_NamesTheTestTheRunFilterLeavesOut(t *testing.T) {
 		t.Fatalf("verdict = %s, want EXCLUDED; a stale `run` line was reported as an inert assertion", got.verdict)
 	}
 	if !strings.Contains(got.evidence, "TestOmitted") {
+		t.Errorf("evidence = %q, want it to name the excluded test", got.evidence)
+	}
+}
+
+// The next several tests name fixture test functions — TestSelected,
+// TestOmitted — that exist only as text inside a mustModule string literal (a
+// throwaway module built at test time), never as a top-level declaration
+// check_doc_citations' line-anchored scanner can see.
+//
+//doccite:ok TestSelected — mustModule fixture text (see selectedPasses/selectedFails), not a top-level declaration
+//doccite:ok TestOmitted — mustModule fixture text (see omittedPasses/omittedFails), not a top-level declaration
+
+func TestWidenOnPass_ReportsFlakyWhenTheSelectedTestIsWhatDisagrees(t *testing.T) {
+	t.Parallel()
+
+	// TestSelected is the only test in the package, and `run` selects it by
+	// name — so a package-wide failure here cannot be `run` leaving anything
+	// out. It is the same test disagreeing with itself between the two runs.
+	root := mustModule(t, selectedFails)
+	got := widenOnPass(root, &spec{pkg: "./...", run: "TestSelected"}, mutation{name: "m"}, false)
+
+	if got.verdict != flaky {
+		t.Fatalf("verdict = %s, want FLAKY; a selected test's own inconsistency was reported as a spec defect", got.verdict)
+	}
+	if !strings.Contains(got.evidence, "TestSelected") {
+		t.Errorf("evidence = %q, want it to name the selected test", got.evidence)
+	}
+}
+
+func TestWidenOnPass_MixedFailuresReportExcludedForTheOmittedName(t *testing.T) {
+	t.Parallel()
+
+	// Both TestSelected (selected by `run`) and TestOmitted (not) fail in the
+	// package-wide run. TestOmitted's absence from `run` is a real spec gap
+	// regardless of what else also failed, so the ruling is EXCLUDED, and the
+	// evidence names only the test `run` is missing.
+	root := mustModule(t, selectedFails+omittedFails)
+	got := widenOnPass(root, &spec{pkg: "./...", run: "TestSelected"}, mutation{name: "m"}, false)
+
+	if got.verdict != excluded {
+		t.Fatalf("verdict = %s, want EXCLUDED; a mixed failure was reported as the selected test's own fault", got.verdict)
+	}
+	if !strings.Contains(got.evidence, "TestOmitted") {
+		t.Errorf("evidence = %q, want it to name the excluded test", got.evidence)
+	}
+	if strings.Contains(got.evidence, "TestSelected") {
+		t.Errorf("evidence = %q, want it to name only the excluded test, not the selected one too", got.evidence)
+	}
+}
+
+func TestWidenOnPass_SubtestFilterReportsExcludedForAnUnselectedSibling(t *testing.T) {
+	t.Parallel()
+
+	// `run` restricts execution to TestSelected/subA, which passes on its
+	// own. subB is the sibling the filter leaves out, and it is subB that
+	// kills the mutation in the package-wide run. Folding the package-wide
+	// failure to its parent name ("TestSelected") before matching against
+	// `run` used to read the /subA restriction as selecting the whole
+	// parent — including subB — and misreport this as FLAKY.
+	body := "func TestSelected(t *testing.T) {\n" +
+		"\tt.Run(\"subA\", func(t *testing.T) {})\n" +
+		"\tt.Run(\"subB\", func(t *testing.T) { t.Fatal(\"kills mutation\") })\n" +
+		"}\n"
+	root := mustModule(t, body)
+	got := widenOnPass(root, &spec{pkg: "./...", run: "TestSelected/subA"}, mutation{name: "m"}, false)
+
+	if got.verdict != excluded {
+		t.Fatalf("verdict = %s, want EXCLUDED; an unselected sibling subtest was reported as this test's own flakiness", got.verdict)
+	}
+	if !strings.Contains(got.evidence, "TestSelected") {
 		t.Errorf("evidence = %q, want it to name the excluded test", got.evidence)
 	}
 }
@@ -133,6 +222,48 @@ func excludedResult() []result {
 	}}
 }
 
+func flakyResult() []result {
+	return []result{{
+		name:     "m",
+		verdict:  flaky,
+		evidence: "TestSelected is selected by `run` and killed this mutation in the package-wide run but not in the filtered run — a determinism problem in the test, not the spec",
+	}}
+}
+
+func TestConfirmExclusions_DowngradesFlakyWhenThePackageIsRedUnmutated(t *testing.T) {
+	t.Parallel()
+
+	// The same confirming run applies to a FLAKY claim as to an EXCLUDED one:
+	// a package that is red even without the mutation was not made red by it,
+	// so neither a spec defect nor a test's determinism is actually at issue.
+	root := mustModule(t, selectedFails)
+	got, err := confirmExclusions(root, &spec{pkg: "./...", run: "TestSelected"}, flakyResult())
+	if err != nil {
+		t.Fatalf("confirmExclusions: %v", err)
+	}
+
+	if got[0].verdict != survived {
+		t.Fatalf("verdict = %s, want SURVIVED; an unrelated failure was reported as a flaky test", got[0].verdict)
+	}
+	if !strings.Contains(got[0].evidence, "red unmutated too") {
+		t.Errorf("evidence = %q, want it to say the package was already red", got[0].evidence)
+	}
+}
+
+func TestConfirmExclusions_KeepsFlakyWhenTheUnmutatedPackageIsGreen(t *testing.T) {
+	t.Parallel()
+
+	root := mustModule(t, selectedPasses)
+	got, err := confirmExclusions(root, &spec{pkg: "./...", run: "TestSelected"}, flakyResult())
+	if err != nil {
+		t.Fatalf("confirmExclusions: %v", err)
+	}
+
+	if got[0].verdict != flaky {
+		t.Errorf("verdict = %s, want FLAKY to stand when the package is green unmutated", got[0].verdict)
+	}
+}
+
 func TestConfirmExclusions_DowngradesWhenThePackageIsRedUnmutated(t *testing.T) {
 	t.Parallel()
 
@@ -189,16 +320,20 @@ func TestNeedsConfirmation_OnlyWhenSomethingClaimedAnExclusion(t *testing.T) {
 
 	// This is the predicate rather than the behaviour on purpose.
 	// confirmExclusions returns the rows unchanged either way — it skipped the
-	// run, or it made one and found no EXCLUDED row to downgrade — so a test
-	// that asserts the verdicts are unchanged passes without the skip existing.
+	// run, or it made one and found no EXCLUDED or FLAKY row to downgrade —
+	// so a test that asserts the verdicts are unchanged passes without the
+	// skip existing.
 	killedRow := result{name: "a", verdict: killed, evidence: "x_test.go:1: boom"}
 	survivedRow := result{name: "b", verdict: survived, evidence: survivedEvidence}
 
 	if needsConfirmation([]result{killedRow, survivedRow}) {
-		t.Error("a spec with no exclusion would pay for the confirming package-wide run")
+		t.Error("a spec with no exclusion or flake would pay for the confirming package-wide run")
 	}
 	if !needsConfirmation([]result{killedRow, survivedRow, excludedResult()[0]}) {
 		t.Error("an EXCLUDED row would be reported without ever being confirmed")
+	}
+	if !needsConfirmation([]result{killedRow, survivedRow, flakyResult()[0]}) {
+		t.Error("a FLAKY row would be reported without ever being confirmed")
 	}
 	if needsConfirmation(nil) {
 		t.Error("an empty result set asked for a confirming run")
@@ -216,5 +351,23 @@ func TestNote_TellsTheSpecDefectApartFromTheInertAssertion(t *testing.T) {
 	}
 	if n == note(result{verdict: survived}) {
 		t.Error("EXCLUDED and SURVIVED share a note; the verdicts are then only cosmetically distinct")
+	}
+}
+
+func TestNote_TellsFlakyApartFromExcludedAndSurvived(t *testing.T) {
+	t.Parallel()
+
+	// FLAKY points the reader at the test's own determinism, not at `run` and
+	// not at "the assertion never ran". A note that reused either of those
+	// other two notes would send the reader to fix the wrong thing.
+	n := note(result{verdict: flaky})
+	if !strings.Contains(n, "determinism") {
+		t.Errorf("note(FLAKY) = %q, want it to name the test's determinism", n)
+	}
+	if n == note(result{verdict: excluded}) {
+		t.Error("FLAKY and EXCLUDED share a note; the verdicts are then only cosmetically distinct")
+	}
+	if n == note(result{verdict: survived}) {
+		t.Error("FLAKY and SURVIVED share a note; the verdicts are then only cosmetically distinct")
 	}
 }
