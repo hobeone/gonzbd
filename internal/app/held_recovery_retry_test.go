@@ -384,7 +384,7 @@ func TestFinalize_RetriesOnlyAParErrorWithHeldVolumes(t *testing.T) {
 	})
 }
 
-// heldVolumesMightRepair needs a job, a ParError and a held volume.
+// heldVolumesMightRepair needs a ParError and a held volume.
 func TestHeldVolumesMightRepair(t *testing.T) {
 	t.Parallel()
 	h := newHeldRecoveryApp(t, "feedface0651a007")
@@ -393,7 +393,6 @@ func TestHeldVolumesMightRepair(t *testing.T) {
 		run  *postproc.Job
 		want bool
 	}{
-		{"no job", &postproc.Job{ParError: true}, false},
 		{"no par2 failure", &postproc.Job{Job: h.job}, false},
 		{"par2 failure with a held volume", &postproc.Job{Job: h.job, ParError: true}, true},
 	}

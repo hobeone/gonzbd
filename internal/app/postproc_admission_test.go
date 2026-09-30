@@ -127,8 +127,7 @@ func TestRemoveJob_EndsThePostProcessingAdmission(t *testing.T) {
 }
 
 // TestJobFinalizerCancelled_EndsTheAdmissionWithoutADispatcher: the admission
-// is ended even where there is no dispatcher to release a claim on, and a
-// callback carrying no job is ignored.
+// is ended even where there is no dispatcher to release a claim on.
 func TestJobFinalizerCancelled_EndsTheAdmissionWithoutADispatcher(t *testing.T) {
 	t.Parallel()
 	application := &Application{}
@@ -136,11 +135,6 @@ func TestJobFinalizerCancelled_EndsTheAdmissionWithoutADispatcher(t *testing.T) 
 	j := job.New("no-dispatcher", "no-dispatcher", job.Policy{})
 	application.postProcAdmissions.admit(j, "")
 
-	f.cancelled(nil)
-	f.cancelled(&postproc.Job{})
-	if n := admissionsHeld(&application.postProcAdmissions); n != 1 {
-		t.Fatalf("admissions held after job-less callbacks = %d, want 1", n)
-	}
 	f.cancelled(&postproc.Job{Job: j})
 	if n := admissionsHeld(&application.postProcAdmissions); n != 0 {
 		t.Errorf("admissions held after cancelled = %d, want 0", n)

@@ -8,17 +8,17 @@ run Test(Finalize_ParErrorWithHeldVolumesRetriesWithThemReleased|Finalize_Retrie
 [the trigger ignores whether par2 failed]
 file internal/app/job_finalizer.go
 --- anchor
-	return ppJob.Job != nil && ppJob.ParError && ppJob.Job.HasDeferredPar2()
+	return ppJob.ParError && ppJob.Job.HasDeferredPar2()
 --- replace
-	return ppJob.Job != nil && ppJob.Job.HasDeferredPar2()
+	return ppJob.Job.HasDeferredPar2()
 --- end
 
 [the trigger ignores whether volumes are held, so the retry is retried again]
 file internal/app/job_finalizer.go
 --- anchor
-	return ppJob.Job != nil && ppJob.ParError && ppJob.Job.HasDeferredPar2()
+	return ppJob.ParError && ppJob.Job.HasDeferredPar2()
 --- replace
-	return ppJob.Job != nil && ppJob.ParError
+	return ppJob.ParError
 --- end
 
 [the retry does not release the held volumes]
