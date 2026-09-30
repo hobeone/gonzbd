@@ -32,10 +32,13 @@ type appWorkers struct {
 	app *Application
 }
 
-// Abort calls CancelJob on the downloader pool. CancelJob clears downloader
-// tracking records (tryList and inFlight) for the given jobID before yielding
-// the job on the dispatcher. Note that CancelJob clears tracking records; it
-// does not cancel or drain active NNTP worker goroutines.
+// Abort calls CancelJob on the downloader pool before yielding the job on the
+// dispatcher. CancelJob reaps the downloader's tracking records (tryList and
+// inFlight): those under the job's ID, and those of every instance no longer
+// registered under its own ID. It does not cancel or drain active NNTP worker
+// goroutines. It reads the registry through Dispatcher.Job, so Abort also
+// takes Dispatcher.mu, which D-B9 forbids holding across a call into Queue
+// (internal/dispatch/tick.go), so it keeps the lock rule below.
 //
 // It does not yield a job the post-processor holds, queued or running. The
 // question is asked of this instance (HasJob), not of the job's ID: the

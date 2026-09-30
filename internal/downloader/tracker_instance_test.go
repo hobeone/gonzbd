@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"runtime"
 	"testing"
+	"time"
 	"weak"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -14,7 +15,7 @@ import (
 
 // TestTracker_TwoInstancesUnderOneIDAreTrackedSeparately: a retry registers a
 // new instance under the ID of the one it replaces, and the two have separate
-// entries. ClearJob, which takes an ID, clears both.
+// entries.
 func TestTracker_TwoInstancesUnderOneIDAreTrackedSeparately(t *testing.T) {
 	tr := newDispatchTracker()
 	removed, retry := bareJob("j1"), bareJob("j1")
@@ -43,11 +44,6 @@ func TestTracker_TwoInstancesUnderOneIDAreTrackedSeparately(t *testing.T) {
 	}
 	if nRemoved != 0 || removedTried {
 		t.Errorf("the removed instance's own entries were not updated: in-flight=%d, try-list present=%v; want 0, false", nRemoved, removedTried)
-	}
-
-	tr.ClearJob("j1")
-	if tryLen, inLen := tr.Len(); tryLen != 0 || inLen != 0 {
-		t.Errorf("after ClearJob(j1): try-list=%d in-flight=%d entries, want 0 and 0", tryLen, inLen)
 	}
 }
 
@@ -202,5 +198,74 @@ func TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries(t *testin
 				t.Error("the retry's article was dispatched a second time while its own fetch is in flight")
 			}
 		})
+	}
+}
+
+// trackOn records server 0 in j's try-list and one fetch in flight for its
+// article 0, as tryDispatch leaves them after a send.
+func trackOn(d *Downloader, j *job.Job) {
+	var mask serverMask
+	mask.set(0)
+	d.tracker.Lock()
+	d.tracker.SetTriedLocked(keyFor(j, 0), mask)
+	d.tracker.IncrementInFlightLocked(keyFor(j, 0))
+	d.tracker.Unlock()
+}
+
+// TestDownloader_CancelJobReapsTheTracker: a cancel drops the entries of the
+// instance under the cancelled ID, and of every instance no longer registered
+// under its own ID, and keeps those of an instance that is.
+//
+// The fixture has:
+//   - "j1": the removed first instance and the retry registered since, from
+//     staleRequest. Neither is the one cancelled.
+//   - "j2": registered and fetching; the cancel is for it.
+//   - "j3": registered, given entries, then removed without an abort. A job
+//     settled at Fetching is removed the same way: sched's Cancel of a
+//     settled job does not call Abort.
+func TestDownloader_CancelJobReapsTheTracker(t *testing.T) {
+	disp, req, retry := staleRequest(t)
+	d := New(disp, []*Server{unreachableServer()}, nil, Options{}, slog.New(slog.DiscardHandler))
+	aborted := bareJob("j2")
+	addTestJob(t, disp, aborted, nil)
+	settled := bareJob("j3")
+	// Not ticked, as in staleRequest: a launched instance's removal waits for
+	// a worker this fixture does not run.
+	if err := disp.Add(context.Background(), settled, dispatch.Header{Name: settled.ID()}); err != nil {
+		t.Fatalf("Add(j3): %v", err)
+	}
+
+	removed := req.job
+	for _, j := range []*job.Job{removed, retry, aborted, settled} {
+		trackOn(d, j)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := disp.Remove(ctx, settled.ID()); err != nil {
+		t.Fatalf("Remove(j3): %v", err)
+	}
+	if tryLen, inLen := d.tracker.Len(); tryLen != 4 || inLen != 4 {
+		t.Fatalf("fixture: try-list=%d in-flight=%d entries, want 4 and 4", tryLen, inLen)
+	}
+
+	d.CancelJob("j2")
+
+	for _, c := range []struct {
+		name string
+		j    *job.Job
+		kept bool
+	}{
+		{"the aborted instance", aborted, false},
+		{"a registered instance not aborted", retry, true},
+		{"a removed instance under a registered ID", removed, false},
+		{"an instance removed without an abort", settled, false},
+	} {
+		n, _, tried := trackerState(d, c.j, 0)
+		switch {
+		case c.kept && (n != 1 || !tried):
+			t.Errorf("%s: in-flight=%d try-list present=%v after CancelJob(j2), want 1 and true", c.name, n, tried)
+		case !c.kept && (n != 0 || tried):
+			t.Errorf("%s: in-flight=%d try-list present=%v after CancelJob(j2), want 0 and false", c.name, n, tried)
+		}
 	}
 }

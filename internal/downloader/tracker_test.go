@@ -3,6 +3,9 @@ package downloader
 import (
 	"sync"
 	"testing"
+	"weak"
+
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // k1 and k2 are two distinct tracker keys. dispatchTracker is agnostic about
@@ -137,7 +140,9 @@ func TestTracker_Len(t *testing.T) {
 	}
 }
 
-func TestTracker_ClearJob(t *testing.T) {
+// TestTracker_DropInstances: dropping an instance removes both kinds of entry
+// for each of its articles, and leaves another instance's alone.
+func TestTracker_DropInstances(t *testing.T) {
 	tr := newDispatchTracker()
 
 	kOther := keyFor(bareJob("j2"), 1)
@@ -156,11 +161,15 @@ func TestTracker_ClearJob(t *testing.T) {
 		t.Fatalf("expected 2, 2, got %d, %d", tryLen, inFlightLen)
 	}
 
-	tr.ClearJob("j1")
+	if got := len(tr.Instances()); got != 2 {
+		t.Errorf("Instances() lists %d instances, want 2", got)
+	}
+
+	tr.DropInstances(map[weak.Pointer[job.Job]]struct{}{k1.inst: {}})
 
 	tryLen, inFlightLen = tr.Len()
 	if tryLen != 1 || inFlightLen != 1 {
-		t.Errorf("after ClearJob(j1), expected 1, 1, got %d, %d", tryLen, inFlightLen)
+		t.Errorf("after dropping j1's instance, expected 1, 1, got %d, %d", tryLen, inFlightLen)
 	}
 
 	tr.Lock()

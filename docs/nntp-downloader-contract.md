@@ -40,7 +40,7 @@ The downloader pipeline operates across four isolated tiers of ownership:
 | Tier | Owned By | Responsibility | Lock / Synchronization |
 |---|---|---|---|
 | **Dispatcher** | Main loop (`run`) | Queue scanning, server selection, work fan-out via `workCh` sends | `Dispatcher.List()` / `Dispatcher.Job()` under dispatcher mutex; `optsMu` RLock for pass options. Never blocks on I/O. |
-| **Tracker** | `dispatchTracker` | In-flight deduplication, per-article try-bitmaps (`serverMask`) | Internal `tracker.Mutex`. Lock-held periods bounded to O(1) bitmap ops. |
+| **Tracker** | `dispatchTracker` | In-flight deduplication, per-article try-bitmaps (`serverMask`) | Internal `tracker.Mutex`. Lock-held periods bounded to O(1) bitmap ops, except the reap's scans (`Instances`, `DropInstances`), which are O(entries). |
 | **Server state** | `Server` | Per-server penalty tracking, bad/good connection counters, optional-server auto-deactivation | `Server.mu` (RWMutex) for penalty/deactivation; atomic counters for bad/good. |
 | **Worker / Connection** | `connWorker` & `managedConn` | Pipelined NNTP network I/O (`nntp.Conn`), yEnc decoding, rate shaping, TLS | `managedConn.mu` for dial-coalescing only; `nntp.Conn` internal locks for pipelining. |
 
@@ -63,8 +63,17 @@ identity.
 
 The key holds the instance through a `weak.Pointer`, so an entry an instance
 leaves behind does not keep its job and manifest in memory. The key also
-carries the job ID, and `CancelJob` clears every entry under an ID, whichever
-instance it was made for.
+carries the job ID, which `CancelJob` uses to reap the tracker: it drops the
+entries under the cancelled ID, and those of every instance that is not the
+one `Dispatcher.Job` returns for its own ID. The second clause is what removes
+an instance's leftovers when it leaves the dispatcher without an abort, as a
+job settled at `Fetching` and then removed does. `CancelJob` is called from
+sched's `Abort`, which fires only for an instance holding a lease itself, and
+a removed instance has been parked, so the instance `Abort` names is the one
+registered under its ID (`TestCancel_AnInstanceHoldingNoLeaseIsNotAborted`).
+`DropInstances` is the tracker's one deleter of whole instances' entries, and
+the reap is its one caller: `git grep -n 'DropInstances(' -- '*.go' ':!*_test.go'`
+finds the declaration and that call.
 
 ## State machines
 
@@ -487,6 +496,8 @@ a server that intermittently succeeds will never trigger auto-deactivation.
 - `PreCheck` STAT probe support before BODY fetch.
 - The Tracker keyed on the job instance, so a removed instance's late
   completion leaves a retry's in-flight count and try-list alone (#665).
+- `CancelJob` reaps the entries of every instance no longer registered under
+  its ID, not only those under the cancelled ID (#679).
 
 ### Open Gaps
 - None recorded.
