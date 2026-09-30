@@ -62,7 +62,7 @@ func TestFetchArticle_HandedOffJobIsNotFetched(t *testing.T) {
 
 	// Pre-mark the article as tried on servers 0 and 1, the way a real
 	// dispatch pass would before offering it to fetchArticle.
-	key := testArticleKey(j, artIdx)
+	key := keyFor(j, artIdx)
 	var mask serverMask
 	mask.set(0)
 	mask.set(1)

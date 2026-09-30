@@ -53,13 +53,13 @@ file internal/downloader/dispatch.go
 file internal/downloader/dispatch.go
 --- anchor
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 		return nil, false
 	}
 --- replace
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
-		d.clearTried(req.jobID(), req.artIdx)
+		d.clearTried(req)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 		return nil, false
 	}
