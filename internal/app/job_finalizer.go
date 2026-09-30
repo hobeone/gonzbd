@@ -162,7 +162,7 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // retry of that entry is rebuilt by ingest again, and so gets one automatic
 // retry of its own.
 func heldVolumesMightRepair(ppJob *postproc.Job) bool {
-	return ppJob.Job != nil && ppJob.ParError && ppJob.Job.HasDeferredPar2()
+	return ppJob.ParError && ppJob.Job.HasDeferredPar2()
 }
 
 // heldVolumesRetryNote is the warning a job heldVolumesMightRepair selects

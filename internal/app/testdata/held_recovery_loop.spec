@@ -8,9 +8,9 @@ run TestFinalize_RetriedJobIsNotRetriedAgain$
 [the trigger ignores whether volumes are held]
 file internal/app/job_finalizer.go
 --- anchor
-	return ppJob.Job != nil && ppJob.ParError && ppJob.Job.HasDeferredPar2()
+	return ppJob.ParError && ppJob.Job.HasDeferredPar2()
 --- replace
-	return ppJob.Job != nil && ppJob.ParError
+	return ppJob.ParError
 --- end
 
 [the retry keeps its volumes held]
