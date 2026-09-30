@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/history"
@@ -47,6 +49,69 @@ func TestPersistAndCommit_LeavesALaterInstanceAlone(t *testing.T) {
 	}
 	if _, err := repo.Get(context.Background(), id); !errors.Is(err, history.ErrNotFound) {
 		t.Errorf("history.Get(%s) err = %v, want ErrNotFound: the first instance's run was filed under the second's ID", id, err)
+	}
+}
+
+// TestPersistAndCommit_LeavesALaterInstancesLaunchClaimAlone: finalizing a
+// job that left the dispatcher without a RemoveJob mark, after a new
+// instance was registered under the same ID and the dispatcher has since
+// actually launched it, must not release that instance's launch claim.
+//
+// The second instance is given a real launch claim the same way
+// TestJobFinalizerCancelled_LeavesALaterInstancesLaunchClaimAlone
+// (job_finalizer_cancelled_test.go) does: a Runner that never reports
+// (stateRecorder, stall_worker_test.go) leaves the claim held until
+// something clears it. Survival is checked both via row.View.Running and via
+// a further Tick not relaunching the job — d.launch's claimLaunched
+// (internal/dispatch/worker.go) only starts a worker when the claim is not
+// already held, so a cleared claim would let this Tick launch j2 a second
+// time.
+func TestPersistAndCommit_LeavesALaterInstancesLaunchClaimAlone(t *testing.T) {
+	app := newTestApplication(t)
+	runner := &stateRecorder{}
+	d := dispatch.New(1, 1, time.Hour, time.Now, &appWorkers{app: app},
+		nopResidency{}, nopDispatchStore{}, runner)
+	app.dispatcher = d
+
+	const id = "feedface00590b01"
+	ctx := context.Background()
+
+	j1 := job.New(id, "first", job.Policy{})
+	if err := d.Add(ctx, j1, dispatch.Header{Name: "first"}); err != nil {
+		t.Fatalf("Add(j1): %v", err)
+	}
+	if err := d.Remove(ctx, id); err != nil {
+		t.Fatalf("Remove(j1): %v", err)
+	}
+
+	j2 := job.New(id, "second", job.Policy{})
+	if err := d.Add(ctx, j2, dispatch.Header{Name: "second"}); err != nil {
+		t.Fatalf("Add(j2): %v", err)
+	}
+	d.Tick(ctx) // j2 begins at Fetching
+	d.Tick(ctx) // j2 granted a lease and launched at Fetching; stateRecorder never reports
+
+	if row, ok := d.Row(id); !ok || !row.View.Running {
+		t.Fatalf("precondition: j2 is not running before persistAndCommit: ok=%v view=%+v", ok, row.View)
+	}
+
+	ppJob := &postproc.Job{Job: j1}
+	err := app.finalizer.persistAndCommit(app.log, buildHistoryEntry(ppJob), ppJob)
+	if !errors.Is(err, errFinalizedJobSuperseded) {
+		t.Errorf("persistAndCommit = %v, want errFinalizedJobSuperseded", err)
+	}
+
+	row, ok := d.Row(id)
+	if !ok {
+		t.Fatalf("dispatcher.Row(%s): the second instance is no longer registered", id)
+	}
+	if !row.View.Running {
+		t.Errorf("j2's launch claim did not survive finalizing the removed first instance: %+v", row.View)
+	}
+
+	d.Tick(ctx) // a cleared claim would relaunch j2 here
+	if got, want := runner.ran(id), []job.State{job.Fetching}; !slices.Equal(got, want) {
+		t.Errorf("stateRecorder.ran(%s) = %v, want %v: the launch claim did not survive, and the tick relaunched j2", id, got, want)
 	}
 }
 

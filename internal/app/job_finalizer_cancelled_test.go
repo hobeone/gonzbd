@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,13 +22,19 @@ import (
 // second instance is given a real launch claim here, taken by the
 // dispatcher's own tick through claimLaunched (internal/dispatch/worker.go),
 // not fabricated on the job object: a Runner that never reports (stateRecorder,
-// stall_worker_test.go) leaves that claim held until something clears it, so
-// its survival is the thing under test rather than an assumption.
+// stall_worker_test.go) leaves that claim held until something clears it.
 //
 // cancelled must release the claim by INSTANCE (YieldedJob), not by ID
 // (Yielded): a by-ID release finds whichever job is currently registered
 // under the ID, and would park the second instance's live worker and clear
-// its claim regardless of which instance the callback names.
+// its claim regardless of which instance the callback names. Two things are
+// asserted after cancelled returns: row.View.Running still reports the
+// scheduler lease j2 holds, and — the assertion that actually pins
+// d.launched[id]'s survival, the same way stall_worker_test.go's
+// TestStall_LeavesALiveAssessingWorkerAlone does — a further Tick does not
+// relaunch j2: d.launch's claimLaunched (internal/dispatch/worker.go) only
+// starts a worker when the claim is not already held, so a cleared claim
+// would let this Tick launch j2 a second time.
 func TestJobFinalizerCancelled_LeavesALaterInstancesLaunchClaimAlone(t *testing.T) {
 	app := newTestApplication(t)
 	runner := &stateRecorder{}
@@ -68,6 +75,11 @@ func TestJobFinalizerCancelled_LeavesALaterInstancesLaunchClaimAlone(t *testing.
 	}
 	if !row.View.Running {
 		t.Errorf("j2's launch claim did not survive a cancelled callback for the removed first instance: %+v", row.View)
+	}
+
+	d.Tick(ctx) // a cleared claim would relaunch j2 here
+	if got, want := runner.ran(id), []job.State{job.Fetching}; !slices.Equal(got, want) {
+		t.Errorf("stateRecorder.ran(%s) = %v, want %v: the launch claim did not survive, and the tick relaunched j2", id, got, want)
 	}
 }
 
