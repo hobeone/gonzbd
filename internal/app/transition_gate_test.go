@@ -57,7 +57,7 @@ func TestJobTransitions_LockSites(t *testing.T) {
 		"app.go:PruneHistory",
 		"app.go:RemoveHistoryJob",
 		"app.go:RemoveJob",
-		"app.go:RetryHistoryJob",
+		"app.go:retryHistoryJob",
 		"job_finalizer.go:persistAndCommit",
 	}
 	if sites := productionCallers(t, "acquire", "tryAcquire"); !slices.Equal(sites, want) {
@@ -66,7 +66,7 @@ func TestJobTransitions_LockSites(t *testing.T) {
 }
 
 // TestJobTransitions_FinalizingSites pins the finalizing record to one writer,
-// the finalizer, and its one reader outside tryAcquire, RetryHistoryJob,
+// the finalizer, and its one reader outside tryAcquire, retryHistoryJob,
 // which checks it after its registration check and again before it
 // registers. A second writer would refuse retries no finalizer excludes; a
 // reader dropped would let a retry that took the lock first change state, or
@@ -75,7 +75,7 @@ func TestJobTransitions_FinalizingSites(t *testing.T) {
 	if sites, want := productionCallers(t, "beginFinalize"), []string{"job_finalizer.go:persistAndCommit"}; !slices.Equal(sites, want) {
 		t.Errorf("functions writing the finalizing record = %v, want %v", sites, want)
 	}
-	if sites, want := productionCallers(t, "isFinalizing"), []string{"app.go:RetryHistoryJob"}; !slices.Equal(sites, want) {
+	if sites, want := productionCallers(t, "isFinalizing"), []string{"app.go:retryHistoryJob"}; !slices.Equal(sites, want) {
 		t.Errorf("functions reading the finalizing record = %v, want %v", sites, want)
 	}
 }

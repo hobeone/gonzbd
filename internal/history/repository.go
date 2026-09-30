@@ -402,7 +402,8 @@ func (r *Repository) Count(ctx context.Context, opts SearchOptions) (int, error)
 // A job's durability rows are not this package's. Of the two callers
 // (`git grep -n 'historyRepo.Delete(' -- 'internal/app/*.go' ':!*_test.go'`
 // returns 2 lines), deleteHistoryEntries reclaims them through durability.Store.Reclaim
-// once the entry is gone, and RetryHistoryJob deliberately does not: it has
+// once the entry is gone, and retryHistoryJob (the body of RetryHistoryJob
+// and of the finalizer's automatic retry) deliberately does not: it has
 // just put the job back in the queue, which is what the rule reads.
 func (r *Repository) Delete(ctx context.Context, nzoIDs ...string) (int, error) {
 	if len(nzoIDs) == 0 {

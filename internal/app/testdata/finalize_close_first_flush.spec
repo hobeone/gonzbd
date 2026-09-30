@@ -56,10 +56,10 @@ file internal/app/durability.go
 [the nil-target return read as post-hoc]
 file internal/app/durability.go
 --- anchor
-		// here, so the retry path does not reach this return except by a race.
+		// re-evaluation forgets the note handleFileComplete makes of that.
 		return nil
 --- replace
-		// here, so the retry path does not reach this return except by a race.
+		// re-evaluation forgets the note handleFileComplete makes of that.
 		closeIsFirstFlush = false
 		return nil
 --- end

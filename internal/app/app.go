@@ -284,7 +284,7 @@ type Application struct {
 	// discipline as checkpointHook.
 	finalizeHook func(*postproc.Job)
 
-	// retryClaimedHook, when non-nil, runs in RetryHistoryJob once it holds
+	// retryClaimedHook, when non-nil, runs in retryHistoryJob once it holds
 	// the job's transition lock and before it reads anything, where a
 	// finalizer of the ID can start without that lock. Same discipline as
 	// checkpointHook.
@@ -1127,7 +1127,7 @@ func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteF
 // and the history package has no business touching the admin directory. So
 // this is the app-level choke point that every history deletion releasing a
 // backup must route through — the SQL half closes by construction, this half
-// by convention. The one other history delete is RetryHistoryJob's, whose
+// by convention. The one other history delete is retryHistoryJob's, whose
 // requeued job keeps the backup; history.Repository.Delete's doc carries the
 // command that enumerates both.
 //
@@ -1867,18 +1867,16 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 			"job", jobID, "reason", reason)
 		return false
 	case outcomeRepair:
-		j.SetPar2ReleaseReason(reason)
-		idxs := j.DeferredRecoveryIndices()
-		if err := j.UndeferRecoveryVolumes(idxs); err != nil {
+		n, err := app.releaseRecoveryVolumes(j, reason)
+		if err != nil {
 			app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
 				"job", jobID, "err", err)
 			failReason := fmt.Sprintf("%s; could not fetch recovery volumes: %v", reason, err)
 			j.SetPar2ReleaseReason(failReason)
 			return false
 		}
-		app.markFetchPolicyDirty(j)
 		app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
-			"job", jobID, "volumes", len(idxs), "reason", reason)
+			"job", jobID, "volumes", n, "reason", reason)
 		app.emit(Event{Type: "queue_updated"})
 		return true
 	default:
@@ -1886,6 +1884,20 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 			"job", jobID, "outcome", outcome)
 		return false
 	}
+}
+
+// releaseRecoveryVolumes records reason and un-defers every recovery volume j
+// still holds, so the downloader fetches them, and returns how many it
+// released. It is the release both the Assessing verdict's outcomeRepair and
+// the finalizer's retry of a par2 failure (retryWithHeldVolumes) make.
+func (app *Application) releaseRecoveryVolumes(j *job.Job, reason string) (int, error) {
+	j.SetPar2ReleaseReason(reason)
+	idxs := j.DeferredRecoveryIndices()
+	if err := j.UndeferRecoveryVolumes(idxs); err != nil {
+		return 0, err
+	}
+	app.markFetchPolicyDirty(j)
+	return len(idxs), nil
 }
 
 // par2Outcome is what par2Verdict was able to determine about a completed
@@ -1918,12 +1930,11 @@ const (
 	// indistinguishable from this value, so it must not be reported as a
 	// clean verdict.
 	//
-	// Holding the volumes does not rescue the damaged case: nothing promotes
-	// a held volume after the job finalizes, and a retry rebuilds the job
-	// from scratch through BuildIngestJob rather than inheriting either
-	// policy (#329), so a retry behaves the same under either policy for a
-	// stronger reason than before — neither one survives to be inherited.
-	// What the hold buys is an honest label — fileState
+	// The damaged case is not repaired from the hold itself. When the job's
+	// post-processing then fails par2 with the volumes still held, the
+	// finalizer retries it with them released (heldVolumesMightRepair,
+	// jobFinalizer.retryWithHeldVolumes). A healthy post never fetches them.
+	// What the hold buys here is an honest label — fileState
 	// renders FetchIfNeeded as "held" and FetchNever as "skipped"
 	// (internal/api/queue.go), and "skipped" would assert a verdict that was
 	// never earned.
@@ -2008,9 +2019,11 @@ func par2Verdict(a par2.Assessment, log *slog.Logger) (outcome par2Outcome, reas
 		// Layout B nothing can say they are needed until unpack has produced
 		// the files par2 protects (postproc's extracted_repair then runs par2
 		// with whatever volumes are on disk), so fetching them here would
-		// spend them on every healthy Layout B post — and for the damaged
-		// case, holding does not rescue it either.
-		// What holding buys is that the fetch policy stays FetchIfNeeded
+		// spend them on every healthy Layout B post. A damaged one fails par2
+		// in post-processing, and the finalizer retries it with the volumes
+		// released (jobFinalizer.retryWithHeldVolumes), which a discard would
+		// prevent: it triggers on HasDeferredPar2, which FetchNever fails.
+		// Holding rather than discarding also keeps the fetch policy FetchIfNeeded
 		// ("held") instead of being marked FetchNever ("skipped"), so the
 		// on-disk state does not assert a verdict that was never earned.
 		//
@@ -2520,6 +2533,13 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 //
 // The history entry is deleted on success.
 func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
+	return app.retryHistoryJob(ctx, jobID, nil)
+}
+
+// retryHistoryJob is RetryHistoryJob, with prepare, when it is not nil,
+// applied to the rebuilt job before its job_files rows are seeded and it is
+// registered. A prepare error aborts the retry as any other step's does.
+func (app *Application) retryHistoryJob(ctx context.Context, jobID string, prepare func(*job.Job) error) error {
 	// Held for the whole call, so no other lock holder on this job ID
 	// interleaves with any step below; see jobTransitions for the finalizer's
 	// bounded exception. A retry never waits for it: a second retry of the
@@ -2650,10 +2670,10 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		return fmt.Errorf("app: retry %s: %w", jobID, err)
 	}
 	// Armed once the manifest is on disk, so every return between here and the
-	// admission below takes it with it: seedJobFiles and checkpointer.FlushJob
-	// return in this span as well as dispatcher.Add, and a retry that never
-	// entered the queue would otherwise leave a manifest no queued job owns
-	// until the next start's sweep.
+	// admission below takes it with it: the prepare, seedJobFiles and
+	// checkpointer.FlushJob return in this span as well as dispatcher.Add, and
+	// a retry that never entered the queue would otherwise leave a manifest no
+	// queued job owns until the next start's sweep.
 	//
 	// Unconditional because the write above always produces a file here: j was
 	// rebuilt by BuildIngestJob, which attaches its manifest or fails, and
@@ -2681,6 +2701,16 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		defer delCancel()
 		app.reclaim(delCtx, jobID)
 	}()
+
+	// Inside the defer's scope, because a prepare may mark j in the
+	// checkpointer (releaseRecoveryVolumes does), and an abort must prune that
+	// mark. Before seedJobFiles and the flush below, which persist the fetch
+	// policy a prepare may change.
+	if prepare != nil {
+		if err := prepare(j); err != nil {
+			return fmt.Errorf("app: retry %s: prepare the rebuilt job: %w", jobID, err)
+		}
+	}
 
 	// Seed any job_files rows this attempt is missing, then flush the
 	// checkpointer synchronously, both immediately before dispatcher.Add and

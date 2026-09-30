@@ -96,8 +96,9 @@ func warnUnlessGone(log *slog.Logger, msg, id string, err error) {
 //
 // It ends the job's post-processing admission on return. The failure reasons
 // the admission noted, those that did not become the run's FailMsg, are added
-// to the history entry's stage log as warnings. They do not change the entry's status, which reflects what
-// the stages did (postProcAdmissions).
+// to the history entry's stage log as warnings, and so is heldVolumesRetryNote
+// for a job it will retry. They do not change the entry's status, which
+// reflects what the stages did (postProcAdmissions).
 func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 	app := f.app
 	var notes []string
@@ -108,11 +109,22 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 		}
 		notes = app.postProcAdmissions.notes(ppJob.Job)
 	}
-	entry := buildHistoryEntry(withFailureNotes(ppJob, notes))
+	// Decided before persistAndCommit tears the job down. A ParError files the
+	// entry Failed (buildHistoryEntry), which is what a retry requires of it.
+	retry := heldVolumesMightRepair(ppJob)
+	var extra []string
+	if retry {
+		extra = append(extra, heldVolumesRetryNote)
+	}
+	entry := buildHistoryEntry(withFailureNotes(ppJob, notes, extra...))
 	if err := f.persistAndCommit(app.log, entry, ppJob); err != nil {
 		return
 	}
-	f.fireCompletionNotification(entry)
+	// After persistAndCommit has returned, so its transition lock is released
+	// and the retry it filed the entry for can claim the ID.
+	if !retry || !f.retryWithHeldVolumes(ppJob.Job.ID()) {
+		f.fireCompletionNotification(entry)
+	}
 
 	// Apply retention now that history has one more entry in it. Best
 	// effort: a job that finished successfully must not be reported as
@@ -131,6 +143,70 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 		app.log.Warn("history retention sweep failed after finalize",
 			"job", ppJob.Job.ID(), "err", err)
 	}
+}
+
+// heldVolumesMightRepair reports whether a finished run failed par2 while its
+// job still held recovery volumes back (Job.HasDeferredPar2), which the
+// finalizer then retries the job to fetch (#651). The Assessing verdict holds
+// them when nothing delivered matched the par2 index (outcomeUnknown): a
+// Layout B post, whose extracted_repair then has nothing to repair a damaged
+// extraction with, or an obfuscated file damaged inside its first 16 KB, which
+// repair then has nothing for either.
+//
+// ParError also covers failures the volumes cannot fix, such as a containment
+// violation. Those cost one retry. The retry does not trigger another: it
+// releases every volume its rebuilt job holds before seeding job_files, which
+// hydration restores the policy from, and nothing else sets a volume to
+// FetchIfNeeded. The policy field is written in four places
+// (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 4 lines):
+// the policy setter, the release (to FetchAlways), the discard (to
+// FetchNever), and construction, which starts every file at FetchAlways. The
+// setter is called from ingest, with FetchIfNeeded, and from hydration
+// (`git grep -nE 'SetFileFetchPolicy\(|RestoreFetchPolicy\(' -- '*.go' ':!*_test.go'`
+// returns 5 lines: those two calls, the two declarations, and the restore
+// delegating to the setter). So its failure is filed as final. A user's
+// retry of that entry is rebuilt by ingest again, and so gets one automatic
+// retry of its own.
+func heldVolumesMightRepair(ppJob *postproc.Job) bool {
+	return ppJob.Job != nil && ppJob.ParError && ppJob.Job.HasDeferredPar2()
+}
+
+// heldVolumesRetryNote is the warning a job heldVolumesMightRepair selects
+// carries in its history entry. The entry is deleted if the automatic retry
+// starts, so the note is read only beside a retry that could not start, such
+// as one a shutdown catches: by then app.ctx is cancelled and the assembler
+// stopped (Application.Shutdown), so retryHistoryJob fails.
+//
+// What the note tells the user to do heals the job. A retry rebuilds it
+// through BuildIngestJob, which holds the recovery volumes back again
+// (`git grep -n 'SetFileFetchPolicy[(]fi, job\.FetchIfNeeded)' -- '*.go' ':!*_test.go'`
+// returns 1 line, internal/app/ingest.go:151, while downloads.on_demand_par2
+// is on). Its post-processing then fails par2 with those volumes held, and
+// this finalizer retries it with them released. With on_demand_par2 off the
+// rebuilt job fetches every volume at once.
+const heldVolumesRetryNote = "par2 repair failed while the recovery volumes were held back; " +
+	"a retry of this job fetches them"
+
+// retryWithHeldVolumes retries the job filed Failed under jobID with every
+// recovery volume the rebuilt job holds released, and reports whether the
+// retry was queued. One that could not be is logged with the reason, and the
+// failure stands as filed.
+func (f *jobFinalizer) retryWithHeldVolumes(jobID string) bool {
+	app := f.app
+	err := app.retryHistoryJob(app.ctx, jobID, func(j *job.Job) error {
+		_, err := app.releaseRecoveryVolumes(j,
+			"post-processing failed par2 repair while the recovery volumes were held back")
+		return err
+	})
+	if err != nil {
+		app.log.Warn("finalize: par2 repair failed and could not retry the job with its held recovery volumes; "+
+			"it stays failed, and you can retry it to fetch its recovery volumes",
+			"job", jobID, "err", err)
+		return false
+	}
+	app.log.Info("finalize: par2 repair failed while recovery volumes were held back; retrying the job to fetch them",
+		"job", jobID)
+	return true
 }
 
 // persistAndCommit writes the history entry to the database, removes the job
@@ -318,8 +394,9 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	//
 	// The last must stop the finalizer: filing would put this run in history
 	// under the retry's ID. `git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
-	// finds 2 production registrations. RetryHistoryJob's reuses an ID,
-	// through the FetchOptions.JobID it sets, and takes the transition lock;
+	// finds 2 production registrations. retryHistoryJob's, the body of
+	// RetryHistoryJob and of retryWithHeldVolumes, reuses an ID through the
+	// FetchOptions.JobID it sets, and takes the transition lock;
 	// AddJob's jobs are built by BuildIngestJob, which mints a newJobID when
 	// no JobID is set. The answer cannot change underneath, with or without
 	// the lock: RetryHistoryJob refuses while the finalizing record this

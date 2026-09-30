@@ -644,7 +644,14 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 	// is dropped too: after a retry the pipeline would discard its result, so
 	// fetching it only spends bandwidth. The intent is read off the request's
 	// own instance for the same reason.
-	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun {
+	//
+	// A handed-off job's request is dropped too, whatever its intent: a
+	// hand-off from Fetching keeps IntentRun until the finalizer's CancelJob
+	// (docs/post-processing-contract.md "An admitted job is not
+	// downloaded"). unmarkTried and ClearArticleEmitted run as above; the
+	// emitted bit does not matter here, since a handed-off job gets no
+	// further dispatch pass to read it.
+	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
 		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 		return nil, false

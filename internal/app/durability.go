@@ -518,7 +518,7 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 	// assembler still holds handles for a job the dispatcher has dropped, so
 	// checkpointAll keeps listing it — and a manifest that cannot be read at all.
 	//
-	// TestCheckpointJob_DoesNotStampABarrierThatNeverRan uses the first, and
+	// TestCheckpointJob_DoesNotStampABarrierThatNeverRan uses the second, and
 	// asserts both halves of the fixture: no target, and the assembler still
 	// listing the job.
 	tgt := app.syncTargetFor(jobID)
@@ -1000,8 +1000,14 @@ var ErrNotFinalized = errors.New("app: completed file was not finalized")
 // (the assembler has stopped, or the job has left the queue — both ordinary,
 // and in both cases nothing downstream will act on the file either).
 //
-// ErrNotFinalized means the opposite, and the caller MUST NOT treat the file
-// as complete. It used to return nothing at all, and the caller proceeded
+// A job still in the queue whose manifest is not resident is NOT one of those.
+// No barrier can run over it, so the file is untrimmed, and the job can be
+// resident again by the time anything delivers the completion. That return is
+// ErrNotFinalized wrapping job.ErrNotResident, with the handle kept for the
+// retry.
+//
+// ErrNotFinalized means the opposite of nil, and the caller MUST NOT treat the
+// file as complete. It used to return nothing at all, and the caller proceeded
 // identically either way — straight into MarkFileComplete, DirectUnpack, job
 // finalization and post-processing. That made a barrierOpTimeout on a wedged
 // mount indistinguishable from an ordinary shutdown: the file was never
@@ -1012,12 +1018,13 @@ var ErrNotFinalized = errors.New("app: completed file was not finalized")
 //
 // # The deferred close, and when its fault counts
 //
-// On the two nil returns before the barrier runs — no barrier, no sync target —
-// nothing has drained or synced the file, so the deferred CloseFile is its
-// only flush, and a fault from it comes back as ErrNotFinalized like any other
-// failed finalize. The exception is a close that answered ErrAssemblerStopped:
-// the worker did not run it, and its exit drain flushes and closes every open
-// file instead, so it is read as closed elsewhere. After them, the close either follows a finalize that
+// On the two nil returns before the barrier runs — no barrier, and no sync
+// target for a job that has left the queue — nothing has drained or synced the
+// file, so the deferred CloseFile is its only flush, and a fault from it comes
+// back as ErrNotFinalized like any other failed finalize. The exception is a
+// close that answered ErrAssemblerStopped: the worker did not run it, and its
+// exit drain flushes and closes every open file instead, so it is read as
+// closed elsewhere. After them, the close either follows a finalize that
 // committed or finds the file already closed by another path, and its fault is
 // logged at Debug: acting on a redundant second fsync would race the
 // completion it is part of, and on a permanent errno would carry a fully acked
@@ -1030,13 +1037,10 @@ var ErrNotFinalized = errors.New("app: completed file was not finalized")
 // the job.
 //
 // A close whose wait ended before it was queued to the worker leaves the
-// handle open, and what the retry does with it depends on which return the
-// close followed. After the no-barrier return, retryFinalize answers
+// handle open. After the no-barrier return, retryFinalize answers
 // errFinalizeUnrecoverable without looking, so stallLost surfaces the restart
-// as above. After the nil-target return, retryFinalize refuses while the job
-// has no resident manifest, and a job Stall paused has none, so every
-// re-evaluation re-stalls it until a user Resume makes it resident; only then
-// does the retry finalize the file through the barrier.
+// as above. After the departed-job return nothing retries: the re-evaluation
+// forgets a job that has left the queue.
 //
 // On every other error the handle is RETAINED, reversing the earlier decision
 // to close it there. That decision rested on a premise that no longer holds:
@@ -1078,8 +1082,9 @@ var ErrNotFinalized = errors.New("app: completed file was not finalized")
 // assembler's own shutdown drain all still release the handles.
 func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string, fileIdx int) (err error) {
 	// closeIsFirstFlush says whether the deferred close is the file's only
-	// drain and sync. It starts true, so a nil return is held to the strict
-	// reading unless it comes after the assignment below that clears it.
+	// drain and sync, as it is on the no-barrier and departed-job returns. It
+	// starts true, so a nil return is held to the strict reading unless it
+	// comes after the assignment below that clears it.
 	closeIsFirstFlush := true
 	defer func() {
 		if err != nil {
@@ -1110,26 +1115,22 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 	}
 	tgt := app.syncTargetFor(jobID)
 	if tgt == nil {
-		// A nil target is a third outcome dressed as success, the same shape
-		// checkpointJob's stamp was — so it needs an argument rather than an
-		// assurance.
-		//
-		// A nil target means the job has left the queue or has no resident
-		// manifest, so the completion that follows is refused: MarkFileComplete
-		// needs the live job resident, and completeFinalizedFile answers
-		// job.ErrNotResident first when the dispatcher no longer has the job.
-		//
-		// The refusal does not end it. handleFileComplete records any refused
-		// completion with noteUndeliveredCompletion, as finalizeDone, and phase
-		// 4 of reevaluateStall delivers it once the job is resident again. For
-		// a job still in the queue that marks complete — and hands to
-		// DirectUnpack — a file this path never trimmed, whose last drain was
-		// flushed only by the close and never committed or acked. That
-		// redelivery is what this return leaves open. A job that has left the
-		// queue is cleared by the re-evaluation instead.
-		//
-		// retryFinalize refuses a nil target outright rather than returning
-		// here, so the retry path does not reach this return except by a race.
+		// A job still in the queue has lost its manifest but not its place,
+		// and can be resident again before anything delivers this completion.
+		// No barrier ran, so the file is untrimmed and its last drain
+		// uncommitted: the completion must wait for a retry that runs one.
+		// Returned as an error so the deferred close keeps the handle that
+		// retry needs, and so handleFileComplete records the file pending
+		// rather than finalized.
+		if app.dispatcher != nil {
+			if _, queued := app.dispatcher.Job(jobID); queued {
+				return fmt.Errorf("%w: job %s file %d: no barrier can run over it: %w",
+					ErrNotFinalized, jobID, fileIdx, job.ErrNotResident)
+			}
+		}
+		// A job that has left the queue: completeFinalizedFile refuses its
+		// completion (the dispatcher no longer has the job), and the stall
+		// re-evaluation forgets the note handleFileComplete makes of that.
 		return nil
 	}
 	trunc, ok := tgt.(durability.Truncator)
@@ -1634,6 +1635,23 @@ func (app *Application) filePathFor(jobID string, fileIdx int) string {
 // truncate, a failed commit — never reached routeFault and would otherwise
 // halt the job with no reason attached at all.
 func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path string, err error) {
+	// A non-resident job is a queue-residency condition, not a storage one, and
+	// not a halt: the job is not parked for it. It is ordinary whenever the
+	// dispatcher evicts a job while one of its completions is in flight —
+	// including at shutdown, which is why it is answered before the Error
+	// below. It arrives from finalizeCompletedFile's nil-target return for a
+	// queued job, on a first attempt or a retry, where no barrier ran, and from
+	// a barrier that committed the runs and then could not ack them. Each is
+	// recorded for retry: the retry runs the barrier once the job is resident,
+	// and the re-evaluation's seed phase replays committed runs into the work
+	// set after it lands.
+	if errors.Is(err, job.ErrNotResident) {
+		app.log.Info("completed file was not finalized because its job is not resident; "+
+			"the finalize is retried once it is",
+			"job", jobID, "fileidx", fileIdx, "err", err)
+		app.notePendingFinalize(jobID, fileIdx)
+		return
+	}
 	app.log.Error("completed file was not finalized; the job is halted rather than "+
 		"shipping a file whose bytes are not known to be correct",
 		"job", jobID, "fileidx", fileIdx, "err", err)
@@ -1650,18 +1668,6 @@ func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path str
 		if routed == nil || !routed.Permanent {
 			app.notePendingFinalize(jobID, fileIdx)
 		}
-		return
-	}
-	//
-	// A non-resident job is a queue-residency condition, not a storage one.
-	// The barrier commits before it acks, so the runs are recorded; the
-	// finalize is recorded for retry, and the re-evaluation's seed phase
-	// replays those runs into the work set once the retry lands.
-	if errors.Is(err, job.ErrNotResident) {
-		app.log.Debug("finalize recorded its durable runs but could not ack a non-resident job; "+
-			"the articles are replayed from the record after the resume",
-			"job", jobID, "fileidx", fileIdx)
-		app.notePendingFinalize(jobID, fileIdx)
 		return
 	}
 	// Not a storage condition, so the job is not parked for it: a deliberate

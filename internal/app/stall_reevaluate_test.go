@@ -233,12 +233,12 @@ func TestReevaluateStall_RetriesEveryInterruptedFinalizeInOnePass(t *testing.T) 
 // TestRetryFinalize_RefusesAJobWithNoReadableManifest pins the second
 // success-lookalike, the one retryFinalize's open-handle check does not cover.
 //
-// finalizeCompletedFile answers nil for a nil sync target. On a first attempt
-// that is safe, because MarkFileComplete refuses the completion for the same
-// reason. On a RETRY the completion is queued behind this call and delivered
-// on a LATER cycle, by which time the job can be resident again — so the file
-// would be recorded finalizeDone without ever having been trimmed, and shipped
-// with pre-allocation's trailing zeros for par2 to read as damage.
+// A job still in the queue whose manifest has been evicted can run no barrier,
+// and can be resident again by the time phase 4 delivers its completion. A
+// retry that reported success would record the file finalizeDone without ever
+// having trimmed it, and ship pre-allocation's trailing zeros for par2 to read
+// as damage. The refusal must also keep the handle, which the retry that
+// follows the promotion needs.
 //
 // The handle is deliberately still open here, so the earlier guard cannot be
 // what produces the refusal.
@@ -246,9 +246,7 @@ func TestRetryFinalize_RefusesAJobWithNoReadableManifest(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID(), 0, 0)
-	if err := application.dispatcher.Remove(t.Context(), job.ID()); err != nil {
-		t.Fatal(err)
-	}
+	job.Evict()
 	open, err := application.assembler.OpenFiles(t.Context(), job.ID())
 	if err != nil {
 		t.Fatal(err)
@@ -258,10 +256,15 @@ func TestRetryFinalize_RefusesAJobWithNoReadableManifest(t *testing.T) {
 			"and this test would assert nothing about the sync target")
 	}
 
-	if err := application.retryFinalize(t.Context(), job.ID(), 0); err == nil {
+	err = application.retryFinalize(t.Context(), job.ID(), 0)
+	if err == nil {
 		t.Fatal("retryFinalize reported success for a job whose manifest cannot be read; the " +
 			"file is recorded finalized and its completion ships an untrimmed file on a " +
 			"later cycle")
+	}
+	if open, oerr := application.assembler.OpenFiles(t.Context(), job.ID()); oerr != nil || !slices.Contains(open, 0) {
+		t.Errorf("the refusal released the handle (open=%v, err=%v); the retry after the job "+
+			"is promoted again finds no handle and the job needs a restart", open, oerr)
 	}
 }
 

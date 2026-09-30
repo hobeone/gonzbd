@@ -70,18 +70,22 @@ func TestFinalizeCompletedFile_WithoutABarrier_ACloseFaultStopsTheCompletion(t *
 }
 
 // TestFinalizeCompletedFile_WithNoSyncTarget_ACloseFaultStopsTheCompletion pins
-// the nil-target path: a job whose manifest is not resident gets no barrier, so
-// here too the close is the file's only flush.
+// the nil-target path that still closes: a job that has left the queue gets no
+// barrier, so here too the close is the file's only flush. A job still in the
+// queue takes the other nil-target return, which closes nothing
+// (TestHandleFileComplete_ANonResidentJobsFileIsNotDeliveredUntrimmed).
 func TestFinalizeCompletedFile_WithNoSyncTarget_ACloseFaultStopsTheCompletion(t *testing.T) {
 	t.Parallel()
 	application, job, arm, _ := newArmableWedgedApp(t)
 	logs := closeFaultLogs(application)
-	// Armed before the eviction: parking the worker opens file 1, which needs
+	// Armed before the removal: parking the worker opens file 1, which needs
 	// the manifest resident.
 	arm()
-	job.Evict()
+	if err := application.dispatcher.Remove(t.Context(), job.ID()); err != nil {
+		t.Fatal(err)
+	}
 	if application.syncTargetFor(job.ID()) != nil {
-		t.Fatal("the evicted job still has a sync target; this test is about the nil-target return")
+		t.Fatal("the removed job still has a sync target; this test is about the nil-target return")
 	}
 
 	err := application.finalizeCompletedFile(t.Context(), job.ID(), 0)

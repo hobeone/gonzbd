@@ -23,9 +23,11 @@ import (
 // has ended (jobFinalizer.persistAndCommit). A retry is still excluded from
 // it. persistAndCommit records its ID in finalizing (beginFinalize) before it
 // does anything, and releases it on return. While the ID is recorded,
-// tryAcquire does not claim it, and a RetryHistoryJob that claimed it first
+// tryAcquire does not claim it, and a retryHistoryJob that claimed it first
 // refuses (isFinalizing) once it has found no instance registered under the
-// ID and before it changes anything.
+// ID and before it changes anything. The finalizer's own retry of a job it
+// filed (jobFinalizer.retryWithHeldVolumes) is called from finalize after
+// persistAndCommit has returned, so the record has ended by then.
 //
 // That check is late enough because the record precedes the finalizer's
 // CancelJob, and an instance no RemoveJob took leaves the dispatcher only
@@ -38,7 +40,7 @@ import (
 // registers, which does not depend on this ordering. A retry is the one way a
 // later instance takes an ID
 // (`git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
-// finds 2 lines: RetryHistoryJob's reuses an ID, and AddJob's mints one), so
+// finds 2 lines: retryHistoryJob's reuses an ID, and AddJob's mints one), so
 // no other instance can register under the ID while its finalizer commits.
 //
 // A channel per held ID rather than a mutex per ID, because a waiter has to be
@@ -50,7 +52,9 @@ import (
 // something the dispatcher waits on. Of the sites TestJobTransitions_LockSites
 // pins, the finalizer alone runs holding such a thing — post-processing's
 // launch claim, which its own Yielded clears — so it takes the lock only after
-// that call.
+// that call. retryHistoryJob also runs on the post-processing worker, from
+// jobFinalizer.retryWithHeldVolumes, once persistAndCommit has returned; it
+// never waits for the lock, taking it with tryAcquire.
 //
 // removed records the job instances a RemoveJob has taken and not given back
 // (a RemoveJob whose dispatcher.Remove fails withdraws its mark), so a

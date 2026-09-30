@@ -225,6 +225,15 @@ of their failure ratio.
    post-processing admission record; `docs/post-processing-contract.md` has
    the rest.
 
+   `buildDispatchPlan` consults `HandedOff` once per job, before the article
+   loop, so a hand-off landing mid-loop still queues the rest of the job's
+   articles into `workCh` — `enqueuePostProc`'s admission is not serialised
+   with `ForEachUnfinishedArticle`. `fetchArticle`'s per-job check (see
+   invariant 7) consults `HandedOff` again, on the request's own instance,
+   before any network I/O — the same gate that drops a paused, cancelled, or
+   superseded-instance request — so a queued article for an admitted job is
+   dropped there even when the loop above already queued it.
+
 7. **A result belongs to the instance it was dispatched for**: a retry
    registers a new `*job.Job` under the same ID, and a fetch can outlive its
    instance's failure, finalization and that retry. So the ID alone does not
@@ -235,11 +244,11 @@ of their failure ratio.
 
    The downloader's own job mutations for a request — `markEmitted` after a
    fetch or an exhausted try-list, the `Job.ClearArticleEmitted` calls when a
-   request is drained or its result dropped, and the per-job intent read in
-   `fetchArticle` — act on that instance, never on a by-ID lookup. Before any
-   network I/O, `fetchArticle` also drops a request whose instance is not the
-   one `Dispatcher.Job` returns for its ID, since the pipeline would discard
-   its result.
+   request is drained or its result dropped, and the per-job intent and
+   hand-off reads in `fetchArticle` — act on that instance, never on a by-ID
+   lookup. Before any network I/O, `fetchArticle` also drops a request whose
+   instance is not the one `Dispatcher.Job` returns for its ID, since the
+   pipeline would discard its result.
 
    The app pipeline's `handleResult` drops a result whose `Job` is not the
    instance `Dispatcher.Job` returns for its ID, before any failure marking,
