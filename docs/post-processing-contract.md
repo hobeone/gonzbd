@@ -91,8 +91,9 @@ single worker goroutine (`run`).
   before any network I/O. An article already in flight (past that check,
   mid-fetch) at the hand-off is dropped by the assembler's whole-job
   tombstone, which `CloseJobHandles` sets and `ForgetJob` clears for a
-  retry. `TestFail_AJobInPostProcessingIsNotDispatched`
-  and `TestCloseJobHandles_TombstonesTheWholeJob` are the pins. A downloader
+  retry. `TestFail_AJobInPostProcessingIsNotDispatched`,
+  `TestCloseJobHandles_TombstonesTheWholeJob`, and (for the per-request check
+  itself) `TestFetchArticle_HandedOffJobIsNotFetched` are the pins. A downloader
   reload leaves an admitted job's progress alone: `ReloadDownloader` runs
   `Job.ClearEmittedForReload` under `postProcAdmissions.unlessAdmitted`, so
   it neither un-fails the articles whose failed bytes the run and its history

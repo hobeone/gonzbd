@@ -6,7 +6,9 @@ run Test(FetchArticle_HandedOffJobIsNotFetched|BuildDispatchPlan_HandOffDuringTh
 # TestDownloaderPerJobPauseResume is the existing test that pins the
 # unmarkTried call in the second mutation below — it is shared by every
 # trigger of this block, and this is the only trigger (pause) a resumed job
-# can observe it through.
+# can observe it through. TestFetchArticle_HandedOffJobIsNotFetched pre-marks
+# its article emitted so the third mutation's ClearArticleEmitted removal is
+# observable through it.
 
 [the hand-off check dropped from fetchArticle's per-job gate]
 file internal/downloader/dispatch.go
@@ -35,6 +37,21 @@ file internal/downloader/dispatch.go
 --- replace
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
+		return nil, false
+	}
+--- end
+
+[the emitted-bit clear dropped from the same gate]
+file internal/downloader/dispatch.go
+--- anchor
+	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
+		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		_ = req.job.ClearArticleEmitted(int(req.artIdx))
+		return nil, false
+	}
+--- replace
+	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
+		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
 		return nil, false
 	}
 --- end

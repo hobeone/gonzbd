@@ -38,7 +38,14 @@ func TestFetchArticle_HandedOffJobIsNotFetched(t *testing.T) {
 	addTestJob(t, d.dispatcher, j, m)
 	d.opts.HandedOff = func(x *job.Job) bool { return x == j }
 
-	req := &articleRequest{job: j, messageID: "a@h"}
+	artIdx := artIdxFor(t, d.dispatcher, j.ID(), "a@h")
+	req := &articleRequest{job: j, artIdx: artIdx, messageID: "a@h"}
+	// Pre-set the emitted bit so the assertion below actually exercises
+	// ClearArticleEmitted, the way TestFetchArticle_DropsARequestForAn
+	// InstanceNoLongerRegistered (instance_test.go) does: a fresh job's
+	// article starts unemitted, so checking ArticleEmitted without this
+	// would pass whether or not the drop path clears anything.
+	markEmittedOn(t, j, artIdx)
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
 	body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1")
@@ -48,8 +55,8 @@ func TestFetchArticle_HandedOffJobIsNotFetched(t *testing.T) {
 	if got := ms.fetches.Load(); got != 0 {
 		t.Errorf("fetchArticle for a handed-off job: ok=%v, BODY fetches=%d, want no fetch", ok, got)
 	}
-	if j.Progress().ArticleEmitted(int(req.artIdx)) {
-		t.Errorf("article %d is still marked emitted after a handed-off job's request was dropped", req.artIdx)
+	if j.Progress().ArticleEmitted(int(artIdx)) {
+		t.Errorf("article %d is still marked emitted after a handed-off job's request was dropped", artIdx)
 	}
 }
 
@@ -64,6 +71,8 @@ func TestFetchArticle_HandedOffJobIsNotFetched(t *testing.T) {
 // late-queued articles before any network I/O, so nothing is actually
 // fetched.
 func TestBuildDispatchPlan_HandOffDuringTheArticleLoop(t *testing.T) {
+	t.Parallel()
+
 	ms := newMockNNTP(t)
 	ms.addArticle("msg1@h", string(yencBody("a.bin", []byte("payload1"))))
 	ms.addArticle("msg2@h", string(yencBody("a.bin", []byte("payload2"))))

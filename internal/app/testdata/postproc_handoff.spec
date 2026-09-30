@@ -6,7 +6,7 @@ run Test(Fail_AJobInPostProcessingIsNotDispatched|PostProcAdmissions_HasIsPerIns
 #
 # This used to also carry a third mutation neutering buildDispatchPlan's own
 # `d.handedOff(j)` check (dispatch.go:88, the queue-time gate). Once
-# fetchArticle grew its own HandedOff check (#657), TestFail_...IsNotDispatched
+# fetchArticle grew its own HandedOff check, TestFail_...IsNotDispatched
 # stopped discriminating that mutation — the request is queued as before but
 # now dropped one layer later, before any network I/O, so the test's "was it
 # fetched" assertion still passes. The queue-time gate is pinned on its own
