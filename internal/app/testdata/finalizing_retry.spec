@@ -1,11 +1,13 @@
 pkg ./internal/app/
-run TestPersistAndCommit_RefusesARetryWhileItCommits$|TestRetryHistoryJob_RefusesWhenAFinalizerStartsDuringIt$|TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState$|TestPruneHistory_SkipsAJobBeingFinalized$
+run TestPersistAndCommit_RefusesARetryWhileItCommits$|TestRetryHistoryJob_RefusesWhenAFinalizerStartsDuringIt$|TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState$|TestPruneHistory_SkipsAJobBeingFinalized$|TestFinalize_ParErrorWithHeldVolumesRetriesWithThemReleased$
 
 # The finalizing record that keeps a retry off an ID while its finalizer
-# commits, each part neutered on its own. RetryHistoryJob meets the record
+# commits, each part neutered on its own. retryHistoryJob meets the record
 # three times: at tryAcquire, after its registration check, and before it
 # registers. TestPersistAndCommit_RefusesARetryWhileItCommits asserts the
 # retry never claims the ID, so it kills the tryAcquire mutation itself.
+# TestFinalize_ParErrorWithHeldVolumesRetriesWithThemReleased is here for the
+# finalizer's own retry, which must be admitted once the record has ended.
 
 [the finalizer never records its ID]
 file internal/app/job_finalizer.go
