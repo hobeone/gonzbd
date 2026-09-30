@@ -544,8 +544,23 @@ three outcomes:
 | Outcome | Meaning | Action |
 |---|---|---|
 | `outcomeClean` | Every par2-tracked file was identified and its assembled CRC matched. | Recovery volumes discarded (`DiscardDeferredPar2`); job finalizes without them. |
-| `outcomeRepair` | At least one par2-tracked file is corrupt, has no CRC to check, could not be verified, or a par2 entry matched no delivered file while others in the same set did. | All deferred volumes un-deferred (`UndeferRecoveryVolumes`) and fetched; job re-enters download. |
+| `outcomeRepair` | At least one par2-tracked file is corrupt, has no CRC to check, could not be verified, or a par2 entry matched no delivered file while others in the same set did. | If the job's `Policy.Repair` is true: all deferred volumes un-deferred (`UndeferRecoveryVolumes`) and fetched; job re-enters download. If `Policy.Repair` is false (PP=0): the volumes are held, like `outcomeUnknown`, and the release reason is still recorded. |
 | `outcomeUnknown` | Nothing delivered matched any par2 entry, by name or by content. | Volumes are held, neither fetched nor discarded; job goes on to post-processing without them. If that fails par2, the finalizer retries the job with them released. |
+
+**The verdict and the fetch decision are separate questions (#653).**
+`par2Verdict` answers only "is repair possible" from the assessment; it does
+not read `Policy`. Two sites decide whether to act on that by releasing
+volumes, and both check `Policy.Repair` first: `maybeReleaseRecoveryVolumes`,
+before calling `releaseRecoveryVolumes` on an `outcomeRepair` verdict at
+download completion, and `Job.MarkArticleFailed`, before releasing on a
+permanent article failure during an active download — the same waste can
+happen well before the job ever reaches Assessing. A PP=0 job's `repair`
+stage self-gates and does no work regardless (`shouldSkipForPP` skips it
+below PP=1), so fetching the volumes for one would spend bandwidth on bytes
+nothing will use. This is a fetch-decision gate only — the Assessing→Repairing
+edge itself stays legal at every policy, per `job.Policy`'s "every state runs
+at every policy" (see `docs/job-lifecycle.md` § "Policy, not a PP level"); a
+PP=0 job that reaches `Repairing` anyway just has nothing for the stage to do.
 
 `outcomeUnknown` covers two indistinguishable cases: a Layout B post (par2
 protects the files an archive will extract to, which do not exist yet, so
@@ -608,7 +623,7 @@ instance (`postProcAdmissions`) both hold.
   cancelled `app.ctx`, so a sink that honours the context may not deliver
   it. Retrying the entry heals the job: the retry is rebuilt
   through `BuildIngestJob`, which holds the volumes back again while
-  `downloads.on_demand_par2` is on (`internal/app/ingest.go:151`), so its
+  `downloads.on_demand_par2` is on (`internal/app/ingest.go:146`), so its
   par2 failure is retried automatically with them released.
 - **Loop bound**: the retry releases every volume it holds before job_files,
   which hydration restores the policy from, is seeded; and only ingest sets

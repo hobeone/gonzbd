@@ -277,7 +277,11 @@ func (j *Job) MarkArticleFailed(artIdx int) error {
 		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
 	}
 	if j.progress.markFailed(j.manifest, artIdx) {
-		if !j.progress.par2Recovered && j.manifest.RecoveryFiles() > 0 {
+		// Repairing never runs for a job whose Policy.Repair is false
+		// (PP=0), so releasing its recovery volumes here would only spend
+		// bandwidth nothing will use. This is the live-download half of the
+		// gate; the Assessing-verdict half is app.maybeReleaseRecoveryVolumes.
+		if j.policy.Repair && !j.progress.par2Recovered && j.manifest.RecoveryFiles() > 0 {
 			if j.undeferRecovery(j.progress.DeferredRecoveryIndices()) {
 				j.progress.setPar2ReleaseReason("permanent article download failure detected on active queue")
 			}

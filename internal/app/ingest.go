@@ -137,12 +137,7 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	job.SortJobFiles(files)
 
 	manifest := job.NewManifest(files)
-	pol := job.Policy{
-		Repair: pp >= types.PPRepair,
-		Unpack: pp >= types.PPUnpack,
-		Delete: pp >= types.PPDelete,
-	}
-	j := job.New(id, name, pol)
+	j := job.New(id, name, job.PolicyFromPP(pp))
 	if err := j.AttachContent(manifest); err != nil {
 		return nil, dispatch.Header{}, fmt.Errorf("create job %q: %w", filename, err)
 	}

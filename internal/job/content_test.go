@@ -754,7 +754,10 @@ func TestJob_ProgressAccessors(t *testing.T) {
 			},
 		},
 	})
-	j := New("attached-job", "test.nzb", Policy{})
+	// PolicyFromPP(3): MarkArticleFailed below exercises the on-demand par2
+	// release, which is gated on Policy.Repair; the zero Policy{} would
+	// leave it unable to release, and this test wants the release path.
+	j := New("attached-job", "test.nzb", PolicyFromPP(3))
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}

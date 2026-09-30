@@ -279,6 +279,10 @@ func TestAppRunner_RunAssessBranches(t *testing.T) {
 		{subject: "movie.vol01+02.par2", bytes: 200},
 	})
 	_ = jDeferred.SetFileFetchPolicy(1, job.FetchIfNeeded)
+	// Releasing a deferred recovery volume is gated on Policy.Repair.
+	// buildRunnerJob's default PP (0) resolves Policy.Repair == false, so
+	// this subtest — which pins the release happening — needs it allowed.
+	jDeferred.SetPolicy(job.PolicyFromPP(types.PPRepair))
 	r.runAssess(context.Background(), jDeferred.ID())
 	if got, want := rec.advance(jDeferred.ID()), [2]job.State{job.Assessing, job.Fetching}; got != want {
 		t.Errorf("jDeferred reported AdvanceFrom %v, want %v", got, want)
