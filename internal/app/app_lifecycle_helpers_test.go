@@ -278,6 +278,12 @@ func newWatchCompletionsTestApp(t *testing.T) (*Application, *job.Job) {
 func newWatchCompletionsTestAppN(t *testing.T, nFiles int) (*Application, *job.Job) {
 	t.Helper()
 	application, _, _ := newLifecycleTestApp(t)
+	// Started, because a completion that meets a stopped assembler is withheld
+	// rather than delivered: nothing trimmed its file.
+	if err := application.assembler.Start(t.Context()); err != nil {
+		t.Fatalf("assembler.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = application.assembler.Stop() })
 
 	parsed := &nzb.NZB{}
 	for i := range nFiles {
@@ -349,6 +355,11 @@ func TestWatchCompletions_DrainsPendingOnContextCancel(t *testing.T) {
 	const nEvents = 6
 	application, j := newWatchCompletionsTestAppN(t, nEvents)
 
+	// Shutdown's order: the assembler stops before the context is cancelled,
+	// so every drained completion meets a stopped assembler.
+	if err := application.assembler.Stop(); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	// Buffer all the events and cancel before the loop ever starts, so the
 	// first iteration's select sees ctx.Done and a full backlog ready.
@@ -369,8 +380,11 @@ func TestWatchCompletions_DrainsPendingOnContextCancel(t *testing.T) {
 		t.Fatal("watchCompletions did not return after context cancellation")
 	}
 
+	// A drained completion is withheld, because nothing trimmed its file, and
+	// recorded pending; a dropped one leaves no record.
+	pending := application.recoveryFiles(j.ID())
 	for i := range nEvents {
-		if !j.Progress().FileComplete(i) {
+		if pending[i] != finalizePending {
 			t.Errorf("file %d: pending completion was dropped instead of drained on shutdown", i)
 		}
 	}

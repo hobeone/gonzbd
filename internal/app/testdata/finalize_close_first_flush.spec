@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestFinalizeCompletedFile_(WithoutABarrier_ACloseFaultStopsTheCompletion|WithNoSyncTarget_ACloseFaultStopsTheCompletion|ACloseFaultAfterACommittedFinalizeIsTolerated|AStoppedAssemblerIsNotAFailedFirstFlush|SkipsAFileTheAssemblerNoLongerHolds)$|TestHandleFileComplete_AFailedFirstFlushIsNotShipped$|TestRouteFinalizeFailure_FailsTheJobOnAPermanentFaultNothingRouted$
+run TestFinalizeCompletedFile_(WithoutABarrier_ACloseFaultStopsTheCompletion|WithNoSyncTarget_ACloseFaultStopsTheCompletion|ACloseFaultAfterACommittedFinalizeIsTolerated|AStoppedAssemblerIsNotAFailedFirstFlush)$|TestHandleFileComplete_(AFailedFirstFlushIsNotShipped|AStoppedAssemblerDoesNotStallTheJob)$|TestRouteFinalizeFailure_FailsTheJobOnAPermanentFaultNothingRouted$
 
 [a first-flush close fault read as post-hoc]
 file internal/app/durability.go
@@ -56,12 +56,12 @@ file internal/app/durability.go
 [the nil-target return read as post-hoc]
 file internal/app/durability.go
 --- anchor
-		// re-evaluation forgets the note handleFileComplete makes of that.
-		return nil
+	if tgt == nil {
+		// A job still in the queue has lost its manifest but not its place,
 --- replace
-		// re-evaluation forgets the note handleFileComplete makes of that.
+	if tgt == nil {
 		closeIsFirstFlush = false
-		return nil
+		// A job still in the queue has lost its manifest but not its place,
 --- end
 
 [a stopped assembler's unrun close read as a failed first flush]

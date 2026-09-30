@@ -96,7 +96,10 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 		t.Fatalf("Shutdown: %v", err)
 	}
 
-	// Verify all 150 files were marked complete.
+	// Verify all 150 completions reached handleFileComplete. One handled
+	// before the assembler stopped is marked complete; one drained after it
+	// is withheld, because nothing trimmed its file, and recorded pending.
+	// A dropped completion is neither.
 	dj, ok := application.Dispatcher().Job(j.ID())
 	if !ok || dj == nil {
 		t.Fatalf("job %s not found in dispatcher", j.ID())
@@ -105,12 +108,10 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 	if p == nil {
 		t.Fatal("job progress is nil")
 	}
+	pending := application.recoveryFiles(j.ID())
 	for fi := range numFiles {
-		if !p.FileComplete(fi) {
-			t.Errorf("file %d Complete = false, want true", fi)
+		if !p.FileComplete(fi) && pending[fi] != finalizePending {
+			t.Errorf("file %d is neither Complete nor recorded pending; its completion was dropped", fi)
 		}
-	}
-	if !dj.IsComplete() {
-		t.Error("job.IsComplete() = false, want true")
 	}
 }

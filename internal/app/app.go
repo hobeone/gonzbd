@@ -1483,17 +1483,6 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, ba
 		if dlErr = waitBounded("downloader", stepTimeout, dl.Stop, app.log); dlErr != nil && errs != nil {
 			*errs = append(*errs, fmt.Errorf("downloader stop: %w", dlErr))
 		}
-		// If dl.Stop returned cleanly with no error, all downloader workers have definitely
-		// exited and will not touch manifests or barriers again. Yield Fetching jobs so
-		// Dispatcher.Stop can cleanly park and evict. If dl.Stop timed out, do NOT yield,
-		// so Dispatcher.Stop observes wait worker timeout and skips eviction.
-		if dlErr == nil && app.dispatcher != nil {
-			for _, row := range app.dispatcher.List() {
-				if row.View.State == job.Fetching {
-					_ = app.dispatcher.Yielded(row.ID)
-				}
-			}
-		}
 	}
 
 	// R6's clean-shutdown barrier, in the only window where both halves
@@ -1501,8 +1490,24 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, ba
 	// assembler has not, so the file handles the barrier needs still exist.
 	// Without it every byte since the last checkpoint is re-fetched on the
 	// next start — a full window thrown away on a deliberate restart.
+	//
+	// Before the yield below, not after it. A yield parks the job's lease and
+	// kicks the tick, whose reconcileResidency evicts the job; the barrier
+	// skips a job with no resident manifest.
 	if barrier {
 		app.shutdownCheckpoint()
+	}
+
+	// If dl.Stop returned cleanly with no error, all downloader workers have definitely
+	// exited and will not touch manifests or barriers again. Yield Fetching jobs so
+	// Dispatcher.Stop can cleanly park and evict. If dl.Stop timed out, do NOT yield,
+	// so Dispatcher.Stop observes wait worker timeout and skips eviction.
+	if dl != nil && dlErr == nil && app.dispatcher != nil {
+		for _, row := range app.dispatcher.List() {
+			if row.View.State == job.Fetching {
+				_ = app.dispatcher.Yielded(row.ID)
+			}
+		}
 	}
 
 	// Abort all active DirectUnpackers before stopping the assembler.
