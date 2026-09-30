@@ -156,10 +156,11 @@ func TestFinalize_FilesAJobThatLeftTheQueueWithoutARemoval(t *testing.T) {
 	}
 }
 
-// TestFinalize_FilesAJobWhoseRemovalFailed: a RemoveJob whose dispatcher.Remove
-// fails leaves the job registered, so its mark must not outlive the call: the
-// finalizer that runs next is the only thing left that files the job.
-func TestFinalize_FilesAJobWhoseRemovalFailed(t *testing.T) {
+// TestFinalize_SkipsAJobWhoseRemovalFailed: a RemoveJob whose dispatcher.Remove
+// fails keeps its mark on the instance it leaves registered. A finalizer of
+// that instance files nothing and leaves it registered, and a later RemoveJob
+// still takes it.
+func TestFinalize_SkipsAJobWhoseRemovalFailed(t *testing.T) {
 	t.Parallel()
 	application, j, _ := newAppWithCustomDispatchStore(t, 1)
 	application.ctx = t.Context()
@@ -171,11 +172,22 @@ func TestFinalize_FilesAJobWhoseRemovalFailed(t *testing.T) {
 		t.Fatal("the failed removal took the job out of the queue")
 	}
 
-	if err := application.finalizer.persistAndCommit(slog.Default(), completedEntryFor(j), &postproc.Job{Job: j}); err != nil {
-		t.Fatalf("persistAndCommit: %v; a job whose removal failed was not filed", err)
+	err := application.finalizer.persistAndCommit(slog.Default(), completedEntryFor(j), &postproc.Job{Job: j})
+	if !errors.Is(err, errFinalizedJobRemoved) {
+		t.Errorf("persistAndCommit on a job whose removal failed = %v, want errFinalizedJobRemoved", err)
 	}
-	if _, err := application.historyRepo.Get(t.Context(), j.ID()); err != nil {
-		t.Errorf("the job is not in history: %v", err)
+	if _, err := application.historyRepo.Get(t.Context(), j.ID()); err == nil {
+		t.Error("the job whose removal failed was filed in history")
+	}
+	if _, held := application.dispatcher.Job(j.ID()); !held {
+		t.Fatal("the skipped finalizer took the job out of the queue")
+	}
+
+	if err := application.RemoveJob(t.Context(), j.ID(), false); err != nil {
+		t.Errorf("a later RemoveJob of the job = %v, want it removed", err)
+	}
+	if _, held := application.dispatcher.Job(j.ID()); held {
+		t.Error("the job is still queued after a later RemoveJob succeeded")
 	}
 }
 

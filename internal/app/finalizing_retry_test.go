@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"testing"
 	"time"
 
@@ -83,77 +84,152 @@ func TestPersistAndCommit_RefusesARetryWhileItCommits(t *testing.T) {
 	}
 }
 
-// TestRetryHistoryJob_RefusedByAFinalizerOfAGivenBackRemoval: a RemoveJob
-// whose dispatcher.Remove fails gives its mark back and leaves the instance
-// registered and cancelled, and the tick then evicts it as a cancelled job that
-// never ran. A retry can find the ID free and pass its early finalizing check,
-// and a finalizer of that instance can then start, find no mark, and take its
-// fallback teardown without the lock. The retry must be refused before it
-// registers, or the ID ends up both queued and filed in history.
+// failedRemovalEvicted registers a never-run instance under id, has a RemoveJob
+// on an ended context fail to remove it, and ticks the dispatcher so it evicts
+// the instance that removal left registered and cancelled. It returns the
+// evicted instance, whose finalizer a test then runs against a retry of id.
 //
-// Real: RemoveJob on an ended context (so Remove fails and unmarks), the
-// dispatcher tick that evicts, the retry, and persistAndCommit's fallback with
-// app.ctx ended (the lock bypass). Stood in for:
-//   - the FAILED entry beside a live instance, which in production is left by
-//     an earlier retry whose history delete failed, is seeded directly;
-//   - the hand-over of the never-run instance to post-processing, which in
-//     production is a by-ID maybeFinalize caller (pipeline.onJobHopeless, the
-//     downloader's OnJobHopeless, or Fail) paused before beginHandOver, is
-//     replaced by calling persistAndCommit on the instance directly.
-func TestRetryHistoryJob_RefusedByAFinalizerOfAGivenBackRemoval(t *testing.T) {
-	t.Parallel()
-	application, repo, adminDir := newLifecycleTestApp(t)
-	const id = "feedface00682a01"
-	addRetryableEntry(t, repo, adminDir, id, "")
-
-	j1 := job.New(id, "never-run", job.Policy{})
-	if err := application.dispatcher.Add(t.Context(), j1, dispatch.Header{Name: "never-run"}); err != nil {
-		t.Fatalf("Add(j1): %v", err)
+// Stood in for: the hand-over of that instance to post-processing, which in
+// production is a by-ID maybeFinalize caller (pipeline.onJobHopeless, the
+// downloader's OnJobHopeless, or Fail) paused before beginHandOver, is
+// replaced by calling persistAndCommit on the instance directly.
+func failedRemovalEvicted(t *testing.T, application *Application, id string) *job.Job {
+	t.Helper()
+	j := job.New(id, "never-run", job.Policy{})
+	if err := application.dispatcher.Add(t.Context(), j, dispatch.Header{Name: "never-run"}); err != nil {
+		t.Fatalf("Add: %v", err)
 	}
-
 	ended, end := context.WithCancel(t.Context())
 	end()
 	if err := application.RemoveJob(ended, id, false); err == nil {
-		t.Fatal("fixture guard: RemoveJob on an ended context succeeded, so it never gave its mark back")
-	}
-	if application.transitions.wasRemoved(j1) {
-		t.Fatal("fixture guard: the failed RemoveJob left its mark standing")
+		t.Fatal("fixture guard: RemoveJob on an ended context succeeded")
 	}
 	application.dispatcher.Tick(t.Context())
 	if _, held := application.dispatcher.Job(id); held {
 		t.Fatal("fixture guard: the tick did not evict the cancelled never-run instance")
 	}
+	return j
+}
 
-	// Held in its job_files seed: past its early finalizing check, before the
-	// check before it registers.
-	retry, blk := startBlockedRetry(t, application, id)
-
+// finalizeWithoutTheLock runs persistAndCommit for j on a stopping process, so
+// it proceeds without the transition lock a blocked retry holds, and returns
+// its error. app.ctx stays ended.
+func finalizeWithoutTheLock(t *testing.T, application *Application, j *job.Job) error {
+	t.Helper()
 	stopping, stop := context.WithCancel(t.Context())
 	stop()
 	application.ctx = stopping
-	var during error
-	released := false
-	log := slog.New(onMessage{
-		msg: "occupy failed during finalize; proceeding with fallback teardown",
-		fn: func() {
-			released = true
-			close(blk.release)
-			during = receiveWithin(t, retry, "the retry")
-		},
-	})
-	ppJob := &postproc.Job{Job: j1}
-	_ = application.finalizer.persistAndCommit(log, completedEntryFor(j1), ppJob)
-	if !released {
-		t.Fatal("fixture guard: the finalizer never took its fallback teardown")
+	return application.finalizer.persistAndCommit(slog.Default(), completedEntryFor(j), &postproc.Job{Job: j})
+}
+
+// requireRetryRegisteredWithItsState checks that the retry of id returned
+// retryErr == nil and left a later instance than removed registered under id,
+// with its queue manifest on disk and its job_files rows in the store.
+func requireRetryRegisteredWithItsState(t *testing.T, application *Application, adminDir, id string, removed *job.Job, retryErr error) {
+	t.Helper()
+	if retryErr != nil {
+		t.Fatalf("RetryHistoryJob = %v, want the retry admitted", retryErr)
+	}
+	cur, queued := application.dispatcher.Job(id)
+	if !queued || cur == removed {
+		t.Fatalf("after the retry, the instance registered under %s = %p (queued %v), want the retry's", id, cur, queued)
+	}
+	if _, err := os.Stat(manifestPathOf(t, adminDir, id)); err != nil {
+		t.Errorf("the retry is registered without its queue manifest: %v", err)
+	}
+	if got := jobFilesCount(t, application, id); got == 0 {
+		t.Error("the retry is registered without its job_files rows")
+	}
+}
+
+// TestRetryHistoryJob_AFinalizerBetweenItsChecksLeavesItsState: a RemoveJob
+// whose dispatcher.Remove fails leaves the instance registered and cancelled,
+// and the tick evicts it as a cancelled job that never ran. A retry of the ID
+// then finds it free, and a finalizer of that instance can begin and end,
+// without the lock, while the retry is between its two finalizing checks. It
+// must act on nothing under the ID: the retry registers with the manifest and
+// rows it wrote. The instance the retry registers is filed by its own
+// finalizer.
+//
+// The FAILED entry beside a live instance, which in production is left by an
+// earlier retry whose history delete failed, is seeded directly.
+func TestRetryHistoryJob_AFinalizerBetweenItsChecksLeavesItsState(t *testing.T) {
+	t.Parallel()
+	application, repo, adminDir := newLifecycleTestApp(t)
+	const id = "feedface00682a01"
+	addRetryableEntry(t, repo, adminDir, id, "")
+	j1 := failedRemovalEvicted(t, application, id)
+
+	// Held in its job_files seed: past its early finalizing check and its
+	// manifest write, before the check before it registers.
+	retry, blk := startBlockedRetry(t, application, id)
+	finErr := finalizeWithoutTheLock(t, application, j1)
+	close(blk.release)
+	retryErr := receiveWithin(t, retry, "the retry")
+
+	if !errors.Is(finErr, errFinalizedJobRemoved) {
+		t.Errorf("the finalizer of the instance whose removal failed = %v, want errFinalizedJobRemoved", finErr)
+	}
+	requireRetryRegisteredWithItsState(t, application, adminDir, id, j1, retryErr)
+
+	application.ctx = t.Context()
+	j2, _ := application.dispatcher.Job(id)
+	if err := application.finalizer.persistAndCommit(slog.Default(), completedEntryFor(j2), &postproc.Job{Job: j2}); err != nil {
+		t.Fatalf("persistAndCommit of the retry's instance: %v", err)
+	}
+	if _, err := repo.Get(t.Context(), id); err != nil {
+		t.Errorf("the retry's instance is not in history after its finalizer: %v", err)
+	}
+}
+
+// TestRetryHistoryJob_AFinalizerAfterItsLastCheckLeavesItsState: as
+// TestRetryHistoryJob_AFinalizerBetweenItsChecksLeavesItsState, with the
+// finalizer beginning after the retry's last finalizing check and before the
+// retry registers, where no check of the retry's can see it.
+func TestRetryHistoryJob_AFinalizerAfterItsLastCheckLeavesItsState(t *testing.T) {
+	t.Parallel()
+	application, repo, adminDir := newLifecycleTestApp(t)
+	const id = "feedface00682a02"
+	addRetryableEntry(t, repo, adminDir, id, "")
+	j1 := failedRemovalEvicted(t, application, id)
+
+	var finErr error
+	ran := false
+	application.retryRegisteringHook = func(string) {
+		ran = true
+		finErr = finalizeWithoutTheLock(t, application, j1)
+	}
+	retryErr := application.RetryHistoryJob(context.Background(), id)
+	if !ran {
+		t.Fatal("fixture guard: the retry never reached the point before it registers")
 	}
 
-	_, queued := application.dispatcher.Job(id)
-	_, histErr := repo.Get(t.Context(), id)
-	if queued && histErr == nil {
-		t.Errorf("job %s is both queued and filed in history: the retry registered under the finalizer's teardown", id)
+	if !errors.Is(finErr, errFinalizedJobRemoved) {
+		t.Errorf("the finalizer of the instance whose removal failed = %v, want errFinalizedJobRemoved", finErr)
 	}
-	if !errors.Is(during, errJobInTransition) {
-		t.Errorf("the retry blocked while the finalizer committed = %v, want errJobInTransition", during)
+	requireRetryRegisteredWithItsState(t, application, adminDir, id, j1, retryErr)
+}
+
+// TestRetryHistoryJob_RefusedByAFinalizingRecordBeforeItRegisters: a retry
+// does not register under an ID a finalizer began committing after the
+// retry's early finalizing check, and a refused retry leaves nothing queued.
+func TestRetryHistoryJob_RefusedByAFinalizingRecordBeforeItRegisters(t *testing.T) {
+	t.Parallel()
+	application, repo, adminDir := newLifecycleTestApp(t)
+	const id = "feedface00682a03"
+	addRetryableEntry(t, repo, adminDir, id, "")
+
+	retry, blk := startBlockedRetry(t, application, id)
+	end := application.transitions.beginFinalize(id)
+	close(blk.release)
+	err := receiveWithin(t, retry, "the retry")
+	end()
+
+	if !errors.Is(err, errJobInTransition) {
+		t.Errorf("RetryHistoryJob with a finalizer begun after its early check = %v, want errJobInTransition", err)
+	}
+	if _, queued := application.dispatcher.Job(id); queued {
+		t.Error("the refused retry registered the job")
 	}
 }
 

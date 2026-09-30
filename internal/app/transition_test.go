@@ -102,17 +102,12 @@ func TestJobTransitions_ClaimHelpers(t *testing.T) {
 	}
 }
 
-// TestJobTransitions_RemovedMarkWithdrawnAndForgotten: unmarkRemoved withdraws
-// a mark, and forgetRemoved, the collection cleanup, drops one.
-func TestJobTransitions_RemovedMarkWithdrawnAndForgotten(t *testing.T) {
+// TestJobTransitions_RemovedMarkForgotten: forgetRemoved, the collection
+// cleanup, drops a mark.
+func TestJobTransitions_RemovedMarkForgotten(t *testing.T) {
 	t.Parallel()
 	var tr jobTransitions
 	j := job.New("a", "a", job.Policy{})
-	tr.markRemoved(j)
-	tr.unmarkRemoved(j)
-	if tr.wasRemoved(j) {
-		t.Error("the mark stayed after unmarkRemoved")
-	}
 	tr.markRemoved(j)
 	tr.forgetRemoved(weak.Make(j))
 	if tr.wasRemoved(j) {

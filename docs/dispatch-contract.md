@@ -346,10 +346,15 @@ of its ID commits at any of those points, and a refused retry leaves the state
 the finalizer is filing untouched
 (`TestPersistAndCommit_RefusesARetryWhileItCommits`,
 `TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState`,
-`TestRetryHistoryJob_RefusedByAFinalizerOfAGivenBackRemoval`). A finalizer
-that begins and ends between the last two checks, or begins after the last,
-is not seen; the `jobTransitions` doc says how one can arise, and #682 tracks
-it.
+`TestRetryHistoryJob_RefusedByAFinalizingRecordBeforeItRegisters`). A
+finalizer that begins after the second of those checks and ends before the
+third, or begins after the third, is a finalizer of an instance a
+`RemoveJob` marked removed: `RemoveJob` keeps that mark on its instance even
+when its `dispatcher.Remove` fails, and the finalizer returns
+`errFinalizedJobRemoved` before any step that acts on the ID. The
+`jobTransitions` doc carries the argument
+(`TestRetryHistoryJob_AFinalizerBetweenItsChecksLeavesItsState`,
+`TestRetryHistoryJob_AFinalizerAfterItsLastCheckLeavesItsState`).
 A holder may
 wait inside the dispatcher: `Dispatcher.Remove` waits on the job's launch
 claim. So nothing may wait for that lock while holding something the

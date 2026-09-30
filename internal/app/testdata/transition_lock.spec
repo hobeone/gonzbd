@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestRetryHistoryJob_(RefusesWhileAnotherHolderHasTheID|RefusesAJobTheDispatcherHolds)$|TestRemoveHistoryJob_ActsOnAFreshReadAfterAnInFlightRetry|TestMarkHistoryCompleted_WaitsForAnInFlightRetry|TestDeleteHistoryEntries_RefusesAnIDOutsideItsClaim|TestPruneHistory_SkipsAJobInTransition|TestRemoveJob_WaitsForAnInFlightTransition|TestFinalize_(WaitsForAnInFlightTransition|ProceedsWithoutTheLockOnceTheProcessIsStopping|DoesNotFileAJobRemovedWhileItWaited|DoesNotFileAJobRemovedWithoutTheLock|FilesAJobThatLeftTheQueueWithoutARemoval|FilesAJobWhoseRemovalFailed)$|TestStillExpired_KeepsOnlyHeldEntriesUnchangedSinceTheScan
+run TestRetryHistoryJob_(RefusesWhileAnotherHolderHasTheID|RefusesAJobTheDispatcherHolds)$|TestRemoveHistoryJob_ActsOnAFreshReadAfterAnInFlightRetry|TestMarkHistoryCompleted_WaitsForAnInFlightRetry|TestDeleteHistoryEntries_RefusesAnIDOutsideItsClaim|TestPruneHistory_SkipsAJobInTransition|TestRemoveJob_WaitsForAnInFlightTransition|TestFinalize_(WaitsForAnInFlightTransition|ProceedsWithoutTheLockOnceTheProcessIsStopping|DoesNotFileAJobRemovedWhileItWaited|DoesNotFileAJobRemovedWithoutTheLock|FilesAJobThatLeftTheQueueWithoutARemoval|SkipsAJobWhoseRemovalFailed)$|TestStillExpired_KeepsOnlyHeldEntriesUnchangedSinceTheScan
 
 # The transition lock's sites, each removed on its own. A claim site is
 # neutered by claiming a different key, not by skipping the claim: that leaves
@@ -124,14 +124,6 @@ file internal/app/job_finalizer.go
 	if app.transitions.wasRemoved(ppJob.Job) {
 --- replace
 	if false {
---- end
-
-[a RemoveJob that gave up keeps its mark]
-file internal/app/app.go
---- anchor
-		app.transitions.unmarkRemoved(j)
---- replace
-		app.transitions.unmarkRemoved(job.New(id, id, job.Policy{}))
 --- end
 
 [the finalizer drops a job that left the queue without a removal]
