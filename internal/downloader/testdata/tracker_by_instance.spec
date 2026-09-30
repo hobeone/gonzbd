@@ -4,9 +4,13 @@ run TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries|TestTracke
 # The tracker keys its entries on the instance a request was dispatched for
 # (#665). The first mutation drops the instance from the key at its one
 # constructor. The next three put back, one helper at a time, a key for
-# whatever instance holds the ID, which after a retry is the retry. The last
-# holds the instance strongly, so an entry left behind keeps its job and
-# manifest in memory.
+# whatever instance holds the ID, which after a retry is the retry. The three
+# after those make each helper do nothing, and the three after those make each
+# skip a request whose instance has been superseded; both leak the removed
+# instance's own entries. The last holds the instance strongly, so an entry
+# left behind keeps its job and manifest in memory.
+#
+# Every mutation is killed by a test that reads the tracker's state directly.
 #
 # tryDispatch's keyFor(a.Job, a.ArtIdx) has no by-ID mutation: a.Job is the
 # instance the dispatch pass just took from Dispatcher.Job, so a lookup there
@@ -54,6 +58,63 @@ file internal/downloader/dispatch.go
 		cur = j
 	}
 	d.tracker.ClearTried(keyFor(cur, req.artIdx))
+--- end
+
+[clearInFlight decrements nothing]
+file internal/downloader/dispatch.go
+--- anchor
+	d.tracker.DecrementInFlight(keyFor(req.job, req.artIdx))
+--- replace
+	_ = req
+--- end
+
+[unmarkTried unmarks nothing]
+file internal/downloader/dispatch.go
+--- anchor
+	d.tracker.UnmarkTried(keyFor(req.job, req.artIdx), serverIdx)
+--- replace
+	_, _ = req, serverIdx
+--- end
+
+[clearTried clears nothing]
+file internal/downloader/dispatch.go
+--- anchor
+	d.tracker.ClearTried(keyFor(req.job, req.artIdx))
+--- replace
+	_ = req
+--- end
+
+[clearInFlight skips a superseded instance]
+file internal/downloader/dispatch.go
+--- anchor
+	d.tracker.DecrementInFlight(keyFor(req.job, req.artIdx))
+--- replace
+	if cur, ok := d.dispatcher.Job(req.jobID()); ok && cur != req.job {
+		return
+	}
+	d.tracker.DecrementInFlight(keyFor(req.job, req.artIdx))
+--- end
+
+[unmarkTried skips a superseded instance]
+file internal/downloader/dispatch.go
+--- anchor
+	d.tracker.UnmarkTried(keyFor(req.job, req.artIdx), serverIdx)
+--- replace
+	if cur, ok := d.dispatcher.Job(req.jobID()); ok && cur != req.job {
+		return
+	}
+	d.tracker.UnmarkTried(keyFor(req.job, req.artIdx), serverIdx)
+--- end
+
+[clearTried skips a superseded instance]
+file internal/downloader/dispatch.go
+--- anchor
+	d.tracker.ClearTried(keyFor(req.job, req.artIdx))
+--- replace
+	if cur, ok := d.dispatcher.Job(req.jobID()); ok && cur != req.job {
+		return
+	}
+	d.tracker.ClearTried(keyFor(req.job, req.artIdx))
 --- end
 
 [the key holds its instance strongly]

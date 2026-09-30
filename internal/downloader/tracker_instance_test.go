@@ -35,9 +35,14 @@ func TestTracker_TwoInstancesUnderOneIDAreTrackedSeparately(t *testing.T) {
 	tr.Lock()
 	n := tr.InFlightLocked(kRetry)
 	got, ok := tr.TryListLocked(kRetry)
+	nRemoved := tr.InFlightLocked(kRemoved)
+	_, removedTried := tr.TryListLocked(kRemoved)
 	tr.Unlock()
 	if n != 1 || !ok || !got.has(0) {
 		t.Errorf("the retry's entries changed with the removed instance's: in-flight=%d, try-list present=%v has server 0=%v; want 1, true, true", n, ok, got.has(0))
+	}
+	if nRemoved != 0 || removedTried {
+		t.Errorf("the removed instance's own entries were not updated: in-flight=%d, try-list present=%v; want 0, false", nRemoved, removedTried)
 	}
 
 	tr.ClearJob("j1")
@@ -88,9 +93,10 @@ func trackerState(d *Downloader, j *job.Job, artIdx int32) (inFlight int, mask s
 }
 
 // retryInFlight builds the state #665 is about: a request for a removed
-// instance still outstanding, and a retry under the same ID whose own fetch of
-// the same article is in flight on server 0. It returns the downloader, the
-// removed instance's request and the retry.
+// instance still outstanding, with its own in-flight count of 1 and server 0
+// in its try-list, and a retry under the same ID whose own fetch of the same
+// article is in flight on server 0. It returns the downloader, the removed
+// instance's request and the retry.
 func retryInFlight(t *testing.T) (*Downloader, *dispatch.Dispatcher, *articleRequest, *job.Job) {
 	t.Helper()
 	disp, req, second := staleRequest(t)
@@ -99,6 +105,15 @@ func retryInFlight(t *testing.T) (*Downloader, *dispatch.Dispatcher, *articleReq
 	backup := NewServer(config.ServerConfig{Name: "s2", Enable: true, Host: "127.0.0.1", Port: 1, Connections: 1})
 	d := New(disp, []*Server{unreachableServer(), backup}, nil, Options{}, slog.New(slog.DiscardHandler))
 	d.pauseCtx = t.Context()
+
+	// The removed instance's own entries, as tryDispatch left them when it
+	// sent req to server 0.
+	var mask serverMask
+	mask.set(0)
+	d.tracker.Lock()
+	d.tracker.SetTriedLocked(keyFor(req.job, req.artIdx), mask)
+	d.tracker.IncrementInFlightLocked(keyFor(req.job, req.artIdx))
+	d.tracker.Unlock()
 
 	a := UnfinishedArticle{Job: second, ArtIdx: req.artIdx, MessageID: "a@h", Bytes: 100, PartNumber: 1}
 	if handled, exReq := d.tryDispatch(t.Context(), a, defaultOpts(d.servers)); !handled || exReq != nil {
@@ -114,18 +129,29 @@ func retryInFlight(t *testing.T) (*Downloader, *dispatch.Dispatcher, *articleReq
 // TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries pins
 // #665: a fetch dispatched for an instance that has since been removed, and
 // completes after a retry registered under the same ID dispatched the same
-// article, must leave the retry's in-flight count and try-list alone.
+// article, must leave the retry's in-flight count and try-list alone. It must
+// still update the removed instance's own entries, or they leak.
 //
-// Each case drives one production path by which a request's completion
-// updates the tracker.
+// Each case drives one production entry point that updates the tracker for a
+// request:
+//   - handleRequest, for a request fetchArticle drops before the fetch. That
+//     runs unmarkTried, and handleRequest's deferred clearInFlight.
+//   - processFetchedArticle, for a success and for a terminal decode error.
+//     Each runs clearTried. It is called directly, so handleRequest's
+//     deferred clearInFlight, which follows it in production, does not run.
+//   - applyDispatchPlan, for a request whose try-list is exhausted. That runs
+//     clearTried from a dispatch pass, not from a worker's completion, and
+//     such a request was never counted in flight.
+//
+// So only the handleRequest case exercises clearInFlight.
 func TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries(t *testing.T) {
 	cases := []struct {
 		name string
 		// complete runs the removed instance's completion.
 		complete func(t *testing.T, d *Downloader, req *articleRequest)
-		// keepsInFlight reports whether the path decrements an in-flight
-		// count, and so whether the retry's count is observable through it.
-		keepsInFlight bool
+		// decrementsInFlight reports whether the path runs clearInFlight, and
+		// so whether in-flight counts are observable through it.
+		decrementsInFlight bool
 	}{
 		{"a request dropped before the fetch", func(t *testing.T, d *Downloader, req *articleRequest) {
 			d.handleRequest(t.Context(), d.servers[0], 0, &managedConn{}, req, "s1#0", nil)
@@ -152,8 +178,17 @@ func TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries(t *testin
 			if !tried || !mask.has(0) {
 				t.Errorf("the retry's try-list lost server 0 to a completion for the removed instance (entry present=%v)", tried)
 			}
-			if !tc.keepsInFlight {
+			// Every path frees the removed instance's server 0: unmarkTried
+			// empties its one-server mask, and clearTried deletes the entry.
+			ownN, _, ownTried := trackerState(d, req.job, req.artIdx)
+			if ownTried {
+				t.Error("the removed instance's own try-list entry is still present after its completion")
+			}
+			if !tc.decrementsInFlight {
 				return
+			}
+			if ownN != 0 {
+				t.Errorf("the removed instance's own in-flight count is %d after its completion, want 0", ownN)
 			}
 			if n != 1 {
 				t.Errorf("the retry's in-flight count is %d after a completion for the removed instance, want 1", n)
