@@ -590,7 +590,7 @@ operation, the path, and whether the condition is `Permanent`.
 
 | Classification | Route | Job outcome | Articles |
 |---|---|---|---|
-| retryable | `Stallable.Stall` → `Application.Stall` | paused, with a surfaced reason naming the file (R27); re-evaluated on an interval and on user action (R19) | stay **Outstanding** |
+| retryable | `Stallable.Stall` → `Application.Stall` | paused, with a surfaced reason naming the file (R27) — except a failed commit of the durability record, which names no file (§9a); re-evaluated on an interval and on user action (R19) | stay **Outstanding** |
 | permanent | `Stallable.Fail` → `Application.Fail` | stopped, reason carried into history (R20) | stay **Outstanding** |
 
 In neither case is `Job.MarkArticleFailed` called, the failed-byte count
@@ -837,9 +837,13 @@ of two sentinels.
 | `durability.ErrFileNotOpen` | the file was closed between the barrier listing it and calling on it | drop that file from the run, surface nothing |
 | `durability.ErrTargetUnavailable` | the operation never ran, for a reason that is not about storage — a stopped assembler, a caller that stopped waiting | abandon the run, surface nothing |
 
-`Barrier.raise` is the single place that applies it, and every fault site in
-`barrier.go` goes through it. Six sites were getting this wrong independently,
-which is why the rule sits on the interface rather than at each of them.
+`Barrier.raise` is the single place that applies it. Every `SyncTarget`
+operation in `barrier.go` sends its error there once `ErrFileNotOpen` has been
+handled, and so does `Barrier.Run`'s commit of the durability record.
+`FinalizeFile`'s commit and run read return plain errors, which
+`Application.routeFinalizeFailure` classifies instead. Six sites were getting
+this wrong independently, which is why the rule sits on the interface rather
+than at each of them.
 
 **A timeout splits, and getting the split wrong is what parked healthy jobs.**
 The implementation's *own* bound expiring — the worker did not answer within
@@ -849,6 +853,18 @@ surfaced. The *caller's* deadline expiring is not: the caller chose to stop
 waiting, and the clean-shutdown checkpoint always does. `jobSyncTarget.submit`
 converts the first into a fault and wraps the second in
 `ErrTargetUnavailable`.
+
+**`Run`'s commit takes the same split, applied by the barrier.** The store is
+not a `SyncTarget`, so nothing on its side wraps a caller that stopped waiting.
+`commitFailure` does it instead: a commit that failed after the caller's
+context ended is wrapped in `ErrTargetUnavailable` and routes nothing. Any
+other commit error reaches `raise` unchanged, and `storagefault.Classify`
+makes it retryable unless it wraps a permanent errno, so the job stalls. The
+commit records no interrupted finalize, so `reevaluateStall` resumes the job at
+the next re-evaluation unless an earlier finalize is still pending. That
+includes a transient `SQLITE_BUSY`. Such a fault carries no path, because the barrier does
+not know the database's: the stall reason names the store's own error, which
+falls short of R27's file.
 
 Dropping a file drops it from **every** collection the run holds, not only from
 its drain reports. `Barrier.Run` releases each surviving file's report with

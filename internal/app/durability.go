@@ -684,9 +684,14 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 			// precisely the state a clear would turn into a re-fetch.
 			return app.nothingAtRisk(jobID)
 		}
-		// Everything else: the fault has already reached the job through
-		// Stallable, and a failed barrier claims nothing — the prior committed
-		// cache is intact and no article was acked.
+		// Everything else came from a step before the ack: the ack's one
+		// error is Job.AckDurable's ErrNotResident, answered above. So no
+		// article was acked and the stored runs are as the last successful
+		// commit left them. Run sends each of those steps' errors, its commit
+		// included, through Barrier.raise, which either routed it to
+		// Stallable — the error then carries durability.ErrFaultRouted — or
+		// judged it not a storage condition and left the job running
+		// (durability.ErrTargetUnavailable, such as a caller's deadline).
 		app.log.Warn("checkpoint barrier failed", "job", jobID, "err", err)
 		// UNSAFE. The barrier claims nothing on this path, so anything written
 		// since the last successful one is still unacked.

@@ -313,7 +313,7 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 	// between them: the commit is what makes the proof true after a crash.
 	collisions, err := b.commit(ctx, jobID, arts)
 	if err != nil {
-		return nil, fmt.Errorf("durability: barrier commit for %s: %w", jobID, err)
+		return nil, b.raise(jobID, "commit", "", commitFailure(ctx, err))
 	}
 	if len(acked) > 0 {
 		slices.Sort(acked)
@@ -430,8 +430,12 @@ func (b *Barrier) confirmAll(ctx context.Context, files []int32, t SyncTarget) {
 	}
 }
 
-// raise turns one SyncTarget error into the right kind of failure, and it is
-// the single boundary every fault site in this file goes through.
+// raise turns one SyncTarget error, or a failed commit of Run's, into the right
+// kind of failure. Every SyncTarget operation in this file sends its error here
+// once ErrFileNotOpen has been handled, and so does Run's commit:
+// `git grep -n 'b\.raise(' -- internal/durability/barrier.go` finds 9 lines.
+// FinalizeFile's commit and run read return plain errors, which
+// Application.routeFinalizeFailure classifies instead.
 //
 // Three outcomes, and the middle one is the one that kept being missed:
 //
@@ -472,6 +476,27 @@ func (b *Barrier) raise(jobID, op, path string, err error) error {
 		return fmt.Errorf("durability: barrier %s job=%s: %w", op, jobID, err)
 	}
 	return b.routeFault(jobID, storagefault.Classify(op, path, err))
+}
+
+// commitFailure prepares a failed commit of the durability record for raise.
+//
+// The store is not a SyncTarget, so nothing on its side of the call wraps a
+// caller that stopped waiting in ErrTargetUnavailable, as jobSyncTarget.submit
+// does for the target's operations. This applies that half of the boundary
+// rule for it: a commit that failed after ctx ended is attributed to the
+// caller, and raise routes nothing for it. Any other commit error is returned
+// unchanged, so raise classifies it — storagefault.Classify defaults an error
+// it does not recognise to retryable, and the job stalls.
+//
+// ctx.Err() is tested rather than errors.Is(err, ctx.Err()), because the
+// driver may report an interrupted statement with an error of its own that
+// wraps no context error.
+func commitFailure(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("%w: commit abandoned by its caller (%w): %w",
+			ErrTargetUnavailable, context.Cause(ctx), err)
+	}
+	return err
 }
 
 // routeFault dispatches a storage fault per A1 and returns it as the error,
