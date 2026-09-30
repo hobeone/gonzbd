@@ -55,7 +55,7 @@ type appWorkers struct {
 // pp.HasJob takes q.mu and busyMu, and no span of either calls out of
 // internal/postproc, so it keeps the lock rule sched.Workers places on Abort.
 // `git grep -n 'q\.mu\.Lock()\|busyMu\.Lock()' -- internal/postproc/postproc.go internal/postproc/queue.go internal/postproc/has.go internal/postproc/cancel.go`
-// returns 13 lines, the spans that claim covers.
+// returns 12 lines, the spans that claim covers.
 func (w *appWorkers) Abort(j *job.Job) {
 	if w.app == nil || j == nil {
 		return
