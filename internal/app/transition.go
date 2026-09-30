@@ -31,7 +31,9 @@ import (
 // something the dispatcher waits on. Of the sites TestJobTransitions_LockSites
 // pins, the finalizer alone runs holding such a thing — post-processing's
 // launch claim, which its own Yielded clears — so it takes the lock only after
-// that call.
+// that call. retryHistoryJob also runs on the post-processing worker, from
+// jobFinalizer.retryWithHeldVolumes, once persistAndCommit has returned; it
+// never waits for the lock, taking it with tryAcquire.
 //
 // removed records the job instances a RemoveJob has taken and not given back
 // (a RemoveJob whose dispatcher.Remove fails withdraws its mark), so a
