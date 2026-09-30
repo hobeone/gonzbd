@@ -15,6 +15,62 @@ import (
 	"github.com/hobeone/gonzbd/internal/postproc"
 )
 
+// TestJobFinalizerCancelled_LeavesALaterInstancesLaunchClaimAlone: a callback
+// that arrives for a removed instance must not release the launch claim of a
+// retry the dispatcher has since actually launched under the same ID. The
+// second instance is given a real launch claim here, taken by the
+// dispatcher's own tick through claimLaunched (internal/dispatch/worker.go),
+// not fabricated on the job object: a Runner that never reports (stateRecorder,
+// stall_worker_test.go) leaves that claim held until something clears it, so
+// its survival is the thing under test rather than an assumption.
+//
+// cancelled must release the claim by INSTANCE (YieldedJob), not by ID
+// (Yielded): a by-ID release finds whichever job is currently registered
+// under the ID, and would park the second instance's live worker and clear
+// its claim regardless of which instance the callback names.
+func TestJobFinalizerCancelled_LeavesALaterInstancesLaunchClaimAlone(t *testing.T) {
+	app := newTestApplication(t)
+	runner := &stateRecorder{}
+	d := dispatch.New(1, 1, time.Hour, time.Now, &appWorkers{app: app},
+		nopResidency{}, nopDispatchStore{}, runner)
+	app.dispatcher = d
+
+	const id = "feedface00584f01"
+	ctx := context.Background()
+
+	j1 := job.New(id, "first", job.Policy{})
+	if err := d.Add(ctx, j1, dispatch.Header{Name: "first"}); err != nil {
+		t.Fatalf("Add(j1): %v", err)
+	}
+	if err := d.Remove(ctx, id); err != nil {
+		t.Fatalf("Remove(j1): %v", err)
+	}
+
+	j2 := job.New(id, "second", job.Policy{})
+	if err := d.Add(ctx, j2, dispatch.Header{Name: "second"}); err != nil {
+		t.Fatalf("Add(j2): %v", err)
+	}
+	d.Tick(ctx) // j2 begins at Fetching
+	d.Tick(ctx) // j2 granted a lease and launched at Fetching; stateRecorder never reports
+
+	if row, ok := d.Row(id); !ok || !row.View.Running {
+		t.Fatalf("precondition: j2 is not running before cancelled: ok=%v view=%+v", ok, row.View)
+	}
+
+	app.finalizer.cancelled(&postproc.Job{Job: j1})
+
+	if got, ok := d.Job(id); !ok || got != j2 {
+		t.Fatalf("dispatcher.Job(%s) = (%p, %v), want the second instance %p", id, got, ok, j2)
+	}
+	row, ok := d.Row(id)
+	if !ok {
+		t.Fatalf("dispatcher.Row(%s): the second instance is no longer registered", id)
+	}
+	if !row.View.Running {
+		t.Errorf("j2's launch claim did not survive a cancelled callback for the removed first instance: %+v", row.View)
+	}
+}
+
 // TestJobFinalizerCancelled_LeavesALaterInstanceAlone: a callback that arrives
 // for a removed instance must not cancel the instance a retry has since
 // registered under the same ID. A never-run job with cancel intent is evicted
