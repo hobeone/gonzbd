@@ -64,19 +64,19 @@ file internal/downloader/dispatch.go
 [the pre-fetch check ignores which instance holds the ID]
 file internal/downloader/dispatch.go
 --- anchor
-	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun {
+	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
 --- replace
-	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur == nil || req.job.Intent() != job.IntentRun {
+	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur == nil || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
 --- end
 
 [a request dropped by the pre-fetch check clears whatever instance holds the ID]
 file internal/downloader/dispatch.go
 --- anchor
-	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun {
+	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
 		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 --- replace
-	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun {
+	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
 		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
 		if ok {
 			_ = cur.ClearArticleEmitted(int(req.artIdx))
@@ -86,11 +86,11 @@ file internal/downloader/dispatch.go
 [a request dropped by the pre-fetch check clears nothing]
 file internal/downloader/dispatch.go
 --- anchor
-	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun {
+	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
 		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 --- replace
-	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun {
+	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
 		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
 		_ = req.job.ClearArticleEmitted(-1)
 --- end
