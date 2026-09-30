@@ -200,10 +200,14 @@ the pause gates the move. `TestStall_LeavesALiveAssessingWorkerAlone` pins it.
 
 On worker exit, the runner (or an external caller) must call exactly one of:
 
-- **`Dispatcher.Finished(id, outcome)`** — the worker finished the state's
-  work, terminally. It rejects `job.OutcomeCancelled` before touching the
-  Queue (only the cancel latch may produce that outcome — `sched.Settle`
-  refuses it too, via `ErrCancelReserved`), then calls `sched.Queue.Settle`.
+- **`Dispatcher.Finished(id, outcome)` / `FinishedJob(j, outcome)`** — the
+  worker finished the state's work, terminally. It rejects
+  `job.OutcomeCancelled` before touching the Queue (only the cancel latch may
+  produce that outcome — `sched.Settle` refuses it too, via
+  `ErrCancelReserved`), then calls `sched.Queue.Settle`. `FinishedJob` does
+  nothing and returns `ErrNotFound` unless `j` is the instance registered
+  under its ID, so a worker holding a removed instance cannot settle a later
+  one; `appRunner.runAssess` reports through it.
 - **`Dispatcher.AdvanceFrom(j, from, next)`** — the worker finished the
   work of `from` and the job continues to `next`. It calls
   `sched.Queue.Handoff`. A `next` that `SetNext` refuses settles the job
@@ -298,8 +302,9 @@ that shipped kept it as the config-facing name for that knob instead.)
 under `d.mu` via `snapshotOrder`, releases the lock, and only then calls
 `sched.Queue.Advance` per job (`internal/dispatch/tick.go`). Every other call into `d.q` —
 `Cancel`, `Retry`, `Pause`, `Resume`, `SetCaps`, `Park` in `Stop`'s sweep,
-`Render`/`RenderAll` in `List`/`Row`/`reconcileResidency`/`launch`, `Settle`
-in `Finished`/`reconcileResidency`, `Park` in `YieldedFor` and in `parkGrant`
+`Render`/`RenderAll` in `List`/`rowFor` (for `Row` and
+`RowJob`)/`reconcileResidency`/`launch`, `Settle` in `finishedFor` (for
+`Finished` and `FinishedJob`)/`reconcileResidency`, `Park` in `YieldedFor` and in `parkGrant`
 (for `launch` and `removeFor`), `Handoff` in
 `handoff` (for `AdvanceFrom` and `YieldedFrom`) — is likewise made
 outside any `d.mu` span (verified: `grep -n 'd\.q\.' internal/dispatch/*.go
@@ -332,14 +337,27 @@ Above the dispatcher, `internal/app` keeps a per-job transition lock
 (`jobTransitions`, `internal/app/transition.go`) that admits one retry,
 finalization, queue removal or history change of a job at a time, except that
 a finalizer proceeds without it after a bounded wait, or at once when the
-application is stopping. A holder may
+application is stopping. Even then a retry of the job is refused for as long
+as the finalizer commits: it records the job's ID for its whole run, and
+`RetryHistoryJob` refuses a recorded ID when it claims the lock, again once it
+has found no instance registered under the ID and before it changes anything,
+and again before it registers the job. So a retry is refused while a finalizer
+of its ID commits at any of those points, and a refused retry leaves the state
+the finalizer is filing untouched
+(`TestPersistAndCommit_RefusesARetryWhileItCommits`,
+`TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState`,
+`TestRetryHistoryJob_RefusedByAFinalizerOfAGivenBackRemoval`). A finalizer
+that begins and ends between the last two checks, or begins after the last,
+is not seen; the `jobTransitions` doc says how one can arise, and #682 tracks
+it.
+A holder may
 wait inside the dispatcher: `Dispatcher.Remove` waits on the job's launch
 claim. So nothing may wait for that lock while holding something the
 dispatcher waits on. The finalizer is the site that runs holding one —
 post-processing's launch claim — so it takes the lock after its own
 `YieldedJob`, which clears that claim; every other site takes it before its
 dispatcher calls. `jobFinalizer.cancelled`, which releases the claim of a
-job `PostProcessor.Cancel` took, also runs holding it but takes no
+job `PostProcessor.CancelJob` took, also runs holding it but takes no
 transition lock at all.
 `TestJobTransitions_LockSites` pins the set of functions that take the lock.
 
@@ -360,9 +378,9 @@ would yield a listing that was true at no single instant (job 3 rendered
 once). `Dispatcher.List` (`internal/dispatch/registry.go`) calls
 `RenderAll` exactly once per listing for this reason.
 
-`Dispatcher.Row(id)` — the single-job lookup used where a caller needs one
-job's status without paying for a full listing walk — calls the per-job
-`Render` instead, deliberately: using `List` for a single lookup would trade
+`Dispatcher.Row(id)` and its instance-bound form `RowJob(j)` — the
+single-job lookups used where a caller needs one job's status without paying
+for a full listing walk — call the per-job `Render` instead, deliberately: using `List` for a single lookup would trade
 one manifest-free `RenderAll` call for an O(n) walk over the whole registry.
 
 `RenderView` (`internal/job/render.go`) carries `StateView` plus `Running`,
@@ -526,7 +544,7 @@ directly rather than being parked).
 - **No per-job cancellation surface in `internal/downloader`.** Cancel's
   interrupt arm calls `Workers.Abort`, whose production implementation is
   `appWorkers` (`internal/app/dispatcher_wiring.go`); `internal/postproc`
-  already exposes `PostProcessor.Cancel(jobID)` for jobs in post-processing
+  already exposes `PostProcessor.CancelJob(j)` for jobs in post-processing
   (`Repairing`/`Extracting`/`Finalizing`),
   but a `Fetching` worker has no equivalent per-job stop today (only global
   pause/stop/disconnect on the downloader).

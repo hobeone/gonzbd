@@ -446,7 +446,7 @@ func TestCancelQueuedJob(t *testing.T) {
 	p.Process(second)
 
 	// Cancel second before it starts.
-	removed := p.Cancel("second")
+	removed := p.CancelJob(second.Job)
 	if !removed {
 		t.Error("Cancel returned false, expected true")
 	}
@@ -498,7 +498,7 @@ func TestCancelInProgressJob(t *testing.T) {
 		return b
 	}, 2*time.Second, "worker to be busy on running job")
 
-	removed := p.Cancel("running")
+	removed := p.CancelJob(job.Job)
 	if !removed {
 		t.Error("Cancel returned false for in-progress job, want true")
 	}
@@ -615,10 +615,11 @@ func TestPPQueueOrdering(t *testing.T) {
 
 func TestPPQueueCancel(t *testing.T) {
 	q := newPPQueue()
-	q.Push(&Job{Job: newQueueJob(t, "a", 0)})
+	a := newQueueJob(t, "a", 0)
+	q.Push(&Job{Job: a})
 	q.Push(&Job{Job: newQueueJob(t, "b", 0)})
-	if _, ok := q.Cancel("a"); !ok {
-		t.Error("Cancel('a') = false, want true")
+	if _, ok := q.CancelJob(a); !ok {
+		t.Error("CancelJob(a) = false, want true")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
@@ -627,8 +628,8 @@ func TestPPQueueCancel(t *testing.T) {
 		t.Errorf("expected 'b', got ok=%v job=%v", ok, job)
 	}
 
-	if _, ok := q.Cancel("does-not-exist"); ok {
-		t.Error("Cancel of non-existent job returned true")
+	if _, ok := q.CancelJob(newQueueJob(t, "does-not-exist", 0)); ok {
+		t.Error("CancelJob of a job never queued returned true")
 	}
 }
 

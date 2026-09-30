@@ -1462,7 +1462,7 @@ func TestDownloader_CancelJob(t *testing.T) {
 		tracker: newDispatchTracker(),
 	}
 
-	key := articleKey{jobID: "j1", artIdx: 0}
+	key := keyFor(bareJob("j1"), 0)
 	d.tracker.Lock()
 	d.tracker.IncrementInFlightLocked(key)
 	d.tracker.Unlock()

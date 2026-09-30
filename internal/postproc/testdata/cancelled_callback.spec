@@ -1,12 +1,12 @@
 pkg ./internal/postproc/
-run TestCancel_(QueuedJobFiresOnJobCancelled|InFlightJobFiresOnJobCancelledAfterStageReturns|UnknownIDFiresNothing)$|TestOnJobCancelled_NotFiredForACompletedJob$
+run TestCancel_(QueuedJobFiresOnJobCancelled|InFlightJobFiresOnJobCancelledAfterStageReturns|UnknownJobFiresNothing)$|TestOnJobCancelled_NotFiredForACompletedJob$
 
 # OnJobCancelled's two firing points, each removed on its own, and the
 # in-flight one moved ahead of the stage it must wait for. Each is neutered by
 # its condition or by where the call sits, so the code still compiles.
 
-[a job Cancel takes out of the queue is not handed back]
-file internal/postproc/postproc.go
+[a job CancelJob takes out of the queue is not handed back]
+file internal/postproc/cancel.go
 --- anchor
 	if removed && p.onJobCancelled != nil {
 --- replace

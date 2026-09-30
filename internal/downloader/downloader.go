@@ -137,8 +137,7 @@ type articleRequest struct {
 	partNumber int
 }
 
-// jobID is the ID of the instance the request was dispatched for, the key of
-// its try-list and in-flight tracking.
+// jobID is the ID of the instance the request was dispatched for.
 func (r *articleRequest) jobID() string { return r.job.ID() }
 
 // Options tunes Downloader behavior. Defaults (zero values) are
@@ -928,7 +927,7 @@ func (d *Downloader) ServerStatus() []ServerSnapshot {
 func (d *Downloader) SpeedLimit() int64 { return int64(d.limiter.Rate()) }
 
 // CancelJob stops tracking for the specified job and clears its try-list
-// and in-flight state.
+// and in-flight state, whichever instance under the ID they were made for.
 func (d *Downloader) CancelJob(jobID string) {
 	d.tracker.ClearJob(jobID)
 }

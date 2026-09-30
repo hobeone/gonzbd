@@ -51,7 +51,7 @@ func newJobFinalizer(app *Application) *jobFinalizer {
 }
 
 // cancelled is called by the post-processor (OnJobCancelled) for a job its
-// Cancel took out of the queue or interrupted, once no stage runs for it, and
+// CancelJob took out of the queue or interrupted, once no stage runs for it, and
 // by enqueuePostProc for a job its hand-over refused as removed. The
 // job is not finalized: it releases the job's launch claim, which
 // dispatcher.Remove waits on and which persistAndCommit and Shutdown release
@@ -64,9 +64,6 @@ func newJobFinalizer(app *Application) *jobFinalizer {
 // among the lock's sites (TestJobTransitions_LockSites).
 func (f *jobFinalizer) cancelled(ppJob *postproc.Job) {
 	app := f.app
-	if ppJob == nil || ppJob.Job == nil {
-		return
-	}
 	defer app.postProcAdmissions.release(ppJob.Job)
 	if app.dispatcher == nil {
 		return
@@ -101,14 +98,11 @@ func warnUnlessGone(log *slog.Logger, msg, id string, err error) {
 // reflects what the stages did (postProcAdmissions).
 func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 	app := f.app
-	var notes []string
-	if ppJob.Job != nil {
-		defer app.postProcAdmissions.release(ppJob.Job)
-		if app.finalizeHook != nil {
-			app.finalizeHook(ppJob)
-		}
-		notes = app.postProcAdmissions.notes(ppJob.Job)
+	defer app.postProcAdmissions.release(ppJob.Job)
+	if app.finalizeHook != nil {
+		app.finalizeHook(ppJob)
 	}
+	notes := app.postProcAdmissions.notes(ppJob.Job)
 	// Decided before persistAndCommit tears the job down. A ParError files the
 	// entry Failed (buildHistoryEntry), which is what a retry requires of it.
 	retry := heldVolumesMightRepair(ppJob)
@@ -168,7 +162,7 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // retry of that entry is rebuilt by ingest again, and so gets one automatic
 // retry of its own.
 func heldVolumesMightRepair(ppJob *postproc.Job) bool {
-	return ppJob.Job != nil && ppJob.ParError && ppJob.Job.HasDeferredPar2()
+	return ppJob.ParError && ppJob.Job.HasDeferredPar2()
 }
 
 // heldVolumesRetryNote is the warning a job heldVolumesMightRepair selects
@@ -256,7 +250,12 @@ func (f *jobFinalizer) retryWithHeldVolumes(jobID string) bool {
 // return.
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, ppJob *postproc.Job) error {
 	app := f.app
-	if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
+	// Recorded before anything else, and ended on every return: while it
+	// stands a retry of this ID is refused at the points jobTransitions
+	// lists, which is what keeps the by-ID steps below on this job when the
+	// lock is bypassed, within the bounds jobTransitions states.
+	defer app.transitions.beginFinalize(ppJob.Job.ID())()
+	if app.dispatcher != nil {
 		id := ppJob.Job.ID()
 		warnUnlessGone(log, "finalize: cancelling the job failed", id,
 			app.dispatcher.CancelJob(ppJob.Job))
@@ -266,26 +265,24 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	// Taken after YieldedJob, which clears post-processing's launch claim on the
 	// job: a RemoveJob holding this lock waits on that claim in
 	// dispatcher.Remove.
-	if ppJob != nil && ppJob.Job != nil {
-		waitCtx, waitCancel := context.WithTimeout(app.ctx, finalizeTransitionWait)
-		claim, err := app.transitions.acquire(waitCtx, ppJob.Job.ID())
-		waitCancel()
-		if err != nil {
-			log.Warn("finalize did not get the job's transition lock in time; proceeding without it",
-				"job", ppJob.Job.ID(), "err", err)
-		} else {
-			defer claim.release()
-		}
-		// A RemoveJob took this instance and has not given it back, and is
-		// tearing down or has torn down what this would commit. Only its mark
-		// says so: a job merely gone from the dispatcher may be a never-run
-		// job the tick evicted after the Cancel above, and that one is still
-		// filed, through OccupyJob's fallback below.
-		if app.transitions.wasRemoved(ppJob.Job) {
-			log.Info("finalize: the job was removed while this waited for it; not filing it",
-				"job", ppJob.Job.ID())
-			return errFinalizedJobRemoved
-		}
+	waitCtx, waitCancel := context.WithTimeout(app.ctx, finalizeTransitionWait)
+	claim, err := app.transitions.acquire(waitCtx, ppJob.Job.ID())
+	waitCancel()
+	if err != nil {
+		log.Warn("finalize did not get the job's transition lock in time; proceeding without it",
+			"job", ppJob.Job.ID(), "err", err)
+	} else {
+		defer claim.release()
+	}
+	// A RemoveJob took this instance and has not given it back, and is
+	// tearing down or has torn down what this would commit. Only its mark
+	// says so: a job merely gone from the dispatcher may be a never-run
+	// job the tick evicted after the Cancel above, and that one is still
+	// filed, through OccupyJob's fallback below.
+	if app.transitions.wasRemoved(ppJob.Job) {
+		log.Info("finalize: the job was removed while this waited for it; not filing it",
+			"job", ppJob.Job.ID())
+		return errFinalizedJobRemoved
 	}
 
 	finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 12*time.Second)
@@ -294,12 +291,15 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	runCommit := func(occupyCtx context.Context) error {
 		mdir := manifestDir(app.config.GetGeneral().AdminDir)
 
+		// The history write files this run under the ID. On the fallback
+		// below no occupancy holds the ID, and what keeps a retry from taking
+		// it before the write is the finalizing record (jobTransitions).
 		var persistErr error
 		if app.historyRepo != nil && app.historyRepo.DB() != nil {
 			// Gathered before the write, because Add stores the entry and this
 			// progress in one transaction, and its doc says what rests on that.
 			var files []history.FileProgress
-			if entry.Status == string(constants.StatusFailed) && ppJob != nil && ppJob.Job != nil {
+			if entry.Status == string(constants.StatusFailed) {
 				files = retainedProgressFor(ppJob.Job, mdir, log)
 			}
 			// The write's deadline starts AFTER that gather, and the order is
@@ -320,7 +320,7 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 				persistErr = err
 			}
 		}
-		if app.checkpointer != nil && ppJob != nil && ppJob.Job != nil {
+		if app.checkpointer != nil {
 			app.checkpointer.Prune(ppJob.Job)
 		}
 		// Not fatal, unlike the reconcile path's version: this job IS in
@@ -329,12 +329,14 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 		// dispatcher still holds, which is what keeps that row loadable until
 		// then (#376: appResidency.hydrate fails without the manifest).
 		//
-		// dispatcher.RemoveJob rather than Remove by ID: on the fallback below this
-		// instance is not occupied, and without the transition lock a retry
-		// can register under the ID meanwhile. ErrNotFound means this
-		// instance is not registered, so there is nothing to remove, retry or
-		// mark.
-		if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
+		// dispatcher.RemoveJob rather than Remove by ID, so the removal names
+		// this instance. ErrNotFound means it is not registered, so there is
+		// nothing to remove, retry or mark. The by-ID steps from here on, the
+		// operational error, reclaim and forgetJobBarrierState, act on this
+		// job's ID. The finalizing record beginFinalize set refuses a retry
+		// that would register under it at the points jobTransitions lists;
+		// the interleavings it does not cover are stated there (#682).
+		if app.dispatcher != nil {
 			jobID := ppJob.Job.ID()
 			removeCtx, removeCancel := context.WithTimeout(occupyCtx, 3*time.Second)
 			err := app.dispatcher.RemoveJob(removeCtx, ppJob.Job)
@@ -358,9 +360,7 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 		// against an existing FAILED entry keeps them for that entry.
 		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 3*time.Second)
 		defer delCancel()
-		if ppJob != nil && ppJob.Job != nil {
-			app.reclaim(delCtx, ppJob.Job.ID())
-		}
+		app.reclaim(delCtx, ppJob.Job.ID())
 		app.forgetJobBarrierState(ppJob.Job.ID())
 		if persistErr != nil {
 			app.emit(Event{Type: "queue_updated"})
@@ -388,10 +388,12 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	// FetchOptions.JobID it sets, and takes the transition lock;
 	// AddJob's jobs are built by BuildIngestJob, which mints a newJobID when
 	// no JobID is set. So while this holds the lock the answer cannot change
-	// underneath. Without it, a retry can register during the fallback: this
-	// run's history write still goes ahead, and dispatcher.RemoveJob is what
-	// leaves the retry registered.
-	if app.dispatcher != nil && ppJob != nil && ppJob.Job != nil {
+	// underneath. Without it, retryHistoryJob's checks of the finalizing
+	// record this function set at its start refuse a retry at the points
+	// jobTransitions lists; a retry that passed its last check before that
+	// record began can still register during the fallback (#682), and
+	// dispatcher.RemoveJob is what leaves such a retry registered.
+	if app.dispatcher != nil {
 		var runErr error
 		if err := app.dispatcher.OccupyJob(finalCtx, ppJob.Job, func(occupyCtx context.Context) {
 			runErr = runCommit(occupyCtx)

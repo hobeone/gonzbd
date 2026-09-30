@@ -4,25 +4,34 @@ run TestHandleFileComplete_ANonResident(JobsFileIsNotDeliveredUntrimmed|Completi
 [a queued job's nil-target finalize answered nil]
 file internal/app/durability.go
 --- anchor
-			if _, queued := app.dispatcher.Job(jobID); queued {
+		return app.withholdUntrimmed(jobID, fileIdx,
+			fmt.Errorf("no barrier can run over it: %w", job.ErrNotResident))
 --- replace
-			if _, queued := app.dispatcher.Job(jobID); false && queued {
+		return nil
+--- end
+
+[a queued job's untrimmed completion answered nil]
+file internal/app/durability.go
+--- anchor
+		if _, queued := app.dispatcher.Job(jobID); queued {
+--- replace
+		if _, queued := app.dispatcher.Job(jobID); false && queued {
 --- end
 
 [a departed job's nil-target finalize answered as non-resident]
 file internal/app/durability.go
 --- anchor
-			if _, queued := app.dispatcher.Job(jobID); queued {
+		if _, queued := app.dispatcher.Job(jobID); queued {
 --- replace
-			if _, queued := app.dispatcher.Job(jobID); true || queued {
+		if _, queued := app.dispatcher.Job(jobID); true || queued {
 --- end
 
 [the nil-target refusal not marked non-resident]
 file internal/app/durability.go
 --- anchor
-				return fmt.Errorf("%w: job %s file %d: no barrier can run over it: %w",
+			fmt.Errorf("no barrier can run over it: %w", job.ErrNotResident))
 --- replace
-				return fmt.Errorf("%w: job %s file %d: no barrier can run over it: %v",
+			fmt.Errorf("no barrier can run over it: %v", job.ErrNotResident))
 --- end
 
 [a non-resident finalize routed as a storage fault]

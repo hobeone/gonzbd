@@ -46,10 +46,12 @@ single worker goroutine (`run`).
   one post-processing run of a job instance, ever, in
   `Application.enqueuePostProc`, which keeps the admission record
   (`postProcAdmissions`). It has two callers: `appRunner.runPostProc`, and
-  `maybeFinalize`, which the downloader's and the pipeline's hopeless
-  callbacks, `runAssess` and `Application.Fail` call
-  (`git grep -n 'maybeFinalize(' -- 'internal/*.go' ':!*_test.go'` returns
-  those 4 call sites and the definition). An admission starts before the DirectUnpack wait and
+  `maybeFinalizeJob`, which hands over only the instance it is given while
+  that instance is registered. `runAssess` calls it with the instance it
+  resolved, and `maybeFinalize` calls it with the instance registered under
+  an ID for the downloader's and the pipeline's hopeless callbacks and
+  `Application.Fail` (`git grep -n 'maybeFinalize(' -- 'internal/*.go' ':!*_test.go'`
+  returns those 3 call sites and the definition). An admission starts before the DirectUnpack wait and
   ends once `jobFinalizer.finalize` or `jobFinalizer.cancelled` has run, so it
   covers the two windows `HasJob` does not see: the wait before `Process`, and
   the callback tail after the worker clears its busy marker. Ending it does not
@@ -58,7 +60,11 @@ single worker goroutine (`run`).
   until the job is collected, and a later call for it is refused rather than
   start a second run whose finalize would file the job in history again. It
   is keyed by job instance, so a retry
-  registered under the ID of a job still being finalized is admitted. An
+  registered under the ID of a job still being finalized is admitted. Such a
+  retry registers only once `jobFinalizer.persistAndCommit` has returned,
+  in the finalize tail that runs before the admission ends: while
+  `persistAndCommit` commits, `RetryHistoryJob` refuses the ID, with or
+  without the transition lock (`jobTransitions`). An
   admission a shutdown interrupts is never ended.
 - **A removed job is not handed over**: `enqueuePostProc` calls `Process`
   only after `postProcAdmissions.beginHandOver`, which refuses a job instance
@@ -121,12 +127,14 @@ single worker goroutine (`run`).
   a `warnings` line, without changing its status.
 - **In-flight tracking & cancellation**: `PostProcessor` tracks the active job
   (`currentJob`) and an independent job context (`currentJobCancel`).
-  Calling `Cancel(jobID)` either removes a pending job from `ppQueue` or cancels
+  Calling `CancelJob(j)` either removes a pending job from `ppQueue` or cancels
   the active job's context mid-stage so the running tool returns promptly without
-  stopping the worker itself. A job `Cancel` removed or interrupted is handed
-  to `OnJobCancelled` rather than `OnJobDone` — synchronously, before `Cancel`
+  stopping the worker itself. It matches `j` by instance, as `HasJob` does, so
+  it leaves alone another instance of the job under the same ID. A job
+  `CancelJob` removed or interrupted is handed
+  to `OnJobCancelled` rather than `OnJobDone` — synchronously, before `CancelJob`
   returns, for a pending job, and by the worker once the stage pipeline has
-  returned, for the active one. A `Cancel` that lands after the worker has seen
+  returned, for the active one. A `CancelJob` that lands after the worker has seen
   the job finish still ends in `OnJobDone`, and a shutdown fires neither; the
   `Options.OnJobCancelled` doc has the full set. The app wires that callback to
   `jobFinalizer.cancelled`, which releases the job's dispatcher launch claim.
@@ -139,7 +147,7 @@ single worker goroutine (`run`).
   out instead: by this callback, by `jobFinalizer.persistAndCommit` through
   `OnJobDone` for a job that finished, or by `Shutdown`'s yield after a stop.
   `RemoveJob` cancels in the dispatcher before it cancels here, so a job the
-  runner hands over after the abort looked is still stopped by this `Cancel`,
+  runner hands over after the abort looked is still stopped by this `CancelJob`,
   though the abort has already released its claim and `RemoveJob` does not
   wait for its stage to return.
 - **Crash recovery handoff**: nothing marks a job as in post-processing on

@@ -50,7 +50,7 @@ func TestMaybeReleaseRecoveryVolumes_NoIndexFindError(t *testing.T) {
 	var logBuf bytes.Buffer
 	app.log = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	if !app.maybeReleaseRecoveryVolumes(t.Context(), jobID) {
+	if !app.maybeReleaseRecoveryVolumes(t.Context(), qjob) {
 		t.Fatal("maybeReleaseRecoveryVolumes returned false when the par2 index could not even be searched for; repair must be assumed")
 	}
 	if qjob.HasDeferredPar2() {
@@ -62,12 +62,48 @@ func TestMaybeReleaseRecoveryVolumes_NoIndexFindError(t *testing.T) {
 	}
 }
 
-// TestMaybeReleaseRecoveryVolumes_JobGone covers the job-not-found guard.
-func TestMaybeReleaseRecoveryVolumes_JobGone(t *testing.T) {
+// TestMaybeReleaseRecoveryVolumes_LeavesALaterInstanceAlone: the verdict for an
+// instance that has left the dispatcher acts on that instance only. A later
+// instance registered under the same ID, whose volumes the no-index fallback
+// would un-defer, keeps them deferred.
+func TestMaybeReleaseRecoveryVolumes_LeavesALaterInstanceAlone(t *testing.T) {
 	t.Parallel()
+	downloadDir := t.TempDir()
+
+	const jobID = "later-instance-deferred"
 	app := newTestApplication(t)
-	if app.maybeReleaseRecoveryVolumes(t.Context(), "absent-job") {
-		t.Error("maybeReleaseRecoveryVolumes must return false when the job is not in the dispatcher")
+	app.config.With(func(c *config.Config) {
+		c.General.DownloadDir = downloadDir
+		c.Downloads.OnDemandPar2 = true
+	})
+
+	stale, staleHdr := newPar2Job(t, jobID, "later-instance-name", []par2FileSpec{
+		{subject: "data.bin", bytes: 100},
+	})
+	if err := app.Dispatcher().Add(context.Background(), stale, staleHdr); err != nil {
+		t.Fatalf("Add(stale): %v", err)
+	}
+	if err := app.Dispatcher().Remove(context.Background(), jobID); err != nil {
+		t.Fatalf("Remove(stale): %v", err)
+	}
+	later, laterHdr := newPar2Job(t, jobID, "later-instance-name", []par2FileSpec{
+		{subject: "data.bin", bytes: 100},
+		{subject: "data.vol000+01.par2", bytes: 100},
+	})
+	if err := app.Dispatcher().Add(context.Background(), later, laterHdr); err != nil {
+		t.Fatalf("Add(later): %v", err)
+	}
+	if !later.HasDeferredPar2() {
+		t.Fatal("fixture guard: the later instance must arrive with a deferred volume")
+	}
+
+	// No job directory exists, so the later instance's verdict would be the
+	// no-index fallback that un-defers its volumes.
+	if app.maybeReleaseRecoveryVolumes(t.Context(), stale) {
+		t.Error("maybeReleaseRecoveryVolumes(stale instance) = true; it has no deferred volume to release")
+	}
+	if !later.HasDeferredPar2() {
+		t.Error("the stale instance's verdict un-deferred the later instance's recovery volumes")
 	}
 }
 
@@ -111,7 +147,7 @@ func TestMaybeReleaseRecoveryVolumes_Unknown(t *testing.T) {
 	var logBuf bytes.Buffer
 	app.log = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	if app.maybeReleaseRecoveryVolumes(t.Context(), jobID) {
+	if app.maybeReleaseRecoveryVolumes(t.Context(), qjob) {
 		t.Error("maybeReleaseRecoveryVolumes must return false on an unidentifiable download; nothing was un-deferred to fetch")
 	}
 	if !qjob.HasDeferredPar2() {
@@ -166,7 +202,7 @@ func TestMaybeReleaseRecoveryVolumes_RepairUndeferFails(t *testing.T) {
 	var logBuf bytes.Buffer
 	app.log = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	if app.maybeReleaseRecoveryVolumes(t.Context(), jobID) {
+	if app.maybeReleaseRecoveryVolumes(t.Context(), qjob) {
 		t.Error("maybeReleaseRecoveryVolumes must return false when un-defer fails")
 	}
 	logged := logBuf.String()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -97,6 +98,27 @@ func TestInstanceBoundHelpers_ExpectedSelectsTheInstance(t *testing.T) {
 					t.Errorf("occupyFor ran = %v, err = %v; want ran %v", ran, err, tc.want)
 				}
 			})
+			t.Run("rowFor", func(t *testing.T) {
+				d := newTestDispatcher(t)
+				j1, j2 := laterInstance(t, d)
+				if _, ok := d.rowFor("j1", tc.expected(j1, j2)); ok != tc.want {
+					t.Errorf("rowFor ok = %v, want %v", ok, tc.want)
+				}
+			})
+			t.Run("finishedFor", func(t *testing.T) {
+				d := newTestDispatcher(t)
+				j1, j2 := laterInstance(t, d)
+				if err := j2.BeginAttempt(time.Now()); err != nil {
+					t.Fatalf("BeginAttempt(j2): %v", err)
+				}
+				err := d.finishedFor("FinishedJob", "j1", tc.expected(j1, j2), job.OutcomeFailed)
+				if (err == nil) != tc.want {
+					t.Errorf("finishedFor err = %v, want success %v", err, tc.want)
+				}
+				if settled := j2.Snapshot().State.Outcome.IsSettled(); settled != tc.want {
+					t.Errorf("registered instance settled = %v after finishedFor, want %v", settled, tc.want)
+				}
+			})
 			t.Run("removeFor", func(t *testing.T) {
 				d := newTestDispatcher(t)
 				j1, j2 := laterInstance(t, d)
@@ -109,6 +131,66 @@ func TestInstanceBoundHelpers_ExpectedSelectsTheInstance(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// TestFinishedJob_LeavesALaterInstanceAlone: a completion reported with a
+// removed instance neither settles the attempt since registered under the
+// same ID nor clears its launch claim, while one reported with the registered
+// instance settles it.
+func TestFinishedJob_LeavesALaterInstanceAlone(t *testing.T) {
+	d := newTestDispatcher(t)
+	j1, j2 := laterInstance(t, d)
+	if err := j2.BeginAttempt(time.Now()); err != nil {
+		t.Fatalf("BeginAttempt(j2): %v", err)
+	}
+	if !d.claimLaunched("j1") {
+		t.Fatal("fixture guard: claimLaunched(j1) = false for the later instance")
+	}
+
+	if err := d.FinishedJob(j1, job.OutcomeFailed); !errors.Is(err, ErrNotFound) {
+		t.Errorf("FinishedJob(removed instance) = %v, want ErrNotFound", err)
+	}
+	if s := j2.Snapshot(); s.State.Outcome.IsSettled() {
+		t.Errorf("FinishedJob with the removed instance settled the later one: outcome %v", s.State.Outcome)
+	}
+	if _, held := d.launched["j1"]; !held {
+		t.Error("FinishedJob with the removed instance cleared the later one's launch claim")
+	}
+
+	if err := d.FinishedJob(j2, job.OutcomeFailed); err != nil {
+		t.Fatalf("FinishedJob(registered instance): %v", err)
+	}
+	if s := j2.Snapshot(); s.State.Outcome != job.OutcomeFailed {
+		t.Errorf("outcome after FinishedJob with the registered instance = %v, want %v", s.State.Outcome, job.OutcomeFailed)
+	}
+	if _, held := d.launched["j1"]; held {
+		t.Error("FinishedJob with the registered instance left its launch claim")
+	}
+	if err := d.FinishedJob(nil, job.OutcomeFailed); !errors.Is(err, ErrNotFound) {
+		t.Errorf("FinishedJob(nil) = %v, want ErrNotFound", err)
+	}
+}
+
+// TestRowJob_LeavesALaterInstanceAlone: a removed instance is not handed the
+// row of the attempt since registered under the same ID, while the registered
+// instance is handed its own.
+func TestRowJob_LeavesALaterInstanceAlone(t *testing.T) {
+	d := newTestDispatcher(t)
+	j1, j2 := laterInstance(t, d)
+	if err := d.SetName("j1", "second"); err != nil {
+		t.Fatalf("SetName: %v", err)
+	}
+
+	if row, ok := d.RowJob(j1); ok {
+		t.Errorf("RowJob(removed instance) = (%+v, true), want no row: it read the later instance's header", row.Header)
+	}
+	row, ok := d.RowJob(j2)
+	if !ok || row.Header.Name != "second" {
+		t.Errorf("RowJob(registered instance) = (name %q, %v), want (%q, true)", row.Header.Name, ok, "second")
+	}
+	if _, ok := d.RowJob(nil); ok {
+		t.Error("RowJob(nil) reported a row")
 	}
 }
 

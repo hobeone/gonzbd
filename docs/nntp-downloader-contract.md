@@ -44,15 +44,27 @@ The downloader pipeline operates across four isolated tiers of ownership:
 | **Server state** | `Server` | Per-server penalty tracking, bad/good connection counters, optional-server auto-deactivation | `Server.mu` (RWMutex) for penalty/deactivation; atomic counters for bad/good. |
 | **Worker / Connection** | `connWorker` & `managedConn` | Pipelined NNTP network I/O (`nntp.Conn`), yEnc decoding, rate shaping, TLS | `managedConn.mu` for dial-coalescing only; `nntp.Conn` internal locks for pipelining. |
 
-**The Tracker's identity is `(jobID, artIdx)`, not the Message-ID.** Both of its
-maps are keyed on that pair. The job is part of the key rather than decoration:
-two resident jobs can legitimately hold the same Message-ID — the same NZB added
-twice, or a reposted par2 volume — and keyed on the Message-ID alone they shared
-one try-list entry and one in-flight count, so one job's article could reach
-`ErrNoServersLeft` without ever having been fetched for it. `artIdx` rather than
-the Message-ID because the manifest already assigns it, it is unique within a job
-by construction, and it cannot be absent; nothing in this tier needs the
-Message-ID's content, only an identity.
+**The Tracker's identity is `(job instance, artIdx)`, not the Message-ID and not
+the job ID.** Both of its maps are keyed on that pair, built by `keyFor` in
+`tracker.go`. The job is part of the key rather than decoration: two resident
+jobs can legitimately hold the same Message-ID — the same NZB added twice, or a
+reposted par2 volume — and keyed on the Message-ID alone they shared one
+try-list entry and one in-flight count, so one job's article could reach
+`ErrNoServersLeft` without ever having been fetched for it. The instance rather
+than the ID because a retry registers a new `*job.Job` under the ID while a
+fetch for the removed instance can still be running: keyed on the ID, that
+fetch's completion decremented the retry's in-flight count and unmarked or
+cleared the retry's try-list (#665). Every completion updates the tracker
+through `clearInFlight`, `unmarkTried` or `clearTried`, which build the key from
+the request's own instance. `artIdx` rather than the Message-ID because the
+manifest already assigns it, it is unique within a job by construction, and it
+cannot be absent; nothing in this tier needs the Message-ID's content, only an
+identity.
+
+The key holds the instance through a `weak.Pointer`, so an entry an instance
+leaves behind does not keep its job and manifest in memory. The key also
+carries the job ID, and `CancelJob` clears every entry under an ID, whichever
+instance it was made for.
 
 ## State machines
 
@@ -110,16 +122,23 @@ of their failure ratio.
    are created once in `Start` and not resized.
 
 2. **Sequential in-flight invariant**: For any article identity
-   `(jobID, artIdx)`, exactly one request can be active across all server pools
-   at any moment (`InFlight(jobID, artIdx) ≤ 1`). `tryDispatch` checks
-   `InFlightLocked(key) > 0` before sending. Fallback to secondary/backup
-   servers is strictly sequential — only after the current request resolves and
-   `clearInFlight` runs.
+   `(job instance, artIdx)`, exactly one request can be active across all
+   server pools at any moment (`InFlight(instance, artIdx) ≤ 1`). `tryDispatch`
+   checks `InFlightLocked(key) > 0` before sending. Fallback to
+   secondary/backup servers is strictly sequential — only after the current
+   request resolves and `clearInFlight` runs.
 
    The identity is the pair, not the `MessageID`. Two resident jobs holding the
    same Message-ID have independent in-flight budgets and may be fetched
    concurrently, which is correct: they are different articles that happen to
    share a name.
+
+   A retry and the removed instance it replaced also have independent budgets.
+   A fetch for the removed instance that is already running when the retry
+   dispatches the same article runs alongside the retry's; invariant 7 drops
+   its result. `fetchArticle` drops a queued request for a removed instance
+   before any network I/O, so the overlap is bounded by the requests that had
+   already passed that check.
 
 3. **Non-blocking dispatch loop**: The main loop (`run`) must never perform
    blocking socket I/O, wait on unbuffered channels, or take write locks across
@@ -246,7 +265,9 @@ of their failure ratio.
    fetch or an exhausted try-list, the `Job.ClearArticleEmitted` calls when a
    request is drained or its result dropped, and the per-job intent and
    hand-off reads in `fetchArticle` — act on that instance, never on a by-ID
-   lookup. Before any network I/O, `fetchArticle` also drops a request whose
+   lookup. So do its tracker updates for a request, whose key is built from
+   the request's instance (see "The Tracker's identity" above). Before any
+   network I/O, `fetchArticle` also drops a request whose
    instance is not the one `Dispatcher.Job` returns for its ID, since the
    pipeline would discard its result.
 
@@ -464,30 +485,9 @@ a server that intermittently succeeds will never trigger auto-deactivation.
 - Per-connection goroutine bounding via local semaphore.
 - Emitted-is-transient durability contract, now derived from the durability design's S3 rather than standing alone.
 - `PreCheck` STAT probe support before BODY fetch.
+- The Tracker keyed on the job instance, so a removed instance's late
+  completion leaves a retry's in-flight count and try-list alone (#665).
 
 ### Open Gaps
-- The Tracker is keyed on `(jobID, artIdx)`, not on the instance (#665).
-  `CancelJob` clears a job's entries, but a fetch still running for a removed
-  instance updates the Tracker on its way out, and after a retry registers a
-  new instance under the same ID those entries are the retry's:
-  - `handleRequest`'s deferred `clearInFlight` decrements the retry's
-    in-flight count;
-  - `fetchArticle`'s `unmarkTried` calls (the pre-fetch drop,
-    a dial failure, a connection failure) unmark a server from the retry's
-    try-list;
-  - `processFetchedArticle`'s `clearTried` calls (terminal decode error and
-    success) delete the retry's try-list entry.
+- None recorded.
 
-  The try-list damage costs retries: the retry may try a server it already
-  tried, and `maxArtTries` undercounts. The in-flight damage is worse:
-  invariant 2 can admit a second concurrent fetch of the retry's article, and
-  both fetches carry the retry instance, so invariant 7 separates neither
-  from the other. If one succeeds and the other then returns a retryable
-  failure, the pipeline clears the Emitted bit of an article whose bytes the
-  assembler already has, and the article is fetched again; if one succeeds
-  and the other fails terminally, the article is both written and marked
-  failed; and a download is credited to `ServerStats` once per fetch.
-
-  Scope: only a retry registered while an earlier instance under the same ID
-  still has a fetch running. Invariant 7 still keeps the earlier instance's
-  own result off the retry.

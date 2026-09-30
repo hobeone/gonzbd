@@ -58,10 +58,11 @@ func TestCancel_QueuedJobFiresOnJobCancelled(t *testing.T) {
 
 	p.Process(makeJob(t, "first"))
 	<-blocker.started
-	p.Process(makeJob(t, "second"))
+	second := makeJob(t, "second")
+	p.Process(second)
 
-	if !p.Cancel("second") {
-		t.Fatal("Cancel(second) = false for a queued job")
+	if !p.CancelJob(second.Job) {
+		t.Fatal("CancelJob(second) = false for a queued job")
 	}
 	if _, cancelled := log.snapshot(); count(cancelled, "second") != 1 {
 		t.Fatalf("OnJobCancelled saw %v when Cancel returned, want second exactly once", cancelled)
@@ -126,10 +127,11 @@ func TestCancel_InFlightJobFiresOnJobCancelledAfterStageReturns(t *testing.T) {
 	releaseStage := func() { releaseOnce.Do(func() { close(stage.release) }) }
 	t.Cleanup(releaseStage)
 
-	p.Process(makeJob(t, "running"))
+	running := makeJob(t, "running")
+	p.Process(running)
 	<-stage.started
-	if !p.Cancel("running") {
-		t.Fatal("Cancel(running) = false for an in-flight job")
+	if !p.CancelJob(running.Job) {
+		t.Fatal("CancelJob(running) = false for an in-flight job")
 	}
 
 	select {
@@ -167,13 +169,46 @@ func TestOnJobCancelled_NotFiredForACompletedJob(t *testing.T) {
 	}
 }
 
-// TestCancel_UnknownIDFiresNothing: a Cancel that finds nothing reports false
-// and hands nothing back.
-func TestCancel_UnknownIDFiresNothing(t *testing.T) {
+// TestCancelJob_AnotherInstanceUnderTheSameID: CancelJob for one instance
+// neither takes a queued job nor interrupts an in-flight one that is another
+// instance under the same ID.
+func TestCancelJob_AnotherInstanceUnderTheSameID(t *testing.T) {
+	block := make(chan struct{})
+	blocker := &recordStage{name: "blocker", block: block, started: make(chan struct{})}
+	defer close(block)
+	var log callbackLog
+	p := startProcessor(t, log.options(blocker))
+
+	running := makeJob(t, "running")
+	p.Process(running)
+	<-blocker.started
+	queued := makeJob(t, "queued")
+	p.Process(queued)
+
+	if other := newQueueJob(t, running.JobID(), 0); p.CancelJob(other) {
+		t.Error("CancelJob = true for another instance under the in-flight job's ID")
+	}
+	if other := newQueueJob(t, queued.JobID(), 0); p.CancelJob(other) {
+		t.Error("CancelJob = true for another instance under the queued job's ID")
+	}
+	if !p.HasJob(queued.Job) {
+		t.Error("the queued job left the queue after CancelJob for another instance under its ID")
+	}
+	if _, cancelled := log.snapshot(); len(cancelled) != 0 {
+		t.Errorf("OnJobCancelled saw %v after CancelJob for other instances", cancelled)
+	}
+}
+
+// TestCancel_UnknownJobFiresNothing: a CancelJob that finds nothing reports
+// false and hands nothing back.
+func TestCancel_UnknownJobFiresNothing(t *testing.T) {
 	var log callbackLog
 	p := startProcessor(t, log.options(newRecordStage("a")))
-	if p.Cancel("nope") {
-		t.Error("Cancel(nope) = true for an ID the processor never saw")
+	if p.CancelJob(makeJob(t, "nope").Job) {
+		t.Error("CancelJob(nope) = true for a job the processor never saw")
+	}
+	if p.CancelJob(nil) {
+		t.Error("CancelJob(nil) = true")
 	}
 	if done, cancelled := log.snapshot(); len(done)+len(cancelled) != 0 {
 		t.Errorf("callbacks fired for an unknown ID: done=%v cancelled=%v", done, cancelled)

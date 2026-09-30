@@ -284,6 +284,12 @@ type Application struct {
 	// discipline as checkpointHook.
 	finalizeHook func(*postproc.Job)
 
+	// retryClaimedHook, when non-nil, runs in retryHistoryJob once it holds
+	// the job's transition lock and before it reads anything, where a
+	// finalizer of the ID can start without that lock. Same discipline as
+	// checkpointHook.
+	retryClaimedHook func(id string)
+
 	// startedTransitionHook, when non-nil, runs in Start right after started
 	// flips true. Same discipline as checkpointHook.
 	startedTransitionHook func()
@@ -958,7 +964,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	if app.removeCancelGapHook != nil {
 		app.removeCancelGapHook(id)
 	}
-	app.postProcessor.Cancel(id)
+	app.postProcessor.CancelJob(j)
 	if app.checkpointer != nil {
 		app.checkpointer.Prune(j)
 	}
@@ -1483,17 +1489,6 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, ba
 		if dlErr = waitBounded("downloader", stepTimeout, dl.Stop, app.log); dlErr != nil && errs != nil {
 			*errs = append(*errs, fmt.Errorf("downloader stop: %w", dlErr))
 		}
-		// If dl.Stop returned cleanly with no error, all downloader workers have definitely
-		// exited and will not touch manifests or barriers again. Yield Fetching jobs so
-		// Dispatcher.Stop can cleanly park and evict. If dl.Stop timed out, do NOT yield,
-		// so Dispatcher.Stop observes wait worker timeout and skips eviction.
-		if dlErr == nil && app.dispatcher != nil {
-			for _, row := range app.dispatcher.List() {
-				if row.View.State == job.Fetching {
-					_ = app.dispatcher.Yielded(row.ID)
-				}
-			}
-		}
 	}
 
 	// R6's clean-shutdown barrier, in the only window where both halves
@@ -1501,8 +1496,24 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, ba
 	// assembler has not, so the file handles the barrier needs still exist.
 	// Without it every byte since the last checkpoint is re-fetched on the
 	// next start — a full window thrown away on a deliberate restart.
+	//
+	// Before the yield below, not after it. A yield parks the job's lease and
+	// kicks the tick, whose reconcileResidency evicts the job; the barrier
+	// skips a job with no resident manifest.
 	if barrier {
 		app.shutdownCheckpoint()
+	}
+
+	// If dl.Stop returned cleanly with no error, all downloader workers have definitely
+	// exited and will not touch manifests or barriers again. Yield Fetching jobs so
+	// Dispatcher.Stop can cleanly park and evict. If dl.Stop timed out, do NOT yield,
+	// so Dispatcher.Stop observes wait worker timeout and skips eviction.
+	if dl != nil && dlErr == nil && app.dispatcher != nil {
+		for _, row := range app.dispatcher.List() {
+			if row.View.State == job.Fetching {
+				_ = app.dispatcher.Yielded(row.ID)
+			}
+		}
 	}
 
 	// Abort all active DirectUnpackers before stopping the assembler.
@@ -1798,17 +1809,14 @@ func (app *Application) markFetchPolicyDirty(j *job.Job) {
 	app.checkpointer.Mark(j)
 }
 
-func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID string) bool {
+// maybeReleaseRecoveryVolumes gives j's on-demand par2 verdict, acts on it on
+// j alone, not on whatever instance holds j's ID by then, and reports whether
+// it un-deferred recovery volumes to fetch.
+func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.Job) bool {
 	if ctx.Err() != nil {
 		return false
 	}
-	if app.dispatcher == nil {
-		return false
-	}
-	j, ok := app.dispatcher.Job(jobID)
-	if !ok {
-		return false
-	}
+	jobID := j.ID()
 
 	if !j.HasDeferredPar2() {
 		return false
@@ -2146,15 +2154,27 @@ func (app *Application) DirectUnpackStatuses() map[string]directunpack.Status {
 	return app.duOrch.statuses()
 }
 
-func (app *Application) maybeFinalize(jobID, failMsg string) { //nocover: defensive error logging on state transition
+// maybeFinalize hands the job registered under jobID to post-processing with
+// failMsg, through maybeFinalizeJob. It is for a caller that holds only the ID
+// and means whichever instance holds it now.
+func (app *Application) maybeFinalize(jobID, failMsg string) {
 	if app.dispatcher == nil {
 		return
 	}
-	j, ok := app.dispatcher.Job(jobID)
-	if !ok {
+	if j, ok := app.dispatcher.Job(jobID); ok {
+		app.maybeFinalizeJob(j, failMsg)
+	}
+}
+
+// maybeFinalizeJob hands j to post-processing with failMsg, only while j is the
+// instance registered under its ID. RowJob reads the header in the same span
+// that finds j registered, so a caller holding a removed instance hands over
+// nothing, rather than a later attempt registered under the same ID.
+func (app *Application) maybeFinalizeJob(j *job.Job, failMsg string) {
+	if app.dispatcher == nil {
 		return
 	}
-	row, ok := app.dispatcher.Row(jobID)
+	row, ok := app.dispatcher.RowJob(j)
 	if !ok {
 		return
 	}
@@ -2346,7 +2366,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 		admittedFailMsg, handOver, ok := app.postProcAdmissions.beginHandOver(j, &app.transitions)
 		if !ok {
 			// A RemoveJob took the job. It is handed back as a job the
-			// post-processor's Cancel took would be: jobFinalizer.cancelled
+			// post-processor's CancelJob took would be: jobFinalizer.cancelled
 			// releases its launch claim, which dispatcher.Remove waits on, and
 			// ends the admission. RemoveJob's own dispatcher cancel does not
 			// release the claim at Extracting or Finalizing, where it does not
@@ -2507,11 +2527,14 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 // get_incomplete_path returns a path only for status = Failed. A completed
 // job has nothing to retry.
 //
-// It refuses, before acting on anything, a job ID another actor holds
-// (errJobInTransition) and, for a FAILED entry, a job the dispatcher already
-// holds (errJobAlreadyQueued). It then refuses, before changing any state, a
-// job whose _FAILED_ download directory cannot be moved back to the path the
-// retry writes to (errRetryDirConflict; see restoreFailedDir).
+// It refuses, before acting on anything, a job ID another actor holds or a
+// finalizer is committing (errJobInTransition) and, for a FAILED entry, a job
+// the dispatcher already holds (errJobAlreadyQueued). It then refuses, before
+// changing any state, a job whose _FAILED_ download directory cannot be moved
+// back to the path the retry writes to (errRetryDirConflict; see
+// restoreFailedDir). A finalizer of the ID that starts after the claim is
+// checked for after the registration check, before any state changes, and
+// again before registering the job (errJobInTransition; see jobTransitions).
 //
 // The history entry is deleted on success.
 func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
@@ -2532,6 +2555,9 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, prepa
 	if !claim.holds(key) {
 		return fmt.Errorf("app: retry %s: %w", jobID, errJobInTransition)
 	}
+	if app.retryClaimedHook != nil {
+		app.retryClaimedHook(jobID)
+	}
 
 	entry, err := app.historyRepo.Get(ctx, jobID)
 	if err != nil {
@@ -2545,6 +2571,13 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, prepa
 		if _, held := app.dispatcher.Job(jobID); held {
 			return fmt.Errorf("app: retry %s: %w", jobID, errJobAlreadyQueued)
 		}
+	}
+	// After the registration check and before anything below changes state.
+	// A finalizer that started after the claim above proceeds without the
+	// lock, and the instance the check found gone may be the one it is
+	// filing; see jobTransitions for why this check is late enough.
+	if app.transitions.isFinalizing(jobID) {
+		return fmt.Errorf("app: retry %s: a finalizer is committing it: %w", jobID, errJobInTransition)
 	}
 
 	j, hdr, err := app.rebuildJobFromNZB(*entry)
@@ -2720,6 +2753,13 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, prepa
 		}
 	}
 
+	// Checked again before registering. A finalizer can begin after the
+	// check above for an instance a failed RemoveJob gave back and the tick
+	// then evicted; its fallback teardown acts on the ID, so a retry
+	// registered under it would be both queued and filed (jobTransitions).
+	if app.transitions.isFinalizing(jobID) {
+		return fmt.Errorf("app: retry %s: a finalizer is committing it: %w", jobID, errJobInTransition)
+	}
 	if app.dispatcher != nil {
 		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
 		err := app.dispatcher.Add(addCtx, j, hdr)
