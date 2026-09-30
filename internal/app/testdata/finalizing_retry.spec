@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestPersistAndCommit_RefusesARetryWhileItCommits$|TestRetryHistoryJob_RefusesWhenAFinalizerStartsDuringIt$|TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState$|TestPruneHistory_SkipsAJobBeingFinalized$|TestFinalize_ParErrorWithHeldVolumesRetriesWithThemReleased$
+run TestPersistAndCommit_RefusesARetryWhileItCommits$|TestRetryHistoryJob_RefusedByAFinalizerOfAGivenBackRemoval$|TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState$|TestPruneHistory_SkipsAJobBeingFinalized$|TestFinalize_ParErrorWithHeldVolumesRetriesWithThemReleased$
 
 # The finalizing record that keeps a retry off an ID while its finalizer
 # commits, each part neutered on its own. retryHistoryJob meets the record
@@ -47,12 +47,12 @@ file internal/app/app.go
 	if false {
 --- end
 
-[a retry registers under a finalizer that began during it]
+[a retry registers under a finalizer of a given-back removal]
 file internal/app/app.go
 --- anchor
-	// does not depend on that ordering holding.
+	// registered under it would be both queued and filed (jobTransitions).
 	if app.transitions.isFinalizing(jobID) {
 --- replace
-	// does not depend on that ordering holding.
+	// registered under it would be both queued and filed (jobTransitions).
 	if false {
 --- end

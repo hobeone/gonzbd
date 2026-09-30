@@ -29,15 +29,23 @@ import (
 // filed (jobFinalizer.retryWithHeldVolumes) is called from finalize after
 // persistAndCommit has returned, so the record has ended by then.
 //
-// That check is late enough because the record precedes the finalizer's
-// CancelJob, and an instance no RemoveJob took leaves the dispatcher only
-// after a cancel: the other cancels and removals are the finalizer's own,
-// cancelled's for a job a RemoveJob took, and startup's before the first tick
+// That check covers a finalizer that began before it, because the record
+// precedes the finalizer's CancelJob and an instance leaves the dispatcher
+// only after a cancel. The cancels and removals
 // (`git grep -n 'dispatcher\.\(Cancel\|CancelJob\|Remove\|RemoveJob\)(' -- 'internal/app/*.go' ':!*_test.go'`
-// finds 7 lines). So a retry that finds the finalizer's instance gone either
-// sees the record, or a RemoveJob took the instance and the finalizer reads
-// that mark before any by-ID step. The retry checks again before it
-// registers, which does not depend on this ordering. A retry is the one way a
+// finds 7 lines) are the finalizer's own, cancelled's for a job a RemoveJob
+// took, startup's before the first tick, and RemoveJob's Cancel and Remove,
+// whose removeFor cancels again. So a retry that finds the finalizer's
+// instance gone either sees the record, or a RemoveJob cancelled the
+// instance. While that RemoveJob's mark stands, the finalizer reads it before
+// any by-ID step. A RemoveJob whose Remove fails gives the mark back
+// (unmarkRemoved) and leaves the instance registered and cancelled, and the
+// tick evicts it if it never ran; a finalizer of that instance can then begin
+// after the early check and take its fallback teardown by ID. The check
+// before registering refuses the retry while such a finalizer commits
+// (TestRetryHistoryJob_RefusedByAFinalizerOfAGivenBackRemoval). Neither check
+// sees one that begins and ends between them, whose by-ID steps can act on
+// what the retry has written so far (#682). A retry is the one way a
 // later instance takes an ID
 // (`git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
 // finds 2 lines: retryHistoryJob's reuses an ID, and AddJob's mints one), so

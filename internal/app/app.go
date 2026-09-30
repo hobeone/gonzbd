@@ -2748,10 +2748,10 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, prepa
 		}
 	}
 
-	// Checked again before registering: a finalizer of the ID that began
-	// after the check above is for an instance a RemoveJob took, which
-	// returns before acting on the ID (jobTransitions), so this refusal
-	// does not depend on that ordering holding.
+	// Checked again before registering. A finalizer can begin after the
+	// check above for an instance a failed RemoveJob gave back and the tick
+	// then evicted; its fallback teardown acts on the ID, so a retry
+	// registered under it would be both queued and filed (jobTransitions).
 	if app.transitions.isFinalizing(jobID) {
 		return fmt.Errorf("app: retry %s: a finalizer is committing it: %w", jobID, errJobInTransition)
 	}

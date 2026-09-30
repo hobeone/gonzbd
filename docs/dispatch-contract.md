@@ -341,11 +341,14 @@ application is stopping. Even then a retry of the job is refused for as long
 as the finalizer commits: it records the job's ID for its whole run, and
 `RetryHistoryJob` refuses a recorded ID when it claims the lock, again once it
 has found no instance registered under the ID and before it changes anything,
-and again before it registers the job. So no later instance takes the ID under
-the finalizer's by-ID teardown, and a refused retry leaves the state the
-finalizer is filing untouched
+and again before it registers the job. So a retry is refused while a finalizer
+of its ID commits at any of those points, and a refused retry leaves the state
+the finalizer is filing untouched
 (`TestPersistAndCommit_RefusesARetryWhileItCommits`,
-`TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState`).
+`TestRetryHistoryJob_AFinalizerStartingAfterTheClaimKeepsItsState`,
+`TestRetryHistoryJob_RefusedByAFinalizerOfAGivenBackRemoval`). A finalizer
+that begins and ends between the last two checks is not seen; the
+`jobTransitions` doc says how one can arise, and #682 tracks it.
 A holder may
 wait inside the dispatcher: `Dispatcher.Remove` waits on the job's launch
 claim. So nothing may wait for that lock while holding something the
