@@ -24,15 +24,16 @@ import (
 // returned near-instant regardless of any concurrent writer, and a
 // re-introduced VACUUM — needing an exclusive lock — would have queued behind
 // one instead. That discriminator broke on purpose: Open's writability check
-// (db.go, a PRAGMA user_version round-trip added for issue #661) is itself a
-// write, so it now queues behind a held writer exactly as a VACUUM would
-// have, and a test built on "which one blocks" can no longer tell them
-// apart. TestOpen_WritabilityCheckIsBoundedByBusyTimeout keeps that setup for
-// what it can still show: the write Open now makes is one ordinary, bounded
-// one like any other in this package — it fails once busy_timeout elapses
+// (db.go, a PRAGMA user_version round-trip) is itself a write, so it now
+// queues behind a held writer exactly as a VACUUM would have, and a test
+// built on "which one blocks" can no longer tell them apart.
+// TestOpen_WritabilityCheckIsBoundedByBusyTimeout keeps that setup for what
+// it can still show: the write Open now makes is one ordinary, bounded one
+// like any other in this package — it fails once busy_timeout elapses
 // rather than hanging forever or silently succeeding past a writer it never
-// actually reached. Telling that write apart from a VACUUM is
-// TestOpen_DoesNotVacuum's job.
+// actually reached. It no longer pins "no startup VACUUM" — it cannot tell
+// one apart from Open's own write. TestOpen_DoesNotVacuum does that instead,
+// below.
 func TestOpen_WritabilityCheckIsBoundedByBusyTimeout(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -80,13 +81,17 @@ func TestOpen_WritabilityCheckIsBoundedByBusyTimeout(t *testing.T) {
 	}
 }
 
-// TestOpen_DoesNotVacuum pins the same invariant as
-// TestOpen_WritabilityCheckIsBoundedByBusyTimeout — no startup VACUUM — on a
-// signal that survives Open's writability check being a write too: free
-// pages. A VACUUM reclaims a database's freelist and shrinks its page count;
-// an ordinary write, including the PRAGMA user_version round-trip Open now
-// performs, does neither. The database is left with free pages by adding and
-// then deleting entries — deleting does not by itself prove anything, since a
+// TestOpen_DoesNotVacuum is what pins "no startup VACUUM" now (see the
+// package comment above). A VACUUM reclaims a database's freelist and
+// shrinks its page count. Open's writability check does not, because the
+// write it makes — a PRAGMA user_version header write on an
+// already-migrated database — rewrites bytes already on the header page and
+// allocates no B-tree pages. The claim below is scoped to that: a write
+// which allocates pages, such as the INSERTs this test's own setup uses to
+// create free pages in the first place, pulls pages from the freelist and
+// would change these counts too; this test does not distinguish that case
+// from a VACUUM. The database is left with free pages by adding and then
+// deleting entries — deleting does not by itself prove anything, since a
 // pruning DELETE runs in this package on every retention sweep without ever
 // reclaiming space — and Open under test must leave both counts exactly as
 // they were.
@@ -133,11 +138,11 @@ func TestOpen_DoesNotVacuum(t *testing.T) {
 	freelistAfter := pragmaInt(t, db2.db, "freelist_count")
 
 	if pageCountAfter != pageCountBefore {
-		t.Errorf("page_count = %d after Open, want unchanged %d — Open shrank the file, which only a VACUUM does",
+		t.Errorf("page_count = %d after Open, want unchanged %d — a header write that allocates no pages must not change it",
 			pageCountAfter, pageCountBefore)
 	}
 	if freelistAfter != freelistBefore {
-		t.Errorf("freelist_count = %d after Open, want unchanged %d — Open reclaimed free pages, which only a VACUUM does",
+		t.Errorf("freelist_count = %d after Open, want unchanged %d — a header write that allocates no pages must not reclaim free pages",
 			freelistAfter, freelistBefore)
 	}
 }
