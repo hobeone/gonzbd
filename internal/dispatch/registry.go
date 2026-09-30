@@ -586,9 +586,25 @@ func (d *Dispatcher) List() []Row {
 // #436: header-tier callers paying manifest-tier cost because the only safe
 // single-job door was the expensive one.
 func (d *Dispatcher) Row(id string) (Row, bool) {
+	return d.rowFor(id, nil)
+}
+
+// RowJob is Row for one instance of a job: it reports false unless j is the
+// job registered under j.ID(), so a caller still holding a removed instance is
+// not handed the header of a later attempt registered under the same ID.
+func (d *Dispatcher) RowJob(j *job.Job) (Row, bool) {
+	if j == nil {
+		return Row{}, false
+	}
+	return d.rowFor(j.ID(), j)
+}
+
+// rowFor is Row and RowJob. When expected is non-nil the header is read in the
+// same d.mu span that finds expected registered, so it is expected's header.
+func (d *Dispatcher) rowFor(id string, expected *job.Job) (Row, bool) {
 	d.mu.Lock()
 	e, ok := d.byID[id]
-	if !ok {
+	if !ok || (expected != nil && e.j != expected) {
 		d.mu.Unlock()
 		return Row{}, false
 	}

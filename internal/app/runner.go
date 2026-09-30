@@ -13,7 +13,7 @@ import (
 // interface so the exactly-once test can observe the calls; production passes
 // the Dispatcher itself.
 type reporter interface {
-	Finished(id string, o job.Outcome) error
+	FinishedJob(j *job.Job, o job.Outcome) error
 	Yielded(id string) error
 	AdvanceFrom(j *job.Job, from, next job.State) error
 }
@@ -22,12 +22,12 @@ type reporter interface {
 // work, and returns immediately.
 //
 // runAssess executes work synchronously in-goroutine and passes ctx to
-// maybeReleaseRecoveryVolumes(ctx, id). runFetch and runPostProc hand off work
+// maybeReleaseRecoveryVolumes(ctx, j). runFetch and runPostProc hand off work
 // to downstream subsystem pools (downloader and postProcessor), whose cancellation
 // and worker drains are owned by their respective Stop methods during
 // Application.Shutdown.
 //
-// Every branch must end in exactly one Finished, Yielded or AdvanceFrom, on
+// Every branch must end in exactly one FinishedJob, Yielded or AdvanceFrom, on
 // some goroutine.
 // Returning without one strands the job's lease and compute slot: the Queue
 // cannot distinguish "holding and working" from "holding and yielded", so
@@ -43,7 +43,7 @@ type reporter interface {
 //     post-processing, is instead reported by runFetch itself, through
 //     advance's AdvanceFrom.
 //  2. Assessing: discharges directly within runAssess via AdvanceFrom (intact,
-//     repairable, or deferred recovery) or Finished(OutcomeFailed) (hopeless).
+//     repairable, or deferred recovery) or FinishedJob(OutcomeFailed) (hopeless).
 //  3. Repairing/Extracting/Finalizing: hands off to postProcessor.Process
 //     (enqueuePostProc). Post-processing completes and yields via
 //     jobFinalizer.persistAndCommit (`git grep -n 'func (f \*jobFinalizer) persistAndCommit' internal/app/`),
@@ -141,8 +141,9 @@ func (r *appRunner) runFetch(_ context.Context, id string) {
 }
 
 // runAssess executes assessment work synchronously in-goroutine and passes ctx
-// to maybeReleaseRecoveryVolumes(ctx, id). It directly reports completion via
-// Finished or its verdict via AdvanceFrom.
+// to maybeReleaseRecoveryVolumes(ctx, j). It directly reports completion via
+// FinishedJob or its verdict via AdvanceFrom. It resolves the job once, and
+// every call after that carries the instance it resolved.
 func (r *appRunner) runAssess(ctx context.Context, id string) {
 	if r.app == nil {
 		if r.report != nil {
@@ -161,18 +162,14 @@ func (r *appRunner) runAssess(ctx context.Context, id string) {
 		return
 	}
 
-	if r.app.maybeReleaseRecoveryVolumes(ctx, id) {
+	if r.app.maybeReleaseRecoveryVolumes(ctx, j) {
 		r.advance(j, job.Assessing, job.Fetching)
 		return
 	}
 
 	repairState := j.RepairState()
 	if repairState.Hopeless() {
-		failMsg := failMsgForJob(j)
-		r.app.maybeFinalize(id, failMsg)
-		if r.report != nil {
-			_ = r.report.Finished(id, job.OutcomeFailed)
-		}
+		r.failHopeless(j)
 		return
 	}
 
@@ -182,6 +179,17 @@ func (r *appRunner) runAssess(ctx context.Context, id string) {
 	}
 
 	r.advance(j, job.Assessing, job.Extracting)
+}
+
+// failHopeless is runAssess's verdict for a job par2 cannot repair: it hands j
+// to post-processing with its failure reason and settles it OutcomeFailed.
+// Both calls carry j, so a verdict on an instance that has left the dispatcher
+// reaches no later instance registered under its ID.
+func (r *appRunner) failHopeless(j *job.Job) {
+	r.app.maybeFinalizeJob(j, failMsgForJob(j))
+	if r.report != nil {
+		_ = r.report.FinishedJob(j, job.OutcomeFailed)
+	}
 }
 
 // advance reports that the work of from is done and the job continues to

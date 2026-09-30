@@ -46,10 +46,12 @@ single worker goroutine (`run`).
   one post-processing run of a job instance, ever, in
   `Application.enqueuePostProc`, which keeps the admission record
   (`postProcAdmissions`). It has two callers: `appRunner.runPostProc`, and
-  `maybeFinalize`, which the downloader's and the pipeline's hopeless
-  callbacks, `runAssess` and `Application.Fail` call
-  (`git grep -n 'maybeFinalize(' -- 'internal/*.go' ':!*_test.go'` returns
-  those 4 call sites and the definition). An admission starts before the DirectUnpack wait and
+  `maybeFinalizeJob`, which hands over only the instance it is given while
+  that instance is registered. `runAssess` calls it with the instance it
+  resolved, and `maybeFinalize` calls it with the instance registered under
+  an ID for the downloader's and the pipeline's hopeless callbacks and
+  `Application.Fail` (`git grep -n 'maybeFinalize(' -- 'internal/*.go' ':!*_test.go'`
+  returns those 3 call sites and the definition). An admission starts before the DirectUnpack wait and
   ends once `jobFinalizer.finalize` or `jobFinalizer.cancelled` has run, so it
   covers the two windows `HasJob` does not see: the wait before `Process`, and
   the callback tail after the worker clears its busy marker. Ending it does not

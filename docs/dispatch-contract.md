@@ -180,10 +180,14 @@ the pause gates the move. `TestStall_LeavesALiveAssessingWorkerAlone` pins it.
 
 On worker exit, the runner (or an external caller) must call exactly one of:
 
-- **`Dispatcher.Finished(id, outcome)`** — the worker finished the state's
-  work, terminally. It rejects `job.OutcomeCancelled` before touching the
-  Queue (only the cancel latch may produce that outcome — `sched.Settle`
-  refuses it too, via `ErrCancelReserved`), then calls `sched.Queue.Settle`.
+- **`Dispatcher.Finished(id, outcome)` / `FinishedJob(j, outcome)`** — the
+  worker finished the state's work, terminally. It rejects
+  `job.OutcomeCancelled` before touching the Queue (only the cancel latch may
+  produce that outcome — `sched.Settle` refuses it too, via
+  `ErrCancelReserved`), then calls `sched.Queue.Settle`. `FinishedJob` does
+  nothing and returns `ErrNotFound` unless `j` is the instance registered
+  under its ID, so a worker holding a removed instance cannot settle a later
+  one; `appRunner.runAssess` reports through it.
 - **`Dispatcher.AdvanceFrom(j, from, next)`** — the worker finished the
   work of `from` and the job continues to `next`. It calls
   `sched.Queue.Handoff`. A `next` that `SetNext` refuses settles the job

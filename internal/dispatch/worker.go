@@ -33,7 +33,24 @@ import (
 // changes) has already changed, while still being unconditional on Settle's
 // outcome.
 func (d *Dispatcher) Finished(id string, o job.Outcome) error {
-	j, ok := d.lookup(id)
+	return d.finishedFor(id, nil, o)
+}
+
+// FinishedJob is Finished for one instance of a job: it settles and clears the
+// launch claim only if j is the job registered under j.ID(), and otherwise
+// returns ErrNotFound having done nothing, so a worker still holding a removed
+// instance cannot settle a later attempt registered under the same ID or clear
+// its claim.
+func (d *Dispatcher) FinishedJob(j *job.Job, o job.Outcome) error {
+	if j == nil {
+		return fmt.Errorf("dispatch: FinishedJob: nil job: %w", ErrNotFound)
+	}
+	return d.finishedFor(j.ID(), j, o)
+}
+
+// finishedFor is Finished and FinishedJob; expected is as for lookupFor.
+func (d *Dispatcher) finishedFor(id string, expected *job.Job, o job.Outcome) error {
+	j, ok := d.lookupFor(id, expected)
 	if !ok {
 		return fmt.Errorf("dispatch: Finished: no job %q: %w", id, ErrNotFound)
 	}

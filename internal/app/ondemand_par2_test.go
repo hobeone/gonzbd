@@ -432,7 +432,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		cancelledCtx, cancel := context.WithCancel(t.Context())
 		cancel()
 
-		if app.maybeReleaseRecoveryVolumes(cancelledCtx, jobID) {
+		if app.maybeReleaseRecoveryVolumes(cancelledCtx, qjob) {
 			t.Error("maybeReleaseRecoveryVolumes must return false when context is cancelled")
 		}
 	})
@@ -445,7 +445,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		copyFixturePar2(t, dirClean)
 		copyFixturePayload(t, dirClean, "data.bin")
 
-		if app.maybeReleaseRecoveryVolumes(t.Context(), jobID) {
+		if app.maybeReleaseRecoveryVolumes(t.Context(), qjob) {
 			t.Error("maybeReleaseRecoveryVolumes must return false when verification is clean")
 		}
 
@@ -492,7 +492,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		copyFixturePar2(t, dirCorrupt)
 		copyFixturePayload(t, dirCorrupt, "data.bin")
 
-		if !app.maybeReleaseRecoveryVolumes(t.Context(), jobCorruptID) {
+		if !app.maybeReleaseRecoveryVolumes(t.Context(), jobCorrupt) {
 			t.Error("maybeReleaseRecoveryVolumes must return true when verification fails")
 		}
 
@@ -531,7 +531,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		}
 		copyFixturePayload(t, filepath.Join(dir, "job-no-index-name"), "data.bin")
 
-		if !app.maybeReleaseRecoveryVolumes(t.Context(), noIndexJobID) {
+		if !app.maybeReleaseRecoveryVolumes(t.Context(), noIdx) {
 			t.Error("a job whose par2 index never arrived must fetch its recovery volumes; without an index " +
 				"nothing can be verified, so skipping them would ship an unchecked job")
 		}
@@ -557,7 +557,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		copyFixturePar2(t, dirObf) // protects data.bin
 		copyFixturePayload(t, dirObf, obfuscated)
 
-		if app.maybeReleaseRecoveryVolumes(t.Context(), obfJobID) {
+		if app.maybeReleaseRecoveryVolumes(t.Context(), obfJob) {
 			t.Fatal("an intact obfuscated download undeferred its recovery volumes; identification finds the file " +
 				"by content, so a verdict of \"needs repair\" means verification was not reading what " +
 				"identification found")
@@ -685,7 +685,7 @@ func TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing(t *testing.T
 				t.Fatalf("precondition: DirtyCount = %d after a flush, want 0", n)
 			}
 
-			app.maybeReleaseRecoveryVolumes(t.Context(), tc.jobID)
+			app.maybeReleaseRecoveryVolumes(t.Context(), j)
 
 			if n := app.checkpointer.DirtyCount(); n == 0 {
 				t.Errorf("DirtyCount = 0 after a par2 verdict moved the fetch policy on job %s, want the job marked — "+

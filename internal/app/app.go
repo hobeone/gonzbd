@@ -1798,17 +1798,14 @@ func (app *Application) markFetchPolicyDirty(j *job.Job) {
 	app.checkpointer.Mark(j)
 }
 
-func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID string) bool {
+// maybeReleaseRecoveryVolumes gives j's on-demand par2 verdict, acts on it on
+// j alone, not on whatever instance holds j's ID by then, and reports whether
+// it un-deferred recovery volumes to fetch.
+func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.Job) bool {
 	if ctx.Err() != nil {
 		return false
 	}
-	if app.dispatcher == nil {
-		return false
-	}
-	j, ok := app.dispatcher.Job(jobID)
-	if !ok {
-		return false
-	}
+	jobID := j.ID()
 
 	if !j.HasDeferredPar2() {
 		return false
@@ -2133,15 +2130,27 @@ func (app *Application) DirectUnpackStatuses() map[string]directunpack.Status {
 	return app.duOrch.statuses()
 }
 
-func (app *Application) maybeFinalize(jobID, failMsg string) { //nocover: defensive error logging on state transition
+// maybeFinalize hands the job registered under jobID to post-processing with
+// failMsg, through maybeFinalizeJob. It is for a caller that holds only the ID
+// and means whichever instance holds it now.
+func (app *Application) maybeFinalize(jobID, failMsg string) {
 	if app.dispatcher == nil {
 		return
 	}
-	j, ok := app.dispatcher.Job(jobID)
-	if !ok {
+	if j, ok := app.dispatcher.Job(jobID); ok {
+		app.maybeFinalizeJob(j, failMsg)
+	}
+}
+
+// maybeFinalizeJob hands j to post-processing with failMsg, only while j is the
+// instance registered under its ID. RowJob reads the header in the same span
+// that finds j registered, so a caller holding a removed instance hands over
+// nothing, rather than a later attempt registered under the same ID.
+func (app *Application) maybeFinalizeJob(j *job.Job, failMsg string) {
+	if app.dispatcher == nil {
 		return
 	}
-	row, ok := app.dispatcher.Row(jobID)
+	row, ok := app.dispatcher.RowJob(j)
 	if !ok {
 		return
 	}

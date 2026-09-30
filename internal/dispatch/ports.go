@@ -70,9 +70,10 @@ type Persisted struct {
 // the dispatcher calls it from the tick goroutine, and a Runner that blocks
 // stalls every other job's advance.
 //
-// The runner reports terminal completion by calling Dispatcher.Finished,
-// finished work that continues to another state by calling
-// Dispatcher.AdvanceFrom, and any other exit by calling Dispatcher.Yielded.
+// The runner reports terminal completion by calling Dispatcher.Finished, or
+// Dispatcher.FinishedJob with the instance it resolved, finished work that
+// continues to another state by calling Dispatcher.AdvanceFrom, and any other
+// exit by calling Dispatcher.Yielded.
 // Not calling one of them strands the job's resources: the Queue cannot tell
 // "holding and working" from "holding and yielded", so nothing else can
 // return them.
