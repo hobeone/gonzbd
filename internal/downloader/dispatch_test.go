@@ -53,14 +53,17 @@ func fakeSrv(name string, priority int, enabled bool) *Server {
 }
 
 // fakeArticle returns an UnfinishedArticle with the given message-ID under
-// jobID "j1".
+// a new instance of job "j1".
+//
+// The instance is new on every call, and the dispatch tracker keys on
+// (instance, artIdx), so a test that seeds tracker state for the article must
+// build the key from the returned a.Job.
 //
 // ArtIdx is set explicitly rather than left at the struct zero. Every caller
-// dispatches a single article, so index 0 is correct for all of them — but the
-// dispatch tracker keys on (jobID, artIdx), so two fixtures sharing a job and
-// an index are one entry, not two. Stating it here is what makes that a
-// decision rather than an accident; a test needing two articles under one job
-// must give them distinct indices.
+// dispatches a single article, so index 0 is correct for all of them — but two
+// articles sharing an instance and an index are one tracker entry, not two. A
+// test needing two articles under one instance must give them distinct
+// indices.
 func fakeArticle(msgID string) UnfinishedArticle {
 	return UnfinishedArticle{
 		Job:       bareJob("j1"),
@@ -115,8 +118,8 @@ func TestTryDispatch_SuccessfulSend(t *testing.T) {
 		t.Error("workCh[s1] is empty — req was not sent")
 	}
 	d.tracker.Lock()
-	inFlightVal := d.tracker.InFlightLocked(articleKey{jobID: "j1", artIdx: 0})
-	mask, _ := d.tracker.TryListLocked(articleKey{jobID: "j1", artIdx: 0})
+	inFlightVal := d.tracker.InFlightLocked(keyFor(a.Job, 0))
+	mask, _ := d.tracker.TryListLocked(keyFor(a.Job, 0))
 	d.tracker.Unlock()
 
 	// inFlight must be incremented so a second dispatch pass skips this article.
@@ -131,7 +134,7 @@ func TestTryDispatch_SuccessfulSend(t *testing.T) {
 
 // Two jobs holding the same Message-ID — the same NZB added twice, or a
 // reposted par2 volume — must not share a try-list entry or an in-flight
-// count. The tracker keys on (jobID, artIdx) for exactly this reason: keyed on
+// count. The tracker keys on (instance, artIdx), not the Message-ID: keyed on
 // the Message-ID alone the second job's article is indistinguishable from the
 // first's, so it is skipped as already in flight and can reach
 // ErrNoServersLeft without ever having been fetched.
@@ -164,8 +167,8 @@ func TestTryDispatch_TwoJobsSharingAMessageIDAreTrackedSeparately(t *testing.T) 
 	}
 
 	d.tracker.Lock()
-	inA := d.tracker.InFlightLocked(articleKey{jobID: "jobA", artIdx: 0})
-	inB := d.tracker.InFlightLocked(articleKey{jobID: "jobB", artIdx: 0})
+	inA := d.tracker.InFlightLocked(keyFor(a.Job, 0))
+	inB := d.tracker.InFlightLocked(keyFor(b.Job, 0))
 	d.tracker.Unlock()
 	if inA != 1 || inB != 1 {
 		t.Errorf("in-flight jobA=%d jobB=%d, want 1 and 1 — the two jobs share a "+
@@ -179,10 +182,10 @@ func TestTryDispatch_AlreadyInFlight(t *testing.T) {
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
-	d.tracker.Lock()
-	d.tracker.IncrementInFlightLocked(articleKey{jobID: "j1", artIdx: 0})
-	d.tracker.Unlock()
 	a := fakeArticle("msg1@h")
+	d.tracker.Lock()
+	d.tracker.IncrementInFlightLocked(keyFor(a.Job, 0))
+	d.tracker.Unlock()
 	opts := defaultOpts(d.servers)
 
 	handled, exReq := d.tryDispatch(context.Background(), a, opts)
@@ -223,13 +226,13 @@ func TestTryDispatch_MaxArtTriesExhausted(t *testing.T) {
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
+	a := fakeArticle("msg1@h")
 	// Mark server 0 as already tried.
 	mask := serverMask{}
 	mask.set(0)
 	d.tracker.Lock()
-	d.tracker.SetTriedLocked(articleKey{jobID: "j1", artIdx: 0}, mask)
+	d.tracker.SetTriedLocked(keyFor(a.Job, 0), mask)
 	d.tracker.Unlock()
-	a := fakeArticle("msg1@h")
 	opts := defaultOpts(d.servers)
 	opts.maxArtTries = 1 // cap at 1 try
 
@@ -252,13 +255,13 @@ func TestTryDispatch_AllServersTriedExhausted(t *testing.T) {
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
+	a := fakeArticle("msg1@h")
 	// Mark the only server as tried.
 	mask := serverMask{}
 	mask.set(0)
 	d.tracker.Lock()
-	d.tracker.SetTriedLocked(articleKey{jobID: "j1", artIdx: 0}, mask)
+	d.tracker.SetTriedLocked(keyFor(a.Job, 0), mask)
 	d.tracker.Unlock()
-	a := fakeArticle("msg1@h")
 	opts := defaultOpts(d.servers)
 
 	handled, exReq := d.tryDispatch(context.Background(), a, opts)
@@ -727,11 +730,11 @@ func BenchmarkDownloader_Dispatch(b *testing.B) {
 	a := fakeArticle("msg1@h")
 	opts := defaultOpts(d.servers)
 	ctx := context.Background()
+	k := keyFor(a.Job, a.ArtIdx)
 
 	b.ResetTimer()
 	for range b.N {
 		// Teardown state directly on the maps to avoid any tracker method/lock overhead.
-		k := articleKey{jobID: a.Job.ID(), artIdx: a.ArtIdx}
 		delete(d.tracker.inFlight, k)
 		delete(d.tracker.tryList, k)
 		select {
@@ -754,13 +757,13 @@ func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
 	addTestJob(t, d.dispatcher, j, m)
 
 	// Setup tried mapping to test that it gets cleared. The key must name the
-	// SAME job the exhausted request below carries: the tracker keys on
-	// (jobID, artIdx), so seeding a different job would leave this entry
+	// SAME instance the exhausted request below carries: the tracker keys on
+	// (instance, artIdx), so seeding a different one would leave this entry
 	// untouched and the assertion would pass for the wrong reason.
 	d.tracker.Lock()
 	mask := serverMask{}
 	mask.set(0)
-	d.tracker.SetTriedLocked(articleKey{jobID: j.ID(), artIdx: 0}, mask)
+	d.tracker.SetTriedLocked(keyFor(j, 0), mask)
 	d.tracker.Unlock()
 
 	plan := dispatchPlan{
@@ -900,13 +903,13 @@ func TestTryDispatch_MaxArtTriesExhausted_MultipleServers(t *testing.T) {
 	srv2 := fakeSrv("s2", 1, true)
 	d := newDispatchDownloader([]*Server{srv1, srv2})
 
+	a := fakeArticle("msg1@h")
 	// Mark server 0 as already tried, but server 1 is not tried.
 	mask := serverMask{}
 	mask.set(0)
 	d.tracker.Lock()
-	d.tracker.SetTriedLocked(articleKey{jobID: "j1", artIdx: 0}, mask)
+	d.tracker.SetTriedLocked(keyFor(a.Job, 0), mask)
 	d.tracker.Unlock()
-	a := fakeArticle("msg1@h")
 	opts := defaultOpts(d.servers)
 	opts.maxArtTries = 1 // cap at 1 try
 
@@ -1656,8 +1659,8 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 	var initialMask serverMask
 	initialMask.set(0)
 	tracker.Lock()
-	tracker.SetTriedLocked(articleKey{jobID: j.ID(), artIdx: 1}, initialMask)
-	tracker.SetTriedLocked(articleKey{jobID: j.ID(), artIdx: 2}, initialMask)
+	tracker.SetTriedLocked(keyFor(j, 1), initialMask)
+	tracker.SetTriedLocked(keyFor(j, 2), initialMask)
 	tracker.Unlock()
 
 	mc := &managedConn{}
@@ -1705,8 +1708,8 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 	}
 
 	tracker.Lock()
-	m1, _ := tracker.TryListLocked(articleKey{jobID: j.ID(), artIdx: 1})
-	m2, _ := tracker.TryListLocked(articleKey{jobID: j.ID(), artIdx: 2})
+	m1, _ := tracker.TryListLocked(keyFor(j, 1))
+	m2, _ := tracker.TryListLocked(keyFor(j, 2))
 	tracker.Unlock()
 
 	if m1.has(0) {
@@ -2026,22 +2029,24 @@ func TestClearTried(t *testing.T) {
 	t.Parallel()
 
 	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
+	req := &articleRequest{job: bareJob("j1"), artIdx: 0}
+	key := keyFor(req.job, req.artIdx)
 	mask := serverMask{}
 	mask.set(0)
 	d.tracker.Lock()
-	d.tracker.SetTriedLocked(articleKey{jobID: "j1", artIdx: 0}, mask)
+	d.tracker.SetTriedLocked(key, mask)
 	d.tracker.Unlock()
 
 	d.tracker.Lock()
-	if _, ok := d.tracker.TryListLocked(articleKey{jobID: "j1", artIdx: 0}); !ok {
+	if _, ok := d.tracker.TryListLocked(key); !ok {
 		t.Fatal("setup: try-list entry missing before clearTried")
 	}
 	d.tracker.Unlock()
 
-	d.clearTried("j1", 0)
+	d.clearTried(req)
 
 	d.tracker.Lock()
-	_, ok := d.tracker.TryListLocked(articleKey{jobID: "j1", artIdx: 0})
+	_, ok := d.tracker.TryListLocked(key)
 	d.tracker.Unlock()
 	if ok {
 		t.Error("clearTried did not remove the try-list entry")
@@ -2053,7 +2058,7 @@ func TestClearTried_UnknownKeyIsNoop(t *testing.T) {
 
 	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
 	// Must not panic on a key that was never tracked.
-	d.clearTried("j1", 99)
+	d.clearTried(&articleRequest{job: bareJob("j1"), artIdx: 99})
 
 	tryListLen, _ := d.tracker.Len()
 	if tryListLen != 0 {
@@ -2159,7 +2164,7 @@ func TestDispatchPass_DispatchesReadyArticle(t *testing.T) {
 	}
 
 	d.tracker.Lock()
-	mask, ok := d.tracker.TryListLocked(articleKey{jobID: j.ID(), artIdx: 0})
+	mask, ok := d.tracker.TryListLocked(keyFor(j, 0))
 	d.tracker.Unlock()
 	if !ok || !mask.has(0) {
 		t.Errorf("try-list for a@h = (%+v, %v), want server 0 marked tried", mask, ok)
@@ -2269,22 +2274,24 @@ func TestClearInFlight_ReleasesTheArticleForRedispatch(t *testing.T) {
 	t.Parallel()
 
 	d := newDispatchDownloader([]*Server{fakeSrv("s1", 0, true)})
+	req := &articleRequest{job: bareJob("j1"), artIdx: 0}
+	key := keyFor(req.job, req.artIdx)
 	d.tracker.Lock()
-	d.tracker.IncrementInFlightLocked(articleKey{jobID: "j1", artIdx: 0})
-	d.tracker.IncrementInFlightLocked(articleKey{jobID: "j1", artIdx: 0})
+	d.tracker.IncrementInFlightLocked(key)
+	d.tracker.IncrementInFlightLocked(key)
 	d.tracker.Unlock()
 
 	inFlight := func() int {
 		d.tracker.Lock()
 		defer d.tracker.Unlock()
-		return d.tracker.InFlightLocked(articleKey{jobID: "j1", artIdx: 0})
+		return d.tracker.InFlightLocked(key)
 	}
 
-	d.clearInFlight("j1", 0)
+	d.clearInFlight(req)
 	if got := inFlight(); got != 1 {
 		t.Fatalf("in-flight = %d after one clear of two, want 1", got)
 	}
-	d.clearInFlight("j1", 0)
+	d.clearInFlight(req)
 	if got := inFlight(); got != 0 {
 		t.Errorf("in-flight = %d after clearing both, want 0 — the article is believed "+
 			"dispatched forever and never falls back to another server", got)
@@ -2302,14 +2309,16 @@ func TestUnmarkTried_LetsTheSameServerBeRetried(t *testing.T) {
 	mask := serverMask{}
 	mask.set(0)
 	mask.set(1)
+	req := &articleRequest{job: bareJob("j1"), artIdx: 0}
+	key := keyFor(req.job, req.artIdx)
 	d.tracker.Lock()
-	d.tracker.SetTriedLocked(articleKey{jobID: "j1", artIdx: 0}, mask)
+	d.tracker.SetTriedLocked(key, mask)
 	d.tracker.Unlock()
 
-	d.unmarkTried("j1", 0, 0)
+	d.unmarkTried(req, 0)
 
 	d.tracker.Lock()
-	got, ok := d.tracker.TryListLocked(articleKey{jobID: "j1", artIdx: 0})
+	got, ok := d.tracker.TryListLocked(key)
 	d.tracker.Unlock()
 	if !ok {
 		t.Fatal("unmarkTried removed the whole try-list entry; every server it had " +
