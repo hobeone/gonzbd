@@ -8,11 +8,12 @@ import (
 // k1 and k2 are two distinct tracker keys. dispatchTracker is agnostic about
 // what a key denotes — it stores masks and counters against whatever identity
 // it is handed — so these stand in for any two articles. That they differ in
-// artIdx rather than jobID is arbitrary here; the cross-job case has its own
-// test below, because that separation is the reason the key is a pair.
+// artIdx rather than instance is arbitrary here; the cross-job and
+// cross-instance cases have their own tests.
 var (
-	k1 = articleKey{jobID: "j1", artIdx: 1}
-	k2 = articleKey{jobID: "j1", artIdx: 2}
+	j1 = bareJob("j1")
+	k1 = keyFor(j1, 1)
+	k2 = keyFor(j1, 2)
 )
 
 func TestTracker_InFlight(t *testing.T) {
@@ -111,7 +112,7 @@ func TestTracker_TryList(t *testing.T) {
 	})
 
 	t.Run("unmark non-existent", func(t *testing.T) {
-		tr.UnmarkTried(articleKey{jobID: "j1", artIdx: 404}, 1) // should not panic or error
+		tr.UnmarkTried(keyFor(j1, 404), 1) // should not panic or error
 	})
 }
 
@@ -139,7 +140,7 @@ func TestTracker_Len(t *testing.T) {
 func TestTracker_ClearJob(t *testing.T) {
 	tr := newDispatchTracker()
 
-	kOther := articleKey{jobID: "j2", artIdx: 1}
+	kOther := keyFor(bareJob("j2"), 1)
 
 	tr.Lock()
 	tr.IncrementInFlightLocked(k1)
@@ -190,7 +191,7 @@ func TestTracker_Concurrency(t *testing.T) {
 	for i := range workers {
 		go func(workerID int) {
 			defer wg.Done()
-			key := articleKey{jobID: "j1", artIdx: 10}
+			key := keyFor(j1, 10)
 			for range iterations {
 				tr.Lock()
 				tr.IncrementInFlightLocked(key)
@@ -205,7 +206,7 @@ func TestTracker_Concurrency(t *testing.T) {
 	for i := range workers {
 		go func(workerID int) {
 			defer wg.Done()
-			key := articleKey{jobID: "j1", artIdx: 20}
+			key := keyFor(j1, 20)
 			for range iterations {
 				mask := serverMask{}
 				mask.set(workerID)

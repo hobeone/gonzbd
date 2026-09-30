@@ -690,7 +690,9 @@ A7 closed the first: with the ID unique across the document, the index could not
 resolve to the wrong article — and F2 then removed the index altogether, so the
 class is gone twice over. The second is out of A7's
 reach entirely — two jobs, not one NZB, each internally valid — and is closed
-structurally by F3, which keys the tracker on `(jobID, artIdx)`.
+structurally by F3, which keyed the tracker on `(jobID, artIdx)`. #665 has
+since narrowed the key from the job ID to the job instance, which still
+separates two jobs.
 
 **A7 holds for restored jobs too, and this is a ground-rule consequence rather
 than an enforcement.** `Manifest.UnmarshalJSON` replays stored article IDs

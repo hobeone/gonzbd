@@ -14,13 +14,13 @@ run Test(FetchArticle_HandedOffJobIsNotFetched|BuildDispatchPlan_HandOffDuringTh
 file internal/downloader/dispatch.go
 --- anchor
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 		return nil, false
 	}
 --- replace
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 		return nil, false
 	}
@@ -30,7 +30,7 @@ file internal/downloader/dispatch.go
 file internal/downloader/dispatch.go
 --- anchor
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 		return nil, false
 	}
@@ -45,13 +45,13 @@ file internal/downloader/dispatch.go
 file internal/downloader/dispatch.go
 --- anchor
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		_ = req.job.ClearArticleEmitted(int(req.artIdx))
 		return nil, false
 	}
 --- replace
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
-		d.unmarkTried(req.jobID(), req.artIdx, serverIdx)
+		d.unmarkTried(req, serverIdx)
 		return nil, false
 	}
 --- end
