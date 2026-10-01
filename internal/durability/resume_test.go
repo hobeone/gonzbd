@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 // writePartial creates a partial file of n bytes and returns its path.
@@ -264,6 +266,65 @@ func TestResume_RunReadFailureIsReturned(t *testing.T) {
 
 	if _, err := r.Resume(context.Background(), "job-1", 0, path); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the read failure", err)
+	}
+}
+
+// TestResume_RunReadFailureNamesTheStore pins that a failed read of the
+// durability record is attributed to the STORE's own path and op "read" —
+// not to the download file Resume was asked about — the same way Barrier's
+// commit and FinalizeFile's own run read are routed (barrier.go, §9a).
+//
+// Resumer holds no Stallable (see the type doc): it is a reader and a
+// deleter, never a dispatcher. So it classifies the failure the same way
+// raise's final branch would and leaves the one remaining step — handing the
+// fault to Stallable — to its caller, which must not re-attribute what this
+// already got right (internal/app/resume_startup.go).
+func TestResume_RunReadFailureNamesTheStore(t *testing.T) {
+	t.Parallel()
+	const dbPath = "/admin/history.db"
+	boom := errors.New("database or disk is full")
+	path := writePartial(t, t.TempDir(), "f.bin", 100)
+	r := NewResumer(&errRunStore{runStore: NewStore(openTestDB(t), dbPath), err: boom}, testLogger(t))
+
+	_, err := r.Resume(context.Background(), "job-1", 0, path)
+
+	f, ok := errors.AsType[*storagefault.Fault](err)
+	if !ok {
+		t.Fatalf("err = %v, want a *storagefault.Fault", err)
+	}
+	if f.Op != "read" {
+		t.Errorf("fault op = %q, want %q", f.Op, "read")
+	}
+	if f.Path != dbPath {
+		t.Errorf("fault path = %q, want %q — the store's own path, not the download file's (R27)",
+			f.Path, dbPath)
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("err = %v, want it to wrap the store's error", err)
+	}
+}
+
+// TestResume_RunReadAbandonedByItsCallerIsNotAFault pins the other half: a
+// run read that failed once the caller's context ended says nothing about
+// storage, matching storeFailure's carve-out for Barrier's own store reads.
+// A caller cancellation routed as a storage fault would park a healthy job
+// naming a disk that did not fail.
+func TestResume_RunReadAbandonedByItsCallerIsNotAFault(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	boom := errors.New("interrupted")
+	path := writePartial(t, t.TempDir(), "f.bin", 100)
+	r := NewResumer(&errRunStore{runStore: NewStore(openTestDB(t), "/admin/history.db"), err: boom}, testLogger(t))
+
+	_, err := r.Resume(ctx, "job-1", 0, path)
+
+	if _, ok := errors.AsType[*storagefault.Fault](err); ok {
+		t.Errorf("err = %v, want it NOT classified as a storage fault — the caller had "+
+			"already stopped waiting", err)
+	}
+	if !errors.Is(err, ErrTargetUnavailable) || !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want it to wrap ErrTargetUnavailable naming the cancellation", err)
 	}
 }
 

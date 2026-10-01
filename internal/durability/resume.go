@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 // ResumeResult is what one file's resume established from stable storage.
@@ -122,7 +124,19 @@ func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path 
 
 	runs, err := r.runs.ForFile(ctx, jobID, fileIdx)
 	if err != nil {
-		return ResumeResult{}, fmt.Errorf("durability: resume runs job=%s file=%d: %w", jobID, fileIdx, err)
+		// Routed the same way Barrier's commit and FinalizeFile's own run read
+		// are (barrier.go, §9a): attributed to the store's own path and op
+		// "read", not to this file, with the same carve-out for a caller that
+		// had already stopped waiting. Resumer holds no Stallable — it is a
+		// reader and a deleter, never a dispatcher (see the type doc) — so it
+		// classifies the failure and leaves the one remaining step, handing it
+		// to Stallable, to its caller, which must not re-attribute what this
+		// already got right.
+		werr := storeFailure(ctx, err)
+		if errors.Is(werr, ErrTargetUnavailable) {
+			return ResumeResult{}, fmt.Errorf("durability: resume runs job=%s file=%d: %w", jobID, fileIdx, werr)
+		}
+		return ResumeResult{}, storagefault.Classify("read", r.runs.Path(), werr)
 	}
 	bound := boundOver(runs, nil)
 	if fi.Size() < bound {

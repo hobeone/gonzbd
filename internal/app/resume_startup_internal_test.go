@@ -17,6 +17,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -469,6 +470,56 @@ func TestResumeAllJobs_ShutdownDuringResumeIsNotAStorageFault(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want it to carry context.Canceled — the sweep must report a "+
 			"shutdown as a shutdown rather than reclassify it as a fault of the device", err)
+	}
+}
+
+// preClassifiedFaultResumer stands in for durability.Resumer having already
+// attributed a failed read of its own record to the store's path and op
+// "read" (durability.Resumer.Resume, §9a) — the shape a failed ForFile now
+// has, rather than a bare error.
+type preClassifiedFaultResumer struct{ fault *storagefault.Fault }
+
+func (r *preClassifiedFaultResumer) Resume(context.Context, string, int32, string) (durability.ResumeResult, error) {
+	return durability.ResumeResult{}, r.fault
+}
+
+// TestResumeAllJobs_AStoreReadFailureNamesTheStoreNotTheFile pins the other
+// half of the §9a routing: resumeJobFiles must use a fault Resume already
+// classified AS IS, rather than relabelling it "resume" against the download
+// file — which is what every OTHER Resume failure (a bare stat error) is
+// still classified against, two tests above.
+//
+// Before, resumeJobFiles ignored what kind of error Resume returned and
+// always classified fresh against the download file's own path, so a failed
+// read of history.db surfaced a stall reason naming the job's partial file
+// instead of the database (#699).
+func TestResumeAllJobs_AStoreReadFailureNamesTheStoreNotTheFile(t *testing.T) {
+	t.Parallel()
+	f := newResumeUnitFixture(t)
+	const dbPath = "/admin/history.db"
+	f.app.resumer = &preClassifiedFaultResumer{
+		fault: storagefault.Classify("read", dbPath, errors.New("database or disk is full")),
+	}
+
+	if err := f.app.resumeAllJobs(t.Context()); err != nil {
+		t.Fatalf("resumeAllJobs: %v", err)
+	}
+
+	row, ok := f.app.dispatcher.Row(f.job.ID())
+	if !ok {
+		t.Fatal("job not in dispatcher")
+	}
+	if row.Status() != constants.StatusPaused {
+		t.Fatalf("status = %q, want %q — a store read failure must still stall the job",
+			row.Status(), constants.StatusPaused)
+	}
+	reason := f.app.StallReason(f.job.ID()).Reason
+	if !strings.Contains(reason, dbPath) {
+		t.Errorf("stall reason = %q, want it to name the store's own path %q (R27)", reason, dbPath)
+	}
+	if strings.Contains(reason, f.path) {
+		t.Errorf("stall reason = %q, names the download file %q instead of the store that "+
+			"actually failed", reason, f.path)
 	}
 }
 
