@@ -372,3 +372,32 @@ func TestFinishCancel_ReclaimErrorPropagates(t *testing.T) {
 			"the slot must be freed even when the audit rejects the lease", q.slots.outstanding())
 	}
 }
+
+// TestCancel_AnInstanceHoldingNoLeaseIsNotAborted: Cancel interrupts only an
+// instance that holds a lease itself. A removed instance has been parked, so a
+// cancel that reaches it must not call Abort, even while a later instance
+// under the same ID holds that ID's compute slot. The downloader's tracker
+// reap relies on this: the instance Abort names is the one registered under
+// its ID.
+func TestCancel_AnInstanceHoldingNoLeaseIsNotAborted(t *testing.T) {
+	for _, at := range []job.State{job.Fetching, job.Assessing, job.Repairing} {
+		t.Run(at.String(), func(t *testing.T) {
+			w := &stubWorkers{}
+			q := New(2, 2, testClock, w)
+			removed := job.New("j1", "n", job.Policy{})
+			mustHoldAt(t, q, removed, at)
+			if err := q.Park(removed); err != nil {
+				t.Fatalf("Park(removed): %v", err)
+			}
+			later := job.New("j1", "n", job.Policy{})
+			mustHoldAt(t, q, later, job.Assessing)
+
+			if err := q.Cancel(removed); err != nil {
+				t.Fatalf("Cancel(removed): %v", err)
+			}
+			if len(w.aborted) != 0 {
+				t.Errorf("aborted = %v, want none: the cancelled instance holds no lease", w.aborted)
+			}
+		})
+	}
+}
