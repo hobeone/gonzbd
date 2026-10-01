@@ -46,11 +46,12 @@ single worker goroutine (`run`).
   one post-processing run of a job instance, ever, in
   `Application.enqueuePostProc`, which keeps the admission record
   (`postProcAdmissions`). It has two callers: `appRunner.runPostProc`, and
-  `maybeFinalizeJob`, which hands over only the instance it is given while
-  that instance is registered. `runAssess` calls it with the instance it
-  resolved, and `maybeFinalize` calls it with the instance registered under
-  an ID for the downloader's and the pipeline's hopeless callbacks and
-  `Application.Fail` (`git grep -n 'maybeFinalize(' -- 'internal/*.go' ':!*_test.go'`
+  `finalizeRegistered`, which hands over only the instance it is given while
+  that instance is registered. It is the body of `maybeFinalizeJob`, which
+  `runAssess` calls with the instance it resolved, and of `maybeFinalize`,
+  which resolves the instance registered under an ID for the downloader's and
+  the pipeline's hopeless callbacks and `Application.Fail`
+  (`git grep -n 'maybeFinalize(' -- 'internal/*.go' ':!*_test.go'`
   returns those 3 call sites and the definition). An admission starts before the DirectUnpack wait and
   ends once `jobFinalizer.finalize` or `jobFinalizer.cancelled` has run, so it
   covers the two windows `HasJob` does not see: the wait before `Process`, and
@@ -85,6 +86,31 @@ single worker goroutine (`run`).
   dispatcher removal is among the steps it skips. A later `RemoveJob` of the
   instance proceeds as the failed one would have
   (`TestFinalize_SkipsAJobWhoseRemovalFailed`).
+- **A job at Assessing is handed over by its Assessing worker**:
+  `maybeFinalize` admits no job whose open attempt is at `Assessing`, has
+  `Assessing` recorded as its next state, or is complete at `Fetching`, where
+  the download-complete report records it
+  (`postProcAdmissions.admitUnlessAssessing`). Admitting one ran the finalize
+  beside `runAssess`, which reads the manifest, the progress record and the
+  download directory the finalize tears down, and whose report could move
+  the admitted job on. The reason is kept for the job's Assessing worker
+  instead. That worker hands the job over in place of its verdict, through
+  `maybeFinalizeJob` and `FinishedJob(OutcomeFailed)` as a hopeless verdict
+  does, and hands over a reason that arrived after its last look and before
+  its report once the report is made. The state is read under the lock the
+  admission is recorded under, so a job admitted by `maybeFinalize` from
+  `Fetching` was not yet complete. `appRunner.runFetch` makes no
+  download-complete report for an admitted job; the report
+  `completeFinalizedFile` makes when the last file completes does not read
+  the admission. A reason waits for a worker the tick has yet to launch, so a
+  job paused before that launch keeps it until it is resumed. A reason `Fail`
+  deferred shows meanwhile as `Header.FailReason`, which `Fail` sets before
+  it hands off; a hopeless callback sets no such field. It is held in memory, as an
+  admission is, and dies with the process
+  (`TestFail_AtAssessingWithALiveWorker_DefersToTheWorkersExit`,
+  `TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches`,
+  `TestFail_OnACompleteJobAtFetching_DefersToAssessing`,
+  `TestFail_BetweenTheVerdictAndItsReport_IsHandedOffAfterTheReport`).
 - **An admitted job is not downloaded**: `maybeFinalize` moves no persisted
   position, so a job it hands over from `Fetching` — `Fail`, the hopeless
   callbacks — keeps a dispatchable row (`IntentRun`, at `Fetching`) until the
@@ -703,6 +729,7 @@ recorded entirely through the fetch-policy discard, not through this field.
 ### Landed
 - Single worker goroutine with `ppQueue` FIFO scheduling and safe cancellation (`Cancel`).
 - At most one post-processing run of a job instance, including after that run has ended (`postProcAdmissions`); a failure reason reported before the run is handed over fails it, and a later one is recorded as a stage-log warning.
+- A failure reason reported by job ID for a job at `Assessing` is handed over by the job's Assessing worker, so post-processing does not run beside `runAssess` (`postProcAdmissions.admitUnlessAssessing`).
 - Complete 12-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
 - `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`/`Unidentified`) bypass logic & DirectUnpack zero-failure verification bypass.
 - Per-set deferral of Layout B par2 sets (`DeferredPar2Sets`) and their par2 verify+repair after unpack (`extracted_repair`).

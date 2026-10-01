@@ -1119,7 +1119,12 @@ stopping guard because nothing it persists positions the job for
 post-processing. It advances no position, and its post-processing hand-off is
 held in memory: a post-processor still running files the job as Failed, and one
 that stops first takes the hand-off with it, so the job restarts at the state it
-was in, its outstanding articles offered again. Of the fields `Fail` writes,
+was in, its outstanding articles offered again. For a job at `Assessing`, or
+due there, `Fail` hands nothing over: it leaves its reason, also in memory,
+for the job's Assessing worker, which hands the job over in place of its
+verdict (`docs/post-processing-contract.md` § "Pipeline Architecture & Queue
+Scheduling"); that reason dies with the process as the hand-off does, a case
+the test below does not drive. Of the fields `Fail` writes,
 `Header.FailReason` is the persisted one, and a restarted job keeps it until it
 leaves the queue.
 `TestFail_InTheCleanShutdownBarrier_DoesNotPersistAPartialJobForPostProcessing`
