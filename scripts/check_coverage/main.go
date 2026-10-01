@@ -151,10 +151,17 @@ func runPkgCoverage(pkgDir string, coverData map[string]float64) error {
 	defer func() { _ = os.Remove(coverProfile) }() // best-effort cleanup before return
 
 	cmd := exec.Command("go", "test", "-coverprofile="+coverProfile, "./"+pkgDir) //nolint:gosec // dev tool, fixed command args
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("tests failed in package %s: %s", pkgDir, stderr.String())
+		// `go test` writes its own failure report -- the `--- FAIL:` lines, a
+		// panic and its stack, the final `FAIL` banner -- to STDOUT, not
+		// stderr; stderr carries build/toolchain errors only. Reporting only
+		// stderr.String() here (as this used to) surfaces an empty string for
+		// an ordinary assertion failure or panic, which is why issue #690 saw
+		// the coverage step fail "with an empty stderr and no named test".
+		return fmt.Errorf("tests failed in package %s:\n%s", pkgDir, formatTestFailure(stdout.String(), stderr.String()))
 	}
 
 	funcCmd := exec.Command("go", "tool", "cover", "-func="+coverProfile) //nolint:gosec // dev tool, fixed command args
@@ -196,6 +203,46 @@ func runPkgCoverage(pkgDir string, coverData map[string]float64) error {
 		coverData[key] = pct
 	}
 	return nil
+}
+
+// formatTestFailure builds the diagnostic text for a failed `go test
+// -coverprofile` run, so the caller's error names the failing test instead of
+// an empty stderr. It keeps three things, per issue #690's ask: every
+// `--- FAIL:` line (so a subtest failure still names its top-level test),
+// the panic block if the package died to a panic rather than a failed
+// assertion, and the last 50 lines of stdout as a catch-all for a failure
+// shape neither of those two patterns covers (e.g. a `go vet`-caught build
+// failure that `go test` reports without a FAIL banner).
+func formatTestFailure(stdout, stderr string) string {
+	var b strings.Builder
+
+	lines := strings.Split(stdout, "\n")
+	var failLines []string
+	for _, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "--- FAIL") {
+			failLines = append(failLines, l)
+		}
+	}
+	if len(failLines) > 0 {
+		fmt.Fprintf(&b, "--- FAIL lines ---\n%s\n", strings.Join(failLines, "\n"))
+	}
+
+	if panicIdx := strings.Index(stdout, "panic:"); panicIdx != -1 {
+		fmt.Fprintf(&b, "--- panic ---\n%s\n", stdout[panicIdx:])
+	}
+
+	tail := lines
+	const tailLines = 50
+	if len(tail) > tailLines {
+		tail = tail[len(tail)-tailLines:]
+	}
+	fmt.Fprintf(&b, "--- last %d lines of stdout ---\n%s\n", tailLines, strings.Join(tail, "\n"))
+
+	if strings.TrimSpace(stderr) != "" {
+		fmt.Fprintf(&b, "--- stderr ---\n%s\n", stderr)
+	}
+
+	return b.String()
 }
 
 func getChangedLines() (map[string]map[int]bool, error) {
