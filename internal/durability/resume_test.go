@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/storagefault"
@@ -288,9 +287,19 @@ func TestResume_RunReadFailureNamesTheStore(t *testing.T) {
 
 	_, err := r.Resume(context.Background(), "job-1", 0, path)
 
+	// err != nil and f != nil are both checked, and both with t.Fatalf,
+	// before f is dereferenced below. storagefault.Classify(op, path, nil)
+	// returns a nil *Fault, and returning that nil pointer AS an error makes
+	// a non-nil error interface whose errors.AsType still reports ok=true —
+	// so "ok" alone does not prove f is safe to read, and a mutation that
+	// drops the failure before Classify is reached would otherwise be
+	// killed by a nil-pointer panic rather than by this assertion.
+	if err == nil {
+		t.Fatalf("Resume returned a nil error for a failed run read")
+	}
 	f, ok := errors.AsType[*storagefault.Fault](err)
-	if !ok {
-		t.Fatalf("err = %v, want a *storagefault.Fault", err)
+	if !ok || f == nil {
+		t.Fatalf("err = %v, want a non-nil *storagefault.Fault", err)
 	}
 	if f.Op != "read" {
 		t.Errorf("fault op = %q, want %q", f.Op, "read")
@@ -329,6 +338,8 @@ func TestResume_RunReadAbandonedByItsCallerIsNotAFault(t *testing.T) {
 }
 
 // delErrStore fails DeleteFile so the discard's own failure can be pinned.
+// ForFile and Path fall through to the embedded real store, so it still
+// answers the bound check honestly — only the delete itself fails.
 type delErrStore struct {
 	runStore
 	err error
@@ -336,52 +347,181 @@ type delErrStore struct {
 
 func (d *delErrStore) deleteFile(context.Context, string, int32) error { return d.err }
 
+// fixedRunsDelErrStore answers ForFile with a fixed run set regardless of ctx,
+// and fails deleteFile. It exists for the short-file discard site's
+// cancellation test: that site's ForFile call runs BEFORE discard, so a real
+// store's ForFile under an already-cancelled context would fail there first
+// and the test would never reach the discard call it means to pin. Path
+// falls through to the embedded real store.
+type fixedRunsDelErrStore struct {
+	runStore
+	runs   []Run
+	delErr error
+}
+
+func (f *fixedRunsDelErrStore) ForFile(context.Context, string, int32) ([]Run, error) {
+	return f.runs, nil
+}
+
+func (f *fixedRunsDelErrStore) deleteFile(context.Context, string, int32) error { return f.delErr }
+
 // TestResume_SurfacesADiscardFailure pins that a discard which could not be
-// made durable is REPORTED rather than swallowed.
+// made durable is REPORTED rather than swallowed, attributed to the STORE's
+// own path and op "delete" — not to the job's download file (R27). This is
+// the missing-file call site; TestResume_ShortFileDiscardFailureNamesTheStore
+// pins the other one discard has.
 //
 // Reporting success would let the sweep move on believing the disproof is
 // recorded. It is not: the next start reads the store, adopts the runs the
 // file has already contradicted, and finishes it with holes.
 func TestResume_SurfacesADiscardFailure(t *testing.T) {
 	t.Parallel()
+	const dbPath = "/admin/history.db"
 	boom := errors.New("delete rejected")
-	rs := &delErrStore{runStore: NewStore(openTestDB(t), "history.db"), err: boom}
+	rs := &delErrStore{runStore: NewStore(openTestDB(t), dbPath), err: boom}
 	storeRuns(t, rs.runStore, "job-1",
 		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1})
 	r := NewResumer(rs, testLogger(t))
 
 	_, err := r.Resume(context.Background(), "job-1", 0, filepath.Join(t.TempDir(), "gone.bin"))
+	if err == nil {
+		t.Fatalf("Resume returned a nil error for a failed discard")
+	}
+	f, ok := errors.AsType[*storagefault.Fault](err)
+	if !ok || f == nil {
+		t.Fatalf("err = %v, want a non-nil *storagefault.Fault", err)
+	}
+	if f.Op != "delete" {
+		t.Errorf("fault op = %q, want %q", f.Op, "delete")
+	}
+	if f.Path != dbPath {
+		t.Errorf("fault path = %q, want %q — the store's own path, not the job's (R27)", f.Path, dbPath)
+	}
 	if !errors.Is(err, boom) {
-		t.Fatalf("err = %v, want it to wrap the discard failure", err)
+		t.Errorf("err = %v, want it to wrap the discard failure", err)
 	}
 }
 
-// TestDiscard_NamesTheJobAndFile pins the one thing this wrapper adds over the
-// store's own DeleteFile: an error naming which file's disproof was lost.
-//
-// It is the only mutation Resumer performs, so its failure is the only way the
-// gate's decision can fail to reach stable storage. A bare "delete failed"
-// would leave the operator, and the sweep's own log line, unable to say which
-// partial the next start is about to adopt anyway.
-func TestDiscard_NamesTheJobAndFile(t *testing.T) {
+// TestResume_ShortFileDiscardFailureNamesTheStore pins the SAME attribution
+// through discard's other call site: a file one byte shorter than its
+// recorded runs also routes a failed delete to the store's own path and op
+// "delete", not to the job's download file.
+func TestResume_ShortFileDiscardFailureNamesTheStore(t *testing.T) {
 	t.Parallel()
+	const dbPath = "/admin/history.db"
 	boom := errors.New("delete rejected")
-	r := NewResumer(&delErrStore{runStore: NewStore(openTestDB(t), "history.db"), err: boom}, testLogger(t))
+	path := writePartial(t, t.TempDir(), "f.bin", 299)
+	rs := &delErrStore{runStore: NewStore(openTestDB(t), dbPath), err: boom}
+	storeRuns(t, rs.runStore, "job-1",
+		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
+		DurableArticle{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 200, CRC32: 2},
+	)
+	r := NewResumer(rs, testLogger(t))
+
+	_, err := r.Resume(context.Background(), "job-1", 0, path)
+	if err == nil {
+		t.Fatalf("Resume returned a nil error for a failed discard")
+	}
+	f, ok := errors.AsType[*storagefault.Fault](err)
+	if !ok || f == nil {
+		t.Fatalf("err = %v, want a non-nil *storagefault.Fault", err)
+	}
+	if f.Op != "delete" {
+		t.Errorf("fault op = %q, want %q", f.Op, "delete")
+	}
+	if f.Path != dbPath {
+		t.Errorf("fault path = %q, want %q — the store's own path, not the job's (R27)", f.Path, dbPath)
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("err = %v, want it to wrap the discard failure", err)
+	}
+}
+
+// TestResume_MissingFileDiscardAbandonedByItsCallerIsNotAFault pins the
+// cancel carve-out through the missing-file call site: a delete that failed
+// once the caller's context ended is not classified as a storage fault,
+// matching the run read's own carve-out.
+func TestResume_MissingFileDiscardAbandonedByItsCallerIsNotAFault(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	boom := errors.New("interrupted")
+	rs := &delErrStore{runStore: NewStore(openTestDB(t), "/admin/history.db"), err: boom}
+	r := NewResumer(rs, testLogger(t))
+
+	_, err := r.Resume(ctx, "job-1", 0, filepath.Join(t.TempDir(), "gone.bin"))
+
+	if _, ok := errors.AsType[*storagefault.Fault](err); ok {
+		t.Errorf("err = %v, want it NOT classified as a storage fault — the caller had "+
+			"already stopped waiting", err)
+	}
+	if !errors.Is(err, ErrTargetUnavailable) || !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want it to wrap ErrTargetUnavailable naming the cancellation", err)
+	}
+}
+
+// TestResume_ShortFileDiscardAbandonedByItsCallerIsNotAFault is the same
+// carve-out through the short-file call site. It uses fixedRunsDelErrStore
+// rather than the real store: this site's ForFile runs before discard, and a
+// real store's ForFile under an already-cancelled context would fail there
+// first, never reaching the discard call this test means to pin.
+func TestResume_ShortFileDiscardAbandonedByItsCallerIsNotAFault(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	boom := errors.New("interrupted")
+	path := writePartial(t, t.TempDir(), "f.bin", 299)
+	rs := &fixedRunsDelErrStore{
+		runStore: NewStore(openTestDB(t), "/admin/history.db"),
+		runs:     []Run{{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: 300, CRC32: 1}},
+		delErr:   boom,
+	}
+	r := NewResumer(rs, testLogger(t))
+
+	_, err := r.Resume(ctx, "job-1", 0, path)
+
+	if _, ok := errors.AsType[*storagefault.Fault](err); ok {
+		t.Errorf("err = %v, want it NOT classified as a storage fault — the caller had "+
+			"already stopped waiting", err)
+	}
+	if !errors.Is(err, ErrTargetUnavailable) || !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want it to wrap ErrTargetUnavailable naming the cancellation", err)
+	}
+}
+
+// TestDiscard_NamesTheStoreAndOp pins the one thing this wrapper adds over the
+// store's own DeleteFile when a delete genuinely fails: it is routed the same
+// way the run read is — op "delete", attributed to the STORE's own path, not
+// the job's (R27). A bare "delete failed" quoting only the store's own text
+// would leave the operator unable to tell a delete failure from a read one.
+func TestDiscard_NamesTheStoreAndOp(t *testing.T) {
+	t.Parallel()
+	const dbPath = "/admin/history.db"
+	boom := errors.New("delete rejected")
+	r := NewResumer(&delErrStore{runStore: NewStore(openTestDB(t), dbPath), err: boom}, testLogger(t))
 
 	err := r.discard(context.Background(), "job-7", 3)
-	if !errors.Is(err, boom) {
-		t.Fatalf("err = %v, want it to wrap the store failure", err)
+	if err == nil {
+		t.Fatalf("discard returned a nil error for a failed delete")
 	}
-	for _, want := range []string{"job=job-7", "file=3"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("err = %q, want it to contain %q", err, want)
-		}
+	f, ok := errors.AsType[*storagefault.Fault](err)
+	if !ok || f == nil {
+		t.Fatalf("err = %v, want a non-nil *storagefault.Fault", err)
+	}
+	if f.Op != "delete" {
+		t.Errorf("fault op = %q, want %q", f.Op, "delete")
+	}
+	if f.Path != dbPath {
+		t.Errorf("fault path = %q, want %q — the store's own path, not the job's (R27)", f.Path, dbPath)
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("err = %v, want it to wrap the store failure", err)
 	}
 
 	// The success path returns nil rather than an error built from a nil
 	// cause, which a naive wrap would produce.
-	ok := NewResumer(NewStore(openTestDB(t), "history.db"), testLogger(t))
-	if err := ok.discard(context.Background(), "job-7", 3); err != nil {
+	okResumer := NewResumer(NewStore(openTestDB(t), "history.db"), testLogger(t))
+	if err := okResumer.discard(context.Background(), "job-7", 3); err != nil {
 		t.Errorf("discarding a file with no runs returned %v, want nil", err)
 	}
 }

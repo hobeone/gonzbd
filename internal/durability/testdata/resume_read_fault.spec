@@ -20,8 +20,10 @@ file internal/durability/resume.go
 [Resume's failed run read is not checked for a caller that stopped waiting]
 file internal/durability/resume.go
 --- anchor
+		// re-attribute what this already got right.
 		werr := storeFailure(ctx, err)
 --- replace
+		// re-attribute what this already got right.
 		werr := err
 --- end
 
