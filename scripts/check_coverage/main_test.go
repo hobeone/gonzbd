@@ -61,12 +61,12 @@ func TestRunPkgCoverage_ConcurrentSafety(t *testing.T) {
 	}
 }
 
-// TestRunPkgCoverage_FailureNamesTheFailingTest pins issue #690: a failing
-// `go test -coverprofile` run must surface which test failed, not an empty
-// stderr. The throwaway module below is a real `go test` invocation that
-// fails for real, rather than a captured fixture of one — what this test
-// checks is runPkgCoverage's handling of an actual failing *exec.Cmd, which a
-// canned string cannot exercise.
+// TestRunPkgCoverage_FailureNamesTheFailingTest pins the invariant that a
+// failing `go test -coverprofile` run must surface which test failed, not an
+// empty stderr. The throwaway module below is a real `go test` invocation
+// that fails for real, rather than a captured fixture of one — what this
+// test checks is runPkgCoverage's handling of an actual failing *exec.Cmd,
+// which a canned string cannot exercise.
 func TestRunPkgCoverage_FailureNamesTheFailingTest(t *testing.T) {
 	dir := t.TempDir()
 	writeCovTestFile(t, filepath.Join(dir, "go.mod"), "module covtest\n\ngo 1.24\n")
@@ -93,7 +93,7 @@ func TestWillFail(t *testing.T) {
 		t.Fatal("runPkgCoverage returned nil error for a failing test run")
 	}
 	if !strings.Contains(err.Error(), "TestWillFail") {
-		t.Errorf("error = %q, want it to name the failing test TestWillFail (issue #690: an empty stderr named no test)", err.Error())
+		t.Errorf("error = %q, want it to name the failing test TestWillFail: go test reports failures on stdout", err.Error())
 	}
 }
 
