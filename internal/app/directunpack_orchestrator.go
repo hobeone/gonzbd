@@ -19,14 +19,15 @@ import (
 // downloader-swap lock, so a DirectUnpack status read no longer serialises
 // against a downloader reload.
 //
-// It holds *Application to read dispatcher, pipeline, config, log, ctx, emit
-// and postProcAdmissions: the fields this command names, apart from the app.mu
-// of the paragraph above:
+// It holds *Application to read dispatcher, pipeline, config, log, ctx, emit,
+// postProcAdmissions and transitions: the fields this command names, apart
+// from the app.mu of the paragraph above:
 // `grep -o 'app\.[A-Za-z]*' internal/app/directunpack_orchestrator.go`.
-// o.mu guards none of them. postProcAdmissions is mutable runtime state behind
-// its own lock, and maybeStart reads it under o.mu, so the lock order is o.mu,
-// then postProcAdmissions.mu; the argument that nothing takes them the other
-// way is at that call.
+// o.mu guards none of them. postProcAdmissions and transitions are mutable
+// runtime state behind their own locks, and maybeStart reads each under o.mu,
+// so the lock order is o.mu, then postProcAdmissions.mu, and o.mu, then
+// jobTransitions.mu; the argument that nothing takes them the other way is at
+// that call.
 type directUnpackOrchestrator struct {
 	app *Application
 
@@ -83,14 +84,24 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	o.mu.Lock()
 	du, exists := o.unpackers[fc.JobID]
 	if !exists {
-		// An admitted job's enqueuePostProc collects its unpacker once, so
-		// one started after that collect is collected by nothing. Read under
-		// o.mu, which that collect takes after the admission: an unpacker
-		// started here on a job not yet admitted is one the collect takes.
-		// An existing unpacker is still fed, since the collect may not have
-		// taken it yet.
+		// No unpacker is started for an instance that is admitted or
+		// removed. An admitted job's enqueuePostProc collects its unpacker
+		// once, and RemoveJob aborts the job's unpacker once
+		// (duOrch.abortJob), so one started after either would be reached by
+		// neither. Both are read under o.mu, which the collect takes after
+		// the admission and abortJob takes after RemoveJob's markRemoved: an
+		// unpacker started here on an instance not yet admitted or marked is
+		// one the collect or abortJob takes. An existing unpacker is still
+		// fed, since the collect may not have taken it yet.
 		//
-		// Lock order: o.mu, then postProcAdmissions.mu. Nothing holding
+		// Lock order: o.mu, then jobTransitions.mu, whose holders take no
+		// other lock: it is taken only in transition.go
+		// (`git grep -n 't\.mu\.Lock()' -- 'internal/app/*.go' ':!*_test.go'`
+		// returns 9 lines, all there), by jobTransitions and transitionClaim
+		// methods that call no function of this package outside that file
+		// while holding it.
+		//
+		// And o.mu, then postProcAdmissions.mu. Nothing holding
 		// postProcAdmissions.mu calls into the orchestrator: its file names
 		// it only in comments (`git grep -n 'duOrch' internal/app/postproc_admission.go`
 		// returns 2 lines, both comments), and unlessAdmitted, which runs a
@@ -98,9 +109,9 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		// callback (`git grep -n 'unlessAdmitted(' -- 'internal/app/*.go' ':!*_test.go'`
 		// returns 3 lines: the definition, reloader.go's call, and this
 		// citation).
-		if app.postProcAdmissions.has(j) {
+		if app.postProcAdmissions.has(j) || app.transitions.wasRemoved(j) {
 			o.mu.Unlock()
-			app.log.Debug("directunpack: not starting, the job is handed to post-processing",
+			app.log.Debug("directunpack: not starting, the job is handed to post-processing or removed",
 				"job", fc.JobID, "fileidx", fc.FileIdx)
 			return
 		}

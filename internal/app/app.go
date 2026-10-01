@@ -270,6 +270,12 @@ type Application struct {
 	// checkpointHook.
 	removeCancelGapHook func(id string)
 
+	// removeAbortGapHook, when non-nil, runs in RemoveJob right after its
+	// duOrch.abortJob, before its dispatcher cancel, where a completion can
+	// still reach the DirectUnpack orchestrator. Same discipline as
+	// checkpointHook.
+	removeAbortGapHook func(id string)
+
 	// directUnpackWaitEndHook, when non-nil, runs in enqueuePostProc's
 	// DirectUnpack-wait goroutine right after its wait step ends (endStep).
 	// It runs from that same goroutine, after the awaitDirectUnpackOrAbort
@@ -968,7 +974,12 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	name := j.Name()
 
 	// Abort any active DirectUnpacker for this job before removing files.
+	// After markRemoved, so a completion landing after this abort starts no
+	// new unpacker (directUnpackOrchestrator.maybeStart).
 	app.duOrch.abortJob(id)
+	if app.removeAbortGapHook != nil {
+		app.removeAbortGapHook(id)
+	}
 	// After markRemoved, so an enqueue that has not yet handed the job over
 	// refuses it. It returns once a DirectUnpack wait duOrch.abortJob could not
 	// reach has aborted its unpacker, before any file below is deleted, and
@@ -2445,8 +2456,10 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	//
 	// The wait step begins before the collect: from the collect on,
 	// duOrch.abortJob cannot reach du, so a RemoveJob's withdraw must already
-	// find the step to wait on. A withdraw before this point leaves du in the
-	// orchestrator, where RemoveJob's duOrch.abortJob aborts it.
+	// find the step to wait on. A withdraw before this point follows its
+	// RemoveJob's duOrch.abortJob, which aborted the unpacker the orchestrator
+	// held, and maybeStart starts none for the instance once it is marked
+	// removed, so the collect below finds none.
 	removed, wait := app.postProcAdmissions.beginWait(j)
 	if app.directUnpackCollectHook != nil {
 		app.directUnpackCollectHook(j.ID())

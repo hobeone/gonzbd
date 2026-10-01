@@ -81,14 +81,18 @@ func TestJobTransitions_FinalizingSites(t *testing.T) {
 }
 
 // TestJobTransitions_RemovedSites pins the removal mark to one writer, and its
-// two readers: the finalizer, and the post-processing hand-over. A second
-// writer would make the finalizer skip a job no user removed, and a completed
-// job would be filed nowhere.
+// three readers: the DirectUnpack start, the finalizer, and the
+// post-processing hand-over. A second writer would make the finalizer skip a
+// job no user removed, and a completed job would be filed nowhere.
 func TestJobTransitions_RemovedSites(t *testing.T) {
 	if sites, want := productionCallers(t, "markRemoved"), []string{"app.go:RemoveJob"}; !slices.Equal(sites, want) {
 		t.Errorf("functions writing the removal mark = %v, want %v", sites, want)
 	}
-	if sites, want := productionCallers(t, "wasRemoved"), []string{"job_finalizer.go:persistAndCommit", "postproc_admission.go:beginHandOver"}; !slices.Equal(sites, want) {
+	if sites, want := productionCallers(t, "wasRemoved"), []string{
+		"directunpack_orchestrator.go:maybeStart",
+		"job_finalizer.go:persistAndCommit",
+		"postproc_admission.go:beginHandOver",
+	}; !slices.Equal(sites, want) {
 		t.Errorf("functions reading the removal mark = %v, want %v", sites, want)
 	}
 }

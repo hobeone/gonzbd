@@ -77,7 +77,12 @@ single worker goroutine (`run`).
   signals a DirectUnpack wait the enqueue is in to abort its unpacker —
   `duOrch.abortJob` cannot reach one `duOrch.collect` has already taken — and
   returns only once that wait has ended, so nothing `RemoveJob` deletes is
-  still being written. It likewise waits for a hand-over already past the
+  still being written. An unpacker still in the orchestrator is aborted by
+  `duOrch.abortJob`, which `RemoveJob` calls after marking, and
+  `directUnpackOrchestrator.maybeStart` starts none for a marked instance, so
+  a volume completing after that abort starts no unpacker
+  (`TestRemoveJob_CompletionAfterTheAbort_StartsNoUnpacker`). `withdraw`
+  likewise waits for a hand-over already past the
   check, so the `Cancel` it makes afterwards finds that job queued or
   running. A `RemoveJob` whose `dispatcher.Remove` fails keeps its mark, so
   every later hand-over of that instance is refused too, and a finalizer of

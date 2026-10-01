@@ -205,3 +205,51 @@ func TestHandOff_CompletionAfterTheCollect_StartsNoUnpacker(t *testing.T) {
 			"nothing collects (status %+v)", du.Status())
 	}
 }
+
+// TestRemoveJob_CompletionAfterTheAbort_StartsNoUnpacker: RemoveJob aborts the
+// job's DirectUnpacker before its dispatcher.Remove, and the job is still
+// registered in between, so a completion can reach the orchestrator there. It
+// must not start a fresh unpacker: RemoveJob aborts the job's unpacker only
+// once, so one started after that abort runs until Shutdown.
+//
+// The completion lands before RemoveJob's dispatcher cancel, while the job
+// still holds its lease and so its manifest: past the cancel, a tick can
+// evict the manifest, and maybeStart then returns before it decides anything.
+func TestRemoveJob_CompletionAfterTheAbort_StartsNoUnpacker(t *testing.T) {
+	t.Parallel()
+	application, j := fetchingRarApp(t)
+	id := j.ID()
+	for i := range 3 {
+		completeFile(t, application, id, i)
+	}
+	if application.duOrch.unpackerForTest(id) == nil {
+		t.Fatal("precondition: the completed volumes started no DirectUnpacker")
+	}
+
+	hookRan := false
+	application.removeAbortGapHook = func(string) {
+		hookRan = true
+		if application.duOrch.unpackerForTest(id) != nil {
+			t.Error("precondition: the job's DirectUnpacker survived RemoveJob's abort")
+		}
+		completeFile(t, application, id, 3)
+	}
+
+	if err := application.RemoveJob(t.Context(), id, false); err != nil {
+		t.Fatalf("RemoveJob: %v", err)
+	}
+	if !hookRan {
+		t.Fatal("precondition: RemoveJob never reached its DirectUnpack abort")
+	}
+
+	if du := application.duOrch.unpackerForTest(id); du != nil {
+		t.Errorf("a completion after RemoveJob's abort started a DirectUnpacker "+
+			"nothing aborts (status %+v)", du.Status())
+	}
+	application.duOrch.mu.Lock()
+	active := application.duOrch.active
+	application.duOrch.mu.Unlock()
+	if active != 0 {
+		t.Errorf("DirectUnpack active count after RemoveJob = %d, want 0", active)
+	}
+}

@@ -68,7 +68,11 @@ import (
 // removed records the job instances a RemoveJob has taken, including one
 // whose dispatcher.Remove failed, so a finalizer can tell a removal from the
 // other ways a job leaves the dispatcher (the tick evicts a never-run job the
-// finalizer's own Cancel made evictable, and that one must still be filed).
+// finalizer's own Cancel made evictable, and that one must still be filed),
+// and so that neither a post-processing hand-over (beginHandOver) nor a
+// DirectUnpack start (directUnpackOrchestrator.maybeStart) begins for the
+// instance once it is marked: the RemoveJob stops only those that began
+// before. TestJobTransitions_RemovedSites pins those three readers.
 // A mark is not withdrawn while the job is reachable: the one delete from
 // removed (`git grep -n 'delete(t\.removed' -- 'internal/app/*.go'` finds 1
 // line) is forgetRemoved's, which runs once the job is collected. Keyed by
