@@ -1806,8 +1806,8 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 		}
 		// The Fetching worker's exit report. A stale one is a repeat for a
 		// job that has already moved on, and must leave its next state alone.
-		if j.IsComplete() {
-			if err := app.dispatcher.AdvanceFrom(j, job.Fetching, job.Assessing); err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
+		if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
+			if err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
 				app.logQueueWriteFailure("report download complete", fc.JobID, fc.FileIdx, err)
 			}
 			if app.downloadReportedHook != nil {
@@ -1817,6 +1817,29 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 	}
 	app.emit(Event{Type: "queue_updated"})
 	return nil
+}
+
+// reportDownloadComplete is the Fetching worker's exit report: it reports
+// Fetching -> Assessing for j through rep when j is complete and not admitted
+// to post-processing, and returns whether it made the report and the report's
+// error. Its callers are completeFinalizedFile and runFetch
+// (`git grep -n 'reportDownloadComplete(' -- 'internal/app/*.go' ':!*_test.go'`
+// returns 4 lines: the two calls, this citation and the definition).
+//
+// An admitted job is left to its post-processing run, as the downloader leaves
+// it (downloader.Options.HandedOff): a hand-off from Fetching keeps the job
+// registered at Fetching until the finalizer's CancelJob, and reporting it
+// would have the tick launch runAssess beside the run.
+//
+// No lock spans the admission read and the report, so a job admitted between
+// them is reported. That is the order of a hand-off made just after the
+// report, which a lock here would not exclude: admit reads no dispatcher
+// state.
+func (app *Application) reportDownloadComplete(j *job.Job, rep reporter) (bool, error) {
+	if !j.IsComplete() || app.postProcAdmissions.has(j) {
+		return false, nil
+	}
+	return true, rep.AdvanceFrom(j, job.Fetching, job.Assessing)
 }
 
 // markFetchPolicyDirty marks a job whose fetch policy a par2 verdict just

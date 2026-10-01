@@ -178,10 +178,12 @@ from.** `Dispatcher.AdvanceFrom(j, from, next)` records `Next`, parks the job
 and clears its claim inside one `sched.Queue.Handoff` span, and does nothing
 (`ErrStaleReport`) unless the job is still open at `from` with no `Next`. The
 app's two kinds of report use it. Download complete (`Fetching → Assessing`)
-is made by `completeFinalizedFile` (`internal/app/app.go`) when the last file
-completes, and by `appRunner.runFetch` (`internal/app/runner.go`) for a job
-already complete when its Fetching worker launches; if both are made, the
-second is stale and changes nothing. `runAssess`'s verdict is the other kind
+is made by `Application.reportDownloadComplete` (`internal/app/app.go`), which
+`completeFinalizedFile` calls when the last file completes and
+`appRunner.runFetch` (`internal/app/runner.go`) calls for a job already
+complete when its Fetching worker launches; if both are made, the second is
+stale and changes nothing. It makes no report for a job admitted to
+post-processing (`docs/post-processing-contract.md`). `runAssess`'s verdict is the other kind
 (`internal/app/runner.go`). As two calls, `SetNext` then `Yielded` by ID, a
 tick could land between them: it moved the job to `next` and launched that
 state's worker, and the late `Yielded` parked that worker's resources and

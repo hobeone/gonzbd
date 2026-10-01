@@ -117,7 +117,7 @@ func TestAppRunner_AdvanceLogsByCause(t *testing.T) {
 		var logs bytes.Buffer
 		rec := &errReporter{err: tc.err}
 		r := &appRunner{report: rec, log: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
-		r.advance(j, job.Assessing, job.Extracting)
+		r.advance(j, job.Extracting)
 		if got, want := rec.advance(j.ID()), [2]job.State{job.Assessing, job.Extracting}; got != want {
 			t.Errorf("err %v: reported %v, want %v", tc.err, got, want)
 		}
@@ -131,5 +131,5 @@ func TestAppRunner_AdvanceLogsByCause(t *testing.T) {
 	}
 
 	nilReport := &appRunner{log: slog.New(slog.DiscardHandler)}
-	nilReport.advance(j, job.Assessing, job.Extracting) // must not panic
+	nilReport.advance(j, job.Extracting) // must not panic
 }
