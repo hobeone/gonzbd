@@ -47,7 +47,8 @@ var embedMigrations embed.FS
 
 // DB wraps a SQLite connection pool configured for history access.
 type DB struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 // Open opens (or creates) the SQLite database at path, applies the schema if
@@ -214,8 +215,13 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	sqlDB.SetMaxIdleConns(25)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
-	return &DB{db: sqlDB}, nil
+	return &DB{db: sqlDB, path: path}, nil
 }
+
+// Path returns the filesystem path (or DSN, e.g. ":memory:") Open was called
+// with. It is the one place that value is recorded; Repository.Path forwards
+// it for callers that only hold a *Repository.
+func (d *DB) Path() string { return d.path }
 
 // Close releases the underlying database connection pool. It is safe to call
 // Close more than once; subsequent calls return nil.

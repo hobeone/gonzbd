@@ -95,13 +95,20 @@ type SearchOptions struct {
 // Repository provides CRUD access to the history table. A zero-value
 // Repository is not usable; construct one via NewRepository.
 type Repository struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 // NewRepository wraps an open DB for use as a repository.
 func NewRepository(d *DB) *Repository {
-	return &Repository{db: d.db}
+	return &Repository{db: d.db, path: d.path}
 }
+
+// Path returns the filesystem path (or DSN) the wrapped DB was opened
+// against — see DB.Path. It is the one place a Repository exposes the path
+// it was built from, so a caller that only holds a *Repository (app.go's
+// New, in particular) does not need to re-derive it from adminDir.
+func (r *Repository) Path() string { return r.path }
 
 // Execer represents a SQL executor (either *sql.DB or *sql.Tx).
 type Execer interface {

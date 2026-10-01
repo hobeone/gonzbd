@@ -24,6 +24,19 @@ func TestOpen(t *testing.T) {
 		}
 	})
 
+	t.Run("Path reports the path Open was called with", func(t *testing.T) {
+		dir := t.TempDir()
+		dbPath := filepath.Join(dir, "history.db")
+		db, err := Open(context.Background(), dbPath)
+		if err != nil {
+			t.Fatalf("expected successful open, got: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		if got := db.Path(); got != dbPath {
+			t.Errorf("Path() = %q, want %q", got, dbPath)
+		}
+	})
+
 	t.Run("ping error when directory path is provided as db file", func(t *testing.T) {
 		dir := t.TempDir()
 		// Passing a directory path as the sqlite file path causes PingContext to fail.

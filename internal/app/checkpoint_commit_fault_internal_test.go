@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -39,10 +40,13 @@ func TestCheckpointJob_ACommitErrorStallsTheJobUntilReevaluated(t *testing.T) {
 		durability.WithCommitWrap(wrap),
 	)
 
-	wantPath := realStore(t, application).Path()
-	if wantPath == "" {
-		t.Fatal("the application's real store carries no path to assert against")
-	}
+	// Independent of the store under test: reconstructed from the admin dir
+	// the test's config carries, the same way newLifecycleTestApp built the
+	// path it actually called history.Open with. Reading wantPath back from
+	// realStore(t, application).Path() instead would be circular — it is
+	// the SUT's own output, so a wrong app.go computation would still match
+	// itself.
+	wantPath := filepath.Join(application.config.GetGeneral().AdminDir, "history.db")
 
 	application.checkpointJob(t.Context(), job.ID())
 
