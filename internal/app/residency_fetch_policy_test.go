@@ -54,7 +54,7 @@ func TestRestoreJobFiles_RestoresNonDefaultFetchPolicy(t *testing.T) {
 			return j, true
 		}
 		return nil, false
-	}, t.TempDir(), durability.NewStore(repo.DB()), slog.New(slog.DiscardHandler))
+	}, t.TempDir(), durability.NewStore(repo.DB(), "history.db"), slog.New(slog.DiscardHandler))
 
 	r.restoreJobFiles(context.Background(), j)
 
@@ -86,7 +86,7 @@ func TestRestoreJobFiles_QueryErrorLeavesJobUntouched(t *testing.T) {
 		t.Fatalf("AttachContent: %v", err)
 	}
 
-	r := newAppResidency(func(string) (*job.Job, bool) { return j, true }, t.TempDir(), durability.NewStore(repo.DB()), slog.New(slog.DiscardHandler))
+	r := newAppResidency(func(string) (*job.Job, bool) { return j, true }, t.TempDir(), durability.NewStore(repo.DB(), "history.db"), slog.New(slog.DiscardHandler))
 	r.restoreJobFiles(context.Background(), j) // must not panic
 
 	if got := j.Progress().FileFetchPolicy(0); got != job.FetchAlways {
@@ -110,7 +110,7 @@ func TestRestoreJobFiles_NilProgressReturnsEarly(t *testing.T) {
 		t.Fatal("precondition: an unattached job must report nil progress")
 	}
 
-	r := newAppResidency(func(string) (*job.Job, bool) { return j, true }, t.TempDir(), durability.NewStore(repo.DB()), slog.New(slog.DiscardHandler))
+	r := newAppResidency(func(string) (*job.Job, bool) { return j, true }, t.TempDir(), durability.NewStore(repo.DB(), "history.db"), slog.New(slog.DiscardHandler))
 	r.restoreJobFiles(context.Background(), j) // must not panic
 }
 
@@ -146,7 +146,7 @@ func TestRestoreJobFiles_ScanErrorSkipsRowAndContinues(t *testing.T) {
 		t.Fatalf("insert job_files: %v", err)
 	}
 
-	r := newAppResidency(func(string) (*job.Job, bool) { return j, true }, t.TempDir(), durability.NewStore(repo.DB()), slog.New(slog.DiscardHandler))
+	r := newAppResidency(func(string) (*job.Job, bool) { return j, true }, t.TempDir(), durability.NewStore(repo.DB(), "history.db"), slog.New(slog.DiscardHandler))
 	r.restoreJobFiles(context.Background(), j)
 
 	if got := j.Progress().FileFetchPolicy(0); got != job.FetchAlways {

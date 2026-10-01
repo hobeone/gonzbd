@@ -60,7 +60,7 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	_ = seeded.BeginAttempt(started)
 	_ = seeded.RecordDownload("mock", 123456)
 	_ = seeded.MarkArticleDone(0, 100, "mock")
-	app.CommitRuns(t, durability.NewStore(h.repo.DB()), jobID,
+	app.CommitRuns(t, durability.NewStore(h.repo.DB(), "history.db"), jobID,
 		[]durability.DurableArticle{
 			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 		})

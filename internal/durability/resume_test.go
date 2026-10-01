@@ -47,7 +47,7 @@ func TestResume_AdoptsWhenTheFileIsLongEnough(t *testing.T) {
 			ctx := context.Background()
 			dir := t.TempDir()
 			path := writePartial(t, dir, "f.bin", tt.size)
-			rs := NewStore(openTestDB(t))
+			rs := NewStore(openTestDB(t), "history.db")
 			storeRuns(t, rs, "job-1",
 				DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 				DurableArticle{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 200, CRC32: 2},
@@ -97,7 +97,7 @@ func TestResume_ShortFileDiscardsItsRuns(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := writePartial(t, dir, "f.bin", 299)
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	storeRuns(t, rs, "job-1",
 		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 		DurableArticle{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 200, CRC32: 2},
@@ -133,7 +133,7 @@ func TestResume_DiscardIsScopedToTheFile(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := writePartial(t, dir, "f0.bin", 10)
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	storeRuns(t, rs, "job-1",
 		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 		DurableArticle{FileIdx: 1, ArtIdx: 5, Offset: 0, Length: 100, CRC32: 2},
@@ -165,7 +165,7 @@ func TestResume_DiscardIsScopedToTheFile(t *testing.T) {
 func TestResume_MissingFileRestarts(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	storeRuns(t, rs, "job-1",
 		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1})
 	r := NewResumer(rs, testLogger(t))
@@ -195,7 +195,7 @@ func TestResume_FileWithNoRunsAdopts(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	path := writePartial(t, t.TempDir(), "f.bin", 0)
-	r := NewResumer(NewStore(openTestDB(t)), testLogger(t))
+	r := NewResumer(NewStore(openTestDB(t), "history.db"), testLogger(t))
 
 	res, err := r.Resume(ctx, "job-1", 0, path)
 	if err != nil {
@@ -230,7 +230,7 @@ func TestResume_StatErrorIsReturned(t *testing.T) {
 		t.Skip("running as root: the directory mode does not deny the stat")
 	}
 
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	storeRuns(t, rs, "job-1",
 		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1})
 	r := NewResumer(rs, testLogger(t))
@@ -260,7 +260,7 @@ func TestResume_RunReadFailureIsReturned(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("run store unreadable")
 	path := writePartial(t, t.TempDir(), "f.bin", 100)
-	r := NewResumer(&errRunStore{runStore: NewStore(openTestDB(t)), err: boom}, testLogger(t))
+	r := NewResumer(&errRunStore{runStore: NewStore(openTestDB(t), "history.db"), err: boom}, testLogger(t))
 
 	if _, err := r.Resume(context.Background(), "job-1", 0, path); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the read failure", err)
@@ -284,7 +284,7 @@ func (d *delErrStore) deleteFile(context.Context, string, int32) error { return 
 func TestResume_SurfacesADiscardFailure(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("delete rejected")
-	rs := &delErrStore{runStore: NewStore(openTestDB(t)), err: boom}
+	rs := &delErrStore{runStore: NewStore(openTestDB(t), "history.db"), err: boom}
 	storeRuns(t, rs.runStore, "job-1",
 		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1})
 	r := NewResumer(rs, testLogger(t))
@@ -305,7 +305,7 @@ func TestResume_SurfacesADiscardFailure(t *testing.T) {
 func TestDiscard_NamesTheJobAndFile(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("delete rejected")
-	r := NewResumer(&delErrStore{runStore: NewStore(openTestDB(t)), err: boom}, testLogger(t))
+	r := NewResumer(&delErrStore{runStore: NewStore(openTestDB(t), "history.db"), err: boom}, testLogger(t))
 
 	err := r.discard(context.Background(), "job-7", 3)
 	if !errors.Is(err, boom) {
@@ -319,7 +319,7 @@ func TestDiscard_NamesTheJobAndFile(t *testing.T) {
 
 	// The success path returns nil rather than an error built from a nil
 	// cause, which a naive wrap would produce.
-	ok := NewResumer(NewStore(openTestDB(t)), testLogger(t))
+	ok := NewResumer(NewStore(openTestDB(t), "history.db"), testLogger(t))
 	if err := ok.discard(context.Background(), "job-7", 3); err != nil {
 		t.Errorf("discarding a file with no runs returned %v, want nil", err)
 	}

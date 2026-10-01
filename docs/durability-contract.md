@@ -590,7 +590,7 @@ operation, the path, and whether the condition is `Permanent`.
 
 | Classification | Route | Job outcome | Articles |
 |---|---|---|---|
-| retryable | `Stallable.Stall` → `Application.Stall` | paused, with a surfaced reason naming the file (R27) — except a failed commit of the durability record, which names no file (§9a); re-evaluated on an interval and on user action (R19) | stay **Outstanding** |
+| retryable | `Stallable.Stall` → `Application.Stall` | paused, with a surfaced reason naming the file (R27) — a failed commit of the durability record instead names the database's own path (§9a); re-evaluated on an interval and on user action (R19) | stay **Outstanding** |
 | permanent | `Stallable.Fail` → `Application.Fail` | stopped, reason carried into history (R20) | stay **Outstanding** |
 
 In neither case is `Job.MarkArticleFailed` called, the failed-byte count
@@ -862,9 +862,11 @@ other commit error reaches `raise` unchanged, and `storagefault.Classify`
 makes it retryable unless it wraps a permanent errno, so the job stalls. The
 commit records no interrupted finalize, so `reevaluateStall` resumes the job at
 the next re-evaluation unless an earlier finalize is still pending. That
-includes a transient `SQLITE_BUSY`. Such a fault carries no path, because the barrier does
-not know the database's: the stall reason names the store's own error, which
-falls short of R27's file.
+includes a transient `SQLITE_BUSY`. Such a fault carries the database's own
+path: `durability.Store` is constructed with it (`NewStore(db, path)`), `raise`
+reads it back through `runStore.Path`, and the stall reason names it in place
+of a file — the one case where what R27 points at is the database rather than
+an article's file.
 
 Dropping a file drops it from **every** collection the run holds, not only from
 its drain reports. `Barrier.Run` releases each surviving file's report with

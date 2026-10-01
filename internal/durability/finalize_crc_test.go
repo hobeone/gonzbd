@@ -28,7 +28,7 @@ import (
 func TestFinalizeFile_CollapsesACleanFileToOneRunCarryingTheWholeFileCRC(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	a0 := bytes.Repeat([]byte{0x01}, 100)
 	a1 := bytes.Repeat([]byte{0x02}, 100)
@@ -73,7 +73,7 @@ func TestFinalizeFile_CollapsesACleanFileToOneRunCarryingTheWholeFileCRC(t *test
 func TestFinalizeFile_AHoleKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	// Article 1 permanently failed: nothing was ever written for [100,200).
 	tgt := &factGapTarget{
@@ -121,7 +121,7 @@ func TestFinalizeFile_AHoleKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 func TestFinalizeFile_AnOverlapKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	tgt := &factGapTarget{
 		size: 200,

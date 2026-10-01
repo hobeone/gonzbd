@@ -98,7 +98,7 @@ func newCrashWindowFixture(t *testing.T, recordArts ...int32) *crashWindowFixtur
 			CRC32:   crc32.ChecksumIEEE(onDisk[int(a)*crashArtLen : (int(a)+1)*crashArtLen]),
 		})
 	}
-	commitRuns(t, durability.NewStore(repo.DB()), j.ID(), arts)
+	commitRuns(t, durability.NewStore(repo.DB(), "history.db"), j.ID(), arts)
 	return f
 }
 

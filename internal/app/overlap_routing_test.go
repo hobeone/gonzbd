@@ -91,7 +91,7 @@ func overlapFixture(t *testing.T, ctx context.Context) (*Application, string) {
 	}
 
 	application.barrier = durability.NewBarrier(
-		durability.NewStore(repo.DB()),
+		durability.NewStore(repo.DB(), "history.db"),
 		application, application, slog.New(slog.DiscardHandler))
 
 	return application, j.ID()

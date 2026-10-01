@@ -39,6 +39,11 @@ func TestCheckpointJob_ACommitErrorStallsTheJobUntilReevaluated(t *testing.T) {
 		durability.WithCommitWrap(wrap),
 	)
 
+	wantPath := realStore(t, application).Path()
+	if wantPath == "" {
+		t.Fatal("the application's real store carries no path to assert against")
+	}
+
 	application.checkpointJob(t.Context(), job.ID())
 
 	row, ok := application.dispatcher.Row(job.ID())
@@ -52,6 +57,11 @@ func TestCheckpointJob_ACommitErrorStallsTheJobUntilReevaluated(t *testing.T) {
 	reason := application.StallReason(job.ID()).Reason
 	if !strings.Contains(reason, "commit") || !strings.Contains(reason, "database or disk is full") {
 		t.Errorf("stall reason = %q, want it to name the commit and the store's error (R27)", reason)
+	}
+	if !strings.Contains(reason, wantPath) {
+		t.Errorf("stall reason = %q, want it to name the store's path %q (R27) — "+
+			"the barrier learned nothing about the database's file from the commit "+
+			"itself and has no other way to find it", reason, wantPath)
 	}
 	if application.hasBarrierStamp(job.ID()) {
 		t.Error("a barrier whose commit failed stamped last_barrier")

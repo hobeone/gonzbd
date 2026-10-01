@@ -29,7 +29,7 @@ func TestResume_AdoptsARunEndingExactlyAtEndOfFile(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	path := writePartial(t, t.TempDir(), "f.bin", 100)
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	storeRuns(t, rs, "job-1",
 		DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1})
 	r := NewResumer(rs, testLogger(t))
@@ -62,7 +62,7 @@ func TestResume_AdoptsARunEndingExactlyAtEndOfFile(t *testing.T) {
 func TestFinalizeFile_ARunAtOffsetZeroOfZeroLengthDoesNotTruncate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	if _, err := rs.commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 0, CRC32: 0},
 	}); err != nil {

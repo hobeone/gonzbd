@@ -92,7 +92,7 @@ func TestOverlapFindings_SurvivesAnUnreadableRecord(t *testing.T) {
 func TestOverlapFindings_ReportsOnePerOverlappedFile(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	// File 0 overlaps: 150 bytes recorded over a 100-byte file. File 1 is
 	// healthy. File 2 overlaps too.
 	if _, err := rs.commit(ctx, "job-1", []DurableArticle{

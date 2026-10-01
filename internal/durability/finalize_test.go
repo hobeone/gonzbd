@@ -61,7 +61,7 @@ func (s *truncTarget) Confirm(_ context.Context, idx int32) { s.confirmed = appe
 func TestFinalizeFile_TruncatesToTheHighestRecordedEnd(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	// What earlier runs recorded: articles 0 and 1 tile [0,200), and article 4
 	// sits above the hole at [400,500).
@@ -103,7 +103,7 @@ func TestFinalizeFile_TruncatesToTheHighestRecordedEnd(t *testing.T) {
 func TestFinalizeFile_NothingRecordedDoesNotTruncate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	tgt := &truncTarget{}
 
 	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
@@ -171,7 +171,7 @@ func TestFinalizeFile_StorageFaultsStallRatherThanFailArticles(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			rs := NewStore(openTestDB(t))
+			rs := NewStore(openTestDB(t), "history.db")
 			ack := &recordingAcker{}
 			stall := &recordingStall{}
 			b := NewBarrier(rs, ack, stall, slog.New(slog.DiscardHandler))

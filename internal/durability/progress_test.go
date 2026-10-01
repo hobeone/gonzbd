@@ -14,7 +14,7 @@ func closedStore(t *testing.T) *Store {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return NewStore(db)
+	return NewStore(db, "history.db")
 }
 
 func countRows(t *testing.T, db *sql.DB, table, jobID string) int {
@@ -33,7 +33,7 @@ func TestStore_AdmitSeedsAndKeepsExistingRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
-	st := NewStore(db)
+	st := NewStore(db, "history.db")
 
 	if err := st.Admit(ctx, "job-a", []uint8{0, 2}); err != nil {
 		t.Fatalf("Admit: %v", err)
@@ -69,7 +69,7 @@ func TestStore_SaveProgressUpdatesFilesAndAddsFailedMarks(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
-	st := NewStore(db)
+	st := NewStore(db, "history.db")
 	if err := st.Admit(ctx, "job-a", []uint8{0}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestStore_FileRowsSkipsARowItCannotScan(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
-	st := NewStore(db)
+	st := NewStore(db, "history.db")
 	if err := st.Admit(ctx, "job-a", []uint8{0, 0}); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestStore_FailedArticlesStopsAtARowItCannotScan(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
-	st := NewStore(db)
+	st := NewStore(db, "history.db")
 	// ORDER BY art_idx sorts the integer before the text value, so 1 is read first.
 	if _, err := db.Exec(`INSERT INTO failed_articles (job_id, art_idx) VALUES ('job-a', 1), ('job-a', 'x')`); err != nil {
 		t.Fatal(err)

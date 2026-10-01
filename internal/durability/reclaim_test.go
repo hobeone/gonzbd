@@ -46,7 +46,7 @@ func seedReclaimStates(t *testing.T) *sql.DB {
 	t.Cleanup(func() { _ = hdb.Close() })
 	repo := history.NewRepository(hdb)
 	db := repo.DB()
-	st := NewStore(db)
+	st := NewStore(db, "history.db")
 	for _, s := range reclaimStates {
 		if err := st.Admit(ctx, s.id, []uint8{0}); err != nil {
 			t.Fatal(err)
@@ -96,7 +96,7 @@ func TestReclaim_AppliesTheRuleToEveryState(t *testing.T) {
 
 	t.Run("SweepOrphans", func(t *testing.T) {
 		db := seedReclaimStates(t)
-		if err := NewStore(db).SweepOrphans(ctx); err != nil {
+		if err := NewStore(db, "history.db").SweepOrphans(ctx); err != nil {
 			t.Fatal(err)
 		}
 		assertReclaimed(t, db, "SweepOrphans")
@@ -104,7 +104,7 @@ func TestReclaim_AppliesTheRuleToEveryState(t *testing.T) {
 
 	t.Run("Reclaim", func(t *testing.T) {
 		db := seedReclaimStates(t)
-		st := NewStore(db)
+		st := NewStore(db, "history.db")
 		for _, s := range reclaimStates {
 			if err := st.Reclaim(ctx, s.id); err != nil {
 				t.Fatal(err)
@@ -120,7 +120,7 @@ func TestReclaim_TouchesOnlyTheNamedJobs(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := seedReclaimStates(t)
-	if err := NewStore(db).Reclaim(ctx, "neither"); err != nil {
+	if err := NewStore(db, "history.db").Reclaim(ctx, "neither"); err != nil {
 		t.Fatal(err)
 	}
 	for _, table := range perJobTables {
@@ -140,7 +140,7 @@ func TestReclaim_IgnoresANullQueueID(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO dispatch_jobs (id, sort_key, name) VALUES (NULL, 0, 'null')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewStore(db).SweepOrphans(ctx); err != nil {
+	if err := NewStore(db, "history.db").SweepOrphans(ctx); err != nil {
 		t.Fatal(err)
 	}
 	assertReclaimed(t, db, "SweepOrphans with a NULL queue id")
@@ -233,7 +233,7 @@ func TestReclaim_ChunksLargeIDLists(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := seedReclaimStates(t)
-	st := NewStore(db)
+	st := NewStore(db, "history.db")
 	ids := make([]string, 0, reclaimChunk*2+3)
 	for i := range reclaimChunk*2 + 2 {
 		ids = append(ids, fmt.Sprintf("bulk-%04d", i))
@@ -263,7 +263,7 @@ func TestInTx_RollsBackWhenTheRuleFails(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := seedReclaimStates(t)
-	st := NewStore(db)
+	st := NewStore(db, "history.db")
 	boom := errors.New("boom")
 	err := st.inTx(ctx, "test", func(tx *sql.Tx) error {
 		if err := applyRule(ctx, tx, nil); err != nil {
@@ -290,7 +290,7 @@ func TestReclaim_ReportsAStatementThatCannotReadHistory(t *testing.T) {
 	if _, err := db.Exec(`DROP TABLE history`); err != nil {
 		t.Fatal(err)
 	}
-	err := NewStore(db).Reclaim(ctx, "neither")
+	err := NewStore(db, "history.db").Reclaim(ctx, "neither")
 	if err == nil || !strings.Contains(err.Error(), "reclaim durable_runs") {
 		t.Fatalf("Reclaim = %v, want an error naming the durable_runs statement", err)
 	}

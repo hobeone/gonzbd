@@ -313,7 +313,7 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 	// between them: the commit is what makes the proof true after a crash.
 	collisions, err := b.commit(ctx, jobID, arts)
 	if err != nil {
-		return nil, b.raise(jobID, "commit", "", commitFailure(ctx, err))
+		return nil, b.raise(jobID, "commit", b.runs.Path(), commitFailure(ctx, err))
 	}
 	if len(acked) > 0 {
 		slices.Sort(acked)

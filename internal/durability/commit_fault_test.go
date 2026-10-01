@@ -3,6 +3,7 @@ package durability
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -28,13 +29,20 @@ func commitFaultTarget() *fakeTarget {
 // Stallable like the drain, sync and stat failures before it. A commit error
 // that only returned left the job downloading while no barrier could record
 // anything it wrote.
+//
+// It also pins R27 for this fault specifically: Run's raise call used to pass
+// "" for the path, since nothing before it ever learned the database's own —
+// commit, unlike write/sync/stat, has no file index to resolve a path from.
+// The stall reason must still name the database file, or an operator sees
+// `on commit ""` and has nothing to act on.
 func TestBarrier_Run_ACommitErrorStallsTheJob(t *testing.T) {
 	t.Parallel()
+	const dbPath = "/admin/history.db"
 	boom := errors.New("database or disk is full")
 	stall := &recordingStall{}
 	ack := &recordingAcker{}
 	tgt := commitFaultTarget()
-	b := NewBarrier(&commitErrStore{runStore: NewStore(openTestDB(t)), err: boom}, ack, stall, testLogger(t))
+	b := NewBarrier(&commitErrStore{runStore: NewStore(openTestDB(t), dbPath), err: boom}, ack, stall, testLogger(t))
 
 	_, err := b.Run(context.Background(), "job-1", tgt)
 
@@ -44,6 +52,12 @@ func TestBarrier_Run_ACommitErrorStallsTheJob(t *testing.T) {
 	}
 	if f := stall.stalled[0]; f.Op != "commit" || !errors.Is(f, boom) {
 		t.Errorf("fault = %v, want op commit wrapping the store's error", f)
+	}
+	if f := stall.stalled[0]; f.Path != dbPath {
+		t.Errorf("fault path = %q, want %q — the store's own path (R27)", f.Path, dbPath)
+	}
+	if !strings.Contains(err.Error(), dbPath) {
+		t.Errorf("Run = %v, want it to name %q", err, dbPath)
 	}
 	if len(stall.failed) != 0 {
 		t.Errorf("failed %d times; an unrecognised commit error is retryable", len(stall.failed))
@@ -67,7 +81,7 @@ func TestBarrier_Run_ACommitAbandonedByItsCallerIsNotStalled(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	stall := &recordingStall{}
-	b := NewBarrier(&commitErrStore{runStore: NewStore(openTestDB(t)), err: errors.New("interrupted")},
+	b := NewBarrier(&commitErrStore{runStore: NewStore(openTestDB(t), "/admin/history.db"), err: errors.New("interrupted")},
 		&recordingAcker{}, stall, testLogger(t))
 	tgt := commitFaultTarget()
 	cancel()

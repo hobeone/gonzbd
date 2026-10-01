@@ -49,7 +49,7 @@ func TestCheckpoint_StaleMarkAfterPruneDoesNotReachARetry(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = hdb.Close() })
 	db := history.NewRepository(hdb).DB()
-	st := durability.NewStore(db)
+	st := durability.NewStore(db, "history.db")
 	c := checkpoint.New(&appCheckpointStore{store: st}, time.Hour, nil)
 
 	const id = "stale-job"

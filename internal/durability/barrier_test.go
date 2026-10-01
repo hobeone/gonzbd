@@ -105,7 +105,7 @@ func TestBarrier_SyncPrecedesCommitAndAck(t *testing.T) {
 		size:    100,
 	}
 	ack := &recordingAcker{}
-	b := newBarrierWithStore(t, NewStore(openTestDB(t)), ack, &recordingStall{})
+	b := newBarrierWithStore(t, NewStore(openTestDB(t), "history.db"), ack, &recordingStall{})
 
 	if _, err := b.Run(ctx, "job-1", tgt); err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func TestBarrier_SyncPrecedesCommitAndAck(t *testing.T) {
 func TestBarrier_SyncFailureAcksNothing(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	if _, err := rs.commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1111},
 	}); err != nil {
@@ -180,7 +180,7 @@ func TestBarrier_PermanentFaultFailsRatherThanStalls(t *testing.T) {
 	ctx := context.Background()
 	tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, syncErr: syscall.EROFS}
 	stall := &recordingStall{}
-	b := newBarrierWithStore(t, NewStore(openTestDB(t)), &recordingAcker{}, stall)
+	b := newBarrierWithStore(t, NewStore(openTestDB(t), "history.db"), &recordingAcker{}, stall)
 
 	if _, err := b.Run(ctx, "job-1", tgt); err == nil {
 		t.Fatal("Run returned nil after EROFS")
@@ -219,7 +219,7 @@ func TestBarrier_DrainAndStatFaultsRouteThroughA1(t *testing.T) {
 			ctx := context.Background()
 			stall := &recordingStall{}
 			ack := &recordingAcker{}
-			b := newBarrierWithStore(t, NewStore(openTestDB(t)), ack, stall)
+			b := newBarrierWithStore(t, NewStore(openTestDB(t), "history.db"), ack, stall)
 
 			_, err := b.Run(ctx, "job-1", tt.tgt)
 			if err == nil {
@@ -271,7 +271,7 @@ func TestBarrier_CommitFailureAcksNothing(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	boom := errors.New("commit exploded")
-	rs := &errStore{runStore: NewStore(openTestDB(t)), err: boom}
+	rs := &errStore{runStore: NewStore(openTestDB(t), "history.db"), err: boom}
 	tgt := &fakeTarget{
 		written: map[int32][]WrittenArticle{0: {{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100}}},
 	}
@@ -297,7 +297,7 @@ func TestBarrier_CommitFailureAcksNothing(t *testing.T) {
 func TestBarrier_NothingDrainedAcksNothing(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	tgt := &fakeTarget{written: map[int32][]WrittenArticle{0: {}}, size: 7}
 	ack := &recordingAcker{}
 	b := newBarrierWithStore(t, rs, ack, &recordingStall{})
@@ -331,7 +331,7 @@ func TestBarrier_AckFailurePropagates(t *testing.T) {
 	tgt := &fakeTarget{
 		written: map[int32][]WrittenArticle{0: {{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100}}},
 	}
-	b := newBarrierWithStore(t, NewStore(openTestDB(t)), ack, &recordingStall{})
+	b := newBarrierWithStore(t, NewStore(openTestDB(t), "history.db"), ack, &recordingStall{})
 
 	if _, err := b.Run(ctx, "job-1", tgt); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the ack failure", err)
@@ -344,7 +344,7 @@ func TestBarrier_AckFailurePropagates(t *testing.T) {
 func TestBarrier_MultipleFilesSyncAllBeforeAnyClaim(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	tgt := &fakeTarget{
 		files: []int32{0, 1},
 		written: map[int32][]WrittenArticle{
@@ -407,7 +407,7 @@ func TestBarrier_ConfirmsOnlyAfterTheCommitAndAck(t *testing.T) {
 	drain := map[int32][]WrittenArticle{0: {{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100}}}
 
 	t.Run("a successful cycle confirms", func(t *testing.T) {
-		b := newBarrierWithStore(t, NewStore(openTestDB(t)),
+		b := newBarrierWithStore(t, NewStore(openTestDB(t), "history.db"),
 			&recordingAcker{}, &recordingStall{})
 		tgt := &fakeTarget{written: drain, size: 100}
 		if _, err := b.Run(ctx, "job-1", tgt); err != nil {
@@ -420,7 +420,7 @@ func TestBarrier_ConfirmsOnlyAfterTheCommitAndAck(t *testing.T) {
 	})
 
 	t.Run("a failed ack does not confirm", func(t *testing.T) {
-		b := newBarrierWithStore(t, NewStore(openTestDB(t)),
+		b := newBarrierWithStore(t, NewStore(openTestDB(t), "history.db"),
 			&recordingAcker{err: errors.New("job not resident")}, &recordingStall{})
 		tgt := &fakeTarget{written: drain, size: 100}
 		if _, err := b.Run(ctx, "job-1", tgt); err == nil {
@@ -442,7 +442,7 @@ func TestBarrier_ConfirmsOnlyAfterTheCommitAndAck(t *testing.T) {
 // leave the rest re-reporting forever.
 func TestConfirmAll_ReleasesEveryFileOfTheJob(t *testing.T) {
 	t.Parallel()
-	b := newBarrierWithStore(t, NewStore(openTestDB(t)),
+	b := newBarrierWithStore(t, NewStore(openTestDB(t), "history.db"),
 		&recordingAcker{}, &recordingStall{})
 	tgt := &fakeTarget{}
 
@@ -523,7 +523,7 @@ func TestBarrier_CommitWrapCanFailOrObserveTheCommit(t *testing.T) {
 	}
 
 	t.Run("a wrap that fails the commit", func(t *testing.T) {
-		rs := NewStore(openTestDB(t))
+		rs := NewStore(openTestDB(t), "history.db")
 		ack := &recordingAcker{}
 		boom := errors.New("database is locked")
 		b := NewBarrier(rs, ack, &recordingStall{}, testLogger(t),
@@ -543,7 +543,7 @@ func TestBarrier_CommitWrapCanFailOrObserveTheCommit(t *testing.T) {
 	})
 
 	t.Run("a wrap that runs the commit", func(t *testing.T) {
-		rs := NewStore(openTestDB(t))
+		rs := NewStore(openTestDB(t), "history.db")
 		var sawJob string
 		b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, testLogger(t),
 			WithCommitWrap(func(_ context.Context, jobID string, commit func() ([]Collision, error)) ([]Collision, error) {

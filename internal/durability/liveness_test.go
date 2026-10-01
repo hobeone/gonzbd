@@ -16,7 +16,7 @@ import (
 func TestSaveProgress_RefusesAFailedArticleForAJobWithNoFiles(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	st := NewStore(openTestDB(t))
+	st := NewStore(openTestDB(t), "history.db")
 
 	// Live: the article is recorded. Without this the test below would pass
 	// against a SaveProgress that never writes a failed article at all.
@@ -64,7 +64,7 @@ func TestSaveProgress_RefusesAFailedArticleForAJobWithNoFiles(t *testing.T) {
 func TestSaveProgress_StillWritesFileRowsForADepartedJob(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	st := NewStore(openTestDB(t))
+	st := NewStore(openTestDB(t), "history.db")
 
 	if err := st.Admit(ctx, "departed", []uint8{0}); err != nil {
 		t.Fatal(err)

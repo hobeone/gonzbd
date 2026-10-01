@@ -413,7 +413,12 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	var durStore *durability.Store
 	if repo != nil && repo.DB() != nil {
 		dispatchStore = dispatchstore.New(repo.DB())
-		durStore = durability.NewStore(repo.DB())
+		// The same join main.go uses to open repo in the first place
+		// (cmd/gonzbd/main.go's history.Open call) — history.Repository
+		// exposes no path of its own, so this is the one place in this
+		// package that still knows it, and the only reason to compute it
+		// again here rather than carry it through repo.
+		durStore = durability.NewStore(repo.DB(), filepath.Join(adminDir, "history.db"))
 		app.durable = durStore
 	}
 	checkpointStore := &appCheckpointStore{store: durStore}

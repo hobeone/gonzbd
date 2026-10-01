@@ -29,10 +29,20 @@ import (
 // article. The append-only store this replaced needed immutability precisely
 // because it wrote BEFORE the write, where a row could describe bytes that
 // were never written.
-type Store struct{ db *sql.DB }
+type Store struct {
+	db   *sql.DB
+	path string
+}
 
-// NewStore wraps db. The caller owns db's lifecycle.
-func NewStore(db *sql.DB) *Store { return &Store{db: db} }
+// NewStore wraps db, which was opened against path. The caller owns db's
+// lifecycle; path is recorded only so Path can report it — Store never opens,
+// closes, or otherwise acts on the file itself.
+func NewStore(db *sql.DB, path string) *Store { return &Store{db: db, path: path} }
+
+// Path returns the database file db was opened against, so Barrier.raise can
+// name it in a failed commit's stall reason (R27). A test fake may pass a
+// placeholder; it is never parsed or compared against the filesystem here.
+func (s *Store) Path() string { return s.path }
 
 var _ runStore = (*Store)(nil)
 

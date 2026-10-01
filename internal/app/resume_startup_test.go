@@ -182,7 +182,7 @@ func (f *resumeFixture) recordRuns(durableArts ...int) {
 			CRC32:   crc32.ChecksumIEEE(f.parts[i]),
 		})
 	}
-	app.CommitRuns(f.t, durability.NewStore(f.repo.DB()), f.jobID, arts)
+	app.CommitRuns(f.t, durability.NewStore(f.repo.DB(), "history.db"), f.jobID, arts)
 }
 
 // stall parks the named articles forever, holding their connections open.
