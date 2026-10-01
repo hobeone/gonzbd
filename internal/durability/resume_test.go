@@ -270,14 +270,14 @@ func TestResume_RunReadFailureIsReturned(t *testing.T) {
 
 // TestResume_RunReadFailureNamesTheStore pins that a failed read of the
 // durability record is attributed to the STORE's own path and op "read" —
-// not to the download file Resume was asked about — the same way Barrier's
-// commit and FinalizeFile's own run read are routed (barrier.go, §9a).
+// not to the download file Resume was asked about — sharing FinalizeFile's
+// own run read's op and the store's-path/storeFailure convention Barrier's
+// commit also follows, under a different op (barrier.go, §9a).
 //
-// Resumer holds no Stallable (see the type doc): it is a reader and a
-// deleter, never a dispatcher. So it classifies the failure the same way
-// raise's final branch would and leaves the one remaining step — handing the
-// fault to Stallable — to its caller, which must not re-attribute what this
-// already got right (internal/app/resume_startup.go).
+// Resumer holds no Stallable (see the type doc): it classifies the failure
+// the same way raise's final branch would and leaves the one remaining step
+// — handing the fault to Stallable — to its caller, which must not
+// re-attribute what this already got right (internal/app/resume_startup.go).
 func TestResume_RunReadFailureNamesTheStore(t *testing.T) {
 	t.Parallel()
 	const dbPath = "/admin/history.db"

@@ -486,8 +486,10 @@ func (r *preClassifiedFaultResumer) Resume(context.Context, string, int32, strin
 // TestResumeAllJobs_AStoreReadFailureNamesTheStoreNotTheFile pins the other
 // half of the §9a routing: resumeJobFiles must use a fault Resume already
 // classified AS IS, rather than relabelling it "resume" against the download
-// file — which is what every OTHER Resume failure (a bare stat error) is
-// still classified against, two tests above.
+// file. That relabelling is still correct for a bare os.Stat failure, which
+// carries no prior classification (two tests above) — ForFile's read and
+// discard's own delete, Resume's other two failure shapes, both arrive
+// already classified and must not be relabelled either.
 //
 // Before, resumeJobFiles ignored what kind of error Resume returned and
 // always classified fresh against the download file's own path, so a failed
