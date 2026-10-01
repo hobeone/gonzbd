@@ -43,7 +43,7 @@ const (
 // for any base it cannot resolve to a plain identifier (an index expression,
 // a call result, and so on), which classifyCall then treats as ignored —
 // none of those shapes appear as a call target in this package today (see
-// the citations below classifyCall).
+// the citations in classifyMember's comment, below).
 func selectorPath(e ast.Expr) []string {
 	switch v := e.(type) {
 	case *ast.Ident:
@@ -59,33 +59,57 @@ func selectorPath(e ast.Expr) []string {
 	}
 }
 
+// dispatcherSafeFields names the Dispatcher fields whose two-level call
+// `d.<field>.<method>(...)` classifyMember ignores outright, because the
+// field's own type cannot reach sched.Queue. Each reason is why, so a
+// reviewer does not have to re-derive it; a field listed here that no call
+// site in the package actually exercises any more is itself a failure (see
+// TestNoCallIntoQueueUnderDispatcherLock's trailing loop over this map),
+// the same way a stale queueCallAllow entry is.
+//
+// Enumerated from the same scan classifyMember's own comment cites below:
+// of the two-level bases that scan finds (mu, storeMu, q, res, store,
+// runner, log, stopOnce), q is handled by its own case, and res/store/runner
+// are deliberately ABSENT here — they are the interfaces this gate exists to
+// catch, so they must fall through to the catch-all callUnresolved case
+// rather than be declared safe.
+var dispatcherSafeFields = map[string]string{
+	"mu":       "sync.Mutex; muField intercepts every Lock/RLock/Unlock/RUnlock call on it before classifyCall ever runs in scanFuncForLockedQueueCalls, and a mutex has no other exported method a CallExpr could target",
+	"storeMu":  "a second, unrelated sync.Mutex guarding store writes; same reasoning as mu, and it is never read inside a d.mu span (TestStoreMuLockNesting_MatchesEnumeration, lock_enumeration_test.go, pins the one place the two nest)",
+	"log":      "*slog.Logger; its methods only format and emit a record, never call back into this package",
+	"stopOnce": "sync.Once; the call on stopOnce itself is just Do(closure) — the closure's own calls are inspected separately, as sibling nodes of the same ast.Inspect walk, not skipped by ignoring Do",
+}
+
 // classifyMember interprets rest — a selector path with a receiver of static
 // type recvType ("Dispatcher" or "removal") already stripped off its front —
 // as a field or method access on that type.
 //
-// The three cases below are not a guess at Dispatcher's shape: a package-wide
-// scan of every `d.<x>(` and `d.<x>.<y>(` and `r.d...` call —
+// The cases below are not a guess at Dispatcher's shape: a package-wide scan
+// of every `d.<x>(` and `d.<x>.<y>(` and `r.d...` call —
 // `grep -noE 'd\.[A-Za-z_]+\(' internal/dispatch/*.go | grep -v _test.go`
 // and the `d\.[A-Za-z_]+\.[A-Za-z_]+\(` and `r\.d\.` variants — finds exactly
 // these shapes: every bare `d.<name>(` is either a real *Dispatcher method or
 // the func-typed beforeClaim field, and every `d.<field>.<method>(` reaches
-// through q, res, store or runner (log, mu and storeMu are handled before
-// classifyMember ever sees them — see muField and the caller in
-// TestNoCallIntoQueueUnderDispatcherLock). A field this package adds later
-// that is itself callable this same way is exactly the case queueCallAllow
-// exists to catch: it falls through to callIgnored only when nothing above
-// matches, so a NEW two-level call through a field is unresolved rather than
-// silently safe, and the test flags it for review instead of missing it.
+// through one of q, res, store, runner, log, mu, storeMu or stopOnce. Of
+// those, mu, storeMu, log and stopOnce are declared safe in
+// dispatcherSafeFields; q gets its own case; everything else two levels deep
+// — res, store, runner today, and any field this package adds later that is
+// itself callable this same way — falls to the final callUnresolved case, so
+// a NEW two-level call through a field is flagged for review rather than
+// silently falling through as callIgnored.
 func classifyMember(recvType string, rest []string) (kind callKind, ident string) {
 	switch recvType {
 	case "Dispatcher":
 		switch {
 		case len(rest) == 2 && rest[0] == "q":
 			return callQueue, "d.q." + rest[1] + "(...)"
-		case len(rest) == 2 && (rest[0] == "res" || rest[0] == "store" || rest[0] == "runner"):
-			return callUnresolved, "d." + rest[0] + "." + rest[1] + "(...)"
 		case len(rest) == 1 && rest[0] == "beforeClaim":
 			return callUnresolved, "d.beforeClaim(...)"
+		case len(rest) == 2:
+			if _, safe := dispatcherSafeFields[rest[0]]; safe {
+				return callIgnored, rest[0]
+			}
+			return callUnresolved, "d." + rest[0] + "." + rest[1] + "(...)"
 		case len(rest) == 1:
 			return callMaybeLocal, "Dispatcher." + rest[0]
 		}
@@ -95,11 +119,17 @@ func classifyMember(recvType string, rest []string) (kind callKind, ident string
 			// The removal's own *Dispatcher field: r.d.X(...) reaches exactly
 			// what d.X(...) would from a *Dispatcher method, so recurse with
 			// the "d" hop stripped — this is what makes r.d.deregister(...)
-			// (registry.go, removal.end) resolve to Dispatcher.deregister.
+			// (registry.go, removal.end) resolve to Dispatcher.deregister,
+			// and r.d.mu.Lock()/Unlock() (registry.go, removal.abort) resolve
+			// to the same safe "mu" case above.
 			return classifyMember("Dispatcher", rest[1:])
 		case len(rest) == 1:
 			return callMaybeLocal, "removal." + rest[0]
 		}
+		// No other shape is reachable: removal's only fields are d
+		// (*Dispatcher, handled above), id (string) and done (bool)
+		// (registry.go's `type removal struct`), and neither of the latter
+		// two has a method a CallExpr could target.
 	}
 	return callIgnored, ""
 }
@@ -274,15 +304,37 @@ func parseDispatchSources(t *testing.T) (*token.FileSet, map[string]*ast.FuncDec
 	return fset, funcs
 }
 
-// computeQueueReaching returns, for every key in funcs, whether that
-// function's body calls into sched.Queue directly or, transitively, through
-// another function this test can resolve (callMaybeLocal). The walk here is
-// NOT scoped to a d.mu span — reachability is a property of what a function
-// calls anywhere in its body, because a function invoked from inside a span
-// carries its own queue calls regardless of whether IT also takes a lock.
-func computeQueueReaching(funcs map[string]*ast.FuncDecl) map[string]bool {
+// packageAnalysis is the one full, lock-unaware walk over every function
+// body that TestNoCallIntoQueueUnderDispatcherLock needs before it can scan
+// any d.mu span.
+type packageAnalysis struct {
+	// reaches[key] is whether that function calls into sched.Queue directly
+	// or, transitively, through another function this test can resolve
+	// (callMaybeLocal).
+	reaches map[string]bool
+	// unresolvedReach[key] lists every distinct unresolved-call description
+	// (an interface field or func value classifyCall could not follow)
+	// reachable from that function, directly or through a resolved local
+	// callee — so a one-line helper's d.runner.Run(...) still surfaces at
+	// every call site that reaches the helper, not just inside the helper
+	// itself.
+	unresolvedReach map[string][]string
+	// safeFieldsUsed[field] is whether some call anywhere in the package
+	// actually matched that entry of dispatcherSafeFields.
+	safeFieldsUsed map[string]bool
+}
+
+// analyzePackage walks every function in funcs exactly once. The walk is NOT
+// scoped to a d.mu span — reachability (of sched.Queue, and of an unresolved
+// call) is a property of what a function calls anywhere in its body, because
+// a function invoked from inside a span carries its own queue calls and
+// unresolved calls regardless of whether IT also takes a lock.
+func analyzePackage(funcs map[string]*ast.FuncDecl) packageAnalysis {
 	direct := map[string]bool{}
 	edges := map[string][]string{}
+	directUnresolved := map[string][]string{}
+	safeFieldsUsed := map[string]bool{}
+
 	for key, fn := range funcs {
 		recv := receiverVar(fn)
 		recvType := receiverType(fn)
@@ -298,36 +350,92 @@ func computeQueueReaching(funcs map[string]*ast.FuncDecl) map[string]bool {
 				direct[key] = true
 			case callMaybeLocal:
 				edges[key] = append(edges[key], ident)
+			case callUnresolved:
+				directUnresolved[key] = append(directUnresolved[key], ident)
+			case callIgnored:
+				if ident != "" {
+					safeFieldsUsed[ident] = true
+				}
 			}
 			return true
 		})
 	}
+
 	reaches := map[string]bool{}
 	maps.Copy(reaches, direct)
+	unresolvedReach := map[string][]string{}
+	for k, v := range directUnresolved {
+		unresolvedReach[k] = appendMissing(nil, v)
+	}
 	for changed := true; changed; {
 		changed = false
 		for key, callees := range edges {
-			if reaches[key] {
-				continue
-			}
 			for _, c := range callees {
-				if reaches[c] {
+				if reaches[c] && !reaches[key] {
 					reaches[key] = true
 					changed = true
-					break
+				}
+				if len(unresolvedReach[c]) > 0 {
+					before := len(unresolvedReach[key])
+					unresolvedReach[key] = appendMissing(unresolvedReach[key], unresolvedReach[c])
+					if len(unresolvedReach[key]) != before {
+						changed = true
+					}
 				}
 			}
 		}
 	}
-	return reaches
+	return packageAnalysis{reaches: reaches, unresolvedReach: unresolvedReach, safeFieldsUsed: safeFieldsUsed}
+}
+
+// appendMissing appends every element of src not already in dst, preserving
+// dst's existing order, and returns the result.
+func appendMissing(dst, src []string) []string {
+	have := make(map[string]bool, len(dst))
+	for _, s := range dst {
+		have[s] = true
+	}
+	for _, s := range src {
+		if !have[s] {
+			dst = append(dst, s)
+			have[s] = true
+		}
+	}
+	return dst
+}
+
+// checkUnresolved is callUnresolved's handling, shared by a call found
+// directly inside a span and one reached transitively through a resolved
+// local helper (via, respectively): allowKey names the exact shape that must
+// appear in queueCallAllow, with the describing text appended to the
+// violation it reports when that entry is missing.
+func checkUnresolved(key, ident, via, pos string, allow map[string]string, seenAllow map[string]bool) (violation string) {
+	allowKey := key + ": " + ident
+	describe := fmt.Sprintf("calls %s (an interface field or func value; this test cannot verify it avoids sched.Queue)", ident)
+	if via != "" {
+		allowKey = key + ": " + via + " -> " + ident
+		describe = fmt.Sprintf("calls %s, which makes an unresolved call %s (an interface field or func value; this test cannot verify it avoids sched.Queue)", via, ident)
+	}
+	if reason, ok := allow[allowKey]; ok {
+		if strings.TrimSpace(reason) != "" {
+			seenAllow[allowKey] = true
+		}
+		return ""
+	}
+	return fmt.Sprintf(
+		"%s: %s while holding d.mu, at %s.\n"+
+			"    Move the call out of the span, or add %q to queueCallAllow with the reason it cannot reach sched.Queue.",
+		key, describe, pos, allowKey)
 }
 
 // scanFuncForLockedQueueCalls walks fn in execution order, tracking whether
 // d.mu is held, and reports every call found while it is that either reaches
-// sched.Queue (directly or through a resolved local function) or cannot be
-// resolved and is not in queueCallAllow. seenAllow records every allow-list
-// key an unresolved call actually matched, so the caller can also fail a
-// stale entry.
+// sched.Queue (directly, or through a resolved local function that itself
+// reaches it) or cannot be resolved and is not in queueCallAllow — including
+// a call to a resolved local function that itself makes an unresolved call,
+// via unresolvedReach, so a one-line helper cannot hide one. seenAllow
+// records every allow-list key an unresolved call actually matched, so the
+// caller can also fail a stale entry.
 //
 // Held-span tracking is a flat toggle over the single ast.Inspect pre-order
 // walk, exactly like analyzeLockNesting's inMu/inStoreMu
@@ -342,7 +450,7 @@ func computeQueueReaching(funcs map[string]*ast.FuncDecl) map[string]bool {
 // `switch` of the same guard shape (Add's stopped/restoring check) also
 // tracks correctly, because the toggle is set only by a matched Unlock, never
 // by a branch merely being visited.
-func scanFuncForLockedQueueCalls(key string, fn *ast.FuncDecl, fset *token.FileSet, reaches map[string]bool, allow map[string]string, seenAllow map[string]bool) (violations []string, sawLock bool) {
+func scanFuncForLockedQueueCalls(key string, fn *ast.FuncDecl, fset *token.FileSet, analysis packageAnalysis, allow map[string]string, seenAllow map[string]bool) (violations []string, sawLock bool) {
 	recv := receiverVar(fn)
 	recvType := receiverType(fn)
 	fvParams := funcValueParamNames(fn)
@@ -373,25 +481,22 @@ func scanFuncForLockedQueueCalls(key string, fn *ast.FuncDecl, fset *token.FileS
 			return true
 		}
 		kind, ident := classifyCall(call, recv, recvType, fvParams)
-		pos := fset.Position(call.Pos())
+		pos := fset.Position(call.Pos()).String()
 		switch kind {
 		case callQueue:
 			violations = append(violations, fmt.Sprintf("%s: calls %s while holding d.mu, at %s", key, ident, pos))
 		case callMaybeLocal:
-			if reaches[ident] {
+			if analysis.reaches[ident] {
 				violations = append(violations, fmt.Sprintf("%s: calls %s, which reaches sched.Queue, while holding d.mu, at %s", key, ident, pos))
 			}
-		case callUnresolved:
-			allowKey := key + ": " + ident
-			if reason, ok := allow[allowKey]; ok {
-				if strings.TrimSpace(reason) != "" {
-					seenAllow[allowKey] = true
+			for _, u := range analysis.unresolvedReach[ident] {
+				if v := checkUnresolved(key, u, ident, pos, allow, seenAllow); v != "" {
+					violations = append(violations, v)
 				}
-			} else {
-				violations = append(violations, fmt.Sprintf(
-					"%s: calls %s (an interface field or func value; this test cannot verify it avoids sched.Queue) while holding d.mu, at %s.\n"+
-						"    Move the call out of the span, or add %q to queueCallAllow with the reason it cannot reach sched.Queue.",
-					key, ident, pos, allowKey))
+			}
+		case callUnresolved:
+			if v := checkUnresolved(key, ident, "", pos, allow, seenAllow); v != "" {
+				violations = append(violations, v)
 			}
 		}
 		return true
@@ -402,15 +507,15 @@ func scanFuncForLockedQueueCalls(key string, fn *ast.FuncDecl, fset *token.FileS
 // TestNoCallIntoQueueUnderDispatcherLock enforces D-B9 (tick.go,
 // registry.go): nothing in this package may hold d.mu across a call into
 // sched.Queue. It parses every non-test source in the package, computes which
-// functions reach sched.Queue (computeQueueReaching), and then walks every
-// function looking for a Queue call — direct, through a resolved local
-// helper, or through something it cannot resolve and that queueCallAllow has
-// not excused — inside a d.mu-held span.
+// functions reach sched.Queue and which make or inherit an unresolved call
+// (analyzePackage), and then walks every function looking for a Queue call —
+// direct, through a resolved local helper, or through something it cannot
+// resolve and that queueCallAllow has not excused — inside a d.mu-held span.
 func TestNoCallIntoQueueUnderDispatcherLock(t *testing.T) {
 	t.Parallel()
 
 	fset, funcs := parseDispatchSources(t)
-	reaches := computeQueueReaching(funcs)
+	analysis := analyzePackage(funcs)
 
 	seenAllow := map[string]bool{}
 	var violations []string
@@ -423,7 +528,7 @@ func TestNoCallIntoQueueUnderDispatcherLock(t *testing.T) {
 	sort.Strings(keys)
 
 	for _, key := range keys {
-		vs, sawLock := scanFuncForLockedQueueCalls(key, funcs[key], fset, reaches, queueCallAllow, seenAllow)
+		vs, sawLock := scanFuncForLockedQueueCalls(key, funcs[key], fset, analysis, queueCallAllow, seenAllow)
 		violations = append(violations, vs...)
 		sawAnyLock = sawAnyLock || sawLock
 	}
@@ -446,15 +551,30 @@ func TestNoCallIntoQueueUnderDispatcherLock(t *testing.T) {
 			t.Errorf("queueCallAllow lists %q, but no d.mu span calls it anymore; remove the entry", key)
 		}
 	}
+
+	// Mirrors the queueCallAllow staleness check above: a field declared
+	// safe that no call anywhere in the package actually exercises this way
+	// is an unverifiable claim, not a verified one.
+	for field, reason := range dispatcherSafeFields {
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("dispatcherSafeFields[%q] has an empty reason; every entry must justify why the field cannot reach sched.Queue", field)
+		}
+		if !analysis.safeFieldsUsed[field] {
+			t.Errorf("dispatcherSafeFields lists %q, but no d.<field>.<method>(...) call anywhere in the package matches it any more; remove the entry", field)
+		}
+	}
 }
 
 // TestLockSpanGateClassifiesKnownShapes pins the walker's behavior on
 // synthetic sources covering the shapes TestNoCallIntoQueueUnderDispatcherLock
 // depends on: a direct Queue call under lock, a call to a local helper that
-// itself reaches the Queue, a call to a local helper that does NOT, and a
-// call through an unresolved (interface-shaped) field — all under a deferred
-// unlock, so the probe also pins that a deferred Unlock holds the span to the
-// end of the function.
+// itself reaches the Queue, a call to a local helper that does NOT, a call
+// through an unresolved (interface-shaped) field, a call through a field
+// dispatcherSafeFields declares safe, a call through a field NOTHING declares
+// safe (the catch-all), and a call to a local helper that itself makes an
+// unresolved call (transitive propagation) — most under a deferred unlock, so
+// the probe also pins that a deferred Unlock holds the span to the end of the
+// function, plus one probe with a non-deferred Unlock pinning that release.
 func TestLockSpanGateClassifiesKnownShapes(t *testing.T) {
 	t.Parallel()
 
@@ -490,6 +610,35 @@ func (d *Dispatcher) probeUnresolvedUnderLock() {
 	defer d.mu.Unlock()
 	d.runner.Run(nil, "", 0)
 }
+
+func (d *Dispatcher) probeSafeFieldUnderLock() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.log.Error("x")
+}
+
+func (d *Dispatcher) probeUnknownFieldUnderLock() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.somethingNew.Frob()
+}
+
+func (d *Dispatcher) probeUnresolvedHelper() {
+	d.runner.Run(nil, "", 0)
+}
+
+func (d *Dispatcher) probeCallsUnresolvedHelperUnderLock() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.probeUnresolvedHelper()
+}
+
+func (d *Dispatcher) probeNonDeferredUnlock() {
+	d.mu.Lock()
+	d.q.Advance(nil)
+	d.mu.Unlock()
+	d.q.Render(nil)
+}
 `
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "probe.go", probeSrc, 0)
@@ -504,16 +653,25 @@ func (d *Dispatcher) probeUnresolvedUnderLock() {
 		}
 		funcs[funcKey(fn)] = fn
 	}
-	reaches := computeQueueReaching(funcs)
+	analysis := analyzePackage(funcs)
 
-	if !reaches["Dispatcher.probeReachingHelper"] {
-		t.Error("computeQueueReaching did not mark probeReachingHelper as reaching sched.Queue")
+	if !analysis.reaches["Dispatcher.probeReachingHelper"] {
+		t.Error("analyzePackage did not mark probeReachingHelper as reaching sched.Queue")
 	}
-	if !reaches["Dispatcher.probeDirectQueueUnderLock"] {
-		t.Error("computeQueueReaching did not mark probeDirectQueueUnderLock (direct d.q call) as reaching sched.Queue")
+	if !analysis.reaches["Dispatcher.probeDirectQueueUnderLock"] {
+		t.Error("analyzePackage did not mark probeDirectQueueUnderLock (direct d.q call) as reaching sched.Queue")
 	}
-	if reaches["Dispatcher.probeSafeHelper"] {
-		t.Error("computeQueueReaching wrongly marked probeSafeHelper as reaching sched.Queue")
+	if analysis.reaches["Dispatcher.probeSafeHelper"] {
+		t.Error("analyzePackage wrongly marked probeSafeHelper as reaching sched.Queue")
+	}
+	if got := analysis.unresolvedReach["Dispatcher.probeUnresolvedHelper"]; len(got) != 1 || got[0] != "d.runner.Run(...)" {
+		t.Errorf("analyzePackage.unresolvedReach[probeUnresolvedHelper] = %v, want [d.runner.Run(...)]", got)
+	}
+	if got := analysis.unresolvedReach["Dispatcher.probeCallsUnresolvedHelperUnderLock"]; len(got) != 1 || got[0] != "d.runner.Run(...)" {
+		t.Errorf("analyzePackage.unresolvedReach[probeCallsUnresolvedHelperUnderLock] (propagated through probeUnresolvedHelper) = %v, want [d.runner.Run(...)]", got)
+	}
+	if !analysis.safeFieldsUsed["log"] {
+		t.Error("analyzePackage did not record probeSafeFieldUnderLock's d.log.Error(...) call against dispatcherSafeFields[\"log\"]")
 	}
 
 	noAllow := map[string]string{}
@@ -527,28 +685,67 @@ func (d *Dispatcher) probeUnresolvedUnderLock() {
 		{"Dispatcher.probeHelperUnderLock", true, false, true},
 		{"Dispatcher.probeSafeUnderLock", false, false, true},
 		{"Dispatcher.probeUnresolvedUnderLock", true, true, true},
+		{"Dispatcher.probeSafeFieldUnderLock", false, false, true},
+		{"Dispatcher.probeUnknownFieldUnderLock", true, true, true},
+		{"Dispatcher.probeCallsUnresolvedHelperUnderLock", true, true, true},
 	}
 	for _, c := range cases {
 		seen := map[string]bool{}
-		vs, sawLock := scanFuncForLockedQueueCalls(c.key, funcs[c.key], fset, reaches, noAllow, seen)
+		vs, sawLock := scanFuncForLockedQueueCalls(c.key, funcs[c.key], fset, analysis, noAllow, seen)
 		if sawLock != c.wantSawLok {
 			t.Errorf("%s: sawLock = %v, want %v", c.key, sawLock, c.wantSawLok)
 		}
 		if got := len(vs) > 0; got != c.wantViol {
 			t.Errorf("%s: violations = %v, want non-empty=%v", c.key, vs, c.wantViol)
 		}
+		gotUnres := false
+		for _, v := range vs {
+			if strings.Contains(v, "queueCallAllow") {
+				gotUnres = true
+			}
+		}
+		if gotUnres != c.wantUnres {
+			t.Errorf("%s: violations mention queueCallAllow = %v, want %v (violations: %v)", c.key, gotUnres, c.wantUnres, vs)
+		}
+	}
+
+	// A non-deferred Unlock releases the span: a Queue call before it is
+	// flagged, and the identical call after it is not.
+	seen := map[string]bool{}
+	vs, _ := scanFuncForLockedQueueCalls("Dispatcher.probeNonDeferredUnlock", funcs["Dispatcher.probeNonDeferredUnlock"], fset, analysis, noAllow, seen)
+	if len(vs) != 1 {
+		t.Fatalf("probeNonDeferredUnlock: violations = %v, want exactly 1", vs)
+	}
+	if !strings.Contains(vs[0], "Advance") {
+		t.Errorf("probeNonDeferredUnlock: violation %q does not name the pre-Unlock Advance call", vs[0])
+	}
+	if strings.Contains(vs[0], "Render") {
+		t.Errorf("probeNonDeferredUnlock: violation %q wrongly names the post-Unlock Render call", vs[0])
 	}
 
 	// probeUnresolvedUnderLock's call is excused once allow-listed, and the
 	// allow key is then marked seen.
 	allowKey := "Dispatcher.probeUnresolvedUnderLock: d.runner.Run(...)"
 	allowed := map[string]string{allowKey: "test probe: Runner is an interface stub, not a reason to leave this unresolved in production"}
-	seen := map[string]bool{}
-	vs, _ := scanFuncForLockedQueueCalls("Dispatcher.probeUnresolvedUnderLock", funcs["Dispatcher.probeUnresolvedUnderLock"], fset, reaches, allowed, seen)
+	seenAllowed := map[string]bool{}
+	vs, _ = scanFuncForLockedQueueCalls("Dispatcher.probeUnresolvedUnderLock", funcs["Dispatcher.probeUnresolvedUnderLock"], fset, analysis, allowed, seenAllowed)
 	if len(vs) != 0 {
 		t.Errorf("probeUnresolvedUnderLock with an allow-list entry: violations = %v, want none", vs)
 	}
-	if !seen[allowKey] {
+	if !seenAllowed[allowKey] {
 		t.Errorf("probeUnresolvedUnderLock's call did not mark %q seen", allowKey)
+	}
+
+	// The transitive case (probeCallsUnresolvedHelperUnderLock -> probeUnresolvedHelper
+	// -> d.runner.Run) is excused by an allow-list entry naming the whole chain.
+	chainKey := "Dispatcher.probeCallsUnresolvedHelperUnderLock: Dispatcher.probeUnresolvedHelper -> d.runner.Run(...)"
+	chainAllowed := map[string]string{chainKey: "test probe: pins that an unresolved call is excused via the helper it is reached through"}
+	seenChain := map[string]bool{}
+	vs, _ = scanFuncForLockedQueueCalls("Dispatcher.probeCallsUnresolvedHelperUnderLock", funcs["Dispatcher.probeCallsUnresolvedHelperUnderLock"], fset, analysis, chainAllowed, seenChain)
+	if len(vs) != 0 {
+		t.Errorf("probeCallsUnresolvedHelperUnderLock with its chain allow-listed: violations = %v, want none", vs)
+	}
+	if !seenChain[chainKey] {
+		t.Errorf("probeCallsUnresolvedHelperUnderLock's transitive call did not mark %q seen", chainKey)
 	}
 }
