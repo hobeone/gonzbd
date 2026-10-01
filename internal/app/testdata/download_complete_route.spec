@@ -1,42 +1,61 @@
 pkg ./internal/app/
-run ^(TestRunFetch_ReportsACompleteJob|TestRestart_CompleteJobPassesThroughAssessing|TestRetryHistoryJob_CompleteJobPassesThroughAssessing|TestRestart_DropsAJobAlreadyInHistoryBeforeTheResumeSweep|TestReconcileBeforeFirstTick_StopsOnACancelledContext)$
+run ^(TestRunFetch_ReportsACompleteJob|TestCompleteFinalizedFile_ReportsFetchingToAssessing|TestCompleteFinalizedFile_AdmittedJobIsNotReportedDownloaded|TestRestart_CompleteJobPassesThroughAssessing|TestRetryHistoryJob_CompleteJobPassesThroughAssessing|TestRestart_DropsAJobAlreadyInHistoryBeforeTheResumeSweep|TestReconcileBeforeFirstTick_StopsOnACancelledContext)$
 timeout 5m
 
-# How a job that is complete with no download-complete report reaches
-# post-processing: its Fetching worker reports it, and it passes through
-# Assessing. Also where startup drops a queued job already in history, which
-# has to precede anything that routes a job onward.
+# How a job's download-complete report is made: reportDownloadComplete reports
+# Fetching -> Assessing for a complete job not admitted to post-processing,
+# and both reporters, completeFinalizedFile and a Fetching worker launched on a
+# complete job, go through it. Also where startup drops a queued job already in
+# history, which has to precede anything that routes a job onward.
 
-[the Fetching worker never reports a complete job]
-file internal/app/runner.go
+[no complete job is ever reported downloaded]
+file internal/app/app.go
 --- anchor
-	if j.IsComplete() && !r.app.postProcAdmissions.has(j) {
+	if !j.IsComplete() || app.postProcAdmissions.has(j) {
 --- replace
-	if false {
+	if true {
 --- end
 
-[the Fetching worker reports a job already admitted to post-processing]
-file internal/app/runner.go
+[a job admitted to post-processing is reported downloaded]
+file internal/app/app.go
 --- anchor
-	if j.IsComplete() && !r.app.postProcAdmissions.has(j) {
+	if !j.IsComplete() || app.postProcAdmissions.has(j) {
 --- replace
-	if j.IsComplete() {
+	if !j.IsComplete() {
 --- end
 
-[the Fetching worker reports an incomplete job]
-file internal/app/runner.go
+[an incomplete job is reported downloaded]
+file internal/app/app.go
 --- anchor
-	if j.IsComplete() && !r.app.postProcAdmissions.has(j) {
+	if !j.IsComplete() || app.postProcAdmissions.has(j) {
 --- replace
-	if !r.app.postProcAdmissions.has(j) {
+	if app.postProcAdmissions.has(j) {
 --- end
 
-[advance reports every verdict from Assessing]
+[the download report names the wrong state it reports from]
+file internal/app/app.go
+--- anchor
+	return true, rep.AdvanceFrom(j, job.Fetching, job.Assessing)
+--- replace
+	return true, rep.AdvanceFrom(j, job.Assessing, job.Assessing)
+--- end
+
+[a file completion reports the download past the owner]
+file internal/app/app.go
+--- anchor
+		if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
+--- replace
+		if reported := j.IsComplete(); reported {
+			err := app.dispatcher.AdvanceFrom(j, job.Fetching, job.Assessing)
+--- end
+
+[the Fetching worker reports the download past the owner]
 file internal/app/runner.go
 --- anchor
-	err := r.report.AdvanceFrom(j, from, next)
+		if reported, err := r.app.reportDownloadComplete(j, r.report); reported {
 --- replace
-	err := r.report.AdvanceFrom(j, job.Assessing, next)
+		if reported := j.IsComplete(); reported {
+			err := r.report.AdvanceFrom(j, job.Fetching, job.Assessing)
 --- end
 
 [a retry hands a complete job straight to post-processing, as it did before]

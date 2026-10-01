@@ -20,8 +20,8 @@ file internal/app/app.go
 		}
 		// The Fetching worker's exit report. A stale one is a repeat for a
 		// job that has already moved on, and must leave its next state alone.
-		if j.IsComplete() {
-			if err := app.dispatcher.AdvanceFrom(j, job.Fetching, job.Assessing); err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
+		if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
+			if err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
 				app.logQueueWriteFailure("report download complete", fc.JobID, fc.FileIdx, err)
 			}
 			if app.downloadReportedHook != nil {
@@ -38,8 +38,8 @@ file internal/app/app.go
 		}
 		// The Fetching worker's exit report. A stale one is a repeat for a
 		// job that has already moved on, and must leave its next state alone.
-		if j.IsComplete() {
-			if err := app.dispatcher.AdvanceFrom(j, job.Fetching, job.Assessing); err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
+		if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
+			if err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
 				app.logQueueWriteFailure("report download complete", fc.JobID, fc.FileIdx, err)
 			}
 			if app.downloadReportedHook != nil {

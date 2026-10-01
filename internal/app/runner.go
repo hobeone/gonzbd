@@ -36,12 +36,14 @@ type reporter interface {
 // The obligation is discharged either synchronously within the runner or via
 // four documented downstream pipeline handoffs:
 //  1. Fetching: hands off to downloader (dl.Wake()). Downloader work completes
-//     and reports via completeFinalizedFile's AdvanceFrom (`git grep -n 'func (app \*Application) completeFinalizedFile' internal/app/`) on download completion,
+//     and reports via completeFinalizedFile's reportDownloadComplete (`git grep -n 'func (app \*Application) completeFinalizedFile' internal/app/`) on download completion,
 //     and yields via Stall (`git grep -n 'func (app \*Application) Stall(' internal/app/`) on stall, appWorkers.Abort
 //     (`git grep -n 'func (w \*appWorkers) Abort' internal/app/`) on cancellation, or stopWorkers (`git grep -n 'func (app \*Application) stopWorkers' internal/app/`)
 //     on shutdown. A job already complete at launch, and not admitted to
 //     post-processing, is instead reported by runFetch itself, through
-//     advance's AdvanceFrom.
+//     reportDownloadComplete. A job admitted from Fetching gets neither
+//     report: its post-processing run releases the claim, on the paths
+//     item 3 lists.
 //  2. Assessing: discharges directly within runAssess via AdvanceFrom (intact,
 //     repairable, or deferred recovery) or FinishedJob(OutcomeFailed) (hopeless).
 //  3. Repairing/Extracting/Finalizing: hands off to postProcessor.Process
@@ -98,16 +100,15 @@ func (r *appRunner) Run(ctx context.Context, id string, state job.State) {
 // downloader.Stop during Application.Shutdown.
 //
 // A job that is already complete when its Fetching worker launches is
-// reported here instead, with the same AdvanceFrom(Fetching, Assessing) that
-// completeFinalizedFile makes. That report follows a file completion, and the
-// downloader sends a complete job no article (ForEachUnfinishedArticle skips
-// every Complete file), so without this such a job would hold its lease at
-// Fetching with no report to move it on. Reporting it sends it to post-processing
-// through Assessing, whose runAssess gives the on-demand par2 verdict. If both
-// reports are made, the second returns ErrStaleReport and changes nothing.
-//
-// A job already admitted to post-processing is left to that run, as the
-// downloader leaves it (downloader.Options.HandedOff).
+// reported here instead, through reportDownloadComplete, the owner
+// completeFinalizedFile reports through. That report follows a file
+// completion, and the downloader sends a complete job no article
+// (ForEachUnfinishedArticle skips every Complete file), so without this such a
+// job would hold its lease at Fetching with no report to move it on. Reporting
+// it sends it to post-processing through Assessing, whose runAssess gives the
+// on-demand par2 verdict. If both reports are made, the second returns
+// ErrStaleReport and changes nothing. reportDownloadComplete makes no report
+// for a job already admitted to post-processing.
 func (r *appRunner) runFetch(_ context.Context, id string) {
 	if r.app == nil {
 		if r.report != nil {
@@ -125,9 +126,11 @@ func (r *appRunner) runFetch(_ context.Context, id string) {
 		}
 		return
 	}
-	if j.IsComplete() && !r.app.postProcAdmissions.has(j) {
-		r.advance(j, job.Fetching, job.Assessing)
-		return
+	if r.report != nil {
+		if reported, err := r.app.reportDownloadComplete(j, r.report); reported {
+			r.logAdvance(j, job.Fetching, job.Assessing, err)
+			return
+		}
 	}
 
 	r.app.mu.Lock()
@@ -163,7 +166,7 @@ func (r *appRunner) runAssess(ctx context.Context, id string) {
 	}
 
 	if r.app.maybeReleaseRecoveryVolumes(ctx, j) {
-		r.advance(j, job.Assessing, job.Fetching)
+		r.advance(j, job.Fetching)
 		return
 	}
 
@@ -174,11 +177,11 @@ func (r *appRunner) runAssess(ctx context.Context, id string) {
 	}
 
 	if repairState == job.RepairPossible || repairState == job.RepairUnknown {
-		r.advance(j, job.Assessing, job.Repairing)
+		r.advance(j, job.Repairing)
 		return
 	}
 
-	r.advance(j, job.Assessing, job.Extracting)
+	r.advance(j, job.Extracting)
 }
 
 // failHopeless is runAssess's verdict for a job par2 cannot repair: it hands j
@@ -192,15 +195,18 @@ func (r *appRunner) failHopeless(j *job.Job) {
 	}
 }
 
-// advance reports that the work of from is done and the job continues to
-// next: runAssess's verdict, or runFetch's report for a job that is already
-// complete. The report records next and releases the job in one dispatcher
-// call, so no tick can move the job between the two.
-func (r *appRunner) advance(j *job.Job, from, next job.State) {
+// advance reports runAssess's verdict: the work of Assessing is done and the
+// job continues to next. The report records next and releases the job in one
+// dispatcher call, so no tick can move the job between the two.
+func (r *appRunner) advance(j *job.Job, next job.State) {
 	if r.report == nil {
 		return
 	}
-	err := r.report.AdvanceFrom(j, from, next)
+	r.logAdvance(j, job.Assessing, next, r.report.AdvanceFrom(j, job.Assessing, next))
+}
+
+// logAdvance logs an AdvanceFrom report's refusal, by cause.
+func (r *appRunner) logAdvance(j *job.Job, from, next job.State, err error) {
 	switch {
 	case err == nil:
 	case errors.Is(err, dispatch.ErrStaleReport) || errors.Is(err, dispatch.ErrNotFound):
