@@ -38,7 +38,7 @@ file internal/app/app.go
 [maybeStart starts an unpacker for a job handed to post-processing]
 file internal/app/directunpack_orchestrator.go
 --- anchor
-		if app.postProcAdmissions.has(j) {
+		if app.postProcAdmissions.has(j) || app.transitions.wasRemoved(j) {
 --- replace
-		if false {
+		if app.transitions.wasRemoved(j) {
 --- end
