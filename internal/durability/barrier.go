@@ -117,8 +117,21 @@ func WithCommitWrap(w CommitWrap) BarrierOption {
 }
 
 // commit is the barrier's one route to the store's commit, so that a
-// CommitWrap covers Run and FinalizeFile alike.
+// CommitWrap covers Run and FinalizeFile alike, and a failed commit is routed
+// the same way for both: through raise, attributed to the store's own path
+// (R27), after storeFailure has decided whether the caller or the store
+// ended it. The error it returns is already routed; callers return it as is.
 func (b *Barrier) commit(ctx context.Context, jobID string, arts []DurableArticle) ([]Collision, error) {
+	collisions, err := b.wrappedCommit(ctx, jobID, arts)
+	if err != nil {
+		return nil, b.raise(jobID, "commit", b.runs.Path(), storeFailure(ctx, err))
+	}
+	return collisions, nil
+}
+
+// wrappedCommit runs the store's commit inside the CommitWrap, if one is
+// installed.
+func (b *Barrier) wrappedCommit(ctx context.Context, jobID string, arts []DurableArticle) ([]Collision, error) {
 	if b.wrap == nil {
 		return b.runs.commit(ctx, jobID, arts)
 	}
@@ -313,7 +326,7 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 	// between them: the commit is what makes the proof true after a crash.
 	collisions, err := b.commit(ctx, jobID, arts)
 	if err != nil {
-		return nil, b.raise(jobID, "commit", b.runs.Path(), commitFailure(ctx, err))
+		return nil, err
 	}
 	if len(acked) > 0 {
 		slices.Sort(acked)
@@ -430,12 +443,13 @@ func (b *Barrier) confirmAll(ctx context.Context, files []int32, t SyncTarget) {
 	}
 }
 
-// raise turns one SyncTarget error, or a failed commit of Run's, into the right
-// kind of failure. Every SyncTarget operation in this file sends its error here
-// once ErrFileNotOpen has been handled, and so does Run's commit:
-// `git grep -n 'b\.raise(' -- internal/durability/barrier.go` finds 9 lines.
-// FinalizeFile's commit and run read return plain errors, which
-// Application.routeFinalizeFailure classifies instead.
+// raise turns one SyncTarget error, or a failed call on the durability store,
+// into the right kind of failure. Every SyncTarget operation in this file sends
+// its error here once ErrFileNotOpen has been handled, and so do the barrier's
+// commit (for Run and FinalizeFile alike) and FinalizeFile's read of the stored
+// runs: `git grep -n 'b\.raise(' -- internal/durability/barrier.go` finds 10
+// lines. overlapFindings' read of the same runs is logged and skipped instead,
+// because it runs after the commit and ack have landed.
 //
 // Three outcomes, and the middle one is the one that kept being missed:
 //
@@ -478,22 +492,22 @@ func (b *Barrier) raise(jobID, op, path string, err error) error {
 	return b.routeFault(jobID, storagefault.Classify(op, path, err))
 }
 
-// commitFailure prepares a failed commit of the durability record for raise.
+// storeFailure prepares a failed call on the durability store for raise.
 //
 // The store is not a SyncTarget, so nothing on its side of the call wraps a
 // caller that stopped waiting in ErrTargetUnavailable, as jobSyncTarget.submit
 // does for the target's operations. This applies that half of the boundary
-// rule for it: a commit that failed after ctx ended is attributed to the
-// caller, and raise routes nothing for it. Any other commit error is returned
+// rule for it: a store call that failed after ctx ended is attributed to the
+// caller, and raise routes nothing for it. Any other error is returned
 // unchanged, so raise classifies it — storagefault.Classify defaults an error
 // it does not recognise to retryable, and the job stalls.
 //
 // ctx.Err() is tested rather than errors.Is(err, ctx.Err()), because the
 // driver may report an interrupted statement with an error of its own that
 // wraps no context error.
-func commitFailure(ctx context.Context, err error) error {
+func storeFailure(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
-		return fmt.Errorf("%w: commit abandoned by its caller (%w): %w",
+		return fmt.Errorf("%w: store call abandoned by its caller (%w): %w",
 			ErrTargetUnavailable, context.Cause(ctx), err)
 	}
 	return err
@@ -630,7 +644,10 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	// reconstruct.
 	stored, err := b.runs.ForFile(ctx, jobID, idx)
 	if err != nil {
-		return nil, fmt.Errorf("durability: finalize runs job=%s file=%d: %w", jobID, idx, err)
+		// A read of the durability record, so it is the store's failure and
+		// not the file's: attributed to the store's path, and to the caller
+		// when ctx had already ended, exactly as commit's is.
+		return nil, b.raise(jobID, "read", b.runs.Path(), storeFailure(ctx, err))
 	}
 	bound := boundOver(stored, arts)
 
@@ -684,7 +701,7 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 
 	collisions, err := b.commit(ctx, jobID, arts)
 	if err != nil {
-		return nil, fmt.Errorf("durability: finalize commit for %s file %d: %w", jobID, idx, err)
+		return nil, err
 	}
 	if len(acked) > 0 {
 		slices.Sort(acked)

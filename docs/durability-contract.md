@@ -590,7 +590,7 @@ operation, the path, and whether the condition is `Permanent`.
 
 | Classification | Route | Job outcome | Articles |
 |---|---|---|---|
-| retryable | `Stallable.Stall` → `Application.Stall` | paused, with a surfaced reason naming the file (R27) — a failed commit of the durability record instead names the database's own path (§9a); re-evaluated on an interval and on user action (R19) | stay **Outstanding** |
+| retryable | `Stallable.Stall` → `Application.Stall` | paused, with a surfaced reason naming the file (R27) — a failed commit or read of the durability record instead names the database's own path (§9a); re-evaluated on an interval and on user action (R19) | stay **Outstanding** |
 | permanent | `Stallable.Fail` → `Application.Fail` | stopped, reason carried into history (R20) | stay **Outstanding** |
 
 In neither case is `Job.MarkArticleFailed` called, the failed-byte count
@@ -839,11 +839,13 @@ of two sentinels.
 
 `Barrier.raise` is the single place that applies it. Every `SyncTarget`
 operation in `barrier.go` sends its error there once `ErrFileNotOpen` has been
-handled, and so does `Barrier.Run`'s commit of the durability record.
-`FinalizeFile`'s commit and run read return plain errors, which
-`Application.routeFinalizeFailure` classifies instead. Six sites were getting
-this wrong independently, which is why the rule sits on the interface rather
-than at each of them.
+handled, and so do the two calls on the durability store whose failure stops a
+barrier: the commit, which `Run` and `FinalizeFile` share through
+`Barrier.commit`, and `FinalizeFile`'s read of the file's stored runs. The
+post-commit read in `overlapFindings` is logged and skipped instead, because the
+commit and the ack it would otherwise undo have already landed. Six sites were
+getting this wrong independently, which is why the rule sits on the interface
+rather than at each of them.
 
 **A timeout splits, and getting the split wrong is what parked healthy jobs.**
 The implementation's *own* bound expiring — the worker did not answer within
@@ -854,19 +856,32 @@ waiting, and the clean-shutdown checkpoint always does. `jobSyncTarget.submit`
 converts the first into a fault and wraps the second in
 `ErrTargetUnavailable`.
 
-**`Run`'s commit takes the same split, applied by the barrier.** The store is
-not a `SyncTarget`, so nothing on its side wraps a caller that stopped waiting.
-`commitFailure` does it instead: a commit that failed after the caller's
-context ended is wrapped in `ErrTargetUnavailable` and routes nothing. Any
-other commit error reaches `raise` unchanged, and `storagefault.Classify`
-makes it retryable unless it wraps a permanent errno, so the job stalls. The
-commit records no interrupted finalize, so `reevaluateStall` resumes the job at
-the next re-evaluation unless an earlier finalize is still pending. That
-includes a transient `SQLITE_BUSY`. Such a fault carries the database's own
-path: `durability.Store` is constructed with it (`NewStore(db, path)`), `raise`
-reads it back through `runStore.Path`, and the stall reason names it in place
-of a file — the one case where what R27 points at is the database rather than
-an article's file.
+**A failed store call takes the same split, applied by the barrier.** The store
+is not a `SyncTarget`, so nothing on its side wraps a caller that stopped
+waiting. `storeFailure` does it instead, for the commit and for
+`FinalizeFile`'s run read alike: a store call that failed after the caller's
+context ended is wrapped in `ErrTargetUnavailable` and routes nothing. Any other
+error reaches `raise` unchanged, and `storagefault.Classify` makes it retryable
+unless it wraps a permanent errno, so the job stalls. That includes a transient
+`SQLITE_BUSY`.
+
+What the job does next depends on which barrier failed. A failed `Run` records
+no interrupted finalize, so `reevaluateStall` resumes the job at the next
+re-evaluation unless an earlier finalize is still pending. A failed
+`FinalizeFile` reaches `Application.routeFinalizeFailure`, which reads the
+outcome from the error: `ErrFaultRouted` records the file for retry without
+stalling the job a second time (a permanent fault records nothing, since
+`Fail` has already taken the job), and `ErrTargetUnavailable` records it for
+retry without stalling it at all. Either way the file is recorded for the retry
+`reevaluateStall` runs, on the residency terms *File completion and the
+handoff* states for any interrupted finalize.
+
+Such a fault carries the database's own path: `durability.Store` is
+constructed with it (`NewStore(db, path)`), `raise` reads it back through
+`runStore.Path`, and the stall reason names it in place of a file — the one
+case where what R27 points at is the database rather than an article's file.
+Naming the completed file instead, as `routeFinalizeFailure`'s own
+classification would, points the operator at a disk that may be healthy.
 
 Dropping a file drops it from **every** collection the run holds, not only from
 its drain reports. `Barrier.Run` releases each surviving file's report with

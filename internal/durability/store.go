@@ -40,8 +40,9 @@ type Store struct {
 func NewStore(db *sql.DB, path string) *Store { return &Store{db: db, path: path} }
 
 // Path returns the database file db was opened against, so Barrier.raise can
-// name it in a failed commit's stall reason (R27). A test fake may pass a
-// placeholder; it is never parsed or compared against the filesystem here.
+// name it in the stall reason of a failed commit or read (R27). A test fake
+// may pass a placeholder; it is never parsed or compared against the
+// filesystem here.
 func (s *Store) Path() string { return s.path }
 
 var _ runStore = (*Store)(nil)
