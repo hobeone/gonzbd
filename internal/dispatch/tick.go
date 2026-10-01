@@ -15,6 +15,10 @@ import (
 // D-B9 forbids holding d.mu across such a call, because Workers.Abort runs
 // inside Queue.mu and an Abort implementation that took d.mu would deadlock
 // ABBA against a concurrent Cancel.
+// TestNoCallIntoQueueUnderDispatcherLock (lock_span_gate_test.go) enforces
+// D-B9 directly: it parses every non-test source in this package and fails on
+// any call into sched.Queue, direct or through a resolved local helper, found
+// inside a d.mu-held span.
 //
 // Eviction of a cancelled never-run job (D-B12) runs after Advance and before
 // reconcileResidency: Advance routes IntentCancel to finishCancel before every
