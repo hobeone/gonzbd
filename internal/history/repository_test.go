@@ -28,6 +28,23 @@ func openTestDB(t *testing.T) (*DB, *Repository) {
 	return db, NewRepository(db)
 }
 
+// TestRepository_Path pins the forwarding: NewRepository must carry the
+// wrapped DB's path through unchanged, since app.go's New reads it via
+// *Repository alone and never sees the *DB that opened it.
+func TestRepository_Path(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "history1.db")
+	db, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := NewRepository(db)
+	if got := repo.Path(); got != path {
+		t.Errorf("Path() = %q, want %q", got, path)
+	}
+}
+
 // sampleEntry builds a fully-populated Entry for round-trip tests. Fields that
 // would normally be empty in production can remain zero-valued.
 func sampleEntry(nzoID, name, status, category string) Entry {

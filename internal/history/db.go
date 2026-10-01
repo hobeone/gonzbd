@@ -47,7 +47,8 @@ var embedMigrations embed.FS
 
 // DB wraps a SQLite connection pool configured for history access.
 type DB struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 // Open opens (or creates) the SQLite database at path, applies the schema if
@@ -124,12 +125,12 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// Up() applies nothing and returns nil against a schema missing whatever
 	// the discarded chain built.
 	//
-	// That failure is silent by construction, and it has been observed. The
-	// daemon came up clean with no durability tables at all: every barrier
-	// failed on its commit with a plain error rather than a
-	// *storagefault.Fault, so checkpointJob logged one Warn and did not stall,
-	// nothing was ever acked, no job completed, and the only signal was a
-	// last_barrier_unix that never advanced.
+	// That failure has been observed. The daemon came up clean with no
+	// durability tables at all, and every barrier failed on its commit.
+	// At the time a failed commit only logged a Warn, so nothing was ever
+	// acked, no job completed, and the only signal was a last_barrier_unix
+	// that never advanced. A failed commit now stalls the job, but the stall
+	// reason names the missing table, not the cause.
 	//
 	// Checked before Up rather than by looking for the tables afterwards,
 	// because this names the cause: the operator is told their database
@@ -214,8 +215,13 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	sqlDB.SetMaxIdleConns(25)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
-	return &DB{db: sqlDB}, nil
+	return &DB{db: sqlDB, path: path}, nil
 }
+
+// Path returns the filesystem path (or DSN, e.g. ":memory:") Open was called
+// with. It is the one place that value is recorded; Repository.Path forwards
+// it for callers that only hold a *Repository.
+func (d *DB) Path() string { return d.path }
 
 // Close releases the underlying database connection pool. It is safe to call
 // Close more than once; subsequent calls return nil.

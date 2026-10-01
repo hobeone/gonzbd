@@ -97,7 +97,7 @@ func newResumeUnitFixture(t *testing.T) *resumeUnitFixture {
 	// File 1 has a run of its own that must NOT reach the work set: with no
 	// resolved name there is no path the gate could have stat'ed, and adopting
 	// it would mark an article Done on the strength of the record alone.
-	commitRuns(t, durability.NewStore(repo.DB()), j.ID(), []durability.DurableArticle{
+	commitRuns(t, durability.NewStore(repo.DB(), "history.db"), j.ID(), []durability.DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
 			CRC32: crc32.ChecksumIEEE(f.articles[0])},
 		{FileIdx: 1, ArtIdx: 2, Offset: 0, Length: unitArtLen, CRC32: 7},
@@ -271,7 +271,7 @@ func TestResumeAllJobs_SeedsResidentAndSkipsNonResident(t *testing.T) {
 	if err := os.WriteFile(otherPath, otherBytes, 0o600); err != nil {
 		t.Fatalf("write(other): %v", err)
 	}
-	commitRuns(t, durability.NewStore(f.repo.DB()), other.ID(), []durability.DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
+	commitRuns(t, durability.NewStore(f.repo.DB(), "history.db"), other.ID(), []durability.DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: unitArtLen,
 		CRC32: crc32.ChecksumIEEE(otherBytes)}})
 	other.Evict()
 	if other.Resident() {

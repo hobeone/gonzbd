@@ -213,7 +213,7 @@ func TestAppCheckpointStore_SaveBatch_TransactionalRollback(t *testing.T) {
 	}
 	cp2 := j2.Checkpoint()
 
-	store := &appCheckpointStore{store: durability.NewStore(db)}
+	store := &appCheckpointStore{store: durability.NewStore(db, "history.db")}
 
 	// SaveBatch with [cp1, cp2] must fail mid-batch and roll back everything.
 	if saveErr := store.SaveBatch(ctx, []job.Checkpoint{cp1, cp2}); saveErr == nil {
@@ -275,7 +275,7 @@ func TestAppCheckpointStore_SaveBatch_NilOrEmpty(t *testing.T) {
 	}
 	defer hdb.Close()
 	repo := history.NewRepository(hdb)
-	s := &appCheckpointStore{store: durability.NewStore(repo.DB())}
+	s := &appCheckpointStore{store: durability.NewStore(repo.DB(), "history.db")}
 	if err := s.SaveBatch(t.Context(), nil); err != nil {
 		t.Errorf("empty slice should return nil, got %v", err)
 	}

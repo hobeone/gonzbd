@@ -47,7 +47,7 @@ func TestRestoreResolution_KeepsRunsWhenFailedArticleScanFails(t *testing.T) {
 		t.Fatalf("insert failed_articles: %v", err)
 	}
 
-	r := newAppResidency(func(string) (*job.Job, bool) { return j, true }, t.TempDir(), durability.NewStore(db), slog.New(slog.DiscardHandler))
+	r := newAppResidency(func(string) (*job.Job, bool) { return j, true }, t.TempDir(), durability.NewStore(db, "history.db"), slog.New(slog.DiscardHandler))
 	r.restoreResolution(context.Background(), j)
 
 	after := j.RemainingBytes()
@@ -86,7 +86,7 @@ func TestRestoreResolution_AppliesNothingWhenARunCannotBeScanned(t *testing.T) {
 		t.Fatalf("insert failed_articles: %v", err)
 	}
 
-	r := newAppResidency(func(string) (*job.Job, bool) { return j, true }, t.TempDir(), durability.NewStore(db), slog.New(slog.DiscardHandler))
+	r := newAppResidency(func(string) (*job.Job, bool) { return j, true }, t.TempDir(), durability.NewStore(db, "history.db"), slog.New(slog.DiscardHandler))
 	r.restoreResolution(context.Background(), j)
 
 	if j.Progress().ArticleFailed(2) {

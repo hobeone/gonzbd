@@ -101,7 +101,7 @@ func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
 
 	detector := newOverlapDetector()
 	application.barrier = durability.NewBarrier(
-		durability.NewStore(repo.DB()), application, application, slog.New(slog.DiscardHandler),
+		durability.NewStore(repo.DB(), "history.db"), application, application, slog.New(slog.DiscardHandler),
 		durability.WithCommitWrap(detector.wrap))
 
 	var wg sync.WaitGroup
@@ -116,7 +116,7 @@ func TestCheckpointJob_IsSerialisedPerJob(t *testing.T) {
 	if detector.sawOverlap() {
 		t.Error("two barriers for one job were inside the store's read-modify-write at the same time")
 	}
-	runs, err := durability.NewStore(repo.DB()).ForFile(ctx, j.ID(), 0)
+	runs, err := durability.NewStore(repo.DB(), "history.db").ForFile(ctx, j.ID(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

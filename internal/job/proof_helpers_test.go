@@ -54,7 +54,7 @@ func proofStore(t *testing.T) *durability.Store {
 		t.Fatalf("proofStore: open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return durability.NewStore(history.NewRepository(db).DB())
+	return durability.NewStore(history.NewRepository(db).DB(), "history.db")
 }
 
 // mintProof produces a DurableProof the way production does: by running a real

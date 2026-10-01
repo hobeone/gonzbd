@@ -420,7 +420,13 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	var durStore *durability.Store
 	if repo != nil && repo.DB() != nil {
 		dispatchStore = dispatchstore.New(repo.DB())
-		durStore = durability.NewStore(repo.DB())
+		// repo.Path() is the one owner of this value (Standing Design Rule
+		// 2): it reports the path history.Open was actually given, in
+		// cmd/gonzbd/main.go. Re-deriving it here from adminDir would be a
+		// second, independent computation of the same fact — and the two
+		// disagreeing is exactly what used to make a commit-failure stall
+		// name the wrong file.
+		durStore = durability.NewStore(repo.DB(), repo.Path())
 		app.durable = durStore
 	}
 	checkpointStore := &appCheckpointStore{store: durStore}

@@ -42,7 +42,7 @@ func (s *closedFileTarget) Confirm(context.Context, int32)    {}
 func TestBarrier_ADeliberatelyClosedFileDoesNotStallTheJob(t *testing.T) {
 	t.Parallel()
 	stall := &recordingStall{}
-	b := NewBarrier(NewStore(openTestDB(t)),
+	b := NewBarrier(NewStore(openTestDB(t), "history.db"),
 		&recordingAcker{}, stall, slog.New(slog.DiscardHandler))
 
 	tgt := &closedFileTarget{}

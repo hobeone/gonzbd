@@ -138,6 +138,11 @@ type runStore interface {
 	// still repairable. See Collision.
 	commit(ctx context.Context, jobID string, arts []DurableArticle) ([]Collision, error)
 
+	// Path returns the database file this store's rows live in, so the
+	// barrier can attribute a failed commit or read of them to it (R27): the
+	// store, not the barrier, knows which file its own connection opened.
+	Path() string
+
 	// ForFile returns every stored run for one file, ordered by Offset.
 	ForFile(ctx context.Context, jobID string, fileIdx int32) ([]Run, error)
 

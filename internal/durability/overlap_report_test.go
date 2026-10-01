@@ -37,7 +37,7 @@ func overlapTarget() *factGapTarget {
 func TestFinalizeFile_ReportsOverlappingDurableArticles(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	tgt := overlapTarget()
 
 	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
@@ -85,7 +85,7 @@ func TestFinalizeFile_ReportsOverlappingDurableArticles(t *testing.T) {
 func TestFinalizeFile_ReportsAnExactOffsetDuplicate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	// A0 and A2 both at offset 0; A1 abuts A0. 200 bytes of surviving record
 	// over a 200-byte file, so Σ Length EQUALS the size and the overlap check
@@ -155,7 +155,7 @@ func TestFinalizeFile_ReportsAnExactOffsetDuplicate(t *testing.T) {
 func TestFinalizeFile_DoesNotReportAHoleAsAnOverlap(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	// A0 [0,100) then A2 [200,300) — nothing covers [100,200).
 	tgt := &factGapTarget{
@@ -225,7 +225,7 @@ func TestFinalizeFile_ReportsAnOverlapAboveAPermanentHole(t *testing.T) {
 func TestRun_ReportsAnOverlapWhenNothingWasAcked(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	tgt := overlapTarget()
 
 	first := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
@@ -260,7 +260,7 @@ func TestRun_ReportsAnOverlapWhenNothingWasAcked(t *testing.T) {
 func TestRun_RaisesEachOverlapOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 	tgt := overlapTarget()
 
 	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))

@@ -20,7 +20,7 @@ func crcOf(b []byte) uint32 { return crc32.ChecksumIEEE(b) }
 func TestStore_MergesAbuttingInBothOffsetAndIndex(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	a := []byte("hello, ")
 	b := []byte("world!!!")
@@ -56,7 +56,7 @@ func TestStore_MergesAbuttingInBothOffsetAndIndex(t *testing.T) {
 func TestStore_OffsetAbutsIndexDoesNot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	arts := []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1111},
@@ -81,7 +81,7 @@ func TestStore_OffsetAbutsIndexDoesNot(t *testing.T) {
 func TestStore_IndexAbutsOffsetDoesNot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	arts := []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1111},
@@ -107,7 +107,7 @@ func TestStore_IndexAbutsOffsetDoesNot(t *testing.T) {
 func TestStore_RedeliveredArticleIsDropped(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	first := []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 500, CRC32: 0xAAAA},
@@ -153,7 +153,7 @@ func TestStore_RedeliveredArticleIsDropped(t *testing.T) {
 func TestStore_RedeliveredAdjacentToNewIsNotAFalseOverlap(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	const artLen = 100 // bytes per article, uniform for simplicity
 
@@ -210,7 +210,7 @@ func TestStore_MergeIsOrderIndependent(t *testing.T) {
 	}
 	reversed := []DurableArticle{forward[2], forward[0], forward[1]}
 
-	rsFwd := NewStore(openTestDB(t))
+	rsFwd := NewStore(openTestDB(t), "history.db")
 	if _, err := rsFwd.commit(ctx, "job-1", forward); err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestStore_MergeIsOrderIndependent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rsRev := NewStore(openTestDB(t))
+	rsRev := NewStore(openTestDB(t), "history.db")
 	if _, err := rsRev.commit(ctx, "job-1", reversed); err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestStore_MergeIsOrderIndependent(t *testing.T) {
 func TestStore_CRCMatchesRealBytes(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	chunks := [][]byte{
 		[]byte("the quick brown fox "),
@@ -294,7 +294,7 @@ func TestStore_CRCMatchesRealBytes(t *testing.T) {
 func TestStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	left1 := []byte("AAAA")
 	left2 := []byte("BBBB")
@@ -366,7 +366,7 @@ func TestStore_MergesTwoMultiArticleRunsAcrossCommits(t *testing.T) {
 func TestStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	left1 := []byte("AAAA")
 	left2 := []byte("BBBB")
@@ -473,7 +473,7 @@ func TestStore_SameOffsetKeepsTheLongerRow(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := context.Background()
-			rs := NewStore(openTestDB(t))
+			rs := NewStore(openTestDB(t), "history.db")
 
 			if _, err := rs.commit(ctx, "job-1", c.first); err != nil {
 				t.Fatal(err)

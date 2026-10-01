@@ -24,12 +24,13 @@ import (
 // the state an actual installation is in when it meets this build. Any version
 // above the highest embedded migration exercises the same branch.
 //
-// The daemon then came up CLEAN with no durability tables at all. Every
-// barrier failed on its commit with a plain error rather than a
-// *storagefault.Fault, so checkpointJob logged one Warn and did not stall.
-// Nothing was ever acked, no job ever completed, and the only signal was a
-// last_barrier_unix that never advanced — which the barrier stamps anyway when
-// a job has no open files.
+// The daemon then came up CLEAN with no durability tables at all, and every
+// barrier failed on its commit. At the time a failed commit only logged a
+// Warn, so nothing was ever acked, no job ever completed, and the only signal
+// was a last_barrier_unix that never advanced — which the barrier stamps
+// anyway when a job has no open files. A failed commit now stalls the job, but
+// the stall reason names the missing table, not the stale migration history
+// behind it; refusing to open is what names that.
 func TestOpen_RefusesADatabaseFromBeforeTheMigrationCollapse(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pre-collapse.db")
 
@@ -58,9 +59,9 @@ func TestOpen_RefusesADatabaseFromBeforeTheMigrationCollapse(t *testing.T) {
 	if err == nil {
 		_ = opened.Close()
 		t.Fatal("Open succeeded against a pre-collapse database. goose applies nothing, " +
-			"so the daemon runs with no durability tables: every barrier fails with a " +
-			"plain error that does not stall, nothing is ever acked, and no job ever " +
-			"completes")
+			"so the daemon runs with no durability tables: every barrier's commit fails, " +
+			"nothing is ever acked, and a downloading job stalls on a missing table rather than " +
+			"on the cause")
 	}
 	if !errors.Is(err, ErrSchemaFromTheFuture) {
 		t.Errorf("err = %v, want ErrSchemaFromTheFuture", err)

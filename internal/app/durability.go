@@ -691,9 +691,14 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 			// precisely the state a clear would turn into a re-fetch.
 			return app.nothingAtRisk(jobID)
 		}
-		// Everything else: the fault has already reached the job through
-		// Stallable, and a failed barrier claims nothing — the prior committed
-		// cache is intact and no article was acked.
+		// Everything else came from a step before the ack: the ack's one
+		// error is Job.AckDurable's ErrNotResident, answered above. So no
+		// article was acked and the stored runs are as the last successful
+		// commit left them. Run sends each of those steps' errors, its commit
+		// included, through Barrier.raise, which either routed it to
+		// Stallable — the error then carries durability.ErrFaultRouted — or
+		// judged it not a storage condition and left the job running
+		// (durability.ErrTargetUnavailable, such as a caller's deadline).
 		app.log.Warn("checkpoint barrier failed", "job", jobID, "err", err)
 		// UNSAFE. The barrier claims nothing on this path, so anything written
 		// since the last successful one is still unacked.
@@ -1653,11 +1658,13 @@ func (app *Application) filePathFor(jobID string, fileIdx int) string {
 // actionable reason on the way. The job's status and its warning ended up
 // disagreeing with each other.
 //
-// So: if a *storagefault.Fault is anywhere in the chain, the barrier has
-// already decided and acted, and there is nothing left to do but stop the
-// completion. Everything else — an OpenFiles timeout, a target that cannot
-// truncate, a failed commit — never reached routeFault and would otherwise
-// halt the job with no reason attached at all.
+// So: if the error carries durability.ErrFaultRouted, the barrier has already
+// decided and acted — a failed commit or read of the durability record
+// included, which FinalizeFile routes naming the store's path — and there is
+// nothing left to do but stop the completion and, for a retryable fault,
+// record the retry. An error from outside the barrier, such as an OpenFiles
+// timeout or a target that cannot truncate, never reached routeFault and
+// would otherwise halt the job with no reason attached at all.
 func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path string, err error) {
 	// A non-resident job is a queue-residency condition, not a storage one, and
 	// not a halt: the job is not parked for it. It is ordinary whenever the

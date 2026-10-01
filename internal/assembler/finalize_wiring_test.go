@@ -74,7 +74,7 @@ func TestFinalizeFileTruncatesThroughTheRealAdapter(t *testing.T) {
 	t.Cleanup(func() { _ = hdb.Close() })
 	db := history.NewRepository(hdb).DB()
 
-	runs := durability.NewStore(db)
+	runs := durability.NewStore(db, "history.db")
 	ack := &noopAcker{}
 	b := durability.NewBarrier(runs, ack, noopStall{}, slog.New(slog.DiscardHandler))
 
@@ -218,7 +218,7 @@ func TestCompletedFileStaysOpenForTheBarrierThenCloses(t *testing.T) {
 	t.Cleanup(func() { _ = hdb.Close() })
 	db := history.NewRepository(hdb).DB()
 	ack := &noopAcker{}
-	b := durability.NewBarrier(durability.NewStore(db), ack, noopStall{},
+	b := durability.NewBarrier(durability.NewStore(db, "history.db"), ack, noopStall{},
 		slog.New(slog.DiscardHandler))
 
 	trunc, ok := tgt.(durability.Truncator)

@@ -60,7 +60,7 @@ func seedCompletedFile(t *testing.T, db *sql.DB, jobID string, fileIdx, firstArt
 			CRC32:   1,
 		}
 	}
-	app.CommitRuns(t, durability.NewStore(db), jobID, arts)
+	app.CommitRuns(t, durability.NewStore(db, "history.db"), jobID, arts)
 }
 
 // recoveryFileIndex returns the one manifest index FileIsPar2Recovery

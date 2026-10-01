@@ -132,7 +132,7 @@ func TestStore_HelpersDirectly(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
-	rs := NewStore(db)
+	rs := NewStore(db, "history.db")
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -189,7 +189,7 @@ func TestStore_HelpersDirectly(t *testing.T) {
 func TestStore_ForJobReturnsAllFilesOrdered(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	if _, err := rs.commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 1, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 0x1},
@@ -219,7 +219,7 @@ func TestStore_ForJobReturnsAllFilesOrdered(t *testing.T) {
 func TestStore_ForJobIsScopedToJob(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	art := DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 0x1}
 	if _, err := rs.commit(ctx, "job-1", []DurableArticle{art}); err != nil {
@@ -243,7 +243,7 @@ func TestStore_ForJobIsScopedToJob(t *testing.T) {
 func TestStore_DiscardRunsIsScoped(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	rs := NewStore(openTestDB(t))
+	rs := NewStore(openTestDB(t), "history.db")
 
 	art := DurableArticle{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 0x1}
 	second := DurableArticle{FileIdx: 1, ArtIdx: 1, Offset: 0, Length: 10, CRC32: 0x2}
@@ -277,7 +277,7 @@ func TestStore_CommitEmptyIsNoop(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	rs := NewStore(db)
+	rs := NewStore(db, "history.db")
 	if _, err := rs.commit(ctx, "job-1", nil); err != nil {
 		t.Fatalf("Commit(nil) on a closed DB = %v, want nil (nothing to do)", err)
 	}
@@ -291,7 +291,7 @@ func TestStore_CommitErrorsOnClosedDB(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	rs := NewStore(db)
+	rs := NewStore(db, "history.db")
 	_, err := rs.commit(ctx, "job-1", []DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1}})
 	if err == nil {
 		t.Fatal("Commit on a closed DB returned nil, want an error")
@@ -306,7 +306,7 @@ func TestStore_DiscardRunsErrorsOnClosedDB(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	rs := NewStore(db)
+	rs := NewStore(db, "history.db")
 	if err := rs.DiscardRuns(ctx, "job-1"); err == nil {
 		t.Fatal("DiscardRuns on a closed DB returned nil, want an error")
 	}
@@ -323,7 +323,7 @@ func TestStore_DeleteFileIsScopedAndReportsAFailure(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
-	rs := NewStore(db)
+	rs := NewStore(db, "history.db")
 	if _, err := rs.commit(ctx, "job-1", []DurableArticle{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
 		{FileIdx: 1, ArtIdx: 5, Offset: 0, Length: 100, CRC32: 2},
@@ -369,7 +369,7 @@ func TestStore_InsertFailureMidBatchRollsBack(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
-	rs := NewStore(db)
+	rs := NewStore(db, "history.db")
 
 	if _, err := db.ExecContext(ctx, `
 		CREATE TRIGGER abort_file_1 BEFORE INSERT ON durable_runs
@@ -402,7 +402,7 @@ func TestStore_DeleteFailureMidBatchRollsBack(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
-	rs := NewStore(db)
+	rs := NewStore(db, "history.db")
 
 	first := []byte("AAAA")
 	if _, err := rs.commit(ctx, "job-1", []DurableArticle{
@@ -454,6 +454,7 @@ func TestStore_NoExportedMethodWritesRunContent(t *testing.T) {
 		"SaveProgress":   "untouched",
 		"FileRows":       "untouched",
 		"FailedArticles": "untouched",
+		"Path":           "untouched",
 	}
 	st := reflect.TypeFor[*Store]()
 	seen := map[string]bool{}
@@ -485,7 +486,7 @@ func TestStore_ForJobReportsAnUnscannableRowAsAFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runs, err := NewStore(db).ForJob(ctx, "job-1")
+	runs, err := NewStore(db, "history.db").ForJob(ctx, "job-1")
 	if err == nil {
 		t.Fatal("ForJob over an unscannable row returned no error")
 	}
@@ -511,7 +512,7 @@ func TestStore_ForFileReturnsNothingOnAFailure(t *testing.T) {
 		('job-1', 0, 'x', 1, 100, 100, 0)`); err != nil {
 		t.Fatal(err)
 	}
-	st := NewStore(db)
+	st := NewStore(db, "history.db")
 
 	runs, err := st.ForFile(ctx, "job-1", 0)
 	if err == nil {
