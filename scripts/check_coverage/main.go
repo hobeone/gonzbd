@@ -206,12 +206,13 @@ func runPkgCoverage(pkgDir string, coverData map[string]float64) error {
 
 // formatTestFailure builds the diagnostic text for a failed `go test
 // -coverprofile` run, so the caller's error names the failing test instead of
-// an empty stderr. It keeps three things: every `--- FAIL:` line (so a
-// subtest failure still names its top-level test), the panic block if the
-// package died to a panic rather than a failed assertion, and the last 50
-// lines of stdout as a catch-all for a failure shape neither of those two
-// patterns covers (e.g. a `go vet`-caught build failure that `go test`
-// reports without a FAIL banner).
+// an empty stderr. It emits four independent sections: every `--- FAIL:`
+// line (so a subtest failure still names its top-level test), the panic
+// block if the package died to a panic rather than a failed assertion, the
+// last 50 lines of stdout as a catch-all for a stdout failure shape neither
+// of those two patterns covers, and stderr verbatim when it is non-empty --
+// a build or toolchain failure (e.g. one `go vet` catches during `go test`)
+// is reported there, never on stdout.
 func formatTestFailure(stdout, stderr string) string {
 	var b strings.Builder
 
