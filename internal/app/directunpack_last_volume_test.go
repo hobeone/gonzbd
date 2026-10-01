@@ -41,8 +41,9 @@ func (r collectingRunner) Run(_ context.Context, id string, state job.State) {
 // last file's completion reports the download finished, and from that report
 // the tick can launch the job's post-processing, which collects its
 // DirectUnpacker. The unpacker must already have the last volume by then: a
-// collect ahead of the feed waits on an unpacker that never gets the volume,
-// and the feed starts a second unpacker that nothing collects.
+// collect ahead of the feed waits on an unpacker that never gets the volume.
+// This test's collect takes no admission, as enqueuePostProc's does, so a
+// feed after it also starts a second unpacker that nothing collects.
 func TestCompleteFinalizedFile_FeedsTheLastVolumeBeforeReportingTheDownload(t *testing.T) {
 	t.Parallel()
 	application, repo, _ := newLifecycleTestApp(t)
