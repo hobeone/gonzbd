@@ -364,12 +364,13 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 // rather than a repeated expression for the reason Standing Design Rule 2
 // gives: the predicate had a copy at each reader, and one that got it subtly
 // wrong — or a new field the invariant grows — would be invisible at the
-// others. Its readers are occupyFor, persistIfChanged, markResident and
-// claimLaunched: `git grep -n 'd\.admitsLocked(' -- 'internal/dispatch/*.go'
-// ':!*_test.go'` returns 4 lines.
+// others. Its readers are occupyFor, persistIfChanged and claimLaunched:
+// `git grep -n 'd\.admitsLocked(' -- 'internal/dispatch/*.go' ':!*_test.go'`
+// returns 3 lines.
 //
-// markWritten is deliberately NOT among them — see its own doc for why an
-// outstanding removal must not suppress a record of a row already on disk.
+// markWritten and markResident are deliberately NOT among them — each records
+// something that has already happened, a row on disk or a manifest in memory,
+// and their own docs say why an outstanding removal must not suppress that.
 func (d *Dispatcher) admitsLocked(id string) bool {
 	return d.byID[id] != nil && d.removing[id] == 0
 }
@@ -382,8 +383,8 @@ func (d *Dispatcher) admitsLocked(id string) bool {
 // the failure mode of skipping it is silence rather than an error (#513).
 //
 // While a removal is outstanding, admitsLocked reports false for its job, so
-// no occupier, worker launch, residency mark or store write attaches to a job
-// that is being torn down. It ends exactly one way:
+// no occupier, worker launch or store write attaches to a job that is being
+// torn down. It ends exactly one way:
 //
 //   - end deregisters the job. The teardown succeeded.
 //   - abort releases the marker and leaves the job registered, for a caller

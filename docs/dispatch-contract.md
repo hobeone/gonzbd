@@ -288,6 +288,21 @@ failure (a short read, a corrupt gzip stream, a missing file) is a fact
 about the job — it can never run — so it settles `Failed` and frees both
 pools.
 
+**`markResident` gates on registration alone, never on `admitsLocked`.** A
+`Remove` can begin while `Hydrate` runs, and the load that `Hydrate` completes
+is real whatever the removal goes on to do, so an outstanding removal must not
+suppress the record of it. A removal that succeeds takes the manifest with its
+own `Evict` and the record with `deregister`. One that aborts leaves the job
+registered, recorded resident and holding nothing, and the next tick's
+eviction arm reclaims the manifest. Suppressing the record left that arm, which
+evicts only a job `isResident` reports, blind to it, and the manifest stayed in
+memory until a restart. The record admits no work: `occupyFor`, `claimLaunched` and
+`persistIfChanged` still consult `admitsLocked`, and a resident job is one the
+hydrate arm skips.
+`TestResidency_AbortedRemoveDuringHydrateIsEvictedByTheNextTick` and
+`TestResidency_SuccessfulRemoveDuringHydrateLeavesNothingResident` pin both
+outcomes.
+
 `MaxActiveJobs` (`internal/config`) is not redundant: `internal/app/app.go`
 passes it directly as the dispatcher's `leaseCap`, and
 `internal/app/reloader.go` calls `Dispatcher.SetCaps` to resize it live on a
