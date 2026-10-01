@@ -204,6 +204,19 @@ func (q *Queue) grantFor(j *job.Job, s job.State) bool {
 // is not settled is a caller mistake (the door §5.9/§5.10 name is for a
 // SETTLED attempt), not a condition a scheduling tick can quietly absorb the
 // way an idempotent re-grant can.
+//
+// Retry reopens the SAME *job.Job instance the caller passes in — it is
+// BeginAttempt on j, not a new registration. The app's own retry does not
+// call this door: retryHistoryJob (internal/app/app.go) refuses a job ID the
+// dispatcher still holds (errJobAlreadyQueued) and instead rebuilds a fresh
+// instance through rebuildJobFromNZB. That matters because several pieces of
+// state are keyed by instance and assume one instance per attempt — the
+// downloader's dispatchTracker keys articleKey by a weak *job.Job pointer
+// (internal/downloader/tracker.go), postProcAdmissions.admit refuses an
+// instance once release has recorded it in ended
+// (internal/app/postproc_admission.go), and jobTransitions.removed is keyed
+// by instance rather than ID (internal/app/transition.go). A same-instance
+// retry would reuse those entries instead of starting clean.
 func (q *Queue) Retry(j *job.Job) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()

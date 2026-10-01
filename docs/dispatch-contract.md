@@ -78,7 +78,7 @@ nobody else can build is what makes its lifecycle statements hold.
 A single goroutine (`Dispatcher.run`) walks the registry on a `time.Ticker`
 and calls `sched.Queue.Advance` on each job. `Dispatcher.kick` performs a
 non-blocking send on a size-1 buffered channel (`wake`) to wake the loop
-early; `Add`, `Cancel`, `Retry`, `Pause`, `Resume`, `SetCaps`, `Finished`,
+early; `Add`, `Cancel`, `Pause`, `Resume`, `SetCaps`, `Finished`,
 `YieldedFor`, and `handoff` for `AdvanceFrom` and `YieldedFrom` all call it.
 
 **Why a channel and not a `sync.Cond`.** The two are interchangeable for
@@ -316,7 +316,7 @@ that shipped kept it as the config-facing name for that knob instead.)
 `sched`.** `Dispatcher.tick` copies the written registry entries (`d.written`)
 under `d.mu` via `snapshotOrder`, releases the lock, and only then calls
 `sched.Queue.Advance` per job (`internal/dispatch/tick.go`). Every other call into `d.q` —
-`Cancel`, `Retry`, `Pause`, `Resume`, `SetCaps`, `Park` in `Stop`'s sweep,
+`Cancel`, `Pause`, `Resume`, `SetCaps`, `Park` in `Stop`'s sweep,
 `Render`/`RenderAll` in `List`/`rowFor` (for `Row` and
 `RowJob`)/`reconcileResidency`/`launch`, `Settle` in `finishedFor` (for
 `Finished` and `FinishedJob`)/`reconcileResidency`, `Park` in `YieldedFor` and in `parkGrant`
