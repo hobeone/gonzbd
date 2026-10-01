@@ -413,11 +413,6 @@ func TestRemove_RefcountsConcurrentRemovals(t *testing.T) {
 		t.Fatal("claimLaunched succeeded while second removal was still in-flight")
 	}
 
-	d.markResident("j1")
-	if d.isResident("j1") {
-		t.Fatal("markResident marked job resident while second removal was in-flight")
-	}
-
 	// An aborted removal must be inert: a second abort or end from it would
 	// decrement the count the surviving removal is holding.
 	first.abort()

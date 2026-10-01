@@ -275,6 +275,13 @@ func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 	app.emit(Event{Type: "queue_updated", NzoID: jobID})
 }
 
+// faultReason is the failure reason a storage fault gives the job it fails:
+// Fail's permanent fault (R20), and enqueuePostProc's close-time fault of
+// either kind.
+func faultReason(f *storagefault.Fault) string {
+	return "Failed: " + f.Error()
+}
+
 // Fail stops a job on a permanent storage fault (R20).
 //
 // Still no article is marked failed. A read-only filesystem says nothing about
@@ -299,7 +306,7 @@ func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 // TestFail_InTheCleanShutdownBarrier_DoesNotPersistAPartialJobForPostProcessing
 // drives both outcomes.
 func (app *Application) Fail(jobID string, f *storagefault.Fault) {
-	reason := "Failed: " + f.Error()
+	reason := faultReason(f)
 	app.log.Error("job failed by a permanent storage fault", "job", jobID, "fault", f.Error())
 	// A permanent fault is not re-evaluated (R20): the job leaves the queue
 	// with its reason, so keeping it on the stalled list would have the

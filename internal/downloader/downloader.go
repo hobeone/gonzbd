@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
 	"github.com/hobeone/gonzbd/internal/dispatch"
@@ -926,10 +927,49 @@ func (d *Downloader) ServerStatus() []ServerSnapshot {
 // Returns 0 when unlimited.
 func (d *Downloader) SpeedLimit() int64 { return int64(d.limiter.Rate()) }
 
-// CancelJob stops tracking for the specified job and clears its try-list
-// and in-flight state, whichever instance under the ID they were made for.
+// CancelJob stops tracking for the job registered under jobID and reaps the
+// tracker (reapTracker).
 func (d *Downloader) CancelJob(jobID string) {
-	d.tracker.ClearJob(jobID)
+	d.reapTracker(jobID)
+}
+
+// reapTracker drops the try-list and in-flight entries of every instance under
+// the ID aborted, and of every instance that is not the one registered under
+// its own ID. The second clause removes what an instance left behind when it
+// was deregistered without an abort, as a job settled at Fetching and then
+// removed is.
+//
+// The registry is read outside the tracker's lock, so an instance whose first
+// entry is added between Instances and DropInstances is not considered. That
+// is safe because an instance found unregistered is not registered again.
+// Past startup's restore, the app registers a job at AddJob and
+// retryHistoryJob (`git grep -n 'dispatcher\.Add(' -- 'internal/app/*.go' ':!*_test.go'`
+// finds 2 lines), and each registers a *job.Job built for that call, whose
+// entries have a different key.
+//
+// It reads the registry through Dispatcher.Job, which takes Dispatcher.mu.
+// CancelJob's caller, appWorkers.Abort, runs inside sched.Queue.mu. D-B9
+// forbids holding Dispatcher.mu across a call into Queue (the tick's doc in
+// internal/dispatch/tick.go), and Queue.Handoff's handed callback,
+// Dispatcher.clearLaunchedFor, already takes Dispatcher.mu inside Queue.mu.
+func (d *Downloader) reapTracker(aborted string) {
+	stale := make(map[weak.Pointer[job.Job]]struct{})
+	for _, ref := range d.tracker.Instances() {
+		if ref.jobID == aborted || !d.registered(ref) {
+			stale[ref.inst] = struct{}{}
+		}
+	}
+	if len(stale) > 0 {
+		d.tracker.DropInstances(stale)
+	}
+}
+
+// registered reports whether ref's instance is the job registered under its
+// ID. A collected instance is not: the registry refers to the job it holds,
+// so that job cannot have been collected.
+func (d *Downloader) registered(ref instanceRef) bool {
+	cur, ok := d.dispatcher.Job(ref.jobID)
+	return ok && cur == ref.inst.Value()
 }
 
 // Wake non-blocking-pokes the main loop to run a dispatch pass.

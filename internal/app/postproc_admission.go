@@ -56,6 +56,13 @@ import (
 // admission, before enqueuePostProc builds the postproc.Job, the first reason becomes the
 // run's FailMsg. Any other reason is kept as a note, which finalize adds to
 // the history entry's stage log without changing its status.
+//
+// enqueuePostProc's own close-time CloseJobHandles fault offers its reason
+// through this same admit call, on the instance its own earlier call already
+// admitted — so that second call is itself a refused call by this rule, and
+// contributes only the fault's reason string: `git grep -n
+// 'postProcAdmissions\.admit(' internal/app/app.go` finds 2 lines, the entry
+// admit and this one.
 type postProcAdmissions struct {
 	mu    sync.Mutex
 	jobs  map[*job.Job]*postProcAdmission

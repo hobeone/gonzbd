@@ -1,5 +1,5 @@
 pkg ./internal/downloader/
-run TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries|TestTracker_TwoInstancesUnderOneIDAreTrackedSeparately|TestTracker_AnEntryDoesNotKeepItsInstanceReachable
+run TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries|TestTracker_TwoInstancesUnderOneIDAreTrackedSeparately|TestTracker_AnEntryDoesNotKeepItsInstanceReachable|TestDownloader_CancelJobReapsTheTracker|TestDownloader_RegisteredRejectsACollectedUnregisteredInstance
 
 # The tracker keys its entries on the instance a request was dispatched for
 # (#665). The first mutation drops the instance from the key at its one
@@ -7,8 +7,20 @@ run TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries|TestTracke
 # whatever instance holds the ID, which after a retry is the retry. The three
 # after those make each helper do nothing, and the three after those make each
 # skip a request whose instance has been superseded; both leak the removed
-# instance's own entries. The last holds the instance strongly, so an entry
+# instance's own entries. The eleventh holds the instance strongly, so an entry
 # left behind keeps its job and manifest in memory.
+#
+# The next two make Instances skip one of its two maps, so a stale instance
+# whose only entry is in the skipped map is never offered to the reap.
+# TestDownloader_CancelJobReapsTheTracker's "j4" and "j5" each have an entry
+# in only one map, so each mutation is caught by exactly one of them.
+#
+# The rest neuter the reap CancelJob runs, one condition at a time: the
+# aborted ID's clause, the registration clause, a registration check that
+# answers by ID alone, a registration check that answers by instance identity
+# alone (so a collected, unregistered instance's nil instance compares equal
+# to the dispatcher's nil miss), one that reaps every instance, and each of
+# DropInstances's two map sweeps.
 #
 # Every mutation is killed by a test that reads the tracker's state directly.
 #
@@ -140,4 +152,85 @@ func keyFor(j *job.Job, artIdx int32) articleKey {
 func keyFor(j *job.Job, artIdx int32) articleKey {
 	return articleKey{jobID: j.ID(), inst: weak.Make(j), artIdx: artIdx, pin: j}
 }
+--- end
+
+[Instances ignores tryList]
+file internal/downloader/tracker.go
+--- anchor
+	for k := range m.tryList {
+		add(k)
+	}
+--- replace
+	for range m.tryList {
+	}
+--- end
+
+[Instances ignores inFlight]
+file internal/downloader/tracker.go
+--- anchor
+	for k := range m.inFlight {
+		add(k)
+	}
+--- replace
+	for range m.inFlight {
+	}
+--- end
+
+[the reap spares the aborted ID]
+file internal/downloader/downloader.go
+--- anchor
+		if ref.jobID == aborted || !d.registered(ref) {
+--- replace
+		if !d.registered(ref) {
+--- end
+
+[the reap spares an unregistered instance]
+file internal/downloader/downloader.go
+--- anchor
+		if ref.jobID == aborted || !d.registered(ref) {
+--- replace
+		if ref.jobID == aborted {
+--- end
+
+[registration is checked by ID alone]
+file internal/downloader/downloader.go
+--- anchor
+	return ok && cur == ref.inst.Value()
+--- replace
+	_ = cur
+	return ok
+--- end
+
+[registration ignores whether the ID is even registered]
+file internal/downloader/downloader.go
+--- anchor
+	return ok && cur == ref.inst.Value()
+--- replace
+	_ = ok
+	return cur == ref.inst.Value()
+--- end
+
+[the reap takes every instance]
+file internal/downloader/downloader.go
+--- anchor
+	return ok && cur == ref.inst.Value()
+--- replace
+	_, _ = cur, ok
+	return false
+--- end
+
+[DropInstances leaves the try-list]
+file internal/downloader/tracker.go
+--- anchor
+			delete(m.tryList, k)
+--- replace
+			_ = k
+--- end
+
+[DropInstances leaves the in-flight counts]
+file internal/downloader/tracker.go
+--- anchor
+			delete(m.inFlight, k)
+--- replace
+			_ = k
 --- end

@@ -21,9 +21,9 @@ import (
 // only when made from the same pointer, even after the object is reclaimed,
 // so a later instance cannot alias an earlier one's entry.
 //
-// jobID is kept beside the instance so ClearJob can clear every instance's
-// entries under an ID. keyFor derives both from one *job.Job, so they cannot
-// disagree.
+// jobID is kept beside the instance so the reaper can ask the dispatcher
+// which instance is registered under it (Downloader.reapTracker). keyFor
+// derives both from one *job.Job, so they cannot disagree.
 //
 // artIdx rather than the Message-ID because it is the identifier the manifest
 // already assigns, it is unique within a job by construction, and it cannot be
@@ -127,18 +127,51 @@ func (m *dispatchTracker) ClearTried(key articleKey) {
 	delete(m.tryList, key)
 }
 
-// ClearJob removes all try-list and in-flight tracking entries for a given
-// jobID, whichever instance under that ID they were made for.
-func (m *dispatchTracker) ClearJob(jobID string) {
+// instanceRef names one job instance that has entries in the tracker.
+type instanceRef struct {
+	jobID string
+	inst  weak.Pointer[job.Job]
+}
+
+// Instances returns each instance that has a try-list or in-flight entry,
+// once.
+func (m *dispatchTracker) Instances() []instanceRef {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	seen := make(map[weak.Pointer[job.Job]]struct{})
+	var out []instanceRef
+	add := func(k articleKey) {
+		if _, ok := seen[k.inst]; ok {
+			return
+		}
+		seen[k.inst] = struct{}{}
+		out = append(out, instanceRef{jobID: k.jobID, inst: k.inst})
+	}
+	for k := range m.tryList {
+		add(k)
+	}
+	for k := range m.inFlight {
+		add(k)
+	}
+	return out
+}
+
+// DropInstances removes every try-list and in-flight entry made for one of
+// the given instances. It is the tracker's one deleter of whole instances'
+// entries; the per-article deleters are DecrementInFlight, UnmarkTried and
+// ClearTried. Downloader.reapTracker is its caller:
+// `git grep -n 'DropInstances(' -- '*.go' ':!*_test.go'` finds 3 lines: that
+// call, this declaration, and the line quoting the pattern.
+func (m *dispatchTracker) DropInstances(stale map[weak.Pointer[job.Job]]struct{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for k := range m.tryList {
-		if k.jobID == jobID {
+		if _, ok := stale[k.inst]; ok {
 			delete(m.tryList, k)
 		}
 	}
 	for k := range m.inFlight {
-		if k.jobID == jobID {
+		if _, ok := stale[k.inst]; ok {
 			delete(m.inFlight, k)
 		}
 	}
