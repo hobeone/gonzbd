@@ -299,3 +299,60 @@ func TestUndeferRecovery(t *testing.T) {
 		}
 	})
 }
+
+// TestMarkArticleFailed_RespectsRepairPolicy pins the live-download half of
+// the fetch-decision policy gate: a permanent article failure must not
+// release a job's deferred recovery volumes when the job's Policy.Repair is
+// false (PP=0), and must release them when Policy.Repair is true. Repairing
+// never runs for a PP=0 job, so releasing them here — during an active
+// download, not only at the Assessing verdict — would still spend bandwidth
+// nothing uses.
+//
+// The true-policy case uses PolicyFromPP(1) (PPRepair) rather than
+// PolicyFromPP(3): PPRepair sets only Repair true, leaving Unpack and Delete
+// false, so it is the fixture that tells the content.go gate apart from a
+// mistaken check on Policy.Unpack or Policy.Delete instead of Policy.Repair.
+func TestMarkArticleFailed_RespectsRepairPolicy(t *testing.T) {
+	newFixture := func(t *testing.T, pol Policy) *Job {
+		t.Helper()
+		m := NewManifest([]JobFile{
+			{Subject: "data", Bytes: 100, Articles: []JobArticle{{ID: "<d0@x>", Bytes: 100, Number: 1}}},
+			{Subject: "vol01+02.par2", Bytes: 100, IsPar2Recovery: true,
+				Articles: []JobArticle{{ID: "<p0@x>", Bytes: 100, Number: 1}}},
+		})
+		j := New("j", "j", pol)
+		if err := j.AttachContent(m); err != nil {
+			t.Fatalf("AttachContent: %v", err)
+		}
+		j.progress.files[1].Fetch = FetchIfNeeded
+		return j
+	}
+
+	t.Run("Repair false (PP=0) holds the volume", func(t *testing.T) {
+		j := newFixture(t, Policy{}) // zero value: Repair == false, matching PP=0
+		if err := j.MarkArticleFailed(0); err != nil {
+			t.Fatalf("MarkArticleFailed: %v", err)
+		}
+		if got := j.progress.files[1].Fetch; got != FetchIfNeeded {
+			t.Errorf("recovery volume fetch policy = %v, want FetchIfNeeded (still held); a PP=0 job's live-download "+
+				"article failure released it despite Policy.Repair == false", got)
+		}
+		if j.progress.Par2Recovered() {
+			t.Error("Par2Recovered = true after a PP=0 job's article failure; nothing was actually released")
+		}
+	})
+
+	t.Run("Repair true (PPRepair) releases the volume", func(t *testing.T) {
+		j := newFixture(t, PolicyFromPP(1)) // PPRepair: Repair true, Unpack/Delete false
+		if err := j.MarkArticleFailed(0); err != nil {
+			t.Fatalf("MarkArticleFailed: %v", err)
+		}
+		if got := j.progress.files[1].Fetch; got != FetchAlways {
+			t.Errorf("recovery volume fetch policy = %v, want FetchAlways (released); a PPRepair job's live-download "+
+				"article failure must release held recovery volumes", got)
+		}
+		if !j.progress.Par2Recovered() {
+			t.Error("Par2Recovered = false after a PPRepair job's article failure; the volume should have been released")
+		}
+	})
+}
