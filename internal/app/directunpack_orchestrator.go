@@ -77,6 +77,27 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	o.mu.Lock()
 	du, exists := o.unpackers[fc.JobID]
 	if !exists {
+		// An admitted job's enqueuePostProc collects its unpacker once, so
+		// one started after that collect is collected by nothing. Read under
+		// o.mu, which that collect takes after the admission: an unpacker
+		// started here on a job not yet admitted is one the collect takes.
+		// An existing unpacker is still fed, since the collect may not have
+		// taken it yet.
+		//
+		// Lock order: o.mu, then postProcAdmissions.mu. Nothing holding
+		// postProcAdmissions.mu calls into the orchestrator: its file names
+		// it only in comments (`git grep -n 'duOrch' internal/app/postproc_admission.go`
+		// returns 2 lines, both comments), and unlessAdmitted, which runs a
+		// callback under that lock, has one caller, passing a job-only
+		// callback (`git grep -n 'unlessAdmitted(' -- 'internal/app/*.go' ':!*_test.go'`
+		// returns 3 lines: the definition, reloader.go's call, and this
+		// citation).
+		if app.postProcAdmissions.has(j) {
+			o.mu.Unlock()
+			app.log.Debug("directunpack: not starting, the job is handed to post-processing",
+				"job", fc.JobID, "fileidx", fc.FileIdx)
+			return
+		}
 		cfgSnap := app.config.Snapshot()
 		downloadDirBase := cfgSnap.General.DownloadDir
 		pp := &cfgSnap.PostProc

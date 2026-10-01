@@ -1792,9 +1792,10 @@ articles or sparse regions.
    complete, and so before the download-finished report
    (`Dispatcher.AdvanceFrom`) from which the tick can launch the job's
    post-processing, whose `enqueuePostProc` collects the unpacker. A feed
-   after that collect would start a second unpacker that nothing collects,
-   and the collected one would wait for the volume
-   (`TestCompleteFinalizedFile_FeedsTheLastVolumeBeforeReportingTheDownload`).
+   after that collect finds the job admitted, and `maybeStart` starts no
+   unpacker for an admitted job, so the collected one would wait for the
+   volume (`TestCompleteFinalizedFile_FeedsTheLastVolumeBeforeReportingTheDownload`,
+   `TestHandOff_CompletionAfterTheCollect_StartsNoUnpacker`).
 2. **Volume waiting**: `waitForVolume()` blocks on `volumeReady` until the
    requested volume number appears in `completedVols`, and returns immediately if
    the set is in `corruptSets`.
@@ -1822,6 +1823,12 @@ articles or sparse regions.
    download finished has every volume, so its unpacker is awaited
    (`TestFail_FromFetching_AbortsTheDirectUnpack`,
    `TestHandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults`).
+   `enqueuePostProc` reads `Job.IsComplete` right after the admission,
+   before `pipeline.forgetJob` drops the paths a feed resolves and before
+   the collect: a file completing after that read leaves the job reading
+   incomplete, so the last file of a download that finishes during the
+   hand-off cannot leave the collected unpacker awaited without its volume
+   (`TestHandOff_LastFileCompletingAtTheCollect_LeavesNoUnpackerAwaitedWithoutAVolume`).
 8. **Path traversal safety**: `extractEntries` opens an `os.Root` anchored at
    `extractDir` and writes every entry through it, so archive entries with `..`
    components, absolute paths, or symlinked path components cannot escape.
