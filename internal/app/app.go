@@ -270,6 +270,12 @@ type Application struct {
 	// checkpointHook.
 	removeCancelGapHook func(id string)
 
+	// removeAbortGapHook, when non-nil, runs in RemoveJob right after its
+	// duOrch.abortJob, before its dispatcher cancel, where a completion can
+	// still reach the DirectUnpack orchestrator. Same discipline as
+	// checkpointHook.
+	removeAbortGapHook func(id string)
+
 	// directUnpackWaitEndHook, when non-nil, runs in enqueuePostProc's
 	// DirectUnpack-wait goroutine right after its wait step ends (endStep).
 	// It runs from that same goroutine, after the awaitDirectUnpackOrAbort
@@ -973,7 +979,12 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	name := j.Name()
 
 	// Abort any active DirectUnpacker for this job before removing files.
+	// After markRemoved, so a completion landing after this abort starts no
+	// new unpacker (directUnpackOrchestrator.maybeStart).
 	app.duOrch.abortJob(id)
+	if app.removeAbortGapHook != nil {
+		app.removeAbortGapHook(id)
+	}
 	// After markRemoved, so an enqueue that has not yet handed the job over
 	// refuses it. It returns once a DirectUnpack wait duOrch.abortJob could not
 	// reach has aborted its unpacker, before any file below is deleted, and
@@ -1800,8 +1811,8 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 		}
 		// The Fetching worker's exit report. A stale one is a repeat for a
 		// job that has already moved on, and must leave its next state alone.
-		if j.IsComplete() {
-			if err := app.dispatcher.AdvanceFrom(j, job.Fetching, job.Assessing); err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
+		if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
+			if err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
 				app.logQueueWriteFailure("report download complete", fc.JobID, fc.FileIdx, err)
 			}
 			if app.downloadReportedHook != nil {
@@ -1811,6 +1822,29 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 	}
 	app.emit(Event{Type: "queue_updated"})
 	return nil
+}
+
+// reportDownloadComplete is the Fetching worker's exit report: it reports
+// Fetching -> Assessing for j through rep when j is complete and not admitted
+// to post-processing, and returns whether it made the report and the report's
+// error. Its callers are completeFinalizedFile and runFetch
+// (`git grep -n 'reportDownloadComplete(' -- 'internal/app/*.go' ':!*_test.go'`
+// returns 4 lines: the two calls, this citation and the definition).
+//
+// An admitted job is left to its post-processing run, as the downloader leaves
+// it (downloader.Options.HandedOff): a hand-off from Fetching keeps the job
+// registered at Fetching until the finalizer's CancelJob, and reporting it
+// would have the tick launch runAssess beside the run.
+//
+// No lock spans the admission read and the report, so a job admitted between
+// them is reported. That is the order of a hand-off made just after the
+// report, which a lock here would not exclude: admit reads no dispatcher
+// state.
+func (app *Application) reportDownloadComplete(j *job.Job, rep reporter) (bool, error) {
+	if !j.IsComplete() || app.postProcAdmissions.has(j) {
+		return false, nil
+	}
+	return true, rep.AdvanceFrom(j, job.Fetching, job.Assessing)
 }
 
 // markFetchPolicyDirty marks a job whose fetch policy a par2 verdict just
@@ -2467,8 +2501,10 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	//
 	// The wait step begins before the collect: from the collect on,
 	// duOrch.abortJob cannot reach du, so a RemoveJob's withdraw must already
-	// find the step to wait on. A withdraw before this point leaves du in the
-	// orchestrator, where RemoveJob's duOrch.abortJob aborts it.
+	// find the step to wait on. A withdraw before this point follows its
+	// RemoveJob's duOrch.abortJob, which aborted the unpacker the orchestrator
+	// held, and maybeStart starts none for the instance once it is marked
+	// removed, so the collect below finds none.
 	removed, wait := app.postProcAdmissions.beginWait(j)
 	if app.directUnpackCollectHook != nil {
 		app.directUnpackCollectHook(j.ID())

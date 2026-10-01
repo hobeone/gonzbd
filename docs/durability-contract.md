@@ -1834,6 +1834,10 @@ articles or sparse regions.
    after that collect finds the job admitted, and `maybeStart` starts no
    unpacker for an admitted job, so the collected one would wait for the
    volume (`TestHandOff_CompletionAfterTheCollect_StartsNoUnpacker`).
+   Nor does `maybeStart` start one for a job instance `RemoveJob` has marked
+   removed: `RemoveJob` aborts the job's unpacker once, after the mark, so one
+   started by a feed landing after that abort would run until shutdown
+   (`TestRemoveJob_CompletionAfterTheAbort_StartsNoUnpacker`).
 2. **Volume waiting**: `waitForVolume()` blocks on `volumeReady` until the
    requested volume number appears in `completedVols`, and returns immediately if
    the set is in `corruptSets`.

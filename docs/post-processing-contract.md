@@ -78,7 +78,12 @@ single worker goroutine (`run`).
   signals a DirectUnpack wait the enqueue is in to abort its unpacker —
   `duOrch.abortJob` cannot reach one `duOrch.collect` has already taken — and
   returns only once that wait has ended, so nothing `RemoveJob` deletes is
-  still being written. It likewise waits for a hand-over already past the
+  still being written. An unpacker still in the orchestrator is aborted by
+  `duOrch.abortJob`, which `RemoveJob` calls after marking, and
+  `directUnpackOrchestrator.maybeStart` starts none for a marked instance, so
+  a volume completing after that abort starts no unpacker
+  (`TestRemoveJob_CompletionAfterTheAbort_StartsNoUnpacker`). `withdraw`
+  likewise waits for a hand-over already past the
   check, so the `Cancel` it makes afterwards finds that job queued or
   running. A `RemoveJob` whose `dispatcher.Remove` fails keeps its mark, so
   every later hand-over of that instance is refused too, and a finalizer of
@@ -114,11 +119,14 @@ single worker goroutine (`run`).
 - **An admitted job is not downloaded**: `maybeFinalize` moves no persisted
   position, so a job it hands over from `Fetching` — `Fail`, the hopeless
   callbacks — keeps a dispatchable row (`IntentRun`, at `Fetching`) until the
-  finalizer's `CancelJob`. The downloader skips an admitted job anyway, and a
-  Fetching worker does not report one download-complete (`appRunner.runFetch`):
-  both read the admission record (`postProcAdmissions.has`, which is
+  finalizer's `CancelJob`. The downloader skips an admitted job anyway, and no
+  download-complete report is made for one, neither by its Fetching worker nor
+  by a file completing after the hand-off: both reporters go through
+  `Application.reportDownloadComplete`. The downloader and that report both
+  read the admission record (`postProcAdmissions.has`, which is
   `downloader.Options.HandedOff`), and `enqueuePostProc` admits before it calls
-  `CloseJobHandles`. "The downloader skips an admitted job anyway" bounds
+  `CloseJobHandles`. A report would have the tick launch `runAssess` beside
+  the run (`TestCompleteFinalizedFile_AdmittedJobIsNotReportedDownloaded`). "The downloader skips an admitted job anyway" bounds
   what dispatches a *new* article; it does not by itself stop one already
   queued before the hand-off — `fetchArticle`'s own per-request check
   (`docs/nntp-downloader-contract.md` invariant 6/7) is what drops that one
