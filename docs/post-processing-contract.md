@@ -104,10 +104,10 @@ single worker goroutine (`run`).
   does, and hands over a reason that arrived after its last look and before
   its report once the report is made. The state is read under the lock the
   admission is recorded under, so a job admitted by `maybeFinalize` from
-  `Fetching` was not yet complete. `appRunner.runFetch` makes no
-  download-complete report for an admitted job; the report
-  `completeFinalizedFile` makes when the last file completes does not read
-  the admission. A reason waits for a worker the tick has yet to launch, so a
+  `Fetching` was not complete when it was read. Both download-complete
+  reports go through `Application.reportDownloadComplete`, which reads the
+  job complete before it reads the admission, so it finds that admission and
+  makes no report. A reason waits for a worker the tick has yet to launch, so a
   job paused before that launch keeps it until it is resumed. A reason `Fail`
   deferred shows meanwhile as `Header.FailReason`, which `Fail` sets before
   it hands off; a hopeless callback sets no such field. It is held in memory, as an

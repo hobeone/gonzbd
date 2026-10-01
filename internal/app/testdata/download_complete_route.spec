@@ -69,7 +69,7 @@ file internal/app/app.go
 	app.emit(Event{Type: "queue_updated"})
 	app.emit(Event{Type: "history_updated"})
 	if j.IsComplete() {
-		app.maybeFinalize(jobID, failMsgForJob(j))
+		app.maybeFinalizeJob(j, failMsgForJob(j))
 	}
 	return nil
 }

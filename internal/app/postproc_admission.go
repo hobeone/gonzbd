@@ -141,10 +141,11 @@ func (a *postProcAdmissions) admit(j *job.Job, failMsg string) admitOutcome {
 // admission or deferral of j interleaves with the read. A job reads as at
 // Assessing from its last file's MarkFileComplete on (awaitsAssessing), and
 // the download-complete report and the tick's move into Assessing both follow
-// that. So an instance this admits at Fetching was not yet complete, and its
-// download-complete report, if one is made, follows the admission: runFetch's
-// reads the admission and is not made, and completeFinalizedFile's does not
-// read it.
+// that. So an instance this admits at Fetching was not complete when this read
+// it, under mu. Both download-complete reports go through
+// Application.reportDownloadComplete, which reads the job complete and then
+// the admission (has, under mu), so it finds this admission and makes no
+// report.
 func (a *postProcAdmissions) admitUnlessAssessing(j *job.Job, failMsg string) admitOutcome {
 	a.mu.Lock()
 	defer a.mu.Unlock()
