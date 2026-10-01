@@ -280,6 +280,12 @@ type Application struct {
 	// discipline as checkpointHook.
 	directUnpackWaitEndHook func(id string)
 
+	// directUnpackCollectHook, when non-nil, runs in enqueuePostProc right
+	// before its collect of the job's DirectUnpacker, after its read of
+	// whether the job's download finished, where a completion of the job's
+	// last file can land. Same discipline as checkpointHook.
+	directUnpackCollectHook func(id string)
+
 	// finalizeHook, when non-nil, runs in jobFinalizer.finalize once the
 	// post-processor has let the job go and before its admission ends. Same
 	// discipline as checkpointHook.
@@ -1772,8 +1778,11 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 		// and so before the download-finished report below. From that report
 		// the tick can launch the job's post-processing, whose enqueuePostProc
 		// collects the unpacker and waits for its volumes: a feed after the
-		// collect would start a second unpacker that nothing collects, and the
-		// wait would not end.
+		// collect finds the job admitted and starts no unpacker (maybeStart),
+		// so the collected one would wait for the volume and the wait would
+		// not end. enqueuePostProc reads the job complete only once every
+		// file is marked, so a feed ahead of the mark is one the collected
+		// unpacker has.
 		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar {
 			app.duOrch.maybeStart(fc)
 		}
@@ -2291,6 +2300,19 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 		return
 	}
 
+	// A job handed over before its download finished (Fail, a hopeless
+	// callback) gets no more files: the downloader skips an admitted job. Its
+	// unpacker would wait for a volume that never arrives, so it is aborted
+	// rather than awaited. Read after the admission, which is what stops the
+	// download, and before the pipeline.forgetJob and the duOrch.collect
+	// below. completeFinalizedFile feeds a volume before it marks the file
+	// complete, so a job that reads complete here has had every volume fed,
+	// each feed having resolved its path before forgetJob drops the paths,
+	// and the collect takes the unpacker that has them: maybeStart starts no
+	// unpacker for an admitted job. A file that completes after this read
+	// leaves the job reading incomplete, and its unpacker is aborted.
+	downloadFinished := j.IsComplete()
+
 	// Close any open assembler file handles for this job so post-processing
 	// operations (Par2 repair, unpack, cleanup) don't trigger NFS silly-rename
 	// (.nfsXXXX) artifacts on open files.
@@ -2426,16 +2448,13 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	// find the step to wait on. A withdraw before this point leaves du in the
 	// orchestrator, where RemoveJob's duOrch.abortJob aborts it.
 	removed, wait := app.postProcAdmissions.beginWait(j)
+	if app.directUnpackCollectHook != nil {
+		app.directUnpackCollectHook(j.ID())
+	}
 	du := app.duOrch.collect(j.ID())
 	if du == nil {
 		app.postProcAdmissions.endStep(j, wait)
 	}
-	// A job handed over before its download finished (Fail, a hopeless
-	// callback) gets no more files: the downloader skips an admitted job. Its
-	// unpacker would wait for a volume that never arrives, so it is aborted
-	// rather than awaited. Read after the admission, which is what stops the
-	// download.
-	downloadFinished := j.IsComplete()
 
 	enqueue := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
 		// Sealed now rather than taken from failMsg: the close fault above,

@@ -108,8 +108,13 @@ single worker goroutine (`run`).
   entry read, nor overlaps an admission that begins during the reload
   (`TestReloadDownloader_LeavesAnAdmittedJobsProgressAlone`). Since no more
   files arrive for it, a job admitted before its download finished
-  (`Job.IsComplete` false) has its DirectUnpacker aborted rather than awaited;
-  see `docs/durability-contract.md` § "DirectUnpack streaming contract".
+  (`Job.IsComplete` false) has its DirectUnpacker aborted rather than awaited.
+  `enqueuePostProc` reads that right after the admission, before it drops
+  the job's file paths (`pipeline.forgetJob`) and collects the unpacker, and
+  `directUnpackOrchestrator.maybeStart` starts no unpacker for an admitted
+  job, so none is started after the collect while the admission lasts, and
+  the collected one is awaited only when every volume reached it; see
+  `docs/durability-contract.md` § "DirectUnpack streaming contract".
   Such a job keeps its pool-A lease until the finalizer's `CancelJob`, as a
   `Repairing` job waiting in the queue does (`needsLease`,
   `internal/sched/requirements.go`). Giving it back early is not a saving:
