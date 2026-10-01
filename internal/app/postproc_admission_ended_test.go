@@ -30,7 +30,7 @@ func TestEnqueue_AfterAFinalizeThatCouldNotRemoveTheJob_AdmitsNoSecondRun(t *tes
 	}
 	historyEntry(t, application, j.ID())
 
-	application.enqueuePostProc(j, dispatch.Header{Name: j.Name()}, "")
+	application.enqueuePostProc(j, dispatch.Header{Name: j.Name()}, "", false)
 	if n := admissionsHeld(&application.postProcAdmissions); n != 0 {
 		t.Errorf("admissions held after a late enqueue = %d, want 0: the finalized instance was admitted to a second run", n)
 	}
@@ -50,7 +50,7 @@ func TestEnqueue_AfterACancelledRun_AdmitsNoSecondRun(t *testing.T) {
 		t.Fatal("the job left the dispatcher, so this would not test one still registered")
 	}
 
-	application.enqueuePostProc(j, dispatch.Header{Name: j.Name()}, "")
+	application.enqueuePostProc(j, dispatch.Header{Name: j.Name()}, "", false)
 	if n := admissionsHeld(&application.postProcAdmissions); n != 0 {
 		t.Errorf("admissions held after a late enqueue = %d, want 0: the cancelled instance was admitted to a second run", n)
 	}

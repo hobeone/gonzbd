@@ -312,6 +312,11 @@ type Application struct {
 	// checkpointHook.
 	downloadReportedHook func(id string)
 
+	// assessHook, when non-nil, runs in runAssess once the worker has resolved
+	// its job and before it assesses it, where the worker is live at
+	// Assessing. Same discipline as checkpointHook.
+	assessHook func(id string)
+
 	// closeJobHandlesHook, when non-nil, overrides assembler.CloseJobHandles in
 	// enqueuePostProc. It exists because no seam reaches a started
 	// assembler's open file to fault its close. Same discipline as
@@ -2188,14 +2193,16 @@ func (app *Application) DirectUnpackStatuses() map[string]directunpack.Status {
 }
 
 // maybeFinalize hands the job registered under jobID to post-processing with
-// failMsg, through maybeFinalizeJob. It is for a caller that holds only the ID
-// and means whichever instance holds it now.
+// failMsg, as maybeFinalizeJob does, unless the job is at, or due at,
+// Assessing (awaitsAssessing): then failMsg is left for its Assessing worker,
+// which hands the job over (postProcAdmissions.admitUnlessAssessing). It is for a caller that holds
+// only the ID and means whichever instance holds it now.
 func (app *Application) maybeFinalize(jobID, failMsg string) {
 	if app.dispatcher == nil {
 		return
 	}
 	if j, ok := app.dispatcher.Job(jobID); ok {
-		app.maybeFinalizeJob(j, failMsg)
+		app.finalizeRegistered(j, failMsg, true)
 	}
 }
 
@@ -2204,6 +2211,11 @@ func (app *Application) maybeFinalize(jobID, failMsg string) {
 // that finds j registered, so a caller holding a removed instance hands over
 // nothing, rather than a later attempt registered under the same ID.
 func (app *Application) maybeFinalizeJob(j *job.Job, failMsg string) {
+	app.finalizeRegistered(j, failMsg, false)
+}
+
+// finalizeRegistered is maybeFinalize's and maybeFinalizeJob's body.
+func (app *Application) finalizeRegistered(j *job.Job, failMsg string, deferAtAssessing bool) {
 	if app.dispatcher == nil {
 		return
 	}
@@ -2211,7 +2223,7 @@ func (app *Application) maybeFinalizeJob(j *job.Job, failMsg string) {
 	if !ok {
 		return
 	}
-	app.enqueuePostProc(j, row.Header, failMsg)
+	app.enqueuePostProc(j, row.Header, failMsg, deferAtAssessing)
 }
 
 // directUnpackWaiter is the subset of *directunpack.DirectUnpacker that
@@ -2278,10 +2290,20 @@ func faultIn(err error) *storagefault.Fault {
 // enqueuePostProc hands j to the post-processor unless a post-processing run of
 // this instance is already admitted, or has been and ended
 // (postProcAdmissions). In the first case it does nothing but offer failMsg to
-// the admitted run; in the second, nothing.
-func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg string) {
-	switch app.postProcAdmissions.admit(j, failMsg) {
+// the admitted run; in the second, nothing. With deferAtAssessing it hands over
+// no job at, or due at, Assessing (awaitsAssessing), and leaves failMsg for
+// the job's Assessing worker.
+func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg string, deferAtAssessing bool) {
+	admit := app.postProcAdmissions.admit
+	if deferAtAssessing {
+		admit = app.postProcAdmissions.admitUnlessAssessing
+	}
+	switch admit(j, failMsg) {
 	case admitted:
+	case deferredToAssessing:
+		app.log.Info("postproc: job is at Assessing; its Assessing worker hands it over with this failure reason",
+			"job", j.ID(), "fail_msg", failMsg)
+		return
 	case refused:
 		// Debug: a refusal that brings no reason loses nothing.
 		app.log.Debug("postproc: job already admitted; not enqueuing it again", "job", j.ID())

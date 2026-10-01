@@ -61,12 +61,29 @@ import (
 // through this same admit call, on the instance its own earlier call already
 // admitted — so that second call is itself a refused call by this rule, and
 // contributes only the fault's reason string: `git grep -n
-// 'postProcAdmissions\.admit(' internal/app/app.go` finds 2 lines, the entry
-// admit and this one.
+// 'postProcAdmissions\.admit(' internal/app/app.go` finds 1 line, this one.
+// enqueuePostProc's entry admission takes admit, or admitUnlessAssessing, as a
+// value rather than calling it there.
+//
+// A hand-off by job ID (maybeFinalize) is not admitted while the job is at
+// Assessing; see admitUnlessAssessing. Its reason waits in assessing for the
+// job's Assessing worker, which hands the job over itself.
 type postProcAdmissions struct {
 	mu    sync.Mutex
 	jobs  map[*job.Job]*postProcAdmission
 	ended map[weak.Pointer[job.Job]]runtime.Cleanup
+	// assessing holds, per instance, the reasons deferred to its Assessing
+	// worker, and the visit that worker owns from beginAssess to endAssess.
+	assessing map[weak.Pointer[job.Job]]*assessVisit
+}
+
+// assessVisit is one Assessing worker's record of the reasons deferred to it.
+// Before a worker owns it, it holds reasons deferred to the worker the tick is
+// yet to launch.
+type assessVisit struct {
+	reasons []string
+	owned   bool
+	cleanup runtime.Cleanup
 }
 
 type postProcAdmission struct {
@@ -99,6 +116,9 @@ const (
 	// refusedEnded: j's admission has ended. The caller's reason has no run
 	// left to reach.
 	refusedEnded
+	// deferredToAssessing: j is at Assessing and not admitted. The caller's
+	// reason is kept for j's Assessing worker, which hands j over.
+	deferredToAssessing
 )
 
 // admit admits j unless it is admitted or its admission has ended. A call
@@ -108,6 +128,133 @@ const (
 func (a *postProcAdmissions) admit(j *job.Job, failMsg string) admitOutcome {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.admitLocked(j, failMsg)
+}
+
+// admitUnlessAssessing is admit, except that it admits no instance at
+// Assessing: it keeps failMsg for the instance's Assessing worker and returns
+// deferredToAssessing. That worker hands such an instance over itself
+// (appRunner.runAssess), so a run this would have admitted does not start
+// beside it.
+//
+// The state is read under mu, which the admission is recorded under, so no
+// admission or deferral of j interleaves with the read. A job reads as at
+// Assessing from its last file's MarkFileComplete on (awaitsAssessing), and
+// the download-complete report and the tick's move into Assessing both follow
+// that. So an instance this admits at Fetching was not yet complete, and its
+// download-complete report, if one is made, follows the admission: runFetch's
+// reads the admission and is not made, and completeFinalizedFile's does not
+// read it.
+func (a *postProcAdmissions) admitUnlessAssessing(j *job.Job, failMsg string) admitOutcome {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	key := weak.Make(j)
+	if _, ended := a.ended[key]; ended {
+		return refusedEnded
+	}
+	if _, admitted := a.jobs[j]; !admitted && awaitsAssessing(j) {
+		v := a.assessing[key]
+		if v == nil {
+			v = a.newVisitLocked(j, key)
+		}
+		v.reasons = append(v.reasons, failMsg)
+		return deferredToAssessing
+	}
+	return a.admitLocked(j, failMsg)
+}
+
+// awaitsAssessing reports whether j's open attempt is at Assessing, has
+// Assessing recorded as its next state, or is a complete job at Fetching,
+// whose download-complete report records it.
+func awaitsAssessing(j *job.Job) bool {
+	s := j.Snapshot()
+	if !s.IsOpen() {
+		return false
+	}
+	switch {
+	case s.State.Next == job.Assessing:
+		return true
+	case s.State.Next != job.StateUnset:
+		return false
+	case s.State.State == job.Assessing:
+		return true
+	case s.State.State == job.Fetching:
+		return j.IsComplete()
+	}
+	return false
+}
+
+// beginAssess starts j's Assessing worker's visit and returns it for
+// endAssess. The visit takes over any reasons deferred before the worker
+// launched. A visit still owned is an earlier worker's that has not reached
+// endAssess; the new visit replaces it, with its reasons, so that the earlier
+// worker's endAssess takes none of the reasons deferred to this one.
+func (a *postProcAdmissions) beginAssess(j *job.Job) *assessVisit {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	key := weak.Make(j)
+	v := a.assessing[key]
+	switch {
+	case v == nil:
+		v = a.newVisitLocked(j, key)
+	case v.owned:
+		v = &assessVisit{reasons: v.reasons, cleanup: v.cleanup}
+		a.assessing[key] = v
+	}
+	v.owned = true
+	return v
+}
+
+// takeDeferred returns the reasons deferred to j's Assessing worker since it
+// last looked, and forgets them.
+func (a *postProcAdmissions) takeDeferred(j *job.Job) []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	v := a.assessing[weak.Make(j)]
+	if v == nil {
+		return nil
+	}
+	reasons := v.reasons
+	v.reasons = nil
+	return reasons
+}
+
+// endAssess ends visit, the one beginAssess returned, and returns the reasons
+// deferred to it since the worker last looked. It returns nothing for a visit
+// a later one replaced.
+func (a *postProcAdmissions) endAssess(j *job.Job, visit *assessVisit) []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	key := weak.Make(j)
+	if a.assessing[key] != visit {
+		return nil
+	}
+	delete(a.assessing, key)
+	visit.cleanup.Stop()
+	return visit.reasons
+}
+
+// newVisitLocked records an empty visit for j, dropped if j is collected
+// first: an instance removed before any worker owned its visit leaves it
+// behind. mu is held.
+func (a *postProcAdmissions) newVisitLocked(j *job.Job, key weak.Pointer[job.Job]) *assessVisit {
+	if a.assessing == nil {
+		a.assessing = make(map[weak.Pointer[job.Job]]*assessVisit)
+	}
+	v := &assessVisit{cleanup: runtime.AddCleanup(j, a.forgetVisit, key)}
+	a.assessing[key] = v
+	return v
+}
+
+// forgetVisit drops a collected job's visit.
+func (a *postProcAdmissions) forgetVisit(key weak.Pointer[job.Job]) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.assessing, key)
+}
+
+// admitLocked is admit's body; mu is held.
+func (a *postProcAdmissions) admitLocked(j *job.Job, failMsg string) admitOutcome {
 	if _, ok := a.ended[weak.Make(j)]; ok {
 		return refusedEnded
 	}

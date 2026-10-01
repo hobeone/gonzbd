@@ -290,21 +290,29 @@ func faultReason(f *storagefault.Fault) string {
 //
 // maybeFinalize is how every other terminal condition leaves the queue — the
 // job carries its reason into history rather than sitting in the queue in a
-// state nothing will move it out of.
+// state nothing will move it out of. A job at Assessing, or due there, is not
+// handed over here: maybeFinalize leaves the reason for the job's Assessing
+// worker, which hands the job over itself
+// (postProcAdmissions.admitUnlessAssessing), so the finalize does not run
+// beside runAssess.
 //
 // # No stopping guard, unlike Stall
 //
 // Stall declines while stopping because its pause is persisted and nothing that
 // could undo it outlives the process. Fail advances no position: neither it nor
-// enqueuePostProc calls SetNext, Transition, Cross or Finish, and on this route
-// the job is settled by the finalizer once the post-processor has run it. The
-// hand-off itself is held in memory. So a Fail during shutdown either files the
-// job through a post-processor that is still running, or the hand-off dies with
-// the process and the job restarts at the state it was in, its outstanding
-// articles offered again. Of the fields Fail writes, Header.FailReason is the
-// persisted one, and a restarted job keeps it until it leaves the queue.
+// enqueuePostProc calls SetNext, Transition, Cross or Finish. On this route the
+// job is settled by the finalizer once the post-processor has run it, or, for
+// a reason left for the Assessing worker, by that worker's FinishedJob, as for
+// a hopeless verdict. The hand-off, or the reason left for the worker, is held
+// in memory. So a Fail during shutdown either files the job through a
+// post-processor that is still running, or the hand-off, or the reason left
+// for the worker, dies with the process and the job restarts at the state it
+// was in, its outstanding articles offered again. Of the fields Fail writes,
+// Header.FailReason is the persisted one, and a restarted job keeps it until
+// it leaves the queue.
 // TestFail_InTheCleanShutdownBarrier_DoesNotPersistAPartialJobForPostProcessing
-// drives both outcomes.
+// drives both outcomes for a job at Fetching; no test drives a shutdown with
+// a reason left for the Assessing worker.
 func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 	reason := faultReason(f)
 	app.log.Error("job failed by a permanent storage fault", "job", jobID, "fault", f.Error())

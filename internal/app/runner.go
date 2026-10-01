@@ -43,7 +43,8 @@ type reporter interface {
 //     post-processing, is instead reported by runFetch itself, through
 //     advance's AdvanceFrom.
 //  2. Assessing: discharges directly within runAssess via AdvanceFrom (intact,
-//     repairable, or deferred recovery) or FinishedJob(OutcomeFailed) (hopeless).
+//     repairable, or deferred recovery) or FinishedJob(OutcomeFailed) (hopeless,
+//     or a failure reason left for it by maybeFinalize).
 //  3. Repairing/Extracting/Finalizing: hands off to postProcessor.Process
 //     (enqueuePostProc). Post-processing completes and yields via
 //     jobFinalizer.persistAndCommit (`git grep -n 'func (f \*jobFinalizer) persistAndCommit' internal/app/`),
@@ -144,6 +145,13 @@ func (r *appRunner) runFetch(_ context.Context, id string) {
 // to maybeReleaseRecoveryVolumes(ctx, j). It directly reports completion via
 // FinishedJob or its verdict via AdvanceFrom. It resolves the job once, and
 // every call after that carries the instance it resolved.
+//
+// It is the one place a job at Assessing is handed to post-processing for a
+// failure reason deferred to it (postProcAdmissions.admitUnlessAssessing). In
+// place of its verdict it hands the job over through failWith if a reason is
+// waiting when it reports (advance, failHopeless). A reason deferred after
+// that look and before the report is handed over once the report is made
+// (handOverLate), when the job no longer reads as at Assessing.
 func (r *appRunner) runAssess(ctx context.Context, id string) {
 	if r.app == nil {
 		if r.report != nil {
@@ -160,6 +168,11 @@ func (r *appRunner) runAssess(ctx context.Context, id string) {
 			_ = r.report.Yielded(id)
 		}
 		return
+	}
+	visit := r.app.postProcAdmissions.beginAssess(j)
+	defer r.handOverLate(j, visit)
+	if r.app.assessHook != nil {
+		r.app.assessHook(id)
 	}
 
 	if r.app.maybeReleaseRecoveryVolumes(ctx, j) {
@@ -182,23 +195,53 @@ func (r *appRunner) runAssess(ctx context.Context, id string) {
 }
 
 // failHopeless is runAssess's verdict for a job par2 cannot repair: it hands j
-// to post-processing with its failure reason and settles it OutcomeFailed.
+// to post-processing through failWith, with any reasons already deferred to
+// this worker ahead of its own failure reason, and settles it OutcomeFailed.
 // Both calls carry j, so a verdict on an instance that has left the dispatcher
 // reaches no later instance registered under its ID.
 func (r *appRunner) failHopeless(j *job.Job) {
-	r.app.maybeFinalizeJob(j, failMsgForJob(j))
+	r.failWith(j, append(r.app.postProcAdmissions.takeDeferred(j), failMsgForJob(j)))
+}
+
+// failWith hands j to post-processing with reasons, the first becoming the
+// run's FailMsg and the rest notes, and settles it OutcomeFailed. It is how
+// runAssess hands over a hopeless job and a job a failure reason was deferred
+// to.
+func (r *appRunner) failWith(j *job.Job, reasons []string) {
+	for _, reason := range reasons {
+		r.app.maybeFinalizeJob(j, reason)
+	}
 	if r.report != nil {
 		_ = r.report.FinishedJob(j, job.OutcomeFailed)
+	}
+}
+
+// handOverLate hands j to post-processing with the reasons deferred to visit
+// since runAssess last looked. It runs once runAssess has reported, so j no
+// longer awaits Assessing (awaitsAssessing): failWith settled it, or its
+// verdict recorded a next state. It is handed over as at that position.
+func (r *appRunner) handOverLate(j *job.Job, visit *assessVisit) {
+	for _, reason := range r.app.postProcAdmissions.endAssess(j, visit) {
+		r.app.maybeFinalizeJob(j, reason)
 	}
 }
 
 // advance reports that the work of from is done and the job continues to
 // next: runAssess's verdict, or runFetch's report for a job that is already
 // complete. The report records next and releases the job in one dispatcher
-// call, so no tick can move the job between the two.
+// call, so no tick can move the job between the two. A verdict from Assessing
+// is replaced by failWith when a failure reason was deferred to the job's
+// Assessing worker; r.app is nil only for a runner built without an
+// application, which defers nothing.
 func (r *appRunner) advance(j *job.Job, from, next job.State) {
 	if r.report == nil {
 		return
+	}
+	if from == job.Assessing && r.app != nil {
+		if reasons := r.app.postProcAdmissions.takeDeferred(j); len(reasons) > 0 {
+			r.failWith(j, reasons)
+			return
+		}
 	}
 	err := r.report.AdvanceFrom(j, from, next)
 	switch {
@@ -248,5 +291,5 @@ func (r *appRunner) runPostProc(_ context.Context, id string, _ job.State) {
 	// finalize and cancelled each latch the cancel (CancelJob) and yield
 	// before they end it, so a launch that took its claim before the cancel
 	// had it cleared by that yield, and no later launch starts.
-	r.app.enqueuePostProc(j, hdr, failMsgForJob(j))
+	r.app.enqueuePostProc(j, hdr, failMsgForJob(j), false)
 }
