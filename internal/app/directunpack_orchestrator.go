@@ -19,8 +19,14 @@ import (
 // downloader-swap lock, so a DirectUnpack status read no longer serialises
 // against a downloader reload.
 //
-// It holds *Application only for read-only, construction-immutable dependencies
-// (queue, pipeline, config, log, ctx, emit); those need no locking.
+// It holds *Application to read dispatcher, pipeline, config, log, ctx, emit
+// and postProcAdmissions: the fields this command names, apart from the app.mu
+// of the paragraph above:
+// `grep -o 'app\.[A-Za-z]*' internal/app/directunpack_orchestrator.go`.
+// o.mu guards none of them. postProcAdmissions is mutable runtime state behind
+// its own lock, and maybeStart reads it under o.mu, so the lock order is o.mu,
+// then postProcAdmissions.mu; the argument that nothing takes them the other
+// way is at that call.
 type directUnpackOrchestrator struct {
 	app *Application
 

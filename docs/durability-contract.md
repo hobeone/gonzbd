@@ -1791,11 +1791,11 @@ articles or sparse regions.
    `completeFinalizedFile` then feeds the volume before it marks the file
    complete, and so before the download-finished report
    (`Dispatcher.AdvanceFrom`) from which the tick can launch the job's
-   post-processing, whose `enqueuePostProc` collects the unpacker. A feed
+   post-processing, whose `enqueuePostProc` collects the unpacker
+   (`TestCompleteFinalizedFile_FeedsTheLastVolumeBeforeReportingTheDownload`). A feed
    after that collect finds the job admitted, and `maybeStart` starts no
    unpacker for an admitted job, so the collected one would wait for the
-   volume (`TestCompleteFinalizedFile_FeedsTheLastVolumeBeforeReportingTheDownload`,
-   `TestHandOff_CompletionAfterTheCollect_StartsNoUnpacker`).
+   volume (`TestHandOff_CompletionAfterTheCollect_StartsNoUnpacker`).
 2. **Volume waiting**: `waitForVolume()` blocks on `volumeReady` until the
    requested volume number appears in `completedVols`, and returns immediately if
    the set is in `corruptSets`.
