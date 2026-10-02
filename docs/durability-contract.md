@@ -1364,10 +1364,15 @@ exists for reasons that involve no pause of ours: `noteNeedsSeed` creates one
 when a checkpoint's `AckDurable` finds the job evicted, and
 `notePendingFinalize` when a finalize does, and the job can be one the user
 paused. Resuming on that would undo the user's pause within one interval with
-no log saying so. `stallRecord.parked` is set only by the paths that pause the
-job themselves. It records that this application paused the job, not that the
-user did not: `Stall` sets it on a job the user had already paused, and the
-re-evaluation then resumes that job once the fault clears (#716).
+no log saying so. `stallRecord.parked` is set only by `Stall`, and only when the
+job's intent was not already `IntentPause` when `Stall` fired: a job the user
+had paused, as for example a checkpoint barrier's fault on a
+paused-and-resident job finds it, is left unmarked, so once nothing is blocked the re-evaluation clears the
+stall reason and leaves the pause in place. A job `Stall` parked stays parked across a later
+fault. If the user pauses a job `Stall` already parked, the record is still
+ours and the re-evaluation resumes it. A user pause that lands between
+`Stall` reading the intent and its `PauseJob` is claimed by `Stall` and
+resumed the same way.
 
 **A user Resume is the boundary, and is deliberately outside the guarantee.**
 `mode=queue&name=resume` and `name=resume_all` (`internal/api/queue.go`) unpause

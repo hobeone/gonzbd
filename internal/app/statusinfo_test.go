@@ -221,7 +221,7 @@ func TestCheckpointStates_ReportsEveryJobWithAFigureToReport(t *testing.T) {
 	application.noteBarrierRun("barriered-only")
 	application.noteStall("stalled-only", &storagefault.Fault{
 		Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC,
-	})
+	}, true)
 
 	got := application.CheckpointStates()
 
@@ -315,7 +315,7 @@ func TestCheckpointState_ComposesTheThreeSourcesForOneJob(t *testing.T) {
 	application.noteBarrierRun("job-1")
 	application.noteStall("job-1", &storagefault.Fault{
 		Op: "sync", Path: "/data/y.bin", Err: syscall.EIO,
-	})
+	}, true)
 
 	got := application.CheckpointState("job-1")
 

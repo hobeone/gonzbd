@@ -279,7 +279,20 @@ func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 	// dispatcher row carries no separate copy of this reason (StallReason,
 	// read via app.StallReason, is the queue listing's source for it; see
 	// reevaluateStall).
-	app.noteStall(jobID, f)
+	//
+	// The pause is claimed only when the user has not already paused the job:
+	// the intent is read before PauseJob. IntentPause there is the user's, or
+	// this application's own earlier pause on a re-stall; the second stays
+	// ours because setStallReasonLocked never clears parked.
+	// Read with no lock held; a user pause landing between the read and
+	// PauseJob is claimed by us and resumed once the fault clears.
+	claimPause := true
+	if app.dispatcher != nil {
+		if j, ok := app.dispatcher.Job(jobID); ok && j.Intent() == job.IntentPause {
+			claimPause = false
+		}
+	}
+	app.noteStall(jobID, f, claimPause)
 	if app.dispatcher != nil {
 		// The pause is latched whatever the state, and PauseJob releases only
 		// a Fetching job's lease, the worker whose writes the fault

@@ -31,9 +31,9 @@ func TestNoteStall_ReplacesTheReasonAndKeepsTheRecoverySet(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
-	application.noteStall("job-1", testFault("write"))
+	application.noteStall("job-1", testFault("write"), true)
 	application.notePendingFinalize("job-1", 3)
-	application.noteStall("job-1", &storagefault.Fault{Op: "sync", Path: "/data/y.bin", Err: syscall.EIO})
+	application.noteStall("job-1", &storagefault.Fault{Op: "sync", Path: "/data/y.bin", Err: syscall.EIO}, true)
 
 	got := application.StallReason("job-1").Reason
 	if got == "" {
@@ -58,7 +58,7 @@ func TestStallRecord_TracksRecoveryPerFileAndForgetsTheJobWhenEmpty(t *testing.T
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
-	application.noteStall("job-1", testFault("write"))
+	application.noteStall("job-1", testFault("write"), true)
 	application.notePendingFinalize("job-1", 0)
 	application.notePendingFinalize("job-1", 1)
 
@@ -95,7 +95,7 @@ func TestStallRecord_TracksRecoveryPerFileAndForgetsTheJobWhenEmpty(t *testing.T
 func TestClearStall_ForgetsAJobWithOutstandingRecoveryWork(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	application.noteStall("job-1", testFault("write"))
+	application.noteStall("job-1", testFault("write"), true)
 	application.notePendingFinalize("job-1", 0)
 
 	if parked := application.clearStall("job-1"); !parked {
@@ -158,7 +158,7 @@ func TestReevaluateStall_LeavesAJobWhoseFileCanNoLongerBeFinalized(t *testing.T)
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID(), 0, 0)
 
-	application.noteStall(job.ID(), testFault("finalize"))
+	application.noteStall(job.ID(), testFault("finalize"), true)
 	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestReevaluateStall_LeavesAJobWhoseFileCanNoLongerBeFinalized(t *testing.T)
 func TestReevaluateStall_ForgetsAJobThatHasLeftTheQueue(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	application.noteStall("gone", testFault("write"))
+	application.noteStall("gone", testFault("write"), true)
 
 	application.reevaluateStall(t.Context(), "gone")
 
@@ -199,8 +199,8 @@ func TestReevaluateStall_ForgetsAJobThatHasLeftTheQueue(t *testing.T) {
 func TestReevaluateStalls_CoversEveryParkedJob(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	application.noteStall("gone-a", testFault("write"))
-	application.noteStall("gone-b", testFault("write"))
+	application.noteStall("gone-a", testFault("write"), true)
+	application.noteStall("gone-b", testFault("write"), true)
 
 	application.reevaluateStalls(t.Context())
 
@@ -217,8 +217,8 @@ func TestReevaluateStalls_CoversEveryParkedJob(t *testing.T) {
 func TestReevaluateStalls_StopsOnACancelledContext(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	application.noteStall("gone-a", testFault("write"))
-	application.noteStall("gone-b", testFault("write"))
+	application.noteStall("gone-a", testFault("write"), true)
+	application.noteStall("gone-b", testFault("write"), true)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -285,7 +285,7 @@ func TestStallLost_ReplacesTheReasonWithTheOneActionLeft(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID(), 0, 0)
-	application.noteStall(job.ID(), testFault("sync"))
+	application.noteStall(job.ID(), testFault("sync"), true)
 	application.notePendingFinalize(job.ID(), 0)
 
 	application.stallLost(job.ID(), 0)
@@ -310,7 +310,7 @@ func TestRetryFinalize_ReportsRatherThanAssumesWhenItCannotAsk(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID(), 0, 0)
-	application.noteStall(job.ID(), testFault("sync"))
+	application.noteStall(job.ID(), testFault("sync"), true)
 	application.notePendingFinalize(job.ID(), 0)
 	if err := application.assembler.Stop(); err != nil {
 		t.Fatal(err)
@@ -339,7 +339,7 @@ func TestRetryFinalize_IsInertWithoutABarrier(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	application.barrier = nil
-	application.noteStall(job.ID(), testFault("sync"))
+	application.noteStall(job.ID(), testFault("sync"), true)
 	application.notePendingFinalize(job.ID(), 0)
 
 	err := application.retryFinalize(t.Context(), job.ID(), 0)
@@ -359,7 +359,7 @@ func TestRetryFinalize_IsInertWithoutABarrier(t *testing.T) {
 func TestReevaluateStall_KeepsAFileWhoseCompletionTheQueueRefused(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
-	application.noteStall(job.ID(), testFault("sync"))
+	application.noteStall(job.ID(), testFault("sync"), true)
 	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +508,7 @@ func TestNoteStallReason_RecordsAReasonThatIsNotAStorageFault(t *testing.T) {
 	}
 
 	// A later fault replaces the text rather than accumulating.
-	application.noteStall("job-1", testFault("write"))
+	application.noteStall("job-1", testFault("write"), true)
 	if r := application.StallReason("job-1").Reason; !strings.Contains(r, "no space") {
 		t.Errorf("reason = %q, want the newer fault", r)
 	}
@@ -615,8 +615,8 @@ func TestSetStallReasonLocked_CreatesTheRecordItNeeds(t *testing.T) {
 	application, _, _ := newLifecycleTestApp(t)
 
 	application.stallMu.Lock()
-	application.setStallReasonLocked("job-1", "Stalled: first")
-	application.setStallReasonLocked("job-1", "Stalled: second")
+	application.setStallReasonLocked("job-1", "Stalled: first", true)
+	application.setStallReasonLocked("job-1", "Stalled: second", true)
 	rec := application.stalls["job-1"]
 	application.stallMu.Unlock()
 
