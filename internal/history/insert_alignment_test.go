@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // TestAddGetRoundTrip_EveryFieldDistinct pins AddTx's positional argument list
@@ -124,6 +126,11 @@ func distinctEntry(t *testing.T) Entry {
 			// Offset so no int64 field collides with another, and non-zero so
 			// a dropped argument reads as a difference rather than a default.
 			f.SetInt(int64(1_000 + i))
+		case f.Type() == reflect.TypeFor[unwanted.State]():
+			// The column's CHECK admits only the declared states, so this
+			// cannot be index-derived; non-zero so a dropped argument reads
+			// as a difference rather than the DEFAULT 0.
+			f.SetUint(uint64(unwanted.StateApproved))
 		default:
 			t.Fatalf("distinctEntry cannot generate a value for %s (%s). Add a "+
 				"case for it — leaving it zero would make this test silently "+
