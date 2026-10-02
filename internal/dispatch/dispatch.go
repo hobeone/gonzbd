@@ -184,20 +184,6 @@ func (d *Dispatcher) cancelFor(id string, expected *job.Job) error {
 	return nil
 }
 
-// Retry re-arms a settled job for another attempt through sched and wakes the
-// tick.
-func (d *Dispatcher) Retry(id string) error {
-	j, ok := d.lookup(id)
-	if !ok {
-		return fmt.Errorf("dispatch: Retry: no job %q", id)
-	}
-	if err := d.q.Retry(j); err != nil {
-		return fmt.Errorf("dispatch: Retry(%s): %w", id, err)
-	}
-	d.kick()
-	return nil
-}
-
 // Pause sets the Queue's pause flag and wakes the tick (D-B13).
 func (d *Dispatcher) Pause() { d.q.Pause(); d.kick() }
 

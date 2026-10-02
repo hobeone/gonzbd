@@ -34,8 +34,13 @@ func TestWorkerExit_ClearsTheLaunchedClaimSoALaterTickCanRelaunch(t *testing.T) 
 			if err := d.Finished(j.ID(), job.OutcomeFailed); err != nil {
 				t.Fatalf("Finished: %v", err)
 			}
-			if err := d.Retry(j.ID()); err != nil {
-				t.Fatalf("Retry: %v", err)
+			// Finished settles the job, and a settled job is not launched by
+			// a tick on its own — reopen it directly through sched.Queue.Retry
+			// (the same instance; Dispatcher has no Retry door of its own) so
+			// the relaunch below can observe whether Finished's own exit
+			// path, the thing under test, left the launched claim clear.
+			if err := d.q.Retry(j); err != nil {
+				t.Fatalf("q.Retry: %v", err)
 			}
 		}, nil},
 		{"Yielded", func(t *testing.T, d *Dispatcher, j *job.Job) {

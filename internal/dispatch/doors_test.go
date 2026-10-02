@@ -74,39 +74,6 @@ func TestCancelJob_LeavesALaterInstanceAlone(t *testing.T) {
 	}
 }
 
-func TestRetry_NoJobReturnsError(t *testing.T) {
-	d := newTestDispatcher(t)
-	if err := d.Retry("missing"); err == nil {
-		t.Fatal("Retry(missing) returned nil, want an error")
-	}
-}
-
-func TestRetry_ReopensASettledJobAndKicks(t *testing.T) {
-	d := newTestDispatcher(t)
-	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(context.Background(), j, Header{}); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	d.tick(context.Background())
-	d.tick(context.Background())
-	if err := d.Finished(j.ID(), job.OutcomeFailed); err != nil {
-		t.Fatalf("Finished: %v", err)
-	}
-	<-d.wake // drain Finished's own kick
-
-	if err := d.Retry(j.ID()); err != nil {
-		t.Fatalf("Retry: %v", err)
-	}
-	if j.Snapshot().State.Outcome.IsSettled() {
-		t.Error("Retry left the job settled — want a reopened attempt")
-	}
-	select {
-	case <-d.wake:
-	default:
-		t.Error("Retry did not kick the tick")
-	}
-}
-
 func TestPauseResumePaused_DelegateToTheQueue(t *testing.T) {
 	d := newTestDispatcher(t)
 

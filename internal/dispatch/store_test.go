@@ -172,9 +172,17 @@ func TestRestore_PostBoundaryJobConsumesTheBoundary(t *testing.T) {
 		t.Fatalf("restore: %v", err)
 	}
 
-	err := d.Retry("j1")
+	// Reach the restored instance directly and reopen it through
+	// sched.Queue.Retry — Dispatcher has no Retry door of its own — since the
+	// property under test is reconstruct's boundary consumption, not the
+	// (removed) same-instance retry door.
+	j, ok := d.lookup("j1")
+	if !ok {
+		t.Fatal("j1 not registered after restore")
+	}
+	err := d.q.Retry(j)
 	if !errors.Is(err, job.ErrBoundaryConsumed) {
-		t.Errorf("Retry() = %v, want ErrBoundaryConsumed — a job restored at Finalizing really did cross, and a fresh attempt is not a legal way to retry it", err)
+		t.Errorf("q.Retry() = %v, want ErrBoundaryConsumed — a job restored at Finalizing really did cross, and a fresh attempt is not a legal way to retry it", err)
 	}
 }
 
