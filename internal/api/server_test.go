@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 )
@@ -26,7 +27,7 @@ func testServer() *Server {
 	cfg := &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}
 	return New(Options{
 		Config:     cfg,
-		Version:    "1.0.0-test",
+		Build:      buildinfo.Info{Version: "1.0.0-test"},
 		Dispatcher: d,
 		App:        apitest.NopApp{Dispatcher: d},
 	})
@@ -146,7 +147,7 @@ func TestCallerLevel_HeaderKey(t *testing.T) {
 // failing closed is the safe direction.
 func TestGetAuth_NilConfigFailsClosed(t *testing.T) {
 	t.Parallel()
-	s := New(Options{Version: "1.0.0-test"})
+	s := New(Options{Build: buildinfo.Info{Version: "1.0.0-test"}})
 	if s.config != nil {
 		t.Fatalf("precondition: config should be nil")
 	}
@@ -368,7 +369,7 @@ func TestAuthConfigDynamic(t *testing.T) {
 	}
 	s := New(Options{
 		Config:     cfg,
-		Version:    "1.0.0-test",
+		Build:      buildinfo.Info{Version: "1.0.0-test"},
 		Dispatcher: d,
 		App:        apitest.NopApp{Dispatcher: d},
 	})

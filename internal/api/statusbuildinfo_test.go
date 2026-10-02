@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 )
 
@@ -44,7 +45,7 @@ func TestModeStatus_BuildInfo(t *testing.T) {
 		t.Fatalf("Default(): %v", err)
 	}
 	cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
-	s := New(Options{Version: "v1.2.0", Commit: "abc123", Date: "2026-07-14T00:00:00Z", Config: cfg})
+	s := New(Options{Build: buildinfo.Info{Version: "v1.2.0", Commit: "abc123", BuildDate: "2026-07-14T00:00:00Z"}, Config: cfg})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=status&name=build_info&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -97,7 +98,7 @@ func TestModeStatus_BuildInfo(t *testing.T) {
 // endpoint's purpose.
 func TestStatusBuildInfo_ReportsTheBinaryItIsRunningIn(t *testing.T) {
 	t.Parallel()
-	s := &Server{version: "1.2.3", commit: "abc1234", date: "2026-08-12"}
+	s := &Server{build: buildinfo.Info{Version: "1.2.3", Commit: "abc1234", BuildDate: "2026-08-12"}}
 
 	rec := httptest.NewRecorder()
 	s.statusBuildInfo(rec, httptest.NewRequest(http.MethodGet, "/api/status/buildinfo", nil))

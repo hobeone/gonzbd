@@ -55,21 +55,25 @@ import (
 
 // Link-time build metadata, set via:
 //
-//	go build -ldflags="-X main.Version=v0.1.0 -X main.Commit=abc1234 -X main.Date=2026-05-06T14:00:00Z"
+//	go build -ldflags="-X main.Version=v0.1.0 -X main.Commit=abc1234 -X main.CommitTime=2026-05-06T13:00:00Z -X main.Dirty=false -X main.Date=2026-05-06T14:00:00Z"
 //
-// scripts/build.sh does this. Only currentBuild reads these; it merges them
-// with the toolchain's embedded VCS info.
+// scripts/build.sh does this. Empty means "not set"; currentBuild merges
+// them with the toolchain's embedded VCS info.
 var (
-	Version = buildinfo.DevVersion // semver tag (e.g. "v0.3.0"), or "dev" for local builds
-	Commit  = buildinfo.Unknown    // short git SHA
-	Date    = buildinfo.Unknown    // RFC-3339 build timestamp
+	Version    string // release tag or `git describe` output
+	Commit     string // short git SHA
+	CommitTime string // RFC-3339 commit timestamp
+	Dirty      string // "true" or "false"
+	Date       string // RFC-3339 build timestamp
 )
 
 // currentBuild resolves this binary's build metadata once. --version, the
 // startup log and the API server all read its result.
 var currentBuild = sync.OnceValue(func() buildinfo.Info {
 	bi, _ := debug.ReadBuildInfo() // !ok leaves bi nil, which Resolve accepts
-	return buildinfo.Resolve(Version, Commit, Date, bi)
+	return buildinfo.Resolve(buildinfo.LinkTime{
+		Version: Version, Commit: Commit, CommitTime: CommitTime, Dirty: Dirty, BuildDate: Date,
+	}, bi)
 })
 
 func main() {
@@ -91,11 +95,7 @@ func main() {
 
 	if *showVersion {
 		b := currentBuild()
-		commit := b.Commit
-		if b.Dirty {
-			commit += "-dirty"
-		}
-		fmt.Printf("gonzbd %s (commit %s, built %s, %s)\n", b.Version, commit, b.BuildDate, runtime.Version())
+		fmt.Printf("gonzbd %s (commit %s, built %s, %s)\n", b.Version, b.CommitLabel(), b.BuildDateLabel(), runtime.Version())
 		return
 	}
 
@@ -206,10 +206,9 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	build := currentBuild()
 	log.Info("gonzbd starting",
 		"version", build.Version,
-		"commit", build.Commit,
+		"commit", build.CommitLabel(),
 		"commit_time", build.CommitTime,
-		"dirty", build.Dirty,
-		"built", build.BuildDate,
+		"built", build.BuildDateLabel(),
 		"go", runtime.Version(),
 	)
 	logBuildDeps(log)
@@ -507,13 +506,8 @@ func ensureSelfSignedCert(certFile, keyFile string, log *slog.Logger) error {
 // (missing external dependencies, no NNTP servers configured) through both
 // the log and the API server's in-UI warning list.
 func buildAPIServer(cfg *config.Config, configPath string, application *app.Application, histRepo *history.Repository, grabber *urlgrabber.Grabber, cancel context.CancelFunc, log *slog.Logger, events *api.Broadcaster) *api.Server {
-	build := currentBuild()
 	apiSrv := api.New(api.Options{
-		Version:      build.Version,
-		Commit:       build.Commit,
-		CommitTime:   build.CommitTime,
-		Dirty:        build.Dirty,
-		Date:         build.BuildDate,
+		Build:        currentBuild(),
 		Dispatcher:   application.Dispatcher(),
 		History:      histRepo,
 		Config:       cfg,

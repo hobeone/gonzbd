@@ -58,11 +58,6 @@ func (s *Server) modeAbout(w http.ResponseWriter, r *http.Request) {
 	ipWG.Wait()
 
 	about := map[string]any{
-		"version":      s.version,
-		"commit":       s.commit,
-		"build_date":   s.date,
-		"commit_time":  s.commitTime,
-		"dirty":        s.dirty,
 		"go_version":   runtime.Version(),
 		"local_ipv4":   localIPv4(),
 		"public_ipv4":  publicV4,
@@ -79,6 +74,7 @@ func (s *Server) modeAbout(w http.ResponseWriter, r *http.Request) {
 		"unrar_path":   resolveBinary(unrarCmd, "unrar"),
 		"sevenz_path":  resolveBinary(sevenzCmd, unpack.SevenZipBinaries...),
 	}
+	s.writeBuildFields(about)
 
 	respondOK(w, "about", about)
 }

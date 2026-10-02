@@ -6,12 +6,16 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 )
 
-// TestBuildMetadataOnTheWire pins that every endpoint reporting build
-// metadata carries the commit time and dirty flag from Options, alongside
-// the pre-existing commit and build_date.
+// TestBuildMetadataOnTheWire pins that the three endpoints reporting build
+// metadata carry the same five fields, and that an absent value is "" (false
+// for dirty) rather than a placeholder. The three are the callers of
+// writeBuildFields: `git grep -n 'writeBuildFields[(]' -- 'internal/api/*.go'
+// ':(exclude)internal/api/*_test.go'` finds its definition plus one call in
+// each of about.go, statusbuildinfo.go and statusoverview.go.
 func TestBuildMetadataOnTheWire(t *testing.T) {
 	t.Parallel()
 	cfg, err := config.Default()
@@ -22,33 +26,30 @@ func TestBuildMetadataOnTheWire(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		opts  Options
-		dirty bool
+		build buildinfo.Info
 	}{
-		{"clean", Options{Commit: "abc1234", CommitTime: "2026-05-01T10:00:00Z", Date: "2026-05-06T14:00:00Z"}, false},
-		{"dirty", Options{Commit: "abc1234", CommitTime: "2026-05-01T10:00:00Z", Date: "2026-05-06T14:00:00Z", Dirty: true}, true},
+		{"clean", buildinfo.Info{Version: "v1.2.0", Commit: "abc1234", CommitTime: "2026-05-01T10:00:00Z", BuildDate: "2026-05-06T14:00:00Z"}},
+		{"dirty", buildinfo.Info{Version: "v1.2.0", Commit: "abc1234", CommitTime: "2026-05-01T10:00:00Z", BuildDate: "2026-05-06T14:00:00Z", Dirty: true}},
+		{"absent", buildinfo.Info{Version: "dev"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			opts := tt.opts
-			opts.Version = "v1.2.0"
-			opts.Config = cfg
-			s := New(opts)
+			s := New(Options{Build: tt.build, Config: cfg})
 
 			check := func(t *testing.T, m map[string]any) {
 				t.Helper()
-				if m["commit"] != "abc1234" {
-					t.Errorf("commit = %v; want abc1234", m["commit"])
+				want := map[string]any{
+					"version":     tt.build.Version,
+					"commit":      tt.build.Commit,
+					"commit_time": tt.build.CommitTime,
+					"dirty":       tt.build.Dirty,
+					"build_date":  tt.build.BuildDate,
 				}
-				if m["commit_time"] != "2026-05-01T10:00:00Z" {
-					t.Errorf("commit_time = %v; want 2026-05-01T10:00:00Z", m["commit_time"])
-				}
-				if m["dirty"] != tt.dirty {
-					t.Errorf("dirty = %v; want %v", m["dirty"], tt.dirty)
-				}
-				if m["build_date"] != "2026-05-06T14:00:00Z" {
-					t.Errorf("build_date = %v; want 2026-05-06T14:00:00Z", m["build_date"])
+				for k, v := range want {
+					if m[k] != v {
+						t.Errorf("%s = %#v; want %#v", k, m[k], v)
+					}
 				}
 			}
 
@@ -58,6 +59,17 @@ func TestBuildMetadataOnTheWire(t *testing.T) {
 					t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
 				}
 				check(t, decodeJSON(t, rr))
+			})
+			t.Run("status_overview general", func(t *testing.T) {
+				rr := apiGet(t, s.Handler(), "/api?mode=status_overview&apikey="+testAPIKey)
+				if rr.Code != http.StatusOK {
+					t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+				}
+				general, ok := decodeJSON(t, rr)["general"].(map[string]any)
+				if !ok {
+					t.Fatalf("no general object in %s", rr.Body.String())
+				}
+				check(t, general)
 			})
 			t.Run("about", func(t *testing.T) {
 				// A cancelled request context makes the handler's outbound

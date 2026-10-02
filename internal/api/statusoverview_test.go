@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
@@ -42,7 +43,7 @@ func TestModeStatusOverview_ReturnsGeneralAndSystemSections(t *testing.T) {
 		articleCache:    12345,
 		downloadDirFree: 987654321,
 	}
-	s := New(Options{Version: "v1.2.0", Commit: "abc123", Config: cfg, App: spy})
+	s := New(Options{Build: buildinfo.Info{Version: "v1.2.0", Commit: "abc123"}, Config: cfg, App: spy})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=status_overview&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {

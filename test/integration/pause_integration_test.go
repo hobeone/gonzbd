@@ -13,6 +13,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/test/mocknntp"
@@ -81,7 +82,7 @@ func TestIntegration_PauseCancelsInFlightFetch(t *testing.T) {
 	apiCfg.General.NZBKey = "testnzbkey"
 
 	apiSrv := api.New(api.Options{
-		Version:    "integration-test",
+		Build:      buildinfo.Info{Version: "integration-test"},
 		Dispatcher: a.Dispatcher(),
 		History:    repo,
 		Config:     apiCfg,

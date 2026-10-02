@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/dispatch"
@@ -35,7 +36,7 @@ func testHistoryServer(t *testing.T) (*Server, *history.Repository) {
 
 	s := New(Options{
 		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version: "1.0.0-test",
+		Build:   buildinfo.Info{Version: "1.0.0-test"},
 		History: repo,
 		App:     apitest.NopApp{History: repo},
 	})
@@ -430,8 +431,8 @@ func TestHistoryRetry(t *testing.T) {
 func TestHistoryNilGuard(t *testing.T) {
 	t.Parallel()
 	s := New(Options{
-		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
-		Version: "1.0.0-test",
+		Config: &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
+		Build:  buildinfo.Info{Version: "1.0.0-test"},
 		// History intentionally nil.
 	})
 	rr := apiGet(t, s.Handler(), "/api?mode=history&apikey="+testAPIKey)
@@ -654,7 +655,7 @@ func TestHistoryList_PostProcJobsNotInjected(t *testing.T) {
 	d := newTestAPIDispatcher(t)
 	s := New(Options{
 		Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version:    "1.0.0-test",
+		Build:      buildinfo.Info{Version: "1.0.0-test"},
 		Dispatcher: d,
 		History:    repo,
 		App:        apitest.NopApp{Dispatcher: d, History: repo},
@@ -805,7 +806,7 @@ func TestHistoryDelete_RemoveHistoryJobErrorLog(t *testing.T) {
 	s := New(Options{
 		Logger:  logger,
 		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version: "1.0.0-test",
+		Build:   buildinfo.Info{Version: "1.0.0-test"},
 		History: repo,
 		App: removeHistoryErrApp{
 			NopApp:  apitest.NopApp{History: repo},

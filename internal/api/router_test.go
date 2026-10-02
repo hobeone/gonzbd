@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 )
 
@@ -270,7 +271,7 @@ func TestModeAuth_ClassifiesKeys(t *testing.T) {
 // silently gate a mode at something no caller can satisfy.
 func TestRegisterModes_EveryEntryIsDispatchable(t *testing.T) {
 	t.Parallel()
-	s := New(Options{Version: "1.0.0-test"})
+	s := New(Options{Build: buildinfo.Info{Version: "1.0.0-test"}})
 	s.registerModes()
 
 	if len(s.modes) == 0 {
@@ -301,7 +302,7 @@ func TestRegisterModes_VersionIsOpen(t *testing.T) {
 	t.Parallel()
 	// New calls registerModes at server.go:147; calling it again here would
 	// mask a regression in New that skipped registration.
-	s := New(Options{Version: "1.0.0-test"})
+	s := New(Options{Build: buildinfo.Info{Version: "1.0.0-test"}})
 
 	entry, ok := s.modes["version"]
 	if !ok {

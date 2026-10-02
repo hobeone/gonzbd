@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 
 	"github.com/hobeone/gonzbd/internal/config"
 )
@@ -132,7 +133,7 @@ func TestModeSetConfig_PersistsToDisk(t *testing.T) {
 	}
 
 	s := New(Options{
-		Version:    "1.0.0-test",
+		Build:      buildinfo.Info{Version: "1.0.0-test"},
 		Config:     cfg,
 		ConfigPath: cfgPath,
 	})
@@ -232,9 +233,9 @@ func TestModeSetConfig_SpeedLimits(t *testing.T) {
 
 	app := &speedLimitSpyApp{}
 	s := New(Options{
-		Version: "1.0.0-test",
-		Config:  cfg,
-		App:     app,
+		Build:  buildinfo.Info{Version: "1.0.0-test"},
+		Config: cfg,
+		App:    app,
 	})
 
 	h := s.Handler()

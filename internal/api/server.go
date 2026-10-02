@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/dispatch"
@@ -18,27 +19,17 @@ import (
 
 // Options configures the API server at construction time.
 type Options struct {
-	// Version is gonzbd's own build version (cmd/gonzbd's main.Version,
-	// defaulting to "dev" for a local build). It is NOT what mode=version
-	// returns — that reports the SABnzbd API generation, because clients
-	// feature-gate on it; see sabnzbdAPIVersion in router.go.
+	// Build is this binary's build metadata, as resolved by
+	// internal/buildinfo. Build.Version is NOT what mode=version returns —
+	// that reports the SABnzbd API generation, because clients feature-gate
+	// on it; see sabnzbdAPIVersion in router.go.
 	//
-	// It reaches clients through mode=about, mode=status_overview,
-	// mode=status&name=build_info and the GitHub update check:
-	// `git grep -n 's[.]version' -- 'internal/api/*.go' ':(exclude)internal/api/*_test.go'`
-	// finds 6 — one read in each of about.go, statusbuildinfo.go and
-	// statusoverview.go, and three in versioncheck.go.
-	Version string
-	// Commit is the short git SHA of the build.
-	Commit string
-	// CommitTime is the RFC-3339 commit timestamp, or "" when unknown.
-	CommitTime string
-	// Dirty reports that the build tree had uncommitted changes.
-	Dirty bool
-	// Date is the RFC-3339 build timestamp.
-	Date string
-	// cmd/gonzbd fills Version, Commit, CommitTime, Dirty and Date from
-	// internal/buildinfo's Resolve.
+	// The build fields reach clients through writeBuildFields, called from
+	// mode=about, mode=status_overview and mode=status&name=build_info:
+	// `git grep -n 'writeBuildFields[(]' -- 'internal/api/*.go' ':(exclude)internal/api/*_test.go'`
+	// finds 4 — its definition and one call in each of those three. The
+	// GitHub update check reads Build.Version directly.
+	Build buildinfo.Info
 
 	// Logger is the structured logger. Defaults to slog.Default() when nil.
 	Logger *slog.Logger
@@ -80,13 +71,9 @@ type Options struct {
 // exposes its handler via Handler; the caller (cmd/gonzbd) is responsible
 // for binding and serving it on a real net/http.Server.
 type Server struct {
-	version    string
-	commit     string
-	date       string
-	commitTime string
-	dirty      bool
-	startTime  time.Time
-	log        *slog.Logger
+	build     buildinfo.Info
+	startTime time.Time
+	log       *slog.Logger
 
 	dispatcher *dispatch.Dispatcher
 	history    *history.Repository
@@ -136,11 +123,7 @@ func New(opts Options) *Server {
 	}
 
 	s := &Server{
-		version:      opts.Version,
-		commit:       opts.Commit,
-		date:         opts.Date,
-		commitTime:   opts.CommitTime,
-		dirty:        opts.Dirty,
+		build:        opts.Build,
 		startTime:    time.Now(),
 		log:          log,
 		dispatcher:   opts.Dispatcher,

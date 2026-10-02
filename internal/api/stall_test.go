@@ -11,6 +11,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -36,7 +37,7 @@ func stallTestServer(t *testing.T, states map[string]app.JobCheckpointState, cou
 	disp := newTestAPIDispatcher(t)
 	s := New(Options{
 		Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version:    "1.0.0-test",
+		Build:      buildinfo.Info{Version: "1.0.0-test"},
 		Dispatcher: disp,
 		App: apitest.NopApp{
 			CheckpointStatesVal: states,

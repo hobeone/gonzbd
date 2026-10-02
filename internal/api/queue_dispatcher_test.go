@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/dispatch"
@@ -85,7 +86,7 @@ func testDispatcherServer(t *testing.T, d *dispatch.Dispatcher, cats ...config.C
 	}
 	s := New(Options{
 		Config:     cfg,
-		Version:    "1.0.0-test",
+		Build:      buildinfo.Info{Version: "1.0.0-test"},
 		Dispatcher: d,
 		App:        apitest.NopApp{Dispatcher: d},
 	})

@@ -17,6 +17,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -521,7 +522,7 @@ func buildAPIServerWithQueue(t *testing.T) (*api.Server, *httptest.Server) {
 	grabber := urlgrabber.New(urlgrabber.Config{}, nopNZBHandler{})
 
 	srv := api.New(api.Options{
-		Version:    "integration-test",
+		Build:      buildinfo.Info{Version: "integration-test"},
 		Dispatcher: application.Dispatcher(),
 		History:    repo,
 		Config:     cfg,
@@ -601,7 +602,7 @@ func buildAPIServerWithValidConfig(t *testing.T) (*api.Server, *httptest.Server)
 	grabber := urlgrabber.New(urlgrabber.Config{}, nopNZBHandler{})
 
 	srv := api.New(api.Options{
-		Version:    "integration-test",
+		Build:      buildinfo.Info{Version: "integration-test"},
 		Dispatcher: application.Dispatcher(),
 		History:    repo,
 		Config:     cfg,

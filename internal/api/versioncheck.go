@@ -31,7 +31,7 @@ var githubLatestReleaseURL = "https://api.github.com/repos/hobeone/gonzbd/releas
 // on any failure: dev build, network error, timeout, or non-2xx
 // response — this is informational only, never load-bearing.
 func (s *Server) statusCheckUpdate(w http.ResponseWriter, r *http.Request) {
-	if s.version == "" || s.version == "dev" {
+	if s.build.Version == "" || s.build.Version == "dev" {
 		respondOK(w, "result", map[string]any{
 			"status": "unknown",
 			"reason": "this build has no version baked in (a local build without -ldflags -X main.Version=...)",
@@ -42,7 +42,7 @@ func (s *Server) statusCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), checkUpdateTimeout)
 	defer cancel()
 
-	latest, err := fetchLatestGithubRelease(ctx, "gonzbd/"+s.version)
+	latest, err := fetchLatestGithubRelease(ctx, "gonzbd/"+s.build.Version)
 	if err != nil {
 		s.log.Debug("check_update: github fetch failed", "error", err)
 		respondOK(w, "result", map[string]any{
@@ -52,7 +52,7 @@ func (s *Server) statusCheckUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cmp := compareVersions(s.version, latest)
+	cmp := compareVersions(s.build.Version, latest)
 	status := "up_to_date"
 	if cmp < 0 {
 		status = "update_available"
