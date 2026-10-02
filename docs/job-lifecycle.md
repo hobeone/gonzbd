@@ -987,21 +987,25 @@ Counter maintenance needs article byte counts and the file↔article mapping.
 Reads do not, and neither does a per-article bit.
 
 **Two article writes do not wait for the manifest.** `Job.MarkArticleFailed`
-and `Job.ClearArticleEmitted` are reached by fetch results, and a fetch can
-complete after its job was evicted — `Application.Stall` pauses a `Fetching`
-job and the next tick evicts it with fetches still in flight. A permanent
-failure's only record is its failed bit: hydration re-derives a success from
-`durable_runs`, but the `failed_articles` rows a failure is restored from are
-written from that bit. An emitted bit survives eviction and hides its article
-from `ForEachUnfinishedArticle`. Refusing either write therefore loses a
-failure or strands an article. With the manifest evicted, both write the bits
-alone and leave the counters to the `recompute` in `RestoreContent` at the next
-hydration; until then `FailedBytes`, `PendingArticles` and `ArticlesFailed` lag
-the bits, and the early par2 release a resident failure triggers is not made:
-held volumes wait for a later resident failure or for the Assessing-time
-verdict, `maybeReleaseRecoveryVolumes`. The checkpointer therefore decides whether to write
-`failed_articles` rows from the bits (`JobProgress.AnyArticleFailed`), not from
-`ArticlesFailed`.
+and `Job.ClearArticleEmitted` are reached from fetch results, from the
+downloader's drops of requests and results, and from the assembler's
+article-fault handlers — all of which can run after the job was evicted:
+`Application.Stall` pauses a `Fetching` job, and the next tick evicts it with
+fetches still in flight. The failed bit is what a failure's durable record is
+written from: hydration re-derives a success from `durable_runs`, but the
+`failed_articles` rows a failure is restored from are written from that bit by
+the checkpoint adapter (`appCheckpointStore.SaveBatch`). An emitted bit
+survives eviction and hides its article from `ForEachUnfinishedArticle`.
+Refusing either write therefore loses a failure or strands an article.
+
+With the manifest evicted, both write the bits alone and leave the counters to
+the `recompute` in `RestoreContent` at the next hydration. Until then
+`FailedBytes`, `PendingArticles` and `ArticlesFailed` lag the bits, and the
+early par2 release a resident failure triggers is not made: held volumes wait
+for a later resident failure or, if damage is then found, for the
+Assessing-time verdict in `maybeReleaseRecoveryVolumes`. The checkpointer
+therefore decides whether to write `failed_articles` rows from the bits
+(`JobProgress.AnyArticleFailed`), not from `ArticlesFailed`.
 
 **Residency is not derived from position.** Either you hold a manifest or you
 do not, and `Job.Manifest() (*Manifest, error)` makes every dependence on one a

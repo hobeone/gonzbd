@@ -226,9 +226,10 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 // records when a job is re-hydrated. The two markDone calls behind the first
 // two entry points moved onto unexported *Job methods in B2.4a; the entry
 // points and the evidence they require are unchanged.
-// job.markFailed sets the bit too, for an
-// article whose bytes will never arrive and which therefore contributes no
-// downloaded bytes.
+// job.setFailedBits sets the bit too, for an article whose bytes will never
+// arrive and which therefore contributes no downloaded bytes — through
+// job.markFailed, or directly from Job.MarkArticleFailed while the manifest is
+// evicted.
 //
 // One path sets the bit WITHOUT going through markDone at all, and it is named
 // here rather than left to the word "ultimately": job.newJobProgressSized

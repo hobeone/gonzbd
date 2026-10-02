@@ -268,9 +268,10 @@ func (j *Job) MarkArticleDone(artIdx int, bytes int64, server string) error {
 
 // MarkArticleFailed records an article that will not be retried.
 //
-// It does not require the manifest. The failed bit is the failure's only
-// record: hydration re-derives a success from durable_runs, but the
-// failed_articles rows a failure is restored from are written from this bit.
+// It does not require the manifest. The failed bit is what the failure's
+// durable record is written from: hydration re-derives a success from
+// durable_runs, but the failed_articles rows a failure is restored from are
+// written from this bit by app's appCheckpointStore.SaveBatch.
 // A fetch can complete after its job was evicted, so refusing an evicted job
 // would lose the failure. Evicted, it records the bits alone: the counters and
 // the early par2 release need the manifest's file ranges and article sizes, and

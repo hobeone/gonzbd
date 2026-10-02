@@ -1162,9 +1162,9 @@ type fileProgressJSON struct {
 // B2.4a — the doors and their evidence are unchanged, only the receiver moved.
 // setFailedBits sets it too, for an article whose bytes will never arrive —
 // through markFailed, or directly from Job.MarkArticleFailed while the
-// manifest is evicted. So a persisted done bit always stands on a completed fsync or
-// a permanent failure — never on a write that was merely attempted (#355) —
-// and the pair is consistent.
+// manifest is evicted. So a persisted done bit always stands on a completed
+// fsync or a permanent failure — never on a write that was merely attempted
+// (#355) — and the pair is consistent.
 //
 // TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list above,
 // and the wider one in app.JobDurability that adds the direct writer this
