@@ -27,7 +27,7 @@ file internal/durability/barrier.go
 [the checkpoint adapter drops failed marks]
 file internal/app/dispatcher_wiring.go
 --- anchor
-			if p.ArticlesFailed() > 0 {
+			if p.AnyArticleFailed() {
 --- replace
 			if false {
 --- end

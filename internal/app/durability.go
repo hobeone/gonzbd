@@ -67,12 +67,20 @@ func (app *Application) AckDurable(p durability.DurableProof) error {
 //
 // Thread-safe: clears the emitted bits under the job lock. It does NOT touch
 // the assembler.
-func (app *Application) handleArticlesUnwritten(jobID string, _ int, artIdxs []int32) {
+func (app *Application) handleArticlesUnwritten(jobID string, fileIdx int, artIdxs []int32) {
+	if app.dispatcher == nil {
+		return
+	}
+	j, ok := app.dispatcher.Job(jobID)
+	if !ok {
+		app.log.Debug("unwritten articles not returned to Outstanding; the job has left the queue",
+			"job", jobID, "fileidx", fileIdx, "articles", len(artIdxs))
+		return
+	}
 	for _, artIdx := range artIdxs {
-		if app.dispatcher != nil {
-			if j, ok := app.dispatcher.Job(jobID); ok {
-				_ = j.ClearArticleEmitted(int(artIdx))
-			}
+		if err := j.ClearArticleEmitted(int(artIdx)); err != nil {
+			app.log.Warn("return unwritten article to Outstanding",
+				"job", jobID, "fileidx", fileIdx, "artidx", artIdx, "err", err)
 		}
 	}
 }
@@ -189,9 +197,11 @@ func (app *Application) postAnomaly(jobID string, fileIdx int, source, reason st
 // property of what the server sent: the offset comes from the article's own
 // yEnc header, so a re-fetch of the same article yields the same rejection.
 // Ack is what charges its bytes against the job's par2 recovery budget and
-// releases on-demand recovery volumes, and Job.MarkArticleFailed clears
-// the Emitted bit as part of resolving the article — without it the job waits
-// forever on something nothing will re-dispatch.
+// releases on-demand recovery volumes, and Job.MarkArticleFailed clears the
+// Emitted bit as part of resolving the article — without it the job waits
+// forever on something nothing will re-dispatch. A job evicted after Stall
+// paused it still records the failure, but the byte charge waits for the next
+// hydration and the release is not made: see Job.MarkArticleFailed.
 //
 // This is the other side of the A1 split from handleWriteFault: that one
 // stalls the job and touches no article, this one fails the article and
@@ -199,13 +209,22 @@ func (app *Application) postAnomaly(jobID string, fileIdx int, source, reason st
 func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx int32, reason string) {
 	app.log.Warn("article rejected by the assembler; recording it as permanently failed",
 		"job", jobID, "fileidx", fileIdx, "artidx", artIdx, "reason", reason)
-	if app.dispatcher != nil {
-		if j, ok := app.dispatcher.Job(jobID); ok {
-			_ = j.MarkArticleFailed(int(artIdx))
-			if app.checkpointer != nil {
-				app.checkpointer.Mark(j)
-			}
-		}
+	if app.dispatcher == nil {
+		return
+	}
+	j, ok := app.dispatcher.Job(jobID)
+	if !ok {
+		app.log.Debug("rejected article not recorded; the job has left the queue",
+			"job", jobID, "artidx", artIdx)
+		return
+	}
+	if err := j.MarkArticleFailed(int(artIdx)); err != nil {
+		app.log.Warn("record rejected article as permanently failed",
+			"job", jobID, "fileidx", fileIdx, "artidx", artIdx, "err", err)
+		return
+	}
+	if app.checkpointer != nil {
+		app.checkpointer.Mark(j)
 	}
 }
 

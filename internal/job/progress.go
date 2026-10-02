@@ -370,6 +370,19 @@ func (p *JobProgress) ArticlesFailed() int {
 	return p.articlesFailed
 }
 
+// AnyArticleFailed reports whether any article has permanently failed.
+//
+// It reads the failed bits rather than ArticlesFailed, which lags them while
+// the manifest is evicted: Job.MarkArticleFailed records an evicted job's
+// failure as bits alone, and the counter catches up only at the next
+// hydration.
+func (p *JobProgress) AnyArticleFailed() bool {
+	if p == nil {
+		return false
+	}
+	return p.failed.any()
+}
+
 // EarlyAborted reports whether the early-abort heuristic has already fired for this job.
 func (p *JobProgress) EarlyAborted() bool {
 	if p == nil {
@@ -625,10 +638,12 @@ func jobStampOrZero(t time.Time) time.Time {
 //
 // This and its three siblings below are the only functions in this package's
 // non-test sources that assign p.downloadStarted or p.downloadFinished by
-// name. #464 routed the six former writers here: markStartedOnce,
-// markDownloadFinishedOnce and ResetForRetry in job.go, SetPostProcStarted in
-// queue.go, UnmarshalJSON below in this file, and the Get decode in
-// sqlite_store.go.
+// name. Everything else reaches the fields through them: Job.MarkJobStarted
+// calls this one, and the pipeline's handleSuccessResult calls MarkJobStarted
+// for every decoded article, so the first wins; Job.MarkDownloadFinished calls
+// setDownloadFinishedOnce; ResetForRetry calls clearDownloadStamps; and
+// UnmarshalJSON, AttachContent and RestoreProgressState install persisted
+// stamps through restoreDownloadStamps.
 //
 // That claim is enforced rather than cited.
 // TestDownloadStampWriters_MatchTheEnumerationStatedInProse walks the package
@@ -865,9 +880,10 @@ func (p *JobProgress) clone() *JobProgress {
 // recomputes from the manifest is what makes the seed and the replay agree
 // instead of stacking.
 //
-// Incremental maintenance by markFailed/resetForReload is what carries the
-// value between recomputes, while no manifest is resident to recompute
-// against.
+// Between recomputes, markFailed and resetForReload maintain the value
+// incrementally; both take the manifest. While the manifest is evicted nothing
+// maintains it: Job.MarkArticleFailed sets the bits alone, and the value lags
+// them until RestoreContent recomputes at the next hydration.
 func (p *JobProgress) recompute(m *Manifest) {
 	// JobProgress and Manifest are persisted as independent JSON documents
 	// (Job.UnmarshalJSON assigns both from separate keys with nothing
@@ -1014,22 +1030,37 @@ func (p *JobProgress) markNotDone(i int) bool {
 // markFailed flips Done+Failed on article i and updates counters. Returns
 // false (no-op) if the article was already Done.
 func (p *JobProgress) markFailed(m *Manifest, i int) bool {
-	if p.done.Get(i) {
+	wasEmitted := p.emitted.Get(i)
+	if !p.setFailedBits(i) {
 		return false
 	}
 	fi := m.fileIndexForArticle(i)
-	if !p.emitted.Get(i) {
+	if !wasEmitted {
 		p.files[fi].Pending--
 		p.pendingArticles--
 	}
-	p.done.Set(i)
-	p.failed.Set(i)
-	p.emitted.Clear(i)
 	bytes := int64(m.ArticleBytes(i))
 	p.failedBytes += bytes
 	p.files[fi].FailedBytes += bytes
 	p.articlesResolved++
 	p.articlesFailed++
+	return true
+}
+
+// setFailedBits is the bit transition of a permanent failure: Done and Failed
+// set, Emitted cleared. Returns false (no-op) if the article was already Done.
+//
+// It needs no manifest and maintains no counter. markFailed calls it and then
+// maintains the counters itself; Job.MarkArticleFailed calls it alone for a job
+// whose manifest is evicted, leaving the counters to the recompute in
+// RestoreContent.
+func (p *JobProgress) setFailedBits(i int) bool {
+	if p.done.Get(i) {
+		return false
+	}
+	p.done.Set(i)
+	p.failed.Set(i)
+	p.emitted.Clear(i)
 	return true
 }
 
@@ -1129,11 +1160,11 @@ type fileProgressJSON struct {
 // applyResolution, which replays the resolution derived from those same
 // records on re-hydration. The first two became unexported *Job methods in
 // B2.4a — the doors and their evidence are unchanged, only the receiver moved.
-// markFailed sets it too, for an
-// article whose bytes will
-// never arrive. So a persisted done bit always stands on a completed fsync or
-// a permanent failure — never on a write that was merely attempted (#355) —
-// and the pair is consistent.
+// setFailedBits sets it too, for an article whose bytes will never arrive —
+// through markFailed, or directly from Job.MarkArticleFailed while the
+// manifest is evicted. So a persisted done bit always stands on a completed
+// fsync or a permanent failure — never on a write that was merely attempted
+// (#355) — and the pair is consistent.
 //
 // TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list above,
 // and the wider one in app.JobDurability that adds the direct writer this

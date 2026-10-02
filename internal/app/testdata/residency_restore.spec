@@ -4,8 +4,8 @@ run TestAppResidency_HydrateThenEvict
 [hydration always attaches fresh progress, zeroing a re-hydrated job's counters]
 file internal/app/residency.go
 --- anchor
-	if p := j.Progress(); p != nil {
-		if err := j.RestoreContent(m, p); err != nil {
+	if j.HasProgress() {
+		if err := j.RestoreContent(m); err != nil {
 			return err
 		}
 	} else if err := j.AttachContent(m); err != nil {

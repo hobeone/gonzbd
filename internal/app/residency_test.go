@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -83,6 +84,43 @@ func TestAppResidency_HydrateThenEvict(t *testing.T) {
 	}
 	if !j.Progress().ArticleDone(0) {
 		t.Fatal("re-hydration re-zeroed progress counters instead of preserving them via RestoreContent")
+	}
+}
+
+// TestAppResidency_RehydrationKeepsAFailureRecordedWhileEvicted pins the
+// hydration half of recording an evicted job's failure: Hydrate restores onto
+// the job's own progress record, so the failed bit survives and is charged.
+func TestAppResidency_RehydrationKeepsAFailureRecordedWhileEvicted(t *testing.T) {
+	dir := t.TempDir()
+	j := job.New("abc123", "test", job.PolicyFromPP(3))
+	writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), j)
+	r := newAppResidency(func(id string) (*job.Job, bool) {
+		if id == "abc123" {
+			return j, true
+		}
+		return nil, false
+	}, dir, nil, nil)
+
+	if err := r.Hydrate(context.Background(), "abc123"); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	if err := j.MarkArticleEmitted(0); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+	r.Evict("abc123")
+	if err := j.MarkArticleFailed(0); err != nil {
+		t.Fatalf("MarkArticleFailed while evicted: %v", err)
+	}
+
+	if err := r.Hydrate(context.Background(), "abc123"); err != nil {
+		t.Fatalf("re-Hydrate: %v", err)
+	}
+	if p := j.Progress(); !p.ArticleFailed(0) || p.ArticleEmitted(0) {
+		t.Errorf("article 0 after re-hydration: failed=%v emitted=%v, want failed and not emitted",
+			p.ArticleFailed(0), p.ArticleEmitted(0))
+	}
+	if got := j.FailedBytes(); got != 100 {
+		t.Errorf("FailedBytes after re-hydration = %d, want 100", got)
 	}
 }
 
@@ -185,4 +223,93 @@ func TestAppResidency_RestoreResolution(t *testing.T) {
 		close(readyCh)
 	}()
 	r.Evict("waiting")
+}
+
+// TestAppResidency_HydrateRefusesAProgressRecordOfAnotherShape pins that a
+// re-hydration whose manifest does not describe the job's own progress record
+// fails rather than recomputing the record against the wrong file ranges.
+func TestAppResidency_HydrateRefusesAProgressRecordOfAnotherShape(t *testing.T) {
+	dir := t.TempDir()
+	j := job.New("abc123", "test", job.PolicyFromPP(3))
+	if err := j.AttachContent(job.NewManifest([]job.JobFile{{Subject: "x.rar", Bytes: 200, Articles: []job.JobArticle{
+		{ID: "a1", Bytes: 100, Number: 1}, {ID: "a2", Bytes: 100, Number: 2},
+	}}})); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	j.Evict()
+	writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), j) // one article
+	r := newAppResidency(func(string) (*job.Job, bool) { return j, true }, dir, nil, nil)
+
+	if err := r.Hydrate(context.Background(), "abc123"); err == nil {
+		t.Fatal("Hydrate attached a one-article manifest to a two-article progress record")
+	}
+	if j.Resident() {
+		t.Error("the job is resident after a refused hydration")
+	}
+}
+
+// TestAppResidency_HydrateWaitsForAHydrationInFlight pins the coalescing
+// branch: a second Hydrate for a job already being hydrated waits for the
+// first and reports its outcome instead of reading the manifest again.
+func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
+	dir := t.TempDir()
+	newJob := func() *job.Job {
+		j := job.New("abc123", "test", job.PolicyFromPP(3))
+		writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), j)
+		return j
+	}
+	inFlight := func(j *job.Job) (*appResidency, chan struct{}) {
+		ready := make(chan struct{})
+		r := &appResidency{
+			lookup:    func(string) (*job.Job, bool) { return j, true },
+			dir:       dir,
+			hydrating: map[string]chan struct{}{"abc123": ready},
+		}
+		return r, ready
+	}
+
+	t.Run("the first succeeded", func(t *testing.T) {
+		j := newJob()
+		r, ready := inFlight(j)
+		done := make(chan error, 1)
+		go func() { done <- r.Hydrate(context.Background(), "abc123") }()
+		m := job.NewManifest([]job.JobFile{{Subject: "test.rar", Bytes: 100, Articles: []job.JobArticle{{ID: "m1", Bytes: 100, Number: 1}}}})
+		if err := j.AttachContent(m); err != nil {
+			t.Fatalf("AttachContent: %v", err)
+		}
+		close(ready)
+		if err := <-done; err != nil {
+			t.Errorf("Hydrate after a successful hydration in flight: %v", err)
+		}
+	})
+
+	t.Run("the first failed", func(t *testing.T) {
+		r, ready := inFlight(newJob())
+		done := make(chan error, 1)
+		go func() { done <- r.Hydrate(context.Background(), "abc123") }()
+		close(ready)
+		if err := <-done; err == nil {
+			t.Error("Hydrate reported success after the hydration it waited on left the job non-resident")
+		}
+	})
+
+	t.Run("the caller gives up", func(t *testing.T) {
+		r, _ := inFlight(newJob())
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := r.Hydrate(ctx, "abc123"); !errors.Is(err, context.Canceled) {
+			t.Errorf("Hydrate with a cancelled context = %v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("a zero-value residency hydrates", func(t *testing.T) {
+		j := newJob()
+		r := &appResidency{lookup: func(string) (*job.Job, bool) { return j, true }, dir: dir}
+		if err := r.Hydrate(context.Background(), "abc123"); err != nil {
+			t.Fatalf("Hydrate: %v", err)
+		}
+		if !j.Resident() {
+			t.Error("the job is not resident after Hydrate")
+		}
+	})
 }

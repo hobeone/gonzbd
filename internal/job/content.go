@@ -21,11 +21,10 @@ var ErrNotResident = errors.New("job: content tier not resident")
 // caller, which is what makes "progress describes this manifest" hold for a
 // job starting out rather than being merely asserted.
 //
-// It is not the sole writer of the pair. RestoreContent, below, installs a
-// manifest alongside progress recovered from the store, and says so in its own
-// comment. `git grep -n 'func (j \*Job) \(AttachContent\|RestoreContent\)' --
-// 'internal/job/*.go'` finds 2 lines, one per constructor. Both are methods on
-// Job, so the pair still cannot be set from outside the package.
+// It is the only writer of the progress pointer, which
+// TestProgressPointerWriters_MatchTheEnumerationStatedInProse pins.
+// RestoreContent, below, installs a manifest beside the progress record the
+// job already holds and never replaces that record.
 func (j *Job) AttachContent(m *Manifest) error {
 	if m == nil {
 		return fmt.Errorf("job %s: AttachContent: nil manifest", j.id)
@@ -37,8 +36,8 @@ func (j *Job) AttachContent(m *Manifest) error {
 	// discard every done/failed bit and both stamps with no error — and since
 	// the first attach zeroed the Job-level copy, there would be nothing left
 	// to seed the replacement from either. Callers gate on this today
-	// (residency.Hydrate takes the RestoreContent arm when Progress() is
-	// non-nil, and the ingest path builds a fresh Job), which is what makes
+	// (residency.Hydrate takes the RestoreContent arm when HasProgress() is
+	// true, and the ingest path builds a fresh Job), which is what makes
 	// this an assertion of an invariant rather than a behaviour change.
 	if j.progress != nil || j.manifest != nil {
 		return fmt.Errorf("job %s: AttachContent: content already attached; use RestoreContent to install a manifest alongside existing progress", j.id)
@@ -65,25 +64,35 @@ func (j *Job) AttachContent(m *Manifest) error {
 	return nil
 }
 
-// RestoreContent installs a manifest together with progress recovered from the
-// store. It is AttachContent's counterpart for a job that has run before, and
-// it is the only other writer of the pair.
+// RestoreContent re-attaches a manifest to the job's own progress record. It
+// is AttachContent's counterpart for a job whose manifest was evicted, and it
+// installs the manifest only: the progress record stays the one the job
+// already holds.
+//
+// The record is recomputed in place, under the same lock its writers take, and
+// never replaced. Writes that need no manifest — MarkArticleFailed and
+// ClearArticleEmitted while evicted, and the progress-tier setters — land on
+// that record at any time, so a copy taken earlier and installed here would
+// silently discard whatever arrived in between. recompute is what folds the
+// bits those writes left into the counters.
 //
 // It verifies the two describe the same job rather than trusting the caller:
 // describesSameJobAs compares article and file counts, and a mismatch here
-// means the stored progress belongs to a different manifest revision.
-func (j *Job) RestoreContent(m *Manifest, p *JobProgress) error {
-	if m == nil || p == nil {
-		return fmt.Errorf("job %s: RestoreContent: nil manifest or progress", j.id)
-	}
-	if !p.describesSameJobAs(m) {
-		return fmt.Errorf("job %s: RestoreContent: progress describes a different manifest", j.id)
+// means the manifest read from disk belongs to a different revision.
+func (j *Job) RestoreContent(m *Manifest) error {
+	if m == nil {
+		return fmt.Errorf("job %s: RestoreContent: nil manifest", j.id)
 	}
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	p.recompute(m)
+	if j.progress == nil {
+		return fmt.Errorf("job %s: RestoreContent: no progress record to restore onto; use AttachContent", j.id)
+	}
+	if !j.progress.describesSameJobAs(m) {
+		return fmt.Errorf("job %s: RestoreContent: progress describes a different manifest", j.id)
+	}
+	j.progress.recompute(m)
 	j.manifest = m
-	j.progress = p
 	j.totalBytes = m.TotalBytes()
 	j.recoveryBytes = m.RecoveryBytes()
 	j.recoveryFiles = m.RecoveryFiles()
@@ -267,14 +276,28 @@ func (j *Job) MarkArticleDone(artIdx int, bytes int64, server string) error {
 }
 
 // MarkArticleFailed records an article that will not be retried.
+//
+// It does not require the manifest. The failed bit is what the failure's
+// durable record is written from: hydration re-derives a success from
+// durable_runs, but the failed_articles rows a failure is restored from are
+// written from this bit by app's appCheckpointStore.SaveBatch.
+// A fetch can complete after its job was evicted, so refusing an evicted job
+// would lose the failure. Evicted, it records the bits alone: the counters and
+// the early par2 release need the manifest's file ranges and article sizes, and
+// RestoreContent's recompute derives the counters from the bits when the job is
+// next hydrated.
 func (j *Job) MarkArticleFailed(artIdx int) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	if j.progress == nil || j.manifest == nil {
+	if j.progress == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
-	if artIdx < 0 || artIdx >= j.manifest.NumArticles() {
+	if artIdx < 0 || artIdx >= j.progress.TotalArticles() {
 		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
+	}
+	if j.manifest == nil {
+		j.progress.setFailedBits(artIdx)
+		return nil
 	}
 	if j.progress.markFailed(j.manifest, artIdx) {
 		// Repairing never runs for a job whose Policy.Repair is false
@@ -304,16 +327,26 @@ func (j *Job) MarkArticleEmitted(artIdx int) error {
 	return nil
 }
 
-// ClearArticleEmitted undoes MarkArticleEmitted for a work item that was never
-// dispatched.
+// ClearArticleEmitted returns an article whose result will not be written to
+// Outstanding.
+//
+// It does not require the manifest. Eviction keeps the emitted bit and
+// ForEachUnfinishedArticle skips an article whose bit is set, so refusing an
+// evicted job strands the article until a downloader reload or a restart.
+// Evicted, it clears the bit alone, and RestoreContent's recompute restores the
+// pending counts when the job is next hydrated.
 func (j *Job) ClearArticleEmitted(artIdx int) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	if j.progress == nil || j.manifest == nil {
+	if j.progress == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
-	if artIdx < 0 || artIdx >= j.manifest.NumArticles() {
+	if artIdx < 0 || artIdx >= j.progress.TotalArticles() {
 		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
+	}
+	if j.manifest == nil {
+		j.progress.emitted.Clear(artIdx)
+		return nil
 	}
 	j.progress.clearEmitted(j.manifest, artIdx)
 	return nil

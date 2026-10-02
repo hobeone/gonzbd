@@ -7,17 +7,17 @@ file internal/job/content.go
 func (j *Job) ClearArticleEmitted(artIdx int) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	if j.progress == nil || j.manifest == nil {
+	if j.progress == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
-	if artIdx < 0 || artIdx >= j.manifest.NumArticles() {
+	if artIdx < 0 || artIdx >= j.progress.TotalArticles() {
 		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
 	}
 --- replace
 func (j *Job) ClearArticleEmitted(artIdx int) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	if j.progress == nil || j.manifest == nil {
+	if j.progress == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
 	if false {

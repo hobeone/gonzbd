@@ -109,3 +109,32 @@ func TestNewBitsetNegativeSizeClampsToZero(t *testing.T) {
 		t.Errorf("Len() = %d, want 0 for negative size", b.Len())
 	}
 }
+
+// TestBitsetAny pins the predicate AnyArticleFailed reads, at the word
+// boundaries a whole-word scan could get wrong.
+func TestBitsetAny(t *testing.T) {
+	for _, tc := range []struct {
+		n   int
+		set []int
+		out []int // indices Set refuses, which must not make it true
+		any bool
+	}{
+		{n: 0},
+		{n: 1},
+		{n: 70, set: []int{69}, any: true},
+		{n: 70, set: []int{64}, any: true},
+		{n: 70, set: []int{0}, any: true},
+		{n: 70, out: []int{70, 127, -1}},
+	} {
+		b := newBitset(tc.n)
+		for _, i := range tc.set {
+			b.Set(i)
+		}
+		for _, i := range tc.out {
+			b.Set(i)
+		}
+		if got := b.any(); got != tc.any {
+			t.Errorf("n=%d set=%v out=%v: any() = %v, want %v", tc.n, tc.set, tc.out, got, tc.any)
+		}
+	}
+}

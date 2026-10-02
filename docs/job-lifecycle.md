@@ -974,16 +974,38 @@ inputs.
 
 ## 11. Residency: the three tiers
 
-Every mutating `JobProgress` operation takes a `*Manifest`. Not one read does.
+Maintaining a `JobProgress` counter needs a `*Manifest`. Reading one does not.
 The tiering is that boundary made explicit.
 
 | Tier | Needs | May fail? |
 |---|---|---|
 | **Header** — remove, reorder, priority, ID/name lookups | neither | **Never** |
-| **Progress** — all reporting, counters, completion and abort checks | `JobProgress` | **Never**, once it exists |
+| **Progress** — all reporting, counters, completion and abort checks; recording a permanent failure or clearing an emitted bit | `JobProgress` | **Never**, once it exists, for an index in range |
 | **Manifest** — dispatch, article indexing, byte accounting | `Manifest` (evictable) | Yes, and must say so |
 
-Writes need article byte counts and the file↔article mapping. Reads do not.
+Counter maintenance needs article byte counts and the file↔article mapping.
+Reads do not, and neither does a per-article bit.
+
+**Two article writes do not wait for the manifest.** `Job.MarkArticleFailed`
+and `Job.ClearArticleEmitted` are reached from fetch results, from the
+downloader's drops of requests and results, and from the assembler's
+article-fault handlers — all of which can run after the job was evicted:
+`Application.Stall` pauses a `Fetching` job, and the next tick evicts it with
+fetches still in flight. The failed bit is what a failure's durable record is
+written from: hydration re-derives a success from `durable_runs`, but the
+`failed_articles` rows a failure is restored from are written from that bit by
+the checkpoint adapter (`appCheckpointStore.SaveBatch`). An emitted bit
+survives eviction and hides its article from `ForEachUnfinishedArticle`.
+Refusing either write therefore loses a failure or strands an article.
+
+With the manifest evicted, both write the bits alone and leave the counters to
+the `recompute` in `RestoreContent` at the next hydration. Until then
+`FailedBytes`, `PendingArticles` and `ArticlesFailed` lag the bits, and the
+early par2 release a resident failure triggers is not made: held volumes wait
+for a later resident failure or, if damage is then found, for the
+Assessing-time verdict in `maybeReleaseRecoveryVolumes`. The checkpointer
+therefore decides whether to write `failed_articles` rows from the bits
+(`JobProgress.AnyArticleFailed`), not from `ArticlesFailed`.
 
 **Residency is not derived from position.** Either you hold a manifest or you
 do not, and `Job.Manifest() (*Manifest, error)` makes every dependence on one a
@@ -1002,10 +1024,15 @@ defect wearing caution's clothes — it refuses work the method is always able t
 do. This was not hypothetical: `SetPar2ReleaseReason` once demanded a manifest
 it never reads, so the reason a job's par2 volumes were released was silently
 discarded for precisely the non-resident jobs the on-demand par2 path acts on.
+`MarkArticleFailed` and `ClearArticleEmitted` were the same defect at a higher
+price — a lost failure and a stranded article — and now do their bit write at
+any residency, using the manifest only for the counters (above).
 
 The gate on `*Job` is `j.manifest == nil` returning `job.ErrNotResident`,
 pinned by `TestManifestAccessIsGated`
-(`internal/job/manifest_gate_test.go`). `ErrNotResident` is deliberately
+(`internal/job/manifest_gate_test.go`). A method that reads the manifest only
+on a resident branch, and does its progress-tier work without it, is listed in
+that test's `manifestGateExempt` with the reason. `ErrNotResident` is deliberately
 distinct from a hydration failure: "evicted" is routine and "unreadable on
 disk" is data loss.
 
@@ -1019,8 +1046,9 @@ anything else keeps its Warn.
 manifest-derived scalars (`TotalBytes`, `NumFiles`, `NumArticles`,
 `RecoveryBytes`, `RecoveryFiles`). These are computed once at ingest and never
 change, so they live in the always-resident tier rather than behind a fallible
-handle. `Evict` clears only the manifest, and `AttachContent`/`RestoreContent`
-are the only writers of the progress pointer.
+handle. `Evict` clears only the manifest, and `AttachContent` is the only
+writer of the progress pointer
+(`TestProgressPointerWriters_MatchTheEnumerationStatedInProse`).
 
 The consequence is the point of the whole design: **every reporting path is
 infallible.** Only mutation paths take the fallible handle.
@@ -1050,6 +1078,12 @@ done/failed bit and both stamps with no error — and since the first attach
 zeroed the Job-level copies, there would be nothing left to seed the
 replacement from either. `RestoreContent` is the door for a job that has run
 before, and it verifies `describesSameJobAs` rather than trusting the caller.
+It re-attaches the manifest beside the job's own record and recomputes that
+record in place, under the lock its writers take. It never installs a copy:
+writes that need no manifest land on the record at any residency, and a copy
+taken before them and installed afterwards would discard them — which is how
+hydration once lost a failure recorded in the window between its clone and its
+install.
 
 ### Residency is bounded by what a job holds
 

@@ -1822,6 +1822,9 @@ It is an ARTICLE fault, not a storage fault, so it resolves against the article
 (A1): `OnArticleRejected` carries it to `Job.MarkArticleFailed`, which
 charges its bytes to the job's failed-byte count, releases on-demand par2, and
 clears its `Emitted` bit so nothing waits on a re-dispatch that will never come.
+A rejection can land after `Stall` paused the job and the dispatcher evicted
+it; it is still recorded, as bits alone, and the byte charge follows at the
+next hydration while the par2 release does not — see `docs/job-lifecycle.md` § "Residency: the three tiers".
 
 The rejected article still **counts toward its file's part total**. That looks
 like the wrong direction and is not: it will never arrive again, so a file that

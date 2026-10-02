@@ -123,7 +123,7 @@ func TestHandleFileComplete_ANonResidentJobsFileIsNotDeliveredUntrimmed(t *testi
 	}
 
 	// The dispatcher promotes the job again.
-	if err := j.RestoreContent(m, j.Progress()); err != nil {
+	if err := j.RestoreContent(m); err != nil {
 		t.Fatal(err)
 	}
 	application.reevaluateStalls(t.Context())

@@ -1,11 +1,14 @@
 package app
 
 import (
+	"log/slog"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -152,6 +155,116 @@ func TestHandleArticleRejected_AcksThePermanentFailure(t *testing.T) {
 		t.Errorf("FailedBytes = %d, was %d — a rejected article's bytes must be charged, "+
 			"or the beyond-repair gate weighs them against par2's budget as if they had arrived",
 			got, before)
+	}
+}
+
+// TestHandleArticleRejected_RecordsAndPersistsTheFailureOfAnEvictedJob pins
+// the rejection path for a job whose manifest was evicted while the article
+// was in flight — the state Stall leaves a Fetching job in.
+//
+// Three things must hold, and each was broken: the failure is recorded on the
+// job; the checkpointer writes its failed_articles row, although the job's
+// failed-article counter has not yet caught up with the bit; and a restart
+// that replays that row charges the article's bytes.
+func TestHandleArticleRejected_RecordsAndPersistsTheFailureOfAnEvictedJob(t *testing.T) {
+	t.Parallel()
+	application, j := newDurabilityTestApp(t, 1, 2)
+	ctx := t.Context()
+
+	m, err := j.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+	// The job_files seed AddJob writes; a failed_articles row needs it.
+	if err := seedJobFiles(ctx, application.durable, j.ID(), j.NumFiles(), j.FileFetchPolicy); err != nil {
+		t.Fatalf("seedJobFiles: %v", err)
+	}
+	if err := j.MarkArticleEmitted(1); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+	application.residency.Evict(j.ID())
+	if j.Resident() {
+		t.Fatal("fixture: the job is still resident after Evict")
+	}
+
+	application.handleArticleRejected(j.ID(), 0, 1, "negative offset")
+
+	if !j.Progress().ArticleFailed(1) {
+		t.Fatal("the rejected article of an evicted job is not marked failed; " +
+			"the failure is dropped, and nothing re-derives it at hydration")
+	}
+
+	if err := application.checkpointer.Flush(ctx); err != nil {
+		t.Fatalf("checkpointer.Flush: %v", err)
+	}
+	rows, err := application.residency.store.FailedArticles(ctx, j.ID())
+	if err != nil {
+		t.Fatalf("FailedArticles: %v", err)
+	}
+	if len(rows) != 1 || rows[0] != 1 {
+		t.Fatalf("failed_articles rows = %v, want [1]: the failure would not survive a restart", rows)
+	}
+
+	// A restart rebuilds the job from the manifest and replays the rows, as
+	// appResidency.restoreResolution does.
+	restarted := job.New(j.ID(), j.Name(), job.PolicyFromPP(3))
+	if err := restarted.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	if err := restarted.ApplyResolution(nil, rows); err != nil {
+		t.Fatalf("ApplyResolution: %v", err)
+	}
+	if got := restarted.FailedBytes(); got != 100 {
+		t.Errorf("FailedBytes after the restart = %d, want 100", got)
+	}
+}
+
+// TestHandleArticlesUnwritten_ClearsTheBitsOfAnEvictedJob pins the sibling:
+// articles rolled back after their job's manifest was evicted return to
+// Outstanding. Eviction keeps their Emitted bits, so a refused clear strands
+// them until a downloader reload or a restart.
+func TestHandleArticlesUnwritten_ClearsTheBitsOfAnEvictedJob(t *testing.T) {
+	t.Parallel()
+	application, j := newDurabilityTestApp(t, 1, 2)
+
+	for _, idx := range []int{0, 1} {
+		if err := j.MarkArticleEmitted(idx); err != nil {
+			t.Fatalf("MarkArticleEmitted(%d): %v", idx, err)
+		}
+	}
+	application.residency.Evict(j.ID())
+	if j.Resident() {
+		t.Fatal("fixture: the job is still resident after Evict")
+	}
+
+	application.handleArticlesUnwritten(j.ID(), 0, []int32{0, 1})
+
+	for _, idx := range []int{0, 1} {
+		if j.Progress().ArticleEmitted(idx) {
+			t.Errorf("article %d is still Emitted after an evicted job's roll-back", idx)
+		}
+	}
+}
+
+// TestArticleHandlers_LogARecordTheJobRefuses pins that neither handler
+// discards the job's error. With the manifest no longer required, an index
+// outside the job is what is left to refuse.
+func TestArticleHandlers_LogARecordTheJobRefuses(t *testing.T) {
+	t.Parallel()
+	application, j := newDurabilityTestApp(t, 1, 2)
+	var logs syncBuffer
+	application.log = slog.New(slog.NewTextHandler(&logs, nil))
+
+	application.handleArticleRejected(j.ID(), 0, 99, "negative offset")
+	application.handleArticlesUnwritten(j.ID(), 0, []int32{99})
+
+	for _, msg := range []string{
+		"record rejected article as permanently failed",
+		"return unwritten article to Outstanding",
+	} {
+		if !strings.Contains(logs.String(), msg) {
+			t.Errorf("log lacks %q after an out-of-range index; the error was discarded. Log:\n%s", msg, logs.String())
+		}
 	}
 }
 
