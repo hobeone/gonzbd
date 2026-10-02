@@ -638,10 +638,12 @@ func jobStampOrZero(t time.Time) time.Time {
 //
 // This and its three siblings below are the only functions in this package's
 // non-test sources that assign p.downloadStarted or p.downloadFinished by
-// name. #464 routed the six former writers here: markStartedOnce,
-// markDownloadFinishedOnce and ResetForRetry in job.go, SetPostProcStarted in
-// queue.go, UnmarshalJSON below in this file, and the Get decode in
-// sqlite_store.go.
+// name. Everything else reaches the fields through them: Job.MarkJobStarted
+// calls this one, and the pipeline's handleSuccessResult calls MarkJobStarted
+// for every decoded article, so the first wins; Job.MarkDownloadFinished calls
+// setDownloadFinishedOnce; ResetForRetry calls clearDownloadStamps; and
+// UnmarshalJSON, AttachContent and RestoreProgressState install persisted
+// stamps through restoreDownloadStamps.
 //
 // That claim is enforced rather than cited.
 // TestDownloadStampWriters_MatchTheEnumerationStatedInProse walks the package
