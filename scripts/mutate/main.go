@@ -201,6 +201,7 @@ func main() {
 		"match zero or several sites, without running any test")
 	checkAll := flag.Bool("check-all", false, "like -check, but discovers every spec belonging to this "+
 		"checkout with git ls-files instead of taking spec paths as arguments")
+	skipRunfilter := flag.Bool("skip-runfilter", false, "skip pre-flight check for dead test names in run filter (used when pre-checked by -check-all)")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -235,22 +236,24 @@ func main() {
 			flag.Usage()
 			os.Exit(2)
 		}
-		runSpec(root, flag.Arg(0), *verbose)
+		runSpec(root, flag.Arg(0), *verbose, *skipRunfilter)
 	}
 }
 
 // runSpec is the command's original behaviour: apply every mutation in one
 // spec, in turn, and require each to produce KILLED.
-func runSpec(root, path string, verbose bool) {
+func runSpec(root, path string, verbose, skipRunfilter bool) {
 	sp, err := parseSpec(path)
 	if err != nil {
 		fatal("%s: %v", path, err)
 	}
 
-	if dead, err := deadRunFilterNames(root, sp); err != nil {
-		fatal("%v", err)
-	} else if len(dead) > 0 {
-		os.Exit(reportRunFilter(sp.pkg, dead))
+	if !skipRunfilter {
+		if dead, err := deadRunFilterNames(root, sp); err != nil {
+			fatal("%v", err)
+		} else if len(dead) > 0 {
+			os.Exit(reportRunFilter(sp.pkg, dead))
+		}
 	}
 
 	installSignalRestore()
@@ -716,7 +719,7 @@ func installSignalRestore() {
 // testArgs builds the go test argv, so the baseline banner prints the command
 // that actually ran rather than a hand-written approximation of it.
 func testArgs(sp *spec) []string {
-	args := []string{"test", "-count=1", sp.pkg}
+	args := []string{"test", "-count=1", "-vet=off", sp.pkg}
 	if sp.tags != "" {
 		// test/integration, test/uitest and test/crash are all behind
 		// //go:build tags, so without this no pin in any of them can be

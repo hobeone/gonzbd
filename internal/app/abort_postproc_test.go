@@ -136,7 +136,7 @@ func awaitStage(t *testing.T, entered <-chan string) {
 
 func removeWithinBudget(t *testing.T, application *Application, id string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 	defer cancel()
 	if err := application.RemoveJob(ctx, id, false); err != nil {
 		t.Fatalf("RemoveJob: %v", err)

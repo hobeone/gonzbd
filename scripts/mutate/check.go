@@ -122,6 +122,79 @@ func runCheck(root string, display, actual []string) int {
 	if !ok {
 		return 1
 	}
+
+	type pkgKey struct {
+		pkg  string
+		tags string
+	}
+	type pendingSpec struct {
+		display string
+		spec    *spec
+		key     pkgKey
+	}
+	var pending []pendingSpec
+	packages := make(map[pkgKey]struct{})
+	for i, specPath := range actual {
+		sp, err := parseSpec(specPath)
+		if err != nil {
+			continue
+		}
+		if _, _, _, hasAlts := plainAlternation(sp.run); hasAlts {
+			k := pkgKey{pkg: sp.pkg, tags: sp.tags}
+			packages[k] = struct{}{}
+			pending = append(pending, pendingSpec{display: display[i], spec: sp, key: k})
+		}
+	}
+
+	if len(pending) > 0 {
+		type listResult struct {
+			key   pkgKey
+			tests []string
+			err   error
+		}
+		resultsChan := make(chan listResult, len(packages))
+		for k := range packages {
+			go func(k pkgKey) {
+				dummySpec := &spec{pkg: k.pkg, tags: k.tags}
+				tests, err := listTests(root, dummySpec)
+				resultsChan <- listResult{key: k, tests: tests, err: err}
+			}(k)
+		}
+		testsByPkg := make(map[pkgKey][]string, len(packages))
+		for range packages {
+			res := <-resultsChan
+			if res.err != nil {
+				fmt.Fprintf(os.Stderr, "mutate: check run filter in %s: %v\n", res.key.pkg, res.err)
+				ok = false
+			} else {
+				testsByPkg[res.key] = res.tests
+			}
+		}
+		if !ok {
+			return 1
+		}
+		type runFilterIssue struct {
+			spec string
+			pkg  string
+			name string
+		}
+		var rfIssues []runFilterIssue
+		for _, p := range pending {
+			listed := testsByPkg[p.key]
+			dead := deadFilterAlternatives(listed, p.spec)
+			for _, d := range dead {
+				rfIssues = append(rfIssues, runFilterIssue{spec: p.display, pkg: p.spec.pkg, name: d})
+			}
+		}
+		if len(rfIssues) > 0 {
+			for _, rf := range rfIssues {
+				fmt.Printf("%s [%s]: %s does not name a test in %s\n", rf.spec, "run", rf.name, rf.pkg)
+			}
+			fmt.Printf("\nStatus: %d name(s) in `run` select no test across %d spec(s).\n", len(rfIssues), len(actual))
+			return 1
+		}
+	}
+
 	fmt.Printf("check: %d spec(s), every anchor resolves to exactly one site.\n", len(actual))
 	return 0
 }
