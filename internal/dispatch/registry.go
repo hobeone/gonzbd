@@ -664,6 +664,8 @@ func (d *Dispatcher) PauseJob(id string) error {
 	if err := j.SetIntent(job.IntentPause); err != nil {
 		return fmt.Errorf("dispatch: pause %s: %w", id, err)
 	}
+	// After SetIntent, never before: a yield first would let a concurrent tick
+	// grant the lease back while the intent still reads IntentRun.
 	if err := d.YieldedFrom(j, job.Fetching); err != nil && !errors.Is(err, ErrStaleReport) {
 		return fmt.Errorf("dispatch: pause %s: %w", id, err)
 	}

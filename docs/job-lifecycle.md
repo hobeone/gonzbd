@@ -1103,9 +1103,11 @@ install.
 > it is paused.
 
 `Dispatcher.reconcileResidency` is the only place the rule is evaluated;
-`Remove` and `Stop` also evict, unconditionally, on departure and shutdown. It
-is driven by one `Render` call and its `Holds` and `Intent` fields — not `HoldsLease()`, which
-under-reports a job at `Extracting` that holds a compute slot and no lease.
+`Remove` evicts on departure whatever the rule says, and `Stop` evicts every
+job at shutdown except one whose worker or occupiers it timed out waiting for.
+It is driven by one `Render` call and its `Holds` and `Intent` fields — not
+`HoldsLease()`, which under-reports a job at `Extracting` that holds a compute
+slot and no lease.
 
 A paused job keeps its manifest because a per-job pause returns a `Fetching`
 job's lease while fetches it dispatched are still in flight: their successes

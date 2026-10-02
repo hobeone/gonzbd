@@ -1519,9 +1519,9 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 // holdUnreconciledJob pauses a job whose history lookup failed, so that no
 // tick routes it onward, and records why on the job for the operator.
 //
-// A PauseJob error leaves the job unpaused. The one it can return for a
-// registered job is ErrIntentLatched, and a cancelled job is not routed onward
-// either.
+// For a registered job PauseJob returns ErrIntentLatched, which leaves the job
+// unpaused — a cancelled job is not routed onward either — or an error from
+// returning its Fetching lease, which comes after the pause has latched.
 func (app *Application) holdUnreconciledJob(jobID string, lookupErr error) {
 	app.log.Error("history lookup failed; pausing this job, which may already be filed, "+
 		"until an operator resumes it", "job", jobID, "err", lookupErr)

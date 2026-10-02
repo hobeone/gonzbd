@@ -1365,7 +1365,9 @@ when a checkpoint's `AckDurable` finds the job evicted, and
 `notePendingFinalize` when a finalize does, and the job can be one the user
 paused. Resuming on that would undo the user's pause within one interval with
 no log saying so. `stallRecord.parked` is set only by the paths that pause the
-job themselves.
+job themselves. It records that this application paused the job, not that the
+user did not: `Stall` sets it on a job the user had already paused, and the
+re-evaluation then resumes that job once the fault clears (#716).
 
 **A user Resume is the boundary, and is deliberately outside the guarantee.**
 `mode=queue&name=resume` and `name=resume_all` (`internal/api/queue.go`) unpause

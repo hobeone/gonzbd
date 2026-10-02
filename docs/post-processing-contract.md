@@ -154,14 +154,19 @@ single worker goroutine (`run`).
   job, so none is started after the collect while the admission lasts, and
   the collected one is awaited only when every volume reached it; see
   `docs/durability-contract.md` § "DirectUnpack streaming contract".
-  Such a job keeps its pool-A lease until the finalizer's `CancelJob`, as a
-  `Repairing` job waiting in the queue does (`needsLease`,
-  `internal/sched/requirements.go`). Giving it back early is not a saving:
+  Unless the user pauses it, such a job keeps its pool-A lease until the
+  finalizer's `CancelJob`, as a `Repairing` job waiting in the queue does
+  (`needsLease`, `internal/sched/requirements.go`); a per-job pause at
+  `Fetching` returns the lease (`Dispatcher.PauseJob`) and keeps the job's
+  manifest resident. Giving it back early otherwise is not a saving:
   a job parked at `Fetching` with `IntentRun` is granted a lease and launched
   again on the next tick, and while it holds none the dispatcher evicts its
   manifest (`docs/dispatch-contract.md` § "Manifest residency is derived from
   pool membership and pause"), which the run's download listing
   (`buildDownloadFileList`) and the finalizer's `retainedProgressFor` read.
+  Both degrade rather than fail on an evicted job: the listing records "File
+  listing unavailable" (`internal/postproc/filelist.go`), and
+  `retainedProgressFor` reads the manifest from disk instead.
 - **Which copy's information wins**: a refused call hands nothing over. The
   admitted call keeps everything it gathered, including the DirectUnpack
   results, which `duOrch.collect` hands out only once. The history entry's
