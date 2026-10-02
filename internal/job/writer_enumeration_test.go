@@ -16,30 +16,11 @@ import (
 // package's writer-enumeration tests scans for. scanWriters uses it to tell
 // a keyed `field: x` composite-literal element that legitimately sets the
 // field apart from an unrelated struct that happens to reuse the same field
-// name — outcome and next are Attempt's; attempts, intent and lease are
-// Job's. (crossed was a sixth until change 03 deleted the field; it is a
-// method now, and a method has no writers to enumerate.) The claim that no
-// OTHER struct here declares any of these five names is established by
-// reading the declarations, not by grepping the names: `git grep -n '^typ[e]
-// [A-Za-z]* struct' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
-// returns 24 types — Attempt, Job, Lease, Policy, RenderView, Snapshot,
-// StateView, edge, and the manifest/progress types — and only the first two declare any of these fields.
-// TestFieldOwners_AreTheOnlyDeclarers is what actually enforces
-// that, so this sentence is orientation rather than the guarantee.
-// A grep for the five field names themselves (`git grep -n -E
-// 'outcome|next|attempts|intent|lease' -- 'internal/job/*.go'
-// ':!internal/job/*_test.go'`) returns well over a hundred lines of comments
-// and error strings that no reader can filter into an answer, which is why it
-// is not the citation. The exact figure is deliberately a bound rather than a
-// number: it moves with every edit to any non-test file in this package —
-// three times while this very comment was being corrected — so a precise
-// count here would be a stale citation by its own next commit. Where a
-// quantity is that volatile, a bound that stays true beats a number that was
-// true once. Matching on the field name alone would therefore still be
-// correct today; this table exists so that stops being an accident if a
-// further type is added later. Deliberately not a number: this sentence said
-// "a seventh" while the count above already said seven, so the two disagreed
-// about whether the next one was the seventh or the eighth.
+// name. Of the package's non-test struct types —
+// `git grep -n '^typ[e] [A-Za-z]* struct' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
+// returns 24 — only the owners listed below declare any of these fields;
+// TestFieldOwners_AreTheOnlyDeclarers enforces that, so this sentence is
+// orientation rather than the guarantee.
 var fieldOwner = map[string]string{
 	"outcome":           "Attempt",
 	"next":              "Attempt",
