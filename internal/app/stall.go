@@ -61,10 +61,14 @@ type stallRecord struct {
 	// indefinite non-progress with a reason the user has already acted on.
 	// Recording the file here is what gives the retry something to retry.
 	files map[int]finalizeState
-	// parked records that THIS application paused the job: Stall, or a
-	// reason stallLost surfaces, called PauseJob for it. It does not record
-	// that the user had NOT paused the job too — Stall sets it on a job the
-	// user already paused, and a re-evaluation then resumes that job.
+	// parked records that THIS application paused the job: Stall called
+	// PauseJob on a job whose intent was not already IntentPause. A job the
+	// user had paused when Stall fired is not marked, so a re-evaluation
+	// clears the reason and leaves that pause in place. A re-evaluation that
+	// resumes the job releases the claim (releasePark), though the record may
+	// outlive it for completions still to deliver. If the user pauses a job
+	// while Stall's pause stands, the record stays parked, and a re-evaluation
+	// resumes it once nothing is blocked.
 	//
 	// A stall record exists for reasons that do not involve a pause at all:
 	// noteNeedsSeed creates one when a checkpoint's ack finds the job evicted,
@@ -97,33 +101,55 @@ func (app *Application) stalledJobIDs() []string {
 // A second fault on an already-stalled job replaces the reason — it is the
 // more recent thing the user has to act on — but must not drop the interrupted
 // finalizes, which are the only record that those files exist at all.
-func (app *Application) noteStall(jobID string, f *storagefault.Fault) {
+//
+// claimPause is true when Stall is about to pause a job whose intent was not
+// already IntentPause, which makes the pause this application's.
+func (app *Application) noteStall(jobID string, f *storagefault.Fault, claimPause bool) {
 	app.stallMu.Lock()
 	defer app.stallMu.Unlock()
-	app.setStallReasonLocked(jobID, "Stalled: "+f.Error())
+	app.setStallReasonLocked(jobID, "Stalled: "+f.Error(), claimPause)
 }
 
-// noteStallReason parks a job with a reason that is not a storage fault.
+// noteStallReason surfaces a reason that is not a storage fault. It pauses
+// nothing and so claims no pause.
 func (app *Application) noteStallReason(jobID, reason string) {
 	app.stallMu.Lock()
 	defer app.stallMu.Unlock()
-	app.setStallReasonLocked(jobID, reason)
+	app.setStallReasonLocked(jobID, reason, false)
 }
 
 // setStallReasonLocked records a reason, creating the record if needed.
-func (app *Application) setStallReasonLocked(jobID, reason string) {
+//
+// claimPause marks the record parked, and nothing here clears it: a record
+// Stall already parked stays ours when a later reason arrives with
+// claimPause false. noteStall passes Stall's decision; noteStallReason passes
+// false because it pauses nothing. A record created by noteNeedsSeed or
+// notePendingFinalize leaves parked false, so a re-evaluation does not
+// resume a user's pause on that record's account.
+func (app *Application) setStallReasonLocked(jobID, reason string, claimPause bool) {
 	rec, ok := app.stalls[jobID]
 	if !ok {
 		rec = &stallRecord{files: map[int]finalizeState{}, since: time.Now()}
 		app.stalls[jobID] = rec
 	}
 	rec.reason = reason
-	// Every caller of this is a path that pauses the job itself — Stall, and
-	// the reasons stallLost surfaces for a job Stall already parked. A record
-	// created any other way (noteNeedsSeed, notePendingFinalize) leaves it
-	// false, so a re-evaluation does not resume a user's pause on that
-	// record's account (a record Stall made is another matter).
-	rec.parked = true
+	if claimPause {
+		rec.parked = true
+	}
+}
+
+// releasePark ends this application's claim on a job's pause once the job has
+// been resumed, and drops the reason: the condition it described was cleared
+// for the resume to happen. The record itself stays for whatever recovery is
+// still owed. Without this a claim outlives the pause it described and is
+// inherited by the next pause the user makes.
+func (app *Application) releasePark(jobID string) {
+	app.stallMu.Lock()
+	defer app.stallMu.Unlock()
+	if rec, ok := app.stalls[jobID]; ok {
+		rec.parked = false
+		rec.reason = ""
+	}
 }
 
 // weParked reports whether this application paused the job, and so may resume
@@ -400,9 +426,10 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	// Phase 2 — unpause, if we paused it.
 	//
 	// Only a job whose record says we paused it (stallRecord.parked) is
-	// resumed, so a user pause on a job whose record noteNeedsSeed or
-	// notePendingFinalize created is left alone. A user pause on a job Stall
-	// also paused is not distinguished, and is undone here.
+	// resumed, so a user pause that predates Stall, or on a job whose record
+	// noteNeedsSeed or notePendingFinalize created, is left alone. A user
+	// pause made after Stall's own is not distinguished from it, and is undone
+	// here.
 	if app.weParked(jobID) {
 		resumed := false
 		if app.dispatcher != nil {
@@ -416,6 +443,7 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 			app.clearStall(jobID)
 			return
 		}
+		app.releasePark(jobID)
 		app.log.Info("stall re-evaluated; the job has been resumed",
 			"job", jobID, "files_recovered", len(files))
 	} else {

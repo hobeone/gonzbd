@@ -1,9 +1,11 @@
 package app
 
 import (
+	"syscall"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 // TestReevaluateStall_DoesNotUndoAUserPause pins whose pause a re-evaluation
@@ -52,7 +54,7 @@ func TestReevaluateStall_StillResumesWhatItParked(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 
 	// What Application.Stall does: record the reason, then pause.
-	application.noteStallReason(job.ID(), "Stalled: storage retryable fault on write")
+	application.noteStall(job.ID(), storagefault.Classify("write", "/mnt/dl/a.bin", syscall.ENOSPC), true)
 	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
@@ -71,6 +73,147 @@ func TestReevaluateStall_StillResumesWhatItParked(t *testing.T) {
 		t.Error("a job this application parked on a storage fault was left parked after " +
 			"the condition cleared: indefinite non-progress with a reason the user has " +
 			"already acted on (L2, R19)")
+	}
+}
+
+// TestReevaluateStall_KeepsAUserPauseStallWasCalledOn pins the case where the
+// job is already paused by the user when a storage fault reaches Stall, as
+// happens when a checkpoint barrier faults on a paused-and-resident job.
+//
+// Stall's own PauseJob then leaves the intent unchanged, so the pause is the user's, and the
+// re-evaluation that follows the fault clearing must clear the stall reason
+// without resuming the job.
+func TestReevaluateStall_KeepsAUserPauseStallWasCalledOn(t *testing.T) {
+	t.Parallel()
+	application, job := newDurabilityTestApp(t, 1, 2)
+
+	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
+		t.Fatalf("the user's pause: %v", err)
+	}
+	application.Stall(job.ID(), storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO))
+
+	if application.StallReason(job.ID()).Reason == "" {
+		t.Fatal("Stall recorded no reason, so the fixture cannot observe it being cleared")
+	}
+	if application.weParked(job.ID()) {
+		t.Error("Stall recorded the user's pause as this application's")
+	}
+
+	application.reevaluateStall(t.Context(), job.ID())
+
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
+		t.Fatal("the job left the queue")
+	}
+	if row.Status() != constants.StatusPaused {
+		t.Errorf("status = %v, want Paused: the fault clearing undid the user's pause", row.Status())
+	}
+	if got := application.StallReason(job.ID()).Reason; got != "" {
+		t.Errorf("stall reason %q survived a re-evaluation with nothing blocked", got)
+	}
+}
+
+// TestStall_ASecondFaultKeepsTheParkItOwns pins that a re-stall of a job Stall
+// itself parked stays ours, though by then the job's intent is Pause: the
+// intent Stall reads is its own earlier pause, not the user's.
+func TestStall_ASecondFaultKeepsTheParkItOwns(t *testing.T) {
+	t.Parallel()
+	application, job := newDurabilityTestApp(t, 1, 2)
+	fault := storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO)
+
+	application.Stall(job.ID(), fault)
+	application.Stall(job.ID(), fault)
+
+	if !application.weParked(job.ID()) {
+		t.Fatal("a second fault on a job Stall parked released this application's claim on the pause")
+	}
+	application.reevaluateStall(t.Context(), job.ID())
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
+		t.Fatal("the job left the queue")
+	}
+	if row.Status() == constants.StatusPaused {
+		t.Error("a job only Stall paused was left paused after the fault cleared")
+	}
+}
+
+// TestStall_OnAnUnparkedRecordOfAUserPausedJob pins that a record
+// noteNeedsSeed created, on a job the user paused, stays unparked when Stall
+// then fires.
+func TestStall_OnAnUnparkedRecordOfAUserPausedJob(t *testing.T) {
+	t.Parallel()
+	application, job := newDurabilityTestApp(t, 1, 2)
+	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
+		t.Fatalf("the user's pause: %v", err)
+	}
+	application.noteNeedsSeed(job.ID())
+
+	application.Stall(job.ID(), storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO))
+
+	if application.weParked(job.ID()) {
+		t.Error("Stall claimed the pause of a job the user had paused, on an existing record")
+	}
+}
+
+// TestReevaluateStall_ReleasesItsParkOnceItResumes pins that a resume ends this
+// application's claim on the pause, even when the record has to survive for a
+// completion the queue refused. A claim left behind on a running job is
+// inherited by whatever pause the user makes next, and the re-evaluation after
+// the next fault resumes it.
+func TestReevaluateStall_ReleasesItsParkOnceItResumes(t *testing.T) {
+	t.Parallel()
+	application, job := newDurabilityTestApp(t, 1, 2)
+	fault := storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO)
+
+	application.Stall(job.ID(), fault)
+	// File 99 does not exist, so the queue refuses its completion and the
+	// record outlives the resume.
+	application.notePendingFinalize(job.ID(), 99)
+	application.setFinalizeState(job.ID(), 99, finalizeDone)
+	application.reevaluateStall(t.Context(), job.ID())
+
+	if _, ok := application.recoveryFiles(job.ID())[99]; !ok {
+		t.Fatal("the record did not survive, so the fixture cannot observe a leftover claim")
+	}
+	if application.weParked(job.ID()) {
+		t.Error("the record still claims a pause after the job was resumed")
+	}
+	if got := application.StallReason(job.ID()).Reason; got != "" {
+		t.Errorf("stall reason %q is still shown on a job that was resumed", got)
+	}
+
+	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
+		t.Fatalf("the user's pause: %v", err)
+	}
+	application.Stall(job.ID(), fault)
+	application.reevaluateStall(t.Context(), job.ID())
+
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
+		t.Fatal("the job left the queue")
+	}
+	if row.Status() != constants.StatusPaused {
+		t.Errorf("status = %v, want Paused: a claim left over from the earlier stall undid the user's later pause", row.Status())
+	}
+}
+
+// TestStallLost_ClaimsNoPause pins that surfacing a lost-handle reason does
+// not make the pause this application's: stallLost pauses nothing, and a
+// claim would let a re-evaluation resume a job the user paused.
+func TestStallLost_ClaimsNoPause(t *testing.T) {
+	t.Parallel()
+	application, job := newDurabilityTestApp(t, 1, 2)
+	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
+		t.Fatalf("the user's pause: %v", err)
+	}
+
+	application.stallLost(job.ID(), 0)
+
+	if application.StallReason(job.ID()).Reason == "" {
+		t.Fatal("stallLost surfaced no reason, so the fixture observes nothing")
+	}
+	if application.weParked(job.ID()) {
+		t.Error("stallLost claimed a pause it did not make")
 	}
 }
 
@@ -96,8 +239,8 @@ func TestWeParked(t *testing.T) {
 		t.Error("a record created by an interrupted finalize was reported as our pause")
 	}
 
-	// Both paths that DO pause set it.
-	application.noteStallReason("ours", "Stalled: something")
+	// The path that pauses (Stall, via noteStall with claimPause) sets it.
+	application.noteStall("ours", storagefault.Classify("write", "/mnt/dl/a.bin", syscall.ENOSPC), true)
 	if !application.weParked("ours") {
 		t.Error("a job this application parked was not recognised as ours, so a " +
 			"re-evaluation would leave it parked after the condition cleared (L2, R19)")
