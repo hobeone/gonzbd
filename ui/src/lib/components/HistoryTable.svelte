@@ -12,16 +12,16 @@
 		setHistoryFailedOnly,
 		getHistorySearch,
 		setHistorySearch
-	} from '$lib/stores/history.svelte';
-	import Modal from '$lib/components/ui/Modal.svelte';
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
+	} from '#lib/stores/history.svelte.js';
+	import Modal from '#lib/components/ui/Modal.svelte';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
 	import Search from '@lucide/svelte/icons/search';
 	import Loader2 from '@lucide/svelte/icons/loader-2';
 	import HistoryRow from './HistoryRow.svelte';
 	import Pagination from './Pagination.svelte';
-	import type { HistorySlot } from '$lib/types';
-	import { showToast } from '$lib/stores/warnings.svelte';
+	import type { HistorySlot } from '#lib/types.js';
+	import { showToast } from '#lib/stores/warnings.svelte.js';
 
 	function slots() {
 		return getHistorySlots();

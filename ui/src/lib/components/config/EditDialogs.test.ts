@@ -1,7 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api.js', () => ({
 	postAction: vi.fn().mockResolvedValue({ status: true }),
 	fetchCategories: vi.fn().mockResolvedValue(['*', 'TV', 'Movies']),
 	fetchScripts: vi.fn().mockResolvedValue(['cleanup.sh'])

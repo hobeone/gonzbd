@@ -1,4 +1,4 @@
-import { fetchWarnings, postAction } from '$lib/api';
+import { fetchWarnings, postAction } from '#lib/api.js';
 import { subscribeWS } from './websocket.svelte';
 import { reportFailure, reportSuccess, onReconnected } from './connection.svelte';
 

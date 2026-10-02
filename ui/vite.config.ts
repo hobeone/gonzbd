@@ -1,12 +1,20 @@
+import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
-	plugins: [tailwindcss(), sveltekit()],
-	resolve: {
-		conditions: ['browser', 'development']
-	},
+	plugins: [
+		tailwindcss(),
+		sveltekit({
+			compilerOptions: {
+				runes: ({ filename }) => filename.split(/[/\\]/).includes('node_modules') ? undefined : true
+			},
+			adapter: adapter({ pages: 'dist', assets: 'dist', fallback: 'index.html' }),
+			prerender: { entries: [] }
+		})
+	],
+	resolve: { conditions: ['browser', 'development'] },
 	test: {
 		fsModuleCache: true,
 		include: ['src/**/*.{test,spec}.{js,ts}'],

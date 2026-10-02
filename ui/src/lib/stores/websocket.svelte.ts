@@ -1,5 +1,5 @@
 import { SvelteSet } from 'svelte/reactivity';
-import { reportDisconnect, reportSuccess, onReconnected } from '$lib/stores/connection.svelte';
+import { reportDisconnect, reportSuccess, onReconnected } from '#lib/stores/connection.svelte.js';
 
 export interface WSEvent {
 	event: string;
@@ -12,7 +12,7 @@ export interface WSEvent {
 	tool?: string;
 	line?: string;
 	stage?: string;
-	servers?: import('$lib/types').ServerSnapshot[];
+	servers?: import('#lib/types.js').ServerSnapshot[];
 }
 
 type Handler = (event: WSEvent) => void;

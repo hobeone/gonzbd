@@ -12,7 +12,7 @@
  *  - Backoff: 1s → 2s → 4s → 8s → 16s → 32s → 60s (cap) with ±20% jitter
  *  - On reconnect: fires all registered onReconnected callbacks
  */
-import { getRedirectUrl } from '$lib/utils';
+import { getRedirectUrl } from '#lib/utils.js';
 
 const MIN_DELAY = 1000;
 const MAX_DELAY = 60000;

@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/svelte';
 import { describe, it, expect, vi } from 'vitest';
 import PostProcSection from './PostProcSection.svelte';
 
-vi.mock('$lib/components/ui/separator', () => ({
+vi.mock('#lib/components/ui/separator/index.js', () => ({
 	Separator: function MockSeparator() {}
 }));
 

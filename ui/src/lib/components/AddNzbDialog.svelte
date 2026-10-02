@@ -1,9 +1,9 @@
 <script lang="ts">
-	import Modal from '$lib/components/ui/Modal.svelte';
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
-	import { uploadNzb, postAction, fetchCategories } from '$lib/api';
-	import { refreshQueue } from '$lib/stores/queue.svelte';
+	import Modal from '#lib/components/ui/Modal.svelte';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { uploadNzb, postAction, fetchCategories } from '#lib/api.js';
+	import { refreshQueue } from '#lib/stores/queue.svelte.js';
 	import FileUp from '@lucide/svelte/icons/file-up';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();

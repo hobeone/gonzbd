@@ -1,14 +1,14 @@
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import HistoryRow from './HistoryRow.svelte';
-import type { HistorySlot } from '$lib/types';
-import { retryHistoryJob } from '$lib/stores/history.svelte';
+import type { HistorySlot } from '#lib/types.js';
+import { retryHistoryJob } from '#lib/stores/history.svelte.js';
 
-vi.mock('$lib/stores/history.svelte', () => ({
+vi.mock('#lib/stores/history.svelte.js', () => ({
 	retryHistoryJob: vi.fn()
 }));
 
-vi.mock('$lib/stores/warnings.svelte', () => ({
+vi.mock('#lib/stores/warnings.svelte.js', () => ({
 	showToast: vi.fn()
 }));
 

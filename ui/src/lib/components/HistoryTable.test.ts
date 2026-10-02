@@ -13,10 +13,10 @@ import {
 	setHistoryFailedOnly,
 	getHistorySearch,
 	setHistorySearch
-} from '$lib/stores/history.svelte';
+} from '#lib/stores/history.svelte.js';
 
 // Mock the history store
-vi.mock('$lib/stores/history.svelte', () => ({
+vi.mock('#lib/stores/history.svelte.js', () => ({
 	getHistorySlots: vi.fn(),
 	getHistory: vi.fn(),
 	getHistoryError: vi.fn(),

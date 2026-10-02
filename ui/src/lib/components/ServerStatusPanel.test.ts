@@ -1,14 +1,14 @@
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import ServerStatusPanel from './ServerStatusPanel.svelte';
-import { getServerStats } from '$lib/stores/queue.svelte';
-import type { ConnSnapshot, ServerSnapshot } from '$lib/types';
+import { getServerStats } from '#lib/stores/queue.svelte.js';
+import type { ConnSnapshot, ServerSnapshot } from '#lib/types.js';
 
-vi.mock('$lib/stores/queue.svelte', () => ({
+vi.mock('#lib/stores/queue.svelte.js', () => ({
 	getServerStats: vi.fn()
 }));
 
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api.js', () => ({
 	fetchConfig: vi.fn().mockResolvedValue({ config: { servers: [] } }),
 	setConfig: vi.fn(),
 	postAction: vi.fn()

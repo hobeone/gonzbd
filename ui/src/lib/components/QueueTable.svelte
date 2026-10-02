@@ -10,15 +10,15 @@
 		setQueuePage,
 		getQueueSearch,
 		setQueueSearch
-	} from '$lib/stores/queue.svelte';
-	import Modal from '$lib/components/ui/Modal.svelte';
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
+	} from '#lib/stores/queue.svelte.js';
+	import Modal from '#lib/components/ui/Modal.svelte';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
 	import Search from '@lucide/svelte/icons/search';
 	import Loader2 from '@lucide/svelte/icons/loader-2';
 	import QueueRow from './QueueRow.svelte';
 	import Pagination from './Pagination.svelte';
-	import type { QueueSlot } from '$lib/types';
+	import type { QueueSlot } from '#lib/types.js';
 
 	function slots() {
 		return getQueueSlots();

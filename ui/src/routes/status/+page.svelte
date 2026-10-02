@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import HelpCircle from '@lucide/svelte/icons/help-circle';
-	import Navbar from '$lib/components/Navbar.svelte';
+	import Navbar from '#lib/components/Navbar.svelte';
 	import {
 		fetchStatusOverview,
 		fetchCheckUpdate,
@@ -16,9 +16,9 @@
 		type BuildInfoResponse,
 		type RedactedConfig,
 		type RedactedServerConfig
-	} from '$lib/api';
-	import { getServerStats } from '$lib/stores/queue.svelte';
-	import { startTelemetry, stopTelemetry } from '$lib/stores/telemetry.svelte';
+	} from '#lib/api.js';
+	import { getServerStats } from '#lib/stores/queue.svelte.js';
+	import { startTelemetry, stopTelemetry } from '#lib/stores/telemetry.svelte.js';
 
 	let overview = $state<StatusOverviewResponse | null>(null);
 	let overviewError = $state('');

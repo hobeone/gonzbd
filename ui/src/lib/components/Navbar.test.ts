@@ -9,11 +9,11 @@ vi.mock('./AddNzbDialog.svelte', () => ({
 vi.mock('./SettingsDialog.svelte', () => ({
 	default: function SettingsDialogMock() {}
 }));
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api.js', () => ({
 	postAction: vi.fn().mockResolvedValue({ status: true })
 }));
 
-import { postAction } from '$lib/api';
+import { postAction } from '#lib/api.js';
 
 describe('Navbar', () => {
 	beforeEach(() => {

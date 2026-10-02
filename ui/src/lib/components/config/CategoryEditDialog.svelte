@@ -1,9 +1,9 @@
 <script lang="ts">
-	import Modal from '$lib/components/ui/Modal.svelte';
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
-	import type { CategoryConfig } from '$lib/types';
-	import { fetchScripts } from '$lib/api';
+	import Modal from '#lib/components/ui/Modal.svelte';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import type { CategoryConfig } from '#lib/types.js';
+	import { fetchScripts } from '#lib/api.js';
 
 	let {
 		open = $bindable(false),

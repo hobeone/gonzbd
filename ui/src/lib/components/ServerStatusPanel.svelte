@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { fetchConfig, setConfig, postAction } from '$lib/api';
-	import { getServerStats } from '$lib/stores/queue.svelte';
-	import type { ServerSnapshot, ConnSnapshot, ServerConfig } from '$lib/types';
-	import { formatSize as formatBytes, formatSpeed as formatBps } from '$lib/utils';
+	import { fetchConfig, setConfig, postAction } from '#lib/api.js';
+	import { getServerStats } from '#lib/stores/queue.svelte.js';
+	import type { ServerSnapshot, ConnSnapshot, ServerConfig } from '#lib/types.js';
+	import { formatSize as formatBytes, formatSpeed as formatBps } from '#lib/utils.js';
 	import Server from '@lucide/svelte/icons/server';
 	import X from '@lucide/svelte/icons/x';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
