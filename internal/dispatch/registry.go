@@ -642,12 +642,29 @@ func (d *Dispatcher) Job(id string) (*job.Job, bool) {
 // WaitReason.IsPause() precisely because a queue-wide pause leaves every job
 // carrying IntentRun, and a PauseJob that also set the queue flag would make
 // that unobservable.
+//
+// A job at Fetching also gives back its lease here. Fetching gates per
+// article, so the downloader stops dispatching new articles for a job whose
+// intent has left IntentRun, but it makes no report of that, and Advance's branch 2 never
+// strips a lease from a job that holds one. Without this yield a paused
+// Fetching job kept one of the leaseCap leases while fetching nothing.
+// YieldedFrom is scoped to Fetching, so a worker in any other state keeps its
+// resources and finishes its state, and the pause gates the move after it.
+// Its ErrStaleReport answers a job with no open attempt at Fetching, or one
+// whose download has already recorded its next state, and is not an error of
+// the pause.
+//
+// The job's manifest stays resident through the pause (reconcileResidency):
+// fetches already in flight land on it.
 func (d *Dispatcher) PauseJob(id string) error {
 	j, ok := d.Job(id)
 	if !ok {
 		return fmt.Errorf("dispatch: pause %s: %w", id, ErrNotFound)
 	}
 	if err := j.SetIntent(job.IntentPause); err != nil {
+		return fmt.Errorf("dispatch: pause %s: %w", id, err)
+	}
+	if err := d.YieldedFrom(j, job.Fetching); err != nil && !errors.Is(err, ErrStaleReport) {
 		return fmt.Errorf("dispatch: pause %s: %w", id, err)
 	}
 	d.kick()

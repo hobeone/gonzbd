@@ -9,16 +9,11 @@ import (
 // TestReevaluateStall_DoesNotUndoAUserPause pins whose pause a re-evaluation
 // is allowed to lift.
 //
-// Phase 2 resumed unconditionally, and a stall record exists for reasons that
-// involve no pause of ours at all. The reachable one is ordinary: a user pauses
-// a job, Dispatcher.PauseJob evicts it, the next checkpoint's AckDurable fails with
-// job.ErrNotResident, and checkpointJob calls noteNeedsSeed — which creates a
-// record. On the next tick nothing is blocked, so phase 2 flipped Paused →
-// Queued and cleared the warning, with no log saying so.
-//
-// It also could not settle. Handles stay open through a pause —
-// CloseJobHandles runs only from enqueuePostProc — so the next checkpoint fails
-// the same way and the record is recreated as fast as it is cleared.
+// A stall record exists for reasons that involve no pause of ours at all:
+// checkpointJob calls noteNeedsSeed when its AckDurable finds the job evicted,
+// which creates a record, and the job can be one the user paused. Nothing is
+// blocked, so a phase 2 that resumed unconditionally flipped Paused → Queued
+// and cleared the warning, with no log saying so.
 func TestReevaluateStall_DoesNotUndoAUserPause(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)

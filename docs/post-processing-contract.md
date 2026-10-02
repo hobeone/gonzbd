@@ -160,7 +160,7 @@ single worker goroutine (`run`).
   a job parked at `Fetching` with `IntentRun` is granted a lease and launched
   again on the next tick, and while it holds none the dispatcher evicts its
   manifest (`docs/dispatch-contract.md` § "Manifest residency is derived from
-  pool membership"), which the run's download listing
+  pool membership and pause"), which the run's download listing
   (`buildDownloadFileList`) and the finalizer's `retainedProgressFor` read.
 - **Which copy's information wins**: a refused call hands nothing over. The
   admitted call keeps everything it gathered, including the DirectUnpack

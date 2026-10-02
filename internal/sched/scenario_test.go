@@ -287,7 +287,8 @@ func TestScenario_5_1_PauseMidDownloadThenResume(t *testing.T) {
 	if err := j.SetIntent(job.IntentPause); err != nil {
 		t.Fatalf("SetIntent: %v", err)
 	}
-	// The downloader yields between articles; the dispatcher calls q.Park —
+	// Dispatcher.PauseJob yields a Fetching job at the pause (YieldedFrom ->
+	// Handoff -> park); the sched-level equivalent is q.Park —
 	// Advance's own branch 2 would decline to touch a job it still holds
 	// (holds-before-gated), so this is not interchangeable with q.Advance(j).
 	if err := q.Park(j); err != nil {

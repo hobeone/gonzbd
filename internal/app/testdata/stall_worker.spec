@@ -1,23 +1,22 @@
 pkg ./internal/app/
 run ^TestStall_LeavesALiveAssessingWorkerAlone$
 
-# Stall releases only a Fetching worker. The first mutation is the shape it
+# Stall's pause releases only a Fetching worker; the release is
+# Dispatcher.PauseJob's. The first mutation is the shape Stall's own release
 # had: a yield by ID, which parks whatever worker the job has now.
 
-[Stall yields by ID, whatever the state]
-file internal/app/durability.go
+[the pause yields by ID, whatever the state]
+file internal/dispatch/registry.go
 --- anchor
-		if j, ok := app.dispatcher.Job(jobID); ok {
-			_ = app.dispatcher.YieldedFrom(j, job.Fetching)
-		}
+	if err := d.YieldedFrom(j, job.Fetching); err != nil && !errors.Is(err, ErrStaleReport) {
 --- replace
-		_ = app.dispatcher.Yielded(jobID)
+	if err := d.Yielded(id); err != nil && !errors.Is(err, ErrStaleReport) {
 --- end
 
-[Stall yields from the state the job is at]
-file internal/app/durability.go
+[the pause yields from the state the job is at]
+file internal/dispatch/registry.go
 --- anchor
-			_ = app.dispatcher.YieldedFrom(j, job.Fetching)
+	if err := d.YieldedFrom(j, job.Fetching); err != nil && !errors.Is(err, ErrStaleReport) {
 --- replace
-			_ = app.dispatcher.YieldedFrom(j, j.Snapshot().State.State)
+	if err := d.YieldedFrom(j, j.Snapshot().State.State); err != nil && !errors.Is(err, ErrStaleReport) {
 --- end

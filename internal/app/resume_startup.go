@@ -99,8 +99,9 @@ type fileResumer interface {
 // A non-resident job in a SWEPT phase is hydrated for the duration and evicted
 // again, so the residency budget docs/job-lifecycle.md exists to bound is
 // unchanged from outside. It matters because a Paused job is the case that
-// needs this most and is never resident: Application.Stall leaves the job
-// Paused, and the sweep skipping it is what let #362 survive in that branch.
+// needs this most and is not resident at startup: Application.Stall leaves the
+// job Paused, and the sweep skipping it is what let #362 survive in that
+// branch.
 // Startup is the moment the hydration is cheapest and safest — nothing else
 // holds a manifest and no article is being dispatched.
 //
