@@ -64,7 +64,7 @@ describe('AboutDialog build info', () => {
 
 	it('hides each row only when its value is genuinely absent', async () => {
 		vi.mocked(fetchJSON).mockResolvedValue(
-			about({ commit: 'unknown', commit_time: '', build_date: 'unknown' })
+			about({ commit: '', commit_time: '', build_date: '' })
 		);
 		render(AboutDialog, { props: { open: true } });
 
@@ -75,7 +75,7 @@ describe('AboutDialog build info', () => {
 	});
 
 	it('keeps the commit row when only the times are absent', async () => {
-		vi.mocked(fetchJSON).mockResolvedValue(about({ commit_time: '', build_date: 'unknown' }));
+		vi.mocked(fetchJSON).mockResolvedValue(about({ commit_time: '', build_date: '' }));
 		render(AboutDialog, { props: { open: true } });
 
 		expect(await screen.findByRole('link', { name: 'abc1234' })).toBeInTheDocument();

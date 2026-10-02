@@ -42,9 +42,9 @@ describe('BuildFooter', () => {
 		expect(await screen.findByText('v1.2.3 · abc1234 (modified)')).toBeInTheDocument();
 	});
 
-	it('shows only the version when the commit is unknown', async () => {
+	it('shows only the version when the commit is absent', async () => {
 		vi.mocked(fetchBuildInfo).mockResolvedValue(
-			info({ commit: 'unknown', commit_time: '', build_date: 'unknown' })
+			info({ commit: '', commit_time: '', build_date: '' })
 		);
 		render(BuildFooter);
 

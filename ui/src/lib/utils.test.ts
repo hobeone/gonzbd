@@ -4,7 +4,7 @@ import {
 	formatSize,
 	getCookie,
 	formatTimestamp,
-	hasCommit,
+	formatCommit,
 	commitUrl,
 	formatBuildLabel
 } from './utils';
@@ -16,15 +16,13 @@ describe('build info helpers', () => {
 		);
 		expect(formatTimestamp('')).toBe('');
 		expect(formatTimestamp(undefined)).toBe('');
-		expect(formatTimestamp('unknown')).toBe('');
 		expect(formatTimestamp('not a date')).toBe('not a date');
 	});
 
-	it('hasCommit rejects empty and the unknown marker', () => {
-		expect(hasCommit('abc1234')).toBe(true);
-		expect(hasCommit('unknown')).toBe(false);
-		expect(hasCommit('')).toBe(false);
-		expect(hasCommit(undefined)).toBe(false);
+	it('formatCommit is the one spelling of commit plus modified flag', () => {
+		expect(formatCommit('abc1234', false)).toBe('abc1234');
+		expect(formatCommit('abc1234', true)).toBe('abc1234 (modified)');
+		expect(formatCommit('', true)).toBe('');
 	});
 
 	it('commitUrl points at the upstream commit page', () => {
@@ -34,7 +32,7 @@ describe('build info helpers', () => {
 	it('formatBuildLabel combines version, commit and modified flag', () => {
 		expect(formatBuildLabel('v1', 'abc1234', false)).toBe('v1 · abc1234');
 		expect(formatBuildLabel('v1', 'abc1234', true)).toBe('v1 · abc1234 (modified)');
-		expect(formatBuildLabel('dev', 'unknown', true)).toBe('dev');
+		expect(formatBuildLabel('dev', '', true)).toBe('dev');
 	});
 });
 

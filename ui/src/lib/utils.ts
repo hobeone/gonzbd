@@ -42,18 +42,12 @@ export function formatETA(seconds: number): string {
 
 /**
  * Format an RFC 3339 timestamp from the backend in the viewer's local time.
- * Returns "" for an empty or "unknown" value (the backend's marker for
- * "not recorded"), and the raw string when it does not parse.
+ * Returns "" for an empty value, and the raw string when it does not parse.
  */
 export function formatTimestamp(iso: string | undefined): string {
-	if (!iso || iso === 'unknown') return '';
+	if (!iso) return '';
 	const d = new Date(iso);
 	return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-}
-
-/** Whether the backend reported a real commit (it sends "unknown" otherwise). */
-export function hasCommit(commit: string | undefined): commit is string {
-	return !!commit && commit !== 'unknown';
 }
 
 /** GitHub URL for a commit of the upstream repository. */
@@ -61,11 +55,15 @@ export function commitUrl(commit: string): string {
 	return `https://github.com/hobeone/gonzbd/commit/${encodeURIComponent(commit)}`;
 }
 
+/** The one rendering of a commit: "abc1234" or "abc1234 (modified)"; "" when absent. */
+export function formatCommit(commit: string, dirty: boolean): string {
+	if (!commit) return '';
+	return dirty ? `${commit} (modified)` : commit;
+}
+
 /** Compact build label for the footer: "v1.2.3 · abc1234 (modified)". */
 export function formatBuildLabel(version: string, commit: string, dirty: boolean): string {
-	const parts = [version];
-	if (hasCommit(commit)) parts.push(dirty ? `${commit} (modified)` : commit);
-	return parts.join(' · ');
+	return [version, formatCommit(commit, dirty)].filter(Boolean).join(' · ');
 }
 
 export function cn(...inputs: ClassValue[]) {
