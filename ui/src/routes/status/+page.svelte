@@ -17,6 +17,7 @@
 		type RedactedConfig,
 		type RedactedServerConfig
 	} from '#lib/api.js';
+	import { formatTimestamp } from '#lib/utils.js';
 	import { getServerStats } from '#lib/stores/queue.svelte.js';
 	import { startTelemetry, stopTelemetry } from '#lib/stores/telemetry.svelte.js';
 
@@ -178,9 +179,7 @@
 	}
 
 	function formatBuildDate(iso: string): string {
-		if (!iso) return 'unknown';
-		const d = new Date(iso);
-		return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+		return formatTimestamp(iso) || 'unknown';
 	}
 </script>
 
@@ -313,7 +312,9 @@
 			{:else if buildInfo}
 				<dl class="mb-4 grid grid-cols-[180px_1fr] gap-x-4 gap-y-3 text-sm">
 					<dt class="text-m3-on-surface/60">Version</dt>
-					<dd class="font-mono text-m3-on-surface">{buildInfo.version} ({buildInfo.commit})</dd>
+					<dd class="font-mono text-m3-on-surface">{buildInfo.version} ({buildInfo.commit}{buildInfo.dirty ? ', modified' : ''})</dd>
+					<dt class="text-m3-on-surface/60">Commit date</dt>
+					<dd class="text-m3-on-surface">{formatBuildDate(buildInfo.commit_time)}</dd>
 					<dt class="text-m3-on-surface/60">Build date</dt>
 					<dd class="text-m3-on-surface">{formatBuildDate(buildInfo.build_date)}</dd>
 					<dt class="text-m3-on-surface/60">Go version</dt>

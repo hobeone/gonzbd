@@ -284,6 +284,10 @@ export interface BuildInfoResponse {
 	status: boolean;
 	version: string;
 	commit: string;
+	/** RFC 3339 commit time; "" when the build recorded none. */
+	commit_time: string;
+	/** True when the build tree had uncommitted changes. */
+	dirty: boolean;
 	build_date: string;
 	go_version: string;
 	deps: BuildDependency[];

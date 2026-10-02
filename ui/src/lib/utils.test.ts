@@ -1,5 +1,42 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { formatSpeed, formatSize, getCookie } from './utils';
+import {
+	formatSpeed,
+	formatSize,
+	getCookie,
+	formatTimestamp,
+	hasCommit,
+	commitUrl,
+	formatBuildLabel
+} from './utils';
+
+describe('build info helpers', () => {
+	it('formatTimestamp renders local time, hides absent values, passes through junk', () => {
+		expect(formatTimestamp('2026-05-01T10:00:00Z')).toBe(
+			new Date('2026-05-01T10:00:00Z').toLocaleString()
+		);
+		expect(formatTimestamp('')).toBe('');
+		expect(formatTimestamp(undefined)).toBe('');
+		expect(formatTimestamp('unknown')).toBe('');
+		expect(formatTimestamp('not a date')).toBe('not a date');
+	});
+
+	it('hasCommit rejects empty and the unknown marker', () => {
+		expect(hasCommit('abc1234')).toBe(true);
+		expect(hasCommit('unknown')).toBe(false);
+		expect(hasCommit('')).toBe(false);
+		expect(hasCommit(undefined)).toBe(false);
+	});
+
+	it('commitUrl points at the upstream commit page', () => {
+		expect(commitUrl('abc1234')).toBe('https://github.com/hobeone/gonzbd/commit/abc1234');
+	});
+
+	it('formatBuildLabel combines version, commit and modified flag', () => {
+		expect(formatBuildLabel('v1', 'abc1234', false)).toBe('v1 · abc1234');
+		expect(formatBuildLabel('v1', 'abc1234', true)).toBe('v1 · abc1234 (modified)');
+		expect(formatBuildLabel('dev', 'unknown', true)).toBe('dev');
+	});
+});
 
 describe('formatSpeed', () => {
 	it('formats zero bytes', () => {
