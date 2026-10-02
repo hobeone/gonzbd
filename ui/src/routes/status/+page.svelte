@@ -17,6 +17,7 @@
 		type RedactedConfig,
 		type RedactedServerConfig
 	} from '#lib/api.js';
+	import { formatBuildLabel, formatTimestamp } from '#lib/utils.js';
 	import { getServerStats } from '#lib/stores/queue.svelte.js';
 	import { startTelemetry, stopTelemetry } from '#lib/stores/telemetry.svelte.js';
 
@@ -177,11 +178,6 @@
 		return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 	}
 
-	function formatBuildDate(iso: string): string {
-		if (!iso) return 'unknown';
-		const d = new Date(iso);
-		return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-	}
 </script>
 
 <svelte:head><title>Status - GoNZBD</title></svelte:head>
@@ -208,7 +204,7 @@
 			<h2 class="mb-4 text-lg font-medium text-m3-on-surface">General Info</h2>
 			<dl class="grid grid-cols-[180px_1fr] gap-x-4 gap-y-3 text-sm">
 				<dt class="text-m3-on-surface/60">Version</dt>
-				<dd class="font-mono text-m3-on-surface">{overview.general.version} ({overview.general.commit})</dd>
+				<dd class="font-mono text-m3-on-surface">{formatBuildLabel(overview.general.version, overview.general.commit, overview.general.dirty)}</dd>
 				<dt class="text-m3-on-surface/60">Uptime</dt>
 				<dd class="text-m3-on-surface">{formatUptime(overview.general.uptime_seconds)}</dd>
 				<dt class="text-m3-on-surface/60">Go version</dt>
@@ -313,9 +309,15 @@
 			{:else if buildInfo}
 				<dl class="mb-4 grid grid-cols-[180px_1fr] gap-x-4 gap-y-3 text-sm">
 					<dt class="text-m3-on-surface/60">Version</dt>
-					<dd class="font-mono text-m3-on-surface">{buildInfo.version} ({buildInfo.commit})</dd>
-					<dt class="text-m3-on-surface/60">Build date</dt>
-					<dd class="text-m3-on-surface">{formatBuildDate(buildInfo.build_date)}</dd>
+					<dd class="font-mono text-m3-on-surface">{formatBuildLabel(buildInfo.version, buildInfo.commit, buildInfo.dirty)}</dd>
+					{#if buildInfo.commit_time}
+						<dt class="text-m3-on-surface/60">Commit date</dt>
+						<dd class="text-m3-on-surface">{formatTimestamp(buildInfo.commit_time)}</dd>
+					{/if}
+					{#if buildInfo.build_date}
+						<dt class="text-m3-on-surface/60">Build date</dt>
+						<dd class="text-m3-on-surface">{formatTimestamp(buildInfo.build_date)}</dd>
+					{/if}
 					<dt class="text-m3-on-surface/60">Go version</dt>
 					<dd class="font-mono text-m3-on-surface">{buildInfo.go_version}</dd>
 				</dl>

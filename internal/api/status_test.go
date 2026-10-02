@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/dispatch"
@@ -206,7 +207,7 @@ func TestFullStatus_SonarrCompleteDir(t *testing.T) {
 			NZBKey:      testNZBKey,
 			CompleteDir: "/data/complete",
 		}},
-		Version:    "1.0.0-test",
+		Build:      buildinfo.Info{Version: "1.0.0-test"},
 		Dispatcher: d,
 	})
 
@@ -259,7 +260,7 @@ func TestModeStatus_UnblockServer(t *testing.T) {
 	// 2. Happy path (app returns true) -> 200
 	app2 := &unblockSpyApp{unblockResult: true}
 	s2 := New(Options{
-		Version: "1.0.0-test",
+		Build: buildinfo.Info{Version: "1.0.0-test"},
 		Config: &config.Config{General: config.GeneralConfig{
 			APIKey: testAPIKey,
 			NZBKey: testNZBKey,
@@ -281,7 +282,7 @@ func TestModeStatus_UnblockServer(t *testing.T) {
 	// 3. Server not found (app returns false) -> 404
 	app3 := &unblockSpyApp{unblockResult: false}
 	s3 := New(Options{
-		Version: "1.0.0-test",
+		Build: buildinfo.Info{Version: "1.0.0-test"},
 		Config: &config.Config{General: config.GeneralConfig{
 			APIKey: testAPIKey,
 			NZBKey: testNZBKey,

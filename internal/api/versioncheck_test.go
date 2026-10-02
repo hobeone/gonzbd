@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 )
 
@@ -73,7 +74,7 @@ func TestModeStatus_CheckUpdate_DevBuildSkipsNetworkCall(t *testing.T) {
 		t.Fatalf("Default(): %v", err)
 	}
 	cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
-	s := New(Options{Version: "dev", Config: cfg})
+	s := New(Options{Build: buildinfo.Info{Version: "dev"}, Config: cfg})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=status&name=check_update&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -158,7 +159,7 @@ func TestModeStatus_CheckUpdate_StatusMapping(t *testing.T) {
 				t.Fatalf("Default(): %v", err)
 			}
 			cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
-			s := New(Options{Version: tc.runningVersion, Config: cfg})
+			s := New(Options{Build: buildinfo.Info{Version: tc.runningVersion}, Config: cfg})
 
 			rr := apiGet(t, s.Handler(), "/api?mode=status&name=check_update&apikey="+testAPIKey)
 			if rr.Code != http.StatusOK {

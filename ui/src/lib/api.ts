@@ -205,10 +205,23 @@ export async function fetchConfig(): Promise<ConfigResponse> {
 	return fetchJSON<ConfigResponse>(apiUrl('get_config'));
 }
 
-export interface StatusOverviewGeneral {
+/**
+ * Build metadata, identical in every response that carries it
+ * (mode=about, status_overview's general section, status build_info).
+ * A value the build did not record is "" (false for dirty).
+ */
+export interface BuildMeta {
 	version: string;
 	commit: string;
+	/** RFC 3339 commit time. */
+	commit_time: string;
+	/** True when the build tree had uncommitted changes. */
+	dirty: boolean;
+	/** RFC 3339 build time. */
 	build_date: string;
+}
+
+export interface StatusOverviewGeneral extends BuildMeta {
 	go_version: string;
 	uptime_seconds: number;
 	hostname: string;
@@ -280,11 +293,8 @@ export interface BuildDependency {
 	version: string;
 }
 
-export interface BuildInfoResponse {
+export interface BuildInfoResponse extends BuildMeta {
 	status: boolean;
-	version: string;
-	commit: string;
-	build_date: string;
 	go_version: string;
 	deps: BuildDependency[];
 }

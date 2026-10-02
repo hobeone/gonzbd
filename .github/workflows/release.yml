@@ -77,9 +77,11 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME#v}  # strip leading 'v' for semver
           COMMIT=$(git rev-parse --short HEAD)
+          COMMIT_TIME=$(git log -1 --format=%cI)
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "commit_time=$COMMIT_TIME" >> "$GITHUB_OUTPUT"
           echo "build_date=$BUILD_DATE" >> "$GITHUB_OUTPUT"
           # Major.minor for the floating tag (e.g. "0.3")
           MINOR_TAG=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+')
@@ -92,7 +94,7 @@ jobs:
           GOARCH: amd64
         run: |
           go build \
-            -ldflags="-s -w -X main.Version=${{ steps.meta.outputs.version }} -X main.Commit=${{ steps.meta.outputs.commit }} -X main.Date=${{ steps.meta.outputs.build_date }}" \
+            -ldflags="-s -w -X main.Version=${{ steps.meta.outputs.version }} -X main.Commit=${{ steps.meta.outputs.commit }} -X main.CommitTime=${{ steps.meta.outputs.commit_time }} -X main.Dirty=false -X main.Date=${{ steps.meta.outputs.build_date }}" \
             -o gonzbd-linux-amd64 \
             ./cmd/gonzbd
 
@@ -103,7 +105,7 @@ jobs:
           GOARCH: arm64
         run: |
           go build \
-            -ldflags="-s -w -X main.Version=${{ steps.meta.outputs.version }} -X main.Commit=${{ steps.meta.outputs.commit }} -X main.Date=${{ steps.meta.outputs.build_date }}" \
+            -ldflags="-s -w -X main.Version=${{ steps.meta.outputs.version }} -X main.Commit=${{ steps.meta.outputs.commit }} -X main.CommitTime=${{ steps.meta.outputs.commit_time }} -X main.Dirty=false -X main.Date=${{ steps.meta.outputs.build_date }}" \
             -o gonzbd-linux-arm64 \
             ./cmd/gonzbd
 
@@ -128,6 +130,8 @@ jobs:
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ steps.meta.outputs.commit }}
+            COMMIT_TIME=${{ steps.meta.outputs.commit_time }}
+            DIRTY=false
             BUILD_DATE=${{ steps.meta.outputs.build_date }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}

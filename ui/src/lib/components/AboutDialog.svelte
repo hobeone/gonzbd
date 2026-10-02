@@ -1,14 +1,12 @@
 <script lang="ts">
 	import Modal from '#lib/components/ui/Modal.svelte';
-	import { fetchJSON } from '#lib/api.js';
+	import { fetchJSON, type BuildMeta } from '#lib/api.js';
+	import { commitUrl, formatCommit, formatTimestamp } from '#lib/utils.js';
 	import Info from '@lucide/svelte/icons/info';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
-	interface AboutInfo {
-		version: string;
-		commit: string;
-		build_date: string;
+	interface AboutInfo extends BuildMeta {
 		go_version: string;
 		local_ipv4: string;
 		public_ipv4: string;
@@ -51,21 +49,30 @@
 		label: string;
 		value: string;
 		mono?: boolean;
+		href?: string;
 	}
 
 	const sections = $derived.by((): { title: string; rows: InfoRow[] }[] => {
 		if (!info) return [];
+		const committed = formatTimestamp(info.commit_time);
+		const built = formatTimestamp(info.build_date);
 		return [
 			{
 				title: 'System',
 				rows: [
 					{ label: 'Version', value: info.version },
-					...(info.commit && info.commit !== 'unknown'
-						? [{ label: 'Commit', value: info.commit, mono: true }]
+					...(info.commit
+						? [
+								{
+									label: 'Commit',
+									value: formatCommit(info.commit, info.dirty),
+									mono: true,
+									href: commitUrl(info.commit)
+								}
+							]
 						: []),
-					...(info.build_date && info.build_date !== 'unknown'
-						? [{ label: 'Built', value: info.build_date }]
-						: []),
+					...(committed ? [{ label: 'Committed', value: committed }] : []),
+					...(built ? [{ label: 'Built', value: built }] : []),
 					{ label: 'Go', value: info.go_version },
 					{ label: 'Hostname', value: info.hostname },
 					{ label: 'Local IP', value: info.local_ipv4 || '—' },
@@ -178,7 +185,16 @@
 									? 'text-amber-600 dark:text-amber-400'
 									: 'text-foreground'}"
 							>
-								{row.value}
+								{#if row.href}
+									<a
+										href={row.href}
+										target="_blank"
+										rel="noopener noreferrer"
+										class="text-primary hover:underline">{row.value}</a
+									>
+								{:else}
+									{row.value}
+								{/if}
 							</dd>
 						</div>
 					{/each}

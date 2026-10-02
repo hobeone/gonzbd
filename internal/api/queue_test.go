@@ -20,6 +20,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -193,7 +194,7 @@ func newTestQueueBridgeWithApp(t *testing.T, cfg *config.Config, makeApp func(di
 	}
 	s := New(Options{
 		Config:     cfg,
-		Version:    "1.0.0-test",
+		Build:      buildinfo.Info{Version: "1.0.0-test"},
 		Dispatcher: disp,
 		App:        application,
 	})
@@ -1257,8 +1258,8 @@ func TestQueueRename_Success(t *testing.T) {
 func TestQueueNilGuard(t *testing.T) {
 	t.Parallel()
 	s := New(Options{
-		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
-		Version: "1.0.0-test",
+		Config: &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
+		Build:  buildinfo.Info{Version: "1.0.0-test"},
 		// Queue intentionally nil.
 	})
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
@@ -2337,7 +2338,7 @@ func TestQueue_CoverageGaps(t *testing.T) {
 		dir2 := t.TempDir()
 		sErr := New(Options{
 			Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: dir2}},
-			Version:    "1.0.0-test",
+			Build:      buildinfo.Info{Version: "1.0.0-test"},
 			Dispatcher: disp,
 			App:        errApp,
 		})
@@ -2403,8 +2404,8 @@ func TestQueue_CoverageGaps(t *testing.T) {
 
 		// addlocalfile with nil queue
 		sNoQueue := New(Options{
-			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-			Version: "1.0.0-test",
+			Config: &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+			Build:  buildinfo.Info{Version: "1.0.0-test"},
 		})
 		rrNoQueue := apiGet(t, sNoQueue.Handler(), "/api?mode=addlocalfile&name=/abs/path.nzb&apikey="+testAPIKey)
 		if rrNoQueue.Code != http.StatusInternalServerError {
@@ -2443,7 +2444,7 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 
 	t.Run("queue_not_wired", func(t *testing.T) {
 		t.Parallel()
-		s := New(Options{Version: "1.0.0"})
+		s := New(Options{Build: buildinfo.Info{Version: "1.0.0"}})
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/api?mode=queue", nil)
 		s.modeQueue(rr, req)
@@ -2463,7 +2464,7 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 		}
 		s := New(Options{
 			Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
-			Version:    "1.0.0-test",
+			Build:      buildinfo.Info{Version: "1.0.0-test"},
 			Dispatcher: disp,
 			App:        spy,
 		})
@@ -2502,7 +2503,7 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 		disp := newTestAPIDispatcher(t)
 		s := New(Options{
 			Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
-			Version:    "1.0.0-test",
+			Build:      buildinfo.Info{Version: "1.0.0-test"},
 			Dispatcher: disp,
 			// App intentionally nil
 		})
@@ -2644,7 +2645,7 @@ func TestQueueDelete_RemoveJobErrorLog(t *testing.T) {
 	s := New(Options{
 		Logger:     logger,
 		Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version:    "1.0.0-test",
+		Build:      buildinfo.Info{Version: "1.0.0-test"},
 		Dispatcher: disp,
 		App: removeJobErrApp{
 			NopApp:  apitest.NopApp{Dispatcher: disp},

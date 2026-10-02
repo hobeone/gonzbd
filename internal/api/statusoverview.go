@@ -61,9 +61,6 @@ func (s *Server) modeStatusOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	general := map[string]any{
-		"version":        s.version,
-		"commit":         s.commit,
-		"build_date":     s.date,
 		"go_version":     runtime.Version(),
 		"uptime_seconds": int64(time.Since(s.startTime).Seconds()),
 		"hostname":       hostname,
@@ -78,6 +75,7 @@ func (s *Server) modeStatusOverview(w http.ResponseWriter, r *http.Request) {
 		"unrar":          map[string]any{"path": resolveBinary(unrarCmd, "unrar"), "version": bv.UnrarVersion},
 		"sevenzip":       map[string]any{"path": resolveBinary(sevenzCmd, unpack.SevenZipBinaries...), "version": bv.SevenzVersion},
 	}
+	s.writeBuildFields(general)
 
 	system := map[string]any{
 		"os":                      runtime.GOOS,

@@ -39,14 +39,28 @@ COPY --from=ui-builder /src/ui/dist ui/dist
 
 ARG VERSION=
 ARG COMMIT=
+ARG COMMIT_TIME=
+ARG DIRTY=
 ARG BUILD_DATE=
-RUN VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}" && \
-    COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}" && \
+# The build context is filtered by .dockerignore, which drops tracked files
+# (Dockerfile, docs/, test/, ...) while keeping .git. Inside this stage git
+# therefore always sees a modified tree: the fallbacks below must not ask for
+# `--dirty`, DIRTY falls back to false because the stage cannot tell, and
+# `-buildvcs=false` keeps the toolchain from stamping the same false
+# vcs.modified=true into the binary. Commit and commit time come from the
+# build-args (scripts/docker-build, release.yml) or, failing that, from git's
+# HEAD, which the filtering does not affect.
+RUN VERSION="${VERSION:-$(git describe --tags --always 2>/dev/null || echo dev)}" && \
+    COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || true)}" && \
+    COMMIT_TIME="${COMMIT_TIME:-$(git log -1 --format=%cI 2>/dev/null || true)}" && \
+    DIRTY="${DIRTY:-false}" && \
     BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -buildvcs=false \
       -ldflags="-s -w \
         -X main.Version=${VERSION} \
         -X main.Commit=${COMMIT} \
+        -X main.CommitTime=${COMMIT_TIME} \
+        -X main.Dirty=${DIRTY} \
         -X main.Date=${BUILD_DATE}" \
       -o /gonzbd ./cmd/gonzbd
 

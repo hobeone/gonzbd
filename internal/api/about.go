@@ -57,10 +57,7 @@ func (s *Server) modeAbout(w http.ResponseWriter, r *http.Request) {
 	go func() { defer ipWG.Done(); publicV6 = publicIP(ctx, "https://api6.ipify.org?format=text") }()
 	ipWG.Wait()
 
-	about := map[string]string{
-		"version":      s.version,
-		"commit":       s.commit,
-		"build_date":   s.date,
+	about := map[string]any{
 		"go_version":   runtime.Version(),
 		"local_ipv4":   localIPv4(),
 		"public_ipv4":  publicV4,
@@ -77,6 +74,7 @@ func (s *Server) modeAbout(w http.ResponseWriter, r *http.Request) {
 		"unrar_path":   resolveBinary(unrarCmd, "unrar"),
 		"sevenz_path":  resolveBinary(sevenzCmd, unpack.SevenZipBinaries...),
 	}
+	s.writeBuildFields(about)
 
 	respondOK(w, "about", about)
 }

@@ -3,6 +3,7 @@
 	import QueueTable from '#lib/components/QueueTable.svelte';
 	import HistoryTable from '#lib/components/HistoryTable.svelte';
 	import WarningsBanner from '#lib/components/WarningsBanner.svelte';
+	import BuildFooter from '#lib/components/BuildFooter.svelte';
 	import StatusBar from '#lib/components/StatusBar.svelte';
 	import Toast from '#lib/components/Toast.svelte';
 	import ConnectionOverlay from '#lib/components/ConnectionOverlay.svelte';
@@ -78,6 +79,7 @@
 			<HistoryTable />
 		</section>
 	</main>
+	<BuildFooter />
 </div>
 
 <Toast />

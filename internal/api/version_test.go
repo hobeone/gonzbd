@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 )
 
 // sonarrVersionRegex is a Go translation of Sonarr's own parser. The line it
@@ -41,13 +43,13 @@ func buildVersions() []string { return []string{"dev", "v0.1.0", "1.0.0-test", "
 // its version gates, whatever gonzbd's own build version happens to be.
 // Asserting only that the body equals sabnzbdAPIVersion would be a change
 // detector — it would still pass if the constant were pointed back at
-// s.version.
+// s.build.Version.
 func TestModeVersion_SatisfiesSonarrVersionGate(t *testing.T) {
 	t.Parallel()
 	for _, bv := range buildVersions() {
 		t.Run("build="+bv, func(t *testing.T) {
 			t.Parallel()
-			s := New(Options{Version: bv})
+			s := New(Options{Build: buildinfo.Info{Version: bv}})
 			rr := apiGet(t, s.Handler(), "/api?mode=version")
 			if rr.Code != http.StatusOK {
 				t.Fatalf("status = %d; want 200", rr.Code)
@@ -93,7 +95,7 @@ func TestModeVersion_DecoupledFromBuildVersion(t *testing.T) {
 	for _, bv := range buildVersions() {
 		t.Run("build="+bv, func(t *testing.T) {
 			t.Parallel()
-			s := New(Options{Version: bv})
+			s := New(Options{Build: buildinfo.Info{Version: bv}})
 			rr := apiGet(t, s.Handler(), "/api?mode=version")
 			if got := decodeJSON(t, rr)["version"]; got == bv {
 				t.Errorf("version = %q, which is the build version; "+
@@ -110,7 +112,7 @@ func TestModeVersion_DecoupledFromBuildVersion(t *testing.T) {
 // twice cannot get two different answers.
 func TestModeVersion_IgnoresRequest(t *testing.T) {
 	t.Parallel()
-	s := New(Options{Version: "dev"})
+	s := New(Options{Build: buildinfo.Info{Version: "dev"}})
 	reqs := []*http.Request{
 		httptest.NewRequest(http.MethodGet, "/api?mode=version", nil),
 		httptest.NewRequest(http.MethodGet, "/api?mode=version&version=9.9.9", nil),

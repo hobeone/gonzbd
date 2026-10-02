@@ -20,6 +20,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/types"
@@ -72,7 +73,7 @@ func buildAPIServer(t *testing.T) (srv *api.Server, ts *httptest.Server, dir str
 	grabber := urlgrabber.New(urlgrabber.Config{}, nopNZBHandler{})
 
 	srv = api.New(api.Options{
-		Version:    "integration-test",
+		Build:      buildinfo.Info{Version: "integration-test"},
 		Dispatcher: application.Dispatcher(),
 		History:    repo,
 		Config:     cfg,

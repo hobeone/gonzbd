@@ -40,6 +40,32 @@ export function formatETA(seconds: number): string {
 	return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
+/**
+ * Format an RFC 3339 timestamp from the backend in the viewer's local time.
+ * Returns "" for an empty value, and the raw string when it does not parse.
+ */
+export function formatTimestamp(iso: string | undefined): string {
+	if (!iso) return '';
+	const d = new Date(iso);
+	return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+/** GitHub URL for a commit of the upstream repository. */
+export function commitUrl(commit: string): string {
+	return `https://github.com/hobeone/gonzbd/commit/${encodeURIComponent(commit)}`;
+}
+
+/** The one rendering of a commit: "abc1234" or "abc1234 (modified)"; "" when absent. */
+export function formatCommit(commit: string, dirty: boolean): string {
+	if (!commit) return '';
+	return dirty ? `${commit} (modified)` : commit;
+}
+
+/** Compact build label for the footer: "v1.2.3 · abc1234 (modified)". */
+export function formatBuildLabel(version: string, commit: string, dirty: boolean): string {
+	return [version, formatCommit(commit, dirty)].filter(Boolean).join(' · ');
+}
+
 export function cn(...inputs: ClassValue[]) {
 	return twMerge(clsx(inputs));
 }

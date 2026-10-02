@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
+	"github.com/hobeone/gonzbd/internal/buildinfo"
 
 	"github.com/mxschmitt/playwright-go"
 
@@ -84,7 +85,7 @@ func newTestEnvWithServer(t *testing.T) *testEnv {
 	}
 
 	apiSrv := api.New(api.Options{
-		Version:    "test-uitest",
+		Build:      buildinfo.Info{Version: "test-uitest"},
 		Dispatcher: d,
 		Config:     cfg,
 		App:        ma,

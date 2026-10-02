@@ -6,7 +6,7 @@ file internal/api/router.go
 --- anchor
 	respondOK(w, "version", sabnzbdAPIVersion)
 --- replace
-	respondOK(w, "version", s.version)
+	respondOK(w, "version", s.build.Version)
 --- end
 
 [a parseable version that still falls below Sonarr's HasVersion(2, 0) gate]
