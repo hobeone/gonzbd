@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -268,6 +269,15 @@ func (app *Application) resumeJobFiles(ctx context.Context, jobID string, m *job
 		if rErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, nil, nil, fmt.Errorf("app: resume sweep aborted: %w", ctxErr)
+			}
+			// A failed read of Resume's own durability record already names the
+			// store's path and op "read" (durability.Resumer.Resume, §9a) — used
+			// as is, rather than relabelled "resume" against this file, which
+			// would point an operator at a download directory whose disk may be
+			// healthy. A bare stat failure on the download file itself has not
+			// been classified yet, and is attributed to it here as before.
+			if f, ok := errors.AsType[*storagefault.Fault](rErr); ok {
+				return swept, runs, f, nil
 			}
 			return swept, runs, storagefault.Classify("resume", path, rErr), nil
 		}

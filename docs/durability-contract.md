@@ -865,6 +865,24 @@ error reaches `raise` unchanged, and `storagefault.Classify` makes it retryable
 unless it wraps a permanent errno, so the job stalls. That includes a transient
 `SQLITE_BUSY`.
 
+**Two more store calls take the same split outside the barrier entirely, and
+both are `durability.Resumer`'s.** `Resume`, which runs once at startup rather
+than on the barrier's cadence, makes the same `ForFile` call `FinalizeFile`
+does; `discard`, called from both of `Resume`'s call sites once the file on
+disk has disproved its runs (§6), makes the record's one delete. A failure in
+either owes the same two things: attribution to the store's own path with an
+op naming what failed (`"read"`, `"delete"`), and the caller-cancellation
+carve-out. But `Resumer` holds no `Stallable` — it is a reader and a deleter
+(§6), never a dispatcher — so it cannot call `raise`. It applies
+`storeFailure` and `storagefault.Classify` itself and returns the
+already-classified fault (or the `ErrTargetUnavailable`-wrapped error, routing
+nothing) to its caller, which does hold one: `Application.resumeJobFiles` uses
+a `*storagefault.Fault` it gets back as is, rather than reclassifying it
+against the download file the way it classifies Resume's own `os.Stat`
+failures. `Application.resumeAllJobs` is what actually calls `Stall` on it,
+exactly once — the same single dispatch point a bare stat failure already went
+through, now shared rather than duplicated.
+
 What the job does next depends on which barrier failed. A failed `Run` records
 no interrupted finalize, so `reevaluateStall` resumes the job at the next
 re-evaluation unless an earlier finalize is still pending. A failed

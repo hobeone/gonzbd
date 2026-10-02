@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 // ResumeResult is what one file's resume established from stable storage.
@@ -44,6 +46,11 @@ type ResumeResult struct {
 // state from its bytes and writeBack() committed that answer as the file's
 // record. Both are gone with the two-record design; see Resume for what
 // replaced them and what that trade gives up.
+//
+// It holds no Stallable and dispatches nothing: a failed read or delete of
+// its own record is classified (op, the store's own path) and returned, and
+// its caller — Application.resumeJobFiles, resumeAllJobs — is what hands the
+// result to Stallable.
 type Resumer struct {
 	runs runStore
 	log  *slog.Logger
@@ -122,7 +129,18 @@ func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path 
 
 	runs, err := r.runs.ForFile(ctx, jobID, fileIdx)
 	if err != nil {
-		return ResumeResult{}, fmt.Errorf("durability: resume runs job=%s file=%d: %w", jobID, fileIdx, err)
+		// Attributed to the store's own path, not this file, with the same
+		// carve-out FinalizeFile's own run read uses for a caller that had
+		// already stopped waiting (barrier.go, §9a): storeFailure, then
+		// storagefault.Classify. Resumer holds no Stallable (see the type
+		// doc), so it classifies the failure and leaves the one remaining
+		// step, handing it to Stallable, to its caller, which must not
+		// re-attribute what this already got right.
+		werr := storeFailure(ctx, err)
+		if errors.Is(werr, ErrTargetUnavailable) {
+			return ResumeResult{}, fmt.Errorf("durability: resume runs job=%s file=%d: %w", jobID, fileIdx, werr)
+		}
+		return ResumeResult{}, storagefault.Classify("read", r.runs.Path(), werr)
 	}
 	bound := boundOver(runs, nil)
 	if fi.Size() < bound {
@@ -143,10 +161,21 @@ func (r *Resumer) Resume(ctx context.Context, jobID string, fileIdx int32, path 
 // discard removes one file's runs after the file on disk has disproved them.
 //
 // The only mutation this type performs. See the Resumer type doc for why that
-// direction is the one a resume is entitled to.
+// direction is the one a resume is entitled to. Both of Resume's call sites —
+// the missing-file branch and the short-file branch — go through here, so
+// fixing its attribution fixes both at once.
+//
+// A failed delete is routed the same way the run read above is: op "delete"
+// against the store's own path, with the same carve-out for a caller that had
+// already stopped waiting. See the run read's comment for why this classifies
+// rather than dispatches.
 func (r *Resumer) discard(ctx context.Context, jobID string, fileIdx int32) error {
 	if err := r.runs.deleteFile(ctx, jobID, fileIdx); err != nil {
-		return fmt.Errorf("durability: resume discard runs job=%s file=%d: %w", jobID, fileIdx, err)
+		werr := storeFailure(ctx, err)
+		if errors.Is(werr, ErrTargetUnavailable) {
+			return fmt.Errorf("durability: resume discard runs job=%s file=%d: %w", jobID, fileIdx, werr)
+		}
+		return storagefault.Classify("delete", r.runs.Path(), werr)
 	}
 	return nil
 }
