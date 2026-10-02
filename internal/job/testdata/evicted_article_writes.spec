@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction|TestMarkArticleFailed_EvictedRejectsAnOutOfRangeIndex|TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding
+run TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction|TestMarkArticleFailed_EvictedRejectsAnOutOfRangeIndex|TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding|TestRestoreContent_KeepsWritesMadeWhileEvicted|TestProgressPointerWriters_MatchTheEnumerationStatedInProse
 
 [an evicted job's failure refused, as before the fix]
 file internal/job/content.go
@@ -88,4 +88,30 @@ file internal/job/content.go
 		return nil
 --- replace
 		return nil
+--- end
+
+[re-hydration installs a copy of the record, as Hydrate once did]
+file internal/job/content.go
+--- anchor
+	j.progress.recompute(m)
+	j.manifest = m
+	j.totalBytes = m.TotalBytes()
+--- replace
+	cp := j.progress.clone()
+	cp.recompute(m)
+	j.progress = cp
+	j.manifest = m
+	j.totalBytes = m.TotalBytes()
+--- end
+
+[re-hydration replaces the record with a fresh one]
+file internal/job/content.go
+--- anchor
+	j.progress.recompute(m)
+	j.manifest = m
+	j.totalBytes = m.TotalBytes()
+--- replace
+	j.progress = newJobProgress(m)
+	j.manifest = m
+	j.totalBytes = m.TotalBytes()
 --- end

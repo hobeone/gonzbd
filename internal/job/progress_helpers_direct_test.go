@@ -194,9 +194,9 @@ func TestDescribesSameJobAs_GuardsBothDimensions(t *testing.T) {
 
 	// Nil on either side is not a match. This is defence in depth rather than
 	// the guard that keeps a null manifest out of recompute: RestoreContent
-	// rejects a nil manifest or progress on the line BEFORE it calls this
-	// (content.go), so the nil case here is only reachable from a caller that
-	// does not. Asserted so the predicate stays total if one appears.
+	// rejects a nil manifest, and a job with no progress record, before it
+	// calls this (content.go), so the nil case here is only reachable from a
+	// caller that does not. Asserted so the predicate stays total if one appears.
 	if p.describesSameJobAs(nil) {
 		t.Error("describesSameJobAs(nil) = true")
 	}

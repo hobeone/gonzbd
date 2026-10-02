@@ -48,6 +48,7 @@ var fieldOwner = map[string]string{
 	"lease":             "Job",
 	"par2ReleaseReason": "JobProgress",
 	"recoveryBytes":     "Job",
+	"progress":          "Job",
 }
 
 // scanWriters parses this package's non-test sources and returns the sorted,
@@ -327,6 +328,25 @@ func TestRecoveryBytesWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
 		t.Errorf("functions assigning recoveryBytes = %v, want %v\n\n"+
 			"the recoveryBytes field is owned by Job and may only be written "+
 			"via AttachContent, RestoreContent, and SetRecoveryBytes.",
+			writers, want)
+	}
+}
+
+// TestProgressPointerWriters_MatchTheEnumerationStatedInProse asserts that
+// AttachContent is the only writer of j.progress.
+//
+// Writes that need no manifest land on the job's progress record at any
+// residency, so a record installed over an existing one — a copy taken before
+// those writes, as hydration once did — discards them silently. RestoreContent
+// recomputes the record in place instead; a second writer here is how that
+// lost update would come back.
+func TestProgressPointerWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
+	writers := scanWriters(t, "progress")
+	want := []string{"AttachContent"}
+	if !slices.Equal(writers, want) {
+		t.Errorf("functions assigning j.progress = %v, want %v\n\n"+
+			"a write that replaces a live progress record discards whatever reached "+
+			"the old one in between; restore onto the record in place instead.",
 			writers, want)
 	}
 }

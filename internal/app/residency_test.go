@@ -86,6 +86,43 @@ func TestAppResidency_HydrateThenEvict(t *testing.T) {
 	}
 }
 
+// TestAppResidency_RehydrationKeepsAFailureRecordedWhileEvicted pins the
+// hydration half of recording an evicted job's failure: Hydrate restores onto
+// the job's own progress record, so the failed bit survives and is charged.
+func TestAppResidency_RehydrationKeepsAFailureRecordedWhileEvicted(t *testing.T) {
+	dir := t.TempDir()
+	j := job.New("abc123", "test", job.PolicyFromPP(3))
+	writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), j)
+	r := newAppResidency(func(id string) (*job.Job, bool) {
+		if id == "abc123" {
+			return j, true
+		}
+		return nil, false
+	}, dir, nil, nil)
+
+	if err := r.Hydrate(context.Background(), "abc123"); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	if err := j.MarkArticleEmitted(0); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+	r.Evict("abc123")
+	if err := j.MarkArticleFailed(0); err != nil {
+		t.Fatalf("MarkArticleFailed while evicted: %v", err)
+	}
+
+	if err := r.Hydrate(context.Background(), "abc123"); err != nil {
+		t.Fatalf("re-Hydrate: %v", err)
+	}
+	if p := j.Progress(); !p.ArticleFailed(0) || p.ArticleEmitted(0) {
+		t.Errorf("article 0 after re-hydration: failed=%v emitted=%v, want failed and not emitted",
+			p.ArticleFailed(0), p.ArticleEmitted(0))
+	}
+	if got := j.FailedBytes(); got != 100 {
+		t.Errorf("FailedBytes after re-hydration = %d, want 100", got)
+	}
+}
+
 // TestAppResidency_HydrateUnknownJobErrors pins that a missing job is an error
 // rather than a silent no-op: the dispatcher logs Residency failures
 // (see logResidencyError — `git grep -n 'func (d \*Dispatcher) logResidencyError' internal/dispatch/`)

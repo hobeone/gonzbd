@@ -318,10 +318,19 @@ func TestJob_AdditionalMethods(t *testing.T) {
 		t.Errorf("ApplyResolution: %v", err)
 	}
 
-	// RestoreContent
-	p := j.Progress()
+	// RestoreContent needs a progress record of the job's own to restore onto.
 	j2 := New("j3", "test3", Policy{})
-	if err := j2.RestoreContent(m, p); err != nil {
+	if err := j2.RestoreContent(m); err == nil {
+		t.Error("RestoreContent on a job with no progress record: nil error")
+	}
+	if err := j.RestoreContent(nil); err == nil {
+		t.Error("RestoreContent(nil): nil error")
+	}
+	other := newManifest([]JobFile{{Subject: "x.rar", Bytes: 100, Articles: []JobArticle{{ID: "<x>", Bytes: 100}}}})
+	if err := j.RestoreContent(other); err == nil {
+		t.Error("RestoreContent with a manifest of a different shape: nil error")
+	}
+	if err := j.RestoreContent(m); err != nil {
 		t.Errorf("RestoreContent: %v", err)
 	}
 
@@ -958,7 +967,7 @@ func TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction(t *testing.T)
 		t.Error("AnyArticleFailed = false with a failed bit set; the checkpointer would write no failed_articles row")
 	}
 
-	if err := j.RestoreContent(m, j.Progress()); err != nil {
+	if err := j.RestoreContent(m); err != nil {
 		t.Fatalf("RestoreContent: %v", err)
 	}
 	if got := j.FailedBytes(); got != 100 {
@@ -1015,7 +1024,7 @@ func TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding(t *testing.T) 
 		t.Fatal("article 2 is still Emitted after the clear")
 	}
 
-	if err := j.RestoreContent(m, j.Progress()); err != nil {
+	if err := j.RestoreContent(m); err != nil {
 		t.Fatalf("RestoreContent: %v", err)
 	}
 	if got := unfinishedArticles(t, j); len(got) != 1 || got[0] != 2 {
@@ -1026,5 +1035,60 @@ func TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding(t *testing.T) 
 	}
 	if p := j.Progress(); p.ArticleDone(2) || p.ArticleFailed(2) {
 		t.Errorf("article 2 done=%v failed=%v after a clear; a clear resolves nothing", p.ArticleDone(2), p.ArticleFailed(2))
+	}
+}
+
+// TestRestoreContent_KeepsWritesMadeWhileEvicted pins that re-hydration
+// restores onto the job's own progress record rather than installing a copy.
+//
+// Hydration used to clone the record, then install the clone. Every write
+// that needs no manifest and landed between the two went to the record the
+// install replaced: a failed bit lost, an article left Emitted, a stamp or a
+// par2 reason gone. This drives each such write in that position and requires
+// all of them after RestoreContent.
+func TestRestoreContent_KeepsWritesMadeWhileEvicted(t *testing.T) {
+	j, m := evictedThreeArticleJob(t)
+	if err := j.MarkArticleEmitted(1); err == nil {
+		t.Fatal("fixture: MarkArticleEmitted succeeded on an evicted job")
+	}
+
+	started := time.Unix(1_700_000_000, 0)
+	if err := j.MarkArticleFailed(2); err != nil {
+		t.Fatalf("MarkArticleFailed: %v", err)
+	}
+	if err := j.MarkJobStarted(started); err != nil {
+		t.Fatalf("MarkJobStarted: %v", err)
+	}
+	if err := j.RecordDownload("srv", 42); err != nil {
+		t.Fatalf("RecordDownload: %v", err)
+	}
+	j.SetPar2ReleaseReason("evicted reason")
+	if err := j.SetFileFetchPolicy(0, FetchNever); err != nil {
+		t.Fatalf("SetFileFetchPolicy: %v", err)
+	}
+
+	if err := j.RestoreContent(m); err != nil {
+		t.Fatalf("RestoreContent: %v", err)
+	}
+
+	p := j.Progress()
+	if !p.ArticleFailed(2) || p.ArticleEmitted(2) {
+		t.Errorf("article 2 after re-hydration: failed=%v emitted=%v, want failed and not emitted — "+
+			"the failure recorded while evicted was replaced by a stale record", p.ArticleFailed(2), p.ArticleEmitted(2))
+	}
+	if got := j.FailedBytes(); got != 100 {
+		t.Errorf("FailedBytes after re-hydration = %d, want 100", got)
+	}
+	if got := j.DownloadStarted(); !got.Equal(started) {
+		t.Errorf("DownloadStarted after re-hydration = %v, want %v", got, started)
+	}
+	if got := p.ServerStats()["srv"]; got != 42 {
+		t.Errorf("server bytes after re-hydration = %d, want 42", got)
+	}
+	if got := j.Par2ReleaseReason(); got != "evicted reason" {
+		t.Errorf("Par2ReleaseReason after re-hydration = %q, want %q", got, "evicted reason")
+	}
+	if got := j.FileFetchPolicy(0); got != FetchNever {
+		t.Errorf("FileFetchPolicy(0) after re-hydration = %v, want FetchNever", got)
 	}
 }

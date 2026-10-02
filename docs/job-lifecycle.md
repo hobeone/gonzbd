@@ -1046,8 +1046,9 @@ anything else keeps its Warn.
 manifest-derived scalars (`TotalBytes`, `NumFiles`, `NumArticles`,
 `RecoveryBytes`, `RecoveryFiles`). These are computed once at ingest and never
 change, so they live in the always-resident tier rather than behind a fallible
-handle. `Evict` clears only the manifest, and `AttachContent`/`RestoreContent`
-are the only writers of the progress pointer.
+handle. `Evict` clears only the manifest, and `AttachContent` is the only
+writer of the progress pointer
+(`TestProgressPointerWriters_MatchTheEnumerationStatedInProse`).
 
 The consequence is the point of the whole design: **every reporting path is
 infallible.** Only mutation paths take the fallible handle.
@@ -1077,6 +1078,12 @@ done/failed bit and both stamps with no error — and since the first attach
 zeroed the Job-level copies, there would be nothing left to seed the
 replacement from either. `RestoreContent` is the door for a job that has run
 before, and it verifies `describesSameJobAs` rather than trusting the caller.
+It re-attaches the manifest beside the job's own record and recomputes that
+record in place, under the lock its writers take. It never installs a copy:
+writes that need no manifest land on the record at any residency, and a copy
+taken before them and installed afterwards would discard them — which is how
+hydration once lost a failure recorded in the window between its clone and its
+install.
 
 ### Residency is bounded by what a job holds
 

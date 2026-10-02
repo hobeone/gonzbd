@@ -88,9 +88,11 @@ func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 
 	// A job that has run before has progress already; installing a fresh
 	// JobProgress would zero its counters, which is the defect the
-	// RestoreContent/AttachContent split exists to prevent.
-	if p := j.Progress(); p != nil {
-		if err := j.RestoreContent(m, p); err != nil {
+	// RestoreContent/AttachContent split exists to prevent. RestoreContent
+	// recomputes the job's own record in place, so a failure or an emitted
+	// clear recorded while the manifest was evicted is kept.
+	if j.HasProgress() {
+		if err := j.RestoreContent(m); err != nil {
 			return err
 		}
 	} else if err := j.AttachContent(m); err != nil {

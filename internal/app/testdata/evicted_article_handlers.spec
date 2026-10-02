@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestHandleArticleRejected_RecordsAndPersistsTheFailureOfAnEvictedJob|TestHandleArticlesUnwritten_ClearsTheBitsOfAnEvictedJob|TestArticleHandlers_LogARecordTheJobRefuses
+run TestHandleArticleRejected_RecordsAndPersistsTheFailureOfAnEvictedJob|TestHandleArticlesUnwritten_ClearsTheBitsOfAnEvictedJob|TestArticleHandlers_LogARecordTheJobRefuses|TestAppResidency_RehydrationKeepsAFailureRecordedWhileEvicted
 
 [an evicted job's failure refused, as before the fix]
 file internal/job/content.go
@@ -49,4 +49,16 @@ file internal/app/durability.go
 		if err := j.ClearArticleEmitted(int(artIdx)); err != nil {
 --- replace
 		if err := j.ClearArticleEmitted(int(artIdx)); false && err != nil {
+--- end
+
+[re-hydration replaces the record with a fresh one]
+file internal/job/content.go
+--- anchor
+	j.progress.recompute(m)
+	j.manifest = m
+	j.totalBytes = m.TotalBytes()
+--- replace
+	j.progress = newJobProgress(m)
+	j.manifest = m
+	j.totalBytes = m.TotalBytes()
 --- end
