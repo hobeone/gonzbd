@@ -267,14 +267,27 @@ func (j *Job) MarkArticleDone(artIdx int, bytes int64, server string) error {
 }
 
 // MarkArticleFailed records an article that will not be retried.
+//
+// It does not require the manifest. The failed bit is the failure's only
+// record: hydration re-derives a success from durable_runs, but the
+// failed_articles rows a failure is restored from are written from this bit.
+// A fetch can complete after its job was evicted, so refusing an evicted job
+// would lose the failure. Evicted, it records the bits alone: the counters and
+// the early par2 release need the manifest's file ranges and article sizes, and
+// RestoreContent's recompute derives the counters from the bits when the job is
+// next hydrated.
 func (j *Job) MarkArticleFailed(artIdx int) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	if j.progress == nil || j.manifest == nil {
+	if j.progress == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
-	if artIdx < 0 || artIdx >= j.manifest.NumArticles() {
+	if artIdx < 0 || artIdx >= j.progress.TotalArticles() {
 		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
+	}
+	if j.manifest == nil {
+		j.progress.setFailedBits(artIdx)
+		return nil
 	}
 	if j.progress.markFailed(j.manifest, artIdx) {
 		// Repairing never runs for a job whose Policy.Repair is false
@@ -304,16 +317,26 @@ func (j *Job) MarkArticleEmitted(artIdx int) error {
 	return nil
 }
 
-// ClearArticleEmitted undoes MarkArticleEmitted for a work item that was never
-// dispatched.
+// ClearArticleEmitted returns an article whose result will not be written to
+// Outstanding.
+//
+// It does not require the manifest. Eviction keeps the emitted bit and
+// ForEachUnfinishedArticle skips an article whose bit is set, so refusing an
+// evicted job strands the article until a downloader reload or a restart.
+// Evicted, it clears the bit alone, and RestoreContent's recompute restores the
+// pending counts when the job is next hydrated.
 func (j *Job) ClearArticleEmitted(artIdx int) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	if j.progress == nil || j.manifest == nil {
+	if j.progress == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
-	if artIdx < 0 || artIdx >= j.manifest.NumArticles() {
+	if artIdx < 0 || artIdx >= j.progress.TotalArticles() {
 		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
+	}
+	if j.manifest == nil {
+		j.progress.emitted.Clear(artIdx)
+		return nil
 	}
 	j.progress.clearEmitted(j.manifest, artIdx)
 	return nil

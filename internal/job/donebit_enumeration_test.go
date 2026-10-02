@@ -24,8 +24,8 @@ var doneMarkers = []string{
 // markDone.
 var doneBitSetters = []string{
 	"markDone",
-	"markFailed",
 	"newJobProgressSized",
+	"setFailedBits",
 }
 
 func TestDoneBitWriters_MatchTheEnumerationStatedInProse(t *testing.T) {

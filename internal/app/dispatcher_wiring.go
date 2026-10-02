@@ -133,7 +133,7 @@ func (s *appCheckpointStore) SaveBatch(ctx context.Context, cps []job.Checkpoint
 					AssembledCRC32: p.FileAssembledCRC32(i),
 				}
 			}
-			if p.ArticlesFailed() > 0 {
+			if p.AnyArticleFailed() {
 				for artIdx := range p.TotalArticles() {
 					if p.ArticleFailed(artIdx) {
 						jp.FailedArticles = append(jp.FailedArticles, artIdx)

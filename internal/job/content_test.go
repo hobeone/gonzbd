@@ -883,3 +883,148 @@ func TestJobFileFetchPolicy_ReadsWithoutCloningProgress(t *testing.T) {
 		}
 	}
 }
+
+// evictedThreeArticleJob builds a job with one 300-byte file of three 100-byte
+// articles and no par2: articles 0 and 1 done, article 2 dispatched (its
+// Emitted bit set) when the manifest is evicted. It returns the manifest so a
+// test can re-hydrate with RestoreContent, as appResidency.Hydrate does with
+// the one it re-reads from disk.
+func evictedThreeArticleJob(t *testing.T) (*Job, *Manifest) {
+	t.Helper()
+	m := NewManifest([]JobFile{{Subject: "data.bin", Bytes: 300, Articles: []JobArticle{
+		{ID: "<a0@x>", Bytes: 100, Number: 1},
+		{ID: "<a1@x>", Bytes: 100, Number: 2},
+		{ID: "<a2@x>", Bytes: 100, Number: 3},
+	}}})
+	j := New("evicted", "evicted", PolicyFromPP(3))
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	for _, i := range []int{0, 1} {
+		if err := j.MarkArticleDone(i, 100, "s"); err != nil {
+			t.Fatalf("MarkArticleDone(%d): %v", i, err)
+		}
+	}
+	if err := j.MarkArticleEmitted(2); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+	j.Evict()
+	if j.Resident() {
+		t.Fatal("fixture: the job is still resident after Evict")
+	}
+	return j, m
+}
+
+// unfinishedArticles lists what ForEachUnfinishedArticle would offer the
+// downloader.
+func unfinishedArticles(t *testing.T, j *Job) []int32 {
+	t.Helper()
+	var out []int32
+	if err := j.ForEachUnfinishedArticle(func(_ int, a int32, _ string, _ int, _ int, _ string) bool {
+		out = append(out, a)
+		return true
+	}); err != nil {
+		t.Fatalf("ForEachUnfinishedArticle: %v", err)
+	}
+	return out
+}
+
+// TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction pins that a
+// permanent failure reaching a job whose manifest was evicted mid-fetch is
+// recorded, and that re-hydration charges it.
+//
+// Stall evicts a Fetching job while its fetches are still in flight, so the
+// failure can arrive after the manifest is gone. The failed bit is the
+// failure's only record — hydration re-derives successes from durable_runs and
+// nothing re-derives a failure — so a refused failure left the article
+// neither done nor failed, and the file could complete with failed=0 and
+// RepairState intact: on a post with no par2, a hole nothing reports.
+func TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction(t *testing.T) {
+	j, m := evictedThreeArticleJob(t)
+
+	if err := j.MarkArticleFailed(2); err != nil {
+		t.Fatalf("MarkArticleFailed on an evicted job: %v", err)
+	}
+	p := j.Progress()
+	if !p.ArticleFailed(2) || !p.ArticleDone(2) {
+		t.Fatalf("article 2 after an evicted failure: done=%v failed=%v, want both — "+
+			"the failure was dropped, and nothing re-derives it at hydration",
+			p.ArticleDone(2), p.ArticleFailed(2))
+	}
+	if p.ArticleEmitted(2) {
+		t.Error("article 2 is still Emitted after its failure was recorded")
+	}
+	if !p.AnyArticleFailed() {
+		t.Error("AnyArticleFailed = false with a failed bit set; the checkpointer would write no failed_articles row")
+	}
+
+	if err := j.RestoreContent(m, j.Progress()); err != nil {
+		t.Fatalf("RestoreContent: %v", err)
+	}
+	if got := j.FailedBytes(); got != 100 {
+		t.Errorf("FailedBytes after re-hydration = %d, want 100", got)
+	}
+	if got := j.ContentFailedBytes(); got != 100 {
+		t.Errorf("ContentFailedBytes after re-hydration = %d, want 100", got)
+	}
+	if got := j.RepairState(); got == RepairIntact {
+		t.Errorf("RepairState after re-hydration = %s: a failed article on a post with no par2 reads as undamaged", got)
+	}
+	if got := j.PendingArticles(); got != 0 {
+		t.Errorf("PendingArticles after re-hydration = %d, want 0", got)
+	}
+	if got := unfinishedArticles(t, j); len(got) != 0 {
+		t.Errorf("unfinished articles after re-hydration = %v, want none: a failed article is resolved", got)
+	}
+}
+
+// TestMarkArticleFailed_EvictedRejectsAnOutOfRangeIndex pins that the evicted
+// path still bounds the index, against the progress record's own size.
+func TestMarkArticleFailed_EvictedRejectsAnOutOfRangeIndex(t *testing.T) {
+	j, _ := evictedThreeArticleJob(t)
+	for _, idx := range []int{-1, 3} {
+		if err := j.MarkArticleFailed(idx); err == nil {
+			t.Errorf("MarkArticleFailed(%d) on an evicted three-article job: nil error", idx)
+		}
+		if err := j.ClearArticleEmitted(idx); err == nil {
+			t.Errorf("ClearArticleEmitted(%d) on an evicted three-article job: nil error", idx)
+		}
+	}
+	if j.Progress().AnyArticleFailed() {
+		t.Error("an out-of-range failure set a failed bit")
+	}
+	if (*JobProgress)(nil).AnyArticleFailed() {
+		t.Error("AnyArticleFailed on a nil progress record = true")
+	}
+}
+
+// TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding pins the
+// sibling: a result that will not be written for a job whose manifest was
+// evicted returns its article to Outstanding.
+//
+// Eviction keeps the Emitted bit, and ForEachUnfinishedArticle skips an
+// article whose bit is set, so a refused clear left the article undispatchable
+// after re-hydration until a downloader reload or a restart.
+func TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding(t *testing.T) {
+	j, m := evictedThreeArticleJob(t)
+
+	if err := j.ClearArticleEmitted(2); err != nil {
+		t.Fatalf("ClearArticleEmitted on an evicted job: %v", err)
+	}
+	if j.Progress().ArticleEmitted(2) {
+		t.Fatal("article 2 is still Emitted after the clear")
+	}
+
+	if err := j.RestoreContent(m, j.Progress()); err != nil {
+		t.Fatalf("RestoreContent: %v", err)
+	}
+	if got := unfinishedArticles(t, j); len(got) != 1 || got[0] != 2 {
+		t.Errorf("unfinished articles after re-hydration = %v, want [2]", got)
+	}
+	if got := j.PendingArticles(); got != 1 {
+		t.Errorf("PendingArticles after re-hydration = %d, want 1", got)
+	}
+	if p := j.Progress(); p.ArticleDone(2) || p.ArticleFailed(2) {
+		t.Errorf("article 2 done=%v failed=%v after a clear; a clear resolves nothing", p.ArticleDone(2), p.ArticleFailed(2))
+	}
+}

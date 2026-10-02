@@ -974,16 +974,34 @@ inputs.
 
 ## 11. Residency: the three tiers
 
-Every mutating `JobProgress` operation takes a `*Manifest`. Not one read does.
+Maintaining a `JobProgress` counter needs a `*Manifest`. Reading one does not.
 The tiering is that boundary made explicit.
 
 | Tier | Needs | May fail? |
 |---|---|---|
 | **Header** — remove, reorder, priority, ID/name lookups | neither | **Never** |
-| **Progress** — all reporting, counters, completion and abort checks | `JobProgress` | **Never**, once it exists |
+| **Progress** — all reporting, counters, completion and abort checks; recording a permanent failure or clearing an emitted bit | `JobProgress` | **Never**, once it exists, for an index in range |
 | **Manifest** — dispatch, article indexing, byte accounting | `Manifest` (evictable) | Yes, and must say so |
 
-Writes need article byte counts and the file↔article mapping. Reads do not.
+Counter maintenance needs article byte counts and the file↔article mapping.
+Reads do not, and neither does a per-article bit.
+
+**Two article writes do not wait for the manifest.** `Job.MarkArticleFailed`
+and `Job.ClearArticleEmitted` are reached by fetch results, and a fetch can
+complete after its job was evicted — `Application.Stall` pauses a `Fetching`
+job and the next tick evicts it with fetches still in flight. A permanent
+failure's only record is its failed bit: hydration re-derives a success from
+`durable_runs`, but the `failed_articles` rows a failure is restored from are
+written from that bit. An emitted bit survives eviction and hides its article
+from `ForEachUnfinishedArticle`. Refusing either write therefore loses a
+failure or strands an article. With the manifest evicted, both write the bits
+alone and leave the counters to the `recompute` in `RestoreContent` at the next
+hydration; until then `FailedBytes`, `PendingArticles` and `ArticlesFailed` lag
+the bits, and the early par2 release a resident failure triggers is not made:
+held volumes wait for a later resident failure or for the Assessing-time
+verdict, `maybeReleaseRecoveryVolumes`. The checkpointer therefore decides whether to write
+`failed_articles` rows from the bits (`JobProgress.AnyArticleFailed`), not from
+`ArticlesFailed`.
 
 **Residency is not derived from position.** Either you hold a manifest or you
 do not, and `Job.Manifest() (*Manifest, error)` makes every dependence on one a
@@ -1002,10 +1020,15 @@ defect wearing caution's clothes — it refuses work the method is always able t
 do. This was not hypothetical: `SetPar2ReleaseReason` once demanded a manifest
 it never reads, so the reason a job's par2 volumes were released was silently
 discarded for precisely the non-resident jobs the on-demand par2 path acts on.
+`MarkArticleFailed` and `ClearArticleEmitted` were the same defect at a higher
+price — a lost failure and a stranded article — and now do their bit write at
+any residency, using the manifest only for the counters (above).
 
 The gate on `*Job` is `j.manifest == nil` returning `job.ErrNotResident`,
 pinned by `TestManifestAccessIsGated`
-(`internal/job/manifest_gate_test.go`). `ErrNotResident` is deliberately
+(`internal/job/manifest_gate_test.go`). A method that reads the manifest only
+on a resident branch, and does its progress-tier work without it, is listed in
+that test's `manifestGateExempt` with the reason. `ErrNotResident` is deliberately
 distinct from a hydration failure: "evicted" is routine and "unreadable on
 disk" is data loss.
 
