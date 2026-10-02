@@ -64,7 +64,7 @@ type stallRecord struct {
 	// parked records that THIS application paused the job: Stall, or a
 	// reason stallLost surfaces, called PauseJob for it. It does not record
 	// that the user had NOT paused the job too — Stall sets it on a job the
-	// user already paused, and a re-evaluation then resumes that job (#716).
+	// user already paused, and a re-evaluation then resumes that job.
 	//
 	// A stall record exists for reasons that do not involve a pause at all:
 	// noteNeedsSeed creates one when a checkpoint's ack finds the job evicted,
@@ -122,7 +122,7 @@ func (app *Application) setStallReasonLocked(jobID, reason string) {
 	// the reasons stallLost surfaces for a job Stall already parked. A record
 	// created any other way (noteNeedsSeed, notePendingFinalize) leaves it
 	// false, so a re-evaluation does not resume a user's pause on that
-	// record's account (a record Stall made is another matter: #716).
+	// record's account (a record Stall made is another matter).
 	rec.parked = true
 }
 
@@ -402,7 +402,7 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	// Only a job whose record says we paused it (stallRecord.parked) is
 	// resumed, so a user pause on a job whose record noteNeedsSeed or
 	// notePendingFinalize created is left alone. A user pause on a job Stall
-	// also paused is not distinguished, and is undone here (#716).
+	// also paused is not distinguished, and is undone here.
 	if app.weParked(jobID) {
 		resumed := false
 		if app.dispatcher != nil {
