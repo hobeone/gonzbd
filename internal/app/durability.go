@@ -294,7 +294,8 @@ func faultReason(f *storagefault.Fault) string {
 // handed over here: maybeFinalize leaves the reason for the job's Assessing
 // worker, which hands the job over itself
 // (postProcAdmissions.admitUnlessAssessing), so the finalize does not run
-// beside runAssess.
+// beside runAssess. Fail resumes such a job if Stall paused it, so that
+// worker launches; a job the user paused waits for the user's resume.
 //
 // # No stopping guard, unlike Stall
 //
@@ -316,10 +317,10 @@ func faultReason(f *storagefault.Fault) string {
 func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 	reason := faultReason(f)
 	app.log.Error("job failed by a permanent storage fault", "job", jobID, "fault", f.Error())
-	// A permanent fault is not re-evaluated (R20): the job leaves the queue
-	// with its reason, so keeping it on the stalled list would have the
-	// re-evaluation resume a job that is on its way to history.
-	app.clearStall(jobID)
+	// A permanent fault is not re-evaluated (R20), so the job leaves the
+	// stalled list: a job handed over is on its way to history, and the
+	// re-evaluation would resume it there.
+	parked := app.clearStall(jobID)
 	if app.dispatcher != nil {
 		// enqueuePostProc hands the job to the postproc queue rather than
 		// removing it synchronously, so history.Entry.FailMessage (this
@@ -327,7 +328,18 @@ func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 		// the only live signal for the window until it does.
 		_ = app.dispatcher.SetFailReason(jobID, reason)
 	}
-	app.maybeFinalize(jobID, reason)
+	if app.maybeFinalize(jobID, reason) && parked {
+		// The reason waits for an Assessing worker the tick launches only for
+		// a job not paused, and the pause is Stall's, whose record was just
+		// cleared: nothing else would resume it. Resumed as the re-evaluation
+		// resumes a job Stall parked (reevaluateStall's phase 2). A pause the
+		// user made has no parked record, and holds the reason until the user
+		// resumes the job.
+		if err := app.dispatcher.ResumeJob(jobID); err != nil {
+			// Removed or cancelled since: nothing is left to hand over.
+			app.log.Info("failed job could not be resumed for its Assessing worker", "job", jobID, "err", err)
+		}
+	}
 }
 
 // barrierLock is one job's barrier mutex, plus what is needed to drop it

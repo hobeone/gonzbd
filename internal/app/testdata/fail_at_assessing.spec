@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run ^(TestFail_AtAssessingWithALiveWorker_DefersToTheWorkersExit|TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches|TestFail_OnACompleteJobAtFetching_DefersToAssessing|TestFail_BetweenTheVerdictAndItsReport_IsHandedOffAfterTheReport|TestAwaitsAssessing|TestAdmitUnlessAssessing_DefersToTheVisit|TestAdmitUnlessAssessing_AdmitsWhatIsNotAtAssessing|TestBeginAssess_AnEarlierVisitsEndTakesNothingDeferredToALaterOne|TestAdmitUnlessAssessing_AVisitNoWorkerOwnsGoesWithItsJob|TestAdmitLocked_Outcomes)$
+run ^(TestFail_AtAssessingWithALiveWorker_DefersToTheWorkersExit|TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches|TestFail_OnACompleteJobAtFetching_DefersToAssessing|TestFail_BetweenTheVerdictAndItsReport_IsHandedOffAfterTheReport|TestAwaitsAssessing|TestAdmitUnlessAssessing_DefersToTheVisit|TestAdmitUnlessAssessing_AdmitsWhatIsNotAtAssessing|TestBeginAssess_AnEarlierVisitsEndTakesNothingDeferredToALaterOne|TestAdmitUnlessAssessing_AVisitNoWorkerOwnsGoesWithItsJob|TestAdmitLocked_Outcomes|TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing|TestFail_OnAStalledJobWithAssessingPending_ResumesItForAssessing|TestFail_OnAUserPausedJob_DefersWithoutResumingIt|TestAdmitUnlessAssessing_KeepsNoEmptyReason|TestMaybeFinalize_AnEmptyReasonAtAssessing_IsNoFailure)$
 timeout 5m
 
 # A hand-off by job ID (Fail, the hopeless callbacks) does not admit a job at
@@ -18,9 +18,9 @@ file internal/app/postproc_admission.go
 [maybeFinalize does not defer]
 file internal/app/app.go
 --- anchor
-		app.finalizeRegistered(j, failMsg, true)
+		return app.finalizeRegistered(j, failMsg, true)
 --- replace
-		app.finalizeRegistered(j, failMsg, false)
+		return app.finalizeRegistered(j, failMsg, false)
 --- end
 
 [enqueuePostProc ignores the deferral]
@@ -119,4 +119,56 @@ file internal/app/postproc_admission.go
 	case v.owned:
 --- replace
 	case false:
+--- end
+
+# A job Stall paused, which Fail then defers, is resumed by Fail so the tick
+# launches the Assessing worker; a pause the user made is not.
+
+[a deferred Fail leaves Stall's pause in place]
+file internal/app/durability.go
+--- anchor
+	if app.maybeFinalize(jobID, reason) && parked {
+--- replace
+	if app.maybeFinalize(jobID, reason) && parked && false {
+--- end
+
+[a deferred Fail resumes a pause the user made]
+file internal/app/durability.go
+--- anchor
+	if app.maybeFinalize(jobID, reason) && parked {
+--- replace
+	if app.maybeFinalize(jobID, reason) && (parked || true) {
+--- end
+
+[a stall record Stall did not park counts as its pause]
+file internal/app/stall.go
+--- anchor
+	delete(app.stalls, jobID)
+	return ok && rec.parked
+--- replace
+	delete(app.stalls, jobID)
+	return ok && (rec.parked || true)
+--- end
+
+[a Fail that admits counts as deferred]
+file internal/app/app.go
+--- anchor
+		app.log.Info("postproc: job is at Assessing; its Assessing worker hands it over",
+			"job", j.ID(), "fail_msg", failMsg)
+		return true
+--- replace
+		app.log.Info("postproc: job is at Assessing; its Assessing worker hands it over",
+			"job", j.ID(), "fail_msg", failMsg)
+		return false
+--- end
+
+# "" is no reason, as admitLocked reads it: deferring it would have the
+# Assessing worker settle a healthy job Failed.
+
+[an empty reason is deferred to the Assessing worker]
+file internal/app/postproc_admission.go
+--- anchor
+		if failMsg == "" {
+--- replace
+		if false {
 --- end

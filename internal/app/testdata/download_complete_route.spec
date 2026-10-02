@@ -75,6 +75,31 @@ file internal/app/app.go
 }
 --- end
 
+[a retry fails a complete job by ID]
+file internal/app/app.go
+--- anchor
+	app.emit(Event{Type: "queue_updated"})
+	app.emit(Event{Type: "history_updated"})
+	return nil
+}
+--- replace
+	app.emit(Event{Type: "queue_updated"})
+	app.emit(Event{Type: "history_updated"})
+	if j.IsComplete() {
+		app.maybeFinalize(jobID, "Failed: injected")
+	}
+	return nil
+}
+--- end
+
+[the Assessing worker settles its verdict Failed]
+file internal/app/runner.go
+--- anchor
+		if reasons := r.app.postProcAdmissions.takeDeferred(j); len(reasons) > 0 {
+--- replace
+		if reasons := r.app.postProcAdmissions.takeDeferred(j); true {
+--- end
+
 [the job already in history is dropped after the resume sweep]
 file internal/app/startup_reconcile.go
 --- anchor

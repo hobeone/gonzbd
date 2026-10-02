@@ -175,6 +175,21 @@ func assertAssessed(t *testing.T, a *app.Application, stage unassessedStage, id 
 	if !assessed {
 		t.Errorf("the complete job never reached the on-demand par2 verdict: " +
 			"its deferred recovery volume was not released, so a repair runs without it")
+	} else {
+		// The verdict is reported, not replaced by a failure: a healthy job
+		// leaves Assessing for Fetching to fetch the volume it released.
+		var row dispatch.Row
+		var ok bool
+		waitUntil(verdictWait, func() bool {
+			row, ok = a.Dispatcher().Row(id)
+			return !ok || row.View.Outcome.IsSettled() || row.View.State != job.Assessing || row.View.Next != job.StateUnset
+		})
+		switch {
+		case !ok:
+			t.Errorf("job %s left the queue after its par2 verdict, want it fetching the recovery volume the verdict released", id)
+		case row.View.Outcome == job.OutcomeFailed:
+			t.Errorf("job %s was settled Failed at %v after its par2 verdict, want the verdict reported", id, row.View.State)
+		}
 	}
 	select {
 	case got := <-stage.unassessed:

@@ -143,6 +143,24 @@ func TestAdmitUnlessAssessing_DefersToTheVisit(t *testing.T) {
 	}
 }
 
+// TestAdmitUnlessAssessing_KeepsNoEmptyReason: "" is no reason, as
+// admitLocked reads it, so a hand-off with none leaves nothing for the
+// Assessing worker to fail the job with.
+func TestAdmitUnlessAssessing_KeepsNoEmptyReason(t *testing.T) {
+	t.Parallel()
+	var a postProcAdmissions
+	j := assessingJob(t, "e")
+	if got := a.admitUnlessAssessing(j, ""); got != deferredToAssessing {
+		t.Fatalf("admitUnlessAssessing(\"\") = %v, want deferredToAssessing", got)
+	}
+	if a.has(j) {
+		t.Fatal("a hand-off at Assessing admitted the job")
+	}
+	if got := a.takeDeferred(j); got != nil {
+		t.Errorf("takeDeferred = %q, want none: an empty reason was kept for the worker", got)
+	}
+}
+
 // TestAdmitUnlessAssessing_AdmitsWhatIsNotAtAssessing: a job past its verdict
 // is admitted as admit would, and an admitted one is not deferred.
 func TestAdmitUnlessAssessing_AdmitsWhatIsNotAtAssessing(t *testing.T) {

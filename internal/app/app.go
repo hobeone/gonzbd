@@ -2230,14 +2230,16 @@ func (app *Application) DirectUnpackStatuses() map[string]directunpack.Status {
 // failMsg, as maybeFinalizeJob does, unless the job is at, or due at,
 // Assessing (awaitsAssessing): then failMsg is left for its Assessing worker,
 // which hands the job over (postProcAdmissions.admitUnlessAssessing). It is for a caller that holds
-// only the ID and means whichever instance holds it now.
-func (app *Application) maybeFinalize(jobID, failMsg string) {
+// only the ID and means whichever instance holds it now. It reports whether it
+// deferred to the Assessing worker.
+func (app *Application) maybeFinalize(jobID, failMsg string) (deferred bool) {
 	if app.dispatcher == nil {
-		return
+		return false
 	}
 	if j, ok := app.dispatcher.Job(jobID); ok {
-		app.finalizeRegistered(j, failMsg, true)
+		return app.finalizeRegistered(j, failMsg, true)
 	}
+	return false
 }
 
 // maybeFinalizeJob hands j to post-processing with failMsg, only while j is the
@@ -2248,16 +2250,17 @@ func (app *Application) maybeFinalizeJob(j *job.Job, failMsg string) {
 	app.finalizeRegistered(j, failMsg, false)
 }
 
-// finalizeRegistered is maybeFinalize's and maybeFinalizeJob's body.
-func (app *Application) finalizeRegistered(j *job.Job, failMsg string, deferAtAssessing bool) {
+// finalizeRegistered is maybeFinalize's and maybeFinalizeJob's body. It
+// reports enqueuePostProc's deferral.
+func (app *Application) finalizeRegistered(j *job.Job, failMsg string, deferAtAssessing bool) (deferred bool) {
 	if app.dispatcher == nil {
-		return
+		return false
 	}
 	row, ok := app.dispatcher.RowJob(j)
 	if !ok {
-		return
+		return false
 	}
-	app.enqueuePostProc(j, row.Header, failMsg, deferAtAssessing)
+	return app.enqueuePostProc(j, row.Header, failMsg, deferAtAssessing)
 }
 
 // directUnpackWaiter is the subset of *directunpack.DirectUnpacker that
@@ -2325,9 +2328,9 @@ func faultIn(err error) *storagefault.Fault {
 // this instance is already admitted, or has been and ended
 // (postProcAdmissions). In the first case it does nothing but offer failMsg to
 // the admitted run; in the second, nothing. With deferAtAssessing it hands over
-// no job at, or due at, Assessing (awaitsAssessing), and leaves failMsg for
-// the job's Assessing worker.
-func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg string, deferAtAssessing bool) {
+// no job at, or due at, Assessing (awaitsAssessing), leaves failMsg for the
+// job's Assessing worker, and reports that it deferred.
+func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg string, deferAtAssessing bool) (deferred bool) {
 	admit := app.postProcAdmissions.admit
 	if deferAtAssessing {
 		admit = app.postProcAdmissions.admitUnlessAssessing
@@ -2335,25 +2338,25 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	switch admit(j, failMsg) {
 	case admitted:
 	case deferredToAssessing:
-		app.log.Info("postproc: job is at Assessing; its Assessing worker hands it over with this failure reason",
+		app.log.Info("postproc: job is at Assessing; its Assessing worker hands it over",
 			"job", j.ID(), "fail_msg", failMsg)
-		return
+		return true
 	case refused:
 		// Debug: a refusal that brings no reason loses nothing.
 		app.log.Debug("postproc: job already admitted; not enqueuing it again", "job", j.ID())
-		return
+		return false
 	case refusedReasonKept:
 		app.log.Info("postproc: job already admitted; its failure reason becomes the admitted run's",
 			"job", j.ID(), "fail_msg", failMsg)
-		return
+		return false
 	case refusedReasonNoted:
 		app.log.Warn("postproc: job already admitted with another failure reason or already handed over; this reason is noted in its history entry's stage log and does not change its status",
 			"job", j.ID(), "fail_msg", failMsg)
-		return
+		return false
 	case refusedEnded:
 		app.log.Warn("postproc: this job instance's post-processing has already ended; not running it again",
 			"job", j.ID(), "fail_msg", failMsg)
-		return
+		return false
 	}
 
 	// A job handed over before its download finished (Fail, a hopeless
@@ -2595,9 +2598,10 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			}
 			enqueue(duResults, duFailures, duSkipped)
 		})
-		return
+		return false
 	}
 	enqueue(nil, nil, nil)
+	return false
 }
 
 // SetQuickCheckEnabled enables or disables the CRC pre-verify pass at runtime

@@ -132,8 +132,8 @@ func (a *postProcAdmissions) admit(j *job.Job, failMsg string) admitOutcome {
 }
 
 // admitUnlessAssessing is admit, except that it admits no instance at
-// Assessing: it keeps failMsg for the instance's Assessing worker and returns
-// deferredToAssessing. That worker hands such an instance over itself
+// Assessing: it keeps failMsg, unless it is "", for the instance's Assessing
+// worker and returns deferredToAssessing. That worker hands such an instance over itself
 // (appRunner.runAssess), so a run this would have admitted does not start
 // beside it.
 //
@@ -154,6 +154,11 @@ func (a *postProcAdmissions) admitUnlessAssessing(j *job.Job, failMsg string) ad
 		return refusedEnded
 	}
 	if _, admitted := a.jobs[j]; !admitted && awaitsAssessing(j) {
+		if failMsg == "" {
+			// No reason, as admitLocked reads "": a plain hand-over, which the
+			// Assessing worker's verdict makes anyway.
+			return deferredToAssessing
+		}
 		v := a.assessing[key]
 		if v == nil {
 			v = a.newVisitLocked(j, key)

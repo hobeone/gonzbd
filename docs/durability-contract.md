@@ -1124,7 +1124,9 @@ due there, `Fail` hands nothing over: it leaves its reason, also in memory,
 for the job's Assessing worker, which hands the job over in place of its
 verdict (`docs/post-processing-contract.md` § "Pipeline Architecture & Queue
 Scheduling"); that reason dies with the process as the hand-off does, a case
-the test below does not drive. Of the fields `Fail` writes,
+the test below does not drive. Such a job that `Stall` paused, `Fail` resumes,
+since it clears the stall record the re-evaluation would have resumed it
+from; that moves the job's intent, not its position. Of the fields `Fail` writes,
 `Header.FailReason` is the persisted one, and a restarted job keeps it until it
 leaves the queue.
 `TestFail_InTheCleanShutdownBarrier_DoesNotPersistAPartialJobForPostProcessing`
