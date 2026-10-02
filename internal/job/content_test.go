@@ -1092,3 +1092,41 @@ func TestRestoreContent_KeepsWritesMadeWhileEvicted(t *testing.T) {
 		t.Errorf("FileFetchPolicy(0) after re-hydration = %v, want FetchNever", got)
 	}
 }
+
+// TestMarkArticleFailed_ResidentEmittedArticleLeavesPendingOnce pins
+// markFailed's emitted accounting: an article left the pending count when it
+// was emitted, so failing it must not take it out again. A double decrement
+// drives the counters below the real outstanding work, and
+// ForEachUnfinishedArticle returns at once when pendingArticles reaches zero,
+// stranding the articles still to fetch.
+func TestMarkArticleFailed_ResidentEmittedArticleLeavesPendingOnce(t *testing.T) {
+	m := NewManifest([]JobFile{{Subject: "data.bin", Bytes: 200, Articles: []JobArticle{
+		{ID: "<b0@x>", Bytes: 100, Number: 1},
+		{ID: "<b1@x>", Bytes: 100, Number: 2},
+	}}})
+	j := New("resident", "resident", PolicyFromPP(3))
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	if err := j.MarkArticleEmitted(1); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+	if got := j.PendingArticles(); got != 1 {
+		t.Fatalf("fixture: PendingArticles after emitting one of two = %d, want 1", got)
+	}
+
+	if err := j.MarkArticleFailed(1); err != nil {
+		t.Fatalf("MarkArticleFailed: %v", err)
+	}
+
+	if got := j.PendingArticles(); got != 1 {
+		t.Errorf("PendingArticles after failing the emitted article = %d, want 1: "+
+			"the article was taken out of the count twice", got)
+	}
+	if got := j.Progress().FilePending(0); got != 1 {
+		t.Errorf("FilePending(0) = %d, want 1", got)
+	}
+	if got := unfinishedArticles(t, j); len(got) != 1 || got[0] != 0 {
+		t.Errorf("unfinished articles = %v, want [0]", got)
+	}
+}

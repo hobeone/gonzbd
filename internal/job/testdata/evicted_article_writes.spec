@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction|TestMarkArticleFailed_EvictedRejectsAnOutOfRangeIndex|TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding|TestRestoreContent_KeepsWritesMadeWhileEvicted|TestProgressPointerWriters_MatchTheEnumerationStatedInProse
+run TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction|TestMarkArticleFailed_EvictedRejectsAnOutOfRangeIndex|TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding|TestRestoreContent_KeepsWritesMadeWhileEvicted|TestMarkArticleFailed_ResidentEmittedArticleLeavesPendingOnce|TestProgressPointerWriters_MatchTheEnumerationStatedInProse
 
 [an evicted job's failure refused, as before the fix]
 file internal/job/content.go
@@ -88,6 +88,17 @@ file internal/job/content.go
 		return nil
 --- replace
 		return nil
+--- end
+
+[markFailed reads the emitted bit after setFailedBits cleared it]
+file internal/job/progress.go
+--- anchor
+	fi := m.fileIndexForArticle(i)
+	if !wasEmitted {
+--- replace
+	fi := m.fileIndexForArticle(i)
+	_ = wasEmitted
+	if !p.emitted.Get(i) {
 --- end
 
 [re-hydration installs a copy of the record, as Hydrate once did]
