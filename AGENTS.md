@@ -261,7 +261,8 @@ copy that drifts. The trigger is the only column this table needs.
 ## Building and Running
 
 ```bash
-go build ./cmd/gonzbd                                  # Build the binary
+go build ./cmd/gonzbd                                  # Build the binary (no version/build time; commit only from VCS info)
+./scripts/build.sh                                     # Build the binary with version, commit and build time stamped in
 ./gonzbd --config ~/.config/gonzbd/gonzbd.yaml --serve # Run as daemon
 ./gonzbd --config <path> --nzb <path>                  # One-shot download
 ```
@@ -271,7 +272,8 @@ go build ./cmd/gonzbd                                  # Build the binary
 No Makefile. Standard Go tooling only:
 
 ```bash
-go build ./cmd/gonzbd                                       # Build the binary
+go build ./cmd/gonzbd                                       # Build the binary (no version/build time; commit only from VCS info)
+./scripts/build.sh                                          # Build with version/commit/build time stamped (what the UI About dialog shows)
 go test ./...                                               # Unit tests
 go test -race ./...                                         # With race detector (required for CI/commits)
 go test -run TestFoo ./internal/nzb/                        # Run a single test

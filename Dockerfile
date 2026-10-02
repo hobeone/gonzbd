@@ -40,10 +40,17 @@ COPY --from=ui-builder /src/ui/dist ui/dist
 ARG VERSION=
 ARG COMMIT=
 ARG BUILD_DATE=
-RUN VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}" && \
+# The build context is filtered by .dockerignore, which drops tracked files
+# (Dockerfile, docs/, test/, ...) while keeping .git. Inside this stage git
+# therefore always sees a modified tree, so the fallbacks below must not ask
+# for `--dirty`, and `-buildvcs=false` keeps the toolchain from stamping the
+# same false vcs.modified=true into the binary. The commit comes from the
+# VERSION/COMMIT build-args (scripts/docker-build, release.yml) or, failing
+# that, from git's HEAD, which is unaffected by the filtering.
+RUN VERSION="${VERSION:-$(git describe --tags --always 2>/dev/null || echo dev)}" && \
     COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}" && \
     BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -buildvcs=false \
       -ldflags="-s -w \
         -X main.Version=${VERSION} \
         -X main.Commit=${COMMIT} \

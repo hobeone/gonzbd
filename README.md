@@ -57,11 +57,19 @@ go build ./cmd/gonzbd
 The first command builds the Svelte SPA into `ui/dist/`; the Go build
 embeds it into the binary. Bun is only needed at build time.
 
-Versioned build:
+Versioned build, which stamps the version, git commit and build time into
+the binary (shown in the About dialog, the page footer and
+`gonzbd --version`):
 
 ```bash
-go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" ./cmd/gonzbd
+./scripts/build.sh
 ```
+
+A plain `go build` inside a git checkout still reports the commit and
+commit time, taken from the build info the Go toolchain embeds, but has
+no version or build time. The Docker image is stamped by
+`./scripts/docker-build`, and by the Dockerfile itself when built with
+`docker compose build`.
 
 ## Docker
 
