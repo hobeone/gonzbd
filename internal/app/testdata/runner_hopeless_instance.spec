@@ -7,9 +7,11 @@ run TestFailHopeless_LeavesALaterInstanceAlone$|TestMaybeReleaseRecoveryVolumes_
 [the hopeless verdict hands over whatever instance holds the ID]
 file internal/app/runner.go
 --- anchor
-	r.app.maybeFinalizeJob(j, failMsgForJob(j))
+	for _, reason := range reasons {
+		r.app.maybeFinalizeJob(j, reason)
 --- replace
-	r.app.maybeFinalize(j.ID(), failMsgForJob(j))
+	for _, reason := range reasons {
+		r.app.maybeFinalize(j.ID(), reason)
 --- end
 
 [the hopeless verdict settles whatever instance holds the ID]

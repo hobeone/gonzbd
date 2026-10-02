@@ -293,7 +293,7 @@ func TestEnqueuePostProc_RemovedBeforeItsHandOver_ReleasesTheJob(t *testing.T) {
 				removed <- application.RemoveJob(ctx, id, false)
 			}()
 			waitFor(t, func() bool { return application.transitions.wasRemoved(j) })
-			application.enqueuePostProc(j, row.Header, "")
+			application.enqueuePostProc(j, row.Header, "", false)
 
 			if err := <-removed; err != nil {
 				t.Fatalf("RemoveJob: %v", err)

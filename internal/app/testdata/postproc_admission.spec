@@ -8,9 +8,9 @@ run Test(Fail_WhilePostProcessing_IsNotedAndLeavesTheStatusToTheStages|RunPostPr
 [enqueuePostProc ignores a refused admission]
 file internal/app/app.go
 --- anchor
-	switch app.postProcAdmissions.admit(j, failMsg) {
+	switch admit(j, failMsg) {
 --- replace
-	switch _ = app.postProcAdmissions.admit(j, failMsg); admitted {
+	switch _ = admit(j, failMsg); admitted {
 --- end
 
 [finalize ends the admission before its tail rather than after it]

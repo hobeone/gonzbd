@@ -228,11 +228,14 @@ func (app *Application) completeFinalizeRecovery(jobID string, fileIdx int) {
 	}
 }
 
-// clearStall forgets a job's parked state.
-func (app *Application) clearStall(jobID string) {
+// clearStall forgets a job's parked state, and reports whether the record it
+// removed was one this application parked (weParked).
+func (app *Application) clearStall(jobID string) (parked bool) {
 	app.stallMu.Lock()
 	defer app.stallMu.Unlock()
+	rec, ok := app.stalls[jobID]
 	delete(app.stalls, jobID)
+	return ok && rec.parked
 }
 
 // StallInfo is what a job's parked state looks like from outside the package.

@@ -98,11 +98,20 @@ func TestClearStall_ForgetsAJobWithOutstandingRecoveryWork(t *testing.T) {
 	application.noteStall("job-1", testFault("write"))
 	application.notePendingFinalize("job-1", 0)
 
-	application.clearStall("job-1")
+	if parked := application.clearStall("job-1"); !parked {
+		t.Error("clearStall of a job Stall parked reported it not parked")
+	}
 
 	if got := application.stalledJobIDs(); len(got) != 0 {
 		t.Errorf("stalledJobIDs = %v, want empty — a job on its way to history would be "+
 			"resumed by the next re-evaluation", got)
+	}
+	if parked := application.clearStall("job-1"); parked {
+		t.Error("clearStall with no record reported the job parked")
+	}
+	application.noteNeedsSeed("job-2")
+	if parked := application.clearStall("job-2"); parked {
+		t.Error("clearStall of a record Stall did not park reported the job parked")
 	}
 }
 
