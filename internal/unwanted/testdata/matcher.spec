@@ -1,0 +1,70 @@
+pkg ./internal/unwanted/
+run TestUnwanted_|TestListed_|TestNewRules_
+
+[the path component is not stripped]
+file internal/unwanted/unwanted.go
+--- anchor
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+--- replace
+	if i := strings.LastIndexAny(name, `/\`); false && i >= 0 {
+--- end
+
+[trailing dots and spaces are not trimmed]
+file internal/unwanted/unwanted.go
+--- anchor
+		return r == '.' || unicode.IsSpace(r) || unicode.IsControl(r)
+--- replace
+		return false && unicode.IsSpace(r)
+--- end
+
+[the comparison is case-sensitive]
+file internal/unwanted/unwanted.go
+--- anchor
+	return strings.ToLower(name[i+1:])
+--- replace
+	return name[i+1:]
+--- end
+
+[a name with no extension is judged like any other]
+file internal/unwanted/unwanted.go
+--- anchor
+	if ext == "" {
+		return false
+	}
+--- replace
+	if false {
+		return false
+	}
+--- end
+
+[whitelist mode reads the list as a blacklist]
+file internal/unwanted/unwanted.go
+--- anchor
+	if r.mode == ModeWhitelist {
+--- replace
+	if false {
+--- end
+
+[a pattern error lets the name through]
+file internal/unwanted/unwanted.go
+--- anchor
+		if ok, err := path.Match(p, ext); ok || err != nil {
+--- replace
+		if ok, _ := path.Match(p, ext); ok {
+--- end
+
+[a malformed configured pattern is accepted]
+file internal/unwanted/unwanted.go
+--- anchor
+		if _, err := path.Match(p, ""); err != nil {
+--- replace
+		if _, err := path.Match(p, ""); false && err != nil {
+--- end
+
+[an entry's leading dot is kept]
+file internal/unwanted/unwanted.go
+--- anchor
+		p := strings.ToLower(strings.TrimLeft(strings.TrimSpace(ext), "."))
+--- replace
+		p := strings.ToLower(strings.TrimSpace(ext))
+--- end
