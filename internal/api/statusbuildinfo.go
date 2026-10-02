@@ -37,11 +37,13 @@ func (s *Server) statusBuildInfo(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	respondJSON(w, http.StatusOK, map[string]any{
-		"status":     true,
-		"version":    s.version,
-		"commit":     s.commit,
-		"build_date": s.date,
-		"go_version": runtime.Version(),
-		"deps":       deps,
+		"status":      true,
+		"version":     s.version,
+		"commit":      s.commit,
+		"build_date":  s.date,
+		"commit_time": s.commitTime,
+		"dirty":       s.dirty,
+		"go_version":  runtime.Version(),
+		"deps":        deps,
 	})
 }

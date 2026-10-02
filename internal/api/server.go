@@ -31,8 +31,14 @@ type Options struct {
 	Version string
 	// Commit is the short git SHA of the build.
 	Commit string
+	// CommitTime is the RFC-3339 commit timestamp, or "" when unknown.
+	CommitTime string
+	// Dirty reports that the build tree had uncommitted changes.
+	Dirty bool
 	// Date is the RFC-3339 build timestamp.
 	Date string
+	// cmd/gonzbd fills Version, Commit, CommitTime, Dirty and Date from
+	// internal/buildinfo's Resolve.
 
 	// Logger is the structured logger. Defaults to slog.Default() when nil.
 	Logger *slog.Logger
@@ -74,11 +80,13 @@ type Options struct {
 // exposes its handler via Handler; the caller (cmd/gonzbd) is responsible
 // for binding and serving it on a real net/http.Server.
 type Server struct {
-	version   string
-	commit    string
-	date      string
-	startTime time.Time
-	log       *slog.Logger
+	version    string
+	commit     string
+	date       string
+	commitTime string
+	dirty      bool
+	startTime  time.Time
+	log        *slog.Logger
 
 	dispatcher *dispatch.Dispatcher
 	history    *history.Repository
@@ -131,6 +139,8 @@ func New(opts Options) *Server {
 		version:      opts.Version,
 		commit:       opts.Commit,
 		date:         opts.Date,
+		commitTime:   opts.CommitTime,
+		dirty:        opts.Dirty,
 		startTime:    time.Now(),
 		log:          log,
 		dispatcher:   opts.Dispatcher,
