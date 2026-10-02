@@ -1,6 +1,9 @@
 package config
 
-import "github.com/hobeone/gonzbd/internal/fsutil"
+import (
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/unwanted"
+)
 
 // DownloadConfig controls bandwidth, retry behavior, and disk-space
 // guards for the download pipeline. See spec §9.3.
@@ -93,6 +96,33 @@ type DownloadConfig struct {
 	// CleanupList is a list of strings or regex patterns to be removed
 	// from folder and filenames.
 	CleanupList []string `yaml:"cleanup_list" json:"cleanup_list"`
+
+	// UnwantedExtensions lists file extensions (without the dot,
+	// case-insensitive; path.Match patterns allowed) that a job must not
+	// deliver. Read according to UnwantedExtensionsMode, and acted on
+	// according to ActionOnUnwantedExtensions. Mirrors SABnzbd's
+	// unwanted_extensions. Default: exe, com, scr, pif, bat, cmd, msi, vbs.
+	UnwantedExtensions []string `yaml:"unwanted_extensions" json:"unwanted_extensions"`
+
+	// UnwantedExtensionsMode is "blacklist" (the listed extensions are
+	// unwanted) or "whitelist" (every extension not listed is unwanted). A
+	// name with no extension is never unwanted. Default: blacklist.
+	UnwantedExtensionsMode unwanted.Mode `yaml:"unwanted_extensions_mode" json:"unwanted_extensions_mode"`
+
+	// ActionOnUnwantedExtensions is what happens when an NZB names an
+	// unwanted file: "off" disables the check, "pause" adds the job paused
+	// until the user resumes it, "fail" files it in history as Failed
+	// without downloading anything. Unless it is "off", unwanted files are
+	// also deleted after unpack, except from a job the user approved.
+	// Default: pause.
+	ActionOnUnwantedExtensions unwanted.Action `yaml:"action_on_unwanted_extensions" json:"action_on_unwanted_extensions"`
+}
+
+// UnwantedRules returns the unwanted-extension rules these settings
+// describe. Validate rejects settings it would refuse, so the error is
+// reachable only for a DownloadConfig that was never validated.
+func (c DownloadConfig) UnwantedRules() (unwanted.Rules, error) {
+	return unwanted.NewRules(c.ActionOnUnwantedExtensions, c.UnwantedExtensionsMode, c.UnwantedExtensions)
 }
 
 // SanitizeOptions returns the naming and cleanup preferences as a

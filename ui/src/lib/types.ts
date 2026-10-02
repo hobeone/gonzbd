@@ -219,6 +219,9 @@ export interface DownloadsConfig {
 	replace_spaces_with: string;
 	strip_diacritics: boolean;
 	cleanup_list: string[];
+	unwanted_extensions: string[];
+	unwanted_extensions_mode: 'blacklist' | 'whitelist';
+	action_on_unwanted_extensions: 'off' | 'pause' | 'fail';
 }
 
 export interface FullConfig {
