@@ -281,11 +281,14 @@ func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 	// reevaluateStall).
 	//
 	// The pause is claimed only when the user has not already paused the job:
-	// the intent is read before PauseJob. IntentPause there is the user's, or
-	// this application's own earlier pause on a re-stall; the second stays
-	// ours because setStallReasonLocked never clears parked.
-	// Read with no lock held; a user pause landing between the read and
-	// PauseJob is claimed by us and resumed once the fault clears.
+	// the intent is read before PauseJob. IntentPause there is not
+	// necessarily the user's: AddJob pauses a duplicate NZB and a
+	// paused-priority ingest, and a re-stall meets Stall's own earlier pause,
+	// which stays ours because setStallReasonLocked never clears parked.
+	// Read with no lock held, so two races are accepted: a user pause landing
+	// between the read and PauseJob is claimed by us and resumed once the
+	// fault clears, and a user resume in the same window leaves PauseJob
+	// pausing a job nobody owns (docs/durability-contract.md).
 	claimPause := true
 	if app.dispatcher != nil {
 		if j, ok := app.dispatcher.Job(jobID); ok && j.Intent() == job.IntentPause {

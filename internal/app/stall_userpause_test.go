@@ -155,6 +155,68 @@ func TestStall_OnAnUnparkedRecordOfAUserPausedJob(t *testing.T) {
 	}
 }
 
+// TestReevaluateStall_ReleasesItsParkOnceItResumes pins that a resume ends this
+// application's claim on the pause, even when the record has to survive for a
+// completion the queue refused. A claim left behind on a running job is
+// inherited by whatever pause the user makes next, and the re-evaluation after
+// the next fault resumes it.
+func TestReevaluateStall_ReleasesItsParkOnceItResumes(t *testing.T) {
+	t.Parallel()
+	application, job := newDurabilityTestApp(t, 1, 2)
+	fault := storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO)
+
+	application.Stall(job.ID(), fault)
+	// File 99 does not exist, so the queue refuses its completion and the
+	// record outlives the resume.
+	application.notePendingFinalize(job.ID(), 99)
+	application.setFinalizeState(job.ID(), 99, finalizeDone)
+	application.reevaluateStall(t.Context(), job.ID())
+
+	if _, ok := application.recoveryFiles(job.ID())[99]; !ok {
+		t.Fatal("the record did not survive, so the fixture cannot observe a leftover claim")
+	}
+	if application.weParked(job.ID()) {
+		t.Error("the record still claims a pause after the job was resumed")
+	}
+	if got := application.StallReason(job.ID()).Reason; got != "" {
+		t.Errorf("stall reason %q is still shown on a job that was resumed", got)
+	}
+
+	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
+		t.Fatalf("the user's pause: %v", err)
+	}
+	application.Stall(job.ID(), fault)
+	application.reevaluateStall(t.Context(), job.ID())
+
+	row, ok := application.dispatcher.Row(job.ID())
+	if !ok {
+		t.Fatal("the job left the queue")
+	}
+	if row.Status() != constants.StatusPaused {
+		t.Errorf("status = %v, want Paused: a claim left over from the earlier stall undid the user's later pause", row.Status())
+	}
+}
+
+// TestStallLost_ClaimsNoPause pins that surfacing a lost-handle reason does
+// not make the pause this application's: stallLost pauses nothing, and a
+// claim would let a re-evaluation resume a job the user paused.
+func TestStallLost_ClaimsNoPause(t *testing.T) {
+	t.Parallel()
+	application, job := newDurabilityTestApp(t, 1, 2)
+	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
+		t.Fatalf("the user's pause: %v", err)
+	}
+
+	application.stallLost(job.ID(), 0)
+
+	if application.StallReason(job.ID()).Reason == "" {
+		t.Fatal("stallLost surfaced no reason, so the fixture observes nothing")
+	}
+	if application.weParked(job.ID()) {
+		t.Error("stallLost claimed a pause it did not make")
+	}
+}
+
 // TestWeParked pins the predicate directly, because its two false cases have
 // different causes and only one of them is exercised end to end.
 func TestWeParked(t *testing.T) {

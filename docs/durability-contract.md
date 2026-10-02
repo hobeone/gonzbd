@@ -1365,14 +1365,31 @@ when a checkpoint's `AckDurable` finds the job evicted, and
 `notePendingFinalize` when a finalize does, and the job can be one the user
 paused. Resuming on that would undo the user's pause within one interval with
 no log saying so. `stallRecord.parked` is set only by `Stall`, and only when the
-job's intent was not already `IntentPause` when `Stall` fired: a job the user
-had paused, as for example a checkpoint barrier's fault on a
-paused-and-resident job finds it, is left unmarked, so once nothing is blocked the re-evaluation clears the
-stall reason and leaves the pause in place. A job `Stall` parked stays parked across a later
-fault. If the user pauses a job `Stall` already parked, the record is still
-ours and the re-evaluation resumes it. A user pause that lands between
-`Stall` reading the intent and its `PauseJob` is claimed by `Stall` and
-resumed the same way.
+job's intent was not already `IntentPause` when `Stall` fired. A job paused
+before the fault, for instance one a checkpoint barrier faults on while it is
+paused and resident, is left unmarked: once nothing is blocked, the
+re-evaluation clears the stall reason and leaves the pause in place.
+The intent `Stall` reads can be the user's pause, the application's own
+(a duplicate NZB or a paused-priority ingest pauses the job on add), or
+`Stall`'s earlier pause. A later fault never releases a claim `Stall` already
+made.
+
+A re-evaluation that resumes the job releases the claim and clears the reason
+at once. The record may outlive the resume while a completion is still to be
+delivered, but it no longer owns any pause, so a pause the user makes
+afterwards is not undone. While `Stall`'s own pause stands, a pause the user
+adds on top is indistinguishable from it, and the re-evaluation resumes it.
+
+Two races are accepted. A user pause landing between `Stall`'s intent read and
+its `PauseJob` is claimed by `Stall` and resumed once the fault clears. A user
+resume landing in the same window leaves `Stall`'s `PauseJob` pausing the job
+with no owner: it stays paused after the fault clears, with no reason shown.
+Closing the second needs an atomic prior-intent swap in the dispatcher.
+
+The claim is in memory and the intent is persisted. A job `Stall` paused before
+a restart comes back as a pause nobody owns, and a fault raised at startup then
+leaves it paused. That gap predates this rule: with no fault, a restart already
+leaves it paused.
 
 **A user Resume is the boundary, and is deliberately outside the guarantee.**
 `mode=queue&name=resume` and `name=resume_all` (`internal/api/queue.go`) unpause
