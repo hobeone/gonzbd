@@ -1,9 +1,9 @@
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Toast from './Toast.svelte';
-import { getToastMessage, dismissToast } from '$lib/stores/warnings.svelte';
+import { getToastMessage, dismissToast } from '#lib/stores/warnings.svelte.js';
 
-vi.mock('$lib/stores/warnings.svelte', () => ({
+vi.mock('#lib/stores/warnings.svelte.js', () => ({
 	getToastMessage: vi.fn(),
 	dismissToast: vi.fn()
 }));

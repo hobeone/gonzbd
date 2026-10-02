@@ -1,6 +1,6 @@
 <script lang="ts">
-	import Modal from '$lib/components/ui/Modal.svelte';
-	import { fetchJSON } from '$lib/api';
+	import Modal from '#lib/components/ui/Modal.svelte';
+	import { fetchJSON } from '#lib/api.js';
 	import Info from '@lucide/svelte/icons/info';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();

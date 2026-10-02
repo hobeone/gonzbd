@@ -1,5 +1,5 @@
-import { postAction } from '$lib/api';
-import type { ServerSnapshot } from '$lib/types';
+import { postAction } from '#lib/api.js';
+import type { ServerSnapshot } from '#lib/types.js';
 import { subscribeWS, type WSEvent } from './websocket.svelte';
 
 const SPEED_HISTORY_SIZE = 60;

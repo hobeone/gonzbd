@@ -1,10 +1,10 @@
 <script lang="ts">
-	import Modal from '$lib/components/ui/Modal.svelte';
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
-	import { Badge } from '$lib/components/ui/badge';
-	import type { ServerConfig } from '$lib/types';
-	import { postAction } from '$lib/api';
+	import Modal from '#lib/components/ui/Modal.svelte';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import type { ServerConfig } from '#lib/types.js';
+	import { postAction } from '#lib/api.js';
 
 	let {
 		open = $bindable(false),

@@ -11,10 +11,10 @@ import {
 	setBandwidthPerc,
 	getQueueSlots,
 	isPaused
-} from '$lib/stores/queue.svelte';
-import { formatSpeed, formatSize } from '$lib/utils';
+} from '#lib/stores/queue.svelte.js';
+import { formatSpeed, formatSize } from '#lib/utils.js';
 
-vi.mock('$lib/stores/queue.svelte', () => ({
+vi.mock('#lib/stores/queue.svelte.js', () => ({
 	getSpeedBytesPerSec: vi.fn(),
 	getSpeedHistory: vi.fn(),
 	getTotalRemainingBytes: vi.fn(),
@@ -26,8 +26,8 @@ vi.mock('$lib/stores/queue.svelte', () => ({
 	isPaused: vi.fn()
 }));
 
-vi.mock('$lib/utils', async (importOriginal) => {
-	const actual = await importOriginal<typeof import('$lib/utils')>();
+vi.mock('#lib/utils.js', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('#lib/utils.js')>();
 	return {
 		...actual,
 		formatSpeed: vi.fn(),

@@ -1,18 +1,18 @@
 <script lang="ts">
-	import Navbar from '$lib/components/Navbar.svelte';
-	import QueueTable from '$lib/components/QueueTable.svelte';
-	import HistoryTable from '$lib/components/HistoryTable.svelte';
-	import WarningsBanner from '$lib/components/WarningsBanner.svelte';
-	import StatusBar from '$lib/components/StatusBar.svelte';
-	import Toast from '$lib/components/Toast.svelte';
-	import ConnectionOverlay from '$lib/components/ConnectionOverlay.svelte';
-	import ShortcutHelp from '$lib/components/ShortcutHelp.svelte';
+	import Navbar from '#lib/components/Navbar.svelte';
+	import QueueTable from '#lib/components/QueueTable.svelte';
+	import HistoryTable from '#lib/components/HistoryTable.svelte';
+	import WarningsBanner from '#lib/components/WarningsBanner.svelte';
+	import StatusBar from '#lib/components/StatusBar.svelte';
+	import Toast from '#lib/components/Toast.svelte';
+	import ConnectionOverlay from '#lib/components/ConnectionOverlay.svelte';
+	import ShortcutHelp from '#lib/components/ShortcutHelp.svelte';
 	import { onMount, onDestroy } from 'svelte';
-	import { startPolling, stopPolling, isPaused, getQueueSlots, getSpeedBytesPerSec } from '$lib/stores/queue.svelte';
-	import { startHistoryPolling, stopHistoryPolling } from '$lib/stores/history.svelte';
-	import { startWarningsPolling, stopWarningsPolling } from '$lib/stores/warnings.svelte';
-	import { faviconForState, type AppState } from '$lib/favicon';
-	import { handleGlobalShortcut, registerShortcut } from '$lib/shortcuts.svelte';
+	import { startPolling, stopPolling, isPaused, getQueueSlots, getSpeedBytesPerSec } from '#lib/stores/queue.svelte.js';
+	import { startHistoryPolling, stopHistoryPolling } from '#lib/stores/history.svelte.js';
+	import { startWarningsPolling, stopWarningsPolling } from '#lib/stores/warnings.svelte.js';
+	import { faviconForState, type AppState } from '#lib/favicon.js';
+	import { handleGlobalShortcut, registerShortcut } from '#lib/shortcuts.svelte.js';
 
 	let helpOpen = $state(false);
 

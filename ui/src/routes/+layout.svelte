@@ -1,7 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import { onMount } from 'svelte';
-	import { initTheme } from '$lib/stores/theme.svelte';
+	import { initTheme } from '#lib/stores/theme.svelte.js';
 
 	let { children } = $props();
 

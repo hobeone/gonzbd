@@ -11,10 +11,10 @@ import {
 	setQueuePage,
 	getQueueSearch,
 	setQueueSearch
-} from '$lib/stores/queue.svelte';
+} from '#lib/stores/queue.svelte.js';
 
 // Mock the queue store
-vi.mock('$lib/stores/queue.svelte', () => ({
+vi.mock('#lib/stores/queue.svelte.js', () => ({
 	getQueueSlots: vi.fn(),
 	getQueue: vi.fn(),
 	getError: vi.fn(),

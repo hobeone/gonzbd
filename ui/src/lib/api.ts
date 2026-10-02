@@ -7,7 +7,7 @@ import type {
 	ConfigResponse
 } from './types';
 import { reportAuthExpired, isAuthExpired } from './stores/connection.svelte';
-import { getRedirectUrl } from '$lib/utils';
+import { getRedirectUrl } from '#lib/utils.js';
 
 const API_BASE = '/api';
 

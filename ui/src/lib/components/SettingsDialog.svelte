@@ -1,7 +1,7 @@
 <script lang="ts">
-	import Modal from '$lib/components/ui/Modal.svelte';
-	import { Button } from '$lib/components/ui/button';
-	import { setConfig, postAction, fetchConfig } from '$lib/api';
+	import Modal from '#lib/components/ui/Modal.svelte';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { setConfig, postAction, fetchConfig } from '#lib/api.js';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import AlertCircle from '@lucide/svelte/icons/alert-circle';
 	import X from '@lucide/svelte/icons/x';
@@ -12,7 +12,7 @@
 	import CategoriesSection from './config/CategoriesSection.svelte';
 	import ServerEditDialog from './config/ServerEditDialog.svelte';
 	import CategoryEditDialog from './config/CategoryEditDialog.svelte';
-	import type { ServerConfig, CategoryConfig } from '$lib/types';
+	import type { ServerConfig, CategoryConfig } from '#lib/types.js';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 

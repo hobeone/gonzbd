@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock dependencies.
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api.js', () => ({
 	fetchQueue: vi.fn(),
 	postAction: vi.fn()
 }));
@@ -49,7 +49,7 @@ import {
 	resumeJob,
 	deleteJob
 } from './queue.svelte';
-import { fetchQueue, postAction } from '$lib/api';
+import { fetchQueue, postAction } from '#lib/api.js';
 
 const mockSlots = [
 	{ nzo_id: 'nzo_1', name: 'Job1', status: 'Downloading', remaining_bytes: 1000 },

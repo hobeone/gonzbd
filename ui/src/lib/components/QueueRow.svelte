@@ -1,13 +1,13 @@
 <script lang="ts">
-	import type { QueueSlot, QueueFile, RepairState } from '$lib/types';
+	import type { QueueSlot, QueueFile, RepairState } from '#lib/types.js';
 	import { untrack } from 'svelte';
-	import { Progress } from '$lib/components/ui/progress';
-	import { Button } from '$lib/components/ui/button';
-	import { Badge } from '$lib/components/ui/badge';
-	import { pauseJob, resumeJob } from '$lib/stores/queue.svelte';
-	import { fetchQueueJobDetail, fetchCategories, fetchScripts, postAction } from '$lib/api';
-	import { subscribeWS } from '$lib/stores/websocket.svelte';
-	import { cn, formatSize as formatBytes, formatETA } from '$lib/utils';
+	import { Progress } from '#lib/components/ui/progress/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { pauseJob, resumeJob } from '#lib/stores/queue.svelte.js';
+	import { fetchQueueJobDetail, fetchCategories, fetchScripts, postAction } from '#lib/api.js';
+	import { subscribeWS } from '#lib/stores/websocket.svelte.js';
+	import { cn, formatSize as formatBytes, formatETA } from '#lib/utils.js';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import Edit2 from '@lucide/svelte/icons/edit-2';
 	import AlertTriangle from '@lucide/svelte/icons/alert-triangle';

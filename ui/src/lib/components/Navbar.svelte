@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { Button } from '$lib/components/ui/button';
-	import { postAction } from '$lib/api';
-	import { registerShortcuts } from '$lib/shortcuts.svelte';
-	import { getTheme, cycleTheme } from '$lib/stores/theme.svelte';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { postAction } from '#lib/api.js';
+	import { registerShortcuts } from '#lib/shortcuts.svelte.js';
+	import { getTheme, cycleTheme } from '#lib/stores/theme.svelte.js';
 	import { onMount } from 'svelte';
 	import ArrowDownCircle from '@lucide/svelte/icons/arrow-down-circle';
 	import Play from '@lucide/svelte/icons/play';

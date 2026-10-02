@@ -11,13 +11,13 @@ vi.mock('./config/CategoriesSection.svelte', () => ({ default: function() {} }))
 vi.mock('./config/ServerEditDialog.svelte', () => ({ default: function() {} }));
 vi.mock('./config/CategoryEditDialog.svelte', () => ({ default: function() {} }));
 
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api.js', () => ({
 	setConfig: vi.fn().mockResolvedValue({ status: true }),
 	postAction: vi.fn().mockResolvedValue({ status: true }),
 	fetchConfig: vi.fn().mockReturnValue(new Promise(() => {}))
 }));
 
-import { fetchConfig } from '$lib/api';
+import { fetchConfig } from '#lib/api.js';
 
 describe('SettingsDialog', () => {
 	beforeEach(() => {

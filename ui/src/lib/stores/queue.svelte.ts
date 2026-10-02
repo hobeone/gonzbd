@@ -1,6 +1,6 @@
 import { BasePollStore } from './base-poll.svelte';
-import { fetchQueue, postAction } from '$lib/api';
-import type { QueueDetail } from '$lib/types';
+import { fetchQueue, postAction } from '#lib/api.js';
+import type { QueueDetail } from '#lib/types.js';
 import { type WSEvent } from './websocket.svelte';
 import { reportFailure, reportSuccess } from './connection.svelte';
 import { startTelemetry, stopTelemetry, setTotalRemainingBytes } from './telemetry.svelte';

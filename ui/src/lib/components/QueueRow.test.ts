@@ -1,22 +1,22 @@
 import { render, screen, fireEvent, within } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import QueueRow from './QueueRow.svelte';
-import type { QueueSlot } from '$lib/types';
-import { formatSize } from '$lib/utils';
+import type { QueueSlot } from '#lib/types.js';
+import { formatSize } from '#lib/utils.js';
 
-vi.mock('$lib/stores/queue.svelte', () => ({
+vi.mock('#lib/stores/queue.svelte.js', () => ({
 	pauseJob: vi.fn().mockResolvedValue(undefined),
 	resumeJob: vi.fn().mockResolvedValue(undefined)
 }));
 
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api.js', () => ({
 	fetchQueueJobDetail: vi.fn()
 }));
 
 // Captures the handler passed to subscribeWS so tests can simulate
 // queue_updated events that drive drawer refreshes.
 let capturedWSHandler: ((event: any) => void) | null = null;
-vi.mock('$lib/stores/websocket.svelte', () => ({
+vi.mock('#lib/stores/websocket.svelte.js', () => ({
 	subscribeWS: vi.fn((handler: (event: any) => void) => {
 		capturedWSHandler = handler;
 		return () => {
@@ -25,8 +25,8 @@ vi.mock('$lib/stores/websocket.svelte', () => ({
 	})
 }));
 
-import { pauseJob, resumeJob } from '$lib/stores/queue.svelte';
-import { fetchQueueJobDetail } from '$lib/api';
+import { pauseJob, resumeJob } from '#lib/stores/queue.svelte.js';
+import { fetchQueueJobDetail } from '#lib/api.js';
 
 describe('QueueRow', () => {
 	const baseSlot: QueueSlot = {

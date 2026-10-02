@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { getWarnings, getWarningsError, getWarningCount, clearWarnings } from '$lib/stores/warnings.svelte';
-	import { getQueueSlots } from '$lib/stores/queue.svelte';
-	import { Button } from '$lib/components/ui/button';
+	import { getWarnings, getWarningsError, getWarningCount, clearWarnings } from '#lib/stores/warnings.svelte.js';
+	import { getQueueSlots } from '#lib/stores/queue.svelte.js';
+	import { Button } from '#lib/components/ui/button/index.js';
 
 	let expanded = $state(true);
 	let clearing = $state(false);

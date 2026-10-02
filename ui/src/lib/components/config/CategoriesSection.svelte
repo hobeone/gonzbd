@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { Separator } from '$lib/components/ui/separator';
-	import { Button } from '$lib/components/ui/button';
-	import { Badge } from '$lib/components/ui/badge';
-	import type { CategoryConfig } from '$lib/types';
+	import { Separator } from '#lib/components/ui/separator/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import type { CategoryConfig } from '#lib/types.js';
 
 	let {
 		configData,

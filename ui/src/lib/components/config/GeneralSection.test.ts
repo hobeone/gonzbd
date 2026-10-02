@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import GeneralSection from './GeneralSection.svelte';
 
 // Mock sub-components to avoid shadcn complexity
-vi.mock('$lib/components/ui/separator', () => ({
+vi.mock('#lib/components/ui/separator/index.js', () => ({
 	Separator: function MockSeparator() {}
 }));
 

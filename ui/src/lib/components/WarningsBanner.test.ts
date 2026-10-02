@@ -1,17 +1,17 @@
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import WarningsBanner from './WarningsBanner.svelte';
-import { getWarnings, getWarningCount, getWarningsError, clearWarnings } from '$lib/stores/warnings.svelte';
-import { getQueueSlots } from '$lib/stores/queue.svelte';
+import { getWarnings, getWarningCount, getWarningsError, clearWarnings } from '#lib/stores/warnings.svelte.js';
+import { getQueueSlots } from '#lib/stores/queue.svelte.js';
 
-vi.mock('$lib/stores/warnings.svelte', () => ({
+vi.mock('#lib/stores/warnings.svelte.js', () => ({
 	getWarnings: vi.fn(),
 	getWarningCount: vi.fn(),
 	getWarningsError: vi.fn(),
 	clearWarnings: vi.fn()
 }));
 
-vi.mock('$lib/stores/queue.svelte', () => ({
+vi.mock('#lib/stores/queue.svelte.js', () => ({
 	getQueueSlots: vi.fn()
 }));
 

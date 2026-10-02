@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { isConnected, isAuthExpired, getLastError, getNextRetryAt, isProbing, retryNow } from '$lib/stores/connection.svelte';
+	import { isConnected, isAuthExpired, getLastError, getNextRetryAt, isProbing, retryNow } from '#lib/stores/connection.svelte.js';
 
 	// Live countdown: updates every 100ms for smooth countdown display.
 	let now = $state(Date.now());

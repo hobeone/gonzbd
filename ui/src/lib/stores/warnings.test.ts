@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Mock $lib/api before importing the store
-vi.mock('$lib/api', () => ({
+// Mock #lib/api.js before importing the store
+vi.mock('#lib/api.js', () => ({
 	fetchWarnings: vi.fn(),
 	postAction: vi.fn()
 }));
@@ -34,7 +34,7 @@ import {
 	dismissToast,
 	clearWarnings
 } from './warnings.svelte';
-import { fetchWarnings, postAction } from '$lib/api';
+import { fetchWarnings, postAction } from '#lib/api.js';
 
 describe('warnings store', () => {
 	beforeEach(() => {

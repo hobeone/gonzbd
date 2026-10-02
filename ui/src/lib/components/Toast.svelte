@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getToastMessage, dismissToast } from '$lib/stores/warnings.svelte';
+	import { getToastMessage, dismissToast } from '#lib/stores/warnings.svelte.js';
 </script>
 
 {#if getToastMessage()}

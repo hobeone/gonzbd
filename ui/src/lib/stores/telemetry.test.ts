@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock dependencies
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api.js', () => ({
 	postAction: vi.fn()
 }));
 
@@ -26,7 +26,7 @@ import {
 	startTelemetry,
 	stopTelemetry
 } from './telemetry.svelte';
-import { postAction } from '$lib/api';
+import { postAction } from '#lib/api.js';
 
 describe('Telemetry Store', () => {
 	beforeEach(() => {

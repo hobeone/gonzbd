@@ -1,6 +1,6 @@
 <script lang="ts">
-	import Modal from '$lib/components/ui/Modal.svelte';
-	import { getShortcuts, type ShortcutDef } from '$lib/shortcuts.svelte';
+	import Modal from '#lib/components/ui/Modal.svelte';
+	import { getShortcuts, type ShortcutDef } from '#lib/shortcuts.svelte.js';
 	import Keyboard from '@lucide/svelte/icons/keyboard';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();

@@ -9,8 +9,8 @@
 		setBandwidthPerc,
 		getQueueSlots,
 		isPaused
-	} from '$lib/stores/queue.svelte';
-	import { formatSpeed, formatSize } from '$lib/utils';
+	} from '#lib/stores/queue.svelte.js';
+	import { formatSpeed, formatSize } from '#lib/utils.js';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import Settings from '@lucide/svelte/icons/settings';
 	import SpeedGraph from './SpeedGraph.svelte';

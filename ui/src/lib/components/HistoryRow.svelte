@@ -1,9 +1,9 @@
 <script lang="ts">
-	import type { HistorySlot } from '$lib/types';
-	import { Button } from '$lib/components/ui/button';
-	import { Badge } from '$lib/components/ui/badge';
-	import { retryHistoryJob } from '$lib/stores/history.svelte';
-	import { showToast } from '$lib/stores/warnings.svelte';
+	import type { HistorySlot } from '#lib/types.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { retryHistoryJob } from '#lib/stores/history.svelte.js';
+	import { showToast } from '#lib/stores/warnings.svelte.js';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import Trash2 from '@lucide/svelte/icons/trash-2';

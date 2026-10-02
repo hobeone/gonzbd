@@ -2,7 +2,7 @@ import { render, screen, cleanup } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import AddNzbDialog from './AddNzbDialog.svelte';
 
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api.js', () => ({
 	uploadNzb: vi.fn().mockResolvedValue({ status: true }),
 	postAction: vi.fn().mockResolvedValue({ status: true }),
 	fetchCategories: vi.fn().mockResolvedValue(['*', 'TV', 'Movies'])
@@ -98,7 +98,7 @@ describe('AddNzbDialog', () => {
 
 	it('passes priority parameter on URL submit when priority or paused is selected', async () => {
 		const { fireEvent } = await import('@testing-library/svelte');
-		const { postAction } = await import('$lib/api');
+		const { postAction } = await import('#lib/api.js');
 
 		render(AddNzbDialog, { props: { open: true } });
 

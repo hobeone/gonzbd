@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock dependencies before importing the store.
-vi.mock('$lib/api', () => ({
+vi.mock('#lib/api.js', () => ({
 	fetchHistory: vi.fn(),
 	postAction: vi.fn()
 }));
@@ -44,7 +44,7 @@ import {
 	deleteHistoryItem,
 	purgeHistory
 } from './history.svelte';
-import { fetchHistory, postAction } from '$lib/api';
+import { fetchHistory, postAction } from '#lib/api.js';
 import { refreshQueue } from './queue.svelte';
 
 const mockSlots = [
