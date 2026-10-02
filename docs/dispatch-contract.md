@@ -156,8 +156,9 @@ so nothing re-grants the job between that report and the re-check.
 
 **A grant with no worker is given back.** A job that reads as `Running` holds
 its lease or slot, and `sched` cannot tell a job that was granted from one
-that is working, so no later `Advance` parks it. A cancel, a per-job pause or
-a removal that lands between the grant and the start of the worker leaves the
+that is working, so no later `Advance` parks it. A cancel, a per-job pause of
+a job not at `Fetching` (`PauseJob` parks one at `Fetching` itself), or a
+removal that lands between the grant and the start of the worker leaves the
 job holding with no worker to report for it. Two points return that grant:
 - `launch`'s first check, for a running job whose intent is no longer
   `IntentRun` and which holds no launch claim. A cancel or pause landing after
@@ -192,13 +193,17 @@ cleared its claim, so the next tick launched the same state again.
 `TestAdvanceFrom_UnlaunchedReportLaunchesTheNextStateOnce` pin it.
 
 `Dispatcher.YieldedFrom(j, from)` is the same door with no verdict: it parks
-and clears the claim only while the job is open at `from`. `Application.Stall`
-uses it with `Fetching`. A storage fault can reach a job that has moved to
-`Assessing`, because the checkpoint still covers its open handles, and a
-by-ID `Yielded` there took the live assess worker's slot and claim, so a
-resume launched a second one. Stall now latches the pause at any state and
-releases only a `Fetching` worker; any other worker finishes and reports, and
-the pause gates the move. `TestStall_LeavesALiveAssessingWorkerAlone` pins it.
+and clears the claim only while the job is open at `from`.
+`Dispatcher.PauseJob` uses it with `Fetching` for every per-job pause,
+`Application.Stall`'s included: the downloader stops serving a paused job but
+reports nothing, so without it a paused `Fetching` job kept its lease. A
+storage fault can reach a job that has moved to `Assessing`, because the
+checkpoint still covers its open handles, and a by-ID `Yielded` there took the
+live assess worker's slot and claim, so a resume launched a second one. A pause
+therefore latches at any state and releases only a `Fetching` worker; any other
+worker finishes and reports, and the pause gates the move.
+`TestStall_LeavesALiveAssessingWorkerAlone` and
+`TestPauseJob_FetchingJobFreesItsLease` pin it.
 
 On worker exit, the runner (or an external caller) must call exactly one of:
 
@@ -250,14 +255,23 @@ clear made after the span would drop that worker's claim. Inside the span
 the job cannot leave `from`. No test pins the placement, because no seam
 can interleave a tick there.
 
-## Manifest residency is derived from pool membership
+## Manifest residency is derived from pool membership and pause
 
-`manifestResident(j) ⟺ q.holds(j)`. `Dispatcher.reconcileResidency`
+A job is hydrated when it holds and is not resident, and evicted when it is
+resident, does not hold, and is not paused. `Dispatcher.reconcileResidency`
 (`internal/dispatch/tick.go`) calls `sched.Queue.Render` once and reads
 `v.Holds` — the field `renderLocked` computes from `q.holds(id, s)`, i.e.
-"has every resource the job's current position requires" — and hydrates
-(`Residency.Hydrate`) when a job holds but is not yet resident, or evicts
-(`Residency.Evict`) when a job is resident but no longer holds.
+"has every resource the job's current position requires" — and `v.Intent`,
+and hydrates (`Residency.Hydrate`) or evicts (`Residency.Evict`) accordingly.
+
+A paused job keeps a manifest it already has: `PauseJob` returns a `Fetching`
+job's lease while fetches it dispatched are in flight, and those land on the
+manifest, and a resume launches without re-reading it. A pause adds no
+hydration of its own: the hydrate arm still requires `Holds`, and a paused job
+is granted nothing, so a paused job restored at startup is hydrated here only
+once a resume lets it take a lease. `TestPauseJob_KeepsThePausedJobResident`,
+`TestResumeJob_ContinuesWithoutRehydrating` and
+`TestRestore_PausedJobIsNotHydratedUntilResumed` pin the three.
 
 Only the manifest tier is evictable: nothing drops a `JobProgress` once it
 exists, and header fields never leave. That is weaker than "resident for a
@@ -269,7 +283,7 @@ access to size one. See `docs/job-lifecycle.md` for that window and the
 
 What the dispatcher changes is only who computes manifest residency: it stops
 being a set the dispatcher maintains independently and becomes a function of
-the pools.
+the pools and the job's intent.
 
 **The invariant holds at tick boundaries, not instantaneously.** `grantFor`
 runs inside `Advance` under `Queue.mu`, so the dispatcher learns a job

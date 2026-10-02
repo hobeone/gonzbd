@@ -1108,9 +1108,9 @@ and nobody should pay for a clean stop.
 
 It also runs **before `stopWorkers` yields the `Fetching` jobs**. A yield parks
 the job's lease and kicks the dispatcher's tick, whose `reconcileResidency`
-evicts a job that no longer holds its lease, and `syncTargetFor` answers nil for
-a job with no resident manifest — so a barrier after the yield skipped every job
-the tick reached first
+evicts a job that no longer holds its lease and is not paused, and
+`syncTargetFor` answers nil for a job with no resident manifest — so a barrier
+after the yield skipped every job the tick reached first
 (`TestStopWorkers_TheShutdownBarrierCoversAJobTheYieldWouldEvict`).
 
 Its budget is **divided**, not repeated. Passing `shutdownCheckpointTimeout` as
@@ -1208,10 +1208,9 @@ line is held to the strict reading by default.
 
 **A nil sync target for a job still in the queue is not a `nil` return.** The
 job has lost its manifest — `Dispatcher.reconcileResidency` evicted it between
-the file's last write and its finalize, for example after a user pause or a
-`Stall` on another of its files — and can be resident again before anything
-delivers the completion. No barrier ran, so the file is untrimmed and its last
-drain uncommitted. `finalizeCompletedFile` returns `ErrNotFinalized` wrapping
+the file's last write and its finalize — and can be resident again before
+anything delivers the completion. No barrier ran, so the file is untrimmed and
+its last drain uncommitted. `finalizeCompletedFile` returns `ErrNotFinalized` wrapping
 `job.ErrNotResident`: the defer's error arm keeps the handle, and
 `routeFinalizeFailure` answers `job.ErrNotResident` ahead of its `Error` log by
 recording the file pending, without parking the job. The completion is
@@ -1245,10 +1244,11 @@ open, and what happens next depends on which return the close followed:
 `finalizeCompletedFile` answers a retry for a queued job with no resident
 manifest exactly as it answers a first attempt, so the refusal is recorded for
 the next pass rather than stalled. A job that was only evicted is retried each
-pass until the dispatcher promotes it again. A job `Stall` paused has no
-manifest either (a paused job holds nothing — `docs/job-lifecycle.md`), so it
-stays parked under its original reason until a user Resume makes it resident;
-only then does the retry finalize the file through the barrier. A job removed
+pass until the dispatcher promotes it again. A job `Stall` paused keeps the
+manifest it had (a paused job is not evicted — `docs/job-lifecycle.md`
+§ "Residency is bounded by what a job holds"), so the next re-evaluation's
+retry finalizes the file through the barrier while the job is still paused,
+and resumes it once every retry has landed. A job removed
 between `reevaluateStall`'s own queue check and the retry takes the departed-job
 return: its handle is released, phase 4 refuses its completion, and the next
 re-evaluation forgets it.
@@ -1260,8 +1260,8 @@ trim to withhold for. `watchCompletions` drains its pending completions after
 fsynced and closed each file without trimming it. Once the downloader has
 stopped cleanly, `stopWorkers` calls
 `Dispatcher.Yielded` for every `Fetching` job, which parks its lease and kicks
-the tick, whose `reconcileResidency` evicts it; nothing orders that eviction
-before or after `Assembler.Stop`. So a drained completion meets one of two
+the tick, whose `reconcileResidency` evicts it unless it is paused; nothing
+orders that eviction before or after `Assembler.Stop`. So a drained completion meets one of two
 returns, and `withholdUntrimmed` answers both for a job still in the queue:
 
 - **The tick evicted the job:** the nil-target return, `ErrNotFinalized`
@@ -1360,14 +1360,14 @@ until every interrupted finalize has landed, so the automatic cadence cannot gro
 the set.
 
 **A re-evaluation only resumes a job THIS application parked.** A stall record
-exists for reasons that involve no pause of ours: a *user* pause evicts the job,
-the next checkpoint's `AckDurable` fails with `ErrJobNotResident`, and
-`noteNeedsSeed` creates one. Resuming on that undid the user's pause within one
-interval with no log saying so — and it could not settle, because handles stay
-open through a pause (`CloseJobHandles` runs only from `enqueuePostProc`), so the
-next checkpoint failed the same way and recreated the record as fast as it was
-cleared. `stallRecord.parked` is set only by the paths that pause the job
-themselves.
+exists for reasons that involve no pause of ours: `noteNeedsSeed` creates one
+when a checkpoint's `AckDurable` finds the job evicted, and
+`notePendingFinalize` when a finalize does, and the job can be one the user
+paused. Resuming on that would undo the user's pause within one interval with
+no log saying so. `stallRecord.parked` is set only by the paths that pause the
+job themselves. It records that this application paused the job, not that the
+user did not: `Stall` sets it on a job the user had already paused, and the
+re-evaluation then resumes that job once the fault clears (#716).
 
 **A user Resume is the boundary, and is deliberately outside the guarantee.**
 `mode=queue&name=resume` and `name=resume_all` (`internal/api/queue.go`) unpause
@@ -1445,9 +1445,7 @@ underneath it, which is precisely what the gate exists to notice.
 **A deletion is persisted before `Resume` returns**, and that is load-bearing
 rather than tidy. Article resolution is derived from the runs on every
 re-hydration, so a correction that lived only in memory would be undone by the
-next eviction and re-promotion — which the sweep reaches without any
-concurrency, since it calls `Stall` on a job whose other file faulted and
-`Stall` pauses the job, evicting the manifest.
+next eviction and re-promotion.
 
 A file **absent** from that slice is not touched at all. Absence is silence, not
 a finding of absence — and three ordinary cases produce it: a file whose filename
@@ -1471,9 +1469,8 @@ before it was promoted.
 **A fault does not discard the files already resumed.** `resumeJobFiles` returns
 what it gathered *before* the fault, `resumeAllJobs` seeds it, and only then
 stalls the job. Returning early and discarding them turned a transient NFS flap on
-file 7 of 20 into a permanent loss of ground for all 20: the stall pauses the job,
-a paused job is not resident, and a non-resident job is skipped by every future
-sweep — which only runs at startup anyway.
+file 7 of 20 into a loss of ground for all 20 until the next start: the stall
+pauses the job, and the sweep that would revisit it runs only at startup.
 
 **A startup fault always stalls, even when it classifies permanent** — which is
 deliberately *not* what `Barrier.routeFault` does. The two answer different
@@ -1822,9 +1819,9 @@ It is an ARTICLE fault, not a storage fault, so it resolves against the article
 (A1): `OnArticleRejected` carries it to `Job.MarkArticleFailed`, which
 charges its bytes to the job's failed-byte count, releases on-demand par2, and
 clears its `Emitted` bit so nothing waits on a re-dispatch that will never come.
-A rejection can land after `Stall` paused the job and the dispatcher evicted
-it; it is still recorded, as bits alone, and the byte charge follows at the
-next hydration while the par2 release does not — see `docs/job-lifecycle.md` § "Residency: the three tiers".
+A rejection can land after the dispatcher evicted the job; it is still
+recorded, as bits alone, and the byte charge follows at the next hydration
+while the par2 release does not — see `docs/job-lifecycle.md` § "Residency: the three tiers".
 
 The rejected article still **counts toward its file's part total**. That looks
 like the wrong direction and is not: it will never arrive again, so a file that
@@ -2024,10 +2021,9 @@ These are known, deliberate, and **not** claims about correctness. They are
 recorded here so the next reader does not mistake them for design.
 
 1. **The startup sweep skips non-resident jobs.** `ReplaceFromRuns` needs a
-   resident manifest. **Resolved:** a swept job is hydrated for the duration of
-   the correction and evicted again, so the durability subsystem's own fault
-   response manufacturing that state — `Application.Stall` → `Dispatcher.PauseJob` →
-   eviction — no longer takes the job out of the sweep's reach. What remains
+   resident manifest. **Resolved:** a swept job that is not resident is
+   hydrated for the correction, so a paused job, which `reconcileResidency`
+   does not hydrate, stays within the sweep's reach. What remains
    true is that the sweep is startup-only: a job stalled after startup is not
    re-swept until the next one.
 

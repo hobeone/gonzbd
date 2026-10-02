@@ -225,7 +225,16 @@ func (d *Dispatcher) evictCancelledNeverRun(ctx context.Context, j *job.Job) boo
 }
 
 // reconcileResidency brings a job's manifest residency in line with what it
-// holds (D-B8: manifestResident(j) <=> q.holds(j)).
+// holds and whether it is paused (D-B8): a job is hydrated when it holds
+// everything its position requires and is not resident, and evicted when it
+// is resident, holds nothing it requires, and is not paused.
+//
+// A paused job keeps a manifest it already has. PauseJob returns a Fetching
+// job's lease while fetches it dispatched are still in flight, and those land
+// on the manifest; keeping it also lets a resume launch without re-reading it.
+// Pause never hydrates: the hydrate arm requires Holds, which a paused job
+// gains only when a resume lets Advance grant it, so this function does not
+// load a paused job restored at startup.
 //
 // The invariant is stated at TICK BOUNDARIES, not instantaneously. grantFor
 // runs inside Advance under Queue.mu, so a job acquires resources before this
@@ -236,8 +245,9 @@ func (d *Dispatcher) evictCancelledNeverRun(ctx context.Context, j *job.Job) boo
 // here. A read that failed because ctx was cancelled does NOT settle — see the
 // branch below for why the two differ.
 //
-// It takes exactly ONE d.q.Render(j) call and reads v.Holds — job.RenderView's
-// field computed by sched's renderLocked from q.holds(j.ID(), s)
+// It takes exactly ONE d.q.Render(j) call and reads v.Intent and v.Holds —
+// the latter job.RenderView's field computed by sched's renderLocked from
+// q.holds(j.ID(), s)
 // (internal/sched/render.go), which is "has every resource the job's current
 // position requires", not merely "has a lease". A job at Extracting holds a
 // compute slot and no lease, so j.HoldsLease() alone would under-report it as
@@ -291,7 +301,7 @@ func (d *Dispatcher) reconcileResidency(ctx context.Context, j *job.Job) error {
 			return fmt.Errorf("hydrate %s: %w", j.ID(), err)
 		}
 		d.markResident(j.ID())
-	case !v.Holds && d.isResident(j.ID()):
+	case !v.Holds && v.Intent != job.IntentPause && d.isResident(j.ID()):
 		d.res.Evict(j.ID())
 		d.markNotResident(j.ID())
 	}

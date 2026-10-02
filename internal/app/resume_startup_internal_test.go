@@ -528,11 +528,10 @@ func TestResumeAllJobs_AStoreReadFailureNamesTheStoreNotTheFile(t *testing.T) {
 // TestResumeAllJobs_SeedsFilesResumedBeforeAFault pins that a fault on one
 // file does not discard the files already resumed.
 //
-// The cost of discarding them is permanent, not transient: the stall pauses
-// the job, a paused job is not resident, and a non-resident job is skipped by
-// every future sweep — which only runs at startup. So a momentary NFS error
-// on the second file would throw away the first file's seed with no path back
-// to it.
+// The cost of discarding them lasts until the next start: the stall pauses
+// the job, and the sweep that would revisit it runs only at startup. So a
+// momentary NFS error on the second file would throw away the first file's
+// seed for the rest of the process.
 //
 // Asserting only that the job stalled would hold for both versions. The
 // assertion that discriminates is that file 0's durable article is Done

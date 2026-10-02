@@ -633,6 +633,12 @@ doneDrain:
 	if err := disp.ResumeJob(j.ID()); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
+	// The pause gave back the job's lease, and this dispatcher has no run
+	// loop, so the tick that re-grants it is made here. The production
+	// runner's Fetching launch calls Wake (internal/app/runner.go); this
+	// test's no-op runner does not, so it is called directly.
+	disp.Tick(t.Context())
+	d.Wake()
 
 	results = collect(t, d.Completions(), remaining, 30*time.Second)
 	for i, r := range results {

@@ -1090,8 +1090,8 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 }
 
 // TestFetchArticle_PausedJobEvictedMidFlight drives the per-job pause branch
-// the way production reaches it: an article already in flight when the user
-// pauses a downloading job.
+// for an article already in flight when the user pauses a downloading job,
+// on a job whose manifest has also been evicted: the drop must not need it.
 func TestFetchArticle_PausedJobEvictedMidFlight(t *testing.T) {
 	t.Parallel()
 

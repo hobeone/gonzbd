@@ -763,6 +763,12 @@ door releases it, and the alternative is a paused `Fetching` job holding a
 pool-A lease forever — a deadlock, not an inefficiency. With pool A at 3 and
 three paused jobs, no job could ever fetch again.
 
+The downloader is the `Fetching` worker and makes no such report: it stops
+serving a job whose intent leaves `IntentRun` and returns nothing. So
+`Dispatcher.PauseJob` makes it, through `YieldedFrom(j, Fetching)`, which parks
+the job only while it is open at `Fetching` with no `next` and leaves any other
+state's worker alone.
+
 `Park` is **unconditional** and takes no view on why the worker stopped. A gate
 is the common reason but not the only one: teardown, shutdown and a dead
 connection all end a worker without ending the work.
@@ -842,7 +848,11 @@ repair, then pausing" — not to make repair interruptible.
 
 `Fetching` is the one state that gates per-article, so its worker stops without
 its work having ended and `next` stays unset. That yield is not a completion
-and must not be reported as one; it goes through `Park`.
+and must not be reported as one; it is a park, which `Dispatcher.PauseJob`
+makes at the pause itself through `YieldedFrom` (`Handoff` with no `next`;
+§8). A queue-wide pause
+makes no such report, and a `Fetching` job whose download is still running
+keeps its lease through one.
 
 **Resume needs no notification.** `SetIntent(IntentRun)` writes a flag; the
 tick loop picks it up on its ordinary cadence. A `Job` cannot call a Queue and
@@ -989,10 +999,10 @@ Reads do not, and neither does a per-article bit.
 **Two article writes do not wait for the manifest.** `Job.MarkArticleFailed`
 and `Job.ClearArticleEmitted` are reached from fetch results, from the
 downloader's drops of requests and results, and from the assembler's
-article-fault handlers — all of which can run after the job was evicted:
-`Application.Stall` pauses a `Fetching` job, and the next tick evicts it with
-fetches still in flight. The failed bit is what a failure's durable record is
-written from: hydration re-derives a success from `durable_runs`, but the
+article-fault handlers — all of which can run after the job was evicted. A
+paused job is not evicted (below), so a pause does not open that window; any
+other eviction with fetches in flight does. The failed bit is what a failure's
+durable record is written from: hydration re-derives a success from `durable_runs`, but the
 `failed_articles` rows a failure is restored from are written from that bit by
 the checkpoint adapter (`appCheckpointStore.SaveBatch`). An emitted bit
 survives eviction and hides its article from `ForEachUnfinishedArticle`.
@@ -1087,15 +1097,29 @@ install.
 
 ### Residency is bounded by what a job holds
 
-> **manifest resident ⟺ the job holds everything its current position
-> requires.**
+> **A manifest is hydrated when the job holds everything its current position
+> requires, and evicted when it does not and is not paused.**
+> A paused job keeps a manifest it already has, and is never hydrated because
+> it is paused.
 
-`Dispatcher.reconcileResidency` is the sole enforcement point, driven by one
-`Render` call and its `Holds` field — not `HoldsLease()`, which under-reports a
-job at `Extracting` that holds a compute slot and no lease.
+`Dispatcher.reconcileResidency` is the only place the rule is evaluated;
+`Remove` evicts on departure whatever the rule says, and `Stop` evicts every
+job at shutdown except one whose worker or occupiers it timed out waiting for.
+It is driven by one `Render` call and its `Holds` and `Intent` fields — not
+`HoldsLease()`, which under-reports a job at `Extracting` that holds a compute
+slot and no lease.
 
-Memory is therefore bounded by the two pool capacities, not by queue depth:
-only holding jobs carry manifests, so a global pause evicts at most pool-A-many.
+A paused job keeps its manifest because a per-job pause returns a `Fetching`
+job's lease while fetches it dispatched are still in flight: their successes
+and failures land on a resident job, through the ordinary path, rather than
+through the evicted-write path above and a re-hydration. A resume then grants
+the lease and launches the worker on the manifest already in memory.
+
+So what `reconcileResidency` keeps resident is bounded by the two pool
+capacities plus the jobs that were resident when paused, settled ones included,
+not by queue depth.
+The paused jobs are deliberately not capped; a manifest is about 1.6 MB per
+20k articles (§13).
 
 **The invariant is stated at tick boundaries, not instantaneously.** `grantFor`
 runs under the Queue's mutex and hydration does disk I/O that must not run
@@ -1169,11 +1193,14 @@ happened.
 from a cold pool. That is forced rather than remembered: the thing you would
 need in order to be in any other state cannot be deserialized.
 
-**Pause takes the same path.** A paused job holds nothing, exactly like a
-restarted one; resume re-acquires and the manifest is re-read from
-`admin/queue/manifests/<id>.json.gz`. Pause/resume and crash/restart are one
-code path, and that is a property of the design rather than a coincidence: both
-are "this job holds nothing and its work is unfinished".
+**Resume takes the same path.** A paused job holds nothing, exactly like a
+restarted one, and resume re-acquires through the same grant. Pause/resume and
+crash/restart are one scheduling path, and that is a property of the design
+rather than a coincidence: both are "this job holds nothing and its work is
+unfinished". They differ only in residency: a job paused while resident keeps
+its manifest, so resume does not re-read it, while for a job restored paused
+at startup the dispatcher reads `admin/queue/manifests/<id>.json.gz` only once
+a resume grants it a lease.
 
 ### Who writes what
 
@@ -1268,7 +1295,7 @@ The sweep writes **nothing** to the durability record. Its one mutation is
 discarding the runs of a file that is missing or shorter than claimed. A
 non-resident job in the swept position is hydrated for the duration and evicted
 again, so this costs no residency — and it matters, because a paused job is the
-case that needs the sweep most and is never resident. See
+case that needs the sweep most and is not resident at startup. See
 `docs/durability-contract.md` § *Restart* for the sweep's bounds.
 
 ---
@@ -1389,10 +1416,12 @@ dead weight, and dropping them on settlement and rehydrating on retry looks
 free. It is not worth doing.
 
 The manifest is already evicted on settlement — a settled attempt holds
-nothing, so residency reconciliation drops it on the next tick. What remains to
-reclaim is the three bitsets: **7.5 KB per parked 20k-article job**, roughly
-140 such failures per megabyte, against a manifest two orders of magnitude
-larger that is already gone.
+nothing, so residency reconciliation drops it on the next tick unless the job
+is paused; a job that settles while carrying `IntentPause` keeps its manifest
+until it is unpaused, retried or removed (Scenario 5.10). For any other settled
+job what remains to reclaim is the three bitsets: **7.5 KB per parked
+20k-article job**, roughly 140 such failures per megabyte, against a manifest
+two orders of magnitude larger that is already gone.
 
 The cheap version is also unavailable. `ArticleDone(i)` returns `false` for an
 out-of-range index, so simply dropping the bitsets would make a compacted job
@@ -1505,16 +1534,18 @@ pinned.
 
 ```
 Fetching   —           Run    lease    running   → "Downloading"
-  user pauses                                      intent=Pause
-  downloader yields between articles; the dispatcher calls Park
+  user pauses: PauseJob sets intent=Pause and yields the Fetching attempt
+  (YieldedFrom → Park); the downloader stops dispatching its articles
 Fetching   —           Pause  —        not run.  → "Paused"
+  the lease is free for the next job; the manifest stays resident
   user resumes                                     intent=Run
   Advance branch 2: next unset, holds nothing → grantFor(Fetching)
 Fetching   —           Run    lease    running   → "Downloading"
 ```
 
 Never touches `Assessing`. A model that derived `next` jumped a partially
-downloaded job straight into verification here.
+downloaded job straight into verification here. The resume re-reads no
+manifest: the pause kept it.
 
 ### Scenario 5.2 — Pause at a boundary
 

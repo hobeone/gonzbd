@@ -942,8 +942,8 @@ func unfinishedArticles(t *testing.T, j *Job) []int32 {
 // permanent failure reaching a job whose manifest was evicted mid-fetch is
 // recorded, and that re-hydration charges it.
 //
-// Stall pauses a Fetching job and the dispatcher evicts it while its fetches
-// are still in flight, so the failure can arrive after the manifest is gone.
+// The dispatcher can evict a job while its fetches are still in flight, so
+// the failure can arrive after the manifest is gone.
 // Hydration re-derives successes from durable_runs, but a failure's
 // failed_articles row is written from its bit, so a refused failure left the
 // article neither done nor failed, and the file could complete with failed=0 and

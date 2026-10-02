@@ -61,18 +61,16 @@ type stallRecord struct {
 	// indefinite non-progress with a reason the user has already acted on.
 	// Recording the file here is what gives the retry something to retry.
 	files map[int]finalizeState
-	// parked records that THIS application paused the job, rather than the
-	// user.
+	// parked records that THIS application paused the job: Stall, or a
+	// reason stallLost surfaces, called PauseJob for it. It does not record
+	// that the user had NOT paused the job too — Stall sets it on a job the
+	// user already paused, and a re-evaluation then resumes that job.
 	//
-	// Phase 2 of a re-evaluation resumes unconditionally, and a stall record
-	// exists for reasons that do not involve a pause at all: a user pause
-	// evicts the job, the next checkpoint's ack fails with job.ErrNotResident,
-	// and noteNeedsSeed creates one. The user's pause was then undone within
-	// one interval, with no log saying so — and recreated as fast as it was
-	// cleared, because handles stay open through a pause (CloseJobHandles runs
-	// only from enqueuePostProc), so the next checkpoint fails the same way.
-	//
-	// Only a record this application parked may be resumed by it.
+	// A stall record exists for reasons that do not involve a pause at all:
+	// noteNeedsSeed creates one when a checkpoint's ack finds the job evicted,
+	// and notePendingFinalize when a finalize does, and that job can be one
+	// the user paused. Such a record leaves parked false, so a re-evaluation
+	// does not resume the job on its account.
 	parked bool
 
 	// needsSeed marks a job whose barrier RECORDED its durable runs but could
@@ -123,7 +121,8 @@ func (app *Application) setStallReasonLocked(jobID, reason string) {
 	// Every caller of this is a path that pauses the job itself — Stall, and
 	// the reasons stallLost surfaces for a job Stall already parked. A record
 	// created any other way (noteNeedsSeed, notePendingFinalize) leaves it
-	// false, which is what stops a re-evaluation resuming a user's pause.
+	// false, so a re-evaluation does not resume a user's pause on that
+	// record's account (a record Stall made is another matter).
 	rec.parked = true
 }
 
@@ -303,22 +302,24 @@ var errFinalizeUnrecoverable = errors.New("app: the completed file's handle is g
 //
 // # The automatic cadence does not resume a job until its finalizes have landed
 //
-// The first draft resumed first, because Barrier.FinalizeFile ends in
-// AckDurable and that needs a resident job, which Stall -> Dispatcher.PauseJob evicted.
-// It works, and it costs too much: an unpaused job dispatches articles into the
+// Resuming first costs too much: an unpaused job dispatches articles into the
 // device that has just refused them, for the length of every retry, every
-// interval, forever — contradicting the reason Stall pauses at all.
+// interval, forever — contradicting the reason Stall pauses at all. The retry
+// needs a resident job, because Barrier.FinalizeFile ends in AckDurable, and
+// Stall's pause keeps the manifest the job has (Dispatcher.reconcileResidency).
 //
 // A residency failure is NOT treated as the finalize having landed. Phase 1
 // counts it as blocked like any other failure: finalizeCompletedFile refuses
 // a queued job with no resident manifest before running the barrier, and a
 // finalize whose ack meets job.ErrNotResident comes back the same way. Both
 // wrap job.ErrNotResident, which routeFinalizeFailure records for retry
-// without parking the job for it. A job Stall paused holds no manifest, so it
-// stays parked on those retries until something — in practice a user Resume —
-// makes it resident; a job that was only evicted is retried each pass until
-// the dispatcher promotes it again. When a retry does land, phase 3 replays
-// the committed runs with SeedFromRuns, exactly as the startup sweep does. Every failure keeps the job parked without it ever dispatching.
+// without parking the job for it. A paused job with no manifest stays parked
+// on those retries until something — in practice a user Resume — makes it
+// resident, since a pause never hydrates; a job that was only evicted is
+// retried each pass until the dispatcher promotes it again. When a retry does
+// land, phase 3 replays the committed runs with SeedFromRuns, exactly as the
+// startup sweep does. Every failure keeps the job parked without it ever
+// dispatching.
 //
 // That last claim is about THIS function, not about the whole system. A user
 // Resume is outside it by design: the API's queue resume handlers unpause the
@@ -398,19 +399,10 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 
 	// Phase 2 — unpause, if we paused it.
 	//
-	// A user pause is respected: a user who paused a stalled job before the
-	// mount came back wanted it paused, and resuming it because the storage
-	// cleared would undo their action silently. The other way round is
-	// worse: a job the user paused has no open files, so the checkpoint
-	// returns job.ErrNotResident and creates a stall record; resuming here
-	// would unpause a user-paused job every thirty seconds, and recreate the
-	// record as fast as it was cleared, because handles stay open through a
-	// pause (CloseJobHandles runs only from enqueuePostProc).
-	//
-	// Phase 2 used to do that: it resumed unconditionally. The user's pause
-	// was then undone within one interval, and recreated as fast as it was
-	// cleared, because handles stay open through a pause, so the next
-	// checkpoint failed the same way.
+	// Only a job whose record says we paused it (stallRecord.parked) is
+	// resumed, so a user pause on a job whose record noteNeedsSeed or
+	// notePendingFinalize created is left alone. A user pause on a job Stall
+	// also paused is not distinguished, and is undone here.
 	if app.weParked(jobID) {
 		resumed := false
 		if app.dispatcher != nil {
@@ -446,8 +438,10 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	}
 
 	// Phase 4 — deliver the completions the stall interrupted. Each needs the
-	// job resident, which it is not if the active set was full when Resume ran
-	// — so an entry survives to be tried again rather than being dropped.
+	// job resident. A job paused while resident stays so, but once phase 2 has
+	// resumed it a tick that grants it no lease evicts it, and a job paused
+	// with no manifest has none — so an entry survives to be tried again
+	// rather than being dropped.
 	for _, fileIdx := range slices.Sorted(maps.Keys(files)) {
 		if err := app.completeFinalizedFile(ctx, FileComplete{JobID: jobID, FileIdx: fileIdx}); err != nil {
 			app.log.Info("stall re-evaluation: the completion could not be delivered yet",
