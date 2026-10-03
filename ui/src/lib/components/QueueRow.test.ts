@@ -615,6 +615,20 @@ describe('QueueRow', () => {
 		});
 	});
 
+	describe('unwanted-extension label', () => {
+		it('labels a job the unwanted-extension check flagged', () => {
+			render(QueueRow, { slot: { ...baseSlot, status: 'Paused', labels: ['UNWANTED'] }, onremove: () => {} });
+			const badge = screen.getByTestId('unwanted-label');
+			expect(badge.textContent).toContain('UNWANTED');
+			expect(badge.getAttribute('title')).toContain('Resume');
+		});
+
+		it('shows no label for an unflagged job', () => {
+			render(QueueRow, { slot: { ...baseSlot, labels: [] }, onremove: () => {} });
+			expect(screen.queryByTestId('unwanted-label')).toBeNull();
+		});
+	});
+
 	describe('durability and stall state', () => {
 		it('renders the stall reason so a parked job is not just a stopped one', () => {
 			render(QueueRow, {

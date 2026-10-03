@@ -273,6 +273,19 @@ describe('History Store', () => {
 		expect(postAction).toHaveBeenCalledWith('history', { name: 'retry', value: 'nzo_2' });
 	});
 
+	it('retryHistoryJob with allowUnwanted approves the unwanted extensions', async () => {
+		vi.mocked(postAction).mockResolvedValue({ status: true });
+		mockHistoryOk();
+
+		await retryHistoryJob('nzo_2', true);
+
+		expect(postAction).toHaveBeenCalledWith('history', {
+			name: 'retry',
+			value: 'nzo_2',
+			allow_unwanted: '1'
+		});
+	});
+
 	// ── Lifecycle ──
 
 	it('stopHistoryPolling prevents further WS-triggered polls', async () => {
