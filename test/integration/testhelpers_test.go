@@ -150,6 +150,18 @@ func RegisterArticles(srv *mocknntp.Server, files []TestFile) {
 	}
 }
 
+// defaultDownloads returns config.Default()'s downloads section, for a test
+// that builds its config field by field. A loaded config always carries one,
+// and ingest refuses a job whose unwanted-extension settings are unset.
+func defaultDownloads(t *testing.T) config.DownloadConfig {
+	t.Helper()
+	def, err := config.Default()
+	if err != nil {
+		t.Fatalf("config.Default: %v", err)
+	}
+	return def.GetDownloads()
+}
+
 // buildAppConfig creates an app.Config pointing at the given mock NNTP address
 // and download directory.
 func buildAppConfig(mockAddr, downloadDir string) *config.Config {
