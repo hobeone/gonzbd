@@ -143,7 +143,12 @@ func (r Rules) Unwanted(name string) bool {
 	if ext == "" {
 		return false
 	}
-	listed := r.listed(ext)
+	listed, err := r.listed(ext)
+	if err != nil {
+		// Fail closed in either mode: a check that cannot decide must not
+		// let the name through.
+		return true
+	}
 	if r.mode == ModeWhitelist {
 		return !listed
 	}
@@ -161,17 +166,20 @@ func (r Rules) Find(names []string) []string {
 	return out
 }
 
-// listed reports whether ext matches a configured pattern. A pattern that
-// fails to match with an error counts as a match: NewRules has validated
-// every pattern, so the error is unreachable through it, and a check that
-// cannot decide must not let the name through.
-func (r Rules) listed(ext string) bool {
+// listed reports whether ext matches a configured pattern, or the error of a
+// pattern that cannot be matched. NewRules validates every pattern, so the
+// error is unreachable through it.
+func (r Rules) listed(ext string) (bool, error) {
 	for _, p := range r.patterns {
-		if ok, err := path.Match(p, ext); ok || err != nil {
-			return true
+		ok, err := path.Match(p, ext)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // extension returns name's extension, lowercased and without its dot, or ""

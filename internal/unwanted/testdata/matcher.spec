@@ -1,5 +1,5 @@
 pkg ./internal/unwanted/
-run TestUnwanted_|TestListed_|TestNewRules_
+run TestUnwanted_|TestNewRules_
 
 [the path component is not stripped]
 file internal/unwanted/unwanted.go
@@ -48,9 +48,21 @@ file internal/unwanted/unwanted.go
 [a pattern error lets the name through]
 file internal/unwanted/unwanted.go
 --- anchor
-		if ok, err := path.Match(p, ext); ok || err != nil {
+	if err != nil {
+		// Fail closed in either mode: a check that cannot decide must not
 --- replace
-		if ok, _ := path.Match(p, ext); ok {
+	if false && err != nil {
+		// Fail closed in either mode: a check that cannot decide must not
+--- end
+
+[a pattern error is not reported]
+file internal/unwanted/unwanted.go
+--- anchor
+		if err != nil {
+			return false, err
+--- replace
+		if err != nil {
+			return false, nil
 --- end
 
 [a malformed configured pattern is accepted]

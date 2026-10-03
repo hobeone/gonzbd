@@ -147,15 +147,17 @@ func TestNewRules_Rejects(t *testing.T) {
 	}
 }
 
-// TestListed_FailsClosedOnAPatternError pins listed's error arm. NewRules
-// refuses a malformed pattern, so this builds Rules directly: the arm is
-// what decides a name if a pattern ever reaches matching unvalidated, and it
-// must decide "unwanted".
-func TestListed_FailsClosedOnAPatternError(t *testing.T) {
+// TestUnwanted_FailsClosedOnAPatternError pins the pattern-error arm in both
+// modes. NewRules refuses a malformed pattern, so this builds Rules directly:
+// the arm is what decides a name if a pattern ever reaches matching
+// unvalidated, and it must decide "unwanted" whichever way the list is read.
+func TestUnwanted_FailsClosedOnAPatternError(t *testing.T) {
 	t.Parallel()
-	r := Rules{action: ActionPause, mode: ModeBlacklist, patterns: []string{"[x"}}
-	if !r.Unwanted("setup.zzz") {
-		t.Error("a malformed pattern let the name through; the check must fail closed")
+	for _, mode := range []Mode{ModeBlacklist, ModeWhitelist} {
+		r := Rules{action: ActionPause, mode: mode, patterns: []string{"[x"}}
+		if !r.Unwanted("setup.zzz") {
+			t.Errorf("%s: a malformed pattern let the name through; the check must fail closed", mode)
+		}
 	}
 }
 
