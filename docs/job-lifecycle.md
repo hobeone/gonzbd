@@ -880,6 +880,20 @@ in `internal/app/durability.go` and `internal/app/stall.go`). An approved job
 is not paused by the check again, keeps its files through `unwanted_cleanup`,
 and carries the approval into history, so a later retry is approved too.
 
+Under `fail`, `AddJob` registers the job paused and blocked
+(`dispatcher.Add` persists that row), then files it through
+`maybeFinalizeJob`. The two steps are not atomic. A crash between them
+brings the job back as a paused, blocked queue job instead of a Failed
+history entry. That is accepted: it is still fail-closed, because a paused
+job downloads nothing, and only a user's resume with the full key approves
+it. Making the two steps atomic would need a startup pass that re-files
+blocked jobs, reading the manifest and the rules in force then, and the
+outcome it would change is already safe.
+
+The check runs only when a job is added or retried. A settings change does
+not re-screen jobs already queued, as in SABnzbd. The post-unpack stage reads
+the live settings on every run.
+
 Apart from restoring it from `dispatch_jobs` (the `Scan` in
 `internal/dispatch/store/store.go`), the writers of `Header.Unwanted` are
 `app.screenUnwanted`, before the job is registered, and `ResumeJobByUser`
