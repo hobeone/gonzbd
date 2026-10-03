@@ -20,6 +20,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/types"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // maxUploadBytes is the maximum allowed NZB upload body size (50 MiB).
@@ -159,6 +160,12 @@ type queueSlot struct {
 	Par2Held          bool                 `json:"par2_held,omitempty"`
 	Par2ReleaseReason string               `json:"par2_release_reason,omitempty"`
 	DirectUnpack      *directunpack.Status `json:"direct_unpack,omitempty"`
+
+	// Labels is SABnzbd's per-slot label list. gonzbd sends one label,
+	// "UNWANTED", when the unwanted-extension check flagged the job, whether
+	// it is still blocked or the user has approved it, as SABnzbd does for
+	// any non-zero unwanted_ext. Always a list, never null.
+	Labels []string `json:"labels"`
 
 	// CurrentStage is a lowercase machine-readable stage identifier
 	// derived from Status (download, repair, unpack, sort, move, ...).
@@ -402,6 +409,14 @@ func buildQueueFiles(j *job.Job) []queueFile {
 	return out
 }
 
+// slotLabels returns the queue slot's label list (see queueSlot.Labels).
+func slotLabels(h dispatch.Header) []string {
+	if h.Unwanted != unwanted.StateNone {
+		return []string{"UNWANTED"}
+	}
+	return []string{}
+}
+
 // noiseFloorBPS is the speed below which ETA computation is suppressed
 // (returns 0). Random fluctuations in BPS would otherwise produce wildly
 // varying ETAs (e.g. 100 hours when the meter dips for a moment).
@@ -504,6 +519,7 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		Par2Held:          par2Held,
 		Par2ReleaseReason: par2ReleaseReason,
 		DirectUnpack:      duStatus,
+		Labels:            slotLabels(r.Header),
 		StallReason:       cp.StallReason,
 		BytesDurable:      durableBytes,
 		BytesPending:      cp.PendingBytes,
@@ -793,7 +809,9 @@ func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, verb str
 			if verb == "paused" {
 				_ = s.dispatcher.PauseJob(id)
 			} else {
-				_ = s.dispatcher.ResumeJob(id)
+				// The user's resume, so also their approval of a job the
+				// unwanted-extension check blocked.
+				_ = s.dispatcher.ResumeJobByUser(id)
 			}
 			if row, ok := s.dispatcher.Row(id); ok {
 				name = row.Header.Name
