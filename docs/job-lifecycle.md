@@ -886,11 +886,9 @@ Under `fail`, `AddJob` registers the job paused and blocked
 (`dispatcher.Add` persists that row), then files it through
 `maybeFinalizeJob`. The two steps are not atomic. A crash between them
 brings the job back as a paused, blocked queue job instead of a Failed
-history entry. That is accepted: it is still fail-closed, because a paused
-job downloads nothing, and only a user's resume with the full key approves
-it. Making the two steps atomic would need a startup pass that re-files
-blocked jobs, reading the manifest and the rules in force then, and the
-outcome it would change is already safe.
+history entry. That is still fail-closed: the job is paused by the check,
+not parked by Stall, so neither the stall re-evaluation nor `Fail` resumes
+it, and only a user's resume with the full key approves it.
 
 The check runs only when a job is added or retried. A settings change does
 not re-screen jobs already queued, as in SABnzbd. The post-unpack stage reads

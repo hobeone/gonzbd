@@ -110,11 +110,11 @@ func NewRules(action Action, mode Mode, extensions []string) (Rules, error) {
 		if p == "" {
 			continue
 		}
-		// An extension holds no dot or comma (extension takes the text after
-		// the last dot), so an entry with either could never match: "*.exe"
-		// or "exe,com" is a mistake to report, not a rule to keep.
+		// An extension never contains a dot (extension takes the text after
+		// the last one), so an entry with a dot ("*.exe") cannot match. A
+		// comma is refused as a list written as one entry ("exe,com").
 		if strings.ContainsAny(p, ".,") {
-			errs = append(errs, fmt.Errorf("extension[%d] %q: an extension cannot contain '.' or ','; list each extension as its own entry", i, ext))
+			errs = append(errs, fmt.Errorf("extension[%d] %q: an entry cannot contain '.' (it would never match) or ','; list each extension as its own entry", i, ext))
 			continue
 		}
 		// path.Match validates the whole pattern whatever it is matched
