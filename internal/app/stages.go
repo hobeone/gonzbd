@@ -13,6 +13,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/unpack"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // binaryProbe holds the results of probing external tool binaries at startup.
@@ -227,6 +228,16 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	deobStage.Log = ppLog
 	deobStage.SetEnabled(deobfuscateFilenames)
 	stages = append(stages, deobStage)
+
+	// Unwanted-extension removal: after unpack, par2 renaming and
+	// deobfuscation, so it judges each file by its final name; before
+	// finalize, so nothing it removes reaches the complete directory. Reads
+	// the live downloads settings on every run.
+	unwantedStage := postproc.NewUnwantedCleanupStage(func() (unwanted.Rules, error) {
+		return cfg.GetDownloads().UnwantedRules()
+	})
+	unwantedStage.Log = ppLog
+	stages = append(stages, unwantedStage)
 
 	// Extension cleanup: delete files matching the user's cleanup list.
 	cleanupStage := postproc.NewExtensionCleanupStage(cleanupExtensions)

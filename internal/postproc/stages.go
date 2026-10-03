@@ -170,8 +170,9 @@ type Job struct {
 	Sanitize fsutil.SanitizeOptions
 
 	// Unwanted is the job's standing against the unwanted-extension check,
-	// read from its queue header at hand-over. The finalizer files it on
-	// the history entry.
+	// read from its queue header at hand-over. UnwantedCleanupStage removes
+	// nothing from an approved job; the finalizer files it on the history
+	// entry.
 	Unwanted unwanted.State
 
 	// StageLog accumulates one entry per stage, in execution order.
