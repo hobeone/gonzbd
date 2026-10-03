@@ -153,8 +153,12 @@ func runCheck(root string, display, actual []string) int {
 			err   error
 		}
 		resultsChan := make(chan listResult, len(packages))
+		const maxConcurrentListings = 4
+		sem := make(chan struct{}, maxConcurrentListings)
 		for k := range packages {
 			go func(k pkgKey) {
+				sem <- struct{}{}
+				defer func() { <-sem }()
 				dummySpec := &spec{pkg: k.pkg, tags: k.tags}
 				tests, err := listTests(root, dummySpec)
 				resultsChan <- listResult{key: k, tests: tests, err: err}
