@@ -310,6 +310,10 @@ func (s *Server) historyRetry(w http.ResponseWriter, r *http.Request) {
 
 	retry := s.jobs.RetryHistoryJob
 	if formValue(r, "allow_unwanted") == "1" {
+		if !s.canApproveUnwanted(r) {
+			s.respondError(w, http.StatusForbidden, errApproveNeedsAPIKey)
+			return
+		}
 		retry = s.jobs.RetryHistoryJobAllowingUnwanted
 	}
 	if err := retry(r.Context(), nzoID); err != nil {

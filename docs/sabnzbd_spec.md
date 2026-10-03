@@ -918,7 +918,7 @@ and `change_opts` are real, but as `queue` sub-actions; see the table above.)
 | `history` | `start`, `limit`, `search`, `category`, `nzo_ids`, `failed_only` | history list | Get history entries |
 | `history` + `name=delete` | `value=nzo_id[,...]\|failed` | status | Delete history entries |
 | `history` + `name=mark_as_completed` | `value=nzo_id` | status | Mark failed as completed |
-| `history` + `name=retry` | `value=nzo_id`, `allow_unwanted=1` | status, nzo_id | Requeue a history entry. `allow_unwanted=1` approves the job's unwanted extensions; without it, a retry the unwanted-extension check refuses answers 409 with the reason. Each history slot carries `unwanted_ext` (0 none, 1 blocked, 2 approved). |
+| `history` + `name=retry` | `value=nzo_id`, `allow_unwanted=1` | status, nzo_id | Requeue a history entry. `allow_unwanted=1` approves the job's unwanted extensions, and needs the full API key (the NZB key gets 403); without it, a retry the unwanted-extension check refuses answers 409 with the reason. Each history slot carries `unwanted_ext` (0 none, 1 blocked, 2 approved). |
 
 #### Configuration
 

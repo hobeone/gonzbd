@@ -868,7 +868,11 @@ the job is filed Failed instead, and a retry is refused with
 
 The user's resume is that approval for a paused job. The API's per-job resume
 calls `Dispatcher.ResumeJobByUser`, which moves `StateBlocked` to
-`StateApproved` under the registry lock before it sets the intent. The
+`StateApproved` under the registry lock before it sets the intent. Approval
+needs the full API key or the UI session: `queue` and `history` also accept
+the upload-only NZB key, so a resume naming a blocked job, or a retry with
+`allow_unwanted=1`, is refused with 403 for that key (`canApproveUnwanted`
+in `internal/api/middleware.go`). The
 application's own resumes — a stall's re-evaluation, `Fail` handing a parked
 job to its Assessing worker — call `ResumeJob` and approve nothing
 (`git grep -n '\.ResumeJob(' -- '*.go' ':!*_test.go'` returns those 2 lines,

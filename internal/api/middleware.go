@@ -69,6 +69,19 @@ type AuthConfig struct {
 	Logger *slog.Logger
 }
 
+// errApproveNeedsAPIKey is the refusal for an unwanted-extension approval
+// attempted without the full API key.
+const errApproveNeedsAPIKey = "approving unwanted extensions requires the full API key"
+
+// canApproveUnwanted reports whether the caller may approve a job the
+// unwanted-extension check blocked. queue and history accept the NZB key
+// (LevelProtected), but that key is upload-only: a holder must not be able to
+// approve the NZB it just uploaded. Approval needs LevelAdmin, which the
+// full API key and the UI's session cookie both reach.
+func (s *Server) canApproveUnwanted(r *http.Request) bool {
+	return callerLevel(r, s.getAuth()) >= LevelAdmin
+}
+
 // callerLevel determines the highest access level the caller can reach
 // based on the supplied credentials.
 func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {

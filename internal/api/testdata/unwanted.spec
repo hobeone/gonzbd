@@ -1,5 +1,5 @@
 pkg ./internal/api/
-run TestQueueResume_ApprovesAnUnwantedBlockedJob|TestQueueSlot_UnwantedLabel|TestHistorySlot_UnwantedExt|TestHistoryRetry_AllowUnwanted|TestHistoryRetry_UnwantedRefusalIsAConflict
+run TestQueueResume_ApprovesAnUnwantedBlockedJob|TestQueueSlot_UnwantedLabel|TestHistorySlot_UnwantedExt|TestHistoryRetry_AllowUnwanted|TestHistoryRetry_UnwantedRefusalIsAConflict|TestQueueResume_NZBKeyCannotApprove|TestHistoryRetry_NZBKeyCannotAllowUnwanted
 
 [the user's resume does not approve]
 file internal/api/queue.go
@@ -7,6 +7,30 @@ file internal/api/queue.go
 				_ = s.dispatcher.ResumeJobByUser(id)
 --- replace
 				_ = s.dispatcher.ResumeJob(id)
+--- end
+
+[the NZB key may approve]
+file internal/api/middleware.go
+--- anchor
+	return callerLevel(r, s.getAuth()) >= LevelAdmin
+--- replace
+	return callerLevel(r, s.getAuth()) >= LevelProtected
+--- end
+
+[a blocked job is resumed without the full key]
+file internal/api/queue.go
+--- anchor
+			if row, ok := s.dispatcher.Row(id); ok && row.Header.Unwanted == unwanted.StateBlocked {
+--- replace
+			if row, ok := s.dispatcher.Row(id); false && ok && row.Header.Unwanted == unwanted.StateBlocked {
+--- end
+
+[retry allow_unwanted with the NZB key]
+file internal/api/history.go
+--- anchor
+		if !s.canApproveUnwanted(r) {
+--- replace
+		if false && !s.canApproveUnwanted(r) {
 --- end
 
 [no label for a flagged job]

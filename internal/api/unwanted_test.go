@@ -50,6 +50,72 @@ func TestQueueResume_ApprovesAnUnwantedBlockedJob(t *testing.T) {
 	}
 }
 
+// TestQueueResume_NZBKeyCannotApprove pins that approval needs the full API
+// key: the upload-only NZB key may resume an ordinary job, but resuming a
+// blocked one would approve the NZB it just uploaded, so that is refused and
+// nothing is resumed.
+func TestQueueResume_NZBKeyCannotApprove(t *testing.T) {
+	t.Parallel()
+	d := newTestAPIDispatcher(t)
+	s := testDispatcherServer(t, d)
+
+	add := func(id string, st unwanted.State) *job.Job {
+		j := job.New(id, id, job.Policy{})
+		if err := j.SetIntent(job.IntentPause); err != nil {
+			t.Fatalf("SetIntent: %v", err)
+		}
+		if err := d.Add(context.Background(), j, dispatch.Header{Name: id, Bytes: 1000, Unwanted: st}); err != nil {
+			t.Fatalf("Add(%s): %v", id, err)
+		}
+		return j
+	}
+	blocked := add("blocked", unwanted.StateBlocked)
+	plain := add("plain", unwanted.StateNone)
+
+	w := apiGet(t, s.Handler(), "/api?mode=queue&name=resume&value=plain,blocked&nzbkey="+testNZBKey)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403 (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "blocked") {
+		t.Errorf("body = %s; want it to name the blocked job", w.Body.String())
+	}
+	if row, _ := d.Row("blocked"); row.Header.Unwanted != unwanted.StateBlocked {
+		t.Errorf("Unwanted = %v; an NZB-key resume approved the job", row.Header.Unwanted)
+	}
+	if blocked.Intent() != job.IntentPause || plain.Intent() != job.IntentPause {
+		t.Error("a refused request resumed a job")
+	}
+
+	w = apiGet(t, s.Handler(), "/api?mode=queue&name=resume&value=plain&nzbkey="+testNZBKey)
+	if w.Code != http.StatusOK {
+		t.Fatalf("plain resume with the NZB key: status = %d; want 200", w.Code)
+	}
+	if plain.Intent() != job.IntentRun {
+		t.Error("the NZB key can no longer resume an ordinary job")
+	}
+}
+
+// TestHistoryRetry_NZBKeyCannotAllowUnwanted pins the same rule for retry.
+func TestHistoryRetry_NZBKeyCannotAllowUnwanted(t *testing.T) {
+	t.Parallel()
+	s, repo := testHistoryServer(t)
+	rec := &retryRecorder{History: repo}
+	s.setAppServices(rec)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=history&name=retry&value=job_1&allow_unwanted=1&nzbkey="+testNZBKey)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403 (body: %s)", rr.Code, rr.Body.String())
+	}
+	if len(rec.plain)+len(rec.allowing) != 0 {
+		t.Errorf("plain = %v, allowing = %v; want no retry", rec.plain, rec.allowing)
+	}
+
+	rr = apiGet(t, s.Handler(), "/api?mode=history&name=retry&value=job_1&nzbkey="+testNZBKey)
+	if rr.Code != http.StatusOK || len(rec.plain) != 1 {
+		t.Errorf("plain retry with the NZB key: status = %d, plain = %v; want it to work", rr.Code, rec.plain)
+	}
+}
+
 // TestQueueSlot_UnwantedLabel pins the SABnzbd-compatible labels list: a job
 // the check flagged carries "UNWANTED", blocked or approved, as SABnzbd's
 // labels do for any non-zero unwanted_ext; any other job has an empty list.
