@@ -768,7 +768,8 @@ func (app *Application) detectDuplicateNZB(ctx context.Context, md5, filename st
 //
 // It also runs the unwanted-extension check (screenUnwanted), before
 // anything is written. A job the check pauses is added paused. A job it
-// fails is added paused, with its NZB backup, and then handed straight to
+// fails is added paused, with its NZB backup when the caller supplied one,
+// and then handed straight to
 // post-processing with the failure message, which skips every stage and
 // files it in history as Failed: the same route every other terminal
 // failure takes, so the entry is retryable like any other. An error

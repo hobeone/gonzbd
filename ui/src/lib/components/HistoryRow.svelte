@@ -24,8 +24,9 @@
 		return new Date(slot.completed * 1000).toLocaleString();
 	}
 
-	// A job the unwanted-extension check refused (unwanted_ext 1, blocked) can
-	// be retried with the extensions approved; a plain retry is refused again.
+	// A failed job the unwanted-extension check blocked (unwanted_ext 1) can be
+	// retried with the extensions approved. A plain retry is checked again
+	// under the current action.
 	let unwantedBlocked = $derived(slot.status === 'Failed' && slot.unwanted_ext === 1);
 
 	async function retry(allowUnwanted = false) {

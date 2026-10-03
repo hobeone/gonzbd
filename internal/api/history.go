@@ -62,8 +62,8 @@ type historySlot struct {
 	Meta         string          `json:"meta"`
 	URLInfo      string          `json:"url_info"`
 	// UnwantedExt is the entry's unwanted-extension state as SABnzbd numbers
-	// it: 0 none, 1 blocked, 2 approved by the user. A Failed entry at 1 is
-	// one the check refused, which a retry with allow_unwanted=1 approves.
+	// it: 0 none, 1 blocked, 2 approved by the user. A retry with
+	// allow_unwanted=1 approves an entry at 1.
 	UnwantedExt unwanted.State `json:"unwanted_ext"`
 }
 

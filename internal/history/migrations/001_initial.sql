@@ -49,10 +49,10 @@ CREATE TABLE history (
     -- storage.
     nzb_backup      TEXT NOT NULL DEFAULT '',
     -- The job's unwanted.State when it was filed: 0 none, 1 blocked by the
-    -- unwanted-extension check, 2 approved by the user. A FAILED entry at 1
-    -- is one the check refused, which "Retry anyway" (allow_unwanted)
-    -- approves and a plain retry refuses again; one at 2 keeps its approval
-    -- through a retry. Not read from fail_message, which is prose.
+    -- unwanted-extension check, 2 approved by the user. "Retry anyway"
+    -- (allow_unwanted) approves an entry at 1; a plain retry re-runs the
+    -- check under the action then in force. An entry at 2 keeps its
+    -- approval through a retry. Not read from fail_message, which is prose.
     unwanted_ext    INTEGER NOT NULL DEFAULT 0 CHECK (unwanted_ext BETWEEN 0 AND 2)
 );
 

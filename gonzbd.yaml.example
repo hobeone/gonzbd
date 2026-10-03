@@ -266,7 +266,8 @@ downloads:
   #   fail  - the job goes straight to history as Failed ("Aborted,
   #           unwanted extension detected"), nothing downloaded. Retry it
   #           with "Retry anyway" (mode=history&name=retry&allow_unwanted=1)
-  #           to approve it; a plain retry is refused again.
+  #           to approve it. A plain retry is checked again under the
+  #           action then in force, so under "fail" it is refused.
   # Unless "off", unwanted files found on disk after unpack are deleted
   # from a job that was not approved. Not covered: a file whose name only
   # appears inside an archive during download, or a post whose filenames

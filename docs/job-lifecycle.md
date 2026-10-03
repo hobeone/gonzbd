@@ -876,10 +876,12 @@ in `internal/app/durability.go` and `internal/app/stall.go`). An approved job
 is not paused by the check again, keeps its files through `unwanted_cleanup`,
 and carries the approval into history, so a later retry is approved too.
 
-The writers of `Header.Unwanted` are `app.screenUnwanted`, before the job is
-registered, and `ResumeJobByUser` afterwards
-(`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` returns 4 lines:
-three in `internal/app/unwanted.go`, one in `internal/dispatch/registry.go`).
+Apart from restoring it from `dispatch_jobs` (the `Scan` in
+`internal/dispatch/store/store.go`), the writers of `Header.Unwanted` are
+`app.screenUnwanted`, before the job is registered, and `ResumeJobByUser`
+afterwards (`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'`
+returns 4 lines: three in `internal/app/unwanted.go`, one in
+`internal/dispatch/registry.go`).
 
 ### Cancel is an interrupt before the boundary, a gate after
 

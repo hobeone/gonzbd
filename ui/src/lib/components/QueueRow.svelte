@@ -134,7 +134,8 @@
 	);
 	let hasFailed = $derived(slot.failed_bytes > 0);
 	// The backend labels the job whether it is still blocked or already
-	// approved; it can only be blocked while paused, so the hint follows that.
+	// approved, and the label does not say which. Only the user's resume
+	// approves, so the hint offers resume when the job is paused.
 	let unwantedLabel = $derived(slot.labels?.includes('UNWANTED') ?? false);
 	let etaText = $derived(formatETA(slot.eta_seconds ?? 0));
 	let isDownloading = $derived(slot.current_stage === 'download');
@@ -520,7 +521,7 @@
 					class="shrink-0 text-[10px] font-bold text-amber-500 border-amber-500/40"
 					title={isPaused
 						? 'The NZB names a file with an unwanted extension. Resume to allow it.'
-						: 'The NZB names a file with an unwanted extension; the job was allowed to continue.'}
+						: 'The NZB names a file with an unwanted extension.'}
 					data-testid="unwanted-label"
 				>
 					UNWANTED

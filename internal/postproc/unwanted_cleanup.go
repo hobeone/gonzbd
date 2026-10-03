@@ -18,18 +18,16 @@ import (
 //
 // It is the backstop for what the ingest check cannot see: a file inside an
 // archive, a file whose NZB subject was obfuscated, a file par2 or
-// deobfuscation renamed. It reads every file the job owns, not only what
-// unpack extracted, for the same reason.
+// deobfuscation renamed. It reads every file the job owns (every file under
+// DownloadDir when OwnedFiles is nil), not only what unpack extracted.
 //
 // It removes nothing when:
 //   - the rules' action is off;
 //   - the job is approved (unwanted.StateApproved): the user accepted the
 //     files, and SABnzbd's unwanted_ext == 2 skips its removal the same way;
-//   - the job has already failed (ParError, UnpackError or FailMsg): finalize
-//     leaves a failed job's files in the download area for a retry, and a
-//     retry resumes from them, so deleting one would cost the retry a file
-//     it believes it has. A failed job delivers nothing to the complete
-//     directory, which is what this stage protects.
+//   - the job has already failed (ParError, UnpackError or FailMsg): its
+//     files stay in the download area for a retry, and it delivers nothing
+//     to the complete directory.
 //
 // It runs at every PP level, unlike SABnzbd, which removes only after its
 // unpack step: a download-only job delivers its files to the complete
