@@ -34,6 +34,16 @@ func TestUnwanted_Blacklist(t *testing.T) {
 		{"setup.exe\t", true},
 		{"setup.exe\x00", true},
 		{"setup.exe ", true},
+		// Unicode format characters render as nothing, so a name ending in
+		// one reads as setup.exe.
+		{"setup.exe" + string(rune(0x200b)), true},
+		{"setup.exe" + string(rune(0x200d)), true},
+		{"setup.exe" + string(rune(0x2060)), true},
+		{"setup.exe" + string(rune(0xfeff)), true},
+		{"setup.exe" + string(rune(0x00ad)), true},
+		{"setup.exe" + string(rune(0x180e)), true},
+		{"setup.exe" + string(rune(0x202e)), true},
+		{"setup.exe." + string(rune(0x200b)) + " " + string(rune(0x202e)), true},
 		{"dir/setup.exe", true},
 		{`dir\setup.exe`, true},
 		{"x.exe/readme.txt", false},
@@ -136,6 +146,11 @@ func TestNewRules_Rejects(t *testing.T) {
 		{"bad mode", ActionPause, "allowlist", nil},
 		{"empty mode", ActionPause, "", nil},
 		{"bad pattern", ActionPause, ModeBlacklist, []string{"exe", "[x"}},
+		// An extension holds no dot or comma, so an entry with either can
+		// never match and is almost certainly a typo for a list.
+		{"file glob", ActionPause, ModeBlacklist, []string{"*.exe"}},
+		{"dotted entry", ActionPause, ModeBlacklist, []string{"tar.gz"}},
+		{"comma-joined entries", ActionPause, ModeBlacklist, []string{"exe,com"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

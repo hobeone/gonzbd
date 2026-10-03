@@ -80,3 +80,27 @@ file internal/unwanted/unwanted.go
 --- replace
 		p := strings.ToLower(strings.TrimSpace(ext))
 --- end
+
+[a trailing format character hides the extension]
+file internal/unwanted/unwanted.go
+--- anchor
+		return r == '.' || unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+--- replace
+		return r == '.' || unicode.IsSpace(r) || unicode.IsControl(r)
+--- end
+
+[an entry that can never match is accepted]
+file internal/unwanted/unwanted.go
+--- anchor
+		if strings.ContainsAny(p, ".,") {
+--- replace
+		if false && strings.ContainsAny(p, ".,") {
+--- end
+
+[a comma-joined entry is accepted]
+file internal/unwanted/unwanted.go
+--- anchor
+		if strings.ContainsAny(p, ".,") {
+--- replace
+		if strings.ContainsAny(p, ".") {
+--- end

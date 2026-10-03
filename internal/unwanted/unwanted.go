@@ -110,6 +110,13 @@ func NewRules(action Action, mode Mode, extensions []string) (Rules, error) {
 		if p == "" {
 			continue
 		}
+		// An extension holds no dot or comma (extension takes the text after
+		// the last dot), so an entry with either could never match: "*.exe"
+		// or "exe,com" is a mistake to report, not a rule to keep.
+		if strings.ContainsAny(p, ".,") {
+			errs = append(errs, fmt.Errorf("extension[%d] %q: an extension cannot contain '.' or ','; list each extension as its own entry", i, ext))
+			continue
+		}
 		// path.Match validates the whole pattern whatever it is matched
 		// against, so a pattern accepted here cannot error in Unwanted.
 		if _, err := path.Match(p, ""); err != nil {
@@ -188,9 +195,11 @@ func (r Rules) listed(ext string) (bool, error) {
 //
 //   - only the last path component counts, split on both '/' and '\', so a
 //     directory named "x.exe" does not lend its extension to "x.exe/readme";
-//   - trailing dots, whitespace and control characters are trimmed, because
-//     Windows drops trailing dots and spaces when it opens a file, so
-//     "setup.exe. " runs as setup.exe;
+//   - trailing dots, whitespace, control characters and Unicode format
+//     characters (Cf: zero-width space and joiner, BOM, soft hyphen,
+//     bidi overrides) are trimmed, because Windows drops trailing dots and
+//     spaces when it opens a file, so "setup.exe. " runs as setup.exe, and
+//     a format character renders as nothing, so the name reads as one;
 //   - the result is lowercased, so "SETUP.EXE" matches "exe".
 //
 // A name that is only a dot and an extension (".exe") has that extension,
@@ -201,7 +210,7 @@ func extension(name string) string {
 		name = name[i+1:]
 	}
 	name = strings.TrimRightFunc(name, func(r rune) bool {
-		return r == '.' || unicode.IsSpace(r) || unicode.IsControl(r)
+		return r == '.' || unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
 	})
 	i := strings.LastIndexByte(name, '.')
 	if i < 0 {

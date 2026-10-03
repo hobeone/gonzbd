@@ -247,7 +247,9 @@ downloads:
 
   # File extensions a job must not deliver, without the dot and
   # case-insensitive. An entry may be a glob pattern matched against the
-  # whole extension (e.g. "r[0-9][0-9]"). Checked against the filenames the
+  # whole extension (e.g. "r[0-9][0-9]"). An entry containing '.' or ','
+  # ("*.exe", "exe,com") is rejected: it could never match an extension.
+  # Checked against the filenames the
   # NZB names when the job is added, and against the job's files on disk
   # after unpack. Mirrors SABnzbd's unwanted_extensions.
   unwanted_extensions: [exe, com, scr, pif, bat, cmd, msi, vbs]

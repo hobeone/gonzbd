@@ -682,7 +682,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `no_penalties` | bool | false | Use minimal penalty times |
 | `pre_check` | bool | false | Pre-check article availability via STAT |
 | `propagation_delay` | int | `0` | Minutes to wait before downloading |
-| `unwanted_extensions` | list | `exe, com, scr, pif, bat, cmd, msi, vbs` | Extensions a job must not deliver (no dot, case-insensitive, glob patterns allowed) |
+| `unwanted_extensions` | list | `exe, com, scr, pif, bat, cmd, msi, vbs` | Extensions a job must not deliver (no dot, case-insensitive, glob patterns allowed; an entry containing `.` or `,` is rejected) |
 | `unwanted_extensions_mode` | string | `blacklist` | `blacklist` (listed are unwanted) or `whitelist` (unlisted are unwanted); a name with no extension is never unwanted |
 | `action_on_unwanted_extensions` | string | `pause` | `off`, `pause` (add paused, labelled UNWANTED; resume approves) or `fail` (file as Failed at add, nothing downloaded); unless `off`, unwanted files are also removed after unpack from a job not approved. SABnzbd stores the mode and action as integers |
 

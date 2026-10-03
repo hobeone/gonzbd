@@ -30,6 +30,8 @@ func TestValidateDownloads_UnwantedExtensions(t *testing.T) {
 		{"unknown mode", func(d *DownloadConfig) { d.UnwantedExtensionsMode = "allowlist" }},
 		{"empty mode", func(d *DownloadConfig) { d.UnwantedExtensionsMode = "" }},
 		{"malformed pattern", func(d *DownloadConfig) { d.UnwantedExtensions = []string{"exe", "[x"} }},
+		{"file glob", func(d *DownloadConfig) { d.UnwantedExtensions = []string{"*.exe"} }},
+		{"comma-joined entries", func(d *DownloadConfig) { d.UnwantedExtensions = []string{"exe,com"} }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -57,6 +59,8 @@ func TestSet_UnwantedExtensionsEnumsValidated(t *testing.T) {
 		{"action_on_unwanted_extensions", "abort", "fail"},
 		{"unwanted_extensions_mode", "allowlist", "whitelist"},
 		{"unwanted_extensions", `["[x"]`, `["exe","r[0-9][0-9]"]`},
+		{"unwanted_extensions", `["*.exe"]`, `["exe","r[0-9][0-9]"]`},
+		{"unwanted_extensions", `["tar.gz"]`, `["exe","r[0-9][0-9]"]`},
 	} {
 		if err := cfg.Set("downloads", c.keyword, c.bad); err == nil {
 			t.Errorf("Set(%s=%s) = nil, want a validation error", c.keyword, c.bad)
