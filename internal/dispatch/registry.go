@@ -707,7 +707,9 @@ func (d *Dispatcher) ResumeJob(id string) error {
 //
 // It is separate from ResumeJob because the application resumes jobs of its
 // own accord — a stall's re-evaluation, Fail handing a parked job to its
-// Assessing worker — and none of those is the user's consent.
+// Assessing worker — and none of those is the user's consent; nor is a
+// resume by a caller holding only the upload key, which the API sends to
+// ResumeJob.
 //
 // The approval is recorded before the intent changes, so no tick can see
 // the job running while still blocked. A resume refused because the job is

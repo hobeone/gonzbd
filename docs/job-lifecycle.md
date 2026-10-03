@@ -872,11 +872,13 @@ calls `Dispatcher.ResumeJobByUser`, which moves `StateBlocked` to
 needs the full API key or the UI session: `queue` and `history` also accept
 the upload-only NZB key, so a resume naming a blocked job, or a retry with
 `allow_unwanted=1`, is refused with 403 for that key (`canApproveUnwanted`
-in `internal/api/middleware.go`). The
-application's own resumes — a stall's re-evaluation, `Fail` handing a parked
-job to its Assessing worker — call `ResumeJob` and approve nothing
-(`git grep -n '\.ResumeJob(' -- '*.go' ':!*_test.go'` returns those 2 lines,
-in `internal/app/durability.go` and `internal/app/stall.go`). An approved job
+in `internal/api/middleware.go`). `ResumeJob` approves nothing. It is
+called by the application's own resumes (a stall's re-evaluation, and `Fail`
+handing a parked job to its Assessing worker), and by an NZB-key resume of
+jobs none of which is blocked
+(`git grep -n '\.ResumeJob(' -- '*.go' ':!*_test.go'` returns 3 lines, in
+`internal/app/durability.go`, `internal/app/stall.go` and
+`internal/api/queue.go`). An approved job
 is not paused by the check again, keeps its files through `unwanted_cleanup`,
 and carries the approval into history, so a later retry is approved too.
 
