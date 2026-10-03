@@ -16,6 +16,10 @@ import (
 // ErrNotFound is returned when an operation names a job ID that is not registered.
 var ErrNotFound = errors.New("dispatch: job not found")
 
+// ErrInvalidJobName is SetName's refusal of a name that is not one safe path
+// component, or that another registered job already has.
+var ErrInvalidJobName = errors.New("dispatch: invalid job name")
+
 // ErrUnwantedBlocked is ResumeJob's refusal of a job the unwanted-extension
 // check blocked: only ResumeJobByUser, the user's approval, unblocks it.
 var ErrUnwantedBlocked = errors.New("dispatch: the job is blocked for unwanted extensions and needs the user's approval")
@@ -919,12 +923,27 @@ func (d *Dispatcher) SetPriority(id string, priority int) error {
 // SetName updates the job's display and filesystem name across both the Header
 // (used for listings without job pointer dereference) and the Job instance (used for
 // downstream filesystem paths and finalization) atomically under d.mu.
+//
+// It refuses (ErrInvalidJobName) a name that is not one safe path component
+// or that another registered job has. It does not sanitise or check the disk;
+// Application.RenameJob, its caller, does both before calling it.
 func (d *Dispatcher) SetName(id, name string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	e, ok := d.byID[id]
 	if !ok {
 		return fmt.Errorf("dispatch: set name %s: %w", id, ErrNotFound)
+	}
+	// The name becomes the job's download directory, DownloadDir/<name>, and
+	// post-processing deletes and moves what is under it. So it must be one
+	// path component, never "." or "..", and no other registered job's name.
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
+		return fmt.Errorf("dispatch: set name %s to %q: not a single path component: %w", id, name, ErrInvalidJobName)
+	}
+	for otherID, other := range d.byID {
+		if otherID != id && other.h.Name == name {
+			return fmt.Errorf("dispatch: set name %s to %q: job %s has that name: %w", id, name, otherID, ErrInvalidJobName)
+		}
 	}
 	e.h.Name = name
 	e.j.SetName(name)

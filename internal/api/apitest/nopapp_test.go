@@ -60,6 +60,9 @@ func TestNopApp_Contract(t *testing.T) {
 	if err := app.RetryHistoryJob(ctx, "job1"); err != nil {
 		t.Errorf("RetryHistoryJob() = %v, want nil", err)
 	}
+	if name, err := app.RenameJob("job1", "n"); err != nil || name != "n" {
+		t.Errorf("RenameJob() = %q, %v, want n, nil", name, err)
+	}
 	if err := app.RetryHistoryJobAllowingUnwanted(ctx, "job1"); err != nil {
 		t.Errorf("RetryHistoryJobAllowingUnwanted() = %v, want nil", err)
 	}

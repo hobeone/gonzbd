@@ -520,9 +520,12 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    check on what `finalize` delivers, and `finalize` moves everything under
    `DownloadDir`, including files par2 repair rebuilt or renamed, which repair
    does not record in `OwnedFiles`. It judges every file under `DownloadDir`.
-   That directory is this job's: `AddJob` names it with `uniqueName`, and a
-   retry restores it with `restoreFailedDir`. Both refuse a name already
-   taken in the queue or on disk.
+   That directory is the download directory joined with the job's name, and
+   the name is one path component no other queued job has. `AddJob` and
+   `Application.RenameJob` (the API's rename) choose it with `uniqueName`
+   and `jobNameTaken`. `Dispatcher.SetName` refuses `.`, `..`, a separator
+   or another job's name. A retry restores the directory with
+   `restoreFailedDir`, which refuses a taken name.
 5. **Script environment contract**: User scripts receive 8 positional arguments
    ($1–$8) matching Python SABnzbd:
    `script <complete_dir> <nzb_name> <job_name> <report_name> <category> <group> <status> <failure_url>`

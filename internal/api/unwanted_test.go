@@ -116,6 +116,52 @@ func TestHistoryRetry_NZBKeyCannotAllowUnwanted(t *testing.T) {
 	}
 }
 
+// renameRecorder records RenameJob calls and answers with err.
+type renameRecorder struct {
+	apitest.NopApp
+	calls []string
+	err   error
+}
+
+func (a *renameRecorder) RenameJob(id, name string) (string, error) {
+	a.calls = append(a.calls, id+"="+name)
+	return name, a.err
+}
+
+// TestQueueRename_GoesThroughTheNameOwner pins that the API renames through
+// Application.RenameJob, the owner that sanitises and uniquifies the name,
+// and reports a refused name as the caller's error.
+func TestQueueRename_GoesThroughTheNameOwner(t *testing.T) {
+	t.Parallel()
+	d := newTestAPIDispatcher(t)
+	s := testDispatcherServer(t, d)
+	if err := d.Add(context.Background(), job.New("j1", "One", job.Policy{}), dispatch.Header{Name: "One"}); err != nil {
+		t.Fatal(err)
+	}
+	rec := &renameRecorder{}
+	s.setAppServices(rec)
+
+	w := apiGet(t, s.Handler(), "/api?mode=queue&name=rename&value=j1&value2=New&apikey="+testAPIKey)
+	if w.Code != http.StatusOK || len(rec.calls) != 1 || rec.calls[0] != "j1=New" {
+		t.Fatalf("status = %d, calls = %v; want one RenameJob(j1, New)", w.Code, rec.calls)
+	}
+	if row, _ := d.Row("j1"); row.Header.Name != "One" {
+		t.Errorf("the handler wrote the name itself (%q) instead of leaving it to the owner", row.Header.Name)
+	}
+
+	for _, refusal := range []error{app.ErrInvalidJobName, fmt.Errorf("x: %w", dispatch.ErrInvalidJobName)} {
+		rec.err = refusal
+		w = apiGet(t, s.Handler(), "/api?mode=queue&name=rename&value=j1&value2=..&apikey="+testAPIKey)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("refusal %v: status = %d; want 400", refusal, w.Code)
+		}
+	}
+	rec.err = fmt.Errorf("x: %w", dispatch.ErrNotFound)
+	if w = apiGet(t, s.Handler(), "/api?mode=queue&name=rename&value=nope&value2=x&apikey="+testAPIKey); w.Code != http.StatusNotFound {
+		t.Errorf("unknown job: status = %d; want 404", w.Code)
+	}
+}
+
 // TestQueueSlot_UnwantedLabel pins the SABnzbd-compatible labels list: a job
 // the check flagged carries "UNWANTED", blocked or approved, as SABnzbd's
 // labels do for any non-zero unwanted_ext; any other job has an empty list.

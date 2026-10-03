@@ -64,6 +64,33 @@ func TestDispatcherControlSurface_PerJobDoors(t *testing.T) {
 	}
 }
 
+// TestSetName_RefusesUnsafeOrTakenNames pins the registry's half of the
+// job-name invariant: a job's name becomes its download directory
+// (DownloadDir/<name>), so it must be one path component that no other
+// registered job has.
+func TestSetName_RefusesUnsafeOrTakenNames(t *testing.T) {
+	d := newTestDispatcher(t)
+	for _, id := range []string{"a", "b"} {
+		if err := d.Add(context.Background(), job.New(id, "Job "+id, job.PolicyFromPP(3)), Header{Name: "Job " + id}); err != nil {
+			t.Fatalf("Add(%s): %v", id, err)
+		}
+	}
+	for _, name := range []string{"", ".", "..", "a/b", `a\b`, "/abs", "x\x00y", "Job b"} {
+		if err := d.SetName("a", name); !errors.Is(err, ErrInvalidJobName) {
+			t.Errorf("SetName(a, %q) = %v, want ErrInvalidJobName", name, err)
+		}
+		if row, _ := d.Row("a"); row.Header.Name != "Job a" {
+			t.Fatalf("after a refused SetName(a, %q) the name is %q", name, row.Header.Name)
+		}
+	}
+	if err := d.SetName("a", "Renamed"); err != nil {
+		t.Fatalf("SetName(a, Renamed) = %v", err)
+	}
+	if err := d.SetName("a", "Renamed"); err != nil {
+		t.Errorf("SetName to the job's own name = %v, want nil", err)
+	}
+}
+
 // TestResumeJobByUser_ApprovesABlockedJob pins the approval half of the
 // unwanted-extension pause: the user's resume moves a blocked job to
 // approved, and the next tick persists it with the intent, while an

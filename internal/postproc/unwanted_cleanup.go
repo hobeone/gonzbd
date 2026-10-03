@@ -21,9 +21,12 @@ import (
 // archive, a file whose NZB subject was obfuscated, a file par2 rebuilt or
 // renamed. It judges what finalize will deliver, which is everything under
 // DownloadDir, so it does not consult OwnedFiles: par2 repair records
-// nothing there. DownloadDir is this job's: AddJob names it with uniqueName,
-// and a retry restores it with restoreFailedDir, and both refuse a name
-// already taken in the queue or on disk.
+// nothing there. DownloadDir is the download directory joined with the job's
+// name, and that name is one path component no other queued job has:
+// AddJob and Application.RenameJob choose it with uniqueName, and
+// Dispatcher.SetName refuses ".", "..", a separator or another job's name.
+// A retry restores the directory with restoreFailedDir, which refuses a
+// taken name.
 //
 // It removes nothing when:
 //   - the rules' action is off;

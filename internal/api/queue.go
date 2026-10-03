@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -959,15 +960,22 @@ func (s *Server) queueChangeName(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var err error
-	if s.dispatcher != nil {
-		err = s.dispatcher.SetName(nzoID, name)
-	} else {
+	if s.dispatcher == nil || s.jobs == nil {
 		s.respondError(w, http.StatusInternalServerError, "dispatcher not wired")
 		return
 	}
-	if err != nil {
+	// The name becomes the job's download directory; RenameJob owns
+	// choosing a safe, unique one.
+	name, err := s.jobs.RenameJob(nzoID, name)
+	switch {
+	case errors.Is(err, app.ErrInvalidJobName), errors.Is(err, dispatch.ErrInvalidJobName):
+		s.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	case errors.Is(err, dispatch.ErrNotFound):
 		s.respondError(w, http.StatusNotFound, err.Error())
+		return
+	case err != nil:
+		s.respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.log.Info("job renamed", "job", nzoID, "name", name)
