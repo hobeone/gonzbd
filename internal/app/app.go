@@ -39,6 +39,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 	"github.com/hobeone/gonzbd/internal/types"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // ErrAlreadyStarted is returned by Start on the second call to a live
@@ -764,7 +765,21 @@ func (app *Application) detectDuplicateNZB(ctx context.Context, md5, filename st
 
 // AddJob validates, deduplicates, and enqueues a new download job. If force
 // is false and a duplicate is detected, the job is added in a paused state.
+//
+// It also runs the unwanted-extension check (screenUnwanted), before
+// anything is written. A job the check pauses is added paused. A job it
+// fails is added paused, with its NZB backup when the caller supplied one,
+// and then handed straight to
+// post-processing with the failure message, which skips every stage and
+// files it in history as Failed: the same route every other terminal
+// failure takes, so the entry is retryable like any other. An error
+// evaluating the check refuses the job.
 func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, rawNZB []byte, force bool) error {
+	unwantedFail, err := app.screenUnwanted(j, &hdr, false)
+	if err != nil {
+		return fmt.Errorf("app: %w", err)
+	}
+
 	adminDir := app.config.GetGeneral().AdminDir
 	nzbDir := filepath.Join(adminDir, "nzb")
 	if err := os.MkdirAll(nzbDir, 0o750); err != nil {
@@ -867,6 +882,9 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	admitted = true
 	app.emit(Event{Type: "queue_updated"})
 	app.log.Info("job added", "name", hdr.Name, "id", j.ID())
+	if unwantedFail != "" {
+		app.maybeFinalizeJob(j, unwantedFail)
+	}
 	return nil
 }
 
@@ -2547,6 +2565,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			DownloadDir:          downloadDir,
 			FinalDir:             finalDir,
 			Sanitize:             sanitize,
+			Unwanted:             hdr.Unwanted,
 			FailMsg:              admittedFailMsg,
 			DirectUnpackSets:     duResults,
 			DirectUnpackFailures: duFailures,
@@ -2699,15 +2718,30 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 // RemoveJob marked removed, and persistAndCommit refuses to file it under the
 // ID on its own (see jobTransitions).
 //
+// The rebuilt job goes through the unwanted-extension check under the action
+// configured now (screenUnwanted), unless its entry records an approval. A
+// job the check fails is refused with ErrUnwantedRefused before any state
+// changes, and its entry stays as it was; RetryHistoryJobAllowingUnwanted
+// approves it instead.
+//
 // The history entry is deleted on success.
 func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
-	return app.retryHistoryJob(ctx, jobID, nil)
+	return app.retryHistoryJob(ctx, jobID, false, nil)
 }
 
-// retryHistoryJob is RetryHistoryJob, with prepare, when it is not nil,
+// RetryHistoryJobAllowingUnwanted is RetryHistoryJob with the user's approval
+// of any unwanted extension the NZB names: the job is queued approved, so it
+// is neither refused nor paused by the check, and its files are not removed
+// after unpack. It is "Retry anyway" (mode=history&name=retry&allow_unwanted=1).
+func (app *Application) RetryHistoryJobAllowingUnwanted(ctx context.Context, jobID string) error {
+	return app.retryHistoryJob(ctx, jobID, true, nil)
+}
+
+// retryHistoryJob is RetryHistoryJob, with allowUnwanted approving the job
+// for the unwanted-extension check, and with prepare, when it is not nil,
 // applied to the rebuilt job before its job_files rows are seeded and it is
 // registered. A prepare error aborts the retry as any other step's does.
-func (app *Application) retryHistoryJob(ctx context.Context, jobID string, prepare func(*job.Job) error) error {
+func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allowUnwanted bool, prepare func(*job.Job) error) error {
 	// Held for the whole call, so no other lock holder on this job ID
 	// interleaves with any step below; see jobTransitions for the finalizer's
 	// bounded exception. A retry never waits for it: a second retry of the
@@ -2746,6 +2780,15 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, prepa
 	j, hdr, err := app.rebuildJobFromNZB(*entry)
 	if err != nil {
 		return err
+	}
+	// Before anything below changes state, so a refusal leaves the entry
+	// and the download directory exactly as they were.
+	unwantedFail, err := app.screenUnwanted(j, &hdr, allowUnwanted || entry.Unwanted == unwanted.StateApproved)
+	if err != nil {
+		return fmt.Errorf("app: retry %s: %w", jobID, err)
+	}
+	if unwantedFail != "" {
+		return fmt.Errorf("app: retry %s: %s: %w", jobID, unwantedFail, ErrUnwantedRefused)
 	}
 
 	// The retry writes to, and post-processing reads, downloadDir/<name>; a

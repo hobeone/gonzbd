@@ -60,6 +60,9 @@ func TestNopApp_Contract(t *testing.T) {
 	if err := app.RetryHistoryJob(ctx, "job1"); err != nil {
 		t.Errorf("RetryHistoryJob() = %v, want nil", err)
 	}
+	if err := app.RetryHistoryJobAllowingUnwanted(ctx, "job1"); err != nil {
+		t.Errorf("RetryHistoryJobAllowingUnwanted() = %v, want nil", err)
+	}
 	if !app.UnblockServer("srv1") {
 		t.Error("UnblockServer() = false, want true")
 	}

@@ -38,6 +38,9 @@ func (n NopApp) ReloadDownloader([]config.ServerConfig) error { return nil }
 // RetryHistoryJob is a stub.
 func (n NopApp) RetryHistoryJob(context.Context, string) error { return nil }
 
+// RetryHistoryJobAllowingUnwanted is a stub.
+func (n NopApp) RetryHistoryJobAllowingUnwanted(context.Context, string) error { return nil }
+
 // SetSpeedLimit is a stub.
 func (n NopApp) SetSpeedLimit(int64) {}
 

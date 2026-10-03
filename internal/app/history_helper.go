@@ -130,6 +130,7 @@ func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
 		TimeAdded:    ppJob.Job.Added(),
 		URLInfo:      repairSummary,
 		Meta:         strings.Join(serverStatsParts, ", "),
+		Unwanted:     ppJob.Unwanted,
 	}
 	if ppJob.ParError || ppJob.UnpackError || ppJob.FailMsg != "" {
 		entry.Status = "Failed"

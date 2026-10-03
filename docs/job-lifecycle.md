@@ -858,6 +858,49 @@ keeps its lease through one.
 tick loop picks it up on its ordinary cadence. A `Job` cannot call a Queue and
 does not need to.
 
+### A user's resume is also an approval
+
+The unwanted-extension check (`app.screenUnwanted`, run at ingest and on a
+retry's rebuild) pauses a job whose NZB names a file it excludes and records
+`Header.Unwanted = StateBlocked`. Under `action_on_unwanted_extensions: fail`
+the job is filed Failed instead, and a retry is refused with
+`app.ErrUnwantedRefused` unless the caller approves (`allow_unwanted=1`).
+
+The user's resume is that approval for a paused job. The API's per-job resume
+calls `Dispatcher.ResumeJobByUser`, which moves `StateBlocked` to
+`StateApproved` under the registry lock before it sets the intent. Approval
+needs the full API key or the UI session: `queue` and `history` also accept
+the upload-only NZB key, so a resume naming a blocked job, or a retry with
+`allow_unwanted=1`, is refused with 403 for that key (`canApproveUnwanted`
+in `internal/api/middleware.go`). `ResumeJob` approves nothing. It is
+called by the application's own resumes (a stall's re-evaluation, and `Fail`
+handing a parked job to its Assessing worker), and by an NZB-key resume of
+jobs none of which is blocked
+(`git grep -n '\.ResumeJob(' -- '*.go' ':!*_test.go'` returns 3 lines, in
+`internal/app/durability.go`, `internal/app/stall.go` and
+`internal/api/queue.go`). An approved job
+is not paused by the check again, keeps its files through `unwanted_cleanup`,
+and carries the approval into history, so a later retry is approved too.
+
+Under `fail`, `AddJob` registers the job paused and blocked
+(`dispatcher.Add` persists that row), then files it through
+`maybeFinalizeJob`. The two steps are not atomic. A crash between them
+brings the job back as a paused, blocked queue job instead of a Failed
+history entry. That is still fail-closed: the job is paused by the check,
+not parked by Stall, so neither the stall re-evaluation nor `Fail` resumes
+it, and only a user's resume with the full key approves it.
+
+The check runs only when a job is added or retried. A settings change does
+not re-screen jobs already queued, as in SABnzbd. The post-unpack stage reads
+the live settings on every run.
+
+Apart from restoring it from `dispatch_jobs` (the `Scan` in
+`internal/dispatch/store/store.go`), the writers of `Header.Unwanted` are
+`app.screenUnwanted`, before the job is registered, and `ResumeJobByUser`
+afterwards (`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'`
+returns 4 lines: three in `internal/app/unwanted.go`, one in
+`internal/dispatch/registry.go`).
+
 ### Cancel is an interrupt before the boundary, a gate after
 
 | State | Cancel |
@@ -1214,6 +1257,11 @@ a resume grants it a lease.
   `Flush` are the only things that write. It takes a `job.Checkpoint`, a
   **value** taken under the Job's own lock, which is what lets it batch without
   holding anything and keeps `Job` doing no I/O.
+- **The unwanted-extension state** (`Header.Unwanted`) is persisted in
+  `dispatch_jobs.unwanted_ext` with the rest of the header, handed to
+  post-processing on `postproc.Job.Unwanted`, and filed in
+  `history.unwanted_ext`, where a retry reads it back. See § 9, "A user's
+  resume is also an approval".
 - **`Policy` is persisted resolved**, not as the PP integer it came from —
   persisting the integer would carry external vocabulary back inside the
   internal layer.

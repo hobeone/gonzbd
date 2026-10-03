@@ -278,7 +278,7 @@ func TestRetryHistoryJob_PrepareErrorAbortsTheRetry(t *testing.T) {
 	addRetryableEntry(t, repo, adminDir, id, "")
 	boom := errors.New("prepare refused")
 
-	err := application.retryHistoryJob(t.Context(), id, func(*job.Job) error { return boom })
+	err := application.retryHistoryJob(t.Context(), id, false, func(*job.Job) error { return boom })
 
 	if !errors.Is(err, boom) {
 		t.Errorf("retryHistoryJob = %v, want the prepare's error", err)
@@ -331,7 +331,7 @@ func TestRetryHistoryJob_AbortedAfterTheReleaseLeavesNothingMarked(t *testing.T)
 			}
 
 			released := 0
-			err := application.retryHistoryJob(t.Context(), id, func(j *job.Job) error {
+			err := application.retryHistoryJob(t.Context(), id, false, func(j *job.Job) error {
 				n, err := application.releaseRecoveryVolumes(j, "test")
 				released = n
 				if err == nil && tc.failAfterRelease {

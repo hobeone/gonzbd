@@ -20,9 +20,47 @@ describe('DownloadsSection', () => {
 			replace_illegal_with: '_',
 			replace_spaces_with: '.',
 			strip_diacritics: true,
-			cleanup_list: ['^abc', 'xyz$']
+			cleanup_list: ['^abc', 'xyz$'],
+			unwanted_extensions: ['exe', 'scr'],
+			unwanted_extensions_mode: 'blacklist',
+			action_on_unwanted_extensions: 'pause'
 		}
 	};
+
+	describe('unwanted extensions', () => {
+		it('renders the three settings with their current values', () => {
+			const { container } = render(DownloadsSection, { configData: mockConfig, onFieldUpdate: vi.fn() });
+			expect(screen.getByText('Unwanted Extensions')).toBeInTheDocument();
+			const action = container.querySelector('#downloads-action_on_unwanted_extensions') as HTMLSelectElement;
+			const mode = container.querySelector('#downloads-unwanted_extensions_mode') as HTMLSelectElement;
+			const list = container.querySelector('#downloads-unwanted_extensions') as HTMLTextAreaElement;
+			expect(action.value).toBe('pause');
+			expect(mode.value).toBe('blacklist');
+			expect(list.value).toBe('exe\nscr');
+			expect([...action.options].map((o) => o.value)).toEqual(['off', 'pause', 'fail']);
+			expect([...mode.options].map((o) => o.value)).toEqual(['blacklist', 'whitelist']);
+		});
+
+		it.each([
+			['action_on_unwanted_extensions', 'fail'],
+			['unwanted_extensions_mode', 'whitelist']
+		])('fires section="downloads" keyword="%s" with the chosen value', async (keyword, value) => {
+			const onFieldUpdate = vi.fn();
+			const { container } = render(DownloadsSection, { configData: mockConfig, onFieldUpdate });
+			const el = container.querySelector(`#downloads-${keyword}`) as HTMLSelectElement;
+			await fireEvent.change(el, { target: { value } });
+			expect(onFieldUpdate).toHaveBeenCalledWith('downloads', keyword, value);
+		});
+
+		it('sends the list as a JSON array', async () => {
+			const onFieldUpdate = vi.fn();
+			const { container } = render(DownloadsSection, { configData: mockConfig, onFieldUpdate });
+			const el = container.querySelector('#downloads-unwanted_extensions') as HTMLTextAreaElement;
+			await fireEvent.input(el, { target: { value: 'exe\n msi \n\nvbs' } });
+			await fireEvent.blur(el);
+			expect(onFieldUpdate).toHaveBeenCalledWith('downloads', 'unwanted_extensions', '["exe","msi","vbs"]');
+		});
+	});
 
 	it('renders the section heading', () => {
 		render(DownloadsSection, { configData: mockConfig, onFieldUpdate: vi.fn() });

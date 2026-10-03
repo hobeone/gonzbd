@@ -633,8 +633,8 @@ func (p *PostProcessor) addHistory(job *Job) {
 //	2 = +unpack (includes repair)
 //	3 = +delete (includes repair + unpack + archive cleanup)
 //
-// Stages always run: quickcheck (just logging), deobfuscate, sample, sort,
-// finalize, script. Stages gated by PP: repair (≥1), unpack (≥2).
+// Stages gated by PP: quickcheck and repair (≥1), unpack (≥2). Every other
+// stage runs at every PP level.
 func shouldSkipForPP(stageName string, pp int) bool {
 	switch stageName {
 	case "quickcheck", "repair":

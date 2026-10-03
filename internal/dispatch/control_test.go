@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // TestDispatcherControlSurface_PerJobDoors pins the doors the API needs and
@@ -60,6 +61,72 @@ func TestDispatcherControlSurface_PerJobDoors(t *testing.T) {
 	}
 	if err := d.ResumeJob("a"); err == nil {
 		t.Fatal("ResumeJob on cancelled job must error")
+	}
+}
+
+// TestResumeJobByUser_ApprovesABlockedJob pins the approval half of the
+// unwanted-extension pause: the user's resume moves a blocked job to
+// approved, and the next tick persists it with the intent, while an
+// application resume (ResumeJob) leaves the block standing.
+func TestResumeJobByUser_ApprovesABlockedJob(t *testing.T) {
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withStore(st))
+	j := job.New("a", "Job A", job.PolicyFromPP(3))
+	if err := j.SetIntent(job.IntentPause); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Add(context.Background(), j, Header{Name: "Job A", Unwanted: unwanted.StateBlocked}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := d.ResumeJob("a"); err != nil {
+		t.Fatalf("ResumeJob: %v", err)
+	}
+	if row, _ := d.Row("a"); row.Header.Unwanted != unwanted.StateBlocked {
+		t.Fatalf("after an application resume Unwanted = %d, want blocked (%d)", row.Header.Unwanted, unwanted.StateBlocked)
+	}
+	if err := d.PauseJob("a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.ResumeJobByUser("a"); err != nil {
+		t.Fatalf("ResumeJobByUser: %v", err)
+	}
+	if in := j.Intent(); in != job.IntentRun {
+		t.Fatalf("Intent = %v, want IntentRun", in)
+	}
+	if row, _ := d.Row("a"); row.Header.Unwanted != unwanted.StateApproved {
+		t.Fatalf("after the user's resume Unwanted = %d, want approved (%d)", row.Header.Unwanted, unwanted.StateApproved)
+	}
+	d.tick(context.Background())
+	if p, ok := st.row("a"); !ok || p.Header.Unwanted != unwanted.StateApproved {
+		t.Fatalf("persisted Unwanted = %d (row %v), want approved", p.Header.Unwanted, ok)
+	}
+
+	if err := d.ResumeJobByUser("nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ResumeJobByUser of an unknown id = %v, want ErrNotFound", err)
+	}
+}
+
+// TestResumeJobByUser_LeavesOtherStatesAlone pins that only a blocked job is
+// approved: a job the check never blocked stays StateNone.
+func TestResumeJobByUser_LeavesOtherStatesAlone(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("a", "Job A", job.PolicyFromPP(3))
+	if err := d.Add(context.Background(), j, Header{Name: "Job A"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := d.ResumeJobByUser("a"); err != nil {
+		t.Fatalf("ResumeJobByUser: %v", err)
+	}
+	if row, _ := d.Row("a"); row.Header.Unwanted != unwanted.StateNone {
+		t.Fatalf("Unwanted = %d, want none", row.Header.Unwanted)
+	}
+	if err := j.SetIntent(job.IntentCancel); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ResumeJobByUser("a"); err == nil {
+		t.Fatal("ResumeJobByUser on a cancelled job must error")
 	}
 }
 

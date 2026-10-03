@@ -2,12 +2,16 @@ package app
 
 import (
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/unpack"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // discardLog returns a logger that throws away all output, keeping test output clean.
@@ -25,8 +29,8 @@ func emptyProbe() binaryProbe {
 // TestBuildStages_StageOrder verifies the documented pipeline order:
 //
 //	quickcheck → repair → rarvolrecovery → unpack → extractedrepair →
-//	sample → par2names → par2cleanup → deobfuscate → extcleanup → finalize →
-//	script
+//	sample → par2names → par2cleanup → deobfuscate → unwantedcleanup →
+//	extcleanup → finalize → script
 //
 // This is the highest-value assertion for stages.go: a silent reorder would
 // cause post-processing failures (e.g. cleanup running before rename).
@@ -53,6 +57,7 @@ func TestBuildStages_StageOrder(t *testing.T) {
 		{"RecoverPar2NamesStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.RecoverPar2NamesStage); return ok }},
 		{"Par2CleanupStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.Par2CleanupStage); return ok }},
 		{"DeobfuscateStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.DeobfuscateStage); return ok }},
+		{"UnwantedCleanupStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.UnwantedCleanupStage); return ok }},
 		{"ExtensionCleanupStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.ExtensionCleanupStage); return ok }},
 		{"FinalizeStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.FinalizeStage); return ok }},
 		{"ScriptStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.ScriptStage); return ok }},
@@ -99,11 +104,62 @@ func TestBuildStages_PointersSameAsSlice(t *testing.T) {
 	if built.Stages[8] != built.Deobfuscate {
 		t.Error("Deobfuscate pointer != stages[8]")
 	}
-	if built.Stages[10] != built.Finalize {
-		t.Error("Finalize pointer != stages[10]")
+	if built.Stages[10] != built.ExtensionCleanup {
+		t.Error("ExtensionCleanup pointer != stages[10]")
 	}
-	if built.Stages[11] != built.Script {
-		t.Error("Script pointer != stages[11]")
+	if built.Stages[11] != built.Finalize {
+		t.Error("Finalize pointer != stages[11]")
+	}
+	if built.Stages[12] != built.Script {
+		t.Error("Script pointer != stages[12]")
+	}
+}
+
+// TestBuildStages_UnwantedCleanupReadsLiveSettings pins that the wired
+// unwanted_cleanup stage reads the downloads settings at run time rather
+// than a copy taken at construction: turning the action off spares the
+// file, turning it back on removes it.
+func TestBuildStages_UnwantedCleanupReadsLiveSettings(t *testing.T) {
+	t.Parallel()
+	cfg := convertConfig(Config{DownloadDir: t.TempDir(), CompleteDir: t.TempDir()})
+	setAction := func(action unwanted.Action) {
+		cfg.With(func(c *config.Config) {
+			c.Downloads.ActionOnUnwantedExtensions = action
+			c.Downloads.UnwantedExtensionsMode = unwanted.ModeBlacklist
+			c.Downloads.UnwantedExtensions = []string{"exe"}
+		})
+	}
+	// Valid and on at construction, so a stage that kept a construction-time
+	// copy would still remove the file once the action is turned off.
+	setAction(unwanted.ActionPause)
+	built, err := buildStages(cfg, "", discardLog(), emptyProbe())
+	if err != nil {
+		t.Fatalf("buildStages: %v", err)
+	}
+	stage := built.Stages[9]
+	if stage.Name() != "unwanted_cleanup" {
+		t.Fatalf("stages[9] = %s, want unwanted_cleanup", stage.Name())
+	}
+	run := func(action unwanted.Action) bool {
+		t.Helper()
+		setAction(action)
+		dir := t.TempDir()
+		exe := filepath.Join(dir, "setup.exe")
+		if err := os.WriteFile(exe, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		job := &postproc.Job{Job: job.New("unwantedlive0001", "live", job.PolicyFromPP(3)), DownloadDir: dir}
+		if err := stage.Run(t.Context(), job); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		_, statErr := os.Stat(exe)
+		return statErr == nil
+	}
+	if !run(unwanted.ActionOff) {
+		t.Error("setup.exe removed with the action off")
+	}
+	if run(unwanted.ActionPause) {
+		t.Error("setup.exe survived with the action on")
 	}
 }
 

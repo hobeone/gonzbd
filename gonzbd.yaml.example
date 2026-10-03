@@ -245,6 +245,39 @@ downloads:
     - (?i)-? ?\(Obfuscated\)$
     - (?i)-? ?\(NZBGeek\)$
 
+  # File extensions a job must not deliver, without the dot and
+  # case-insensitive. An entry may be a glob pattern matched against the
+  # whole extension (e.g. "r[0-9][0-9]"). An entry containing '.' ("*.exe")
+  # is rejected because it could never match an extension, and one
+  # containing ',' ("exe,com") because it is a list written as one entry.
+  # Checked against the filenames the
+  # NZB names when the job is added, and against the job's files on disk
+  # after unpack. Mirrors SABnzbd's unwanted_extensions.
+  unwanted_extensions: [exe, com, scr, pif, bat, cmd, msi, vbs]
+
+  # How unwanted_extensions is read: "blacklist" (the listed extensions
+  # are unwanted) or "whitelist" (every extension NOT listed is unwanted).
+  # A filename with no extension is never unwanted, in either mode, so
+  # obfuscated posts are not blocked wholesale. Default: blacklist.
+  unwanted_extensions_mode: blacklist
+
+  # What happens when an NZB names an unwanted file:
+  #   off   - no check, and nothing is removed after unpack.
+  #   pause - the job is added paused and labelled UNWANTED. Resuming it
+  #           approves it: it is not paused again, and its files are not
+  #           removed after unpack.
+  #   fail  - the job goes straight to history as Failed ("Aborted,
+  #           unwanted extension detected"), nothing downloaded. Retry it
+  #           with "Retry anyway" (mode=history&name=retry&allow_unwanted=1)
+  #           to approve it. A plain retry is checked again under the
+  #           action then in force, so under "fail" it is refused.
+  # Unless "off", unwanted files found on disk after unpack are deleted
+  # from a job that was not approved. Not covered: a file whose name only
+  # appears inside an archive during download, or a post whose filenames
+  # are obfuscated, carries nothing to check at add time; the after-unpack
+  # removal is the backstop for those. Default: pause.
+  action_on_unwanted_extensions: pause
+
 postproc:
   # Enable RAR archive extraction. Requires unrar or 7z on PATH.
   enable_unrar: true

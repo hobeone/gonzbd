@@ -498,7 +498,7 @@ func apiDoSetConfig(t *testing.T, ts *httptest.Server, section, keyword, value s
 func buildAPIServerWithQueue(t *testing.T) (*api.Server, *httptest.Server) {
 	t.Helper()
 
-	cfg := &config.Config{}
+	cfg := &config.Config{Downloads: defaultDownloads(t)}
 	dir := t.TempDir()
 	cfg.General.APIKey = integrationAPIKey
 	cfg.General.NZBKey = integrationNZBKey

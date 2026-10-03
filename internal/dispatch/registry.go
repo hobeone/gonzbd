@@ -10,6 +10,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // ErrNotFound is returned when an operation names a job ID that is not registered.
@@ -79,6 +80,13 @@ type Header struct {
 	// fact about the NZB — it can be set on any job — so it is kept in its
 	// own field rather than joined into one of them.
 	OperationalError string
+
+	// Unwanted is the job's standing against the unwanted-extension check.
+	// The application's ingest and retry paths set it before the job is
+	// registered; once registered, ResumeJobByUser is its only runtime
+	// writer (restore aside, see above), and it only moves
+	// unwanted.StateBlocked to unwanted.StateApproved.
+	Unwanted unwanted.State
 
 	Script    string
 	Password  string
@@ -683,6 +691,42 @@ func (d *Dispatcher) ResumeJob(id string) error {
 	if !ok {
 		return fmt.Errorf("dispatch: resume %s: %w", id, ErrNotFound)
 	}
+	if err := j.SetIntent(job.IntentRun); err != nil {
+		return fmt.Errorf("dispatch: resume %s: %w", id, err)
+	}
+	d.kick()
+	return nil
+}
+
+// ResumeJobByUser is ResumeJob for a resume the user asked for, and it is
+// also the user's approval of a job the unwanted-extension check blocked:
+// such a job moves from unwanted.StateBlocked to unwanted.StateApproved, as
+// SABnzbd's resume after an "unwanted" pause does. An approved job is not
+// paused by the check again and keeps its files after unpack. The new state
+// reaches dispatch_jobs at the next persist, with the intent.
+//
+// It is separate from ResumeJob because the application resumes jobs of its
+// own accord — a stall's re-evaluation, Fail handing a parked job to its
+// Assessing worker — and none of those is the user's consent; nor is a
+// resume by a caller holding only the upload key, which the API sends to
+// ResumeJob.
+//
+// The approval is recorded before the intent changes, so no tick can see
+// the job running while still blocked. A resume refused because the job is
+// cancelled leaves a cancelled job approved, which nothing reads.
+func (d *Dispatcher) ResumeJobByUser(id string) error {
+	d.mu.Lock()
+	e, ok := d.byID[id]
+	if !ok {
+		d.mu.Unlock()
+		return fmt.Errorf("dispatch: resume %s: %w", id, ErrNotFound)
+	}
+	if e.h.Unwanted == unwanted.StateBlocked {
+		e.h.Unwanted = unwanted.StateApproved
+	}
+	j := e.j
+	d.mu.Unlock()
+
 	if err := j.SetIntent(job.IntentRun); err != nil {
 		return fmt.Errorf("dispatch: resume %s: %w", id, err)
 	}

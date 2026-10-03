@@ -20,6 +20,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/types"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // maxUploadBytes is the maximum allowed NZB upload body size (50 MiB).
@@ -159,6 +160,12 @@ type queueSlot struct {
 	Par2Held          bool                 `json:"par2_held,omitempty"`
 	Par2ReleaseReason string               `json:"par2_release_reason,omitempty"`
 	DirectUnpack      *directunpack.Status `json:"direct_unpack,omitempty"`
+
+	// Labels is SABnzbd's per-slot label list. gonzbd sends one label,
+	// "UNWANTED", when the unwanted-extension check flagged the job, whether
+	// it is still blocked or the user has approved it, as SABnzbd does for
+	// any non-zero unwanted_ext. Always a list, never null.
+	Labels []string `json:"labels"`
 
 	// CurrentStage is a lowercase machine-readable stage identifier
 	// derived from Status (download, repair, unpack, sort, move, ...).
@@ -402,6 +409,14 @@ func buildQueueFiles(j *job.Job) []queueFile {
 	return out
 }
 
+// slotLabels returns the queue slot's label list (see queueSlot.Labels).
+func slotLabels(h dispatch.Header) []string {
+	if h.Unwanted != unwanted.StateNone {
+		return []string{"UNWANTED"}
+	}
+	return []string{}
+}
+
 // noiseFloorBPS is the speed below which ETA computation is suppressed
 // (returns 0). Random fluctuations in BPS would otherwise produce wildly
 // varying ETAs (e.g. 100 hours when the meter dips for a moment).
@@ -504,6 +519,7 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		Par2Held:          par2Held,
 		Par2ReleaseReason: par2ReleaseReason,
 		DirectUnpack:      duStatus,
+		Labels:            slotLabels(r.Header),
 		StallReason:       cp.StallReason,
 		BytesDurable:      durableBytes,
 		BytesPending:      cp.PendingBytes,
@@ -764,12 +780,14 @@ func (s *Server) queuePurge(w http.ResponseWriter, r *http.Request) {
 
 // queuePauseJobs pauses specific jobs by ID (CSV in value=).
 func (s *Server) queuePauseJobs(w http.ResponseWriter, r *http.Request) {
-	s.queueSetPaused(w, r, "paused")
+	_ = s.queueSetPaused(w, r, "paused")
 }
 
 // queueResumeJobs resumes specific jobs by ID (CSV in value=).
 func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
-	s.queueSetPaused(w, r, "resumed")
+	if !s.queueSetPaused(w, r, "resumed") {
+		return
+	}
 	// R19's "on user action". A user who has just cleared a full disk and
 	// pressed resume should not also wait out the re-evaluation interval —
 	// and for a job parked by a failed file finalize, Queue.Resume alone does
@@ -782,17 +800,35 @@ func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
 // queueSetPaused applies action (Pause or Resume) to each job ID in the
 // CSV value= parameter, logging the result with the given verb. Not-found
 // IDs are silently ignored, matching SABnzbd's lenient bulk semantics.
-func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, verb string) {
+//
+// A resume is also the approval of a job the unwanted-extension check
+// blocked, and approval needs the full API key: a caller with only the NZB
+// key who names a blocked job is refused with 403, and no job is resumed.
+// It reports whether the request was carried out.
+func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, verb string) bool {
 	value, ok := s.requireParam(w, r, "value", "")
 	if !ok {
-		return
+		return false
 	}
-	for _, id := range splitCSV(value) {
+	ids := splitCSV(value)
+	approve := verb != "paused" && s.canApproveUnwanted(r)
+	if verb != "paused" && !approve && s.dispatcher != nil {
+		for _, id := range ids {
+			if row, ok := s.dispatcher.Row(id); ok && row.Header.Unwanted == unwanted.StateBlocked {
+				s.respondError(w, http.StatusForbidden, "job "+id+" is blocked for unwanted extensions: "+errApproveNeedsAPIKey)
+				return false
+			}
+		}
+	}
+	for _, id := range ids {
 		var name string
 		if s.dispatcher != nil {
-			if verb == "paused" {
+			switch {
+			case verb == "paused":
 				_ = s.dispatcher.PauseJob(id)
-			} else {
+			case approve:
+				_ = s.dispatcher.ResumeJobByUser(id)
+			default:
 				_ = s.dispatcher.ResumeJob(id)
 			}
 			if row, ok := s.dispatcher.Row(id); ok {
@@ -804,6 +840,7 @@ func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, verb str
 		}
 	}
 	respondStatus(w)
+	return true
 }
 
 // queuePriority handles name=priority. SABnzbd convention:

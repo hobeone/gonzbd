@@ -682,6 +682,9 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `no_penalties` | bool | false | Use minimal penalty times |
 | `pre_check` | bool | false | Pre-check article availability via STAT |
 | `propagation_delay` | int | `0` | Minutes to wait before downloading |
+| `unwanted_extensions` | list | `exe, com, scr, pif, bat, cmd, msi, vbs` | Extensions a job must not deliver (no dot, case-insensitive, glob patterns allowed; an entry containing `.` or `,` is rejected) |
+| `unwanted_extensions_mode` | string | `blacklist` | `blacklist` (listed are unwanted) or `whitelist` (unlisted are unwanted); a name with no extension is never unwanted |
+| `action_on_unwanted_extensions` | string | `pause` | `off`, `pause` (add paused, labelled UNWANTED; resume approves) or `fail` (file as Failed at add, nothing downloaded); unless `off`, unwanted files are also removed after unpack from a job not approved. SABnzbd stores the mode and action as integers |
 
 ### 9.4 Post-Processing Settings
 
@@ -915,6 +918,7 @@ and `change_opts` are real, but as `queue` sub-actions; see the table above.)
 | `history` | `start`, `limit`, `search`, `category`, `nzo_ids`, `failed_only` | history list | Get history entries |
 | `history` + `name=delete` | `value=nzo_id[,...]\|failed` | status | Delete history entries |
 | `history` + `name=mark_as_completed` | `value=nzo_id` | status | Mark failed as completed |
+| `history` + `name=retry` | `value=nzo_id`, `allow_unwanted=1` | status, nzo_id | Requeue a history entry. `allow_unwanted=1` approves the job's unwanted extensions, and needs the full API key (the NZB key gets 403); without it, a retry the unwanted-extension check refuses answers 409 with the reason. Each history slot carries `unwanted_ext` (0 none, 1 blocked, 2 approved). |
 
 #### Configuration
 

@@ -5,7 +5,108 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
+
+// TestValidateDownloads_UnwantedExtensions pins that load-time validation
+// refuses an unknown action or mode and a malformed pattern, rather than
+// letting the ingest check meet them.
+func TestValidateDownloads_UnwantedExtensions(t *testing.T) {
+	t.Parallel()
+	base, err := Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("Default() does not validate: %v", err)
+	}
+	cases := []struct {
+		name string
+		mut  func(*DownloadConfig)
+	}{
+		{"unknown action", func(d *DownloadConfig) { d.ActionOnUnwantedExtensions = "abort" }},
+		{"empty action", func(d *DownloadConfig) { d.ActionOnUnwantedExtensions = "" }},
+		{"unknown mode", func(d *DownloadConfig) { d.UnwantedExtensionsMode = "allowlist" }},
+		{"empty mode", func(d *DownloadConfig) { d.UnwantedExtensionsMode = "" }},
+		{"malformed pattern", func(d *DownloadConfig) { d.UnwantedExtensions = []string{"exe", "[x"} }},
+		{"file glob", func(d *DownloadConfig) { d.UnwantedExtensions = []string{"*.exe"} }},
+		{"comma-joined entries", func(d *DownloadConfig) { d.UnwantedExtensions = []string{"exe,com"} }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			d := base.GetDownloads()
+			c.mut(&d)
+			err := d.validate()
+			if err == nil || !strings.Contains(err.Error(), "unwanted_extensions") {
+				t.Errorf("validate() = %v, want an unwanted_extensions error", err)
+			}
+		})
+	}
+}
+
+// TestSet_UnwantedExtensionsEnumsValidated pins the live-reload half: a Set
+// of an unknown value is refused and the previous value kept, since the
+// settings are read live at every ingest and every post-processing run.
+func TestSet_UnwantedExtensionsEnumsValidated(t *testing.T) {
+	t.Parallel()
+	cfg, err := Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ keyword, bad, good string }{
+		{"action_on_unwanted_extensions", "abort", "fail"},
+		{"unwanted_extensions_mode", "allowlist", "whitelist"},
+		{"unwanted_extensions", `["[x"]`, `["exe","r[0-9][0-9]"]`},
+		{"unwanted_extensions", `["*.exe"]`, `["exe","r[0-9][0-9]"]`},
+		{"unwanted_extensions", `["tar.gz"]`, `["exe","r[0-9][0-9]"]`},
+	} {
+		if err := cfg.Set("downloads", c.keyword, c.bad); err == nil {
+			t.Errorf("Set(%s=%s) = nil, want a validation error", c.keyword, c.bad)
+		}
+		if err := cfg.Set("downloads", c.keyword, c.good); err != nil {
+			t.Errorf("Set(%s=%s) = %v, want nil", c.keyword, c.good, err)
+		}
+	}
+	d := cfg.GetDownloads()
+	if d.ActionOnUnwantedExtensions != unwanted.ActionFail || d.UnwantedExtensionsMode != unwanted.ModeWhitelist {
+		t.Errorf("after Set: action=%q mode=%q, want fail/whitelist", d.ActionOnUnwantedExtensions, d.UnwantedExtensionsMode)
+	}
+	if !slices.Equal(d.UnwantedExtensions, []string{"exe", "r[0-9][0-9]"}) {
+		t.Errorf("after Set: extensions=%q", d.UnwantedExtensions)
+	}
+}
+
+func TestDefault_UnwantedExtensions(t *testing.T) {
+	t.Parallel()
+	cfg, err := Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := cfg.GetDownloads()
+	if d.ActionOnUnwantedExtensions != unwanted.ActionPause {
+		t.Errorf("default action = %q, want pause", d.ActionOnUnwantedExtensions)
+	}
+	if d.UnwantedExtensionsMode != unwanted.ModeBlacklist {
+		t.Errorf("default mode = %q, want blacklist", d.UnwantedExtensionsMode)
+	}
+	want := []string{"exe", "com", "scr", "pif", "bat", "cmd", "msi", "vbs"}
+	if !slices.Equal(d.UnwantedExtensions, want) {
+		t.Errorf("default list = %q, want %q", d.UnwantedExtensions, want)
+	}
+	// The returned list is a copy: mutating it must not reach the config.
+	d.UnwantedExtensions[0] = "mutated"
+	if cfg.GetDownloads().UnwantedExtensions[0] != "exe" {
+		t.Error("GetDownloads shares UnwantedExtensions with the config")
+	}
+	snap := cfg.IngestSnapshot()
+	snap.Downloads.UnwantedExtensions[0] = "mutated"
+	cfg.Snapshot().Downloads.UnwantedExtensions[1] = "mutated"
+	if got := cfg.GetDownloads().UnwantedExtensions; got[0] != "exe" || got[1] != "com" {
+		t.Errorf("a snapshot shares UnwantedExtensions with the config: %q", got)
+	}
+}
 
 // ---------- portInRange ----------
 
@@ -303,6 +404,9 @@ func TestDownloadConfig_ValidateDirect(t *testing.T) {
 		BandwidthPerc: 50,
 		MaxArtTries:   3,
 		MaxActiveJobs: 4,
+
+		UnwantedExtensionsMode:     unwanted.ModeBlacklist,
+		ActionOnUnwantedExtensions: unwanted.ActionOff,
 	}
 	if err := d.validate(); err != nil {
 		t.Errorf("expected clean validate, got: %v", err)

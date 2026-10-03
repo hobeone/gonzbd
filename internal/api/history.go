@@ -3,13 +3,16 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/humanfmt"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // modeHistory handles mode=history with sub-actions via the name= parameter.
@@ -58,6 +61,10 @@ type historySlot struct {
 	ScriptLine   string          `json:"script_line"`
 	Meta         string          `json:"meta"`
 	URLInfo      string          `json:"url_info"`
+	// UnwantedExt is the entry's unwanted-extension state as SABnzbd numbers
+	// it: 0 none, 1 blocked, 2 approved by the user. A retry with
+	// allow_unwanted=1 approves an entry at 1.
+	UnwantedExt unwanted.State `json:"unwanted_ext"`
 }
 
 // stageLogEntry represents a post-processing stage result (Repair, Unpack, etc.).
@@ -167,6 +174,7 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 			ScriptLine:   e.ScriptLine,
 			Meta:         e.Meta,
 			URLInfo:      e.URLInfo,
+			UnwantedExt:  e.Unwanted,
 		})
 	}
 
@@ -290,14 +298,30 @@ func (s *Server) historyMarkCompleted(w http.ResponseWriter, r *http.Request) {
 
 // historyRetry moves an entry from history back to the queue via the retry
 // sub-action. The nzo_id is supplied in the value= parameter.
+//
+// allow_unwanted=1 is the user's approval of the job's unwanted extensions:
+// the retry is queued approved, and the check neither pauses nor fails it.
+// Without it, a retry the check refuses answers 409 with the reason.
 func (s *Server) historyRetry(w http.ResponseWriter, r *http.Request) {
 	nzoID, ok := s.requireParam(w, r, "value", "")
 	if !ok {
 		return
 	}
 
-	if err := s.jobs.RetryHistoryJob(r.Context(), nzoID); err != nil {
-		s.respondError(w, http.StatusInternalServerError, "retry: "+err.Error())
+	retry := s.jobs.RetryHistoryJob
+	if formValue(r, "allow_unwanted") == "1" {
+		if !s.canApproveUnwanted(r) {
+			s.respondError(w, http.StatusForbidden, errApproveNeedsAPIKey)
+			return
+		}
+		retry = s.jobs.RetryHistoryJobAllowingUnwanted
+	}
+	if err := retry(r.Context(), nzoID); err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, app.ErrUnwantedRefused) {
+			code = http.StatusConflict
+		}
+		s.respondError(w, code, "retry: "+err.Error())
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{

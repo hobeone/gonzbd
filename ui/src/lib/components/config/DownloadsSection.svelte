@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import ConfigInput from './ConfigInput.svelte';
+	import ConfigSelect from './ConfigSelect.svelte';
 	import ConfigSwitch from './ConfigSwitch.svelte';
 	import ConfigTextarea from './ConfigTextarea.svelte';
 
@@ -11,6 +12,16 @@
 		configData: Record<string, any>;
 		onFieldUpdate: (section: string, keyword: string, value: string | number | boolean) => void;
 	} = $props();
+
+	const unwantedActionOptions = [
+		{ value: 'off', label: 'Off' },
+		{ value: 'pause', label: 'Pause the job' },
+		{ value: 'fail', label: 'Fail the job' }
+	];
+	const unwantedModeOptions = [
+		{ value: 'blacklist', label: 'Blacklist (listed extensions are unwanted)' },
+		{ value: 'whitelist', label: 'Whitelist (only listed extensions are allowed)' }
+	];
 </script>
 
 <section class="space-y-6">
@@ -38,5 +49,13 @@
 		<ConfigSwitch section="downloads" keyword="strip_diacritics" label="Strip Diacritics" value={configData.downloads.strip_diacritics} description="Replace accented characters with ASCII (e.g. é -> e)." onupdate={onFieldUpdate} />
 		<ConfigTextarea section="downloads" keyword="cleanup_list" label="Indexer/Spam Cleanup List" value={configData.downloads.cleanup_list} description="Regex patterns to strip from names (one per line).
 		Examples: ^\[PRiVATE\]-? or (?i)-? ?\(Scenzbd\)$" onupdate={onFieldUpdate} />
+		<Separator class="my-4" />
+		<div>
+			<h4 class="text-sm font-medium">Unwanted Extensions</h4>
+			<p class="text-xs text-muted-foreground mb-4">Refuse posts that would deliver executables or other file types you never want.</p>
+		</div>
+		<ConfigSelect section="downloads" keyword="action_on_unwanted_extensions" label="Action on Unwanted Extensions" value={configData.downloads.action_on_unwanted_extensions} options={unwantedActionOptions} description="Checked against the filenames in the NZB when a job is added. Pause: the job waits, labelled UNWANTED, until you resume it, which approves it. Fail: the job goes straight to history as failed; use Retry anyway to approve it. Unless off, unwanted files found after unpack are also deleted from jobs you did not approve." onupdate={onFieldUpdate} />
+		<ConfigSelect section="downloads" keyword="unwanted_extensions_mode" label="Unwanted Extensions Mode" value={configData.downloads.unwanted_extensions_mode} options={unwantedModeOptions} description="A filename with no extension is never treated as unwanted." onupdate={onFieldUpdate} />
+		<ConfigTextarea section="downloads" keyword="unwanted_extensions" label="Unwanted Extension List" value={configData.downloads.unwanted_extensions ?? []} description="One extension per line, without the dot. Glob patterns such as r[0-9][0-9] match the whole extension. Not covered: names only visible inside an archive during download, and obfuscated filenames; the after-unpack removal is the backstop for those." onupdate={onFieldUpdate} />
 	</div>
 </section>

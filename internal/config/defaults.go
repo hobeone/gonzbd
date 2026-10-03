@@ -4,8 +4,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"slices"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // DefaultCleanupList is the list of regex patterns used to strip spam from job names.
@@ -20,6 +22,10 @@ var DefaultCleanupList = []string{
 	`(?i)-? ?\(Obfuscated\)$`,
 	`(?i)-? ?\(NZBGeek\)$`,
 }
+
+// DefaultUnwantedExtensions is the seed unwanted-extension list: executable
+// and script types Windows runs directly, which no media post needs.
+var DefaultUnwantedExtensions = []string{"exe", "com", "scr", "pif", "bat", "cmd", "msi", "vbs"}
 
 // runningInDockerImage reports whether this binary is the official Docker
 // image, via the GONZBD_DOCKER=1 marker set in the Dockerfile's runtime
@@ -87,6 +93,10 @@ func Default() (*Config, error) {
 			ReplaceSpacesWith:  "",
 			StripDiacritics:    false,
 			CleanupList:        DefaultCleanupList,
+
+			UnwantedExtensions:         slices.Clone(DefaultUnwantedExtensions),
+			UnwantedExtensionsMode:     unwanted.ModeBlacklist,
+			ActionOnUnwantedExtensions: unwanted.ActionPause,
 		},
 		PostProc: PostProcConfig{
 			EnableUnrar:             true,

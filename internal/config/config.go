@@ -42,6 +42,7 @@ func (c *Config) GetDownloads() DownloadConfig {
 	defer c.mu.RUnlock()
 	dl := c.Downloads
 	dl.CleanupList = slices.Clone(c.Downloads.CleanupList)
+	dl.UnwantedExtensions = slices.Clone(c.Downloads.UnwantedExtensions)
 	return dl
 }
 
@@ -95,6 +96,7 @@ func (c *Config) IngestSnapshot() IngestSnapshot {
 	defer c.mu.RUnlock()
 	dl := c.Downloads
 	dl.CleanupList = slices.Clone(c.Downloads.CleanupList)
+	dl.UnwantedExtensions = slices.Clone(c.Downloads.UnwantedExtensions)
 	return IngestSnapshot{
 		Downloads:  dl,
 		Categories: slices.Clone(c.Categories),
@@ -117,6 +119,7 @@ func (c *Config) Snapshot() *Config {
 	res.General.LocalRanges = slices.Clone(c.General.LocalRanges)
 	res.General.LogLevels = maps.Clone(c.General.LogLevels)
 	res.Downloads.CleanupList = slices.Clone(c.Downloads.CleanupList)
+	res.Downloads.UnwantedExtensions = slices.Clone(c.Downloads.UnwantedExtensions)
 	res.PostProc.CleanupExtensions = slices.Clone(c.PostProc.CleanupExtensions)
 	res.Notifications.Email.To = slices.Clone(c.Notifications.Email.To)
 	res.Notifications.Email.Events = slices.Clone(c.Notifications.Email.Events)
