@@ -813,6 +813,8 @@ func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, verb str
 	ids := splitCSV(value)
 	approve := verb != "paused" && s.canApproveUnwanted(r)
 	if verb != "paused" && !approve && s.dispatcher != nil {
+		// ResumeJob enforces the block itself. This only turns what would be
+		// a silent refusal into a 403 that names the job.
 		for _, id := range ids {
 			if row, ok := s.dispatcher.Row(id); ok && row.Header.Unwanted == unwanted.StateBlocked {
 				s.respondError(w, http.StatusForbidden, "job "+id+" is blocked for unwanted extensions: "+errApproveNeedsAPIKey)

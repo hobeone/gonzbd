@@ -872,10 +872,14 @@ calls `Dispatcher.ResumeJobByUser`, which moves `StateBlocked` to
 needs the full API key or the UI session: `queue` and `history` also accept
 the upload-only NZB key, so a resume naming a blocked job, or a retry with
 `allow_unwanted=1`, is refused with 403 for that key (`canApproveUnwanted`
-in `internal/api/middleware.go`). `ResumeJob` approves nothing. It is
-called by the application's own resumes (a stall's re-evaluation, and `Fail`
-handing a parked job to its Assessing worker), and by an NZB-key resume of
-jobs none of which is blocked
+in `internal/api/middleware.go`). `ResumeJob` approves nothing, and it
+refuses a blocked job (`ErrUnwantedBlocked`), decided under the registry
+lock. So `ResumeJobByUser` is the one way to unblock a job, even for a resume
+that races a retry registering the job blocked after the API's own check.
+`ResumeJob` is called by the application's own resumes (a stall's
+re-evaluation, and `Fail` handing a parked job to its Assessing worker),
+which log a refusal and leave the job paused, and by a resume from a caller
+holding only the NZB key
 (`git grep -n '\.ResumeJob(' -- '*.go' ':!*_test.go'` returns 3 lines, in
 `internal/app/durability.go`, `internal/app/stall.go` and
 `internal/api/queue.go`). An approved job

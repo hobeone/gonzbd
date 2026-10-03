@@ -16,6 +16,10 @@ import (
 // ErrNotFound is returned when an operation names a job ID that is not registered.
 var ErrNotFound = errors.New("dispatch: job not found")
 
+// ErrUnwantedBlocked is ResumeJob's refusal of a job the unwanted-extension
+// check blocked: only ResumeJobByUser, the user's approval, unblocks it.
+var ErrUnwantedBlocked = errors.New("dispatch: the job is blocked for unwanted extensions and needs the user's approval")
+
 // Header is the display metadata a listing needs.
 //
 // Name is the one field job.Job DOES carry, and it is duplicated here on
@@ -686,11 +690,24 @@ func (d *Dispatcher) PauseJob(id string) error {
 // It cannot un-cancel: SetIntent latches IntentCancel (job/intent.go,
 // IsLatched), so this returns that error rather than silently doing nothing.
 // Silently succeeding would tell the API a cancelled job had been resumed.
+//
+// It refuses a job the unwanted-extension check blocked
+// (ErrUnwantedBlocked), so ResumeJobByUser is the one way to unblock one.
 func (d *Dispatcher) ResumeJob(id string) error {
-	j, ok := d.Job(id)
+	d.mu.Lock()
+	e, ok := d.byID[id]
 	if !ok {
+		d.mu.Unlock()
 		return fmt.Errorf("dispatch: resume %s: %w", id, ErrNotFound)
 	}
+	// Decided under d.mu against the entry registered now, so a resume that
+	// races a retry registering the job blocked still sees the block.
+	if e.h.Unwanted == unwanted.StateBlocked {
+		d.mu.Unlock()
+		return fmt.Errorf("dispatch: resume %s: %w", id, ErrUnwantedBlocked)
+	}
+	j := e.j
+	d.mu.Unlock()
 	if err := j.SetIntent(job.IntentRun); err != nil {
 		return fmt.Errorf("dispatch: resume %s: %w", id, err)
 	}
@@ -709,7 +726,7 @@ func (d *Dispatcher) ResumeJob(id string) error {
 // own accord — a stall's re-evaluation, Fail handing a parked job to its
 // Assessing worker — and none of those is the user's consent; nor is a
 // resume by a caller holding only the upload key, which the API sends to
-// ResumeJob.
+// ResumeJob. ResumeJob refuses a blocked job, so none of them unblocks one.
 //
 // The approval is recorded before the intent changes, so no tick can see
 // the job running while still blocked. A resume refused because the job is

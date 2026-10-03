@@ -79,14 +79,17 @@ func TestResumeJobByUser_ApprovesABlockedJob(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	if err := d.ResumeJob("a"); err != nil {
-		t.Fatalf("ResumeJob: %v", err)
+	// A plain resume is refused outright: only ResumeJobByUser unblocks.
+	// This is the order a resume racing a retry produces, where the API's
+	// own check ran before the retry registered the job blocked.
+	if err := d.ResumeJob("a"); !errors.Is(err, ErrUnwantedBlocked) {
+		t.Fatalf("ResumeJob on a blocked job = %v, want ErrUnwantedBlocked", err)
+	}
+	if in := j.Intent(); in != job.IntentPause {
+		t.Fatalf("after a refused resume Intent = %v, want IntentPause: the block was bypassed", in)
 	}
 	if row, _ := d.Row("a"); row.Header.Unwanted != unwanted.StateBlocked {
 		t.Fatalf("after an application resume Unwanted = %d, want blocked (%d)", row.Header.Unwanted, unwanted.StateBlocked)
-	}
-	if err := d.PauseJob("a"); err != nil {
-		t.Fatal(err)
 	}
 
 	if err := d.ResumeJobByUser("a"); err != nil {
