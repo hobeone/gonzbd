@@ -858,6 +858,29 @@ keeps its lease through one.
 tick loop picks it up on its ordinary cadence. A `Job` cannot call a Queue and
 does not need to.
 
+### A user's resume is also an approval
+
+The unwanted-extension check (`app.screenUnwanted`, run at ingest and on a
+retry's rebuild) pauses a job whose NZB names a file it excludes and records
+`Header.Unwanted = StateBlocked`. Under `action_on_unwanted_extensions: fail`
+the job is filed Failed instead, and a retry is refused with
+`app.ErrUnwantedRefused` unless the caller approves (`allow_unwanted=1`).
+
+The user's resume is that approval for a paused job. The API's per-job resume
+calls `Dispatcher.ResumeJobByUser`, which moves `StateBlocked` to
+`StateApproved` under the registry lock before it sets the intent. The
+application's own resumes — a stall's re-evaluation, `Fail` handing a parked
+job to its Assessing worker — call `ResumeJob` and approve nothing
+(`git grep -n '\.ResumeJob(' -- '*.go' ':!*_test.go'` returns those 2 lines,
+in `internal/app/durability.go` and `internal/app/stall.go`). An approved job
+is not paused by the check again, keeps its files through `unwanted_cleanup`,
+and carries the approval into history, so a later retry is approved too.
+
+The writers of `Header.Unwanted` are `app.screenUnwanted`, before the job is
+registered, and `ResumeJobByUser` afterwards
+(`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` returns 4 lines:
+three in `internal/app/unwanted.go`, one in `internal/dispatch/registry.go`).
+
 ### Cancel is an interrupt before the boundary, a gate after
 
 | State | Cancel |
@@ -1214,6 +1237,11 @@ a resume grants it a lease.
   `Flush` are the only things that write. It takes a `job.Checkpoint`, a
   **value** taken under the Job's own lock, which is what lets it batch without
   holding anything and keeps `Job` doing no I/O.
+- **The unwanted-extension state** (`Header.Unwanted`) is persisted in
+  `dispatch_jobs.unwanted_ext` with the rest of the header, handed to
+  post-processing on `postproc.Job.Unwanted`, and filed in
+  `history.unwanted_ext`, where a retry reads it back. See § 9, "A user's
+  resume is also an approval".
 - **`Policy` is persisted resolved**, not as the PP integer it came from —
   persisting the integer would carry external vocabulary back inside the
   internal layer.

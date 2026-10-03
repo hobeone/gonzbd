@@ -219,9 +219,9 @@ single worker goroutine (`run`).
   (`Application.reconcileBeforeFirstTick`), so such a duplicate is not routed
   onward.
 
-## Full 12-Stage Execution Sequence
+## Full 13-Stage Execution Sequence
 
-The complete post-processing pipeline consists of 12 registered stages configured in
+The complete post-processing pipeline consists of 13 registered stages configured in
 `internal/app/stages.go` and executed sequentially for every job:
 
 ```
@@ -231,7 +231,10 @@ The complete post-processing pipeline consists of 12 registered stages configure
 [ 7. recover_par2_names ] ◄── [ 6. sample_cleanup ] ◄───────────── [ 5. extracted_repair ]
        │
        ▼
-[ 8. par2_cleanup ] ──► [ 9. deobfuscate ] ──► [ 10. extension_cleanup ] ──► [ 11. finalize ] ──► [ 12. script ]
+[ 8. par2_cleanup ] ──► [ 9. deobfuscate ] ──► [ 10. unwanted_cleanup ] ──► [ 11. extension_cleanup ]
+                                                                                       │
+                                                                                       ▼
+                                                     [ 13. script ] ◄── [ 12. finalize ]
 ```
 
 ### Stage Responsibilities & Self-Gating Matrix
@@ -251,6 +254,7 @@ or modify its behavior:
 | **`recover_par2_names`** | Restores original filenames by scanning `.par2` files on disk for 16KB MD5 hashes via `deobfuscate.Par2Rename`. | Runs unconditionally after unpack. | Renames files in `DownloadDir` & `OwnedFiles`. |
 | **`par2_cleanup`** | Deletes `.par2` files and orphaned `.1`, `.2`, etc. backup files created during `par2 repair` after repair, unpack, and rename stages have finished. | Skipped if `ParError` or `UnpackError` set (preserves par2 files for manual repair), or if `DeferredPar2Sets` is non-empty and `DeferredPar2Verified` is false (a deferred set protects extracted files par2 has not checked). | Unlinks `.par2` and `.1`/`.2` backup files. |
 | **`deobfuscate`** | Detects obfuscated file names and restores clean titles from job metadata. Also performs subtitle alignment (`.srt` renamed to match dominant video). | Skipped if disabled in config. | Renames files and subtitles in `DownloadDir` & `OwnedFiles`. |
+| **`unwanted_cleanup`** | Deletes the job's files whose extension the unwanted-extension rules (`downloads.unwanted_extensions`, `_mode`, `action_on_unwanted_extensions`) exclude, judged by final name, so it catches what the NZB-filename check at ingest cannot see: archive members, obfuscated subjects, par2 and deobfuscate renames. Reads the live settings on every run. Removes newly empty subdirectories. Runs at every PP level, unlike SABnzbd, which removes only after its unpack. | Skipped if the action is `off`, the job is approved (`Unwanted == StateApproved`: the user resumed it or retried it anyway), or `ParError`, `UnpackError` or `FailMsg` is set (a failed job keeps its files for retry). Settings that cannot be read fail the job (`FailMsg`) rather than deliver unchecked files. | Unlinks matching files from `OwnedFiles`. |
 | **`extension_cleanup`** | Deletes unwanted file extensions (`.sfv`, `.nfo`, etc.) based on user config. Explicitly protects `.nzb` files (`SkipNZB = true`) and files in `ConsumedFiles`. Removes newly empty subdirectories. | Skipped if cleanup list empty. | Unlinks matching extensions from `OwnedFiles`. |
 | **`finalize`** | Moves processed files from `DownloadDir` to `FinalDir` (`CompleteDir/job_name`). When `job.ParError || job.UnpackError || job.FailMsg != ""`, skips moving to `FinalDir` and instead prepends `_FAILED_` to `DownloadDir` in place (when `folder_rename: true`), leaving files in incomplete download area for retry; `RetryHistoryJob` moves it back first (see Failure & Degradation Rules). | Always runs unless pre-check aborted job. | Populates `FinalDir` or renames `DownloadDir` with `_FAILED_` prefix; sets status to `StatusMoving`. |
 | **`script`** | Executes user-defined post-processing script with full environment (`SAB_*` vars, including Go-specific `SAB_FINAL_PROCESSING_DIR`) and 8 positional args ($1–$8). Supports `RedactSecrets` (`SAB_API_KEY`/`SAB_PASSWORD` masked as `**REDACTED**`) and `ScriptCanFail` (non-zero exit logged as warning instead of error). | Skipped if no script configured for job/category. | Captures script exit code and stdout/stderr log (capped at 512 KiB). |
@@ -339,13 +343,13 @@ SABnzbd post-processing levels are cumulative integer masks on `postproc.Job.PP`
 `internal/job.Job`. `PP` does not survive past App, which resolves it into a
 `job.Policy` before persistence (see `docs/dispatch-contract.md`):
 
-- **PP = 0 (Download Only)**: Skips `quickcheck`, `repair`, and `unpack`. Runs the cleanup stages (`sample_cleanup`, `par2_cleanup`, `extension_cleanup`), finalize, and script.
+- **PP = 0 (Download Only)**: Skips `quickcheck`, `repair`, and `unpack`. Runs the cleanup stages (`sample_cleanup`, `par2_cleanup`, `unwanted_cleanup`, `extension_cleanup`), finalize, and script.
 - **PP = 1 (Repair Only)**: Runs `quickcheck` and `repair`. Skips `unpack`.
 - **PP = 2 (Repair + Unpack)**: Runs `quickcheck`, `repair`, and `unpack`.
 - **PP = 3 (Repair + Unpack + Delete)**: Full processing including archive deletion.
 
 `shouldSkipForPP(stageName, pp)` enforces these bounds centrally. Stages like
-`deobfuscate`, `sample_cleanup`, `finalize`, and `script` always run regardless of PP level.
+`deobfuscate`, `sample_cleanup`, `unwanted_cleanup`, `finalize`, and `script` always run regardless of PP level.
 
 ## Native Engine Dispatch & External Fallback
 
@@ -510,7 +514,7 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
 4. **`OwnedFiles` isolation (#3462)**: `processJob` snapshots `OwnedFiles` from
    `DownloadDir` before any stage runs. Unpack and rename stages register newly
    created files into `OwnedFiles`. Cleanup stages (`extension_cleanup`,
-   `sample_cleanup`) MUST ONLY delete files present in `OwnedFiles`, guaranteeing
+   `unwanted_cleanup`, `sample_cleanup`) MUST ONLY delete files present in `OwnedFiles`, guaranteeing
    unrelated files in shared directories are never deleted.
 5. **Script environment contract**: User scripts receive 8 positional arguments
    ($1–$8) matching Python SABnzbd:
@@ -748,7 +752,7 @@ recorded entirely through the fetch-policy discard, not through this field.
 - Single worker goroutine with `ppQueue` FIFO scheduling and safe cancellation (`Cancel`).
 - At most one post-processing run of a job instance, including after that run has ended (`postProcAdmissions`); a failure reason reported before the run is handed over fails it, and a later one is recorded as a stage-log warning.
 - A failure reason reported by job ID for a job at `Assessing` is handed over by the job's Assessing worker, so post-processing does not run beside `runAssess` (`postProcAdmissions.admitUnlessAssessing`).
-- Complete 12-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
+- Complete 13-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
 - `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`/`Unidentified`) bypass logic & DirectUnpack zero-failure verification bypass.
 - Per-set deferral of Layout B par2 sets (`DeferredPar2Sets`) and their par2 verify+repair after unpack (`extracted_repair`).
 - A par2 failure with recovery volumes held back retries the job once with them released (`jobFinalizer.retryWithHeldVolumes`, #651).
