@@ -33,20 +33,54 @@ file internal/postproc/unwanted_cleanup.go
 	if false && rules.Action() == unwanted.ActionOff {
 --- end
 
-[a file the job does not own is removed]
+[only files OwnedFiles lists are judged]
 file internal/postproc/unwanted_cleanup.go
 --- anchor
-			if _, owned := job.OwnedFiles[absPath]; !owned {
+		if d.IsDir() || !rules.Unwanted(d.Name()) {
 --- replace
-			if _, owned := job.OwnedFiles[absPath]; false && !owned {
+		if _, owned := job.OwnedFiles[filepath.Join(job.DownloadDir, path)]; d.IsDir() || !rules.Unwanted(d.Name()) || (job.OwnedFiles != nil && !owned) {
 --- end
 
 [nothing is removed]
 file internal/postproc/unwanted_cleanup.go
 --- anchor
-		if !rules.Unwanted(d.Name()) {
+		if d.IsDir() || !rules.Unwanted(d.Name()) {
 --- replace
 		if true || !rules.Unwanted(d.Name()) {
+--- end
+
+[an unopenable directory lets the job through]
+file internal/postproc/unwanted_cleanup.go
+--- anchor
+		return s.fail(job, fmt.Errorf("open %s: %w", job.DownloadDir, err))
+--- replace
+		return nil
+--- end
+
+[an unreadable directory stops the walk]
+file internal/postproc/unwanted_cleanup.go
+--- anchor
+			errs = append(errs, err)
+			if d != nil && d.IsDir() {
+--- replace
+			return err
+			if d != nil && d.IsDir() {
+--- end
+
+[a failed removal is only logged]
+file internal/postproc/unwanted_cleanup.go
+--- anchor
+			errs = append(errs, fmt.Errorf("remove %s: %w", path, err))
+--- replace
+			_ = fmt.Errorf("remove %s: %w", path, err)
+--- end
+
+[recorded errors do not fail the job]
+file internal/postproc/unwanted_cleanup.go
+--- anchor
+	if err := errors.Join(errs...); err != nil {
+--- replace
+	if err := errors.Join(errs...); false && err != nil {
 --- end
 
 [emptied directories are left behind]

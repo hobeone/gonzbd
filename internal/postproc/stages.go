@@ -229,7 +229,9 @@ type Job struct {
 	// file that isn't this job's own, even if DownloadDir were ever shared
 	// or reused. A nil map means "not tracked" and disables the restriction
 	// (used by callers/tests that construct a Job directly without going
-	// through processJob).
+	// through processJob). par2 repair records nothing here, so a file it
+	// rebuilds or renames is absent; UnwantedCleanupStage, which must judge
+	// everything finalize delivers, does not restrict itself to this set.
 	OwnedFiles map[string]struct{}
 
 	// Par2Renames maps par2's canonical filename → actual on-disk filename.

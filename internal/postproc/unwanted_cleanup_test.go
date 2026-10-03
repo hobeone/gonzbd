@@ -86,9 +86,6 @@ func TestUnwantedCleanup_RemovesNothing(t *testing.T) {
 		{"action off", unwanted.ActionOff, func(*Job) {}},
 		{"failed job", unwanted.ActionFail, func(j *Job) { j.UnpackError = true }},
 		{"job with a fail message", unwanted.ActionFail, func(j *Job) { j.FailMsg = "beyond repair" }},
-		{"not the job's own", unwanted.ActionPause, func(j *Job) {
-			j.OwnedFiles = map[string]struct{}{filepath.Join(j.DownloadDir, "movie.mkv"): {}}
-		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -100,6 +97,102 @@ func TestUnwantedCleanup_RemovesNothing(t *testing.T) {
 			}
 			if !exists(t, filepath.Join(dir, "Setup.EXE")) || !exists(t, filepath.Join(dir, "extras/run.bat")) {
 				t.Error("an unwanted file was removed")
+			}
+		})
+	}
+}
+
+// TestUnwantedCleanup_JudgesEveryFileFinalizeDelivers pins that the stage
+// judges what finalize will move, not what OwnedFiles recorded. par2 repair
+// records nothing in OwnedFiles, so a file it rebuilt (absent from the NZB)
+// or renamed (posted under an obfuscated name, quickcheck off) is not owned,
+// and finalize moves the whole directory regardless.
+func TestUnwantedCleanup_JudgesEveryFileFinalizeDelivers(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"movie.mkv", "setup.exe", "readme.bat"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	job := &Job{Job: newQueueJob(t, "test", 0), DownloadDir: dir}
+	// The snapshot taken at the start of the run: the payload, and the
+	// obfuscated name repair later renamed to readme.bat. setup.exe was
+	// rebuilt by repair and is in no snapshot.
+	job.OwnedFiles = map[string]struct{}{
+		filepath.Join(dir, "movie.mkv"):    {},
+		filepath.Join(dir, "a1b2c3d4e5f6"): {},
+	}
+	if err := NewUnwantedCleanupStage(rulesOf(t, unwanted.ActionPause)).Run(context.Background(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, gone := range []string{"setup.exe", "readme.bat"} {
+		if exists(t, filepath.Join(dir, gone)) {
+			t.Errorf("%s survived: par2 produced it, so OwnedFiles does not list it, and finalize would deliver it", gone)
+		}
+	}
+	if !exists(t, filepath.Join(dir, "movie.mkv")) {
+		t.Error("movie.mkv was removed")
+	}
+}
+
+// TestUnwantedCleanup_FailsClosedOnIO pins that a file the stage could not
+// check or remove fails the job rather than reach finalize.
+func TestUnwantedCleanup_FailsClosedOnIO(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, dir string) string // returns the DownloadDir to use
+	}{
+		{"unopenable download dir", func(t *testing.T, dir string) string {
+			return filepath.Join(dir, "missing")
+		}},
+		{"unreadable subdirectory", func(t *testing.T, dir string) string {
+			locked := filepath.Join(dir, "a_locked")
+			if err := os.Mkdir(locked, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(locked, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(locked, 0o755) }) //nolint:errcheck // test cleanup
+			return dir
+		}},
+		{"unremovable file", func(t *testing.T, dir string) string {
+			sub := filepath.Join(dir, "ro")
+			if err := os.Mkdir(sub, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(sub, "trap.exe"), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(sub, 0o555); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(sub, 0o755) }) //nolint:errcheck // test cleanup
+			return dir
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "z"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "z", "setup.exe"), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			job := &Job{Job: newQueueJob(t, "test", 0), DownloadDir: c.setup(t, dir)}
+			err := NewUnwantedCleanupStage(rulesOf(t, unwanted.ActionPause)).Run(context.Background(), job)
+			if err == nil {
+				t.Error("Run = nil; want the I/O failure reported")
+			}
+			if job.FailMsg == "" {
+				t.Error("FailMsg empty; an unchecked file would be delivered")
+			}
+			if c.name == "unreadable subdirectory" && exists(t, filepath.Join(dir, "z", "setup.exe")) {
+				t.Error("z/setup.exe survived: the walk stopped at the unreadable directory")
 			}
 		})
 	}

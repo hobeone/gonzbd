@@ -2,6 +2,7 @@ package postproc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -11,15 +12,18 @@ import (
 	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
-// UnwantedCleanupStage deletes the job's files whose extension the
-// unwanted-extension rules exclude, once unpack, par2 renaming and
-// deobfuscation have given them their final names. Mirrors SABnzbd's
-// postproc.remove_unwanted_files.
+// UnwantedCleanupStage deletes the files under the job's DownloadDir whose
+// extension the unwanted-extension rules exclude, once unpack, par2 repair
+// and renaming, and deobfuscation have given them their final names. Mirrors
+// SABnzbd's postproc.remove_unwanted_files.
 //
 // It is the backstop for what the ingest check cannot see: a file inside an
-// archive, a file whose NZB subject was obfuscated, a file par2 or
-// deobfuscation renamed. It reads every file the job owns (every file under
-// DownloadDir when OwnedFiles is nil), not only what unpack extracted.
+// archive, a file whose NZB subject was obfuscated, a file par2 rebuilt or
+// renamed. It judges what finalize will deliver, which is everything under
+// DownloadDir, so it does not consult OwnedFiles: par2 repair records
+// nothing there. DownloadDir is this job's alone, because AddJob names it
+// with uniqueName against the queue and the download and complete
+// directories.
 //
 // It removes nothing when:
 //   - the rules' action is off;
@@ -33,8 +37,8 @@ import (
 // unpack step: a download-only job delivers its files to the complete
 // directory as well.
 //
-// If the rules cannot be read it fails the job rather than deliver files it
-// did not check.
+// If the rules cannot be read, or a file cannot be read or removed, it fails
+// the job rather than deliver files it did not check.
 type UnwantedCleanupStage struct {
 	// rules returns the live rules; read once per run, so a settings change
 	// applies from the next job.
@@ -71,50 +75,56 @@ func (s *UnwantedCleanupStage) Run(ctx context.Context, job *Job) error {
 
 	root, err := os.OpenRoot(job.DownloadDir)
 	if err != nil {
-		logf(ctx, log, job, slog.LevelWarn, "open root %s: %v", job.DownloadDir, err)
-		return nil
+		return s.fail(job, fmt.Errorf("open %s: %w", job.DownloadDir, err))
 	}
 	defer root.Close() //nolint:errcheck // read-only close
 
 	var removed int
+	var errs []error
 	walkErr := fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
-		}
-		if d.IsDir() {
+			// Record it and keep walking, so one unreadable directory
+			// does not hide the files after it; the job fails below.
+			errs = append(errs, err)
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if !rules.Unwanted(d.Name()) {
+		if d.IsDir() || !rules.Unwanted(d.Name()) {
 			return nil
-		}
-		// Only the job's own files, as the other cleanup stages; a nil
-		// OwnedFiles means untracked (see Job.OwnedFiles).
-		absPath := filepath.Join(job.DownloadDir, path)
-		if job.OwnedFiles != nil {
-			if _, owned := job.OwnedFiles[absPath]; !owned {
-				return nil
-			}
 		}
 		if err := root.Remove(path); err != nil {
-			logf(ctx, log, job, slog.LevelWarn, "remove %s: %v", path, err)
+			errs = append(errs, fmt.Errorf("remove %s: %w", path, err))
 			return nil
 		}
-		delete(job.OwnedFiles, absPath)
+		delete(job.OwnedFiles, filepath.Join(job.DownloadDir, path))
 		removed++
 		logf(ctx, log, job, slog.LevelInfo, "removed %s (unwanted extension)", path)
 		return nil
 	})
 	if walkErr != nil {
-		logf(ctx, log, job, slog.LevelWarn, "walk %s: %v", job.DownloadDir, walkErr)
+		// The callback returns an error only on cancellation.
+		return walkErr
 	}
 	if removed > 0 {
 		cleanupEmptyDirs(root)
 		logf(ctx, log, job, slog.LevelInfo, "Removed %d files with unwanted extensions", removed)
 	}
+	if err := errors.Join(errs...); err != nil {
+		return s.fail(job, err)
+	}
 	return nil
+}
+
+// fail fails the job for a file the stage could not check or remove: finalize
+// would deliver it unchecked.
+func (s *UnwantedCleanupStage) fail(job *Job, err error) error {
+	job.FailMsg = fmt.Sprintf("unwanted-extension cleanup could not check every file: %v", err)
+	return fmt.Errorf("unwanted_cleanup: %w", err)
 }
 
 func (s *UnwantedCleanupStage) logger(job *Job) *slog.Logger {
