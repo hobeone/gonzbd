@@ -173,6 +173,13 @@ func TestNopApp_Contract(t *testing.T) {
 		History:    repo,
 	}
 
+	if name, err := wiredApp.RenameJob("job1", "Renamed"); err != nil || name != "Renamed" {
+		t.Errorf("wired RenameJob() = %q, %v; want Renamed, nil", name, err)
+	}
+	if j.Name() != "Renamed" {
+		t.Errorf("job1 name after wired RenameJob() = %q, want Renamed", j.Name())
+	}
+
 	if err := wiredApp.RemoveJob(ctx, "job1", false); err != nil {
 		t.Errorf("wired RemoveJob() = %v, want nil", err)
 	}

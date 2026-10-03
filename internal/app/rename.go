@@ -47,9 +47,10 @@ func (app *Application) jobNameTaken(snap *config.Config, name string) bool {
 }
 
 // RenameJob renames a queued job and returns the name it was given. The name
-// is the job's download directory (DownloadDir/<name>), so it is chosen as
-// an ingest name is: sanitised with fsutil.SanitizeFolderName, then made
-// unique with uniqueName and jobNameTaken, as AddJob does. A name that trims
+// is the job's download directory (DownloadDir/<name>), so it is sanitised
+// with fsutil.SanitizeFolderName, as ingest does (ingest's spam-stripping
+// CleanupName is not applied: the user chose this name), then made unique
+// with uniqueName and jobNameTaken, as AddJob does. A name that trims
 // to nothing is refused with ErrInvalidJobName. Dispatcher.SetName then
 // refuses anything that is still not one path component or that another
 // job took meanwhile.

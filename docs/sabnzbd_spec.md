@@ -852,7 +852,7 @@ Error:
 | `queue` | `start`, `limit`, `search`, `nzo_ids` | Queue object | Get queue; no sub-action |
 | `queue` + `name=delete` | `value=nzo_id[,...]` | status | Delete job(s) |
 | `queue` + `name=delete_nzf` | `value=nzo_id`, `value2=nzf_id` | status | Delete file from job — **NOT IMPLEMENTED** |
-| `queue` + `name=rename` | `value=nzo_id`, `value2=name`, `value3=password` | status | Rename job. The name is the job's download directory, so it is sanitised as an ingest name is and made unique (another queued job's name, or one on disk, gets a `.1` suffix); a name that trims to nothing, `.` or `..` answers 400 |
+| `queue` + `name=rename` | `value=nzo_id`, `value2=name`, `value3=password` | status | Rename job. The name is the job's download directory, so it is sanitised with ingest's folder-name sanitiser (not its spam-prefix cleanup) and made unique (another queued job's name, or one on disk, gets a `.1` suffix); a name that trims to nothing, `.` or `..` answers 400 |
 | `queue` + `name=pause` | `value=nzo_id` | status | Pause specific job |
 | `queue` + `name=resume` | `value=nzo_id` | status | Resume specific job |
 | `queue` + `name=priority` | `value=nzo_id`, `value2=priority` | priority int | Change priority |

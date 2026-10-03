@@ -874,7 +874,8 @@ the upload-only NZB key, so a resume naming a blocked job, or a retry with
 `allow_unwanted=1`, is refused with 403 for that key (`canApproveUnwanted`
 in `internal/api/middleware.go`). `ResumeJob` approves nothing, and it
 refuses a blocked job (`ErrUnwantedBlocked`), decided under the registry
-lock. So `ResumeJobByUser` is the one way to unblock a job, even for a resume
+lock. So `ResumeJobByUser` is the one way to unblock a registered job (a
+retry with `allow_unwanted=1` registers a new one already approved), even for a resume
 that races a retry registering the job blocked after the API's own check.
 `ResumeJob` is called by the application's own resumes (a stall's
 re-evaluation, and `Fail` handing a parked job to its Assessing worker),

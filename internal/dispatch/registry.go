@@ -926,7 +926,9 @@ func (d *Dispatcher) SetPriority(id string, priority int) error {
 //
 // It refuses (ErrInvalidJobName) a name that is not one safe path component
 // or that another registered job has. It does not sanitise or check the disk;
-// Application.RenameJob, its caller, does both before calling it.
+// Application.RenameJob does both before calling it — the production caller,
+// at internal/app/rename.go (`git grep -n '\.SetName(' -- '*.go' ':!*_test.go'`
+// also lists the apitest double and two Job.SetName calls).
 func (d *Dispatcher) SetName(id, name string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
