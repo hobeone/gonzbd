@@ -150,7 +150,7 @@ func waitingDirectUnpack(t *testing.T, application *Application, id string) *dir
 // admission to end.
 func awaitAdmissionsEnded(t *testing.T, application *Application) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(500 * time.Millisecond)
 	for admissionsHeld(&application.postProcAdmissions) != 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the job's post-processing admission never ended")
@@ -404,7 +404,7 @@ func TestPostProcAdmissions_WithdrawWaitsOutAStep(t *testing.T) {
 				})
 				select {
 				case <-removal:
-				case <-time.After(5 * time.Second):
+				case <-time.After(500 * time.Millisecond):
 					t.Fatal("withdraw did not close the removal channel")
 				}
 				// withdraw has taken the step's token under the lock by the
@@ -423,7 +423,7 @@ func TestPostProcAdmissions_WithdrawWaitsOutAStep(t *testing.T) {
 				}
 				select {
 				case <-done:
-				case <-time.After(5 * time.Second):
+				case <-time.After(500 * time.Millisecond):
 					t.Fatalf("withdraw did not return after %s", end)
 				}
 				if !endedFirst.Load() {

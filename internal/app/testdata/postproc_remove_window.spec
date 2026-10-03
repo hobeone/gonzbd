@@ -1,5 +1,5 @@
 pkg ./internal/app/
-timeout 90s
+timeout 8s
 run Test(RemoveJob_DuringTheDirectUnpackWait_PostProcessingDoesNotRun|RemoveJob_WaitsForTheDirectUnpackToStop|EnqueuePostProc_RemovedBeforeItsHandOver_ReleasesTheJob|RemoveJob_InterruptsTheDirectUnpackWait|PostProcAdmissions_HandOverRefusesARemovedInstance|PostProcAdmissions_WithdrawWaitsOutAStep|PostProcAdmissions_AStaleTokenEndsNoStep|PostProcAdmissions_WithdrawIsSafeToRepeat|AwaitDirectUnpackOrAbort_RemovalAbortsAndContinues)$
 
 # A removed job's post-processing does not start: the hand-over refuses an

@@ -280,7 +280,12 @@ else
         WORKERS="$MUTATE_PARALLEL_WORKERS"
     else
         NUM_CPUS=$(nproc 2>/dev/null || echo 4)
-        WORKERS=$(( NUM_CPUS > 8 ? 8 : NUM_CPUS ))
+        if [ "$NUM_CPUS" -ge 4 ]; then
+            WORKERS=$(( NUM_CPUS / 2 ))
+            if [ "$WORKERS" -gt 16 ]; then WORKERS=16; fi
+        else
+            WORKERS="$NUM_CPUS"
+        fi
     fi
     if [ "$WORKERS" -gt "$NUM_SPECS" ]; then WORKERS="$NUM_SPECS"; fi
 
@@ -297,7 +302,10 @@ else
     QUEUE_LOCK="$WORKTREE_BASE/queue.lock"
     RESULTS_FILE="$WORKTREE_BASE/results.txt"
     touch "$QUEUE_LOCK" "$RESULTS_FILE"
-    printf "%s\n" "${SPECS[@]}" > "$QUEUE_FILE"
+    # Schedule heaviest specs first (LPT) to minimize makespan and avoid tail stragglers
+    for s in "${SPECS[@]}"; do
+        echo "$(grep -c '^\[' "$s") $s"
+    done | sort -rn | awk '{print $2}' > "$QUEUE_FILE"
 
     echo "Running $NUM_SPECS mutation specs in parallel across $WORKERS git worktrees..."
 
@@ -342,7 +350,7 @@ else
                 [ -n "$spec" ] || break
                 log_file="$WORKTREE_BASE/logs/$(echo "$spec" | tr '/' '_').log"
                 echo "[$w/$WORKERS] Running mutation spec: $spec"
-                if ! "$MUTATE_BIN" "$spec" 2>&1 | tee "$log_file" | sed -u "s|^|[$spec] |"; then
+                if ! "$MUTATE_BIN" -skip-runfilter "$spec" 2>&1 | tee "$log_file" | sed -u "s|^|[$spec] |"; then
                     echo -e "${RED}[$w/$WORKERS] FAILED: $spec${NC}" >&2
                     echo -e "${RED}--- Failure output for $spec ---${NC}" >&2
                     cat "$log_file" >&2

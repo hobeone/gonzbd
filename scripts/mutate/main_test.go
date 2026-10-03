@@ -219,6 +219,9 @@ func TestTestArgs_AlwaysPassesCount1(t *testing.T) {
 	if !strings.Contains(joined, "-count=1") {
 		t.Errorf("testArgs = %q, missing -count=1", joined)
 	}
+	if !strings.Contains(joined, "-vet=off") {
+		t.Errorf("testArgs = %q, missing -vet=off", joined)
+	}
 	if !strings.Contains(joined, "-run TestFoo") || !strings.Contains(joined, "-timeout 1m0s") {
 		t.Errorf("testArgs = %q", joined)
 	}
@@ -231,6 +234,9 @@ func TestTestArgs_AlwaysPassesCount1(t *testing.T) {
 	}
 	if !strings.Contains(bare, "-count=1") {
 		t.Errorf("testArgs = %q, missing -count=1", bare)
+	}
+	if !strings.Contains(bare, "-vet=off") {
+		t.Errorf("testArgs = %q, missing -vet=off", bare)
 	}
 }
 
