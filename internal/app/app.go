@@ -324,6 +324,11 @@ type Application struct {
 	// checkpointHook.
 	downloadReportedHook func(id string)
 
+	// peekedHook, when non-nil, runs in completeFinalizedFile right after the
+	// archive peek and before the file is marked complete. Same discipline as
+	// checkpointHook.
+	peekedHook func()
+
 	// assessHook, when non-nil, runs in runAssess once the worker has resolved
 	// its job and before it assesses it, where the worker is live at
 	// Assessing. Same discipline as checkpointHook.
@@ -1400,10 +1405,11 @@ func (app *Application) Start(ctx context.Context) error {
 	// complete job restored at Fetching, or never run, is reported
 	// download-complete by its Fetching worker (appRunner.runFetch) and reaches
 	// post-processing through Assessing. One path in the dispatcher's start
-	// can: completeStrandedFiles -> completeFinalizedFile ->
-	// peekArchiveForUnwanted -> finalizeRegistered -> enqueuePostProc, for a
-	// job whose stranded file the archive peek finds an unwanted name in under
-	// action=fail.
+	// can: completeStrandedFiles -> completeFinalizedFile, which files the job
+	// (finalizeRegistered -> enqueuePostProc) after MarkFileComplete when
+	// peekArchiveForUnwanted finds an unwanted name in the stranded file under
+	// action=fail and the job is not then complete (a complete one is deferred
+	// to its Assessing worker, awaitsAssessing).
 	if app.dispatcher != nil {
 		if err := app.dispatcher.StartWith(app.ctx, app.reconcileBeforeFirstTick); err != nil {
 			return fmt.Errorf("app: start dispatcher: %w", err)
@@ -1797,7 +1803,10 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 		// The volume's headers are read before anything consumes it, so a
 		// flagged one is never fed to DirectUnpack below: the peek that blocks
 		// a job aborts its unpacker, and maybeStart refuses a Blocked job.
-		app.peekArchiveForUnwanted(j, fc)
+		unwantedFail := app.peekArchiveForUnwanted(j, fc)
+		if app.peekedHook != nil {
+			app.peekedHook()
+		}
 		// DirectUnpack is fed the volume before the file is marked complete,
 		// and so before the download-finished report below. From that report
 		// the tick can launch the job's post-processing, whose enqueuePostProc
@@ -1816,6 +1825,13 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 		}
 		if app.checkpointer != nil {
 			app.checkpointer.Mark(j)
+		}
+		// A job the peek failed is filed only now: the history entry retains
+		// each file's progress as it stands when post-processing takes the
+		// job, and a finalize before the mark above would record this file as
+		// incomplete, or evict the job so the mark found it not resident.
+		if unwantedFail != "" {
+			app.finalizeRegistered(j, unwantedFail, true)
 		}
 		// The Fetching worker's exit report. A stale one is a repeat for a
 		// job that has already moved on, and must leave its next state alone.

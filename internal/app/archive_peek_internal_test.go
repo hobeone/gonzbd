@@ -261,8 +261,12 @@ func TestPeek_RARVolumeWithUnwantedMember_PausesTheJob(t *testing.T) {
 
 func TestPeek_RARVolumeWithUnwantedMember_FailsTheJob(t *testing.T) {
 	t.Parallel()
+	// A second, later file keeps the job from being complete, so it is handed
+	// to post-processing directly; a complete job is handed over by its
+	// Assessing worker, which this fixture does not run (the pipeline test
+	// below covers that route).
 	a := newPeekApp(t, unwanted.ActionFail, onlyTxt, false,
-		[]peekFile{{"release.part1.rar", unpackFixture(t, "single_rar5.rar")}})
+		[]peekFile{{"release.part1.rar", unpackFixture(t, "single_rar5.rar")}, {"release.part2.rar", []byte("later")}})
 	a.complete(t, 0)
 
 	e := a.awaitHistory(t)
@@ -384,14 +388,16 @@ func TestPeek_ConcurrentCompletionsActOnce(t *testing.T) {
 	a.log = slog.New(countingHandler{needle: "downloaded archive names files", n: &acted})
 
 	var wg sync.WaitGroup
+	var asked atomic.Int32 // peeks that returned a failure message
 	start := make(chan struct{})
 	for i := range 4 {
 		wg.Go(func() {
 			<-start
-			// The peek itself, not the whole completion: a completion that
-			// lands after the failed job was handed to post-processing finds
-			// it no longer resident, which is not what is under test.
-			a.peekArchiveForUnwanted(a.j, FileComplete{JobID: a.j.ID(), FileIdx: i})
+			// The peek itself, not the whole completion, so the filing below
+			// stays in one place.
+			if a.peekArchiveForUnwanted(a.j, FileComplete{JobID: a.j.ID(), FileIdx: i}) != "" {
+				asked.Add(1)
+			}
 		})
 	}
 	close(start)
@@ -400,6 +406,10 @@ func TestPeek_ConcurrentCompletionsActOnce(t *testing.T) {
 	if got := acted.Load(); got != 1 {
 		t.Errorf("the block acted %d times, want 1", got)
 	}
+	if got := asked.Load(); got != 1 {
+		t.Fatalf("%d peeks asked for the job to be filed, want 1", got)
+	}
+	a.finalizeRegistered(a.j, unwantedFailMessage([]string{"file1.txt", "file2.txt", "nested.txt"}), true)
 	e := a.awaitHistory(t)
 	if e.Status != string(constants.StatusFailed) || e.Unwanted != unwanted.StateBlocked {
 		t.Errorf("history = status %q unwanted %d, want Failed and blocked", e.Status, e.Unwanted)
@@ -416,12 +426,19 @@ func TestBlockForUnwanted_ALoserOfTheRaceDoesNotAct(t *testing.T) {
 	var acted atomic.Int32
 	a.log = slog.New(countingHandler{needle: "downloaded archive names files", n: &acted})
 
+	var msgs []string
 	for range 2 {
-		a.blockForUnwanted(a.j, 0, "rar", unwanted.ActionFail, []string{"file1.txt"})
+		if m := a.blockForUnwanted(a.j, 0, "rar", unwanted.ActionFail, []string{"file1.txt"}); m != "" {
+			msgs = append(msgs, m)
+		}
 	}
 	if got := acted.Load(); got != 1 {
 		t.Errorf("the block acted %d times for two calls on one job, want 1", got)
 	}
+	if len(msgs) != 1 {
+		t.Fatalf("%d calls returned a failure message, want 1", len(msgs))
+	}
+	a.finalizeRegistered(a.j, msgs[0], true)
 	e := a.awaitHistory(t)
 	if e.FailMessage != "Aborted, unwanted extension detected: file1.txt" {
 		t.Errorf("FailMessage = %q", e.FailMessage)
@@ -545,6 +562,7 @@ func TestArchiveMemberNames(t *testing.T) {
 		{"par2 declared names", write("x.bin", par2Declaring("a.exe")), "par2", []string{"a.exe"}, false},
 		{"neither archive kind", write("plain", []byte("hello world, not an archive")), "", nil, false},
 		{"corrupt rar is an error", write("bad.rar", unpackFixture(t, "corrupt.rar")), "rar", nil, true},
+		{"corrupt par2 is an error", write("bad.par2", par2Declaring("a.exe")[:70]), "par2", nil, true},
 		{"missing file is an error", filepath.Join(dir, "missing"), "", nil, true},
 	}
 	for _, tc := range cases {

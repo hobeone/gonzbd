@@ -924,10 +924,16 @@ A hit calls `Dispatcher.BlockUnwanted`, which decides under the registry lock
 and moves `StateNone` to `StateBlocked` once however many completions hit
 together. Only the call that made the move acts. Under `pause` the job is
 paused as `PauseJob` does (intent and lease; files kept) and the user's resume
-approves it as above. Under `fail` the application files it through
-`maybeFinalize` with the ingest check's message, no pause being applied first:
+approves it as above. Under `fail` the peek returns the ingest check's
+message and `completeFinalizedFile` files the job with it (`finalizeRegistered`)
+after `MarkFileComplete` and the checkpoint mark, no pause being applied first:
 a pause would hold the reason for an Assessing worker until the user's resume,
-which approves the job. `ResumeJob` and `ResumeJobByUser` share one body
+which approves the job. Filing before the mark would let post-processing record
+the flagged file as incomplete in the history entry, or evict the job so the
+mark found it not resident. A job that file completes is deferred to its
+Assessing worker, which files it. A crash between the move and the filing
+leaves the job Blocked and unfiled; the restart's re-peek does nothing for a
+Blocked job, so `unwanted_cleanup` is what removes the files. `ResumeJob` and `ResumeJobByUser` share one body
 (`resume`) that sets the intent in the same `d.mu` span as its decision, as
 `BlockUnwanted` does, so a resume cannot leave a Blocked job running; a stall re-evaluation whose resume is refused as blocked releases its
 park and still delivers the files it holds. The state reaches `dispatch_jobs` at the next persist

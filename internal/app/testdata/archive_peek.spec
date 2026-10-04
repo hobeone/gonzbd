@@ -3,7 +3,7 @@
 #
 #     go run ./scripts/mutate internal/app/testdata/archive_peek.spec
 pkg ./internal/app/
-run TestPeek_|TestArchivePeek_|TestBlockForUnwanted_|TestReevaluateStall_ABlocked
+run TestPeek_|TestArchivePeek_|TestBlockForUnwanted_|TestReevaluateStall_ABlocked|TestArchiveMemberNames
 timeout 10m
 
 [a file with a failed article is read anyway]
@@ -52,6 +52,44 @@ file internal/app/archive_peek.go
 	if action == unwanted.ActionFail {
 --- replace
 	if false {
+--- end
+
+[the failed job is filed straight after the peek, before the file is marked complete]
+file internal/app/app.go
+--- anchor
+		unwantedFail := app.peekArchiveForUnwanted(j, fc)
+--- replace
+		unwantedFail := app.peekArchiveForUnwanted(j, fc)
+		if unwantedFail != "" {
+			app.finalizeRegistered(j, unwantedFail, true)
+			unwantedFail = ""
+		}
+--- end
+
+[the failed job is never filed after the mark]
+file internal/app/app.go
+--- anchor
+		if unwantedFail != "" {
+			app.finalizeRegistered(j, unwantedFail, true)
+--- replace
+		if false && unwantedFail != "" {
+			app.finalizeRegistered(j, unwantedFail, true)
+--- end
+
+[a par2 file that fails to parse is not reported as an error]
+file internal/app/archive_peek.go
+--- anchor
+		return nil, "par2", fmt.Errorf("parse par2 file: %w", err)
+--- replace
+		_ = err
+--- end
+
+[the recorded filename is never used to locate the file]
+file internal/app/archive_peek.go
+--- anchor
+	} else if name := p.FileFilename(fc.FileIdx); name != "" {
+--- replace
+	} else if name := p.FileFilename(fc.FileIdx); name != "" && false {
 --- end
 
 [a call that lost the race to block still acts]

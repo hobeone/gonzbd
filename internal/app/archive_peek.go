@@ -102,33 +102,35 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 // Dispatcher.BlockUnwanted is the owner of the transition and decides under its
 // own lock, so concurrent completions that find hits produce one move and only
 // the call that made it acts: it aborts the job's DirectUnpacker (a running
-// one would otherwise extract the flagged member), and under ActionFail files
-// the job through maybeFinalize with the ingest check's message. No lock is
-// held across the header read or the file I/O.
-func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) {
+// one would otherwise extract the flagged member), and under ActionFail
+// returns the ingest check's message for the caller to file the job with.
+// Filing is the caller's, after MarkFileComplete: post-processing can read the
+// job's per-file progress and evict it as soon as it is handed over. No lock
+// is held across the header read or the file I/O.
+func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) string {
 	if app.dispatcher == nil {
-		return
+		return ""
 	}
 	jobID := fc.JobID
 	if st, ok := app.dispatcher.UnwantedState(jobID); !ok || st != unwanted.StateNone {
-		return
+		return ""
 	}
 	rules, err := app.config.GetDownloads().UnwantedRules()
 	if err != nil {
 		app.log.Warn("archive peek skipped: cannot read the unwanted-extension rules",
 			"job", jobID, "fileidx", fc.FileIdx, "err", err)
-		return
+		return ""
 	}
 	if rules.Action() == unwanted.ActionOff {
-		return
+		return ""
 	}
 	m, err := j.Manifest()
 	if err != nil || fc.FileIdx < 0 || fc.FileIdx >= m.NumFiles() {
-		return
+		return ""
 	}
 	p := j.Progress()
 	if p == nil || hasFailedArticle(m, p, fc.FileIdx) {
-		return
+		return ""
 	}
 	// The pipeline's resolved path when it has one. The startup repair of a
 	// stranded finalize runs before the pipeline has resolved any, and then
@@ -141,48 +143,53 @@ func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) {
 		path = app.pipeline.jobFilePath(j.Name(), name)
 	}
 	if path == "" {
-		return
+		return ""
 	}
 	pp := app.config.GetPostProc()
 	names, kind, err := archiveMemberNames(path, par2.ParseOptionsFromConfig(&pp))
 	if err != nil {
 		app.log.Debug("archive peek: could not list the file's names; leaving it to par2 and post-unpack removal",
 			"job", jobID, "fileidx", fc.FileIdx, "err", err)
-		return
+		return ""
 	}
 	found := rules.Find(names)
 	if len(found) == 0 {
-		return
+		return ""
 	}
 
-	app.blockForUnwanted(j, fc.FileIdx, kind, rules.Action(), found)
+	return app.blockForUnwanted(j, fc.FileIdx, kind, rules.Action(), found)
 }
 
 // blockForUnwanted is the acting half of the peek: it asks the dispatcher to
 // block the job and, only if this call made the move, applies the action. A
 // completion that read StateNone and lost the race to another reaches here
 // too and, finding the move made, does nothing.
-func (app *Application) blockForUnwanted(j *job.Job, fileIdx int, kind string, action unwanted.Action, found []string) {
+//
+// Under ActionFail it does not file the job: it returns the failure message,
+// and the caller files it once the flagged file is marked complete (see
+// completeFinalizedFile). It returns "" when there is nothing to file.
+func (app *Application) blockForUnwanted(j *job.Job, fileIdx int, kind string, action unwanted.Action, found []string) string {
 	jobID := j.ID()
 	moved, err := app.dispatcher.BlockUnwanted(j, action == unwanted.ActionPause)
 	if err != nil && !moved {
 		app.log.Warn("archive peek: could not block the job",
 			"job", jobID, "fileidx", fileIdx, "err", err)
-		return
+		return ""
 	}
 	if err != nil {
 		app.log.Warn("archive peek: blocked the job but could not pause it",
 			"job", jobID, "fileidx", fileIdx, "err", err)
 	}
 	if !moved {
-		return
+		return ""
 	}
 	app.log.Warn("downloaded archive names files with unwanted extensions",
 		"job", jobID, "source", kind, "fileidx", fileIdx,
 		"action", action, "files", found)
 	app.duOrch.abortJob(jobID)
-	if action == unwanted.ActionFail {
-		app.finalizeRegistered(j, unwantedFailMessage(found), true)
-	}
 	app.emit(Event{Type: "queue_updated", NzoID: jobID})
+	if action == unwanted.ActionFail {
+		return unwantedFailMessage(found)
+	}
+	return ""
 }

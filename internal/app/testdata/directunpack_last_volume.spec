@@ -18,6 +18,13 @@ file internal/app/app.go
 		if app.checkpointer != nil {
 			app.checkpointer.Mark(j)
 		}
+		// A job the peek failed is filed only now: the history entry retains
+		// each file's progress as it stands when post-processing takes the
+		// job, and a finalize before the mark above would record this file as
+		// incomplete, or evict the job so the mark found it not resident.
+		if unwantedFail != "" {
+			app.finalizeRegistered(j, unwantedFail, true)
+		}
 		// The Fetching worker's exit report. A stale one is a repeat for a
 		// job that has already moved on, and must leave its next state alone.
 		if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
@@ -35,6 +42,13 @@ file internal/app/app.go
 		}
 		if app.checkpointer != nil {
 			app.checkpointer.Mark(j)
+		}
+		// A job the peek failed is filed only now: the history entry retains
+		// each file's progress as it stands when post-processing takes the
+		// job, and a finalize before the mark above would record this file as
+		// incomplete, or evict the job so the mark found it not resident.
+		if unwantedFail != "" {
+			app.finalizeRegistered(j, unwantedFail, true)
 		}
 		// The Fetching worker's exit report. A stale one is a repeat for a
 		// job that has already moved on, and must leave its next state alone.
