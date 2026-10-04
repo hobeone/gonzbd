@@ -466,3 +466,59 @@ file scripts/mutate/main.go
 --- replace
 	return slices.ContainsFunc(results, func(r result) bool { return r.verdict == excluded })
 --- end
+
+[go subprocesses stop being pointed at the throwaway cache]
+file scripts/mutate/gocache.go
+--- anchor
+	if dir := cacheDir(); dir != "" {
+		// A duplicate key
+--- replace
+	if dir := cacheDir(); false && dir != "" {
+		// A duplicate key
+--- end
+
+[exit skips removing the throwaway cache]
+file scripts/mutate/main.go
+--- anchor
+	cleanupThrowaway()
+	os.Exit(code)
+--- replace
+	os.Exit(code)
+--- end
+
+[a panic in runSpec no longer removes the throwaway cache]
+file scripts/mutate/main.go
+--- anchor
+	defer cleanupThrowaway() // a panic unwinds through here; every os.Exit goes through exit
+--- replace
+	defer func() {}() // a panic unwinds through here; every os.Exit goes through exit
+--- end
+
+[action entries hardlinked instead of copied when seeding]
+file scripts/mutate/gocache.go
+--- anchor
+			if err := os.WriteFile(to, b, 0o666); err != nil { //nolint:gosec // G306: matches the mode go gives action entries
+				return err
+			}
+--- replace
+			_ = b
+			if err := os.Link(from, to); err != nil {
+				return err
+			}
+--- end
+
+[removal guard on the cache directory's parent neutered]
+file scripts/mutate/gocache.go
+--- anchor
+	if filepath.Dir(filepath.Clean(dir)) != base || !strings.HasPrefix(filepath.Base(dir), cacheDirPrefix) {
+--- replace
+	if false {
+--- end
+
+[the cache directory is never registered for removal]
+file scripts/mutate/gocache.go
+--- anchor
+	throwaway.dir, throwaway.base = dir, filepath.Clean(base)
+--- replace
+	throwaway.dir, throwaway.base = "", ""
+--- end

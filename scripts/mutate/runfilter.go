@@ -1,8 +1,8 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"slices"
 	"strings"
@@ -107,8 +107,7 @@ func listArgs(sp *spec) []string {
 // to enumerate its tests — which is why it runs once, before the baseline,
 // rather than for every mutation.
 func listTests(root string, sp *spec) ([]string, error) {
-	cmd := exec.Command("go", listArgs(sp)...) //nolint:gosec // G204: argv comes from the operator's own spec, the same trust level as testArgs
-	cmd.Dir = root
+	cmd := goCommand(context.Background(), root, listArgs(sp))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("list tests in %s: %w\n%s", sp.pkg, err, indent(string(out)))

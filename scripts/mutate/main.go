@@ -201,6 +201,9 @@ func main() {
 		"match zero or several sites, without running any test")
 	checkAll := flag.Bool("check-all", false, "like -check, but discovers every spec belonging to this "+
 		"checkout with git ls-files instead of taking spec paths as arguments")
+	sharedCache := flag.Bool("shared-cache", false, "run go against the shared build cache instead of a "+
+		"throwaway one, so a mutated build can be inspected or reused afterwards (it leaves the build "+
+		"output of every mutation in that cache)")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -235,25 +238,34 @@ func main() {
 			flag.Usage()
 			os.Exit(2)
 		}
-		runSpec(root, flag.Arg(0), *verbose)
+		runSpec(root, flag.Arg(0), *verbose, *sharedCache)
 	}
 }
 
 // runSpec is the command's original behaviour: apply every mutation in one
 // spec, in turn, and require each to produce KILLED.
-func runSpec(root, path string, verbose bool) {
+func runSpec(root, path string, verbose, sharedCache bool) {
 	sp, err := parseSpec(path)
 	if err != nil {
 		fatal("%s: %v", path, err)
 	}
 
+	// The handler goes in before the cache directory exists, so an interrupt
+	// at any later point removes it.
+	installSignalRestore()
+	defer cleanupThrowaway() // a panic unwinds through here; every os.Exit goes through exit
+	if !sharedCache {
+		shared := sharedCacheDir(root)
+		if err := startThrowaway(chooseCacheBase(shared), shared); err != nil {
+			fatal("%v", err)
+		}
+	}
+
 	if dead, err := deadRunFilterNames(root, sp); err != nil {
 		fatal("%v", err)
 	} else if len(dead) > 0 {
-		os.Exit(reportRunFilter(sp.pkg, dead))
+		exit(reportRunFilter(sp.pkg, dead))
 	}
-
-	installSignalRestore()
 
 	// The baseline runs first and unmutated. Every verdict below is a claim
 	// about what the mutation changed, and that claim is empty if the test was
@@ -268,7 +280,7 @@ func runSpec(root, path string, verbose bool) {
 			"Every verdict this command produces is a statement about what the\n"+
 			"mutation changed. A test that already fails yields KILLED for any\n"+
 			"mutation, and none of them mean anything.\n\n%s\n", indent(out))
-		os.Exit(1)
+		exit(1)
 	}
 	if ranNothing(out) {
 		// `go test -run TestTypo` exits 0 and prints "[no tests to run]", so
@@ -279,7 +291,7 @@ func runSpec(root, path string, verbose bool) {
 			"go test exited 0 without executing anything, which usually means the\n"+
 			"`run` pattern matches no test in %s. Left unchecked this reports every\n"+
 			"mutation as SURVIVED.\n\n%s\n", sp.pkg, indent(out))
-		os.Exit(1)
+		exit(1)
 	}
 	fmt.Println("baseline: PASS")
 	fmt.Println()
@@ -294,7 +306,7 @@ func runSpec(root, path string, verbose bool) {
 		fatal("%v", err)
 	}
 
-	os.Exit(report(confirmed))
+	exit(report(confirmed))
 }
 
 // run applies one mutation, runs the test, and restores the file.
@@ -707,9 +719,9 @@ func installSignalRestore() {
 			fmt.Fprintf(os.Stderr, "\ninterrupted: restored %s\n", path)
 		}
 		if s, ok := sig.(syscall.Signal); ok {
-			os.Exit(int(s) | 0x80)
+			exit(int(s) | 0x80)
 		}
-		os.Exit(1)
+		exit(1)
 	}()
 }
 
@@ -740,11 +752,9 @@ func goTest(root string, sp *spec) (output string, exitCode int, launchErr error
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// G204: the package and -run pattern come from a spec file the developer
-	// running this command wrote, the same trust level as the shell they typed
-	// it in. The binary is always "go".
-	cmd := exec.CommandContext(ctx, "go", testArgs(sp)...) //nolint:gosec // G204: argv comes from the operator's own spec
-	cmd.Dir = root
+	// The package and -run pattern come from a spec file the developer running
+	// this command wrote; goCommand carries the G204 rationale.
+	cmd := goCommand(ctx, root, testArgs(sp))
 
 	pending.Lock()
 	pending.cancel = cancel
@@ -946,7 +956,30 @@ func indent(s string) string {
 
 func fatal(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "mutate: "+format+"\n", args...)
-	os.Exit(2)
+	exit(2)
+}
+
+// exit removes the throwaway build cache and then ends the process. os.Exit
+// skips deferred calls, so a path that ends in os.Exit after the cache exists
+// has to remove it for itself — the same reason fatalRestoring exists for the
+// source file. A removal failure is reported and does not change the exit
+// code: the verdict was already decided, and the directory's name is printed.
+func exit(code int) {
+	cleanupThrowaway()
+	os.Exit(code)
+}
+
+// cleanupThrowaway removes the throwaway cache and reports a failure to do so.
+// It is idempotent, and is the one call exit and runSpec's deferred cleanup
+// (the path a panic takes) share.
+func cleanupThrowaway() {
+	dir := cacheDir()
+	if dir == "" {
+		return
+	}
+	if err := removeThrowaway(); err != nil {
+		fmt.Fprintf(os.Stderr, "mutate: could not remove the throwaway build cache %s: %v\n", dir, err)
+	}
 }
 
 func usage() {
