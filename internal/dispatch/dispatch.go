@@ -80,6 +80,11 @@ type Dispatcher struct {
 	// Save cannot resurrect a row deleted by Remove.
 	storeMu sync.Mutex
 
+	// resumeDecidedHook, when non-nil, runs in ResumeJob after it has decided
+	// to resume and before it sets the intent, with d.mu held. Test seam for
+	// the interleaving with BlockUnwanted.
+	resumeDecidedHook func()
+
 	// nextSeq is the sequence register will hand the next job, and register is
 	// its sole writer: `git grep -n 'd\.nextSeq =' internal/dispatch` returns
 	// 1 line, register's own max().

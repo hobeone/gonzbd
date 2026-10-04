@@ -3,7 +3,7 @@
 #
 #     go run ./scripts/mutate internal/dispatch/testdata/block_unwanted.spec
 pkg ./internal/dispatch/
-run TestBlockUnwanted_
+run TestBlockUnwanted_|TestResumeJob_Racing
 timeout 5m
 
 [a blocked or approved job is moved again]
@@ -28,6 +28,16 @@ file internal/dispatch/registry.go
 	if pause {
 --- replace
 	if false {
+--- end
+
+[ResumeJob lets go of d.mu between deciding and setting the intent]
+file internal/dispatch/registry.go
+--- anchor
+		d.resumeDecidedHook()
+--- replace
+		d.mu.Unlock()
+		d.resumeDecidedHook()
+		d.mu.Lock()
 --- end
 
 [a block without the pause request pauses anyway]

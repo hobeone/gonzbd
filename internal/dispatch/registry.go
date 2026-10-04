@@ -691,17 +691,21 @@ func (d *Dispatcher) PauseJob(id string) error {
 	return d.pauseJob(j)
 }
 
-// pauseJob is PauseJob's body for one instance, so BlockUnwanted pauses the
-// instance it blocked rather than whatever holds the ID afterwards.
+// pauseJob is PauseJob's body for one instance.
 func (d *Dispatcher) pauseJob(j *job.Job) error {
-	id := j.ID()
 	if err := j.SetIntent(job.IntentPause); err != nil {
-		return fmt.Errorf("dispatch: pause %s: %w", id, err)
+		return fmt.Errorf("dispatch: pause %s: %w", j.ID(), err)
 	}
-	// After SetIntent, never before: a yield first would let a concurrent tick
-	// grant the lease back while the intent still reads IntentRun.
+	return d.yieldPaused(j)
+}
+
+// yieldPaused is the half of a pause that follows the intent: a Fetching job
+// gives back its lease. After SetIntent, never before: a yield first would
+// let a concurrent tick grant the lease back while the intent still reads
+// IntentRun.
+func (d *Dispatcher) yieldPaused(j *job.Job) error {
 	if err := d.YieldedFrom(j, job.Fetching); err != nil && !errors.Is(err, ErrStaleReport) {
-		return fmt.Errorf("dispatch: pause %s: %w", id, err)
+		return fmt.Errorf("dispatch: pause %s: %w", j.ID(), err)
 	}
 	d.kick()
 	return nil
@@ -751,15 +755,25 @@ func (d *Dispatcher) BlockUnwanted(id string, pause bool) (moved bool, err error
 	}
 	e.h.Unwanted = unwanted.StateBlocked
 	j := e.j
-	d.mu.Unlock()
-
+	// The intent is set in the same d.mu span as the state, so a ResumeJob
+	// that decided before this call has also set its intent before it, and
+	// one that decides after sees Blocked: the two cannot leave the job
+	// Blocked and running. SetIntent takes only the job's own lock and calls
+	// nothing back.
+	var pauseErr error
 	if pause {
-		if err := d.pauseJob(j); err != nil {
-			return true, err
+		if err := j.SetIntent(job.IntentPause); err != nil {
+			pauseErr = fmt.Errorf("dispatch: pause %s: %w", id, err)
 		}
 	}
-	d.kick()
-	return true, nil
+	d.mu.Unlock()
+
+	if pause && pauseErr == nil {
+		pauseErr = d.yieldPaused(j)
+	} else {
+		d.kick()
+	}
+	return true, pauseErr
 }
 
 // ResumeJob clears a pause request by restoring the default intent.
@@ -778,14 +792,20 @@ func (d *Dispatcher) ResumeJob(id string) error {
 		return fmt.Errorf("dispatch: resume %s: %w", id, ErrNotFound)
 	}
 	// Decided under d.mu against the entry registered now, so a resume that
-	// races a retry registering the job blocked still sees the block.
+	// races a retry registering the job blocked, or BlockUnwanted blocking it
+	// after its download began, still sees the block. The intent is set in the
+	// same span: BlockUnwanted sets its pause under d.mu too, so the two
+	// serialise and a Blocked job is not left running.
 	if e.h.Unwanted == unwanted.StateBlocked {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: resume %s: %w", id, ErrUnwantedBlocked)
 	}
-	j := e.j
+	if d.resumeDecidedHook != nil {
+		d.resumeDecidedHook()
+	}
+	err := e.j.SetIntent(job.IntentRun)
 	d.mu.Unlock()
-	if err := j.SetIntent(job.IntentRun); err != nil {
+	if err != nil {
 		return fmt.Errorf("dispatch: resume %s: %w", id, err)
 	}
 	d.kick()
