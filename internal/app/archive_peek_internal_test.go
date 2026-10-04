@@ -344,7 +344,7 @@ func TestPeek_ApprovedJobIsNotChecked(t *testing.T) {
 	a := newPeekApp(t, unwanted.ActionPause, onlyTxt, false,
 		[]peekFile{{"x.rar", unpackFixture(t, "single_rar5.rar")}})
 	// The user approves before the volume completes.
-	if _, _, err := a.dispatcher.BlockUnwanted(a.j.ID(), false); err != nil {
+	if _, err := a.dispatcher.BlockUnwanted(a.j.ID(), false); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.dispatcher.ResumeJobByUser(a.j.ID()); err != nil {

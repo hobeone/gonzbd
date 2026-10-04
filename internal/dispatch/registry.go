@@ -726,27 +726,28 @@ func (d *Dispatcher) UnwantedState(id string) (unwanted.State, bool) {
 // unwanted.StateBlocked, and is the one function that makes that move on a
 // registered job (the ingest check sets the state before registration).
 //
-// moved reports whether this call made the move; now is the job's state after
-// it. A job already Blocked or Approved is left as it is and moved is false,
-// so two completions that find the same hit produce one move, and a job the
-// user approved is not blocked again. The decision is taken under d.mu.
+// moved reports whether this call made the move. A job already Blocked or
+// Approved is left as it is and moved is false, so two completions that find
+// the same hit produce one move, and a job the user approved is not blocked
+// again. The decision is taken under d.mu. The error is ErrNotFound with moved
+// false, or a refused pause with moved true: the job is Blocked either way
+// the caller reads moved, and only the pause failed.
 //
 // With pause the job is paused as PauseJob does, so the user's resume
 // approves it (ResumeJobByUser). Without it the caller files the job and the
 // intent is left alone: a pause here would hold a failure reason waiting for
 // an Assessing worker until the user resumed, which approves the job. The new
 // state reaches dispatch_jobs at the next persist, as ResumeJobByUser's does.
-func (d *Dispatcher) BlockUnwanted(id string, pause bool) (moved bool, now unwanted.State, err error) {
+func (d *Dispatcher) BlockUnwanted(id string, pause bool) (moved bool, err error) {
 	d.mu.Lock()
 	e, ok := d.byID[id]
 	if !ok {
 		d.mu.Unlock()
-		return false, unwanted.StateNone, fmt.Errorf("dispatch: block %s: %w", id, ErrNotFound)
+		return false, fmt.Errorf("dispatch: block %s: %w", id, ErrNotFound)
 	}
 	if e.h.Unwanted != unwanted.StateNone {
-		now = e.h.Unwanted
 		d.mu.Unlock()
-		return false, now, nil
+		return false, nil
 	}
 	e.h.Unwanted = unwanted.StateBlocked
 	j := e.j
@@ -754,11 +755,11 @@ func (d *Dispatcher) BlockUnwanted(id string, pause bool) (moved bool, now unwan
 
 	if pause {
 		if err := d.pauseJob(j); err != nil {
-			return true, unwanted.StateBlocked, err
+			return true, err
 		}
 	}
 	d.kick()
-	return true, unwanted.StateBlocked, nil
+	return true, nil
 }
 
 // ResumeJob clears a pause request by restoring the default intent.

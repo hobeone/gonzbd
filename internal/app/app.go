@@ -1791,8 +1791,8 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 			return err
 		}
 		// The volume's headers are read before anything consumes it, so a
-		// flagged one is never fed to DirectUnpack below: maybeStart refuses
-		// a Blocked job, and the peek has just aborted its unpacker.
+		// flagged one is never fed to DirectUnpack below: the peek that blocks
+		// a job aborts its unpacker, and maybeStart refuses a Blocked job.
 		app.peekArchiveForUnwanted(j, fc)
 		// DirectUnpack is fed the volume before the file is marked complete,
 		// and so before the download-finished report below. From that report

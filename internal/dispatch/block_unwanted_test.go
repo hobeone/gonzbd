@@ -22,9 +22,9 @@ func TestBlockUnwanted_PauseMovesNoneToBlockedAndPersists(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	moved, now, err := d.BlockUnwanted("a", true)
-	if err != nil || !moved || now != unwanted.StateBlocked {
-		t.Fatalf("BlockUnwanted = (%v, %d, %v), want (true, blocked, nil)", moved, now, err)
+	moved, err := d.BlockUnwanted("a", true)
+	if err != nil || !moved {
+		t.Fatalf("BlockUnwanted = (%v, %v), want (true, nil)", moved, err)
 	}
 	if in := j.Intent(); in != job.IntentPause {
 		t.Errorf("Intent = %v, want IntentPause", in)
@@ -55,7 +55,7 @@ func TestBlockUnwanted_WithoutPauseLeavesTheIntent(t *testing.T) {
 	if err := d.Add(context.Background(), j, Header{Name: "Job A"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	moved, _, err := d.BlockUnwanted("a", false)
+	moved, err := d.BlockUnwanted("a", false)
 	if err != nil || !moved {
 		t.Fatalf("BlockUnwanted = (%v, %v), want moved", moved, err)
 	}
@@ -74,9 +74,12 @@ func TestBlockUnwanted_LeavesBlockedAndApprovedAlone(t *testing.T) {
 		if err := d.Add(context.Background(), j, Header{Name: "Job A", Unwanted: from}); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
-		moved, now, err := d.BlockUnwanted("a", true)
-		if err != nil || moved || now != from {
-			t.Errorf("from %d: BlockUnwanted = (%v, %d, %v), want (false, %d, nil)", from, moved, now, err, from)
+		moved, err := d.BlockUnwanted("a", true)
+		if err != nil || moved {
+			t.Errorf("from %d: BlockUnwanted = (%v, %v), want (false, nil)", from, moved, err)
+		}
+		if now, _ := d.UnwantedState("a"); now != from {
+			t.Errorf("from %d: UnwantedState = %d, want it unchanged", from, now)
 		}
 		if in := j.Intent(); in != job.IntentRun {
 			t.Errorf("from %d: Intent = %v, want IntentRun: a refused block paused the job", from, in)
@@ -87,7 +90,7 @@ func TestBlockUnwanted_LeavesBlockedAndApprovedAlone(t *testing.T) {
 // TestBlockUnwanted_UnknownJob pins the not-found refusal.
 func TestBlockUnwanted_UnknownJob(t *testing.T) {
 	d := newTestDispatcher(t)
-	if _, _, err := d.BlockUnwanted("nope", true); !errors.Is(err, ErrNotFound) {
+	if _, err := d.BlockUnwanted("nope", true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("BlockUnwanted of an unknown id = %v, want ErrNotFound", err)
 	}
 	if _, ok := d.UnwantedState("nope"); ok {
@@ -110,9 +113,9 @@ func TestBlockUnwanted_ConcurrentCallsMoveOnce(t *testing.T) {
 	for range callers {
 		wg.Go(func() {
 			<-start
-			moved, now, err := d.BlockUnwanted("a", true)
-			if err != nil || now != unwanted.StateBlocked {
-				t.Errorf("BlockUnwanted = (%v, %d, %v), want a blocked job", moved, now, err)
+			moved, err := d.BlockUnwanted("a", true)
+			if err != nil {
+				t.Errorf("BlockUnwanted = (%v, %v)", moved, err)
 			}
 			if moved {
 				moves.Add(1)

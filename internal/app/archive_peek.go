@@ -68,7 +68,8 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 // returns 3 lines: handleFileComplete, stall re-evaluation and the startup
 // repair of a stranded finalize).
 //
-// It does nothing, and reports nothing to the job, when:
+// It does nothing, and reports nothing to the job, when the job is not
+// resident or its file cannot be located, and also when:
 //   - the job is already Blocked or Approved (Dispatcher.UnwantedState), or the
 //     rules cannot be read or are ActionOff;
 //   - any article of the file failed. The volume then has holes and its headers
@@ -108,12 +109,18 @@ func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) {
 	if p == nil || hasFailedArticle(m, p, fc.FileIdx) {
 		return
 	}
-	// The pipeline's resolved path when it has one; the startup repair of a
-	// stranded finalize runs before the pipeline has resolved any, and
-	// resume_startup.go derives the path from the subject the same way.
-	path := app.pipeline.jobFilePath(j.Name(), m.FileSubject(fc.FileIdx))
+	// The pipeline's resolved path when it has one. The startup repair of a
+	// stranded finalize runs before the pipeline has resolved any, and then
+	// the path comes from the filename the job recorded, as
+	// resume_startup.go's sweep does; with neither, the file is not guessed at.
+	path := ""
 	if info, err := app.pipeline.resolveFileInfo(jobID, fc.FileIdx); err == nil {
 		path = info.Path
+	} else if name := p.FileFilename(fc.FileIdx); name != "" {
+		path = app.pipeline.jobFilePath(j.Name(), name)
+	}
+	if path == "" {
+		return
 	}
 	pp := app.config.GetPostProc()
 	names, kind, err := archiveMemberNames(path, par2.ParseOptionsFromConfig(&pp))
@@ -135,7 +142,7 @@ func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) {
 // completion that read StateNone and lost the race to another reaches here
 // too and, finding the move made, does nothing.
 func (app *Application) blockForUnwanted(jobID string, fileIdx int, kind string, action unwanted.Action, found []string) {
-	moved, _, err := app.dispatcher.BlockUnwanted(jobID, action == unwanted.ActionPause)
+	moved, err := app.dispatcher.BlockUnwanted(jobID, action == unwanted.ActionPause)
 	if err != nil && !moved {
 		app.log.Warn("archive peek: could not block the job",
 			"job", jobID, "fileidx", fileIdx, "err", err)

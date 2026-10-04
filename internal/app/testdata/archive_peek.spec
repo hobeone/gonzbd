@@ -41,9 +41,9 @@ file internal/app/archive_peek.go
 [the pause action does not pause]
 file internal/app/archive_peek.go
 --- anchor
-	moved, _, err := app.dispatcher.BlockUnwanted(jobID, action == unwanted.ActionPause)
+	moved, err := app.dispatcher.BlockUnwanted(jobID, action == unwanted.ActionPause)
 --- replace
-	moved, _, err := app.dispatcher.BlockUnwanted(jobID, false)
+	moved, err := app.dispatcher.BlockUnwanted(jobID, false)
 --- end
 
 [the fail action does not file the job]
