@@ -971,6 +971,9 @@ func (s *Server) queueChangeName(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, app.ErrInvalidJobName), errors.Is(err, dispatch.ErrInvalidJobName):
 		s.respondError(w, http.StatusBadRequest, err.Error())
 		return
+	case errors.Is(err, dispatch.ErrJobStarted):
+		s.respondError(w, http.StatusConflict, "cannot rename a job whose download has started")
+		return
 	case errors.Is(err, dispatch.ErrNotFound):
 		s.respondError(w, http.StatusNotFound, err.Error())
 		return

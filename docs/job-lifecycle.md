@@ -213,6 +213,12 @@ Three things follow:
   identity, and `folder_rename` renames a failed job's; `RetryHistoryJob`
   renames it back before queuing the retry (`docs/post-processing-contract.md`
   § "Failure & Degradation Rules").
+- **A rename is refused once articles may exist under the old name.** The
+  directory is keyed by name and a rename moves no files, so
+  `Dispatcher.SetName` returns `ErrJobStarted` when `Job.DownloadBegun` is
+  true (first-article stamp set, or a done article). `HasRun` is the wrong
+  test for this: it is true for any job the tick has opened an attempt on,
+  including one still waiting behind others.
 - **`Outcome` stays genuinely write-once.** A verdict is never revised, only
   superseded by the next attempt's.
 - **"Never started" is exact.** `HasRun()` is `len(attempts) != 0`.

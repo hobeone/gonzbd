@@ -47,7 +47,9 @@ func (app *Application) jobNameTaken(snap *config.Config, name string) bool {
 	return false
 }
 
-// RenameJob renames a queued job and returns the name it was given. The name
+// RenameJob renames a queued job whose download has not begun and returns the
+// name it was given; Dispatcher.SetName refuses a job that has begun, with
+// dispatch.ErrJobStarted, since a rename moves no files. The name
 // is the job's download directory (DownloadDir/<name>), so it is sanitised
 // with fsutil.SanitizeFolderName, as ingest does (ingest's spam-stripping
 // CleanupName is not applied: the user chose this name), then made unique

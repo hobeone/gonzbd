@@ -10,7 +10,12 @@ vi.mock('#lib/stores/queue.svelte.js', () => ({
 }));
 
 vi.mock('#lib/api.js', () => ({
-	fetchQueueJobDetail: vi.fn()
+	fetchQueueJobDetail: vi.fn(),
+	postAction: vi.fn()
+}));
+
+vi.mock('#lib/stores/warnings.svelte.js', () => ({
+	showToast: vi.fn()
 }));
 
 // Captures the handler passed to subscribeWS so tests can simulate
@@ -26,7 +31,8 @@ vi.mock('#lib/stores/websocket.svelte.js', () => ({
 }));
 
 import { pauseJob, resumeJob } from '#lib/stores/queue.svelte.js';
-import { fetchQueueJobDetail } from '#lib/api.js';
+import { fetchQueueJobDetail, postAction } from '#lib/api.js';
+import { showToast } from '#lib/stores/warnings.svelte.js';
 
 describe('QueueRow', () => {
 	const baseSlot: QueueSlot = {
@@ -61,6 +67,20 @@ describe('QueueRow', () => {
 	};
 
 	beforeEach(() => vi.clearAllMocks());
+
+	it('shows the server refusal when a rename is rejected', async () => {
+		const msg = 'dispatch: a job whose download has started cannot be renamed';
+		vi.mocked(postAction).mockRejectedValueOnce(new Error(msg));
+		render(QueueRow, { slot: baseSlot, onremove: () => {} });
+
+		await fireEvent.click(screen.getByTitle('Rename'));
+		const input = screen.getByRole('textbox');
+		await fireEvent.input(input, { target: { value: 'Other' } });
+		await fireEvent.keyDown(input, { key: 'Enter' });
+
+		await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith(msg));
+		expect(baseSlot.name).toBe('Test.NZB');
+	});
 
 	it('renders progress bar and percentage', () => {
 		render(QueueRow, { slot: baseSlot, onremove: () => {} });

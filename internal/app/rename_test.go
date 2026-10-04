@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -112,6 +113,27 @@ func TestRenameJob_GivesASafeUniqueName(t *testing.T) {
 			t.Errorf("RenameJob to its own name = %q, %v; want first, nil", got, err)
 		}
 	})
+}
+
+// TestRenameJob_RefusesAJobWhoseDownloadHasStarted pins that the registry's
+// refusal reaches RenameJob's caller as dispatch.ErrJobStarted and leaves
+// the name alone.
+func TestRenameJob_RefusesAJobWhoseDownloadHasStarted(t *testing.T) {
+	t.Parallel()
+	a, id := renameFixture(t)
+	j, ok := a.Dispatcher().Job(id)
+	if !ok {
+		t.Fatalf("job %s is gone", id)
+	}
+	if err := j.MarkJobStarted(time.Now()); err != nil {
+		t.Fatalf("MarkJobStarted: %v", err)
+	}
+	if _, err := a.RenameJob(id, "elsewhere"); !errors.Is(err, dispatch.ErrJobStarted) {
+		t.Errorf("RenameJob after a download began = %v, want ErrJobStarted", err)
+	}
+	if got := nameOf(t, a, id); got != "first" {
+		t.Errorf("a refused rename changed the name to %q", got)
+	}
 }
 
 // TestRenameJob_UnknownJob reports the dispatcher's not-found error.

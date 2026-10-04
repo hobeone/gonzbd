@@ -93,6 +93,69 @@ func TestSetName_RefusesUnsafeOrTakenNames(t *testing.T) {
 	}
 }
 
+// TestSetName_RefusesAJobThatHasStarted pins the registry's refusal to rename
+// a job whose download has begun: its name is its download directory and a
+// rename moves nothing. A job that has only begun an attempt (which the tick
+// does for any ungated job) or whose articles all failed is still renamable.
+func TestSetName_RefusesAJobThatHasStarted(t *testing.T) {
+	d := newTestDispatcher(t)
+	manifest := func() *job.Manifest {
+		return job.NewManifest([]job.JobFile{{
+			Subject: "f", Bytes: 200,
+			Articles: []job.JobArticle{{ID: "a1", Bytes: 100, Number: 1}, {ID: "a2", Bytes: 100, Number: 2}},
+		}})
+	}
+	add := func(id string, prep func(*job.Job)) *job.Job {
+		j := job.New(id, "Job "+id, job.PolicyFromPP(3))
+		if err := j.AttachContent(manifest()); err != nil {
+			t.Fatalf("AttachContent(%s): %v", id, err)
+		}
+		prep(j)
+		if err := d.Add(context.Background(), j, Header{Name: "Job " + id}); err != nil {
+			t.Fatalf("Add(%s): %v", id, err)
+		}
+		return j
+	}
+	stamped := add("stamped", func(j *job.Job) {
+		if err := j.MarkJobStarted(time.Now()); err != nil {
+			t.Fatalf("MarkJobStarted: %v", err)
+		}
+	})
+	retried := add("retried", func(j *job.Job) { // done article, stamps cleared as ResetForRetry leaves them
+		if err := j.MarkArticleDone(0, 100, "s"); err != nil {
+			t.Fatalf("MarkArticleDone: %v", err)
+		}
+	})
+	add("attempt", func(j *job.Job) {
+		if err := j.BeginAttempt(testClock()); err != nil {
+			t.Fatalf("BeginAttempt: %v", err)
+		}
+	})
+	add("failed", func(j *job.Job) {
+		if err := j.MarkArticleFailed(0); err != nil {
+			t.Fatalf("MarkArticleFailed: %v", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		id string
+		j  *job.Job
+	}{{"stamped", stamped}, {"retried", retried}} {
+		err := d.SetName(tc.id, "Other "+tc.id)
+		if !errors.Is(err, ErrJobStarted) || errors.Is(err, ErrInvalidJobName) {
+			t.Errorf("SetName on %s = %v, want ErrJobStarted and not ErrInvalidJobName", tc.id, err)
+		}
+		if row, _ := d.Row(tc.id); row.Header.Name != "Job "+tc.id || tc.j.Name() != "Job "+tc.id {
+			t.Errorf("a refused rename changed the name: header %q, job %q", row.Header.Name, tc.j.Name())
+		}
+	}
+	for _, id := range []string{"attempt", "failed"} {
+		if err := d.SetName(id, "Renamed "+id); err != nil {
+			t.Errorf("SetName on %s, which fetched nothing = %v, want nil", id, err)
+		}
+	}
+}
+
 // TestAdd_RefusesANameAnotherJobHas pins the registration half of the name
 // invariant: two callers that each chose a name the queue did not yet hold
 // cannot both register under it, because Add checks under the same d.mu span

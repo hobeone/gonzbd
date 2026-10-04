@@ -6,6 +6,7 @@
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { pauseJob, resumeJob } from '#lib/stores/queue.svelte.js';
 	import { fetchQueueJobDetail, fetchCategories, fetchScripts, postAction } from '#lib/api.js';
+	import { showToast } from '#lib/stores/warnings.svelte.js';
 	import { subscribeWS } from '#lib/stores/websocket.svelte.js';
 	import { cn, formatSize as formatBytes, formatETA } from '#lib/utils.js';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -405,7 +406,8 @@
 			await postAction('queue', { name: 'rename', value: slot.nzo_id, value2: newName });
 			slot.name = newName;
 		} catch (err) {
-			console.error('Failed to rename job:', err);
+			// The server refuses a rename once the download has started (409).
+			showToast(err instanceof Error ? err.message : String(err));
 		}
 	}
 

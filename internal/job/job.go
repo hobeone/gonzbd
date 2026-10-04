@@ -228,8 +228,8 @@ type Job struct {
 	// Three functions write them, not two: RestoreProgressState and
 	// SetPar2ReleaseReason write values, and AttachContent writes the zeroes
 	// after seeding — `git grep -n 'j\.restored' -- 'internal/job/content.go'`
-	// finds 16 lines across those three plus the four accessors that read
-	// them. All sixteen are inside a contentMu critical section.
+	// finds 17 lines across those three plus the five accessors that read
+	// them. All seventeen are inside a contentMu critical section.
 	restoredPar2Reason    string
 	restoredDLStarted     time.Time
 	restoredDLFinished    time.Time

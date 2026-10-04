@@ -20,6 +20,13 @@ var ErrNotFound = errors.New("dispatch: job not found")
 // component, or that another registered job already has.
 var ErrInvalidJobName = errors.New("dispatch: invalid job name")
 
+// ErrJobStarted is SetName's refusal of a job whose download has begun
+// (Job.DownloadBegun). The name is the job's download directory and a
+// rename moves no files, so a rename once bytes may exist would strand them
+// under the old name. It is not an ErrInvalidJobName: nothing is wrong with
+// the name.
+var ErrJobStarted = errors.New("dispatch: a job whose download has started cannot be renamed")
+
 // ErrJobNameTaken is the refusal of a name another registered job holds, by
 // SetName or by registration (Add, and restore). It wraps ErrInvalidJobName.
 // A caller that chose the name before asking can choose again and retry.
@@ -934,8 +941,9 @@ func (d *Dispatcher) SetPriority(id string, priority int) error {
 // (used for listings without job pointer dereference) and the Job instance (used for
 // downstream filesystem paths and finalization) atomically under d.mu.
 //
-// It refuses (ErrInvalidJobName) a name that is not one safe path component
-// or that another registered job has. It does not sanitise or check the disk;
+// It refuses (ErrJobStarted) a job whose download has begun, and
+// (ErrInvalidJobName) a name that is not one safe path component or that
+// another registered job has. It does not sanitise or check the disk;
 // Application.RenameJob does both before calling it — the production caller,
 // at internal/app/rename.go (`git grep -n '\.SetName(' -- '*.go' ':!*_test.go'`
 // also lists the apitest double and two Job.SetName calls).
@@ -945,6 +953,13 @@ func (d *Dispatcher) SetName(id, name string) error {
 	e, ok := d.byID[id]
 	if !ok {
 		return fmt.Errorf("dispatch: set name %s: %w", id, ErrNotFound)
+	}
+	// A job with article bytes may have them under DownloadDir/<old name>,
+	// and a rename moves none. The test is Job.DownloadBegun, not HasRun:
+	// Queue.Advance opens an attempt for any ungated job on its first tick,
+	// so HasRun would refuse a job still waiting behind others.
+	if e.j.DownloadBegun() {
+		return fmt.Errorf("dispatch: set name %s to %q: %w", id, name, ErrJobStarted)
 	}
 	// The name becomes the job's download directory, DownloadDir/<name>, and
 	// post-processing deletes and moves what is under it. So it must be one
