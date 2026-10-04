@@ -650,7 +650,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `verify_xff_header` | bool | `false` | When true, every hop in the header named by `trusted_forward_header` must also be trusted once the direct peer qualifies. When false and no forwarding header is present, trust is based on the peer alone; if one IS present while false, the request fails closed (a same-host reverse proxy makes the peer look loopback regardless of the real client). Set true + add the proxy's address to `local_ranges` to trust it explicitly. Never consulted for an untrusted peer, so it cannot be spoofed. |
 | `trusted_forward_header` | string | `""` (→ `x-forwarded-for`) | Which single forwarding header your reverse proxy actually manages: `x-forwarded-for`, `forwarded` (RFC 7239), or `x-real-ip`. Only consulted when `verify_xff_header` is true. The other two headers are ignored for hop-trust purposes even if present — this prevents a client from injecting a forged value into whichever header you're not relying on (mirrors nginx's `real_ip_header` directive). |
 
-| `download_dir` | path | `~/Downloads/incomplete` | Work-in-progress directory |
+| `download_dir` | path | `~/Downloads/incomplete` | Work-in-progress directory. `set_config` refuses a change (HTTP 409) while the queue holds any unsettled job |
 | `complete_dir` | path | `~/Downloads/complete` | Final output directory |
 | `dirscan_dir` | path | | Watched folder path |
 | `dirscan_speed` | int | `5` | Watched folder scan interval (seconds) |

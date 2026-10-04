@@ -3068,10 +3068,33 @@ func (app *Application) SetBandwidthPerc(perc int) {
 	app.bandwidthPerc.Store(int32(perc)) //nolint:gosec // G115: perc is bounded 0-100
 }
 
-// SetDownloadDir updates the download directory used for new jobs.
-// Already-queued jobs are unaffected since their paths were computed at
-// enqueue time. The caller is responsible for creating the directory.
-func (app *Application) SetDownloadDir(dir string) {
+// ErrDownloadDirBusy is SetDownloadDir's refusal: the queue holds a job that
+// has not settled.
+var ErrDownloadDirBusy = errors.New("download_dir cannot change while the queue holds unfinished jobs")
+
+// SetDownloadDir changes the download directory, refusing a change the queue
+// cannot absorb. A job's directory is the base in force when it was queued
+// joined with its name, but post-processing re-derives it from the base in
+// force at hand-over, so a changed base while a job is registered would point
+// post-processing at a directory the job never wrote to.
+//
+// It therefore refuses with ErrDownloadDirBusy while the dispatcher, when there
+// is one, holds any row whose Outcome is not settled: queued, downloading,
+// paused, and a job handed to post-processing, which stays registered at
+// Fetching until the finalizer's CancelJob (see reportDownloadComplete). Setting the value already in force succeeds regardless. A job
+// queued between the check and the swap is not covered. The caller is
+// responsible for creating the directory.
+func (app *Application) SetDownloadDir(dir string) error {
+	if dir == app.downloadDir() {
+		return nil
+	}
+	if app.dispatcher != nil {
+		for _, row := range app.dispatcher.List() {
+			if !row.View.Outcome.IsSettled() {
+				return ErrDownloadDirBusy
+			}
+		}
+	}
 	app.mu.Lock()
 	app.config.With(func(c *config.Config) {
 		c.General.DownloadDir = dir
@@ -3084,6 +3107,7 @@ func (app *Application) SetDownloadDir(dir string) {
 	app.mu.Unlock()
 	// --- No lock held below this line ---
 	app.log.Info("download dir updated", "dir", dir)
+	return nil
 }
 
 // SetCompleteDir updates the complete directory used for new jobs.

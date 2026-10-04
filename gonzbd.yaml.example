@@ -82,6 +82,9 @@ general:
   # Working directory for in-progress downloads. Files here are
   # incomplete and should not be accessed by media scanners.
   # Created automatically on startup if it does not exist.
+  # A runtime change through the API is refused while any job is queued,
+  # downloading, paused or post-processing. Do not edit this and restart
+  # while jobs are queued: see docs/config-contract.md.
   download_dir: Downloads/incomplete
 
   # Destination for completed and post-processed jobs. Media scanners

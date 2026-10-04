@@ -33,7 +33,7 @@ type DownloaderControl interface {
 	SetSpeedLimit(bytesPerSec int64)
 	SetBandwidthMax(bytesPerSec int64)
 	SetBandwidthPerc(perc int)
-	SetDownloadDir(dir string)
+	SetDownloadDir(dir string) error
 	SetCompleteDir(dir string)
 	PauseDownloads()
 	ResumeDownloads()

@@ -63,7 +63,8 @@ type GeneralConfig struct {
 	TrustedForwardHeader TrustedForwardHeader `yaml:"trusted_forward_header" json:"trusted_forward_header"`
 
 	// DownloadDir is the work-in-progress directory for incomplete
-	// downloads. Created on startup if it does not exist.
+	// downloads. Created on startup if it does not exist. A runtime change
+	// through set_config is refused while the queue holds an unfinished job.
 	DownloadDir string `yaml:"download_dir" json:"download_dir"`
 	// CompleteDir is the destination for completed jobs.
 	CompleteDir string `yaml:"complete_dir" json:"complete_dir"`

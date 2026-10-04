@@ -48,7 +48,7 @@ func (n NopApp) SetBandwidthMax(int64) {}
 func (n NopApp) SetBandwidthPerc(int) {}
 
 // SetDownloadDir is a stub.
-func (n NopApp) SetDownloadDir(string) {}
+func (n NopApp) SetDownloadDir(string) error { return nil }
 
 // SetCompleteDir is a stub.
 func (n NopApp) SetCompleteDir(string) {}

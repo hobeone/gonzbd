@@ -120,7 +120,7 @@ func TestNopApp_Contract(t *testing.T) {
 	app.SetSpeedLimit(100)
 	app.SetBandwidthMax(200)
 	app.SetBandwidthPerc(50)
-	app.SetDownloadDir("/tmp/down")
+	_ = app.SetDownloadDir("/tmp/down")
 	app.SetCompleteDir("/tmp/comp")
 	app.PauseDownloads()
 	app.ResumeDownloads()
