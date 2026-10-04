@@ -96,20 +96,20 @@
 //
 // Every mutation compiles a one-off copy of the mutated package and links a
 // test binary that nothing will ever look up again. Against the user's own Go
-// build cache that is pure garbage — about 16 MB per mutation for an
-// internal/app spec, measured — and the full spec suite, run by every session
-// at every gate, did it hundreds of times over.
+// build cache that is pure garbage, and the full spec suite, run by every
+// session at every gate, did it hundreds of times over.
 //
-// So a run does not use that cache. It creates a throwaway one, passes it to
-// every go subprocess that builds anything as GOCACHE — `exec.CommandContext(ctx, "go"`
-// appears once in this package, in goCommand; the only other `go` it starts is
-// `go env GOCACHE` — and deletes it on exit. The throwaway cache is seeded from the
-// user's: the `-d` output files are hard-linked, which costs no disk because
-// they are content-addressed and go rewrites one in place only if it is
-// already corrupt, and the small `-a` action entries are copied, because go
-// does rewrite those in place (see seedCache). Seeding makes the unmutated
-// dependencies cache hits, so the run is as fast as one against the shared
-// cache — measured within a few percent for a spec run from a stable path.
+// So a run does not use that cache. It creates a throwaway one and deletes it
+// on exit. goTest and listTests build their commands through goCommand, which
+// passes the throwaway cache to go as GOCACHE; `go env GOCACHE` in
+// sharedCacheDir is the one other non-test go invocation here. The throwaway
+// cache is seeded from the user's: the `-d` output files are hard-linked,
+// which costs no extra disk because they are content-addressed and go
+// rewrites one in place only if it is already corrupt, and the small `-a`
+// action entries are copied, because go does rewrite those in place (see
+// seedCache). Seeding makes the unmutated dependencies cache hits, so a run
+// costs about what one against the shared cache does; the measurements are in
+// the commit that introduced this.
 //
 // Where it goes, in order: MUTATE_GOCACHE_BASE if set; else $TMPDIR if that is
 // on the user's cache's filesystem; else the user's cache's parent directory.
@@ -127,11 +127,15 @@
 // mutated build.
 //
 // Removal runs on the same exit paths as the file restore: exit() for every
-// os.Exit, runSpec's defer for a panic, and the signal handler, which goes
-// through exit(). removeThrowaway refuses to delete anything that is not a
-// mutate-gocache-* directory directly under the base it created it in. The
-// one path it cannot cover is SIGKILL, which leaves the directory behind; it
-// holds only the entries that run added to a seed of hardlinks.
+// os.Exit once runSpec has begun (the argument-parsing and -check exits come
+// earlier, before any cache exists), runSpec's defer for a panic, and the
+// signal handler, which goes through exit(). removeThrowaway refuses to
+// delete anything that is not a mutate-gocache-* directory directly under the
+// base it created it in. A death that skips both the defer and the handler —
+// SIGKILL, SIGQUIT, a Go runtime fatal error — leaves the directory behind: the
+// hard links cost no extra disk, but the copied action entries and whatever
+// that run built stay. scripts/run_tests.sh prunes its own worker directories
+// after such a death; a bare mutate run's directory is not pruned.
 //
 // -check and -check-all still list tests against the user's cache: they
 // compile the unmutated packages, whose output is reusable, not garbage.
@@ -298,7 +302,7 @@ func runSpec(root, path string, verbose, skipRunfilter, sharedCache bool) {
 	// The handler goes in before the cache directory exists, so an interrupt
 	// at any later point removes it.
 	installSignalRestore()
-	defer cleanupThrowaway() // a panic unwinds through here; every os.Exit goes through exit
+	defer cleanupThrowaway() // a panic unwinds through here; os.Exit calls from here on go through exit
 	if !sharedCache {
 		shared := sharedCacheDir(root)
 		var err error

@@ -54,7 +54,9 @@ func cacheDir() string {
 
 // goCommand builds a `go` invocation rooted at root, with GOCACHE pointed at
 // the throwaway cache when there is one. goTest and listTests both go through
-// it, so no go subprocess of this command reaches the shared cache around it.
+// it, so their builds use the throwaway cache whenever runSpec created or
+// adopted one; -check, -check-all and -shared-cache leave cacheDir empty and
+// inherit the caller's GOCACHE.
 func goCommand(ctx context.Context, root string, args []string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "go", args...) //nolint:gosec // G204: argv comes from the operator's own spec, the same trust level as testArgs
 	cmd.Dir = root

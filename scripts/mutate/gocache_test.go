@@ -307,10 +307,20 @@ func mustStart(base string) {
 // runChild runs TestThrowawayChild for a scenario and returns its exit code
 // and combined output. The shared GOCACHE is the one given, never the
 // caller's.
-func runChild(t *testing.T, scenario, base, gocache, root, spec string) (int, string) {
+//
+// The child's environment drops MUTATE_GOCACHE_DIR and MUTATE_GOCACHE_BASE
+// from the caller's: scripts/run_tests.sh exports the former to every worker
+// that runs this package's spec, and a child that inherited it would adopt
+// that directory instead of creating one under base, so every "the cache is
+// gone" assertion below would pass for want of anything to remove. extra is
+// appended last, for a test that sets one of them on purpose.
+func runChild(t *testing.T, scenario, base, gocache, root, spec string, extra ...string) (int, string) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run", "^TestThrowawayChild$") //nolint:gosec // G204: re-exec of the test binary itself
-	cmd.Env = append(os.Environ(),
+	env := slices.DeleteFunc(os.Environ(), func(e string) bool {
+		return strings.HasPrefix(e, cacheDirEnv+"=") || strings.HasPrefix(e, cacheBaseEnv+"=")
+	})
+	cmd.Env = append(env,
 		childScenarioEnv+"="+scenario,
 		cacheBaseEnv+"="+base,
 		"GOCACHE="+gocache,
@@ -319,6 +329,7 @@ func runChild(t *testing.T, scenario, base, gocache, root, spec string) (int, st
 		childRootEnv+"="+root,
 		childSpecEnv+"="+spec,
 	)
+	cmd.Env = append(cmd.Env, extra...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return 0, string(out)
@@ -367,8 +378,7 @@ func TestThrowawayCache_IsRemovedOnEveryNonSpecExitPath(t *testing.T) {
 
 func TestThrowawayCache_AdoptedDirectorySurvivesExit(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "worker-cache")
-	t.Setenv(cacheDirEnv, dir)
-	code, out := runChild(t, "adopt", t.TempDir(), t.TempDir(), "", "")
+	code, out := runChild(t, "adopt", t.TempDir(), t.TempDir(), "", "", cacheDirEnv+"="+dir)
 	if code != 0 {
 		t.Fatalf("exit code = %d\n%s", code, out)
 	}

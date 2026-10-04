@@ -216,7 +216,8 @@ git worktree prune >/dev/null 2>&1 || true
 # MUTATE_GOCACHE_DIR), seeded from the user's cache by hardlink on first use and
 # deleted when this run ends, so the build output of every mutation -- which is
 # never reused -- does not accumulate in the shared cache. Hardlinks need the
-# same filesystem as the cache, so the directories sit beside it, not in $TMPDIR.
+# same filesystem as the cache, so the directories sit beside it (or under
+# MUTATE_GOCACHE_BASE), not in $TMPDIR.
 # A worker keeps its directory across specs so the repository's own packages are
 # built once per worker, not once per spec.
 GO_BUILD_CACHE=$(go env GOCACHE 2>/dev/null || true)
@@ -224,7 +225,7 @@ MUTATE_CACHE_BASE=""
 if [ -n "$GO_BUILD_CACHE" ] && [ "$GO_BUILD_CACHE" != "off" ] && [ -d "$GO_BUILD_CACHE" ]; then
     MUTATE_CACHE_BASE="${MUTATE_GOCACHE_BASE:-$(dirname "$GO_BUILD_CACHE")}"
     # Prune cache directories left by a hard-killed run: only names of the exact
-    # form gonzbd-mutate-gocache.<owner pid>.<worker>, and only if the owner is gone.
+    # form gonzbd-mutate-gocache.<owner pid>.<worker>, and only if the owner pid cannot be signalled.
     for stale in "$MUTATE_CACHE_BASE"/gonzbd-mutate-gocache.*.*; do
         [ -d "$stale" ] || continue
         stale_pid="${stale##*/gonzbd-mutate-gocache.}"

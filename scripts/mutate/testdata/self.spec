@@ -489,9 +489,9 @@ file scripts/mutate/main.go
 [a panic in runSpec no longer removes the throwaway cache]
 file scripts/mutate/main.go
 --- anchor
-	defer cleanupThrowaway() // a panic unwinds through here; every os.Exit goes through exit
+	defer cleanupThrowaway() // a panic unwinds through here; os.Exit calls from here on go through exit
 --- replace
-	defer func() {}() // a panic unwinds through here; every os.Exit goes through exit
+	defer func() {}() // a panic unwinds through here; os.Exit calls from here on go through exit
 --- end
 
 [action entries hardlinked instead of copied when seeding]
