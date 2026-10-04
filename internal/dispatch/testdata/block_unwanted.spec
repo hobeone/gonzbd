@@ -40,6 +40,14 @@ file internal/dispatch/registry.go
 		d.mu.Lock()
 --- end
 
+[a stale instance blocks the job registered under its ID]
+file internal/dispatch/registry.go
+--- anchor
+	if !ok || e.j != j {
+--- replace
+	if !ok {
+--- end
+
 [a block without the pause request pauses anyway]
 file internal/dispatch/registry.go
 --- anchor

@@ -36,8 +36,11 @@ func unwantedFailMessage(names []string) string {
 }
 
 // screenUnwanted applies the unwanted-extension check to j, a job about to
-// be registered, and records the result in hdr.Unwanted. It is the only
-// writer of that field before registration: AddJob calls it for every
+// be registered, and records the result in hdr.Unwanted, overwriting what
+// the header carried in: a retry's header carries its history entry's
+// standing (rebuildJobFromNZB), and an entry filed Blocked is held to it even
+// when the NZB's own names are clean, so a job that failed for what its
+// archives named is retried only with approval. AddJob calls it for every
 // ingest source, and retryHistoryJob for every retry
 // (`git grep -n 'app\.screenUnwanted(' -- 'internal/app/*.go' ':!*_test.go'`
 // returns 2 lines). Once the job is registered, Dispatcher.BlockUnwanted
@@ -59,6 +62,10 @@ func (app *Application) screenUnwanted(j *job.Job, hdr *dispatch.Header, approve
 		hdr.Unwanted = unwanted.StateApproved
 		return "", nil
 	}
+	// A retry carries its entry's standing in hdr.Unwanted: an entry filed
+	// Blocked was refused for what its downloaded archives named, which the
+	// NZB's own names need not show, so the retry is held to it as well.
+	carriedBlock := hdr.Unwanted == unwanted.StateBlocked
 	hdr.Unwanted = unwanted.StateNone
 	rules, err := app.config.GetDownloads().UnwantedRules()
 	if err != nil {
@@ -76,8 +83,12 @@ func (app *Application) screenUnwanted(j *job.Job, hdr *dispatch.Header, approve
 		names[i] = m.FileSubject(i)
 	}
 	found := rules.Find(names)
-	if len(found) == 0 {
+	if len(found) == 0 && !carriedBlock {
 		return "", nil
+	}
+	failText := unwantedFailPrefix + " in an earlier attempt"
+	if len(found) > 0 {
+		failText = unwantedFailMessage(found)
 	}
 	hdr.Unwanted = unwanted.StateBlocked
 	if err := j.SetIntent(job.IntentPause); err != nil {
@@ -86,7 +97,7 @@ func (app *Application) screenUnwanted(j *job.Job, hdr *dispatch.Header, approve
 	app.log.Warn("NZB names files with unwanted extensions",
 		"job", j.ID(), "name", hdr.Name, "action", rules.Action(), "files", found)
 	if rules.Action() == unwanted.ActionFail {
-		return unwantedFailMessage(found), nil
+		return failText, nil
 	}
 	return "", nil
 }

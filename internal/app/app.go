@@ -1396,10 +1396,14 @@ func (app *Application) Start(ctx context.Context) error {
 	// Dropping the jobs already in history, and the resume sweep, run inside
 	// the dispatcher's start, between restoring the registry and the first
 	// tick. reconcileBeforeFirstTick and resumeAllJobs have that placement's
-	// argument. Start hands no job to post-processing itself: a complete job
-	// restored at Fetching, or never run, is reported download-complete by its
-	// Fetching worker (appRunner.runFetch) and reaches post-processing through
-	// Assessing.
+	// argument. The restart itself hands no complete job to post-processing: a
+	// complete job restored at Fetching, or never run, is reported
+	// download-complete by its Fetching worker (appRunner.runFetch) and reaches
+	// post-processing through Assessing. One path in the dispatcher's start
+	// can: completeStrandedFiles -> completeFinalizedFile ->
+	// peekArchiveForUnwanted -> finalizeRegistered -> enqueuePostProc, for a
+	// job whose stranded file the archive peek finds an unwanted name in under
+	// action=fail.
 	if app.dispatcher != nil {
 		if err := app.dispatcher.StartWith(app.ctx, app.reconcileBeforeFirstTick); err != nil {
 			return fmt.Errorf("app: start dispatcher: %w", err)
@@ -2668,6 +2672,7 @@ func (app *Application) rebuildJobFromNZB(entry history.Entry) (*job.Job, dispat
 		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: %w", entry.NzoID, err)
 	}
 	hdr.NZBBackup = entry.NZBBackup
+	hdr.Unwanted = entry.Unwanted // the retry's input to screenUnwanted, which overwrites it
 	return j, hdr, nil
 }
 
@@ -2705,8 +2710,9 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 // ID on its own (see jobTransitions).
 //
 // The rebuilt job goes through the unwanted-extension check under the action
-// configured now (screenUnwanted), unless its entry records an approval. A
-// job the check fails is refused with ErrUnwantedRefused before any state
+// configured now (screenUnwanted), unless its entry records an approval; an
+// entry filed Blocked is held to that standing as well, whatever named the
+// extension. A job the check fails is refused with ErrUnwantedRefused before any state
 // changes, and its entry stays as it was; RetryHistoryJobAllowingUnwanted
 // approves it instead.
 //

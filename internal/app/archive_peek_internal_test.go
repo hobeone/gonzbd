@@ -64,18 +64,26 @@ func par2Packet(typ [16]byte, body []byte) []byte {
 	return out.Bytes()
 }
 
-// par2Declaring builds a par2 file whose one File Description packet names
-// name. Only the name matters to the peek; the rest is well-formed filler.
-func par2Declaring(name string) []byte {
+// par2Declaring builds a par2 file with one File Description packet per name.
+// Only the names matter to the peek; the rest is well-formed filler, with a
+// distinct file ID per packet.
+func par2Declaring(names ...string) []byte {
 	typ := [16]byte{'P', 'A', 'R', ' ', '2', '.', '0', 0x00, 'F', 'i', 'l', 'e', 'D', 'e', 's', 'c'}
-	var body bytes.Buffer
-	body.Write(make([]byte, 16+16+16)) // file ID, MD5, MD5 of the first 16 KiB
-	_ = binary.Write(&body, binary.LittleEndian, uint64(1024))
-	body.WriteString(name)
-	for body.Len()%4 != 0 {
-		body.WriteByte(0)
+	var out bytes.Buffer
+	for i, name := range names {
+		var body bytes.Buffer
+		id := make([]byte, 16)
+		id[0] = byte(i + 1)
+		body.Write(id)
+		body.Write(make([]byte, 16+16)) // MD5, MD5 of the first 16 KiB
+		_ = binary.Write(&body, binary.LittleEndian, uint64(1024))
+		body.WriteString(name)
+		for body.Len()%4 != 0 {
+			body.WriteByte(0)
+		}
+		out.Write(par2Packet(typ, body.Bytes()))
 	}
-	return par2Packet(typ, body.Bytes())
+	return out.Bytes()
 }
 
 type peekApp struct {
@@ -91,10 +99,16 @@ type peekApp struct {
 // fail-action job reaches history through peekNoOpStage.
 func newPeekApp(t *testing.T, action unwanted.Action, exts []string, du bool, files []peekFile) *peekApp {
 	t.Helper()
+	return newPeekAppMode(t, action, unwanted.ModeBlacklist, exts, du, files)
+}
+
+// newPeekAppMode is newPeekApp with the extension list read in mode.
+func newPeekAppMode(t *testing.T, action unwanted.Action, mode unwanted.Mode, exts []string, du bool, files []peekFile) *peekApp {
+	t.Helper()
 	application, repo, _ := newLifecycleTestApp(t, WithPostProcStages([]postproc.Stage{peekNoOpStage{}}))
 	application.config.With(func(c *config.Config) {
 		c.Downloads.UnwantedExtensions = exts
-		c.Downloads.UnwantedExtensionsMode = unwanted.ModeBlacklist
+		c.Downloads.UnwantedExtensionsMode = mode
 		c.Downloads.ActionOnUnwantedExtensions = action
 		c.PostProc.DirectUnpack = du
 		c.PostProc.EnableUnrar = du
@@ -344,7 +358,7 @@ func TestPeek_ApprovedJobIsNotChecked(t *testing.T) {
 	a := newPeekApp(t, unwanted.ActionPause, onlyTxt, false,
 		[]peekFile{{"x.rar", unpackFixture(t, "single_rar5.rar")}})
 	// The user approves before the volume completes.
-	if _, err := a.dispatcher.BlockUnwanted(a.j.ID(), false); err != nil {
+	if _, err := a.dispatcher.BlockUnwanted(a.j, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.dispatcher.ResumeJobByUser(a.j.ID()); err != nil {
@@ -403,7 +417,7 @@ func TestBlockForUnwanted_ALoserOfTheRaceDoesNotAct(t *testing.T) {
 	a.log = slog.New(countingHandler{needle: "downloaded archive names files", n: &acted})
 
 	for range 2 {
-		a.blockForUnwanted(a.j.ID(), 0, "rar", unwanted.ActionFail, []string{"file1.txt"})
+		a.blockForUnwanted(a.j, 0, "rar", unwanted.ActionFail, []string{"file1.txt"})
 	}
 	if got := acted.Load(); got != 1 {
 		t.Errorf("the block acted %d times for two calls on one job, want 1", got)
@@ -424,7 +438,7 @@ func TestBlockForUnwanted_Failures(t *testing.T) {
 	var acted atomic.Int32
 	a.log = slog.New(countingHandler{needle: "downloaded archive names files", n: &acted})
 
-	a.blockForUnwanted("no-such-job", 0, "rar", unwanted.ActionPause, []string{"x.txt"})
+	a.blockForUnwanted(job.New("no-such-job", "x", job.PolicyFromPP(3)), 0, "rar", unwanted.ActionPause, []string{"x.txt"})
 	if got := acted.Load(); got != 0 {
 		t.Errorf("an unregistered job was acted on %d times", got)
 	}
@@ -432,7 +446,7 @@ func TestBlockForUnwanted_Failures(t *testing.T) {
 	if err := a.j.SetIntent(job.IntentCancel); err != nil {
 		t.Fatal(err)
 	}
-	a.blockForUnwanted(a.j.ID(), 0, "rar", unwanted.ActionPause, []string{"x.txt"})
+	a.blockForUnwanted(a.j, 0, "rar", unwanted.ActionPause, []string{"x.txt"})
 	if got := a.state(t); got != unwanted.StateBlocked {
 		t.Errorf("Unwanted = %d, want blocked even though the pause was refused", got)
 	}

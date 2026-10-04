@@ -27,7 +27,7 @@ func TestResumeJob_RacingBlockUnwantedNeverLeavesABlockedJobRunning(t *testing.T
 	var wg sync.WaitGroup
 	d.resumeDecidedHook = func() {
 		wg.Go(func() {
-			if _, err := d.BlockUnwanted("a", true); err != nil {
+			if _, err := d.BlockUnwanted(j, true); err != nil {
 				t.Errorf("BlockUnwanted: %v", err)
 			}
 		})

@@ -742,10 +742,16 @@ func (d *Dispatcher) UnwantedState(id string) (unwanted.State, bool) {
 // intent is left alone: a pause here would hold a failure reason waiting for
 // an Assessing worker until the user resumed, which approves the job. The new
 // state reaches dispatch_jobs at the next persist, as ResumeJobByUser's does.
-func (d *Dispatcher) BlockUnwanted(id string, pause bool) (moved bool, err error) {
+func (d *Dispatcher) BlockUnwanted(j *job.Job, pause bool) (moved bool, err error) {
+	if j == nil {
+		return false, fmt.Errorf("dispatch: block: nil job: %w", ErrNotFound)
+	}
+	id := j.ID()
 	d.mu.Lock()
 	e, ok := d.byID[id]
-	if !ok {
+	// The instance is checked, as RemoveJob's is: a caller holding a removed
+	// instance must not block a later attempt registered under the same ID.
+	if !ok || e.j != j {
 		d.mu.Unlock()
 		return false, fmt.Errorf("dispatch: block %s: %w", id, ErrNotFound)
 	}
@@ -754,7 +760,6 @@ func (d *Dispatcher) BlockUnwanted(id string, pause bool) (moved bool, err error
 		return false, nil
 	}
 	e.h.Unwanted = unwanted.StateBlocked
-	j := e.j
 	// The intent is set in the same d.mu span as the state, so a ResumeJob
 	// that decided before this call has also set its intent before it, and
 	// one that decides after sees Blocked: the two cannot leave the job

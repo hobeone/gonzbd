@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -432,20 +433,35 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 	// here.
 	if app.weParked(jobID) {
 		resumed := false
+		blocked := false
 		if app.dispatcher != nil {
 			if err := app.dispatcher.ResumeJob(jobID); err != nil {
-				app.log.Warn("stall re-evaluation: the job could not be resumed in dispatcher", "job", jobID, "err", err)
+				// A job another file's completion has since blocked for an
+				// unwanted extension stays paused for the user, whose resume
+				// approves it. Its storage fault has cleared all the same, so
+				// the park is released and the phases below still run: they
+				// carry the only record of a file finalized but not delivered.
+				if errors.Is(err, dispatch.ErrUnwantedBlocked) {
+					blocked = true
+				} else {
+					app.log.Warn("stall re-evaluation: the job could not be resumed in dispatcher", "job", jobID, "err", err)
+				}
 			} else {
 				resumed = true
 			}
 		}
-		if !resumed {
+		if !resumed && !blocked {
 			app.clearStall(jobID)
 			return
 		}
 		app.releasePark(jobID)
-		app.log.Info("stall re-evaluated; the job has been resumed",
-			"job", jobID, "files_recovered", len(files))
+		if blocked {
+			app.log.Info("stall re-evaluated; the job is blocked for unwanted extensions and stays paused",
+				"job", jobID, "files_recovered", len(files))
+		} else {
+			app.log.Info("stall re-evaluated; the job has been resumed",
+				"job", jobID, "files_recovered", len(files))
+		}
 	} else {
 		// The seed below still runs: those bits are on stable record and the
 		// live work set does not have them, whoever paused the job.

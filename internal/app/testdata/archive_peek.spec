@@ -3,7 +3,7 @@
 #
 #     go run ./scripts/mutate internal/app/testdata/archive_peek.spec
 pkg ./internal/app/
-run TestPeek_|TestArchivePeek_|TestBlockForUnwanted_
+run TestPeek_|TestArchivePeek_|TestBlockForUnwanted_|TestReevaluateStall_ABlocked
 timeout 10m
 
 [a file with a failed article is read anyway]
@@ -33,17 +33,17 @@ file internal/app/archive_peek.go
 [a RAR is never identified by its magic]
 file internal/app/archive_peek.go
 --- anchor
-	if isRAR {
+	case err == nil && ver == 5:
 --- replace
-	if isRAR && false {
+	case err == nil && ver == 5 && false:
 --- end
 
 [the pause action does not pause]
 file internal/app/archive_peek.go
 --- anchor
-	moved, err := app.dispatcher.BlockUnwanted(jobID, action == unwanted.ActionPause)
+	moved, err := app.dispatcher.BlockUnwanted(j, action == unwanted.ActionPause)
 --- replace
-	moved, err := app.dispatcher.BlockUnwanted(jobID, false)
+	moved, err := app.dispatcher.BlockUnwanted(j, false)
 --- end
 
 [the fail action does not file the job]
@@ -68,6 +68,55 @@ file internal/app/archive_peek.go
 	app.duOrch.abortJob(jobID)
 --- replace
 	_ = jobID
+--- end
+
+[the stall re-evaluation drops a blocked parked job's recovery]
+file internal/app/stall.go
+--- anchor
+				if errors.Is(err, dispatch.ErrUnwantedBlocked) {
+--- replace
+				if errors.Is(err, dispatch.ErrUnwantedBlocked) && false {
+--- end
+
+[a retry does not read the entry's blocked standing]
+file internal/app/unwanted.go
+--- anchor
+	if len(found) == 0 && !carriedBlock {
+--- replace
+	if len(found) == 0 && (!carriedBlock || true) {
+--- end
+
+[a retry's header does not carry the entry's standing]
+file internal/app/app.go
+--- anchor
+	hdr.Unwanted = entry.Unwanted // the retry's input to screenUnwanted, which overwrites it
+--- replace
+	hdr.Unwanted = unwanted.StateNone
+--- end
+
+[par2-declared archive volumes are judged]
+file internal/app/archive_peek.go
+--- anchor
+		if unpack.Classify(f.FileName) != unpack.UnknownArchive || job.IsPar2File(f.FileName) {
+--- replace
+		if unpack.Classify(f.FileName) != unpack.UnknownArchive && false || job.IsPar2File(f.FileName) {
+--- end
+
+[par2-declared par2 files are judged]
+file internal/app/archive_peek.go
+--- anchor
+		if unpack.Classify(f.FileName) != unpack.UnknownArchive || job.IsPar2File(f.FileName) {
+--- replace
+		if unpack.Classify(f.FileName) != unpack.UnknownArchive || job.IsPar2File(f.FileName) && false {
+--- end
+
+[a RAR3 volume is listed through the unrar fallback]
+file internal/app/archive_peek.go
+--- anchor
+		return nil, "rar", errRAR3Skipped
+--- replace
+		info, ierr := rarheader.Inspect(path)
+		return info.Filenames, "rar", ierr
 --- end
 
 [the unpacker feed does not refuse a blocked job]

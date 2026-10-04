@@ -521,10 +521,13 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    `DownloadDir`, including files par2 repair rebuilt or renamed, which repair
    does not record in `OwnedFiles`. It judges every file under `DownloadDir`.
    It is also the backstop for the archive peek (`app.peekArchiveForUnwanted`),
-   which blocks a job early, while it downloads, from the member names in RAR
+   which blocks a job early, while it downloads, from the member names in RAR5
    volume headers and the names a par2 file declares. The peek is an
-   accelerator: it reads no 7z, zip, nested or header-encrypted archive,
-   skips a file with a failed article, and skips a job that is approved or
+   accelerator and lists RAR5 only, in pure Go: it never forks `unrar`, so a
+   RAR3 volume (or a RAR5 volume the engine cannot list) is skipped and its
+   content is caught by this stage after unpack, while the par2 hint does not
+   depend on the archive version. It reads no 7z, zip, nested or
+   header-encrypted archive, skips a file with a failed article, and skips a job that is approved or
    whose action is `off`, so this stage still runs for every one of those.
    That directory is the download directory joined with the job's name, and
    no two registered jobs share a name. The dispatcher owns that rule:

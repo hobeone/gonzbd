@@ -2,6 +2,8 @@ package app_test
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -108,12 +110,23 @@ func TestArchivePeek_Pipeline_FailActionFiltersMidDownload(t *testing.T) {
 	// A retry is refused with "in progress" while the finalizer still holds
 	// the job, which outlasts the history row and the queue entry: try again
 	// until that refusal clears.
-	var retryErr error
-	if !h.WaitUntil(30*time.Second, func() bool {
-		retryErr = h.app.RetryHistoryJobAllowingUnwanted(t.Context(), j.ID())
-		return retryErr == nil || !strings.Contains(retryErr.Error(), "in progress")
-	}) || retryErr != nil {
-		t.Fatalf("RetryHistoryJobAllowingUnwanted: %v", retryErr)
+	retry := func(f func(context.Context, string) error) error {
+		var err error
+		if !h.WaitUntil(30*time.Second, func() bool {
+			err = f(t.Context(), j.ID())
+			return err == nil || !strings.Contains(err.Error(), "in progress")
+		}) {
+			t.Fatal("the finalizer never released the job")
+		}
+		return err
+	}
+	// The NZB's own names are clean, so only the entry's Blocked standing can
+	// refuse a plain retry.
+	if err := retry(h.app.RetryHistoryJob); !errors.Is(err, app.ErrUnwantedRefused) {
+		t.Fatalf("plain RetryHistoryJob = %v, want ErrUnwantedRefused", err)
+	}
+	if err := retry(h.app.RetryHistoryJobAllowingUnwanted); err != nil {
+		t.Fatalf("RetryHistoryJobAllowingUnwanted: %v", err)
 	}
 	if !h.WaitUntil(30*time.Second, func() bool {
 		got, err := h.repo.Get(t.Context(), j.ID())

@@ -22,7 +22,7 @@ func TestBlockUnwanted_PauseMovesNoneToBlockedAndPersists(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	moved, err := d.BlockUnwanted("a", true)
+	moved, err := d.BlockUnwanted(j, true)
 	if err != nil || !moved {
 		t.Fatalf("BlockUnwanted = (%v, %v), want (true, nil)", moved, err)
 	}
@@ -55,7 +55,7 @@ func TestBlockUnwanted_WithoutPauseLeavesTheIntent(t *testing.T) {
 	if err := d.Add(context.Background(), j, Header{Name: "Job A"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	moved, err := d.BlockUnwanted("a", false)
+	moved, err := d.BlockUnwanted(j, false)
 	if err != nil || !moved {
 		t.Fatalf("BlockUnwanted = (%v, %v), want moved", moved, err)
 	}
@@ -74,7 +74,7 @@ func TestBlockUnwanted_LeavesBlockedAndApprovedAlone(t *testing.T) {
 		if err := d.Add(context.Background(), j, Header{Name: "Job A", Unwanted: from}); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
-		moved, err := d.BlockUnwanted("a", true)
+		moved, err := d.BlockUnwanted(j, true)
 		if err != nil || moved {
 			t.Errorf("from %d: BlockUnwanted = (%v, %v), want (false, nil)", from, moved, err)
 		}
@@ -90,11 +90,43 @@ func TestBlockUnwanted_LeavesBlockedAndApprovedAlone(t *testing.T) {
 // TestBlockUnwanted_UnknownJob pins the not-found refusal.
 func TestBlockUnwanted_UnknownJob(t *testing.T) {
 	d := newTestDispatcher(t)
-	if _, err := d.BlockUnwanted("nope", true); !errors.Is(err, ErrNotFound) {
+	if _, err := d.BlockUnwanted(job.New("nope", "Nope", job.PolicyFromPP(3)), true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("BlockUnwanted of an unknown id = %v, want ErrNotFound", err)
 	}
 	if _, ok := d.UnwantedState("nope"); ok {
 		t.Error("UnwantedState of an unknown id reported found")
+	}
+}
+
+// TestBlockUnwanted_ARemovedInstanceBlocksNothing pins that the instance is
+// checked: a caller holding a job that is not the one registered under its ID
+// leaves the registered one alone.
+func TestBlockUnwanted_ARemovedInstanceBlocksNothing(t *testing.T) {
+	d := newTestDispatcher(t)
+	registered := job.New("a", "Job A", job.PolicyFromPP(3))
+	if err := d.Add(context.Background(), registered, Header{Name: "Job A"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	stale := job.New("a", "Job A", job.PolicyFromPP(3))
+	if moved, err := d.BlockUnwanted(stale, true); moved || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("BlockUnwanted(stale) = (%v, %v), want (false, ErrNotFound)", moved, err)
+	}
+	if st, _ := d.UnwantedState("a"); st != unwanted.StateNone {
+		t.Errorf("UnwantedState = %d, want none", st)
+	}
+	if in := registered.Intent(); in != job.IntentRun {
+		t.Errorf("Intent = %v, want IntentRun", in)
+	}
+}
+
+// TestYieldedPaused_ReportsAFailedYield pins that a yield refused for a reason
+// other than a stale report is the pause's error: an unregistered job has no
+// lease to give back.
+func TestYieldedPaused_ReportsAFailedYield(t *testing.T) {
+	d := newTestDispatcher(t)
+	err := d.yieldPaused(job.New("ghost", "Ghost", job.PolicyFromPP(3)))
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("yieldPaused of an unregistered job = %v, want an ErrNotFound error", err)
 	}
 }
 
@@ -113,7 +145,7 @@ func TestBlockUnwanted_ConcurrentCallsMoveOnce(t *testing.T) {
 	for range callers {
 		wg.Go(func() {
 			<-start
-			moved, err := d.BlockUnwanted("a", true)
+			moved, err := d.BlockUnwanted(j, true)
 			if err != nil {
 				t.Errorf("BlockUnwanted = (%v, %v)", moved, err)
 			}

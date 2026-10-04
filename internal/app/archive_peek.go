@@ -1,37 +1,50 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/rarheader"
+	"github.com/hobeone/gonzbd/internal/unpack"
 	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
+// errRAR3Skipped marks a RAR3 volume the peek does not list: RAR3 names come
+// only from the external unrar, which the completion path never forks.
+var errRAR3Skipped = errors.New("rar3 volume: the early check lists RAR5 only")
+
 // archiveMemberNames returns the filenames the file at path declares: the
-// members a RAR volume lists, or the files a par2 file protects. The kind is
+// members a RAR5 volume lists, or the files a par2 file protects. The kind is
 // read from the file's magic bytes, never its name, so an obfuscated name
 // does not hide an archive. A file that is neither returns no names and no
 // error.
 //
-// The RAR names come from rarheader.Inspect, which guards the pure-Go engine
-// against panics and runs the external unrar for RAR3 and for a RAR5 volume
-// the engine cannot list; the par2 parse is guarded here the same way
-// (cmdutil.SafeEngineRun). Names are returned as declared, for Rules.Find to
-// judge.
+// RAR names come from rarheader.InspectRar5, the pure-Go route, which guards
+// the engine against panics itself. A RAR3 volume, or a RAR5 volume the engine
+// cannot list, is an error and is skipped: rarheader.Inspect would fall back to
+// forking `unrar vt`, which has no timeout and would run on the single
+// completion goroutine. The par2 parse is guarded by cmdutil.SafeEngineRun. RAR
+// members are returned as declared. The names a par2 file declares are
+// returned except those unpack.Classify recognises as archive volumes and
+// those job.IsPar2File recognises, which the pipeline consumes before the
+// post-unpack check, so the peek and that backstop judge the same population.
+// Rules.Find judges what is returned.
 func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string, kind string, err error) {
-	isRAR, err := rarheader.IsRAR(path)
-	if err != nil {
-		return nil, "", fmt.Errorf("read signature: %w", err)
-	}
-	if isRAR {
-		info, err := rarheader.Inspect(path)
+	ver, err := rarheader.Version(path)
+	switch {
+	case err == nil && ver == 5:
+		info, err := rarheader.InspectRar5(path)
 		if err != nil {
 			return nil, "rar", fmt.Errorf("list rar members: %w", err)
 		}
 		return info.Filenames, "rar", nil
+	case err == nil:
+		return nil, "rar", errRAR3Skipped
+	case !errors.Is(err, rarheader.ErrNotRAR):
+		return nil, "", fmt.Errorf("read signature: %w", err)
 	}
 	isPar2, err := par2.HasMagic(path)
 	if err != nil {
@@ -50,6 +63,13 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 	}
 	names = make([]string, 0, len(files))
 	for _, f := range files {
+		// A par2 set declares its archive volumes and par2 files too. The
+		// unpack and par2 stages consume those before unwanted_cleanup runs,
+		// so that stage never judges them; judging them here would block, in
+		// whitelist mode, a job the backstop lets through.
+		if unpack.Classify(f.FileName) != unpack.UnknownArchive || job.IsPar2File(f.FileName) {
+			continue
+		}
 		names = append(names, f.FileName)
 	}
 	return names, "par2", nil
@@ -59,7 +79,7 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 // and, when they name a file with an unwanted extension, blocks the job while
 // its download is still running. It is an accelerator for the post-unpack
 // removal in internal/postproc, which stays the backstop: it sees only what a
-// completed RAR volume or par2 file declares, and no 7z, zip, nested or
+// completed RAR5 volume or par2 file declares, and no RAR3, 7z, zip, nested or
 // header-encrypted archive.
 //
 // It runs from completeFinalizedFile, ahead of the DirectUnpack feed and of
@@ -134,15 +154,16 @@ func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) {
 		return
 	}
 
-	app.blockForUnwanted(jobID, fc.FileIdx, kind, rules.Action(), found)
+	app.blockForUnwanted(j, fc.FileIdx, kind, rules.Action(), found)
 }
 
 // blockForUnwanted is the acting half of the peek: it asks the dispatcher to
 // block the job and, only if this call made the move, applies the action. A
 // completion that read StateNone and lost the race to another reaches here
 // too and, finding the move made, does nothing.
-func (app *Application) blockForUnwanted(jobID string, fileIdx int, kind string, action unwanted.Action, found []string) {
-	moved, err := app.dispatcher.BlockUnwanted(jobID, action == unwanted.ActionPause)
+func (app *Application) blockForUnwanted(j *job.Job, fileIdx int, kind string, action unwanted.Action, found []string) {
+	jobID := j.ID()
+	moved, err := app.dispatcher.BlockUnwanted(j, action == unwanted.ActionPause)
 	if err != nil && !moved {
 		app.log.Warn("archive peek: could not block the job",
 			"job", jobID, "fileidx", fileIdx, "err", err)
@@ -160,7 +181,7 @@ func (app *Application) blockForUnwanted(jobID string, fileIdx int, kind string,
 		"action", action, "files", found)
 	app.duOrch.abortJob(jobID)
 	if action == unwanted.ActionFail {
-		app.maybeFinalize(jobID, unwantedFailMessage(found))
+		app.finalizeRegistered(j, unwantedFailMessage(found), true)
 	}
 	app.emit(Event{Type: "queue_updated", NzoID: jobID})
 }

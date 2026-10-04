@@ -18,7 +18,7 @@
 // What it cannot see is a name it is not given. A post whose subjects are
 // obfuscated, or whose payload is inside an archive, carries no unwanted
 // extension at ingest. While such a job downloads, the archive peek in
-// internal/app is given the member names of each completed RAR volume and the
+// internal/app is given the member names of each completed RAR5 volume and the
 // names a par2 file declares, and blocks the job early; it is an accelerator.
 // The post-unpack stage is the backstop for the files those produce on disk,
 // and for the archive kinds the peek does not read.

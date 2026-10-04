@@ -10,7 +10,7 @@ file internal/dispatch/registry.go
 --- anchor
 	if err := d.YieldedFrom(j, job.Fetching); err != nil && !errors.Is(err, ErrStaleReport) {
 --- replace
-	if err := d.Yielded(id); err != nil && !errors.Is(err, ErrStaleReport) {
+	if err := d.Yielded(j.ID()); err != nil && !errors.Is(err, ErrStaleReport) {
 --- end
 
 [the pause yields from the state the job is at]
