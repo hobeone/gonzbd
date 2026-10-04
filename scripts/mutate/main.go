@@ -92,6 +92,50 @@
 // sibling branch's specs against this tree's source (see run_tests.sh's own
 // comment on this, which this command's discovery matches on purpose).
 //
+// # The build cache
+//
+// Every mutation compiles a one-off copy of the mutated package and links a
+// test binary that nothing will ever look up again. Against the user's own Go
+// build cache that is pure garbage — about 16 MB per mutation for an
+// internal/app spec, measured — and the full spec suite, run by every session
+// at every gate, did it hundreds of times over.
+//
+// So a run does not use that cache. It creates a throwaway one, passes it to
+// every go subprocess that builds anything as GOCACHE — `exec.CommandContext(ctx, "go"`
+// appears once in this package, in goCommand; the only other `go` it starts is
+// `go env GOCACHE` — and deletes it on exit. The throwaway cache is seeded from the
+// user's: the `-d` output files are hard-linked, which costs no disk because
+// they are content-addressed and go rewrites one in place only if it is
+// already corrupt, and the small `-a` action entries are copied, because go
+// does rewrite those in place (see seedCache). Seeding makes the unmutated
+// dependencies cache hits, so the run is as fast as one against the shared
+// cache — measured within a few percent for a spec run from a stable path.
+//
+// Where it goes, in order: MUTATE_GOCACHE_BASE if set; else $TMPDIR if that is
+// on the user's cache's filesystem; else the user's cache's parent directory.
+// A hardlink cannot cross filesystems, and a seed that had to copy gigabytes
+// would cost more than it saves, which is why /tmp on a tmpfs is not the
+// default. A seed that fails is reported and the run continues on what was
+// seeded: slower, never wrong.
+//
+// MUTATE_GOCACHE_DIR names an absolute directory the caller owns. It is used
+// as the cache (seeded only if it does not exist) and never deleted, so a
+// series of runs can share one — scripts/run_tests.sh gives each worker one,
+// because the repository's packages are then built once per worker instead of
+// once per spec, and removes them itself. -shared-cache opts out entirely and
+// leaves each mutation's build output in the user's cache, for debugging a
+// mutated build.
+//
+// Removal runs on the same exit paths as the file restore: exit() for every
+// os.Exit, runSpec's defer for a panic, and the signal handler, which goes
+// through exit(). removeThrowaway refuses to delete anything that is not a
+// mutate-gocache-* directory directly under the base it created it in. The
+// one path it cannot cover is SIGKILL, which leaves the directory behind; it
+// holds only the entries that run added to a seed of hardlinks.
+//
+// -check and -check-all still list tests against the user's cache: they
+// compile the unmutated packages, whose output is reusable, not garbage.
+//
 // # Restoring
 //
 // The source file is restored from a copy this command wrote, on every exit
@@ -257,7 +301,13 @@ func runSpec(root, path string, verbose, skipRunfilter, sharedCache bool) {
 	defer cleanupThrowaway() // a panic unwinds through here; every os.Exit goes through exit
 	if !sharedCache {
 		shared := sharedCacheDir(root)
-		if err := startThrowaway(chooseCacheBase(shared), shared); err != nil {
+		var err error
+		if dir := os.Getenv(cacheDirEnv); dir != "" {
+			err = adoptCache(dir, shared)
+		} else {
+			err = startThrowaway(chooseCacheBase(shared), shared)
+		}
+		if err != nil {
 			fatal("%v", err)
 		}
 	}
@@ -986,12 +1036,23 @@ func cleanupThrowaway() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v] <spec-file>
+	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v] [-shared-cache] <spec-file>
        go run ./scripts/mutate -check <spec-file>...
        go run ./scripts/mutate -check-all
 
 Runs AGENTS.md's observed red check: apply each mutation, require the test to
 fail, restore the file. Exits non-zero unless every mutation is KILLED.
+
+Builds run in a throwaway Go build cache, seeded from yours by hardlink and
+deleted on exit, so the output of every mutated build never reaches your own
+cache. Environment:
+  MUTATE_GOCACHE_BASE  directory to create it in (default: $TMPDIR if on the
+                       same filesystem as your cache, else beside your cache;
+                       hardlinks cannot cross filesystems)
+  MUTATE_GOCACHE_DIR   an absolute directory you own, used as the cache across
+                       runs and never deleted by this command
+-shared-cache runs go against your own cache instead, leaving every mutation's
+build output in it.
 
 -check parses the given spec(s) and reports every anchor that resolves to
 zero or several sites, without compiling anything, running a test, or writing

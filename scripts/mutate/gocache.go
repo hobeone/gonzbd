@@ -23,6 +23,10 @@ import (
 // documented in the package doc and usage text.
 const cacheBaseEnv = "MUTATE_GOCACHE_BASE"
 
+// cacheDirEnv names a cache directory the caller owns and wants this run to
+// use instead of creating its own; see adoptCache.
+const cacheDirEnv = "MUTATE_GOCACHE_DIR"
+
 // cacheDirPrefix is what every directory this command creates for a cache
 // starts with, and what removeThrowaway requires before it deletes anything.
 const cacheDirPrefix = "mutate-gocache-"
@@ -122,7 +126,7 @@ func deviceOf(path string) (uint64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return uint64(st.Dev), true //nolint:gosec // G115: a device number is only compared for equality
+	return uint64(st.Dev), true //nolint:gosec,unconvert // a device number is only compared for equality; Dev is not uint64 on every platform
 }
 
 // startThrowaway creates this run's cache directory under base, registers it
@@ -133,7 +137,7 @@ func deviceOf(path string) (uint64, bool) {
 // The directory is registered before it is seeded, so every exit path from
 // there on removes it.
 func startThrowaway(base, shared string) error {
-	if err := os.MkdirAll(base, 0o700); err != nil {
+	if err := os.MkdirAll(base, 0o700); err != nil { //nolint:gosec // G703: base is the operator's own MUTATE_GOCACHE_BASE or a directory derived from go env
 		return fmt.Errorf("create the build-cache base %s: %w", base, err)
 	}
 	dir, err := os.MkdirTemp(base, cacheDirPrefix)
@@ -156,8 +160,35 @@ func startThrowaway(base, shared string) error {
 	return nil
 }
 
+// adoptCache points the go subprocesses at a directory the caller owns, seeding
+// it from shared only if it does not exist yet. It is how one throwaway cache
+// serves a series of mutate runs — scripts/run_tests.sh gives each worker one,
+// so the repository's own packages are built once per worker rather than once
+// per spec — and the caller removes it. This command never does: throwaway.base
+// stays empty, which removeThrowaway reads as "not ours to delete".
+func adoptCache(dir, shared string) error {
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("%s must be an absolute path, got %q", cacheDirEnv, dir)
+	}
+	_, statErr := os.Stat(dir) //nolint:gosec // G703: dir is the operator's own MUTATE_GOCACHE_DIR
+	fresh := errors.Is(statErr, fs.ErrNotExist)
+	if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:gosec // G703: dir is the operator's own MUTATE_GOCACHE_DIR
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	throwaway.Lock()
+	throwaway.dir, throwaway.base = dir, ""
+	throwaway.Unlock()
+	if fresh && shared != "" {
+		if err := seedCache(shared, dir); err != nil {
+			fmt.Fprintf(os.Stderr, "mutate: seeding %s from %s failed (%v); continuing with what was seeded\n", dir, shared, err)
+		}
+	}
+	return nil
+}
+
 // removeThrowaway deletes the directory startThrowaway created, and only that
-// one. It is idempotent, so every exit path may call it.
+// one. It is idempotent, so every exit path may call it. A directory adopted
+// with adoptCache is left alone.
 //
 // It refuses — returns an error and deletes nothing — unless the directory is
 // a direct child of the base it was created in and carries cacheDirPrefix. The
@@ -169,7 +200,7 @@ func removeThrowaway() error {
 	throwaway.Lock()
 	defer throwaway.Unlock()
 	dir, base := throwaway.dir, throwaway.base
-	if dir == "" {
+	if dir == "" || base == "" {
 		return nil
 	}
 	if filepath.Dir(filepath.Clean(dir)) != base || !strings.HasPrefix(filepath.Base(dir), cacheDirPrefix) {
@@ -194,15 +225,15 @@ func removeThrowaway() error {
 //
 // What each kind of entry gets, and why:
 //
-//   - `-d` output files are hardlinked. They are named by the hash of their
+//   - `-d` output files are hard-linked. They are named by the hash of their
 //     content, and go rewrites one in place only when the existing file is
 //     already corrupt (DiskCache.copyFile in cmd/go/internal/cache).
 //   - `-a` action entries are COPIED. go overwrites those in place when an
 //     action is re-put with a different output — the cache's own comment in
-//     putIndexEntry says it leaves them writable for that — and a hardlinked
+//     putIndexEntry says it leaves them writable for that — and a hard-linked
 //     one would let this run's builds rewrite the shared cache's entry.
 //   - Executable entries (a `-d` directory, from `go run`/`go build -o`
-//     outputs) have their files hardlinked into a new directory.
+//     outputs) have their files hard-linked into a new directory.
 //   - trim.txt is written fresh, so go does not scan the throwaway cache for
 //     entries to trim; it would only unlink our own names, but the scan costs.
 //

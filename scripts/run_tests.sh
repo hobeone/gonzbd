@@ -212,6 +212,29 @@ while IFS= read -r line; do
 done < <(git worktree list --porcelain)
 git worktree prune >/dev/null 2>&1 || true
 
+# Each worker builds in its own throwaway Go build cache (scripts/mutate's
+# MUTATE_GOCACHE_DIR), seeded from the user's cache by hardlink on first use and
+# deleted when this run ends, so the build output of every mutation -- which is
+# never reused -- does not accumulate in the shared cache. Hardlinks need the
+# same filesystem as the cache, so the directories sit beside it, not in $TMPDIR.
+# A worker keeps its directory across specs so the repository's own packages are
+# built once per worker, not once per spec.
+GO_BUILD_CACHE=$(go env GOCACHE 2>/dev/null || true)
+MUTATE_CACHE_BASE=""
+if [ -n "$GO_BUILD_CACHE" ] && [ "$GO_BUILD_CACHE" != "off" ] && [ -d "$GO_BUILD_CACHE" ]; then
+    MUTATE_CACHE_BASE="${MUTATE_GOCACHE_BASE:-$(dirname "$GO_BUILD_CACHE")}"
+    # Prune cache directories left by a hard-killed run: only names of the exact
+    # form gonzbd-mutate-gocache.<owner pid>.<worker>, and only if the owner is gone.
+    for stale in "$MUTATE_CACHE_BASE"/gonzbd-mutate-gocache.*.*; do
+        [ -d "$stale" ] || continue
+        stale_pid="${stale##*/gonzbd-mutate-gocache.}"
+        stale_pid="${stale_pid%%.*}"
+        case "$stale_pid" in ''|*[!0-9]*) continue ;; esac
+        if kill -0 "$stale_pid" 2>/dev/null; then continue; fi
+        rm -rf "$stale"
+    done
+fi
+
 MUTATE_BIN=$(mktemp -t gonzbd-mutate.XXXXXX)
 WORKTREE_BASE=""
 SNAP_INDEX=""
@@ -233,6 +256,11 @@ cleanup_mutate() {
     fi
     if [ -n "$MUTATE_BIN" ] && [ -f "$MUTATE_BIN" ]; then
         rm -f "$MUTATE_BIN"
+    fi
+    if [ -n "$MUTATE_CACHE_BASE" ] && [ -n "${WORKERS:-}" ]; then
+        for ((w=0; w<WORKERS; w++)); do
+            rm -rf "$MUTATE_CACHE_BASE/gonzbd-mutate-gocache.$$.$w"
+        done
     fi
     if [ -n "$WORKTREE_BASE" ] && [ -d "$WORKTREE_BASE" ]; then
         if [ -n "${WORKERS:-}" ]; then
@@ -345,6 +373,9 @@ else
             export GOFLAGS="${GOFLAGS:+$GOFLAGS }-p=$CPU_BUDGET"
             set -o pipefail
             cd "$WORKTREE_BASE/wt-$w"
+            if [ -n "$MUTATE_CACHE_BASE" ]; then
+                export MUTATE_GOCACHE_DIR="$MUTATE_CACHE_BASE/gonzbd-mutate-gocache.$$.$w"
+            fi
             while true; do
                 spec=$(pop_spec)
                 [ -n "$spec" ] || break

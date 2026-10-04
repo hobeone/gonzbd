@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,10 +79,10 @@ func TestStartThrowaway_SeedsByLinkAndCopy(t *testing.T) {
 
 	// The output file is linked: its bytes cost no disk.
 	if !sameInode(t, filepath.Join(shared, "ab", "abcd-d"), filepath.Join(dir, "ab", "abcd-d")) {
-		t.Error("the -d output was copied, not hardlinked")
+		t.Error("the -d output was copied, not hard-linked")
 	}
 	if !sameInode(t, filepath.Join(shared, "cd", "cdef-d", "tool"), filepath.Join(dir, "cd", "cdef-d", "tool")) {
-		t.Error("the executable entry's file was copied, not hardlinked")
+		t.Error("the executable entry's file was copied, not hard-linked")
 	}
 
 	// The action entry is copied: go rewrites those in place, so a link would
@@ -141,6 +142,50 @@ func TestRemoveThrowaway_LeavesTheSharedEntriesAlone(t *testing.T) {
 	}
 	if cacheDir() != "" {
 		t.Errorf("cacheDir = %q after removal, want empty so no later go command is pointed at it", cacheDir())
+	}
+}
+
+func TestAdoptCache_SeedsOnlyAFreshDirectoryAndNeverRemovesIt(t *testing.T) {
+	resetThrowaway(t)
+	shared := fakeSharedCache(t)
+	dir := filepath.Join(t.TempDir(), "worker-cache")
+
+	if err := adoptCache(dir, shared); err != nil {
+		t.Fatal(err)
+	}
+	if cacheDir() != dir {
+		t.Fatalf("cacheDir = %q, want the adopted %q", cacheDir(), dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ab", "abcd-d")); err != nil {
+		t.Errorf("a fresh adopted directory was not seeded: %v", err)
+	}
+
+	// A second adoption of the same directory is a later spec in the same
+	// worker: what the first run left there must survive, and the shared
+	// cache's entries must not be re-seeded over it.
+	writeTree(t, filepath.Join(dir, "ff", "leftover-d"), "from the first spec")
+	if err := os.Remove(filepath.Join(dir, "ab", "abcd-d")); err != nil {
+		t.Fatal(err)
+	}
+	if err := adoptCache(dir, shared); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ff", "leftover-d")); err != nil {
+		t.Errorf("an entry from the previous run was lost: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ab", "abcd-d")); err == nil {
+		t.Error("an existing adopted directory was seeded again")
+	}
+
+	if err := removeThrowaway(); err != nil {
+		t.Errorf("removeThrowaway = %v, want nil: an adopted directory is not ours", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("an adopted directory was removed: %v", err)
+	}
+
+	if err := adoptCache("relative/dir", shared); err == nil {
+		t.Error("a relative directory was accepted")
 	}
 }
 
@@ -236,6 +281,11 @@ func TestThrowawayChild(t *testing.T) {
 		mustStart(base)
 		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
 		time.Sleep(30 * time.Second)
+	case "adopt":
+		if err := adoptCache(os.Getenv(cacheDirEnv), ""); err != nil {
+			fatal("child: %v", err)
+		}
+		exit(0)
 	case "sharedcache":
 		runSpec(os.Getenv(childRootEnv), os.Getenv(childSpecEnv), false, false, true)
 	case "panic":
@@ -273,7 +323,7 @@ func runChild(t *testing.T, scenario, base, gocache, root, spec string) (int, st
 	if err == nil {
 		return 0, string(out)
 	}
-	ee, ok := err.(*exec.ExitError)
+	ee, ok := errors.AsType[*exec.ExitError](err)
 	if !ok {
 		t.Fatalf("run child: %v", err)
 	}
@@ -286,7 +336,7 @@ func leftovers(t *testing.T, base string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var names []string
+	names := make([]string, 0, len(entries))
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
@@ -312,6 +362,18 @@ func TestThrowawayCache_IsRemovedOnEveryNonSpecExitPath(t *testing.T) {
 				t.Errorf("the throwaway cache survived the %s path: %v", tc.scenario, left)
 			}
 		})
+	}
+}
+
+func TestThrowawayCache_AdoptedDirectorySurvivesExit(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "worker-cache")
+	t.Setenv(cacheDirEnv, dir)
+	code, out := runChild(t, "adopt", t.TempDir(), t.TempDir(), "", "")
+	if code != 0 {
+		t.Fatalf("exit code = %d\n%s", code, out)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("the caller's cache directory was removed on exit: %v", err)
 	}
 }
 

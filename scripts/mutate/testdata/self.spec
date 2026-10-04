@@ -515,6 +515,14 @@ file scripts/mutate/gocache.go
 	if false {
 --- end
 
+[a caller-owned cache directory is no longer exempt from removal]
+file scripts/mutate/gocache.go
+--- anchor
+	if dir == "" || base == "" {
+--- replace
+	if dir == "" {
+--- end
+
 [the cache directory is never registered for removal]
 file scripts/mutate/gocache.go
 --- anchor
