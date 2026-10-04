@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Page from './+page.svelte';
 
 vi.mock('#lib/components/Navbar.svelte', () => ({ default: function () {} }));
-vi.mock('#lib/stores/queue.svelte.js', () => ({ getServerStats: vi.fn().mockReturnValue([]) }));
+vi.mock('#lib/stores/queue.svelte.js', () => ({ getServerStats: vi.fn().mockReturnValue([]), refreshQueue: vi.fn() }));
 vi.mock('#lib/stores/telemetry.svelte.js', () => ({
 	startTelemetry: vi.fn(),
 	stopTelemetry: vi.fn()

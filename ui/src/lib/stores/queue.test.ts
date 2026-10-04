@@ -205,6 +205,34 @@ describe('Queue Store', () => {
 
 	// ── Job actions ──
 
+	it('an overlapping poll() settles only after the trailing re-poll has landed', async () => {
+		const okQueue = (paused: boolean) =>
+			({
+				status: true,
+				queue: { slots: [], noofslots: 0, paused, speed: '0', timeleft: '0:00:00' }
+			}) as any;
+		let releaseFirst!: () => void;
+		vi.mocked(fetchQueue)
+			.mockImplementationOnce(
+				() => new Promise((resolve) => (releaseFirst = () => resolve(okQueue(false))))
+			)
+			.mockResolvedValueOnce(okQueue(true));
+
+		const first = refreshQueue();
+		let overlappingDone = false;
+		const overlapping = refreshQueue().then(() => {
+			overlappingDone = true;
+		});
+		await Promise.resolve();
+		expect(overlappingDone).toBe(false);
+
+		releaseFirst();
+		await Promise.all([first, overlapping]);
+
+		expect(fetchQueue).toHaveBeenCalledTimes(2);
+		expect(isPaused()).toBe(true);
+	});
+
 	it('pauseAll posts pause and re-polls so isPaused follows', async () => {
 		vi.mocked(postAction).mockResolvedValue({ status: true });
 		vi.mocked(fetchQueue).mockResolvedValue({

@@ -18,7 +18,7 @@
 		type RedactedServerConfig
 	} from '#lib/api.js';
 	import { formatBuildLabel, formatTimestamp } from '#lib/utils.js';
-	import { getServerStats } from '#lib/stores/queue.svelte.js';
+	import { getServerStats, refreshQueue } from '#lib/stores/queue.svelte.js';
 	import { startTelemetry, stopTelemetry } from '#lib/stores/telemetry.svelte.js';
 
 	let overview = $state<StatusOverviewResponse | null>(null);
@@ -130,6 +130,9 @@
 	// /status doesn't leak a duplicate handler.
 	onMount(() => {
 		startTelemetry();
+		// One fetch so the navbar's Pause/Resume button starts correct on a
+		// direct load; this page does not poll the queue.
+		refreshQueue();
 	});
 	onDestroy(() => {
 		stopTelemetry();
