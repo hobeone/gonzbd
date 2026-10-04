@@ -146,9 +146,8 @@ func TestSetConfigDownloadDir_SameValueSucceedsWithAQueuedJob(t *testing.T) {
 	}
 }
 
-// TestSetConfigDownloadDir_InvalidValueIsStillABadRequest pins that the trial
-// validation precedes the refusal, so an empty value is not reported as a
-// queue problem.
+// TestSetConfigDownloadDir_InvalidValueIsStillABadRequest pins that an empty
+// value is answered 400 with a job queued, not 409.
 func TestSetConfigDownloadDir_InvalidValueIsStillABadRequest(t *testing.T) {
 	t.Parallel()
 	r := newDownloadDirRig(t)
@@ -158,5 +157,31 @@ func TestSetConfigDownloadDir_InvalidValueIsStillABadRequest(t *testing.T) {
 
 	if code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (body: %s)", code, body)
+	}
+}
+
+// TestSetConfigDownloadDir_ApplicationGetsTheExpandedPath pins that the
+// application is given the validated, path-expanded value rather than the raw
+// request value.
+func TestSetConfigDownloadDir_ApplicationGetsTheExpandedPath(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GONZBD_TEST_DL_ROOT", root)
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	spy := &setConfigSpyApp{}
+	s := New(Options{Build: buildinfo.Info{Version: "1.0.0-test"}, Config: cfg, App: spy})
+	cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
+
+	rr := apiGet(t, s.Handler(), "/api?mode=set_config&section=general&keyword=download_dir&value="+url.QueryEscape("$GONZBD_TEST_DL_ROOT/incomplete")+"&apikey="+testAPIKey)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if want := filepath.Join(root, "incomplete"); spy.downloadDir != want {
+		t.Errorf("application was given %q, want the expanded %q", spy.downloadDir, want)
 	}
 }

@@ -3081,9 +3081,10 @@ var ErrDownloadDirBusy = errors.New("download_dir cannot change while the queue 
 // It therefore refuses with ErrDownloadDirBusy while the dispatcher, when there
 // is one, holds any row whose Outcome is not settled: queued, downloading,
 // paused, and a job handed to post-processing, which stays registered at
-// Fetching until the finalizer's CancelJob (see reportDownloadComplete). Setting the value already in force succeeds regardless. A job
-// queued between the check and the swap is not covered. The caller is
-// responsible for creating the directory.
+// Fetching until the finalizer's CancelJob (see reportDownloadComplete).
+// Setting the value already in force succeeds regardless. A job queued between
+// the check and the swap is not covered. The caller is responsible for
+// creating the directory.
 func (app *Application) SetDownloadDir(dir string) error {
 	if dir == app.downloadDir() {
 		return nil

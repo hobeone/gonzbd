@@ -20,6 +20,11 @@ var errRetryDirConflict = errors.New("cannot restore the failed download directo
 // _FAILED_ name the finalize stage gave it (postproc.FailedDir) to
 // downloadDir/name, the path the retry writes to and post-processing reads.
 //
+// It refuses with errRetryDirConflict when recordedPath is not directly under
+// downloadDir: the entry was recorded under an earlier download_dir, so its
+// bytes are not where the retry would write and the retry would resume from
+// progress whose files are missing.
+//
 // It acts only when recordedPath, the history entry's path, is exactly that
 // _FAILED_ sibling; any other recorded path means no rename happened and the
 // bytes are already at downloadDir/name. It returns the path it moved from, or
@@ -33,6 +38,10 @@ var errRetryDirConflict = errors.New("cannot restore the failed download directo
 // exists, since nothing says whose that directory is. Where neither exists the
 // bytes are gone and there is nothing to move.
 func restoreFailedDir(recordedPath, downloadDir, name string, nameQueued func(string) bool) (string, error) {
+	if recordedPath != "" && filepath.Dir(recordedPath) != downloadDir {
+		return "", fmt.Errorf("%w: download_dir changed since this job failed; its files are at %s",
+			errRetryDirConflict, recordedPath)
+	}
 	jobDir := filepath.Join(downloadDir, name)
 	failedDir := postproc.FailedDir(jobDir)
 	if recordedPath != failedDir {

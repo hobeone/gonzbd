@@ -32,16 +32,26 @@ which one is a call (`internal/api/config.go`) and three are declarations.
 `git grep -n 'config\.Load(' -- '*.go' ':!*_test.go'` finds 2 lines, the daemon
 at startup (`cmd/gonzbd/main.go`) and a separate tool (`scripts/nzbprobe`), and
 the daemon has no SIGHUP or file-watch handler, so nothing reloads the file
-while it runs. The `--download-dir` flag is applied by `resolveDirs` at startup.
+while it runs. `git grep -n 'resolveDirs(' -- 'cmd/*.go' ':!*_test.go'` shows
+the `--download-dir` flag is handled only at startup, in `cmd/gonzbd`; this
+document does not claim it reaches the application.
 
 Known limitations:
 
 - Editing `download_dir` in the YAML and restarting while jobs are queued is
   unsupported. The check runs only on a runtime change; at startup the new value
   simply applies.
-- A job queued between the check and the swap is not covered.
+- A job queued between the check and the swap is not covered. Its files are
+  written under the old base, post-processing then looks under the new one, and
+  the job fails with its bytes left under the old base.
+- Two concurrent `download_dir` sets can leave the pipeline and the config
+  disagreeing, because nothing serializes them.
+- If `config.Save` fails after `SetDownloadDir` succeeded, the running daemon
+  uses the new directory while the file on disk still holds the old one.
 - Only registered jobs block a change. A failed history entry awaiting retry is
-  not registered, so a retry after the change looks under the new base.
+  not registered; a retry of an entry recorded under the earlier base is refused
+  with an error naming the recorded path, because its files are not under the
+  current one.
 
 ## Config ↔ UI Contract Test
 
