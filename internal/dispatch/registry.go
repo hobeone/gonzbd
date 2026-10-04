@@ -97,9 +97,10 @@ type Header struct {
 
 	// Unwanted is the job's standing against the unwanted-extension check.
 	// The application's ingest and retry paths set it before the job is
-	// registered; once registered, ResumeJobByUser is its only runtime
-	// writer (restore aside, see above), and it only moves
-	// unwanted.StateBlocked to unwanted.StateApproved.
+	// registered; once registered, BlockUnwanted (None to Blocked) and
+	// ResumeJobByUser (Blocked to Approved) are its only runtime writers
+	// (restore aside, see above): `git grep -n 'e[.]h[.]Unwanted = '
+	// -- 'internal/dispatch/*.go' ':!*_test.go'` returns 2 lines, those two.
 	Unwanted unwanted.State
 
 	Script    string
@@ -687,6 +688,13 @@ func (d *Dispatcher) PauseJob(id string) error {
 	if !ok {
 		return fmt.Errorf("dispatch: pause %s: %w", id, ErrNotFound)
 	}
+	return d.pauseJob(j)
+}
+
+// pauseJob is PauseJob's body for one instance, so BlockUnwanted pauses the
+// instance it blocked rather than whatever holds the ID afterwards.
+func (d *Dispatcher) pauseJob(j *job.Job) error {
+	id := j.ID()
 	if err := j.SetIntent(job.IntentPause); err != nil {
 		return fmt.Errorf("dispatch: pause %s: %w", id, err)
 	}
@@ -697,6 +705,60 @@ func (d *Dispatcher) PauseJob(id string) error {
 	}
 	d.kick()
 	return nil
+}
+
+// UnwantedState reports the registered job's standing against the
+// unwanted-extension check. It reads one map entry under d.mu and renders
+// nothing, so a caller that only needs this one field does not pay Row's
+// rendering.
+func (d *Dispatcher) UnwantedState(id string) (unwanted.State, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.byID[id]
+	if !ok {
+		return unwanted.StateNone, false
+	}
+	return e.h.Unwanted, true
+}
+
+// BlockUnwanted records that an archive the job has downloaded names a file
+// with an unwanted extension. It moves the job from unwanted.StateNone to
+// unwanted.StateBlocked, and is the one function that makes that move on a
+// registered job (the ingest check sets the state before registration).
+//
+// moved reports whether this call made the move; now is the job's state after
+// it. A job already Blocked or Approved is left as it is and moved is false,
+// so two completions that find the same hit produce one move, and a job the
+// user approved is not blocked again. The decision is taken under d.mu.
+//
+// With pause the job is paused as PauseJob does, so the user's resume
+// approves it (ResumeJobByUser). Without it the caller files the job and the
+// intent is left alone: a pause here would hold a failure reason waiting for
+// an Assessing worker until the user resumed, which approves the job. The new
+// state reaches dispatch_jobs at the next persist, as ResumeJobByUser's does.
+func (d *Dispatcher) BlockUnwanted(id string, pause bool) (moved bool, now unwanted.State, err error) {
+	d.mu.Lock()
+	e, ok := d.byID[id]
+	if !ok {
+		d.mu.Unlock()
+		return false, unwanted.StateNone, fmt.Errorf("dispatch: block %s: %w", id, ErrNotFound)
+	}
+	if e.h.Unwanted != unwanted.StateNone {
+		now = e.h.Unwanted
+		d.mu.Unlock()
+		return false, now, nil
+	}
+	e.h.Unwanted = unwanted.StateBlocked
+	j := e.j
+	d.mu.Unlock()
+
+	if pause {
+		if err := d.pauseJob(j); err != nil {
+			return true, unwanted.StateBlocked, err
+		}
+	}
+	d.kick()
+	return true, unwanted.StateBlocked, nil
 }
 
 // ResumeJob clears a pause request by restoring the default intent.
