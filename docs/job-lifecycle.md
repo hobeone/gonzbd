@@ -924,16 +924,31 @@ A hit calls `Dispatcher.BlockUnwanted`, which decides under the registry lock
 and moves `StateNone` to `StateBlocked` once however many completions hit
 together. Only the call that made the move acts. Under `pause` the job is
 paused as `PauseJob` does (intent and lease; files kept) and the user's resume
-approves it as above. Under `fail` the peek returns the ingest check's
-message and `completeFinalizedFile` files the job with it (`finalizeRegistered`)
-after `MarkFileComplete` and the checkpoint mark, no pause being applied first:
-a pause would hold the reason for an Assessing worker until the user's resume,
-which approves the job. Filing before the mark would let post-processing record
-the flagged file as incomplete in the history entry, or evict the job so the
-mark found it not resident. A job that file completes is deferred to its
-Assessing worker, which files it. A crash between the move and the filing
-leaves the job Blocked and unfiled; the restart's re-peek does nothing for a
-Blocked job, so `unwanted_cleanup` is what removes the files. `ResumeJob` and `ResumeJobByUser` share one body
+approves it as above. Under `fail` no pause is applied (a pause would hold the
+reason for an Assessing worker until the user's resume, which approves the
+job), so the job is Blocked with `IntentRun`, and filing it is owed. The owner
+of that filing is `fileOwedUnwantedFailure`, which derives the debt from
+persisted state: a Blocked job whose intent is `IntentRun`. Every other way to
+be Blocked pauses the job (the pause action's move sets `IntentPause` under the
+same lock; the ingest check pauses what it blocks) and the user's resume
+approves it. The writers behind that claim are found with
+`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` and
+`git grep -n 'SetIntent(job.IntentRun)' -- '*.go'`. The owner is called from
+`completeFinalizedFile` after `MarkFileComplete` and the checkpoint mark, with
+the peek's message naming the files, and by `reconcileBeforeFirstTick` for every
+restored job, with none. Filing before the mark would let post-processing
+record the flagged file as incomplete in the history entry, or evict the job so
+the mark found it not resident; and because the debt is derived, a completion
+whose mark failed and is redelivered files it too, and a job restored Blocked
+and running is filed before the first tick instead of downloading on. A filing
+without the peek's message (a redelivery, a restart) carries the prefix alone,
+since the names are not persisted; one racing the peek's own filing can
+therefore be the reason the history entry shows. A job that file completes is
+deferred to its Assessing worker, which files it. A pause of a Blocked
+`IntentRun` job (a user's, or a stall's) ends the derivation, since the intent
+is no longer `IntentRun`: the job is then held like a pause-action one, and
+`ResumeJob` refuses it while only the user's resume (`ResumeJobByUser`)
+approves it. `ResumeJob` and `ResumeJobByUser` share one body
 (`resume`) that sets the intent in the same `d.mu` span as its decision, as
 `BlockUnwanted` does, so a resume cannot leave a Blocked job running; a stall re-evaluation whose resume is refused as blocked releases its
 park and still delivers the files it holds. The state reaches `dispatch_jobs` at the next persist

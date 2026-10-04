@@ -36,6 +36,38 @@ func unwantedFailMessage(names []string) string {
 	return msg
 }
 
+// fileOwedUnwantedFailure files j as failed when persisted state says the
+// archive peek owes it a filing: the job is Blocked and its intent is
+// IntentRun. Under the pause action BlockUnwanted sets IntentPause in the
+// same d.mu span as the move, and the ingest check pauses what it blocks, so
+// IntentRun on a Blocked job comes only from the fail action's move, which
+// leaves the filing to this function. The enumeration is
+// `git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` (the writers of
+// Header.Unwanted: screenUnwanted, BlockUnwanted, resume) and
+// `git grep -n 'SetIntent(job.IntentRun)' -- '*.go'` (resume, which approves
+// or refuses a Blocked job).
+//
+// Being derived from state, the filing survives what a message in a local
+// variable did not: a completion whose mark failed and is redelivered, and a
+// restart (reconcileBeforeFirstTick). It is the one place that files such a
+// job. failMsg is the peek's message naming the files; the names are not
+// persisted, so a call with "" (a redelivery or the startup sweep) files with
+// the prefix alone. Filing is idempotent through the post-processing
+// admission, and defers to the Assessing worker for a job that is complete.
+func (app *Application) fileOwedUnwantedFailure(j *job.Job, failMsg string) {
+	if app.dispatcher == nil {
+		return
+	}
+	row, ok := app.dispatcher.RowJob(j)
+	if !ok || row.Header.Unwanted != unwanted.StateBlocked || j.Intent() != job.IntentRun {
+		return
+	}
+	if failMsg == "" {
+		failMsg = unwantedFailPrefix
+	}
+	app.enqueuePostProc(j, row.Header, failMsg, true)
+}
+
 // screenUnwanted applies the unwanted-extension check to j, a job about to
 // be registered, and records the result in hdr.Unwanted, overwriting what
 // the header carried in. priorBlock says the job's history entry was filed

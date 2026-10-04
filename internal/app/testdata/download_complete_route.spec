@@ -111,7 +111,10 @@ file internal/app/startup_reconcile.go
 			app.dropJobAlreadyInHistory(ctx, row.ID)
 		}
 	}
-	return app.resumeAllJobs(ctx)
+	if err := app.resumeAllJobs(ctx); err != nil {
+		return err
+	}
+	return app.fileOwedUnwantedFailures(ctx)
 --- replace
 	if err := app.resumeAllJobs(ctx); err != nil {
 		return err
@@ -124,7 +127,7 @@ file internal/app/startup_reconcile.go
 			app.dropJobAlreadyInHistory(ctx, row.ID)
 		}
 	}
-	return nil
+	return app.fileOwedUnwantedFailures(ctx)
 --- end
 
 [a cancelled startup goes on dropping and sweeping jobs]

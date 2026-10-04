@@ -104,8 +104,10 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 // the call that made it acts: it aborts the job's DirectUnpacker (a running
 // one would otherwise extract the flagged member), and under ActionFail
 // returns the ingest check's message for the caller to file the job with.
-// Filing is the caller's, after MarkFileComplete: post-processing can read the
-// job's per-file progress and evict it as soon as it is handed over. No lock
+// Filing is the caller's, through fileOwedUnwantedFailure and after
+// MarkFileComplete: post-processing can read the job's per-file progress and
+// evict it as soon as it is handed over. The message only names the files; the
+// filing is owed by the job's state, so it does not depend on this return. No lock
 // is held across the header read or the file I/O.
 func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) string {
 	if app.dispatcher == nil {

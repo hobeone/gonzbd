@@ -3,7 +3,7 @@
 #
 #     go run ./scripts/mutate internal/app/testdata/archive_peek.spec
 pkg ./internal/app/
-run TestPeek_|TestArchivePeek_|TestBlockForUnwanted_|TestReevaluateStall_ABlocked|TestArchiveMemberNames
+run TestPeek_|TestArchivePeek_|TestBlockForUnwanted_|TestReevaluateStall_ABlocked|TestArchiveMemberNames|TestReconcile_FilesAFail
 timeout 10m
 
 [a file with a failed article is read anyway]
@@ -69,11 +69,43 @@ file internal/app/app.go
 [the failed job is never filed after the mark]
 file internal/app/app.go
 --- anchor
+		app.fileOwedUnwantedFailure(j, unwantedFail)
+--- replace
+		_ = unwantedFail
+--- end
+
+[the filing is carried by the message alone, so a redelivery cannot file it]
+file internal/app/app.go
+--- anchor
+		app.fileOwedUnwantedFailure(j, unwantedFail)
+--- replace
 		if unwantedFail != "" {
 			app.finalizeRegistered(j, unwantedFail, true)
+		}
+--- end
+
+[the owed filing ignores the job's state]
+file internal/app/unwanted.go
+--- anchor
+	if !ok || row.Header.Unwanted != unwanted.StateBlocked || j.Intent() != job.IntentRun {
 --- replace
-		if false && unwantedFail != "" {
-			app.finalizeRegistered(j, unwantedFail, true)
+	if !ok {
+--- end
+
+[a pause-blocked job counts as owed]
+file internal/app/unwanted.go
+--- anchor
+	if !ok || row.Header.Unwanted != unwanted.StateBlocked || j.Intent() != job.IntentRun {
+--- replace
+	if !ok || row.Header.Unwanted != unwanted.StateBlocked {
+--- end
+
+[the startup sweep files nothing]
+file internal/app/startup_reconcile.go
+--- anchor
+	return app.fileOwedUnwantedFailures(ctx)
+--- replace
+	return nil
 --- end
 
 [a par2 file that fails to parse is not reported as an error]
