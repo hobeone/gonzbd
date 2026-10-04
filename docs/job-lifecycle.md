@@ -928,8 +928,8 @@ failed entry is not refused by the ingest check, since the NZB's own names are
 clean, and is unapproved unless made with `allow_unwanted=1`, which queues it
 approved so neither the peek nor `unwanted_cleanup` touches it. A file the
 retry keeps as already complete is not completed again, so it is not peeked;
-`unwanted_cleanup` is what covers it. The mover also aborts the job's
-DirectUnpacker, and `directUnpackOrchestrator.maybeStart` refuses to feed a
+`unwanted_cleanup` is what covers it. The application, on the call that made
+the move, also aborts the job's DirectUnpacker, and `directUnpackOrchestrator.maybeStart` refuses to feed a
 blocked job, so no flagged member is extracted while the job waits.
 
 Apart from restoring it from `dispatch_jobs` (the `Scan` in

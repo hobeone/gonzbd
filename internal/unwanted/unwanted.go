@@ -53,9 +53,11 @@ type Action string
 const (
 	// ActionOff disables the check, both at ingest and after unpack.
 	ActionOff Action = "off"
-	// ActionPause adds the job paused. Resuming it approves it.
+	// ActionPause pauses the job, at add or when a downloaded archive names
+	// the file. Resuming it approves it.
 	ActionPause Action = "pause"
-	// ActionFail files the job in history as Failed without downloading it.
+	// ActionFail files the job in history as Failed: at add without
+	// downloading it, or when a downloaded archive names the file.
 	ActionFail Action = "fail"
 )
 

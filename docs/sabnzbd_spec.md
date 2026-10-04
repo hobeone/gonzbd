@@ -684,7 +684,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `propagation_delay` | int | `0` | Minutes to wait before downloading |
 | `unwanted_extensions` | list | `exe, com, scr, pif, bat, cmd, msi, vbs` | Extensions a job must not deliver (no dot, case-insensitive, glob patterns allowed; an entry containing `.` or `,` is rejected) |
 | `unwanted_extensions_mode` | string | `blacklist` | `blacklist` (listed are unwanted) or `whitelist` (unlisted are unwanted); a name with no extension is never unwanted |
-| `action_on_unwanted_extensions` | string | `pause` | `off`, `pause` (add paused, labelled UNWANTED; resume approves) or `fail` (file as Failed at add, nothing downloaded); unless `off`, unwanted files are also removed after unpack from a job not approved. SABnzbd stores the mode and action as integers |
+| `action_on_unwanted_extensions` | string | `pause` | `off`, `pause` (add paused, or pause on a hit found in a downloaded RAR volume or par2 file; labelled UNWANTED; resume approves) or `fail` (file as Failed at add with nothing downloaded, or when a downloaded RAR volume or par2 file names one; gonzbd addition, SABnzbd checks the NZB only); unless `off`, unwanted files are also removed after unpack from a job not approved. SABnzbd stores the mode and action as integers |
 
 ### 9.4 Post-Processing Settings
 
