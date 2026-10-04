@@ -933,7 +933,8 @@ be Blocked pauses the job (the pause action's move sets `IntentPause` under the
 same lock; the ingest check pauses what it blocks) and the user's resume
 approves it. The writers behind that claim are found with
 `git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` and
-`git grep -n 'SetIntent(job.IntentRun)' -- '*.go'`. The owner is called from
+`git grep -n 'SetIntent(job[.]IntentRun)' -- '*.go' ':!*_test.go'` (one hit,
+in `resume`). The owner is called from
 `completeFinalizedFile` after `MarkFileComplete` and the checkpoint mark, with
 the peek's message naming the files, and by `reconcileBeforeFirstTick` for every
 restored job, with none. Filing before the mark would let post-processing
@@ -943,12 +944,17 @@ whose mark failed and is redelivered files it too, and a job restored Blocked
 and running is filed before the first tick instead of downloading on. A filing
 without the peek's message (a redelivery, a restart) carries the prefix alone,
 since the names are not persisted; one racing the peek's own filing can
-therefore be the reason the history entry shows. A job that file completes is
+therefore be the reason the history entry shows (names lost; the post-processing
+admission still lets only one filing through). A job that file completes is
 deferred to its Assessing worker, which files it. A pause of a Blocked
 `IntentRun` job (a user's, or a stall's) ends the derivation, since the intent
 is no longer `IntentRun`: the job is then held like a pause-action one, and
 `ResumeJob` refuses it while only the user's resume (`ResumeJobByUser`)
-approves it. `ResumeJob` and `ResumeJobByUser` share one body
+approves it. The same holds for a job a stall had already parked when a flagged
+completion reached it: `BlockUnwanted` with no pause finds the intent already
+`IntentPause`, so the job is never filed and ends held for approval, with the
+UNWANTED label. For that job `fail` is downgraded to `pause`, which is still
+safe. `ResumeJob` and `ResumeJobByUser` share one body
 (`resume`) that sets the intent in the same `d.mu` span as its decision, as
 `BlockUnwanted` does, so a resume cannot leave a Blocked job running; a stall re-evaluation whose resume is refused as blocked releases its
 park and still delivers the files it holds. The state reaches `dispatch_jobs` at the next persist

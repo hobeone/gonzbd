@@ -100,6 +100,14 @@ file internal/app/unwanted.go
 	if !ok || row.Header.Unwanted != unwanted.StateBlocked {
 --- end
 
+[the startup sweep hydrates a job before checking that it owes a filing]
+file internal/app/startup_reconcile.go
+--- anchor
+		if _, owed := app.unwantedFilingOwed(j); !owed {
+--- replace
+		if _, owed := app.unwantedFilingOwed(j); !owed && false {
+--- end
+
 [the startup sweep files nothing]
 file internal/app/startup_reconcile.go
 --- anchor

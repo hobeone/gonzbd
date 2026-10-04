@@ -316,14 +316,22 @@ func (d *Dispatcher) sortKeyOf(id string) int64 {
 //
 // The general shape is worth naming: two correct accessors composed across a
 // lock boundary are not equivalent to one accessor that reads both fields.
-func (d *Dispatcher) entryFor(id string) (Header, int64, bool) {
+//
+// It also takes j's Snapshot in that span. BlockUnwanted and ResumeJobByUser
+// change the Header's Unwanted state and the intent under d.mu, so a Header and
+// an intent read in two spans can pair a Blocked state with the intent of a
+// resume that approved it, and a row persisted so would, after a crash, read
+// as a fail-action filing owed (fileOwedUnwantedFailure). Job.Snapshot is a
+// read of Job.mu with no I/O and no call into sched.Queue, so D-B9 (which is
+// about the Queue) is not engaged; resume already takes Job.mu under d.mu.
+func (d *Dispatcher) entryFor(j *job.Job) (Header, int64, job.Snapshot, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	e, ok := d.byID[id]
+	e, ok := d.byID[j.ID()]
 	if !ok {
-		return Header{}, 0, false
+		return Header{}, 0, job.Snapshot{}, false
 	}
-	return e.h, e.seq, true
+	return e.h, e.seq, j.Snapshot(), true
 }
 
 // snapshotOrder returns the registered jobs that have a written queue row, in
@@ -797,9 +805,9 @@ func (d *Dispatcher) ResumeJob(id string) error {
 // approval (byUser only) and the intent change happen in one d.mu span.
 // BlockUnwanted decides and sets its pause under d.mu too, so the two
 // serialise and a Blocked job is not left running. The writers of IntentRun
-// are enumerated by `git grep -n 'SetIntent(job.IntentRun)' -- '*.go'`;
-// outside tests its hits are this comment and the call below. Re-run it when
-// adding a resume path.
+// are enumerated by `git grep -n 'SetIntent(job[.]IntentRun)' -- '*.go' ':!*_test.go'`,
+// whose one hit is the call below (the bracket keeps the comments that cite
+// the command from matching it). Re-run it when adding a resume path.
 //
 // A byUser resume of a blocked job approves it before the intent changes, so
 // no tick can see the job running while still blocked. A resume refused

@@ -3,8 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-
-	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // reconcileBeforeFirstTick is Application.Start's beforeFirstTick step for
@@ -50,15 +48,19 @@ func (app *Application) fileOwedUnwantedFailures(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("app: startup reconciliation aborted: %w", err)
 		}
-		if row.Header.Unwanted != unwanted.StateBlocked {
+		j, ok := app.dispatcher.Job(row.ID)
+		if !ok {
+			continue
+		}
+		// Decided before hydrating: a paused job, which is every Blocked one
+		// but the fail action's, is never loaded by this sweep.
+		if _, owed := app.unwantedFilingOwed(j); !owed {
 			continue
 		}
 		if app.residency != nil {
 			_ = app.residency.Hydrate(ctx, row.ID)
 		}
-		if j, ok := app.dispatcher.Job(row.ID); ok {
-			app.fileOwedUnwantedFailure(j, "")
-		}
+		app.fileOwedUnwantedFailure(j, "")
 	}
 	return nil
 }

@@ -44,8 +44,8 @@ func unwantedFailMessage(names []string) string {
 // leaves the filing to this function. The enumeration is
 // `git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` (the writers of
 // Header.Unwanted: screenUnwanted, BlockUnwanted, resume) and
-// `git grep -n 'SetIntent(job.IntentRun)' -- '*.go'` (resume, which approves
-// or refuses a Blocked job).
+// `git grep -n 'SetIntent(job[.]IntentRun)' -- '*.go' ':!*_test.go'` (resume,
+// the one non-test call, which approves or refuses a Blocked job).
 //
 // Being derived from state, the filing survives what a message in a local
 // variable did not: a completion whose mark failed and is redelivered, and a
@@ -55,17 +55,30 @@ func unwantedFailMessage(names []string) string {
 // the prefix alone. Filing is idempotent through the post-processing
 // admission, and defers to the Assessing worker for a job that is complete.
 func (app *Application) fileOwedUnwantedFailure(j *job.Job, failMsg string) {
-	if app.dispatcher == nil {
-		return
-	}
-	row, ok := app.dispatcher.RowJob(j)
-	if !ok || row.Header.Unwanted != unwanted.StateBlocked || j.Intent() != job.IntentRun {
+	row, owed := app.unwantedFilingOwed(j)
+	if !owed {
 		return
 	}
 	if failMsg == "" {
 		failMsg = unwantedFailPrefix
 	}
 	app.enqueuePostProc(j, row.Header, failMsg, true)
+}
+
+// unwantedFilingOwed is the one predicate for a filing owed to j: it is
+// registered, Blocked, and has IntentRun. fileOwedUnwantedFailure acts on it
+// and the startup sweep uses it to decide whether to hydrate a job at all, so
+// a paused Blocked job is never loaded for it. It returns j's row, read in the
+// same call.
+func (app *Application) unwantedFilingOwed(j *job.Job) (dispatch.Row, bool) {
+	if app.dispatcher == nil {
+		return dispatch.Row{}, false
+	}
+	row, ok := app.dispatcher.RowJob(j)
+	if !ok || row.Header.Unwanted != unwanted.StateBlocked || j.Intent() != job.IntentRun {
+		return dispatch.Row{}, false
+	}
+	return row, true
 }
 
 // screenUnwanted applies the unwanted-extension check to j, a job about to

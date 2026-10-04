@@ -444,11 +444,12 @@ func TestLastWrittenAndMarkWritten_RoundTrip(t *testing.T) {
 func TestEntryFor_RoundTrip(t *testing.T) {
 	d := newTestDispatcher(t)
 	h := Header{Name: "n", Category: "tv", Added: 1700000000}
-	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), h); err != nil {
+	j1 := job.New("j1", "n", job.Policy{})
+	if err := d.Add(context.Background(), j1, h); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
-	got, seq, ok := d.entryFor("j1")
+	got, seq, _, ok := d.entryFor(j1)
 	if !ok || got != h {
 		t.Errorf("entryFor(j1) = (%+v, %v), want (%+v, true)", got, ok, h)
 	}
@@ -456,7 +457,7 @@ func TestEntryFor_RoundTrip(t *testing.T) {
 		t.Errorf("entryFor(j1) seq = %d, want 0 for the first job added", seq)
 	}
 
-	if got, gotSeq, ok := d.entryFor("nope"); ok {
+	if got, gotSeq, _, ok := d.entryFor(job.New("nope", "n", job.Policy{})); ok {
 		t.Errorf("entryFor(nope) = (%+v, %d, true), want ok false for an unregistered ID", got, gotSeq)
 	}
 }

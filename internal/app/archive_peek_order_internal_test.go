@@ -121,8 +121,17 @@ func TestReconcile_FilesAFailBlockedJobAndHoldsAPauseBlockedOne(t *testing.T) {
 			if in := a.j.Intent(); in != c.intent {
 				t.Fatalf("Intent = %v, want %v", in, c.intent)
 			}
+			// As restored: the content tier is not resident. The resume sweep,
+			// which hydrates every downloading job itself, is left out so what
+			// is under test is this sweep's own hydration.
+			a.resumer = nil
+			a.j.Evict()
 			if err := a.reconcileBeforeFirstTick(t.Context()); err != nil {
 				t.Fatalf("reconcileBeforeFirstTick: %v", err)
+			}
+			// A pause never hydrates: the sweep loads only a job it files.
+			if _, err := a.j.Manifest(); errors.Is(err, job.ErrNotResident) == c.filed {
+				t.Errorf("after the sweep Manifest err = %v, want not-resident only for the held job", err)
 			}
 			if got := a.postProcAdmissions.has(a.j); got != c.filed {
 				t.Fatalf("filed = %v, want %v", got, c.filed)

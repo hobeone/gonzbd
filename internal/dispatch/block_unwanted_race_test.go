@@ -48,6 +48,42 @@ func TestResumeJob_RacingBlockUnwantedNeverLeavesABlockedJobRunning(t *testing.T
 	}
 }
 
+// TestPersistIfChanged_NeverWritesABlockedStateWithTheApprovingResumesIntent
+// lands the user's approving resume right after the persist's read of the
+// job. The row written must be one moment's view: the Blocked state with the
+// pause, or the Approved state with the run, never Blocked with IntentRun,
+// which a restart reads as a fail-action filing that is owed.
+func TestPersistIfChanged_NeverWritesABlockedStateWithTheApprovingResumesIntent(t *testing.T) {
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withStore(st))
+	j := job.New("a", "Job A", job.PolicyFromPP(3))
+	if err := d.Add(context.Background(), j, Header{Name: "Job A"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if moved, err := d.BlockUnwanted(j, true); err != nil || !moved {
+		t.Fatalf("BlockUnwanted = (%v, %v)", moved, err)
+	}
+	once := true
+	d.persistReadHook = func() {
+		if once {
+			once = false
+			if err := d.ResumeJobByUser("a"); err != nil {
+				t.Errorf("ResumeJobByUser: %v", err)
+			}
+		}
+	}
+	if err := d.persistIfChanged(context.Background(), j); err != nil {
+		t.Fatalf("persistIfChanged: %v", err)
+	}
+	p, ok := st.row("a")
+	if !ok {
+		t.Fatal("no row was written")
+	}
+	if p.Header.Unwanted == unwanted.StateBlocked && p.Intent == job.IntentRun {
+		t.Fatalf("persisted row = Blocked with IntentRun: a torn read of the header and the intent")
+	}
+}
+
 // TestResumeJobByUser_RacingBlockUnwantedNeverLeavesABlockedJobRunning is the
 // user-resume twin: BlockUnwanted starts after ResumeJobByUser has decided
 // (the job was not blocked, so there was nothing to approve) and before it

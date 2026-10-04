@@ -3,7 +3,7 @@
 #
 #     go run ./scripts/mutate internal/dispatch/testdata/block_unwanted.spec
 pkg ./internal/dispatch/
-run TestBlockUnwanted_|TestResumeJob_Racing|TestResumeJobByUser_Racing
+run TestBlockUnwanted_|TestResumeJob_Racing|TestResumeJobByUser_Racing|TestPersistIfChanged_NeverWrites
 timeout 5m
 
 [a blocked or approved job is moved again]
@@ -38,6 +38,18 @@ file internal/dispatch/registry.go
 		d.mu.Unlock()
 		d.resumeDecidedHook()
 		d.mu.Lock()
+--- end
+
+[the persisted row's intent is read after, not with, its header]
+file internal/dispatch/tick.go
+--- anchor
+	h, seq, s, ok := d.entryFor(j)
+--- replace
+	h, seq, _, ok := d.entryFor(j)
+	if ok && d.persistReadHook != nil {
+		d.persistReadHook()
+	}
+	s := j.Snapshot()
 --- end
 
 [a stale instance blocks the job registered under its ID]
