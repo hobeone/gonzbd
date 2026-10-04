@@ -20,9 +20,9 @@ file internal/app/rename.go
 [the rename is not made unique]
 file internal/app/rename.go
 --- anchor
-	name = uniqueName(name, func(n string) bool { return app.jobNameTaken(snap, n) })
+		name := uniqueName(base, func(n string) bool { return app.jobNameTaken(snap, n) })
 --- replace
-	_ = uniqueName(name, func(n string) bool { return app.jobNameTaken(snap, n) })
+		name := base
 --- end
 
 [a name on disk counts as free]

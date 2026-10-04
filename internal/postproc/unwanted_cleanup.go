@@ -22,11 +22,12 @@ import (
 // renamed. It judges what finalize will deliver, which is everything under
 // DownloadDir, so it does not consult OwnedFiles: par2 repair records
 // nothing there. DownloadDir is the download directory joined with the job's
-// name, and that name is one path component no other queued job has:
-// AddJob and Application.RenameJob choose it with uniqueName, and
-// Dispatcher.SetName refuses ".", "..", a separator or another job's name.
-// A retry restores the directory with restoreFailedDir, which refuses a
-// taken name.
+// name, and no two registered jobs share a name: the dispatcher refuses one
+// another registered job holds, both when a job is registered and when it is
+// renamed (Dispatcher.nameHolderLocked). AddJob and Application.RenameJob
+// choose a name again when refused; Dispatcher.SetName also refuses ".",
+// ".." and a separator. A retry keeps its recorded name and is refused if
+// another job holds it.
 //
 // It removes nothing when:
 //   - the rules' action is off;

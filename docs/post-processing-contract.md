@@ -521,11 +521,16 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    `DownloadDir`, including files par2 repair rebuilt or renamed, which repair
    does not record in `OwnedFiles`. It judges every file under `DownloadDir`.
    That directory is the download directory joined with the job's name, and
-   the name is one path component no other queued job has. `AddJob` and
-   `Application.RenameJob` (the API's rename) choose it with `uniqueName`
-   and `jobNameTaken`. `Dispatcher.SetName` refuses `.`, `..`, a separator
-   or another job's name. A retry restores the directory with
-   `restoreFailedDir`, which refuses a taken name.
+   no two registered jobs share a name. The dispatcher owns that rule:
+   `Dispatcher.nameHolderLocked` is checked under `d.mu` both when a job is
+   registered (`Add`, and restore at startup) and when it is renamed
+   (`SetName`), so of two callers that chose one name concurrently, only
+   one is admitted. `AddJob` and `Application.RenameJob` (the API's rename)
+   choose a name with `uniqueName` and `jobNameTaken`, and choose again when
+   the dispatcher refuses it (`claimJobName`). `Dispatcher.SetName` also
+   refuses `.`, `..` and a separator. A retry keeps the name its history
+   entry recorded, because that is where its bytes are, and is refused if
+   another registered job holds it.
 5. **Script environment contract**: User scripts receive 8 positional arguments
    ($1–$8) matching Python SABnzbd:
    `script <complete_dir> <nzb_name> <job_name> <report_name> <category> <group> <status> <failure_url>`
@@ -742,7 +747,10 @@ recorded entirely through the fetch-policy discard, not through this field.
   nothing, when `DownloadDir/<name>` already exists, when another queued job
   has that name, or when the `_FAILED_` directory is gone but
   `DownloadDir/<name>` exists — each is a directory that may not be this
-  job's. `TestRetryHistoryJob_ResumesInTheFailedDirectory` runs the real
+  job's. A job that registers the name after that check, before the retry
+  is queued, makes `Dispatcher.Add` refuse the retry, which then unwinds the
+  same way (`TestRetryHistoryJob_RefusesWhenAnotherJobTookItsName`).
+  `TestRetryHistoryJob_ResumesInTheFailedDirectory` runs the real
   `finalize` stage through a failure and a retry, in process and after a
   restart.
 - **Unpack Failure (`UnpackError = true`)**: Extraction errors (bad password,

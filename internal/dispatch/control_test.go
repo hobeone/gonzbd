@@ -3,7 +3,9 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,6 +90,54 @@ func TestSetName_RefusesUnsafeOrTakenNames(t *testing.T) {
 	}
 	if err := d.SetName("a", "Renamed"); err != nil {
 		t.Errorf("SetName to the job's own name = %v, want nil", err)
+	}
+}
+
+// TestAdd_RefusesANameAnotherJobHas pins the registration half of the name
+// invariant: two callers that each chose a name the queue did not yet hold
+// cannot both register under it, because Add checks under the same d.mu span
+// that inserts the job. A refused Add leaves no entry and writes no row.
+func TestAdd_RefusesANameAnotherJobHas(t *testing.T) {
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withStore(st))
+	if err := d.Add(context.Background(), job.New("a", "Same", job.PolicyFromPP(3)), Header{Name: "Same"}); err != nil {
+		t.Fatalf("Add(a): %v", err)
+	}
+	err := d.Add(context.Background(), job.New("b", "Same", job.PolicyFromPP(3)), Header{Name: "Same"})
+	if !errors.Is(err, ErrJobNameTaken) || !errors.Is(err, ErrInvalidJobName) {
+		t.Fatalf("Add(b) under a's name = %v, want ErrJobNameTaken wrapping ErrInvalidJobName", err)
+	}
+	if _, ok := d.Row("b"); ok {
+		t.Fatal("a refused Add left b registered")
+	}
+	st.mu.Lock()
+	_, wrote := st.rows["b"]
+	st.mu.Unlock()
+	if wrote {
+		t.Fatal("a refused Add wrote b's queue row")
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := range n {
+		wg.Go(func() {
+			id := fmt.Sprintf("c%d", i)
+			errs[i] = d.Add(context.Background(), job.New(id, "Raced", job.PolicyFromPP(3)), Header{Name: "Raced"})
+		})
+	}
+	wg.Wait()
+	admitted := 0
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			admitted++
+		case !errors.Is(err, ErrJobNameTaken):
+			t.Errorf("concurrent Add c%d = %v, want nil or ErrJobNameTaken", i, err)
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("%d of %d concurrent Adds under one name were admitted, want exactly 1", admitted, n)
 	}
 }
 

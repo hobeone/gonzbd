@@ -362,7 +362,7 @@ func TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess(t *testing.T) {
 
 	addErr := make(chan error, 1)
 	go func() {
-		addErr <- d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"})
+		addErr <- d.Add(context.Background(), job.New("j1", "n1", job.Policy{}), Header{Name: "n1"})
 	}()
 
 	deadline := time.Now().Add(5 * time.Second)

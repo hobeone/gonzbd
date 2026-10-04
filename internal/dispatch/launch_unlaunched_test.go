@@ -132,8 +132,8 @@ func TestLaunch_DeclinedLaunchReturnsTheGrant(t *testing.T) {
 					t.Errorf("j1 still holds its grant after a %s declined its launch: view %+v", h.name, v)
 				}
 
-				j2 := job.New("j2", "n", job.Policy{})
-				if err := d.Add(ctx, j2, Header{}); err != nil {
+				j2 := job.New("j2", "n2", job.Policy{})
+				if err := d.Add(ctx, j2, Header{Name: "n2"}); err != nil {
 					t.Fatalf("Add j2: %v", err)
 				}
 				d.tick(ctx) // BeginAttempt at Fetching

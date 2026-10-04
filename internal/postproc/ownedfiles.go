@@ -37,11 +37,10 @@ func markRenamed(job *Job, from, to string) {
 
 // snapshotOwnedFiles returns the set of absolute paths of every regular file
 // currently under dir. Used to seed Job.OwnedFiles at the start of
-// processJob: since dir (job.DownloadDir) is exclusive to this job for its
-// entire lifetime (see the job-name uniqueness invariant enforced by
-// app.AddJob and app.RenameJob, and Dispatcher.SetName), every file present
-// at that moment was produced by
-// this job's own download — nothing else can have written there.
+// processJob. dir (job.DownloadDir) is named after the job, and no other
+// registered job has that name: the dispatcher refuses a taken name at
+// registration and at rename (Dispatcher.nameHolderLocked). So every file
+// present at that moment was produced by this job's own download.
 func snapshotOwnedFiles(dir string) (map[string]struct{}, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {

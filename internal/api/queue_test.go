@@ -2151,7 +2151,7 @@ func TestQueueList_UsesSingleDirectUnpackSnapshot(t *testing.T) {
 	})
 
 	for _, id := range []string{"job-1", "job-2", "job-3"} {
-		_ = addTestJob(t, q, testAddOptions{JobID: id, Filename: "movie.nzb"})
+		_ = addTestJob(t, q, testAddOptions{JobID: id, Filename: "movie.nzb", Name: "movie-" + id})
 	}
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)

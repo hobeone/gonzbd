@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
@@ -70,9 +71,34 @@ func (app *Application) RenameJob(id, name string) (string, error) {
 	if name == row.Header.Name {
 		return name, nil
 	}
-	name = uniqueName(name, func(n string) bool { return app.jobNameTaken(snap, n) })
-	if err := app.dispatcher.SetName(id, name); err != nil {
+	name, err := app.claimJobName(snap, name, func(n string) error { return app.dispatcher.SetName(id, n) })
+	if err != nil {
 		return "", fmt.Errorf("app: rename %s: %w", id, err)
 	}
 	return name, nil
+}
+
+// maxJobNameAttempts bounds claimJobName. Each refusal it retries means
+// another job took the chosen name in the meantime, so one caller loses at
+// most once per job named concurrently with it.
+const maxJobNameAttempts = 32
+
+// claimJobName chooses a name from base with uniqueName and jobNameTaken, and
+// passes it to claim, the registry call that writes it: Dispatcher.Add for
+// AddJob, Dispatcher.SetName for RenameJob. The registry refuses a name
+// another registered job holds (dispatch.ErrJobNameTaken), which happens when
+// that job took it after it was chosen here. claimJobName then chooses again.
+// It returns the name claim accepted, or claim's first other error.
+func (app *Application) claimJobName(snap *config.Config, base string, claim func(name string) error) (string, error) {
+	for range maxJobNameAttempts {
+		name := uniqueName(base, func(n string) bool { return app.jobNameTaken(snap, n) })
+		if app.jobNameChosenHook != nil {
+			app.jobNameChosenHook(name)
+		}
+		err := claim(name)
+		if !errors.Is(err, dispatch.ErrJobNameTaken) {
+			return name, err
+		}
+	}
+	return "", fmt.Errorf("app: no free job name from %q after %d attempts: %w", base, maxJobNameAttempts, dispatch.ErrJobNameTaken)
 }

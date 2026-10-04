@@ -309,6 +309,11 @@ type Application struct {
 	// job. Same discipline as checkpointHook.
 	retryRegisteringHook func(id string)
 
+	// jobNameChosenHook, when non-nil, runs in claimJobName after a name is
+	// chosen and before the registry is asked to take it. Same discipline as
+	// checkpointHook.
+	jobNameChosenHook func(name string)
+
 	// startedTransitionHook, when non-nil, runs in Start right after started
 	// flips true. Same discipline as checkpointHook.
 	startedTransitionHook func()
@@ -798,11 +803,10 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		hdr.DuplicateReason = dupReason
 	}
 
+	// The name is chosen at the Add below, where the registry can refuse one
+	// another job took meanwhile; nothing written before it depends on the name.
 	snap := app.config.Snapshot()
-	hdr.Name = uniqueName(hdr.Name, func(name string) bool {
-		return app.jobNameTaken(snap, name)
-	})
-	j.SetName(hdr.Name)
+	baseName := hdr.Name
 
 	// Everything from here on writes something the job owns — NZB backup,
 	// manifest, job_files rows — and until the job reaches dispatch_jobs only
@@ -845,13 +849,17 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 			}
 		}
 	}
-	if app.dispatcher != nil {
-		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
-		err := app.dispatcher.Add(addCtx, j, hdr)
-		addCancel()
-		if err != nil {
-			return fmt.Errorf("app: add to dispatcher: %w", err)
+	if _, err := app.claimJobName(snap, baseName, func(name string) error {
+		hdr.Name = name
+		j.SetName(name)
+		if app.dispatcher == nil {
+			return nil
 		}
+		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
+		defer addCancel()
+		return app.dispatcher.Add(addCtx, j, hdr)
+	}); err != nil {
+		return fmt.Errorf("app: add to dispatcher: %w", err)
 	}
 	admitted = true
 	app.emit(Event{Type: "queue_updated"})
@@ -2940,6 +2948,11 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
 		err := app.dispatcher.Add(addCtx, j, hdr)
 		addCancel()
+		if errors.Is(err, dispatch.ErrJobNameTaken) {
+			// Not chosen again, as AddJob does: the name is the directory
+			// holding this job's bytes, which the retained progress describes.
+			return fmt.Errorf("app: retry %s: %w: %w", jobID, errRetryDirConflict, err)
+		}
 		if err != nil {
 			return err
 		}

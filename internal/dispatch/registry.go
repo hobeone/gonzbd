@@ -20,6 +20,11 @@ var ErrNotFound = errors.New("dispatch: job not found")
 // component, or that another registered job already has.
 var ErrInvalidJobName = errors.New("dispatch: invalid job name")
 
+// ErrJobNameTaken is the refusal of a name another registered job holds, by
+// SetName or by registration (Add, and restore). It wraps ErrInvalidJobName.
+// A caller that chose the name before asking can choose again and retry.
+var ErrJobNameTaken = fmt.Errorf("%w: another registered job has it", ErrInvalidJobName)
+
 // ErrUnwantedBlocked is ResumeJob's refusal of a job the unwanted-extension
 // check blocked: only ResumeJobByUser, the user's approval, unblocks it.
 var ErrUnwantedBlocked = errors.New("dispatch: the job is blocked for unwanted extensions and needs the user's approval")
@@ -29,8 +34,9 @@ var ErrUnwantedBlocked = errors.New("dispatch: the job is blocked for unwanted e
 // Name is the one field job.Job DOES carry, and it is duplicated here on
 // purpose: it lets a listing be composed from Header alone, without the
 // registry handing out *job.Job pointers to do it. Header.Name is read by
-// API queue search filtering (internal/api/queue.go) and Application
-// name collision detection (internal/app/app.go), while downstream filesystem
+// API queue search filtering (internal/api/queue.go), the registry's own
+// name check (nameHolderLocked) and Application.queuedName
+// (internal/app/retry_failed_dir.go), while downstream filesystem
 // paths and finalization read Job.Name(). SetName updates both under d.mu so the
 // two copies stay in lockstep.
 //
@@ -261,6 +267,10 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 	if d.removing[j.ID()] > 0 {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: register: %s: %w", j.ID(), errPreemptedByRemoval)
+	}
+	if otherID, taken := d.nameHolderLocked(j.ID(), h.Name); taken {
+		d.mu.Unlock()
+		return fmt.Errorf("dispatch: register %s as %q: job %s has that name: %w", j.ID(), h.Name, otherID, ErrJobNameTaken)
 	}
 	added := seq == seqNext
 	if added {
@@ -942,14 +952,29 @@ func (d *Dispatcher) SetName(id, name string) error {
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
 		return fmt.Errorf("dispatch: set name %s to %q: not a single path component: %w", id, name, ErrInvalidJobName)
 	}
-	for otherID, other := range d.byID {
-		if otherID != id && other.h.Name == name {
-			return fmt.Errorf("dispatch: set name %s to %q: job %s has that name: %w", id, name, otherID, ErrInvalidJobName)
-		}
+	if otherID, taken := d.nameHolderLocked(id, name); taken {
+		return fmt.Errorf("dispatch: set name %s to %q: job %s has that name: %w", id, name, otherID, ErrJobNameTaken)
 	}
 	e.h.Name = name
 	e.j.SetName(name)
 	return nil
+}
+
+// nameHolderLocked reports the registered job other than id whose name is
+// name. It is the registry's one test of "no two registered jobs share a
+// name": register applies it to a job entering the registry (Add and
+// restore) and SetName to a rename, both under the d.mu span that then
+// writes the name, so a name chosen concurrently by two callers reaches the
+// registry for only one of them.
+// `git grep -n 'd\.nameHolderLocked(' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 2 lines.
+// Caller must hold d.mu.
+func (d *Dispatcher) nameHolderLocked(id, name string) (string, bool) {
+	for otherID, other := range d.byID {
+		if otherID != id && other.h.Name == name {
+			return otherID, true
+		}
+	}
+	return "", false
 }
 
 // SetCategory sets the category for a registered job.
