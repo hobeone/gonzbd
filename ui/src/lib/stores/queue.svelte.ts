@@ -82,6 +82,19 @@ class QueueStore extends BasePollStore {
 		this.poll();
 	}
 
+	// pauseAll and resumeAll toggle the global pause and then re-poll rather
+	// than waiting for the server's queue_updated broadcast, which can arrive
+	// late or not at all (dropped socket); isPaused() reads the polled queue.
+	async pauseAll() {
+		await postAction('pause');
+		await this.poll();
+	}
+
+	async resumeAll() {
+		await postAction('resume');
+		await this.poll();
+	}
+
 	async pauseJob(nzoId: string) {
 		await postAction('queue', { name: 'pause', value: nzoId });
 		await this.poll();
@@ -119,6 +132,8 @@ export const startPolling = () => store.start();
 export const stopPolling = () => store.stop();
 export const refreshQueue = () => store.poll();
 
+export const pauseAll = () => store.pauseAll();
+export const resumeAll = () => store.resumeAll();
 export const pauseJob = (id: string) => store.pauseJob(id);
 export const resumeJob = (id: string) => store.resumeJob(id);
 export const deleteJob = (id: string, df?: boolean) => store.deleteJob(id, df);

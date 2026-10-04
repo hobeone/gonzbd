@@ -9,11 +9,13 @@ vi.mock('./AddNzbDialog.svelte', () => ({
 vi.mock('./SettingsDialog.svelte', () => ({
 	default: function SettingsDialogMock() {}
 }));
-vi.mock('#lib/api.js', () => ({
-	postAction: vi.fn().mockResolvedValue({ status: true })
+vi.mock('#lib/stores/queue.svelte.js', async (importOriginal) => ({
+	...(await importOriginal<typeof import('#lib/stores/queue.svelte.js')>()),
+	pauseAll: vi.fn().mockResolvedValue(undefined),
+	resumeAll: vi.fn().mockResolvedValue(undefined)
 }));
 
-import { postAction } from '#lib/api.js';
+import { pauseAll, resumeAll } from '#lib/stores/queue.svelte.js';
 
 describe('Navbar', () => {
 	beforeEach(() => {
@@ -36,26 +38,21 @@ describe('Navbar', () => {
 		expect(screen.getByText('Resume')).toBeInTheDocument();
 	});
 
-	it('clicking Pause calls postAction with pause', async () => {
+	// pauseAll/resumeAll post the action and then re-poll the queue (see the
+	// store tests), which is what flips the button; the component must go
+	// through them rather than posting on its own.
+	it('clicking Pause calls pauseAll only', async () => {
 		render(Navbar, { props: { paused: false } });
-		const btn = screen.getByText('Pause');
-		await fireEvent.click(btn);
-		expect(postAction).toHaveBeenCalledWith('pause');
+		await fireEvent.click(screen.getByText('Pause'));
+		expect(pauseAll).toHaveBeenCalledTimes(1);
+		expect(resumeAll).not.toHaveBeenCalled();
 	});
 
-	it('clicking Resume calls postAction with resume', async () => {
+	it('clicking Resume calls resumeAll only', async () => {
 		render(Navbar, { props: { paused: true } });
-		const btn = screen.getByText('Resume');
-		await fireEvent.click(btn);
-		expect(postAction).toHaveBeenCalledWith('resume');
-	});
-
-	it('calls onpausetoggle callback after toggle', async () => {
-		const toggle = vi.fn();
-		render(Navbar, { props: { paused: false, onpausetoggle: toggle } });
-		const btn = screen.getByText('Pause');
-		await fireEvent.click(btn);
-		expect(toggle).toHaveBeenCalled();
+		await fireEvent.click(screen.getByText('Resume'));
+		expect(resumeAll).toHaveBeenCalledTimes(1);
+		expect(pauseAll).not.toHaveBeenCalled();
 	});
 
 	it('renders + Add NZB button', () => {

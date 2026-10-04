@@ -3161,23 +3161,34 @@ func (app *Application) SetCompleteDir(dir string) {
 
 // PauseDownloads cancels all in-flight fetch operations and flushes the
 // speed meter so the UI graph drops to zero immediately. Call this in
-// addition to queue.PauseAll() which only prevents new dispatch.
+// addition to dispatcher.Pause(), which only prevents new dispatch.
+//
+// It then broadcasts queue_updated, because the metrics tick does not: it emits
+// one only while speed is above zero, which a pause makes false. The API
+// handlers that call this (control.go and queue.go in internal/api) pause the
+// dispatcher first when one is configured, so the queue a client re-polls on that event already
+// reports paused.
 func (app *Application) PauseDownloads() {
 	app.mu.Lock()
-	defer app.mu.Unlock()
 	if app.downloader != nil {
 		app.downloader.Pause()
 	}
+	app.mu.Unlock()
+	// --- No lock held below this line ---
+	app.emit(Event{Type: "queue_updated"})
 }
 
 // ResumeDownloads creates a fresh fetch context so workers can dial and
-// fetch again, then pokes the dispatch loop.
+// fetch again, then pokes the dispatch loop and broadcasts queue_updated, the
+// mirror of PauseDownloads (the same handlers resume the dispatcher first).
 func (app *Application) ResumeDownloads() {
 	app.mu.Lock()
-	defer app.mu.Unlock()
 	if app.downloader != nil {
 		app.downloader.Resume()
 	}
+	app.mu.Unlock()
+	// --- No lock held below this line ---
+	app.emit(Event{Type: "queue_updated"})
 }
 
 // DisconnectAll drops all idle NNTP connections. Workers stay alive and

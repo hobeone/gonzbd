@@ -45,6 +45,8 @@ import {
 	getSpeedBytesPerSec,
 	getSpeedHistory,
 	getTotalRemainingBytes,
+	pauseAll,
+	resumeAll,
 	pauseJob,
 	resumeJob,
 	deleteJob
@@ -202,6 +204,31 @@ describe('Queue Store', () => {
 	});
 
 	// ── Job actions ──
+
+	it('pauseAll posts pause and re-polls so isPaused follows', async () => {
+		vi.mocked(postAction).mockResolvedValue({ status: true });
+		vi.mocked(fetchQueue).mockResolvedValue({
+			status: true,
+			queue: { slots: [], noofslots: 0, paused: true, speed: '0', timeleft: '0:00:00' }
+		} as any);
+
+		await pauseAll();
+
+		expect(postAction).toHaveBeenCalledWith('pause');
+		expect(fetchQueue).toHaveBeenCalled();
+		expect(isPaused()).toBe(true);
+	});
+
+	it('resumeAll posts resume and re-polls so isPaused follows', async () => {
+		vi.mocked(postAction).mockResolvedValue({ status: true });
+		mockQueueOk();
+
+		await resumeAll();
+
+		expect(postAction).toHaveBeenCalledWith('resume');
+		expect(fetchQueue).toHaveBeenCalled();
+		expect(isPaused()).toBe(false);
+	});
 
 	it('pauseJob sends pause action and re-polls', async () => {
 		vi.mocked(postAction).mockResolvedValue({ status: true });
