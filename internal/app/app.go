@@ -3089,7 +3089,7 @@ var ErrDownloadDirBusy = errors.New("download_dir cannot change while the queue 
 // the check and the swap is not covered. The caller is responsible for
 // creating the directory.
 func (app *Application) SetDownloadDir(dir string) error {
-	if dir == app.downloadDir() {
+	if filepath.Clean(dir) == filepath.Clean(app.downloadDir()) {
 		return nil
 	}
 	if app.dispatcher != nil {
@@ -3115,8 +3115,10 @@ func (app *Application) SetDownloadDir(dir string) error {
 }
 
 // SetCompleteDir updates the complete directory used for new jobs.
-// Already-queued jobs are unaffected since their FinalDir was computed at
-// enqueue time. The caller is responsible for creating the directory.
+// enqueuePostProc derives a job's FinalDir from the complete directory in
+// force when the job is handed to post-processing, so a change applies to jobs
+// still queued at that point. The caller is responsible for creating the
+// directory.
 func (app *Application) SetCompleteDir(dir string) {
 	app.mu.Lock()
 	app.config.With(func(c *config.Config) {

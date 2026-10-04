@@ -33,9 +33,10 @@ which one is a call (`internal/api/config.go`) and three are declarations.
 at startup (`cmd/gonzbd/main.go`) and a separate tool (`scripts/nzbprobe`), and
 the daemon has no SIGHUP or file-watch handler, so nothing reloads the file
 while it runs. `git grep -n 'resolveDirs(' -- 'cmd/*.go' ':!*_test.go'` shows
-the `--download-dir` flag is handled only at startup, in `cmd/gonzbd`, where
-its value is used to create directories and is never written to the config
-that `app.New` reads, so the flag does not reach the application.
+the `--download-dir` flag is handled only at startup, in `cmd/gonzbd`. Its
+value is used to create directories and, when `general.admin_dir` is blank, to
+derive the admin directory, but it is never written to the config that
+`app.New` reads, so the flag does not set the application's download directory.
 
 Known limitations:
 
@@ -55,6 +56,10 @@ Known limitations:
   not registered; a retry of an entry whose recorded path is neither directly
   under the current `download_dir` nor inside `complete_dir` is refused with an
   error naming that path.
+- The retry check also accepts an entry when the old `download_dir` sat inside
+  the current `complete_dir`, or the current `complete_dir` equals the old
+  `download_dir`. The retry then restores nothing and fails with its bytes
+  under the old path.
 - Deleting, with files, a history entry recorded under an earlier base is
   refused by `safeDeleteDir`, which allows only the current `download_dir` and
   `complete_dir`. The handler logs a warning and still removes the entry, so

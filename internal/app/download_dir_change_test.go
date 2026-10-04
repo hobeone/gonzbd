@@ -86,6 +86,16 @@ func TestSetDownloadDir_SameValueSucceedsWithAJobQueued(t *testing.T) {
 	}
 }
 
+func TestSetDownloadDir_SameValueWithATrailingSlashSucceeds(t *testing.T) {
+	t.Parallel()
+	application, old := newDownloadDirApp(t)
+	queueOneJob(t, application)
+
+	if err := application.SetDownloadDir(old + "/"); err != nil {
+		t.Fatalf("SetDownloadDir(%q) with a job queued: %v", old+"/", err)
+	}
+}
+
 func TestSetDownloadDir_SucceedsWhenEveryJobIsSettled(t *testing.T) {
 	t.Parallel()
 	application, _ := newDownloadDirApp(t)
