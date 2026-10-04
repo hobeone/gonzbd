@@ -156,6 +156,11 @@ func TestQueueRename_GoesThroughTheNameOwner(t *testing.T) {
 			t.Errorf("refusal %v: status = %d; want 400", refusal, w.Code)
 		}
 	}
+	rec.err = fmt.Errorf("x: %w", dispatch.ErrJobStarted)
+	w = apiGet(t, s.Handler(), "/api?mode=queue&name=rename&value=j1&value2=New&apikey="+testAPIKey)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "download has started") {
+		t.Errorf("started job: status = %d body = %s; want 409 naming the started download", w.Code, w.Body.String())
+	}
 	rec.err = fmt.Errorf("x: %w", dispatch.ErrNotFound)
 	if w = apiGet(t, s.Handler(), "/api?mode=queue&name=rename&value=nope&value2=x&apikey="+testAPIKey); w.Code != http.StatusNotFound {
 		t.Errorf("unknown job: status = %d; want 404", w.Code)

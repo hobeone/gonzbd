@@ -37,8 +37,6 @@ file internal/app/rename.go
 file internal/app/rename.go
 --- anchor
 	if name == row.Header.Name {
-		return name, nil
 --- replace
 	if false && name == row.Header.Name {
-		return name, nil
 --- end

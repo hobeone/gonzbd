@@ -224,6 +224,25 @@ func (j *Job) DownloadStarted() time.Time {
 	return j.progress.DownloadStarted()
 }
 
+// DownloadBegun reports whether article bytes may exist under the job's name:
+// the first-article stamp is set, or at least one article is recorded done.
+// The second term is what a retried job needs, because ResetForRetry clears
+// the stamps but keeps the done articles. Before the job has a JobProgress it
+// reads only the restored stamp, as DownloadStarted does.
+//
+// A job that has begun an attempt but fetched nothing (HasRun, which
+// Queue.Advance sets for any ungated job on its first tick) does not report
+// it, and neither does one whose every article failed.
+func (j *Job) DownloadBegun() bool {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.progress == nil {
+		return !j.restoredDLStarted.IsZero()
+	}
+	p := j.progress
+	return !p.downloadStarted.IsZero() || p.articlesResolved > p.articlesFailed
+}
+
 // DownloadFinished returns the time downloading completed, or zero if
 // unfinished. Reads the restored value before hydration, as DownloadStarted does.
 func (j *Job) DownloadFinished() time.Time {

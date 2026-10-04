@@ -213,6 +213,15 @@ Three things follow:
   identity, and `folder_rename` renames a failed job's; `RetryHistoryJob`
   renames it back before queuing the retry (`docs/post-processing-contract.md`
   § "Failure & Degradation Rules").
+- **A rename is refused once articles may exist under the old name.** The
+  directory is keyed by name and a rename moves no files, so
+  `Dispatcher.SetName` returns `ErrJobStarted` when `Job.DownloadBegun` is
+  true (first-article stamp set, or a done article). A job restored at
+  startup has no `JobProgress` until hydrated, and a retried job's stored
+  stamps are zero, so `SetName` hydrates such a job first
+  (`loadProgressForRename`). `HasRun` is the wrong
+  test for this: it is true for any job the tick has opened an attempt on,
+  including one still waiting behind others.
 - **`Outcome` stays genuinely write-once.** A verdict is never revised, only
   superseded by the next attempt's.
 - **"Never started" is exact.** `HasRun()` is `len(attempts) != 0`.
@@ -1118,7 +1127,7 @@ manifest loading is deferred to `Residency.Hydrate` by architectural discipline
 access manifests and does not have the file and article counts sizing needs.
 The record arrives later, at first hydration.
 `grep -n 'j\.progress == nil\|j\.progress != nil' internal/job/*.go | grep -v
-_test.go` finds 45 lines, so "no caller checks for their absence" describes an
+_test.go` finds 47 lines, so "no caller checks for their absence" describes an
 intent rather than the code.
 
 That window is why `Job` carries a small set of `restored*` fields for

@@ -47,7 +47,9 @@ func (app *Application) jobNameTaken(snap *config.Config, name string) bool {
 	return false
 }
 
-// RenameJob renames a queued job and returns the name it was given. The name
+// RenameJob renames a queued job whose download has not begun and returns the
+// name it was given; Dispatcher.SetName refuses a job that has begun, with
+// dispatch.ErrJobStarted, since a rename moves no files. The name
 // is the job's download directory (DownloadDir/<name>), so it is sanitised
 // with fsutil.SanitizeFolderName, as ingest does (ingest's spam-stripping
 // CleanupName is not applied: the user chose this name), then made unique
@@ -69,6 +71,12 @@ func (app *Application) RenameJob(id, name string) (string, error) {
 	snap := app.config.Snapshot()
 	name = fsutil.SanitizeFolderName(name, snap.Downloads.SanitizeOptions())
 	if name == row.Header.Name {
+		// Not uniqueName: the job's own name is not "taken" by itself. Not an
+		// early return either: SetName owns the refusal of a started job, and
+		// a same-name rename of one is still a rename request.
+		if err := app.dispatcher.SetName(id, name); err != nil {
+			return "", fmt.Errorf("app: rename %s: %w", id, err)
+		}
 		return name, nil
 	}
 	name, err := app.claimJobName(snap, name, func(n string) error { return app.dispatcher.SetName(id, n) })

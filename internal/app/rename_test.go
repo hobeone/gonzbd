@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -111,7 +112,35 @@ func TestRenameJob_GivesASafeUniqueName(t *testing.T) {
 		if err != nil || got != "first" {
 			t.Errorf("RenameJob to its own name = %q, %v; want first, nil", got, err)
 		}
+		if n := nameOf(t, a, id); n != "first" {
+			t.Errorf("a same-name rename left the name %q, want first", n)
+		}
 	})
+}
+
+// TestRenameJob_RefusesAJobWhoseDownloadHasStarted pins that the registry's
+// refusal reaches RenameJob's caller as dispatch.ErrJobStarted and leaves
+// the name alone.
+func TestRenameJob_RefusesAJobWhoseDownloadHasStarted(t *testing.T) {
+	t.Parallel()
+	a, id := renameFixture(t)
+	j, ok := a.Dispatcher().Job(id)
+	if !ok {
+		t.Fatalf("job %s is gone", id)
+	}
+	if err := j.MarkJobStarted(time.Now()); err != nil {
+		t.Fatalf("MarkJobStarted: %v", err)
+	}
+	if _, err := a.RenameJob(id, "elsewhere"); !errors.Is(err, dispatch.ErrJobStarted) {
+		t.Errorf("RenameJob after a download began = %v, want ErrJobStarted", err)
+	}
+	if got := nameOf(t, a, id); got != "first" {
+		t.Errorf("a refused rename changed the name to %q", got)
+	}
+	// A same-name request is still a rename request: SetName refuses it too.
+	if _, err := a.RenameJob(id, "first"); !errors.Is(err, dispatch.ErrJobStarted) {
+		t.Errorf("same-name RenameJob after a download began = %v, want ErrJobStarted", err)
+	}
 }
 
 // TestRenameJob_UnknownJob reports the dispatcher's not-found error.
