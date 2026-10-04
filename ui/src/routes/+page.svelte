@@ -56,7 +56,7 @@
 <svelte:window onkeydown={handleGlobalShortcut} />
 
 <div class="flex min-h-screen flex-col bg-background text-foreground antialiased selection:bg-primary/20 selection:text-primary">
-	<Navbar paused={isPaused()} onpausetoggle={() => {}} />
+	<Navbar />
 	<StatusBar />
 	<ConnectionOverlay />
 

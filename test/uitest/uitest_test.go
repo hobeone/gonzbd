@@ -112,14 +112,9 @@ func TestQueuePauseResume(t *testing.T) {
 		t.Fatalf("click Pause: %v", err)
 	}
 
-	// The backend doesn't broadcast a WebSocket event on pause state changes,
-	// so the SPA won't re-poll until the 30s fallback. Reload to force re-fetch.
-	if _, err := page.Reload(playwright.PageReloadOptions{
-		WaitUntil: playwright.WaitUntilStateNetworkidle,
-	}); err != nil {
-		t.Fatalf("reload after pause: %v", err)
-	}
-
+	// No reload: the button must flip on its own. The harness has no
+	// Application behind the API, so nothing emits queue_updated on pause and
+	// the flip depends on the SPA re-polling the queue after its own click.
 	resumeBtn := nav.GetByRole("button", playwright.LocatorGetByRoleOptions{Name: "Resume"})
 	if err := resumeBtn.WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
@@ -128,15 +123,9 @@ func TestQueuePauseResume(t *testing.T) {
 		t.Fatalf("Resume button not visible after pause: %v", err)
 	}
 
-	// Click Resume — Pause button should reappear after reload.
+	// Click Resume — the Pause button should reappear without a reload.
 	if err := resumeBtn.Click(); err != nil {
 		t.Fatalf("click Resume: %v", err)
-	}
-
-	if _, err := page.Reload(playwright.PageReloadOptions{
-		WaitUntil: playwright.WaitUntilStateNetworkidle,
-	}); err != nil {
-		t.Fatalf("reload after resume: %v", err)
 	}
 
 	pauseBtn2 := nav.GetByRole("button", playwright.LocatorGetByRoleOptions{Name: "Pause"})

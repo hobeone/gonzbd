@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Button } from '#lib/components/ui/button/index.js';
-	import { postAction } from '#lib/api.js';
+	import { isPaused, pauseAll, resumeAll } from '#lib/stores/queue.svelte.js';
 	import { registerShortcuts } from '#lib/shortcuts.svelte.js';
 	import { getTheme, cycleTheme } from '#lib/stores/theme.svelte.js';
 	import { onMount } from 'svelte';
@@ -20,13 +20,11 @@
 	import ServerStatusPanel from './ServerStatusPanel.svelte';
 	import AboutDialog from './AboutDialog.svelte';
 
-	let {
-		paused = false,
-		onpausetoggle
-	}: {
-		paused?: boolean;
-		onpausetoggle?: () => void;
-	} = $props();
+	// An explicit paused prop wins; otherwise the button follows the queue
+	// store, which pauseAll/resumeAll refresh. $derived keeps it reactive: a
+	// default-parameter isPaused() would be read once.
+	let { paused: pausedProp }: { paused?: boolean } = $props();
+	let paused = $derived(pausedProp ?? isPaused());
 
 	let toggling = $state(false);
 	let addDialogOpen = $state(false);
@@ -39,8 +37,7 @@
 	async function togglePause() {
 		toggling = true;
 		try {
-			await postAction(paused ? 'resume' : 'pause');
-			onpausetoggle?.();
+			await (paused ? resumeAll() : pauseAll());
 		} finally {
 			toggling = false;
 		}

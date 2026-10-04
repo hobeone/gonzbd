@@ -8,8 +8,11 @@ import { startTelemetry, stopTelemetry, setTotalRemainingBytes } from './telemet
 class QueueStore extends BasePollStore {
 	#queue = $state.raw<QueueDetail | null>(null);
 
-	// Debounce: prevent overlapping poll() calls from piling up.
-	#pollInFlight = false;
+	// Debounce: prevent overlapping poll() calls from piling up. #running is
+	// the in-flight run, which includes any trailing re-poll a caller asked for
+	// while it was busy; an overlapping poll() returns it, so awaiting poll()
+	// settles only once the state that call wanted to see has been fetched.
+	#running: Promise<void> | null = null;
 	#pollDirty = false;
 
 	get queue() { return this.#queue; }
@@ -19,12 +22,25 @@ class QueueStore extends BasePollStore {
 	get pageLimit() { return this.pageLimitState; }
 	get searchText() { return this.searchTextState; }
 
-	async poll() {
-		if (this.#pollInFlight) {
+	poll(): Promise<void> {
+		if (this.#running) {
 			this.#pollDirty = true;
-			return;
+			return this.#running;
 		}
-		this.#pollInFlight = true;
+		this.#running = this.#pollLoop().finally(() => {
+			this.#running = null;
+		});
+		return this.#running;
+	}
+
+	async #pollLoop() {
+		do {
+			this.#pollDirty = false;
+			await this.#pollOnce();
+		} while (this.#pollDirty);
+	}
+
+	async #pollOnce() {
 		try {
 			const params: Record<string, string> = {};
 			if (this.searchTextState) params.search = this.searchTextState;
@@ -39,12 +55,6 @@ class QueueStore extends BasePollStore {
 			const msg = e instanceof Error ? e.message : String(e);
 			this.errorState = msg;
 			reportFailure(msg);
-		} finally {
-			this.#pollInFlight = false;
-			if (this.#pollDirty) {
-				this.#pollDirty = false;
-				this.poll();
-			}
 		}
 	}
 
@@ -80,6 +90,19 @@ class QueueStore extends BasePollStore {
 			}
 		}
 		this.poll();
+	}
+
+	// pauseAll and resumeAll toggle the global pause and then re-poll rather
+	// than waiting for the server's queue_updated broadcast, which can arrive
+	// late or not at all (dropped socket); isPaused() reads the polled queue.
+	async pauseAll() {
+		await postAction('pause');
+		await this.poll();
+	}
+
+	async resumeAll() {
+		await postAction('resume');
+		await this.poll();
 	}
 
 	async pauseJob(nzoId: string) {
@@ -119,6 +142,8 @@ export const startPolling = () => store.start();
 export const stopPolling = () => store.stop();
 export const refreshQueue = () => store.poll();
 
+export const pauseAll = () => store.pauseAll();
+export const resumeAll = () => store.resumeAll();
 export const pauseJob = (id: string) => store.pauseJob(id);
 export const resumeJob = (id: string) => store.resumeJob(id);
 export const deleteJob = (id: string, df?: boolean) => store.deleteJob(id, df);
