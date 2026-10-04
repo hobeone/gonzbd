@@ -1790,6 +1790,10 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 			return err
 		}
+		// The volume's headers are read before anything consumes it, so a
+		// flagged one is never fed to DirectUnpack below: maybeStart refuses
+		// a Blocked job, and the peek has just aborted its unpacker.
+		app.peekArchiveForUnwanted(j, fc)
 		// DirectUnpack is fed the volume before the file is marked complete,
 		// and so before the download-finished report below. From that report
 		// the tick can launch the job's post-processing, whose enqueuePostProc

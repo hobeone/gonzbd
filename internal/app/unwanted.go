@@ -40,7 +40,9 @@ func unwantedFailMessage(names []string) string {
 // writer of that field before registration: AddJob calls it for every
 // ingest source, and retryHistoryJob for every retry
 // (`git grep -n 'app\.screenUnwanted(' -- 'internal/app/*.go' ':!*_test.go'`
-// returns 2 lines).
+// returns 2 lines). Once the job is registered, Dispatcher.BlockUnwanted
+// and ResumeJobByUser write it instead (peekArchiveForUnwanted calls the
+// first).
 //
 // approved says the job comes already approved — a retry of an approved
 // entry, or one the user asked to run with allow_unwanted — and such a job

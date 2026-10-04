@@ -861,7 +861,8 @@ does not need to.
 ### A user's resume is also an approval
 
 The unwanted-extension check (`app.screenUnwanted`, run at ingest and on a
-retry's rebuild) pauses a job whose NZB names a file it excludes and records
+retry's rebuild, and the archive peek below) pauses a job whose NZB or
+downloaded archives name a file it excludes and records
 `Header.Unwanted = StateBlocked`. Under `action_on_unwanted_extensions: fail`
 the job is filed Failed instead, and a retry is refused with
 `app.ErrUnwantedRefused` unless the caller approves (`allow_unwanted=1`).
@@ -895,16 +896,48 @@ history entry. That is still fail-closed: the job is paused by the check,
 not parked by Stall, so neither the stall re-evaluation nor `Fail` resumes
 it, and only a user's resume with the full key approves it.
 
-The check runs only when a job is added or retried. A settings change does
-not re-screen jobs already queued, as in SABnzbd. The post-unpack stage reads
-the live settings on every run.
+The ingest check runs only when a job is added or retried. A settings change
+does not re-screen jobs already queued, as in SABnzbd. The post-unpack stage
+reads the live settings on every run.
+
+**The archive peek is a second, earlier detector, not a replacement.** While a
+job downloads, `app.peekArchiveForUnwanted` reads the names a just-completed
+file declares: a RAR volume's members (`rarheader.Inspect`) or the files a par2
+file protects (`par2.ParseFileDescriptionsWithOptions`), each identified by its
+magic bytes and not its name, and judges them with the same `Rules.Find`. It
+runs from `completeFinalizedFile`, before the DirectUnpack feed and before
+`MarkFileComplete`, so a stall's re-evaluation and the startup repair of a
+stranded finalize get it too (`git grep -n 'app\.completeFinalizedFile('
+-- 'internal/app/*.go' ':!*_test.go'` returns 3 lines). It does nothing for a
+job already Blocked or Approved, with the action `off`, for a file with a
+failed article (par2 and the post-unpack stage cover those), or when the
+headers cannot be read; it never fails a job for being unable to look. 7z,
+zip, nested and header-encrypted archives are outside it, and
+`unwanted_cleanup` remains the backstop for them.
+
+A hit calls `Dispatcher.BlockUnwanted`, which decides under the registry lock
+and moves `StateNone` to `StateBlocked` once however many completions hit
+together. Only the call that made the move acts. Under `pause` the job is
+paused as `PauseJob` does (intent and lease; files kept) and the user's resume
+approves it as above. Under `fail` the application files it through
+`maybeFinalize` with the ingest check's message, no pause being applied first:
+a pause would hold the reason for an Assessing worker until the user's resume,
+which approves the job. The state reaches `dispatch_jobs` at the next persist
+and `history.unwanted_ext` through `postproc.Job.Unwanted`. A retry of the
+failed entry is not refused by the ingest check, since the NZB's own names are
+clean, and is unapproved unless made with `allow_unwanted=1`, which queues it
+approved so neither the peek nor `unwanted_cleanup` touches it. A file the
+retry keeps as already complete is not completed again, so it is not peeked;
+`unwanted_cleanup` is what covers it. The mover also aborts the job's
+DirectUnpacker, and `directUnpackOrchestrator.maybeStart` refuses to feed a
+blocked job, so no flagged member is extracted while the job waits.
 
 Apart from restoring it from `dispatch_jobs` (the `Scan` in
 `internal/dispatch/store/store.go`), the writers of `Header.Unwanted` are
-`app.screenUnwanted`, before the job is registered, and `ResumeJobByUser`
-afterwards (`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'`
-returns 4 lines: three in `internal/app/unwanted.go`, one in
-`internal/dispatch/registry.go`).
+`app.screenUnwanted`, before the job is registered, and, afterwards,
+`BlockUnwanted` (None to Blocked) and `ResumeJobByUser` (Blocked to Approved)
+(`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` returns 5 lines:
+three in `internal/app/unwanted.go`, two in `internal/dispatch/registry.go`).
 
 ### Cancel is an interrupt before the boundary, a gate after
 
