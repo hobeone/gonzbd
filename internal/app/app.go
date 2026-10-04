@@ -2751,6 +2751,9 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, prepa
 	// The retry writes to, and post-processing reads, downloadDir/<name>; a
 	// failed attempt the finalize stage renamed left its bytes under _FAILED_.
 	downloadDir := app.downloadDir()
+	if err := checkRecordedUnderCurrentBase(entry.Path, downloadDir, app.config.GetGeneral().CompleteDir); err != nil {
+		return fmt.Errorf("app: retry %s refused: %w", jobID, err)
+	}
 	restoredFrom, err := restoreFailedDir(entry.Path, downloadDir, j.Name(), app.queuedName)
 	if err != nil {
 		return fmt.Errorf("app: retry %s: restore download directory: %w", jobID, err)

@@ -33,25 +33,32 @@ which one is a call (`internal/api/config.go`) and three are declarations.
 at startup (`cmd/gonzbd/main.go`) and a separate tool (`scripts/nzbprobe`), and
 the daemon has no SIGHUP or file-watch handler, so nothing reloads the file
 while it runs. `git grep -n 'resolveDirs(' -- 'cmd/*.go' ':!*_test.go'` shows
-the `--download-dir` flag is handled only at startup, in `cmd/gonzbd`; this
-document does not claim it reaches the application.
+the `--download-dir` flag is handled only at startup, in `cmd/gonzbd`, where
+its value is used to create directories and is never written to the config
+that `app.New` reads, so the flag does not reach the application.
 
 Known limitations:
 
 - Editing `download_dir` in the YAML and restarting while jobs are queued is
   unsupported. The check runs only on a runtime change; at startup the new value
   simply applies.
-- A job queued between the check and the swap is not covered. Its files are
-  written under the old base, post-processing then looks under the new one, and
-  the job fails with its bytes left under the old base.
+- A job added between the check and the swap is not covered, and ends up
+  consistent on the new base, because its files take the pipeline's directory
+  when each file is registered. A retry in that window is the failing case:
+  the failed directory is restored under the old base while registration uses
+  the new one, so the job fails with its bytes left under the old base.
 - Two concurrent `download_dir` sets can leave the pipeline and the config
   disagreeing, because nothing serializes them.
 - If `config.Save` fails after `SetDownloadDir` succeeded, the running daemon
   uses the new directory while the file on disk still holds the old one.
 - Only registered jobs block a change. A failed history entry awaiting retry is
-  not registered; a retry of an entry recorded under the earlier base is refused
-  with an error naming the recorded path, because its files are not under the
-  current one.
+  not registered; a retry of an entry whose recorded path is neither directly
+  under the current `download_dir` nor inside `complete_dir` is refused with an
+  error naming that path.
+- Deleting, with files, a history entry recorded under an earlier base is
+  refused by `safeDeleteDir`, which allows only the current `download_dir` and
+  `complete_dir`. The handler logs a warning and still removes the entry, so
+  those files stay on disk.
 
 ## Config ↔ UI Contract Test
 

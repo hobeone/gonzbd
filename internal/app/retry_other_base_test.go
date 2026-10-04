@@ -2,7 +2,6 @@ package app
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,20 +9,37 @@ import (
 	"github.com/hobeone/gonzbd/internal/postproc"
 )
 
-func TestRestoreFailedDir_RefusesAnEntryRecordedUnderAnotherBase(t *testing.T) {
+func TestCheckRecordedUnderCurrentBase(t *testing.T) {
 	t.Parallel()
-	oldBase, newBase := t.TempDir(), t.TempDir()
-	recorded := postproc.FailedDir(filepath.Join(oldBase, "job"))
-	if err := os.MkdirAll(recorded, 0o750); err != nil {
-		t.Fatal(err)
-	}
+	base, other, complete := t.TempDir(), t.TempDir(), t.TempDir()
+	failed := postproc.FailedDir(filepath.Join(base, "job"))
 
-	from, err := restoreFailedDir(recorded, newBase, "job", func(string) bool { return false })
-
-	if !errors.Is(err, errRetryDirConflict) || !strings.Contains(err.Error(), "download_dir changed") {
-		t.Fatalf("restoreFailedDir error = %v, want errRetryDirConflict naming the download_dir change", err)
-	}
-	if from != "" {
-		t.Errorf("restoreFailedDir moved from %q, want nothing moved", from)
+	for _, tc := range []struct {
+		name     string
+		recorded string
+		download string
+		refused  bool
+	}{
+		{"same base", failed, base, false},
+		{"same base with a trailing slash", failed, base + "/", false},
+		{"same base with doubled slashes", failed, base + "//", false},
+		{"same base spelled with a dot segment", failed, base + "/./", false},
+		{"no recorded path", "", base, false},
+		{"entry under complete_dir", filepath.Join(complete, "cat", "job"), base, false},
+		{"entry under an earlier base", postproc.FailedDir(filepath.Join(other, "job")), base, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := checkRecordedUnderCurrentBase(tc.recorded, tc.download, complete)
+			if !tc.refused {
+				if err != nil {
+					t.Fatalf("checkRecordedUnderCurrentBase = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, errRetryDirConflict) || !strings.Contains(err.Error(), "not under the current download_dir") {
+				t.Fatalf("checkRecordedUnderCurrentBase = %v, want errRetryDirConflict naming the recorded path", err)
+			}
+		})
 	}
 }
