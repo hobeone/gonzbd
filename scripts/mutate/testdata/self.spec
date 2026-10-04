@@ -14,9 +14,9 @@ timeout 5m
 [-count=1 dropped from the test command]
 file scripts/mutate/main.go
 --- anchor
-	args := []string{"test", "-count=1", sp.pkg}
+	args := []string{"test", "-count=1", "-vet=off", sp.pkg}
 --- replace
-	args := []string{"test", sp.pkg}
+	args := []string{"test", "-vet=off", sp.pkg}
 --- end
 
 [build-failure detection widened to a substring scan]

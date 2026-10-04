@@ -237,14 +237,14 @@ func TestThrowawayChild(t *testing.T) {
 		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
 		time.Sleep(30 * time.Second)
 	case "sharedcache":
-		runSpec(os.Getenv(childRootEnv), os.Getenv(childSpecEnv), false, true)
+		runSpec(os.Getenv(childRootEnv), os.Getenv(childSpecEnv), false, false, true)
 	case "panic":
 		// run's first write goes through writeFile; panicking there is a panic
 		// in the middle of runSpec, after the cache exists.
 		writeFile = func(string, []byte, os.FileMode) error { panic("simulated panic") }
-		runSpec(os.Getenv(childRootEnv), os.Getenv(childSpecEnv), false, false)
+		runSpec(os.Getenv(childRootEnv), os.Getenv(childSpecEnv), false, false, false)
 	default:
-		runSpec(os.Getenv(childRootEnv), os.Getenv(childSpecEnv), false, false)
+		runSpec(os.Getenv(childRootEnv), os.Getenv(childSpecEnv), false, false, false)
 	}
 }
 

@@ -154,18 +154,13 @@ func filterMatchesName(run, name string) bool {
 	return true
 }
 
-// deadRunFilterNames names every alternative of a plain `run` line that
-// selects no test `go test -list` reports for the spec's package. It returns
-// nil, nil for a `run` that is not a plain alternation (see
-// plainAlternation) or that names none at all.
-func deadRunFilterNames(root string, sp *spec) ([]string, error) {
+// deadFilterAlternatives checks a list of test names against the spec's parsed
+// run filter alternatives. It returns nil for a run that is not a plain
+// alternation.
+func deadFilterAlternatives(listed []string, sp *spec) []string {
 	alts, startAnchored, endAnchored, ok := plainAlternation(sp.run)
 	if !ok {
-		return nil, nil
-	}
-	listed, err := listTests(root, sp)
-	if err != nil {
-		return nil, fmt.Errorf("list tests for the `run` check: %w", err)
+		return nil
 	}
 	var dead []string
 	for _, alt := range alts {
@@ -173,7 +168,22 @@ func deadRunFilterNames(root string, sp *spec) ([]string, error) {
 			dead = append(dead, alt)
 		}
 	}
-	return dead, nil
+	return dead
+}
+
+// deadRunFilterNames names every alternative of a plain `run` line that
+// selects no test `go test -list` reports for the spec's package. It returns
+// nil, nil for a `run` that is not a plain alternation (see
+// plainAlternation) or that names none at all.
+func deadRunFilterNames(root string, sp *spec) ([]string, error) {
+	if _, _, _, ok := plainAlternation(sp.run); !ok {
+		return nil, nil
+	}
+	listed, err := listTests(root, sp)
+	if err != nil {
+		return nil, fmt.Errorf("list tests for the `run` check: %w", err)
+	}
+	return deadFilterAlternatives(listed, sp), nil
 }
 
 // reportRunFilter prints the RUNFILTER verdict for every dead alternative and

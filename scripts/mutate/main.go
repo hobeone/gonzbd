@@ -204,6 +204,7 @@ func main() {
 	sharedCache := flag.Bool("shared-cache", false, "run go against the shared build cache instead of a "+
 		"throwaway one, so a mutated build can be inspected or reused afterwards (it leaves the build "+
 		"output of every mutation in that cache)")
+	skipRunfilter := flag.Bool("skip-runfilter", false, "skip pre-flight check for dead test names in run filter (used when pre-checked by -check-all)")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -238,13 +239,13 @@ func main() {
 			flag.Usage()
 			os.Exit(2)
 		}
-		runSpec(root, flag.Arg(0), *verbose, *sharedCache)
+		runSpec(root, flag.Arg(0), *verbose, *skipRunfilter, *sharedCache)
 	}
 }
 
 // runSpec is the command's original behaviour: apply every mutation in one
 // spec, in turn, and require each to produce KILLED.
-func runSpec(root, path string, verbose, sharedCache bool) {
+func runSpec(root, path string, verbose, skipRunfilter, sharedCache bool) {
 	sp, err := parseSpec(path)
 	if err != nil {
 		fatal("%s: %v", path, err)
@@ -261,10 +262,12 @@ func runSpec(root, path string, verbose, sharedCache bool) {
 		}
 	}
 
-	if dead, err := deadRunFilterNames(root, sp); err != nil {
-		fatal("%v", err)
-	} else if len(dead) > 0 {
-		exit(reportRunFilter(sp.pkg, dead))
+	if !skipRunfilter {
+		if dead, err := deadRunFilterNames(root, sp); err != nil {
+			fatal("%v", err)
+		} else if len(dead) > 0 {
+			exit(reportRunFilter(sp.pkg, dead))
+		}
 	}
 
 	// The baseline runs first and unmutated. Every verdict below is a claim
@@ -728,7 +731,7 @@ func installSignalRestore() {
 // testArgs builds the go test argv, so the baseline banner prints the command
 // that actually ran rather than a hand-written approximation of it.
 func testArgs(sp *spec) []string {
-	args := []string{"test", "-count=1", sp.pkg}
+	args := []string{"test", "-count=1", "-vet=off", sp.pkg}
 	if sp.tags != "" {
 		// test/integration, test/uitest and test/crash are all behind
 		// //go:build tags, so without this no pin in any of them can be
