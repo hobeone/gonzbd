@@ -78,9 +78,9 @@ func (app *Application) RenameJob(id, name string) (string, error) {
 	return name, nil
 }
 
-// maxJobNameAttempts bounds claimJobName. Each refusal it retries means
-// another job took the chosen name in the meantime, so one caller loses at
-// most once per job named concurrently with it.
+// maxJobNameAttempts bounds claimJobName. Each refusal means another job was
+// registered or renamed under the chosen name after it was chosen, so each
+// retry follows a lost race; the bound only stops an unending run of them.
 const maxJobNameAttempts = 32
 
 // claimJobName chooses a name from base with uniqueName and jobNameTaken, and

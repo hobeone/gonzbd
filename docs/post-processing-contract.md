@@ -526,11 +526,13 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    registered (`Add`, and restore at startup) and when it is renamed
    (`SetName`), so of two callers that chose one name concurrently, only
    one is admitted. `AddJob` and `Application.RenameJob` (the API's rename)
-   choose a name with `uniqueName` and `jobNameTaken`, and choose again when
-   the dispatcher refuses it (`claimJobName`). `Dispatcher.SetName` also
-   refuses `.`, `..` and a separator. A retry keeps the name its history
-   entry recorded, because that is where its bytes are, and is refused if
-   another registered job holds it.
+   choose a name with `uniqueName` and `jobNameTaken`, which also rejects a
+   name with something on disk under it, and choose again when the
+   dispatcher refuses it (`claimJobName`). `Dispatcher.SetName` also refuses
+   an empty name, `.`, `..`, a separator and NUL. A retry takes the name
+   rebuilt from its history entry rather than a freshly chosen one, because
+   that directory is where its bytes are, and is refused if another
+   registered job holds it.
 5. **Script environment contract**: User scripts receive 8 positional arguments
    ($1–$8) matching Python SABnzbd:
    `script <complete_dir> <nzb_name> <job_name> <report_name> <category> <group> <status> <failure_url>`

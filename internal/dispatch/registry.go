@@ -33,9 +33,9 @@ var ErrUnwantedBlocked = errors.New("dispatch: the job is blocked for unwanted e
 //
 // Name is the one field job.Job DOES carry, and it is duplicated here on
 // purpose: it lets a listing be composed from Header alone, without the
-// registry handing out *job.Job pointers to do it. Header.Name is read by
-// API queue search filtering (internal/api/queue.go), the registry's own
-// name check (nameHolderLocked) and Application.queuedName
+// registry handing out *job.Job pointers to do it. Header.Name is read by,
+// among others, API queue listing and search (internal/api/queue.go), the
+// registry's own name check (nameHolderLocked) and Application.queuedName
 // (internal/app/retry_failed_dir.go), while downstream filesystem
 // paths and finalization read Job.Name(). SetName updates both under d.mu so the
 // two copies stay in lockstep.
@@ -964,8 +964,8 @@ func (d *Dispatcher) SetName(id, name string) error {
 // name. It is the registry's one test of "no two registered jobs share a
 // name": register applies it to a job entering the registry (Add and
 // restore) and SetName to a rename, both under the d.mu span that then
-// writes the name, so a name chosen concurrently by two callers reaches the
-// registry for only one of them.
+// writes the name, so of two callers that chose one name concurrently, the
+// registry admits only one.
 // `git grep -n 'd\.nameHolderLocked(' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 2 lines.
 // Caller must hold d.mu.
 func (d *Dispatcher) nameHolderLocked(id, name string) (string, bool) {

@@ -25,9 +25,10 @@ import (
 // name, and no two registered jobs share a name: the dispatcher refuses one
 // another registered job holds, both when a job is registered and when it is
 // renamed (Dispatcher.nameHolderLocked). AddJob and Application.RenameJob
-// choose a name again when refused; Dispatcher.SetName also refuses ".",
-// ".." and a separator. A retry keeps its recorded name and is refused if
-// another job holds it.
+// choose a name with nothing on disk under it (jobNameTaken), and choose
+// again when refused; Dispatcher.SetName also refuses an empty name, ".",
+// "..", a separator and NUL. A retry takes the name rebuilt from its history
+// entry, not a freshly chosen one, and is refused if another job holds it.
 //
 // It removes nothing when:
 //   - the rules' action is off;
