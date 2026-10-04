@@ -3,7 +3,7 @@
 #
 #     go run ./scripts/mutate internal/dispatch/testdata/block_unwanted.spec
 pkg ./internal/dispatch/
-run TestBlockUnwanted_|TestResumeJob_Racing
+run TestBlockUnwanted_|TestResumeJob_Racing|TestResumeJobByUser_Racing
 timeout 5m
 
 [a blocked or approved job is moved again]

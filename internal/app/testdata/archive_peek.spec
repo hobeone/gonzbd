@@ -81,33 +81,33 @@ file internal/app/stall.go
 [a retry does not read the entry's blocked standing]
 file internal/app/unwanted.go
 --- anchor
-	if len(found) == 0 && !carriedBlock {
+	if len(found) == 0 && !priorBlock {
 --- replace
-	if len(found) == 0 && (!carriedBlock || true) {
+	if len(found) == 0 && (!priorBlock || true) {
 --- end
 
-[a retry's header does not carry the entry's standing]
+[a retry does not pass the entry's blocked standing to the check]
 file internal/app/app.go
 --- anchor
-	hdr.Unwanted = entry.Unwanted // the retry's input to screenUnwanted, which overwrites it
+allowUnwanted || entry.Unwanted == unwanted.StateApproved, entry.Unwanted == unwanted.StateBlocked)
 --- replace
-	hdr.Unwanted = unwanted.StateNone
+allowUnwanted || entry.Unwanted == unwanted.StateApproved, false)
 --- end
 
 [par2-declared archive volumes are judged]
 file internal/app/archive_peek.go
 --- anchor
-		if unpack.Classify(f.FileName) != unpack.UnknownArchive || job.IsPar2File(f.FileName) {
+		if unpack.Classify(f.FileName) != unpack.UnknownArchive || par2.IsPar2Name(f.FileName) {
 --- replace
-		if unpack.Classify(f.FileName) != unpack.UnknownArchive && false || job.IsPar2File(f.FileName) {
+		if unpack.Classify(f.FileName) != unpack.UnknownArchive && false || par2.IsPar2Name(f.FileName) {
 --- end
 
 [par2-declared par2 files are judged]
 file internal/app/archive_peek.go
 --- anchor
-		if unpack.Classify(f.FileName) != unpack.UnknownArchive || job.IsPar2File(f.FileName) {
+		if unpack.Classify(f.FileName) != unpack.UnknownArchive || par2.IsPar2Name(f.FileName) {
 --- replace
-		if unpack.Classify(f.FileName) != unpack.UnknownArchive || job.IsPar2File(f.FileName) && false {
+		if unpack.Classify(f.FileName) != unpack.UnknownArchive || par2.IsPar2Name(f.FileName) && false {
 --- end
 
 [a RAR3 volume is listed through the unrar fallback]
@@ -117,6 +117,14 @@ file internal/app/archive_peek.go
 --- replace
 		info, ierr := rarheader.Inspect(path)
 		return info.Filenames, "rar", ierr
+--- end
+
+[the par2 exemption is the substring test again, so evil.par2.exe is skipped]
+file internal/app/archive_peek.go
+--- anchor
+|| par2.IsPar2Name(f.FileName) {
+--- replace
+|| job.IsPar2File(f.FileName) {
 --- end
 
 [the unpacker feed does not refuse a blocked job]

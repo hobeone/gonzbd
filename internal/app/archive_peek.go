@@ -29,9 +29,10 @@ var errRAR3Skipped = errors.New("rar3 volume: the early check lists RAR5 only")
 // completion goroutine. The par2 parse is guarded by cmdutil.SafeEngineRun. RAR
 // members are returned as declared. The names a par2 file declares are
 // returned except those unpack.Classify recognises as archive volumes and
-// those job.IsPar2File recognises, which the pipeline consumes before the
-// post-unpack check, so the peek and that backstop judge the same population.
-// Rules.Find judges what is returned.
+// those par2.IsPar2Name accepts (the test FindPar2Files uses), which the
+// pipeline consumes before the post-unpack check. Rules.Find judges what is
+// returned, so a declared name that is neither, such as "evil.par2.exe", is
+// judged here as the backstop would judge it.
 func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string, kind string, err error) {
 	ver, err := rarheader.Version(path)
 	switch {
@@ -67,7 +68,7 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 		// unpack and par2 stages consume those before unwanted_cleanup runs,
 		// so that stage never judges them; judging them here would block, in
 		// whitelist mode, a job the backstop lets through.
-		if unpack.Classify(f.FileName) != unpack.UnknownArchive || job.IsPar2File(f.FileName) {
+		if unpack.Classify(f.FileName) != unpack.UnknownArchive || par2.IsPar2Name(f.FileName) {
 			continue
 		}
 		names = append(names, f.FileName)

@@ -85,9 +85,9 @@ func TestScreenUnwanted(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildIngestJob: %v", err)
 			}
-			hdr.Unwanted = c.prior
+			hdr.Unwanted = c.prior // a stale header value must be overwritten, not read
 
-			failMsg, err := a.screenUnwanted(j, &hdr, c.approved)
+			failMsg, err := a.screenUnwanted(j, &hdr, c.approved, c.prior == unwanted.StateBlocked)
 			if c.wantErr {
 				if err == nil {
 					t.Fatalf("screenUnwanted = nil error; want the check to fail closed")

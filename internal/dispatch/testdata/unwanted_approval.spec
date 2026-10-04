@@ -4,31 +4,29 @@ run TestResumeJobByUser_
 [the user's resume does not approve a blocked job]
 file internal/dispatch/registry.go
 --- anchor
-	if e.h.Unwanted == unwanted.StateBlocked {
 		e.h.Unwanted = unwanted.StateApproved
+	}
+	if d.resumeDecidedHook != nil {
 --- replace
-	if false && e.h.Unwanted == unwanted.StateBlocked {
-		e.h.Unwanted = unwanted.StateApproved
+		_ = e
+	}
+	if d.resumeDecidedHook != nil {
 --- end
 
 [the user's resume approves every job, blocked or not]
 file internal/dispatch/registry.go
 --- anchor
 	if e.h.Unwanted == unwanted.StateBlocked {
-		e.h.Unwanted = unwanted.StateApproved
+		if !byUser {
 --- replace
 	if true {
-		e.h.Unwanted = unwanted.StateApproved
+		if !byUser {
 --- end
 
 [a plain resume unblocks a blocked job]
 file internal/dispatch/registry.go
 --- anchor
-	if e.h.Unwanted == unwanted.StateBlocked {
-		d.mu.Unlock()
-		return fmt.Errorf("dispatch: resume %s: %w", id, ErrUnwantedBlocked)
+		if !byUser {
 --- replace
-	if false && e.h.Unwanted == unwanted.StateBlocked {
-		d.mu.Unlock()
-		return fmt.Errorf("dispatch: resume %s: %w", id, ErrUnwantedBlocked)
+		if false && !byUser {
 --- end

@@ -790,20 +790,37 @@ func (d *Dispatcher) BlockUnwanted(j *job.Job, pause bool) (moved bool, err erro
 // It refuses a job the unwanted-extension check blocked
 // (ErrUnwantedBlocked), so ResumeJobByUser is the one way to unblock one.
 func (d *Dispatcher) ResumeJob(id string) error {
+	return d.resume(id, false)
+}
+
+// resume is the one body of ResumeJob and ResumeJobByUser: the decision, the
+// approval (byUser only) and the intent change happen in one d.mu span.
+// BlockUnwanted decides and sets its pause under d.mu too, so the two
+// serialise and a Blocked job is not left running. The writers of IntentRun
+// are enumerated by `git grep -n 'SetIntent(job.IntentRun)' -- '*.go'`;
+// outside tests its hits are this comment and the call below. Re-run it when
+// adding a resume path.
+//
+// A byUser resume of a blocked job approves it before the intent changes, so
+// no tick can see the job running while still blocked. A resume refused
+// because the job is cancelled leaves a cancelled job approved, which nothing
+// reads.
+func (d *Dispatcher) resume(id string, byUser bool) error {
 	d.mu.Lock()
 	e, ok := d.byID[id]
 	if !ok {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: resume %s: %w", id, ErrNotFound)
 	}
-	// Decided under d.mu against the entry registered now, so a resume that
-	// races a retry registering the job blocked, or BlockUnwanted blocking it
-	// after its download began, still sees the block. The intent is set in the
-	// same span: BlockUnwanted sets its pause under d.mu too, so the two
-	// serialise and a Blocked job is not left running.
+	// Decided against the entry registered now, so a resume that races a retry
+	// registering the job blocked, or BlockUnwanted blocking it after its
+	// download began, still sees the block.
 	if e.h.Unwanted == unwanted.StateBlocked {
-		d.mu.Unlock()
-		return fmt.Errorf("dispatch: resume %s: %w", id, ErrUnwantedBlocked)
+		if !byUser {
+			d.mu.Unlock()
+			return fmt.Errorf("dispatch: resume %s: %w", id, ErrUnwantedBlocked)
+		}
+		e.h.Unwanted = unwanted.StateApproved
 	}
 	if d.resumeDecidedHook != nil {
 		d.resumeDecidedHook()
@@ -830,27 +847,9 @@ func (d *Dispatcher) ResumeJob(id string) error {
 // resume by a caller holding only the upload key, which the API sends to
 // ResumeJob. ResumeJob refuses a blocked job, so none of them unblocks one.
 //
-// The approval is recorded before the intent changes, so no tick can see
-// the job running while still blocked. A resume refused because the job is
-// cancelled leaves a cancelled job approved, which nothing reads.
+// See resume for the ordering of the approval and the intent.
 func (d *Dispatcher) ResumeJobByUser(id string) error {
-	d.mu.Lock()
-	e, ok := d.byID[id]
-	if !ok {
-		d.mu.Unlock()
-		return fmt.Errorf("dispatch: resume %s: %w", id, ErrNotFound)
-	}
-	if e.h.Unwanted == unwanted.StateBlocked {
-		e.h.Unwanted = unwanted.StateApproved
-	}
-	j := e.j
-	d.mu.Unlock()
-
-	if err := j.SetIntent(job.IntentRun); err != nil {
-		return fmt.Errorf("dispatch: resume %s: %w", id, err)
-	}
-	d.kick()
-	return nil
+	return d.resume(id, true)
 }
 
 // Remove cancels a job, waits for its launch claim latch to be cleared via

@@ -10,10 +10,11 @@ import (
 	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
-// ErrUnwantedRefused reports a retry refused because the job's NZB names a
-// file with an unwanted extension, the configured action is fail, and the
-// job has not been approved. Retrying with allow_unwanted approves it.
-var ErrUnwantedRefused = errors.New("refused: the NZB names a file with an unwanted extension")
+// ErrUnwantedRefused reports a retry refused because the job names a file with
+// an unwanted extension (in the NZB, in a downloaded RAR5 volume, or in a par2
+// file), the configured action is fail, and the job has not been approved.
+// Retrying with allow_unwanted approves it.
+var ErrUnwantedRefused = errors.New("refused: the job names a file with an unwanted extension")
 
 // unwantedFailPrefix is the message a job the check fails carries into
 // history, SABnzbd's wording. unwantedFailMessage appends the names.
@@ -37,10 +38,10 @@ func unwantedFailMessage(names []string) string {
 
 // screenUnwanted applies the unwanted-extension check to j, a job about to
 // be registered, and records the result in hdr.Unwanted, overwriting what
-// the header carried in: a retry's header carries its history entry's
-// standing (rebuildJobFromNZB), and an entry filed Blocked is held to it even
-// when the NZB's own names are clean, so a job that failed for what its
-// archives named is retried only with approval. AddJob calls it for every
+// the header carried in. priorBlock says the job's history entry was filed
+// Blocked: such an entry is held to it even when the NZB's own names are
+// clean, so a job that failed for what its archives named is retried only
+// with approval. AddJob calls it for every
 // ingest source, and retryHistoryJob for every retry
 // (`git grep -n 'app\.screenUnwanted(' -- 'internal/app/*.go' ':!*_test.go'`
 // returns 2 lines). Once the job is registered, Dispatcher.BlockUnwanted
@@ -57,15 +58,14 @@ func unwantedFailMessage(names []string) string {
 // It fails closed: if the rules or the job's file list cannot be read, it
 // returns an error and the caller must refuse the job rather than add it
 // unchecked.
-func (app *Application) screenUnwanted(j *job.Job, hdr *dispatch.Header, approved bool) (failMsg string, err error) {
+func (app *Application) screenUnwanted(j *job.Job, hdr *dispatch.Header, approved, priorBlock bool) (failMsg string, err error) {
 	if approved {
 		hdr.Unwanted = unwanted.StateApproved
 		return "", nil
 	}
-	// A retry carries its entry's standing in hdr.Unwanted: an entry filed
-	// Blocked was refused for what its downloaded archives named, which the
-	// NZB's own names need not show, so the retry is held to it as well.
-	carriedBlock := hdr.Unwanted == unwanted.StateBlocked
+	// An entry filed Blocked was refused for what its downloaded archives
+	// named, which the NZB's own names need not show, so the retry is held to
+	// it as well.
 	hdr.Unwanted = unwanted.StateNone
 	rules, err := app.config.GetDownloads().UnwantedRules()
 	if err != nil {
@@ -83,7 +83,7 @@ func (app *Application) screenUnwanted(j *job.Job, hdr *dispatch.Header, approve
 		names[i] = m.FileSubject(i)
 	}
 	found := rules.Find(names)
-	if len(found) == 0 && !carriedBlock {
+	if len(found) == 0 && !priorBlock {
 		return "", nil
 	}
 	failText := unwantedFailPrefix + " in an earlier attempt"

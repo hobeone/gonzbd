@@ -47,3 +47,37 @@ func TestResumeJob_RacingBlockUnwantedNeverLeavesABlockedJobRunning(t *testing.T
 		t.Errorf("Intent = %v, want IntentPause: the job is blocked and running", in)
 	}
 }
+
+// TestResumeJobByUser_RacingBlockUnwantedNeverLeavesABlockedJobRunning is the
+// user-resume twin: BlockUnwanted starts after ResumeJobByUser has decided
+// (the job was not blocked, so there was nothing to approve) and before it
+// sets the intent. They serialise on d.mu, so the block lands after the
+// resume, the job stays Blocked and its pause stands.
+func TestResumeJobByUser_RacingBlockUnwantedNeverLeavesABlockedJobRunning(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("a", "Job A", job.PolicyFromPP(3))
+	if err := d.Add(context.Background(), j, Header{Name: "Job A"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	d.resumeDecidedHook = func() {
+		wg.Go(func() {
+			if _, err := d.BlockUnwanted(j, true); err != nil {
+				t.Errorf("BlockUnwanted: %v", err)
+			}
+		})
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err := d.ResumeJobByUser("a"); err != nil {
+		t.Fatalf("ResumeJobByUser: %v", err)
+	}
+	wg.Wait()
+
+	if st, _ := d.UnwantedState("a"); st != unwanted.StateBlocked {
+		t.Fatalf("UnwantedState = %d, want blocked", st)
+	}
+	if in := j.Intent(); in != job.IntentPause {
+		t.Errorf("Intent = %v, want IntentPause: the job is blocked and running", in)
+	}
+}

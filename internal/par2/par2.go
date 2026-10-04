@@ -217,6 +217,14 @@ func isVolume(name string) bool {
 	return volPattern.MatchString(name[:len(name)-len(filepath.Ext(name))])
 }
 
+// IsPar2Name reports whether name ends in the .par2 extension, case-blind.
+// It is the test FindPar2Files applies to a directory entry, so a name this
+// accepts is one the par2 stages consume; a name such as "evil.par2.exe" is
+// not.
+func IsPar2Name(name string) bool {
+	return strings.EqualFold(filepath.Ext(name), ".par2")
+}
+
 // FindPar2Files scans dir for .par2 files and groups them into Sets.
 // Files that are not .par2 files are ignored.  Returns an empty slice (not an
 // error) when no par2 files are found.  The returned slice is ordered by set
@@ -229,7 +237,7 @@ func FindPar2Files(dir string, opts ...ParseOptions) ([]Set, error) {
 
 	var entries []string
 	for _, de := range dirEntries {
-		if !de.IsDir() && strings.EqualFold(filepath.Ext(de.Name()), ".par2") {
+		if !de.IsDir() && IsPar2Name(de.Name()) {
 			entries = append(entries, filepath.Join(dir, de.Name()))
 		}
 	}

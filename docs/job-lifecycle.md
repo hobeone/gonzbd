@@ -927,14 +927,14 @@ paused as `PauseJob` does (intent and lease; files kept) and the user's resume
 approves it as above. Under `fail` the application files it through
 `maybeFinalize` with the ingest check's message, no pause being applied first:
 a pause would hold the reason for an Assessing worker until the user's resume,
-which approves the job. `ResumeJob` and `BlockUnwanted` each set the intent in
-the same `d.mu` span as their decision, so a resume cannot leave a Blocked job
-running; a stall re-evaluation whose resume is refused as blocked releases its
+which approves the job. `ResumeJob` and `ResumeJobByUser` share one body
+(`resume`) that sets the intent in the same `d.mu` span as its decision, as
+`BlockUnwanted` does, so a resume cannot leave a Blocked job running; a stall re-evaluation whose resume is refused as blocked releases its
 park and still delivers the files it holds. The state reaches `dispatch_jobs` at the next persist
 and `history.unwanted_ext` through `postproc.Job.Unwanted`. A retry of the
 failed entry is held to its Blocked standing even though the NZB's own names
-are clean: `rebuildJobFromNZB` carries the entry's `Unwanted` into the header,
-`screenUnwanted` reads it as a prior block and, with the action not `off`,
+are clean: `retryHistoryJob` passes whether the entry was filed Blocked to
+`screenUnwanted` as its `priorBlock` argument and, with the action not `off`,
 refuses a plain retry (`ErrUnwantedRefused` under `fail`; added paused and
 Blocked under `pause`). Only `allow_unwanted=1` queues it approved, so neither
 the peek nor `unwanted_cleanup` touches it. A file a retry keeps as already
@@ -948,10 +948,8 @@ Apart from restoring it from `dispatch_jobs` (the `Scan` in
 `internal/dispatch/store/store.go`), the writers of `Header.Unwanted` are
 `app.screenUnwanted`, before the job is registered, and, afterwards,
 `BlockUnwanted` (None to Blocked) and `ResumeJobByUser` (Blocked to Approved)
-(`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` returns 6 lines:
-three in `internal/app/unwanted.go`, two in `internal/dispatch/registry.go`, and
-the retry's carried input in `rebuildJobFromNZB`, which `screenUnwanted` reads
-and overwrites).
+(`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` returns 5 lines:
+three in `internal/app/unwanted.go`, two in `internal/dispatch/registry.go`).
 
 ### Cancel is an interrupt before the boundary, a gate after
 

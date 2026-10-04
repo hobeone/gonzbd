@@ -194,8 +194,9 @@ cleared its claim, so the next tick launched the same state again.
 
 `Dispatcher.YieldedFrom(j, from)` is the same door with no verdict: it parks
 and clears the claim only while the job is open at `from`.
-`Dispatcher.pauseJob` uses it with `Fetching`, and `PauseJob` (`Application.Stall`'s
-included) and `BlockUnwanted`, when it pauses, both go through `pauseJob`: the downloader stops serving a paused job but
+`Dispatcher.yieldPaused` uses it with `Fetching`. `PauseJob` (`Application.Stall`'s
+included) reaches it through `pauseJob`, and `BlockUnwanted`, when it pauses, sets
+the pause intent itself under `d.mu` and then calls `yieldPaused`: the downloader stops serving a paused job but
 reports nothing, so without it a paused `Fetching` job kept its lease. A
 storage fault can reach a job that has moved to `Assessing`, because the
 checkpoint still covers its open handles, and a by-ID `Yielded` there took the

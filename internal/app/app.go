@@ -780,7 +780,7 @@ func (app *Application) detectDuplicateNZB(ctx context.Context, md5, filename st
 // failure takes, so the entry is retryable like any other. An error
 // evaluating the check refuses the job.
 func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, rawNZB []byte, force bool) error {
-	unwantedFail, err := app.screenUnwanted(j, &hdr, false)
+	unwantedFail, err := app.screenUnwanted(j, &hdr, false, false)
 	if err != nil {
 		return fmt.Errorf("app: %w", err)
 	}
@@ -2672,7 +2672,6 @@ func (app *Application) rebuildJobFromNZB(entry history.Entry) (*job.Job, dispat
 		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: %w", entry.NzoID, err)
 	}
 	hdr.NZBBackup = entry.NZBBackup
-	hdr.Unwanted = entry.Unwanted // the retry's input to screenUnwanted, which overwrites it
 	return j, hdr, nil
 }
 
@@ -2775,7 +2774,7 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	}
 	// Before anything below changes state, so a refusal leaves the entry
 	// and the download directory exactly as they were.
-	unwantedFail, err := app.screenUnwanted(j, &hdr, allowUnwanted || entry.Unwanted == unwanted.StateApproved)
+	unwantedFail, err := app.screenUnwanted(j, &hdr, allowUnwanted || entry.Unwanted == unwanted.StateApproved, entry.Unwanted == unwanted.StateBlocked)
 	if err != nil {
 		return fmt.Errorf("app: retry %s: %w", jobID, err)
 	}

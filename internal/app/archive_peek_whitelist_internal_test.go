@@ -30,6 +30,36 @@ func TestPeek_WhitelistPar2StillBlocksAnUnlistedName(t *testing.T) {
 	}
 }
 
+// A name that merely contains ".par2" is not a par2 file the pipeline
+// consumes, so the backstop judges it; the peek must too. The exemption is
+// the par2 extension, not a substring.
+func TestPeek_Par2LookalikeNamesAreJudged(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"evil.par2.exe", "evil.PAR2x.scr", "evil.par2 .exe"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a := newPeekAppMode(t, unwanted.ActionPause, unwanted.ModeBlacklist, []string{"exe", "scr"}, false,
+				[]peekFile{{"release.par2", par2Declaring("movie.mkv", name)}})
+			a.complete(t, 0)
+			if got := a.state(t); got != unwanted.StateBlocked {
+				t.Fatalf("Unwanted = %d, want blocked by %q", got, name)
+			}
+		})
+	}
+}
+
+// The real par2 and volume names stay exempt in whitelist mode, where every
+// unlisted extension is unwanted.
+func TestPeek_WhitelistRealPar2AndVolumeNamesStayExempt(t *testing.T) {
+	t.Parallel()
+	a := newPeekAppMode(t, unwanted.ActionPause, unwanted.ModeWhitelist, []string{"mkv"}, false,
+		[]peekFile{{"release.par2", par2Declaring("movie.vol01+02.par2", "movie.PAR2", "movie.part01.rar", "movie.mkv")}})
+	a.complete(t, 0)
+	if got := a.state(t); got != unwanted.StateNone {
+		t.Fatalf("Unwanted = %d, want none", got)
+	}
+}
+
 func TestPeek_WhitelistRARMembers(t *testing.T) {
 	t.Parallel()
 	rar := unpackFixture(t, "single_rar5.rar") // file1.txt, file2.txt, nested.txt
