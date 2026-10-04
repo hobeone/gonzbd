@@ -1094,7 +1094,9 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 	application.SetMaxArtOpt(2)
 	application.SetTopOnly(true)
 	application.SetPropagationDelay(10)
-	application.SetDownloadDir(t.TempDir())
+	if err := application.SetDownloadDir(t.TempDir()); err != nil {
+		t.Fatalf("SetDownloadDir: %v", err)
+	}
 	application.SetCompleteDir(t.TempDir())
 
 	// Enable direct-unpack via config directly for the maybeDirectUnpack

@@ -160,6 +160,22 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A download_dir change is applied to the application before the live
+	// config is touched, so a refusal leaves the old value in force in the
+	// config, on disk and in the pipeline. The trial Set on a snapshot supplies
+	// the validated, path-expanded value the application is given.
+	if section == "general" && keyword == "download_dir" && s.downloads != nil {
+		trial := s.config.Snapshot()
+		if err := trial.Set(section, keyword, value); err != nil {
+			s.respondError(w, http.StatusBadRequest, "set config: "+err.Error())
+			return
+		}
+		if err := s.downloads.SetDownloadDir(trial.General.DownloadDir); err != nil {
+			s.respondError(w, http.StatusConflict, "set config: "+err.Error())
+			return
+		}
+	}
+
 	if err := s.config.Set(section, keyword, value); err != nil {
 		s.respondError(w, http.StatusBadRequest, "set config: "+err.Error())
 		return
@@ -198,8 +214,8 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 	// Hot-apply postproc and download options for the next job.
 	s.reloadSection(section)
 
-	// Hot-apply directory changes: create the directory and push it to the
-	// running application so future jobs use the new path immediately.
+	// Create the new directory. A download_dir change was already pushed to the
+	// running application above; a complete_dir change is pushed here.
 	if section == "general" && (keyword == "download_dir" || keyword == "complete_dir") {
 		if warning := s.applyDirectoryChange(keyword); warning != "" {
 			respondJSON(w, http.StatusOK, map[string]any{
@@ -267,9 +283,7 @@ func (s *Server) applyDirectoryChange(keyword string) string {
 		s.log.Error("create directory", "keyword", keyword, "dir", dir, "error", err)
 		return fmt.Sprintf("config saved but could not create %s: %v", dir, err)
 	}
-	if keyword == "download_dir" {
-		s.downloads.SetDownloadDir(dir)
-	} else {
+	if keyword == "complete_dir" {
 		s.downloads.SetCompleteDir(dir)
 	}
 	s.log.Info("directory updated", "keyword", keyword, "dir", dir)

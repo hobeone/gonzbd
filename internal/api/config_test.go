@@ -597,6 +597,7 @@ type setConfigSpyApp struct {
 	apitest.NopApp
 	mu                  sync.Mutex
 	reloadDownloaderErr error
+	setDownloadDirErr   error
 	reloadedDownloader  int
 	reloadedPostProc    int
 	reloadedDownloads   int
@@ -633,10 +634,14 @@ func (a *setConfigSpyApp) ReloadGeneralOptions(_ config.GeneralConfig) {
 	a.reloadedGeneral++
 }
 
-func (a *setConfigSpyApp) SetDownloadDir(dir string) {
+func (a *setConfigSpyApp) SetDownloadDir(dir string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.setDownloadDirErr != nil {
+		return a.setDownloadDirErr
+	}
 	a.downloadDir = dir
+	return nil
 }
 
 func (a *setConfigSpyApp) SetCompleteDir(dir string) {

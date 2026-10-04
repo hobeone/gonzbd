@@ -111,3 +111,23 @@ func (app *Application) queuedName(name string) bool {
 	}
 	return false
 }
+
+// checkRecordedUnderCurrentBase refuses, with errRetryDirConflict, a retry
+// whose history entry records a path that is neither directly under
+// downloadDir nor inside completeDir. Such an entry was recorded under another
+// base, so its bytes are not where the retry would write and the retry would
+// resume from retained progress whose files are missing. Both sides of the
+// download_dir comparison are cleaned because the configured value is not
+// (a trailing slash or a "./" prefix is legal there).
+func checkRecordedUnderCurrentBase(recordedPath, downloadDir, completeDir string) error {
+	if recordedPath == "" || filepath.Dir(filepath.Clean(recordedPath)) == filepath.Clean(downloadDir) {
+		return nil
+	}
+	if completeDir != "" {
+		if rel, err := filepath.Rel(filepath.Clean(completeDir), filepath.Clean(recordedPath)); err == nil && filepath.IsLocal(rel) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: its files are at %s, not under the current download_dir or complete_dir",
+		errRetryDirConflict, recordedPath)
+}
