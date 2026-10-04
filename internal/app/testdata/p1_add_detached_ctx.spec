@@ -5,16 +5,12 @@ run TestAddJob_DisconnectDuringDispatcherSaveStillPersistsQueueRow|TestRetryHist
 file internal/app/app.go
 --- anchor
 		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
-		err := app.dispatcher.Add(addCtx, j, hdr)
-		addCancel()
-		if err != nil {
-			return fmt.Errorf("app: add to dispatcher: %w", err)
+		defer addCancel()
+		return app.dispatcher.Add(addCtx, j, hdr)
 --- replace
 		addCtx, addCancel := context.WithTimeout(ctx, addPersistTimeout)
-		err := app.dispatcher.Add(addCtx, j, hdr)
-		addCancel()
-		if err != nil {
-			return fmt.Errorf("app: add to dispatcher: %w", err)
+		defer addCancel()
+		return app.dispatcher.Add(addCtx, j, hdr)
 --- end
 
 [RetryHistoryJob WithoutCancel neutered]
@@ -23,16 +19,12 @@ file internal/app/app.go
 		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
 		err := app.dispatcher.Add(addCtx, j, hdr)
 		addCancel()
-		if err != nil {
-			return err
-		}
+		if errors.Is(err, dispatch.ErrJobNameTaken) {
 --- replace
 		addCtx, addCancel := context.WithTimeout(ctx, addPersistTimeout)
 		err := app.dispatcher.Add(addCtx, j, hdr)
 		addCancel()
-		if err != nil {
-			return err
-		}
+		if errors.Is(err, dispatch.ErrJobNameTaken) {
 --- end
 
 [AddJob's deferred cleanup neutered]

@@ -60,6 +60,12 @@ func TestNopApp_Contract(t *testing.T) {
 	if err := app.RetryHistoryJob(ctx, "job1"); err != nil {
 		t.Errorf("RetryHistoryJob() = %v, want nil", err)
 	}
+	if name, err := app.RenameJob("job1", "n"); err != nil || name != "n" {
+		t.Errorf("RenameJob() = %q, %v, want n, nil", name, err)
+	}
+	if err := app.RetryHistoryJobAllowingUnwanted(ctx, "job1"); err != nil {
+		t.Errorf("RetryHistoryJobAllowingUnwanted() = %v, want nil", err)
+	}
 	if !app.UnblockServer("srv1") {
 		t.Error("UnblockServer() = false, want true")
 	}
@@ -165,6 +171,13 @@ func TestNopApp_Contract(t *testing.T) {
 	wiredApp := NopApp{
 		Dispatcher: disp,
 		History:    repo,
+	}
+
+	if name, err := wiredApp.RenameJob("job1", "Renamed"); err != nil || name != "Renamed" {
+		t.Errorf("wired RenameJob() = %q, %v; want Renamed, nil", name, err)
+	}
+	if j.Name() != "Renamed" {
+		t.Errorf("job1 name after wired RenameJob() = %q, want Renamed", j.Name())
 	}
 
 	if err := wiredApp.RemoveJob(ctx, "job1", false); err != nil {

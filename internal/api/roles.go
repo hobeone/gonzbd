@@ -24,6 +24,8 @@ type JobManager interface {
 	RemoveJob(ctx context.Context, id string, deleteFiles bool) error
 	RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error
 	RetryHistoryJob(ctx context.Context, jobID string) error
+	RetryHistoryJobAllowingUnwanted(ctx context.Context, jobID string) error
+	RenameJob(id, name string) (string, error)
 	MarkHistoryCompleted(ctx context.Context, id string) error
 }
 

@@ -47,7 +47,13 @@ CREATE TABLE history (
     -- name takes a .1/.2 suffix when a forced duplicate add would otherwise
     -- overwrite an existing backup. The two can differ, so they cannot share
     -- storage.
-    nzb_backup      TEXT NOT NULL DEFAULT ''
+    nzb_backup      TEXT NOT NULL DEFAULT '',
+    -- The job's unwanted.State when it was filed: 0 none, 1 blocked by the
+    -- unwanted-extension check, 2 approved by the user. "Retry anyway"
+    -- (allow_unwanted) approves an entry at 1; a plain retry re-runs the
+    -- check under the action then in force. An entry at 2 keeps its
+    -- approval through a retry. Not read from fail_message, which is prose.
+    unwanted_ext    INTEGER NOT NULL DEFAULT 0 CHECK (unwanted_ext BETWEEN 0 AND 2)
 );
 
 CREATE UNIQUE INDEX idx_history_nzo_id ON history(nzo_id);
@@ -307,7 +313,14 @@ CREATE TABLE dispatch_jobs (
     -- finalize prints no par2 summary line at all: every arm of that switch
     -- tests either this flag or a held-volume count that un-deferring has
     -- already driven to zero.
-    par2_recovered    INTEGER NOT NULL DEFAULT 0
+    par2_recovered    INTEGER NOT NULL DEFAULT 0,
+
+    -- The job's unwanted.State: 0 none, 1 blocked by the unwanted-extension
+    -- check at ingest, 2 approved by the user. Persisted because approval is
+    -- an event, not a function of the NZB: an approved job must not be
+    -- paused again, nor have its files removed after unpack, after a
+    -- restart.
+    unwanted_ext      INTEGER NOT NULL DEFAULT 0 CHECK (unwanted_ext BETWEEN 0 AND 2)
 );
 
 CREATE INDEX idx_dispatch_jobs_sort_key ON dispatch_jobs(sort_key);

@@ -58,7 +58,7 @@ func TestStall_LeavesALiveAssessingWorkerAlone(t *testing.T) {
 	j1 := job.New("j1", "first", job.Policy{})
 	j2 := job.New("j2", "second", job.Policy{})
 	for _, j := range []*job.Job{j1, j2} {
-		if err := d.Add(ctx, j, dispatch.Header{}); err != nil {
+		if err := d.Add(ctx, j, dispatch.Header{Name: j.Name()}); err != nil {
 			t.Fatalf("Add(%s): %v", j.ID(), err)
 		}
 	}

@@ -3,6 +3,8 @@ package apitest
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync/atomic"
 
 	"github.com/hobeone/gonzbd/internal/app"
@@ -37,6 +39,18 @@ func (n NopApp) ReloadDownloader([]config.ServerConfig) error { return nil }
 
 // RetryHistoryJob is a stub.
 func (n NopApp) RetryHistoryJob(context.Context, string) error { return nil }
+
+// RenameJob forwards to Dispatcher.SetName when a Dispatcher is set, without
+// the sanitising and uniquifying Application.RenameJob adds.
+func (n NopApp) RenameJob(id, name string) (string, error) {
+	if n.Dispatcher == nil {
+		return name, nil
+	}
+	return name, n.Dispatcher.SetName(id, name)
+}
+
+// RetryHistoryJobAllowingUnwanted is a stub.
+func (n NopApp) RetryHistoryJobAllowingUnwanted(context.Context, string) error { return nil }
 
 // SetSpeedLimit is a stub.
 func (n NopApp) SetSpeedLimit(int64) {}
@@ -103,7 +117,17 @@ func (n NopApp) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, raw
 				break
 			}
 		}
-		return n.Dispatcher.Add(ctx, j, hdr)
+		// The registry refuses a name another job holds; production's AddJob
+		// then takes the next ".N" suffix (claimJobName), and so does this.
+		base := hdr.Name
+		for i := 1; ; i++ {
+			err := n.Dispatcher.Add(ctx, j, hdr)
+			if !errors.Is(err, dispatch.ErrJobNameTaken) || i > 32 {
+				return err
+			}
+			hdr.Name = fmt.Sprintf("%s.%d", base, i)
+			j.SetName(hdr.Name)
+		}
 	}
 	return nil
 }

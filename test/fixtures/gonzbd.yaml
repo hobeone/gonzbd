@@ -51,6 +51,12 @@ downloads:
   no_penalties: false
   pre_check: false
   propagation_delay: 0
+  # Extensions a job must not deliver; see gonzbd.yaml.example.
+  unwanted_extensions: [exe, com, scr, pif, bat, cmd, msi, vbs]
+  # blacklist | whitelist
+  unwanted_extensions_mode: blacklist
+  # off | pause | fail
+  action_on_unwanted_extensions: pause
 
 postproc:
   enable_unrar: true

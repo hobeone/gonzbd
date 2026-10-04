@@ -63,8 +63,10 @@ class HistoryStore extends BasePollStore {
 		await this.poll();
 	}
 
-	async retryJob(nzoId: string) {
-		await postAction('history', { name: 'retry', value: nzoId });
+	async retryJob(nzoId: string, allowUnwanted: boolean) {
+		const params: Record<string, string> = { name: 'retry', value: nzoId };
+		if (allowUnwanted) params.allow_unwanted = '1';
+		await postAction('history', params);
 		await this.poll();
 	}
 }
@@ -85,8 +87,10 @@ export const getHistoryError = () => store.error;
 export const startHistoryPolling = () => store.start();
 export const stopHistoryPolling = () => store.stop();
 
-export async function retryHistoryJob(id: string) {
-	await store.retryJob(id);
+/** Requeue a history entry. allowUnwanted is the user's approval of the
+ *  job's unwanted extensions ("Retry anyway"). */
+export async function retryHistoryJob(id: string, allowUnwanted = false) {
+	await store.retryJob(id, allowUnwanted);
 	await refreshQueue();
 }
 

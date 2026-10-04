@@ -133,6 +133,10 @@
 		slot.status !== 'Queued' && slot.status !== 'Paused' && slot.status !== 'Idle'
 	);
 	let hasFailed = $derived(slot.failed_bytes > 0);
+	// The backend labels the job whether it is still blocked or already
+	// approved, and the label does not say which. Only the user's resume
+	// approves, so the hint offers resume when the job is paused.
+	let unwantedLabel = $derived(slot.labels?.includes('UNWANTED') ?? false);
 	let etaText = $derived(formatETA(slot.eta_seconds ?? 0));
 	let isDownloading = $derived(slot.current_stage === 'download');
 
@@ -509,6 +513,18 @@
 			{#if slot.par2_held}
 				<Badge variant="outline" class="shrink-0 text-[10px] text-muted-foreground border-border/60" title="Par2 recovery volumes are downloaded only if repair is needed">
 					par2 on-demand
+				</Badge>
+			{/if}
+			{#if unwantedLabel}
+				<Badge
+					variant="outline"
+					class="shrink-0 text-[10px] font-bold text-amber-500 border-amber-500/40"
+					title={isPaused
+						? 'The NZB names a file with an unwanted extension. Resume to allow it.'
+						: 'The NZB names a file with an unwanted extension.'}
+					data-testid="unwanted-label"
+				>
+					UNWANTED
 				</Badge>
 			{/if}
 		</div>

@@ -13,6 +13,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // QuickCheckOutcome is what the quickcheck stage was able to determine about
@@ -168,6 +169,12 @@ type Job struct {
 	// Sanitize defines the naming replacement options for this job.
 	Sanitize fsutil.SanitizeOptions
 
+	// Unwanted is the job's standing against the unwanted-extension check,
+	// read from its queue header at hand-over. UnwantedCleanupStage removes
+	// nothing from an approved job; the finalizer files it on the history
+	// entry.
+	Unwanted unwanted.State
+
 	// StageLog accumulates one entry per stage, in execution order.
 	StageLog []StageLogEntry
 
@@ -222,7 +229,9 @@ type Job struct {
 	// file that isn't this job's own, even if DownloadDir were ever shared
 	// or reused. A nil map means "not tracked" and disables the restriction
 	// (used by callers/tests that construct a Job directly without going
-	// through processJob).
+	// through processJob). par2 repair records nothing here, so a file it
+	// rebuilds or renames is absent; UnwantedCleanupStage, which must judge
+	// everything finalize delivers, does not restrict itself to this set.
 	OwnedFiles map[string]struct{}
 
 	// Par2Renames maps par2's canonical filename → actual on-disk filename.

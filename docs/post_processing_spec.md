@@ -1424,13 +1424,15 @@ func (p *PostProcessor) Process(ctx context.Context, j *Job) (*Result, error) {
     //  2. repair            (par2 verify/repair)
     //  3. rar_volume_recovery (rebuild a missing RAR volume from par2)
     //  4. unpack            (filejoin → unrar → 7z, depth ≤ 3)
-    //  5. sample_cleanup    (remove samples if enabled)
-    //  6. par2names         (recover obfuscated names from par2)
-    //  7. par2_cleanup      (delete .par2 once no longer needed)
-    //  8. deobfuscate       (heuristic rename)
-    //  9. extension_cleanup (delete files matching cleanup list)
-    // 10. finalize          (move to complete dir) — runs BEFORE script
-    // 11. script            (user post-processing script; sees final dir)
+    //  5. extracted_repair  (par2 sets deferred until unpack produced their files)
+    //  6. sample_cleanup    (remove samples if enabled)
+    //  7. par2names         (recover obfuscated names from par2)
+    //  8. par2_cleanup      (delete .par2 once no longer needed)
+    //  9. deobfuscate       (heuristic rename)
+    // 10. unwanted_cleanup  (delete unwanted-extension files unless approved)
+    // 11. extension_cleanup (delete files matching cleanup list)
+    // 12. finalize          (move to complete dir) — runs BEFORE script
+    // 13. script            (user post-processing script; sees final dir)
     // Sorting (TV/movie templates) is NOT implemented — see §11.
     // Stage errors are recorded in the StageLog but do NOT abort the pipeline.
 }

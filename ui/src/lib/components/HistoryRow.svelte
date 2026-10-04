@@ -6,6 +6,7 @@
 	import { showToast } from '#lib/stores/warnings.svelte.js';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+	import ShieldOff from '@lucide/svelte/icons/shield-off';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
 
 	let { slot, onremove }: { slot: HistorySlot; onremove: () => void } = $props();
@@ -23,10 +24,15 @@
 		return new Date(slot.completed * 1000).toLocaleString();
 	}
 
-	async function retry() {
+	// A failed job the unwanted-extension check blocked (unwanted_ext 1) can be
+	// retried with the extensions approved. A plain retry is checked again
+	// under the current action.
+	let unwantedBlocked = $derived(slot.status === 'Failed' && slot.unwanted_ext === 1);
+
+	async function retry(allowUnwanted = false) {
 		acting = true;
 		try {
-			await retryHistoryJob(slot.nzo_id);
+			await retryHistoryJob(slot.nzo_id, allowUnwanted);
 		} catch (e) {
 			showToast(e instanceof Error ? e.message : String(e));
 		} finally {
@@ -118,6 +124,18 @@
 					title="Retry"
 				>
 					<RotateCcw class="size-3.5" />
+				</Button>
+			{/if}
+			{#if unwantedBlocked}
+				<Button
+					variant="ghost"
+					size="icon-xs"
+					onclick={(e) => { e.stopPropagation(); retry(true); }}
+					disabled={acting}
+					class="rounded-full text-amber-500 hover:bg-amber-500/10 transition-colors"
+					title="Retry anyway: allow the unwanted extensions"
+				>
+					<ShieldOff class="size-3.5" />
 				</Button>
 			{/if}
 			<Button

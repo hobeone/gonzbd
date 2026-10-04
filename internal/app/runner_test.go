@@ -223,6 +223,9 @@ func buildRunnerJob(t *testing.T, app *Application, files []failMsgFile, failIdx
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
+	// Every call builds from "t.nzb"; the registry refuses a second job of one name.
+	hdr.Name = hdr.Name + "-" + j.ID()
+	j.SetName(hdr.Name)
 	if err := app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
 		t.Fatalf("Add: %v", err)
 	}

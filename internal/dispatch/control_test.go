@@ -3,11 +3,14 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // TestDispatcherControlSurface_PerJobDoors pins the doors the API needs and
@@ -60,6 +63,150 @@ func TestDispatcherControlSurface_PerJobDoors(t *testing.T) {
 	}
 	if err := d.ResumeJob("a"); err == nil {
 		t.Fatal("ResumeJob on cancelled job must error")
+	}
+}
+
+// TestSetName_RefusesUnsafeOrTakenNames pins the registry's half of the
+// job-name invariant: a job's name becomes its download directory
+// (DownloadDir/<name>), so it must be one path component that no other
+// registered job has.
+func TestSetName_RefusesUnsafeOrTakenNames(t *testing.T) {
+	d := newTestDispatcher(t)
+	for _, id := range []string{"a", "b"} {
+		if err := d.Add(context.Background(), job.New(id, "Job "+id, job.PolicyFromPP(3)), Header{Name: "Job " + id}); err != nil {
+			t.Fatalf("Add(%s): %v", id, err)
+		}
+	}
+	for _, name := range []string{"", ".", "..", "a/b", `a\b`, "/abs", "x\x00y", "Job b"} {
+		if err := d.SetName("a", name); !errors.Is(err, ErrInvalidJobName) {
+			t.Errorf("SetName(a, %q) = %v, want ErrInvalidJobName", name, err)
+		}
+		if row, _ := d.Row("a"); row.Header.Name != "Job a" {
+			t.Fatalf("after a refused SetName(a, %q) the name is %q", name, row.Header.Name)
+		}
+	}
+	if err := d.SetName("a", "Renamed"); err != nil {
+		t.Fatalf("SetName(a, Renamed) = %v", err)
+	}
+	if err := d.SetName("a", "Renamed"); err != nil {
+		t.Errorf("SetName to the job's own name = %v, want nil", err)
+	}
+}
+
+// TestAdd_RefusesANameAnotherJobHas pins the registration half of the name
+// invariant: two callers that each chose a name the queue did not yet hold
+// cannot both register under it, because Add checks under the same d.mu span
+// that inserts the job. A refused Add leaves no entry and writes no row.
+func TestAdd_RefusesANameAnotherJobHas(t *testing.T) {
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withStore(st))
+	if err := d.Add(context.Background(), job.New("a", "Same", job.PolicyFromPP(3)), Header{Name: "Same"}); err != nil {
+		t.Fatalf("Add(a): %v", err)
+	}
+	err := d.Add(context.Background(), job.New("b", "Same", job.PolicyFromPP(3)), Header{Name: "Same"})
+	if !errors.Is(err, ErrJobNameTaken) || !errors.Is(err, ErrInvalidJobName) {
+		t.Fatalf("Add(b) under a's name = %v, want ErrJobNameTaken wrapping ErrInvalidJobName", err)
+	}
+	if _, ok := d.Row("b"); ok {
+		t.Fatal("a refused Add left b registered")
+	}
+	st.mu.Lock()
+	_, wrote := st.rows["b"]
+	st.mu.Unlock()
+	if wrote {
+		t.Fatal("a refused Add wrote b's queue row")
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := range n {
+		wg.Go(func() {
+			id := fmt.Sprintf("c%d", i)
+			errs[i] = d.Add(context.Background(), job.New(id, "Raced", job.PolicyFromPP(3)), Header{Name: "Raced"})
+		})
+	}
+	wg.Wait()
+	admitted := 0
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			admitted++
+		case !errors.Is(err, ErrJobNameTaken):
+			t.Errorf("concurrent Add c%d = %v, want nil or ErrJobNameTaken", i, err)
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("%d of %d concurrent Adds under one name were admitted, want exactly 1", admitted, n)
+	}
+}
+
+// TestResumeJobByUser_ApprovesABlockedJob pins the approval half of the
+// unwanted-extension pause: the user's resume moves a blocked job to
+// approved, and the next tick persists it with the intent, while an
+// application resume (ResumeJob) leaves the block standing.
+func TestResumeJobByUser_ApprovesABlockedJob(t *testing.T) {
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withStore(st))
+	j := job.New("a", "Job A", job.PolicyFromPP(3))
+	if err := j.SetIntent(job.IntentPause); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Add(context.Background(), j, Header{Name: "Job A", Unwanted: unwanted.StateBlocked}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// A plain resume is refused outright: only ResumeJobByUser unblocks.
+	// This is the order a resume racing a retry produces, where the API's
+	// own check ran before the retry registered the job blocked.
+	if err := d.ResumeJob("a"); !errors.Is(err, ErrUnwantedBlocked) {
+		t.Fatalf("ResumeJob on a blocked job = %v, want ErrUnwantedBlocked", err)
+	}
+	if in := j.Intent(); in != job.IntentPause {
+		t.Fatalf("after a refused resume Intent = %v, want IntentPause: the block was bypassed", in)
+	}
+	if row, _ := d.Row("a"); row.Header.Unwanted != unwanted.StateBlocked {
+		t.Fatalf("after an application resume Unwanted = %d, want blocked (%d)", row.Header.Unwanted, unwanted.StateBlocked)
+	}
+
+	if err := d.ResumeJobByUser("a"); err != nil {
+		t.Fatalf("ResumeJobByUser: %v", err)
+	}
+	if in := j.Intent(); in != job.IntentRun {
+		t.Fatalf("Intent = %v, want IntentRun", in)
+	}
+	if row, _ := d.Row("a"); row.Header.Unwanted != unwanted.StateApproved {
+		t.Fatalf("after the user's resume Unwanted = %d, want approved (%d)", row.Header.Unwanted, unwanted.StateApproved)
+	}
+	d.tick(context.Background())
+	if p, ok := st.row("a"); !ok || p.Header.Unwanted != unwanted.StateApproved {
+		t.Fatalf("persisted Unwanted = %d (row %v), want approved", p.Header.Unwanted, ok)
+	}
+
+	if err := d.ResumeJobByUser("nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ResumeJobByUser of an unknown id = %v, want ErrNotFound", err)
+	}
+}
+
+// TestResumeJobByUser_LeavesOtherStatesAlone pins that only a blocked job is
+// approved: a job the check never blocked stays StateNone.
+func TestResumeJobByUser_LeavesOtherStatesAlone(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("a", "Job A", job.PolicyFromPP(3))
+	if err := d.Add(context.Background(), j, Header{Name: "Job A"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := d.ResumeJobByUser("a"); err != nil {
+		t.Fatalf("ResumeJobByUser: %v", err)
+	}
+	if row, _ := d.Row("a"); row.Header.Unwanted != unwanted.StateNone {
+		t.Fatalf("Unwanted = %d, want none", row.Header.Unwanted)
+	}
+	if err := j.SetIntent(job.IntentCancel); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ResumeJobByUser("a"); err == nil {
+		t.Fatal("ResumeJobByUser on a cancelled job must error")
 	}
 }
 

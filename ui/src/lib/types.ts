@@ -83,6 +83,9 @@ export interface QueueSlot {
 	eta_seconds: number;
 	current_file: string;
 	par2_held?: boolean;
+	/** SABnzbd's label list. "UNWANTED" marks a job the unwanted-extension
+	 *  check flagged; if it is paused, the user's resume approves it. */
+	labels?: string[];
 	files?: QueueFile[];
 	direct_unpack?: DirectUnpackStatus;
 }
@@ -146,6 +149,10 @@ export interface HistorySlot {
 	script_line: string;
 	meta: string;
 	url_info: string;
+	/** The unwanted-extension state, numbered as SABnzbd does: 0 none,
+	 *  1 blocked, 2 approved by the user. A Failed entry at 1 is one the
+	 *  check refused, which "Retry anyway" approves. */
+	unwanted_ext: number;
 }
 
 export interface HistoryDetail {
@@ -219,6 +226,9 @@ export interface DownloadsConfig {
 	replace_spaces_with: string;
 	strip_diacritics: boolean;
 	cleanup_list: string[];
+	unwanted_extensions: string[];
+	unwanted_extensions_mode: 'blacklist' | 'whitelist';
+	action_on_unwanted_extensions: 'off' | 'pause' | 'fail';
 }
 
 export interface FullConfig {

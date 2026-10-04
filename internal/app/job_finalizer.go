@@ -187,7 +187,7 @@ const heldVolumesRetryNote = "par2 repair failed while the recovery volumes were
 // failure stands as filed.
 func (f *jobFinalizer) retryWithHeldVolumes(jobID string) bool {
 	app := f.app
-	err := app.retryHistoryJob(app.ctx, jobID, func(j *job.Job) error {
+	err := app.retryHistoryJob(app.ctx, jobID, false, func(j *job.Job) error {
 		_, err := app.releaseRecoveryVolumes(j,
 			"post-processing failed par2 repair while the recovery volumes were held back")
 		return err

@@ -210,6 +210,9 @@ func (d *DownloadConfig) validate() error {
 	if err := validateCleanupList(d.CleanupList); err != nil {
 		errs = append(errs, err)
 	}
+	if _, err := d.UnwantedRules(); err != nil {
+		errs = append(errs, fmt.Errorf("unwanted_extensions: %w", err))
+	}
 	return errors.Join(errs...)
 }
 

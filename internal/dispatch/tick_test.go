@@ -45,7 +45,7 @@ func TestTick_WalksInQueueOrder(t *testing.T) {
 	first := job.New("first", "n", job.Policy{})
 	second := job.New("second", "n", job.Policy{})
 	for _, j := range []*job.Job{first, second} {
-		if err := d.Add(context.Background(), j, Header{}); err != nil {
+		if err := d.Add(context.Background(), j, Header{Name: j.ID()}); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}
@@ -232,8 +232,8 @@ func TestTick_LogsAndSkipsAJobWhoseAdvanceErrors(t *testing.T) {
 	// Registered AFTER the failing job, so it is reached only if the walk
 	// carries on past the error. Without it the test observes the log and
 	// nothing else, and tick's `continue` could be a `return` unnoticed.
-	later := job.New("j2", "n", job.Policy{})
-	if err := d2.Add(context.Background(), later, Header{}); err != nil {
+	later := job.New("j2", "n2", job.Policy{})
+	if err := d2.Add(context.Background(), later, Header{Name: "n2"}); err != nil {
 		t.Fatalf("d2.Add(later): %v", err)
 	}
 

@@ -37,10 +37,12 @@ func markRenamed(job *Job, from, to string) {
 
 // snapshotOwnedFiles returns the set of absolute paths of every regular file
 // currently under dir. Used to seed Job.OwnedFiles at the start of
-// processJob: since dir (job.DownloadDir) is exclusive to this job for its
-// entire lifetime (see the job-name uniqueness invariant enforced by
-// app.AddJob), every file present at that moment was produced by
-// this job's own download — nothing else can have written there.
+// processJob. dir (job.DownloadDir) is named after the job. No other
+// registered job has that name (Dispatcher.nameHolderLocked, at registration
+// and at rename), and AddJob and RenameJob choose only a name with nothing on
+// disk under it (jobNameTaken). So the files present at that moment are this
+// job's own: its download's, or a retried attempt's — unless something
+// outside gonzbd created that directory after the name was chosen.
 func snapshotOwnedFiles(dir string) (map[string]struct{}, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {

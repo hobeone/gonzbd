@@ -11,6 +11,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // newTestStore opens a real migrated database. The point of this package's
@@ -97,6 +98,9 @@ func TestStore_AllHeaderFieldsAndTimestampsSurviveRoundTrip(t *testing.T) {
 			URL:              "https://index.example.com/nzb/123",
 			MD5:              "0123456789abcdef0123456789abcdef",
 			Added:            1700000001,
+			// Not StateNone, which agrees with the column DEFAULT 0 and
+			// would round-trip through an unmapped column by accident.
+			Unwanted: unwanted.StateApproved,
 		},
 		Policy: job.Policy{Verify: true, Repair: true, Unpack: true, Delete: false},
 		State: job.StateView{
@@ -205,6 +209,24 @@ func TestStore_RoundTripsEveryEnumMember(t *testing.T) {
 		if got := save(t, p); got.State.Activity != a {
 			t.Errorf("Activity %s round-tripped as %s", a, got.State.Activity)
 		}
+	}
+	for _, u := range []unwanted.State{unwanted.StateNone, unwanted.StateBlocked, unwanted.StateApproved} {
+		p := base
+		p.Header.Unwanted = u
+		if got := save(t, p); got.Header.Unwanted != u {
+			t.Errorf("Unwanted %d round-tripped as %d", u, got.Header.Unwanted)
+		}
+	}
+}
+
+// TestStore_RefusesAnUndeclaredUnwantedState pins the column's CHECK: a
+// state no code declares is refused at the write rather than read back as
+// something a check site would have to interpret.
+func TestStore_RefusesAnUndeclaredUnwantedState(t *testing.T) {
+	s := newTestStore(t)
+	p := dispatch.Persisted{ID: "j", Header: dispatch.Header{Name: "n", Unwanted: unwanted.StateApproved + 1}}
+	if err := s.Save(t.Context(), p); err == nil {
+		t.Fatal("Save of an undeclared unwanted state succeeded")
 	}
 }
 

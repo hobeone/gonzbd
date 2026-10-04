@@ -58,7 +58,7 @@ func buildAPIServer(t *testing.T) (srv *api.Server, ts *httptest.Server, dir str
 
 	repo := history.NewRepository(db)
 
-	cfg := &config.Config{}
+	cfg := &config.Config{Downloads: defaultDownloads(t)}
 	cfg.General.APIKey = integrationAPIKey
 	cfg.General.NZBKey = integrationNZBKey
 	cfg.General.DownloadDir = dir

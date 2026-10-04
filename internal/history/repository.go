@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // ErrNotFound is returned by Get when no history entry matches the requested
@@ -71,6 +73,11 @@ type Entry struct {
 
 	// TimeAdded holds the unix timestamp of when the job was added to the queue.
 	TimeAdded time.Time
+
+	// Unwanted is the job's unwanted.State when it was filed. A Failed entry
+	// at unwanted.StateBlocked is one the unwanted-extension check refused;
+	// retry reads this, not FailMessage, to tell.
+	Unwanted unwanted.State
 }
 
 // SearchOptions controls which rows Search returns.
@@ -128,9 +135,9 @@ INSERT INTO history
    nzo_id, storage, path, script_log, script_line, download_time,
    postproc_time, stage_log, downloaded, completeness, fail_message,
    url_info, bytes, meta, md5sum, password,
-   archive, time_added, nzb_backup)
+   archive, time_added, nzb_backup, unwanted_ext)
 VALUES
-  (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 
 	_, err := exec.ExecContext(ctx, q,
 		toUnix(e.Completed),
@@ -140,7 +147,7 @@ VALUES
 		e.DownloadTime, e.PostprocTime, e.StageLog,
 		e.Downloaded, e.Completeness, e.FailMessage, e.URLInfo,
 		e.Bytes, e.Meta, e.MD5Sum, e.Password,
-		e.Archive, toUnix(e.TimeAdded), e.NZBBackup,
+		e.Archive, toUnix(e.TimeAdded), e.NZBBackup, e.Unwanted,
 	)
 	if err != nil {
 		return fmt.Errorf("history: add tx %q: %w", e.NzoID, err)
@@ -550,7 +557,7 @@ const allColumns = `id, completed, name, nzb_name, category, pp, script,
 url, status, nzo_id, storage, path, script_log, script_line, download_time,
 postproc_time, stage_log, downloaded, completeness, fail_message, url_info,
 bytes, meta, md5sum, password, archive, time_added,
-nzb_backup`
+nzb_backup, unwanted_ext`
 
 // scanner abstracts over *sql.Row and *sql.Rows so scanEntry works for both.
 type scanner interface {
@@ -589,6 +596,9 @@ func scanEntry(s scanner) (*Entry, error) {
 		&downloaded, &completeness, &failMessage, &urlInfo,
 		&bytesVal, &meta, &md5sum, &password,
 		&archive, &timeAdded, &nzbBackup,
+		// Scanned straight into the field: the column is NOT NULL, and
+		// database/sql range-checks the narrowing into uint8.
+		&e.Unwanted,
 	)
 	if err != nil {
 		return nil, err

@@ -34,6 +34,7 @@ describe('HistoryRow', () => {
 		script_line: '',
 		meta: '',
 		url_info: '',
+		unwanted_ext: 0,
 		stage_log: []
 	};
 
@@ -97,7 +98,43 @@ describe('HistoryRow', () => {
 		const retryBtn = screen.getByTitle('Retry');
 		await fireEvent.click(retryBtn);
 
-		expect(retryHistoryJob).toHaveBeenCalledWith('456');
+		expect(retryHistoryJob).toHaveBeenCalledWith('456', false);
+	});
+
+	// ── Unwanted extensions ──
+
+	it('offers Retry anyway on a job the unwanted-extension check failed', async () => {
+		vi.mocked(retryHistoryJob).mockResolvedValue(undefined);
+		const slot = {
+			...baseSlot,
+			status: 'Failed',
+			fail_message: 'Aborted, unwanted extension detected: setup.exe',
+			unwanted_ext: 1
+		};
+		render(HistoryRow, { slot, onremove: vi.fn() });
+
+		await fireEvent.click(screen.getByTitle('Retry anyway: allow the unwanted extensions'));
+
+		expect(retryHistoryJob).toHaveBeenCalledWith('456', true);
+	});
+
+	it('plain Retry on a blocked job does not approve it', async () => {
+		vi.mocked(retryHistoryJob).mockResolvedValue(undefined);
+		const slot = { ...baseSlot, status: 'Failed', fail_message: 'x', unwanted_ext: 1 };
+		render(HistoryRow, { slot, onremove: vi.fn() });
+
+		await fireEvent.click(screen.getByTitle('Retry'));
+
+		expect(retryHistoryJob).toHaveBeenCalledWith('456', false);
+	});
+
+	it.each([
+		['a failed job the check did not block', { status: 'Failed', unwanted_ext: 0 }],
+		['a failed job already approved', { status: 'Failed', unwanted_ext: 2 }],
+		['a completed job', { status: 'Completed', unwanted_ext: 1 }]
+	])('does not offer Retry anyway for %s', (_name, over) => {
+		render(HistoryRow, { slot: { ...baseSlot, ...over }, onremove: vi.fn() });
+		expect(screen.queryByTitle('Retry anyway: allow the unwanted extensions')).toBeNull();
 	});
 
 	// ── Edge cases ──

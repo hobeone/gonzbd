@@ -10,18 +10,33 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // ErrNotFound is returned when an operation names a job ID that is not registered.
 var ErrNotFound = errors.New("dispatch: job not found")
 
+// ErrInvalidJobName is SetName's refusal of a name that is not one safe path
+// component, or that another registered job already has.
+var ErrInvalidJobName = errors.New("dispatch: invalid job name")
+
+// ErrJobNameTaken is the refusal of a name another registered job holds, by
+// SetName or by registration (Add, and restore). It wraps ErrInvalidJobName.
+// A caller that chose the name before asking can choose again and retry.
+var ErrJobNameTaken = fmt.Errorf("%w: another registered job has it", ErrInvalidJobName)
+
+// ErrUnwantedBlocked is ResumeJob's refusal of a job the unwanted-extension
+// check blocked: only ResumeJobByUser, the user's approval, unblocks it.
+var ErrUnwantedBlocked = errors.New("dispatch: the job is blocked for unwanted extensions and needs the user's approval")
+
 // Header is the display metadata a listing needs.
 //
 // Name is the one field job.Job DOES carry, and it is duplicated here on
 // purpose: it lets a listing be composed from Header alone, without the
-// registry handing out *job.Job pointers to do it. Header.Name is read by
-// API queue search filtering (internal/api/queue.go) and Application
-// name collision detection (internal/app/app.go), while downstream filesystem
+// registry handing out *job.Job pointers to do it. Header.Name is read by,
+// among others, API queue listing and search (internal/api/queue.go), the
+// registry's own name check (nameHolderLocked) and Application.queuedName
+// (internal/app/retry_failed_dir.go), while downstream filesystem
 // paths and finalization read Job.Name(). SetName updates both under d.mu so the
 // two copies stay in lockstep.
 //
@@ -79,6 +94,13 @@ type Header struct {
 	// fact about the NZB — it can be set on any job — so it is kept in its
 	// own field rather than joined into one of them.
 	OperationalError string
+
+	// Unwanted is the job's standing against the unwanted-extension check.
+	// The application's ingest and retry paths set it before the job is
+	// registered; once registered, ResumeJobByUser is its only runtime
+	// writer (restore aside, see above), and it only moves
+	// unwanted.StateBlocked to unwanted.StateApproved.
+	Unwanted unwanted.State
 
 	Script    string
 	Password  string
@@ -245,6 +267,10 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 	if d.removing[j.ID()] > 0 {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: register: %s: %w", j.ID(), errPreemptedByRemoval)
+	}
+	if otherID, taken := d.nameHolderLocked(j.ID(), h.Name); taken {
+		d.mu.Unlock()
+		return fmt.Errorf("dispatch: register %s as %q: job %s has that name: %w", j.ID(), h.Name, otherID, ErrJobNameTaken)
 	}
 	added := seq == seqNext
 	if added {
@@ -678,11 +704,60 @@ func (d *Dispatcher) PauseJob(id string) error {
 // It cannot un-cancel: SetIntent latches IntentCancel (job/intent.go,
 // IsLatched), so this returns that error rather than silently doing nothing.
 // Silently succeeding would tell the API a cancelled job had been resumed.
+//
+// It refuses a job the unwanted-extension check blocked
+// (ErrUnwantedBlocked), so ResumeJobByUser is the one way to unblock one.
 func (d *Dispatcher) ResumeJob(id string) error {
-	j, ok := d.Job(id)
+	d.mu.Lock()
+	e, ok := d.byID[id]
 	if !ok {
+		d.mu.Unlock()
 		return fmt.Errorf("dispatch: resume %s: %w", id, ErrNotFound)
 	}
+	// Decided under d.mu against the entry registered now, so a resume that
+	// races a retry registering the job blocked still sees the block.
+	if e.h.Unwanted == unwanted.StateBlocked {
+		d.mu.Unlock()
+		return fmt.Errorf("dispatch: resume %s: %w", id, ErrUnwantedBlocked)
+	}
+	j := e.j
+	d.mu.Unlock()
+	if err := j.SetIntent(job.IntentRun); err != nil {
+		return fmt.Errorf("dispatch: resume %s: %w", id, err)
+	}
+	d.kick()
+	return nil
+}
+
+// ResumeJobByUser is ResumeJob for a resume the user asked for, and it is
+// also the user's approval of a job the unwanted-extension check blocked:
+// such a job moves from unwanted.StateBlocked to unwanted.StateApproved, as
+// SABnzbd's resume after an "unwanted" pause does. An approved job is not
+// paused by the check again and keeps its files after unpack. The new state
+// reaches dispatch_jobs at the next persist, with the intent.
+//
+// It is separate from ResumeJob because the application resumes jobs of its
+// own accord — a stall's re-evaluation, Fail handing a parked job to its
+// Assessing worker — and none of those is the user's consent; nor is a
+// resume by a caller holding only the upload key, which the API sends to
+// ResumeJob. ResumeJob refuses a blocked job, so none of them unblocks one.
+//
+// The approval is recorded before the intent changes, so no tick can see
+// the job running while still blocked. A resume refused because the job is
+// cancelled leaves a cancelled job approved, which nothing reads.
+func (d *Dispatcher) ResumeJobByUser(id string) error {
+	d.mu.Lock()
+	e, ok := d.byID[id]
+	if !ok {
+		d.mu.Unlock()
+		return fmt.Errorf("dispatch: resume %s: %w", id, ErrNotFound)
+	}
+	if e.h.Unwanted == unwanted.StateBlocked {
+		e.h.Unwanted = unwanted.StateApproved
+	}
+	j := e.j
+	d.mu.Unlock()
+
 	if err := j.SetIntent(job.IntentRun); err != nil {
 		return fmt.Errorf("dispatch: resume %s: %w", id, err)
 	}
@@ -858,6 +933,12 @@ func (d *Dispatcher) SetPriority(id string, priority int) error {
 // SetName updates the job's display and filesystem name across both the Header
 // (used for listings without job pointer dereference) and the Job instance (used for
 // downstream filesystem paths and finalization) atomically under d.mu.
+//
+// It refuses (ErrInvalidJobName) a name that is not one safe path component
+// or that another registered job has. It does not sanitise or check the disk;
+// Application.RenameJob does both before calling it — the production caller,
+// at internal/app/rename.go (`git grep -n '\.SetName(' -- '*.go' ':!*_test.go'`
+// also lists the apitest double and two Job.SetName calls).
 func (d *Dispatcher) SetName(id, name string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -865,9 +946,35 @@ func (d *Dispatcher) SetName(id, name string) error {
 	if !ok {
 		return fmt.Errorf("dispatch: set name %s: %w", id, ErrNotFound)
 	}
+	// The name becomes the job's download directory, DownloadDir/<name>, and
+	// post-processing deletes and moves what is under it. So it must be one
+	// path component, never "." or "..", and no other registered job's name.
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
+		return fmt.Errorf("dispatch: set name %s to %q: not a single path component: %w", id, name, ErrInvalidJobName)
+	}
+	if otherID, taken := d.nameHolderLocked(id, name); taken {
+		return fmt.Errorf("dispatch: set name %s to %q: job %s has that name: %w", id, name, otherID, ErrJobNameTaken)
+	}
 	e.h.Name = name
 	e.j.SetName(name)
 	return nil
+}
+
+// nameHolderLocked reports the registered job other than id whose name is
+// name. It is the registry's one test of "no two registered jobs share a
+// name": register applies it to a job entering the registry (Add and
+// restore) and SetName to a rename, both under the d.mu span that then
+// writes the name, so of two callers that chose one name concurrently, the
+// registry admits only one.
+// `git grep -n 'd\.nameHolderLocked(' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 2 lines.
+// Caller must hold d.mu.
+func (d *Dispatcher) nameHolderLocked(id, name string) (string, bool) {
+	for otherID, other := range d.byID {
+		if otherID != id && other.h.Name == name {
+			return otherID, true
+		}
+	}
+	return "", false
 }
 
 // SetCategory sets the category for a registered job.
