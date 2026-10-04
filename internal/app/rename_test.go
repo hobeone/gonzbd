@@ -112,6 +112,9 @@ func TestRenameJob_GivesASafeUniqueName(t *testing.T) {
 		if err != nil || got != "first" {
 			t.Errorf("RenameJob to its own name = %q, %v; want first, nil", got, err)
 		}
+		if n := nameOf(t, a, id); n != "first" {
+			t.Errorf("a same-name rename left the name %q, want first", n)
+		}
 	})
 }
 
@@ -133,6 +136,10 @@ func TestRenameJob_RefusesAJobWhoseDownloadHasStarted(t *testing.T) {
 	}
 	if got := nameOf(t, a, id); got != "first" {
 		t.Errorf("a refused rename changed the name to %q", got)
+	}
+	// A same-name request is still a rename request: SetName refuses it too.
+	if _, err := a.RenameJob(id, "first"); !errors.Is(err, dispatch.ErrJobStarted) {
+		t.Errorf("same-name RenameJob after a download began = %v, want ErrJobStarted", err)
 	}
 }
 

@@ -71,6 +71,12 @@ func (app *Application) RenameJob(id, name string) (string, error) {
 	snap := app.config.Snapshot()
 	name = fsutil.SanitizeFolderName(name, snap.Downloads.SanitizeOptions())
 	if name == row.Header.Name {
+		// Not uniqueName: the job's own name is not "taken" by itself. Not an
+		// early return either: SetName owns the refusal of a started job, and
+		// a same-name rename of one is still a rename request.
+		if err := app.dispatcher.SetName(id, name); err != nil {
+			return "", fmt.Errorf("app: rename %s: %w", id, err)
+		}
 		return name, nil
 	}
 	name, err := app.claimJobName(snap, name, func(n string) error { return app.dispatcher.SetName(id, n) })

@@ -534,7 +534,8 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    whose download has begun, as `Job.DownloadBegun` reports it: the
    first-article stamp is set or at least one article is done. That is not
    `HasRun`, which the tick sets for any ungated job before it fetches
-   anything. The done-article term is what keeps a retried job
+   anything. A same-name rename is refused too, and a restored job with no
+   progress yet is hydrated first. The done-article term is what keeps a retried job
    refused, since `ResetForRetry` clears the stamp but keeps the articles and
    their bytes under the name. A retry takes the name
    rebuilt from its history entry rather than a freshly chosen one, because

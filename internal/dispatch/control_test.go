@@ -156,6 +156,52 @@ func TestSetName_RefusesAJobThatHasStarted(t *testing.T) {
 	}
 }
 
+// TestSetName_RefusesARetriedJobRestoredBeforeHydration pins the restart case:
+// a retried job's stored row carries no download stamp (ResetForRetry clears
+// it) and a restored job has no JobProgress, so only its done articles, which
+// Hydrate restores, show that bytes exist under its name. SetName must load
+// them rather than trust the empty row. The residency double stands in for
+// the real one by attaching content and marking an article done, as
+// RestoreContent plus the durable-run restore do.
+func TestSetName_RefusesARetriedJobRestoredBeforeHydration(t *testing.T) {
+	st := &fakeStore{}
+	st.seed([]Persisted{
+		{ID: "retried", SortKey: 1, Header: Header{Name: "retried"}, Intent: job.IntentPause},
+		{ID: "fresh", SortKey: 2, Header: Header{Name: "fresh"}, Intent: job.IntentPause},
+	})
+	fr := &fakeResidency{}
+	d := newTestDispatcher(t, withStore(st), withResidency(fr))
+	fr.onHydrate = func(id string) {
+		j, ok := d.Job(id)
+		if !ok {
+			return
+		}
+		m := job.NewManifest([]job.JobFile{{Subject: "f", Bytes: 200,
+			Articles: []job.JobArticle{{ID: "a1", Bytes: 100, Number: 1}, {ID: "a2", Bytes: 100, Number: 2}}}})
+		if err := j.AttachContent(m); err != nil {
+			t.Errorf("AttachContent: %v", err)
+		}
+		if id == "retried" {
+			if err := j.MarkArticleDone(0, 100, "s"); err != nil {
+				t.Errorf("MarkArticleDone: %v", err)
+			}
+		}
+	}
+	if err := d.restore(context.Background()); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	if err := d.SetName("retried", "Other"); !errors.Is(err, ErrJobStarted) {
+		t.Errorf("after restart: SetName on a retried job = %v, want ErrJobStarted", err)
+	}
+	if err := d.SetName("fresh", "Renamed"); err != nil {
+		t.Errorf("after restart: SetName on a job with no articles = %v, want nil", err)
+	}
+	if row, _ := d.Row("retried"); row.Header.Name != "retried" {
+		t.Errorf("a refused rename changed the name to %q", row.Header.Name)
+	}
+}
+
 // TestAdd_RefusesANameAnotherJobHas pins the registration half of the name
 // invariant: two callers that each chose a name the queue did not yet hold
 // cannot both register under it, because Add checks under the same d.mu span
