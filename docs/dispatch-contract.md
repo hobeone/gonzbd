@@ -274,6 +274,13 @@ once a resume lets it take a lease. `TestPauseJob_KeepsThePausedJobResident`,
 `TestResumeJob_ContinuesWithoutRehydrating` and
 `TestRestore_PausedJobIsNotHydratedUntilResumed` pin the three.
 
+The startup sweep borrows residency outside this rule: `Application.resumeAllJobs`
+hydrates each swept job itself, which the dispatcher does not record, and evicts
+it at the end of that job's iteration unless a keep condition holds, so no
+dispatcher state changes. See
+`docs/durability-contract.md` § *Which jobs the sweep covers*, which lists the
+keep conditions.
+
 Only the manifest tier is evictable: nothing drops a `JobProgress` once it
 exists, and header fields never leave. That is weaker than "resident for a
 job's whole time in the registry", and deliberately so — a job restored at

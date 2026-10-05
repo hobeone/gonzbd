@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -28,11 +29,11 @@ type fileResumer interface {
 	Resume(ctx context.Context, jobID string, fileIdx int32, path string) (durability.ResumeResult, error)
 }
 
-// resumeAllJobs re-derives every DOWNLOADING job's work set from what is
+// resumeAllJobs re-derives the work set of every job at Fetching from what is
 // actually on stable storage, and is the production caller L3 was missing.
 //
-// "Downloading" rather than "resident", and that word is the guard rather than
-// a description of it — see the phase note below. It re-derives rather than
+// "Fetching" rather than "resident", and that position is the guard rather than
+// a description of it — see "Fetching only" below. It re-derives rather than
 // seeds: the result REPLACES what appResidency.Hydrate restored, including
 // clearing a bit whose bytes are gone (#362).
 //
@@ -96,16 +97,17 @@ type fileResumer interface {
 // without reading a byte of it: nothing but a completed fsync can put a claim
 // INTO the record, and a delete only ever takes one away.
 //
-// A non-resident job in a SWEPT phase is hydrated for the duration and evicted
-// again, so the residency budget docs/job-lifecycle.md exists to bound is
-// unchanged from outside. It matters because a Paused job is the case that
-// needs this most and is not resident at startup: Application.Stall leaves the
-// job Paused, and the sweep skipping it is what let #362 survive in that
-// branch.
+// A job at Fetching whose manifest is not resident is hydrated for its own
+// iteration and evicted at the end of it unless releaseSweepHydration or
+// resumeJob keeps it (docs/durability-contract.md § "Which jobs the sweep
+// covers" lists them), so the residency budget docs/job-lifecycle.md exists to
+// bound is unchanged from outside except for those kept jobs. It matters because a Paused job is the case that needs this most
+// and is not resident at startup: Application.Stall leaves the job Paused, and
+// the sweep skipping it is what let #362 survive in that branch.
 // Startup is the moment the hydration is cheapest and safest — nothing else
 // holds a manifest and no article is being dispatched.
 //
-// # Active and Paused, because only there is the assembler the sole writer
+// # Fetching only, because only there is the assembler the sole writer
 //
 // Residency is NOT the right bound now that the seed is authoritative.
 // JobPhase.IsResident is true for PhaseProcessing as well — Verifying,
@@ -138,22 +140,17 @@ type fileResumer interface {
 //
 // What would break this argument, stated so a later change has to notice.
 //
-// PhaseActive is StatusDownloading and StatusFetching, and the second one is
-// ALREADY not download-only: constants.StatusFetching is "downloading extra
-// par2 files for repair", which is a repair-time status. The guard is sound
-// today only because nothing assigns it — it exists in the transition table,
-// the phase mapping and the API's vocabulary, and no code path sets it. That
-// is a fact about the writers, not an invariant the type enforces (Job.Phase's
-// own doc makes the same point about Grabbing and Checking, and notes that the
-// load paths assign Status from a persisted string without validating it). So
-// the hazard here is present and load-bearing on unreachability: the first
-// code that starts setting StatusFetching puts a repair-time job inside the
-// window this guard trusts, and must move it out of PhaseActive or bound the
-// sweep on the status rather than the phase.
+// The guard is the job's position, row.View.State == job.Fetching, and a
+// paused job is still at Fetching with pause intent. The status vocabulary is
+// derived from it, not the other way round: job.RenderView's status maps
+// Fetching to constants.StatusFetching when the job has been Assessed and to
+// constants.StatusDownloading otherwise (internal/job/sabnzbd.go), and the
+// guard covers both. Whether a job back at Fetching after a repair still has
+// the assembler as the sole writer of its files has not been argued here.
 //
-// The other way in is a non-assembler writer arriving inside PhaseActive at
-// all — a DirectUnpack that wrote back into its source rather than reading it,
-// or a repair moved earlier than download-complete.
+// The other way in is a non-assembler writer arriving while a job is at
+// Fetching — a DirectUnpack that wrote back into its source rather than
+// reading it, or a repair moved earlier than download-complete.
 func (app *Application) resumeAllJobs(ctx context.Context) error {
 	if app.resumer == nil {
 		return nil
@@ -168,49 +165,114 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 					"job", row.ID, "state", row.View.State)
 				continue
 			}
-			if app.residency != nil {
-				_ = app.residency.Hydrate(ctx, row.ID)
-			}
 			j, ok := app.dispatcher.Job(row.ID)
 			if !ok {
 				continue
 			}
-			m, err := j.Manifest()
-			if err != nil {
-				app.log.Debug("resume sweep skipped a non-resident job",
-					"job", row.ID, "err", err)
-				continue
-			}
-			swept, runs, fault, err := app.resumeJobFiles(ctx, row.ID, m, row.Header.Name, j.Progress())
-			if err != nil {
+			if err := app.resumeJob(ctx, row, j); err != nil {
 				return err
-			}
-			replaceErr := j.ReplaceFromRuns(swept, runs)
-			if replaceErr != nil {
-				app.log.Warn("resume sweep could not fully apply a job's recomputation",
-					"job", row.ID, "err", replaceErr)
-			}
-			// ReplaceFromRuns changes Complete and the CRC in memory only, and
-			// hydration re-applies job_files unconditionally, so the row must
-			// be written before the job can be evicted. A failed write is
-			// logged like a failed replace: the mark stays pending for the
-			// next periodic flush, and the sweep carries on.
-			if app.checkpointer != nil {
-				app.checkpointer.Mark(j)
-				if err := app.checkpointer.FlushJob(ctx, j); err != nil {
-					app.log.Warn("resume sweep could not persist a job's recomputation",
-						"job", row.ID, "err", err)
-				}
-			}
-			if fault == nil && replaceErr == nil {
-				app.completeStrandedFiles(ctx, row.ID, m, swept, runs)
-			}
-			if fault != nil {
-				app.Stall(row.ID, fault)
 			}
 		}
 	}
 	return nil
+}
+
+// resumeJob is one iteration of resumeAllJobs: it loads j if it is not
+// resident, re-derives its work set, and releases a load it made.
+//
+// The release is a defer so that it covers every return, including the
+// context-cancelled abort and the storage-fault stall: each leaves a job this
+// iteration hydrated, and the dispatcher's residency bookkeeping did not
+// record the load.
+func (app *Application) resumeJob(ctx context.Context, row dispatch.Row, j *job.Job) error {
+	// unwritten is set when the recomputation below may not be in job_files.
+	// The release then does not run: hydration re-applies that table, and a
+	// stale complete = 1 re-applied over the cleared in-memory Complete is
+	// never undone (RestoreFileMeta only sets it), so the first tick's
+	// re-hydration would hide the file's articles from dispatch.
+	var unwritten bool
+	if app.residency != nil && !j.Resident() {
+		defer func() {
+			if !unwritten {
+				app.releaseSweepHydration(row.ID, j)
+			}
+		}()
+		_ = app.residency.Hydrate(ctx, row.ID)
+	}
+	m, err := j.Manifest()
+	if err != nil {
+		app.log.Debug("resume sweep skipped a non-resident job",
+			"job", row.ID, "err", err)
+		return nil
+	}
+	swept, runs, fault, err := app.resumeJobFiles(ctx, row.ID, m, row.Header.Name, j.Progress())
+	if err != nil {
+		return err
+	}
+	replaceErr := j.ReplaceFromRuns(swept, runs)
+	if replaceErr != nil {
+		app.log.Warn("resume sweep could not fully apply a job's recomputation",
+			"job", row.ID, "err", replaceErr)
+	}
+	// ReplaceFromRuns changes Complete and the CRC in memory only, and
+	// hydration re-applies job_files unconditionally, so the row must
+	// be written before the job can be evicted. A failed write is
+	// logged like a failed replace and the sweep carries on: the mark stays
+	// pending for the next periodic flush, and the job stays resident so
+	// that flush writes the recomputation rather than a re-hydrated copy.
+	if app.checkpointer == nil {
+		// Defensive: New assigns app.checkpointer unconditionally.
+		unwritten = true
+	} else {
+		app.checkpointer.Mark(j)
+		if err := app.checkpointer.FlushJob(ctx, j); err != nil {
+			unwritten = true
+			app.log.Warn("resume sweep could not persist a job's recomputation",
+				"job", row.ID, "err", err)
+		}
+	}
+	if fault == nil && replaceErr == nil {
+		app.completeStrandedFiles(ctx, row.ID, m, swept, runs)
+	}
+	if fault != nil {
+		app.Stall(row.ID, fault)
+	}
+	return nil
+}
+
+// releaseSweepHydration evicts the manifest resumeJob loaded for j, unless the
+// job needs it.
+//
+// The dispatcher records a load with markResident, called from
+// reconcileResidency and loadProgressForRename
+// (`git grep -n 'markResident(' -- 'internal/dispatch/*.go' ':!*_test.go'`
+// returns 3 lines: those two calls and the definition), so it has no record of
+// this one: left resident, a paused job's manifest stays in memory until the
+// job is resumed, removed or the dispatcher stops, because reconcileResidency
+// never evicts a job with pause intent and, for any other, evicts only what
+// isResident reports. Evicting here puts the job back where the dispatcher
+// believes it is, which is why no dispatcher state changes with it.
+//
+// A job that holds everything its position requires (RenderView.Holds) keeps
+// the manifest: reconcileResidency would load it for exactly that reason on
+// the first tick. A job the sweep's stranded-file repair handed to
+// post-processing (completeFinalizedFile files an owed unwanted failure, as
+// fileOwedUnwantedFailures does after hydrating) is admitted and keeps it too,
+// since post-processing reads the manifest without hydrating. A job that is no
+// longer registered is left to the removal that deregistered it, whose own
+// Evict has run. resumeJob does not call this at all for a job whose
+// recomputation may not be in job_files.
+//
+// Holds is read and the manifest dropped in two steps, so a tick between them
+// could hydrate and record the job and then have the manifest dropped under
+// it. The sweep's placement before the first tick (see resumeAllJobs) is what
+// rules that out, as it does for the seed itself.
+func (app *Application) releaseSweepHydration(jobID string, j *job.Job) {
+	row, ok := app.dispatcher.RowJob(j)
+	if !ok || row.View.Holds || app.postProcAdmissions.has(j) {
+		return
+	}
+	app.residency.Evict(jobID)
 }
 
 // resumeJobFiles resumes each of one job's files and returns two things
