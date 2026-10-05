@@ -12,8 +12,8 @@ import (
 
 // errRetryDirConflict refuses a retry whose failed attempt's bytes cannot be
 // put back where the retry writes without touching something else: the
-// directory the retry would write to already exists, or another queued job
-// already carries its name.
+// directory the retry would write to already exists (restoreFailedDir), or
+// another job holds its name (Dispatcher.ReserveName, in retryHistoryJob).
 var errRetryDirConflict = errors.New("cannot restore the failed download directory")
 
 // restoreFailedDir moves a failed job's download directory back from the
@@ -27,12 +27,14 @@ var errRetryDirConflict = errors.New("cannot restore the failed download directo
 // directory back with undoRestoreFailedDir.
 //
 // It refuses with errRetryDirConflict, moving nothing, when downloadDir/name
-// already exists or nameQueued reports another queued job of that name: either
-// is a directory that is not this job's, and the retry would write into it.
-// It also refuses when the _FAILED_ directory is gone but downloadDir/name
-// exists, since nothing says whose that directory is. Where neither exists the
-// bytes are gone and there is nothing to move.
-func restoreFailedDir(recordedPath, downloadDir, name string, nameQueued func(string) bool) (string, error) {
+// already exists: it is a directory that is not this job's, and the retry would
+// write into it. It also refuses when the _FAILED_ directory is gone but
+// downloadDir/name exists, since nothing says whose that directory is. Where
+// neither exists the bytes are gone and there is nothing to move.
+//
+// It does not check whether a job holds name: its caller must have reserved it
+// (Dispatcher.ReserveName) first, which refuses a holder before anything moves.
+func restoreFailedDir(recordedPath, downloadDir, name string) (string, error) {
 	jobDir := filepath.Join(downloadDir, name)
 	failedDir := postproc.FailedDir(jobDir)
 	if recordedPath != failedDir {
@@ -58,8 +60,6 @@ func restoreFailedDir(recordedPath, downloadDir, name string, nameQueued func(st
 	case dstExists:
 		return "", fmt.Errorf("%w: %s already exists; move or remove it, then retry",
 			errRetryDirConflict, jobDir)
-	case nameQueued(name):
-		return "", fmt.Errorf("%w: another queued job is named %q", errRetryDirConflict, name)
 	}
 	if err := renameWithin(downloadDir, failedDir, jobDir); err != nil {
 		return "", err

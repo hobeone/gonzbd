@@ -20,7 +20,7 @@ file internal/app/rename.go
 [the rename is not made unique]
 file internal/app/rename.go
 --- anchor
-		name := uniqueName(base, func(n string) bool { return app.jobNameTaken(snap, n) })
+		name := uniqueName(base, func(n string) bool { return refused[n] || app.jobNameTaken(snap, n) })
 --- replace
 		name := base
 --- end

@@ -17,7 +17,7 @@ import (
 var ErrNotFound = errors.New("dispatch: job not found")
 
 // ErrInvalidJobName is SetName's refusal of a name that is not one safe path
-// component, or that another registered job already has.
+// component, or that another registered job has or another job has reserved.
 var ErrInvalidJobName = errors.New("dispatch: invalid job name")
 
 // ErrJobStarted is SetName's refusal of a job whose download has begun
@@ -27,10 +27,11 @@ var ErrInvalidJobName = errors.New("dispatch: invalid job name")
 // the name.
 var ErrJobStarted = errors.New("dispatch: a job whose download has started cannot be renamed")
 
-// ErrJobNameTaken is the refusal of a name another registered job holds, by
-// SetName or by registration (Add, and restore). It wraps ErrInvalidJobName.
+// ErrJobNameTaken is the refusal of a name another registered job holds or
+// another job has reserved (ReserveName), by SetName, by registration (Add,
+// and restore) or by ReserveName itself. It wraps ErrInvalidJobName.
 // A caller that chose the name before asking can choose again and retry.
-var ErrJobNameTaken = fmt.Errorf("%w: another registered job has it", ErrInvalidJobName)
+var ErrJobNameTaken = fmt.Errorf("%w: another job has it", ErrInvalidJobName)
 
 // ErrUnwantedBlocked is ResumeJob's refusal of a job the unwanted-extension
 // check blocked: only ResumeJobByUser, the user's approval, unblocks it.
@@ -1038,7 +1039,7 @@ func (d *Dispatcher) SetPriority(id string, priority int) error {
 //
 // It refuses (ErrJobStarted) a job whose download has begun, and
 // (ErrInvalidJobName) a name that is not one safe path component or that
-// another registered job has. It does not sanitise or check the disk;
+// another registered job has or another job has reserved. It does not sanitise or check the disk;
 // Application.RenameJob does both before calling it — the production caller,
 // at internal/app/rename.go (`git grep -n '\.SetName(' -- '*.go' ':!*_test.go'`
 // also lists the apitest double and two Job.SetName calls).
@@ -1092,19 +1093,56 @@ func (d *Dispatcher) loadProgressForRename(id string) error {
 	return nil
 }
 
-// nameHolderLocked reports the registered job other than id whose name is
-// name. It is the registry's one test of "no two registered jobs share a
-// name": register applies it to a job entering the registry (Add and
-// restore) and SetName to a rename, both under the d.mu span that then
-// writes the name, so of two callers that chose one name concurrently, the
-// registry admits only one.
-// `git grep -n 'd\.nameHolderLocked(' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 2 lines.
+// ReserveName holds name for the job id before that job is registered, for a
+// caller that must move something on disk to name first and so cannot let
+// another job take it in between: a retry restoring a failed job's directory.
+// It refuses with ErrJobNameTaken, changing nothing, when a registered job
+// other than id has the name or another id has reserved it. While it is held,
+// register and SetName refuse the name to every job but id; since no other
+// registered job had it when it was reserved, id's own Add is not refused for
+// the name.
+//
+// The returned release frees the reservation and may be called any number of
+// times; it frees only a reservation still held by id for that name.
+// Only release removes an entry from reservedNames (its closure holds the one
+// delete), so a
+// reservation lasts until its caller releases it: the caller defers release,
+// and the reservation is not persisted, so a restart drops it. Registering id
+// does not consume it, so release is still the caller's to call after a
+// successful Add.
+func (d *Dispatcher) ReserveName(id, name string) (release func(), err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if otherID, taken := d.nameHolderLocked(id, name); taken {
+		return nil, fmt.Errorf("dispatch: reserve %q for %s: job %s has that name: %w", name, id, otherID, ErrJobNameTaken)
+	}
+	d.reservedNames[name] = id
+	return func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.reservedNames[name] == id {
+			delete(d.reservedNames, name)
+		}
+	}, nil
+}
+
+// nameHolderLocked reports the job other than id that holds name: a
+// registered job named it, or ReserveName reserved it. It is the registry's
+// one test of "no two jobs share a name": register applies it to a job
+// entering the registry (Add and restore), SetName to a rename and
+// ReserveName to a reservation, all under the d.mu span that then writes the
+// name, so of two callers that chose one name concurrently, the registry
+// admits only one.
+// `git grep -n 'd\.nameHolderLocked(' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 3 lines.
 // Caller must hold d.mu.
 func (d *Dispatcher) nameHolderLocked(id, name string) (string, bool) {
 	for otherID, other := range d.byID {
 		if otherID != id && other.h.Name == name {
 			return otherID, true
 		}
+	}
+	if holder, ok := d.reservedNames[name]; ok && holder != id {
+		return holder, true
 	}
 	return "", false
 }
