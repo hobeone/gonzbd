@@ -1504,8 +1504,10 @@ finished coming up at boot.
 
 ### Which jobs the sweep covers
 
-The bound is on STATUS, not on phase and not on residency (`sweptStatus`):
-**Downloading, Fetching and Paused**.
+The bound is on the job's position, not on phase and not on residency:
+`resumeAllJobs` sweeps a job whose `State` is `job.Fetching` and skips every
+other (`TestSweptState` enumerates it). A paused job is at `Fetching` with
+pause intent, so it is swept.
 
 - Not phase, because `PhaseActive` excludes **Paused**, and a paused job is the
   case that needs the sweep most: it is mid-download, nothing but the assembler
@@ -1521,20 +1523,33 @@ The bound is on STATUS, not on phase and not on residency (`sweptStatus`):
   relocates it out of the download directory entirely. The property the sweep
   needs is *the assembler is the only writer of these files*.
 
-A swept job that is **not resident** — every paused one — is hydrated for its
-own iteration and evicted at the end of it, so residency is unchanged from
-outside. `Application.resumeJob` hydrates the **live** job through
+In production every swept job is **not resident** when the sweep reaches it
+(a restored job has no manifest, paused or not), so each is hydrated for its own
+iteration and evicted at the end of it, and residency is unchanged from outside.
+`Application.resumeJob` hydrates the **live** job through
 `appResidency.Hydrate` and applies the correction with `Job.ReplaceFromRuns`;
 `releaseSweepHydration` then evicts it. The dispatcher never records the load
 (`markResident` is called only from `reconcileResidency` and
 `loadProgressForRename`), and `reconcileResidency` never evicts a job with
 pause intent and evicts any other only if `isResident` reports it, so without
 the release the manifest would stay in memory until the job was resumed,
-removed or the dispatcher stopped. A job that was
-already resident, that holds what its position requires (`RenderView.Holds`),
-or that the repair handed to post-processing (`postProcAdmissions.has`, which
-reads the manifest without hydrating), keeps its manifest. Startup is when this is cheapest and safest: nothing else
-holds a manifest and no article is being dispatched.
+removed or the dispatcher stopped.
+
+A swept job keeps its manifest when any of these holds:
+
+- it was already resident;
+- it holds what its position requires (`RenderView.Holds`);
+- the sweep's repair handed it to post-processing (`postProcAdmissions.has`);
+  post-processing reads the manifest without hydrating it;
+- its recomputation may not be in `job_files` (no checkpointer, or `FlushJob`
+  failed). Hydration re-applies that table and `RestoreFileMeta` only ever sets
+  `Complete`, so a re-hydration from a stale `complete = 1` would hide the
+  file's articles from dispatch for good; left resident, the pending mark
+  writes the recomputation.
+
+Startup is when this is cheapest and safest: nothing else holds a manifest and
+no article is being dispatched. A job that gets a lease reads its manifest again
+on the first tick.
 
 ### The sweep also finishes a finalize a crash interrupted
 
@@ -2052,8 +2067,8 @@ recorded here so the next reader does not mistake them for design.
 
 1. **The startup sweep skips non-resident jobs.** `ReplaceFromRuns` needs a
    resident manifest. **Resolved:** a swept job that is not resident is
-   hydrated for the correction and evicted afterwards, so a paused job, which `reconcileResidency`
-   does not hydrate, stays within the sweep's reach. What remains
+   hydrated for the correction and evicted afterwards, so a paused job, which
+   `reconcileResidency` does not hydrate, stays within the sweep's reach. What remains
    true is that the sweep is startup-only: a job stalled after startup is not
    re-swept until the next one.
 
@@ -2063,8 +2078,8 @@ recorded here so the next reader does not mistake them for design.
    assigns it**: it exists in the transition table, the phase mapping and the
    API's vocabulary, and no code path sets it. That is a fact about the writers,
    not an invariant the type enforces. The first code that starts setting it
-   puts a repair-time job inside the window `sweptStatus` trusts, and must
-   remove it from that list. The other way in is any non-assembler writer
+   puts a repair-time job inside the window the `job.Fetching` bound trusts, and must
+   be excluded from it. The other way in is any non-assembler writer
    arriving while a job is Downloading or Paused — a DirectUnpack that wrote
    back into its source rather than reading it, or a repair moved earlier than
    download-complete.

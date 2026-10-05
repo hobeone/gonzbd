@@ -3,7 +3,7 @@
 #
 #     go run ./scripts/mutate internal/app/testdata/resume_residency.spec
 pkg ./internal/app/
-run TestResumeJob_AnAbortedIterationStillReleasesWhatItHydrated|TestResumeAllJobs_EvictsAJobItHydrated|TestResumeAllJobs_EvictedJobIsHydratedAgainWhenItHolds|TestResumeAllJobs_KeepsAJobAlreadyResident|TestResumeAllJobs_KeepsAHydratedJobThatHoldsALease|TestResumeAllJobs_KeepsAHydratedJobAdmittedToPostProcessing
+run TestResumeAllJobs_KeepsAHydratedJobWhoseRecomputationWasNotWritten|TestResumeJob_AnAbortedIterationStillReleasesWhatItHydrated|TestResumeAllJobs_EvictsAJobItHydrated|TestResumeAllJobs_EvictedJobIsHydratedAgainWhenItHolds|TestResumeAllJobs_KeepsAJobAlreadyResident|TestResumeAllJobs_KeepsAHydratedJobThatHoldsALease|TestResumeAllJobs_KeepsAHydratedJobAdmittedToPostProcessing
 timeout 10m
 
 [the sweep never releases what it hydrated]
@@ -33,6 +33,14 @@ file internal/app/resume_startup.go
 	if !ok || row.View.Holds {
 --- end
 
+
+[the release runs although the recomputation was not written]
+file internal/app/resume_startup.go
+--- anchor
+			if !unwritten {
+--- replace
+			if !unwritten || true {
+--- end
 
 [the release does not check the job was not resident before the sweep]
 file internal/app/resume_startup.go

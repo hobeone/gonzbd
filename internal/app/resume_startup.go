@@ -189,8 +189,18 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 // iteration hydrated, and the dispatcher's residency bookkeeping did not
 // record the load.
 func (app *Application) resumeJob(ctx context.Context, row dispatch.Row, j *job.Job) error {
+	// unwritten is set when the recomputation below may not be in job_files.
+	// The release then does not run: hydration re-applies that table, and a
+	// stale complete = 1 re-applied over the cleared in-memory Complete is
+	// never undone (RestoreFileMeta only sets it), so the first tick's
+	// re-hydration would hide the file's articles from dispatch.
+	var unwritten bool
 	if app.residency != nil && !j.Resident() {
-		defer app.releaseSweepHydration(row.ID, j)
+		defer func() {
+			if !unwritten {
+				app.releaseSweepHydration(row.ID, j)
+			}
+		}()
 		_ = app.residency.Hydrate(ctx, row.ID)
 	}
 	m, err := j.Manifest()
@@ -211,11 +221,15 @@ func (app *Application) resumeJob(ctx context.Context, row dispatch.Row, j *job.
 	// ReplaceFromRuns changes Complete and the CRC in memory only, and
 	// hydration re-applies job_files unconditionally, so the row must
 	// be written before the job can be evicted. A failed write is
-	// logged like a failed replace: the mark stays pending for the
-	// next periodic flush, and the sweep carries on.
-	if app.checkpointer != nil {
+	// logged like a failed replace and the sweep carries on: the mark stays
+	// pending for the next periodic flush, and the job stays resident so
+	// that flush writes the recomputation rather than a re-hydrated copy.
+	if app.checkpointer == nil {
+		unwritten = true
+	} else {
 		app.checkpointer.Mark(j)
 		if err := app.checkpointer.FlushJob(ctx, j); err != nil {
+			unwritten = true
 			app.log.Warn("resume sweep could not persist a job's recomputation",
 				"job", row.ID, "err", err)
 		}
@@ -239,16 +253,18 @@ func (app *Application) resumeJob(ctx context.Context, row dispatch.Row, j *job.
 // this one: left resident, a paused job's manifest stays in memory until the
 // job is resumed, removed or the dispatcher stops, because reconcileResidency
 // never evicts a job with pause intent and, for any other, evicts only what
-// isResident reports. Evicting here puts the job back where the dispatcher believes
-// it is, which is why no dispatcher state changes with it.
+// isResident reports. Evicting here puts the job back where the dispatcher
+// believes it is, which is why no dispatcher state changes with it.
 //
 // A job that holds everything its position requires (RenderView.Holds) keeps
 // the manifest: reconcileResidency would load it for exactly that reason on
 // the first tick. A job the sweep's stranded-file repair handed to
 // post-processing (completeFinalizedFile files an owed unwanted failure, as
 // fileOwedUnwantedFailures does after hydrating) is admitted and keeps it too,
-// since post-processing reads the manifest without hydrating. A job that is no longer registered is left to the removal
-// that deregistered it, whose own Evict has run.
+// since post-processing reads the manifest without hydrating. A job that is no
+// longer registered is left to the removal that deregistered it, whose own
+// Evict has run. resumeJob does not call this at all for a job whose
+// recomputation may not be in job_files.
 //
 // Holds is read and the manifest dropped in two steps, so a tick between them
 // could hydrate and record the job and then have the manifest dropped under

@@ -2,8 +2,11 @@ package app
 
 import (
 	"context"
+	"hash/crc32"
+	"os"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -143,5 +146,82 @@ func TestResumeAllJobs_KeepsAHydratedJobThatHoldsALease(t *testing.T) {
 	sweptAnArticle(t, f)
 	if !f.job.Resident() {
 		t.Error("the sweep evicted the manifest of a job that holds a lease")
+	}
+}
+
+// A sweep whose recomputation did not reach job_files leaves the job loaded:
+// hydration re-applies the stale complete = 1 over the cleared in-memory
+// Complete, and nothing undoes it.
+func TestResumeAllJobs_KeepsAHydratedJobWhoseRecomputationWasNotWritten(t *testing.T) {
+	t.Parallel()
+	f := newResumeUnitFixture(t)
+	ctx := t.Context()
+	id := f.job.ID()
+	commitRuns(t, realStore(t, f.app), id, []durability.DurableArticle{
+		{FileIdx: 0, ArtIdx: 1, Offset: unitArtLen, Length: unitArtLen,
+			CRC32: crc32.ChecksumIEEE(f.articles[1])},
+	})
+	m, err := f.job.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+	if err := seedJobFiles(ctx, f.app.durable, id, m.NumFiles(), f.job.FileFetchPolicy); err != nil {
+		t.Fatalf("seedJobFiles: %v", err)
+	}
+	db := f.repo.DB()
+	if _, err := db.ExecContext(ctx,
+		`UPDATE job_files SET complete = 1, filename = ? WHERE job_id = ? AND file_index = 0`,
+		unitFileOne, id); err != nil {
+		t.Fatalf("mark file 0 complete: %v", err)
+	}
+	if err := writeJobManifest(f.app.config.GetGeneral().AdminDir, f.job); err != nil {
+		t.Fatalf("writeJobManifest: %v", err)
+	}
+	f.app.residency.Evict(id)
+	if err := f.app.residency.Hydrate(ctx, id); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	if !f.job.Progress().FileComplete(0) {
+		t.Fatal("fixture: file 0 did not hydrate as complete, so the sweep has nothing to clear")
+	}
+	if err := os.Truncate(f.path, 0); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	// Not resident before the sweep, and every write to job_files fails during it.
+	f.job.Evict()
+	if _, err := db.ExecContext(ctx, `CREATE TRIGGER fail_job_files_update BEFORE UPDATE ON job_files
+		BEGIN SELECT RAISE(ABORT, 'injected write failure'); END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	sweepErr := f.app.resumeAllJobs(ctx)
+	if _, err := db.ExecContext(ctx, `DROP TRIGGER fail_job_files_update`); err != nil {
+		t.Fatalf("drop trigger: %v", err)
+	}
+	if sweepErr != nil {
+		t.Fatalf("resumeAllJobs: %v", sweepErr)
+	}
+	if f.job.Progress().FileComplete(0) {
+		t.Fatal("fixture: the sweep did not clear file 0's Complete in memory")
+	}
+	if !f.job.Resident() {
+		t.Fatal("the sweep evicted a job whose recomputation never reached job_files")
+	}
+
+	// The first tick and the periodic flush: what was recomputed is what lands.
+	if err := f.job.Grant(job.NewLease(71403)); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	f.app.dispatcher.Tick(ctx)
+	if err := f.app.checkpointer.Flush(ctx); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	var complete int
+	if err := db.QueryRowContext(ctx,
+		`SELECT complete FROM job_files WHERE job_id = ? AND file_index = 0`, id).Scan(&complete); err != nil {
+		t.Fatalf("read job_files: %v", err)
+	}
+	if complete != 0 || f.job.Progress().FileComplete(0) {
+		t.Errorf("file 0 is Complete again (job_files.complete = %d, in memory %v) after the tick "+
+			"and the periodic flush", complete, f.job.Progress().FileComplete(0))
 	}
 }

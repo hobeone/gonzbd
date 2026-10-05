@@ -128,9 +128,9 @@ func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 //
 // Separate from JobDurability because the queue listing already holds every
 // job's progress and must not re-snapshot it — a listing is polled
-// continuously and Queue.SnapshotJob deep-copies and can hydrate a manifest
-// from disk. A struct with a DurableBytes field left zero on that path would
-// be a figure that silently means two things.
+// continuously and a snapshot deep-copies a job's progress. A struct with a
+// DurableBytes field left zero on that path would be a figure that silently
+// means two things.
 type JobCheckpointState struct {
 	// PendingBytes is what has been written since this job's current
 	// checkpoint window opened: accepted by the OS, not yet fsynced, and lost
