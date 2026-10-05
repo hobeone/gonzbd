@@ -2719,8 +2719,8 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 // changing any state, a job whose name another job holds, or whose _FAILED_
 // download directory cannot be moved back to the path the retry writes to
 // (errRetryDirConflict; see restoreFailedDir). A finalizer of the ID that
-// starts after the transition claim is checked for once, after the registration check and before any state
-// changes (errJobInTransition). One starting later is of an instance a
+// starts after the transition claim is checked for once, after the
+// registration check and before any state changes (errJobInTransition). One starting later is of an instance a
 // RemoveJob marked removed, and persistAndCommit refuses to file it under the
 // ID on its own (see jobTransitions).
 //

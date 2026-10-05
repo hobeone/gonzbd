@@ -1097,22 +1097,27 @@ func (d *Dispatcher) loadProgressForRename(id string) error {
 // caller that must move something on disk to name first and so cannot let
 // another job take it in between: a retry restoring a failed job's directory.
 // It refuses with ErrJobNameTaken, changing nothing, when a registered job
-// other than id has the name or another id has reserved it. While it is held,
+// other than id has the name or anyone, id included, has reserved it: a
+// reservation is not re-entrant, so each is held by exactly one caller and
+// that caller's release frees it. While it is held,
 // register and SetName refuse the name to every job but id; since no other
 // registered job had it when it was reserved, id's own Add is not refused for
 // the name.
 //
 // The returned release frees the reservation and may be called any number of
 // times; it frees only a reservation still held by id for that name.
-// Only release removes an entry from reservedNames (its closure holds the one
-// delete), so a
-// reservation lasts until its caller releases it: the caller defers release,
+// Only release removes an entry from reservedNames:
+// `git grep -n 'delete(d\.reservedNames' -- 'internal/dispatch/*.go' ':!*_test.go'`
+// returns 1 line. So a reservation lasts until its caller releases it: the caller defers release,
 // and the reservation is not persisted, so a restart drops it. Registering id
 // does not consume it, so release is still the caller's to call after a
 // successful Add.
 func (d *Dispatcher) ReserveName(id, name string) (release func(), err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if _, held := d.reservedNames[name]; held {
+		return nil, fmt.Errorf("dispatch: reserve %q for %s: already reserved: %w", name, id, ErrJobNameTaken)
+	}
 	if otherID, taken := d.nameHolderLocked(id, name); taken {
 		return nil, fmt.Errorf("dispatch: reserve %q for %s: job %s has that name: %w", name, id, otherID, ErrJobNameTaken)
 	}

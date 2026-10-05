@@ -41,6 +41,29 @@ func TestReserveName_HoldsANameAgainstEveryoneButItsHolder(t *testing.T) {
 	}
 }
 
+// TestReserveName_IsNotReentrant pins that a second reservation of a held
+// name is refused even for the same id, and that it does not disturb the
+// first: the first caller's release is what frees the name.
+func TestReserveName_IsNotReentrant(t *testing.T) {
+	d := newTestDispatcher(t)
+	release, err := d.ReserveName("a", "Name")
+	if err != nil {
+		t.Fatalf("ReserveName: %v", err)
+	}
+	if _, err := d.ReserveName("a", "Name"); !errors.Is(err, ErrJobNameTaken) {
+		t.Fatalf("a second ReserveName by the same id = %v, want ErrJobNameTaken", err)
+	}
+	if _, err := d.ReserveName("b", "Name"); !errors.Is(err, ErrJobNameTaken) {
+		t.Errorf("the refused re-reservation freed the name: ReserveName(b) = %v", err)
+	}
+	release()
+	release2, err := d.ReserveName("b", "Name")
+	if err != nil {
+		t.Fatalf("ReserveName after release = %v, want nil", err)
+	}
+	release2()
+}
+
 // TestReserveName_RefusesANameARegisteredJobHas pins that nothing is reserved
 // when the name is already held.
 func TestReserveName_RefusesANameARegisteredJobHas(t *testing.T) {

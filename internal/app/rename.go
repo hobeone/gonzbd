@@ -19,7 +19,9 @@ var ErrInvalidJobName = errors.New("invalid job name")
 // jobNameTaken reports whether name is unavailable as a job's directory
 // name: another queued job has it, or something exists at that name in the
 // download directory, the complete directory, or a category directory under
-// it. AddJob and RenameJob both pass it to uniqueName.
+// it. AddJob and RenameJob both pass it to uniqueName. It does not see a name
+// a retry has reserved (Dispatcher.ReserveName), which is held in the registry
+// before anything is on disk; claimJobName absorbs the registry's refusal.
 func (app *Application) jobNameTaken(snap *config.Config, name string) bool {
 	if app.queuedName(name) {
 		return true
@@ -87,7 +89,8 @@ func (app *Application) RenameJob(id, name string) (string, error) {
 }
 
 // maxJobNameAttempts bounds claimJobName. Each refusal means another job was
-// registered or renamed under the chosen name after it was chosen, so each
+// registered, renamed or reserved (by a retry) under the chosen name after it
+// was chosen, so each
 // retry follows a lost race; the bound only stops an unending run of them.
 const maxJobNameAttempts = 32
 

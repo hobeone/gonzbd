@@ -19,6 +19,15 @@ file internal/dispatch/registry.go
 		if true {
 --- end
 
+# A reservation is held by exactly one caller.
+[a held name can be reserved again by its holder]
+file internal/dispatch/registry.go
+--- anchor
+	if _, held := d.reservedNames[name]; held {
+--- replace
+	if _, held := d.reservedNames[name]; held && false {
+--- end
+
 # The holder's own registration is not refused by its reservation.
 [the holder is refused its own name]
 file internal/dispatch/registry.go
