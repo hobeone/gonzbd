@@ -742,7 +742,7 @@ func TestSweptState(t *testing.T) {
 		why   string
 	}{
 		{job.StateUnset, false, "never run; assembler has written nothing"},
-		{job.Fetching, true, "PhaseActive: the assembler is the only writer"},
+		{job.Fetching, true, "Fetching: the assembler is the only writer"},
 		{job.Assessing, false, "par2 repairs the file in place"},
 		{job.Repairing, false, "par2 repairs the file in place"},
 		{job.Extracting, false, "unpack reads it and writes elsewhere"},

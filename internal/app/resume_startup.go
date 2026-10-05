@@ -29,11 +29,11 @@ type fileResumer interface {
 	Resume(ctx context.Context, jobID string, fileIdx int32, path string) (durability.ResumeResult, error)
 }
 
-// resumeAllJobs re-derives every DOWNLOADING job's work set from what is
+// resumeAllJobs re-derives the work set of every job at Fetching from what is
 // actually on stable storage, and is the production caller L3 was missing.
 //
-// "Downloading" rather than "resident", and that word is the guard rather than
-// a description of it — see the phase note below. It re-derives rather than
+// "Fetching" rather than "resident", and that position is the guard rather than
+// a description of it — see "Fetching only" below. It re-derives rather than
 // seeds: the result REPLACES what appResidency.Hydrate restored, including
 // clearing a bit whose bytes are gone (#362).
 //
@@ -98,15 +98,16 @@ type fileResumer interface {
 // INTO the record, and a delete only ever takes one away.
 //
 // A job at Fetching whose manifest is not resident is hydrated for its own
-// iteration and evicted at the end of it (releaseSweepHydration), so the
-// residency budget docs/job-lifecycle.md exists to bound is unchanged from
-// outside. It matters because a Paused job is the case that needs this most
+// iteration and evicted at the end of it unless releaseSweepHydration or
+// resumeJob keeps it (docs/durability-contract.md § "Which jobs the sweep
+// covers" lists them), so the residency budget docs/job-lifecycle.md exists to
+// bound is unchanged from outside except for those kept jobs. It matters because a Paused job is the case that needs this most
 // and is not resident at startup: Application.Stall leaves the job Paused, and
 // the sweep skipping it is what let #362 survive in that branch.
 // Startup is the moment the hydration is cheapest and safest — nothing else
 // holds a manifest and no article is being dispatched.
 //
-// # Active and Paused, because only there is the assembler the sole writer
+// # Fetching only, because only there is the assembler the sole writer
 //
 // Residency is NOT the right bound now that the seed is authoritative.
 // JobPhase.IsResident is true for PhaseProcessing as well — Verifying,
@@ -139,22 +140,17 @@ type fileResumer interface {
 //
 // What would break this argument, stated so a later change has to notice.
 //
-// PhaseActive is StatusDownloading and StatusFetching, and the second one is
-// ALREADY not download-only: constants.StatusFetching is "downloading extra
-// par2 files for repair", which is a repair-time status. The guard is sound
-// today only because nothing assigns it — it exists in the transition table,
-// the phase mapping and the API's vocabulary, and no code path sets it. That
-// is a fact about the writers, not an invariant the type enforces (Job.Phase's
-// own doc makes the same point about Grabbing and Checking, and notes that the
-// load paths assign Status from a persisted string without validating it). So
-// the hazard here is present and load-bearing on unreachability: the first
-// code that starts setting StatusFetching puts a repair-time job inside the
-// window this guard trusts, and must move it out of PhaseActive or bound the
-// sweep on the status rather than the phase.
+// The guard is the job's position, row.View.State == job.Fetching, and a
+// paused job is still at Fetching with pause intent. The status vocabulary is
+// derived from it, not the other way round: job.RenderView's status maps
+// Fetching to constants.StatusFetching when the job has been Assessed and to
+// constants.StatusDownloading otherwise (internal/job/sabnzbd.go), and the
+// guard covers both. Whether a job back at Fetching after a repair still has
+// the assembler as the sole writer of its files has not been argued here.
 //
-// The other way in is a non-assembler writer arriving inside PhaseActive at
-// all — a DirectUnpack that wrote back into its source rather than reading it,
-// or a repair moved earlier than download-complete.
+// The other way in is a non-assembler writer arriving while a job is at
+// Fetching — a DirectUnpack that wrote back into its source rather than
+// reading it, or a repair moved earlier than download-complete.
 func (app *Application) resumeAllJobs(ctx context.Context) error {
 	if app.resumer == nil {
 		return nil
@@ -225,6 +221,7 @@ func (app *Application) resumeJob(ctx context.Context, row dispatch.Row, j *job.
 	// pending for the next periodic flush, and the job stays resident so
 	// that flush writes the recomputation rather than a re-hydrated copy.
 	if app.checkpointer == nil {
+		// Defensive: New assigns app.checkpointer unconditionally.
 		unwritten = true
 	} else {
 		app.checkpointer.Mark(j)

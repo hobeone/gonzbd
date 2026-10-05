@@ -1427,12 +1427,14 @@ row claim more than it already did.
 
 The sweep writes **nothing** to the durability record. Its one mutation is
 discarding the runs of a file that is missing or shorter than claimed. Every
-swept job is non-resident at startup, and it matters most for a paused one,
-which the dispatcher never hydrates. Each is hydrated for its own iteration and
+swept job is not resident by the time the sweep reaches it, and it matters most
+for a paused one, which `reconcileResidency` never hydrates. Each is hydrated for its own iteration and
 evicted at the end of it (`releaseSweepHydration`), so the sweep costs no
 residency, except that a job keeps its manifest if it was already resident,
 holds what its position requires, was handed to post-processing by the sweep's
-own repair, or has a recomputation that may not have reached `job_files`. The
+own repair, or has a recomputation that may not have reached `job_files` (a paused job kept
+for that reason stays loaded until it is resumed, removed or the dispatcher
+stops). The
 eviction is the sweep's own because the dispatcher records only the loads it
 makes itself and `reconcileResidency` never evicts a paused job's manifest
 (only removal and `Stop` do), so nothing else would drop it. See

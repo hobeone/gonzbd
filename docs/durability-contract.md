@@ -1523,8 +1523,10 @@ pause intent, so it is swept.
   relocates it out of the download directory entirely. The property the sweep
   needs is *the assembler is the only writer of these files*.
 
-In production every swept job is **not resident** when the sweep reaches it
-(a restored job has no manifest, paused or not), so each is hydrated for its own
+Every swept job is **not resident** by the time `reconcileBeforeFirstTick`
+reaches it, paused or not (the non-test callers of `Hydrate` are
+`resume_startup.go`, `startup_reconcile.go`, whose filing runs after the sweep,
+and two in `internal/dispatch`, which run from a tick or a rename), so each is hydrated for its own
 iteration and evicted at the end of it, and residency is unchanged from outside.
 `Application.resumeJob` hydrates the **live** job through
 `appResidency.Hydrate` and applies the correction with `Job.ReplaceFromRuns`;
@@ -1548,8 +1550,11 @@ A swept job keeps its manifest when any of these holds:
   writes the recomputation.
 
 Startup is when this is cheapest and safest: nothing else holds a manifest and
-no article is being dispatched. A job that gets a lease reads its manifest again
-on the first tick.
+no article is being dispatched. A released job that gets a lease is hydrated again
+on the first tick. A paused job kept resident after an unwritten recomputation
+stays loaded until it is resumed, removed or the dispatcher stops, because
+`reconcileResidency` never evicts a job with pause intent (only removal and
+`Stop` do).
 
 ### The sweep also finishes a finalize a crash interrupted
 
@@ -2074,15 +2079,13 @@ recorded here so the next reader does not mistake them for design.
 
 2. **`StatusFetching` is swept and is not download-only.**
    `constants.StatusFetching` means "downloading extra par2 files for repair" —
-   a repair-time status. The bound is sound today only because **nothing
-   assigns it**: it exists in the transition table, the phase mapping and the
-   API's vocabulary, and no code path sets it. That is a fact about the writers,
-   not an invariant the type enforces. The first code that starts setting it
-   puts a repair-time job inside the window the `job.Fetching` bound trusts, and must
-   be excluded from it. The other way in is any non-assembler writer
-   arriving while a job is Downloading or Paused — a DirectUnpack that wrote
-   back into its source rather than reading it, or a repair moved earlier than
-   download-complete.
+   a repair-time status, and `internal/job/sabnzbd.go` derives it from a job at
+   `Fetching` that has been Assessed. The sweep's bound is that position
+   (`job.Fetching`), so it covers a job in that status. Whether the assembler is
+   still the sole writer of such a job's files, after a repair, has not been
+   argued here. The other way in is any non-assembler writer arriving while a
+   job is at `Fetching` — a DirectUnpack that wrote back into its source rather
+   than reading it, or a repair moved earlier than download-complete.
 
 3. **The SPLIT case in stall recovery.** `reevaluateStall` phase 3
    (`seedFromCommittedRuns`) logs and returns on failure, while phase 4 still

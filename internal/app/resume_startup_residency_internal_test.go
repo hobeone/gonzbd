@@ -187,7 +187,7 @@ func TestResumeAllJobs_KeepsAHydratedJobWhoseRecomputationWasNotWritten(t *testi
 	if err := os.Truncate(f.path, 0); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	// Not resident before the sweep, and every write to job_files fails during it.
+	// Not resident before the sweep, and every UPDATE of job_files fails during it.
 	f.job.Evict()
 	if _, err := db.ExecContext(ctx, `CREATE TRIGGER fail_job_files_update BEFORE UPDATE ON job_files
 		BEGIN SELECT RAISE(ABORT, 'injected write failure'); END`); err != nil {

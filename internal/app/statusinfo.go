@@ -128,7 +128,7 @@ func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 //
 // Separate from JobDurability because the queue listing already holds every
 // job's progress and must not re-snapshot it — a listing is polled
-// continuously and a snapshot deep-copies a job's progress. A struct with a
+// continuously and re-copying every job's progress is the cost. A struct with a
 // DurableBytes field left zero on that path would be a figure that silently
 // means two things.
 type JobCheckpointState struct {
