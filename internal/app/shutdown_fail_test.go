@@ -262,6 +262,9 @@ func runShutdownFailRestart(t *testing.T, postProcBusy, wantInHistory bool) {
 	if !ok {
 		t.Fatal("the persisted job is not queued after the restart")
 	}
+	// The downloader reads articles of a job that holds a lease, which the
+	// dispatcher hydrates; the startup sweep no longer leaves a job loaded.
+	waitFor(t, rj.Resident)
 	var offered int
 	if err := rj.ForEachUnfinishedArticle(func(int, int32, string, int, int, string) bool {
 		offered++

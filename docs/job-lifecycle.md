@@ -1427,9 +1427,15 @@ row claim more than it already did.
 
 The sweep writes **nothing** to the durability record. Its one mutation is
 discarding the runs of a file that is missing or shorter than claimed. A
-non-resident job in the swept position is hydrated for the duration and evicted
-again, so this costs no residency — and it matters, because a paused job is the
-case that needs the sweep most and is not resident at startup. See
+non-resident job in the swept position is hydrated for its own iteration and
+evicted at the end of it (`releaseSweepHydration`), unless it was already
+resident, holds what its position requires or was handed to post-processing by
+the sweep's own repair, so this costs no residency — and
+it matters, because a paused job is the case that needs the sweep most and is
+not resident at startup. The eviction is the sweep's own, because
+the dispatcher records only the loads it makes itself and
+`reconcileResidency` never evicts a paused job's manifest (only removal and
+`Stop` do), so nothing else would drop it. See
 `docs/durability-contract.md` § *Restart* for the sweep's bounds.
 
 ---

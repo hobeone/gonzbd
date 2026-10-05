@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -96,12 +97,12 @@ type fileResumer interface {
 // without reading a byte of it: nothing but a completed fsync can put a claim
 // INTO the record, and a delete only ever takes one away.
 //
-// A non-resident job in a SWEPT phase is hydrated for the duration and evicted
-// again, so the residency budget docs/job-lifecycle.md exists to bound is
-// unchanged from outside. It matters because a Paused job is the case that
-// needs this most and is not resident at startup: Application.Stall leaves the
-// job Paused, and the sweep skipping it is what let #362 survive in that
-// branch.
+// A job at Fetching whose manifest is not resident is hydrated for its own
+// iteration and evicted at the end of it (releaseSweepHydration), so the
+// residency budget docs/job-lifecycle.md exists to bound is unchanged from
+// outside. It matters because a Paused job is the case that needs this most
+// and is not resident at startup: Application.Stall leaves the job Paused, and
+// the sweep skipping it is what let #362 survive in that branch.
 // Startup is the moment the hydration is cheapest and safest — nothing else
 // holds a manifest and no article is being dispatched.
 //
@@ -168,49 +169,97 @@ func (app *Application) resumeAllJobs(ctx context.Context) error {
 					"job", row.ID, "state", row.View.State)
 				continue
 			}
-			if app.residency != nil {
-				_ = app.residency.Hydrate(ctx, row.ID)
-			}
 			j, ok := app.dispatcher.Job(row.ID)
 			if !ok {
 				continue
 			}
-			m, err := j.Manifest()
-			if err != nil {
-				app.log.Debug("resume sweep skipped a non-resident job",
-					"job", row.ID, "err", err)
-				continue
-			}
-			swept, runs, fault, err := app.resumeJobFiles(ctx, row.ID, m, row.Header.Name, j.Progress())
-			if err != nil {
+			if err := app.resumeJob(ctx, row, j); err != nil {
 				return err
-			}
-			replaceErr := j.ReplaceFromRuns(swept, runs)
-			if replaceErr != nil {
-				app.log.Warn("resume sweep could not fully apply a job's recomputation",
-					"job", row.ID, "err", replaceErr)
-			}
-			// ReplaceFromRuns changes Complete and the CRC in memory only, and
-			// hydration re-applies job_files unconditionally, so the row must
-			// be written before the job can be evicted. A failed write is
-			// logged like a failed replace: the mark stays pending for the
-			// next periodic flush, and the sweep carries on.
-			if app.checkpointer != nil {
-				app.checkpointer.Mark(j)
-				if err := app.checkpointer.FlushJob(ctx, j); err != nil {
-					app.log.Warn("resume sweep could not persist a job's recomputation",
-						"job", row.ID, "err", err)
-				}
-			}
-			if fault == nil && replaceErr == nil {
-				app.completeStrandedFiles(ctx, row.ID, m, swept, runs)
-			}
-			if fault != nil {
-				app.Stall(row.ID, fault)
 			}
 		}
 	}
 	return nil
+}
+
+// resumeJob is one iteration of resumeAllJobs: it loads j if it is not
+// resident, re-derives its work set, and releases a load it made.
+//
+// The release is a defer so that it covers every return, including the
+// context-cancelled abort and the storage-fault stall: each leaves a job this
+// iteration hydrated, and the dispatcher's residency bookkeeping did not
+// record the load.
+func (app *Application) resumeJob(ctx context.Context, row dispatch.Row, j *job.Job) error {
+	if app.residency != nil && !j.Resident() {
+		defer app.releaseSweepHydration(row.ID, j)
+		_ = app.residency.Hydrate(ctx, row.ID)
+	}
+	m, err := j.Manifest()
+	if err != nil {
+		app.log.Debug("resume sweep skipped a non-resident job",
+			"job", row.ID, "err", err)
+		return nil
+	}
+	swept, runs, fault, err := app.resumeJobFiles(ctx, row.ID, m, row.Header.Name, j.Progress())
+	if err != nil {
+		return err
+	}
+	replaceErr := j.ReplaceFromRuns(swept, runs)
+	if replaceErr != nil {
+		app.log.Warn("resume sweep could not fully apply a job's recomputation",
+			"job", row.ID, "err", replaceErr)
+	}
+	// ReplaceFromRuns changes Complete and the CRC in memory only, and
+	// hydration re-applies job_files unconditionally, so the row must
+	// be written before the job can be evicted. A failed write is
+	// logged like a failed replace: the mark stays pending for the
+	// next periodic flush, and the sweep carries on.
+	if app.checkpointer != nil {
+		app.checkpointer.Mark(j)
+		if err := app.checkpointer.FlushJob(ctx, j); err != nil {
+			app.log.Warn("resume sweep could not persist a job's recomputation",
+				"job", row.ID, "err", err)
+		}
+	}
+	if fault == nil && replaceErr == nil {
+		app.completeStrandedFiles(ctx, row.ID, m, swept, runs)
+	}
+	if fault != nil {
+		app.Stall(row.ID, fault)
+	}
+	return nil
+}
+
+// releaseSweepHydration evicts the manifest resumeJob loaded for j, unless the
+// job needs it.
+//
+// The dispatcher records a load with markResident, called from
+// reconcileResidency and loadProgressForRename
+// (`git grep -n 'markResident(' -- 'internal/dispatch/*.go' ':!*_test.go'`
+// returns 3 lines: those two calls and the definition), so it has no record of
+// this one: left resident, a paused job's manifest stays in memory until the
+// job is resumed, removed or the dispatcher stops, because reconcileResidency
+// never evicts a job with pause intent and, for any other, evicts only what
+// isResident reports. Evicting here puts the job back where the dispatcher believes
+// it is, which is why no dispatcher state changes with it.
+//
+// A job that holds everything its position requires (RenderView.Holds) keeps
+// the manifest: reconcileResidency would load it for exactly that reason on
+// the first tick. A job the sweep's stranded-file repair handed to
+// post-processing (completeFinalizedFile files an owed unwanted failure, as
+// fileOwedUnwantedFailures does after hydrating) is admitted and keeps it too,
+// since post-processing reads the manifest without hydrating. A job that is no longer registered is left to the removal
+// that deregistered it, whose own Evict has run.
+//
+// Holds is read and the manifest dropped in two steps, so a tick between them
+// could hydrate and record the job and then have the manifest dropped under
+// it. The sweep's placement before the first tick (see resumeAllJobs) is what
+// rules that out, as it does for the seed itself.
+func (app *Application) releaseSweepHydration(jobID string, j *job.Job) {
+	row, ok := app.dispatcher.RowJob(j)
+	if !ok || row.View.Holds || app.postProcAdmissions.has(j) {
+		return
+	}
+	app.residency.Evict(jobID)
 }
 
 // resumeJobFiles resumes each of one job's files and returns two things

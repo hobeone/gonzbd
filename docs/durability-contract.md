@@ -1521,11 +1521,19 @@ The bound is on STATUS, not on phase and not on residency (`sweptStatus`):
   relocates it out of the download directory entirely. The property the sweep
   needs is *the assembler is the only writer of these files*.
 
-A swept job that is **not resident** — every paused one — is hydrated for the
-duration and evicted again, so residency is unchanged from outside.
-`Application.resumeAllJobs` takes a hydrated clone through `SnapshotJob` to read
-the manifest, and `Job.ReplaceFromRuns` hydrates the live job itself to
-apply the correction. Startup is when this is cheapest and safest: nothing else
+A swept job that is **not resident** — every paused one — is hydrated for its
+own iteration and evicted at the end of it, so residency is unchanged from
+outside. `Application.resumeJob` hydrates the **live** job through
+`appResidency.Hydrate` and applies the correction with `Job.ReplaceFromRuns`;
+`releaseSweepHydration` then evicts it. The dispatcher never records the load
+(`markResident` is called only from `reconcileResidency` and
+`loadProgressForRename`), and `reconcileResidency` never evicts a job with
+pause intent and evicts any other only if `isResident` reports it, so without
+the release the manifest would stay in memory until the job was resumed,
+removed or the dispatcher stopped. A job that was
+already resident, that holds what its position requires (`RenderView.Holds`),
+or that the repair handed to post-processing (`postProcAdmissions.has`, which
+reads the manifest without hydrating), keeps its manifest. Startup is when this is cheapest and safest: nothing else
 holds a manifest and no article is being dispatched.
 
 ### The sweep also finishes a finalize a crash interrupted
@@ -2044,7 +2052,7 @@ recorded here so the next reader does not mistake them for design.
 
 1. **The startup sweep skips non-resident jobs.** `ReplaceFromRuns` needs a
    resident manifest. **Resolved:** a swept job that is not resident is
-   hydrated for the correction, so a paused job, which `reconcileResidency`
+   hydrated for the correction and evicted afterwards, so a paused job, which `reconcileResidency`
    does not hydrate, stays within the sweep's reach. What remains
    true is that the sweep is startup-only: a job stalled after startup is not
    re-swept until the next one.
