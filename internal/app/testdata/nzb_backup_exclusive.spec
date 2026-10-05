@@ -6,12 +6,12 @@ run TestWriteNZBBackup_|TestAddJob_AFailedIngestDoesNotRemoveAnotherIngestsBacku
 [the claim replaces whatever holds the name]
 file internal/app/app.go
 --- anchor
-		err := os.Link(staged, filepath.Join(nzbDir, name+".gz"))
+		err := root.Link(stagedName, name+".gz")
 --- replace
-		err := os.Rename(staged, filepath.Join(nzbDir, name+".gz"))
+		err := root.Rename(stagedName, name+".gz")
 --- end
 
-# A refused name is the signal to choose again; any other error is a failure.
+# A refused name is the signal to choose again.
 [a lost race is reported as a failure instead of choosing again]
 file internal/app/app.go
 --- anchor
@@ -20,7 +20,7 @@ file internal/app/app.go
 		if !errors.Is(err, fs.ErrExist) || true {
 --- end
 
-# The staging name must not outlive the call.
+# Any other link failure is an error, not a name to skip.
 [a link failure that is not an existing name is retried as one]
 file internal/app/app.go
 --- anchor
@@ -29,10 +29,22 @@ file internal/app/app.go
 		if !errors.Is(err, fs.ErrExist) && false {
 --- end
 
+# The staging name must not outlive the call.
 [the staging file is left in admin/nzb]
 file internal/app/app.go
 --- anchor
-	defer func() { _ = os.Remove(staged) }()
+	defer func() { _ = root.Remove(stagedName) }()
 --- replace
-	defer func() { _ = staged }()
+	defer func() { _ = stagedName }()
+--- end
+
+# A name is free only if nothing, a dangling symlink included, is at it: with
+# Stat a dangling link reads as free, the link refuses it every pass, and the
+# attempt bound is reached.
+[the name check follows a symlink]
+file internal/app/app.go
+--- anchor
+			_, err := root.Lstat(candidate + ".gz")
+--- replace
+			_, err := root.Stat(candidate + ".gz")
 --- end

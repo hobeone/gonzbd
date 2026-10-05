@@ -3385,8 +3385,8 @@ func failMsgForCounters(p failureByteCounters, state string, recBytes int64, rec
 // with fs.ErrExist rather than replace, so a writer that loses a race for a
 // name chooses the next one. So the name a call gets back was created by that
 // call, and AddJob's failure cleanup, which removes it, cannot remove another
-// ingest's backup. The link below is the one os.Link call in non-test code under
-// internal/app: `git grep -n 'os\.Link(' -- 'internal/app/*.go' ':!*_test.go'`
+// ingest's backup. The link below is the one Root.Link call in non-test code
+// under internal/app: `git grep -n 'root\.Link(' -- 'internal/app/*.go' ':!*_test.go'`
 // returns 1 line. The staged file is complete and synced before it is linked,
 // so a backup name shows complete content; the directory is not synced, as
 // before.
@@ -3415,39 +3415,43 @@ func writeNZBBackup(nzbDir, filename string, rawNZB []byte, chosen func(name str
 	if err != nil {
 		return "", err
 	}
+	// Every name below is resolved through a handle on nzbDir, as
+	// removeNZBBackupIn does, so a name derived from the submitted filename
+	// cannot reach outside it. The name is also one path element:
+	// filepath.Base leaves no separator and the ".gz" suffix rules out "." and "..".
+	root, err := os.OpenRoot(nzbDir)
+	if err != nil {
+		_ = os.Remove(staged)
+		return "", fmt.Errorf("open NZB backup directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	stagedName := filepath.Base(staged)
 	// The backup name is a second link to the same inode; this removes only
 	// the staging name.
-	defer func() { _ = os.Remove(staged) }()
+	defer func() { _ = root.Remove(stagedName) }()
 
 	base := filepath.Base(filename)
-	// Names a link refused because another writer created them after the
-	// check below read them free. It is what guarantees progress: the next
-	// pass skips them even if the Lstat disagrees.
-	lost := map[string]bool{}
 	for range maxNZBBackupAttempts {
 		name := uniqueName(base, func(candidate string) bool {
-			if lost[candidate] {
-				return true
-			}
 			// Lstat, not Stat, for the reason given on fsutil.GetUniqueRelPath:
 			// this decides whether a name is free, and Stat answers about a
-			// link's target, so a dangling symlink here would read as free.
-			// It is the fast path; the link below is the authority, and it
-			// refuses a dangling symlink too, rather than writing through it.
-			_, err := os.Lstat(filepath.Join(nzbDir, candidate+".gz"))
+			// link's target, so a dangling symlink here would read as free and
+			// burn an attempt on a link that must refuse it. The link below is
+			// the authority; a name it refuses is seen by this on the next
+			// pass, and maxNZBBackupAttempts bounds the passes.
+			_, err := root.Lstat(candidate + ".gz")
 			return err == nil
 		})
 		if chosen != nil {
 			chosen(name + ".gz")
 		}
-		err := os.Link(staged, filepath.Join(nzbDir, name+".gz"))
+		err := root.Link(stagedName, name+".gz")
 		if err == nil {
 			return name + ".gz", nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
 			return "", fmt.Errorf("publish NZB backup %s: %w", name+".gz", err)
 		}
-		lost[name] = true
 	}
 	return "", fmt.Errorf("no free NZB backup name from %q after %d attempts", base, maxNZBBackupAttempts)
 }
