@@ -75,24 +75,28 @@ func (d *Dispatcher) tick(ctx context.Context) {
 // traffic — Persisted is a plain comparable struct (no slices or maps), so
 // `last == p` is a real equality check, not a reference comparison.
 //
-// D-B9: d.mu is never held across the Snapshot or Save calls. lastWritten and
-// markWritten each take d.mu for one map operation and release it
-// immediately; Snapshot (into job, taking Job.mu) and Save (into Store) both
-// run unlocked between them. This read was d.q.Render until the two facts
+// D-B9: d.mu is never held across a call into sched.Queue or across Save.
+// entryFor takes the job's Snapshot (a Job.mu read) inside its d.mu span,
+// which is not a Queue call; lastWritten and markWritten each take d.mu for
+// one map operation and release it immediately; Save (into Store) runs
+// unlocked between them. This read was d.q.Render until the two facts
 // Persisted records — the job's own StateView and Intent — were taken
 // straight from Snapshot instead, which drops a Queue.mu acquisition that
 // bought this function nothing.
 func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) error {
-	h, seq, ok := d.entryFor(j.ID())
+	// The Snapshot is taken for the same reason as in evictCancelledNeverRun
+	// (Persisted carries only the job's own StateView and Intent, so Render's
+	// Queue.mu acquisition would buy nothing this row records), and inside the
+	// same d.mu span as the Header, so the two are one moment's view.
+	h, seq, s, ok := d.entryFor(j)
 	if !ok {
 		// Evicted (D-B12) or removed between snapshotOrder and here: nothing
 		// left in the registry to attach a Header to.
 		return nil
 	}
-	// Snapshot for the same reason as evictCancelledNeverRun: Persisted
-	// carries only the job's own StateView and Intent, so Render's Queue.mu
-	// acquisition would buy nothing this row records.
-	s := j.Snapshot()
+	if d.persistReadHook != nil {
+		d.persistReadHook()
+	}
 	p := Persisted{
 		ID:      j.ID(),
 		SortKey: seq,

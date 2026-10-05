@@ -870,7 +870,8 @@ does not need to.
 ### A user's resume is also an approval
 
 The unwanted-extension check (`app.screenUnwanted`, run at ingest and on a
-retry's rebuild) pauses a job whose NZB names a file it excludes and records
+retry's rebuild, and the archive peek below) pauses a job whose NZB or
+downloaded archives name a file it excludes and records
 `Header.Unwanted = StateBlocked`. Under `action_on_unwanted_extensions: fail`
 the job is filed Failed instead, and a retry is refused with
 `app.ErrUnwantedRefused` unless the caller approves (`allow_unwanted=1`).
@@ -904,16 +905,87 @@ history entry. That is still fail-closed: the job is paused by the check,
 not parked by Stall, so neither the stall re-evaluation nor `Fail` resumes
 it, and only a user's resume with the full key approves it.
 
-The check runs only when a job is added or retried. A settings change does
-not re-screen jobs already queued, as in SABnzbd. The post-unpack stage reads
-the live settings on every run.
+The ingest check runs only when a job is added or retried. A settings change
+does not re-screen jobs already queued, as in SABnzbd. The post-unpack stage
+reads the live settings on every run.
+
+**The archive peek is a second, earlier detector, not a replacement.** While a
+job downloads, `app.peekArchiveForUnwanted` reads the names a just-completed
+file declares: a RAR5 volume's members (`rarheader.InspectRar5`, pure Go) or the files a par2
+file protects (`par2.ParseFileDescriptionsWithOptions`), each identified by its
+magic bytes and not its name, and judges them with the same `Rules.Find`. A
+par2 file's declared archive volumes and par2 files are not judged, since the
+pipeline consumes them before `unwanted_cleanup` and the two must judge one
+population. The peek never forks `unrar`: a RAR3 volume, or a RAR5 volume the
+engine cannot list, is skipped (RAR3 content is caught by `unwanted_cleanup`
+after unpack), while the par2 hint does not depend on the archive version. It
+runs from `completeFinalizedFile`, before the DirectUnpack feed and before
+`MarkFileComplete`, so a stall's re-evaluation and the startup repair of a
+stranded finalize get it too (`git grep -n 'app\.completeFinalizedFile('
+-- 'internal/app/*.go' ':!*_test.go'` returns 3 lines). It does nothing for a
+job already Blocked or Approved, with the action `off`, for a file with a
+failed article (par2 and the post-unpack stage cover those), or when the
+headers cannot be read; it never fails a job for being unable to look. 7z,
+zip, nested and header-encrypted archives are outside it, and
+`unwanted_cleanup` remains the backstop for them.
+
+A hit calls `Dispatcher.BlockUnwanted`, which decides under the registry lock
+and moves `StateNone` to `StateBlocked` once however many completions hit
+together. Only the call that made the move acts. Under `pause` the job is
+paused as `PauseJob` does (intent and lease; files kept) and the user's resume
+approves it as above. Under `fail` no pause is applied (a pause would hold the
+reason for an Assessing worker until the user's resume, which approves the
+job), so the job is Blocked with `IntentRun`, and filing it is owed. The owner
+of that filing is `fileOwedUnwantedFailure`, which derives the debt from
+persisted state: a Blocked job whose intent is `IntentRun`. Every other way to
+be Blocked pauses the job (the pause action's move sets `IntentPause` under the
+same lock; the ingest check pauses what it blocks) and the user's resume
+approves it. The writers behind that claim are found with
+`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` and
+`git grep -n 'SetIntent(job[.]IntentRun)' -- '*.go' ':!*_test.go'` (one hit,
+in `resume`). The owner is called from
+`completeFinalizedFile` after `MarkFileComplete` and the checkpoint mark, with
+the peek's message naming the files, and by `reconcileBeforeFirstTick` for every
+restored job, with none. Filing before the mark would let post-processing
+record the flagged file as incomplete in the history entry, or evict the job so
+the mark found it not resident; and because the debt is derived, a completion
+whose mark failed and is redelivered files it too, and a job restored Blocked
+and running is filed before the first tick instead of downloading on. A filing
+without the peek's message (a redelivery, a restart) carries the prefix alone,
+since the names are not persisted; one racing the peek's own filing can
+therefore be the reason the history entry shows (names lost; the post-processing
+admission still lets only one filing through). A job that file completes is
+deferred to its Assessing worker, which files it. A pause of a Blocked
+`IntentRun` job (a user's, or a stall's) ends the derivation, since the intent
+is no longer `IntentRun`: the job is then held like a pause-action one, and
+`ResumeJob` refuses it while only the user's resume (`ResumeJobByUser`)
+approves it. The same holds for a job a stall had already parked when a flagged
+completion reached it: `BlockUnwanted` with no pause finds the intent already
+`IntentPause`, so the job is never filed and ends held for approval, with the
+UNWANTED label. For that job `fail` is downgraded to `pause`, which is still
+safe. `ResumeJob` and `ResumeJobByUser` share one body
+(`resume`) that sets the intent in the same `d.mu` span as its decision, as
+`BlockUnwanted` does, so a resume cannot leave a Blocked job running; a stall re-evaluation whose resume is refused as blocked releases its
+park and still delivers the files it holds. The state reaches `dispatch_jobs` at the next persist
+and `history.unwanted_ext` through `postproc.Job.Unwanted`. A retry of the
+failed entry is held to its Blocked standing even though the NZB's own names
+are clean: `retryHistoryJob` passes whether the entry was filed Blocked to
+`screenUnwanted` as its `priorBlock` argument and, with the action not `off`,
+refuses a plain retry (`ErrUnwantedRefused` under `fail`; added paused and
+Blocked under `pause`). Only `allow_unwanted=1` queues it approved, so neither
+the peek nor `unwanted_cleanup` touches it. A file a retry keeps as already
+complete is not completed again, so it is not peeked.
+
+The application, on the call that made
+the move, also aborts the job's DirectUnpacker, and `directUnpackOrchestrator.maybeStart` refuses to feed a
+blocked job, so no flagged member is extracted while the job waits.
 
 Apart from restoring it from `dispatch_jobs` (the `Scan` in
 `internal/dispatch/store/store.go`), the writers of `Header.Unwanted` are
-`app.screenUnwanted`, before the job is registered, and `ResumeJobByUser`
-afterwards (`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'`
-returns 4 lines: three in `internal/app/unwanted.go`, one in
-`internal/dispatch/registry.go`).
+`app.screenUnwanted`, before the job is registered, and, afterwards,
+`BlockUnwanted` (None to Blocked) and `ResumeJobByUser` (Blocked to Approved)
+(`git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` returns 5 lines:
+three in `internal/app/unwanted.go`, two in `internal/dispatch/registry.go`).
 
 ### Cancel is an interrupt before the boundary, a gate after
 

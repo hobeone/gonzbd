@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // directUnpackOrchestrator owns the set of in-flight DirectUnpackers and the
@@ -144,6 +145,20 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		o.active++
 	}
 	o.mu.Unlock()
+
+	// A Blocked job (unwanted extensions found) is fed nothing, so a flagged
+	// member is never extracted. Read AFTER the unpacker exists and before the
+	// feed: BlockUnwanted writes the state before the peek's abortJob takes
+	// o.mu, so an unpacker created above either predates that abortJob, which
+	// removes it, or was created after it, when the state is already visible
+	// here. The read is outside o.mu: it takes the dispatcher's lock, and the
+	// Job and Row calls at the top of this function take it before o.mu.
+	if st, _ := app.dispatcher.UnwantedState(fc.JobID); st == unwanted.StateBlocked {
+		o.abortJob(fc.JobID)
+		app.log.Debug("directunpack: not feeding a job blocked for unwanted extensions",
+			"job", fc.JobID, "fileidx", fc.FileIdx)
+		return
+	}
 
 	// A file can reach "complete" with some of its articles permanently Failed
 	// (the assembler still fires OnFileComplete once every article is resolved

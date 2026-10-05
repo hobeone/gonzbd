@@ -141,7 +141,7 @@ Post-processing runs a chain of `Stage` implementations in order for each comple
 | 7 | `par2names` | `postproc` | Recover original filenames from PAR2 metadata |
 | 8 | `par2_cleanup` | `postproc` | Delete `.par2` files after repair/rename (when enabled) |
 | 9 | `deobfuscate` | `deobfuscate` | Rename obfuscated files using NZB hints and PAR2 filenames |
-| 10 | `unwanted_cleanup` | `postproc` | Delete every file under the job's download directory whose extension the unwanted-extension rules exclude, unless the user approved the job |
+| 10 | `unwanted_cleanup` | `postproc` | Delete every file under the job's download directory whose extension the unwanted-extension rules exclude, unless the user approved the job. Backstop for `app.peekArchiveForUnwanted`, which blocks a job early from RAR5 volume and par2 headers while it downloads (RAR3 content is caught here) |
 | 11 | `extension_cleanup` | `postproc` | Delete files matching the user's cleanup extension list |
 | 12 | `finalize` | `postproc` | Move job from incomplete to complete directory |
 | 13 | `script` | `postproc` | Run user-supplied post-processing script (see `docs/post-processing-scripts.md`) |

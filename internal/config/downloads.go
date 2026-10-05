@@ -110,9 +110,11 @@ type DownloadConfig struct {
 	UnwantedExtensionsMode unwanted.Mode `yaml:"unwanted_extensions_mode" json:"unwanted_extensions_mode"`
 
 	// ActionOnUnwantedExtensions is what happens when an NZB names an
-	// unwanted file: "off" disables the check, "pause" adds the job paused
-	// until the user resumes it, "fail" files it in history as Failed
-	// without downloading anything. Unless it is "off", unwanted files are
+	// unwanted file, or a RAR5 volume or par2 file downloaded for the job
+	// does: "off" disables the check, "pause" pauses the job until the user
+	// resumes it, "fail" files it in history as Failed (at add, before
+	// anything downloads, or at the point a downloaded file names one).
+	// Unless it is "off", unwanted files are
 	// also deleted after unpack, except from a job the user approved.
 	// Default: pause.
 	ActionOnUnwantedExtensions unwanted.Action `yaml:"action_on_unwanted_extensions" json:"action_on_unwanted_extensions"`

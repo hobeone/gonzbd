@@ -11,12 +11,12 @@ run ^(TestPauseJob_FetchingJobFreesItsLease|TestPauseJob_RefusesACancelledJobAnd
 file internal/dispatch/registry.go
 --- anchor
 	if err := j.SetIntent(job.IntentPause); err != nil {
-		return fmt.Errorf("dispatch: pause %s: %w", id, err)
+		return fmt.Errorf("dispatch: pause %s: %w", j.ID(), err)
 	}
 --- replace
 	if err := j.SetIntent(job.IntentPause); err != nil {
 		_ = d.YieldedFrom(j, job.Fetching)
-		return fmt.Errorf("dispatch: pause %s: %w", id, err)
+		return fmt.Errorf("dispatch: pause %s: %w", j.ID(), err)
 	}
 --- end
 

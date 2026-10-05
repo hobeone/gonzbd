@@ -522,8 +522,8 @@
 					variant="outline"
 					class="shrink-0 text-[10px] font-bold text-amber-500 border-amber-500/40"
 					title={isPaused
-						? 'The NZB names a file with an unwanted extension. Resume to allow it.'
-						: 'The NZB names a file with an unwanted extension.'}
+						? 'This job names a file with an unwanted extension. Resume to allow it.'
+						: 'This job names a file with an unwanted extension.'}
 					data-testid="unwanted-label"
 				>
 					UNWANTED

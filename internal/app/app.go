@@ -324,6 +324,11 @@ type Application struct {
 	// checkpointHook.
 	downloadReportedHook func(id string)
 
+	// peekedHook, when non-nil, runs in completeFinalizedFile right after the
+	// archive peek and before the file is marked complete. Same discipline as
+	// checkpointHook.
+	peekedHook func()
+
 	// assessHook, when non-nil, runs in runAssess once the worker has resolved
 	// its job and before it assesses it, where the worker is live at
 	// Assessing. Same discipline as checkpointHook.
@@ -780,7 +785,7 @@ func (app *Application) detectDuplicateNZB(ctx context.Context, md5, filename st
 // failure takes, so the entry is retryable like any other. An error
 // evaluating the check refuses the job.
 func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, rawNZB []byte, force bool) error {
-	unwantedFail, err := app.screenUnwanted(j, &hdr, false)
+	unwantedFail, err := app.screenUnwanted(j, &hdr, false, false)
 	if err != nil {
 		return fmt.Errorf("app: %w", err)
 	}
@@ -1396,10 +1401,15 @@ func (app *Application) Start(ctx context.Context) error {
 	// Dropping the jobs already in history, and the resume sweep, run inside
 	// the dispatcher's start, between restoring the registry and the first
 	// tick. reconcileBeforeFirstTick and resumeAllJobs have that placement's
-	// argument. Start hands no job to post-processing itself: a complete job
-	// restored at Fetching, or never run, is reported download-complete by its
-	// Fetching worker (appRunner.runFetch) and reaches post-processing through
-	// Assessing.
+	// argument. The restart itself hands no complete job to post-processing: a
+	// complete job restored at Fetching, or never run, is reported
+	// download-complete by its Fetching worker (appRunner.runFetch) and reaches
+	// post-processing through Assessing. One path in the dispatcher's start
+	// can: completeStrandedFiles -> completeFinalizedFile, which files the job
+	// (finalizeRegistered -> enqueuePostProc) after MarkFileComplete when
+	// peekArchiveForUnwanted finds an unwanted name in the stranded file under
+	// action=fail and the job is not then complete (a complete one is deferred
+	// to its Assessing worker, awaitsAssessing).
 	if app.dispatcher != nil {
 		if err := app.dispatcher.StartWith(app.ctx, app.reconcileBeforeFirstTick); err != nil {
 			return fmt.Errorf("app: start dispatcher: %w", err)
@@ -1790,6 +1800,13 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 			return err
 		}
+		// The volume's headers are read before anything consumes it, so a
+		// flagged one is never fed to DirectUnpack below: the peek that blocks
+		// a job aborts its unpacker, and maybeStart refuses a Blocked job.
+		unwantedFail := app.peekArchiveForUnwanted(j, fc)
+		if app.peekedHook != nil {
+			app.peekedHook()
+		}
 		// DirectUnpack is fed the volume before the file is marked complete,
 		// and so before the download-finished report below. From that report
 		// the tick can launch the job's post-processing, whose enqueuePostProc
@@ -1809,6 +1826,13 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 		if app.checkpointer != nil {
 			app.checkpointer.Mark(j)
 		}
+		// A job the peek failed is filed only now: the history entry retains
+		// each file's progress as it stands when post-processing takes the
+		// job, and a finalize before the mark above would record this file as
+		// incomplete, or evict the job so the mark found it not resident. The
+		// filing is owed by the job's state, not by unwantedFail, so a
+		// completion that failed before here and is redelivered files it too.
+		app.fileOwedUnwantedFailure(j, unwantedFail)
 		// The Fetching worker's exit report. A stale one is a repeat for a
 		// job that has already moved on, and must leave its next state alone.
 		if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
@@ -2701,8 +2725,9 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 // ID on its own (see jobTransitions).
 //
 // The rebuilt job goes through the unwanted-extension check under the action
-// configured now (screenUnwanted), unless its entry records an approval. A
-// job the check fails is refused with ErrUnwantedRefused before any state
+// configured now (screenUnwanted), unless its entry records an approval; an
+// entry filed Blocked is held to that standing as well, whatever named the
+// extension. A job the check fails is refused with ErrUnwantedRefused before any state
 // changes, and its entry stays as it was; RetryHistoryJobAllowingUnwanted
 // approves it instead.
 //
@@ -2765,7 +2790,7 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	}
 	// Before anything below changes state, so a refusal leaves the entry
 	// and the download directory exactly as they were.
-	unwantedFail, err := app.screenUnwanted(j, &hdr, allowUnwanted || entry.Unwanted == unwanted.StateApproved)
+	unwantedFail, err := app.screenUnwanted(j, &hdr, allowUnwanted || entry.Unwanted == unwanted.StateApproved, entry.Unwanted == unwanted.StateBlocked)
 	if err != nil {
 		return fmt.Errorf("app: retry %s: %w", jobID, err)
 	}

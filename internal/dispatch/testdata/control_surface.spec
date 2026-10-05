@@ -5,9 +5,11 @@ run TestDispatcherControlSurface_PerJobDoors|TestDispatcherRemove_IsIdempotentAn
 file internal/dispatch/registry.go
 --- anchor
 	if err := j.SetIntent(job.IntentPause); err != nil {
+		return fmt.Errorf("dispatch: pause %s: %w", j.ID(), err)
 --- replace
 	d.q.Pause()
 	if err := j.SetIntent(job.IntentPause); err != nil {
+		return fmt.Errorf("dispatch: pause %s: %w", j.ID(), err)
 --- end
 
 [Remove deregisters before cancelling, stranding the lease and slot]

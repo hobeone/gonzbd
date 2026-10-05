@@ -4,8 +4,9 @@
 // It is a defence against malware delivered as a download: a post that
 // carries a .exe or .scr is refused, paused or cleaned, depending on the
 // configured Action. Rules.Unwanted is the one function that decides whether
-// a name is unwanted; the ingest check in internal/app and the post-unpack
-// removal stage in internal/postproc both call it, so the two cannot disagree
+// a name is unwanted; the ingest check and the archive peek in internal/app
+// and the post-unpack removal stage in internal/postproc all call it
+// (Rules.Find, which the first two use, calls it), so they cannot disagree
 // about a name.
 //
 // Filenames reach Unwanted from an NZB, which is untrusted. The extension is
@@ -16,8 +17,11 @@
 //
 // What it cannot see is a name it is not given. A post whose subjects are
 // obfuscated, or whose payload is inside an archive, carries no unwanted
-// extension at ingest; the post-unpack stage is the backstop for the files
-// those produce on disk.
+// extension at ingest. While such a job downloads, the archive peek in
+// internal/app is given the member names of each completed RAR5 volume and the
+// names a par2 file declares, and blocks the job early; it is an accelerator.
+// The post-unpack stage is the backstop for the files those produce on disk,
+// and for the archive kinds the peek does not read.
 package unwanted
 
 import (
@@ -49,9 +53,11 @@ type Action string
 const (
 	// ActionOff disables the check, both at ingest and after unpack.
 	ActionOff Action = "off"
-	// ActionPause adds the job paused. Resuming it approves it.
+	// ActionPause pauses the job, at add or when a downloaded archive names
+	// the file. Resuming it approves it.
 	ActionPause Action = "pause"
-	// ActionFail files the job in history as Failed without downloading it.
+	// ActionFail files the job in history as Failed: at add without
+	// downloading it, or when a downloaded archive names the file.
 	ActionFail Action = "fail"
 )
 

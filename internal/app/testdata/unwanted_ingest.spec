@@ -92,17 +92,17 @@ file internal/app/app.go
 [a retry ignores allow_unwanted]
 file internal/app/app.go
 --- anchor
-	unwantedFail, err := app.screenUnwanted(j, &hdr, allowUnwanted || entry.Unwanted == unwanted.StateApproved)
+	unwantedFail, err := app.screenUnwanted(j, &hdr, allowUnwanted || entry.Unwanted == unwanted.StateApproved, entry.Unwanted == unwanted.StateBlocked)
 --- replace
-	unwantedFail, err := app.screenUnwanted(j, &hdr, entry.Unwanted == unwanted.StateApproved)
+	unwantedFail, err := app.screenUnwanted(j, &hdr, entry.Unwanted == unwanted.StateApproved, entry.Unwanted == unwanted.StateBlocked)
 --- end
 
 [a retry forgets the entry's approval]
 file internal/app/app.go
 --- anchor
-	unwantedFail, err := app.screenUnwanted(j, &hdr, allowUnwanted || entry.Unwanted == unwanted.StateApproved)
+	unwantedFail, err := app.screenUnwanted(j, &hdr, allowUnwanted || entry.Unwanted == unwanted.StateApproved, entry.Unwanted == unwanted.StateBlocked)
 --- replace
-	unwantedFail, err := app.screenUnwanted(j, &hdr, allowUnwanted || (false && entry.Unwanted == unwanted.StateApproved))
+	unwantedFail, err := app.screenUnwanted(j, &hdr, allowUnwanted || (false && entry.Unwanted == unwanted.StateApproved), entry.Unwanted == unwanted.StateBlocked)
 --- end
 
 [the hand-over drops the job's unwanted state]

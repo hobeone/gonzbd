@@ -264,21 +264,28 @@ downloads:
   # obfuscated posts are not blocked wholesale. Default: blacklist.
   unwanted_extensions_mode: blacklist
 
-  # What happens when an NZB names an unwanted file:
+  # What happens when an NZB names an unwanted file, or when a RAR5 volume
+  # or par2 file downloaded for the job does (read while it downloads;
+  # RAR3 volumes are not read then, and the par2 check works whatever the
+  # archive version):
   #   off   - no check, and nothing is removed after unpack.
-  #   pause - the job is added paused and labelled UNWANTED. Resuming it
+  #   pause - the job is added paused (or, for a hit found while it
+  #           downloads, paused there) and labelled UNWANTED. Resuming it
   #           approves it: it is not paused again, and its files are not
   #           removed after unpack.
-  #   fail  - the job goes straight to history as Failed ("Aborted,
-  #           unwanted extension detected"), nothing downloaded. Retry it
-  #           with "Retry anyway" (mode=history&name=retry&allow_unwanted=1)
-  #           to approve it. A plain retry is checked again under the
-  #           action then in force, so under "fail" it is refused.
+  #   fail  - the job goes to history as Failed ("Aborted, unwanted
+  #           extension detected"): at add, nothing downloaded, or at the
+  #           point a downloaded RAR5 volume or par2 file names one, its
+  #           files kept. Retry it with "Retry anyway"
+  #           (mode=history&name=retry&allow_unwanted=1) to approve it. A
+  #           plain retry of a job filed for an unwanted extension is
+  #           checked again under the action then in force, so under "fail"
+  #           it is refused, whatever named the extension.
   # Unless "off", unwanted files found on disk after unpack are deleted
-  # from a job that was not approved. Not covered: a file whose name only
-  # appears inside an archive during download, or a post whose filenames
-  # are obfuscated, carries nothing to check at add time; the after-unpack
-  # removal is the backstop for those. Default: pause.
+  # from a job that was not approved. Not covered while downloading: RAR3, 7z,
+  # zip, nested or header-encrypted archives, a file with a failed article, or
+  # a par2 file with junk before its first packet; the after-unpack removal
+  # is the backstop for those. Default: pause.
   action_on_unwanted_extensions: pause
 
 postproc:

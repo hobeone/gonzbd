@@ -444,6 +444,28 @@ func ParseFileDescriptionsWithOptions(path string, opts ParseOptions) ([]FileDes
 	return set.Files, nil
 }
 
+// HasMagic reports whether the file at path starts with the par2 packet
+// signature. It reads at most len(magic) bytes. A file shorter than that is
+// false with a nil error; only a failure to open or read is an error. The
+// parser tolerates junk before the first packet, so a file it can parse may
+// still report false here: the answer is "identifiably par2 at offset 0", a
+// cheap pre-filter, not "parseable".
+func HasMagic(path string) (bool, error) {
+	f, err := os.Open(path) //nolint:gosec // path is a job-owned file chosen by the caller
+	if err != nil {
+		return false, err
+	}
+	defer f.Close() //nolint:errcheck // read-only file
+	buf := make([]byte, len(magic))
+	if _, err := io.ReadFull(f, buf); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, nil
+		}
+		return false, err
+	}
+	return bytes.Equal(buf, magic), nil
+}
+
 // scanForMagic scans forward using default junk scan limit to find next magic.
 func scanForMagic(f *os.File, magic []byte) (bool, error) {
 	return scanForMagicWithOptions(f, magic, defaultMaxJunkScan)
