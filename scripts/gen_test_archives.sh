@@ -15,7 +15,10 @@ TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 # Clean previous output
-rm -f "$OUTDIR"/*.rar "$OUTDIR"/*.r[0-9][0-9]
+# rar5_link_symlink/hard/solid.rar are copied from rarengine's testdata, not
+# generated here, so the clean step leaves them alone.
+find "$OUTDIR" -maxdepth 1 \( -name '*.rar' -o -name '*.r[0-9][0-9]' \) \
+	! -name 'rar5_link_symlink.rar' ! -name 'rar5_link_hard.rar' ! -name 'rar5_link_solid.rar' -delete
 mkdir -p "$OUTDIR"
 
 # Create source content files
@@ -52,6 +55,12 @@ printf '\x00\x00\x00\x00\x00\x00\x00\x00' | dd of="$OUTDIR/corrupt.rar" bs=1 see
 # --- Archive with directory entries (for IsDir handling) ---
 echo "==> with_dirs.rar"
 ( cd "$TMPDIR" && rar a -r "$(cd - >/dev/null && pwd)/$OUTDIR/with_dirs.rar" subdir/ >/dev/null )
+
+# --- Hostile symlink: target climbs out of the extraction root ---
+echo "==> rar5_link_escape.rar"
+mkdir -p "$TMPDIR/escape"
+( cd "$TMPDIR/escape" && echo "real" > real.txt && ln -s ../../etc/passwd evil.lnk && echo "ok" > after.txt \
+	&& rar a -ol -ep "$(cd - >/dev/null && pwd)/$OUTDIR/rar5_link_escape.rar" real.txt evil.lnk after.txt >/dev/null )
 
 echo ""
 echo "=== Generated test archives ==="

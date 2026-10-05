@@ -63,6 +63,9 @@ func ClassifyRarEngineError(err error) FailReason {
 		errors.Is(err, rarengine.ErrTruncatedFile),
 		errors.Is(err, rarengine.ErrSolidStreamBroken):
 		return FailCorrupt
+	case errors.Is(err, rarengine.ErrDictionaryTooLarge):
+		// A capacity limit of the pure-Go window, not damage to the archive.
+		return FailDictionaryTooLarge
 	case errors.Is(err, rarengine.ErrNoNextVolume):
 		return FailMissingVolume
 	case errors.Is(err, rarengine.ErrUnsupportedFormat),
@@ -227,6 +230,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			if ctx.Err() != nil {
 				return res, ctx.Err()
 			}
+			NoteDictionaryLimit(log, err, entry.Header)
 			res.Reason = ClassifyRarEngineError(err)
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", entry.Header.Name, err))
@@ -238,6 +242,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			if ctx.Err() != nil {
 				return res, ctx.Err()
 			}
+			NoteDictionaryLimit(log, err, entry.Header)
 			res.Reason = ClassifyRarEngineError(err)
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", entry.Header.Name, err))
@@ -245,7 +250,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			return res, err
 		}
 
-		if !entry.Header.IsDir {
+		if ExtractedEntryExists(root, destRel, entry.Header) {
 			extractedFiles = append(extractedFiles, destPath)
 			displayPath := destRel
 			outBuf.WriteString("Extracting  " + displayPath + "\n")
@@ -290,6 +295,14 @@ func (er rarEntryReader) Read(p []byte) (int, error) {
 func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, destPath string, fh *rarengine.FileHeader, r io.Reader, opts Options, log *slog.Logger) error {
 	if fh.IsDir {
 		return root.MkdirAll(destRel, 0o750)
+	}
+
+	// A link member carries no payload: Read would return ErrLinkEntry. Handle
+	// it before the reader is touched. Both the post-processing loop and
+	// DirectUnpack reach links through this function. The caller still calls
+	// CloseMember afterwards, which is where the verdict is reported.
+	if fh.LinkType != rarengine.LinkNone {
+		return extractLinkEntry(ctx, root, destRel, destPath, fh, opts, log)
 	}
 
 	// mode is masked to only the rw bits, matching go_tar/go_sevenzip's

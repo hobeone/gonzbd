@@ -697,6 +697,7 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
+			unpack.NoteDictionaryLimit(d.log, err, entry.Header)
 			return nil, fmt.Errorf("directunpack: extract %s: %w", entry.Header.Name, err)
 		}
 
@@ -704,10 +705,11 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
+			unpack.NoteDictionaryLimit(d.log, err, entry.Header)
 			return nil, fmt.Errorf("directunpack: verify %s: %w", entry.Header.Name, err)
 		}
 
-		if !entry.Header.IsDir {
+		if unpack.ExtractedEntryExists(root, destRel, entry.Header) {
 			extractedFiles = append(extractedFiles, destPath)
 		}
 		if d.opts.OnLine != nil {

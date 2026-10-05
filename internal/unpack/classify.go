@@ -22,6 +22,10 @@ const (
 	// FailFileTooLarge means a file in the archive exceeds the
 	// filesystem's or OS's maximum file size.
 	FailFileTooLarge
+	// FailDictionaryTooLarge means the pure-Go RAR engine's history window is
+	// smaller than the archive needs. It is a capacity limit, not corruption;
+	// the external unrar can extract the set.
+	FailDictionaryTooLarge
 )
 
 // String returns a human-readable label for the FailReason.
@@ -39,6 +43,8 @@ func (r FailReason) String() string {
 		return "not an archive"
 	case FailFileTooLarge:
 		return "file too large"
+	case FailDictionaryTooLarge:
+		return "dictionary larger than the pure-Go window"
 	default:
 		return "unknown error"
 	}

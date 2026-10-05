@@ -43,7 +43,7 @@ func TestLayoutB_RetryWithTheHeldVolumeRepairsTheExtraction(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			first, dir := deliveredJob(t, "layout_b", []string{"feature.par2"}, []deliveredFile{damagedB2(t)})
+			first, dir := deliveredJob(t, "layout_b", []string{"feature.par2"}, []deliveredFile{damagedNoDigest(t)})
 			if errs := runStages(t, first, par2StagesCleanup(tc.cleanup)...); !first.ParError {
 				t.Fatalf("fixture guard: the first run did not fail its extracted repair; stage errors: %v", errs)
 			}
@@ -58,7 +58,7 @@ func TestLayoutB_RetryWithTheHeldVolumeRepairsTheExtraction(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "feature.vol0+1.par2"), vol, 0o644); err != nil {
 				t.Fatal(err)
 			}
-			retry, _ := deliveredJob(t, "layout_b", nil, []deliveredFile{damagedB2(t)})
+			retry, _ := deliveredJob(t, "layout_b", nil, []deliveredFile{damagedNoDigest(t)})
 			if err := os.RemoveAll(retry.DownloadDir); err != nil {
 				t.Fatal(err)
 			}

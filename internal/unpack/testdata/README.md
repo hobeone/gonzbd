@@ -14,6 +14,10 @@ Re-run that script to regenerate. **Do not edit these files by hand.**
 | `encrypted_header.rar` | RAR5 | Header-encrypted, password: `testpass` |
 | `corrupt.rar` | RAR5 (damaged) | Bytes overwritten at offset 20 |
 | `with_dirs.rar` | RAR5 | Contains directory entries |
+| `rar5_link_symlink.rar` | RAR5 | `real.txt` and `link.txt` -> `real.txt` (copied from rarengine testdata) |
+| `rar5_link_hard.rar` | RAR5 | `orig.txt` and hard link `hard.txt` -> `orig.txt` (copied from rarengine testdata) |
+| `rar5_link_solid.rar` | RAR5 solid | `a.txt`, symlink `mid.lnk` -> `a.txt`, `c.txt` back-referencing `a.txt` (copied from rarengine testdata) |
+| `rar5_link_escape.rar` | RAR5 | `real.txt`, symlink `evil.lnk` -> `../../etc/passwd`, `after.txt` |
 
 ## Limitations
 
