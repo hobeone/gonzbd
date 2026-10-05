@@ -16,7 +16,6 @@ import (
 func TestRestoreFailedDir(t *testing.T) {
 	t.Parallel()
 	const name = "job"
-	noneQueued := func(string) bool { return false }
 	for _, tc := range []struct {
 		name string
 		// recordFailed records the _FAILED_ path on the entry; otherwise the
@@ -24,7 +23,6 @@ func TestRestoreFailedDir(t *testing.T) {
 		recordFailed bool
 		failed       string // "dir", "file" or "" for absent
 		jobDir       bool
-		queued       bool
 		wantErr      error
 		wantMoved    bool
 	}{
@@ -34,7 +32,6 @@ func TestRestoreFailedDir(t *testing.T) {
 		{name: "job dir already exists", recordFailed: true, failed: "dir", jobDir: true, wantErr: errRetryDirConflict},
 		{name: "failed dir gone, job dir exists", recordFailed: true, jobDir: true, wantErr: errRetryDirConflict},
 		{name: "failed path is a file", recordFailed: true, failed: "file", wantErr: errRetryDirConflict},
-		{name: "another job queued by that name", recordFailed: true, failed: "dir", queued: true, wantErr: errRetryDirConflict},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -63,12 +60,7 @@ func TestRestoreFailedDir(t *testing.T) {
 			if tc.recordFailed {
 				recorded = failedDir
 			}
-			queued := noneQueued
-			if tc.queued {
-				queued = func(n string) bool { return n == name }
-			}
-
-			from, err := restoreFailedDir(recorded, downloadDir, name, queued)
+			from, err := restoreFailedDir(recorded, downloadDir, name)
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("restoreFailedDir error = %v, want %v", err, tc.wantErr)
 			}

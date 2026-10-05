@@ -16,7 +16,7 @@ file internal/app/retry_failed_dir.go
 [RetryHistoryJob never restores the directory]
 file internal/app/app.go
 --- anchor
-	restoredFrom, err := restoreFailedDir(entry.Path, downloadDir, j.Name(), app.queuedName)
+	restoredFrom, err := restoreFailedDir(entry.Path, downloadDir, j.Name())
 --- replace
 	restoredFrom, err := "", error(nil)
 --- end
@@ -41,14 +41,6 @@ file internal/app/app.go
 file internal/app/retry_failed_dir.go
 --- anchor
 	case dstExists:
---- replace
-	case false:
---- end
-
-[a queued job of the same name does not refuse the retry]
-file internal/app/retry_failed_dir.go
---- anchor
-	case nameQueued(name):
 --- replace
 	case false:
 --- end

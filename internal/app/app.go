@@ -2722,13 +2722,17 @@ var errJobAlreadyQueued = errors.New("this job is already in the queue")
 // It refuses, before acting on anything, a job ID another actor holds or a
 // finalizer is committing (errJobInTransition) and, for a FAILED entry, a job
 // the dispatcher already holds (errJobAlreadyQueued). It then refuses, before
-// changing any state, a job whose _FAILED_ download directory cannot be moved
-// back to the path the retry writes to (errRetryDirConflict; see
-// restoreFailedDir). A finalizer of the ID that starts after the claim is
-// checked for once, after the registration check and before any state
-// changes (errJobInTransition). One starting later is of an instance a
+// changing any state, a job whose name another job holds, or whose _FAILED_
+// download directory cannot be moved back to the path the retry writes to
+// (errRetryDirConflict; see restoreFailedDir). A finalizer of the ID that
+// starts after the transition claim is checked for once, after the
+// registration check and before any state changes (errJobInTransition). One starting later is of an instance a
 // RemoveJob marked removed, and persistAndCommit refuses to file it under the
 // ID on its own (see jobTransitions).
+//
+// From before the restore until it returns, the retry holds its name in the
+// dispatcher (Dispatcher.ReserveName), so no job can register or be renamed to
+// it in between.
 //
 // The rebuilt job goes through the unwanted-extension check under the action
 // configured now (screenUnwanted), unless its entry records an approval; an
@@ -2810,7 +2814,22 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	if err := checkRecordedUnderCurrentBase(entry.Path, downloadDir, app.config.GetGeneral().CompleteDir); err != nil {
 		return fmt.Errorf("app: retry %s refused: %w", jobID, err)
 	}
-	restoredFrom, err := restoreFailedDir(entry.Path, downloadDir, j.Name(), app.queuedName)
+	// The name is the directory the restore below moves bytes into, and the
+	// registry is what refuses a second job that name, so it is claimed there
+	// first: a refusal then happens before anything moves, and no other job can
+	// register or be renamed to the name between the restore and the Add (both
+	// go through nameHolderLocked, which honours the reservation). The claim
+	// is released when this call returns, after the restore's undo below (defers
+	// run last to first) so the name stays held while that moves the directory
+	// back, and after a successful Add, which holds the name itself.
+	if app.dispatcher != nil {
+		releaseName, err := app.dispatcher.ReserveName(jobID, j.Name())
+		if err != nil {
+			return fmt.Errorf("app: retry %s: %w: %w", jobID, errRetryDirConflict, err)
+		}
+		defer releaseName()
+	}
+	restoredFrom, err := restoreFailedDir(entry.Path, downloadDir, j.Name())
 	if err != nil {
 		return fmt.Errorf("app: retry %s: restore download directory: %w", jobID, err)
 	}
@@ -2982,11 +3001,10 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
 		err := app.dispatcher.Add(addCtx, j, hdr)
 		addCancel()
-		if errors.Is(err, dispatch.ErrJobNameTaken) {
-			// Not chosen again, as AddJob does: the name is the directory
-			// holding this job's bytes, which the retained progress describes.
-			return fmt.Errorf("app: retry %s: %w: %w", jobID, errRetryDirConflict, err)
-		}
+		// A refusal for the name is not reachable here while ReserveName holds
+		// it, so none is handled; the retry keeps its name rather than
+		// choosing another as AddJob does, because it is the directory holding
+		// the bytes the retained progress describes.
 		if err != nil {
 			return err
 		}

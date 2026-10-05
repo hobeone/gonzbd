@@ -53,8 +53,10 @@ file internal/dispatch/registry.go
 file internal/dispatch/registry.go
 --- anchor
 	if otherID, taken := d.nameHolderLocked(id, name); taken {
+		return fmt.Errorf("dispatch: set name %s to %q: job %s has that name: %w", id, name, otherID, ErrJobNameTaken)
 --- replace
 	if otherID, taken := d.nameHolderLocked(id, name); false && taken {
+		return fmt.Errorf("dispatch: set name %s to %q: job %s has that name: %w", id, name, otherID, ErrJobNameTaken)
 --- end
 
 [a taken name is refused as merely invalid]

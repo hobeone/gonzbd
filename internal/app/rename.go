@@ -19,7 +19,9 @@ var ErrInvalidJobName = errors.New("invalid job name")
 // jobNameTaken reports whether name is unavailable as a job's directory
 // name: another queued job has it, or something exists at that name in the
 // download directory, the complete directory, or a category directory under
-// it. AddJob and RenameJob both pass it to uniqueName.
+// it. AddJob and RenameJob both pass it to uniqueName. It does not see a name
+// a retry has reserved (Dispatcher.ReserveName), which is held in the registry
+// before anything is on disk; claimJobName absorbs the registry's refusal.
 func (app *Application) jobNameTaken(snap *config.Config, name string) bool {
 	if app.queuedName(name) {
 		return true
@@ -87,19 +89,24 @@ func (app *Application) RenameJob(id, name string) (string, error) {
 }
 
 // maxJobNameAttempts bounds claimJobName. Each refusal means another job was
-// registered or renamed under the chosen name after it was chosen, so each
+// registered, renamed or reserved (by a retry) under the chosen name after it
+// was chosen, so each
 // retry follows a lost race; the bound only stops an unending run of them.
 const maxJobNameAttempts = 32
 
 // claimJobName chooses a name from base with uniqueName and jobNameTaken, and
 // passes it to claim, the registry call that writes it: Dispatcher.Add for
 // AddJob, Dispatcher.SetName for RenameJob. The registry refuses a name
-// another registered job holds (dispatch.ErrJobNameTaken), which happens when
-// that job took it after it was chosen here. claimJobName then chooses again.
-// It returns the name claim accepted, or claim's first other error.
+// another job holds or has reserved (dispatch.ErrJobNameTaken), which happens
+// when that job took it after it was chosen here, or when a retry reserved it
+// and has not restored its directory yet, so jobNameTaken sees nothing. A name
+// the registry refused is not chosen again, so the next choice is the next
+// suffix either way. It returns the name claim accepted, or claim's first other
+// error.
 func (app *Application) claimJobName(snap *config.Config, base string, claim func(name string) error) (string, error) {
+	refused := map[string]bool{}
 	for range maxJobNameAttempts {
-		name := uniqueName(base, func(n string) bool { return app.jobNameTaken(snap, n) })
+		name := uniqueName(base, func(n string) bool { return refused[n] || app.jobNameTaken(snap, n) })
 		if app.jobNameChosenHook != nil {
 			app.jobNameChosenHook(name)
 		}
@@ -107,6 +114,7 @@ func (app *Application) claimJobName(snap *config.Config, base string, claim fun
 		if !errors.Is(err, dispatch.ErrJobNameTaken) {
 			return name, err
 		}
+		refused[name] = true
 	}
 	return "", fmt.Errorf("app: no free job name from %q after %d attempts: %w", base, maxJobNameAttempts, dispatch.ErrJobNameTaken)
 }

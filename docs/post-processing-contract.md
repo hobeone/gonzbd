@@ -530,11 +530,12 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    header-encrypted archive, skips a file with a failed article, and skips a job that is approved or
    whose action is `off`, so this stage still runs for every one of those.
    That directory is the download directory joined with the job's name, and
-   no two registered jobs share a name. The dispatcher owns that rule:
-   `Dispatcher.nameHolderLocked` is checked under `d.mu` both when a job is
-   registered (`Add`, and restore at startup) and when it is renamed
-   (`SetName`), so of two callers that chose one name concurrently, only
-   one is admitted. `AddJob` and `Application.RenameJob` (the API's rename)
+   no two jobs share a name, registered or reserved. The dispatcher owns that rule:
+   `Dispatcher.nameHolderLocked` is checked under `d.mu` when a job is
+   registered (`Add`, and restore at startup), when it is renamed
+   (`SetName`) and when a name is reserved (`ReserveName`, which a retry
+   takes before it restores its directory), so of two callers that chose one
+   name concurrently, only one is admitted. `AddJob` and `Application.RenameJob` (the API's rename)
    choose a name with `uniqueName` and `jobNameTaken`, which also rejects a
    name with something on disk under it, and choose again when the
    dispatcher refuses it (`claimJobName`). `Dispatcher.SetName` also refuses
@@ -762,13 +763,16 @@ recorded entirely through the fetch-policy discard, not through this field.
   post-processing reads, `DownloadDir/<name>`, so `RetryHistoryJob` renames
   the `_FAILED_` directory back to it before queuing the job
   (`restoreFailedDir`, `internal/app/retry_failed_dir.go`), and back again if
-  the retry aborts before the job is queued. It refuses the retry, moving
-  nothing, when `DownloadDir/<name>` already exists, when another queued job
-  has that name, or when the `_FAILED_` directory is gone but
-  `DownloadDir/<name>` exists — each is a directory that may not be this
-  job's. A job that registers the name after that check, before the retry
-  is queued, makes `Dispatcher.Add` refuse the retry, which then unwinds the
-  same way (`TestRetryHistoryJob_RefusesWhenAnotherJobTookItsName`).
+  the retry aborts before the job is queued. Before that move it reserves the
+  name in the dispatcher (`Dispatcher.ReserveName`), so a job that holds the
+  name refuses the retry before anything moves, and no job can register or be
+  renamed to the name until the retry returns; its own `Add` is admitted. The
+  reservation is in memory and released by a defer, after the undo
+  (`TestRetryHistoryJob_NoJobCanTakeItsNameAfterTheRestore`,
+  `TestRetryHistoryJob_AbortedRetryReturnsItsDirectoryAndItsName`). It also
+  refuses the retry, moving nothing, when `DownloadDir/<name>` already
+  exists, or when the `_FAILED_` directory is gone but `DownloadDir/<name>`
+  exists — each is a directory that may not be this job's.
   `TestRetryHistoryJob_ResumesInTheFailedDirectory` runs the real
   `finalize` stage through a failure and a retry, in process and after a
   restart.

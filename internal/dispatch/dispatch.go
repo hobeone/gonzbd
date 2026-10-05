@@ -43,7 +43,7 @@ type Dispatcher struct {
 	// is never launchable).
 	//
 	// The teardowns, enumerated from source rather than remembered —
-	// `git grep -n 'delete(d\.\|delete(r\.d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 15 lines:
+	// `git grep -n 'delete(d\.\|delete(r\.d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 16 lines:
 	//
 	//   - deregister (registry.go), eight lines: byID, written, resident,
 	//     removing, occupiers, occupancyTokens, occupyDrained, occupyStep. launched is cleared via clearLaunched. d.order is pruned by
@@ -61,6 +61,9 @@ type Dispatcher struct {
 	//     call — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
 	//     grep -v _test.go` finds six lines, one per site.
 	//   - Occupy (occupy.go), four lines: occupancyTokens, occupiers, occupyDrained, and occupyStep when refcount drops to 0.
+	//   - ReserveName's release (registry.go), one line: reservedNames. It is
+	//     keyed by name, not job ID, and is outside deregister and Stop's
+	//     sweep: the reserving caller's release is its one remover.
 	//
 	// Stop's sweep therefore prunes resident and launched through those two
 	// accessors; it deliberately leaves byID, order and written intact,
@@ -70,6 +73,7 @@ type Dispatcher struct {
 	launched        map[string]chan struct{}
 	written         map[string]Persisted
 	removing        map[string]int
+	reservedNames   map[string]string // name -> the job ID holding it; see ReserveName
 	occupiers       map[string]int
 	occupancyTokens map[string]map[any]struct{}
 	occupyDrained   map[string]chan struct{}
@@ -300,6 +304,7 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 		launched:        map[string]chan struct{}{},
 		written:         map[string]Persisted{},
 		removing:        make(map[string]int),
+		reservedNames:   make(map[string]string),
 		occupiers:       make(map[string]int),
 		occupancyTokens: make(map[string]map[any]struct{}),
 		occupyDrained:   make(map[string]chan struct{}),

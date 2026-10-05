@@ -19,12 +19,10 @@ file internal/app/app.go
 		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
 		err := app.dispatcher.Add(addCtx, j, hdr)
 		addCancel()
-		if errors.Is(err, dispatch.ErrJobNameTaken) {
 --- replace
 		addCtx, addCancel := context.WithTimeout(ctx, addPersistTimeout)
 		err := app.dispatcher.Add(addCtx, j, hdr)
 		addCancel()
-		if errors.Is(err, dispatch.ErrJobNameTaken) {
 --- end
 
 [AddJob's deferred cleanup neutered]

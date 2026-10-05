@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/dispatch/store"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -232,66 +230,5 @@ func TestRenameJob_ANameTakenAfterItWasChosenIsChosenAgain(t *testing.T) {
 	names := queueNames(application)
 	if got != "target.1" || names[a.ID()] != "target.1" || names[b.ID()] != "target" {
 		t.Fatalf("rename returned %q, names = %v; want the added job at target and the renamed one at target.1", got, names)
-	}
-}
-
-// TestRetryHistoryJob_RefusesWhenAnotherJobTookItsName pins that a retry is
-// not given another name: its name is the directory its retained bytes are
-// in. When a job registers that name first, the retry is refused and leaves
-// the history entry, and no queue row or manifest, behind.
-func TestRetryHistoryJob_RefusesWhenAnotherJobTookItsName(t *testing.T) {
-	t.Parallel()
-	application, repo := newNameRaceApp(t)
-	adminDir := application.config.GetGeneral().AdminDir
-	nzbBackupDir := filepath.Join(adminDir, "nzb")
-	if err := os.MkdirAll(nzbBackupDir, 0o750); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	const jobID = "feedfacecafe0001"
-	const nzbBackup = "name-retry.nzb.gz"
-	rawNZB := []byte(`<?xml version="1.0" encoding="utf-8"?>
-<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
-  <file poster="test" date="1700000000" subject="name-retry.bin yEnc (1/1)">
-    <groups><group>alt.binaries.test</group></groups>
-    <segments><segment bytes="100" number="1">name-retry-0@t</segment></segments>
-  </file>
-</nzb>`)
-	if err := fsutil.WriteGzAtomicBytes(filepath.Join(nzbBackupDir, nzbBackup), rawNZB); err != nil {
-		t.Fatalf("WriteGzAtomicBytes: %v", err)
-	}
-	if err := repo.Add(t.Context(), history.Entry{
-		NzoID:     jobID,
-		Name:      "name-retry",
-		NzbName:   "name-retry.nzb",
-		NZBBackup: nzbBackup,
-		Category:  "*",
-		Status:    "Failed",
-		Completed: time.Now(),
-	}, nil); err != nil {
-		t.Fatalf("repo.Add: %v", err)
-	}
-
-	other, ho, ro := buildNamedIngestJob(t, application, "name-retry", "other")
-	application.retryRegisteringHook = func(string) {
-		if err := application.AddJob(t.Context(), other, ho, ro, false); err != nil {
-			t.Errorf("setup: AddJob(name-retry): %v", err)
-		}
-	}
-	err := application.RetryHistoryJob(t.Context(), jobID)
-	if !errors.Is(err, dispatch.ErrJobNameTaken) || !errors.Is(err, errRetryDirConflict) {
-		t.Fatalf("RetryHistoryJob after another job took its name = %v, want errRetryDirConflict wrapping ErrJobNameTaken", err)
-	}
-	if names := queueNames(application); len(names) != 1 || names[other.ID()] != "name-retry" {
-		t.Fatalf("queue = %v, want only the other job, at name-retry", names)
-	}
-	if _, err := repo.Get(t.Context(), jobID); err != nil {
-		t.Errorf("the refused retry lost its history entry: %v", err)
-	}
-	mpath, err := manifestPath(adminDir, jobID)
-	if err != nil {
-		t.Fatalf("manifestPath: %v", err)
-	}
-	if _, err := os.Stat(mpath); !os.IsNotExist(err) {
-		t.Errorf("the refused retry left its manifest %s (stat err = %v)", mpath, err)
 	}
 }
