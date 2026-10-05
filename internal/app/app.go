@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -29,7 +30,6 @@ import (
 	dispatchstore "github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
@@ -313,6 +313,11 @@ type Application struct {
 	// chosen and before the registry is asked to take it. Same discipline as
 	// checkpointHook.
 	jobNameChosenHook func(name string)
+
+	// nzbBackupChosenHook, when non-nil, runs in writeNZBBackup after a backup
+	// name is chosen and before the file is published under it. Same
+	// discipline as checkpointHook.
+	nzbBackupChosenHook func(name string)
 
 	// startedTransitionHook, when non-nil, runs in Start right after started
 	// flips true. Same discipline as checkpointHook.
@@ -826,9 +831,10 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	}()
 
 	if hdr.Filename != "" && len(rawNZB) > 0 {
-		name, err := writeNZBBackup(nzbDir, hdr.Filename, rawNZB)
+		name, err := writeNZBBackup(nzbDir, hdr.Filename, rawNZB, app.nzbBackupChosenHook)
 		if err != nil {
-			app.log.Warn("failed to write gzipped NZB backup; job will not be retryable",
+			app.log.Warn("failed to write gzipped NZB backup; job will not be retryable "+
+				"(admin_dir must be on a filesystem that supports hard links)",
 				"filename", hdr.Filename, "err", err)
 		} else {
 			hdr.NZBBackup = name
@@ -3366,25 +3372,32 @@ func failMsgForCounters(p failureByteCounters, state string, recBytes int64, rec
 	}
 }
 
-// writeGzFile writes data to path as a gzip-compressed file using atomic
-// temp+fsync+rename to prevent corruption on crash.
-func writeGzFile(path string, data []byte) error {
-	return fsutil.WriteGzAtomicBytes(path, data)
-}
-
 // writeNZBBackup stores rawNZB gzipped under nzbDir and returns the basename
 // it used, which the caller records on the job so a retry can find it again.
 //
 // The file keeps the name the NZB was submitted under, because admin/nzb/ is
 // browsed by hand to find an NZB to re-add or inspect. When that name is
-// already taken — only reachable via a forced duplicate add — it takes the
-// same ".1"/".2" suffix queue.UniqueName gives colliding job names, rather
-// than overwriting and losing the earlier NZB.
+// already taken it takes the same ".1"/".2" suffix uniqueName gives
+// colliding job names, rather than overwriting and losing the earlier NZB.
 //
-// The stat-then-write window is the same benign TOCTOU AddJob already accepts
-// for job names: this daemon is single-instance, and a lost race costs one
-// overwritten backup rather than any queue state.
-func writeNZBBackup(nzbDir, filename string, rawNZB []byte) (string, error) {
+// Choosing the name and creating the file are one step. The content is staged
+// under a private name and then hard-linked to the chosen one, and link fails
+// with fs.ErrExist rather than replace, so a writer that loses a race for a
+// name chooses the next one. So the name a call gets back was created by that
+// call, and AddJob's failure cleanup, which removes it, cannot remove another
+// ingest's backup. The link below is the one Root.Link call in non-test code
+// under internal/app: `git grep -n 'root\.Link(' -- 'internal/app/*.go' ':!*_test.go'`
+// returns 1 line. The staged file is complete and synced before it is linked,
+// so a backup name shows complete content; the directory is not synced, as
+// before.
+//
+// It needs a filesystem that supports hard links for admin/nzb. Where link
+// fails for any reason but an existing name, no backup is written and the
+// job is not retryable (AddJob logs it).
+//
+// chosen, when non-nil, runs after each name is chosen and before the link
+// that claims it.
+func writeNZBBackup(nzbDir, filename string, rawNZB []byte, chosen func(name string)) (string, error) {
 	// Normalize before compressing: a caller's rawNZB is only guaranteed to
 	// be "whatever dirscanner's extension-driven single unwrap produced,"
 	// which can still carry an envelope layer nzb.Parse's own
@@ -3392,34 +3405,88 @@ func writeNZBBackup(nzbDir, filename string, rawNZB []byte) (string, error) {
 	// TestWriteNZBBackup_AlreadyEnvelopedInputIsNormalized). Parse does not
 	// call StripEnvelope itself — it keeps its own single peel — but
 	// running rawNZB through StripEnvelope here, before compressing, means
-	// this function (the sole writer of admin/nzb/ backups) never persists
-	// less-plain bytes than what Parse actually consumed.
+	// this function never persists less-plain bytes than what Parse actually
+	// consumed.
 	plain, err := nzb.StripEnvelope(rawNZB, nzb.ParserLimits{})
 	if err != nil {
 		return "", fmt.Errorf("normalize NZB before backup: %w", err)
 	}
-	rawNZB = plain
-
-	base := filepath.Base(filename)
-	name := uniqueName(base, func(candidate string) bool {
-		// Lstat, not Stat, for the reason given on fsutil.GetUniqueRelPath:
-		// this decides whether a name is free, and Stat answers about a link's
-		// target, so a dangling symlink here would hand back a name that is
-		// already occupied.
-		//
-		// Unlike the par2 and unpack sites, this one is not reachable from
-		// downloaded content — nzbDir is <AdminDir>/nzb, not the job download
-		// directory — and WriteGzAtomicBytes publishes by rename, which does
-		// not follow a final symlink. So the consequence is a clobbered link
-		// rather than a write through it. It is corrected because it is the
-		// same question, not because it carries the same risk.
-		_, err := os.Lstat(filepath.Join(nzbDir, candidate+".gz"))
-		return err == nil
-	}) + ".gz"
-	if err := writeGzFile(filepath.Join(nzbDir, name), rawNZB); err != nil {
+	staged, err := stageGzFile(nzbDir, plain)
+	if err != nil {
 		return "", err
 	}
-	return name, nil
+	// Every name below is resolved through a handle on nzbDir, as
+	// removeNZBBackupIn does, so a name derived from the submitted filename
+	// cannot reach outside it. The name is also one path element:
+	// filepath.Base leaves no separator and the ".gz" suffix rules out "." and "..".
+	root, err := os.OpenRoot(nzbDir)
+	if err != nil {
+		_ = os.Remove(staged)
+		return "", fmt.Errorf("open NZB backup directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	stagedName := filepath.Base(staged)
+	// The backup name is a second link to the same inode; this removes only
+	// the staging name.
+	defer func() { _ = root.Remove(stagedName) }()
+
+	base := filepath.Base(filename)
+	for range maxNZBBackupAttempts {
+		name := uniqueName(base, func(candidate string) bool {
+			// Lstat, not Stat, for the reason given on fsutil.GetUniqueRelPath:
+			// this decides whether a name is free, and Stat answers about a
+			// link's target, so a dangling symlink here would read as free and
+			// burn an attempt on a link that must refuse it. The link below is
+			// the authority; a name it refuses is seen by this on the next
+			// pass, and maxNZBBackupAttempts bounds the passes.
+			_, err := root.Lstat(candidate + ".gz")
+			return err == nil
+		})
+		if chosen != nil {
+			chosen(name + ".gz")
+		}
+		err := root.Link(stagedName, name+".gz")
+		if err == nil {
+			return name + ".gz", nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", fmt.Errorf("publish NZB backup %s: %w", name+".gz", err)
+		}
+	}
+	return "", fmt.Errorf("no free NZB backup name from %q after %d attempts", base, maxNZBBackupAttempts)
+}
+
+// maxNZBBackupAttempts bounds writeNZBBackup's choose-and-link loop. A link
+// refusal means another writer took the name after it was chosen; the bound
+// stops a pathological directory from spinning here.
+const maxNZBBackupAttempts = 64
+
+// stageGzFile writes data gzipped and fsynced to a new uniquely named file in
+// dir and returns its path. The name starts with "." and ends ".staging", so
+// it is never a backup name, which ends ".gz". On error nothing is left
+// behind.
+func stageGzFile(dir string, data []byte) (string, error) {
+	f, err := os.CreateTemp(dir, ".nzb-*.staging")
+	if err != nil {
+		return "", fmt.Errorf("stage NZB backup: %w", err)
+	}
+	path := f.Name()
+	gz := gzip.NewWriter(f)
+	_, err = gz.Write(data)
+	if err == nil {
+		err = gz.Close()
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("stage NZB backup: %w", err)
+	}
+	return path, nil
 }
 
 // NNTPTestResult holds outcome metrics for an on-demand NNTP server test connection.

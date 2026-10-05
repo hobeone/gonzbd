@@ -189,7 +189,7 @@ func TestWriteNZBBackup_WritesGzippedFileUsingBasename(t *testing.T) {
 	nzbDir := t.TempDir()
 	raw := []byte("<nzb>hello</nzb>")
 
-	name, err := writeNZBBackup(nzbDir, "sub/dir/Show.S01E01.nzb", raw)
+	name, err := writeNZBBackup(nzbDir, "sub/dir/Show.S01E01.nzb", raw, nil)
 	if err != nil {
 		t.Fatalf("writeNZBBackup: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestWriteNZBBackup_AlreadyEnvelopedInputIsNormalized(t *testing.T) {
 	// peeled off by extension-driven extraction, one layer still present.
 	alreadyEnveloped := onceBuf.Bytes()
 
-	name, err := writeNZBBackup(nzbDir, "Show.S01E01.nzb", alreadyEnveloped)
+	name, err := writeNZBBackup(nzbDir, "Show.S01E01.nzb", alreadyEnveloped, nil)
 	if err != nil {
 		t.Fatalf("writeNZBBackup: %v", err)
 	}
@@ -252,11 +252,11 @@ func TestWriteNZBBackup_CollisionGetsUniqueSuffix(t *testing.T) {
 	first := []byte("<nzb>first</nzb>")
 	second := []byte("<nzb>second</nzb>")
 
-	firstName, err := writeNZBBackup(nzbDir, "Show.S01E01.nzb", first)
+	firstName, err := writeNZBBackup(nzbDir, "Show.S01E01.nzb", first, nil)
 	if err != nil {
 		t.Fatalf("writeNZBBackup (first): %v", err)
 	}
-	secondName, err := writeNZBBackup(nzbDir, "Show.S01E01.nzb", second)
+	secondName, err := writeNZBBackup(nzbDir, "Show.S01E01.nzb", second, nil)
 	if err != nil {
 		t.Fatalf("writeNZBBackup (second): %v", err)
 	}
@@ -284,22 +284,22 @@ func TestWriteNZBBackup_PropagatesWriteError(t *testing.T) {
 		t.Fatalf("fixture guard: %s unexpectedly exists", missingDir)
 	}
 
-	_, err := writeNZBBackup(missingDir, "job.nzb", []byte("data"))
+	_, err := writeNZBBackup(missingDir, "job.nzb", []byte("data"), nil)
 	if err == nil {
 		t.Fatal("writeNZBBackup succeeded against a nonexistent directory, want an error")
 	}
 }
 
-// TestWriteNZBBackup_ADanglingSymlinkOccupiesTheName pins the Lstat in the
-// uniqueness callback.
+// TestWriteNZBBackup_ADanglingSymlinkOccupiesTheName pins that a dangling
+// symlink at a backup name occupies it.
 //
 // Stat answers about a link's target, so a dangling symlink read as an unused
 // name and the backup took it — replacing the link. This is the same class as
 // the fsutil, unpack and par2 sites, but the weakest instance of it: nzbDir is
 // <AdminDir>/nzb rather than a job download directory, so downloaded content
-// cannot plant the link, and WriteGzAtomicBytes publishes by rename, which does
-// not follow a final symlink. It is fixed because it asks the same question,
-// not because it carries the same risk.
+// cannot plant the link. The name is claimed by a link that refuses an occupied
+// name, a dangling symlink included, so the Lstat is the fast path and the
+// claim the authority; this pins the outcome either way.
 func TestWriteNZBBackup_ADanglingSymlinkOccupiesTheName(t *testing.T) {
 	nzbDir := t.TempDir()
 
@@ -308,7 +308,7 @@ func TestWriteNZBBackup_ADanglingSymlinkOccupiesTheName(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	name, err := writeNZBBackup(nzbDir, "Show.S01E01.nzb", []byte("<nzb>body</nzb>"))
+	name, err := writeNZBBackup(nzbDir, "Show.S01E01.nzb", []byte("<nzb>body</nzb>"), nil)
 	if err != nil {
 		t.Fatalf("writeNZBBackup: %v", err)
 	}

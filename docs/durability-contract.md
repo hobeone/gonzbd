@@ -2246,6 +2246,17 @@ recorded here so the next reader does not mistake them for design.
 
 8. **The crash suite does not test fsync-to-platter.** See below.
 
+9. **`admin_dir` must support hard links, and a crash can leave a staging
+   file.** An NZB backup (`admin/nzb/<name>.gz`) is staged under
+   `.nzb-*.staging` and hard-linked to its name, so that two ingests never
+   share one (`writeNZBBackup`, `internal/app/app.go`). Where the link fails
+   for any reason but an existing name (FAT/exFAT, some network or FUSE
+   mounts), no backup is written, the job is not retryable, and AddJob logs a
+   warning naming the requirement. It does not fall back to another publish
+   path, which would put a partial file under a real backup name on a crash.
+   A crash between staging and the link leaves the `.staging` file, which no
+   sweep removes; the directory is not fsynced after the link.
+
 ## What the crash suite actually pins
 
 `test/crash/` (build tag `crash`, Linux only, six tests) runs the real daemon as
