@@ -244,6 +244,16 @@ func (r *appRunner) advance(j *job.Job, next job.State) {
 			r.failWith(j, reasons)
 			return
 		}
+		// A report to Fetching is the demotion. The finish stamped on the way
+		// out is no longer the job's last exit from Fetching, so the slot
+		// reopens and the job takes a new stamp when it leaves again. It is
+		// reopened only here, after a deferred failure reason has had the
+		// job: that hand-over keeps the finish the job left Fetching with.
+		if next == job.Fetching {
+			if err := j.ClearDownloadFinished(); err != nil {
+				r.log.Warn("runner: could not reopen the download finish", "job", j.ID(), "err", err)
+			}
+		}
 	}
 	r.logAdvance(j, job.Assessing, next, r.report.AdvanceFrom(j, job.Assessing, next))
 }

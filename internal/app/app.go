@@ -1864,9 +1864,22 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 // them is reported. That is the order of a hand-off made just after the
 // report, which a lock here would not exclude: admit reads no dispatcher
 // state.
+//
+// It also stamps the download finish, before the report, so a job reads as
+// finished from the moment it can be seen at Assessing; the time spent waiting
+// for a compute slot or in Assessing is not download time. A job that Assessing
+// reports back to Fetching reopens the slot (appRunner.advance), so a stamp
+// taken here is replaced by the next exit. A report that reads the job complete
+// just before such a demotion and stamps just after it can leave a stale
+// finish on a job at Fetching; the dispatcher's row withholds it while the job
+// stays there, and the next exit does not replace it. The ErrNotResident branch
+// is not expected to run: IsComplete reads true only for a job with progress.
 func (app *Application) reportDownloadComplete(j *job.Job, rep reporter) (bool, error) {
 	if !j.IsComplete() || app.postProcAdmissions.has(j) {
 		return false, nil
+	}
+	if err := j.MarkDownloadFinished(time.Now()); err != nil {
+		app.log.Warn("could not record the download finish time", "job", j.ID(), "err", err)
 	}
 	return true, rep.AdvanceFrom(j, job.Fetching, job.Assessing)
 }
@@ -2383,16 +2396,14 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 		return false
 	}
 
-	// The download phase ends here for every job that gets this far: a first
-	// admission is the point past which the downloader skips the job
-	// (downloader Options.HandedOff), and an article still in flight cannot
-	// start the clock again once a finish is set (setDownloadStartedOnce).
-	// Stamping at the Fetching -> Assessing report instead would be early for a
-	// job that Assessing demotes back to Fetching to release recovery volumes,
-	// and the first stamp would win. This line runs once per job instance; the
-	// slot is first-wins so that a finish restored from the store survives a
-	// re-admission after a restart, and ResetForRetry reopens it for a
-	// re-download. A job without resident progress has nothing to stamp.
+	// A job handed over while still at Fetching (Fail, a hopeless callback)
+	// never makes the report reportDownloadComplete stamps on, so its download
+	// ends here: the downloader skips an admitted job (downloader
+	// Options.HandedOff), and an article still in flight cannot start the clock
+	// again once a finish is set (setDownloadStartedOnce). A job that already
+	// left Fetching, and was not demoted back, has its finish, and the slot is
+	// first-wins, so this is a no-op for it. A job that has not been hydrated
+	// since a restart has no progress, and the stamp fails with ErrNotResident.
 	if err := j.MarkDownloadFinished(time.Now()); err != nil {
 		app.log.Warn("postproc: could not record the download finish time", "job", j.ID(), "err", err)
 	}

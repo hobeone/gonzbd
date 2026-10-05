@@ -1130,3 +1130,45 @@ func TestMarkArticleFailed_ResidentEmittedArticleLeavesPendingOnce(t *testing.T)
 		t.Errorf("unfinished articles = %v, want [0]", got)
 	}
 }
+
+// TestClearDownloadFinished_ReopensTheFinishAndKeepsTheStart: a job going back
+// to Fetching gives up its finish, keeps the start its first article set, and
+// takes a new finish when it leaves again.
+func TestClearDownloadFinished_ReopensTheFinishAndKeepsTheStart(t *testing.T) {
+	t.Parallel()
+
+	m := NewManifest([]JobFile{{
+		Subject:  "test.rar",
+		Bytes:    100,
+		Articles: []JobArticle{{ID: "<a1@x>", Bytes: 100, Number: 1}},
+	}})
+	j := New("clear-job", "test.nzb", Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	start := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	first := start.Add(time.Hour)
+	second := start.Add(2 * time.Hour)
+	if err := j.MarkJobStarted(start); err != nil {
+		t.Fatalf("MarkJobStarted: %v", err)
+	}
+	if err := j.MarkDownloadFinished(first); err != nil {
+		t.Fatalf("MarkDownloadFinished(first): %v", err)
+	}
+
+	if err := j.ClearDownloadFinished(); err != nil {
+		t.Fatalf("ClearDownloadFinished: %v", err)
+	}
+	if got := j.DownloadFinished(); !got.IsZero() {
+		t.Errorf("DownloadFinished after the clear = %v, want zero", got)
+	}
+	if got := j.DownloadStarted(); !got.Equal(start) {
+		t.Errorf("DownloadStarted after the clear = %v, want %v", got, start)
+	}
+	if err := j.MarkDownloadFinished(second); err != nil {
+		t.Fatalf("MarkDownloadFinished(second): %v", err)
+	}
+	if got := j.DownloadFinished(); !got.Equal(second) {
+		t.Errorf("DownloadFinished after the re-stamp = %v, want %v", got, second)
+	}
+}

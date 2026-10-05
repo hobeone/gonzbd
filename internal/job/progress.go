@@ -643,7 +643,8 @@ func jobStampOrZero(t time.Time) time.Time {
 // for every decoded article, so the first wins; Job.MarkDownloadFinished calls
 // setDownloadFinishedOnce; ResetForRetry calls clearDownloadStamps; and
 // UnmarshalJSON, AttachContent and RestoreProgressState install persisted
-// stamps through restoreDownloadStamps.
+// stamps through restoreDownloadStamps, as does Job.ClearDownloadFinished,
+// which installs the current start and no finish.
 //
 // That claim is enforced rather than cited.
 // TestDownloadStampWriters_MatchTheEnumerationStatedInProse walks the package
