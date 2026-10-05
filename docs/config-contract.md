@@ -36,7 +36,9 @@ while it runs.
 
 Startup reads the directory from the config alone (`resolveDirs` in
 `cmd/gonzbd`; `git grep -n Getenv -- cmd/gonzbd ':!*_test.go'` finds no read of it from the
-environment). There is deliberately no `--download-dir` flag: the config
+environment in `cmd/gonzbd`; `$VAR` and `~` expansion inside the config's path
+fields, in `internal/config/expand.go`, is how the environment can
+reach the value). There is deliberately no `--download-dir` flag: the config
 object is both what the application reads and what `set_config` saves, so in
 serve mode a value held only in memory would be written to the file by the
 next save. `cmd/gonzbd/dirflag_test.go` pins that the flag is
