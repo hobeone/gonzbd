@@ -109,13 +109,14 @@ func (d *Dispatcher) persistIfChanged(ctx context.Context, j *job.Job) error {
 		p.DownloadStarted = ds.Unix()
 	}
 	// The finish is the time the job last left Fetching, so a row at Fetching
-	// records none: a job restored there is dispatched to fetch again, and a
-	// finish restored with it would be stale (a start refused after it, a
-	// duration that stops at the first partial run). A job handed to
-	// post-processing from Fetching stays registered at Fetching until its
-	// finalizer, so one restored mid-post-processing is re-stamped when it is
-	// handed over again.
-	if df := j.DownloadFinished(); !df.IsZero() && s.State.State != job.Fetching {
+	// with no recorded next state records none: a job restored there is
+	// dispatched to fetch again, and a finish restored with it would be stale
+	// (a start refused after it, a duration that stops at the first partial
+	// run). A row at Fetching with Assessing recorded holds a download-complete
+	// report, and keeps the finish. A job handed to post-processing from
+	// Fetching stays registered at Fetching until its finalizer, so one
+	// restored mid-post-processing is re-stamped when it is handed over again.
+	if df := j.DownloadFinished(); !df.IsZero() && (s.State.State != job.Fetching || s.State.Next != job.StateUnset) {
 		p.DownloadFinished = df.Unix()
 	}
 	p.Par2ReleaseReason = j.Par2ReleaseReason()

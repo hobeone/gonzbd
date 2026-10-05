@@ -986,7 +986,7 @@ func (j *Job) ClearDownloadFinished() error {
 	if j.progress == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
-	j.progress.restoreDownloadStamps(j.progress.downloadStarted, time.Time{})
+	j.progress.clearDownloadFinished()
 	return nil
 }
 

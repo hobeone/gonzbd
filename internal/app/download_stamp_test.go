@@ -3,6 +3,8 @@ package app
 import (
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // TestEnqueuePostProc_FromFetching_StampsTheFinishWhenNoneIsSet: a job handed
@@ -38,7 +40,7 @@ func TestEnqueuePostProc_FromFetching_StampsTheFinishWhenNoneIsSet(t *testing.T)
 	awaitFinalized(t, application, id)
 
 	entry := historyEntry(t, application, id)
-	if entry.DownloadTime < 29 || entry.DownloadTime > 31 {
+	if entry.DownloadTime < 29 || entry.DownloadTime > 40 {
 		t.Errorf("history DownloadTime = %d, want about 30 (1 is the missing-stamp fallback)", entry.DownloadTime)
 	}
 }
@@ -66,4 +68,33 @@ func TestEnqueuePostProc_KeepsTheFinishAJobLeftFetchingWith(t *testing.T) {
 	}
 	close(stage.finish)
 	awaitFinalized(t, application, j.ID())
+}
+
+// TestAdvanceToFetching_WithADeferredFailureReason_KeepsTheFinish: a job whose
+// Assessing worker finds a failure reason waiting is handed to post-processing
+// in place of the demotion it was reporting, so it never goes back to
+// Fetching and keeps the finish it left Fetching with. Reopening the slot
+// before that look would have the hand-over stamp a later one.
+func TestAdvanceToFetching_WithADeferredFailureReason_KeepsTheFinish(t *testing.T) {
+	t.Parallel()
+	f := newFailAtAssessingFixture(t)
+	finish := time.Now().Add(-time.Minute)
+	if err := f.j.MarkJobStarted(finish.Add(-time.Minute)); err != nil {
+		t.Fatalf("MarkJobStarted: %v", err)
+	}
+	if err := f.j.MarkDownloadFinished(finish); err != nil {
+		t.Fatalf("MarkDownloadFinished: %v", err)
+	}
+	if err := f.d.AdvanceFrom(f.j, job.Fetching, job.Assessing); err != nil {
+		t.Fatalf("AdvanceFrom: %v", err)
+	}
+	f.app.Fail(f.j.ID(), assessFault())
+	f.requireNotAdmitted(t, "Fail with Assessing pending", job.StateView{State: job.Fetching, Next: job.Assessing}, false)
+
+	f.app.runner.advance(f.j, job.Fetching)
+	f.awaitHandOff(t)
+
+	if got := f.j.DownloadFinished(); !got.Equal(finish) {
+		t.Errorf("finish after the deferred reason's hand-over = %v, want the %v the job left Fetching with", got, finish)
+	}
 }

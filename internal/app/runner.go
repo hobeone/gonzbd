@@ -247,8 +247,11 @@ func (r *appRunner) advance(j *job.Job, next job.State) {
 		// A report to Fetching is the demotion. The finish stamped on the way
 		// out is no longer the job's last exit from Fetching, so the slot
 		// reopens and the job takes a new stamp when it leaves again. It is
-		// reopened only here, after a deferred failure reason has had the
-		// job: that hand-over keeps the finish the job left Fetching with.
+		// reopened after a deferred failure reason has had the job, because
+		// that hand-over keeps the finish the job left Fetching with. This is
+		// the only production call: `git grep -n '[C]learDownloadFinished()'
+		// -- '*.go' ':!*_test.go'` returns 2 lines, this one and the
+		// declaration.
 		if next == job.Fetching {
 			if err := j.ClearDownloadFinished(); err != nil {
 				r.log.Warn("runner: could not reopen the download finish", "job", j.ID(), "err", err)

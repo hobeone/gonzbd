@@ -41,6 +41,16 @@ func TestPersist_RecordsTheDownloadFinishOnlyOutsideFetching(t *testing.T) {
 	if err := d.AdvanceFrom(j, job.Fetching, job.Assessing); err != nil {
 		t.Fatalf("AdvanceFrom: %v", err)
 	}
+	// Still at Fetching, with the report recorded as Assessing: the verdict
+	// is saved with the finish it carries.
+	if err := d.persistIfChanged(context.Background(), j); err != nil {
+		t.Fatalf("persistIfChanged: %v", err)
+	}
+	p, _ = st.row("j1")
+	if p.State.State != job.Fetching || p.State.Next != job.Assessing || p.DownloadFinished != 1700000200 {
+		t.Errorf("row with the report recorded = state %v next %v finish %d, want Fetching, Assessing, 1700000200",
+			p.State.State, p.State.Next, p.DownloadFinished)
+	}
 	d.tick(context.Background())
 	p, _ = st.row("j1")
 	if p.State.State != job.Assessing || p.DownloadFinished != 1700000200 {

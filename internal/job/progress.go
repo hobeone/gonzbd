@@ -636,15 +636,15 @@ func jobStampOrZero(t time.Time) time.Time {
 // setDownloadStartedOnce records the download start, reporting whether it took.
 // A later call is a no-op: first start wins.
 //
-// This and its three siblings below are the only functions in this package's
+// This and its four siblings below are the only functions in this package's
 // non-test sources that assign p.downloadStarted or p.downloadFinished by
 // name. Everything else reaches the fields through them: Job.MarkJobStarted
 // calls this one, and the pipeline's handleSuccessResult calls MarkJobStarted
 // for every decoded article, so the first wins; Job.MarkDownloadFinished calls
-// setDownloadFinishedOnce; ResetForRetry calls clearDownloadStamps; and
+// setDownloadFinishedOnce; Job.ClearDownloadFinished calls
+// clearDownloadFinished; ResetForRetry calls clearDownloadStamps; and
 // UnmarshalJSON, AttachContent and RestoreProgressState install persisted
-// stamps through restoreDownloadStamps, as does Job.ClearDownloadFinished,
-// which installs the current start and no finish.
+// stamps through restoreDownloadStamps.
 //
 // That claim is enforced rather than cited.
 // TestDownloadStampWriters_MatchTheEnumerationStatedInProse walks the package
@@ -679,6 +679,15 @@ func (p *JobProgress) setDownloadFinishedOnce(t time.Time) bool {
 	}
 	p.downloadFinished = t
 	return true
+}
+
+// clearDownloadFinished reopens the finish slot and leaves the start alone. The
+// finish is the time the job last left Fetching, so a job reported back to
+// Fetching gives up the one it recorded and takes a new one when it leaves
+// again. It is its own door rather than a restoreDownloadStamps call, which
+// installs stamps the process did not mint and is not a mark.
+func (p *JobProgress) clearDownloadFinished() {
+	p.downloadFinished = time.Time{}
 }
 
 // clearDownloadStamps reopens both first-wins slots. `git grep -c
@@ -717,8 +726,9 @@ func (p *JobProgress) clearDownloadStamps() {
 // Callers: `git grep -c 'restoreDownloadStamps(' -- '*.go' ':!*_test.go'`
 // returns 2 files — this file (declaration and UnmarshalJSON) and content.go,
 // where AttachContent seeds a fresh JobProgress from the stamps
-// RestoreProgressState recorded on the Job before hydration (#504). It reads a
-// stamp the process did not mint, which is what this method is the door for.
+// RestoreProgressState recorded on the Job before hydration (#504), and
+// RestoreProgressState installs them into a live one. It reads a stamp the
+// process did not mint, which is what this method is the door for.
 func (p *JobProgress) restoreDownloadStamps(started, finished time.Time) {
 	p.clearDownloadStamps()
 	p.downloadStarted = jobStampOrZero(started)
