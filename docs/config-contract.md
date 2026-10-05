@@ -32,11 +32,17 @@ which one is a call (`internal/api/config.go`) and three are declarations.
 `git grep -n 'config\.Load(' -- '*.go' ':!*_test.go'` finds 2 lines, the daemon
 at startup (`cmd/gonzbd/main.go`) and a separate tool (`scripts/nzbprobe`), and
 the daemon has no SIGHUP or file-watch handler, so nothing reloads the file
-while it runs. `git grep -n 'resolveDirs(' -- 'cmd/*.go' ':!*_test.go'` shows
-the `--download-dir` flag is handled only at startup, in `cmd/gonzbd`. Its
-value is used to create directories and, when `general.admin_dir` is blank, to
-derive the admin directory, but it is never written to the config that
-`app.New` reads, so the flag does not set the application's download directory.
+while it runs.
+
+Startup reads the directory from the config alone (`resolveDirs` in
+`cmd/gonzbd`; `git grep -n Getenv -- cmd/gonzbd ':!*_test.go'` finds no read of it from the
+environment in `cmd/gonzbd`; `$VAR` and `~` expansion inside the config's path
+fields, in `internal/config/expand.go`, is how the environment can
+reach the value). There is deliberately no `--download-dir` flag: the config
+object is both what the application reads and what `set_config` saves, so in
+serve mode a value held only in memory would be written to the file by the
+next save. `cmd/gonzbd/dirflag_test.go` pins that the flag is
+rejected.
 
 Known limitations:
 

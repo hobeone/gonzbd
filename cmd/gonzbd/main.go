@@ -83,7 +83,6 @@ func main() {
 	nzbPath := flag.String("nzb", "", "one-shot: path to NZB file to download (mutually exclusive with --serve)")
 	serve := flag.Bool("serve", false, "run the daemon: HTTP server (API + web UI) blocking until signal")
 	listenAddr := flag.String("listen", "", "override the config's host:port listener (serve mode only)")
-	downloadDir := flag.String("download-dir", "", "override download-dir (incomplete) from config")
 	logLevelsFlag := flag.String("log-levels", "", "comma-separated component=level overrides (e.g. api=warn,nntp=error)")
 	pidPath := flag.String("pid", "", "write daemon PID to this path while running (serve mode only)")
 	verbose := flag.Bool("v", false, "verbose logging")
@@ -109,12 +108,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "--serve and --nzb are mutually exclusive")
 		os.Exit(2)
 	case *serve:
-		if err := serveMode(*configPath, *listenAddr, *downloadDir, *logLevelsFlag, *pidPath, *verbose); err != nil {
+		if err := serveMode(*configPath, *listenAddr, *logLevelsFlag, *pidPath, *verbose); err != nil {
 			slog.Error("serve failed", "err", err)
 			os.Exit(1)
 		}
 	case *nzbPath != "":
-		if err := run(*configPath, *nzbPath, *downloadDir, *logLevelsFlag, *verbose); err != nil {
+		if err := run(*configPath, *nzbPath, *logLevelsFlag, *verbose); err != nil {
 			slog.Error("download failed", "err", err)
 			os.Exit(1)
 		}
@@ -126,8 +125,8 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  gonzbd --config <path> --serve [--listen host:port] [--download-dir <path>] [--log-levels api=warn,nntp=error] [--pid <path>] [-v]")
-	fmt.Fprintln(os.Stderr, "  gonzbd --config <path> --nzb <path> [--download-dir <path>] [--log-levels api=warn] [-v]")
+	fmt.Fprintln(os.Stderr, "  gonzbd --config <path> --serve [--listen host:port] [--log-levels api=warn,nntp=error] [--pid <path>] [-v]")
+	fmt.Fprintln(os.Stderr, "  gonzbd --config <path> --nzb <path> [--log-levels api=warn] [-v]")
 	fmt.Fprintln(os.Stderr, "  gonzbd --version")
 	fmt.Fprintln(os.Stderr, "  -f is an alias for --config")
 }
@@ -166,13 +165,13 @@ func loadOrCreateConfig(configPath string, persist bool) (*config.Config, error)
 // serveMode runs the long-lived daemon: boots the download pipeline, opens
 // the history DB, constructs the API server and web handler, composes them
 // on a single listener, and blocks until SIGINT/SIGTERM.
-func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverride, pidPath string, verbose bool) error {
+func serveMode(configPath, listenOverride, logLevelsOverride, pidPath string, verbose bool) error {
 	cfg, err := loadOrCreateConfig(configPath, true)
 	if err != nil {
 		return err
 	}
 
-	dlDir, adminDir, err := resolveDirs(cfg, downloadDirOverride)
+	dlDir, adminDir, err := resolveDirs(cfg)
 	if err != nil {
 		return err
 	}
@@ -887,14 +886,14 @@ func ensureRuntimeDirs(cfg *config.Config, dlDir, adminDir string, log *slog.Log
 }
 
 // resolveDirs computes the effective download and admin directories from
-// the config and optional overrides. Separated from serveMode for reuse.
-func resolveDirs(cfg *config.Config, downloadDirOverride string) (dlDir, adminDir string, err error) {
+// the config. The config is the only source of the download directory: there
+// is no command-line override, because in serve mode a value held only in
+// memory would be written to the config file by the next set_config save.
+// Shared by serveMode and run.
+func resolveDirs(cfg *config.Config) (dlDir, adminDir string, err error) {
 	dlDir = cfg.General.DownloadDir
-	if downloadDirOverride != "" {
-		dlDir = downloadDirOverride
-	}
 	if dlDir == "" {
-		return "", "", fmt.Errorf("download directory is empty (set general.download_dir in config or pass --download-dir)")
+		return "", "", fmt.Errorf("download directory is empty (set general.download_dir in config)")
 	}
 
 	adminDir = cfg.General.AdminDir
@@ -1011,7 +1010,7 @@ func waitForCompletion(ctx context.Context, application *app.Application, j *job
 	}
 }
 
-func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, verbose bool) error {
+func run(configPath, nzbPath, logLevelsOverride string, verbose bool) error {
 	cfg, err := loadOrCreateConfig(configPath, false)
 	if err != nil {
 		return err
@@ -1024,7 +1023,7 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 	}
 	log := slog.Default().With("component", "main")
 
-	dlDir, adminDir, err := resolveDirs(cfg, downloadDirOverride)
+	dlDir, adminDir, err := resolveDirs(cfg)
 	if err != nil {
 		return err
 	}
