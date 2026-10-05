@@ -833,7 +833,8 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	if hdr.Filename != "" && len(rawNZB) > 0 {
 		name, err := writeNZBBackup(nzbDir, hdr.Filename, rawNZB, app.nzbBackupChosenHook)
 		if err != nil {
-			app.log.Warn("failed to write gzipped NZB backup; job will not be retryable",
+			app.log.Warn("failed to write gzipped NZB backup; job will not be retryable "+
+				"(admin_dir must be on a filesystem that supports hard links)",
 				"filename", hdr.Filename, "err", err)
 		} else {
 			hdr.NZBBackup = name
@@ -3384,8 +3385,8 @@ func failMsgForCounters(p failureByteCounters, state string, recBytes int64, rec
 // with fs.ErrExist rather than replace, so a writer that loses a race for a
 // name chooses the next one. So the name a call gets back was created by that
 // call, and AddJob's failure cleanup, which removes it, cannot remove another
-// ingest's backup. The one creator of a file under a backup name is the link
-// below: `git grep -n 'os\.Link(' -- 'internal/app/*.go' ':!*_test.go'`
+// ingest's backup. The link below is the one os.Link call in non-test code under
+// internal/app: `git grep -n 'os\.Link(' -- 'internal/app/*.go' ':!*_test.go'`
 // returns 1 line. The staged file is complete and synced before it is linked,
 // so a backup name shows complete content; the directory is not synced, as
 // before.

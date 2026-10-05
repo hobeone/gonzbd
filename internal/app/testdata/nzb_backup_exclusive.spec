@@ -21,6 +21,14 @@ file internal/app/app.go
 --- end
 
 # The staging name must not outlive the call.
+[a link failure that is not an existing name is retried as one]
+file internal/app/app.go
+--- anchor
+		if !errors.Is(err, fs.ErrExist) {
+--- replace
+		if !errors.Is(err, fs.ErrExist) && false {
+--- end
+
 [the staging file is left in admin/nzb]
 file internal/app/app.go
 --- anchor
