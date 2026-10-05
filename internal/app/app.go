@@ -2383,6 +2383,20 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 		return false
 	}
 
+	// The download phase ends here for every job that gets this far: a first
+	// admission is the point past which the downloader skips the job
+	// (downloader Options.HandedOff), and an article still in flight cannot
+	// start the clock again once a finish is set (setDownloadStartedOnce).
+	// Stamping at the Fetching -> Assessing report instead would be early for a
+	// job that Assessing demotes back to Fetching to release recovery volumes,
+	// and the first stamp would win. This line runs once per job instance; the
+	// slot is first-wins so that a finish restored from the store survives a
+	// re-admission after a restart, and ResetForRetry reopens it for a
+	// re-download. A job without resident progress has nothing to stamp.
+	if err := j.MarkDownloadFinished(time.Now()); err != nil {
+		app.log.Warn("postproc: could not record the download finish time", "job", j.ID(), "err", err)
+	}
+
 	// A job handed over before its download finished (Fail, a hopeless
 	// callback) gets no more files: the downloader skips an admitted job. Its
 	// unpacker would wait for a volume that never arrives, so it is aborted

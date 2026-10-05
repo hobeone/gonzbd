@@ -959,7 +959,10 @@ func (j *Job) RecordDownload(server string, bytes int) error {
 	return nil
 }
 
-// MarkDownloadFinished records the download completion timestamp.
+// MarkDownloadFinished records the download completion timestamp. Its one
+// production caller is the application's enqueuePostProc, at the admission that
+// ends a job's download phase: `git grep -n '[M]arkDownloadFinished(' -- '*.go'
+// ':!*_test.go'` returns 2 lines, that call and this declaration.
 func (j *Job) MarkDownloadFinished(t time.Time) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
