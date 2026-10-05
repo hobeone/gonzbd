@@ -416,7 +416,8 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    extracted files and whatever recovery volumes are on disk. The archive's
    own per-member checksum is not enough on its own: `go_rar` verifies CRC32
    and plain BLAKE2sp digests, but cannot check a key-derived MAC digest, an encrypted
-   member's BLAKE2sp digest, or a header that records no digest (`unpack.CloseMember` filters
+   member's BLAKE2sp digest (rarengine hashes only a member that is not
+   encrypted and not MAC-keyed), or a header that records no digest (`unpack.CloseMember` filters
    `ErrChecksumUnsupported`), `go_7z` skips a member that records no CRC,
    and damage in a stored archive's member passes through. A set
    `extracted_repair` cannot verify or repair sets `ParError`, which fails

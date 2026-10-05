@@ -743,8 +743,12 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader
 	// DirectUnpack's results are otherwise accepted as they stand.
 	if cErr := fsutil.CheckContainment(d.extractDir); cErr != nil {
 		for _, f := range extractedFiles {
-			if fi, lErr := os.Lstat(f); lErr == nil && fi.Mode()&os.ModeSymlink != 0 {
-				_ = os.Remove(f)
+			rel, rErr := filepath.Rel(d.extractDir, f)
+			if rErr != nil {
+				continue
+			}
+			if fi, lErr := root.Lstat(rel); lErr == nil && fi.Mode()&os.ModeSymlink != 0 {
+				_ = root.Remove(rel)
 			}
 		}
 		return nil, fmt.Errorf("directunpack: containment check: %w", cErr)
