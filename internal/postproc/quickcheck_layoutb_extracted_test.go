@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io/fs"
 	"log/slog"
@@ -456,5 +457,26 @@ func TestJob_Par2Deferred(t *testing.T) {
 	if !job.par2Deferred("feature") || job.par2Deferred("extras") {
 		t.Errorf("par2Deferred(feature, extras) = %v, %v; want true, false",
 			job.par2Deferred("feature"), job.par2Deferred("extras"))
+	}
+}
+
+// An archive that records a plain BLAKE2sp digest checks its own member: the
+// Go path now verifies it, so damage that used to slip through to par2 is
+// reported as an extraction failure. damaged_nodigest.rar is what still
+// reaches extracted_repair.
+func TestLayoutB_Blake2spDamageIsCaughtByTheArchive(t *testing.T) {
+	t.Parallel()
+
+	job, _ := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{
+		{name: "release.rar", data: fixtureBytes(t, "layout_b", "damaged_b2.rar")},
+	})
+
+	stageErrs := runStages(t, job, par2Stages()...)
+
+	if !job.UnpackError {
+		t.Fatalf("UnpackError = false: the damaged BLAKE2sp archive extracted without complaint; stage errors: %v", stageErrs)
+	}
+	if !strings.Contains(fmt.Sprint(stageErrs), "checksum") {
+		t.Errorf("stage errors do not report the checksum mismatch: %v", stageErrs)
 	}
 }

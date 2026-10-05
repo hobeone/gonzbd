@@ -45,6 +45,16 @@ type Options struct {
 	// IgnoreUnrarDates discards in-archive modification timestamps and uses extraction time.
 	// Adds -tsm- to unrar arguments (matches SABnzbd's behavior).
 	IgnoreUnrarDates bool
+	// ExtractSymlinks lets the pure-Go RAR path create symlink and junction
+	// members. Default false: such members are logged and skipped, because a
+	// link target comes from the archive. Hard links and file copies are
+	// unaffected. The external unrar is not governed by this option.
+	ExtractSymlinks bool
+	// Symlinks collects symlink members during one pure-Go RAR extraction so
+	// they can be created after the last member. Set by the extraction loop
+	// that owns it; callers leave it nil. With ExtractSymlinks true and no
+	// batch, a symlink member is refused rather than created in place.
+	Symlinks *SymlinkBatch
 	// UseGoRAR uses the pure-Go rarengine library for RAR3/RAR5 extraction
 	// instead of shelling out to unrar. No external binary required.
 	// Default true.

@@ -144,7 +144,7 @@ func (f *FinalizeStage) moveFileByFile(ctx context.Context, log *slog.Logger, jo
 	for _, e := range entries {
 		src := filepath.Join(job.DownloadDir, e.Name())
 		dst := fsutil.JoinSafe(dest, "", e.Name(), job.Sanitize)
-		if err := moveRecursive(ctx, src, dst); err != nil {
+		if err := moveRecursive(ctx, job.DownloadDir, src, dst); err != nil {
 			moveErrors = append(moveErrors, fmt.Errorf("finalize: move %s -> %s: %w", src, dst, err))
 			logf(ctx, log, job, slog.LevelWarn, "Failed to move %s → %s: %v", filepath.Base(src), dst, err)
 			continue
@@ -193,8 +193,10 @@ func prefixDirName(dir, prefix string) string {
 	return filepath.Join(parent, prefix+base)
 }
 
-// moveRecursive handles moving files or directories, with cross-device support.
-func moveRecursive(ctx context.Context, src, dst string) error {
+// moveRecursive handles moving files or directories, with cross-device
+// support. root is the top of the tree being moved (the job's download
+// directory); a symlink inside it may point anywhere within root.
+func moveRecursive(ctx context.Context, root, src, dst string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -205,7 +207,7 @@ func moveRecursive(ctx context.Context, src, dst string) error {
 	}
 
 	if !info.IsDir() {
-		return fsutil.MoveFile(src, dst)
+		return fsutil.MoveFileWithin(root, src, dst)
 	}
 
 	// It's a directory — preserve source permissions.
@@ -219,7 +221,7 @@ func moveRecursive(ctx context.Context, src, dst string) error {
 	}
 
 	for _, e := range entries {
-		if err := moveRecursive(ctx, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+		if err := moveRecursive(ctx, root, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
 			return err
 		}
 	}

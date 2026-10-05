@@ -15,6 +15,7 @@ import (
 	"github.com/hobeone/rarengine"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/rarheader"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
@@ -61,6 +62,9 @@ type Options struct {
 	OverwriteFiles bool
 	// IgnoreUnrarDates discards in-archive timestamps.
 	IgnoreUnrarDates bool
+	// ExtractSymlinks lets symlink members be created (see
+	// unpack.Options.ExtractSymlinks). Default false: they are skipped.
+	ExtractSymlinks bool
 
 	// OnLine is called for each line of extraction output. May be nil.
 	OnLine func(string)
@@ -649,6 +653,10 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader
 
 	var extractedFiles []string
 
+	// Symlink members wait here until the last member has been written; see
+	// unpack.SymlinkBatch.
+	symlinks := unpack.NewSymlinkBatch()
+
 	for {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -689,6 +697,8 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader
 			OneFolder:        d.opts.OneFolder,
 			OverwriteFiles:   d.opts.OverwriteFiles,
 			IgnoreUnrarDates: d.opts.IgnoreUnrarDates,
+			ExtractSymlinks:  d.opts.ExtractSymlinks,
+			Symlinks:         symlinks,
 			OnLine:           d.opts.OnLine,
 		}
 		if err := unpack.ExtractEntryRarengine(ctx, root, d.extractDir, destRel, destPath, entry.Header, entry, unpackOpts, d.log); err != nil {
@@ -715,6 +725,29 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader
 		if d.opts.OnLine != nil {
 			d.opts.OnLine("Extracting  " + entry.Header.Name)
 		}
+	}
+
+	links, err := symlinks.Finish(root, unpack.Options{
+		OverwriteFiles: d.opts.OverwriteFiles,
+		OnLine:         d.opts.OnLine,
+	}, d.log)
+	for _, rel := range links {
+		extractedFiles = append(extractedFiles, filepath.Join(d.extractDir, filepath.FromSlash(rel)))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("directunpack: create symlinks: %w", err)
+	}
+
+	// The same post-extraction gate post-processing applies to its own
+	// results: nothing under the extraction directory may resolve outside it.
+	// DirectUnpack's results are otherwise accepted as they stand.
+	if cErr := fsutil.CheckContainment(d.extractDir); cErr != nil {
+		for _, f := range extractedFiles {
+			if fi, lErr := os.Lstat(f); lErr == nil && fi.Mode()&os.ModeSymlink != 0 {
+				_ = os.Remove(f)
+			}
+		}
+		return nil, fmt.Errorf("directunpack: containment check: %w", cErr)
 	}
 
 	return extractedFiles, nil

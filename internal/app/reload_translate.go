@@ -23,6 +23,7 @@ func unpackConfigFromPP(pp config.PostProcConfig, probe binaryProbe, cmdCfg cmdu
 			SevenZipCommand:  pp.SevenzCommand,
 			OverwriteFiles:   pp.OverwriteFiles,
 			IgnoreUnrarDates: pp.IgnoreUnrarDates,
+			ExtractSymlinks:  pp.ExtractSymlinks,
 			OneFolder:        pp.FlatUnpack,
 			UseGoRAR:         pp.UseGoRAR,
 			GoRarFallback:    pp.GoRarFallback,

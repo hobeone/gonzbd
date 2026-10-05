@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/hobeone/rarengine"
@@ -49,7 +51,7 @@ func assertSymlink(t *testing.T, p, wantTarget string) {
 }
 
 func TestGoUnRAR_SymlinkMember(t *testing.T) {
-	outDir, res, _, err := extractLinkFixture(t, "rar5_link_symlink", Options{})
+	outDir, res, _, err := extractLinkFixture(t, "rar5_link_symlink", Options{ExtractSymlinks: true})
 	if err != nil {
 		t.Fatalf("GoUnRAR: %v", err)
 	}
@@ -87,7 +89,7 @@ func TestGoUnRAR_HardLinkMember(t *testing.T) {
 }
 
 func TestGoUnRAR_SolidArchiveWithLink(t *testing.T) {
-	outDir, _, _, err := extractLinkFixture(t, "rar5_link_solid", Options{})
+	outDir, _, _, err := extractLinkFixture(t, "rar5_link_solid", Options{ExtractSymlinks: true})
 	if err != nil {
 		t.Fatalf("GoUnRAR: %v", err)
 	}
@@ -102,7 +104,7 @@ func TestGoUnRAR_SolidArchiveWithLink(t *testing.T) {
 
 func TestGoUnRAR_EscapingSymlinkRefused(t *testing.T) {
 	var lines []string
-	outDir, res, logs, err := extractLinkFixture(t, "rar5_link_escape", Options{OnLine: func(l string) { lines = append(lines, l) }})
+	outDir, res, logs, err := extractLinkFixture(t, "rar5_link_escape", Options{ExtractSymlinks: true, OnLine: func(l string) { lines = append(lines, l) }})
 	if err != nil {
 		t.Fatalf("a refused link must not fail the set: %v", err)
 	}
@@ -153,7 +155,7 @@ func TestNoteDictionaryLimit(t *testing.T) {
 
 	NoteDictionaryLimit(log, fmt.Errorf("x: %w", rarengine.ErrDictionaryTooLarge), fh)
 	out := buf.String()
-	for _, want := range []string{"32 MiB", "not corruption", "big.bin", "268435456"} {
+	for _, want := range []string{"32 MiB", "not corruption", "go_rar_fallback", "unrar is installed", "big.bin", "268435456"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log %q missing %q", out, want)
 		}
@@ -322,7 +324,12 @@ func TestExtractEntryRarengine_SymlinkOverwrite(t *testing.T) {
 	fh := &rarengine.FileHeader{Name: "l", LinkType: rarengine.LinkUnixSymlink, LinkTarget: "t"}
 	run := func(opts Options) {
 		t.Helper()
+		opts.ExtractSymlinks = true
+		opts.Symlinks = NewSymlinkBatch()
 		if err := ExtractEntryRarengine(context.Background(), root, outDir, "l", filepath.Join(outDir, "l"), fh, nil, opts, log); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := opts.Symlinks.Finish(root, opts, log); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -332,4 +339,281 @@ func TestExtractEntryRarengine_SymlinkOverwrite(t *testing.T) {
 	}
 	run(Options{OverwriteFiles: true})
 	assertSymlink(t, filepath.Join(outDir, "l"), "t")
+}
+
+func TestGoUnRAR_SymlinkMembersSkippedByDefault(t *testing.T) {
+	for _, tc := range []struct {
+		fixture string
+		link    string
+		other   string
+	}{
+		{"rar5_link_symlink", "link.txt", "real.txt"},
+		{"rar5_link_solid", "mid.lnk", "c.txt"},
+	} {
+		t.Run(tc.fixture, func(t *testing.T) {
+			var lines []string
+			outDir, res, logs, err := extractLinkFixture(t, tc.fixture, Options{OnLine: func(l string) { lines = append(lines, l) }})
+			if err != nil {
+				t.Fatalf("a skipped symlink must not fail the set: %v", err)
+			}
+			if _, lerr := os.Lstat(filepath.Join(outDir, tc.link)); !os.IsNotExist(lerr) {
+				t.Fatalf("%s was created with extract_symlinks off (err=%v)", tc.link, lerr)
+			}
+			if _, serr := os.Stat(filepath.Join(outDir, tc.other)); serr != nil {
+				t.Errorf("neighbouring member %s missing: %v", tc.other, serr)
+			}
+			want := "go_unrar: skipping symlink member " + tc.link + ": extract_symlinks is off"
+			if !strings.Contains(logs, want) {
+				t.Errorf("log lacks %q:\n%s", want, logs)
+			}
+			for _, f := range res.ExtractedFiles {
+				if strings.HasSuffix(f, tc.link) {
+					t.Errorf("skipped symlink listed in ExtractedFiles: %v", res.ExtractedFiles)
+				}
+			}
+			if !strings.Contains(strings.Join(lines, "\n"), "extract_symlinks is off") {
+				t.Errorf("OnLine did not report the skip: %v", lines)
+			}
+		})
+	}
+}
+
+func TestGoUnRAR_HardLinkStillExtractedWithSymlinksOff(t *testing.T) {
+	outDir, _, _, err := extractLinkFixture(t, "rar5_link_hard", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, filepath.Join(outDir, "hard.txt")); got != "orig content" {
+		t.Errorf("hard.txt = %q", got)
+	}
+}
+
+// linkSession is a root plus a batch, for driving ExtractEntryRarengine with
+// hand-built headers.
+type linkSession struct {
+	t      *testing.T
+	dir    string
+	root   *os.Root
+	opts   Options
+	logs   *bytes.Buffer
+	notes  []string
+	finish []string
+}
+
+func newLinkSession(t *testing.T, opts Options) *linkSession {
+	t.Helper()
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { root.Close() })
+	ls := &linkSession{t: t, dir: dir, root: root, logs: &bytes.Buffer{}}
+	opts.ExtractSymlinks = true
+	opts.Symlinks = NewSymlinkBatch()
+	opts.OnLine = func(l string) { ls.notes = append(ls.notes, l) }
+	ls.opts = opts
+	return ls
+}
+
+func (ls *linkSession) log() *slog.Logger {
+	return slog.New(slog.NewTextHandler(ls.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+func (ls *linkSession) add(name string, lt rarengine.LinkType, target string) {
+	ls.t.Helper()
+	fh := &rarengine.FileHeader{Name: name, LinkType: lt, LinkTarget: target}
+	if err := ExtractEntryRarengine(context.Background(), ls.root, ls.dir, name, filepath.Join(ls.dir, name), fh, nil, ls.opts, ls.log()); err != nil {
+		ls.t.Fatalf("ExtractEntryRarengine(%s): %v", name, err)
+	}
+}
+
+func (ls *linkSession) done() []string {
+	ls.t.Helper()
+	got, err := ls.opts.Symlinks.Finish(ls.root, ls.opts, ls.log())
+	if err != nil {
+		ls.t.Fatalf("Finish: %v", err)
+	}
+	ls.finish = got
+	return got
+}
+
+func (ls *linkSession) exists(name string) bool {
+	_, err := os.Lstat(filepath.Join(ls.dir, name))
+	return err == nil
+}
+
+// A later member can make an earlier, already-valid link escape: "link" ->
+// "sub/d/../../z" is inside the root while sub/d does not exist (it cleans to
+// "z"), but once the archive's later member "sub/d" -> ".." is created, sub/d
+// is the root and the same target climbs out of it. Creation-time checking
+// alone accepts both; the final re-validation must remove the first.
+func TestSymlinkBatch_LaterLinkMakesEarlierLinkEscape(t *testing.T) {
+	ls := newLinkSession(t, Options{})
+	ls.add("link", rarengine.LinkUnixSymlink, "sub/d/../../z")
+	ls.add("sub/d", rarengine.LinkUnixSymlink, "..")
+	got := ls.done()
+
+	if ls.exists("link") {
+		t.Fatal("link survived although sub/d now makes it resolve outside the root")
+	}
+	if !ls.exists("sub/d") {
+		t.Error("the harmless link sub/d should remain")
+	}
+	if len(got) != 1 || got[0] != "sub/d" {
+		t.Errorf("Finish returned %v, want [sub/d]", got)
+	}
+	if !strings.Contains(ls.logs.String(), "removed symlink that escapes") {
+		t.Errorf("removal not logged:\n%s", ls.logs.String())
+	}
+}
+
+// The same hole through OverwriteFiles: "sub/f" is a regular file when the
+// first link is recorded, then a later member replaces it with a symlink to
+// "..".
+func TestSymlinkBatch_FileReplacedBySymlinkMakesEarlierLinkEscape(t *testing.T) {
+	ls := newLinkSession(t, Options{OverwriteFiles: true})
+	if err := os.MkdirAll(filepath.Join(ls.dir, "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ls.dir, "sub", "f"), []byte("regular"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ls.add("link", rarengine.LinkUnixSymlink, "sub/f/../../z")
+	ls.add("sub/f", rarengine.LinkUnixSymlink, "..")
+	ls.done()
+
+	if ls.exists("link") {
+		t.Fatal("link survived after sub/f was replaced by a symlink to the root")
+	}
+	assertSymlink(t, filepath.Join(ls.dir, "sub", "f"), "..")
+}
+
+func TestSymlinkBatch_NothingCreatedBeforeFinish(t *testing.T) {
+	ls := newLinkSession(t, Options{})
+	ls.add("l", rarengine.LinkUnixSymlink, "t")
+	if ls.exists("l") {
+		t.Fatal("symlink created before the archive's last member")
+	}
+	if got := ls.done(); len(got) != 1 || got[0] != "l" {
+		t.Fatalf("Finish = %v", got)
+	}
+	assertSymlink(t, filepath.Join(ls.dir, "l"), "t")
+}
+
+func TestSymlinkMember_OneFolderRefusesTargetsOutsideFlatLayout(t *testing.T) {
+	ls := newLinkSession(t, Options{OneFolder: true})
+	ls.add("a/ok", rarengine.LinkUnixSymlink, "sibling.txt")
+	ls.add("bad1", rarengine.LinkUnixSymlink, "sub/x")
+	ls.add("bad2", rarengine.LinkUnixSymlink, "../x")
+	ls.add("bad3", rarengine.LinkUnixSymlink, "./sub/../x/y")
+	ls.done()
+	if !ls.exists("a/ok") && !ls.exists("ok") {
+		t.Error("bare sibling target should be accepted")
+	}
+	for _, n := range []string{"bad1", "bad2", "bad3"} {
+		if ls.exists(n) {
+			t.Errorf("%s created although its target leaves the flattened layout", n)
+		}
+	}
+	if !strings.Contains(ls.logs.String(), "flattened layout") {
+		t.Errorf("refusal reason not logged:\n%s", ls.logs.String())
+	}
+}
+
+func TestLinkMembers_NameTooLongIsARefusalNotAFailure(t *testing.T) {
+	long := strings.Repeat("n", 300)
+	ls := newLinkSession(t, Options{})
+	if err := os.WriteFile(filepath.Join(ls.dir, "orig.txt"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ls.add(long, rarengine.LinkUnixSymlink, "orig.txt") // Finish must not fail
+	ls.add("fine", rarengine.LinkUnixSymlink, "orig.txt")
+	ls.add(long+"h", rarengine.LinkHardLink, "orig.txt") // ExtractEntryRarengine must not fail
+	got := ls.done()
+	if len(got) != 1 || got[0] != "fine" {
+		t.Errorf("Finish = %v, want only the link that fits", got)
+	}
+	if !strings.Contains(ls.logs.String(), "destination cannot hold this link") {
+		t.Errorf("refusal reason not logged:\n%s", ls.logs.String())
+	}
+}
+
+func TestIsLinkUnsupported(t *testing.T) {
+	for _, e := range []error{syscall.EPERM, syscall.ENOTSUP, syscall.ENAMETOOLONG,
+		&os.PathError{Op: "symlinkat", Path: "x", Err: syscall.EPERM}} {
+		if !isLinkUnsupported(e) {
+			t.Errorf("%v not treated as unsupported", e)
+		}
+	}
+	for _, e := range []error{syscall.ENOSPC, syscall.EACCES, errors.New("x")} {
+		if isLinkUnsupported(e) {
+			t.Errorf("%v wrongly treated as unsupported", e)
+		}
+	}
+}
+
+// A target read back from disk is literal. On Unix a backslash is an ordinary
+// name character, so "x\..\.." is one component naming nothing, not a climb.
+func TestPhysicalResolve_OnDiskTargetsKeepBackslashes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Symlink(`x\..\..`, filepath.Join(dir, "s")); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if _, err := physicalResolve(root, "s/y"); err != nil {
+		t.Fatalf("on-disk backslash target was rewritten into a climb: %v", err)
+	}
+	// An archive target about to be stored is still normalized.
+	if _, err := normalizeLinkTarget(`..\..\z`); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := normalizeLinkTarget(`a\b`); got != "a/b" {
+		t.Errorf("archive target not normalized: %q", got)
+	}
+}
+
+// rarengine verifies a plain BLAKE2sp digest, so a damaged -htb archive is
+// caught by the Go path as corruption (it extracted silently before).
+func TestGoUnRAR_DamagedBlake2spArchiveIsCorrupt(t *testing.T) {
+	outDir := t.TempDir()
+	archive := Archive{
+		Type:     RarArchive,
+		Name:     "damaged_b2",
+		MainFile: filepath.Join("..", "..", "test", "fixtures", "par2", "layout_b", "damaged_b2.rar"),
+	}
+	res, err := GoUnRAR(context.Background(), slog.New(slog.DiscardHandler), archive, outDir, "", Options{})
+	if err == nil {
+		t.Fatal("damaged BLAKE2sp archive extracted without an error")
+	}
+	if !errors.Is(err, rarengine.ErrCRCMismatch) || res.Reason != FailCorrupt {
+		t.Fatalf("err = %v, reason = %v; want ErrCRCMismatch and FailCorrupt", err, res.Reason)
+	}
+}
+
+// The final check also joins the link's real parent and its target lexically.
+// "hop/../../x" stays inside the root when walked physically (hop -> sub/deeper),
+// but lexically it climbs out, and a link that only passes one of the two
+// checks is removed.
+func TestSymlinkBatch_FinalCheckIsLexicallyConservative(t *testing.T) {
+	ls := newLinkSession(t, Options{})
+	if err := os.MkdirAll(filepath.Join(ls.dir, "sub", "deeper"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("sub/deeper", filepath.Join(ls.dir, "hop")); err != nil {
+		t.Fatal(err)
+	}
+	ls.add("l", rarengine.LinkUnixSymlink, "hop/../../x")
+	ls.add("fine", rarengine.LinkUnixSymlink, "hop/y")
+	got := ls.done()
+	if ls.exists("l") {
+		t.Error("link that climbs out lexically was kept")
+	}
+	if !slices.Equal(got, []string{"fine"}) {
+		t.Errorf("Finish = %v, want [fine]", got)
+	}
 }
