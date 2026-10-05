@@ -30,7 +30,7 @@ var downloadStartedWriters = []string{
 }
 
 var downloadFinishedWriters = []string{
-	"clearDownloadStamps", "restoreDownloadStamps", "setDownloadFinishedOnce",
+	"clearDownloadFinished", "clearDownloadStamps", "restoreDownloadStamps", "setDownloadFinishedOnce",
 }
 
 // scanStampWriters parses this package's non-test sources and returns the

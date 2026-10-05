@@ -959,7 +959,13 @@ func (j *Job) RecordDownload(server string, bytes int) error {
 	return nil
 }
 
-// MarkDownloadFinished records the download completion timestamp.
+// MarkDownloadFinished records the time the job left Fetching: its first
+// article's start to this stamp is the download duration history shows. The
+// first call after the slot is open wins. Its production callers are the
+// application's reportDownloadComplete, on the report that moves a complete job
+// out of Fetching, and enqueuePostProc, for a job handed to post-processing from
+// Fetching before that report: `git grep -n '[M]arkDownloadFinished(' -- '*.go'
+// ':!*_test.go'` returns 3 lines, those two calls and this declaration.
 func (j *Job) MarkDownloadFinished(t time.Time) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
@@ -967,6 +973,20 @@ func (j *Job) MarkDownloadFinished(t time.Time) error {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
 	j.progress.setDownloadFinishedOnce(t)
+	return nil
+}
+
+// ClearDownloadFinished reopens the finish slot, for a job going back to
+// Fetching. Its one production caller is the application's appRunner.advance, on the
+// Assessing -> Fetching demotion: `git grep -n '[C]learDownloadFinished()' --
+// '*.go' ':!*_test.go'` returns 2 lines, that call and this declaration.
+func (j *Job) ClearDownloadFinished() error {
+	j.contentMu.Lock()
+	defer j.contentMu.Unlock()
+	if j.progress == nil {
+		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
+	}
+	j.progress.clearDownloadFinished()
 	return nil
 }
 

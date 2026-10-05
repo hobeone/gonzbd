@@ -66,6 +66,13 @@ func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
 	if p != nil {
 		expected, _, failed := p.ProgressFigures()
 		expectedBytes = expected
+		// From the first decoded article to the job's last exit from Fetching
+		// (reportDownloadComplete, or the hand-over of a job still at
+		// Fetching), so time spent waiting for or in Assessing and later
+		// stages is not counted. The exceptions are a job restored at
+		// Fetching or handed over late, which is stamped at its next exit and
+		// so counts the time since its first article. A missing stamp, or a
+		// duration under a second, reads as 1.
 		if !p.DownloadStarted().IsZero() && !p.DownloadFinished().IsZero() {
 			downloadDuration = int64(p.DownloadFinished().Sub(p.DownloadStarted()).Seconds())
 		}

@@ -332,3 +332,7 @@ func (f ResumeFunc) Resume(ctx context.Context, jobID string, fileIdx int32, pat
 func (a *Application) WrapResumer(wrap func(next ResumeFunc) ResumeFunc) {
 	a.resumer = wrap(a.resumer.Resume)
 }
+
+// SetAssessHook installs assessHook for the external test package. Call it
+// before Start.
+func (a *Application) SetAssessHook(fn func(id string)) { a.assessHook = fn }

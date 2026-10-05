@@ -130,7 +130,7 @@ func writePayload(t *testing.T, downloadDir, jobName string) {
 
 // startRouteApp starts an application over repo with on-demand par2 on, no
 // enabled server, and unassessedStage as its only post-processing stage.
-func startRouteApp(t *testing.T, repo *history.Repository, adminDir, downloadDir, completeDir string) (*app.Application, unassessedStage) {
+func startRouteApp(t *testing.T, repo *history.Repository, adminDir, downloadDir, completeDir string, beforeStart ...func(*app.Application)) (*app.Application, unassessedStage) {
 	t.Helper()
 	cfg := testConfig(downloadDir, completeDir, adminDir, config.ServerConfig{
 		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false,
@@ -142,6 +142,9 @@ func startRouteApp(t *testing.T, repo *history.Repository, adminDir, downloadDir
 		t.Fatalf("app.New: %v", err)
 	}
 	stage.app.Store(a)
+	for _, f := range beforeStart {
+		f(a)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(func() {
 		a.ForceStopWorkers()
