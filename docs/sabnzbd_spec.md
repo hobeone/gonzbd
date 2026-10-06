@@ -712,6 +712,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `overwrite_files` | bool | false | Overwrite existing extracted files |
 | `flat_unpack` | bool | false | Extract all to single folder |
 | `use_go_rar` | bool | true | Use pure-Go rarengine for RAR5 extraction (falls back to external unrar for RAR3 and unsupported formats) |
+| `extract_symlinks` | bool | false | Let the pure-Go RAR extractor create symlink and junction members; off, they are logged and skipped. Links are created after the last member and any that resolves outside the job directory is removed. Hard links and file copies are always extracted. Does not govern the external unrar |
 | `extra_unrar_params` | string | `` | Extra unrar flags (allowlist: -mlp, -om*, -ri*) |
 | `extra_par2_params` | string | `` | Extra par2 flags |
 | `script_can_fail` | bool | false | Non-zero script exit = warning not failure |
