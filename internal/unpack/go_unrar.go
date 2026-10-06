@@ -63,6 +63,9 @@ func ClassifyRarEngineError(err error) FailReason {
 		errors.Is(err, rarengine.ErrTruncatedFile),
 		errors.Is(err, rarengine.ErrSolidStreamBroken):
 		return FailCorrupt
+	case errors.Is(err, rarengine.ErrDictionaryTooLarge):
+		// A capacity limit of the pure-Go window, not damage to the archive.
+		return FailDictionaryTooLarge
 	case errors.Is(err, rarengine.ErrNoNextVolume):
 		return FailMissingVolume
 	case errors.Is(err, rarengine.ErrUnsupportedFormat),
@@ -102,8 +105,9 @@ func ClassifyRarEngineError(err error) FailReason {
 //
 // ErrChecksumUnsupported is filtered because it reports that a digest could not
 // be checked, not that anything failed — rarengine returns it for a key-derived
-// MAC, a BLAKE2sp-only archive, or a header carrying no digest record, and the
-// bytes were delivered regardless. Every other verdict is returned to the
+// MAC or a header carrying no digest record, and the bytes were delivered
+// regardless. (A plain BLAKE2sp digest is verified, and a mismatch is
+// ErrCRCMismatch.) Every other verdict is returned to the
 // caller, which decides what it means for the archive.
 func CloseMember(entry io.Closer) error {
 	if err := entry.Close(); err != nil && !errors.Is(err, rarengine.ErrChecksumUnsupported) {
@@ -175,6 +179,10 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 	var extractedFiles []string
 	var outBuf strings.Builder
 
+	// Symlink members are queued here and created after the last member; see
+	// SymlinkBatch for why.
+	opts.Symlinks = NewSymlinkBatch()
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return res, err
@@ -227,6 +235,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			if ctx.Err() != nil {
 				return res, ctx.Err()
 			}
+			NoteDictionaryLimit(log, err, entry.Header)
 			res.Reason = ClassifyRarEngineError(err)
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", entry.Header.Name, err))
@@ -238,6 +247,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			if ctx.Err() != nil {
 				return res, ctx.Err()
 			}
+			NoteDictionaryLimit(log, err, entry.Header)
 			res.Reason = ClassifyRarEngineError(err)
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", entry.Header.Name, err))
@@ -245,7 +255,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			return res, err
 		}
 
-		if !entry.Header.IsDir {
+		if ExtractedEntryExists(root, destRel, entry.Header) {
 			extractedFiles = append(extractedFiles, destPath)
 			displayPath := destRel
 			outBuf.WriteString("Extracting  " + displayPath + "\n")
@@ -254,6 +264,16 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 		if opts.OnLine != nil {
 			opts.OnLine("Extracting  " + entry.Header.Name)
 		}
+	}
+
+	links, linkErr := opts.Symlinks.Finish(root, opts, log)
+	for _, rel := range links {
+		extractedFiles = append(extractedFiles, filepath.Join(outDir, filepath.FromSlash(rel)))
+		outBuf.WriteString("Extracting  " + rel + "\n")
+	}
+	if linkErr != nil {
+		res.Reason = FailUnknown
+		return res, linkErr
 	}
 
 	res.ExtractedFiles = extractedFiles
@@ -266,7 +286,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 // rarEntryReader wraps an io.Reader (typically a *rarengine.Entry) to convert
 // rarengine.ErrChecksumUnsupported at the end of a member into io.EOF.
 // rarengine returns its verdict from Read alongside the final bytes; for archives
-// with uncheckable digests (e.g. key-derived MACs or BLAKE2sp), this delivery is
+// with uncheckable digests (a key-derived MAC, or no digest record), this delivery is
 // valid content that should be published, with the verdict filtered at both Read
 // (here) and entry.Close().
 type rarEntryReader struct {
@@ -292,6 +312,14 @@ func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, 
 		return root.MkdirAll(destRel, 0o750)
 	}
 
+	// A link member carries no payload: Read would return ErrLinkEntry. Handle
+	// it before the reader is touched. Both the post-processing loop and
+	// DirectUnpack reach links through this function. The caller still calls
+	// CloseMember afterwards, which is where the verdict is reported.
+	if fh.LinkType != rarengine.LinkNone {
+		return extractLinkEntry(ctx, root, destRel, destPath, fh, opts, log)
+	}
+
 	// mode is masked to only the rw bits, matching go_tar/go_sevenzip's
 	// policy for untrusted archives -- but also gated on fh.HostOS != 0:
 	// rarengine reports Mode()==0 for archives created on hosts that don't
@@ -306,7 +334,7 @@ func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, 
 	// No bomb-limit check here: rarengine enforces its own decompression-
 	// bomb limits internally (see rarengine.ErrRarBombDetected, surfaced via
 	// ClassifyRarEngineError). r is wrapped in rarEntryReader to tolerate
-	// unverifiable checksums (e.g. BLAKE2sp/MAC), but is not wrapped in a
+	// unverifiable checksums (a key-derived MAC or no digest), but is not wrapped in a
 	// boundReader before writing.
 	entryReader := &rarEntryReader{r: r}
 	_, err := writeEntrySafely(ctx, root, destRel, destPath, entryReader, nil, true, mode, fh.ModificationTime, opts, fh.Name, "go_unrar", log, nil)

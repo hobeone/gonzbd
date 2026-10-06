@@ -1184,3 +1184,124 @@ func TestCorruptSets(t *testing.T) {
 		t.Error("CorruptSets returned the live map; a caller can mark sets corrupt by mutating it")
 	}
 }
+
+// runDirectUnpackFixture extracts one single-volume testdata archive through
+// DirectUnpack and returns the extraction directory.
+func runDirectUnpackFixture(t *testing.T, archive string, opts Options) (string, []string) {
+	t.Helper()
+	dir, files, failures := runDirectUnpackFixtureRaw(t, archive, opts, nil)
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got: %+v", failures)
+	}
+	return dir, files
+}
+
+// runDirectUnpackFixtureRaw is runDirectUnpackFixture without the no-failure
+// assertion; prepare, if non-nil, runs on the extraction directory first.
+func runDirectUnpackFixtureRaw(t *testing.T, archive string, opts Options, prepare func(dir string)) (string, []string, map[string]FailedSet) {
+	t.Helper()
+	srcDir := testdataDir(t)
+	workDir := t.TempDir()
+	extractDir := t.TempDir()
+	volPath := copyRAR(t, srcDir, workDir, archive)
+
+	if prepare != nil {
+		prepare(extractDir)
+	}
+
+	du := New(testLogger(t), "test-job", workDir, extractDir, opts)
+	du.SetAllFilenames([]string{archive})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	du.Add(ctx, archive, volPath)
+	du.Wait()
+
+	var files []string
+	for _, r := range du.Results() {
+		files = append(files, r.ExtractedFiles...)
+	}
+	return extractDir, files, du.Failures()
+}
+
+func TestDirectUnpack_SymlinkMember(t *testing.T) {
+	dir, files := runDirectUnpackFixture(t, "rar5_link_symlink.rar", Options{ExtractSymlinks: true})
+	if got, err := os.Readlink(filepath.Join(dir, "link.txt")); err != nil || got != "real.txt" {
+		t.Fatalf("link.txt -> %q, %v; want real.txt", got, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "real.txt")); err != nil || string(b) != "real text" {
+		t.Fatalf("real.txt = %q, %v", b, err)
+	}
+	if len(files) != 2 {
+		t.Errorf("ExtractedFiles = %v, want 2 entries", files)
+	}
+}
+
+func TestDirectUnpack_HardLinkMember(t *testing.T) {
+	dir, _ := runDirectUnpackFixture(t, "rar5_link_hard.rar", Options{})
+	for _, name := range []string{"orig.txt", "hard.txt"} {
+		if b, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(b) != "orig content" {
+			t.Errorf("%s = %q, %v", name, b, err)
+		}
+	}
+}
+
+func TestDirectUnpack_SolidArchiveWithLink(t *testing.T) {
+	dir, _ := runDirectUnpackFixture(t, "rar5_link_solid.rar", Options{ExtractSymlinks: true})
+	want := "BBBB third member text, compressible compressible compressible a.txt"
+	if b, err := os.ReadFile(filepath.Join(dir, "c.txt")); err != nil || string(b) != want {
+		t.Fatalf("c.txt = %q, %v", b, err)
+	}
+	if got, err := os.Readlink(filepath.Join(dir, "mid.lnk")); err != nil || got != "a.txt" {
+		t.Fatalf("mid.lnk -> %q, %v", got, err)
+	}
+}
+
+func TestDirectUnpack_EscapingSymlinkRefusedSetContinues(t *testing.T) {
+	dir, files := runDirectUnpackFixture(t, "rar5_link_escape.rar", Options{ExtractSymlinks: true})
+	if _, err := os.Lstat(filepath.Join(dir, "evil.lnk")); !os.IsNotExist(err) {
+		t.Fatalf("evil.lnk was created: %v", err)
+	}
+	for _, name := range []string{"real.txt", "after.txt"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s missing: %v", name, err)
+		}
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "evil.lnk") {
+			t.Errorf("refused link listed in ExtractedFiles: %v", files)
+		}
+	}
+}
+
+func TestDirectUnpack_SymlinkMemberSkippedByDefault(t *testing.T) {
+	dir, files := runDirectUnpackFixture(t, "rar5_link_symlink.rar", Options{})
+	if _, err := os.Lstat(filepath.Join(dir, "link.txt")); !os.IsNotExist(err) {
+		t.Fatalf("link.txt created with extract_symlinks off: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "real.txt")); err != nil || string(b) != "real text" {
+		t.Fatalf("real.txt = %q, %v", b, err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "link.txt") {
+			t.Errorf("skipped symlink listed in ExtractedFiles: %v", files)
+		}
+	}
+}
+
+// DirectUnpack's results get the same containment gate post-processing applies:
+// a symlink under the extraction directory that resolves outside it fails the
+// run instead of being accepted.
+func TestDirectUnpack_ContainmentViolationFailsTheRun(t *testing.T) {
+	outside := t.TempDir()
+	_, _, failures := runDirectUnpackFixtureRaw(t, "single_rar5.rar", Options{}, func(dir string) {
+		if err := os.Symlink(outside, filepath.Join(dir, "escape")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if len(failures) == 0 {
+		t.Fatal("a symlink resolving outside the extraction directory was accepted")
+	}
+	if !strings.Contains(fmt.Sprint(failures), "containment") {
+		t.Errorf("failure does not name the containment check: %+v", failures)
+	}
+}

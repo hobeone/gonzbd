@@ -9,8 +9,10 @@ import (
 // ExtractedRepairStage runs par2 verify+repair, once unpack has finished, on
 // the par2 sets quickcheck deferred because they protect what an archive
 // extracts to (Job.DeferredPar2Sets). It is the check on those files that the
-// archive's own checksums cannot give: go_rar cannot check a BLAKE2sp-only or
-// MAC digest, go_7z skips a member that records no CRC, and a stored archive
+// archive's own checksums cannot give: go_rar cannot check a key-derived MAC
+// digest, an encrypted member's BLAKE2sp digest (rarengine hashes only a member
+// that is not encrypted and not MAC-keyed), or a header that records no
+// digest; go_7z skips a member that records no CRC, and a stored archive
 // passes damage through. It repairs with whatever recovery volumes are on
 // disk, and a set it cannot verify or repair sets ParError, which fails the
 // run. When the job held its recovery volumes back through download, the

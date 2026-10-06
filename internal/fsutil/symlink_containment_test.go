@@ -132,3 +132,50 @@ func TestCheckSymlinkContainment_SubdirTarget(t *testing.T) {
 		t.Errorf("subdir target should pass containment: %v", err)
 	}
 }
+
+// A "../lib/x" link between sibling directories of one job is valid: it stays
+// inside the job root. Checking it against the link's own directory refused it
+// and failed the cross-device finalize.
+func TestCopyAndRemoveWithin_SiblingDirectoryLinkStaysInsideRoot(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, d := range []string{"lib", "sub"} {
+		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "lib", "x"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(root, "sub", "link")
+	if err := os.Symlink("../lib/x", src); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "link")
+
+	if err := copyAndRemoveWithin(root, src, dst); err != nil {
+		t.Fatalf("copyAndRemoveWithin: %v", err)
+	}
+	if got, err := os.Readlink(dst); err != nil || got != "../lib/x" {
+		t.Fatalf("moved link -> %q, %v", got, err)
+	}
+	if _, err := os.Lstat(src); !os.IsNotExist(err) {
+		t.Errorf("source link still present: %v", err)
+	}
+}
+
+func TestCopyAndRemoveWithin_LinkLeavingRootStillRefused(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "job")
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(root, "sub", "link")
+	if err := os.Symlink("../../outside", src); err != nil {
+		t.Fatal(err)
+	}
+	err := copyAndRemoveWithin(root, src, filepath.Join(t.TempDir(), "link"))
+	if !errors.Is(err, ErrSymlinkEscape) {
+		t.Fatalf("err = %v, want ErrSymlinkEscape", err)
+	}
+}

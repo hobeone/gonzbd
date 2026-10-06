@@ -79,7 +79,7 @@ func (a *Application) TriggerMaybeDirectUnpack(fc FileComplete) {
 
 // TriggerBuildDirectUnpackOpts calls the orchestrator's option builder.
 func (a *Application) TriggerBuildDirectUnpackOpts() any {
-	return a.duOrch.buildOpts(false, false, false)
+	return a.duOrch.buildOpts(false, false, false, false)
 }
 
 // TriggerPersistAndCommit calls the finalizer's persistAndCommit method.

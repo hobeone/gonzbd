@@ -28,9 +28,15 @@ compressed on purpose: a stored (`-m0`) archive carries the protected file's
 bytes verbatim, and par2's block scan would find them inside it.
 `damaged_b2.rar` is a stored RAR5 of the same `feature.bin` that records only
 a BLAKE2sp digest (`-htb`), with four bytes of the member overwritten at
-archive offset 20000. `go_rar` cannot check that digest, so it extracts the
-damage without an error; the recovery block in `feature.vol0+1.par2` repairs
-it.
+archive offset 20000. rarengine verifies BLAKE2sp since its #82, so the Go path
+catches that damage itself (`ErrCRCMismatch`, `FailCorrupt`); it is kept to pin
+that behaviour.
+`damaged_nodigest.rar` is the same archive with the digest left out: a stored
+RAR5 of `feature.bin` whose file header carries no digest record, with four
+bytes of the member overwritten at member offset 19897 (archive offset 19957 in the
+committed file; 19992 before the 35-byte digest record is stripped). `go_rar` has nothing
+to check the content against, so it extracts the damage without an error; the
+recovery block in `feature.vol0+1.par2` repairs it.
 
 `par2/layout_b_mixed/` holds two more par2 sets for mixed identification.
 `withnfo.par2` + `withnfo.vol0+1.par2` protect `feature.bin` (the Layout B
@@ -83,6 +89,20 @@ par2 create -s4000 -r10 -n1 feature.par2 feature.bin
 sha256sum feature.bin > feature.bin.sha256
 rar a -m0 -ma5 -htb damaged_b2.rar feature.bin
 printf '\xff\xff\xff\xff' | dd of=damaged_b2.rar bs=1 seek=20000 conv=notrunc
+# damaged_nodigest.rar: -qo- keeps rar from appending a quick-open locator to
+# the main header, so the only hand edit below is the digest strip. Without it
+# the locator goes stale and `unrar t` reports a corrupt main header.
+rar a -m0 -ma5 -htb -qo- damaged_nodigest.rar feature.bin
+# The member data starts 8 bytes earlier than in damaged_b2.rar (no locator),
+# so the same member offset (19897) is archive offset 19992 at this point;
+# the digest strip below moves the data 35 bytes earlier, to 19957.
+printf '\xff\xff\xff\xff' | dd of=damaged_nodigest.rar bs=1 seek=19992 conv=notrunc
+# rar always writes a digest. Strip the BLAKE2sp extra record (the 35 bytes
+# 22 02 00 <32-byte hash>) from the file header, which starts at archive
+# offset 16: lower its header size (74 -> 39) and extra-area size (46 -> 11),
+# and recompute the header CRC32 over the size vint and header body. The data
+# area is untouched. Verify with `unrar t`: it must report "All OK" with no
+# header error.
 
 # par2/layout_b_mixed (requires par2), from the same feature.bin
 printf 'Feature release notes.\nSource: fixture.\n' > feature.nfo

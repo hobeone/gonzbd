@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io/fs"
 	"log/slog"
@@ -104,13 +105,15 @@ func par2Stages() []Stage {
 	return []Stage{qc, repair, up, extracted, cleanup}
 }
 
-// damagedB2 is a stored RAR5 of feature.bin that records only a BLAKE2sp
-// digest, with four bytes of the member overwritten. go_rar cannot check that
-// digest, so the damage extracts without an error; the one recovery block in
-// feature.vol0+1.par2 covers it.
-func damagedB2(t *testing.T) deliveredFile {
+// damagedNoDigest is a stored RAR5 of feature.bin whose file header records no
+// digest at all, with four bytes of the member overwritten. go_rar has nothing
+// to check the content against (rarengine reports ErrChecksumUnsupported, which
+// the extractor filters), so the damage extracts without an error; the one
+// recovery block in feature.vol0+1.par2 covers it. It used to record a BLAKE2sp
+// digest instead, but rarengine verifies those now and would catch the damage.
+func damagedNoDigest(t *testing.T) deliveredFile {
 	t.Helper()
-	return deliveredFile{name: "release.rar", data: fixtureBytes(t, "layout_b", "damaged_b2.rar")}
+	return deliveredFile{name: "release.rar", data: fixtureBytes(t, "layout_b", "damaged_nodigest.rar")}
 }
 
 func assertAbsent(t *testing.T, dir string, names ...string) {
@@ -138,7 +141,7 @@ func assertPresent(t *testing.T, dir string, names ...string) {
 func TestLayoutB_ExtractedFileIsVerifiedAgainstPar2(t *testing.T) {
 	t.Parallel()
 
-	job, dir := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{damagedB2(t)})
+	job, dir := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{damagedNoDigest(t)})
 
 	stageErrs := runStages(t, job, par2Stages()...)
 
@@ -163,7 +166,7 @@ func TestLayoutB_ExtractedFileIsVerifiedAgainstPar2(t *testing.T) {
 func TestLayoutB_UnrepairableExtractionFailsTheJob(t *testing.T) {
 	t.Parallel()
 
-	job, dir := deliveredJob(t, "layout_b", []string{"feature.par2"}, []deliveredFile{damagedB2(t)})
+	job, dir := deliveredJob(t, "layout_b", []string{"feature.par2"}, []deliveredFile{damagedNoDigest(t)})
 
 	stageErrs := runStages(t, job, par2Stages()...)
 
@@ -274,7 +277,7 @@ func TestExtractedRepairStage_Skips(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			job, _ := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{damagedB2(t)})
+			job, _ := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{damagedNoDigest(t)})
 			job.DeferredPar2Sets = []string{"feature"}
 			tc.mutate(job)
 			parErr := job.ParError
@@ -302,7 +305,7 @@ func TestExtractedRepairStage_Skips(t *testing.T) {
 func TestExtractedRepairStage_MissingDeferredSetFailsTheJob(t *testing.T) {
 	t.Parallel()
 
-	job, _ := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{damagedB2(t)})
+	job, _ := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{damagedNoDigest(t)})
 	job.DeferredPar2Sets = []string{"feature", "vanished"}
 	_, repair, _ := layoutStages()
 
@@ -347,7 +350,7 @@ func TestQuickCheckStage_VerdictExcludesDeferredSets(t *testing.T) {
 func TestRepairStage_SkipsDeferredSets(t *testing.T) {
 	t.Parallel()
 
-	job, _ := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{damagedB2(t)})
+	job, _ := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{damagedNoDigest(t)})
 	job.QuickCheck = QuickCheckDamaged
 	job.DeferredPar2Sets = []string{"feature"}
 	_, repair, _ := layoutStages()
@@ -454,5 +457,26 @@ func TestJob_Par2Deferred(t *testing.T) {
 	if !job.par2Deferred("feature") || job.par2Deferred("extras") {
 		t.Errorf("par2Deferred(feature, extras) = %v, %v; want true, false",
 			job.par2Deferred("feature"), job.par2Deferred("extras"))
+	}
+}
+
+// An archive that records a plain BLAKE2sp digest checks its own member: the
+// Go path now verifies it, so damage that used to slip through to par2 is
+// reported as an extraction failure. damaged_nodigest.rar is what still
+// reaches extracted_repair.
+func TestLayoutB_Blake2spDamageIsCaughtByTheArchive(t *testing.T) {
+	t.Parallel()
+
+	job, _ := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{
+		{name: "release.rar", data: fixtureBytes(t, "layout_b", "damaged_b2.rar")},
+	})
+
+	stageErrs := runStages(t, job, par2Stages()...)
+
+	if !job.UnpackError {
+		t.Fatalf("UnpackError = false: the damaged BLAKE2sp archive extracted without complaint; stage errors: %v", stageErrs)
+	}
+	if !strings.Contains(fmt.Sprint(stageErrs), "checksum") {
+		t.Errorf("stage errors do not report the checksum mismatch: %v", stageErrs)
 	}
 }
