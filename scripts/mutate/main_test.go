@@ -240,6 +240,21 @@ func TestTestArgs_AlwaysPassesCount1(t *testing.T) {
 	}
 }
 
+func TestTestArgs_PassesParallelOnlyWhenTheSpecSetsIt(t *testing.T) {
+	t.Parallel()
+
+	got := strings.Join(testArgs(&spec{pkg: "./p/", parallel: 24}), " ")
+	if !strings.Contains(got, "-parallel 24") {
+		t.Errorf("testArgs = %q, want -parallel 24", got)
+	}
+
+	// Zero must leave go test's default alone rather than pass -parallel 0,
+	// which go test rejects.
+	if bare := strings.Join(testArgs(&spec{pkg: "./p/"}), " "); strings.Contains(bare, "-parallel") {
+		t.Errorf("testArgs = %q, want no -parallel when none was asked for", bare)
+	}
+}
+
 func TestRestore_ProvesTheBytesRatherThanTrustingTheWrite(t *testing.T) {
 	t.Parallel()
 

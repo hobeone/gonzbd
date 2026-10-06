@@ -294,6 +294,18 @@ else
     CPU_BUDGET=$(( NUM_CPUS / WORKERS ))
     if [ "$CPU_BUDGET" -lt 1 ]; then CPU_BUDGET=1; fi
 
+    # GOMAXPROCS=$CPU_BUDGET below keeps compilers and CPU-bound tests from
+    # oversubscribing the machine, but `go test -parallel` defaults to
+    # GOMAXPROCS, so it would also cap tests that only wait (a fixture's
+    # Stop, a poll) at CPU_BUDGET at a time. Parallelism is set on its own.
+    # 0 is rejected although mutate accepts it: there it means "leave go test's
+    # default", which here would bring the cap straight back.
+    TEST_PARALLEL="${MUTATE_TEST_PARALLEL:-$NUM_CPUS}"
+    if ! [[ "$TEST_PARALLEL" =~ ^[0-9]+$ ]] || [ "$TEST_PARALLEL" -lt 1 ]; then
+        echo -e "${RED}ERROR: MUTATE_TEST_PARALLEL must be a positive integer, got '$TEST_PARALLEL'${NC}" >&2
+        exit 1
+    fi
+
     WORKTREE_BASE=$(mktemp -d -t gonzbd-mutate-wt.XXXXXX)
     echo "$$" > "$WORKTREE_BASE/owner.pid"
     mkdir -p "$WORKTREE_BASE/logs"
@@ -354,7 +366,7 @@ else
                 # printed with one cat, which keeps workers' lines apart in the
                 # common case of a short `ok` line. It is not atomic: a long
                 # log, or the FAILED header followed by the log, can interleave.
-                if "$MUTATE_BIN" -q -skip-runfilter "$spec" >"$log_file" 2>&1; then
+                if "$MUTATE_BIN" -q -parallel "$TEST_PARALLEL" -skip-runfilter "$spec" >"$log_file" 2>&1; then
                     cat "$log_file"
                     echo "$spec PASSED" >> "$RESULTS_FILE"
                 else
