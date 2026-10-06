@@ -126,6 +126,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -163,11 +164,21 @@ type mutation struct {
 
 // spec is a parsed mutation file.
 type spec struct {
-	pkg       string
-	run       string
-	tags      string
-	timeout   time.Duration
+	pkg     string
+	run     string
+	tags    string
+	timeout time.Duration
+	// parallel is go test's -parallel. It is not read from the spec file: it
+	// is a property of the machine running the sweep, set from the command
+	// line, and zero leaves go test's default (GOMAXPROCS).
+	parallel  int
 	mutations []mutation
+}
+
+// runOpts is how the command line shapes one spec's run.
+type runOpts struct {
+	verbose, quiet, skipRunfilter bool
+	parallel                      int
 }
 
 // result pairs a mutation with what running it showed.
@@ -204,11 +215,16 @@ func main() {
 	checkAll := flag.Bool("check-all", false, "like -check, but discovers every spec belonging to this "+
 		"checkout with git ls-files instead of taking spec paths as arguments")
 	skipRunfilter := flag.Bool("skip-runfilter", false, "skip pre-flight check for dead test names in run filter (used when pre-checked by -check-all)")
+	parallel := flag.Int("parallel", 0, "pass -parallel N to go test (0 keeps go test's default, GOMAXPROCS)")
 	flag.Usage = usage
 	flag.Parse()
 
 	if *verbose && *quiet {
 		fmt.Fprintln(os.Stderr, "mutate: -v and -q contradict each other; pass one")
+		os.Exit(2)
+	}
+	if *parallel < 0 {
+		fmt.Fprintln(os.Stderr, "mutate: -parallel must not be negative")
 		os.Exit(2)
 	}
 
@@ -243,7 +259,7 @@ func main() {
 			flag.Usage()
 			os.Exit(2)
 		}
-		runSpec(root, flag.Arg(0), *verbose, *quiet, *skipRunfilter)
+		runSpec(root, flag.Arg(0), runOpts{verbose: *verbose, quiet: *quiet, skipRunfilter: *skipRunfilter, parallel: *parallel})
 	}
 }
 
@@ -254,14 +270,15 @@ func main() {
 // that passes is one line, and a spec whose mutations fail prints what failed
 // and how to look closer. The evidence column a passing spec produces is what a
 // commit body records, so quiet is opt-in rather than the default.
-func runSpec(root, path string, verbose, quiet, skipRunfilter bool) {
+func runSpec(root, path string, opts runOpts) {
 	start := time.Now()
 	sp, err := parseSpec(path)
 	if err != nil {
 		fatal("%s: %v", path, err)
 	}
+	sp.parallel = opts.parallel
 
-	if !skipRunfilter {
+	if !opts.skipRunfilter {
 		if dead, err := deadRunFilterNames(root, sp); err != nil {
 			fatal("%v", err)
 		} else if len(dead) > 0 {
@@ -275,7 +292,7 @@ func runSpec(root, path string, verbose, quiet, skipRunfilter bool) {
 	// about what the mutation changed, and that claim is empty if the test was
 	// not passing to begin with.
 	baselineCmd := "go " + strings.Join(testArgs(sp), " ")
-	if !quiet {
+	if !opts.quiet {
 		fmt.Printf("baseline: %s\n", baselineCmd)
 	}
 	out, code, launchErr := goTest(root, sp)
@@ -302,14 +319,14 @@ func runSpec(root, path string, verbose, quiet, skipRunfilter bool) {
 			"command: %s\n\n%s\n", sp.pkg, baselineCmd, indent(out))
 		os.Exit(1)
 	}
-	if !quiet {
+	if !opts.quiet {
 		fmt.Println("baseline: PASS")
 		fmt.Println()
 	}
 
 	results := make([]result, 0, len(sp.mutations))
 	for _, m := range sp.mutations {
-		results = append(results, run(root, sp, m, verbose))
+		results = append(results, run(root, sp, m, opts.verbose))
 	}
 
 	confirmed, err := confirmExclusions(root, sp, results)
@@ -317,7 +334,7 @@ func runSpec(root, path string, verbose, quiet, skipRunfilter bool) {
 		fatal("%v", err)
 	}
 
-	if quiet {
+	if opts.quiet {
 		os.Exit(reportQuiet(path, confirmed, time.Since(start)))
 	}
 	os.Exit(report(confirmed))
@@ -755,6 +772,9 @@ func testArgs(sp *spec) []string {
 	if sp.timeout > 0 {
 		args = append(args, "-timeout", sp.timeout.String())
 	}
+	if sp.parallel > 0 {
+		args = append(args, "-parallel", strconv.Itoa(sp.parallel))
+	}
 	return args
 }
 
@@ -1004,12 +1024,17 @@ func fatal(format string, args ...any) {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] <spec-file>
+	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] [-parallel N] <spec-file>
        go run ./scripts/mutate -check <spec-file>...
        go run ./scripts/mutate -check-all
 
 Runs AGENTS.md's observed red check: apply each mutation, require the test to
 fail, restore the file. Exits non-zero unless every mutation is KILLED.
+
+-parallel N passes -parallel N to the go test runs that execute tests: the
+baseline, each mutation and the package-wide re-runs. Left unset,
+go test uses GOMAXPROCS, which a caller that caps GOMAXPROCS to share a machine
+between workers (scripts/run_tests.sh) turns into a cap on tests that only wait.
 
 -q is for sweeping every spec: a spec that passes prints one line, and one that
 does not prints only its failing rows and the command to rerun it with the full
