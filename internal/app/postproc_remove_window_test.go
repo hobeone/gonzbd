@@ -98,7 +98,7 @@ func launchedAppAt(t *testing.T, stage postproc.Stage, state job.State) (*Applic
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	t.Cleanup(func() { _ = d.Stop() })
+	t.Cleanup(func() { stopHeldDispatcher(d) })
 	if err := application.postProcessor.Start(t.Context()); err != nil {
 		t.Fatalf("postProcessor.Start: %v", err)
 	}
