@@ -27,6 +27,22 @@ func (r holdingRunner) Run(_ context.Context, id string, _ job.State) {
 	r.launched <- id
 }
 
+// stopHeldDispatcher stops d in the order Application.Shutdown uses: Pause, so
+// the ticker launches nothing new, Yielded for each listed job, then Stop. It
+// yields every listed job, where Shutdown yields only the states whose worker
+// stopped cleanly. holdingRunner never yields, so a job no test hands off or
+// removes still holds its launch claim at cleanup, and a bare Stop waits for it
+// up to perJobTimeout (3s) per job within Stop's overall budget. A yield before
+// the Pause can be undone: the ticker launches the job again and the runner
+// takes the claim back.
+func stopHeldDispatcher(d *dispatch.Dispatcher) {
+	d.Pause()
+	for _, row := range d.List() {
+		_ = d.Yielded(row.ID) // ErrNotFound for a job gone from the registry; ignored
+	}
+	_ = d.Stop()
+}
+
 // repairingJob builds a one-file job whose attempt stands at Repairing. Its
 // file is Complete, as a job's are once it leaves Fetching.
 func repairingJob(t *testing.T, application *Application, name string) (*job.Job, dispatch.Header) {
@@ -104,7 +120,7 @@ func heldRepairingApp(t *testing.T, stage postproc.Stage) (*Application, *job.Jo
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	t.Cleanup(func() { _ = d.Stop() })
+	t.Cleanup(func() { stopHeldDispatcher(d) })
 	if err := application.postProcessor.Start(t.Context()); err != nil {
 		t.Fatalf("postProcessor.Start: %v", err)
 	}
@@ -211,7 +227,7 @@ func TestRemoveJob_ReleasesARepairingJobPostProcessingDoesNotHold(t *testing.T) 
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	t.Cleanup(func() { _ = d.Stop() })
+	t.Cleanup(func() { stopHeldDispatcher(d) })
 
 	select {
 	case <-runner.launched:
