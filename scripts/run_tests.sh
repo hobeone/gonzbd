@@ -349,15 +349,20 @@ else
                 spec=$(pop_spec)
                 [ -n "$spec" ] || break
                 log_file="$WORKTREE_BASE/logs/$(echo "$spec" | tr '/' '_').log"
-                echo "[$w/$WORKERS] Running mutation spec: $spec"
-                if ! "$MUTATE_BIN" -skip-runfilter "$spec" 2>&1 | tee "$log_file" | sed -u "s|^|[$spec] |"; then
-                    echo -e "${RED}[$w/$WORKERS] FAILED: $spec${NC}" >&2
-                    echo -e "${RED}--- Failure output for $spec ---${NC}" >&2
+                # -q gives a passing spec one `ok` line and a failing one its
+                # failing rows plus a rerun command. Output goes to a log and is
+                # printed with one cat, which keeps workers' lines apart in the
+                # common case of a short `ok` line. It is not atomic: a long
+                # log, or the FAILED header followed by the log, can interleave.
+                if "$MUTATE_BIN" -q -skip-runfilter "$spec" >"$log_file" 2>&1; then
+                    cat "$log_file"
+                    echo "$spec PASSED" >> "$RESULTS_FILE"
+                else
+                    echo -e "${RED}FAILED: $spec${NC}" >&2
                     cat "$log_file" >&2
                     echo "$spec FAILED" >> "$RESULTS_FILE"
                     exit 1
                 fi
-                echo "$spec PASSED" >> "$RESULTS_FILE"
             done
         ) &
         PIDS+=($!)
