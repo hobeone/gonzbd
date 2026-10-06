@@ -507,11 +507,15 @@ func TestSymlinkMember_OneFolderRefusesTargetsOutsideFlatLayout(t *testing.T) {
 	ls.add("bad1", rarengine.LinkUnixSymlink, "sub/x")
 	ls.add("bad2", rarengine.LinkUnixSymlink, "../x")
 	ls.add("bad3", rarengine.LinkUnixSymlink, "./sub/../x/y")
+	// "." names the flattened directory itself, not a sibling member, and
+	// path.Base(".") is "." so the base-name test alone keeps it.
+	ls.add("bad4", rarengine.LinkUnixSymlink, ".")
+	ls.add("bad5", rarengine.LinkUnixSymlink, "./.")
 	ls.done()
 	if !ls.exists("a/ok") && !ls.exists("ok") {
 		t.Error("bare sibling target should be accepted")
 	}
-	for _, n := range []string{"bad1", "bad2", "bad3"} {
+	for _, n := range []string{"bad1", "bad2", "bad3", "bad4", "bad5"} {
 		if ls.exists(n) {
 			t.Errorf("%s created although its target leaves the flattened layout", n)
 		}
@@ -615,5 +619,328 @@ func TestSymlinkBatch_FinalCheckIsLexicallyConservative(t *testing.T) {
 	}
 	if !slices.Equal(got, []string{"fine"}) {
 		t.Errorf("Finish = %v, want [fine]", got)
+	}
+}
+
+// sub/sub1 -> a/b/c is already on disk, so sub/hop passes the physical
+// checks (sub1/../../../sub2 is sub/sub2) but fails the lexical final check
+// and is removed. sub/hop/inner would be created through sub/hop, landing in
+// sub/sub2; once hop is gone the path Finish recorded for it names nothing.
+// A link whose parent is a symlink must be refused, not fail the whole set.
+func TestSymlinkBatch_LinkUnderASymlinkedParentIsRefused(t *testing.T) {
+	ls := newLinkSession(t, Options{})
+	for _, d := range []string{"sub/a/b/c", "sub/sub2"} {
+		if err := os.MkdirAll(filepath.Join(ls.dir, filepath.FromSlash(d)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("a/b/c", filepath.Join(ls.dir, "sub", "sub1")); err != nil {
+		t.Fatal(err)
+	}
+	ls.add("sub/hop", rarengine.LinkUnixSymlink, "sub1/../../../sub2")
+	ls.add("sub/hop/inner", rarengine.LinkUnixSymlink, "file.txt")
+	got := ls.done()
+
+	if len(got) != 0 {
+		t.Errorf("Finish = %v, want none", got)
+	}
+	if ls.exists("sub/hop") {
+		t.Error("sub/hop survived although it climbs out lexically")
+	}
+	if ls.exists("sub/sub2/inner") {
+		t.Error("a link was created through the symlinked parent sub/hop")
+	}
+	if !strings.Contains(ls.logs.String(), "is a symlink") {
+		t.Errorf("refusal reason not logged:\n%s", ls.logs.String())
+	}
+}
+
+// With OverwriteFiles, a second member of the same name replaces the first
+// link. If the replacement then fails the final check and is removed, the
+// path must not still be listed for the first one, or Finish tries to remove
+// it twice and fails the set.
+func TestSymlinkBatch_ReplacedLinkIsCheckedOnce(t *testing.T) {
+	ls := newLinkSession(t, Options{OverwriteFiles: true})
+	if err := os.MkdirAll(filepath.Join(ls.dir, "sub", "deeper"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("sub/deeper", filepath.Join(ls.dir, "hop")); err != nil {
+		t.Fatal(err)
+	}
+	ls.add("dup", rarengine.LinkUnixSymlink, "fine")
+	ls.add("dup", rarengine.LinkUnixSymlink, "hop/../../x")
+	got := ls.done()
+
+	if len(got) != 0 {
+		t.Errorf("Finish = %v, want none", got)
+	}
+	if ls.exists("dup") {
+		t.Error("the replacing link climbs out lexically and should have been removed")
+	}
+}
+
+// Removing a link can change how a link already checked in the same pass
+// resolves, so Finish must re-check until nothing changes. w -> q/r is on
+// disk beforehand. "l" is checked before "x" in the first pass and passes:
+// x -> w/../../a/b expands to a/b, so l's target walks a/b, .., a/y (nothing
+// there), .., a/z. Then x fails the lexical check (w/../.. climbs out) and is
+// removed. Without x, the walk of l's target is x, .., y -> ".", .., which
+// climbs out, so a second pass must remove l as well.
+func TestSymlinkBatch_RevalidatesUntilStable(t *testing.T) {
+	ls := newLinkSession(t, Options{})
+	if err := os.Symlink("q/r", filepath.Join(ls.dir, "w")); err != nil {
+		t.Fatal(err)
+	}
+	ls.add("l", rarengine.LinkUnixSymlink, "x/../y/../z")
+	ls.add("x", rarengine.LinkUnixSymlink, "w/../../a/b")
+	ls.add("y", rarengine.LinkUnixSymlink, ".")
+	got := ls.done()
+
+	if ls.exists("l") {
+		t.Error("l survived although it climbs out once x is removed")
+	}
+	if !slices.Equal(got, []string{"y"}) {
+		t.Errorf("Finish = %v, want [y]", got)
+	}
+	for _, rel := range got {
+		if err := verifyCreatedLink(ls.root, rel); err != nil {
+			t.Errorf("Finish returned %s, which fails the final check: %v", rel, err)
+		}
+	}
+}
+
+func TestValidateLinkTarget(t *testing.T) {
+	tests := []struct {
+		target  string
+		archive bool
+		ok      bool
+	}{
+		{"a/b", true, true},
+		{"../x", true, true},
+		{"", true, false},
+		{"", false, false},
+		{"a\x00b", false, false},
+		{"/etc/passwd", false, false},
+		{"C:x", true, false},
+		{"c:/x", true, false},
+		// On disk, "C:x" is an ordinary relative name.
+		{"C:x", false, true},
+		// Not a drive letter: the first byte is not a letter.
+		{"1:x", true, true},
+	}
+	for _, tt := range tests {
+		err := validateLinkTarget(tt.target, tt.archive)
+		if tt.ok && err != nil {
+			t.Errorf("validateLinkTarget(%q, %v) = %v, want nil", tt.target, tt.archive, err)
+		}
+		if !tt.ok && !errors.Is(err, errLinkRefused) {
+			t.Errorf("validateLinkTarget(%q, %v) = %v, want a refusal", tt.target, tt.archive, err)
+		}
+	}
+}
+
+// A hard link or file copy whose target is not a regular file is refused: a
+// hard link to a symlink would plant a symlink whatever extract_symlinks says,
+// and a directory cannot be linked or copied.
+func TestCreateHardLinkEntry_TargetNotARegularFile(t *testing.T) {
+	for _, lt := range []rarengine.LinkType{rarengine.LinkHardLink, rarengine.LinkFileCopy} {
+		for _, target := range []string{"d", "s"} {
+			t.Run(fmt.Sprintf("%v/%s", lt, target), func(t *testing.T) {
+				dir, root := openTestRoot(t)
+				if err := os.WriteFile(filepath.Join(dir, "orig.txt"), []byte("data"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(dir, "d"), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("orig.txt", filepath.Join(dir, "s")); err != nil {
+					t.Fatal(err)
+				}
+				fh := &rarengine.FileHeader{Name: "h", LinkType: lt, LinkTarget: target}
+				err := createHardLinkEntry(context.Background(), root, "h", filepath.Join(dir, "h"), fh, Options{}, slog.New(slog.DiscardHandler))
+				if !errors.Is(err, errLinkRefused) || !strings.Contains(err.Error(), "not a regular file") {
+					t.Fatalf("got %v, want a not-a-regular-file refusal", err)
+				}
+				if _, lerr := os.Lstat(filepath.Join(dir, "h")); !os.IsNotExist(lerr) {
+					t.Errorf("h was created (err=%v)", lerr)
+				}
+			})
+		}
+	}
+}
+
+func TestRecordSymlinkEntry(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	fh := func(target string) *rarengine.FileHeader {
+		return &rarengine.FileHeader{Name: "l", LinkType: rarengine.LinkUnixSymlink, LinkTarget: target}
+	}
+
+	t.Run("off by default", func(t *testing.T) {
+		_, root := openTestRoot(t)
+		var lines []string
+		opts := Options{Symlinks: NewSymlinkBatch(), OnLine: func(l string) { lines = append(lines, l) }}
+		if err := recordSymlinkEntry(root, "l", "l", fh("t"), opts, log); err != nil {
+			t.Fatal(err)
+		}
+		if len(opts.Symlinks.pending) != 0 {
+			t.Errorf("queued with extract_symlinks off: %v", opts.Symlinks.pending)
+		}
+		if len(lines) != 1 || !strings.Contains(lines[0], "extract_symlinks is off") {
+			t.Errorf("OnLine = %v", lines)
+		}
+	})
+
+	t.Run("no batch", func(t *testing.T) {
+		_, root := openTestRoot(t)
+		err := recordSymlinkEntry(root, "l", "l", fh("t"), Options{ExtractSymlinks: true}, log)
+		if !errors.Is(err, errLinkRefused) {
+			t.Fatalf("got %v, want a refusal", err)
+		}
+	})
+
+	refused := []struct{ name, target string }{
+		{"absolute", "/etc/passwd"},
+		{"escapes at record time", "../x"},
+	}
+	for _, tt := range refused {
+		t.Run(tt.name, func(t *testing.T) {
+			_, root := openTestRoot(t)
+			opts := Options{ExtractSymlinks: true, Symlinks: NewSymlinkBatch()}
+			if err := recordSymlinkEntry(root, "l", "l", fh(tt.target), opts, log); !errors.Is(err, errLinkRefused) {
+				t.Fatalf("got %v, want a refusal", err)
+			}
+			if len(opts.Symlinks.pending) != 0 {
+				t.Errorf("refused link queued: %v", opts.Symlinks.pending)
+			}
+		})
+	}
+
+	t.Run("queued, not created", func(t *testing.T) {
+		dir, root := openTestRoot(t)
+		opts := Options{ExtractSymlinks: true, Symlinks: NewSymlinkBatch()}
+		if err := recordSymlinkEntry(root, "sub/l", "sub/l", fh(`..\t`), opts, log); err != nil {
+			t.Fatal(err)
+		}
+		if len(opts.Symlinks.pending) != 1 || opts.Symlinks.pending[0].destRel != "sub/l" {
+			t.Fatalf("pending = %+v", opts.Symlinks.pending)
+		}
+		if _, lerr := os.Lstat(filepath.Join(dir, "sub", "l")); !os.IsNotExist(lerr) {
+			t.Errorf("link created at record time (err=%v)", lerr)
+		}
+	})
+}
+
+func TestPrepareLinkDest(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	fh := &rarengine.FileHeader{Name: "x"}
+	setup := func(t *testing.T) (*os.Root, string) {
+		t.Helper()
+		dir, root := openTestRoot(t)
+		if err := os.WriteFile(filepath.Join(dir, "f"), []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(dir, "d"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		return root, dir
+	}
+
+	t.Run("creates the parent", func(t *testing.T) {
+		root, dir := setup(t)
+		skip, err := prepareLinkDest(root, "new/dir/l", "", fh, Options{}, log)
+		if skip || err != nil {
+			t.Fatalf("got (%v, %v)", skip, err)
+		}
+		if fi, err := os.Lstat(filepath.Join(dir, "new", "dir")); err != nil || !fi.IsDir() {
+			t.Errorf("parent not created as a directory: %v", err)
+		}
+	})
+
+	t.Run("parent is a file", func(t *testing.T) {
+		root, _ := setup(t)
+		_, err := prepareLinkDest(root, "f/l", "", fh, Options{}, log)
+		if err == nil || errors.Is(err, errLinkRefused) {
+			t.Fatalf("got %v, want a filesystem error", err)
+		}
+	})
+
+	t.Run("existing kept without overwrite", func(t *testing.T) {
+		root, dir := setup(t)
+		var lines []string
+		skip, err := prepareLinkDest(root, "f", "", fh, Options{OnLine: func(l string) { lines = append(lines, l) }}, log)
+		if !skip || err != nil {
+			t.Fatalf("got (%v, %v), want skip", skip, err)
+		}
+		if got := mustRead(t, filepath.Join(dir, "f")); got != "old" {
+			t.Errorf("f = %q", got)
+		}
+		if len(lines) != 1 || !strings.Contains(lines[0], "Skipping existing") {
+			t.Errorf("OnLine = %v", lines)
+		}
+	})
+
+	t.Run("directory in the way", func(t *testing.T) {
+		root, dir := setup(t)
+		_, err := prepareLinkDest(root, "d", "", fh, Options{OverwriteFiles: true}, log)
+		if !errors.Is(err, errLinkRefused) {
+			t.Fatalf("got %v, want a refusal", err)
+		}
+		if fi, err := os.Lstat(filepath.Join(dir, "d")); err != nil || !fi.IsDir() {
+			t.Errorf("directory d was removed: %v", err)
+		}
+	})
+
+	t.Run("file replaced with overwrite", func(t *testing.T) {
+		root, dir := setup(t)
+		skip, err := prepareLinkDest(root, "f", "", fh, Options{OverwriteFiles: true}, log)
+		if skip || err != nil {
+			t.Fatalf("got (%v, %v)", skip, err)
+		}
+		if _, lerr := os.Lstat(filepath.Join(dir, "f")); !os.IsNotExist(lerr) {
+			t.Errorf("f not removed (err=%v)", lerr)
+		}
+	})
+}
+
+func TestVerifyCreatedLink(t *testing.T) {
+	dir, root := openTestRoot(t)
+	if err := os.WriteFile(filepath.Join(dir, "plain"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{"good": "plain", "abs": "/etc/passwd", "out": "../x"} {
+		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := verifyCreatedLink(root, "good"); err != nil {
+		t.Errorf("good: %v", err)
+	}
+	for _, rel := range []string{"plain", "missing", "abs", "out"} {
+		if err := verifyCreatedLink(root, rel); !errors.Is(err, errLinkRefused) {
+			t.Errorf("%s: got %v, want a refusal", rel, err)
+		}
+	}
+}
+
+func TestRefuseSymlinkedParent(t *testing.T) {
+	dir, root := openTestRoot(t)
+	if err := os.MkdirAll(filepath.Join(dir, "a", "b"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "f"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a", filepath.Join(dir, "s")); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"l", "a/b/l", "new/l", "a/new/l", "f/x/l"} {
+		if err := refuseSymlinkedParent(root, rel); err != nil {
+			t.Errorf("%s: %v", rel, err)
+		}
+	}
+	for _, rel := range []string{"s/l", "s/b/l"} {
+		if err := refuseSymlinkedParent(root, rel); !errors.Is(err, errLinkRefused) {
+			t.Errorf("%s: got %v, want a refusal", rel, err)
+		}
 	}
 }

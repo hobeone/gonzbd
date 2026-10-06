@@ -215,19 +215,53 @@ type pendingSymlink struct {
 // NewSymlinkBatch returns an empty batch.
 func NewSymlinkBatch() *SymlinkBatch { return &SymlinkBatch{} }
 
-// Len reports how many symlinks are waiting for Finish.
-func (b *SymlinkBatch) Len() int { return len(b.pending) }
+// refuseSymlinkedParent refuses a link whose parent path passes through a
+// symlink that is already on disk. A link created through one lands at the
+// symlink's destination, not at destRel, so the final check in Finish (which
+// reads destRel back) would not be checking the link that exists, and
+// removing the symlinked parent would leave that link behind untracked.
+// Components that do not exist yet are created by prepareLinkDest as real
+// directories.
+func refuseSymlinkedParent(root *os.Root, destRel string) error {
+	dir := path.Dir(destRel)
+	if dir == "." {
+		return nil
+	}
+	parts := strings.Split(dir, "/")
+	for i := range parts {
+		p := path.Join(parts[:i+1]...)
+		fi, err := root.Lstat(p)
+		if err != nil {
+			return nil //nolint:nilerr // not there (or not a directory): MkdirAll in prepareLinkDest creates it or reports why not
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			return refusef("parent %q of %q is a symlink", p, destRel)
+		}
+	}
+	return nil
+}
 
 // Finish creates the recorded symlinks and then re-validates every one it
 // created against the final on-disk state, removing (and logging) any that
 // escapes the root. It returns the paths, relative to root and slash
-// separated, of the links that remain. A link the destination cannot hold
-// (see isLinkUnsupported) or that fails validation is skipped with a log line;
+// separated, of the links that remain. A link whose parent passes through a
+// symlink (see refuseSymlinkedParent), that the destination cannot hold (see
+// isLinkUnsupported), or that fails validation is skipped with a log line;
 // any other filesystem error fails the call.
+//
+// Because no link is created under a symlinked parent, a later link cannot
+// replace a directory (prepareLinkDest refuses that), and a path is listed
+// once even when a same-named member replaces an earlier link, every path in
+// created names a link that exists, in a chain of real directories, until
+// Finish itself removes it.
 func (b *SymlinkBatch) Finish(root *os.Root, opts Options, log *slog.Logger) ([]string, error) {
 	var created []string
 	for _, p := range b.pending {
-		target, err := resolveSymlinkTarget(root, p.destRel, p.target)
+		err := refuseSymlinkedParent(root, p.destRel)
+		var target string
+		if err == nil {
+			target, err = resolveSymlinkTarget(root, p.destRel, p.target)
+		}
 		var skip bool
 		if err == nil {
 			skip, err = prepareLinkDest(root, p.destRel, p.destPath, p.fh, opts, log)
@@ -249,6 +283,9 @@ func (b *SymlinkBatch) Finish(root *os.Root, opts Options, log *slog.Logger) ([]
 			continue
 		}
 		if !skip {
+			// A same-named earlier member was just replaced (OverwriteFiles):
+			// list the path once, for the link that is there now.
+			created = slices.DeleteFunc(created, func(r string) bool { return r == p.destRel })
 			created = append(created, p.destRel)
 		}
 	}
