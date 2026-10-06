@@ -197,6 +197,8 @@ var pending struct {
 
 func main() {
 	verbose := flag.Bool("v", false, "print the full go test output for every mutation")
+	quiet := flag.Bool("q", false, "print one line for a spec whose mutations were all killed, and the failing "+
+		"rows with a rerun hint for one that was not (for sweeping many specs)")
 	check := flag.Bool("check", false, "parse the given spec(s), resolve every anchor, and report any that "+
 		"match zero or several sites, without running any test")
 	checkAll := flag.Bool("check-all", false, "like -check, but discovers every spec belonging to this "+
@@ -204,6 +206,11 @@ func main() {
 	skipRunfilter := flag.Bool("skip-runfilter", false, "skip pre-flight check for dead test names in run filter (used when pre-checked by -check-all)")
 	flag.Usage = usage
 	flag.Parse()
+
+	if *verbose && *quiet {
+		fmt.Fprintln(os.Stderr, "mutate: -v and -q contradict each other; pass one")
+		os.Exit(2)
+	}
 
 	root, err := repoRoot()
 	if err != nil {
@@ -236,13 +243,19 @@ func main() {
 			flag.Usage()
 			os.Exit(2)
 		}
-		runSpec(root, flag.Arg(0), *verbose, *skipRunfilter)
+		runSpec(root, flag.Arg(0), *verbose, *quiet, *skipRunfilter)
 	}
 }
 
 // runSpec is the command's original behaviour: apply every mutation in one
 // spec, in turn, and require each to produce KILLED.
-func runSpec(root, path string, verbose, skipRunfilter bool) {
+//
+// quiet is the sweep's view of it, in the manner of `go test ./...`: a spec
+// that passes is one line, and a spec whose mutations fail prints what failed
+// and how to look closer. The evidence column a passing spec produces is what a
+// commit body records, so quiet is opt-in rather than the default.
+func runSpec(root, path string, verbose, quiet, skipRunfilter bool) {
+	start := time.Now()
 	sp, err := parseSpec(path)
 	if err != nil {
 		fatal("%s: %v", path, err)
@@ -261,7 +274,10 @@ func runSpec(root, path string, verbose, skipRunfilter bool) {
 	// The baseline runs first and unmutated. Every verdict below is a claim
 	// about what the mutation changed, and that claim is empty if the test was
 	// not passing to begin with.
-	fmt.Printf("baseline: go %s\n", strings.Join(testArgs(sp), " "))
+	baselineCmd := "go " + strings.Join(testArgs(sp), " ")
+	if !quiet {
+		fmt.Printf("baseline: %s\n", baselineCmd)
+	}
 	out, code, launchErr := goTest(root, sp)
 	if launchErr != nil {
 		fatal("could not run go test: %v", launchErr)
@@ -270,7 +286,8 @@ func runSpec(root, path string, verbose, skipRunfilter bool) {
 		fmt.Fprintf(os.Stderr, "\nBASELINE FAILED — no mutation was applied.\n\n"+
 			"Every verdict this command produces is a statement about what the\n"+
 			"mutation changed. A test that already fails yields KILLED for any\n"+
-			"mutation, and none of them mean anything.\n\n%s\n", indent(out))
+			"mutation, and none of them mean anything.\n\n"+
+			"command: %s\n\n%s\n", baselineCmd, indent(out))
 		os.Exit(1)
 	}
 	if ranNothing(out) {
@@ -281,11 +298,14 @@ func runSpec(root, path string, verbose, skipRunfilter bool) {
 		fmt.Fprintf(os.Stderr, "\nBASELINE RAN NO TESTS — no mutation was applied.\n\n"+
 			"go test exited 0 without executing anything, which usually means the\n"+
 			"`run` pattern matches no test in %s. Left unchecked this reports every\n"+
-			"mutation as SURVIVED.\n\n%s\n", sp.pkg, indent(out))
+			"mutation as SURVIVED.\n\n"+
+			"command: %s\n\n%s\n", sp.pkg, baselineCmd, indent(out))
 		os.Exit(1)
 	}
-	fmt.Println("baseline: PASS")
-	fmt.Println()
+	if !quiet {
+		fmt.Println("baseline: PASS")
+		fmt.Println()
+	}
 
 	results := make([]result, 0, len(sp.mutations))
 	for _, m := range sp.mutations {
@@ -297,6 +317,9 @@ func runSpec(root, path string, verbose, skipRunfilter bool) {
 		fatal("%v", err)
 	}
 
+	if quiet {
+		os.Exit(reportQuiet(path, confirmed, time.Since(start)))
+	}
 	os.Exit(report(confirmed))
 }
 
@@ -857,32 +880,9 @@ func firstAssertion(out string) string {
 
 // report prints the table and returns the process exit code.
 func report(results []result) int {
-	width := len("mutation")
-	for _, r := range results {
-		if len(r.name) > width {
-			width = len(r.name)
-		}
-	}
+	printRows(results)
 
-	fmt.Printf("%-*s  %-13s  %s\n", width, "mutation", "verdict", "evidence")
-	fmt.Println(strings.Repeat("-", width+17+60))
-	bad := 0
-	for _, r := range results {
-		if r.verdict != killed {
-			bad++
-		}
-		fmt.Printf("%-*s  %-13s  %s\n", width, r.name, r.verdict, r.evidence)
-	}
-
-	// Only the verdicts that are not self-explanatory get a note. Restating a
-	// KILLED line here would just print the evidence column twice.
-	for _, r := range results {
-		if n := note(r); n != "" {
-			fmt.Printf("\n%s:\n  %s\n", r.name, n)
-		}
-	}
-
-	if bad > 0 {
+	if bad := len(notKilled(results)); bad > 0 {
 		fmt.Printf("\nStatus: %d of %d mutations did not produce a red result.\n", bad, len(results))
 		return 1
 	}
@@ -893,6 +893,57 @@ func report(results []result) int {
 		"Record the evidence column in the commit body — a red-green claim without\n"+
 		"the message it produced is an assertion, not evidence.\n", len(results))
 	return 0
+}
+
+// reportQuiet is report for a sweep over many specs, and returns the process
+// exit code.
+//
+// A spec whose mutations were all killed is one `go test`-shaped line. One that
+// was not prints a FAIL line, a table of only the rows that did not produce a
+// red result — the killed rows are what the spec was supposed to do, and
+// listing them buries the ones that were not — the note `note` has for each of
+// those rows, and the command that reruns the spec with the full table and
+// every go test output.
+func reportQuiet(specPath string, results []result, elapsed time.Duration) int {
+	bad := notKilled(results)
+	secs := elapsed.Seconds()
+	if len(bad) == 0 {
+		fmt.Printf("ok  \t%s\t%.3fs\t%d mutations killed\n", specPath, secs, len(results))
+		return 0
+	}
+
+	fmt.Printf("FAIL\t%s\t%.3fs\t%d of %d mutations did not produce a red result\n\n",
+		specPath, secs, len(bad), len(results))
+	printRows(bad)
+	fmt.Printf("\nrerun: go run ./scripts/mutate -v %s\n", specPath)
+	return 1
+}
+
+// notKilled returns the rows that did not produce a red result.
+func notKilled(rs []result) []result {
+	return slices.DeleteFunc(slices.Clone(rs), func(r result) bool { return r.verdict == killed })
+}
+
+// printRows prints the verdict table for rs followed by each row's note.
+func printRows(rs []result) {
+	width := len("mutation")
+	for _, r := range rs {
+		width = max(width, len(r.name))
+	}
+
+	fmt.Printf("%-*s  %-13s  %s\n", width, "mutation", "verdict", "evidence")
+	fmt.Println(strings.Repeat("-", width+17+60))
+	for _, r := range rs {
+		fmt.Printf("%-*s  %-13s  %s\n", width, r.name, r.verdict, r.evidence)
+	}
+
+	// Only the verdicts that are not self-explanatory get a note. Restating a
+	// KILLED line here would just print the evidence column twice.
+	for _, r := range rs {
+		if n := note(r); n != "" {
+			fmt.Printf("\n%s:\n  %s\n", r.name, n)
+		}
+	}
 }
 
 // note explains a verdict whose meaning is not carried by the evidence column.
@@ -953,12 +1004,17 @@ func fatal(format string, args ...any) {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v] <spec-file>
+	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] <spec-file>
        go run ./scripts/mutate -check <spec-file>...
        go run ./scripts/mutate -check-all
 
 Runs AGENTS.md's observed red check: apply each mutation, require the test to
 fail, restore the file. Exits non-zero unless every mutation is KILLED.
+
+-q is for sweeping every spec: a spec that passes prints one line, and one that
+does not prints only its failing rows and the command to rerun it with the full
+table. Without it the evidence column is printed for every mutation, which is
+what a commit body records.
 
 -check parses the given spec(s) and reports every anchor that resolves to
 zero or several sites, without compiling anything, running a test, or writing

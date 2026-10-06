@@ -412,6 +412,91 @@ func TestNote_ExplainsOnlyTheVerdictsThatGetMisread(t *testing.T) {
 	}
 }
 
+func TestReportQuiet_OneLineWhenEveryMutationIsKilled(t *testing.T) {
+	results := []result{
+		{name: "guard neutered", verdict: killed, evidence: "got 1, want 2"},
+		{name: "branch deleted", verdict: killed, evidence: "panic: boom"},
+	}
+
+	var code int
+	out := captureStdout(t, func() {
+		code = reportQuiet("internal/x/testdata/x.spec", results, 1500*time.Millisecond)
+	})
+
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if want := "ok  \tinternal/x/testdata/x.spec\t1.500s\t2 mutations killed\n"; out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+}
+
+func TestReportQuiet_FailureNamesOnlyTheRowsThatDidNotDie(t *testing.T) {
+	results := []result{
+		{name: "dead one", verdict: killed, evidence: "killed-evidence-text"},
+		{name: "live one", verdict: survived, evidence: survivedEvidence},
+		{name: "stale one", verdict: anchorFail, evidence: "anchor matched no site"},
+	}
+
+	var code int
+	out := captureStdout(t, func() {
+		code = reportQuiet("internal/x/testdata/x.spec", results, 2*time.Second)
+	})
+
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.HasPrefix(out, "FAIL\tinternal/x/testdata/x.spec\t2.000s\t2 of 3 mutations did not produce a red result\n") {
+		t.Errorf("missing go-test-shaped FAIL header:\n%s", out)
+	}
+	for _, want := range []string{"live one", "stale one", "SURVIVED", "ANCHOR",
+		note(results[1]), note(results[2]),
+		"rerun: go run ./scripts/mutate -v internal/x/testdata/x.spec"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"dead one", "killed-evidence-text"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("output lists a killed mutation (%q); quiet mode shows failures only:\n%s", unwanted, out)
+		}
+	}
+}
+
+func TestNotKilled_KeepsEveryVerdictButKilledInOrderAndLeavesTheInputAlone(t *testing.T) {
+	t.Parallel()
+
+	in := []result{
+		{name: "a", verdict: killed},
+		{name: "b", verdict: survived},
+		{name: "c", verdict: killed},
+		{name: "d", verdict: compileError},
+	}
+
+	got := notKilled(in)
+
+	if len(got) != 2 || got[0].name != "b" || got[1].name != "d" {
+		t.Errorf("notKilled = %v, want rows b and d in order", got)
+	}
+	if len(in) != 4 || in[0].name != "a" || in[2].name != "c" {
+		t.Errorf("notKilled modified its input: %v", in)
+	}
+}
+
+func TestReport_StillPrintsTheEvidenceOfKilledRows(t *testing.T) {
+	results := []result{{name: "dead one", verdict: killed, evidence: "killed-evidence-text"}}
+
+	var code int
+	out := captureStdout(t, func() { code = report(results) })
+
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(out, "killed-evidence-text") || !strings.Contains(out, "Status: all 1 mutations killed") {
+		t.Errorf("the default report must keep the evidence column a commit body records:\n%s", out)
+	}
+}
+
 func mustCwd(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
