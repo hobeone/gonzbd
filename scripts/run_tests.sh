@@ -8,6 +8,7 @@ set -e # Exit on first error
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
 echo "===================================================="
@@ -264,13 +265,34 @@ fi
 echo -e "${GREEN}✓ Mutation Anchor Check Passed${NC}"
 
 mapfile -t SPECS < <(git ls-files --cached --others --exclude-standard -- '*testdata/*.spec' | sort -u)
+# MUTATE_SINCE=<ref> narrows the sweep to the specs `mutate -affected` selects
+# for a diff against <ref>. It is a fast loop for iterating, not the gate: the
+# selection misses a spec whose pinned behaviour changed through a file it does
+# not mutate, so the full sweep stays the check before a merge.
+TOTAL_SPECS=${#SPECS[@]}
+SWEEP_SCOPE="All"
+SWEEP_COLOR="$GREEN"
+SWEEP_NOTE=""
+if [ -n "${MUTATE_SINCE:-}" ]; then
+    if ! AFFECTED=$("$MUTATE_BIN" -affected "$MUTATE_SINCE"); then
+        echo -e "${RED}ERROR: could not select specs for MUTATE_SINCE='$MUTATE_SINCE'.${NC}" >&2
+        cleanup_mutate
+        trap - EXIT INT TERM
+        exit 1
+    fi
+    mapfile -t SPECS < <(printf '%s\n' "$AFFECTED" | sed '/^$/d')
+    SWEEP_SCOPE="Selected"
+    SWEEP_COLOR="$YELLOW"
+    SWEEP_NOTE=" - MUTATE_SINCE=$MUTATE_SINCE: ${#SPECS[@]} of $TOTAL_SPECS specs, a fast loop and not the gate"
+    echo -e "${SWEEP_COLOR}${SWEEP_NOTE# - }${NC}"
+fi
 NUM_SPECS=${#SPECS[@]}
 
 if [ "$NUM_SPECS" -eq 0 ]; then
     echo "No mutation specs found."
     cleanup_mutate
     trap - EXIT INT TERM
-    echo -e "${GREEN}✓ No Mutation Specs Found${NC}"
+    echo -e "${SWEEP_COLOR}✓ No Mutation Specs Found${SWEEP_NOTE}${NC}"
 else
     if [ -n "${MUTATE_PARALLEL_WORKERS:-}" ]; then
         if ! [[ "$MUTATE_PARALLEL_WORKERS" =~ ^[0-9]+$ ]] || [ "$MUTATE_PARALLEL_WORKERS" -lt 1 ]; then
@@ -434,7 +456,7 @@ else
     cleanup_mutate
     trap - EXIT INT TERM
 
-    echo -e "${GREEN}✓ All Mutation Specs Killed ($RUN_COUNT/$NUM_SPECS)${NC}"
+    echo -e "${SWEEP_COLOR}✓ ${SWEEP_SCOPE} Mutation Specs Killed ($RUN_COUNT/$NUM_SPECS)${SWEEP_NOTE}${NC}"
 fi
 
 # 3. Go Integration Tests

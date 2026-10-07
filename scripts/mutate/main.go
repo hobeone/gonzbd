@@ -216,6 +216,8 @@ func main() {
 		"checkout with git ls-files instead of taking spec paths as arguments")
 	skipRunfilter := flag.Bool("skip-runfilter", false, "skip pre-flight check for dead test names in run filter (used when pre-checked by -check-all)")
 	parallel := flag.Int("parallel", 0, "pass -parallel N to go test (0 keeps go test's default, GOMAXPROCS)")
+	affected := flag.String("affected", "", "print the specs a diff against REF can change, one per line, "+
+		"instead of running anything (see the usage text for what that selects and misses)")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -234,6 +236,26 @@ func main() {
 	}
 
 	switch {
+	case *affected != "":
+		if flag.NArg() != 0 {
+			fmt.Fprintln(os.Stderr, "mutate: -affected takes no spec arguments; it discovers them itself")
+			os.Exit(2)
+		}
+		specs, err := discoverSpecs(root)
+		if err != nil {
+			fatal("%v", err)
+		}
+		changed, err := changedSince(root, *affected)
+		if err != nil {
+			fatal("%v", err)
+		}
+		sel, err := affectedSpecs(root, specs, changed)
+		if err != nil {
+			fatal("%v", err)
+		}
+		for _, s := range sel {
+			fmt.Println(s)
+		}
 	case *checkAll:
 		if flag.NArg() != 0 {
 			fmt.Fprintln(os.Stderr, "mutate: -check-all takes no spec arguments; it discovers them itself")
@@ -1027,6 +1049,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] [-parallel N] <spec-file>
        go run ./scripts/mutate -check <spec-file>...
        go run ./scripts/mutate -check-all
+       go run ./scripts/mutate -affected REF
 
 Runs AGENTS.md's observed red check: apply each mutation, require the test to
 fail, restore the file. Exits non-zero unless every mutation is KILLED.
@@ -1035,6 +1058,14 @@ fail, restore the file. Exits non-zero unless every mutation is KILLED.
 baseline, each mutation and the package-wide re-runs. Left unset,
 go test uses GOMAXPROCS, which a caller that caps GOMAXPROCS to share a machine
 between workers (scripts/run_tests.sh) turns into a cap on tests that only wait.
+
+-affected REF prints the specs, one per line, that a change since REF can move:
+the spec file itself changed, or a file one of its mutations edits did. Tracked
+files are compared with the working tree, and untracked files that are not
+gitignored also count. It is a fast loop, not a gate. A change to any other
+file selects nothing, including the test a spec runs and the package it
+targets, so it misses a spec whose pinned behaviour such a file altered; only
+the full sweep covers that.
 
 -q is for sweeping every spec: a spec that passes prints one line, and one that
 does not prints only its failing rows and the command to rerun it with the full
