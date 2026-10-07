@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -252,6 +253,21 @@ func TestTestArgs_PassesParallelOnlyWhenTheSpecSetsIt(t *testing.T) {
 	// which go test rejects.
 	if bare := strings.Join(testArgs(&spec{pkg: "./p/"}), " "); strings.Contains(bare, "-parallel") {
 		t.Errorf("testArgs = %q, want no -parallel when none was asked for", bare)
+	}
+}
+
+func TestTestArgs_PassesGcflagsOnlyWhenTheSpecSetsThem(t *testing.T) {
+	t.Parallel()
+
+	// One argument, not two: the value holds a space, and -gcflags=-N -l as a
+	// single token is what go test reads as the flag with its whole value.
+	args := testArgs(&spec{pkg: "./p/", gcflags: "-N -l"})
+	if !slices.Contains(args, "-gcflags=-N -l") {
+		t.Errorf("testArgs = %q, want the single argument -gcflags=-N -l", args)
+	}
+
+	if bare := strings.Join(testArgs(&spec{pkg: "./p/"}), " "); strings.Contains(bare, "-gcflags") {
+		t.Errorf("testArgs = %q, want no -gcflags when none was asked for", bare)
 	}
 }
 

@@ -171,7 +171,11 @@ type spec struct {
 	// parallel is go test's -parallel. It is not read from the spec file: it
 	// is a property of the machine running the sweep, set from the command
 	// line, and zero leaves go test's default (GOMAXPROCS).
-	parallel  int
+	parallel int
+	// gcflags is go test's -gcflags, set from the command line like parallel.
+	// It applies to the package the spec names, which is the package every
+	// mutation is rebuilt through.
+	gcflags   string
 	mutations []mutation
 }
 
@@ -179,6 +183,7 @@ type spec struct {
 type runOpts struct {
 	verbose, quiet, skipRunfilter bool
 	parallel                      int
+	gcflags                       string
 }
 
 // result pairs a mutation with what running it showed.
@@ -216,6 +221,8 @@ func main() {
 		"checkout with git ls-files instead of taking spec paths as arguments")
 	skipRunfilter := flag.Bool("skip-runfilter", false, "skip pre-flight check for dead test names in run filter (used when pre-checked by -check-all)")
 	parallel := flag.Int("parallel", 0, "pass -parallel N to go test (0 keeps go test's default, GOMAXPROCS)")
+	gcflags := flag.String("gcflags", "-N -l", "pass -gcflags to go test; the default compiles the package under test "+
+		"unoptimized, which is faster to rebuild once per mutation (empty passes nothing)")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -259,7 +266,7 @@ func main() {
 			flag.Usage()
 			os.Exit(2)
 		}
-		runSpec(root, flag.Arg(0), runOpts{verbose: *verbose, quiet: *quiet, skipRunfilter: *skipRunfilter, parallel: *parallel})
+		runSpec(root, flag.Arg(0), runOpts{verbose: *verbose, quiet: *quiet, skipRunfilter: *skipRunfilter, parallel: *parallel, gcflags: *gcflags})
 	}
 }
 
@@ -277,6 +284,7 @@ func runSpec(root, path string, opts runOpts) {
 		fatal("%s: %v", path, err)
 	}
 	sp.parallel = opts.parallel
+	sp.gcflags = opts.gcflags
 
 	if !opts.skipRunfilter {
 		if dead, err := deadRunFilterNames(root, sp); err != nil {
@@ -775,6 +783,9 @@ func testArgs(sp *spec) []string {
 	if sp.parallel > 0 {
 		args = append(args, "-parallel", strconv.Itoa(sp.parallel))
 	}
+	if sp.gcflags != "" {
+		args = append(args, "-gcflags="+sp.gcflags)
+	}
 	return args
 }
 
@@ -1024,7 +1035,7 @@ func fatal(format string, args ...any) {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] [-parallel N] <spec-file>
+	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] [-parallel N] [-gcflags FLAGS] <spec-file>
        go run ./scripts/mutate -check <spec-file>...
        go run ./scripts/mutate -check-all
 
@@ -1035,6 +1046,12 @@ fail, restore the file. Exits non-zero unless every mutation is KILLED.
 baseline, each mutation and the package-wide re-runs. Left unset,
 go test uses GOMAXPROCS, which a caller that caps GOMAXPROCS to share a machine
 between workers (scripts/run_tests.sh) turns into a cap on tests that only wait.
+
+-gcflags FLAGS passes -gcflags=FLAGS to the same go test runs. Every mutation
+rebuilds the package under test, so the default '-N -l' (no optimization, no
+inlining) makes that rebuild cheaper. A test that depends on inlining or escape
+analysis sees a different build than a plain go test; -gcflags= (empty) passes
+nothing.
 
 -q is for sweeping every spec: a spec that passes prints one line, and one that
 does not prints only its failing rows and the command to rerun it with the full
