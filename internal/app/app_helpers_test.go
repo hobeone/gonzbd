@@ -134,6 +134,7 @@ func buildFailArticleJob(t *testing.T) (*dispatch.Dispatcher, *job.Job) {
 // article within its [lo,hi) range has exhausted retries, even with a
 // second article in the same file still pending.
 func TestHasFailedArticle_TrueWhenAnyArticleInRangeFailed(t *testing.T) {
+	t.Parallel()
 	d, j := buildFailArticleJob(t)
 	ackFailed(t, d, j.ID(), "second@t")
 
@@ -146,6 +147,7 @@ func TestHasFailedArticle_TrueWhenAnyArticleInRangeFailed(t *testing.T) {
 // TestHasFailedArticle_FalseWhenNoArticleFailed pins the negative case: a
 // file whose articles are all still pending (or done) reports no failure.
 func TestHasFailedArticle_FalseWhenNoArticleFailed(t *testing.T) {
+	t.Parallel()
 	_, j := buildFailArticleJob(t)
 	m, p := mustManifest(t, j), j.Progress()
 	if hasFailedArticle(m, p, 0) {
@@ -157,6 +159,7 @@ func TestHasFailedArticle_FalseWhenNoArticleFailed(t *testing.T) {
 // one file does not leak into hasFailedArticle's verdict for a different
 // file — the [lo,hi) range from FileRange must actually scope the check.
 func TestHasFailedArticle_RespectsFileBoundary(t *testing.T) {
+	t.Parallel()
 	parsed := &nzb.NZB{Files: []nzb.File{
 		{Subject: "a.bin", Bytes: 100, Articles: []nzb.Article{{ID: "a@t", Bytes: 100, Number: 1}}},
 		{Subject: "b.bin", Bytes: 100, Articles: []nzb.Article{{ID: "b@t", Bytes: 100, Number: 1}}},
@@ -186,6 +189,7 @@ func TestHasFailedArticle_RespectsFileBoundary(t *testing.T) {
 // returned name is the submitted filename's basename plus ".gz", and the
 // file lands at nzbDir/<name> as valid gzip.
 func TestWriteNZBBackup_WritesGzippedFileUsingBasename(t *testing.T) {
+	t.Parallel()
 	nzbDir := t.TempDir()
 	raw := []byte("<nzb>hello</nzb>")
 
@@ -216,6 +220,7 @@ func TestWriteNZBBackup_WritesGzippedFileUsingBasename(t *testing.T) {
 // nzb.StripEnvelope before compressing, so the persisted backup is exactly
 // one gzip layer around plain XML regardless of what its caller handed it.
 func TestWriteNZBBackup_AlreadyEnvelopedInputIsNormalized(t *testing.T) {
+	t.Parallel()
 	nzbDir := t.TempDir()
 	plain := []byte("<nzb>already enveloped</nzb>")
 
@@ -248,6 +253,7 @@ func TestWriteNZBBackup_AlreadyEnvelopedInputIsNormalized(t *testing.T) {
 // ".1"-style suffix instead, matching unique naming behaviour, so the
 // original NZB (needed to retry the older job) survives.
 func TestWriteNZBBackup_CollisionGetsUniqueSuffix(t *testing.T) {
+	t.Parallel()
 	nzbDir := t.TempDir()
 	first := []byte("<nzb>first</nzb>")
 	second := []byte("<nzb>second</nzb>")
@@ -279,6 +285,7 @@ func TestWriteNZBBackup_CollisionGetsUniqueSuffix(t *testing.T) {
 // which does not exist (and so cannot receive the atomic temp file) surfaces
 // as an error rather than being swallowed.
 func TestWriteNZBBackup_PropagatesWriteError(t *testing.T) {
+	t.Parallel()
 	missingDir := filepath.Join(t.TempDir(), "does-not-exist")
 	if _, err := os.Stat(missingDir); !os.IsNotExist(err) {
 		t.Fatalf("fixture guard: %s unexpectedly exists", missingDir)
@@ -301,6 +308,7 @@ func TestWriteNZBBackup_PropagatesWriteError(t *testing.T) {
 // name, a dangling symlink included, so the Lstat is the fast path and the
 // claim the authority; this pins the outcome either way.
 func TestWriteNZBBackup_ADanglingSymlinkOccupiesTheName(t *testing.T) {
+	t.Parallel()
 	nzbDir := t.TempDir()
 
 	// Relative and dangling: Lstat sees the link, Stat sees nothing.

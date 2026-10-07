@@ -105,14 +105,21 @@ func TestOpen_DoesNotVacuum(t *testing.T) {
 
 	const n = 300
 	ids := make([]string, n)
+	tx, err := db.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
 	for i := range n {
 		id := fmt.Sprintf("vacuum-probe-%d", i)
 		ids[i] = id
 		e := sampleEntry(id, "name", "Completed", "movies")
 		e.ScriptLog = make([]byte, 4096) // pad rows across enough pages to free some on delete
-		if err := repo.Add(ctx, e, nil); err != nil {
-			t.Fatalf("Add %s: %v", id, err)
+		if err := repo.AddTx(ctx, tx, e); err != nil {
+			t.Fatalf("AddTx %s: %v", id, err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
 	}
 	if _, err := repo.Delete(ctx, ids...); err != nil {
 		t.Fatalf("Delete: %v", err)

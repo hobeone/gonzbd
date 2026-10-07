@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -184,4 +185,34 @@ func parseSpec(path string) (*spec, error) {
 		return nil, fmt.Errorf("no [mutation] blocks")
 	}
 	return sp, nil
+}
+
+// applyChunk restricts the spec's mutations to the K-th chunk of M total chunks
+// (1-based, in "K/M" format).
+func (sp *spec) applyChunk(s string) error {
+	kStr, mStr, ok := strings.Cut(s, "/")
+	if !ok {
+		return fmt.Errorf("invalid -chunk %q: want K/M (e.g. 1/3)", s)
+	}
+	k, err := strconv.Atoi(kStr)
+	if err != nil || k < 1 {
+		return fmt.Errorf("invalid -chunk %q: K must be a positive integer", s)
+	}
+	m, err := strconv.Atoi(mStr)
+	if err != nil || m < 1 {
+		return fmt.Errorf("invalid -chunk %q: M must be a positive integer", s)
+	}
+	if k > m {
+		return fmt.Errorf("invalid -chunk %q: K (%d) must not exceed M (%d)", s, k, m)
+	}
+
+	n := len(sp.mutations)
+	if n == 0 {
+		return nil
+	}
+
+	start := (k - 1) * n / m
+	end := min(k*n/m, n)
+	sp.mutations = sp.mutations[start:end]
+	return nil
 }

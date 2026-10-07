@@ -34,20 +34,31 @@ func jobFilesRowCount(t *testing.T, h *harness, jobID string) int {
 }
 
 func TestSIGKILL_AddThenImmediateKill_PositiveControl(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, lostAddFixture())
 	jobID := h.AddJob()
-	time.Sleep(1500 * time.Millisecond)
+	deadline := time.Now().Add(3 * time.Second)
+	manifestPath := manifestPathFor(h.AdminDir, jobID)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(manifestPath); err == nil {
+			if slot, ok := h.Slot(jobID); ok && slot.Status != "" {
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	h.Kill()
 	h.Restart()
 
 	slot, ok := h.Slot(jobID)
 	if !ok {
-		t.Fatalf("positive control: job %s absent after 1.5s grace before SIGKILL", jobID)
+		t.Fatalf("positive control: job %s absent after grace before SIGKILL", jobID)
 	}
 	t.Logf("positive control: job %s survived with status %q", jobID, slot.Status)
 }
 
 func TestSIGKILL_AddThenImmediateKill(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, lostAddFixture())
 	jobID := h.AddJob()
 	h.Kill()

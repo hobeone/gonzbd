@@ -1137,21 +1137,25 @@ func TestClampPenalty(t *testing.T) {
 	tests := []struct {
 		name        string
 		noPenalties bool
+		maxPenalty  time.Duration
 		pen         time.Duration
 		want        time.Duration
 	}{
-		{"disabled: long penalty passes through unclamped", false, constants.PenaltyUnknown, constants.PenaltyUnknown},
-		{"enabled: below threshold passes through unclamped", true, constants.PenaltyShort - time.Second, constants.PenaltyShort - time.Second},
-		{"enabled: above threshold is clamped down", true, constants.PenaltyShort + time.Second, constants.PenaltyShort},
-		{"enabled: zero passes through unclamped", true, 0, 0},
+		{"disabled: long penalty passes through unclamped", false, 0, constants.PenaltyUnknown, constants.PenaltyUnknown},
+		{"enabled: below threshold passes through unclamped", true, 0, constants.PenaltyShort - time.Second, constants.PenaltyShort - time.Second},
+		{"enabled: above threshold is clamped down", true, 0, constants.PenaltyShort + time.Second, constants.PenaltyShort},
+		{"enabled: zero passes through unclamped", true, 0, 0, 0},
+		{"custom max: below threshold passes through", false, 500 * time.Millisecond, 200 * time.Millisecond, 200 * time.Millisecond},
+		{"custom max: above threshold is clamped down", false, 500 * time.Millisecond, 5 * time.Second, 500 * time.Millisecond},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			d := &Downloader{opts: Options{NoPenalties: tt.noPenalties}}
+			d := &Downloader{opts: Options{NoPenalties: tt.noPenalties, MaxPenalty: tt.maxPenalty}}
 			got := d.clampPenalty(tt.pen)
 			if got != tt.want {
-				t.Errorf("clampPenalty(%v) with NoPenalties=%v = %v, want %v", tt.pen, tt.noPenalties, got, tt.want)
+				t.Errorf("clampPenalty(%v) with NoPenalties=%v, MaxPenalty=%v = %v, want %v",
+					tt.pen, tt.noPenalties, tt.maxPenalty, got, tt.want)
 			}
 		})
 	}

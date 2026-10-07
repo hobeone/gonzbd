@@ -216,6 +216,9 @@ type Application struct {
 	// reevaluateStalls is otherwise unpinnable, and was.
 	stallRecheckInterval time.Duration
 
+	// maxPenalty overrides the maximum server penalty duration for tests.
+	maxPenalty time.Duration
+
 	wg     sync.WaitGroup
 	ctx    context.Context //nolint:containedctx // ctx is the app's lifecycle context, stored by design
 	cancel context.CancelFunc
@@ -713,6 +716,11 @@ func WithCloseHandlesTimeout(d time.Duration) func(*Application) {
 // WithMetricsPushInterval overrides the interval at which metrics are pushed to the emitter.
 func WithMetricsPushInterval(d time.Duration) func(*Application) {
 	return func(a *Application) { a.metricsPushInterval = d }
+}
+
+// WithMaxPenalty overrides the maximum server penalty duration for tests.
+func WithMaxPenalty(d time.Duration) func(*Application) {
+	return func(a *Application) { a.maxPenalty = d }
 }
 
 func uniqueName(base string, exists func(string) bool) string {
@@ -3101,6 +3109,7 @@ func (app *Application) buildDownloaderOptions() downloader.Options {
 		MaxArtOpt:        maxArtOpt,
 		TopOnly:          topOnly,
 		NoPenalties:      noPenalties,
+		MaxPenalty:       app.maxPenalty,
 		PreCheck:         preCheck,
 		PropagationDelay: time.Duration(propDelay) * time.Minute,
 		OnJobHopeless: func(jobID string) {

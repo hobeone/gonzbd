@@ -72,7 +72,7 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 	defer db.Close()
 	repo := history.NewRepository(db)
 
-	application, err := app.New(cfg, repo)
+	application, err := app.New(cfg, repo, app.WithMaxPenalty(1*time.Second))
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
@@ -158,9 +158,10 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 	}
 
 	// Wait for completion (or timeout)
-	// With penalty escalation enabled (NoPenalties = false), unexpected EOF
-	// incurs PenaltyUnknown (3 minutes), so the timeout must exceed 3m.
-	timeout := 4 * time.Minute
+	// With penalty escalation active (NoPenalties = false) and MaxPenalty clamped
+	// to 1s for the test harness, the pipeline recovers from connection drops and
+	// completes promptly without waiting out the 3m production PenaltyUnknown.
+	timeout := 15 * time.Second
 	deadline := time.Now().Add(timeout)
 	completed := false
 	for time.Now().Before(deadline) {
@@ -169,7 +170,7 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 			completed = true
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	if !completed {

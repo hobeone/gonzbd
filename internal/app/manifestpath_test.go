@@ -18,6 +18,7 @@ import (
 // registry membership makes that unreachable today, but this is the check that
 // says so locally instead of five hops away in the ingest path.
 func TestManifestPath_RejectsUnsafeJobID(t *testing.T) {
+	t.Parallel()
 	for _, id := range []string{
 		"",
 		".",
@@ -29,6 +30,7 @@ func TestManifestPath_RejectsUnsafeJobID(t *testing.T) {
 		"/absolute",
 	} {
 		t.Run(id, func(t *testing.T) {
+			t.Parallel()
 			got, err := manifestPath("/admin", id)
 			if err == nil {
 				t.Fatalf("manifestPath(%q) = %q, nil; want an error — an unsafe ID reached the filesystem", id, got)
@@ -44,18 +46,22 @@ func TestManifestPath_RejectsUnsafeJobID(t *testing.T) {
 // the daemon actually mints — newJobID returns 16 lowercase hex characters —
 // nor the shorter identifiers this package's own tests use.
 func TestManifestPath_AcceptsMintedIDs(t *testing.T) {
+	t.Parallel()
 	for _, id := range []string{"0123456789abcdef", "j1", "job-1", "job_1"} {
-		got, err := manifestPath("/admin", id)
-		if err != nil {
-			t.Fatalf("manifestPath(%q) = %v; want no error", id, err)
-		}
-		want := filepath.Join("/admin", "queue", "manifests", id+".json.gz")
-		if got != want {
-			t.Errorf("manifestPath(%q) = %q, want %q", id, got, want)
-		}
-		if !strings.HasSuffix(got, ".json.gz") {
-			t.Errorf("manifestPath(%q) = %q, want a .json.gz suffix", id, got)
-		}
+		t.Run(id, func(t *testing.T) {
+			t.Parallel()
+			got, err := manifestPath("/admin", id)
+			if err != nil {
+				t.Fatalf("manifestPath(%q) = %v; want no error", id, err)
+			}
+			want := filepath.Join("/admin", "queue", "manifests", id+".json.gz")
+			if got != want {
+				t.Errorf("manifestPath(%q) = %q, want %q", id, got, want)
+			}
+			if !strings.HasSuffix(got, ".json.gz") {
+				t.Errorf("manifestPath(%q) = %q, want a .json.gz suffix", id, got)
+			}
+		})
 	}
 }
 
@@ -68,6 +74,7 @@ func TestManifestPath_AcceptsMintedIDs(t *testing.T) {
 // Plain os.Open follows that symlink, which is what makes this a real
 // difference rather than a restatement of the guard.
 func TestOpenManifestIn_RefusesSymlinkEscapingTheDirectory(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	dir := filepath.Join(base, "manifests")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -180,6 +187,7 @@ func writeJobManifestFixture(t *testing.T, jobID string) *job.Job {
 // Without this file a tick that hydrates the job settles it Failed, which is
 // permanent — see the function's own doc.
 func TestWriteJobManifest_WritesTheFileTheHydratorReads(t *testing.T) {
+	t.Parallel()
 	admin := t.TempDir()
 	j := writeJobManifestFixture(t, "")
 
@@ -203,6 +211,7 @@ func TestWriteJobManifest_WritesTheFileTheHydratorReads(t *testing.T) {
 // failure is returned rather than swallowed: a caller that admitted the job
 // anyway would leave one no tick can hydrate.
 func TestWriteJobManifest_ReportsADirectoryItCannotCreate(t *testing.T) {
+	t.Parallel()
 	// A regular file as the parent makes MkdirAll fail with ENOTDIR, which
 	// needs no permission changes and so behaves the same for root.
 	blocker := filepath.Join(t.TempDir(), "not-a-dir")
@@ -222,6 +231,7 @@ func TestWriteJobManifest_ReportsADirectoryItCannotCreate(t *testing.T) {
 // TestWriteJobManifest_RefusesAnUnsafeJobID pins that the path guard is reached
 // through this writer too, not only through manifestPath's direct callers.
 func TestWriteJobManifest_RefusesAnUnsafeJobID(t *testing.T) {
+	t.Parallel()
 	admin := t.TempDir()
 	j := writeJobManifestFixture(t, "../evil")
 

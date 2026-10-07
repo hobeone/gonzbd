@@ -1092,22 +1092,37 @@ func splitParts(payload []byte, partSize int) [][]byte {
 	return parts
 }
 
+var (
+	reservedPortsMu sync.Mutex
+	reservedPorts   = make(map[int]bool)
+)
+
 // freePort reserves and releases an ephemeral port, returning its number.
 func freePort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve a port: %v", err)
+	reservedPortsMu.Lock()
+	defer reservedPortsMu.Unlock()
+	for range 50 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("reserve a port: %v", err)
+		}
+		addr, ok := ln.Addr().(*net.TCPAddr)
+		if !ok {
+			_ = ln.Close()
+			t.Fatalf("reserved listener address is %T, want *net.TCPAddr", ln.Addr())
+		}
+		port := addr.Port
+		if err := ln.Close(); err != nil {
+			t.Fatalf("release the reserved port: %v", err)
+		}
+		if !reservedPorts[port] {
+			reservedPorts[port] = true
+			return port
+		}
 	}
-	addr, ok := ln.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("reserved listener address is %T, want *net.TCPAddr", ln.Addr())
-	}
-	port := addr.Port
-	if err := ln.Close(); err != nil {
-		t.Fatalf("release the reserved port: %v", err)
-	}
-	return port
+	t.Fatalf("failed to reserve an uncollided port after 50 attempts")
+	return 0
 }
 
 // describeDiff summarises how two byte slices differ, in the terms someone

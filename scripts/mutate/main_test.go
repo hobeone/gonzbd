@@ -451,7 +451,7 @@ func TestReportQuiet_OneLineWhenEveryMutationIsKilled(t *testing.T) {
 
 	var code int
 	out := captureStdout(t, func() {
-		code = reportQuiet("internal/x/testdata/x.spec", results, 1500*time.Millisecond)
+		code = reportQuiet("internal/x/testdata/x.spec", "", results, 1500*time.Millisecond)
 	})
 
 	if code != 0 {
@@ -459,6 +459,14 @@ func TestReportQuiet_OneLineWhenEveryMutationIsKilled(t *testing.T) {
 	}
 	if want := "ok  \tinternal/x/testdata/x.spec\t1.500s\t2 mutations killed\n"; out != want {
 		t.Errorf("output = %q, want %q", out, want)
+	}
+
+	// With chunk label
+	outChunk := captureStdout(t, func() {
+		code = reportQuiet("internal/x/testdata/x.spec", "1/3", results, 1500*time.Millisecond)
+	})
+	if want := "ok  \tinternal/x/testdata/x.spec [1/3]\t1.500s\t2 mutations killed\n"; outChunk != want {
+		t.Errorf("chunk output = %q, want %q", outChunk, want)
 	}
 }
 
@@ -471,7 +479,7 @@ func TestReportQuiet_FailureNamesOnlyTheRowsThatDidNotDie(t *testing.T) {
 
 	var code int
 	out := captureStdout(t, func() {
-		code = reportQuiet("internal/x/testdata/x.spec", results, 2*time.Second)
+		code = reportQuiet("internal/x/testdata/x.spec", "", results, 2*time.Second)
 	})
 
 	if code != 1 {

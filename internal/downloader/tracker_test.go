@@ -231,3 +231,22 @@ func TestTracker_Concurrency(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestDownloader_ReapTracker(t *testing.T) {
+	t.Parallel()
+	d := &Downloader{tracker: newDispatchTracker()}
+	job1 := bareJob("j1")
+	k := keyFor(job1, 1)
+
+	d.tracker.Lock()
+	d.tracker.IncrementInFlightLocked(k)
+	d.tracker.Unlock()
+
+	d.reapTracker("j1")
+
+	d.tracker.Lock()
+	if got := d.tracker.InFlightLocked(k); got != 0 {
+		t.Errorf("InFlightLocked after reapTracker = %d, want 0", got)
+	}
+	d.tracker.Unlock()
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -219,5 +220,53 @@ func TestParseSpec_MissingFileIsAnError(t *testing.T) {
 
 	if _, err := parseSpec(filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Fatal("parseSpec accepted a path that does not exist")
+	}
+}
+
+func TestSpec_ApplyChunk(t *testing.T) {
+	t.Parallel()
+
+	// 1. Invalid formats
+	for _, bad := range []string{"", "1", "abc", "1/0", "0/3", "4/3", "-1/2", "1/-2", "1/2/3"} {
+		sp := &spec{mutations: make([]mutation, 5)}
+		if err := sp.applyChunk(bad); err == nil {
+			t.Errorf("applyChunk(%q) accepted invalid chunk specification", bad)
+		}
+	}
+
+	// 2. Exact partition of 25 mutations into 3 chunks
+	sp := &spec{}
+	for i := range 25 {
+		sp.mutations = append(sp.mutations, mutation{name: "m" + strings.Repeat("x", i)})
+	}
+
+	var seen []string
+	for k := 1; k <= 3; k++ {
+		chunkSp := &spec{mutations: slices.Clone(sp.mutations)}
+		if err := chunkSp.applyChunk(strings.TrimSpace(string([]byte{'0' + byte(k), '/', '3'}))); err != nil {
+			t.Fatalf("applyChunk(%d/3): %v", k, err)
+		}
+		for _, m := range chunkSp.mutations {
+			seen = append(seen, m.name)
+		}
+	}
+
+	if len(seen) != 25 {
+		t.Fatalf("got %d total mutations across chunks, want 25", len(seen))
+	}
+	for i := range 25 {
+		want := "m" + strings.Repeat("x", i)
+		if seen[i] != want {
+			t.Errorf("mutation %d = %q, want %q", i, seen[i], want)
+		}
+	}
+
+	// 3. Single mutation spec chunk 1/1
+	singleSp := &spec{mutations: []mutation{{name: "single"}}}
+	if err := singleSp.applyChunk("1/1"); err != nil {
+		t.Fatalf("applyChunk(1/1): %v", err)
+	}
+	if len(singleSp.mutations) != 1 || singleSp.mutations[0].name != "single" {
+		t.Errorf("applyChunk(1/1) = %+v, want 1 mutation", singleSp.mutations)
 	}
 }

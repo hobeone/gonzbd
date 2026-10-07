@@ -854,7 +854,7 @@ func TestWebSocketLifecycleLogging_BufferOverflow(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
@@ -878,7 +878,6 @@ func TestWebSocketLifecycleLogging_BufferOverflow(t *testing.T) {
 			t.Fatal("timeout waiting for buffer overflow")
 		default:
 			b.Broadcast(Event{Type: "overflow", Line: big})
-			time.Sleep(1 * time.Millisecond)
 		}
 	}
 

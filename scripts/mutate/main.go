@@ -184,6 +184,7 @@ type runOpts struct {
 	verbose, quiet, skipRunfilter bool
 	parallel                      int
 	gcflags                       string
+	chunk                         string
 }
 
 // result pairs a mutation with what running it showed.
@@ -223,6 +224,7 @@ func main() {
 	parallel := flag.Int("parallel", 0, "pass -parallel N to go test (0 keeps go test's default, GOMAXPROCS)")
 	gcflags := flag.String("gcflags", "-N -l", "pass -gcflags to go test; the default compiles the package under test "+
 		"unoptimized, which is faster to rebuild once per mutation (empty passes nothing)")
+	chunk := flag.String("chunk", "", "run a 1-based fraction of mutations from the spec, in the form K/M (e.g. 1/3)")
 	affected := flag.String("affected", "", "print the specs a diff against REF can change, one per line, "+
 		"instead of running anything (see the usage text for what that selects and misses)")
 	flag.Usage = usage
@@ -288,7 +290,14 @@ func main() {
 			flag.Usage()
 			os.Exit(2)
 		}
-		runSpec(root, flag.Arg(0), runOpts{verbose: *verbose, quiet: *quiet, skipRunfilter: *skipRunfilter, parallel: *parallel, gcflags: *gcflags})
+		runSpec(root, flag.Arg(0), runOpts{
+			verbose:       *verbose,
+			quiet:         *quiet,
+			skipRunfilter: *skipRunfilter,
+			parallel:      *parallel,
+			gcflags:       *gcflags,
+			chunk:         *chunk,
+		})
 	}
 }
 
@@ -307,6 +316,11 @@ func runSpec(root, path string, opts runOpts) {
 	}
 	sp.parallel = opts.parallel
 	sp.gcflags = opts.gcflags
+	if opts.chunk != "" {
+		if err := sp.applyChunk(opts.chunk); err != nil {
+			fatal("%v", err)
+		}
+	}
 
 	if !opts.skipRunfilter {
 		if dead, err := deadRunFilterNames(root, sp); err != nil {
@@ -365,7 +379,7 @@ func runSpec(root, path string, opts runOpts) {
 	}
 
 	if opts.quiet {
-		os.Exit(reportQuiet(path, confirmed, time.Since(start)))
+		os.Exit(reportQuiet(path, opts.chunk, confirmed, time.Since(start)))
 	}
 	os.Exit(report(confirmed))
 }
@@ -957,18 +971,26 @@ func report(results []result) int {
 // listing them buries the ones that were not — the note `note` has for each of
 // those rows, and the command that reruns the spec with the full table and
 // every go test output.
-func reportQuiet(specPath string, results []result, elapsed time.Duration) int {
+func reportQuiet(specPath, chunk string, results []result, elapsed time.Duration) int {
 	bad := notKilled(results)
 	secs := elapsed.Seconds()
+	label := specPath
+	if chunk != "" {
+		label = fmt.Sprintf("%s [%s]", specPath, chunk)
+	}
 	if len(bad) == 0 {
-		fmt.Printf("ok  \t%s\t%.3fs\t%d mutations killed\n", specPath, secs, len(results))
+		fmt.Printf("ok  \t%s\t%.3fs\t%d mutations killed\n", label, secs, len(results))
 		return 0
 	}
 
 	fmt.Printf("FAIL\t%s\t%.3fs\t%d of %d mutations did not produce a red result\n\n",
-		specPath, secs, len(bad), len(results))
+		label, secs, len(bad), len(results))
 	printRows(bad)
-	fmt.Printf("\nrerun: go run ./scripts/mutate -v %s\n", specPath)
+	rerunChunk := ""
+	if chunk != "" {
+		rerunChunk = fmt.Sprintf(" -chunk %s", chunk)
+	}
+	fmt.Printf("\nrerun: go run ./scripts/mutate -v%s %s\n", rerunChunk, specPath)
 	return 1
 }
 
@@ -1057,13 +1079,17 @@ func fatal(format string, args ...any) {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] [-parallel N] [-gcflags FLAGS] <spec-file>
+	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] [-parallel N] [-gcflags FLAGS] [-chunk K/M] <spec-file>
        go run ./scripts/mutate -check <spec-file>...
        go run ./scripts/mutate -check-all
        go run ./scripts/mutate -affected REF
 
 Runs AGENTS.md's observed red check: apply each mutation, require the test to
 fail, restore the file. Exits non-zero unless every mutation is KILLED.
+
+-chunk K/M runs the K-th fraction of mutations from the spec out of M total
+chunks (1-based, e.g. 1/3, 2/3, 3/3). This allows large specs to be partitioned
+and executed across parallel workers without altering the spec file.
 
 -parallel N passes -parallel N to the go test runs that execute tests: the
 baseline, each mutation and the package-wide re-runs. Left unset,

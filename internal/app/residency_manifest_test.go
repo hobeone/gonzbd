@@ -18,6 +18,7 @@ import (
 // Pre-existing helper surfaced by check_test_alignment while this package was
 // touched for #329 — not part of that change, but a real gap once flagged.
 func TestDecodeManifest_DecodesGzippedJSON(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "m.json.gz")
 	content := `{"files":[{"subject":"test.rar","bytes":100,"articles":[{"id":"m1","bytes":100,"number":1}]}]}`
@@ -58,6 +59,7 @@ func TestDecodeManifest_DecodesGzippedJSON(t *testing.T) {
 // gzip-compressed is rejected at the gzip.NewReader step rather than
 // producing a zero-value manifest.
 func TestDecodeManifest_RejectsNonGzip(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "m.json.gz")
 	if err := os.WriteFile(path, []byte("not gzip"), 0o600); err != nil {
@@ -76,6 +78,7 @@ func TestDecodeManifest_RejectsNonGzip(t *testing.T) {
 // openManifestIn and decodeManifest: given a job ID, it locates and decodes
 // that job's manifest under the residency's manifest directory.
 func TestReadManifest_ReadsFromDir(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	j := job.New("abc123", "test", job.Policy{})
 	writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), j)
@@ -93,6 +96,7 @@ func TestReadManifest_ReadsFromDir(t *testing.T) {
 // TestReadManifest_MissingJobErrors pins that a job ID with no manifest file
 // on disk reports an error rather than a nil manifest with a nil error.
 func TestReadManifest_MissingJobErrors(t *testing.T) {
+	t.Parallel()
 	r := newAppResidency(func(string) (*job.Job, bool) { return nil, false }, t.TempDir(), nil, nil)
 	if _, err := r.readManifest(context.Background(), "nope"); err == nil {
 		t.Error("readManifest for a missing job returned nil error, want one")

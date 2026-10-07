@@ -37,8 +37,12 @@ type AppriseNotifier struct {
 // client with a defaultAppriseTimeout timeout is used instead so a hung
 // Apprise endpoint cannot block Dispatcher.Dispatch indefinitely.
 func NewAppriseNotifier(cfg AppriseConfig, client *http.Client) *AppriseNotifier {
-	if client == nil || client.Timeout == 0 {
+	if client == nil {
 		client = &http.Client{Timeout: defaultAppriseTimeout}
+	} else if client.Timeout == 0 {
+		c := *client
+		c.Timeout = defaultAppriseTimeout
+		client = &c
 	}
 	return &AppriseNotifier{cfg: cfg, client: client}
 }

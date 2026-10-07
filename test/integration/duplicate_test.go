@@ -65,6 +65,7 @@ import (
 // from a lucky streak of isolated passes and was wrong. Then check whether
 // a new read-then-write transaction has been added without withWriteTx.
 func TestIntegration_DuplicateDetection(t *testing.T) {
+	t.Parallel()
 	srv := newMockServer(t, nil)
 	// We need a stable directory to check the admin/nzb folder
 	dir := t.TempDir()
@@ -148,6 +149,7 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 }
 
 func TestIntegration_DirectoryCollision(t *testing.T) {
+	t.Parallel()
 	srv := newMockServer(t, nil)
 	dir := t.TempDir()
 

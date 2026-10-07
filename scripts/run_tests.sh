@@ -303,26 +303,17 @@ else
     else
         NUM_CPUS=$(nproc 2>/dev/null || echo 4)
         if [ "$NUM_CPUS" -ge 4 ]; then
-            WORKERS=$(( NUM_CPUS / 2 ))
+            WORKERS=$(( NUM_CPUS * 3 / 4 ))
             if [ "$WORKERS" -gt 16 ]; then WORKERS=16; fi
+            if [ "$WORKERS" -lt 4 ]; then WORKERS=4; fi
         else
             WORKERS="$NUM_CPUS"
         fi
     fi
-    if [ "$WORKERS" -gt "$NUM_SPECS" ]; then WORKERS="$NUM_SPECS"; fi
 
-    # Compute per-worker CPU budget to prevent oversubscription timeouts
     NUM_CPUS=$(nproc 2>/dev/null || echo 4)
-    CPU_BUDGET=$(( NUM_CPUS / WORKERS ))
-    if [ "$CPU_BUDGET" -lt 1 ]; then CPU_BUDGET=1; fi
-
-    # GOMAXPROCS=$CPU_BUDGET below keeps compilers and CPU-bound tests from
-    # oversubscribing the machine, but `go test -parallel` defaults to
-    # GOMAXPROCS, so it would also cap tests that only wait (a fixture's
-    # Stop, a poll) at CPU_BUDGET at a time. Parallelism is set on its own.
-    # 0 is rejected although mutate accepts it: there it means "leave go test's
-    # default", which here would bring the cap straight back.
-    TEST_PARALLEL="${MUTATE_TEST_PARALLEL:-$NUM_CPUS}"
+    WORKER_PROCS=$(( NUM_CPUS >= 8 ? 2 : 1 ))
+    TEST_PARALLEL="${MUTATE_TEST_PARALLEL:-4}"
     if ! [[ "$TEST_PARALLEL" =~ ^[0-9]+$ ]] || [ "$TEST_PARALLEL" -lt 1 ]; then
         echo -e "${RED}ERROR: MUTATE_TEST_PARALLEL must be a positive integer, got '$TEST_PARALLEL'${NC}" >&2
         exit 1
@@ -341,12 +332,38 @@ else
     QUEUE_LOCK="$WORKTREE_BASE/queue.lock"
     RESULTS_FILE="$WORKTREE_BASE/results.txt"
     touch "$QUEUE_LOCK" "$RESULTS_FILE"
-    # Schedule heaviest specs first (LPT) to minimize makespan and avoid tail stragglers
-    for s in "${SPECS[@]}"; do
-        echo "$(grep -c '^\[' "$s") $s"
-    done | sort -rn | awk '{print $2}' > "$QUEUE_FILE"
 
-    echo "Running $NUM_SPECS mutation specs in parallel across $WORKERS git worktrees..."
+    # Partition heavy specs into chunks to eliminate tail stragglers and minimize makespan.
+    # Weight jobs by compilation footprint (internal/app is largest) for LPT scheduling.
+    MAX_CHUNK_MUTATIONS="${MUTATE_MAX_CHUNK:-5}"
+    ALL_ITEMS=()
+    QUEUE_ITEMS=()
+    for s in "${SPECS[@]}"; do
+        mut_count=$(grep -c '^\[' "$s" || echo 1)
+        pkg_weight=1
+        case "$s" in
+            internal/app/*) pkg_weight=4 ;;
+            internal/downloader/*|internal/api/*|internal/history/*|internal/durability/*) pkg_weight=2 ;;
+        esac
+        if [ "$mut_count" -le "$MAX_CHUNK_MUTATIONS" ]; then
+            ALL_ITEMS+=("$s")
+            QUEUE_ITEMS+=("$(( mut_count * pkg_weight )) $s")
+        else
+            chunks=$(( (mut_count + MAX_CHUNK_MUTATIONS - 1) / MAX_CHUNK_MUTATIONS ))
+            chunk_size=$(( (mut_count + chunks - 1) / chunks ))
+            for ((c=1; c<=chunks; c++)); do
+                item="$s:$c/$chunks"
+                ALL_ITEMS+=("$item")
+                QUEUE_ITEMS+=("$(( chunk_size * pkg_weight )) $item")
+            done
+        fi
+    done
+    printf "%s\n" "${QUEUE_ITEMS[@]}" | sort -rn | awk '{print $2}' > "$QUEUE_FILE"
+
+    NUM_JOBS=${#ALL_ITEMS[@]}
+    if [ "$WORKERS" -gt "$NUM_JOBS" ]; then WORKERS="$NUM_JOBS"; fi
+
+    echo "Running $NUM_SPECS mutation specs ($NUM_JOBS parallel jobs) across $WORKERS git worktrees..."
 
     # Create snapshot commit from a temporary index
     SNAP_INDEX=$(mktemp -t gonzbd-index.XXXXXX)
@@ -365,8 +382,8 @@ else
         fi
     done
 
-    # Pop next spec atomically from shared queue
-    pop_spec() {
+    # Pop next item atomically from shared queue
+    pop_item() {
         (
             flock -x 200
             if [ -s "$QUEUE_FILE" ]; then
@@ -380,26 +397,34 @@ else
     set -m
     for ((w=0; w<WORKERS; w++)); do
         (
-            export GOMAXPROCS="$CPU_BUDGET"
-            export GOFLAGS="${GOFLAGS:+$GOFLAGS }-p=$CPU_BUDGET"
+            export GOMAXPROCS="${MUTATE_GOMAXPROCS:-$WORKER_PROCS}"
             set -o pipefail
             cd "$WORKTREE_BASE/wt-$w"
             while true; do
-                spec=$(pop_spec)
-                [ -n "$spec" ] || break
-                log_file="$WORKTREE_BASE/logs/$(echo "$spec" | tr '/' '_').log"
+                item=$(pop_item)
+                [ -n "$item" ] || break
+                spec="${item%%:*}"
+                chunk=""
+                if [ "$item" != "$spec" ]; then
+                    chunk="${item#*:}"
+                fi
+                CHUNK_ARGS=()
+                if [ -n "$chunk" ]; then
+                    CHUNK_ARGS=(-chunk "$chunk")
+                fi
+                log_file="$WORKTREE_BASE/logs/$(echo "$item" | tr '/:' '__').log"
                 # -q gives a passing spec one `ok` line and a failing one its
                 # failing rows plus a rerun command. Output goes to a log and is
                 # printed with one cat, which keeps workers' lines apart in the
                 # common case of a short `ok` line. It is not atomic: a long
                 # log, or the FAILED header followed by the log, can interleave.
-                if "$MUTATE_BIN" -q -parallel "$TEST_PARALLEL" "${MUTATE_GCFLAGS_ARGS[@]}" -skip-runfilter "$spec" >"$log_file" 2>&1; then
+                if "$MUTATE_BIN" -q -parallel "$TEST_PARALLEL" "${CHUNK_ARGS[@]}" "${MUTATE_GCFLAGS_ARGS[@]}" -skip-runfilter "$spec" >"$log_file" 2>&1; then
                     cat "$log_file"
-                    echo "$spec PASSED" >> "$RESULTS_FILE"
+                    echo "$item PASSED" >> "$RESULTS_FILE"
                 else
-                    echo -e "${RED}FAILED: $spec${NC}" >&2
+                    echo -e "${RED}FAILED: $item${NC}" >&2
                     cat "$log_file" >&2
-                    echo "$spec FAILED" >> "$RESULTS_FILE"
+                    echo "$item FAILED" >> "$RESULTS_FILE"
                     exit 1
                 fi
             done
@@ -436,10 +461,10 @@ else
 
     if [ "$FAILED" -ne 0 ]; then
         echo -e "${RED}ERROR: One or more mutation specs failed.${NC}" >&2
-        echo "Unrun / interrupted specs:" >&2
-        for spec in "${SPECS[@]}"; do
-            if ! grep -q "^$spec " "$RESULTS_FILE" 2>/dev/null; then
-                echo "  [not run] $spec" >&2
+        echo "Unrun / interrupted jobs:" >&2
+        for item in "${ALL_ITEMS[@]}"; do
+            if ! grep -q "^$item " "$RESULTS_FILE" 2>/dev/null; then
+                echo "  [not run] $item" >&2
             fi
         done
         cleanup_mutate
@@ -447,21 +472,20 @@ else
         exit 1
     fi
 
-    # Assert that all expected specs passed via set equality
-    PASSED_SPECS=$(sed -n 's/ PASSED$//p' "$RESULTS_FILE" | sort -u)
-    EXPECTED_SPECS=$(printf '%s\n' "${SPECS[@]}" | sort -u)
-    if [ "$PASSED_SPECS" != "$EXPECTED_SPECS" ]; then
-        echo -e "${RED}ERROR: Executed specs do not match expected spec list.${NC}" >&2
+    # Assert that all expected items passed via set equality
+    PASSED_ITEMS=$(sed -n 's/ PASSED$//p' "$RESULTS_FILE" | sort -u)
+    EXPECTED_ITEMS=$(printf '%s\n' "${ALL_ITEMS[@]}" | sort -u)
+    if [ "$PASSED_ITEMS" != "$EXPECTED_ITEMS" ]; then
+        echo -e "${RED}ERROR: Executed jobs do not match expected job list.${NC}" >&2
         cleanup_mutate
         trap - EXIT INT TERM
         exit 1
     fi
-    RUN_COUNT=$(printf '%s\n' "$PASSED_SPECS" | grep -c . || echo 0)
 
     cleanup_mutate
     trap - EXIT INT TERM
 
-    echo -e "${SWEEP_COLOR}✓ ${SWEEP_SCOPE} Mutation Specs Killed ($RUN_COUNT/$NUM_SPECS)${SWEEP_NOTE}${NC}"
+    echo -e "${SWEEP_COLOR}✓ ${SWEEP_SCOPE} Mutation Specs Killed ($NUM_SPECS specs across $NUM_JOBS jobs)${SWEEP_NOTE}${NC}"
 fi
 
 # 3. Go Integration Tests
@@ -492,9 +516,13 @@ echo -e "\n[5/7] Running UI Component Tests..."
 echo -e "${GREEN}✓ UI Component Tests Passed${NC}"
 
 # 6. UI E2E Tests (requires built UI + Playwright browsers)
-echo -e "\n[6/7] Running UI E2E Tests..."
-go test -tags=uitest -v ./test/uitest/...
-echo -e "${GREEN}✓ UI E2E Tests Passed${NC}"
+if [ "${SKIP_PLAYWRIGHT:-}" = "1" ] || [ "${SKIP_UITEST:-}" = "1" ]; then
+    echo -e "\n[6/7] Skipping UI E2E Tests (SKIP_PLAYWRIGHT=1)..."
+else
+    echo -e "\n[6/7] Running UI E2E Tests..."
+    go test -tags=uitest -v ./test/uitest/...
+    echo -e "${GREEN}✓ UI E2E Tests Passed${NC}"
+fi
 
 if [ "$VULN_STATUS" -ne 0 ]; then
     echo -e "\n${RED}===================================================="

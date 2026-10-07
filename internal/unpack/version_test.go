@@ -2,6 +2,7 @@ package unpack
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -76,24 +77,10 @@ func TestParseUnrarOutput(t *testing.T) {
 	}
 }
 
-func init() {
-	if os.Getenv("GO_WANT_HELPER_PROCESS") == "1" {
-		mode := os.Getenv("HELPER_MODE")
-		switch mode {
-		case "unrar":
-			_, _ = os.Stdout.WriteString("UNRAR 7.21 freeware\n")
-			os.Exit(0)
-		case "sevenzip":
-			_, _ = os.Stdout.WriteString("7-Zip (z) 21.06 x64\n")
-			os.Exit(0)
-		default:
-			os.Exit(1)
-		}
-	}
-}
-
 func TestDetectUnrar(t *testing.T) {
+	t.Parallel()
 	t.Run("nonexistent binary", func(t *testing.T) {
+		t.Parallel()
 		got := DetectUnrar(t.Context(), "/path/to/nonexistent")
 		if got.Available {
 			t.Error("expected Available to be false for nonexistent binary")
@@ -101,13 +88,11 @@ func TestDetectUnrar(t *testing.T) {
 	})
 
 	t.Run("valid mock binary", func(t *testing.T) {
-		bin := os.Args[0]
-		os.Setenv("GO_WANT_HELPER_PROCESS", "1")
-		os.Setenv("HELPER_MODE", "unrar")
-		defer func() {
-			os.Unsetenv("GO_WANT_HELPER_PROCESS")
-			os.Unsetenv("HELPER_MODE")
-		}()
+		t.Parallel()
+		bin := filepath.Join(t.TempDir(), "unrar")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"UNRAR 7.21 freeware\"\n"), 0755); err != nil {
+			t.Fatalf("write mock unrar: %v", err)
+		}
 
 		got := DetectUnrar(t.Context(), bin)
 		if !got.Available {
@@ -123,7 +108,9 @@ func TestDetectUnrar(t *testing.T) {
 }
 
 func TestDetectSevenZip(t *testing.T) {
+	t.Parallel()
 	t.Run("nonexistent binary", func(t *testing.T) {
+		t.Parallel()
 		got := DetectSevenZip(t.Context(), "/path/to/nonexistent")
 		if got.Available {
 			t.Error("expected Available to be false for nonexistent binary")
@@ -131,13 +118,11 @@ func TestDetectSevenZip(t *testing.T) {
 	})
 
 	t.Run("valid mock binary", func(t *testing.T) {
-		bin := os.Args[0]
-		os.Setenv("GO_WANT_HELPER_PROCESS", "1")
-		os.Setenv("HELPER_MODE", "sevenzip")
-		defer func() {
-			os.Unsetenv("GO_WANT_HELPER_PROCESS")
-			os.Unsetenv("HELPER_MODE")
-		}()
+		t.Parallel()
+		bin := filepath.Join(t.TempDir(), "7z")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"7-Zip (z) 21.06 x64\"\n"), 0755); err != nil {
+			t.Fatalf("write mock 7z: %v", err)
+		}
 
 		got := DetectSevenZip(t.Context(), bin)
 		if !got.Available {
