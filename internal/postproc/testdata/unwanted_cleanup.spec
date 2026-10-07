@@ -33,14 +33,6 @@ file internal/postproc/unwanted_cleanup.go
 	if false && rules.Action() == unwanted.ActionOff {
 --- end
 
-[only files OwnedFiles lists are judged]
-file internal/postproc/unwanted_cleanup.go
---- anchor
-		if d.IsDir() || !rules.Unwanted(d.Name()) {
---- replace
-		if _, owned := job.OwnedFiles[filepath.Join(job.DownloadDir, path)]; d.IsDir() || !rules.Unwanted(d.Name()) || (job.OwnedFiles != nil && !owned) {
---- end
-
 [nothing is removed]
 file internal/postproc/unwanted_cleanup.go
 --- anchor

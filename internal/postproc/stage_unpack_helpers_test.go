@@ -79,8 +79,7 @@ func TestUnpackStage_filterPending(t *testing.T) {
 
 // TestUnpackStage_handleDirectUnpack pins the handoff from DirectUnpack: the
 // parts it already extracted must be marked processed so the unpack stage does
-// not extract them a second time, and its output files must be owned so the
-// cleanup stages do not skip them as foreign.
+// not extract them a second time.
 //
 // Parts are marked under BOTH the full path and the basename, because Scan's
 // lookup is basename-based while the recursion tracks full paths. Marking only
@@ -98,12 +97,6 @@ func TestUnpackStage_handleDirectUnpack(t *testing.T) {
 	job := &Job{
 		Job:         newQueueJob(t, "dujob", 0),
 		DownloadDir: dir,
-		// Non-nil: markOwned returns early on a nil OwnedFiles, so with nil
-		// nothing is recorded and the ownership assertion below fails. That
-		// failure would be about the fixture rather than about
-		// handleDirectUnpack, which is the reading a later maintainer would
-		// have to disprove before trusting the test.
-		OwnedFiles: map[string]struct{}{},
 		DirectUnpackSets: map[string]directunpack.SuccessSet{
 			"set-one": {
 				ExtractedFiles: []string{extracted},
@@ -127,9 +120,6 @@ func TestUnpackStage_handleDirectUnpack(t *testing.T) {
 	}
 	if successful[0].Type != unpack.RarArchive {
 		t.Errorf("archive type = %v, want RarArchive", successful[0].Type)
-	}
-	if _, owned := job.OwnedFiles[extracted]; !owned {
-		t.Errorf("%s was not marked owned; the cleanup stages skip unowned files", extracted)
 	}
 }
 

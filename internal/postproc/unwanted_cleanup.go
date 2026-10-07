@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 
 	"github.com/hobeone/gonzbd/internal/unwanted"
 )
@@ -20,8 +19,7 @@ import (
 // It is the backstop for what the ingest check cannot see: a file inside an
 // archive, a file whose NZB subject was obfuscated, a file par2 rebuilt or
 // renamed. It judges what finalize will deliver, which is everything under
-// DownloadDir, so it does not consult OwnedFiles: par2 repair records
-// nothing there. DownloadDir is the download directory joined with the job's
+// DownloadDir. DownloadDir is the download directory joined with the job's
 // name, and no two registered jobs share a name: the dispatcher refuses one
 // another registered job holds, both when a job is registered and when it is
 // renamed (Dispatcher.nameHolderLocked). AddJob and Application.RenameJob
@@ -106,7 +104,6 @@ func (s *UnwantedCleanupStage) Run(ctx context.Context, job *Job) error {
 			errs = append(errs, fmt.Errorf("remove %s: %w", path, err))
 			return nil
 		}
-		delete(job.OwnedFiles, filepath.Join(job.DownloadDir, path))
 		removed++
 		logf(ctx, log, job, slog.LevelInfo, "removed %s (unwanted extension)", path)
 		return nil

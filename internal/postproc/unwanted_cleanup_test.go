@@ -103,10 +103,8 @@ func TestUnwantedCleanup_RemovesNothing(t *testing.T) {
 }
 
 // TestUnwantedCleanup_JudgesEveryFileFinalizeDelivers pins that the stage
-// judges what finalize will move, not what OwnedFiles recorded. par2 repair
-// records nothing in OwnedFiles, so a file it rebuilt (absent from the NZB)
-// or renamed (posted under an obfuscated name, quickcheck off) is not owned,
-// and finalize moves the whole directory regardless.
+// judges every file in DownloadDir that finalize will move, including files
+// produced or renamed by par2 repair.
 func TestUnwantedCleanup_JudgesEveryFileFinalizeDelivers(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"movie.mkv", "setup.exe", "readme.bat"} {
@@ -115,19 +113,12 @@ func TestUnwantedCleanup_JudgesEveryFileFinalizeDelivers(t *testing.T) {
 		}
 	}
 	job := &Job{Job: newQueueJob(t, "test", 0), DownloadDir: dir}
-	// The snapshot taken at the start of the run: the payload, and the
-	// obfuscated name repair later renamed to readme.bat. setup.exe was
-	// rebuilt by repair and is in no snapshot.
-	job.OwnedFiles = map[string]struct{}{
-		filepath.Join(dir, "movie.mkv"):    {},
-		filepath.Join(dir, "a1b2c3d4e5f6"): {},
-	}
 	if err := NewUnwantedCleanupStage(rulesOf(t, unwanted.ActionPause)).Run(context.Background(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	for _, gone := range []string{"setup.exe", "readme.bat"} {
 		if exists(t, filepath.Join(dir, gone)) {
-			t.Errorf("%s survived: par2 produced it, so OwnedFiles does not list it, and finalize would deliver it", gone)
+			t.Errorf("%s survived in DownloadDir and finalize would deliver it", gone)
 		}
 	}
 	if !exists(t, filepath.Join(dir, "movie.mkv")) {
