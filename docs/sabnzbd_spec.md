@@ -1,7 +1,15 @@
-# GoNZBD Specification
+# SABnzbd Reference
 
 **Source**: SABnzbd v5.x (Python 3.9+)  
 **Purpose**: Automated Usenet binary newsreader — downloads NZB files, verifies, repairs, and extracts archives with zero human interaction.
+
+> **What is binding.** Only [§10 HTTP API](#10-http-api), which third-party
+> tools call, and [§16.1 NZB XML Format](#161-nzb-xml-format) are requirements
+> for GoNZBD. Every other section describes how SABnzbd works: background and
+> prior art, not a specification. GoNZBD's own design may differ wherever that
+> is simpler or faster, and matching SABnzbd behaviour that the API does not
+> expose is never by itself a reason for a design. See `AGENTS.md` § "Reading
+> Prior Art".
 
 ---
 

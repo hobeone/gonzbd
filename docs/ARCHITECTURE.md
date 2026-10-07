@@ -1,6 +1,6 @@
 # GoNZBD Architecture & Design
 
-This document provides a detailed overview of the architecture, design, and implementation of GoNZBD, a high-performance Go reimplementation of [SABnzbd](https://sabnzbd.org).
+This document provides a detailed overview of the architecture, design, and implementation of GoNZBD, a high-performance automated Usenet binary downloader written in Go. Its one compatibility obligation is the SABnzbd-compatible HTTP API that third-party tools call (`docs/sabnzbd_spec.md` §10); behind that API the design is its own, with [SABnzbd](https://sabnzbd.org) and [NZBGet](https://nzbget.com) as prior art.
 
 ## Project Overview
 
