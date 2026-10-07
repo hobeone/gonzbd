@@ -328,6 +328,11 @@ else
         exit 1
     fi
 
+    # mutate has its own -gcflags default. MUTATE_GCFLAGS replaces it when set,
+    # and set but empty passes nothing.
+    MUTATE_GCFLAGS_ARGS=()
+    if [ -n "${MUTATE_GCFLAGS+x}" ]; then MUTATE_GCFLAGS_ARGS=(-gcflags "$MUTATE_GCFLAGS"); fi
+
     WORKTREE_BASE=$(mktemp -d -t gonzbd-mutate-wt.XXXXXX)
     echo "$$" > "$WORKTREE_BASE/owner.pid"
     mkdir -p "$WORKTREE_BASE/logs"
@@ -388,7 +393,7 @@ else
                 # printed with one cat, which keeps workers' lines apart in the
                 # common case of a short `ok` line. It is not atomic: a long
                 # log, or the FAILED header followed by the log, can interleave.
-                if "$MUTATE_BIN" -q -parallel "$TEST_PARALLEL" -skip-runfilter "$spec" >"$log_file" 2>&1; then
+                if "$MUTATE_BIN" -q -parallel "$TEST_PARALLEL" "${MUTATE_GCFLAGS_ARGS[@]}" -skip-runfilter "$spec" >"$log_file" 2>&1; then
                     cat "$log_file"
                     echo "$spec PASSED" >> "$RESULTS_FILE"
                 else
