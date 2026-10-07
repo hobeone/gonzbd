@@ -74,6 +74,14 @@ type PostProcConfig struct {
 	// last member and any that resolves outside the job directory is removed.
 	// Does not govern the external unrar, which handles links itself.
 	ExtractSymlinks bool `yaml:"extract_symlinks" json:"extract_symlinks"`
+	// RarDecodeWorkers sets how many goroutines the pure-Go RAR5 extractor
+	// uses to decode one compressed member's blocks. 0 (default) means
+	// auto: min(runtime.NumCPU(), 4). 1 means the serial decoder. Values
+	// above 8 are clamped by rarengine. Negative values are treated as 0
+	// (auto). Stored (uncompressed) members are unaffected. Each worker
+	// count above 1 can retain up to 2n x 4 MiB of buffers per extraction
+	// after very large blocks. Does not govern the external unrar.
+	RarDecodeWorkers int `yaml:"rar_decode_workers" json:"rar_decode_workers"`
 	// OverwriteFiles allows extraction to clobber existing files in
 	// the destination.
 	OverwriteFiles bool `yaml:"overwrite_files" json:"overwrite_files"`

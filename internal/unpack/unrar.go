@@ -50,6 +50,11 @@ type Options struct {
 	// link target comes from the archive. Hard links and file copies are
 	// unaffected. The external unrar is not governed by this option.
 	ExtractSymlinks bool
+	// DecodeWorkers is the configured rar_decode_workers value for the
+	// pure-Go RAR path: <= 0 means auto, 1 serial, larger values decode a
+	// compressed member's blocks on that many goroutines (see
+	// DecodeWorkers). The external unrar is not governed by this option.
+	DecodeWorkers int
 	// Symlinks collects symlink members during one pure-Go RAR extraction so
 	// they can be created after the last member. Set by the extraction loop
 	// that owns it; callers leave it nil. With ExtractSymlinks true and no

@@ -45,3 +45,18 @@ func TestUnpackConfigFromPP_ForwardsProbeHasProblem(t *testing.T) {
 		}
 	}
 }
+
+// TestRarDecodeWorkersPlumbing pins that rar_decode_workers reaches both the
+// post-process unpack options and the DirectUnpack options.
+func TestRarDecodeWorkersPlumbing(t *testing.T) {
+	t.Parallel()
+	pp := config.PostProcConfig{RarDecodeWorkers: 3}
+	got := unpackConfigFromPP(pp, binaryProbe{}, cmdutil.CmdConfig{}, nil)
+	if got.Base.DecodeWorkers != 3 {
+		t.Errorf("unpackConfigFromPP Base.DecodeWorkers = %d, want 3", got.Base.DecodeWorkers)
+	}
+	du := (&directUnpackOrchestrator{}).buildOpts(false, false, false, false, pp.RarDecodeWorkers)
+	if du.DecodeWorkers != 3 {
+		t.Errorf("buildOpts DecodeWorkers = %d, want 3", du.DecodeWorkers)
+	}
+}

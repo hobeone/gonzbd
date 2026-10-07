@@ -769,3 +769,20 @@ func TestConfig_ValueGetters_Isolation(t *testing.T) {
 		t.Errorf("Snapshot() mutated live config")
 	}
 }
+
+func TestRarDecodeWorkers(t *testing.T) {
+	cfg, err := Default()
+	if err != nil {
+		t.Fatalf("Default() error: %v", err)
+	}
+	if cfg.PostProc.RarDecodeWorkers != 0 {
+		t.Errorf("default RarDecodeWorkers = %d, want 0 (auto)", cfg.PostProc.RarDecodeWorkers)
+	}
+	var pp PostProcConfig
+	if err := yaml.Unmarshal([]byte("rar_decode_workers: 1\n"), &pp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if pp.RarDecodeWorkers != 1 {
+		t.Errorf("RarDecodeWorkers = %d, want 1", pp.RarDecodeWorkers)
+	}
+}

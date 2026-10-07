@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -166,6 +167,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 	close(volumesChan)
 
 	r := rarengine.NewReader(volumesChan)
+	r.SetWorkers(DecodeWorkers(opts.DecodeWorkers, runtime.NumCPU()))
 	defer r.Close() //nolint:errcheck // close open and queued volumes
 	stop := context.AfterFunc(ctx, func() { _ = r.Close() })
 	defer stop()
