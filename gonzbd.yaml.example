@@ -375,6 +375,12 @@ postproc:
   # always extracted. Does not affect the external unrar.
   extract_symlinks: false
 
+  # Goroutines the pure-Go RAR5 extractor uses to decode one compressed member.
+  # 0 (default) picks min(CPU count, 4); 1 is the serial decoder; values above
+  # 8 are clamped. Stored (uncompressed) members are unaffected. Each extra
+  # worker costs a little CPU for about 2x wall-clock on compressed members.
+  rar_decode_workers: 0
+
   # Allow extraction to overwrite existing files in the destination.
   # When false, existing files are preserved and extraction may fail
   # if a name collision occurs.

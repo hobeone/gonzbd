@@ -79,6 +79,8 @@ postproc:
   par2_max_junk_scan_bytes: 65536
   ignore_unrar_dates: false
   extract_symlinks: false
+  # Decode goroutines per compressed RAR5 member (0 = auto: min(CPU count, 4); 1 = serial).
+  rar_decode_workers: 0
   overwrite_files: false
   use_go_rar: true
   use_go_7z: true
