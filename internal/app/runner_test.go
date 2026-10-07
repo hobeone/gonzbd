@@ -77,14 +77,14 @@ func (r *reportRecorder) calls() int {
 // of wall clock to show up.
 func waitFor(t *testing.T, pred func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
 		if pred() {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatal("condition not met within 2s")
+	t.Fatal("condition not met within 1s")
 }
 
 // TestAppRunner_ReturnsPromptly pins ports.go's hardest requirement: Run is

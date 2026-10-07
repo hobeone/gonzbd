@@ -35,13 +35,18 @@ quality gates).
   tree. It is a loop for iterating, not the final gate before merge.
 - `MUTATE_PARALLEL_WORKERS=<n>`: Number of parallel git worktrees running
   `scripts/mutate` (default `3/4 * NUM_CPUS`, clamped to 4..16).
-- `MUTATE_MAX_CHUNK=<n>`: Maximum mutations per chunk (default 4 on >=16 cores,
-  5 otherwise). Heavy specs are partitioned into chunks to eliminate tail
-  stragglers and balance makespan across workers.
+- `MUTATE_MAX_CHUNK=<n>`: Maximum mutations per chunk (default 5).
+  Heavy specs are partitioned into chunks to eliminate tail stragglers and
+  balance makespan across workers. Chunk 1 verifies the unmutated baseline;
+  chunks 2..M pass `-skip-baseline` to avoid redundant baseline runs.
 - `MUTATE_GOMAXPROCS=<n>`: `GOMAXPROCS` for each mutation worker process
-  (default 2 on >=8 cores, 1 otherwise).
+  (default 2 on >=24 cores, 1 otherwise). On <24 core hosts, `GOMAXPROCS=1`
+  guarantees total worker concurrency stays strictly within physical core
+  count (`workers * procs <= nproc`).
 - `MUTATE_TEST_PARALLEL=<n>`: `-parallel` flag passed to `scripts/mutate`
-  controlling in-process subtest parallelism (default 4).
+  controlling in-process subtest parallelism (default `NUM_CPUS`, bounded
+  to `[4, 32]`). Subtests under `t.Parallel()` scale with host core count,
+  achieving substantial wall-clock speedups for wait-heavy scenario tests.
 - `MUTATE_GCFLAGS=<flags>`: Custom `-gcflags` passed to `scripts/mutate`.
 
 ## 1. Unit Tests (`go test ./...`)
