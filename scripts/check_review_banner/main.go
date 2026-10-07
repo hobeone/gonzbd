@@ -54,6 +54,7 @@ func main() {
 	// skip check rather than failing on absent review docs.
 	if *dir == filepath.Join("docs", "reviews") {
 		if _, err := os.Stat(*dir); os.IsNotExist(err) {
+			fmt.Println("check_review_banner: no docs/reviews directory, nothing to check")
 			return
 		}
 	}

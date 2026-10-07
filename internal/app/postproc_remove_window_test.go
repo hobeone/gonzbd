@@ -146,11 +146,11 @@ func waitingDirectUnpack(t *testing.T, application *Application, id string) *dir
 	return du
 }
 
-// awaitAdmissionsEnded waits up to five seconds for every post-processing
+// awaitAdmissionsEnded waits up to five hundred milliseconds for every post-processing
 // admission to end.
 func awaitAdmissionsEnded(t *testing.T, application *Application) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(500 * time.Millisecond)
 	for admissionsHeld(&application.postProcAdmissions) != 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the job's post-processing admission never ended")

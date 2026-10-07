@@ -1,9 +1,10 @@
 package unpack
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/testutil"
 )
 
 func TestParseUnrarOutput(t *testing.T) {
@@ -90,9 +91,7 @@ func TestDetectUnrar(t *testing.T) {
 	t.Run("valid mock binary", func(t *testing.T) {
 		t.Parallel()
 		bin := filepath.Join(t.TempDir(), "unrar")
-		if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"UNRAR 7.21 freeware\"\n"), 0755); err != nil {
-			t.Fatalf("write mock unrar: %v", err)
-		}
+		testutil.WriteExecutable(t, bin, "#!/bin/sh\necho \"UNRAR 7.21 freeware\"\n")
 
 		got := DetectUnrar(t.Context(), bin)
 		if !got.Available {
@@ -120,9 +119,7 @@ func TestDetectSevenZip(t *testing.T) {
 	t.Run("valid mock binary", func(t *testing.T) {
 		t.Parallel()
 		bin := filepath.Join(t.TempDir(), "7z")
-		if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"7-Zip (z) 21.06 x64\"\n"), 0755); err != nil {
-			t.Fatalf("write mock 7z: %v", err)
-		}
+		testutil.WriteExecutable(t, bin, "#!/bin/sh\necho \"7-Zip (z) 21.06 x64\"\n")
 
 		got := DetectSevenZip(t.Context(), bin)
 		if !got.Available {

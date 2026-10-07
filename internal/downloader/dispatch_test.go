@@ -1147,6 +1147,8 @@ func TestClampPenalty(t *testing.T) {
 		{"enabled: zero passes through unclamped", true, 0, 0, 0},
 		{"custom max: below threshold passes through", false, 500 * time.Millisecond, 200 * time.Millisecond, 200 * time.Millisecond},
 		{"custom max: above threshold is clamped down", false, 500 * time.Millisecond, 5 * time.Second, 500 * time.Millisecond},
+		{"both set: NoPenalties caps MaxPenalty when MaxPenalty is larger", true, 2 * constants.PenaltyShort, 3 * constants.PenaltyShort, constants.PenaltyShort},
+		{"both set: MaxPenalty wins when smaller than PenaltyShort", true, 500 * time.Millisecond, constants.PenaltyShort, 500 * time.Millisecond},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

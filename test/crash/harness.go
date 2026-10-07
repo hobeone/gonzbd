@@ -289,7 +289,7 @@ func (h *harness) waitForAPI() {
 	h.t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(h.BaseURL + "/api?mode=version&output=json") //nolint:noctx // short-lived readiness poll
+		resp, err := http.Get(h.BaseURL + "/api?mode=version&output=json&apikey=" + h.APIKey) //nolint:noctx // short-lived readiness poll
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -297,7 +297,11 @@ func (h *harness) waitForAPI() {
 			}
 		}
 		if !h.running() {
-			h.t.Fatalf("daemon exited before its API came up\n%s", h.tailLog())
+			tail := h.tailLog()
+			if strings.Contains(tail, "bind: address already in use") {
+				h.t.Fatalf("daemon failed to bind port %d (address already in use):\n%s", h.port, tail)
+			}
+			h.t.Fatalf("daemon exited before its API came up\n%s", tail)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -1098,6 +1102,9 @@ var (
 )
 
 // freePort reserves and releases an ephemeral port, returning its number.
+// Note: uniqueness tracking via reservedPorts is in-process only across
+// concurrent tests; it cannot protect against external processes binding
+// to the port between close and daemon startup.
 func freePort(t *testing.T) int {
 	t.Helper()
 	reservedPortsMu.Lock()
@@ -1105,16 +1112,19 @@ func freePort(t *testing.T) int {
 	for range 50 {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			t.Fatalf("reserve a port: %v", err)
+			time.Sleep(5 * time.Millisecond)
+			continue
 		}
 		addr, ok := ln.Addr().(*net.TCPAddr)
 		if !ok {
 			_ = ln.Close()
-			t.Fatalf("reserved listener address is %T, want *net.TCPAddr", ln.Addr())
+			time.Sleep(5 * time.Millisecond)
+			continue
 		}
 		port := addr.Port
 		if err := ln.Close(); err != nil {
-			t.Fatalf("release the reserved port: %v", err)
+			time.Sleep(5 * time.Millisecond)
+			continue
 		}
 		if !reservedPorts[port] {
 			reservedPorts[port] = true

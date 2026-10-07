@@ -132,7 +132,8 @@ func TestAppWorkers_Abort_DelayedGoroutine_DoesNotDisruptNewAttempt(t *testing.T
 	// Simulate delayed Abort call from old attempt j1.
 	w.Abort(j1)
 
-	// Wait briefly to allow the async goroutine spawned by Abort to run.
+	// Negative-observation window: allow the async goroutine spawned by Abort
+	// to execute its YieldedJob attempt. Since j1 != j2, it must not disrupt j2.
 	time.Sleep(50 * time.Millisecond)
 
 	// Dispatcher still holds j2 under "job-reuse".

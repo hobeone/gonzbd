@@ -39,13 +39,18 @@ func TestSIGKILL_AddThenImmediateKill_PositiveControl(t *testing.T) {
 	jobID := h.AddJob()
 	deadline := time.Now().Add(3 * time.Second)
 	manifestPath := manifestPathFor(h.AdminDir, jobID)
+	var ready bool
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(manifestPath); err == nil {
 			if slot, ok := h.Slot(jobID); ok && slot.Status != "" {
+				ready = true
 				break
 			}
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	if !ready {
+		t.Fatalf("positive control: precondition not met within 3s bound for job %s", jobID)
 	}
 	h.Kill()
 	h.Restart()

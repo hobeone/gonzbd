@@ -440,7 +440,7 @@ func (d *Downloader) selectServerForArticle(mask serverMask, hasTried bool, opts
 // apply the same rule (OPT-3).
 func (d *Downloader) clampPenalty(pen time.Duration) time.Duration {
 	maxPen := d.opts.MaxPenalty
-	if maxPen == 0 && d.opts.NoPenalties {
+	if d.opts.NoPenalties && (maxPen == 0 || maxPen > constants.PenaltyShort) {
 		maxPen = constants.PenaltyShort
 	}
 	if maxPen > 0 && pen > maxPen {

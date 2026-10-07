@@ -1,7 +1,8 @@
 #!/bin/bash
 # run_tests.sh - Comprehensive test suite for sabnzbd-go
 # Includes Go static analysis, linters, unit tests (-race), Go integration tests,
-# the crash-consistency suite, Svelte UI checks/tests, and Playwright E2E tests.
+# the crash-consistency suite, Svelte UI checks/tests, parallel mutation tests,
+# and Playwright E2E tests (skippable via SKIP_PLAYWRIGHT=1 / SKIP_UITEST=1).
 
 set -e # Exit on first error
 
@@ -311,8 +312,25 @@ else
         fi
     fi
 
-    NUM_CPUS=$(nproc 2>/dev/null || echo 4)
-    WORKER_PROCS=$(( NUM_CPUS >= 8 ? 2 : 1 ))
+    # Concurrency tuning:
+    # WORKERS specifies the number of parallel git worktree workers (each running scripts/mutate).
+    # WORKER_PROCS sets GOMAXPROCS for each worker process (default 2 on >=8 cores, 1 otherwise).
+    # On a 24-core host with default 16 workers, 16 * 2 = 32 represents a ~1.33x oversubscription.
+    # Because mutation workers spend significant time in I/O, process fork/exec, and compiler
+    # stalls, this moderate oversubscription achieves optimal CPU saturation and wall clock time.
+    # TEST_PARALLEL (-parallel flag to scripts/mutate) controls go test in-process subtest parallelism
+    # independent of OS threads (GOMAXPROCS).
+    if [ -n "${MUTATE_GOMAXPROCS:-}" ]; then
+        if ! [[ "$MUTATE_GOMAXPROCS" =~ ^[0-9]+$ ]] || [ "$MUTATE_GOMAXPROCS" -lt 1 ]; then
+            echo -e "${RED}ERROR: MUTATE_GOMAXPROCS must be a positive integer, got '$MUTATE_GOMAXPROCS'${NC}" >&2
+            exit 1
+        fi
+        WORKER_PROCS="$MUTATE_GOMAXPROCS"
+    else
+        NUM_CPUS=$(nproc 2>/dev/null || echo 4)
+        WORKER_PROCS=$(( NUM_CPUS >= 8 ? 2 : 1 ))
+    fi
+
     TEST_PARALLEL="${MUTATE_TEST_PARALLEL:-4}"
     if ! [[ "$TEST_PARALLEL" =~ ^[0-9]+$ ]] || [ "$TEST_PARALLEL" -lt 1 ]; then
         echo -e "${RED}ERROR: MUTATE_TEST_PARALLEL must be a positive integer, got '$TEST_PARALLEL'${NC}" >&2
@@ -334,12 +352,22 @@ else
     touch "$QUEUE_LOCK" "$RESULTS_FILE"
 
     # Partition heavy specs into chunks to eliminate tail stragglers and minimize makespan.
-    # Weight jobs by compilation footprint (internal/app is largest) for LPT scheduling.
-    MAX_CHUNK_MUTATIONS="${MUTATE_MAX_CHUNK:-5}"
+    # Weight jobs by compilation footprint (internal/app is largest) plus fixed baseline
+    # overhead (~2 mutation equivalents) for LPT scheduling.
+    NUM_CPUS=$(nproc 2>/dev/null || echo 4)
+    DEFAULT_MAX_CHUNK=$(( NUM_CPUS >= 16 ? 4 : 5 ))
+    MAX_CHUNK_MUTATIONS="${MUTATE_MAX_CHUNK:-$DEFAULT_MAX_CHUNK}"
+    if ! [[ "$MAX_CHUNK_MUTATIONS" =~ ^[0-9]+$ ]] || [ "$MAX_CHUNK_MUTATIONS" -lt 1 ]; then
+        echo -e "${RED}ERROR: MUTATE_MAX_CHUNK must be a positive integer, got '$MAX_CHUNK_MUTATIONS'${NC}" >&2
+        exit 1
+    fi
+
     ALL_ITEMS=()
     QUEUE_ITEMS=()
     for s in "${SPECS[@]}"; do
-        mut_count=$(grep -c '^\[' "$s" || echo 1)
+        mut_count=$(grep -c '^\[' "$s" || true)
+        mut_count="${mut_count:-0}"
+        if [ "$mut_count" -lt 1 ]; then mut_count=1; fi
         pkg_weight=1
         case "$s" in
             internal/app/*) pkg_weight=4 ;;
@@ -347,14 +375,14 @@ else
         esac
         if [ "$mut_count" -le "$MAX_CHUNK_MUTATIONS" ]; then
             ALL_ITEMS+=("$s")
-            QUEUE_ITEMS+=("$(( mut_count * pkg_weight )) $s")
+            QUEUE_ITEMS+=("$(( (mut_count + 2) * pkg_weight )) $s")
         else
             chunks=$(( (mut_count + MAX_CHUNK_MUTATIONS - 1) / MAX_CHUNK_MUTATIONS ))
             chunk_size=$(( (mut_count + chunks - 1) / chunks ))
             for ((c=1; c<=chunks; c++)); do
                 item="$s:$c/$chunks"
                 ALL_ITEMS+=("$item")
-                QUEUE_ITEMS+=("$(( chunk_size * pkg_weight )) $item")
+                QUEUE_ITEMS+=("$(( (chunk_size + 2) * pkg_weight )) $item")
             done
         fi
     done
@@ -516,7 +544,9 @@ echo -e "\n[5/7] Running UI Component Tests..."
 echo -e "${GREEN}✓ UI Component Tests Passed${NC}"
 
 # 6. UI E2E Tests (requires built UI + Playwright browsers)
+UI_E2E_SKIPPED=0
 if [ "${SKIP_PLAYWRIGHT:-}" = "1" ] || [ "${SKIP_UITEST:-}" = "1" ]; then
+    UI_E2E_SKIPPED=1
     echo -e "\n[6/7] Skipping UI E2E Tests (SKIP_PLAYWRIGHT=1)..."
 else
     echo -e "\n[6/7] Running UI E2E Tests..."
@@ -532,6 +562,12 @@ if [ "$VULN_STATUS" -ne 0 ]; then
     exit "$VULN_STATUS"
 fi
 
-echo -e "\n${GREEN}===================================================="
-echo "ALL TESTS PASSED SUCCESSFULLY"
-echo -e "====================================================${NC}"
+if [ "$UI_E2E_SKIPPED" -eq 1 ]; then
+    echo -e "\n${YELLOW}===================================================="
+    echo "ALL TESTS PASSED (PARTIAL: UI E2E skipped, not the gate)"
+    echo -e "====================================================${NC}"
+else
+    echo -e "\n${GREEN}===================================================="
+    echo "ALL TESTS PASSED SUCCESSFULLY"
+    echo -e "====================================================${NC}"
+fi

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -240,11 +241,16 @@ func TestSpec_ApplyChunk(t *testing.T) {
 		sp.mutations = append(sp.mutations, mutation{name: "m" + strings.Repeat("x", i)})
 	}
 
+	wantLens := []int{8, 8, 9}
 	var seen []string
 	for k := 1; k <= 3; k++ {
 		chunkSp := &spec{mutations: slices.Clone(sp.mutations)}
-		if err := chunkSp.applyChunk(strings.TrimSpace(string([]byte{'0' + byte(k), '/', '3'}))); err != nil {
-			t.Fatalf("applyChunk(%d/3): %v", k, err)
+		chunkStr := fmt.Sprintf("%d/3", k)
+		if err := chunkSp.applyChunk(chunkStr); err != nil {
+			t.Fatalf("applyChunk(%s): %v", chunkStr, err)
+		}
+		if len(chunkSp.mutations) != wantLens[k-1] {
+			t.Errorf("chunk %d length = %d, want %d", k, len(chunkSp.mutations), wantLens[k-1])
 		}
 		for _, m := range chunkSp.mutations {
 			seen = append(seen, m.name)
@@ -268,5 +274,11 @@ func TestSpec_ApplyChunk(t *testing.T) {
 	}
 	if len(singleSp.mutations) != 1 || singleSp.mutations[0].name != "single" {
 		t.Errorf("applyChunk(1/1) = %+v, want 1 mutation", singleSp.mutations)
+	}
+
+	// 4. M > n causing 0 mutations in chunk
+	fewSp := &spec{mutations: make([]mutation, 5)}
+	if err := fewSp.applyChunk("1/9"); err == nil {
+		t.Error("applyChunk(1/9) on 5 mutations accepted, want error for 0 mutations")
 	}
 }

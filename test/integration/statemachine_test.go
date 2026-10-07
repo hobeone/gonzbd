@@ -157,11 +157,21 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 		t.Fatalf("app.AddJob: %v", err)
 	}
 
-	// Wait for completion (or timeout)
+	// Wait for completion (or timeout).
 	// With penalty escalation active (NoPenalties = false) and MaxPenalty clamped
 	// to 1s for the test harness, the pipeline recovers from connection drops and
 	// completes promptly without waiting out the 3m production PenaltyUnknown.
-	timeout := 15 * time.Second
+	// Note: real-duration penalty expiry and backoff intervals are unit-tested
+	// in internal/downloader.
+	// The 15s timeout budget is derived from its constituent components:
+	// chaosWindow (2s) + stallReadTimeout (5s) + clampedPenalty (1s) + slack (7s) = 15s.
+	const (
+		chaosWindow      = 2 * time.Second
+		stallReadTimeout = 5 * time.Second
+		clampedPenalty   = 1 * time.Second
+		slack            = 7 * time.Second
+		timeout          = chaosWindow + stallReadTimeout + clampedPenalty + slack
+	)
 	deadline := time.Now().Add(timeout)
 	completed := false
 	for time.Now().Before(deadline) {
