@@ -24,6 +24,15 @@ integration → crash-consistency → UI vitest → `bun run build` → uitest
 sequentially. Use it as the canonical pre-commit gate (matches CLAUDE.md
 quality gates).
 
+Its mutation phase is the longest step. `MUTATE_SINCE=<ref> scripts/run_tests.sh`
+narrows that phase to the specs `go run ./scripts/mutate -affected <ref>`
+selects: those whose spec file, or a file one of their mutations edits, differs
+from `<ref>` in the working tree (untracked files that are not gitignored
+count). It is a loop for iterating, not the gate. A change to any other file
+selects nothing, including the test a spec runs, so it can miss a spec whose
+pinned behaviour such a file altered, and the full sweep stays the check
+before a merge.
+
 ## 1. Unit Tests (`go test ./...`)
 
 **When to run:** Before every commit. Required to pass with `-race`.

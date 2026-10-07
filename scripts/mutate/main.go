@@ -223,6 +223,8 @@ func main() {
 	parallel := flag.Int("parallel", 0, "pass -parallel N to go test (0 keeps go test's default, GOMAXPROCS)")
 	gcflags := flag.String("gcflags", "-N -l", "pass -gcflags to go test; the default compiles the package under test "+
 		"unoptimized, which is faster to rebuild once per mutation (empty passes nothing)")
+	affected := flag.String("affected", "", "print the specs a diff against REF can change, one per line, "+
+		"instead of running anything (see the usage text for what that selects and misses)")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -241,6 +243,26 @@ func main() {
 	}
 
 	switch {
+	case *affected != "":
+		if flag.NArg() != 0 {
+			fmt.Fprintln(os.Stderr, "mutate: -affected takes no spec arguments; it discovers them itself")
+			os.Exit(2)
+		}
+		specs, err := discoverSpecs(root)
+		if err != nil {
+			fatal("%v", err)
+		}
+		changed, err := changedSince(root, *affected)
+		if err != nil {
+			fatal("%v", err)
+		}
+		sel, err := affectedSpecs(root, specs, changed)
+		if err != nil {
+			fatal("%v", err)
+		}
+		for _, s := range sel {
+			fmt.Println(s)
+		}
 	case *checkAll:
 		if flag.NArg() != 0 {
 			fmt.Fprintln(os.Stderr, "mutate: -check-all takes no spec arguments; it discovers them itself")
@@ -1038,6 +1060,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] [-parallel N] [-gcflags FLAGS] <spec-file>
        go run ./scripts/mutate -check <spec-file>...
        go run ./scripts/mutate -check-all
+       go run ./scripts/mutate -affected REF
 
 Runs AGENTS.md's observed red check: apply each mutation, require the test to
 fail, restore the file. Exits non-zero unless every mutation is KILLED.
@@ -1052,6 +1075,14 @@ rebuilds the package under test, so the default '-N -l' (no optimization, no
 inlining) makes that rebuild cheaper. A test that depends on inlining or escape
 analysis sees a different build than a plain go test; -gcflags= (empty) passes
 nothing.
+
+-affected REF prints the specs, one per line, that a change since REF can move:
+the spec file itself changed, or a file one of its mutations edits did. Tracked
+files are compared with the working tree, and untracked files that are not
+gitignored also count. It is a fast loop, not a gate. A change to any other
+file selects nothing, including the test a spec runs and the package it
+targets, so it misses a spec whose pinned behaviour such a file altered; only
+the full sweep covers that.
 
 -q is for sweeping every spec: a spec that passes prints one line, and one that
 does not prints only its failing rows and the command to rerun it with the full
