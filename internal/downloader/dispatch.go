@@ -819,38 +819,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	// docs/durability-contract.md.
 	d.markEmitted(req)
 	d.clearTried(req)
-	d.notePartNumberDisagreement(req, payload.partNumber)
 	d.emitResult(ctx, req, name, payload.data, payload.offset, payload.crc, nil)
-}
-
-// notePartNumberDisagreement counts the cases where the part ordinal a server
-// declared in =ybegin part= is not the NZB segment number that was asked for.
-//
-// It takes NO action, deliberately. No error class, no try-list change, no
-// sentinel in isRetryableDownloaderError — the article is emitted exactly as
-// it would have been.
-//
-// The comparison is novel. Manifest.ArticleNumber had no consumer at all
-// before this, and SABnzbd's decoder reads part_begin and part_size without
-// ever checking the served part against the segment number, so nothing
-// anywhere establishes how often the two agree in the wild. Promoting it
-// straight to a correctness decision would risk failing healthy articles
-// across every server if some indexer renumbers segments — a fleet-wide
-// regression bought with zero evidence. Counting first answers whether the
-// case exists at all, at no risk, and #379 records what each outcome means.
-//
-// Zero on either side disables the comparison: a single-part post declares no
-// part=, UU has no equivalent field, and a non-numeric value is not evidence
-// of a disagreement.
-func (d *Downloader) notePartNumberDisagreement(req *articleRequest, served int) {
-	if served == 0 || req.partNumber == 0 || served == req.partNumber {
-		return
-	}
-	telemetry.PartNumberMismatches.Add(1)
-	d.log.Warn("served part number disagrees with the NZB segment number; "+
-		"counting it, taking no action",
-		"job", req.jobID(), "msgid", req.messageID,
-		"served", served, "expected", req.partNumber)
 }
 
 func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server string, data []byte, offset int64, crc uint32, err error) {
@@ -1072,20 +1041,10 @@ func classifyDecodeError(err error) string {
 // for DMCA/takedown keywords. If found, ErrArticleRemoved is returned
 // so the caller does not waste bandwidth retrying on backup servers.
 // decodedPayload is what one article body yielded.
-//
-// A struct rather than a fifth positional return: the fourth was already at
-// the limit of what a caller can read without counting, and partNumber is the
-// one field a reader is most likely to transpose with offset or crc, both of
-// which are also numeric.
 type decodedPayload struct {
 	data   []byte
 	offset int64
 	crc    uint32
-
-	// partNumber is the ordinal the SERVER declared in =ybegin part=, which is
-	// not necessarily the segment number the NZB asked for. Zero when the
-	// article declares none, and for UU, which has no equivalent field.
-	partNumber int
 }
 
 func decodePayload(body []byte, requestedPartNumber int) (decodedPayload, error) {
@@ -1102,8 +1061,7 @@ func decodePayload(body []byte, requestedPartNumber int) (decodedPayload, error)
 		// than letting it claim segment 1's offset. article.PartNumber
 		// (from a bare =ybegin part=, with no =ypart) does not save it:
 		// that field is server-declared and unvalidated, not derived from
-		// requestedPartNumber, and D1 only counts a disagreement rather
-		// than acting on it.
+		// requestedPartNumber.
 		if !article.HasOffset && requestedPartNumber > 1 {
 			if article.Data != nil {
 				decoder.PutBuffer(article.Data)
@@ -1111,10 +1069,9 @@ func decodePayload(body []byte, requestedPartNumber int) (decodedPayload, error)
 			return decodedPayload{}, ErrOffsetUnknownForPart
 		}
 		return decodedPayload{
-			data:       article.Data,
-			offset:     article.Offset,
-			crc:        article.CRC,
-			partNumber: article.PartNumber,
+			data:   article.Data,
+			offset: article.Offset,
+			crc:    article.CRC,
 		}, nil
 	case errors.Is(decErr, decoder.ErrNotYEnc):
 		if article.Data != nil {

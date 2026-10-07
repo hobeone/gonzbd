@@ -128,11 +128,6 @@ func TestDecodePayload_UUYieldsACRCOverTheDecodedBytes(t *testing.T) {
 	if got.offset != 0 {
 		t.Errorf("offset = %d, want 0", got.offset)
 	}
-	if got.partNumber != 0 {
-		t.Errorf("partNumber = %d, want 0 — UU has no part ordinal, and a non-zero "+
-			"value here would put every UU article into the disagreement counter",
-			got.partNumber)
-	}
 	want := crc32.ChecksumIEEE(got.data)
 	if got.crc != want {
 		t.Errorf("crc = %#08x, want %#08x (CRC32 of the decoded UU output). "+
