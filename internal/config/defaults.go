@@ -116,6 +116,7 @@ func Default() (*Config, error) {
 			Par2MaxJunkScanBytes:    65536,    // 64 KiB
 			IgnoreUnrarDates:        false,
 			ExtractSymlinks:         false,
+			RarDecodeWorkers:        0, // auto
 			OverwriteFiles:          false,
 			FlatUnpack:              false,
 			DeobfuscateFilenames:    true,

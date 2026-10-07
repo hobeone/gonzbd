@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 
@@ -65,6 +66,9 @@ type Options struct {
 	// ExtractSymlinks lets symlink members be created (see
 	// unpack.Options.ExtractSymlinks). Default false: they are skipped.
 	ExtractSymlinks bool
+	// DecodeWorkers is the configured rar_decode_workers value (see
+	// unpack.Options.DecodeWorkers). <= 0 means auto.
+	DecodeWorkers int
 
 	// OnLine is called for each line of extraction output. May be nil.
 	OnLine func(string)
@@ -546,6 +550,7 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) error {
 		volumesChan, feedErrChan := d.startVolumeFeed(ctx, setname, maxVol)
 
 		r := rarengine.NewReader(volumesChan)
+		r.SetWorkers(unpack.DecodeWorkers(d.opts.DecodeWorkers, runtime.NumCPU()))
 		defer r.Close() //nolint:errcheck // close open and queued volumes
 		stop := context.AfterFunc(ctx, func() { _ = r.Close() })
 		defer stop()
@@ -698,6 +703,7 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader
 			OverwriteFiles:   d.opts.OverwriteFiles,
 			IgnoreUnrarDates: d.opts.IgnoreUnrarDates,
 			ExtractSymlinks:  d.opts.ExtractSymlinks,
+			DecodeWorkers:    d.opts.DecodeWorkers,
 			Symlinks:         symlinks,
 			OnLine:           d.opts.OnLine,
 		}

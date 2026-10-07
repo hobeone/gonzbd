@@ -31,6 +31,16 @@ echo "Nested file content"  > "$TMPDIR/subdir/nested.txt"
 echo "==> single_rar5.rar"
 ( cd "$TMPDIR" && rar a -r "$(cd - >/dev/null && pwd)/$OUTDIR/single_rar5.rar" file1.txt file2.txt subdir/ >/dev/null )
 
+# compressed_rar5.rar: the one fixture here whose member is compressed rather
+# than stored, so it exercises rarengine's block decoder (and its worker
+# pipeline). The plaintext is regenerated line for line by
+# compressedFixtureText in internal/unpack/decode_workers_test.go.
+echo "==> compressed_rar5.rar"
+for i in $(seq 0 5999); do
+	printf 'line %06d the quick brown fox jumps over the lazy dog\n' "$i"
+done > "$TMPDIR/compressed.txt"
+( cd "$TMPDIR" && rar a -ma5 -ep -m3 -md128k "$(cd - >/dev/null && pwd)/$OUTDIR/compressed_rar5.rar" compressed.txt >/dev/null )
+
 # --- Multi-volume RAR5, new naming (partNN.rar) ---
 # Create a larger file to force multi-volume with 1KB volumes.
 dd if=/dev/urandom of="$TMPDIR/bigfile.bin" bs=1024 count=8 2>/dev/null

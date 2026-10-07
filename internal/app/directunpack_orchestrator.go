@@ -124,6 +124,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		overwriteFiles := pp.OverwriteFiles
 		ignoreUnrarDates := pp.IgnoreUnrarDates
 		extractSymlinks := pp.ExtractSymlinks
+		decodeWorkers := pp.RarDecodeWorkers
 		if limit > 0 && o.active >= limit {
 			o.mu.Unlock()
 			app.log.Debug("directunpack: skipping, concurrency limit reached",
@@ -134,7 +135,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		du = directunpack.New(
 			app.log.With("component", "directunpack", "job", fc.JobID),
 			fc.JobID, downloadDir, downloadDir,
-			o.buildOpts(flatUnpack, overwriteFiles, ignoreUnrarDates, extractSymlinks),
+			o.buildOpts(flatUnpack, overwriteFiles, ignoreUnrarDates, extractSymlinks, decodeWorkers),
 		)
 		// Provide all filenames so the DU can compute total volume counts.
 		allNames := make([]string, m.NumFiles())
@@ -185,13 +186,14 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 // values. The caller reads them (alongside the concurrency limit and download
 // dir) from value getters, so the orchestrator lock isn't held across
 // two separate config reads.
-func (o *directUnpackOrchestrator) buildOpts(flatUnpack, overwriteFiles, ignoreUnrarDates, extractSymlinks bool) directunpack.Options {
+func (o *directUnpackOrchestrator) buildOpts(flatUnpack, overwriteFiles, ignoreUnrarDates, extractSymlinks bool, decodeWorkers int) directunpack.Options {
 	return directunpack.Options{
 		Password:         "", // per-job passwords are pre-checked; DU skips password jobs
 		OneFolder:        flatUnpack,
 		OverwriteFiles:   overwriteFiles,
 		IgnoreUnrarDates: ignoreUnrarDates,
 		ExtractSymlinks:  extractSymlinks,
+		DecodeWorkers:    decodeWorkers,
 		OnStatusChange: func() {
 			o.app.emit(Event{Type: "queue_updated"})
 		},
