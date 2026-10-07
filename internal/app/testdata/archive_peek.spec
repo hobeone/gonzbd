@@ -2,8 +2,18 @@
 # neuters one decision and a named test must die.
 #
 #     go run ./scripts/mutate internal/app/testdata/archive_peek.spec
+#
+# TestArchivePeek_Pipeline_PauseActionHoldsTheJobUntilApproved is left out of
+# the run line: a mutation that stops it passing costs one of its 30s waits.
+# It kills 4 of the mutations below (the RAR magic, the pause action, and the
+# two owed-filing ones) and none of them depends on it alone: the magic and
+# pause ones also die to TestPeek_RARVolumeWithUnwantedMember_PausesTheJob,
+# and both owed-filing ones to
+# TestReconcile_FilesAFailBlockedJobAndHoldsAPauseBlockedOne. It still runs in
+# go test.
+
 pkg ./internal/app/
-run TestPeek_|TestArchivePeek_|TestBlockForUnwanted_|TestReevaluateStall_ABlocked|TestArchiveMemberNames|TestReconcile_FilesAFail
+run TestPeek_|TestArchivePeek_Pipeline_FailAction|TestBlockForUnwanted_|TestReevaluateStall_ABlocked|TestArchiveMemberNames|TestReconcile_FilesAFail
 timeout 10m
 
 [a file with a failed article is read anyway]
