@@ -71,7 +71,7 @@ func TestFinalizeFile_ARunAtOffsetZeroOfZeroLengthDoesNotTruncate(t *testing.T) 
 	tgt := &truncTarget{}
 
 	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
-	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 	if tgt.called {

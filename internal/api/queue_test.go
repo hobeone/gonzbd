@@ -2810,7 +2810,6 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 			Password:         "hunter2",
 			Script:           "post.py",
 			IngestAnomaly:    "1 empty message-id",
-			PostAnomaly:      "overlap at byte 0",
 			FailReason:       "Failed: input/output error",
 			DuplicateReason:  "Duplicate NZB",
 			OperationalError: "low disk space",
@@ -2850,9 +2849,6 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 	}
 	if slot.IngestAnomaly != "1 empty message-id" {
 		t.Errorf("IngestAnomaly = %q, want %q", slot.IngestAnomaly, "1 empty message-id")
-	}
-	if slot.PostAnomaly != "overlap at byte 0" {
-		t.Errorf("PostAnomaly = %q, want %q", slot.PostAnomaly, "overlap at byte 0")
 	}
 	if slot.FailReason != "Failed: input/output error" {
 		t.Errorf("FailReason = %q, want %q", slot.FailReason, "Failed: input/output error")

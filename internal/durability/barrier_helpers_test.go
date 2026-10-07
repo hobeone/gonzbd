@@ -1,10 +1,6 @@
 package durability
 
-import (
-	"context"
-	"errors"
-	"testing"
-)
+import "testing"
 
 // TestBoundOver_TakesTheMaximumAcrossBothSources pins the truncate bound's
 // arithmetic directly, at the level FinalizeFile cannot reach: the two sources
@@ -58,62 +54,5 @@ func TestDurableArticle_CarriesEveryFieldTheRunNeeds(t *testing.T) {
 	// report that disagreed from placing a run in the wrong file's record.
 	if got.FileIdx != 7 {
 		t.Errorf("FileIdx = %d, want the caller's 7 rather than the article's 99", got.FileIdx)
-	}
-}
-
-// TestOverlapFindings_SurvivesAnUnreadableRecord pins the one decision this
-// helper makes beyond delegating to overlapFrom.
-//
-// It runs BELOW the commit and the ack, both of which have already landed, so
-// a read failure here may not fail the cycle. The finding is a property of
-// rows on stable storage, and the next committing checkpoint asks the same
-// question of the same rows.
-func TestOverlapFindings_SurvivesAnUnreadableRecord(t *testing.T) {
-	t.Parallel()
-	b := NewBarrier(&errRunStore{err: errors.New("unreadable")}, nil, nil, testLogger(t))
-
-	got := b.overlapFindings(context.Background(), "job-1", []int32{0, 1},
-		map[int32]int64{0: 100, 1: 100}, &fakeTarget{})
-
-	if got != nil {
-		t.Errorf("findings = %+v from an unreadable record, want none — a read failure "+
-			"is not evidence that a file's articles wrote over each other", got)
-	}
-}
-
-// TestOverlapFindings_ReportsOnePerOverlappedFile pins that it iterates rather
-// than stopping at the first file, and that a healthy file beside a malformed
-// one contributes nothing.
-//
-// Run's caller cannot see which of a job's files a finding belongs to — that
-// is why PostAnomaly carries FileIdx — so a helper that returned only the
-// first would silence every file after it for the life of the process, since
-// admit latches per file.
-func TestOverlapFindings_ReportsOnePerOverlappedFile(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	rs := NewStore(openTestDB(t), "history.db")
-	// File 0 overlaps: 150 bytes recorded over a 100-byte file. File 1 is
-	// healthy. File 2 overlaps too.
-	if _, err := rs.commit(ctx, "job-1", []DurableArticle{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
-		{FileIdx: 0, ArtIdx: 2, Offset: 50, Length: 50, CRC32: 2},
-		{FileIdx: 1, ArtIdx: 3, Offset: 0, Length: 100, CRC32: 3},
-		{FileIdx: 2, ArtIdx: 4, Offset: 0, Length: 100, CRC32: 4},
-		{FileIdx: 2, ArtIdx: 6, Offset: 60, Length: 40, CRC32: 5},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	b := NewBarrier(rs, nil, nil, testLogger(t))
-
-	got := b.overlapFindings(ctx, "job-1", []int32{0, 1, 2},
-		map[int32]int64{0: 100, 1: 100, 2: 100}, &fakeTarget{})
-
-	if len(got) != 2 {
-		t.Fatalf("findings = %+v, want one for each of files 0 and 2", got)
-	}
-	if got[0].FileIdx != 0 || got[1].FileIdx != 2 {
-		t.Errorf("findings name files %d and %d, want 0 and 2 — the healthy file between "+
-			"them must contribute nothing", got[0].FileIdx, got[1].FileIdx)
 	}
 }

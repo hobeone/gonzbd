@@ -183,7 +183,7 @@ func runShutdownFailRestart(t *testing.T, postProcBusy, wantInHistory bool) {
 		}
 		mu := a1.jobBarrierLock(j.ID())
 		mu.Lock()
-		_, runErr := a1.barrier.Run(context.Background(), j.ID(), erofsSyncTarget{a1.syncTargetFor(j.ID())})
+		runErr := a1.barrier.Run(context.Background(), j.ID(), erofsSyncTarget{a1.syncTargetFor(j.ID())})
 		mu.Unlock()
 		a1.releaseJobBarrierLock(j.ID())
 		failRouted = runErr != nil

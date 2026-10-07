@@ -663,7 +663,6 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		OnWriteFault:        app.handleWriteFault,
 		OnArticlesUnwritten: app.handleArticlesUnwritten,
 		OnArticleRejected:   app.handleArticleRejected,
-		OnPostAnomaly:       app.handlePostAnomaly,
 		OnFileComplete:      onFileComplete,
 	}, log)
 	app.assembler = asm
@@ -2931,9 +2930,6 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 		}
 	}
 	j.ResetForRetry()
-	if app.barrier != nil {
-		app.barrier.ForgetJob(jobID)
-	}
 	// A failure aborts the retry. The job-level tombstone the close-handles
 	// arm set when this job entered post-processing drops every article of
 	// the retry without resolving it, so a retry that kept it would sit at

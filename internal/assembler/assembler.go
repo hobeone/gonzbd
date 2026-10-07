@@ -2,7 +2,6 @@ package assembler
 
 import (
 	"context"
-	"fmt"
 	"math"
 
 	"errors"
@@ -266,31 +265,6 @@ type Options struct {
 	// is not Outstanding: ForEachUnfinishedArticle skips a set Emitted bit, so
 	// the job waits forever on an article nothing will re-dispatch.
 	OnArticleRejected func(jobID string, fileIdx int, artIdx int32, reason string)
-
-	// OnPostAnomaly reports something structurally wrong with what the servers
-	// served for a job, in terms a user can act on. Currently only an offset
-	// collision: two segments of one file claiming the same byte range.
-	//
-	// It is per-JOB and pairs with OnArticleRejected rather than replacing it.
-	// The rejection resolves each article's accounting; this explains the
-	// SHAPE of the fault once, so the user learns their download is failing
-	// because the post is malformed rather than because of a disk or network
-	// problem — which is the whole of #379.
-	//
-	// The reason states the fact and stops there. It does not say the post is
-	// bad, because this package cannot know that. Three things produce the
-	// same observation: a genuinely malformed post, a redundant posting whose
-	// copies are both valid, and a server mangling the =ypart begin= digits in
-	// transit — and nothing here can separate them, because yEnc checksums the
-	// decoded payload and never its headers. Option D's original wording
-	// accused the post, on the strength of every eligible server agreeing;
-	// with no failover there is no cross-server evidence to support it.
-	//
-	// Fired once per file (see faultedArticle.firstCollision), because
-	// Header.PostAnomaly accumulates findings rather than replacing them,
-	// and an obfuscated post can collide on every segment it has — without
-	// the latch, one file would append the same sentence once per segment.
-	OnPostAnomaly func(jobID string, fileIdx int, reason string)
 
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.
 	MinFreeBytes int64
@@ -832,10 +806,9 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 }
 
 // ForgetJob drops every tombstone this assembler holds for jobID, so its files
-// can be written again. It is the counterpart of durability.Barrier.ForgetJob
-// and is called from the same place, for the same reason: a retry returns
-// under the SAME job ID, and per-job state latched during the previous attempt
-// would otherwise silently apply to the new one.
+// can be written again. A retry returns under the SAME job ID, and per-job
+// state latched during the previous attempt would otherwise silently apply to
+// the new one.
 //
 // # What it is for
 //
@@ -1281,7 +1254,7 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 			"closed; routing them now, but a producer of the faulted set is not being "+
 			"drained",
 			"path", f.info.Path, "articles", len(leaked), "artidxs", faultedIndices(leaked))
-		a.routeFaulted(leaked, key.jobID, key.fileIdx, f.info.Path)
+		a.routeFaulted(leaked, key.jobID, key.fileIdx)
 	}
 
 	if permanent != nil {
@@ -1800,20 +1773,14 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 	// Checked here rather than inside Accept so the refusal travels the same
 	// route as the out-of-range one above — Accept's contract is that its error
 	// always reports STORAGE failing, and this reports the article.
-	if owner, settled := f.w.offsetSettledBy(req.Offset, id); settled {
+	if _, settled := f.w.offsetSettledBy(req.Offset, id); settled {
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
 		f.w.failPermanent(id.artIdx)
-		rej := &rejectedArticleError{
+		return &rejectedArticleError{
 			reason: "claims a byte offset already written by another article",
 		}
-		if f.w.notePostAnomaly() {
-			rej.anomaly = postAnomalyReason(f.info.Path, faultedArticle{
-				id: id, offset: req.Offset, displacedBy: owner,
-			})
-		}
-		return rej
 	}
 	return f.w.Accept(id, req.Offset, req.Data, req.CRC32)
 }
@@ -1827,15 +1794,6 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 // successful part — see handleSuccessArticle.
 type rejectedArticleError struct {
 	reason string
-
-	// anomaly, when non-empty, is a job-level description of a structural
-	// fault in what the servers served — currently only an offset collision.
-	//
-	// It rides on the rejection because the two are one event seen at two
-	// scales: reason resolves THIS article, anomaly explains the shape of the
-	// fault once per file. Empty for an out-of-range offset, which is a
-	// property of one article rather than of the post.
-	anomaly string
 }
 
 func (e *rejectedArticleError) Error() string {
@@ -1854,13 +1812,9 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 	if rej, ok := errors.AsType[*rejectedArticleError](err); ok {
 		a.log.Warn("article rejected; it will be recorded as permanently failed",
 			"job", req.JobID, "fileidx", req.FileIdx, "artidx", req.ArtIdx,
-			"path", f.info.Path, "reason", rej.reason)
+			"msgid", req.MessageID, "path", f.info.Path, "reason", rej.reason)
 		if a.opts.OnArticleRejected != nil {
 			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, rej.reason)
-		}
-		// Paired with the per-article report above, not an alternative to it.
-		if rej.anomaly != "" && a.opts.OnPostAnomaly != nil {
-			a.opts.OnPostAnomaly(req.JobID, req.FileIdx, rej.anomaly)
 		}
 		return true
 	}
@@ -1899,7 +1853,7 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 // by code that did not, which is the arrangement every count defect in this
 // area came out of.
 func (a *Assembler) releaseFaulted(f *openFile, jobID string, fileIdx int) {
-	a.routeFaulted(f.w.takeFaulted(), jobID, fileIdx, f.info.Path)
+	a.routeFaulted(f.w.takeFaulted(), jobID, fileIdx)
 }
 
 // routeFaulted disposes of one already-taken set of rolled-back articles.
@@ -1909,7 +1863,7 @@ func (a *Assembler) releaseFaulted(f *openFile, jobID string, fileIdx int) {
 // file, because every part was settled when the articles were rolled back or
 // resolved.
 // Anything it could reach for would be state it does not own.
-func (a *Assembler) routeFaulted(rolled []faultedArticle, jobID string, fileIdx int, path string) {
+func (a *Assembler) routeFaulted(rolled []faultedArticle, jobID string, fileIdx int) {
 	if len(rolled) == 0 {
 		return
 	}
@@ -1922,60 +1876,17 @@ func (a *Assembler) routeFaulted(rolled []faultedArticle, jobID string, fileIdx 
 			a.log.Warn("article was displaced by another claiming the same offset; "+
 				"recording it as permanently failed",
 				"job", jobID, "fileidx", fileIdx, "artidx", r.id.artIdx,
-				"offset", r.offset, "displacedby", r.displacedBy.artIdx)
+				"msgid", r.id.msgID, "offset", r.offset, "displacedby", r.displacedBy.artIdx,
+				"displacedby_msgid", r.displacedBy.msgID)
 			if a.opts.OnArticleRejected != nil {
 				a.opts.OnArticleRejected(jobID, fileIdx, r.id.artIdx,
 					"displaced by a later article claiming the same offset")
-			}
-			// Once per file, alongside the per-article report above.
-			if r.firstCollision && a.opts.OnPostAnomaly != nil {
-				a.opts.OnPostAnomaly(jobID, fileIdx, postAnomalyReason(path, r))
 			}
 			continue
 		}
 		arts = append(arts, r.id.artIdx)
 	}
 	a.noteArticlesUnwritten(jobID, fileIdx, arts)
-}
-
-// postAnomalyReason describes an offset collision for a human, without
-// diagnosing it.
-//
-// Every clause is an observation. "Claim the same byte range" is what the
-// articles' own =ypart begin= values say; it does not assert the post is
-// malformed, because a redundant posting and a server that mangled the digits
-// in transit produce the identical observation and nothing here can tell them
-// apart. See Options.OnPostAnomaly.
-//
-// It names the file rather than the file index because the index means nothing
-// to a user reading a queue row, and both Message-IDs because they are what
-// makes the claim checkable against the NZB.
-//
-// The wording must not CONTAIN WarningsBanner.svelte's 'Duplicate NZB': that
-// banner counts duplicates by substring, so a reason merely containing the
-// phrase would be tallied as one.
-func postAnomalyReason(path string, r faultedArticle) string {
-	return fmt.Sprintf(
-		"Overlapping segments in %s: %s and %s both claim byte offset %d, so only "+
-			"one of them can be written. %s was discarded and this file may be "+
-			"incomplete.",
-		filepath.Base(path), articleLabel(r.displacedBy), articleLabel(r.id),
-		r.offset, articleLabel(r.id))
-}
-
-// articleLabel identifies an article for a human.
-//
-// An NZB may omit a segment's Message-ID, but such a segment is dropped at
-// parse and counted, so nothing the assembler sees carries an empty one. The
-// index fallback is therefore unreachable from any production path and is kept
-// only so this cannot print an empty string where an identifier belongs — a
-// display concern, not a claim that untracked articles exist. Removing msgID
-// from articleID altogether is a separate change.
-func articleLabel(id articleID) string {
-	if id.msgID == "" {
-		return fmt.Sprintf("#%d", id.artIdx)
-	}
-	return "<" + id.msgID + ">"
 }
 
 // faultedIndices lists the article indices in a rolled-back set, for the two

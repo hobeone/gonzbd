@@ -80,9 +80,9 @@ func TestMergeAdjacentRuns(t *testing.T) {
 // different offsets do not contend for one key.
 //
 // What the surviving pair buys is the evidence: Σ length then exceeds the
-// file's size, which is the only thing §3.3's overlap check can see. Dropping
-// the entry would make Σ length equal the size, silence that warning, and
-// return the article to Outstanding to be re-fetched and collide again.
+// file's size, and the file keeps two rows so §3.5 withholds the whole-file
+// CRC. Dropping the entry would make Σ length equal the size and return the
+// article to Outstanding to be re-fetched and collide again.
 func TestMergeAdjacentRuns_KeepsAnInteriorOverlapAsItsOwnRow(t *testing.T) {
 	t.Parallel()
 	// A0 [0,100) and A1 [100,200) abut and fold together; A2 then claims
@@ -101,16 +101,14 @@ func TestMergeAdjacentRuns_KeepsAnInteriorOverlapAsItsOwnRow(t *testing.T) {
 		t.Fatalf("rows = %d, want 2: %+v", len(out), out)
 	}
 
-	// The evidence the overlap check reads. Without BOTH rows this sum equals
-	// the file's size and §3.3 reports nothing at all.
+	// Both rows survive, so Σ length exceeds the file's size.
 	var recorded int64
 	for _, r := range out {
 		recorded += r.Length
 	}
 	size := int64(200) // max(Offset+Length), which is what FinalizeFile trims to
 	if recorded <= size {
-		t.Errorf("Σ length = %d against a %d-byte file; it must EXCEED the size, or "+
-			"overlapFrom has no evidence and the user is told nothing", recorded, size)
+		t.Errorf("Σ length = %d against a %d-byte file; it must EXCEED the size", recorded, size)
 	}
 
 	// And the CRC is withheld on the row count, so #387's outcome is closed

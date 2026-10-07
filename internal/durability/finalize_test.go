@@ -78,7 +78,7 @@ func TestFinalizeFile_TruncatesToTheHighestRecordedEnd(t *testing.T) {
 		drained: []WrittenArticle{{FileIdx: 0, ArtIdx: 3, Offset: 300, Length: 100, CRC32: 0x33}},
 	}
 	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
-	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 
@@ -107,7 +107,7 @@ func TestFinalizeFile_NothingRecordedDoesNotTruncate(t *testing.T) {
 	tgt := &truncTarget{}
 
 	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
-	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 	if tgt.called {
@@ -176,7 +176,7 @@ func TestFinalizeFile_StorageFaultsStallRatherThanFailArticles(t *testing.T) {
 			stall := &recordingStall{}
 			b := NewBarrier(rs, ack, stall, slog.New(slog.DiscardHandler))
 
-			if _, err := b.FinalizeFile(ctx, "job-1", 0, tc.target()); err == nil {
+			if err := b.FinalizeFile(ctx, "job-1", 0, tc.target()); err == nil {
 				t.Fatal("FinalizeFile returned nil on a storage fault")
 			}
 			routed := append(append([]*storagefault.Fault{}, stall.stalled...), stall.failed...)

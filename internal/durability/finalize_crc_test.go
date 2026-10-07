@@ -42,7 +42,7 @@ func TestFinalizeFile_CollapsesACleanFileToOneRunCarryingTheWholeFileCRC(t *test
 		},
 	}
 	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
-	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 
@@ -84,7 +84,7 @@ func TestFinalizeFile_AHoleKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 		},
 	}
 	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
-	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 
@@ -115,7 +115,6 @@ func TestFinalizeFile_AHoleKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 // what carries it for an EXACT-offset duplicate, where one of the pair is
 // dropped and a single row survives; that shape is caught by the article-
 // coverage condition instead, and is pinned separately in
-// TestFinalizeFile_ReportsAnExactOffsetDuplicate and in
 // app.TestRecordAssembledCRC_WithholdsWhenAnExactOffsetDuplicateWasDropped.
 // This test pins that the mechanism really does leave a second row to see.
 func TestFinalizeFile_AnOverlapKeepsTheFileAtMoreThanOneRun(t *testing.T) {
@@ -132,7 +131,7 @@ func TestFinalizeFile_AnOverlapKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 		},
 	}
 	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, slog.New(slog.DiscardHandler))
-	if _, err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
+	if err := b.FinalizeFile(ctx, "job-1", 0, tgt); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 

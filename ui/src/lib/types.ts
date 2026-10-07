@@ -40,12 +40,6 @@ export interface QueueSlot {
 	 *  a bad article/segment costs only its own bytes). Set once, never
 	 *  cleared — it describes the ingested document, not runtime state. */
 	ingest_anomaly?: string;
-	/** A byte-accounting collision the assembler or durability barrier found
-	 *  after the job started downloading (#379) — distinct from
-	 *  ingest_anomaly's parse-time findings. A later finding for a different
-	 *  file is appended, joined with "; ", so several malformed files each
-	 *  keep their own finding. */
-	post_anomaly?: string;
 	/** Why the job is parked on a storage fault — a full disk, a wedged
 	 *  mount — or absent when it is not. Render it; the backend has already
 	 *  decided that the condition is one the user can act on, and it is

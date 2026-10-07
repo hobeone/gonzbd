@@ -140,56 +140,6 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 	})
 }
 
-// handlePostAnomaly surfaces a structural fault in what the servers served, so
-// the user can tell a bad post from a bad disk or a bad connection (#379).
-//
-// It writes Header.PostAnomaly, whose sole writer this is (through
-// AddPostAnomaly) — see the field's doc comment. A later anomaly for a
-// different file is appended rather than overwritten, so a job whose
-// several files are each malformed keeps every finding instead of only the
-// last.
-//
-// A failure to record it is logged and dropped. A job that has left the queue
-// has nothing to warn about, which is ordinary rather than a defect (A2).
-//
-// There are TWO sources, which the log line names rather than assumes. The
-// assembler detects an exact-offset collision at accept time, before either
-// article is written. The barrier detects it at COMPLETION, by comparing the
-// bytes its recorded runs account for against the file's real size — see
-// durability.PostAnomaly.
-//
-// They are not redundant, and the reason is not that their cases are disjoint.
-// Within one process they are: the assembler resolves its collision's loser
-// permanently failed, so nothing writes its bytes and no run records it.
-// Across a RESTART the assembler's acceptedAt is empty, so two articles at the
-// same offset can both be written and both recorded, and the barrier's sum
-// then exceeds the file. It is still not a double report, because the
-// assembler is blind in exactly that window — the window, not the offsets, is
-// what keeps them from overlapping. What the barrier alone can see, in any
-// window, is a RANGE overlap that shares no start offset.
-func (app *Application) handlePostAnomaly(jobID string, fileIdx int, reason string) {
-	app.postAnomaly(jobID, fileIdx, "assembler", reason)
-}
-
-// reportPostAnomalies routes the barrier's findings.
-//
-// Called on both barrier paths and always AFTER their per-job mutex is
-// released — see the call sites. Nil and empty are the overwhelmingly common
-// case and cost one branch.
-func (app *Application) reportPostAnomalies(jobID string, found []durability.PostAnomaly) {
-	for _, pa := range found {
-		app.postAnomaly(jobID, int(pa.FileIdx), "barrier", pa.Reason)
-	}
-}
-
-func (app *Application) postAnomaly(jobID string, fileIdx int, source, reason string) {
-	app.log.Warn("post anomaly reported",
-		"job", jobID, "fileidx", fileIdx, "source", source, "reason", reason)
-	if app.dispatcher != nil {
-		_ = app.dispatcher.AddPostAnomaly(jobID, reason)
-	}
-}
-
 // handleArticleRejected records an article the assembler refused as
 // permanently failed.
 //
@@ -708,20 +658,10 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 	pending := app.pendingBytesFor(jobID)
 
 	app.barrierRuns.Add(1)
-	found, err := app.barrier.Run(ctx, jobID, tgt)
+	err := app.barrier.Run(ctx, jobID, tgt)
 	mu.Unlock()
 	// --- No lock held below this line ---
 
-	// Reported after the unlock rather than under it. The lock is held across
-	// the barrier's I/O by design — that is the serialisation — but a log
-	// write is I/O of its own, and a slow handler would hold every other
-	// checkpoint for this job behind a message about one that already failed.
-	//
-	// Post anomalies travel the same route for the same reason, and the reason
-	// is I/O under a lock and nothing more. barrier-mu already nests q.mu on
-	// every successful checkpoint, through AckDurable, so reporting under it
-	// would introduce no new ordering — there is no deadlock argument here.
-	app.reportPostAnomalies(jobID, found)
 	if err != nil {
 		// Nothing to put back: the accumulator was never cleared, so it still
 		// describes the bytes at risk. A failed barrier leaves the figure
@@ -1239,15 +1179,10 @@ func (app *Application) finalizeCompletedFile(ctx context.Context, jobID string,
 	defer app.releaseJobBarrierLock(jobID)
 	mu.Lock()
 	// --- Barrier serialised per job below this line ---
-	found, err := app.barrier.FinalizeFile(ctx, jobID, int32(fileIdx), trunc) //nolint:gosec // G115: file counts are far below int32
+	err = app.barrier.FinalizeFile(ctx, jobID, int32(fileIdx), trunc) //nolint:gosec // G115: file counts are far below int32
 	mu.Unlock()
 	// --- No lock held below this line ---
 
-	// Below the unlock for the same reason the error report is, and reported
-	// even though the file is about to be called finalized: it IS finalized,
-	// and it is also damaged. #410 already withheld its whole-file CRC, which
-	// sends it to par2; this is what tells the user why.
-	app.reportPostAnomalies(jobID, found)
 	if err != nil {
 		// Reported by the caller, not here: the lock spans the barrier's I/O
 		// by design, and a log write is I/O of its own with no business

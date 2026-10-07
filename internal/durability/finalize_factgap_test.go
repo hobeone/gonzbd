@@ -79,7 +79,7 @@ func TestFinalizeFile_PostTruncateStatFaultNamesTheFile(t *testing.T) {
 	stall := &recordingStall{}
 	b := NewBarrier(rs, &recordingAcker{}, stall, slog.New(slog.DiscardHandler))
 
-	_, err := b.FinalizeFile(ctx, "job-1", 0, tgt)
+	err := b.FinalizeFile(ctx, "job-1", 0, tgt)
 	if err == nil {
 		t.Fatal("FinalizeFile returned nil; the injected stat failure was not surfaced")
 	}

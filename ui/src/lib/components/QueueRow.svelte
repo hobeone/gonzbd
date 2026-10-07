@@ -160,7 +160,6 @@
 			[
 				slot.stall_reason && { text: slot.stall_reason, severe: true, testid: 'stall-reason' },
 				slot.fail_reason && { text: slot.fail_reason, severe: true },
-				slot.post_anomaly && { text: slot.post_anomaly, severe: false },
 				slot.operational_error && { text: slot.operational_error, severe: false },
 				slot.duplicate_reason && { text: slot.duplicate_reason, severe: false },
 				slot.ingest_anomaly && { text: slot.ingest_anomaly, severe: false }

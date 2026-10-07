@@ -87,7 +87,6 @@ func TestStore_AllHeaderFieldsAndTimestampsSurviveRoundTrip(t *testing.T) {
 			Priority:         1,
 			Bytes:            2048576,
 			IngestAnomaly:    "1 empty message-id",
-			PostAnomaly:      "overlap at byte 0",
 			FailReason:       "Failed: input/output error",
 			DuplicateReason:  "Duplicate NZB",
 			OperationalError: "failed to remove finalized job from queue",

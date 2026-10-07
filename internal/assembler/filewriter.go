@@ -148,10 +148,6 @@ type FileWriter struct {
 	// exactly as seenDone's duplicate handling is.
 	acceptedAt map[int64]offsetOwner
 
-	// postAnomalyReported latches once this file has raised a job-level
-	// warning about a collision. See faultedArticle.firstCollision.
-	postAnomalyReported bool
-
 	// faulted accumulates the articles a failed write rolled back, for the
 	// caller to route to Outstanding. See fail.
 	faulted []faultedArticle
@@ -218,22 +214,13 @@ type faultedArticle struct {
 	id        articleID
 
 	// offset and displacedBy carry the diagnosis, and are meaningful only
-	// when displaced is set. They exist because the assembler has to tell the
-	// user WHAT it saw — which byte range, and which two segments claimed it —
-	// and the writer is the only layer that knows.
+	// when displaced is set.
 	//
 	// They are set by the same statement that sets displaced, which is the
 	// whole point of failDisplaced no longer patching this record after the
 	// fact: "displaced with no displacer" is not a state a caller can reach.
 	offset      int64
 	displacedBy articleID
-
-	// firstCollision marks the one record per file that should raise the
-	// job-level warning, so an obfuscated post with N colliding segments
-	// reports once rather than appending the same sentence to
-	// Header.PostAnomaly N times. The per-ARTICLE report is unaffected —
-	// every displaced article still goes to OnArticleRejected.
-	firstCollision bool
 }
 
 // offsetOwner is the article that owns one offset, and whether its bytes have
@@ -395,11 +382,10 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 func (w *FileWriter) failDisplaced(id articleID, off int64, by articleID) {
 	w.admitPermanentFailure(id.artIdx)
 	w.faulted = append(w.faulted, faultedArticle{
-		id:             id,
-		displaced:      true,
-		offset:         off,
-		displacedBy:    by,
-		firstCollision: w.notePostAnomaly(),
+		id:          id,
+		displaced:   true,
+		offset:      off,
+		displacedBy: by,
 	})
 }
 
@@ -506,18 +492,6 @@ func (w *FileWriter) offsetSettledBy(off int64, arriving articleID) (articleID, 
 		return articleID{}, false
 	}
 	return owner.id, true
-}
-
-// notePostAnomaly reports whether this file has yet raised a job-level warning
-// about a collision, latching so it raises exactly one. See
-// faultedArticle.firstCollision, which is the same latch on the other
-// disposition.
-func (w *FileWriter) notePostAnomaly() bool {
-	if w.postAnomalyReported {
-		return false
-	}
-	w.postAnomalyReported = true
-	return true
 }
 
 // admitAccepted takes an article on as a part of this file, before its bytes

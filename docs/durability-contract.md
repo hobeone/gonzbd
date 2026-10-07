@@ -389,10 +389,10 @@ drain is at-least-once (§3), so the drained set overlaps what is already
 stored, and the dedup has to happen at **article** granularity **before**
 grouping. Grouped first, a re-delivery of articles 5–9 arriving beside
 genuinely new 10–12 forms one run `[5,12]` that no stored row covers, so no
-whole-run check drops it; it inserts beside the stored row and `Σ length` then
-exceeds the file's true size — a permanent false overlap finding on a healthy
-file. Subtracting covered `art_idx` values first leaves `[10,12]`, which is the
-truth. One owner, one order: **subtract, then sort, then group, then merge.**
+whole-run check drops it; it inserts a second row beside the stored one and the
+file no longer collapses to a single run. Subtracting covered `art_idx` values
+first leaves `[10,12]`, which is the truth. One owner, one order: **subtract,
+then sort, then group, then merge.**
 
 **A failed barrier claims nothing** (R7). It acks no article and leaves the
 stored rows wholly intact, because `Store.commit` is atomic and is the last
@@ -533,8 +533,7 @@ be stored — `(job_id, file_idx, offset)` is the primary key — so
 `mergeAdjacentRuns` drops one, and a **single row at offset 0** survives. A
 length check against the file's size would be *inert* here: `FinalizeFile`
 derives its truncate bound from `max(offset+length)` over the same rows, so
-`size == Length` holds by construction. `Σ length` equals the size too, so the
-overlap check below sees nothing either. Every condition stated in *bytes* is
+`size == Length` holds by construction. Every condition stated in *bytes* is
 satisfied, and the CRC would be published over articles whose bytes another
 article has overwritten.
 
@@ -548,35 +547,6 @@ A permanently failed article — interior *or* at the tail — fails the same
 condition, and needs no exception for it. The record does not account for every
 article, so no CRC is published, `QuickCheck` reads `NoCRC`, and the repair path
 runs.
-
-#### Overlaps are detected at completion, and `Σ length` has a blind spot
-
-A run is built only from articles that abut exactly, so an overlapping article
-never merges into one. It is still written, and the overlap is caught at
-completion by comparing the recorded lengths against the file:
-
-| | Meaning |
-|---|---|
-| `Σ length > stat size` | **definite overlap** — articles wrote over each other |
-| `Σ length == stat size` | **no evidence of overlap** — not proof of a clean tiling; see below |
-| `Σ length < stat size` | articles are missing or failed, the ordinary incomplete case |
-
-**Record the gap rather than let a reader assume the middle row is a
-guarantee.** `Σ length` is a sum, so an N-byte overlap and an N-byte hole
-cancel and land on equality: the check reports *no evidence of overlap* on a
-file holding both. The prefix walk this replaced compared adjacent extents
-structurally and saw the overlap regardless; this arithmetic cannot.
-
-Two things bound the loss, and neither is this check:
-
-- A hole means a gap between rows, so such a file has **more than one row** —
-  and no single run covers its whole article range. The whole-file CRC is
-  withheld on either condition alone. The #387 outcome is closed structurally by
-  a different guard, not by this sum.
-- The file is incomplete either way, so par2 fetches recovery volumes and
-  repairs both defects.
-
-What is lost is a *warning* on a file the user is already told is incomplete.
 
 ### 5. A storage fault never marks an article failed
 
@@ -841,11 +811,9 @@ of two sentinels.
 operation in `barrier.go` sends its error there once `ErrFileNotOpen` has been
 handled, and so do the two calls on the durability store whose failure stops a
 barrier: the commit, which `Run` and `FinalizeFile` share through
-`Barrier.commit`, and `FinalizeFile`'s read of the file's stored runs. The
-post-commit read in `overlapFindings` is logged and skipped instead, because the
-commit and the ack it would otherwise undo have already landed. Six sites were
-getting this wrong independently, which is why the rule sits on the interface
-rather than at each of them.
+`Barrier.commit`, and `FinalizeFile`'s read of the file's stored runs. Six sites
+were getting this wrong independently, which is why the rule sits on the
+interface rather than at each of them.
 
 **A timeout splits, and getting the split wrong is what parked healthy jobs.**
 The implementation's *own* bound expiring — the worker did not answer within
@@ -1765,46 +1733,17 @@ including every failure path.
     failed. Detection used to BE the eviction, so the two could not disagree;
     moving detection ahead of the cache separated them.
 
-  Either way the first collision on a file raises `Options.OnPostAnomaly`, which
-  the app routes to `Header.PostAnomaly`. That is diagnosis, not accounting: it states
-  that two segments claim one byte **offset** without asserting the post is
-  malformed, because a redundant posting and a server-mangled `=ypart begin=`
-  produce the same observation and yEnc checksums the payload, never the header.
-
-  **This detects an exact shared start offset only, and it is one of two
-  sources.** Two articles whose ranges overlap without sharing a start offset
-  are invisible here — `acceptedAt` is keyed on the offset — and the later one
-  overwrites the earlier's bytes. The durability layer catches that case
-  instead, after both writes have landed, by comparing `Σ length` over the
-  file's runs against the file's size: a sum above the size means two durable
-  articles describe the same bytes (§4, which also records the blind spot in
-  that comparison). It reports through
-  `durability.PostAnomaly` on the barrier's return, and the app routes it to the
-  same `Header.PostAnomaly`, at most once per `(jobID, fileIdx)`. The latch is in
-  memory, so that bound is per process: a restart raises each finding once
-  more, which is what a user who restarted to fix something would expect.
-
-  The two are not redundant, though the reason is narrower than "their cases
-  are disjoint". Within one process they are: the assembler resolves its
-  collision's loser permanently failed, so it never earns a durable bit and the
-  walk never reaches it. Across a **restart** `acceptedAt` is empty, so two
-  articles at the same offset can both be written and both become durable, and
-  the barrier does then see an exact-offset pair — still not a double report,
-  because the assembler is blind in exactly that window. What the barrier alone
-  can see, in any window, is a range overlap sharing no start offset. Neither
-  prevents the write; see #387 for what detection here does not cover.
-
-  That exact-offset pair reaches the user by a **third** path, not by the sum
-  above. `Store.commit` must discard one of the two — the primary key admits
-  one row per offset — and returns the discard as a `durability.Collision`,
-  which the barrier renders as a `PostAnomaly` naming both articles and the
-  contested offset. It has to come from the commit: the dropped row contributes
-  nothing to `Σ length`, and once the commit lands the survivor is
-  indistinguishable from a row that never had a rival, so no later pass over
-  the stored rows can re-derive it. The report says the post is malformed and
-  that par2 will repair the file; it does **not** say the file is corrupt,
-  because this layer cannot tell the in-episode case (which completes *short*)
-  from the cross-episode one (which completes *wrong*).
+  **This detects an exact shared start offset only.** Two articles whose ranges
+  overlap without sharing a start offset are invisible here — `acceptedAt` is
+  keyed on the offset — and the later one overwrites the earlier's bytes. The
+  durability layer still withholds the whole-file CRC for any file that does not
+  collapse to a single contiguous run covering every article (§4), so `par2`
+  runs and repairs the file. Across a **restart** `acceptedAt` is empty, so two
+  articles at the same offset can both be written and both become durable;
+  `Store.commit` discards one of the two (`(job_id, file_idx, offset)` is the
+  primary key) and returns the discard as a `durability.Collision`, which leaves
+  the survivor unable to cover every article index and therefore withholds the
+  whole-file CRC as well.
 - **Cross-state dedup**: an `ArtIdx` previously counted as a success arriving as
   a failure (or vice versa) does not increment `partsWritten` again.
 - **Late articles**: an article for a file already in the `completed` tombstone is
@@ -2111,11 +2050,7 @@ recorded here so the next reader does not mistake them for design.
    its own — the row count misses the exact-offset duplicate, where one of the
    pair is dropped and a single row survives. §4 has both worked examples.
 
-5. **`Σ length` cannot see a hole and an equal-sized overlap together.** A bound
-   on the overlap check rather than a defect in it; §4 states it, its two
-   bounding arguments, and what is actually lost.
-
-6. **A crash between the barrier's commit and the following queue save strands
+5. **A crash between the barrier's commit and the following queue save strands
    a completed file, and the next start repairs it rather than the window being
    closed.** The two facts about a finished file survive a crash by *different*
    mechanisms, and only one of them is transactional:
@@ -2195,8 +2130,8 @@ recorded here so the next reader does not mistake them for design.
    grows with every test that seeds a row, nothing checks a count in Markdown,
    and the claim this paragraph needs is the filtered one.
 
-7. **An exact-offset collision is PREVENTED only within one open-file episode;
-   across a boundary it is detected and reported after the fact.**
+6. **An exact-offset collision is PREVENTED only within one open-file episode;
+   across a boundary it withholds the whole-file CRC so `par2` repairs it.**
    `FileWriter.acceptedAt` maps each byte offset to the article that owns it,
    and a second article claiming an owned offset is refused and resolved
    permanently failed — which works because that article is not yet `Done`, and
@@ -2206,11 +2141,10 @@ recorded here so the next reader does not mistake them for design.
    finalized short, reopens the file with an empty map, and the later write
    overwrites the earlier. The file then completes *wrong*.
 
-   **The bound is that both outcomes are diagnosed and repairable.** Across the
-   boundary `Store.commit` must discard one of the two rows, returns it as a
-   `durability.Collision`, and the barrier raises a `PostAnomaly` naming both
-   articles and the contested offset (§4). The whole-file CRC is withheld either
-   way, because the record cannot cover the discarded article's index. So par2
+   **The bound is that both outcomes are repairable.** Across the boundary
+   `Store.commit` must discard one of the two rows and returns it as a
+   `durability.Collision` (§4). The whole-file CRC is withheld either way,
+   because the record cannot cover the discarded article's index. So `par2`
    runs in both cases; what differs is a short file versus a wrong one, and a
    failed-byte figure that is correct versus one that omits the loser's bytes.
 
