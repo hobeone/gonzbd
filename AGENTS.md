@@ -14,10 +14,16 @@ is a standing obligation, not a one-off cleanup.
 
 ## Project Context
 
-GoNZBD is a high-performance Go reimplementation of [SABnzbd](https://sabnzbd.org),
-the automated Usenet binary newsreader. It targets fresh installations and is
-**not** a drop-in replacement for the Python version. The reference Python
-implementation lives at `../sabnzbd/`.
+GoNZBD is a high-performance automated Usenet binary downloader written in Go.
+Its one compatibility obligation is the SABnzbd-compatible HTTP API that
+third-party tools (Sonarr, Radarr and the like) call — `docs/sabnzbd_spec.md`
+§10, with §16.1 for the NZB format. Everything behind that API is our own
+design, and it targets fresh installations. [SABnzbd](https://sabnzbd.org)
+(`../sabnzbd/`) and [NZBGet](https://nzbget.com) (`../nzbget/`) are prior art:
+read them for how the problem has been solved, and prefer our own approach
+wherever it is simpler or faster. SABnzbd in particular carries handling for
+old posting styles and old servers, and workarounds for Python's limits (the
+GIL, decode speed) that a Go program does not have.
 
 - **Module path:** `github.com/hobeone/gonzbd`
 - **Go version:** 1.27.0 (toolchain 1.27.0)
@@ -227,13 +233,14 @@ Before writing any code, read these in order:
 3. **`docs/TESTING.md`** — Comprehensive testing guide. Covers all test suites
    (unit, integration, E2E, contract), build tags, required tools, and when to
    run each. **Read this before running or modifying tests.**
-4. **`docs/sabnzbd_spec.md`** — The functional specification and source of truth
-   for behavior: protocols (NNTP), data formats (NZB, persistence), API endpoint
-   schemas, constants.
-5. **`../sabnzbd/sabnzbd/`** — The original Python source, external to this repo.
-   Consult for clarification of intent when the spec is ambiguous, **but do not
-   transliterate**. Translate intent into idiomatic Go. The spec has been wrong
-   before — when in doubt, ask.
+4. **`docs/sabnzbd_spec.md`** — Binding only in §10 (the HTTP API third-party
+   tools call) and §16.1 (the NZB format). The rest describes how SABnzbd
+   works: useful background, not a requirement. Matching SABnzbd behaviour the
+   API does not expose is never by itself a reason for a design.
+5. **Prior art: `../sabnzbd/sabnzbd/` (Python) and `../nzbget/daemon/` (C++)**,
+   both external to this repo. Read them for intent and for edge cases real
+   posts produce, **but do not transliterate**, and judge each idea on its
+   merits — see "Reading Prior Art" below. When in doubt, ask.
 
 ### Topic docs — read only when the trigger applies
 
@@ -624,7 +631,7 @@ attribute `LIVED`/`NOT COVERED` mutants to your change vs. pre-existing gaps.
 If you cannot resolve a problem after a focused investigation:
 - **Do not** try to work around the issue with a hack.
 - **Do not** disable tests or skip checks.
-- **Do** read the relevant Python code for clarity on intent.
+- **Do** read how the prior art (SABnzbd, NZBGet) handles the same case.
 - **Do** ask the user for direction with a specific proposal (see Decision Protocol below).
 
 ## Decision Protocol
@@ -636,7 +643,7 @@ list. Use this format whenever either applies.
 When the spec or plan is ambiguous, or when an implementation choice will
 significantly affect later work:
 
-1. **Investigate first** — read the relevant Python code, check existing Go libraries, consider 2-3 approaches.
+1. **Investigate first** — read how the prior art handles it, check existing Go libraries, consider 2-3 approaches.
 2. **Form an opinion** — pick the approach you would default to and the reasons.
 3. **Present to the user** in this format:
    ```
@@ -666,7 +673,7 @@ Decisions that must be escalated:
 - Adding a second constructor for a type, a second writer of a derived field, or a second enforcement point for one invariant (see "Standing Design Rules" — each is an owner-model violation, and each has shipped a defect here)
 - Keeping a guard whose only justification is state an earlier build wrote, unless the security carve-out applies
 - Persistence format changes (file paths, schema, on-disk layout)
-- API behavior changes that affect compatibility with the existing Glitter web UI
+- API behavior changes that affect the third-party tools calling the §10 API, or the web UI
 - Database schema changes (pre-v1.0 modifies `001_initial.sql` directly per Standing Design Rule 1; post-v1.0 adds a new `goose` migration in `internal/history/migrations/`)
 
 ## Go Coding Standards, Testing Standards, and Backend Lessons Learned
@@ -771,17 +778,25 @@ gh run watch <run-id>                   # follow it
 `docs/commit-cycle.md` § "Why CI is disabled" has the CodeQL/toolchain history
 and how to restore automatic runs.
 
-## Reading Python for Reference
+## Reading Prior Art
 
-When consulting the Python source for behavior clarification:
+When consulting SABnzbd or NZBGet:
 
 - Read for **intent and edge cases**, not for line-by-line translation.
-- Python's threading model (single-threaded selector + threading.Lock) is **not** the Go model. Translate to goroutines + channels + RWMutex.
-- Python's pickle persistence is **not** the Go model. Translate to JSON or SQLite as decided in the plan.
-- Python's class hierarchies often translate to Go composition + interfaces. Don't reproduce inheritance.
-- Variable naming should follow Go conventions (`MixedCaps`), not Python's `snake_case`.
+- Ask why a behaviour exists before adopting it. It may be **essential** (any
+  downloader needs it), **historical** (an old posting style, server quirk or
+  Usenet practice that modern posts and providers no longer produce), a
+  **language** workaround (Python's GIL, single-threaded selector or slow
+  decoding), or a free **design** choice. Only an essential behaviour is owed;
+  a design choice is worth taking only on its merits, and the other two are
+  not reasons to carry anything over.
+- SABnzbd's threading (single-threaded selector + `threading.Lock`) and pickle
+  persistence are **not** the Go model. Use goroutines, channels and
+  `sync.RWMutex`, and JSON or SQLite as decided in the plan.
+- Python class hierarchies translate to Go composition + interfaces; names
+  follow Go conventions (`MixedCaps`), not `snake_case`.
 
-When in doubt about whether a Python behavior is essential or accidental, ask.
+When in doubt about which kind a behaviour is, ask.
 
 ## Key File Locations
 
