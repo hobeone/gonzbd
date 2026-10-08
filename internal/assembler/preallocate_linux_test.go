@@ -12,18 +12,16 @@ import (
 
 func TestPreallocateLinuxFallback(t *testing.T) {
 	// Opening /proc/self/coredump_filter for writing.
-	// fallocate on /proc files returns ENOTSUP/EOPNOTSUPP, forcing the fallback path.
+	// fallocate on /proc files returns ENOTSUP/EOPNOTSUPP, which is ignored as a no-op.
 	f, err := os.OpenFile("/proc/self/coredump_filter", os.O_WRONLY, 0)
 	if err != nil {
 		t.Skipf("Skipping test: cannot open coredump_filter: %v", err)
 	}
 	defer f.Close()
 
-	// Call preallocateFile. It should fail fallocate with EOPNOTSUPP,
-	// fall back to Truncate, which will succeed and return nil.
 	err = preallocateFile(f, 1024)
 	if err != nil {
-		t.Errorf("expected no error from preallocating /proc file with fallback, got: %v", err)
+		t.Errorf("expected no error from preallocating /proc file, got: %v", err)
 	}
 }
 
