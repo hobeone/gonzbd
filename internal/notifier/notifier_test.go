@@ -810,6 +810,7 @@ func TestScriptNotifier_TimeoutZero(t *testing.T) {
 func TestAppriseNotifier_DefaultClient(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Connection", "close")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -819,6 +820,10 @@ func TestAppriseNotifier_DefaultClient(t *testing.T) {
 		URL:       srv.URL,
 		EventMask: []EventType{Warning},
 	}, nil)
+
+	if n.ClientForTest().Timeout != DefaultAppriseTimeout {
+		t.Fatalf("client.Timeout = %v, want %v", n.ClientForTest().Timeout, DefaultAppriseTimeout)
+	}
 
 	err := n.Send(t.Context(), Event{Type: Warning, Timestamp: time.Now()})
 	if err != nil {
@@ -888,14 +893,21 @@ func TestAppriseNotifier_ClientTimeoutPreventsHang(t *testing.T) {
 func TestAppriseNotifier_DefaultTimeoutAppliedWhenClientTimeoutZero(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Connection", "close")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
+	// Supply a client with custom transport but Timeout == 0 (same hazard as &http.Client{}).
+	client := &http.Client{Transport: srv.Client().Transport}
 	n := NewAppriseNotifier(AppriseConfig{
 		URL:       srv.URL,
 		EventMask: []EventType{Warning},
-	}, &http.Client{}) // Timeout: 0, same hazard as http.DefaultClient
+	}, client)
+
+	if n.ClientForTest().Timeout != DefaultAppriseTimeout {
+		t.Fatalf("client.Timeout = %v, want %v", n.ClientForTest().Timeout, DefaultAppriseTimeout)
+	}
 
 	err := n.Send(t.Context(), Event{Type: Warning, Timestamp: time.Now()})
 	if err != nil {

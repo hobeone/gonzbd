@@ -91,6 +91,7 @@ func waitFor(t *testing.T, pred func() bool) {
 // called from the dispatcher's tick goroutine, so blocking there stalls every
 // other job's advance -- not just this one's.
 func TestAppRunner_ReturnsPromptly(t *testing.T) {
+	t.Parallel()
 	r := newAppRunner(newTestApplication(t))
 
 	done := make(chan struct{})
@@ -111,6 +112,7 @@ func TestAppRunner_ReturnsPromptly(t *testing.T) {
 // lease and compute slot forever, because the Queue cannot tell 'holding and
 // working' from 'holding and yielded'.
 func TestAppRunner_EveryStateReportsExactlyOnce(t *testing.T) {
+	t.Parallel()
 	for _, st := range job.AllStates() {
 		t.Run(st.String(), func(t *testing.T) {
 			app := newTestApplication(t)
@@ -138,6 +140,7 @@ func TestAppRunner_EveryStateReportsExactlyOnce(t *testing.T) {
 //   - Fetching hands off to downloader (dl.Wake).
 //   - Repairing/Extracting/Finalizing hands off to postProcessor.
 func TestAppRunner_EveryStateDischargesCompletionContract(t *testing.T) {
+	t.Parallel()
 	for _, st := range job.AllStates() {
 		t.Run(st.String()+"/StoppingYieldsImmediately", func(t *testing.T) {
 			app := newTestApplication(t)
@@ -195,6 +198,7 @@ func TestAppRunner_EveryStateDischargesCompletionContract(t *testing.T) {
 }
 
 func TestAppRunner_DirectMethods(t *testing.T) {
+	t.Parallel()
 	app := newTestApplication(t)
 	rec := &reportRecorder{}
 	r := newAppRunner(app)
@@ -242,6 +246,7 @@ func buildRunnerJob(t *testing.T, app *Application, files []failMsgFile, failIdx
 }
 
 func TestAppRunner_RunAssessBranches(t *testing.T) {
+	t.Parallel()
 	app := newTestApplication(t)
 	rec := &reportRecorder{}
 	r := newAppRunner(app)

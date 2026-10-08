@@ -407,8 +407,9 @@ a desync may be a one-off, and `PenaltyPerm` would retire a server on a single
 bad response. `classifyConnError` counts it under `nntp_desynced`, which is
 where the evidence to revisit this would come from.
 
-When `opts.NoPenalties` is set, `clampPenalty` caps all penalties to
-`PenaltyShort` (1 min) regardless of the error class.
+When `opts.MaxPenalty` is set or `opts.NoPenalties` is true, `clampPenalty` caps
+all penalties (to `opts.MaxPenalty`, or `PenaltyShort` (1 min) by default when
+`NoPenalties` is true) regardless of the error class.
 
 *(Note: `constants.PenaltyTimeout`, `constants.PenaltyShare`, and `constants.PenaltyTooMany`
 are defined in `internal/constants` as protocol constants from the upstream spec, but are

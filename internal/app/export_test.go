@@ -251,6 +251,20 @@ func (a *Application) ForceStopWorkers() {
 	}
 }
 
+// StopAndJoin stops workers, cancels the application context, and waits for
+// all background goroutines on wg to finish. Used in test cleanups so that
+// background loops do not hold or create files while t.TempDir() is being removed.
+func (a *Application) StopAndJoin() {
+	a.ForceStopWorkers()
+	if a.cancel != nil {
+		a.cancel()
+	}
+	_ = waitBounded("wg.Wait", 5*time.Second, func() error {
+		a.wg.Wait()
+		return nil
+	}, a.log)
+}
+
 // BarrierRuns reports how many checkpoint barriers have been started.
 //
 // The cadence tests need to tell "the barrier fired" from "the barrier had

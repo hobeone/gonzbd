@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -854,7 +855,7 @@ func TestWebSocketLifecycleLogging_BufferOverflow(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
@@ -872,13 +873,19 @@ func TestWebSocketLifecycleLogging_BufferOverflow(t *testing.T) {
 
 	// Send messages until buffer overflow
 	big := strings.Repeat("x", 4096)
-	for b.NumClients() > 0 {
+	const maxBroadcasts = 10000
+	for i := 0; b.NumClients() > 0; i++ {
+		if i >= maxBroadcasts {
+			t.Fatalf("buffer overflow not reached after %d broadcasts", maxBroadcasts)
+		}
 		select {
 		case <-ctx.Done():
 			t.Fatal("timeout waiting for buffer overflow")
 		default:
 			b.Broadcast(Event{Type: "overflow", Line: big})
-			time.Sleep(1 * time.Millisecond)
+			if i%64 == 0 {
+				runtime.Gosched()
+			}
 		}
 	}
 

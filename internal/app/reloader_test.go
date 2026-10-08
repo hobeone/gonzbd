@@ -26,6 +26,7 @@ func newBareJob(t *testing.T, app *Application, id, md5 string) (*job.Job, dispa
 }
 
 func TestApplication_ReloadOptions(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	fd := newFakeDownloader()
 	app, err := New(cfg, nil, WithDownloader(fd))
@@ -194,6 +195,7 @@ func TestApplication_ReloadOptions(t *testing.T) {
 // guards the snapshot's release-before-call ordering with a timeout in case a
 // future change reintroduces the lock-holding call.
 func TestApplication_ReloadPostProcOptions_NoDeadlockUnderReadLock(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	app, err := New(cfg, nil)
 	if err != nil {
@@ -216,6 +218,7 @@ func TestApplication_ReloadPostProcOptions_NoDeadlockUnderReadLock(t *testing.T)
 }
 
 func TestApplication_RunMetricsPush(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
@@ -230,6 +233,22 @@ func TestApplication_RunMetricsPush(t *testing.T) {
 
 	if emitter.count == 0 {
 		t.Error("expected metrics push to broadcast events")
+	}
+}
+
+func TestApplication_WithMaxPenalty(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+	app, err := New(cfg, nil, WithMaxPenalty(500*time.Millisecond))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if app.maxPenalty != 500*time.Millisecond {
+		t.Errorf("maxPenalty = %v, want 500ms", app.maxPenalty)
+	}
+	opts := app.buildDownloaderOptions()
+	if opts.MaxPenalty != 500*time.Millisecond {
+		t.Errorf("buildDownloaderOptions().MaxPenalty = %v, want 500ms", opts.MaxPenalty)
 	}
 }
 
@@ -252,6 +271,7 @@ func (e *eventCounter) Broadcast(ev Event) {
 // constraint, but nothing was left to propagate an accepted value to the
 // already-running stage on live reload).
 func TestApplication_ReloadPostProcOptions_AppliesStrictSandboxToRunningStage(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	cfg.With(func(c *config.Config) {
 		c.PostProc.StrictSandbox = false
@@ -279,6 +299,7 @@ func TestApplication_ReloadPostProcOptions_AppliesStrictSandboxToRunningStage(t 
 // way — detectDuplicateNZB itself only returns the duplicate reason text, so this
 // test asserts that contract).
 func TestDetectDuplicateNZB(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	a, err := New(cfg, nil)
 	if err != nil {
@@ -354,6 +375,7 @@ func TestDetectDuplicateNZB(t *testing.T) {
 // still hold the values the earlier steps left, so a helper that pushed a stale
 // snapshot of any field would redden here.
 func TestPushDispatchOptions_ForwardsEachSetterToTheRunningDownloader(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	fd := newFakeDownloader()
 	app, err := New(cfg, nil, WithDownloader(fd))

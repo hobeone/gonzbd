@@ -72,7 +72,7 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 	defer db.Close()
 	repo := history.NewRepository(db)
 
-	application, err := app.New(cfg, repo)
+	application, err := app.New(cfg, repo, app.WithMaxPenalty(1*time.Second))
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
@@ -157,10 +157,21 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 		t.Fatalf("app.AddJob: %v", err)
 	}
 
-	// Wait for completion (or timeout)
-	// With penalty escalation enabled (NoPenalties = false), unexpected EOF
-	// incurs PenaltyUnknown (3 minutes), so the timeout must exceed 3m.
-	timeout := 4 * time.Minute
+	// Wait for completion (or timeout).
+	// With penalty escalation active (NoPenalties = false) and MaxPenalty clamped
+	// to 1s for the test harness, the pipeline recovers from connection drops and
+	// completes promptly without waiting out the 3m production PenaltyUnknown.
+	// Note: real-duration penalty expiry and backoff intervals are unit-tested
+	// in internal/downloader.
+	// The 15s timeout budget is derived from its constituent components:
+	// chaosWindow (2s) + stallReadTimeout (5s) + clampedPenalty (1s) + slack (7s) = 15s.
+	const (
+		chaosWindow      = 2 * time.Second
+		stallReadTimeout = 5 * time.Second
+		clampedPenalty   = 1 * time.Second
+		slack            = 7 * time.Second
+		timeout          = chaosWindow + stallReadTimeout + clampedPenalty + slack
+	)
 	deadline := time.Now().Add(timeout)
 	completed := false
 	for time.Now().Before(deadline) {
@@ -169,7 +180,7 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 			completed = true
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	if !completed {

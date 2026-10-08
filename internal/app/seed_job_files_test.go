@@ -55,6 +55,7 @@ func countSeeded(t *testing.T, db *sql.DB, jobID string) int {
 // correct outcome for a recovery volume, not "results already set" — the
 // pre-#329 shape this test used to pin.
 func TestSeedJobFiles_OneRowPerFile(t *testing.T) {
+	t.Parallel()
 	db := openHistoryTestDB(t)
 
 	derived := map[int]job.FetchPolicy{2: job.FetchIfNeeded}
@@ -112,6 +113,7 @@ func TestSeedJobFiles_OneRowPerFile(t *testing.T) {
 // checkpointer has already written — DO NOTHING rather than an upsert, because
 // an upsert would reset a completed file's filename and CRC back to empty.
 func TestSeedJobFiles_IsIdempotent(t *testing.T) {
+	t.Parallel()
 	db := openHistoryTestDB(t)
 
 	if err := seedJobFiles(t.Context(), durability.NewStore(db, "history.db"), "job-b", 3, fetchAlwaysForAll); err != nil {
@@ -157,6 +159,7 @@ func TestSeedJobFiles_IsIdempotent(t *testing.T) {
 // inside SQLite is a truer stand-in for the real failures here (a disk error, a
 // busy timeout) than a Go-side hook would be.
 func TestSeedJobFiles_IsAllOrNothing(t *testing.T) {
+	t.Parallel()
 	db := openHistoryTestDB(t)
 
 	if _, err := db.Exec(`
@@ -180,6 +183,7 @@ BEGIN SELECT RAISE(ABORT, 'injected fault'); END`); err != nil {
 // an error. The loop body never runs, so this reaches Commit with an empty
 // transaction, which is the one path the other three tests never take.
 func TestSeedJobFiles_ZeroFilesCommits(t *testing.T) {
+	t.Parallel()
 	db := openHistoryTestDB(t)
 
 	if err := seedJobFiles(t.Context(), durability.NewStore(db, "history.db"), "job-d", 0, fetchAlwaysForAll); err != nil {
@@ -192,6 +196,7 @@ func TestSeedJobFiles_ZeroFilesCommits(t *testing.T) {
 
 // TestSeedJobFiles_CancelledContextSeedsNothing pins the BeginTx error path.
 func TestSeedJobFiles_CancelledContextSeedsNothing(t *testing.T) {
+	t.Parallel()
 	db := openHistoryTestDB(t)
 
 	ctx, cancel := context.WithCancel(t.Context())

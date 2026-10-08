@@ -177,6 +177,11 @@ type Options struct {
 	// a short fixed duration instead of the class-specific defaults.
 	NoPenalties bool
 
+	// MaxPenalty caps the duration of any server penalty. When zero,
+	// defaults to constants.PenaltyShort if NoPenalties is true, or
+	// unlimited (no clamp) if NoPenalties is false.
+	MaxPenalty time.Duration
+
 	// PreCheck sends a STAT command before BODY to verify article
 	// existence on the server, avoiding wasted bandwidth on 430s.
 	PreCheck bool

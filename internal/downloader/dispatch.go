@@ -433,13 +433,18 @@ func (d *Downloader) selectServerForArticle(mask serverMask, hasTried bool, opts
 	return nil, -2
 }
 
-// clampPenalty enforces d.opts.NoPenalties: when set, no server penalty may
-// exceed constants.PenaltyShort, regardless of the error class PenaltyFor
-// would otherwise map to. Kept as a one-line helper so both call sites
-// (dial failure, fetch failure) apply the same rule (OPT-3).
+// clampPenalty enforces d.opts.NoPenalties and d.opts.MaxPenalty: when
+// MaxPenalty is set or NoPenalties is true, no server penalty may exceed the
+// configured bound, regardless of the error class PenaltyFor would otherwise
+// map to. Kept as a helper so both call sites (dial failure, fetch failure)
+// apply the same rule (OPT-3).
 func (d *Downloader) clampPenalty(pen time.Duration) time.Duration {
-	if d.opts.NoPenalties && pen > constants.PenaltyShort {
-		return constants.PenaltyShort
+	maxPen := d.opts.MaxPenalty
+	if d.opts.NoPenalties && (maxPen == 0 || maxPen > constants.PenaltyShort) {
+		maxPen = constants.PenaltyShort
+	}
+	if maxPen > 0 && pen > maxPen {
+		return maxPen
 	}
 	return pen
 }

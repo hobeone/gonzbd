@@ -18,6 +18,7 @@ import (
 // single unreadable failed_articles row costs the job its entire durable
 // resolution and every recorded byte range is re-fetched.
 func TestRestoreResolution_KeepsRunsWhenFailedArticleScanFails(t *testing.T) {
+	t.Parallel()
 	db := openHistoryTestDB(t)
 
 	j := job.New("j1", "test", job.Policy{})
@@ -64,6 +65,7 @@ func TestRestoreResolution_KeepsRunsWhenFailedArticleScanFails(t *testing.T) {
 // articles against no runs at all. Only a partial read — one wrapping
 // durability.ErrIncomplete — is applied.
 func TestRestoreResolution_AppliesNothingWhenARunCannotBeScanned(t *testing.T) {
+	t.Parallel()
 	db := openHistoryTestDB(t)
 
 	j := job.New("j1", "test", job.Policy{})

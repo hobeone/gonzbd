@@ -23,6 +23,7 @@ import (
 // already-live job would already carry the right policy in memory and this
 // test would pass even with the restore neutered.
 func TestRestoreJobFiles_RestoresNonDefaultFetchPolicy(t *testing.T) {
+	t.Parallel()
 	db, err := history.Open(t.Context(), t.TempDir()+"/history.db")
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
@@ -69,6 +70,7 @@ func TestRestoreJobFiles_RestoresNonDefaultFetchPolicy(t *testing.T) {
 // job — a closed *sql.DB is a stand-in for the real failures here (a
 // dropped connection, a busy timeout).
 func TestRestoreJobFiles_QueryErrorLeavesJobUntouched(t *testing.T) {
+	t.Parallel()
 	db, err := history.Open(t.Context(), t.TempDir()+"/history.db")
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
@@ -98,6 +100,7 @@ func TestRestoreJobFiles_QueryErrorLeavesJobUntouched(t *testing.T) {
 // attached content (Progress() == nil) is left alone rather than panicking
 // on a nil progress dereference inside the restore loop.
 func TestRestoreJobFiles_NilProgressReturnsEarly(t *testing.T) {
+	t.Parallel()
 	db, err := history.Open(t.Context(), t.TempDir()+"/history.db")
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
@@ -119,6 +122,7 @@ func TestRestoreJobFiles_NilProgressReturnsEarly(t *testing.T) {
 // than aborting the whole restore — a later well-formed row for a different
 // file must still be applied.
 func TestRestoreJobFiles_ScanErrorSkipsRowAndContinues(t *testing.T) {
+	t.Parallel()
 	db, err := history.Open(t.Context(), t.TempDir()+"/history.db")
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)

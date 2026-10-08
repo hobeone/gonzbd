@@ -57,6 +57,7 @@ func externalFixture() harnessOpts {
 //     that only counted re-fetches would pass against an implementation that
 //     re-fetched everything and still assembled it wrongly.
 func TestExternalModification_TruncatedPartialIsRecomputed(t *testing.T) {
+	t.Parallel()
 	opts := externalFixture()
 	h := newHarness(t, opts)
 	jobID := h.AddJob()
@@ -138,6 +139,7 @@ func TestExternalModification_TruncatedPartialIsRecomputed(t *testing.T) {
 // evidence for any article, so every one of them is Outstanding again —
 // including the ones the stored runs still claim are durable.
 func TestExternalModification_DeletedPartialRestartsTheFile(t *testing.T) {
+	t.Parallel()
 	opts := externalFixture()
 	h := newHarness(t, opts)
 	jobID := h.AddJob()
@@ -193,6 +195,7 @@ func TestExternalModification_DeletedPartialRestartsTheFile(t *testing.T) {
 // Both halves discriminate. The no-refetch half did not until #362 was fixed —
 // see the note on TestExternalModification_MtimeTouchCostsNoRefetch.
 func TestExternalModification_AppendedGarbageIsTrimmed(t *testing.T) {
+	t.Parallel()
 	opts := externalFixture()
 	h := newHarness(t, opts)
 	jobID := h.AddJob()
@@ -283,6 +286,7 @@ func TestExternalModification_AppendedGarbageIsTrimmed(t *testing.T) {
 // turned this assertion into a pin, and the same neutering that leaves it green
 // again would mean the precedence has been reverted.
 func TestExternalModification_MtimeTouchCostsNoRefetch(t *testing.T) {
+	t.Parallel()
 	opts := externalFixture()
 	h := newHarness(t, opts)
 	jobID := h.AddJob()

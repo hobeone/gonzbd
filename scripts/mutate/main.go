@@ -181,9 +181,10 @@ type spec struct {
 
 // runOpts is how the command line shapes one spec's run.
 type runOpts struct {
-	verbose, quiet, skipRunfilter bool
-	parallel                      int
-	gcflags                       string
+	verbose, quiet, skipRunfilter, skipBaseline bool
+	parallel                                    int
+	gcflags                                     string
+	chunk                                       string
 }
 
 // result pairs a mutation with what running it showed.
@@ -220,9 +221,11 @@ func main() {
 	checkAll := flag.Bool("check-all", false, "like -check, but discovers every spec belonging to this "+
 		"checkout with git ls-files instead of taking spec paths as arguments")
 	skipRunfilter := flag.Bool("skip-runfilter", false, "skip pre-flight check for dead test names in run filter (used when pre-checked by -check-all)")
+	skipBaseline := flag.Bool("skip-baseline", false, "skip unmutated baseline test run (used when verified by chunk 1 or caller)")
 	parallel := flag.Int("parallel", 0, "pass -parallel N to go test (0 keeps go test's default, GOMAXPROCS)")
 	gcflags := flag.String("gcflags", "-N -l", "pass -gcflags to go test; the default compiles the package under test "+
 		"unoptimized, which is faster to rebuild once per mutation (empty passes nothing)")
+	chunk := flag.String("chunk", "", "run a 1-based fraction of mutations from the spec, in the form K/M (e.g. 1/3)")
 	affected := flag.String("affected", "", "print the specs a diff against REF can change, one per line, "+
 		"instead of running anything (see the usage text for what that selects and misses)")
 	flag.Usage = usage
@@ -288,7 +291,15 @@ func main() {
 			flag.Usage()
 			os.Exit(2)
 		}
-		runSpec(root, flag.Arg(0), runOpts{verbose: *verbose, quiet: *quiet, skipRunfilter: *skipRunfilter, parallel: *parallel, gcflags: *gcflags})
+		os.Exit(runSpec(root, flag.Arg(0), runOpts{
+			verbose:       *verbose,
+			quiet:         *quiet,
+			skipRunfilter: *skipRunfilter,
+			skipBaseline:  *skipBaseline,
+			parallel:      *parallel,
+			gcflags:       *gcflags,
+			chunk:         *chunk,
+		}))
 	}
 }
 
@@ -299,7 +310,7 @@ func main() {
 // that passes is one line, and a spec whose mutations fail prints what failed
 // and how to look closer. The evidence column a passing spec produces is what a
 // commit body records, so quiet is opt-in rather than the default.
-func runSpec(root, path string, opts runOpts) {
+func runSpec(root, path string, opts runOpts) int {
 	start := time.Now()
 	sp, err := parseSpec(path)
 	if err != nil {
@@ -307,12 +318,17 @@ func runSpec(root, path string, opts runOpts) {
 	}
 	sp.parallel = opts.parallel
 	sp.gcflags = opts.gcflags
+	if opts.chunk != "" {
+		if err := sp.applyChunk(opts.chunk); err != nil {
+			fatal("%v", err)
+		}
+	}
 
 	if !opts.skipRunfilter {
 		if dead, err := deadRunFilterNames(root, sp); err != nil {
 			fatal("%v", err)
 		} else if len(dead) > 0 {
-			os.Exit(reportRunFilter(sp.pkg, dead))
+			return reportRunFilter(sp.pkg, dead)
 		}
 	}
 
@@ -321,37 +337,39 @@ func runSpec(root, path string, opts runOpts) {
 	// The baseline runs first and unmutated. Every verdict below is a claim
 	// about what the mutation changed, and that claim is empty if the test was
 	// not passing to begin with.
-	baselineCmd := "go " + strings.Join(testArgs(sp), " ")
-	if !opts.quiet {
-		fmt.Printf("baseline: %s\n", baselineCmd)
-	}
-	out, code, launchErr := goTest(root, sp)
-	if launchErr != nil {
-		fatal("could not run go test: %v", launchErr)
-	}
-	if code != 0 {
-		fmt.Fprintf(os.Stderr, "\nBASELINE FAILED — no mutation was applied.\n\n"+
-			"Every verdict this command produces is a statement about what the\n"+
-			"mutation changed. A test that already fails yields KILLED for any\n"+
-			"mutation, and none of them mean anything.\n\n"+
-			"command: %s\n\n%s\n", baselineCmd, indent(out))
-		os.Exit(1)
-	}
-	if ranNothing(out) {
-		// `go test -run TestTypo` exits 0 and prints "[no tests to run]", so
-		// a misspelled run filter reads as a green baseline and then reports
-		// every mutation SURVIVED — a full sweep of "nothing pins this",
-		// against a test that never executed.
-		fmt.Fprintf(os.Stderr, "\nBASELINE RAN NO TESTS — no mutation was applied.\n\n"+
-			"go test exited 0 without executing anything, which usually means the\n"+
-			"`run` pattern matches no test in %s. Left unchecked this reports every\n"+
-			"mutation as SURVIVED.\n\n"+
-			"command: %s\n\n%s\n", sp.pkg, baselineCmd, indent(out))
-		os.Exit(1)
-	}
-	if !opts.quiet {
-		fmt.Println("baseline: PASS")
-		fmt.Println()
+	if !opts.skipBaseline {
+		baselineCmd := "go " + strings.Join(testArgs(sp), " ")
+		if !opts.quiet {
+			fmt.Printf("baseline: %s\n", baselineCmd)
+		}
+		out, code, launchErr := goTest(root, sp)
+		if launchErr != nil {
+			fatal("could not run go test: %v", launchErr)
+		}
+		if code != 0 {
+			fmt.Fprintf(os.Stderr, "\nBASELINE FAILED — no mutation was applied.\n\n"+
+				"Every verdict this command produces is a statement about what the\n"+
+				"mutation changed. A test that already fails yields KILLED for any\n"+
+				"mutation, and none of them mean anything.\n\n"+
+				"command: %s\n\n%s\n", baselineCmd, indent(out))
+			return 1
+		}
+		if ranNothing(out) {
+			// `go test -run TestTypo` exits 0 and prints "[no tests to run]", so
+			// a misspelled run filter reads as a green baseline and then reports
+			// every mutation SURVIVED — a full sweep of "nothing pins this",
+			// against a test that never executed.
+			fmt.Fprintf(os.Stderr, "\nBASELINE RAN NO TESTS — no mutation was applied.\n\n"+
+				"go test exited 0 without executing anything, which usually means the\n"+
+				"`run` pattern matches no test in %s. Left unchecked this reports every\n"+
+				"mutation as SURVIVED.\n\n"+
+				"command: %s\n\n%s\n", sp.pkg, baselineCmd, indent(out))
+			return 1
+		}
+		if !opts.quiet {
+			fmt.Println("baseline: PASS")
+			fmt.Println()
+		}
 	}
 
 	results := make([]result, 0, len(sp.mutations))
@@ -365,9 +383,9 @@ func runSpec(root, path string, opts runOpts) {
 	}
 
 	if opts.quiet {
-		os.Exit(reportQuiet(path, confirmed, time.Since(start)))
+		return reportQuiet(path, opts.chunk, confirmed, time.Since(start))
 	}
-	os.Exit(report(confirmed))
+	return report(confirmed)
 }
 
 // run applies one mutation, runs the test, and restores the file.
@@ -957,18 +975,26 @@ func report(results []result) int {
 // listing them buries the ones that were not — the note `note` has for each of
 // those rows, and the command that reruns the spec with the full table and
 // every go test output.
-func reportQuiet(specPath string, results []result, elapsed time.Duration) int {
+func reportQuiet(specPath, chunk string, results []result, elapsed time.Duration) int {
 	bad := notKilled(results)
 	secs := elapsed.Seconds()
+	label := specPath
+	if chunk != "" {
+		label = fmt.Sprintf("%s [%s]", specPath, chunk)
+	}
 	if len(bad) == 0 {
-		fmt.Printf("ok  \t%s\t%.3fs\t%d mutations killed\n", specPath, secs, len(results))
+		fmt.Printf("ok  \t%s\t%.3fs\t%d mutations killed\n", label, secs, len(results))
 		return 0
 	}
 
 	fmt.Printf("FAIL\t%s\t%.3fs\t%d of %d mutations did not produce a red result\n\n",
-		specPath, secs, len(bad), len(results))
+		label, secs, len(bad), len(results))
 	printRows(bad)
-	fmt.Printf("\nrerun: go run ./scripts/mutate -v %s\n", specPath)
+	rerunChunk := ""
+	if chunk != "" {
+		rerunChunk = fmt.Sprintf(" -chunk %s", chunk)
+	}
+	fmt.Printf("\nrerun: go run ./scripts/mutate -v%s %s\n", rerunChunk, specPath)
 	return 1
 }
 
@@ -1057,13 +1083,20 @@ func fatal(format string, args ...any) {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] [-parallel N] [-gcflags FLAGS] <spec-file>
+	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] [-parallel N] [-gcflags FLAGS] [-chunk K/M] <spec-file>
        go run ./scripts/mutate -check <spec-file>...
        go run ./scripts/mutate -check-all
        go run ./scripts/mutate -affected REF
 
 Runs AGENTS.md's observed red check: apply each mutation, require the test to
 fail, restore the file. Exits non-zero unless every mutation is KILLED.
+
+-chunk K/M runs the K-th fraction of mutations from the spec out of M total
+chunks (1-based, e.g. 1/3, 2/3, 3/3). This allows large specs to be partitioned
+and executed across parallel workers without altering the spec file.
+
+-skip-baseline skips the unmutated baseline test run. Used when chunk 1 or the
+caller has already verified that the unmutated test passes and matches real tests.
 
 -parallel N passes -parallel N to the go test runs that execute tests: the
 baseline, each mutation and the package-wide re-runs. Left unset,

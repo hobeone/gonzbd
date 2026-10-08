@@ -52,6 +52,7 @@ func productionCallers(t *testing.T, names ...string) []string {
 // actor the lock-order argument in jobTransitions has not been made for, and
 // one dropped from it acts on a job's state unexcluded.
 func TestJobTransitions_LockSites(t *testing.T) {
+	t.Parallel()
 	want := []string{
 		"app.go:MarkHistoryCompleted",
 		"app.go:PruneHistory",
@@ -72,6 +73,7 @@ func TestJobTransitions_LockSites(t *testing.T) {
 // reader dropped would let a retry that took the lock first change state, or
 // register, under a finalizer's teardown.
 func TestJobTransitions_FinalizingSites(t *testing.T) {
+	t.Parallel()
 	if sites, want := productionCallers(t, "beginFinalize"), []string{"job_finalizer.go:persistAndCommit"}; !slices.Equal(sites, want) {
 		t.Errorf("functions writing the finalizing record = %v, want %v", sites, want)
 	}
@@ -85,6 +87,7 @@ func TestJobTransitions_FinalizingSites(t *testing.T) {
 // post-processing hand-over. A second writer would make the finalizer skip a
 // job no user removed, and a completed job would be filed nowhere.
 func TestJobTransitions_RemovedSites(t *testing.T) {
+	t.Parallel()
 	if sites, want := productionCallers(t, "markRemoved"), []string{"app.go:RemoveJob"}; !slices.Equal(sites, want) {
 		t.Errorf("functions writing the removal mark = %v, want %v", sites, want)
 	}

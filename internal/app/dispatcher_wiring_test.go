@@ -18,6 +18,7 @@ import (
 // dispatcher with both ports satisfied. dispatch.New panics on a nil Residency
 // or Runner, so this test failing to panic IS the assertion.
 func TestApplicationConstructsAWiredDispatcher(t *testing.T) {
+	t.Parallel()
 	app := newTestApplication(t)
 	if app.Dispatcher() == nil {
 		t.Fatal("app.New must construct a Dispatcher")
@@ -62,6 +63,7 @@ func (m *mockCancelWakeDownloader) Wake() {
 }
 
 func TestAppWorkers_Abort(t *testing.T) {
+	t.Parallel()
 	// 1. Nil app should safely return without panic.
 	wNil := &appWorkers{app: nil}
 	wNil.Abort(job.New("job-nil", "Job Nil", job.Policy{}))
@@ -107,6 +109,7 @@ func TestAppWorkers_Abort(t *testing.T) {
 }
 
 func TestAppWorkers_Abort_DelayedGoroutine_DoesNotDisruptNewAttempt(t *testing.T) {
+	t.Parallel()
 	app := newTestApplication(t)
 	w := &appWorkers{app: app}
 
@@ -129,7 +132,8 @@ func TestAppWorkers_Abort_DelayedGoroutine_DoesNotDisruptNewAttempt(t *testing.T
 	// Simulate delayed Abort call from old attempt j1.
 	w.Abort(j1)
 
-	// Wait briefly to allow the async goroutine spawned by Abort to run.
+	// Negative-observation window: allow the async goroutine spawned by Abort
+	// to execute its YieldedJob attempt. Since j1 != j2, it must not disrupt j2.
 	time.Sleep(50 * time.Millisecond)
 
 	// Dispatcher still holds j2 under "job-reuse".
@@ -140,6 +144,7 @@ func TestAppWorkers_Abort_DelayedGoroutine_DoesNotDisruptNewAttempt(t *testing.T
 }
 
 func TestAppCheckpointStore_SaveBatch_TransactionalRollback(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	hdb, err := history.Open(ctx, filepath.Join(t.TempDir(), "history.db"))
 	if err != nil {
@@ -265,6 +270,7 @@ func TestAppCheckpointStore_SaveBatch_TransactionalRollback(t *testing.T) {
 }
 
 func TestAppCheckpointStore_SaveBatch_NilOrEmpty(t *testing.T) {
+	t.Parallel()
 	sNil := &appCheckpointStore{store: nil}
 	if err := sNil.SaveBatch(t.Context(), []job.Checkpoint{{ID: "x"}}); err != nil {
 		t.Errorf("nil db should return nil, got %v", err)

@@ -32,13 +32,18 @@ type AppriseNotifier struct {
 	client *http.Client
 }
 
-// NewAppriseNotifier creates an AppriseNotifier. If client is nil, or has no
-// timeout configured (client.Timeout == 0, as on http.DefaultClient), a
-// client with a defaultAppriseTimeout timeout is used instead so a hung
-// Apprise endpoint cannot block Dispatcher.Dispatch indefinitely.
+// NewAppriseNotifier creates an AppriseNotifier. If client is nil, a fresh
+// client with defaultAppriseTimeout is used. If client has no timeout
+// configured (client.Timeout == 0, as on http.DefaultClient), it is shallow-copied
+// with defaultAppriseTimeout so its Transport is preserved while preventing
+// a hung Apprise endpoint from blocking Dispatcher.Dispatch indefinitely.
 func NewAppriseNotifier(cfg AppriseConfig, client *http.Client) *AppriseNotifier {
-	if client == nil || client.Timeout == 0 {
+	if client == nil {
 		client = &http.Client{Timeout: defaultAppriseTimeout}
+	} else if client.Timeout == 0 {
+		c := *client
+		c.Timeout = defaultAppriseTimeout
+		client = &c
 	}
 	return &AppriseNotifier{cfg: cfg, client: client}
 }

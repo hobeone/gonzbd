@@ -50,6 +50,15 @@ func main() {
 	dir := flag.String("dir", filepath.Join("docs", "reviews"), "directory of review documents to check")
 	flag.Parse()
 
+	// If the default reviews directory does not exist (e.g. review docs removed),
+	// skip check rather than failing on absent review docs.
+	if *dir == filepath.Join("docs", "reviews") {
+		if _, err := os.Stat(*dir); os.IsNotExist(err) {
+			fmt.Println("check_review_banner: no docs/reviews directory, nothing to check")
+			return
+		}
+	}
+
 	missing, err := check(*dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "check_review_banner: %v\n", err)

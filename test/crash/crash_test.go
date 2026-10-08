@@ -39,6 +39,7 @@ func killFixture() harnessOpts {
 // What it does NOT check is that an fsync'd byte reached the platter; see the
 // package doc. The claim under test here is the process-boundary half.
 func TestSIGKILL_NoArticleIsResolvedWithoutItsBytes(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, killFixture())
 	jobID := h.AddJob()
 
@@ -150,6 +151,7 @@ func TestSIGKILL_NoArticleIsResolvedWithoutItsBytes(t *testing.T) {
 // rework if and only if the restarted daemon fetched it again having already
 // fetched it before the kill.
 func TestSIGKILL_ReworkStaysWithinTheCheckpointBound(t *testing.T) {
+	t.Parallel()
 	opts := killFixture()
 	h := newHarness(t, opts)
 	jobID := h.AddJob()

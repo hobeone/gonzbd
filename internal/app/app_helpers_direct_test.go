@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/history"
@@ -19,6 +21,7 @@ import (
 // first collision — a loop that stopped after one attempt would pass a
 // single-collision test and fail on disk the first time two names collided.
 func TestUniqueName_SuffixesUntilFree(t *testing.T) {
+	t.Parallel()
 	t.Run("free name is returned unchanged", func(t *testing.T) {
 		got := uniqueName("movie", func(string) bool { return false })
 		if got != "movie" {
@@ -73,6 +76,7 @@ func testHistoryRepo(t *testing.T) *history.Repository {
 // long before reaching historyFileProgress. The guard is defence inside the
 // helper, unreachable from production today.
 func TestHistoryFileProgress_NoRepoIsNotAnError(t *testing.T) {
+	t.Parallel()
 	app := &Application{}
 
 	got, err := app.historyFileProgress(context.Background(), "j1")
@@ -94,6 +98,7 @@ func TestHistoryFileProgress_NoRepoIsNotAnError(t *testing.T) {
 // that guard was true on every run and the query never executed — a test that
 // satisfied check_test_alignment while verifying nothing.
 func TestHistoryFileProgress_ReturnsNothingForAnUnknownJob(t *testing.T) {
+	t.Parallel()
 	app := &Application{historyRepo: testHistoryRepo(t)}
 
 	got, err := app.historyFileProgress(context.Background(), "no-such-job")
@@ -102,5 +107,32 @@ func TestHistoryFileProgress_ReturnsNothingForAnUnknownJob(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("historyFileProgress returned %d rows for an unknown job, want 0", len(got))
+	}
+}
+
+// TestStageGzFile tests stageGzFile directly: valid staging produces a readable
+// gzipped file at the returned path, while an invalid directory fails.
+func TestStageGzFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	data := []byte("hello staging data")
+
+	path, err := stageGzFile(dir, data)
+	if err != nil {
+		t.Fatalf("stageGzFile: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	if !strings.HasPrefix(path, dir) {
+		t.Errorf("path %s not in dir %s", path, dir)
+	}
+	got := readGzFile(t, path)
+	if string(got) != string(data) {
+		t.Errorf("readGzFile = %q, want %q", got, data)
+	}
+
+	// Error path: nonexistent directory
+	if _, err := stageGzFile(filepath.Join(dir, "no-such-dir"), data); err == nil {
+		t.Error("stageGzFile in nonexistent directory returned nil error, want error")
 	}
 }

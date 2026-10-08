@@ -74,6 +74,7 @@ func expectedSHA256(t *testing.T) string {
 // TestDirectUnpackInOrder feeds volumes 1-6 in order and verifies that
 // the extracted file matches the expected SHA-256.
 func TestDirectUnpackInOrder(t *testing.T) {
+	t.Parallel()
 	srcDir := fixtureDir(t)
 	workDir := t.TempDir()
 	extractDir := t.TempDir()
@@ -131,6 +132,7 @@ func TestDirectUnpackInOrder(t *testing.T) {
 // to verify that the DirectUnpacker correctly waits for vol 1 before
 // starting, then handles out-of-order delivery.
 func TestDirectUnpackOutOfOrder(t *testing.T) {
+	t.Parallel()
 	srcDir := fixtureDir(t)
 	workDir := t.TempDir()
 	extractDir := t.TempDir()
@@ -187,6 +189,7 @@ func TestDirectUnpackOutOfOrder(t *testing.T) {
 // TestDirectUnpackAbort verifies that Abort() stops extraction and
 // Results() returns an empty map.
 func TestDirectUnpackAbort(t *testing.T) {
+	t.Parallel()
 	srcDir := fixtureDir(t)
 	workDir := t.TempDir()
 	extractDir := t.TempDir()

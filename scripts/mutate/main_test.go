@@ -451,7 +451,7 @@ func TestReportQuiet_OneLineWhenEveryMutationIsKilled(t *testing.T) {
 
 	var code int
 	out := captureStdout(t, func() {
-		code = reportQuiet("internal/x/testdata/x.spec", results, 1500*time.Millisecond)
+		code = reportQuiet("internal/x/testdata/x.spec", "", results, 1500*time.Millisecond)
 	})
 
 	if code != 0 {
@@ -459,6 +459,14 @@ func TestReportQuiet_OneLineWhenEveryMutationIsKilled(t *testing.T) {
 	}
 	if want := "ok  \tinternal/x/testdata/x.spec\t1.500s\t2 mutations killed\n"; out != want {
 		t.Errorf("output = %q, want %q", out, want)
+	}
+
+	// With chunk label
+	outChunk := captureStdout(t, func() {
+		code = reportQuiet("internal/x/testdata/x.spec", "1/3", results, 1500*time.Millisecond)
+	})
+	if want := "ok  \tinternal/x/testdata/x.spec [1/3]\t1.500s\t2 mutations killed\n"; outChunk != want {
+		t.Errorf("chunk output = %q, want %q", outChunk, want)
 	}
 }
 
@@ -471,7 +479,7 @@ func TestReportQuiet_FailureNamesOnlyTheRowsThatDidNotDie(t *testing.T) {
 
 	var code int
 	out := captureStdout(t, func() {
-		code = reportQuiet("internal/x/testdata/x.spec", results, 2*time.Second)
+		code = reportQuiet("internal/x/testdata/x.spec", "", results, 2*time.Second)
 	})
 
 	if code != 1 {
@@ -535,4 +543,126 @@ func mustCwd(t *testing.T) string {
 		t.Fatalf("Getwd: %v", err)
 	}
 	return wd
+}
+
+func captureOutput(t *testing.T, fn func()) (string, string) {
+	t.Helper()
+	rOut, wOut, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe stdout: %v", err)
+	}
+	rErr, wErr, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe stderr: %v", err)
+	}
+	savedOut := os.Stdout
+	savedErr := os.Stderr
+	os.Stdout = wOut
+	os.Stderr = wErr
+
+	fn()
+
+	if err := wOut.Close(); err != nil {
+		t.Fatalf("close wOut: %v", err)
+	}
+	if err := wErr.Close(); err != nil {
+		t.Fatalf("close wErr: %v", err)
+	}
+	os.Stdout = savedOut
+	os.Stderr = savedErr
+
+	var bOut, bErr bytes.Buffer
+	if _, err := bOut.ReadFrom(rOut); err != nil {
+		t.Fatalf("read bOut: %v", err)
+	}
+	if _, err := bErr.ReadFrom(rErr); err != nil {
+		t.Fatalf("read bErr: %v", err)
+	}
+	return bOut.String(), bErr.String()
+}
+
+func TestRunSpec_SkipBaseline(t *testing.T) {
+	// A temporary module with a passing test and a mutation that kills it.
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "go.mod"), "module mutatetest\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(root, "target.go"), "package mutatetest\n\nfunc Value() int {\n\treturn 1\n}\n")
+	mustWrite(t, filepath.Join(root, "target_test.go"), "package mutatetest\n\nimport \"testing\"\n\nfunc TestValue(t *testing.T) {\n\tif Value() != 1 {\n\t\tt.Fatal(\"value was not 1\")\n\t}\n}\n")
+
+	specContent := "pkg .\nrun TestValue\n\n[the value changed]\nfile target.go\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n"
+	specPath := filepath.Join(root, "test.spec")
+	mustWrite(t, specPath, specContent)
+
+	// Case 1: skipBaseline = false runs the unmutated baseline first.
+	var codeDefault int
+	outDefault, _ := captureOutput(t, func() {
+		codeDefault = runSpec(root, specPath, runOpts{
+			skipBaseline:  false,
+			skipRunfilter: true,
+		})
+	})
+	if codeDefault != 0 {
+		t.Fatalf("runSpec with baseline = %d, want 0; out:\n%s", codeDefault, outDefault)
+	}
+	if !strings.Contains(outDefault, "baseline: PASS") {
+		t.Errorf("default runSpec output lacks 'baseline: PASS':\n%s", outDefault)
+	}
+	if !strings.Contains(outDefault, "the value changed") || !strings.Contains(outDefault, "KILLED") {
+		t.Errorf("default runSpec output missing mutation verdict:\n%s", outDefault)
+	}
+
+	// Case 2: skipBaseline = true skips baseline and still reports mutation verdicts.
+	var codeSkip int
+	outSkip, _ := captureOutput(t, func() {
+		codeSkip = runSpec(root, specPath, runOpts{
+			skipBaseline:  true,
+			skipRunfilter: true,
+		})
+	})
+	if codeSkip != 0 {
+		t.Fatalf("runSpec with skipBaseline = %d, want 0; out:\n%s", codeSkip, outSkip)
+	}
+	if strings.Contains(outSkip, "baseline:") {
+		t.Errorf("skipBaseline runSpec output unexpectedly contains baseline output:\n%s", outSkip)
+	}
+	if !strings.Contains(outSkip, "the value changed") || !strings.Contains(outSkip, "KILLED") {
+		t.Errorf("skipBaseline runSpec output missing mutation verdict:\n%s", outSkip)
+	}
+
+	// Case 3: A broken baseline fails when skipBaseline = false, but is bypassed when skipBaseline = true.
+	brokenRoot := t.TempDir()
+	mustWrite(t, filepath.Join(brokenRoot, "go.mod"), "module brokenmod\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(brokenRoot, "target.go"), "package brokenmod\n\nfunc Broken() int {\n\treturn 1\n}\n")
+	mustWrite(t, filepath.Join(brokenRoot, "target_test.go"), "package brokenmod\n\nimport \"testing\"\n\nfunc TestBroken(t *testing.T) {\n\tt.Fatal(\"broken unmutated test\")\n}\n")
+	brokenSpecPath := filepath.Join(brokenRoot, "broken.spec")
+	mustWrite(t, brokenSpecPath, "pkg .\nrun TestBroken\n\n[broken mut]\nfile target.go\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
+
+	var codeBrokenDefault int
+	_, errBrokenDefault := captureOutput(t, func() {
+		codeBrokenDefault = runSpec(brokenRoot, brokenSpecPath, runOpts{
+			skipBaseline:  false,
+			skipRunfilter: true,
+		})
+	})
+	if codeBrokenDefault != 1 {
+		t.Errorf("broken baseline with skipBaseline = false code = %d, want 1 (BASELINE FAILED)", codeBrokenDefault)
+	}
+	if !strings.Contains(errBrokenDefault, "BASELINE FAILED") {
+		t.Errorf("broken baseline with skipBaseline = false missing BASELINE FAILED message:\n%s", errBrokenDefault)
+	}
+
+	var codeBrokenSkip int
+	outBrokenSkip, _ := captureOutput(t, func() {
+		codeBrokenSkip = runSpec(brokenRoot, brokenSpecPath, runOpts{
+			skipBaseline:  true,
+			skipRunfilter: true,
+		})
+	})
+	// With baseline skipped, the mutation runs. Since the test fails on both unmutated and mutated code,
+	// the mutation reports KILLED and runSpec exits 0.
+	if codeBrokenSkip != 0 {
+		t.Errorf("broken baseline with skipBaseline = true code = %d, want 0; out:\n%s", codeBrokenSkip, outBrokenSkip)
+	}
+	if !strings.Contains(outBrokenSkip, "KILLED") {
+		t.Errorf("broken baseline with skipBaseline = true missing KILLED verdict:\n%s", outBrokenSkip)
+	}
 }

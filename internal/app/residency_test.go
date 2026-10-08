@@ -34,6 +34,7 @@ func writeTestManifest(t *testing.T, path string, _ *job.Job) {
 // states: Hydrate makes the manifest available and may block on disk; Evict
 // takes it away. The dispatcher decides WHEN and delegates WHAT to here.
 func TestAppResidency_HydrateThenEvict(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	j := job.New("abc123", "test", job.PolicyFromPP(3))
 	writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), j)
@@ -91,6 +92,7 @@ func TestAppResidency_HydrateThenEvict(t *testing.T) {
 // hydration half of recording an evicted job's failure: Hydrate restores onto
 // the job's own progress record, so the failed bit survives and is charged.
 func TestAppResidency_RehydrationKeepsAFailureRecordedWhileEvicted(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	j := job.New("abc123", "test", job.PolicyFromPP(3))
 	writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), j)
@@ -130,6 +132,7 @@ func TestAppResidency_RehydrationKeepsAFailureRecordedWhileEvicted(t *testing.T)
 // and a silent success would strand a job
 // at Fetching with nothing to fetch from.
 func TestAppResidency_HydrateUnknownJobErrors(t *testing.T) {
+	t.Parallel()
 	r := newAppResidency(func(string) (*job.Job, bool) { return nil, false }, t.TempDir(), nil, nil)
 	if err := r.Hydrate(context.Background(), "nope"); err == nil {
 		t.Fatal("Hydrate of an unknown job must error")
@@ -137,6 +140,7 @@ func TestAppResidency_HydrateUnknownJobErrors(t *testing.T) {
 }
 
 func TestAppResidency_RestoreResolution(t *testing.T) {
+	t.Parallel()
 	rNilDB := newAppResidency(func(string) (*job.Job, bool) { return nil, false }, t.TempDir(), nil, nil)
 	jUnattached := job.New("j_nil", "name", job.Policy{})
 	rNilDB.restoreResolution(context.Background(), jUnattached)
@@ -229,6 +233,7 @@ func TestAppResidency_RestoreResolution(t *testing.T) {
 // re-hydration whose manifest does not describe the job's own progress record
 // fails rather than recomputing the record against the wrong file ranges.
 func TestAppResidency_HydrateRefusesAProgressRecordOfAnotherShape(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	j := job.New("abc123", "test", job.PolicyFromPP(3))
 	if err := j.AttachContent(job.NewManifest([]job.JobFile{{Subject: "x.rar", Bytes: 200, Articles: []job.JobArticle{
@@ -252,6 +257,7 @@ func TestAppResidency_HydrateRefusesAProgressRecordOfAnotherShape(t *testing.T) 
 // branch: a second Hydrate for a job already being hydrated waits for the
 // first and reports its outcome instead of reading the manifest again.
 func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	newJob := func() *job.Job {
 		j := job.New("abc123", "test", job.PolicyFromPP(3))

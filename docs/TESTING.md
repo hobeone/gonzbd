@@ -24,14 +24,30 @@ integration → crash-consistency → UI vitest → `bun run build` → uitest
 sequentially. Use it as the canonical pre-commit gate (matches CLAUDE.md
 quality gates).
 
-Its mutation phase is the longest step. `MUTATE_SINCE=<ref> scripts/run_tests.sh`
-narrows that phase to the specs `go run ./scripts/mutate -affected <ref>`
-selects: those whose spec file, or a file one of their mutations edits, differs
-from `<ref>` in the working tree (untracked files that are not gitignored
-count). It is a loop for iterating, not the gate. A change to any other file
-selects nothing, including the test a spec runs, so it can miss a spec whose
-pinned behaviour such a file altered, and the full sweep stays the check
-before a merge.
+#### Environment Variables
+
+- `SKIP_PLAYWRIGHT=1` or `SKIP_UITEST=1`: Skips the Playwright UI E2E suite
+  (step 6/7) for environments lacking Playwright browsers. Outputs a notice
+  that the run is partial (`PARTIAL: UI E2E skipped, not the gate`).
+- `MUTATE_SINCE=<ref>`: Narrows the mutation phase to the specs
+  `go run ./scripts/mutate -affected <ref>` selects: those whose spec file,
+  or a file one of their mutations edits, differs from `<ref>` in the working
+  tree. It is a loop for iterating, not the final gate before merge.
+- `MUTATE_PARALLEL_WORKERS=<n>`: Number of parallel git worktrees running
+  `scripts/mutate` (default `3/4 * NUM_CPUS`, clamped to 4..16).
+- `MUTATE_MAX_CHUNK=<n>`: Maximum mutations per chunk (default 5).
+  Heavy specs are partitioned into chunks to eliminate tail stragglers and
+  balance makespan across workers. Chunk 1 verifies the unmutated baseline;
+  chunks 2..M pass `-skip-baseline` to avoid redundant baseline runs.
+- `MUTATE_GOMAXPROCS=<n>`: `GOMAXPROCS` for each mutation worker process
+  (default 2 on >=24 cores, 1 otherwise). On <24 core hosts, `GOMAXPROCS=1`
+  guarantees total worker concurrency stays strictly within physical core
+  count (`workers * procs <= nproc`).
+- `MUTATE_TEST_PARALLEL=<n>`: `-parallel` flag passed to `scripts/mutate`
+  controlling in-process subtest parallelism (default `NUM_CPUS`, bounded
+  to `[4, 32]`). Subtests under `t.Parallel()` scale with host core count,
+  achieving substantial wall-clock speedups for wait-heavy scenario tests.
+- `MUTATE_GCFLAGS=<flags>`: Custom `-gcflags` passed to `scripts/mutate`.
 
 ## 1. Unit Tests (`go test ./...`)
 

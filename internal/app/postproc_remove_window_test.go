@@ -146,7 +146,7 @@ func waitingDirectUnpack(t *testing.T, application *Application, id string) *dir
 	return du
 }
 
-// awaitAdmissionsEnded waits up to five seconds for every post-processing
+// awaitAdmissionsEnded waits up to five hundred milliseconds for every post-processing
 // admission to end.
 func awaitAdmissionsEnded(t *testing.T, application *Application) {
 	t.Helper()
