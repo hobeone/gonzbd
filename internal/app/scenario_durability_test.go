@@ -51,7 +51,7 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(func() {
-		a.ForceStopWorkers()
+		a.StopAndJoin(t)
 		cancel()
 	})
 	if err := a.Start(ctx); err != nil {
@@ -149,7 +149,7 @@ func TestDurability_AcceptedIsNotDone(t *testing.T) {
 	t.Cleanup(func() {
 		// ForceStopWorkers, not Shutdown: Shutdown runs R6's clean-shutdown
 		// barrier, which would ack the very article this test is about.
-		a.ForceStopWorkers()
+		a.StopAndJoin(t)
 		cancel()
 	})
 	if err := a.Start(ctx); err != nil {
@@ -221,7 +221,7 @@ func TestBarrierFiresOnByteBound(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(func() {
-		a.ForceStopWorkers()
+		a.StopAndJoin(t)
 		cancel()
 	})
 	if err := a.Start(ctx); err != nil {
@@ -265,7 +265,7 @@ func TestBarrierFiresOnTimeBound(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(func() {
-		a.ForceStopWorkers()
+		a.StopAndJoin(t)
 		cancel()
 	})
 	if err := a.Start(ctx); err != nil {

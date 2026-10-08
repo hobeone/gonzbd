@@ -226,7 +226,7 @@ func (f *resumeFixture) startWith(conns int, stages []postproc.Stage, beforeStar
 	}
 	ctx, cancel := context.WithCancel(f.t.Context())
 	f.t.Cleanup(func() {
-		a.StopAndJoin()
+		a.StopAndJoin(f.t)
 		cancel()
 	})
 	if err := a.Start(ctx); err != nil {

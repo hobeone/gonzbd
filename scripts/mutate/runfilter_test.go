@@ -1,36 +1,20 @@
 package main
 
 import (
-	"bytes"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 )
 
-// captureStdout redirects os.Stdout for the duration of fn and returns what
-// was written. It is not safe to run in parallel with anything else that
-// writes to os.Stdout, since the swap is global — callers must not mark
-// their test t.Parallel().
+// captureStdout redirects os.Stdout and os.Stderr for the duration of fn via
+// captureOutput and returns what was written to os.Stdout. It is not safe to
+// run in parallel with anything else that writes to standard streams, since
+// the swap is global — callers must not mark their test t.Parallel().
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("Pipe: %v", err)
-	}
-	saved := os.Stdout
-	os.Stdout = w
-	fn()
-	if err := w.Close(); err != nil {
-		t.Fatalf("close pipe: %v", err)
-	}
-	os.Stdout = saved
-	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(r); err != nil {
-		t.Fatalf("read captured stdout: %v", err)
-	}
-	return buf.String()
+	out, _ := captureOutput(t, fn)
+	return out
 }
 
 func TestPlainAlternation_SplitsAndStripsCapturingAnchoring(t *testing.T) {

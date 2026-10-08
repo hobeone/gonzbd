@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -311,5 +312,45 @@ func TestSettleJobBytes_LosesNothingToAConcurrentWrite(t *testing.T) {
 			return
 		default:
 		}
+	}
+}
+
+func TestStopAndJoin_WaitsForWgBeforePostProcAndReportsTimeout(t *testing.T) {
+	t.Parallel()
+	application, _, _ := newLifecycleTestApp(t)
+	application.shutdownStepTimeout = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	application.ctx, application.cancel = ctx, cancel
+	t.Cleanup(cancel)
+
+	var wgFinished atomic.Bool
+	application.wg.Go(func() {
+		<-application.ctx.Done()
+		wgFinished.Store(true)
+	})
+
+	var wgDoneWhenPostProcStopped bool
+	application.postProcStopHook = func() error {
+		wgDoneWhenPostProcStopped = wgFinished.Load()
+		return nil
+	}
+
+	if err := application.stopAndJoin(); err != nil {
+		t.Fatalf("stopAndJoin unexpected error: %v", err)
+	}
+	if !wgDoneWhenPostProcStopped {
+		t.Error("post-processor stopped before context cancellation and wg.Wait finished")
+	}
+
+	// Verify stopAndJoin reports an error when wg.Wait exceeds shutdownStepTimeout.
+	appStuck, _, _ := newLifecycleTestApp(t)
+	appStuck.shutdownStepTimeout = 10 * time.Millisecond
+	unblock := make(chan struct{})
+	t.Cleanup(func() { close(unblock) })
+	appStuck.wg.Go(func() {
+		<-unblock
+	})
+	if err := appStuck.stopAndJoin(); err == nil {
+		t.Error("stopAndJoin returned nil error when wg.Wait timed out")
 	}
 }

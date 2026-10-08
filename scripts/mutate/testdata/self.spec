@@ -466,3 +466,32 @@ file scripts/mutate/main.go
 --- replace
 	return slices.ContainsFunc(results, func(r result) bool { return r.verdict == excluded })
 --- end
+
+[runSpec returns 0 on a spec parse error]
+file scripts/mutate/main.go
+--- anchor
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mutate: %s: %v\n", path, err)
+		return 2
+	}
+--- replace
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mutate: %s: %v\n", path, err)
+		return 0
+	}
+--- end
+
+[runSpec returns 0 on an invalid -chunk flag]
+file scripts/mutate/main.go
+--- anchor
+		if err := sp.applyChunk(opts.chunk); err != nil {
+			fmt.Fprintf(os.Stderr, "mutate: %v\n", err)
+			return 2
+		}
+--- replace
+		if err := sp.applyChunk(opts.chunk); err != nil {
+			fmt.Fprintf(os.Stderr, "mutate: %v\n", err)
+			return 0
+		}
+--- end
+

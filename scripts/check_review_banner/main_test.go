@@ -93,3 +93,40 @@ func TestCheck_RejectsATooShortHash(t *testing.T) {
 		t.Fatalf("check reported %d findings, want 1 (the commit half unsatisfied)", len(got))
 	}
 }
+
+func TestCheckDir_SkipsOnlyWhenAllowMissingIsTrue(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "absent")
+
+	// When allowMissing is true (default -dir when docs/reviews is absent),
+	// a missing directory returns skipped=true and nil error.
+	missing, skipped, err := checkDir(absent, true)
+	if err != nil {
+		t.Fatalf("checkDir(absent, true) unexpected error: %v", err)
+	}
+	if !skipped {
+		t.Error("checkDir(absent, true) skipped = false, want true")
+	}
+	if len(missing) != 0 {
+		t.Errorf("checkDir(absent, true) findings = %v, want empty", missing)
+	}
+
+	// When allowMissing is false (explicit -dir), a missing directory returns an error.
+	if _, skipped, err := checkDir(absent, false); err == nil || skipped {
+		t.Errorf("checkDir(absent, false) = (skipped=%v, err=%v), want (false, non-nil error)", skipped, err)
+	}
+
+	// When the directory exists, allowMissing=true still checks its contents and reports findings.
+	dir := writeDocs(t, map[string]string{
+		"bad.md": "# No banner here\n",
+	})
+	missing, skipped, err = checkDir(dir, true)
+	if err != nil {
+		t.Fatalf("checkDir(existing, true) unexpected error: %v", err)
+	}
+	if skipped {
+		t.Error("checkDir(existing, true) skipped = true, want false")
+	}
+	if len(missing) != 1 {
+		t.Errorf("checkDir(existing, true) findings = %d, want 1", len(missing))
+	}
+}

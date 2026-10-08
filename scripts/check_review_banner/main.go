@@ -19,6 +19,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -47,22 +48,25 @@ const bannerLabel = "Frozen record"
 var commitRef = regexp.MustCompile("`[0-9a-f]{7,40}`")
 
 func main() {
-	dir := flag.String("dir", filepath.Join("docs", "reviews"), "directory of review documents to check")
+	defaultDir := filepath.Join("docs", "reviews")
+	dir := flag.String("dir", defaultDir, "directory of review documents to check")
 	flag.Parse()
 
-	// If the default reviews directory does not exist (e.g. review docs removed),
-	// skip check rather than failing on absent review docs.
-	if *dir == filepath.Join("docs", "reviews") {
-		if _, err := os.Stat(*dir); os.IsNotExist(err) {
-			fmt.Println("check_review_banner: no docs/reviews directory, nothing to check")
-			return
+	explicitDir := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "dir" {
+			explicitDir = true
 		}
-	}
+	})
 
-	missing, err := check(*dir)
+	missing, skipped, err := checkDir(*dir, !explicitDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "check_review_banner: %v\n", err)
 		os.Exit(2)
+	}
+	if skipped {
+		fmt.Println("check_review_banner: no docs/reviews directory, nothing to check")
+		return
 	}
 	if len(missing) == 0 {
 		return
@@ -82,12 +86,27 @@ type finding struct {
 	markers []string
 }
 
-// check returns the review documents missing any required marker.
+// checkDir runs check(dir), except that when allowMissing is true (used only
+// when -dir is left at its default docs/reviews path, since git does not track
+// empty directories when no review snapshots exist in the tree) a non-existent
+// directory returns skipped=true and nil error. An explicit -dir sets
+// allowMissing=false so a typo or moved directory still fails loudly.
+func checkDir(dir string, allowMissing bool) ([]finding, bool, error) {
+	if allowMissing {
+		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+			return nil, true, nil
+		}
+	}
+	missing, err := check(dir)
+	return missing, false, err
+}
+
+// check returns the review documents in dir missing any required marker.
 //
-// A missing directory is an error rather than a pass. "No files to check"
-// and "the directory moved" are indistinguishable from the outside, and the
-// second silently disables the gate — which is the failure mode a presence
-// check is least able to notice about itself.
+// In check itself, a missing directory is an error rather than a pass:
+// "no files to check" and "the directory moved" are indistinguishable to
+// os.ReadDir. Only checkDir with allowMissing=true treats os.ErrNotExist as a
+// skip when the default docs/reviews directory is absent.
 func check(dir string) ([]finding, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -553,6 +554,8 @@ func captureOutput(t *testing.T, fn func()) (string, string) {
 	}
 	rErr, wErr, err := os.Pipe()
 	if err != nil {
+		_ = rOut.Close()
+		_ = wOut.Close()
 		t.Fatalf("Pipe stderr: %v", err)
 	}
 	savedOut := os.Stdout
@@ -560,23 +563,45 @@ func captureOutput(t *testing.T, fn func()) (string, string) {
 	os.Stdout = wOut
 	os.Stderr = wErr
 
+	var (
+		bOut, bErr     bytes.Buffer
+		errOut, errErr error
+		wg             sync.WaitGroup
+	)
+	wg.Go(func() {
+		_, errOut = bOut.ReadFrom(rOut)
+		_ = rOut.Close()
+	})
+	wg.Go(func() {
+		_, errErr = bErr.ReadFrom(rErr)
+		_ = rErr.Close()
+	})
+
+	closed := false
+	finishPipes := func() {
+		os.Stdout = savedOut
+		os.Stderr = savedErr
+		if !closed {
+			closed = true
+			if err := wOut.Close(); err != nil {
+				t.Errorf("close wOut: %v", err)
+			}
+			if err := wErr.Close(); err != nil {
+				t.Errorf("close wErr: %v", err)
+			}
+			wg.Wait()
+		}
+	}
+	defer finishPipes()
+
 	fn()
+	finishPipes()
 
-	if err := wOut.Close(); err != nil {
-		t.Fatalf("close wOut: %v", err)
+	if errOut != nil {
+		t.Fatalf("read bOut: %v", errOut)
 	}
-	if err := wErr.Close(); err != nil {
-		t.Fatalf("close wErr: %v", err)
-	}
-	os.Stdout = savedOut
-	os.Stderr = savedErr
-
-	var bOut, bErr bytes.Buffer
-	if _, err := bOut.ReadFrom(rOut); err != nil {
-		t.Fatalf("read bOut: %v", err)
-	}
-	if _, err := bErr.ReadFrom(rErr); err != nil {
-		t.Fatalf("read bErr: %v", err)
+	if errErr != nil {
+		t.Fatalf("read bErr: %v", errErr)
 	}
 	return bOut.String(), bErr.String()
 }
@@ -664,5 +689,84 @@ func TestRunSpec_SkipBaseline(t *testing.T) {
 	}
 	if !strings.Contains(outBrokenSkip, "KILLED") {
 		t.Errorf("broken baseline with skipBaseline = true missing KILLED verdict:\n%s", outBrokenSkip)
+	}
+}
+
+func TestCaptureOutput_DrainsLargeOutputWithoutDeadlock(t *testing.T) {
+	// Write 256 KiB (4x the default 64 KiB Linux pipe buffer) to both stdout
+	// and stderr inside captureOutput to verify concurrent draining prevents
+	// pipe-buffer deadlocks.
+	payloadOut := strings.Repeat("o", 256*1024)
+	payloadErr := strings.Repeat("e", 256*1024)
+
+	gotOut, gotErr := captureOutput(t, func() {
+		_, _ = os.Stdout.WriteString(payloadOut)
+		_, _ = os.Stderr.WriteString(payloadErr)
+	})
+	if len(gotOut) != len(payloadOut) || gotOut != payloadOut {
+		t.Errorf("stdout len = %d, want %d", len(gotOut), len(payloadOut))
+	}
+	if len(gotErr) != len(payloadErr) || gotErr != payloadErr {
+		t.Errorf("stderr len = %d, want %d", len(gotErr), len(payloadErr))
+	}
+
+	// Verify os.Stdout and os.Stderr are restored even if fn panics.
+	origOut, origErr := os.Stdout, os.Stderr
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = captureOutput(t, func() {
+			panic("simulated failure inside captureOutput")
+		})
+	}()
+	if os.Stdout != origOut || os.Stderr != origErr {
+		t.Errorf("os.Stdout/os.Stderr were not restored after panic inside captureOutput")
+	}
+}
+
+func TestRunSpec_ReturnsExitCodeTwoOnErrors(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "go.mod"), "module mutatetest\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(root, "target.go"), "package mutatetest\n\nfunc Value() int {\n\treturn 1\n}\n")
+
+	// Case 1: missing spec file returns exit code 2 without terminating the process.
+	var codeMissing int
+	_, errMissing := captureOutput(t, func() {
+		codeMissing = runSpec(root, filepath.Join(root, "missing.spec"), runOpts{})
+	})
+	if codeMissing != 2 {
+		t.Errorf("missing spec code = %d, want 2", codeMissing)
+	}
+	if !strings.Contains(errMissing, "mutate:") {
+		t.Errorf("missing spec stderr lacks 'mutate:' prefix:\n%s", errMissing)
+	}
+
+	// Case 2: invalid chunk flag returns exit code 2 without terminating the process.
+	specPath := filepath.Join(root, "test.spec")
+	mustWrite(t, specPath, "pkg .\nrun TestValue\n\n[mut]\nfile target.go\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
+
+	var codeChunk int
+	_, errChunk := captureOutput(t, func() {
+		codeChunk = runSpec(root, specPath, runOpts{chunk: "invalid"})
+	})
+	if codeChunk != 2 {
+		t.Errorf("invalid chunk code = %d, want 2", codeChunk)
+	}
+	if !strings.Contains(errChunk, "invalid -chunk") {
+		t.Errorf("invalid chunk stderr lacks 'invalid -chunk':\n%s", errChunk)
+	}
+
+	// Case 3: deadRunFilterNames failure (non-existent package) returns exit code 2.
+	badPkgSpec := filepath.Join(root, "badpkg.spec")
+	mustWrite(t, badPkgSpec, "pkg ./doesnotexist\nrun TestA|TestB\n\n[mut]\nfile target.go\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
+
+	var codeRunfilter int
+	_, errRunfilter := captureOutput(t, func() {
+		codeRunfilter = runSpec(root, badPkgSpec, runOpts{skipRunfilter: false})
+	})
+	if codeRunfilter != 2 {
+		t.Errorf("deadRunFilterNames error code = %d, want 2", codeRunfilter)
+	}
+	if !strings.Contains(errRunfilter, "list tests") {
+		t.Errorf("deadRunFilterNames error stderr lacks 'list tests':\n%s", errRunfilter)
 	}
 }

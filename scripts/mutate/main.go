@@ -314,19 +314,22 @@ func runSpec(root, path string, opts runOpts) int {
 	start := time.Now()
 	sp, err := parseSpec(path)
 	if err != nil {
-		fatal("%s: %v", path, err)
+		fmt.Fprintf(os.Stderr, "mutate: %s: %v\n", path, err)
+		return 2
 	}
 	sp.parallel = opts.parallel
 	sp.gcflags = opts.gcflags
 	if opts.chunk != "" {
 		if err := sp.applyChunk(opts.chunk); err != nil {
-			fatal("%v", err)
+			fmt.Fprintf(os.Stderr, "mutate: %v\n", err)
+			return 2
 		}
 	}
 
 	if !opts.skipRunfilter {
 		if dead, err := deadRunFilterNames(root, sp); err != nil {
-			fatal("%v", err)
+			fmt.Fprintf(os.Stderr, "mutate: %v\n", err)
+			return 2
 		} else if len(dead) > 0 {
 			return reportRunFilter(sp.pkg, dead)
 		}
@@ -344,7 +347,8 @@ func runSpec(root, path string, opts runOpts) int {
 		}
 		out, code, launchErr := goTest(root, sp)
 		if launchErr != nil {
-			fatal("could not run go test: %v", launchErr)
+			fmt.Fprintf(os.Stderr, "mutate: could not run go test: %v\n", launchErr)
+			return 2
 		}
 		if code != 0 {
 			fmt.Fprintf(os.Stderr, "\nBASELINE FAILED — no mutation was applied.\n\n"+
@@ -379,7 +383,8 @@ func runSpec(root, path string, opts runOpts) int {
 
 	confirmed, err := confirmExclusions(root, sp, results)
 	if err != nil {
-		fatal("%v", err)
+		fmt.Fprintf(os.Stderr, "mutate: %v\n", err)
+		return 2
 	}
 
 	if opts.quiet {

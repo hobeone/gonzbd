@@ -914,3 +914,30 @@ func TestAppriseNotifier_DefaultTimeoutAppliedWhenClientTimeoutZero(t *testing.T
 		t.Fatalf("expected success once the zero-timeout client is replaced, got: %v", err)
 	}
 }
+
+func TestAppriseNotifier_ShallowCopiesNonNilClient(t *testing.T) {
+	t.Parallel()
+
+	// Case 1: caller passes a client with Timeout == 0. NewAppriseNotifier must
+	// not mutate caller's struct and must decouple its internal client from later
+	// caller mutations.
+	zeroClient := &http.Client{}
+	nZero := NewAppriseNotifier(AppriseConfig{URL: "http://example.invalid"}, zeroClient)
+	if zeroClient.Timeout != 0 {
+		t.Errorf("caller zeroClient.Timeout mutated to %v, want 0", zeroClient.Timeout)
+	}
+	zeroClient.Timeout = 99 * time.Second
+	if got := nZero.ClientForTest().Timeout; got != DefaultAppriseTimeout {
+		t.Errorf("nZero client.Timeout after caller mutation = %v, want %v", got, DefaultAppriseTimeout)
+	}
+
+	// Case 2: caller passes a client with Timeout > 0. NewAppriseNotifier must
+	// also shallow-copy the client so subsequent caller mutations do not affect
+	// the notifier's client.
+	customClient := &http.Client{Timeout: 3 * time.Second}
+	nCustom := NewAppriseNotifier(AppriseConfig{URL: "http://example.invalid"}, customClient)
+	customClient.Timeout = 42 * time.Second
+	if got := nCustom.ClientForTest().Timeout; got != 3*time.Second {
+		t.Errorf("nCustom client.Timeout after caller mutation = %v, want 3s", got)
+	}
+}
