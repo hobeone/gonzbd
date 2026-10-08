@@ -85,9 +85,14 @@ func WithCommitWrap(w CommitWrap) BarrierOption {
 // (R27), after storeFailure has decided whether the caller or the store
 // ended it. The error it returns is already routed; callers return it as is.
 func (b *Barrier) commit(ctx context.Context, jobID string, arts []DurableArticle) error {
-	_, err := b.wrappedCommit(ctx, jobID, arts)
+	colls, err := b.wrappedCommit(ctx, jobID, arts)
 	if err != nil {
 		return b.raise(jobID, "commit", b.runs.Path(), storeFailure(ctx, err))
+	}
+	for _, c := range colls {
+		b.log.Warn("exact-offset collision at durable barrier",
+			"job", jobID, "file", c.FileIdx, "offset", c.Offset,
+			"kept_art", c.Kept, "dropped_art", c.Dropped)
 	}
 	return nil
 }

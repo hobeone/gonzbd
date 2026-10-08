@@ -240,3 +240,39 @@ func TestExtensionCleanup_ZipSlip_Symlink(t *testing.T) {
 		t.Errorf("victim content modified: %s", string(data))
 	}
 }
+
+func TestExtensionCleanup_ConfinedToDownloadDir(t *testing.T) {
+	parent := t.TempDir()
+	siblingFile := filepath.Join(parent, "sibling.nfo")
+	if err := os.WriteFile(siblingFile, []byte("SIBLING"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dlDir := filepath.Join(parent, "job-download")
+	if err := os.Mkdir(dlDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	targetFile := filepath.Join(dlDir, "release.nfo")
+	if err := os.WriteFile(targetFile, []byte("TARGET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stage := NewExtensionCleanupStage([]string{"nfo"})
+	job := &Job{
+		DownloadDir:   dlDir,
+		ConsumedFiles: make(map[string]struct{}),
+	}
+
+	if err := stage.Run(context.Background(), job); err != nil {
+		t.Fatalf("stage run: %v", err)
+	}
+
+	// Inside dlDir: deleted
+	if _, err := os.Stat(targetFile); !os.IsNotExist(err) {
+		t.Errorf("expected %s to be deleted inside DownloadDir", targetFile)
+	}
+	// Outside dlDir: spared
+	if data, err := os.ReadFile(siblingFile); err != nil || string(data) != "SIBLING" {
+		t.Errorf("sibling file was modified or deleted: %v, content=%q", err, string(data))
+	}
+}

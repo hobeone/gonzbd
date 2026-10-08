@@ -2,7 +2,7 @@
 
 This document is the contract for `internal/postproc`, `internal/par2`, and
 `internal/unpack`: the stage execution state machine, queue scheduling, repair and
-extraction rules, script execution isolation, and owned-file safety bounds.
+extraction rules, script execution isolation, and per-job directory isolation.
 
 `docs/ARCHITECTURE.md` describes post-processing high-level design. This document
 establishes its contract-level invariants and error escalation rules.
@@ -27,8 +27,9 @@ Multi-stage post-processing introduces subtle failure modes:
 - **Redundant PAR2 repair subprocesses**: Executing expensive multi-minute `par2`
   processes on files that already passed CRC32 checks or were successfully
   extracted by DirectUnpack.
-- **Accidental deletion of un-owned files**: Cleanup stages blindly deleting files
-  in a shared or reused working directory that belong to other downloads (#3462).
+- **Accidental deletion across downloads**: Deleting files in a shared or reused
+  directory that belong to other jobs (#3462); prevented by per-job DownloadDir
+  exclusivity (Invariant 4).
 - **Environment leakage to user scripts**: User post-processing scripts failing
   or hanging due to unhandled environment variables, missing positional args, or
   un-capped log output.

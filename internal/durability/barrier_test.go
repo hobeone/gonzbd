@@ -1,10 +1,12 @@
 package durability
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"syscall"
 
 	"testing"
@@ -561,4 +563,36 @@ func TestBarrier_CommitWrapCanFailOrObserveTheCommit(t *testing.T) {
 			t.Errorf("the wrapped commit wrote %d runs, want 1", len(runs))
 		}
 	})
+}
+
+func TestBarrier_CommitLogsCollisions(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	rs := NewStore(openTestDB(t), "history.db")
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, logger,
+		WithCommitWrap(func(_ context.Context, _ string, commit func() ([]Collision, error)) ([]Collision, error) {
+			_, err := commit()
+			if err != nil {
+				return nil, err
+			}
+			return []Collision{{FileIdx: 1, Offset: 1024, Kept: 0, Dropped: 1}}, nil
+		}))
+
+	target := &fakeTarget{
+		written: map[int32][]WrittenArticle{1: {{FileIdx: 1, ArtIdx: 0, Offset: 1024, Length: 100}}},
+		size:    1124,
+		files:   []int32{1},
+	}
+	if err := b.Run(ctx, "job-collision", target); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "exact-offset collision at durable barrier") {
+		t.Errorf("expected collision warning in logs, got %q", out)
+	}
+	if !strings.Contains(out, "offset=1024") || !strings.Contains(out, "kept_art=0") || !strings.Contains(out, "dropped_art=1") {
+		t.Errorf("expected collision details in logs, got %q", out)
+	}
 }
