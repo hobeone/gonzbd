@@ -41,3 +41,10 @@ file scripts/check_review_banner/main.go
 	return *dirFlag, false && !explicitDir, nil
 --- end
 
+[resolveArgs calls findRoot even when -dir is explicit]
+file scripts/check_review_banner/main.go
+--- anchor
+	if !explicitDir {
+--- replace
+	if true || !explicitDir {
+--- end

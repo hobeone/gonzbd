@@ -250,9 +250,10 @@ func (a *Application) stopAndJoin() error {
 	var errs []error
 	a.stopWorkers(stepTimeout, &errs, noBarrierOnStop)
 	// Prune resident jobs from the checkpointer before joinAndStop cancels the
-	// context so neither watchCompletions' drainCompletions pass nor
-	// Checkpointer.Run's ctx.Done exit flush writes un-checkpointed state to
-	// disk during a simulated hard crash.
+	// context so Checkpointer.Run's ctx.Done exit flush has nothing to write
+	// during a simulated hard crash (watchCompletions' drainCompletions pass on
+	// ctx.Done is already inert because stopWorkers has stopped the assembler,
+	// so finalizeCompletedFile fails with assembler.ErrAssemblerStopped).
 	if a.checkpointer != nil && a.dispatcher != nil {
 		for _, row := range a.dispatcher.List() {
 			if j, ok := a.dispatcher.Job(row.ID); ok {

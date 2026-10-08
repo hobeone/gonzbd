@@ -135,9 +135,11 @@ func TestCheckDir_SkipsOnlyWhenAllowMissingIsTrue(t *testing.T) {
 
 func TestResolveArgs_DistinguishesDefaultFromExplicitDir(t *testing.T) {
 	root := "/repo/root"
+	okRoot := func() (string, error) { return root, nil }
+	errRoot := func() (string, error) { return "", os.ErrNotExist }
 
 	t.Run("default directory resolves under root with allowMissing true", func(t *testing.T) {
-		dir, allowMissing, err := resolveArgs(nil, root)
+		dir, allowMissing, err := resolveArgs(nil, okRoot)
 		if err != nil {
 			t.Fatalf("resolveArgs(nil) unexpected error: %v", err)
 		}
@@ -150,10 +152,16 @@ func TestResolveArgs_DistinguishesDefaultFromExplicitDir(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit -dir sets allowMissing false", func(t *testing.T) {
-		dir, allowMissing, err := resolveArgs([]string{"-dir", "docs/reviews"}, root)
+	t.Run("default directory propagates findRoot error", func(t *testing.T) {
+		if _, _, err := resolveArgs(nil, errRoot); err == nil {
+			t.Fatal("resolveArgs(nil, errRoot) = nil error, want error")
+		}
+	})
+
+	t.Run("explicit -dir sets allowMissing false without calling findRoot", func(t *testing.T) {
+		dir, allowMissing, err := resolveArgs([]string{"-dir", "docs/reviews"}, errRoot)
 		if err != nil {
-			t.Fatalf("resolveArgs(-dir) unexpected error: %v", err)
+			t.Fatalf("resolveArgs(-dir, errRoot) unexpected error: %v", err)
 		}
 		if dir != "docs/reviews" {
 			t.Errorf("dir = %q, want %q", dir, "docs/reviews")

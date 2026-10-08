@@ -332,17 +332,23 @@ func TestStopAndJoin_WaitsForWgBeforePostProcAndReportsTimeout(t *testing.T) {
 		application.handleArticleRejected(j.ID(), 0, 1, "negative offset")
 		application.wg.Go(func() { _ = application.checkpointer.Run(application.ctx) })
 
+		postProcEntered := make(chan struct{})
 		var wgFinished, wgDoneWhenPostProcStopped atomic.Bool
 		application.wg.Go(func() {
 			<-application.ctx.Done()
-			// Delay briefly after context cancellation so a reordered
-			// implementation that runs postProcessor.Stop before wg.Wait
-			// observes wgFinished == false deterministically.
-			time.Sleep(20 * time.Millisecond)
+			// Wait briefly (or until postProcStopHook runs) after context
+			// cancellation so a reordered implementation that invokes
+			// postProcessor.Stop before wg.Wait almost always enters the hook
+			// while wgFinished is still false.
+			select {
+			case <-postProcEntered:
+			case <-time.After(20 * time.Millisecond):
+			}
 			wgFinished.Store(true)
 		})
 
 		application.postProcStopHook = func() error {
+			close(postProcEntered)
 			wgDoneWhenPostProcStopped.Store(wgFinished.Load())
 			return nil
 		}

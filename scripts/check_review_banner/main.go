@@ -49,13 +49,9 @@ const bannerLabel = "Frozen record"
 var commitRef = regexp.MustCompile("`[0-9a-f]{7,40}`")
 
 func main() {
-	root, err := repoRoot()
+	dir, allowMissing, err := resolveArgs(os.Args[1:], repoRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "check_review_banner: %v\n", err)
-		os.Exit(2)
-	}
-	dir, allowMissing, err := resolveArgs(os.Args[1:], root)
-	if err != nil {
 		os.Exit(2)
 	}
 
@@ -90,11 +86,12 @@ func repoRoot() (string, error) {
 
 // resolveArgs parses CLI flags and reports the target directory and whether a
 // missing directory should be skipped (true for the default directory under
-// root; false when -dir is set explicitly).
-func resolveArgs(args []string, root string) (dir string, allowMissing bool, err error) {
+// findRoot; false when -dir is set explicitly). findRoot is called only when
+// -dir is left at its default so an explicit -dir does not require a git
+// checkout.
+func resolveArgs(args []string, findRoot func() (string, error)) (dir string, allowMissing bool, err error) {
 	fs := flag.NewFlagSet("check_review_banner", flag.ContinueOnError)
-	defaultDir := filepath.Join(root, "docs", "reviews")
-	dirFlag := fs.String("dir", defaultDir, "directory of review documents to check")
+	dirFlag := fs.String("dir", filepath.Join("docs", "reviews"), "directory of review documents to check")
 	if err := fs.Parse(args); err != nil {
 		return "", false, err
 	}
@@ -104,6 +101,13 @@ func resolveArgs(args []string, root string) (dir string, allowMissing bool, err
 			explicitDir = true
 		}
 	})
+	if !explicitDir {
+		root, err := findRoot()
+		if err != nil {
+			return "", false, err
+		}
+		*dirFlag = filepath.Join(root, "docs", "reviews")
+	}
 	return *dirFlag, !explicitDir, nil
 }
 
