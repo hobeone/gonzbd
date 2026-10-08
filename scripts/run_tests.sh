@@ -219,22 +219,6 @@ WORKTREE_BASE=""
 SNAP_INDEX=""
 PIDS=()
 
-trim_gocache_if_needed() {
-    local max_gb="${MUTATE_MAX_GOCACHE_GB:-40}"
-    local gocache_dir
-    gocache_dir=$(go env GOCACHE 2>/dev/null || echo "$HOME/.cache/go-build")
-    if [ -d "$gocache_dir" ]; then
-        local cache_kb
-        cache_kb=$(du -sk "$gocache_dir" 2>/dev/null | awk '{print $1}')
-        local limit_kb=$(( max_gb * 1024 * 1024 ))
-        if [ -n "$cache_kb" ] && [ "$cache_kb" -gt "$limit_kb" ] 2>/dev/null; then
-            local cache_gb=$(( cache_kb / 1024 / 1024 ))
-            echo "Notice: Go build cache at $gocache_dir is ${cache_gb}GB (exceeds ${max_gb}GB threshold). Resetting with go clean -cache..."
-            go clean -cache
-        fi
-    fi
-}
-
 cleanup_mutate() {
     # Terminate worker process groups if still running
     if [ "${#PIDS[@]}" -gt 0 ]; then
@@ -261,13 +245,11 @@ cleanup_mutate() {
         rm -rf "$WORKTREE_BASE"
         git worktree prune >/dev/null 2>&1 || true
     fi
-    trim_gocache_if_needed
 }
 trap cleanup_mutate EXIT
 trap 'cleanup_mutate; exit 130' INT
 trap 'cleanup_mutate; exit 143' TERM
 
-trim_gocache_if_needed
 go build -o "$MUTATE_BIN" ./scripts/mutate
 
 # Anchor check: resolves every spec's anchors against the current source
