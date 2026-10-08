@@ -1594,21 +1594,26 @@ func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
 // Message-ID, so deleting the overwrite left that assertion green — the leg
 // went vacuous the moment the maps were re-keyed, without failing.
 //
-// What still reads the field is the human-facing report. articleLabel renders
-// an article as <message-id>, and postAnomalyReason names both sides of an
-// offset collision, so a collision's reason string is where the ref's
-// Message-ID becomes observable. If the request won, both sides would be
-// reported as <ghost@id> and the operator would be told an article collided
-// with itself.
+// What still reads the field is the operator log on a displaced or rejected
+// article, which records both sides of an offset collision.
 func TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports(t *testing.T) {
 	dir := t.TempDir()
 	files := make(map[string]FileInfo)
 	registerFile(t, dir, files, "real-job", 0, 2)
 
-	anomaly := make(chan string, 1)
+	var logBuf strings.Builder
+	rejected := make(chan struct{}, 1)
 	opts := makeOpts(dir, files)
-	opts.OnPostAnomaly = func(_ string, _ int, reason string) { anomaly <- reason }
-	a := startAssembler(t, opts)
+	opts.WriteCacheBytes = 1 << 20
+	opts.OnArticleRejected = func(_ string, _ int, _ int32, _ string) {
+		select {
+		case rejected <- struct{}{}:
+		default:
+		}
+	}
+	a := New(opts, slog.New(slog.NewTextHandler(&logBuf, nil)))
+	a.Start(t.Context())
+	t.Cleanup(func() { _ = a.Stop() })
 
 	// Two different articles claiming one offset. Their refs carry distinct
 	// Message-IDs; both requests carry the same wrong one.
@@ -1630,18 +1635,20 @@ func TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports(t *testing.T) {
 	}
 
 	select {
-	case reason := <-anomaly:
-		if strings.Contains(reason, "ghost@id") {
-			t.Errorf("the collision was reported as %q — the request's Message-ID "+
-				"reached the worker instead of the ref's", reason)
+	case <-rejected:
+		_ = a.Stop()
+		logged := logBuf.String()
+		if strings.Contains(logged, "ghost@id") {
+			t.Errorf("the collision was logged as %q — the request's Message-ID "+
+				"reached the worker instead of the ref's", logged)
 		}
 		for _, want := range []string{"incumbent@id", "arrival@id"} {
-			if !strings.Contains(reason, want) {
-				t.Errorf("the collision report %q does not name %s", reason, want)
+			if !strings.Contains(logged, want) {
+				t.Errorf("the collision log %q does not name %s", logged, want)
 			}
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("no anomaly was reported for two articles claiming one offset")
+		t.Fatal("no article was rejected for two articles claiming one offset")
 	}
 }
 

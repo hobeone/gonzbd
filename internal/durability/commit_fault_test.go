@@ -44,7 +44,7 @@ func TestBarrier_Run_ACommitErrorStallsTheJob(t *testing.T) {
 	tgt := commitFaultTarget()
 	b := NewBarrier(&commitErrStore{runStore: NewStore(openTestDB(t), dbPath), err: boom}, ack, stall, testLogger(t))
 
-	_, err := b.Run(context.Background(), "job-1", tgt)
+	err := b.Run(context.Background(), "job-1", tgt)
 
 	if len(stall.stalled) != 1 {
 		t.Fatalf("stalled %d times, want 1 — a job whose commits fail keeps downloading "+
@@ -86,7 +86,7 @@ func TestBarrier_Run_ACommitAbandonedByItsCallerIsNotStalled(t *testing.T) {
 	tgt := commitFaultTarget()
 	cancel()
 
-	_, err := b.Run(ctx, "job-1", tgt)
+	err := b.Run(ctx, "job-1", tgt)
 
 	if len(stall.stalled)+len(stall.failed) != 0 {
 		t.Errorf("stalled %v, failed %v — a caller that stopped waiting is not a storage "+
@@ -157,7 +157,7 @@ func TestBarrier_FinalizeFile_AStoreErrorStallsNamingTheStore(t *testing.T) {
 			tgt := &truncTarget{drained: []WrittenArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100}}}
 			b := NewBarrier(&finalizeStoreFault{runStore: store, op: op, err: boom}, ack, stall, testLogger(t))
 
-			_, err := b.FinalizeFile(context.Background(), "job-1", 0, tgt)
+			err := b.FinalizeFile(context.Background(), "job-1", 0, tgt)
 
 			if len(stall.stalled) != 1 {
 				t.Fatalf("stalled %d times, want 1 — the job is halted with no reason the "+
@@ -211,7 +211,7 @@ func TestBarrier_FinalizeFile_AStoreCallAbandonedByItsCallerIsNotStalled(t *test
 			}
 			b := NewBarrier(rs, ack, stall, testLogger(t))
 
-			_, err := b.FinalizeFile(ctx, "job-1", 0, tgt)
+			err := b.FinalizeFile(ctx, "job-1", 0, tgt)
 
 			if len(stall.stalled)+len(stall.failed) != 0 {
 				t.Errorf("stalled %v, failed %v — a caller that stopped waiting is not a "+

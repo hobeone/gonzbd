@@ -1,10 +1,12 @@
 package durability
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"syscall"
 
 	"testing"
@@ -107,7 +109,7 @@ func TestBarrier_SyncPrecedesCommitAndAck(t *testing.T) {
 	ack := &recordingAcker{}
 	b := newBarrierWithStore(t, NewStore(openTestDB(t), "history.db"), ack, &recordingStall{})
 
-	if _, err := b.Run(ctx, "job-1", tgt); err != nil {
+	if err := b.Run(ctx, "job-1", tgt); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"drain", "sync", "stat"}
@@ -147,7 +149,7 @@ func TestBarrier_SyncFailureAcksNothing(t *testing.T) {
 	stall := &recordingStall{}
 	b := newBarrierWithStore(t, rs, ack, stall)
 
-	if _, err := b.Run(ctx, "job-1", tgt); err == nil {
+	if err := b.Run(ctx, "job-1", tgt); err == nil {
 		t.Fatal("Run returned nil after a failed sync")
 	}
 	if len(ack.proofs) != 0 {
@@ -182,7 +184,7 @@ func TestBarrier_PermanentFaultFailsRatherThanStalls(t *testing.T) {
 	stall := &recordingStall{}
 	b := newBarrierWithStore(t, NewStore(openTestDB(t), "history.db"), &recordingAcker{}, stall)
 
-	if _, err := b.Run(ctx, "job-1", tgt); err == nil {
+	if err := b.Run(ctx, "job-1", tgt); err == nil {
 		t.Fatal("Run returned nil after EROFS")
 	}
 	if len(stall.failed) != 1 {
@@ -221,7 +223,7 @@ func TestBarrier_DrainAndStatFaultsRouteThroughA1(t *testing.T) {
 			ack := &recordingAcker{}
 			b := newBarrierWithStore(t, NewStore(openTestDB(t), "history.db"), ack, stall)
 
-			_, err := b.Run(ctx, "job-1", tt.tgt)
+			err := b.Run(ctx, "job-1", tt.tgt)
 			if err == nil {
 				t.Fatal("Run returned nil after a storage fault")
 			}
@@ -278,7 +280,7 @@ func TestBarrier_CommitFailureAcksNothing(t *testing.T) {
 	ack := &recordingAcker{}
 	b := newBarrierWithStore(t, rs, ack, &recordingStall{})
 
-	_, err := b.Run(ctx, "job-1", tgt)
+	err := b.Run(ctx, "job-1", tgt)
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the commit failure", err)
 	}
@@ -302,7 +304,7 @@ func TestBarrier_NothingDrainedAcksNothing(t *testing.T) {
 	ack := &recordingAcker{}
 	b := newBarrierWithStore(t, rs, ack, &recordingStall{})
 
-	if _, err := b.Run(ctx, "job-1", tgt); err != nil {
+	if err := b.Run(ctx, "job-1", tgt); err != nil {
 		t.Fatal(err)
 	}
 	if len(ack.proofs) != 0 {
@@ -333,7 +335,7 @@ func TestBarrier_AckFailurePropagates(t *testing.T) {
 	}
 	b := newBarrierWithStore(t, NewStore(openTestDB(t), "history.db"), ack, &recordingStall{})
 
-	if _, err := b.Run(ctx, "job-1", tgt); !errors.Is(err, boom) {
+	if err := b.Run(ctx, "job-1", tgt); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the ack failure", err)
 	}
 }
@@ -355,7 +357,7 @@ func TestBarrier_MultipleFilesSyncAllBeforeAnyClaim(t *testing.T) {
 	}
 	ack := &recordingAcker{}
 	b := newBarrierWithStore(t, rs, ack, &recordingStall{})
-	if _, err := b.Run(ctx, "job-1", tgt); err != nil {
+	if err := b.Run(ctx, "job-1", tgt); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"drain", "drain", "sync", "sync", "stat", "stat"}
@@ -410,7 +412,7 @@ func TestBarrier_ConfirmsOnlyAfterTheCommitAndAck(t *testing.T) {
 		b := newBarrierWithStore(t, NewStore(openTestDB(t), "history.db"),
 			&recordingAcker{}, &recordingStall{})
 		tgt := &fakeTarget{written: drain, size: 100}
-		if _, err := b.Run(ctx, "job-1", tgt); err != nil {
+		if err := b.Run(ctx, "job-1", tgt); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
 		if len(tgt.confirmed) == 0 {
@@ -423,7 +425,7 @@ func TestBarrier_ConfirmsOnlyAfterTheCommitAndAck(t *testing.T) {
 		b := newBarrierWithStore(t, NewStore(openTestDB(t), "history.db"),
 			&recordingAcker{err: errors.New("job not resident")}, &recordingStall{})
 		tgt := &fakeTarget{written: drain, size: 100}
-		if _, err := b.Run(ctx, "job-1", tgt); err == nil {
+		if err := b.Run(ctx, "job-1", tgt); err == nil {
 			t.Fatal("Run reported success while the ack failed")
 		}
 		if len(tgt.confirmed) != 0 {
@@ -531,7 +533,7 @@ func TestBarrier_CommitWrapCanFailOrObserveTheCommit(t *testing.T) {
 				return nil, boom
 			}))
 
-		if _, err := b.Run(ctx, "job-1", newTarget()); !errors.Is(err, boom) {
+		if err := b.Run(ctx, "job-1", newTarget()); !errors.Is(err, boom) {
 			t.Fatalf("Run = %v, want the wrap's failure", err)
 		}
 		if len(ack.proofs) != 0 {
@@ -551,7 +553,7 @@ func TestBarrier_CommitWrapCanFailOrObserveTheCommit(t *testing.T) {
 				return commit()
 			}))
 
-		if _, err := b.Run(ctx, "job-1", newTarget()); err != nil {
+		if err := b.Run(ctx, "job-1", newTarget()); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
 		if sawJob != "job-1" {
@@ -561,4 +563,36 @@ func TestBarrier_CommitWrapCanFailOrObserveTheCommit(t *testing.T) {
 			t.Errorf("the wrapped commit wrote %d runs, want 1", len(runs))
 		}
 	})
+}
+
+func TestBarrier_CommitLogsCollisions(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	rs := NewStore(openTestDB(t), "history.db")
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	b := NewBarrier(rs, &recordingAcker{}, &recordingStall{}, logger,
+		WithCommitWrap(func(_ context.Context, _ string, commit func() ([]Collision, error)) ([]Collision, error) {
+			_, err := commit()
+			if err != nil {
+				return nil, err
+			}
+			return []Collision{{FileIdx: 1, Offset: 1024, Kept: 0, Dropped: 1}}, nil
+		}))
+
+	target := &fakeTarget{
+		written: map[int32][]WrittenArticle{1: {{FileIdx: 1, ArtIdx: 0, Offset: 1024, Length: 100}}},
+		size:    1124,
+		files:   []int32{1},
+	}
+	if err := b.Run(ctx, "job-collision", target); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "exact-offset collision at durable barrier") {
+		t.Errorf("expected collision warning in logs, got %q", out)
+	}
+	if !strings.Contains(out, "offset=1024") || !strings.Contains(out, "kept_art=0") || !strings.Contains(out, "dropped_art=1") {
+		t.Errorf("expected collision details in logs, got %q", out)
+	}
 }

@@ -19,8 +19,7 @@ const uuBody = "begin 644 test.bin\n%2&5L;&\\`\n`\nend\n"
 // yencNoYPart builds a yEnc article with no =ypart line, so
 // decoder.Article.HasOffset is false and Offset defaults to 0. part is the
 // =ybegin part= value; 0 omits the key entirely (a plain, single-part-shaped
-// header). Mirrors yencPart in partnumber_test.go, which always includes
-// =ypart and so cannot build this fixture.
+// header).
 func yencNoYPart(part int, payload string) []byte {
 	encoded := make([]byte, 0, len(payload))
 	for i := range len(payload) {
@@ -86,10 +85,8 @@ func TestDecodePayload_UUFirstSegmentStillDecodes(t *testing.T) {
 // =ypart line leaves decoder.Article.HasOffset false, so Offset is the
 // format's zero-value default rather than genuine position data — the same
 // shape as the UU case, from the other decoder. A bare =ybegin part=N does
-// not save it: that field is server-declared and unvalidated (D1 in
-// docs/article-validation-contract.md only counts a disagreement against the
-// NZB's segment number, it does not act on one), so a malformed or lying
-// part= cannot be trusted to justify offset 0.
+// not save it: that field is server-declared and unvalidated, so a malformed
+// or lying part= cannot be trusted to justify offset 0.
 func TestDecodePayload_YencNoYPartRejectedForNonFirstSegment(t *testing.T) {
 	t.Parallel()
 

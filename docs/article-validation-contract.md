@@ -1,8 +1,8 @@
 # Article Validation Contract
 
 > **Status: in progress; dispositions settled.** F1, F3, A7, F6, F2, F5/B1, E5 and the
-> whole A-block have landed, and E3's detection half has (#387: the durability
-> layer classifies a range overlap and warns the user); C5, E4 and F4 remain
+> whole A-block have landed, and E3's CRC-withholding half has (#387: the durability
+> layer withholds the whole-file CRC on any non-abutting overlap so `par2` runs); C5, E4 and F4 remain
 > proposed, as does any E3 PREVENTION. §8 is no longer open — what each class of violation
 > produces has been decided and is binding on the work that follows. This
 > document defines what GoNZBD asserts about a Usenet article, where each
@@ -524,9 +524,9 @@ the rows.
 | C1–C3 | payload self-verification | L2 | ✅ already enforced | — |
 | C4 | checksum presence | L2 | count only | — |
 | C5 | `offset + len ≤ size`; `end − begin + 1 == len` | L2 | fail article (`end=` half counts first) | — |
-| D1–D3 | NZB ↔ article disagreements | L3 | job-level warning | — |
+| ~~D1–D4~~ | ~~NZB ↔ article disagreements~~ | L3 | **dropped** — no consumer (see §5.D) | — |
 | E1–E2 | bounds, exact-offset collision | L4 | ✅ already enforced | — |
-| E3 | range overlap | L4 detects nothing; the durability layer detects it by comparing the recorded runs' summed lengths against the file's size | **post anomaly** (user warning), after the write | A7 **and** E5 |
+| E3 | range overlap | L4 detects nothing; the durability layer withholds the whole-file CRC whenever runs do not collapse to a single row covering every article | **withhold CRC** (`par2` runs), after the write | A7 **and** E5 |
 | E4 | part tiling / gaps | L0 + L4 | warn at ingestion | — |
 | E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | L3 | ✅ **implemented** — reject (#346) | — |
 | F1 | key `FileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
@@ -537,7 +537,7 @@ the rows.
 
 **Build order.** The F-items land first (§5.F), then the assertions:
 
-> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → ~~E5~~ → ~~F1a~~ (fixture `ArtIdx`) → ~~F1b~~ (flip the key) → E3 (detection ~~landed~~; prevention open) / E4
+> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → ~~E5~~ → ~~F1a~~ (fixture `ArtIdx`) → ~~F1b~~ (flip the key) → E3 (CRC withholding ~~landed~~; prevention open) / E4
 
 Struck items have landed. F3 led because it was the smallest instance of the
 pattern and the cheapest place to learn its cost; doing it first is what
@@ -894,41 +894,30 @@ wrong for this file.
 Per §3, the `end=` half is **counted before it is enforced**: `end=` is optional
 in a format with no conformance suite, and divergent emission is likely.
 
-### D. NZB ↔ article reconciliation (L3 — mostly missing)
+### D. NZB ↔ article reconciliation (L3 — dropped)
 
 | # | Assertion | Status |
 |---|---|---|
-| D1 | served `part=` equals the requested segment number | ⚠ counted only (#379) |
-| D2 | `=ybegin size=` identical across all parts of a file | ⚠ **absent** |
-| D3 | decoded length is plausible against the NZB's `bytes` | ⚠ **absent** |
-| ~~D4~~ | ~~`=ybegin name=` identical across all parts of a file~~ | **dropped as ceremony — see below** |
+| ~~D1~~ | ~~served `part=` equals the requested segment number~~ | **dropped** — no consumer; probe removed (#10) |
+| ~~D2~~ | ~~`=ybegin size=` identical across all parts of a file~~ | **dropped** — no consumer |
+| ~~D3~~ | ~~decoded length is plausible against the NZB's `bytes`~~ | **dropped** — no consumer |
+| ~~D4~~ | ~~`=ybegin name=` identical across all parts of a file~~ | **dropped** — no consumer |
 
-D2 is Class 2 with **no authoritative side needed**: the parts of one file
-disagreeing with each other is proof of malformation on its own terms,
-detectable with one stored value per file and no external reference.
+The general rule this section established: **a consistency check on a field with
+no consumer is ceremony.** Either the field earns a consumer or it should not be
+checked, and a warning or unacted-on counter is not a consumer.
 
-**A `name=` cross-part consistency check is deliberately NOT proposed.**
-`decoder.Article.Filename`
-has **zero consumers outside `internal/decoder`** — the displayed name is derived
-from the NZB subject in `convertFile`, and the decoded `name=` is parsed and then
-discarded. The check would have plumbed a field through three packages in order
-to warn about a value the system never uses. `Article.TotalSize` is likewise
-unconsumed today, but C5 gives it a real job, so it stays.
-
-The general rule this yields, worth applying before any future check is added:
-**a consistency check on a field with no consumer is ceremony.** Either the field
-earns a consumer or it should be deleted, and a warning is not a consumer.
-
-**Both surviving assertions produce a job-level warning and nothing else**
-(§8, decision 2). Neither rejects an article, fails a file, or feeds
-`isRetryableDownloaderError`. The warning names both claims and the file they
-disagree about, so a user reading the job can see that the posting is malformed
-before par2 tells them.
-
-D3 additionally **gains no authority over `ExpectedSize`** (§8, decision 4). It
-observes that the decoded length disagrees with the NZB's `bytes` and says so;
-it does not tighten the 12.5% slack in `offsetOutOfRange`, and the NZB's `bytes`
-remains advisory everywhere it is already advisory.
+- **D1 (`=ybegin part=` vs NZB segment number):** `=ybegin part=` has no
+  downstream consumer — placement uses `=ypart begin=` (`article.Offset`), and
+  E5 gates offset-less decodes solely on the NZB's `requestedPartNumber > 1`.
+  The temporary mismatch probe (#379) took no action by design and has been
+  removed (#10).
+- **D2 (`=ybegin size=`) and D3 (decoded length vs NZB `bytes`):** Neither
+  alters article acceptance, server failover, or `ExpectedSize` (which keeps its
+  advisory 12.5% slack in `offsetOutOfRange`).
+- **D4 (`=ybegin name=`):** `decoder.Article.Filename` has zero consumers
+  outside `internal/decoder` — the displayed name is derived from the NZB
+  subject in `convertFile`.
 
 ### E. Geometry (L4 — assembler)
 
@@ -936,22 +925,21 @@ remains advisory everywhere it is already advisory.
 |---|---|---|
 | E1 | offset ≥ 0, no overflow, within `ExpectedSize` + 12.5% | ✅ enforced |
 | E2 | no two articles share an exact start offset | ✅ enforced (#385) |
-| E3 | no two articles' ranges **overlap** | ⚠ **not prevented**; detected after the fact (#387) |
+| E3 | no two articles' ranges **overlap** | ⚠ **not prevented**; whole-file CRC withheld (#387) |
 | E4 | the parts tile `[0, size)` with no gap | ⚠ **absent** at L4; also undetected at L0 |
 
 | E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | ✅ **implemented** (#346) — `decodePayload` rejects `ErrOffsetUnknownForPart` |
 
-**E3 lands as an after-the-fact warning, not a hot-path guard** (§8, decision
-3), conditional on both A7 and E5, not on A7 alone. Both are now in place, so
-the condition holds — for the route E5 governs; see the paragraph after next
-for the route that remains outside it.
+**E3 withholds the whole-file CRC rather than adding a hot-path range guard** (§8,
+decision 3), conditional on both A7 and E5, not on A7 alone. Both are now in
+place, so the condition holds — for the route E5 governs; see the paragraph
+after next for the route that remains outside it.
 
 E5 is what closed the route that made the conditional necessary, across both
 decode shapes that produce it. `decodePayload`'s UU fallback can only assert
 offset 0, and so can its yEnc path when the body carries no `=ypart` line
 (`decoder.Article.HasOffset` false) — a bare `=ybegin part=N` does not save
-it, since that field is server-declared and unvalidated (D1 only counts a
-disagreement against it). Offset 0 is correct for segment 1 of a file and
+it, since that field is server-declared and unvalidated. Offset 0 is correct for segment 1 of a file and
 belongs to no other segment. Before this fix, a server answering, say,
 segment 5 of a multi-part file with either shape of body could claim segment
 1's offset, and A7 could not touch it — no Message-ID is repeated.
@@ -969,20 +957,13 @@ consists of exactly the one article E5 rejects, so the cost is bounded to
 that article's own bytes, same as any other E5 rejection.
 
 A distinct route is NOT closed by E5: two articles that both carry a genuine
-`=ypart` line, whose `begin=` values happen to collide. Nothing at L3 rejects
-that — it is not a missing-offset decode, so E5 does not see it, and D1–D3
-do not compare one article's declared offset against another's. With A7 and
+`=ypart` line, whose `begin=` values happen to overlap. Nothing at L3 rejects
+that — it is not a missing-offset decode, so E5 does not see it, and nothing at
+L3 compares one article's declared offset against another's. With A7 and
 E5 both in place, that residual route does not justify a range query on every
-accept. Warn on overlaps and revisit only if the residual population is one
-neither explains. This also defers #387's design choice — the interval
-structure it debates is only worth building if that population justifies it.
-
-An earlier version of this paragraph said to **count** overlaps and gated the
-revisit on what "the counter" showed. No counter was built: what shipped is a
-job warning raised at most once per `(jobID, fileIdx)`, which a user can act on
-and nobody can aggregate. §8 decision 3 says the same thing; this paragraph
-contradicted it until #387's detection landed, and the measurement the revisit
-depends on still does not exist.
+accept. Because `mergeAdjacentRuns` merges only articles that abut cleanly, any
+range overlap leaves multiple `durable_runs` rows (or drops a duplicate offset)
+and withholds the whole-file CRC, so `par2` runs and repairs the file.
 
 E4 has an L0 half worth taking first: **a gap in NZB part numbers is decidable
 offline.** A file whose segments are numbered 1, 2, 4 parses today with no
@@ -1211,38 +1192,29 @@ later reader can tell a decision from an oversight.
    A1's placement no longer matters — before or after the digest write is the
    same digest — and its silent drop is now a counted rejection.
 
-2. **A Class 2 disagreement is a job-level warning.** Not telemetry alone —
-   the user is the party who can act on "this posting is malformed" by finding
-   another one. Not a rejection either: no side is provably wrong. The warning
-   names both claims and the file. This covers D1–D3 and E3's warning.
+2. **A Class 2 disagreement with no consumer is dropped.**
+   Where no side is provably wrong and nothing in the pipeline consumes the
+   field (`D1`–`D4`), no check or counter is kept (see §5.D).
 
-3. **Overlap detection warns; it does not guard.** E3 warns the user and does
-   not gate the accept path. **Conditional on both A7 and E5**, not A7 alone,
-   and both are now in place — see §5.E: E5 (#346) rejects a decode (UU, or
-   yEnc with no `=ypart`) that would default to claiming offset 0 for a
+3. **Overlaps withhold the whole-file CRC rather than gating the accept path.**
+   E3 does not gate the accept path. **Conditional on both A7 and E5**, not A7
+   alone, and both are now in place — see §5.E: E5 (#346) rejects a decode (UU,
+   or yEnc with no `=ypart`) that would default to claiming offset 0 for a
    segment other than the first, closing the route by which such a decode
    could claim an offset without a repeated Message-ID for A7 to catch. A
    distinct route remains open — two articles each carrying a genuine
-   `=ypart` declaration whose `begin=` values happen to collide — which
-   neither A7 nor E5 addresses; the residual population below is presumed to
-   include it. #387's interval-structure design is deferred until the
-   warning rate justifies it.
-
-   As shipped there is **no counter**, which earlier drafts of this section
-   promised twice. What exists is a job warning raised at most once per
-   `(jobID, fileIdx)`, latched in memory and therefore per process — a restart
-   raises each finding once more. That is enough for a user to act on and is
-   not a rate anyone can aggregate, so deciding whether the deferral above is
-   justified needs telemetry that does not yet exist.
+   `=ypart` declaration whose `begin=` values happen to overlap — which
+   neither A7 nor E5 addresses; the durability layer withholds the whole-file
+   CRC whenever a file's runs do not collapse to a single contiguous row
+   covering every article, so `par2` runs and repairs the file.
 
    **E5 has landed (#346), so the condition this decision rests on is met.**
    Prevention of the general E3 overlap case is still deferred, and that
    deferral now rests on both A7 and E5 rather than on an incomplete argument.
 
-4. **The NZB's `bytes` gains no authority.** It stays advisory. D3 observes
-   disagreement without acting on it, `offsetOutOfRange` keeps its 12.5% slack
-   unchanged, and the slack figure is not re-derived from measurement as part of
-   this work.
+4. **The NZB's `bytes` gains no authority.** It stays advisory. `offsetOutOfRange`
+   keeps its 12.5% slack unchanged, and the slack figure is not re-derived from
+   measurement as part of this work.
 
    **Caveat found in review, and it is a genuine conflict with decision 1.**
    `ExpectedSize` is `Manifest.FileBytes(fileIdx)`, which traces back to the sum

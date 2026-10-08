@@ -124,14 +124,7 @@ type runStore interface {
 	// finalize. mergeAdjacentRuns carries the argument.
 	//
 	// This is the exact-offset collision internal/downloader/dispatch.go's
-	// UU block describes, and the returned Collisions are how it is
-	// reported: the dropped row contributes nothing to Σ length, so
-	// §3.3's completion check has no evidence to find and cannot be the
-	// signal. §3.3's "an overlapped file keeps more rows" is therefore
-	// true of PARTIAL overlaps and not of this one, and this return value
-	// exists because that difference is invisible from the stored rows
-	// afterwards — the commit that drops the row is the last moment the
-	// collision can be observed at all.
+	// UU block describes.
 	//
 	// Collisions are returned rather than raised: a commit that hits one
 	// has still succeeded, the transaction still lands, and the file is

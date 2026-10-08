@@ -4,25 +4,25 @@ run TestCheckpointJob_ACommitErrorStallsTheJobUntilReevaluated|TestHandleFileCom
 [the barrier's commit returns a failure without routing it]
 file internal/durability/barrier.go
 --- anchor
-		return nil, b.raise(jobID, "commit", b.runs.Path(), storeFailure(ctx, err))
+		return b.raise(jobID, "commit", b.runs.Path(), storeFailure(ctx, err))
 --- replace
-		return nil, fmt.Errorf("durability: barrier commit for %s: %w", jobID, storeFailure(ctx, err))
+		return fmt.Errorf("durability: barrier commit for %s: %w", jobID, storeFailure(ctx, err))
 --- end
 
 [a failed commit's stall reason drops the store's path]
 file internal/durability/barrier.go
 --- anchor
-		return nil, b.raise(jobID, "commit", b.runs.Path(), storeFailure(ctx, err))
+		return b.raise(jobID, "commit", b.runs.Path(), storeFailure(ctx, err))
 --- replace
-		return nil, b.raise(jobID, "commit", "", storeFailure(ctx, err))
+		return b.raise(jobID, "commit", "", storeFailure(ctx, err))
 --- end
 
 [a failed commit is not checked for a caller that stopped waiting]
 file internal/durability/barrier.go
 --- anchor
-		return nil, b.raise(jobID, "commit", b.runs.Path(), storeFailure(ctx, err))
+		return b.raise(jobID, "commit", b.runs.Path(), storeFailure(ctx, err))
 --- replace
-		return nil, b.raise(jobID, "commit", b.runs.Path(), err)
+		return b.raise(jobID, "commit", b.runs.Path(), err)
 --- end
 
 [raise routes nothing for an error it does not recognise]

@@ -61,8 +61,8 @@ func (s *factGapTarget) Confirm(_ context.Context, idx int32) { s.confirmed = ap
 // against a durable article the fact log did not name — a divergence that
 // cannot be represented in a single record written after the fsync, so the
 // guard and the class it defended against are both gone. This pin is not: the
-// post-truncate stat survives, and it is the value both §3.3's overlap check
-// and §3.4's resume gate are stated against.
+// post-truncate stat survives, and it is the value §3.4's resume gate is
+// stated against.
 func TestFinalizeFile_PostTruncateStatFaultNamesTheFile(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -79,7 +79,7 @@ func TestFinalizeFile_PostTruncateStatFaultNamesTheFile(t *testing.T) {
 	stall := &recordingStall{}
 	b := NewBarrier(rs, &recordingAcker{}, stall, slog.New(slog.DiscardHandler))
 
-	_, err := b.FinalizeFile(ctx, "job-1", 0, tgt)
+	err := b.FinalizeFile(ctx, "job-1", 0, tgt)
 	if err == nil {
 		t.Fatal("FinalizeFile returned nil; the injected stat failure was not surfaced")
 	}

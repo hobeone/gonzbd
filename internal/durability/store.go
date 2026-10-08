@@ -244,25 +244,20 @@ func coveredByAny(stored []Run, artIdx int32) bool {
 // That is the correct outcome, because the drop exists for exactly one reason:
 // (job_id, file_idx, offset) is the primary key and cannot hold two rows at
 // one offset. Two rows at DIFFERENT offsets violate nothing, so nothing forces
-// a choice between them, and keeping both is what makes Σ length exceed the
-// file's size — which is precisely the evidence §3.3's overlap check reports
-// on. Dropping the later entry instead would erase that evidence, silence the
-// warning, and return its article to Outstanding to be re-fetched and collide
+// a choice between them, and keeping both leaves the file at more than one row
+// — which is what §3.5's single-row CRC condition reads to withhold the
+// whole-file CRC and leave verification to par2. Dropping the later entry
+// instead would return its article to Outstanding to be re-fetched and collide
 // again.
 //
 // The consequence is that one physical situation — two articles claiming one
-// offset — is reported as a Collision or as an overlap depending on whether
-// the rival was absorbed by a merge first. Both reach the user; §3.5 withholds
-// the whole-file CRC either way, on the row count in this case and on article
-// coverage in the other.
+// offset — leaves either a Collision (when the duplicate is dropped at the
+// same row start) or a second row (when the rival was absorbed by a merge
+// first). §3.5 withholds the whole-file CRC either way, on article coverage in
+// the first case and on the row count in the second.
 //
-// Every drop that DOES happen is reported, as a Collision, and this is the
-// only place in the program that can report one. overlapFrom cannot: it compares Σ length
-// against the file's size, and dropping the duplicate is exactly what stops
-// Σ length from exceeding it. Nor can any later pass over the stored rows —
-// the survivor is by then indistinguishable from a row that never had a
-// rival. The information exists here and nowhere else, so it leaves by return
-// value rather than being re-derived downstream.
+// Dropping the duplicate deterministically keeps mergeAdjacentRuns a pure function;
+// the returned Collisions record the dropped rivals; Barrier.commit logs each one.
 //
 // The trap this exists to avoid: crc32util.Combine(a, b, lenB) requires lenB
 // to be the WHOLE length of the run being folded in, not one article's

@@ -108,7 +108,7 @@ func TestFinalizeFileTruncatesThroughTheRealAdapter(t *testing.T) {
 			"assertion below would pass vacuously", st.Size())
 	}
 
-	if _, err := b.FinalizeFile(ctx, "job1", 0, trunc); err != nil {
+	if err := b.FinalizeFile(ctx, "job1", 0, trunc); err != nil {
 		t.Fatalf("FinalizeFile: %v", err)
 	}
 
@@ -225,7 +225,7 @@ func TestCompletedFileStaysOpenForTheBarrierThenCloses(t *testing.T) {
 	if !ok {
 		t.Fatal("the per-job adapter does not implement durability.Truncator")
 	}
-	if _, err := b.FinalizeFile(ctx, "job1", 0, trunc); err != nil {
+	if err := b.FinalizeFile(ctx, "job1", 0, trunc); err != nil {
 		t.Fatalf("FinalizeFile on a completed file: %v", err)
 	}
 	if st, err := os.Stat(path); err != nil {

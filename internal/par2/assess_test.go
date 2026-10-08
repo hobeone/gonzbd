@@ -282,12 +282,9 @@ func TestAssess_UnverifiedFilesAreOrdered(t *testing.T) {
 }
 
 // TestApplyRenames_ReportsOnlyWhatItAchieved pins that the returned list is
-// what happened, not what was planned.
-//
-// Callers track file ownership from this list (postproc's markRenamed), so a
-// rename reported but not performed would move ownership to a path holding no
-// file, and the real file would be left unowned — which the cleanup stages
-// then skip.
+// what happened, not what was planned: a failed rename is logged and omitted
+// from the returned slice so callers only record relocations that landed on
+// disk.
 func TestApplyRenames_ReportsOnlyWhatItAchieved(t *testing.T) {
 	t.Parallel()
 

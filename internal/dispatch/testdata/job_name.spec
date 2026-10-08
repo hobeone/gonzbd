@@ -6,7 +6,7 @@ file internal/dispatch/registry.go
 --- anchor
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
 --- replace
-	if false {
+	if false && strings.ContainsAny(name, "/\\\x00") {
 --- end
 
 [a separator is allowed]
@@ -14,7 +14,7 @@ file internal/dispatch/registry.go
 --- anchor
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
 --- replace
-	if name == "" || name == "." || name == ".." {
+	if name == "" || name == "." || name == ".." || (false && strings.ContainsAny(name, "/\\\x00")) {
 --- end
 
 [dot-dot is allowed]

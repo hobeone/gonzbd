@@ -70,7 +70,6 @@ type yencHeader struct {
 	offset int64 // byte offset of this part in the assembled file (0-based, from =ypart begin-1)
 	name   string
 	isPart bool
-	part   int // part ordinal from =ybegin part=, 0 when absent
 
 	// hasYPart is true only when a =ypart line was present, i.e. only when
 	// offset is a genuine derived value rather than the zero-value default.
@@ -110,8 +109,8 @@ type Article struct {
 	// HasOffset is true only when the article carried a =ypart line, i.e.
 	// only when Offset above is a genuine derived value rather than the
 	// zero-value default. A =ybegin part= alone, with no =ypart, still
-	// leaves this false: PartNumber below can be nonzero while HasOffset is
-	// false, and callers must not read Offset as position data in that case.
+	// leaves this false, and callers must not read Offset as position data
+	// in that case.
 	HasOffset bool
 
 	// TotalSize is the assembled file's size in bytes as DECLARED by the
@@ -139,19 +138,6 @@ type Article struct {
 	// CRC is the CRC32 computed over Data. If the trailer's pcrc32/crc32
 	// field was present, DecodeArticle has already verified it matches.
 	CRC uint32
-
-	// PartNumber is the 1-based ordinal the server declared in =ybegin part=,
-	// or 0 when the article carries none — a single-part post, or a
-	// non-numeric value.
-	//
-	// Nothing in this package acts on it. It exists so the dispatcher can
-	// compare it against the NZB segment number that was requested and COUNT
-	// the disagreements (#379). That comparison is novel: SABnzbd's decoder
-	// reads part_begin and part_size without ever checking the served part
-	// against the segment number, so there is no prior evidence about how
-	// often servers and indexers agree. Counting first is what makes it safe
-	// to consider acting later.
-	PartNumber int
 }
 
 // DecodeArticle decodes a yEnc-encoded NNTP article body. body is the raw
@@ -273,13 +259,12 @@ func DecodeArticleBuf(body, scratch []byte) (Article, error) {
 	// therefore does not imply a checksum was verified, only that none
 	// disagreed.
 	art := Article{
-		Filename:   hdr.name,
-		Offset:     hdr.offset,
-		HasOffset:  hdr.hasYPart,
-		TotalSize:  hdr.size,
-		Data:       decoded,
-		CRC:        computedCRC,
-		PartNumber: hdr.part,
+		Filename:  hdr.name,
+		Offset:    hdr.offset,
+		HasOffset: hdr.hasYPart,
+		TotalSize: hdr.size,
+		Data:      decoded,
+		CRC:       computedCRC,
 	}
 
 	if trailer.size != int64(len(decoded)) {
@@ -459,18 +444,6 @@ func parseHeader(body []byte) (yencHeader, int, error) {
 		case "part":
 			if v != "" {
 				hdr.isPart = true
-				// The VALUE, not just its presence. isPart drives which
-				// checksum field parseTrailer treats as authoritative and is
-				// unchanged; the ordinal is carried so the dispatcher can
-				// compare what the server served against the segment number
-				// the NZB asked for (#379). A non-numeric part= leaves it at
-				// zero, which disables that comparison rather than failing the
-				// article — nothing has ever validated this field, and a
-				// decoder that starts rejecting on it would fail articles that
-				// download correctly today.
-				if n, err := strconv.Atoi(v); err == nil && n > 0 {
-					hdr.part = n
-				}
 			}
 		}
 	})

@@ -153,8 +153,6 @@ type SyncTarget interface {
 	// moves without a byte moving (a restore, a copy, a touch), where a size
 	// shortfall means bytes the record claims are genuinely absent. See
 	// Resumer.Resume and the design doc's §3.4.
-	//
-	// It is also what §3.3's overlap check compares Σ Length against.
 	Stat(fileIdx int32) (size int64, err error)
 
 	// Path returns the file's path on disk, for a stall reason a user can

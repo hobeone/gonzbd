@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"sync"
 
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
@@ -48,48 +47,12 @@ type Barrier struct {
 	stall Stallable
 	log   *slog.Logger
 	wrap  CommitWrap
-
-	// reportedMu guards reported and nothing else. It is never held across
-	// any of this type's I/O — see NewBarrier.
-	reportedMu sync.Mutex
-	// reported latches the files whose overlap has already been raised.
-	//
-	// An overlap is a property of the PERSISTED runs, so every checkpoint after
-	// the first re-derives the same finding from the same rows. Without a
-	// latch a job with one malformed file raises it on every cycle until the
-	// download ends — and because Header.PostAnomaly accumulates findings
-	// rather than replacing them, each re-raise would append a duplicate
-	// entry, growing the field once per checkpoint instead of once per
-	// malformed file.
-	//
-	// Keyed on job and file because Run's caller serialises per JOB, so two
-	// jobs genuinely do run here at once.
-	//
-	// Entries are removed only by ForgetJob, which a retry calls because it
-	// reuses the job ID. Nothing reclaims them on ordinary completion, and the
-	// bound that makes that acceptable is the number of files carrying an
-	// overlap — a defect count, not a job count. It is deliberately
-	// per-process: a restart raises each finding once more, which is what a
-	// user who restarted to fix something would expect.
-	reported map[overlapKey]struct{}
-}
-
-// overlapKey identifies the file an overlap finding was raised for.
-type overlapKey struct {
-	jobID   string
-	fileIdx int32
 }
 
 // NewBarrier wires a barrier. It owns none of its collaborators' lifecycles.
-//
-// It holds one lock, reportedMu, and that lock never covers I/O: it is taken
-// and released around a map probe on the report latch, below every collaborator
-// call. Run and FinalizeFile do I/O throughout and the project bans I/O under a
-// lock, so nothing else here may grow a lock without moving the I/O first.
 func NewBarrier(rs runStore, ack Acker, stall Stallable, log *slog.Logger, opts ...BarrierOption) *Barrier {
 	b := &Barrier{
 		runs: rs, ack: ack, stall: stall, log: log,
-		reported: make(map[overlapKey]struct{}),
 	}
 	for _, o := range opts {
 		o(b)
@@ -121,12 +84,17 @@ func WithCommitWrap(w CommitWrap) BarrierOption {
 // the same way for both: through raise, attributed to the store's own path
 // (R27), after storeFailure has decided whether the caller or the store
 // ended it. The error it returns is already routed; callers return it as is.
-func (b *Barrier) commit(ctx context.Context, jobID string, arts []DurableArticle) ([]Collision, error) {
-	collisions, err := b.wrappedCommit(ctx, jobID, arts)
+func (b *Barrier) commit(ctx context.Context, jobID string, arts []DurableArticle) error {
+	colls, err := b.wrappedCommit(ctx, jobID, arts)
 	if err != nil {
-		return nil, b.raise(jobID, "commit", b.runs.Path(), storeFailure(ctx, err))
+		return b.raise(jobID, "commit", b.runs.Path(), storeFailure(ctx, err))
 	}
-	return collisions, nil
+	for _, c := range colls {
+		b.log.Warn("exact-offset collision at durable barrier",
+			"job", jobID, "file", c.FileIdx, "offset", c.Offset,
+			"kept_art", c.Kept, "dropped_art", c.Dropped)
+	}
+	return nil
 }
 
 // wrappedCommit runs the store's commit inside the CommitWrap, if one is
@@ -136,63 +104,6 @@ func (b *Barrier) wrappedCommit(ctx context.Context, jobID string, arts []Durabl
 		return b.runs.commit(ctx, jobID, arts)
 	}
 	return b.wrap(ctx, jobID, func() ([]Collision, error) { return b.runs.commit(ctx, jobID, arts) })
-}
-
-// admit filters classified findings down to the ones not yet raised for their
-// file, and latches those.
-//
-// The single owner of the latch — both Run and FinalizeFile go through here, so
-// neither can latch on a different rule, and there is nowhere else to write the
-// map.
-//
-// Called only AFTER a successful Commit, never at the point of classification.
-// Spending the latch is irreversible for the life of the process, so it must
-// not happen on a path that then fails: classify freely, admit once the cycle
-// has actually landed. Both an earlier draft of this change and the first fix
-// to it got that order wrong, in each case leaving a window where the finding
-// was consumed by a cycle that reported nothing.
-func (b *Barrier) admit(jobID string, cands []PostAnomaly) []PostAnomaly {
-	if len(cands) == 0 {
-		return nil
-	}
-	b.reportedMu.Lock()
-	defer b.reportedMu.Unlock()
-	var out []PostAnomaly
-	for _, pa := range cands {
-		key := overlapKey{jobID: jobID, fileIdx: pa.FileIdx}
-		if _, seen := b.reported[key]; seen {
-			continue
-		}
-		b.reported[key] = struct{}{}
-		out = append(out, pa)
-	}
-	return out
-}
-
-// ForgetJob drops every latched overlap finding for a job, so its next
-// checkpoint may raise them again.
-//
-// Called when a job re-enters the queue under an ID it has already used — a
-// retry reuses the job ID, and its durable runs are usually retained across it:
-// the reclaim rule keeps them for a FAILED history entry. They are dropped
-// deliberately when the re-parsed manifest changes shape, because a run names
-// articles by art_idx and a renumbering makes it describe other articles.
-//
-// Without this the retried job's overlaps match the latch from the previous
-// attempt and are dropped, silencing the warning permanently rather than once.
-//
-// So ForgetJob may not assume any run is present, and does not need to: it
-// clears the latch either way, which is correct for both outcomes.
-//
-// Idempotent, and safe for a job that never reported anything.
-func (b *Barrier) ForgetJob(jobID string) {
-	b.reportedMu.Lock()
-	defer b.reportedMu.Unlock()
-	for key := range b.reported {
-		if key.jobID == jobID {
-			delete(b.reported, key)
-		}
-	}
 }
 
 // Run executes one checkpoint for a job:
@@ -219,7 +130,7 @@ func (b *Barrier) ForgetJob(jobID string) {
 // A storage fault never marks an article failed (A1). Retryable stalls the
 // job, permanent fails it, and in both cases the articles stay Outstanding
 // to be re-fetched.
-func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAnomaly, error) {
+func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 	files := t.Files()
 	drained := make(map[int32][]WrittenArticle, len(files))
 
@@ -238,7 +149,7 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 			continue
 		}
 		if err != nil {
-			return nil, b.raise(jobID, "write", t.Path(idx), err)
+			return b.raise(jobID, "write", t.Path(idx), err)
 		}
 		open = append(open, idx)
 		drained[idx] = w
@@ -277,14 +188,14 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 				delete(drained, idx)
 				continue
 			}
-			return nil, b.raise(jobID, "sync", t.Path(idx), err)
+			return b.raise(jobID, "sync", t.Path(idx), err)
 		}
 		synced = append(synced, idx)
 	}
 	files = synced
 
-	// Phase 3 — collect what the fsync just made durable, and the size each
-	// file now has.
+	// Phase 3 — collect what the fsync just made durable, probing each file
+	// with Stat to catch close races or surface storage faults naming the file.
 	//
 	// A file dropped by any phase leaves `files` there and then, and that is
 	// what makes the drop complete rather than partial. The slice is also what
@@ -294,10 +205,9 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 	// on to make the next drain whole.
 	var arts []DurableArticle
 	var acked []int32
-	sizes := make(map[int32]int64, len(files))
 	built := files[:0:0]
 	for _, idx := range files {
-		size, err := t.Stat(idx)
+		_, err := t.Stat(idx)
 		if errors.Is(err, ErrFileNotOpen) {
 			// Closed between the fsync and the stat — the same race phases 1
 			// and 2 each handle, arriving at the third place a closed handle
@@ -310,9 +220,8 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 			continue
 		}
 		if err != nil {
-			return nil, b.raise(jobID, "stat", t.Path(idx), err)
+			return b.raise(jobID, "stat", t.Path(idx), err)
 		}
-		sizes[idx] = size
 		for _, w := range drained[idx] {
 			arts = append(arts, durableArticle(idx, w))
 			acked = append(acked, w.ArtIdx)
@@ -324,9 +233,8 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 	// Phase 4 — commit the runs atomically, then and only then ack. Nothing
 	// between these two statements may fail, and nothing may be inserted
 	// between them: the commit is what makes the proof true after a crash.
-	collisions, err := b.commit(ctx, jobID, arts)
-	if err != nil {
-		return nil, err
+	if err := b.commit(ctx, jobID, arts); err != nil {
+		return err
 	}
 	if len(acked) > 0 {
 		slices.Sort(acked)
@@ -334,19 +242,7 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 		// other. Both are on Barrier and both sit below a Sync that returned nil.
 		// See the Barrier type doc.
 		if err := b.ack.AckDurable(newProof(jobID, acked)); err != nil {
-			// The collisions travel WITH the error, because they describe the
-			// commit above — which landed — rather than this ack. Dropping
-			// them here lost them permanently: the commit already discarded
-			// the losing row, and on the next cycle these same articles are
-			// subtracted as an at-least-once redelivery before the merge runs,
-			// so Commit finds nothing to collide and returns none. Nothing
-			// downstream can re-derive a collision from the stored rows.
-			//
-			// A caller that ignores findings alongside an error loses nothing
-			// it had before; app.finalizeCompletedFile already reports them
-			// first and checks the error second.
-			return b.admit(jobID, collisionFindings(collisions, t.Path)),
-				fmt.Errorf("durability: barrier ack for %s: %w", jobID, err)
+			return fmt.Errorf("durability: barrier ack for %s: %w", jobID, err)
 		}
 	}
 	// Only here, below both the commit and the ack. Releasing on the fsync —
@@ -360,34 +256,7 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) ([]PostAn
 	b.confirmAll(ctx, files, t)
 	b.log.Debug("durability barrier committed",
 		"job", jobID, "files", len(files), "articles_acked", len(acked))
-
-	// Findings ride the paths that COMMITTED, and every one of them — which is
-	// not the same as "the paths that returned a nil error", and the
-	// difference is a real defect this comment's first draft allowed. An
-	// overlap is a property of the persisted runs, not of this cycle, so
-	// withholding it from a checkpoint that failed loses nothing: the next
-	// committing one re-derives it from the same rows. Reporting it from a
-	// cycle that committed nothing would tell the user about a state the
-	// barrier had just declined to make true.
-	//
-	// The acked==0 case is exactly the path a RESUMED job takes for a file
-	// that became durable in an earlier process, where no later cycle
-	// re-derives anything because the file never drains again — so it carries
-	// the finding too, which is why this sits below the shared confirmAll
-	// rather than inside a branch.
-	//
-	// Classified from the stored rows AFTER the commit, so this cycle's own
-	// articles are included. It is deliberately not squeezed between the
-	// commit and the ack, where §6 forbids anything at all.
-	//
-	// Collisions come FIRST, and the order is load-bearing rather than
-	// cosmetic: admit's latch is keyed on (job, file), so where a file has
-	// both findings only the first survives. A collision names two articles
-	// and a byte offset; an overlap names a byte total. The specific one is
-	// the one worth spending the file's single warning on.
-	cands := collisionFindings(collisions, t.Path)
-	cands = append(cands, b.overlapFindings(ctx, jobID, files, sizes, t)...)
-	return b.admit(jobID, cands), nil
+	return nil
 }
 
 // durableArticle converts one drained article into the record the store places.
@@ -406,32 +275,6 @@ func durableArticle(fileIdx int32, w WrittenArticle) DurableArticle {
 	}
 }
 
-// overlapFindings classifies each file's stored runs against the size the file
-// now has, per §3.3: Σ Length greater than the file means articles wrote over
-// each other.
-//
-// A read failure is logged and skipped rather than raised. The runs are on
-// stable storage and the next committing checkpoint asks the same question of
-// the same rows, so a failure here costs a delayed warning about a file that
-// is repairable anyway — it must not fail a barrier whose commit and ack have
-// already landed.
-func (b *Barrier) overlapFindings(ctx context.Context, jobID string, files []int32, sizes map[int32]int64, t SyncTarget) []PostAnomaly {
-	var found []PostAnomaly
-	for _, idx := range files {
-		runs, err := b.runs.ForFile(ctx, jobID, idx)
-		if err != nil {
-			b.log.Warn("could not read a file's durable runs to check it for overlaps; "+
-				"the next checkpoint asks the same question of the same rows",
-				"job", jobID, "file", idx, "err", err)
-			continue
-		}
-		if pa, ok := overlapFrom(runs, sizes[idx], idx, func() string { return t.Path(idx) }); ok {
-			found = append(found, pa)
-		}
-	}
-	return found
-}
-
 // confirmAll releases every file's drain report once the cycle has landed.
 //
 // Confirm cannot fail, so this cannot either: the work it records is already
@@ -448,8 +291,7 @@ func (b *Barrier) confirmAll(ctx context.Context, files []int32, t SyncTarget) {
 // its error here once ErrFileNotOpen has been handled, and so do the barrier's
 // commit (for Run and FinalizeFile alike) and FinalizeFile's read of the stored
 // runs: `git grep -n 'b\.raise(' -- internal/durability/barrier.go` finds 10
-// lines. overlapFindings' read of the same runs is logged and skipped instead,
-// because it runs after the commit and ack have landed.
+// lines.
 //
 // Three outcomes, and the middle one is the one that kept being missed:
 //
@@ -599,7 +441,7 @@ type Truncator interface {
 // Truncation only ever shrinks (S6). The writer refuses a bound above the file
 // on disk rather than clamping, because growing appends zeros, which asserts
 // content that exists nowhere.
-func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t Truncator) ([]PostAnomaly, error) {
+func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t Truncator) error {
 	written, err := t.Drain(ctx, idx)
 	if errors.Is(err, ErrFileNotOpen) {
 		// Some other path closed it first — a cancel, or CloseJobHandles on a
@@ -608,10 +450,10 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 		// this is the narrow race rather than the ordinary case, and it is
 		// still not a fault.
 		b.log.Debug("file closed before its finalize could run", "job", jobID, "file", idx)
-		return nil, nil
+		return nil
 	}
 	if err != nil {
-		return nil, b.raise(jobID, "write", t.Path(idx), err)
+		return b.raise(jobID, "write", t.Path(idx), err)
 	}
 	if err := t.Sync(ctx, idx); err != nil {
 		if errors.Is(err, ErrFileNotOpen) {
@@ -623,9 +465,9 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 			// re-running against a handle that cannot come back.
 			b.log.Debug("file closed between its finalize drain and sync",
 				"job", jobID, "file", idx)
-			return nil, nil
+			return nil
 		}
-		return nil, b.raise(jobID, "sync", t.Path(idx), err)
+		return b.raise(jobID, "sync", t.Path(idx), err)
 	}
 
 	arts := make([]DurableArticle, 0, len(written))
@@ -647,7 +489,7 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 		// A read of the durability record, so it is the store's failure and
 		// not the file's: attributed to the store's path, and to the caller
 		// when ctx had already ended, exactly as commit's is.
-		return nil, b.raise(jobID, "read", b.runs.Path(), storeFailure(ctx, err))
+		return b.raise(jobID, "read", b.runs.Path(), storeFailure(ctx, err))
 	}
 	bound := boundOver(stored, arts)
 
@@ -656,15 +498,13 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 			if errors.Is(err, ErrFileNotOpen) {
 				b.log.Debug("file closed before its finalize could truncate",
 					"job", jobID, "file", idx)
-				return nil, nil
+				return nil
 			}
-			return nil, b.raise(jobID, "truncate", t.Path(idx), err)
+			return b.raise(jobID, "truncate", t.Path(idx), err)
 		}
-		// The truncate changed the file, so it is fsynced again before its
-		// size is read: the size is what §3.3's overlap check and §3.4's
-		// resume gate are both stated against, and reading it from a file
-		// whose metadata is not yet on stable storage would compare against a
-		// number the next restart does not see.
+		// The truncate changed the file, so it is fsynced before the post-truncate
+		// stat probe: reading metadata not yet on stable storage would leave a
+		// state the next restart does not see.
 		if err := t.Sync(ctx, idx); err != nil {
 			if errors.Is(err, ErrFileNotOpen) {
 				// Closed between this function's own Truncate and this Sync.
@@ -676,41 +516,32 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 				// See the pre-truncate Sync for the same argument at length.
 				b.log.Debug("file closed between its finalize truncate and sync",
 					"job", jobID, "file", idx)
-				return nil, nil
+				return nil
 			}
-			return nil, b.raise(jobID, "sync", t.Path(idx), err)
+			return b.raise(jobID, "sync", t.Path(idx), err)
 		}
 	}
-	// One stat, unconditionally — not nested inside `if bound > 0` above. A
-	// bound of 0 means no run, stored or newly acked, claims any bytes, so the
-	// truncate is skipped; nothing here is exempt from needing the file's real
-	// size, though, because it is what §3.3's overlap check below is compared
-	// against. Reading it from `t.Stat` in both branches — rather than falling
-	// back to some zero value when bound == 0 — is what keeps that comparison
-	// honest for a file this call finds already empty. After any truncate,
-	// so the size reflects the trim when one happened. R27: a fault here
-	// names the file, which is what makes the stall reason actionable.
-	size, err := t.Stat(idx)
+	// One stat, unconditionally — not nested inside `if bound > 0` above.
+	// The returned size is unused here; this Stat call serves as a liveness
+	// and storage fault probe. ErrFileNotOpen indicates a close that raced
+	// with finalize (returning nil cleanly), while any other error raises a
+	// storage fault naming the file (R27).
+	_, err = t.Stat(idx)
 	if errors.Is(err, ErrFileNotOpen) {
 		b.log.Debug("file closed before its finalize could stat it", "job", jobID, "file", idx)
-		return nil, nil
+		return nil
 	}
 	if err != nil {
-		return nil, b.raise(jobID, "stat", t.Path(idx), err)
+		return b.raise(jobID, "stat", t.Path(idx), err)
 	}
 
-	collisions, err := b.commit(ctx, jobID, arts)
-	if err != nil {
-		return nil, err
+	if err := b.commit(ctx, jobID, arts); err != nil {
+		return err
 	}
 	if len(acked) > 0 {
 		slices.Sort(acked)
 		if err := b.ack.AckDurable(newProof(jobID, acked)); err != nil {
-			// Carried with the error, as in Run and for the same reason: the
-			// commit landed, so the collision is real and this is the only
-			// cycle that can ever see it.
-			return b.admit(jobID, collisionFindings(collisions, t.Path)),
-				fmt.Errorf("durability: finalize ack for %s file %d: %w", jobID, idx, err)
+			return fmt.Errorf("durability: finalize ack for %s file %d: %w", jobID, idx, err)
 		}
 	}
 	// Below both the commit and the ack, as in Run. A finalize that failed
@@ -719,18 +550,7 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	// and a bound derived only from this run's articles sits below bytes that
 	// are genuinely on disk.
 	t.Confirm(ctx, idx)
-
-	// A file being finalized has stopped receiving articles, so its overlap is
-	// permanent and this is the last chance to notice it. Classified from the
-	// stored rows after the commit, so the articles this call just recorded
-	// are included, and against the POST-truncate size, which is the first
-	// point at which the file's size is its true content length rather than
-	// pre-allocation's.
-	// Collisions first, for the reason Run gives: one warning per file, spent
-	// on the more specific finding.
-	cands := collisionFindings(collisions, t.Path)
-	cands = append(cands, b.overlapFindings(ctx, jobID, []int32{idx}, map[int32]int64{idx: size}, t)...)
-	return b.admit(jobID, cands), nil
+	return nil
 }
 
 // boundOver returns the highest end offset among a file's stored runs and the

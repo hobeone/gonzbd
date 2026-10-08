@@ -111,7 +111,6 @@ func (s *RarVolumeRecoveryStage) Run(ctx context.Context, job *Job) error {
 			logf(ctx, log, job, slog.LevelWarn, "rar_volume_recovery: rename %s -> %s failed: %v", p, newPath, err)
 			continue
 		}
-		markRenamed(job, p, newPath)
 		logf(ctx, log, job, slog.LevelInfo, "rar_volume_recovery: recovered %s as volume %d -> %s", filepath.Base(p), volIdx, newName)
 	}
 

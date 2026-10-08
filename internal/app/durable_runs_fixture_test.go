@@ -29,7 +29,7 @@ func commitRuns(t *testing.T, st *durability.Store, jobID string, arts []durabil
 		return c, err
 	})
 	b := durability.NewBarrier(st, discardAcker{}, discardStallable{}, slog.New(slog.DiscardHandler), capture)
-	if _, err := b.Run(context.Background(), jobID, newWrittenTarget(arts)); err != nil {
+	if err := b.Run(context.Background(), jobID, newWrittenTarget(arts)); err != nil {
 		t.Fatalf("commitRuns: barrier run: %v", err)
 	}
 	return cols

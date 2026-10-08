@@ -32,10 +32,9 @@ import (
 // collisionFixture drives two articles at one offset through the real accept
 // path and reports what came out.
 type collisionFixture struct {
-	a         *Assembler
-	f         *openFile
-	rejected  []int32
-	anomalies []string
+	a        *Assembler
+	f        *openFile
+	rejected []int32
 }
 
 func newCollisionFixture(t *testing.T, cacheBytes int64) *collisionFixture {
@@ -43,9 +42,6 @@ func newCollisionFixture(t *testing.T, cacheBytes int64) *collisionFixture {
 	c := &collisionFixture{a: newHelperAssembler()}
 	c.a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
 		c.rejected = append(c.rejected, artIdx)
-	}
-	c.a.opts.OnPostAnomaly = func(_ string, _ int, reason string) {
-		c.anomalies = append(c.anomalies, reason)
 	}
 	c.f = newHelperFile(t, t.TempDir(), "collide.dat", 1<<20)
 	c.f.info.TotalParts = 2
@@ -97,10 +93,6 @@ func TestCollision_ArrivalRejectedOnceIncumbentIsWritten(t *testing.T) {
 	if got := c.f.w.takeFaulted(); len(got) != 0 {
 		t.Errorf("the written incumbent was rolled back as well as remaining in the "+
 			"barrier's evidence: %+v — one article, two terminal dispositions", got)
-	}
-	if len(c.anomalies) != 1 {
-		t.Errorf("OnPostAnomaly fired %d times, want 1 — the collision is still the "+
-			"thing the user has to be told about", len(c.anomalies))
 	}
 
 	// The incumbent's bytes are still the truth at that offset, which is what
@@ -295,20 +287,6 @@ func TestFileWriter_OffsetSettledBy(t *testing.T) {
 					got, owner)
 			}
 		})
-	}
-}
-
-// TestFileWriter_NotePostAnomalyLatches pins the latch both dispositions share,
-// so a file raises one job-level warning however its collisions resolve.
-func TestFileWriter_NotePostAnomalyLatches(t *testing.T) {
-	w := newTestFileWriter(t)
-
-	if !w.notePostAnomaly() {
-		t.Fatal("the first collision on a file did not claim the warning, so none is raised")
-	}
-	if w.notePostAnomaly() {
-		t.Error("a second collision claimed the warning again, which is what overwrites " +
-			"Header.PostAnomaly once per colliding segment")
 	}
 }
 
@@ -570,10 +548,6 @@ func TestFileWriter_ReacceptWhileCachedIsNotSelfDisplacement(t *testing.T) {
 		t.Errorf("the article was displaced by itself: %+v — routeFaulted resolves it "+
 			"permanently failed while its own replacement buffer is still queued to be "+
 			"written and acked", rolled)
-	}
-	if w.postAnomalyReported {
-		t.Error("a post anomaly was raised for one article colliding with itself, which " +
-			"tells the user their post is malformed when nothing is wrong with it")
 	}
 
 	// The re-accept replaced a cache entry, and buffer's eviction branch is what

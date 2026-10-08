@@ -2,7 +2,7 @@
 
 This document is the contract for `internal/postproc`, `internal/par2`, and
 `internal/unpack`: the stage execution state machine, queue scheduling, repair and
-extraction rules, script execution isolation, and owned-file safety bounds.
+extraction rules, script execution isolation, and per-job directory isolation.
 
 `docs/ARCHITECTURE.md` describes post-processing high-level design. This document
 establishes its contract-level invariants and error escalation rules.
@@ -27,8 +27,9 @@ Multi-stage post-processing introduces subtle failure modes:
 - **Redundant PAR2 repair subprocesses**: Executing expensive multi-minute `par2`
   processes on files that already passed CRC32 checks or were successfully
   extracted by DirectUnpack.
-- **Accidental deletion of un-owned files**: Cleanup stages blindly deleting files
-  in a shared or reused working directory that belong to other downloads (#3462).
+- **Accidental deletion across downloads**: Deleting files in a shared or reused
+  directory that belong to other jobs (#3462); prevented by per-job DownloadDir
+  exclusivity (Invariant 4).
 - **Environment leakage to user scripts**: User post-processing scripts failing
   or hanging due to unhandled environment variables, missing positional args, or
   un-capped log output.
@@ -247,15 +248,15 @@ or modify its behavior:
 |---|---|---|---|
 | **`quickcheck`** | Relocates flat files into expected subdirs; verifies file CRC32s against par2 headers without executing `par2`; defers each par2 set that protects what an archive extracts to until after unpack. | Skipped if disabled or `PP < 1`. | Sets `QuickCheck` to one of `NotRun` / `Clean` / `Damaged` / `Inconclusive` / `Unidentified`, and `DeferredPar2Sets`. |
 | **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted, for every par2 set not in `DeferredPar2Sets`. | Skipped if `PP < 1`, `QuickCheck == Clean`, `QuickCheck == Unidentified`, OR DirectUnpack extracted all archives without errors **and** `QuickCheck == NotRun`. | Sets `ParError` and `Par2Renames`. |
-| **`rar_volume_recovery`** | Renames obfuscated volume files (e.g. `abc.001` → `abc.part001.rar`) using RAR5 header volume sequencing if standard filename parsing found no RAR sets. | Skipped if disabled, standard RAR sets already detected, or volume indexing is ambiguous. | Renames volume files in `DownloadDir` & `OwnedFiles`. |
+| **`rar_volume_recovery`** | Renames obfuscated volume files (e.g. `abc.001` → `abc.part001.rar`) using RAR5 header volume sequencing if standard filename parsing found no RAR sets. | Skipped if disabled, standard RAR sets already detected, or volume indexing is ambiguous. | Renames volume files in `DownloadDir`. |
 | **`unpack`** | Decompresses archives (`RAR`, `7z`, `TAR`, `split join`) up to `maxUnpackDepth = 3` recursive passes using native pure-Go engines (`go_rar`, `go_7z`, `go_tar`, `filejoin`) with optional external CLI fallbacks (`unrar`, `7z`). Respects `DirectUnpackSets` to skip already-extracted archives. | Skipped if `PP < 2` OR `ParError == true` (skips extraction unconditionally on repair failure). | Sets `UnpackError`. |
 | **`extracted_repair`** | Runs `repair`'s per-set verify/repair, with `repair`'s configuration, on the sets in `DeferredPar2Sets`, against the files unpack extracted. | Does nothing when `DeferredPar2Sets` is empty; skipped if `ParError` or `UnpackError` is set. | Sets `ParError` when a deferred set cannot be verified or repaired, or is gone; otherwise sets `DeferredPar2Verified`. |
-| **`sample_cleanup`** | Deletes sample video and proof files matching `(?i)(^|[\W_])(sample|proof)`. Includes a false-positive guard where all files match the pattern. | Skipped if disabled in config or if every file in the directory matches the sample pattern. | Unlinks sample files from `OwnedFiles`. |
-| **`recover_par2_names`** | Restores original filenames by scanning `.par2` files on disk for 16KB MD5 hashes via `deobfuscate.Par2Rename`. | Runs unconditionally after unpack. | Renames files in `DownloadDir` & `OwnedFiles`. |
+| **`sample_cleanup`** | Deletes sample video and proof files matching `(?i)(^|[\W_])(sample|proof)`. Includes a false-positive guard where all files match the pattern. | Skipped if disabled in config or if every file in the directory matches the sample pattern. | Unlinks sample files from `DownloadDir`. |
+| **`recover_par2_names`** | Restores original filenames by scanning `.par2` files on disk for 16KB MD5 hashes via `deobfuscate.Par2Rename`. | Runs unconditionally after unpack. | Renames files in `DownloadDir`. |
 | **`par2_cleanup`** | Deletes `.par2` files and orphaned `.1`, `.2`, etc. backup files created during `par2 repair` after repair, unpack, and rename stages have finished. | Skipped if `ParError` or `UnpackError` set (preserves par2 files for manual repair), or if `DeferredPar2Sets` is non-empty and `DeferredPar2Verified` is false (a deferred set protects extracted files par2 has not checked). | Unlinks `.par2` and `.1`/`.2` backup files. |
-| **`deobfuscate`** | Detects obfuscated file names and restores clean titles from job metadata. Also performs subtitle alignment (`.srt` renamed to match dominant video). | Skipped if disabled in config. | Renames files and subtitles in `DownloadDir` & `OwnedFiles`. |
-| **`unwanted_cleanup`** | Deletes every file under `DownloadDir` (not only `OwnedFiles`; see Core Pipeline Invariant 4) whose extension the unwanted-extension rules (`downloads.unwanted_extensions`, `_mode`, `action_on_unwanted_extensions`) exclude, judged by final name, so it catches what the NZB-filename check at ingest and the in-download archive peek cannot see: archive members, obfuscated subjects, files par2 repair rebuilt or renamed (absent from `OwnedFiles`), and files renamed by `recover_par2_names` or `deobfuscate`. Reads the live settings on every run. Removes empty subdirectories after deleting at least one file. Runs at every PP level, unlike SABnzbd, which removes only after its unpack. | Skipped if the action is `off`, the job is approved (`Unwanted == StateApproved`: the user resumed it or retried it anyway), or `ParError`, `UnpackError` or `FailMsg` is set (a failed job keeps its files for retry). Settings that cannot be read, a directory that cannot be read, or a file that cannot be removed fail the job (`FailMsg`) rather than deliver unchecked files. | Deletes matching files from disk and from `OwnedFiles`. |
-| **`extension_cleanup`** | Deletes unwanted file extensions (`.sfv`, `.nfo`, etc.) based on user config. Explicitly protects `.nzb` files (`SkipNZB = true`) and files in `ConsumedFiles`. Removes newly empty subdirectories. | Skipped if cleanup list empty. | Unlinks matching extensions from `OwnedFiles`. |
+| **`deobfuscate`** | Detects obfuscated file names and restores clean titles from job metadata. Also performs subtitle alignment (`.srt` renamed to match dominant video). | Skipped if disabled in config. | Renames files and subtitles in `DownloadDir`. |
+| **`unwanted_cleanup`** | Deletes every file under `DownloadDir` whose extension the unwanted-extension rules (`downloads.unwanted_extensions`, `_mode`, `action_on_unwanted_extensions`) exclude, judged by final name, so it catches what the NZB-filename check at ingest and the in-download archive peek cannot see: archive members, obfuscated subjects, files par2 repair rebuilt or renamed, and files renamed by `recover_par2_names` or `deobfuscate`. Reads the live settings on every run. Removes empty subdirectories after deleting at least one file. Runs at every PP level, unlike SABnzbd, which removes only after its unpack. | Skipped if the action is `off`, the job is approved (`Unwanted == StateApproved`: the user resumed it or retried it anyway), or `ParError`, `UnpackError` or `FailMsg` is set (a failed job keeps its files for retry). Settings that cannot be read, a directory that cannot be read, or a file that cannot be removed fail the job (`FailMsg`) rather than deliver unchecked files. | Deletes matching files from disk. |
+| **`extension_cleanup`** | Deletes unwanted file extensions (`.sfv`, `.nfo`, etc.) based on user config. Explicitly protects `.nzb` files (`SkipNZB = true`) and files in `ConsumedFiles`. Removes newly empty subdirectories. | Skipped if cleanup list empty. | Unlinks matching extensions from `DownloadDir`. |
 | **`finalize`** | Moves processed files from `DownloadDir` to `FinalDir` (`CompleteDir/job_name`). When `job.ParError || job.UnpackError || job.FailMsg != ""`, skips moving to `FinalDir` and instead prepends `_FAILED_` to `DownloadDir` in place (when `folder_rename: true`), leaving files in incomplete download area for retry; `RetryHistoryJob` moves it back first (see Failure & Degradation Rules). | Always runs unless pre-check aborted job. | Populates `FinalDir` or renames `DownloadDir` with `_FAILED_` prefix; sets status to `StatusMoving`. |
 | **`script`** | Executes user-defined post-processing script with full environment (`SAB_*` vars, including Go-specific `SAB_FINAL_PROCESSING_DIR`) and 8 positional args ($1–$8). Supports `RedactSecrets` (`SAB_API_KEY`/`SAB_PASSWORD` masked as `**REDACTED**`) and `ScriptCanFail` (non-zero exit logged as warning instead of error). | Skipped if no script configured for job/category. | Captures script exit code and stdout/stderr log (capped at 512 KiB). |
 
@@ -273,8 +274,7 @@ or modify its behavior:
 > The two responsibilities in the row above are the ones that make it
 > permanent, and neither is a verification decision:
 > `par2.ApplyRenames` has exactly one caller in the tree
-> (`stage_quickcheck.go:101`), paired with `markRenamed` so relocation does not
-> strand a file's old path in `OwnedFiles`; and `QuickCheckClean` is the only
+> (`stage_quickcheck.go:100`); and `QuickCheckClean` is the only
 > verdict that lets `repair` skip spawning par2 on a set it has checked
 > (`stage_repair.go:110`). The
 > download path cannot host either — it *"decides; it never renames"*
@@ -513,15 +513,12 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    guard in `recordVerdict` for a job whose manifest describes no files. With
    the default inverted, a future early return fails safe by construction
    rather than by review catching it.
-4. **`OwnedFiles` isolation (#3462)**: `processJob` snapshots `OwnedFiles` from
-   `DownloadDir` before any stage runs. Unpack and rename stages register newly
-   created files into `OwnedFiles`. The cleanup stages `extension_cleanup`
-   and `sample_cleanup` MUST ONLY delete files present in `OwnedFiles`,
-   guaranteeing unrelated files in shared directories are never deleted.
-   `unwanted_cleanup` is the exception, and deliberately: it is a security
-   check on what `finalize` delivers, and `finalize` moves everything under
-   `DownloadDir`, including files par2 repair rebuilt or renamed, which repair
-   does not record in `OwnedFiles`. It judges every file under `DownloadDir`.
+4. **Per-job `DownloadDir` isolation**: Every cleanup stage (`sample_cleanup`,
+   `extension_cleanup`, `unwanted_cleanup`) operates directly on the files under
+   `DownloadDir`, which is exclusive to the job for its entire lifetime.
+   `unwanted_cleanup` is the security check on what `finalize` delivers, and
+   `finalize` moves everything under `DownloadDir`, including files par2 repair
+   rebuilt or renamed. It judges every file under `DownloadDir`.
    It is also the backstop for the archive peek (`app.peekArchiveForUnwanted`),
    which blocks a job early, while it downloads, from the member names in RAR5
    volume headers and the names a par2 file declares. The peek is an
@@ -799,7 +796,7 @@ recorded entirely through the fetch-policy discard, not through this field.
 - `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`/`Unidentified`) bypass logic & DirectUnpack zero-failure verification bypass.
 - Per-set deferral of Layout B par2 sets (`DeferredPar2Sets`) and their par2 verify+repair after unpack (`extracted_repair`).
 - A par2 failure with recovery volumes held back retries the job once with them released (`jobFinalizer.retryWithHeldVolumes`, #651).
-- `OwnedFiles` snapshotting and cleanup isolation (#3462) with in-place rename tracking (`markRenamed`).
+- Per-job `DownloadDir` isolation across cleanup stages (`Dispatcher.nameHolderLocked`, `ReserveName`).
 - Python-compatible 8-arg positional and `SAB_*` environment contract for user scripts with 512 KiB log caps, `RedactSecrets`, and `ScriptCanFail` runtime toggleability.
 - Native Go engine dispatch (`go_par2`, `go_rar`, `go_7z`, `go_tar`, `filejoin`) with external CLI fallbacks.
 - Synthetic `download`, `direct unpack`, and `summary` StageLog cards for history UI rendering.

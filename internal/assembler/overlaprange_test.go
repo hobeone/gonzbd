@@ -19,9 +19,8 @@ import (
 func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 	t.Skip("#387: FileWriter detects collisions by exact start offset only, so THIS " +
 		"layer does not see the overlap and the bytes are overwritten. The durability " +
-		"layer now detects it afterwards, by comparing the recorded runs' summed " +
-		"lengths against the file's size, and reports it as a " +
-		"post anomaly — but that is detection after the write, and what this pins is " +
+		"layer withholds the whole-file CRC because the overlapping runs do not merge " +
+		"into a single row, so par2 runs — but what this pins is " +
 		"that the write happens at all. Kept executable rather than deleted: #387 " +
 		"records that its original probe was thrown away and had to be rebuilt. Remove " +
 		"this Skip when prevention lands; it must fail before it passes.")
@@ -30,13 +29,9 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 	a := newHelperAssembler()
 
 	var rejected []int32
-	var anomalies []string
 	var unwritten []int32
 	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
 		rejected = append(rejected, artIdx)
-	}
-	a.opts.OnPostAnomaly = func(_ string, _ int, reason string) {
-		anomalies = append(anomalies, reason)
 	}
 	a.opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
 		unwritten = append(unwritten, artIdxs...)
@@ -74,12 +69,12 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 	if !bytes.Equal(overlap, bytes.Repeat([]byte("A"), 500)) {
 		t.Errorf("A's durable range [500,1000) holds %q, want all 'A' — B overwrote "+
 			"part of an article that was already written, and nothing detected it "+
-			"(rejected=%v anomalies=%d unwritten=%v)",
-			string(overlap[:min(16, len(overlap))]), rejected, len(anomalies), unwritten)
+			"(rejected=%v unwritten=%v)",
+			string(overlap[:min(16, len(overlap))]), rejected, unwritten)
 	}
 
-	if len(rejected) == 0 && len(anomalies) == 0 {
-		t.Errorf("no article was rejected and no post anomaly was raised, but two "+
+	if len(rejected) == 0 {
+		t.Errorf("no article was rejected, but two "+
 			"articles claimed overlapping ranges [0,1000) and [500,1500) — the "+
 			"overlap went entirely undetected (file len=%d)", len(got))
 	}
@@ -98,21 +93,16 @@ func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 		"barrier publish a whole-file CRC. That half is fixed — the overlapping article " +
 		"abuts nothing, so it gets a durable_runs row of its own, and a whole-file CRC " +
 		"is published only for a file that holds exactly ONE row starting at offset 0, " +
-		"so par2 runs — and the " +
-		"barrier now also reports the overlap, so it is no longer silent. What remains " +
+		"so par2 runs. What remains " +
 		"unfixed, and what this pins, is that the bytes are overwritten in the first place.")
 
 	dir := t.TempDir()
 	a := newHelperAssembler()
 
 	var rejected []int32
-	var anomalies []string
 	var completed int
 	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
 		rejected = append(rejected, artIdx)
-	}
-	a.opts.OnPostAnomaly = func(_ string, _ int, reason string) {
-		anomalies = append(anomalies, reason)
 	}
 	a.opts.OnFileComplete = func(_ string, _ int) {
 		completed++
@@ -143,15 +133,15 @@ func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 
 	if !bytes.Equal(got[150:200], bytes.Repeat([]byte("B"), 50)) {
 		t.Errorf("A1's durable range [150,200) holds %q, want all 'B' — X overwrote "+
-			"it undetected (rejected=%v anomalies=%d parts=%d completed=%d filelen=%d)",
-			string(got[150:200]), rejected, len(anomalies), f.w.parts(), completed, len(got))
+			"it undetected (rejected=%v parts=%d completed=%d filelen=%d)",
+			string(got[150:200]), rejected, f.w.parts(), completed, len(got))
 	}
-	if f.w.parts() >= f.info.TotalParts && len(rejected) == 0 && len(anomalies) == 0 {
-		t.Errorf("the file reached parts=%d/%d with nothing rejected and no anomaly, "+
+	if f.w.parts() >= f.info.TotalParts && len(rejected) == 0 {
+		t.Errorf("the file reached parts=%d/%d with nothing rejected, "+
 			"so the ASSEMBLER finalizes it as healthy over a range that was overwritten. "+
-			"The downstream consequences are fixed elsewhere — the barrier withholds the "+
-			"whole-file CRC for this shape so par2 runs, and reports the overlap so the "+
-			"user is told — but neither undoes the overwrite, which is what this pins",
+			"The downstream consequence is fixed elsewhere — the barrier withholds the "+
+			"whole-file CRC for this shape so par2 runs — "+
+			"but that does not undo the overwrite, which is what this pins",
 			f.w.parts(), f.info.TotalParts)
 	}
 }
