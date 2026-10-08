@@ -79,9 +79,8 @@ func TestMergeAdjacentRuns(t *testing.T) {
 // to satisfy the primary key (job_id, file_idx, offset), and two rows at
 // different offsets do not contend for one key.
 //
-// What the surviving pair buys is the evidence: Σ length then exceeds the
-// file's size, and the file keeps two rows so §3.5 withholds the whole-file
-// CRC. Dropping the entry would make Σ length equal the size and return the
+// What the surviving pair buys is the evidence: the file keeps two rows so
+// §3.5 withholds the whole-file CRC. Dropping the entry would return the
 // article to Outstanding to be re-fetched and collide again.
 func TestMergeAdjacentRuns_KeepsAnInteriorOverlapAsItsOwnRow(t *testing.T) {
 	t.Parallel()

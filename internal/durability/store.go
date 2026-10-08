@@ -257,8 +257,7 @@ func coveredByAny(stored []Run, artIdx int32) bool {
 // the first case and on the row count in the second.
 //
 // Dropping the duplicate deterministically keeps mergeAdjacentRuns a pure function;
-// the returned Collisions record the dropped rivals, but are currently discarded
-// by the barrier since PostAnomaly reporting was removed.
+// the returned Collisions record the dropped rivals; Barrier.commit logs each one.
 //
 // The trap this exists to avoid: crc32util.Combine(a, b, lenB) requires lenB
 // to be the WHOLE length of the run being folded in, not one article's

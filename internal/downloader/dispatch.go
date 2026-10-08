@@ -1058,10 +1058,9 @@ func decodePayload(body []byte, requestedPartNumber int) (decodedPayload, error)
 		// (internal/nzb/parser.go rejects s.Number <= 0 at parse time), so
 		// > 1 unambiguously means "not the first segment" — assertion E5 of
 		// docs/article-validation-contract.md rejects this decode rather
-		// than letting it claim segment 1's offset. article.PartNumber
-		// (from a bare =ybegin part=, with no =ypart) does not save it:
-		// that field is server-declared and unvalidated, not derived from
-		// requestedPartNumber.
+		// than letting it claim segment 1's offset. A bare =ybegin part=
+		// (with no =ypart) does not save it: that header declares an
+		// ordinal, not a byte position.
 		if !article.HasOffset && requestedPartNumber > 1 {
 			if article.Data != nil {
 				decoder.PutBuffer(article.Data)
