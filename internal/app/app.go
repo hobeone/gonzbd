@@ -490,8 +490,8 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	)
 	app.runner.report = app.dispatcher
 
-	// Probe sparse file support on the download directory. Pre-allocation
-	// uses fallocate/ftruncate which benefits from sparse-capable filesystems.
+	// Probe sparse file support on the download directory. Out-of-order
+	// WriteAt calls rely on sparse-capable filesystems.
 	if supported, msg := assembler.CheckSparseSupport(dlDir); !supported {
 		log.Warn(msg)
 	} else {

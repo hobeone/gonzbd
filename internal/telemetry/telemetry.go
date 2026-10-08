@@ -111,7 +111,7 @@ var (
 	// written, fsync'd, and closed).
 	FilesCompleted = expvar.NewInt("assembler_files_completed")
 
-	// PreallocCalls counts file pre-allocation calls (fallocate/ftruncate).
+	// PreallocCalls counts file pre-allocation calls (fallocate on Linux).
 	PreallocCalls = expvar.NewInt("assembler_prealloc_calls")
 )
 

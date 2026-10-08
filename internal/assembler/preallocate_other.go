@@ -4,14 +4,9 @@ package assembler
 
 import "os"
 
-// preallocateFile pre-allocates size bytes for f using ftruncate.
-// This creates a sparse file on filesystems that support it (NTFS,
-// APFS, HFS+, ext4, xfs, btrfs). On filesystems without sparse
-// support, this may allocate real blocks — acceptable because the
-// file will be filled anyway. Never shrinks an already-larger file.
-func preallocateFile(f *os.File, size int64) error {
-	if size <= 0 {
-		return nil // nothing to pre-allocate
-	}
-	return growFile(f, size)
+// preallocateFile is a no-op on non-Linux platforms, which have no portable
+// fallocate(2) equivalent that reserves physical extents without extending
+// i_size via ftruncate.
+func preallocateFile(_ *os.File, _ int64) error { //nocover: non-Linux stub, not compiled on Linux CI
+	return nil
 }

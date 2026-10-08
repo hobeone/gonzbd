@@ -1563,33 +1563,38 @@ It is platform-specific:
 
 | Platform | Mechanism | Failure behaviour |
 |---|---|---|
-| **Linux** | `fallocate(2)` — reserves contiguous extents without zeroing | falls back to `ftruncate` (sparse file) on `ENOTSUP`/`EOPNOTSUPP` (NFS, tmpfs, older FUSE) |
-| **Non-Linux** | `ftruncate` — sparse on APFS, HFS+, ext4, xfs, btrfs | may allocate real blocks on a non-sparse filesystem; acceptable, since the file will be filled |
+| **Linux** | `fallocate(2)` — reserves contiguous extents without zeroing | skips pre-allocation on `ENOTSUP`/`EOPNOTSUPP` (NFS before v4.2 or without server `ALLOCATE` support, older FUSE) |
+| **Non-Linux** | no-op | `WriteAt` at arbitrary offsets creates sparse holes on first write |
+
+Calling `ftruncate` when `fallocate(2)` is unsupported reserves no physical
+extents on sparse filesystems and adds a `Stat`+`Truncate` metadata round-trip
+before the first write; `WriteAt` at an arbitrary offset already creates sparse
+holes directly.
 
 It uses `FileInfo.ExpectedSize`, the NZB's declared **encoded** byte count, which
-runs ~2% above the file's decoded size. That difference is exactly why a completed
-file must be trimmed: left in place it is trailing zeros, which par2 reports as
-damage on a download that was perfectly healthy. The trim bound comes from the
-durable runs (§4), never from a high-water mark the assembler maintained — there
-is no longer any such figure, and `openFile` records no resume state at all.
+runs ~2% above the file's decoded size. That difference is why a completed file
+on a `fallocate`-capable filesystem must be trimmed: left in place it is trailing
+zeros, which par2 reports as damage on a download that was perfectly healthy. The
+trim bound comes from the durable runs (§4), never from a high-water mark the
+assembler maintained — there is no longer any such figure, and `openFile` records
+no resume state at all.
 
 Every first open in an open episode calls `preallocateFile` again, including a
 reopen of an existing partial (the handle is `O_WRONLY|O_CREATE`, never
 `O_TRUNC`), and a file can legitimately already be larger than `ExpectedSize` —
 `offsetOutOfRange`'s slack allows a decoded write up to
-`1 + 1/offsetSlackDivisor` of it. The `ftruncate` path (both the Linux fallback
-and the only mechanism on other platforms) therefore never shrinks a file that
-is already at least `size` bytes; `growFile` (`preallocate.go`) is the shared
-grow-only guard both call. This is the opposite direction from `FileWriter.Truncate`'s
-S6 (§4), which only ever shrinks — pre-allocation reserves space ahead of
-writes, the completion trim removes the encoded/decoded slack once writing is
-done, and neither may perform the other's mutation.
+`1 + 1/offsetSlackDivisor` of it. `fallocate(2)` with `mode=0` is grow-only in
+the kernel and never shrinks a file that is already at least `size` bytes. This
+is the opposite direction from `FileWriter.Truncate`'s S6 (§4), which only ever
+shrinks — pre-allocation reserves space ahead of writes, the completion trim
+removes the encoded/decoded slack once writing is done, and neither may perform
+the other's mutation.
 
 `SupportsSparse()` (`sparse.go`) probes whether the target filesystem supports
 sparse files by creating a temporary file, truncating it to 1 MiB and checking
 `st_blocks * 512 < apparent_size`. It is an **informational probe** used at
 startup for logging; it does not gate pre-allocation. The assembler always
-attempts `fallocate`/`ftruncate` regardless of the result.
+attempts `fallocate` on Linux regardless of the result.
 
 ## Write coalescing cache
 

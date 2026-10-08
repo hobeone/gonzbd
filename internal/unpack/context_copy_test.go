@@ -101,9 +101,21 @@ func TestContextCopy_ZeroRead(t *testing.T) {
 	}
 }
 
+type chunkedReader struct {
+	r         io.Reader
+	chunkSize int
+}
+
+func (c *chunkedReader) Read(p []byte) (int, error) {
+	if len(p) > c.chunkSize {
+		p = p[:c.chunkSize]
+	}
+	return c.r.Read(p)
+}
+
 func TestContextCopy_PeriodicCancellationCheck(t *testing.T) {
 	data := make([]byte, 512*1024)
-	src := bytes.NewReader(data)
+	src := &chunkedReader{r: bytes.NewReader(data), chunkSize: 32 * 1024}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -119,6 +131,26 @@ func TestContextCopy_PeriodicCancellationCheck(t *testing.T) {
 	// If it never checked, it would write all 512 KiB.
 	if n != 256*1024 {
 		t.Errorf("expected to write exactly 262144 bytes, wrote %d", n)
+	}
+}
+
+type bufSizeSpyReader struct {
+	seenCap int
+}
+
+func (r *bufSizeSpyReader) Read(p []byte) (int, error) {
+	r.seenCap = len(p)
+	return 0, io.EOF
+}
+
+func TestContextCopy_UsesPooledBuffer(t *testing.T) {
+	spy := &bufSizeSpyReader{}
+	_, err := contextCopy(context.Background(), io.Discard, spy)
+	if err != nil {
+		t.Fatalf("contextCopy error: %v", err)
+	}
+	if spy.seenCap != contextCopyBufSize {
+		t.Errorf("contextCopy read buffer length = %d, want %d (contextCopyBufSize)", spy.seenCap, contextCopyBufSize)
 	}
 }
 
