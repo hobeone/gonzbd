@@ -49,7 +49,6 @@ downloads:
   checkpoint_bytes: 64M
   top_only: false
   no_penalties: false
-  pre_check: false
   propagation_delay: 0
   # Extensions a job must not deliver; see gonzbd.yaml.example.
   unwanted_extensions: [exe, com, scr, pif, bat, cmd, msi, vbs]

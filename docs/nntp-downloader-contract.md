@@ -291,9 +291,10 @@ of their failure ratio.
 Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
 (`Conn.sem`) of capacity `max(1, ServerConfig.PipeliningRequests)`.
 
-- **Command submission**: `Fetch`/`Stat` acquire a semaphore slot, append a
-  `pendingCmd` to a FIFO queue, and write the NNTP command to the wire under
-  `sendLock`. The FIFO order matches the wire order exactly.
+- **Command submission**: `Fetch` (and the test/e2e-only `Stat` peer method)
+  acquires a semaphore slot, appends a `pendingCmd` to a FIFO queue, and writes
+  the NNTP command to the wire under `sendLock`. The FIFO order matches the
+  wire order exactly.
 - **Response consumption**: A single `runReader` goroutine pops the FIFO head,
   reads the response (including dot-stuffed body for BODY commands), fills the
   result, and closes the `pendingCmd.done` channel. It then releases the
@@ -308,8 +309,8 @@ Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
   ID is located by its angle brackets rather than by field position.
 
   `cmdKind.successResponse` is the sole owner of that code table:
-  `runReader` publishes its verdict as `cmdResult.success`, and `Fetch`/`Stat`
-  branch on that rather than re-comparing 222/223 themselves.
+  `runReader` publishes its verdict as `cmdResult.success`, and `Fetch` (and
+  `Stat`) branch on that rather than re-comparing 222/223 themselves.
 
   This covers only responses that carry an identity. An error response
   (`430`/`423`) names no article, so it still pairs by FIFO alone; a desync
@@ -362,17 +363,6 @@ downstream action:
 | **Decode Error (non-CRC)** | Cleared (`clearTried`) | None | `Job.MarkArticleEmitted` (terminal), emits failed `ArticleResult`. Includes DMCA/takedown (`ErrArticleRemoved`). |
 | **Max Tries Exceeded (`maxArtTries`)** | — | None | Emits `ErrNoServersLeft`. |
 | **All Eligible Servers Exhausted** | — | None | Emits `ErrNoServersLeft` after queue lock release (via `applyDispatchPlan`). |
-
-### Pre-check probing (`PreCheck`)
-
-When `Options.PreCheck` is enabled, `fetchArticle` sends an initial `STAT <msgid>`
-command (`c.Stat`) before issuing `BODY`.
-- If `STAT` returns `ErrNoArticle` (430/423), the server is confirmed not to have
-  the article without spending bandwidth transferring a body. `RecordGoodConnection`
-  is called and a retryable `ArticleResult` is emitted immediately.
-- If `STAT` fails with any connection-level or socket error, execution falls
-  through to the standard `c.Fetch` call so standard dial/connection error and
-  penalty logic apply uniformly.
 
 ### DMCA / takedown handling
 
@@ -495,7 +485,6 @@ a server that intermittently succeeds will never trigger auto-deactivation.
 - Optional server auto-deactivation via `shouldDeactivateOptional`.
 - Per-connection goroutine bounding via local semaphore.
 - Emitted-is-transient durability contract, now derived from the durability design's S3 rather than standing alone.
-- `PreCheck` STAT probe support before BODY fetch.
 - The Tracker keyed on the job instance, so a removed instance's late
   completion leaves a retry's in-flight count and try-list alone (#665).
 - `CancelJob` reaps the entries of every instance no longer registered under

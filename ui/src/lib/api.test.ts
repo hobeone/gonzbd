@@ -204,7 +204,7 @@ describe('API Wrappers', () => {
 
 		it('converts boolean value to string', async () => {
 			mockOk({ status: true });
-			await setConfig('downloads', 'pre_check', true);
+			await setConfig('downloads', 'top_only', true);
 
 			const body = mockFetch.mock.calls[0][1].body as FormData;
 			expect(body.get('value')).toBe('true');

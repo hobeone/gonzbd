@@ -181,10 +181,6 @@ type Options struct {
 	// unlimited (no clamp) if NoPenalties is false.
 	MaxPenalty time.Duration
 
-	// PreCheck sends a STAT command before BODY to verify article
-	// existence on the server, avoiding wasted bandwidth on 430s.
-	PreCheck bool
-
 	// PropagationDelay is the minimum age a job must have before its
 	// articles are dispatched. Zero means no delay.
 	PropagationDelay time.Duration

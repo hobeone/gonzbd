@@ -213,11 +213,6 @@ downloads:
   # constant. Useful for testing/debugging only.
   no_penalties: false
 
-  # Issue NNTP STAT before BODY to verify article existence. Trades
-  # latency for fewer wasted bytes on missing articles. Useful when
-  # using multiple servers with different retention windows.
-  pre_check: false
-
   # Minutes to wait after a job is added before downloading begins.
   # Allows articles to propagate to backup/fill servers. 0 disables.
   propagation_delay: 0

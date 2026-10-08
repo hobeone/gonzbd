@@ -261,6 +261,27 @@ func TestDecode_ServerPortExplicitNotOverridden(t *testing.T) {
 	}
 }
 
+func TestDecode_UnknownFieldStillNormalizes(t *testing.T) {
+	t.Parallel()
+	yaml := withServersYAML(t, "servers:\n  - name: plain\n    host: news.example.com\n    connections: 1\n  - name: tls\n    host: ssl.example.com\n    connections: 1\n    ssl: true\n") + "\nunknown_legacy_key: true\n"
+	cfg, unknowns, err := decode(strings.NewReader(yaml))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(unknowns) != 1 {
+		t.Fatalf("unknowns = %v, want 1 entry", unknowns)
+	}
+	if len(cfg.Servers) != 2 {
+		t.Fatalf("got %d servers, want 2", len(cfg.Servers))
+	}
+	if cfg.Servers[0].Port != 119 {
+		t.Errorf("Servers[0].Port = %d, want 119", cfg.Servers[0].Port)
+	}
+	if cfg.Servers[1].Port != 563 {
+		t.Errorf("Servers[1].Port = %d, want 563", cfg.Servers[1].Port)
+	}
+}
+
 // ---------- helper ----------
 
 // minimalYAML returns a YAML string that passes Validate() and is suitable

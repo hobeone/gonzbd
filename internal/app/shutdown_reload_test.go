@@ -57,7 +57,6 @@ func TestBuildDownloaderOptions_FieldMapping(t *testing.T) {
 		c.Downloads.MaxArtOpt = 3
 		c.Downloads.TopOnly = true
 		c.Downloads.NoPenalties = true
-		c.Downloads.PreCheck = true
 		c.Downloads.PropagationDelay = 10 // minutes
 	})
 
@@ -78,9 +77,6 @@ func TestBuildDownloaderOptions_FieldMapping(t *testing.T) {
 	}
 	if !opts.NoPenalties {
 		t.Error("NoPenalties = false, want true")
-	}
-	if !opts.PreCheck {
-		t.Error("PreCheck = false, want true")
 	}
 	if opts.PropagationDelay != 10*time.Minute {
 		t.Errorf("PropagationDelay = %v, want 10m", opts.PropagationDelay)
@@ -108,9 +104,6 @@ func TestBuildDownloaderOptions_Defaults(t *testing.T) {
 	}
 	if opts.NoPenalties {
 		t.Error("NoPenalties should be false by default")
-	}
-	if opts.PreCheck {
-		t.Error("PreCheck should be false by default")
 	}
 	if opts.PropagationDelay != 0 {
 		t.Errorf("PropagationDelay = %v, want 0", opts.PropagationDelay)

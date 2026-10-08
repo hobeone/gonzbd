@@ -63,7 +63,7 @@ func PenaltyFor(err error) time.Duration {
 }
 
 // classifyConnError maps a connection-level failure (a dial error, or a
-// Fetch/Stat error other than the 430/ErrNoArticle case already handled
+// Fetch error other than the 430/ErrNoArticle case already handled
 // elsewhere) to a telemetry.PipelineErrors class label. Its sentinel set
 // overlaps heavily with PenaltyFor's — both classify the same underlying
 // errors — but is not identical: PenaltyFor exists to pick a penalty

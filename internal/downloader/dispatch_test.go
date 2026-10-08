@@ -1125,7 +1125,7 @@ func TestFetchArticle_PausedJobEvictedMidFlight(t *testing.T) {
 	}
 }
 
-// ---------- OPT-3: no_penalties / max_art_opt / pre_check ----------
+// ---------- OPT-3: no_penalties / max_art_opt ----------
 
 // clampPenalty in isolation, bracketing constants.PenaltyShort on both
 // sides so the boundary comparison (pen > constants.PenaltyShort) is
@@ -1321,102 +1321,9 @@ func TestIsServerCandidate(t *testing.T) {
 	}
 }
 
-// PreCheck issues an NNTP STAT before BODY. When the server reports the
-// article missing via STAT, Fetch (BODY) must never be called — the
-// same not-found path taken on a Fetch-time ErrNoArticle is followed
-// instead (RecordGoodConnection + emitResult wrapping ErrNoArticle).
-func TestFetchArticle_PreCheckSkipsFetchOnMissingArticle(t *testing.T) {
-	t.Parallel()
-
-	ms := newMockNNTP(t)
-	// Deliberately do not add "missing@h" to ms.bodies, so STAT reports
-	// 430 (no such article). If Fetch (BODY) were called anyway, the
-	// mock's rejections counter would increment.
-
-	srv := testServer(t, "s", ms.addr)
-	d := &Downloader{
-		dispatcher:  newTestDispatcher(t),
-		tracker:     newDispatchTracker(),
-		log:         slog.New(slog.DiscardHandler),
-		opts:        Options{PreCheck: true},
-		completions: make(chan *ArticleResult, 1),
-		limiter:     bpsmeter.NewLimiter(0),
-	}
-	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
-	defer d.pauseCancel()
-
-	j, m := makeJobWithArticles(t, []string{"missing@h"})
-	addTestJob(t, d.dispatcher, j, m)
-
-	req := &articleRequest{job: j, messageID: "missing@h"}
-	mc := &managedConn{}
-	defer mc.Close(d, "worker1") // avoid leaving the conn open for the mock's idle-timeout to close (slows the test)
-	body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1")
-	if ok || body != nil {
-		t.Fatalf("expected fetchArticle to report not-found, got ok=%v body=%v", ok, body)
-	}
-
-	if ms.fetches.Load() != 0 || ms.rejections.Load() != 0 {
-		t.Errorf("BODY was called (fetches=%d rejections=%d), want 0 — PreCheck should have short-circuited via STAT",
-			ms.fetches.Load(), ms.rejections.Load())
-	}
-
-	select {
-	case res := <-d.completions:
-		if !errors.Is(res.Err, nntp.ErrNoArticle) {
-			t.Errorf("completion err = %v, want wrapping nntp.ErrNoArticle", res.Err)
-		}
-	default:
-		t.Error("expected a result on completions for the not-found article")
-	}
-
-	if srv.goodConnections() != 1 {
-		t.Errorf("goodConnections = %d, want 1 (STAT-based not-found is not a server fault)", srv.goodConnections())
-	}
-}
-
-// TestFetchArticle_PreCheckCountsNNTPNoArticle is a non-parallel sibling of
-// TestFetchArticle_PreCheckSkipsFetchOnMissingArticle asserting
-// telemetry.PipelineErrors classification. Kept separate (rather than
-// extending the t.Parallel() test above) because PipelineErrors is
-// process-global state that a concurrent parallel subtest could race on.
-func TestFetchArticle_PreCheckCountsNNTPNoArticle(t *testing.T) {
-	telemetry.Reset()
-	t.Cleanup(telemetry.Reset)
-
-	ms := newMockNNTP(t)
-
-	srv := testServer(t, "s", ms.addr)
-	d := &Downloader{
-		dispatcher:  newTestDispatcher(t),
-		tracker:     newDispatchTracker(),
-		log:         slog.New(slog.DiscardHandler),
-		opts:        Options{PreCheck: true},
-		completions: make(chan *ArticleResult, 1),
-		limiter:     bpsmeter.NewLimiter(0),
-	}
-	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
-	defer d.pauseCancel()
-
-	j, m := makeJobWithArticles(t, []string{"missing@h"})
-	addTestJob(t, d.dispatcher, j, m)
-
-	req := &articleRequest{job: j, messageID: "missing@h"}
-	mc := &managedConn{}
-	defer mc.Close(d, "worker1")
-	if body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1"); ok || body != nil {
-		t.Fatalf("expected fetchArticle to report not-found, got ok=%v body=%v", ok, body)
-	}
-
-	if got := telemetry.ErrorCount(telemetry.ErrClassNNTPNoArticle); got != 1 {
-		t.Errorf("PipelineErrors[nntp_no_article] = %d, want 1", got)
-	}
-}
-
-// TestFetchArticle_FetchCountsNNTPNoArticle covers the second nntp_no_article
-// classification call site — a 430 from BODY (not STAT) when PreCheck is
-// disabled, distinct from TestFetchArticle_PreCheckCountsNNTPNoArticle's
-// STAT-based precheck path. Non-parallel: PipelineErrors is process-global.
+// TestFetchArticle_FetchCountsNNTPNoArticle covers the nntp_no_article
+// classification call site — a 430 from BODY. Non-parallel: PipelineErrors is
+// process-global.
 func TestFetchArticle_FetchCountsNNTPNoArticle(t *testing.T) {
 	telemetry.Reset()
 	t.Cleanup(telemetry.Reset)
@@ -1440,10 +1347,17 @@ func TestFetchArticle_FetchCountsNNTPNoArticle(t *testing.T) {
 	req := &articleRequest{job: j, messageID: "missing@h"}
 	mc := &managedConn{}
 	defer mc.Close(d, "worker1")
+	srv.RecordBadConnection()
 	if body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1"); ok || body != nil {
 		t.Fatalf("expected fetchArticle to report not-found, got ok=%v body=%v", ok, body)
 	}
 
+	if got := srv.BadConnections(); got != 0 {
+		t.Errorf("srv.BadConnections() = %d, want 0 (430 is a healthy protocol response)", got)
+	}
+	if got := srv.goodConnections(); got != 1 {
+		t.Errorf("srv.goodConnections() = %d, want 1 (430 is not a server fault)", got)
+	}
 	if got := telemetry.ErrorCount(telemetry.ErrClassNNTPNoArticle); got != 1 {
 		t.Errorf("PipelineErrors[nntp_no_article] = %d, want 1", got)
 	}
@@ -1493,8 +1407,7 @@ func TestFetchArticle_DialFailureCountsConnError(t *testing.T) {
 // A connection-level failure during Fetch (mid-stream disconnect, distinct
 // from a clean 430 ErrNoArticle) must apply the clamped penalty via the
 // second clampPenalty call site in fetchArticle. Exercises the "fetch
-// failed" branch that TestDownloaderDialFailure and
-// TestFetchArticle_PreCheckSkipsFetchOnMissingArticle do not reach.
+// failed" branch that TestDownloaderDialFailure does not reach.
 func TestFetchArticle_FetchFailureAppliesClampedPenalty(t *testing.T) {
 	t.Parallel()
 
@@ -1542,8 +1455,8 @@ func TestFetchArticle_FetchFailureAppliesClampedPenalty(t *testing.T) {
 // TestFetchArticle_FetchFailureCountsConnError is a non-parallel sibling of
 // TestFetchArticle_FetchFailureAppliesClampedPenalty asserting
 // telemetry.PipelineErrors classification for a connection-level fetch
-// failure. Kept separate from the t.Parallel() test above for the same
-// process-global-state reason as TestFetchArticle_PreCheckCountsNNTPNoArticle.
+// failure. Kept separate from the t.Parallel() test above because
+// PipelineErrors is process-global state.
 func TestFetchArticle_FetchFailureCountsConnError(t *testing.T) {
 	telemetry.Reset()
 	t.Cleanup(telemetry.Reset)

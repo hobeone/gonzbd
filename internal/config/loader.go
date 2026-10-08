@@ -167,16 +167,17 @@ func decode(r io.Reader) (*Config, []string, error) {
 	// for path fields is handled post-parse by cfg.ExpandPaths().
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true) // collect unknown keys; partitioned below
+	var unknowns []string
 	if err := dec.Decode(cfg); err != nil {
 		if errors.Is(err, io.EOF) {
 			// Empty file — return defaults.
 			return cfg, nil, nil
 		}
-		unknowns, fatal := partitionYAMLErrors(err)
+		var fatal error
+		unknowns, fatal = partitionYAMLErrors(err)
 		if fatal != nil {
 			return nil, unknowns, wrapYAMLError(fatal, b)
 		}
-		return cfg, unknowns, nil
 	}
 
 	// Sticky defaults: if these fields are empty after decoding, it means
@@ -185,7 +186,7 @@ func decode(r io.Reader) (*Config, []string, error) {
 	// and system work correctly for existing users.
 	cfg.applyNormalization()
 
-	return cfg, nil, nil
+	return cfg, unknowns, nil
 }
 
 // Save writes the configuration to path atomically: the YAML is rendered

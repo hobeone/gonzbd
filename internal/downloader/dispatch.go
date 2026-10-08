@@ -709,23 +709,6 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 		return nil, false
 	}
 
-	if d.opts.PreCheck {
-		if statErr := c.Stat(fetchCtx, req.messageID); statErr != nil {
-			if errors.Is(statErr, nntp.ErrNoArticle) {
-				d.log.Debug("article not found (precheck)", "server", name, "msgid", req.messageID)
-				srv.RecordGoodConnection()
-				telemetry.PipelineErrors.Add(telemetry.ErrClassNNTPNoArticle, 1)
-				d.emitResult(ctx, req, name, nil, 0, 0, statErr)
-				return nil, false
-			}
-			// Any other Stat error (connection-level) is handled exactly
-			// like a Fetch failure below — fall through to the normal
-			// Fetch call so the existing dial/connection-error handling
-			// (penalty, bad-connection recording, re-dial) applies
-			// uniformly rather than being duplicated here.
-		}
-	}
-
 	body, err := c.Fetch(fetchCtx, req.messageID)
 	if err != nil {
 		if errors.Is(err, nntp.ErrNoArticle) {
@@ -862,9 +845,8 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		// nothing.
 		//
 		// Unconditional because it is a no-op where no bit was set:
-		// fetchArticle's two ErrNoArticle paths (the PreCheck STAT and the
-		// BODY fetch) and processFetchedArticle's CRC-mismatch path reach here
-		// without marking.
+		// fetchArticle's ErrNoArticle path and processFetchedArticle's
+		// CRC-mismatch path reach here without marking.
 		//
 		// On the request's own instance: a later instance under the same ID
 		// set its bit for a fetch of its own, whose result is still coming.
