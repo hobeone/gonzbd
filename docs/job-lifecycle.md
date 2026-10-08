@@ -466,10 +466,8 @@ Unifying them may still be worth doing; it is not owed.
 The `quickcheck` stage is **retained permanently**, for two responsibilities
 nothing else has:
 
-- **Subdirectory relocation.** It is the only caller of `par2.ApplyRenames`,
-  and pairs it with its own rename bookkeeping so a relocated file does not
-  leave its old path recorded as owned — where the ownership guards in the
-  cleanup stages would then skip it as unowned. Without this pass ahead of
+- **Subdirectory relocation.** It is the only caller of `par2.ApplyRenames`
+  so nested par2 paths are relocated before repair. Without this pass ahead of
   repair, a job whose par2 set names nested paths fails verification and
   extraction.
 - **The external-binary bypass.** A clean QuickCheck is what lets the repair

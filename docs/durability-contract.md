@@ -2143,7 +2143,7 @@ recorded here so the next reader does not mistake them for design.
 
    **The bound is that both outcomes are repairable.** Across the boundary
    `Store.commit` must discard one of the two rows and returns it as a
-   `durability.Collision` (§4). The whole-file CRC is withheld either way,
+   `durability.Collision` (see "Duplicate and late-article handling"). The whole-file CRC is withheld either way,
    because the record cannot cover the discarded article's index. So `par2`
    runs in both cases; what differs is a short file versus a wrong one, and a
    failed-byte figure that is correct versus one that omits the loser's bytes.

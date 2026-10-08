@@ -189,8 +189,8 @@ func (b *Barrier) Run(ctx context.Context, jobID string, t SyncTarget) error {
 	}
 	files = synced
 
-	// Phase 3 — collect what the fsync just made durable, after stat'ing each
-	// file.
+	// Phase 3 — collect what the fsync just made durable, probing each file
+	// with Stat to catch close races or surface storage faults naming the file.
 	//
 	// A file dropped by any phase leaves `files` there and then, and that is
 	// what makes the drop complete rather than partial. The slice is also what
@@ -497,10 +497,9 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 			}
 			return b.raise(jobID, "truncate", t.Path(idx), err)
 		}
-		// The truncate changed the file, so it is fsynced again before its
-		// size is read: the size is what §3.4's resume gate is stated
-		// against, and reading it from a file whose metadata is not yet on
-		// stable storage would leave a size the next restart does not see.
+		// The truncate changed the file, so it is fsynced before the post-truncate
+		// stat probe: reading metadata not yet on stable storage would leave a
+		// state the next restart does not see.
 		if err := t.Sync(ctx, idx); err != nil {
 			if errors.Is(err, ErrFileNotOpen) {
 				// Closed between this function's own Truncate and this Sync.
@@ -517,10 +516,11 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 			return b.raise(jobID, "sync", t.Path(idx), err)
 		}
 	}
-	// One stat, unconditionally — not nested inside `if bound > 0` above,
-	// and after any truncate so the check reflects the trim when one happened.
-	// R27: a fault here names the file, which is what makes the stall reason
-	// actionable.
+	// One stat, unconditionally — not nested inside `if bound > 0` above.
+	// The returned size is unused here; this Stat call serves as a liveness
+	// and storage fault probe. ErrFileNotOpen indicates a close that raced
+	// with finalize (returning nil cleanly), while any other error raises a
+	// storage fault naming the file (R27).
 	_, err = t.Stat(idx)
 	if errors.Is(err, ErrFileNotOpen) {
 		b.log.Debug("file closed before its finalize could stat it", "job", jobID, "file", idx)

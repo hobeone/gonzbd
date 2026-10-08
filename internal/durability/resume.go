@@ -97,8 +97,7 @@ func NewResumer(rs runStore, log *slog.Logger) *Resumer {
 // # What this gives up
 //
 // In-place corruption that preserves the file's length is no longer detected
-// at startup. par2 detects and repairs it at completion, which is the same
-// answer §3.3 gives for an overlap.
+// at startup. par2 detects and repairs it at completion.
 //
 // # The gate depends on WHERE the sweep runs, not only on what it compares
 //

@@ -39,9 +39,8 @@
 //     ranges. Resume returns the runs; the queue takes the complement.
 //   - Where the file ends — max(Offset+Length) over its runs, which is what
 //     FinalizeFile trims to (S6: the trim only ever shrinks).
-//   - Whether the file's bytes are in doubt — Σ Length greater than the
-//     file's size means articles wrote over each other (§3.3), and any file
-//     holding more than one row is refused a whole-file CRC (§3.5).
+//   - Whether the file's bytes are in doubt — any file holding more than one
+//     row is refused a whole-file CRC (§3.5).
 //
 // # One writer of content, and several deleters
 //

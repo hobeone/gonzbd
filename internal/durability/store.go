@@ -256,11 +256,9 @@ func coveredByAny(stored []Run, artIdx int32) bool {
 // first). §3.5 withholds the whole-file CRC either way, on article coverage in
 // the first case and on the row count in the second.
 //
-// Every drop that DOES happen is reported as a Collision, and this is the
-// only place in the program that can report one: once the duplicate is dropped,
-// the survivor is indistinguishable from a row that never had a rival. The
-// information exists here and nowhere else, so it leaves by return value rather
-// than being re-derived downstream.
+// Dropping the duplicate deterministically keeps mergeAdjacentRuns a pure function;
+// the returned Collisions record the dropped rivals, but are currently discarded
+// by the barrier since PostAnomaly reporting was removed.
 //
 // The trap this exists to avoid: crc32util.Combine(a, b, lenB) requires lenB
 // to be the WHOLE length of the run being folded in, not one article's

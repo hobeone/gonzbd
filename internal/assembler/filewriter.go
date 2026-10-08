@@ -793,8 +793,8 @@ func (w *FileWriter) Confirm() {
 }
 
 // Stat returns the file's size as it is now. It is S7's validity stamp — which
-// a resume checks the file against, and which the barrier compares Σ Length to
-// — so it must be read after the Sync it describes.
+// a resume checks the file against — so it must be read after the Sync it
+// describes.
 //
 // It used to return the modification time as the stamp's second half. See
 // durability.SyncTarget.Stat for why that half was deleted rather than left
