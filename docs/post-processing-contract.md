@@ -797,7 +797,7 @@ recorded entirely through the fetch-policy discard, not through this field.
 - Per-set deferral of Layout B par2 sets (`DeferredPar2Sets`) and their par2 verify+repair after unpack (`extracted_repair`).
 - A par2 failure with recovery volumes held back retries the job once with them released (`jobFinalizer.retryWithHeldVolumes`, #651).
 - Per-job `DownloadDir` isolation across cleanup stages (`Dispatcher.nameHolderLocked`, `ReserveName`).
-- Python-compatible 8-arg positional and `SAB_*` environment contract for user scripts with 512 KiB log caps, `RedactSecrets`, and `ScriptCanFail` runtime toggleability.
+- Python-compatible 8-arg positional and `SAB_*` environment contract for user scripts with 512 KiB log caps, `RedactSecrets`, and `ScriptCanFail` runtime toggleability (a non-zero script exit when `ScriptCanFail == false` sets `job.FailMsg`, pinned by `TestScriptStage_CanFailFalse_SetsFailMsg`).
 - Native Go engine dispatch (`go_par2`, `go_rar`, `go_7z`, `go_tar`, `filejoin`) with external CLI fallbacks.
 - Synthetic `download`, `direct unpack`, and `summary` StageLog cards for history UI rendering.
 
@@ -819,7 +819,3 @@ recorded entirely through the fetch-policy discard, not through this field.
   that computes the subset. Target: compute the block-covering subset from
   the repair stage's reported shortfall and release that rather than every
   held volume.
-- **`ScriptCanFail == false` Authoritative Failure (`internal/postproc`)**: When a
-  user script exits non-zero and `ScriptCanFail` is false, `ScriptStage.Run()` sets
-  `StageLogEntry.Err` but does not set `job.FailMsg`, so `buildSummaryEntry` records
-  `Status = "Completed"`. Fix: PR #275.

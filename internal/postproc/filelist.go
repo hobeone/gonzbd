@@ -167,9 +167,10 @@ func buildDownloadFileList(j *Job) []string {
 		// job.progress.DeferredRecoveryIndices() — every deferred index at
 		// once — so a real job's held volumes go from "all deferred" to
 		// "none deferred" in one step and heldVols is 0 by the time
-		// Par2Recovered() is true. (c) only becomes reachable once a caller
-		// un-defers a strict subset — e.g. a future block-exact selection
-		// seam on UndeferRecoveryVolumes' fileIdxs parameter.
+		// Par2Recovered() is true; even if a future block-exact caller
+		// un-defers a strict subset on UndeferRecoveryVolumes' fileIdxs
+		// parameter, the Par2Recovered() arm above intercepts it, so (c) no
+		// longer reaches this arm.
 		//
 		// (a) and (b) both leave the bytes never fetched, which is what
 		// this line reports.
