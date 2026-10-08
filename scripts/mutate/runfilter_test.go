@@ -8,12 +8,16 @@ import (
 )
 
 // captureStdout redirects os.Stdout and os.Stderr for the duration of fn via
-// captureOutput and returns what was written to os.Stdout. It is not safe to
-// run in parallel with anything else that writes to standard streams, since
-// the swap is global — callers must not mark their test t.Parallel().
+// captureOutput, logs any captured stderr via t.Log, and returns what was
+// written to os.Stdout. It is not safe to run in parallel with anything else
+// that writes to standard streams, since the swap is global — callers must not
+// mark their test t.Parallel().
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
-	out, _ := captureOutput(t, fn)
+	out, errOut := captureOutput(t, fn)
+	if errOut != "" {
+		t.Log(errOut)
+	}
 	return out
 }
 

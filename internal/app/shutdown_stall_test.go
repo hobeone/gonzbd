@@ -317,40 +317,68 @@ func TestSettleJobBytes_LosesNothingToAConcurrentWrite(t *testing.T) {
 
 func TestStopAndJoin_WaitsForWgBeforePostProcAndReportsTimeout(t *testing.T) {
 	t.Parallel()
-	application, _, _ := newLifecycleTestApp(t)
-	application.shutdownStepTimeout = 50 * time.Millisecond
-	ctx, cancel := context.WithCancel(context.Background())
-	application.ctx, application.cancel = ctx, cancel
-	t.Cleanup(cancel)
 
-	var wgFinished atomic.Bool
-	application.wg.Go(func() {
-		<-application.ctx.Done()
-		wgFinished.Store(true)
+	t.Run("waits for wg before stopping post-processor and prunes checkpointer", func(t *testing.T) {
+		t.Parallel()
+		application, j := newDurabilityTestApp(t, 1, 2)
+		application.shutdownStepTimeout = 2 * time.Second
+		ctx, cancel := context.WithCancel(context.Background())
+		application.ctx, application.cancel = ctx, cancel
+		t.Cleanup(cancel)
+
+		if err := seedJobFiles(t.Context(), application.durable, j.ID(), j.NumFiles(), j.FileFetchPolicy); err != nil {
+			t.Fatalf("seedJobFiles: %v", err)
+		}
+		application.handleArticleRejected(j.ID(), 0, 1, "negative offset")
+		application.wg.Go(func() { _ = application.checkpointer.Run(application.ctx) })
+
+		var wgFinished, wgDoneWhenPostProcStopped atomic.Bool
+		application.wg.Go(func() {
+			<-application.ctx.Done()
+			// Delay briefly after context cancellation so a reordered
+			// implementation that runs postProcessor.Stop before wg.Wait
+			// observes wgFinished == false deterministically.
+			time.Sleep(20 * time.Millisecond)
+			wgFinished.Store(true)
+		})
+
+		application.postProcStopHook = func() error {
+			wgDoneWhenPostProcStopped.Store(wgFinished.Load())
+			return nil
+		}
+
+		if err := application.stopAndJoin(); err != nil {
+			t.Fatalf("stopAndJoin unexpected error: %v", err)
+		}
+		if !wgDoneWhenPostProcStopped.Load() {
+			t.Error("post-processor stopped before context cancellation and wg.Wait finished (in joinAndStop)")
+		}
+
+		rows, err := application.residency.store.FailedArticles(t.Context(), j.ID())
+		if err != nil {
+			t.Fatalf("FailedArticles: %v", err)
+		}
+		if len(rows) != 0 {
+			t.Errorf("stopAndJoin flushed dirty checkpointer entry on crash: failed_articles = %v, want empty", rows)
+		}
 	})
 
-	var wgDoneWhenPostProcStopped bool
-	application.postProcStopHook = func() error {
-		wgDoneWhenPostProcStopped = wgFinished.Load()
-		return nil
-	}
+	t.Run("reports error when wg.Wait times out", func(t *testing.T) {
+		t.Parallel()
+		var zeroApp Application
+		if got := zeroApp.stepTimeout(); got != defaultShutdownStepTimeout {
+			t.Errorf("zeroApp.stepTimeout() = %v, want %v", got, defaultShutdownStepTimeout)
+		}
 
-	if err := application.stopAndJoin(); err != nil {
-		t.Fatalf("stopAndJoin unexpected error: %v", err)
-	}
-	if !wgDoneWhenPostProcStopped {
-		t.Error("post-processor stopped before context cancellation and wg.Wait finished")
-	}
-
-	// Verify stopAndJoin reports an error when wg.Wait exceeds shutdownStepTimeout.
-	appStuck, _, _ := newLifecycleTestApp(t)
-	appStuck.shutdownStepTimeout = 10 * time.Millisecond
-	unblock := make(chan struct{})
-	t.Cleanup(func() { close(unblock) })
-	appStuck.wg.Go(func() {
-		<-unblock
+		appStuck, _, _ := newLifecycleTestApp(t)
+		appStuck.shutdownStepTimeout = 10 * time.Millisecond
+		unblock := make(chan struct{})
+		t.Cleanup(func() { close(unblock) })
+		appStuck.wg.Go(func() {
+			<-unblock
+		})
+		if err := appStuck.stopAndJoin(); err == nil {
+			t.Error("stopAndJoin returned nil error when wg.Wait timed out")
+		}
 	})
-	if err := appStuck.stopAndJoin(); err == nil {
-		t.Error("stopAndJoin returned nil error when wg.Wait timed out")
-	}
 }

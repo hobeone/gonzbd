@@ -147,7 +147,7 @@ func TestDurability_AcceptedIsNotDone(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(func() {
-		// ForceStopWorkers, not Shutdown: Shutdown runs R6's clean-shutdown
+		// StopAndJoin, not Shutdown: Shutdown runs R6's clean-shutdown
 		// barrier, which would ack the very article this test is about.
 		a.StopAndJoin(t)
 		cancel()

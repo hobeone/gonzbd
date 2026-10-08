@@ -417,8 +417,7 @@ else
         fi
     done
 
-    # Pop next item atomically via an index counter into ORDERED_QUEUE, avoiding
-    # per-job sed -i file rewrites across all chunks.
+    # Pop next item atomically via an index counter into ORDERED_QUEUE under flock.
     pop_item() {
         (
             flock -x 200

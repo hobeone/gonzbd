@@ -1,16 +1,60 @@
 pkg ./internal/app/
 run TestStopAndJoin_WaitsForWgBeforePostProcAndReportsTimeout
 
-[stopAndJoin skips cancelling the application context]
-file internal/app/export_test.go
+[joinAndStop skips cancelling the application context]
+file internal/app/app.go
 --- anchor
-	if a.cancel != nil {
-		a.cancel()
+	if app.cancel != nil {
+		app.cancel()
 	}
 --- replace
-	if false && a.cancel != nil {
-		a.cancel()
+	if false && app.cancel != nil {
+		app.cancel()
 	}
+--- end
+
+[joinAndStop stops the post-processor before waiting on wg]
+file internal/app/app.go
+--- anchor
+	if err := waitBounded("wg.Wait", stepTimeout, func() error {
+		app.wg.Wait()
+		return nil
+	}, app.log); err != nil {
+		*errs = append(*errs, fmt.Errorf("wg wait: %w", err))
+	}
+
+	ppStopFn := app.postProcessor.Stop
+	if app.postProcStopHook != nil {
+		ppStopFn = app.postProcStopHook
+	}
+	ppErr := waitBounded("postprocessor", stepTimeout, ppStopFn, app.log)
+	if ppErr != nil {
+		*errs = append(*errs, fmt.Errorf("postprocessor stop: %w", ppErr))
+	}
+--- replace
+	ppStopFn := app.postProcessor.Stop
+	if app.postProcStopHook != nil {
+		ppStopFn = app.postProcStopHook
+	}
+	ppErr := waitBounded("postprocessor", stepTimeout, ppStopFn, app.log)
+	if ppErr != nil {
+		*errs = append(*errs, fmt.Errorf("postprocessor stop: %w", ppErr))
+	}
+
+	if err := waitBounded("wg.Wait", stepTimeout, func() error {
+		app.wg.Wait()
+		return nil
+	}, app.log); err != nil {
+		*errs = append(*errs, fmt.Errorf("wg wait: %w", err))
+	}
+--- end
+
+[stopAndJoin skips pruning the checkpointer before context cancellation]
+file internal/app/export_test.go
+--- anchor
+	if a.checkpointer != nil && a.dispatcher != nil {
+--- replace
+	if false && a.checkpointer != nil && a.dispatcher != nil {
 --- end
 
 [stopAndJoin swallows waitBounded errors instead of returning them]
@@ -21,3 +65,4 @@ file internal/app/export_test.go
 	_ = errors.Join(errs...)
 	return nil
 --- end
+

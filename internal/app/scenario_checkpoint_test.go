@@ -133,11 +133,10 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 			server.FetchCount(msgIDs[0]), server.FetchCount(msgIDs[1]), server.FetchCount(msgIDs[2]), runs)
 	}
 
-	// Simulate an ungraceful hard crash: stop downloader and assembler workers
-	// first (so in-flight events are delivered while watchCompletions is running),
-	// then cancel the application context. We deliberately do NOT call a1.Shutdown()
-	// so no quiet shutdown flush runs, preserving true no-flush hard-crash semantics.
-	a1.ForceStopWorkers()
+	// Simulate an ungraceful hard crash via ForceStopWorkers rather than
+	// Shutdown so neither R6's clean-shutdown barrier nor Checkpointer.Run's
+	// exit flush runs.
+	a1.ForceStopWorkers(t)
 	cancel1()
 
 	// Verify on disk: Articles 0 and 2 are durably marked Done, while Article 1 is NOT Done.
@@ -298,10 +297,9 @@ func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
 		t.Errorf("expected stage1 count 1 before crash, got %d", c)
 	}
 
-	// Simulate an ungraceful hard crash: stop downloader and assembler workers
-	// first, then cancel the application context. We deliberately do NOT call
-	// a1.Shutdown() so no quiet shutdown flush runs.
-	a1.ForceStopWorkers()
+	// Simulate a hard crash mid-post-processing via ForceStopWorkers rather than
+	// Shutdown so the job remains in Repairing without a clean-shutdown flush.
+	a1.ForceStopWorkers(t)
 	cancel1()
 
 	// Verify on-disk queue state after crash: job must still exist in dispatch_jobs.

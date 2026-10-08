@@ -577,25 +577,21 @@ func captureOutput(t *testing.T, fn func()) (string, string) {
 		_ = rErr.Close()
 	})
 
-	closed := false
 	finishPipes := func() {
 		os.Stdout = savedOut
 		os.Stderr = savedErr
-		if !closed {
-			closed = true
-			if err := wOut.Close(); err != nil {
-				t.Errorf("close wOut: %v", err)
-			}
-			if err := wErr.Close(); err != nil {
-				t.Errorf("close wErr: %v", err)
-			}
-			wg.Wait()
+		if err := wOut.Close(); err != nil {
+			t.Errorf("close wOut: %v", err)
 		}
+		if err := wErr.Close(); err != nil {
+			t.Errorf("close wErr: %v", err)
+		}
+		wg.Wait()
 	}
-	defer finishPipes()
-
-	fn()
-	finishPipes()
+	func() {
+		defer finishPipes()
+		fn()
+	}()
 
 	if errOut != nil {
 		t.Fatalf("read bOut: %v", errOut)
@@ -693,34 +689,37 @@ func TestRunSpec_SkipBaseline(t *testing.T) {
 }
 
 func TestCaptureOutput_DrainsLargeOutputWithoutDeadlock(t *testing.T) {
-	// Write 256 KiB (4x the default 64 KiB Linux pipe buffer) to both stdout
-	// and stderr inside captureOutput to verify concurrent draining prevents
-	// pipe-buffer deadlocks.
-	payloadOut := strings.Repeat("o", 256*1024)
-	payloadErr := strings.Repeat("e", 256*1024)
+	t.Run("drains 256KiB stdout and stderr without deadlock", func(t *testing.T) {
+		// Write 256 KiB (4x the default 64 KiB Linux pipe buffer) to both stdout
+		// and stderr inside captureOutput to verify concurrent draining prevents
+		// pipe-buffer deadlocks.
+		payloadOut := strings.Repeat("o", 256*1024)
+		payloadErr := strings.Repeat("e", 256*1024)
 
-	gotOut, gotErr := captureOutput(t, func() {
-		_, _ = os.Stdout.WriteString(payloadOut)
-		_, _ = os.Stderr.WriteString(payloadErr)
-	})
-	if len(gotOut) != len(payloadOut) || gotOut != payloadOut {
-		t.Errorf("stdout len = %d, want %d", len(gotOut), len(payloadOut))
-	}
-	if len(gotErr) != len(payloadErr) || gotErr != payloadErr {
-		t.Errorf("stderr len = %d, want %d", len(gotErr), len(payloadErr))
-	}
-
-	// Verify os.Stdout and os.Stderr are restored even if fn panics.
-	origOut, origErr := os.Stdout, os.Stderr
-	func() {
-		defer func() { _ = recover() }()
-		_, _ = captureOutput(t, func() {
-			panic("simulated failure inside captureOutput")
+		gotOut, gotErr := captureOutput(t, func() {
+			_, _ = os.Stdout.WriteString(payloadOut)
+			_, _ = os.Stderr.WriteString(payloadErr)
 		})
-	}()
-	if os.Stdout != origOut || os.Stderr != origErr {
-		t.Errorf("os.Stdout/os.Stderr were not restored after panic inside captureOutput")
-	}
+		if gotOut != payloadOut {
+			t.Errorf("stdout len = %d, want %d", len(gotOut), len(payloadOut))
+		}
+		if gotErr != payloadErr {
+			t.Errorf("stderr len = %d, want %d", len(gotErr), len(payloadErr))
+		}
+	})
+
+	t.Run("restores stdout and stderr on panic", func(t *testing.T) {
+		origOut, origErr := os.Stdout, os.Stderr
+		func() {
+			defer func() { _ = recover() }()
+			_, _ = captureOutput(t, func() {
+				panic("simulated failure inside captureOutput")
+			})
+		}()
+		if os.Stdout != origOut || os.Stderr != origErr {
+			t.Errorf("os.Stdout/os.Stderr were not restored after panic inside captureOutput")
+		}
+	})
 }
 
 func TestRunSpec_ReturnsExitCodeTwoOnErrors(t *testing.T) {
@@ -728,45 +727,99 @@ func TestRunSpec_ReturnsExitCodeTwoOnErrors(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "go.mod"), "module mutatetest\n\ngo 1.24\n")
 	mustWrite(t, filepath.Join(root, "target.go"), "package mutatetest\n\nfunc Value() int {\n\treturn 1\n}\n")
 
-	// Case 1: missing spec file returns exit code 2 without terminating the process.
-	var codeMissing int
-	_, errMissing := captureOutput(t, func() {
-		codeMissing = runSpec(root, filepath.Join(root, "missing.spec"), runOpts{})
-	})
-	if codeMissing != 2 {
-		t.Errorf("missing spec code = %d, want 2", codeMissing)
-	}
-	if !strings.Contains(errMissing, "mutate:") {
-		t.Errorf("missing spec stderr lacks 'mutate:' prefix:\n%s", errMissing)
-	}
-
-	// Case 2: invalid chunk flag returns exit code 2 without terminating the process.
 	specPath := filepath.Join(root, "test.spec")
 	mustWrite(t, specPath, "pkg .\nrun TestValue\n\n[mut]\nfile target.go\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
 
-	var codeChunk int
-	_, errChunk := captureOutput(t, func() {
-		codeChunk = runSpec(root, specPath, runOpts{chunk: "invalid"})
-	})
-	if codeChunk != 2 {
-		t.Errorf("invalid chunk code = %d, want 2", codeChunk)
-	}
-	if !strings.Contains(errChunk, "invalid -chunk") {
-		t.Errorf("invalid chunk stderr lacks 'invalid -chunk':\n%s", errChunk)
-	}
-
-	// Case 3: deadRunFilterNames failure (non-existent package) returns exit code 2.
 	badPkgSpec := filepath.Join(root, "badpkg.spec")
 	mustWrite(t, badPkgSpec, "pkg ./doesnotexist\nrun TestA|TestB\n\n[mut]\nfile target.go\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
 
-	var codeRunfilter int
-	_, errRunfilter := captureOutput(t, func() {
-		codeRunfilter = runSpec(root, badPkgSpec, runOpts{skipRunfilter: false})
+	t.Run("missing spec file", func(t *testing.T) {
+		var code int
+		_, errOut := captureOutput(t, func() {
+			code = runSpec(root, filepath.Join(root, "missing.spec"), runOpts{})
+		})
+		if code != 2 {
+			t.Errorf("missing spec code = %d, want 2 (from fail)", code)
+		}
+		if !strings.Contains(errOut, "mutate:") {
+			t.Errorf("missing spec stderr lacks 'mutate:' prefix:\n%s", errOut)
+		}
 	})
-	if codeRunfilter != 2 {
-		t.Errorf("deadRunFilterNames error code = %d, want 2", codeRunfilter)
-	}
-	if !strings.Contains(errRunfilter, "list tests") {
-		t.Errorf("deadRunFilterNames error stderr lacks 'list tests':\n%s", errRunfilter)
-	}
+
+	t.Run("invalid chunk flag", func(t *testing.T) {
+		var code int
+		_, errOut := captureOutput(t, func() {
+			code = runSpec(root, specPath, runOpts{chunk: "invalid"})
+		})
+		if code != 2 {
+			t.Errorf("invalid chunk code = %d, want 2", code)
+		}
+		if !strings.Contains(errOut, "invalid -chunk") {
+			t.Errorf("invalid chunk stderr lacks 'invalid -chunk':\n%s", errOut)
+		}
+	})
+
+	t.Run("deadRunFilterNames error", func(t *testing.T) {
+		var code int
+		_, errOut := captureOutput(t, func() {
+			code = runSpec(root, badPkgSpec, runOpts{skipRunfilter: false})
+		})
+		if code != 2 {
+			t.Errorf("deadRunFilterNames error code = %d, want 2", code)
+		}
+		if !strings.Contains(errOut, "list tests") {
+			t.Errorf("deadRunFilterNames error stderr lacks 'list tests':\n%s", errOut)
+		}
+	})
+
+	t.Run("baseline goTest launch error", func(t *testing.T) {
+		var code int
+		_, errOut := captureOutput(t, func() {
+			code = runSpec(filepath.Join(root, "missing-root"), specPath, runOpts{
+				skipRunfilter: true,
+				skipBaseline:  false,
+			})
+		})
+		if code != 2 {
+			t.Errorf("baseline goTest launch error code = %d, want 2", code)
+		}
+		if !strings.Contains(errOut, "could not run go test") {
+			t.Errorf("baseline goTest launch error stderr lacks 'could not run go test':\n%s", errOut)
+		}
+	})
+
+	t.Run("confirmExclusions launch error", func(t *testing.T) {
+		exclRoot := t.TempDir()
+		mustWrite(t, filepath.Join(exclRoot, "go.mod"), "module mutatetest\n\ngo 1.24\n")
+		mustWrite(t, filepath.Join(exclRoot, "target.go"), "package mutatetest\n\nfunc Value() int {\n\treturn 1\n}\n")
+		mustWrite(t, filepath.Join(exclRoot, "target_test.go"), "package mutatetest\n\nimport \"testing\"\n\nfunc TestSelected(t *testing.T) {}\nfunc TestOmitted(t *testing.T) {\n\tif Value() != 1 {\n\t\tt.Fatal(\"omitted kills mutation\")\n\t}\n}\n")
+
+		exclSpec := filepath.Join(exclRoot, "excl.spec")
+		mustWrite(t, exclSpec, "pkg .\nrun TestSelected\n\n[mut]\nfile target.go\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
+
+		savedRead := readFile
+		t.Cleanup(func() { readFile = savedRead })
+		readFile = func(name string) ([]byte, error) {
+			data, err := savedRead(name)
+			// restoreLocked calls readFile after writing the original bytes back
+			// at the end of run(); clearing PATH after that read makes the
+			// subsequent confirmExclusions goTest call fail to launch "go".
+			t.Setenv("PATH", "")
+			return data, err
+		}
+
+		var code int
+		_, errOut := captureOutput(t, func() {
+			code = runSpec(exclRoot, exclSpec, runOpts{
+				skipRunfilter: true,
+				skipBaseline:  true,
+			})
+		})
+		if code != 2 {
+			t.Errorf("confirmExclusions launch error code = %d, want 2", code)
+		}
+		if !strings.Contains(errOut, "confirming package-wide test") {
+			t.Errorf("confirmExclusions launch error stderr lacks 'confirming package-wide test':\n%s", errOut)
+		}
+	})
 }

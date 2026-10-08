@@ -470,13 +470,13 @@ file scripts/mutate/main.go
 [runSpec returns 0 on a spec parse error]
 file scripts/mutate/main.go
 --- anchor
+	sp, err := parseSpec(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mutate: %s: %v\n", path, err)
-		return 2
+		return fail("%s: %v", path, err)
 	}
 --- replace
+	sp, err := parseSpec(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mutate: %s: %v\n", path, err)
 		return 0
 	}
 --- end
@@ -485,13 +485,66 @@ file scripts/mutate/main.go
 file scripts/mutate/main.go
 --- anchor
 		if err := sp.applyChunk(opts.chunk); err != nil {
-			fmt.Fprintf(os.Stderr, "mutate: %v\n", err)
-			return 2
+			return fail("%v", err)
 		}
 --- replace
 		if err := sp.applyChunk(opts.chunk); err != nil {
-			fmt.Fprintf(os.Stderr, "mutate: %v\n", err)
 			return 0
 		}
 --- end
+
+[runSpec returns 0 on a deadRunFilterNames error]
+file scripts/mutate/main.go
+--- anchor
+		if dead, err := deadRunFilterNames(root, sp); err != nil {
+			return fail("%v", err)
+		} else if len(dead) > 0 {
+--- replace
+		if dead, err := deadRunFilterNames(root, sp); err != nil {
+			return 0
+		} else if len(dead) > 0 {
+--- end
+
+[runSpec returns 0 on a baseline goTest launch error]
+file scripts/mutate/main.go
+--- anchor
+		out, code, launchErr := goTest(root, sp)
+		if launchErr != nil {
+			return fail("could not run go test: %v", launchErr)
+		}
+--- replace
+		out, code, launchErr := goTest(root, sp)
+		if launchErr != nil {
+			return 0
+		}
+--- end
+
+[runSpec returns 0 on a confirmExclusions error]
+file scripts/mutate/main.go
+--- anchor
+	confirmed, err := confirmExclusions(root, sp, results)
+	if err != nil {
+		return fail("%v", err)
+	}
+--- replace
+	confirmed, err := confirmExclusions(root, sp, results)
+	if err != nil {
+		return 0
+	}
+--- end
+
+[fail returns 0 instead of 2]
+file scripts/mutate/main.go
+--- anchor
+func fail(format string, args ...any) int {
+	fmt.Fprintf(os.Stderr, "mutate: "+format+"\n", args...)
+	return 2
+}
+--- replace
+func fail(format string, args ...any) int {
+	fmt.Fprintf(os.Stderr, "mutate: "+format+"\n", args...)
+	return 0
+}
+--- end
+
 
