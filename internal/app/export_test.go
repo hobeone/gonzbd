@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"testing"
@@ -232,37 +233,65 @@ func (a *Application) AssemblerMinFreeBytes() int64 {
 	return a.assembler.MinFreeBytes()
 }
 
-// ForceStopWorkers stops the downloader and assembler without flushing the queue
-// or cancelling the application context. Used in scenario tests to simulate an
-// abrupt process termination (hard crash) without calling queue.Save() or
-// creating shutdown ordering hazards.
-//
-// noBarrierOnStop is what makes it a hard crash rather than a quiet Shutdown:
-// a SIGKILLed process does not get to run a final checkpoint, so neither does
-// this. A test that ran one here would be asserting against a clean stop while
-// claiming to test a crash.
-func (a *Application) ForceStopWorkers() {
-	a.stopWorkers(15*time.Second, nil, noBarrierOnStop)
-	if a.postProcessor != nil {
-		_ = a.postProcessor.Stop()
+// stopAndJoin performs a hard-crash teardown in Shutdown's component order
+// (state guards -> stopWorkers with noBarrierOnStop -> prune dirty checkpointer
+// entries -> joinAndStop) without running R6's clean-shutdown barrier or
+// flushing the checkpointer.
+func (a *Application) stopAndJoin() error {
+	if !a.stopped.CompareAndSwap(false, true) {
+		return nil
 	}
+	a.stopping.Store(true)
 	if a.dispatcher != nil {
-		_ = a.dispatcher.Stop()
+		a.dispatcher.Pause()
+	}
+
+	stepTimeout := min(a.stepTimeout(), 5*time.Second)
+	var errs []error
+	a.stopWorkers(stepTimeout, &errs, noBarrierOnStop)
+	// Prune resident jobs from the checkpointer before joinAndStop cancels the
+	// context so Checkpointer.Run's ctx.Done exit flush has nothing to write
+	// during a simulated hard crash (watchCompletions' drainCompletions pass on
+	// ctx.Done is already inert because stopWorkers has stopped the assembler,
+	// so finalizeCompletedFile fails with assembler.ErrAssemblerStopped).
+	if a.checkpointer != nil && a.dispatcher != nil {
+		for _, row := range a.dispatcher.List() {
+			if j, ok := a.dispatcher.Job(row.ID); ok {
+				a.checkpointer.Prune(j)
+			}
+		}
+	}
+	a.joinAndStop(stepTimeout, &errs)
+	return errors.Join(errs...)
+}
+
+// ForceStopWorkers stops the downloader and assembler without running R6's
+// clean-shutdown barrier, prunes dirty checkpointer entries so Checkpointer.Run
+// does not flush them on context cancellation, cancels the application context,
+// waits for background goroutines on wg to exit, and stops the post-processor
+// and dispatcher. Fails tb if any teardown step times out or errors. Used in
+// scenario tests to simulate an abrupt process termination (hard crash) without
+// calling Shutdown().
+//
+// noBarrierOnStop and checkpointer pruning are what make it a hard crash rather
+// than a quiet Shutdown: a SIGKILLed process does not get to run a final
+// checkpoint, so neither does this.
+func (a *Application) ForceStopWorkers(tb testing.TB) {
+	tb.Helper()
+	if err := a.stopAndJoin(); err != nil {
+		tb.Fatalf("ForceStopWorkers: %v", err)
 	}
 }
 
-// StopAndJoin stops workers, cancels the application context, and waits for
-// all background goroutines on wg to finish. Used in test cleanups so that
-// background loops do not hold or create files while t.TempDir() is being removed.
-func (a *Application) StopAndJoin() {
-	a.ForceStopWorkers()
-	if a.cancel != nil {
-		a.cancel()
+// StopAndJoin runs ForceStopWorkers' hard-crash teardown and fails tb if any
+// teardown step (including waiting for background goroutines on wg) times out
+// or errors. Used in test cleanups so that background loops do not hold or
+// create files while t.TempDir() is being removed.
+func (a *Application) StopAndJoin(tb testing.TB) {
+	tb.Helper()
+	if err := a.stopAndJoin(); err != nil {
+		tb.Errorf("StopAndJoin: %v", err)
 	}
-	_ = waitBounded("wg.Wait", 5*time.Second, func() error {
-		a.wg.Wait()
-		return nil
-	}, a.log)
 }
 
 // BarrierRuns reports how many checkpoint barriers have been started.

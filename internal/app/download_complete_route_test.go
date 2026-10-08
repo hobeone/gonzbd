@@ -147,7 +147,7 @@ func startRouteApp(t *testing.T, repo *history.Repository, adminDir, downloadDir
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(func() {
-		a.ForceStopWorkers()
+		a.StopAndJoin(t)
 		cancel()
 	})
 	if err := a.Start(ctx); err != nil {

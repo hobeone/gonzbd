@@ -93,3 +93,81 @@ func TestCheck_RejectsATooShortHash(t *testing.T) {
 		t.Fatalf("check reported %d findings, want 1 (the commit half unsatisfied)", len(got))
 	}
 }
+
+func TestCheckDir_SkipsOnlyWhenAllowMissingIsTrue(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "absent")
+
+	t.Run("skips missing directory when allowMissing is true", func(t *testing.T) {
+		missing, skipped, err := checkDir(absent, true)
+		if err != nil {
+			t.Fatalf("checkDir(absent, true) unexpected error: %v", err)
+		}
+		if !skipped {
+			t.Error("checkDir(absent, true) skipped = false, want true")
+		}
+		if len(missing) != 0 {
+			t.Errorf("checkDir(absent, true) findings = %v, want empty", missing)
+		}
+	})
+
+	t.Run("errors on missing directory when allowMissing is false", func(t *testing.T) {
+		if _, skipped, err := checkDir(absent, false); err == nil || skipped {
+			t.Errorf("checkDir(absent, false) = (skipped=%v, err=%v), want (false, non-nil error)", skipped, err)
+		}
+	})
+
+	t.Run("checks existing directory when allowMissing is true", func(t *testing.T) {
+		dir := writeDocs(t, map[string]string{
+			"bad.md": "# No banner here\n",
+		})
+		missing, skipped, err := checkDir(dir, true)
+		if err != nil {
+			t.Fatalf("checkDir(existing, true) unexpected error: %v", err)
+		}
+		if skipped {
+			t.Error("checkDir(existing, true) skipped = true, want false")
+		}
+		if len(missing) != 1 {
+			t.Errorf("checkDir(existing, true) findings = %d, want 1", len(missing))
+		}
+	})
+}
+
+func TestResolveArgs_DistinguishesDefaultFromExplicitDir(t *testing.T) {
+	root := "/repo/root"
+	okRoot := func() (string, error) { return root, nil }
+	errRoot := func() (string, error) { return "", os.ErrNotExist }
+
+	t.Run("default directory resolves under root with allowMissing true", func(t *testing.T) {
+		dir, allowMissing, err := resolveArgs(nil, okRoot)
+		if err != nil {
+			t.Fatalf("resolveArgs(nil) unexpected error: %v", err)
+		}
+		wantDir := filepath.Join(root, "docs", "reviews")
+		if dir != wantDir {
+			t.Errorf("dir = %q, want %q", dir, wantDir)
+		}
+		if !allowMissing {
+			t.Error("allowMissing = false for default -dir, want true")
+		}
+	})
+
+	t.Run("default directory propagates findRoot error", func(t *testing.T) {
+		if _, _, err := resolveArgs(nil, errRoot); err == nil {
+			t.Fatal("resolveArgs(nil, errRoot) = nil error, want error")
+		}
+	})
+
+	t.Run("explicit -dir sets allowMissing false without calling findRoot", func(t *testing.T) {
+		dir, allowMissing, err := resolveArgs([]string{"-dir", "docs/reviews"}, errRoot)
+		if err != nil {
+			t.Fatalf("resolveArgs(-dir, errRoot) unexpected error: %v", err)
+		}
+		if dir != "docs/reviews" {
+			t.Errorf("dir = %q, want %q", dir, "docs/reviews")
+		}
+		if allowMissing {
+			t.Error("allowMissing = true for explicit -dir, want false")
+		}
+	})
+}

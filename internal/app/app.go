@@ -1516,20 +1516,29 @@ func waitBounded(name string, d time.Duration, wait func() error, log *slog.Logg
 // finalBarrier tells stopWorkers whether to run R6's clean-shutdown checkpoint
 // between stopping the downloader and stopping the assembler.
 //
-// Shutdown passes barrierOnStop. ForceStopWorkers passes noBarrierOnStop
-// because its whole purpose is to reproduce a hard kill, and a process that
-// was SIGKILLed did not get to flush anything.
+// Shutdown passes barrierOnStop. stopAndJoin (in export_test.go) passes
+// noBarrierOnStop because its purpose is to reproduce a hard kill, and a
+// process that was SIGKILLed did not get to flush anything.
 type finalBarrier bool
 
 const (
 	barrierOnStop   finalBarrier = true
 	noBarrierOnStop finalBarrier = false
+
+	defaultShutdownStepTimeout = 15 * time.Second
 )
+
+func (app *Application) stepTimeout() time.Duration {
+	if app.shutdownStepTimeout > 0 {
+		return app.shutdownStepTimeout
+	}
+	return defaultShutdownStepTimeout
+}
 
 // stopWorkers stops the downloader, optionally runs the clean-shutdown barrier,
 // aborts active DirectUnpackers, and stops the assembler, in exactly that order.
-// Shared between Shutdown and ForceStopWorkers (in export_test.go) so the
-// teardown ordering cannot drift between them.
+// Shared between Shutdown and stopAndJoin (in export_test.go) so the head of
+// the teardown ordering cannot drift between them.
 //
 // The barrier sits between the downloader stopping and the assembler stopping
 // because that is the only window where both halves hold: no new article can
@@ -1594,6 +1603,45 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, ba
 	}
 }
 
+// joinAndStop cancels the application context, waits for background goroutines
+// on wg to finish, stops the post-processor, yields any active post-processing
+// leases, and stops the dispatcher, in that order. Shared between Shutdown and
+// stopAndJoin (in export_test.go) so the teardown tail cannot drift between them.
+func (app *Application) joinAndStop(stepTimeout time.Duration, errs *[]error) {
+	if app.cancel != nil {
+		app.cancel()
+	}
+
+	if err := waitBounded("wg.Wait", stepTimeout, func() error {
+		app.wg.Wait()
+		return nil
+	}, app.log); err != nil {
+		*errs = append(*errs, fmt.Errorf("wg wait: %w", err))
+	}
+
+	ppStopFn := app.postProcessor.Stop
+	if app.postProcStopHook != nil {
+		ppStopFn = app.postProcStopHook
+	}
+	ppErr := waitBounded("postprocessor", stepTimeout, ppStopFn, app.log)
+	if ppErr != nil {
+		*errs = append(*errs, fmt.Errorf("postprocessor stop: %w", ppErr))
+	}
+	if app.dispatcher != nil && ppErr == nil {
+		for _, row := range app.dispatcher.List() {
+			if row.View.State == job.Repairing || row.View.State == job.Extracting || row.View.State == job.Finalizing {
+				_ = app.dispatcher.Yielded(row.ID)
+			}
+		}
+	}
+
+	if app.dispatcher != nil {
+		if err := waitBounded("dispatcher", stepTimeout, app.dispatcher.Stop, app.log); err != nil {
+			*errs = append(*errs, fmt.Errorf("dispatcher stop: %w", err))
+		}
+	}
+}
+
 // Shutdown stops the downloader, post-processor, and assembler, flushes the
 // cache, and persists the queue to disk. Safe to call multiple times.
 //
@@ -1607,7 +1655,8 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, ba
 //  5. Wait for background goroutines to finish.
 //  6. Stop the post-processor, save queue.
 //
-// Steps 1-3 are stopWorkers; see its doc for why the barrier sits between them.
+// Steps 1-3 are stopWorkers and steps 4-6 are joinAndStop; see stopWorkers' doc
+// for why the barrier sits between steps 1 and 3.
 func (app *Application) Shutdown() error {
 	if !app.started.Load() || !app.stopped.CompareAndSwap(false, true) {
 		return nil
@@ -1624,45 +1673,10 @@ func (app *Application) Shutdown() error {
 	}
 
 	var errs []error
-	stepTimeout := app.shutdownStepTimeout
-	if stepTimeout <= 0 {
-		stepTimeout = 15 * time.Second
-	}
+	stepTimeout := app.stepTimeout()
 
 	app.stopWorkers(stepTimeout, &errs, barrierOnStop)
-
-	app.cancel()
-
-	if err := waitBounded("wg.Wait", stepTimeout, func() error {
-		app.wg.Wait()
-		return nil
-	}, app.log); err != nil {
-		errs = append(errs, fmt.Errorf("wg wait: %w", err))
-	}
-
-	ppStopFn := app.postProcessor.Stop
-	if app.postProcStopHook != nil {
-		ppStopFn = app.postProcStopHook
-	}
-	ppErr := waitBounded("postprocessor", stepTimeout, ppStopFn, app.log)
-	if ppErr != nil {
-		errs = append(errs, fmt.Errorf("postprocessor stop: %w", ppErr))
-	}
-	if app.dispatcher != nil {
-		if ppErr == nil {
-			for _, row := range app.dispatcher.List() {
-				if row.View.State == job.Repairing || row.View.State == job.Extracting || row.View.State == job.Finalizing {
-					_ = app.dispatcher.Yielded(row.ID)
-				}
-			}
-		}
-	}
-
-	if app.dispatcher != nil {
-		if err := waitBounded("dispatcher", stepTimeout, app.dispatcher.Stop, app.log); err != nil {
-			errs = append(errs, fmt.Errorf("dispatcher stop: %w", err))
-		}
-	}
+	app.joinAndStop(stepTimeout, &errs)
 
 	if app.checkpointer != nil {
 		if err := app.checkpointer.Flush(context.Background()); err != nil {

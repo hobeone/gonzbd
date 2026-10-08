@@ -306,6 +306,11 @@ func main() {
 // runSpec is the command's original behaviour: apply every mutation in one
 // spec, in turn, and require each to produce KILLED.
 //
+// Argument, spec-parse, chunk, run-filter, baseline-launch, and
+// exclusion-confirmation errors print to os.Stderr and return 2 via fail. File
+// backup, write, and restore failures inside run() still abort via
+// fatal/fatalRestoring after attempting to restore the working tree.
+//
 // quiet is the sweep's view of it, in the manner of `go test ./...`: a spec
 // that passes is one line, and a spec whose mutations fail prints what failed
 // and how to look closer. The evidence column a passing spec produces is what a
@@ -314,19 +319,19 @@ func runSpec(root, path string, opts runOpts) int {
 	start := time.Now()
 	sp, err := parseSpec(path)
 	if err != nil {
-		fatal("%s: %v", path, err)
+		return fail("%s: %v", path, err)
 	}
 	sp.parallel = opts.parallel
 	sp.gcflags = opts.gcflags
 	if opts.chunk != "" {
 		if err := sp.applyChunk(opts.chunk); err != nil {
-			fatal("%v", err)
+			return fail("%v", err)
 		}
 	}
 
 	if !opts.skipRunfilter {
 		if dead, err := deadRunFilterNames(root, sp); err != nil {
-			fatal("%v", err)
+			return fail("%v", err)
 		} else if len(dead) > 0 {
 			return reportRunFilter(sp.pkg, dead)
 		}
@@ -344,7 +349,7 @@ func runSpec(root, path string, opts runOpts) int {
 		}
 		out, code, launchErr := goTest(root, sp)
 		if launchErr != nil {
-			fatal("could not run go test: %v", launchErr)
+			return fail("could not run go test: %v", launchErr)
 		}
 		if code != 0 {
 			fmt.Fprintf(os.Stderr, "\nBASELINE FAILED — no mutation was applied.\n\n"+
@@ -379,7 +384,7 @@ func runSpec(root, path string, opts runOpts) int {
 
 	confirmed, err := confirmExclusions(root, sp, results)
 	if err != nil {
-		fatal("%v", err)
+		return fail("%v", err)
 	}
 
 	if opts.quiet {
@@ -1077,9 +1082,13 @@ func indent(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-func fatal(format string, args ...any) {
+func fail(format string, args ...any) int {
 	fmt.Fprintf(os.Stderr, "mutate: "+format+"\n", args...)
-	os.Exit(2)
+	return 2
+}
+
+func fatal(format string, args ...any) {
+	os.Exit(fail(format, args...))
 }
 
 func usage() {

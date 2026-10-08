@@ -19,9 +19,11 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -47,22 +49,20 @@ const bannerLabel = "Frozen record"
 var commitRef = regexp.MustCompile("`[0-9a-f]{7,40}`")
 
 func main() {
-	dir := flag.String("dir", filepath.Join("docs", "reviews"), "directory of review documents to check")
-	flag.Parse()
-
-	// If the default reviews directory does not exist (e.g. review docs removed),
-	// skip check rather than failing on absent review docs.
-	if *dir == filepath.Join("docs", "reviews") {
-		if _, err := os.Stat(*dir); os.IsNotExist(err) {
-			fmt.Println("check_review_banner: no docs/reviews directory, nothing to check")
-			return
-		}
-	}
-
-	missing, err := check(*dir)
+	dir, allowMissing, err := resolveArgs(os.Args[1:], repoRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "check_review_banner: %v\n", err)
 		os.Exit(2)
+	}
+
+	missing, skipped, err := checkDir(dir, allowMissing)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "check_review_banner: %v\n", err)
+		os.Exit(2)
+	}
+	if skipped {
+		fmt.Println("check_review_banner: no docs/reviews directory, nothing to check")
+		return
 	}
 	if len(missing) == 0 {
 		return
@@ -76,18 +76,63 @@ func main() {
 	os.Exit(1)
 }
 
+func repoRoot() (string, error) {
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", fmt.Errorf("not in a git repository: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// resolveArgs parses CLI flags and reports the target directory and whether a
+// missing directory should be skipped (true for the default directory under
+// findRoot; false when -dir is set explicitly). findRoot is called only when
+// -dir is left at its default so an explicit -dir does not require a git
+// checkout.
+func resolveArgs(args []string, findRoot func() (string, error)) (dir string, allowMissing bool, err error) {
+	fs := flag.NewFlagSet("check_review_banner", flag.ContinueOnError)
+	dirFlag := fs.String("dir", filepath.Join("docs", "reviews"), "directory of review documents to check")
+	if err := fs.Parse(args); err != nil {
+		return "", false, err
+	}
+	explicitDir := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "dir" {
+			explicitDir = true
+		}
+	})
+	if !explicitDir {
+		root, err := findRoot()
+		if err != nil {
+			return "", false, err
+		}
+		*dirFlag = filepath.Join(root, "docs", "reviews")
+	}
+	return *dirFlag, !explicitDir, nil
+}
+
 // finding is one document and the markers it lacks.
 type finding struct {
 	path    string
 	markers []string
 }
 
-// check returns the review documents missing any required marker.
-//
-// A missing directory is an error rather than a pass. "No files to check"
-// and "the directory moved" are indistinguishable from the outside, and the
-// second silently disables the gate — which is the failure mode a presence
-// check is least able to notice about itself.
+// checkDir runs check(dir), skipping a non-existent directory when
+// allowMissing is true (the default directory) and returning an error when
+// allowMissing is false (an explicit -dir).
+func checkDir(dir string, allowMissing bool) ([]finding, bool, error) {
+	if allowMissing {
+		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) { //nolint:gosec // G703: dir is the operator's -dir flag or repoRoot/docs/reviews
+			return nil, true, nil
+		}
+	}
+	missing, err := check(dir)
+	return missing, false, err
+}
+
+// check returns the review documents in dir missing any required marker.
+// A missing directory is an error; callers that allow the default directory
+// to be absent use checkDir with allowMissing=true.
 func check(dir string) ([]finding, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

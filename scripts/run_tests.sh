@@ -237,11 +237,10 @@ cleanup_mutate() {
         rm -f "$MUTATE_BIN"
     fi
     if [ -n "$WORKTREE_BASE" ] && [ -d "$WORKTREE_BASE" ]; then
-        if [ -n "${WORKERS:-}" ]; then
-            for ((w=0; w<WORKERS; w++)); do
-                git worktree remove --force "$WORKTREE_BASE/wt-$w" >/dev/null 2>&1 || true
-            done
-        fi
+        for wt in "$WORKTREE_BASE"/wt-*; do
+            [ -e "$wt" ] || continue
+            git worktree remove --force "$wt" >/dev/null 2>&1 || true
+        done
         rm -rf "$WORKTREE_BASE"
         git worktree prune >/dev/null 2>&1 || true
     fi
@@ -354,9 +353,10 @@ else
     echo "$$" > "$WORKTREE_BASE/owner.pid"
     mkdir -p "$WORKTREE_BASE/logs"
 
-    QUEUE_FILE="$WORKTREE_BASE/queue.txt"
+    QUEUE_IDX_FILE="$WORKTREE_BASE/queue.idx"
     QUEUE_LOCK="$WORKTREE_BASE/queue.lock"
     RESULTS_FILE="$WORKTREE_BASE/results.txt"
+    echo 0 > "$QUEUE_IDX_FILE"
     touch "$QUEUE_LOCK" "$RESULTS_FILE"
 
     # Partition heavy specs into chunks to eliminate tail stragglers and minimize makespan.
@@ -393,7 +393,7 @@ else
             done
         fi
     done
-    printf "%s\n" "${QUEUE_ITEMS[@]}" | sort -rn | awk '{print $2}' > "$QUEUE_FILE"
+    mapfile -t ORDERED_QUEUE < <(printf "%s\n" "${QUEUE_ITEMS[@]}" | sort -rn | awk '{print $2}')
 
     NUM_JOBS=${#ALL_ITEMS[@]}
     if [ "$WORKERS" -gt "$NUM_JOBS" ]; then WORKERS="$NUM_JOBS"; fi
@@ -417,13 +417,14 @@ else
         fi
     done
 
-    # Pop next item atomically from shared queue
+    # Pop next item atomically via an index counter into ORDERED_QUEUE under flock.
     pop_item() {
         (
             flock -x 200
-            if [ -s "$QUEUE_FILE" ]; then
-                head -n 1 "$QUEUE_FILE"
-                sed -i '1d' "$QUEUE_FILE"
+            read -r idx < "$QUEUE_IDX_FILE"
+            if [ "$idx" -lt "${#ORDERED_QUEUE[@]}" ]; then
+                echo $((idx + 1)) > "$QUEUE_IDX_FILE"
+                printf '%s\n' "${ORDERED_QUEUE[$idx]}"
             fi
         ) 200>"$QUEUE_LOCK"
     }
