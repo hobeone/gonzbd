@@ -535,15 +535,23 @@ about where the line falls.
   `settleLocked` overrides whatever outcome that later call passes to
   `job.OutcomeCancelled`, because the worker's error in this case is the
   cancellation's own artifact.
-- **Post-boundary** (`Extracting`, `Finalizing`) or **not running**:
-  `finishCancel` settles directly via `settleLocked(j,
-  job.OutcomeCancelled, s)`, but the override in `settleLocked` does not
-  fire for a post-boundary job — its own outcome, if it later reports one
-  through some other path, stands. This is what lets a running `Finalizing`
-  job that completes normally after being cancelled settle `OutcomeOK`
-  rather than falsely `Cancelled`: the files have already moved and the
-  script has already run, so recording `Cancelled` would misdescribe what
+- **Post-boundary and running** (`Extracting`, `Finalizing`):
+  `finishCancel` gates without interrupting (`!cancelInterrupts(s.State.State)`)
+  and returns `nil` without calling `settleLocked` — the active worker owns the
+  job's resources and runs to completion. When that worker later finishes and
+  reports its outcome, the override in `settleLocked` (`s.Intent ==
+  job.IntentCancel && cancelInterrupts`) does not fire for a post-boundary
+  state, so the worker's own outcome stands. This is what lets a running
+  `Finalizing` job that completes normally after being cancelled settle
+  `OutcomeOK` rather than falsely `Cancelled`: the files have already moved and
+  the script has already run, so recording `Cancelled` would misdescribe what
   is on disk.
+- **Not running** (pre- or post-boundary — e.g. waiting on a lease or compute
+  slot, or restored from a restart): `finishCancel` settles directly via
+  `settleLocked(j, job.OutcomeCancelled, s)`. Passing `OutcomeCancelled`
+  explicitly is what makes a non-running post-boundary job record
+  `OutcomeCancelled`, since `settleLocked`'s `cancelInterrupts` override does
+  not fire for post-boundary states.
 
 `sched.Queue.Settle` refuses a caller-supplied `job.OutcomeCancelled`
 (`ErrCancelReserved`) before taking any lock — only the cancel latch may
