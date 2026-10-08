@@ -48,6 +48,10 @@ quality gates).
   to `[4, 32]`). Subtests under `t.Parallel()` scale with host core count,
   achieving substantial wall-clock speedups for wait-heavy scenario tests.
 - `MUTATE_GCFLAGS=<flags>`: Custom `-gcflags` passed to `scripts/mutate`.
+- `MUTATE_MAX_GOCACHE_GB=<n>`: Maximum size in GB for Go's build cache
+  before it is automatically reset with `go clean -cache` (default 40).
+  Prevents rapid, transient mutation builds across parallel worktrees from
+  exhausting disk space.
 
 ## 1. Unit Tests (`go test ./...`)
 

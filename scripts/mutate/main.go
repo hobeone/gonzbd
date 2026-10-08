@@ -291,7 +291,7 @@ func main() {
 			flag.Usage()
 			os.Exit(2)
 		}
-		runSpec(root, flag.Arg(0), runOpts{
+		os.Exit(runSpec(root, flag.Arg(0), runOpts{
 			verbose:       *verbose,
 			quiet:         *quiet,
 			skipRunfilter: *skipRunfilter,
@@ -299,7 +299,7 @@ func main() {
 			parallel:      *parallel,
 			gcflags:       *gcflags,
 			chunk:         *chunk,
-		})
+		}))
 	}
 }
 
@@ -310,7 +310,7 @@ func main() {
 // that passes is one line, and a spec whose mutations fail prints what failed
 // and how to look closer. The evidence column a passing spec produces is what a
 // commit body records, so quiet is opt-in rather than the default.
-func runSpec(root, path string, opts runOpts) {
+func runSpec(root, path string, opts runOpts) int {
 	start := time.Now()
 	sp, err := parseSpec(path)
 	if err != nil {
@@ -328,7 +328,7 @@ func runSpec(root, path string, opts runOpts) {
 		if dead, err := deadRunFilterNames(root, sp); err != nil {
 			fatal("%v", err)
 		} else if len(dead) > 0 {
-			os.Exit(reportRunFilter(sp.pkg, dead))
+			return reportRunFilter(sp.pkg, dead)
 		}
 	}
 
@@ -352,7 +352,7 @@ func runSpec(root, path string, opts runOpts) {
 				"mutation changed. A test that already fails yields KILLED for any\n"+
 				"mutation, and none of them mean anything.\n\n"+
 				"command: %s\n\n%s\n", baselineCmd, indent(out))
-			os.Exit(1)
+			return 1
 		}
 		if ranNothing(out) {
 			// `go test -run TestTypo` exits 0 and prints "[no tests to run]", so
@@ -364,7 +364,7 @@ func runSpec(root, path string, opts runOpts) {
 				"`run` pattern matches no test in %s. Left unchecked this reports every\n"+
 				"mutation as SURVIVED.\n\n"+
 				"command: %s\n\n%s\n", sp.pkg, baselineCmd, indent(out))
-			os.Exit(1)
+			return 1
 		}
 		if !opts.quiet {
 			fmt.Println("baseline: PASS")
@@ -383,9 +383,9 @@ func runSpec(root, path string, opts runOpts) {
 	}
 
 	if opts.quiet {
-		os.Exit(reportQuiet(path, opts.chunk, confirmed, time.Since(start)))
+		return reportQuiet(path, opts.chunk, confirmed, time.Since(start))
 	}
-	os.Exit(report(confirmed))
+	return report(confirmed)
 }
 
 // run applies one mutation, runs the test, and restores the file.

@@ -219,6 +219,22 @@ WORKTREE_BASE=""
 SNAP_INDEX=""
 PIDS=()
 
+trim_gocache_if_needed() {
+    local max_gb="${MUTATE_MAX_GOCACHE_GB:-40}"
+    local gocache_dir
+    gocache_dir=$(go env GOCACHE 2>/dev/null || echo "$HOME/.cache/go-build")
+    if [ -d "$gocache_dir" ]; then
+        local cache_kb
+        cache_kb=$(du -sk "$gocache_dir" 2>/dev/null | awk '{print $1}')
+        local limit_kb=$(( max_gb * 1024 * 1024 ))
+        if [ -n "$cache_kb" ] && [ "$cache_kb" -gt "$limit_kb" ] 2>/dev/null; then
+            local cache_gb=$(( cache_kb / 1024 / 1024 ))
+            echo "Notice: Go build cache at $gocache_dir is ${cache_gb}GB (exceeds ${max_gb}GB threshold). Resetting with go clean -cache..."
+            go clean -cache
+        fi
+    fi
+}
+
 cleanup_mutate() {
     # Terminate worker process groups if still running
     if [ "${#PIDS[@]}" -gt 0 ]; then
@@ -245,11 +261,13 @@ cleanup_mutate() {
         rm -rf "$WORKTREE_BASE"
         git worktree prune >/dev/null 2>&1 || true
     fi
+    trim_gocache_if_needed
 }
 trap cleanup_mutate EXIT
 trap 'cleanup_mutate; exit 130' INT
 trap 'cleanup_mutate; exit 143' TERM
 
+trim_gocache_if_needed
 go build -o "$MUTATE_BIN" ./scripts/mutate
 
 # Anchor check: resolves every spec's anchors against the current source
@@ -295,6 +313,7 @@ if [ "$NUM_SPECS" -eq 0 ]; then
     trap - EXIT INT TERM
     echo -e "${SWEEP_COLOR}✓ No Mutation Specs Found${SWEEP_NOTE}${NC}"
 else
+    NUM_CPUS=$(nproc 2>/dev/null || echo 4)
     if [ -n "${MUTATE_PARALLEL_WORKERS:-}" ]; then
         if ! [[ "$MUTATE_PARALLEL_WORKERS" =~ ^[0-9]+$ ]] || [ "$MUTATE_PARALLEL_WORKERS" -lt 1 ]; then
             echo -e "${RED}ERROR: MUTATE_PARALLEL_WORKERS must be a positive integer, got '$MUTATE_PARALLEL_WORKERS'${NC}" >&2
@@ -302,7 +321,6 @@ else
         fi
         WORKERS="$MUTATE_PARALLEL_WORKERS"
     else
-        NUM_CPUS=$(nproc 2>/dev/null || echo 4)
         if [ "$NUM_CPUS" -ge 4 ]; then
             WORKERS=$(( NUM_CPUS * 3 / 4 ))
             if [ "$WORKERS" -gt 16 ]; then WORKERS=16; fi
@@ -327,7 +345,6 @@ else
         fi
         WORKER_PROCS="$MUTATE_GOMAXPROCS"
     else
-        NUM_CPUS=$(nproc 2>/dev/null || echo 4)
         WORKER_PROCS=$(( NUM_CPUS >= 24 ? 2 : 1 ))
     fi
 
