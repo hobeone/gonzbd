@@ -23,7 +23,7 @@ import (
 // in-memory map. Unrecognised message IDs produce 430.
 //
 // It's not a faithful RFC 3977 implementation — it only speaks the
-// verbs the downloader uses (CAPABILITIES, BODY, STAT, QUIT) — but
+// verbs the downloader uses (CAPABILITIES, BODY, QUIT) — but
 // it exercises the same TCP/CRLF plumbing that a real server would.
 type mockNNTP struct {
 	addr string
@@ -222,16 +222,6 @@ func (ms *mockNNTP) handleConn(c net.Conn) {
 			}
 			ms.fetches.Add(1)
 			_ = write(fmt.Sprintf("222 0 <%s> body follows\r\n%s\r\n.\r\n", id, body))
-		case strings.HasPrefix(cmd, "STAT "):
-			id := strings.Trim(strings.TrimPrefix(cmd, "STAT "), "<>")
-			ms.bodiesMu.Lock()
-			_, hasBody := ms.bodies[id]
-			ms.bodiesMu.Unlock()
-			if !hasBody {
-				_ = write("430 no such article\r\n")
-				continue
-			}
-			_ = write(fmt.Sprintf("223 0 <%s>\r\n", id))
 		case cmd == "QUIT":
 			_ = write("205 bye\r\n")
 			return

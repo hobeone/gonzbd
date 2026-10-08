@@ -3098,7 +3098,6 @@ func (app *Application) buildDownloaderOptions() downloader.Options {
 	maxArtOpt := dl.MaxArtOpt
 	topOnly := dl.TopOnly
 	noPenalties := dl.NoPenalties
-	preCheck := dl.PreCheck
 	propDelay := dl.PropagationDelay
 	return downloader.Options{
 		MaxArtTries:      maxArtTries,
@@ -3106,7 +3105,6 @@ func (app *Application) buildDownloaderOptions() downloader.Options {
 		TopOnly:          topOnly,
 		NoPenalties:      noPenalties,
 		MaxPenalty:       app.maxPenalty,
-		PreCheck:         preCheck,
 		PropagationDelay: time.Duration(propDelay) * time.Minute,
 		OnJobHopeless: func(jobID string) {
 			var msg string

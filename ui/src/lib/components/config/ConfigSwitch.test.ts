@@ -6,32 +6,32 @@ describe('ConfigSwitch', () => {
 	it('renders label', () => {
 		render(ConfigSwitch, {
 			section: 'downloads',
-			keyword: 'pre_check',
+			keyword: 'top_only',
 			value: false,
-			label: 'Pre-check articles'
+			label: 'Top-only server mode'
 		});
-		expect(screen.getByLabelText('Pre-check articles')).toBeInTheDocument();
+		expect(screen.getByLabelText('Top-only server mode')).toBeInTheDocument();
 	});
 
 	it('renders description when provided', () => {
 		render(ConfigSwitch, {
 			section: 'downloads',
-			keyword: 'pre_check',
+			keyword: 'top_only',
 			value: false,
-			label: 'Pre-check',
-			description: 'STAT check before download'
+			label: 'Top-only',
+			description: 'Only use the highest-priority server group'
 		});
-		expect(screen.getByText('STAT check before download')).toBeInTheDocument();
+		expect(screen.getByText('Only use the highest-priority server group')).toBeInTheDocument();
 	});
 
 	it('checkbox reflects value prop', () => {
 		render(ConfigSwitch, {
 			section: 'downloads',
-			keyword: 'pre_check',
+			keyword: 'top_only',
 			value: true,
-			label: 'Pre-check'
+			label: 'Top-only'
 		});
-		const checkbox = screen.getByLabelText('Pre-check') as HTMLInputElement;
+		const checkbox = screen.getByLabelText('Top-only') as HTMLInputElement;
 		expect(checkbox.checked).toBe(true);
 	});
 
@@ -39,15 +39,15 @@ describe('ConfigSwitch', () => {
 		const onupdate = vi.fn();
 		render(ConfigSwitch, {
 			section: 'downloads',
-			keyword: 'pre_check',
+			keyword: 'top_only',
 			value: false,
-			label: 'Pre-check',
+			label: 'Top-only',
 			onupdate
 		});
 
-		const checkbox = screen.getByLabelText('Pre-check');
+		const checkbox = screen.getByLabelText('Top-only');
 		await fireEvent.click(checkbox);
 
-		expect(onupdate).toHaveBeenCalledWith('downloads', 'pre_check', true);
+		expect(onupdate).toHaveBeenCalledWith('downloads', 'top_only', true);
 	});
 });

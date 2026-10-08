@@ -630,10 +630,11 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 // inner layers assume it — a second check here would be a state that cannot
 // occur, which is the class of code that document exists to delete.
 
-// Stat is BODY's cheap cousin: it asks the server whether an article
-// exists without transferring the body. Returns nil if present,
-// ErrNoArticle (or another sentinel) if not. Useful for capability
-// probing and dupe-checking flows.
+// Stat sends STAT <message-id> to ask the server whether an article exists
+// without transferring the body. Returns nil if present, ErrNoArticle (or
+// another sentinel) if not. It has no production downloader caller (the
+// downloader sends BODY directly) and is retained for nntp-layer and e2e
+// protocol tests.
 func (c *Conn) Stat(ctx context.Context, messageID string) error {
 	if c.State() != StateReady {
 		return ErrInvalidState

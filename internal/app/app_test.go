@@ -795,13 +795,6 @@ func (m *mockNNTP) handleConn(c net.Conn) {
 			_ = write(fmt.Sprintf("222 0 <%s> body follows\r\n", id))
 			_ = write(string(dotStuff(body)))
 			_ = write("\r\n.\r\n")
-		case strings.HasPrefix(cmd, "STAT "):
-			id := strings.Trim(strings.TrimPrefix(cmd, "STAT "), "<>")
-			if _, ok := m.bodies[id]; !ok {
-				_ = write("430 no such article\r\n")
-				continue
-			}
-			_ = write(fmt.Sprintf("223 0 <%s>\r\n", id))
 		case cmd == "QUIT":
 			_ = write("205 bye\r\n")
 			return

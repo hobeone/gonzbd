@@ -66,11 +66,6 @@ type DownloadConfig struct {
 	// constants.PenaltyShort, useful for testing.
 	NoPenalties bool `yaml:"no_penalties" json:"no_penalties"`
 
-	// PreCheck issues an NNTP STAT before BODY to confirm article
-	// availability. Trades latency for fewer wasted bytes on missing
-	// articles.
-	PreCheck bool `yaml:"pre_check" json:"pre_check"`
-
 	// OnDemandPar2 defers par2 recovery volumes (*.volNNN+MM.par2) and only
 	// downloads them if CRC verification shows the download needs repair. The
 	// par2 index file is always downloaded. Saves bandwidth on intact

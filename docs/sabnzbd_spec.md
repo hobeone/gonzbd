@@ -688,7 +688,6 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `max_compute_slots` | int | `2` | Maximum number of concurrent compute/post-processing jobs |
 | `top_only` | bool | false | Only use top-priority server |
 | `no_penalties` | bool | false | Use minimal penalty times |
-| `pre_check` | bool | false | Pre-check article availability via STAT |
 | `propagation_delay` | int | `0` | Minutes to wait before downloading |
 | `unwanted_extensions` | list | `exe, com, scr, pif, bat, cmd, msi, vbs` | Extensions a job must not deliver (no dot, case-insensitive, glob patterns allowed; an entry containing `.` or `,` is rejected) |
 | `unwanted_extensions_mode` | string | `blacklist` | `blacklist` (listed are unwanted) or `whitelist` (unlisted are unwanted); a name with no extension is never unwanted |

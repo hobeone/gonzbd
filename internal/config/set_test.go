@@ -196,16 +196,6 @@ func TestConfig_Set(t *testing.T) {
 			},
 		},
 		{
-			"set bool (pre_check)",
-			"downloads", "pre_check", "true",
-			false,
-			func(t *testing.T, c *Config) {
-				if !c.Downloads.PreCheck {
-					t.Error("PreCheck is false, want true")
-				}
-			},
-		},
-		{
 			"set string (replace_illegal_with)",
 			"downloads", "replace_illegal_with", ".",
 			false,

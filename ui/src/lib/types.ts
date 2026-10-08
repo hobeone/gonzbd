@@ -213,7 +213,6 @@ export interface DownloadsConfig {
 	max_active_jobs: number;
 	top_only: boolean;
 	no_penalties: boolean;
-	pre_check: boolean;
 	on_demand_par2: boolean;
 	propagation_delay: number;
 	replace_illegal_with: string;
