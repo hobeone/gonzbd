@@ -33,8 +33,7 @@ func TestNoteArticlesUnwritten_IsSilentOnAnEmptySet(t *testing.T) {
 // A rejected article is resolved elsewhere and will never arrive again, so it
 // must keep its count toward the file's part total — a file that stopped
 // counting it could never reach TotalParts, and the job would sit at 100% with
-// nothing outstanding. It must also not appear in the rolled-back set, which
-// would clear an Emitted bit the ack is about to resolve.
+// nothing outstanding.
 func TestFailPermanent_KeepsTheArticleCounted(t *testing.T) {
 	w := newTestFileWriter(t)
 	w.seenDone[1] = struct{}{}
@@ -47,11 +46,6 @@ func TestFailPermanent_KeepsTheArticleCounted(t *testing.T) {
 	if _, failed := w.seenFailed[1]; !failed {
 		t.Error("the refused article is not in seenFailed, so a redelivery would be " +
 			"counted a second time and overshoot the file's part total")
-	}
-	if got := w.takeFaulted(); len(got) != 0 {
-		t.Errorf("takeFaulted() = %v — a refused article must not be rolled back to "+
-			"Outstanding: it is resolved, and re-dispatching it would fetch the same "+
-			"unusable article forever", got)
 	}
 
 	// An article with no Message-ID is keyed on its ArtIdx like any other —

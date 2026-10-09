@@ -34,8 +34,9 @@ func withShortWrite(n int) fileWriterOpt {
 // cannot tell it from a total failure and rolls the article back, which is safe
 // only because of what it does with the article.
 //
-// The load-bearing property is the last assertion: fail routes it to
-// OUTSTANDING, not to permanently failed. A1 forbids a storage fault from
+// The load-bearing property is the last two assertions: the article is
+// rolled back, not permanently failed, and routeAcceptFailure returns it to
+// OUTSTANDING. A1 forbids a storage fault from
 // resolving an article, so it is coming back. The file therefore cannot reach
 // TotalParts, OnFileComplete cannot fire, and no truncate runs while the
 // unrecorded partial bytes exist. By the time the file can finalize, the
@@ -48,6 +49,7 @@ func withShortWrite(n int) fileWriterOpt {
 func TestFileWriter_ShortWriteLeavesNoClaimOverPartialBytes(t *testing.T) {
 	w := newTestFileWriter(t, withShortWrite(50))
 
+	w.admitAccepted(0)
 	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{0xAA}, 100), 0); err == nil {
 		t.Fatal("Accept returned nil error after a short write; the fault must reach the caller")
 	}
@@ -75,9 +77,11 @@ func TestFileWriter_ShortWriteLeavesNoClaimOverPartialBytes(t *testing.T) {
 		t.Errorf("Drain reported %d articles for a write that failed; a record built "+
 			"from this report would claim bytes that are only partly on disk", len(written))
 	}
-	if faulted := w.takeFaulted(); len(faulted) != 1 {
-		t.Errorf("takeFaulted returned %d articles, want 1 routed back to Outstanding: "+
-			"a storage fault must never resolve an article (A1), or the file can "+
-			"finalize over the partial bytes this write left behind", len(faulted))
+	if _, failed := w.seenFailed[0]; failed {
+		t.Error("a storage fault resolved the article against itself (A1); the file " +
+			"can then finalize over the partial bytes this write left behind")
+	}
+	if w.parts() != 0 {
+		t.Errorf("parts = %d, want 0: the rolled-back article gave its part back", w.parts())
 	}
 }

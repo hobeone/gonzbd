@@ -33,6 +33,9 @@ type collisionFixture struct {
 	a        *Assembler
 	f        *openFile
 	rejected []int32
+	// unwritten collects what OnArticlesUnwritten was told to return to
+	// Outstanding, which is how a rolled-back article is observed.
+	unwritten []int32
 }
 
 func newCollisionFixture(t *testing.T) *collisionFixture {
@@ -40,6 +43,9 @@ func newCollisionFixture(t *testing.T) *collisionFixture {
 	c := &collisionFixture{a: newHelperAssembler()}
 	c.a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
 		c.rejected = append(c.rejected, artIdx)
+	}
+	c.a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
+		c.unwritten = append(c.unwritten, arts...)
 	}
 	c.f = newHelperFile(t, t.TempDir(), "collide.dat", 1<<20)
 	c.f.info.TotalParts = 2
@@ -70,9 +76,9 @@ func TestCollision_ArrivalRejectedOnceIncumbentIsWritten(t *testing.T) {
 	if len(c.rejected) != 1 || c.rejected[0] != 2 {
 		t.Errorf("OnArticleRejected = %v, want [2] — the arrival loses a written offset", c.rejected)
 	}
-	if got := c.f.w.takeFaulted(); len(got) != 0 {
-		t.Errorf("the written incumbent was rolled back as well as remaining in the "+
-			"barrier's evidence: %+v — one article, two terminal dispositions", got)
+	if len(c.unwritten) != 0 {
+		t.Errorf("the written incumbent was returned to Outstanding as well as remaining in the "+
+			"barrier's evidence: %v — one article, two terminal dispositions", c.unwritten)
 	}
 	onDisk, err := os.ReadFile(c.f.w.path)
 	if err != nil {
@@ -134,8 +140,8 @@ func TestCollision_OffsetStaysSettledAfterConfirm(t *testing.T) {
 			"been ACKED durable, and overwriting it now contradicts a fact the queue "+
 			"has already recorded", c.rejected)
 	}
-	if got := c.f.w.takeFaulted(); len(got) != 0 {
-		t.Errorf("an already-acked article was rolled back: %+v", got)
+	if len(c.unwritten) != 0 {
+		t.Errorf("an already-acked article was returned to Outstanding: %v", c.unwritten)
 	}
 }
 
@@ -239,14 +245,12 @@ func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
 	// admitted afresh. Admitting a second time without the fail would charge
 	// partsWritten twice for one article.
 	c.f.w.fail(id)
-	_ = c.f.w.takeFaulted()
 	c.f.w.admitAccepted(id.artIdx)
 	c.f.w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
 	req.Data = []byte("AAAA")
 	if err := c.a.acceptArticle(c.f, id, req); err == nil {
 		t.Fatal("precondition: the injected write fault did not surface")
 	}
-	_ = c.f.w.takeFaulted()
 
 	if owner := c.f.w.acceptedAt[0]; !owner.written {
 		t.Error("a re-accept by the offset's own owner cleared the written latch, " +
@@ -266,9 +270,11 @@ func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
 			"re-accept, so the arrival overwrote an article the barrier has acked",
 			c.rejected)
 	}
-	if got := c.f.w.takeFaulted(); len(got) != 0 {
-		t.Errorf("an already-written article was rolled back: %+v — permanently "+
-			"failed and acked durable at once", got)
+	// The only article routed to Outstanding is the re-accept whose write
+	// failed; the written incumbent's disposition is the barrier's alone.
+	if len(c.unwritten) != 0 {
+		t.Errorf("OnArticlesUnwritten = %v: acceptArticle does not route, so nothing "+
+			"may have reached the callback — the settled arrival is rejected, not rolled back", c.unwritten)
 	}
 }
 
@@ -289,8 +295,8 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...), 0); err == nil {
 		t.Fatal("precondition: the injected write fault did not surface")
 	}
-	if rolled := w.takeFaulted(); len(rolled) != 1 || rolled[0].id != id {
-		t.Fatalf("precondition: want one rollback of %+v, got %+v", id, rolled)
+	if w.parts() != 0 {
+		t.Fatalf("precondition: parts = %d after the rollback, want 0", w.parts())
 	}
 
 	// The re-dispatched copy, at the same offset.
@@ -300,8 +306,8 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 		t.Fatalf("re-accept: %v", err)
 	}
 
-	if rolled := w.takeFaulted(); len(rolled) != 0 {
-		t.Errorf("the re-accepted article was reported as colliding with itself: %+v", rolled)
+	if got := w.parts(); got != 1 {
+		t.Errorf("parts = %d after the re-accept, want 1: it was treated as a collision with itself", got)
 	}
 }
 
@@ -322,7 +328,6 @@ func TestFileWriter_RolledBackOwnerKeepsItsOffsetUntilReplaced(t *testing.T) {
 	if err := w.Accept(first, 0, []byte("AAAA"), 0); err == nil {
 		t.Fatal("precondition: the injected write fault did not surface")
 	}
-	_ = w.takeFaulted()
 	if w.parts() != 0 {
 		t.Fatalf("parts = %d after the rollback, want 0", w.parts())
 	}
@@ -341,9 +346,6 @@ func TestFileWriter_RolledBackOwnerKeepsItsOffsetUntilReplaced(t *testing.T) {
 	}
 	if owner := w.acceptedAt[0]; owner.id != second || !owner.written {
 		t.Errorf("acceptedAt[0] = %+v, want the second article, written", owner)
-	}
-	if rolled := w.takeFaulted(); len(rolled) != 0 {
-		t.Errorf("replacing a rolled-back owner produced a second rollback: %+v", rolled)
 	}
 	if got, settled := w.offsetSettledBy(0, third); !settled || got != second {
 		t.Errorf("offsetSettledBy(third) = %+v, %v; want the second article settled", got, settled)

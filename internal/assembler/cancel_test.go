@@ -185,7 +185,7 @@ func TestCloseCancelledFile_DispositionDecidesTheBytesAndNothingElse(t *testing.
 			closed := false
 			f.w.closeFile = func() error { closed = true; return nil }
 
-			a.closeCancelledFile(f.w.key, f, tc.disposition)
+			a.closeCancelledFile(f, tc.disposition)
 
 			if !closed {
 				t.Error("the file handle was not closed — a caller that deletes the " +

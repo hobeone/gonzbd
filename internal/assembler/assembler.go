@@ -205,11 +205,10 @@ type Options struct {
 	// the article to Outstanding.
 	//
 	// It carries NO article index, and that separation is the fix for a whole
-	// class of stranding. The signature used to name one article, so a batch
-	// failure — a drain — could report
-	// only whichever article triggered it, and the rest were rolled back
-	// silently. Returning articles to Outstanding is now OnArticlesUnwritten's
-	// job, which takes the whole set.
+	// class of stranding. The signature used to name one article, so a failure
+	// that rolled back several could report only whichever article triggered
+	// it, and the rest were rolled back silently. Returning articles to
+	// Outstanding is OnArticlesUnwritten's job, which takes a set.
 	OnWriteFault func(jobID string, fileIdx int, f *storagefault.Fault)
 
 	// OnArticlesUnwritten, if non-nil, is called on the worker goroutine with
@@ -1015,7 +1014,7 @@ func (a *Assembler) dispatchRequest(
 			if k.jobID != cancelID {
 				continue
 			}
-			a.closeCancelledFile(k, f, req.disposition)
+			a.closeCancelledFile(f, req.disposition)
 			// Dispatcher-level bookkeeping, and unconditional. What happens to
 			// the BYTES is the disposition's business and lives in the helper;
 			// which keys this worker still tracks is this loop's, and a kept
@@ -1126,14 +1125,6 @@ func (a *Assembler) dispatchRequest(
 // downloader is already stopped and the handles still exist, so by the time
 // this runs there is little left to report.
 //
-// # What happens to any articles still in the faulted set
-//
-// Drain writes nothing, so it adds nothing to w.faulted; the only producer is
-// a writeOne failure inside Accept, which handleSuccessArticle routes on its
-// own path. The releaseFaulted below is a backstop for that set, whose only
-// consumer is takeFaulted: left behind, those articles would keep their
-// Emitted bits — not Done, not Failed, not Outstanding.
-//
 // # Why the fault is REPORTED and not ROUTED
 //
 // Returning it is the pattern opDrain, opSync and opTruncate already use, and
@@ -1163,7 +1154,6 @@ func (a *Assembler) dispatchRequest(
 // the case that makes the difference: reporting the ENOSPC alone describes the
 // condition as one that waiting can clear, when it cannot.
 func (a *Assembler) drainAndClose(f *openFile) error {
-	key := f.w.key
 	var first, permanent error
 	note := func(op string, err error) {
 		if err == nil {
@@ -1183,30 +1173,11 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 
 	_, err := f.w.Drain()
 	note("drain file before close", err)
-	// Unconditional, and cheap when there is nothing to give back: this is the
-	// last chance to return anything left in the faulted set, because Close
-	// below throws the writer away and the set with it.
-	a.releaseFaulted(f, key.jobID, key.fileIdx)
 	note("sync file before close", f.w.Sync())
 	// A failing Close is a storage condition too, and on network-backed mounts
 	// it is frequently the first report of writes that never landed — the
 	// close is where a deferred error surfaces.
-	//
-	// The faulted set it returns is separate from that error and is expected
-	// to be empty: the releaseFaulted above drained it, and neither Sync nor
-	// Close can add to it. Routed anyway rather than dropped — unlike the
-	// cancel path, this file is being closed normally and its articles are
-	// still wanted — and reported at Error, because a non-empty set here means
-	// a producer has appeared that nothing drains.
-	leaked, cerr := f.w.Close()
-	note("close file", cerr)
-	if len(leaked) > 0 {
-		a.log.Error("articles were rolled back and never routed before the file was "+
-			"closed; routing them now, but a producer of the faulted set is not being "+
-			"drained",
-			"path", f.info.Path, "articles", len(leaked), "artidxs", faultedIndices(leaked))
-		a.routeFaulted(leaked, key.jobID, key.fileIdx)
-	}
+	note("close file", f.w.Close())
 
 	if permanent != nil {
 		return permanent
@@ -1219,16 +1190,9 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 // owns every handle (X1).
 //
 // It is the cancel counterpart to drainAndClose, and deliberately not a call
-// to it. drainAndClose does two further things that are right for its own
-// caller and wrong here:
+// to it. drainAndClose does something that is right for its own caller and
+// wrong here:
 //
-//   - It calls releaseFaulted and routes whatever Close returns, firing
-//     OnArticlesUnwritten and OnArticleRejected. This path DROPS that set. The
-//     job is being torn down and has already left the queue, so returning its
-//     articles to Outstanding would re-dispatch work for a job that is going
-//     away — true under both dispositions, since keeping a job's bytes does
-//     not make its articles wanted again. closeleak_test.go pins it with
-//     t.Errorf on both callbacks, for each disposition.
 //   - It calls Sync. CloseJobHandles needs that fsync because par2 and unrar
 //     are about to read the file. Nothing reads a removed job's files, and an
 //     fsync here would stall ingest for every other job on the one worker
@@ -1243,30 +1207,16 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 // The caller keeps the bookkeeping: the open-map delete, the per-file
 // completed tombstone is unconditional and none of it is this function's
 // business.
-func (a *Assembler) closeCancelledFile(k fileKey, f *openFile, disposition FileDisposition) {
+func (a *Assembler) closeCancelledFile(f *openFile, disposition FileDisposition) {
 	// The close error is best-effort only under DeleteFiles, where the file is
 	// unlinked below and nothing it failed to flush could ever be read. Under
 	// KeepFiles the file survives, so the same error means a kept file may be
 	// missing bytes, and it is logged rather than discarded.
-	leaked, cerr := f.w.Close()
+	cerr := f.w.Close()
 	if cerr != nil && disposition == KeepFiles {
 		a.log.Warn("failed to close a cancelled job's file that is being kept; "+
 			"unsynced bytes may not have reached the platter",
 			"path", f.info.Path, "error", cerr)
-	}
-	if len(leaked) > 0 {
-		// The indices, not just a count. This path DROPS the set, so this line
-		// is the only record left of which articles were stranded — a count
-		// names nothing an operator or a bug report could act on.
-		//
-		// Every producer of w.faulted is drained before the worker returns to
-		// its select loop, so a non-empty set means a producer has been added
-		// that nothing drains, and that is a tripwire.
-		a.log.Error("articles were rolled back and never routed before a "+
-			"cancelled job's file was closed; they keep their Emitted bit and "+
-			"will not be re-dispatched until a restart",
-			"job", k.jobID, "fileidx", k.fileIdx,
-			"articles", len(leaked), "artidxs", faultedIndices(leaked))
 	}
 	if disposition == DeleteFiles {
 		if err := fsutil.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
@@ -1290,8 +1240,7 @@ func (a *Assembler) drainAndCloseAll(open map[fileKey]*openFile) {
 		// which is a WaitGroup misuse panic, and it would take the process
 		// down before Shutdown's final queue.Save.
 		//
-		// drainAndClose has already logged each failure and returned the
-		// articles it rolled back, and the next start re-derives the job's
+		// drainAndClose has already logged each failure, and the next start re-derives the job's
 		// state from disk regardless (S3).
 		_ = a.drainAndClose(f)
 	}
@@ -1328,10 +1277,10 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 			// relabelling it. Re-resolving here would call the FileInfo
 			// resolver a second time on a path where the resolver is itself
 			// the thing that may have failed.
-			// Reported alongside the fault rather than left to
-			// releaseFaulted: there is no FileWriter to have rolled it back,
-			// because the file was never opened. The article is nevertheless
-			// un-written and still Emitted, which is not Outstanding.
+			// Reported alongside the fault: there is no FileWriter to have
+			// rolled it back, because the file was never opened. The article
+			// is nevertheless un-written and still Emitted, which is not
+			// Outstanding.
 			a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
 			a.noteWriteFault("", req, err)
 			if req.Data != nil {
@@ -1356,24 +1305,6 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	} else {
 		admitted = a.handleSuccessArticle(f, req)
 	}
-	// THE drain, and the reason it is one call on every path rather than one
-	// per producer.
-	//
-	// The invariant is "w.faulted is empty when the file's ROUTING is
-	// complete", and a release scattered across each producer does not
-	// establish it — it only establishes that each producer eventually gets
-	// drained by somebody. handleFatalArticle and the rejection branch both
-	// once reached the comparison below with a stale set pending, and the file
-	// could reach TotalParts with a part whose bytes were pooled and never
-	// written, firing OnFileComplete at 100% reported health over a hole.
-	//
-	// The count no longer depends on this call: FileWriter.fail gives the part
-	// back as it rolls the article back, so the comparison below is correct
-	// whether or not anything has been drained. What still depends on it is the
-	// ROUTING — an article left in w.faulted is neither Done, nor Failed, nor
-	// Outstanding — which is why the call stays unconditional rather than
-	// becoming best-effort.
-	a.releaseFaulted(f, req.JobID, req.FileIdx)
 	if !admitted {
 		return
 	}
@@ -1414,7 +1345,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 // An earlier version of this paragraph derived the same conclusion from
 // "partsWritten is incremented when an article is ACCEPTED and is never
 // decremented". That premise was already false when it was written — the
-// give-back existed, in releaseFaulted — and it is comprehensively false now.
+// give-back existed, in rollbackPart — and it is comprehensively false now.
 // The conclusion survives the correction because it never depended on the
 // count: what strands the article is the absence of a RECORD, not the presence
 // of a part.
@@ -1694,66 +1625,12 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 		}
 		return true
 	}
-	// Released here as well as by processRequest's drain. This one is not
-	// redundant belt-and-braces: it keeps the roll-back adjacent to the
-	// failure that caused it, which is what the unit-level contract for this
-	// function asserts. The drain is what makes the INVARIANT hold for
-	// producers that have no such site.
-	a.releaseFaulted(f, req.JobID, req.FileIdx)
+	// The rolled-back article is the one whose write just failed: writeOne is
+	// the only caller of FileWriter.fail. Its Emitted bit is still set, so it
+	// is handed back to be cleared, as the openTargetFile failure does.
+	a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
 	a.noteWriteFault(f.info.Path, req, err)
 	return false
-}
-
-// releaseFaulted returns every article a failed writer operation rolled back
-// to Outstanding.
-//
-// Called after every operation that can populate w.faulted — which is not the
-// same set as "every operation that can fail", and reading it as such is how
-// two producers went unpaired. It includes the ones whose fault the barrier
-// routes rather than this package (the two are separate concerns: the barrier
-// can park the job, but it never learns which articles lost their bytes,
-// because that set does not cross the SyncTarget interface) and the close-time
-// drain.
-//
-// Counting is NOT part of this. FileWriter.fail gives the part back as it
-// rolls the article back, in the same statement pair that removes it from
-// seenDone, so by the time the set arrives here every count is already
-// correct. This function's whole job is disposition: back to Outstanding.
-func (a *Assembler) releaseFaulted(f *openFile, jobID string, fileIdx int) {
-	a.routeFaulted(f.w.takeFaulted(), jobID, fileIdx)
-}
-
-// routeFaulted disposes of one already-taken set of rolled-back articles.
-//
-// Split from releaseFaulted so Close's return value has somewhere to go. It
-// takes no *openFile deliberately: there is nothing left for it to do to the
-// file, because every part was settled when the articles were rolled back or
-// resolved. Anything it could reach for would be state it does not own.
-func (a *Assembler) routeFaulted(rolled []faultedArticle, jobID string, fileIdx int) {
-	if len(rolled) == 0 {
-		return
-	}
-	arts := make([]int32, 0, len(rolled))
-	for _, r := range rolled {
-		arts = append(arts, r.id.artIdx)
-	}
-	a.noteArticlesUnwritten(jobID, fileIdx, arts)
-}
-
-// faultedIndices lists the article indices in a rolled-back set, for the two
-// tripwire logs at the Close call sites.
-//
-// It exists because those two lines used to report a COUNT. On the cancel path
-// the set is dropped, so the log is the only record that survives it, and
-// "articles=3" names nothing anyone could act on — not the articles, and not
-// the producer that must have been added for the set to be non-empty at all.
-// The disposition is unchanged either way; this only makes the report legible.
-func faultedIndices(rolled []faultedArticle) []int32 {
-	out := make([]int32, len(rolled))
-	for i, r := range rolled {
-		out[i] = r.id.artIdx
-	}
-	return out
 }
 
 // noteArticlesUnwritten hands one set of un-written articles to their owner.

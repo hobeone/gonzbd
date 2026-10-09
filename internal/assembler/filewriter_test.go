@@ -301,7 +301,7 @@ func TestFileWriter_WriteOneFailureClearsSeenDone(t *testing.T) {
 		t.Fatalf("parts() = %d, want 1; the fixture did not admit the article", w.parts())
 	}
 
-	if err := w.writeOne(bufferedArticle{offset: 0, data: []byte("xy"), id: articleID{msgID: "a9", artIdx: 9}}); err == nil {
+	if err := w.writeOne(articleID{msgID: "a9", artIdx: 9}, 0, []byte("xy"), 0); err == nil {
 		t.Fatal("writeOne returned nil after EIO")
 	}
 	if _, still := w.seenDone[9]; still {
@@ -310,23 +310,12 @@ func TestFileWriter_WriteOneFailureClearsSeenDone(t *testing.T) {
 	if _, failed := w.seenFailed[9]; failed {
 		t.Error("a9 was recorded as FAILED by a storage fault, which A1 forbids")
 	}
-	rolled := w.takeFaulted()
-	if len(rolled) != 1 || rolled[0].id.msgID != "a9" {
-		t.Fatalf("takeFaulted() = %v, want a9 — an article nobody is told about keeps "+
-			"its Emitted bit and is never re-dispatched", rolled)
-	}
-	// Asserted on the counter rather than on a flag describing what someone
-	// else ought to do to it. The roll-back applies the give-back itself, and
-	// this is the observation that pins it: nothing has drained w.faulted, and
-	// the part is already gone.
+	// Asserted on the counter: the roll-back applies the give-back itself, and
+	// this is the observation that pins it.
 	if got := w.parts(); got != 0 {
 		t.Errorf("parts() = %d after the roll-back, want 0 — a9 was accepted and "+
 			"counted, so the roll-back must give its count back; otherwise the file "+
 			"reaches TotalParts over bytes that are not there", got)
-	}
-	if got := w.takeFaulted(); len(got) != 0 {
-		t.Errorf("takeFaulted() returned %v a second time; routing an article twice "+
-			"clears an Emitted bit a later dispatch legitimately set", got)
 	}
 }
 

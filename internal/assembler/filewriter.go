@@ -32,18 +32,6 @@ type articleID struct {
 // accounting uses, and the two could disagree.
 func (a articleID) sameArticle(b articleID) bool { return a.artIdx == b.artIdx }
 
-// bufferedArticle is one article's decoded bytes with its offset and identity,
-// on their way to writeOne.
-type bufferedArticle struct {
-	offset int64
-	data   []byte
-	id     articleID
-	// crc32 is the decoded article's CRC32, carried alongside offset and id
-	// so noteWritten can report it. It is the one the decoder already
-	// validated; nothing here computes or combines a CRC.
-	crc32 uint32
-}
-
 // FileWriter owns one target file: its handle and its write path. It has no
 // authority over anything externally visible.
 //
@@ -153,10 +141,6 @@ type FileWriter struct {
 	// exactly as seenDone's duplicate handling is.
 	acceptedAt map[int64]offsetOwner
 
-	// faulted accumulates the articles a failed write rolled back, for the
-	// caller to route to Outstanding. See fail.
-	faulted []faultedArticle
-
 	// partsWritten counts how many of the file's parts have been accounted
 	// for, whether by a successful accept or by a permanent failure.
 	//
@@ -199,13 +183,6 @@ type FileWriter struct {
 	// only way to fail a real Close is to close the handle first, which makes
 	// Sync fail one line earlier and never reaches the arm under test.
 	closeFile func() error
-}
-
-// faultedArticle is one article a failed write rolled back, for the caller to
-// return to Outstanding. fail builds it, with the give-back of the article's
-// part already applied.
-type faultedArticle struct {
-	id articleID
 }
 
 // offsetOwner is the article that owns one offset, and whether its bytes have
@@ -308,12 +285,9 @@ func (w *FileWriter) rollbackPart(artIdx int32) {
 	}
 }
 
-// fail rolls one article back to never-having-arrived, and records it so the
-// caller can return it to Outstanding.
+// fail rolls one article back to never-having-arrived after its write failed.
 //
-// # Rolled back, not marked failed
-//
-// It clears seenDone and — unlike the version this replaces — does NOT set
+// It clears seenDone and gives the article's part back, and does NOT set
 // seenFailed. A failed WRITE is a storage condition, and A1 forbids resolving
 // it against the article: the bytes are still available on the server and the
 // article is still wanted. Recording it as failed made a redelivery take the
@@ -321,33 +295,15 @@ func (w *FileWriter) rollbackPart(artIdx int32) {
 // bytes but does not count them, so the file's part total was permanently one
 // short of the truth for every rolled-back article.
 //
-// # Recording it is the whole point
-//
-// Absence from Drain's return does NOT leave the article Outstanding. Its
-// Emitted bit is still set from dispatch and ForEachUnfinishedArticle skips a
-// set Emitted bit, so an article that is merely dropped here is stranded until
-// something clears that bit: neither Done, nor Failed, nor Outstanding. A
-// restart clears it by not persisting it — jobProgressJSON excludes emitted
-// deliberately (internal/job/progress.go) — and a downloader reload clears it
-// in-process, unless #417 withholds that job's clear.
-//
-// The only producer is a failed writeOne inside Accept, which rolls back that
-// one article. The set is accumulated here and taken by the caller, rather
-// than inferred from the error Accept returns.
-//
-// # It gives the part back itself
-//
-// The give-back used to live in Assembler.releaseFaulted, one struct away from
-// the seenDone entry it is derived from, carried across by a stored uncount
-// flag. Both moved here: the delete and the decrement are now one statement
-// pair, so an article cannot lose its seenDone record while keeping its part.
-//
-// The rollback is exempt from the count's own > 0 clamp by construction rather
-// than by luck. An article only loses a part if it held one, which means it
-// was in seenDone and not in seenFailed, which means partsWritten counted it.
+// Returning the article to Outstanding is the caller's: its Emitted bit is
+// still set from dispatch and ForEachUnfinishedArticle skips a set Emitted
+// bit, so an article merely dropped here is stranded. writeOne is the only
+// caller of fail — `git grep -n '\.fail(' -- internal/assembler ':!*_test.go'`
+// finds 2 lines, this comment and the call in writeOne — so the one article
+// is the one whose Accept returned the
+// error, and routeAcceptFailure reports it.
 func (w *FileWriter) fail(id articleID) {
 	w.rollbackPart(id.artIdx)
-	w.faulted = append(w.faulted, faultedArticle{id: id})
 }
 
 // parts reports how many of the file's parts have been accounted for. The
@@ -435,17 +391,6 @@ func (w *FileWriter) failPermanent(artIdx int32) {
 	w.seenFailed[artIdx] = struct{}{}
 }
 
-// takeFaulted returns and clears the articles rolled back since the last call.
-//
-// Taken rather than read, because each set must be routed exactly once: the
-// caller returns them to Outstanding, and reporting one twice would clear an
-// Emitted bit a later dispatch had legitimately set.
-func (w *FileWriter) takeFaulted() []faultedArticle {
-	out := w.faulted
-	w.faulted = nil
-	return out
-}
-
 // Accept writes one article's bytes through writeOne.
 //
 // It takes ownership of data and returns it to the decoder pool on every path,
@@ -479,23 +424,23 @@ func (w *FileWriter) Accept(id articleID, off int64, data []byte, crc32 uint32) 
 	if !taken || !owner.id.sameArticle(id) {
 		w.acceptedAt[off] = offsetOwner{id: id}
 	}
-	return w.writeOne(bufferedArticle{offset: off, data: data, id: id, crc32: crc32})
+	return w.writeOne(id, off, data, crc32)
 }
 
 // writeOne writes a single article and reports it Written on success.
-func (w *FileWriter) writeOne(art bufferedArticle) error {
+func (w *FileWriter) writeOne(id articleID, off int64, data []byte, crc32 uint32) error {
 	telemetry.DiskWrites.Add(1)
-	telemetry.DiskWriteBytes.Add(int64(len(art.data)))
-	_, err := w.writeAt(art.data, art.offset)
-	if art.data != nil {
-		defer decoder.PutBuffer(art.data)
+	telemetry.DiskWriteBytes.Add(int64(len(data)))
+	_, err := w.writeAt(data, off)
+	if data != nil {
+		defer decoder.PutBuffer(data)
 	}
 	if err != nil {
 		telemetry.PipelineErrors.Add(telemetry.ErrClassDiskWriteError, 1)
-		w.fail(art.id)
+		w.fail(id)
 		return storagefault.Classify("write", w.path, err)
 	}
-	w.noteWritten(art.id, art.offset, len(art.data), art.crc32)
+	w.noteWritten(id, off, len(data), crc32)
 	return nil
 }
 
@@ -626,52 +571,14 @@ func (w *FileWriter) Truncate(n int64) error {
 	return nil
 }
 
-// Close releases the handle, and hands back any articles that were rolled back
-// and never routed.
+// Close releases the handle.
 //
-// # Why the set is a return value
-//
-// Close is the writer's last act: everything it holds is unreachable
-// afterwards, w.faulted included. An article left in that set is neither Done,
-// nor Failed, nor Outstanding — its Emitted bit is still set from dispatch and
-// ForEachUnfinishedArticle skips a set Emitted bit — so it is stranded for the
-// life of the process unless something clears that bit. A restart clears it by
-// not persisting it — jobProgressJSON excludes emitted deliberately
-// (internal/job/progress.go) — and a downloader reload clears it in-process,
-// unless #417 withholds that job's clear.
-//
-// There are two call sites — `grep -n 'w\.Close()' internal/assembler/*.go |
-// grep -v _test.go` returns the cancel arm and drainAndClose — and the set is
-// empty at both whenever every producer of w.faulted has been drained before
-// the worker returns to its select loop, which is the ordinary case.
-//
-// One path leaves it non-empty on purpose. The cancel arm's KeepFiles branch
-// calls Drain, whose error path calls w.fail on everything it did not attempt,
-// and then deliberately skips the releaseFaulted that would empty the set
-// again — because routing those articles would re-dispatch work for a job
-// that has left the queue. So a non-empty set there is expected rather than a
-// defect, and that arm distinguishes the two cases by whether the drain
-// failed.
-//
-// This return value does not fix a leak. It converts the emptiness from a
-// property that has to be re-argued across the whole file into one the
-// compiler restates at each call site — the same reason takeFaulted is a take
-// and not a read. A caller that adds a new path into Close now has to say what
-// happens to the articles, instead of silently dropping them.
-//
-// Taken rather than read, on takeFaulted's terms: each set must be routed
-// exactly once, and reporting one twice would clear an Emitted bit a later
-// dispatch had legitimately set.
-//
-// The error is unchanged and still reports STORAGE. A non-empty set is a
-// defect in this package, not a condition of the volume, so it is deliberately
-// not folded into the error: drainAndClose classifies that error into the
-// barrier's fault handling, and a bug reported as a storage fault would stall
-// a job over a healthy disk.
-func (w *FileWriter) Close() ([]faultedArticle, error) {
-	leaked := w.takeFaulted()
+// The error reports STORAGE: on network-backed mounts the close is where a
+// deferred write error first surfaces, and drainAndClose classifies it into the
+// barrier's fault handling.
+func (w *FileWriter) Close() error {
 	if err := w.closeFile(); err != nil {
-		return leaked, storagefault.Classify("close", w.path, err)
+		return storagefault.Classify("close", w.path, err)
 	}
-	return leaked, nil
+	return nil
 }

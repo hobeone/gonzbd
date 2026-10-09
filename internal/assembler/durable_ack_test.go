@@ -349,13 +349,6 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 	// see FileWriter.fail, which applies the give-back in the same statement
 	// pair that clears seenDone. Counting an article whose bytes are not on
 	// disk is what let a file reach TotalParts and finalize over them.
-	//
-	// This comment used to name Assembler.releaseFaulted as the thing that
-	// gave the count back, and that was wrong on its own terms: this test
-	// calls w.fail directly and never calls releaseFaulted, so under the old
-	// arrangement nothing gave anything back and the assertion below passed
-	// only because a fresh seenDone insert returns true. The sentence is
-	// accurate now for a different reason than it claimed then.
 	retry := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("retry")}
 	if !a.handleSuccessArticle(f, retry) {
 		t.Error("the retry was not counted toward TotalParts, so the file can never " +

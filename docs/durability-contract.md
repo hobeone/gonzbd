@@ -1846,9 +1846,11 @@ articles or sparse regions.
   | `Options.OnWriteFault` | the classified `*storagefault.Fault`, no article | stalls or fails the job on the usual R18 rule |
 
   They are separate because they are needed in different combinations. A fault
-  raised inside `Accept` needs both. A `Drain` or `Sync` failure reaches the
-  **barrier**, which routes the fault — but the rolled-back article set never
-  crosses the `SyncTarget` interface, so the assembler still owes the first.
+  raised inside `Accept` needs both: `routeAcceptFailure` reports the one
+  article whose write failed to `OnArticlesUnwritten`, then the fault to
+  `OnWriteFault`. A `Sync` or `Close` failure reaches the **barrier** (or the
+  close caller), which routes the fault; no article was rolled back, so there
+  is nothing for the first.
   `OnWriteFault` used to carry a single article index and do both, so a
   failure that rolled back several articles reported one and rolled the rest back silently: they
   were left neither Done, nor Failed, nor Outstanding, and only a restart
@@ -1876,22 +1878,18 @@ articles or sparse regions.
   how the two used to drift apart. `partsWritten` lives on `FileWriter`, beside
   the `seenDone`/`seenFailed` sets it is derived from, and `FileWriter`
   applies the decrement in the same statement pair that clears the article's
-  `seenDone` entry — in `rollbackPart`, which `fail` calls before recording what
-  becomes of the article. The routing callbacks decide *disposition* only. An article
+  `seenDone` entry — in `rollbackPart`, which `fail` calls. The routing callbacks decide *disposition* only. An article
   already counted as permanently **failed** keeps its part through a roll-back:
   `admitPermanentFailure` charged it, a redelivery writes bytes without
   charging a second one, and decrementing there leaves the file one part short
   of `TotalParts` forever.
 
-  `FileWriter.Close` **returns** whatever is left in the rolled-back set
-  alongside its error, so the set cannot be dropped by omission at the moment
-  the writer stops existing. It is empty at both call sites on every reachable
-  path; a non-empty one means a producer was added that nothing drains.
-  `drainAndClose` routes it — that file is closing normally and its articles
-  are still wanted — while the job-cancel arm drops it, because the file is
-  unlinked on the next line and the job is leaving the queue. Both report at
-  Error, with the article indices, since the cancel arm's log is the only
-  record that survives the drop.
+  `fail` records nothing beyond that give-back: `writeOne` is its only caller
+  (`git grep -n '\.fail(' -- internal/assembler ':!*_test.go'` finds 2 lines,
+  the call and a doc comment), so the rolled-back article is the one whose
+  `Accept` returned the error, and `routeAcceptFailure` reports it by index.
+  The job-cancel arm and `drainAndClose` route nothing at close, because no
+  rolled-back articles can be pending then.
 
   A rolled-back article is **not** put in `seenFailed`. A storage fault says
   nothing about the article's availability (A1), and recording it failed made

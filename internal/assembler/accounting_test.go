@@ -165,12 +165,6 @@ func TestFileWriter_RollbackPart(t *testing.T) {
 				t.Errorf("%d is still in seenDone, so a redelivery would be read "+
 					"as a duplicate and its bytes never written", tc.id.artIdx)
 			}
-			// The give-back is the whole of it: rollbackPart records no
-			// disposition, so neither caller can inherit one it did not choose.
-			if len(w.faulted) != 0 {
-				t.Errorf("rollbackPart appended %d faulted articles, want 0 — the "+
-					"disposition belongs to the caller", len(w.faulted))
-			}
 		})
 	}
 }
@@ -266,23 +260,5 @@ func TestFileWriter_FailRollsBackEveryArticlesPart(t *testing.T) {
 					"redelivery being counted", w.seenFailed)
 			}
 		})
-	}
-}
-
-// TestFaultedIndices_ListsEveryArticleInTheSet pins the tripwire logs' one
-// derivation. The cancel arm DROPS the set it reports, so this slice is the
-// only record left of which articles were stranded; a helper that dropped or
-// reordered an entry would make that record quietly wrong.
-func TestFaultedIndices_ListsEveryArticleInTheSet(t *testing.T) {
-	got := faultedIndices([]faultedArticle{
-		{id: articleID{msgID: "n1", artIdx: 7}},
-		{id: articleID{msgID: "d2", artIdx: 2}},
-	})
-	if len(got) != 2 || got[0] != 7 || got[1] != 2 {
-		t.Errorf("faultedIndices = %v, want [7 2] — every article in the set, in order, "+
-			"whatever its disposition", got)
-	}
-	if got := faultedIndices(nil); len(got) != 0 {
-		t.Errorf("faultedIndices(nil) = %v, want empty", got)
 	}
 }
