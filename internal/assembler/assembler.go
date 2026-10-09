@@ -1473,8 +1473,8 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 	return f, nil
 }
 
-// seedOwned seeds w's range set from ranges verified before this process. It
-// is the one place that turns FileInfo.Owned into a seed.
+// seedOwned seeds w's range set from ranges verified before this process;
+// openTargetFile passes it FileInfo.Owned.
 //
 // The ranges come from disk, so each is checked first: Off >= 0, Len > 0 and
 // Off+Len not overflowing. An invalid range is dropped with a warning. That is

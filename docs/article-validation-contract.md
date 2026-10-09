@@ -926,7 +926,7 @@ checked, and a warning or unacted-on counter is not a consumer.
 |---|---|---|
 | E1 | offset ≥ 0, no overflow, within `ExpectedSize` + 12.5% | ✅ enforced |
 | E2 | no two articles write intersecting byte ranges | ✅ enforced within one open-file episode (#385, #759) |
-| E3 | no two articles' ranges **overlap** | ✅ the same check as E2 (`FileWriter.owned`); across a restart `owned` starts empty and the whole-file CRC is withheld (#387) |
+| E3 | no two articles' ranges **overlap** | ✅ the same check as E2 (`FileWriter.owned`); across a restart `owned` starts empty unless the resolver supplies `FileInfo.Owned`, and the whole-file CRC is withheld (#387) |
 | E4 | the parts tile `[0, size)` with no gap | ⚠ **absent** at L4; also undetected at L0 |
 
 | E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | ✅ **implemented** (#346) — `decodePayload` rejects `ErrOffsetUnknownForPart` |
