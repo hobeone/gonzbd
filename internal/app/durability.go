@@ -643,10 +643,11 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 		return true
 	}
 
-	// Read WITHOUT clearing. The accumulator is retired by settleJobBytes on
-	// the success path below, and by nothing else — a job whose barrier is
-	// still in flight therefore stays visible to jobsAtRisk, which is what
-	// stops a concurrent reload clearing its Emitted bits (#417).
+	// Read WITHOUT clearing. On the success path below, settleJobBytes is the
+	// only call that retires this window; forgetJobBarrierState is the other
+	// remover, dropping the entry on departure. A job whose barrier is still in
+	// flight therefore stays visible to jobsAtRisk, which is what stops a
+	// concurrent reload clearing its Emitted bits (#417). `git grep -n -E 'jobBarrierBytes(\[[^]]*\])? *(\+=| = )|delete\(app\.jobBarrierBytes' -- 'internal/app/*.go' ':!*_test.go'` finds 5 writers: app.go's init, forgetJobBarrierState's delete, noteJobBytes, and settleJobBytes's assignment and delete.
 	pending := app.pendingBytesFor(jobID)
 
 	app.barrierRuns.Add(1)
@@ -693,8 +694,10 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 	return true
 }
 
-// settleJobBytes retires the bytes a SUCCESSFUL barrier made durable, and is
-// the only thing that reduces a job's accumulator.
+// settleJobBytes retires the bytes a SUCCESSFUL barrier made durable. Of the
+// writers of the accumulator it is one of the two that reduce an entry; the
+// other is forgetJobBarrierState, which drops the whole entry on departure.
+// `git grep -n -E 'jobBarrierBytes(\[[^]]*\])? *(\+=| = )|delete\(app\.jobBarrierBytes' -- 'internal/app/*.go' ':!*_test.go'` finds 5 writers, as cited at checkpointJob.
 //
 // It subtracts the figure the barrier read before it ran, rather than clearing
 // the entry, and the difference is the whole point. An article written while
@@ -776,9 +779,9 @@ func (app *Application) nothingAtRisk(jobID string) bool {
 // The accumulator is the right source rather than a convenient one.
 // onArticleWritten feeds it on every accepted write and its own doc says it
 // "counts accepted bytes, not durable ones: it is measuring how much work is at
-// risk between barriers". settleJobBytes is the only thing that reduces it, and
-// only a successful barrier calls it — so an absent entry means a barrier
-// really did make everything durable.
+// risk between barriers". Its entries shrink only in settleJobBytes, and a
+// departure drops an entry wholesale. `git grep -n '[s]ettleJobBytes(' -- 'internal/app/*.go' ':!*_test.go'` finds 2 lines: the one call in checkpointJob, and the definition.
+// So an absent entry means a successful barrier retired the bytes, the job left, or it never wrote.
 //
 // That is also why this needs no in-flight case, and why it does not have to
 // take the per-job barrier mutex to be correct. A job whose barrier is running
