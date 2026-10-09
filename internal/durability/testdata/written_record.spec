@@ -5,9 +5,9 @@ timeout 3m
 [the EXISTS guard no longer requires a job_files row]
 file internal/durability/written.go
 --- anchor
- WHERE EXISTS (SELECT 1 FROM job_files WHERE job_id = ?)`,
+	if !live {
 --- replace
- WHERE ? <> ''`,
+	if false {
 --- end
 
 [DeleteAll deletes nothing]

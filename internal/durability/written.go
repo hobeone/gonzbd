@@ -1,6 +1,7 @@
 package durability
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -16,6 +17,11 @@ type WrittenRow struct {
 	Offset  int64
 	Length  int64
 	CRC32   uint32
+}
+
+// CompareWrittenRows orders rows by offset, then article index.
+func CompareWrittenRows(a, b WrittenRow) int {
+	return cmp.Or(cmp.Compare(a.Offset, b.Offset), cmp.Compare(a.ArtIdx, b.ArtIdx))
 }
 
 // FileState is the job_files columns the flusher updates.
@@ -75,14 +81,8 @@ func applyBatch(ctx context.Context, tx *sql.Tx, b RecordBatch) error {
 			return err
 		}
 	}
-	for _, r := range b.Rows {
-		if _, err := tx.ExecContext(ctx, `
-INSERT OR REPLACE INTO written_articles (job_id, file_idx, art_idx, offset, length, crc32)
-SELECT ?, ?, ?, ?, ?, ?
- WHERE EXISTS (SELECT 1 FROM job_files WHERE job_id = ?)`,
-			b.JobID, r.FileIdx, r.ArtIdx, r.Offset, r.Length, r.CRC32, b.JobID); err != nil {
-			return fmt.Errorf("durability: record written article %s file %d art %d: %w", b.JobID, r.FileIdx, r.ArtIdx, err)
-		}
+	if err := insertRows(ctx, tx, b); err != nil {
+		return err
 	}
 	for _, f := range b.Files {
 		if _, err := tx.ExecContext(ctx,
@@ -99,6 +99,34 @@ SELECT ?, ?, ?, ?, ?, ?
 			`UPDATE job_files SET complete = ? WHERE job_id = ? AND file_index = ?`,
 			boolInt(v.SetComplete), b.JobID, v.FileIdx); err != nil {
 			return fmt.Errorf("durability: verdict complete %s file %d: %w", b.JobID, v.FileIdx, err)
+		}
+	}
+	return nil
+}
+
+// insertRows writes a batch's rows when the job still has a job_files row,
+// which it checks once for the batch and prepares the insert once for it.
+func insertRows(ctx context.Context, tx *sql.Tx, b RecordBatch) error {
+	if len(b.Rows) == 0 {
+		return nil
+	}
+	var live bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM job_files WHERE job_id = ?)`, b.JobID).Scan(&live); err != nil {
+		return fmt.Errorf("durability: check job_files %s: %w", b.JobID, err)
+	}
+	if !live {
+		return nil
+	}
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT OR REPLACE INTO written_articles (job_id, file_idx, art_idx, offset, length, crc32) VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("durability: prepare written insert %s: %w", b.JobID, err)
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, r := range b.Rows {
+		if _, err := stmt.ExecContext(ctx, b.JobID, r.FileIdx, r.ArtIdx, r.Offset, r.Length, r.CRC32); err != nil {
+			return fmt.Errorf("durability: record written article %s file %d art %d: %w", b.JobID, r.FileIdx, r.ArtIdx, err)
 		}
 	}
 	return nil
