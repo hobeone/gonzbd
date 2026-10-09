@@ -112,7 +112,7 @@ proposed the durability record redesign, since superseded by this contract.
 | R20 | Permanent-storage → the job fails with that reason; no article is marked failed. |
 | R21 | No storage fault may alter the health percentage or the failed-byte count. |
 | R22 | Every storage syscall on the critical path is timeout-bounded, with at most one probe in flight per mount. |
-| R26 | A job can report at any time: bytes durable, bytes written-but-not-durable, articles outstanding, time of last successful barrier, and stall reason. |
+| R26 | A job can report at any time: bytes durable, bytes written-but-not-durable, articles outstanding, time of last successful barrier, and stall reason. Only bytes durable and the stall reason are reported; the written-but-not-durable byte count and the last-barrier time are not. |
 | R27 | A stalled job surfaces a reason the user can act on. |
 | R28 | An invariant violation fails loudly; it must never degrade silently. |
 
@@ -1039,13 +1039,12 @@ Three details that have each been got wrong once:
 - **A dropped kick is not a lost kick.** `barrierKick` is a non-blocking send;
   the accumulator is not reset by `noteJobBytes`, so the next article re-raises
   it and the interval tick covers the job regardless.
-- **`lastBarrier` stamps only a barrier that returned nil, and only one that
-  actually ran.** "The barrier ran and failed" and "no barrier ran at all" are
-  different facts. Folding the second into the first's nil-error case is how a
-  job on a dead mount came to be stamped every 30 seconds. A job with no sync
-  target likewise never reaches the settle, so its accumulator stands. Both
-  `lastBarrier` and the accumulator are internal to `internal/app`; the API
-  surfaces only `bytes_durable`.
+- **A checkpoint that ran no barrier does not retire the accumulator.** "The
+  barrier ran and failed" and "no barrier ran at all" are different facts. A job
+  with no sync target, and a checkpoint over no open files, both return before
+  the settle, so the accumulator stands. The accumulator (`jobBarrierBytes`) is
+  internal to `internal/app`, and no API field carries it; `bytes_durable` is
+  the only byte figure the API reports.
 
 **`bytes_durable` and the pending-byte accumulator are not in the same unit.**
 `bytes_durable` comes from the job's progress — `expected - failed - remaining`
@@ -1820,7 +1819,7 @@ articles or sparse regions.
 | `internalFileComplete` | cap 128. **Not** a bound on retained fds — see the handoff section. |
 | Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
 | Disk probe cache | one `probeState` per directory, evicted after 10 minutes; at most one outstanding `statfs` per directory. |
-| Per-job barrier state | `jobBarrierMu`, `jobBarrierBytes` and `lastBarrier` are dropped by `forgetJobBarrierState` when a job leaves the assembler's business — otherwise one entry per job ever downloaded, for the life of the process. The mutex's deletion is **deferred while anyone holds it**: dropping it let the next caller mint a second mutex for the same job, which serialises nothing, and the delete is reachable from inside a live barrier via `routeFault → Fail → maybeFinalize → enqueuePostProc`. |
+| Per-job barrier state | `jobBarrierMu` and `jobBarrierBytes` are dropped by `forgetJobBarrierState` when a job leaves the assembler's business — otherwise one entry per job ever downloaded, for the life of the process. The mutex's deletion is **deferred while anyone holds it**: dropping it let the next caller mint a second mutex for the same job, which serialises nothing, and the delete is reachable from inside a live barrier via `routeFault → Fail → maybeFinalize → enqueuePostProc`. |
 | Durability rows | `durable_runs`, `failed_articles` and `job_files`, all three deleted by the reclaim rule (`internal/durability/reclaim.go`) once nothing reaches the job; a FAILED history entry keeps its `durable_runs` for a retry and nothing else. See §6's *The barrier is the only thing that puts CONTENT into the record* for the full deleter enumeration, and do not read this row as one. None of the three has a foreign key to the queue, so nothing removes them implicitly. A crash between a departure and its reclaim strands rows until the next start, whose `SweepOrphans` takes them; there is no periodic sweep, because one would reclaim a job between `Admit` and `Dispatcher.Add`. |
 
 ## Failure & degradation rules
@@ -2140,8 +2139,8 @@ a green run does and does not bound.
 - Barrier operations over the assembler's control channel (`fileIdxSyncOp`),
   timeout-bounded.
 - Checkpoint cadence: time bound, byte bound, file completion, clean shutdown.
-  The barrier's accumulator and stamp are internal; the API and UI no longer
-  surface them (the `bytes_pending` and `last_barrier_unix` slot fields are gone).
+  The barrier's accumulator is internal; the API and UI no longer surface it
+  (the `bytes_pending` and `last_barrier_unix` slot fields were removed).
 - Authoritative startup sweep (`resumeAllJobs` → `Job.ReplaceFromRuns`) and
   the additive stall-recovery replay (`SeedFromRuns`).
 - Repair for a finalize a crash interrupted (`completeStrandedFiles` →

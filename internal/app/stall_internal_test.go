@@ -126,27 +126,6 @@ func TestStallReason_ReportsNothingForAJobThatIsNotParked(t *testing.T) {
 	}
 }
 
-// TestNoteBarrierRun_StampsOnlyASuccessfulBarrier pins R26's last-barrier
-// figure. It exists to tell a job that is checkpointing normally from one whose
-// barriers have been failing since the mount went away, and forgetting it with
-// the rest of a departed job's state is what keeps the map from growing for the
-// life of the process.
-func TestNoteBarrierRun_StampsOnlyASuccessfulBarrier(t *testing.T) {
-	t.Parallel()
-	application, _, _ := newLifecycleTestApp(t)
-
-	application.noteBarrierRun("job-1")
-	if !application.hasBarrierStamp("job-1") {
-		t.Fatal("noteBarrierRun did not stamp the job's last barrier")
-	}
-
-	application.forgetJobBarrierState("job-1")
-	if application.hasBarrierStamp("job-1") {
-		t.Error("the last-barrier stamp survived the job's departure — the map would grow " +
-			"one entry per job ever downloaded")
-	}
-}
-
 // TestReevaluateStall_LeavesAJobWhoseFileCanNoLongerBeFinalized pins the
 // terminal state. Once a completed file's handle is gone, no retry in this
 // process can trim it, and resuming the job anyway would let the completion

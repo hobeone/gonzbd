@@ -1379,22 +1379,18 @@ func TestHandleFileComplete_ResolvesThePathBeforeFinalizing(t *testing.T) {
 	}
 }
 
-// TestCheckpointJob_DoesNotStampABarrierThatNeverRan pins R26's last-barrier
-// figure against its own inversion.
+// TestCheckpointJob_LeavesPendingBytesWhenNoBarrierRan pins the accumulator
+// across a checkpoint that ran no barrier.
 //
-// checkpointJob had two outcomes where the world has three. A job with no sync
-// target ran no barrier at all, but `err` stayed nil, so control fell through
-// to the success stamp — and the window had already been zeroed, by a
-// read-and-clear that then ran before the barrier rather than after it. The
-// operator then sees a fresh barrier timestamp beside zero pending bytes: two
-// figures agreeing that nothing is at risk, at the moment when everything
-// written since the last real barrier is.
+// A job with no sync target runs no barrier at all, and its window must stand:
+// zeroing it would report no bytes at risk while bytes written since the last
+// real barrier are still unsynced.
 //
 // The fixture removes the job from the queue while the assembler still holds
 // its file open, which is one way to produce a nil target. The other is a
 // job still in the queue whose manifest has been evicted: syncTargetFor reads
 // the resident manifest and hydrates nothing.
-func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
+func TestCheckpointJob_LeavesPendingBytesWhenNoBarrierRan(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID(), 0, 0)
@@ -1419,11 +1415,6 @@ func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
 
 	application.checkpointJob(t.Context(), job.ID())
 
-	if application.hasBarrierStamp(job.ID()) {
-		t.Error("a checkpoint that ran no barrier stamped the job's last barrier — the stamp " +
-			"tells a job that is checkpointing from one whose barriers stopped, and this " +
-			"reports the opposite")
-	}
 	if got := application.pendingBytesFor(job.ID()); got != 4096 {
 		t.Errorf("pending bytes = %d, want 4096 — a window that was never closed was zeroed, so "+
 			"the bytes at risk read as none", got)

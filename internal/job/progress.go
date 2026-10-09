@@ -1176,9 +1176,8 @@ type fileProgressJSON struct {
 // fsync or a permanent failure — never on a write that was merely attempted
 // (#355) — and the pair is consistent.
 //
-// TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list above,
-// and the wider one in app.JobDurability that adds the direct writer this
-// paragraph does not mention. Add a door onto the bit and it fails by name.
+// TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list above.
+// Add a door onto the bit and it fails by name.
 type jobProgressJSON struct {
 	Done   []bool             `json:"done"`
 	Failed []bool             `json:"failed"`

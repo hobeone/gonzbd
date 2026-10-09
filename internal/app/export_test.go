@@ -311,13 +311,12 @@ func (a *Application) NoteJobBytes(jobID string, n int) {
 	a.noteJobBytes(jobID, n)
 }
 
-// JobBarrierState reports whether the job has tracked barrier state (bytes, mutex, or last barrier).
-func (a *Application) JobBarrierState(jobID string) (hasBytes bool, hasMu bool, hasLast bool) {
+// JobBarrierState reports whether the job has tracked barrier state (bytes or mutex).
+func (a *Application) JobBarrierState(jobID string) (hasBytes bool, hasMu bool) {
 	a.barrierMu.Lock()
 	defer a.barrierMu.Unlock()
 	_, hasBytes = a.jobBarrierBytes[jobID]
 	_, hasMu = a.jobBarrierMu[jobID]
-	_, hasLast = a.lastBarrier[jobID]
 	return
 }
 

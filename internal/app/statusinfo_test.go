@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -224,33 +223,6 @@ func TestCheckpointStates_ReportsEveryParkedJob(t *testing.T) {
 	}
 	if _, ok := got["never-seen"]; ok {
 		t.Error("a job with nothing to report appears in the snapshot")
-	}
-}
-
-// TestJobDurability_ReportsDownloadedBytesAsDurable pins the identity the
-// listing's bytes_durable rests on: a downloaded byte IS a durable byte, so a
-// second counter would be a second representation of one fact, free to drift.
-func TestJobDurability_ReportsDownloadedBytesAsDurable(t *testing.T) {
-	t.Parallel()
-	application, j := newDurabilityTestApp(t, 1, 3)
-	if got := DurableBytesOf(j.Progress()); got != 0 {
-		t.Fatalf("fixture already reports %d durable bytes; the assertion below cannot tell "+
-			"a real figure from a leaked one", got)
-	}
-
-	// Two of the file's three 100-byte articles are on stable storage, as one
-	// merged run.
-	if err := j.SeedFromRuns([]durability.Run{
-		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: 200},
-	}); err != nil {
-		t.Fatalf("SeedFromRuns: %v", err)
-	}
-
-	got := application.JobDurability(j.ID())
-
-	if got.DurableBytes != 200 {
-		t.Errorf("DurableBytes = %d, want 200 — two 100-byte articles are covered by a "+
-			"recorded run and the figure does not report them", got.DurableBytes)
 	}
 }
 

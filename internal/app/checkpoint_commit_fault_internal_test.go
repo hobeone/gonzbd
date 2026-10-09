@@ -25,6 +25,10 @@ func TestCheckpointJob_ACommitErrorStallsTheJobUntilReevaluated(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 	writeFixtureArticle(t, application, job.ID(), 0, 0)
+	application.noteJobBytes(job.ID(), 100)
+	if got := application.pendingBytesFor(job.ID()); got != 100 {
+		t.Fatalf("fixture accumulated %d pending bytes, want 100", got)
+	}
 
 	var failing atomic.Bool
 	failing.Store(true)
@@ -67,8 +71,9 @@ func TestCheckpointJob_ACommitErrorStallsTheJobUntilReevaluated(t *testing.T) {
 			"the barrier learned nothing about the database's file from the commit "+
 			"itself and has no other way to find it", reason, wantPath)
 	}
-	if application.hasBarrierStamp(job.ID()) {
-		t.Error("a barrier whose commit failed stamped last_barrier")
+	if got := application.pendingBytesFor(job.ID()); got != 100 {
+		t.Errorf("pending bytes = %d after a failed commit, want 100 — a commit that "+
+			"made nothing durable must not retire the window it failed to cover", got)
 	}
 
 	failing.Store(false)
@@ -87,8 +92,9 @@ func TestCheckpointJob_ACommitErrorStallsTheJobUntilReevaluated(t *testing.T) {
 	// the next barrier records and acks the article the failure did not.
 	application.checkpointJob(t.Context(), job.ID())
 
-	if !application.hasBarrierStamp(job.ID()) {
-		t.Error("the barrier after the resume did not commit")
+	if got := application.pendingBytesFor(job.ID()); got != 0 {
+		t.Errorf("pending bytes = %d after the barrier that committed on resume, want 0 — "+
+			"the run that succeeded earned the window it read", got)
 	}
 	if n, err := job.CountUnfinishedArticles(0); err != nil || n != 1 {
 		t.Errorf("unfinished = %d (err %v), want 1 — the article written before the "+

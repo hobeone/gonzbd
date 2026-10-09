@@ -15,23 +15,14 @@ func failCommit(context.Context, string, func() ([]durability.Collision, error))
 	return nil, errors.New("database is locked")
 }
 
-// TestCheckpointJob_DoesNotStampABarrierOverNoFiles pins the other half of the
-// stamp guard.
+// TestCheckpointJob_KeepsPendingBytesOverNoFiles pins the empty-file-set path.
 //
-// SyncTarget.Files answers nil when OpenFiles times out on a wedged mount —
-// deliberately, because the barrier has nothing useful to do with the error.
-// Barrier.Run then iterates nothing, Commit returns early on an empty slice,
-// len(acked)==0 returns nil, and checkpointJob read that nil as success and
-// stamped last_barrier. The API reported a fresh timestamp every interval
-// while nothing had been fsynced since the mount went away — the exact
-// inversion R26 asks that figure to prevent.
+// When the assembler holds no open file for the job, checkpointJob returns
+// without running a barrier, and the accumulator must stand: a run over
+// nothing made nothing durable.
 //
-// checkpointJob's own comment names this scenario as the defect it fixed, but
-// the guard and its test cover only the nil-sync-target case of a job that
-// left the queue. A wedged mount keeps its target: syncTargetFor goes through
-// SnapshotJob, which hydrates a manifest from disk and does not touch the
-// mount at all.
-func TestCheckpointJob_DoesNotStampABarrierOverNoFiles(t *testing.T) {
+// The nil-sync-target case is TestCheckpointJob_LeavesPendingBytesWhenNoBarrierRan.
+func TestCheckpointJob_KeepsPendingBytesOverNoFiles(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
@@ -42,21 +33,18 @@ func TestCheckpointJob_DoesNotStampABarrierOverNoFiles(t *testing.T) {
 		t.Fatal("the fixture has no sync target, so it exercises the nil-target guard " +
 			"rather than the empty-file-set one")
 	}
-	if application.hasBarrierStamp(job.ID()) {
-		t.Fatal("the fixture was already stamped, so it cannot observe a new stamp")
-	}
+	application.noteJobBytes(job.ID(), 400)
 
 	application.checkpointJob(t.Context(), job.ID())
 
-	if application.hasBarrierStamp(job.ID()) {
-		t.Error("a barrier that saw no files stamped last_barrier. On a wedged mount " +
-			"Files() answers nil every interval, so the job reports a fresh barrier " +
-			"timestamp forever while nothing has been fsynced")
+	if got := application.pendingBytesFor(job.ID()); got != 400 {
+		t.Errorf("pending bytes = %d after a checkpoint over no files, want 400: retiring "+
+			"the window there would report nothing at risk while nothing has been fsynced", got)
 	}
 }
 
 // TestCheckpointJob_KeepsThePendingByteFigureWhenTheBarrierFails pins the
-// figure beside the stamp.
+// figure after a failed barrier.
 //
 // checkpointJob used to reset the accumulator BEFORE the run, so an article
 // written while the barrier was in flight would be charged to the next window.
@@ -88,8 +76,8 @@ func TestCheckpointJob_KeepsThePendingByteFigureWhenTheBarrierFails(t *testing.T
 
 	if got := application.pendingBytesFor(job.ID()); got != 400 {
 		t.Errorf("pending bytes = %d after a barrier that claimed nothing, want 400. "+
-			"Reporting zero beside a stale last_barrier says nothing is at risk at "+
-			"the moment when everything written since the last real barrier is", got)
+			"Reporting zero says nothing is at risk at the moment when everything "+
+			"written since the last real barrier is", got)
 	}
 }
 
