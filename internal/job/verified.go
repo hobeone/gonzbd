@@ -1,7 +1,6 @@
 package job
 
 import (
-	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -41,18 +40,19 @@ func (j *Job) InstallVerified(fileIdx int, rows []durability.WrittenRow) error {
 	if p.written == nil {
 		p.written = make(map[int][]durability.WrittenRow)
 	}
-	byArt := make(map[int32]durability.WrittenRow, len(p.written[fileIdx])+len(rows))
-	for _, r := range p.written[fileIdx] {
+	resident := p.written[fileIdx]
+	if len(resident) == 0 {
+		p.written[fileIdx] = sortedClone(rows)
+		return nil
+	}
+	byArt := make(map[int32]durability.WrittenRow, len(resident)+len(rows))
+	for _, r := range resident {
 		byArt[r.ArtIdx] = r
 	}
 	for _, r := range rows {
 		byArt[r.ArtIdx] = r
 	}
-	merged := slices.Collect(maps.Values(byArt))
-	slices.SortFunc(merged, func(a, b durability.WrittenRow) int {
-		return cmp.Or(cmp.Compare(a.Offset, b.Offset), cmp.Compare(a.ArtIdx, b.ArtIdx))
-	})
-	p.written[fileIdx] = merged
+	p.written[fileIdx] = sortedClone(slices.Collect(maps.Values(byArt)))
 	return nil
 }
 
@@ -65,4 +65,11 @@ func (j *Job) FileRows(fileIdx int) []durability.WrittenRow {
 		return nil
 	}
 	return slices.Clone(j.progress.written[fileIdx])
+}
+
+// sortedClone returns rows copied into offset order.
+func sortedClone(rows []durability.WrittenRow) []durability.WrittenRow {
+	out := slices.Clone(rows)
+	slices.SortFunc(out, durability.CompareWrittenRows)
+	return out
 }

@@ -150,3 +150,25 @@ func TestFileRows_ReturnsACopy(t *testing.T) {
 		t.Errorf("a Progress() clone saw %d rows after a later install, want 1: the clone shares the map", n)
 	}
 }
+
+// TestInstallVerified_NeitherKeepsNorReordersTheCallersSlice pins the first
+// install into a file: the resident rows are a sorted copy, so the caller can
+// reuse or edit its slice without reaching the job.
+func TestInstallVerified_NeitherKeepsNorReordersTheCallersSlice(t *testing.T) {
+	t.Parallel()
+	j := verifiedTestJob(t)
+	rows := []durability.WrittenRow{
+		{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100, CRC32: 0x2},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1},
+	}
+	if err := j.InstallVerified(0, rows); err != nil {
+		t.Fatalf("InstallVerified: %v", err)
+	}
+	if rows[0].ArtIdx != 2 || rows[1].ArtIdx != 0 {
+		t.Errorf("the caller's slice was reordered: %+v", rows)
+	}
+	rows[1].CRC32 = 99
+	if got := j.FileRows(0); got[0].CRC32 != 0x1 {
+		t.Errorf("resident row CRC = %d after editing the caller's slice, want 1: the job kept the caller's slice", got[0].CRC32)
+	}
+}
