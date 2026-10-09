@@ -48,7 +48,9 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	if job.FinalDir == "" {
-		return fmt.Errorf("finalize: FinalDir not set")
+		err := errors.New("finalize: FinalDir not set")
+		job.FailMsg = err.Error()
+		return err
 	}
 
 	if job.DownloadDir == job.FinalDir {
@@ -63,7 +65,11 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	logf(ctx, log, job, slog.LevelInfo, "Moving %s → %s", job.DownloadDir, dest)
-	return f.moveToDest(ctx, log, job, dest, folderRename)
+	if err := f.moveToDest(ctx, log, job, dest, folderRename); err != nil {
+		job.FailMsg = err.Error()
+		return err
+	}
+	return nil
 }
 
 func (f *FinalizeStage) handleFailure(ctx context.Context, log *slog.Logger, job *Job, folderRename bool) error {
@@ -140,23 +146,28 @@ func (f *FinalizeStage) moveFileByFile(ctx context.Context, log *slog.Logger, jo
 		return fmt.Errorf("finalize: mkdir %s: %w", dest, err)
 	}
 
+	var moved, failed []string
 	var moveErrors []error
 	for _, e := range entries {
 		src := filepath.Join(job.DownloadDir, e.Name())
 		dst := fsutil.JoinSafe(dest, "", e.Name(), job.Sanitize)
 		if err := moveRecursive(ctx, job.DownloadDir, src, dst); err != nil {
+			failed = append(failed, e.Name())
 			moveErrors = append(moveErrors, fmt.Errorf("finalize: move %s -> %s: %w", src, dst, err))
 			logf(ctx, log, job, slog.LevelWarn, "Failed to move %s → %s: %v", filepath.Base(src), dst, err)
 			continue
 		}
+		moved = append(moved, e.Name())
 		logf(ctx, log, job, slog.LevelInfo, "%s → %s", filepath.Base(src), dst)
 	}
 
 	if len(moveErrors) > 0 {
 		// Some files failed to move — do NOT remove the source directory
 		// to avoid data loss of the unmoved files.
-		logf(ctx, log, job, slog.LevelWarn, "Partial move: %d file(s) failed, keeping source directory %s", len(moveErrors), job.DownloadDir)
-		return errors.Join(moveErrors...)
+		logf(ctx, log, job, slog.LevelWarn, "Partial move: %d file(s) failed (moved to %s: [%s]; unmoved in %s: [%s]), keeping source directory %s",
+			len(moveErrors), dest, strings.Join(moved, ", "), job.DownloadDir, strings.Join(failed, ", "), job.DownloadDir)
+		return fmt.Errorf("finalize: partial move (moved to %s: [%s]; unmoved in %s: [%s]): %w",
+			dest, strings.Join(moved, ", "), job.DownloadDir, strings.Join(failed, ", "), errors.Join(moveErrors...))
 	}
 
 	// All files moved successfully — clean up the empty source directory.

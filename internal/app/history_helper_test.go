@@ -258,3 +258,33 @@ func TestBuildHistoryEntry_DownloadedExcludesDeferredPar2(t *testing.T) {
 		t.Errorf("Completeness = %d, want %d", got, want)
 	}
 }
+
+// TestBuildHistoryEntry_FinalizeFailureUsesDownloadDir verifies #761: when
+// FinalizeStage fails to move a job into FinalDir and sets ppJob.FailMsg,
+// buildHistoryEntry records Status == "Failed" and points both Path and
+// Storage at ppJob.DownloadDir (where the files still live) rather than the
+// unpopulated FinalDir.
+func TestBuildHistoryEntry_FinalizeFailureUsesDownloadDir(t *testing.T) {
+	t.Parallel()
+	_, qjob := buildHistoryTestJob(t, "hist-finalize-fail", "MyRelease", time.Now(), 1)
+	ppJob := &postproc.Job{
+		Job:         qjob,
+		DownloadDir: "/downloads/incomplete/MyRelease",
+		FinalDir:    "/downloads/complete/MyRelease",
+		FailMsg:     "finalize: mkdir /downloads/complete: permission denied",
+	}
+
+	entry := buildHistoryEntry(ppJob)
+	if entry.Status != "Failed" {
+		t.Errorf("entry.Status = %q, want %q", entry.Status, "Failed")
+	}
+	if entry.FailMessage != ppJob.FailMsg {
+		t.Errorf("entry.FailMessage = %q, want %q", entry.FailMessage, ppJob.FailMsg)
+	}
+	if entry.Path != ppJob.DownloadDir {
+		t.Errorf("entry.Path = %q, want DownloadDir %q", entry.Path, ppJob.DownloadDir)
+	}
+	if entry.Storage != ppJob.DownloadDir {
+		t.Errorf("entry.Storage = %q, want DownloadDir %q", entry.Storage, ppJob.DownloadDir)
+	}
+}
