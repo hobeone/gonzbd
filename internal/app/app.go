@@ -2634,6 +2634,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			URL:                  hdr.URL,
 			DownloadDir:          downloadDir,
 			FinalDir:             finalDir,
+			FlatLayout:           flatLayout,
 			Sanitize:             sanitize,
 			Unwanted:             hdr.Unwanted,
 			FailMsg:              admittedFailMsg,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -524,6 +525,51 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 	}
 	p.log.Info("postproc: processing job", "job", job.JobID(), "name", job.Name())
 
+	// L11: Pre-check — skip processing when the download directory is
+	// empty or doesn't exist, unless a per-job FinalDir already holds the
+	// delivered files from a pre-crash FinalizeStage (#767). Matches Python
+	// SABnzbd's Stage 1 pre-check (§6.2) which guards against no-op
+	// post-processing of empty jobs. The guard only fires when DownloadDir is
+	// set; stages that don't need a physical directory (unit tests, dry-run
+	// pipelines) leave it empty.
+	stages := p.stages
+	var preCheckReason string
+	if job.FailMsg == "" && job.DownloadDir != "" {
+		if entries, err := os.ReadDir(job.DownloadDir); err != nil || len(entries) == 0 {
+			if errors.Is(err, fs.ErrNotExist) && job.alreadyDelivered() {
+				// Interim crash-recovery check (#767): if the daemon died
+				// after FinalizeStage moved the job into FinalDir (including a
+				// kill while ScriptStage was running), the queue row still says
+				// Extracting and enqueuePostProc recomputes DownloadDir in the
+				// incomplete area, which is now gone. For a per-job layout
+				// (!job.FlatLayout), a non-empty FinalDir means the files were
+				// already delivered: set DownloadDir = FinalDir before building
+				// the preamble log, skip stages up to and including finalize,
+				// and run the script stage with its normal failure semantics.
+				// With a flat category (catDir ending in "*"), FinalDir is the
+				// shared complete/<category> directory and non-empty proves
+				// nothing, so the existing failure path stays.
+				//
+				// Residual risk: a stale same-named directory plus a manually
+				// removed download dir would be treated as delivered.
+				// Persisting the delivery step as its own recorded state will
+				// make this check unnecessary.
+				p.log.Info("postproc: download directory missing and per-job FinalDir is non-empty; treating as delivered",
+					"job", job.JobID(),
+					"download_dir", job.DownloadDir,
+					"final_dir", job.FinalDir,
+				)
+				job.DownloadDir = job.FinalDir
+				stages = stagesAfterFinalize(stages)
+			} else {
+				preCheckReason = "download directory is empty"
+				if err != nil {
+					preCheckReason = fmt.Sprintf("download directory unavailable: %v", err)
+				}
+			}
+		}
+	}
+
 	job.StageLog = append(job.StageLog, buildPreambleLog(job)...)
 
 	if job.FailMsg != "" {
@@ -538,34 +584,22 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 		})
 		return
 	}
-
-	// L11: Pre-check — skip processing when the download directory is
-	// empty or doesn't exist. Matches Python SABnzbd's Stage 1 pre-check
-	// (§6.2) which guards against no-op post-processing of empty jobs.
-	// The guard only fires when DownloadDir is set; stages that don't need
-	// a physical directory (unit tests, dry-run pipelines) leave it empty.
-	if job.DownloadDir != "" {
-		if entries, err := os.ReadDir(job.DownloadDir); err != nil || len(entries) == 0 {
-			reason := "download directory is empty"
-			if err != nil {
-				reason = fmt.Sprintf("download directory unavailable: %v", err)
-			}
-			job.FailMsg = reason
-			p.log.Warn("postproc: skipping all stages — empty job",
-				"job", job.JobID(),
-				"dir", job.DownloadDir,
-				"reason", reason,
-			)
-			job.StageLog = append(job.StageLog, StageLogEntry{
-				Stage:   "pre-check",
-				Started: time.Now(),
-				Lines:   []string{"Post-processing skipped: " + reason},
-			})
-			return
-		}
+	if preCheckReason != "" {
+		job.FailMsg = preCheckReason
+		p.log.Warn("postproc: skipping all stages — empty job",
+			"job", job.JobID(),
+			"dir", job.DownloadDir,
+			"reason", preCheckReason,
+		)
+		job.StageLog = append(job.StageLog, StageLogEntry{
+			Stage:   "pre-check",
+			Started: time.Now(),
+			Lines:   []string{"Post-processing skipped: " + preCheckReason},
+		})
+		return
 	}
 
-	for _, stage := range p.stages {
+	for _, stage := range stages {
 		entry, abort := p.runStage(ctx, stage, job)
 		job.StageLog = append(job.StageLog, entry)
 		if abort {
@@ -580,6 +614,29 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 	)
 
 	job.StageLog = append(job.StageLog, buildSummaryEntry(job))
+}
+
+// alreadyDelivered reports whether a job whose DownloadDir is missing has
+// already been delivered into a per-job FinalDir (#767). Flat-layout
+// categories share FinalDir across all jobs in the category, so non-empty
+// proves nothing and returns false.
+func (j *Job) alreadyDelivered() bool {
+	if j.FlatLayout || j.FinalDir == "" {
+		return false
+	}
+	entries, err := os.ReadDir(j.FinalDir)
+	return err == nil && len(entries) > 0
+}
+
+// stagesAfterFinalize returns the stages following "finalize" in stages, or
+// nil when "finalize" is not registered or is the last stage.
+func stagesAfterFinalize(stages []Stage) []Stage {
+	for i, s := range stages {
+		if s.Name() == "finalize" {
+			return stages[i+1:]
+		}
+	}
+	return nil
 }
 
 // setBusyWithJob updates busy, currentJob, and currentJobCancel

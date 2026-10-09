@@ -210,7 +210,10 @@ single worker goroutine (`run`).
   disk. If the daemon crashes or shuts down while a job is being processed,
   `workerCtx` cancellation halts stage execution and the job stays in the
   queue, and the next startup resumes it from its persisted dispatcher state.
-  A job at `Repairing`, `Extracting` or `Finalizing` is post-processed again;
+  A job at `Repairing`, `Extracting` or `Finalizing` is post-processed again
+  (and if `finalize` had already moved its files into a per-job `FinalDir`
+  before the crash, `processJob`'s pre-check skips up through `finalize` and
+  runs only `script`; see Core Pipeline Invariant 2);
   one handed over from `Fetching` is back at `Fetching`, where it downloads
   again if it is incomplete. If it is complete, its Fetching worker reports it
   download-complete (`appRunner.runFetch`) and it reaches post-processing
@@ -257,7 +260,7 @@ or modify its behavior:
 | **`deobfuscate`** | Detects obfuscated file names and restores clean titles from job metadata. Also performs subtitle alignment (`.srt` renamed to match dominant video). | Skipped if disabled in config. | Renames files and subtitles in `DownloadDir`. |
 | **`unwanted_cleanup`** | Deletes every file under `DownloadDir` whose extension the unwanted-extension rules (`downloads.unwanted_extensions`, `_mode`, `action_on_unwanted_extensions`) exclude, judged by final name, so it catches what the NZB-filename check at ingest and the in-download archive peek cannot see: archive members, obfuscated subjects, files par2 repair rebuilt or renamed, and files renamed by `recover_par2_names` or `deobfuscate`. Reads the live settings on every run. Removes empty subdirectories after deleting at least one file. Runs at every PP level, unlike SABnzbd, which removes only after its unpack. | Skipped if the action is `off`, the job is approved (`Unwanted == StateApproved`: the user resumed it or retried it anyway), or `ParError`, `UnpackError` or `FailMsg` is set (a failed job keeps its files for retry). Settings that cannot be read, a directory that cannot be read, or a file that cannot be removed fail the job (`FailMsg`) rather than deliver unchecked files. | Deletes matching files from disk. |
 | **`extension_cleanup`** | Deletes unwanted file extensions (`.sfv`, `.nfo`, etc.) based on user config. Explicitly protects `.nzb` files (`SkipNZB = true`) and files in `ConsumedFiles`. Removes newly empty subdirectories. | Skipped if cleanup list empty. | Unlinks matching extensions from `DownloadDir`. |
-| **`finalize`** | Moves processed files from `DownloadDir` to `FinalDir` (`CompleteDir/job_name`). When `job.ParError || job.UnpackError || job.FailMsg != ""`, skips moving to `FinalDir` and instead prepends `_FAILED_` to `DownloadDir` in place (when `folder_rename: true`), leaving files in incomplete download area for retry; `RetryHistoryJob` moves it back first (see Failure & Degradation Rules). If moving to `FinalDir` fails, sets `job.FailMsg = "finalize: ..."` (recording moved and unmoved files on partial move) and leaves `DownloadDir` at the incomplete directory; `_UNPACK_` prefix-strip failure remains a non-fatal warning. | Always runs unless pre-check aborted job. | Populates `FinalDir` (updating `DownloadDir`), renames `DownloadDir` with `_FAILED_` prefix on prior failure, or sets `FailMsg` on move error. |
+| **`finalize`** | Moves processed files from `DownloadDir` to `FinalDir` (`CompleteDir/job_name`). When `job.ParError || job.UnpackError || job.FailMsg != ""`, skips moving to `FinalDir` and instead prepends `_FAILED_` to `DownloadDir` in place (when `folder_rename: true`), leaving files in incomplete download area for retry; `RetryHistoryJob` moves it back first (see Failure & Degradation Rules). If moving to `FinalDir` fails, sets `job.FailMsg = "finalize: ..."` (recording moved and unmoved files on partial move) and leaves `DownloadDir` at the incomplete directory; `_UNPACK_` prefix-strip failure remains a non-fatal warning. | Always runs unless pre-check aborted job or skipped stages through `finalize` on an already-delivered per-job `FinalDir` (#767). | Populates `FinalDir` (updating `DownloadDir`), renames `DownloadDir` with `_FAILED_` prefix on prior failure, or sets `FailMsg` on move error. |
 | **`script`** | Executes user-defined post-processing script with full environment (`SAB_*` vars, including Go-specific `SAB_FINAL_PROCESSING_DIR`) and 8 positional args ($1–$8). Supports `RedactSecrets` (`SAB_API_KEY`/`SAB_PASSWORD` masked as `**REDACTED**`) and `ScriptCanFail` (when true, a non-zero exit fails the job; default false logs it without failing the job). | Skipped if no script configured for job/category. | Captures script exit code and stdout/stderr log (capped at 512 KiB). |
 
 > **`quickcheck` is a permanent stage (decided 2026-09-03).**
@@ -370,8 +373,24 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    code.
 2. **Pre-check abort**: If `job.FailMsg` is pre-populated (e.g. download health
    check failed) or `job.DownloadDir` is empty/missing, all processing stages are
-   skipped. A synthetic `pre-check` entry is appended to `StageLog` and the job
-   completes directly to history.
+   skipped, a synthetic `pre-check` entry is appended to `StageLog`, and the job
+   completes directly to history as `Failed` — with one crash-recovery exception
+   (#767): when `job.DownloadDir` is missing (`fs.ErrNotExist`), the job uses a
+   per-job destination (`!job.FlatLayout`, set by `Application.enqueuePostProc`
+   from whether the category `Dir` ends in `*`), and `job.FinalDir` exists and is
+   non-empty (`Job.alreadyDelivered`), `processJob` treats the job as already
+   delivered before the crash, sets `job.DownloadDir = job.FinalDir` before
+   building the preamble log, skips all stages up to and including `finalize`
+   (`stagesAfterFinalize`), runs `script` with its normal failure semantics, and
+   files the history entry with `Path = FinalDir` and `Storage = FinalDir` as
+   `Completed` when `script` succeeds (or `Failed` if `script` fails and
+   `script_can_fail` is true) (`TestPreCheck_AlreadyDeliveredPerJobFinalDir`,
+   `TestEnqueuePostProc_DeliveredCrashRecovery`). With a flat category
+   (`FlatLayout == true`), `FinalDir` is the shared `complete/<category>`
+   directory where non-empty proves nothing, so the pre-check abort still fires.
+   Residual risk until the delivery step is persisted as its own state: a stale
+   same-named directory under `complete/` plus a manually removed `DownloadDir`
+   is also treated as delivered.
 3. **Verification bypass guarantees**: `repair` bypasses `par2` execution when
    `QuickCheck == Clean` (verification already confirmed every CRC), or when
    DirectUnpack extracted all archives without errors **and** `QuickCheck ==
