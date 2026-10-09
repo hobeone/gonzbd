@@ -348,7 +348,7 @@ These rules are distilled from real bugs found across dozens of audit and harden
 
 - **Add idle read deadlines on long-lived network sockets.** NNTP connections without read deadlines hang silently when the remote end disappears. Use `SetReadDeadline` and reset on each successful read.
 
-- **SQLite per-connection pragmas belong in the DSN, not in post-connect hooks.** `journal_mode=WAL` and `busy_timeout` set via `_pragma=` in the DSN ensure every connection (including pool-created ones) has them from the start.
+- **SQLite per-connection pragmas belong in the DSN, not in post-connect hooks.** Setting connection-scoped pragmas (`foreign_keys(1)`, `busy_timeout(5000)`, `synchronous(FULL)`) and `_txlock=immediate` via `_pragma=` in the DSN ensures every connection (including pool-created ones) has them from the start, while database-scoped `journal_mode=WAL` runs once at `Open`.
 
 - **Batch large deletions to avoid unbounded transactions.** Deleting thousands of history records in a single `DELETE ... WHERE id IN (...)` can lock the database. Use chunked deletes with a reasonable batch size.
 
