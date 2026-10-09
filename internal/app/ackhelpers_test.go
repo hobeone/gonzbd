@@ -38,8 +38,8 @@ func artIdxsFor(t *testing.T, disp *dispatch.Dispatcher, jobID string, msgIDs ..
 	return out
 }
 
-// ackDoneIdx marks articles durable through SeedFromRuns, the path a resumed
-// job uses to adopt the runs a barrier recorded.
+// ackDoneIdx marks articles Done through InstallVerified, the door a resumed
+// job's verified written rows enter by.
 func ackDoneIdx(t *testing.T, disp *dispatch.Dispatcher, jobID string, artIdxs ...int32) {
 	t.Helper()
 	if len(artIdxs) == 0 {
@@ -55,7 +55,7 @@ func ackDoneIdx(t *testing.T, disp *dispatch.Dispatcher, jobID string, artIdxs .
 		t.Fatalf("ackDoneIdx: job %s manifest: %v", jobID, err)
 	}
 
-	runs := make([]durability.Run, 0, len(artIdxs))
+	byFile := make(map[int][]durability.WrittenRow)
 	for _, a := range artIdxs {
 		i := int(a)
 		if i < 0 || i >= m.NumArticles() {
@@ -65,16 +65,20 @@ func ackDoneIdx(t *testing.T, disp *dispatch.Dispatcher, jobID string, artIdxs .
 		if !ok {
 			t.Fatalf("ackDoneIdx: article %d not owned by any file in job %s", i, jobID)
 		}
-		runs = append(runs, durability.Run{
-			FileIdx:     int32(fi), //nolint:gosec // G115: file counts are far below int32
-			FirstArtIdx: a,
-			LastArtIdx:  a,
-			Length:      int64(m.ArticleBytes(i)),
+		lo, _ := m.FileRange(fi)
+		var off int64
+		for k := lo; k < i; k++ {
+			off += int64(m.ArticleBytes(k))
+		}
+		byFile[fi] = append(byFile[fi], durability.WrittenRow{
+			FileIdx: fi, ArtIdx: a, Offset: off, Length: int64(m.ArticleBytes(i)),
 		})
 	}
 
-	if err := j.SeedFromRuns(runs); err != nil {
-		t.Fatalf("ackDoneIdx: SeedFromRuns: %v", err)
+	for fi, rows := range byFile {
+		if err := j.InstallVerified(fi, rows); err != nil {
+			t.Fatalf("ackDoneIdx: InstallVerified: %v", err)
+		}
 	}
 }
 

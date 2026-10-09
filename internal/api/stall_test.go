@@ -178,13 +178,13 @@ func TestQueueAPI_ReportsDurableBytesFromRecordedRuns(t *testing.T) {
 		t.Errorf("bytes_durable = %d before any barrier ran, want 0", before.BytesDurable)
 	}
 
-	// Now make the job's single 1024-byte article durable, through the same
-	// recorded-run replay a resume performs. Asserting only the zero above
-	// pinned nothing: a bytes_durable that always answered 0 satisfied it.
-	if err := j.SeedFromRuns([]durability.Run{
-		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 0, Length: 1024},
+	// Now make the job's single 1024-byte article Done, through the door a
+	// resume's verified rows enter by. Asserting only the zero above pinned
+	// nothing: a bytes_durable that always answered 0 satisfied it.
+	if err := j.InstallVerified(0, []durability.WrittenRow{
+		{FileIdx: 0, ArtIdx: 0, Length: 1024},
 	}); err != nil {
-		t.Fatalf("SeedFromRuns: %v", err)
+		t.Fatalf("InstallVerified: %v", err)
 	}
 
 	after := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), j.ID())

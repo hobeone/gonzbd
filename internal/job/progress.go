@@ -6,6 +6,8 @@ import (
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/durability"
 )
 
 // JobProgress is the mutable per-article and per-file state of a job:
@@ -20,6 +22,11 @@ type JobProgress struct {
 	// Bitsets rather than []bool: see bitset.go for the memory argument.
 	done, failed, emitted bitset
 	files                 []FileProgress
+
+	// written holds, per file index, the rows InstallVerified installed, in
+	// offset order, for the whole-file CRC. It is not persisted here:
+	// written_articles is the record, and this is a resident copy of it.
+	written map[int][]durability.WrittenRow
 
 	pendingArticles   int
 	articlesResolved  int
@@ -872,6 +879,12 @@ func (p *JobProgress) clone() *JobProgress {
 	cp.files = slices.Clone(p.files)
 
 	cp.serverStats = maps.Clone(p.serverStats)
+	if p.written != nil {
+		cp.written = make(map[int][]durability.WrittenRow, len(p.written))
+		for fi, rows := range p.written {
+			cp.written[fi] = slices.Clone(rows)
+		}
+	}
 	return &cp
 }
 

@@ -343,7 +343,9 @@ evidence a proof cannot represent — but it means "ack before fsync is code tha
 does not compile" is true of `AckDurable` and **false as a statement about the
 queue as a whole**. The seeding doors are held by their contracts and by
 `TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade`, not by the
-compiler.
+compiler. `Job.InstallVerified` is a further such door: its evidence is a
+restart's readback of each `written_articles` row against the file
+(`verifyJobFiles`, `internal/app/verify.go`), which no proof represents either.
 
 `Job.SeedFromRuns`'s half is stronger than a test: its only done-bit write is
 `progress.markDone`, which sets `p.done` and never clears it, so the additive

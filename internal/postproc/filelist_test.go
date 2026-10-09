@@ -128,7 +128,7 @@ func buildTestJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) *job.Job {
 		}
 	}
 
-	var runs []durability.Run
+	rows := make(map[int][]durability.WrittenRow)
 	var failedIDs []string
 	for fi, f := range specs {
 		for ai, a := range f.articles {
@@ -142,11 +142,16 @@ func buildTestJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) *job.Job {
 				if !ok {
 					t.Fatalf("buildTestJob: article %s (global idx %d) not owned by any manifest file", id, globalIdx)
 				}
-				runs = append(runs, durability.Run{
-					FileIdx:     int32(mfi),       //nolint:gosec // G115: file counts are far below int32
-					FirstArtIdx: int32(globalIdx), //nolint:gosec // G115: article counts are far below int32
-					LastArtIdx:  int32(globalIdx), //nolint:gosec // G115: article counts are far below int32
-					Length:      int64(m.ArticleBytes(globalIdx)),
+				lo, _ := m.FileRange(mfi)
+				var off int64
+				for k := lo; k < globalIdx; k++ {
+					off += int64(m.ArticleBytes(k))
+				}
+				rows[mfi] = append(rows[mfi], durability.WrittenRow{
+					FileIdx: mfi,
+					ArtIdx:  int32(globalIdx), //nolint:gosec // G115: article counts are far below int32
+					Offset:  off,
+					Length:  int64(m.ArticleBytes(globalIdx)),
 				})
 			}
 		}
@@ -154,9 +159,9 @@ func buildTestJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) *job.Job {
 	if len(failedIDs) > 0 {
 		ackFailedIDs(t, j, m, failedIDs)
 	}
-	if len(runs) > 0 {
-		if err := j.SeedFromRuns(runs); err != nil {
-			t.Fatalf("SeedFromRuns: %v", err)
+	for fi, rs := range rows {
+		if err := j.InstallVerified(fi, rs); err != nil {
+			t.Fatalf("InstallVerified: %v", err)
 		}
 	}
 	return j
