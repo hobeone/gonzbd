@@ -1648,7 +1648,7 @@ including every failure path.
 
   - **A range is claimed only after its write returned nil** (in `writeOne`).
     The arrival whose `[off, off+len)` intersects a claimed range is rejected
-    (`rangeOwnedBy`, checked in `acceptArticle`). The incumbent's bytes back a
+    (`ownerOf`, checked in `acceptArticle`). The incumbent's bytes back a
     durable claim: the next `Drain` reports them, and the barrier records the
     run naming its CRC and acks it. Letting a later article overwrite the range
     makes that record unverifiable, and failing the incumbent as well would give

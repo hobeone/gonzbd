@@ -250,18 +250,6 @@ func (w *FileWriter) fail(id articleID) {
 // caller compares it to FileInfo.TotalParts to decide the file is complete.
 func (w *FileWriter) parts() int { return w.partsWritten }
 
-// rangeOwnedBy reports the article that has written bytes inside r, so the
-// ARRIVING article must be refused rather than allowed to overwrite them.
-//
-// The incumbent may already be in w.written, or in w.reported after a Drain
-// handed it to the barrier, and the barrier records a run over exactly its
-// range with its CRC. Letting the arrival overwrite those bytes leaves a record
-// describing bytes the file no longer holds. An article whose write faulted
-// claimed nothing (see owned), so it never makes a later arrival lose.
-func (w *FileWriter) rangeOwnedBy(r Range, arriving articleID) (articleID, bool) {
-	return w.owned.ownerOf(r, arriving)
-}
-
 // admitAccepted takes an article on as a part of this file, before its bytes
 // are handed to Accept.
 //

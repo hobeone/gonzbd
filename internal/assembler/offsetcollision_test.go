@@ -127,9 +127,9 @@ func TestCollision_RangeStaysOwnedAfterConfirm(t *testing.T) {
 	}
 }
 
-// TestFileWriter_RangeOwnedBy covers the predicate that decides whether an
+// TestOwnedRanges_ArrivalVerdicts covers the predicate that decides whether an
 // arrival is refused, directly, including the ways it must answer "no".
-func TestFileWriter_RangeOwnedBy(t *testing.T) {
+func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
 	owner := articleID{msgID: "owner", artIdx: 1}
 	arriving := articleID{msgID: "arriving", artIdx: 2}
 
@@ -152,7 +152,7 @@ func TestFileWriter_RangeOwnedBy(t *testing.T) {
 			w := newTestFileWriter(t)
 			tc.seed(w)
 
-			got, owned := w.rangeOwnedBy(tc.r, tc.arriving)
+			got, owned := w.owned.ownerOf(tc.r, tc.arriving)
 
 			if owned != tc.wantOwned {
 				t.Fatalf("owned = %v, want %v", owned, tc.wantOwned)
@@ -268,7 +268,7 @@ func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 	if owner, owned := w.owned.ownerOf(r, second); owned {
 		t.Fatalf("ownerOf = %+v after a faulted write, want no owner", owner)
 	}
-	if _, owned := w.rangeOwnedBy(r, second); owned {
+	if _, owned := w.owned.ownerOf(r, second); owned {
 		t.Fatal("a range whose only writer faulted was owned against a rival")
 	}
 
@@ -277,7 +277,7 @@ func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 	if err := w.Accept(second, 0, []byte("BBBB"), 0); err != nil {
 		t.Fatalf("accept second: %v", err)
 	}
-	if got, owned := w.rangeOwnedBy(r, third); !owned || got != second {
-		t.Errorf("rangeOwnedBy(third) = %+v, %v; want the second article to own it", got, owned)
+	if got, owned := w.owned.ownerOf(r, third); !owned || got != second {
+		t.Errorf("ownerOf(third) = %+v, %v; want the second article to own it", got, owned)
 	}
 }

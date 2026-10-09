@@ -1120,7 +1120,7 @@ has two levels, not four**:
 > **written-or-reported beats accepted.**
 
 That is exactly what `FileWriter.owned` records (a range is claimed only after
-its write returned nil) and what `rangeOwnedBy` consults. A collision with a
+its write returned nil) and what `acceptArticle` consults via `ownedRanges.ownerOf`. A collision with a
 written range must be refused.
 
 **The durable tier is deliberately collapsed into "written", because it is not

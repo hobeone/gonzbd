@@ -1,6 +1,10 @@
 package assembler
 
-import "sort"
+import (
+	"fmt"
+	"slices"
+	"sort"
+)
 
 // Range is a half-open byte range [Off, Off+Len) in a target file.
 type Range struct{ Off, Len int64 }
@@ -32,16 +36,34 @@ func (o *ownedRanges) ownerOf(r Range, arriving articleID) (articleID, bool) {
 	return articleID{}, false
 }
 
-// claim records id as the owner of r, keeping the slice sorted by Off.
+// claim records id as the owner of r, keeping the slice sorted by Off and free
+// of intersections: ownerOf's binary search is correct only while end order
+// equals offset order.
+//
+// Entries of the same article that intersect r are replaced by r (a retry may
+// write a different length). An intersecting entry of a DIFFERENT article
+// panics rather than being refused: the caller must have found no owner via
+// ownerOf first, and the one production path, acceptArticle, does so
+// immediately before Accept on the file's single goroutine —
+// `git grep -n 'owned\.claim' -- '*.go' ':!*_test.go'` finds the one call, in
+// writeOne, reached from Accept, whose one non-test caller is acceptArticle.
+// A refusal here could not return the article's accounting, since its bytes
+// are already written.
 func (o *ownedRanges) claim(r Range, id articleID) {
 	if r.Len <= 0 {
 		return
 	}
-	i := sort.Search(len(o.s), func(i int) bool { return o.s[i].r.Off >= r.Off })
-	if i < len(o.s) && o.s[i].r == r {
-		o.s[i].id = id
-		return
+	lo := sort.Search(len(o.s), func(i int) bool { return o.s[i].r.end() > r.Off })
+	hi := lo
+	for hi < len(o.s) && o.s[hi].r.Off < r.end() {
+		if !o.s[hi].id.sameArticle(id) {
+			panic(fmt.Sprintf("assembler: claim of %+v by article %d intersects %+v owned by article %d",
+				r, id.artIdx, o.s[hi].r, o.s[hi].id.artIdx))
+		}
+		hi++
 	}
+	o.s = slices.Delete(o.s, lo, hi)
+	i := sort.Search(len(o.s), func(i int) bool { return o.s[i].r.Off >= r.Off })
 	o.s = append(o.s, ownedRange{})
 	copy(o.s[i+1:], o.s[i:])
 	o.s[i] = ownedRange{r: r, id: id}

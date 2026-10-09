@@ -1574,13 +1574,17 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 		return &rejectedArticleError{reason: reason}
 	}
 	// A byte range another article has already written is owned, and the
-	// ARRIVING article is the one refused. See FileWriter.rangeOwnedBy for why
-	// the loser is chosen this way round rather than by arrival order.
+	// ARRIVING article is the one refused rather than the incumbent. The
+	// incumbent may already be in w.written, or in w.reported after a Drain
+	// handed it to the barrier, and the barrier records a run over exactly its
+	// range with its CRC; overwriting those bytes leaves a record describing
+	// bytes the file no longer holds. An article whose write faulted claimed
+	// nothing (see FileWriter.owned), so it never makes a later arrival lose.
 	//
 	// Checked here rather than inside Accept so the refusal travels the same
 	// route as the out-of-range one above — Accept's contract is that its error
 	// always reports STORAGE failing, and this reports the article.
-	if _, settled := f.w.rangeOwnedBy(Range{Off: req.Offset, Len: int64(len(req.Data))}, id); settled {
+	if _, settled := f.w.owned.ownerOf(Range{Off: req.Offset, Len: int64(len(req.Data))}, id); settled {
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}

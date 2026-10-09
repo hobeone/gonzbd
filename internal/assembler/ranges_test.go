@@ -49,8 +49,47 @@ func TestOwnedRanges_ClaimKeepsOffsetOrder(t *testing.T) {
 	if got, ok := o.ownerOf(Range{150, 10}, articleID{artIdx: 9}); !ok || got.artIdx != 2 {
 		t.Errorf("ownerOf([150,160)) = %+v, %v; want article 2", got, ok)
 	}
-	o.claim(Range{100, 100}, articleID{artIdx: 7})
-	if got, _ := o.ownerOf(Range{150, 10}, articleID{artIdx: 9}); got.artIdx != 7 || len(o.s) != 3 {
-		t.Errorf("re-claim: owner %+v, len %d; want article 7 replacing in place", got, len(o.s))
+}
+
+func TestOwnedRanges_ReclaimBySameArticleLeavesOneEntry(t *testing.T) {
+	a := articleID{artIdx: 1, msgID: "<a@x>"}
+	probe := articleID{artIdx: 9}
+	for _, tc := range []struct {
+		name   string
+		second Range
+		probe  Range
+	}{
+		{"longer", Range{0, 100}, Range{60, 10}},
+		{"shorter", Range{0, 20}, Range{5, 10}},
+		{"shifted", Range{10, 50}, Range{55, 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var o ownedRanges
+			o.claim(Range{200, 50}, articleID{artIdx: 2})
+			o.claim(Range{0, 50}, a)
+			o.claim(tc.second, a)
+			if len(o.s) != 2 {
+				t.Fatalf("entries = %+v, want the re-claim to replace the first range", o.s)
+			}
+			// The probe lies inside the new range; the old range's end would
+			// put it past the broken search's starting point.
+			if got, ok := o.ownerOf(tc.probe, probe); !ok || got != a {
+				t.Errorf("ownerOf(%+v) = %+v, %v; want article 1", tc.probe, got, ok)
+			}
+			if got, ok := o.ownerOf(Range{210, 10}, probe); !ok || got.artIdx != 2 {
+				t.Errorf("the neighbour was lost: ownerOf = %+v, %v", got, ok)
+			}
+		})
 	}
+}
+
+func TestOwnedRanges_ClaimOverAnotherArticlePanics(t *testing.T) {
+	var o ownedRanges
+	o.claim(Range{0, 50}, articleID{artIdx: 1})
+	defer func() {
+		if recover() == nil {
+			t.Error("claiming over another article's range did not panic")
+		}
+	}()
+	o.claim(Range{40, 50}, articleID{artIdx: 2})
 }
