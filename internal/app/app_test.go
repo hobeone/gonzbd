@@ -681,6 +681,157 @@ func TestFullDownloadLifecycle(t *testing.T) {
 	}
 }
 
+// TestScriptCanFail_StageWiring verifies end-to-end through the real stage
+// wiring (both buildStages at startup and ReloadPostProcOptions at runtime)
+// that:
+//   - with default config (script_can_fail: false), a script exiting non-zero
+//     records its output in the stage log and the job still completes;
+//   - with script_can_fail: true, a script exiting non-zero fails the job.
+func TestScriptCanFail_StageWiring(t *testing.T) {
+	t.Parallel()
+	boolPtr := func(v bool) *bool { return &v }
+	for _, tc := range []struct {
+		name          string
+		scriptCanFail bool
+		reloaded      *bool
+		wantStatus    string
+		wantFailMsg   string
+	}{
+		{
+			name:          "default false completes on non-zero exit",
+			scriptCanFail: false,
+			wantStatus:    "Completed",
+			wantFailMsg:   "",
+		},
+		{
+			name:          "true fails job on non-zero exit",
+			scriptCanFail: true,
+			wantStatus:    "Failed",
+			wantFailMsg:   "Script fail.sh failed (exit=1)",
+		},
+		{
+			name:          "hot reload false to true fails job",
+			scriptCanFail: false,
+			reloaded:      boolPtr(true),
+			wantStatus:    "Failed",
+			wantFailMsg:   "Script fail.sh failed (exit=1)",
+		},
+		{
+			name:          "hot reload true to false completes job",
+			scriptCanFail: true,
+			reloaded:      boolPtr(false),
+			wantStatus:    "Completed",
+			wantFailMsg:   "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			const partSize = 4 * 1024
+			raw := makeDeterministic(partSize)
+			articles := map[string][]byte{
+				"p1@script": yencEncodePart("test.bin", 1, 1, raw, partSize, 1, partSize),
+			}
+			mock := startMockNNTP(t, articles)
+
+			downloadDir := t.TempDir()
+			completeDir := t.TempDir()
+			adminDir := t.TempDir()
+			scriptDir := t.TempDir()
+			scriptPath := filepath.Join(scriptDir, "fail.sh")
+			if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho \"script diagnostic output\"\nexit 1\n"), 0o755); err != nil {
+				t.Fatalf("write script: %v", err)
+			}
+
+			db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+			if err != nil {
+				t.Fatalf("history.Open: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			repo := history.NewRepository(db)
+
+			cfg := testConfig(
+				downloadDir,
+				completeDir,
+				adminDir,
+				config.ServerConfig{
+					Name:               "mock",
+					Host:               mock.host,
+					Port:               mock.port,
+					Connections:        1,
+					PipeliningRequests: 1,
+					Timeout:            5,
+					Enable:             true,
+				},
+			)
+			cfg.With(func(c *config.Config) {
+				c.General.ScriptDir = scriptDir
+				if tc.scriptCanFail {
+					c.PostProc.ScriptCanFail = true
+				}
+			})
+
+			application, err := app.New(cfg, repo)
+			if err != nil {
+				t.Fatalf("app.New: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			if err := application.Start(ctx); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			t.Cleanup(func() { _ = application.Shutdown() })
+
+			if tc.reloaded != nil {
+				cfg.With(func(c *config.Config) {
+					c.PostProc.ScriptCanFail = *tc.reloaded
+				})
+				snap := cfg.Snapshot()
+				application.ReloadPostProcOptions(snap.PostProc, snap.General.ScriptDir)
+			}
+
+			parsed := &nzb.NZB{
+				Files: []nzb.File{{
+					Subject:  "test.bin",
+					Date:     time.Now().UTC(),
+					Articles: []nzb.Article{{ID: "p1@script", Bytes: partSize, Number: 1}},
+					Bytes:    partSize,
+				}},
+			}
+			j, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{
+				NzbName: "scriptjob",
+				Script:  "fail.sh",
+			})
+			hdr.Filename = "scriptjob.nzb"
+			if err := application.AddJob(t.Context(), j, hdr, []byte("<nzb/>"), false); err != nil {
+				t.Fatalf("AddJob: %v", err)
+			}
+
+			select {
+			case <-application.PostProcComplete():
+			case <-ctx.Done():
+				t.Fatalf("timeout waiting for post-proc completion: %v", ctx.Err())
+			}
+
+			entry, err := repo.Get(t.Context(), j.ID())
+			if err != nil {
+				t.Fatalf("repo.Get: %v", err)
+			}
+			if entry.Status != tc.wantStatus {
+				t.Errorf("entry.Status = %q, want %q", entry.Status, tc.wantStatus)
+			}
+			if entry.FailMessage != tc.wantFailMsg {
+				t.Errorf("entry.FailMessage = %q, want %q", entry.FailMessage, tc.wantFailMsg)
+			}
+			if !strings.Contains(entry.StageLog, "script diagnostic output") {
+				t.Errorf("entry.StageLog missing script output; got %s", entry.StageLog)
+			}
+			if !strings.Contains(entry.StageLog, "Exit code: 1") {
+				t.Errorf("entry.StageLog missing exit code line; got %s", entry.StageLog)
+			}
+		})
+	}
+}
+
 // Fixture helpers for the download path. Only startMockNNTP is used outside
 // this file, by checkpoint_test.go; makeDeterministic, yencEncodePart,
 // mockNNTP and dotStuff have no caller elsewhere in the package

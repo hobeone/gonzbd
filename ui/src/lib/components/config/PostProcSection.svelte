@@ -106,7 +106,7 @@
 	<div>
 		<h4 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-2">Advanced</h4>
 		<div class="divide-y divide-gray-100 dark:divide-gray-800">
-			<ConfigSwitch section="postproc" keyword="script_can_fail" label="Script can fail" value={configData.postproc.script_can_fail} description="Treat non-zero script exit codes as warnings instead of job failures." onupdate={onFieldUpdate} />
+			<ConfigSwitch section="postproc" keyword="script_can_fail" label="Script can fail" value={configData.postproc.script_can_fail} description="Mark the job as failed when a post-processing script exits with a non-zero code." onupdate={onFieldUpdate} />
 			<ConfigInput section="postproc" keyword="nice" label="nice arguments" placeholder="e.g. -n 15 (empty = disabled)" value={configData.postproc.nice} description="Prepended to all external tool commands to lower CPU priority." onupdate={onFieldUpdate} />
 			<ConfigInput section="postproc" keyword="ionice" label="ionice arguments" placeholder="e.g. -c2 -n4 (empty = disabled)" value={configData.postproc.ionice} description="Prepended to all external tool commands to lower I/O priority." onupdate={onFieldUpdate} />
 			<ConfigInput section="postproc" keyword="extra_unrar_params" label="Extra UnRAR parameters" placeholder="e.g. -ri5:100" value={configData.postproc.extra_unrar_params} description="Additional flags for unrar. Only -mlp, -om*, and -ri* are allowed." onupdate={onFieldUpdate} />

@@ -591,7 +591,7 @@ forms — argv is unreliable (arg 4 is a hardcoded empty string) and incomplete.
    The envelope key is `SAB_API_KEY` (with underscore), not `SAB_APIKEY`.
    `SAB_FINAL_PROCESSING_DIR` is NOT emitted by Python; use `SAB_COMPLETE_DIR`.
 
-3. **Return code**: Non-zero indicates failure (recorded in history).
+3. **Return code**: Non-zero is recorded in history; marks the job failed only when `script_can_fail` is `true` (default `false` logs without failing the job).
 4. **stdout+stderr**: Combined stream captured and stored as `script_log` in history (gzip-compressed BLOB).
 
 ### 8.5 Direct Unpack
@@ -724,7 +724,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `rar_decode_workers` | int | 0 | Goroutines the pure-Go RAR5 extractor uses to decode one compressed member; 0 = auto (min(CPU count, 4)), 1 = serial, above 8 clamped, negative treated as 0 |
 | `extra_unrar_params` | string | `` | Extra unrar flags (allowlist: -mlp, -om*, -ri*) |
 | `extra_par2_params` | string | `` | Extra par2 flags |
-| `script_can_fail` | bool | false | Non-zero script exit = warning not failure |
+| `script_can_fail` | bool | false | When true, a non-zero script exit marks the job failed; when false, logs without failing the job |
 | `redact_script_secrets` | bool | false | Replace SAB_API_KEY/SAB_PASSWORD with `**REDACTED**` in script env (log-hygiene, not a security boundary) |
 
 ### 9.5 Category Configuration

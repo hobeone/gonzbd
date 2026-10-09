@@ -31,10 +31,10 @@ type ScriptStage struct {
 	APIKey  string
 	APIURL  string
 
-	// scriptCanFail when true causes non-zero script exit codes to be
-	// logged but NOT treated as pipeline errors. This matches Python's
-	// cfg.script_can_fail() behavior. Default false = non-zero exit
-	// is an error. Atomic so SetScriptCanFail can be called from any goroutine.
+	// scriptCanFail when true causes a non-zero script exit code to mark
+	// the job as failed. This matches SABnzbd's cfg.script_can_fail()
+	// behavior. Default false logs a non-zero exit without failing the job.
+	// Atomic so SetScriptCanFail can be called from any goroutine.
 	scriptCanFail atomic.Bool
 
 	// redactSecrets when true causes SAB_API_KEY and SAB_PASSWORD to be
@@ -47,8 +47,8 @@ type ScriptStage struct {
 	Log *slog.Logger
 }
 
-// SetScriptCanFail enables or disables treating non-zero script exit codes as
-// warnings at runtime without restart. Thread-safe.
+// SetScriptCanFail enables or disables failing the job when a script exits
+// non-zero at runtime without restart. Thread-safe.
 func (s *ScriptStage) SetScriptCanFail(v bool) { s.scriptCanFail.Store(v) }
 
 // SetRedactSecrets enables or disables masking of SAB_API_KEY and SAB_PASSWORD
@@ -77,8 +77,8 @@ func NewScriptStage(scriptDir, completeDir, version, apiKey, apiURL string) *Scr
 func (*ScriptStage) Name() string { return "script" }
 
 // Run builds a ScriptInput from the job and invokes RunScript. Returns nil
-// when no script is configured or the script exits 0; wraps the RunScript
-// error otherwise.
+// when no script is configured, the script exits 0, or the script exits
+// non-zero while scriptCanFail is false; wraps the RunScript error otherwise.
 func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	s.mu.RLock()
 	scriptDir := s.ScriptDir
@@ -184,12 +184,14 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	if res.Err != nil {
 		if errors.Is(res.Err, ErrNonZeroExit) {
 			logf(ctx, log, job, slog.LevelWarn, "Error: script %q exited %d", name, res.ExitCode)
-			if s.scriptCanFail.Load() {
+			if !s.scriptCanFail.Load() {
 				// Log but don't fail the pipeline.
-				logf(ctx, log, job, slog.LevelInfo, "script_can_fail=true: ignoring non-zero exit")
+				logf(ctx, log, job, slog.LevelInfo, "script_can_fail=false: ignoring non-zero exit")
 				return nil
 			}
-			job.FailMsg = fmt.Sprintf("Script %s failed (exit=%d)", name, res.ExitCode)
+			if status == 0 {
+				job.FailMsg = fmt.Sprintf("Script %s failed (exit=%d)", name, res.ExitCode)
+			}
 			return fmt.Errorf("script %q exited %d", name, res.ExitCode)
 		}
 		logf(ctx, log, job, slog.LevelWarn, "Error: script %q failed: %v", name, res.Err)

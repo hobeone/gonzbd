@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -109,41 +110,40 @@ func TestScriptStage_CaseInsensitiveNoneAndDefault(t *testing.T) {
 	}
 }
 
-// TestScriptStage_CanFailFalse_SetsFailMsg verifies that when
+// TestScriptStage_CanFailFalse_NoFailMsg verifies that when
 // ScriptCanFail is false (default) and the script exits non-zero,
-// job.FailMsg is set so buildSummaryEntry records Status="Failed".
-// Without this, a failed script produces a "Completed" history entry.
-func TestScriptStage_CanFailFalse_SetsFailMsg(t *testing.T) {
+// the output is recorded and Run returns nil without setting job.FailMsg,
+// so the job still completes (matching SABnzbd's cfg.script_can_fail()).
+func TestScriptStage_CanFailFalse_NoFailMsg(t *testing.T) {
 	t.Parallel()
 	job, _ := stageJob(t)
 
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "fail.sh")
-	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 7\n"))
+	writeScript(t, scriptPath, []byte("#!/bin/sh\necho \"minor script warning\"\nexit 7\n"))
 
 	job.Script = "fail.sh"
 	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
 	// ScriptCanFail defaults to false — do not call SetScriptCanFail.
 
 	err := stage.Run(t.Context(), job)
-	if err == nil {
-		t.Fatal("expected non-nil error for non-zero script exit with ScriptCanFail=false")
+	if err != nil {
+		t.Fatalf("expected nil error for non-zero script exit with ScriptCanFail=false, got %v", err)
 	}
-
-	// The critical assertion: FailMsg must be populated so that
-	// buildSummaryEntry sees it and records Status="Failed".
-	if job.FailMsg == "" {
-		t.Error("job.FailMsg should be set when ScriptCanFail=false and script exits non-zero")
+	if job.FailMsg != "" {
+		t.Errorf("job.FailMsg should be empty with ScriptCanFail=false, got %q", job.FailMsg)
 	}
-	if !strings.Contains(job.FailMsg, "fail.sh") {
-		t.Errorf("job.FailMsg should mention script name, got %q", job.FailMsg)
+	if !slices.ContainsFunc(job.OutputLines, func(line string) bool {
+		return strings.Contains(line, "minor script warning")
+	}) {
+		t.Errorf("expected script output in job.OutputLines, got %v", job.OutputLines)
 	}
 }
 
-// TestScriptStage_CanFailTrue_NoFailMsg verifies that when
+// TestScriptStage_CanFailTrue_SetsFailMsg verifies that when
 // ScriptCanFail is true and the script exits non-zero, job.FailMsg
-// is NOT set (the failure is swallowed as a warning).
-func TestScriptStage_CanFailTrue_NoFailMsg(t *testing.T) {
+// is set and Run returns an error so buildSummaryEntry records Status="Failed".
+func TestScriptStage_CanFailTrue_SetsFailMsg(t *testing.T) {
 	t.Parallel()
 	job, _ := stageJob(t)
 
@@ -156,11 +156,64 @@ func TestScriptStage_CanFailTrue_NoFailMsg(t *testing.T) {
 	stage.SetScriptCanFail(true)
 
 	err := stage.Run(t.Context(), job)
-	if err != nil {
-		t.Fatalf("expected nil error with ScriptCanFail=true, got %v", err)
+	if err == nil {
+		t.Fatal("expected non-nil error for non-zero script exit with ScriptCanFail=true")
 	}
-	if job.FailMsg != "" {
-		t.Errorf("job.FailMsg should be empty with ScriptCanFail=true, got %q", job.FailMsg)
+	if job.FailMsg == "" {
+		t.Error("job.FailMsg should be set when ScriptCanFail=true and script exits non-zero")
+	}
+	if !strings.Contains(job.FailMsg, "fail.sh") {
+		t.Errorf("job.FailMsg should mention script name, got %q", job.FailMsg)
+	}
+}
+
+// TestScriptStage_CanFailTrue_PreservesPriorFailure verifies that when an
+// earlier stage has already failed (job.FailMsg != "", job.ParError, or
+// job.UnpackError), a non-zero script exit with ScriptCanFail=true does not
+// overwrite job.FailMsg and mask the original stage failure.
+func TestScriptStage_CanFailTrue_PreservesPriorFailure(t *testing.T) {
+	t.Parallel()
+	scriptDir := t.TempDir()
+	scriptPath := filepath.Join(scriptDir, "fail.sh")
+	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 3\n"))
+
+	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
+	stage.SetScriptCanFail(true)
+
+	for _, tc := range []struct {
+		name        string
+		setup       func(*Job)
+		wantFailMsg string
+	}{
+		{
+			name:        "prior FailMsg preserved",
+			setup:       func(j *Job) { j.FailMsg = "unwanted extension detected" },
+			wantFailMsg: "unwanted extension detected",
+		},
+		{
+			name:        "prior ParError keeps empty FailMsg",
+			setup:       func(j *Job) { j.ParError = true },
+			wantFailMsg: "",
+		},
+		{
+			name:        "prior UnpackError keeps empty FailMsg",
+			setup:       func(j *Job) { j.UnpackError = true },
+			wantFailMsg: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			j, _ := stageJob(t)
+			j.Script = "fail.sh"
+			tc.setup(j)
+
+			if err := stage.Run(t.Context(), j); err == nil {
+				t.Fatal("expected non-nil error for non-zero script exit with ScriptCanFail=true")
+			}
+			if j.FailMsg != tc.wantFailMsg {
+				t.Errorf("job.FailMsg = %q, want %q", j.FailMsg, tc.wantFailMsg)
+			}
+		})
 	}
 }
 

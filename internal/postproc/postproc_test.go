@@ -967,49 +967,53 @@ func TestQuickCheckPassedSkipsRepair(t *testing.T) {
 	}
 }
 
-// TestScriptCanFail_True verifies that non-zero script exit is logged but
-// does NOT return an error when ScriptCanFail is true.
+// TestScriptCanFail_True verifies that a non-zero script exit sets job.FailMsg
+// and records an error on the script stage when ScriptCanFail is true, while
+// the pipeline completes both stages.
 func TestScriptCanFail_True(t *testing.T) {
 	t.Parallel()
-	// Create a real ScriptStage and verify SetScriptCanFail works.
-	script := &ScriptStage{}
+	scriptDir := t.TempDir()
+	writeScript(t, filepath.Join(scriptDir, "test.sh"), []byte("#!/bin/sh\nexit 1\n"))
+
+	script := NewScriptStage(scriptDir, t.TempDir(), "test", "", "")
 	script.SetScriptCanFail(true)
 	if !script.scriptCanFail.Load() {
 		t.Error("ScriptCanFail should be true")
 	}
 
-	// Use a mock stage in the pipeline to simulate a failing script.
-	// The pipeline continues past errors, so both stages should run.
-	failScript := newRecordStage("script")
-	failScript.returnErr = fmt.Errorf("script %q exited %d", "test.sh", 1)
 	finalize := newRecordStage("finalize")
 
 	var doneMu sync.Mutex
-	var doneJobs []string
+	var doneJob *Job
 	p := startProcessor(t, Options{
-		Stages: []Stage{finalize, failScript},
+		Stages: []Stage{finalize, script},
 		OnJobDone: func(j *Job) {
 			doneMu.Lock()
-			doneJobs = append(doneJobs, j.JobID())
+			doneJob = j
 			doneMu.Unlock()
 		},
 	})
 
 	job := makeJob(t, "script-can-fail")
+	job.Script = "test.sh"
 	p.Process(job)
 
 	waitUntil(t, func() bool {
 		doneMu.Lock()
 		defer doneMu.Unlock()
-		return len(doneJobs) == 1
+		return doneJob != nil
 	}, 2*time.Second, "job to complete")
 
-	// The script stage errored but pipeline should still complete both stages.
+	// The script stage errored with ScriptCanFail=true and set FailMsg, while
+	// the pipeline still ran finalize and completed.
 	if finalize.CallCount() != 1 {
 		t.Errorf("finalize ran %d times, want 1", finalize.CallCount())
 	}
-	if failScript.CallCount() != 1 {
-		t.Errorf("script ran %d times, want 1", failScript.CallCount())
+	doneMu.Lock()
+	gotFailMsg := doneJob.FailMsg
+	doneMu.Unlock()
+	if gotFailMsg == "" {
+		t.Error("expected job.FailMsg to be set when ScriptCanFail=true and script exits non-zero")
 	}
 }
 

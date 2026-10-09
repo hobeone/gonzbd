@@ -101,6 +101,11 @@ describe('PostProcSection', () => {
 	it('renders advanced group labels', () => {
 		render(PostProcSection, { configData: mockConfig, onFieldUpdate: vi.fn() });
 		expect(screen.getByText('Script can fail')).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				'Mark the job as failed when a post-processing script exits with a non-zero code.'
+			)
+		).toBeInTheDocument();
 		expect(screen.getByText('nice arguments')).toBeInTheDocument();
 		expect(screen.getByText('ionice arguments')).toBeInTheDocument();
 		expect(screen.getByText('Extra UnRAR parameters')).toBeInTheDocument();
