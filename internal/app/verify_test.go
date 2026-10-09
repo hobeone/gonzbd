@@ -726,7 +726,7 @@ func TestErrVerifyFault(t *testing.T) {
 	if !strings.Contains(msg, "/dl/a.bin") || !strings.Contains(msg, syscall.EIO.Error()) {
 		t.Errorf("Error() = %q, want it to name the file and the cause", msg)
 	}
-	var wrapped error = fmt.Errorf("outer: %w", f)
+	wrapped := fmt.Errorf("outer: %w", f)
 	if !errors.Is(wrapped, syscall.EIO) {
 		t.Error("errors.Is(wrapped, EIO) = false, want Unwrap to expose the cause")
 	}
