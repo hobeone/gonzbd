@@ -1,6 +1,7 @@
 package postproc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -907,13 +909,79 @@ func TestShouldSkipForPP(t *testing.T) {
 		{"extension_cleanup", 0, false},
 		{"sample_cleanup", 0, false},
 		{"recover_par2_names", 0, false},
-		{"par2_cleanup", 0, false},
+		{"par2_cleanup", 0, true},
+		{"par2_cleanup", 1, false},
+		{"par2_cleanup", 2, false},
+		{"par2_cleanup", 3, false},
 	}
 	for _, tt := range tests {
 		got := shouldSkipForPP(tt.stage, tt.pp)
 		if got != tt.want {
 			t.Errorf("shouldSkipForPP(%q, %d) = %v, want %v", tt.stage, tt.pp, got, tt.want)
 		}
+	}
+}
+
+// TestPar2Cleanup_PP0Skipped_PPVerifyRuns verifies that par2_cleanup preserves
+// .par2 files at PP=0 (download only, where nothing verified or repaired) and
+// deletes them at PP=PPVerify when cleanup is enabled and no repair/unpack
+// error occurred.
+func TestPar2Cleanup_PP0Skipped_PPVerifyRuns(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		pp          int
+		wantDeleted bool
+	}{
+		{"PP=0 preserves par2 files", types.PPNone, false},
+		{"PP=PPVerify deletes par2 files", types.PPVerify, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			dataFile := filepath.Join(dir, "movie.mkv")
+			par2Main := filepath.Join(dir, "movie.par2")
+			par2Vol := filepath.Join(dir, "movie.vol00+1.par2")
+			for _, p := range []string{dataFile, par2Main, par2Vol} {
+				if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+					t.Fatalf("write %s: %v", p, err)
+				}
+			}
+
+			var doneMu sync.Mutex
+			var done bool
+			p := startProcessor(t, Options{
+				Stages: []Stage{NewPar2CleanupStage(true)},
+				OnJobDone: func(*Job) {
+					doneMu.Lock()
+					done = true
+					doneMu.Unlock()
+				},
+			})
+
+			job := &Job{
+				Job:         newQueueJob(t, "par2-pp", tc.pp),
+				DownloadDir: dir,
+				PP:          tc.pp,
+			}
+			p.Process(job)
+
+			waitUntil(t, func() bool {
+				doneMu.Lock()
+				defer doneMu.Unlock()
+				return done
+			}, 2*time.Second, "job to finish")
+
+			for _, pf := range []string{par2Main, par2Vol} {
+				_, err := os.Stat(pf)
+				if tc.wantDeleted && !os.IsNotExist(err) {
+					t.Errorf("%s survived at PP=%d (stat err=%v); want deleted", filepath.Base(pf), tc.pp, err)
+				}
+				if !tc.wantDeleted && err != nil {
+					t.Errorf("%s deleted at PP=%d (stat err=%v); want preserved for manual repair", filepath.Base(pf), tc.pp, err)
+				}
+			}
+		})
 	}
 }
 
@@ -1748,4 +1816,161 @@ func TestPreCheck_AlreadyDeliveredPerJobFinalDir(t *testing.T) {
 			t.Errorf("stagesAfterFinalize([repair, script]) = %v, want nil", got)
 		}
 	})
+}
+
+// TestProcessJob_SweepsLeftoverTempFiles verifies that orphaned
+// .gonzbd-tmp-<16 hex> files left behind in DownloadDir (or its subdirectories)
+// by an interrupted extraction or split join are removed at the start of a
+// post-processing run before any stage executes, while non-matching dotfiles
+// and regular files are preserved.
+func TestProcessJob_SweepsLeftoverTempFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	realRoot := filepath.Join(dir, "movie.mkv")
+	realSub := filepath.Join(subDir, "subs.srt")
+	dotHidden := filepath.Join(dir, ".hidden")
+	dotNonHexTmp := filepath.Join(dir, ".gonzbd-tmp-keep")
+	staleRoot := filepath.Join(dir, ".gonzbd-tmp-0123456789abcdef")
+	staleSub := filepath.Join(subDir, ".gonzbd-tmp-fedcba9876543210")
+
+	for _, p := range []string{realRoot, realSub, dotHidden, dotNonHexTmp, staleRoot, staleSub} {
+		if err := os.WriteFile(p, []byte("data"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+
+	var stageSawStale bool
+	checkStage := newRecordStage("check")
+	checkStage.runFn = func(_ context.Context, _ *Job) error {
+		for _, stale := range []string{staleRoot, staleSub} {
+			if _, err := os.Stat(stale); !os.IsNotExist(err) {
+				stageSawStale = true
+			}
+		}
+		return nil
+	}
+
+	var procLogBuf bytes.Buffer
+	var doneMu sync.Mutex
+	var done bool
+	p := startProcessor(t, Options{
+		Stages: []Stage{checkStage},
+		Logger: slog.New(slog.NewTextHandler(&procLogBuf, nil)),
+		OnJobDone: func(*Job) {
+			doneMu.Lock()
+			done = true
+			doneMu.Unlock()
+		},
+	})
+
+	job := makeJob(t, "sweep-temp")
+	job.DownloadDir = dir
+	p.Process(job)
+
+	waitUntil(t, func() bool {
+		doneMu.Lock()
+		defer doneMu.Unlock()
+		return done
+	}, 2*time.Second, "job to finish")
+	if err := p.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if checkStage.CallCount() != 1 {
+		t.Fatalf("checkStage ran %d times, want 1", checkStage.CallCount())
+	}
+	if stageSawStale {
+		t.Error("stale .gonzbd-tmp-* file was still present when first stage ran; sweep must run before stages")
+	}
+
+	procLogs := procLogBuf.String()
+	for _, stale := range []string{staleRoot, staleSub} {
+		if _, err := os.Stat(stale); !os.IsNotExist(err) {
+			t.Errorf("stale temp file %s still exists (stat err=%v); want removed by start-of-run sweep", stale, err)
+		}
+		if !strings.Contains(procLogs, "postproc: removed leftover temp file") || !strings.Contains(procLogs, stale) {
+			t.Errorf("expected removal log for %s in processor logs, got %q", stale, procLogs)
+		}
+	}
+	for _, keep := range []string{realRoot, realSub, dotHidden, dotNonHexTmp} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("expected non-temp file %s to be preserved, got stat err=%v", keep, err)
+		}
+	}
+
+	// Verify logging: empty/missing paths log no warning, a non-directory
+	// path (ENOTDIR) logs an OpenRoot warning, and an unremovable temp file in
+	// a read-only directory logs a removal warning.
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	sweepTempFiles(logger, "")
+	sweepTempFiles(logger, filepath.Join(dir, "does-not-exist"))
+	if logBuf.Len() != 0 {
+		t.Errorf("expected no log output for empty/missing dir, got %q", logBuf.String())
+	}
+	sweepTempFiles(logger, realRoot)
+	if !strings.Contains(logBuf.String(), "postproc: failed to open download dir for temp-file sweep") {
+		t.Errorf("expected warning when OpenRoot fails with ENOTDIR, got %q", logBuf.String())
+	}
+
+	if os.Geteuid() != 0 {
+		roDir := filepath.Join(dir, "ro")
+		if err := os.MkdirAll(roDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		roTmp := filepath.Join(roDir, ".gonzbd-tmp-1111222233334444")
+		if err := os.WriteFile(roTmp, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(roDir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(roDir, 0o755) })
+
+		logBuf.Reset()
+		sweepTempFiles(logger, roDir)
+		if !strings.Contains(logBuf.String(), "postproc: failed to remove leftover temp file") {
+			t.Errorf("expected warning when root.Remove fails on read-only dir, got %q", logBuf.String())
+		}
+	}
+
+	// Verify interaction with #767 alreadyDelivered recovery:
+	// 1. A per-job FinalDir holding only a leftover .gonzbd-tmp-* file is not
+	//    treated as already delivered.
+	tempOnlyFinal := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempOnlyFinal, ".gonzbd-tmp-0123456789abcdef"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if (&Job{FinalDir: tempOnlyFinal}).alreadyDelivered() {
+		t.Error("alreadyDelivered() = true for FinalDir containing only a .gonzbd-tmp-* file, want false")
+	}
+
+	// 2. When DownloadDir is missing and a per-job FinalDir has both a real
+	//    delivered file and a leftover .gonzbd-tmp-* file, processJob sweeps
+	//    the redirected FinalDir before building the preamble log.
+	deliveredFinal := t.TempDir()
+	deliveredReal := filepath.Join(deliveredFinal, "movie.mkv")
+	deliveredStale := filepath.Join(deliveredFinal, ".gonzbd-tmp-fedcba9876543210")
+	if err := os.WriteFile(deliveredReal, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(deliveredStale, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deliveredJob := makeJob(t, "sweep-delivered")
+	deliveredJob.DownloadDir = filepath.Join(t.TempDir(), "missing-dl")
+	deliveredJob.FinalDir = deliveredFinal
+	ppDelivered := New(Options{Stages: []Stage{NewFinalizeStage()}})
+	ppDelivered.processJob(t.Context(), deliveredJob)
+	if _, err := os.Stat(deliveredStale); !os.IsNotExist(err) {
+		t.Errorf("stale temp file in redirected FinalDir still exists (stat err=%v), want removed", err)
+	}
+	if _, err := os.Stat(deliveredReal); err != nil {
+		t.Errorf("delivered file %s missing after FinalDir sweep: %v", deliveredReal, err)
+	}
 }

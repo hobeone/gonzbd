@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -435,11 +437,11 @@ func buildSummaryEntry(job *Job) StageLogEntry {
 func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (StageLogEntry, bool) {
 	// PP enforcement (M1): skip stages above the job's post-processing
 	// level. SABnzbd PP levels are cumulative:
-	//   0 = download only (skip repair + unpack)
-	//   1 = +repair (par2 verify/repair)
-	//   2 = +unpack (also does repair)
+	//   0 = download only (skip repair + par2 cleanup + unpack)
+	//   1 = +repair (par2 verify/repair + par2 cleanup)
+	//   2 = +unpack (also does repair + par2 cleanup)
 	//   3 = +delete (repair + unpack + cleanup)
-	// Quickcheck and repair require PP ≥ 1; unpack requires PP ≥ 2.
+	// Quickcheck, repair, and par2_cleanup require PP ≥ 1; unpack requires PP ≥ 2.
 	// Other stages (deobfuscate, sort, finalize, script) always run.
 	if shouldSkipForPP(stage.Name(), job.PP) {
 		p.log.Info("postproc: skipping stage (PP level)",
@@ -511,6 +513,41 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	return entry, false
 }
 
+// sweepTempFiles removes leftover .gonzbd-tmp-<16 hex> files under dir that an
+// interrupted extraction (writeEntrySafely) or split join (FileJoin) left
+// behind before its atomic rename completed.
+func sweepTempFiles(log *slog.Logger, dir string) {
+	if dir == "" {
+		return
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) && log != nil {
+			log.Warn("postproc: failed to open download dir for temp-file sweep", "dir", dir, "err", err)
+		}
+		return
+	}
+	defer root.Close() //nolint:errcheck // best-effort cleanup
+
+	_ = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return nil //nolint:nilerr // best-effort sweep continues past subdirectories and errors
+		}
+		if fsutil.IsTempFile(d.Name()) {
+			if rmErr := root.Remove(path); rmErr != nil {
+				if !errors.Is(rmErr, os.ErrNotExist) && log != nil {
+					log.Warn("postproc: failed to remove leftover temp file", "path", filepath.Join(dir, path), "err", rmErr)
+				}
+				return nil
+			}
+			if log != nil {
+				log.Info("postproc: removed leftover temp file", "path", filepath.Join(dir, path))
+			}
+		}
+		return nil
+	})
+}
+
 // processJob runs all registered stages in order for job.
 // Stage errors are recorded but do not abort the pipeline.
 //
@@ -524,6 +561,8 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 		}
 	}
 	p.log.Info("postproc: processing job", "job", job.JobID(), "name", job.Name())
+
+	sweepTempFiles(p.log, job.DownloadDir)
 
 	// L11: Pre-check — skip processing when the download directory is
 	// empty or doesn't exist, unless a per-job FinalDir already holds the
@@ -561,6 +600,7 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 				)
 				job.DownloadDir = job.FinalDir
 				stages = stagesAfterFinalize(stages)
+				sweepTempFiles(p.log, job.DownloadDir)
 			} else {
 				preCheckReason = "download directory is empty"
 				if err != nil {
@@ -619,12 +659,14 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 // alreadyDelivered reports whether a job whose DownloadDir is missing has
 // already been delivered into a per-job FinalDir (#767). Flat-layout
 // categories share FinalDir across all jobs in the category, so non-empty
-// proves nothing and returns false.
+// proves nothing and returns false. Orphaned .gonzbd-tmp-<16 hex> files do not
+// count as delivered payload.
 func (j *Job) alreadyDelivered() bool {
 	if j.FlatLayout || j.FinalDir == "" {
 		return false
 	}
 	entries, err := os.ReadDir(j.FinalDir)
+	entries = slices.DeleteFunc(entries, func(e os.DirEntry) bool { return fsutil.IsTempFile(e.Name()) })
 	return err == nil && len(entries) > 0
 }
 
@@ -672,16 +714,16 @@ func (p *PostProcessor) addHistory(job *Job) {
 // shouldSkipForPP returns true if the named stage should be skipped because
 // the job's PP level is too low. SABnzbd PP levels are cumulative:
 //
-//	0 = download only (no repair, no unpack)
-//	1 = +repair (par2 verify/repair)
-//	2 = +unpack (includes repair)
+//	0 = download only (no repair, no par2 cleanup, no unpack)
+//	1 = +repair (par2 verify/repair and par2 cleanup)
+//	2 = +unpack (includes repair and par2 cleanup)
 //	3 = +delete (includes repair + unpack + archive cleanup)
 //
-// Stages gated by PP: quickcheck and repair (≥1), unpack (≥2). Every other
-// stage runs at every PP level.
+// Stages gated by PP: quickcheck, repair, and par2_cleanup (≥1); unpack (≥2).
+// Every other stage runs at every PP level.
 func shouldSkipForPP(stageName string, pp int) bool {
 	switch stageName {
-	case "quickcheck", "repair":
+	case "quickcheck", "repair", "par2_cleanup":
 		return pp < types.PPVerify
 	case "unpack":
 		return pp < types.PPUnpack
