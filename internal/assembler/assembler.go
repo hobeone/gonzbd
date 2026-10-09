@@ -1766,14 +1766,14 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 		f.w.failPermanent(id.artIdx)
 		return &rejectedArticleError{reason: reason}
 	}
-	// An offset whose owner has already been reported Written is settled, and
-	// the ARRIVING article is the one refused. See FileWriter.offsetSettledBy
-	// for why the loser is chosen this way round rather than by arrival order.
+	// A range that overlaps an already-accepted article (or an exact offset
+	// whose owner has already been reported Written) is settled, and the
+	// ARRIVING article is the one refused. See FileWriter.offsetSettledBy.
 	//
 	// Checked here rather than inside Accept so the refusal travels the same
 	// route as the out-of-range one above — Accept's contract is that its error
 	// always reports STORAGE failing, and this reports the article.
-	if _, settled := f.w.offsetSettledBy(req.Offset, id); settled {
+	if _, settled := f.w.offsetSettledBy(req.Offset, int64(len(req.Data)), id); settled {
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}

@@ -1661,7 +1661,7 @@ including every failure path.
   bytes are redundant and re-writing them is a second `WriteAt` over the same
   range. The value was written and never read, and #375 removed it.
 
-  Offsets are owned by `acceptedAt` instead, which is a different index for a
+  Byte intervals are owned by `accepted` instead, which is a different index for a
   different question: not "has this article been seen" but "who owns this byte
   range, and have their bytes been written". See the collision rules below.
 - A write path that **fails** moves its articles out of `seenDone` and does
@@ -1674,11 +1674,14 @@ including every failure path.
   necessary but **not sufficient** to leave the article Outstanding: its
   Emitted bit survives, and `ForEachUnfinishedArticle` skips a set Emitted bit.
   The fault's route is what clears it — see the write-error rule below.
-- **Two articles claiming one offset** resolve one of two ways, and which one
-  depends on whether the incumbent has been reported Written. Detection lives in
-  `FileWriter.acceptedAt`, an offset→owner index recorded in `Accept`, and a
-  collision is decided by **identity**: an offset already owned by the same
-  article is a re-accept after a rollback, not a collision.
+- **Two articles claiming overlapping byte ranges** resolve one of two ways, and
+  which one depends on whether the incumbent has been reported Written and
+  whether the arrival shares the incumbent's exact start offset and length
+  (`r.off == off && end == r.end`). Detection lives in
+  `FileWriter.accepted`, a sorted, pairwise-disjoint slice of `acceptedRange`
+  intervals recorded in `Accept`, and a collision is decided by **identity**: an
+  interval already owned by the same article is a re-accept after a rollback,
+  not a collision.
 
   Detection used to live in `writeCache.buffer` and keyed on cache residency,
   which missed the ordinary in-order case entirely — the first article was
@@ -1686,26 +1689,33 @@ including every failure path.
   file completed with one part's bytes overwritten (#383). Detection is
   per-open-episode, the same residency as `seenDone`.
 
-  - **Incumbent written → the offset is SETTLED and the ARRIVAL is rejected**
-    (`offsetSettledBy`, checked in `acceptArticle`). Its bytes back a durable
-    claim: the next `Drain` reports them, and the barrier records the run
-    naming its CRC at that offset and acks it. Letting a later article overwrite
-    the range makes that record unverifiable, and failing the incumbent as well
-    would give one article two terminal dispositions — permanently failed *and*
-    acked durable. The arrival is resolved permanently failed, keeps its part
-    (it will never arrive again), and its bytes are charged to par2.
+  - **Incumbent written, or partial/straddling/different-length interval overlap
+    → the range is SETTLED and the ARRIVAL is rejected** (`offsetSettledBy`,
+    checked in `acceptArticle`). When the incumbent has been written, its bytes
+    back a durable claim: the next `Drain` reports them, and the barrier records
+    the run naming its CRC at that offset and acks it. When the overlap has a
+    different start offset or length (`r.off != off || end != r.end`),
+    `writeCache` (which is keyed by start offset) cannot displace the
+    incumbent's buffered slice cleanly (#759). Letting a
+    later article overwrite the range makes the record unverifiable (or ships a
+    splice on a no-par2 job), and failing a written incumbent as well would give
+    one article two terminal dispositions — permanently failed *and* acked
+    durable. The arrival is resolved permanently failed, keeps its part (it will
+    never arrive again), and its bytes are charged to par2.
 
-    The `written` flag is **latched on the offset**, not derived from
+    The `written` flag is **latched on the interval**, not derived from
     `w.written`/`w.reported`. `Confirm` empties both once the articles are
     acked, and an acked article holds the strongest claim there is — a derived
     check would read the empty set as *no* claim and displace it one checkpoint
     later.
 
-  - **Incumbent still buffered → the INCUMBENT is displaced**, which is what the
-    write cache always did. It made no claim, so failing it corrects the
-    writer's own accounting and nothing durable. It is resolved *permanently
-    failed* rather than returned to Outstanding — re-fetching it reproduces the
-    collision, observed as a ping-pong that never settles.
+  - **Incumbent still buffered at the exact same start offset and length
+    (`r.off == off && end == r.end`) → the INCUMBENT is displaced**, which is
+    what the write cache always did. It made
+    no claim, so failing it corrects the writer's own accounting and nothing
+    durable. It is resolved *permanently failed* rather than returned to
+    Outstanding — re-fetching it reproduces the collision, observed as a
+    ping-pong that never settles.
 
     It **keeps its part**, and is counted for one through
     `admitPermanentFailure` if it does not already hold one. `TotalParts` counts
@@ -1738,13 +1748,15 @@ including every failure path.
     failed. Detection used to BE the eviction, so the two could not disagree;
     moving detection ahead of the cache separated them.
 
-  **This detects an exact shared start offset only.** Two articles whose ranges
-  overlap without sharing a start offset are invisible here — `acceptedAt` is
-  keyed on the offset — and the later one overwrites the earlier's bytes. The
-  durability layer still withholds the whole-file CRC for any file that does not
-  collapse to a single contiguous run covering every article (§4), so `par2`
-  runs and repairs the file. Across a **restart** `acceptedAt` is empty, so two
-  articles at the same offset can both be written and both become durable;
+  **This detects any interval overlap `[off, end)` within one open-file episode
+  (#759).** Two articles whose byte ranges overlap — whether at the same start
+  offset, straddling a boundary, or one contained inside another — intersect in
+  `FileWriter.accepted`, and `offsetSettledBy` refuses the arrival before any
+  bytes are overwritten. Across a **restart** (or handle-close boundary)
+  `accepted` is empty, so two overlapping articles can both be written across
+  separate episodes and both become durable; the durability layer still
+  withholds the whole-file CRC for any file that does not collapse to a single
+  contiguous run covering every article (§4), and for an exact-offset tie
   `Store.commit` discards one of the two (`(job_id, file_idx, offset)` is the
   primary key) and returns the discard as a `durability.Collision`, which leaves
   the survivor unable to cover every article index and therefore withholds the
@@ -2135,25 +2147,29 @@ recorded here so the next reader does not mistake them for design.
    grows with every test that seeds a row, nothing checks a count in Markdown,
    and the claim this paragraph needs is the filtered one.
 
-6. **An exact-offset collision is PREVENTED only within one open-file episode;
-   across a boundary it withholds the whole-file CRC so `par2` repairs it.**
-   `FileWriter.acceptedAt` maps each byte offset to the article that owns it,
-   and a second article claiming an owned offset is refused and resolved
-   permanently failed — which works because that article is not yet `Done`, and
-   `markFailed` early-returns on one that is. The file then completes *short*.
-   That map lives on the `FileWriter`, so it is forgotten when the file closes:
-   a **restart**, or a **retry** of a failed job whose file was incomplete or
-   finalized short, reopens the file with an empty map, and the later write
-   overwrites the earlier. The file then completes *wrong*.
+6. **An interval overlap or offset collision is PREVENTED within one open-file
+   episode (#759); across a boundary it withholds the whole-file CRC so `par2`
+   repairs it (#387).**
+   `FileWriter.accepted` records each accepted byte interval `[off, end)` and
+   the article that owns it, and a second article whose range overlaps an owned
+   interval is refused and resolved permanently failed — which works because
+   that article is not yet `Done`, and `markFailed` early-returns on one that
+   is. The file then completes *short*. That slice lives on the `FileWriter`, so
+   it is forgotten when the file closes: a **restart**, or a **retry** of a
+   failed job whose file was incomplete or finalized short, reopens the file
+   with an empty slice, and the later write overwrites the earlier. The file
+   then completes *wrong*.
 
    **The bound is that both outcomes are repairable.** Across the boundary
-   `Store.commit` must discard one of the two rows and returns it as a
-   `durability.Collision` (see "Duplicate and late-article handling"). The whole-file CRC is withheld either way,
-   because the record cannot cover the discarded article's index. So `par2`
-   runs in both cases; what differs is a short file versus a wrong one, and a
+   `mergeAdjacentRuns` refuses to merge non-abutting spans (and for an
+   exact-offset tie `Store.commit` discards one of the two rows and returns it
+   as a `durability.Collision`; see "Duplicate and late-article handling"). The
+   whole-file CRC is withheld either way, because the record does not collapse
+   to a single contiguous row covering every article's index. So `par2` runs in
+   both cases; what differs is a short file versus a wrong one, and a
    failed-byte figure that is correct versus one that omits the loser's bytes.
 
-   **Do not try to close this by rehydrating `acceptedAt` from `durable_runs`.**
+   **Do not try to close this by rehydrating `accepted` from `durable_runs`.**
    It cannot be done: a `Run` is a *merged* span carrying `FirstArtIdx`,
    `LastArtIdx`, `Offset` and `Length`, and merging destroys the per-article
    boundaries — a row saying "articles 0–199 occupy bytes [0,20000)" cannot say

@@ -1,6 +1,7 @@
 package assembler
 
 import (
+	"cmp"
 	"os"
 	"slices"
 
@@ -99,54 +100,32 @@ type FileWriter struct {
 	seenDone   map[int32]struct{}
 	seenFailed map[int32]struct{}
 
-	// acceptedAt records which article OWNS each offset this writer has
-	// accepted bytes for. It is the collision detector (#383).
+	// accepted records the pairwise-disjoint byte intervals [off, end) this
+	// writer has accepted bytes for, sorted by off. It is the collision and
+	// range-overlap detector (#383, #759).
 	//
-	// Detection used to live in writeCache.buffer, which decided a collision
-	// by finding the first article still resident in fb.articles. That answers
-	// "are these bytes still unwritten", which is a question about caching,
-	// not about what the file has been told. buildContiguousRun deletes each
-	// article it flushes and advances fb.writeCursor past it, so for an
-	// IN-ORDER download the first article was gone before the duplicate
-	// arrived: the duplicate was buffered, never picked up by a run, and
-	// written over the first at drain time. No detection, no roll-back, both
-	// counted, file completes. Two further paths missed it — caching disabled
-	// (write_cache_size has no validation floor and accepts zero) and
-	// zero-length articles, which buffer refuses. Both route to writeOne.
+	// Detection lives here rather than in writeCache.buffer because cache
+	// membership only sees articles still unwritten, whereas an in-order
+	// download flushes and evicts an article before a colliding or overlapping
+	// segment arrives.
 	//
-	// A collision is decided by IDENTITY, not by occupancy: an offset already
+	// A collision is decided by IDENTITY, not by occupancy: a range already
 	// owned by THIS article is a re-accept, not a collision. That is what
-	// makes the index safe without any removal.
+	// makes the set safe without removing entries on a write-fault rollback.
 	//
-	// The index answers TWO questions, and they resolve opposite ways. Whether
-	// the owner has been reported Written decides which article loses:
-	// offsetSettledBy refuses the ARRIVAL when it has, because the incumbent's
-	// bytes already back a durable claim; Accept displaces the INCUMBENT when
-	// it has not, because a buffered article contradicts nothing. Only the
-	// second reaches failDisplaced, and acceptArticle has already refused
-	// everything the first covers before Accept is called.
+	// Any arrival whose range intersects an already-accepted range owned by
+	// another article is refused in acceptArticle via offsetSettledBy, except
+	// when the sole intersecting range is an unwritten buffered incumbent at
+	// the exact same start offset and length (r.canBeDisplacedBy), which Accept
+	// displaces in place via failDisplaced.
 	//
-	// The occupancy form would have needed it. An article whose write faults
-	// is rolled back and re-dispatched, and comes back at the same offset —
-	// req.ArtIdx is the manifest index, so the redelivered articleID is
-	// identical — and without removal every such retry would report a
-	// collision with itself. Removal used to be additionally blocked for one
-	// class of article: fail returned early on an empty Message-ID, so an
-	// untracked article's entry would never have been removed, which was that
-	// false positive arriving on the one path the mechanism could not reach.
-	// fail no longer has that early return, but removal still is not how
-	// acceptedAt behaves — see below, entries are never removed by design,
-	// independent of what fail does. Identity comparison answers all of it and
-	// leaves seenDone alone.
-	//
-	// Entries are never removed, and that is deliberate rather than a leak.
-	// The question is "who owns this offset", not "who currently holds a
-	// part", so the index is intentionally NOT equal to seenDone: a
-	// write-faulted article keeps its entry here while losing its seenDone
-	// one. Residency is the writer's, so this is per-open-episode — a
-	// collision spanning a close-handles cycle or a restart is invisible,
-	// exactly as seenDone's duplicate handling is.
-	acceptedAt map[int64]offsetOwner
+	// Entries are never removed on rollback, and that is deliberate rather
+	// than a leak. An article whose write faults is rolled back and
+	// re-dispatched, and comes back with the same ArtIdx, so identity
+	// comparison recognises it as the owner. Residency is the writer's, so
+	// this is per-open-episode — a collision spanning a close-handles cycle or
+	// a restart is invisible, exactly as seenDone's duplicate handling is.
+	accepted []acceptedRange
 
 	// faulted accumulates the articles a failed write rolled back, for the
 	// caller to route to Outstanding. See fail.
@@ -223,29 +202,48 @@ type faultedArticle struct {
 	displacedBy articleID
 }
 
-// offsetOwner is the article that owns one offset, and whether its bytes have
-// been reported Written.
+// acceptedRange is one byte interval [off, end) this writer has accepted, the
+// article that owns it, and whether its bytes have been reported Written.
 //
 // written is latched by noteWritten and is never cleared while the entry
 // survives, which is the whole reason it lives here rather than being derived
-// from w.written/w.reported.
-//
-// "While the entry survives" is the load-bearing qualifier, and it was missing
-// when this comment was first written: Accept re-recorded the arrival as owner
-// unconditionally, so a re-accept by the owner ITSELF replaced the entry with a
-// fresh one and dropped the latch. Accept now rewrites the entry only when the
-// owner actually changes.
-//
-// Those two slices are the barrier's pending evidence: Confirm empties them
-// once the articles have been acked durable. An article that has been acked is
-// the strongest possible claim on its offset, and a claim derived from the
-// pending slices would read it as no claim at all — so a collision arriving
-// after a checkpoint would displace an article the queue has already recorded
-// as durably written. That is the same double-disposition defect one
-// checkpoint later, and the derived form cannot see it.
-type offsetOwner struct {
+// from w.written/w.reported. Those two slices are the barrier's pending
+// evidence: Confirm empties them once the articles have been acked durable. An
+// article that has been acked is the strongest possible claim on its range,
+// and a claim derived from the pending slices would read it as no claim at all.
+type acceptedRange struct {
+	off     int64
+	end     int64
 	id      articleID
 	written bool
+}
+
+// overlaps reports whether a write at [off, end) conflicts with r.
+// Two ranges sharing a start offset always conflict, even when zero-length;
+// otherwise non-empty half-open intervals [off, end) and [r.off, r.end)
+// intersect when each starts before the other ends. A zero-length entry at a
+// different start offset occupies no bytes and does not conflict with a
+// covering interval.
+func (r acceptedRange) overlaps(off, end int64) bool {
+	if off == r.off {
+		return true
+	}
+	if end == off || r.end == r.off {
+		return false
+	}
+	if off < r.off {
+		return r.off < end
+	}
+	return off < r.end
+}
+
+// canBeDisplacedBy reports whether an unwritten buffered incumbent r may be
+// displaced in place by an arriving range [off, end) from another article.
+// Only a same-start-offset arrival with the exact same length (end == r.end)
+// can replace the single write-cache slot at r.off without leaving a partial
+// slice or overlapping a neighbour.
+func (r acceptedRange) canBeDisplacedBy(off, end int64) bool {
+	return !r.written && r.off == off && end == r.end
 }
 
 // newFileWriter wraps an already-open handle.
@@ -257,12 +255,36 @@ func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *F
 		wc:         wc,
 		seenDone:   make(map[int32]struct{}),
 		seenFailed: make(map[int32]struct{}),
-		acceptedAt: make(map[int64]offsetOwner),
 	}
 	w.writeAt = handle.WriteAt
 	w.syncFile = handle.Sync
 	w.closeFile = handle.Close
 	return w
+}
+
+// firstCandidateIdx returns the earliest index in w.accepted that could
+// overlap a range starting at off. Because w.accepted is sorted by off and
+// pairwise disjoint (accepted[i].end <= accepted[i+1].off), at most one entry
+// starting before off — the immediate predecessor idx-1 — can extend past off.
+func (w *FileWriter) firstCandidateIdx(off int64) int {
+	idx, _ := slices.BinarySearchFunc(w.accepted, off, func(r acceptedRange, target int64) int {
+		return cmp.Compare(r.off, target)
+	})
+	if idx > 0 {
+		return idx - 1
+	}
+	return 0
+}
+
+// ownerAt returns the accepted range starting at off, if any.
+func (w *FileWriter) ownerAt(off int64) (acceptedRange, bool) {
+	idx, found := slices.BinarySearchFunc(w.accepted, off, func(r acceptedRange, target int64) int {
+		return cmp.Compare(r.off, target)
+	})
+	if !found {
+		return acceptedRange{}, false
+	}
+	return w.accepted[idx], true
 }
 
 // noteWritten records an article whose bytes reached WriteAt without error.
@@ -273,15 +295,18 @@ func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *F
 // claim cannot be made from an accept path because no accept path can call
 // this.
 //
-// It also latches the offset's owner as written, which is what makes the
-// offset settled against a later article claiming it. Latched HERE for the
-// same reason the append is here: both assert "these bytes are the file's
+// It also latches the range's owner as written, which is what makes the range
+// settled against a later article claiming the same offset. Latched HERE for
+// the same reason the append is here: both assert "these bytes are the file's
 // content at this offset", and applying one without the other is the
 // derived-state split #375 was about.
 func (w *FileWriter) noteWritten(id articleID, off int64, n int, crc32 uint32) {
-	if owner, taken := w.acceptedAt[off]; taken && owner.id.sameArticle(id) {
-		owner.written = true
-		w.acceptedAt[off] = owner
+	end := off + int64(n)
+	for i := w.firstCandidateIdx(off); i < len(w.accepted) && w.accepted[i].off <= off; i++ {
+		if w.accepted[i].overlaps(off, end) && w.accepted[i].id.sameArticle(id) {
+			w.accepted[i].written = true
+			break
+		}
 	}
 	w.written = append(w.written, durability.WrittenArticle{
 		FileIdx: int32(w.key.fileIdx), //nolint:gosec // G115: file counts are far below int32
@@ -327,9 +352,9 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // admitPermanentFailure rather than failPermanent, because the incumbent is
 // not guaranteed to hold a part to keep. failPermanent only KEEPS one, which
 // suffices at acceptArticle's call sites because admitAccepted ran a statement
-// earlier. Here it does not: acceptedAt entries are never removed, so a
-// write-faulted article keeps its offset ownership after fail has taken its
-// part and its seenDone entry away, and a later arrival at that offset
+// earlier. Here it does not: accepted entries are never removed, so a
+// write-faulted article keeps its range ownership after fail has taken its
+// part and its seenDone entry away, and a later arrival at that range
 // displaces a stale owner holding nothing. failPermanent would count nothing
 // for it and the file would wedge exactly as before. admitPermanentFailure
 // counts if and only if the article is not already counted.
@@ -352,7 +377,7 @@ func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.report
 // no longer holds.
 //
 // acceptArticle enforces the precondition by refusing the ARRIVAL when the
-// offset is settled, so this is reached only from the cache-eviction case it
+// range is settled, so this is reached only from the cache-eviction case it
 // was written for. Do not add a caller without checking offsetSettledBy first.
 // It does NOT delegate to fail. It used to, and then reached back to
 // specialize the record fail had appended:
@@ -463,35 +488,33 @@ func (w *FileWriter) fail(id articleID) {
 // caller compares it to FileInfo.TotalParts to decide the file is complete.
 func (w *FileWriter) parts() int { return w.partsWritten }
 
-// offsetSettledBy reports the article that owns off when that owner has
-// already made a durability claim, so the ARRIVING article must be refused
-// rather than allowed to displace it.
+// offsetSettledBy reports the article that owns an already-accepted range
+// intersecting [off, off+length) when the ARRIVING article must be refused
+// rather than allowed to displace it (#383, #759).
 //
-// This is the half of collision handling that failDisplaced cannot do. That
-// function was written when the only caller was the write cache's eviction,
-// where the incumbent was still buffered and had made no claim — its own doc
-// said so. Detecting the FLUSHED case (#383) falsified that precondition: the
-// incumbent may already be in w.written, or in w.reported after a Drain handed
-// it to the barrier.
-//
-// Failing it there gives one article two terminal dispositions at once —
-// routeFaulted resolves it permanently failed while the barrier still holds it
-// as evidence and acks it durable. And the ack would be a lie: the drain
-// reports this article's CRC at this offset, and the barrier records a run
-// over exactly that range, so letting the arrival overwrite it leaves a
-// record describing bytes the file no longer holds.
-//
-// So an offset whose owner has been reported Written is SETTLED, and the later
-// article loses. That is the opposite of the cache-resident case, deliberately:
-// there the incumbent has no claim to protect, so the arrival wins and the
-// incumbent is resolved permanently failed. Which article loses differs; the
-// accounting does not, since both dispositions keep the loser counted.
-func (w *FileWriter) offsetSettledBy(off int64, arriving articleID) (articleID, bool) {
-	owner, taken := w.acceptedAt[off]
-	if !taken || owner.id.sameArticle(arriving) || !owner.written {
-		return articleID{}, false
+// Any overlap with an interval at a different start offset, an interval of a
+// different non-zero length, or an interval whose owner has already been
+// reported Written settles the range against the arrival so the arriving
+// article costs only its own bytes and never writes a splice over an accepted
+// neighbour. Only an unwritten buffered incumbent occupying the exact same
+// range (see acceptedRange.canBeDisplacedBy) is left unsettled here for Accept
+// to displace in place.
+func (w *FileWriter) offsetSettledBy(off, length int64, arriving articleID) (articleID, bool) {
+	end := off + length
+	for i := w.firstCandidateIdx(off); i < len(w.accepted); i++ {
+		r := w.accepted[i]
+		if !r.overlaps(off, end) {
+			if r.off > off && r.off >= end {
+				break
+			}
+			continue
+		}
+		if r.id.sameArticle(arriving) || r.canBeDisplacedBy(off, end) {
+			continue
+		}
+		return r.id, true
 	}
-	return owner.id, true
+	return articleID{}, false
 }
 
 // admitAccepted takes an article on as a part of this file, before its bytes
@@ -564,6 +587,48 @@ func (w *FileWriter) takeFaulted() []faultedArticle {
 	return out
 }
 
+// recordAccepted inserts or updates [off, end) in w.accepted while maintaining
+// its start-sorted, pairwise-disjoint invariant. Any unwritten incumbent owned
+// by a different article that overlaps [off, end) is displaced and its
+// buffered bytes are discarded; a re-accept by the same article preserves its
+// written latch and merged span.
+func (w *FileWriter) recordAccepted(id articleID, off, end int64) {
+	first := w.firstCandidateIdx(off)
+	if first < len(w.accepted) {
+		r := w.accepted[first]
+		if off == end && r.off < off && off < r.end {
+			return
+		}
+		if !r.overlaps(off, end) && r.off < off {
+			first++
+		}
+	}
+	last := first
+	written := false
+	for last < len(w.accepted) && (w.accepted[last].overlaps(off, end) || w.accepted[last].off < end) {
+		r := w.accepted[last]
+		if !r.overlaps(off, end) {
+			last++
+			continue
+		}
+		if !r.id.sameArticle(id) {
+			w.failDisplaced(r.id, r.off, id)
+			w.wc.discardAt(w.key, r.off)
+		} else {
+			written = written || r.written
+			off = min(off, r.off)
+			end = max(end, r.end)
+		}
+		last++
+	}
+	w.accepted = slices.Replace(w.accepted, first, last, acceptedRange{
+		off:     off,
+		end:     end,
+		id:      id,
+		written: written,
+	})
+}
+
 // Accept buffers or writes one article's bytes.
 //
 // It takes ownership of data and returns it to the decoder pool on every path,
@@ -577,48 +642,7 @@ func (w *FileWriter) takeFaulted() []faultedArticle {
 // Drain is not enough on its own — and the file goes on to complete over bytes
 // that never landed.
 func (w *FileWriter) Accept(id articleID, off int64, data []byte, crc32 uint32) error {
-	// Collision detection happens HERE, before the cache is consulted, so it
-	// is independent of cache residency and of whether caching is configured
-	// at all. See acceptedAt for why identity rather than occupancy.
-	//
-	// The displaced article is the incumbent, not the arrival: its bytes are
-	// either already on disk or about to be overwritten, and nothing will
-	// write them again. Recording the arrival as the new owner afterwards is
-	// what lets a third article at the same offset be detected in turn.
-	// A settled offset never reaches here — acceptArticle refuses the arrival
-	// before calling Accept — so any incumbent found here has made no
-	// durability claim, and displacing it contradicts nothing.
-	owner, taken := w.acceptedAt[off]
-	if taken && !owner.id.sameArticle(id) {
-		w.failDisplaced(owner.id, off, id)
-		// Take the incumbent's bytes away as well as its accounting. Failing an
-		// article whose payload is still buffered leaves the next drain to
-		// write it and the barrier to ack it durable, for an article
-		// routeFaulted has already reported permanently failed. See discardAt:
-		// wc.buffer evicts the entry itself on most paths, but not for a
-		// zero-length arrival, which it refuses before touching the map.
-		w.wc.discardAt(w.key, off)
-	}
-	// A re-accept by the offset's OWN owner keeps the entry it already has,
-	// written latch included. Rewriting it unconditionally reset written to
-	// false and unsettled an offset whose bytes were already durable, after
-	// which the next article to claim it was no longer refused and displaced
-	// an article the barrier had acked — the double disposition again.
-	//
-	// seenDone is keyed on ArtIdx now, so a genuine DUPLICATE delivery of an
-	// already-accepted article is caught by handleSuccessArticle's dedup arm
-	// and never reaches acceptArticle at all, whatever its Message-ID — that
-	// used to be the only way an untracked article reached here, because
-	// admitAccepted recorded nothing for an empty Message-ID and the dedup
-	// missed it. What still reaches this branch is a write-fault RETRY:
-	// rollbackPart deletes the seenDone entry so the redelivery is not a
-	// duplicate, but acceptedAt's entry for this offset is never removed (see
-	// acceptedAt), so the same identity finds itself already the owner. A
-	// re-accept that writes through immediately hid the old defect by
-	// re-latching in noteWritten; one that lands in the cache did not.
-	if !taken || !owner.id.sameArticle(id) {
-		w.acceptedAt[off] = offsetOwner{id: id}
-	}
+	w.recordAccepted(id, off, off+int64(len(data)))
 
 	art := bufferedArticle{offset: off, data: data, id: id, crc32: crc32}
 	if w.wc.buffer(w.key, art) {
