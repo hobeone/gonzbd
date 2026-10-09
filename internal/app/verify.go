@@ -1,7 +1,6 @@
 package app
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -12,11 +11,10 @@ import (
 	"path/filepath"
 	"slices"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/hobeone/gonzbd/internal/crc32util"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 // verifyResult is what one verification pass established about a job's files.
@@ -26,7 +24,6 @@ type verifyResult struct {
 	Verdicts []durability.FileVerdict
 	Verified map[int][]durability.WrittenRow // per file, rows that matched, in offset order
 	Failed   map[int][]int32                 // per file, articles failed by an intersection
-	Finished []int                           // files finished by path in this pass
 }
 
 // errVerifyFault wraps every non-definitive error verifyJobFiles returns, so
@@ -46,7 +43,7 @@ const verifyBufSize = 1 << 20
 // preadAt and fsyncFile are seams for tests to inject device errors.
 var (
 	preadAt   = func(f *os.File, b []byte, off int64) (int, error) { return f.ReadAt(b, off) }
-	fsyncFile = func(f *os.File) error { return unix.Fsync(int(f.Fd())) }
+	fsyncFile = func(f *os.File) error { return f.Sync() }
 )
 
 // verifyJobFiles reads back every recorded article of every complete=0 file
@@ -119,7 +116,6 @@ func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.Fil
 		}
 		if finish {
 			v.SetComplete = true
-			res.Finished = append(res.Finished, fi)
 		}
 		if v.DeleteAll || len(v.DeleteArtIdxs) > 0 || v.SetComplete {
 			res.Verdicts = append(res.Verdicts, v)
@@ -176,9 +172,7 @@ func rowsByFile(rows []durability.WrittenRow) map[int][]durability.WrittenRow {
 		out[r.FileIdx] = append(out[r.FileIdx], r)
 	}
 	for _, rs := range out {
-		slices.SortFunc(rs, func(a, b durability.WrittenRow) int {
-			return cmp.Or(cmp.Compare(a.Offset, b.Offset), cmp.Compare(a.ArtIdx, b.ArtIdx))
-		})
+		slices.SortFunc(rs, durability.CompareWrittenRows)
 	}
 	return out
 }
@@ -244,33 +238,44 @@ func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow
 }
 
 // resolveRows keeps, in offset order, each matching row that does not
-// intersect one already kept. A row that intersects a kept row is failed,
-// whether or not it matched itself; any other non-matching row is deleted
-// and its article is Outstanding again.
+// intersect the one kept just before it. A row that intersects a kept row is
+// failed, whether or not it matched itself; any other non-matching row is
+// deleted and its article is Outstanding again.
+//
+// rows are in offset order and kept rows are disjoint, so the kept rows are
+// ordered by end as well, and a row can only reach the nearest kept row on
+// either side of it.
 func resolveRows(rows []durability.WrittenRow, match []bool) fileReadback {
 	var out fileReadback
+	kept := make([]bool, len(rows))
 	for k, r := range rows {
-		if match[k] && !intersectsAny(r, out.verified) {
-			out.verified = append(out.verified, r)
+		if !match[k] {
+			continue
 		}
+		if n := len(out.verified); n > 0 && intersects(r, out.verified[n-1]) {
+			continue
+		}
+		kept[k] = true
+		out.verified = append(out.verified, r)
 	}
-	for _, r := range rows {
-		switch {
-		case slices.Contains(out.verified, r):
-		case intersectsAny(r, out.verified):
-			out.failed = append(out.failed, r.ArtIdx)
-			out.deleted = append(out.deleted, r.ArtIdx)
-		default:
-			out.deleted = append(out.deleted, r.ArtIdx)
+	before := 0 // kept rows preceding rows[k]
+	for k, r := range rows {
+		if kept[k] {
+			before++
+			continue
 		}
+		hit := before > 0 && intersects(r, out.verified[before-1]) ||
+			before < len(out.verified) && intersects(r, out.verified[before])
+		if hit {
+			out.failed = append(out.failed, r.ArtIdx)
+		}
+		out.deleted = append(out.deleted, r.ArtIdx)
 	}
 	return out
 }
 
-func intersectsAny(r durability.WrittenRow, kept []durability.WrittenRow) bool {
-	return slices.ContainsFunc(kept, func(k durability.WrittenRow) bool {
-		return r.Offset < k.Offset+k.Length && k.Offset < r.Offset+r.Length
-	})
+func intersects(a, b durability.WrittenRow) bool {
+	return a.Offset < b.Offset+b.Length && b.Offset < a.Offset+a.Length
 }
 
 // rowMatches reads one row's range through buf and compares its CRC. A short
@@ -309,20 +314,8 @@ func finishFileByPath(path string, maxEnd int64) (err error) {
 			err = fmt.Errorf("finish %s: close: %w", path, cErr)
 		}
 	}()
-	if err := fsyncFile(fh); err != nil {
-		return fmt.Errorf("finish %s: fsync: %w", path, err)
-	}
-	st, err := fh.Stat()
-	if err != nil {
-		return fmt.Errorf("finish %s: stat: %w", path, err)
-	}
-	if maxEnd > 0 && st.Size() > maxEnd {
-		if err := fh.Truncate(maxEnd); err != nil {
-			return fmt.Errorf("finish %s: truncate to %d: %w", path, maxEnd, err)
-		}
-		if err := fsyncFile(fh); err != nil {
-			return fmt.Errorf("finish %s: fsync after truncate: %w", path, err)
-		}
+	if err := storagefault.ShrinkAndSync(fh, maxEnd, fsyncFile); err != nil {
+		return fmt.Errorf("finish %s: %w", path, err)
 	}
 	return nil
 }

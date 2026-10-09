@@ -12,18 +12,35 @@ file internal/assembler/finish.go
 [the first fsync is skipped]
 file internal/assembler/finish.go
 --- anchor
-	if err := w.syncFile(); err != nil {
+	if err := w.Sync(); err != nil {
 		return fmt.Errorf("finish %s: first fsync: %w", w.path, err)
 	}
 --- replace
 --- end
 
-[the truncate also grows a shorter file]
+[the second fsync is skipped]
 file internal/assembler/finish.go
 --- anchor
-		if fi.Size() > end {
+	if err := w.Sync(); err != nil {
+		return fmt.Errorf("finish %s: second fsync: %w", w.path, err)
+	}
 --- replace
-		if fi.Size() != end {
+--- end
+
+[the truncate is skipped]
+file internal/assembler/finish.go
+--- anchor
+		if err := w.Truncate(end); err != nil {
+--- replace
+		if err := error(nil); err != nil {
+--- end
+
+[the truncate also grows a shorter file]
+file internal/assembler/filewriter.go
+--- anchor
+	if n >= fi.Size() {
+--- replace
+	if n == fi.Size() {
 --- end
 
 [maxEnd reads the first range instead of the last]

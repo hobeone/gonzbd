@@ -112,6 +112,27 @@ func TestFileWriter_FinishReturnsAnFsyncErrorAndDoesNotTruncate(t *testing.T) {
 	}
 }
 
+func TestFileWriter_FinishReturnsASecondFsyncError(t *testing.T) {
+	w := newPreallocatedWriter(t)
+	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{1}, 100), 0); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("injected second fsync failure")
+	calls := 0
+	w.syncFile = func() error {
+		calls++
+		if calls == 2 {
+			return boom
+		}
+		return nil
+	}
+
+	err := w.finish()
+	if !errors.Is(err, boom) {
+		t.Fatalf("finish error = %v, want one wrapping %v", err, boom)
+	}
+}
+
 func TestOwnedRanges_MaxEnd(t *testing.T) {
 	var o ownedRanges
 	if got := o.maxEnd(); got != 0 {

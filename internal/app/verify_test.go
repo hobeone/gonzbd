@@ -101,8 +101,14 @@ func checkVerifyResult(t *testing.T, got verifyResult, wantVerdicts []durability
 	if !slices.Equal(got.Failed[0], wantFailed) {
 		t.Errorf("Failed[0] = %v, want %v", got.Failed[0], wantFailed)
 	}
-	if !slices.Equal(got.Finished, wantFinished) {
-		t.Errorf("Finished = %v, want %v", got.Finished, wantFinished)
+	var finished []int
+	for _, v := range got.Verdicts {
+		if v.SetComplete {
+			finished = append(finished, v.FileIdx)
+		}
+	}
+	if !slices.Equal(finished, wantFinished) {
+		t.Errorf("files with SetComplete = %v, want %v", finished, wantFinished)
 	}
 }
 
@@ -471,6 +477,30 @@ func TestFinishFileByPath(t *testing.T) {
 			}
 		})
 	}
+	t.Run("a failing second fsync is returned", func(t *testing.T) {
+		// Not parallel: it replaces the package-level fsyncFile seam.
+		path := filepath.Join(t.TempDir(), "f.bin")
+		if err := os.WriteFile(path, make([]byte, 5000), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		orig := fsyncFile
+		t.Cleanup(func() { fsyncFile = orig })
+		calls := 0
+		fsyncFile = func(f *os.File) error {
+			calls++
+			if calls == 2 {
+				return syscall.EIO
+			}
+			return orig(f)
+		}
+		err := finishFileByPath(path, 4096)
+		if !errors.Is(err, syscall.EIO) {
+			t.Errorf("err = %v, want one wrapping EIO from the second fsync", err)
+		}
+		if calls != 2 {
+			t.Errorf("fsynced %d times, want 2", calls)
+		}
+	})
 	t.Run("a missing file is an error naming it", func(t *testing.T) {
 		t.Parallel()
 		path := filepath.Join(t.TempDir(), "gone.bin")
@@ -615,6 +645,22 @@ func TestResolveRows(t *testing.T) {
 			t.Errorf("%s: got verified=%v failed=%v deleted=%v deleteAll=%v; want verified=%v failed=%v deleted=%v",
 				tc.name, got.verified, got.failed, got.deleted, got.deleteAll, tc.verified, tc.failed, tc.deleted)
 		}
+	}
+}
+
+// TestResolveRows_ALongRowReachesAKeptRowAfterIt pins the lookahead: a
+// non-matching row that overlaps only the kept row that FOLLOWS it in offset
+// order is failed, not merely deleted.
+func TestResolveRows_ALongRowReachesAKeptRowAfterIt(t *testing.T) {
+	t.Parallel()
+	a := durability.WrittenRow{ArtIdx: 0, Offset: 0, Length: 100}
+	long := durability.WrittenRow{ArtIdx: 1, Offset: 120, Length: 200}
+	c := durability.WrittenRow{ArtIdx: 2, Offset: 200, Length: 100}
+	got := resolveRows([]durability.WrittenRow{a, long, c}, []bool{true, false, true})
+	if !slices.Equal(got.verified, []durability.WrittenRow{a, c}) ||
+		!slices.Equal(got.failed, []int32{1}) || !slices.Equal(got.deleted, []int32{1}) {
+		t.Errorf("got verified=%v failed=%v deleted=%v; want a and c kept, art 1 failed and deleted",
+			got.verified, got.failed, got.deleted)
 	}
 }
 

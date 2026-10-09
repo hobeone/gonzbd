@@ -18,11 +18,30 @@ file internal/app/verify.go
 --- end
 
 [(c) the maxEnd > 0 guard dropped]
-file internal/app/verify.go
+file internal/storagefault/shrink.go
 --- anchor
-	if maxEnd > 0 && st.Size() > maxEnd {
+	if end > 0 {
 --- replace
-	if st.Size() > maxEnd {
+	if true {
+--- end
+
+[(c2) the second fsync skipped]
+file internal/storagefault/shrink.go
+--- anchor
+	if err := sync(f); err != nil {
+		return Classify("sync", path, err)
+	}
+	return nil
+--- replace
+	return nil
+--- end
+
+[(c3) the truncate skipped]
+file internal/storagefault/shrink.go
+--- anchor
+			if err := f.Truncate(end); err != nil {
+--- replace
+			if err := error(nil); err != nil {
 --- end
 
 [(d) an EIO falls through to the delete path]
@@ -68,9 +87,25 @@ file internal/app/verify.go
 [(i) a row intersecting a kept row is not failed]
 file internal/app/verify.go
 --- anchor
-		case intersectsAny(r, out.verified):
+		if hit {
 --- replace
-		case false:
+		if hit && false {
+--- end
+
+[(i2) a row reaching only the kept row after it is not failed]
+file internal/app/verify.go
+--- anchor
+			before < len(out.verified) && intersects(r, out.verified[before])
+--- replace
+			false
+--- end
+
+[(i3) a matching row is kept without checking the row kept before it]
+file internal/app/verify.go
+--- anchor
+		if n := len(out.verified); n > 0 && intersects(r, out.verified[n-1]) {
+--- replace
+		if n := len(out.verified); n > 0 && false {
 --- end
 
 [(j) the cancellation check before finishing dropped]
