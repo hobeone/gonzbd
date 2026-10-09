@@ -150,7 +150,7 @@ scripts. GoNZBD adds a few extensions (marked below).
 | Exit Code | Meaning |
 |-----------|---------|
 | `0` | Success — recorded in history |
-| Non-zero | Failure — recorded in history with error |
+| Non-zero | Recorded in history; marks the job failed only when `postproc.script_can_fail` is `true` (default `false` logs without failing the job) |
 
 The exit code and captured output are stored in the history database.
 
@@ -370,8 +370,10 @@ func TestMyScript(t *testing.T) {
   failed post-processing run and verify your script handles it correctly.
 - **Test with special characters**: Use job names containing spaces, quotes,
   and unicode to ensure your script handles them.
-- **Check exit codes**: GoNZBD treats any non-zero exit as a failure. Use
-  `set -e` in bash scripts to catch unexpected errors.
+- **Check exit codes**: When `postproc.script_can_fail` is `true`, GoNZBD treats
+  a non-zero exit as a job failure (default `false` logs the exit in the stage
+  log without failing the job). Use `set -e` in bash scripts to catch
+  unexpected errors.
 - **Output is captured**: Write diagnostic info to stdout/stderr — it's
   stored in the history database and visible in the UI.
 - **Timeout**: Scripts that run longer than 30 seconds are killed. For long

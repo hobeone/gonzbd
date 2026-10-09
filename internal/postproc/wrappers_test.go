@@ -252,22 +252,33 @@ func TestPar2CleanupStage_DisabledByConfig(t *testing.T) {
 	}
 }
 
-// P22: ScriptStage with ScriptCanFail=true swallows non-zero exit errors.
+// P22: ScriptStage with default ScriptCanFail=false swallows non-zero exit
+// errors; with ScriptCanFail=true it returns an error and sets job.FailMsg.
 func TestScriptStage_ScriptCanFail(t *testing.T) {
 	t.Parallel()
-	job, _ := stageJob(t)
-	job.Script = "fail.sh"
-
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "fail.sh")
 	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 3\n"))
 
 	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
-	stage.SetScriptCanFail(true)
 
-	err := stage.Run(t.Context(), job)
-	if err != nil {
-		t.Errorf("Run with ScriptCanFail=true should return nil, got %v", err)
+	jobDefault, _ := stageJob(t)
+	jobDefault.Script = "fail.sh"
+	if err := stage.Run(t.Context(), jobDefault); err != nil {
+		t.Errorf("Run with default ScriptCanFail=false should return nil, got %v", err)
+	}
+	if jobDefault.FailMsg != "" {
+		t.Errorf("job.FailMsg with ScriptCanFail=false = %q, want empty", jobDefault.FailMsg)
+	}
+
+	stage.SetScriptCanFail(true)
+	jobFail, _ := stageJob(t)
+	jobFail.Script = "fail.sh"
+	if err := stage.Run(t.Context(), jobFail); err == nil {
+		t.Error("Run with ScriptCanFail=true expected error, got nil")
+	}
+	if jobFail.FailMsg == "" {
+		t.Error("job.FailMsg with ScriptCanFail=true expected non-empty")
 	}
 }
 
@@ -414,9 +425,10 @@ func TestScriptStage_FailingScript(t *testing.T) {
 	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 7\n"))
 
 	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
+	stage.SetScriptCanFail(true)
 	err := stage.Run(t.Context(), job)
 	if err == nil {
-		t.Fatalf("expected error for exit 7; got nil")
+		t.Fatalf("expected error for exit 7 with ScriptCanFail=true; got nil")
 	}
 	if !strings.Contains(err.Error(), "exited 7") {
 		t.Errorf("err = %v; want contains 'exited 7'", err)

@@ -209,11 +209,10 @@ type PostProcConfig struct {
 	// Matches SABnzbd's cfg.extra_par2_parameters().
 	ExtraPar2Params string `yaml:"extra_par2_params" json:"extra_par2_params"`
 
-	// ScriptCanFail when true causes non-zero script exit codes to be
-	// logged but NOT treated as job failures. This matches SABnzbd's
-	// cfg.script_can_fail() behavior. Scripts that return non-zero for
-	// informational reasons (e.g. partial failure but still usable) won't
-	// cause the entire job to be marked as failed. Default false.
+	// ScriptCanFail when true causes a non-zero script exit code to mark
+	// the job as failed. This matches SABnzbd's cfg.script_can_fail()
+	// behavior. When false (the default), non-zero script exit codes are
+	// logged and recorded in the stage log without failing the job.
 	ScriptCanFail bool `yaml:"script_can_fail" json:"script_can_fail"`
 
 	// RedactScriptSecrets when true replaces SAB_API_KEY and SAB_PASSWORD
