@@ -455,7 +455,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	var dispatchStore dispatch.Store = nopDispatchStore{}
 	var durStore *durability.Store
 	if repo != nil && repo.DB() != nil {
-		dispatchStore = dispatchstore.New(repo.DB())
+		dispatchStore = dispatchstore.New(repo.DB(), log)
 		// repo.Path() is the one owner of this value (Standing Design Rule
 		// 2): it reports the path history.Open was actually given, in
 		// cmd/gonzbd/main.go. Re-deriving it here from adminDir would be a

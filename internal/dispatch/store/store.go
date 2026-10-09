@@ -3,21 +3,32 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
 )
 
 // Store persists the dispatcher's queue in the dispatch_jobs table.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	log *slog.Logger
 }
 
 var _ dispatch.Store = (*Store)(nil)
 
 // New returns a Store over db. The caller owns db and its lifetime; Store
-// neither opens nor closes it.
-func New(db *sql.DB) *Store { return &Store{db: db} }
+// neither opens nor closes it. If log is nil, a discard logger is used.
+func New(db *sql.DB, log *slog.Logger) *Store {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &Store{
+		db:  db,
+		log: log.With("component", "dispatch_store"),
+	}
+}
 
 // columns is the column list Load scans and Save writes, in one place so the
 // two cannot drift into disagreeing about order. A mismatch between them would
@@ -35,6 +46,12 @@ const columns = `id, sort_key, name, category, priority, bytes,
 // The ID tiebreak makes the result total rather than merely mostly-ordered:
 // SQLite is free to return rows sharing a sort_key in any order, and
 // dispatch.restore sorts with the same tiebreak so the two agree.
+//
+// A row that fails rows.Scan (for example, an out-of-range integer in a narrow
+// enum column or a NULL in a non-nullable Go field) is logged at Error and
+// skipped so a single corrupt row cannot prevent the rest of the queue from
+// loading. A failure of the query or cursor iteration itself is returned as an
+// error.
 func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+columns+` FROM dispatch_jobs ORDER BY sort_key ASC, id ASC`)
@@ -57,6 +74,12 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 		// An earlier revision scanned into ten intermediate ints and
 		// range-checked them itself, which allocated per row and duplicated
 		// what the standard library already guarantees.
+		//
+		// id is column 0, so database/sql's left-to-right Scan populates p.ID
+		// whenever id itself is non-NULL before any later column's conversion
+		// can fail; if id is NULL (SQLite allows NULL in a TEXT PRIMARY KEY
+		// column declared without NOT NULL), Scan fails on column 0 with p.ID
+		// left empty.
 		var p dispatch.Persisted
 		if err := rows.Scan(
 			&p.ID, &p.SortKey,
@@ -71,7 +94,8 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 			&p.Header.Added, &p.DownloadStarted, &p.DownloadFinished, &p.Par2ReleaseReason,
 			&p.RecoveryBytes, &p.Par2Recovered, &p.Header.Unwanted,
 		); err != nil {
-			return nil, fmt.Errorf("dispatch/store: load: scan: %w", err)
+			s.log.Error("dispatch/store: load scan failed", "job_id", p.ID, "err", err)
+			continue
 		}
 		out = append(out, p)
 	}
@@ -141,4 +165,18 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("dispatch/store: delete %s: %w", id, err)
 	}
 	return nil
+}
+
+// Has reports whether a row with id exists in dispatch_jobs, including a row
+// that Load skipped on a scan error.
+func (s *Store) Has(ctx context.Context, id string) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM dispatch_jobs WHERE id = ?`, id).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("dispatch/store: has %s: %w", id, err)
+	}
+	return true, nil
 }

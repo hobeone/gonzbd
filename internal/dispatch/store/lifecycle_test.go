@@ -94,7 +94,7 @@ func TestDispatcher_RoundTripsThroughRealSQLite(t *testing.T) {
 		t.Fatalf("history.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	st := store.New(history.NewRepository(db).DB())
+	st := store.New(history.NewRepository(db).DB(), nil)
 
 	newDispatcher := func() *dispatch.Dispatcher {
 		r := &yieldRunner{}
@@ -230,7 +230,7 @@ func TestDispatcher_QuietRestartWritesNothing(t *testing.T) {
 		t.Fatalf("history.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	st := store.New(history.NewRepository(db).DB())
+	st := store.New(history.NewRepository(db).DB(), nil)
 
 	newDispatcher := func() *dispatch.Dispatcher {
 		r := &yieldRunner{}

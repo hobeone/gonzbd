@@ -1,8 +1,10 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -276,10 +278,13 @@ func TestRemove_OverlappingAddWithTransientDeleteErrorIsRetriedByTick(t *testing
 
 // TestStart_RefusesARowThatDiffersFromTheOneAddWrote pins that restore's skip
 // of a pre-Start Add is narrow: a stored row for a registered job that differs
-// from the row Add wrote is still refused.
+// from the row Add wrote is not silently ignored as Add's own write, but reaches
+// register and is refused and logged without overwriting the registered job.
 func TestStart_RefusesARowThatDiffersFromTheOneAddWrote(t *testing.T) {
+	var buf bytes.Buffer
 	st := &fakeStore{}
 	d := newTestDispatcher(t, withStore(st))
+	d.log = captureLogger(&buf)
 	if err := d.Add(t.Context(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -287,8 +292,17 @@ func TestStart_RefusesARowThatDiffersFromTheOneAddWrote(t *testing.T) {
 	p.Header.Name = "someone else's"
 	st.seed([]Persisted{p})
 
-	if err := d.Start(t.Context()); err == nil {
-		t.Fatal("Start registered a stored row that differs from the one Add wrote for the same job")
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if row, ok := d.Row("j1"); !ok || row.Header.Name != "n" {
+		t.Errorf("Row(j1) = (%+v, %v), want Header.Name = \"n\"", row, ok)
+	}
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if out := buf.String(); !strings.Contains(out, "restore failed") || !strings.Contains(out, "job_id=j1") {
+		t.Fatalf("Start silently skipped a stored row that differs from the one Add wrote; log = %q", out)
 	}
 }
 

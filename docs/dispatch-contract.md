@@ -489,7 +489,14 @@ constructor. `internal/job` exports exactly one constructor
 (`git grep -n 'func New(' internal/job/` returns one), and replaying instead
 of adding a `job.Restore(...)` gets the state machine's own validation for
 free: an illegal position, an inadmissible `Outcome`, or an illegal `Next`
-is refused by the door itself rather than trusted into memory. Every
+is refused by the door itself rather than trusted into memory. A row that
+fails `rows.Scan` in `Store.Load`, or fails `reconstruct` or `register` in
+`Dispatcher.restore`, is logged at `Error` with its job ID and skipped — left
+untouched in `dispatch_jobs` and omitted from `d.written` so `persistIfChanged`
+neither rewrites nor deletes it — while the remaining rows still restore
+(Standing Design Rule 3); a query or cursor iteration failure in `Store.Load`
+(or an error returned by `beforeFirstTick` in `StartWith`) still fails
+`Start`/`StartWith`. Every
 restored job comes back holding no lease and no slot regardless of the
 position it was persisted at — the pools are process-local, so there is
 nothing from a previous process to reclaim — and the first tick re-acquires
