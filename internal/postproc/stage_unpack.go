@@ -355,14 +355,16 @@ func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job 
 	}
 }
 
-// cleanupArchives deletes source archive files after successful extraction.
+// cleanupArchives records source archive files for deletion after FinalizeStage
+// moves the job to FinalDir (#768), keeping them in DownloadDir until then so a
+// crash before finalize can safely rerun post-processing.
 func (u *UnpackStage) cleanupArchives(ctx context.Context, log *slog.Logger, job *Job, allSuccessful []unpack.Archive) {
 	if u.cleanup.Load() && len(allSuccessful) > 0 {
 		var cleaned int
 		for _, a := range allSuccessful {
 			for _, part := range a.Parts {
-				if err := fsutil.Remove(part); err == nil {
-					line := "Deleted archive file: " + filepath.Base(part)
+				if _, err := os.Lstat(part); err == nil && job.recordPendingDeletion(part) {
+					line := "Queued archive file for deletion at finalize: " + filepath.Base(part)
 					job.OutputLines = append(job.OutputLines, "[unpack] "+line)
 					if job.OnOutput != nil {
 						job.OnOutput("unpack", line)
@@ -372,7 +374,7 @@ func (u *UnpackStage) cleanupArchives(ctx context.Context, log *slog.Logger, job
 			}
 		}
 		if cleaned > 0 {
-			logf(ctx, log, job, slog.LevelInfo, "Cleaned up %d archive file(s)", cleaned)
+			logf(ctx, log, job, slog.LevelInfo, "Queued %d archive file(s) for deletion at finalize", cleaned)
 		}
 	}
 }

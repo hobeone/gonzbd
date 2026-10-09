@@ -74,7 +74,7 @@ func (s *SampleCleanupStage) Run(ctx context.Context, job *Job) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || path == "." {
+		if d.IsDir() || path == "." || job.isPendingDeletion(path) {
 			return nil
 		}
 		totalFiles++

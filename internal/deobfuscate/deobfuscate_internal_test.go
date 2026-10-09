@@ -227,7 +227,7 @@ func TestExtractRARUsefulNameDirect(t *testing.T) {
 	defer root.Close()
 
 	// 1. Empty directory
-	if got := extractRARUsefulName(root, tmpDir, log); got != "" {
+	if got := extractRARUsefulName(root, tmpDir, log, nil); got != "" {
 		t.Errorf("extractRARUsefulName empty: got %q, want empty", got)
 	}
 
@@ -235,7 +235,7 @@ func TestExtractRARUsefulNameDirect(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	if got := extractRARUsefulName(root, tmpDir, log); got != "" {
+	if got := extractRARUsefulName(root, tmpDir, log, nil); got != "" {
 		t.Errorf("extractRARUsefulName non-rar: got %q, want empty", got)
 	}
 
@@ -251,13 +251,13 @@ func TestExtractRARUsefulNameDirect(t *testing.T) {
 		t.Fatalf("copy rar: %v", err)
 	}
 
-	got := extractRARUsefulName(root, tmpDir, log)
+	got := extractRARUsefulName(root, tmpDir, log, nil)
 	if got != "sample" {
 		t.Errorf("extractRARUsefulName(sample.rar) = %q, want 'sample'", got)
 	}
 
 	// Test nil logger doesn't panic
-	if gotNil := extractRARUsefulName(root, tmpDir, nil); gotNil != "sample" {
+	if gotNil := extractRARUsefulName(root, tmpDir, nil, nil); gotNil != "sample" {
 		t.Errorf("extractRARUsefulName with nil logger: got %q, want 'sample'", gotNil)
 	}
 }

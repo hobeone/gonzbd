@@ -7,7 +7,9 @@ package postproc
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -252,6 +254,16 @@ type Job struct {
 	// These sets are handled normally by the unpack stage's external unrar
 	// fallback; this is expected, not an error.
 	DirectUnpackSkipped map[string]directunpack.SkippedSet
+
+	// PendingDeletions lists paths relative to DownloadDir of extracted
+	// archives (from UnpackStage) and par2/backup files (from Par2CleanupStage)
+	// that are kept in DownloadDir until FinalizeStage has moved the job to
+	// FinalDir (#768), so a crash before finalize leaves the download directory
+	// intact for a rerun. Intermediate stages (extracted_repair,
+	// sample_cleanup, recover_par2_names, deobfuscate, unwanted_cleanup,
+	// extension_cleanup) skip them, and FinalizeStage deletes them once the
+	// final move succeeds.
+	PendingDeletions []string
 }
 
 // StageLogEntry records the outcome of a single stage execution.
@@ -310,6 +322,66 @@ func (j *Job) HasRecord() bool {
 // after unpack.
 func (j *Job) par2Deferred(set string) bool {
 	return slices.Contains(j.DeferredPar2Sets, set)
+}
+
+// pendingDeletionRel normalizes path to a clean path relative to j.DownloadDir,
+// or returns ("", false) when path is empty or outside j.DownloadDir.
+func (j *Job) pendingDeletionRel(path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	rel := filepath.Clean(filepath.FromSlash(path))
+	if filepath.IsAbs(rel) {
+		if j.DownloadDir == "" {
+			return "", false
+		}
+		r, err := filepath.Rel(j.DownloadDir, rel)
+		if err != nil {
+			return "", false
+		}
+		rel = r
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
+}
+
+// recordPendingDeletion records path (relative to DownloadDir) for deletion
+// after FinalizeStage moves the job's files (#768). Returns true when path is
+// inside DownloadDir and was recorded.
+func (j *Job) recordPendingDeletion(path string) bool {
+	rel, ok := j.pendingDeletionRel(path)
+	if !ok {
+		return false
+	}
+	if !slices.Contains(j.PendingDeletions, rel) {
+		j.PendingDeletions = append(j.PendingDeletions, rel)
+	}
+	return true
+}
+
+// isPendingDeletion reports whether path (relative to DownloadDir or absolute
+// within DownloadDir) has been recorded for deletion at finalize (#768).
+func (j *Job) isPendingDeletion(path string) bool {
+	if len(j.PendingDeletions) == 0 {
+		return false
+	}
+	rel, ok := j.pendingDeletionRel(path)
+	return ok && slices.Contains(j.PendingDeletions, rel)
+}
+
+// pendingDeletionSet returns a set of the relative paths in PendingDeletions,
+// or nil when none are recorded.
+func (j *Job) pendingDeletionSet() map[string]struct{} {
+	if len(j.PendingDeletions) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(j.PendingDeletions))
+	for _, rel := range j.PendingDeletions {
+		set[rel] = struct{}{}
+	}
+	return set
 }
 
 // JobID returns the job identifier.

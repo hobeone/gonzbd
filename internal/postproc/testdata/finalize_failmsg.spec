@@ -18,12 +18,12 @@ file internal/postproc/stage_finalize.go
 [moveToDest error leaves FailMsg unset]
 file internal/postproc/stage_finalize.go
 --- anchor
-	if err := f.moveToDest(ctx, log, job, dest, folderRename); err != nil {
+	if err := f.moveToDest(ctx, log, job, dest, stageViaUnpackPrefix); err != nil {
 		job.FailMsg = err.Error()
 		return err
 	}
 --- replace
-	if err := f.moveToDest(ctx, log, job, dest, folderRename); err != nil {
+	if err := f.moveToDest(ctx, log, job, dest, stageViaUnpackPrefix); err != nil {
 		return err
 	}
 --- end

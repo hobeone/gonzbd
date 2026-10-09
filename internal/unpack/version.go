@@ -16,7 +16,7 @@ type UnrarInfo struct {
 	VersionStr string
 	// HasProblem is true when the binary is too old (< 5.50) or its version
 	// could not be determined. In this mode, flags that old/non-RARLAB unrar
-	// variants don't support are stripped: -scf, -or, -ai, -tsm-.
+	// variants don't support are stripped: -scf, -ai, -tsm-.
 	// Matches SABnzbd's RAR_PROBLEM degraded mode.
 	HasProblem bool
 	// Available is true when the binary was found on PATH.

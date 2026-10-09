@@ -75,7 +75,7 @@ func deliveredJob(t *testing.T, layout string, fixtures []string, delivered []de
 			t.Fatalf("SetFileCRC32FromRuns(%d) = %v, %v; want the CRC recorded", i, ok, err)
 		}
 	}
-	return &Job{Job: j, DownloadDir: dir, PP: types.PPDelete}, dir
+	return &Job{Job: j, DownloadDir: dir, FinalDir: dir, PP: types.PPDelete}, dir
 }
 
 // assertFeatureExtracted fails unless dir holds feature.bin with the bytes
@@ -94,15 +94,17 @@ func assertFeatureExtracted(t *testing.T, dir string) {
 }
 
 // par2Stages returns the par2-related stages in pipeline order, wired as
-// buildStages wires them: quickcheck, repair, unpack, extracted_repair and
-// par2_cleanup.
+// buildStages wires them: quickcheck, repair, unpack, extracted_repair,
+// par2_cleanup, and finalize (which executes the deferred par2 deletions).
 func par2Stages() []Stage {
 	qc, repair, up := layoutStages()
 	extracted := NewExtractedRepairStage(repair)
 	extracted.Log = slog.New(slog.DiscardHandler)
 	cleanup := NewPar2CleanupStage(true)
 	cleanup.Log = slog.New(slog.DiscardHandler)
-	return []Stage{qc, repair, up, extracted, cleanup}
+	finalize := NewFinalizeStage()
+	finalize.Log = slog.New(slog.DiscardHandler)
+	return []Stage{qc, repair, up, extracted, cleanup, finalize}
 }
 
 // damagedNoDigest is a stored RAR5 of feature.bin whose file header records no

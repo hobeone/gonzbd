@@ -128,26 +128,38 @@ func TestUnpackStage_CleanupDeletesArchiveParts(t *testing.T) {
 	if err := s.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	if _, err := os.Stat(rarPath); err != nil {
+		t.Errorf("archive removed before finalize: %v", err)
+	}
+	if !job.isPendingDeletion(rarPath) {
+		t.Errorf("archive %s not recorded in PendingDeletions: %v", rarPath, job.PendingDeletions)
+	}
+	job.FinalDir = dir
+	if err := NewFinalizeStage().Run(t.Context(), job); err != nil {
+		t.Fatalf("FinalizeStage.Run: %v", err)
+	}
 	if _, err := os.Stat(rarPath); !os.IsNotExist(err) {
-		t.Errorf("archive still exists after cleanup: want removed, got %v", err)
+		t.Errorf("archive still exists after finalize cleanup: want removed, got %v", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 	found := false
 	for _, line := range output {
-		if strings.Contains(line, "[unpack] Deleted archive file: single_rar5.rar") {
+		if strings.Contains(line, "[unpack] Queued archive file for deletion at finalize: single_rar5.rar") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected deleted archive file log, got: %v", output)
+		t.Errorf("expected queued archive file log, got: %v", output)
 	}
 
-	foundSummary := slices.Contains(job.OutputLines, "Cleaned up 1 archive file(s)")
-	if !foundSummary {
-		t.Errorf("expected 'Cleaned up 1 archive file(s)' in job.OutputLines, got: %v", job.OutputLines)
+	if !slices.Contains(job.OutputLines, "Queued 1 archive file(s) for deletion at finalize") {
+		t.Errorf("expected 'Queued 1 archive file(s) for deletion at finalize' in job.OutputLines, got: %v", job.OutputLines)
+	}
+	if !slices.Contains(job.OutputLines, "Cleaned up 1 pending file(s)") {
+		t.Errorf("expected 'Cleaned up 1 pending file(s)' from finalize in job.OutputLines, got: %v", job.OutputLines)
 	}
 }
 
@@ -193,9 +205,16 @@ func TestUnpackStage_DirectUnpackPrePopulated(t *testing.T) {
 	if err := s.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// Cleanup must have deleted the fake part that DirectUnpack recorded.
+	if !job.isPendingDeletion(fakePart) {
+		t.Errorf("DirectUnpack part %s not recorded in PendingDeletions", fakePart)
+	}
+	job.FinalDir = dir
+	if err := NewFinalizeStage().Run(t.Context(), job); err != nil {
+		t.Fatalf("FinalizeStage.Run: %v", err)
+	}
+	// Finalize must have deleted the fake part that DirectUnpack recorded.
 	if _, err := os.Stat(fakePart); !os.IsNotExist(err) {
-		t.Errorf("DirectUnpack part %s still on disk after cleanup", fakePart)
+		t.Errorf("DirectUnpack part %s still on disk after finalize cleanup", fakePart)
 	}
 }
 
@@ -1562,8 +1581,15 @@ func TestUnpackStage_CleanupArchives(t *testing.T) {
 
 	u.cleanupArchives(t.Context(), slog.Default(), job, allSuccessful)
 
+	if !job.isPendingDeletion(archiveFile) {
+		t.Errorf("cleanupArchives did not record %s in PendingDeletions", archiveFile)
+	}
+	job.FinalDir = dir
+	if err := NewFinalizeStage().Run(t.Context(), job); err != nil {
+		t.Fatalf("FinalizeStage.Run: %v", err)
+	}
 	if _, err := os.Stat(archiveFile); !os.IsNotExist(err) {
-		t.Errorf("cleanupArchives failed to remove %s", archiveFile)
+		t.Errorf("FinalizeStage failed to remove %s", archiveFile)
 	}
 }
 
