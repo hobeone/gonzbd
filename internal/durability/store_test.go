@@ -451,6 +451,8 @@ func TestStore_NoExportedMethodWritesRunContent(t *testing.T) {
 		"SaveProgress":   "untouched",
 		"FileRows":       "untouched",
 		"FailedArticles": "untouched",
+		"ApplyRecord":    "untouched",
+		"WrittenRows":    "untouched",
 		"Path":           "untouched",
 	}
 	st := reflect.TypeFor[*Store]()

@@ -77,11 +77,12 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- UNIQUE(job_id, file_index) is also the access path, which is why there is no
 -- separate index on job_id.
 -- `git grep -nE 'INTO job_files|UPDATE job_files|FROM job_files' -- '*.go'
--- ':!*_test.go'` returns five lines: the INSERT, UPDATE and SELECT in
+-- ':!*_test.go'` returns eight lines: the INSERT, UPDATE and SELECT in
 -- internal/durability that read or write job_files directly, a fourth line
 -- in the same package where SaveProgress's failed_articles INSERT guards
 -- itself with a `FROM job_files` EXISTS check
--- (internal/durability/progress.go), and a SELECT in test/crash/harness.go,
+-- (internal/durability/progress.go), three in written.go (ApplyRecord's EXISTS
+-- guard on written_articles and its two UPDATEs), and a SELECT in test/crash/harness.go,
 -- which that filter keeps because it is build-tagged rather than named
 -- _test.go. The reclaim rule's DELETE is a sixth statement the grep cannot
 -- see, because it builds it from a table name
@@ -163,6 +164,27 @@ CREATE TABLE failed_articles (
     job_id  TEXT    NOT NULL,
     art_idx INTEGER NOT NULL,
     PRIMARY KEY (job_id, art_idx)
+) WITHOUT ROWID;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+-- One row per article whose decoded bytes were handed to pwrite at
+-- (offset, length) and for which pwrite returned nil. NOT a durability claim: a
+-- row may describe bytes the kernel never flushed. A row becomes a Done bit by
+-- a CRC match during verification, or by its file being complete = 1.
+--
+-- Keyed by job_id with no foreign key, so rows are removed deliberately rather
+-- than by cascade, by the reclaim rule in internal/durability/reclaim.go. A
+-- FAILED history entry keeps them, because a retry verifies them against the
+-- partial file instead of refetching it.
+CREATE TABLE written_articles (
+    job_id   TEXT    NOT NULL,
+    file_idx INTEGER NOT NULL,
+    art_idx  INTEGER NOT NULL,
+    offset   INTEGER NOT NULL,
+    length   INTEGER NOT NULL,
+    crc32    INTEGER NOT NULL,
+    PRIMARY KEY (job_id, file_idx, art_idx)
 ) WITHOUT ROWID;
 -- +goose StatementEnd
 

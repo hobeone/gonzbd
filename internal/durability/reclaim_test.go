@@ -21,7 +21,7 @@ type reclaimState struct {
 	queued    bool
 	history   constants.Status // "" for no history entry
 	keepAll   bool             // every table's rows survive
-	keepsRuns bool             // durable_runs alone survives
+	keepsRuns bool             // the keptForFailedEntry tables survive
 }
 
 var reclaimStates = []reclaimState{
@@ -57,6 +57,9 @@ func seedReclaimStates(t *testing.T) *sql.DB {
 		if _, err := st.commit(ctx, s.id, []DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1}}); err != nil {
 			t.Fatal(err)
 		}
+		if err := st.ApplyRecord(ctx, []RecordBatch{{JobID: s.id, Rows: []WrittenRow{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1}}}}); err != nil {
+			t.Fatal(err)
+		}
 		if s.queued {
 			if _, err := db.Exec(`INSERT INTO dispatch_jobs (id, sort_key, name) VALUES (?, 0, ?)`, s.id, s.id); err != nil {
 				t.Fatal(err)
@@ -76,7 +79,7 @@ func assertReclaimed(t *testing.T, db *sql.DB, via string) {
 	for _, s := range reclaimStates {
 		for _, table := range perJobTables {
 			want := 0
-			if s.keepAll || (s.keepsRuns && table.name == "durable_runs") {
+			if s.keepAll || (s.keepsRuns && table.keptForFailedEntry) {
 				want = 1
 			}
 			if got := countRows(t, db, table.name, s.id); got != want {
