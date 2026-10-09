@@ -48,6 +48,7 @@ that document.
 <!-- doccite:ok internal/app/verify_bench_test.go — created by this plan -->
 <!-- doccite:ok internal/app/loose_record_test.go — created by this plan -->
 <!-- doccite:ok TestRecorder_ApplyIgnoresTheInstanceCheck — created by this plan -->
+<!-- doccite:ok TestRecorder_UntrustPurgesPendingRows — created by this plan -->
 
 ## Global Constraints
 
@@ -69,6 +70,8 @@ that document.
 3. **A history retry under the same job ID must not receive the previous instance's late flush.** The instance check, not the `EXISTS` guard, covers this. Pinned in Task 4.3.
 4. **A file with zero accepted articles is not truncated to zero.** `maxEnd == 0` leaves the file alone. Pinned in Task 4.5.
 5. **A no-par2 post whose last articles failed is not delivered.** Truncation to `maxEnd` hides the tail on disk, but failed bytes still reach `RepairNoCapacity`. Pinned in Task 4.5.
+6. **An unreadable sector must not cost the whole job.** A verification fault parks the job through the stall and never settles it Failed. Pinned in Task 5.1.
+7. **A completion fault must recover without a restart.** No tombstone on the fault path, so the refetch opens a fresh writer. Pinned in Task 5.1.
 
 ## Stop conditions
 
@@ -688,7 +691,9 @@ func TestRecorder_RemergesOnError(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run → FAIL.** **Step 3: Implement.** The `ApplyRecord` call happens with `mu` released. `noteWritten` calls `j.MarkArticleDone(int(row.ArtIdx), bytes, server)` after appending and logs `job.ErrNotResident` at Debug.
+Add a fourth test, `TestRecorder_UntrustPurgesPendingRows`: `noteWritten` two rows for file 0, then `apply` a `DeleteAll` verdict for file 0, then `flush`; assert no batch carries a row for file 0.
+
+- [ ] **Step 2: Run → FAIL.** **Step 3: Implement.** A `DeleteAll` verdict removes the file's pending rows and dirty entry under `mu` before its transaction. The `ApplyRecord` call happens with `mu` released. `noteWritten` calls `j.MarkArticleDone(int(row.ArtIdx), bytes, server)` after appending and logs `job.ErrNotResident` at Debug.
 - [ ] **Step 4: Run → PASS** with `-race`.
 - [ ] **Step 5: Red-check** the instance check and the single-snapshot rule (move the dirty snapshot into a second critical section) with a spec under `internal/app/testdata/recorder_*.spec`.
 - [ ] **Step 6: Commit** `feat(app): add the recorder that owns the written-article record`.
@@ -714,7 +719,10 @@ func TestRecorder_RemergesOnError(t *testing.T) {
       Failed   map[int][]int32                     // per file, articles failed by an intersection
       Finished []int                               // files finished by path in this pass
   }
-  func verifyJobFiles(ctx context.Context, name string, m *job.Manifest, files []durability.FileRow, rows []durability.WrittenRow, dl string) (verifyResult, error)
+  func verifyJobFiles(ctx context.Context, name string, m *job.Manifest, files []durability.FileRow, rows []durability.WrittenRow, dl string, retry bool) (verifyResult, error)
+  // errVerifyFault wraps every non-definitive error verifyJobFiles returns, so
+  // reconcileResidency can park the job instead of settling it Failed.
+  type errVerifyFault struct{ File string; Err error }
   func fileCRCFromRows(rows []durability.WrittenRow, failed bool, lo, hi int) (uint32, bool) // false ⇒ NoCRC
   func finishFileByPath(path string, maxEnd int64) error
   ```
@@ -730,7 +738,7 @@ func TestRecorder_RemergesOnError(t *testing.T) {
   - `complete=1` file → no bytes read (make the file unreadable with `chmod 000` and assert no error), every row verified;
   - a `complete=0` file whose policy is on-demand → read and verified like any other.
 
-  A second test injects a read error: replace the package-level `preadAt` seam with one returning `syscall.EIO` on the second row, and assert `verifyJobFiles` returns an error **and** a zero `verifyResult` (Review Focus 1). A third cancels the context after the first row and asserts the same.
+  A second test injects a read error: replace the package-level `preadAt` seam with one returning `syscall.EIO` on the second row, and assert `verifyJobFiles` returns an `*errVerifyFault` (via `errors.As`) naming the file **and** a zero `verifyResult` (Review Focus 1). A third cancels the context after the first row and asserts the same. A fourth covers the retry path: two intersecting rows where the first matches, called with `retry=true`, must leave the file out of `Finished` and put no `SetComplete` in its verdict; the same input with `retry=false` finishes it.
 
 - [ ] **Step 2: Failing tests for `fileCRCFromRows`.** Gapless chain → the combined CRC equals `crc32.ChecksumIEEE` of the concatenated bytes; a gap → false; a straddle (row 2 starts inside row 1) → false; first row not at 0 → false; `failed == true` → false; a missing article in `[lo, hi)` → false.
 
@@ -773,7 +781,7 @@ in the PR body.
 
 ### Task 5.1: Cut over (commit 1)
 
-**Files:** `internal/app/residency.go`, `app.go` (`retryHistoryJob` — including its `checkpointer.Prune`/`FlushJob`/`Mark` calls and abort defer, the shape check, and setting `complete=0` on every file before `verifyJobFiles`; `handleFileComplete`, `completeFinalizedFile`, wiring), `internal/app/verify.go` (receives `strandedComplete` and `jobFilePath` from `resume_startup.go`), `internal/history/repository.go` (`Add` loses its per-file progress argument; its callers), the four `FileAssembledCRC32(` call sites re-pointed at `fileCRCFromRows` (`dispatcher_wiring.go`, `job_finalizer.go`, `par2names.go`, `internal/postproc/stage_quickcheck.go`), `internal/assembler` (the `charged` result of `finish()` routed to `OnArticleRejected` as failed bytes), `pipeline.go` (`registerFile` fills `FileInfo.Owned`), `job_finalizer.go` (`persistAndCommit` flush; `retainedProgressFor` removed from the call), `stall.go` (`reevaluateStall` keeps only the parking half), `reloader.go` (`Quiesce`, drop the #417 guard), `events.go` (`FileComplete.Resumed`), `internal/assembler/assembler.go` (`Quiesce` control message; call `w.finish()` before `OnFileComplete`), `test/crash/harness.go` and `crash_test.go` (new oracle; re-pin the two SIGKILL tests).
+**Files:** `internal/app/residency.go`, `internal/dispatch/tick.go` (`reconcileResidency` does not settle on a verification fault; the residency port's doc states the new error class), `app.go` (`retryHistoryJob` — including its `checkpointer.Prune`/`FlushJob`/`Mark` calls and abort defer, the shape check, and setting `complete=0` on every file before `verifyJobFiles`; `handleFileComplete`, `completeFinalizedFile`, wiring), `internal/app/verify.go` (receives `strandedComplete` and `jobFilePath` from `resume_startup.go`), `internal/history/repository.go` (`Add` loses its per-file progress argument; its callers), the four `FileAssembledCRC32(` call sites re-pointed at `fileCRCFromRows` (`dispatcher_wiring.go`, `job_finalizer.go`, `par2names.go`, `internal/postproc/stage_quickcheck.go`), `internal/assembler` (the `charged` result of `finish()` routed to `OnArticleRejected` as failed bytes), `pipeline.go` (`registerFile` fills `FileInfo.Owned`), `job_finalizer.go` (`persistAndCommit` flush; `retainedProgressFor` removed from the call), `stall.go` (`reevaluateStall` keeps only the parking half), `reloader.go` (`Quiesce`, drop the #417 guard), `events.go` (`FileComplete.Resumed`), `internal/assembler/assembler.go` (`Quiesce` control message; call `w.finish()` before `OnFileComplete`), `test/crash/harness.go` and `crash_test.go` (new oracle; re-pin the two SIGKILL tests).
 
 **Interfaces:**
 - Consumes: everything from PR 4.
@@ -788,6 +796,9 @@ in the PR body.
   - crash after leaving Fetching: write a file fully, stop before the flush carrying `complete=1`, restore the job in Assessing, zero one range, and assert that article is Outstanding (the read happens outside Fetching);
   - retry after post-processing: complete a job, overwrite one byte of a delivered file as par2 repair would, fail and retry it; assert the changed article is refetched, not trusted;
   - shape mismatch: retry with an NZB whose file has one article fewer; assert every row of the job is deleted;
+  - **a completion fault converges in-process**: inject an fsync error at finish, resume the stall, and assert the file's articles are refetched, written and the file reaches `complete=1` without a restart (no tombstone; the cached `FileInfo` was dropped);
+  - **a verification fault parks, never fails**: restore a job whose file read returns `EIO` through the `preadAt` seam; assert the job is stalled with a reason naming the file, its outcome is unset, and after the seam is restored a resume verifies and attaches it;
+  - **a close-time fsync fault untrusts**: inject an fsync error in `drainAndCloseAll` at shutdown; after restart assert the file has no rows and its articles are Outstanding;
   - `complete=1` at restart: assert its failed set is installed before `completeFinalizedFile` runs, by checking `hasFailedArticle` for a file with one failed article.
 - [ ] **Step 2: Run → FAIL.**
 - [ ] **Step 3: Implement the cutover** per spec §3.2–§3.8. In `Hydrate`: on the no-progress branch, read `FileRows` and `WrittenRows`, call `verifyJobFiles`, commit with `recorder.apply`, then `AttachContent`, `InstallVerified` per file, `MarkFileComplete` and enqueue `FileComplete{Resumed: true}` for each `Finished` file. Return the error with nothing attached if any of that fails.

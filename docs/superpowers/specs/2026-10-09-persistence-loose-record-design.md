@@ -137,7 +137,11 @@ measuring it a merge condition.
 5. **Verifier results and file untrusting** reach SQLite through the flusher's
    synchronous path, not through a second writer. The verifier and the
    completion-fault path hand the flusher a per-file verdict (rows to delete,
-   `complete` to clear) and wait for it to commit.
+   `complete` to clear) and wait for it to commit. A verdict that deletes all
+   of a file's rows also removes that file's **pending** delta rows and dirty
+   entry, inside the same critical section and before the transaction, so no
+   later background flush can write back rows for a file that was just
+   untrusted.
 
 `MarkArticleFailed` stays in memory only. `durability.Store.Admit`'s insert is
 the one other writer of `job_files`, and it creates rows rather than updating
@@ -187,11 +191,19 @@ For each such file:
 2. `os.Open(path)`. `ENOENT` is definitive: every row for the file is
    deleted and its articles are Outstanding.
 3. `fsync(fd)`. On Linux ≥ 4.16 a newly opened descriptor is told about a
-   writeback error it has not yet seen. An error makes the file **untrusted**:
-   all its rows are deleted and its articles are Outstanding. Then
-   `posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED)`, so that the reads come from
-   the device rather than from pages that were marked clean after a failed
-   writeback.
+   writeback error **that no earlier fsync has reported**. An error makes the
+   file **untrusted**: all its rows are deleted and its articles are
+   Outstanding. Then `posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED)`, so that
+   the reads come from the device rather than from pages that were marked clean
+   after a failed writeback.
+
+   The fsync catches only an error nobody has reported. Two kept fsyncs report
+   errors first: `drainAndCloseAll` at clean shutdown and `CloseJobHandles` at
+   the hand-over to post-processing. Each of them **untrusts** the file whose
+   fsync faulted, through the same synchronous path as a completion fault
+   (§3.4), before the flusher's final run. So no file whose error was already
+   consumed reaches this step with rows, and the cache drop is a second line of
+   defence rather than the only one.
 4. Rows in offset order; `pread` each range through a reused 1 MiB buffer.
    - A full read whose CRC matches → Done, installed by
      `Job.InstallVerified(fileIdx, rows)` (which carries
@@ -202,7 +214,10 @@ For each such file:
      the other article is marked **failed**, not Outstanding, so a restart
      cannot alternate between them.
 5. If every article in the file's range is now resolved (the
-   `strandedComplete` predicate, the single owner of "needs finishing"), finish
+   `strandedComplete` predicate, the single owner of "needs finishing") —
+   counting an article this pass failed by an intersection as resolved
+   **except on the retry path**, where `ResetForRetry` is about to clear that
+   failure and a finished file would contradict it — finish
    it by path (§3.4) inside the pass and put `complete=1` in the verdict, so the
    flag is committed only after that fsync. After attaching, `Hydrate` marks
    the file complete in memory and enqueues a `FileComplete` with a new field
@@ -211,10 +226,20 @@ For each such file:
    `completeFinalizedFile` to skip the DirectUnpack feed (§3.4).
 
 **Only a definitive comparison changes state.** Any other error — EIO, ESTALE,
-a cancelled context — aborts verification for the job with nothing changed,
-classified through `storagefault.Classify`, and nothing is attached. Results
+an fsync failure while finishing by path, a cancelled context — aborts
+verification for the job with nothing changed and nothing attached. Results
 are applied once, through the flusher, in one transaction at the end of the
 pass.
+
+**A verification fault parks the job; it never fails it.** Today
+`reconcileResidency` settles a job `OutcomeFailed` on any hydration error that
+is not a context error, which would turn one unreadable sector into a lost job.
+`Hydrate` therefore returns a distinguishable verification-fault error,
+classified through `storagefault.Classify`; `reconcileResidency` does not settle
+it, and the job is parked through the existing stall with a reason naming the
+file. Resuming hydrates and verifies again. A sector that stays unreadable
+keeps the job parked until the operator acts — deleting the file sends it down
+the `ENOENT` arm and refetches it.
 
 For a file with `complete=1` (and not reset by a retry, §3.7): every row's article is Done, the failed set is
 the complement of its rows, the whole-file CRC is derived by §3.5, and no bytes
@@ -278,8 +303,14 @@ reads a file's size on disk. A no-par2 post with a failed tail reaches
 `RepairNoCapacity`; a post with par2 is repaired.
 
 **Any error** goes to `OnWriteFault` with the classified fault (Stall or Fail).
-The handle is closed, the **tombstone is set anyway** so that a late duplicate
-cannot reopen the file, `complete` stays 0, and **the file is untrusted**: its
+The handle is closed and removed from the open set, **no tombstone is set**,
+and the pipeline's cached `FileInfo` for the file is dropped. A tombstone would
+route every refetched article to `handleLateDuplicate`, which returns without
+writing or releasing it when the handle is gone, so the refetch would never
+converge. Instead the first refetched article re-registers the file — recounting
+`TotalParts` and seeding ownership from the now-empty row set — and opens a
+fresh writer; a late duplicate of an old article is written and recorded like
+any other. `complete` stays 0, and **the file is untrusted**: its
 Done bits are cleared and its rows deleted, through the flusher's synchronous
 path (§3.2 item 5). The clear has to reach SQLite before the job can be
 evicted, because the hydration-time `job_files` restore only ever sets
@@ -361,13 +392,13 @@ the hole NZBGet has. This paragraph belongs in `durability-contract.md` at NN1.
 | Hook | Behaviour |
 |---|---|
 | Write fault (`pwrite` error) | Unchanged: the part rolls back, `OnArticlesUnwritten` clears Emitted, `OnWriteFault` → Stall/Fail. No row is written. |
-| Completion fault | §3.4: tombstone; file untrusted through the flusher; Stall. `reevaluateStall` keeps only its parking half: on resume the file's articles are Outstanding and are refetched. The "restart gonzbd to resume" dead end disappears. |
+| Completion fault | §3.4: no tombstone; cached `FileInfo` dropped; file untrusted through the flusher; Stall. `reevaluateStall` keeps only its parking half: on resume the file's articles are Outstanding and are refetched. The "restart gonzbd to resume" dead end disappears. |
 | Pause, low-disk, server penalty | Nothing writes the record; no hook. |
 | Reload (`ReloadDownloader`) | Stop the old downloader; `setCompletions(nil)`; a new `assembler.Quiesce(ctx)` control message on the request queue, answered when reached, so everything queued ahead has been written and its callbacks have run; `ClearEmittedForReload(false)` for every non-admitted job; start the new downloader. The #417 guard and its byte accounting go: an Emitted bit now covers only an article whose bytes have not reached `pwrite`. |
 | Remove (`RemoveJob`) | Unchanged; reclaim deletes rows under the `keptForFailedEntry` rule. A racing flush is stopped by the instance check and the `EXISTS` guard; any orphan rows are removed by `sweepOrphans` at startup. |
 | Retry (`retryHistoryJob`) | Rebuild from the NZB; restore `_FAILED_`; reclaim; shape-check rows against the re-parsed manifest (every `(file_idx, art_idx)` inside the file's range, and per-file article counts derived from the manifest), deleting the job's rows on a mismatch; set `complete=0` on **every** `job_files` row, because post-processing may have repaired, moved or deleted the bytes since they were written, so a retry reads the whole job once; `verifyJobFiles`; `ResetForRetry`; `ForgetJob`. A file quickcheck moved into a par2 subdirectory is at a path its `filename` does not name, so it takes the `ENOENT` arm and is refetched whole — accepted, as today. An article failed by an intersection is cleared by `ResetForRetry` and fetched again; it re-collides with the seeded winner and is refused, so it cannot displace it. |
-| Clean shutdown | `shutdownCheckpoint` and its 10 s budget go; `drainAndCloseAll` keeps its per-file fsync; the flusher runs once after `assembler.Stop`. No clean-shutdown flag. |
-| Hand-over to post-processing | `CloseJobHandles` (drain, fsync, close) and `enqueuePostProc`'s synchronous flush are unchanged. |
+| Clean shutdown | `shutdownCheckpoint` and its 10 s budget go; `drainAndCloseAll` keeps its per-file fsync and untrusts any file whose fsync faults (§3.3 step 3); the flusher runs once after `assembler.Stop`. No clean-shutdown flag. |
+| Hand-over to post-processing | `CloseJobHandles` (drain, fsync, close) and `enqueuePostProc`'s synchronous flush stay; a file whose close-time fsync faults is untrusted (§3.3 step 3). |
 
 ### 3.8 The flush in `persistAndCommit`
 
@@ -429,8 +460,8 @@ written rows; failed articles are not persisted and come back Outstanding.
 3. No row becomes a Done bit after a restart without a device read, whatever
    the job's state, unless its file is `complete=1` and was not reset by a
    retry.
-4. A file whose fsync failed has no rows and no Done bits, in memory or in
-   SQLite.
+4. A file whose fsync failed has no rows and no Done bits, in memory, in the
+   recorder's pending buffer, or in SQLite.
 5. No two written articles of a file have intersecting byte ranges, and an
    article owns a range only once its write succeeded.
 6. The whole-file CRC exists only for a gapless, non-overlapping chain of rows
