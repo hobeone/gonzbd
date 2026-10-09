@@ -1419,15 +1419,14 @@ func TestCheckpointJob_DoesNotStampABarrierThatNeverRan(t *testing.T) {
 
 	application.checkpointJob(t.Context(), job.ID())
 
-	got := application.JobDurability(job.ID())
-	if !got.LastBarrier.IsZero() {
-		t.Errorf("LastBarrier = %v after a checkpoint that ran no barrier, want the zero time — "+
-			"the figure exists to tell a job that is checkpointing from one whose barriers "+
-			"stopped, and this reports the opposite", got.LastBarrier)
+	if application.hasBarrierStamp(job.ID()) {
+		t.Error("a checkpoint that ran no barrier stamped the job's last barrier — the stamp " +
+			"tells a job that is checkpointing from one whose barriers stopped, and this " +
+			"reports the opposite")
 	}
-	if got.PendingBytes != 4096 {
-		t.Errorf("PendingBytes = %d, want 4096 — a window that was never closed was zeroed, so "+
-			"the bytes at risk read as none", got.PendingBytes)
+	if got := application.pendingBytesFor(job.ID()); got != 4096 {
+		t.Errorf("pending bytes = %d, want 4096 — a window that was never closed was zeroed, so "+
+			"the bytes at risk read as none", got)
 	}
 }
 

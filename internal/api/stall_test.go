@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
 	"github.com/hobeone/gonzbd/internal/app"
@@ -22,11 +21,9 @@ import (
 // decoded by json tag so a rename breaks the test rather than silently
 // zeroing the fields.
 type durabilitySlot struct {
-	NzoID           string `json:"nzo_id"`
-	StallReason     string `json:"stall_reason"`
-	BytesDurable    int64  `json:"bytes_durable"`
-	BytesPending    int64  `json:"bytes_pending"`
-	LastBarrierUnix int64  `json:"last_barrier_unix"`
+	NzoID        string `json:"nzo_id"`
+	StallReason  string `json:"stall_reason"`
+	BytesDurable int64  `json:"bytes_durable"`
 }
 
 // stallTestServer wires a dispatcher and a NopApp whose checkpoint figures the
@@ -169,39 +166,16 @@ func TestQueueAPI_AlwaysSendsStallReasonEvenWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestQueueAPI_ReportsDurableAndPendingBytesSeparately pins R26.
-//
-// bytes_pending is what has been written but not yet covered by an fsync — the
-// rework window made visible. It must be reported separately from
-// bytes_durable and never summed into it: one figure survives a power loss and
-// the other does not, so a total asserts the stronger claim about all of it.
-// They are not even in the same unit — bytes_durable is encoded NZB bytes,
-// bytes_pending the decoded bytes written — so this test's fixture values are
-// chosen independently rather than derived from one another.
-func TestQueueAPI_ReportsDurableAndPendingBytesSeparately(t *testing.T) {
+// TestQueueAPI_ReportsDurableBytesFromRecordedRuns pins bytes_durable on the
+// wire: it is zero before any run is recorded and follows the recorded runs.
+func TestQueueAPI_ReportsDurableBytesFromRecordedRuns(t *testing.T) {
 	t.Parallel()
 	s, disp := stallTestServer(t, nil, nil)
 	j := addTestDispatcherJob(t, disp, "inflight")
-	barrierAt := time.Now().Truncate(time.Second)
-	s.status = apitest.NopApp{CheckpointStatesVal: map[string]app.JobCheckpointState{
-		j.ID(): {PendingBytes: 512, LastBarrier: barrierAt},
-	}}
 
 	before := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), j.ID())
-
-	if before.BytesPending != 512 {
-		t.Errorf("bytes_pending = %d, want 512 — the rework window is not reported at all",
-			before.BytesPending)
-	}
-	// Nothing is durable yet, so anything non-zero here can only be the
-	// pending bytes leaking into the durable figure.
 	if before.BytesDurable != 0 {
-		t.Errorf("bytes_durable = %d before any barrier ran, want 0; the written-but-not-durable "+
-			"bytes are being counted as durable, which claims they survive a power loss",
-			before.BytesDurable)
-	}
-	if before.LastBarrierUnix != barrierAt.Unix() {
-		t.Errorf("last_barrier_unix = %d, want %d", before.LastBarrierUnix, barrierAt.Unix())
+		t.Errorf("bytes_durable = %d before any barrier ran, want 0", before.BytesDurable)
 	}
 
 	// Now make the job's single 1024-byte article durable, through the same
@@ -218,26 +192,6 @@ func TestQueueAPI_ReportsDurableAndPendingBytesSeparately(t *testing.T) {
 		t.Errorf("bytes_durable = %d after a recorded run covered the job's only article, "+
 			"want 1024 — the field reports nothing a barrier achieved", after.BytesDurable)
 	}
-	if after.BytesPending != 512 {
-		t.Errorf("bytes_pending = %d, want it unchanged at 512 — the two figures are being "+
-			"derived from one source", after.BytesPending)
-	}
-}
-
-// TestQueueAPI_ReportsNoLastBarrierAsZero pins the encoding of "never".
-// time.Time's zero value renders as -6795364578871 through Unix(), which a
-// client formats as a date in the year 1754 rather than as an absence.
-func TestQueueAPI_ReportsNoLastBarrierAsZero(t *testing.T) {
-	t.Parallel()
-	s, disp := stallTestServer(t, nil, nil)
-	j := addTestDispatcherJob(t, disp, "fresh")
-
-	slot := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), j.ID())
-
-	if slot.LastBarrierUnix != 0 {
-		t.Errorf("last_barrier_unix = %d for a job that has never checkpointed, want 0",
-			slot.LastBarrierUnix)
-	}
 }
 
 // TestQueueAPI_DetailCarriesTheSameDurabilityFields pins the drawer endpoint,
@@ -249,7 +203,7 @@ func TestQueueAPI_DetailCarriesTheSameDurabilityFields(t *testing.T) {
 	s, disp := stallTestServer(t, nil, nil)
 	j := addTestDispatcherJob(t, disp, "drawer")
 	s.status = apitest.NopApp{CheckpointStatesVal: map[string]app.JobCheckpointState{
-		j.ID(): {StallReason: "Stalled: disk full", PendingBytes: 64},
+		j.ID(): {StallReason: "Stalled: disk full"},
 	}}
 
 	slots := queueDurabilitySlots(t, s,
@@ -259,9 +213,6 @@ func TestQueueAPI_DetailCarriesTheSameDurabilityFields(t *testing.T) {
 	if slot.StallReason == "" {
 		t.Error("stall_reason is empty in the detail response; the drawer the user opens on a " +
 			"stalled row is the one place the reason is missing")
-	}
-	if slot.BytesPending != 64 {
-		t.Errorf("bytes_pending = %d in the detail response, want 64", slot.BytesPending)
 	}
 }
 

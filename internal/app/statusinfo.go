@@ -121,41 +121,19 @@ func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 }
 
 // JobCheckpointState is the part of a job's durability figures that lives in
-// the application rather than in the queue: what a barrier has not yet covered,
-// when the last one succeeded, and why the job is parked.
+// the application rather than in the queue: why the job is parked.
 //
 // Separate from JobDurability because the queue listing already holds every
 // job's progress and must not re-snapshot it — a listing is polled
-// continuously and re-copying every job's progress is the cost. A struct with a
-// DurableBytes field left zero on that path would be a figure that silently
-// means two things.
+// continuously and re-copying every job's progress is the cost.
 type JobCheckpointState struct {
-	// PendingBytes is what has been written since this job's current
-	// checkpoint window opened: accepted by the OS, not yet fsynced, and lost
-	// on a power failure.
-	//
-	// DECODED bytes -- the accumulator is fed len(data) per accepted article,
-	// because B1's volume bound measures rework at risk and rework is
-	// measured in bytes on disk. DurableBytesOf is in ENCODED bytes. The two
-	// are not comparable; see the bytes_durable/bytes_pending field doc in
-	// internal/api/queue.go for why neither can move to the other's unit.
-	PendingBytes int64
-	// LastBarrier is when this job's last barrier completed without error, or
-	// the zero time when none has.
-	LastBarrier time.Time
 	// StallReason is the surfaced, actionable text R27 requires, or "" when
 	// the job is not parked.
 	StallReason string
 }
 
 // JobDurability is what R26 asks a job to be able to report at any time: how
-// much of it is on stable storage, how much is written but not yet covered by
-// an fsync, when its last barrier succeeded, and why it is parked.
-//
-// The two byte figures are reported separately and are never summed. They make
-// different claims — one survives a power loss, the other is the rework window
-// B1 bounds — and adding them produces a number that asserts the stronger of
-// the two about all of it.
+// much of it is on stable storage and why it is parked.
 type JobDurability struct {
 	JobCheckpointState
 	// DurableBytes is what a completed fsync covers.
@@ -165,37 +143,15 @@ type JobDurability struct {
 // CheckpointState reads one job's application-side figures, for the single-job
 // detail endpoint. The whole-queue listing uses CheckpointStates instead.
 func (app *Application) CheckpointState(jobID string) JobCheckpointState {
-	var out JobCheckpointState
-	app.barrierMu.Lock()
-	out.PendingBytes = app.jobBarrierBytes[jobID]
-	out.LastBarrier = app.lastBarrier[jobID]
-	app.barrierMu.Unlock()
-	out.StallReason = app.StallReason(jobID).Reason
-	return out
+	return JobCheckpointState{StallReason: app.StallReason(jobID).Reason}
 }
 
-// CheckpointStates returns every job that has a figure worth reporting, keyed
-// by job ID.
+// CheckpointStates returns every parked job, keyed by job ID.
 //
-// One pass under each lock rather than one pass per job, for the same reason
-// DirectUnpackStatuses exists: the queue listing is polled continuously, and
-// taking these locks per slot would put every poll's cost on the write path's
-// contention.
+// One pass under the stall lock rather than one lock per job, for the same
+// reason DirectUnpackStatuses exists: the queue listing is polled continuously.
 func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 	out := make(map[string]JobCheckpointState)
-	app.barrierMu.Lock()
-	for jobID, n := range app.jobBarrierBytes {
-		st := out[jobID]
-		st.PendingBytes = n
-		out[jobID] = st
-	}
-	for jobID, at := range app.lastBarrier {
-		st := out[jobID]
-		st.LastBarrier = at
-		out[jobID] = st
-	}
-	app.barrierMu.Unlock()
-
 	app.stallMu.Lock()
 	for jobID, rec := range app.stalls {
 		if rec.reason == "" {

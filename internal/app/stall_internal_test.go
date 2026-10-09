@@ -135,17 +135,15 @@ func TestNoteBarrierRun_StampsOnlyASuccessfulBarrier(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
-	before := time.Now()
 	application.noteBarrierRun("job-1")
-	got := application.JobDurability("job-1").LastBarrier
-	if got.Before(before) {
-		t.Errorf("LastBarrier = %v, want at or after %v", got, before)
+	if !application.hasBarrierStamp("job-1") {
+		t.Fatal("noteBarrierRun did not stamp the job's last barrier")
 	}
 
 	application.forgetJobBarrierState("job-1")
-	if got := application.JobDurability("job-1").LastBarrier; !got.IsZero() {
-		t.Errorf("LastBarrier = %v after the job departed, want the zero time — the map "+
-			"would grow one entry per job ever downloaded", got)
+	if application.hasBarrierStamp("job-1") {
+		t.Error("the last-barrier stamp survived the job's departure — the map would grow " +
+			"one entry per job ever downloaded")
 	}
 }
 

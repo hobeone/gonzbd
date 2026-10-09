@@ -88,9 +88,9 @@ func TestNopApp_Contract(t *testing.T) {
 		t.Errorf("CheckpointState() = %+v on an unconfigured NopApp, want the zero value", st)
 	}
 	configured := NopApp{CheckpointStatesVal: map[string]appkg.JobCheckpointState{
-		"job1": {PendingBytes: 42, StallReason: "Stalled: disk full"},
+		"job1": {StallReason: "Stalled: disk full"},
 	}}
-	if st := configured.CheckpointState("job1"); st.PendingBytes != 42 || st.StallReason == "" {
+	if st := configured.CheckpointState("job1"); st.StallReason == "" {
 		t.Errorf("CheckpointState(job1) = %+v, want the configured figures — the queue detail "+
 			"endpoint reads this one, and a stub that dropped them would make its assertions "+
 			"pass against a handler that sends nothing", st)

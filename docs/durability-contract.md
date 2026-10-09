@@ -2145,8 +2145,9 @@ a green run does and does not bound.
   CRC, decide completion, or truncate.
 - Barrier operations over the assembler's control channel (`fileIdxSyncOp`),
   timeout-bounded.
-- Checkpoint cadence: time bound, byte bound, file completion, clean shutdown,
-  with `lastBarrier`/`PendingBytes` surfaced through the API and UI.
+- Checkpoint cadence: time bound, byte bound, file completion, clean shutdown.
+  The barrier's accumulator and stamp are internal; the API and UI no longer
+  surface them (the `bytes_pending` and `last_barrier_unix` slot fields are gone).
 - Authoritative startup sweep (`resumeAllJobs` → `Job.ReplaceFromRuns`) and
   the additive stall-recovery replay (`SeedFromRuns`).
 - Repair for a finalize a crash interrupted (`completeStrandedFiles` →
