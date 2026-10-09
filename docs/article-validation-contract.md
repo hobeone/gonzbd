@@ -924,7 +924,7 @@ checked, and a warning or unacted-on counter is not a consumer.
 | # | Assertion | Status |
 |---|---|---|
 | E1 | offset ≥ 0, no overflow, within `ExpectedSize` + 12.5% | ✅ enforced |
-| E2 | no two articles share an exact start offset | ✅ enforced (#385) |
+| E2 | no two articles write intersecting byte ranges | ✅ enforced within one open-file episode (#385, #759) |
 | E3 | no two articles' ranges **overlap** | ⚠ **not prevented**; whole-file CRC withheld (#387) |
 | E4 | the parts tile `[0, size)` with no gap | ⚠ **absent** at L4; also undetected at L0 |
 
@@ -1105,10 +1105,9 @@ has two levels, not four**:
 
 > **written-or-reported beats accepted.**
 
-That is exactly what `offsetOwner{id, written}` records and what
-`offsetSettledBy` already consults. A collision between two merely-accepted
-articles is a coin flip and either may be written; a collision with a written
-range is not, and must be refused.
+That is exactly what `FileWriter.owned` records (a range is claimed only after
+its write returned nil) and what `rangeOwnedBy` consults. A collision with a
+written range must be refused.
 
 **The durable tier is deliberately collapsed into "written", because it is not
 retrievable where the decision is made.** Durability is now recorded in exactly
@@ -1120,7 +1119,7 @@ writer holds in memory distinguishes a written range from an acked-durable one:
 the `Drain`/`Confirm` cycle empties `written` and then `reported` once the
 articles are acked, so a
 derived check would read the acked case as *no* claim at all, which is why
-`offsetOwner.written` is latched on the offset instead.
+ownership is recorded on the range instead.
 
 So the four-level ordering that reads naturally here — durable-and-acked beats
 written beats accepted beats claimed — **does not exist and must not be cited as

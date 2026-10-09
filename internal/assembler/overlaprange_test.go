@@ -6,25 +6,13 @@ import (
 	"testing"
 )
 
-// TestOverlap_PartialRangeOverwritesADurableArticle probes #387: collision
-// detection keys on an article's exact START offset, so two articles whose
-// byte ranges overlap without sharing a start offset are not detected.
+// TestOverlap_PartialRangeOverwritesADurableArticle pins #387/#759: two
+// articles whose byte ranges overlap without sharing a start offset are
+// detected, and the arrival is refused.
 //
-// A occupies [0, 1000). B occupies [500, 1500). They overlap on [500, 1000),
-// but acceptedAt is keyed on the offset alone, so B's probe at 500 misses A's
-// entry at 0 and nothing compares the ranges.
-//
-// Both articles go straight to WriteAt, so A's bytes are on disk before B
-// arrives.
+// A occupies [0, 1000). B occupies [500, 1500). They overlap on [500, 1000);
+// A's bytes are on disk before B arrives, so B is the loser.
 func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
-	t.Skip("#387: FileWriter detects collisions by exact start offset only, so THIS " +
-		"layer does not see the overlap and the bytes are overwritten. The durability " +
-		"layer withholds the whole-file CRC because the overlapping runs do not merge " +
-		"into a single row, so par2 runs — but what this pins is " +
-		"that the write happens at all. Kept executable rather than deleted: #387 " +
-		"records that its original probe was thrown away and had to be rebuilt. Remove " +
-		"this Skip when prevention lands; it must fail before it passes.")
-
 	dir := t.TempDir()
 	a := newHelperAssembler()
 
@@ -84,16 +72,8 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 // count reaches TotalParts, and the file finalizes as healthy.
 //
 // A0 [0,100), A1 [100,200), X [150,200). X overlaps A1 without sharing its
-// start offset, so acceptedAt's exact-key probe at 150 misses.
+// start offset, and is refused.
 func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
-	t.Skip("#387: as above, THE ASSEMBLER does not see the overlap. Note what this one " +
-		"shows that the other does not: the file COMPLETES, which is what let the " +
-		"barrier publish a whole-file CRC. That half is fixed — the overlapping article " +
-		"abuts nothing, so it gets a durable_runs row of its own, and a whole-file CRC " +
-		"is published only for a file that holds exactly ONE row starting at offset 0, " +
-		"so par2 runs. What remains " +
-		"unfixed, and what this pins, is that the bytes are overwritten in the first place.")
-
 	dir := t.TempDir()
 	a := newHelperAssembler()
 

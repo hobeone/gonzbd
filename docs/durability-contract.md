@@ -1625,9 +1625,9 @@ including every failure path.
   bytes are redundant and re-writing them is a second `WriteAt` over the same
   range. The value was written and never read, and #375 removed it.
 
-  Offsets are owned by `acceptedAt` instead, which is a different index for a
-  different question: not "has this article been seen" but "who owns this byte
-  range, and have their bytes been written". See the collision rules below.
+  Byte ranges are owned by `FileWriter.owned` instead, which is a different
+  index for a different question: not "has this article been seen" but "who
+  has written this byte range". See the collision rules below.
 - A write path that **fails** moves its articles out of `seenDone` and does
   **not** put them in `seenFailed`. An earlier version of this rule said it did,
   which contradicts the roll-back rule below and the behaviour of
@@ -1638,50 +1638,45 @@ including every failure path.
   necessary but **not sufficient** to leave the article Outstanding: its
   Emitted bit survives, and `ForEachUnfinishedArticle` skips a set Emitted bit.
   The fault's route is what clears it — see the write-error rule below.
-- **Two articles claiming one offset** resolve one of two ways, and which one
-  depends on whether the incumbent has been reported Written. Detection lives in
-  `FileWriter.acceptedAt`, an offset→owner index recorded in `Accept`, and a
-  collision is decided by **identity**: an offset already owned by the same
-  article is a re-accept after a rollback, not a collision.
+- **Two articles claiming intersecting byte ranges**: the first writer wins.
+  Detection lives in `FileWriter.owned`, a sorted per-file set of the ranges
+  written so far (`ranges.go`), and a collision is decided by **identity**: a
+  range owned by the same article is a re-accept after a rollback, not a
+  collision.
 
   Detection is per-open-episode, the same residency as `seenDone`.
 
-  - **Incumbent written → the offset is SETTLED and the ARRIVAL is rejected**
-    (`offsetSettledBy`, checked in `acceptArticle`). Its bytes back a durable
-    claim: the next `Drain` reports them, and the barrier records the run
-    naming its CRC at that offset and acks it. Letting a later article overwrite
-    the range makes that record unverifiable, and failing the incumbent as well
-    would give one article two terminal dispositions — permanently failed *and*
-    acked durable. The arrival is resolved permanently failed, keeps its part
-    (it will never arrive again), and its bytes are charged to par2.
+  - **A range is claimed only after its write returned nil** (in `writeOne`).
+    The arrival whose `[off, off+len)` intersects a claimed range is rejected
+    (`rangeOwnedBy`, checked in `acceptArticle`). The incumbent's bytes back a
+    durable claim: the next `Drain` reports them, and the barrier records the
+    run naming its CRC and acks it. Letting a later article overwrite the range
+    makes that record unverifiable, and failing the incumbent as well would give
+    one article two terminal dispositions — permanently failed *and* acked
+    durable. The arrival is resolved permanently failed, keeps its part (it
+    will never arrive again), and its bytes are charged to par2.
 
-    The `written` flag is **latched on the offset**, not derived from
+    Ownership is recorded on the range, not derived from
     `w.written`/`w.reported`. `Confirm` empties both once the articles are
     acked, and an acked article holds the strongest claim there is — a derived
     check would read the empty set as *no* claim and overwrite it one checkpoint
     later.
 
-  - **Incumbent never written → the arrival takes the offset over.** The only
-    way an article owns an offset without having been written is that its write
-    faulted: `fail` rolled it back and re-dispatched it, and it keeps its
-    `acceptedAt` entry (entries are never removed). It made no claim, so there is
-    nothing to protect, and `Accept` replaces the entry with the arrival. The
-    rolled-back article comes back later, finds the offset owned by a different
-    article, and is refused like any other loser if the arrival has been
-    written. The `!owner.written` test in `offsetSettledBy` is what separates
-    this case from the settled one.
+  - **An article whose write faulted owns nothing.** `fail` rolled it back and
+    it is re-dispatched; because the claim follows the write, there is no entry
+    to replace and no latch to consult. A rival at the same range is accepted,
+    and the rolled-back article, arriving later at a range the rival has
+    written, is refused like any other loser.
 
-  **This detects an exact shared start offset only.** Two articles whose ranges
-  overlap without sharing a start offset are invisible here — `acceptedAt` is
-  keyed on the offset — and the later one overwrites the earlier's bytes. The
-  durability layer still withholds the whole-file CRC for any file that does not
-  collapse to a single contiguous run covering every article (§4), so `par2`
-  runs and repairs the file. Across a **restart** `acceptedAt` is empty, so two
-  articles at the same offset can both be written and both become durable;
-  `Store.commit` discards one of the two (`(job_id, file_idx, offset)` is the
-  primary key) and returns the discard as a `durability.Collision`, which leaves
-  the survivor unable to cover every article index and therefore withholds the
-  whole-file CRC as well.
+  **Intersection is detected, not only a shared start offset.** The overlap
+  probes are `TestOverlap_PartialRangeOverwritesADurableArticle` and
+  `TestOverlap_ContainedOverlapStillCompletesTheFile`. Across a **restart**
+  `owned` is empty, so two articles at the same offset can both be written and
+  both become durable; `Store.commit` discards one of the two
+  (`(job_id, file_idx, offset)` is the primary key) and returns the discard as a
+  `durability.Collision`, which leaves the survivor unable to cover every
+  article index and therefore withholds the whole-file CRC, so `par2` runs and
+  repairs the file.
 - **Cross-state dedup**: an `ArtIdx` previously counted as a success arriving as
   a failure (or vice versa) does not increment `partsWritten` again.
 - **Late articles**: an article for a file already in the `completed` tombstone is
@@ -2049,15 +2044,15 @@ recorded here so the next reader does not mistake them for design.
    grows with every test that seeds a row, nothing checks a count in Markdown,
    and the claim this paragraph needs is the filtered one.
 
-6. **An exact-offset collision is PREVENTED only within one open-file episode;
+6. **A range collision is PREVENTED only within one open-file episode;
    across a boundary it withholds the whole-file CRC so `par2` repairs it.**
-   `FileWriter.acceptedAt` maps each byte offset to the article that owns it,
-   and a second article claiming an owned offset is refused and resolved
+   `FileWriter.owned` records the byte range each article has written,
+   and a second article whose range intersects an owned one is refused and resolved
    permanently failed — which works because that article is not yet `Done`, and
    `markFailed` early-returns on one that is. The file then completes *short*.
-   That map lives on the `FileWriter`, so it is forgotten when the file closes:
+   That set lives on the `FileWriter`, so it is forgotten when the file closes:
    a **restart**, or a **retry** of a failed job whose file was incomplete or
-   finalized short, reopens the file with an empty map, and the later write
+   finalized short, reopens the file with an empty set, and the later write
    overwrites the earlier. The file then completes *wrong*.
 
    **The bound is that both outcomes are repairable.** Across the boundary
@@ -2067,7 +2062,7 @@ recorded here so the next reader does not mistake them for design.
    runs in both cases; what differs is a short file versus a wrong one, and a
    failed-byte figure that is correct versus one that omits the loser's bytes.
 
-   **Do not try to close this by rehydrating `acceptedAt` from `durable_runs`.**
+   **Do not try to close this by rehydrating `owned` from `durable_runs`.**
    It cannot be done: a `Run` is a *merged* span carrying `FirstArtIdx`,
    `LastArtIdx`, `Offset` and `Length`, and merging destroys the per-article
    boundaries — a row saying "articles 0–199 occupy bytes [0,20000)" cannot say
