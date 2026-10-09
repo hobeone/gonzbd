@@ -1,6 +1,7 @@
 package postproc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -1383,5 +1384,127 @@ func TestBuildSummaryEntry_AllSuccess(t *testing.T) {
 	}
 	if !strings.Contains(linesStr, "✓ unpack") {
 		t.Errorf("expected '✓ unpack' in summary, got: %v", entry.Lines)
+	}
+}
+
+// TestProcessJob_SweepsLeftoverTempFiles verifies that orphaned
+// .gonzbd-tmp-<16 hex> files left behind in DownloadDir (or its subdirectories)
+// by an interrupted extraction or split join are removed at the start of a
+// post-processing run before any stage executes, while non-matching dotfiles
+// and regular files are preserved.
+func TestProcessJob_SweepsLeftoverTempFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	realRoot := filepath.Join(dir, "movie.mkv")
+	realSub := filepath.Join(subDir, "subs.srt")
+	dotHidden := filepath.Join(dir, ".hidden")
+	dotNonHexTmp := filepath.Join(dir, ".gonzbd-tmp-keep")
+	staleRoot := filepath.Join(dir, ".gonzbd-tmp-0123456789abcdef")
+	staleSub := filepath.Join(subDir, ".gonzbd-tmp-fedcba9876543210")
+
+	for _, p := range []string{realRoot, realSub, dotHidden, dotNonHexTmp, staleRoot, staleSub} {
+		if err := os.WriteFile(p, []byte("data"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+
+	var stageSawStale bool
+	checkStage := newRecordStage("check")
+	checkStage.runFn = func(_ context.Context, _ *Job) error {
+		for _, stale := range []string{staleRoot, staleSub} {
+			if _, err := os.Stat(stale); !os.IsNotExist(err) {
+				stageSawStale = true
+			}
+		}
+		return nil
+	}
+
+	var procLogBuf bytes.Buffer
+	var doneMu sync.Mutex
+	var done bool
+	p := startProcessor(t, Options{
+		Stages: []Stage{checkStage},
+		Logger: slog.New(slog.NewTextHandler(&procLogBuf, nil)),
+		OnJobDone: func(*Job) {
+			doneMu.Lock()
+			done = true
+			doneMu.Unlock()
+		},
+	})
+
+	job := makeJob(t, "sweep-temp")
+	job.DownloadDir = dir
+	p.Process(job)
+
+	waitUntil(t, func() bool {
+		doneMu.Lock()
+		defer doneMu.Unlock()
+		return done
+	}, 2*time.Second, "job to finish")
+	if err := p.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if checkStage.CallCount() != 1 {
+		t.Fatalf("checkStage ran %d times, want 1", checkStage.CallCount())
+	}
+	if stageSawStale {
+		t.Error("stale .gonzbd-tmp-* file was still present when first stage ran; sweep must run before stages")
+	}
+
+	procLogs := procLogBuf.String()
+	for _, stale := range []string{staleRoot, staleSub} {
+		if _, err := os.Stat(stale); !os.IsNotExist(err) {
+			t.Errorf("stale temp file %s still exists (stat err=%v); want removed by start-of-run sweep", stale, err)
+		}
+		if !strings.Contains(procLogs, "postproc: removed leftover temp file") || !strings.Contains(procLogs, stale) {
+			t.Errorf("expected removal log for %s in processor logs, got %q", stale, procLogs)
+		}
+	}
+	for _, keep := range []string{realRoot, realSub, dotHidden, dotNonHexTmp} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("expected non-temp file %s to be preserved, got stat err=%v", keep, err)
+		}
+	}
+
+	// Verify logging: empty/missing paths log no warning, a non-directory
+	// path (ENOTDIR) logs an OpenRoot warning, and an unremovable temp file in
+	// a read-only directory logs a removal warning.
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	sweepTempFiles(logger, "")
+	sweepTempFiles(logger, filepath.Join(dir, "does-not-exist"))
+	if logBuf.Len() != 0 {
+		t.Errorf("expected no log output for empty/missing dir, got %q", logBuf.String())
+	}
+	sweepTempFiles(logger, realRoot)
+	if !strings.Contains(logBuf.String(), "postproc: failed to open download dir for temp-file sweep") {
+		t.Errorf("expected warning when OpenRoot fails with ENOTDIR, got %q", logBuf.String())
+	}
+
+	if os.Geteuid() != 0 {
+		roDir := filepath.Join(dir, "ro")
+		if err := os.MkdirAll(roDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		roTmp := filepath.Join(roDir, ".gonzbd-tmp-1111222233334444")
+		if err := os.WriteFile(roTmp, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(roDir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(roDir, 0o755) })
+
+		logBuf.Reset()
+		sweepTempFiles(logger, roDir)
+		if !strings.Contains(logBuf.String(), "postproc: failed to remove leftover temp file") {
+			t.Errorf("expected warning when root.Remove fails on read-only dir, got %q", logBuf.String())
+		}
 	}
 }

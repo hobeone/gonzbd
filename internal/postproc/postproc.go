@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -510,6 +512,41 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	return entry, false
 }
 
+// sweepTempFiles removes leftover .gonzbd-tmp-<16 hex> files under dir that an
+// interrupted extraction (writeEntrySafely) or split join (FileJoin) left
+// behind before its atomic rename completed.
+func sweepTempFiles(log *slog.Logger, dir string) {
+	if dir == "" {
+		return
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) && log != nil {
+			log.Warn("postproc: failed to open download dir for temp-file sweep", "dir", dir, "err", err)
+		}
+		return
+	}
+	defer root.Close() //nolint:errcheck // best-effort cleanup
+
+	_ = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return nil //nolint:nilerr // best-effort sweep continues past subdirectories and errors
+		}
+		if fsutil.IsTempFile(d.Name()) {
+			if rmErr := root.Remove(path); rmErr != nil {
+				if !errors.Is(rmErr, os.ErrNotExist) && log != nil {
+					log.Warn("postproc: failed to remove leftover temp file", "path", filepath.Join(dir, path), "err", rmErr)
+				}
+				return nil
+			}
+			if log != nil {
+				log.Info("postproc: removed leftover temp file", "path", filepath.Join(dir, path))
+			}
+		}
+		return nil
+	})
+}
+
 // processJob runs all registered stages in order for job.
 // Stage errors are recorded but do not abort the pipeline.
 //
@@ -523,6 +560,8 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 		}
 	}
 	p.log.Info("postproc: processing job", "job", job.JobID(), "name", job.Name())
+
+	sweepTempFiles(p.log, job.DownloadDir)
 
 	job.StageLog = append(job.StageLog, buildPreambleLog(job)...)
 
