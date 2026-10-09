@@ -16,7 +16,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/crc32util"
 	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -50,40 +49,34 @@ var (
 	fsyncFile = func(f *os.File) error { return unix.Fsync(int(f.Fd())) }
 )
 
-// verifyFilePath is the path the writer used for a recorded filename.
-//
-// The recorded name is the base of a fsutil.JoinSafe path built with the
-// configured sanitize options, by pipeline.registerFile, the one production
-// caller of the filename setter:
-// `git grep -n 'SetFileFilename(' -- '*.go' ':!*_test.go'` finds 3 lines,
-// that caller, the definition and this comment. Sanitizing an
-// already-sanitized name changes nothing, so joining it with no options gives
-// the same path. The JoinSafe still matters: the name comes from SQLite and
-// must not walk out of the job directory.
-// TestVerifyFilePath_MatchesTheWritersPath pins the equivalence.
-func verifyFilePath(dl, jobName, filename string) string {
-	return fsutil.JoinSafe(filepath.Join(dl, jobName), "", filename, fsutil.SanitizeOptions{})
-}
-
 // verifyJobFiles reads back every recorded article of every complete=0 file
 // that has rows, whatever its fetch policy, and decides what each row is
 // worth. It touches no job and no SQLite row; see verifyResult.
 //
-// Per file: ENOENT deletes every row; an fsync error on the fresh descriptor
-// deletes every row (the file is untrusted); a CRC mismatch or a short read
-// deletes that row; of two intersecting rows that both match, the first in
-// offset order is kept and the other article is failed and its row deleted.
+// pathFor resolves a recorded filename to a path. The caller passes the
+// writer's own resolver (pipeline.jobFilePath), so the verifier reads the
+// file the writer wrote under whatever sanitize options are configured.
+//
+// Per file: an empty filename deletes every row, since none can be read
+// back; ENOENT deletes every row only when the file's directory exists — a
+// missing directory (an unmounted download root) is a fault naming it; an
+// fsync error on the fresh descriptor deletes every row (the file is
+// untrusted); a row with a negative offset or a non-positive length is
+// deleted unread; a CRC mismatch or a short read deletes that row. Of rows
+// whose ranges intersect, the first matching one in offset order is kept and
+// each other article is failed and its row deleted.
 // A file whose articles are then all resolved (fileFinishable) is finished by
 // path and gets SetComplete. On a retry an intersection failure does not count
 // as resolved, because ResetForRetry is about to clear it.
 //
 // A complete=1 file is not read: every row is Verified as it stands.
 //
-// Any other error — an open error other than ENOENT, a read error, an fsync
-// or truncate error while finishing, a cancelled ctx — returns the zero
-// result and an *errVerifyFault naming the file.
-func verifyJobFiles(ctx context.Context, name string, m *job.Manifest, files []durability.FileRow,
-	rows []durability.WrittenRow, dl string, retry bool) (verifyResult, error) {
+// Any other error — an open error other than ENOENT, a failed stat of the
+// directory, a read error, an fsync or truncate error while finishing, a
+// cancelled ctx — returns the zero result and an *errVerifyFault naming the
+// file or directory.
+func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.FileRow,
+	rows []durability.WrittenRow, pathFor func(filename string) string, retry bool) (verifyResult, error) {
 	byFile := rowsByFile(rows)
 	res := verifyResult{
 		Verified: make(map[int][]durability.WrittenRow),
@@ -101,15 +94,16 @@ func verifyJobFiles(ctx context.Context, name string, m *job.Manifest, files []d
 			continue
 		}
 		if f.Filename == "" {
+			res.Verdicts = append(res.Verdicts, durability.FileVerdict{FileIdx: fi, DeleteAll: true})
 			continue
 		}
-		path := verifyFilePath(dl, name, f.Filename)
+		path := pathFor(f.Filename)
 		if buf == nil {
 			buf = make([]byte, verifyBufSize)
 		}
 		out, err := readBackFile(ctx, path, fr, buf)
 		if err != nil {
-			return verifyResult{}, &errVerifyFault{File: path, Err: err}
+			return verifyResult{}, asVerifyFault(path, err)
 		}
 		v := durability.FileVerdict{FileIdx: fi, DeleteAll: out.deleteAll, DeleteArtIdxs: out.deleted}
 		if len(out.verified) > 0 {
@@ -132,6 +126,14 @@ func verifyJobFiles(ctx context.Context, name string, m *job.Manifest, files []d
 		}
 	}
 	return res, nil
+}
+
+// asVerifyFault names path in err, unless err already names what faulted.
+func asVerifyFault(path string, err error) error {
+	if _, ok := errors.AsType[*errVerifyFault](err); ok {
+		return err
+	}
+	return &errVerifyFault{File: path, Err: err}
 }
 
 // finishIfResolved finishes one read-back file by path when every article of
@@ -190,10 +192,16 @@ type fileReadback struct {
 }
 
 // readBackFile opens, fsyncs and drops the cache of one file, then reads each
-// row and resolves intersections. rows are in offset order.
+// valid row and resolves intersections. rows are in offset order.
 func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow, buf []byte) (fileReadback, error) {
-	fh, err := os.Open(path) //nolint:gosec // G304: path is JoinSafe-confined to the job directory
+	fh, err := os.Open(path) //nolint:gosec // G304: the caller's resolver confines path to the job directory
 	if errors.Is(err, fs.ErrNotExist) {
+		// Absence is definitive only inside a directory that exists; a
+		// missing directory says nothing about the file.
+		dir := filepath.Dir(path)
+		if _, sErr := os.Stat(dir); sErr != nil {
+			return fileReadback{}, &errVerifyFault{File: dir, Err: sErr}
+		}
 		return fileReadback{deleteAll: true}, nil
 	}
 	if err != nil {
@@ -210,8 +218,17 @@ func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow
 		return fileReadback{}, err
 	}
 
-	match := make([]bool, len(rows))
-	for k, r := range rows {
+	valid := make([]durability.WrittenRow, 0, len(rows))
+	var invalid []int32
+	for _, r := range rows {
+		if r.Offset < 0 || r.Length <= 0 {
+			invalid = append(invalid, r.ArtIdx)
+			continue
+		}
+		valid = append(valid, r)
+	}
+	match := make([]bool, len(valid))
+	for k, r := range valid {
 		if err := ctx.Err(); err != nil {
 			return fileReadback{}, err
 		}
@@ -221,7 +238,9 @@ func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow
 		}
 		match[k] = ok
 	}
-	return resolveRows(rows, match), nil
+	out := resolveRows(valid, match)
+	out.deleted = append(out.deleted, invalid...)
+	return out, nil
 }
 
 // resolveRows keeps, in offset order, each matching row that does not
@@ -281,7 +300,7 @@ func rowMatches(fh *os.File, r durability.WrittenRow, buf []byte) (bool, error) 
 // again, and closes it. It never grows a file, and a file no article bounds
 // is left alone.
 func finishFileByPath(path string, maxEnd int64) (err error) {
-	fh, err := os.OpenFile(path, os.O_RDWR, 0) //nolint:gosec // G304: path is JoinSafe-confined to the job directory
+	fh, err := os.OpenFile(path, os.O_RDWR, 0) //nolint:gosec // G304: the caller's resolver confines path to the job directory
 	if err != nil {
 		return fmt.Errorf("finish %s: %w", path, err)
 	}

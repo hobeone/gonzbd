@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestVerifyJobFiles_Outcomes|TestVerifyJobFiles_ReadFaultChangesNothing|TestVerifyJobFiles_FsyncErrorUntrustsTheFile|TestVerifyJobFiles_RetryDoesNotFinishOverAnIntersectionFailure|TestFinishFileByPath|TestFileCRCFromRows|TestFileFinishable|TestResolveRows|TestReadBackFile_ReadsARowLongerThanTheBuffer|TestFinishIfResolved
+run TestVerifyJobFiles_Outcomes|TestVerifyJobFiles_ReadFaultChangesNothing|TestVerifyJobFiles_FsyncErrorUntrustsTheFile|TestVerifyJobFiles_RetryDoesNotFinishOverAnIntersectionFailure|TestFinishFileByPath|TestFileCRCFromRows|TestFileFinishable|TestResolveRows|TestReadBackFile_ReadsARowLongerThanTheBuffer|TestFinishIfResolved|TestVerifyJobFiles_CancelChangesNothing|TestVerifyJobFiles_OpenErrorIsAFault|TestVerifyJobFiles_MissingDirectoryIsAFault|TestVerifyJobFiles_OpensTheResolversPath
 
 [(a) a CRC mismatch treated as a match]
 file internal/app/verify.go
@@ -83,4 +83,52 @@ file internal/app/verify.go
 	if false {
 		return false, nil
 	}
+--- end
+
+[(k) a missing directory treated as a missing file]
+file internal/app/verify.go
+--- anchor
+			return fileReadback{}, &errVerifyFault{File: dir, Err: sErr}
+--- replace
+			return fileReadback{deleteAll: true}, nil
+--- end
+
+[(l) the per-row cancellation check neutered]
+file internal/app/verify.go
+--- anchor
+		if err := ctx.Err(); err != nil {
+			return fileReadback{}, err
+--- replace
+		if false {
+			return fileReadback{}, err
+--- end
+
+[(m) an open error other than ENOENT treated as absence]
+file internal/app/verify.go
+--- anchor
+	if err != nil {
+		return fileReadback{}, err
+	}
+	defer func() { _ = fh.Close() }()
+--- replace
+	if err != nil {
+		return fileReadback{deleteAll: true}, nil
+	}
+	defer func() { _ = fh.Close() }()
+--- end
+
+[(n) the impossible-range check neutered]
+file internal/app/verify.go
+--- anchor
+		if r.Offset < 0 || r.Length <= 0 {
+--- replace
+		if false {
+--- end
+
+[(o) the path derived from the name instead of the resolver]
+file internal/app/verify.go
+--- anchor
+		path := pathFor(f.Filename)
+--- replace
+		path := filepath.Join(filepath.Dir(pathFor("x")), f.Filename)
 --- end

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,7 +16,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/crc32util"
 	"github.com/hobeone/gonzbd/internal/durability"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -25,6 +25,7 @@ const verifyArt = 1024
 // disk, and a row per article carrying the true CRC of its bytes.
 type verifyFixture struct {
 	dl, name, path string
+	resolve        func(filename string) string // the writer's path for a recorded name
 	m              *job.Manifest
 	data           []byte
 	rows           []durability.WrittenRow
@@ -55,6 +56,8 @@ func newVerifyFixture(t *testing.T) *verifyFixture {
 		f.rows = append(f.rows, f.rowAt(i, int64(i*verifyArt)))
 	}
 	f.files = []durability.FileRow{{FileIndex: 0, Filename: "v.bin"}}
+	dir := filepath.Dir(f.path)
+	f.resolve = func(filename string) string { return filepath.Join(dir, filename) }
 	return f
 }
 
@@ -75,7 +78,7 @@ func (f *verifyFixture) rowAt(art int, off int64) durability.WrittenRow {
 
 func (f *verifyFixture) run(t *testing.T, ctx context.Context, rows []durability.WrittenRow, retry bool) (verifyResult, error) {
 	t.Helper()
-	return verifyJobFiles(ctx, f.name, f.m, f.files, rows, f.dl, retry)
+	return verifyJobFiles(ctx, f.m, f.files, rows, f.resolve, retry)
 }
 
 func pick(rows []durability.WrittenRow, idx ...int) []durability.WrittenRow {
@@ -227,6 +230,29 @@ func TestVerifyJobFiles_Outcomes(t *testing.T) {
 			},
 		},
 		{
+			name: "an empty filename deletes every row",
+			prepare: func(t *testing.T, f *verifyFixture) []durability.WrittenRow {
+				f.files[0].Filename = ""
+				return f.rows
+			},
+			want: outcome{verdicts: []durability.FileVerdict{{FileIdx: 0, DeleteAll: true}}},
+		},
+		{
+			// A zero-length row with CRC 0 would "match" the empty read, and a
+			// negative offset would fault the job; each costs only its row.
+			name: "rows with an impossible range are deleted unread",
+			prepare: func(t *testing.T, f *verifyFixture) []durability.WrittenRow {
+				empty := durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Offset: 2 * verifyArt}
+				negative := f.rows[3]
+				negative.Offset = -1
+				return []durability.WrittenRow{f.rows[0], f.rows[1], empty, negative}
+			},
+			want: outcome{
+				verdicts: []durability.FileVerdict{{FileIdx: 0, DeleteArtIdxs: []int32{3, 2}}},
+				verified: []int{0, 1},
+			},
+		},
+		{
 			name: "rows given out of offset order come back in it",
 			prepare: func(t *testing.T, f *verifyFixture) []durability.WrittenRow {
 				return pick(f.rows, 2, 0)
@@ -296,10 +322,46 @@ func TestVerifyJobFiles_CancelChangesNothing(t *testing.T) {
 	}
 	t.Cleanup(func() { preadAt = orig })
 
-	res, err := f.run(t, ctx, f.rows, false)
+	// Not every article, so the finish step's own ctx check cannot catch it.
+	res, err := f.run(t, ctx, pick(f.rows, 0, 1, 2), false)
 	assertVerifyFault(t, res, err, f.path)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want it to wrap context.Canceled", err)
+	}
+}
+
+// TestVerifyJobFiles_OpensTheResolversPath pins that the verifier reads the
+// path the caller's resolver returns, not one it derives from the name.
+func TestVerifyJobFiles_OpensTheResolversPath(t *testing.T) {
+	t.Parallel()
+	f := newVerifyFixture(t)
+	dir := filepath.Dir(f.path)
+	if err := os.Rename(f.path, filepath.Join(dir, "a_b.bin")); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	f.files[0].Filename = "a b.bin"
+	f.resolve = func(filename string) string {
+		return filepath.Join(dir, strings.ReplaceAll(filename, " ", "_"))
+	}
+	res, err := f.run(t, t.Context(), pick(f.rows, 0, 1), false)
+	if err != nil {
+		t.Fatalf("verifyJobFiles: %v", err)
+	}
+	checkVerifyResult(t, res, nil, pick(f.rows, 0, 1), nil, nil)
+}
+
+// TestVerifyJobFiles_MissingDirectoryIsAFault pins that ENOENT is a finding
+// about the file only inside a directory that exists: a download root that is
+// not mounted must park the job, not delete every row it has.
+func TestVerifyJobFiles_MissingDirectoryIsAFault(t *testing.T) {
+	t.Parallel()
+	f := newVerifyFixture(t)
+	gone := filepath.Join(f.dl, "unmounted", "vjob")
+	f.resolve = func(filename string) string { return filepath.Join(gone, filename) }
+	res, err := f.run(t, t.Context(), f.rows, false)
+	assertVerifyFault(t, res, err, gone)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("err = %v, want it to wrap the directory's ENOENT", err)
 	}
 }
 
@@ -496,28 +558,6 @@ func TestFileCRCFromRows(t *testing.T) {
 	// Combine is what the chain uses; pin the two agree on a two-row split.
 	if c := crc32util.Combine(crc32.ChecksumIEEE(data[:10]), crc32.ChecksumIEEE(data[10:20]), 10); c != crc32.ChecksumIEEE(data[:20]) {
 		t.Fatalf("fixture guard: Combine disagrees with ChecksumIEEE")
-	}
-}
-
-// TestVerifyFilePath_MatchesTheWritersPath pins that the verifier opens the
-// path the writer used, for every filename the writer can have recorded:
-// pipeline.registerFile records the base of a JoinSafe path built with the
-// configured options, and the verifier re-joins it with none.
-func TestVerifyFilePath_MatchesTheWritersPath(t *testing.T) {
-	t.Parallel()
-	dl := t.TempDir()
-	p := &pipeline{downloadDir: dl, sanitize: fsutil.SanitizeOptions{
-		ReplaceIllegalWith: "-", ReplaceSpacesWith: "_", StripDiacritics: true,
-	}}
-	for _, raw := range []string{"plain.bin", "a b.rar", "é tude.mkv", "con.txt", `x:y?"<>|.bin`, "../../etc/passwd", " trailing. "} {
-		written := p.jobFilePath("job", raw)
-		recorded := filepath.Base(written)
-		if got := verifyFilePath(dl, "job", recorded); got != written {
-			t.Errorf("%q: verifier path %q, writer path %q", raw, got, written)
-		}
-		if got := p.jobFilePath("job", recorded); got != written {
-			t.Errorf("%q: re-resolving the recorded name gave %q, want %q", raw, got, written)
-		}
 	}
 }
 

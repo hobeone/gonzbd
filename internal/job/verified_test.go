@@ -139,10 +139,14 @@ func TestFileRows_ReturnsACopy(t *testing.T) {
 		t.Errorf("resident row CRC = %d after editing the returned copy, want 7", again[0].CRC32)
 	}
 	clone := j.Progress()
+	clone.written[0][0].CRC32 = 99
+	if again := j.FileRows(0); again[0].CRC32 != 7 {
+		t.Errorf("resident row CRC = %d after editing a Progress() clone's row, want 7: the clone shares the slice", again[0].CRC32)
+	}
 	if err := j.InstallVerified(0, []durability.WrittenRow{{FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 100}}); err != nil {
 		t.Fatalf("InstallVerified: %v", err)
 	}
 	if n := len(clone.written[0]); n != 1 {
-		t.Errorf("a Progress() clone saw %d rows after a later install, want 1: the clone shares the slice", n)
+		t.Errorf("a Progress() clone saw %d rows after a later install, want 1: the clone shares the map", n)
 	}
 }
