@@ -14,8 +14,8 @@ import (
 // but acceptedAt is keyed on the offset alone, so B's probe at 500 misses A's
 // entry at 0 and nothing compares the ranges.
 //
-// The write cache is disabled (newHelperFile builds newWriteCache(0)), so both
-// articles go straight to WriteAt and A's bytes are on disk before B arrives.
+// Both articles go straight to WriteAt, so A's bytes are on disk before B
+// arrives.
 func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 	t.Skip("#387: FileWriter detects collisions by exact start offset only, so THIS " +
 		"layer does not see the overlap and the bytes are overwritten. The durability " +
@@ -37,9 +37,7 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 		unwritten = append(unwritten, artIdxs...)
 	}
 
-	wc := newWriteCache(0)
 	f := newHelperFile(t, dir, "overlap.dat", 0)
-	f.w.wc = wc
 	f.info.TotalParts = 2
 	key := fileKey{jobID: "job", fileIdx: 0}
 	open := map[fileKey]*openFile{key: f}
@@ -49,13 +47,13 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 	a.processRequest(WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a@example",
 		Offset: 0, Data: bytes.Repeat([]byte("A"), 1000),
-	}, open, completed, wc)
+	}, open, completed)
 
 	// B starts 500 bytes into A's range.
 	a.processRequest(WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "b@example",
 		Offset: 500, Data: bytes.Repeat([]byte("B"), 1000),
-	}, open, completed, wc)
+	}, open, completed)
 
 	got, err := os.ReadFile(f.info.Path)
 	if err != nil {
@@ -108,9 +106,7 @@ func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 		completed++
 	}
 
-	wc := newWriteCache(0)
 	f := newHelperFile(t, dir, "contained.dat", 0)
-	f.w.wc = wc
 	f.info.TotalParts = 3
 	key := fileKey{jobID: "job", fileIdx: 0}
 	open := map[fileKey]*openFile{key: f}
@@ -120,7 +116,7 @@ func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 		a.processRequest(WriteRequest{
 			JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
 			Offset: off, Data: bytes.Repeat([]byte{b}, n),
-		}, open, completedSet, wc)
+		}, open, completedSet)
 	}
 	submit(0, "a0@example", 0, 'A', 100)
 	submit(1, "a1@example", 100, 'B', 100)

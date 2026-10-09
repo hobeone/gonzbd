@@ -67,50 +67,6 @@ func TestFileWriter_AdmitRetryOfFailedDoesNotCount(t *testing.T) {
 	}
 }
 
-// TestFileWriter_FailDisplacedKeepsThePartAndMarksTheDisposition pins the
-// disposition #386 settled: a displaced article is RESOLVED, not rolled back.
-//
-// The question this leaves open was which of two rules applies to an article
-// that loses its offset. Giving the part back AND resolving it permanently
-// failed is the combination routeAcceptFailure's doc argues against in the
-// mirror case, and it is unsatisfiable: TotalParts counts both colliding
-// segments, so a file that stops counting the loser waits for a part that
-// nothing can now supply.
-//
-// So the part stays. The seen-set half is what makes a redelivery cheap —
-// handleSuccessArticle and handleLateDuplicate both test seenDone before
-// seenFailed, and membership in either is enough to refuse the copy without
-// re-writing it.
-func TestFileWriter_FailDisplacedKeepsThePartAndMarksTheDisposition(t *testing.T) {
-	w := newTestFileWriter(t)
-	w.admitAccepted(1)
-	if w.parts() != 1 {
-		t.Fatalf("parts() = %d, want 1; the fixture did not admit the article", w.parts())
-	}
-
-	w.failDisplaced(articleID{msgID: "x1", artIdx: 1}, 0, articleID{msgID: "x2", artIdx: 2})
-
-	if got := w.parts(); got != 1 {
-		t.Errorf("parts() = %d after the displacement, want 1 — the article is resolved "+
-			"permanently failed, and a file that stopped counting it could never reach "+
-			"TotalParts", got)
-	}
-	if _, failed := w.seenFailed[1]; !failed {
-		t.Error("x1 is not in seenFailed after being displaced, so a redelivery is not " +
-			"recognised and gets reported permanently failed a second time")
-	}
-	rolled := w.takeFaulted()
-	if len(rolled) != 1 || rolled[0].id.msgID != "x1" {
-		t.Fatalf("takeFaulted() = %v, want x1 — an article nobody is told about keeps its "+
-			"Emitted bit and is never resolved", rolled)
-	}
-	if !rolled[0].displaced {
-		t.Error("the entry is not marked displaced, so the caller would return it to " +
-			"Outstanding; the re-fetched copy then displaces the article that displaced " +
-			"it, which was observed as a ping-pong that never settles")
-	}
-}
-
 // TestFileWriter_FailKeepsThePartOfAnAlreadyFailedArticle pins the !wasFailed
 // half of fail's give-back, which nothing else in the package observes.
 //
@@ -156,10 +112,7 @@ func TestFileWriter_FailKeepsThePartOfAnAlreadyFailedArticle(t *testing.T) {
 
 // TestFileWriter_RollbackPart covers the give-back both dispositions share.
 //
-// rollbackPart is now fail's alone. It used to be shared with failDisplaced,
-// on the premise that the two dispositions differed in what they RECORDED but
-// not in how they counted; #386 retired that premise, since a displaced
-// article keeps its part and a rolled-back one gives it up.
+// rollbackPart is fail's alone.
 //
 // It is tested directly because the branching lives here rather than at either
 // call site, so a change to fail's accounting cannot pass unnoticed.
@@ -323,7 +276,7 @@ func TestFileWriter_FailRollsBackEveryArticlesPart(t *testing.T) {
 func TestFaultedIndices_ListsEveryArticleInTheSet(t *testing.T) {
 	got := faultedIndices([]faultedArticle{
 		{id: articleID{msgID: "n1", artIdx: 7}},
-		{id: articleID{msgID: "d2", artIdx: 2}, displaced: true},
+		{id: articleID{msgID: "d2", artIdx: 2}},
 	})
 	if len(got) != 2 || got[0] != 7 || got[1] != 2 {
 		t.Errorf("faultedIndices = %v, want [7 2] — every article in the set, in order, "+

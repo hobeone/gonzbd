@@ -16,12 +16,6 @@ import (
 
 type fileWriterOpt func(*FileWriter)
 
-// withCacheBytes gives the writer a cache of n bytes. Zero disables caching,
-// so an article is written straight through.
-func withCacheBytes(n int64) fileWriterOpt {
-	return func(w *FileWriter) { w.wc = newWriteCache(n) }
-}
-
 // withWriteError makes every WriteAt fail with err, injected on the writeAt
 // field before first use — the same override shape diskProbe.statfs uses.
 func withWriteError(err error) fileWriterOpt {
@@ -38,27 +32,22 @@ func newTestFileWriter(t *testing.T, opts ...fileWriterOpt) *FileWriter {
 		t.Fatalf("open target: %v", err)
 	}
 	t.Cleanup(func() { _ = fh.Close() })
-	w := newFileWriter(fh, path, fileKey{jobID: "job1", fileIdx: 0}, newWriteCache(0))
+	w := newFileWriter(fh, path, fileKey{jobID: "job1", fileIdx: 0})
 	for _, o := range opts {
 		o(w)
 	}
 	return w
 }
 
-// TestFileWriter_DrainReportsOnlyWrittenArticles is the pin for S2. An article
-// sitting in the write cache has NOT reached disk, and Drain is the barrier's
-// only evidence — so a buffered-but-unwritten article must not appear in its
-// return value.
-func TestFileWriter_DrainReportsOnlyWrittenArticles(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(1<<20))
+// TestFileWriter_DrainReportsTheWrittenExtent pins what Drain hands the
+// barrier: the offset and length an accepted article's bytes landed at. The
+// barrier charges bytes durable from this, so a wrong extent misreports
+// progress.
+func TestFileWriter_DrainReportsTheWrittenExtent(t *testing.T) {
+	w := newTestFileWriter(t)
 
-	// Buffer an article without triggering a contiguous flush. Offset 4096 is
-	// above the cursor, so no run forms.
 	if err := w.Accept(articleID{msgID: "a5", artIdx: 5}, 4096, bytes.Repeat([]byte{1}, 100), 0); err != nil {
 		t.Fatal(err)
-	}
-	if got := w.writtenSoFar(); len(got) != 0 {
-		t.Fatalf("writtenSoFar = %v before any drain, want empty", got)
 	}
 
 	got, err := w.Drain()
@@ -76,8 +65,8 @@ func TestFileWriter_DrainReportsOnlyWrittenArticles(t *testing.T) {
 }
 
 // TestFileWriter_DrainCarriesTheArticlesCRC32 pins the additive first step of
-// #423: a written article's decoded CRC32 must survive Accept, the write
-// cache, and noteWritten to reach Drain's report. Nothing consumes the value
+// #423: a written article's decoded CRC32 must survive Accept and
+// noteWritten to reach Drain's report. Nothing consumes the value
 // yet — a later task groups articles into contiguous runs and combines their
 // CRCs — but the field must not be lost or zeroed on the way to Drain.
 func TestFileWriter_DrainCarriesTheArticlesCRC32(t *testing.T) {
@@ -102,77 +91,15 @@ func TestFileWriter_DrainCarriesTheArticlesCRC32(t *testing.T) {
 	}
 }
 
-// TestFileWriter_CoalescedRunReportsEachArticlesOwnCRC32 is the coalescing
-// half of the same claim. buildContiguousRun merges several articles' bytes
-// into one flat buffer before the write, and CRC32 has to be carried per
-// article on runPart exactly the way offset and length already are — a run
-// must not merge or overwrite the individual CRCs into one shared value.
-func TestFileWriter_CoalescedRunReportsEachArticlesOwnCRC32(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(4<<20))
-
-	const chunk = 64 << 10
-	const n = 12 // 768 KiB, past contiguousRunSize (512 KiB)
-	for i := range n {
-		crc := uint32(1000 + i) //nolint:gosec // G115: test fixture, well within uint32
-		if err := w.Accept(
-			articleID{msgID: string(rune('a' + i)), artIdx: testArtIdx(i)},
-			int64(i)*chunk, make([]byte, chunk), crc,
-		); err != nil {
-			t.Fatalf("Accept %d: %v", i, err)
-		}
-	}
-
-	got := w.writtenSoFar()
-	if len(got) == 0 {
-		t.Fatal("no coalesced flush fired; the fixture never reached contiguousRunSize")
-	}
-	for _, a := range got {
-		wantCRC := uint32(1000) + uint32(a.ArtIdx) //nolint:gosec // G115: test fixture
-		if a.CRC32 != wantCRC {
-			t.Errorf("article %d reported CRC32 %#x, want %#x — the run's CRCs were "+
-				"merged or misassigned instead of carried per article",
-				a.ArtIdx, a.CRC32, wantCRC)
-		}
-	}
-}
-
-// TestFileWriter_FailedWriteIsNotReportedAsWritten pins the deferred-write
-// failure path. Drain's contract to the barrier is the only evidence it has,
-// so an article whose WriteAt failed must be absent from the report and the
-// fault must come back classified.
-func TestFileWriter_FailedWriteIsNotReportedAsWritten(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(1<<20), withWriteError(syscall.ENOSPC))
-
-	if err := w.Accept(articleID{msgID: "a5", artIdx: 5}, 4096, bytes.Repeat([]byte{1}, 100), 0); err != nil {
-		t.Fatal(err)
-	}
-	got, err := w.Drain()
-	if err == nil {
-		t.Fatal("Drain returned nil error after ENOSPC")
-	}
-	var f *storagefault.Fault
-	if !errors.As(err, &f) {
-		t.Fatalf("Drain error = %T, want *storagefault.Fault", err)
-	}
-	if f.Permanent {
-		t.Error("ENOSPC classified permanent")
-	}
-	for _, a := range got {
-		if a.ArtIdx == 5 {
-			t.Fatal("article 5 reported written although its WriteAt failed")
-		}
-	}
-}
-
-// TestFileWriter_DirectWriteFailureIsNotReported is the uncached half of the
-// same claim. Both paths append to w.written and both must do it only below a
-// successful writeAt; pinning one says nothing about the other.
+// TestFileWriter_DirectWriteFailureIsNotReported pins that an article whose
+// WriteAt failed is absent from the report and the fault comes back
+// classified. Drain's contract to the barrier is the only evidence it has.
 func TestFileWriter_DirectWriteFailureIsNotReported(t *testing.T) {
 	w := newTestFileWriter(t, withWriteError(syscall.EIO))
 
 	err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 0, bytes.Repeat([]byte{7}, 64), 0)
 	if err == nil {
-		t.Fatal("Accept returned nil error after EIO on an uncached write")
+		t.Fatal("Accept returned nil error after EIO")
 	}
 	if _, ok := errors.AsType[*storagefault.Fault](err); !ok {
 		t.Fatalf("Accept error = %T, want *storagefault.Fault", err)
@@ -338,10 +265,7 @@ func TestFileWriter_TakeReportsUntilTheCycleIsConfirmed(t *testing.T) {
 }
 
 // TestFileWriter_NoteWrittenCarriesTheArticlesOwnRange pins what the barrier
-// charges bytes from. A run's articles are coalesced into one buffer before
-// the write, so each one's own offset and length have to be carried rather
-// than derived from the run — getting this wrong misreports every coalesced
-// article's extent at once.
+// charges bytes from: each article's own offset and length.
 func TestFileWriter_NoteWrittenCarriesTheArticlesOwnRange(t *testing.T) {
 	w := newTestFileWriter(t)
 	w.noteWritten(articleID{msgID: "a3", artIdx: 3}, 512, 128, 0)
@@ -435,11 +359,9 @@ func TestFileWriter_TruncateIgnoresANegativeBound(t *testing.T) {
 // worker goroutine that is its only caller, and reaching it would have turned
 // a cancellation into a storage fault and stalled a healthy job.
 //
-// The property it named in passing — never return a buffered article as though
-// its bytes had landed — is the one worth keeping, and it does not need a
-// cancellation to reach: TestFileWriter_DrainReportsOnlyWrittenArticles above
-// pins it directly, and TestFileWriter_FailedWriteIsNotReportedAsWritten pins
-// the other way an article can be in the cache and not on disk.
+// The property it named in passing — never report an article as though its
+// bytes had landed when they had not — does not need a cancellation to reach:
+// TestFileWriter_DirectWriteFailureIsNotReported pins it directly.
 
 // TestFileWriter_StatOnAClosedHandleIsAStorageFault pins Stat's failure branch.
 // The barrier reads the size as the S7 validity stamp, so a failure must come
@@ -455,153 +377,5 @@ func TestFileWriter_StatOnAClosedHandleIsAStorageFault(t *testing.T) {
 	}
 	if _, ok := errors.AsType[*storagefault.Fault](err); !ok {
 		t.Fatalf("Stat error = %T, want *storagefault.Fault", err)
-	}
-}
-
-// TestFileWriter_DrainReleasesUnattemptedBuffersOnFailure pins the pooling half
-// of Drain's error path. Everything after the failing write was never attempted
-// and still holds a pooled buffer; leaking those costs one decoder buffer per
-// article for the rest of the drain.
-func TestFileWriter_DrainReleasesUnattemptedBuffersOnFailure(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(1<<20), withWriteError(syscall.ENOSPC))
-	for i, off := range []int64{4096, 8192, 12288} {
-		if err := w.Accept(articleID{msgID: string(rune('a' + i)), artIdx: testArtIdx(i)}, off, make([]byte, 64), 0); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := w.Drain()
-	if err == nil {
-		t.Fatal("Drain returned nil after ENOSPC")
-	}
-	if len(got) != 0 {
-		t.Errorf("Drain reported %d articles written although every WriteAt failed", len(got))
-	}
-}
-
-// TestFileWriter_CoalescedRunWriteFailureReportsNothing pins flushRun's error
-// branch. A coalesced run is one WriteAt for many articles, so a failure loses
-// all of their bytes at once — reporting any of them would claim bytes the file
-// does not have for articles whose originals are already pooled.
-func TestFileWriter_CoalescedRunWriteFailureReportsNothing(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(4<<20), withWriteError(syscall.EIO))
-
-	// Fill a contiguous run past contiguousRunSize so a flush actually fires.
-	const chunk = 64 << 10
-	var off int64
-	var lastErr error
-	for i := range 12 {
-		lastErr = w.Accept(articleID{msgID: string(rune('a' + i)), artIdx: testArtIdx(i)}, off, make([]byte, chunk), 0)
-		off += chunk
-		if lastErr != nil {
-			break
-		}
-	}
-	if lastErr == nil {
-		t.Fatal("no coalesced flush fired; the fixture never reached contiguousRunSize")
-	}
-	if _, ok := errors.AsType[*storagefault.Fault](lastErr); !ok {
-		t.Fatalf("run write error = %T, want *storagefault.Fault", lastErr)
-	}
-	if got := w.writtenSoFar(); len(got) != 0 {
-		t.Errorf("writtenSoFar = %d articles after the run's WriteAt failed, want 0", len(got))
-	}
-}
-
-// TestFileWriter_CoalescedRunReportsEveryArticlesOwnRange pins the success half
-// of coalescing, which is the write cache's entire purpose: many articles
-// become one WriteAt, and each must still be reported with its OWN offset and
-// length.
-//
-// The ranges cannot be recovered from the coalesced buffer — it is flat, and
-// the originals are pooled before the write — so they are carried on runPart.
-// Getting that wrong misreports every article in the run at once, and the
-// barrier charges durable bytes from exactly these numbers.
-func TestFileWriter_CoalescedRunReportsEveryArticlesOwnRange(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(4<<20))
-
-	const chunk = 64 << 10
-	const n = 12 // 768 KiB, past contiguousRunSize (512 KiB)
-	for i := range n {
-		if err := w.Accept(
-			articleID{msgID: string(rune('a' + i)), artIdx: testArtIdx(i)},
-			int64(i)*chunk, make([]byte, chunk), 0,
-		); err != nil {
-			t.Fatalf("Accept %d: %v", i, err)
-		}
-	}
-
-	got := w.writtenSoFar()
-	if len(got) == 0 {
-		t.Fatal("no coalesced flush fired; the fixture never reached contiguousRunSize")
-	}
-	for _, a := range got {
-		wantOff := int64(a.ArtIdx) * chunk
-		if a.Offset != wantOff {
-			t.Errorf("article %d reported at offset %d, want %d — the run's ranges were "+
-				"derived from the coalesced buffer instead of carried per article",
-				a.ArtIdx, a.Offset, wantOff)
-		}
-		if a.Length != chunk {
-			t.Errorf("article %d reported length %d, want %d", a.ArtIdx, a.Length, chunk)
-		}
-	}
-	// The bytes must actually be on disk at those offsets, not merely claimed.
-	st, err := os.Stat(w.path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := int64(len(got)) * chunk; st.Size() < want {
-		t.Errorf("file is %d bytes but %d articles were reported written", st.Size(), len(got))
-	}
-}
-
-// TestFileWriter_SyncDoesNotDiscardAnArticleNoDrainReported pins the split
-// between w.written and w.reported, which is the half the earlier pin missed.
-//
-// Folding the two — having Sync clear both — left every package green, and it
-// is the exact loss this writer's own doc calls out: an article accepted
-// BETWEEN a Drain and its Sync is covered by that fsync but was never handed
-// to the barrier, so nothing can ever ack it. It stays Outstanding for a file
-// the assembler has already tombstoned, which no re-fetch can reach.
-//
-// Sequenced deliberately: a1 is reported and then CONFIRMED, a2 arrives inside
-// the window, and only the second Drain may mention a2.
-//
-// The Confirm is load-bearing rather than ceremony. Sync used to release the
-// report itself, which lost it to any failure between the fsync and the
-// barrier's commit; the release moved to Confirm, which the barrier calls only
-// once the commit and the ack have both landed. a2 is untouched by it because
-// it was never reported — the split between w.written and w.reported is
-// exactly what keeps the two apart.
-func TestFileWriter_SyncDoesNotDiscardAnArticleNoDrainReported(t *testing.T) {
-	w := newTestFileWriter(t)
-	if err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 0, []byte("abcd"), 0); err != nil {
-		t.Fatal(err)
-	}
-	if first := w.take(); len(first) != 1 || first[0].ArtIdx != 1 {
-		t.Fatalf("first take = %v, want article 1 alone", first)
-	}
-
-	// Accepted after the Drain that reported a1, before the Sync that
-	// confirms it. The worker handles Drain and Sync as two separate control
-	// messages, so a write can land between them.
-	if err := w.Accept(articleID{msgID: "a2", artIdx: 2}, 4, []byte("efgh"), 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Sync(); err != nil {
-		t.Fatal(err)
-	}
-	// The barrier's commit and ack have landed, so the reported set may go.
-	w.Confirm()
-
-	second := w.take()
-	if len(second) != 1 {
-		t.Fatalf("second take = %v, want exactly article 2 — a1 was released by the "+
-			"Confirm and a2 was never reported", second)
-	}
-	if second[0].ArtIdx != 2 {
-		t.Errorf("second take = %v, want article 2: the Sync discarded an article no Drain had "+
-			"reported, so no ack can ever reach it and it stays Outstanding on a file the "+
-			"assembler has already tombstoned", second)
 	}
 }

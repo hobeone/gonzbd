@@ -58,8 +58,7 @@ func (app *Application) AckDurable(p durability.DurableProof) error {
 //
 // It takes a SET rather than one article, and that is the point. The assembler
 // used to carry a single index alongside the fault, so a batch failure — a
-// coalesced run, a drain, a cache displacement — reported only whichever
-// article happened to be first in the batch.
+// drain — reported only whichever article happened to be first in the batch.
 //
 // R17: returns each article to Outstanding by clearing its emitted bit. The
 // articles are not marked failed (A1) and their bytes are not charged against

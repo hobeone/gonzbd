@@ -383,7 +383,7 @@ Buffers decoded article data in memory between the decoder and the assembler, wi
 
 | Parameter | Default | Config Key |
 |-----------|---------|-----------|
-| Memory limit | 500 MB (SABnzbd); GoNZBD default 64 MiB, see §9.3 | `write_cache_size` |
+| Memory limit | 500 MB (SABnzbd); GoNZBD has no article cache and writes each article synchronously | — |
 | Max configurable | 1 GB | `DEF_ARTICLE_CACHE_MAX` |
 | Flush trigger | 90% full | `ARTICLE_CACHE_NON_CONTIGUOUS_FLUSH_PERCENTAGE` |
 | Flush interval | 0.5 sec | Assembler poll rate |
@@ -679,7 +679,6 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `bandwidth_max` | string | `` | Max bandwidth (e.g., `10M`, `1G`, `0`=unlimited) |
 | `bandwidth_perc` | int | `100` | Percentage of max to use |
 | `min_free_space` | string (`ByteSize`) | `1G` | Min free disk space before pause (accepts K/M/G/T suffixes) |
-| `write_cache_size` | string | `64M` | Write coalescing buffer size (e.g., `64M`, `0`=disabled) |
 | `checkpoint_interval` | int | `30` | Seconds between durability checkpoints per job (`0`=default) |
 | `checkpoint_bytes` | string | `64M` | Bytes downloaded per job between durability checkpoints (`0`=default) |
 | `max_art_tries` | int | `3` | Max tries per article before marking bad |

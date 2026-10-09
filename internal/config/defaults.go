@@ -77,7 +77,6 @@ func Default() (*Config, error) {
 			BandwidthMax:       0, // unlimited
 			BandwidthPerc:      100,
 			MinFreeSpace:       ByteSize(1024 * constants.MiB),
-			WriteCacheSize:     ByteSize(constants.DefaultWriteCacheBytes),
 			CheckpointInterval: int(constants.DefaultCheckpointInterval.Seconds()),
 			CheckpointBytes:    ByteSize(constants.DefaultCheckpointBytes),
 			MaxArtTries:        3,

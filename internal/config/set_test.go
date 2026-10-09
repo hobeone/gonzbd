@@ -176,16 +176,6 @@ func TestConfig_Set(t *testing.T) {
 			},
 		},
 		{
-			"set ByteSize (write_cache_size)",
-			"downloads", "write_cache_size", "500M",
-			false,
-			func(t *testing.T, c *Config) {
-				if c.Downloads.WriteCacheSize != 500*1024*1024 {
-					t.Errorf("WriteCacheSize = %v, want 500M", c.Downloads.WriteCacheSize)
-				}
-			},
-		},
-		{
 			"set int (max_art_tries)",
 			"downloads", "max_art_tries", "5",
 			false,

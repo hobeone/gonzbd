@@ -135,8 +135,7 @@ type FileProgress struct {
 	// queue knows: durability.Barrier computes it as the highest end offset
 	// among the file's DURABLE facts, which describes the FILE rather than
 	// the session, and needs no seed. The write cursor was only ever a
-	// coalescing hint and is now local to the assembler's cache, starting at
-	// zero each run (#311, #353).
+	// coalescing hint, and went with the assembler's write cache (#311, #353).
 	//
 	// They are gone rather than retained-at-zero because a field that is
 	// always zero and documented as a resume seed is worse than no field: a

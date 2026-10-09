@@ -11,7 +11,6 @@ describe('DownloadsSection', () => {
 		downloads: {
 			bandwidth_max: '10M',
 			min_free_space: '1G',
-			write_cache_size: '500M',
 			max_art_tries: 3,
 			max_active_jobs: 4,
 			top_only: false,
@@ -70,7 +69,6 @@ describe('DownloadsSection', () => {
 		render(DownloadsSection, { configData: mockConfig, onFieldUpdate: vi.fn() });
 		expect(screen.getByText('Maximum Bandwidth')).toBeInTheDocument();
 		expect(screen.getByText('Minimum Free Space')).toBeInTheDocument();
-		expect(screen.getByText('Article Cache')).toBeInTheDocument();
 		expect(screen.getByText('Article Retries')).toBeInTheDocument();
 		expect(screen.getByText('Maximum Active Jobs')).toBeInTheDocument();
 		expect(screen.getByText('Top-only server mode')).toBeInTheDocument();
@@ -103,7 +101,6 @@ describe('DownloadsSection', () => {
 		}> = [
 			{ keyword: 'bandwidth_max',        inputId: 'downloads-bandwidth_max',        newValue: '20M'  },
 			{ keyword: 'min_free_space',        inputId: 'downloads-min_free_space',        newValue: '2G'   },
-			{ keyword: 'write_cache_size',      inputId: 'downloads-write_cache_size',      newValue: '750M' },
 			{ keyword: 'max_art_tries',         inputId: 'downloads-max_art_tries',         newValue: '7'    },
 			{ keyword: 'max_active_jobs',       inputId: 'downloads-max_active_jobs',       newValue: '8'    },
 			{ keyword: 'top_only',               inputId: 'downloads-top_only',               newValue: '',    isSwitch: true },

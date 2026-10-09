@@ -228,7 +228,7 @@ plainly.
 **A pass DOES bound**, on the filesystem the tests ran on:
 
 - That no article is resolved before its bytes have left the process. A
-  SIGKILL destroys the assembler's write cache for real, with no flush, so an
+  SIGKILL destroys the process's in-memory buffers for real, with no flush, so an
   article acked early has no bytes in the file afterwards and the CRC
   read-back sees it.
 - That the work a crash costs stays inside the checkpoint bound, measured at

@@ -26,7 +26,7 @@ import (
 // which owns every file handle, has done the work and answered.
 //
 // That indirection is invariant X1, not ceremony. One goroutine owns all the
-// state, so the barrier can read a file's cache and handle without a lock. The
+// state, so the barrier can read a file's writer and handle without a lock. The
 // alternative — a mutex over the open-file map and the writers — would put
 // WriteAt and fsync inside a critical section, which is both a contention
 // disaster on the hot path and the thing check_lock_io exists to catch.
@@ -448,7 +448,7 @@ func (a *Assembler) OpenJobIDs(ctx context.Context) ([]string, error) {
 }
 
 // handleSyncOp performs one barrier operation on the worker goroutine.
-func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *writeCache) {
+func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile) {
 	var r syncReply
 	switch op.kind {
 	case opFiles:
@@ -526,7 +526,6 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, wc *wri
 			// deciding what it means belongs to the caller.
 			r.err = a.drainAndClose(f)
 			delete(open, key)
-			wc.forget(key)
 		case opFiles, opJobs:
 		}
 	}

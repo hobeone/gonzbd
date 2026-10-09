@@ -30,25 +30,18 @@ func TestCloseJobHandles_TombstonesEvenWhenTheDrainFailed(t *testing.T) {
 	a := newHelperAssembler()
 	a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
 
-	wc := newWriteCache(1 << 20)
 	f := newHelperFile(t, dir, "job_0.dat", 0)
-	f.w.wc = wc
 	key := fileKey{jobID: "job", fileIdx: 0}
 	open := map[fileKey]*openFile{key: f}
 	completed := map[fileKey]struct{}{}
 
-	if !a.handleSuccessArticle(f, WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a", Offset: 0, Data: []byte("AAAA"),
-	}) {
-		t.Fatal("the article was not accepted, so the fixture never buffered it")
-	}
-	f.w.writeAt = func([]byte, int64) (int, error) { return 0, syscall.ENOSPC }
+	f.w.syncFile = func() error { return syscall.EIO }
 
 	ack := make(chan error, 1)
 	cancelledJobs := map[string]struct{}{}
 	a.dispatchRequest(
 		WriteRequest{JobID: "", FileIdx: fileIdxCloseHandles, MessageID: "job", ackCh: ack},
-		open, completed, cancelledJobs, wc)
+		open, completed, cancelledJobs)
 
 	if _, tombstoned := completed[key]; !tombstoned {
 		t.Error("a file whose close-time drain failed was not tombstoned, so it sits " +
@@ -83,22 +76,15 @@ func TestCloseJobHandles_ArmSendsTheCloseTimeFaultOnTheAck(t *testing.T) {
 	a := newHelperAssembler()
 	a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
 
-	wc := newWriteCache(1 << 20)
 	f := newHelperFile(t, dir, "job_0.dat", 0)
-	f.w.wc = wc
 	open := map[fileKey]*openFile{{jobID: "job", fileIdx: 0}: f}
 
-	if !a.handleSuccessArticle(f, WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a", Offset: 0, Data: []byte("AAAA"),
-	}) {
-		t.Fatal("the article was not accepted, so the fixture never buffered it")
-	}
-	f.w.writeAt = func([]byte, int64) (int, error) { return 0, syscall.ENOSPC }
+	f.w.syncFile = func() error { return syscall.EIO }
 
 	ack := make(chan error, 1)
 	a.dispatchRequest(
 		WriteRequest{JobID: "", FileIdx: fileIdxCloseHandles, MessageID: "job", ackCh: ack},
-		open, map[fileKey]struct{}{}, map[string]struct{}{}, wc)
+		open, map[fileKey]struct{}{}, map[string]struct{}{})
 
 	err := <-ack
 	if _, ok := errors.AsType[*storagefault.Fault](err); !ok {

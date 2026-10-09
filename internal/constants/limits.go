@@ -13,16 +13,6 @@ const (
 	TiB int64 = 1 << 40
 )
 
-// Write cache limits. The write coalescing cache buffers decoded articles
-// in the assembler and flushes them as larger contiguous writes.
-const (
-	// DefaultWriteCacheBytes is the default assembler write coalescing
-	// cache size. Buffered articles are flushed as larger contiguous
-	// writes, reducing I/O syscall count. 64 MiB holds ~90 typical
-	// articles (700KB each).
-	DefaultWriteCacheBytes int64 = 64 * MiB
-)
-
 // Checkpoint barrier bounds. A barrier drains a job's buffered writes, fsyncs
 // its open files, and only then commits what the process may claim about them,
 // so these two together are the stated bound on how much downloaded work a

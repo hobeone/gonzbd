@@ -22,7 +22,6 @@ import (
 // the set exists to close.
 func TestForgetJob_DropsOnlyTheNamedJobsTombstones(t *testing.T) {
 	a := newHelperAssembler()
-	wc := newWriteCache(0)
 
 	retried0 := fileKey{jobID: "retried", fileIdx: 0}
 	retried1 := fileKey{jobID: "retried", fileIdx: 1}
@@ -36,7 +35,7 @@ func TestForgetJob_DropsOnlyTheNamedJobsTombstones(t *testing.T) {
 	ack := make(chan error, 1)
 	a.dispatchRequest(
 		WriteRequest{JobID: "", FileIdx: fileIdxForgetJob, MessageID: "retried", ackCh: ack},
-		map[fileKey]*openFile{}, completed, map[string]struct{}{}, wc)
+		map[fileKey]*openFile{}, completed, map[string]struct{}{})
 
 	if _, still := completed[retried0]; still {
 		t.Error("file 0 of the retried job is still tombstoned, so its re-fetched " +
@@ -69,13 +68,12 @@ func TestForgetJob_DropsOnlyTheNamedJobsTombstones(t *testing.T) {
 // progresses.
 func TestForgetJob_DropsTheCancelledMark(t *testing.T) {
 	a := newHelperAssembler()
-	wc := newWriteCache(0)
 	cancelled := map[string]struct{}{"retried": {}, "other": {}}
 
 	ack := make(chan error, 1)
 	a.dispatchRequest(
 		WriteRequest{JobID: "", FileIdx: fileIdxForgetJob, MessageID: "retried", ackCh: ack},
-		map[fileKey]*openFile{}, map[fileKey]struct{}{}, cancelled, wc)
+		map[fileKey]*openFile{}, map[fileKey]struct{}{}, cancelled)
 
 	if _, still := cancelled["retried"]; still {
 		t.Error("the retried job is still marked cancelled, so every article of the " +
@@ -90,12 +88,11 @@ func TestForgetJob_DropsTheCancelledMark(t *testing.T) {
 // TestForgetJob_LeavesOpenHandlesAlone pins the deliberate non-action.
 //
 // This message forgets that files were FINISHED. It asserts nothing about a
-// file being written right now, and closing a live handle here would strand
-// the bytes its write cache is holding.
+// file being written right now, and closing a live handle here would pull it
+// out from under its writer.
 func TestForgetJob_LeavesOpenHandlesAlone(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
-	wc := newWriteCache(1 << 20)
 
 	f := newHelperFile(t, dir, "job_0.dat", 0)
 	key := fileKey{jobID: "job", fileIdx: 0}
@@ -104,11 +101,11 @@ func TestForgetJob_LeavesOpenHandlesAlone(t *testing.T) {
 	ack := make(chan error, 1)
 	a.dispatchRequest(
 		WriteRequest{JobID: "", FileIdx: fileIdxForgetJob, MessageID: "job", ackCh: ack},
-		open, map[fileKey]struct{}{}, map[string]struct{}{}, wc)
+		open, map[fileKey]struct{}{}, map[string]struct{}{})
 
 	if _, ok := open[key]; !ok {
 		t.Error("an open file was removed by ForgetJob; the arm must not touch live " +
-			"handles, whose cached bytes would be stranded by a close here")
+			"handles, which a close here would pull out from under their writers")
 	}
 }
 
@@ -124,10 +121,8 @@ func TestForgetJob_LetsAPreviouslyCompletedFileAcceptArticlesAgain(t *testing.T)
 	a := newHelperAssembler()
 	var unwritten int
 	a.opts.OnArticlesUnwritten = func(string, int, []int32) { unwritten++ }
-	wc := newWriteCache(1 << 20)
 
 	f := newHelperFile(t, dir, "job_0.dat", 0)
-	f.w.wc = wc
 	key := fileKey{jobID: "job", fileIdx: 0}
 	open := map[fileKey]*openFile{key: f}
 	completed := map[fileKey]struct{}{key: {}}
@@ -139,7 +134,7 @@ func TestForgetJob_LetsAPreviouslyCompletedFileAcceptArticlesAgain(t *testing.T)
 		}
 	}
 
-	a.processRequest(req(), open, completed, wc)
+	a.processRequest(req(), open, completed)
 	if got := f.w.parts(); got != 0 {
 		t.Fatalf("the tombstoned file admitted %d parts; the fixture is not "+
 			"exercising the late-duplicate path this test is about", got)
@@ -148,9 +143,9 @@ func TestForgetJob_LetsAPreviouslyCompletedFileAcceptArticlesAgain(t *testing.T)
 	ack := make(chan error, 1)
 	a.dispatchRequest(
 		WriteRequest{JobID: "", FileIdx: fileIdxForgetJob, MessageID: "job", ackCh: ack},
-		open, completed, map[string]struct{}{}, wc)
+		open, completed, map[string]struct{}{})
 
-	a.processRequest(req(), open, completed, wc)
+	a.processRequest(req(), open, completed)
 	if got := f.w.parts(); got != 1 {
 		t.Errorf("the file admitted %d parts after ForgetJob, want 1: a retry still "+
 			"cannot write to a file this process finished earlier", got)

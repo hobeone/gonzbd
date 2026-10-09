@@ -207,7 +207,6 @@ export interface DownloadsConfig {
 	bandwidth_max: string;
 	bandwidth_perc: number;
 	min_free_space: string;
-	write_cache_size: string;
 	max_art_tries: number;
 	max_art_opt: number;
 	max_active_jobs: number;

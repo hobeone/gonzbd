@@ -23,7 +23,7 @@ import (
 // It is deliberately end-to-end through the real barrier rather than through a
 // test hook. The property is not "some code sets the bit in the right place";
 // it is "by the time the bit is set, a completed fsync covers the bytes", and
-// only the real chain — assembler write cache, barrier drain, fsync,
+// only the real chain — assembler write, barrier drain, fsync,
 // store commit, AckDurable — can demonstrate that. The previous version
 // of this test replaced the whole ack path with a hook it supplied itself,
 // which meant it pinned its own fixture.
@@ -113,7 +113,7 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 }
 
 // TestDurability_AcceptedIsNotDone pins S2 from the other side: entry into a
-// buffer, a channel, or the assembler's write cache is never evidence about
+// buffer or a channel is never evidence about
 // disk, so an article the downloader has delivered and decoded must stay
 // Outstanding until a barrier has fsynced it.
 //

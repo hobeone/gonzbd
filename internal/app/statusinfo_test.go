@@ -19,7 +19,7 @@ import (
 var _ = (*Application).enqueuePostProc
 var _ = (*pipeline).run
 
-func TestApplication_ArticleCacheBytes_ReturnsZeroInitially(t *testing.T) {
+func TestApplication_ArticleCacheBytes_IsZeroBecauseNothingIsBuffered(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	app, err := New(cfg, nil)
@@ -29,7 +29,7 @@ func TestApplication_ArticleCacheBytes_ReturnsZeroInitially(t *testing.T) {
 	defer app.Shutdown()
 
 	if got := app.ArticleCacheBytes(); got != 0 {
-		t.Errorf("ArticleCacheBytes() = %d, want 0 on a fresh app", got)
+		t.Errorf("ArticleCacheBytes() = %d, want 0: the assembler buffers nothing", got)
 	}
 }
 

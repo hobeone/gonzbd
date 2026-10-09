@@ -11,8 +11,8 @@ import "testing"
 // the barrier has the record and this package no longer has the authority.
 //
 // The exception is an article that was counted toward TotalParts and then
-// un-done. FileWriter.fail clears an article from seenDone when its coalesced
-// run fails to write, but partsWritten was incremented when the article was
+// un-done. FileWriter.fail clears an article from seenDone when its write
+// fails, but partsWritten was incremented when the article was
 // ACCEPTED and is never decremented — so other articles can carry the file to
 // completion while this one holds no state anywhere. Its Emitted bit was
 // cleared by the write fault, the downloader re-dispatched it, and the copy
@@ -39,7 +39,7 @@ func TestLateDuplicate_ResolvesAnArticleTheWriterNeverAccepted(t *testing.T) {
 		a.processRequest(WriteRequest{
 			JobID: key.jobID, FileIdx: key.fileIdx, ArtIdx: 4,
 			MessageID: "<never-accepted@x>", Offset: 0, Data: []byte("abcd"),
-		}, open, completed, newWriteCache(0))
+		}, open, completed)
 
 		if len(rejected) != 1 || rejected[0] != 4 {
 			t.Errorf("OnArticleRejected calls = %v, want [4] — the article holds no state "+
@@ -63,7 +63,7 @@ func TestLateDuplicate_ResolvesAnArticleTheWriterNeverAccepted(t *testing.T) {
 		a.processRequest(WriteRequest{
 			JobID: key.jobID, FileIdx: key.fileIdx, ArtIdx: 4,
 			MessageID: "<already-here@x>", Offset: 0, Data: []byte("abcd"),
-		}, open, completed, newWriteCache(0))
+		}, open, completed)
 
 		if len(rejected) != 0 {
 			t.Errorf("OnArticleRejected calls = %v, want none — this article was accepted "+

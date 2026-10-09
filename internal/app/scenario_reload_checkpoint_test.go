@@ -37,16 +37,12 @@ import (
 // is the one observation that cannot be satisfied by an internal bookkeeping
 // change: either the article went back on the wire or it did not.
 func TestReload_DoesNotReFetchAWrittenButUnackedArticle(t *testing.T) {
-	// Write cache off, so "written" means the bytes are on disk rather than
-	// in the assembler's userspace buffer. That is not a convenience: #390's
-	// damage is precisely that the bytes ARE already on disk when the article
-	// is acked permanently failed, so the cached state is a milder case and
-	// pinning it would understate the bug. It is also the only form of
-	// "written" a test can observe without a barrier — and a barrier is the
-	// thing this test must prove has not run.
-	h := newScenarioHarnessWithConfig(t, 2, func(c *config.Config) {
-		c.Downloads.WriteCacheSize = 0
-	})
+	// "Written" means the bytes are on disk: #390's damage is precisely that
+	// the bytes ARE already on disk when the article is acked permanently
+	// failed. It is also the only form of "written" a test can observe
+	// without a barrier — and a barrier is the thing this test must prove has
+	// not run.
+	h := newScenarioHarnessWithConns(t, 2)
 	h.Start()
 
 	// One file, two articles. Article 1 is stalled, so the file cannot

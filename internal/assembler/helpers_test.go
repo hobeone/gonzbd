@@ -77,7 +77,7 @@ func newHelperFile(t *testing.T, dir, name string, expectedSize int64) *openFile
 	t.Cleanup(func() { _ = fh.Close() })
 	key := fileKey{jobID: "job", fileIdx: 0}
 	return &openFile{
-		w:    newFileWriter(fh, path, key, newWriteCache(0)),
+		w:    newFileWriter(fh, path, key),
 		info: FileInfo{Path: path, ExpectedSize: expectedSize},
 	}
 }
@@ -185,81 +185,31 @@ func TestCloseAll_ContinuesPastAFailedClose(t *testing.T) {
 	}
 }
 
-func TestRelievePressure(t *testing.T) {
-	dir := t.TempDir()
-
-	t.Run("flushes until the cache is back under the threshold", func(t *testing.T) {
-		a := newHelperAssembler()
-		// pressure() trips above 90% of the limit.
-		wc := newWriteCache(100)
-		f := newHelperFile(t, dir, "press.dat", 0)
-		open := map[fileKey]*openFile{f.w.key: f}
-
-		for i := range 5 {
-			wc.buffer(f.w.key, bufferedArticle{
-				offset: int64(i * 20),
-				data:   []byte("12345678901234567890"),
-				id:     articleID{msgID: "<x@y>", artIdx: testArtIdx(i)},
-			})
-		}
-		if !wc.pressure() {
-			t.Fatal("fixture did not put the cache under pressure; the test would pass vacuously")
-		}
-
-		a.relievePressure(wc, open)
-
-		if wc.pressure() {
-			t.Errorf("still under pressure after relievePressure: used=%d limit=%d", wc.used, wc.limit)
-		}
-		// The flushed bytes must actually have reached the file, not just left
-		// the cache's accounting.
-		st, err := f.w.handle.Stat()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if st.Size() == 0 {
-			t.Error("relievePressure emptied the cache without writing anything")
-		}
-	})
-
-	t.Run("is a no-op when there is no pressure", func(t *testing.T) {
-		a := newHelperAssembler()
-		wc := newWriteCache(1 << 20)
-		f := newHelperFile(t, dir, "nopress.dat", 0)
-		wc.buffer(f.w.key, bufferedArticle{offset: 0, data: []byte("abcd"), id: articleID{msgID: "<a@x>"}})
-		a.relievePressure(wc, map[fileKey]*openFile{f.w.key: f})
-		if !wc.buffered(f.w.key, 0) {
-			t.Error("relievePressure flushed an article while under the threshold")
-		}
-	})
-}
-
-// TestDrainAndClose_FlushesBeforeClosing pins the shutdown ordering. A file
-// closed with articles still buffered loses their bytes silently: they were
-// never written, so no Drain ever reported them, and the queue is told nothing
-// in either direction.
-func TestDrainAndClose_FlushesBeforeClosing(t *testing.T) {
+// TestDrainAndClose_KeepsWrittenBytesAndClosesTheHandle pins the shutdown
+// ordering: an accepted article's bytes are on disk before the handle closes,
+// and the close happens.
+func TestDrainAndClose_KeepsWrittenBytesAndClosesTheHandle(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
 	f := newHelperFile(t, dir, "drainclose.dat", 0)
-	f.w.wc = newWriteCache(1 << 20)
 
 	if err := f.w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("abcdefgh"), 0); err != nil {
 		t.Fatal(err)
 	}
-	// Still buffered: nothing has reached the file yet.
-	if st, err := os.Stat(f.info.Path); err == nil && st.Size() != 0 {
-		t.Fatalf("fixture wrote through instead of buffering; size=%d", st.Size())
-	}
 
-	a.drainAndClose(f)
+	if err := a.drainAndClose(f); err != nil {
+		t.Fatalf("drainAndClose: %v", err)
+	}
 
 	st, err := os.Stat(f.info.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if st.Size() != 8 {
-		t.Errorf("file is %d bytes after drainAndClose, want 8 — buffered bytes were dropped on close", st.Size())
+		t.Errorf("file is %d bytes after drainAndClose, want 8", st.Size())
+	}
+	if err := f.w.handle.Close(); err == nil {
+		t.Error("the handle was still open after drainAndClose")
 	}
 }
 

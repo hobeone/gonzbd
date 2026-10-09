@@ -18,7 +18,6 @@ func killFixture() harnessOpts {
 	return harnessOpts{
 		CheckpointBytes:    1 << 20,
 		CheckpointInterval: time.Hour, // the byte bound is the one under test
-		WriteCacheBytes:    1 << 20,
 		Connections:        1,
 		BodyDelay:          8 * time.Millisecond,
 		Files:              []fileSpec{{Name: "payload.bin", Size: 16 << 20, PartSize: 128 << 10}},
@@ -27,10 +26,10 @@ func killFixture() harnessOpts {
 
 // TestSIGKILL_NoArticleIsResolvedWithoutItsBytes is the end-to-end pin for
 // S1 and S2: nothing may claim an article is resolved on the strength of the
-// article having entered a buffer, a channel or the write cache.
+// article having entered a buffer or a channel.
 //
-// The kill is what gives the check teeth. A SIGKILL destroys the assembler's
-// write cache with no flush, so an article acked before its bytes left the
+// The kill is what gives the check teeth. A SIGKILL destroys the process's
+// in-memory buffers with no flush, so an article acked before its bytes left the
 // process has no bytes in the file afterwards — and this test reads the file.
 // It reads it with the daemon dead and from its own database, because after a
 // crash the database is the only record of what was CLAIMED and the file is
@@ -85,7 +84,7 @@ func TestSIGKILL_NoArticleIsResolvedWithoutItsBytes(t *testing.T) {
 	}
 
 	// Grounding 2: the kill landed MID-window. If every article the server
-	// served had already been acked, the write cache was empty when the
+	// served had already been acked, nothing was in memory when the
 	// process died and the check below could not have caught an over-claim.
 	if len(servedAtKill) <= claimed {
 		t.Fatalf("%d articles served but %d already claimed at kill time — the kill "+
@@ -217,15 +216,13 @@ func TestSIGKILL_ReworkStaysWithinTheCheckpointBound(t *testing.T) {
 	// assertion pass:
 	//   - CheckpointBytes: B1's own bound, the bytes written since the window
 	//     opened.
-	//   - WriteCacheBytes: the assembler's coalescing buffer, in-process
-	//     memory that dies with the process.
 	//   - Connections * ArticleSize: articles in flight on the wire, served
 	//     by the mock but never delivered to the assembler.
-	bound := opts.CheckpointBytes + opts.WriteCacheBytes + int64(opts.Connections)*int64(h.ArticleSize)
+	bound := opts.CheckpointBytes + int64(opts.Connections)*int64(h.ArticleSize)
 	if reworkBytes > bound {
-		t.Errorf("re-fetched %d bytes after the crash, bound is %d (checkpoint %d + write cache %d "+
-			"+ %d in flight) — B1 is violated",
-			reworkBytes, bound, opts.CheckpointBytes, opts.WriteCacheBytes,
+		t.Errorf("re-fetched %d bytes after the crash, bound is %d (checkpoint %d + %d in flight) "+
+			"— B1 is violated",
+			reworkBytes, bound, opts.CheckpointBytes,
 			int64(opts.Connections)*int64(h.ArticleSize))
 	}
 	// Grounding: with no rework at all the bound assertion says nothing, and
