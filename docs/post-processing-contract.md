@@ -297,10 +297,13 @@ verify on every run rather than reading a record of the last one. A retried or
 crash-restarted job therefore re-verifies.
 
 The qualifier is load-bearing. The extraction path does write into that
-directory transiently: `fsutil.RootedCreateTemp` puts a `.gonzbd-tmp-<16 hex>`
-file beside each entry it is about to rename into place, and the four `unpack`
-engines open their root at the same directory. Those are removed on the
-deferred path, so a crash or a kill mid-extraction can leave one behind. What
+directory transiently: `fsutil.RootedCreateTemp` and
+`fsutil.RootedCreateTempPerm` put a `.gonzbd-tmp-<16 lowercase hex>`
+(`fsutil.IsTempFile`) file beside each entry they are about to rename into
+place (`writeEntrySafely` and `FileJoin`), and the four `unpack` engines open
+their root at the same directory. Those are removed on the deferred path, and
+any orphan left behind by a crash or a kill mid-extraction is swept at the
+start of the next post-processing run (`sweepTempFiles` in `processJob`). What
 does not exist any more is a file we later READ BACK and act on — which is the
 property that mattered, since it is the read that turns a forged write into a
 decision.
