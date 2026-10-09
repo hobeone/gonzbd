@@ -226,7 +226,8 @@ func TestCollision_CachedIncumbentIsDisplacedNotRejected(t *testing.T) {
 }
 
 // TestFileWriter_OffsetSettledBy covers the predicate that chooses between the
-// two dispositions, directly, including the two ways it must answer "no".
+// two dispositions, directly, including the ways it must answer "no" and the
+// interval-overlap cases it must refuse.
 func TestFileWriter_OffsetSettledBy(t *testing.T) {
 	owner := articleID{msgID: "owner", artIdx: 1}
 	arriving := articleID{msgID: "arriving", artIdx: 2}
@@ -234,40 +235,80 @@ func TestFileWriter_OffsetSettledBy(t *testing.T) {
 	tests := []struct {
 		name        string
 		seed        func(w *FileWriter)
+		off         int64
+		length      int64
 		arriving    articleID
 		wantSettled bool
 	}{
 		{
 			name:        "an unclaimed offset is not settled",
 			seed:        func(*FileWriter) {},
+			off:         0,
+			length:      64,
 			arriving:    arriving,
 			wantSettled: false,
 		},
 		{
-			name: "an offset whose owner is only buffered is not settled",
+			name: "an exact range whose owner is only buffered is not settled",
 			seed: func(w *FileWriter) {
-				w.acceptedAt[0] = offsetOwner{id: owner}
+				w.accepted = []acceptedRange{{off: 0, end: 64, id: owner}}
 			},
+			off:         0,
+			length:      64,
 			arriving:    arriving,
 			wantSettled: false,
 		},
 		{
 			name: "an offset whose owner was written is settled",
 			seed: func(w *FileWriter) {
-				w.acceptedAt[0] = offsetOwner{id: owner, written: true}
+				w.accepted = []acceptedRange{{off: 0, end: 64, id: owner, written: true}}
 			},
+			off:         0,
+			length:      64,
 			arriving:    arriving,
 			wantSettled: true,
 		},
 		{
 			name: "the owner does not settle the offset against ITSELF",
 			seed: func(w *FileWriter) {
-				w.acceptedAt[0] = offsetOwner{id: owner, written: true}
+				w.accepted = []acceptedRange{{off: 0, end: 64, id: owner, written: true}}
 			},
+			off:    0,
+			length: 64,
 			// A redelivery of the same article must not be refused as if it
 			// were a stranger; handleSuccessArticle's dedup normally catches
 			// it first, but an article with no Message-ID cannot be deduped.
 			arriving:    owner,
+			wantSettled: false,
+		},
+		{
+			name: "a partial overlap into an accepted range's tail is settled even while buffered",
+			seed: func(w *FileWriter) {
+				w.accepted = []acceptedRange{{off: 0, end: 1000, id: owner}}
+			},
+			off:         900,
+			length:      1000,
+			arriving:    arriving,
+			wantSettled: true,
+		},
+		{
+			name: "a partial overlap into an accepted range's head is settled even while buffered",
+			seed: func(w *FileWriter) {
+				w.accepted = []acceptedRange{{off: 1000, end: 2000, id: owner}}
+			},
+			off:         900,
+			length:      1000,
+			arriving:    arriving,
+			wantSettled: true,
+		},
+		{
+			name: "an abutting range before or after an accepted range is not settled",
+			seed: func(w *FileWriter) {
+				w.accepted = []acceptedRange{{off: 1000, end: 2000, id: owner, written: true}}
+			},
+			off:         0,
+			length:      1000,
+			arriving:    arriving,
 			wantSettled: false,
 		},
 	}
@@ -277,7 +318,7 @@ func TestFileWriter_OffsetSettledBy(t *testing.T) {
 			w := newTestFileWriter(t)
 			tc.seed(w)
 
-			got, settled := w.offsetSettledBy(0, tc.arriving)
+			got, settled := w.offsetSettledBy(tc.off, tc.length, tc.arriving)
 
 			if settled != tc.wantSettled {
 				t.Fatalf("settled = %v, want %v", settled, tc.wantSettled)
@@ -306,7 +347,7 @@ func TestFileWriter_OffsetSettledBy(t *testing.T) {
 // which is why it now calls acceptArticle directly, below the dedup.
 //
 // It does NOT mean nothing reaches Accept twice. A write fault does: fail
-// deletes the seenDone entry and never sets seenFailed, while acceptedAt is
+// deletes the seenDone entry and never sets seenFailed, while accepted is
 // never removed by design — so a redelivery after a fault misses both dedup
 // arms and re-accepts against the entry the first delivery left. That is the
 // path this guard exists for, and it is why the guard must stay. The direct
@@ -322,7 +363,7 @@ func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
 	if err := c.a.acceptArticle(c.f, id, req); err != nil {
 		t.Fatalf("accept incumbent: %v", err)
 	}
-	if owner := c.f.w.acceptedAt[0]; !owner.written {
+	if owner, ok := c.f.w.ownerAt(0); !ok || !owner.written {
 		t.Fatal("precondition: the incumbent was not latched as written")
 	}
 
@@ -346,7 +387,7 @@ func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
 		t.Fatalf("re-accept: %v", err)
 	}
 
-	if owner := c.f.w.acceptedAt[0]; !owner.written {
+	if owner, ok := c.f.w.ownerAt(0); !ok || !owner.written {
 		t.Error("a re-accept by the offset's own owner cleared the written latch, " +
 			"unsettling an offset whose bytes are already durable")
 	}
@@ -401,11 +442,17 @@ func TestCollision_DisplacedIncumbentLosesItsBufferedBytes(t *testing.T) {
 			"the settled path rather than the displacement one")
 	}
 
-	// A zero-length arrival at the same offset. wc.buffer refuses it, so
-	// nothing replaces the incumbent's entry.
-	c.accept(2, "<b@x>", 0, nil)
+	// A zero-length arrival at the same offset, driven through Accept directly
+	// (acceptArticle's offsetSettledBy refuses a length-mismatched arrival
+	// before it reaches Accept). wc.buffer refuses a zero-length article, so
+	// nothing in buffer replaces the incumbent's entry — only Accept's explicit
+	// wc.discardAt evicts it.
+	c.f.w.admitAccepted(2)
+	if err := c.f.w.Accept(articleID{msgID: "<b@x>", artIdx: 2}, 0, nil, 0); err != nil {
+		t.Fatalf("accept zero-length displacer: %v", err)
+	}
 
-	// processRequest is what drains the faulted set in production; handleSuccessArticle
+	// processRequest is what drains the faulted set in production; Accept
 	// does not, so route it here to reach the same disposition.
 	c.a.releaseFaulted(c.f, "job", 0)
 	if len(c.rejected) != 1 || c.rejected[0] != 1 {
@@ -513,7 +560,7 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 // article's ArtIdx is already in seenDone, so a PLAIN redelivery never reaches
 // Accept a second time. That is not the only route: a write-fault retry gets
 // there, because fail deletes the seenDone entry and never sets seenFailed
-// while acceptedAt is never removed, so the redelivery misses both dedup arms
+// while accepted is never removed, so the redelivery misses both dedup arms
 // and finds itself already the owner. This test drives the same second Accept
 // through acceptArticle directly rather than staging a fault to reach it.
 //

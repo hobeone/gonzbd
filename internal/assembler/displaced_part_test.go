@@ -14,7 +14,7 @@ import (
 // validation on its own because nothing checks an article against its siblings.
 //
 // Article X is admitted and counted. Article Y arrives at the same offset;
-// Accept's acceptedAt check finds X, discards its buffered bytes through
+// Accept's accepted check finds X, discards its buffered bytes through
 // wc.discardAt, and routes X to failDisplaced. X keeps its count because it is
 // RESOLVED — OnArticleRejected carries it to the queue and it will never arrive
 // again, so a file that stopped counting it could never reach TotalParts.

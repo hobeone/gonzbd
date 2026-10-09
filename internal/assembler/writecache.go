@@ -157,7 +157,7 @@ func (wc *writeCache) enabled() bool {
 //
 // It no longer reports what it evicted. That return, and FileWriter.Accept's
 // loop over it, were unreachable: Accept calls wc.discardAt the moment its
-// acceptedAt check finds a DIFFERENT article owning the offset, so the only
+// accepted check finds a DIFFERENT article owning the offset, so the only
 // incumbent that survives to here is the same article re-accepting after a
 // rollback, which is not a collision (#406).
 //
@@ -166,7 +166,7 @@ func (wc *writeCache) enabled() bool {
 // a question about caching: buildContiguousRun deletes each article it flushes,
 // so in an in-order download the first article had already left this map before
 // its duplicate arrived, and three paths — flushed, caching disabled,
-// zero-length — reported no collision at all. FileWriter.acceptedAt is the
+// zero-length — reported no collision at all. FileWriter.accepted is the
 // detector, consulted in Accept before this function, and it sees all three.
 func (wc *writeCache) buffer(key fileKey, art bufferedArticle) bool {
 	if !wc.enabled() {

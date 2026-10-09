@@ -74,7 +74,7 @@ func TestDisplacement_FileStillReachesTotalParts(t *testing.T) {
 //
 // failPermanent KEEPS a part. That is sufficient where acceptArticle calls it,
 // because admitAccepted ran a statement earlier and the article provably holds
-// one. A displaced incumbent has no such guarantee: acceptedAt entries are
+// one. A displaced incumbent has no such guarantee: accepted entries are
 // never removed, so an article whose write faulted keeps owning its offset
 // after fail has taken its part and its seenDone entry away. The next article
 // at that offset displaces an owner holding nothing, and a primitive that only
@@ -90,7 +90,7 @@ func TestDisplacement_StaleOwnerIsCountedNotMerelyKept(t *testing.T) {
 	}
 
 	// The write-fault rollback: the part and the seenDone entry go, the
-	// acceptedAt ownership stays. Asserted rather than assumed, because the
+	// accepted ownership stays. Asserted rather than assumed, because the
 	// whole case rests on those two moving apart.
 	w.fail(first)
 	_ = w.takeFaulted()
@@ -98,8 +98,8 @@ func TestDisplacement_StaleOwnerIsCountedNotMerelyKept(t *testing.T) {
 		t.Fatalf("parts = %d after the rollback, want 0; the fixture did not roll the "+
 			"article back, so it proves nothing about a stale owner", w.parts())
 	}
-	if owner, taken := w.acceptedAt[0]; !taken || owner.id != first {
-		t.Fatalf("acceptedAt[0] = %+v (taken=%v), want the rolled-back article: the "+
+	if owner, taken := w.ownerAt(0); !taken || owner.id != first {
+		t.Fatalf("ownerAt(0) = %+v (taken=%v), want the rolled-back article: the "+
 			"fixture did not produce a stale owner", owner.id, taken)
 	}
 
