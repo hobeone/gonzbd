@@ -77,6 +77,22 @@ const (
 	// paces a config change, and a user waiting on a settings save is a
 	// different tolerance from a process on its way out.
 	reloadCheckpointTimeout = 10 * time.Second
+
+	defaultLowDiskRecheckInterval = 5 * time.Second
+
+	// lowDiskProbeTimeout bounds each DiskProbe.FreeBytes call in
+	// tryAutoResumeLowDisk. Separate from defaultLowDiskRecheckInterval so
+	// overriding the polling cadence in tests does not shrink the statfs
+	// deadline.
+	lowDiskProbeTimeout = 5 * time.Second
+)
+
+type pauseReason string
+
+const (
+	pauseReasonNone    pauseReason = ""
+	pauseReasonUser    pauseReason = "user"
+	pauseReasonLowDisk pauseReason = "low_disk"
 )
 
 // Downloader defines the lifecycle and control interface for the Usenet
@@ -100,9 +116,15 @@ type DownloaderStats interface {
 	ServerStatus() []downloader.ServerSnapshot
 }
 
+// DiskProbe queries free disk space on a directory path.
+type DiskProbe interface {
+	FreeBytes(ctx context.Context, dir string) (int64, error)
+}
+
 var (
 	_ Downloader      = (*downloader.Downloader)(nil)
 	_ DownloaderStats = (*downloader.Downloader)(nil)
+	_ DiskProbe       = (*assembler.DiskProbe)(nil)
 )
 
 // Application manages the download and post-processing pipeline.
@@ -116,6 +138,9 @@ type Application struct {
 	// without synchronization (same pattern as the immutable version field).
 	binaryVersions BinaryVersions
 	mu             sync.Mutex
+	pauseReason    pauseReason
+	lowDiskCancel  context.CancelFunc
+	lowDiskWg      sync.WaitGroup
 	// reloadMu serializes ReloadDownloader calls end-to-end. It is separate
 	// from mu (which only guards the brief downloader/downloaderStats field
 	// swap) so concurrent reloads queue up instead of interleaving their
@@ -135,12 +160,11 @@ type Application struct {
 	downloader      Downloader
 	downloaderStats DownloaderStats
 	assembler       *assembler.Assembler
-	// diskProbe bounds DownloadDirFreeBytes' statfs calls (from /health and
-	// the status-overview API, both polled per-HTTP-request) to at most one
-	// outstanding probe per directory — independent from assembler's own
-	// diskProbe, since checkDiskSpace and DownloadDirFreeBytes are separate
-	// call paths against the same directory. See assembler.DiskProbe.
-	diskProbe        *assembler.DiskProbe
+	// diskProbe bounds DownloadDirFreeBytes' and low-disk auto-resume's statfs
+	// calls to at most one outstanding probe per directory — independent from
+	// assembler's own diskProbe, since checkDiskSpace and DownloadDirFreeBytes
+	// are separate call paths against the same directory. See assembler.DiskProbe.
+	diskProbe        DiskProbe
 	postProcessor    *postproc.PostProcessor
 	pipeline         *pipeline
 	jobComplete      chan JobComplete
@@ -214,7 +238,8 @@ type Application struct {
 	// constant directly so a test can drive the ticker arm of runCheckpoint's
 	// select without waiting 30 seconds — the seam between the loop and
 	// reevaluateStalls is otherwise unpinnable, and was.
-	stallRecheckInterval time.Duration
+	stallRecheckInterval   time.Duration
+	lowDiskRecheckInterval time.Duration
 
 	// maxPenalty overrides the maximum server penalty duration for tests.
 	maxPenalty time.Duration
@@ -423,6 +448,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.barrierKick = make(chan string, 64)
 	app.stallKick = make(chan struct{}, 1)
 	app.stallRecheckInterval = stallRecheckInterval
+	app.lowDiskRecheckInterval = defaultLowDiskRecheckInterval
 	app.checkpointInterval = time.Duration(dl.CheckpointInterval) * time.Second
 	app.checkpointBytes = int64(dl.CheckpointBytes)
 	app.shutdownStepTimeout = 15 * time.Second
@@ -670,10 +696,23 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}, log)
 	app.assembler = asm
 	p.assembler = asm
-	app.diskProbe = assembler.NewDiskProbe(assembler.DefaultDiskProbeTTL)
+	if app.diskProbe == nil {
+		app.diskProbe = assembler.NewDiskProbe(assembler.DefaultDiskProbeTTL)
+	}
 	app.RecordHeartbeat()
 
 	return app, nil
+}
+
+// WithDiskProbe overrides the free-space probe used by DownloadDirFreeBytes
+// and low-disk auto-resume.
+func WithDiskProbe(p DiskProbe) func(*Application) {
+	return func(a *Application) { a.diskProbe = p }
+}
+
+// WithLowDiskRecheckInterval overrides the low-disk auto-resume polling cadence.
+func WithLowDiskRecheckInterval(d time.Duration) func(*Application) {
+	return func(a *Application) { a.lowDiskRecheckInterval = d }
 }
 
 // WithCheckpointInterval overrides the checkpoint cadence, for tests that
@@ -1438,7 +1477,7 @@ func (app *Application) Start(ctx context.Context) error {
 	// flips true (via CompareAndSwap) before this point, so a concurrent
 	// ReloadDownloader call could otherwise race an unguarded read of
 	// app.downloader against its own field swap — the same torn-read class
-	// fixed in #98. See handleLowDisk/Shutdown for the same pattern.
+	// fixed in #98. See stopWorkers for the same pattern.
 	app.mu.Lock()
 	dl := app.downloader
 	app.mu.Unlock()
@@ -1548,6 +1587,8 @@ func (app *Application) stepTimeout() time.Duration {
 // arrive, and the file handles the barrier needs still exist. See
 // Application.shutdownCheckpoint.
 func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, barrier finalBarrier) {
+	app.stopLowDiskWatch()
+
 	// Barrier on reloadMu: stopped is now true, so any ReloadDownloader call
 	// that arrives after this point sees it and returns immediately without
 	// doing any work. But a reload already past that check when we set
@@ -3263,17 +3304,16 @@ func (app *Application) SetCompleteDir(dir string) {
 	app.log.Info("complete dir updated", "dir", dir)
 }
 
-// PauseDownloads cancels all in-flight fetch operations and flushes the
-// speed meter so the UI graph drops to zero immediately. Call this in
-// addition to dispatcher.Pause(), which only prevents new dispatch.
-//
-// It then broadcasts queue_updated, because the metrics tick does not: it emits
-// one only while speed is above zero, which a pause makes false. The API
-// handlers that call this (control.go and queue.go in internal/api) pause the
-// dispatcher first when one is configured, so the queue a client re-polls on that event already
-// reports paused.
+// PauseDownloads records a user pause, stops any low-disk auto-resume watch,
+// pauses the dispatcher queue and downloader (cancelling in-flight fetches and
+// flushing the speed meter), and broadcasts queue_updated.
 func (app *Application) PauseDownloads() {
 	app.mu.Lock()
+	app.pauseReason = pauseReasonUser
+	app.stopLowDiskWatchLocked()
+	if app.dispatcher != nil {
+		app.dispatcher.Pause()
+	}
 	if app.downloader != nil {
 		app.downloader.Pause()
 	}
@@ -3282,11 +3322,16 @@ func (app *Application) PauseDownloads() {
 	app.emit(Event{Type: "queue_updated"})
 }
 
-// ResumeDownloads creates a fresh fetch context so workers can dial and
-// fetch again, then pokes the dispatch loop and broadcasts queue_updated, the
-// mirror of PauseDownloads (the same handlers resume the dispatcher first).
+// ResumeDownloads clears the pause reason, stops any low-disk auto-resume
+// watch, resumes the dispatcher queue and downloader, and broadcasts
+// queue_updated.
 func (app *Application) ResumeDownloads() {
 	app.mu.Lock()
+	app.pauseReason = pauseReasonNone
+	app.stopLowDiskWatchLocked()
+	if app.dispatcher != nil {
+		app.dispatcher.Resume()
+	}
 	if app.downloader != nil {
 		app.downloader.Resume()
 	}
@@ -3318,21 +3363,122 @@ func (app *Application) UnblockServer(name string) bool {
 }
 
 // handleLowDisk is invoked by the assembler worker goroutine when free space
-// on the target directory drops below the configured threshold. It snapshots
-// app.downloader rather than locking across Pause(): holding app.mu across
-// Pause() would invert lock order against ReloadDownloader, which holds
-// app.mu for its entire body including downloader.Stop().
+// on the target directory drops below the configured threshold. Under app.mu
+// (matching PauseDownloads and ResumeDownloads so concurrent pause/resume
+// transitions never leave dispatcher and downloader out of sync), it pauses
+// both the dispatcher queue (setting sched.Queue.paused / GlobalPause, which
+// makes /api?mode=queue and /api?mode=status report paused:true and gates
+// every new state move in Advance — including Assessing, Repairing,
+// Extracting, and Finalizing entry — while leaving any worker already launched
+// before the pause running to completion) and the downloader, records
+// pauseReasonLowDisk unless a user pause is already active, and starts the
+// recurring free-space watch so downloads auto-resume once free space recovers
+// at or above the threshold.
 func (app *Application) handleLowDisk(dir string, freeBytes int64) {
 	app.mu.Lock()
-	dl := app.downloader
-	app.mu.Unlock()
-	// --- No lock held below this line ---
-	if dl != nil {
-		dl.Pause()
+	if app.pauseReason != pauseReasonUser {
+		app.pauseReason = pauseReasonLowDisk
 	}
+	if app.dispatcher != nil {
+		app.dispatcher.Pause()
+	}
+	if app.downloader != nil {
+		app.downloader.Pause()
+	}
+	if app.pauseReason == pauseReasonLowDisk && !app.stopping.Load() && !app.stopped.Load() && app.lowDiskRecheckInterval > 0 && app.lowDiskCancel == nil {
+		watchCtx, cancel := context.WithCancel(app.ctx)
+		app.lowDiskCancel = cancel
+		interval := app.lowDiskRecheckInterval
+		app.lowDiskWg.Go(func() {
+			app.watchLowDisk(watchCtx, dir, interval)
+		})
+	}
+	app.mu.Unlock()
 	app.log.Warn("low disk space, downloads paused",
 		"dir", dir,
 		"freeMB", freeBytes/(1024*1024))
+	app.emit(Event{Type: "queue_updated"})
+}
+
+func (app *Application) stopLowDiskWatchLocked() {
+	if app.lowDiskCancel != nil {
+		app.lowDiskCancel()
+		app.lowDiskCancel = nil
+	}
+}
+
+func (app *Application) stopLowDiskWatch() {
+	app.mu.Lock()
+	if app.pauseReason == pauseReasonLowDisk {
+		app.pauseReason = pauseReasonNone
+	}
+	app.stopLowDiskWatchLocked()
+	app.mu.Unlock()
+	app.lowDiskWg.Wait()
+}
+
+func (app *Application) watchLowDisk(ctx context.Context, dir string, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if app.tryAutoResumeLowDisk(ctx, dir) {
+				return
+			}
+		}
+	}
+}
+
+func (app *Application) tryAutoResumeLowDisk(ctx context.Context, dir string) bool {
+	probeDir := dir
+	probeCtx, cancel := context.WithTimeout(ctx, lowDiskProbeTimeout)
+	free, err := app.diskProbe.FreeBytes(probeCtx, probeDir)
+	if errors.Is(err, os.ErrNotExist) {
+		if dlDir := app.downloadDir(); dlDir != "" && dlDir != probeDir {
+			probeDir = dlDir
+			free, err = app.diskProbe.FreeBytes(probeCtx, probeDir)
+		}
+	}
+	cancel()
+	if err != nil {
+		app.log.Warn("low-disk auto-resume check failed", "dir", probeDir, "err", err)
+		return false
+	}
+	// Exact complement of assembler.checkDiskSpace's `free < minFreeBytes`
+	// check (internal/assembler/assembler.go): min_free_space is itself the
+	// user-configured reserve margin. On Linux filesystems where fallocate
+	// succeeds (internal/assembler/preallocate_linux.go), already-open files
+	// preallocated their full ExpectedSize on their first segment write, so
+	// subsequent writes to those open files do not consume additional blocks
+	// (opening the next file, or writing on non-Linux / filesystems without
+	// fallocate support where preallocateFile is a no-op, may still allocate
+	// blocks and re-trip handleLowDisk if free space drops below MinFreeBytes).
+	if free < app.assembler.MinFreeBytes() {
+		return false
+	}
+
+	app.mu.Lock()
+	if app.pauseReason != pauseReasonLowDisk || app.stopping.Load() || app.stopped.Load() {
+		app.mu.Unlock()
+		return true
+	}
+	app.pauseReason = pauseReasonNone
+	app.stopLowDiskWatchLocked()
+	if app.dispatcher != nil {
+		app.dispatcher.Resume()
+	}
+	if app.downloader != nil {
+		app.downloader.Resume()
+	}
+	app.mu.Unlock()
+	app.log.Info("disk space recovered, downloads auto-resumed",
+		"dir", probeDir,
+		"freeMB", free/(1024*1024))
+	app.emit(Event{Type: "queue_updated"})
+	return true
 }
 
 // ServerStatus returns a point-in-time snapshot of all servers,

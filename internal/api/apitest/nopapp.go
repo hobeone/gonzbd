@@ -67,11 +67,19 @@ func (n NopApp) SetDownloadDir(string) error { return nil }
 // SetCompleteDir is a stub.
 func (n NopApp) SetCompleteDir(string) {}
 
-// PauseDownloads is a stub.
-func (n NopApp) PauseDownloads() {}
+// PauseDownloads forwards to Dispatcher.Pause when a Dispatcher is set.
+func (n NopApp) PauseDownloads() {
+	if n.Dispatcher != nil {
+		n.Dispatcher.Pause()
+	}
+}
 
-// ResumeDownloads is a stub.
-func (n NopApp) ResumeDownloads() {}
+// ResumeDownloads forwards to Dispatcher.Resume when a Dispatcher is set.
+func (n NopApp) ResumeDownloads() {
+	if n.Dispatcher != nil {
+		n.Dispatcher.Resume()
+	}
+}
 
 // DisconnectAll is a stub.
 func (n NopApp) DisconnectAll() {}

@@ -2428,12 +2428,14 @@ type queueSpyApp struct {
 }
 
 func (a *queueSpyApp) PauseDownloads() {
+	a.NopApp.PauseDownloads()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.paused++
 }
 
 func (a *queueSpyApp) ResumeDownloads() {
+	a.NopApp.ResumeDownloads()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.resumed++
@@ -2512,16 +2514,10 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200", rr.Code)
 		}
-		if !disp.Paused() {
-			t.Error("expected queue to be paused")
-		}
 
 		rr = apiGet(t, s.Handler(), "/api?mode=queue&name=resume_all&apikey="+testAPIKey)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d; want 200", rr.Code)
-		}
-		if disp.Paused() {
-			t.Error("expected queue to be resumed")
 		}
 	})
 

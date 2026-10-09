@@ -173,6 +173,15 @@ func TestNopApp_Contract(t *testing.T) {
 		History:    repo,
 	}
 
+	wiredApp.PauseDownloads()
+	if !disp.Paused() {
+		t.Error("disp.Paused() = false after wired PauseDownloads(), want true")
+	}
+	wiredApp.ResumeDownloads()
+	if disp.Paused() {
+		t.Error("disp.Paused() = true after wired ResumeDownloads(), want false")
+	}
+
 	if name, err := wiredApp.RenameJob("job1", "Renamed"); err != nil || name != "Renamed" {
 		t.Errorf("wired RenameJob() = %q, %v; want Renamed, nil", name, err)
 	}

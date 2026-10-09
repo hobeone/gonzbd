@@ -108,7 +108,7 @@ func TestServerStatus_DelegatesToDownloaderStats(t *testing.T) {
 // the pattern used by TestBuildDownloaderOptions_Defaults.
 func TestHandleLowDisk_NilDownloader(t *testing.T) {
 	t.Parallel()
-	app := &Application{log: slog.New(slog.DiscardHandler)}
+	app := &Application{log: slog.New(slog.DiscardHandler), emitter: dummyEmitter{}}
 
 	app.handleLowDisk("/tmp/somewhere", 1024)
 }
@@ -118,7 +118,7 @@ func TestHandleLowDisk_NilDownloader(t *testing.T) {
 func TestHandleLowDisk_PausesDownloader(t *testing.T) {
 	t.Parallel()
 	fd := newFakeDownloader()
-	app := &Application{log: slog.New(slog.DiscardHandler), downloader: fd}
+	app := &Application{log: slog.New(slog.DiscardHandler), emitter: dummyEmitter{}, downloader: fd}
 
 	app.handleLowDisk("/tmp/somewhere", 1024)
 
