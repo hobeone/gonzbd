@@ -296,12 +296,13 @@ func repoRoot() (string, error) {
 //
 // take must move the new articles out of w.written, or an article is reported
 // twice within one unconfirmed window and the report grows per barrier. And it
-// must NOT drop the unconfirmed set, or a barrier whose Sync failed strands
-// articles that no later Drain will ever mention again — which for a completed
-// file is the bound FinalizeFile trims to, sitting below real bytes.
+// must NOT drop the unconfirmed set, or a barrier whose commit or ack failed
+// after Sync strands articles that no later Drain will ever mention again —
+// which for a completed file is the bound FinalizeFile trims to, sitting below
+// real bytes.
 //
-// The Sync is the only thing that may discard the set, so it is asserted last
-// and on its own.
+// Confirm is what discards the set after a successful cycle, so it is asserted
+// last and on its own.
 func TestFileWriter_TakeReportsUntilTheCycleIsConfirmed(t *testing.T) {
 	w := newTestFileWriter(t)
 	if err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 0, []byte("abcd"), 0); err != nil {
@@ -316,8 +317,8 @@ func TestFileWriter_TakeReportsUntilTheCycleIsConfirmed(t *testing.T) {
 			"twice within one window and the report would grow per barrier", got)
 	}
 	if second := w.take(); len(second) != 1 {
-		t.Errorf("take = %v with no Sync in between, want the same one article — a barrier "+
-			"whose Sync failed would otherwise strand it with no ack able to reach it", second)
+		t.Errorf("take = %v with no Confirm in between, want the same one article — a barrier "+
+			"whose commit or ack failed would otherwise strand it with no ack able to reach it", second)
 	}
 	if err := w.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)

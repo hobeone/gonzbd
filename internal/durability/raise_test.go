@@ -76,6 +76,7 @@ func TestRaise(t *testing.T) {
 	}{
 		{"a deliberate close", fmt.Errorf("worker: %w", ErrFileNotOpen)},
 		{"an unavailable target", fmt.Errorf("stopped: %w", ErrTargetUnavailable)},
+		{"an incomplete file after rollback", fmt.Errorf("rolled back: %w", ErrFileIncomplete)},
 	} {
 		t.Run(tc.name+" is not a storage condition", func(t *testing.T) {
 			s := &recordingStall{}
@@ -125,6 +126,14 @@ func TestRaise(t *testing.T) {
 		}
 		if len(s.stalled) != 1 {
 			t.Errorf("stalled %d times, want 1", len(s.stalled))
+		}
+		if got := storeFailure(context.Background(), syscall.EIO); !errors.Is(got, syscall.EIO) {
+			t.Errorf("storeFailure on live ctx = %v, want EIO", got)
+		}
+		rs := NewStore(openTestDB(t), "history.db")
+		b := NewBarrier(rs, &recordingAcker{}, s, slog.New(slog.DiscardHandler))
+		if _, err := b.wrappedCommit(context.Background(), "job-1", nil); err != nil {
+			t.Errorf("wrappedCommit(nil) = %v, want nil", err)
 		}
 	})
 }

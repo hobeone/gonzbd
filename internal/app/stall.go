@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -239,6 +240,17 @@ func (app *Application) setFinalizeState(jobID string, fileIdx int, st finalizeS
 	}
 }
 
+// dropPendingFinalize removes one file from a job's pending-finalize map when a
+// failed Drain or Sync rolled its parts back below TotalParts (#760), keeping
+// the stall record itself so Phase 2 can still release the park it owns.
+func (app *Application) dropPendingFinalize(jobID string, fileIdx int) {
+	app.stallMu.Lock()
+	defer app.stallMu.Unlock()
+	if rec, ok := app.stalls[jobID]; ok {
+		delete(rec.files, fileIdx)
+	}
+}
+
 // completeFinalizeRecovery drops one file from a job's recovery set, and the
 // whole record once nothing is left to recover.
 func (app *Application) completeFinalizeRecovery(jobID string, fileIdx int) {
@@ -403,6 +415,15 @@ func (app *Application) reevaluateStall(ctx context.Context, jobID string) {
 		case err == nil:
 			app.setFinalizeState(jobID, fileIdx, finalizeDone)
 			files[fileIdx] = finalizeDone
+		case errors.Is(err, durability.ErrFileIncomplete):
+			// A failed Drain or Sync rolled back one or more of this file's
+			// articles to Outstanding and lifted the assembler's completed
+			// tombstone (#760). Keep the open FileWriter handle in place and
+			// drop the pending finalize entry: once Phase 2 resumes the job,
+			// re-fetching the Outstanding articles will reach TotalParts on
+			// the same FileWriter and fire OnFileComplete afresh.
+			app.dropPendingFinalize(jobID, fileIdx)
+			delete(files, fileIdx)
 		case errors.Is(err, errFinalizeUnrecoverable):
 			app.stallLost(jobID, fileIdx)
 			files[fileIdx] = finalizeLost

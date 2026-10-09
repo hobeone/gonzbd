@@ -398,7 +398,7 @@ then sort, then group, then merge.**
 stored rows wholly intact, because `Store.commit` is atomic and is the last
 thing that can fail before the ack.
 
-### 3. A drain is at-least-once, and a report survives a failed sync
+### 3. A drain is at-least-once across post-sync failures, and a failed sync poisons the report
 
 `SyncTarget.Drain` may re-report an article a previous `Drain` already returned,
 and `Store.commit` absorbs the duplicate (R12): an article whose `ArtIdx` a
@@ -407,26 +407,56 @@ twice and never widens `Σ length`. See §2 for why that subtraction has to
 happen at article granularity rather than per run.
 
 `FileWriter` keeps two slices to make that true: `written` (reported by no
-`Drain` yet) and `reported` (handed to a `Drain`, not yet confirmed by a
-`Sync`). **Only `Confirm` discards `reported`**, and the barrier calls it solely
-once the runs are committed and the articles are acked. A barrier that drains
-and then fails — at the sync, the run commit, the ack, or the truncate —
-re-reports on the next attempt.
+`Drain` yet) and `reported` (handed to a `Drain`, awaiting confirmation after a
+successful `Sync`). **`Confirm` discards `reported` once the runs are committed
+and the articles are acked, while a failed `Sync` poisons and releases it
+(#760).** A barrier that drains, completes `Sync`, and then fails — at the
+post-sync stat, the run commit, the ack, or the truncate — re-reports on the
+next attempt.
 
-Releasing on the `Sync` would cover only the first of those. The fsync makes the
-bytes durable, but the commit and the ack still follow it, and a failure between
-them left the retry with nothing to re-report while the bytes sat on disk
-unacked — the file could then never complete for the life of the handle, because
-a redelivery is dropped as a duplicate.
+Releasing on a *successful* `Sync` would lose the report to any failure between
+the fsync and the ack: the fsync makes the bytes durable, but the commit and the
+ack still follow it, and a failure between them left the retry with nothing to
+re-report while the bytes sat on disk unacked — the file could then never
+complete for the life of the handle, because a redelivery is dropped as a
+duplicate. For a **completed** file whose `Sync` succeeded, losing that report
+to a post-`Sync` failure also costs bytes: the retry drains nothing, so the
+bound `FinalizeFile` trims to sits below bytes that are genuinely on disk, and
+the truncate destroys them.
 
-This is load-bearing rather than tidy. For a file still being written, losing a
-report costs a re-fetch. For a **completed** file it costs bytes: the retry
-drains nothing, so the bound `FinalizeFile` trims to sits below bytes that are
-genuinely on disk, and the truncate destroys them.
+By contrast, when `Sync` **itself** fails (`w.syncFile()` returns an error), the
+retained report must **not** be re-drained (#760). Linux reports a writeback
+error to a file descriptor once (`errseq`) and marks the failed pages clean; a
+subsequent `fsync` on the same descriptor can return `nil` with nothing to
+write. `FileWriter.poisonSync` therefore discards `reported` and `written`,
+unlatches `written` on `accepted`, and rolls every affected article back into
+`faulted` so `opSync` (and `drainAndClose`) routes them through
+`OnArticlesUnwritten` back to `Outstanding` to be fetched again.
 
-The split between the two slices is what keeps an article written *between* a
-`Drain` and its `Sync` from being discarded by that `Sync`: it is still in
-`written`, which `Sync` does not touch.
+When that rollback (or a failed `Drain`) drops a previously completed file's
+`partsWritten` below `TotalParts`, `Assembler.releaseSyncRollback` lifts the
+`completed[key]` tombstone and marks the `openFile` rolled back (`f.rolledBack =
+true`). On the stall recovery pass (`Application.reevaluateStall` →
+`retryFinalize` → `Barrier.FinalizeFile`) or an in-flight completion that runs
+after a checkpoint rollback (`handleFileComplete` → `finalizeCompletedFile` →
+`routeFinalizeFailure`), `jobSyncTarget` (in
+`internal/assembler/synctarget.go`, the sole production implementation of
+`durability.SyncTarget` and `durability.Truncator` — `git grep -n
+'^func (.*) Confirm(ctx' -- '*.go'` returns
+`internal/assembler/synctarget.go:422` alone) answers `Truncate` with
+`durability.ErrFileIncomplete`. `finalizeCompletedFile` returns that non-nil
+error so its deferred `CloseFile` keeps the `FileWriter` handle open in
+`open[key]`, `routeFinalizeFailure` returns without stalling or queueing a
+pending finalize, and `reevaluateStall` drops the file from the
+pending-finalize map (`dropPendingFinalize`) without marking it complete or
+blocking the job's resume. Once the job resumes and the re-fetched `Outstanding`
+articles land on that same open `FileWriter`, `partsWritten` reaches
+`TotalParts` again, `finalizeFile` clears `f.rolledBack` and fires
+`OnFileComplete`, and `FinalizeFile` trims the file to its full decoded extent.
+
+The split between `written` and `reported` is what keeps an article written
+*between* a `Drain` and a **successful** `Sync` from being discarded when that
+cycle's `Confirm` runs: it stays in `written`, which `Confirm` does not touch.
 
 ### 4. The truncate bound is `max(offset+length)` over the runs, and only ever shrinks
 
