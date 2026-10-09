@@ -4,9 +4,9 @@ run TestOpen_TakesTheWriteLockAtBegin
 [the _txlock=immediate DSN parameter dropped]
 file internal/history/db.go
 --- anchor
-	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_txlock=immediate"
+	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)&_txlock=immediate"
 --- replace
-	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)"
 --- end
 
 [the DSN keeping the parameter but selecting deferred]

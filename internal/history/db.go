@@ -86,7 +86,11 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// transactions serialize from their first statement rather than their
 	// first write, which SQLite does anyway — it permits one writer at a
 	// time regardless.
-	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_txlock=immediate"
+	//
+	// synchronous(FULL) fsyncs the WAL on each transaction commit rather than
+	// only at checkpoints, so a committed queue or history write survives
+	// power loss once its transaction returns.
+	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)&_txlock=immediate"
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("history: open %q: %w", path, err)

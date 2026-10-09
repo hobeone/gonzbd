@@ -94,6 +94,64 @@ func TestOpen(t *testing.T) {
 	})
 }
 
+func TestOpen_SetsSynchronousFullOnPooledConnections(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	conn1, err := db.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("first Conn: %v", err)
+	}
+	t.Cleanup(func() { _ = conn1.Close() })
+
+	// Check out a second connection while conn1 is still held so the pool
+	// opens a distinct underlying SQLite connection, verifying the connection-scoped
+	// DSN pragmas (synchronous, foreign_keys, busy_timeout) apply to every
+	// pooled connection rather than only to the initial checkout at Open.
+	conn2, err := db.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("second Conn: %v", err)
+	}
+	t.Cleanup(func() { _ = conn2.Close() })
+
+	const (
+		sqliteSynchronousFull = 2
+		wantForeignKeys       = 1
+		wantBusyTimeout       = 5000
+	)
+	for i, conn := range []*sql.Conn{conn1, conn2} {
+		var syncMode int
+		if err := conn.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&syncMode); err != nil {
+			t.Fatalf("conn %d PRAGMA synchronous: %v", i+1, err)
+		}
+		if syncMode != sqliteSynchronousFull {
+			t.Errorf("conn %d PRAGMA synchronous = %d, want %d (FULL)", i+1, syncMode, sqliteSynchronousFull)
+		}
+
+		var foreignKeys int
+		if err := conn.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+			t.Fatalf("conn %d PRAGMA foreign_keys: %v", i+1, err)
+		}
+		if foreignKeys != wantForeignKeys {
+			t.Errorf("conn %d PRAGMA foreign_keys = %d, want %d", i+1, foreignKeys, wantForeignKeys)
+		}
+
+		var busyTimeout int
+		if err := conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+			t.Fatalf("conn %d PRAGMA busy_timeout: %v", i+1, err)
+		}
+		if busyTimeout != wantBusyTimeout {
+			t.Errorf("conn %d PRAGMA busy_timeout = %d, want %d", i+1, busyTimeout, wantBusyTimeout)
+		}
+	}
+}
+
 func TestDB_Ping(t *testing.T) {
 	t.Parallel()
 	t.Run("nil db returns error", func(t *testing.T) {
