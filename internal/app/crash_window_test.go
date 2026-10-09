@@ -234,6 +234,11 @@ func TestStrandedComplete_Predicate(t *testing.T) {
 			"below passes for the wrong reason")
 	}
 
+	// No progress at all (a job not resident) is never stranded.
+	if strandedComplete(nil, m, 0) {
+		t.Error("a nil progress was reported stranded")
+	}
+
 	// An out-of-range index must not panic on p.files or m.FileRange. The
 	// sweep only ever passes indices it walked, so this is a guard on the
 	// helper's own contract rather than on a reachable call.

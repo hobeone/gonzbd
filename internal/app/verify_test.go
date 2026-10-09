@@ -716,3 +716,21 @@ func TestFinishIfResolved(t *testing.T) {
 		t.Errorf("every article verified: finished=%v err=%v, want finished", ok, err)
 	}
 }
+
+// TestErrVerifyFault pins the message and the unwrap chain reconcileResidency
+// relies on to park the job.
+func TestErrVerifyFault(t *testing.T) {
+	t.Parallel()
+	f := &errVerifyFault{File: "/dl/a.bin", Err: syscall.EIO}
+	msg := f.Error()
+	if !strings.Contains(msg, "/dl/a.bin") || !strings.Contains(msg, syscall.EIO.Error()) {
+		t.Errorf("Error() = %q, want it to name the file and the cause", msg)
+	}
+	var wrapped error = fmt.Errorf("outer: %w", f)
+	if !errors.Is(wrapped, syscall.EIO) {
+		t.Error("errors.Is(wrapped, EIO) = false, want Unwrap to expose the cause")
+	}
+	if got, ok := errors.AsType[*errVerifyFault](wrapped); !ok || got != f {
+		t.Errorf("errors.AsType = %v, %v, want the original fault", got, ok)
+	}
+}
