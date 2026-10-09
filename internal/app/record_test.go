@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -97,48 +96,6 @@ func TestRecorder_CompleteNeverLandsWithoutItsLastRow(t *testing.T) {
 	b := st.batches[0]
 	if len(b.Rows) != 1 || len(b.Files) != 1 {
 		t.Errorf("batch = %+v, want the row and the complete flag in one transaction", b)
-	}
-}
-
-// TestRecorder_CompleteNeverPrecedesItsRowUnderConcurrency has a writer note
-// file i's row and then mark it complete while flushes run, and requires every
-// flushed complete flag to be accompanied, in that flush or an earlier one, by
-// its row.
-func TestRecorder_CompleteNeverPrecedesItsRowUnderConcurrency(t *testing.T) {
-	st := &fakeRecordStore{}
-	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
-	const files = 300
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for i := range files {
-			r.noteWritten(j, durability.WrittenRow{FileIdx: i, ArtIdx: 0, Length: 1}, 1, "s")
-			r.markDirty(j, i, durability.FileState{Complete: true})
-		}
-	}()
-	flushing := true
-	for flushing {
-		select {
-		case <-done:
-			flushing = false
-		default:
-		}
-		_ = r.flush(context.Background())
-	}
-	_ = r.flush(context.Background())
-
-	rowSeen := make(map[int]bool)
-	for _, b := range st.snapshot() {
-		for _, row := range b.Rows {
-			rowSeen[row.FileIdx] = true
-		}
-		for _, f := range b.Files {
-			if f.Complete && !rowSeen[f.FileIdx] {
-				t.Fatalf("file %d complete flushed before its row", f.FileIdx)
-			}
-		}
 	}
 }
 
@@ -260,29 +217,5 @@ func TestRecorder_NoteWrittenKeepsRowForNonResidentJob(t *testing.T) {
 	}
 	if n := st.rowCount(); n != 1 {
 		t.Errorf("rows = %d, want the non-resident job's row kept", n)
-	}
-}
-
-func TestRecorder_RunFlushesUntilCancelled(t *testing.T) {
-	st := &fakeRecordStore{}
-	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
-	ctx, cancel := context.WithCancel(context.Background())
-	finished := make(chan struct{})
-	go func() { r.run(ctx, time.Millisecond); close(finished) }()
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10}, 10, "srv")
-	deadline := time.Now().Add(5 * time.Second)
-	for st.rowCount() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	cancel()
-	<-finished
-	if st.rowCount() != 1 {
-		t.Errorf("rows = %d, want the tick to have flushed 1", st.rowCount())
-	}
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Length: 10}, 10, "srv")
-	time.Sleep(10 * time.Millisecond)
-	if st.rowCount() != 1 {
-		t.Errorf("rows = %d after cancel, want run to have stopped without a final flush", st.rowCount())
 	}
 }

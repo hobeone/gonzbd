@@ -19,12 +19,21 @@ type recordStore interface {
 
 // recorder buffers one row per written article and one FileState per dirty
 // file, keyed by job instance, and writes them in one transaction per flush.
-// Verdicts go through apply, the same writer, so nothing here is a second
-// path to written_articles or the job_files updates.
+// Verdicts go through apply, which takes the same writer lock as flush.
 type recorder struct {
 	st      recordStore
 	current func(id string) *job.Job
 	log     *slog.Logger
+
+	// wmu is a deliberate serialising writer lock, held across I/O: flush holds
+	// it from its snapshot through ApplyRecord and any remerge, and apply holds
+	// it from its purge through ApplyRecord. That is what stops an in-flight
+	// flush from writing back, or re-merging, rows an untrust has just removed.
+	// Lock order is wmu, then mu, then the dispatcher's mu (through current,
+	// which flush calls before it takes mu). No caller of flush or apply may
+	// hold the dispatcher's mu. noteWritten and markDirty take only mu, so the
+	// download hot path never waits on a store call.
+	wmu sync.Mutex
 
 	mu      sync.Mutex // guards pending and dirty
 	pending map[*job.Job][]durability.WrittenRow
@@ -78,38 +87,83 @@ func (r *recorder) isCurrent(j *job.Job) bool {
 	return r.current(j.ID()) == j
 }
 
-// takeRowsLocked empties pending, dropping rows of replaced instances.
-func (r *recorder) takeRowsLocked() map[*job.Job][]durability.WrittenRow {
-	out := make(map[*job.Job][]durability.WrittenRow, len(r.pending))
+// liveInstances runs the instance check once for every job with buffered state
+// and returns the answers, so both halves of a snapshot are filtered by the
+// same one. It calls current with mu released. A job first buffered after the
+// listing is absent from the result and is left for the next flush.
+func (r *recorder) liveInstances() map[*job.Job]bool {
+	r.mu.Lock()
+	jobs := make([]*job.Job, 0, len(r.pending)+len(r.dirty))
+	for j := range r.pending {
+		jobs = append(jobs, j)
+	}
+	for j := range r.dirty {
+		if _, ok := r.pending[j]; !ok {
+			jobs = append(jobs, j)
+		}
+	}
+	r.mu.Unlock()
+
+	live := make(map[*job.Job]bool, len(jobs))
+	for _, j := range jobs {
+		live[j] = r.isCurrent(j)
+	}
+	return live
+}
+
+// takeRowsLocked removes from pending the rows of every job live has an answer
+// for, and returns those of current instances.
+func (r *recorder) takeRowsLocked(live map[*job.Job]bool) map[*job.Job][]durability.WrittenRow {
+	out := make(map[*job.Job][]durability.WrittenRow, len(live))
 	for j, rows := range r.pending {
-		if r.isCurrent(j) {
+		current, checked := live[j]
+		if !checked {
+			continue
+		}
+		delete(r.pending, j)
+		if current {
 			out[j] = rows
 		}
 	}
-	r.pending = make(map[*job.Job][]durability.WrittenRow)
 	return out
 }
 
-// takeFilesLocked empties dirty, dropping files of replaced instances.
-func (r *recorder) takeFilesLocked() map[*job.Job]map[int]durability.FileState {
-	out := make(map[*job.Job]map[int]durability.FileState, len(r.dirty))
+// takeFilesLocked is takeRowsLocked for dirty file states.
+func (r *recorder) takeFilesLocked(live map[*job.Job]bool) map[*job.Job]map[int]durability.FileState {
+	out := make(map[*job.Job]map[int]durability.FileState, len(live))
 	for j, files := range r.dirty {
-		if r.isCurrent(j) {
+		current, checked := live[j]
+		if !checked {
+			continue
+		}
+		delete(r.dirty, j)
+		if current {
 			out[j] = files
 		}
 	}
-	r.dirty = make(map[*job.Job]map[int]durability.FileState)
 	return out
 }
 
 // flush takes ONE snapshot of the pending rows and dirty files under mu, so a
 // file's complete flag cannot land without the rows noted before it was
-// marked, and writes it with mu released. On a store error the snapshot is
-// merged back for the next flush.
+// marked, and writes it with mu released but wmu held. On a store error the
+// snapshot is merged back for the next flush before wmu is released.
 func (r *recorder) flush(ctx context.Context) error {
+	r.wmu.Lock()
+	err := r.flushLocked(ctx)
+	r.wmu.Unlock()
+	if err != nil {
+		r.log.Warn("recorder: flush failed; will retry", "err", err)
+	}
+	return err
+}
+
+// flushLocked is flush's body; the caller holds wmu.
+func (r *recorder) flushLocked(ctx context.Context) error {
+	live := r.liveInstances()
 	r.mu.Lock()
-	rows := r.takeRowsLocked()
-	files := r.takeFilesLocked()
+	rows := r.takeRowsLocked(live)
+	files := r.takeFilesLocked(live)
 	r.mu.Unlock()
 
 	byJob := make(map[*job.Job]*durability.RecordBatch, len(rows)+len(files))
@@ -139,7 +193,6 @@ func (r *recorder) flush(ctx context.Context) error {
 	}
 	if err := r.st.ApplyRecord(ctx, batches); err != nil {
 		r.remerge(rows, files)
-		r.log.Warn("recorder: flush failed; will retry", "err", err)
 		return err
 	}
 	return nil
@@ -172,10 +225,15 @@ func (r *recorder) remerge(rows map[*job.Job][]durability.WrittenRow, files map[
 
 // apply commits verdicts for j synchronously. j comes from the caller and
 // current is not consulted: a retry commits its verdict before the rebuilt
-// job is added to the dispatcher. A DeleteAll verdict first purges the file's
-// pending rows and dirty state, and a DeleteArtIdxs verdict the named
-// pending rows, so a later background flush cannot write them back.
+// job is added to the dispatcher. It holds wmu from the purge through
+// ApplyRecord, so no flush is in flight that could write back what the verdict
+// removes, and the purge removes what is still buffered: a DeleteAll verdict
+// the file's pending rows, a DeleteArtIdxs verdict the named pending rows, and
+// any verdict that sets or clears complete the file's dirty state.
 func (r *recorder) apply(ctx context.Context, j *job.Job, v []durability.FileVerdict) error {
+	r.wmu.Lock()
+	defer r.wmu.Unlock()
+
 	r.mu.Lock()
 	for _, fv := range v {
 		r.purgeLocked(j, fv)
@@ -185,22 +243,25 @@ func (r *recorder) apply(ctx context.Context, j *job.Job, v []durability.FileVer
 }
 
 func (r *recorder) purgeLocked(j *job.Job, fv durability.FileVerdict) {
-	if !fv.DeleteAll && len(fv.DeleteArtIdxs) == 0 {
-		return
-	}
-	drop := make(map[int32]bool, len(fv.DeleteArtIdxs))
-	for _, a := range fv.DeleteArtIdxs {
-		drop[a] = true
-	}
-	kept := r.pending[j][:0]
-	for _, row := range r.pending[j] {
-		if row.FileIdx == fv.FileIdx && (fv.DeleteAll || drop[row.ArtIdx]) {
-			continue
+	if fv.DeleteAll || len(fv.DeleteArtIdxs) > 0 {
+		drop := make(map[int32]bool, len(fv.DeleteArtIdxs))
+		for _, a := range fv.DeleteArtIdxs {
+			drop[a] = true
 		}
-		kept = append(kept, row)
+		kept := r.pending[j][:0]
+		for _, row := range r.pending[j] {
+			if row.FileIdx == fv.FileIdx && (fv.DeleteAll || drop[row.ArtIdx]) {
+				continue
+			}
+			kept = append(kept, row)
+		}
+		if len(kept) == 0 {
+			delete(r.pending, j)
+		} else {
+			r.pending[j] = kept
+		}
 	}
-	r.pending[j] = kept
-	if fv.DeleteAll {
+	if fv.DeleteAll || fv.SetComplete || fv.ClearComplete {
 		delete(r.dirty[j], fv.FileIdx)
 	}
 }
