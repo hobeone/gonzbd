@@ -283,6 +283,10 @@ type Options struct {
 	// DiskCheckTimeout bounds each FreeBytes call in checkDiskSpace.
 	// Zero selects the default (5 seconds).
 	DiskCheckTimeout time.Duration
+
+	// SyncFile, if non-nil, overrides fh.Sync on newly opened FileWriters so
+	// cross-package tests can inject fsync faults without a dead mount.
+	SyncFile func() error
 }
 
 // fileKey uniquely identifies a target file within the assembler.
@@ -312,6 +316,11 @@ type fileKey struct {
 type openFile struct {
 	w    *FileWriter
 	info FileInfo
+	// rolledBack records that a completed file's tombstone was lifted by
+	// releaseSyncRollback after a failed Drain or Sync dropped parts() below
+	// TotalParts (#760), so opTruncate answers ErrFileIncomplete until the
+	// re-fetched articles reach TotalParts again in finalizeFile.
+	rolledBack bool
 }
 
 // Assembler receives decoded article data and writes it to target files using
@@ -1023,7 +1032,7 @@ func (a *Assembler) dispatchRequest(
 	if req.syncOp != nil {
 		// Control message: a barrier operation. Answered on this goroutine,
 		// which owns every file handle and every write cache (X1).
-		a.handleSyncOp(req.syncOp, open, wc)
+		a.handleSyncOp(req.syncOp, open, completed, wc)
 		return 0
 	}
 	if req.ackCh != nil && req.FileIdx == fileIdxCancelJob {
@@ -1236,14 +1245,17 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 	// only chance to return what the drain rolled back, because Close below
 	// throws the writer away and its faulted set with it.
 	a.releaseFaulted(f, key.jobID, key.fileIdx)
-	note("sync file before close", f.w.Sync())
+	if syncErr := f.w.Sync(); syncErr != nil {
+		note("sync file before close", syncErr)
+		a.releaseFaulted(f, key.jobID, key.fileIdx)
+	}
 	// A failing Close is a storage condition too, and on network-backed mounts
 	// it is frequently the first report of writes that never landed — the
 	// close is where a deferred error surfaces.
 	//
 	// The faulted set it returns is separate from that error and is expected
-	// to be empty: the releaseFaulted above drained it, and neither Sync nor
-	// Close can add to it. Routed anyway rather than dropped — unlike the
+	// to be empty: the releaseFaulted calls above drained any articles that
+	// Drain or a failing Sync rolled back, and Close does not add to it. Routed anyway rather than dropped — unlike the
 	// cancel path, this file is being closed normally and its articles are
 	// still wanted — and reported at Error, because a non-empty set here means
 	// a producer has appeared that nothing drains.
@@ -1648,6 +1660,9 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 		w:    newFileWriter(fh, info.Path, key, wc),
 		info: info,
 	}
+	if a.opts.SyncFile != nil {
+		f.w.syncFile = a.opts.SyncFile
+	}
 	open[key] = f
 	return f, nil
 }
@@ -1980,6 +1995,7 @@ func (a *Assembler) noteWriteFault(path string, req WriteRequest, err error) {
 // exit) still closes whatever is left in `open`.
 func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, completed map[fileKey]struct{}) {
 	completed[key] = struct{}{} // tombstone: reject late duplicates
+	f.rolledBack = false
 	telemetry.FilesCompleted.Add(1)
 	a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)
 	if a.opts.OnFileComplete != nil {

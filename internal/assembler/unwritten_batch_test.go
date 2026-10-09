@@ -56,7 +56,7 @@ func TestDrainFailure_ReportsEveryRolledBackArticle(t *testing.T) {
 	// Called directly because no worker is running, so nothing else touches
 	// the writer this owns (X1).
 	op := &syncOp{kind: opDrain, jobID: "job", fileIdx: 0, reply: make(chan syncReply, 1)}
-	a.handleSyncOp(op, open, wc)
+	a.handleSyncOp(op, open, nil, wc)
 	if r := <-op.reply; r.err == nil {
 		t.Fatal("the drain succeeded over a full device, so this test proves nothing")
 	}

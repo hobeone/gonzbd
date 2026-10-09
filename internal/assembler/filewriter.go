@@ -53,31 +53,24 @@ type FileWriter struct {
 	// from a successful writeAt (S2).
 	written []durability.WrittenArticle
 
-	// reported holds what a Drain has already handed to the barrier but whose
-	// CYCLE has not been confirmed. Drain returns it again, and Confirm — not
-	// Sync — is what finally discards it.
+	// reported holds what a Drain has already handed to the barrier while its
+	// cycle awaits confirmation after a successful Sync. Drain returns it
+	// again across post-Sync failures, and Confirm is what discards it once
+	// the cycle lands; a failed Sync poisons and releases it (#760).
 	//
-	// The distinction is the whole point. A successful fsync makes the bytes
-	// durable, but the barrier still has to commit the run rows and ack the
-	// articles, and both can fail after it. Releasing on the
-	// fsync covered only the first of the failures this retention exists for,
-	// while the doc below claimed all three.
+	// A successful fsync makes the bytes durable, but the barrier still has to
+	// commit the run rows and ack the articles, and both can fail after it.
+	// Retaining the report across those post-Sync failures is R12's
+	// at-least-once delivery: without it, a retry after a failed commit or ack
+	// drains nothing, so FinalizeFile's bound sits below bytes that are
+	// genuinely on disk (#342, #350).
 	//
-	// This is R12's at-least-once delivery, which SyncTarget.Drain explicitly
-	// blesses ("re-reporting an article a previous Drain already returned is
-	// permitted and expected"), and it is load-bearing rather than tidy. A
-	// barrier that drains and then fails — the sync, the run commit, the
-	// truncate — used to lose the report outright. For a file still being
-	// written that only cost a re-fetch. For a COMPLETED file it costs bytes:
-	// the retry drains nothing, so the bound FinalizeFile trims to
-	// sits below bytes that are genuinely on disk, and the truncate destroys
-	// them. That is the #342/#350 family arriving through the recovery path.
-	//
-	// An earlier version of this comment argued the opposite — that retaining
-	// the report would "trade a bounded cost for an unbounded slice". The
-	// bound it was worried about is real but small: entries accumulate only
-	// between CONFIRMED cycles, and a job whose barriers are failing stalls
-	// (R19) and stops writing.
+	// By contrast, a failed Sync itself must NOT retain the report (#760).
+	// Linux reports a writeback error to a file descriptor once (errseq) and
+	// marks the failed pages clean, so a later fsync on the same handle can
+	// return nil even though the bytes never reached disk. On a Sync failure,
+	// poisonSync discards reported and written and rolls their articles back
+	// into faulted so the caller returns them to Outstanding.
 	reported []durability.WrittenArticle
 
 	// seenDone and seenFailed keep duplicate handling idempotent (R12). They
@@ -322,8 +315,9 @@ func (w *FileWriter) noteWritten(id articleID, off int64, n int, crc32 uint32) {
 // made no claim.
 func (w *FileWriter) writtenSoFar() []durability.WrittenArticle { return w.written }
 
-// unconfirmed returns the articles a Drain has reported that no Sync has yet
-// confirmed. Used by tests to assert the report survives a failed Sync.
+// unconfirmed returns the articles a Drain has reported that no Confirm has
+// yet released. Used by tests to assert the report survives a successful Sync
+// until Confirm and is discarded by a failed Sync (#760).
 func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.reported }
 
 // failDisplaced resolves an article a LATER article displaced from the same
@@ -700,16 +694,18 @@ func (w *FileWriter) flushRun(run *flushRun) error {
 }
 
 // Drain flushes every buffered article for this file and returns the articles
-// whose bytes reached WriteAt without error since the last SUCCESSFUL Sync —
-// NOT since the last Drain.
+// whose bytes reached WriteAt without error since the last confirmed cycle
+// (and not poisoned by a failed Sync) — NOT merely since the last Drain.
 //
 // The distinction is load-bearing and this comment used to get it wrong. take()
-// re-reports everything a Drain has already handed over but no Sync has yet
-// confirmed, which is R12's at-least-once delivery. Reading "since the last
+// re-reports everything a Drain has already handed over across post-Sync
+// failures until Confirm releases it (or a failed Sync poisons and rolls it
+// back, #760), which is R12's at-least-once delivery. Reading "since the last
 // call" as the contract makes the re-report look redundant, and removing it
-// destroys bytes on a retried finalize: the retry drains nothing, so the
-// bound FinalizeFile trims to sits below bytes genuinely on disk. See
-// take() and the FileWriter.reported field doc, which are the authority.
+// destroys bytes on a retried finalize after a failed commit or ack: the retry
+// drains nothing, so the bound FinalizeFile trims to sits below bytes genuinely
+// on disk. See take() and the FileWriter.reported field doc, which are the
+// authority.
 //
 // It must NOT return an article that is merely buffered. S2 makes acceptance
 // and durability different things, and this return value is the only evidence
@@ -770,13 +766,14 @@ func (w *FileWriter) Drain() ([]durability.WrittenArticle, error) {
 }
 
 // take moves the newly written articles into the unconfirmed set and returns
-// the whole of it — everything written since the last SUCCESSFUL Sync.
+// the whole of it — everything written since the last confirmed cycle (and not
+// poisoned by a failed Sync).
 //
-// The split between the two slices is what keeps an article written BETWEEN a
-// Drain and its Sync from being discarded by that Sync: it is still in
-// w.written, which Sync does not touch, so the next Drain reports it. Folding
-// the two together would silently drop it — covered by the fsync, but never
-// claimed, so never acked.
+// The split between w.written and w.reported is what keeps an article written
+// BETWEEN a Drain and a successful Sync from being discarded when that cycle's
+// Confirm runs: it stays in w.written, which Confirm does not touch, so the
+// next Drain reports it. Folding the two together would silently drop it —
+// covered by the fsync, but never claimed, so never acked.
 func (w *FileWriter) take() []durability.WrittenArticle {
 	w.reported = append(w.reported, w.written...)
 	w.written = nil
@@ -786,27 +783,68 @@ func (w *FileWriter) take() []durability.WrittenArticle {
 // Sync fsyncs the handle. Until this returns nil, nothing a preceding Drain
 // reported may be claimed (S1).
 //
+// If the fsync fails, poisonSync discards the retained report (and any
+// articles written since the Drain) and rolls them back into faulted so the
+// caller returns them to Outstanding (#760): Linux reports a writeback error
+// once per file descriptor (errseq) and marks the failed pages clean, so a
+// retry fsync on the same handle can return nil even though the bytes never
+// reached disk.
+//
 // It takes no context, for the reason Drain documents at length: the guard was
 // unreachable, and reaching it would have turned a cancellation into a storage
 // fault and stalled a healthy job.
 func (w *FileWriter) Sync() error {
 	if err := w.syncFile(); err != nil {
+		w.poisonSync()
 		return storagefault.Classify("sync", w.path, err)
 	}
-	// The report is deliberately NOT discarded here. The fsync makes the
-	// bytes durable, but the runs are not yet committed and nothing is acked,
-	// and either of those can still fail. Clearing on the fsync covered only
-	// the first of the failures the retention exists for. Confirm is what
-	// releases it.
+	// The report is deliberately NOT discarded on a successful fsync. The
+	// fsync makes the bytes durable, but the runs are not yet committed and
+	// nothing is acked, and either of those can still fail. Confirm is what
+	// releases it once the cycle lands.
 	return nil
+}
+
+// poisonSync discards the unconfirmed report and rolls every article in
+// w.reported and w.written back into w.faulted so the caller returns them to
+// Outstanding (#760).
+func (w *FileWriter) poisonSync() {
+	for _, a := range w.reported {
+		w.rollbackSyncedArticle(a.ArtIdx)
+	}
+	for _, a := range w.written {
+		w.rollbackSyncedArticle(a.ArtIdx)
+	}
+	w.reported = nil
+	w.written = nil
+}
+
+// rollbackSyncedArticle unlatches written on w.accepted for artIdx and rolls
+// the article back into w.faulted if it is not already pending there.
+func (w *FileWriter) rollbackSyncedArticle(artIdx int32) {
+	id := articleID{artIdx: artIdx}
+	for i := range w.accepted {
+		if w.accepted[i].id.artIdx == artIdx {
+			w.accepted[i].written = false
+			id = w.accepted[i].id
+		}
+	}
+	for _, f := range w.faulted {
+		if !f.displaced && f.id.artIdx == artIdx {
+			return
+		}
+	}
+	w.fail(id)
 }
 
 // Confirm releases the drain report, and is called only once the barrier has
 // committed the runs and acked the articles.
 //
-// It is what bounds the retained set. Drain re-reports across any failure, so
-// without a confirmation the set would grow to every article ever written to
-// this file and every later checkpoint would redo all of it.
+// It is what bounds the retained set across post-Sync failures. Drain
+// re-reports across any failure after a successful Sync (while a failed Sync
+// poisons and releases the report, #760), so without a confirmation the set
+// would grow to every article ever written to this file and every later
+// checkpoint would redo all of it.
 //
 // Deliberately cannot fail. It records that work already succeeded, so there
 // is no outcome for a caller to handle: a missed Confirm costs one redundant

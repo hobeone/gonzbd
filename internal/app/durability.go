@@ -1683,6 +1683,17 @@ func (app *Application) routeFinalizeFailure(jobID string, fileIdx int, path str
 		app.notePendingFinalize(jobID, fileIdx)
 		return
 	}
+	// A concurrent checkpoint whose Drain or Sync failed after OnFileComplete
+	// was queued has already routed its own fault, lifted completed[key], and
+	// returned the rolled-back articles to Outstanding (#760). Once those
+	// articles are re-fetched and written to the open FileWriter, OnFileComplete
+	// fires again, so neither a second stall nor a pending-finalize note is owed.
+	if errors.Is(err, durability.ErrFileIncomplete) {
+		app.log.Info("completed file rolled back to incomplete before finalization; "+
+			"it will finalize again once re-fetched articles arrive",
+			"job", jobID, "fileidx", fileIdx, "err", err)
+		return
+	}
 	app.log.Error("completed file was not finalized; the job is halted rather than "+
 		"shipping a file whose bytes are not known to be correct",
 		"job", jobID, "fileidx", fileIdx, "err", err)
