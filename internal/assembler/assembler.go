@@ -685,8 +685,8 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string, disposition Fil
 // Its error can be a *storagefault.Fault about a FILE, not only a submit or
 // timeout error about the call — a caller matching on it has to expect both.
 // That reports at least one of the job's files failing its close-time Drain,
-// Sync or Close: a file whose close-time drain failed has buffered bytes that
-// never reached the platter. The production caller, app's enqueuePostProc,
+// Sync or Close: a file whose close-time Sync or Close failed has written bytes
+// that may never have reached the platter. The production caller, app's enqueuePostProc,
 // fails the post-processing run on any fault this returns, permanent or
 // retryable, and runs the stages after any other error — a timeout with no
 // fault observed.
@@ -754,7 +754,7 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 		// Captured, not discarded. The arm computes closeErr from every
 		// drainAndClose it performs and sends it here precisely so this
 		// returns it; reading `<-ack` and returning nil made the send side
-		// dead code and handed enqueuePostProc a job whose buffered bytes never
+		// dead code and handed enqueuePostProc a job whose unsynced bytes never
 		// reached the platter, with only a Warn inside drainAndClose as a
 		// trace. That is the defect this arm's own tombstone comment describes
 		// as fixed — it was fixed on the send side only.
@@ -1046,8 +1046,8 @@ func (a *Assembler) dispatchRequest(
 			cerr := a.drainAndClose(f)
 			if cerr != nil {
 				// Recorded on the ack, not swallowed: a file whose close-time
-				// drain failed has buffered bytes that never reached the
-				// platter, and enqueuePostProc fails the post-processing run
+				// sync or close failed has written bytes that may never have
+				// reached the platter, and enqueuePostProc fails the post-processing run
 				// on any fault this is, permanent or retryable.
 				closeErr = errors.Join(closeErr, cerr)
 			}
@@ -1126,17 +1126,13 @@ func (a *Assembler) dispatchRequest(
 // downloader is already stopped and the handles still exist, so by the time
 // this runs there is little left to report.
 //
-// # What happens to the articles the drain ROLLED BACK, which is the fix here
+// # What happens to any articles still in the faulted set
 //
-// A failed Drain rolls back everything after the failing write into w.faulted,
-// and takeFaulted is its only consumer. Without the releaseFaulted below that
-// set died with the writer, and those articles kept their Emitted bits: not
-// Done, not Failed, not Outstanding.
-//
-// They no longer keep their place in partsWritten as well — FileWriter.fail
-// gives the part back as it rolls the article back — so what is lost by
-// skipping the release is the routing alone. That is still the half that
-// strands an article for the life of the process.
+// Drain writes nothing, so it adds nothing to w.faulted; the only producer is
+// a writeOne failure inside Accept, which handleSuccessArticle routes on its
+// own path. The releaseFaulted below is a backstop for that set, whose only
+// consumer is takeFaulted: left behind, those articles would keep their
+// Emitted bits — not Done, not Failed, not Outstanding.
 //
 // # Why the fault is REPORTED and not ROUTED
 //
@@ -1188,8 +1184,8 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 	_, err := f.w.Drain()
 	note("drain file before close", err)
 	// Unconditional, and cheap when there is nothing to give back: this is the
-	// only chance to return what the drain rolled back, because Close below
-	// throws the writer away and its faulted set with it.
+	// last chance to return anything left in the faulted set, because Close
+	// below throws the writer away and the set with it.
 	a.releaseFaulted(f, key.jobID, key.fileIdx)
 	note("sync file before close", f.w.Sync())
 	// A failing Close is a storage condition too, and on network-backed mounts
@@ -1255,7 +1251,7 @@ func (a *Assembler) closeCancelledFile(k fileKey, f *openFile, disposition FileD
 	leaked, cerr := f.w.Close()
 	if cerr != nil && disposition == KeepFiles {
 		a.log.Warn("failed to close a cancelled job's file that is being kept; "+
-			"buffered bytes may not have reached the platter",
+			"unsynced bytes may not have reached the platter",
 			"path", f.info.Path, "error", cerr)
 	}
 	if len(leaked) > 0 {
@@ -1411,7 +1407,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 // An article can reach here holding no state at all: absent from seenDone,
 // absent from seenFailed, and holding no part. FileWriter.fail puts it in
 // exactly that condition — it clears the seenDone entry and gives the part
-// back together — for every article a drain rolled back.
+// back together — for every article whose write failed.
 // The rollback returned it to Outstanding, the downloader re-dispatched it,
 // and the copy that comes back arrives after its file was tombstoned.
 //

@@ -946,7 +946,7 @@ visible rather than assumed:
 | File completion | `Application.handleFileComplete` → `finalizeCompletedFile` → `Barrier.FinalizeFile` | per file |
 | Clean shutdown | `Application.shutdownCheckpoint` → `checkpointAllShare` | `shutdownCheckpointTimeout` (10s) for the **whole sweep**, divided evenly among the jobs it visits |
 | Downloader reload | `Application.ReloadDownloader` → `checkpointAllShare` | `reloadCheckpointTimeout` (10s), same division. See below — this is the one trigger whose *result* is consumed. |
-| Pause | **not implemented as a trigger.** No code path runs a barrier on pause; a paused job simply stops writing, and its buffered bytes wait for the next interval tick or for shutdown. R6 names it and nothing satisfies it. | — |
+| Pause | **not implemented as a trigger.** No code path runs a barrier on pause; a paused job simply stops writing, and its unsynced bytes wait for the next interval tick or for shutdown. R6 names it and nothing satisfies it. | — |
 
 ### The reload trigger is the one whose coverage is load-bearing
 
@@ -1849,8 +1849,8 @@ articles or sparse regions.
   raised inside `Accept` needs both. A `Drain` or `Sync` failure reaches the
   **barrier**, which routes the fault — but the rolled-back article set never
   crosses the `SyncTarget` interface, so the assembler still owes the first.
-  `OnWriteFault` used to carry a single article index and do both, so every
-  batch failure reported one article and rolled the rest back silently: they
+  `OnWriteFault` used to carry a single article index and do both, so a
+  failure that rolled back several articles reported one and rolled the rest back silently: they
   were left neither Done, nor Failed, nor Outstanding, and only a restart
   recovered them — at the time, through the `ClearEmittedForReload` sweep that
   `Application.Start` then ran.

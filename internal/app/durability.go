@@ -57,8 +57,8 @@ func (app *Application) AckDurable(p durability.DurableProof) error {
 // clears them in-process, unless the job is one #417 withholds.
 //
 // It takes a SET rather than one article, and that is the point. The assembler
-// used to carry a single index alongside the fault, so a batch failure — a
-// drain — reported only whichever article happened to be first in the batch.
+// used to carry a single index alongside the fault, so a failure that rolled
+// back several articles reported only whichever article happened to be first.
 //
 // R17: returns each article to Outstanding by clearing its emitted bit. The
 // articles are not marked failed (A1) and their bytes are not charged against
@@ -1304,7 +1304,7 @@ func (app *Application) recordAssembledCRC(ctx context.Context, jobID string, fi
 // stopWorkers calls between stopping the downloader and stopping the assembler.
 //
 // The third, PAUSE, is NOT IMPLEMENTED anywhere. No code path runs a barrier
-// when a job is paused; a paused job stops writing and its buffered bytes wait
+// when a job is paused; a paused job stops writing and its unsynced bytes wait
 // for the next interval tick or for shutdown. Said plainly because an earlier
 // version of this comment folded pause into "Shutdown's final pass", which
 // reads as coverage and is not.

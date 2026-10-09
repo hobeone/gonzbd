@@ -497,11 +497,12 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile) {
 		switch op.kind {
 		case opDrain:
 			r.written, r.err = f.w.Drain()
-			// The barrier routes the fault; it cannot route the ARTICLES. A
-			// failed drain rolls back every article after the write that
-			// failed, and that set never crosses the SyncTarget interface —
-			// so without this they are neither Done, nor Failed, nor
-			// Outstanding, and only a restart recovers them.
+			// Drain writes nothing, so it adds nothing to the faulted set; a
+			// rolled-back article comes only from a failed write in Accept.
+			// The set never crosses the SyncTarget interface, so this release
+			// is the backstop that returns anything left in it to Outstanding
+			// rather than leaving it neither Done, nor Failed, nor
+			// Outstanding.
 			a.releaseFaulted(f, op.jobID, int(op.fileIdx))
 		case opSync:
 			r.err = f.w.Sync()

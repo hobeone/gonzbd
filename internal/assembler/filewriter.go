@@ -331,10 +331,9 @@ func (w *FileWriter) rollbackPart(artIdx int32) {
 // deliberately (internal/job/progress.go) — and a downloader reload clears it
 // in-process, unless #417 withholds that job's clear.
 //
-// Every batch failure rolls back MORE articles than the one that triggered it
-// — a drain loses everything after the write that failed — and the caller was
-// given only one article index to route. So the set is accumulated here and
-// taken by the caller, rather than inferred from an error.
+// The only producer is a failed writeOne inside Accept, which rolls back that
+// one article. The set is accumulated here and taken by the caller, rather
+// than inferred from the error Accept returns.
 //
 // # It gives the part back itself
 //

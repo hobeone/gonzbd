@@ -13,7 +13,7 @@ import (
 // cannot be re-run there: its first act is Truncator.Drain, which answers
 // ErrFileNotOpen and takes the early exit, and nothing reopens a file during
 // the resume sweep. What that pass actually needs is only this step — no
-// drain, because a fresh process has an empty write cache; no commit, because
+// drain, because a fresh process has written nothing; no commit, because
 // there are no new articles; no ack, because the sweep has already re-set the
 // bits from the record.
 //

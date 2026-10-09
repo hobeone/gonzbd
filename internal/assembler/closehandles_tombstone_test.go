@@ -44,13 +44,13 @@ func TestCloseJobHandles_TombstonesEvenWhenTheDrainFailed(t *testing.T) {
 		open, completed, cancelledJobs)
 
 	if _, tombstoned := completed[key]; !tombstoned {
-		t.Error("a file whose close-time drain failed was not tombstoned, so it sits " +
+		t.Error("a file whose close-time sync failed was not tombstoned, so it sits " +
 			"in neither open nor completed. An article still in flight now reaches " +
 			"openTargetFile and re-creates a file the job has handed to " +
 			"post-processing, leaking the fd that CloseJobHandles exists to release")
 	}
 	if _, tombstoned := cancelledJobs["job"]; !tombstoned {
-		t.Error("a job whose close-time drain failed was not tombstoned, so a late " +
+		t.Error("a job whose close-time sync failed was not tombstoned, so a late " +
 			"article for a file it never opened creates one under the post-processor")
 	}
 	if _, still := open[key]; still {
@@ -61,7 +61,7 @@ func TestCloseJobHandles_TombstonesEvenWhenTheDrainFailed(t *testing.T) {
 // TestCloseJobHandles_ArmSendsTheCloseTimeFaultOnTheAck is the other half.
 // The arm once acked with a bare close, so the fault it had just computed was
 // never sent and enqueuePostProc handed the job to par2, unrar and cleanup over
-// a file whose buffered bytes never reached the platter. The only trace was a
+// a file whose unsynced bytes never reached the platter. The only trace was a
 // Warn inside drainAndClose.
 //
 // It pins the SEND, and only the send: it drives dispatchRequest directly and
