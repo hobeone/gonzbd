@@ -1385,3 +1385,367 @@ func TestBuildSummaryEntry_AllSuccess(t *testing.T) {
 		t.Errorf("expected '✓ unpack' in summary, got: %v", entry.Lines)
 	}
 }
+
+// TestPreCheck_AlreadyDeliveredPerJobFinalDir verifies #767: when DownloadDir
+// is missing (because FinalizeStage already moved the job before a crash) and
+// a per-job FinalDir exists and is non-empty, processJob sets
+// DownloadDir = FinalDir, skips stages up to and including finalize, runs
+// script with its normal failure semantics, and completes with FailMsg == "".
+// With a flat layout (FlatLayout == true), FinalDir is shared across jobs so
+// non-empty proves nothing and the job is still filed Failed.
+func TestPreCheck_AlreadyDeliveredPerJobFinalDir(t *testing.T) {
+	t.Parallel()
+
+	t.Run("per-job FinalDir skips finalize, runs script, and completes", func(t *testing.T) {
+		t.Parallel()
+
+		missingDownloadDir := filepath.Join(t.TempDir(), "missing-download-dir")
+		finalDir := filepath.Join(t.TempDir(), "complete", "movies", "MyRelease")
+		if err := os.MkdirAll(finalDir, 0o750); err != nil {
+			t.Fatalf("mkdir finalDir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(finalDir, "movie.mkv"), []byte("video"), 0o600); err != nil {
+			t.Fatalf("write movie.mkv: %v", err)
+		}
+
+		scriptDir := t.TempDir()
+		statusFile := filepath.Join(scriptDir, "status.txt")
+		dirFile := filepath.Join(scriptDir, "dir.txt")
+		writeScript(t, filepath.Join(scriptDir, "notify.sh"),
+			[]byte("#!/bin/sh\necho \"$SAB_PP_STATUS\" > "+statusFile+"\necho \"$SAB_FINAL_PROCESSING_DIR\" > "+dirFile+"\n"))
+
+		qjob := newQueueJob(t, "delivered-per-job", 3)
+		qjob.SetName("MyRelease")
+		if err := qjob.RecordDownload("news.example", 2048); err != nil {
+			t.Fatalf("RecordDownload: %v", err)
+		}
+		job := &Job{
+			Job:         qjob,
+			Filename:    "MyRelease.nzb",
+			PP:          3,
+			DownloadDir: missingDownloadDir,
+			FinalDir:    finalDir,
+			FlatLayout:  false,
+			Script:      "notify.sh",
+		}
+
+		pp := New(Options{
+			Stages: []Stage{
+				NewFinalizeStage(),
+				NewScriptStage(scriptDir, filepath.Dir(finalDir), "test", "", ""),
+			},
+		})
+		pp.processJob(t.Context(), job)
+
+		if job.FailMsg != "" {
+			t.Errorf("job.FailMsg = %q, want empty", job.FailMsg)
+		}
+		if job.DownloadDir != finalDir {
+			t.Errorf("job.DownloadDir = %q, want FinalDir %q", job.DownloadDir, finalDir)
+		}
+
+		var sawFinalize, sawScript, sawMovieLine, sawServersLine bool
+		for _, entry := range job.StageLog {
+			switch entry.Stage {
+			case "download":
+				for _, line := range entry.Lines {
+					if strings.Contains(line, "Error reading download dir") {
+						t.Errorf("download StageLog contains read error on delivered job: %q", line)
+					}
+					if strings.Contains(line, "movie.mkv") {
+						sawMovieLine = true
+					}
+					if strings.Contains(line, "Servers: news.example") {
+						sawServersLine = true
+					}
+				}
+			case "finalize":
+				sawFinalize = true
+			case "script":
+				sawScript = true
+			}
+		}
+		if !sawMovieLine {
+			t.Errorf("download StageLog missing delivered file movie.mkv; StageLog = %+v", job.StageLog)
+		}
+		if !sawServersLine {
+			t.Errorf("download StageLog missing ServerStats line; StageLog = %+v", job.StageLog)
+		}
+		if sawFinalize {
+			t.Errorf("finalize stage ran on already-delivered job; StageLog = %+v", job.StageLog)
+		}
+		if !sawScript {
+			t.Errorf("script stage did not run on already-delivered job; StageLog = %+v", job.StageLog)
+		}
+		if summary := buildSummaryEntry(job); len(summary.Lines) == 0 || !strings.HasPrefix(summary.Lines[0], "Pipeline Completed") {
+			t.Errorf("summary header = %v, want prefix %q", summary.Lines, "Pipeline Completed")
+		}
+
+		gotStatus, err := os.ReadFile(statusFile)
+		if err != nil {
+			t.Fatalf("read script status output: %v", err)
+		}
+		if strings.TrimSpace(string(gotStatus)) != "0" {
+			t.Errorf("script SAB_PP_STATUS = %q, want %q", strings.TrimSpace(string(gotStatus)), "0")
+		}
+		gotDir, err := os.ReadFile(dirFile)
+		if err != nil {
+			t.Fatalf("read script dir output: %v", err)
+		}
+		if strings.TrimSpace(string(gotDir)) != finalDir {
+			t.Errorf("script SAB_FINAL_PROCESSING_DIR = %q, want FinalDir %q", strings.TrimSpace(string(gotDir)), finalDir)
+		}
+	})
+
+	t.Run("per-job FinalDir preserves script failure semantics", func(t *testing.T) {
+		t.Parallel()
+
+		missingDownloadDir := filepath.Join(t.TempDir(), "missing-download-dir")
+		finalDir := filepath.Join(t.TempDir(), "complete", "movies", "MyRelease")
+		if err := os.MkdirAll(finalDir, 0o750); err != nil {
+			t.Fatalf("mkdir finalDir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(finalDir, "movie.mkv"), []byte("video"), 0o600); err != nil {
+			t.Fatalf("write movie.mkv: %v", err)
+		}
+
+		scriptDir := t.TempDir()
+		writeScript(t, filepath.Join(scriptDir, "fail.sh"), []byte("#!/bin/sh\nexit 5\n"))
+
+		qjob := newQueueJob(t, "delivered-script-fail", 3)
+		qjob.SetName("MyRelease")
+		job := &Job{
+			Job:         qjob,
+			Filename:    "MyRelease.nzb",
+			PP:          3,
+			DownloadDir: missingDownloadDir,
+			FinalDir:    finalDir,
+			Script:      "fail.sh",
+		}
+
+		scriptStage := NewScriptStage(scriptDir, filepath.Dir(finalDir), "test", "", "")
+		scriptStage.SetScriptCanFail(true)
+		pp := New(Options{
+			Stages: []Stage{
+				NewFinalizeStage(),
+				scriptStage,
+			},
+		})
+		pp.processJob(t.Context(), job)
+
+		if !strings.Contains(job.FailMsg, "Script fail.sh failed") {
+			t.Errorf("job.FailMsg = %q, want script failure message", job.FailMsg)
+		}
+		if job.DownloadDir != finalDir {
+			t.Errorf("job.DownloadDir = %q, want FinalDir %q", job.DownloadDir, finalDir)
+		}
+	})
+
+	t.Run("flat layout still files Failed", func(t *testing.T) {
+		t.Parallel()
+
+		missingDownloadDir := filepath.Join(t.TempDir(), "missing-download-dir")
+		flatFinalDir := filepath.Join(t.TempDir(), "complete", "movies")
+		if err := os.MkdirAll(flatFinalDir, 0o750); err != nil {
+			t.Fatalf("mkdir flatFinalDir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(flatFinalDir, "other_job.mkv"), []byte("video"), 0o600); err != nil {
+			t.Fatalf("write other_job.mkv: %v", err)
+		}
+
+		scriptDir := t.TempDir()
+		ranFile := filepath.Join(scriptDir, "ran.txt")
+		writeScript(t, filepath.Join(scriptDir, "notify.sh"),
+			[]byte("#!/bin/sh\necho ran > "+ranFile+"\n"))
+
+		qjob := newQueueJob(t, "delivered-flat", 3)
+		qjob.SetName("MyRelease")
+		job := &Job{
+			Job:         qjob,
+			Filename:    "MyRelease.nzb",
+			PP:          3,
+			DownloadDir: missingDownloadDir,
+			FinalDir:    flatFinalDir,
+			FlatLayout:  true,
+			Script:      "notify.sh",
+		}
+
+		pp := New(Options{
+			Stages: []Stage{
+				NewFinalizeStage(),
+				NewScriptStage(scriptDir, filepath.Dir(flatFinalDir), "test", "", ""),
+			},
+		})
+		pp.processJob(t.Context(), job)
+
+		if !strings.Contains(job.FailMsg, "download directory unavailable") {
+			t.Errorf("job.FailMsg = %q, want download directory unavailable error", job.FailMsg)
+		}
+		if len(job.StageLog) != 2 || job.StageLog[0].Stage != "download" || job.StageLog[1].Stage != "pre-check" {
+			t.Errorf("job.StageLog = %+v, want [download, pre-check]", job.StageLog)
+		}
+		if job.DownloadDir != missingDownloadDir {
+			t.Errorf("job.DownloadDir = %q, want original %q", job.DownloadDir, missingDownloadDir)
+		}
+		if _, err := os.Stat(ranFile); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("script ran on flat-layout missing-DownloadDir job (stat err = %v)", err)
+		}
+	})
+
+	t.Run("empty existing DownloadDir still files Failed even with non-empty FinalDir", func(t *testing.T) {
+		t.Parallel()
+
+		emptyDownloadDir := t.TempDir()
+		finalDir := filepath.Join(t.TempDir(), "complete", "movies", "MyRelease")
+		if err := os.MkdirAll(finalDir, 0o750); err != nil {
+			t.Fatalf("mkdir finalDir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(finalDir, "stale.mkv"), []byte("video"), 0o600); err != nil {
+			t.Fatalf("write stale.mkv: %v", err)
+		}
+
+		qjob := newQueueJob(t, "empty-existing-dl", 3)
+		qjob.SetName("MyRelease")
+		job := &Job{
+			Job:         qjob,
+			Filename:    "MyRelease.nzb",
+			PP:          3,
+			DownloadDir: emptyDownloadDir,
+			FinalDir:    finalDir,
+		}
+
+		pp := New(Options{
+			Stages: []Stage{NewFinalizeStage()},
+		})
+		pp.processJob(t.Context(), job)
+
+		if job.FailMsg != "download directory is empty" {
+			t.Errorf("job.FailMsg = %q, want %q", job.FailMsg, "download directory is empty")
+		}
+		if len(job.StageLog) != 2 || job.StageLog[0].Stage != "download" || job.StageLog[1].Stage != "pre-check" {
+			t.Errorf("job.StageLog = %+v, want [download, pre-check]", job.StageLog)
+		}
+		if job.DownloadDir != emptyDownloadDir {
+			t.Errorf("job.DownloadDir = %q, want %q", job.DownloadDir, emptyDownloadDir)
+		}
+	})
+
+	t.Run("non-ENOENT ReadDir error on DownloadDir still files Failed even with non-empty FinalDir", func(t *testing.T) {
+		t.Parallel()
+
+		downloadDirAsFile := filepath.Join(t.TempDir(), "download-is-a-file")
+		if err := os.WriteFile(downloadDirAsFile, []byte("not-a-dir"), 0o600); err != nil {
+			t.Fatalf("write downloadDirAsFile: %v", err)
+		}
+		finalDir := filepath.Join(t.TempDir(), "complete", "movies", "MyRelease")
+		if err := os.MkdirAll(finalDir, 0o750); err != nil {
+			t.Fatalf("mkdir finalDir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(finalDir, "stale.mkv"), []byte("video"), 0o600); err != nil {
+			t.Fatalf("write stale.mkv: %v", err)
+		}
+
+		qjob := newQueueJob(t, "enotdir-dl", 3)
+		qjob.SetName("MyRelease")
+		job := &Job{
+			Job:         qjob,
+			Filename:    "MyRelease.nzb",
+			PP:          3,
+			DownloadDir: downloadDirAsFile,
+			FinalDir:    finalDir,
+		}
+
+		pp := New(Options{
+			Stages: []Stage{NewFinalizeStage()},
+		})
+		pp.processJob(t.Context(), job)
+
+		if !strings.HasPrefix(job.FailMsg, "download directory unavailable:") {
+			t.Errorf("job.FailMsg = %q, want prefix %q", job.FailMsg, "download directory unavailable:")
+		}
+		if len(job.StageLog) != 2 || job.StageLog[0].Stage != "download" || job.StageLog[1].Stage != "pre-check" {
+			t.Errorf("job.StageLog = %+v, want [download, pre-check]", job.StageLog)
+		}
+		if job.DownloadDir != downloadDirAsFile {
+			t.Errorf("job.DownloadDir = %q, want %q", job.DownloadDir, downloadDirAsFile)
+		}
+	})
+
+	t.Run("FailMsg-preset job does not redirect missing DownloadDir to FinalDir and records download preamble", func(t *testing.T) {
+		t.Parallel()
+
+		missingDownloadDir := filepath.Join(t.TempDir(), "missing-download-dir")
+		finalDir := filepath.Join(t.TempDir(), "complete", "movies", "MyRelease")
+		if err := os.MkdirAll(finalDir, 0o750); err != nil {
+			t.Fatalf("mkdir finalDir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(finalDir, "stale.mkv"), []byte("video"), 0o600); err != nil {
+			t.Fatalf("write stale.mkv: %v", err)
+		}
+
+		qjob := newQueueJob(t, "failmsg-preset-dl", 3)
+		qjob.SetName("MyRelease")
+		job := &Job{
+			Job:         qjob,
+			Filename:    "MyRelease.nzb",
+			PP:          3,
+			DownloadDir: missingDownloadDir,
+			FinalDir:    finalDir,
+			FailMsg:     "Aborted, cannot be completed",
+		}
+
+		pp := New(Options{
+			Stages: []Stage{NewFinalizeStage()},
+		})
+		pp.processJob(t.Context(), job)
+
+		if job.FailMsg != "Aborted, cannot be completed" {
+			t.Errorf("job.FailMsg = %q, want %q", job.FailMsg, "Aborted, cannot be completed")
+		}
+		if job.DownloadDir != missingDownloadDir {
+			t.Errorf("job.DownloadDir = %q, want original %q", job.DownloadDir, missingDownloadDir)
+		}
+		if len(job.StageLog) != 2 || job.StageLog[0].Stage != "download" || job.StageLog[1].Stage != "skipped" {
+			t.Errorf("job.StageLog = %+v, want [download, skipped]", job.StageLog)
+		}
+	})
+
+	t.Run("alreadyDelivered and stagesAfterFinalize helpers", func(t *testing.T) {
+		t.Parallel()
+
+		emptyFinal := t.TempDir()
+		populatedFinal := t.TempDir()
+		if err := os.WriteFile(filepath.Join(populatedFinal, "a.bin"), []byte("x"), 0o600); err != nil {
+			t.Fatalf("write a.bin: %v", err)
+		}
+
+		for _, tc := range []struct {
+			name string
+			job  Job
+			want bool
+		}{
+			{name: "unset FinalDir", job: Job{}, want: false},
+			{name: "missing FinalDir", job: Job{FinalDir: filepath.Join(t.TempDir(), "missing")}, want: false},
+			{name: "empty FinalDir", job: Job{FinalDir: emptyFinal}, want: false},
+			{name: "flat layout with populated FinalDir", job: Job{FinalDir: populatedFinal, FlatLayout: true}, want: false},
+			{name: "per-job layout with populated FinalDir", job: Job{FinalDir: populatedFinal, FlatLayout: false}, want: true},
+		} {
+			if got := tc.job.alreadyDelivered(); got != tc.want {
+				t.Errorf("%s: alreadyDelivered() = %v, want %v", tc.name, got, tc.want)
+			}
+		}
+
+		s1 := newRecordStage("repair")
+		s2 := NewFinalizeStage()
+		s3 := newRecordStage("script")
+		if got := stagesAfterFinalize([]Stage{s1, s2, s3}); len(got) != 1 || got[0].Name() != "script" {
+			t.Errorf("stagesAfterFinalize([repair, finalize, script]) = %v, want [script]", got)
+		}
+		if got := stagesAfterFinalize([]Stage{s1, s2}); len(got) != 0 {
+			t.Errorf("stagesAfterFinalize([repair, finalize]) = %v, want empty", got)
+		}
+		if got := stagesAfterFinalize([]Stage{s1, s3}); got != nil {
+			t.Errorf("stagesAfterFinalize([repair, script]) = %v, want nil", got)
+		}
+	})
+}
