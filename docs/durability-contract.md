@@ -1042,26 +1042,20 @@ Three details that have each been got wrong once:
 - **`lastBarrier` stamps only a barrier that returned nil, and only one that
   actually ran.** "The barrier ran and failed" and "no barrier ran at all" are
   different facts. Folding the second into the first's nil-error case is how a
-  job on a dead mount came to report a fresh stamp every 30 seconds — the exact
-  inversion of what R26 asks that figure to distinguish. A job with no sync
-  target likewise never reaches the settle, so its accumulator stands: zeroing
-  it would report zero pending bytes beside a stale timestamp, two figures
-  agreeing that nothing is at risk at the moment when everything is.
+  job on a dead mount came to be stamped every 30 seconds. A job with no sync
+  target likewise never reaches the settle, so its accumulator stands. Both
+  `lastBarrier` and the accumulator are internal to `internal/app`; the API
+  surfaces only `bytes_durable`.
 
-**`bytes_durable` and `bytes_pending` are not in the same unit**, and R26 asks
-only that the rework window be *visible*, not that it be commensurable with the
-durable total. `bytes_durable` comes from the job's progress —
-`expected - failed - remaining` over NZB-declared, yEnc-**encoded** sizes, the
-same unit as `size`/`sizeleft` beside it. `bytes_pending` accumulates
-`len(data)` per accepted article: **decoded** bytes, the ones on disk, because
-B1's volume bound measures rework at risk. Neither can move to the other's
-unit. Reading `bytes_durable` from a sum over the durability record's lengths —
-a decoded figure — is the substitution `docs/job-lifecycle.md`
-records as having overstated every non-resident job's remaining bytes; and
-re-basing the accumulator on declared sizes would corrupt the cadence trigger
-it exists to drive. The API contract already forbids summing them; the unit
-difference is a second, independent reason, and it also rules out a ratio or a
-difference.
+**`bytes_durable` and the pending-byte accumulator are not in the same unit.**
+`bytes_durable` comes from the job's progress — `expected - failed - remaining`
+over NZB-declared, yEnc-**encoded** sizes, the same unit as `size`/`sizeleft`
+beside it. The accumulator (`jobBarrierBytes`) takes `len(data)` per accepted
+article: **decoded** bytes, the ones on disk, because B1's volume bound measures
+rework at risk. Neither can move to the other's unit, and re-basing the
+accumulator on declared sizes would corrupt the cadence trigger it exists to
+drive. The two must not be summed or ratioed by internal code; no API field
+carries the accumulator today.
 
 The queue save follows the barrier rather than running on its own timer, because
 the barrier is what produces something worth saving: an ack marks articles done

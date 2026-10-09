@@ -185,10 +185,9 @@ type Application struct {
 	barrierMu       sync.Mutex
 	jobBarrierMu    map[string]*barrierLock
 	jobBarrierBytes map[string]int64
-	// lastBarrier is when each job's last barrier completed without error.
-	// R26 asks a job to be able to report it, and it is the figure that tells
-	// "this job is checkpointing normally" from "this job has not had a
-	// successful barrier since the mount went away".
+	// lastBarrier is when each job's last barrier completed without error. It
+	// is an internal stamp: no API field reports it. It is kept for a later
+	// change to the barrier.
 	lastBarrier map[string]time.Time
 
 	// stallMu guards stalls. It is never held across I/O: every walk copies

@@ -61,7 +61,7 @@ func TestCheckpointJob_DoesNotStampABarrierOverNoFiles(t *testing.T) {
 // checkpointJob used to reset the accumulator BEFORE the run, so an article
 // written while the barrier was in flight would be charged to the next window.
 // Nothing restored it when the run failed, so a job that stalled at phase 1
-// with megabytes unsynced reported bytes_pending as 0 — and because the stall
+// with megabytes unsynced reported its pending bytes as 0 — and because the stall
 // pauses it, nothing re-accumulated.
 //
 // The window is now retired by settleJobBytes on the success path, which keeps
@@ -87,7 +87,7 @@ func TestCheckpointJob_KeepsThePendingByteFigureWhenTheBarrierFails(t *testing.T
 	application.checkpointJob(t.Context(), job.ID())
 
 	if got := application.pendingBytesFor(job.ID()); got != 400 {
-		t.Errorf("bytes_pending = %d after a barrier that claimed nothing, want 400. "+
+		t.Errorf("pending bytes = %d after a barrier that claimed nothing, want 400. "+
 			"Reporting zero beside a stale last_barrier says nothing is at risk at "+
 			"the moment when everything written since the last real barrier is", got)
 	}
@@ -127,7 +127,7 @@ func TestCheckpointJob_LeavesThePendingBytesWhenTheRunFails(t *testing.T) {
 	application.checkpointJob(t.Context(), job.ID())
 
 	if got := application.pendingBytesFor(job.ID()); got < 400 {
-		t.Errorf("bytes_pending = %d after a failed barrier, want at least 400. The "+
+		t.Errorf("pending bytes = %d after a failed barrier, want at least 400. The "+
 			"window was retired by a run that claimed nothing, so the figure reports "+
 			"no bytes at risk while every byte written since the last real barrier "+
 			"still is", got)
