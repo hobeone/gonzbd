@@ -253,7 +253,7 @@ or modify its behavior:
 | **`extracted_repair`** | Runs `repair`'s per-set verify/repair, with `repair`'s configuration, on the sets in `DeferredPar2Sets`, against the files unpack extracted. | Does nothing when `DeferredPar2Sets` is empty; skipped if `ParError` or `UnpackError` is set. | Sets `ParError` when a deferred set cannot be verified or repaired, or is gone; otherwise sets `DeferredPar2Verified`. |
 | **`sample_cleanup`** | Deletes sample video and proof files matching `(?i)(^|[\W_])(sample|proof)`. Includes a false-positive guard where all files match the pattern. | Skipped if disabled in config or if every file in the directory matches the sample pattern. | Unlinks sample files from `DownloadDir`. |
 | **`recover_par2_names`** | Restores original filenames by scanning `.par2` files on disk for 16KB MD5 hashes via `deobfuscate.Par2Rename`. | Runs unconditionally after unpack. | Renames files in `DownloadDir`. |
-| **`par2_cleanup`** | Deletes `.par2` files and orphaned `.1`, `.2`, etc. backup files created during `par2 repair` after repair, unpack, and rename stages have finished. | Skipped if `ParError` or `UnpackError` set (preserves par2 files for manual repair), or if `DeferredPar2Sets` is non-empty and `DeferredPar2Verified` is false (a deferred set protects extracted files par2 has not checked). | Unlinks `.par2` and `.1`/`.2` backup files. |
+| **`par2_cleanup`** | Deletes `.par2` files and orphaned `.1`, `.2`, etc. backup files created during `par2 repair` after repair, unpack, and rename stages have finished. | Skipped if `PP < 1`, if `ParError` or `UnpackError` set (preserves par2 files for manual repair), or if `DeferredPar2Sets` is non-empty and `DeferredPar2Verified` is false (a deferred set protects extracted files par2 has not checked). | Unlinks `.par2` and `.1`/`.2` backup files. |
 | **`deobfuscate`** | Detects obfuscated file names and restores clean titles from job metadata. Also performs subtitle alignment (`.srt` renamed to match dominant video). | Skipped if disabled in config. | Renames files and subtitles in `DownloadDir`. |
 | **`unwanted_cleanup`** | Deletes every file under `DownloadDir` whose extension the unwanted-extension rules (`downloads.unwanted_extensions`, `_mode`, `action_on_unwanted_extensions`) exclude, judged by final name, so it catches what the NZB-filename check at ingest and the in-download archive peek cannot see: archive members, obfuscated subjects, files par2 repair rebuilt or renamed, and files renamed by `recover_par2_names` or `deobfuscate`. Reads the live settings on every run. Removes empty subdirectories after deleting at least one file. Runs at every PP level, unlike SABnzbd, which removes only after its unpack. | Skipped if the action is `off`, the job is approved (`Unwanted == StateApproved`: the user resumed it or retried it anyway), or `ParError`, `UnpackError` or `FailMsg` is set (a failed job keeps its files for retry). Settings that cannot be read, a directory that cannot be read, or a file that cannot be removed fail the job (`FailMsg`) rather than deliver unchecked files. | Deletes matching files from disk. |
 | **`extension_cleanup`** | Deletes unwanted file extensions (`.sfv`, `.nfo`, etc.) based on user config. Explicitly protects `.nzb` files (`SkipNZB = true`) and files in `ConsumedFiles`. Removes newly empty subdirectories. | Skipped if cleanup list empty. | Unlinks matching extensions from `DownloadDir`. |
@@ -341,15 +341,17 @@ write at all, rather than protecting any particular file.
 
 ## Post-Processing (PP) Level Enforcement
 
-SABnzbd post-processing levels are cumulative integer masks on `postproc.Job.PP`
+SABnzbd post-processing levels are cumulative integer levels on `postproc.Job.PP`
 (`internal/postproc/stages.go:154`) — post-processing's own job struct, not
-`internal/job.Job`. `PP` does not survive past App, which resolves it into a
-`job.Policy` before persistence (see `docs/dispatch-contract.md`):
+`internal/job.Job`. `PP` is persisted on `dispatch.Header.PP`
+(`internal/dispatch/store/store.go:29`, alongside the resolved `job.Policy`
+booleans; see `docs/dispatch-contract.md`) and forwarded to `postproc.Job.PP`
+(`internal/app/app.go:2621`):
 
-- **PP = 0 (Download Only)**: Skips `quickcheck`, `repair`, and `unpack`. Runs the cleanup stages (`sample_cleanup`, `par2_cleanup`, `unwanted_cleanup`, `extension_cleanup`), finalize, and script.
-- **PP = 1 (Repair Only)**: Runs `quickcheck` and `repair`. Skips `unpack`.
-- **PP = 2 (Repair + Unpack)**: Runs `quickcheck`, `repair`, and `unpack`.
-- **PP = 3 (Repair + Unpack + Delete)**: Full processing including archive deletion.
+- **PP = 0 (Download Only)**: Skips `quickcheck`, `repair`, `par2_cleanup`, and `unpack` (preserving `.par2` files since nothing verified or repaired). Runs the remaining cleanup stages (`sample_cleanup`, `unwanted_cleanup`, `extension_cleanup`), finalize, and script.
+- **PP = 1 (Repair Only)**: Runs `quickcheck`, `repair`, and `par2_cleanup`. Skips `unpack`.
+- **PP = 2 (Repair + Unpack)**: Runs `quickcheck`, `repair`, `unpack` (including archive deletion when `enable_rar_cleanup` is enabled; `internal/postproc/stage_unpack.go:360`), and `par2_cleanup`.
+- **PP = 3 (Repair + Unpack + Delete)**: Runs the same stage set as `PP = 2` (`shouldSkipForPP` does not gate on `PPDelete`; gating archive deletion on `PP = 3` is a separate question from #769).
 
 `shouldSkipForPP(stageName, pp)` enforces these bounds centrally. Stages like
 `deobfuscate`, `sample_cleanup`, `unwanted_cleanup`, `finalize`, and `script` always run regardless of PP level.

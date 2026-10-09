@@ -17,6 +17,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -908,13 +909,79 @@ func TestShouldSkipForPP(t *testing.T) {
 		{"extension_cleanup", 0, false},
 		{"sample_cleanup", 0, false},
 		{"recover_par2_names", 0, false},
-		{"par2_cleanup", 0, false},
+		{"par2_cleanup", 0, true},
+		{"par2_cleanup", 1, false},
+		{"par2_cleanup", 2, false},
+		{"par2_cleanup", 3, false},
 	}
 	for _, tt := range tests {
 		got := shouldSkipForPP(tt.stage, tt.pp)
 		if got != tt.want {
 			t.Errorf("shouldSkipForPP(%q, %d) = %v, want %v", tt.stage, tt.pp, got, tt.want)
 		}
+	}
+}
+
+// TestPar2Cleanup_PP0Skipped_PPVerifyRuns verifies that par2_cleanup preserves
+// .par2 files at PP=0 (download only, where nothing verified or repaired) and
+// deletes them at PP=PPVerify when cleanup is enabled and no repair/unpack
+// error occurred.
+func TestPar2Cleanup_PP0Skipped_PPVerifyRuns(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		pp          int
+		wantDeleted bool
+	}{
+		{"PP=0 preserves par2 files", types.PPNone, false},
+		{"PP=PPVerify deletes par2 files", types.PPVerify, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			dataFile := filepath.Join(dir, "movie.mkv")
+			par2Main := filepath.Join(dir, "movie.par2")
+			par2Vol := filepath.Join(dir, "movie.vol00+1.par2")
+			for _, p := range []string{dataFile, par2Main, par2Vol} {
+				if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+					t.Fatalf("write %s: %v", p, err)
+				}
+			}
+
+			var doneMu sync.Mutex
+			var done bool
+			p := startProcessor(t, Options{
+				Stages: []Stage{NewPar2CleanupStage(true)},
+				OnJobDone: func(*Job) {
+					doneMu.Lock()
+					done = true
+					doneMu.Unlock()
+				},
+			})
+
+			job := &Job{
+				Job:         newQueueJob(t, "par2-pp", tc.pp),
+				DownloadDir: dir,
+				PP:          tc.pp,
+			}
+			p.Process(job)
+
+			waitUntil(t, func() bool {
+				doneMu.Lock()
+				defer doneMu.Unlock()
+				return done
+			}, 2*time.Second, "job to finish")
+
+			for _, pf := range []string{par2Main, par2Vol} {
+				_, err := os.Stat(pf)
+				if tc.wantDeleted && !os.IsNotExist(err) {
+					t.Errorf("%s survived at PP=%d (stat err=%v); want deleted", filepath.Base(pf), tc.pp, err)
+				}
+				if !tc.wantDeleted && err != nil {
+					t.Errorf("%s deleted at PP=%d (stat err=%v); want preserved for manual repair", filepath.Base(pf), tc.pp, err)
+				}
+			}
+		})
 	}
 }
 

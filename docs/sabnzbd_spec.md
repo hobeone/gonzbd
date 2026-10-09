@@ -492,17 +492,18 @@ Post-processing runs sequentially through named stages:
 
 The stage log is stored in the history database for display.
 
-### 8.2 Post-Processing Flags (PP bits)
+### 8.2 Post-Processing Flags (PP levels)
 
-Controlled per-job and per-category:
+Controlled per-job and per-category as a cumulative integer level:
 
-| Bit | Flag | Meaning |
-|-----|------|---------|
-| 0 | repair | Run par2 repair |
-| 1 | unpack | Extract archives |
-| 2 | delete | Delete NZB and par2 files after success |
+| Level | Flag | Meaning |
+|-------|------|---------|
+| 0 | none | Download only (skip repair and unpack) |
+| 1 | +repair | Run par2 verify/repair (and par2 cleanup) |
+| 2 | +unpack | Extract archives (implies repair) |
+| 3 | +delete | Delete source archives after extraction (implies repair and unpack) |
 
-PP value is a bitmask: 0=none, 1=repair only, 2=unpack only, 3=repair+unpack, 7=repair+unpack+delete.
+PP value is a cumulative level (`0`–`3`). (GoNZBD clamps legacy bitmask values above `3` such as `7` to `3`, and gates its separate `par2_cleanup` stage on `PP >= 1` via `shouldSkipForPP`.)
 
 ### 8.3 External Tool Invocations
 

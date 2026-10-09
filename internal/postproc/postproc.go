@@ -436,11 +436,11 @@ func buildSummaryEntry(job *Job) StageLogEntry {
 func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (StageLogEntry, bool) {
 	// PP enforcement (M1): skip stages above the job's post-processing
 	// level. SABnzbd PP levels are cumulative:
-	//   0 = download only (skip repair + unpack)
-	//   1 = +repair (par2 verify/repair)
-	//   2 = +unpack (also does repair)
+	//   0 = download only (skip repair + par2 cleanup + unpack)
+	//   1 = +repair (par2 verify/repair + par2 cleanup)
+	//   2 = +unpack (also does repair + par2 cleanup)
 	//   3 = +delete (repair + unpack + cleanup)
-	// Quickcheck and repair require PP ≥ 1; unpack requires PP ≥ 2.
+	// Quickcheck, repair, and par2_cleanup require PP ≥ 1; unpack requires PP ≥ 2.
 	// Other stages (deobfuscate, sort, finalize, script) always run.
 	if shouldSkipForPP(stage.Name(), job.PP) {
 		p.log.Info("postproc: skipping stage (PP level)",
@@ -654,16 +654,16 @@ func (p *PostProcessor) addHistory(job *Job) {
 // shouldSkipForPP returns true if the named stage should be skipped because
 // the job's PP level is too low. SABnzbd PP levels are cumulative:
 //
-//	0 = download only (no repair, no unpack)
-//	1 = +repair (par2 verify/repair)
-//	2 = +unpack (includes repair)
+//	0 = download only (no repair, no par2 cleanup, no unpack)
+//	1 = +repair (par2 verify/repair and par2 cleanup)
+//	2 = +unpack (includes repair and par2 cleanup)
 //	3 = +delete (includes repair + unpack + archive cleanup)
 //
-// Stages gated by PP: quickcheck and repair (≥1), unpack (≥2). Every other
-// stage runs at every PP level.
+// Stages gated by PP: quickcheck, repair, and par2_cleanup (≥1); unpack (≥2).
+// Every other stage runs at every PP level.
 func shouldSkipForPP(stageName string, pp int) bool {
 	switch stageName {
-	case "quickcheck", "repair":
+	case "quickcheck", "repair", "par2_cleanup":
 		return pp < types.PPVerify
 	case "unpack":
 		return pp < types.PPUnpack
