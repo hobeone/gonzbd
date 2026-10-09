@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
+	dispatchstore "github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -1489,7 +1490,8 @@ func (app *Application) holdUnreconciledJob(jobID string, lookupErr error) {
 }
 
 // reclaim applies durability's reclaim rule to the named jobs, then unlinks
-// the manifest of each one the dispatcher no longer holds. Call it after the
+// the manifest of each one that has neither a registered dispatcher entry nor
+// a persisted dispatch_jobs row. Call it after the
 // state change a departure depends on: the rule reads the queue and history as
 // they are, so it cannot reclaim a job something still reaches, and calling it
 // after a departure that failed or was made by someone else is harmless.
@@ -1510,9 +1512,10 @@ func (app *Application) reclaim(ctx context.Context, id string, more ...string) 
 	app.unlinkDepartedManifests(append([]string{id}, more...))
 }
 
-// unlinkDepartedManifests unlinks the manifest of each named job the dispatcher
-// no longer holds, which is the disk half of the rule: a manifest's lifetime is
-// exactly its queue row's.
+// unlinkDepartedManifests unlinks the manifest of each named job that has
+// neither a registered dispatcher entry nor a persisted dispatch_jobs row
+// (including rows skipped during Store.Load or Dispatcher.restore), which is
+// the disk half of the rule: a manifest's lifetime is exactly its queue row's.
 func (app *Application) unlinkDepartedManifests(ids []string) {
 	dir := manifestDir(app.config.GetGeneral().AdminDir)
 	for _, jobID := range ids {
@@ -1521,15 +1524,44 @@ func (app *Application) unlinkDepartedManifests(ids []string) {
 				continue
 			}
 		}
+		if app.hasUnrestoredQueueRow(jobID) {
+			continue
+		}
 		if err := removeManifestIn(dir, jobID); err != nil && !os.IsNotExist(err) {
 			app.log.Warn("could not unlink a departed job's manifest", "job", jobID, "err", err)
 		}
 	}
 }
 
+// hasUnrestoredQueueRow reports whether dispatch_jobs holds a row for a job ID
+// that is not registered in the dispatcher (a row skipped by Store.Load or
+// Dispatcher.restore). It delegates the query to dispatchstore.Store.Has with a
+// bounded context and fails closed (returns true) on a read error so a
+// transient database fault during the startup orphan sweep never unlinks a
+// skipped job's manifest.
+func (app *Application) hasUnrestoredQueueRow(jobID string) bool {
+	if app.dispatcher != nil {
+		if _, held := app.dispatcher.Job(jobID); held {
+			return false
+		}
+	}
+	if app.durable == nil || app.historyRepo == nil || app.historyRepo.DB() == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	exists, err := dispatchstore.New(app.historyRepo.DB(), app.log).Has(ctx, jobID)
+	if err != nil {
+		app.log.Warn("could not check dispatch_jobs before unlinking manifest; keeping manifest",
+			"job", jobID, "err", err)
+		return true
+	}
+	return exists
+}
+
 // sweepOrphans reclaims what every missed or crash-interrupted departure left:
-// the rows of every unreachable job, and the manifest of every job the
-// dispatcher does not hold.
+// the rows of every unreachable job, and the manifest of every job that has
+// neither a registered dispatcher entry nor a persisted dispatch_jobs row.
 //
 // Startup only, after the dispatcher has restored the queue and before
 // anything can call Admit (durability.Store.SweepOrphans says why).

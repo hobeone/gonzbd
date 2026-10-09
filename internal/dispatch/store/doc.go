@@ -11,6 +11,6 @@
 // internal/history/migrations/001_initial.sql for the argument that separated
 // them. The swap it anticipated has happened; the separation outlived it.
 //
-// Application constructs a Store via store.New(repo.DB()) to persist dispatch
-// jobs and queue ordering.
+// Application constructs a Store via store.New(repo.DB(), log) to persist
+// dispatch jobs and queue ordering.
 package store

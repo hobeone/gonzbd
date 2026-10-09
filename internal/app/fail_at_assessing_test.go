@@ -69,7 +69,7 @@ func newFailAtAssessingFixture(t *testing.T) *failAtAssessingFixture {
 	application.closeJobHandlesHook = func(context.Context, string) error { return nil }
 	runner := &stateRecorder{}
 	d := dispatch.New(2, 1, time.Hour, time.Now, &appWorkers{app: application},
-		application.residency, dispatchstore.New(repo.DB()), assessingTee{rec: runner, next: application.runner})
+		application.residency, dispatchstore.New(repo.DB(), nil), assessingTee{rec: runner, next: application.runner})
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 	application.runner.report = d
