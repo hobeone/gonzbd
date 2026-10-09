@@ -1,12 +1,20 @@
 pkg ./internal/app/
 run TestRecorder_PurgeLocked
 
-[the complete-verdict dirty purge dropped]
+[the complete override of a kept dirty state dropped]
 file internal/app/record.go
 --- anchor
-	if fv.DeleteAll || fv.SetComplete || fv.ClearComplete {
+		st.Complete = fv.SetComplete
 --- replace
-	if fv.DeleteAll {
+		_ = st.Complete
+--- end
+
+[an emptied dirty map left in place]
+file internal/app/record.go
+--- anchor
+	if len(m) == 0 {
+--- replace
+	if false {
 --- end
 
 [the named-art row filter widened to the whole file]

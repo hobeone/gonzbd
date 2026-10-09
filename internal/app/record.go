@@ -27,12 +27,12 @@ type recorder struct {
 
 	// wmu is a deliberate serialising writer lock, held across I/O: flush holds
 	// it from its snapshot through ApplyRecord and any remerge, and apply holds
-	// it from its purge through ApplyRecord. That is what stops an in-flight
+	// it from its purge through ApplyRecord. Together they keep an in-flight
 	// flush from writing back, or re-merging, rows an untrust has just removed.
 	// Lock order is wmu, then mu, then the dispatcher's mu (through current,
 	// which flush calls before it takes mu). No caller of flush or apply may
-	// hold the dispatcher's mu. noteWritten and markDirty take only mu, so the
-	// download hot path never waits on a store call.
+	// hold the dispatcher's mu. noteWritten and markDirty take only mu; wmu is
+	// taken where `git grep -n 'r\.wmu\.Lock()' internal/app/record.go` finds 2 lines.
 	wmu sync.Mutex
 
 	mu      sync.Mutex // guards pending and dirty
@@ -150,7 +150,7 @@ func (r *recorder) takeFilesLocked(live map[*job.Job]bool) map[*job.Job]map[int]
 // snapshot is merged back for the next flush before wmu is released.
 func (r *recorder) flush(ctx context.Context) error {
 	r.wmu.Lock()
-	err := r.flushLocked(ctx)
+	err := r.flushLocked(ctx) // includes the remerge on error, see flushLocked
 	r.wmu.Unlock()
 	if err != nil {
 		r.log.Warn("recorder: flush failed; will retry", "err", err)
@@ -192,6 +192,9 @@ func (r *recorder) flushLocked(ctx context.Context) error {
 		batches = append(batches, *b)
 	}
 	if err := r.st.ApplyRecord(ctx, batches); err != nil {
+		// The remerge must finish before wmu is released: otherwise an apply
+		// that was waiting could purge first and this remerge would then
+		// resurrect the untrusted rows.
 		r.remerge(rows, files)
 		return err
 	}
@@ -261,8 +264,16 @@ func (r *recorder) purgeLocked(j *job.Job, fv durability.FileVerdict) {
 			r.pending[j] = kept
 		}
 	}
-	if fv.DeleteAll || fv.SetComplete || fv.ClearComplete {
-		delete(r.dirty[j], fv.FileIdx)
+	m := r.dirty[j]
+	switch st, ok := m[fv.FileIdx]; {
+	case fv.DeleteAll:
+		delete(m, fv.FileIdx)
+	case ok && (fv.SetComplete || fv.ClearComplete):
+		st.Complete = fv.SetComplete
+		m[fv.FileIdx] = st
+	}
+	if len(m) == 0 {
+		delete(r.dirty, j)
 	}
 }
 

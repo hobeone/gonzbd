@@ -86,7 +86,9 @@ func (s *modelStore) ApplyRecord(_ context.Context, batches []durability.RecordB
 // same file, then releases the flush, and returns the final modelled state.
 // apply waits on the recorder's writer lock, so the untrust is given a bounded
 // time to commit while the flush is blocked: correct code times out and
-// proceeds, a recorder that lets apply overtake commits it first.
+// proceeds, a recorder that lets apply overtake commits it first. The timeout
+// can only let a mutant live (apply too slow to overtake within it), never fail
+// correct code, which releases the flush either way.
 func untrustDuringFlush(t *testing.T, flushFails bool) *modelStore {
 	t.Helper()
 	st := newModelStore(true, flushFails)
@@ -109,7 +111,7 @@ func untrustDuringFlush(t *testing.T, flushFails bool) *modelStore {
 	select {
 	case e := <-applyDone:
 		applyErr, applied = e, true
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(time.Second):
 	}
 	close(st.release)
 	if err := <-flushErr; (err != nil) != flushFails {
@@ -208,10 +210,10 @@ func TestRecorder_PurgeLocked(t *testing.T) {
 			durability.FileVerdict{FileIdx: 0, DeleteAll: true}, [][2]int{{1, 1}}, []int{1}},
 		{"DeleteArtIdxs drops only the named art in that file and keeps dirty",
 			durability.FileVerdict{FileIdx: 0, DeleteArtIdxs: []int32{1}}, [][2]int{{0, 2}, {1, 1}}, []int{0, 1}},
-		{"ClearComplete drops dirty but no rows",
-			durability.FileVerdict{FileIdx: 0, ClearComplete: true}, [][2]int{{0, 1}, {0, 2}, {1, 1}}, []int{1}},
-		{"SetComplete drops dirty but no rows",
-			durability.FileVerdict{FileIdx: 0, SetComplete: true}, [][2]int{{0, 1}, {0, 2}, {1, 1}}, []int{1}},
+		{"ClearComplete keeps dirty and drops no rows",
+			durability.FileVerdict{FileIdx: 0, ClearComplete: true}, [][2]int{{0, 1}, {0, 2}, {1, 1}}, []int{0, 1}},
+		{"SetComplete keeps dirty and drops no rows",
+			durability.FileVerdict{FileIdx: 0, SetComplete: true}, [][2]int{{0, 1}, {0, 2}, {1, 1}}, []int{0, 1}},
 		{"an empty verdict changes nothing",
 			durability.FileVerdict{FileIdx: 0}, [][2]int{{0, 1}, {0, 2}, {1, 1}}, []int{0, 1}},
 	}
@@ -243,6 +245,41 @@ func TestRecorder_PurgeLocked(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRecorder_PurgeLockedCompleteVerdictKeepsFileStateButOverridesComplete(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		v    durability.FileVerdict
+		want bool
+	}{
+		{"ClearComplete", durability.FileVerdict{FileIdx: 0, ClearComplete: true}, false},
+		{"SetComplete", durability.FileVerdict{FileIdx: 0, SetComplete: true}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			j := newTestJob(t, "id")
+			r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, slog.Default())
+			r.dirty[j] = map[int]durability.FileState{0: {FileIdx: 0, Complete: !tc.want, Filename: "a.bin", FetchPolicy: 2}}
+			r.purgeLocked(j, tc.v)
+			got, ok := r.dirty[j][0]
+			if !ok {
+				t.Fatal("dirty entry dropped, want it kept")
+			}
+			if got.Filename != "a.bin" || got.FetchPolicy != 2 || got.Complete != tc.want {
+				t.Errorf("state = %+v, want filename and policy kept and Complete=%v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRecorder_PurgeLockedLeavesNoEmptyDirtyEntry(t *testing.T) {
+	j := newTestJob(t, "id")
+	r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, slog.Default())
+	r.dirty[j] = map[int]durability.FileState{0: {FileIdx: 0}}
+	r.purgeLocked(j, durability.FileVerdict{FileIdx: 0, DeleteAll: true})
+	if _, ok := r.dirty[j]; ok {
+		t.Error("dirty kept an empty map for the job")
 	}
 }
 
