@@ -82,10 +82,10 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- in the same package where SaveProgress's failed_articles INSERT guards
 -- itself with a `FROM job_files` EXISTS check
 -- (internal/durability/progress.go), three in written.go (ApplyRecord's EXISTS
--- guard on written_articles and its two UPDATEs), and a SELECT in test/crash/harness.go,
--- which that filter keeps because it is build-tagged rather than named
--- _test.go. The reclaim rule's DELETE is a sixth statement the grep cannot
--- see, because it builds it from a table name
+-- guard on written_articles and its two UPDATEs), and a SELECT in
+-- test/crash/harness.go, which that filter keeps because it is build-tagged
+-- rather than named _test.go. The reclaim rule's DELETE is a further statement
+-- the grep cannot see, because it builds it from a table name
 -- (internal/durability/reclaim.go). Every one keys
 -- on `job_id` or on `job_id AND file_index`, and both are prefixes of that
 -- index -- so a second B-tree on job_id alone would be maintained on every
@@ -170,13 +170,13 @@ CREATE TABLE failed_articles (
 -- +goose StatementBegin
 -- One row per article whose decoded bytes were handed to pwrite at
 -- (offset, length) and for which pwrite returned nil. NOT a durability claim: a
--- row may describe bytes the kernel never flushed. A row becomes a Done bit by
--- a CRC match during verification, or by its file being complete = 1.
+-- row may describe bytes the kernel never flushed. The decoder's CRC of those
+-- bytes is stored with it. Written by Store.ApplyRecord.
 --
 -- Keyed by job_id with no foreign key, so rows are removed deliberately rather
--- than by cascade, by the reclaim rule in internal/durability/reclaim.go. A
--- FAILED history entry keeps them, because a retry verifies them against the
--- partial file instead of refetching it.
+-- than by cascade, by the reclaim rule in internal/durability/reclaim.go. That
+-- rule keeps them for a FAILED history entry, so that a retry can verify them
+-- against the partial file.
 CREATE TABLE written_articles (
     job_id   TEXT    NOT NULL,
     file_idx INTEGER NOT NULL,

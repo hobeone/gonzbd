@@ -17,7 +17,8 @@ type perJobTable struct {
 	// keptForFailedEntry marks the tables whose rows outlive the queue row
 	// while the job is a FAILED history entry: a retry reads a failed job's
 	// durable_runs to bound FinalizeFile's truncate to the whole partial file
-	// (#422), and verifies its written_articles against the partial file.
+	// (#422). written_articles is kept so a retry can verify it against the
+	// partial file.
 	// job_files and failed_articles are not read by a retry.
 	keptForFailedEntry bool
 }
