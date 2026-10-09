@@ -6,6 +6,46 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
+// TestRepairState_FailedBytesComeFromArticleSizes pins that a no-par2 job whose
+// last two articles failed reads as having no repair capacity, from the
+// manifest's article sizes alone: nothing here touches a file on disk, so a
+// preallocated file's size cannot change the verdict.
+func TestRepairState_FailedBytesComeFromArticleSizes(t *testing.T) {
+	t.Parallel()
+
+	m := job.NewManifest([]job.JobFile{{
+		Subject: "data.bin",
+		Bytes:   400,
+		Articles: []job.JobArticle{
+			{ID: "<a0@x>", Bytes: 100, Number: 1},
+			{ID: "<a1@x>", Bytes: 100, Number: 2},
+			{ID: "<a2@x>", Bytes: 100, Number: 3},
+			{ID: "<a3@x>", Bytes: 100, Number: 4},
+		},
+	}})
+	j := job.New("four-articles", "four.nzb", job.Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	for i := range 2 {
+		if err := j.MarkArticleDone(i, 100, "srv1"); err != nil {
+			t.Fatalf("MarkArticleDone(%d): %v", i, err)
+		}
+	}
+	for i := 2; i < 4; i++ {
+		if err := j.MarkArticleFailed(i); err != nil {
+			t.Fatalf("MarkArticleFailed(%d): %v", i, err)
+		}
+	}
+
+	if got := j.ContentFailedBytes(); got != 200 {
+		t.Errorf("ContentFailedBytes() = %d, want 200", got)
+	}
+	if got := job.RepairStateFrom(j.ContentFailedBytes(), 0, false); got != job.RepairNoCapacity {
+		t.Errorf("RepairStateFrom(%d, 0, false) = %v, want %v", j.ContentFailedBytes(), got, job.RepairNoCapacity)
+	}
+}
+
 func TestJob_RepairState_UnknownWhenNoProgress(t *testing.T) {
 	t.Parallel()
 
