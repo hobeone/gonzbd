@@ -1,6 +1,8 @@
 package assembler
 
 import (
+	"cmp"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -45,8 +47,9 @@ func (o *ownedRanges) ownerOf(r Range, arriving articleID) (articleID, bool) {
 // panics rather than being refused: the caller must have found no owner via
 // ownerOf first, and the one production path, acceptArticle, does so
 // immediately before Accept on the file's single goroutine —
-// `git grep -n 'owned\.claim' -- '*.go' ':!*_test.go'` finds the one call, in
-// writeOne, reached from Accept, whose one non-test caller is acceptArticle.
+// `git grep -n '\.claim(' -- 'internal/assembler/*.go' ':!*_test.go' ':!internal/assembler/diskprobe.go'`
+// finds 2 lines, this comment and the one call, in writeOne, reached from
+// Accept, whose one non-test caller is acceptArticle.
 // A refusal here could not return the article's accounting, since its bytes
 // are already written.
 func (o *ownedRanges) claim(r Range, id articleID) {
@@ -73,9 +76,30 @@ func (o *ownedRanges) claim(r Range, id articleID) {
 // manifest article, so sameArticle never waves an arrival through.
 var seededOwner = articleID{artIdx: -1}
 
-// seed marks rs as owned by seededOwner.
-func (o *ownedRanges) seed(rs []Range) {
-	for _, r := range rs {
-		o.claim(r, seededOwner)
+// errSeedNotEmpty is returned by seed on a set that already holds ranges.
+var errSeedNotEmpty = errors.New("assembler: seed on a non-empty range set")
+
+// seed marks rs as owned by seededOwner. It runs once, at file open, before any
+// Accept: on a non-empty set it returns errSeedNotEmpty and changes nothing
+// (rs may be derived from disk, so a bad call must not panic).
+//
+// seededOwner stands for many independent verified articles, so seed does not
+// go through claim, whose same-article replace would drop earlier coverage.
+// Instead it sorts a copy of rs and merges intersecting or abutting ranges.
+func (o *ownedRanges) seed(rs []Range) error {
+	if len(o.s) != 0 {
+		return errSeedNotEmpty
 	}
+	sorted := slices.DeleteFunc(slices.Clone(rs), func(r Range) bool { return r.Len <= 0 })
+	slices.SortFunc(sorted, func(a, b Range) int { return cmp.Compare(a.Off, b.Off) })
+	for _, r := range sorted {
+		if n := len(o.s); n > 0 && r.Off <= o.s[n-1].r.end() {
+			if e := r.end(); e > o.s[n-1].r.end() {
+				o.s[n-1].r.Len = e - o.s[n-1].r.Off
+			}
+			continue
+		}
+		o.s = append(o.s, ownedRange{r: r, id: seededOwner})
+	}
+	return nil
 }

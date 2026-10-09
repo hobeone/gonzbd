@@ -12,9 +12,9 @@ file internal/assembler/ranges.go
 [seed claims as the zero article]
 file internal/assembler/ranges.go
 --- anchor
-		o.claim(r, seededOwner)
+		o.s = append(o.s, ownedRange{r: r, id: seededOwner})
 --- replace
-		o.claim(r, articleID{})
+		o.s = append(o.s, ownedRange{r: r, id: articleID{}})
 --- end
 
 [range claimed before the write returned]

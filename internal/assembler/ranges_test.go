@@ -1,6 +1,51 @@
 package assembler
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
+
+func TestOwnedRanges_SeedMergesIntersectingRanges(t *testing.T) {
+	probe := articleID{artIdx: 3}
+	for _, tc := range []struct {
+		name    string
+		in      []Range
+		covered []Range
+		free    []Range
+	}{
+		{"intersecting", []Range{{0, 100}, {50, 100}}, []Range{{10, 5}, {120, 5}}, []Range{{150, 5}}},
+		{"contained", []Range{{0, 100}, {10, 10}}, []Range{{10, 5}, {90, 5}}, []Range{{100, 5}}},
+		{"unsorted and abutting", []Range{{200, 50}, {100, 100}, {0, 50}}, []Range{{0, 5}, {150, 5}, {240, 5}}, []Range{{50, 50}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var o ownedRanges
+			if err := o.seed(tc.in); err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range tc.covered {
+				if _, ok := o.ownerOf(r, probe); !ok {
+					t.Errorf("ownerOf(%+v) not owned after seeding %+v", r, tc.in)
+				}
+			}
+			for _, r := range tc.free {
+				if _, ok := o.ownerOf(r, probe); ok {
+					t.Errorf("ownerOf(%+v) owned after seeding %+v", r, tc.in)
+				}
+			}
+		})
+	}
+}
+
+func TestOwnedRanges_SeedOnNonEmptySetChangesNothing(t *testing.T) {
+	var o ownedRanges
+	o.claim(Range{0, 10}, articleID{artIdx: 1})
+	if err := o.seed([]Range{{100, 10}}); !errors.Is(err, errSeedNotEmpty) {
+		t.Fatalf("seed err = %v, want errSeedNotEmpty", err)
+	}
+	if len(o.s) != 1 || o.s[0].r != (Range{0, 10}) {
+		t.Errorf("set = %+v, want it unchanged", o.s)
+	}
+}
 
 func TestOwnedRanges_IntersectionIsOwned(t *testing.T) {
 	var o ownedRanges
@@ -31,7 +76,9 @@ func TestOwnedRanges_IntersectionIsOwned(t *testing.T) {
 
 func TestOwnedRanges_SeededRangeIsOwnedByEveryArrival(t *testing.T) {
 	var o ownedRanges
-	o.seed([]Range{{0, 100}})
+	if err := o.seed([]Range{{0, 100}}); err != nil {
+		t.Fatal(err)
+	}
 	// artIdx 0 is the zero articleID's index: a zero sentinel would treat it
 	// as the owner itself and wave it through.
 	if _, got := o.ownerOf(Range{50, 10}, articleID{artIdx: 0}); !got {
