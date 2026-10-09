@@ -159,6 +159,12 @@ type FileInfo struct {
 	// consumers depend on this being the larger of the two figures — see
 	// finalizeFile and offsetInRange.
 	ExpectedSize int64
+
+	// Owned lists byte ranges verified before this process started. An arrival
+	// intersecting one is refused, as it would be had this process written it.
+	// It is read once, when the file is opened (seedOwned), and not kept: the
+	// writer's own range set is the only copy afterwards.
+	Owned []Range
 }
 
 // Options configures an Assembler.
@@ -263,6 +269,12 @@ type Options struct {
 	// is not Outstanding: ForEachUnfinishedArticle skips a set Emitted bit, so
 	// the job waits forever on an article nothing will re-dispatch.
 	OnArticleRejected func(jobID string, fileIdx int, artIdx int32, reason string)
+
+	// OnArticleWritten, if non-nil, is called on the worker goroutine once per
+	// article whose bytes were written without error and whose range was
+	// claimed: off and n are the range, crc the article's CRC32. It is not
+	// called for a refused article or a faulted write.
+	OnArticleWritten func(jobID string, fileIdx int, artIdx int32, off, n int64, crc uint32)
 
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.
 	MinFreeBytes int64
@@ -1456,8 +1468,39 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 		w:    newFileWriter(fh, info.Path, key),
 		info: info,
 	}
+	a.seedOwned(f.w, info.Owned)
 	open[key] = f
 	return f, nil
+}
+
+// seedOwned seeds w's range set from ranges verified before this process. It
+// is the one place that turns FileInfo.Owned into a seed.
+//
+// The ranges come from disk, so each is checked first: Off >= 0, Len > 0 and
+// Off+Len not overflowing. An invalid range is dropped with a warning. That is
+// safe under Standing Design Rule 3: an unseeded range only means its articles
+// are fetched again, which costs their own bytes.
+//
+// seed fails only on a non-empty set, and this runs on a fresh writer, so its
+// error is a programming error and is logged at Error level rather than
+// returned: the file still opens, unseeded, and the cost is the same refetch.
+func (a *Assembler) seedOwned(w *FileWriter, owned []Range) {
+	if len(owned) == 0 {
+		return
+	}
+	valid := make([]Range, 0, len(owned))
+	for _, r := range owned {
+		if r.Off < 0 || r.Len <= 0 || r.Off > math.MaxInt64-r.Len {
+			a.log.Warn("dropping invalid owned range",
+				"job", w.key.jobID, "fileidx", w.key.fileIdx, "off", r.Off, "len", r.Len)
+			continue
+		}
+		valid = append(valid, r)
+	}
+	if err := w.owned.seed(valid); err != nil {
+		a.log.Error("seeding owned ranges failed",
+			"job", w.key.jobID, "fileidx", w.key.fileIdx, "error", err)
+	}
 }
 
 // handleFatalArticle counts a permanently failed article toward the file's
@@ -1593,7 +1636,14 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 			reason: "claims a byte range already written by another article",
 		}
 	}
-	return f.w.Accept(id, req.Offset, req.Data, req.CRC32)
+	n := int64(len(req.Data)) // Accept returns the buffer to the pool
+	if err := f.w.Accept(id, req.Offset, req.Data, req.CRC32); err != nil {
+		return err
+	}
+	if a.opts.OnArticleWritten != nil {
+		a.opts.OnArticleWritten(req.JobID, req.FileIdx, req.ArtIdx, req.Offset, n, req.CRC32)
+	}
+	return nil
 }
 
 // rejectedArticleError marks a refusal that is about the ARTICLE, so the

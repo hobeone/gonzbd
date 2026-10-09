@@ -936,7 +936,7 @@ checked, and a warning or unacted-on counter is not a consumer.
 `acceptArticle` refuses an arrival whose `[off, off+len)` intersects another
 article's range. The refused article is resolved permanently failed and its
 bytes are charged to par2. It is enforced within one open-file episode; across a
-restart `owned` starts empty (until a later change seeds it from verified rows)
+restart `owned` starts empty unless the resolver supplies `FileInfo.Owned` (the assembler seeds from it at open)
 and the durability layer's whole-file CRC withholding is the backstop.
 
 **The one known Rule 3 exception, recorded and not fixed.** First-writer-wins
