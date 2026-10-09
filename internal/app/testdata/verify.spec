@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestVerifyJobFiles_Outcomes|TestVerifyJobFiles_ReadFaultChangesNothing|TestVerifyJobFiles_FsyncErrorUntrustsTheFile|TestVerifyJobFiles_RetryDoesNotFinishOverAnIntersectionFailure|TestFinishFileByPath|TestFileCRCFromRows|TestFileFinishable|TestResolveRows|TestReadBackFile_ReadsARowLongerThanTheBuffer|TestFinishIfResolved|TestVerifyJobFiles_CancelChangesNothing|TestVerifyJobFiles_OpenErrorIsAFault|TestVerifyJobFiles_MissingDirectoryIsAFault|TestVerifyJobFiles_OpensTheResolversPath
+run TestVerifyJobFiles_Outcomes|TestVerifyJobFiles_ReadFaultChangesNothing|TestVerifyJobFiles_FsyncErrorUntrustsTheFile|TestVerifyJobFiles_RetryDoesNotFinishOverAnIntersectionFailure|TestFinishFileByPath|TestFinishFileByPath_ReturnsASecondFsyncError|TestFileCRCFromRows|TestFileFinishable|TestResolveRows|TestReadBackFile_ReadsARowLongerThanTheBuffer|TestFinishIfResolved|TestVerifyJobFiles_CancelChangesNothing|TestVerifyJobFiles_OpenErrorIsAFault|TestVerifyJobFiles_MissingDirectoryIsAFault|TestVerifyJobFiles_OpensTheResolversPath
 
 [(a) a CRC mismatch treated as a match]
 file internal/app/verify.go
@@ -18,7 +18,7 @@ file internal/app/verify.go
 --- end
 
 [(c) the maxEnd > 0 guard dropped]
-file internal/storagefault/shrink.go
+file internal/fsutil/shrink.go
 --- anchor
 	if end > 0 {
 --- replace
@@ -26,10 +26,10 @@ file internal/storagefault/shrink.go
 --- end
 
 [(c2) the second fsync skipped]
-file internal/storagefault/shrink.go
+file internal/fsutil/shrink.go
 --- anchor
 	if err := sync(f); err != nil {
-		return Classify("sync", path, err)
+		return storagefault.Classify("sync", path, err)
 	}
 	return nil
 --- replace
@@ -37,7 +37,7 @@ file internal/storagefault/shrink.go
 --- end
 
 [(c3) the truncate skipped]
-file internal/storagefault/shrink.go
+file internal/fsutil/shrink.go
 --- anchor
 			if err := f.Truncate(end); err != nil {
 --- replace

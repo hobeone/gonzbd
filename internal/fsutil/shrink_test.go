@@ -1,4 +1,4 @@
-package storagefault
+package fsutil
 
 import (
 	"errors"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 func shrinkFile(t *testing.T, size int64) *os.File {
@@ -63,7 +65,7 @@ func TestShrinkAndSync_FirstFsyncFailureDoesNotTruncate(t *testing.T) {
 	t.Parallel()
 	f := shrinkFile(t, 500)
 	err := ShrinkAndSync(f, 300, func(*os.File) error { return syscall.EIO })
-	var fault *Fault
+	var fault *storagefault.Fault
 	if !errors.As(err, &fault) || fault.Op != "sync" || !errors.Is(err, syscall.EIO) {
 		t.Fatalf("err = %v, want a sync Fault wrapping EIO", err)
 	}
@@ -83,7 +85,7 @@ func TestShrinkAndSync_SecondFsyncFailureIsReturned(t *testing.T) {
 		}
 		return nil
 	})
-	var fault *Fault
+	var fault *storagefault.Fault
 	if !errors.As(err, &fault) || fault.Op != "sync" || !errors.Is(err, syscall.EIO) {
 		t.Fatalf("err = %v, want a sync Fault wrapping EIO from the second fsync", err)
 	}
@@ -96,7 +98,7 @@ func TestShrinkAndSync_TruncateAndStatFailuresAreClassified(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := ShrinkAndSync(f, 300, func(*os.File) error { return nil })
-	var fault *Fault
+	var fault *storagefault.Fault
 	if !errors.As(err, &fault) || fault.Op != "stat" {
 		t.Fatalf("err = %v, want a stat Fault on a closed file", err)
 	}

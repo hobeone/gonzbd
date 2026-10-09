@@ -13,8 +13,8 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/crc32util"
 	"github.com/hobeone/gonzbd/internal/durability"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
-	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 // verifyResult is what one verification pass established about a job's files.
@@ -245,6 +245,9 @@ func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow
 // rows are in offset order and kept rows are disjoint, so the kept rows are
 // ordered by end as well, and a row can only reach the nearest kept row on
 // either side of it.
+//
+// Precondition: rows are sorted by (Offset, ArtIdx) and every Length is > 0;
+// readBackFile filters the invalid rows out first.
 func resolveRows(rows []durability.WrittenRow, match []bool) fileReadback {
 	var out fileReadback
 	kept := make([]bool, len(rows))
@@ -314,7 +317,7 @@ func finishFileByPath(path string, maxEnd int64) (err error) {
 			err = fmt.Errorf("finish %s: close: %w", path, cErr)
 		}
 	}()
-	if err := storagefault.ShrinkAndSync(fh, maxEnd, fsyncFile); err != nil {
+	if err := fsutil.ShrinkAndSync(fh, maxEnd, fsyncFile); err != nil {
 		return fmt.Errorf("finish %s: %w", path, err)
 	}
 	return nil

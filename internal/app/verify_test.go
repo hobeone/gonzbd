@@ -477,30 +477,6 @@ func TestFinishFileByPath(t *testing.T) {
 			}
 		})
 	}
-	t.Run("a failing second fsync is returned", func(t *testing.T) {
-		// Not parallel: it replaces the package-level fsyncFile seam.
-		path := filepath.Join(t.TempDir(), "f.bin")
-		if err := os.WriteFile(path, make([]byte, 5000), 0o600); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		orig := fsyncFile
-		t.Cleanup(func() { fsyncFile = orig })
-		calls := 0
-		fsyncFile = func(f *os.File) error {
-			calls++
-			if calls == 2 {
-				return syscall.EIO
-			}
-			return orig(f)
-		}
-		err := finishFileByPath(path, 4096)
-		if !errors.Is(err, syscall.EIO) {
-			t.Errorf("err = %v, want one wrapping EIO from the second fsync", err)
-		}
-		if calls != 2 {
-			t.Errorf("fsynced %d times, want 2", calls)
-		}
-	})
 	t.Run("a missing file is an error naming it", func(t *testing.T) {
 		t.Parallel()
 		path := filepath.Join(t.TempDir(), "gone.bin")
@@ -509,6 +485,34 @@ func TestFinishFileByPath(t *testing.T) {
 			t.Errorf("err = %v, want an error naming %s", err, path)
 		}
 	})
+}
+
+// TestFinishFileByPath_ReturnsASecondFsyncError pins that a failing fsync
+// after the truncate is returned.
+//
+// Not parallel: it replaces the package-level fsyncFile seam.
+func TestFinishFileByPath_ReturnsASecondFsyncError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "f.bin")
+	if err := os.WriteFile(path, make([]byte, 5000), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	orig := fsyncFile
+	t.Cleanup(func() { fsyncFile = orig })
+	calls := 0
+	fsyncFile = func(f *os.File) error {
+		calls++
+		if calls == 2 {
+			return syscall.EIO
+		}
+		return orig(f)
+	}
+	err := finishFileByPath(path, 4096)
+	if !errors.Is(err, syscall.EIO) {
+		t.Errorf("err = %v, want one wrapping EIO from the second fsync", err)
+	}
+	if calls != 2 {
+		t.Errorf("fsynced %d times, want 2", calls)
+	}
 }
 
 // TestFileCRCFromRows pins the derivation's single-chain predicate: a CRC
