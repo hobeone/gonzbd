@@ -50,7 +50,7 @@ func cancelWithoutRouting(t *testing.T, name string, disposition FileDisposition
 			disposition: disposition,
 		},
 		open, map[fileKey]struct{}{}, map[string]struct{}{})
-	return f.info.Path, open, key
+	return f.info.Path(), open, key
 }
 
 // TestDispatchRequest_CancelDeletingFilesRoutesNothing covers the DeleteFiles
@@ -115,7 +115,7 @@ func TestDispatchRequest_CancelKeepingFilesLogsAFailedClose(t *testing.T) {
 	if !strings.Contains(logs.String(), "failed to close a cancelled job's file that is being kept") {
 		t.Errorf("a failed close of a kept file was not reported; log was:\n%s", logs.String())
 	}
-	if _, err := os.Stat(f.info.Path); err != nil {
+	if _, err := os.Stat(f.info.Path()); err != nil {
 		t.Errorf("the kept file is gone after a failed close: %v", err)
 	}
 }

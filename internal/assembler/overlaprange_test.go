@@ -44,7 +44,7 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 		Offset: 500, Data: bytes.Repeat([]byte("B"), 1000),
 	}, open, completed)
 
-	got, err := os.ReadFile(f.info.Path)
+	got, err := os.ReadFile(f.info.Path())
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 	submit(1, "a1@example", 100, 'B', 100)
 	submit(2, "x@example", 150, 'X', 50) // contained in A1's range
 
-	got, err := os.ReadFile(f.info.Path)
+	got, err := os.ReadFile(f.info.Path())
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestOverlap_StraddlingArticleIsRefusedAndCountedAsFailed(t *testing.T) {
 		t.Errorf("straddling article B (artIdx 1) was noted as written: %v", f.w.unsynced)
 	}
 
-	got, err := os.ReadFile(f.info.Path)
+	got, err := os.ReadFile(f.info.Path())
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused(t *testing.T) {
 					"incumbent [%d,%d)", rejected, tc.arrOff, tc.arrOff+int64(tc.arrLen),
 					tc.incOff, tc.incOff+int64(tc.incLen))
 			}
-			got, err := os.ReadFile(f.info.Path)
+			got, err := os.ReadFile(f.info.Path())
 			if err != nil {
 				t.Fatalf("read back: %v", err)
 			}

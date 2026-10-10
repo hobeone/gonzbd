@@ -866,9 +866,9 @@ func TestJobFilePath_ResolvesUnderTheJobDirectory(t *testing.T) {
 	}
 }
 
-// TestJobFileLocation_AgreesWithTheWritersJoin pins that the verifier's
-// directory and name join to the path registerFile's fsutil.JoinSafe gives
-// the writer, so the two cannot disagree about which file a name means.
+// TestJobFileLocation_AgreesWithTheWritersJoin pins that jobFileLocation's
+// directory and name join to the path fsutil.JoinSafe gives for the same
+// name, and that the name is one path component.
 func TestJobFileLocation_AgreesWithTheWritersJoin(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)

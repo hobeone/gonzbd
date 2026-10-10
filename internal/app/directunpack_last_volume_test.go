@@ -116,7 +116,7 @@ func TestCompleteFinalizedFile_FeedsTheLastVolumeBeforeReportingTheDownload(t *t
 			t.Fatal(err)
 		}
 		application.pipeline.mu.Lock()
-		application.pipeline.fileInfo[fileKey{jobID: id, fileIdx: i}] = assembler.FileInfo{Path: path}
+		application.pipeline.fileInfo[fileKey{jobID: id, fileIdx: i}] = assembler.FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path)}
 		application.pipeline.mu.Unlock()
 	}
 

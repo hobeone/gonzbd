@@ -390,15 +390,13 @@ func finishFileByPath(loc jobFile, maxEnd int64) (err error) {
 	return nil
 }
 
-// jobFileLocation resolves where the assembler would have put one of a job's
-// files, from the filename the queue already recorded: the job directory, and
-// the sanitized name inside it.
-//
-// It reads p.downloadDir under the same lock registerFile does, so the two
-// cannot disagree about which directory a job's files live in, and it
-// sanitizes the name as registerFile's fsutil.JoinSafe does — a verification
-// that read a different path than the writer used would find every file
-// missing. TestJobFileLocation_AgreesWithTheWritersJoin pins the agreement.
+// jobFileLocation resolves where one of a job's files lives: the job
+// directory, and the sanitized name inside it. registerFile names the writer's
+// file with it and the restart verifier reads with it, so the two cannot
+// disagree about a file's directory or name — a verification that read a
+// different path than the writer used would find every file missing. The
+// sanitized name is the one fsutil.JoinSafe would join, a single path
+// component (TestJobFileLocation_AgreesWithTheWritersJoin).
 func (p *pipeline) jobFileLocation(jobName, filename string) jobFile {
 	p.mu.RLock()
 	jobDir := filepath.Join(p.downloadDir, jobName)
@@ -411,6 +409,20 @@ func (p *pipeline) jobFileLocation(jobName, filename string) jobFile {
 // jobFilePath is jobFileLocation's path.
 func (p *pipeline) jobFilePath(jobName, filename string) string {
 	return p.jobFileLocation(jobName, filename).Path()
+}
+
+// uniqueJobFileName returns loc.Name, or the first of its ".1", ".2"… variants that
+// nothing in loc.Dir holds yet (fsutil.GetUniqueRelPath, which Lstats through
+// an os.Root on loc.Dir, so a symlink counts as taken and is never followed).
+// A directory that does not exist or cannot be opened holds no name: loc.Name
+// is returned unchanged, and the writer's own open reports any real error.
+func uniqueJobFileName(loc jobFile) string {
+	root, err := openRoot(loc.Dir)
+	if err != nil {
+		return loc.Name
+	}
+	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
+	return fsutil.GetUniqueRelPath(root, loc.Name)
 }
 
 // fileFinishable reports whether one file has every article resolved and no

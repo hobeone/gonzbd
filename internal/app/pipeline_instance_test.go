@@ -287,7 +287,7 @@ func assertRegisteredBy(t *testing.T, p *pipeline, id, name string) {
 	if err != nil {
 		t.Fatalf("resolveFileInfo: %v", err)
 	}
-	if dir := filepath.Base(filepath.Dir(info.Path)); !strings.EqualFold(dir, name) {
-		t.Errorf("file 0 was registered in %q, want the %q instance's directory", info.Path, name)
+	if dir := filepath.Base(filepath.Dir(info.Path())); !strings.EqualFold(dir, name) {
+		t.Errorf("file 0 was registered in %q, want the %q instance's directory", info.Path(), name)
 	}
 }

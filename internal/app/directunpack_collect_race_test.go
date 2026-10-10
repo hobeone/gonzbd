@@ -110,7 +110,7 @@ func fetchingRarApp(t *testing.T) (*Application, *job.Job) {
 			t.Fatal(err)
 		}
 		application.pipeline.mu.Lock()
-		application.pipeline.fileInfo[fileKey{jobID: id, fileIdx: i}] = assembler.FileInfo{Path: path}
+		application.pipeline.fileInfo[fileKey{jobID: id, fileIdx: i}] = assembler.FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path)}
 		application.pipeline.mu.Unlock()
 	}
 	return application, j

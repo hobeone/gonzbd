@@ -367,6 +367,20 @@ with `..`, is an open error and a verification fault, never a read, fsync or
 truncate of a file elsewhere. A job directory that exists but cannot be opened
 for reading is a fault too, since the directory is opened before the file.
 
+**The writer's open is confined the same way.** The pipeline names each file
+with the same resolver (`registerFile` calls `pipeline.jobFileLocation`) and
+hands the assembler the job directory and the name as `FileInfo.Dir` and
+`FileInfo.Name`. `openTargetFile` creates the directory, then opens the name
+`O_WRONLY|O_CREATE` through an `os.Root` on it (`openInDir`), so a symlink in
+the job directory that points out of it, or a name that climbs out with `..`,
+fails the open: no file outside the job directory is created or written. The
+failure takes the path of any other failed open: a routed `open` fault, and
+the article handed back as unwritten
+(`TestOpenTargetFile_RefusesToWriteOutOfTheJobDirectory`). The first time a
+file is named, `uniqueJobFileName` checks the name with `Lstat` through an
+`os.Root` on the job directory, so a name already held by a file or a symlink
+gets a numeric suffix rather than being reused.
+
 The fresh descriptor's fsync reports a writeback error **no earlier fsync has
 reported** (Linux ≥ 4.16). On Linux the file's cache is then dropped
 (`POSIX_FADV_DONTNEED`), so the reads come from the device rather than from

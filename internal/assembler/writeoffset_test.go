@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -23,7 +24,7 @@ func registerSizedFile(t *testing.T, dir string, files map[string]FileInfo, jobI
 	t.Helper()
 	path := fmt.Sprintf("%s/%s_%d.dat", dir, jobID, fileIdx)
 	files[fmt.Sprintf("%s:%d", jobID, fileIdx)] = FileInfo{
-		Path:         path,
+		Dir: filepath.Dir(path), Name: filepath.Base(path),
 		TotalParts:   totalParts,
 		ExpectedSize: expected,
 	}

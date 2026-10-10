@@ -55,7 +55,7 @@ func registerFile(t *testing.T, dir string, files map[string]FileInfo, jobID str
 	t.Helper()
 	path := filepath.Join(dir, fmt.Sprintf("%s_%d.dat", jobID, fileIdx))
 	key := fmt.Sprintf("%s:%d", jobID, fileIdx)
-	files[key] = FileInfo{Path: path, TotalParts: totalParts}
+	files[key] = FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), TotalParts: totalParts}
 	return path
 }
 
@@ -680,7 +680,7 @@ func TestTelemetryPreallocCalls(t *testing.T) {
 	files := make(map[string]FileInfo)
 	// File with ExpectedSize > 0 triggers pre-allocation.
 	path := filepath.Join(dir, "job1_0.dat")
-	files["job1:0"] = FileInfo{Path: path, TotalParts: 1, ExpectedSize: 4096}
+	files["job1:0"] = FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), TotalParts: 1, ExpectedSize: 4096}
 
 	opts := makeOpts(dir, files)
 	a := startAssembler(t, opts)
@@ -822,7 +822,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 
 		opts := Options{
 			FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
-				return FileInfo{Path: "test"}, nil
+				return FileInfo{Name: "test"}, nil
 			},
 			OnFileComplete: func(jobID string, fileIdx int) {
 				callbackJobID = jobID
@@ -872,7 +872,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		var fault *storagefault.Fault
 		opts := Options{
 			FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
-				return FileInfo{Path: "test"}, nil
+				return FileInfo{Name: "test"}, nil
 			},
 			OnFileComplete:  func(string, int) { completes++ },
 			OnFileUntrusted: func(string, int) { untrusted++ },
@@ -1045,7 +1045,7 @@ func TestPreallocCallsNotIncrementedWhenSizeZero(t *testing.T) {
 	dir := t.TempDir()
 	files := make(map[string]FileInfo)
 	path := filepath.Join(dir, "job1_0.dat")
-	files["job1:0"] = FileInfo{Path: path, TotalParts: 1, ExpectedSize: 0}
+	files["job1:0"] = FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), TotalParts: 1, ExpectedSize: 0}
 
 	opts := makeOpts(dir, files)
 	a := startAssembler(t, opts)
@@ -1120,11 +1120,11 @@ func TestCancelJob_BlocksUntilFileClosedAndRemoved(t *testing.T) {
 			switch jobID {
 			case "target":
 				// TotalParts is never reached, so the file stays open.
-				return FileInfo{Path: targetPath, TotalParts: 100}, nil
+				return FileInfo{Dir: filepath.Dir(targetPath), Name: filepath.Base(targetPath), TotalParts: 100}, nil
 			case "blocker":
 				resolverEntered <- struct{}{}
 				<-resolverRelease
-				return FileInfo{Path: blockerPath, TotalParts: 1}, nil
+				return FileInfo{Dir: filepath.Dir(blockerPath), Name: filepath.Base(blockerPath), TotalParts: 1}, nil
 			default:
 				return FileInfo{}, fmt.Errorf("unexpected job %q", jobID)
 			}
