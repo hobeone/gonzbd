@@ -2,7 +2,6 @@ package job
 
 import (
 	"fmt"
-	"maps"
 	"slices"
 
 	"github.com/hobeone/gonzbd/internal/crc32util"
@@ -98,24 +97,54 @@ func installRows(m *Manifest, p *JobProgress, fileIdx int, rows []durability.Wri
 	for _, r := range rows {
 		p.markDone(m, int(r.ArtIdx))
 	}
+	p.upsertRows(fileIdx, rows)
+}
+
+// upsertRows makes each row its article's resident row in p.written[fileIdx],
+// replacing the row the article already has or appending one. It is the one
+// replace-or-append of resident rows: installRows and Job.MarkArticleWritten
+// call it (`git grep -n 'p\.[u]psertRows(' -- '*.go' ':!*_test.go'` returns 2
+// lines).
+//
+// The resident rows are kept in no particular order. Their readers do not
+// assume one: FileRows and settleFileCRC each sort a copy (sortedClone).
+//
+// clone() shares p.written's slices, so a stored slice is never edited in
+// place: a replacement is made in a new slice. An append may write into the
+// stored slice's spare capacity, which no holder can see: every slice header
+// sharing that backing array was read from p.written, the stored length only
+// grows between replacements, so each holder's length is at most the stored
+// one and append writes only past it. A replacement or a delete moves
+// p.written to a new array, and nothing appends to the old one again. When the
+// file has no resident rows the append starts a new array, so the caller's
+// slice is never kept. The caller holds contentMu.
+func (p *JobProgress) upsertRows(fileIdx int, rows []durability.WrittenRow) {
+	if len(rows) == 0 {
+		return
+	}
 	if p.written == nil {
 		p.written = make(map[int][]durability.WrittenRow)
 	}
-	resident := p.written[fileIdx]
-	if len(resident) == 0 {
-		if len(rows) > 0 {
-			p.written[fileIdx] = sortedClone(rows)
-		}
-		return
+	out := p.written[fileIdx]
+	at := make(map[int32]int, len(out)+len(rows))
+	for k, r := range out {
+		at[r.ArtIdx] = k
 	}
-	byArt := make(map[int32]durability.WrittenRow, len(resident)+len(rows))
-	for _, r := range resident {
-		byArt[r.ArtIdx] = r
-	}
+	copied := false
 	for _, r := range rows {
-		byArt[r.ArtIdx] = r
+		k, ok := at[r.ArtIdx]
+		if !ok {
+			at[r.ArtIdx] = len(out)
+			out = append(out, r)
+			continue
+		}
+		if !copied {
+			out = slices.Clone(out)
+			copied = true
+		}
+		out[k] = r
 	}
-	p.written[fileIdx] = sortedClone(slices.Collect(maps.Values(byArt)))
+	p.written[fileIdx] = out
 }
 
 // MarkArticleWritten records an article whose bytes were written: it is Done,
@@ -139,17 +168,7 @@ func (j *Job) MarkArticleWritten(row durability.WrittenRow) error {
 	}
 	p := j.progress
 	p.markDone(m, int(row.ArtIdx))
-	if p.written == nil {
-		p.written = make(map[int][]durability.WrittenRow)
-	}
-	resident := p.written[row.FileIdx]
-	if k := slices.IndexFunc(resident, func(r durability.WrittenRow) bool { return r.ArtIdx == row.ArtIdx }); k >= 0 {
-		replaced := slices.Clone(resident)
-		replaced[k] = row
-		p.written[row.FileIdx] = replaced
-		return nil
-	}
-	p.written[row.FileIdx] = append(resident, row)
+	p.upsertRows(row.FileIdx, []durability.WrittenRow{row})
 	return nil
 }
 

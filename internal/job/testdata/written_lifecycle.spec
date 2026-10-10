@@ -37,9 +37,9 @@ file internal/job/verified.go
 [a written article's row is not kept for the CRC]
 file internal/job/verified.go
 --- anchor
-	p.written[row.FileIdx] = append(resident, row)
+	p.upsertRows(row.FileIdx, []durability.WrittenRow{row})
 	return nil
 --- replace
-	_ = resident
+	_ = row
 	return nil
 --- end

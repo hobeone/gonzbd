@@ -241,6 +241,48 @@ func TestInstallRows_KeepsACopyOfTheFirstInstall(t *testing.T) {
 	}
 }
 
+// TestMarkArticleWritten_ReplacesARowAResetLeftBehind pins that a write
+// replaces its article's resident row rather than adding one, including when
+// the article's Done bit was cleared under the row: a failed article's late
+// write stores a row, and ResetForRetry clears Done and Failed but keeps it.
+func TestMarkArticleWritten_ReplacesARowAResetLeftBehind(t *testing.T) {
+	t.Parallel()
+	j := verifiedTestJob(t)
+	if err := j.MarkArticleFailed(0); err != nil {
+		t.Fatalf("MarkArticleFailed: %v", err)
+	}
+	if err := j.MarkArticleWritten(durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1}); err != nil {
+		t.Fatalf("MarkArticleWritten: %v", err)
+	}
+	j.ResetForRetry()
+	second := durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 2}
+	if err := j.MarkArticleWritten(second); err != nil {
+		t.Fatalf("MarkArticleWritten: %v", err)
+	}
+	if got := j.FileRows(0); !slices.Equal(got, []durability.WrittenRow{second}) {
+		t.Errorf("FileRows(0) = %+v, want only the second write's row", got)
+	}
+}
+
+// TestMarkArticleWritten_ReplacesWithoutReachingAClone pins upsertRows'
+// copy-on-write: a clone taken before a replacement shares the stored slice,
+// so the replacement must land in a new one and leave the clone's row as it
+// was.
+func TestMarkArticleWritten_ReplacesWithoutReachingAClone(t *testing.T) {
+	t.Parallel()
+	j := verifiedTestJob(t)
+	if err := j.MarkArticleWritten(durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Length: 100, CRC32: 7}); err != nil {
+		t.Fatalf("MarkArticleWritten: %v", err)
+	}
+	clone := j.Progress()
+	if err := j.MarkArticleWritten(durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Length: 100, CRC32: 8}); err != nil {
+		t.Fatalf("MarkArticleWritten: %v", err)
+	}
+	if rows := clone.written[0]; len(rows) != 1 || rows[0].CRC32 != 7 {
+		t.Errorf("a clone taken before the replacement sees %+v, want its one row with CRC 7", rows)
+	}
+}
+
 // TestJobFileState pins the record's view of one file: each field read from
 // the file's progress, and no state for a file the job does not have.
 func TestJobFileState(t *testing.T) {

@@ -12,9 +12,13 @@ file internal/job/progress.go
 [the first install keeps the caller's slice]
 file internal/job/verified.go
 --- anchor
-			p.written[fileIdx] = sortedClone(rows)
+	out := p.written[fileIdx]
 --- replace
-			p.written[fileIdx] = rows
+	out := p.written[fileIdx]
+	if len(out) == 0 {
+		p.written[fileIdx] = rows
+		return
+	}
 --- end
 
 [the sorted copy is sorted in place]
@@ -36,10 +40,9 @@ file internal/job/verified.go
 [a later install drops the resident rows]
 file internal/job/verified.go
 --- anchor
-	for _, r := range resident {
-		byArt[r.ArtIdx] = r
+	for k, r := range out {
+		at[r.ArtIdx] = k
 	}
 --- replace
-	for range resident {
-	}
+	out = nil
 --- end
