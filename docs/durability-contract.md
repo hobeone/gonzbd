@@ -112,7 +112,7 @@ proposed the durability record redesign, since superseded by this contract.
 | R20 | Permanent-storage → the job fails with that reason; no article is marked failed. |
 | R21 | No storage fault may alter the health percentage or the failed-byte count. |
 | R22 | Every storage syscall on the critical path is timeout-bounded, with at most one probe in flight per mount. |
-| R26 | A job can report at any time: bytes durable, bytes written-but-not-durable, articles outstanding, time of last successful barrier, and stall reason. Only bytes durable and the stall reason are reported; the written-but-not-durable byte count and the last-barrier time are not. |
+| R26 | A job can report at any time: bytes durable, articles outstanding, and stall reason. |
 | R27 | A stalled job surfaces a reason the user can act on. |
 | R28 | An invariant violation fails loudly; it must never degrade silently. |
 
