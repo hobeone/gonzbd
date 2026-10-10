@@ -915,10 +915,12 @@ pipeline consumes them before `unwanted_cleanup` and the two must judge one
 population. The peek never forks `unrar`: a RAR3 volume, or a RAR5 volume the
 engine cannot list, is skipped (RAR3 content is caught by `unwanted_cleanup`
 after unpack), while the par2 hint does not depend on the archive version. It
-runs from `completeFinalizedFile`, before the DirectUnpack feed and before
-`MarkFileComplete`, so a stall's re-evaluation and the startup repair of a
-stranded finalize get it too (`git grep -n 'app\.completeFinalizedFile('
--- 'internal/app/*.go' ':!*_test.go'` returns 3 lines). It does nothing for a
+runs from `completeFinalizedFile` for a live completion, before the
+DirectUnpack feed and before `MarkFileComplete`
+(`git grep -n 'app\.completeFinalizedFile(' -- 'internal/app/*.go'
+':!*_test.go'` returns 1 line, `handleFileComplete`), and from
+`peekResumedFile` for a file the verifier finished by path at hydration,
+before the hydration marks it complete. It does nothing for a
 job already Blocked or Approved, with the action `off`, for a file with a
 failed article (par2 and the post-unpack stage cover those), or when the
 headers cannot be read; it never fails a job for being unable to look. 7z,

@@ -135,10 +135,10 @@ func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) stri
 	if p == nil || hasFailedArticle(m, p, fc.FileIdx) {
 		return ""
 	}
-	// The pipeline's resolved path when it has one. The startup repair of a
-	// stranded finalize runs before the pipeline has resolved any, and then
-	// the path comes from the filename the job recorded; with neither, the
-	// file is not guessed at.
+	// The pipeline's resolved path when it has one. A file the verifier
+	// finished at hydration (peekResumedFile) was never registered with the
+	// pipeline, and then the path comes from the filename the job recorded;
+	// with neither, the file is not guessed at.
 	path := ""
 	if info, err := app.pipeline.resolveFileInfo(jobID, fc.FileIdx); err == nil {
 		path = info.Path

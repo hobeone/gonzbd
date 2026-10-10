@@ -747,10 +747,10 @@ instance (`postProcAdmissions`) both hold.
   par2 failure is retried automatically with them released.
 - **Loop bound**: the retry releases every volume it holds before job_files,
   which hydration restores the policy from, is seeded; and only ingest sets
-  a volume to `FetchIfNeeded`. The policy field has four writers
-  (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 4
-  lines): the setter, the release, the discard, and construction, which
-  starts every file at `FetchAlways`. The setter's two callers are ingest,
+  a volume to `FetchIfNeeded`. The policy field has three writers
+  (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 3
+  lines): the setter, the release, and the discard. Construction writes
+  nothing: every file starts at the zero value, `FetchAlways`. The setter's two callers are ingest,
   passing `FetchIfNeeded`, and hydration
   (`git grep -nE 'SetFileFetchPolicy\(|RestoreFetchPolicy\(' -- '*.go'
   ':!*_test.go'` returns 5 lines: those two calls, the two declarations, and
