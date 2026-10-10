@@ -189,8 +189,8 @@ per-article persistence.
 Not run automatically (see "Continuous Integration" in AGENTS.md — `ci.yml`
 is dispatch-only for every suite, not specifically this one), but it **is**
 part of `scripts/run_tests.sh` (step 4/7) and, when `ci.yml` is dispatched by
-hand, its own `crash` job — see the status note at the end of this section
-for pass/fail history.
+hand, its own `crash` job — see "Why the truncate and delete tests exist" at
+the end of this section for the defect two of them were written red against.
 
 **Location:** `test/crash/`
 
@@ -209,17 +209,19 @@ NNTP server, drives it through the HTTP API, and then kills or perturbs it. The
 daemon must be a separate process for the kill to mean anything: an in-process
 test cannot lose the memory the design's central claim is about.
 
+The tests that pin `docs/durability-contract.md`:
+
 | Test | Pins |
 |------|------|
-| `TestSIGKILL_NoArticleIsResolvedWithoutItsBytes` | S1/S2 — nothing is resolved on the strength of having entered a buffer |
-| `TestSIGKILL_NoVerifiedArticleIsFetchedAgain` | B1/L3 — an article whose row was recorded is not fetched again; and #361, that the resume continues the same file |
-| `TestExternalModification_TruncatedPartialIsRecomputed` | S4 — a recomputation supersedes a falsified cache |
-| `TestExternalModification_DeletedPartialRestartsTheFile` | S3 — absence of evidence is absence |
-| `TestExternalModification_AppendedGarbageIsTrimmed` | S6 — metadata may shrink a file, never grow it |
-| `TestExternalModification_MtimeTouchCostsNoRefetch` | R13 — an invalidated stamp costs a recomputation, not a re-download |
+| `TestSIGKILL_NoArticleIsResolvedWithoutItsBytes` | a `written_articles` row is never ahead of its bytes, and the restarted daemon resolves an article only on bytes that hash to its row |
+| `TestSIGKILL_NoVerifiedArticleIsFetchedAgain` | B1 — an article recorded before the kill whose bytes verify is not fetched again; and #361, that the restart continues the same file |
+| `TestExternalModification_TruncatedPartialIsRecomputed` | a recorded article the truncation destroyed fails its readback and is fetched again; those below the cut are not |
+| `TestExternalModification_DeletedPartialRestartsTheFile` | S3 — with no file there is no evidence for any article, whatever the record says |
+| `TestExternalModification_AppendedGarbageIsTrimmed` | S6 — bytes past the last written article do not survive into the completed file |
+| `TestExternalModification_MtimeTouchCostsNoRefetch` | an mtime change with every byte in place costs no refetch |
 
-The last four together discharge R33's four external modifications: truncate,
-delete, append, mtime-only touch.
+The last four cover four external modifications of a partial file between
+runs: truncate, delete, append, mtime-only touch.
 
 ### What a pass does and does not bound
 
@@ -228,14 +230,14 @@ plainly.
 
 **A pass DOES bound**, on the filesystem the tests ran on:
 
-- That no article is resolved before its bytes have left the process. A
-  SIGKILL destroys the process's in-memory buffers for real, with no flush, so an
-  article acked early has no bytes in the file afterwards and the CRC
-  read-back sees it.
-- That the work a crash costs stays inside the checkpoint bound, measured at
-  the wire from the mock server's per-article delivery counts rather than from
-  any status the daemon reports about itself.
-- That an article a completed fsync covered is never fetched again.
+- That no row is recorded before its bytes have left the process, and that a
+  restart resolves no article whose bytes do not hash to its row. A SIGKILL
+  destroys the process's in-memory buffers for real, with no flush, so a row
+  recorded early has no bytes in the file afterwards and the CRC read-back
+  sees it.
+- That an article recorded before a crash, whose bytes verify, is never
+  fetched again — measured at the wire from the mock server's per-article
+  delivery counts rather than from any status the daemon reports about itself.
 
 **A pass does NOT bound:**
 
@@ -249,10 +251,10 @@ plainly.
   a device the test can cut underneath the filesystem (a device-mapper
   `log-writes` or `flakey` target), which needs root.
 
-  This is measured, not inferred: **removing the `Sync()` syscall from the
-  write path entirely left the suite byte-identical to baseline** — six passes,
-  same assertions, no diagnostic difference. Read that as the bound on what a
-  green run means, not as evidence that the fsync is unnecessary.
+  This was measured, not inferred: under the earlier barrier design,
+  **removing the `Sync()` syscall from the write path left the suite
+  byte-identical to baseline**. Read that as the bound on what a green run
+  means, not as evidence that the fsync is unnecessary.
 - **NFS or SMB fsync behaviour.** The bound is measured on the test's own
   filesystem only. A server that acknowledges an fsync it has not honoured is
   outside what any of this can see.
@@ -268,47 +270,15 @@ plainly.
 go test -tags=crash -timeout=20m ./test/crash/ -v
 ```
 
-### Status: all six pass, and two of them were red until #362 was fixed
+### Why the truncate and delete tests exist
 
 `TestExternalModification_TruncatedPartialIsRecomputed` and
-`TestExternalModification_DeletedPartialRestartsTheFile` were committed red on
-purpose, against a real defect. Both produced a **completed file with a hole in
-it**: the daemon declared the job finished and moved a file to the complete
-directory whose destroyed region read back as zeros.
-
-The cause was that the resume's finding was discarded rather than wrong.
-`durability.Resumer` got the right answer for a file truncated in half — but
-the startup sweep installed it through the **additive** seeding entry point,
-which only *sets* durable bits and never clears one, while
-`Store.RestoreJobProgress` had already restored every article the last barrier
-acked. So the queue's restored state outranked the finding that disproved it.
-
-The fix (#362) is `Job.ReplaceFromRuns`: a second, **authoritative** seeding
-entry point that the startup sweep uses in place of `SeedFromRuns`, because it
-is the one caller that has just stat'ed the files and deleted the runs a file
-contradicts. Every other seeding path — `Application.reevaluateStall`'s phase 3
-— is replaying an ack that already landed and stays additive.
-<!-- doccite:ok TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade — removed by the loose-record cut-over (plan Task 5.1); this barrier-era section is rewritten in Task 5.4 -->
-`TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` guards that split
-from the replay side. The additive side has no test, and what stands in for
-one is narrower than it looks: `Job.SeedFromRuns` writes done bits only
-through `progress.markDone`, which sets `p.done` and never clears it, so as
-the method stands today there is no clearing path to assert the absence of.
-
-That is a property of the current body, not an enforced invariant. A clearing
-path exists in the package — `markNotDone` calls `p.done.Clear` — and nothing
-would stop `SeedFromRuns` from calling it. In particular
-`job.TestDoneBitWriters_MatchTheEnumerationStatedInProse` would not notice:
-its AST walk matches `.Set` on `.done` and is blind to `.Clear`, so it
-enumerates who SETS the bit rather than who may clear it. Read it as covering
-the writer list, not additivity.
-
-Making the sweep authoritative also turned two of the other four tests into
-real pins. `TestExternalModification_MtimeTouchCostsNoRefetch` and the
-no-refetch half of `TestExternalModification_AppendedGarbageIsTrimmed` used to
-pass with `durability.Resumer.Resume` neutered to return no runs, because the
-restored state alone kept those articles off the wire. With the sweep
-authoritative, that neutering reddens both — observed, not reasoned.
+`TestExternalModification_DeletedPartialRestartsTheFile` were committed red,
+against a real defect (#362): a partial truncated or deleted between runs
+**completed with a hole in it**, because restored progress outranked the
+restart's finding that its bytes were gone. Under the loose record a restart
+installs no Done bit for an incomplete file except from a row whose bytes it
+has just read back, so there is no restored state left to outrank the device.
 
 **Do not silence a failing test here by weakening it.** The assertions are
 about WHICH articles came back over the wire, and a test that only checked the
@@ -384,10 +354,10 @@ Failed tests automatically capture screenshots to `test/uitest/screenshots/`.
 | `scenario_test.go` | Core download → assembly → post-processing lifecycle |
 | `scenario_recovery_test.go` | Recovery after mid-job failures |
 | `scenario_smoke_test.go` | Minimal smoke tests for fast feedback |
-| `scenario_checkpoint_test.go` | Queue checkpoint / persistence under load |
+| `scenario_checkpoint_test.go` | Progress persisted across a crash mid-download and mid-post-processing |
 | `scenario_durability_test.go` | Durability across restarts |
 | `scenario_reload_test.go` | Config reload without restart |
-| `scenario_reload_checkpoint_test.go` | Reload inside the durability checkpoint window — a written but unacked article is not re-fetched |
+| `scenario_reload_checkpoint_test.go` | Reload while a file is incomplete — an article the assembler has written is not re-fetched |
 | `scenario_retry_reset_test.go` | Article retry and reset logic |
 | `scenario_decode_error_test.go` | Decoder error handling paths |
 | `scenario_dispatch_deadlock_test.go` | Dispatch deadlock detection |
@@ -450,7 +420,7 @@ To maintain green CI and ensure testing reliability, follow these anti-pattern a
    - Call `f.Close()`
    - Rename to final target path using `os.Rename` (atomic rename prevents ETXTBSY races)
 4. **Mutex-Guarded Callback Slices:** Any slice that accumulates logs asynchronously (e.g. `job.OnOutput = func(...) { lines = append(lines, line) }`) must be protected by a `sync.Mutex` to prevent data races under `-race`.
-5. **Drain/Stop Background Workers Before Assertions:** When testing background tasks (e.g. checkpoint tickers), explicitly stop or drain the workers before making final assertions to prevent late asynchronous writes from polluting your state.
+5. **Drain/Stop Background Workers Before Assertions:** When testing background tasks (e.g. the recorder's flush ticker), explicitly stop or drain the workers before making final assertions to prevent late asynchronous writes from polluting your state.
 
 ## 9. Decision Guide: Which Tests to Run
 
@@ -464,5 +434,5 @@ To maintain green CI and ensure testing reliability, follow these anti-pattern a
 | Svelte UI components, layout | Add: `go test -v -tags=uitest ./test/uitest/...` |
 | NZB parsing, file naming | Add: `go test -v -tags=integration -run TestNaming ./test/integration/...` |
 | Download pipeline | Add: `go test -v -tags=integration -run TestDownload ./test/integration/...` |
-| Durability, checkpoints, assembler writes, resume | Add: `go test -count=1 -tags=crash -timeout=20m ./test/crash/` (all six must pass; see §3a for what a pass does and does not bound) |
+| Durability, the article record, assembler writes, restart verification | Add: `go test -count=1 -tags=crash -timeout=20m ./test/crash/` (every test must pass; see §3a for what a pass does and does not bound) |
 | Pre-release validation | All: unit + integration + uitest + contract |
