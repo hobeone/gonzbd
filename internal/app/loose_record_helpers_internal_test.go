@@ -244,7 +244,7 @@ func TestEnqueueResumedCompletion_DeliversWhenTheChannelIsFull(t *testing.T) {
 	for len(a.internalFileComplete) < cap(a.internalFileComplete) {
 		a.internalFileComplete <- FileComplete{JobID: "filler"}
 	}
-	a.enqueueResumedCompletion("resumed", 7)
+	a.enqueueResumedCompletion("resumed", 7, "")
 	deadline := time.After(10 * time.Second)
 	for {
 		select {
@@ -284,7 +284,7 @@ func TestEnqueueResumedCompletion_StartDoesNotWaitForTheConsumer(t *testing.T) {
 	a := newLREnv(t).newApp(t, func(app *Application) {
 		app.startedTransitionHook = func() {
 			for i := range n {
-				app.enqueueResumedCompletion("no-such-job", i)
+				app.enqueueResumedCompletion("no-such-job", i, "")
 			}
 		}
 	})
@@ -330,7 +330,7 @@ func TestEnqueueResumedCompletion_SenderExitsAtShutdown(t *testing.T) {
 		a.internalFileComplete <- FileComplete{JobID: "filler"}
 	}
 	for i := range 20 {
-		a.enqueueResumedCompletion("late", i)
+		a.enqueueResumedCompletion("late", i, "")
 	}
 	if left := waitResumedSenders(a.Application); left != 0 {
 		t.Errorf("%d resumed senders outlived Shutdown: a sender that cannot deliver must give up on app.ctx", left)

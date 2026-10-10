@@ -164,12 +164,12 @@ func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) stri
 }
 
 // peekResumedFile is the peek for a file the verifier finished by path at
-// hydration, installed as residency.peek. The failure message is dropped: a
-// job it blocked under ActionFail is filed by the completion that follows
-// (fileOwedUnwantedFailure derives the filing from the job's state) with the
-// message's prefix alone.
-func (app *Application) peekResumedFile(j *job.Job, fileIdx int) {
-	_ = app.peekArchiveForUnwanted(j, FileComplete{JobID: j.ID(), FileIdx: fileIdx, Resumed: true})
+// hydration, installed as residency.peek. It returns the peek's failure
+// message, which the hydration carries to the file's Resumed completion
+// (FileComplete.FailMsg) so the job the peek blocked under ActionFail is filed
+// naming the flagged files.
+func (app *Application) peekResumedFile(j *job.Job, fileIdx int) string {
+	return app.peekArchiveForUnwanted(j, FileComplete{JobID: j.ID(), FileIdx: fileIdx, Resumed: true})
 }
 
 // blockForUnwanted is the acting half of the peek: it asks the dispatcher to

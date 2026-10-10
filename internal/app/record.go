@@ -390,7 +390,8 @@ func (app *Application) handleFileUntrusted(jobID string, fileIdx int) {
 
 // enqueueResumedCompletion hands the consumer of internalFileComplete a file
 // the verifier finished by path, marked Resumed. It reads app.ctx, so it is
-// called only once Start has set it. Its callers are a hydration's
+// called only once Start has set it. failMsg is the message of the archive
+// peek that ran on the file before it was marked complete, or "". Its callers are a hydration's
 // residency.finished and a retry; a hydration runs from a dispatcher tick,
 // from a rename (Dispatcher.SetName's LoadProgress), and inside Start from
 // hydratePausedJobs and fileOwedUnwantedFailures.
@@ -405,8 +406,8 @@ func (app *Application) handleFileUntrusted(jobID string, fileIdx int) {
 // app (joinAndStop) and on every failed Start, so the goroutine cannot
 // outlive the app; a completion it gives up is re-derived by the next start's
 // verification.
-func (app *Application) enqueueResumedCompletion(jobID string, fileIdx int) {
-	fc := FileComplete{JobID: jobID, FileIdx: fileIdx, Resumed: true}
+func (app *Application) enqueueResumedCompletion(jobID string, fileIdx int, failMsg string) {
+	fc := FileComplete{JobID: jobID, FileIdx: fileIdx, Resumed: true, FailMsg: failMsg}
 	select {
 	case app.internalFileComplete <- fc:
 		return

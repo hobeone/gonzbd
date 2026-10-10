@@ -24,6 +24,11 @@ type FileComplete struct {
 	// the retry's verification finished is not peeked: that job is not
 	// registered when installVerification runs.
 	Resumed bool
+	// FailMsg is the failure message of the archive peek that ran on a
+	// Resumed file at hydration, naming the flagged files, or "". Only
+	// enqueueResumedCompletion sets it; the consumer passes it to
+	// fileOwedUnwantedFailure in place of a peek of its own.
+	FailMsg string
 }
 
 // JobComplete is emitted when all files in a job are assembled.

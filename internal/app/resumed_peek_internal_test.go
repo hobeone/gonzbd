@@ -64,7 +64,7 @@ func TestInstallVerification_TheResidencyPeekBlocksTheJobBeforeTheMark(t *testin
 	var blockedAtPeekEnd unwanted.State
 	var completeAtPeekEnd bool
 	installVerification(a.j, files, rows, res, true, slog.New(slog.DiscardHandler), func(fi int) {
-		a.residency.peek(a.j, fi)
+		_ = a.residency.peek(a.j, fi)
 		blockedAtPeekEnd = a.state(t)
 		completeAtPeekEnd = a.j.Progress().FileComplete(fi)
 	})
@@ -118,9 +118,10 @@ func TestHydrate_PeeksEachFileTheVerifierFinishedBeforeItIsMarked(t *testing.T) 
 	var completeAtPeek bool
 	a2 := env.newApp(t, func(a *Application) {
 		a.dispatcher.Pause()
-		a.residency.peek = func(pj *job.Job, fi int) {
+		a.residency.peek = func(pj *job.Job, fi int) string {
 			peeked = append(peeked, fi)
 			completeAtPeek = pj.Progress().FileComplete(fi)
+			return ""
 		}
 	})
 	a2.start(t)

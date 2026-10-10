@@ -40,13 +40,14 @@ type appResidency struct {
 	// writer used (pipeline.jobFilePath). commit applies verdicts through the
 	// recorder's synchronous path. finished receives each file the verifier
 	// finished by path, once the job is attached; peek is the archive peek
-	// run on each such file before it is marked complete (installVerification);
+	// run on each such file before it is marked complete (installVerification),
+	// whose failure message finished carries to the Resumed completion;
 	// parked receives the fault of a verification that could not complete. All
 	// five are set by New before anything can hydrate.
 	pathFor  func(jobName, filename string) string
 	commit   func(ctx context.Context, j *job.Job, v []durability.FileVerdict) error
-	finished func(jobID string, fileIdx int)
-	peek     func(j *job.Job, fileIdx int)
+	finished func(jobID string, fileIdx int, failMsg string)
+	peek     func(j *job.Job, fileIdx int) string
 	parked   func(jobID string, f *storagefault.Fault)
 
 	mu        sync.Mutex
@@ -157,12 +158,13 @@ func (r *appResidency) verifyAndAttach(ctx context.Context, j *job.Job, m *job.M
 	if err := j.AttachContent(m); err != nil {
 		return err
 	}
+	failMsgs := make(map[int]string)
 	var peek func(int)
 	if r.peek != nil {
-		peek = func(fi int) { r.peek(j, fi) }
+		peek = func(fi int) { failMsgs[fi] = r.peek(j, fi) }
 	}
 	for _, fi := range installVerification(j, files, rows, res, true, r.log, peek) {
-		r.finished(j.ID(), fi)
+		r.finished(j.ID(), fi, failMsgs[fi])
 	}
 	return nil
 }

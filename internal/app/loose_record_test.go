@@ -783,7 +783,7 @@ func TestLooseRecord_ResumedCompletionSurvivesEviction(t *testing.T) {
 	var owed []int
 	a2 := env.newApp(t, func(a *Application) {
 		a.dispatcher.Pause()
-		a.residency.finished = func(_ string, fi int) { owed = append(owed, fi) }
+		a.residency.finished = func(_ string, fi int, _ string) { owed = append(owed, fi) }
 	})
 	a2.start(t)
 	id := j.ID()
@@ -799,7 +799,7 @@ func TestLooseRecord_ResumedCompletionSurvivesEviction(t *testing.T) {
 		t.Fatal("fixture: the job is still resident after Evict")
 	}
 
-	a2.enqueueResumedCompletion(id, 0)
+	a2.enqueueResumedCompletion(id, 0, "")
 	lrWaitFor(t, "the resumed completion to be consumed", func() bool {
 		a2.recorder.mu.Lock()
 		defer a2.recorder.mu.Unlock()

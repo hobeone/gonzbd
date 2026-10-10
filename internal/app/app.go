@@ -1618,7 +1618,7 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 		//
 		// A Resumed completion was peeked by installVerification, ahead of the
 		// mark that lets the job reach Assessing, so it is not peeked again.
-		unwantedFail := ""
+		unwantedFail := fc.FailMsg
 		if !fc.Resumed {
 			unwantedFail = app.peekArchiveForUnwanted(j, fc)
 			if app.peekedHook != nil {
@@ -2765,7 +2765,7 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	admitted = true
 	restoreKept = true
 	for _, fi := range finished {
-		app.enqueueResumedCompletion(jobID, fi)
+		app.enqueueResumedCompletion(jobID, fi, "")
 	}
 
 	// Detached for the same reason Add is, and separately bounded so Add's
