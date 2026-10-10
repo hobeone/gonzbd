@@ -492,13 +492,13 @@ callers in `internal/assembler/assembler.go`):
 |---|---|---|
 | `finalizeFile` | the completion finish or close (§2) | **no tombstone** — a tombstone would route every refetched article to `handleLateDuplicate`, which writes nothing once the handle is gone, so the refetch would never converge; the fault goes to `OnWriteFault` → Stall or Fail |
 | the close-handles arm of `CloseJobHandles` | the close-time fsync or close | the fault is sent on the control message's ack (*Hand-over to post-processing*) |
-| `drainAndCloseAll`, at worker exit | the close-time fsync or close | the fault is not routed: there is no caller left to answer |
+| `syncAndCloseAll`, at worker exit | the close-time fsync or close | the fault is not routed: there is no caller left to answer |
 
 **A failed close-time fsync also rolls back the articles it covered.** A
 `FileWriter` keeps `unsynced`, the articles written since the last successful
 `Sync`. A failed `Sync` moves every one into `poisoned` (`poisonSync`), and
 `releasePoisoned` returns them to Outstanding through `OnArticlesUnwritten`. In
-production `FileWriter.Sync` fails only inside `drainAndClose`, its one
+production `FileWriter.Sync` fails only inside `syncAndClose`, its one
 production call (`git grep -n 'w\.Sync()' -- 'internal/assembler/*.go'
 ':!*_test.go'` returns 1 line), which closes the writer right after, so the
 writer and its owned ranges are discarded with it. The file is then untrusted
@@ -517,7 +517,8 @@ the only one.
 `FileWriter.owned` (`ownedRanges`, `internal/assembler/ranges.go`) is the
 single owner of which article wrote which bytes of a file.
 
-- **A range is claimed only after its write returned nil** (`writeOne`). An
+- **Within an episode, a range is claimed only after its write returned nil**
+  (`writeOne`); the ranges seeded at open are the other entries (below). An
   article whose write faulted owns nothing, so it cannot cause a later article
   to be refused.
 - **An arrival whose `[off, off+len)` intersects a range another article owns
@@ -530,7 +531,7 @@ single owner of which article wrote which bytes of a file.
   (`WrittenRow.HasValidShape` is the one shape rule). It is never refetched on
   that account.
 - Intersection is detected, not only a shared start offset
-  (`TestOverlap_PartialRangeOverwritesADurableArticle`,
+  (`TestOverlap_PartialRangeOverlapIsRefused`,
   `TestOverlap_ContainedOverlapStillCompletesTheFile`).
 
 **Within one open-file episode this is enforced by the writer. Across a
@@ -691,7 +692,7 @@ assembler's tombstones for it, and a retry whose `ForgetJob` fails is aborted.
 the context, waits for its goroutines, stops post-processing and the
 dispatcher, and **then** flushes the recorder.
 
-`Assembler.Stop` drains the request channel and then runs `drainAndCloseAll`:
+`Assembler.Stop` drains the request channel and then runs `syncAndCloseAll`:
 each open file is fsynced and closed, and one whose fsync or close failed is
 untrusted (§4). Partial files are closed without firing `OnFileComplete`. The
 flush comes after the assembler has stopped, so it carries the row of every
@@ -803,8 +804,16 @@ assembler-side buffering of decoded articles, no coalescing and no
 memory-pressure flush (`git grep -n 'writeOne(' -- internal ':!*_test.go'`
 finds 2 lines: the definition and its one call, in `Accept`).
 
-The only memory the assembler holds ahead of the disk is the request channel
-(`reqs`, see *Memory & allocation budget*).
+The decoded bytes the assembler holds ahead of the disk are the queued requests
+in the request channel (`reqs`, see *Memory & allocation budget*), the one
+request the worker is processing, and one request per `WriteArticle` caller
+blocked on the `reqs` send. No assembler field stores article bytes outside
+`reqs`: `WriteRequest.Data` is the package's one `[]byte` struct field
+(`git grep -n -E '^\s+\w+\s+\[\]byte\b' -- 'internal/assembler/*.go' ':!*_test.go'`
+returns 1 line), and `reqs` is the one field typed to hold a `WriteRequest`
+(`git grep -n 'chan WriteRequest' -- 'internal/assembler/*.go' ':!*_test.go'`
+returns 2 lines: the field and its `make`). Buffers still upstream of
+`WriteArticle`, in the downloader's decode path, are not counted here.
 
 Decoder buffers are returned to `sync.Pool` (`decoder.PutBuffer`) on every path,
 including every failure path.

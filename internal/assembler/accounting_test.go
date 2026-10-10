@@ -219,19 +219,17 @@ func TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice(t *testing.
 // TestFileWriter_FailRollsBackEveryArticlesPart pins that fail decrements the
 // part count for any admitted article, with no identity-dependent early return.
 //
-// fail used to skip articles with no Message-ID, because rollbackPart could not
-// find them in a Message-ID-keyed map; routeAcceptFailure gave their part back
-// separately through giveBackUntrackedPart. With the maps keyed on ArtIdx there
-// is one path.
+// rollbackPart keys on ArtIdx, so the Message-ID plays no part in the
+// rollback: an article with an empty one loses its part exactly as one with a
+// Message-ID does.
 func TestFileWriter_FailRollsBackEveryArticlesPart(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		msgID string
 	}{
 		{"with a Message-ID", "a@t"},
-		// Constructible only in-package; no production path produces it. It is
-		// here because it is the input the deleted guard responded to, and so
-		// the only one that can show the guard is gone.
+		// Constructible only in-package; no production path produces it. It
+		// is the input an identity-dependent early return in fail would skip.
 		{"with none", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

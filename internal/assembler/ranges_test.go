@@ -99,10 +99,15 @@ func TestOwnedRanges_ClaimKeepsOffsetOrder(t *testing.T) {
 	for i, off := range []int64{200, 0, 100} {
 		o.claim(Range{off, 100}, articleID{artIdx: int32(i)})
 	}
-	// A probe in the middle of the slice must find the right entry, which a
-	// slice left unsorted by claim would miss.
-	if got, ok := o.ownerOf(Range{150, 10}, articleID{artIdx: 9}); !ok || got.artIdx != 2 {
-		t.Errorf("ownerOf([150,160)) = %+v, %v; want article 2", got, ok)
+	// A probe inside each range must find its owner, which ownerOf's binary
+	// search misses for some entry of a slice claim left unsorted.
+	for _, tc := range []struct {
+		off  int64
+		want int32
+	}{{50, 1}, {150, 2}, {250, 0}} {
+		if got, ok := o.ownerOf(Range{tc.off, 10}, articleID{artIdx: 9}); !ok || got.artIdx != tc.want {
+			t.Errorf("ownerOf([%d,%d)) = %+v, %v; want article %d", tc.off, tc.off+10, got, ok, tc.want)
+		}
 	}
 }
 

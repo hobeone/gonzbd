@@ -42,10 +42,10 @@ func TestCloseJobHandles_UntrustsAFileWhoseCloseTimeSyncFailed(t *testing.T) {
 	}
 }
 
-// TestDrainAndCloseAll_UntrustsAFileWhoseSyncFailed is the worker-exit half:
+// TestSyncAndCloseAll_UntrustsAFileWhoseSyncFailed is the worker-exit half:
 // a clean shutdown's fsync that fails untrusts its file, synchronously, before
 // the recorder's final flush.
-func TestDrainAndCloseAll_UntrustsAFileWhoseSyncFailed(t *testing.T) {
+func TestSyncAndCloseAll_UntrustsAFileWhoseSyncFailed(t *testing.T) {
 	a := newHelperAssembler()
 	a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
 	var got []fileKey
@@ -57,7 +57,7 @@ func TestDrainAndCloseAll_UntrustsAFileWhoseSyncFailed(t *testing.T) {
 	bad := newHelperFile(t, dir, "bad.dat", 0)
 	bad.w.syncFile = func() error { return syscall.EIO }
 	good := newHelperFile(t, dir, "good.dat", 0)
-	a.drainAndCloseAll(map[fileKey]*openFile{
+	a.syncAndCloseAll(map[fileKey]*openFile{
 		{jobID: "job", fileIdx: 3}: bad,
 		{jobID: "job", fileIdx: 4}: good,
 	})

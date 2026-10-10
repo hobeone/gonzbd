@@ -105,7 +105,7 @@ func (app *Application) handleArticlesUnwritten(jobID string, fileIdx int, artId
 //
 // The window is narrow and this is not the place to close it; what matters
 // here is that the claim is bounded rather than absolute, so nobody builds on
-// it. Assembler.drainAndCloseAll declines to route faults at all for exactly
+// it. Assembler.syncAndCloseAll declines to route faults at all for exactly
 // this reason.
 func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fault) {
 	app.wg.Go(func() {
