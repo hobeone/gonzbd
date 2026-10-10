@@ -26,12 +26,12 @@ old posting styles and old servers, and workarounds for Python's limits (the
 GIL, decode speed) that a Go program does not have.
 
 - **Module path:** `github.com/hobeone/gonzbd`
-- **Go version:** 1.27.0 (toolchain 1.27.0)
+- **Go version:** 1.27.2 (`go.mod`'s `go` line; there is no separate `toolchain` directive)
 - **Status:** Core backend download pipeline and legacy mode-dispatch API
   (`/api?mode=...`) are functional. The Glitter web UI port (Phase 12) is the
   current active focus.
 - **Main technologies:**
-    - **Language:** Go 1.27.0+
+    - **Language:** Go 1.27.2+
     - **Configuration:** YAML (`gopkg.in/yaml.v3`)
     - **Persistence:** SQLite (`modernc.org/sqlite`, pure Go) for both history
       and queue state; gzip-JSON for per-job manifests

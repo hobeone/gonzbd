@@ -415,8 +415,7 @@ func TestGoTar_GenuineGNUSparseEntry(t *testing.T) {
 	// task brief's suggested go doc archive/tar.Header /
 	// archive/tar.SparseEntry APIs.
 	//
-	// Verified against this Go toolchain (go1.26.5, matching go.mod's
-	// go 1.26.4 toolchain directive):
+	// Verified against go1.27.2, go.mod's go version:
 	//
 	//   $ go doc archive/tar.Header    # no Sparse-related field at all
 	//   $ go doc archive/tar.SparseEntry
@@ -445,7 +444,7 @@ func TestGoTar_GenuineGNUSparseEntry(t *testing.T) {
 	// physically present or hole-synthesized, since the check fires on
 	// the *declared* size alone (see extractTarFile's projTotal check,
 	// which runs before any byte of the entry is read).
-	t.Skip("archive/tar in this Go version (go1.26.5) has no public API " +
+	t.Skip("archive/tar (checked on go1.27.2) has no public API " +
 		"for writing a genuine GNU sparse entry (no Header.SparseHoles, " +
 		"no SparseEntry type) -- see comment above; " +
 		"TestGoTar_SparseBombRejected covers the declared-size bomb check.")
@@ -1251,7 +1250,7 @@ func TestGoTar_DirectoryOnlyArchive(t *testing.T) {
 // component) still resolves to its full, correct nested path and passes
 // through SanitizeArchivePath and extraction normally.
 //
-// Verified empirically against this Go toolchain (go1.26.5): tar.Writer
+// Verified empirically against go1.27.2: tar.Writer
 // auto-upgrades hdr.Format to PAX when needed -- there is no need to set
 // hdr.Format = tar.FormatPAX explicitly, and tar.Reader.Next() returns the
 // full resolved long name (not a truncated legacy-field value) with
