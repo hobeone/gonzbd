@@ -2,10 +2,9 @@
 
 > **Status: in progress; dispositions settled.** F1, F3, A7, F6, F2, F5/B1, E5 and the
 > whole A-block have landed, and so has E3: `FileWriter` refuses an arrival whose
-> byte range intersects one already written (#759), within one open-file episode,
-> with the durability layer's whole-file CRC withholding (#387) as the backstop
-> across a restart for a job with `par2` (a no-`par2` job that reopens the file
-> has no backstop); C5, E4 and F4 remain proposed. §8 is no longer open — what each class of violation
+> byte range intersects one already written (#759), within one open-file episode
+> and, through ranges seeded from a restart's verified rows, across one; C5, E4
+> and F4 remain proposed. §8 is no longer open — what each class of violation
 > produces has been decided and is binding on the work that follows. This
 > document defines what GoNZBD asserts about a Usenet article, where each
 > assertion belongs, and what it deliberately does not assert. It exists to
@@ -397,7 +396,7 @@ Netnews. This produces a deliberate asymmetry:
 
 Do not conflate the two. Rejecting an article because its header had an
 unrecognised key is a compatibility regression; accepting an offset that
-overlaps a durable range is a correctness one.
+overlaps a written range is a correctness one.
 
 ## 4. The placement rule — and the two tiers above it
 
@@ -528,7 +527,7 @@ the rows.
 | C5 | `offset + len ≤ size`; `end − begin + 1 == len` | L2 | fail article (`end=` half counts first) | — |
 | ~~D1–D4~~ | ~~NZB ↔ article disagreements~~ | L3 | **dropped** — no consumer (see §5.D) | — |
 | E1 | bounds | L4 | ✅ already enforced | — |
-| E2–E3 | byte-range collision and overlap | L4 | ✅ **implemented within an open-file episode** (#759) — the first writer of a range wins and the arrival is refused; across a restart the durability layer withholds the whole-file CRC whenever runs do not collapse to a single row covering every article, which only helps when `par2` runs: a no-`par2` job that reopens the file can still ship the splice | — |
+| E2–E3 | byte-range collision and overlap | L4 | ✅ **implemented** (#759) — the first writer of a range wins and the arrival is refused; across a restart the writer is seeded with the ranges of the job's verified rows (`FileInfo.Owned`) | — |
 | E4 | part tiling / gaps | L0 + L4 | warn at ingestion | — |
 | E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | L3 | ✅ **implemented** — reject (#346) | — |
 | F1 | key `FileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
@@ -539,7 +538,7 @@ the rows.
 
 **Build order.** The F-items land first (§5.F), then the assertions:
 
-> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → ~~E5~~ → ~~F1a~~ (fixture `ArtIdx`) → ~~F1b~~ (flip the key) → E3 (~~within an episode~~; cross-episode no-`par2` prevention open) / E4
+> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → ~~E5~~ → ~~F1a~~ (fixture `ArtIdx`) → ~~F1b~~ (flip the key) → ~~E3~~ / E4
 
 Struck items have landed. F3 led because it was the smallest instance of the
 pattern and the cheapest place to learn its cost; doing it first is what
@@ -927,7 +926,7 @@ checked, and a warning or unacted-on counter is not a consumer.
 |---|---|---|
 | E1 | offset ≥ 0, no overflow, within `ExpectedSize` + 12.5% | ✅ enforced |
 | E2 | no two articles write intersecting byte ranges | ✅ enforced within one open-file episode (#385, #759) |
-| E3 | no two articles' ranges **overlap** | ✅ the same check as E2 (`FileWriter.owned`), within an open-file episode; across a restart `owned` starts with the ranges the resolver supplies in `FileInfo.Owned`: those of the job's resident written rows, which a restart installs for an incomplete file only after reading them back (`pipeline.registerFile`; `git grep -n 'Owned:' -- '*.go' ':!*_test.go'` finds 1 line), and the whole-file CRC is withheld (#387), which only helps when `par2` runs — a no-`par2` job that reopens the file can still ship a splice over any range `FileInfo.Owned` did not name |
+| E3 | no two articles' ranges **overlap** | ✅ the same check as E2 (`FileWriter.owned`); across a restart `owned` starts with the ranges the resolver supplies in `FileInfo.Owned`: those of the job's resident written rows, which a restart installs for an incomplete file only after reading them back and resolving any two that intersect (`pipeline.registerFile`; `git grep -n 'Owned:' -- '*.go' ':!*_test.go'` finds 1 line) |
 | E4 | the parts tile `[0, size)` with no gap | ⚠ **absent** at L4; also undetected at L0 |
 
 | E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | ✅ **implemented** (#346) — `decodePayload` rejects `ErrOffsetUnknownForPart` |
@@ -936,13 +935,13 @@ checked, and a warning or unacted-on counter is not a consumer.
 #759). `FileWriter.owned` records each range once its write returned nil, and
 `acceptArticle` refuses an arrival whose `[off, off+len)` intersects another
 article's range. The refused article is resolved permanently failed and its
-bytes are charged to par2. It is enforced within one open-file episode; across a
-restart `owned` starts with the ranges the resolver supplies in
-`FileInfo.Owned` (the assembler seeds from it at open; see the E3 row), and the
-durability layer's whole-file CRC withholding is the backstop for the rest. That backstop
-only turns into a repair when `par2` runs: a job with no `par2` that reopens
-the file can still write an arrival overlapping a range `FileInfo.Owned` did
-not name and ship the splice.
+bytes are charged to par2. Within one open-file episode the writer enforces it;
+across a restart `owned` starts with the ranges the resolver supplies in
+`FileInfo.Owned` (the assembler seeds from it at open; see the E3 row). An
+article whose row had not reached SQLite before a crash is Outstanding after
+it, and is written again under the same rule; a permanent failure is not
+persisted, so a refused article is fetched again after a restart and meets the
+same rule.
 
 **The one known Rule 3 exception, recorded and not fixed.** First-writer-wins
 decides by arrival, not by which article is right. When a bogus article arrives
@@ -979,11 +978,8 @@ A distinct route is NOT closed by E5: two articles that both carry a genuine
 `=ypart` line, whose `begin=` values happen to overlap. Nothing at L3 rejects
 that — it is not a missing-offset decode, so E5 does not see it, and nothing at
 L3 compares one article's declared offset against another's. L4's range check
-(above) refuses the later arrival. Across a restart, because `mergeAdjacentRuns`
-merges only articles that abut cleanly, any range overlap leaves multiple
-`durable_runs` rows (or drops a duplicate offset) and withholds the whole-file
-CRC, so `par2` runs and repairs the file when the post has `par2`; without it,
-the splice ships.
+(above) refuses the later arrival, within an open-file episode and, through the
+seeded ranges, across a restart.
 
 E4 has an L0 half worth taking first: **a gap in NZB part numbers is decidable
 offline.** A file whose segments are numbered 1, 2, 4 parses today with no
@@ -1112,8 +1108,8 @@ This argues *against* reflexive rejection. Refusing an article we cannot verify
 discards data that par2 might well have been able to use, and converts a
 repairable file into an unrepairable one. But it does not argue for accepting
 everything, because writing an unverifiable article can destroy a better-
-evidenced one (#387: an overlapping write silently falsifies a durable run whose
-articles have already been acked).
+evidenced one (#387: an overlapping write silently falsified a recorded range
+whose articles had already been resolved).
 
 The rule that resolves the family:
 
@@ -1129,25 +1125,15 @@ That is exactly what `FileWriter.owned` records (a range is claimed only after
 its write returned nil) and what `acceptArticle` consults via `ownedRanges.ownerOf`. A collision with a
 written range must be refused.
 
-**The durable tier is deliberately collapsed into "written", because it is not
-retrievable where the decision is made.** Durability is now recorded in exactly
-one place — `durable_runs`, written by `durability.Barrier` after the fsync —
-and `internal/assembler` does not import `internal/durability`'s store at all.
-Reaching it from `FileWriter.Accept` would mean a SQLite read on the single
-goroutine that owns every open file handle, on the hot accept path. Nothing the
-writer holds in memory distinguishes a written range from an acked-durable one:
-the `Drain`/`Confirm` cycle empties `written` and then `reported` once the
-articles are acked, so a
-derived check would read the acked case as *no* claim at all, which is why
-ownership is recorded on the range instead.
-
-So the four-level ordering that reads naturally here — durable-and-acked beats
-written beats accepted beats claimed — **does not exist and must not be cited as
-though it does.** Anything wanting it across a restart or handle-close boundary
-must first push an in-memory acked set down from the barrier, which is a design
-change with a cost, not a lookup. Within an open-file episode, `FileWriter.owned`
-refuses any arrival intersecting another article's written range (#759); across an episode boundary, #387's
-whole-file CRC withholding ensures `par2` runs on the file.
+**There is no durable tier above "written".** No record says a range is
+fsynced: `written_articles` describes what `pwrite` accepted, and a restart
+proves a row by reading its bytes back rather than by trusting an fsync. So
+the four-level ordering that reads naturally here — durable beats written
+beats accepted beats claimed — **does not exist and must not be cited as
+though it does.** Within an open-file episode `FileWriter.owned` refuses any
+arrival intersecting another article's written range (#759); across a restart
+the verified rows' ranges are seeded into it before any write, and they are
+"written" in the same sense.
 
 Refusal is never silent. Every refusal produces a recorded, user-visible
 disposition — which is exactly what #382's `resolve(article, disposition)`
@@ -1222,11 +1208,11 @@ later reader can tell a decision from an oversight.
    claimed after each successful write, and `acceptArticle` refuses an arrival
    whose range intersects one — see §5.E. E5 (#346) still rejects a decode (UU,
    or yEnc with no `=ypart`) that would default to claiming offset 0 for a
-   segment other than the first. The check is per open-file episode; across a
-   restart the durability layer withholds the whole-file CRC whenever a file's
-   runs do not collapse to a single contiguous row covering every article, so
-   `par2` runs and repairs the file when the post has `par2`; a no-`par2` job
-   that reopens the file can still ship the splice. The recorded cost is the Rule 3 exception in
+   segment other than the first. Across a restart the writer is seeded with the
+   ranges of the job's verified rows, so the same check holds there. The
+   whole-file CRC is withheld from any file whose rows do not chain gaplessly
+   (#387), so `par2` still verifies a file a refusal left with a hole. The
+   recorded cost is the Rule 3 exception in
    §5.E: a bogus article that arrives first gets its good neighbours refused.
 
 4. **The NZB's `bytes` gains no authority.** It stays advisory. `offsetOutOfRange`

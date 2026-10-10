@@ -193,58 +193,37 @@ of their failure ratio.
    and `downloader` is commonly configured at `info`).
 
 5. **Emitted-is-transient durability contract**: `Job.MarkArticleEmitted` is not
-   persisted to disk. If the process crashes before a barrier makes the
-   article durable, the `Emitted` flag is lost on restart and the article is
-   re-dispatched.
+   persisted to disk. If the process crashes, the `Emitted` flag is lost on
+   restart and the article is re-dispatched unless the restart can prove its
+   bytes are on disk.
 
    This is no longer a standalone rule. It is a consequence of S3 — *absence of
    evidence is absence* — in `docs/durability-contract.md`: an article a restart
    cannot prove is on disk is Outstanding, and `Emitted` is by construction not
    evidence about disk, so it is not persisted at all.
 
-   `Done` now means what it says. `durability.Barrier` drains the assembler's
-   writer, `fsync`s the file, commits the drained articles to
-   `durable_runs`, and only then mints a `DurableProof` — which `Job.AckDurable` requires and which has no
-   exported constructor outside `internal/durability`. No caller outside that package can name an article's
-   bytes were covered by a completed `fsync`; the ack does not describe bytes
-   sitting in a page cache.
+   In a running process an article is `Done` once its `pwrite` returned, and the
+   recorder buffers a `written_articles` row for it, flushed every 5 s. Neither
+   is trusted across a restart: the first hydration reads every row of an
+   incomplete file back from the device and keeps only those whose bytes match
+   their CRC.
 
-   The barrier does *not* wait for file completion to do this. It runs on a
-   cadence — a 30-second time bound, a 64 MiB byte bound, file completion, and
-   clean shutdown — so the window between "written" and "durable" is one
-   checkpoint interval rather than one whole file.
+   What a crash costs, by what the restart can prove:
 
-   What a crash costs, by what the restart can prove. The deciding question is
-   "is this article covered by a `durable_runs` row", and since the barrier
-   writes that row only after the fsync, it is now the same question as "was it
-   acked":
+   | State at the crash | What the restart does |
+   |---|---|
+   | still in memory ahead of the write, or never received | no row. Outstanding, re-dispatched. This contract. |
+   | written, but its row not yet flushed | no row. Outstanding, re-dispatched, and its bytes are written again. |
+   | row flushed, and the bytes read back with its CRC | Done; not re-dispatched. |
+   | row flushed, but the bytes are gone, short or different (lost from the page cache, truncated, overwritten, the file deleted) | the row is deleted; Outstanding, re-dispatched. |
+   | the file was recorded `complete=1` | not read: `complete=1` is written only after the file's fsync. |
+   | a storage layer that acknowledged an fsync it did not honour (a lying disk, an NFS server that acks early), for a `complete=1` file | not re-dispatched, and nothing in the download path repairs it. par2 covers it. |
 
-   | State at the crash | Acked? | What the restart does |
-   |---|---|---|
-   | still in memory ahead of the write, or never received | no | no row covers it. Outstanding, re-dispatched. This contract. |
-   | written but not yet fsynced-and-committed, whether or not the bytes survived | no | no row covers it, and nothing reads the file to find out. Outstanding, re-dispatched. |
-   | covered by a completed fsync, and the file is at least as long as its rows claim | yes | the rows are adopted without reading a byte. |
-   | covered by a completed fsync, but the file is shorter than its rows claim (truncated or deleted out of band) | yes | the file's rows are DELETED and every one of its articles is Outstanding. |
-   | a fsync the storage layer acknowledged but did not honour (a lying disk, an NFS server that acks early) | yes | not re-dispatched, and nothing in the download path repairs it. par2 covers it. |
+   The last row is the only case where a restart's `Done` can be wrong, and it
+   is outside what this program can observe.
 
-   **Row two used to split, and no longer does.** Bytes that reached the disk
-   and survived, but which no barrier had recorded, used to be recovered: a
-   per-article record written at decode time named the region, and the resume
-   read it back and matched the CRC. That record is gone — there is now one
-   record, written only after the fsync — so an unacked article is exactly a
-   re-fetched one. The cost is priced as R3 in
-   `docs/durability-contract.md`: **a checkpoint's worth of re-download per
-   unclean shutdown**, bounded by the 30s/64 MiB cadence and shrunk further by
-   file completion and clean shutdown. What was bought for it is that a record
-   can no longer describe bytes that were never written.
-
-   The last row is genuinely outside what this program can observe, and it is
-   the only case where an ack can be wrong — the "written but not fsynced yet and
-   therefore acked" case that used to sit there is gone. The row above it is not
-   an ack being wrong: the record was true when written, and the file changed
-   underneath it, which is exactly what the size gate exists to catch.
-
-   See `docs/durability-contract.md` for the assembler and barrier side of this.
+   See `docs/durability-contract.md` for the assembler and recorder side of
+   this.
 
 6. **A job handed to post-processing is not dispatched**: `buildDispatchPlan`
    and `hasDownloadableJobs` skip a job `Options.HandedOff` reports, whatever
