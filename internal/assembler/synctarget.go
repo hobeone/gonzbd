@@ -448,7 +448,7 @@ func (a *Assembler) OpenJobIDs(ctx context.Context) ([]string, error) {
 }
 
 // handleSyncOp performs one barrier operation on the worker goroutine.
-func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile) {
+func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, completed map[fileKey]struct{}) {
 	var r syncReply
 	switch op.kind {
 	case opFiles:
@@ -499,11 +499,21 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile) {
 			r.written, r.err = f.w.Drain()
 		case opSync:
 			r.err = f.w.Sync()
+			// A failed Sync poisons the retained report and rolls its articles
+			// back into w.poisoned (#760); route them back to Outstanding and
+			// lift any completed tombstone if partsWritten dropped below
+			// TotalParts.
+			a.releaseSyncRollback(f, key, completed)
 		case opConfirm:
 			f.w.Confirm()
 		case opStat:
 			r.size, r.err = f.w.Stat()
 		case opTruncate:
+			if f.rolledBack {
+				r.err = fmt.Errorf("assembler: job %s file %d is incomplete (%d/%d parts): %w",
+					op.jobID, op.fileIdx, f.w.parts(), f.info.TotalParts, durability.ErrFileIncomplete)
+				break
+			}
 			r.err = f.w.Truncate(op.bound)
 		case opClose:
 			// Answered, not swallowed. This arm used to leave r.err nil, so
@@ -519,9 +529,31 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile) {
 			// is the file's only flush. Reporting it is this arm's job;
 			// deciding what it means belongs to the caller.
 			r.err = a.drainAndClose(f)
+			a.releaseSyncRollback(f, key, completed)
 			delete(open, key)
 		case opFiles, opJobs:
 		}
 	}
 	op.reply <- r
+}
+
+// releaseSyncRollback routes any articles a failed Sync rolled back to
+// Outstanding, and lifts the per-file completed tombstone if the rollback
+// dropped partsWritten below TotalParts so re-fetched articles can be written
+// when they arrive.
+func (a *Assembler) releaseSyncRollback(f *openFile, key fileKey, completed map[fileKey]struct{}) {
+	a.releasePoisoned(f)
+	if f.info.TotalParts > 0 && f.w.parts() < f.info.TotalParts {
+		if _, wasComplete := completed[key]; wasComplete {
+			delete(completed, key)
+			f.rolledBack = true
+		}
+	}
+}
+
+// releasePoisoned returns the articles a failed Sync rolled back to
+// Outstanding. Their Emitted bits are still set from dispatch, so without this
+// they are neither Done, nor Failed, nor Outstanding.
+func (a *Assembler) releasePoisoned(f *openFile) {
+	a.noteArticlesUnwritten(f.w.key.jobID, f.w.key.fileIdx, f.w.takePoisoned())
 }

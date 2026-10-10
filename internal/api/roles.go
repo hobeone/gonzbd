@@ -66,9 +66,6 @@ type StatusReporter interface {
 	// Speed returns the current aggregate download speed in bytes/sec.
 	Speed() float64
 	ServerStatus() []downloader.ServerSnapshot
-	// ArticleCacheBytes returns the assembler's in-memory article buffering,
-	// for the status page. The assembler no longer buffers, so it is zero.
-	ArticleCacheBytes() int64
 	DirectUnpackStatus(jobID string) (directunpack.Status, bool)
 	// DirectUnpackStatuses returns a snapshot of every active direct-unpack
 	// job's status, keyed by job ID. Used by queueList to take the

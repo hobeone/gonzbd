@@ -92,12 +92,23 @@ var ErrTargetUnavailable = errors.New("durability: sync target unavailable")
 // underneath and callers can keep reading its Permanent flag.
 var ErrFaultRouted = errors.New("durability: storage fault already routed")
 
+// ErrFileIncomplete reports that a file presented to FinalizeFile is no
+// longer complete — a failed Drain or Sync rolled back one or more of its
+// articles to Outstanding and lifted the target's completion tombstone
+// (#760) — so the file must stay open to receive the re-fetched articles
+// rather than being truncated, closed, or marked complete now.
+var ErrFileIncomplete = errors.New("durability: file is no longer complete")
+
 // SyncTarget is the barrier's view of a job's open files. It is deliberately
 // narrow: the barrier never sees a file handle, a writer's state, or a byte, so
 // it cannot write, cannot ack early, and cannot be tempted to derive
 // durability from anything but a completed Sync.
 //
 // X1 makes the implementation the single writer of each file it reports.
+// In production, assembler.jobSyncTarget (internal/assembler/synctarget.go)
+// is the sole implementation of both SyncTarget and Truncator —
+// `git grep -n '^func (.*) Confirm(ctx' -- '*.go'` returns
+// internal/assembler/synctarget.go:422 alone.
 type SyncTarget interface {
 	// Files returns the job's currently open files. R8 bounds barrier cost
 	// by this set rather than by job size: the barrier fsyncs open files,
@@ -123,6 +134,17 @@ type SyncTarget interface {
 	// nil without an actual fsync — or that treats a buffered flush as
 	// sufficient — makes every downstream claim a lie that survives a
 	// process crash but not a power loss.
+	//
+	// A failed Sync poisons the unconfirmed report (#760): Linux reports a
+	// writeback error to a file descriptor once (errseq) and marks the
+	// failed pages clean, so a subsequent fsync on the same handle can
+	// return nil even though the bytes never reached disk. On a Sync error
+	// the target discards its retained report and rolls the affected
+	// articles back to Outstanding rather than re-reporting them to the
+	// next Drain. If that rollback drops a completed file below TotalParts,
+	// the target lifts its completion tombstone and answers a subsequent
+	// Truncate with ErrFileIncomplete so FinalizeFile / retryFinalize keeps
+	// the handle open until the re-fetched articles complete the file again.
 	Sync(ctx context.Context, fileIdx int32) error
 
 	// Confirm releases the file's drain report, and must be called only once

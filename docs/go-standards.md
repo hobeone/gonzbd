@@ -44,7 +44,6 @@ The architecture establishes specific concurrency patterns. Follow them:
     - `d.mu sync.Mutex` guards the per-job bookkeeping maps. Take it, touch one map, release — it must not be held across a call into `sched` or `Residency.Hydrate`, nor across any I/O.
     - `d.storeMu sync.Mutex` serializes store writes so a `Save` cannot race a `Delete` (`registry.go`, `tick.go`). It is *deliberately* held across blocking SQLite calls — that is its entire job, and `tick.go`'s `store.Save` carries a `//lockio:` waiver saying so — so the "touch one map, release" rule does not apply to it. What does apply: `storeMu` is the OUTER lock. `persistIfChanged` takes `storeMu` then `d.mu` to re-check the registry before writing; never invert that. Neither lock may be held across a call into `sched` or `Residency.Hydrate`.
 - **Per-job locking**: two `sync.RWMutex` on `job.Job` — `mu` for the header tier, `contentMu` for the evictable manifest/progress tier. `mu` is the OUTER lock; never take it while holding `contentMu`.
-- **Article cache**: `sync.RWMutex` + `atomic.Int64` for memory tracking.
 - **Downloader main loop**: `select{}` over multiple channels.
 
 If a new component needs coordination, document the choice (mutex vs channel vs other) in a comment near its declaration.

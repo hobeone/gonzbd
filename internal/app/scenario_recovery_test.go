@@ -110,7 +110,7 @@ func seedCompletedJob(t *testing.T, repo *history.Repository, adminDir, id, name
 		t.Fatalf("write manifest: %v", err)
 	}
 
-	store := dispatchstore.New(repo.DB())
+	store := dispatchstore.New(repo.DB(), nil)
 	cp := j.Checkpoint()
 	p := dispatch.Persisted{
 		ID:      j.ID(),

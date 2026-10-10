@@ -94,9 +94,9 @@ type Dispatcher struct {
 	// for a change that lands between that read and the row's Save.
 	persistReadHook func()
 
-	// nextSeq is the sequence register will hand the next job, and register is
-	// its sole writer: `git grep -n 'd\.nextSeq =' internal/dispatch` returns
-	// 1 line, register's own max().
+	// nextSeq is the sequence register will hand the next job, and
+	// advanceSeqLocked is its sole writer: `git grep -n 'd\.nextSeq =' internal/dispatch`
+	// returns 1 line, advanceSeqLocked's own max().
 	//
 	// It is also register's sole reader. That half is stated rather than
 	// cited, because "reads this field" has no pattern that separates the code
@@ -230,13 +230,14 @@ func (d *Dispatcher) SetStopTimeout(timeout time.Duration) {
 	d.stopTimeout = timeout
 }
 
-// The three log helpers exist so the tick has exactly one shape for "this job
-// failed, keep walking". A tick must never abandon the rest of the queue
-// because one job errored — that would let a single bad job stall every other,
-// which is the blast radius Standing Design Rule 3 bounds for articles and the
-// same argument applies here. Production callers, all in tick.go: tick itself
-// (logAdvanceError), reconcileResidency (logResidencyError), and
-// evictCancelledNeverRun plus persistIfChanged (logStoreError).
+// The four log helpers exist so the tick and startup restore have one shape for
+// "this job failed, keep walking". Neither may abandon the rest of the queue
+// because one job errored — that would let a single bad job or corrupt row
+// stall every other, which is the blast radius Standing Design Rule 3 bounds
+// for articles and the same argument applies here. Production callers: tick
+// itself (logAdvanceError), reconcileResidency (logResidencyError),
+// evictCancelledNeverRun plus persistIfChanged (logStoreError), all in
+// tick.go; and restore (logRestoreError) in dispatch.go.
 func (d *Dispatcher) logAdvanceError(id string, err error) {
 	d.log.Error("advance failed", "job_id", id, "err", err)
 }
@@ -247,6 +248,10 @@ func (d *Dispatcher) logResidencyError(id string, err error) {
 
 func (d *Dispatcher) logStoreError(id string, err error) {
 	d.log.Error("store write failed", "job_id", id, "err", err)
+}
+
+func (d *Dispatcher) logRestoreError(id string, err error) {
+	d.log.Error("restore failed", "job_id", id, "err", err)
 }
 
 // kick wakes the ticker and any external observers without blocking. The
@@ -370,9 +375,9 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 // the ticker during it — Add, PauseJob, AdvanceFrom — only primes the wake,
 // so its pass runs once the ticker starts.
 //
-// An error from it fails Start exactly as a failed restore does — the ticker
-// never launches and a later Stop returns — except that the registered rows
-// stay registered, since restore's rollback covers only its own failure.
+// An error from it fails Start the way a failed Store.Load does — the ticker
+// never launches and a later Stop returns — except that the restored rows are
+// already registered by the time beforeFirstTick runs.
 func (d *Dispatcher) StartWith(ctx context.Context, beforeFirstTick func(context.Context) error) error {
 	d.mu.Lock()
 	if d.stopped {
@@ -713,17 +718,6 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dispatch: restore: load: %w", err)
 	}
-	// Restore is all-or-nothing. Registering as it goes would otherwise leave
-	// every row before the failing one in the registry: Start reports the
-	// error and clears started, so a caller may legitimately retry once a
-	// transient store problem clears — but the retry re-Loads the same rows
-	// and Add refuses the first with "already registered", so the dispatcher
-	// can never start again. In between, List and Stop would be operating on
-	// a queue that was never fully restored.
-	//
-	// deregister is total (registry.go), so rolling back a partial restore needs
-	// nothing beyond calling it for each ID this call registered — including
-	// the write markWritten recorded, which deregister also clears.
 	// Sort rather than trust Load's slice order, with a tiebreak matching the
 	// SQLite store's `ORDER BY sort_key ASC, id ASC`. A sort keyed on SortKey
 	// alone disagrees with SQLite whenever two keys collide, and the
@@ -738,45 +732,33 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 	})
 
 	now := time.Now()
-	// A set, not a slice: the membership test below runs once per stored row
-	// against everything registered so far, which is quadratic in queue size
-	// on a slice. Rollback order does not matter — every entry is deregistered.
+	// A row that cannot be reconstructed or registered is logged at Error and
+	// skipped so one bad row cannot prevent the daemon from starting with the
+	// remaining queue (Standing Design Rule 3). A skipped row is left untouched
+	// in the store for inspection and omitted from d.written so persistIfChanged
+	// neither rewrites nor deletes it.
 	registered := map[string]struct{}{}
-	defer func() {
-		for id := range registered {
-			// This rollback does not NEED the removal protocol: it runs
-			// inside Start before the tick goroutine launches, so no
-			// occupier, worker or store write can exist for a job it is
-			// unwinding, and the invariant the marker enforces holds
-			// vacuously here.
-			//
-			// It takes the door anyway, because the door having no exception
-			// is the whole point of #513. An exemption would have to be
-			// re-justified by every reader, and the justification is a
-			// property of the CALLER (pre-tick) rather than of this loop —
-			// exactly the kind of reasoning that goes stale when Start grows
-			// a step. Two map operations on an error path that runs at most
-			// once per Start is not a price worth reasoning about.
-			rm, ok := d.beginRemoval(id)
-			if !ok {
-				continue
-			}
-			rm.end()
-		}
-	}()
 	for _, p := range rows {
 		// An Add before Start already registered its job and wrote p into
 		// d.written; skip the row only when it matches what this process
 		// wrote prior to restore, so a different stored row for the same ID
-		// still reaches register and fails loudly.
+		// still reaches register and is logged as a conflict.
 		if w, ok := d.lastWritten(p.ID); ok && w == p {
 			if _, mine := registered[p.ID]; !mine {
 				continue
 			}
 		}
+		// Advance nextSeq past every row Load returned before reconstruct and
+		// register so a subsequent Add sorts after rows restore skips on a
+		// reconstruct or register error as well as registered ones (rows
+		// skipped inside Store.Load before reaching restore are not in rows).
+		d.mu.Lock()
+		d.advanceSeqLocked(p.SortKey)
+		d.mu.Unlock()
 		j, err := reconstruct(p.ID, p.Header.Name, p.Policy, p.State, p.Intent, now)
 		if err != nil {
-			return fmt.Errorf("dispatch: restore: job %s at %+v: %w", p.ID, p.State, err)
+			d.logRestoreError(p.ID, fmt.Errorf("dispatch: restore: job %s at %+v: %w", p.ID, p.State, err))
+			continue
 		}
 		restoreJobMetadata(j, p)
 		// register, not Add: Add would assign a FRESH sequence while
@@ -785,12 +767,12 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 		// rewrite every restored row's key.
 		// TestRestore_DoesNotRewriteRowsItJustRead pins that.
 		if err := d.register(j, p.Header, p.SortKey); err != nil {
-			return fmt.Errorf("dispatch: restore: register %s: %w", p.ID, err)
+			d.logRestoreError(p.ID, fmt.Errorf("dispatch: restore: register %s: %w", p.ID, err))
+			continue
 		}
 		registered[p.ID] = struct{}{}
 		d.markWritten(p)
 	}
-	clear(registered) // every row landed; the deferred rollback becomes a no-op
 	return nil
 }
 

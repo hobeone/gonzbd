@@ -119,7 +119,7 @@ func newResumeFixture(t *testing.T) *resumeFixture {
 		t.Fatalf("write manifest: %v", err)
 	}
 
-	store := dispatchstore.New(repo.DB())
+	store := dispatchstore.New(repo.DB(), nil)
 	cp := j.Checkpoint()
 	p := dispatch.Persisted{
 		ID:      j.ID(),

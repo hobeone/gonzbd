@@ -63,6 +63,11 @@ func TestOwnedRanges_IntersectionIsOwned(t *testing.T) {
 		{"abuts end", Range{1000, 10}, false},
 		{"zero-length inside", Range{10, 0}, false},
 		{"before", Range{-10, 10}, false},
+		{"1-byte overlap at tail", Range{999, 10}, true},
+		{"contained", Range{100, 50}, true},
+		{"enclosing", Range{-10, 2000}, true},
+		{"disjoint after", Range{2000, 10}, false},
+		{"zero-length at start", Range{0, 0}, false},
 	}
 	for _, tc := range cases {
 		if _, got := o.ownerOf(tc.r, b); got != tc.want {

@@ -949,9 +949,9 @@ The paragraphs below on E5 and the `=ypart` route predate that check and describ
 why no *separate* hot-path guard was once judged necessary. E5 still closes the
 missing-offset route:
 
-E5 is what closed the route that made the conditional necessary, across both
-decode shapes that produce it. `decodePayload`'s UU fallback can only assert
-offset 0, and so can its yEnc path when the body carries no `=ypart` line
+E5 is what closed the missing-offset route across both decode shapes that
+produce it. `decodePayload`'s UU fallback can only assert offset 0, and so can
+its yEnc path when the body carries no `=ypart` line
 (`decoder.Article.HasOffset` false) — a bare `=ybegin part=N` does not save
 it, since that field is server-declared and unvalidated. Offset 0 is correct for segment 1 of a file and
 belongs to no other segment. Before this fix, a server answering, say,
@@ -1137,10 +1137,11 @@ ownership is recorded on the range instead.
 
 So the four-level ordering that reads naturally here — durable-and-acked beats
 written beats accepted beats claimed — **does not exist and must not be cited as
-though it does.** Anything wanting it must first push an in-memory acked set down
-from the barrier, which is a design change with a cost, not a lookup. #387's
-overwrite of an acked-durable range is the case this concession leaves open, and
-that is the honest statement of the limit.
+though it does.** Anything wanting it across a restart or handle-close boundary
+must first push an in-memory acked set down from the barrier, which is a design
+change with a cost, not a lookup. Within an open-file episode, `FileWriter.owned`
+refuses any arrival intersecting another article's written range (#759); across an episode boundary, #387's
+whole-file CRC withholding ensures `par2` runs on the file.
 
 Refusal is never silent. Every refusal produces a recorded, user-visible
 disposition — which is exactly what #382's `resolve(article, disposition)`

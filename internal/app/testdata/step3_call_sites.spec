@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run ^(TestReclaim_TakesOnlyWhatNothingReaches|TestReclaim_LogsAFailureAndStillUnlinksTheManifest|TestRemoveJob_ReclaimsAJobSomeoneElseRemoved|TestRemoveJob_ReclaimsAJobThatLeftTheQueueBeforeTheCall|TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability|TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed|TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError|TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule|TestRemoveHistoryJob_ReclaimsTheFailedEntrysRuns|TestMarkHistoryCompleted_ReclaimsTheFailedEntrysRuns|TestAddJob_FailedAddLeavesNoOrphanArtifacts|TestStart_SweepsWhatNoDepartureReclaimed|TestSweepOrphans_ReportsWhatItCouldNotSweep|TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset|TestRetryHistoryJob_AbortsWhenStaleFailedMarksCannotBeCleared|TestRetryHistoryJob_ResumesCompletedFilesFromRetainedProgress|TestRetryHistoryJob_FailedFlushLeavesNothingMarked|TestRetryHistoryJob_FailedFlushRemovesTheQueueManifest|TestRetryHistoryJob_RefusesWhileAnotherHolderHasTheID)$
+run ^(TestReclaim_TakesOnlyWhatNothingReaches|TestReclaim_LogsAFailureAndStillUnlinksTheManifest|TestRemoveJob_ReclaimsAJobSomeoneElseRemoved|TestRemoveJob_ReclaimsAJobThatLeftTheQueueBeforeTheCall|TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability|TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed|TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError|TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule|TestRemoveHistoryJob_ReclaimsTheFailedEntrysRuns|TestMarkHistoryCompleted_ReclaimsTheFailedEntrysRuns|TestAddJob_FailedAddLeavesNoOrphanArtifacts|TestStart_SweepsWhatNoDepartureReclaimed|TestSweepOrphans_ReportsWhatItCouldNotSweep|TestSweepOrphans_PreservesManifestOfUnrestoredQueueRow|TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset|TestRetryHistoryJob_AbortsWhenStaleFailedMarksCannotBeCleared|TestRetryHistoryJob_ResumesCompletedFilesFromRetainedProgress|TestRetryHistoryJob_FailedFlushLeavesNothingMarked|TestRetryHistoryJob_FailedFlushRemovesTheQueueManifest|TestRetryHistoryJob_RefusesWhileAnotherHolderHasTheID)$
 timeout 1m
 
 [RemoveJob reports instead of cleaning up after someone else removed the job]
@@ -126,6 +126,49 @@ file internal/app/durability.go
 			if _, held := app.dispatcher.Job(jobID); held {
 --- replace
 			if _, held := app.dispatcher.Job(jobID); held && false {
+--- end
+
+[unlinkDepartedManifests unlinks the manifest of an unrestored queue row]
+file internal/app/durability.go
+--- anchor
+		if app.hasUnrestoredQueueRow(jobID) {
+			continue
+		}
+--- replace
+		if false {
+			continue
+		}
+--- end
+
+[hasUnrestoredQueueRow fails open on a database error]
+file internal/app/durability.go
+--- anchor
+	if err != nil {
+		app.log.Warn("could not check dispatch_jobs before unlinking manifest; keeping manifest",
+			"job", jobID, "err", err)
+		return true
+	}
+--- replace
+	if err != nil {
+		app.log.Warn("could not check dispatch_jobs before unlinking manifest; keeping manifest",
+			"job", jobID, "err", err)
+		return false
+	}
+--- end
+
+[hasUnrestoredQueueRow swallows a database error without logging]
+file internal/app/durability.go
+--- anchor
+	if err != nil {
+		app.log.Warn("could not check dispatch_jobs before unlinking manifest; keeping manifest",
+			"job", jobID, "err", err)
+		return true
+	}
+--- replace
+	if err != nil {
+		_ = err
+		return true
+	}
 --- end
 
 [reclaim swallows a failed reclaim]
