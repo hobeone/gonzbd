@@ -72,9 +72,6 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) queuePauseAll(w http.ResponseWriter, _ *http.Request) {
-	if s.dispatcher != nil {
-		s.dispatcher.Pause()
-	}
 	if s.downloads != nil {
 		s.downloads.PauseDownloads()
 	}
@@ -83,9 +80,6 @@ func (s *Server) queuePauseAll(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) queueResumeAll(w http.ResponseWriter, _ *http.Request) {
-	if s.dispatcher != nil {
-		s.dispatcher.Resume()
-	}
 	if s.downloads != nil {
 		s.downloads.ResumeDownloads()
 		s.downloads.ReevaluateStalls()
