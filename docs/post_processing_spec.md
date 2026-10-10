@@ -219,21 +219,17 @@ This produces a CRC32 that matches what par2 records as the **file-level CRC32**
 >
 > GoNZBD does **not** maintain a running combined CRC at write time, and the
 > assembler has no authority to record a whole-file CRC at all. The value comes
-> from the durability record instead: each `durable_runs` row carries the
-> `crc32_combine` of the articles that merged into it, so a file whose articles
-> all abut collapses to a **single** row at offset 0 whose `crc32` *is* the
-> whole-file CRC — already computed, on stable storage, with no read of the
-> file. It is a query, not a walk.
+> from the article record instead: each `written_articles` row carries the
+> decoder's CRC of one article, and `Job.SettleFileCRC` combines them with
+> `crc32_combine` when the file completes, with no read of the file.
 >
-> `Application.recordAssembledCRC` threads that value to `Queue.SetFileCRC32FromRuns`
-> when the file finalizes, so `FileProgress.AssembledCRC32` is populated for a
-> file whose bytes tile it exactly. A file that keeps more than one row — a hole,
-> or an article overlapping a sibling — supplies nothing, and so does one whose
-> single row does not account for every article of the file, which is what a
-> permanently failed article or a discarded same-offset duplicate leaves. Zero
+> It publishes `FileProgress.AssembledCRC32` only for a file whose rows tile it
+> exactly: every article has one row, none failed, the first starts at offset
+> 0, and each starts where the previous one ends. A file with a hole, a
+> permanently failed article, or rows that do not chain supplies nothing. Zero
 > is the documented "unavailable" value: the verify reads it as `NoCRC` and
 > par2 runs.
-> See §4 of [`durability-contract.md`](durability-contract.md).
+> See [`durability-contract.md`](durability-contract.md) § "The whole-file CRC".
 
 Go (superseded): implement `crc32Combine(crc1, crc2 uint32, len2 int64) uint32`
 using GF(2) matrix doubling — see zlib's `crc32_combine64`. Keep

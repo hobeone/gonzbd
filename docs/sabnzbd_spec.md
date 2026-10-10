@@ -293,7 +293,7 @@ Running, QuickCheck, Completed, Failed, Deleted, Idle
 ### 4.4 Queue Persistence
 
 - **Format** (SABnzbd): Python pickle + gzip. **GoNZBD**: SQLite database (`history.db`) + gzipped JSON manifests (`queue/manifests/<id>.json.gz`).
-- **Filename** (GoNZBD): `history.db` (SQLite store: job order, state, metadata, in the `dispatch_jobs` and `job_files` tables, plus download durability in `durable_runs` and `failed_articles`) plus one `queue/manifests/<id>.json.gz` manifest per job, both under the admin directory. Queue state shares a single database file with history rather than having one of its own. (SABnzbd used a single `queue10.sab`.)
+- **Filename** (GoNZBD): `history.db` (SQLite store: job order, state, metadata, in the `dispatch_jobs` and `job_files` tables, plus the article record in `written_articles`) plus one `queue/manifests/<id>.json.gz` manifest per job, both under the admin directory. Queue state shares a single database file with history rather than having one of its own. (SABnzbd used a single `queue10.sab`.)
 - **Postproc queue**: in-memory only in GoNZBD (not persisted; in-flight post-processing restarts from scratch after a crash). SABnzbd persisted `postproc2.sab`.
 - **Repair modes** (on startup):
   - Mode 0: Use existing queue as-is
@@ -302,26 +302,22 @@ Running, QuickCheck, Completed, Failed, Deleted, Idle
 
 **Go recommendation**: Persistence uses SQLite (`history.db`) for transaction-safe queue state and indexing, and immutable gzipped JSON files (`queue/manifests/<id>.json.gz`) for job article specifications.
 
-**Download durability** is a separate concern from queue state and has its own
-two tables, both keyed by job ID:
+**Download progress** is a separate concern from queue state, recorded per job
+in two tables:
 
-- `durable_runs` — one row per contiguous **run** of articles made durable
-  together: `{file_idx, first_art_idx, last_art_idx, offset, length, crc32}`.
-  Written **only** by `durability.Barrier`, strictly after the `fsync` that
-  makes it true, so it asserts presence as well as content. Adjacent rows
-  merge, so a file whose articles arrive in order collapses to a single row at
-  offset 0 whose `crc32` is the whole-file CRC.
-- `failed_articles` — one row per permanently failed article: `{job_id,
-  art_idx}`. Written solely by `checkpoint.Checkpointer`. A failed article never
-  decodes, so no run ever covers it, and this is the only record that it will
-  not arrive.
+- `written_articles` — one row per article whose decoded bytes `pwrite`
+  accepted: `{file_idx, art_idx, offset, length, crc32}`. It is not a
+  durability claim; the recorder (`internal/app/record.go`) writes it every
+  5 s and at shutdown, hand-over and filing.
+- `job_files` — one row per file: `complete`, `filename`, `fetch_policy`.
+  `complete=1` is written only after the file was fsynced and trimmed.
 
-On restart, every downloading job's article state is derived from those two
-records, and the resume sweep then does one `stat` per file: a file shorter
-than its runs claim has them deleted and is fetched again. GoNZBD has no
-equivalent of SABnzbd's repair modes 1 and 2 (rescan/reconstruct from the
-incomplete directory); the resume sweep covers the same ground from the
-recorded runs instead of a directory scan.
+A permanent article failure is not persisted. On restart, the first hydration
+of each job reads every row of an incomplete file back from the device and
+keeps only those whose bytes match their CRC; the rest are deleted and their
+articles fetched again. GoNZBD has no equivalent of SABnzbd's repair modes 1
+and 2 (rescan/reconstruct from the incomplete directory); verification covers
+the same ground from the recorded rows instead of a directory scan.
 See [`docs/durability-contract.md`](durability-contract.md).
 
 ### 4.5 Duplicate Detection
@@ -680,8 +676,6 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `bandwidth_max` | string | `` | Max bandwidth (e.g., `10M`, `1G`, `0`=unlimited) |
 | `bandwidth_perc` | int | `100` | Percentage of max to use |
 | `min_free_space` | string (`ByteSize`) | `1G` | Min free disk space before pause (accepts K/M/G/T suffixes) |
-| `checkpoint_interval` | int | `30` | Seconds between durability checkpoints per job (`0`=default) |
-| `checkpoint_bytes` | string | `64M` | Bytes downloaded per job between durability checkpoints (`0`=default) |
 | `max_art_tries` | int | `3` | Max tries per article before marking bad |
 | `max_art_opt` | int | `1` | Max tries on optional servers |
 | `max_active_jobs` | int | `4` | Maximum number of active/processing jobs concurrently |
@@ -1070,8 +1064,9 @@ Its indexes are specified alongside it, in the same section.
   (0 = keep forever)
 - Failed jobs: separately configurable `general.history_failed_retention_days`
   (0 = keep forever), so a failure can outlive a success
-- Deleting an entry releases what it owns: its `history_job_files` rows and
-  its `admin/nzb/<name>.gz` backup. A pruned job can no longer be retried.
+- Deleting an entry releases what it owns: its `admin/nzb/<name>.gz` backup,
+  and, for a FAILED entry, the `job_files` and `written_articles` rows it kept
+  for a retry. A pruned job can no longer be retried.
 - The sweep runs at startup and after each job finalizes. Both thresholds at
   0 makes it a no-op.
 - No VACUUM runs on startup or after a prune: SQLite reuses the pages a
@@ -1317,7 +1312,7 @@ These are the GoNZBD admin files (the SABnzbd originals are noted for reference)
 
 | File (GoNZBD) | Contents | Format | SABnzbd original |
 |------|----------|--------|------------------|
-| `history.db` + `queue/manifests/<id>.json.gz` | Download queue state, per-article durability facts, and immutable job manifests | SQLite + gzipped JSON | `queue10.sab` (pickle+gzip) |
+| `history.db` + `queue/manifests/<id>.json.gz` | Download queue state, the per-article record of written articles, and immutable job manifests | SQLite + gzipped JSON | `queue10.sab` (pickle+gzip) |
 | _(none — in-memory only)_ | Post-processing queue | not persisted | `postproc2.sab` |
 | _(none — in-memory only)_ | Dir scanner state | not persisted | `watched_data2.sab` (pickle+gzip) |
 | `bpsmeter.json` | Bandwidth statistics | JSON | `bpsmeter.sab` (pickle+gzip) |
