@@ -5,8 +5,10 @@ run TestRecorder_UntrustAfterInFlightFailedFlushWins
 file internal/app/record.go
 --- anchor
 func (r *recorder) apply(ctx context.Context, j *job.Job, v []durability.FileVerdict, files ...durability.FileState) error {
-	r.wmu.Lock()
-	defer r.wmu.Unlock()
+	if err := r.lockWriter(ctx); err != nil {
+		return err
+	}
+	defer r.unlockWriter()
 --- replace
 func (r *recorder) apply(ctx context.Context, j *job.Job, v []durability.FileVerdict, files ...durability.FileState) error {
 --- end

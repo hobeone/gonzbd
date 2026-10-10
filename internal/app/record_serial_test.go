@@ -297,8 +297,10 @@ func TestRecorder_FlushLockedWritesNothingWhenIdleAndRemergesOnError(t *testing.
 	st := &fakeRecordStore{}
 	j := newTestJob(t, "id")
 	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
-	r.wmu.Lock()
-	defer r.wmu.Unlock()
+	if err := r.lockWriter(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer r.unlockWriter()
 	if err := r.flushLocked(context.Background()); err != nil || len(st.snapshot()) != 0 {
 		t.Fatalf("idle flushLocked = %v with %d batches, want nil and none", err, len(st.snapshot()))
 	}

@@ -177,18 +177,18 @@ And two ways out:
   `mu`, so a file's `complete=1` cannot land without the rows noted before it,
   and writes it in one transaction with `mu` released. On a store error it
   merges the snapshot back before releasing `wmu`. It runs every
-  `defaultRecordInterval` (5 s) from `recorder.run` — which is what bounds a
-  crash's rework (B1), and which bounds each flush by `recorderFlushTimeout`
-  (2 s) because an untrust on the assembler's worker waits for `wmu` behind
-  it — and synchronously at three
+  `defaultRecordInterval` (5 s) from `recorder.run`, under `app.ctx`, which
+  is what bounds a crash's rework (B1); and synchronously at three
   sites — `git grep -n -E 'recorder\.flush\(' -- '*.go' ':!*_test.go'` returns
   3 lines:
   - `Application.Shutdown`, after the assembler and the dispatcher have
     stopped, on Shutdown's step budget;
   - `enqueuePostProc`, after `CloseJobHandles` and before post-processing can
-    change the bytes the rows describe, bounded by `recorderFlushTimeout`;
+    change the bytes the rows describe, bounded by `recorderFlushTimeout`
+    (2 s), since it holds the post-processing admission;
   - `persistAndCommit`, after `historyRepo.Add` (so a failed `Add` does not
-    lose progress) and before `RemoveJob` and reclaim, on its own 2 s budget.
+    lose progress) and before `RemoveJob` and reclaim, bounded by
+    `recorderFlushTimeout`.
 - **`apply`** commits verdicts, and optionally whole file states, for one job
   synchronously. It holds `wmu` from its purge through `ApplyRecord`, and the
   purge removes what is still buffered for the file it names — a `DeleteAll`
@@ -197,6 +197,14 @@ And two ways out:
   what the verdict removed. Its callers are verification, the retry, and the
   untrust of a file (§4): `git grep -n -E 'recorder\.apply\(' -- '*.go' ':!*_test.go'`
   returns 5 lines.
+
+**The wait for `wmu` is bounded by the waiter's own context.** `wmu` is
+deliberately held across `ApplyRecord`, and some holders have no deadline (a
+hydration's commit, a retry's applies). So `flush` and `apply` take it through
+`lockWriter`, which gives up when the caller's context ends and returns its
+error; a waiter that gave up took no snapshot and purged nothing. That is what
+bounds an untrust on the assembler's single worker (§4) whatever holds the
+lock.
 
 Two guards keep a row off a job it does not belong to:
 
@@ -439,8 +447,9 @@ worker, in this order:
    purges what is still buffered for it. This has to land before the job can be
    evicted and re-hydrated: hydration restores `complete` from `job_files` and
    would otherwise reinstate a stale `complete=1`. It is bounded by
-   `untrustTimeout` (2 s), shorter than `closeHandlesTimeout` so a close that
-   untrusts a file keeps time to report its fault.
+   `untrustTimeout` (2 s), the wait for `wmu` included (§1), shorter than
+   `closeHandlesTimeout` so a close that untrusts a file keeps time to report
+   its fault.
 2. `Job.UntrustFile` returns every Done article of the file to Outstanding,
    clears `Complete` and the CRC, and releases the resident rows. An article
    already failed stays failed: `markNotDone` refuses a failed article.
@@ -450,8 +459,10 @@ worker, in this order:
 
 If the SQLite write fails, what stays there is rows flushed earlier with
 `complete` still 0 (the purge already dropped the buffered ones, and
-`complete=1` is written only after a successful fsync), and the next start
-reads them back before trusting any.
+`complete=1` is written only after a successful fsync). If the wait for `wmu`
+timed out instead, nothing was purged either, and a later flush also writes
+the file's buffered rows, still with `complete=0`. Either way the next
+hydration or retry reads every such row back before trusting it.
 
 The assembler untrusts a file at three points (`noteFileUntrusted` has three
 callers in `internal/assembler/assembler.go`):
@@ -1030,7 +1041,10 @@ recorded here so the next reader does not mistake them for design.
    job's writes; a verification read blocks the tick; a manifest read or
    removal on the filesystem hosting `admin_dir` blocks its caller. The
    bounded waits are the callers' (`closeHandlesTimeout`, `untrustTimeout`,
-   the disk probe, Shutdown's step budgets), not the syscalls'.
+   `recorderFlushTimeout`, the disk probe, Shutdown's step budgets), not the
+   syscalls'. A stalled record write holds `wmu` until its own context ends,
+   which for a hydration's commit or a retry's applies may be never; a waiter
+   for `wmu` gives up when its own context ends (§1).
 
 7. **The crash suite does not test fsync-to-platter.** See below.
 
@@ -1075,10 +1089,11 @@ a green run does and does not bound.
    row's CRC, or because its file was `complete=1` and not reset by a retry.
 2. `complete=1` is written only after the file's fsync and trim, and never for
    a file whose fsync failed.
-3. A file whose fsync failed has no rows and no Done bits in memory or in the
-   recorder's buffer once its untrust has run, and none in SQLite once the
-   untrust's `apply` succeeded; rows a failed `apply` leaves have `complete=0`
-   and are read back before any is trusted (§4).
+3. A file whose fsync failed has no rows and no Done bits in memory once its
+   untrust has run, none in the recorder's buffer once the untrust's `apply`
+   took `wmu`, and none in SQLite once that `apply` succeeded; rows a failed or
+   timed-out `apply` leaves have `complete=0` and are read back before any is
+   trusted (§4).
 4. No two written articles of a file have intersecting byte ranges, and an
    article owns a range only once its write succeeded.
 5. The whole-file CRC exists only for a gapless, non-overlapping chain of rows

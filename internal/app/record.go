@@ -34,8 +34,13 @@ type recorder struct {
 	// caller, liveInstances (through isCurrent), releases mu before calling
 	// it. No caller of flush or apply may hold the dispatcher's mu.
 	// noteWritten and markDirty take only mu; wmu is taken where
-	// `git grep -n 'r\.wmu\.Lock()' internal/app/record.go` finds 2 lines.
-	wmu sync.Mutex
+	// `git grep -n 'r\.lockWriter(' internal/app/record.go` finds 2 lines.
+	//
+	// It is a 1-buffered channel rather than a sync.Mutex so that each waiter's
+	// wait is bounded by its own ctx (lockWriter): a holder with no deadline
+	// delays a waiter only until the waiter's ctx ends. Holding it is having
+	// sent into it.
+	wmu chan struct{}
 
 	mu      sync.Mutex // guards pending and dirty
 	pending map[*job.Job][]durability.WrittenRow
@@ -47,6 +52,7 @@ func newRecorder(st recordStore, current func(id string) *job.Job, log *slog.Log
 		st:      st,
 		current: current,
 		log:     log,
+		wmu:     make(chan struct{}, 1),
 		pending: make(map[*job.Job][]durability.WrittenRow),
 		dirty:   make(map[*job.Job]map[int]durability.FileState),
 	}
@@ -147,14 +153,30 @@ func (r *recorder) takeFilesLocked(live map[*job.Job]bool) map[*job.Job]map[int]
 	return out
 }
 
+// lockWriter takes wmu, or returns ctx's error if ctx ends first.
+func (r *recorder) lockWriter(ctx context.Context) error {
+	select {
+	case r.wmu <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// unlockWriter releases wmu; the caller holds it.
+func (r *recorder) unlockWriter() { <-r.wmu }
+
 // flush takes ONE snapshot of the pending rows and dirty files under mu, so a
 // file's complete flag cannot land without the rows noted before it was
 // marked, and writes it with mu released but wmu held. On a store error the
-// snapshot is merged back for the next flush before wmu is released.
+// snapshot is merged back for the next flush before wmu is released. If ctx
+// ends before wmu is free, it returns ctx's error having taken no snapshot.
 func (r *recorder) flush(ctx context.Context) error {
-	r.wmu.Lock()
-	err := r.flushLocked(ctx) // includes the remerge on error, see flushLocked
-	r.wmu.Unlock()
+	err := r.lockWriter(ctx)
+	if err == nil {
+		err = r.flushLocked(ctx) // includes the remerge on error, see flushLocked
+		r.unlockWriter()
+	}
 	if err != nil {
 		r.log.Warn("recorder: flush failed; will retry", "err", err)
 	}
@@ -237,10 +259,13 @@ func (r *recorder) remerge(rows map[*job.Job][]durability.WrittenRow, files map[
 // buffered: a DeleteAll verdict the file's pending rows, a DeleteArtIdxs
 // verdict the named pending rows, and any verdict that sets or clears
 // complete the file's dirty state. A file state given here replaces the
-// file's buffered one.
+// file's buffered one. If ctx ends before wmu is free, it returns ctx's error
+// having purged nothing.
 func (r *recorder) apply(ctx context.Context, j *job.Job, v []durability.FileVerdict, files ...durability.FileState) error {
-	r.wmu.Lock()
-	defer r.wmu.Unlock()
+	if err := r.lockWriter(ctx); err != nil {
+		return err
+	}
+	defer r.unlockWriter()
 
 	r.mu.Lock()
 	for _, fv := range v {
@@ -299,11 +324,7 @@ func (r *recorder) run(ctx context.Context, every time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			// Bounded: the flush holds wmu, which an untrust on the assembler's
-			// worker (handleFileUntrusted) waits for.
-			fctx, cancel := context.WithTimeout(ctx, recorderFlushTimeout)
-			_ = r.flush(fctx) // flush logs its own failure
-			cancel()
+			_ = r.flush(ctx) // flush logs its own failure
 		}
 	}
 }
@@ -314,22 +335,21 @@ type nopRecordStore struct{}
 
 func (nopRecordStore) ApplyRecord(context.Context, []durability.RecordBatch) error { return nil }
 
-// recorderFlushTimeout bounds a flush: the periodic one in run, the finalizer's
-// persistAndCommit and the hand-over to post-processing. Shutdown's flush has
-// its own step budget instead.
+// recorderFlushTimeout bounds the two flushes whose callers must not block:
+// the finalizer's persistAndCommit, and the hand-over to post-processing,
+// which holds the post-processing admission. It covers the wait for wmu and
+// the write. Shutdown's flush has its own step budget instead.
 const recorderFlushTimeout = 2 * time.Second
 
-// untrustTimeout bounds the synchronous SQLite write that untrusts a file. It
-// runs on the assembler's worker goroutine, which every job's writes wait on.
+// untrustTimeout bounds the synchronous SQLite untrust of a file: the wait for
+// wmu and the write. It runs on the assembler's worker goroutine, which every
+// job's writes wait on.
 //
 // It is shorter than closeHandlesTimeout because the close-handles arm calls
 // it inside CloseJobHandles: the caller waits closeHandlesTimeout for the
 // worker's reply, and an untrust that used all of it would leave the close
 // timed out with its fault unseen. One untrust leaves the close 3s; a close
-// with several failing files spends this bound once per file. It does not
-// cover the wait for wmu: behind a flush already writing, that wait lasts at
-// most recorderFlushTimeout (Shutdown's step budget for its own flush); behind
-// a verification's or a retry's apply, this bound does not hold it.
+// with several failing files spends this bound once per file.
 const untrustTimeout = 2 * time.Second
 
 // lookupCurrent is the recorder's instance check: the job the dispatcher holds
@@ -382,10 +402,12 @@ func (app *Application) handleFileUntrusted(jobID string, fileIdx int) {
 	if err := app.recorder.apply(ctx, j, []durability.FileVerdict{
 		{FileIdx: fileIdx, DeleteAll: true, ClearComplete: true},
 	}); err != nil {
-		// The purge above already dropped the file's buffered rows and
-		// complete flag, so what stays in SQLite is rows flushed earlier, with
-		// complete still 0: complete=1 is written only after a successful
-		// fsync. A complete=0 row is trusted at the next start only after
+		// The verdict did not reach SQLite. If the write failed, apply's purge
+		// already dropped the file's buffered rows; if the wait for wmu timed
+		// out, nothing was purged and a later flush writes them. Either way
+		// the file's rows in SQLite have complete still 0: complete=1 is
+		// written only after a successful fsync, and this file's fsync failed. A
+		// complete=0 row is trusted at a hydration or a retry only after
 		// verification reads its bytes back and matches its CRC.
 		app.log.Error("could not remove an untrusted file's record; the next start reads its rows back and checks each CRC before trusting them",
 			"job", jobID, "fileidx", fileIdx, "err", err)
