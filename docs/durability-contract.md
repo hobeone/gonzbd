@@ -980,7 +980,7 @@ are bounded by the flush cadence and by file size, as below.
   rolls back a set of articles, and its fault goes on the close-handles ack, or
   nowhere at worker exit.
   A restart also clears a stranded Emitted bit, by not persisting it
-  (`jobProgressJSON` has no `emitted` field), and so does a downloader reload
+  (`JobProgress` is not serialized), and so does a downloader reload
   (`git grep -n 'j\.ClearEmittedForReload(' -- '*.go' ':!*_test.go'` finds 1
   line, in `internal/app/reloader.go`).
 - **`FileInfo` resolution, `MkdirAll`, or `OpenFile` failure** — the article's

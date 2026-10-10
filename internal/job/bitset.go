@@ -56,24 +56,3 @@ func (b bitset) Clone() bitset {
 	copy(w, b.words)
 	return bitset{words: w, n: b.n}
 }
-
-// ToBools renders the set as []bool for the on-disk JSON shape, which is
-// deliberately unchanged.
-func (b bitset) ToBools() []bool {
-	out := make([]bool, b.n)
-	for i := range b.n {
-		out[i] = b.Get(i)
-	}
-	return out
-}
-
-// bitsetFromBools builds a bitset from the on-disk []bool shape.
-func bitsetFromBools(in []bool) bitset {
-	b := newBitset(len(in))
-	for i, v := range in {
-		if v {
-			b.Set(i)
-		}
-	}
-	return b
-}

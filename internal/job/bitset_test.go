@@ -63,25 +63,6 @@ func TestBitsetCloneIsIndependent(t *testing.T) {
 	}
 }
 
-// The on-disk JSON shape stays []bool, so the conversion must round-trip
-// exactly, including trailing padding bits that do not correspond to an
-// article.
-func TestBitsetBoolRoundTrip(t *testing.T) {
-	in := make([]bool, 70)
-	in[0], in[64], in[69] = true, true, true
-
-	got := bitsetFromBools(in).ToBools()
-
-	if len(got) != len(in) {
-		t.Fatalf("round trip changed length: got %d, want %d", len(got), len(in))
-	}
-	for i := range in {
-		if got[i] != in[i] {
-			t.Errorf("bit %d: got %v, want %v", i, got[i], in[i])
-		}
-	}
-}
-
 // TestBitsetOutOfRangeIsSafe pins the bounds-check branch on Get/Set/Clear:
 // callers that pass a stale or corrupt index must get a safe no-op/false
 // rather than a panic or a write past the end of words.

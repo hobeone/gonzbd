@@ -24,8 +24,9 @@ import (
 // Job.MarkArticleFailed names them, and eviction keeps job.progress, so
 // pause and resume do not clear them either. Left alone they are stranded for
 // the life of the process, at any residency, until something clears them. A
-// restart clears them by not persisting them — jobProgressJSON excludes
-// emitted deliberately (internal/job/progress.go) — and a downloader reload
+// restart clears them because the bit is never persisted: JobProgress is not
+// serialized, and the restarted process builds each job's progress afresh
+// with no Emitted bit set (internal/job/progress.go) — and a downloader reload
 // clears them in-process once the assembler has quiesced.
 //
 // It takes a SET rather than one article, and that is the point. The assembler

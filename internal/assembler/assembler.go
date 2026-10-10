@@ -241,9 +241,9 @@ type Options struct {
 	// the bit. Two things do, and neither is on this path:
 	//
 	//   - A restart, by NOT persisting the bit rather than by clearing it.
-	//     jobProgressJSON excludes emitted deliberately
-	//     (internal/job/progress.go), so a job reloaded from the store starts
-	//     with none set. Nothing has to run for this to hold.
+	//     JobProgress is not serialized (internal/job/progress.go), so a job
+	//     reloaded from the store starts with none set. Nothing has to run for
+	//     this to hold.
 	//   - A downloader reload, which calls Job.ClearEmittedForReload(false)
 	//     per job and clears them in-process.
 	//
