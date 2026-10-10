@@ -53,10 +53,15 @@ file internal/app/job_finalizer.go
 [the hand-over to post-processing does not flush]
 file internal/app/app.go
 --- anchor
-	if err := app.recorder.flush(context.Background()); err != nil {
+	err := app.recorder.flush(flushCtx)
+	flushCancel()
+	if err != nil {
 		app.log.Warn("recorder flush at the hand-over to post-processing failed", "job", j.ID(), "err", err)
 --- replace
-	if err := error(nil); err != nil {
+	err := error(nil)
+	_ = flushCtx
+	flushCancel()
+	if err != nil {
 		app.log.Warn("recorder flush at the hand-over to post-processing failed", "job", j.ID(), "err", err)
 --- end
 
