@@ -363,7 +363,12 @@ func (app *Application) handleFileUntrusted(jobID string, fileIdx int) {
 	if err := app.recorder.apply(ctx, j, []durability.FileVerdict{
 		{FileIdx: fileIdx, DeleteAll: true, ClearComplete: true},
 	}); err != nil {
-		app.log.Error("could not remove an untrusted file's record; its rows may be trusted at the next start",
+		// The purge above already dropped the file's buffered rows and
+		// complete flag, so what stays in SQLite is rows flushed earlier, with
+		// complete still 0: complete=1 is written only after a successful
+		// fsync. A complete=0 row is trusted at the next start only after
+		// verification reads its bytes back and matches its CRC.
+		app.log.Error("could not remove an untrusted file's record; the next start reads its rows back and checks each CRC before trusting them",
 			"job", jobID, "fileidx", fileIdx, "err", err)
 	}
 	if err := j.UntrustFile(fileIdx); err != nil {

@@ -135,11 +135,11 @@ file internal/app/app.go
 [a failed SQLite untrust skips the in-memory half]
 file internal/app/record.go
 --- anchor
-		app.log.Error("could not remove an untrusted file's record; its rows may be trusted at the next start",
+		app.log.Error("could not remove an untrusted file's record; the next start reads its rows back and checks each CRC before trusting them",
 			"job", jobID, "fileidx", fileIdx, "err", err)
 	}
 --- replace
-		app.log.Error("could not remove an untrusted file's record; its rows may be trusted at the next start",
+		app.log.Error("could not remove an untrusted file's record; the next start reads its rows back and checks each CRC before trusting them",
 			"job", jobID, "fileidx", fileIdx, "err", err)
 		return
 	}
