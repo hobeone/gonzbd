@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestLooseRecord_|TestHandleFileUntrusted_ReturnsArticlesToOutstandingWhenSQLiteFails|TestResidencyFault_|TestVerifyAndAttach_|TestInstallVerification_|TestVerifyRetry_|TestHydratePausedJobs_|TestRecorder_|TestDurability_DoneMeansWrittenAndRecorded|TestRecord_FlushesOnCleanShutdown|TestFinalize_
+run TestLooseRecord_|TestHandleFileUntrusted_ReturnsArticlesToOutstandingWhenSQLiteFails|TestResidencyFault_|TestVerifyAndAttach_|TestInstallVerification_|TestVerifyRetry_|TestVerifyPausedJobs_|TestRecorder_|TestDurability_DoneMeansWrittenAndRecorded|TestRecord_FlushesOnCleanShutdown|TestFinalize_
 
 # Restart and retry resume from the loose article record (written_articles +
 # job_files). Each mutation removes one half of that path; each must be caught
@@ -161,10 +161,10 @@ file internal/app/residency.go
 
 # A job restored at Fetching under a pause is hydrated, and so verified,
 # before the first tick, so its progress reads what the record holds.
-[a paused job is not hydrated at startup]
+[a paused job is not loaded after startup]
 file internal/app/startup_reconcile.go
 --- anchor
-		if err := app.dispatcher.LoadProgress(ctx, row.ID); err != nil {
+		err := app.dispatcher.LoadProgress(jctx, row.ID)
 --- replace
-		if err := ctx.Err(); err != nil {
+		err := app.dispatcher.LoadProgress(jctx, "")
 --- end

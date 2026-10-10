@@ -304,9 +304,11 @@ verifies itself:
 
 - the dispatcher's tick (`reconcileResidency`), for a job that holds what its
   position requires;
-- `hydratePausedJobs`, inside `Start` before the first tick: a job restored at
-  `Fetching` with `IntentPause` is hydrated, and so verified, so that
-  `mode=queue` reports its progress rather than 0 %;
+- `Application.verifyPausedJobs` → `LoadProgress`, on a goroutine `Start`
+  launches last, after the API can listen: each job restored at `Fetching`
+  with `IntentPause` is hydrated, and so verified, one at a time under a
+  per-job deadline (`pausedVerifyTimeout`, 10 minutes), so that `mode=queue`
+  reports its progress rather than 0 % without the user resuming it;
 - `Dispatcher.SetName` → `LoadProgress`. A rename is refused once
   `Job.DownloadBegun()` is true and moves nothing on disk; verification runs
   first, so verified rows make the job "begun" and a rename can never leave
@@ -411,9 +413,10 @@ of that hydration, so the job is filed with the flagged names whichever
 completion arrives first.
 
 When the channel is full, the send moves to its own goroutine that gives up
-when `app.ctx` is cancelled. It cannot block the caller: `hydratePausedJobs`
-runs inside `Dispatcher.StartWith`, before `watchCompletions` starts. A
-completion it gives up is re-derived by the next start's verification.
+when `app.ctx` is cancelled. It cannot block the caller:
+`fileOwedUnwantedFailures` runs inside `Dispatcher.StartWith`, before
+`watchCompletions` starts. A completion it gives up is re-derived by the next
+start's verification.
 
 #### Retry
 
@@ -1029,17 +1032,35 @@ recorded here so the next reader does not mistake them for design.
    matters, the follow-up is a `verified` gate in the dispatch plan with the
    read on the Fetching worker.
 
-   **At startup the cost is paid before the API listens.**
-   `hydratePausedJobs` (`internal/app/startup_reconcile.go`) hydrates, and so
-   verifies, every job restored at `Fetching` with `IntentPause`, synchronously
-   inside `Application.Start`, and `cmd/gonzbd/main.go` starts its HTTP server
-   after `Start` returns. Startup time therefore grows with the recorded bytes
-   of those jobs' `complete=0` files. A hung hard-mounted share blocks the
-   read-back, and so `Start` and the API, indefinitely (limitation 6). A
-   paused job then stays resident until it is resumed or removed, because the
-   tick's eviction arm skips `IntentPause` (`reconcileResidency`,
-   `internal/dispatch/tick.go`). The follow-up is asynchronous paused-job
-   verification.
+   **At startup the paused jobs are verified after the API listens, and a
+   job reports no progress until its own verification lands.**
+   `verifyPausedJobs` (`internal/app/startup_reconcile.go`) hydrates, and so
+   verifies, every job restored at `Fetching` with `IntentPause`, one at a
+   time, on a goroutine `Application.Start` launches last; `cmd/gonzbd/main.go`
+   starts its HTTP server after `Start` returns, so the read-back runs while
+   the API serves. Until a job's load lands, `mode=queue` reports its header's
+   byte count as remaining (0 %), as it does for any restored job before its
+   first hydration; the loads run in queue order, so a job low in the queue
+   waits behind the bytes of those above it. Each load runs under a per-job
+   deadline (`pausedVerifyTimeout`, 10 minutes): a job whose read-back exceeds
+   it is left unloaded, parks nothing and keeps its rows, and reports 0 %
+   until its resume lets the tick hydrate it — the cost of a deadline too
+   short for a large job on a slow mount. A hung hard-mounted share still
+   blocks the read in the syscall, which no deadline interrupts (limitation
+   6); it then holds `Shutdown`'s `wg.Wait` step to its budget, since the
+   verifier is on `app.wg`. A paused job that was loaded stays resident until
+   it is resumed or removed, because the tick's eviction arm skips
+   `IntentPause` (`reconcileResidency`, `internal/dispatch/tick.go`). A
+   resume during a job's load waits for it (`appResidency.Hydrate` runs one
+   hydration of a job at a time, and a waiter whose hydration did not attach
+   hydrates the job itself). A removal or a rename during it blocks its
+   caller — the HTTP handler behind `mode=queue&name=delete`, or
+   `Dispatcher.SetName` — on `appResidency.Evict`, which takes no context and
+   waits for whichever hydration of the job is in flight to return: for this
+   verifier's load, up to the per-job deadline between rows, and for as long
+   as a read a hung mount does not return; for a tick's or a rename's
+   hydration, which has no deadline, until that read-back ends. The load's
+   verdicts then reach SQLite before the removal's reclaim deletes the rows.
 
 2. **An unreadable sector, or a missing download directory, keeps the job
    parked until the operator acts** (§3). Deleting the file refetches it; a
@@ -1069,9 +1090,10 @@ recorded here so the next reader does not mistake them for design.
 
 6. **A remote NFS/SMB mount can stall untimed calls.** A `pwrite` or `fsync`
    that does not return blocks the assembler's single worker, and so every
-   job's writes; a verification read blocks the tick, or at startup
-   `hydratePausedJobs` and so `Start` and the API (limitation 1); a manifest
-   read or removal on the filesystem hosting `admin_dir` blocks its caller.
+   job's writes; a verification read blocks the tick, or after startup the
+   paused jobs' verifier and the `Shutdown` step that joins it (limitation
+   1); a manifest read or removal on the filesystem hosting `admin_dir`
+   blocks its caller.
    The bounded waits are the callers' (`closeHandlesTimeout`,
    `untrustTimeout`, `recorderFlushTimeout`, the disk probe, Shutdown's step
    budgets), not the syscalls'. A stalled record write holds `wmu` until its

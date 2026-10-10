@@ -1042,8 +1042,10 @@ func (d *Dispatcher) SetName(id, name string) error {
 //
 // SetName calls it so Job.DownloadBegun reads the job's done articles and not
 // only the restored stamp: a retried job's stamps are cleared while its done
-// articles, and their bytes under the name, are kept. Start calls it for every
-// job restored paused at Fetching, which no tick hydrates until it is resumed.
+// articles, and their bytes under the name, are kept. The application's
+// startup verifier (Application.verifyPausedJobs) calls it, after Start has
+// returned, for every job restored paused at Fetching, which no tick hydrates
+// until it is resumed.
 //
 // It does disk I/O, so it takes no lock across Hydrate (D-B9). A job that is
 // not registered, or already has progress, is left alone.
