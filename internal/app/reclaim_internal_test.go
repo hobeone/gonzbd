@@ -47,10 +47,10 @@ func fileExists(t *testing.T, path string) bool {
 // assertRowsGone fails unless jobID has no row in any per-job table.
 func assertRowsGone(t *testing.T, application *Application, jobID, why string) {
 	t.Helper()
-	nr, nf := durabilityRowCounts(t, application, jobID)
-	if nj := jobFilesCount(t, application, jobID); nr != 0 || nf != 0 || nj != 0 {
-		t.Errorf("%s: %s kept %d runs, %d failed rows and %d job_files rows, want none",
-			why, jobID, nr, nf, nj)
+	nw, nf := durabilityRowCounts(t, application, jobID)
+	if nw != 0 || nf != 0 {
+		t.Errorf("%s: %s kept %d written_articles rows and %d job_files rows, want none",
+			why, jobID, nw, nf)
 	}
 }
 
@@ -73,10 +73,10 @@ func TestReclaim_TakesOnlyWhatNothingReaches(t *testing.T) {
 	if fileExists(t, goneManifest) {
 		t.Error("the departed job's manifest survived reclaim")
 	}
-	nr, nf := durabilityRowCounts(t, application, queued.ID())
-	if nj := jobFilesCount(t, application, queued.ID()); nr != 1 || nf != 1 || nj != 1 {
-		t.Errorf("the queued job kept %d runs, %d failed rows and %d job_files rows, want 1 of each",
-			nr, nf, nj)
+	nw, nf := durabilityRowCounts(t, application, queued.ID())
+	if nw != 1 || nf != 1 {
+		t.Errorf("the queued job kept %d written_articles rows and %d job_files rows, want 1 of each",
+			nw, nf)
 	}
 	if !fileExists(t, queuedManifest) {
 		t.Error("reclaim unlinked the manifest of a job the dispatcher still holds; " +
@@ -93,7 +93,7 @@ func TestReclaim_LogsAFailureAndStillUnlinksTheManifest(t *testing.T) {
 	application, _, _ := newLifecycleTestApp(t)
 	var logged bytes.Buffer
 	application.log = slog.New(slog.NewTextHandler(&logged, nil))
-	application.durable = failingRunStore{durabilityStore: application.durable, err: errors.New("database is locked")}
+	application.durable = failingRuleStore{durabilityStore: application.durable, err: errors.New("database is locked")}
 	manifest := placeManifest(t, application, "departed0000000")
 
 	application.reclaim(t.Context(), "departed0000000")
@@ -213,8 +213,8 @@ func TestMarkHistoryCompleted_ReportsAMissingEntry(t *testing.T) {
 }
 
 // TestRemoveHistoryJob_ReclaimsTheFailedEntrysRuns pins the history-delete
-// departure: the entry and its retained file progress go in history's own
-// transaction, and the runs it kept for a retry go through reclaim after it.
+// departure: the entry goes in history's own transaction, and the rows it kept
+// for a retry go through reclaim after it.
 func TestRemoveHistoryJob_ReclaimsTheFailedEntrysRuns(t *testing.T) {
 	t.Parallel()
 	const nArticles = 2
@@ -226,14 +226,6 @@ func TestRemoveHistoryJob_ReclaimsTheFailedEntrysRuns(t *testing.T) {
 		t.Fatalf("RemoveHistoryJob: %v", err)
 	}
 	assertRowsGone(t, application, j.ID(), "a deleted failed entry")
-	var n int
-	if err := application.historyRepo.DB().QueryRowContext(t.Context(),
-		`SELECT COUNT(*) FROM history_job_files WHERE job_id = ?`, j.ID()).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Errorf("%d history_job_files rows survive their entry", n)
-	}
 }
 
 // TestStart_SweepsWhatNoDepartureReclaimed pins the backstop: rows and a
@@ -271,7 +263,7 @@ func TestStart_SweepsWhatNoDepartureReclaimed(t *testing.T) {
 		t.Error("the stranded manifest survived the startup sweep")
 	}
 	if nr, nf := durabilityRowCounts(t, application, queued.ID()); nr != 1 || nf != 1 {
-		t.Errorf("the queued job kept %d runs and %d failed rows across the sweep, want 1 and 1", nr, nf)
+		t.Errorf("the queued job kept %d written_articles rows and %d job_files rows across the sweep, want 1 and 1", nr, nf)
 	}
 	if !fileExists(t, queuedManifest) {
 		t.Error("the startup sweep unlinked a queued job's manifest")
@@ -280,7 +272,7 @@ func TestStart_SweepsWhatNoDepartureReclaimed(t *testing.T) {
 
 // TestStart_SweepPreservesAFailedHistoryEntrysRuns pins the startup sweep's
 // other exception: an orphan whose job is recorded as a FAILED history entry
-// must not lose the durable_runs a retry bounds FinalizeFile's truncate from
+// must not lose the written_articles and job_files rows a retry verifies
 // (internal/durability/reclaim.go's keptForFailedEntry).
 // TestStart_SweepsWhatNoDepartureReclaimed above already pins that the
 // startup sweep takes a plain orphan and leaves a queued job alone; this is
@@ -303,14 +295,10 @@ func TestStart_SweepPreservesAFailedHistoryEntrysRuns(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = application.Shutdown() })
 
-	nr, nf := durabilityRowCounts(t, application, failedID)
+	nr, _ := durabilityRowCounts(t, application, failedID)
 	if nr != 1 {
 		t.Errorf("a FAILED history entry's written_articles = %d after the startup sweep, want 1: "+
 			"a retry verifies these rows against the partial files", nr)
-	}
-	if nf != 0 {
-		t.Errorf("a FAILED history entry's failed_articles = %d after the startup sweep, want 0: "+
-			"only job_files, durable_runs and written_articles are kept for a FAILED entry", nf)
 	}
 	if nj := jobFilesCount(t, application, failedID); nj != 1 {
 		t.Errorf("a FAILED history entry's job_files = %d after the startup sweep, want 1: "+
@@ -356,7 +344,7 @@ func TestSweepOrphans_ReportsWhatItCouldNotSweep(t *testing.T) {
 		application, _, _ := newLifecycleTestApp(t)
 		var logged bytes.Buffer
 		application.log = slog.New(slog.NewTextHandler(&logged, nil))
-		application.durable = failingRunStore{durabilityStore: application.durable, err: errors.New("database is locked")}
+		application.durable = failingRuleStore{durabilityStore: application.durable, err: errors.New("database is locked")}
 		manifest := placeManifest(t, application, "stranded0000000")
 
 		application.sweepOrphans(t.Context())
@@ -478,9 +466,9 @@ func TestSweepOrphans_PreservesManifestOfUnrestoredQueueRow(t *testing.T) {
 	if !fileExists(t, skippedManifest) {
 		t.Error("sweepOrphans deleted the manifest of a skipped row that still exists in dispatch_jobs")
 	}
-	nr, nf := durabilityRowCounts(t, application, skippedID)
-	if nj := jobFilesCount(t, application, skippedID); nr != 1 || nf != 1 || nj != 1 {
-		t.Errorf("skipped row kept %d runs, %d failed rows, %d job_files rows, want 1 of each", nr, nf, nj)
+	nw, nf := durabilityRowCounts(t, application, skippedID)
+	if nw != 1 || nf != 1 {
+		t.Errorf("skipped row kept %d written_articles rows and %d job_files rows, want 1 of each", nw, nf)
 	}
 	if fileExists(t, orphanManifest) {
 		t.Error("sweepOrphans kept the manifest of an orphan with no dispatch_jobs row")

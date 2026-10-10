@@ -7,55 +7,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/durability"
 )
 
-// TestRunsCoverage covers the bounds checks that decide whether a durability
-// Run names articles the manifest actually has. Both rejections matter: a run
-// naming a file that does not exist, and a run whose article span escapes the
-// file it claims.
-func TestRunsCoverage(t *testing.T) {
-	m := NewManifest([]JobFile{
-		{Subject: "f0", Bytes: 200, Articles: []JobArticle{
-			{ID: "<a0@x>", Bytes: 100, Number: 1},
-			{ID: "<a1@x>", Bytes: 100, Number: 2},
-		}},
-		{Subject: "f1", Bytes: 100, Articles: []JobArticle{
-			{ID: "<b0@x>", Bytes: 100, Number: 1},
-		}},
-	})
-
-	tests := []struct {
-		name      string
-		run       durability.Run
-		wantFirst int
-		wantLast  int
-		wantErr   bool
-	}{
-		{name: "whole first file", run: durability.Run{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1}, wantFirst: 0, wantLast: 1},
-		{name: "single article of second file", run: durability.Run{FileIdx: 1, FirstArtIdx: 2, LastArtIdx: 2}, wantFirst: 2, wantLast: 2},
-		{name: "file index past the end", run: durability.Run{FileIdx: 2, FirstArtIdx: 0, LastArtIdx: 0}, wantErr: true},
-		{name: "negative file index", run: durability.Run{FileIdx: -1, FirstArtIdx: 0, LastArtIdx: 0}, wantErr: true},
-		{name: "inverted span", run: durability.Run{FileIdx: 0, FirstArtIdx: 1, LastArtIdx: 0}, wantErr: true},
-		{name: "span starts before the file", run: durability.Run{FileIdx: 1, FirstArtIdx: 1, LastArtIdx: 2}, wantErr: true},
-		{name: "span runs past the file", run: durability.Run{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 2}, wantErr: true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			first, last, err := runsCoverage(m, tc.run)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("runsCoverage(%+v) = %d, %d, nil; want an error", tc.run, first, last)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("runsCoverage(%+v): %v", tc.run, err)
-			}
-			if first != tc.wantFirst || last != tc.wantLast {
-				t.Errorf("runsCoverage(%+v) = %d, %d; want %d, %d", tc.run, first, last, tc.wantFirst, tc.wantLast)
-			}
-		})
-	}
-}
-
 // TestJobPar2Recovered_ReadsThroughBeforeHydration covers both branches of the
 // Job-level accessor. The pre-hydration branch is the one #504 turns on: a
 // restored job that is never hydrated — it holds no lease or slot and is not
@@ -166,9 +117,7 @@ func TestAttachContent_RefusesASecondAttach(t *testing.T) {
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("first AttachContent: %v", err)
 	}
-	if err := j.MarkArticleDone(0, 100, "srv"); err != nil {
-		t.Fatalf("MarkArticleDone: %v", err)
-	}
+	markWritten(t, j, 0)
 
 	if err := j.AttachContent(m); err == nil {
 		t.Fatal("second AttachContent returned nil; it must refuse rather than replace a live record")
@@ -355,4 +304,31 @@ func TestMarkArticleFailed_RespectsRepairPolicy(t *testing.T) {
 			t.Error("Par2Recovered = false after a PPRepair job's article failure; the volume should have been released")
 		}
 	})
+}
+
+// markWritten marks article artIdx Done the way the recorder does, through
+// MarkArticleWritten, with a row that tiles the file's articles end to end.
+func markWritten(t testing.TB, j *Job, artIdx int) {
+	t.Helper()
+	m, err := j.Manifest()
+	if err != nil {
+		t.Fatalf("markWritten: manifest: %v", err)
+	}
+	var off int64
+	fileIdx := 0
+	for fi := range m.NumFiles() {
+		lo, hi := m.FileRange(fi)
+		if artIdx < lo || artIdx >= hi {
+			continue
+		}
+		fileIdx = fi
+		for i := lo; i < artIdx; i++ {
+			off += int64(m.ArticleBytes(i))
+		}
+	}
+	if err := j.MarkArticleWritten(durability.WrittenRow{
+		FileIdx: fileIdx, ArtIdx: int32(artIdx), Offset: off, Length: int64(m.ArticleBytes(artIdx)),
+	}); err != nil {
+		t.Fatalf("MarkArticleWritten(%d): %v", artIdx, err)
+	}
 }

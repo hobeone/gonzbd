@@ -75,8 +75,8 @@ func seedJobFilesRowIn(t *testing.T, db *sql.DB, jobID string, fileIndex int, co
 		c = 1
 	}
 	if _, err := db.Exec(
-		`INSERT INTO job_files (job_id, file_index, complete, filename, assembled_crc32, fetch_policy)
-		 VALUES (?, ?, ?, '', 0, ?)`,
+		`INSERT INTO job_files (job_id, file_index, complete, filename, fetch_policy)
+		 VALUES (?, ?, ?, '', ?)`,
 		jobID, fileIndex, c, int(fetch)); err != nil {
 		t.Fatalf("seed job_files row: %v", err)
 	}

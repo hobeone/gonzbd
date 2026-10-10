@@ -102,9 +102,9 @@ func TestDecodePayload_NonDMCA_NonYenc(t *testing.T) {
 // ArticleFact.HasCRC.
 //
 // The durability design carries, for every decoded article, a CRC32 over its
-// decoded bytes: it rides the barrier's drain report and is combined into the
-// crc32 of the durable run the article joins, which for a file that collapses
-// to one run IS the whole-file CRC par2 verification compares against. UU is
+// decoded bytes: it rides the assembler's write report into the article's
+// written row, and the rows of a file whose articles tile it combine into the
+// whole-file CRC par2 verification compares against. UU is
 // the one decode path that used to report no CRC at all — not because the
 // bytes are unverifiable, but because the *format* carries no checksum to
 // compare against. That is irrelevant here: the value describes our own bytes,

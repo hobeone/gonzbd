@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/job/jobtest"
 	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
@@ -122,9 +123,7 @@ func TestSetName_RefusesAJobThatHasStarted(t *testing.T) {
 		}
 	})
 	retried := add("retried", func(j *job.Job) { // done article, stamps cleared as ResetForRetry leaves them
-		if err := j.MarkArticleDone(0, 100, "s"); err != nil {
-			t.Fatalf("MarkArticleDone: %v", err)
-		}
+		jobtest.MarkArticleWritten(t, j, 0)
 	})
 	add("attempt", func(j *job.Job) {
 		if err := j.BeginAttempt(testClock()); err != nil {
@@ -182,9 +181,7 @@ func TestSetName_RefusesARetriedJobRestoredBeforeHydration(t *testing.T) {
 			t.Errorf("AttachContent: %v", err)
 		}
 		if id == "retried" {
-			if err := j.MarkArticleDone(0, 100, "s"); err != nil {
-				t.Errorf("MarkArticleDone: %v", err)
-			}
+			jobtest.MarkArticleWritten(t, j, 0)
 		}
 	}
 	if err := d.restore(context.Background()); err != nil {

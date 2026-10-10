@@ -65,106 +65,35 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- called, whether it finished, what it hashed to, and whether it is fetched.
 --
 -- Every column is something no other artifact holds. filename is discovered
--- from the yEnc header, assembled_crc32 computed over the assembled bytes,
--- complete decided by the assembler, fetch_policy chosen by the on-demand par2
--- policy. Anything the manifest already says does not belong here: the
--- manifest is loaded before these rows are read, so a copy would only ever be
--- the stale one.
+-- from the yEnc header, complete decided by the assembler, fetch_policy chosen
+-- by the on-demand par2 policy. Anything the manifest already says does not
+-- belong here: the manifest is loaded before these rows are read, so a copy
+-- would only ever be the stale one.
 --
 -- The fetch_policy CHECK is the only guard that value has -- neither
 -- SetFileFetchPolicy nor RestoreFetchPolicy range-checks it.
 --
 -- UNIQUE(job_id, file_index) is also the access path, which is why there is no
 -- separate index on job_id.
--- `git grep -nE 'INTO job_files|UPDATE job_files|FROM job_files' -- '*.go'
--- ':!*_test.go'` returns eight lines: the INSERT, UPDATE and SELECT in
--- internal/durability that read or write job_files directly, a fourth line
--- in the same package where SaveProgress's failed_articles INSERT guards
--- itself with a `FROM job_files` EXISTS check
--- (internal/durability/progress.go), three in written.go (ApplyRecord's EXISTS
--- guard on written_articles and its two UPDATEs), and a SELECT in
--- test/crash/harness.go, which that filter keeps because it is build-tagged
--- rather than named _test.go. The reclaim rule's DELETE is a further statement
--- the grep cannot see, because it builds it from a table name
--- (internal/durability/reclaim.go). Every one keys
--- on `job_id` or on `job_id AND file_index`, and both are prefixes of that
--- index -- so a second B-tree on job_id alone would be maintained on every
--- write to answer a lookup the first one already answers.
--- history_job_files reaches the same arrangement through
--- PRIMARY KEY (job_id, file_index).
+-- `git grep -nE '(INTO|UPDATE|FROM) job_file[s]' -- '*.go' ':!*_test.go'`
+-- returns 6 lines: the INSERT and the SELECT in internal/durability/progress.go,
+-- three in internal/durability/written.go (ApplyRecord's EXISTS guard on
+-- written_articles and its two UPDATEs), and a SELECT in test/crash/harness.go,
+-- which that filter keeps because it is build-tagged rather than named
+-- _test.go. The reclaim rule's DELETE is a further statement the grep cannot
+-- see, because it builds it from a table name (internal/durability/reclaim.go).
+-- Every one keys on `job_id` or on `job_id AND file_index`, and both are
+-- prefixes of that index -- so a second B-tree on job_id alone would be
+-- maintained on every write to answer a lookup the first one already answers.
 CREATE TABLE job_files (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id           TEXT NOT NULL,
     file_index       INTEGER NOT NULL,
     complete         INTEGER NOT NULL DEFAULT 0,
     filename         TEXT,
-    assembled_crc32  INTEGER DEFAULT 0,
     fetch_policy     INTEGER NOT NULL DEFAULT 0 CHECK (fetch_policy BETWEEN 0 AND 2),
     UNIQUE(job_id, file_index)
 );
--- +goose StatementEnd
-
--- +goose StatementBegin
--- One row per maximal run of articles that abut in both byte offset and
--- article index and were made durable together: fsynced, then recorded in the
--- same transaction as the barrier's commit.
---
--- A row is only ever written AFTER the fsync that makes it true, never before
--- or during one. That ordering is what the table is for, and it is what makes
--- last-write-wins safe here -- merging is read-modify-write, so a commit may
--- delete and replace rows it owns, but a later commit can only ever describe
--- MORE durable bytes than an earlier one, never different ones.
---
--- first_art_idx and last_art_idx name which articles the run accounts for; the
--- resume set is the complement. offset and length bound the completion
--- truncate (max(offset+length)) and the overlap check (sum of length against
--- stat size). crc32 is combined left-to-right over the run's articles via
--- crc32util.Combine, so a file that collapses to one row starting at offset 0
--- has its whole-file CRC in that row -- no walk, no prefix state.
---
--- Runs are built in one place: durability.Store's commit takes individual
--- articles rather than runs, and is unexported, so no package outside
--- internal/durability can call it; its one production caller is
--- Barrier.commit. See internal/durability/run.go.
---
--- Keyed by job_id with no foreign key, so rows are removed deliberately rather
--- than by cascade, by the reclaim rule in internal/durability/reclaim.go: a
--- job's rows go when nothing reaches it, EXCEPT that a FAILED history entry
--- keeps these, because a retry reuses the job ID over the same partial file and
--- the retained runs bound the completion truncate to the whole file rather than
--- to the handful of articles the retry re-fetched. RetryHistoryJob also drops
--- them when it declines to apply the retained progress.
-CREATE TABLE durable_runs (
-    job_id        TEXT    NOT NULL,
-    file_idx      INTEGER NOT NULL,
-    first_art_idx INTEGER NOT NULL,
-    last_art_idx  INTEGER NOT NULL,
-    offset        INTEGER NOT NULL,
-    length        INTEGER NOT NULL,
-    crc32         INTEGER NOT NULL,
-    PRIMARY KEY (job_id, file_idx, offset)
-) WITHOUT ROWID;
--- +goose StatementEnd
-
--- +goose StatementBegin
--- Articles that permanently failed. With durable_runs it gives a job's article
--- resolution: done means covered by a run, failed means a row here, neither
--- means outstanding.
---
--- One production writer -- `git grep -n 'INTO failed_articles' -- '*.go'
--- ':!*_test.go'` returns one line, the INSERT OR IGNORE inside
--- durability.Store.SaveProgress, which the checkpointer writes through. Deleted
--- by the reclaim rule alone (internal/durability/reclaim.go) once the job has
--- left the queue, failed or not; a retry also runs the rule before it seeds.
---
--- A table rather than a bitmap column on job_files because its reversal is
--- per-article and per-job, which a packed blob can only express by rewriting
--- the whole thing.
-CREATE TABLE failed_articles (
-    job_id  TEXT    NOT NULL,
-    art_idx INTEGER NOT NULL,
-    PRIMARY KEY (job_id, art_idx)
-) WITHOUT ROWID;
 -- +goose StatementEnd
 
 -- +goose StatementBegin
@@ -186,34 +115,6 @@ CREATE TABLE written_articles (
     crc32    INTEGER NOT NULL,
     PRIMARY KEY (job_id, file_idx, art_idx)
 ) WITHOUT ROWID;
--- +goose StatementEnd
-
--- +goose StatementBegin
--- Per-file download progress retained for a FAILED job, so a retry refetches
--- only the articles that did not make it.
---
--- Separate from job_files, which the reclaim rule takes when a FAILED job
--- leaves the queue: these rows are what a retry restores its file progress
--- from, and history.Repository.Delete removes them with their entry.
---
--- No foreign key here either: the owning row is history(nzo_id), and these are
--- removed explicitly when it is deleted. Only failed jobs get rows -- a job
--- that succeeded has nothing to retry.
---
--- A progress overlay, not a second manifest. article_count is the exception to
--- that and is here for one purpose: retainedMatchesManifest compares it
--- against the re-parsed NZB's file ranges, so an overlay that no longer lines
--- up with the NZB is refused rather than applied to the wrong articles.
-CREATE TABLE history_job_files (
-    job_id           TEXT NOT NULL,
-    file_index       INTEGER NOT NULL,
-    complete         INTEGER NOT NULL DEFAULT 0,
-    filename         TEXT,
-    assembled_crc32  INTEGER DEFAULT 0,
-    article_count    INTEGER NOT NULL DEFAULT 0,
-    fetch_policy     INTEGER NOT NULL DEFAULT 0 CHECK (fetch_policy BETWEEN 0 AND 2),
-    PRIMARY KEY (job_id, file_index)
-);
 -- +goose StatementEnd
 
 -- +goose StatementBegin
@@ -348,9 +249,7 @@ CREATE INDEX idx_dispatch_jobs_sort_key ON dispatch_jobs(sort_key);
 -- +goose Down
 -- +goose StatementBegin
 DROP TABLE dispatch_jobs;
-DROP TABLE history_job_files;
-DROP TABLE failed_articles;
-DROP TABLE durable_runs;
+DROP TABLE written_articles;
 DROP TABLE job_files;
 DROP TABLE history;
 -- +goose StatementEnd

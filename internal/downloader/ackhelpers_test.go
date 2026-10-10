@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job/jobtest"
 )
 
 // artIdxFor resolves a message ID to its global article index.
@@ -50,15 +51,8 @@ func ackDoneIdx(t *testing.T, disp *dispatch.Dispatcher, jobID string, artIdxs .
 	if !ok {
 		t.Fatalf("ackDoneIdx: job %s not in dispatcher", jobID)
 	}
-	m, err := j.Manifest()
-	if err != nil {
-		t.Fatalf("ackDoneIdx: job %s manifest: %v", jobID, err)
-	}
 	for _, a := range artIdxs {
-		i := int(a)
-		if err := j.MarkArticleDone(i, int64(m.ArticleBytes(i)), "test"); err != nil {
-			t.Fatalf("MarkArticleDone: %v", err)
-		}
+		jobtest.MarkArticleWritten(t, j, int(a))
 	}
 }
 

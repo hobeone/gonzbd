@@ -5,13 +5,13 @@ import (
 )
 
 // pruneVia runs the composition production uses: select the entries past
-// retention, then delete them through Repository.Delete, which is also what
-// releases their retained per-file progress. It returns the number removed.
+// retention, then delete them through Repository.Delete. It returns the number
+// removed.
 //
 // Repository.Prune used to do both halves itself with its own DELETE, which
-// is precisely why it orphaned history_job_files rows (#303). Driving the
-// tests through the same two calls the app makes keeps them honest about
-// what actually happens when retention fires.
+// is precisely why it orphaned the per-entry rows its caller releases (#303).
+// Driving the tests through the same two calls the app makes keeps them honest
+// about what actually happens when retention fires.
 func pruneVia(t *testing.T, repo *Repository, retainDays, retainFailedDays int) int {
 	t.Helper()
 

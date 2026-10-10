@@ -789,8 +789,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if _, ok := f.w.seenDone[0]; !ok {
 			t.Error("expected seenDone to contain artidx 0")
 		}
-		if got := f.w.writtenSoFar(); len(got) != 1 {
-			t.Fatalf("writtenSoFar = %v, want 1 entry — the bytes reached WriteAt", got)
+		if got := f.w.unsynced; len(got) != 1 {
+			t.Fatalf("unsynced = %v, want 1 entry — the bytes reached WriteAt", got)
 		}
 
 		// Duplicate success.
@@ -911,8 +911,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		// rather than seenDone, and must not be recorded as damaged (A1).
 		//
 		// This subtest previously required the opposite return value, on the
-		// reasoning that "the barrier's next Drain simply won't see it, which
-		// leaves it Outstanding for a re-fetch". Absence from a Drain does not
+		// reasoning that an article never noted as written "leaves it
+		// Outstanding for a re-fetch". Absence from the written set does not
 		// make an article Outstanding: its Emitted bit is still set from
 		// dispatch, ForEachUnfinishedArticle skips a set Emitted bit, and no
 		// path on this branch clears it. So the article was never re-fetched,
@@ -941,8 +941,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 				"processRequest increments partsWritten on this return, so the file " +
 				"reaches TotalParts and finalizes over bytes that never reached disk")
 		}
-		if got := f.w.writtenSoFar(); len(got) != 0 {
-			t.Errorf("writtenSoFar = %v after a failed write, want empty", got)
+		if got := f.w.unsynced; len(got) != 0 {
+			t.Errorf("unsynced = %v after a failed write, want empty", got)
 		}
 		if _, ok := f.w.seenFailed[0]; ok {
 			t.Error("artidx 0 was recorded as FAILED by a storage fault, which A1 forbids: " +
@@ -1288,7 +1288,7 @@ func TestFileWriter_DirectWriteErrorCountsPipelineError(t *testing.T) {
 
 	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0})
 
-	if err := w.Accept(articleID{msgID: "m1"}, 0, []byte("data"), 0); err == nil {
+	if err := w.Accept(articleID{msgID: "m1"}, 0, []byte("data")); err == nil {
 		t.Error("Accept on a closed file returned nil error, want a storage fault")
 	}
 	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
@@ -1526,13 +1526,8 @@ func TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports(t *testing.T) {
 // JobID and FileIdx are exported and are both overwritten from the caller's
 // ArticleRef, so a caller outside this package chooses them freely. While the
 // worker discriminated on the sentinel pair alone, a ref naming an empty job
-// and fileIdxSyncOp reached the barrier arm, which dereferences a *syncOp an
-// outside caller has no way to set — a nil dereference on the worker
-// goroutine, which has no recover(), so it takes the process with it.
-//
-// All three sentinels are exercised because they fail differently: the barrier
-// one panics, while the other two would silently cancel a job or close its
-// handles, naming the target through the article's own MessageID.
+// and a sentinel would silently cancel a job or close its handles, naming the
+// target through the article's own MessageID.
 //
 // The assertion is that a legitimate article sent AFTER the forgery still
 // completes its file, not merely that the forged one wrote nothing. The forged
@@ -1553,7 +1548,6 @@ func TestWriteArticle_CannotForgeAControlMessage(t *testing.T) {
 		name    string
 		fileIdx int
 	}{
-		{"barrier sentinel", fileIdxSyncOp},
 		{"cancel sentinel", fileIdxCancelJob},
 		{"close-handles sentinel", fileIdxCloseHandles},
 	} {

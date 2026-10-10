@@ -1,5 +1,9 @@
 # Download Durability & Storage Contract
 
+<!-- doccite:ok TestAckDurable_ExternallyConstructibleEmptyProofAcksNothing — removed with the durability barrier (plan Task 5.2); this barrier-era section is rewritten in Task 5.4 -->
+<!-- doccite:ok internal/assembler/synctarget.go — deleted with the sync-op surface (plan Task 5.2); this barrier-era section is rewritten in Task 5.4 -->
+<!-- doccite:ok TestStore_NoExportedMethodWritesRunContent — removed with the durability barrier (plan Task 5.2); this barrier-era section is rewritten in Task 5.4 -->
+<!-- doccite:ok internal/durability/resume.go — deleted with the resumer (plan Task 5.2); this barrier-era section is rewritten in Task 5.4 -->
 <!-- doccite:ok TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade — removed by the loose-record cut-over (plan Task 5.1); this barrier-era section is rewritten in Task 5.4 -->
 <!-- doccite:ok TestStopWorkers_TheShutdownBarrierCoversAJobTheYieldWouldEvict — removed by the loose-record cut-over (plan Task 5.1); this barrier-era section is rewritten in Task 5.4 -->
 <!-- doccite:ok TestFail_InTheCleanShutdownBarrier_DoesNotPersistAPartialJobForPostProcessing — removed by the loose-record cut-over (plan Task 5.1); this barrier-era section is rewritten in Task 5.4 -->

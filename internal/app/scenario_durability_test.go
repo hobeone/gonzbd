@@ -61,7 +61,7 @@ func startHeldApp(t *testing.T, name string, interval time.Duration) (*app.Appli
 // writtenArticles reports the article indexes written_articles holds for jobID.
 func writtenArticles(t *testing.T, repo *history.Repository, jobID string) []int32 {
 	t.Helper()
-	rows, err := durability.NewStore(repo.DB(), "history.db").WrittenRows(t.Context(), jobID)
+	rows, err := durability.NewStore(repo.DB()).WrittenRows(t.Context(), jobID)
 	if err != nil {
 		t.Fatalf("WrittenRows: %v", err)
 	}

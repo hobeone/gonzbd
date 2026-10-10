@@ -86,7 +86,7 @@ func TestDemotionToFetching_RestampsTheDownloadFinish(t *testing.T) {
 	cfg := testConfig(downloadDir, completeDir, adminDir)
 	cfg.With(func(c *config.Config) { c.Downloads.OnDemandPar2 = true })
 	j, hdr := buildTestJob(t, cfg, deferredVolumeNZB("restamp"), types.FetchOptions{NzbName: "restamp", PP: types.PPRepair})
-	persistCompleteJob(t, repo, adminDir, j, hdr, j.Checkpoint().State, 1)
+	persistCompleteJob(t, repo, adminDir, j, hdr, j.State(), 1)
 	writePayload(t, downloadDir, j.Name())
 
 	var mu sync.Mutex

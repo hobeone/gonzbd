@@ -27,7 +27,7 @@ type reclaimState struct {
 // keptForFailedFixture names the tables a FAILED history entry keeps. It is
 // stated by name rather than read from perJobTables' keptForFailedEntry, so a
 // flag flipped there fails here instead of moving both sides at once.
-var keptForFailedFixture = map[string]bool{"job_files": true, "durable_runs": true, "written_articles": true}
+var keptForFailedFixture = map[string]bool{"job_files": true, "written_articles": true}
 
 var reclaimStates = []reclaimState{
 	{id: "queued", queued: true, keepAll: true},
@@ -51,15 +51,9 @@ func seedReclaimStates(t *testing.T) *sql.DB {
 	t.Cleanup(func() { _ = hdb.Close() })
 	repo := history.NewRepository(hdb)
 	db := repo.DB()
-	st := NewStore(db, "history.db")
+	st := NewStore(db)
 	for _, s := range reclaimStates {
 		if err := st.Admit(ctx, s.id, []uint8{0}); err != nil {
-			t.Fatal(err)
-		}
-		if err := st.SaveProgress(ctx, []JobProgress{{JobID: s.id, FailedArticles: []int{3}}}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := st.commit(ctx, s.id, []DurableArticle{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1}}); err != nil {
 			t.Fatal(err)
 		}
 		if err := st.ApplyRecord(ctx, []RecordBatch{{JobID: s.id, Rows: []WrittenRow{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 10, CRC32: 1}}}}); err != nil {
@@ -104,7 +98,7 @@ func TestReclaim_AppliesTheRuleToEveryState(t *testing.T) {
 
 	t.Run("SweepOrphans", func(t *testing.T) {
 		db := seedReclaimStates(t)
-		if err := NewStore(db, "history.db").SweepOrphans(ctx); err != nil {
+		if err := NewStore(db).SweepOrphans(ctx); err != nil {
 			t.Fatal(err)
 		}
 		assertReclaimed(t, db, "SweepOrphans")
@@ -112,7 +106,7 @@ func TestReclaim_AppliesTheRuleToEveryState(t *testing.T) {
 
 	t.Run("Reclaim", func(t *testing.T) {
 		db := seedReclaimStates(t)
-		st := NewStore(db, "history.db")
+		st := NewStore(db)
 		for _, s := range reclaimStates {
 			if err := st.Reclaim(ctx, s.id); err != nil {
 				t.Fatal(err)
@@ -128,7 +122,7 @@ func TestReclaim_TouchesOnlyTheNamedJobs(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := seedReclaimStates(t)
-	if err := NewStore(db, "history.db").Reclaim(ctx, "neither"); err != nil {
+	if err := NewStore(db).Reclaim(ctx, "neither"); err != nil {
 		t.Fatal(err)
 	}
 	for _, table := range perJobTables {
@@ -148,7 +142,7 @@ func TestReclaim_IgnoresANullQueueID(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO dispatch_jobs (id, sort_key, name) VALUES (NULL, 0, 'null')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewStore(db, "history.db").SweepOrphans(ctx); err != nil {
+	if err := NewStore(db).SweepOrphans(ctx); err != nil {
 		t.Fatal(err)
 	}
 	assertReclaimed(t, db, "SweepOrphans with a NULL queue id")
@@ -169,8 +163,7 @@ func TestReclaim_ReportsAClosedDatabase(t *testing.T) {
 }
 
 // TestPerJobTables_CoversEveryJobKeyedTable fails when the schema gains a
-// table keyed by job_id that the reclaim rule does not cover. history_job_files
-// is the one exception: internal/history owns it and deletes it with its entry.
+// table keyed by job_id that the reclaim rule does not cover.
 func TestPerJobTables_CoversEveryJobKeyedTable(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
@@ -187,9 +180,7 @@ func TestPerJobTables_CoversEveryJobKeyedTable(t *testing.T) {
 		if err := rows.Scan(&name); err != nil {
 			t.Fatal(err)
 		}
-		if name != "history_job_files" {
-			inSchema = append(inSchema, name)
-		}
+		inSchema = append(inSchema, name)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
@@ -241,7 +232,7 @@ func TestReclaim_ChunksLargeIDLists(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := seedReclaimStates(t)
-	st := NewStore(db, "history.db")
+	st := NewStore(db)
 	ids := make([]string, 0, reclaimChunk*2+3)
 	for i := range reclaimChunk*2 + 2 {
 		ids = append(ids, fmt.Sprintf("bulk-%04d", i))
@@ -271,7 +262,7 @@ func TestInTx_RollsBackWhenTheRuleFails(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := seedReclaimStates(t)
-	st := NewStore(db, "history.db")
+	st := NewStore(db)
 	boom := errors.New("boom")
 	err := st.inTx(ctx, "test", func(tx *sql.Tx) error {
 		if err := applyRule(ctx, tx, nil); err != nil {
@@ -290,8 +281,7 @@ func TestInTx_RollsBackWhenTheRuleFails(t *testing.T) {
 
 // TestReclaim_ReportsAStatementThatCannotReadHistory pins the failure a
 // departure most plausibly meets mid-rule: the job_files statement reads
-// history, and when it cannot, Reclaim reports it and deletes nothing — not
-// even the failed_articles rows the statement before it removed.
+// history, and when it cannot, Reclaim reports it and deletes nothing.
 func TestReclaim_ReportsAStatementThatCannotReadHistory(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -299,11 +289,13 @@ func TestReclaim_ReportsAStatementThatCannotReadHistory(t *testing.T) {
 	if _, err := db.Exec(`DROP TABLE history`); err != nil {
 		t.Fatal(err)
 	}
-	err := NewStore(db, "history.db").Reclaim(ctx, "neither")
+	err := NewStore(db).Reclaim(ctx, "neither")
 	if err == nil || !strings.Contains(err.Error(), "reclaim job_files") {
 		t.Fatalf("Reclaim = %v, want an error naming the job_files statement", err)
 	}
-	if n := countRows(t, db, "failed_articles", "neither"); n != 1 {
-		t.Errorf("%d failed_articles rows after a failed reclaim, want 1", n)
+	for _, table := range perJobTables {
+		if n := countRows(t, db, table.name, "neither"); n != 1 {
+			t.Errorf("%d %s rows after a failed reclaim, want 1", n, table.name)
+		}
 	}
 }

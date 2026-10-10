@@ -88,7 +88,7 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		// they summarise, which is the S5 violation. The byte figures are
 		// forbidden too, by the sibling subtest below rather than this list,
 		// because they are excluded for a different reason — derivable from
-		// the manifest crossed with the durability record, rather than a
+		// the manifest crossed with the article record, rather than a
 		// second writer of a fact stored elsewhere.
 		forbidden := []string{"max_written", "write_cursor"}
 		rows, err := db.Query(`SELECT name FROM pragma_table_info('job_files')`)
@@ -116,9 +116,9 @@ func TestMigrations_SchemaShape(t *testing.T) {
 
 	// Both figures are derivable: a failed article's size is m.ArticleBytes(i),
 	// which the manifest carries whether or not the article was fetched, and
-	// failed_articles supplies the set of i. JobProgress.markFailed performs
-	// that sum and ApplyResolution recomputes both at hydration, where a
-	// manifest is always attached.
+	// JobProgress's failed bits supply the set of i. JobProgress.markFailed
+	// performs that sum and JobProgress.recompute rebuilds both at hydration,
+	// where a manifest is always attached.
 	//
 	// Asserted absent rather than merely left out, for the same reason the
 	// two-record tables below are: while a column exists, a change can
@@ -134,7 +134,7 @@ func TestMigrations_SchemaShape(t *testing.T) {
 			}
 			if n != 0 {
 				t.Errorf("job_files.%s is back — it is derivable from the manifest "+
-					"crossed with durable_runs and failed_articles, which is what "+
+					"crossed with the article record, which is what "+
 					"JobProgress.recompute does at hydration, so a stored copy is a "+
 					"second authority for a figure that already has one", col)
 			}
@@ -166,12 +166,11 @@ func TestMigrations_SchemaShape(t *testing.T) {
 	})
 
 	// What the table is actually for: results that exist nowhere else.
-	// filename is discovered from the yEnc header, assembled_crc32 computed
-	// over the assembled bytes, complete decided by the assembler, and
-	// fetch_policy chosen by the on-demand par2 policy. Losing any of them
-	// loses information no other artifact holds.
+	// filename is discovered from the yEnc header, complete decided by the
+	// assembler, and fetch_policy chosen by the on-demand par2 policy. Losing
+	// any of them loses information no other artifact holds.
 	t.Run("job_files keeps the results nothing else records", func(t *testing.T) {
-		for _, col := range []string{"filename", "complete", "assembled_crc32", "fetch_policy"} {
+		for _, col := range []string{"filename", "complete", "fetch_policy"} {
 			var n int
 			if err := db.QueryRow(
 				`SELECT COUNT(*) FROM pragma_table_info('job_files') WHERE name = ?`, col,
@@ -185,12 +184,14 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		}
 	})
 
-	// The two-record store 002 replaced and 003 dropped. Asserted absent
-	// rather than merely unused: while either table exists, a change can
-	// reintroduce a writer for it, and the whole point of the durable-runs
-	// design is that one download is described once.
-	t.Run("the two-record tables are gone", func(t *testing.T) {
-		for _, table := range []string{"article_facts", "file_extents"} {
+	// The record tables the loose-article record retired, and the two-record
+	// store before them. Asserted absent rather than merely unused: while any
+	// of them exists, a change can reintroduce a writer for it, and the whole
+	// point of written_articles is that one download is described once.
+	t.Run("the retired record tables are gone", func(t *testing.T) {
+		for _, table := range []string{
+			"article_facts", "file_extents", "durable_runs", "failed_articles", "history_job_files",
+		} {
 			var n int
 			if err := db.QueryRow(
 				`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table,
@@ -204,67 +205,48 @@ func TestMigrations_SchemaShape(t *testing.T) {
 		}
 	})
 
-	// And the queue's own third copy. Article resolution is DERIVED from
-	// durable_runs and failed_articles; a column here would be re-serialised
-	// wholesale on every job update and free to disagree with both.
-	t.Run("neither job_files table carries articles_done", func(t *testing.T) {
-		for _, table := range []string{"job_files", "history_job_files"} {
-			var n int
-			if err := db.QueryRow(
-				`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = 'articles_done'`, table,
-			).Scan(&n); err != nil {
-				t.Fatal(err)
-			}
-			if n != 0 {
-				t.Errorf("%s.articles_done is back — it is a third copy of what "+
-					"durable_runs and failed_articles already hold between them", table)
-			}
+	// The queue's own third copy. Article resolution is DERIVED from
+	// written_articles and the failed bits; a column here would be
+	// re-serialised wholesale on every job update and free to disagree with
+	// both.
+	t.Run("job_files does not carry articles_done", func(t *testing.T) {
+		var n int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('job_files') WHERE name = 'articles_done'`,
+		).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("job_files.articles_done is back — it is a third copy of what " +
+				"written_articles and the failed bits already hold between them")
 		}
 	})
 
-	t.Run("durable_runs is keyed per file and offset", func(t *testing.T) {
+	t.Run("written_articles is keyed per file and article", func(t *testing.T) {
 		// Asserted through pragma_table_info's pk ordinals rather than a
 		// "PRIMARY KEY" substring of the DDL. The substring is satisfied by a
 		// key on any columns at all, including the wrong ones, while the
 		// failure message names the columns — a check that cannot fail for the
 		// reason it reports.
 		//
-		// Offset is the third column and that ordering is load-bearing:
-		// Store.queryBracketing scans the key range by offset within
-		// a (job_id, file_idx) prefix, so a key that put offset anywhere else
-		// would turn every commit into a full-file read.
-		want := map[string]int{"job_id": 1, "file_idx": 2, "offset": 3}
-		got := primaryKeyOrdinals(t, db, "durable_runs")
+		// The key is what makes a redelivered article replace its earlier row.
+		want := map[string]int{"job_id": 1, "file_idx": 2, "art_idx": 3}
+		got := primaryKeyOrdinals(t, db, "written_articles")
 		if !maps.Equal(got, want) {
-			t.Errorf("durable_runs primary key = %v, want %v", got, want)
+			t.Errorf("written_articles primary key = %v, want %v", got, want)
 		}
 	})
 
-	t.Run("failed_articles is keyed for an idempotent record", func(t *testing.T) {
-		// RecordFailedArticles uses INSERT OR IGNORE, which is idempotent only
-		// against a key on exactly this pair.
-		want := map[string]int{"job_id": 1, "art_idx": 2}
-		got := primaryKeyOrdinals(t, db, "failed_articles")
-		if !maps.Equal(got, want) {
-			t.Errorf("failed_articles primary key = %v, want %v — INSERT OR IGNORE "+
-				"is only idempotent against a key on (job_id, art_idx)", got, want)
-		}
-	})
-
-	t.Run("durable_runs carries what the three consumers need", func(t *testing.T) {
-		// One column per question the record answers: the article range is the
-		// resume set's complement, offset+length give the truncate bound and
-		// the overlap check, and crc32 IS the whole-file CRC when a file
-		// collapses to one row.
-		for _, col := range []string{"first_art_idx", "last_art_idx", "offset", "length", "crc32"} {
+	t.Run("written_articles carries the range and CRC of what was written", func(t *testing.T) {
+		for _, col := range []string{"offset", "length", "crc32"} {
 			var n int
 			if err := db.QueryRow(
-				`SELECT COUNT(*) FROM pragma_table_info('durable_runs') WHERE name = ?`, col,
+				`SELECT COUNT(*) FROM pragma_table_info('written_articles') WHERE name = ?`, col,
 			).Scan(&n); err != nil {
 				t.Fatal(err)
 			}
 			if n != 1 {
-				t.Errorf("durable_runs missing column %q", col)
+				t.Errorf("written_articles missing column %q", col)
 			}
 		}
 	})
@@ -304,9 +286,9 @@ func TestMigrations_SchemaShape(t *testing.T) {
 // The subtests above pin the handful of properties this task's design turns
 // on. This pins everything else — every table and index's stored DDL, and
 // every foreign key — so that the constraints nothing else asserts cannot be
-// dropped silently: WITHOUT ROWID on durable_runs and failed_articles,
-// job_files's UNIQUE(job_id, file_index), the fetch_policy CHECK on both
-// job_files and history_job_files, and the AUTOINCREMENT on job_files.id.
+// dropped silently: WITHOUT ROWID on written_articles,
+// job_files's UNIQUE(job_id, file_index), the fetch_policy CHECK on
+// job_files, and the AUTOINCREMENT on job_files.id.
 // sqlite_sequence appears in the dump and is deliberately not filtered out:
 // SQLite creates it only for an AUTOINCREMENT column, so its presence is the
 // assertion that job_files.id still has one.

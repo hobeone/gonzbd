@@ -123,7 +123,7 @@ func (e *lrEnv) newApp(t *testing.T, configure ...func(*Application)) *lrApp {
 	for _, c := range configure {
 		c(a)
 	}
-	return &lrApp{Application: a, fd: fd, repo: repo, st: durability.NewStore(repo.DB(), repo.Path())}
+	return &lrApp{Application: a, fd: fd, repo: repo, st: durability.NewStore(repo.DB())}
 }
 
 // start starts a and registers a hard stop for the end of the test.

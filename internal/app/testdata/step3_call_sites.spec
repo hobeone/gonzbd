@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run ^(TestRetryHistoryJob_PrepareErrorAbortsTheRetry|TestReclaim_TakesOnlyWhatNothingReaches|TestReclaim_LogsAFailureAndStillUnlinksTheManifest|TestRemoveJob_ReclaimsAJobSomeoneElseRemoved|TestRemoveJob_ReclaimsAJobThatLeftTheQueueBeforeTheCall|TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability|TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed|TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError|TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule|TestRemoveHistoryJob_ReclaimsTheFailedEntrysRuns|TestMarkHistoryCompleted_ReclaimsTheFailedEntrysRuns|TestAddJob_FailedAddLeavesNoOrphanArtifacts|TestStart_SweepsWhatNoDepartureReclaimed|TestSweepOrphans_ReportsWhatItCouldNotSweep|TestSweepOrphans_PreservesManifestOfUnrestoredQueueRow|TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset|TestRetryHistoryJob_AbortsWhenStaleFailedMarksCannotBeCleared|TestRetryHistoryJob_RefusesWhileAnotherHolderHasTheID)$
+run ^(TestRetryHistoryJob_PrepareErrorAbortsTheRetry|TestReclaim_TakesOnlyWhatNothingReaches|TestReclaim_LogsAFailureAndStillUnlinksTheManifest|TestRemoveJob_ReclaimsAJobSomeoneElseRemoved|TestRemoveJob_ReclaimsAJobThatLeftTheQueueBeforeTheCall|TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability|TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed|TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError|TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule|TestRemoveHistoryJob_ReclaimsTheFailedEntrysRuns|TestMarkHistoryCompleted_ReclaimsTheFailedEntrysRuns|TestAddJob_FailedAddLeavesNoOrphanArtifacts|TestStart_SweepsWhatNoDepartureReclaimed|TestSweepOrphans_ReportsWhatItCouldNotSweep|TestSweepOrphans_PreservesManifestOfUnrestoredQueueRow|TestRetryHistoryJob_RefusesWhileAnotherHolderHasTheID|TestFinalizer_PersistError_CleanupExecutes|TestPersistAndCommit_DropsDurabilityForACompletedJob)$
 timeout 1m
 
 [RemoveJob reports instead of cleaning up after someone else removed the job]
@@ -87,22 +87,6 @@ file internal/app/app.go
 	}()
 --- end
 
-[the retry leaves stray failed marks]
-file internal/app/app.go
---- anchor
-		if err := app.durable.Reclaim(ctx, jobID); err != nil {
---- replace
-		if err := error(nil); err != nil {
---- end
-
-[the retry proceeds after a clear it could not make]
-file internal/app/app.go
---- anchor
-			return fmt.Errorf("app: retry %s: clear stale failed articles: %w", jobID, err)
---- replace
-			app.log.Warn("could not clear failed_articles for retry", "job", jobID, "err", err)
---- end
-
 [Start skips the sweep]
 file internal/app/app.go
 --- anchor
@@ -186,16 +170,6 @@ file internal/app/durability.go
 	for _, jobID := range ids {
 --- replace
 	for _, jobID := range ids[:0] {
---- end
-
-[a failed rule statement no longer rolls back the ones before it]
-file internal/durability/reclaim.go
---- anchor
-	if err := fn(tx); err != nil {
-		return err
-	}
---- replace
-	_ = fn(tx)
 --- end
 
 [the sweep swallows a failed row sweep]

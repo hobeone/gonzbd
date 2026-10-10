@@ -13,19 +13,14 @@ const (
 	TiB int64 = 1 << 40
 )
 
-// Checkpoint barrier bounds. A barrier drains a job's buffered writes, fsyncs
-// its open files, and only then commits what the process may claim about them,
-// so these two together are the stated bound on how much downloaded work a
-// power loss can cost (design invariant B1). The barrier fires on whichever
-// arrives first.
+// Checkpoint defaults. The barrier they once paced was deleted; they remain
+// only as defaults for the config fields of the same name, which have no
+// runtime reader.
 const (
-	// DefaultCheckpointInterval is the default time bound between barriers
-	// for one job. Thirty seconds of re-fetched articles is the worst case a
-	// power loss can cost on a slow link.
+	// DefaultCheckpointInterval is the default for downloads.checkpoint_interval.
 	DefaultCheckpointInterval = 30 * time.Second
 
-	// DefaultCheckpointBytes is the default volume bound between barriers
-	// for one job, for links fast enough that 30 seconds is a lot of data.
+	// DefaultCheckpointBytes is the default for downloads.checkpoint_bytes.
 	DefaultCheckpointBytes int64 = 64 * MiB
 )
 

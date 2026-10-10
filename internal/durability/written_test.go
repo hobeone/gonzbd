@@ -10,7 +10,7 @@ import (
 
 func newWrittenStore(t *testing.T) *Store {
 	t.Helper()
-	return NewStore(openTestDB(t), "history.db")
+	return NewStore(openTestDB(t))
 }
 
 func TestApplyRecord_RowsRequireAJobFilesRow(t *testing.T) {

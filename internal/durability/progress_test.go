@@ -14,7 +14,7 @@ func closedStore(t *testing.T) *Store {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return NewStore(db, "history.db")
+	return NewStore(db)
 }
 
 func countRows(t *testing.T, db *sql.DB, table, jobID string) int {
@@ -33,15 +33,15 @@ func TestStore_AdmitSeedsAndKeepsExistingRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
-	st := NewStore(db, "history.db")
+	st := NewStore(db)
 
 	if err := st.Admit(ctx, "job-a", []uint8{0, 2}); err != nil {
 		t.Fatalf("Admit: %v", err)
 	}
-	if err := st.SaveProgress(ctx, []JobProgress{{JobID: "job-a", Files: []FileRow{
-		{FileIndex: 0, Complete: true, FetchPolicy: 1, Filename: "a.bin", AssembledCRC32: 9},
+	if err := st.ApplyRecord(ctx, []RecordBatch{{JobID: "job-a", Files: []FileState{
+		{FileIdx: 0, Complete: true, FetchPolicy: 1, Filename: "a.bin"},
 	}}}); err != nil {
-		t.Fatalf("SaveProgress: %v", err)
+		t.Fatalf("ApplyRecord: %v", err)
 	}
 	if err := st.Admit(ctx, "job-a", []uint8{0, 2, 1}); err != nil {
 		t.Fatalf("re-Admit: %v", err)
@@ -52,51 +52,13 @@ func TestStore_AdmitSeedsAndKeepsExistingRows(t *testing.T) {
 		t.Fatalf("FileRows: %v", err)
 	}
 	want := []FileRow{
-		{FileIndex: 0, Complete: true, FetchPolicy: 1, Filename: "a.bin", AssembledCRC32: 9},
+		{FileIndex: 0, Complete: true, FetchPolicy: 1, Filename: "a.bin"},
 		{FileIndex: 1, FetchPolicy: 2},
 		{FileIndex: 2, FetchPolicy: 1},
 	}
 	if !slices.Equal(rows, want) {
 		t.Errorf("rows after a re-seed = %+v, want %+v — the seed overwrote retained progress, "+
 			"or failed to add the new file", rows, want)
-	}
-}
-
-// TestStore_SaveProgressUpdatesFilesAndAddsFailedMarks pins that a checkpoint
-// updates seeded rows and only ever ADDS failed marks: a second batch without
-// an article does not clear the mark the first one wrote.
-func TestStore_SaveProgressUpdatesFilesAndAddsFailedMarks(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	db := openTestDB(t)
-	st := NewStore(db, "history.db")
-	if err := st.Admit(ctx, "job-a", []uint8{0}); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, failed := range [][]int{{3, 5}, {5}} {
-		if err := st.SaveProgress(ctx, []JobProgress{{
-			JobID:          "job-a",
-			Files:          []FileRow{{FileIndex: 0, Filename: "x", FetchPolicy: 2}},
-			FailedArticles: failed,
-		}}); err != nil {
-			t.Fatalf("SaveProgress: %v", err)
-		}
-	}
-
-	got, err := st.FailedArticles(ctx, "job-a")
-	if err != nil {
-		t.Fatalf("FailedArticles: %v", err)
-	}
-	if !slices.Equal(got, []int32{3, 5}) {
-		t.Errorf("failed articles = %v, want [3 5]", got)
-	}
-	rows, _ := st.FileRows(ctx, "job-a")
-	if len(rows) != 1 || rows[0].Filename != "x" || rows[0].FetchPolicy != 2 {
-		t.Errorf("file row = %+v, want the checkpointed filename and policy", rows)
-	}
-	if err := st.SaveProgress(ctx, nil); err != nil {
-		t.Errorf("empty batch = %v, want nil", err)
 	}
 }
 
@@ -107,7 +69,7 @@ func TestStore_FileRowsSkipsARowItCannotScan(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := openTestDB(t)
-	st := NewStore(db, "history.db")
+	st := NewStore(db)
 	if err := st.Admit(ctx, "job-a", []uint8{0, 0}); err != nil {
 		t.Fatal(err)
 	}
@@ -125,28 +87,6 @@ func TestStore_FileRowsSkipsARowItCannotScan(t *testing.T) {
 	}
 }
 
-// TestStore_FailedArticlesStopsAtARowItCannotScan pins the other read's
-// partial contract: what was read before the bad row comes back, marked
-// incomplete.
-func TestStore_FailedArticlesStopsAtARowItCannotScan(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	db := openTestDB(t)
-	st := NewStore(db, "history.db")
-	// ORDER BY art_idx sorts the integer before the text value, so 1 is read first.
-	if _, err := db.Exec(`INSERT INTO failed_articles (job_id, art_idx) VALUES ('job-a', 1), ('job-a', 'x')`); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := st.FailedArticles(ctx, "job-a")
-	if !errors.Is(err, ErrIncomplete) {
-		t.Fatalf("err = %v, want it to wrap ErrIncomplete", err)
-	}
-	if !slices.Equal(got, []int32{1}) {
-		t.Errorf("got %v, want [1]: the index read before the bad row", got)
-	}
-}
-
 // TestStore_ProgressMethodsReportAClosedDatabase covers every method's first
 // failure path: none may swallow an error its caller has to act on.
 func TestStore_ProgressMethodsReportAClosedDatabase(t *testing.T) {
@@ -154,10 +94,8 @@ func TestStore_ProgressMethodsReportAClosedDatabase(t *testing.T) {
 	ctx := context.Background()
 	st := closedStore(t)
 	calls := map[string]func() error{
-		"Admit":          func() error { return st.Admit(ctx, "j", []uint8{0}) },
-		"SaveProgress":   func() error { return st.SaveProgress(ctx, []JobProgress{{JobID: "j"}}) },
-		"FileRows":       func() error { _, err := st.FileRows(ctx, "j"); return err },
-		"FailedArticles": func() error { _, err := st.FailedArticles(ctx, "j"); return err },
+		"Admit":    func() error { return st.Admit(ctx, "j", []uint8{0}) },
+		"FileRows": func() error { _, err := st.FileRows(ctx, "j"); return err },
 	}
 	for name, call := range calls {
 		err := call()

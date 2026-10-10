@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/job/jobtest"
 )
 
 // buildQCJob builds a single-file *job.Job whose file has a resolved
@@ -32,16 +32,7 @@ func buildQCJob(t *testing.T, id, filename string, bytes int64, crc uint32) *job
 		t.Fatalf("SetFileFilename: %v", err)
 	}
 	if crc != 0 {
-		if _, err := j.SetFileCRC32FromRuns(0, []durability.Run{{
-			FileIdx:     0,
-			FirstArtIdx: 0,
-			LastArtIdx:  0,
-			Offset:      0,
-			Length:      bytes,
-			CRC32:       crc,
-		}}); err != nil {
-			t.Fatalf("SetFileCRC32FromRuns: %v", err)
-		}
+		jobtest.SeedFileCRC(t, j, 0, crc)
 	}
 	return j
 }

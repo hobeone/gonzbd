@@ -324,8 +324,7 @@ func (app *Application) runStallRecheck(ctx context.Context) {
 // manifest and rows, and lasts until an operator resumes it.
 //
 // Its rows and manifest go through reclaim, which keeps a FAILED entry's
-// job_files, durable_runs and written_articles for a retry the way every
-// departure does.
+// job_files and written_articles for a retry the way every departure does.
 func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID string) {
 	// With no history database there is no history to find the job in. The
 	// check lives here rather than at the call site, so the method answers
@@ -504,8 +503,6 @@ func (app *Application) sweepOrphans(ctx context.Context) {
 	// job in the database, so reclaiming these ids again would delete nothing.
 	app.unlinkDepartedManifests(ids)
 }
-
-var _ durability.Stallable = (*Application)(nil)
 
 // durabilityStore is what Application calls on durability.Store: the
 // job_files seed, reads of the article record, and the reclaim rule the

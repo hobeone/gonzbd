@@ -55,7 +55,7 @@ type WriteRequest struct {
 	//
 	// They stay on this struct because control messages are WriteRequest
 	// values too, and those DO own them: a control message carries one of the
-	// negative FileIdx sentinels (see synctarget.go) with JobID empty and the
+	// negative FileIdx sentinels (see control.go) with JobID empty and the
 	// job named in MessageID, which is how dispatchRequest tells an operation
 	// from an article before any writer sees it.
 	JobID string
@@ -84,9 +84,8 @@ type WriteRequest struct {
 	Data []byte
 
 	// CRC32 is the decoded article's CRC32 — the same value the decoder
-	// validated against the yEnc trailer. It travels alongside Data through
-	// Accept and noteWritten, unread until a later task
-	// consumes it off Drain's report.
+	// validated against the yEnc trailer. It travels alongside Data to
+	// OnArticleWritten.
 	CRC32 uint32
 
 	// FatalErr is set if the article permanently failed to download.
@@ -116,7 +115,7 @@ type WriteRequest struct {
 	// in dispatchRequest's own comment block.
 	//
 	// Unexported for the reason the block above dispatchRequest gives for
-	// ackCh and syncOp: JobID and FileIdx are exported and overwritten from
+	// ackCh: JobID and FileIdx are exported and overwritten from
 	// the caller's ArticleRef, so a sentinel alone is an encoding rather than
 	// a proof. A caller outside this package cannot set this field, so it
 	// cannot direct the worker to unlink a file.
@@ -124,11 +123,6 @@ type WriteRequest struct {
 	// The zero value is KeepFiles, so a control message that failed to say
 	// what it wanted destroys nothing.
 	disposition FileDisposition
-
-	// syncOp, when non-nil, carries a barrier operation for the worker to
-	// perform on its own goroutine. Set only by jobSyncTarget; never used by
-	// ordinary write requests. See synctarget.go.
-	syncOp *syncOp
 }
 
 // FileInfo describes a target file. The assembler requests it from the caller's
@@ -213,11 +207,10 @@ type Options struct {
 	// write for an article fails.
 	//
 	// It exists because a fault raised inside FileWriter.Accept has no other
-	// way out. The barrier only sees what Drain, Sync, Stat or Truncate
-	// returns, and a rejected write leaves nothing behind for a later Drain to
-	// fail on. The article is not failed by this: a storage fault says nothing about the
-	// article's availability (A1), so the caller stalls the job and returns
-	// the article to Outstanding.
+	// way out: a rejected write leaves nothing behind for a later fsync to
+	// fail on. The article is not failed by this: a storage fault says nothing
+	// about the article's availability (A1), so the caller stalls the job and
+	// returns the article to Outstanding.
 	//
 	// It carries NO article index, and that separation is the fix for a whole
 	// class of stranding. The signature used to name one article, so a failure
@@ -231,12 +224,16 @@ type Options struct {
 	// Outstanding by clearing their Emitted bits.
 	//
 	// It is separate from OnWriteFault because the two are needed in different
-	// combinations, not because the split is tidier. A fault this package
-	// routes itself needs both; a Drain or Sync failure reaches the barrier,
-	// which routes the fault — but the article set never leaves this package,
-	// so it still needs this one. Folding them together meant either
-	// double-routing the fault or losing the articles, and losing the
-	// articles is what happened.
+	// combinations, not because the split is tidier. A write fault this
+	// package routes needs both; a failed close-time fsync is reported by
+	// drainAndClose's caller, which routes the fault — but the article set
+	// never leaves this package, so it still needs this one. Folding them
+	// together meant either double-routing the fault or losing the articles,
+	// and losing the articles is what happened.
+	//
+	// It takes a SET because one failure can roll back several articles: a
+	// failed close-time Sync rolls back every article written since the last
+	// successful one, and releasePoisoned delivers them in a single call.
 	//
 	// Emitted is NOT Outstanding: ForEachUnfinishedArticle skips a set Emitted
 	// bit, so an article reported by neither is stranded for the life of the
@@ -248,12 +245,10 @@ type Options struct {
 	//     (internal/job/progress.go), so a job reloaded from the store starts
 	//     with none set. Nothing has to run for this to hold.
 	//   - A downloader reload, which calls Job.ClearEmittedForReload(false)
-	//     per job and clears them in-process — unless the job is one whose
-	//     checkpoint could not protect it, in which case #417 withholds
-	//     exactly this clear.
+	//     per job and clears them in-process.
 	//
 	// So "stranded until the process stops" is the worst case, not the only
-	// one: a reload in between recovers it, and a withheld reload does not.
+	// one: a reload in between recovers it.
 	//
 	// No fault is passed, deliberately. This says nothing about why the write
 	// failed and must not be read as evidence about any article (A1).
@@ -295,10 +290,6 @@ type Options struct {
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.
 	MinFreeBytes int64
 
-	// BarrierOpTimeout bounds each barrier operation submitted to the worker.
-	// Zero selects the default (5 seconds).
-	BarrierOpTimeout time.Duration
-
 	// DiskCheckTimeout bounds each FreeBytes call in checkDiskSpace.
 	// Zero selects the default (5 seconds).
 	DiskCheckTimeout time.Duration
@@ -331,11 +322,6 @@ type fileKey struct {
 type openFile struct {
 	w    *FileWriter
 	info FileInfo
-	// rolledBack records that a completed file's tombstone was lifted by
-	// releaseSyncRollback after a failed Drain or Sync dropped parts() below
-	// TotalParts (#760), so opTruncate answers ErrFileIncomplete until the
-	// re-fetched articles reach TotalParts again in finalizeFile.
-	rolledBack bool
 }
 
 // Assembler receives decoded article data and writes it to target files using
@@ -376,10 +362,9 @@ type Assembler struct {
 	putBuffer func([]byte)
 
 	// mu guards the started/stopped state and the stopCh channel.
-	mu               sync.Mutex
-	started          bool
-	stopped          bool
-	barrierOpTimeout time.Duration
+	mu      sync.Mutex
+	started bool
+	stopped bool
 
 	// stopCh is closed by Stop to signal the worker to begin draining.
 	// We use a dedicated stop channel rather than closing reqs, because
@@ -435,30 +420,6 @@ func (a *Assembler) releaseBuffer(buf []byte) {
 		return
 	}
 	decoder.PutBuffer(buf)
-}
-
-// BarrierOpTimeout returns the configured barrier operation timeout, or the default.
-func (a *Assembler) BarrierOpTimeout() time.Duration {
-	if a != nil {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		if a.barrierOpTimeout > 0 {
-			return a.barrierOpTimeout
-		}
-		if a.opts.BarrierOpTimeout > 0 {
-			return a.opts.BarrierOpTimeout
-		}
-	}
-	return barrierOpTimeout
-}
-
-// SetBarrierOpTimeout updates the barrier operation timeout. Thread-safe.
-func (a *Assembler) SetBarrierOpTimeout(d time.Duration) {
-	if a != nil {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		a.barrierOpTimeout = d
-	}
 }
 
 // Start launches the worker goroutine. It returns an error if called more than
@@ -716,8 +677,8 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string, disposition Fil
 // ForgetJob.
 // Its error can be a *storagefault.Fault about a FILE, not only a submit or
 // timeout error about the call — a caller matching on it has to expect both.
-// That reports at least one of the job's files failing its close-time Drain,
-// Sync or Close: a file whose close-time Sync or Close failed has written bytes
+// That reports at least one of the job's files failing its close-time Sync
+// or Close: a file whose close-time Sync or Close failed has written bytes
 // that may never have reached the platter. The production caller, app's enqueuePostProc,
 // fails the post-processing run on any fault this returns, permanent or
 // retryable, and runs the stages after any other error — a timeout with no
@@ -818,7 +779,7 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 // close-handles arm tombstones every file of a job entering post-processing.
 // Nothing removes an entry: the set is keyed on (jobID, fileIdx) and lives as
 // long as the worker goroutine. That is right while a job is running — the
-// tombstone is what stops a late duplicate racing the barrier's finalize — and
+// tombstone is what stops a late duplicate racing the file's completion — and
 // wrong the moment the same job ID comes back.
 //
 // Without this, an in-process retry re-dispatches articles whose writes all
@@ -980,7 +941,7 @@ mainLoop:
 			// duplicating it: a closed reqs makes this receive permanently
 			// ready, so `default` would never be selected and this loop would
 			// spin at full CPU dispatching zero-value requests forever. A zero
-			// WriteRequest has a nil ackCh and a nil syncOp, so it matches no
+			// WriteRequest has a nil ackCh, so it matches no
 			// control arm in dispatchRequest and would reach processRequest
 			// with an empty job ID.
 			//
@@ -1015,29 +976,21 @@ mainLoop:
 	}
 
 	// Shared shutdown, reached from every exit above so no path can skip a
-	// step. Every open file is drained to disk and fsynced before its handle
-	// closes, so a clean shutdown leaves nothing buffered.
-	//
-	// There is no ack here any more, and no ordering to get right between the
-	// two: the articles this drain writes are reported by the next barrier,
-	// and if the process dies before one runs they stay Outstanding and are
-	// re-fetched. Losing that race used to mean marking articles complete
-	// whose bytes were still unsynced; now it costs a
-	// re-download, which is the direction the design trades toward.
+	// step. Every open file is fsynced before its handle closes, so a clean
+	// shutdown leaves nothing buffered.
 	a.drainAndCloseAll(open)
 }
 
 // dispatchRequest handles a single request from the channel. It processes the
-// control messages — each a non-nil ackCh (or syncOp) plus a FileIdx sentinel —
+// control messages — each a non-nil ackCh plus a FileIdx sentinel —
 // skips articles for jobs the cancel or close-handles arm tombstoned, and delegates normal write
 // requests to processRequest. Returns 1 if a normal request was processed (for
 // reqCount tracking), 0 otherwise.
 //
-// Four control messages, in the order the arms below test for them:
-// fileIdxSyncOp (a barrier operation), fileIdxCancelJob (close and remove a
-// job's files), fileIdxCloseHandles (close a job's handles, leaving the files),
-// and fileIdxForgetJob (drop a job's tombstones so a retry under the same ID
-// can write again).
+// The control messages, in the order the arms below test for them:
+// fileIdxCancelJob (close and remove a job's files), fileIdxCloseHandles (close
+// a job's handles, leaving the files), fileIdxForgetJob (drop a job's
+// tombstones so a retry under the same ID can write again) and fileIdxQuiesce.
 //
 // This method is called from both the main select loop and the shutdown
 // drain loop to ensure cancel messages are handled correctly in both paths.
@@ -1054,20 +1007,13 @@ func (a *Assembler) dispatchRequest(
 	// both exported and both overwritten from the caller's ArticleRef, so on
 	// the sentinel alone a caller outside this package could submit an article
 	// with an empty JobID and a negative FileIdx and have the worker act on it
-	// as a control message — for the barrier arm, dereferencing a syncOp the
-	// caller had no way to set. ackCh and syncOp are unexported, so no value
-	// built outside internal/assembler can have either, and the confusion is
+	// as a control message. ackCh is unexported, so no value built outside
+	// internal/assembler can have it set, and the confusion is
 	// unrepresentable rather than rejected.
 	//
 	// A zero WriteRequest is excluded by the same test, which matters for the
 	// shutdown drain loop below: it dispatches zero values when the channel is
 	// closed, and they must reach processRequest rather than any arm here.
-	if req.syncOp != nil {
-		// Control message: a barrier operation. Answered on this goroutine,
-		// which owns every file handle (X1).
-		a.handleSyncOp(req.syncOp, open, completed)
-		return 0
-	}
 	if req.ackCh != nil && req.FileIdx == fileIdxCancelJob {
 		// Control message: cancel a job. Close every open file for the job
 		// encoded in MessageID, and unlink them or leave them on disk
@@ -1182,8 +1128,8 @@ func (a *Assembler) dispatchRequest(
 	return 1
 }
 
-// drainAndClose drains a file's writer, fsyncs, closes it, and reports
-// whether any of the three failed. The close-handles arm and drainAndCloseAll
+// drainAndClose fsyncs a file and closes it, and reports whether either
+// failed. The close-handles arm and drainAndCloseAll
 // untrust the file on an error (noteFileUntrusted): a failed fsync means the
 // bytes its articles were reported written with cannot be trusted. A failed
 // fsync also returns the articles it poisoned to Outstanding through
@@ -1198,7 +1144,7 @@ func (a *Assembler) dispatchRequest(
 // Stall would pause a job whose files post-processing is using.
 //
 // A permanent fault is preferred over the first one when they differ, because
-// only the permanent one preserves R20. ENOSPC on the drain followed by EROFS
+// only the permanent one preserves R20. ENOSPC on the fsync followed by EROFS
 // on the close — an ext4 mounted errors=remount-ro, the Debian default — is
 // the case that makes the difference: reporting the ENOSPC alone describes the
 // condition as one that waiting can clear, when it cannot.
@@ -1220,11 +1166,9 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 		}
 	}
 
-	_, err := f.w.Drain()
-	note("drain file before close", err)
 	if syncErr := f.w.Sync(); syncErr != nil {
 		note("sync file before close", syncErr)
-		// A failed Sync rolled the file's unconfirmed articles back into
+		// A failed Sync rolled the file's unsynced articles back into
 		// w.poisoned (#760). Close below throws the writer away with that set,
 		// so this is the only chance to return them to Outstanding.
 		a.releasePoisoned(f)
@@ -1238,6 +1182,13 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 		return permanent
 	}
 	return first
+}
+
+// releasePoisoned returns the articles a failed Sync rolled back to
+// Outstanding. Their Emitted bits are still set from dispatch, so without this
+// they are neither Done, nor Failed, nor Outstanding.
+func (a *Assembler) releasePoisoned(f *openFile) {
+	a.noteArticlesUnwritten(f.w.key.jobID, f.w.key.fileIdx, f.w.takePoisoned())
 }
 
 // closeCancelledFile releases one open file of a cancelled job, and disposes
@@ -1320,9 +1271,8 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		f, err = a.openTargetFile(key, req, open)
 		if err != nil {
 			// Routed through OnWriteFault, because nothing else can reach
-			// it: the file is never inserted into open, so opFiles never
-			// lists it, Files() never includes it, and no barrier operation
-			// can return it. Dropped, a persistent EACCES or EROFS on the
+			// it: the file is never inserted into open, so no later fsync or
+			// close can return it. Dropped, a persistent EACCES or EROFS on the
 			// download directory left the job at N% with no reason attached
 			// and the article Emitted forever — the outcome openTargetFile's
 			// own doc says returning a fault prevents.
@@ -1567,8 +1517,7 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 		// A duplicate of an article already accepted. Its first copy is
 		// already written; this copy's
 		// bytes are redundant, and re-writing them would be a second
-		// WriteAt for the same range. Nothing is claimed here — the
-		// barrier absorbs duplicate reports itself (R12).
+		// WriteAt for the same range.
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
@@ -1618,12 +1567,8 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 // acceptArticle range-checks the write and hands it to the file's writer,
 // returning any storage fault the write raised.
 //
-// An earlier version of this doc claimed the fault was "logged and left to the
-// barrier, which is what surfaces it to the job via Stallable", and that the
-// article "simply does not appear in the next Drain, which leaves it
-// Outstanding". Neither half held. The barrier only sees a fault that Drain,
-// Sync, Stat or Truncate returns, and a write rejected here leaves nothing
-// behind for a later Drain to fail on, so no fault was ever routed. Nor is the article
+// A write rejected here leaves nothing behind for a later fsync to fail on, so
+// the fault has to be returned to be routed at all. Nor is the article
 // Outstanding: its Emitted bit is still set, and ForEachUnfinishedArticle
 // skips it, so it is never re-dispatched.
 //
@@ -1641,10 +1586,9 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 	}
 	// A byte range another article has already written is owned, and the
 	// ARRIVING article is the one refused rather than the incumbent. The
-	// incumbent may already be in w.written, or in w.reported after a Drain
-	// handed it to the barrier, and the barrier records a run over exactly its
-	// range with its CRC; overwriting those bytes leaves a record describing
-	// bytes the file no longer holds. An article whose write faulted claimed
+	// incumbent's row may already be buffered by the recorder
+	// (OnArticleWritten) over exactly its range with its CRC; overwriting those
+	// bytes leaves a record describing bytes the file no longer holds. An article whose write faulted claimed
 	// nothing (see FileWriter.owned), so it never makes a later arrival lose.
 	//
 	// Checked here rather than inside Accept so the refusal travels the same
@@ -1660,7 +1604,7 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 		}
 	}
 	n := int64(len(req.Data)) // Accept returns the buffer to the pool
-	if err := f.w.Accept(id, req.Offset, req.Data, req.CRC32); err != nil {
+	if err := f.w.Accept(id, req.Offset, req.Data); err != nil {
 		return err
 	}
 	if a.opts.OnArticleWritten != nil {

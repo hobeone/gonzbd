@@ -125,7 +125,6 @@ var closureLockMethods = map[string]bool{
 	"Pop":                      true,
 	"tryPop":                   true,
 	"withLock":                 true,
-	"write":                    true,
 	"Handoff":                  true,
 	"unlessAdmitted":           true,
 }

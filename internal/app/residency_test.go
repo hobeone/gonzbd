@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/job/jobtest"
 )
 
 func writeTestManifest(t *testing.T, path string, _ *job.Job) {
@@ -63,9 +64,7 @@ func TestAppResidency_HydrateThenEvict(t *testing.T) {
 	if err := r.Hydrate(context.Background(), "abc123"); err != nil {
 		t.Fatalf("second Hydrate: %v", err)
 	}
-	if err := j.MarkArticleDone(0, 100, "srv"); err != nil {
-		t.Fatalf("MarkArticleDone: %v", err)
-	}
+	jobtest.MarkArticleWritten(t, j, 0)
 	if !j.Progress().ArticleDone(0) {
 		t.Fatal("precondition: article 0 must be marked done")
 	}

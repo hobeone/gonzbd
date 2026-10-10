@@ -116,22 +116,21 @@ func newResumeFixture(t *testing.T) *resumeFixture {
 	}
 
 	store := dispatchstore.New(repo.DB(), nil)
-	cp := j.Checkpoint()
 	p := dispatch.Persisted{
 		ID:      j.ID(),
 		SortKey: 1,
 		Header:  hdr,
 		Policy:  j.Policy(),
-		State:   cp.State,
+		State:   j.State(),
 		Intent:  j.Intent(),
 	}
 	if err := store.Save(t.Context(), p); err != nil {
 		t.Fatalf("store.Save: %v", err)
 	}
 	_, err = repo.DB().ExecContext(t.Context(),
-		`INSERT INTO job_files (job_id, file_index, complete, assembled_crc32, fetch_policy, filename)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		j.ID(), 0, 0, 0, int(job.FetchAlways), resumeFileName,
+		`INSERT INTO job_files (job_id, file_index, complete, fetch_policy, filename)
+		VALUES (?, ?, ?, ?, ?)`,
+		j.ID(), 0, 0, int(job.FetchAlways), resumeFileName,
 	)
 	if err != nil {
 		t.Fatalf("insert job_files: %v", err)
@@ -178,7 +177,7 @@ func (f *resumeFixture) recordWritten(arts ...int) {
 			CRC32:   crc32.ChecksumIEEE(f.parts[i]),
 		})
 	}
-	app.SeedWritten(f.t, durability.NewStore(f.repo.DB(), "history.db"), f.jobID, rows)
+	app.SeedWritten(f.t, durability.NewStore(f.repo.DB()), f.jobID, rows)
 }
 
 // stall parks the named articles forever, holding their connections open.

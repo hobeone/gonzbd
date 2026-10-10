@@ -228,10 +228,10 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 		t.Fatalf("repo.Add existing: %v", err)
 	}
 
-	// Seed durability row (failed_articles) to verify it gets deleted during cleanup.
+	// Seed a durability row to verify it gets deleted during cleanup.
 	if _, err := repo.DB().ExecContext(t.Context(),
-		`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)`, qJob.ID()); err != nil {
-		t.Fatalf("seed failed_articles: %v", err)
+		`INSERT INTO job_files (job_id, file_index) VALUES (?, 0)`, qJob.ID()); err != nil {
+		t.Fatalf("seed job_files: %v", err)
 	}
 
 	entry := history.Entry{
@@ -256,13 +256,13 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 	}
 
 	// 3. Durability rows deletion still executed for completed job.
-	var failedCount int
+	var filesCount int
 	if err := repo.DB().QueryRowContext(t.Context(),
-		`SELECT COUNT(*) FROM failed_articles WHERE job_id = ?`, qJob.ID()).Scan(&failedCount); err != nil {
-		t.Fatalf("query failed_articles: %v", err)
+		`SELECT COUNT(*) FROM job_files WHERE job_id = ?`, qJob.ID()).Scan(&filesCount); err != nil {
+		t.Fatalf("query job_files: %v", err)
 	}
-	if failedCount != 0 {
-		t.Errorf("expected failed_articles to be deleted after persist error, got count %d", failedCount)
+	if filesCount != 0 {
+		t.Errorf("expected job_files to be deleted after persist error, got count %d", filesCount)
 	}
 }
 

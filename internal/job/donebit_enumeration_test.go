@@ -13,12 +13,7 @@ import (
 
 // doneMarkers is every function in this package that reaches markDone.
 var doneMarkers = []string{
-	"AckDurable",
-	"ApplyResolution",
-	"MarkArticleDone",
 	"MarkArticleWritten",
-	"ReplaceFromRuns",
-	"SeedFromRuns",
 	"installRows",
 }
 

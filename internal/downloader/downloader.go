@@ -97,8 +97,9 @@ type ArticleResult struct {
 	Offset int64
 
 	// CRC is the CRC32 of the decoded article data. It travels with the
-	// article to the assembler, comes back in the drain, and is folded into
-	// the durable run the barrier records — so every successful decode carries
+	// article to the assembler, which reports it with the write
+	// (Options.OnArticleWritten) for the recorder's row, and is combined into
+	// the whole-file CRC — so every successful decode carries
 	// one: the yEnc path takes the decoder's own checksum over the decoded
 	// output, and the UU path computes one in decodePayload because the format
 	// supplies none.

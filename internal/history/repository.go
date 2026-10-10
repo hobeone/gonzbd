@@ -155,18 +155,6 @@ VALUES
 	return nil
 }
 
-// FileProgress is one file's retained download progress, as history_job_files
-// stores it. Nothing writes those rows any more; RetainedFiles still reads
-// them.
-type FileProgress struct {
-	FileIndex      int
-	Complete       bool
-	FetchPolicy    uint8
-	Filename       string
-	AssembledCRC32 uint32
-	ArticleCount   int
-}
-
 // Add inserts e. It returns an error (wrapping a SQLite unique-constraint
 // violation) if an entry with the same nzo_id already exists.
 //
@@ -186,36 +174,6 @@ func (r *Repository) Add(ctx context.Context, e Entry) error {
 		return fmt.Errorf("history: add %q: commit: %w", e.NzoID, err)
 	}
 	return nil
-}
-
-// RetainedFiles returns the history_job_files rows filed under jobID,
-// ordered by file index. An entry with none yields no rows and no error.
-func (r *Repository) RetainedFiles(ctx context.Context, jobID string) ([]FileProgress, error) {
-	const q = `
-SELECT file_index, complete, fetch_policy,
-       COALESCE(filename, ''), COALESCE(assembled_crc32, 0), article_count
-FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
-	rows, err := r.db.QueryContext(ctx, q, jobID)
-	if err != nil {
-		return nil, fmt.Errorf("history: retained files %q: %w", jobID, err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []FileProgress
-	for rows.Next() {
-		var f FileProgress
-		var complete int
-		if err := rows.Scan(&f.FileIndex, &complete, &f.FetchPolicy,
-			&f.Filename, &f.AssembledCRC32, &f.ArticleCount); err != nil {
-			return nil, fmt.Errorf("history: scan retained file %q: %w", jobID, err)
-		}
-		f.Complete = complete != 0
-		out = append(out, f)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("history: retained files %q: %w", jobID, err)
-	}
-	return out, nil
 }
 
 // Get fetches the entry with the given nzo_id. It returns ErrNotFound (via
@@ -406,17 +364,6 @@ func (r *Repository) Delete(ctx context.Context, nzoIDs ...string) (int, error) 
 			args[j] = id
 		}
 
-		// Retained per-file progress is owned by the history entry but has
-		// no foreign key to cascade from, because the jobs row it used to
-		// hang off is deleted at MoveToHistory. Removing it here rather
-		// than at Delete's call sites is what keeps it from accumulating:
-		// every deletion path, present and future, gets the cleanup without
-		// having to remember it, in the same transaction as the row itself.
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM history_job_files WHERE job_id IN ("+placeholders+")", args...); err != nil { //nolint:gosec // placeholders is only "?,?,?" — no user data
-			return 0, fmt.Errorf("history: delete retained job files: %w", err)
-		}
-
 		res, err := tx.ExecContext(ctx,
 			"DELETE FROM history WHERE nzo_id IN ("+placeholders+")", args...) //nolint:gosec // placeholders is only "?,?,?" — no user data
 		if err != nil {
@@ -462,12 +409,11 @@ func (r *Repository) MarkCompleted(ctx context.Context, nzoID string) error {
 // of 0 for either means "keep forever" (spec §11.4), and 0 for both returns
 // nothing without touching the database.
 //
-// This deliberately selects rather than deletes. An entry owns two things
-// besides its row — its history_job_files progress and its admin/nzb backup —
-// and only the caller can release the second, because it is a file and this
-// package has no business in the admin directory. Handing the entries back
-// lets one deletion path release all three, instead of a pruner that quietly
-// orphans two of them (#303).
+// This deliberately selects rather than deletes. An entry owns something
+// besides its row — its admin/nzb backup — and only the caller can release it,
+// because it is a file and this package has no business in the admin
+// directory. Handing the entries back lets one deletion path release both,
+// instead of a pruner that quietly orphans the backup (#303).
 func (r *Repository) ExpiredEntries(ctx context.Context, retainDays, retainFailedDays int) ([]Entry, error) {
 	if retainDays <= 0 && retainFailedDays <= 0 {
 		return nil, nil

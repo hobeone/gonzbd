@@ -17,7 +17,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/dispatch/store"
-	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -217,31 +216,19 @@ func TestDropJobAlreadyInHistory_DoesNothingWithoutAHistoryDatabase(t *testing.T
 
 // ---------- error paths ----------
 
-// failingRunStore fails every read and delete of durable_runs, for the paths
-// that must degrade to a re-fetch rather than to a wrong answer. The other two
-// tables' operations reach the embedded real store, so a test can still watch
-// those rows go while the run record refuses.
-type failingRunStore struct {
+// failingRuleStore fails the reclaim rule, for the paths that must log the
+// failure and carry on. Every other operation reaches the embedded real store.
+type failingRuleStore struct {
 	durabilityStore
 	err error
 }
 
-func (f failingRunStore) ForFile(context.Context, string, int32) ([]durability.Run, error) {
-	return nil, f.err
-}
+func (f failingRuleStore) Reclaim(context.Context, string, ...string) error { return f.err }
 
-func (f failingRunStore) ForJob(context.Context, string) ([]durability.Run, error) {
-	return nil, f.err
-}
-
-func (f failingRunStore) DiscardRuns(context.Context, string) error { return f.err }
-
-func (f failingRunStore) Reclaim(context.Context, string, ...string) error { return f.err }
-
-func (f failingRunStore) SweepOrphans(context.Context) error { return f.err }
+func (f failingRuleStore) SweepOrphans(context.Context) error { return f.err }
 
 // TestStall_ReportsRatherThanPanicsOnAJobThatHasLeft pins the case a storage
-// fault most easily hits: the barrier finds the fault, and by the time the
+// fault most easily hits: the assembler finds the fault, and by the time the
 // stall reaches the queue the job has been removed. Both queue writes fail and
 // neither may take the process down or abort the other.
 func TestStall_ReportsRatherThanPanicsOnAJobThatHasLeft(t *testing.T) {
@@ -296,10 +283,8 @@ func TestEmit_ReachesTheRegisteredEmitter(t *testing.T) {
 // particular file, and never lets it go.
 //
 // It reproduces a wedged mount without needing one. The worker owns every file
-// handle, so anything that blocks it blocks every barrier operation for every
-// job — which is exactly the condition barrierOpTimeout exists for, and the
-// reason SyncTarget.Files can return "no files" for a reason that is not "no
-// files".
+// handle, so anything that blocks it blocks every control message for every
+// job — which is the condition closeHandlesTimeout exists for.
 type wedgeOnFile struct {
 	fileIdx int
 	entered chan struct{}
@@ -336,10 +321,10 @@ func newWedgedApp(t *testing.T) (*Application, *job.Job, func()) {
 
 // newArmableWedgedApp is newWedgedApp with the wedge deferred: file 0 is open
 // and the worker is healthy until arm is called, which parks the worker inside
-// file 1's open and cuts the assembler's barrier-op bound to 20ms.
+// file 1's open.
 //
-// arm may be called from inside a barrier callback, which is what lets a test
-// wedge the worker AFTER a finalize's own operations have all been answered.
+// arm may be called from inside a callback, which is what lets a test wedge
+// the worker AFTER the operations before it have all been answered.
 func newArmableWedgedApp(t *testing.T) (application *Application, j *job.Job, arm, release func()) {
 	t.Helper()
 	application, j = newDurabilityTestApp(t, 2, 1)
@@ -376,7 +361,6 @@ func newArmableWedgedApp(t *testing.T) (application *Application, j *job.Job, ar
 	writeFixtureArticle(t, application, j.ID(), 0, 0)
 
 	arm = func() {
-		application.assembler.SetBarrierOpTimeout(20 * time.Millisecond)
 		// File 1's open parks the worker, so no control message can be answered.
 		if err := application.pipeline.registerFile(j, 1); err != nil {
 			t.Errorf("registerFile 1: %v", err)
@@ -450,7 +434,7 @@ func TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability(t 
 		t.Fatalf("seed job files: %v", err)
 	}
 	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
-		t.Fatalf("fixture recorded %d runs and %d failed rows, want 1 and 1; "+
+		t.Fatalf("fixture recorded %d runs and %d job_files rows, want 1 and 1; "+
 			"the test would pass vacuously", nr, nf)
 	}
 	if n := jobFilesCount(t, application, j.ID()); n == 0 {
@@ -466,7 +450,7 @@ func TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability(t 
 	}
 
 	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 0 || nf != 0 {
-		t.Errorf("%d durable runs and %d failed-article rows survive a reconcile that was "+
+		t.Errorf("%d durable runs and %d job_files rows survive a reconcile that was "+
 			"cancelled after the job left the dispatcher", nr, nf)
 	}
 	if n := jobFilesCount(t, application, j.ID()); n != 0 {
@@ -527,7 +511,7 @@ func TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails(t *
 			"the next startup has nothing to reconcile it against", err)
 	}
 	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
-		t.Errorf("%d durable runs and %d failed-article rows left after a failed Remove, "+
+		t.Errorf("%d durable runs and %d job_files rows left after a failed Remove, "+
 			"want 1 and 1 — the row outlived its own state", nr, nf)
 	}
 	if n := jobFilesCount(t, application, j.ID()); n != 1 {
@@ -623,9 +607,9 @@ func TestHoldUnreconciledJob_LeavesACancelledJobAlone(t *testing.T) {
 // crashed between MoveToHistory and the queue removal that follows it.
 //
 // Both directions fail differently. Keeping a completed job's rows leaks one
-// set per crash of this kind. Dropping a FAILED job's runs is worse: its retry
-// reuses the job ID over the same partial file, and the runs are what bound
-// FinalizeFile's truncate to the whole file (#422).
+// set per crash of this kind. Dropping a FAILED job's rows is worse: its retry
+// reuses the job ID over the same partial file, and the written_articles rows
+// are what let it verify what is already on disk instead of fetching it all.
 func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -640,9 +624,9 @@ func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
 			application, job := newDurabilityTestApp(t, 1, 2)
 
 			seedDurability(t, application, job.ID())
-			if nr, nf := durabilityRowCounts(t, application, job.ID()); nr != 1 || nf != 1 || jobFilesCount(t, application, job.ID()) != 1 {
-				t.Fatalf("fixture recorded %d runs, %d failed rows and %d job_files rows, want 1 "+
-					"of each; the test would pass vacuously", nr, nf, jobFilesCount(t, application, job.ID()))
+			if nr, nf := durabilityRowCounts(t, application, job.ID()); nr != 1 || nf != 1 {
+				t.Fatalf("fixture recorded %d written rows and %d job_files rows, want 1 "+
+					"of each; the test would pass vacuously", nr, nf)
 			}
 
 			if err := application.historyRepo.Add(t.Context(), history.Entry{
@@ -656,13 +640,9 @@ func TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule(t *testing.T) {
 				t.Fatal("the job is still in the dispatcher although it is in history")
 			}
 
-			nr, nf := durabilityRowCounts(t, application, job.ID())
+			nr, _ := durabilityRowCounts(t, application, job.ID())
 			if nr != tc.wantRuns {
 				t.Errorf("%d written rows after reconciling a %s entry, want %d", nr, tc.status, tc.wantRuns)
-			}
-			if nf != 0 {
-				t.Errorf("%d failed-article rows survive reconciliation; nothing reads them "+
-					"once the job has left the queue", nf)
 			}
 			if n := jobFilesCount(t, application, job.ID()); n != tc.wantRuns {
 				t.Errorf("%d job_files rows after reconciling a %s entry, want %d", n, tc.status, tc.wantRuns)

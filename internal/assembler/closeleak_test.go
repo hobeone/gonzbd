@@ -30,7 +30,7 @@ func cancelWithoutRouting(t *testing.T, name string, disposition FileDisposition
 	}
 
 	f := newHelperFile(t, t.TempDir(), name, 0)
-	if err := f.w.Accept(articleID{msgID: "a5", artIdx: 5}, 0, []byte("AAAA"), 0); err != nil {
+	if err := f.w.Accept(articleID{msgID: "a5", artIdx: 5}, 0, []byte("AAAA")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
 	key = f.w.key

@@ -1,5 +1,5 @@
 pkg ./internal/assembler/
-run Test(Sync_ActuallyIssuesTheFsyncAndKeepsTheReport|DrainReport_FailedSyncPoisonsReportAndRollsBackArticles|FileWriter_PoisonSyncAndRollbackSyncedArticle|DrainAndClose_FailedSyncRoutesRolledBackArticles|OptionsSyncFile_ReachesTheCompletionFsync)$
+run Test(Sync_ActuallyIssuesTheFsync|Sync_FailedSyncRollsBackEveryUnsyncedArticle|Sync_SuccessCoversTheArticlesWrittenBeforeIt|FileWriter_PoisonSyncAndRollbackSyncedArticle|DrainAndClose_FailedSyncRoutesRolledBackArticles|OptionsSyncFile_ReachesTheCompletionFsync)$
 
 [Sync omits poisonSync on fsync error]
 file internal/assembler/filewriter.go
@@ -14,44 +14,35 @@ file internal/assembler/filewriter.go
 	}
 --- end
 
-[poisonSync omits rolling back w.reported]
+[Sync success leaves the covered articles in unsynced]
 file internal/assembler/filewriter.go
 --- anchor
-	for _, a := range w.reported {
-		w.rollbackSyncedArticle(a.ArtIdx)
+	// Covered by this fsync: a later failure says nothing about these.
+	w.unsynced = nil
+--- replace
+	// Covered by this fsync: a later failure says nothing about these.
+--- end
+
+[poisonSync omits rolling back w.unsynced]
+file internal/assembler/filewriter.go
+--- anchor
+	for _, a := range w.unsynced {
+		w.rollbackSyncedArticle(a)
 	}
 --- replace
-	for range w.reported {
+	for range w.unsynced {
 	}
 --- end
 
-[poisonSync omits rolling back w.written]
+[poisonSync retains w.unsynced instead of clearing it]
 file internal/assembler/filewriter.go
 --- anchor
-	for _, a := range w.written {
-		w.rollbackSyncedArticle(a.ArtIdx)
+		w.rollbackSyncedArticle(a)
 	}
+	w.unsynced = nil
 --- replace
-	for range w.written {
+		w.rollbackSyncedArticle(a)
 	}
---- end
-
-[poisonSync retains w.reported instead of clearing it]
-file internal/assembler/filewriter.go
---- anchor
-	w.reported = nil
-	w.written = nil
---- replace
-	w.written = nil
---- end
-
-[poisonSync retains w.written instead of clearing it]
-file internal/assembler/filewriter.go
---- anchor
-	w.reported = nil
-	w.written = nil
---- replace
-	w.reported = nil
 --- end
 
 [rollbackSyncedArticle omits duplicate check on w.poisoned]
@@ -75,51 +66,6 @@ file internal/assembler/filewriter.go
 	w.fail(articleID{artIdx: artIdx})
 --- end
 
-[opClose omits releaseSyncRollback before delete]
-file internal/assembler/synctarget.go
---- anchor
-			r.err = a.drainAndClose(f)
-			a.releaseSyncRollback(f, key, completed)
-			delete(open, key)
---- replace
-			r.err = a.drainAndClose(f)
-			delete(open, key)
---- end
-
-[releaseSyncRollback fails to lift completed tombstone when parts rolled back below TotalParts]
-file internal/assembler/synctarget.go
---- anchor
-	if f.info.TotalParts > 0 && f.w.parts() < f.info.TotalParts {
-		if _, wasComplete := completed[key]; wasComplete {
-			delete(completed, key)
-			f.rolledBack = true
-		}
-	}
---- replace
-	if false && f.info.TotalParts > 0 && f.w.parts() < f.info.TotalParts {
-		if _, wasComplete := completed[key]; wasComplete {
-			delete(completed, key)
-			f.rolledBack = true
-		}
-	}
---- end
-
-[releaseSyncRollback deletes completed tombstone even when parts still meet TotalParts]
-file internal/assembler/synctarget.go
---- anchor
-	if f.info.TotalParts > 0 && f.w.parts() < f.info.TotalParts {
---- replace
-	if f.info.TotalParts > 0 && f.w.parts() <= f.info.TotalParts {
---- end
-
-[releaseSyncRollback deletes completed tombstone when TotalParts is zero]
-file internal/assembler/synctarget.go
---- anchor
-	if f.info.TotalParts > 0 && f.w.parts() < f.info.TotalParts {
---- replace
-	if f.info.TotalParts >= 0 && (f.info.TotalParts == 0 || f.w.parts() < f.info.TotalParts) {
---- end
-
 [openTargetFile omits wiring Options.SyncFile]
 file internal/assembler/assembler.go
 --- anchor
@@ -137,13 +83,4 @@ file internal/assembler/assembler.go
 --- replace
 	}
 	// A failing Close is a storage condition too, and on network-backed mounts
---- end
-
-[releaseSyncRollback omits routing the poisoned set]
-file internal/assembler/synctarget.go
---- anchor
-	a.releasePoisoned(f)
-	if f.info.TotalParts > 0 && f.w.parts() < f.info.TotalParts {
---- replace
-	if f.info.TotalParts > 0 && f.w.parts() < f.info.TotalParts {
 --- end

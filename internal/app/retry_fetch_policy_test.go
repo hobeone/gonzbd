@@ -72,12 +72,12 @@ func seedCompletedFile(t *testing.T, db *sql.DB, downloadDir, jobName, jobID str
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(
-		`INSERT INTO job_files (job_id, file_index, complete, filename, assembled_crc32, fetch_policy)
-		 VALUES (?, ?, 1, ?, 0, ?)`,
+		`INSERT INTO job_files (job_id, file_index, complete, filename, fetch_policy)
+		 VALUES (?, ?, 1, ?, ?)`,
 		jobID, fileIdx, filename, int(job.FetchAlways)); err != nil {
 		t.Fatalf("seed job_files row: %v", err)
 	}
-	app.SeedWritten(t, durability.NewStore(db, "history.db"), jobID, rows)
+	app.SeedWritten(t, durability.NewStore(db), jobID, rows)
 }
 
 // recoveryFileIndex returns the one manifest index FileIsPar2Recovery
@@ -109,8 +109,8 @@ func seedJobFilesRow(t *testing.T, db *sql.DB, jobID string, fileIndex int, comp
 		c = 1
 	}
 	if _, err := db.Exec(
-		`INSERT INTO job_files (job_id, file_index, complete, filename, assembled_crc32, fetch_policy)
-		 VALUES (?, ?, ?, '', 0, ?)`,
+		`INSERT INTO job_files (job_id, file_index, complete, filename, fetch_policy)
+		 VALUES (?, ?, ?, '', ?)`,
 		jobID, fileIndex, c, int(fetch)); err != nil {
 		t.Fatalf("seed job_files row: %v", err)
 	}

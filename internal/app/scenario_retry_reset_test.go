@@ -15,6 +15,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/job/jobtest"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/types"
 )
@@ -63,7 +64,7 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	}
 	_ = seeded.BeginAttempt(started)
 	_ = seeded.RecordDownload("mock", 123456)
-	_ = seeded.MarkArticleDone(0, 100, "mock")
+	jobtest.MarkArticleWritten(t, seeded, 0)
 	// Article 0's bytes on disk and its row, which the retry reads back.
 	part := bytes.Repeat([]byte{'R'}, 100)
 	jobDir := filepath.Join(h.cfg.GetGeneral().DownloadDir, "retry-reset")
@@ -78,7 +79,7 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 		jobID); err != nil {
 		t.Fatalf("seed job_files: %v", err)
 	}
-	app.SeedWritten(t, durability.NewStore(h.repo.DB(), "history.db"), jobID,
+	app.SeedWritten(t, durability.NewStore(h.repo.DB()), jobID,
 		[]durability.WrittenRow{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(part)}})
 	_ = seeded.MarkArticleFailed(1)
 	_, _ = seeded.Finish(job.OutcomeFailed, finished)

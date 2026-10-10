@@ -94,7 +94,7 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 		if !p.ArticleDone(0) || p.ArticleDone(1) || !p.ArticleDone(2) {
 			return false
 		}
-		runs, err := durability.NewStore(repo.DB(), "history.db").WrittenRows(t.Context(), j.ID())
+		runs, err := durability.NewStore(repo.DB()).WrittenRows(t.Context(), j.ID())
 		if err != nil {
 			return false
 		}
@@ -123,7 +123,7 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 			p := jobInst.Progress()
 			p0, p1, p2 = p.ArticleDone(0), p.ArticleDone(1), p.ArticleDone(2)
 		}
-		runs, _ := durability.NewStore(repo.DB(), "history.db").WrittenRows(t.Context(), j.ID())
+		runs, _ := durability.NewStore(repo.DB()).WrittenRows(t.Context(), j.ID())
 		t.Fatalf("timed out waiting for checkpoint on disk to capture mid-download state: stalls=%d p0=%v p1=%v p2=%v f0=%d f1=%d f2=%d runs=%+v",
 			server.StallCount(), p0, p1, p2,
 			server.FetchCount(msgIDs[0]), server.FetchCount(msgIDs[1]), server.FetchCount(msgIDs[2]), runs)
@@ -135,7 +135,7 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 	cancel1()
 
 	// Verify on disk: articles 0 and 2 are recorded written, article 1 is not.
-	runs, err := durability.NewStore(repo.DB(), "history.db").WrittenRows(t.Context(), j.ID())
+	runs, err := durability.NewStore(repo.DB()).WrittenRows(t.Context(), j.ID())
 	if err != nil {
 		t.Fatalf("load written rows from disk: %v", err)
 	}

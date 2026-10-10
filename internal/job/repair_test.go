@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/job/jobtest"
 )
 
 // TestRepairState_FailedBytesComeFromArticleSizes pins that a no-par2 job whose
@@ -28,9 +29,7 @@ func TestRepairState_FailedBytesComeFromArticleSizes(t *testing.T) {
 		t.Fatalf("AttachContent: %v", err)
 	}
 	for i := range 2 {
-		if err := j.MarkArticleDone(i, 100, "srv1"); err != nil {
-			t.Fatalf("MarkArticleDone(%d): %v", i, err)
-		}
+		jobtest.MarkArticleWritten(t, j, i)
 	}
 	for i := 2; i < 4; i++ {
 		if err := j.MarkArticleFailed(i); err != nil {

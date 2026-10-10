@@ -11,8 +11,8 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/dispatch"
-	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/job/jobtest"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/types"
@@ -65,31 +65,13 @@ func copyFixturePayload(t *testing.T, dir, asName string) {
 	}
 }
 
-// seedFileCRC gives one of a job's files an assembled CRC32.
-//
-// It goes through Job.SetFileCRC32FromRuns rather than writing the field,
-// which means presenting the record that would have earned the value: one
-// durable run at offset 0 spanning every article of the file. That is the
-// gatekeeper's point — the CRC and its evidence arrive together — and it keeps
-// these fixtures describing a state the program can actually reach.
+// seedFileCRC gives one of a job's files an assembled CRC32, through
+// Job.SettleFileCRC with the rows that would earn the value (jobtest.SeedFileCRC).
+// That is the gatekeeper's point — the CRC and its evidence arrive together —
+// and it keeps these fixtures describing a state the program can actually reach.
 func seedFileCRC(t *testing.T, j *job.Job, fileIdx int, crc uint32) {
 	t.Helper()
-	m, err := j.Manifest()
-	if err != nil {
-		t.Fatalf("manifest for the CRC fixture: %v", err)
-	}
-	lo, hi := m.FileRange(fileIdx)
-	runs := []durability.Run{{
-		FileIdx:     int32(fileIdx),
-		FirstArtIdx: int32(lo),
-		LastArtIdx:  int32(hi - 1),
-		Offset:      0,
-		Length:      m.FileBytes(fileIdx),
-		CRC32:       crc,
-	}}
-	if _, err := j.SetFileCRC32FromRuns(fileIdx, runs); err != nil {
-		t.Fatalf("SetFileCRC32FromRuns(%d): %v", fileIdx, err)
-	}
+	jobtest.SeedFileCRC(t, j, fileIdx, crc)
 }
 
 // par2FileSpec describes one file for buildPar2Job: its subject, assembled

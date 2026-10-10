@@ -3,8 +3,8 @@ package app
 import (
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/job/jobtest"
 )
 
 // TestResolvedName pins the precedence every par2 call site uses: the recorded
@@ -51,12 +51,7 @@ func TestAssembledFiles(t *testing.T) {
 	if err := j.SetFileFilename(0, "7xq6N6P340dCh9Lnih5hY3jsArfSN1"); err != nil {
 		t.Fatalf("SetFileFilename: %v", err)
 	}
-	runs := []durability.Run{
-		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1068AFA6},
-	}
-	if _, err := j.SetFileCRC32FromRuns(0, runs); err != nil {
-		t.Fatalf("SetFileCRC32FromRuns: %v", err)
-	}
+	jobtest.SeedFileCRC(t, j, 0, 0x1068AFA6)
 
 	files := assembledFiles(m, j.Progress())
 	if len(files) != m.NumFiles() {

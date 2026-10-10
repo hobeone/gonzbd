@@ -49,8 +49,7 @@ func blockRetryInAdmit(application *Application) *blockingAdmitStore {
 
 // addRetryableEntry files a FAILED history entry for jobID with an NZB backup
 // the retry can rebuild from, and returns the backup's path. path is the
-// entry's download directory, or "" for none. No retained per-file progress is
-// filed with it, so a retry of it reaches DiscardRuns.
+// entry's download directory, or "" for none.
 func addRetryableEntry(t *testing.T, repo *history.Repository, adminDir, jobID, path string) string {
 	t.Helper()
 	backup := jobID + ".nzb.gz"
@@ -95,12 +94,9 @@ func TestRetryHistoryJob_RefusesWhileAnotherHolderHasTheID(t *testing.T) {
 	if !errors.Is(err, errJobInTransition) {
 		t.Fatalf("RetryHistoryJob err = %v, want errJobInTransition", err)
 	}
-	if runs, failed := durabilityRowCounts(t, application, jobID); runs != 1 || failed != 1 {
-		t.Errorf("runs, failed_articles = %d, %d, want 1, 1: the refused retry reclaimed "+
-			"state another actor holds", runs, failed)
-	}
-	if n := jobFilesCount(t, application, jobID); n != 1 {
-		t.Errorf("job_files rows = %d, want 1: the refused retry acted on them", n)
+	if written, files := durabilityRowCounts(t, application, jobID); written != 1 || files != 1 {
+		t.Errorf("written_articles, job_files = %d, %d, want 1, 1: the refused retry reclaimed "+
+			"state another actor holds", written, files)
 	}
 	if _, err := os.Stat(manifestPathOf(t, adminDir, jobID)); !os.IsNotExist(err) {
 		t.Errorf("a refused retry wrote a queue manifest (stat err = %v)", err)

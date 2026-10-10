@@ -98,7 +98,7 @@ func TestFinalize_RemovesJobFromQueueWhenHistoryWriteFails(t *testing.T) {
 // finalization collides with a pre-existing Failed history entry (e.g. following
 // a crash between history commit and Dispatcher.Remove), teardown removes the
 // job from the dispatcher, and the rows it leaves are the ones that entry's
-// retry reads: its durable_runs, and nothing else.
+// retry reads: its job_files and written_articles.
 func TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed(t *testing.T) {
 	adminDir := t.TempDir()
 	cfg := testConfigInternal(t, adminDir)
@@ -146,12 +146,12 @@ func TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed(t *testing.T) {
 		t.Fatalf("seed conflicting failed entry: %v", err)
 	}
 
-	// 2. Seed durability rows (job_files, written_articles, failed_articles).
+	// 2. Seed durability rows (job_files, written_articles).
 	seedDurability(t, application, job.ID())
 
 	nf, ne := durabilityRowCounts(t, application, job.ID())
 	if nf != 1 || ne != 1 {
-		t.Fatalf("fixture seeded %d written rows and %d failed rows, want 1 and 1", nf, ne)
+		t.Fatalf("fixture seeded %d written rows and %d job_files rows, want 1 and 1", nf, ne)
 	}
 
 	// 3. Finalize a job with that ID (simulating a re-run of finalize where status was Completed).
@@ -166,10 +166,10 @@ func TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed(t *testing.T) {
 		t.Error("job remained in dispatcher; expected teardown to remove it")
 	}
 
-	// 5. Verify the failed entry's record survives, and its failed articles do not.
+	// 5. Verify the failed entry's record survives.
 	nfAfter, neAfter := durabilityRowCounts(t, application, job.ID())
-	if nfAfter != 1 || neAfter != 0 {
-		t.Errorf("after a conflict with a failed entry: written=%d, failed=%d, want 1 and 0",
+	if nfAfter != 1 || neAfter != 1 {
+		t.Errorf("after a conflict with a failed entry: written=%d, job_files=%d, want 1 and 1",
 			nfAfter, neAfter)
 	}
 	if n := jobFilesCount(t, application, job.ID()); n != 1 {
@@ -234,15 +234,15 @@ func TestFinalize_KeepsTheManifestWhenTheDispatcherRemoveFails(t *testing.T) {
 			"(stat: %v); appResidency.hydrate cannot load the row without it", err)
 	}
 	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
-		t.Errorf("%d durable runs and %d failed-article rows left for a job that is still "+
+		t.Errorf("%d durable runs and %d job_files rows left for a job that is still "+
 			"queued, want 1 and 1", nr, nf)
 	}
 }
 
 // TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError pins that a
-// reclaim which cannot read history deletes nothing. The rule's durable_runs
-// statement reads history, so when it fails its transaction takes back the
-// deletes that ran before it, and every row is kept for the next attempt.
+// reclaim which cannot read history deletes nothing. The rule's statements
+// read history, so when one fails its transaction takes back the deletes that
+// ran before it, and every row is kept for the next attempt.
 func TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError(t *testing.T) {
 	adminDir := t.TempDir()
 	cfg := testConfigInternal(t, adminDir)
@@ -280,12 +280,12 @@ func TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError(t *testing.T)
 		t.Fatalf("Add: %v", err)
 	}
 
-	// 1. Seed durability rows (job_files, durable_runs, failed_articles).
+	// 1. Seed durability rows (job_files, written_articles).
 	seedDurability(t, application, job.ID())
 
 	nf, ne := durabilityRowCounts(t, application, job.ID())
 	if nf != 1 || ne != 1 {
-		t.Fatalf("fixture seeded %d runs and %d failed rows, want 1 and 1", nf, ne)
+		t.Fatalf("fixture seeded %d runs and %d job_files rows, want 1 and 1", nf, ne)
 	}
 
 	// 2. Corrupt the history schema so historyRepo.Add and the reclaim rule's
@@ -305,7 +305,7 @@ func TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError(t *testing.T)
 	// 4. Verify durability rows are NOT deleted.
 	nfAfter, neAfter := durabilityRowCounts(t, application, job.ID())
 	if nfAfter != 1 || neAfter != 1 {
-		t.Errorf("durability rows were deleted when history lookup failed with error: runs=%d, failed=%d, want 1 and 1",
+		t.Errorf("durability rows were deleted when history lookup failed with error: runs=%d, job_files=%d, want 1 and 1",
 			nfAfter, neAfter)
 	}
 	var jobFilesCount int

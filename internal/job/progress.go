@@ -122,9 +122,9 @@ type FileProgress struct {
 	//
 	// Not persisted, and does not need to be: markFailed below computes it as
 	// m.ArticleBytes(i) summed over the failed set. The manifest knows an
-	// article's size whether or not it was ever fetched, and failed_articles
-	// supplies the set, so the durability record crossed with the manifest
-	// reproduces this figure exactly.
+	// article's size whether or not it was ever fetched, and the persisted
+	// failed bits supply the set, so the manifest crossed with them reproduces
+	// this figure exactly.
 	FailedBytes int64
 	// IsPar2 marks a par2 file — the index or a recovery volume — as opposed
 	// to content. Carried per file, like Bytes and FailedBytes, so
@@ -1015,9 +1015,9 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 }
 
 // markNotDone returns article i to Outstanding. It is the inverse of markDone,
-// and it exists for exactly one caller: Queue.ReplaceFromRuns, which has
-// stat'ed the file and is entitled to contradict a bit derived from a run the
-// resume then discarded (#362). Nothing on the download path may call it — an
+// and it has exactly one caller: Job.UntrustFile, which returns a file's
+// articles to Outstanding once its fsync failed — `git grep -n -E '\.markNotDone[(]' -- '*.go' ':!*_test.go'`
+// finds 1 line, in verified.go. Nothing on the download path may call it — an
 // ack is a one-way transition (R9).
 //
 // It clears the bit and nothing else. The figures markDone maintains are
@@ -1028,7 +1028,7 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 // nor emitted. A copy of those rules that drifts is a half-inverse, and a
 // half-inverse of markDone is how #300 arose from the other direction: bits
 // and derived figures disagreeing, so the job reports a health its per-article
-// state does not support. ReplaceFromRuns recomputes once for the whole job
+// state does not support. UntrustFile recomputes once for the whole file
 // instead.
 //
 // A permanently failed article is never cleared, and that is a rule about what
@@ -1181,22 +1181,18 @@ type fileProgressJSON struct {
 // and InstallCompleteFile, which install rows a restart or retry read back
 // and fsynced, or rows of a complete=1 file whose fsync preceded the flag;
 // setFailedBits, for an article whose bytes will never arrive; and
-// newJobProgressSized, restoring bits a JobProgress is built from. AckDurable,
-// SeedFromRuns, ReplaceFromRuns, ApplyResolution and MarkArticleDone reach
-// markDone too, and none has a caller outside this package and
-// internal/durability, whose Barrier nothing in production builds —
-// `git grep -n -E '\.(AckDurable|ApplyResolution|MarkArticleDone|ReplaceFromRuns|SeedFromRuns)\(' -- '*.go' ':!*_test.go' ':!internal/job/*' ':!internal/durability/*'`
-// finds 0 lines.
+// newJobProgressSized, restoring bits a JobProgress is built from. Of the
+// functions that reach markDone, MarkArticleWritten and installRows are the
+// only two: `git grep -n -E '\bmarkDone\(' -- '*.go' ':!*_test.go'` finds 3
+// lines, the definition and one call in each.
 //
 // So a Done bit from MarkArticleWritten stands on a write, not on an fsync.
 // What stops it outliving bytes that never reached the disk is the untrust:
 // a failed fsync at completion (FileWriter.finish), at CloseJobHandles or at
-// worker exit — the assembler's fsyncs of a file it writes, apart from the
-// sync target's opSync, which only the Barrier drives — untrusts the file (Application.handleFileUntrusted), which deletes its rows, purges its
-// buffered ones and clears its Done bits. What a crash loses before any fsync
-// is caught by the next start, which reads every row back before installing
-// it. A caller of MarkArticleDone must bring its own evidence that the bytes
-// are on disk.
+// worker exit untrusts the file (Application.handleFileUntrusted), which
+// deletes its rows, purges its buffered ones and clears its Done bits. What a
+// crash loses before any fsync is caught by the next start, which reads every
+// row back before installing it.
 //
 // TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list above.
 // Add a door onto the bit and it fails by name.

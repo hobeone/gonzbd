@@ -18,6 +18,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/job/jobtest"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
@@ -36,7 +37,7 @@ func seedCompletedJob(t *testing.T, repo *history.Repository, adminDir, id, name
 	j, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: name, JobID: id})
 	_ = j.SetFileFilename(0, "recovery.bin")
 	_ = j.BeginAttempt(time.Now())
-	_ = j.MarkArticleDone(0, 100, "mock")
+	jobtest.MarkArticleWritten(t, j, 0)
 	_ = j.MarkFileComplete(0)
 
 	if state != job.StateUnset && state != job.Fetching {
@@ -113,29 +114,28 @@ func seedCompletedJob(t *testing.T, repo *history.Repository, adminDir, id, name
 	}
 
 	store := dispatchstore.New(repo.DB(), nil)
-	cp := j.Checkpoint()
 	p := dispatch.Persisted{
 		ID:      j.ID(),
 		SortKey: 1,
 		Header:  hdr,
 		Policy:  j.Policy(),
-		State:   cp.State,
+		State:   j.State(),
 		Intent:  j.Intent(),
 	}
 	if err := store.Save(t.Context(), p); err != nil {
 		t.Fatalf("store.Save: %v", err)
 	}
 	_, err = repo.DB().ExecContext(t.Context(),
-		`INSERT INTO job_files (job_id, file_index, complete, assembled_crc32, fetch_policy, filename)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		j.ID(), 0, 1, 0, int(job.FetchAlways), "recovery.bin",
+		`INSERT INTO job_files (job_id, file_index, complete, fetch_policy, filename)
+		VALUES (?, ?, ?, ?, ?)`,
+		j.ID(), 0, 1, int(job.FetchAlways), "recovery.bin",
 	)
 	if err != nil {
 		t.Fatalf("insert job_files: %v", err)
 	}
 	// The article's row: a complete file is trusted unread, and its articles
 	// are Done exactly where it has rows. The callers write 100 zero bytes.
-	app.SeedWritten(t, durability.NewStore(repo.DB(), "history.db"), j.ID(), []durability.WrittenRow{
+	app.SeedWritten(t, durability.NewStore(repo.DB()), j.ID(), []durability.WrittenRow{
 		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(make([]byte, 100))},
 	})
 	return j

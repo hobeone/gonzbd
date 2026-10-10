@@ -3,13 +3,11 @@ package app
 import (
 	"bytes"
 	"compress/gzip"
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -71,47 +69,8 @@ func failJobIntoHistory(t *testing.T, application *Application, job *job.Job, nA
 	if err := application.TriggerPersistAndCommit(slog.Default(), entry, &postproc.Job{Job: job}); err != nil {
 		t.Fatalf("persistAndCommit: %v", err)
 	}
-	if nf, ne := durabilityRowCounts(t, application, job.ID()); nf != 1 || ne != 0 {
-		t.Fatalf("fixture: persistAndCommit left %d written rows and %d failed rows, want 1 and 0", nf, ne)
-	}
-}
-
-// TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset pins that a retry
-// re-attempts the articles that failed, even when failed_articles rows
-// outlived the failed departure that should have reclaimed them (#561). The
-// retry reclaims them, and the article it exists to re-attempt is Outstanding.
-func TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset(t *testing.T) {
-	t.Parallel()
-	const nArticles = 3
-	application, job := newDurabilityTestApp(t, 1, nArticles)
-	// Article 0 has a written row; article 1 is permanently failed.
-	seedDurability(t, application, job.ID())
-	failJobIntoHistory(t, application, job, nArticles)
-	// The stray row: what a late write leaves after the departure's reclaim.
-	if _, err := application.historyRepo.DB().ExecContext(t.Context(),
-		`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)`, job.ID()); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := application.RetryHistoryJob(t.Context(), job.ID()); err != nil {
-		t.Fatalf("RetryHistoryJob: %v", err)
-	}
-
-	if _, ne := durabilityRowCounts(t, application, job.ID()); ne != 0 {
-		t.Errorf("%d failed-article rows survive the retry", ne)
-	}
-	j, ok := application.dispatcher.Job(job.ID())
-	if !ok {
-		t.Fatal("job not in dispatcher")
-	}
-	var outstanding []int32
-	j.ForEachUnfinishedArticle(func(_ int, artIdx int32, _ string, _ int, _ int, _ string) bool {
-		outstanding = append(outstanding, artIdx)
-		return true
-	})
-	if !slices.Contains(outstanding, 1) {
-		t.Errorf("article 1 is not Outstanding after the retry (outstanding = %v); "+
-			"it is the article the retry was asked to re-attempt", outstanding)
+	if nw, nf := durabilityRowCounts(t, application, job.ID()); nw != 1 || nf != 1 {
+		t.Fatalf("fixture: persistAndCommit left %d written rows and %d job_files rows, want 1 and 1", nw, nf)
 	}
 }
 
@@ -134,45 +93,9 @@ func TestRetryHistoryJob_DiscardsRowsWhenTheManifestShapeChanged(t *testing.T) {
 		t.Fatalf("RetryHistoryJob: %v", err)
 	}
 
-	nf, ne := durabilityRowCounts(t, application, job.ID())
-	if nf != 0 || ne != 0 {
-		t.Errorf("the retry kept %d written rows and %d failed rows against a manifest whose "+
-			"shape changed; they now describe articles that are somewhere else", nf, ne)
-	}
-}
-
-// failingReclaimStore delegates everything to the real store except Reclaim.
-// Embedding the interface keeps the stub honest: a retry that grows a call to
-// another store method gets the real one.
-type failingReclaimStore struct {
-	durabilityStore
-	err error
-}
-
-func (f failingReclaimStore) Reclaim(context.Context, string, ...string) error { return f.err }
-
-// TestRetryHistoryJob_AbortsWhenStaleFailedMarksCannotBeCleared: a retry whose
-// reclaim of stray failed_articles rows fails aborts, rather than enqueue the
-// job over rows it decided to remove.
-func TestRetryHistoryJob_AbortsWhenStaleFailedMarksCannotBeCleared(t *testing.T) {
-	t.Parallel()
-	const nArticles = 3
-	application, job := newDurabilityTestApp(t, 1, nArticles)
-	seedDurability(t, application, job.ID())
-	failJobIntoHistory(t, application, job, nArticles)
-
-	wantErr := errors.New("database is locked")
-	application.durable = failingReclaimStore{durabilityStore: application.durable, err: wantErr}
-
-	err := application.RetryHistoryJob(t.Context(), job.ID())
-	if err == nil {
-		t.Fatal("the retry reported success while the stale failed marks it decided to clear are still in place")
-	}
-	if !errors.Is(err, wantErr) {
-		t.Errorf("error does not wrap the cause: got %v, want it to wrap %v", err, wantErr)
-	}
-	if _, queued := application.dispatcher.Job(job.ID()); queued {
-		t.Error("the retry aborted but still enqueued the job")
+	if nw, _ := durabilityRowCounts(t, application, job.ID()); nw != 0 {
+		t.Errorf("the retry kept %d written rows against a manifest whose "+
+			"shape changed; they now describe articles that are somewhere else", nw)
 	}
 }
 

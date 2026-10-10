@@ -18,9 +18,8 @@ import (
 // already in flight would fall through to openTargetFile — MkdirAll,
 // OpenFile(O_CREATE), preallocate — re-creating a file the job has handed to
 // post-processing, with an fd nothing closes: the control message is sent once
-// per admission. The job would reappear in OpenJobIDs, the checkpoint loop
-// would barrier it, and on NFS the handle held across post-processing's unlink
-// is the .nfsXXXX silly-rename the arm exists to prevent.
+// per admission. On NFS the handle held across post-processing's unlink is the
+// .nfsXXXX silly-rename the arm exists to prevent.
 //
 // Gating either tombstone on success protects no re-dispatch: the caller,
 // enqueuePostProc, admits the job first, and the downloader does not dispatch

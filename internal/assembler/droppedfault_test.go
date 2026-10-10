@@ -11,9 +11,8 @@ import (
 // TestProcessRequest_RoutesAFailedOpen pins finding 11.
 //
 // processRequest logged openTargetFile's classified fault and returned. The
-// file is never inserted into open, so opFiles never lists it, Files() never
-// includes it, and the barrier never drains or syncs it — the fault had no
-// path to Stallable at all. The pipeline saw WriteArticle return nil, so the
+// file is never inserted into open, so no later fsync or close ever sees it —
+// the fault had no path out of the assembler at all. The pipeline saw WriteArticle return nil, so the
 // article stayed Emitted and was permanently skipped. A persistent EACCES or
 // EROFS on the download directory left the job at N% with no reason attached,
 // which is the outcome openTargetFile's own doc says returning a fault
@@ -47,7 +46,7 @@ func TestProcessRequest_RoutesAFailedOpen(t *testing.T) {
 
 	if len(faults) == 0 {
 		t.Fatal("a file that could not be opened routed no fault. It is never in the " +
-			"open set, so no barrier operation can ever surface it, and the article " +
+			"open set, so no later fsync or close can ever surface it, and the article " +
 			"stays Emitted and is never re-dispatched")
 	}
 	if gotArt != 9 {

@@ -210,8 +210,8 @@ func TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice(t *testing.
 			"articles are still outstanding", got)
 	}
 	// The bytes are still written, because they are still the file's content.
-	if got := f.w.writtenSoFar(); len(got) != 1 {
-		t.Errorf("writtenSoFar = %v, want one article — the redelivery is not counted, "+
+	if got := f.w.unsynced; len(got) != 1 {
+		t.Errorf("unsynced = %v, want one article — the redelivery is not counted, "+
 			"but its bytes are the file's content and must still land", got)
 	}
 }

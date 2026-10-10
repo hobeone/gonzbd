@@ -193,7 +193,7 @@ func TestDrainAndClose_KeepsWrittenBytesAndClosesTheHandle(t *testing.T) {
 	a := newHelperAssembler()
 	f := newHelperFile(t, dir, "drainclose.dat", 0)
 
-	if err := f.w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("abcdefgh"), 0); err != nil {
+	if err := f.w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("abcdefgh")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -214,9 +214,10 @@ func TestDrainAndClose_KeepsWrittenBytesAndClosesTheHandle(t *testing.T) {
 }
 
 // TestAcceptArticle_OutOfRangeOffsetIsNotReported pins the security check's
-// effect on the barrier's evidence. offsetOutOfRange rejects an attacker-supplied
-// yEnc offset; the article must then be absent from what Drain reports, or the
-// barrier acks an article whose bytes were deliberately never written.
+// effect on the record. offsetOutOfRange rejects an attacker-supplied yEnc
+// offset; the article must then be absent from what the writer notes as
+// written, or the record describes an article whose bytes were deliberately
+// never written.
 func TestAcceptArticle_OutOfRangeOffsetIsNotReported(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
@@ -227,8 +228,8 @@ func TestAcceptArticle_OutOfRangeOffsetIsNotReported(t *testing.T) {
 		Offset: 1 << 40, Data: []byte("evil"),
 	})
 
-	if got := f.w.writtenSoFar(); len(got) != 0 {
-		t.Errorf("writtenSoFar = %v after a rejected offset, want empty", got)
+	if got := f.w.unsynced; len(got) != 0 {
+		t.Errorf("unsynced = %v after a rejected offset, want empty", got)
 	}
 	if _, failed := f.w.seenFailed[4]; !failed {
 		t.Error("the rejected article was not moved to seenFailed")

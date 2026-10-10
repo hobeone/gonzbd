@@ -36,7 +36,7 @@ file internal/assembler/assembler.go
 [the callback fires even when the write faulted]
 file internal/assembler/assembler.go
 --- anchor
-	if err := f.w.Accept(id, req.Offset, req.Data, req.CRC32); err != nil {
+	if err := f.w.Accept(id, req.Offset, req.Data); err != nil {
 --- replace
-	if err := f.w.Accept(id, req.Offset, req.Data, req.CRC32); err != nil && false {
+	if err := f.w.Accept(id, req.Offset, req.Data); err != nil && false {
 --- end

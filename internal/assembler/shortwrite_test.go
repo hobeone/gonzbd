@@ -50,7 +50,7 @@ func TestFileWriter_ShortWriteLeavesNoClaimOverPartialBytes(t *testing.T) {
 	w := newTestFileWriter(t, withShortWrite(50))
 
 	w.admitAccepted(0)
-	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{0xAA}, 100), 0); err == nil {
+	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{0xAA}, 100)); err == nil {
 		t.Fatal("Accept returned nil error after a short write; the fault must reach the caller")
 	}
 
@@ -69,13 +69,9 @@ func TestFileWriter_ShortWriteLeavesNoClaimOverPartialBytes(t *testing.T) {
 			"so it cannot pin what happens to the bytes one leaves behind")
 	}
 
-	written, err := w.Drain()
-	if err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if len(written) != 0 {
-		t.Errorf("Drain reported %d articles for a write that failed; a record built "+
-			"from this report would claim bytes that are only partly on disk", len(written))
+	if len(w.unsynced) != 0 {
+		t.Errorf("%d articles noted written for a write that failed; a record built "+
+			"from them would claim bytes that are only partly on disk", len(w.unsynced))
 	}
 	if _, failed := w.seenFailed[0]; failed {
 		t.Error("a storage fault resolved the article against itself (A1); the file " +

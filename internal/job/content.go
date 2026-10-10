@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/hobeone/gonzbd/internal/durability"
 )
 
 // ErrNotResident is returned by Manifest when the job's content tier is not
@@ -277,20 +275,6 @@ func (j *Job) SetFileFetchPolicy(fi int, policy FetchPolicy) error {
 		return fmt.Errorf("job %s: file index %d out of range", j.id, fi)
 	}
 	j.progress.files[fi].Fetch = policy
-	return nil
-}
-
-// MarkArticleDone records a successfully downloaded article.
-func (j *Job) MarkArticleDone(artIdx int, bytes int64, server string) error {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
-	if j.progress == nil || j.manifest == nil {
-		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
-	}
-	if artIdx < 0 || artIdx >= j.manifest.NumArticles() {
-		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
-	}
-	j.progress.markDone(j.manifest, artIdx)
 	return nil
 }
 
@@ -585,30 +569,6 @@ func (j *Job) SetPar2ReleaseReason(reason string) {
 	}
 }
 
-// AckDurable applies a durability proof's articles, returning how many named
-// an article this job does not have, and how many it does have.
-func (j *Job) AckDurable(proof durability.DurableProof) (invalid, nArt int, err error) {
-	arts := proof.Articles()
-	if len(arts) == 0 {
-		return 0, 0, nil
-	}
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
-	if j.manifest == nil || j.progress == nil {
-		return 0, 0, fmt.Errorf("job %s: %w", j.id, ErrNotResident)
-	}
-	nArt = j.manifest.NumArticles()
-	for _, idx := range arts {
-		i := int(idx)
-		if i < 0 || i >= nArt {
-			invalid++
-			continue
-		}
-		j.progress.markDone(j.manifest, i)
-	}
-	return invalid, nArt, nil
-}
-
 // CountUnfinishedArticles returns the count of articles not yet Done for the given file.
 func (j *Job) CountUnfinishedArticles(fileIdx int) (int, error) {
 	j.contentMu.RLock()
@@ -703,130 +663,6 @@ func (j *Job) RestoreFileMeta(fileIdx int, filename string, complete bool, crc u
 // has; neither door range-checks it.
 func (j *Job) RestoreFetchPolicy(fileIdx int, p FetchPolicy) error {
 	return j.SetFileFetchPolicy(fileIdx, p)
-}
-
-// SetFileCRC32FromRuns stores the assembled CRC32 on a file if runs prove it.
-func (j *Job) SetFileCRC32FromRuns(fileIdx int, runs []durability.Run) (bool, error) {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
-	if j.manifest == nil || j.progress == nil {
-		return false, fmt.Errorf("job %s: %w", j.id, ErrNotResident)
-	}
-	if fileIdx < 0 || fileIdx >= j.manifest.NumFiles() {
-		return false, fmt.Errorf("job %s: fileIdx %d out of range", j.id, fileIdx)
-	}
-	if len(runs) != 1 || runs[0].Offset != 0 {
-		return false, nil
-	}
-	lo, hi := j.manifest.FileRange(fileIdx)
-	if int(runs[0].FirstArtIdx) != lo || int(runs[0].LastArtIdx) != hi-1 {
-		return false, nil
-	}
-	j.progress.files[fileIdx].AssembledCRC32 = runs[0].CRC32
-	return true, nil
-}
-
-// SeedFromRuns marks every article covered by runs as done.
-func (j *Job) SeedFromRuns(runs []durability.Run) error {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
-	if j.manifest == nil || j.progress == nil {
-		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
-	}
-	type span struct{ lo, hi int }
-	spans := make([]span, 0, len(runs))
-	for _, r := range runs {
-		lo, hi, err := runsCoverage(j.manifest, r)
-		if err != nil {
-			return err
-		}
-		spans = append(spans, span{lo: lo, hi: hi})
-	}
-	for _, s := range spans {
-		for i := s.lo; i <= s.hi; i++ {
-			j.progress.markDone(j.manifest, i)
-		}
-	}
-	return nil
-}
-
-// ReplaceFromRuns installs what a fresh resume established about a job's
-// files, resetting unverified articles to Outstanding.
-func (j *Job) ReplaceFromRuns(files []int32, runs []durability.Run) error {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
-	if j.manifest == nil || j.progress == nil {
-		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
-	}
-	m := j.manifest
-	covered := make([]bool, m.NumArticles())
-	for _, r := range runs {
-		lo, hi, cErr := runsCoverage(m, r)
-		if cErr != nil {
-			return cErr
-		}
-		for i := lo; i <= hi; i++ {
-			covered[i] = true
-		}
-	}
-	for _, fi := range files {
-		f := int(fi)
-		if f < 0 || f >= m.NumFiles() {
-			return fmt.Errorf("job %s: file index %d out of range (%d files)", j.id, f, m.NumFiles())
-		}
-		lo, hi := m.FileRange(f)
-		fileCleared := 0
-		for i := lo; i < hi; i++ {
-			if covered[i] {
-				j.progress.markDone(m, i)
-				continue
-			}
-			if j.progress.markNotDone(i) {
-				fileCleared++
-			}
-		}
-		if fileCleared > 0 {
-			fp := &j.progress.files[f]
-			fp.Complete = false
-			fp.AssembledCRC32 = 0
-		}
-	}
-	j.progress.recompute(m)
-	return nil
-}
-
-// RunRange describes a contiguous span of articles covered by a durable run.
-type RunRange struct {
-	First int32
-	Last  int32
-}
-
-// ApplyResolution derives and installs the per-article done and failed state
-// from durable runs and failed_articles rows on hydration, then recomputes progress.
-func (j *Job) ApplyResolution(runs []RunRange, failed []int32) error {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
-	if j.manifest == nil || j.progress == nil {
-		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
-	}
-	m := j.manifest
-	numArts := m.NumArticles()
-	for _, idx := range failed {
-		i := int(idx)
-		if i >= 0 && i < numArts {
-			_ = j.progress.markFailed(m, i)
-		}
-	}
-	for _, r := range runs {
-		lo, hi := max(int(r.First), 0), min(int(r.Last), numArts-1)
-		for i := lo; i <= hi; i++ {
-			if !j.progress.failed.Get(i) {
-				j.progress.markDone(m, i)
-			}
-		}
-	}
-	j.progress.recompute(m)
-	return nil
 }
 
 // ClearEmittedForReload resets Emitted and Failed flags for reload.
@@ -1030,20 +866,4 @@ func (j *Job) Par2Recovered() bool {
 		return j.restoredPar2Recovered
 	}
 	return j.progress.Par2Recovered()
-}
-
-func runsCoverage(m *Manifest, r durability.Run) (first, last int, err error) {
-	fi := int(r.FileIdx)
-	nFiles := m.NumFiles()
-	if fi < 0 || fi >= nFiles {
-		return 0, 0, fmt.Errorf("file index %d out of range (%d files)", fi, nFiles)
-	}
-	lo, hi := m.FileRange(fi)
-	first, last = int(r.FirstArtIdx), int(r.LastArtIdx)
-	if first > last || first < lo || last >= hi {
-		return 0, 0, fmt.Errorf(
-			"file %d: run covers articles [%d,%d], outside the file's range [%d,%d)",
-			fi, first, last, lo, hi)
-	}
-	return first, last, nil
 }

@@ -66,12 +66,12 @@ func TestSeedJobFiles_OneRowPerFile(t *testing.T) {
 		return job.FetchAlways
 	}
 
-	if err := seedJobFiles(t.Context(), durability.NewStore(db, "history.db"), "job-a", 4, fetch); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-a", 4, fetch); err != nil {
 		t.Fatalf("seedJobFiles: %v", err)
 	}
 
 	rows, err := db.Query(
-		`SELECT file_index, complete, fetch_policy, filename, assembled_crc32
+		`SELECT file_index, complete, fetch_policy, filename
 		   FROM job_files WHERE job_id = ? ORDER BY file_index`, "job-a")
 	if err != nil {
 		t.Fatalf("query job_files: %v", err)
@@ -80,14 +80,14 @@ func TestSeedJobFiles_OneRowPerFile(t *testing.T) {
 
 	var got []int
 	for rows.Next() {
-		var fi, complete, policy, crc int
+		var fi, complete, policy int
 		var filename string
-		if err := rows.Scan(&fi, &complete, &policy, &filename, &crc); err != nil {
+		if err := rows.Scan(&fi, &complete, &policy, &filename); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
-		if complete != 0 || filename != "" || crc != 0 {
-			t.Errorf("file %d seeded with placeholder results already set: complete=%d filename=%q crc=%d",
-				fi, complete, filename, crc)
+		if complete != 0 || filename != "" {
+			t.Errorf("file %d seeded with placeholder results already set: complete=%d filename=%q",
+				fi, complete, filename)
 		}
 		if want := int(fetch(fi)); policy != want {
 			t.Errorf("file %d fetch_policy = %d, want %d (the derived policy)", fi, policy, want)
@@ -116,7 +116,7 @@ func TestSeedJobFiles_IsIdempotent(t *testing.T) {
 	t.Parallel()
 	db := openHistoryTestDB(t)
 
-	if err := seedJobFiles(t.Context(), durability.NewStore(db, "history.db"), "job-b", 3, fetchAlwaysForAll); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-b", 3, fetchAlwaysForAll); err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
 	if _, err := db.Exec(
@@ -125,7 +125,7 @@ func TestSeedJobFiles_IsIdempotent(t *testing.T) {
 	); err != nil {
 		t.Fatalf("simulate checkpoint: %v", err)
 	}
-	if err := seedJobFiles(t.Context(), durability.NewStore(db, "history.db"), "job-b", 3, fetchAlwaysForAll); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-b", 3, fetchAlwaysForAll); err != nil {
 		t.Fatalf("second seed: %v", err)
 	}
 
@@ -169,7 +169,7 @@ BEGIN SELECT RAISE(ABORT, 'injected fault'); END`); err != nil {
 		t.Fatalf("create trigger: %v", err)
 	}
 
-	err := seedJobFiles(t.Context(), durability.NewStore(db, "history.db"), "job-c", 6, fetchAlwaysForAll)
+	err := seedJobFiles(t.Context(), durability.NewStore(db), "job-c", 6, fetchAlwaysForAll)
 	if err == nil {
 		t.Fatal("seedJobFiles returned nil, want the injected fault reported")
 	}
@@ -186,7 +186,7 @@ func TestSeedJobFiles_ZeroFilesCommits(t *testing.T) {
 	t.Parallel()
 	db := openHistoryTestDB(t)
 
-	if err := seedJobFiles(t.Context(), durability.NewStore(db, "history.db"), "job-d", 0, fetchAlwaysForAll); err != nil {
+	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-d", 0, fetchAlwaysForAll); err != nil {
 		t.Fatalf("seedJobFiles with no files: %v", err)
 	}
 	if n := countSeeded(t, db, "job-d"); n != 0 {
@@ -202,7 +202,7 @@ func TestSeedJobFiles_CancelledContextSeedsNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	if err := seedJobFiles(ctx, durability.NewStore(db, "history.db"), "job-e", 3, fetchAlwaysForAll); err == nil {
+	if err := seedJobFiles(ctx, durability.NewStore(db), "job-e", 3, fetchAlwaysForAll); err == nil {
 		t.Fatal("seedJobFiles returned nil for a cancelled context, want an error")
 	}
 	if n := countSeeded(t, db, "job-e"); n != 0 {

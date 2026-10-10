@@ -107,14 +107,14 @@ func persistCompleteJob(t *testing.T, repo *history.Repository, adminDir string,
 			complete, fetch = 0, job.FetchIfNeeded
 		}
 		if _, err := repo.DB().ExecContext(t.Context(),
-			`INSERT INTO job_files (job_id, file_index, complete, assembled_crc32, fetch_policy, filename)
-			VALUES (?, ?, ?, 0, ?, '')`,
+			`INSERT INTO job_files (job_id, file_index, complete, fetch_policy, filename)
+			VALUES (?, ?, ?, ?, '')`,
 			j.ID(), fi, complete, int(fetch)); err != nil {
 			t.Fatalf("insert job_files: %v", err)
 		}
 		if complete == 1 {
 			lo, _ := m.FileRange(fi)
-			app.SeedWritten(t, durability.NewStore(repo.DB(), "history.db"), j.ID(), []durability.WrittenRow{
+			app.SeedWritten(t, durability.NewStore(repo.DB()), j.ID(), []durability.WrittenRow{
 				{FileIdx: fi, ArtIdx: int32(lo), Offset: 0, Length: 1024, //nolint:gosec // G115: fixture index
 					CRC32: crc32.ChecksumIEEE(make([]byte, 1024))},
 			})
@@ -249,7 +249,7 @@ func TestRestart_CompleteJobPassesThroughAssessing(t *testing.T) {
 					t.Fatalf("BeginAttempt: %v", err)
 				}
 			}
-			state := j.Checkpoint().State
+			state := j.State()
 			if tc.verdict {
 				state.Next = job.Assessing
 			}
@@ -325,7 +325,7 @@ func TestRestart_DropsAJobAlreadyInHistoryBeforeItIsTicked(t *testing.T) {
 	if err := dup.BeginAttempt(time.Now()); err != nil {
 		t.Fatalf("BeginAttempt: %v", err)
 	}
-	persistCompleteJob(t, f.repo, f.adminDir, dup, hdr, dup.Checkpoint().State, 2)
+	persistCompleteJob(t, f.repo, f.adminDir, dup, hdr, dup.State(), 2)
 	if err := f.repo.Add(t.Context(), history.Entry{
 		NzoID: dup.ID(), Name: "duplicate", Status: string(constants.StatusCompleted),
 	}); err != nil {

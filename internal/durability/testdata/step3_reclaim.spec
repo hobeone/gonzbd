@@ -2,14 +2,6 @@ pkg ./internal/durability/
 run TestReclaim_|TestPerJobTables_|TestRuleStatement_|TestInTx_
 timeout 3m
 
-[a failed history entry no longer keeps its durable_runs]
-file internal/durability/reclaim.go
---- anchor
-	{name: "durable_runs", keptForFailedEntry: true},
---- replace
-	{name: "durable_runs"},
---- end
-
 [a failed history entry no longer keeps its written_articles]
 file internal/durability/reclaim.go
 --- anchor
@@ -69,7 +61,7 @@ file internal/durability/reclaim.go
 [perJobTables drops a table]
 file internal/durability/reclaim.go
 --- anchor
-	{name: "failed_articles"},
+	{name: "job_files", keptForFailedEntry: true},
 --- replace
 --- end
 

@@ -805,7 +805,6 @@ When in doubt about which kind a behaviour is, ask.
 - **Job Record & Content Tiers:** `internal/job/` — the `Job`, its `Manifest` and `JobProgress`
 - **Scheduling Decisions:** `internal/sched/` — leases, compute slots, state transitions, no I/O
 - **Job Registry & Persistence:** `internal/dispatch/` — the ordered registry, the tick loop, manifest residency, queue-state rows
-- **Batched Progress Writes:** `internal/checkpoint/`
 - **Web UI (Svelte SPA):** `ui/` — Svelte 5 + TypeScript + Vite, embedded via `//go:embed all:dist` in `ui/embed.go`
 - **SPA Handler:** `internal/web/` — serves embedded dist with SPA catch-all fallback to index.html
 - **Configuration Schema:** `internal/config/`

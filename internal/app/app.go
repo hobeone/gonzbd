@@ -46,9 +46,8 @@ import (
 var ErrAlreadyStarted = errors.New("app: already started")
 
 const (
-	// closeHandlesTimeout bounds the pre-post-processing handle close. It
-	// matches assembler.barrierOpTimeout, the bound on every other control
-	// message that has to reach the single worker goroutine.
+	// closeHandlesTimeout bounds the pre-post-processing handle close, a
+	// control message that has to reach the single assembler worker goroutine.
 	closeHandlesTimeout = 5 * time.Second
 
 	// reloadQuiesceTimeout bounds ReloadDownloader's wait for the assembler
@@ -384,7 +383,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		// second, independent computation of the same fact — and the two
 		// disagreeing is exactly what used to make a commit-failure stall
 		// name the wrong file.
-		durStore = durability.NewStore(repo.DB(), repo.Path())
+		durStore = durability.NewStore(repo.DB())
 		app.durable = durStore
 		recStore = durStore
 		reader = durStore
@@ -1087,8 +1086,8 @@ func (app *Application) deleteHistoryEntries(ctx context.Context, claim *transit
 	if err != nil {
 		return n, err
 	}
-	// A FAILED entry kept its job's job_files, durable_runs and
-	// written_articles for a retry; with the entry gone nothing reaches them.
+	// A FAILED entry kept its job's job_files and written_articles for a
+	// retry; with the entry gone nothing reaches them.
 	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer delCancel()
 	app.reclaim(delCtx, ids[0], ids[1:]...)
@@ -1096,7 +1095,7 @@ func (app *Application) deleteHistoryEntries(ctx context.Context, claim *transit
 }
 
 // MarkHistoryCompleted marks a history entry completed. A FAILED entry kept
-// its job's job_files, durable_runs and written_articles for a retry, and a completed
+// its job's job_files and written_articles for a retry, and a completed
 // one has nothing to retry, so they are reclaimed. It waits, for as long as
 // ctx allows, while another actor holds the job.
 func (app *Application) MarkHistoryCompleted(ctx context.Context, id string) error {
@@ -2465,8 +2464,8 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 // re-parsing the gzipped NZB backup recorded on it.
 //
 // This is where the article message-IDs come back. They are not in SQLite —
-// job_files holds per-file metadata, durable_runs holds article INDICES, and
-// neither holds the <id@host> strings a BODY command needs — and the job's
+// job_files holds per-file metadata, written_articles holds article INDICES,
+// and neither holds the <id@host> strings a BODY command needs — and the job's
 // manifest was unlinked when it finalized. The NZB is the only remaining copy,
 // which is why the backup's name is recorded on the entry.
 //
@@ -2668,18 +2667,6 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	}()
 
 	m, _ := j.Manifest()
-	if app.durable != nil {
-		// Failed marks can outlive the failed departure that should have
-		// reclaimed them, so the rule runs again here. The entry is still
-		// FAILED, so it keeps the job_files and written_articles rows the
-		// verification below reads.
-		//
-		// A failure aborts the retry, unlike app.reclaim's log-only departure
-		// calls: those have nothing left to tell.
-		if err := app.durable.Reclaim(ctx, jobID); err != nil {
-			return fmt.Errorf("app: retry %s: clear stale failed articles: %w", jobID, err)
-		}
-	}
 	finished, err := app.verifyRetry(ctx, j, m)
 	if err != nil {
 		return fmt.Errorf("app: retry %s: %w", jobID, err)

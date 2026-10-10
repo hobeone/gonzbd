@@ -121,44 +121,6 @@ func TestJob_ContentMethods(t *testing.T) {
 		t.Fatalf("FileFilename = %q, want renamed.rar", got)
 	}
 
-	// AckDurable
-	proof := mintProof(t, j.ID(), []int32{0, 99})
-	inv, nArt, err := j.AckDurable(proof)
-	if err != nil || inv != 1 || nArt != 3 {
-		t.Fatalf("AckDurable = inv:%d, nArt:%d, err:%v; want inv:1, nArt:3, nil", inv, nArt, err)
-	}
-	if count, _ := j.CountUnfinishedArticles(0); count != 1 {
-		t.Fatalf("CountUnfinishedArticles after AckDurable = %d, want 1", count)
-	}
-
-	// SetFileCRC32FromRuns
-	runs := []durability.Run{
-		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: 200, CRC32: 0x12345678},
-	}
-	ok, err := j.SetFileCRC32FromRuns(0, runs)
-	if err != nil || !ok {
-		t.Fatalf("SetFileCRC32FromRuns = %v, %v, want true, nil", ok, err)
-	}
-	if got := j.Progress().FileAssembledCRC32(0); got != 0x12345678 {
-		t.Fatalf("FileAssembledCRC32 = %x, want 0x12345678", got)
-	}
-
-	// SeedFromRuns
-	if err := j.SeedFromRuns(runs); err != nil {
-		t.Fatalf("SeedFromRuns: %v", err)
-	}
-	if count, _ := j.CountUnfinishedArticles(0); count != 0 {
-		t.Fatalf("CountUnfinishedArticles after SeedFromRuns = %d, want 0", count)
-	}
-
-	// ReplaceFromRuns
-	if err := j.ReplaceFromRuns([]int32{0}, nil); err != nil {
-		t.Fatalf("ReplaceFromRuns: %v", err)
-	}
-	if count, _ := j.CountUnfinishedArticles(0); count != 2 {
-		t.Fatalf("CountUnfinishedArticles after ReplaceFromRuns = %d, want 2", count)
-	}
-
 	// MarkArticleFailed triggers on-demand par2 release
 	if err := j.MarkArticleFailed(0); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
@@ -288,9 +250,7 @@ func TestJob_AdditionalMethods(t *testing.T) {
 	if err := j.ClearArticleEmitted(0); err != nil {
 		t.Errorf("ClearArticleEmitted: %v", err)
 	}
-	if err := j.MarkArticleDone(0, 50, "srv1"); err != nil {
-		t.Errorf("MarkArticleDone: %v", err)
-	}
+	markWritten(t, j, 0)
 
 	var visited []int32
 	j.ForEachUnfinishedArticle(func(fileIdx int, artIdx int32, id string, bytes int, number int, subject string) bool {
@@ -301,7 +261,7 @@ func TestJob_AdditionalMethods(t *testing.T) {
 		t.Errorf("ForEachUnfinishedArticle visited %d articles, want 2", len(visited))
 	}
 
-	// RestoreFileMeta & ApplyResolution
+	// RestoreFileMeta
 	if err := j.RestoreFileMeta(0, "f1.rar", true, 0x1234); err != nil {
 		t.Errorf("RestoreFileMeta: %v", err)
 	}
@@ -313,9 +273,6 @@ func TestJob_AdditionalMethods(t *testing.T) {
 	}
 	if err := j.RestoreFetchPolicy(99, FetchIfNeeded); err == nil {
 		t.Error("RestoreFetchPolicy with an out-of-range file index should error")
-	}
-	if err := j.ApplyResolution([]RunRange{{First: 0, Last: 0}}, []int32{1}); err != nil {
-		t.Errorf("ApplyResolution: %v", err)
 	}
 
 	// RestoreContent needs a progress record of the job's own to restore onto.
@@ -332,12 +289,6 @@ func TestJob_AdditionalMethods(t *testing.T) {
 	}
 	if err := j.RestoreContent(m); err != nil {
 		t.Errorf("RestoreContent: %v", err)
-	}
-
-	// Checkpoint
-	cp := j.Checkpoint()
-	if cp.ID != "j2" {
-		t.Errorf("Checkpoint ID = %q, want j2", cp.ID)
 	}
 
 	// ResetForRetry when resident
@@ -370,8 +321,8 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 	if err := j.RestoreFetchPolicy(0, FetchAlways); err == nil {
 		t.Error("RestoreFetchPolicy on unattached job should error")
 	}
-	if err := j.MarkArticleDone(0, 100, "srv"); err == nil {
-		t.Error("MarkArticleDone on unattached job should error")
+	if err := j.MarkArticleWritten(durability.WrittenRow{}); err == nil {
+		t.Error("MarkArticleWritten on unattached job should error")
 	}
 	if err := j.MarkArticleEmitted(0); err == nil {
 		t.Error("MarkArticleEmitted on unattached job should error")
@@ -391,12 +342,6 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 	j.SetPar2ReleaseReason("reason")
 	if err := j.SetFileFilename(0, "fn"); err == nil {
 		t.Error("SetFileFilename on unattached job should error")
-	}
-	if _, err := j.SetFileCRC32FromRuns(0, nil); err == nil {
-		t.Error("SetFileCRC32FromRuns on unattached job should error")
-	}
-	if err := j.ReplaceFromRuns(nil, nil); err == nil {
-		t.Error("ReplaceFromRuns on unattached job should error")
 	}
 	if cleared, retained := j.ClearEmittedForReload(false); cleared != nil || retained != nil {
 		t.Error("ClearEmittedForReload on unattached job should return nil, nil")
@@ -434,15 +379,6 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 	}
 	_ = cleared
 
-	badRunFi := durability.Run{FileIdx: 99, FirstArtIdx: 0, LastArtIdx: 1}
-	if err := jResident.SeedFromRuns([]durability.Run{badRunFi}); err == nil {
-		t.Error("SeedFromRuns should error on bad file index run")
-	}
-	badRunArt := durability.Run{FileIdx: 0, FirstArtIdx: 5, LastArtIdx: 2}
-	if err := jResident.SeedFromRuns([]durability.Run{badRunArt}); err == nil {
-		t.Error("SeedFromRuns should error on out-of-range article indices run")
-	}
-
 	jResident.SetPar2ReleaseReason("clean")
 	if err := jResident.MarkJobStarted(time.Now()); err != nil {
 		t.Errorf("MarkJobStarted: %v", err)
@@ -452,22 +388,6 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 	}
 	if err := jResident.MarkDownloadFinished(time.Now()); err != nil {
 		t.Errorf("MarkDownloadFinished: %v", err)
-	}
-
-	if _, err := jResident.SetFileCRC32FromRuns(99, nil); err == nil {
-		t.Error("SetFileCRC32FromRuns should error on out-of-range fileIdx")
-	}
-	validCRC := durability.Run{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, CRC32: 0x12345678}
-	if ok, err := jResident.SetFileCRC32FromRuns(0, []durability.Run{validCRC}); err != nil || !ok {
-		t.Errorf("SetFileCRC32FromRuns(valid) = %v, %v; want true, nil", ok, err)
-	}
-
-	if err := jResident.ReplaceFromRuns([]int32{99}, nil); err == nil {
-		t.Error("ReplaceFromRuns should error on out of range file index")
-	}
-	validRun := durability.Run{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 0}
-	if err := jResident.ReplaceFromRuns([]int32{0}, []durability.Run{validRun}); err != nil {
-		t.Errorf("ReplaceFromRuns: %v", err)
 	}
 
 	start := time.Unix(1700000000, 0).UTC()
@@ -590,9 +510,8 @@ func TestResetForRetry_UncompletesAFileWithUndoneArticles(t *testing.T) {
 		t.Fatalf("AttachContent: %v", err)
 	}
 	// Article 1 and file 1's only article are done; article 0 is not.
-	if err := j.ApplyResolution([]RunRange{{First: 1, Last: 2}}, nil); err != nil {
-		t.Fatalf("ApplyResolution: %v", err)
-	}
+	markWritten(t, j, 1)
+	markWritten(t, j, 2)
 	for fi, crc := range []uint32{0xAAAA, 0xBBBB} {
 		if err := j.RestoreFileMeta(fi, "", true, crc); err != nil {
 			t.Fatalf("RestoreFileMeta(%d): %v", fi, err)
@@ -812,9 +731,7 @@ func TestJob_ProgressAccessors(t *testing.T) {
 	if err := j.MarkJobStarted(start); err != nil {
 		t.Fatalf("MarkJobStarted: %v", err)
 	}
-	if err := j.MarkArticleDone(0, 50, "srv1"); err != nil {
-		t.Fatalf("MarkArticleDone: %v", err)
-	}
+	markWritten(t, j, 0)
 	// MarkArticleFailed triggers on-demand par2 release and sets Par2ReleaseReason
 	if err := j.MarkArticleFailed(1); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
@@ -910,9 +827,7 @@ func evictedThreeArticleJob(t *testing.T) (*Job, *Manifest) {
 		t.Fatalf("AttachContent: %v", err)
 	}
 	for _, i := range []int{0, 1} {
-		if err := j.MarkArticleDone(i, 100, "s"); err != nil {
-			t.Fatalf("MarkArticleDone(%d): %v", i, err)
-		}
+		markWritten(t, j, i)
 	}
 	if err := j.MarkArticleEmitted(2); err != nil {
 		t.Fatalf("MarkArticleEmitted: %v", err)
@@ -944,10 +859,10 @@ func unfinishedArticles(t *testing.T, j *Job) []int32 {
 //
 // The dispatcher can evict a job while its fetches are still in flight, so
 // the failure can arrive after the manifest is gone.
-// Hydration re-derives successes from durable_runs, but a failure's
-// failed_articles row is written from its bit, so a refused failure left the
-// article neither done nor failed, and the file could complete with failed=0 and
-// RepairState intact: on a post with no par2, a hole nothing reports.
+// Hydration re-derives successes from the written_articles rows, but a
+// failure lives only in its bit, so a refused failure left the article neither
+// done nor failed, and the file could complete with failed=0 and RepairState
+// intact: on a post with no par2, a hole nothing reports.
 func TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction(t *testing.T) {
 	j, m := evictedThreeArticleJob(t)
 
