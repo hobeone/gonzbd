@@ -117,8 +117,8 @@ func (app *Application) StallReason(jobID string) StallInfo {
 // ReevaluateStalls asks the stall loop to re-evaluate every parked job now,
 // rather than at the next interval. This is R19's "and on user action".
 //
-// Non-blocking: it is called from the API's resume handlers, which must not
-// wait on a re-evaluation.
+// Non-blocking: it is called from the API's per-job resume handler and, under
+// app.mu, from resumeLocked, neither of which may wait on a re-evaluation.
 func (app *Application) ReevaluateStalls() {
 	select {
 	case app.stallKick <- struct{}{}:

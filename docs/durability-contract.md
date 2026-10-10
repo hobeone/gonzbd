@@ -721,7 +721,9 @@ one, and a restarted job keeps it until it leaves the queue.
 releases only a `Fetching` job's lease; a job that has moved on keeps its
 worker, and the pause gates its next move. `reevaluateStall` runs on an
 interval (`stallRecheckInterval`, 30 s) and on user action
-(`ReevaluateStalls`, from the API's resume handlers). It retries nothing: a
+(`ReevaluateStalls`, from the API's per-job resume and from both queue-wide
+resumes, the user's and the low-disk auto-resume, which share
+`resumeLocked`). It retries nothing: a
 write or completion fault left the affected articles Outstanding, and a
 verification fault left the job non-resident, so a resumed job refetches and
 re-verifies through the ordinary paths. If the condition has not cleared, the
