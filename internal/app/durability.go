@@ -19,8 +19,9 @@ import (
 //
 // The write did not happen, so the articles must be fetched again — but their
 // Emitted bits are still set from dispatch, and ForEachUnfinishedArticle skips
-// a set Emitted bit. Nothing else clears them on this path: no Drain reports
-// them, no Job.MarkArticleFailed names them, and eviction keeps job.progress, so
+// a set Emitted bit. Nothing else clears them on this path: the recorder does
+// not see them (it records articles whose write succeeded), no
+// Job.MarkArticleFailed names them, and eviction keeps job.progress, so
 // pause and resume do not clear them either. Left alone they are stranded for
 // the life of the process, at any residency, until something clears them. A
 // restart clears them by not persisting them — jobProgressJSON excludes

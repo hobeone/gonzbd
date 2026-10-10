@@ -81,7 +81,7 @@ var ErrCancelReserved = errors.New("sched: Settle: OutcomeCancelled is reserved 
 // drop the lease and lose a pool-A slot permanently and silently.
 //
 // PRECONDITION, which this package cannot check: the caller's worker for j has
-// returned and will not touch the job's lease, slot, manifest or barrier
+// returned and will not touch the job's lease, slot or manifest
 // again. There is deliberately no q.running guard here, and its absence is not
 // an oversight. running() is IsOpen && Next == StateUnset && holds(), and for
 // a worker that has just finished normally at Fetching every conjunct is still

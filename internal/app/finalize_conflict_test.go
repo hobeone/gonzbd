@@ -234,7 +234,7 @@ func TestFinalize_KeepsTheManifestWhenTheDispatcherRemoveFails(t *testing.T) {
 			"(stat: %v); appResidency.hydrate cannot load the row without it", err)
 	}
 	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
-		t.Errorf("%d durable runs and %d job_files rows left for a job that is still "+
+		t.Errorf("%d written rows and %d job_files rows left for a job that is still "+
 			"queued, want 1 and 1", nr, nf)
 	}
 }

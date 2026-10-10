@@ -141,8 +141,8 @@ func TestRetryHistoryJob_LosingConcurrentRetryIsRefusedBeforeActing(t *testing.T
 
 // TestRetryHistoryJob_RefusesAJobTheDispatcherHolds: a FAILED entry can exist
 // beside a queued job of the same ID (see errJobAlreadyQueued). A retry of it
-// must refuse before acting on the queued job's state. With
-// no retained progress filed, the retry would otherwise drop its durable runs.
+// must refuse before acting on the queued job's state, or the retry would
+// otherwise drop the queued job's written rows.
 func TestRetryHistoryJob_RefusesAJobTheDispatcherHolds(t *testing.T) {
 	t.Parallel()
 	application, repo, adminDir := newLifecycleTestApp(t)
@@ -173,7 +173,7 @@ func TestRetryHistoryJob_RefusesAJobTheDispatcherHolds(t *testing.T) {
 		t.Fatalf("RetryHistoryJob err = %v, want errJobAlreadyQueued", err)
 	}
 	if runs, _ := durabilityRowCounts(t, application, jobID); runs != 1 {
-		t.Errorf("durable runs = %d, want 1: the retry discarded a queued job's runs", runs)
+		t.Errorf("written rows = %d, want 1: the retry discarded a queued job's runs", runs)
 	}
 	manifestAfter, err := os.ReadFile(manifestPathOf(t, adminDir, jobID))
 	if err != nil {

@@ -2253,7 +2253,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	closeCtx, closeCancel := context.WithTimeout(context.Background(), closeTimeout)
 	closeErr := closeJobHandles(closeCtx, j.ID())
 	closeCancel()
-	// A *storagefault.Fault on a file's close-time drain, sync or close fails
+	// A *storagefault.Fault on a file's close-time sync or close fails
 	// the run, permanent or retryable: this close arm tombstones the handle
 	// either way, so nothing ever retries it, and the lost bytes would
 	// otherwise reach par2/unrar as a hole. It is offered to the admission as

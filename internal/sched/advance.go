@@ -20,7 +20,7 @@ var ErrNotSettled = errors.New("sched: Retry: attempt is not settled")
 // yielded, and the dispatcher calls q.park(j)".
 //
 // PRECONDITION, which this package cannot check: the caller's worker for j has
-// returned and will not touch the job's lease, slot, manifest or barrier
+// returned and will not touch the job's lease, slot or manifest
 // again. running() stays TRUE for a worker that has yielded and not yet been
 // parked — that is precisely why this door exists — so the fact is the
 // caller's to guarantee, exactly as Workers.Abort's non-blocking requirement

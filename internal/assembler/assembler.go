@@ -1431,9 +1431,9 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 	// carry forward how far EARLIER PROCESSES — previous starts of the daemon
 	// — had written this file, so the completion truncate would not cut away
 	// the bytes those processes put there (#342). The truncate no longer
-	// derives its bound from anything this process measured: it comes from the
-	// file's durable runs, which describe the FILE rather than the session, so
-	// there is nothing left for a seed to protect.
+	// derives its bound from anything this process measured: finish bounds it by
+	// the file's ownedRanges (maxEnd, finish.go), which seedOwned fills from the
+	// record below, so there is nothing left for a seed to protect.
 	f := &openFile{
 		w:    newFileWriter(fh, info.Path, key),
 		info: info,
@@ -1556,9 +1556,9 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 		// is the same fact arriving from the other side of the pipeline.
 		//
 		// Counting it claims nothing about its bytes: nothing wrote them, so
-		// no durable run covers it and the truncate bound never reaches past
-		// it, and its bytes are charged to failedBytes for par2 to repair
-		// from.
+		// no owned range covers it and the completion trim (finish, bounded by
+		// ownedRanges.maxEnd) never reaches past it, and its bytes are charged
+		// to failedBytes for par2 to repair from.
 		return a.routeAcceptFailure(f, req, err)
 	}
 	return true
@@ -1787,8 +1787,8 @@ const offsetSlackDivisor = 8
 // as an unbounded int64 from the article body returned by the NNTP server. It
 // is therefore attacker-controlled: without this check, a hostile or
 // compromised server can return a single article whose offset makes WriteAt
-// produce a file of arbitrary apparent size. The completion truncate no longer
-// commits that size — it is bounded by the durable runs — but the sparse file
+// produce a file of arbitrary apparent size. The completion trim does not
+// commit that size — finish bounds it by ownedRanges.maxEnd — but the sparse file
 // itself is still the attack, so the offset is rejected before the write.
 //
 // It returns the reason rather than a bare bool because the rejection has to

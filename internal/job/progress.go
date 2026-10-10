@@ -105,11 +105,11 @@ type FileProgress struct {
 	// encoded NZB `bytes` attribute — because RemainingBytes subtracts the
 	// two, and only figures in one unit can be subtracted.
 	//
-	// That is not the unit durability works in. A durable run's Length is the
-	// DECODED payload an fsync proved, summed over the same set of articles,
-	// and runs a few percent lower. The two are not interchangeable, which is
-	// why this is summed from the manifest's per-article bytes over the
-	// resolved set rather than read off the durability record.
+	// That is not the unit the written_articles rows work in. A row's Length is
+	// the DECODED payload handed to WriteAt, summed over the same set of
+	// articles, and a few percent lower. The two are not interchangeable, which
+	// is why this is summed from the manifest's per-article bytes over the
+	// resolved set rather than read off the record.
 	//
 	// Maintained live by markDone and rebuilt by recompute at hydration, both
 	// from the manifest.

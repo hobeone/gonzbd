@@ -54,7 +54,7 @@ func mustHoldAt(t *testing.T, q *Queue, j *job.Job, at job.State) {
 
 // TestCancel_PreBoundaryAbortsRatherThanSeizing pins §3.7's interrupt arm.
 // "Immediately" describes when the worker is TOLD to stop, not when its
-// resources are taken: the Manifest and StorageBarrier come with the lease, so
+// resources are taken: the Manifest comes with the lease, so
 // reclaiming one from under a downloader mid-article is a use-after-free in
 // all but name.
 func TestCancel_PreBoundaryAbortsRatherThanSeizing(t *testing.T) {

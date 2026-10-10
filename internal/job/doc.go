@@ -131,7 +131,7 @@
 // and reclaims; the Job holds it, Grant admits one, and surrenderLocked is
 // its sole releaser. LeaseID gives each issuance an identity distinct from
 // the *Lease pointer, because the pointer alone cannot serve: Lease had no
-// fields while its manifest and barrier waited for a later half, and Go
+// fields while its manifest waited for a later half, and Go
 // gives distinct zero-size allocations the same address, so two jobs'
 // leases collapsed into one entry in a pointer-keyed pool. NewLease mints a
 // Lease from an id the pool already knows it issued; Grant refuses

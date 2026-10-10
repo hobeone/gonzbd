@@ -308,7 +308,7 @@ func (j *Job) State() StateView {
 // 0, nothing more. NOT whether it ever held a lease: D-I12 decoupled the two,
 // so a job that has begun an attempt and is still waiting for pool A returns
 // true here while j.lease is nil. Exact, where any predicate over bytes or
-// durable runs would conflate "did not start" with "started and got
+// written rows would conflate "did not start" with "started and got
 // nowhere".
 func (j *Job) HasRun() bool {
 	j.mu.RLock()

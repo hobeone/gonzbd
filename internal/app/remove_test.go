@@ -278,7 +278,7 @@ func TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability(t *testi
 	}
 
 	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 0 || nf != 0 {
-		t.Errorf("%d durable runs and %d job_files rows survive a removal whose "+
+		t.Errorf("%d written rows and %d job_files rows survive a removal whose "+
 			"caller disconnected after the job left the dispatcher", nr, nf)
 	}
 	if n := jobFilesCount(t, application, j.ID()); n != 0 {

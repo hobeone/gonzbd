@@ -450,7 +450,7 @@ func TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability(t 
 	}
 
 	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 0 || nf != 0 {
-		t.Errorf("%d durable runs and %d job_files rows survive a reconcile that was "+
+		t.Errorf("%d written rows and %d job_files rows survive a reconcile that was "+
 			"cancelled after the job left the dispatcher", nr, nf)
 	}
 	if n := jobFilesCount(t, application, j.ID()); n != 0 {
@@ -511,7 +511,7 @@ func TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails(t *
 			"the next startup has nothing to reconcile it against", err)
 	}
 	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
-		t.Errorf("%d durable runs and %d job_files rows left after a failed Remove, "+
+		t.Errorf("%d written rows and %d job_files rows left after a failed Remove, "+
 			"want 1 and 1 — the row outlived its own state", nr, nf)
 	}
 	if n := jobFilesCount(t, application, j.ID()); n != 1 {
