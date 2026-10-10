@@ -283,3 +283,13 @@ func dirtyJobs(r *recorder) int {
 	defer r.mu.Unlock()
 	return len(r.dirty)
 }
+
+// TestUntrustTimeout_LeavesTheCloseItsBudget pins the order of the two bounds:
+// an untrust runs inside CloseJobHandles, so its own bound must end before the
+// close's does.
+func TestUntrustTimeout_LeavesTheCloseItsBudget(t *testing.T) {
+	t.Parallel()
+	if untrustTimeout >= closeHandlesTimeout {
+		t.Errorf("untrustTimeout = %v, want less than closeHandlesTimeout (%v): one untrust in a close would use the whole close budget", untrustTimeout, closeHandlesTimeout)
+	}
+}

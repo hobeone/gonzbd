@@ -311,7 +311,14 @@ func (nopRecordStore) ApplyRecord(context.Context, []durability.RecordBatch) err
 
 // untrustTimeout bounds the synchronous SQLite write that untrusts a file. It
 // runs on the assembler's worker goroutine, which every job's writes wait on.
-const untrustTimeout = 5 * time.Second
+//
+// It is shorter than closeHandlesTimeout because the close-handles arm calls
+// it inside CloseJobHandles: the caller waits closeHandlesTimeout for the
+// worker's reply, and an untrust that used all of it would leave the close
+// timed out with its fault unseen. One untrust leaves the close 3s; a close
+// with several failing files spends this bound once per file. It does not
+// cover the wait for wmu behind a flush already writing.
+const untrustTimeout = 2 * time.Second
 
 // lookupCurrent is the recorder's instance check: the job the dispatcher holds
 // under id, or nil.
