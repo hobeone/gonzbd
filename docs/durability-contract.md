@@ -428,10 +428,12 @@ By contrast, when `Sync` **itself** fails (`w.syncFile()` returns an error), the
 retained report must **not** be re-drained (#760). Linux reports a writeback
 error to a file descriptor once (`errseq`) and marks the failed pages clean; a
 subsequent `fsync` on the same descriptor can return `nil` with nothing to
-write. `FileWriter.poisonSync` therefore discards `reported` and `written`,
-unlatches `written` on `accepted`, and rolls every affected article back into
-`poisoned` so `opSync` (and `drainAndClose`) routes them through
-`OnArticlesUnwritten` back to `Outstanding` to be fetched again.
+write. `FileWriter.poisonSync` therefore discards `reported` and `written`
+and rolls every affected article back into `poisoned` so `opSync` (and
+`drainAndClose`) routes them through `OnArticlesUnwritten` back to
+`Outstanding` to be fetched again. The rolled-back articles keep their ranges
+in `FileWriter.owned`: a redelivery carries the same `ArtIdx` and rewrites its
+bytes, and a different article intersecting the range is refused.
 
 When that rollback drops a previously completed file's
 `partsWritten` below `TotalParts`, `Assembler.releaseSyncRollback` lifts the
@@ -1655,9 +1657,9 @@ including every failure path.
   bytes are redundant and re-writing them is a second `WriteAt` over the same
   range. The value was written and never read, and #375 removed it.
 
-  Byte intervals are owned by `accepted` instead, which is a different index for a
-  different question: not "has this article been seen" but "who owns this byte
-  range, and have their bytes been written". See the collision rules below.
+  Byte ranges are owned by `FileWriter.owned` instead, which is a different
+  index for a different question: not "has this article been seen" but "who
+  has written this byte range". See the collision rules below.
 - A write path that **fails** moves its articles out of `seenDone` and does
   **not** put them in `seenFailed`. An earlier version of this rule said it did,
   which contradicts the roll-back rule below and the behaviour of
@@ -1668,59 +1670,51 @@ including every failure path.
   necessary but **not sufficient** to leave the article Outstanding: its
   Emitted bit survives, and `ForEachUnfinishedArticle` skips a set Emitted bit.
   The fault's route is what clears it — see the write-error rule below.
-- **Two articles claiming overlapping byte ranges** resolve one of two ways, and
-  which one depends on whether the incumbent has been reported Written.
-  Detection lives in
-  `FileWriter.accepted`, a sorted, pairwise-disjoint slice of `acceptedRange`
-  intervals recorded in `Accept`, and a collision is decided by **identity**: an
-  interval already owned by the same article is a re-accept after a rollback,
-  not a collision.
+- **Two articles claiming intersecting byte ranges**: the first writer wins.
+  Detection lives in `FileWriter.owned`, a sorted per-file set of the ranges
+  written so far (`ranges.go`), and a collision is decided by **identity**: a
+  range owned by the same article is a re-accept after a rollback, not a
+  collision.
 
   Detection is per-open-episode, the same residency as `seenDone`.
 
-  - **Incumbent written → the range is SETTLED and the ARRIVAL is rejected**
-    (`offsetSettledBy`, checked in `acceptArticle`), whether the arrival shares
-    the incumbent's range exactly, straddles its boundary, or sits inside it
-    (#759). The incumbent's bytes back a durable claim: the next `Drain`
-    reports them, and the barrier records the run naming its CRC at that
-    offset and acks it. Letting a
-    later article overwrite the range makes the record unverifiable (or ships a
-    splice on a no-par2 job), and failing a written incumbent as well would give
+  - **A range is claimed only after its write returned nil** (in `writeOne`).
+    The arrival whose `[off, off+len)` intersects a claimed range is rejected
+    (`ownerOf`, checked in `acceptArticle`). The incumbent's bytes back a
+    durable claim: the next `Drain` reports them, and the barrier records the
+    run naming its CRC and acks it. Letting a later article overwrite the range
+    makes that record unverifiable, and failing the incumbent as well would give
     one article two terminal dispositions — permanently failed *and* acked
-    durable. The arrival is resolved permanently failed, keeps its part (it will
-    never arrive again), and its bytes are charged to par2.
+    durable. The arrival is resolved permanently failed, keeps its part (it
+    will never arrive again), and its bytes are charged to par2.
 
-    The `written` flag is **latched on the interval**, not derived from
+    Ownership is recorded on the range, not derived from
     `w.written`/`w.reported`. `Confirm` empties both once the articles are
     acked, and an acked article holds the strongest claim there is — a derived
     check would read the empty set as *no* claim and overwrite it one checkpoint
     later.
 
-  - **Incumbent never written → the arrival takes the range over.** Every
-    accepted article is written before a rival can arrive, so an article owns a
-    range without a `written` latch only when its write faulted (`fail` rolled
-    it back) or a failed `Sync` rolled it back (§3, #760). Either way it was
-    already returned to Outstanding, it keeps its `accepted` interval (entries
-    are never removed on rollback), and it made no claim, so there is nothing
-    to protect: `recordAccepted` drops its interval and records the arrival's.
-    The rolled-back article comes back later, finds the range owned by a
-    different article, and is refused like any other loser once the arrival
-    has been written. The `!r.written` test in `offsetSettledBy` is what
-    separates this case from the settled one.
+  - **An article whose write faulted owns nothing.** `fail` rolled it back and
+    it is re-dispatched; because the claim follows the write, there is no entry
+    to replace and no latch to consult. A rival at the same range is accepted,
+    and the rolled-back article, arriving later at a range the rival has
+    written, is refused like any other loser.
 
-  **This detects any interval overlap `[off, end)` within one open-file episode
-  (#759).** Two articles whose byte ranges overlap — whether at the same start
-  offset, straddling a boundary, or one contained inside another — intersect in
-  `FileWriter.accepted`, and `offsetSettledBy` refuses the arrival before any
-  bytes are overwritten. Across a **restart** (or handle-close boundary)
-  `accepted` is empty, so two overlapping articles can both be written across
-  separate episodes and both become durable; the durability layer still
-  withholds the whole-file CRC for any file that does not collapse to a single
-  contiguous run covering every article (§4), and for an exact-offset tie
-  `Store.commit` discards one of the two (`(job_id, file_idx, offset)` is the
-  primary key) and returns the discard as a `durability.Collision`, which leaves
-  the survivor unable to cover every article index and therefore withholds the
-  whole-file CRC as well.
+  - **An article a failed `Sync` rolled back keeps its range** (#760). Its
+    write returned nil, so it claimed; `poisonSync` returns it to
+    `Outstanding` without touching `owned`, its redelivery is accepted by
+    identity, and a rival intersecting the range is refused.
+
+  **Intersection is detected, not only a shared start offset.** The overlap
+  probes are `TestOverlap_PartialRangeOverwritesADurableArticle` and
+  `TestOverlap_ContainedOverlapStillCompletesTheFile`. Across a **restart**
+  `owned` is empty, so two articles at the same offset can both be written and
+  both become durable; `Store.commit` discards one of the two
+  (`(job_id, file_idx, offset)` is the primary key) and returns the discard as a
+  `durability.Collision`, which leaves the survivor unable to cover every
+  article index and therefore withholds the whole-file CRC, so `par2` runs and
+  repairs the file when the post has `par2`; a no-`par2` job ships the
+  overwrite (item 6 under accepted limitations).
 - **Cross-state dedup**: an `ArtIdx` previously counted as a success arriving as
   a failure (or vice versa) does not increment `partsWritten` again.
 - **Late articles**: an article for a file already in the `completed` tombstone is
@@ -2088,20 +2082,20 @@ recorded here so the next reader does not mistake them for design.
    grows with every test that seeds a row, nothing checks a count in Markdown,
    and the claim this paragraph needs is the filtered one.
 
-6. **An interval overlap or offset collision is PREVENTED within one open-file
-   episode (#759); across a boundary it withholds the whole-file CRC so `par2`
-   repairs it (#387).**
-   `FileWriter.accepted` records each accepted byte interval `[off, end)` and
-   the article that owns it, and a second article whose range overlaps an owned
-   interval is refused and resolved permanently failed — which works because
-   that article is not yet `Done`, and `markFailed` early-returns on one that
-   is. The file then completes *short*. That slice lives on the `FileWriter`, so
-   it is forgotten when the file closes: a **restart**, or a **retry** of a
-   failed job whose file was incomplete or finalized short, reopens the file
-   with an empty slice, and the later write overwrites the earlier. The file
-   then completes *wrong*.
+6. **A range collision is PREVENTED only within one open-file episode;
+   across a boundary it withholds the whole-file CRC so `par2`, when the post
+   has it, repairs it.**
+   `FileWriter.owned` records the byte range each article has written,
+   and a second article whose range intersects an owned one is refused and resolved
+   permanently failed — which works because that article is not yet `Done`, and
+   `markFailed` early-returns on one that is. The file then completes *short*.
+   That set lives on the `FileWriter`, so it is forgotten when the file closes:
+   a **restart**, or a **retry** of a failed job whose file was incomplete or
+   finalized short, reopens the file with an empty set, and the later write
+   overwrites the earlier. The file then completes *wrong*.
 
-   **The bound is that both outcomes are repairable.** Across the boundary
+   **For a post with `par2`, the bound is that both outcomes are repairable.**
+   Across the boundary
    `mergeAdjacentRuns` refuses to merge non-abutting spans (and for an
    exact-offset tie `Store.commit` discards one of the two rows and returns it
    as a `durability.Collision`; see "Duplicate and late-article handling"). The
@@ -2110,7 +2104,7 @@ recorded here so the next reader does not mistake them for design.
    both cases; what differs is a short file versus a wrong one, and a
    failed-byte figure that is correct versus one that omits the loser's bytes.
 
-   **Do not try to close this by rehydrating `accepted` from `durable_runs`.**
+   **Do not try to close this by rehydrating `owned` from `durable_runs`.**
    It cannot be done: a `Run` is a *merged* span carrying `FirstArtIdx`,
    `LastArtIdx`, `Offset` and `Length`, and merging destroys the per-article
    boundaries — a row saying "articles 0–199 occupy bytes [0,20000)" cannot say

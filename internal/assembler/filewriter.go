@@ -1,7 +1,6 @@
 package assembler
 
 import (
-	"cmp"
 	"os"
 	"slices"
 
@@ -99,29 +98,18 @@ type FileWriter struct {
 	seenDone   map[int32]struct{}
 	seenFailed map[int32]struct{}
 
-	// accepted records the pairwise-disjoint byte intervals [off, end) this
-	// writer has accepted bytes for, sorted by off. It is the collision and
-	// range-overlap detector (#383, #759).
+	// owned records which article owns each byte range this writer has
+	// WRITTEN: first writer wins (#383, #759). A range is claimed only after
+	// its write returned nil, so an article whose write faulted owns nothing and
+	// its retry, or a rival at the same range, is accepted. acceptArticle
+	// refuses an arrival that intersects another article's range before Accept
+	// is called.
 	//
-	// A collision is decided by IDENTITY, not by occupancy: a range already
-	// owned by THIS article is a re-accept, not a collision. That is what
-	// makes the set safe without removing entries on a write-fault rollback.
-	//
-	// Whether an intersecting owner has been reported Written decides which
-	// article loses: offsetSettledBy refuses the ARRIVAL when it has, because
-	// the incumbent's bytes already back a durable claim. acceptArticle makes
-	// that refusal before Accept is called. An owner that has NOT been
-	// reported Written (its write faulted, or a failed Sync rolled it back)
-	// made no claim for the arrival to contradict, so recordAccepted drops its
-	// range and the arrival takes it.
-	//
-	// Entries are never removed on rollback, and that is deliberate rather
-	// than a leak. An article whose write faults is rolled back and
-	// re-dispatched, and comes back with the same ArtIdx, so identity
-	// comparison recognises it as the owner. Residency is the writer's, so
-	// this is per-open-episode — a collision spanning a close-handles cycle or
-	// a restart is invisible, exactly as seenDone's duplicate handling is.
-	accepted []acceptedRange
+	// Entries are never removed, including by a failed Sync's rollback (see
+	// rollbackSyncedArticle). The question is "who wrote these bytes", not
+	// "who currently holds a part", so owned is intentionally not equal to
+	// seenDone. Residency is the writer's, so this is per-open-episode.
+	owned ownedRanges
 
 	// poisoned accumulates the articles a failed Sync rolled back (#760), for
 	// releaseSyncRollback to route to Outstanding via takePoisoned.
@@ -170,41 +158,6 @@ type FileWriter struct {
 	closeFile func() error
 }
 
-// acceptedRange is one byte interval [off, end) this writer has accepted, the
-// article that owns it, and whether its bytes have been reported Written.
-//
-// written is latched by noteWritten and is never cleared while the entry
-// survives, which is the whole reason it lives here rather than being derived
-// from w.written/w.reported. Those two slices are the barrier's pending
-// evidence: Confirm empties them once the articles have been acked durable. An
-// article that has been acked is the strongest possible claim on its range,
-// and a claim derived from the pending slices would read it as no claim at all.
-type acceptedRange struct {
-	off     int64
-	end     int64
-	id      articleID
-	written bool
-}
-
-// overlaps reports whether a write at [off, end) conflicts with r.
-// Two ranges sharing a start offset always conflict, even when zero-length;
-// otherwise non-empty half-open intervals [off, end) and [r.off, r.end)
-// intersect when each starts before the other ends. A zero-length entry at a
-// different start offset occupies no bytes and does not conflict with a
-// covering interval.
-func (r acceptedRange) overlaps(off, end int64) bool {
-	if off == r.off {
-		return true
-	}
-	if end == off || r.end == r.off {
-		return false
-	}
-	if off < r.off {
-		return r.off < end
-	}
-	return off < r.end
-}
-
 // newFileWriter wraps an already-open handle.
 func newFileWriter(handle *os.File, path string, key fileKey) *FileWriter {
 	w := &FileWriter{
@@ -220,31 +173,6 @@ func newFileWriter(handle *os.File, path string, key fileKey) *FileWriter {
 	return w
 }
 
-// firstCandidateIdx returns the earliest index in w.accepted that could
-// overlap a range starting at off. Because w.accepted is sorted by off and
-// pairwise disjoint (accepted[i].end <= accepted[i+1].off), at most one entry
-// starting before off — the immediate predecessor idx-1 — can extend past off.
-func (w *FileWriter) firstCandidateIdx(off int64) int {
-	idx, _ := slices.BinarySearchFunc(w.accepted, off, func(r acceptedRange, target int64) int {
-		return cmp.Compare(r.off, target)
-	})
-	if idx > 0 {
-		return idx - 1
-	}
-	return 0
-}
-
-// ownerAt returns the accepted range starting at off, if any.
-func (w *FileWriter) ownerAt(off int64) (acceptedRange, bool) {
-	idx, found := slices.BinarySearchFunc(w.accepted, off, func(r acceptedRange, target int64) int {
-		return cmp.Compare(r.off, target)
-	})
-	if !found {
-		return acceptedRange{}, false
-	}
-	return w.accepted[idx], true
-}
-
 // noteWritten records an article whose bytes reached WriteAt without error.
 //
 // Every append to w.written goes through here, so there is exactly one place
@@ -252,20 +180,7 @@ func (w *FileWriter) ownerAt(off int64) (acceptedRange, bool) {
 // from below a successful writeAt. That is the structural half of S2: the
 // claim cannot be made from an accept path because no accept path can call
 // this.
-//
-// It also latches the range's owner as written, which is what makes the range
-// settled against a later article claiming the same offset. Latched HERE for
-// the same reason the append is here: both assert "these bytes are the file's
-// content at this offset", and applying one without the other is the
-// derived-state split #375 was about.
 func (w *FileWriter) noteWritten(id articleID, off int64, n int, crc32 uint32) {
-	end := off + int64(n)
-	for i := w.firstCandidateIdx(off); i < len(w.accepted) && w.accepted[i].off <= off; i++ {
-		if w.accepted[i].overlaps(off, end) && w.accepted[i].id.sameArticle(id) {
-			w.accepted[i].written = true
-			break
-		}
-	}
 	w.written = append(w.written, durability.WrittenArticle{
 		FileIdx: int32(w.key.fileIdx), //nolint:gosec // G115: file counts are far below int32
 		ArtIdx:  id.artIdx,
@@ -333,40 +248,6 @@ func (w *FileWriter) fail(id articleID) {
 // parts reports how many of the file's parts have been accounted for. The
 // caller compares it to FileInfo.TotalParts to decide the file is complete.
 func (w *FileWriter) parts() int { return w.partsWritten }
-
-// offsetSettledBy reports the article that owns an already-accepted range
-// intersecting [off, off+length) when that owner has already made a
-// durability claim, so the ARRIVING article must be refused rather than
-// allowed to overwrite it (#383, #759).
-//
-// The incumbent may already be in w.written, or in w.reported after a Drain
-// handed it to the barrier, and the barrier records a run over exactly its
-// range with its CRC. Letting the arrival overwrite those bytes leaves a record
-// describing bytes the file no longer holds. Any overlap with a range whose
-// owner has been reported Written therefore settles the range against the
-// arrival, so the arriving article costs only its own bytes and never writes a
-// splice over an accepted neighbour.
-//
-// An owner that has not been reported Written has no claim to protect: the
-// `!r.written` test below is what lets a write-faulted article, which keeps
-// its range without having written, be replaced by the next arrival.
-func (w *FileWriter) offsetSettledBy(off, length int64, arriving articleID) (articleID, bool) {
-	end := off + length
-	for i := w.firstCandidateIdx(off); i < len(w.accepted); i++ {
-		r := w.accepted[i]
-		if !r.overlaps(off, end) {
-			if r.off > off && r.off >= end {
-				break
-			}
-			continue
-		}
-		if r.id.sameArticle(arriving) || !r.written {
-			continue
-		}
-		return r.id, true
-	}
-	return articleID{}, false
-}
 
 // admitAccepted takes an article on as a part of this file, before its bytes
 // are handed to Accept.
@@ -439,47 +320,6 @@ func (w *FileWriter) takePoisoned() []int32 {
 	return out
 }
 
-// recordAccepted inserts or updates [off, end) in w.accepted while maintaining
-// its start-sorted, pairwise-disjoint invariant. A re-accept by the same
-// article preserves its written latch and merged span.
-//
-// An overlapping range owned by a different article is dropped. acceptArticle
-// has already refused the arrival against every range whose owner was
-// reported Written, so what is dropped here belongs to an article that made no
-// claim: its write faulted, or a failed Sync rolled it back, and either way it
-// was handed back to Outstanding when that happened. Dropping its range
-// resolves nothing about the article; its redelivery meets the arrival's range
-// and is refused there.
-func (w *FileWriter) recordAccepted(id articleID, off, end int64) {
-	first := w.firstCandidateIdx(off)
-	if first < len(w.accepted) {
-		r := w.accepted[first]
-		if off == end && r.off < off && off < r.end {
-			return
-		}
-		if !r.overlaps(off, end) && r.off < off {
-			first++
-		}
-	}
-	last := first
-	written := false
-	for last < len(w.accepted) && (w.accepted[last].overlaps(off, end) || w.accepted[last].off < end) {
-		r := w.accepted[last]
-		if r.overlaps(off, end) && r.id.sameArticle(id) {
-			written = written || r.written
-			off = min(off, r.off)
-			end = max(end, r.end)
-		}
-		last++
-	}
-	w.accepted = slices.Replace(w.accepted, first, last, acceptedRange{
-		off:     off,
-		end:     end,
-		id:      id,
-		written: written,
-	})
-}
-
 // Accept writes one article's bytes through writeOne.
 //
 // It takes ownership of data and returns it to the decoder pool on every path,
@@ -493,14 +333,6 @@ func (w *FileWriter) recordAccepted(id articleID, off, end int64) {
 // Drain is not enough on its own — and the file goes on to complete over bytes
 // that never landed.
 func (w *FileWriter) Accept(id articleID, off int64, data []byte, crc32 uint32) error {
-	// A settled range never reaches here — acceptArticle refuses the arrival
-	// before calling Accept — so any range a different article owns that
-	// intersects this one has not been reported Written, and recordAccepted
-	// replaces it. A re-accept by the range's OWN owner keeps its written
-	// latch: what reaches that case is a write-fault RETRY, since rollbackPart
-	// deletes the seenDone entry so the redelivery is not a duplicate, but the
-	// accepted entry is never removed.
-	w.recordAccepted(id, off, off+int64(len(data)))
 	return w.writeOne(id, off, data, crc32)
 }
 
@@ -517,6 +349,7 @@ func (w *FileWriter) writeOne(id articleID, off int64, data []byte, crc32 uint32
 		w.fail(id)
 		return storagefault.Classify("write", w.path, err)
 	}
+	w.owned.claim(Range{Off: off, Len: int64(len(data))}, id)
 	w.noteWritten(id, off, len(data), crc32)
 	return nil
 }
@@ -618,14 +451,13 @@ func (w *FileWriter) poisonSync() {
 	w.written = nil
 }
 
-// rollbackSyncedArticle unlatches written on w.accepted for artIdx and rolls
-// the article back into w.poisoned if it is not already pending there.
+// rollbackSyncedArticle rolls the article back into w.poisoned if it is not
+// already pending there.
+//
+// It leaves w.owned alone: the article wrote its range, so it keeps it. Its
+// redelivery carries the same artIdx and is accepted to rewrite the bytes, and
+// a different article intersecting the range is refused at acceptArticle.
 func (w *FileWriter) rollbackSyncedArticle(artIdx int32) {
-	for i := range w.accepted {
-		if w.accepted[i].id.artIdx == artIdx {
-			w.accepted[i].written = false
-		}
-	}
 	if slices.Contains(w.poisoned, artIdx) {
 		return
 	}

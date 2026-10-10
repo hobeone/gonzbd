@@ -142,8 +142,8 @@ func TestJobSyncTargetConfirm_SwallowsAStoppedAssembler(t *testing.T) {
 // FileWriter: once Sync fails (e.g. EIO), the retained drain report (and any
 // article written between Drain and Sync) is released as failed rather than
 // re-drained on the next Drain, and the affected articles are rolled back into
-// poisoned with their parts and seenDone entries cleared and their written
-// latches unlatched.
+// poisoned with their parts and seenDone entries cleared, while keeping the
+// ranges they wrote.
 func TestDrainReport_FailedSyncPoisonsReportAndRollsBackArticles(t *testing.T) {
 	w := newWrittenFileWriter(t)
 	w.admitAccepted(0)
@@ -191,8 +191,13 @@ func TestDrainReport_FailedSyncPoisonsReportAndRollsBackArticles(t *testing.T) {
 	if rolled := w.takePoisoned(); !slices.Equal(rolled, []int32{0, 1}) {
 		t.Errorf("takePoisoned = %v, want [0 1] rolled back to Outstanding", rolled)
 	}
-	if r, ok := w.ownerAt(0); !ok || r.written {
-		t.Errorf("ownerAt(0) = (%+v, %v), want written=false after failed Sync", r, ok)
+	// The rolled-back article keeps the range it wrote: its redelivery is
+	// accepted (same artIdx) and a rival is refused.
+	if owner, owned := w.owned.ownerOf(Range{0, 4}, articleID{artIdx: 9}); !owned || owner.artIdx != 0 {
+		t.Errorf("ownerOf([0,4)) = (%+v, %v) after failed Sync, want article 0 still owning it", owner, owned)
+	}
+	if _, owned := w.owned.ownerOf(Range{0, 4}, articleID{artIdx: 0}); owned {
+		t.Error("the rolled-back article's own redelivery was refused after a failed Sync")
 	}
 
 	// Retry cycle: Drain + Sync where Sync now returns nil must report nothing.

@@ -9,21 +9,20 @@ import (
 
 // Offset collisions (#383, #379).
 //
-// Two articles claiming one byte offset resolve by whether the incumbent has
-// been reported Written. Every accepted article is written synchronously, so an
-// incumbent is on disk before a rival can arrive, with two exceptions: an
-// article whose write faulted, and one a failed Sync rolled back (#760), keep
-// their accepted range without a written latch.
+// Two articles claiming overlapping byte ranges resolve by whether the incumbent
+// has written. Every accepted article is written synchronously, so an incumbent
+// is on disk before a rival can arrive, with one exception: an article whose
+// write faulted owns nothing.
 //
-//   - Incumbent written → the offset is SETTLED and the ARRIVAL is rejected.
+//   - Incumbent written → the range is OWNED and the ARRIVAL is rejected.
 //     Its bytes are on disk, the next Drain reports them, and the barrier
 //     records the run naming its CRC at that offset and acks it durable.
 //     Letting a later article overwrite the range makes that record
 //     unverifiable, and failing the incumbent as well would give one article
 //     two terminal dispositions. Checked in acceptArticle, refused like any
 //     other article-level rejection.
-//   - Incumbent faulted, never written → it made no claim, so the arrival
-//     takes the offset over.
+//   - Incumbent faulted, never written → it claimed nothing, so the arrival is
+//     accepted.
 
 // --- Settled offsets: the arrival is rejected ------------------------------
 
@@ -89,25 +88,8 @@ func TestCollision_ArrivalRejectedOnceIncumbentIsWritten(t *testing.T) {
 	}
 }
 
-// TestCollision_ArrivalRejectedForZeroLengthIncumbent covers the zero-length
-// path: such an article still reaches WriteAt, still owns its offset, and so
-// still settles it.
-func TestCollision_ArrivalRejectedForZeroLengthIncumbent(t *testing.T) {
-	c := newCollisionFixture(t)
-
-	if !c.accept(1, "<empty@x>", 0, nil) {
-		t.Fatal("precondition: the zero-length incumbent was not counted")
-	}
-	c.accept(2, "<second@x>", 0, []byte("BBBB"))
-
-	if len(c.rejected) != 1 || c.rejected[0] != 2 {
-		t.Errorf("OnArticleRejected = %v, want [2] — a zero-length incumbent still "+
-			"reached WriteAt and still owns its offset", c.rejected)
-	}
-}
-
-// TestCollision_OffsetStaysSettledAfterConfirm is the reason the written flag
-// is latched on the offset rather than derived from the barrier's pending
+// TestCollision_RangeStaysOwnedAfterConfirm is the reason the written flag
+// is recorded on the range rather than derived from the barrier's pending
 // evidence.
 //
 // w.written and w.reported are what the barrier has NOT yet finished with;
@@ -116,7 +98,7 @@ func TestCollision_ArrivalRejectedForZeroLengthIncumbent(t *testing.T) {
 // that scanned those slices would see an empty set and read it as no claim —
 // so a collision arriving one checkpoint later would overwrite an article the
 // queue has already recorded as durably written.
-func TestCollision_OffsetStaysSettledAfterConfirm(t *testing.T) {
+func TestCollision_RangeStaysOwnedAfterConfirm(t *testing.T) {
 	c := newCollisionFixture(t)
 
 	if !c.accept(1, "<first@x>", 0, []byte("AAAA")) {
@@ -145,102 +127,26 @@ func TestCollision_OffsetStaysSettledAfterConfirm(t *testing.T) {
 	}
 }
 
-// TestFileWriter_OffsetSettledBy covers the predicate that decides whether an
-// arrival is refused, directly, including the ways it must answer "no" and the
-// interval-overlap cases it must refuse.
-func TestFileWriter_OffsetSettledBy(t *testing.T) {
+// TestOwnedRanges_ArrivalVerdicts covers the predicate that decides whether an
+// arrival is refused, directly, including the ways it must answer "no".
+func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
 	owner := articleID{msgID: "owner", artIdx: 1}
 	arriving := articleID{msgID: "arriving", artIdx: 2}
 
 	tests := []struct {
-		name        string
-		seed        func(w *FileWriter)
-		off         int64
-		length      int64
-		arriving    articleID
-		wantSettled bool
+		name      string
+		seed      func(w *FileWriter)
+		arriving  articleID
+		r         Range
+		wantOwned bool
 	}{
-		{
-			name:        "an unclaimed offset is not settled",
-			seed:        func(*FileWriter) {},
-			off:         0,
-			length:      64,
-			arriving:    arriving,
-			wantSettled: false,
-		},
-		{
-			name: "an exact range whose owner was never reported Written is not settled",
-			seed: func(w *FileWriter) {
-				w.accepted = []acceptedRange{{off: 0, end: 64, id: owner}}
-			},
-			off:         0,
-			length:      64,
-			arriving:    arriving,
-			wantSettled: false,
-		},
-		{
-			name: "an offset whose owner was written is settled",
-			seed: func(w *FileWriter) {
-				w.accepted = []acceptedRange{{off: 0, end: 64, id: owner, written: true}}
-			},
-			off:         0,
-			length:      64,
-			arriving:    arriving,
-			wantSettled: true,
-		},
-		{
-			name: "the owner does not settle the offset against ITSELF",
-			seed: func(w *FileWriter) {
-				w.accepted = []acceptedRange{{off: 0, end: 64, id: owner, written: true}}
-			},
-			off:    0,
-			length: 64,
-			// A redelivery of the same article must not be refused as if it
-			// were a stranger; handleSuccessArticle's dedup normally catches
-			// it first, but a write-fault retry gets past it.
-			arriving:    owner,
-			wantSettled: false,
-		},
-		{
-			name: "a partial overlap into a written range's tail is settled",
-			seed: func(w *FileWriter) {
-				w.accepted = []acceptedRange{{off: 0, end: 1000, id: owner, written: true}}
-			},
-			off:         900,
-			length:      1000,
-			arriving:    arriving,
-			wantSettled: true,
-		},
-		{
-			name: "a partial overlap into a written range's head is settled",
-			seed: func(w *FileWriter) {
-				w.accepted = []acceptedRange{{off: 1000, end: 2000, id: owner, written: true}}
-			},
-			off:         900,
-			length:      1000,
-			arriving:    arriving,
-			wantSettled: true,
-		},
-		{
-			name: "a partial overlap into a never-written range is not settled",
-			seed: func(w *FileWriter) {
-				w.accepted = []acceptedRange{{off: 0, end: 1000, id: owner}}
-			},
-			off:         900,
-			length:      1000,
-			arriving:    arriving,
-			wantSettled: false,
-		},
-		{
-			name: "an abutting range before or after an accepted range is not settled",
-			seed: func(w *FileWriter) {
-				w.accepted = []acceptedRange{{off: 1000, end: 2000, id: owner, written: true}}
-			},
-			off:         0,
-			length:      1000,
-			arriving:    arriving,
-			wantSettled: false,
-		},
+		{"an unclaimed range is not owned", func(*FileWriter) {}, arriving, Range{0, 4}, false},
+		{"the same range is owned", func(w *FileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{0, 4}, true},
+		{"a partial overlap is owned", func(w *FileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{2, 4}, true},
+		{"a partial overlap into a range's head is owned", func(w *FileWriter) { w.owned.claim(Range{1000, 1000}, owner) }, arriving, Range{900, 1000}, true},
+		{"an abutting range is not owned", func(w *FileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{4, 4}, false},
+		{"a range abutting from below is not owned", func(w *FileWriter) { w.owned.claim(Range{1000, 1000}, owner) }, arriving, Range{0, 1000}, false},
+		{"the owner does not collide with ITSELF", func(w *FileWriter) { w.owned.claim(Range{0, 4}, owner) }, owner, Range{0, 4}, false},
 	}
 
 	for _, tc := range tests {
@@ -248,36 +154,27 @@ func TestFileWriter_OffsetSettledBy(t *testing.T) {
 			w := newTestFileWriter(t)
 			tc.seed(w)
 
-			got, settled := w.offsetSettledBy(tc.off, tc.length, tc.arriving)
+			got, owned := w.owned.ownerOf(tc.r, tc.arriving)
 
-			if settled != tc.wantSettled {
-				t.Fatalf("settled = %v, want %v", settled, tc.wantSettled)
+			if owned != tc.wantOwned {
+				t.Fatalf("owned = %v, want %v", owned, tc.wantOwned)
 			}
-			if settled && got != owner {
-				t.Errorf("owner = %+v, want %+v — the caller names it in the warning",
-					got, owner)
+			if owned && got != owner {
+				t.Errorf("owner = %+v, want %+v — the caller names it in the warning", got, owner)
 			}
 		})
 	}
 }
 
-// TestCollision_ReacceptDoesNotUnsettleAWrittenOffset pins that the written
-// latch survives a re-accept by its own owner whose write then FAILS.
-//
-// Accept records the arrival as the offset's owner. For an article that has
-// already been written, re-recording it as a fresh owner resets `written` to
-// false, and a re-accept whose write succeeds re-latches it in noteWritten and
-// hides the defect. One whose write fails does not: the offset is left
-// UNSETTLED over bytes the barrier may already have acked, so the next article
-// to claim it is no longer refused and overwrites them — the double
-// disposition again.
+// TestCollision_FailedReacceptKeepsTheWrittenRange pins that the range survives
+// a re-accept by its own owner whose write then FAILS: the owner keeps the
+// range it wrote, so the next article to claim it is still refused.
 //
 // seenDone is keyed on ArtIdx, so handleSuccessArticle's dedup arm recognises a
-// PLAIN redelivery regardless of its Message-ID and returns before
-// acceptArticle is called, which is why this calls acceptArticle directly. A
-// write fault is what reaches a second Accept: fail deletes the seenDone entry
-// and never sets seenFailed, while accepted is never removed by design.
-func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
+// PLAIN redelivery and returns before acceptArticle is called, which is why this
+// calls acceptArticle directly. A write fault is what reaches a second Accept:
+// fail deletes the seenDone entry and never sets seenFailed.
+func TestCollision_FailedReacceptKeepsTheWrittenRange(t *testing.T) {
 	c := newCollisionFixture(t)
 	id := articleID{msgID: "<first@x>", artIdx: 1}
 	req := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "<first@x>", Offset: 0}
@@ -287,14 +184,10 @@ func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
 	if err := c.a.acceptArticle(c.f, id, req); err != nil {
 		t.Fatalf("accept incumbent: %v", err)
 	}
-	if owner, ok := c.f.w.ownerAt(0); !ok || !owner.written {
-		t.Fatal("precondition: the incumbent was not latched as written")
+	if owner, owned := c.f.w.owned.ownerOf(Range{0, 4}, articleID{artIdx: 99}); !owned || owner != id {
+		t.Fatalf("precondition: ownerOf = %+v, %v; want the incumbent", owner, owned)
 	}
 
-	// Staged as the write-fault retry that is the real route here: fail rolls
-	// the part back and clears the seenDone entry, then the redelivery is
-	// admitted afresh. Admitting a second time without the fail would charge
-	// partsWritten twice for one article.
 	c.f.w.fail(id)
 	c.f.w.admitAccepted(id.artIdx)
 	c.f.w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
@@ -303,12 +196,6 @@ func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
 		t.Fatal("precondition: the injected write fault did not surface")
 	}
 
-	if owner, ok := c.f.w.ownerAt(0); !ok || !owner.written {
-		t.Error("a re-accept by the offset's own owner cleared the written latch, " +
-			"unsettling an offset whose bytes are already durable")
-	}
-
-	// The consequence: a genuinely different article must still be refused.
 	second := articleID{msgID: "<second@x>", artIdx: 2}
 	req2 := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "<second@x>", Offset: 0, Data: []byte("BBBB")}
 	c.f.w.admitAccepted(second.artIdx)
@@ -317,15 +204,12 @@ func TestCollision_ReacceptDoesNotUnsettleAWrittenOffset(t *testing.T) {
 	}
 
 	if len(c.rejected) != 1 || c.rejected[0] != 2 {
-		t.Errorf("OnArticleRejected = %v, want [2] — the offset was unsettled by the "+
-			"re-accept, so the arrival overwrote an article the barrier has acked",
-			c.rejected)
+		t.Errorf("OnArticleRejected = %v, want [2] — the failed re-accept released the "+
+			"range, so the arrival overwrote an article the barrier has acked", c.rejected)
 	}
-	// The only article routed to Outstanding is the re-accept whose write
-	// failed; the written incumbent's disposition is the barrier's alone.
 	if len(c.unwritten) != 0 {
 		t.Errorf("OnArticlesUnwritten = %v: acceptArticle does not route, so nothing "+
-			"may have reached the callback — the settled arrival is rejected, not rolled back", c.unwritten)
+			"may have reached the callback", c.unwritten)
 	}
 }
 
@@ -362,16 +246,17 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 	}
 }
 
-// TestFileWriter_RolledBackOwnerKeepsItsOffsetUntilReplaced pins what a write
-// fault leaves behind: the article loses its part and its seenDone entry, but
-// keeps its accepted range without having written. The next different
-// article to claim the offset replaces it, and once that one is written the
-// offset is settled against a third.
-func TestFileWriter_RolledBackOwnerKeepsItsOffsetUntilReplaced(t *testing.T) {
+// TestFileWriter_FaultedWriteOwnsNothing pins what a write fault leaves
+// behind: the article loses its part and its seenDone entry and, because its
+// range is claimed only after the write returned nil, owns nothing. A different
+// article at the same range is accepted, and once written it owns the range
+// against a third.
+func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 	w := newTestFileWriter(t)
 	first := articleID{msgID: "first", artIdx: 1}
 	second := articleID{msgID: "second", artIdx: 2}
 	third := articleID{msgID: "third", artIdx: 3}
+	r := Range{0, 4}
 
 	realWrite := w.writeAt
 	w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
@@ -382,12 +267,11 @@ func TestFileWriter_RolledBackOwnerKeepsItsOffsetUntilReplaced(t *testing.T) {
 	if w.parts() != 0 {
 		t.Fatalf("parts = %d after the rollback, want 0", w.parts())
 	}
-	owner, taken := w.ownerAt(0)
-	if !taken || owner.id != first || owner.written {
-		t.Fatalf("ownerAt(0) = %+v (taken=%v), want the rolled-back article, unwritten", owner, taken)
+	if owner, owned := w.owned.ownerOf(r, second); owned {
+		t.Fatalf("ownerOf = %+v after a faulted write, want no owner", owner)
 	}
-	if _, settled := w.offsetSettledBy(0, 4, second); settled {
-		t.Fatal("an offset owned by a rolled-back article was settled against a rival")
+	if _, owned := w.owned.ownerOf(r, second); owned {
+		t.Fatal("a range whose only writer faulted was owned against a rival")
 	}
 
 	w.writeAt = realWrite
@@ -395,10 +279,7 @@ func TestFileWriter_RolledBackOwnerKeepsItsOffsetUntilReplaced(t *testing.T) {
 	if err := w.Accept(second, 0, []byte("BBBB"), 0); err != nil {
 		t.Fatalf("accept second: %v", err)
 	}
-	if owner, _ := w.ownerAt(0); owner.id != second || !owner.written {
-		t.Errorf("ownerAt(0) = %+v, want the second article, written", owner)
-	}
-	if got, settled := w.offsetSettledBy(0, 4, third); !settled || got != second {
-		t.Errorf("offsetSettledBy(third) = %+v, %v; want the second article settled", got, settled)
+	if got, owned := w.owned.ownerOf(r, third); !owned || got != second {
+		t.Errorf("ownerOf(third) = %+v, %v; want the second article to own it", got, owned)
 	}
 }

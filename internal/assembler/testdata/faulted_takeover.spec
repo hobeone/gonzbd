@@ -1,31 +1,21 @@
 pkg ./internal/assembler/
 run TestFaultedIncumbent_TakenOverThenRedeliveryRefused$
 
-[the takeover also resolves the faulted incumbent permanently failed]
+[a faulted incumbent claims its range before the write returns]
 file internal/assembler/filewriter.go
 --- anchor
-		if r.overlaps(off, end) && r.id.sameArticle(id) {
+	_, err := w.writeAt(data, off)
 --- replace
-		if r.overlaps(off, end) && !r.id.sameArticle(id) {
-			w.admitPermanentFailure(r.id.artIdx)
-		}
-		if r.overlaps(off, end) && r.id.sameArticle(id) {
---- end
-
-[a never-written incumbent settles its range against the rival]
-file internal/assembler/filewriter.go
---- anchor
-		if r.id.sameArticle(arriving) || !r.written {
---- replace
-		if r.id.sameArticle(arriving) {
+	w.owned.claim(Range{Off: off, Len: int64(len(data))}, id)
+	_, err := w.writeAt(data, off)
 --- end
 
 [the redelivery is let past the rival's written range]
-file internal/assembler/filewriter.go
+file internal/assembler/ranges.go
 --- anchor
-		if r.id.sameArticle(arriving) || !r.written {
+		if o.s[i].r.intersects(r) && !o.s[i].id.sameArticle(arriving) {
 --- replace
-		if r.id.sameArticle(arriving) || true {
+		if false {
 --- end
 
 [the write fault is not reported to OnArticlesUnwritten]

@@ -15,12 +15,13 @@ import (
 // different article claiming the same range, and the faulted article's
 // redelivery.
 //
-// The faulted article is handed back to Outstanding once, at the fault. The
-// rival that takes its range over must not resolve it a second time: failing
-// it permanently on top of that OnArticlesUnwritten would give one article two
-// dispositions. Its redelivery is then refused against the rival's written
-// bytes, which is where it is counted failed, and only that redelivery
-// completes the file.
+// The faulted article is handed back to Outstanding once, at the fault, and
+// owns nothing (FileWriter.owned is claimed only after a nil write). The rival
+// writes the unowned range and must not resolve the faulted article a second
+// time: failing it permanently on top of that OnArticlesUnwritten would give
+// one article two dispositions. Its redelivery is then refused against the
+// rival's written bytes, which is where it is counted failed, and only that
+// redelivery completes the file.
 func TestFaultedIncumbent_TakenOverThenRedeliveryRefused(t *testing.T) {
 	a := newHelperAssembler()
 	path := filepath.Join(t.TempDir(), "takeover.dat")

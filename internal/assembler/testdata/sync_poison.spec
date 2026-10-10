@@ -54,17 +54,6 @@ file internal/assembler/filewriter.go
 	w.reported = nil
 --- end
 
-[rollbackSyncedArticle omits unlatching written on w.accepted]
-file internal/assembler/filewriter.go
---- anchor
-		if w.accepted[i].id.artIdx == artIdx {
-			w.accepted[i].written = false
-		}
---- replace
-		if w.accepted[i].id.artIdx == artIdx {
-		}
---- end
-
 [rollbackSyncedArticle omits duplicate check on w.poisoned]
 file internal/assembler/filewriter.go
 --- anchor

@@ -3,18 +3,16 @@ package assembler
 import (
 	"bytes"
 	"os"
+	"slices"
 	"testing"
 )
 
 // TestOverlap_PartialRangeOverwritesADurableArticle pins #387/#759: two
-// articles whose byte ranges overlap without sharing a start offset must not
-// both be written.
+// articles whose byte ranges overlap without sharing a start offset are
+// detected, and the arrival is refused.
 //
-// A occupies [0, 1000). B occupies [500, 1500). They overlap on [500, 1000),
-// without sharing A's start offset 0.
-//
-// Both articles go straight to WriteAt, so A's bytes are on disk before B
-// arrives.
+// A occupies [0, 1000). B occupies [500, 1500). They overlap on [500, 1000);
+// A's bytes are on disk before B arrives, so B is the loser.
 func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
@@ -73,7 +71,7 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 // file does not grow.
 //
 // A0 [0,100), A1 [100,200), X [150,200). X overlaps A1 without sharing its
-// start offset.
+// start offset, and is refused.
 func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
@@ -203,7 +201,7 @@ func TestOverlap_StraddlingArticleIsRefusedAndCountedAsFailed(t *testing.T) {
 // TestOverlap_BadArticleArrivingFirstRefusesItsNeighbours pins the accepted
 // arrival-order limitation of #759: when the misplaced article B [900, 1900)
 // arrives before A [0, 1000) and C [1000, 2000), A and C both intersect B's
-// accepted range and are refused so no splice is written.
+// owned range and are refused so no splice is written.
 func TestOverlap_BadArticleArrivingFirstRefusesItsNeighbours(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
@@ -240,17 +238,20 @@ func TestOverlap_BadArticleArrivingFirstRefusesItsNeighbours(t *testing.T) {
 }
 
 // TestOverlap_SameOffsetDifferentLengthIsRefused pins that an arriving article
-// sharing start offset 0 with a written incumbent [0, 1000) is refused whatever
-// its length (zero, [0, 500) or [0, 1500)), so the incumbent is neither
-// partially overwritten nor extended over the neighbour at [1000, 2000).
+// sharing start offset 0 with a written incumbent [0, 1000) is refused at any
+// non-zero length ([0, 500) or [0, 1500)), so the incumbent is neither
+// partially overwritten nor extended over the neighbour at [1000, 2000). A
+// zero-length arrival occupies no bytes, intersects nothing, and is accepted
+// without touching A.
 func TestOverlap_SameOffsetDifferentLengthIsRefused(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		arrivalLen int
+		name         string
+		arrivalLen   int
+		wantRejected []int32
 	}{
-		{"zero_0", 0},
-		{"shorter_500", 500},
-		{"longer_1500", 1500},
+		{"zero_0", 0, nil},
+		{"shorter_500", 500, []int32{1}},
+		{"longer_1500", 1500, []int32{1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			arrivalLen := tc.arrivalLen
@@ -281,8 +282,9 @@ func TestOverlap_SameOffsetDifferentLengthIsRefused(t *testing.T) {
 			// C [1000, 2000) completes the file.
 			submit(2, "c@example", 1000, 'C', 1000)
 
-			if len(rejected) != 1 || rejected[0] != 1 {
-				t.Errorf("OnArticleRejected = %v, want [1] (B refused despite same start offset)", rejected)
+			if !slices.Equal(rejected, tc.wantRejected) {
+				t.Errorf("OnArticleRejected = %v, want %v (B at A's start offset, len %d)",
+					rejected, tc.wantRejected, arrivalLen)
 			}
 			got, err := os.ReadFile(f.w.path)
 			if err != nil {
@@ -304,7 +306,7 @@ func TestOverlap_SameOffsetDifferentLengthIsRefused(t *testing.T) {
 // TestOverlap_ZeroLengthArticleDoesNotBlockCoveringNeighbour pins that a
 // zero-length article accepted at an interior offset [500, 500) does not
 // block a subsequent legitimate article [0, 1000) covering offset 500, nor
-// break the sorted disjoint interval invariant for later overlap checks.
+// break the owned set's ordering for later overlap checks.
 func TestOverlap_ZeroLengthArticleDoesNotBlockCoveringNeighbour(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
@@ -351,94 +353,102 @@ func TestOverlap_ZeroLengthArticleDoesNotBlockCoveringNeighbour(t *testing.T) {
 	}
 }
 
-func TestAcceptedRange_Overlaps(t *testing.T) {
-	r := acceptedRange{off: 100, end: 200, id: articleID{artIdx: 1}}
-
-	overlapCases := []struct {
-		name string
-		off  int64
-		end  int64
-		want bool
+// TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused pins that
+// acceptArticle probes the arrival's whole range, not its first byte. In both
+// cases the arrival starts BEFORE the incumbent, so a probe of its first byte
+// alone finds nothing, the arrival is written over the incumbent, and claim
+// panics on the intersecting entry.
+func TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		incOff, arrOff    int64
+		incLen, arrLen    int
+		incByte, arrivals byte
 	}{
-		{"exact match", 100, 200, true},
-		{"zero-length at start", 100, 100, true},
-		{"zero-length at interior offset", 150, 150, false},
-		{"1-byte overlap at head", 50, 101, true},
-		{"1-byte overlap at tail", 199, 250, true},
-		{"contained", 120, 180, true},
-		{"enclosing", 50, 250, true},
-		{"abutting before", 0, 100, false},
-		{"abutting after", 200, 300, false},
-		{"disjoint before", 0, 50, false},
-		{"disjoint after", 250, 300, false},
-	}
-	for _, tc := range overlapCases {
+		{"left_straddle", 1000, 900, 1000, 200, 'C', 'B'},
+		{"enclosing", 3000, 2500, 100, 1000, 'D', 'E'},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := r.overlaps(tc.off, tc.end); got != tc.want {
-				t.Errorf("overlaps(%d, %d) = %v, want %v", tc.off, tc.end, got, tc.want)
+			a := newHelperAssembler()
+			var rejected []int32
+			a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+				rejected = append(rejected, artIdx)
+			}
+			f := newHelperFile(t, t.TempDir(), "before.dat", 4000)
+			f.info.TotalParts = 2
+			open := map[fileKey]*openFile{{jobID: "job", fileIdx: 0}: f}
+			completedSet := map[fileKey]struct{}{}
+			submit := func(idx int32, off int64, b byte, n int) {
+				t.Helper()
+				defer func() {
+					if p := recover(); p != nil {
+						t.Fatalf("article %d at [%d,%d) panicked the worker: %v", idx, off, off+int64(n), p)
+					}
+				}()
+				a.processRequest(WriteRequest{
+					JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: string('a'+idx) + "@example",
+					Offset: off, Data: bytes.Repeat([]byte{b}, n),
+				}, open, completedSet)
+			}
+
+			submit(0, tc.incOff, tc.incByte, tc.incLen)
+			submit(1, tc.arrOff, tc.arrivals, tc.arrLen)
+
+			if !slices.Equal(rejected, []int32{1}) {
+				t.Errorf("OnArticleRejected = %v, want [1] — the arrival [%d,%d) intersects the "+
+					"incumbent [%d,%d)", rejected, tc.arrOff, tc.arrOff+int64(tc.arrLen),
+					tc.incOff, tc.incOff+int64(tc.incLen))
+			}
+			got, err := os.ReadFile(f.info.Path)
+			if err != nil {
+				t.Fatalf("read back: %v", err)
+			}
+			inc := got[tc.incOff : tc.incOff+int64(tc.incLen)]
+			if !bytes.Equal(inc, bytes.Repeat([]byte{tc.incByte}, tc.incLen)) {
+				t.Errorf("the incumbent's range was overwritten by the arrival")
 			}
 		})
 	}
-
-	zeroIncumbent := acceptedRange{off: 150, end: 150, id: articleID{artIdx: 2}, written: true}
-	if zeroIncumbent.overlaps(100, 200) {
-		t.Error("zero-length incumbent [150,150) must not overlap covering [100,200)")
-	}
-	if !zeroIncumbent.overlaps(150, 200) {
-		t.Error("zero-length incumbent [150,150) must conflict at identical start offset 150")
-	}
 }
 
-func TestFileWriter_RecordAccepted_MaintainsSortedDisjointIntervals(t *testing.T) {
-	w := newTestFileWriter(t)
-	a0 := articleID{msgID: "a0", artIdx: 0}
-	a1 := articleID{msgID: "a1", artIdx: 1}
-	a2 := articleID{msgID: "a2", artIdx: 2}
+// TestOverlap_ZeroLengthArrivalInsideOwnedRangeIsAccepted pins that an empty
+// article whose offset lies inside another article's owned range costs
+// nothing: ownerOf finds no intersection for it, so acceptArticle lets it
+// through, and claim must record nothing rather than panic on the entry that
+// covers its offset.
+func TestOverlap_ZeroLengthArrivalInsideOwnedRangeIsAccepted(t *testing.T) {
+	a := newHelperAssembler()
+	var rejected []int32
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+		rejected = append(rejected, artIdx)
+	}
+	f := newHelperFile(t, t.TempDir(), "empty-inside.dat", 1000)
+	f.info.TotalParts = 3
+	open := map[fileKey]*openFile{{jobID: "job", fileIdx: 0}: f}
+	completedSet := map[fileKey]struct{}{}
 
-	// Out-of-order insertion: [2000, 3000), then [0, 1000), then [1000, 2000).
-	w.recordAccepted(a2, 2000, 3000)
-	w.recordAccepted(a0, 0, 1000)
-	w.recordAccepted(a1, 1000, 2000)
+	a.processRequest(WriteRequest{
+		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a@example",
+		Offset: 0, Data: bytes.Repeat([]byte{'A'}, 1000),
+	}, open, completedSet)
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Fatalf("an empty article at offset 500 panicked the worker: %v", p)
+			}
+		}()
+		a.processRequest(WriteRequest{
+			JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "z@example", Offset: 500,
+		}, open, completedSet)
+	}()
 
-	if len(w.accepted) != 3 {
-		t.Fatalf("len(w.accepted) = %d, want 3", len(w.accepted))
+	if len(rejected) != 0 {
+		t.Errorf("OnArticleRejected = %v, want none — an empty article occupies no bytes", rejected)
 	}
-	if got := w.firstCandidateIdx(1500); got != 1 {
-		t.Errorf("firstCandidateIdx(1500) = %d, want 1", got)
+	if got := f.w.parts(); got != 2 {
+		t.Errorf("parts = %d, want 2 — the empty article is counted toward the file", got)
 	}
-	if _, ok := w.ownerAt(500); ok {
-		t.Error("ownerAt(500) = true, want false for interior offset")
-	}
-	if r, ok := w.ownerAt(1000); !ok || r.id != a1 {
-		t.Errorf("ownerAt(1000) = (%+v, %v), want a1", r, ok)
-	}
-
-	// Latch a1 as written via noteWritten, then re-accept a1 over an overlapping
-	// subrange [1200, 1800): the merged interval [1000, 2000) and written latch
-	// must survive so a stranger at [1900, 1950) is still refused.
-	w.noteWritten(a1, 1000, 1000, 0)
-	w.recordAccepted(a1, 1200, 1800)
-
-	r, ok := w.ownerAt(1000)
-	if !ok || !r.written || r.off != 1000 || r.end != 2000 {
-		t.Fatalf("after same-article re-accept: ownerAt(1000) = (%+v, %v), want [1000,2000) written=true", r, ok)
-	}
-	if owner, settled := w.offsetSettledBy(1900, 50, articleID{msgID: "stranger", artIdx: 9}); !settled || owner != a1 {
-		t.Errorf("offsetSettledBy(1900, 50) = (%+v, %v), want (a1, true)", owner, settled)
-	}
-
-	// a0 was never reported Written (as after a write fault), so it made no
-	// claim: a stranger straddling it is not settled, and recording the
-	// stranger drops a0's range rather than keeping two owners for [0, 1000).
-	stranger := articleID{msgID: "stranger", artIdx: 9}
-	if owner, settled := w.offsetSettledBy(500, 500, stranger); settled {
-		t.Errorf("offsetSettledBy(500, 500) = (%+v, true) over unwritten a0, want unsettled", owner)
-	}
-	w.recordAccepted(stranger, 500, 1000)
-	if _, ok := w.ownerAt(0); ok {
-		t.Error("ownerAt(0) still names a0 after a stranger took its unwritten range")
-	}
-	if r, ok := w.ownerAt(500); !ok || r.id != stranger || r.end != 1000 {
-		t.Errorf("ownerAt(500) = (%+v, %v), want the stranger over [500,1000)", r, ok)
+	if len(f.w.owned.s) != 1 || f.w.owned.s[0].r != (Range{0, 1000}) || f.w.owned.s[0].id.artIdx != 0 {
+		t.Errorf("owned = %+v, want only article 0's [0,1000)", f.w.owned.s)
 	}
 }
