@@ -121,8 +121,8 @@ type Application struct {
 	lowDiskCancel  context.CancelFunc
 	lowDiskWg      sync.WaitGroup
 	// reloadMu serializes ReloadDownloader calls end-to-end. It is separate
-	// from mu (which only guards the brief downloader/downloaderStats field
-	// swap) so concurrent reloads queue up instead of interleaving their
+	// from mu (which ReloadDownloader holds only for its opening snapshot and
+	// the closing start and downloader/downloaderStats swap) so concurrent reloads queue up instead of interleaving their
 	// Stop/setCompletions/Quiesce/ClearEmittedForReload/Start sequences, which
 	// would otherwise risk wiring app.downloader and app.pipeline's
 	// completions source to two different downloader instances.

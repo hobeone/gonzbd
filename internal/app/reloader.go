@@ -134,11 +134,12 @@ func (app *Application) ReloadGeneralOptions(g config.GeneralConfig) {
 // and app.pipeline's completions source wired to two different downloader
 // instances (leaking the loser's goroutines and stalling dispatch on the
 // orphaned one). app.mu is only held within that section to snapshot the old
-// downloader and, at the end, to swap in the new one — stopping the old
-// downloader and building/starting the new one happen without app.mu held,
-// so app.mu-guarded reads (Speed, ServerStatus, PauseDownloads, etc.) are
-// never blocked on downloader shutdown or startup work. See AGENTS.md
-// "never hold a mutex during disk I/O or network calls" and issue #118.
+// downloader and, at the end, to start the new one and swap it in — stopping
+// the old downloader, quiescing the pipeline and building the new one happen
+// without app.mu held, so app.mu-guarded reads (Speed, ServerStatus,
+// PauseDownloads, etc.) are never blocked on downloader shutdown. Start only
+// launches goroutines. See AGENTS.md "never hold a mutex during disk I/O or
+// network calls" and issue #118.
 func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	app.reloadMu.Lock()
 	defer app.reloadMu.Unlock()
@@ -205,11 +206,22 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 		servers[i] = downloader.NewServer(sc)
 	}
 	newDownloader := downloader.New(app.dispatcher, servers, app.meter, app.buildDownloaderOptions(), app.log)
+
+	// The pause decision, Start and the swap share one app.mu span, so the
+	// new downloader is paused before any of its workers exist (#791), and a
+	// pause or resume cannot fall between the decision and the swap and
+	// reach only the old downloader. pauseReason is written only under
+	// app.mu: `git grep -n 'app[.]pauseReason = ' -- '*.go' ':!*_test.go'`
+	// finds 4 lines, each inside an app.mu span. Start dials nothing;
+	// connection workers dial on their first request.
+	app.mu.Lock()
+	if app.pauseReason != pauseReasonNone {
+		newDownloader.Pause()
+	}
 	if err := newDownloader.Start(app.ctx); err != nil {
+		app.mu.Unlock()
 		return err
 	}
-
-	app.mu.Lock()
 	app.downloader = newDownloader
 	app.downloaderStats = newDownloader
 	app.mu.Unlock()
