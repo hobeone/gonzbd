@@ -228,6 +228,20 @@ func (j *Job) FileRows(fileIdx int) []durability.WrittenRow {
 	return sortedClone(j.progress.written[fileIdx])
 }
 
+// FileState returns one file's state as the record stores it, read under the
+// job's read lock without cloning the progress record. ok is false when the
+// job has no progress or fi names no file.
+func (j *Job) FileState(fi int) (st durability.FileState, ok bool) {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	p := j.progress
+	if p == nil || fi < 0 || fi >= len(p.files) {
+		return durability.FileState{}, false
+	}
+	f := p.files[fi]
+	return durability.FileState{FileIdx: fi, Complete: f.Complete, Filename: f.Filename, FetchPolicy: uint8(f.Fetch)}, true
+}
+
 // sortedClone returns rows copied into offset order.
 func sortedClone(rows []durability.WrittenRow) []durability.WrittenRow {
 	out := slices.Clone(rows)

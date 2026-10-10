@@ -241,6 +241,31 @@ func TestInstallRows_KeepsACopyOfTheFirstInstall(t *testing.T) {
 	}
 }
 
+// TestJobFileState pins the record's view of one file: each field read from
+// the file's progress, and no state for a file the job does not have.
+func TestJobFileState(t *testing.T) {
+	t.Parallel()
+	j := verifiedTestJob(t)
+	if err := j.SetFileFilename(1, "b.bin"); err != nil {
+		t.Fatalf("SetFileFilename: %v", err)
+	}
+	if err := j.SetFileFetchPolicy(1, FetchIfNeeded); err != nil {
+		t.Fatalf("SetFileFetchPolicy: %v", err)
+	}
+	if err := j.MarkFileComplete(1); err != nil {
+		t.Fatalf("MarkFileComplete: %v", err)
+	}
+	want := durability.FileState{FileIdx: 1, Complete: true, Filename: "b.bin", FetchPolicy: uint8(FetchIfNeeded)}
+	if got, ok := j.FileState(1); !ok || got != want {
+		t.Errorf("FileState(1) = %+v, %v; want %+v, true", got, ok, want)
+	}
+	for _, fi := range []int{-1, 2} {
+		if _, ok := j.FileState(fi); ok {
+			t.Errorf("FileState(%d) reported a file the job does not have", fi)
+		}
+	}
+}
+
 // TestManifestArticleInFile pins the one range check a written row passes: the
 // file must exist and the article must sit inside that file's range.
 func TestManifestArticleInFile(t *testing.T) {

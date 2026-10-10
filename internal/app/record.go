@@ -432,13 +432,9 @@ func (app *Application) enqueueResumedCompletion(jobID string, fileIdx int, fail
 // once the file was finished: complete=1 never reaches SQLite before its
 // fsync.
 func (app *Application) markFileDirty(j *job.Job, fi int) {
-	p := j.Progress()
-	if p == nil || fi < 0 || fi >= p.NumFiles() {
+	st, ok := j.FileState(fi)
+	if !ok {
 		return
 	}
-	app.recorder.markDirty(j, fi, durability.FileState{
-		Complete:    p.FileComplete(fi),
-		Filename:    p.FileFilename(fi),
-		FetchPolicy: uint8(p.FileFetchPolicy(fi)),
-	})
+	app.recorder.markDirty(j, fi, st)
 }
