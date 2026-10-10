@@ -114,7 +114,7 @@ func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 
 // JobCheckpointState is the part of a job's queue-row figures that lives in
 // the application rather than in the queue: why the job is parked. The name
-// predates the loose-record design; nothing here is a checkpoint.
+// predates the loose-record design; the type holds only stall state.
 //
 // The queue listing already holds every job's progress, so the written-bytes
 // figure is derived from that and this struct carries only what the

@@ -13,7 +13,7 @@ reviews:
       instructions: |
         This package is a job-lifecycle state machine and it is fully wired
         into production: it is imported across the app, api, dispatch, sched,
-        downloader, checkpoint and postproc layers, not held behind a future
+        downloader and postproc layers, not held behind a future
         integration. So "this is unused" IS a valid finding here — an exported
         symbol with no production caller is the class #297 tracks.
 

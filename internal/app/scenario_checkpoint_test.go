@@ -124,7 +124,7 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 			p0, p1, p2 = p.ArticleDone(0), p.ArticleDone(1), p.ArticleDone(2)
 		}
 		runs, _ := durability.NewStore(repo.DB()).WrittenRows(t.Context(), j.ID())
-		t.Fatalf("timed out waiting for checkpoint on disk to capture mid-download state: stalls=%d p0=%v p1=%v p2=%v f0=%d f1=%d f2=%d runs=%+v",
+		t.Fatalf("timed out waiting for the recorder write on disk to capture mid-download state: stalls=%d p0=%v p1=%v p2=%v f0=%d f1=%d f2=%d runs=%+v",
 			server.StallCount(), p0, p1, p2,
 			server.FetchCount(msgIDs[0]), server.FetchCount(msgIDs[1]), server.FetchCount(msgIDs[2]), runs)
 	}
