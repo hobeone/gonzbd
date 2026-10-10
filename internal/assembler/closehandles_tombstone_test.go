@@ -9,7 +9,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
-// TestCloseJobHandles_TombstonesEvenWhenTheDrainFailed pins the close arm's
+// TestCloseJobHandles_TombstonesEvenWhenTheSyncFailed pins the close arm's
 // tombstones in the FAILING direction, which is the direction the per-file one
 // was briefly broken in.
 //
@@ -24,7 +24,7 @@ import (
 // Gating either tombstone on success protects no re-dispatch: the caller,
 // enqueuePostProc, admits the job first, and the downloader does not dispatch
 // an admitted job.
-func TestCloseJobHandles_TombstonesEvenWhenTheDrainFailed(t *testing.T) {
+func TestCloseJobHandles_TombstonesEvenWhenTheSyncFailed(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
 	a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
@@ -61,7 +61,7 @@ func TestCloseJobHandles_TombstonesEvenWhenTheDrainFailed(t *testing.T) {
 // The arm once acked with a bare close, so the fault it had just computed was
 // never sent and enqueuePostProc handed the job to par2, unrar and cleanup over
 // a file whose unsynced bytes never reached the platter. The only trace was a
-// Warn inside drainAndClose.
+// Warn inside syncAndClose.
 //
 // It pins the SEND, and only the send: it drives dispatchRequest directly and
 // reads the ack itself, so it never calls CloseJobHandles. Under its previous

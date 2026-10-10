@@ -1,5 +1,5 @@
 pkg ./internal/assembler/
-run Test(Sync_ActuallyIssuesTheFsync|Sync_FailedSyncRollsBackEveryUnsyncedArticle|Sync_SuccessCoversTheArticlesWrittenBeforeIt|FileWriter_PoisonSyncAndRollbackSyncedArticle|DrainAndClose_FailedSyncRoutesRolledBackArticles|OptionsSyncFile_ReachesTheCompletionFsync)$
+run Test(Sync_ActuallyIssuesTheFsync|Sync_FailedSyncRollsBackEveryUnsyncedArticle|Sync_SuccessCoversTheArticlesWrittenBeforeIt|FileWriter_PoisonSyncAndRollbackSyncedArticle|SyncAndClose_FailedSyncRoutesRolledBackArticles|OptionsSyncFile_ReachesTheCompletionFsync)$
 
 [Sync omits poisonSync on fsync error]
 file internal/assembler/filewriter.go
@@ -74,7 +74,7 @@ file internal/assembler/assembler.go
 	if syncFn := a.opts.SyncFile; false && syncFn != nil {
 --- end
 
-[drainAndClose omits releasePoisoned after failed Sync]
+[syncAndClose omits releasePoisoned after failed Sync]
 file internal/assembler/assembler.go
 --- anchor
 		a.releasePoisoned(f)

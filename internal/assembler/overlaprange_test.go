@@ -7,13 +7,13 @@ import (
 	"testing"
 )
 
-// TestOverlap_PartialRangeOverwritesADurableArticle pins #387/#759: two
+// TestOverlap_PartialRangeOverlapIsRefused pins #387/#759: two
 // articles whose byte ranges overlap without sharing a start offset are
 // detected, and the arrival is refused.
 //
 // A occupies [0, 1000). B occupies [500, 1500). They overlap on [500, 1000);
 // A's bytes are on disk before B arrives, so B is the loser.
-func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
+func TestOverlap_PartialRangeOverlapIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
 

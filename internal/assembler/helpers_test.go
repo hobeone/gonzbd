@@ -154,7 +154,7 @@ func TestCloseAll(t *testing.T) {
 	f2.w.key = fileKey{jobID: "job", fileIdx: 1}
 	open := map[fileKey]*openFile{f1.w.key: f1, f2.w.key: f2}
 
-	a.drainAndCloseAll(open)
+	a.syncAndCloseAll(open)
 
 	if completions != 0 {
 		t.Errorf("closeAll fired %d completion callbacks, want 0", completions)
@@ -178,27 +178,27 @@ func TestCloseAll_ContinuesPastAFailedClose(t *testing.T) {
 	good := newHelperFile(t, dir, "good.dat", 0)
 	good.w.key = fileKey{jobID: "job", fileIdx: 1}
 
-	a.drainAndCloseAll(map[fileKey]*openFile{bad.w.key: bad, good.w.key: good})
+	a.syncAndCloseAll(map[fileKey]*openFile{bad.w.key: bad, good.w.key: good})
 
 	if err := good.w.handle.Close(); err == nil {
 		t.Error("the second handle was left open after the first failed to close")
 	}
 }
 
-// TestDrainAndClose_KeepsWrittenBytesAndClosesTheHandle pins the shutdown
+// TestSyncAndClose_KeepsWrittenBytesAndClosesTheHandle pins the shutdown
 // ordering: an accepted article's bytes are on disk before the handle closes,
 // and the close happens.
-func TestDrainAndClose_KeepsWrittenBytesAndClosesTheHandle(t *testing.T) {
+func TestSyncAndClose_KeepsWrittenBytesAndClosesTheHandle(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
-	f := newHelperFile(t, dir, "drainclose.dat", 0)
+	f := newHelperFile(t, dir, "syncclose.dat", 0)
 
 	if err := f.w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("abcdefgh")); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := a.drainAndClose(f); err != nil {
-		t.Fatalf("drainAndClose: %v", err)
+	if err := a.syncAndClose(f); err != nil {
+		t.Fatalf("syncAndClose: %v", err)
 	}
 
 	st, err := os.Stat(f.info.Path)
@@ -206,10 +206,10 @@ func TestDrainAndClose_KeepsWrittenBytesAndClosesTheHandle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if st.Size() != 8 {
-		t.Errorf("file is %d bytes after drainAndClose, want 8", st.Size())
+		t.Errorf("file is %d bytes after syncAndClose, want 8", st.Size())
 	}
 	if err := f.w.handle.Close(); err == nil {
-		t.Error("the handle was still open after drainAndClose")
+		t.Error("the handle was still open after syncAndClose")
 	}
 }
 
