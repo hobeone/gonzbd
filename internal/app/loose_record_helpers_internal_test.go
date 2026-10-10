@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
 	"syscall"
 	"testing"
@@ -62,6 +64,46 @@ func TestVerifyAndAttach_InstallsWhatTheRecordProves(t *testing.T) {
 		if got, want := articleDone(fresh, art), art < 2; got != want {
 			t.Errorf("article %d Done = %v, want %v", art, got, want)
 		}
+	}
+}
+
+// TestVerifyAndAttach_MissingDirectoryParksTheJob is the hydration's half of
+// TestRetryHistoryJob_AfterDownloadDirDeleted: a complete=0 file whose
+// directory is gone may sit on a share that has not come up, so the hydration
+// parks the job on a verify fault naming the directory and keeps every row.
+func TestVerifyAndAttach_MissingDirectoryParksTheJob(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a := env.newApp(t)
+	j0 := a.addJob(t, "nodir", 3, 2)
+	env.writeFileA(t, j0, 3, 0, 1)
+	a.recordFileA(t, j0.ID(), false, 0, 1)
+	dir := filepath.Dir(env.filePath(j0))
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove the job directory: %v", err)
+	}
+	m, err := j0.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+
+	fresh := job.New(j0.ID(), j0.Name(), job.Policy{})
+	err = a.residency.verifyAndAttach(t.Context(), fresh, m)
+	if !errors.Is(err, dispatch.ErrResidencyFault) {
+		t.Fatalf("verifyAndAttach = %v, want a residency fault: a missing directory at a hydration is not absence", err)
+	}
+	if vf, ok := errors.AsType[*errVerifyFault](err); !ok || vf.File != dir {
+		t.Errorf("err = %v, want an *errVerifyFault naming %s", err, dir)
+	}
+	if fresh.Resident() {
+		t.Error("the job is resident after a verification that faulted")
+	}
+	rows, err := a.st.WrittenRows(t.Context(), j0.ID())
+	if err != nil {
+		t.Fatalf("WrittenRows: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("%d rows in SQLite after the fault, want the 2 recorded: a parked hydration deletes nothing", len(rows))
 	}
 }
 

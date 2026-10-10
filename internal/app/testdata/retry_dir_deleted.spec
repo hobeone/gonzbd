@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run Test(RetryHistoryJob_AfterDownloadDirDeleted|VerifyJobFiles_RetryTreatsAMissingDirectoryAsGone|VerifyJobFiles_MissingDirectoryIsAFault|VerifyJobFiles_RetryFaultsOnAnotherDirectoryStatError)$
+run Test(RetryHistoryJob_AfterDownloadDirDeleted|VerifyAndAttach_MissingDirectoryParksTheJob|VerifyJobFiles_RetryTreatsAMissingDirectoryAsGone|VerifyJobFiles_MissingDirectoryIsAFault|VerifyJobFiles_RetryFaultsOnAnotherDirectoryStatError)$
 
 # A retry of a job whose download directory is gone drops the recorded rows
 # and refetches; a hydration of the same job still parks on the fault. A stat
@@ -27,4 +27,12 @@ file internal/app/verify.go
 		if _, sErr := statDir(dir); sErr != nil && (!retry || !errors.Is(sErr, fs.ErrNotExist)) {
 --- replace
 		if _, sErr := statDir(dir); sErr != nil && !retry {
+--- end
+
+[a hydration verifies as a retry does]
+file internal/app/residency.go
+--- anchor
+	res, err := verifyJobFiles(ctx, m, files, rows, pathFor, false)
+--- replace
+	res, err := verifyJobFiles(ctx, m, files, rows, pathFor, true)
 --- end
