@@ -24,9 +24,7 @@ file internal/app/verify.go
 [a zero-length row is verified without comparing its CRC]
 file internal/app/verify.go
 --- anchor
-		if ok {
-			out.verified = append(out.verified, r)
+		if r.CRC32 == 0 {
 --- replace
-		if ok || true {
-			out.verified = append(out.verified, r)
+		if true {
 --- end

@@ -26,6 +26,7 @@ func TestReadBackFile_VerifiesAZeroLengthRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readBackFile: %v", err)
 	}
+	slices.SortFunc(out.verified, durability.CompareWrittenRows) // the verified rows carry no order
 	if want := []durability.WrittenRow{first, empty}; !slices.Equal(out.verified, want) {
 		t.Errorf("verified = %+v, want %+v: the empty row sits inside article 0 and must neither fail it nor be failed", out.verified, want)
 	}

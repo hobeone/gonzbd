@@ -23,7 +23,7 @@ import (
 // rebuilt job is already attached (verifyRetry).
 type verifyResult struct {
 	Verdicts []durability.FileVerdict
-	Verified map[int][]durability.WrittenRow // per file, rows that matched, in offset order
+	Verified map[int][]durability.WrittenRow // per file, rows that matched, in no particular order
 	Failed   map[int][]int32                 // per file, articles failed by an intersection
 }
 
@@ -195,7 +195,7 @@ func rowsByFile(rows []durability.WrittenRow) map[int][]durability.WrittenRow {
 type fileReadback struct {
 	deleteAll bool
 	deleted   []int32                 // rows to delete: mismatched, short, or failed
-	verified  []durability.WrittenRow // in offset order
+	verified  []durability.WrittenRow // resolveRows' rows in offset order, then the zero-length rows
 	failed    []int32                 // failed by an intersection
 }
 
@@ -262,17 +262,13 @@ func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow
 	out := resolveRows(valid, match)
 	out.deleted = append(out.deleted, invalid...)
 	for _, r := range empty {
-		ok, err := rowMatches(fh, r, buf)
-		if err != nil {
-			return fileReadback{}, err
-		}
-		if ok {
+		// Zero bytes have CRC 0, so the row is judged without a read.
+		if r.CRC32 == 0 {
 			out.verified = append(out.verified, r)
 		} else {
 			out.deleted = append(out.deleted, r.ArtIdx)
 		}
 	}
-	slices.SortFunc(out.verified, durability.CompareWrittenRows)
 	return out, nil
 }
 
