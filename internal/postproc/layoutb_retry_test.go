@@ -20,17 +20,18 @@ func par2StagesCleanup(cleanup bool) []Stage {
 	extracted.Log = slog.New(slog.DiscardHandler)
 	par2Cleanup := NewPar2CleanupStage(true)
 	par2Cleanup.Log = slog.New(slog.DiscardHandler)
-	return []Stage{qc, repair, up, extracted, par2Cleanup}
+	finalize := NewFinalizeStage()
+	finalize.Log = slog.New(slog.DiscardHandler)
+	return []Stage{qc, repair, up, extracted, par2Cleanup, finalize}
 }
 
 // A Layout B job whose recovery volumes were held back fails its extracted
 // repair. The app then retries it with those volumes released (#651), and the
 // retry post-processes the same download directory, where the first run's
-// extraction still is. Whether the archive is there too depends on unpack's
-// archive cleanup: with it on, the production default, unpack deleted the
-// archive before extracted_repair failed, and the retry repairs the extracted
-// file in place without unpacking again. Either way the retry, with the
-// recovery volume on disk, must repair the extraction.
+// extraction and archive still are (#768 defers archive deletion to a
+// successful finalize, so the failed first run keeps release.rar even when
+// archive cleanup is on). On the successful retry, finalize deletes the
+// archive when cleanup is on and keeps it when off.
 func TestLayoutB_RetryWithTheHeldVolumeRepairsTheExtraction(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -47,8 +48,8 @@ func TestLayoutB_RetryWithTheHeldVolumeRepairsTheExtraction(t *testing.T) {
 			if errs := runStages(t, first, par2StagesCleanup(tc.cleanup)...); !first.ParError {
 				t.Fatalf("fixture guard: the first run did not fail its extracted repair; stage errors: %v", errs)
 			}
-			if _, err := os.Stat(filepath.Join(dir, "release.rar")); (err == nil) != tc.archiveKept {
-				t.Fatalf("fixture guard: archive present = %v after the failed run, want %v", err == nil, tc.archiveKept)
+			if _, err := os.Stat(filepath.Join(dir, "release.rar")); err != nil {
+				t.Fatalf("fixture guard: archive was deleted on the failed first run: %v", err)
 			}
 
 			// The retry downloads the held volume into the same directory. Its
@@ -63,6 +64,7 @@ func TestLayoutB_RetryWithTheHeldVolumeRepairsTheExtraction(t *testing.T) {
 				t.Fatal(err)
 			}
 			retry.DownloadDir = dir
+			retry.FinalDir = dir
 
 			errs := runStages(t, retry, par2StagesCleanup(tc.cleanup)...)
 
@@ -71,6 +73,9 @@ func TestLayoutB_RetryWithTheHeldVolumeRepairsTheExtraction(t *testing.T) {
 					retry.ParError, retry.UnpackError, retry.QuickCheck, errs)
 			}
 			assertFeatureExtracted(t, dir)
+			if _, err := os.Stat(filepath.Join(dir, "release.rar")); (err == nil) != tc.archiveKept {
+				t.Errorf("archive present = %v after the successful retry, want %v", err == nil, tc.archiveKept)
+			}
 		})
 	}
 }

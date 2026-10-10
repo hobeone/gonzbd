@@ -279,3 +279,189 @@ func testPar2Rename(ctx context.Context, log *slog.Logger, dir string, opts fsut
 	defer root.Close()
 	return Par2Rename(ctx, log, root, dir, opts)
 }
+
+func TestDeobfuscateHelpersAndExcluding(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	log := slog.New(slog.DiscardHandler)
+
+	fileData := make([]byte, 20000)
+	copy(fileData, []byte("payload for par2 exclusion test"))
+	obfPath := filepath.Join(dir, "abcdef1234567890.mkv")
+	if err := os.WriteFile(obfPath, fileData, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	sibPath := filepath.Join(dir, "abcdef1234567890.nfo")
+	if err := os.WriteFile(sibPath, []byte("nfo"), 0o600); err != nil {
+		t.Fatalf("WriteFile sib: %v", err)
+	}
+	writePar2(t, dir, "original.mkv", fileData)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	par2s := findPar2Files(entries, dir)
+	if len(par2s) != 1 {
+		t.Fatalf("findPar2Files = %v, want 1 par2 file", par2s)
+	}
+	hashes := buildHashToNameMap(log, par2s)
+	if len(hashes) != 1 {
+		t.Fatalf("buildHashToNameMap = %v, want 1 entry", hashes)
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	// 1. Par2RenameExcluding: excluding test.par2 or the target file prevents renaming.
+	renames, err := Par2RenameExcluding(t.Context(), log, root, dir, fsutil.SanitizeOptions{}, map[string]struct{}{"test.par2": {}})
+	if err != nil {
+		t.Fatalf("Par2RenameExcluding(exclude par2): %v", err)
+	}
+	if len(renames) != 0 {
+		t.Fatalf("expected 0 renames when par2 file is excluded, got %v", renames)
+	}
+	renames, err = Par2RenameExcluding(t.Context(), log, root, dir, fsutil.SanitizeOptions{}, map[string]struct{}{"abcdef1234567890.mkv": {}})
+	if err != nil {
+		t.Fatalf("Par2RenameExcluding(exclude candidate): %v", err)
+	}
+	if len(renames) != 0 {
+		t.Fatalf("expected 0 renames when candidate is excluded, got %v", renames)
+	}
+
+	// 2. extractRARUsefulName: excluding the RAR archive skips reading its header.
+	rarBytes, err := os.ReadFile(filepath.Join("..", "..", "test", "fixtures", "rar", "sample.rar"))
+	if err != nil {
+		t.Fatalf("ReadFile sample.rar: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "archive.rar"), rarBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile archive.rar: %v", err)
+	}
+	if got := extractRARUsefulName(root, dir, log, nil); got != "sample" {
+		t.Errorf("extractRARUsefulName without exclusion = %q, want sample", got)
+	}
+	if got := extractRARUsefulName(root, dir, log, map[string]struct{}{"archive.rar": {}}); got != "" {
+		t.Errorf("extractRARUsefulName with archive.rar excluded = %q, want empty", got)
+	}
+
+	// Excluding Phase 1 (par2-based rename returns early when unexcluded).
+	parPhaseDir := t.TempDir()
+	writePar2(t, parPhaseDir, "original.mkv", fileData)
+	if err := os.WriteFile(filepath.Join(parPhaseDir, "abcdef1234567890.mkv"), fileData, 0o600); err != nil {
+		t.Fatalf("WriteFile parPhaseDir/abcdef1234567890.mkv: %v", err)
+	}
+	parPhaseRenames, err := Excluding(t.Context(), log, parPhaseDir, "Fallback", fsutil.SanitizeOptions{}, nil)
+	if err != nil || len(parPhaseRenames) != 1 || filepath.Base(parPhaseRenames[0].To) != "original.mkv" {
+		t.Fatalf("Excluding Phase 1 = %v, %v; want [original.mkv]", parPhaseRenames, err)
+	}
+
+	// 3. Excluding + SubtitlesExcluding: excluding a competing 10 MiB file and an .srt file.
+	subDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(subDir, "archive.rar"), rarBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile subDir/archive.rar: %v", err)
+	}
+	bigMkv := filepath.Join(subDir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv")
+	if err := os.WriteFile(bigMkv, make([]byte, 11*1024*1024), 0o600); err != nil {
+		t.Fatalf("WriteFile bigMkv: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "competing.bin"), make([]byte, 10*1024*1024), 0o600); err != nil {
+		t.Fatalf("WriteFile competing.bin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "keep.srt"), []byte("srt1"), 0o600); err != nil {
+		t.Fatalf("WriteFile keep.srt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "excluded.srt"), []byte("srt2"), 0o600); err != nil {
+		t.Fatalf("WriteFile excluded.srt: %v", err)
+	}
+	// Without excluding competing.bin, no 3x dominant file exists for SubtitlesExcluding.
+	if noDom, sErr := SubtitlesExcluding(log, subDir, nil); sErr != nil || len(noDom) != 0 {
+		t.Fatalf("SubtitlesExcluding without exclusion = %v, %v; want empty", noDom, sErr)
+	}
+	excl := map[string]struct{}{"archive.rar": {}, "competing.bin": {}, "excluded.srt": {}}
+	deobRenames, err := Excluding(t.Context(), log, subDir, "Clean.Title", fsutil.SanitizeOptions{}, excl)
+	if err != nil {
+		t.Fatalf("Excluding: %v", err)
+	}
+	if len(deobRenames) != 1 || filepath.Base(deobRenames[0].To) != "Clean.Title.mkv" {
+		t.Fatalf("Excluding renames = %v, want [Clean.Title.mkv]", deobRenames)
+	}
+	srtRenames, err := SubtitlesExcluding(log, subDir, excl)
+	if err != nil {
+		t.Fatalf("SubtitlesExcluding: %v", err)
+	}
+	if len(srtRenames) != 1 || filepath.Base(srtRenames[0].To) != "Clean.Title.keep.srt" {
+		t.Fatalf("SubtitlesExcluding renames = %v, want [Clean.Title.keep.srt]", srtRenames)
+	}
+	if _, err := Excluding(t.Context(), log, filepath.Join(subDir, "missing"), "Title", fsutil.SanitizeOptions{}, nil); err == nil {
+		t.Error("expected error from Excluding on missing directory")
+	}
+	if _, err := SubtitlesExcluding(log, filepath.Join(subDir, "missing"), nil); err == nil {
+		t.Error("expected error from SubtitlesExcluding on missing directory")
+	}
+
+	if !hasObfuscatedPattern(log, "b082fa0beaa644d3aa01045d5b8d0b36") {
+		t.Error("hasObfuscatedPattern(32-hex) = false, want true")
+	}
+	if got := originalStem("/tmp/foo.junk.mkv", []Rename{{From: "/tmp/foo.junk", To: "/tmp/foo.junk.mkv"}}); got != "/tmp/foo" {
+		t.Errorf("originalStem = %q, want /tmp/foo", got)
+	}
+
+	sibRenames, err := renameSiblings(
+		log,
+		root,
+		dir,
+		"Clean.Movie",
+		obfPath,
+		[]string{obfPath, sibPath},
+		[]string{"abcdef1234567890.mkv", "abcdef1234567890.nfo"},
+		nil,
+		fsutil.SanitizeOptions{},
+	)
+	if err != nil {
+		t.Fatalf("renameSiblings: %v", err)
+	}
+	if len(sibRenames) != 1 {
+		t.Fatalf("renameSiblings = %v, want 1 sibling rename", sibRenames)
+	}
+	if _, err := renameRecorded(log, root, "Clean.Movie.nfo", "abcdef1234567890.nfo", sibRenames[0].To, sibPath, "", "restore"); err != nil {
+		t.Fatalf("renameRecorded: %v", err)
+	}
+
+	dedupDir := t.TempDir()
+	dedupRoot, err := os.OpenRoot(dedupDir)
+	if err != nil {
+		t.Fatalf("OpenRoot dedupDir: %v", err)
+	}
+	defer dedupRoot.Close()
+	for name, data := range map[string][]byte{
+		"Clean.Movie.mkv":                      []byte("same-bytes"),
+		"b082fa0beaa644d3aa01045d5b8d0b36.mkv": []byte("same-bytes"),
+		"0675e29e9abfd2f7d069dab0b853283c.mkv": []byte("diff-bytes"),
+		"Notes.File.mkv":                       []byte("same-bytes"),
+	} {
+		if err := os.WriteFile(filepath.Join(dedupDir, name), data, 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+	inRels := []string{
+		"Clean.Movie.mkv",
+		"b082fa0beaa644d3aa01045d5b8d0b36.mkv",
+		"0675e29e9abfd2f7d069dab0b853283c.mkv",
+		"Notes.File.mkv",
+	}
+	inPaths := make([]string, len(inRels))
+	for i, r := range inRels {
+		inPaths[i] = filepath.Join(dedupDir, r)
+	}
+	_, outRels := dedupObfuscatedAgainstTarget(log, dedupRoot, "Clean.Movie", inPaths, inRels, fsutil.SanitizeOptions{})
+	if len(outRels) != 3 {
+		t.Fatalf("dedupObfuscatedAgainstTarget = %v, want 3 surviving entries", outRels)
+	}
+	if _, err := os.Stat(filepath.Join(dedupDir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv")); !os.IsNotExist(err) {
+		t.Errorf("identical obfuscated file still exists: err=%v", err)
+	}
+}

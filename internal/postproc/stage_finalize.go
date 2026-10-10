@@ -2,6 +2,7 @@ package postproc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -53,23 +54,79 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 		return err
 	}
 
+	if job.DownloadDir != "" {
+		_ = os.Remove(filepath.Join(job.DownloadDir, pendingDeletionsFile))
+	}
+
 	if job.DownloadDir == job.FinalDir {
 		logf(ctx, log, job, slog.LevelInfo, "Already at final location: %s", job.FinalDir)
+		f.deletePending(ctx, log, job)
 		return nil // Already there (e.g. one-shot download directly to target)
 	}
 
-	// Determine the initial destination — with _UNPACK_ prefix if enabled.
+	// Determine the initial destination — with _UNPACK_ prefix when
+	// folderRename is enabled or when pending deletions must be unlinked
+	// before publishing a fresh job.FinalDir (#768).
+	stageViaUnpackPrefix := folderRename
+	if !stageViaUnpackPrefix && len(job.PendingDeletions) > 0 {
+		if _, err := os.Lstat(job.FinalDir); errors.Is(err, os.ErrNotExist) {
+			stageViaUnpackPrefix = true
+		}
+	}
 	dest := job.FinalDir
-	if folderRename {
+	if stageViaUnpackPrefix {
 		dest = prefixDirName(job.FinalDir, "_UNPACK_")
 	}
 
 	logf(ctx, log, job, slog.LevelInfo, "Moving %s → %s", job.DownloadDir, dest)
-	if err := f.moveToDest(ctx, log, job, dest, folderRename); err != nil {
+	if err := f.moveToDest(ctx, log, job, dest, stageViaUnpackPrefix); err != nil {
 		job.FailMsg = err.Error()
 		return err
 	}
 	return nil
+}
+
+const pendingDeletionsFile = ".gonzbd-pending-deletions"
+
+// deletePending removes the extracted archives and par2/backup files recorded
+// in job.PendingDeletions under job.DownloadDir (#768). When a top-level
+// entry name was sanitized via job.Sanitize, it also checks the path with the
+// first component sanitized.
+func (f *FinalizeStage) deletePending(ctx context.Context, log *slog.Logger, job *Job) {
+	if len(job.PendingDeletions) == 0 || job.DownloadDir == "" {
+		return
+	}
+	var deleted int
+	for _, rel := range job.PendingDeletions {
+		target := filepath.Join(job.DownloadDir, rel)
+		if !fsutil.PathWithin(job.DownloadDir, target) {
+			continue
+		}
+		if _, err := os.Lstat(target); errors.Is(err, os.ErrNotExist) {
+			first, rest, hasSep := strings.Cut(rel, string(filepath.Separator))
+			sanitized := fsutil.JoinSafe(job.DownloadDir, "", first, job.Sanitize)
+			if hasSep {
+				sanitized = filepath.Join(sanitized, rest)
+			}
+			if sanitized != target && fsutil.PathWithin(job.DownloadDir, sanitized) {
+				target = sanitized
+			}
+		}
+		if _, err := os.Lstat(target); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err := fsutil.Remove(target); err != nil {
+			logf(ctx, log, job, slog.LevelWarn, "Failed to delete %s after finalize: %v", rel, err)
+			continue
+		}
+		deleted++
+		logf(ctx, log, job, slog.LevelInfo, "Deleted %s", rel)
+	}
+	if deleted > 0 {
+		logf(ctx, log, job, slog.LevelInfo, "Cleaned up %d pending file(s)", deleted)
+	}
+	_ = os.Remove(filepath.Join(job.DownloadDir, pendingDeletionsFile))
+	job.PendingDeletions = nil
 }
 
 func (f *FinalizeStage) handleFailure(ctx context.Context, log *slog.Logger, job *Job, folderRename bool) error {
@@ -108,6 +165,15 @@ func (f *FinalizeStage) moveToDest(ctx context.Context, log *slog.Logger, job *J
 		return fmt.Errorf("finalize: mkdir %s: %w", filepath.Dir(dest), err)
 	}
 
+	sidecar := filepath.Join(job.DownloadDir, pendingDeletionsFile)
+	if len(job.PendingDeletions) > 0 {
+		if data, err := json.Marshal(job.PendingDeletions); err == nil {
+			if err := fsutil.WriteAtomicBytesPerm(sidecar, data, 0o600); err != nil {
+				logf(ctx, log, job, slog.LevelWarn, "Failed to write pending deletions sidecar: %v", err)
+			}
+		}
+	}
+
 	// If the source directory exists, rename it to the target.
 	// Fall back to file-by-file move on cross-device (EXDEV) or
 	// not-empty (ENOTEMPTY/EEXIST) errors — the latter allows
@@ -115,6 +181,10 @@ func (f *FinalizeStage) moveToDest(ctx context.Context, log *slog.Logger, job *J
 	if err := os.Rename(job.DownloadDir, dest); err == nil {
 		logf(ctx, log, job, slog.LevelInfo, "%s → %s (atomic rename)", job.DownloadDir, dest)
 		job.DownloadDir = dest
+		// Unlink pending archives and par2 files while the directory is still
+		// at dest (with _UNPACK_ prefix when folderRename is enabled) before
+		// publishing job.FinalDir (#768).
+		f.deletePending(ctx, log, job)
 		// If FolderRename is active, strip the _UNPACK_ prefix now.
 		if folderRename {
 			if err := os.Rename(dest, job.FinalDir); err != nil {
@@ -127,8 +197,10 @@ func (f *FinalizeStage) moveToDest(ctx context.Context, log *slog.Logger, job *J
 		}
 		return nil
 	} else if !fsutil.IsRenameMergeNeeded(err) {
+		_ = os.Remove(sidecar)
 		return fmt.Errorf("finalize: rename %s -> %s: %w", job.DownloadDir, dest, err)
 	} else {
+		_ = os.Remove(sidecar)
 		logf(ctx, log, job, slog.LevelInfo, "Atomic rename failed (%v), falling back to file-by-file move", err)
 	}
 
@@ -150,8 +222,11 @@ func (f *FinalizeStage) moveFileByFile(ctx context.Context, log *slog.Logger, jo
 	var moveErrors []error
 	for _, e := range entries {
 		src := filepath.Join(job.DownloadDir, e.Name())
+		if job.isPendingDeletion(src) {
+			continue
+		}
 		dst := fsutil.JoinSafe(dest, "", e.Name(), job.Sanitize)
-		if err := moveRecursive(ctx, job.DownloadDir, src, dst); err != nil {
+		if err := moveRecursive(ctx, job.DownloadDir, src, dst, job.isPendingDeletion); err != nil {
 			failed = append(failed, e.Name())
 			moveErrors = append(moveErrors, fmt.Errorf("finalize: move %s -> %s: %w", src, dst, err))
 			logf(ctx, log, job, slog.LevelWarn, "Failed to move %s → %s: %v", filepath.Base(src), dst, err)
@@ -170,7 +245,9 @@ func (f *FinalizeStage) moveFileByFile(ctx context.Context, log *slog.Logger, jo
 			dest, strings.Join(moved, ", "), job.DownloadDir, strings.Join(failed, ", "), errors.Join(moveErrors...))
 	}
 
-	// All files moved successfully — clean up the empty source directory.
+	// All payload files moved successfully — unlink pending archives/par2
+	// files in place and clean up the source directory.
+	f.deletePending(ctx, log, job)
 	_ = fsutil.RemoveAll(job.DownloadDir)
 	logf(ctx, log, job, slog.LevelInfo, "Removed empty source directory: %s", job.DownloadDir)
 
@@ -207,9 +284,12 @@ func prefixDirName(dir, prefix string) string {
 // moveRecursive handles moving files or directories, with cross-device
 // support. root is the top of the tree being moved (the job's download
 // directory); a symlink inside it may point anywhere within root.
-func moveRecursive(ctx context.Context, root, src, dst string) error {
+func moveRecursive(ctx context.Context, root, src, dst string, isPending func(string) bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if isPending != nil && isPending(src) {
+		return nil
 	}
 
 	info, err := os.Lstat(src)
@@ -232,11 +312,14 @@ func moveRecursive(ctx context.Context, root, src, dst string) error {
 	}
 
 	for _, e := range entries {
-		if err := moveRecursive(ctx, root, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+		if err := moveRecursive(ctx, root, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), isPending); err != nil {
 			return err
 		}
 	}
 
+	if rem, rerr := os.ReadDir(src); rerr == nil && len(rem) > 0 {
+		return nil
+	}
 	return fsutil.Remove(src)
 }
 

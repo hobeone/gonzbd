@@ -2,6 +2,7 @@ package postproc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/types"
+	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // Options configures a PostProcessor at construction time.
@@ -513,13 +515,16 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	return entry, false
 }
 
-// sweepTempFiles removes leftover .gonzbd-tmp-<16 hex> files under dir that an
-// interrupted extraction (writeEntrySafely) or split join (FileJoin) left
+// sweepTempFiles removes leftover .gonzbd-tmp-<16 hex> files and
+// .gonzbd-tmp-unpack-* staging directories under dir that an interrupted
+// extraction (writeEntrySafely, UnRAR, SevenZip) or split join (FileJoin) left
 // behind before its atomic rename completed.
 func sweepTempFiles(log *slog.Logger, dir string) {
 	if dir == "" {
 		return
 	}
+	unpack.CleanupStageDirs(dir)
+	_ = os.Remove(filepath.Join(dir, pendingDeletionsFile))
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) && log != nil {
@@ -575,6 +580,10 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 	var preCheckReason string
 	if job.FailMsg == "" && job.DownloadDir != "" {
 		if entries, err := os.ReadDir(job.DownloadDir); err != nil || len(entries) == 0 {
+			var recoverErr error
+			if errors.Is(err, fs.ErrNotExist) {
+				recoverErr = p.recoverUnpackFinalDir(ctx, job)
+			}
 			if errors.Is(err, fs.ErrNotExist) && job.alreadyDelivered() {
 				// Interim crash-recovery check (#767): if the daemon died
 				// after FinalizeStage moved the job into FinalDir (including a
@@ -603,7 +612,9 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 				sweepTempFiles(p.log, job.DownloadDir)
 			} else {
 				preCheckReason = "download directory is empty"
-				if err != nil {
+				if recoverErr != nil {
+					preCheckReason = fmt.Sprintf("download directory unavailable (%v): %v", recoverErr, err)
+				} else if err != nil {
 					preCheckReason = fmt.Sprintf("download directory unavailable: %v", err)
 				}
 			}
@@ -654,6 +665,48 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 	)
 
 	job.StageLog = append(job.StageLog, buildSummaryEntry(job))
+}
+
+// recoverUnpackFinalDir completes an interrupted FinalizeStage that moved
+// DownloadDir to _UNPACK_<FinalDir> before crashing (#768). When the
+// pending-deletions sidecar is still present inside _UNPACK_<FinalDir> (crash
+// before or during deletePending), it loads the JSON list and runs
+// deletePending to finish unlinking the recorded archives and par2 files before
+// renaming _UNPACK_<FinalDir> to FinalDir.
+func (p *PostProcessor) recoverUnpackFinalDir(ctx context.Context, job *Job) error {
+	if job.FlatLayout || job.FinalDir == "" {
+		return nil
+	}
+	if _, err := os.Lstat(job.FinalDir); !errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	unpackDir := prefixDirName(job.FinalDir, "_UNPACK_")
+	if _, err := os.Lstat(unpackDir); err != nil {
+		return nil //nolint:nilerr // no _UNPACK_ directory to recover
+	}
+	if data, err := os.ReadFile(filepath.Join(unpackDir, pendingDeletionsFile)); err == nil { //nolint:gosec // sidecar is pendingDeletionsFile inside unpackDir
+		if err := json.Unmarshal(data, &job.PendingDeletions); err == nil {
+			prevDir := job.DownloadDir
+			job.DownloadDir = unpackDir
+			(&FinalizeStage{Log: p.log}).deletePending(ctx, p.log, job)
+			job.DownloadDir = prevDir
+		}
+	}
+	if err := os.Rename(unpackDir, job.FinalDir); err != nil {
+		p.log.Warn("postproc: failed to recover staged _UNPACK_ directory",
+			"job", job.JobID(),
+			"unpack_dir", unpackDir,
+			"final_dir", job.FinalDir,
+			"err", err,
+		)
+		return fmt.Errorf("staged directory %s recovery failed: %w", unpackDir, err)
+	}
+	p.log.Info("postproc: recovered staged _UNPACK_ directory to FinalDir",
+		"job", job.JobID(),
+		"unpack_dir", unpackDir,
+		"final_dir", job.FinalDir,
+	)
+	return nil
 }
 
 // alreadyDelivered reports whether a job whose DownloadDir is missing has

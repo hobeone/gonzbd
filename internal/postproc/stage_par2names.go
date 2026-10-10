@@ -39,7 +39,7 @@ func (r *RecoverPar2NamesStage) Run(ctx context.Context, job *Job) error {
 	}
 	defer root.Close() //nolint:errcheck // read-only close
 
-	renames, err := deobfuscate.Par2Rename(ctx, log, root, job.DownloadDir, job.Sanitize)
+	renames, err := deobfuscate.Par2RenameExcluding(ctx, log, root, job.DownloadDir, job.Sanitize, job.pendingDeletionSet())
 	if len(renames) == 0 {
 		logf(ctx, log, job, slog.LevelInfo, "No par2-based renames needed")
 	} else {

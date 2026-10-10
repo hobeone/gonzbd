@@ -18,8 +18,10 @@ import (
 //
 // It is the backstop for what the ingest check cannot see: a file inside an
 // archive, a file whose NZB subject was obfuscated, a file par2 rebuilt or
-// renamed. It judges what finalize will deliver, which is everything under
-// DownloadDir. DownloadDir is the download directory joined with the job's
+// renamed. It judges every file under DownloadDir except files recorded in
+// Job.PendingDeletions (#768; skipped by moveFileByFile and unlinked by
+// FinalizeStage.deletePending). DownloadDir is the download directory joined
+// with the job's
 // name, and no two registered jobs share a name: the dispatcher refuses one
 // another registered job holds, both when a job is registered and when it is
 // renamed (Dispatcher.nameHolderLocked). AddJob and Application.RenameJob
@@ -98,6 +100,9 @@ func (s *UnwantedCleanupStage) Run(ctx context.Context, job *Job) error {
 			return ctx.Err()
 		}
 		if d.IsDir() || !rules.Unwanted(d.Name()) {
+			return nil
+		}
+		if job.isPendingDeletion(path) {
 			return nil
 		}
 		if err := root.Remove(path); err != nil {

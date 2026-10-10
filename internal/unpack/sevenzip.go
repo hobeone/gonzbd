@@ -60,7 +60,10 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 		return Result{Err: err}, err
 	}
 
-	pwFlag := "-p" + password // safe even when password is ""
+	argFlag := "-p"
+	if password != "" {
+		argFlag = "-p<redacted>"
+	}
 
 	method := "x" // preserve paths
 	if opts.OneFolder {
@@ -72,35 +75,32 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 		"-y",    // assume yes
 		"-bd",   // disable progress percentage indicator
 		"-bsp0", // suppress progress stream (keep stdout for stage log)
-		pwFlag,
 	}
+	flagIdx := len(args)
+	args = append(args, argFlag)
 
 	// Overwrite behavior.
 	if opts.OverwriteFiles {
 		args = append(args, "-aoa") // overwrite all existing files (SABnzbd default)
 	} else {
-		args = append(args, "-aou") // auto-rename on collision (safe default)
+		args = append(args, "-aos") // skip extracting of existing files
 	}
-
-	args = append(args,
-		archive.MainFile,
-		"-o"+outDir, // no space between -o and the path
-	)
 
 	// P11: Case-sensitivity flag. Linux filesystems are case-sensitive;
 	// macOS/Windows are not. Matches Python SABnzbd spec §8.3.
+	sscFlag := "-ssc-" // case-insensitive
 	if runtime.GOOS == "linux" {
-		args = append(args, "-ssc") // case-sensitive
-	} else {
-		args = append(args, "-ssc-") // case-insensitive
+		sscFlag = "-ssc" // case-sensitive
 	}
 
+	displayArgs := append(append([]string(nil), args...), archive.MainFile, "-o"+outDir, sscFlag)
+
 	// Build a display-safe command line (redact password).
-	cmdLine := formatCmdLine(bin, args, pwFlag)
+	cmdLine := formatCmdLine(bin, displayArgs, "")
 
 	log.Info("7zip: starting extraction",
 		"binary", bin,
-		"args", formatArgs(args, pwFlag),
+		"args", formatArgs(displayArgs, ""),
 		"archive", archive.MainFile,
 		"outDir", outDir,
 		"cmdline", cmdLine,
@@ -114,7 +114,17 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 		opts.OnCommand(cmdLine)
 	}
 
-	cmd, err := cmdutil.BuildSandboxedCommand(ctx, log, opts.CmdCfg, opts.Sandbox, bin, args...) //nolint:gosec // bin and args are caller-supplied, not shell-expanded
+	stageDir, err := prepareStageDir(outDir)
+	if err != nil {
+		return Result{CommandLine: cmdLine, Err: err, Reason: FailUnknown, Engine: "7z"}, err
+	}
+	defer func() { _ = os.RemoveAll(stageDir) }()
+
+	execArgs := append(append([]string(nil), args...), archive.MainFile, "-o"+stageDir, sscFlag)
+	if password != "" {
+		execArgs[flagIdx] = "-p" + password
+	}
+	cmd, err := cmdutil.BuildSandboxedCommand(ctx, log, opts.CmdCfg, opts.Sandbox, bin, execArgs...) //nolint:gosec // bin and args are caller-supplied, not shell-expanded
 	if err != nil {
 		return Result{CommandLine: cmdLine, Err: err, Reason: FailUnknown, Engine: "7z"}, err
 	}
@@ -122,20 +132,12 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
 
-	// Snapshot directory contents before extraction for diff.
-	beforeSnap, _ := snapshotDir(outDir)
-
 	runErr := cmd.Run()
 	streamer.Flush()
 
-	// Diff to find newly created files (best-effort).
-	afterSnap, _ := snapshotDir(outDir)
-	extracted := diffSnapshot(beforeSnap, afterSnap)
-
 	res := Result{
-		CommandLine:    cmdLine,
-		Output:         streamer.String(),
-		ExtractedFiles: extracted,
+		CommandLine: cmdLine,
+		Output:      streamer.String(),
 	}
 
 	if runErr != nil {
@@ -159,6 +161,13 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 		}
 		return res, res.Err
 	}
+
+	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts)
+	if pubErr != nil {
+		res.Err = fmt.Errorf("7zip: publish staged files: %w", pubErr)
+		return res, res.Err
+	}
+	res.ExtractedFiles = published
 
 	log.Info("7zip: extraction succeeded", "archive", archive.MainFile)
 	return res, nil

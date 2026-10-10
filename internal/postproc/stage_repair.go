@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -187,6 +188,7 @@ func (s *RepairStage) repairSets(ctx context.Context, log *slog.Logger, job *Job
 		job.ParError = true
 		return 0, fmt.Errorf("repair: scan data files: %w", scanErr)
 	}
+	dataFiles = slices.DeleteFunc(dataFiles, job.isPendingDeletion)
 	logf(ctx, log, job, slog.LevelInfo, "Found %d non-par2 data file(s) for checksum matching", len(dataFiles))
 
 	// A failing set does not stop the others: each par2 set is independent,
@@ -468,11 +470,12 @@ func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, jo
 // a known archive/data extension followed by ".N" (e.g. ".rar.1", ".mkv.2").
 var par2BackupRe = regexp.MustCompile(`(?i)\.(rar|r\d+|7z|zip|mkv|avi|mp4|flac|mp3|srt|nfo)\.\d{1,3}$`)
 
-// cleanupPar2Backups removes backup files created by par2 during repair.
+// cleanupPar2Backups finds backup files created by par2 during repair so
+// Par2CleanupStage can record them for deletion at finalize (#768).
 // When par2 repairs a damaged file "movie.rar", it renames the damaged
 // original to "movie.rar.1" and writes the repaired data to "movie.rar".
-// This function finds and removes those ".N" backup files, but only when
-// the corresponding repaired file exists (safety check).
+// This function returns those ".N" backup filenames, but only when the
+// corresponding repaired file exists alongside the backup (safety check).
 func cleanupPar2Backups(dir string, log *slog.Logger) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -501,18 +504,13 @@ func cleanupPar2Backups(dir string, log *slog.Logger) []string {
 			continue
 		}
 		originalName := name[:lastDot]
-		// Only delete if the repaired original exists alongside the backup.
+		// Only schedule for deletion if the repaired original exists alongside the backup.
 		if !existing[originalName] {
 			log.Info("repair: keeping par2 backup (repaired file missing)",
 				"backup", name, "expected", originalName)
 			continue
 		}
-		path := filepath.Join(dir, name)
-		if err := fsutil.Remove(path); err != nil {
-			log.Warn("repair: failed to remove par2 backup", "file", name, "err", err)
-			continue
-		}
-		log.Info("repair: removed par2 backup", "file", name)
+		log.Info("repair: scheduled par2 backup for finalize deletion", "file", name)
 		removed = append(removed, name)
 	}
 	return removed

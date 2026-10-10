@@ -3,20 +3,20 @@ package postproc
 import (
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
-// Par2CleanupStage deletes .par2 files and par2-created backup files from
-// the job's download directory. It runs after unpack and only proceeds when
-// both repair and unpack succeeded (no ParError, no UnpackError) and every
-// par2 set quickcheck deferred until after unpack has been verified against
-// the extracted files (Job.DeferredPar2Verified). This
-// preserves par2 files for debugging when extraction fails — previously
-// they were deleted inside RepairStage before unpack even ran.
+// Par2CleanupStage records .par2 files and par2-created backup files from the
+// job's download directory for deletion after FinalizeStage moves the job to
+// FinalDir (#768). It runs after unpack and only proceeds when both repair and
+// unpack succeeded (no ParError, no UnpackError) and every par2 set quickcheck
+// deferred until after unpack has been verified against the extracted files
+// (Job.DeferredPar2Verified). Keeping the files on disk until finalize ensures
+// a crash before finalize can safely rerun post-processing.
 type Par2CleanupStage struct {
 	// cleanup is set atomically so SetCleanup can be called from any goroutine
 	// (e.g. the API handler) while a job may be running in the postproc worker.
@@ -42,9 +42,9 @@ func (s *Par2CleanupStage) CleanupEnabled() bool { return s.cleanup.Load() }
 // Name implements Stage.
 func (*Par2CleanupStage) Name() string { return "par2_cleanup" }
 
-// Run deletes all par2 files and par2 backup files from job.DownloadDir.
-// Skipped when Cleanup is false, when repair or unpack has failed, or while a
-// deferred par2 set is unverified.
+// Run records all par2 files and par2 backup files in job.DownloadDir for
+// deletion at finalize (#768). Skipped when Cleanup is false, when repair or
+// unpack has failed, or while a deferred par2 set is unverified.
 func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	log := s.Log
 	if log == nil {
@@ -72,7 +72,6 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 		return nil
 	}
 
-	// Delete all .par2 files.
 	sets, err := par2.FindPar2Files(job.DownloadDir, s.ParseOpts)
 	if err != nil {
 		log.Warn("par2 cleanup: failed to scan for par2 files", "err", err)
@@ -82,8 +81,8 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	var cleaned int
 	for _, set := range sets {
 		if set.MainFile != "" {
-			if err := fsutil.Remove(set.MainFile); err == nil {
-				line := "Deleted par2 file: " + filepath.Base(set.MainFile)
+			if _, err := os.Lstat(set.MainFile); err == nil && job.recordPendingDeletion(set.MainFile) {
+				line := "Queued par2 file for deletion at finalize: " + filepath.Base(set.MainFile)
 				job.OutputLines = append(job.OutputLines, "[par2_cleanup] "+line)
 				if job.OnOutput != nil {
 					job.OnOutput("par2_cleanup", line)
@@ -92,8 +91,8 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 			}
 		}
 		for _, ef := range set.ExtraFiles {
-			if err := fsutil.Remove(ef); err == nil {
-				line := "Deleted par2 file: " + filepath.Base(ef)
+			if _, err := os.Lstat(ef); err == nil && job.recordPendingDeletion(ef) {
+				line := "Queued par2 file for deletion at finalize: " + filepath.Base(ef)
 				job.OutputLines = append(job.OutputLines, "[par2_cleanup] "+line)
 				if job.OnOutput != nil {
 					job.OnOutput("par2_cleanup", line)
@@ -103,23 +102,27 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 		}
 	}
 	if cleaned > 0 {
-		logf(ctx, log, job, slog.LevelInfo, "Cleaned up %d par2 file(s)", cleaned)
+		logf(ctx, log, job, slog.LevelInfo, "Queued %d par2 file(s) for deletion at finalize", cleaned)
 	}
 
 	// Par2 repair creates backup copies of damaged files by appending
 	// ".1", ".2" etc. (e.g. "movie.part01.rar" → "movie.part01.rar.1").
-	// These orphaned backups confuse later stages (deobfuscate sees
-	// RAR magic bytes in a ".1" file and incorrectly appends ".rar").
+	// Record them for deletion at finalize and exclude them from later
+	// stages (deobfuscate, unwanted, extension_cleanup).
 	backups := cleanupPar2Backups(job.DownloadDir, log)
+	var backupCleaned int
 	for _, backup := range backups {
-		line := "Deleted par2 backup file: " + filepath.Base(backup)
-		job.OutputLines = append(job.OutputLines, "[par2_cleanup] "+line)
-		if job.OnOutput != nil {
-			job.OnOutput("par2_cleanup", line)
+		if job.recordPendingDeletion(filepath.Join(job.DownloadDir, backup)) {
+			line := "Queued par2 backup file for deletion at finalize: " + filepath.Base(backup)
+			job.OutputLines = append(job.OutputLines, "[par2_cleanup] "+line)
+			if job.OnOutput != nil {
+				job.OnOutput("par2_cleanup", line)
+			}
+			backupCleaned++
 		}
 	}
-	if len(backups) > 0 {
-		logf(ctx, log, job, slog.LevelInfo, "Cleaned up %d par2 backup file(s)", len(backups))
+	if backupCleaned > 0 {
+		logf(ctx, log, job, slog.LevelInfo, "Queued %d par2 backup file(s) for deletion at finalize", backupCleaned)
 	}
 
 	return nil

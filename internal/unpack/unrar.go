@@ -90,7 +90,7 @@ type Options struct {
 	// HasProblem is true when the detected unrar binary is too old (< 5.50)
 	// or its version could not be determined. In this mode, flags that
 	// old/non-RARLAB variants don't support are stripped:
-	// -scf, -or, -ai, -tsm-. Matches SABnzbd's RAR_PROBLEM degraded mode.
+	// -scf, -ai, -tsm-. Matches SABnzbd's RAR_PROBLEM degraded mode.
 	HasProblem bool
 	// OnLine is called for each line of subprocess output. May be nil.
 	OnLine func(string) `json:"-"`
@@ -171,9 +171,9 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 		mode = "e"
 	}
 
-	pwFlag := "-p-" // suppress interactive prompt
+	argFlag := "-p-" // suppress interactive prompt
 	if password != "" {
-		pwFlag = "-p" + password
+		argFlag = "-p<redacted>"
 	}
 
 	args := []string{
@@ -191,23 +191,21 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 		)
 	}
 
-	args = append(args, pwFlag)
+	flagIdx := len(args)
+	args = append(args, argFlag)
 
 	// Extraction flags from config.
 	if opts.OverwriteFiles {
 		args = append(args, "-o+")
 	} else {
-		args = append(args, "-o-") // don't overwrite existing files
-		if !opts.HasProblem {
-			args = append(args, "-or") // auto-rename on collision (not supported by free unrar)
-		}
+		args = append(args, "-o-") // skip existing files
 	}
 	if opts.IgnoreUnrarDates && !opts.HasProblem {
 		args = append(args, "-tsm-") // don't restore modification times (not supported by free unrar)
 	}
 	args = append(args, opts.ExtraArgs...) // user-specified extra flags
 
-	args = append(args, archive.MainFile, outDir+"/") // unrar expects a trailing slash on the output directory
+	displayArgs := append(append([]string(nil), args...), archive.MainFile, outDir+"/") // unrar expects a trailing slash on the output directory
 
 	bin, err := UnrarBin(opts)
 	if err != nil {
@@ -215,11 +213,11 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 	}
 
 	// Build a display-safe command line (redact password).
-	cmdLine := formatCmdLine(bin, args, pwFlag)
+	cmdLine := formatCmdLine(bin, displayArgs, "")
 
 	log.Info("unrar: starting extraction",
 		"binary", bin,
-		"args", formatArgs(args, pwFlag),
+		"args", formatArgs(displayArgs, ""),
 		"archive", archive.MainFile,
 		"outDir", outDir,
 		"cmdline", cmdLine,
@@ -233,7 +231,17 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 		opts.OnCommand(cmdLine)
 	}
 
-	cmd, err := cmdutil.BuildSandboxedCommand(ctx, log, opts.CmdCfg, opts.Sandbox, bin, args...) //nolint:gosec // args are caller-supplied, not shell-expanded
+	stageDir, err := prepareStageDir(outDir)
+	if err != nil {
+		return Result{CommandLine: cmdLine, Err: err, Reason: FailUnknown, Engine: "unrar"}, err
+	}
+	defer func() { _ = os.RemoveAll(stageDir) }()
+
+	execArgs := append(append([]string(nil), args...), archive.MainFile, stageDir+"/")
+	if password != "" {
+		execArgs[flagIdx] = "-p" + password
+	}
+	cmd, err := cmdutil.BuildSandboxedCommand(ctx, log, opts.CmdCfg, opts.Sandbox, bin, execArgs...) //nolint:gosec // args are caller-supplied, not shell-expanded
 	if err != nil {
 		return Result{CommandLine: cmdLine, Err: err, Reason: FailUnknown, Engine: "unrar"}, err
 	}
@@ -241,20 +249,12 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
 
-	// Snapshot directory contents before extraction for diff.
-	beforeSnap, _ := snapshotDir(outDir)
-
 	runErr := cmd.Run()
 	streamer.Flush()
 
-	// Diff to find newly created files (best-effort).
-	afterSnap, _ := snapshotDir(outDir)
-	extracted := diffSnapshot(beforeSnap, afterSnap)
-
 	res := Result{
-		CommandLine:    cmdLine,
-		Output:         streamer.String(),
-		ExtractedFiles: extracted,
+		CommandLine: cmdLine,
+		Output:      streamer.String(),
 	}
 
 	if runErr != nil {
@@ -267,25 +267,32 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 			// invalid filenames. In this case the extraction usually
 			// succeeds despite the non-zero exit code. Downgrade to
 			// a warning. Matches SABnzbd's handling in newsunpack.py.
+			stageSnap, _ := snapshotDir(stageDir)
 			if strings.Contains(res.Output, "Cannot create") &&
 				strings.Contains(res.Output, "Attempting to correct") &&
-				len(extracted) > 0 {
+				len(stageSnap) > 0 {
+				published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts)
+				if pubErr != nil {
+					res.Err = fmt.Errorf("unrar: publish staged files: %w", pubErr)
+					return res, res.Err
+				}
+				res.ExtractedFiles = published
 				log.Warn("unrar: auto-corrected invalid filename(s)",
 					"archive", archive.MainFile,
-					"extractedCount", len(extracted),
+					"extractedCount", len(published),
 				)
 				// Clear the error — extraction succeeded with corrections.
 				res.Err = nil
 				res.ExitCode = 0
-			} else {
-				res.Err = fmt.Errorf("unrar exited %d (%s): %w", res.ExitCode, res.Reason, runErr)
-				log.Error("unrar: extraction failed",
-					"archive", archive.MainFile,
-					"exitCode", res.ExitCode,
-					"reason", res.Reason.String(),
-					"output", res.Output,
-				)
+				return res, nil
 			}
+			res.Err = fmt.Errorf("unrar exited %d (%s): %w", res.ExitCode, res.Reason, runErr)
+			log.Error("unrar: extraction failed",
+				"archive", archive.MainFile,
+				"exitCode", res.ExitCode,
+				"reason", res.Reason.String(),
+				"output", res.Output,
+			)
 		} else {
 			res.Err = fmt.Errorf("unrar: %w", runErr)
 			log.Error("unrar: failed to start process",
@@ -296,6 +303,13 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 		}
 		return res, res.Err
 	}
+
+	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts)
+	if pubErr != nil {
+		res.Err = fmt.Errorf("unrar: publish staged files: %w", pubErr)
+		return res, res.Err
+	}
+	res.ExtractedFiles = published
 
 	log.Info("unrar: extraction succeeded", "archive", archive.MainFile)
 	return res, nil

@@ -138,7 +138,7 @@ func TestUnRAR_PasswordFlag(t *testing.T) {
 }
 
 // TestUnRAR_HasProblemDegradedMode verifies that when HasProblem is true
-// (non-original or old unrar), the flags -scf, -or, -ai, -tsm- are NOT
+// (non-original or old unrar), the flags -scf, -ai, -tsm- are NOT
 // emitted. Matches SABnzbd's RAR_PROBLEM degraded mode.
 func TestUnRAR_HasProblemDegradedMode(t *testing.T) {
 	var captured string
@@ -170,7 +170,7 @@ func TestUnRAR_HasProblemDegradedMode(t *testing.T) {
 	}
 
 	// These flags should be ABSENT in degraded mode:
-	for _, flag := range []string{"-scf", "-ai", "-or", "-tsm-"} {
+	for _, flag := range []string{"-scf", "-ai", "-tsm-"} {
 		if strings.Contains(captured, flag) {
 			t.Errorf("degraded mode: cmdline should NOT contain flag %q but does: %q", flag, captured)
 		}

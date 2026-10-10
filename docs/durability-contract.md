@@ -859,7 +859,10 @@ would put `WriteAt` and `fsync` inside a critical section, which is what
 ## Disk-space pre-flight
 
 `checkDiskSpace` runs every 16 `WriteRequest` items (`diskCheckInterval`), and is
-skipped entirely when `MinFreeBytes` is zero. Two distinct timeouts bound it:
+skipped entirely when `MinFreeBytes` is zero. It probes the directory of each
+file still in the worker's open set. `finalizeFile` closes a completed file and
+drops it from that set before the check, so a request that completes the last
+open file checks nothing that turn. Two distinct timeouts bound it:
 
 - **Caller timeout** (`diskCheckTimeout = 5s`) — each per-directory `FreeBytes`
   call bounds how long the worker blocks waiting for a result.
@@ -874,7 +877,10 @@ minutes (`diskProbeEvictAfter`).
 
 When free space drops below `MinFreeBytes` the `OnLowDisk` callback fires. **The
 assembler does not pause itself** — the callback owns that decision — and it
-continues processing requests in the channel.
+continues processing requests in the channel. The callback,
+`Application.handleLowDisk`, applies the queue-wide pause and pauses the
+downloader; `docs/job-lifecycle.md` § "10. Rendering, and the translation to
+SABnzbd" has how it lifts.
 
 ## Offset bounds checking
 

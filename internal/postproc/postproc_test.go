@@ -951,7 +951,7 @@ func TestPar2Cleanup_PP0Skipped_PPVerifyRuns(t *testing.T) {
 			var doneMu sync.Mutex
 			var done bool
 			p := startProcessor(t, Options{
-				Stages: []Stage{NewPar2CleanupStage(true)},
+				Stages: []Stage{NewPar2CleanupStage(true), NewFinalizeStage()},
 				OnJobDone: func(*Job) {
 					doneMu.Lock()
 					done = true
@@ -962,6 +962,7 @@ func TestPar2Cleanup_PP0Skipped_PPVerifyRuns(t *testing.T) {
 			job := &Job{
 				Job:         newQueueJob(t, "par2-pp", tc.pp),
 				DownloadDir: dir,
+				FinalDir:    dir,
 				PP:          tc.pp,
 			}
 			p.Process(job)

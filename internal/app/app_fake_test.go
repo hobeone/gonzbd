@@ -29,6 +29,8 @@ type fakeDownloader struct {
 	topOnly          bool
 	propagationDelay time.Duration
 	serverStatus     []downloader.ServerSnapshot
+	onBeforePause    func()
+	onBeforeResume   func()
 }
 
 func newFakeDownloader() *fakeDownloader {
@@ -97,11 +99,23 @@ func (f *fakeDownloader) SpeedLimit() int64 {
 
 func (f *fakeDownloader) Pause() {
 	f.mu.Lock()
+	hook := f.onBeforePause
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.paused = true
 }
 
 func (f *fakeDownloader) Resume() {
+	f.mu.Lock()
+	hook := f.onBeforeResume
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.paused = false

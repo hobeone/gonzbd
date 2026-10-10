@@ -17,6 +17,13 @@ import (
 // to original filenames, and renames any obfuscated files that match.
 // It opens root for dir once and confines all filesystem operations.
 func Par2Rename(ctx context.Context, log *slog.Logger, root *os.Root, dir string, opts fsutil.SanitizeOptions) ([]Rename, error) {
+	return Par2RenameExcluding(ctx, log, root, dir, opts, nil)
+}
+
+// Par2RenameExcluding is Par2Rename with an optional set of relative entry
+// names (exclude) that are ignored both as .par2 sources and as rename
+// candidates (#768).
+func Par2RenameExcluding(_ context.Context, log *slog.Logger, root *os.Root, dir string, opts fsutil.SanitizeOptions, exclude map[string]struct{}) ([]Rename, error) {
 	if log == nil {
 		log = slog.Default().With("component", "deobfuscate")
 	}
@@ -31,7 +38,15 @@ func Par2Rename(ctx context.Context, log *slog.Logger, root *os.Root, dir string
 		return nil, fmt.Errorf("readdir: %w", err)
 	}
 
-	par2Files := findPar2Files(entries, dir)
+	filtered := entries[:0:0]
+	for _, e := range entries {
+		if _, skip := exclude[e.Name()]; skip {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+
+	par2Files := findPar2Files(filtered, dir)
 	if len(par2Files) == 0 {
 		return nil, nil
 	}
@@ -42,7 +57,7 @@ func Par2Rename(ctx context.Context, log *slog.Logger, root *os.Root, dir string
 	}
 
 	var renames []Rename
-	for _, e := range entries {
+	for _, e := range filtered {
 		r, renamed, err := par2RenameFile(log, root, dir, e, hashToName, opts)
 		if err != nil {
 			return renames, err

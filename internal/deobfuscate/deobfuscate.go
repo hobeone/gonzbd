@@ -271,6 +271,12 @@ func renameRecorded(log *slog.Logger, root *os.Root, relSrc, relDst, src, dst, t
 // Deobfuscation is skipped entirely when the download contains DVD/Bluray
 // disc structure directories (VIDEO_TS, AUDIO_TS, BDMV).
 func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename, error) {
+	return Excluding(ctx, log, dir, usefulName, opts, nil)
+}
+
+// Excluding is Deobfuscate with an optional set of relative entry
+// names (exclude) that are ignored across all deobfuscation phases (#768).
+func Excluding(ctx context.Context, log *slog.Logger, dir, usefulName string, opts fsutil.SanitizeOptions, exclude map[string]struct{}) ([]Rename, error) {
 	if log == nil {
 		log = slog.Default().With("component", "deobfuscate")
 	}
@@ -288,7 +294,7 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	}
 
 	// Phase 1: Attempt PAR2-based deobfuscation first.
-	parRenames, err := Par2Rename(ctx, log, root, dir, opts)
+	parRenames, err := Par2RenameExcluding(ctx, log, root, dir, opts, exclude)
 	if err != nil {
 		log.Warn("deobfuscate: par2 deobfuscation encountered an error", "dir", dir, "err", err)
 	}
@@ -298,7 +304,7 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	}
 
 	// Phase 2: Attempt RAR-header-based deobfuscation.
-	rarName := extractRARUsefulName(root, dir, log)
+	rarName := extractRARUsefulName(root, dir, log, exclude)
 	if rarName != "" {
 		log.Info("deobfuscate: RAR headers suggest useful name", "name", rarName)
 		usefulName = rarName
@@ -319,6 +325,9 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	var relPaths []string
 	for _, e := range entries {
 		if !e.Type().IsRegular() {
+			continue
+		}
+		if _, skip := exclude[e.Name()]; skip {
 			continue
 		}
 		paths = append(paths, filepath.Join(dir, e.Name()))
@@ -345,6 +354,10 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 				relPaths[i] = filepath.Base(r.To)
 			}
 		}
+	}
+
+	if usefulName != "" {
+		paths, relPaths = dedupObfuscatedAgainstTarget(log, root, usefulName, paths, relPaths, opts)
 	}
 
 	bigPath, ok, err := BiggestFile(paths)
@@ -405,6 +418,41 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	}
 
 	return renames, nil
+}
+
+// dedupObfuscatedAgainstTarget removes any obfuscated candidate in relPaths
+// whose deobfuscated target (usefulName + ext) already exists in root with
+// byte-for-byte identical content (#768). This occurs when a post-processing
+// rerun re-extracts an archive whose obfuscated member was already renamed to
+// usefulName+ext on a prior interrupted run before FinalizeStage completed.
+func dedupObfuscatedAgainstTarget(
+	log *slog.Logger,
+	root *os.Root,
+	usefulName string,
+	paths, relPaths []string,
+	opts fsutil.SanitizeOptions,
+) (keptPaths, keptRels []string) {
+	keptPaths = paths[:0:0]
+	keptRels = relPaths[:0:0]
+	for i, rel := range relPaths {
+		relDst := fsutil.SanitizeFilename(usefulName+filepath.Ext(rel), opts)
+		if relDst != rel && IsProbablyObfuscated(log, rel) {
+			statSrc, errSrc := root.Stat(rel)
+			statDst, errDst := root.Stat(relDst)
+			if errSrc == nil && errDst == nil && statSrc.Size() == statDst.Size() {
+				if eq, err := streamEqual(root, rel, relDst); err == nil && eq && root.Remove(rel) == nil {
+					log.Info("deobfuscate: deleted duplicate obfuscated file",
+						"deleted", rel,
+						"identical_to", relDst,
+					)
+					continue
+				}
+			}
+		}
+		keptPaths = append(keptPaths, paths[i])
+		keptRels = append(keptRels, rel)
+	}
+	return keptPaths, keptRels
 }
 
 // originalStem returns the path stem (no extension) of bigPath as it was
@@ -487,6 +535,12 @@ func containsIgnoredMovieFolder(root *os.Root) bool {
 // Subtitles renames .srt subtitle files to match the dominant
 // video file in dir. This ensures media players auto-detect subtitles.
 func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
+	return SubtitlesExcluding(log, dir, nil)
+}
+
+// SubtitlesExcluding is Subtitles with an optional set of relative entry names
+// (exclude) that are ignored when finding the dominant video and subtitles (#768).
+func SubtitlesExcluding(log *slog.Logger, dir string, exclude map[string]struct{}) ([]Rename, error) {
 	if log == nil {
 		log = slog.Default().With("component", "deobfuscate")
 	}
@@ -511,6 +565,9 @@ func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 	var srtRels []string
 	for _, e := range entries {
 		if !e.Type().IsRegular() {
+			continue
+		}
+		if _, skip := exclude[e.Name()]; skip {
 			continue
 		}
 		p := filepath.Join(dir, e.Name())
@@ -569,7 +626,7 @@ func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 // extension) and inspects their headers to extract internal filenames. Returns
 // the stem of the most common internal filename, or "" if no useful name can
 // be determined.
-func extractRARUsefulName(root *os.Root, dir string, log *slog.Logger) string {
+func extractRARUsefulName(root *os.Root, dir string, log *slog.Logger, exclude map[string]struct{}) string {
 	if log == nil {
 		log = slog.Default().With("component", "deobfuscate")
 	}
@@ -587,6 +644,9 @@ func extractRARUsefulName(root *os.Root, dir string, log *slog.Logger) string {
 	var internalNames []string
 	for _, e := range entries {
 		if !e.Type().IsRegular() {
+			continue
+		}
+		if _, skip := exclude[e.Name()]; skip {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())

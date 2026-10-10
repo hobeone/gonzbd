@@ -3,6 +3,7 @@ package postproc
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -148,48 +149,63 @@ func TestPar2CleanupStage_RunsAfterSuccessfulUnpack(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// The data file must survive.
-	if _, err := os.Stat(filepath.Join(dir, "movie.mkv")); err != nil {
-		t.Error("movie.mkv should survive cleanup")
-	}
-
-	// All par2 files should be deleted.
-	entries, _ := os.ReadDir(dir)
-	for _, e := range entries {
-		if strings.HasSuffix(strings.ToLower(e.Name()), ".par2") {
-			t.Errorf("par2 file %q should have been cleaned up", e.Name())
-		}
-	}
-
-	// Verify OutputLines logs.
-	foundPar2Cleaned := false
-	foundBackupsCleaned := false
+	// Verify OutputLines logs from Par2CleanupStage before FinalizeStage runs.
+	foundPar2Queued := false
+	foundBackupsQueued := false
 	expectedLogs := map[string]bool{
-		"[par2_cleanup] Deleted par2 file: movie.par2":         false,
-		"[par2_cleanup] Deleted par2 file: movie.vol00+1.par2": false,
-		"[par2_cleanup] Deleted par2 file: movie.vol01+2.par2": false,
-		"[par2_cleanup] Deleted par2 backup file: movie.mkv.1": false,
+		"[par2_cleanup] Queued par2 file for deletion at finalize: movie.par2":         false,
+		"[par2_cleanup] Queued par2 file for deletion at finalize: movie.vol00+1.par2": false,
+		"[par2_cleanup] Queued par2 file for deletion at finalize: movie.vol01+2.par2": false,
+		"[par2_cleanup] Queued par2 backup file for deletion at finalize: movie.mkv.1": false,
 	}
 	for _, line := range job.OutputLines {
-		if line == "Cleaned up 3 par2 file(s)" {
-			foundPar2Cleaned = true
+		if line == "Queued 3 par2 file(s) for deletion at finalize" {
+			foundPar2Queued = true
 		}
-		if line == "Cleaned up 1 par2 backup file(s)" {
-			foundBackupsCleaned = true
+		if line == "Queued 1 par2 backup file(s) for deletion at finalize" {
+			foundBackupsQueued = true
 		}
 		if _, expected := expectedLogs[line]; expected {
 			expectedLogs[line] = true
 		}
 	}
-	if !foundPar2Cleaned {
-		t.Errorf("expected 'Cleaned up 3 par2 file(s)' in output, got: %v", job.OutputLines)
+	if !foundPar2Queued {
+		t.Errorf("expected 'Queued 3 par2 file(s) for deletion at finalize' in output, got: %v", job.OutputLines)
 	}
-	if !foundBackupsCleaned {
-		t.Errorf("expected 'Cleaned up 1 par2 backup file(s)' in output, got: %v", job.OutputLines)
+	if !foundBackupsQueued {
+		t.Errorf("expected 'Queued 1 par2 backup file(s) for deletion at finalize' in output, got: %v", job.OutputLines)
 	}
 	for expectedLine, found := range expectedLogs {
 		if !found {
 			t.Errorf("expected log line %q not found in: %v", expectedLine, job.OutputLines)
+		}
+	}
+
+	// Before FinalizeStage runs, files remain in DownloadDir (#768).
+	for _, name := range []string{"movie.par2", "movie.vol00+1.par2", "movie.vol01+2.par2", "movie.mkv.1"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s deleted before FinalizeStage: %v", name, err)
+		}
+	}
+
+	job.FinalDir = dir
+	if err := NewFinalizeStage().Run(t.Context(), job); err != nil {
+		t.Fatalf("FinalizeStage.Run: %v", err)
+	}
+	if !slices.Contains(job.OutputLines, "Cleaned up 4 pending file(s)") {
+		t.Errorf("expected 'Cleaned up 4 pending file(s)' after finalize, got: %v", job.OutputLines)
+	}
+
+	// The data file must survive.
+	if _, err := os.Stat(filepath.Join(dir, "movie.mkv")); err != nil {
+		t.Error("movie.mkv should survive cleanup")
+	}
+
+	// All par2 and backup files should be deleted after finalize.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasSuffix(strings.ToLower(e.Name()), ".par2") || e.Name() == "movie.mkv.1" {
+			t.Errorf("file %q should have been cleaned up at finalize", e.Name())
 		}
 	}
 }
@@ -557,7 +573,7 @@ func TestPar2CleanupStage_NoFiles(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	for _, line := range job.OutputLines {
-		if strings.Contains(line, "Cleaned up ") {
+		if strings.Contains(line, "Cleaned up ") || strings.Contains(line, "Queued ") {
 			t.Errorf("unexpected cleanup log: %q", line)
 		}
 	}
