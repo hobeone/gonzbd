@@ -1035,7 +1035,9 @@ func (d *Dispatcher) SetName(id, name string) error {
 
 // LoadProgress hydrates a registered job that has no JobProgress yet, and
 // records the load as reconcileResidency does, so a later tick evicts it when
-// the job holds nothing. Hydration verifies the job's written articles, so
+// the job holds nothing and is not paused: reconcileResidency's eviction arm
+// skips IntentPause, so a paused job stays resident until it is resumed or
+// removed. Hydration verifies the job's written articles, so
 // afterwards the job's progress reports them.
 //
 // SetName calls it so Job.DownloadBegun reads the job's done articles and not

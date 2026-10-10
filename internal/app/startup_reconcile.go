@@ -41,6 +41,10 @@ func (app *Application) reconcileBeforeFirstTick(ctx context.Context) error {
 // without this mode=queue reports 0% for a job whose written articles are on
 // disk. A verification fault parks the job (appResidency.Hydrate) and is not
 // an error here; only a cancelled ctx stops the loop.
+//
+// It runs synchronously inside Application.Start, so each job's verification
+// read delays Start's return and so the API's start (docs/durability-contract.md,
+// Accepted limitation 1), and a job it hydrates stays resident while paused.
 func (app *Application) hydratePausedJobs(ctx context.Context) error {
 	if app.dispatcher == nil {
 		return nil

@@ -991,6 +991,17 @@ recorded here so the next reader does not mistake them for design.
    matters, the follow-up is a `verified` gate in the dispatch plan with the
    read on the Fetching worker.
 
+   **At startup the cost is paid before the API listens.**
+   `hydratePausedJobs` (`internal/app/startup_reconcile.go`) hydrates, and so
+   verifies, every job restored at `Fetching` with `IntentPause`, synchronously
+   inside `Application.Start`, and `cmd/gonzbd/main.go` starts its HTTP server
+   after `Start` returns. Startup time therefore grows with the recorded bytes
+   of those jobs' `complete=0` files, and a remote mount makes it slower. A
+   paused job then stays resident until it is resumed or removed, because the
+   tick's eviction arm skips `IntentPause` (`reconcileResidency`,
+   `internal/dispatch/tick.go`). The follow-up is asynchronous paused-job
+   verification.
+
 2. **An unreadable sector, or a missing download directory, keeps the job
    parked until the operator acts** (§3). Deleting the file refetches it; a
    directory the user deleted by hand also parks rather than refetching. A
