@@ -278,14 +278,18 @@ is not re-hydrated every tick after a residency fault parked it.
 `TestRestore_PausedJobIsNotHydratedUntilResumed` and
 `TestReconcileResidency_DoesNotRehydrateAPausedSlotHolder` pin the four.
 
-Two loads happen outside this rule, both through `Dispatcher.LoadProgress`,
+Three loads happen outside this rule. Two go through `Dispatcher.LoadProgress`,
 which hydrates a registered job with no progress and records the load so a
 later tick evicts it once it holds nothing and is not paused:
 `Application.hydratePausedJobs`, before the first tick, for every job restored
 paused at `Fetching`, so its verified progress is reported — each such job
 stays resident until it is resumed or removed, since the tick's eviction arm
 skips `IntentPause` (`docs/durability-contract.md`, Accepted limitation 1);
-and `SetName`, so a rename sees whether the job's download has begun. A hydration that cannot verify the job's files
+and `SetName`, so a rename sees whether the job's download has begun. The
+third is `Application.fileOwedUnwantedFailures`, before the first tick, which
+calls the residency's `Hydrate` directly for a restored job the archive peek
+owes a filing, so the filing sees its verified files; it records no load,
+because the job departs once filed. A hydration that cannot verify the job's files
 returns an error wrapping `ErrResidencyFault`, which no caller settles: the
 job has been parked (`docs/durability-contract.md` §3).
 

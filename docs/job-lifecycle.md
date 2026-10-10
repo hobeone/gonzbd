@@ -1392,11 +1392,13 @@ about what a downloader has in flight, and nothing that survived a restart is.
 
 ### Verification at the first hydration
 
-There is no startup pass over the downloads. A job's written articles are
-verified when it is first hydrated after a restart, before anything is
-attached: by the tick, for a
-job that holds what its position requires; by `hydratePausedJobs`, for a job
-restored paused at `Fetching`; or by a rename's `LoadProgress`. If verification
+A job's written articles are verified when it is first hydrated after a
+restart, before anything is attached: by the tick, for a job that holds what
+its position requires; by `hydratePausedJobs`, for a job restored paused at
+`Fetching` — which runs inside `Application.Start`, before the API listens
+(`docs/durability-contract.md`, Accepted limitation 1); by
+`fileOwedUnwantedFailures`, also before the first tick, for a restored job the
+archive peek owes a filing; or by a rename's `LoadProgress`. If verification
 cannot complete for a reason about the device, nothing is attached, the job is
 parked, and the next hydration starts again — so a job a hydration attached
 was verified first (a freshly ingested job has no rows to verify, and a retry
