@@ -304,6 +304,29 @@ func (s failRecordFor) ApplyRecord(ctx context.Context, batches []durability.Rec
 	return s.recordStore.ApplyRecord(ctx, batches)
 }
 
+// ObserveRecordWrites wraps the recorder's store so that each ApplyRecord call
+// reports its duration, the number of written-article rows it carried, and
+// its error. Call it before Start.
+func (a *Application) ObserveRecordWrites(fn func(d time.Duration, rows int, err error)) {
+	a.recorder.st = observedRecordStore{recordStore: a.recorder.st, fn: fn}
+}
+
+type observedRecordStore struct {
+	recordStore
+	fn func(d time.Duration, rows int, err error)
+}
+
+func (s observedRecordStore) ApplyRecord(ctx context.Context, batches []durability.RecordBatch) error {
+	rows := 0
+	for _, b := range batches {
+		rows += len(b.Rows)
+	}
+	start := time.Now()
+	err := s.recordStore.ApplyRecord(ctx, batches)
+	s.fn(time.Since(start), rows, err)
+	return err
+}
+
 // SeedWritten is seedWritten for the external test package.
 func SeedWritten(t *testing.T, st *durability.Store, jobID string, rows []durability.WrittenRow) {
 	t.Helper()
