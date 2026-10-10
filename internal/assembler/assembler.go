@@ -1206,10 +1206,9 @@ func (a *Assembler) releasePoisoned(f *openFile) {
 //     goroutine in exchange for nothing.
 //
 // "Already left the queue" is exact rather than hedging: RemoveJob is the only
-// production caller of CancelJob — `git grep -n 'CancelJob(' -- '*.go'`
-// outside tests and outside this file's own doc comments returns
-// Application.RemoveJob alone — and since #376 it removes the job from the
-// queue BEFORE calling in, returning early if that fails.
+// production caller of this CancelJob — `git grep -n 'assembler\.CancelJob(' -- '*.go' ':!*_test.go'`
+// returns 1 line, in Application.RemoveJob — and since #376 it removes the job
+// from the queue BEFORE calling in, returning early if that fails.
 //
 // The caller keeps the bookkeeping: the open-map delete, the per-file
 // completed tombstone is unconditional and none of it is this function's
