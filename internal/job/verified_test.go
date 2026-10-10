@@ -282,11 +282,11 @@ func TestDoneClearingPaths_LeaveNoRowWithoutItsBit(t *testing.T) {
 	}{
 		"ResetForRetry": {
 			clear:   func(j *Job) error { j.ResetForRetry(); return nil },
-			cleared: []int{2},
+			cleared: []int{2, 3},
 		},
 		"ClearEmittedForReload": {
 			clear:   func(j *Job) error { j.ClearEmittedForReload(false); return nil },
-			cleared: []int{2},
+			cleared: []int{2, 3},
 		},
 		"UntrustFile": {
 			clear:   func(j *Job) error { return j.UntrustFile(0) },
@@ -302,6 +302,7 @@ func TestDoneClearingPaths_LeaveNoRowWithoutItsBit(t *testing.T) {
 				}
 			}
 			lateWrittenFailure(t, j, 2, 0xBAD)
+			lateWrittenFailure(t, j, 3, 0xBAD)
 			if err := tc.clear(j); err != nil {
 				t.Fatalf("clear: %v", err)
 			}

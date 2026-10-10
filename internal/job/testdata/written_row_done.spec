@@ -2,48 +2,62 @@ pkg ./internal/job/
 run ^(TestDoneClearingPaths_LeaveNoRowWithoutItsBit|TestMarkArticleWritten_ARewriteAfterARetrySettlesTheCRC|TestClearDone_LeavesACloneItsRows|TestMarkArticleWritten_MarksDoneAndKeepsTheRow|TestSettleFileCRC_DerivesStoresAndReleases)$
 
 # #797: a resident written row exists only for a Done article. clearDone is
-# the one clearer of a Done bit and drops the row with it, which is what lets
+# the one clearer of a Done bit and drops the rows with it, which is what lets
 # MarkArticleWritten append without searching when it sets the bit. Each
 # clearing site is reverted on its own.
 
-[ResetForRetry clears the bits inline and keeps the row]
+[ResetForRetry clears the bits inline and keeps the rows]
 file internal/job/content.go
 --- anchor
-				j.progress.clearDone(fi, i)
+		j.progress.clearDone(fi, reset...)
 --- replace
-				j.progress.done.Clear(i)
-				j.progress.failed.Clear(i)
+		for _, i := range reset {
+			j.progress.done.Clear(i)
+			j.progress.failed.Clear(i)
+		}
 --- end
 
-[resetForReload clears the bits inline and keeps the row]
+[resetForReload clears the bits inline and keeps the rows]
 file internal/job/progress.go
 --- anchor
-	p.files[fi].FailedBytes -= bytes
-	p.clearDone(fi, i)
+	p.clearDone(fi, reset...)
+	return cleared, retained
 --- replace
-	p.files[fi].FailedBytes -= bytes
-	p.done.Clear(i)
-	p.failed.Clear(i)
+	for _, i := range reset {
+		p.done.Clear(i)
+		p.failed.Clear(i)
+	}
+	return cleared, retained
 --- end
 
 # UntrustFile, the third clearing site, releases the file's rows in bulk
 # before markNotDone runs, so reverting markNotDone changes no row:
 # bitset_writers.spec pins it, and written_lifecycle.spec the bulk release.
 
-[clearDone keeps the row]
+[clearDone keeps the rows]
 file internal/job/progress.go
 --- anchor
-	p.dropRow(fi, i)
+	p.dropRows(fi, arts)
 --- replace
 	_ = fi
 --- end
 
-[dropRow edits the stored slice in place]
+[dropRows drops only the first article it is given]
 file internal/job/verified.go
 --- anchor
-	p.written[fi] = slices.Delete(slices.Clone(rows), k, k+1)
+	for _, i := range arts {
+		drop[int32(i)] = struct{}{}
 --- replace
-	p.written[fi] = slices.Delete(rows, k, k+1)
+	for _, i := range arts[:1] {
+		drop[int32(i)] = struct{}{}
+--- end
+
+[dropRows edits the stored slice in place]
+file internal/job/verified.go
+--- anchor
+	p.written[fi] = slices.DeleteFunc(slices.Clone(rows), dropped)
+--- replace
+	p.written[fi] = slices.DeleteFunc(rows, dropped)
 --- end
 
 [the append is taken for an article that already has a row]

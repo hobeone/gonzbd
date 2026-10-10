@@ -8,14 +8,11 @@ run TestResetForRetry_UncompletesAFileWithUndoneArticles
 [ResetForRetry clears Complete only for files whose failed articles it reset]
 file internal/job/content.go
 --- anchor
-				j.progress.clearDone(fi, i)
-			}
-			if !j.progress.done.Get(i) {
---- replace
-				j.progress.clearDone(fi, i)
+			case !j.progress.done.Get(i):
 				unresolved = true
-			}
-			if false {
+--- replace
+			case false:
+				unresolved = true
 --- end
 
 [the stale assembled CRC is kept]

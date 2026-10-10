@@ -113,7 +113,7 @@ func installRows(m *Manifest, p *JobProgress, fileIdx int, rows []durability.Wri
 // assume one: FileRows and settleFileCRC each sort a copy (sortedClone).
 //
 // clone() shares p.written's slices, so a stored slice is never edited in
-// place: a replacement, or dropRow's removal, is made in a new slice. An
+// place: a replacement, or dropRows' removal, is made in a new slice. An
 // append, here or in appendRow, may write into the stored slice's spare
 // capacity, which no holder can see: every slice header sharing that backing
 // array was read from p.written, the stored length only grows between
@@ -195,16 +195,24 @@ func (p *JobProgress) appendRow(row durability.WrittenRow) {
 	p.written[row.FileIdx] = append(p.written[row.FileIdx], row)
 }
 
-// dropRow removes article i's resident row from file fi, if it has one. The
-// remaining rows are stored in a new slice, so a clone sharing the old one is
-// unaffected. The caller holds contentMu.
-func (p *JobProgress) dropRow(fi, i int) {
+// dropRows removes the resident rows of articles arts from file fi, in one
+// pass over the file's rows. When any is removed the remaining rows are stored
+// in a new slice, so a clone sharing the old one is unaffected. The caller
+// holds contentMu.
+func (p *JobProgress) dropRows(fi int, arts []int) {
 	rows := p.written[fi]
-	k := slices.IndexFunc(rows, func(r durability.WrittenRow) bool { return int(r.ArtIdx) == i })
-	if k < 0 {
+	if len(rows) == 0 || len(arts) == 0 {
 		return
 	}
-	p.written[fi] = slices.Delete(slices.Clone(rows), k, k+1)
+	drop := make(map[int32]struct{}, len(arts))
+	for _, i := range arts {
+		drop[int32(i)] = struct{}{} //nolint:gosec // G115: article index fits in int32
+	}
+	dropped := func(r durability.WrittenRow) bool { _, ok := drop[r.ArtIdx]; return ok }
+	if !slices.ContainsFunc(rows, dropped) {
+		return
+	}
+	p.written[fi] = slices.DeleteFunc(slices.Clone(rows), dropped)
 }
 
 // SettleFileCRC derives a completed file's whole-file CRC from its resident

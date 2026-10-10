@@ -674,13 +674,10 @@ func (j *Job) ClearEmittedForReload(skipEmitted bool) (cleared, retained []int32
 		return nil, nil
 	}
 	m := j.manifest
-	for i := range m.NumArticles() {
-		switch {
-		case j.progress.resetForReload(m, i, !skipEmitted):
-			cleared = append(cleared, int32(i))
-		case j.progress.failed.Get(i):
-			retained = append(retained, int32(i))
-		}
+	for fi := range m.NumFiles() {
+		c, r := j.progress.resetForReload(m, fi, !skipEmitted)
+		cleared = append(cleared, c...)
+		retained = append(retained, r...)
 	}
 	if len(cleared) > 0 || len(retained) > 0 {
 		j.progress.recompute(m)
@@ -717,20 +714,24 @@ func (j *Job) ResetForRetry() {
 	j.progress.clearPar2ReleaseReason()
 	j.progress.clearDownloadStamps()
 
-	// A bulk reset: clearDone writes bits only, and the recompute below
-	// derives every counter from them.
+	// A bulk reset: clearDone maintains no counter, and the recompute below
+	// derives every one of them from the bits.
 	m := j.manifest
+	var reset []int
 	for fi := range m.NumFiles() {
 		unresolved := false
+		reset = reset[:0]
 		lo, hi := m.FileRange(fi)
 		for i := lo; i < hi; i++ {
-			if j.progress.failed.Get(i) {
-				j.progress.clearDone(fi, i)
-			}
-			if !j.progress.done.Get(i) {
+			switch {
+			case j.progress.failed.Get(i):
+				reset = append(reset, i)
+				unresolved = true
+			case !j.progress.done.Get(i):
 				unresolved = true
 			}
 		}
+		j.progress.clearDone(fi, reset...)
 		if unresolved {
 			fp := &j.progress.files[fi]
 			fp.Complete = false

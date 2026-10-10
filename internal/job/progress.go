@@ -1035,19 +1035,22 @@ func (p *JobProgress) markNotDone(fi, i int) bool {
 	return true
 }
 
-// clearDone returns article i of file fi to Outstanding: it clears the Done
-// and Failed bits and drops the article's resident written row. It is the one
-// clearer of a Done bit, so a resident row exists only for a Done article,
-// which is what lets MarkArticleWritten append without searching when it sets
-// the bit. TestBitsetWriters_MatchTheEnumerationStatedInProse pins it as the
-// only caller of done.Clear and failed.Clear.
+// clearDone returns articles arts of file fi to Outstanding: it clears their
+// Done and Failed bits and drops their resident written rows, in one pass over
+// the file's rows however many articles it is given. It is the one clearer of
+// a Done bit, so a resident row exists only for a Done article, which is what
+// lets MarkArticleWritten append without searching when it sets the bit.
+// TestBitsetWriters_MatchTheEnumerationStatedInProse pins it as the only
+// caller of done.Clear and failed.Clear.
 //
 // It maintains no counter: ResetForRetry, UntrustFile and ClearEmittedForReload
 // each recompute after it, and resetForReload also unwinds failedBytes itself.
-func (p *JobProgress) clearDone(fi, i int) {
-	p.done.Clear(i)
-	p.failed.Clear(i)
-	p.dropRow(fi, i)
+func (p *JobProgress) clearDone(fi int, arts ...int) {
+	for _, i := range arts {
+		p.done.Clear(i)
+		p.failed.Clear(i)
+	}
+	p.dropRows(fi, arts)
 }
 
 // markFailed flips Done+Failed on article i and updates counters. Returns
@@ -1087,9 +1090,10 @@ func (p *JobProgress) setFailedBits(i int) bool {
 	return true
 }
 
-// resetForReload clears the transient Emitted flag on article i and, if it
-// was Failed and its file is still open for writing, resets it to retryable
-// (Done=false, Failed=false), subtracting its bytes from FailedBytes.
+// resetForReload clears the transient Emitted flag on each article of file
+// fi and, if the file is still open for writing, resets each Failed one to
+// retryable (Done=false, Failed=false, through one clearDone for the file),
+// subtracting its bytes from FailedBytes.
 // RemainingBytes needs no restoring of its own: it derives from
 // BytesDownloaded/FailedBytes on read, and an article that was never
 // downloaded leaves BytesDownloaded untouched, so undoing FailedBytes here is
@@ -1122,8 +1126,9 @@ func (p *JobProgress) setFailedBits(i int) bool {
 // still holds — is a different one, and its objection does not apply here. It
 // needs knowledge of the writer that this layer does not have; Complete is
 // queue-owned state.
-// It reports whether it cleared article i's failed bit, which
-// ClearEmittedForReload aggregates into its `cleared` return. NO CALLER USES
+// It returns the articles whose failed bit it cleared and those it left failed
+// in a Complete file, which ClearEmittedForReload aggregates into its
+// `cleared` and `retained` returns. NO CALLER USES
 // THAT RETURN TODAY — `git grep -n 'j\.ClearEmittedForReload(' -- '*.go'
 // ':!*_test.go'` finds 1 line, and discards it. The per-article answer
 // exists so that a caller CAN name the stored rows it may drop: now that the
@@ -1146,22 +1151,29 @@ func (p *JobProgress) setFailedBits(i int) bool {
 // old downloader's teardown failed — ErrNoServersLeft is terminal — failed
 // for the rest of the process: markNotDone refuses a permanently failed
 // article, and only a whole-job retry clears it.
-func (p *JobProgress) resetForReload(m *Manifest, i int, clearEmitted bool) bool {
-	if clearEmitted {
-		p.emitted.Clear(i)
+func (p *JobProgress) resetForReload(m *Manifest, fi int, clearEmitted bool) (cleared, retained []int32) {
+	lo, hi := m.FileRange(fi)
+	complete := p.files[fi].Complete
+	var reset []int
+	for i := lo; i < hi; i++ {
+		if clearEmitted {
+			p.emitted.Clear(i)
+		}
+		if !p.failed.Get(i) {
+			continue
+		}
+		if complete {
+			retained = append(retained, int32(i)) //nolint:gosec // G115: article index fits in int32
+			continue
+		}
+		bytes := int64(m.ArticleBytes(i))
+		p.failedBytes -= bytes
+		p.files[fi].FailedBytes -= bytes
+		reset = append(reset, i)
+		cleared = append(cleared, int32(i)) //nolint:gosec // G115: article index fits in int32
 	}
-	if !p.failed.Get(i) {
-		return false
-	}
-	fi := m.fileIndexForArticle(i)
-	if p.files[fi].Complete {
-		return false
-	}
-	bytes := int64(m.ArticleBytes(i))
-	p.failedBytes -= bytes
-	p.files[fi].FailedBytes -= bytes
-	p.clearDone(fi, i)
-	return true
+	p.clearDone(fi, reset...)
+	return cleared, retained
 }
 
 // isEarlyAbort returns true if the job should be aborted based on the
