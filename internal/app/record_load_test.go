@@ -96,15 +96,31 @@ func TestRecordPathUnderLoad(t *testing.T) {
 		latMu     sync.Mutex
 		lats      []time.Duration
 		rowsSeen  int64
+		noRows    int   // successful calls that carried no written-article row
+		failures  int   // calls that returned an error
+		firstErr  error // the first of them
 	)
-	a.ObserveRecordWrites(func(d time.Duration, rows int) {
+	// Only a successful call that carried rows enters the distribution: a
+	// failed flush is retried, so counting it would count its rows twice, and
+	// a call with no rows is not the per-article write being measured.
+	a.ObserveRecordWrites(func(d time.Duration, rows int, err error) {
 		if !measuring.Load() {
 			return
 		}
 		latMu.Lock()
-		lats = append(lats, d)
-		rowsSeen += int64(rows)
-		latMu.Unlock()
+		defer latMu.Unlock()
+		switch {
+		case err != nil:
+			failures++
+			if firstErr == nil {
+				firstErr = err
+			}
+		case rows == 0:
+			noRows++
+		default:
+			lats = append(lats, d)
+			rowsSeen += int64(rows)
+		}
 	})
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -168,14 +184,16 @@ func TestRecordPathUnderLoad(t *testing.T) {
 	reap := func(id string) {
 		completed++
 		var storage string
-		waitUntil(10*time.Second, func() bool {
+		if !waitUntil(10*time.Second, func() bool {
 			e, err := repo.Get(t.Context(), id)
 			if err != nil {
 				return false
 			}
 			storage = e.Storage
 			return true
-		})
+		}) {
+			t.Logf("job %s has no history entry after 10s; its storage directory, if any, is not deleted", id)
+		}
 		if storage != "" {
 			_ = os.RemoveAll(storage)
 		}
@@ -205,6 +223,10 @@ func TestRecordPathUnderLoad(t *testing.T) {
 	if profDir != "" {
 		runtime.SetBlockProfileRate(1)
 		runtime.SetMutexProfileFraction(1)
+		t.Cleanup(func() {
+			runtime.SetBlockProfileRate(0)
+			runtime.SetMutexProfileFraction(0)
+		})
 	}
 	measuring.Store(true)
 	start := time.Now()
@@ -221,8 +243,11 @@ func TestRecordPathUnderLoad(t *testing.T) {
 
 	latMu.Lock()
 	defer latMu.Unlock()
-	if len(lats) == 0 {
-		t.Fatal("no ApplyRecord call in the measurement window")
+	if failures > 0 {
+		t.Errorf("%d ApplyRecord calls failed in the measurement window; first: %v", failures, firstErr)
+	}
+	if rowsSeen == 0 {
+		t.Fatalf("no written-article row reached SQLite in the measurement window (%d calls without rows, %d failed)", noRows, failures)
 	}
 	sorted := slices.Clone(lats)
 	slices.Sort(sorted)
@@ -236,9 +261,9 @@ func TestRecordPathUnderLoad(t *testing.T) {
 	t.Logf("window %v: %d jobs finished (%.0f MiB, %.1f MiB/s by finished jobs), %d rows recorded (%.0f articles/s)",
 		elapsed.Round(time.Millisecond), jobsDone, mib, mib/elapsed.Seconds(),
 		rowsSeen, float64(rowsSeen)/elapsed.Seconds())
-	t.Logf("ApplyRecord: n=%d p50=%v p90=%v p99=%v max=%v total=%v (%.3f%% of the window)",
+	t.Logf("ApplyRecord with rows: n=%d p50=%v p90=%v p99=%v max=%v total=%v (%.3f%% of the window); %d calls without rows not included",
 		len(sorted), pct(0.50), pct(0.90), pct(0.99), sorted[len(sorted)-1],
-		sum, 100*sum.Seconds()/elapsed.Seconds())
+		sum, 100*sum.Seconds()/elapsed.Seconds(), noRows)
 	t.Logf("-wal peak: %.2f MiB over the run, %.2f MiB in the window",
 		float64(walPeak.Load())/(1<<20), float64(walPeakWindow.Load())/(1<<20))
 }

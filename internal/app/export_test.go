@@ -305,15 +305,15 @@ func (s failRecordFor) ApplyRecord(ctx context.Context, batches []durability.Rec
 }
 
 // ObserveRecordWrites wraps the recorder's store so that each ApplyRecord call
-// reports its duration and the number of written-article rows it carried.
-// Call it before Start.
-func (a *Application) ObserveRecordWrites(fn func(d time.Duration, rows int)) {
+// reports its duration, the number of written-article rows it carried, and
+// its error. Call it before Start.
+func (a *Application) ObserveRecordWrites(fn func(d time.Duration, rows int, err error)) {
 	a.recorder.st = observedRecordStore{recordStore: a.recorder.st, fn: fn}
 }
 
 type observedRecordStore struct {
 	recordStore
-	fn func(d time.Duration, rows int)
+	fn func(d time.Duration, rows int, err error)
 }
 
 func (s observedRecordStore) ApplyRecord(ctx context.Context, batches []durability.RecordBatch) error {
@@ -323,7 +323,7 @@ func (s observedRecordStore) ApplyRecord(ctx context.Context, batches []durabili
 	}
 	start := time.Now()
 	err := s.recordStore.ApplyRecord(ctx, batches)
-	s.fn(time.Since(start), rows)
+	s.fn(time.Since(start), rows, err)
 	return err
 }
 
