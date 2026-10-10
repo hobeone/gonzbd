@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestVerifyJobFiles_Outcomes|TestVerifyJobFiles_ReadFaultChangesNothing|TestVerifyJobFiles_FsyncErrorUntrustsTheFile|TestVerifyJobFiles_RetryDoesNotFinishOverAnIntersectionFailure|TestFinishFileByPath|TestFinishFileByPath_ReturnsASecondFsyncError|TestFileFinishable|TestResolveRows|TestReadBackFile_ReadsARowLongerThanTheBuffer|TestFinishIfResolved|TestVerifyJobFiles_CancelChangesNothing|TestVerifyJobFiles_OpenErrorIsAFault|TestVerifyJobFiles_MissingDirectoryIsAFault|TestVerifyJobFiles_OpensTheResolversPath|TestVerifyJobFiles_LeavesAFileWithNoRowsUntouched
+run TestVerifyJobFiles_Outcomes|TestVerifyJobFiles_ReadFaultChangesNothing|TestVerifyJobFiles_FsyncErrorUntrustsTheFile|TestVerifyJobFiles_RetryDoesNotFinishOverAnIntersectionFailure|TestFinishFileByPath|TestFinishFileByPath_FsyncsOnlyAfterATruncate|TestFinishFileByPath_ReturnsTheFsyncErrorAfterATruncate|TestReadBackFile_AMissingFileInAnExistingDirectoryIsGone|TestFileFinishable|TestResolveRows|TestReadBackFile_ReadsARowLongerThanTheBuffer|TestFinishIfResolved|TestVerifyJobFiles_CancelChangesNothing|TestVerifyJobFiles_OpenErrorIsAFault|TestVerifyJobFiles_MissingDirectoryIsAFault|TestVerifyJobFiles_OpensTheResolversPath|TestVerifyJobFiles_LeavesAFileWithNoRowsUntouched
 
 [(a) a CRC mismatch treated as a match]
 file internal/app/verify.go
@@ -25,15 +25,23 @@ file internal/fsutil/shrink.go
 	if true {
 --- end
 
-[(c2) the second fsync skipped]
+[(c2) the fsync after the truncate skipped]
 file internal/fsutil/shrink.go
 --- anchor
 	if err := sync(f); err != nil {
-		return storagefault.Classify("sync", path, err)
+		return storagefault.Classify("sync", f.Name(), err)
 	}
 	return nil
 --- replace
 	return nil
+--- end
+
+[(c4) the finish fsyncs a file it did not truncate]
+file internal/fsutil/shrink.go
+--- anchor
+	if err != nil || !shrunk {
+--- replace
+	if err != nil || !shrunk && false {
 --- end
 
 [(c3) the truncate skipped]
@@ -115,9 +123,9 @@ file internal/app/verify.go
 [(k) a missing directory treated as a missing file]
 file internal/app/verify.go
 --- anchor
-			return fileReadback{}, &errVerifyFault{File: dir, Err: sErr}
+		return fileReadback{}, &errVerifyFault{File: loc.Dir, Err: err}
 --- replace
-			return fileReadback{deleteAll: true}, nil
+		return fileReadback{deleteAll: true}, nil
 --- end
 
 [(l) the per-row cancellation check neutered]
@@ -155,9 +163,9 @@ file internal/app/verify.go
 [(o) the path derived from the name instead of the resolver]
 file internal/app/verify.go
 --- anchor
-		path := pathFor(f.Filename)
+		loc := locate(f.Filename)
 --- replace
-		path := filepath.Join(filepath.Dir(pathFor("x")), f.Filename)
+		loc := jobFile{Dir: locate("x").Dir, Name: f.Filename}
 --- end
 
 [(p) a file with no rows is read back]

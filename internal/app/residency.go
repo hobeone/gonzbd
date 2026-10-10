@@ -36,15 +36,15 @@ type appResidency struct {
 	store  recordReader // nil when there is no history database
 	log    *slog.Logger
 
-	// pathFor resolves a recorded filename of the named job to the path its
-	// writer used (pipeline.jobFilePath). commit applies verdicts through the
+	// locate resolves a recorded filename of the named job to the directory
+	// and name its writer used (pipeline.jobFileLocation). commit applies verdicts through the
 	// recorder's synchronous path. finished receives each file the verifier
 	// finished by path, once the job is attached; peek is the archive peek
 	// run on each such file before it is marked complete (installVerification),
 	// whose failure message finished carries to the Resumed completion;
 	// parked receives the fault of a verification that could not complete. All
 	// five are set by New before anything can hydrate.
-	pathFor  func(jobName, filename string) string
+	locate   func(jobName, filename string) jobFile
 	commit   func(ctx context.Context, j *job.Job, v []durability.FileVerdict) error
 	finished func(jobID string, fileIdx int, failMsg string)
 	peek     func(j *job.Job, fileIdx int) string
@@ -143,8 +143,8 @@ func (r *appResidency) verifyAndAttach(ctx context.Context, j *job.Job, m *job.M
 	if err != nil {
 		return r.fault(ctx, j, storagefault.Classify("read record", "", err), err)
 	}
-	pathFor := func(fn string) string { return r.pathFor(j.Name(), fn) }
-	res, err := verifyJobFiles(ctx, m, files, rows, pathFor, false)
+	locate := func(fn string) jobFile { return r.locate(j.Name(), fn) }
+	res, err := verifyJobFiles(ctx, m, files, rows, locate, false)
 	if err != nil {
 		f := storagefault.Classify("verify", "", err)
 		if vf, ok := errors.AsType[*errVerifyFault](err); ok {

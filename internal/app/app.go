@@ -505,7 +505,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		fileInfo:  make(map[fileKey]assembler.FileInfo),
 	}
 	app.pipeline = p
-	app.residency.pathFor = p.jobFilePath
+	app.residency.locate = p.jobFileLocation
 
 	stageList := app.customStages
 	if stageList == nil {
@@ -2897,8 +2897,8 @@ func (app *Application) verifyRetry(ctx context.Context, j *job.Job, m *job.Mani
 			return nil, fmt.Errorf("clear complete: %w", err)
 		}
 	}
-	pathFor := func(fn string) string { return app.pipeline.jobFilePath(j.Name(), fn) }
-	res, err := verifyJobFiles(ctx, m, files, rows, pathFor, true)
+	locate := func(fn string) jobFile { return app.pipeline.jobFileLocation(j.Name(), fn) }
+	res, err := verifyJobFiles(ctx, m, files, rows, locate, true)
 	if err != nil {
 		return nil, fmt.Errorf("verify written articles: %w", err)
 	}
