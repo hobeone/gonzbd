@@ -18,13 +18,11 @@ file internal/app/app.go
 [ResumeDownloads stops broadcasting]
 file internal/app/app.go
 --- anchor
-		app.downloader.Resume()
-	}
+	app.resumeLocked()
 	app.mu.Unlock()
 	// --- No lock held below this line ---
 	app.emit(Event{Type: "queue_updated"})
 --- replace
-		app.downloader.Resume()
-	}
+	app.resumeLocked()
 	app.mu.Unlock()
 --- end
