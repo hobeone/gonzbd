@@ -1642,13 +1642,16 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
 			app.duOrch.maybeStart(fc)
 		}
+		// A resumed completion neither marks the file nor dirties it: the
+		// hydration or retry that finished it committed its SetComplete
+		// verdict, which is the one writer of complete = 1 for that file.
 		if !fc.Resumed {
 			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
 				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 				return err
 			}
+			app.markFileDirty(j, fc.FileIdx)
 		}
-		app.markFileDirty(j, fc.FileIdx)
 		// A job the peek failed is filed only now: a finalize before the mark
 		// above would evict the job so the mark found it not resident. The
 		// filing is owed by the job's state, not by unwantedFail, so a

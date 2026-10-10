@@ -11,21 +11,27 @@ file internal/app/app.go
 		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
 			app.duOrch.maybeStart(fc)
 		}
+		// A resumed completion neither marks the file nor dirties it: the
+		// hydration or retry that finished it committed its SetComplete
+		// verdict, which is the one writer of complete = 1 for that file.
 		if !fc.Resumed {
 			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
 				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 				return err
 			}
+			app.markFileDirty(j, fc.FileIdx)
 		}
-		app.markFileDirty(j, fc.FileIdx)
 --- replace
+		// A resumed completion neither marks the file nor dirties it: the
+		// hydration or retry that finished it committed its SetComplete
+		// verdict, which is the one writer of complete = 1 for that file.
 		if !fc.Resumed {
 			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
 				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 				return err
 			}
+			app.markFileDirty(j, fc.FileIdx)
 		}
-		app.markFileDirty(j, fc.FileIdx)
 		if reported, _ := app.reportDownloadComplete(j, app.dispatcher); reported && app.downloadReportedHook != nil {
 			app.downloadReportedHook(fc.JobID)
 		}

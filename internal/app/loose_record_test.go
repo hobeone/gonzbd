@@ -814,12 +814,18 @@ func TestLooseRecord_ResumedCompletionSurvivesEviction(t *testing.T) {
 	}
 
 	a2.enqueueResumedCompletion(id, 0, "")
+	// watchCompletions is one goroutine, so the sentinel is received only after
+	// the completion ahead of it has been handled in full.
+	a2.internalFileComplete <- FileComplete{JobID: "sentinel"}
 	lrWaitFor(t, "the resumed completion to be consumed", func() bool {
-		a2.recorder.mu.Lock()
-		defer a2.recorder.mu.Unlock()
-		st, ok := a2.recorder.dirty[j2][0]
-		return ok && st.Complete
+		return len(a2.internalFileComplete) == 0
 	})
+	a2.recorder.mu.Lock()
+	_, dirtied := a2.recorder.dirty[j2][0]
+	a2.recorder.mu.Unlock()
+	if dirtied {
+		t.Error("a resumed completion dirtied file A; the SetComplete verdict is the one writer of its complete flag")
+	}
 	if err := a2.residency.Hydrate(t.Context(), id); err != nil {
 		t.Fatalf("re-hydrate: %v", err)
 	}
