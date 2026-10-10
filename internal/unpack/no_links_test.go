@@ -142,8 +142,9 @@ func TestExtractEntryRarengine_LinkMemberLeavesTheRootUntouched(t *testing.T) {
 // The external extractors write into a private staging directory, and
 // publishStagedExtraction decides what reaches outDir. unrar creates hard
 // links and (without -ol-) symlinks there; 7z creates symlinks. Neither may
-// reach the job: a symlink is not published, and of several names for one
-// inode only the first is.
+// reach the job: nothing but a regular file is published, no name of a file
+// that also has a name outside the stage is, and of several names for one
+// inode all inside the stage only the first is.
 func TestPublishStagedExtraction_PublishesNoLinks(t *testing.T) {
 	outDir := t.TempDir()
 	stageDir, err := prepareStageDir(outDir)
@@ -163,6 +164,18 @@ func TestPublishStagedExtraction_PublishesNoLinks(t *testing.T) {
 	if err := os.Symlink("/etc", filepath.Join(stageDir, "dirlink")); err != nil {
 		t.Fatal(err)
 	}
+	if err := syscall.Mkfifo(filepath.Join(stageDir, "pipe.fifo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// c.mkv's only other name is a downloaded volume in outDir, outside the
+	// stage: publishing it would join the volume to an extracted file.
+	vol := filepath.Join(outDir, "job.part01.rar")
+	if err := os.WriteFile(vol, []byte("volume bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(vol, filepath.Join(stageDir, "c.mkv")); err != nil {
+		t.Fatal(err)
+	}
 	var lines []string
 	published, err := publishStagedExtraction(slog.New(slog.DiscardHandler), outDir, stageDir, Options{OnLine: func(l string) { lines = append(lines, l) }})
 	if err != nil {
@@ -171,7 +184,7 @@ func TestPublishStagedExtraction_PublishesNoLinks(t *testing.T) {
 	if !slices.Equal(published, []string{"a.mkv"}) {
 		t.Fatalf("published = %v, want [a.mkv]", published)
 	}
-	for _, name := range []string{"b.mkv", "s.mkv", "dirlink"} {
+	for _, name := range []string{"b.mkv", "c.mkv", "s.mkv", "dirlink", "pipe.fifo"} {
 		if _, lerr := os.Lstat(filepath.Join(outDir, name)); !os.IsNotExist(lerr) {
 			t.Errorf("%s reached outDir (err=%v)", name, lerr)
 		}
@@ -182,8 +195,13 @@ func TestPublishStagedExtraction_PublishesNoLinks(t *testing.T) {
 	if err := os.RemoveAll(stageDir); err != nil {
 		t.Fatal(err)
 	}
-	if n := nlink(t, filepath.Join(outDir, "a.mkv")); n != 1 {
-		t.Errorf("a.mkv has %d names once the stage is gone, want 1", n)
+	for _, p := range []string{filepath.Join(outDir, "a.mkv"), vol} {
+		if n := nlink(t, p); n != 1 {
+			t.Errorf("%s has %d names once the stage is gone, want 1", filepath.Base(p), n)
+		}
+	}
+	if got := mustRead(t, vol); got != "volume bytes" {
+		t.Errorf("the volume outside the stage = %q, want it untouched", got)
 	}
 }
 

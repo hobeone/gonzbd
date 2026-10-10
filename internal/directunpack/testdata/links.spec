@@ -1,5 +1,5 @@
 pkg ./internal/directunpack/
-run TestDirectUnpack_ContainmentViolationFailsTheRun|TestDirectUnpack_LinkMembersAreNeverCreated|TestDirectUnpack_HardLinkMemberToAJobFileIsSkipped
+run TestDirectUnpack_ContainmentViolationFailsTheRun|TestDirectUnpack_LinkMembersAreNeverCreated|TestDirectUnpack_HardLinkMemberToAJobFileIsSkipped|TestDirectUnpacker_ExtractMember
 
 [DirectUnpack accepts results without the containment gate]
 file internal/directunpack/directunpack.go
@@ -62,4 +62,12 @@ file internal/unpack/rar_links.go
 	return !fh.IsDir && fh.LinkType == rarengine.LinkNone
 --- replace
 	return !fh.IsDir
+--- end
+
+[DirectUnpack lists directory members]
+file internal/unpack/rar_links.go
+--- anchor
+	return !fh.IsDir && fh.LinkType == rarengine.LinkNone
+--- replace
+	return fh.LinkType == rarengine.LinkNone
 --- end

@@ -365,9 +365,11 @@ Where each extractor enforces it:
 - **Pure-Go 7z and tar**: `extractSevenZipEntry` and `GoTar` extract only
   regular files and directories.
 - **External `unrar` and `7z`**: both extract into a private staging directory,
-  and `publishStagedExtraction` publishes only regular files, and only the first
-  name (in lexical walk order) of an inode that has several, so the name that
-  survives a hard-linked pair is not necessarily the archive's original member.
+  and `publishStagedExtraction` publishes only regular files. It publishes no
+  name of a file that also has a name outside the staging directory, and only
+  the first name (in lexical walk order) of a file whose several names are all
+  inside it, so the name that survives a hard-linked pair is not necessarily
+  the archive's original member.
   `unrar` 7.00 and later (the detected version, `UnrarInfo.Version`) is also
   passed `-ol-` and creates no symlinks at all. An older or undetected `unrar`
   is not, since it rejects the switch: it creates symlinks in the staging

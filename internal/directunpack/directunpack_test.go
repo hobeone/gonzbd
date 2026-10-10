@@ -1394,4 +1394,23 @@ func TestDirectUnpacker_ExtractMember(t *testing.T) {
 			}
 		})
 	}
+
+	// A directory member is created but is not a file to list.
+	t.Run("directory", func(t *testing.T) {
+		extractDir := t.TempDir()
+		root, err := os.OpenRoot(extractDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		d := New(testLogger(t), "test-job", t.TempDir(), extractDir, Options{})
+		fh := &rarengine.FileHeader{Name: "season1", IsDir: true}
+		got, err := d.extractMember(context.Background(), root, fh, &fakeMember{r: strings.NewReader("")})
+		if err != nil || got != "" {
+			t.Fatalf("extractMember(dir) = %q, %v; want nothing listed", got, err)
+		}
+		if fi, serr := os.Stat(filepath.Join(extractDir, "season1")); serr != nil || !fi.IsDir() {
+			t.Errorf("directory not created: %v", serr)
+		}
+	})
 }

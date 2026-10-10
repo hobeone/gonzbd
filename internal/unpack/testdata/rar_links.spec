@@ -1,5 +1,5 @@
 pkg ./internal/unpack/
-run TestGoUnRAR_LinkMembersAreNeverCreated|TestExtractEntryRarengine_LinkMemberLeavesTheRootUntouched|TestPublishStagedExtraction_PublishesNoLinks|TestUnRAR_LinkMembersAreNotPublished|TestUnRAR_SkipSymlinksFlag
+run TestGoUnRAR_LinkMembersAreNeverCreated|TestExtractEntryRarengine_LinkMemberLeavesTheRootUntouched|TestPublishStagedExtraction_PublishesNoLinks|TestUnRAR_LinkMembersAreNotPublished|TestUnRAR_SkipSymlinksFlag|TestExtractMember
 
 # Pins for "no links in a job": every extraction path skips link members.
 # Each arm below re-enables one link type, or one listing or publishing
@@ -86,6 +86,30 @@ file internal/unpack/unrar.go
 	if opts.UnrarVersion >= unrarSkipSymlinksVersion {
 --- replace
 	if true {
+--- end
+
+[ExtractedEntryExists includes directories]
+file internal/unpack/rar_links.go
+--- anchor
+	return !fh.IsDir && fh.LinkType == rarengine.LinkNone
+--- replace
+	return fh.LinkType == rarengine.LinkNone
+--- end
+
+[staged special files other than symlinks are published]
+file internal/unpack/snapshot.go
+--- anchor
+	if !d.Type().IsRegular() {
+--- replace
+	if d.Type()&os.ModeSymlink != 0 {
+--- end
+
+[a staged file with a name outside the stage is published]
+file internal/unpack/snapshot.go
+--- anchor
+	if staged[id] < nlink {
+--- replace
+	if staged[id] < nlink && false {
 --- end
 
 [every name of a hard-linked inode is published]
