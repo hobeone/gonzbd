@@ -111,10 +111,8 @@ func TestVerifyColdRead_Measure(t *testing.T) {
 	}
 	m := job.NewManifest([]job.JobFile{{Subject: coldFileName, Bytes: coldFileSize, Articles: arts}})
 	files := []durability.FileRow{{FileIndex: 0, Filename: coldFileName}}
-	pathFor := func(name string) string { return filepath.Join(dir, name) }
-
 	start := time.Now()
-	res, err := verifyJobFiles(t.Context(), m, files, rows, pathFor, false)
+	res, err := verifyJobFiles(t.Context(), m, files, rows, in(dir), false)
 	el := time.Since(start)
 	if err != nil {
 		t.Fatalf("verifyJobFiles: %v", err)

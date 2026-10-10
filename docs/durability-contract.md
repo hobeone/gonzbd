@@ -255,8 +255,9 @@ worker and on the writing handle:
 
 The handle is closed at completion; nothing keeps it open for a later step.
 The one other place a file is finished is the verifier's `finishFileByPath`
-(§3), which runs the same `ShrinkAndSync` over bytes it has just read back from
-the device, and never over Done bits that came from a `pwrite`.
+(§3), which applies the same truncate rule (`fsutil.ShrinkAfterSync`) to bytes
+it has just fsynced and read back from the device, and never to Done bits that
+came from a `pwrite`.
 
 `OnFileComplete` reaches `Application.completeFinalizedFile`, which settles the
 whole-file CRC, peeks the archive, feeds DirectUnpack, calls
@@ -329,9 +330,10 @@ no state makes the read unnecessary. For each such file, in order:
 | Case | Outcome |
 |---|---|
 | empty `filename` | every row deleted: none can be located |
-| `open` returns `ENOENT` **and the file's directory exists** | every row deleted; the file's articles are Outstanding |
-| `open` returns `ENOENT` and the directory is missing, or `stat` of it fails | **verification fault** (below); on a retry a missing directory (`ENOENT` from the `stat`) deletes every row of the file, like the row above |
-| any other `open` error | verification fault |
+| opening the job directory returns `ENOENT` | **verification fault** (below); on a retry every row of the file deleted, like the row below |
+| opening the job directory fails otherwise | verification fault |
+| `open` of the file inside the open directory returns `ENOENT` | every row deleted; the file's articles are Outstanding |
+| any other `open` error, including a name or symlink that leads out of the job directory | verification fault |
 | `fsync` on the fresh descriptor fails | every row deleted: the file is untrusted |
 | a row with `offset < 0` or `length < 0` | that row deleted unread |
 | a zero-length row | verified when its CRC is 0, otherwise deleted; it claims no range, so it never fails another article |
@@ -347,15 +349,23 @@ absence would delete every job's recorded progress. A job whose directory the
 user deleted by hand therefore parks rather than refetching at a hydration, and
 the operator's resume re-verifies it. **A retry differs** (*Retry* below): it is
 the user's explicit act, and `restoreFailedDir` has already put back a
-directory it could, so a directory still missing (`ENOENT` from the `stat`) is
+directory it could, so a directory still missing (`ENOENT` opening it) is
 taken as absence. **A retry cannot tell an unmounted download root from a
 deleted job directory**. On an unmounted share `restoreFailedDir` finds
 neither the `_FAILED_` directory nor the job directory and moves nothing, and
-`readBackFile` gets `ENOENT` from the job directory's `stat`, so the retry
+`readBackFile` gets `ENOENT` opening the job directory, so the retry
 drops every file's rows and refetches the job, though the bytes may still be
-on the share. Any other `stat` error stays a verification
+on the share. Any other error opening the directory stays a verification
 fault on both paths. The decision lives in one place, `readBackFile`'s `retry`
 parameter.
+
+**Both opens are confined to the job directory.** `readBackFile` and
+`finishFileByPath` open the job directory as an `os.Root` and the file's
+sanitized name inside it (`pipeline.jobFileLocation` resolves both), so a
+symlink in the job directory that points out of it, or a name that climbs out
+with `..`, is an open error and a verification fault, never a read, fsync or
+truncate of a file elsewhere. A job directory that exists but cannot be opened
+for reading is a fault too, since the directory is opened before the file.
 
 The fresh descriptor's fsync reports a writeback error **no earlier fsync has
 reported** (Linux ≥ 4.16). On Linux the file's cache is then dropped
@@ -366,9 +376,12 @@ no-op. Rows are read in offset order through one reused 1 MiB buffer.
 A file whose articles are then all resolved is **finished by path**: the
 `fileFinishable` predicate (`FetchAlways`, not complete, a non-empty article
 range, every article resolved) decides it, `finishFileByPath` runs
-`ShrinkAndSync` with the end of the last verified row, and only then does the
-verdict carry `SetComplete`. An fsync or truncate error while finishing is a
-verification fault.
+`fsutil.ShrinkAfterSync` with the end of the last verified row — truncate if
+the file is longer, then fsync, with no fsync before the truncate and none
+when nothing was truncated, since the read-back's fsync on the fresh
+descriptor already landed the file and the verifier writes nothing to it
+in between — and only then does the verdict carry `SetComplete`. An fsync or
+truncate error while finishing is a verification fault.
 
 A `complete=1` file is not read. Its rows are installed as they stand
 (`Job.InstallCompleteFile`): each row's article is Done, **every other article
@@ -435,8 +448,8 @@ completion it gives up is re-derived by the next start's verification.
    directory is missing takes the `ENOENT` arm instead of the verification
    fault (*What* above): its rows are deleted and it is refetched
    (`TestRetryHistoryJob_AfterDownloadDirDeleted`), whether the directory was
-   deleted or its download root is not mounted. Any other `stat` error is
-   still a verification fault, and the retry aborts.
+   deleted or its download root is not mounted. Any other error opening the
+   directory is still a verification fault, and the retry aborts.
 
 Each step's verdicts are committed before the next. Then `ResetForRetry`,
 `Assembler.ForgetJob`, the manifest write, `seedJobFiles`, and a synchronous
@@ -1047,8 +1060,8 @@ recorded here so the next reader does not mistake them for design.
    retry differs: it cannot tell an unmounted download root from a deleted
    job directory, and either way deletes the recorded rows and refetches
    (§3 *Retry*). A retry run while the share is down therefore refetches a job
-   whose bytes are still on the share. A `stat` error other than `ENOENT`
-   stays a fault on both paths.
+   whose bytes are still on the share. An error other than `ENOENT` opening
+   the job directory stays a fault on both paths.
 
 3. **A file whose last article was written while its job was evicted is not
    marked complete in this process.** `MarkFileComplete` needs the manifest,

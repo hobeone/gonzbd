@@ -42,12 +42,23 @@ func (e *errVerifyFault) Unwrap() error { return e.Err }
 // verifyBufSize is the one read buffer a pass reuses for every row.
 const verifyBufSize = 1 << 20
 
-// preadAt, fsyncFile and statDir are seams for tests to inject device errors.
+// preadAt, fsyncFile and openRoot are seams for tests to inject device errors.
 var (
 	preadAt   = func(f *os.File, b []byte, off int64) (int, error) { return f.ReadAt(b, off) }
 	fsyncFile = func(f *os.File) error { return f.Sync() }
-	statDir   = os.Stat
+	openRoot  = os.OpenRoot
 )
+
+// jobFile locates one of a job's files: Dir is the job directory and Name the
+// file's name inside it. The verifier opens Name through an os.Root on Dir, so
+// a Name that climbs out of Dir, or a symlink inside Dir that points out of
+// it, is refused by the open itself.
+type jobFile struct {
+	Dir, Name string
+}
+
+// Path is the file's path, for messages and for callers that open by path.
+func (f jobFile) Path() string { return filepath.Join(f.Dir, f.Name) }
 
 // verifyJobFiles reads back every recorded article of every complete=0 file
 // that has rows, whatever its fetch policy, and decides what each row is
@@ -57,16 +68,18 @@ var (
 // (Application.verifyRetry): `git grep -n '[v]erifyJobFiles(' -- '*.go' ':!*_test.go'`
 // finds 3 lines, those two calls and its declaration.
 //
-// pathFor resolves a recorded filename to a path. Both callers pass the
-// writer's own resolver (pipeline.jobFilePath), so the verifier reads the file
-// the writer wrote under whatever sanitize options are configured, and the
-// path stays confined to the job directory.
+// locate resolves a recorded filename to its job directory and name. Both
+// callers pass the writer's own resolver (pipeline.jobFileLocation), so the
+// verifier reads the file the writer wrote under whatever sanitize options
+// are configured. Both opens go through an os.Root on the job directory
+// (readBackFile, finishFileByPath), which keeps them inside it.
 //
 // Per file: an empty filename deletes every row, since none can be read
 // back; ENOENT deletes every row only when the file's directory exists — at a
 // hydration a missing directory (an unmounted download root) is a fault naming
 // it, while on a retry it is absence too, unmounted root or not
-// (readBackFile); an
+// (readBackFile); a name that resolves outside the job directory, through
+// ".." or a symlink, is an open error other than ENOENT, so a fault; an
 // fsync error on the fresh descriptor deletes every row (the file is
 // untrusted); a row with an invalid shape (WrittenRow.HasValidShape) is
 // deleted unread, while a zero-length row is valid and verifies against CRC 0;
@@ -79,13 +92,13 @@ var (
 //
 // A complete=1 file is not read: every row is Verified as it stands.
 //
-// Any other error — an open error other than ENOENT, a failed stat of the
-// directory (at a hydration, or any non-ENOENT stat error on a retry), a read
+// Any other error — an open error other than ENOENT, a failed open of the
+// directory (at a hydration, or any non-ENOENT error on a retry), a read
 // error, an fsync or truncate error while finishing, a
 // cancelled ctx — returns the zero result and an *errVerifyFault naming the
 // file or directory.
 func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.FileRow,
-	rows []durability.WrittenRow, pathFor func(filename string) string, retry bool) (verifyResult, error) {
+	rows []durability.WrittenRow, locate func(filename string) jobFile, retry bool) (verifyResult, error) {
 	byFile := rowsByFile(rows)
 	res := verifyResult{
 		Verified: make(map[int][]durability.WrittenRow),
@@ -106,11 +119,12 @@ func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.Fil
 			res.Verdicts = append(res.Verdicts, durability.FileVerdict{FileIdx: fi, DeleteAll: true})
 			continue
 		}
-		path := pathFor(f.Filename)
+		loc := locate(f.Filename)
+		path := loc.Path()
 		if buf == nil {
 			buf = make([]byte, verifyBufSize)
 		}
-		out, err := readBackFile(ctx, path, fr, buf, retry)
+		out, err := readBackFile(ctx, loc, fr, buf, retry)
 		if err != nil {
 			return verifyResult{}, asVerifyFault(path, err)
 		}
@@ -122,7 +136,7 @@ func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.Fil
 			res.Failed[fi] = out.failed
 		}
 
-		finish, err := finishIfResolved(ctx, m, f, path, out, retry)
+		finish, err := finishIfResolved(ctx, m, f, loc, out, retry)
 		if err != nil {
 			return verifyResult{}, &errVerifyFault{File: path, Err: err}
 		}
@@ -145,8 +159,9 @@ func asVerifyFault(path string, err error) error {
 }
 
 // finishIfResolved finishes one read-back file by path when every article of
-// it is resolved, and reports whether it did.
-func finishIfResolved(ctx context.Context, m *job.Manifest, f durability.FileRow, path string,
+// it is resolved, and reports whether it did. out must be what readBackFile
+// just returned for loc: finishFileByPath relies on that read-back's fsync.
+func finishIfResolved(ctx context.Context, m *job.Manifest, f durability.FileRow, loc jobFile,
 	out fileReadback, retry bool) (bool, error) {
 	if out.deleteAll || len(out.verified) == 0 {
 		return false, nil
@@ -173,7 +188,7 @@ func finishIfResolved(ctx context.Context, m *job.Manifest, f durability.FileRow
 			maxEnd = max(maxEnd, r.Offset+r.Length)
 		}
 	}
-	if err := finishFileByPath(path, maxEnd); err != nil {
+	if err := finishFileByPath(loc, maxEnd); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -200,23 +215,28 @@ type fileReadback struct {
 }
 
 // readBackFile opens, fsyncs and drops the cache of one file, then reads each
-// valid row and resolves intersections. rows are in offset order.
-func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow, buf []byte, retry bool) (fileReadback, error) {
-	fh, err := os.Open(path) //nolint:gosec // G304: path comes from the caller's resolver, pipeline.jobFilePath, which confines it to the job directory
-	if errors.Is(err, fs.ErrNotExist) {
-		// Absence is definitive only inside a directory that exists; a
-		// missing directory says nothing about the file at a hydration,
-		// where it may be a share that has not come up. A retry treats a
-		// missing directory (ENOENT from the stat) as absence: it cannot
-		// tell an unmounted download root from a deleted job directory, and
-		// either way drops the rows and refetches. Any other stat error is a
-		// fault on both paths. This is the one place that decides fault
-		// versus gone.
-		dir := filepath.Dir(path)
-		if _, sErr := statDir(dir); sErr != nil && (!retry || !errors.Is(sErr, fs.ErrNotExist)) {
-			return fileReadback{}, &errVerifyFault{File: dir, Err: sErr}
+// valid row and resolves intersections. rows are in offset order. A result
+// that is not deleteAll follows a successful fsync of the file on the
+// descriptor opened here; finishFileByPath relies on that.
+func readBackFile(ctx context.Context, loc jobFile, rows []durability.WrittenRow, buf []byte, retry bool) (fileReadback, error) {
+	// Absence is definitive only inside a directory that exists; a missing
+	// directory says nothing about the file at a hydration, where it may be
+	// a share that has not come up. A retry treats a missing directory
+	// (ENOENT opening it) as absence: it cannot tell an unmounted download
+	// root from a deleted job directory, and either way drops the rows and
+	// refetches. Any other error opening the directory is a fault on both
+	// paths. This is the one place that decides fault versus gone.
+	root, err := openRoot(loc.Dir)
+	if err != nil {
+		if retry && errors.Is(err, fs.ErrNotExist) {
+			return fileReadback{deleteAll: true}, nil
 		}
-		return fileReadback{deleteAll: true}, nil
+		return fileReadback{}, &errVerifyFault{File: loc.Dir, Err: err}
+	}
+	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
+	fh, err := root.Open(loc.Name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fileReadback{deleteAll: true}, nil // inside a directory held open, so one that exists
 	}
 	if err != nil {
 		return fileReadback{}, err
@@ -338,12 +358,24 @@ func rowMatches(fh *os.File, r durability.WrittenRow, buf []byte) (bool, error) 
 	return crc == r.CRC32, nil
 }
 
-// finishFileByPath fsyncs a file whose every article was just read back from
-// the device, truncates it to maxEnd if it is larger and maxEnd > 0, fsyncs
-// again, and closes it. It never grows a file, and a file no article bounds
-// is left alone.
-func finishFileByPath(path string, maxEnd int64) (err error) {
-	fh, err := os.OpenFile(path, os.O_RDWR, 0) //nolint:gosec // G304: path comes from the caller's resolver, pipeline.jobFilePath, which confines it to the job directory
+// finishFileByPath truncates a file whose every article was just read back
+// from the device to maxEnd if it is larger and maxEnd > 0, fsyncs it if it
+// truncated, and closes it. It never grows a file, and a file no article
+// bounds is left alone.
+//
+// It does not fsync before the truncate, as the assembler's finish does:
+// finishIfResolved is its one caller — `git grep -n '[f]inishFileByPath(' -- '*.go' ':!*_test.go'`
+// finds 2 lines, that call and this declaration — and runs it only on a
+// readBackFile result that is not deleteAll, which follows readBackFile's own
+// successful fsync of this file, with only reads in between.
+func finishFileByPath(loc jobFile, maxEnd int64) (err error) {
+	path := loc.Path()
+	root, err := openRoot(loc.Dir)
+	if err != nil {
+		return fmt.Errorf("finish %s: %w", path, err)
+	}
+	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
+	fh, err := root.OpenFile(loc.Name, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("finish %s: %w", path, err)
 	}
@@ -352,26 +384,33 @@ func finishFileByPath(path string, maxEnd int64) (err error) {
 			err = fmt.Errorf("finish %s: close: %w", path, cErr)
 		}
 	}()
-	if err := fsutil.ShrinkAndSync(fh, maxEnd, fsyncFile); err != nil {
+	if err := fsutil.ShrinkAfterSync(fh, maxEnd, fsyncFile); err != nil {
 		return fmt.Errorf("finish %s: %w", path, err)
 	}
 	return nil
 }
 
-// jobFilePath resolves the on-disk path the assembler would have used for one
-// of a job's files, from the filename the queue already recorded.
+// jobFileLocation resolves where the assembler would have put one of a job's
+// files, from the filename the queue already recorded: the job directory, and
+// the sanitized name inside it.
 //
 // It reads p.downloadDir under the same lock registerFile does, so the two
-// cannot disagree about which directory a job's files live in, and it applies
-// the same JoinSafe sanitisation — a verification that read a different path
-// than the writer used would find every file missing.
-func (p *pipeline) jobFilePath(jobName, filename string) string {
+// cannot disagree about which directory a job's files live in, and it
+// sanitizes the name as registerFile's fsutil.JoinSafe does — a verification
+// that read a different path than the writer used would find every file
+// missing. TestJobFileLocation_AgreesWithTheWritersJoin pins the agreement.
+func (p *pipeline) jobFileLocation(jobName, filename string) jobFile {
 	p.mu.RLock()
 	jobDir := filepath.Join(p.downloadDir, jobName)
 	sanitize := p.sanitize
 	p.mu.RUnlock()
 	// --- No lock held below this line ---
-	return fsutil.JoinSafe(jobDir, "", filename, sanitize)
+	return jobFile{Dir: jobDir, Name: fsutil.SanitizeFilename(filename, sanitize)}
+}
+
+// jobFilePath is jobFileLocation's path.
+func (p *pipeline) jobFilePath(jobName, filename string) string {
+	return p.jobFileLocation(jobName, filename).Path()
 }
 
 // fileFinishable reports whether one file has every article resolved and no

@@ -103,3 +103,55 @@ func TestShrinkAndSync_TruncateAndStatFailuresAreClassified(t *testing.T) {
 		t.Fatalf("err = %v, want a stat Fault on a closed file", err)
 	}
 }
+
+func TestShrinkAfterSync_Sizes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		size, end int64
+		want      int64
+		wantSyncs int
+	}{
+		{"larger is truncated and fsynced", 500, 300, 300, 1},
+		{"shorter is neither grown nor fsynced", 200, 300, 200, 0},
+		{"no bound leaves it alone", 500, 0, 500, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := shrinkFile(t, tc.size)
+			syncs := 0
+			if err := ShrinkAfterSync(f, tc.end, func(*os.File) error { syncs++; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if got := sizeOf(t, f); got != tc.want {
+				t.Errorf("size = %d, want %d", got, tc.want)
+			}
+			if syncs != tc.wantSyncs {
+				t.Errorf("fsynced %d times, want %d", syncs, tc.wantSyncs)
+			}
+		})
+	}
+}
+
+func TestShrinkAfterSync_FsyncFailureIsReturned(t *testing.T) {
+	t.Parallel()
+	f := shrinkFile(t, 500)
+	err := ShrinkAfterSync(f, 300, func(*os.File) error { return syscall.EIO })
+	var fault *storagefault.Fault
+	if !errors.As(err, &fault) || fault.Op != "sync" || !errors.Is(err, syscall.EIO) {
+		t.Fatalf("err = %v, want a sync Fault wrapping EIO", err)
+	}
+}
+
+func TestShrinkAfterSync_StatFailureIsClassified(t *testing.T) {
+	t.Parallel()
+	f := shrinkFile(t, 500)
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err := ShrinkAfterSync(f, 300, func(*os.File) error { return nil })
+	var fault *storagefault.Fault
+	if !errors.As(err, &fault) || fault.Op != "stat" {
+		t.Fatalf("err = %v, want a stat Fault on a closed file", err)
+	}
+}
