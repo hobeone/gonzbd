@@ -1,8 +1,9 @@
 pkg ./internal/job/
-run ^(TestManifestArticleInFile|TestMarkArticleWritten_AcceptsAZeroLengthRow|TestMarkArticleWritten_MarksDoneAndKeepsTheRow|TestPlaceRows_KeepsOnlyRowsOfTheFile|TestInstallVerified_ARowItCannotPlaceCostsOnlyItself)$
+run ^(TestManifestArticleInFile|TestMarkArticleWritten_AcceptsAZeroLengthRow|TestMarkArticleWritten_RejectsAnInvalidShape|TestMarkArticleWritten_MarksDoneAndKeepsTheRow|TestPlaceRows_KeepsOnlyRowsOfTheFile|TestInstallVerified_ARowItCannotPlaceCostsOnlyItself)$
 
-# One range predicate, Manifest.ArticleInFile, guards every row that resolves
-# an article. MarkArticleWritten asks only it: a zero-length article is valid.
+# One range predicate, Manifest.ArticleInFile, and one shape predicate,
+# WrittenRow.HasValidShape, guard every row that resolves an article, live and
+# at a restart. A zero-length article is valid at both.
 
 [the predicate ignores the file's upper bound]
 file internal/job/manifest.go
@@ -34,4 +35,12 @@ file internal/job/verified.go
 	if !m.ArticleInFile(row.FileIdx, row.ArtIdx) {
 --- replace
 	if !m.ArticleInFile(row.FileIdx, row.ArtIdx) || row.Length <= 0 {
+--- end
+
+[MarkArticleWritten drops the shape predicate]
+file internal/job/verified.go
+--- anchor
+	if !row.HasValidShape() {
+--- replace
+	if false {
 --- end

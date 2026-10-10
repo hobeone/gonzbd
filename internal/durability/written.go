@@ -23,9 +23,9 @@ type WrittenRow struct {
 // produced: a non-negative offset and a non-negative length. A zero-length
 // article is written with n == 0 (the assembler reports it through
 // OnArticleWritten) and its row verifies zero bytes against CRC 0, so it is
-// valid; it claims no byte range. job.placeRows and app.readBackFile judge a
-// restart's rows by this method, so a zero-length row the live door accepts
-// is not dropped after a restart.
+// valid; it claims no byte range. The live door (job.Job.MarkArticleWritten)
+// and a restart's (job.placeRows, app.readBackFile) each judge a row by this
+// method, so a row the live door accepts is not dropped after a restart.
 func (r WrittenRow) HasValidShape() bool { return r.Offset >= 0 && r.Length >= 0 }
 
 // CompareWrittenRows orders rows by offset, then article index.

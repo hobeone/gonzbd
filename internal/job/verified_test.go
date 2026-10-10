@@ -343,6 +343,23 @@ func TestMarkArticleWritten_AcceptsAZeroLengthRow(t *testing.T) {
 	}
 }
 
+// TestMarkArticleWritten_RejectsAnInvalidShape: the live door judges a row by
+// WrittenRow.HasValidShape, as a restart does, so a row of an article in range
+// but with a negative offset is refused and its article is not Done.
+func TestMarkArticleWritten_RejectsAnInvalidShape(t *testing.T) {
+	t.Parallel()
+	j := verifiedTestJob(t)
+	if err := j.MarkArticleWritten(durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Offset: -1, Length: 100}); err == nil {
+		t.Fatal("MarkArticleWritten accepted a row with a negative offset")
+	}
+	if j.Progress().ArticleDone(1) {
+		t.Error("an article whose row was refused is Done")
+	}
+	if got := j.FileRows(0); len(got) != 0 {
+		t.Errorf("FileRows(0) = %+v, want none: the refused row is resident", got)
+	}
+}
+
 // TestMarkArticleWritten_MarksDoneAndKeepsTheRow pins the in-process door: the
 // article is Done, its row is resident for the CRC, and a second write of the
 // same article replaces its row.

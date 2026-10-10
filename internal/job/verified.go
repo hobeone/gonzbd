@@ -161,11 +161,15 @@ func (j *Job) MarkArticleWritten(row durability.WrittenRow) error {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
 	m := j.manifest
-	// The range check only: a zero-length row is valid here. The assembler
-	// reports a zero-length article through OnArticleWritten with n == 0, and
-	// unless it is Done its file never completes.
+	// The same two predicates placeRows judges a restart's rows by. A
+	// zero-length row is valid here: the assembler reports a zero-length
+	// article through OnArticleWritten with n == 0, and unless it is Done its
+	// file never completes.
 	if !m.ArticleInFile(row.FileIdx, row.ArtIdx) {
 		return fmt.Errorf("job %s: article %d is not in file %d", j.id, row.ArtIdx, row.FileIdx)
+	}
+	if !row.HasValidShape() {
+		return fmt.Errorf("job %s: article %d has an invalid range [%d, +%d)", j.id, row.ArtIdx, row.Offset, row.Length)
 	}
 	p := j.progress
 	p.markDone(m, int(row.ArtIdx))
