@@ -378,19 +378,6 @@ func (p *JobProgress) ArticlesFailed() int {
 	return p.articlesFailed
 }
 
-// AnyArticleFailed reports whether any article has permanently failed.
-//
-// It reads the failed bits rather than ArticlesFailed, which lags them while
-// the manifest is evicted: Job.MarkArticleFailed records an evicted job's
-// failure as bits alone, and the counter catches up only at the next
-// hydration.
-func (p *JobProgress) AnyArticleFailed() bool {
-	if p == nil {
-		return false
-	}
-	return p.failed.any()
-}
-
 // EarlyAborted reports whether the early-abort heuristic has already fired for this job.
 func (p *JobProgress) EarlyAborted() bool {
 	if p == nil {

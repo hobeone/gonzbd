@@ -340,9 +340,14 @@ func TestInstallCompleteFile_FailsTheRestAndSettles(t *testing.T) {
 		t.Fatalf("InstallCompleteFile = %d, %v", dropped, err)
 	}
 	p := whole.Progress()
-	if !p.FileComplete(0) || p.FileAssembledCRC32(0) != crc32.ChecksumIEEE(data) || p.AnyArticleFailed() {
-		t.Errorf("a whole complete file: complete=%v crc=%08x failed=%v; want true, %08x, false",
-			p.FileComplete(0), p.FileAssembledCRC32(0), p.AnyArticleFailed(), crc32.ChecksumIEEE(data))
+	if !p.FileComplete(0) || p.FileAssembledCRC32(0) != crc32.ChecksumIEEE(data) {
+		t.Errorf("a whole complete file: complete=%v crc=%08x; want true, %08x",
+			p.FileComplete(0), p.FileAssembledCRC32(0), crc32.ChecksumIEEE(data))
+	}
+	for i := range 4 {
+		if p.ArticleFailed(i) {
+			t.Errorf("article %d of a whole complete file is failed", i)
+		}
 	}
 
 	holed := verifiedTestJob(t)

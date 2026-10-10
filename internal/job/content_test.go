@@ -878,9 +878,6 @@ func TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction(t *testing.T)
 	if p.ArticleEmitted(2) {
 		t.Error("article 2 is still Emitted after its failure was recorded")
 	}
-	if !p.AnyArticleFailed() {
-		t.Error("AnyArticleFailed = false with a failed bit set")
-	}
 
 	if err := j.RestoreContent(m); err != nil {
 		t.Fatalf("RestoreContent: %v", err)
@@ -914,11 +911,11 @@ func TestMarkArticleFailed_EvictedRejectsAnOutOfRangeIndex(t *testing.T) {
 			t.Errorf("ClearArticleEmitted(%d) on an evicted three-article job: nil error", idx)
 		}
 	}
-	if j.Progress().AnyArticleFailed() {
-		t.Error("an out-of-range failure set a failed bit")
-	}
-	if (*JobProgress)(nil).AnyArticleFailed() {
-		t.Error("AnyArticleFailed on a nil progress record = true")
+	p := j.Progress()
+	for i := range 3 {
+		if p.ArticleFailed(i) {
+			t.Errorf("an out-of-range failure set article %d's failed bit", i)
+		}
 	}
 }
 
