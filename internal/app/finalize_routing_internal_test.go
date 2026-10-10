@@ -11,10 +11,10 @@ import (
 // TestStall_DoesNotParkAJobWhileTheProcessIsStopping pins the one pause that
 // cannot be undone.
 //
-// Shutdown's final queue.Save PERSISTS a pause taken during shutdown, the
+// A pause taken during shutdown is PERSISTED with the job's queue row, and the
 // stall list that would re-evaluate it is in-memory and dies with the process,
-// and the startup sweep skips the job because its phase is no longer active.
-// A healthy job came back Paused after a slow but normal stop, permanently.
+// so the next start restores the job paused and only the user resumes it. A
+// healthy job came back Paused after a slow but normal stop, permanently.
 //
 // The discriminator is whether the PROCESS is stopping, not the error — see
 // the sibling test for why the error cannot serve. This test drives the

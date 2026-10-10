@@ -1182,8 +1182,10 @@ type fileProgressJSON struct {
 // a failed fsync at completion (FileWriter.finish), at CloseJobHandles or at
 // worker exit untrusts the file (Application.handleFileUntrusted), which
 // deletes its rows, purges its buffered ones and clears its Done bits. What a
-// crash loses before any fsync is caught by the next start, which reads every
-// row back before installing it.
+// crash loses before any fsync is caught by the next start, which reads back
+// every row of a complete=0 file before installing it; a complete=1 file is
+// installed as it stands, because complete=1 is written only after the file's
+// fsync.
 //
 // TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list above.
 // Add a door onto the bit and it fails by name.

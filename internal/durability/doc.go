@@ -8,24 +8,29 @@
 //
 // A row is not a durability claim — it may describe bytes the kernel never
 // flushed. What makes it safe to use is that a restart does not trust it: the
-// verifier in internal/app reads every row's bytes back and compares their CRC
-// before installing the article as Done, and a failed fsync at close deletes
-// the file's rows (internal/app.handleFileUntrusted). A row that cannot be
-// verified costs a re-fetch of its article, never a hole.
+// verifier in internal/app reads back every row of a complete=0 file and
+// compares its CRC before installing the article as Done, and a failed fsync
+// deletes the file's rows (internal/app.handleFileUntrusted). A complete=1
+// file is installed as it stands, because complete=1 is written only after the
+// file's fsync. A row that cannot be verified costs a re-fetch of its article,
+// never a hole.
 //
 // job_files holds the per-file results nothing else records: whether the file
 // finished, what it was called, and its fetch policy.
 //
 // # Writers
 //
-// Store.ApplyRecord is the only writer of written_articles rows and of
-// job_files' complete, filename and fetch_policy columns, and the recorder in
-// internal/app is its caller:
+// Store.ApplyRecord is the only writer of written_articles and the only
+// UPDATE of job_files, and the recorder in internal/app is its caller:
 // `git grep -n -E 'INTO written_[a]rticles' -- '*.go' ':!*_test.go'` returns 1
-// line, in written.go, and
+// line, in written.go;
+// `git grep -n -E 'UPDATE job_[f]iles' -- '*.go' ':!*_test.go'` returns 2
+// lines, both in written.go; and
 // `git grep -n -E '\.ApplyRecord[(]' -- '*.go' ':!*_test.go'` returns 2 lines,
-// both in internal/app/record.go. Store.Admit seeds the job_files rows those
-// updates need.
+// both in internal/app/record.go. Store.Admit is the one other writer of
+// job_files: it inserts each file's seed row and sets its fetch_policy
+// (`git grep -n -E 'INTO job_[f]iles' -- '*.go' ':!*_test.go'` returns 1 line,
+// in progress.go).
 //
 // # Deleters
 //

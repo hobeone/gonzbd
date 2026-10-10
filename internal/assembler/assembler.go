@@ -283,8 +283,9 @@ type Options struct {
 	//
 	// It reports a write, not durability: a later failed Sync can roll the
 	// article back (FileWriter.poisonSync), and OnArticlesUnwritten then names
-	// it. The rolled-back article keeps its owned range, so its redelivery is
-	// accepted and calls this again with the same artIdx.
+	// it. In production that Sync is drainAndClose's, which closes the writer
+	// next, and the file is untrusted (OnFileUntrusted); a redelivery opens a
+	// fresh writer and calls this again with the same artIdx.
 	OnArticleWritten func(jobID string, fileIdx int, artIdx int32, off, n int64, crc uint32)
 
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.

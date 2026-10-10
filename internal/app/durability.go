@@ -91,7 +91,7 @@ func (app *Application) handleArticlesUnwritten(jobID string, fileIdx int, artId
 // goroutine. This callback did not.
 //
 // wg.Add during Wait is ORDINARILY safe because this runs on the assembler
-// worker, which Shutdown joins at step 3 — before app.wg.Wait() at step 4.
+// worker, which Shutdown stops (stopWorkers) before joinAndStop's app.wg.Wait().
 //
 // "Ordinarily" is doing real work in that sentence, and an earlier version
 // omitted it. waitBounded ABANDONS its step when the budget expires: it logs
@@ -176,9 +176,9 @@ func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx 
 // nothing surfaced, which A2 forbids.
 //
 // Both an explicit flag and the context are consulted. Shutdown sets the flag
-// before its first step, while app.ctx is cancelled only at step 3, so the
-// flag is what covers a fault raised while the assembler drains and closes its
-// files. The context test covers a SIGTERM-cancelled parent context, which
+// before its first step, while it cancels app.ctx in joinAndStop, after the
+// assembler has stopped, so the flag is what covers a fault raised while the
+// assembler drains and closes its files. The context test covers a SIGTERM-cancelled parent context, which
 // arrives without Shutdown having been entered.
 func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 	if app.stopping.Load() || (app.ctx != nil && app.ctx.Err() != nil) {

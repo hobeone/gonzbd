@@ -73,10 +73,12 @@ func newAppResidency(lookup func(string) (*job.Job, bool), dir string, store rec
 // A job with no progress yet has its written articles verified first
 // (verifyJobFiles), and the verdicts committed, before anything is attached:
 // if either fails, nothing is attached and the next hydration starts again.
-// So a job with progress has always been verified. A verification that could
-// not complete for a reason about the device is parked through the stall and
-// returned wrapping dispatch.ErrResidencyFault, which the dispatcher does not
-// settle.
+// So a job Hydrate attached was verified first. Other jobs gain progress
+// without Hydrate: a freshly ingested job has no rows to verify, and a retry
+// verifies its rebuilt job itself (Application.verifyRetry). A verification
+// that could not complete for a reason about the device is parked through the
+// stall and returned wrapping dispatch.ErrResidencyFault, which the dispatcher
+// does not settle.
 func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 	j, ok := r.lookup(id)
 	if !ok {

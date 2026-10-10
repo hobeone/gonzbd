@@ -192,8 +192,8 @@ type Application struct {
 	// stopping is set at the top of Shutdown, BEFORE any of its steps run.
 	//
 	// It feeds Application.Stall's refusal to park a job while the process is
-	// stopping. app.ctx is cancelled only at step 4 of Shutdown, after the
-	// assembler has stopped, so a fault raised while stopping the workers
+	// stopping. Shutdown cancels app.ctx in joinAndStop, after the assembler
+	// has stopped, so a fault raised while stopping the workers
 	// would otherwise pause a job, and the pause would be persisted while the
 	// stall list that re-evaluates it dies with the process.
 	stopping atomic.Bool
@@ -523,7 +523,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		default:
 			// Channel full — spawn goroutine on app.wg to ensure delivery.
 			// Ordering constraint: this is safe w.r.t. wg.Add-during-Wait only because OnFileComplete
-			// runs on the assembler worker, which Shutdown joins at step 2 — before app.wg.Wait() at step 4.
+			// runs on the assembler worker, which Shutdown stops (stopWorkers) before joinAndStop's app.wg.Wait().
 			//
 			// Blocking the worker instead would stall every job's writes on
 			// this consumer.

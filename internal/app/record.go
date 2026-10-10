@@ -32,8 +32,9 @@ type recorder struct {
 	// Lock order: wmu before mu, and wmu before the dispatcher's mu, which
 	// current takes. mu and the dispatcher's mu are not nested: current's one
 	// caller, liveInstances (through isCurrent), releases mu before calling
-	// it. No caller of flush or apply may hold the dispatcher's mu. noteWritten and markDirty take only mu; wmu is
-	// taken where `git grep -n 'r\.wmu\.Lock()' internal/app/record.go` finds 2 lines.
+	// it. No caller of flush or apply may hold the dispatcher's mu.
+	// noteWritten and markDirty take only mu; wmu is taken where
+	// `git grep -n 'r\.wmu\.Lock()' internal/app/record.go` finds 2 lines.
 	wmu sync.Mutex
 
 	mu      sync.Mutex // guards pending and dirty
