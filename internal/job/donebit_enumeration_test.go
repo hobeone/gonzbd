@@ -21,7 +21,6 @@ var doneMarkers = []string{
 // markDone.
 var doneBitSetters = []string{
 	"markDone",
-	"newJobProgressSized",
 	"setFailedBits",
 }
 

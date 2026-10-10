@@ -29,12 +29,10 @@ type JobProgress struct {
 	// calls once the article's WriteAt has returned (internal/app/record.go);
 	// installRows, through InstallVerified and InstallCompleteFile, which
 	// install rows a restart or retry read back and fsynced, or rows of a
-	// complete=1 file whose fsync preceded the flag; setFailedBits, for an
-	// article whose bytes will never arrive (that failure is in memory only:
-	// it is not persisted); and newJobProgressSized, which takes bits from
-	// FileMeta.Done and Failed, though fileMetaFromManifest, which builds the
-	// FileMeta values production uses, sets neither. Of the functions that
-	// reach markDone, MarkArticleWritten and installRows are the only two:
+	// complete=1 file whose fsync preceded the flag; and setFailedBits, for
+	// an article whose bytes will never arrive (that failure is in memory
+	// only: it is not persisted). Of the functions that reach markDone,
+	// MarkArticleWritten and installRows are the only two:
 	// `git grep -n -E '\bmarkDone\(' -- '*.go' ':!*_test.go'` finds 3 lines,
 	// the definition and one call in each.
 	//
@@ -191,20 +189,17 @@ const (
 	earlyAbortThreshold = 0.80
 )
 
-// FileMeta is the per-file shape needed to size a non-resident job's
-// progress without a manifest.
+// FileMeta is the per-file sizing a fresh JobProgress is built from. It
+// carries no state: every article starts Outstanding and every file
+// incomplete, at the FetchAlways zero.
 type FileMeta struct {
-	ArticleCount    int
-	Bytes           int64
-	Complete        bool
-	Fetch           FetchPolicy
-	IsPar2          bool
-	BytesDownloaded int64
-	FailedBytes     int64
-	Done            []bool
-	Failed          []bool
+	ArticleCount int
+	Bytes        int64
+	IsPar2       bool
 }
 
+// newJobProgressSized returns a fresh JobProgress sized to files: every
+// file's Pending is its article count, and no bit is set.
 func newJobProgressSized(files []FileMeta) *JobProgress {
 	total := 0
 	for _, f := range files {
@@ -217,47 +212,21 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 		files:           make([]FileProgress, len(files)),
 		pendingArticles: total,
 	}
-	var failedTotal int64
-	base := 0
 	for fi, f := range files {
 		p.files[fi].Pending = f.ArticleCount
-		p.files[fi].Complete = f.Complete
-		p.files[fi].Fetch = f.Fetch
 		p.files[fi].IsPar2 = f.IsPar2
 		p.files[fi].Bytes = f.Bytes
-		p.files[fi].BytesDownloaded = f.BytesDownloaded
-		p.files[fi].FailedBytes = f.FailedBytes
-		for i := range f.ArticleCount {
-			if i >= len(f.Done) || !f.Done[i] {
-				continue
-			}
-			p.done.Set(base + i)
-			p.files[fi].Pending--
-			p.pendingArticles--
-			p.articlesResolved++
-			if i < len(f.Failed) && f.Failed[i] {
-				p.failed.Set(base + i)
-				p.articlesFailed++
-			}
-		}
-		base += f.ArticleCount
-		failedTotal += f.FailedBytes
 	}
-	p.failedBytes = failedTotal
 	return p
 }
 
-// fileMetaFromManifest projects m into the same per-file shape
-// Store.ArticleCountsByJob returns, so newJobProgress and
-// newJobProgressSized are one code path rather than two that must be kept
-// in agreement by hand. A fresh job has nothing downloaded, nothing
-// failed, and no file complete or deferred, so every field but the sizes
-// is zero.
+// fileMetaFromManifest projects m into the per-file sizing
+// newJobProgressSized takes.
 //
 // The projection is lossless for what JobProgress needs: Manifest.TotalBytes
 // is the sum of every file's bytes, and Manifest.NumArticles is the sum of
-// every file's article count, so the totals newJobProgressSized derives
-// match the ones newJobProgress used to take from the manifest directly.
+// every file's article count, so the totals newJobProgressSized derives are
+// the manifest's.
 func fileMetaFromManifest(m *Manifest) []FileMeta {
 	files := make([]FileMeta, m.NumFiles())
 	for fi := range files {
@@ -271,17 +240,10 @@ func fileMetaFromManifest(m *Manifest) []FileMeta {
 	return files
 }
 
-// newJobProgress returns a zero-value JobProgress sized to m: every file's
-// Pending starts at its article count (all articles start undone/unemitted),
-// so RemainingBytes() — derived from per-file state, see
-// derivedRemainingBytes — starts at m.TotalBytes(). It projects m into
-// []FileMeta and delegates to newJobProgressSized, so resident and
-// non-resident construction are literally the same code and cannot drift
-// apart the way the two used to (see TestFailedBytes_NotDoubledByHydration
-// for what that drift cost). One side effect of delegating: pendingArticles
-// is now set to m.NumArticles() here too, where it used to be left at 0
-// until the first recompute — see the caller-visibility check this was
-// verified against.
+// newJobProgress returns a fresh JobProgress sized to m: every file's Pending
+// starts at its article count and pendingArticles at m.NumArticles(), so
+// RemainingBytes() — derived from per-file state, see derivedRemainingBytes —
+// starts at m.TotalBytes().
 func newJobProgress(m *Manifest) *JobProgress {
 	return newJobProgressSized(fileMetaFromManifest(m))
 }
@@ -574,7 +536,7 @@ func (p *JobProgress) sizeFigures() (expected, remaining int64) {
 // because Deferred is never toggled on a file that already has resolved
 // articles: markFailed adds to the job-level failedBytes and to the
 // file's own FailedBytes unconditionally, with no check of Deferred, and
-// newJobProgressSized/recompute sum failedBytes over every file including
+// recompute sums failedBytes over every file including
 // deferred ones. Today no caller defers a file after any of its articles
 // have been dispatched, so a deferred file's FailedBytes is always zero in
 // practice — but that is an invariant of the callers, not of this
@@ -915,12 +877,8 @@ func (p *JobProgress) clone() *JobProgress {
 // impractical.
 //
 // recompute is authoritative for the job-level failedBytes wherever a
-// manifest is resident, and that single ownership is what keeps hydration
-// from double-counting. The restore path replays per-article state through
-// markFailed on top of a progress that newJobProgressSized may already have
-// seeded from job_files — two sources for one figure — so an owner that
-// recomputes from the manifest is what makes the seed and the replay agree
-// instead of stacking.
+// manifest is resident: it derives the figure from the failed bits and the
+// manifest's article sizes, so it cannot stack on an earlier value.
 //
 // Between recomputes, markFailed and resetForReload maintain the value
 // incrementally; both take the manifest. While the manifest is evicted nothing

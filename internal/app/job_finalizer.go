@@ -150,10 +150,10 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // violation. Those cost one retry. The retry does not trigger another: it
 // releases every volume its rebuilt job holds before seeding job_files, which
 // hydration restores the policy from, and nothing else sets a volume to
-// FetchIfNeeded. The policy field is written in four places
-// (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 4 lines):
-// the policy setter, the release (to FetchAlways), the discard (to
-// FetchNever), and construction, which starts every file at FetchAlways. The
+// FetchIfNeeded. The policy field is written in three places
+// (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 3 lines):
+// the policy setter, the release (to FetchAlways), and the discard (to
+// FetchNever); construction leaves every file at the FetchAlways zero. The
 // setter is called from ingest, with FetchIfNeeded, and from hydration
 // (`git grep -nE 'SetFileFetchPolicy\(|RestoreFetchPolicy\(' -- '*.go' ':!*_test.go'`
 // returns 5 lines: those two calls, the two declarations, and the restore

@@ -333,29 +333,28 @@ func TestIsEarlyAbort_Boundaries(t *testing.T) {
 	}
 }
 
+// TestNewJobProgressSized: a fresh progress is sized to its files and carries
+// no state — every article pending, every file at the FetchAlways zero.
 func TestNewJobProgressSized(t *testing.T) {
 	files := []FileMeta{
-		{
-			Bytes:           100,
-			ArticleCount:    2,
-			IsPar2:          false,
-			Done:            []bool{true, false},
-			Failed:          []bool{true, false},
-			Fetch:           FetchIfNeeded,
-			BytesDownloaded: 50,
-			FailedBytes:     50,
-		},
-		{Bytes: 200, ArticleCount: 4, IsPar2: false, Fetch: FetchAlways},
+		{Bytes: 100, ArticleCount: 2},
+		{Bytes: 200, ArticleCount: 4, IsPar2: true},
 	}
 	p := newJobProgressSized(files)
-	if p.PendingArticles() != 5 {
-		t.Errorf("PendingArticles() = %d, want 5", p.PendingArticles())
+	if p.PendingArticles() != 6 {
+		t.Errorf("PendingArticles() = %d, want 6", p.PendingArticles())
 	}
-	if len(p.files) != 2 {
-		t.Fatalf("len(p.files) = %d, want 2", len(p.files))
+	if p.NumFiles() != 2 {
+		t.Fatalf("p.NumFiles() = %d, want 2", p.NumFiles())
 	}
-	if !p.UsesOnDemandPar2() {
-		t.Error("UsesOnDemandPar2() should be true when FetchIfNeeded present")
+	for fi, f := range files {
+		got := p.files[fi]
+		if got.Pending != f.ArticleCount || got.Bytes != f.Bytes || got.IsPar2 != f.IsPar2 {
+			t.Errorf("file %d = %+v, want Pending %d, Bytes %d, IsPar2 %v", fi, got, f.ArticleCount, f.Bytes, f.IsPar2)
+		}
+	}
+	if p.UsesOnDemandPar2() {
+		t.Error("a fresh progress uses on-demand par2; every file must start FetchAlways")
 	}
 
 	var nilP *JobProgress
@@ -365,13 +364,17 @@ func TestNewJobProgressSized(t *testing.T) {
 	if nilP.UsesOnDemandPar2() {
 		t.Error("nilP.UsesOnDemandPar2() should be false")
 	}
-	if p.NumFiles() != 2 {
-		t.Errorf("p.NumFiles() = %d, want 2", p.NumFiles())
-	}
+}
 
-	allAlways := newJobProgressSized([]FileMeta{{ArticleCount: 1, Fetch: FetchAlways}})
-	if allAlways.UsesOnDemandPar2() {
-		t.Error("allAlways.UsesOnDemandPar2() should be false")
+// TestUsesOnDemandPar2_ReadsTheFetchPolicy sets a file's policy through its
+// door, Job.SetFileFetchPolicy.
+func TestUsesOnDemandPar2_ReadsTheFetchPolicy(t *testing.T) {
+	j := verifiedTestJob(t)
+	if err := j.SetFileFetchPolicy(1, FetchIfNeeded); err != nil {
+		t.Fatalf("SetFileFetchPolicy: %v", err)
+	}
+	if !j.Progress().UsesOnDemandPar2() {
+		t.Error("UsesOnDemandPar2() = false with a FetchIfNeeded file")
 	}
 }
 
@@ -382,8 +385,8 @@ func TestJobProgress_TotalArticles(t *testing.T) {
 	}
 
 	p := newJobProgressSized([]FileMeta{
-		{ArticleCount: 5, Fetch: FetchAlways},
-		{ArticleCount: 3, Fetch: FetchIfNeeded},
+		{ArticleCount: 5},
+		{ArticleCount: 3},
 	})
 	if got := p.TotalArticles(); got != 8 {
 		t.Errorf("p.TotalArticles() = %d, want 8", got)

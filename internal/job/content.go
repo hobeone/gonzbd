@@ -657,8 +657,9 @@ func (j *Job) RestoreFileMeta(fileIdx int, filename string, complete bool, crc u
 // assignment, so restoring a policy and setting one cannot drift apart.
 // SetFileFetchPolicy is the only entry point OUTSIDE this file that assigns
 // the field — `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' | grep -v _test.go`
-// finds four assignment sites, and the other three are package-internal:
-// newJobProgressSized (progress.go), undeferRecovery and DiscardDeferredPar2.
+// finds three assignment sites, and the other two are package-internal:
+// undeferRecovery and DiscardDeferredPar2. A fresh progress starts at the
+// FetchAlways zero.
 // The `job_files.fetch_policy` CHECK (0-2) is the only range guard the value
 // has; neither door range-checks it.
 func (j *Job) RestoreFetchPolicy(fileIdx int, p FetchPolicy) error {
