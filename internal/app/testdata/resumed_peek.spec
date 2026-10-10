@@ -4,9 +4,9 @@ run Test(InstallVerification_PeeksAFinishedFileBeforeMarkingItComplete|InstallVe
 [the hydration drops the peek's failure message]
 file internal/app/residency.go
 --- anchor
-		peek = func(fi int) { failMsgs[fi] = r.peek(j, fi) }
+		if msg := r.peek(j, fi); failMsg == "" {
 --- replace
-		peek = func(fi int) { _ = r.peek(j, fi) }
+		if msg := r.peek(j, fi); false && failMsg == "" {
 --- end
 
 [the Resumed completion is enqueued without the message]
@@ -15,6 +15,19 @@ file internal/app/record.go
 	fc := FileComplete{JobID: jobID, FileIdx: fileIdx, Resumed: true, FailMsg: failMsg}
 --- replace
 	fc := FileComplete{JobID: jobID, FileIdx: fileIdx, Resumed: true}
+--- end
+
+[the message reaches only the flagged file's completion, not the job's]
+file internal/app/residency.go
+--- anchor
+		r.finished(j.ID(), fi, failMsg)
+--- replace
+		r.finished(j.ID(), fi, func() string {
+			if fi == 1 {
+				return failMsg
+			}
+			return ""
+		}())
 --- end
 
 [the consumer ignores the carried message]
@@ -52,9 +65,9 @@ file internal/app/residency.go
 [Hydrate does not hand the peek to installVerification]
 file internal/app/residency.go
 --- anchor
-		peek = func(fi int) { failMsgs[fi] = r.peek(j, fi) }
+		peek = func(fi int) {
 --- replace
-		peek = nil
+		_ = func(fi int) {
 --- end
 
 [the application installs no peek on its residency]

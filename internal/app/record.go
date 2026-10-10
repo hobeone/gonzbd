@@ -390,10 +390,12 @@ func (app *Application) handleFileUntrusted(jobID string, fileIdx int) {
 
 // enqueueResumedCompletion hands the consumer of internalFileComplete a file
 // the verifier finished by path, marked Resumed. It reads app.ctx, so it is
-// called only once Start has set it. failMsg is the message of the archive
-// peek that ran on the file before it was marked complete, or "". Its callers are a hydration's
-// residency.finished and a retry; a hydration runs from a dispatcher tick,
-// from a rename (Dispatcher.SetName's LoadProgress), and inside Start from
+// called only once Start has set it. failMsg is the failure message of the
+// archive peek that blocked the job during the hydration that finished the
+// file, or "": a job-level fact, so every file that hydration finished carries
+// it. Its callers are a hydration's residency.finished and a retry; a
+// hydration runs from a dispatcher tick, from a rename
+// (Dispatcher.SetName's LoadProgress), and inside Start from
 // hydratePausedJobs and fileOwedUnwantedFailures.
 //
 // When the channel is full the send moves to its own goroutine, which gives

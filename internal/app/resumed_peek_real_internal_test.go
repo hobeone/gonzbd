@@ -18,16 +18,16 @@ import (
 	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
-// resumedPeekNZB renders a two-file NZB: A.bin is one article of size bytes,
-// B.bin one of lrArtLen, so B.bin keeps the job from completing.
-func resumedPeekNZB(size int) []byte {
+// resumedPeekNZB renders a two-file NZB: A.bin and B.bin, one article each, of
+// the given sizes.
+func resumedPeekNZB(sizes [2]int) []byte {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="iso-8859-1" ?>` + "\n")
 	b.WriteString(`<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">` + "\n")
 	for fi, f := range []struct {
 		name string
 		n    int
-	}{{"A.bin", size}, {"B.bin", lrArtLen}} {
+	}{{"A.bin", sizes[0]}, {"B.bin", sizes[1]}} {
 		fmt.Fprintf(&b, `<file poster="p@t" date="1700000000" subject="&quot;%s&quot; yEnc (1/1)">`+"\n", f.name)
 		b.WriteString("<groups><group>alt.bin.test</group></groups>\n<segments>\n")
 		fmt.Fprintf(&b, `<segment bytes="%d" number="1">f%da1@t</segment>`+"\n", f.n, fi)
@@ -43,23 +43,31 @@ func resumedPeekNZB(size int) []byte {
 // BlockUnwanted, and under the pause action its yieldPaused, run from inside
 // that hydration; neither may wait on it. Under the fail action the history
 // entry keeps the flagged names, which the hydration carries to the Resumed
-// completion (FileComplete.FailMsg).
+// completion (FileComplete.FailMsg), also when a clean finished file precedes
+// the flagged one: the message is the job's, not the flagged file's.
 func TestHydrate_RealPeekBlocksTheJobFromInsideTheTicksHydration(t *testing.T) {
 	t.Parallel()
 	names := []string{"a.exe", "b.scr"}
 	data := par2Declaring(names...)
 	for _, c := range []struct {
-		name   string
-		action unwanted.Action
+		name    string
+		action  unwanted.Action
+		flagged int // index of the par2 file; the other file is clean
 	}{
-		{"pause", unwanted.ActionPause},
-		{"fail", unwanted.ActionFail},
+		{"pause", unwanted.ActionPause, 0},
+		{"fail", unwanted.ActionFail, 0},
+		{"fail with a clean finished file first", unwanted.ActionFail, 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			env := newLREnv(t)
 			a1 := env.newApp(t)
-			raw := resumedPeekNZB(len(data))
+			clean := lrArticle(0, 0)
+			contents := [2][]byte{data, clean}
+			if c.flagged == 1 {
+				contents = [2][]byte{clean, data}
+			}
+			raw := resumedPeekNZB([2]int{len(contents[0]), len(contents[1])})
 			parsed, err := nzb.Parse(strings.NewReader(string(raw)))
 			if err != nil {
 				t.Fatalf("nzb.Parse: %v", err)
@@ -74,14 +82,24 @@ func TestHydrate_RealPeekBlocksTheJobFromInsideTheTicksHydration(t *testing.T) {
 			if err := os.MkdirAll(filepath.Dir(env.filePath(j)), 0o750); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(env.filePath(j), data, 0o600); err != nil {
-				t.Fatal(err)
+			batch := durability.RecordBatch{JobID: j.ID()}
+			// Every file is recorded in the clean-first case, so the
+			// verifier finishes both; otherwise only the flagged file A.
+			for fi, name := range []string{"A.bin", "B.bin"} {
+				if c.flagged == 0 && fi == 1 {
+					continue
+				}
+				path := filepath.Join(env.dl, j.Name(), name)
+				if err := os.WriteFile(path, contents[fi], 0o600); err != nil {
+					t.Fatal(err)
+				}
+				batch.Files = append(batch.Files, durability.FileState{FileIdx: fi, Filename: name})
+				batch.Rows = append(batch.Rows, durability.WrittenRow{
+					FileIdx: fi, ArtIdx: int32(fi), Offset: 0, //nolint:gosec // G115: 0 or 1
+					Length: int64(len(contents[fi])), CRC32: crc32.ChecksumIEEE(contents[fi]),
+				})
 			}
-			err = a1.st.ApplyRecord(t.Context(), []durability.RecordBatch{{
-				JobID: j.ID(),
-				Files: []durability.FileState{{FileIdx: 0, Filename: "A.bin"}},
-				Rows:  []durability.WrittenRow{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: int64(len(data)), CRC32: crc32.ChecksumIEEE(data)}},
-			}})
+			err = a1.st.ApplyRecord(t.Context(), []durability.RecordBatch{batch})
 			if err != nil {
 				t.Fatalf("ApplyRecord: %v", err)
 			}

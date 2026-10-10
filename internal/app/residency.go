@@ -158,13 +158,21 @@ func (r *appResidency) verifyAndAttach(ctx context.Context, j *job.Job, m *job.M
 	if err := j.AttachContent(m); err != nil {
 		return err
 	}
-	failMsgs := make(map[int]string)
+	// The message is a fact about the job, not the file: only the peek that
+	// moved the job to Blocked returns one, and the first completion queued
+	// may be an unflagged file's, which would file the job without the names.
+	// So the first message goes to every completion of this hydration.
+	var failMsg string
 	var peek func(int)
 	if r.peek != nil {
-		peek = func(fi int) { failMsgs[fi] = r.peek(j, fi) }
+		peek = func(fi int) {
+			if msg := r.peek(j, fi); failMsg == "" {
+				failMsg = msg
+			}
+		}
 	}
 	for _, fi := range installVerification(j, files, rows, res, true, r.log, peek) {
-		r.finished(j.ID(), fi, failMsgs[fi])
+		r.finished(j.ID(), fi, failMsg)
 	}
 	return nil
 }
