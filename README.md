@@ -28,7 +28,7 @@ is not a drop-in replacement for an existing Python SABnzbd install.
 
 ## Requirements
 
-- Go 1.26 or later (see `go.mod`).
+- Go 1.27.2 or later (see `go.mod`).
 - Node.js 18+ (build-time only, for the Svelte UI).
 - Optional at runtime:
   - `par2` — parity verify and repair.
