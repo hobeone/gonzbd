@@ -100,11 +100,11 @@ func TestRetryHistoryJob_DiscardsRowsWhenTheManifestShapeChanged(t *testing.T) {
 	}
 }
 
-// TestRetryHistoryJob_AfterDownloadDirDeleted: a user who deleted a failed
-// job's download directory and then retries it has nothing on disk for the
-// recorded rows to describe, so the retry drops them and refetches. A
-// hydration parks on the same missing directory (an unmounted share), but a
-// retry is a user's explicit act on a download root that exists.
+// TestRetryHistoryJob_AfterDownloadDirDeleted: a retry of a failed job whose
+// download directory is missing drops the recorded rows and refetches. A
+// hydration parks on the same missing directory instead. A retry cannot tell
+// a directory the user deleted from a download root that is not mounted, and
+// drops the rows either way; this test deletes the directory.
 func TestRetryHistoryJob_AfterDownloadDirDeleted(t *testing.T) {
 	t.Parallel()
 	const nArticles = 3

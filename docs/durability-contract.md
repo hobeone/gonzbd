@@ -334,9 +334,16 @@ has not come up at boot makes every file of every job `ENOENT`; reading that as
 absence would delete every job's recorded progress. A job whose directory the
 user deleted by hand therefore parks rather than refetching at a hydration, and
 the operator's resume re-verifies it. **A retry differs** (*Retry* below): it is
-the user's explicit act, `restoreFailedDir` has already put back a directory it
-could, and a directory still missing means the recorded bytes are gone. The
-decision lives in one place, `readBackFile`'s `retry` parameter.
+the user's explicit act, and `restoreFailedDir` has already put back a
+directory it could, so a directory still missing (`ENOENT` from the `stat`) is
+taken as absence. **A retry cannot tell an unmounted download root from a
+deleted job directory**. On an unmounted share `restoreFailedDir` finds
+neither the `_FAILED_` directory nor the job directory and moves nothing, and
+`readBackFile` gets `ENOENT` from the job directory's `stat`, so the retry
+drops every file's rows and refetches the job, though the bytes may still be
+on the share. Any other `stat` error stays a verification
+fault on both paths. The decision lives in one place, `readBackFile`'s `retry`
+parameter.
 
 The fresh descriptor's fsync reports a writeback error **no earlier fsync has
 reported** (Linux ≥ 4.16). On Linux the file's cache is then dropped
@@ -413,9 +420,11 @@ completion it gives up is re-derived by the next start's verification.
    counted resolved, because `Job.ResetForRetry` is about to clear that
    failure, and a finished file would contradict it. Cleared and fetched again,
    it re-collides with the seeded winner (§5) and is refused. A file whose
-   directory no longer exists takes the `ENOENT` arm instead of the
-   verification fault (*What* above): its rows are deleted and it is refetched
-   (`TestRetryHistoryJob_AfterDownloadDirDeleted`).
+   directory is missing takes the `ENOENT` arm instead of the verification
+   fault (*What* above): its rows are deleted and it is refetched
+   (`TestRetryHistoryJob_AfterDownloadDirDeleted`), whether the directory was
+   deleted or its download root is not mounted. Any other `stat` error is
+   still a verification fault, and the retry aborts.
 
 Each step's verdicts are committed before the next. Then `ResetForRetry`,
 `Assembler.ForgetJob`, the manifest write, `seedJobFiles`, and a synchronous
@@ -1016,8 +1025,11 @@ recorded here so the next reader does not mistake them for design.
 2. **An unreadable sector, or a missing download directory, keeps the job
    parked until the operator acts** (§3). Deleting the file refetches it; a
    directory the user deleted by hand also parks rather than refetching. A
-   retry differs: a missing download directory there deletes the recorded
-   rows and refetches (§3 *Retry*).
+   retry differs: it cannot tell an unmounted download root from a deleted
+   job directory, and either way deletes the recorded rows and refetches
+   (§3 *Retry*). A retry run while the share is down therefore refetches a job
+   whose bytes are still on the share. A `stat` error other than `ENOENT`
+   stays a fault on both paths.
 
 3. **A file whose last article was written while its job was evicted is not
    marked complete in this process.** `MarkFileComplete` needs the manifest,

@@ -64,7 +64,8 @@ var (
 // Per file: an empty filename deletes every row, since none can be read
 // back; ENOENT deletes every row only when the file's directory exists — at a
 // hydration a missing directory (an unmounted download root) is a fault naming
-// it, while on a retry it is absence too (readBackFile); an
+// it, while on a retry it is absence too, unmounted root or not
+// (readBackFile); an
 // fsync error on the fresh descriptor deletes every row (the file is
 // untrusted); a row with an invalid shape (WrittenRow.HasValidShape) is
 // deleted unread, while a zero-length row is valid and verifies against CRC 0;
@@ -78,7 +79,8 @@ var (
 // A complete=1 file is not read: every row is Verified as it stands.
 //
 // Any other error — an open error other than ENOENT, a failed stat of the
-// directory, a read error, an fsync or truncate error while finishing, a
+// directory (at a hydration, or any non-ENOENT stat error on a retry), a read
+// error, an fsync or truncate error while finishing, a
 // cancelled ctx — returns the zero result and an *errVerifyFault naming the
 // file or directory.
 func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.FileRow,
@@ -203,11 +205,12 @@ func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow
 	if errors.Is(err, fs.ErrNotExist) {
 		// Absence is definitive only inside a directory that exists; a
 		// missing directory says nothing about the file at a hydration,
-		// where it may be a share that has not come up. A retry is a user's
-		// act on a job whose directory restoreFailedDir has already put
-		// back if it could, so a directory still missing means the bytes the
-		// rows describe are gone, and the cost of believing it is a refetch.
-		// This is the one place that decides fault versus gone.
+		// where it may be a share that has not come up. A retry treats a
+		// missing directory (ENOENT from the stat) as absence: it cannot
+		// tell an unmounted download root from a deleted job directory, and
+		// either way drops the rows and refetches. Any other stat error is a
+		// fault on both paths. This is the one place that decides fault
+		// versus gone.
 		dir := filepath.Dir(path)
 		if _, sErr := os.Stat(dir); sErr != nil && (!retry || !errors.Is(sErr, fs.ErrNotExist)) {
 			return fileReadback{}, &errVerifyFault{File: dir, Err: sErr}
