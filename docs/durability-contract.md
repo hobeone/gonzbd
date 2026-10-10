@@ -804,13 +804,16 @@ assembler-side buffering of decoded articles, no coalescing and no
 memory-pressure flush (`git grep -n 'writeOne(' -- internal ':!*_test.go'`
 finds 2 lines: the definition and its one call, in `Accept`).
 
-Decoded bytes ahead of the disk are the queued requests in the request channel
-(`reqs`, see *Memory & allocation budget*) plus the one request the worker is
-processing. `WriteRequest.Data` is the package's one `[]byte` field
+The decoded bytes the assembler holds ahead of the disk are the queued requests
+in the request channel (`reqs`, see *Memory & allocation budget*), the one
+request the worker is processing, and one request per `WriteArticle` caller
+blocked on the `reqs` send. No assembler field stores article bytes outside
+`reqs`: `WriteRequest.Data` is the package's one `[]byte` struct field
 (`git grep -n -E '^\s+\w+\s+\[\]byte\b' -- 'internal/assembler/*.go' ':!*_test.go'`
-returns 1 line, `assembler.go:84`), and `reqs` is the one field typed to hold a
-`WriteRequest` (`git grep -n 'chan WriteRequest' -- 'internal/assembler/*.go' ':!*_test.go'`
-returns 2 lines: the field and its `make`).
+returns 1 line), and `reqs` is the one field typed to hold a `WriteRequest`
+(`git grep -n 'chan WriteRequest' -- 'internal/assembler/*.go' ':!*_test.go'`
+returns 2 lines: the field and its `make`). Buffers still upstream of
+`WriteArticle`, in the downloader's decode path, are not counted here.
 
 Decoder buffers are returned to `sync.Pool` (`decoder.PutBuffer`) on every path,
 including every failure path.
