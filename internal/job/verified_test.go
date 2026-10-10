@@ -104,6 +104,24 @@ func TestInstallVerified_ReplacesAnArticlesEarlierRow(t *testing.T) {
 	}
 }
 
+// TestInstallVerified_MergesALaterInstallWithTheResidentRows pins that a
+// second install of different articles adds to the file's rows rather than
+// replacing them.
+func TestInstallVerified_MergesALaterInstallWithTheResidentRows(t *testing.T) {
+	t.Parallel()
+	j := verifiedTestJob(t)
+	a := durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1}
+	c := durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100, CRC32: 0x3}
+	for _, r := range []durability.WrittenRow{c, a} {
+		if _, err := j.InstallVerified(0, []durability.WrittenRow{r}); err != nil {
+			t.Fatalf("InstallVerified: %v", err)
+		}
+	}
+	if got := j.FileRows(0); !slices.Equal(got, []durability.WrittenRow{a, c}) {
+		t.Errorf("FileRows(0) = %+v, want both rows in offset order", got)
+	}
+}
+
 // TestInstallVerified_ARowItCannotPlaceCostsOnlyItself pins open design item
 // 3: a row naming another file, an article outside the file, or an impossible
 // range is dropped and counted, and the valid rows beside it are installed
@@ -112,7 +130,8 @@ func TestInstallVerified_ARowItCannotPlaceCostsOnlyItself(t *testing.T) {
 	t.Parallel()
 	good := durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100}
 	for name, bad := range map[string]durability.WrittenRow{
-		"another file's row":          {FileIdx: 1, ArtIdx: 4, Offset: 0, Length: 100},
+		// Article 1 is inside file 0's range, so only the file check refuses it.
+		"another file's row":          {FileIdx: 1, ArtIdx: 1, Offset: 100, Length: 100},
 		"an article outside the file": {FileIdx: 0, ArtIdx: 4, Offset: 400, Length: 100},
 		"a negative article":          {FileIdx: 0, ArtIdx: -1, Offset: 0, Length: 100},
 		"a negative offset":           {FileIdx: 0, ArtIdx: 1, Offset: -1, Length: 100},

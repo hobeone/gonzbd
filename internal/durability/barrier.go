@@ -325,7 +325,7 @@ func (b *Barrier) raise(jobID, op, path string, err error) error {
 		}
 		return b.routeFault(jobID, f)
 	}
-	if errors.Is(err, ErrFileNotOpen) || errors.Is(err, ErrTargetUnavailable) {
+	if errors.Is(err, ErrFileNotOpen) || errors.Is(err, ErrTargetUnavailable) || errors.Is(err, ErrFileIncomplete) {
 		b.log.Info("barrier operation did not run, for a reason that is not a storage condition; "+
 			"the job is not parked for it",
 			"job", jobID, "op", op, "path", path, "err", err)
@@ -493,15 +493,19 @@ func (b *Barrier) FinalizeFile(ctx context.Context, jobID string, idx int32, t T
 	}
 	bound := boundOver(stored, arts)
 
-	if bound > 0 {
-		if err := t.Truncate(ctx, idx, bound); err != nil {
-			if errors.Is(err, ErrFileNotOpen) {
-				b.log.Debug("file closed before its finalize could truncate",
-					"job", jobID, "file", idx)
-				return nil
-			}
-			return b.raise(jobID, "truncate", t.Path(idx), err)
+	truncBound := bound
+	if truncBound <= 0 {
+		truncBound = -1
+	}
+	if err := t.Truncate(ctx, idx, truncBound); err != nil {
+		if errors.Is(err, ErrFileNotOpen) {
+			b.log.Debug("file closed before its finalize could truncate",
+				"job", jobID, "file", idx)
+			return nil
 		}
+		return b.raise(jobID, "truncate", t.Path(idx), err)
+	}
+	if bound > 0 {
 		// The truncate changed the file, so it is fsynced before the post-truncate
 		// stat probe: reading metadata not yet on stable storage would leave a
 		// state the next restart does not see.

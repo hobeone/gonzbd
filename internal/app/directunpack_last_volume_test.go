@@ -61,7 +61,7 @@ func TestCompleteFinalizedFile_FeedsTheLastVolumeBeforeReportingTheDownload(t *t
 		1, 1, 10*time.Millisecond, time.Now,
 		&appWorkers{app: application},
 		application.residency,
-		dispatchstore.New(repo.DB()),
+		dispatchstore.New(repo.DB(), nil),
 		runner,
 	)
 	application.dispatcher = d

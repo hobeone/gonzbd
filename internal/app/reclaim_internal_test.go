@@ -169,7 +169,7 @@ func TestRemoveJob_ReclaimsAJobThatLeftTheQueueBeforeTheCall(t *testing.T) {
 }
 
 // TestMarkHistoryCompleted_ReclaimsTheFailedEntrysRuns is E9. A FAILED entry
-// keeps its job's durable_runs for a retry; once it is marked completed there
+// keeps its job's record rows for a retry; once it is marked completed there
 // is no retry, and nothing else would ever remove them.
 func TestMarkHistoryCompleted_ReclaimsTheFailedEntrysRuns(t *testing.T) {
 	t.Parallel()
@@ -309,7 +309,8 @@ func TestStart_SweepPreservesAFailedHistoryEntrysRuns(t *testing.T) {
 			"a retry verifies these rows against the partial files", nr)
 	}
 	if nf != 0 {
-		t.Errorf("a FAILED history entry's failed_articles = %d after the startup sweep, want 0", nf)
+		t.Errorf("a FAILED history entry's failed_articles = %d after the startup sweep, want 0: "+
+			"only job_files, durable_runs and written_articles are kept for a FAILED entry", nf)
 	}
 	if nj := jobFilesCount(t, application, failedID); nj != 1 {
 		t.Errorf("a FAILED history entry's job_files = %d after the startup sweep, want 1: "+
@@ -434,5 +435,73 @@ func TestUnlinkDepartedManifests_TakesOnlyWhatTheDispatcherLetGo(t *testing.T) {
 	if strings.Contains(logged.String(), "could not unlink") {
 		t.Errorf("a manifest that was already gone was reported as a failure; log = %q",
 			logged.String())
+	}
+}
+
+// TestSweepOrphans_PreservesManifestOfUnrestoredQueueRow pins that when a
+// dispatch_jobs row is skipped during Store.Load or Dispatcher.restore (so the
+// row remains in dispatch_jobs while the dispatcher does not hold it), the
+// startup orphan sweep preserves both its durability rows and its manifest file
+// on disk.
+func TestSweepOrphans_PreservesManifestOfUnrestoredQueueRow(t *testing.T) {
+	t.Parallel()
+	application, queued := newDurabilityTestApp(t, 1, 1)
+	const skippedID = "skipped00000000"
+	const orphanID = "orphan000000000"
+
+	// Insert a corrupt dispatch_jobs row directly into SQLite (state = 256,
+	// which Store.Load skips while leaving the row in dispatch_jobs).
+	raw := application.historyRepo.DB()
+	if _, err := raw.ExecContext(t.Context(),
+		`INSERT INTO dispatch_jobs (id, sort_key, name, state) VALUES (?, 99, 'skipped', 256)`,
+		skippedID,
+	); err != nil {
+		t.Fatalf("insert skipped row: %v", err)
+	}
+	seedDurability(t, application, skippedID)
+	seedDurability(t, application, orphanID)
+	skippedManifest := placeManifest(t, application, skippedID)
+	orphanManifest := placeManifest(t, application, orphanID)
+
+	if application.hasUnrestoredQueueRow(queued.ID()) {
+		t.Error("hasUnrestoredQueueRow returned true for a job registered in the dispatcher")
+	}
+	if !application.hasUnrestoredQueueRow(skippedID) {
+		t.Error("hasUnrestoredQueueRow returned false for a skipped row present in dispatch_jobs")
+	}
+	if application.hasUnrestoredQueueRow(orphanID) {
+		t.Error("hasUnrestoredQueueRow returned true for an orphan with no dispatch_jobs row")
+	}
+
+	application.sweepOrphans(t.Context())
+
+	if !fileExists(t, skippedManifest) {
+		t.Error("sweepOrphans deleted the manifest of a skipped row that still exists in dispatch_jobs")
+	}
+	nr, nf := durabilityRowCounts(t, application, skippedID)
+	if nj := jobFilesCount(t, application, skippedID); nr != 1 || nf != 1 || nj != 1 {
+		t.Errorf("skipped row kept %d runs, %d failed rows, %d job_files rows, want 1 of each", nr, nf, nj)
+	}
+	if fileExists(t, orphanManifest) {
+		t.Error("sweepOrphans kept the manifest of an orphan with no dispatch_jobs row")
+	}
+	assertRowsGone(t, application, orphanID, "an orphan with no dispatch_jobs row")
+
+	// When dispatch_jobs cannot be queried, hasUnrestoredQueueRow fails closed
+	// (returns true) and logs a warning so a transient database fault never
+	// unlinks a skipped job's manifest.
+	var logged bytes.Buffer
+	application.log = slog.New(slog.NewTextHandler(&logged, nil))
+	const dbErrID = "dberr0000000000"
+	dbErrManifest := placeManifest(t, application, dbErrID)
+	if _, err := raw.ExecContext(t.Context(), `DROP TABLE dispatch_jobs`); err != nil {
+		t.Fatalf("drop dispatch_jobs: %v", err)
+	}
+	application.unlinkDepartedManifests([]string{dbErrID})
+	if !fileExists(t, dbErrManifest) {
+		t.Error("unlinkDepartedManifests unlinked a manifest when dispatch_jobs lookup failed; want fail-closed preservation")
+	}
+	if !strings.Contains(logged.String(), "could not check dispatch_jobs before unlinking manifest; keeping manifest") {
+		t.Errorf("log = %q, want warning about dispatch_jobs lookup failure", logged.String())
 	}
 }

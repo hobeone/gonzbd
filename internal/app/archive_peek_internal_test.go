@@ -119,7 +119,7 @@ func newPeekAppMode(t *testing.T, action unwanted.Action, mode unwanted.Mode, ex
 		1, 1, 10*time.Millisecond, time.Now,
 		&appWorkers{app: application},
 		application.residency,
-		dispatchstore.New(repo.DB()),
+		dispatchstore.New(repo.DB(), nil),
 		runner,
 	)
 	application.dispatcher = d
@@ -235,7 +235,7 @@ func TestPeek_RARVolumeWithUnwantedMember_PausesTheJob(t *testing.T) {
 		t.Errorf("the flagged file was not marked complete (complete=%v, manifest err=%v)", a.j.IsComplete(), err)
 	}
 	// Blocked reaches dispatch_jobs by the next tick, as the ingest check's does.
-	store := dispatchstore.New(a.repo.DB())
+	store := dispatchstore.New(a.repo.DB(), nil)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		rows, err := store.Load(t.Context())

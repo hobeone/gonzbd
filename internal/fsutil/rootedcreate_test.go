@@ -275,6 +275,81 @@ func TestRootedCreateTemp_UniqueAcrossCalls(t *testing.T) {
 		if err := f.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
+		if !fsutil.IsTempFile(filepath.Base(tmpRel)) {
+			t.Errorf("IsTempFile(%q) = false, want true", filepath.Base(tmpRel))
+		}
+	}
+}
+
+func TestIsTempFile(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{".gonzbd-tmp-0123456789abcdef", true},
+		{".gonzbd-tmp-fedcba9876543210", true},
+		{".gonzbd-tmp-keep", false},
+		{".gonzbd-tmp-0123456789abcde", false},   // 15 chars
+		{".gonzbd-tmp-0123456789abcdef0", false}, // 17 chars
+		{".gonzbd-tmp-0123456789ABCDEF", false},  // uppercase hex
+		{".gonzbd-tmp-0123456789abcde/", false},  // '0'-1
+		{".gonzbd-tmp-0123456789abcde:", false},  // '9'+1
+		{".gonzbd-tmp-0123456789abcde`", false},  // 'a'-1
+		{".gonzbd-tmp-0123456789abcdeg", false},  // 'f'+1
+		{".hidden", false},
+		{"movie.mkv", false},
+	} {
+		if got := fsutil.IsTempFile(tc.name); got != tc.want {
+			t.Errorf("IsTempFile(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestRootedCreateTempPerm(t *testing.T) {
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	f600, _, err := fsutil.RootedCreateTemp(t.Context(), root, "default.bin")
+	if err != nil {
+		t.Fatalf("RootedCreateTemp: %v", err)
+	}
+	info600, err := f600.Stat()
+	_ = f600.Close()
+	if err != nil {
+		t.Fatalf("Stat f600: %v", err)
+	}
+	if got := info600.Mode().Perm(); got != 0o600 {
+		t.Errorf("RootedCreateTemp perm = %04o, want 0600", got)
+	}
+
+	probePath := filepath.Join(outDir, "umask-probe")
+	probeFile, err := os.OpenFile(probePath, os.O_CREATE|os.O_WRONLY, 0o666)
+	if err != nil {
+		t.Fatalf("create umask probe: %v", err)
+	}
+	probeInfo, err := probeFile.Stat()
+	_ = probeFile.Close()
+	if err != nil {
+		t.Fatalf("stat umask probe: %v", err)
+	}
+	wantPerm := probeInfo.Mode().Perm()
+
+	f666, _, err := fsutil.RootedCreateTempPerm(t.Context(), root, "joined.bin", 0o666)
+	if err != nil {
+		t.Fatalf("RootedCreateTempPerm: %v", err)
+	}
+	info666, err := f666.Stat()
+	_ = f666.Close()
+	if err != nil {
+		t.Fatalf("Stat f666: %v", err)
+	}
+	if got := info666.Mode().Perm(); got != wantPerm {
+		t.Errorf("RootedCreateTempPerm(0o666) perm = %04o, want %04o", got, wantPerm)
 	}
 }
 

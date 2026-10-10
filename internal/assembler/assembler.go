@@ -280,9 +280,16 @@ type Options struct {
 	OnArticleRejected func(jobID string, fileIdx int, artIdx int32, reason string)
 
 	// OnArticleWritten, if non-nil, is called on the worker goroutine once per
-	// article whose bytes were written without error and whose range was
-	// claimed: off and n are the range, crc the article's CRC32. It is not
-	// called for a refused article or a faulted write.
+	// article whose bytes were written without error: off and n are the range,
+	// crc the article's CRC32. It is not called for a refused article or a
+	// faulted write. A zero-length article is reported with n == 0 but claims
+	// no range (ownedRanges.claim), so a restart's verifier (app.verifyJobFiles)
+	// deletes its row and the article is fetched again.
+	//
+	// It reports a write, not durability: a later failed Sync can roll the
+	// article back (FileWriter.poisonSync), and OnArticlesUnwritten then names
+	// it. The rolled-back article keeps its owned range, so its redelivery is
+	// accepted and calls this again with the same artIdx.
 	OnArticleWritten func(jobID string, fileIdx int, artIdx int32, off, n int64, crc uint32)
 
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.
@@ -324,6 +331,11 @@ type fileKey struct {
 type openFile struct {
 	w    *FileWriter
 	info FileInfo
+	// rolledBack records that a completed file's tombstone was lifted by
+	// releaseSyncRollback after a failed Drain or Sync dropped parts() below
+	// TotalParts (#760), so opTruncate answers ErrFileIncomplete until the
+	// re-fetched articles reach TotalParts again in finalizeFile.
+	rolledBack bool
 }
 
 // Assembler receives decoded article data and writes it to target files using
@@ -1053,7 +1065,7 @@ func (a *Assembler) dispatchRequest(
 	if req.syncOp != nil {
 		// Control message: a barrier operation. Answered on this goroutine,
 		// which owns every file handle (X1).
-		a.handleSyncOp(req.syncOp, open)
+		a.handleSyncOp(req.syncOp, open, completed)
 		return 0
 	}
 	if req.ackCh != nil && req.FileIdx == fileIdxCancelJob {
@@ -1173,7 +1185,9 @@ func (a *Assembler) dispatchRequest(
 // drainAndClose drains a file's writer, fsyncs, closes it, and reports
 // whether any of the three failed. The close-handles arm and drainAndCloseAll
 // untrust the file on an error (noteFileUntrusted): a failed fsync means the
-// bytes its articles were reported written with cannot be trusted.
+// bytes its articles were reported written with cannot be trusted. A failed
+// fsync also returns the articles it poisoned to Outstanding through
+// releasePoisoned (FileWriter.poisonSync).
 //
 // # Why the fault is REPORTED and not ROUTED
 //
@@ -1208,7 +1222,13 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 
 	_, err := f.w.Drain()
 	note("drain file before close", err)
-	note("sync file before close", f.w.Sync())
+	if syncErr := f.w.Sync(); syncErr != nil {
+		note("sync file before close", syncErr)
+		// A failed Sync rolled the file's unconfirmed articles back into
+		// w.poisoned (#760). Close below throws the writer away with that set,
+		// so this is the only chance to return them to Outstanding.
+		a.releasePoisoned(f)
+	}
 	// A failing Close is a storage condition too, and on network-backed mounts
 	// it is frequently the first report of writes that never landed — the
 	// close is where a deferred error surfaces.

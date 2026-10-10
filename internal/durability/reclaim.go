@@ -36,8 +36,8 @@ var perJobTables = []perJobTable{
 }
 
 // The reclaim rule, as SQL: a job's rows go when nothing reaches the job — no
-// queue row, and no FAILED history entry for the tables a failed entry
-// keeps. ruleStatement is its only text. Reclaim and SweepOrphans differ only
+// queue row, and, for a table marked keptForFailedEntry, no FAILED history
+// entry. ruleStatement is its only text. Reclaim and SweepOrphans differ only
 // in the id filter appended to it, so they cannot disagree about the rule.
 //
 // NOT EXISTS rather than NOT IN: NOT IN over a subquery that yields a NULL is

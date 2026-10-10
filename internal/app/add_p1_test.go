@@ -38,7 +38,7 @@ func TestAddJob_DisconnectDuringDispatcherSaveStillPersistsQueueRow(t *testing.T
 		1, 1, time.Second, time.Now,
 		&appWorkers{app: application},
 		application.residency,
-		disconnectingSaveStore{Store: store.New(repo.DB()), cancel: cancel},
+		disconnectingSaveStore{Store: store.New(repo.DB(), nil), cancel: cancel},
 		application.runner,
 	)
 	application.dispatcher = d
@@ -56,7 +56,7 @@ func TestAddJob_DisconnectDuringDispatcherSaveStillPersistsQueueRow(t *testing.T
 	if ctx.Err() == nil {
 		t.Fatal("caller context was never cancelled inside Save")
 	}
-	rows, err := store.New(repo.DB()).Load(t.Context())
+	rows, err := store.New(repo.DB(), nil).Load(t.Context())
 	if err != nil {
 		t.Fatalf("Load dispatch_jobs: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestRetryHistoryJob_DisconnectDuringDispatcherSaveStillPersistsQueueRow(t *
 		1, 1, time.Second, time.Now,
 		&appWorkers{app: application},
 		application.residency,
-		disconnectingSaveStore{Store: store.New(repo.DB()), cancel: cancel},
+		disconnectingSaveStore{Store: store.New(repo.DB(), nil), cancel: cancel},
 		application.runner,
 	)
 	application.dispatcher = d
@@ -115,7 +115,7 @@ func TestRetryHistoryJob_DisconnectDuringDispatcherSaveStillPersistsQueueRow(t *
 	if ctx.Err() == nil {
 		t.Fatal("caller context was never cancelled inside Save")
 	}
-	rows, err := store.New(repo.DB()).Load(t.Context())
+	rows, err := store.New(repo.DB(), nil).Load(t.Context())
 	if err != nil {
 		t.Fatalf("Load dispatch_jobs: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestAddJob_FailedAddLeavesNoOrphanArtifacts(t *testing.T) {
 		1, 1, time.Second, time.Now,
 		&appWorkers{app: application},
 		application.residency,
-		failingSaveStore{Store: store.New(repo.DB()), err: os.ErrPermission},
+		failingSaveStore{Store: store.New(repo.DB(), nil), err: os.ErrPermission},
 		application.runner,
 	)
 
@@ -286,7 +286,7 @@ func TestRetryHistoryJob_FailedAddRemovesTheQueueManifest(t *testing.T) {
 		1, 1, time.Second, time.Now,
 		&appWorkers{app: application},
 		application.residency,
-		failingSaveStore{Store: store.New(repo.DB()), err: os.ErrPermission},
+		failingSaveStore{Store: store.New(repo.DB(), nil), err: os.ErrPermission},
 		application.runner,
 	)
 

@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestVerifyJobFiles_Outcomes|TestVerifyJobFiles_ReadFaultChangesNothing|TestVerifyJobFiles_FsyncErrorUntrustsTheFile|TestVerifyJobFiles_RetryDoesNotFinishOverAnIntersectionFailure|TestFinishFileByPath|TestFinishFileByPath_ReturnsASecondFsyncError|TestFileFinishable|TestResolveRows|TestReadBackFile_ReadsARowLongerThanTheBuffer|TestFinishIfResolved|TestVerifyJobFiles_CancelChangesNothing|TestVerifyJobFiles_OpenErrorIsAFault|TestVerifyJobFiles_MissingDirectoryIsAFault|TestVerifyJobFiles_OpensTheResolversPath
+run TestVerifyJobFiles_Outcomes|TestVerifyJobFiles_ReadFaultChangesNothing|TestVerifyJobFiles_FsyncErrorUntrustsTheFile|TestVerifyJobFiles_RetryDoesNotFinishOverAnIntersectionFailure|TestFinishFileByPath|TestFinishFileByPath_ReturnsASecondFsyncError|TestFileFinishable|TestResolveRows|TestReadBackFile_ReadsARowLongerThanTheBuffer|TestFinishIfResolved|TestVerifyJobFiles_CancelChangesNothing|TestVerifyJobFiles_OpenErrorIsAFault|TestVerifyJobFiles_MissingDirectoryIsAFault|TestVerifyJobFiles_OpensTheResolversPath|TestVerifyJobFiles_LeavesAFileWithNoRowsUntouched
 
 [(a) a CRC mismatch treated as a match]
 file internal/app/verify.go
@@ -158,4 +158,12 @@ file internal/app/verify.go
 		path := pathFor(f.Filename)
 --- replace
 		path := filepath.Join(filepath.Dir(pathFor("x")), f.Filename)
+--- end
+
+[(p) a file with no rows is read back]
+file internal/app/verify.go
+--- anchor
+		if len(fr) == 0 {
+--- replace
+		if false {
 --- end

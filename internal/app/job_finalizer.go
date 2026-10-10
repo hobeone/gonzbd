@@ -346,8 +346,9 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 
 		// Unconditional: the rule decides from the queue and history as they
 		// now are, so a job still queued keeps everything, a FAILED entry
-		// keeps its record rows for a retry, and a persist that failed
-		// against an existing FAILED entry keeps them for that entry.
+		// keeps its record rows (job_files, durable_runs and written_articles)
+		// for a retry, and a persist that failed against an existing FAILED
+		// entry keeps them for that entry.
 		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 3*time.Second)
 		defer delCancel()
 		app.reclaim(delCtx, ppJob.Job.ID())

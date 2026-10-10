@@ -1,5 +1,6 @@
 // Package durability owns the persistence of download progress. Store runs
-// all of the production SQL on durable_runs, job_files and failed_articles.
+// all of the production SQL on durable_runs, written_articles, job_files and
+// failed_articles.
 //
 // Of those, durable_runs is the durability record: ONE fact about a download,
 // whose content is put there by one writer at one moment, per

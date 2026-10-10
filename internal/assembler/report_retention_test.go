@@ -1,9 +1,14 @@
 package assembler
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"syscall"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
 // newWrittenFileWriter returns a FileWriter holding one successfully written
@@ -125,4 +130,204 @@ func TestJobSyncTargetConfirm_SwallowsAStoppedAssembler(t *testing.T) {
 	// blocking — it has no error to return by design.
 	tgt := a.SyncTargetFor("job1")
 	tgt.Confirm(t.Context(), 0)
+}
+
+// TestDrainReport_FailedSyncPoisonsReportAndRollsBackArticles pins #760 on
+// FileWriter: once Sync fails (e.g. EIO), the retained drain report (and any
+// article written between Drain and Sync) is released as failed rather than
+// re-drained on the next Drain, and the affected articles are rolled back into
+// poisoned with their parts and seenDone entries cleared, while keeping the
+// ranges they wrote.
+func TestDrainReport_FailedSyncPoisonsReportAndRollsBackArticles(t *testing.T) {
+	w := newWrittenFileWriter(t)
+	w.admitAccepted(0)
+
+	first, err := w.Drain()
+	if err != nil {
+		t.Fatalf("first Drain: %v", err)
+	}
+	if len(first) != 1 || first[0].ArtIdx != 0 {
+		t.Fatalf("first Drain = %+v, want [artIdx 0]", first)
+	}
+
+	// An article written between Drain and Sync also sits in the page cache
+	// when fsync fails and must be rolled back alongside w.reported.
+	w.admitAccepted(1)
+	if err := w.Accept(articleID{msgID: "m2", artIdx: 1}, 4, []byte("BBBB"), 0); err != nil {
+		t.Fatalf("Accept m2: %v", err)
+	}
+	if w.parts() != 2 {
+		t.Fatalf("precondition: parts = %d, want 2", w.parts())
+	}
+
+	// First Sync fails with EIO; retry Sync returns nil (Linux errseq behavior).
+	syncCalls := 0
+	w.syncFile = func() error {
+		syncCalls++
+		if syncCalls == 1 {
+			return os.ErrInvalid
+		}
+		return nil
+	}
+	if err := w.Sync(); err == nil {
+		t.Fatal("first Sync returned nil, want error")
+	}
+
+	if got := w.unconfirmed(); len(got) != 0 {
+		t.Errorf("unconfirmed after failed Sync = %+v, want empty (report poisoned)", got)
+	}
+	if got := w.writtenSoFar(); len(got) != 0 {
+		t.Errorf("writtenSoFar after failed Sync = %+v, want empty", got)
+	}
+	if w.parts() != 0 {
+		t.Errorf("parts after failed Sync = %d, want 0 (parts rolled back)", w.parts())
+	}
+	if rolled := w.takePoisoned(); !slices.Equal(rolled, []int32{0, 1}) {
+		t.Errorf("takePoisoned = %v, want [0 1] rolled back to Outstanding", rolled)
+	}
+	// The rolled-back article keeps the range it wrote: its redelivery is
+	// accepted (same artIdx) and a rival is refused.
+	if owner, owned := w.owned.ownerOf(Range{0, 4}, articleID{artIdx: 9}); !owned || owner.artIdx != 0 {
+		t.Errorf("ownerOf([0,4)) = (%+v, %v) after failed Sync, want article 0 still owning it", owner, owned)
+	}
+	if _, owned := w.owned.ownerOf(Range{0, 4}, articleID{artIdx: 0}); owned {
+		t.Error("the rolled-back article's own redelivery was refused after a failed Sync")
+	}
+
+	// Retry cycle: Drain + Sync where Sync now returns nil must report nothing.
+	retryDrained, err := w.Drain()
+	if err != nil {
+		t.Fatalf("retry Drain: %v", err)
+	}
+	if len(retryDrained) != 0 {
+		t.Errorf("retry Drain returned %+v, want empty (failed Sync must not re-drain)", retryDrained)
+	}
+	if err := w.Sync(); err != nil {
+		t.Fatalf("retry Sync: %v", err)
+	}
+}
+
+func runSyncOpWithCompleted(t *testing.T, a *Assembler, open map[fileKey]*openFile, completed map[fileKey]struct{}, op syncOp) syncReply {
+	t.Helper()
+	op.reply = make(chan syncReply, 1)
+	a.handleSyncOp(&op, open, completed)
+	select {
+	case r := <-op.reply:
+		return r
+	default:
+		t.Fatal("handleSyncOp did not reply")
+		return syncReply{}
+	}
+}
+
+func TestFileWriter_PoisonSyncAndRollbackSyncedArticle(t *testing.T) {
+	w := newWrittenFileWriter(t)
+	w.admitAccepted(0)
+	if _, err := w.Drain(); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	// Calling rollbackSyncedArticle twice for the same artIdx must append to
+	// w.poisoned only once.
+	w.rollbackSyncedArticle(0)
+	w.rollbackSyncedArticle(0)
+	if got := len(w.poisoned); got != 1 {
+		t.Fatalf("len(w.poisoned) = %d after duplicate rollbackSyncedArticle, want 1", got)
+	}
+	// A different article is still rolled back alongside it.
+	w.admitAccepted(1)
+	w.rollbackSyncedArticle(1)
+	if !slices.Equal(w.poisoned, []int32{0, 1}) {
+		t.Fatalf("w.poisoned = %v, want [0 1]", w.poisoned)
+	}
+	w.poisonSync()
+	if len(w.reported) != 0 || len(w.written) != 0 {
+		t.Errorf("poisonSync left reported=%d written=%d, want 0/0", len(w.reported), len(w.written))
+	}
+
+	var unwritten []int32
+	a := newHelperAssembler()
+	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
+		unwritten = append(unwritten, arts...)
+	}
+	key := fileKey{jobID: "job1", fileIdx: 0}
+	completed := map[fileKey]struct{}{key: {}}
+	f := &openFile{w: w, info: FileInfo{TotalParts: 1}}
+	a.releaseSyncRollback(f, key, completed)
+	if !slices.Equal(unwritten, []int32{0, 1}) {
+		t.Errorf("releaseSyncRollback unwritten = %v, want [0 1]", unwritten)
+	}
+	if _, stillDone := completed[key]; stillDone {
+		t.Error("releaseSyncRollback left completed[key] set when parts < TotalParts")
+	}
+	if !f.rolledBack {
+		t.Error("releaseSyncRollback did not set f.rolledBack when lifting completed[key]")
+	}
+
+	// When parts() >= TotalParts (or TotalParts == 0), releaseSyncRollback must
+	// preserve completed[key] and leave f.rolledBack false.
+	w.admitAccepted(0)
+	completed[key] = struct{}{}
+	f.rolledBack = false
+	a.releaseSyncRollback(f, key, completed)
+	if _, stillDone := completed[key]; !stillDone {
+		t.Error("releaseSyncRollback deleted completed[key] when parts() >= TotalParts")
+	}
+	if f.rolledBack {
+		t.Error("releaseSyncRollback set f.rolledBack when parts() >= TotalParts")
+	}
+
+	w.fail(articleID{artIdx: 0})
+	f.info.TotalParts = 0
+	a.releaseSyncRollback(f, key, completed)
+	if _, stillDone := completed[key]; !stillDone {
+		t.Error("releaseSyncRollback deleted completed[key] when TotalParts == 0")
+	}
+}
+
+func TestDrainAndClose_FailedSyncRoutesRolledBackArticles(t *testing.T) {
+	a := newHelperAssembler()
+	var unwritten []int32
+	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
+		unwritten = append(unwritten, arts...)
+	}
+
+	key := fileKey{jobID: "job1", fileIdx: 0}
+	f := newHelperFile(t, t.TempDir(), "close-sync-fail.dat", 0)
+	f.info.TotalParts = 1
+	open := map[fileKey]*openFile{key: f}
+	completed := map[fileKey]struct{}{key: {}}
+	f.w.admitAccepted(7)
+	if err := f.w.Accept(articleID{msgID: "m7", artIdx: 7}, 0, []byte("abcd"), 0); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	f.w.syncFile = func() error { return syscall.EIO }
+
+	rClose := runSyncOpWithCompleted(t, a, open, completed, syncOp{kind: opClose, jobID: "job1", fileIdx: 0})
+	if !errors.Is(rClose.err, syscall.EIO) {
+		t.Fatalf("opClose = %v, want EIO", rClose.err)
+	}
+	if len(unwritten) != 1 || unwritten[0] != 7 {
+		t.Errorf("OnArticlesUnwritten = %v, want [7] after failed close-time Sync", unwritten)
+	}
+	if _, stillDone := completed[key]; stillDone {
+		t.Error("completed[key] still set after opClose failed Sync rolled back parts below TotalParts")
+	}
+
+	// CloseJobHandles and the worker-exit drain call drainAndClose with no
+	// releaseSyncRollback after it, so drainAndClose must route the poisoned
+	// set itself before Close throws the writer away.
+	unwritten = nil
+	g := newHelperFile(t, t.TempDir(), "close-handles-sync-fail.dat", 0)
+	g.w.key = key
+	g.w.admitAccepted(8)
+	if err := g.w.Accept(articleID{msgID: "m8", artIdx: 8}, 0, []byte("abcd"), 0); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	g.w.syncFile = func() error { return syscall.EIO }
+	if err := a.drainAndClose(g); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("drainAndClose = %v, want EIO", err)
+	}
+	if !slices.Equal(unwritten, []int32{8}) {
+		t.Errorf("OnArticlesUnwritten = %v, want [8] from drainAndClose's failed Sync", unwritten)
+	}
 }

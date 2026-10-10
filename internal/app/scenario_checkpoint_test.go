@@ -298,7 +298,7 @@ func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
 	cancel1()
 
 	// Verify on-disk queue state after crash: job must still exist in dispatch_jobs.
-	store := dispatchstore.New(repo.DB())
+	store := dispatchstore.New(repo.DB(), nil)
 	rows, err := store.Load(t.Context())
 	if err != nil {
 		t.Fatalf("store.Load: %v", err)

@@ -3,6 +3,7 @@ package assembler
 import (
 	"context"
 	"errors"
+	"os"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -93,6 +94,35 @@ func TestQuiesce_ReturnsAfterEverythingQueuedAheadOfIt(t *testing.T) {
 	if got := written.Load(); got != n {
 		t.Errorf("Quiesce returned with %d of %d articles written — a reload "+
 			"clearing Emitted now would clear bits for articles about to be written", got, n)
+	}
+}
+
+// TestOptionsSyncFile_ReachesTheCompletionFsync pins the seam: Options.SyncFile
+// replaces the fsync a completing file's finish runs, so an injected device
+// error untrusts the file instead of completing it.
+func TestOptionsSyncFile_ReachesTheCompletionFsync(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "job1", 0, 1)
+	opts := makeOpts(dir, files)
+	opts.SyncFile = func(*os.File) error { return syscall.EIO }
+	opts.OnArticlesUnwritten = func(string, int, []int32) {}
+	var untrusted, completed atomic.Int32
+	opts.OnFileUntrusted = func(string, int) { untrusted.Add(1) }
+	opts.OnFileComplete = func(string, int) { completed.Add(1) }
+	a := startAssembler(t, opts)
+
+	if err := writeArticle(t.Context(), a, WriteRequest{
+		JobID: "job1", FileIdx: 0, ArtIdx: 0, MessageID: "m", Offset: 0, Data: make([]byte, 8),
+	}); err != nil {
+		t.Fatalf("writeArticle: %v", err)
+	}
+	if err := a.Quiesce(t.Context()); err != nil {
+		t.Fatalf("Quiesce: %v", err)
+	}
+	if untrusted.Load() != 1 || completed.Load() != 0 {
+		t.Errorf("untrusted=%d completed=%d, want 1 and 0: the injected fsync error did not reach finish",
+			untrusted.Load(), completed.Load())
 	}
 }
 

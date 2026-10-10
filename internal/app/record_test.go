@@ -99,6 +99,63 @@ func TestRecorder_CompleteNeverLandsWithoutItsLastRow(t *testing.T) {
 	}
 }
 
+func TestRecorder_FlushesADirtyOnlyJob(t *testing.T) {
+	st := &fakeRecordStore{}
+	j := newTestJob(t, "id")
+	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r.markDirty(j, 0, durability.FileState{Complete: true, Filename: "f.bin"})
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	b := st.snapshot()
+	if len(b) != 1 || len(b[0].Files) != 1 || !b[0].Files[0].Complete || len(b[0].Rows) != 0 {
+		t.Errorf("batches = %+v, want one batch carrying file 0's state and no rows", b)
+	}
+}
+
+func TestRecorder_LeavesAJobFirstBufferedAfterTheListingForTheNextFlush(t *testing.T) {
+	st := &fakeRecordStore{}
+	j1, j2 := newTestJob(t, "one"), newTestJob(t, "two")
+	var r *recorder
+	calls := 0
+	r = newRecorder(st, func(id string) *job.Job {
+		calls++
+		if calls == 1 {
+			// j2 is buffered after liveInstances listed the jobs, so the
+			// first flush has no instance answer for it.
+			r.noteWritten(j2, durability.WrittenRow{FileIdx: 0, ArtIdx: 3, Length: 10})
+			r.markDirty(j2, 0, durability.FileState{Complete: true})
+		}
+		if id == "one" {
+			return j1
+		}
+		return j2
+	}, slog.Default())
+	r.noteWritten(j1, durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Length: 10})
+
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range st.snapshot() {
+		if b.JobID == "two" {
+			t.Fatalf("first flush wrote %+v for a job buffered after its listing", b)
+		}
+	}
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var rows, files int
+	for _, b := range st.snapshot() {
+		if b.JobID == "two" {
+			rows += len(b.Rows)
+			files += len(b.Files)
+		}
+	}
+	if rows != 1 || files != 1 {
+		t.Errorf("job two after the second flush: %d rows, %d files, want 1 and 1 — state buffered during a listing was dropped", rows, files)
+	}
+}
+
 func TestRecorder_RemergesOnError(t *testing.T) {
 	st := &fakeRecordStore{failNext: true}
 	j := newTestJob(t, "id")

@@ -3,6 +3,7 @@ package unpack
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -452,5 +453,272 @@ func TestFileJoin_CopyError(t *testing.T) {
 		t.Error("expected error when copying a directory part, but got nil")
 	} else if !strings.HasPrefix(err.Error(), "filejoin: copy") {
 		t.Errorf("expected copy error, got: %v", err)
+	}
+}
+
+type midJoinInspectCtx struct {
+	context.Context
+	outDir          string
+	finalName       string
+	inspected       bool
+	sawFinalMidJoin bool
+	sawTempMidJoin  bool
+	tempSizeMidJoin int64
+}
+
+func (c *midJoinInspectCtx) Err() error {
+	if c.inspected {
+		return context.Canceled
+	}
+	entries, err := os.ReadDir(c.outDir)
+	if err != nil || len(entries) == 0 {
+		return c.Context.Err()
+	}
+	// Wait until the first part has flushed bytes to disk inside outDir.
+	var anyWritten bool
+	for _, e := range entries {
+		if info, infoErr := e.Info(); infoErr == nil && info.Size() > 0 {
+			anyWritten = true
+			break
+		}
+	}
+	if !anyWritten {
+		return c.Context.Err()
+	}
+	c.inspected = true
+	if _, statErr := os.Stat(filepath.Join(c.outDir, c.finalName)); statErr == nil {
+		c.sawFinalMidJoin = true
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".gonzbd-tmp-") {
+			c.sawTempMidJoin = true
+			if info, infoErr := e.Info(); infoErr == nil {
+				c.tempSizeMidJoin = info.Size()
+			}
+		}
+	}
+	return context.Canceled
+}
+
+// TestFileJoin_AtomicTempPublish verifies that FileJoin writes in-progress
+// data to a .gonzbd-tmp-* sibling and only publishes the final name via rename
+// after flush and close, so a mid-join interruption never leaves a truncated
+// file under the final name.
+func TestFileJoin_AtomicTempPublish(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	outDir := t.TempDir()
+
+	// Size part 1 above joinBufSize so copyPart flushes bytes to disk before
+	// FileJoin checks ctx.Err() ahead of part 2.
+	part1Data := bytes.Repeat([]byte("A"), joinBufSize+64)
+	part2Data := bytes.Repeat([]byte("B"), 64)
+	part1 := filepath.Join(dir, "movie.001")
+	part2 := filepath.Join(dir, "movie.002")
+	if err := os.WriteFile(part1, part1Data, 0o644); err != nil {
+		t.Fatalf("write part 1: %v", err)
+	}
+	if err := os.WriteFile(part2, part2Data, 0o644); err != nil {
+		t.Fatalf("write part 2: %v", err)
+	}
+
+	archive := Archive{
+		Type:     SplitArchive,
+		Name:     "movie",
+		MainFile: part1,
+		Parts:    []string{part1, part2},
+	}
+
+	inspectCtx := &midJoinInspectCtx{
+		Context:   t.Context(),
+		outDir:    outDir,
+		finalName: "movie",
+	}
+	if _, err := FileJoin(inspectCtx, slog.Default(), archive, outDir, Options{}); err == nil {
+		t.Fatal("expected cancellation error mid-join, got nil")
+	}
+	if !inspectCtx.inspected {
+		t.Fatal("fixture guard: midJoinInspectCtx never observed flushed bytes in outDir")
+	}
+	if inspectCtx.sawFinalMidJoin {
+		t.Error("final output \"movie\" existed while join was in flight; want absent until atomic rename")
+	}
+	if !inspectCtx.sawTempMidJoin || inspectCtx.tempSizeMidJoin < joinBufSize {
+		t.Errorf("sawTempMidJoin=%v tempSizeMidJoin=%d; want .gonzbd-tmp-* sibling with >= %d bytes mid-join",
+			inspectCtx.sawTempMidJoin, inspectCtx.tempSizeMidJoin, joinBufSize)
+	}
+
+	// Deferred cleanup must have removed the unpublished temp file.
+	if entries, err := os.ReadDir(outDir); err != nil || len(entries) != 0 {
+		t.Errorf("outDir after cancelled join = %v (err=%v), want empty", entries, err)
+	}
+
+	// A subsequent run on the same outDir completes and leaves no temp file.
+	res, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
+	if err != nil || res.Err != nil {
+		t.Fatalf("rerun FileJoin: err=%v res.Err=%v", err, res.Err)
+	}
+	info, err := os.Stat(filepath.Join(outDir, "movie"))
+	if err != nil {
+		t.Fatalf("stat joined output: %v", err)
+	}
+	if want := int64(len(part1Data) + len(part2Data)); info.Size() != want {
+		t.Errorf("joined size = %d, want %d", info.Size(), want)
+	}
+
+	// Joined output must have standard 0o666 &^ umask permissions, not 0o600.
+	refPath := filepath.Join(dir, "umask_ref")
+	refFile, err := os.OpenFile(refPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o666)
+	if err != nil {
+		t.Fatalf("open reference file: %v", err)
+	}
+	_ = refFile.Close()
+	refInfo, err := os.Stat(refPath)
+	if err != nil {
+		t.Fatalf("stat reference file: %v", err)
+	}
+	if gotPerm, wantPerm := info.Mode().Perm(), refInfo.Mode().Perm(); gotPerm != wantPerm {
+		t.Errorf("joined file mode = %04o, want %04o (0o666 &^ umask)", gotPerm, wantPerm)
+	}
+
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "movie" {
+		t.Errorf("outDir entries after complete join = %v, want only [movie]", entries)
+	}
+}
+
+func TestFileJoin_OutputAlreadyExists_MissingFirstPart(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	outDir := t.TempDir()
+
+	// Simulate a crash during archive cleanup after .001 was already unlinked
+	// while .002 and .003 remain alongside the completed joined file.
+	part2 := filepath.Join(dir, "data.002")
+	part3 := filepath.Join(dir, "data.003")
+	if err := os.WriteFile(part2, []byte("B"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(part3, []byte("C"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "data"), []byte("ABC"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := Archive{
+		Type:     SplitArchive,
+		Name:     "data",
+		MainFile: part2,
+		Parts:    []string{part2, part3},
+	}
+
+	res, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
+	if err != nil || res.Err != nil {
+		t.Fatalf("expected no-op success when joined output exists despite missing .001, got err=%v res.Err=%v", err, res.Err)
+	}
+	got, err := os.ReadFile(filepath.Join(outDir, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "ABC" {
+		t.Errorf("existing file content = %q, want %q", got, "ABC")
+	}
+}
+
+func TestFileJoin_OutputNonRegularNotTreatedAsExisting(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	outDir := t.TempDir()
+
+	part1 := filepath.Join(dir, "data.001")
+	part2 := filepath.Join(dir, "data.002")
+	if err := os.WriteFile(part1, []byte("A"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(part2, []byte("B"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Plant a symlink at outRel so root.Lstat(outRel) succeeds with a
+	// non-regular mode. FileJoin must not treat a non-regular entry as an
+	// already-completed join output.
+	if err := os.Symlink("missing-target", filepath.Join(outDir, "data")); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := Archive{
+		Type:     SplitArchive,
+		Name:     "data",
+		MainFile: part1,
+		Parts:    []string{part1, part2},
+	}
+
+	res, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
+	if err != nil || res.Err != nil {
+		t.Fatalf("FileJoin with symlink at outRel failed: err=%v res.Err=%v", err, res.Err)
+	}
+	info, err := os.Lstat(filepath.Join(outDir, "data"))
+	if err != nil {
+		t.Fatalf("Lstat joined output: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("output mode = %v, want regular file replacing symlink", info.Mode())
+	}
+	got, err := os.ReadFile(filepath.Join(outDir, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "AB" {
+		t.Errorf("joined content = %q, want %q", got, "AB")
+	}
+}
+
+func TestSyncAndPublishJoin_SyncsBeforeCloseAndRename(t *testing.T) {
+	t.Parallel()
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	const tmpRel = ".gonzbd-tmp-0123456789abcdef"
+	if err := os.WriteFile(filepath.Join(outDir, tmpRel), []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// An os.Pipe write descriptor fails Sync() with EINVAL on Linux while
+	// succeeding on Close(). If outFile.Sync() is skipped, Close() and
+	// root.Rename() succeed and publish "movie" without an fsync.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	err = syncAndPublishJoin(w, root, tmpRel, "movie")
+	if err == nil || !strings.Contains(err.Error(), "filejoin: sync output") {
+		t.Fatalf("syncAndPublishJoin(pipe) = %v, want filejoin: sync output error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outDir, "movie")); !os.IsNotExist(statErr) {
+		t.Errorf("movie was published despite failed Sync() (stat err=%v)", statErr)
+	}
+
+	// Verify rename failure is surfaced when tmpRel is missing at publish time,
+	// and that outFile was closed before Rename.
+	f, err := os.CreateTemp(outDir, "sync-ok-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = syncAndPublishJoin(f, root, "missing-temp", "movie")
+	if err == nil || !strings.Contains(err.Error(), "filejoin: publish output") {
+		t.Fatalf("syncAndPublishJoin(missing temp) = %v, want filejoin: publish output error", err)
+	}
+	if closeErr := f.Close(); !errors.Is(closeErr, os.ErrClosed) {
+		t.Errorf("outFile.Close() after syncAndPublishJoin = %v, want os.ErrClosed", closeErr)
 	}
 }

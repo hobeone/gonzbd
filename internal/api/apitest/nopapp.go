@@ -182,9 +182,6 @@ func (n NopApp) CheckpointState(jobID string) app.JobCheckpointState {
 // BinaryVersionsInfo is a stub.
 func (n NopApp) BinaryVersionsInfo() app.BinaryVersions { return app.BinaryVersions{} }
 
-// ArticleCacheBytes is a stub.
-func (n NopApp) ArticleCacheBytes() int64 { return 0 }
-
 // DownloadDirFreeBytes is a stub.
 func (n NopApp) DownloadDirFreeBytes(context.Context) (int64, error) { return 0, nil }
 

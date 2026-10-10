@@ -362,8 +362,11 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	log := app.log
 
-	if app.meter == nil {
-		app.meter = bpsmeter.NewMeter(10*time.Second, time.Now)
+	app.meter = bpsmeter.NewMeter(10*time.Second, time.Now)
+	if state, err := bpsmeter.LoadState(app.meterStatePath()); err == nil {
+		app.meter.Restore(state)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		log.Warn("load bpsmeter state", "err", err)
 	}
 
 	var dispatchStore dispatch.Store = nopDispatchStore{}
@@ -371,7 +374,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	var recStore recordStore = nopRecordStore{}
 	var reader recordReader
 	if repo != nil && repo.DB() != nil {
-		dispatchStore = dispatchstore.New(repo.DB())
+		dispatchStore = dispatchstore.New(repo.DB(), log)
 		// repo.Path() is the one owner of this value (Standing Design Rule
 		// 2): it reports the path history.Open was actually given, in
 		// cmd/gonzbd/main.go. Re-deriving it here from adminDir would be a
@@ -1081,8 +1084,8 @@ func (app *Application) deleteHistoryEntries(ctx context.Context, claim *transit
 	if err != nil {
 		return n, err
 	}
-	// A FAILED entry kept its job's durable_runs for a retry; with the entry
-	// gone nothing reaches them.
+	// A FAILED entry kept its job's job_files, durable_runs and
+	// written_articles for a retry; with the entry gone nothing reaches them.
 	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer delCancel()
 	app.reclaim(delCtx, ids[0], ids[1:]...)
@@ -1090,9 +1093,9 @@ func (app *Application) deleteHistoryEntries(ctx context.Context, claim *transit
 }
 
 // MarkHistoryCompleted marks a history entry completed. A FAILED entry kept
-// its job's durable_runs for a retry, and a completed one has nothing to
-// retry, so they are reclaimed. It waits, for as long as ctx allows, while
-// another actor holds the job.
+// its job's job_files, durable_runs and written_articles for a retry, and a completed
+// one has nothing to retry, so they are reclaimed. It waits, for as long as
+// ctx allows, while another actor holds the job.
 func (app *Application) MarkHistoryCompleted(ctx context.Context, id string) error {
 	if app.historyRepo == nil {
 		return errors.New("history repository not wired")
@@ -1459,8 +1462,14 @@ func (app *Application) joinAndStop(stepTimeout time.Duration, errs *[]error) {
 	}
 }
 
-// Shutdown stops the downloader, post-processor, and assembler, and flushes
-// the article record. Safe to call multiple times.
+// meterStatePath returns the path to the persisted bandwidth meter state file.
+func (app *Application) meterStatePath() string {
+	return filepath.Join(app.config.GetGeneral().AdminDir, "bpsmeter.json")
+}
+
+// Shutdown stops the downloader, post-processor, and assembler, flushes the
+// article record, and saves the bandwidth meter totals. Safe to call multiple
+// times.
 //
 // Ordering matters:
 //  1. Stop the downloader — no new articles are dispatched — and abort
@@ -1472,7 +1481,7 @@ func (app *Application) joinAndStop(stepTimeout time.Duration, errs *[]error) {
 //  4. Wait for background goroutines to finish.
 //  5. Stop the post-processor and the dispatcher.
 //  6. Flush the recorder, so what was written since its last flush is not
-//     refetched on the next start.
+//     refetched on the next start, and save the bandwidth meter totals.
 //
 // Steps 1-2 are stopWorkers and steps 3-5 are joinAndStop.
 func (app *Application) Shutdown() error {
@@ -1501,6 +1510,9 @@ func (app *Application) Shutdown() error {
 		errs = append(errs, fmt.Errorf("recorder flush: %w", err))
 	}
 	flushCancel()
+	if err := bpsmeter.SaveState(app.meterStatePath(), app.meter.Capture()); err != nil {
+		app.log.Warn("save bpsmeter state", "err", err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -2373,6 +2385,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			URL:                  hdr.URL,
 			DownloadDir:          downloadDir,
 			FinalDir:             finalDir,
+			FlatLayout:           flatLayout,
 			Sanitize:             sanitize,
 			Unwanted:             hdr.Unwanted,
 			FailMsg:              admittedFailMsg,

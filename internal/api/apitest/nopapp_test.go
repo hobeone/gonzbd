@@ -106,9 +106,6 @@ func TestNopApp_Contract(t *testing.T) {
 		t.Errorf("ReevaluateStalls calls = %d, want 1", got)
 	}
 
-	if cache := app.ArticleCacheBytes(); cache != 0 {
-		t.Errorf("ArticleCacheBytes() = %d, want 0", cache)
-	}
 	if free, err := app.DownloadDirFreeBytes(ctx); free != 0 || err != nil {
 		t.Errorf("DownloadDirFreeBytes() = (%d, %v), want (0, nil)", free, err)
 	}

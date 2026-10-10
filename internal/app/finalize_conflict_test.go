@@ -201,7 +201,7 @@ func TestFinalize_KeepsTheManifestWhenTheDispatcherRemoveFails(t *testing.T) {
 		1, 1, time.Second, time.Now,
 		&appWorkers{app: application},
 		application.residency,
-		removeRefusingStore{Store: store.New(repo.DB())},
+		removeRefusingStore{Store: store.New(repo.DB(), nil)},
 		application.runner,
 	)
 	application.dispatcher = d
