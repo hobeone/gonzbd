@@ -16,6 +16,9 @@ func TestOwnedRanges_SeedMergesIntersectingRanges(t *testing.T) {
 		{"intersecting", []Range{{0, 100}, {50, 100}}, []Range{{10, 5}, {120, 5}}, []Range{{150, 5}}},
 		{"contained", []Range{{0, 100}, {10, 10}}, []Range{{10, 5}, {90, 5}}, []Range{{100, 5}}},
 		{"unsorted and abutting", []Range{{200, 50}, {100, 100}, {0, 50}}, []Range{{0, 5}, {150, 5}, {240, 5}}, []Range{{50, 50}}},
+		// Kept, {50,-45} would end at 5, before {0,10}'s end, and ownerOf's
+		// binary search over ends would skip [0,10) for a probe at 5.
+		{"empty and negative lengths dropped", []Range{{0, 10}, {50, -45}, {60, 10}, {30, 0}}, []Range{{5, 3}, {0, 5}, {60, 5}}, []Range{{30, 1}, {40, 10}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var o ownedRanges

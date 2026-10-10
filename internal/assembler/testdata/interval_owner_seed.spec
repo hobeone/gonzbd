@@ -22,3 +22,11 @@ file internal/assembler/ranges.go
 	if false {
 		return errSeedNotEmpty
 --- end
+
+[seed keeps empty and negative-length ranges]
+file internal/assembler/ranges.go
+--- anchor
+	sorted := slices.DeleteFunc(slices.Clone(rs), func(r Range) bool { return r.Len <= 0 })
+--- replace
+	sorted := slices.DeleteFunc(slices.Clone(rs), func(r Range) bool { return false })
+--- end

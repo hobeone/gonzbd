@@ -80,8 +80,10 @@ var seededOwner = articleID{artIdx: -1}
 var errSeedNotEmpty = errors.New("assembler: seed on a non-empty range set")
 
 // seed marks rs as owned by seededOwner. It runs once, at file open, before any
-// Accept: on a non-empty set it returns errSeedNotEmpty and changes nothing
-// (rs may be derived from disk, so a bad call must not panic).
+// Accept: on a non-empty set it returns errSeedNotEmpty and changes nothing.
+//
+// seed drops ranges with Len <= 0 and checks nothing else: a negative Off or an
+// Off+Len that overflows int64 must be rejected by the caller before seed.
 //
 // seededOwner stands for many independent verified articles, so seed does not
 // go through claim, whose same-article replace would drop earlier coverage.
