@@ -83,7 +83,7 @@ func TestInstallVerification_RestoresThePolicyOnlyWhenAsked(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
 
 	retry := lrBuiltJob(t, a, "retry", 1, 1)
-	if got := installVerification(retry, files, []durability.WrittenRow{row}, res, false, log); !slices.Equal(got, []int{0}) {
+	if got := installVerification(retry, files, []durability.WrittenRow{row}, res, false, log, nil); !slices.Equal(got, []int{0}) {
 		t.Errorf("finished = %v, want [0]: the verdict set file A complete", got)
 	}
 	if got := retry.FileFetchPolicy(1); got != job.FetchAlways {
@@ -94,7 +94,7 @@ func TestInstallVerification_RestoresThePolicyOnlyWhenAsked(t *testing.T) {
 	}
 
 	hydrated := lrBuiltJob(t, a, "hydrate", 1, 1)
-	installVerification(hydrated, files, []durability.WrittenRow{row}, res, true, log)
+	installVerification(hydrated, files, []durability.WrittenRow{row}, res, true, log, nil)
 	if got := hydrated.FileFetchPolicy(1); got != job.FetchNever {
 		t.Errorf("hydration left file B at %v, want the stored FetchNever", got)
 	}

@@ -17,10 +17,12 @@ type FileComplete struct {
 	FileIdx int
 	// Resumed marks a completion the verifier produced at hydration rather
 	// than one this process assembled. The hydration already settled the
-	// file's CRC and marked it complete, so its consumer skips both and needs
-	// no manifest. It is not fed to DirectUnpack: an unpacker starts only from
-	// volume 1 of a live download, and post-processing's normal unpack is the
-	// backstop.
+	// file's CRC, peeked its archive for unwanted names and marked it
+	// complete, so its consumer skips all three and needs no manifest. It is
+	// not fed to DirectUnpack: an unpacker starts only from volume 1 of a live
+	// download, and post-processing's normal unpack is the backstop. A file
+	// the retry's verification finished is not peeked: that job is not
+	// registered when installVerification runs.
 	Resumed bool
 }
 

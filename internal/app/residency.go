@@ -39,12 +39,14 @@ type appResidency struct {
 	// pathFor resolves a recorded filename of the named job to the path its
 	// writer used (pipeline.jobFilePath). commit applies verdicts through the
 	// recorder's synchronous path. finished receives each file the verifier
-	// finished by path, once the job is attached; parked receives the fault
-	// of a verification that could not complete. All four are set by New
-	// before anything can hydrate.
+	// finished by path, once the job is attached; peek is the archive peek
+	// run on each such file before it is marked complete (installVerification);
+	// parked receives the fault of a verification that could not complete. All
+	// five are set by New before anything can hydrate.
 	pathFor  func(jobName, filename string) string
 	commit   func(ctx context.Context, j *job.Job, v []durability.FileVerdict) error
 	finished func(jobID string, fileIdx int)
+	peek     func(j *job.Job, fileIdx int)
 	parked   func(jobID string, f *storagefault.Fault)
 
 	mu        sync.Mutex
@@ -155,7 +157,11 @@ func (r *appResidency) verifyAndAttach(ctx context.Context, j *job.Job, m *job.M
 	if err := j.AttachContent(m); err != nil {
 		return err
 	}
-	for _, fi := range installVerification(j, files, rows, res, true, r.log) {
+	var peek func(int)
+	if r.peek != nil {
+		peek = func(fi int) { r.peek(j, fi) }
+	}
+	for _, fi := range installVerification(j, files, rows, res, true, r.log, peek) {
 		r.finished(j.ID(), fi)
 	}
 	return nil
@@ -187,10 +193,17 @@ func (r *appResidency) fault(ctx context.Context, j *job.Job, f *storagefault.Fa
 
 // installVerification installs one verification's outcome on a job whose
 // content is attached and has no other record yet, and returns the files the
-// verifier finished by path. Each of those is settled (Job.SettleFileCRC) and
-// marked complete here, while the manifest is certainly attached; the
-// completion the caller then queues (FileComplete.Resumed) runs only the steps
-// that read progress, so it lands even if the job is evicted first.
+// verifier finished by path. Each of those is settled (Job.SettleFileCRC),
+// peeked and marked complete here, in that order, while the manifest is
+// certainly attached; the completion the caller then queues
+// (FileComplete.Resumed) runs only the steps that read progress, so it lands
+// even if the job is evicted first.
+//
+// peek, when non-nil, is the archive peek for a finished file. It runs before
+// the mark, because the mark is what lets the download-complete report take
+// the job to Assessing: a last file marked first could reach post-processing
+// unpeeked. A retry passes nil: its job is not registered yet, and the peek
+// reads the registered job's unwanted state.
 //
 // Each file gets its recorded filename, and its recorded fetch policy when
 // restorePolicy is set. A complete=1 file's
@@ -199,7 +212,7 @@ func (r *appResidency) fault(ctx context.Context, j *job.Job, f *storagefault.Fa
 // verified, and the articles an intersection failed. A row that cannot be
 // placed costs its own article (Standing Design Rule 3).
 func installVerification(j *job.Job, files []durability.FileRow, rows []durability.WrittenRow,
-	res verifyResult, restorePolicy bool, log *slog.Logger) (finished []int) {
+	res verifyResult, restorePolicy bool, log *slog.Logger, peek func(fileIdx int)) (finished []int) {
 	byFile := rowsByFile(rows)
 	setComplete := make(map[int]bool, len(res.Verdicts))
 	for _, v := range res.Verdicts {
@@ -238,6 +251,9 @@ func installVerification(j *job.Job, files []durability.FileRow, rows []durabili
 		if setComplete[fi] {
 			if _, _, err := j.SettleFileCRC(fi); err != nil {
 				log.Warn("residency: settle a finished file's CRC", "job", j.ID(), "fileidx", fi, "err", err)
+			}
+			if peek != nil {
+				peek(fi)
 			}
 			if err := j.MarkFileComplete(fi); err != nil {
 				log.Warn("residency: mark a finished file complete", "job", j.ID(), "fileidx", fi, "err", err)

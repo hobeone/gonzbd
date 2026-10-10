@@ -403,6 +403,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		return app.recorder.apply(ctx, j, v)
 	}
 	app.residency.finished = app.enqueueResumedCompletion
+	app.residency.peek = app.peekResumedFile
 	app.residency.parked = app.Stall
 	app.runner = newAppRunner(app)
 	app.dispatcher = dispatch.New(
@@ -1584,9 +1585,10 @@ func (app *Application) handleFileComplete(_ context.Context, fc FileComplete) {
 // mark it dirty for the recorder, and report the job's download complete when
 // this was its last file.
 //
-// A Resumed completion skips the CRC settle and the mark: installVerification
-// did both while the manifest was attached, so a job evicted since still takes
-// the rest, which reads only progress.
+// A Resumed completion skips the CRC settle, the peek and the mark:
+// installVerification did all three, in that order, while the manifest was
+// attached, so a job evicted since still takes the rest, which reads only
+// progress.
 //
 // It returns an error when the job could not take the completion: it left the
 // queue, or, for an assembler completion, MarkFileComplete found it evicted.
@@ -1610,9 +1612,15 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 		// The volume's headers are read before anything consumes it, so a
 		// flagged one is never fed to DirectUnpack below: the peek that blocks
 		// a job aborts its unpacker, and maybeStart refuses a Blocked job.
-		unwantedFail := app.peekArchiveForUnwanted(j, fc)
-		if app.peekedHook != nil {
-			app.peekedHook()
+		//
+		// A Resumed completion was peeked by installVerification, ahead of the
+		// mark that lets the job reach Assessing, so it is not peeked again.
+		unwantedFail := ""
+		if !fc.Resumed {
+			unwantedFail = app.peekArchiveForUnwanted(j, fc)
+			if app.peekedHook != nil {
+				app.peekedHook()
+			}
 		}
 		// DirectUnpack is fed the volume before the file is marked complete,
 		// and so before the download-finished report below. From that report
@@ -2836,7 +2844,7 @@ func (app *Application) verifyRetry(ctx context.Context, j *job.Job, m *job.Mani
 			return nil, fmt.Errorf("commit verdicts: %w", err)
 		}
 	}
-	return installVerification(j, files, rows, res, false, app.log), nil
+	return installVerification(j, files, rows, res, false, app.log, nil), nil
 }
 
 // rowsFitManifest reports whether every row names an article inside its

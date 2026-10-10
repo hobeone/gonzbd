@@ -67,13 +67,13 @@ file internal/app/archive_peek.go
 [the failed job is filed straight after the peek, before the file is marked complete]
 file internal/app/app.go
 --- anchor
-		unwantedFail := app.peekArchiveForUnwanted(j, fc)
+			unwantedFail = app.peekArchiveForUnwanted(j, fc)
 --- replace
-		unwantedFail := app.peekArchiveForUnwanted(j, fc)
-		if unwantedFail != "" {
-			app.finalizeRegistered(j, unwantedFail, true)
-			unwantedFail = ""
-		}
+			unwantedFail = app.peekArchiveForUnwanted(j, fc)
+			if unwantedFail != "" {
+				app.finalizeRegistered(j, unwantedFail, true)
+				unwantedFail = ""
+			}
 --- end
 
 [the failed job is never filed after the mark]

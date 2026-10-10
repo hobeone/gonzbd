@@ -86,8 +86,9 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 // It runs from completeFinalizedFile, ahead of the DirectUnpack feed and of
 // MarkFileComplete, so a flagged volume is never fed to an unpacker
 // (`git grep -n 'app\.completeFinalizedFile(' -- 'internal/app/*.go' ':!*_test.go'`
-// returns 1 line, in handleFileComplete, which also applies the verifier's
-// resumed completions).
+// returns 1 line, in handleFileComplete). A file the verifier finished at
+// hydration is peeked by installVerification instead, through
+// peekResumedFile, ahead of the same mark.
 //
 // It does nothing, and reports nothing to the job, when the job is not
 // resident or its file cannot be located, and also when:
@@ -160,6 +161,15 @@ func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) stri
 	}
 
 	return app.blockForUnwanted(j, fc.FileIdx, kind, rules.Action(), found)
+}
+
+// peekResumedFile is the peek for a file the verifier finished by path at
+// hydration, installed as residency.peek. The failure message is dropped: a
+// job it blocked under ActionFail is filed by the completion that follows
+// (fileOwedUnwantedFailure derives the filing from the job's state) with the
+// message's prefix alone.
+func (app *Application) peekResumedFile(j *job.Job, fileIdx int) {
+	_ = app.peekArchiveForUnwanted(j, FileComplete{JobID: j.ID(), FileIdx: fileIdx, Resumed: true})
 }
 
 // blockForUnwanted is the acting half of the peek: it asks the dispatcher to
