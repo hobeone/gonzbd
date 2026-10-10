@@ -199,7 +199,7 @@ func TestStillExpired_KeepsOnlyHeldEntriesUnchangedSinceTheScan(t *testing.T) {
 		if id == refiled {
 			completed = time.Now().Truncate(time.Second)
 		}
-		if err := repo.Add(t.Context(), history.Entry{NzoID: id, Name: id, Status: "Failed", Completed: completed}, nil); err != nil {
+		if err := repo.Add(t.Context(), history.Entry{NzoID: id, Name: id, Status: "Failed", Completed: completed}); err != nil {
 			t.Fatalf("repo.Add: %v", err)
 		}
 	}
@@ -253,7 +253,7 @@ func TestPruneHistory_SkipsAJobInTransition(t *testing.T) {
 	for _, id := range []string{held, free} {
 		if err := repo.Add(t.Context(), history.Entry{
 			NzoID: id, Name: id, Status: "Failed", Completed: time.Now().AddDate(0, 0, -90),
-		}, nil); err != nil {
+		}); err != nil {
 			t.Fatalf("repo.Add: %v", err)
 		}
 	}

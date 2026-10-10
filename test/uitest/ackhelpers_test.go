@@ -56,7 +56,7 @@ func ackDone(t *testing.T, d *dispatch.Dispatcher, jobID, msgID string) {
 		Offset:  off,
 		Length:  int64(m.ArticleBytes(target)),
 	}
-	if err := job.InstallVerified(fi, []durability.WrittenRow{row}); err != nil {
+	if _, err := job.InstallVerified(fi, []durability.WrittenRow{row}); err != nil {
 		t.Fatalf("ackDone: InstallVerified: %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,7 +15,6 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/crc32util"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -515,86 +515,6 @@ func TestFinishFileByPath_ReturnsASecondFsyncError(t *testing.T) {
 	}
 }
 
-// TestFileCRCFromRows pins the derivation's single-chain predicate: a CRC
-// only from a gapless chain of every article of the file, starting at 0, with
-// none failed.
-func TestFileCRCFromRows(t *testing.T) {
-	t.Parallel()
-	data := make([]byte, 4*verifyArt)
-	for i := range data {
-		data[i] = byte(i*13 + 5)
-	}
-	// File 1 of a job whose file 0 has 3 articles, so lo is not 0.
-	const lo, hi = 3, 7
-	chain := func() []durability.WrittenRow {
-		rows := make([]durability.WrittenRow, 0, 4)
-		for i := range 4 {
-			off := int64(i * verifyArt)
-			rows = append(rows, durability.WrittenRow{
-				FileIdx: 1, ArtIdx: int32(lo + i), Offset: off, Length: verifyArt, //nolint:gosec // G115: test index
-				CRC32: crc32.ChecksumIEEE(data[off : off+verifyArt]),
-			})
-		}
-		return rows
-	}
-
-	got, ok := fileCRCFromRows(chain(), false, lo, hi)
-	if !ok || got != crc32.ChecksumIEEE(data) {
-		t.Errorf("gapless chain = %08x, %v; want %08x, true", got, ok, crc32.ChecksumIEEE(data))
-	}
-	// The same chain as file 0 of a job, where the range starts at 0.
-	first := chain()
-	for i := range first {
-		first[i].FileIdx, first[i].ArtIdx = 0, int32(i) //nolint:gosec // G115: test index
-	}
-	if got, ok := fileCRCFromRows(first, false, 0, 4); !ok || got != crc32.ChecksumIEEE(data) {
-		t.Errorf("gapless chain at lo=0 = %08x, %v; want %08x, true", got, ok, crc32.ChecksumIEEE(data))
-	}
-
-	for name, mutate := range map[string]func([]durability.WrittenRow) []durability.WrittenRow{
-		"a gap": func(r []durability.WrittenRow) []durability.WrittenRow {
-			r[2].Offset++
-			r[3].Offset++
-			return r
-		},
-		"a straddle": func(r []durability.WrittenRow) []durability.WrittenRow {
-			r[1].Offset = verifyArt / 2
-			return r
-		},
-		"first row not at 0": func(r []durability.WrittenRow) []durability.WrittenRow {
-			for i := range r {
-				r[i].Offset += 10
-			}
-			return r
-		},
-		"a missing article": func(r []durability.WrittenRow) []durability.WrittenRow {
-			return r[:3]
-		},
-		"a duplicated article": func(r []durability.WrittenRow) []durability.WrittenRow {
-			r[1].ArtIdx = r[0].ArtIdx
-			return r
-		},
-		"an article outside the range": func(r []durability.WrittenRow) []durability.WrittenRow {
-			r[3].ArtIdx = hi
-			return r
-		},
-	} {
-		if _, ok := fileCRCFromRows(mutate(chain()), false, lo, hi); ok {
-			t.Errorf("%s: fileCRCFromRows returned a CRC, want NoCRC", name)
-		}
-	}
-	if _, ok := fileCRCFromRows(chain(), true, lo, hi); ok {
-		t.Error("failed=true: fileCRCFromRows returned a CRC, want NoCRC")
-	}
-	if _, ok := fileCRCFromRows(nil, false, lo, lo); ok {
-		t.Error("an empty range: fileCRCFromRows returned a CRC, want NoCRC")
-	}
-	// Combine is what the chain uses; pin the two agree on a two-row split.
-	if c := crc32util.Combine(crc32.ChecksumIEEE(data[:10]), crc32.ChecksumIEEE(data[10:20]), 10); c != crc32.ChecksumIEEE(data[:20]) {
-		t.Fatalf("fixture guard: Combine disagrees with ChecksumIEEE")
-	}
-}
-
 // TestFileFinishable pins each exclusion of the shared "needs finishing" rule
 // that strandedComplete and verifyJobFiles both call.
 func TestFileFinishable(t *testing.T) {
@@ -733,4 +653,34 @@ func TestErrVerifyFault(t *testing.T) {
 	if got, ok := errors.AsType[*errVerifyFault](wrapped); !ok || got != f {
 		t.Errorf("errors.AsType = %v, %v, want the original fault", got, ok)
 	}
+}
+
+// TestJobFilePath_ResolvesUnderTheJobDirectory pins that verification reads a
+// file where the assembler wrote it, and that a name recorded in the queue
+// cannot walk out of the job's own directory.
+func TestJobFilePath_ResolvesUnderTheJobDirectory(t *testing.T) {
+	t.Parallel()
+	application, _, _ := newLifecycleTestApp(t)
+	root := application.pipeline.downloadDir
+
+	if got, want := application.pipeline.jobFilePath("a job", "file.bin"),
+		filepath.Join(root, "a job", "file.bin"); got != want {
+		t.Errorf("jobFilePath = %q, want %q", got, want)
+	}
+
+	escape := application.pipeline.jobFilePath("a job", "../../etc/passwd")
+	jobDir := filepath.Join(root, "a job")
+	if !bytes.HasPrefix([]byte(escape), []byte(jobDir+string(os.PathSeparator))) {
+		t.Errorf("jobFilePath = %q, want it confined to %q", escape, jobDir)
+	}
+}
+
+// fileSize is path's size, failing the test if it cannot be read.
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return st.Size()
 }

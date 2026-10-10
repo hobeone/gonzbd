@@ -28,13 +28,12 @@ import (
 )
 
 // The fixture below is a three-article file, and EVERY test that uses it
-// leaves at least one of those articles durable and at least one not.
+// leaves at least one of those articles written and at least one not.
 //
 // That is a hard requirement, not a style. A fixture in which every article is
-// durable is satisfied by a "mark everything Done" mutation, and one in which
-// none are is satisfied by a "seed nothing" mutation — so a single-state
-// fixture cannot tell the seeding logic from its absence. Both mutations have
-// to go red, which takes both states present in one file.
+// written is satisfied by a "mark everything Done" mutation, and one in which
+// none are is satisfied by a "verify nothing" mutation — so a single-state
+// fixture cannot tell the verification from its absence.
 const (
 	resumePartLen  = 64
 	resumeArts     = 3
@@ -43,15 +42,12 @@ const (
 )
 
 // resumeFixture is a job that a previous run left half-downloaded: its target
-// file exists on disk, and durable_runs records which of its articles a
-// barrier actually fsynced.
+// file exists on disk, and written_articles records which of its articles
+// were written.
 //
-// The queue's own per-article state is DERIVED from those same runs now, so a
-// fixture cannot separate "what the sweep installed" from "what the store
-// restored" by leaving one of them empty — they are one record. What keeps the
-// assertions attributable is the stall below: the checkpoint bounds put the
-// barrier out of reach, so nothing in the process can add a Done bit the
-// startup state did not already imply.
+// What keeps the assertions attributable is the stall below: a stalled article
+// is never written, so nothing in the process can add a Done bit the startup
+// verification did not already establish.
 type resumeFixture struct {
 	t           *testing.T
 	adminDir    string
@@ -167,14 +163,14 @@ func (f *resumeFixture) writePartial(present ...int) {
 	}
 }
 
-// recordRuns writes the durable runs a barrier would have recorded for the
-// named articles. Written here rather than through a barrier because the point
-// of these tests is what a LATER process makes of a record an earlier one left.
-func (f *resumeFixture) recordRuns(durableArts ...int) {
+// recordWritten writes the written_articles rows an earlier run would have
+// recorded for the named articles. Written directly because the point of these
+// tests is what a LATER process makes of a record an earlier one left.
+func (f *resumeFixture) recordWritten(arts ...int) {
 	f.t.Helper()
-	arts := make([]durability.DurableArticle, 0, len(durableArts))
-	for _, i := range durableArts {
-		arts = append(arts, durability.DurableArticle{
+	rows := make([]durability.WrittenRow, 0, len(arts))
+	for _, i := range arts {
+		rows = append(rows, durability.WrittenRow{
 			FileIdx: 0,
 			ArtIdx:  int32(i), //nolint:gosec // G115: fixture article counts are tiny
 			Offset:  int64(i * resumePartLen),
@@ -182,16 +178,13 @@ func (f *resumeFixture) recordRuns(durableArts ...int) {
 			CRC32:   crc32.ChecksumIEEE(f.parts[i]),
 		})
 	}
-	app.CommitRuns(f.t, durability.NewStore(f.repo.DB(), "history.db"), f.jobID, arts)
+	app.SeedWritten(f.t, durability.NewStore(f.repo.DB(), "history.db"), f.jobID, rows)
 }
 
 // stall parks the named articles forever, holding their connections open.
 //
-// It is how these tests keep Done attributable. The checkpoint cadence is
-// pinned open below, so the only other thing that can ack an article is the
-// file-completion finalize — and a file with a permanently stalled part never
-// completes. With this in place, a Done bit can only have come from the
-// startup sweep.
+// It is how these tests keep Done attributable: a stalled article is never
+// written, so a Done bit can only have come from the startup verification.
 func (f *resumeFixture) stall(arts ...int) {
 	f.t.Helper()
 	for _, i := range arts {
@@ -199,8 +192,7 @@ func (f *resumeFixture) stall(arts ...int) {
 	}
 }
 
-// start brings the application up over the seeded state. Both checkpoint
-// bounds are pinned far out of reach so no barrier runs during the test.
+// start brings the application up over the seeded state.
 func (f *resumeFixture) start(conns int) *app.Application {
 	f.t.Helper()
 	return f.startWith(conns, []postproc.Stage{noOpStage{}}, nil)
@@ -215,8 +207,6 @@ func (f *resumeFixture) startWith(conns int, stages []postproc.Stage, beforeStar
 	a, err := app.New(testConfig(f.downloadDir, f.completeDir, f.adminDir, srvCfg),
 		f.repo,
 		app.WithPostProcStages(stages),
-		app.WithCheckpointInterval(time.Hour),
-		app.WithCheckpointBytes(1<<40),
 	)
 	if err != nil {
 		f.t.Fatalf("app.New: %v", err)
@@ -245,6 +235,13 @@ func (f *resumeFixture) assertDone(a *app.Application, want [resumeArts]bool) {
 	if !ok {
 		f.t.Fatal("job left the dispatcher before it could be inspected")
 	}
+	// The verification runs when a tick first makes the job resident.
+	if !waitUntil(10*time.Second, j.Resident) {
+		f.t.Fatal("the job never became resident, so it was never verified")
+	}
+	if err := a.AwaitHydration(f.t.Context(), f.jobID); err != nil {
+		f.t.Fatalf("AwaitHydration: %v", err)
+	}
 	p := j.Progress()
 	if p == nil {
 		f.t.Fatal("job has no progress")
@@ -258,57 +255,57 @@ func (f *resumeFixture) assertDone(a *app.Application, want [resumeArts]bool) {
 	}
 }
 
-// dumpRuns serialises every durable_runs row for the job, for a before/after
+// dumpRows serialises every written_articles row, for a before/after
 // comparison.
-func (f *resumeFixture) dumpRuns() string {
+func (f *resumeFixture) dumpRows() string {
 	f.t.Helper()
 	rows, err := f.repo.DB().QueryContext(f.t.Context(), `
-SELECT job_id, file_idx, first_art_idx, last_art_idx, offset, length, crc32
-FROM durable_runs ORDER BY job_id, file_idx, offset`)
+SELECT job_id, file_idx, art_idx, offset, length, crc32
+FROM written_articles ORDER BY job_id, file_idx, offset`)
 	if err != nil {
-		f.t.Fatalf("query durable_runs: %v", err)
+		f.t.Fatalf("query written_articles: %v", err)
 	}
 	defer func() { _ = rows.Close() }()
 	var out strings.Builder
 	for rows.Next() {
 		var jobID string
-		var fileIdx, first, last, offset, length, crc int64
-		if err := rows.Scan(&jobID, &fileIdx, &first, &last, &offset, &length, &crc); err != nil {
-			f.t.Fatalf("scan durable_runs: %v", err)
+		var fileIdx, art, offset, length, crc int64
+		if err := rows.Scan(&jobID, &fileIdx, &art, &offset, &length, &crc); err != nil {
+			f.t.Fatalf("scan written_articles: %v", err)
 		}
-		fmt.Fprintf(&out, "%s|%d|%d|%d|%d|%d|%d\n", jobID, fileIdx, first, last, offset, length, crc)
+		fmt.Fprintf(&out, "%s|%d|%d|%d|%d|%d\n", jobID, fileIdx, art, offset, length, crc)
 	}
 	if err := rows.Err(); err != nil {
-		f.t.Fatalf("iterate durable_runs: %v", err)
+		f.t.Fatalf("iterate written_articles: %v", err)
 	}
 	return out.String()
 }
 
-// TestResumeAtStartup_SeedsDurableArticles is the base claim: what a previous
-// run fsynced comes back Done, and what it did not comes back Outstanding.
-func TestResumeAtStartup_SeedsDurableArticles(t *testing.T) {
+// TestResumeAtStartup_RestoresVerifiedArticles is the base claim: what a
+// previous run wrote, and whose bytes still match, comes back Done, and what
+// it did not write comes back Outstanding.
+func TestResumeAtStartup_RestoresVerifiedArticles(t *testing.T) {
 	t.Parallel()
 	f := newResumeFixture(t)
 	f.writePartial(0, 2)
-	f.recordRuns(0, 2)
+	f.recordWritten(0, 2)
 	f.stall(1) // the one Outstanding article must not be able to become Done
 
 	a := f.start(2)
 	f.assertDone(a, [resumeArts]bool{true, false, true})
 }
 
-// TestResumeAtStartup_DurableArticlesAreNeverRefetched is the ordering pin,
-// and the one that actually states L3.
+// TestResumeAtStartup_VerifiedArticlesAreNeverRefetched is the ordering pin.
 //
 // Marking the right bits is not the property; not asking for the bytes is. A
-// sweep that runs after the downloader has started passes the test above and
-// fails this one, because the request for a durable article is already on the
-// wire by the time its bit is set.
-func TestResumeAtStartup_DurableArticlesAreNeverRefetched(t *testing.T) {
+// verification that runs after the job is dispatched passes the test above
+// and fails this one, because the request for a written article is already on
+// the wire by the time its bit is set.
+func TestResumeAtStartup_VerifiedArticlesAreNeverRefetched(t *testing.T) {
 	t.Parallel()
 	f := newResumeFixture(t)
 	f.writePartial(0, 2)
-	f.recordRuns(0, 2)
+	f.recordWritten(0, 2)
 	f.stall(1)
 
 	a := f.start(2)
@@ -321,53 +318,42 @@ func TestResumeAtStartup_DurableArticlesAreNeverRefetched(t *testing.T) {
 	}
 	for _, i := range []int{0, 2} {
 		if n := f.server.FetchCount(f.msgIDs[i]); n != 0 {
-			t.Errorf("article %d was fetched %d time(s); its bytes were already fsynced by an earlier run (L3)", i, n)
+			t.Errorf("article %d was fetched %d time(s); its bytes were already written and verified", i, n)
 		}
 	}
 	_ = a
 }
 
-// TestResumeAtStartup_ShortFileIsNotAdopted pins S7 as §3.4 narrowed it: the
-// record is authoritative, and the ONE thing that disproves it is a file
-// shorter than it claims.
-//
-// The record here says all three articles are durable, so it claims 192 bytes;
-// the file has been truncated to 128. That shortfall means bytes the record
-// claims are genuinely not there, so the file's runs are discarded and every
-// one of its articles goes back to Outstanding.
-//
-// The discard is WHOLE-FILE, and that is a deliberate coarsening rather than
-// an oversight. The old per-article recomputation could keep article 0, whose
-// bytes survived the truncation; the size gate cannot tell which articles the
-// missing bytes belonged to, and re-fetching one extra article is the cheap
-// direction. §3.4 prices it: the alternative is reading every partial file at
-// every startup.
-func TestResumeAtStartup_ShortFileIsNotAdopted(t *testing.T) {
+// TestResumeAtStartup_ShortFileKeepsOnlyTheArticlesItHolds: the record says
+// all three articles were written, but the file was truncated to two
+// articles' length and only article 0's bytes were ever there. Each row is
+// read back on its own, so article 0 is kept, article 1 (zeros) fails its CRC
+// and article 2 (past the end) is a short read.
+func TestResumeAtStartup_ShortFileKeepsOnlyTheArticlesItHolds(t *testing.T) {
 	t.Parallel()
 	f := newResumeFixture(t)
 	f.writePartial(0)
-	f.recordRuns(0, 1, 2)
+	f.recordWritten(0, 1, 2)
 	if err := os.Truncate(f.path, resumePartLen*2); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	f.stall(0, 1, 2)
 
 	a := f.start(1)
-	f.assertDone(a, [resumeArts]bool{false, false, false})
+	f.assertDone(a, [resumeArts]bool{true, false, false})
 }
 
-// TestResumeAtStartup_MissingFileLeavesEverythingOutstanding pins S3 for the
-// restart case: with no file to verify against, nothing can be proven, and
-// unproven means fetch it again.
+// TestResumeAtStartup_MissingFileLeavesEverythingOutstanding: with no file to
+// verify against, nothing can be proven, and unproven means fetch it again.
 //
 // The articles are all stalled, so nothing else in the process can set a Done
-// bit. If the missing file were ignored and the recorded runs adopted anyway,
+// bit. If the missing file were ignored and the recorded rows adopted anyway,
 // two of them would come back Done.
 func TestResumeAtStartup_MissingFileLeavesEverythingOutstanding(t *testing.T) {
 	t.Parallel()
 	f := newResumeFixture(t)
 	f.writePartial(0, 2)
-	f.recordRuns(0, 2)
+	f.recordWritten(0, 2)
 	if err := os.Remove(f.path); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
@@ -377,54 +363,30 @@ func TestResumeAtStartup_MissingFileLeavesEverythingOutstanding(t *testing.T) {
 	f.assertDone(a, [resumeArts]bool{false, false, false})
 }
 
-// TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles pins A1, and
-// the deliberate divergence from Barrier.routeFault that goes with it.
-//
-// A failure to READ the disk is a condition of the device and says nothing
-// about any article's availability. Attributing it to the articles would burn
-// their retry budget and make the job's reported health describe the disk
-// instead of the download.
-//
-// Both classifications are exercised, and the permanent one is the point. The
-// barrier routes a permanent fault to Fail; the startup sweep routes it to
-// Stall, because at startup nothing has been downloaded yet, so failing
-// protects no work while it does send the job to history and discard the
-// bytes an earlier run left on disk. That divergence is invisible in a
-// retryable-only fixture — restoring `if fault.Permanent { app.Fail(...) }`
-// leaves every other test in this package green — so a later "harmonise the
-// fault routing" change would silently start binning recoverable jobs on a
-// boot-order EROFS.
+// TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles: a failure to
+// READ the disk is a condition of the device and says nothing about any
+// article. It parks the job, fails no article, and leaves the record exactly
+// as it was. Both classifications are exercised, because a permanent errno is
+// the one a later "route permanent faults to Fail" change would break.
 func TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		// fault makes the target file's stat fail, and reports whether the
-		// resulting errno classifies permanent.
+		// fault makes opening the target file fail.
 		fault func(t *testing.T, f *resumeFixture)
-		// wantDone is the article state the job comes back with.
-		//
-		// It is NOT all-false in both arms, and the difference is the point.
-		// A stat failure says nothing about any article, so the durability
-		// record is left exactly as it was — neither adopted into a swept file
-		// nor discarded. The arm that recorded runs therefore still derives
-		// them on hydration; the arm that recorded none has none to derive.
-		// Asserting all-false everywhere would pin "a fault erases the record",
-		// which is the opposite of A1.
-		wantDone [resumeArts]bool
 	}{{
 		// ELOOP: not fs.ErrNotExist, so it cannot be confused with the
 		// missing-file case, and not a listed permanent errno.
 		name: "retryable ELOOP",
 		fault: func(t *testing.T, f *resumeFixture) {
 			t.Helper()
+			f.recordWritten(0, 2)
 			if err := os.Symlink(f.path, f.path); err != nil {
 				t.Fatalf("symlink loop: %v", err)
 			}
 		},
-		wantDone: [resumeArts]bool{false, false, false},
 	}, {
-		// EACCES, which storagefault classifies PERMANENT. The barrier would
-		// Fail on this; the sweep must not.
+		// EACCES, which storagefault classifies PERMANENT.
 		name: "permanent EACCES",
 		fault: func(t *testing.T, f *resumeFixture) {
 			t.Helper()
@@ -432,13 +394,12 @@ func TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles(t *testing.T) 
 				t.Skip("running as root: mode bits do not deny access, so no EACCES can be produced")
 			}
 			f.writePartial(0, 2)
-			f.recordRuns(0, 2)
+			f.recordWritten(0, 2)
 			if err := os.Chmod(f.dir, 0o000); err != nil {
 				t.Fatalf("chmod: %v", err)
 			}
 			t.Cleanup(func() { _ = os.Chmod(f.dir, 0o750) })
 		},
-		wantDone: [resumeArts]bool{true, false, true},
 	}}
 
 	for _, tt := range tests {
@@ -448,164 +409,61 @@ func TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles(t *testing.T) 
 				t.Fatalf("mkdir: %v", err)
 			}
 			tt.fault(t, f)
+			before := f.dumpRows()
+			if before == "" {
+				t.Fatal("no recorded row to compare against; the fixture proves nothing")
+			}
 
 			a := f.start(1)
 
-			row, ok := a.Dispatcher().Row(f.jobID)
-			if !ok {
-				t.Fatal("the job left the dispatcher on a storage fault; it must stall, not be " +
-					"failed into history — the bytes an earlier run left on disk go with it")
-			}
-			j, _ := a.Dispatcher().Job(f.jobID)
-			if row.Status() != constants.StatusPaused {
-				t.Errorf("status = %q, want %q — a storage fault must park the job rather than "+
-					"fail it or let it keep dispatching into a device that cannot be read",
-					row.Status(), constants.StatusPaused)
+			// The verification runs when the first tick hydrates the job.
+			if !waitUntil(10*time.Second, func() bool { return a.StallReason(f.jobID).Reason != "" }) {
+				t.Fatal("the read fault never parked the job")
 			}
 			if stallReason := a.StallReason(f.jobID).Reason; !strings.HasPrefix(stallReason, "Stalled: ") {
 				t.Errorf("stall reason = %q, want a surfaced stall reason beginning \"Stalled: \" (R27); "+
 					"a \"Failed: \" reason here means the fault was routed as terminal", stallReason)
 			}
-			for i := range resumeArts {
-				if j.Progress().ArticleFailed(i) {
-					t.Errorf("article %d was marked permanently failed by a DISK read failure (A1)", i)
-				}
+			row, ok := a.Dispatcher().Row(f.jobID)
+			if !ok {
+				t.Fatal("the job left the dispatcher on a storage fault; it must stall, not be " +
+					"failed into history — the bytes an earlier run left on disk go with it")
 			}
-			f.assertDone(a, tt.wantDone)
+			if row.Status() != constants.StatusPaused {
+				t.Errorf("status = %q, want %q — a storage fault must park the job rather than "+
+					"fail it or let it keep dispatching into a device that cannot be read",
+					row.Status(), constants.StatusPaused)
+			}
+			j, _ := a.Dispatcher().Job(f.jobID)
+			if o := j.State().Outcome; o != job.OutcomePending {
+				t.Errorf("outcome = %v, want none: a DISK read failure decided the job (A1)", o)
+			}
+			if after := f.dumpRows(); after != before {
+				t.Errorf("a read fault changed the record:\n before %q\n after  %q", before, after)
+			}
 		})
 	}
 }
 
-// TestResumeAtStartup_LeavesTheRecordAloneWhenItAdopts pins the asymmetry that
-// makes the record trustworthy at all: the barrier is its only WRITER, and the
-// resume's whole mutation budget is deleting a disproved file's runs.
-//
-// It matters more than tidiness. §3.4 trusts the record without reading a byte
-// of it back, and that is only defensible while nothing but a completed fsync
-// can put a claim INTO it. A resume that wrote — even its own answer, even
-// unchanged — would be a second writer, and the design had exactly that until
-// this change.
-//
-// The other half of the asymmetry, the discard, is pinned by
-// TestResumeAtStartup_ShortFileIsNotAdopted.
+// TestResumeAtStartup_LeavesTheRecordAloneWhenItAdopts: a verification whose
+// rows all read back deletes nothing and rewrites nothing.
 func TestResumeAtStartup_LeavesTheRecordAloneWhenItAdopts(t *testing.T) {
 	t.Parallel()
 	f := newResumeFixture(t)
 	f.writePartial(0, 2)
-	f.recordRuns(0, 2)
+	f.recordWritten(0, 2)
 	f.stall(1)
 
-	before := f.dumpRuns()
+	before := f.dumpRows()
 	if before == "" {
-		t.Fatal("no recorded run to compare against; the fixture proves nothing")
+		t.Fatal("no recorded row to compare against; the fixture proves nothing")
 	}
 
 	a := f.start(2)
-	// The sweep is synchronous in Start, and the checkpoint bounds above put
-	// the barrier out of reach, so anything that changed here was written by
-	// the resume.
 	f.assertDone(a, [resumeArts]bool{true, false, true})
 
-	if after := f.dumpRuns(); after != before {
-		t.Errorf("an ADOPTING resume rewrote the durability record:\n before %q\n after  %q",
+	if after := f.dumpRows(); after != before {
+		t.Errorf("an adopting verification rewrote the record:\n before %q\n after  %q",
 			before, after)
-	}
-}
-
-// recordComplete flags one of the job's files complete in job_files, which is
-// the queue-side state a PREVIOUS run would have left behind once its finalize
-// ran.
-//
-// It takes no article list. The per-article half of a previous run's state is
-// derived on hydration from the same durable_runs rows recordRuns writes, so
-// seeding it here would add nothing — and that is checked rather than assumed:
-// internal/app/testdata/resume_shortened_partial.spec mutates the sweep's
-// markNotDone call and the assertions go red on recordRuns alone.
-//
-// The Complete flag is what this exists for. It lives on job_files and nowhere
-// else, nothing re-derives it — see the "Why it is a pass here rather than a
-// derived flag" section on completeStrandedFiles for why deriving it would be
-// wrong — and a sweep that disproved the file must clear it or the job goes to
-// post-processing over a hole.
-//
-// This writes the row directly rather than driving the real write path, which
-// is a weaker fixture than the one that stood here before 18f7ed74 and is
-// worth stating. That path ends in durability.Store.SaveProgress, which writes
-// every column of a file's row, and this fixture must set one boolean and leave
-// the rest as the ingest seed wrote them. The column and value below are the
-// ones SaveProgress writes for it, so the gap is the statement rather than the
-// value.
-func (f *resumeFixture) recordComplete(fileIdx int) {
-	f.t.Helper()
-	res, err := f.repo.DB().ExecContext(f.t.Context(),
-		`UPDATE job_files SET complete = 1 WHERE job_id = ? AND file_index = ?`,
-		f.jobID, fileIdx,
-	)
-	if err != nil {
-		f.t.Fatalf("mark file %d complete: %v", fileIdx, err)
-	}
-	// A silent zero-row UPDATE is the failure this helper existed to prevent:
-	// it restores the empty-stub behaviour, and the assertion it feeds passes
-	// either way.
-	n, err := res.RowsAffected()
-	if err != nil {
-		f.t.Fatalf("rows affected marking file %d complete: %v", fileIdx, err)
-	}
-	if n != 1 {
-		f.t.Fatalf("marking file %d complete updated %d job_files rows, want 1", fileIdx, n)
-	}
-}
-
-// TestResumeAtStartup_ShortenedPartialIsRefetched is #362 end to end through
-// the sweep: a previous run recorded all three articles durable and the file
-// complete, then the file was shortened underneath the daemon.
-//
-// The gate finds the file shorter than its runs claim, discards them, and the
-// sweep installs the result — so every article goes back to Outstanding and the
-// file stops being Complete. Against the unfixed shape the Complete flag and
-// the Done bits survived and the job shipped a file with a zero-filled hole
-// and no warning.
-//
-// Two things make this more than a restatement of the unit gate. The Complete
-// flag is queue-side state that nothing re-derives, so only the sweep's
-// explicit clear-and-persist removes it. And the whole path runs inside Start
-// BEFORE dispatch, which is what stops the assembler re-creating and
-// pre-allocating the file underneath the gate — a file of zeros at full length
-// would pass the size comparison the truncated one fails.
-func TestResumeAtStartup_ShortenedPartialIsRefetched(t *testing.T) {
-	t.Parallel()
-	f := newResumeFixture(t)
-	f.writePartial(0, 1, 2)
-	f.recordRuns(0, 1, 2)
-	f.recordComplete(0)
-	// Shortened to article 0 alone, which is 128 bytes below what the runs
-	// claim, so the gate discards them.
-	if err := os.Truncate(f.path, resumePartLen); err != nil {
-		t.Fatalf("truncate: %v", err)
-	}
-	// Nothing else in the process may set a Done bit: the checkpoint bounds
-	// put the barrier out of reach and a stalled article never completes.
-	f.stall(0, 1, 2)
-
-	a := f.start(2)
-
-	j, ok := a.Dispatcher().Job(f.jobID)
-	if !ok {
-		t.Fatal("the job left the dispatcher during startup: every article came back Done and " +
-			"the file stayed Complete, so there was nothing left to fetch — the resume's " +
-			"disproof was discarded and the file ships with a hole (#362)")
-	}
-	p := j.Progress()
-	for i := range resumeArts {
-		if p.ArticleDone(i) {
-			t.Errorf("article %d is still Done after the truncation destroyed the bytes the "+
-				"record claimed — the record outlived the file that disproved it, so the "+
-				"file completes with a zero-filled hole (#362)", i)
-		}
-	}
-	if p.FileComplete(0) {
-		t.Error("the file is still marked Complete although the assembler has bytes left " +
-			"to write into it; the Complete flag lives on job_files and nothing else " +
-			"re-derives it, so only the sweep's own persist can clear it")
 	}
 }

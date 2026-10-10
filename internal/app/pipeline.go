@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
-	"github.com/hobeone/gonzbd/internal/checkpoint"
 	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
@@ -119,11 +119,9 @@ type pipeline struct {
 	// onHeartbeat is called when an article result is processed.
 	onHeartbeat func()
 
-	// onArticleWritten reports an article's decoded byte count to the
-	// checkpoint cadence, which uses it for B1's volume bound.
-	onArticleWritten func(jobID string, n int)
-
-	checkpointer *checkpoint.Checkpointer
+	// markDirty records one file's state for the recorder's next flush
+	// (Application.markFileDirty).
+	markDirty func(j *job.Job, fileIdx int)
 
 	// ctx is the context passed to run(); stored so setCompletions can
 	// avoid blocking forever if run() has already exited.
@@ -365,26 +363,20 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 				"job", res.JobID(), "fileidx", res.FileIdx, "err", err)
 		}
 
-		// Record the permanent failure directly. R10 puts this outside the
-		// barrier deliberately: a permanent failure asserts nothing about
-		// disk, so there is no fsync for it to be ordered after, and losing
-		// one in a crash costs a re-attempt that fails again. Only the
-		// success direction needs the barrier's proof.
+		// Record the permanent failure directly. R10 keeps this off the write
+		// path deliberately: a permanent failure asserts nothing about disk,
+		// so there is no write for it to be ordered after, and losing one in
+		// a crash costs a re-attempt that fails again. Only the success
+		// direction needs bytes behind it.
 		//
-		// The assembler used to do this, on the argument that failure and
-		// completion accounting should be ordered with file writes on its
-		// single worker goroutine. That argument died with the assembler's
-		// ack authority: a Done now comes only from the barrier, and
-		// markDone/markFailed are both first-writer-wins on the same bit, so
-		// there is no ordering left for the two to get wrong.
+		// markDone and markFailed are both first-writer-wins on the same bit,
+		// so this needs no ordering with the assembler's writes, which mark
+		// an article Done through the recorder (Job.MarkArticleWritten).
 		// Without this call nothing records the failure at all, and a job whose every
 		// article failed finishes as Completed with an empty fail message.
 		if err := res.Job.MarkArticleFailed(int(res.ArtIdx)); err != nil {
 			p.log.Warn("record permanent article failure",
 				"job", res.JobID(), "msgid", res.MessageID, "err", err)
-		}
-		if p.checkpointer != nil {
-			p.checkpointer.Mark(res.Job)
 		}
 
 		// The article still goes to the assembler, which counts it toward the
@@ -464,14 +456,9 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	// The offset, length and CRC are still discovered here and are still not
 	// knowable from the NZB — they come from the yEnc =ypart header inside
 	// the body, so the article-to-byte-range map is itself downloaded data.
-	// They now travel with the article through the assembler, which reports
-	// them back to the barrier in its drain, and the barrier records them
-	// only after the fsync that makes them true.
-	//
-	// nBytes is read before the write, because a successful WriteArticle
-	// hands res.Data to the assembler and the slice must not be touched
-	// afterwards.
-	nBytes := len(res.Data)
+	// They travel with the article through the assembler, which reports
+	// them through OnArticleWritten once the write returned nil, and the
+	// recorder records them.
 
 	writeErr := p.assembler.WriteArticle(ctx, refFor(res), assembler.WriteRequest{
 		Offset: res.Offset,
@@ -485,12 +472,6 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	} else if writeErr == nil {
 		bufferConsumed = true // assembler owns the buffer now
 		telemetry.ArticlesWritten.Add(1)
-		// B1's volume bound counts accepted bytes, not durable ones: it is
-		// measuring how much work is at risk between barriers, and an article
-		// the assembler took but has not fsynced is exactly that work.
-		if p.onArticleWritten != nil {
-			p.onArticleWritten(res.JobID(), nBytes)
-		}
 	}
 }
 
@@ -573,16 +554,14 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 		return fmt.Errorf("count unfinished articles: %w", err)
 	}
 
-	// The assembler is no longer told whether this file is resumed, nor
-	// seeded with an earlier run's write cursor or high-water mark. It has no
-	// use for any of them: it does not truncate, so it needs no bound of its
-	// own. The completion truncate now derives
-	// its bound from the durable runs, which describe the file rather than
-	// the session.
+	// Owned seeds the writer's ranges with the file's verified rows, so an
+	// arrival that intersects one is refused as it would be had this process
+	// written it, and the completion truncate bounds over them.
 	info := assembler.FileInfo{
 		Path:         path,
 		TotalParts:   totalParts,
 		ExpectedSize: m.FileBytes(fileIdx),
+		Owned:        ownedRanges(j.FileRows(fileIdx)),
 	}
 
 	p.mu.Lock()
@@ -606,8 +585,8 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 			p.mu.Unlock()
 			return fmt.Errorf("set file filename: %w", err)
 		}
-		if p.checkpointer != nil {
-			p.checkpointer.Mark(j)
+		if p.markDirty != nil {
+			p.markDirty(j, fileIdx)
 		}
 	}
 	p.fileInfo[key] = info
@@ -631,6 +610,27 @@ func (p *pipeline) resolveFileInfo(jobID string, fileIdx int) (assembler.FileInf
 		return assembler.FileInfo{}, fmt.Errorf("no file info for %s[%d]", jobID, fileIdx)
 	}
 	return info, nil
+}
+
+// ownedRanges is the byte ranges of rows, for FileInfo.Owned.
+func ownedRanges(rows []durability.WrittenRow) []assembler.Range {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]assembler.Range, len(rows))
+	for i, r := range rows {
+		out[i] = assembler.Range{Off: r.Offset, Len: r.Length}
+	}
+	return out
+}
+
+// forgetFile removes one file's cached fileInfo entry, so the next article for
+// it registers the file again: a fresh part count and owned set. Called when a
+// file is untrusted.
+func (p *pipeline) forgetFile(jobID string, fileIdx int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.fileInfo, fileKey{jobID: jobID, fileIdx: fileIdx})
 }
 
 // forgetJob removes all cached fileInfo entries for jobID. Called when

@@ -302,6 +302,12 @@ func (d *Dispatcher) reconcileResidency(ctx context.Context, j *job.Job) error {
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return fmt.Errorf("hydrate %s: %w", j.ID(), err)
 			}
+			// A residency fault is about the device, not the job: one
+			// unreadable sector must not settle the job Failed. Residency
+			// parks it, and a later hydration verifies it again.
+			if errors.Is(err, ErrResidencyFault) {
+				return fmt.Errorf("hydrate %s: %w", j.ID(), err)
+			}
 			// The job cannot run without its manifest, and it is holding
 			// resources it can never use. Settling returns both pools; leaving
 			// it would strand them, because no later tick reaches a different

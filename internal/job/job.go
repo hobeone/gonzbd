@@ -160,9 +160,7 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 // claim above is now enforced separately by
 // internal/sched.TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse.
 //
-// Job does no I/O. It exposes State() and the attempt accessors. The
-// checkpoint package (internal/checkpoint.Checkpointer) reads those and writes
-// the database.
+// Job does no I/O. It exposes State() and the attempt accessors.
 //
 // Lock Hierarchy:
 // - j.mu is the outer lock (guards lifecycle state, attempts, leases, metadata).

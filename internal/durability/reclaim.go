@@ -18,8 +18,10 @@ type perJobTable struct {
 	// while the job is a FAILED history entry: a retry reads a failed job's
 	// durable_runs to bound FinalizeFile's truncate to the whole partial file
 	// (#422). written_articles is kept so a retry can verify it against the
-	// partial file.
-	// job_files and failed_articles are not read by a retry.
+	// partial file, and job_files with it: a written row is useless to a
+	// retry without the filename that locates its bytes, and the retry's
+	// re-seed (Admit) inserts only rows that are missing.
+	// failed_articles is not read by a retry.
 	keptForFailedEntry bool
 }
 
@@ -27,14 +29,14 @@ type perJobTable struct {
 // TestPerJobTables_CoversEveryJobKeyedTable fails when the schema gains a
 // job_id table this list does not name.
 var perJobTables = []perJobTable{
-	{name: "job_files"},
 	{name: "failed_articles"},
+	{name: "job_files", keptForFailedEntry: true},
 	{name: "durable_runs", keptForFailedEntry: true},
 	{name: "written_articles", keptForFailedEntry: true},
 }
 
 // The reclaim rule, as SQL: a job's rows go when nothing reaches the job — no
-// queue row, and no FAILED history entry for the one table a failed entry
+// queue row, and no FAILED history entry for the tables a failed entry
 // keeps. ruleStatement is its only text. Reclaim and SweepOrphans differ only
 // in the id filter appended to it, so they cannot disagree about the rule.
 //

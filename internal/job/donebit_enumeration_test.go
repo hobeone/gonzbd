@@ -15,10 +15,11 @@ import (
 var doneMarkers = []string{
 	"AckDurable",
 	"ApplyResolution",
-	"InstallVerified",
 	"MarkArticleDone",
+	"MarkArticleWritten",
 	"ReplaceFromRuns",
 	"SeedFromRuns",
+	"installRows",
 }
 
 // doneBitSetters is every function that sets p.done WITHOUT going through

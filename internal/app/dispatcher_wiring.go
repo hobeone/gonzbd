@@ -6,7 +6,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/dispatch"
-	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -105,43 +104,3 @@ type nopDispatchStore struct{}
 func (nopDispatchStore) Load(context.Context) ([]dispatch.Persisted, error) { return nil, nil }
 func (nopDispatchStore) Save(context.Context, dispatch.Persisted) error     { return nil }
 func (nopDispatchStore) Delete(context.Context, string) error               { return nil }
-
-// appCheckpointStore is checkpoint.Store over durability.Store. It only
-// translates: durability cannot name job.Checkpoint (internal/job imports it),
-// so each checkpoint is mapped here to the store's plain types, and the store
-// does the writing. A nil store makes it a no-op, which is the no-history-
-// database mode.
-type appCheckpointStore struct {
-	store *durability.Store
-}
-
-func (s *appCheckpointStore) SaveBatch(ctx context.Context, cps []job.Checkpoint) error {
-	if s.store == nil || len(cps) == 0 {
-		return nil
-	}
-	batch := make([]durability.JobProgress, 0, len(cps))
-	for _, cp := range cps {
-		jp := durability.JobProgress{JobID: cp.ID}
-		if p := cp.Progress; p != nil {
-			jp.Files = make([]durability.FileRow, p.NumFiles())
-			for i := range jp.Files {
-				jp.Files[i] = durability.FileRow{
-					FileIndex:      i,
-					Complete:       p.FileComplete(i),
-					FetchPolicy:    uint8(p.FileFetchPolicy(i)),
-					Filename:       p.FileFilename(i),
-					AssembledCRC32: p.FileAssembledCRC32(i),
-				}
-			}
-			if p.AnyArticleFailed() {
-				for artIdx := range p.TotalArticles() {
-					if p.ArticleFailed(artIdx) {
-						jp.FailedArticles = append(jp.FailedArticles, artIdx)
-					}
-				}
-			}
-		}
-		batch = append(batch, jp)
-	}
-	return s.store.SaveProgress(ctx, batch)
-}

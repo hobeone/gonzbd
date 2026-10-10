@@ -49,14 +49,6 @@ file internal/app/app.go
 	}
 --- end
 
-[stopAndJoin skips pruning the checkpointer before context cancellation]
-file internal/app/export_test.go
---- anchor
-	if a.checkpointer != nil && a.dispatcher != nil {
---- replace
-	if false && a.checkpointer != nil && a.dispatcher != nil {
---- end
-
 [stopAndJoin swallows waitBounded errors instead of returning them]
 file internal/app/export_test.go
 --- anchor
@@ -65,4 +57,3 @@ file internal/app/export_test.go
 	_ = errors.Join(errs...)
 	return nil
 --- end
-

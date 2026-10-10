@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestAppRunner_EveryStateDischargesCompletionContract|TestApplication_Shutdown_WedgedComponent|TestBarrierRunsOnCleanShutdown
+run TestAppRunner_EveryStateDischargesCompletionContract|TestApplication_Shutdown_WedgedComponent
 
 [stopping does not yield immediately]
 file internal/app/runner.go

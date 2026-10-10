@@ -11,11 +11,12 @@
 //
 // DESTROYED FOR REAL: everything the process held in its own memory. That is
 // the decoded articles queued ahead of the assembler, the
-// downloader's in-flight buffers, and the queue's unsaved in-memory state. A
-// SIGKILL gives the process no chance to flush any of it, so an article that
-// was acked before its bytes left the process is an article whose bytes are
-// simply absent from the file afterwards. That is the S1/S2 over-claim these
-// tests catch, and they catch it with no simulation of any kind.
+// downloader's in-flight buffers, the recorder's unflushed rows, and the
+// queue's unsaved in-memory state. A SIGKILL gives the process no chance to
+// flush any of it, so an article recorded written before its bytes left the
+// process is an article whose bytes are simply absent from the file
+// afterwards. That is the over-claim these tests catch, and they catch it with
+// no simulation of any kind.
 //
 // NOT DESTROYED: the kernel page cache. A write(2) that returned before the
 // kill is visible to every later reader whether or not it was ever fsynced,
@@ -84,7 +85,7 @@ type harnessOpts struct {
 	Connections int
 	// BodyDelay throttles the mock server so a job takes long enough to be
 	// killed part-way through. Without it a loopback download of any size
-	// this suite can afford finishes before the first barrier.
+	// this suite can afford finishes before the first record flush.
 	BodyDelay time.Duration
 	// Files defaults to a single multi-part file.
 	Files []fileSpec
@@ -312,9 +313,9 @@ func (h *harness) running() bool {
 
 // Kill SIGKILLs the daemon and waits for it to be reaped.
 //
-// SIGKILL, not SIGTERM: a graceful stop runs shutdownCheckpoint, which acks
-// everything outstanding and would make every test here measure a clean
-// restart instead of a crash.
+// SIGKILL, not SIGTERM: a graceful stop flushes the recorder, which records
+// everything written and would make every test here measure a clean restart
+// instead of a crash.
 func (h *harness) Kill() {
 	h.t.Helper()
 	h.mu.Lock()
@@ -363,9 +364,9 @@ func (h *harness) Stop() {
 // failure mode this comment exists to prevent:
 //
 //   - The kill is the real one. Everything the daemon held in user space —
-//     above all the decoded articles queued ahead of the assembler — is gone, with no flush. An
-//     article acked before its bytes left the process has no bytes on disk
-//     afterwards, and the CRC read-back sees exactly that.
+//     above all the decoded articles queued ahead of the assembler — is gone,
+//     with no flush. An article recorded before its bytes left the process has
+//     no bytes on disk afterwards, and the CRC read-back sees exactly that.
 //
 //   - The eviction is best-effort and partial BY CONSTRUCTION.
 //     POSIX_FADV_DONTNEED invalidates clean pages and skips dirty ones, so it
@@ -533,14 +534,9 @@ func (h *harness) Slot(jobID string) (slot, bool) {
 	return slot{}, false
 }
 
-// WaitForDurableBytes blocks until the job reports at least want bytes
-// covered by a completed fsync, and returns the slot it saw.
-//
-// This is the grounding the crash tests need: it is what makes "the process
-// was killed part-way through a checkpoint window" a fact the test
-// established rather than a hope. Waiting on a barrier COUNT would not do it —
-// a barrier that acked nothing still counts.
-func (h *harness) WaitForDurableBytes(jobID string, want int64) slot {
+// WaitForWrittenBytes blocks until the job reports at least want bytes of
+// articles written, and returns the slot it saw.
+func (h *harness) WaitForWrittenBytes(jobID string, want int64) slot {
 	h.t.Helper()
 	var last slot
 	deadline := time.Now().Add(90 * time.Second)
@@ -553,50 +549,48 @@ func (h *harness) WaitForDurableBytes(jobID string, want int64) slot {
 			}
 		}
 		if !h.running() {
-			h.t.Fatalf("daemon exited while waiting for %d durable bytes\n%s", want, h.tailLog())
+			h.t.Fatalf("daemon exited while waiting for %d written bytes\n%s", want, h.tailLog())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	h.t.Fatalf("job %s reached only %d durable bytes in 90s, want %d (last slot %+v)\n%s",
+	h.t.Fatalf("job %s reached only %d written bytes in 90s, want %d (last slot %+v)\n%s",
 		jobID, last.BytesDurable, want, last, h.tailLog())
 	return slot{}
 }
 
-// WaitForUnackedBacklog blocks until the daemon has taken delivery of at
-// least minUnacked more articles than it has acked, so that a kill issued
-// straight afterwards lands INSIDE a checkpoint window with real work in
-// memory.
+// WaitForRecordedBacklog blocks until written_articles holds at least minRows
+// rows for the job AND the mock server has served at least minUnrecorded more
+// articles than that, so that a kill issued straight afterwards lands with
+// recorded work to keep and unrecorded work at risk.
 //
-// It exists because the obvious fixture does not reach that state. Waiting
-// only for a durable-byte threshold returns the instant a barrier completes,
-// which is the one moment in the cycle when nothing is at risk — a crash
-// there costs nothing and every S1/S2 assertion holds vacuously. The suite
-// found this the first time it ran, via the grounding assertion in
-// TestSIGKILL_NoArticleIsResolvedWithoutItsBytes.
-//
-// Fatal on timeout rather than returning an error: a crash test that silently
-// proceeded from the wrong state would certify a property it never reached.
-func (h *harness) WaitForUnackedBacklog(jobID string, minUnacked int) {
+// It reads the database while the daemon runs, which openDB refuses. That is
+// sound for a wait: SQLite serves a reader a consistent snapshot, and nothing
+// asserted later depends on what this read saw.
+func (h *harness) WaitForRecordedBacklog(jobID string, minRows, minUnrecorded int) {
 	h.t.Helper()
+	db, err := sql.Open("sqlite", "file:"+h.DBPath+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		h.t.Fatalf("open %s read-only: %v", h.DBPath, err)
+	}
+	defer func() { _ = db.Close() }()
 	deadline := time.Now().Add(90 * time.Second)
-	var served, durableArts int
+	var served, rows int
 	for time.Now().Before(deadline) {
-		s, ok := h.Slot(jobID)
-		if ok {
-			served = len(h.Server.ArticlesServed())
-			durableArts = int(s.BytesDurable) / h.ArticleSize
-			if served-durableArts >= minUnacked {
-				return
-			}
+		if err := db.QueryRow(`SELECT COUNT(*) FROM written_articles WHERE job_id = ?`, jobID).Scan(&rows); err != nil {
+			rows = 0
+		}
+		served = len(h.Server.ArticlesServed())
+		if rows >= minRows && served-rows >= minUnrecorded {
+			return
 		}
 		if !h.running() {
-			h.t.Fatalf("daemon exited while waiting for an unacked backlog\n%s", h.tailLog())
+			h.t.Fatalf("daemon exited while waiting for a recorded backlog\n%s", h.tailLog())
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	h.t.Fatalf("job %s never had %d articles outstanding at once (last: %d served, %d acked); "+
-		"a kill now would land between checkpoint windows and risk nothing\n%s",
-		jobID, minUnacked, served, durableArts, h.tailLog())
+	h.t.Fatalf("job %s never had %d rows recorded with %d articles unrecorded (last: %d "+
+		"served, %d recorded); a kill now would risk nothing or keep nothing\n%s",
+		jobID, minRows, minUnrecorded, served, rows, h.tailLog())
 }
 
 // WaitForJobFinished blocks until the daemon says the job is done: it has
@@ -777,69 +771,37 @@ func (h *harness) openDB() *sql.DB {
 	return db
 }
 
-// durableRun mirrors one durable_runs row: a maximal span of articles that
-// abut in both byte offset and article index and were made durable together.
-//
-// It replaced a pair of rows — a per-article Class A fact and a per-file Class
-// B durable bitmap — with one record written only after the fsync that makes
-// it true. The consequence for this harness is that the unit of assertion is
-// now a RUN rather than an article: a run's CRC32 is combined over the
-// articles it covers, so its bytes are checked in one read instead of one per
-// article. Which ARTICLES are durable is still recoverable, from
-// [FirstArtIdx, LastArtIdx].
-type durableRun struct {
-	FileIdx     int32
-	FirstArtIdx int32
-	LastArtIdx  int32
-	Offset      int64
-	Length      int64
-	CRC32       uint32
+// writtenRow mirrors one written_articles row: an article whose decoded bytes
+// were written at [Offset, Offset+Length), with their CRC32.
+type writtenRow struct {
+	FileIdx int32
+	ArtIdx  int32
+	Offset  int64
+	Length  int64
+	CRC32   uint32
 }
 
-// Runs reads every durable run for a job from stable storage, keyed by file
-// index and ordered by offset within each file.
-func (h *harness) Runs(db *sql.DB, jobID string) map[int32][]durableRun {
+// Rows reads every written_articles row for a job from stable storage, keyed
+// by file index and ordered by offset within each file.
+func (h *harness) Rows(db *sql.DB, jobID string) map[int32][]writtenRow {
 	h.t.Helper()
 	rows, err := db.Query(
-		`SELECT file_idx, first_art_idx, last_art_idx, offset, length, crc32
-		   FROM durable_runs WHERE job_id = ? ORDER BY file_idx, offset`, jobID)
+		`SELECT file_idx, art_idx, offset, length, crc32
+		   FROM written_articles WHERE job_id = ? ORDER BY file_idx, offset`, jobID)
 	if err != nil {
-		h.t.Fatalf("query durable_runs: %v", err)
+		h.t.Fatalf("query written_articles: %v", err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := map[int32][]durableRun{}
+	out := map[int32][]writtenRow{}
 	for rows.Next() {
-		var r durableRun
-		if err := rows.Scan(&r.FileIdx, &r.FirstArtIdx, &r.LastArtIdx,
-			&r.Offset, &r.Length, &r.CRC32); err != nil {
-			h.t.Fatalf("scan durable_runs: %v", err)
+		var r writtenRow
+		if err := rows.Scan(&r.FileIdx, &r.ArtIdx, &r.Offset, &r.Length, &r.CRC32); err != nil {
+			h.t.Fatalf("scan written_articles: %v", err)
 		}
 		out[r.FileIdx] = append(out[r.FileIdx], r)
 	}
 	if err := rows.Err(); err != nil {
-		h.t.Fatalf("durable_runs rows: %v", err)
-	}
-	return out
-}
-
-// FailedArticles reads a job's permanently failed article indices.
-func (h *harness) FailedArticles(db *sql.DB, jobID string) map[int32]bool {
-	h.t.Helper()
-	rows, err := db.Query(`SELECT art_idx FROM failed_articles WHERE job_id = ?`, jobID)
-	if err != nil {
-		h.t.Fatalf("query failed_articles: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := map[int32]bool{}
-	for rows.Next() {
-		var idx int32
-		if err := rows.Scan(&idx); err != nil {
-			h.t.Fatalf("scan failed_articles: %v", err)
-		}
-		out[idx] = true
-	}
-	if err := rows.Err(); err != nil {
-		h.t.Fatalf("failed_articles rows: %v", err)
+		h.t.Fatalf("written_articles rows: %v", err)
 	}
 	return out
 }
@@ -848,33 +810,17 @@ func (h *harness) FailedArticles(db *sql.DB, jobID string) map[int32]bool {
 // count.
 //
 // ArticleCount does NOT come from the database. It is len(h.MsgIDs[fileIdx]),
-// taken from the fixture this harness built and served, and that is a
-// deliberate strengthening rather than a convenience.
-//
-// The count is needed to turn the global article indices in durable_runs and
-// failed_articles into file-local ordinals. Reading it back from the daemon
-// would mean deriving those boundaries from the daemon's own copy of the
-// structure the test already knows — so a daemon that recorded the wrong
-// article count would be checked against its own mistake, and every
-// per-ordinal assertion below would silently line up. Taking it from the
-// fixture makes the comparison what a black-box test's comparison should be:
-// against what was submitted, not against what was stored.
+// taken from the fixture this harness built and served, so the global article
+// indices in written_articles are turned into file-local ordinals against
+// what was submitted rather than against what the daemon stored.
 type jobFile struct {
 	FileIdx      int32
 	Filename     string
 	ArticleCount int
 	Complete     bool
-	// Done and Failed are the per-article resolution the daemon derives, in
-	// FILE-LOCAL ordinal order: done means covered by a durable run, failed
-	// means a failed_articles row. They used to be decoded from a
-	// job_files.articles_done blob, which was a third copy of the same state
-	// and is gone.
-	Done   []bool
-	Failed []bool
 }
 
-// JobFiles reads the queue's own per-file state from stable storage, with each
-// file's article resolution derived the same way the daemon derives it.
+// JobFiles reads the queue's own per-file state from stable storage.
 func (h *harness) JobFiles(db *sql.DB, jobID string) []jobFile {
 	h.t.Helper()
 	rows, err := db.Query(
@@ -892,9 +838,6 @@ func (h *harness) JobFiles(db *sql.DB, jobID string) []jobFile {
 			h.t.Fatalf("scan job_files: %v", err)
 		}
 		jf.Complete = complete != 0
-		// From the fixture, not the row — see the type's doc comment.
-		// Indexed by file position, the same correspondence articleIDSet
-		// already relies on.
 		idx := int(jf.FileIdx)
 		if idx < 0 || idx >= len(h.MsgIDs) {
 			h.t.Fatalf("job_files row names file_index %d, but the fixture built %d "+
@@ -907,23 +850,8 @@ func (h *harness) JobFiles(db *sql.DB, jobID string) []jobFile {
 	if err := rows.Err(); err != nil {
 		h.t.Fatalf("job_files rows: %v", err)
 	}
-
-	// The row set must be exactly one row per submitted file, at that file's
-	// own index. The per-row bounds check above is not enough: FileRanges sums
-	// ArticleCount in row order to get each file's base, so a set missing file
-	// 1 gives file 2 a base short by file 1's articles, and every done/failed
-	// ordinal below that base lands on the wrong file — silently, with the
-	// assertions still passing against the wrong rows. Since the seed writes
-	// every index in one transaction, a gap here is a daemon defect and this
-	// harness should report it rather than compute around it.
-	//
-	// The ordering clause is NOT exercised today, and is here as a precondition
-	// rather than a fix: every crash fixture submits a single file
-	// (`git grep -nE '\[\]fileSpec\{' -- test/crash` returns 3 lines, the two
-	// per-suite options and the default in newHarness, each a one-element
-	// literal), so no gap is constructible and FileRanges' base is always 0. It
-	// earns its place the day a multi-file fixture appears, which is the same
-	// day the misattribution would start happening silently.
+	// One row per submitted file, at that file's own index: FileRanges sums
+	// ArticleCount in row order, so a gap would shift every later file's base.
 	if len(out) != len(h.MsgIDs) {
 		h.t.Fatalf("job_files has %d rows, but the fixture submitted %d files",
 			len(out), len(h.MsgIDs))
@@ -931,61 +859,29 @@ func (h *harness) JobFiles(db *sql.DB, jobID string) []jobFile {
 	for i, jf := range out {
 		if int(jf.FileIdx) != i {
 			h.t.Fatalf("job_files row %d names file_index %d; the rows are ordered by "+
-				"file_index, so this is a gap or a duplicate and the article-index "+
-				"bases derived from them would be wrong", i, jf.FileIdx)
-		}
-	}
-
-	// Derived here rather than read, because that is what the daemon does now.
-	// Deliberately re-implemented against the raw rows instead of calling into
-	// internal/queue: this harness reads stable storage with the daemon dead,
-	// and borrowing the daemon's own decoder would let one bug hide itself in
-	// both places.
-	runs := h.Runs(db, jobID)
-	failed := h.FailedArticles(db, jobID)
-	bases := FileRanges(out)
-	for i := range out {
-		f := &out[i]
-		f.Done = make([]bool, f.ArticleCount)
-		f.Failed = make([]bool, f.ArticleCount)
-		base := bases[f.FileIdx]
-		for _, r := range runs[f.FileIdx] {
-			for a := r.FirstArtIdx; a <= r.LastArtIdx; a++ {
-				if ord := int(a - base); ord >= 0 && ord < f.ArticleCount {
-					f.Done[ord] = true
-				}
-			}
-		}
-		for ord := range f.ArticleCount {
-			if failed[base+int32(ord)] { //nolint:gosec // fixture article counts are tiny
-				// failed implies done, matching the daemon's own derivation:
-				// both its consumers read Failed only inside the Done branch.
-				f.Done[ord], f.Failed[ord] = true, true
-			}
+				"file_index, so this is a gap or a duplicate", i, jf.FileIdx)
 		}
 	}
 	return out
 }
 
-// DurableOrdinals returns, per file index, one bool per FILE-LOCAL article
-// ordinal: true where a completed fsync covered that article's bytes.
+// RecordedOrdinals returns, per file index, one bool per FILE-LOCAL article
+// ordinal: true where written_articles holds a row for that article.
 //
 // The daemon must already be stopped; see openDB.
-func (h *harness) DurableOrdinals(jobID string) map[int32][]bool {
+func (h *harness) RecordedOrdinals(jobID string) map[int32][]bool {
 	h.t.Helper()
 	db := h.openDB()
 	files := h.JobFiles(db, jobID)
-	runs := h.Runs(db, jobID)
+	rows := h.Rows(db, jobID)
 	bases := FileRanges(files)
 	out := map[int32][]bool{}
 	for _, f := range files {
 		bits := make([]bool, f.ArticleCount)
 		base := bases[f.FileIdx]
-		for _, r := range runs[f.FileIdx] {
-			for a := r.FirstArtIdx; a <= r.LastArtIdx; a++ {
-				if ord := int(a - base); ord >= 0 && ord < f.ArticleCount {
-					bits[ord] = true
-				}
+		for _, r := range rows[f.FileIdx] {
+			if ord := int(r.ArtIdx - base); ord >= 0 && ord < f.ArticleCount {
+				bits[ord] = true
 			}
 		}
 		out[f.FileIdx] = bits
@@ -993,25 +889,21 @@ func (h *harness) DurableOrdinals(jobID string) map[int32][]bool {
 	return out
 }
 
-// DurableMessageIDs returns the Message-ID of every article a completed fsync
-// covered, per the recorded runs.
+// RecordedMessageIDs returns the Message-ID of every article written_articles
+// holds a row for.
 //
 // This — not the set of articles the mock server delivered — is what "must not
 // be fetched again" is a claim about. An article can be served and never
 // written: the download stops, the article is discarded in flight, and the
-// design's answer for it is a re-fetch. Asserting over the served set instead
-// makes the test fail on that legitimate case, which is what the first draft of
-// the append test did.
+// design's answer for it is a re-fetch.
 //
 // The daemon must already be stopped; see openDB.
-func (h *harness) DurableMessageIDs(jobID string) map[string]bool {
+func (h *harness) RecordedMessageIDs(jobID string) map[string]bool {
 	h.t.Helper()
 	out := map[string]bool{}
-	for fileIdx, bits := range h.DurableOrdinals(jobID) {
-		for i, durable := range bits {
-			if durable {
-				// MsgIDs is indexed by (file, file-local part), which is
-				// exactly the ordinal a durable bit is placed at.
+	for fileIdx, bits := range h.RecordedOrdinals(jobID) {
+		for i, recorded := range bits {
+			if recorded {
 				out[h.MsgIDs[fileIdx][i]] = true
 			}
 		}

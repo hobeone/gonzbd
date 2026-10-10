@@ -15,39 +15,28 @@ import (
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
-// TestReload_DoesNotReFetchAWrittenButUnackedArticle pins the window #390 is
-// about: an article the assembler has WRITTEN but that no barrier has ACKED
-// yet.
+// TestReload_DoesNotReFetchAWrittenArticle pins #390's window: an article the
+// assembler has written in a file that has not completed.
 //
-// That window is real and ordinary. An article becomes Emitted when it is
-// dispatched and only becomes Done when a barrier acks it durable, so
-// everything written since the last checkpoint sits in between. A file's own
-// completion acks it — so to hold an article in the window, the file must not
-// complete while the test is looking: article 0 downloads and is written while
-// article 1 is stalled and has not arrived.
-//
-// ReloadDownloader then clears every Emitted bit. Without a checkpoint first,
-// article 0 is offered again, and the ONLY reason it is not lost is that the
-// assembler discards the redelivery. What is lost is the bandwidth, and — per
-// #390 — if the re-fetch fails terminally against the new server set, the
-// article is acked permanently failed while its bytes are already on disk,
-// inflating failedBytes for a file that is not damaged.
+// ReloadDownloader clears every Emitted bit. An article whose write had not
+// yet been reported would be offered again, and if the re-fetch failed
+// terminally against the new server set it would be failed while its bytes
+// are on disk. The reload quiesces the assembler first, so every write it
+// accepted is reported Done before the bits are cleared. To hold an article in
+// that window the file must not complete: article 0 downloads and is written
+// while article 1 is stalled.
 //
 // The assertion is the server's own fetch count, not queue state, because it
 // is the one observation that cannot be satisfied by an internal bookkeeping
 // change: either the article went back on the wire or it did not.
-func TestReload_DoesNotReFetchAWrittenButUnackedArticle(t *testing.T) {
+func TestReload_DoesNotReFetchAWrittenArticle(t *testing.T) {
 	// "Written" means the bytes are on disk: #390's damage is precisely that
-	// the bytes ARE already on disk when the article is acked permanently
-	// failed. It is also the only form of "written" a test can observe
-	// without a barrier — and a barrier is the thing this test must prove has
-	// not run.
+	// the bytes ARE already on disk when the article is failed.
 	h := newScenarioHarnessWithConns(t, 2)
 	h.Start()
 
 	// One file, two articles. Article 1 is stalled, so the file cannot
-	// complete while the test sets up, and article 0 is never acked by a file
-	// finalize. nntptest stalls are ONE-SHOT (Scripted.handleBody deletes the
+	// complete while the test sets up. nntptest stalls are ONE-SHOT (Scripted.handleBody deletes the
 	// injected failure on use), so after the reload article 1 is served
 	// normally — which is what lets the job finish rather than wedge the
 	// harness on cleanup.
@@ -114,22 +103,11 @@ func TestReload_DoesNotReFetchAWrittenButUnackedArticle(t *testing.T) {
 			}
 		}
 		t.Fatalf("article 0 never reached disk (last path %q); nothing is in the "+
-			"written-but-unacked window and the test would assert nothing.\n"+
+			"written window and the test would assert nothing.\n"+
 			"job dir %q contains %v (readdir err: %v)", diskPath(), jobDir, names, rerr)
 	}
 	if got := h.server.FetchCount(writtenID); got != 1 {
 		t.Fatalf("setup: fetch count = %d, want exactly 1 before the reload", got)
-	}
-
-	// The article must still be UNACKED, or the window under test does not
-	// exist and a passing assertion below would mean nothing. A periodic
-	// barrier would ack it; at the default 30s cadence none should have run
-	// in the few ms this takes, but "should" is what silent vacuous passes
-	// are made of, so it is checked rather than assumed.
-	if runs := h.app.BarrierRuns(); runs != 0 {
-		t.Fatalf("a barrier ran (%d) before the reload, so article 0 is already "+
-			"acked durable and is no longer in the written-but-unacked window "+
-			"this test exists to cover", runs)
 	}
 
 	// Reload onto the same server set. The server identity is irrelevant —
@@ -159,9 +137,9 @@ func TestReload_DoesNotReFetchAWrittenButUnackedArticle(t *testing.T) {
 
 	if got := h.server.FetchCount(writtenID); got != 1 {
 		t.Errorf("article was fetched %d times, want 1 — ReloadDownloader cleared its "+
-			"Emitted bit while the assembler still held it written-but-unacked, so it "+
-			"went back on the wire. Its bytes were already on disk; had this re-fetch "+
-			"failed terminally it would have been acked permanently failed and charged "+
-			"to failedBytes for a file that is not damaged (#390)", got)
+			"Emitted bit before its write was reported, so it went back on the wire. "+
+			"Its bytes were already on disk; had this re-fetch failed terminally it "+
+			"would have been failed and charged to failedBytes for a file that is "+
+			"not damaged (#390)", got)
 	}
 }

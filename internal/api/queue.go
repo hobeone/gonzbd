@@ -175,10 +175,9 @@ type queueSlot struct {
 	// Reflects job.PendingArticles, which is updated on every state
 	// mutation (downloaded, failed, retried).
 	//
-	// This is also R26's "articles outstanding": an article is resolved only
-	// by a barrier's ack or a permanent failure, so what is left here is
-	// exactly what a crash would re-fetch, alongside the two byte figures
-	// below.
+	// This is also R26's "articles outstanding": an article is resolved by
+	// being written (Done) or by a permanent failure, and a crash re-fetches
+	// what is left here plus any Done article whose row had not been flushed.
 	ArticlesRemaining int `json:"articles_remaining"`
 
 	// ETASeconds is RemainingBytes divided by current aggregate speed.

@@ -39,7 +39,7 @@ func TestRetryHistoryJob_AbortsWhenTheAssemblerCannotForgetTheJob(t *testing.T) 
 		NzbName:   "forgetfails.nzb",
 		NZBBackup: "forgetfails.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 

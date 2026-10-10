@@ -1,20 +1,12 @@
 pkg ./internal/job/
 run TestFileRows_ReturnsACopy|TestInstallVerified_NeitherKeepsNorReordersTheCallersSlice
 
-[a Progress() clone shares each file's row slice]
+[a Progress() clone shares the live row map]
 file internal/job/progress.go
 --- anchor
-			cp.written[fi] = slices.Clone(rows)
+	cp.written = maps.Clone(p.written)
 --- replace
-			cp.written[fi] = rows
---- end
-
-[the first install keeps the caller's slice]
-file internal/job/verified.go
---- anchor
-		p.written[fileIdx] = sortedClone(rows)
---- replace
-		p.written[fileIdx] = rows
+	cp.written = p.written
 --- end
 
 [the sorted copy is sorted in place]

@@ -10,21 +10,10 @@ import (
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
-// TestOpenJobIDs_IsBoundedWhileTheWorkerIsBlocked pins the bound that keeps one
-// wedged mount from freezing the whole process.
-//
-// OpenJobIDs was the only barrier control-message helper with no
-// barrierOpTimeout; OpenFiles, Stat and CloseFile all wrap the caller's context
-// in one. runCheckpoint is launched with the application's lifetime context,
-// which is cancelled only at shutdown, so a worker blocked in an fsync made the
-// submit wait forever.
-//
-// The consequence is process-wide rather than per-job, because runCheckpoint is
-// a single select loop that also owns the stall re-evaluation tick and the
-// trailing queue save. Blocking it means no other job ever checkpoints again, a
-// job stalled on that same mount can never un-park even after the operator
-// fixes it, and the queue is never saved again — which contradicts the
-// contract's own "a wedged mount stalls the job, never the process".
+// TestOpenJobIDs_IsBoundedWhileTheWorkerIsBlocked pins that OpenJobIDs, like
+// OpenFiles, Stat and CloseFile, wraps the caller's context in
+// barrierOpTimeout, so a worker blocked in an fsync cannot make a caller with a
+// long-lived context wait forever.
 //
 // The worker is blocked here inside the FileInfo resolver rather than inside a
 // real fsync: what is under test is the WAIT for the worker's reply, and the
@@ -102,9 +91,6 @@ func TestOpenJobIDs_IsBoundedWhileTheWorkerIsBlocked(t *testing.T) {
 			t.Errorf("returned after %v, want roughly %v", got.dur, a.BarrierOpTimeout())
 		}
 	case <-time.After(3 * a.BarrierOpTimeout()):
-		t.Fatal("OpenJobIDs did not return while the worker was blocked. " +
-			"runCheckpoint is launched with a context cancelled only at shutdown, so " +
-			"this blocks the single loop that owns checkpointing, stall re-evaluation " +
-			"and the queue save — for every job, not just this one")
+		t.Fatal("OpenJobIDs did not return while the worker was blocked")
 	}
 }

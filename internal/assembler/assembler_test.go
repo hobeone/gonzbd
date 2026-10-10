@@ -14,9 +14,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/storagefault"
 	"github.com/hobeone/gonzbd/internal/telemetry"
 	"github.com/hobeone/gonzbd/internal/testutil"
 )
@@ -812,15 +814,11 @@ func TestAssembler_HelperMethods(t *testing.T) {
 	})
 
 	t.Run("finalizeFile", func(t *testing.T) {
-		// finalizeFile no longer truncates, no longer computes a CRC, and no
-		// longer closes the handle — all three moved to durability.Barrier,
-		// which is the only component that knows an fsync has happened (see
-		// finalizeFile's doc comment). What is left to pin here is: the
-		// tombstone goes down, the handle stays OPEN for the barrier to
-		// finalize through, and OnFileComplete fires with (jobID, fileIdx).
+		// A finish that succeeds closes the handle, drops it from open,
+		// tombstones the file and reports it once.
 		var callbackJobID string
 		var callbackFileIdx int
-		var callbackFired int
+		var callbackFired, untrusted int
 
 		opts := Options{
 			FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
@@ -831,6 +829,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 				callbackFileIdx = fileIdx
 				callbackFired++
 			},
+			OnFileUntrusted: func(string, int) { untrusted++ },
 		}
 		a := New(opts, slog.Default())
 
@@ -841,41 +840,68 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		}
 
 		key := fileKey{jobID: "job1", fileIdx: 0}
+		open := map[fileKey]*openFile{key: f}
 		completed := make(map[fileKey]struct{})
+		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: 0}
 
-		req := WriteRequest{
-			JobID:   "job1",
-			FileIdx: 0,
-			ArtIdx:  0,
+		a.finalizeFile(f, key, req, open, completed)
+
+		if _, ok := open[key]; ok {
+			t.Error("a finished file is still in the open map")
 		}
-
-		a.finalizeFile(f, key, req, completed)
-
-		// The file stays open, and that is now structural rather than
-		// asserted: finalizeFile is not given the open map at all, so it
-		// cannot remove the file from it. Closing here would take the handle
-		// away from Barrier.FinalizeFile, which still has to Drain, Sync,
-		// Truncate and Stat it — the completed file would keep
-		// pre-allocation's trailing zeros and its last articles would never
-		// be acked.
-		//
-		// The assertion this replaces read the map back after passing it to a
-		// parameter finalizeFile had already blanked to `_`, so it could not
-		// have failed.
-		//
-		// The tombstone goes down immediately even so, or a late duplicate
-		// would be written into a file the barrier is mid-way through
-		// truncating.
 		if _, ok := completed[key]; !ok {
 			t.Error("expected file to be added to completed map")
 		}
-
-		// Check callback fired.
 		if callbackFired != 1 {
 			t.Errorf("expected OnFileComplete callback to fire 1 time, got %d", callbackFired)
 		}
 		if callbackJobID != "job1" || callbackFileIdx != 0 {
 			t.Errorf("callback parameters mismatch: job=%s, idx=%d", callbackJobID, callbackFileIdx)
+		}
+		if untrusted != 0 {
+			t.Errorf("a finished file was untrusted %d times", untrusted)
+		}
+	})
+
+	t.Run("finalizeFile completion fault", func(t *testing.T) {
+		// A finish whose fsync fails is a completion fault: the handle is
+		// dropped, NO tombstone goes down (a refetch must open a fresh
+		// writer), the file is untrusted, and the fault is routed. It is not
+		// reported complete.
+		var completes, untrusted int
+		var fault *storagefault.Fault
+		opts := Options{
+			FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
+				return FileInfo{Path: "test"}, nil
+			},
+			OnFileComplete:  func(string, int) { completes++ },
+			OnFileUntrusted: func(string, int) { untrusted++ },
+			OnWriteFault:    func(_ string, _ int, ft *storagefault.Fault) { fault = ft },
+		}
+		a := New(opts, slog.Default())
+
+		f := newHelperFile(t, t.TempDir(), "fault.dat", 0)
+		f.w.syncFile = func() error { return syscall.EIO }
+		key := fileKey{jobID: "job1", fileIdx: 0}
+		open := map[fileKey]*openFile{key: f}
+		completed := make(map[fileKey]struct{})
+
+		a.finalizeFile(f, key, WriteRequest{JobID: "job1", FileIdx: 0}, open, completed)
+
+		if _, ok := open[key]; ok {
+			t.Error("a faulted file is still in the open map")
+		}
+		if _, ok := completed[key]; ok {
+			t.Error("a faulted file was tombstoned; its refetch would land in handleLateDuplicate")
+		}
+		if completes != 0 {
+			t.Errorf("a faulted file was reported complete %d times", completes)
+		}
+		if untrusted != 1 {
+			t.Errorf("a faulted file was untrusted %d times, want 1", untrusted)
+		}
+		if fault == nil || !errors.Is(fault, syscall.EIO) {
+			t.Errorf("OnWriteFault got %v, want a fault wrapping EIO", fault)
 		}
 	})
 
@@ -1362,10 +1388,10 @@ func TestAssembler_CloseJobHandles_ContextCanceled(t *testing.T) {
 //
 //   - JobID and FileIdx: the file completes at all. If the request won, the
 //     write would be routed to a job and file that were never registered.
-//   - ArtIdx: the drained durability records carry the refs' indices. This is
-//     the field with the quietest failure — a wrong ArtIdx here is persisted
-//     into the checkpoint, so it is asserted against the record a checkpoint
-//     would actually write rather than against anything in memory.
+//   - ArtIdx: OnArticleWritten carries the refs' indices. This is the field
+//     with the quietest failure — a wrong ArtIdx here is persisted into the
+//     written-article record, so it is asserted against the callback that
+//     feeds that record rather than against anything in memory.
 //
 // It calls WriteArticle directly rather than through the writeArticle helper,
 // which derives the ref from the request and so could never make them disagree.
@@ -1375,8 +1401,15 @@ func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
 	path := registerFile(t, dir, files, "real-job", 0, 2)
 
 	completed := make(chan int, 1)
+	var mu sync.Mutex
+	var gotIdx []int32
 	opts := makeOpts(dir, files)
 	opts.OnFileComplete = func(_ string, fileIdx int) { completed <- fileIdx }
+	opts.OnArticleWritten = func(_ string, _ int, artIdx int32, _, _ int64, _ uint32) {
+		mu.Lock()
+		gotIdx = append(gotIdx, artIdx)
+		mu.Unlock()
+	}
 	a := startAssembler(t, opts)
 
 	// The refs differ from each other in ArtIdx and MessageID; the requests do
@@ -1413,20 +1446,12 @@ func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
 		t.Errorf("file contents = %q, want %q", got, "AAAABBBB")
 	}
 
-	written, err := a.SyncTargetFor("real-job").Drain(t.Context(), 0)
-	if err != nil {
-		t.Fatalf("Drain: %v — the drain report is where the request's out-of-range "+
-			"99 would surface, as a durable run naming an article the job's "+
-			"manifest does not have", err)
-	}
-	gotIdx := make([]int32, 0, len(written))
-	for _, w := range written {
-		gotIdx = append(gotIdx, w.ArtIdx)
-	}
+	mu.Lock()
+	defer mu.Unlock()
 	slices.Sort(gotIdx)
 	if !slices.Equal(gotIdx, []int32{0, 1}) {
-		t.Errorf("durable records carry ArtIdx %v, want [0 1] — the request's "+
-			"ArtIdx reached the checkpoint instead of the ref's", gotIdx)
+		t.Errorf("written records carry ArtIdx %v, want [0 1] — the request's "+
+			"ArtIdx reached the record instead of the ref's", gotIdx)
 	}
 }
 

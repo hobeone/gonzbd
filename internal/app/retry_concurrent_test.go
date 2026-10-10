@@ -59,7 +59,7 @@ func addRetryableEntry(t *testing.T, repo *history.Repository, adminDir, jobID, 
 		NzoID: jobID, Name: "retry-" + jobID, NzbName: jobID + ".nzb",
 		NZBBackup: backup, Category: "*", Status: "Failed", Completed: time.Now(),
 		Path: path,
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	return filepath.Join(adminDir, "nzb", backup)

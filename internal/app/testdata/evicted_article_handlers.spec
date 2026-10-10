@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestHandleArticleRejected_RecordsAndPersistsTheFailureOfAnEvictedJob|TestHandleArticlesUnwritten_ClearsTheBitsOfAnEvictedJob|TestArticleHandlers_LogARecordTheJobRefuses|TestAppResidency_RehydrationKeepsAFailureRecordedWhileEvicted
+run TestHandleArticleRejected_RecordsTheFailureOfAnEvictedJob|TestHandleArticlesUnwritten_ClearsTheBitsOfAnEvictedJob|TestArticleHandlers_LogARecordTheJobRefuses|TestAppResidency_RehydrationKeepsAFailureRecordedWhileEvicted
 
 [an evicted job's failure refused, as before the fix]
 file internal/job/content.go
@@ -25,14 +25,6 @@ file internal/job/content.go
 	if j.manifest == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
---- end
-
-[the checkpoint adapter gates failed rows on the lagging counter]
-file internal/app/dispatcher_wiring.go
---- anchor
-			if p.AnyArticleFailed() {
---- replace
-			if p.ArticlesFailed() > 0 {
 --- end
 
 [the rejection handler discards the job's error]

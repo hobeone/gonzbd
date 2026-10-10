@@ -82,29 +82,6 @@ func seedJobFilesRowIn(t *testing.T, db *sql.DB, jobID string, fileIndex int, co
 	}
 }
 
-// seedHistoryJobFilesRowIn inserts a history_job_files row — the retained
-// per-file progress historyFileProgress reads to build RetryHistoryJob's
-// overlay. articleCount must match the re-parsed NZB's file range or
-// retainedMatchesManifest rejects the whole overlay.
-//
-// fetch_policy is left at the schema default here, unlike the sibling seeder
-// in retry_fetch_policy_test.go which takes it as a parameter. These two tests
-// turn on job_files, seeded separately below; the retained history policy is
-// not part of either scenario, and nothing in production reads that column.
-func seedHistoryJobFilesRowIn(t *testing.T, db *sql.DB, jobID string, fileIndex int, complete bool, articleCount int) {
-	t.Helper()
-	c := 0
-	if complete {
-		c = 1
-	}
-	if _, err := db.Exec(
-		`INSERT INTO history_job_files (job_id, file_index, complete, filename, assembled_crc32, article_count)
-		 VALUES (?, ?, ?, '', 0, ?)`,
-		jobID, fileIndex, c, articleCount); err != nil {
-		t.Fatalf("seed history_job_files row: %v", err)
-	}
-}
-
 // newEvictionTestApp builds an Application with a real history repo over
 // temp dirs, downloads paused so a job sits still.
 func newEvictionTestApp(t *testing.T) (*Application, *history.Repository, string) {
@@ -127,20 +104,16 @@ func newEvictionTestApp(t *testing.T) (*Application, *history.Repository, string
 }
 
 // TestRetryHistoryJob_SurvivesEviction pins that the fetch policy a retry
-// derives is what a later eviction and re-hydration reads back too — not
-// merely what is briefly true in memory right after RetryHistoryJob returns.
-// Task 3b's seed-then-flush is what makes this hold: without it, job_files
-// still carries the failed attempt's fetch_policy (FetchAlways, seeded
-// below) and Hydrate's restoreJobFiles/RestoreFetchPolicy call reapplies
-// that stale value over the re-derived FetchIfNeeded the moment the
-// dispatcher evicts and re-hydrates the retried job (#329, case d).
+// derives is what job_files holds once RetryHistoryJob returns, and what an
+// eviction and re-hydration leaves in memory — not merely what is briefly
+// true right after the retry (#329, case d). A restart hydrates from
+// job_files, so a row still carrying the failed attempt's policy (FetchAlways,
+// seeded below) would reapply it over the re-derived FetchIfNeeded.
 //
-// job_files must be seeded with the failed attempt's OWN fetch_policy
-// (FetchAlways here), not left empty: seedJobFiles' ON CONFLICT DO NOTHING
-// only fills a missing row, so an empty job_files table would let 3a's seed
-// (which already writes the correct derived policy) create a correct row on
-// its own — passing this test even with Mark/Flush deleted, and reporting
-// Task 5's mutation SURVIVED instead of killed.
+// job_files must be seeded with the failed attempt's OWN fetch_policy, not
+// left empty: seedJobFiles' ON CONFLICT DO NOTHING only fills a missing row,
+// so an empty table would let the seed create a correct row on its own and
+// pass this test with the retry's record commit deleted.
 func TestRetryHistoryJob_SurvivesEviction(t *testing.T) {
 	application, repo, adminDir := newEvictionTestApp(t)
 
@@ -153,11 +126,9 @@ func TestRetryHistoryJob_SurvivesEviction(t *testing.T) {
 		NzbName:   "survivesevict.nzb",
 		NZBBackup: "survivesevict.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
-	seedHistoryJobFilesRowIn(t, repo.DB(), id, 0, false, 2)
-	seedHistoryJobFilesRowIn(t, repo.DB(), id, 1, false, 1)
 	// The failed attempt's own job_files rows, carrying the pre-fix default
 	// rather than a policy anyone derived — which is the point: FetchAlways
 	// differs from the FetchIfNeeded this retry derives, so reapplying the
@@ -192,19 +163,18 @@ func TestRetryHistoryJob_SurvivesEviction(t *testing.T) {
 	}
 
 	if got := j.Progress().FileFetchPolicy(idx); got != job.FetchIfNeeded {
-		t.Errorf("FileFetchPolicy(%d) = %v after evict+re-hydrate, want FetchIfNeeded — job_files "+
-			"still carried the failed attempt's stale policy, so 3b's seed-and-flush did not "+
-			"overwrite it before the dispatcher could evict the retried job", idx, got)
+		t.Errorf("FileFetchPolicy(%d) = %v after evict+re-hydrate, want FetchIfNeeded", idx, got)
 	}
+	assertStoredFetchPolicy(t, application, id, idx, job.FetchIfNeeded)
 }
 
 // TestAddJob_FreshRecoveryVolumeSurvivesEviction pins the ingest-path half of
-// the invariant: a fresh on-demand-par2 job evicted and re-hydrated before
-// any article completes must keep its recovery volume at FetchIfNeeded.
-// checkpointer.Mark only fires on download/ack progress, so a job that has
-// downloaded nothing is never flushed — seedJobFiles authoring the derived
-// policy at INSERT time (Task 3a) is the only thing standing between this
-// and the volume silently downloading anyway (#329, case e).
+// the invariant: a fresh on-demand-par2 job that has downloaded nothing keeps
+// its recovery volume at FetchIfNeeded, in memory across an eviction and in
+// job_files for a restart. Nothing has been written, so the recorder has
+// flushed nothing for it; seedJobFiles authoring the derived policy at INSERT
+// time is the only thing standing between this and the volume silently
+// downloading after a restart (#329, case e).
 func TestAddJob_FreshRecoveryVolumeSurvivesEviction(t *testing.T) {
 	application, _, _ := newEvictionTestApp(t)
 	if !application.config.GetDownloads().OnDemandPar2 {
@@ -256,7 +226,27 @@ func TestAddJob_FreshRecoveryVolumeSurvivesEviction(t *testing.T) {
 
 	if got := j.Progress().FileFetchPolicy(idx); got != job.FetchIfNeeded {
 		t.Errorf("FileFetchPolicy(%d) = %v after evict+re-hydrate of a job that downloaded "+
-			"nothing, want FetchIfNeeded — seedJobFiles wrote the hardcoded FetchAlways default "+
-			"instead of the derived policy, and no checkpointer flush had fired yet to correct it", idx, got)
+			"nothing, want FetchIfNeeded", idx, got)
 	}
+	assertStoredFetchPolicy(t, application, id, idx, job.FetchIfNeeded)
+}
+
+// assertStoredFetchPolicy fails the test unless file fi's job_files row holds
+// want, which is what a restart's hydration restores.
+func assertStoredFetchPolicy(t *testing.T, application *Application, id string, fi int, want job.FetchPolicy) {
+	t.Helper()
+	rows, err := application.durable.FileRows(t.Context(), id)
+	if err != nil {
+		t.Fatalf("FileRows: %v", err)
+	}
+	for _, r := range rows {
+		if r.FileIndex == fi {
+			if got := job.FetchPolicy(r.FetchPolicy); got != want {
+				t.Errorf("job_files.fetch_policy for file %d = %v, want %v: a restart "+
+					"would hydrate the stale policy", fi, got, want)
+			}
+			return
+		}
+	}
+	t.Errorf("no job_files row for file %d", fi)
 }

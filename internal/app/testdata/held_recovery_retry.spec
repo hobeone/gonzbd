@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run Test(Finalize_ParErrorWithHeldVolumesRetriesWithThemReleased|Finalize_RetriedJobIsNotRetriedAgain|Finalize_RetryThatCannotStartLeavesTheFailureVisible|Finalize_RetriesOnlyAParErrorWithHeldVolumes|RetryHistoryJob_PrepareErrorAbortsTheRetry|RetryHistoryJob_AbortedAfterTheReleaseLeavesNothingMarked|Finalize_HeldVolumesEntryCarriesTheRetryNote)$
+run Test(Finalize_ParErrorWithHeldVolumesRetriesWithThemReleased|Finalize_RetriedJobIsNotRetriedAgain|Finalize_RetryThatCannotStartLeavesTheFailureVisible|Finalize_RetriesOnlyAParErrorWithHeldVolumes|RetryHistoryJob_PrepareErrorAbortsTheRetry|Finalize_HeldVolumesEntryCarriesTheRetryNote)$
 
 # #651: a par2 failure while recovery volumes were held back retries the job
 # with them released. Each clause of the trigger, the release in the retry,
@@ -63,10 +63,10 @@ file internal/app/job_finalizer.go
 	app.log.Info("finalize: par2 repair failed while
 --- end
 
-# The prepare marks the rebuilt job in the checkpointer, so an abort after it
-# must prune the mark. Excusing a retry with a prepare from the cleanup is the
-# state before the prepare moved inside the cleanup's scope.
-[an aborted retry with a prepare keeps its checkpointer mark]
+# A prepare runs inside the cleanup's scope, so an abort after it reclaims
+# what the retry wrote. Excusing a retry with a prepare from the cleanup is
+# the state before the prepare moved inside that scope.
+[an aborted retry with a prepare skips the cleanup]
 file internal/app/app.go
 --- anchor
 		if admitted {

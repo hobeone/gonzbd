@@ -658,15 +658,8 @@ func TestMaybeReleaseRecoveryVolumes_RespectsRepairPolicy(t *testing.T) {
 	}
 }
 
-// TestMarkFetchPolicyDirty_Guards covers markFetchPolicyDirty's own branches,
-// which the verdict path never reaches: a configured Application always has a
-// checkpointer and always passes a looked-up job.
-//
-// They are not dead weight. Application is constructed field by field rather
-// than through one constructor that guarantees a checkpointer — newTestApp
-// variants in this package leave it nil — so an unguarded Mark here would turn
-// a clean par2 verdict into a nil dereference in a test-only configuration, and
-// the panic would be blamed on the verdict rather than the wiring.
+// TestMarkFetchPolicyDirty_Guards covers markFetchPolicyDirty's own branches:
+// a nil job marks nothing, and a job is marked for the recorder's next flush.
 func TestMarkFetchPolicyDirty_Guards(t *testing.T) {
 	t.Parallel()
 
@@ -674,47 +667,39 @@ func TestMarkFetchPolicyDirty_Guards(t *testing.T) {
 		{subject: "data.bin", bytes: 100},
 	})
 
-	t.Run("no checkpointer is a no-op", func(t *testing.T) {
-		app := &Application{}
-		app.markFetchPolicyDirty(j)
-	})
-
 	t.Run("nil job is a no-op", func(t *testing.T) {
 		app := newTestApplication(t)
-		before := app.checkpointer.DirtyCount()
+		before := dirtyJobs(app.recorder)
 		app.markFetchPolicyDirty(nil)
-		if got := app.checkpointer.DirtyCount(); got != before {
-			t.Errorf("DirtyCount = %d after marking a nil job, want %d unchanged", got, before)
+		if got := dirtyJobs(app.recorder); got != before {
+			t.Errorf("dirty jobs = %d after marking a nil job, want %d unchanged", got, before)
 		}
 	})
 
 	t.Run("a job is marked", func(t *testing.T) {
 		app := newTestApplication(t)
-		if err := app.checkpointer.Flush(t.Context()); err != nil {
+		if err := app.recorder.flush(t.Context()); err != nil {
 			t.Fatalf("Flush: %v", err)
 		}
 		app.markFetchPolicyDirty(j)
-		if got := app.checkpointer.DirtyCount(); got != 1 {
+		if got := dirtyJobs(app.recorder); got != 1 {
 			t.Errorf("DirtyCount = %d after marking one job, want 1", got)
 		}
 	})
 }
 
 // TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing pins that a
-// par2 verdict marks the job for checkpointing, for both outcomes that move a
+// par2 verdict marks the job for the recorder, for both outcomes that move a
 // fetch policy.
 //
-// Without the mark the verdict lives only in JobProgress, which Job.Evict
-// keeps — but appResidency.restoreJobFiles re-applies the persisted row on
-// every hydration, so the next eviction and re-hydration would silently move
-// the policy back to whatever the row still held. Nothing else marks the job
-// here: the verdict runs at download-complete, after the MarkFileComplete path
-// has stopped firing, so waiting for "the next flush" is waiting for a mark
-// that never arrives (#329).
+// Without the mark the verdict lives only in JobProgress, and a restart
+// verifies the job against the job_files row, which still holds the old
+// policy. Nothing else marks the job here: the verdict runs at
+// download-complete, after the MarkFileComplete path has stopped firing (#329).
 //
-// DirtyCount rather than a job_files read: the claim is that the verdict marked
-// the job, and a row read would be satisfied just as well by some other path
-// having marked it for an unrelated reason.
+// The recorder's dirty set rather than a job_files read: the claim is that the
+// verdict marked the job, and a row read would be satisfied just as well by
+// some other path having marked it for an unrelated reason.
 func TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -762,16 +747,16 @@ func TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing(t *testing.T
 
 			// Adding the job may itself mark it; clear the set so the count
 			// after the verdict is the verdict's own doing.
-			if err := app.checkpointer.Flush(t.Context()); err != nil {
+			if err := app.recorder.flush(t.Context()); err != nil {
 				t.Fatalf("Flush: %v", err)
 			}
-			if n := app.checkpointer.DirtyCount(); n != 0 {
+			if n := dirtyJobs(app.recorder); n != 0 {
 				t.Fatalf("precondition: DirtyCount = %d after a flush, want 0", n)
 			}
 
 			app.maybeReleaseRecoveryVolumes(t.Context(), j)
 
-			if n := app.checkpointer.DirtyCount(); n == 0 {
+			if n := dirtyJobs(app.recorder); n == 0 {
 				t.Errorf("DirtyCount = 0 after a par2 verdict moved the fetch policy on job %s, want the job marked — "+
 					"the new policy is only in memory, so the next evict/re-hydrate restores the stale row over it", tc.jobID)
 			}

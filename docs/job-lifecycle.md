@@ -219,7 +219,7 @@ Three things follow:
   true (first-article stamp set, or a done article). A job restored at
   startup has no `JobProgress` until hydrated, and a retried job's stored
   stamps are zero, so `SetName` hydrates such a job first
-  (`loadProgressForRename`). `HasRun` is the wrong
+  (`Dispatcher.LoadProgress`). `HasRun` is the wrong
   test for this: it is true for any job the tick has opened an attempt on,
   including one still waiting behind others.
 - **`Outcome` stays genuinely write-once.** A verdict is never revised, only

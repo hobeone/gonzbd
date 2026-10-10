@@ -131,7 +131,7 @@ func TestCompleteFinalizedFile_FeedsTheLastVolumeBeforeReportingTheDownload(t *t
 		}
 	}
 	for i := range volumes {
-		if err := application.completeFinalizedFile(t.Context(), FileComplete{JobID: id, FileIdx: i}); err != nil {
+		if err := application.completeFinalizedFile(FileComplete{JobID: id, FileIdx: i}); err != nil {
 			t.Fatalf("completeFinalizedFile(%d): %v", i, err)
 		}
 	}

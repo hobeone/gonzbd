@@ -997,8 +997,8 @@ func (d *Dispatcher) SetPriority(id string, priority int) error {
 // at internal/app/rename.go (`git grep -n '\.SetName(' -- '*.go' ':!*_test.go'`
 // also lists the apitest double and two Job.SetName calls).
 func (d *Dispatcher) SetName(id, name string) error {
-	if err := d.loadProgressForRename(id); err != nil {
-		return err
+	if err := d.LoadProgress(context.Background(), id); err != nil {
+		return fmt.Errorf("dispatch: set name %s: %w", id, err)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -1027,20 +1027,25 @@ func (d *Dispatcher) SetName(id, name string) error {
 	return nil
 }
 
-// loadProgressForRename hydrates a job restored at startup that has no
-// JobProgress yet, so Job.DownloadBegun reads its done articles and not only
-// the restored stamp: a retried job's stamps are cleared while its done
-// articles, and their bytes under the name, are kept. It runs before SetName
-// takes d.mu because Hydrate does disk I/O (D-B9), and records the load as
-// reconcileResidency does so a later tick evicts it when the job holds
-// nothing. A job that is not registered is left for SetName to report.
-func (d *Dispatcher) loadProgressForRename(id string) error {
+// LoadProgress hydrates a registered job that has no JobProgress yet, and
+// records the load as reconcileResidency does, so a later tick evicts it when
+// the job holds nothing. Hydration verifies the job's written articles, so
+// afterwards the job's progress reports them.
+//
+// SetName calls it so Job.DownloadBegun reads the job's done articles and not
+// only the restored stamp: a retried job's stamps are cleared while its done
+// articles, and their bytes under the name, are kept. Start calls it for every
+// job restored paused at Fetching, which no tick hydrates until it is resumed.
+//
+// It does disk I/O, so it takes no lock across Hydrate (D-B9). A job that is
+// not registered, or already has progress, is left alone.
+func (d *Dispatcher) LoadProgress(ctx context.Context, id string) error {
 	j, ok := d.Job(id)
 	if !ok || j.HasProgress() {
 		return nil
 	}
-	if err := d.res.Hydrate(context.Background(), id); err != nil {
-		return fmt.Errorf("dispatch: set name %s: load progress: %w", id, err)
+	if err := d.res.Hydrate(ctx, id); err != nil {
+		return fmt.Errorf("dispatch: load progress %s: %w", id, err)
 	}
 	d.markResident(id)
 	return nil

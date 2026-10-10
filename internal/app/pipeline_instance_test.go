@@ -146,8 +146,6 @@ func TestHandleResult_DropsAResultFetchedForAnEarlierInstance(t *testing.T) {
 			t.Cleanup(func() { _ = p.assembler.Stop() })
 			var hopeless bool
 			p.onJobHopeless = func(string) { hopeless = true }
-			var written bool
-			p.onArticleWritten = func(string, int) { written = true }
 
 			p.handleResult(t.Context(), &downloader.ArticleResult{
 				Job:        first,
@@ -167,9 +165,6 @@ func TestHandleResult_DropsAResultFetchedForAnEarlierInstance(t *testing.T) {
 			}
 			if hopeless {
 				t.Error("a stale result reached early-abort accounting")
-			}
-			if written {
-				t.Error("a stale result reached the checkpoint cadence")
 			}
 		})
 	}

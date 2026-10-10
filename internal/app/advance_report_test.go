@@ -23,7 +23,7 @@ func TestCompleteFinalizedFile_ReportsFetchingToAssessing(t *testing.T) {
 		t.Fatalf("BeginAttempt: %v", err)
 	}
 
-	if err := application.completeFinalizedFile(t.Context(), FileComplete{JobID: j.ID(), FileIdx: 0}); err != nil {
+	if err := application.completeFinalizedFile(FileComplete{JobID: j.ID(), FileIdx: 0}); err != nil {
 		t.Fatalf("completeFinalizedFile: %v", err)
 	}
 	if got := j.Snapshot().State; got.State != job.Fetching || got.Next != job.Assessing {
@@ -33,7 +33,7 @@ func TestCompleteFinalizedFile_ReportsFetchingToAssessing(t *testing.T) {
 	if err := j.Transition(job.Assessing); err != nil {
 		t.Fatalf("Transition: %v", err)
 	}
-	if err := application.completeFinalizedFile(t.Context(), FileComplete{JobID: j.ID(), FileIdx: 0}); err != nil {
+	if err := application.completeFinalizedFile(FileComplete{JobID: j.ID(), FileIdx: 0}); err != nil {
 		t.Fatalf("repeated completeFinalizedFile: %v", err)
 	}
 	if got := j.Snapshot().State; got.State != job.Assessing || got.Next != job.StateUnset {

@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/hobeone/gonzbd/internal/crc32util"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -323,38 +322,25 @@ func finishFileByPath(path string, maxEnd int64) (err error) {
 	return nil
 }
 
-// fileCRCFromRows derives a file's whole-file CRC from its per-article rows,
-// given in offset order. It returns false (NoCRC) unless every article of
-// [lo, hi) has exactly one row, none failed, the first row is at offset 0,
-// and each row starts where the previous one ends — so the chain cannot
-// overlap or leave a gap.
-func fileCRCFromRows(rows []durability.WrittenRow, failed bool, lo, hi int) (uint32, bool) {
-	if failed || hi <= lo || len(rows) != hi-lo {
-		return 0, false
-	}
-	seen := make([]bool, hi-lo)
-	var crc uint32
-	var end int64
-	for k, r := range rows {
-		a := int(r.ArtIdx)
-		if a < lo || a >= hi || seen[a-lo] || r.Offset != end {
-			return 0, false
-		}
-		seen[a-lo] = true
-		if k == 0 {
-			crc = r.CRC32
-		} else {
-			crc = crc32util.Combine(crc, r.CRC32, r.Length)
-		}
-		end = r.Offset + r.Length
-	}
-	return crc, true
+// jobFilePath resolves the on-disk path the assembler would have used for one
+// of a job's files, from the filename the queue already recorded.
+//
+// It reads p.downloadDir under the same lock registerFile does, so the two
+// cannot disagree about which directory a job's files live in, and it applies
+// the same JoinSafe sanitisation — a verification that read a different path
+// than the writer used would find every file missing.
+func (p *pipeline) jobFilePath(jobName, filename string) string {
+	p.mu.RLock()
+	jobDir := filepath.Join(p.downloadDir, jobName)
+	sanitize := p.sanitize
+	p.mu.RUnlock()
+	// --- No lock held below this line ---
+	return fsutil.JoinSafe(jobDir, "", filename, sanitize)
 }
 
 // fileFinishable reports whether one file has every article resolved and no
-// Complete flag, and so needs finishing. It is the core of that question for
-// both strandedComplete and verifyJobFiles, which differ only in where
-// "resolved" comes from.
+// Complete flag, and so needs finishing. verifyJobFiles asks it, of the
+// articles its read-back resolved.
 //
 // FetchAlways only, matching Job.IsComplete: a deferred or discarded par2
 // recovery volume is never dispatched, so "every article resolved" is

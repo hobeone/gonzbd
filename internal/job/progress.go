@@ -23,9 +23,11 @@ type JobProgress struct {
 	done, failed, emitted bitset
 	files                 []FileProgress
 
-	// written holds, per file index, the rows InstallVerified installed, in
-	// offset order, for the whole-file CRC. It is not persisted here:
-	// written_articles is the record, and this is a resident copy of it.
+	// written holds, per file index, the written rows of a file that has not
+	// yet completed, for the whole-file CRC: verified rows and rows written
+	// this process, in no particular order. It is not persisted here:
+	// written_articles is the record, and this is a resident copy of the part
+	// of it a completion still needs. verified.go owns its lifecycle.
 	written map[int][]durability.WrittenRow
 
 	pendingArticles   int
@@ -139,9 +141,9 @@ type FileProgress struct {
 	// Both used to be persisted and fed back to the assembler on resume, so
 	// the completion truncate would not cut below what earlier runs wrote
 	// (#342). The truncate no longer derives its bound from anything the
-	// queue knows: durability.Barrier computes it as the highest end offset
-	// among the file's DURABLE facts, which describes the FILE rather than
-	// the session, and needs no seed. The write cursor was only ever a
+	// queue knows: the assembler's FileWriter.finish trims to the end of the
+	// last range it owns, and a restart's verifier to the end of the last
+	// verified row, so it needs no seed. The write cursor was only ever a
 	// coalescing hint, and went with the assembler's write cache (#311, #353).
 	//
 	// They are gone rather than retained-at-zero because a field that is
@@ -879,12 +881,9 @@ func (p *JobProgress) clone() *JobProgress {
 	cp.files = slices.Clone(p.files)
 
 	cp.serverStats = maps.Clone(p.serverStats)
-	if p.written != nil {
-		cp.written = make(map[int][]durability.WrittenRow, len(p.written))
-		for fi, rows := range p.written {
-			cp.written[fi] = slices.Clone(rows)
-		}
-	}
+	// The map is copied and the row slices are shared: a stored slice is never
+	// edited in place (see verified.go), so the clone's view cannot change.
+	cp.written = maps.Clone(p.written)
 	return &cp
 }
 

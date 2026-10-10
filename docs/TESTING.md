@@ -183,8 +183,9 @@ E2E_NZB=/tmp/test.nzb go test -timeout=10m ./test/e2e/
 ## 3a. Crash-Consistency Tests (`-tags=crash`)
 
 **When to run:** After any change to `internal/durability`, `internal/assembler`,
-the checkpoint cadence in `internal/app/durability.go`, the startup resume sweep
-in `internal/app/resume_startup.go`, or the queue's per-article persistence.
+the record cadence in `internal/app/record.go`, the restart verifier in
+`internal/app/verify.go` and `internal/app/residency.go`, or the queue's
+per-article persistence.
 Not run automatically (see "Continuous Integration" in AGENTS.md — `ci.yml`
 is dispatch-only for every suite, not specifically this one), but it **is**
 part of `scripts/run_tests.sh` (step 4/7) and, when `ci.yml` is dispatched by
@@ -211,7 +212,7 @@ test cannot lose the memory the design's central claim is about.
 | Test | Pins |
 |------|------|
 | `TestSIGKILL_NoArticleIsResolvedWithoutItsBytes` | S1/S2 — nothing is resolved on the strength of having entered a buffer |
-| `TestSIGKILL_ReworkStaysWithinTheCheckpointBound` | B1/L3 — unacked rework is bounded, acked rework is zero; and #361, that the resume continues the same file |
+| `TestSIGKILL_NoVerifiedArticleIsFetchedAgain` | B1/L3 — an article whose row was recorded is not fetched again; and #361, that the resume continues the same file |
 | `TestExternalModification_TruncatedPartialIsRecomputed` | S4 — a recomputation supersedes a falsified cache |
 | `TestExternalModification_DeletedPartialRestartsTheFile` | S3 — absence of evidence is absence |
 | `TestExternalModification_AppendedGarbageIsTrimmed` | S6 — metadata may shrink a file, never grow it |
@@ -287,6 +288,7 @@ entry point that the startup sweep uses in place of `SeedFromRuns`, because it
 is the one caller that has just stat'ed the files and deleted the runs a file
 contradicts. Every other seeding path — `Application.reevaluateStall`'s phase 3
 — is replaying an ack that already landed and stays additive.
+<!-- doccite:ok TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade — removed by the loose-record cut-over (plan Task 5.1); this barrier-era section is rewritten in Task 5.4 -->
 `TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade` guards that split
 from the replay side. The additive side has no test, and what stands in for
 one is narrower than it looks: `Job.SeedFromRuns` writes done bits only

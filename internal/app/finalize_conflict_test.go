@@ -72,7 +72,7 @@ func TestFinalize_RemovesJobFromQueueWhenHistoryWriteFails(t *testing.T) {
 		Name:      "already-there",
 		Status:    string(constants.StatusCompleted),
 		Completed: time.Now(),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("seed conflicting entry: %v", err)
 	}
 
@@ -142,16 +142,16 @@ func TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed(t *testing.T) {
 		Name:      "existing-failed-job",
 		Status:    string(constants.StatusFailed),
 		Completed: time.Now(),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("seed conflicting failed entry: %v", err)
 	}
 
-	// 2. Seed durability rows (job_files, durable_runs, failed_articles).
+	// 2. Seed durability rows (job_files, written_articles, failed_articles).
 	seedDurability(t, application, job.ID())
 
 	nf, ne := durabilityRowCounts(t, application, job.ID())
 	if nf != 1 || ne != 1 {
-		t.Fatalf("fixture seeded %d runs and %d failed rows, want 1 and 1", nf, ne)
+		t.Fatalf("fixture seeded %d written rows and %d failed rows, want 1 and 1", nf, ne)
 	}
 
 	// 3. Finalize a job with that ID (simulating a re-run of finalize where status was Completed).
@@ -166,14 +166,14 @@ func TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed(t *testing.T) {
 		t.Error("job remained in dispatcher; expected teardown to remove it")
 	}
 
-	// 5. Verify the failed entry's runs survive, and only them.
+	// 5. Verify the failed entry's record survives, and its failed articles do not.
 	nfAfter, neAfter := durabilityRowCounts(t, application, job.ID())
 	if nfAfter != 1 || neAfter != 0 {
-		t.Errorf("after a conflict with a failed entry: runs=%d, failed=%d, want 1 and 0",
+		t.Errorf("after a conflict with a failed entry: written=%d, failed=%d, want 1 and 0",
 			nfAfter, neAfter)
 	}
-	if n := jobFilesCount(t, application, job.ID()); n != 0 {
-		t.Errorf("job_files rows survive a conflict with a failed entry: count=%d, want 0", n)
+	if n := jobFilesCount(t, application, job.ID()); n != 1 {
+		t.Errorf("job_files rows after a conflict with a failed entry: count=%d, want 1", n)
 	}
 }
 

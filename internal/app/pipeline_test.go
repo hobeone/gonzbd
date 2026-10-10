@@ -343,14 +343,15 @@ func TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered(t *t
 	}
 }
 
-func TestHandleSuccessResult_RecordsNothingDurableAndReportsTheBytes(t *testing.T) {
+// TestHandleSuccessResult_LeavesTheArticleUnresolved: the pipeline hands the
+// bytes to the assembler; the article is resolved only once the assembler
+// reports it written.
+func TestHandleSuccessResult_LeavesTheArticleUnresolved(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	app := newTestApplication(t)
 	disp, j := helperJob(t, app, "happy", 1, 2)
-	var notedJob string
-	var notedBytes int
 	p := &pipeline{
 		log:         slog.New(slog.DiscardHandler),
 		dispatcher:  disp,
@@ -361,9 +362,6 @@ func TestHandleSuccessResult_RecordsNothingDurableAndReportsTheBytes(t *testing.
 			},
 		}, slog.New(slog.DiscardHandler)),
 		fileInfo: make(map[fileKey]assembler.FileInfo),
-		onArticleWritten: func(jobID string, n int) {
-			notedJob, notedBytes = jobID, n
-		},
 	}
 	if err := p.assembler.Start(t.Context()); err != nil {
 		t.Fatalf("assembler.Start: %v", err)
@@ -375,11 +373,6 @@ func TestHandleSuccessResult_RecordsNothingDurableAndReportsTheBytes(t *testing.
 		Job: j, FileIdx: 0, ArtIdx: 0, MessageID: "happy-f0-a0@x",
 		Offset: 4096, Data: payload, CRC: 0xC0FFEE, ServerName: "s1",
 	})
-
-	if notedJob != j.ID() || notedBytes != len(payload) {
-		t.Errorf("reported (%q, %d) to the checkpoint cadence, want (%q, %d)",
-			notedJob, notedBytes, j.ID(), len(payload))
-	}
 
 	gotJob, ok := disp.Job(j.ID())
 	if !ok {

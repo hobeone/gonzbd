@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run ^(TestReclaim_TakesOnlyWhatNothingReaches|TestReclaim_LogsAFailureAndStillUnlinksTheManifest|TestRemoveJob_ReclaimsAJobSomeoneElseRemoved|TestRemoveJob_ReclaimsAJobThatLeftTheQueueBeforeTheCall|TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability|TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed|TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError|TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule|TestRemoveHistoryJob_ReclaimsTheFailedEntrysRuns|TestMarkHistoryCompleted_ReclaimsTheFailedEntrysRuns|TestAddJob_FailedAddLeavesNoOrphanArtifacts|TestStart_SweepsWhatNoDepartureReclaimed|TestSweepOrphans_ReportsWhatItCouldNotSweep|TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset|TestRetryHistoryJob_AbortsWhenStaleFailedMarksCannotBeCleared|TestRetryHistoryJob_ResumesCompletedFilesFromRetainedProgress|TestRetryHistoryJob_FailedFlushLeavesNothingMarked|TestRetryHistoryJob_FailedFlushRemovesTheQueueManifest|TestRetryHistoryJob_RefusesWhileAnotherHolderHasTheID)$
+run ^(TestRetryHistoryJob_PrepareErrorAbortsTheRetry|TestReclaim_TakesOnlyWhatNothingReaches|TestReclaim_LogsAFailureAndStillUnlinksTheManifest|TestRemoveJob_ReclaimsAJobSomeoneElseRemoved|TestRemoveJob_ReclaimsAJobThatLeftTheQueueBeforeTheCall|TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability|TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed|TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError|TestDropJobAlreadyInHistory_AppliesTheFailedRetentionRule|TestRemoveHistoryJob_ReclaimsTheFailedEntrysRuns|TestMarkHistoryCompleted_ReclaimsTheFailedEntrysRuns|TestAddJob_FailedAddLeavesNoOrphanArtifacts|TestStart_SweepsWhatNoDepartureReclaimed|TestSweepOrphans_ReportsWhatItCouldNotSweep|TestRetryHistoryJob_ClearsTheFailedArticlesItJustReset|TestRetryHistoryJob_AbortsWhenStaleFailedMarksCannotBeCleared|TestRetryHistoryJob_RefusesWhileAnotherHolderHasTheID)$
 timeout 1m
 
 [RemoveJob reports instead of cleaning up after someone else removed the job]
@@ -143,28 +143,6 @@ file internal/app/durability.go
 	for _, jobID := range ids {
 --- replace
 	for _, jobID := range ids[:0] {
---- end
-
-[the retry ignores its retained file progress]
-file internal/app/app.go
---- anchor
-		for _, f := range retained {
-			_ = j.RestoreFileMeta(f.FileIndex, f.Filename, f.Complete, f.AssembledCRC32)
-		}
---- replace
-		for _, f := range retained[:0] {
-			_ = j.RestoreFileMeta(f.FileIndex, f.Filename, f.Complete, f.AssembledCRC32)
-		}
---- end
-
-[the retry never persists the progress it restored]
-file internal/app/app.go
---- anchor
-		if err := app.checkpointer.FlushJob(context.Background(), j); err != nil {
-			return fmt.Errorf("app: retry %s: flush checkpoint: %w", jobID, err)
---- replace
-		if err := error(nil); err != nil {
-			return fmt.Errorf("app: retry %s: flush checkpoint: %w", jobID, err)
 --- end
 
 [a failed rule statement no longer rolls back the ones before it]

@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestReevaluateStall_KeepsAUserPauseStallWasCalledOn|TestStall_OnAnUnparkedRecordOfAUserPausedJob|TestStall_ASecondFaultKeepsTheParkItOwns|TestReevaluateStall_ReleasesItsParkOnceItResumes|TestStallLost_ClaimsNoPause
+run TestReevaluateStall_KeepsAUserPauseStallWasCalledOn|TestStall_OnAnUnparkedRecordOfAUserPausedJob|TestStall_ASecondFaultKeepsTheParkItOwns
 
 [Stall claims a pause the user already set]
 file internal/app/durability.go
@@ -17,20 +17,4 @@ file internal/app/stall.go
 	}
 --- replace
 	rec.parked = claimPause
---- end
-
-[a resume leaves its claim on the pause behind]
-file internal/app/stall.go
---- anchor
-		app.releasePark(jobID)
---- replace
-		_ = jobID
---- end
-
-[stallLost claims a pause it never made]
-file internal/app/stall.go
---- anchor
-	app.setStallReasonLocked(jobID, reason, false)
---- replace
-	app.setStallReasonLocked(jobID, reason, true)
 --- end

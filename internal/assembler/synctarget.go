@@ -47,6 +47,10 @@ const (
 	// tombstone set is keyed on (jobID, fileIdx) and never expires
 	// otherwise — see Assembler.ForgetJob.
 	fileIdxForgetJob = -4
+
+	// fileIdxQuiesce asks the worker to answer once everything queued ahead
+	// of it has been processed — see Assembler.Quiesce.
+	fileIdxQuiesce = -5
 )
 
 // syncOp is one barrier operation for the worker to perform.

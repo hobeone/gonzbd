@@ -473,3 +473,29 @@ func TestResidency_SuccessfulRemoveDuringHydrateLeavesNothingResident(t *testing
 			"read as already resident and never hydrate")
 	}
 }
+
+// TestResidency_ResidencyFaultDoesNotSettleTheJob pins the third class of
+// Hydrate error: a residency fault is about the device (an unreadable sector
+// during verification), and settling would turn it into a lost job. The job
+// keeps its outcome and is left not resident, for a later hydration to verify
+// again.
+func TestResidency_ResidencyFaultDoesNotSettleTheJob(t *testing.T) {
+	fault := fmt.Errorf("verify A.bin: %w", ErrResidencyFault)
+	res := &fakeResidency{failOn: map[string]error{"j1": fault}}
+	d := newTestDispatcher(t, withResidency(res))
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	d.tick(context.Background())
+	d.tick(context.Background())
+
+	if got := d.q.Render(j).Outcome; got != job.OutcomePending {
+		t.Errorf("Outcome = %v, want Pending — a verification fault parks a job, "+
+			"it never fails it", got)
+	}
+	if d.isResident("j1") {
+		t.Error("isResident(j1) = true after a hydration that failed")
+	}
+}

@@ -86,8 +86,8 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 // It runs from completeFinalizedFile, ahead of the DirectUnpack feed and of
 // MarkFileComplete, so a flagged volume is never fed to an unpacker
 // (`git grep -n 'app\.completeFinalizedFile(' -- 'internal/app/*.go' ':!*_test.go'`
-// returns 3 lines: handleFileComplete, stall re-evaluation and the startup
-// repair of a stranded finalize).
+// returns 1 line, in handleFileComplete, which also applies the verifier's
+// resumed completions).
 //
 // It does nothing, and reports nothing to the job, when the job is not
 // resident or its file cannot be located, and also when:

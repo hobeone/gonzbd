@@ -76,7 +76,7 @@ func ackDoneIdx(t *testing.T, disp *dispatch.Dispatcher, jobID string, artIdxs .
 	}
 
 	for fi, rows := range byFile {
-		if err := j.InstallVerified(fi, rows); err != nil {
+		if _, err := j.InstallVerified(fi, rows); err != nil {
 			t.Fatalf("ackDoneIdx: InstallVerified: %v", err)
 		}
 	}

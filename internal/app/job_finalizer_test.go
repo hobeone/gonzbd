@@ -2,7 +2,6 @@ package app_test
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,8 +9,6 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -179,7 +176,7 @@ func TestFinalizer_ShutdownContext_PersistSucceeds(t *testing.T) {
 }
 
 // TestFinalizer_PersistError_CleanupExecutes pins that when historyRepo.Add fails with
-// an error, dispatcher removal, checkpointer prune, and manifest deletion still execute.
+// an error, dispatcher removal, durability-row reclaim, and manifest deletion still execute.
 func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 	t.Parallel()
 	dl := t.TempDir()
@@ -222,18 +219,12 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	// Mark the job in checkpointer so we verify it gets pruned.
-	application.Checkpointer().Mark(qJob)
-	if application.Checkpointer().DirtyCount() != 1 {
-		t.Fatalf("expected 1 dirty job before finalization, got %d", application.Checkpointer().DirtyCount())
-	}
-
 	// Pre-seed duplicate entry so historyRepo.Add fails with a UNIQUE constraint violation.
 	existing := history.Entry{
 		NzoID: qJob.ID(),
 		Name:  "already-exists",
 	}
-	if err := repo.Add(t.Context(), existing, nil); err != nil {
+	if err := repo.Add(t.Context(), existing); err != nil {
 		t.Fatalf("repo.Add existing: %v", err)
 	}
 
@@ -241,12 +232,6 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 	if _, err := repo.DB().ExecContext(t.Context(),
 		`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)`, qJob.ID()); err != nil {
 		t.Fatalf("seed failed_articles: %v", err)
-	}
-
-	// Seed barrier accumulator bytes to verify forgetJobBarrierState cleans it up.
-	application.NoteJobBytes(qJob.ID(), 1024)
-	if hasBytes, _ := application.JobBarrierState(qJob.ID()); !hasBytes {
-		t.Fatal("expected barrier bytes to be tracked before finalization")
 	}
 
 	entry := history.Entry{
@@ -270,12 +255,7 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 		t.Errorf("expected manifest %s to be deleted after persist error, got err: %v", manifestPath, err)
 	}
 
-	// 3. Checkpointer prune still executed.
-	if application.Checkpointer().DirtyCount() != 0 {
-		t.Errorf("expected checkpointer dirty count to be 0 after prune, got %d", application.Checkpointer().DirtyCount())
-	}
-
-	// 4. Durability rows deletion still executed for completed job.
+	// 3. Durability rows deletion still executed for completed job.
 	var failedCount int
 	if err := repo.DB().QueryRowContext(t.Context(),
 		`SELECT COUNT(*) FROM failed_articles WHERE job_id = ?`, qJob.ID()).Scan(&failedCount); err != nil {
@@ -283,11 +263,6 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 	}
 	if failedCount != 0 {
 		t.Errorf("expected failed_articles to be deleted after persist error, got count %d", failedCount)
-	}
-
-	// 5. forgetJobBarrierState still executed.
-	if hasBytes, hasMu := application.JobBarrierState(qJob.ID()); hasBytes || hasMu {
-		t.Errorf("expected job barrier state to be forgotten, got bytes=%v mu=%v", hasBytes, hasMu)
 	}
 }
 
@@ -387,90 +362,4 @@ func TestFinalizer_PostProcessorTimeout_OccupiedJobSkipsEviction(t *testing.T) {
 		t.Fatalf("tx.Commit: %v", err)
 	}
 	<-finalizerDone
-}
-
-func TestFinalizer_FailedJob_NonResidentManifest_WritesHistoryJobFiles(t *testing.T) {
-	t.Parallel()
-	dl := t.TempDir()
-	comp := t.TempDir()
-	admin := t.TempDir()
-	cfg := testConfig(dl, comp, admin)
-
-	db, err := history.Open(t.Context(), filepath.Join(admin, "history.db"))
-	if err != nil {
-		t.Fatalf("history.Open: %v", err)
-	}
-	repo := history.NewRepository(db)
-
-	application, err := app.New(cfg, repo)
-	if err != nil {
-		t.Fatalf("app.New: %v", err)
-	}
-
-	parsed := &nzb.NZB{
-		Files: []nzb.File{
-			{
-				Subject: "test-file-1.bin",
-				Bytes:   100,
-				Articles: []nzb.Article{
-					{ID: "art1@domain", Bytes: 100, Number: 1},
-				},
-			},
-			{
-				Subject: "test-file-2.bin",
-				Bytes:   200,
-				Articles: []nzb.Article{
-					{ID: "art2@domain", Bytes: 200, Number: 1},
-				},
-			},
-		},
-	}
-	qJob, qHdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "nonresident-manifest-test"})
-
-	// Write the manifest to the queue manifests location on disk.
-	m, err := qJob.Manifest()
-	if err != nil {
-		t.Fatalf("qJob.Manifest: %v", err)
-	}
-	data, err := json.Marshal(m)
-	if err != nil {
-		t.Fatalf("Marshal manifest: %v", err)
-	}
-	manifestPath := filepath.Join(admin, "queue", "manifests", qJob.ID()+".json.gz")
-	if err := os.MkdirAll(filepath.Dir(manifestPath), 0755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	if err := fsutil.WriteGzAtomicBytes(manifestPath, data); err != nil {
-		t.Fatalf("WriteGzAtomicBytes manifest: %v", err)
-	}
-
-	if err := application.Dispatcher().Add(context.Background(), qJob, qHdr); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-
-	// Evict the manifest from memory.
-	qJob.Evict()
-	if qJob.Resident() {
-		t.Fatal("expected qJob.Resident() to be false after Evict()")
-	}
-
-	entry := history.Entry{
-		NzoID:  qJob.ID(),
-		Name:   qJob.Name(),
-		Status: string(constants.StatusFailed),
-	}
-
-	if err := application.TriggerPersistAndCommit(slog.Default(), entry, &postproc.Job{Job: qJob}); err != nil {
-		t.Fatalf("TriggerPersistAndCommit: %v", err)
-	}
-
-	var count int
-	if err := repo.DB().QueryRowContext(t.Context(),
-		"SELECT COUNT(*) FROM history_job_files WHERE job_id = ?", qJob.ID()).Scan(&count); err != nil {
-		t.Fatalf("QueryRowContext: %v", err)
-	}
-
-	if count != 2 {
-		t.Fatalf("history_job_files count = %d, want 2", count)
-	}
 }

@@ -35,9 +35,9 @@ func (a articleID) sameArticle(b articleID) bool { return a.artIdx == b.artIdx }
 // FileWriter owns one target file: its handle and its write path. It has no
 // authority over anything externally visible.
 //
-// It cannot ack an article, record a CRC part, decide a file is complete, or
-// truncate. Those decisions moved to durability.Barrier, which is the only
-// component that knows whether an fsync has happened. The writer's entire
+// It cannot ack an article, record a CRC part or decide a file is complete.
+// Its one durability step is finish: fsync, trim to its owned ranges, fsync.
+// The writer's entire
 // contract to the outside world is: bytes it reports from Drain reached
 // WriteAt without error, and everything else is its own business.
 //

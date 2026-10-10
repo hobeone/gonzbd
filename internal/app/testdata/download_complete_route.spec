@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run ^(TestRunFetch_ReportsACompleteJob|TestCompleteFinalizedFile_ReportsFetchingToAssessing|TestCompleteFinalizedFile_AdmittedJobIsNotReportedDownloaded|TestRetryHistoryJob_CompleteJobPassesThroughAssessing|TestRestart_DropsAJobAlreadyInHistoryBeforeTheResumeSweep|TestReconcileBeforeFirstTick_StopsOnACancelledContext)$
+run ^(TestRunFetch_ReportsACompleteJob|TestCompleteFinalizedFile_ReportsFetchingToAssessing|TestCompleteFinalizedFile_AdmittedJobIsNotReportedDownloaded|TestRetryHistoryJob_CompleteJobPassesThroughAssessing|TestRestart_DropsAJobAlreadyInHistoryBeforeItIsTicked|TestReconcileBeforeFirstTick_StopsOnACancelledContext)$
 timeout 1m
 
 # How a job's download-complete report is made: reportDownloadComplete reports
@@ -58,40 +58,6 @@ file internal/app/runner.go
 			err := r.report.AdvanceFrom(j, job.Fetching, job.Assessing)
 --- end
 
-[a retry hands a complete job straight to post-processing, as it did before]
-file internal/app/app.go
---- anchor
-	app.emit(Event{Type: "queue_updated"})
-	app.emit(Event{Type: "history_updated"})
-	return nil
-}
---- replace
-	app.emit(Event{Type: "queue_updated"})
-	app.emit(Event{Type: "history_updated"})
-	if j.IsComplete() {
-		app.maybeFinalizeJob(j, failMsgForJob(j))
-	}
-	return nil
-}
---- end
-
-[a retry fails a complete job by ID]
-file internal/app/app.go
---- anchor
-	app.emit(Event{Type: "queue_updated"})
-	app.emit(Event{Type: "history_updated"})
-	return nil
-}
---- replace
-	app.emit(Event{Type: "queue_updated"})
-	app.emit(Event{Type: "history_updated"})
-	if j.IsComplete() {
-		app.maybeFinalize(jobID, "Failed: injected")
-	}
-	return nil
-}
---- end
-
 [the Assessing worker settles its verdict Failed]
 file internal/app/runner.go
 --- anchor
@@ -100,34 +66,18 @@ file internal/app/runner.go
 		if reasons := r.app.postProcAdmissions.takeDeferred(j); true {
 --- end
 
-[the job already in history is dropped after the resume sweep]
+[the job already in history is not dropped before the first tick]
 file internal/app/startup_reconcile.go
 --- anchor
-	if app.dispatcher != nil {
-		for _, row := range app.dispatcher.List() {
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("app: startup reconciliation aborted: %w", err)
-			}
 			app.dropJobAlreadyInHistory(ctx, row.ID)
 		}
 	}
-	if err := app.resumeAllJobs(ctx); err != nil {
-		return err
-	}
-	return app.fileOwedUnwantedFailures(ctx)
+	if err := app.hydratePausedJobs(ctx); err != nil {
 --- replace
-	if err := app.resumeAllJobs(ctx); err != nil {
-		return err
-	}
-	if app.dispatcher != nil {
-		for _, row := range app.dispatcher.List() {
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("app: startup reconciliation aborted: %w", err)
-			}
-			app.dropJobAlreadyInHistory(ctx, row.ID)
+			_ = row.ID
 		}
 	}
-	return app.fileOwedUnwantedFailures(ctx)
+	if err := app.hydratePausedJobs(ctx); err != nil {
 --- end
 
 [a cancelled startup goes on dropping and sweeping jobs]

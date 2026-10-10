@@ -22,7 +22,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
-	"github.com/hobeone/gonzbd/internal/checkpoint"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -47,36 +46,18 @@ import (
 var ErrAlreadyStarted = errors.New("app: already started")
 
 const (
-	defaultCheckpointInterval = constants.DefaultCheckpointInterval
-	defaultCheckpointBytes    = constants.DefaultCheckpointBytes
-
 	// closeHandlesTimeout bounds the pre-post-processing handle close. It
 	// matches assembler.barrierOpTimeout, the bound on every other control
 	// message that has to reach the single worker goroutine.
 	closeHandlesTimeout = 5 * time.Second
 
-	// shutdownCheckpointTimeout bounds R6's clean-shutdown barrier. It sits
-	// inside the 15s per-step budget Shutdown gives the assembler stop that
-	// follows it, so a wedged mount delays shutdown rather than preventing it.
-	shutdownCheckpointTimeout = 10 * time.Second
+	// reloadQuiesceTimeout bounds ReloadDownloader's wait for the assembler
+	// to process what the old downloader produced.
+	reloadQuiesceTimeout = 10 * time.Second
 
-	// reloadCheckpointTimeout is the BUDGET the barrier ReloadDownloader runs
-	// before clearing the Emitted bits divides among resident jobs.
-	//
-	// It is deliberately not called a bound, because it does not bound the
-	// call. checkpointJob acquires the per-job barrier lock before it looks
-	// at any context, and sync.Mutex is not cancellable, so a job whose
-	// barrier is already running under the periodic sweep is waited for
-	// however long that sweep takes — a per-job hold of up to one full
-	// checkpoint interval. The budget governs how the remaining time is
-	// shared out, not when the call returns.
-	//
-	// A SEPARATE constant from shutdownCheckpointTimeout despite the equal
-	// value, because the two bound different things and one is free to move.
-	// Shutdown's sits inside a per-step budget it must not exceed; this one
-	// paces a config change, and a user waiting on a settings save is a
-	// different tolerance from a process on its way out.
-	reloadCheckpointTimeout = 10 * time.Second
+	// defaultRecordInterval is the recorder's flush cadence. A crash loses at
+	// most this much of the record, which costs a re-fetch of those articles.
+	defaultRecordInterval = 5 * time.Second
 )
 
 // Downloader defines the lifecycle and control interface for the Usenet
@@ -107,9 +88,8 @@ var (
 
 // Application manages the download and post-processing pipeline.
 type Application struct {
-	version            string
-	checkpointInterval time.Duration
-	log                *slog.Logger
+	version string
+	log     *slog.Logger
 
 	// binaryVersions is populated once in New() from the startup probe
 	// and never mutated afterward — safe to read from any goroutine
@@ -119,7 +99,7 @@ type Application struct {
 	// reloadMu serializes ReloadDownloader calls end-to-end. It is separate
 	// from mu (which only guards the brief downloader/downloaderStats field
 	// swap) so concurrent reloads queue up instead of interleaving their
-	// Stop/setCompletions/checkpoint/ClearEmittedForReload/Start sequences, which
+	// Stop/setCompletions/Quiesce/ClearEmittedForReload/Start sequences, which
 	// would otherwise risk wiring app.downloader and app.pipeline's
 	// completions source to two different downloader instances.
 	reloadMu sync.Mutex
@@ -130,7 +110,6 @@ type Application struct {
 	dispatcher      *dispatch.Dispatcher
 	residency       *appResidency
 	runner          *appRunner
-	checkpointer    *checkpoint.Checkpointer
 	historyRepo     *history.Repository
 	downloader      Downloader
 	downloaderStats DownloaderStats
@@ -150,45 +129,23 @@ type Application struct {
 	internalFileComplete chan FileComplete
 	onFileComplete       func(jobID string, fileIdx int)
 
-	// barrier is the single place the Written -> Durable -> Resolved
-	// transition happens (X2). It is the only thing that can mint a
-	// DurableProof, and Job.AckDurable takes one, so no other path in the
-	// program can ack an article as downloaded. nil when the process has no
-	// history database, in which case nothing acks and every restart
-	// re-downloads — see New.
-	barrier *durability.Barrier
-	// durable is the store that owns a job's per-job rows: durable_runs,
-	// job_files and failed_articles. Nil when there is no history database.
-	// The barrier is the only writer of run content, and this handle cannot
-	// write it — durability.Store's commit is unexported.
+	// durable is the store that owns a job's per-job rows: job_files and
+	// written_articles. Nil when there is no history database.
 	durable durabilityStore
-	resumer fileResumer
 
-	// checkpointBytes is B1's volume bound. checkpointInterval above is its
-	// time bound; the barrier fires on whichever arrives first.
-	checkpointBytes int64
+	// recorder is the one writer of the article record: it buffers what the
+	// assembler wrote and flushes it every recordInterval, and commits
+	// verification and untrust verdicts synchronously. Never nil; with no
+	// history database it writes to a store that discards.
+	recorder       *recorder
+	recordInterval time.Duration
 
-	// barrierKick carries an out-of-band checkpoint request from the write
-	// path to the checkpoint loop, for a job that has crossed the byte bound.
-	// Buffered and sent to non-blockingly: the write path must never wait on
-	// the checkpoint loop.
-	barrierKick chan string
+	// syncFile, when non-nil, replaces the assembler's fsync of a file's
+	// writing handle. Same discipline as the other same-package test seams:
+	// set once, before the application is started.
+	syncFile func(*os.File) error
 
-	// barrierRuns counts completed Barrier.Run attempts. Observability, and
-	// the only way a test can tell "the cadence fired" from "the cadence
-	// happened to have nothing to do".
-	barrierRuns atomic.Int64
-
-	// barrierMu guards jobBarrierBytes. It is NOT the barrier's own lock:
-	// jobBarrierMu holds those, one per job, and they are held across the
-	// barrier's I/O while this one never is.
-	barrierMu       sync.Mutex
-	jobBarrierMu    map[string]*barrierLock
-	jobBarrierBytes map[string]int64
-
-	// stallMu guards stalls. It is never held across I/O: every walk copies
-	// what it needs and releases first, because a re-evaluation runs barrier
-	// operations against a mount that is suspected of being wedged.
+	// stallMu guards stalls. It is never held across I/O.
 	stallMu sync.Mutex
 	stalls  map[string]*stallRecord
 
@@ -201,14 +158,13 @@ type Application struct {
 	postProcAdmissions postProcAdmissions
 
 	// stallKick carries R19's "on user action" re-evaluation request from an
-	// HTTP handler to the checkpoint loop. Buffered and sent to
-	// non-blockingly, for the same reason barrierKick is.
+	// HTTP handler to the stall loop. Buffered and sent to non-blockingly: an
+	// HTTP handler must never wait on that loop.
 	stallKick chan struct{}
 
 	// stallRecheckInterval is R19's interval cadence. A field rather than the
-	// constant directly so a test can drive the ticker arm of runCheckpoint's
-	// select without waiting 30 seconds — the seam between the loop and
-	// reevaluateStalls is otherwise unpinnable, and was.
+	// constant directly so a test can drive the ticker arm of runStallRecheck's
+	// select without waiting 30 seconds.
 	stallRecheckInterval time.Duration
 
 	// maxPenalty overrides the maximum server penalty duration for tests.
@@ -229,50 +185,31 @@ type Application struct {
 
 	// stopping is set at the top of Shutdown, BEFORE any of its steps run.
 	//
-	// It exists because the guard it feeds — Application.Stall's refusal to
-	// park a job while the process is stopping — tested app.ctx.Err(), and
-	// app.cancel() runs at step 4, AFTER the clean-shutdown checkpoint at step
-	// 2. So the guard was inert on exactly the path it was written for: the
-	// shutdown barrier exceeds its budget on a queue with many open files,
-	// every job it reaches raises a fault, ctx.Err() is still nil, the pause
-	// runs, and the queue.Save at the end of Shutdown persists it. The stall
-	// list that would re-evaluate it is in-memory and dies with the process,
-	// so the job comes back Paused forever.
-	//
-	// Reordering cancel() before the checkpoint is not the fix: it would
-	// cancel the checkpoint's own context and stop it doing the work it exists
-	// to do. Only a SIGTERM-cancelled parent context took the guarded path,
-	// which is why this is a separate flag rather than a second look at ctx.
+	// It feeds Application.Stall's refusal to park a job while the process is
+	// stopping. app.ctx is cancelled only at step 4 of Shutdown, after the
+	// assembler has stopped, so a fault raised while stopping the workers
+	// would otherwise pause a job, and the pause would be persisted while the
+	// stall list that re-evaluates it dies with the process.
 	stopping atomic.Bool
-
-	// checkpointHook, when non-nil, runs at the top of shutdownCheckpoint.
-	// Same discipline as the other same-package test seams: set once, before
-	// the application is started. See shutdownCheckpoint for why the ordering
-	// needs a seam at all.
-	checkpointHook func()
-
-	// jobCheckpointHook, when non-nil, runs with each job's checkpoint context
-	// just before its barrier. Same discipline as checkpointHook.
-	jobCheckpointHook func(context.Context)
 
 	// postProcStopHook, when non-nil, overrides postProcessor.Stop during Shutdown.
 	postProcStopHook func() error
 
 	// removeJobHook, when non-nil, runs in RemoveJob just before
 	// dispatcher.Remove, where the tick can evict the job RemoveJob has just
-	// cancelled. Same discipline as checkpointHook.
+	// cancelled. Same discipline as syncFile.
 	removeJobHook func(id string)
 
 	// removeCancelGapHook, when non-nil, runs in RemoveJob between its
 	// dispatcher cancel and its post-processing cancel, where a job the runner
 	// is still handing over can reach the post-processor. Same discipline as
-	// checkpointHook.
+	// syncFile.
 	removeCancelGapHook func(id string)
 
 	// removeAbortGapHook, when non-nil, runs in RemoveJob right after its
 	// duOrch.abortJob, before its dispatcher cancel, where a completion can
 	// still reach the DirectUnpack orchestrator. Same discipline as
-	// checkpointHook.
+	// syncFile.
 	removeAbortGapHook func(id string)
 
 	// directUnpackWaitEndHook, when non-nil, runs in enqueuePostProc's
@@ -282,65 +219,65 @@ type Application struct {
 	// state from inside the hook observes the two in the order this
 	// goroutine actually executed them — no race against another goroutine's
 	// unrelated work, unlike a hook that fires from RemoveJob's caller. Same
-	// discipline as checkpointHook.
+	// discipline as syncFile.
 	directUnpackWaitEndHook func(id string)
 
 	// directUnpackCollectHook, when non-nil, runs in enqueuePostProc right
 	// before its collect of the job's DirectUnpacker, after its read of
 	// whether the job's download finished, where a completion of the job's
-	// last file can land. Same discipline as checkpointHook.
+	// last file can land. Same discipline as syncFile.
 	directUnpackCollectHook func(id string)
 
 	// finalizeHook, when non-nil, runs in jobFinalizer.finalize once the
 	// post-processor has let the job go and before its admission ends. Same
-	// discipline as checkpointHook.
+	// discipline as syncFile.
 	finalizeHook func(*postproc.Job)
 
 	// retryClaimedHook, when non-nil, runs in retryHistoryJob once it holds
 	// the job's transition lock and before it reads anything, where a
 	// finalizer of the ID can start without that lock. Same discipline as
-	// checkpointHook.
+	// syncFile.
 	retryClaimedHook func(id string)
 
 	// retryRegisteringHook, when non-nil, runs in retryHistoryJob after its
 	// last finalizing check and before dispatcher.Add registers the rebuilt
-	// job. Same discipline as checkpointHook.
+	// job. Same discipline as syncFile.
 	retryRegisteringHook func(id string)
 
 	// jobNameChosenHook, when non-nil, runs in claimJobName after a name is
 	// chosen and before the registry is asked to take it. Same discipline as
-	// checkpointHook.
+	// syncFile.
 	jobNameChosenHook func(name string)
 
 	// nzbBackupChosenHook, when non-nil, runs in writeNZBBackup after a backup
 	// name is chosen and before the file is published under it. Same
-	// discipline as checkpointHook.
+	// discipline as syncFile.
 	nzbBackupChosenHook func(name string)
 
 	// startedTransitionHook, when non-nil, runs in Start right after started
-	// flips true. Same discipline as checkpointHook.
+	// flips true. Same discipline as syncFile.
 	startedTransitionHook func()
 
 	// downloadReportedHook, when non-nil, runs in completeFinalizedFile right
 	// after the report that the job's download finished, where the tick can
 	// already have launched the job's post-processing. Same discipline as
-	// checkpointHook.
+	// syncFile.
 	downloadReportedHook func(id string)
 
 	// peekedHook, when non-nil, runs in completeFinalizedFile right after the
 	// archive peek and before the file is marked complete. Same discipline as
-	// checkpointHook.
+	// syncFile.
 	peekedHook func()
 
 	// assessHook, when non-nil, runs in runAssess once the worker has resolved
 	// its job and before it assesses it, where the worker is live at
-	// Assessing. Same discipline as checkpointHook.
+	// Assessing. Same discipline as syncFile.
 	assessHook func(id string)
 
 	// closeJobHandlesHook, when non-nil, overrides assembler.CloseJobHandles in
 	// enqueuePostProc. It exists because no seam reaches a started
 	// assembler's open file to fault its close. Same discipline as
-	// checkpointHook.
+	// syncFile.
 	closeJobHandlesHook func(ctx context.Context, jobID string) error
 
 	shutdownStepTimeout time.Duration
@@ -410,32 +347,16 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	app.duOrch = newDirectUnpackOrchestrator(app)
 	app.finalizer = newJobFinalizer(app)
-	app.jobBarrierMu = make(map[string]*barrierLock)
-	app.jobBarrierBytes = make(map[string]int64)
 	app.stalls = make(map[string]*stallRecord)
-	app.barrierKick = make(chan string, 64)
 	app.stallKick = make(chan struct{}, 1)
 	app.stallRecheckInterval = stallRecheckInterval
-	app.checkpointInterval = time.Duration(dl.CheckpointInterval) * time.Second
-	app.checkpointBytes = int64(dl.CheckpointBytes)
+	app.recordInterval = defaultRecordInterval
 	app.shutdownStepTimeout = 15 * time.Second
 	app.closeHandlesTimeout = closeHandlesTimeout
 	app.metricsPushInterval = 1000 * time.Millisecond
 	for _, o := range opts {
 		o(app)
 	}
-	// Resolve both checkpoint bounds HERE, not in Start.
-	//
-	// They are read by noteJobBytes on the pipeline's worker goroutines and by
-	// runCheckpoint on its own, and New is the last point at which nothing is
-	// running yet — the options loop above is the final writer either way.
-	// Resolving in Start would write the field after Start has already
-	// launched pipeline.run, which is a data race with a concrete cost rather
-	// than a theoretical one: this is where the DEFAULT is substituted, so a
-	// stale read of the configured 0 (the documented "use the default") makes
-	// `bytes >= checkpointBytes` true for every article and runs a full
-	// barrier per article.
-	app.checkpointInterval, app.checkpointBytes = checkpointSettings(app.checkpointInterval, app.checkpointBytes)
 	if app.log == nil {
 		app.log = slog.Default().With("component", "app")
 	}
@@ -447,6 +368,8 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 
 	var dispatchStore dispatch.Store = nopDispatchStore{}
 	var durStore *durability.Store
+	var recStore recordStore = nopRecordStore{}
+	var reader recordReader
 	if repo != nil && repo.DB() != nil {
 		dispatchStore = dispatchstore.New(repo.DB())
 		// repo.Path() is the one owner of this value (Standing Design Rule
@@ -457,8 +380,10 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		// name the wrong file.
 		durStore = durability.NewStore(repo.DB(), repo.Path())
 		app.durable = durStore
+		recStore = durStore
+		reader = durStore
 	}
-	checkpointStore := &appCheckpointStore{store: durStore}
+	app.recorder = newRecorder(recStore, app.lookupCurrent, log)
 	leaseCap := maxActiveJobs
 	if leaseCap <= 0 {
 		leaseCap = 4
@@ -468,8 +393,12 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		slotCap = 2
 	}
 	mdir := manifestDir(adminDir)
-	app.checkpointer = checkpoint.New(checkpointStore, 5*time.Second, log)
-	app.residency = newAppResidency(app.lookupJob, mdir, durStore, log)
+	app.residency = newAppResidency(app.lookupJob, mdir, reader, log)
+	app.residency.commit = func(ctx context.Context, j *job.Job, v []durability.FileVerdict) error {
+		return app.recorder.apply(ctx, j, v)
+	}
+	app.residency.finished = app.enqueueResumedCompletion
+	app.residency.parked = app.Stall
 	app.runner = newAppRunner(app)
 	app.dispatcher = dispatch.New(
 		leaseCap,
@@ -535,12 +464,12 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 			}
 			app.maybeFinalize(jobID, msg)
 		},
-		onArticleWritten: app.noteJobBytes,
-		checkpointer:     app.checkpointer,
-		updateCh:         make(chan completionSwap, 1),
-		fileInfo:         make(map[fileKey]assembler.FileInfo),
+		markDirty: app.markFileDirty,
+		updateCh:  make(chan completionSwap, 1),
+		fileInfo:  make(map[fileKey]assembler.FileInfo),
 	}
 	app.pipeline = p
+	app.residency.pathFor = p.jobFilePath
 
 	stageList := app.customStages
 	if stageList == nil {
@@ -578,13 +507,6 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.postProcessor = pp
 
 	onFileComplete := func(jobID string, fileIdx int) {
-		// No CRC32 is reported. The assembler cannot compute a whole-file
-		// one honestly — a resumed run is never sent the articles an earlier
-		// run completed, so its parts never tile the file (#349) — and the
-		// honest figure is the crc32 of a file's single durable run, which
-		// Application.recordAssembledCRC queries after the finalize. Nothing
-		// consumes this callback's would-be figure; see the note on
-		// FileComplete.
 		fc := FileComplete{JobID: jobID, FileIdx: fileIdx}
 		select {
 		case app.internalFileComplete <- fc:
@@ -593,13 +515,8 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 			// Ordering constraint: this is safe w.r.t. wg.Add-during-Wait only because OnFileComplete
 			// runs on the assembler worker, which Shutdown joins at step 2 — before app.wg.Wait() at step 4.
 			//
-			// This arm is why the channel's capacity is NOT a bound on
-			// anything. A completed file now keeps its assembler handle open
-			// until the consumer finalizes it (see assembler.finalizeFile), so
-			// an unbounded backlog here is an unbounded set of open handles.
-			// The arm is still required: blocking the worker on a consumer
-			// whose finalize path submits control messages back to that same
-			// worker deadlocks both.
+			// Blocking the worker instead would stall every job's writes on
+			// this consumer.
 			app.wg.Go(func() {
 				app.internalFileComplete <- fc
 			})
@@ -607,42 +524,13 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	app.onFileComplete = onFileComplete
 
-	// The durability record lives in the history database, which is also where
-	// the queue's own state lives. One database, one set of transactions, no
-	// second file to keep consistent with it.
-	//
-	// A process with no history database gets no barrier, and that is a
-	// degraded mode rather than a supported one: the barrier is the only
-	// thing that can mint a DurableProof, so nothing acks, and every restart
-	// re-downloads everything. It is logged loudly for that reason. Only
-	// tests that never download reach it.
-	if durStore != nil {
-		app.resumer = durability.NewResumer(durStore, log)
-		app.barrier = durability.NewBarrier(durStore, app, app, log)
-	} else {
-		log.Warn("no history database: durability barrier disabled, " +
-			"no article will be acked and every restart re-downloads the whole queue")
-	}
-
-	// The assembler is given no SUCCESS ack callback. It has no authority to
-	// resolve an article as downloaded any more: successes are acked by
-	// durability.Barrier, which is the only component that runs the fsync
-	// (X2). The barrier's cadence lives in runCheckpoint.
-	//
-	// OnArticleRejected is the one exception in the other direction, and it is
-	// not the assembler resolving anything: it reports an article it refused,
-	// and handleArticleRejected does the acking. The refusal has no other
-	// witness — a bad yEnc offset is caught here and nowhere else — so without
-	// this the article is silently dropped and its job never finishes. Ordinary
-	// permanent failures still go to Job.MarkArticleFailed from the
-	// pipeline.
-	//
-	// Options carries no durability store either, and nothing here records
-	// anything about an article. The assembler REPORTS what its writes
-	// reached — offset, length and CRC come back in the drain — and the
-	// barrier records them after the fsync. A store wired in here would put a
-	// writer on the assembler's worker goroutine, where a SQLite stall is read
-	// as evidence about storage and parks a healthy job (A1).
+	// The assembler is given no SUCCESS ack callback: an article is resolved
+	// as downloaded by OnArticleWritten, after its write returned nil, through
+	// the recorder, which buffers its row first. OnArticleRejected reports an
+	// article the assembler refused, which handleArticleRejected fails;
+	// ordinary permanent failures still go to Job.MarkArticleFailed from the
+	// pipeline. OnFileUntrusted reports a file whose fsync failed, which
+	// handleFileUntrusted returns to Outstanding in memory and in SQLite.
 	asm := assembler.New(assembler.Options{
 		FileInfo:            p.resolveFileInfo,
 		MinFreeBytes:        minFreeBytes,
@@ -650,7 +538,10 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		OnWriteFault:        app.handleWriteFault,
 		OnArticlesUnwritten: app.handleArticlesUnwritten,
 		OnArticleRejected:   app.handleArticleRejected,
+		OnArticleWritten:    app.handleArticleWritten,
+		OnFileUntrusted:     app.handleFileUntrusted,
 		OnFileComplete:      onFileComplete,
+		SyncFile:            app.syncFileHandle,
 	}, log)
 	app.assembler = asm
 	p.assembler = asm
@@ -660,33 +551,15 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	return app, nil
 }
 
-// WithCheckpointInterval overrides the checkpoint cadence, for tests that
-// cannot wait 30 seconds for one.
-//
-// It is one interval, not two, because there is only one thing to schedule:
-// each tick runs a durability barrier per active job and then saves the queue.
-// The save follows the barrier because the barrier is what produces something
-// worth saving — an ack marks articles Done in memory, and until the queue is
-// written a crash re-fetches them anyway.
-func WithCheckpointInterval(d time.Duration) func(*Application) {
-	return func(a *Application) { a.checkpointInterval = d }
-}
-
 // WithStallRecheckInterval overrides R19's re-evaluation cadence.
-//
-// Separate from the checkpoint interval because they measure different things:
-// one bounds rework on a healthy job, the other bounds how long a user waits
-// after clearing a full disk. A test that drove the re-evaluation off the
-// checkpoint interval would be asserting against a coupling production does
-// not have.
 func WithStallRecheckInterval(d time.Duration) func(*Application) {
 	return func(a *Application) { a.stallRecheckInterval = d }
 }
 
-// WithCheckpointBytes overrides B1's volume bound, for tests that cannot
-// download 64 MiB to see one barrier.
-func WithCheckpointBytes(n int64) func(*Application) {
-	return func(a *Application) { a.checkpointBytes = n }
+// WithRecordInterval overrides how often the recorder flushes written
+// articles and file state to the database.
+func WithRecordInterval(d time.Duration) func(*Application) {
+	return func(a *Application) { a.recordInterval = d }
 }
 
 // WithShutdownStepTimeout overrides the per-step shutdown timeout for tests.
@@ -840,13 +713,12 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	}
 
 	// Seed before handing the job to the dispatcher, the same order
-	// RetryHistoryJob uses. Not for an eviction race — Evict keeps
-	// JobProgress, and restoreJobFiles overlays only rows that exist, so a
-	// hydration inside the window would read nothing and leave the derived
-	// policy standing. The reason is the error path: registering first means a
-	// failed seed returns an error to the caller while the job is already in
-	// the dispatcher and downloading, with no job_files rows for SaveBatch to
-	// update, so the attempt runs unrecorded and reports as a failure to add.
+	// RetryHistoryJob uses. The reason is the error path: registering first
+	// means a failed seed returns an error to the caller while the job is
+	// already in the dispatcher and downloading, with no job_files rows for the
+	// recorder to update — ApplyRecord writes no written_articles row for a job
+	// without one — so the attempt runs unrecorded and reports as a failure to
+	// add.
 	if app.durable != nil {
 		if m, err := j.Manifest(); err == nil && m != nil {
 			if err := seedJobFiles(ctx, app.durable, j.ID(), m.NumFiles(), j.FileFetchPolicy); err != nil {
@@ -1010,9 +882,6 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 		app.removeCancelGapHook(id)
 	}
 	app.postProcessor.CancelJob(j)
-	if app.checkpointer != nil {
-		app.checkpointer.Prune(j)
-	}
 	if app.removeJobHook != nil {
 		app.removeJobHook(id)
 	}
@@ -1026,16 +895,13 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// is a request no one else carries — so the removal continues rather than
 	// reporting, and the rule decides the rows either way.
 	if rmErr != nil && !errors.Is(rmErr, dispatch.ErrNotFound) {
-		// The job stays registered and cancelled, so its checkpoints must be
-		// written again. The mark stays: a hand-over of this instance is
-		// refused (beginHandOver) and a finalizer of it files nothing and
-		// takes none of its by-ID steps (persistAndCommit), so no teardown of
-		// this instance can act on a retry registered under the ID once the
-		// tick has evicted it. The cost is that this instance is never filed
-		// in history. A later RemoveJob of it proceeds as this one would have.
-		if app.checkpointer != nil {
-			app.checkpointer.Unprune(j)
-		}
+		// The job stays registered and cancelled. The mark stays: a hand-over
+		// of this instance is refused (beginHandOver) and a finalizer of it
+		// files nothing and takes none of its by-ID steps (persistAndCommit),
+		// so no teardown of this instance can act on a retry registered under
+		// the ID once the tick has evicted it. The cost is that this instance
+		// is never filed in history. A later RemoveJob of it proceeds as this
+		// one would have.
 		return rmErr
 	}
 
@@ -1090,7 +956,6 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// Forget the pipeline's cached file info now that no more articles can
 	// be dispatched for this job.
 	app.pipeline.forgetJob(id)
-	app.forgetJobBarrierState(id)
 	// Five seconds matches dropJobAlreadyInHistory, the other path that
 	// reclaims a job that DEPARTED rather than finished.
 	delCtx, delCancel := context.WithTimeout(cleanupCtx, 5*time.Second)
@@ -1377,7 +1242,7 @@ func (app *Application) Start(ctx context.Context) error {
 		// This matters most for the late failure paths. By the time the
 		// waitBounded steps can fail, four long-lived goroutines are already
 		// running against app.ctx — pipeline.run, watchCompletions,
-		// runCheckpoint and runMetricsPush. Without this cancel they would run
+		// runStallRecheck and runMetricsPush. Without this cancel they would run
 		// forever, and nothing would join them either, since app.wg.Wait lives
 		// only in Shutdown.
 		if app.dispatcher != nil {
@@ -1398,18 +1263,14 @@ func (app *Application) Start(ctx context.Context) error {
 	if app.startedTransitionHook != nil {
 		app.startedTransitionHook()
 	}
-	// Dropping the jobs already in history, and the resume sweep, run inside
-	// the dispatcher's start, between restoring the registry and the first
-	// tick. reconcileBeforeFirstTick and resumeAllJobs have that placement's
-	// argument. The restart itself hands no complete job to post-processing: a
+	// Dropping the jobs already in history, and hydrating the paused ones, run
+	// inside the dispatcher's start, between restoring the registry and the
+	// first tick; reconcileBeforeFirstTick has that placement's argument. A
 	// complete job restored at Fetching, or never run, is reported
 	// download-complete by its Fetching worker (appRunner.runFetch) and reaches
-	// post-processing through Assessing. One path in the dispatcher's start
-	// can: completeStrandedFiles -> completeFinalizedFile, which files the job
-	// (finalizeRegistered -> enqueuePostProc) after MarkFileComplete when
-	// peekArchiveForUnwanted finds an unwanted name in the stranded file under
-	// action=fail and the job is not then complete (a complete one is deferred
-	// to its Assessing worker, awaitsAssessing).
+	// post-processing through Assessing. A file a hydration here finishes by
+	// path is queued as a Resumed completion, which watchCompletions applies
+	// once it runs.
 	if app.dispatcher != nil {
 		if err := app.dispatcher.StartWith(app.ctx, app.reconcileBeforeFirstTick); err != nil {
 			return fmt.Errorf("app: start dispatcher: %w", err)
@@ -1439,14 +1300,11 @@ func (app *Application) Start(ctx context.Context) error {
 	app.pipeline.ctx = app.ctx // must be set before goroutine launch (setCompletions reads it)
 	app.wg.Go(func() { app.pipeline.run(app.ctx) })
 	app.wg.Go(func() { app.watchCompletions(app.ctx) })
-	// Read only. Both bounds were resolved in New, before anything was
-	// running; writing either here would race every goroutine launched above.
-	interval := app.checkpointInterval
-	app.wg.Go(func() { app.runCheckpoint(app.ctx, interval) })
+	app.wg.Go(func() { app.runStallRecheck(app.ctx) })
 	app.wg.Go(func() { app.runMetricsPush(app.ctx) })
-	if app.checkpointer != nil {
-		app.wg.Go(func() { _ = app.checkpointer.Run(app.ctx) })
-	}
+	// Read only: recordInterval was set in New, before anything was running.
+	interval := app.recordInterval
+	app.wg.Go(func() { app.recorder.run(app.ctx, interval) })
 
 	app.log.Info("application started")
 
@@ -1464,8 +1322,8 @@ func (app *Application) Start(ctx context.Context) error {
 	// finalization, matching upstream (sabnzbd/postproc.py calls
 	// auto_history_purge there) — so a daemon that finishes nothing never
 	// prunes, and the instance that sat idle over the threshold would keep
-	// its expired history forever. Deliberately not on the checkpoint
-	// ticker: that fires every 30 seconds against a policy measured in days.
+	// its expired history forever. Deliberately not on a ticker of its own:
+	// the policy is measured in days.
 	if _, err := app.PruneHistory(app.ctx); err != nil {
 		app.log.Warn("history retention sweep failed at startup", "err", err)
 	}
@@ -1500,20 +1358,7 @@ func waitBounded(name string, d time.Duration, wait func() error, log *slog.Logg
 	}
 }
 
-// finalBarrier tells stopWorkers whether to run R6's clean-shutdown checkpoint
-// between stopping the downloader and stopping the assembler.
-//
-// Shutdown passes barrierOnStop. stopAndJoin (in export_test.go) passes
-// noBarrierOnStop because its purpose is to reproduce a hard kill, and a
-// process that was SIGKILLed did not get to flush anything.
-type finalBarrier bool
-
-const (
-	barrierOnStop   finalBarrier = true
-	noBarrierOnStop finalBarrier = false
-
-	defaultShutdownStepTimeout = 15 * time.Second
-)
+const defaultShutdownStepTimeout = 15 * time.Second
 
 func (app *Application) stepTimeout() time.Duration {
 	if app.shutdownStepTimeout > 0 {
@@ -1522,16 +1367,14 @@ func (app *Application) stepTimeout() time.Duration {
 	return defaultShutdownStepTimeout
 }
 
-// stopWorkers stops the downloader, optionally runs the clean-shutdown barrier,
-// aborts active DirectUnpackers, and stops the assembler, in exactly that order.
-// Shared between Shutdown and stopAndJoin (in export_test.go) so the head of
-// the teardown ordering cannot drift between them.
+// stopWorkers stops the downloader, aborts active DirectUnpackers, and stops
+// the assembler, in exactly that order. Shared between Shutdown and
+// stopAndJoin (in export_test.go) so the head of the teardown ordering cannot
+// drift between them.
 //
-// The barrier sits between the downloader stopping and the assembler stopping
-// because that is the only window where both halves hold: no new article can
-// arrive, and the file handles the barrier needs still exist. See
-// Application.shutdownCheckpoint.
-func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, barrier finalBarrier) {
+// The assembler's stop fsyncs and closes every open file, and untrusts any
+// file whose fsync fails, synchronously, before it returns.
+func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error) {
 	// Barrier on reloadMu: stopped is now true, so any ReloadDownloader call
 	// that arrives after this point sees it and returns immediately without
 	// doing any work. But a reload already past that check when we set
@@ -1554,21 +1397,8 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, ba
 		}
 	}
 
-	// R6's clean-shutdown barrier, in the only window where both halves
-	// hold: the downloader has stopped so no new article can arrive, and the
-	// assembler has not, so the file handles the barrier needs still exist.
-	// Without it every byte since the last checkpoint is re-fetched on the
-	// next start — a full window thrown away on a deliberate restart.
-	//
-	// Before the yield below, not after it. A yield parks the job's lease and
-	// kicks the tick, whose reconcileResidency evicts the job; the barrier
-	// skips a job with no resident manifest.
-	if barrier {
-		app.shutdownCheckpoint()
-	}
-
 	// If dl.Stop returned cleanly with no error, all downloader workers have definitely
-	// exited and will not touch manifests or barriers again. Yield Fetching jobs so
+	// exited and will not touch manifests again. Yield Fetching jobs so
 	// Dispatcher.Stop can cleanly park and evict. If dl.Stop timed out, do NOT yield,
 	// so Dispatcher.Stop observes wait worker timeout and skips eviction.
 	if dl != nil && dlErr == nil && app.dispatcher != nil {
@@ -1629,27 +1459,28 @@ func (app *Application) joinAndStop(stepTimeout time.Duration, errs *[]error) {
 	}
 }
 
-// Shutdown stops the downloader, post-processor, and assembler, flushes the
-// cache, and persists the queue to disk. Safe to call multiple times.
+// Shutdown stops the downloader, post-processor, and assembler, and flushes
+// the article record. Safe to call multiple times.
 //
 // Ordering matters:
-//  1. Stop the downloader — no new articles are dispatched.
-//  2. Run R6's clean-shutdown barrier, so work since the last checkpoint is not
-//     re-fetched on the next start, and abort active DirectUnpackers.
-//  3. Stop the assembler — drains in-flight writes and delivers any remaining
-//     OnFileComplete events to watchCompletions, which is still running.
-//  4. Cancel the context — watchCompletions exits.
-//  5. Wait for background goroutines to finish.
-//  6. Stop the post-processor, save queue.
+//  1. Stop the downloader — no new articles are dispatched — and abort
+//     active DirectUnpackers.
+//  2. Stop the assembler — fsyncs and closes every open file, and delivers
+//     any remaining OnFileComplete events to watchCompletions, which is still
+//     running.
+//  3. Cancel the context — watchCompletions drains and exits.
+//  4. Wait for background goroutines to finish.
+//  5. Stop the post-processor and the dispatcher.
+//  6. Flush the recorder, so what was written since its last flush is not
+//     refetched on the next start.
 //
-// Steps 1-3 are stopWorkers and steps 4-6 are joinAndStop; see stopWorkers' doc
-// for why the barrier sits between steps 1 and 3.
+// Steps 1-2 are stopWorkers and steps 3-5 are joinAndStop.
 func (app *Application) Shutdown() error {
 	if !app.started.Load() || !app.stopped.CompareAndSwap(false, true) {
 		return nil
 	}
-	// Before any step, so the stall guard covers the clean-shutdown barrier
-	// below. See the field's doc.
+	// Before any step, so the stall guard covers every fault the steps below
+	// raise. See the field's doc.
 	app.stopping.Store(true)
 
 	// Pause the dispatcher queue immediately: sets q.paused, which blocks new
@@ -1662,14 +1493,14 @@ func (app *Application) Shutdown() error {
 	var errs []error
 	stepTimeout := app.stepTimeout()
 
-	app.stopWorkers(stepTimeout, &errs, barrierOnStop)
+	app.stopWorkers(stepTimeout, &errs)
 	app.joinAndStop(stepTimeout, &errs)
 
-	if app.checkpointer != nil {
-		if err := app.checkpointer.Flush(context.Background()); err != nil {
-			errs = append(errs, fmt.Errorf("checkpointer flush: %w", err))
-		}
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), stepTimeout)
+	if err := app.recorder.flush(flushCtx); err != nil {
+		errs = append(errs, fmt.Errorf("recorder flush: %w", err))
 	}
+	flushCancel()
 	return errors.Join(errs...)
 }
 
@@ -1719,100 +1550,40 @@ func (app *Application) logQueueWriteFailure(op, jobID string, fileIdx int, err 
 	app.log.Warn(op+" failed", "job", jobID, "fileidx", fileIdx, "err", err)
 }
 
-// handleFileComplete processes a single file completion event.
-func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete) {
-	// FIRST, before anything downstream can act on the file. finalizeCompletedFile
-	// runs the barrier over it, trims it to its real extent and hands the
-	// handle back to the assembler. Everything below — MarkFileComplete,
-	// DirectUnpack, job finalization and the post-processing that follows —
-	// reads or consumes those bytes, and a file that still carries
-	// pre-allocation's trailing zeros is one par2 reports as damaged.
-	//
-	// A failure here therefore STOPS the completion rather than being logged
-	// past. The file is not marked complete, DirectUnpack is not fed it, and
-	// the job does not finalize — because none of those can be undone once
-	// done, while a stalled job can be resumed by an operator who has fixed
-	// the mount. The job pauses with the reason attached (A1, R19, R27): a
-	// failure to trim is a condition of storage, so no article is marked
-	// failed, the failed-byte count and the health percentage are untouched,
-	// and every article stays exactly as durable as it already was.
-	//
-	// The path is resolved BEFORE the finalize, not after. Application.Fail
-	// carries a permanently faulted job into maybeFinalize, which drops the
-	// pipeline's cached FileInfo for it — so a path asked for afterwards comes
-	// back empty and the reason the operator is shown names no file at all.
-	// That is a bug on its own, independent of the double-routing below.
-	path := app.filePathFor(fc.JobID, fc.FileIdx)
-	if err := app.finalizeCompletedFile(ctx, fc.JobID, fc.FileIdx); err != nil {
-		app.routeFinalizeFailure(fc.JobID, fc.FileIdx, path, err)
-		return
-	}
-	if err := app.completeFinalizedFile(ctx, fc); err != nil {
-		// Recorded, not just logged. The barrier has already trimmed this
-		// file, acked its articles and released the handle, and the
-		// assembler's tombstone means OnFileComplete will never fire for it
-		// again — so nothing else IN THIS PROCESS can re-trigger this. Dropping
-		// it leaves the file's Complete flag false with every article Done and
-		// nothing left to dispatch: a wedged job.
-		//
-		// It no longer survives restarts — completeStrandedFiles finishes the
-		// interrupted finalize during the next start's resume sweep — and this
-		// note stays because a restart is not an acceptable recovery for a
-		// condition the running process can fix itself. The retry is what keeps
-		// the repair in-process; the sweep is the backstop for the crash that
-		// takes the note down with it.
-		app.log.Info("completion not delivered; recorded for the stall re-evaluation to retry",
-			"job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
-		app.noteUndeliveredCompletion(fc.JobID, fc.FileIdx)
+// handleFileComplete processes a single file completion event. The file was
+// finished before the event was sent: fsynced and trimmed on its writing handle
+// by the assembler, or by path by the verifier.
+func (app *Application) handleFileComplete(_ context.Context, fc FileComplete) {
+	if err := app.completeFinalizedFile(fc); err != nil {
+		// A job that left the queue, or was evicted, has nothing to mark. An
+		// evicted job's file is re-derived at its next hydration: its rows are
+		// all verified, so verification finishes it by path again.
+		app.log.Info("completion not delivered", "job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
 	}
 }
 
-// completeFinalizedFile is everything the completion path does AFTER the
-// file's bytes on disk are known to be correct.
+// completeFinalizedFile is everything the completion path does once the
+// file's bytes on disk are known to be correct: derive its whole-file CRC,
+// peek the archive, feed DirectUnpack (unless fc.Resumed), mark it complete,
+// mark it dirty for the recorder, and report the job's download complete when
+// this was its last file.
 //
-// Split out of handleFileComplete because a stall raised by a failed finalize
-// interrupts the completion between the two halves, and
-// Application.reevaluateStall has to resume it from exactly there — the
-// finalize retried on its own, then this. Inlining it would have meant a
-// second copy of the DirectUnpack/mark-complete/finalize sequence, free to
-// drift from this one (S5).
-//
-// It returns an error only so the retry can tell whether the queue accepted
-// the completion: MarkFileComplete needs the job resident, and a job the
-// active set had no room to re-promote must be tried again rather than have
-// its completion silently dropped. handleFileComplete's own call has already
-// logged everything a live pipeline can act on.
-func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComplete) error {
-	// The assembled CRC is recorded HERE rather than beside the barrier,
-	// because this function is what every completion path shares and the CRC
-	// is part of "everything the completion path does after the bytes are
-	// correct". Beside the barrier it was reached by ONE of the three:
-	//
-	//   - the ordinary path reached it, since finalizeCompletedFile returns
-	//     nil and its caller comes straight here;
-	//   - stall recovery did not. retryFinalize swallowed job.ErrNotResident —
-	//     the ack cannot mark a paused job — and returned before the CRC, then
-	//     Phase 4 arrived here having marked the file finalizeDone, and
-	//     nothing retried it;
-	//   - the startup repair did not, because completeStrandedFiles has no
-	//     barrier call to hang it off at all.
-	//
-	// Both of those left AssembledCRC32 at zero, which par2 reads as NoCRC:
-	// the QuickCheck bypass is suppressed and every recovery volume is fetched
-	// for a file whose whole-file CRC was sitting in its durable run the
-	// entire time. One owner rather than three call sites is what stops a
-	// fourth path from being added without one.
-	//
-	// Before MarkFileComplete, so the value is on the progress record by the
-	// time the download-complete report below lets the job reach
-	// post-processing through Assessing.
-	app.recordAssembledCRC(ctx, fc.JobID, fc.FileIdx)
+// It returns an error when the job could not take the completion:
+// MarkFileComplete needs the job resident.
+func (app *Application) completeFinalizedFile(fc FileComplete) error {
 	if app.dispatcher != nil {
 		j, ok := app.dispatcher.Job(fc.JobID)
 		if !ok {
 			err := job.ErrNotResident
 			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 			return err
+		}
+		// Before MarkFileComplete, so the value is on the progress record by
+		// the time the download-complete report below lets the job reach
+		// post-processing through Assessing. A file whose rows do not chain
+		// gaplessly gets zero, which par2 reads as NoCRC.
+		if _, _, err := j.SettleFileCRC(fc.FileIdx); err != nil {
+			app.logQueueWriteFailure("settle file CRC", fc.JobID, fc.FileIdx, err)
 		}
 		// The volume's headers are read before anything consumes it, so a
 		// flagged one is never fed to DirectUnpack below: the peek that blocks
@@ -1830,20 +1601,18 @@ func (app *Application) completeFinalizedFile(ctx context.Context, fc FileComple
 		// not end. enqueuePostProc reads the job complete only once every
 		// file is marked, so a feed ahead of the mark is one the collected
 		// unpacker has.
-		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar {
+		//
+		// A resumed completion is not fed: see FileComplete.Resumed.
+		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
 			app.duOrch.maybeStart(fc)
 		}
 		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
 			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 			return err
 		}
-		if app.checkpointer != nil {
-			app.checkpointer.Mark(j)
-		}
-		// A job the peek failed is filed only now: the history entry retains
-		// each file's progress as it stands when post-processing takes the
-		// job, and a finalize before the mark above would record this file as
-		// incomplete, or evict the job so the mark found it not resident. The
+		app.markFileDirty(j, fc.FileIdx)
+		// A job the peek failed is filed only now: a finalize before the mark
+		// above would evict the job so the mark found it not resident. The
 		// filing is owed by the job's state, not by unwantedFail, so a
 		// completion that failed before here and is redelivered files it too.
 		app.fileOwedUnwantedFailure(j, unwantedFail)
@@ -1898,26 +1667,20 @@ func (app *Application) reportDownloadComplete(j *job.Job, rep reporter) (bool, 
 	return true, rep.AdvanceFrom(j, job.Fetching, job.Assessing)
 }
 
-// markFetchPolicyDirty marks a job whose fetch policy a par2 verdict just
-// changed, so the job_files row catches up to memory.
-//
-// Without it the verdict lives only in JobProgress. Job.Evict keeps
-// JobProgress, but appResidency.restoreJobFiles re-applies the persisted row on
-// every hydration, so an eviction and re-hydration before the next flush moved
-// the policy back to whatever the row still held — undoing a discard, or
-// re-holding volumes a repair had just released. Nothing else marks the job at
-// this point: the verdict runs at download-complete, when the MarkFileComplete
-// path that would otherwise mark it has stopped firing, so "the next flush"
-// could be indefinitely far away or never come.
-//
-// Mark only, no Flush: the checkpointer's own cadence decides when to write,
-// and the window this closes is the one where nothing had marked the job at
-// all. A verdict is not a request for synchronous I/O.
+// markFetchPolicyDirty marks every file of a job whose fetch policy a par2
+// verdict just changed, so the job_files rows catch up to memory at the
+// recorder's next flush. A verdict is not a request for synchronous I/O.
 func (app *Application) markFetchPolicyDirty(j *job.Job) {
-	if app.checkpointer == nil || j == nil {
+	if j == nil {
 		return
 	}
-	app.checkpointer.Mark(j)
+	p := j.Progress()
+	if p == nil {
+		return
+	}
+	for fi := range p.NumFiles() {
+		app.markFileDirty(j, fi)
+	}
 }
 
 // maybeReleaseRecoveryVolumes gives j's on-demand par2 verdict, acts on it on
@@ -2487,16 +2250,17 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 		app.log.Warn("enqueuePostProc: failed to close assembler job handles with no fault observed (likely a timeout); post-processing runs anyway, and the handles may still be open or still flush",
 			"job", j.ID(), "err", closeErr)
 	}
-	if app.checkpointer != nil {
-		if err := app.checkpointer.Flush(context.Background()); err != nil {
-			app.log.Warn("forced checkpoint flush on job completion failed", "job", j.ID(), "err", err)
-		}
+	// The hand-over's synchronous flush: every file's rows and complete flag
+	// reach SQLite before post-processing can change the bytes they describe.
+	// A file whose close-time fsync faulted was untrusted before the close
+	// returned, so its rows are already gone.
+	if err := app.recorder.flush(context.Background()); err != nil {
+		app.log.Warn("recorder flush at the hand-over to post-processing failed", "job", j.ID(), "err", err)
 	}
 
 	// Release cached file info for this job; the assembler no longer
 	// needs it, and keeping it around leaks memory across many downloads.
 	app.pipeline.forgetJob(j.ID())
-	app.forgetJobBarrierState(j.ID())
 
 	snap := app.config.Snapshot()
 	gen := &snap.General
@@ -2877,58 +2641,22 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 		}
 	}()
 
-	var progressApplied bool
-	retained, rErr := app.historyFileProgress(ctx, jobID)
-	if rErr != nil {
-		return fmt.Errorf("app: retry %s: restore retained progress: %w", jobID, rErr)
-	}
 	m, _ := j.Manifest()
-	if len(retained) > 0 && m != nil && retainedMatchesManifest(retained, m) {
-		if app.durable != nil {
-			runs, runErr := app.durable.ForJob(ctx, jobID)
-			if runErr != nil {
-				return fmt.Errorf("app: retry %s: load runs: %w", jobID, runErr)
-			}
-			var files []int32
-			for fi := range m.NumFiles() {
-				files = append(files, int32(fi))
-			}
-			if err := j.ReplaceFromRuns(files, runs); err == nil {
-				progressApplied = true
-			}
-		}
-		for _, f := range retained {
-			_ = j.RestoreFileMeta(f.FileIndex, f.Filename, f.Complete, f.AssembledCRC32)
-		}
-	} else if len(retained) > 0 {
-		app.log.Info("no usable retained progress for retry; downloading from scratch",
-			"job", jobID)
-	}
-
 	if app.durable != nil {
 		// Failed marks can outlive the failed departure that should have
-		// reclaimed them: that reclaim may have failed, and a checkpoint flush
-		// in flight at the departure can write after it (#561). A retry would
-		// read them back as permanent and never re-attempt those articles, so
-		// the rule runs again here. The entry is still FAILED, so it keeps the
-		// runs.
+		// reclaimed them, so the rule runs again here. The entry is still
+		// FAILED, so it keeps the job_files and written_articles rows the
+		// verification below reads.
 		//
 		// A failure aborts the retry, unlike app.reclaim's log-only departure
-		// calls: those have nothing left to tell, and this one would hand the
-		// user a retry that hydration has already marked Failed+Done for the
-		// articles it exists to re-attempt.
+		// calls: those have nothing left to tell.
 		if err := app.durable.Reclaim(ctx, jobID); err != nil {
 			return fmt.Errorf("app: retry %s: clear stale failed articles: %w", jobID, err)
 		}
-		// Unapplied retained runs describe a manifest this retry no longer
-		// has, and a stale run bounds FinalizeFile's truncate, which destroys
-		// the partial file beyond it (#422). So a discard that fails aborts
-		// the retry.
-		if !progressApplied {
-			if err := app.durable.DiscardRuns(ctx, jobID); err != nil {
-				return fmt.Errorf("app: retry %s: drop stale durable runs: %w", jobID, err)
-			}
-		}
+	}
+	finished, err := app.verifyRetry(ctx, j, m)
+	if err != nil {
+		return fmt.Errorf("app: retry %s: %w", jobID, err)
 	}
 	j.ResetForRetry()
 	// A failure aborts the retry. The job-level tombstone the close-handles
@@ -2946,10 +2674,10 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 		return fmt.Errorf("app: retry %s: %w", jobID, err)
 	}
 	// Armed once the manifest is on disk, so every return between here and the
-	// admission below takes it with it: the prepare, seedJobFiles and
-	// checkpointer.FlushJob return in this span as well as dispatcher.Add, and
-	// a retry that never entered the queue would otherwise leave a manifest no
-	// queued job owns until the next start's sweep.
+	// admission below takes it with it: the prepare, seedJobFiles and the
+	// record commit return in this span as well as dispatcher.Add, and a retry
+	// that never entered the queue would otherwise leave a manifest no queued
+	// job owns until the next start's sweep.
 	//
 	// Unconditional because the write above always produces a file here: j was
 	// rebuilt by BuildIngestJob, which attaches its manifest or fails, and
@@ -2962,65 +2690,36 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 			return
 		}
 		// Not the NZB backup: the history entry still owns it, and a later
-		// retry reads it to rebuild the job. reclaim takes the manifest and the
-		// job_files rows seeded below; the entry is still FAILED, so the rule
-		// keeps its durable_runs.
-		//
-		// Pruned before the reclaim, as every departure that prunes orders
-		// it: a failed FlushJob leaves j marked, and a later flush writing it
-		// after a new retry of this ID re-seeded job_files would hand that
-		// retry this attempt's state.
-		if app.checkpointer != nil {
-			app.checkpointer.Prune(j)
-		}
+		// retry reads it to rebuild the job. reclaim takes the manifest; the
+		// entry is still FAILED, so the rule keeps the job's record rows.
+		// Anything the recorder buffered for j is dropped by its instance
+		// check, since j never became the dispatcher's.
 		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer delCancel()
 		app.reclaim(delCtx, jobID)
 	}()
 
-	// Inside the defer's scope, because a prepare may mark j in the
-	// checkpointer (releaseRecoveryVolumes does), and an abort must prune that
-	// mark. Before seedJobFiles and the flush below, which persist the fetch
-	// policy a prepare may change.
+	// Inside the defer's scope, and before seedJobFiles and the commit below,
+	// which persist the fetch policy a prepare may change.
 	if prepare != nil {
 		if err := prepare(j); err != nil {
 			return fmt.Errorf("app: retry %s: prepare the rebuilt job: %w", jobID, err)
 		}
 	}
 
-	// Seed any job_files rows this attempt is missing, then flush the
-	// checkpointer synchronously, both immediately before dispatcher.Add and
-	// after ResetForRetry and the barrier/assembler forget calls above — not
-	// merely after the restore loop. ResetForRetry clears Complete on every
-	// file with an article that is not done, and SaveBatch persists complete
-	// for every file of a marked job; flushing before ResetForRetry would
-	// write the pre-reset complete = 1, leave the job clean, and let an
-	// eviction hydrate files as complete that the retry had just
-	// un-completed. Before Add the dispatcher does not hold the job and no
-	// eviction is possible; after Add the tick loop can evict and re-hydrate
-	// concurrently, which is the window this closes (#329).
-	//
-	// A failed job's job_files rows are reclaimed when it leaves the queue, so
-	// the seed normally writes every row fresh; one a failed reclaim left is
-	// kept by ON CONFLICT DO NOTHING and overwritten by the flush. Either way
-	// the progress the retry keeps is the retained history_job_files applied
-	// through RestoreFileMeta above, and the flush is what writes it here.
+	// Seed any job_files rows this attempt is missing, then commit every
+	// file's state through the recorder's synchronous path, immediately before
+	// dispatcher.Add. The background flush cannot carry it: its instance check
+	// drops state for a job the dispatcher does not hold yet. A file the
+	// verification finished keeps complete = 1.
 	if app.durable != nil && m != nil {
 		if err := seedJobFiles(ctx, app.durable, jobID, m.NumFiles(), j.FileFetchPolicy); err != nil {
 			return fmt.Errorf("app: retry %s: seed job_files: %w", jobID, err)
 		}
-	}
-	if app.checkpointer != nil {
-		app.checkpointer.Mark(j)
-		// context.Background(), matching saveQueueIfDirty, the shutdown
-		// flush and enqueuePostProc: a client disconnect mid-request must
-		// not abort a retry that has already mutated state. A FlushJob error
-		// aborts the retry rather than being discarded, as a failed
-		// DiscardRuns above does — a discarded error would silently reopen
-		// the eviction window above. FlushJob writes this job alone, so
-		// another job's checkpoint failure cannot abort the retry.
-		if err := app.checkpointer.FlushJob(context.Background(), j); err != nil {
-			return fmt.Errorf("app: retry %s: flush checkpoint: %w", jobID, err)
+		// context.Background(): a client disconnect mid-request must not
+		// abort a retry that has already mutated state.
+		if err := app.recorder.apply(context.Background(), j, nil, retryFileStates(j, finished)...); err != nil {
+			return fmt.Errorf("app: retry %s: commit file state: %w", jobID, err)
 		}
 	}
 
@@ -3041,6 +2740,9 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	}
 	admitted = true
 	restoreKept = true
+	for _, fi := range finished {
+		app.enqueueResumedCompletion(jobID, fi)
+	}
 
 	// Detached for the same reason Add is, and separately bounded so Add's
 	// budget is not shared: the job is in dispatch_jobs by now, and a client
@@ -3060,34 +2762,108 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	return nil
 }
 
-// historyFileProgress reads a job's retained per-file progress, or nothing when
-// this installation has no history database.
+// verifyRetry verifies a rebuilt job's written articles before it is
+// registered, and installs what was verified on it. It returns the files the
+// verification finished by path, which are owed a completion once the job is
+// registered.
 //
-// The absent-repo case is the only part of the read that belongs here: the rows
-// and their columns are internal/history's, so the query lives there
-// (Repository.RetainedFiles) and this decides whether there is a database to
-// ask at all.
-func (app *Application) historyFileProgress(ctx context.Context, jobID string) ([]history.FileProgress, error) {
-	if app.historyRepo == nil || app.historyRepo.DB() == nil {
+// A retried job is built by BuildIngestJob, which attaches its manifest, so
+// Hydrate would return early and never verify it; this is its verification.
+//
+//  1. Shape check: every row must name an article inside its file's range of
+//     the re-parsed manifest. On a mismatch every row of the job is deleted,
+//     unread.
+//  2. complete is cleared on every file, because post-processing may have
+//     repaired, moved or deleted the bytes since they were written. The
+//     retry therefore reads every file with rows once.
+//  3. verifyJobFiles with retry set, so an article an intersection failed is
+//     not counted resolved: ResetForRetry is about to clear that failure.
+//
+// Each step's verdicts are committed through the recorder before the next.
+func (app *Application) verifyRetry(ctx context.Context, j *job.Job, m *job.Manifest) ([]int, error) {
+	if app.durable == nil || m == nil {
 		return nil, nil
 	}
-	return app.historyRepo.RetainedFiles(ctx, jobID)
+	files, err := app.durable.FileRows(ctx, j.ID())
+	if err != nil {
+		return nil, fmt.Errorf("read job_files: %w", err)
+	}
+	rows, err := app.durable.WrittenRows(ctx, j.ID())
+	if err != nil {
+		return nil, fmt.Errorf("read written_articles: %w", err)
+	}
+	var reset []durability.FileVerdict
+	if !rowsFitManifest(rows, m) {
+		app.log.Info("retry: the written rows do not fit the re-parsed NZB; every one is deleted",
+			"job", j.ID(), "rows", len(rows))
+		rows = nil
+		for _, f := range files {
+			reset = append(reset, durability.FileVerdict{FileIdx: f.FileIndex, DeleteAll: true, ClearComplete: true})
+		}
+	} else {
+		for _, f := range files {
+			reset = append(reset, durability.FileVerdict{FileIdx: f.FileIndex, ClearComplete: true})
+		}
+	}
+	for i := range files {
+		files[i].Complete = false
+	}
+	if len(reset) > 0 {
+		if err := app.recorder.apply(ctx, j, reset); err != nil {
+			return nil, fmt.Errorf("clear complete: %w", err)
+		}
+	}
+	pathFor := func(fn string) string { return app.pipeline.jobFilePath(j.Name(), fn) }
+	res, err := verifyJobFiles(ctx, m, files, rows, pathFor, true)
+	if err != nil {
+		return nil, fmt.Errorf("verify written articles: %w", err)
+	}
+	if len(res.Verdicts) > 0 {
+		if err := app.recorder.apply(ctx, j, res.Verdicts); err != nil {
+			return nil, fmt.Errorf("commit verdicts: %w", err)
+		}
+	}
+	return installVerification(j, files, rows, res, false, app.log), nil
 }
 
-func retainedMatchesManifest(retained []history.FileProgress, m *job.Manifest) bool {
-	if len(retained) != m.NumFiles() {
-		return false
-	}
-	for i, f := range retained {
-		if f.FileIndex != i {
+// rowsFitManifest reports whether every row names an article inside its
+// file's range of m.
+func rowsFitManifest(rows []durability.WrittenRow, m *job.Manifest) bool {
+	for _, r := range rows {
+		if r.FileIdx < 0 || r.FileIdx >= m.NumFiles() {
 			return false
 		}
-		lo, hi := m.FileRange(i)
-		if f.ArticleCount != hi-lo {
+		lo, hi := m.FileRange(r.FileIdx)
+		if int(r.ArtIdx) < lo || int(r.ArtIdx) >= hi {
 			return false
 		}
 	}
 	return true
+}
+
+// retryFileStates is every file's state of a retried job as its record should
+// hold it before the job is registered. A file in finished was finished by
+// path and keeps complete = 1; its completion is delivered after the job is
+// registered.
+func retryFileStates(j *job.Job, finished []int) []durability.FileState {
+	p := j.Progress()
+	if p == nil {
+		return nil
+	}
+	done := make(map[int]bool, len(finished))
+	for _, fi := range finished {
+		done[fi] = true
+	}
+	out := make([]durability.FileState, 0, p.NumFiles())
+	for fi := range p.NumFiles() {
+		out = append(out, durability.FileState{
+			FileIdx:     fi,
+			Complete:    p.FileComplete(fi) || done[fi],
+			Filename:    p.FileFilename(fi),
+			FetchPolicy: uint8(p.FileFetchPolicy(fi)),
+		})
+	}
+	return out
 }
 
 // buildDownloaderOptions constructs a downloader.Options from the current

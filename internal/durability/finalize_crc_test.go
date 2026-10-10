@@ -116,6 +116,7 @@ func TestFinalizeFile_AHoleKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 // dropped and a single row survives; that shape is caught by the article-
 // coverage condition instead, and is pinned separately in
 // app.TestRecordAssembledCRC_WithholdsWhenAnExactOffsetDuplicateWasDropped.
+// doccite:ok TestRecordAssembledCRC_WithholdsWhenAnExactOffsetDuplicateWasDropped — removed with the barrier's app wiring in plan Task 5.1; this file goes with the barrier in Task 5.2
 // This test pins that the mechanism really does leave a second row to see.
 func TestFinalizeFile_AnOverlapKeepsTheFileAtMoreThanOneRun(t *testing.T) {
 	t.Parallel()

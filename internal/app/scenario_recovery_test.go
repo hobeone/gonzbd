@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	dispatchstore "github.com/hobeone/gonzbd/internal/dispatch/store"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -131,6 +133,11 @@ func seedCompletedJob(t *testing.T, repo *history.Repository, adminDir, id, name
 	if err != nil {
 		t.Fatalf("insert job_files: %v", err)
 	}
+	// The article's row: a complete file is trusted unread, and its articles
+	// are Done exactly where it has rows. The callers write 100 zero bytes.
+	app.SeedWritten(t, durability.NewStore(repo.DB(), "history.db"), j.ID(), []durability.WrittenRow{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(make([]byte, 100))},
+	})
 	return j
 }
 
@@ -275,7 +282,7 @@ func TestRecovery_DuplicateJobInHistory(t *testing.T) {
 		Status:    "Completed",
 		Completed: time.Now(),
 	}
-	if err := repo.Add(t.Context(), entry, nil); err != nil {
+	if err := repo.Add(t.Context(), entry); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 

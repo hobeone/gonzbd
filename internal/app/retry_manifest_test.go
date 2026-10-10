@@ -29,7 +29,7 @@ func TestRetryHistoryJob_UnwritableManifestDirLeavesTheEntryRetryable(t *testing
 	if err := repo.Add(t.Context(), history.Entry{
 		NzoID: jobID, Name: "retry-unwritable", NzbName: "retry-unwritable.nzb",
 		NZBBackup: nzbBackup, Category: "*", Status: "Failed", Completed: time.Now(),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 

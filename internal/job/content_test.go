@@ -964,7 +964,7 @@ func TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction(t *testing.T)
 		t.Error("article 2 is still Emitted after its failure was recorded")
 	}
 	if !p.AnyArticleFailed() {
-		t.Error("AnyArticleFailed = false with a failed bit set; the checkpointer would write no failed_articles row")
+		t.Error("AnyArticleFailed = false with a failed bit set")
 	}
 
 	if err := j.RestoreContent(m); err != nil {

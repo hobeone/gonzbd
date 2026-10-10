@@ -65,7 +65,7 @@ func TestRecorder_DropsRowsOfAReplacedInstance(t *testing.T) {
 	st := &fakeRecordStore{}
 	old, cur := newTestJob(t, "id"), newTestJob(t, "id")
 	r := newRecorder(st, func(string) *job.Job { return cur }, slog.Default())
-	r.noteWritten(old, durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Length: 10}, 10, "srv")
+	r.noteWritten(old, durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Length: 10})
 	if err := r.flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestRecorder_CompleteNeverLandsWithoutItsLastRow(t *testing.T) {
 	st := &fakeRecordStore{}
 	j := newTestJob(t, "id")
 	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 4, Length: 10}, 10, "srv")
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 4, Length: 10})
 	r.markDirty(j, 0, durability.FileState{FileIdx: 0, Complete: true})
 	_ = r.flush(context.Background())
 	b := st.batches[0]
@@ -103,7 +103,7 @@ func TestRecorder_RemergesOnError(t *testing.T) {
 	st := &fakeRecordStore{failNext: true}
 	j := newTestJob(t, "id")
 	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10}, 10, "srv")
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 	if err := r.flush(context.Background()); err == nil {
 		t.Fatal("want the store error")
 	}
@@ -134,10 +134,10 @@ func TestRecorder_RemergeKeepsNewerFileStateAndRowOrder(t *testing.T) {
 	st := &failingOnce{}
 	j := newTestJob(t, "id")
 	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10}, 10, "srv")
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 	r.markDirty(j, 0, durability.FileState{Complete: false, Filename: "old"})
 	st.during = func() {
-		r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 20}, 20, "srv2")
+		r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 20})
 		r.markDirty(j, 0, durability.FileState{Complete: true, Filename: "new"})
 	}
 	if err := r.flush(context.Background()); err == nil {
@@ -159,9 +159,9 @@ func TestRecorder_UntrustPurgesPendingRows(t *testing.T) {
 	st := &fakeRecordStore{}
 	j := newTestJob(t, "id")
 	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10}, 10, "srv")
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Length: 10}, 10, "srv")
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 1, ArtIdx: 0, Length: 10}, 10, "srv")
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Length: 10})
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 1, ArtIdx: 0, Length: 10})
 	r.markDirty(j, 0, durability.FileState{Complete: true})
 	if err := r.apply(context.Background(), j, []durability.FileVerdict{{FileIdx: 0, DeleteAll: true, ClearComplete: true}}); err != nil {
 		t.Fatal(err)
@@ -190,8 +190,8 @@ func TestRecorder_UntrustArtIdxsPurgesOnlyNamedRows(t *testing.T) {
 	st := &fakeRecordStore{}
 	j := newTestJob(t, "id")
 	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10}, 10, "srv")
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Length: 10}, 10, "srv")
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Length: 10})
 	if err := r.apply(context.Background(), j, []durability.FileVerdict{{FileIdx: 0, DeleteArtIdxs: []int32{1}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -211,11 +211,18 @@ func TestRecorder_NoteWrittenKeepsRowForNonResidentJob(t *testing.T) {
 	st := &fakeRecordStore{}
 	bare := job.New("bare", "bare", job.PolicyFromPP(3)) // no content attached
 	r2 := newRecorder(st, func(string) *job.Job { return bare }, slog.Default())
-	r2.noteWritten(bare, durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Length: 1}, 1, "s")
+	r2.noteWritten(bare, durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Length: 1})
 	if err := r2.flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if n := st.rowCount(); n != 1 {
 		t.Errorf("rows = %d, want the non-resident job's row kept", n)
 	}
+}
+
+// dirtyJobs is how many job instances have a file state buffered in r.
+func dirtyJobs(r *recorder) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.dirty)
 }

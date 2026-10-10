@@ -66,7 +66,7 @@ func seedReclaimStates(t *testing.T) *sql.DB {
 			}
 		}
 		if s.history != "" {
-			if err := repo.Add(ctx, history.Entry{NzoID: s.id, Name: s.id, Status: string(s.history)}, nil); err != nil {
+			if err := repo.Add(ctx, history.Entry{NzoID: s.id, Name: s.id, Status: string(s.history)}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -74,12 +74,17 @@ func seedReclaimStates(t *testing.T) *sql.DB {
 	return db
 }
 
+// keptForFailed is the set of tables a FAILED entry keeps, stated here rather
+// than read from perJobTables' own flag, so a flag flipped there fails this
+// test instead of changing what it expects.
+var keptForFailed = map[string]bool{"job_files": true, "durable_runs": true, "written_articles": true}
+
 func assertReclaimed(t *testing.T, db *sql.DB, via string) {
 	t.Helper()
 	for _, s := range reclaimStates {
 		for _, table := range perJobTables {
 			want := 0
-			if s.keepAll || (s.keepsRuns && table.keptForFailedEntry) {
+			if s.keepAll || (s.keepsRuns && keptForFailed[table.name]) {
 				want = 1
 			}
 			if got := countRows(t, db, table.name, s.id); got != want {
@@ -284,8 +289,9 @@ func TestInTx_RollsBackWhenTheRuleFails(t *testing.T) {
 }
 
 // TestReclaim_ReportsAStatementThatCannotReadHistory pins the failure a
-// departure most plausibly meets mid-rule: the durable_runs statement reads
-// history, and when it cannot, Reclaim reports it and deletes nothing.
+// departure most plausibly meets mid-rule: the job_files statement reads
+// history, and when it cannot, Reclaim reports it and deletes nothing — not
+// even the failed_articles rows the statement before it removed.
 func TestReclaim_ReportsAStatementThatCannotReadHistory(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -294,10 +300,10 @@ func TestReclaim_ReportsAStatementThatCannotReadHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := NewStore(db, "history.db").Reclaim(ctx, "neither")
-	if err == nil || !strings.Contains(err.Error(), "reclaim durable_runs") {
-		t.Fatalf("Reclaim = %v, want an error naming the durable_runs statement", err)
+	if err == nil || !strings.Contains(err.Error(), "reclaim job_files") {
+		t.Fatalf("Reclaim = %v, want an error naming the job_files statement", err)
 	}
-	if n := countRows(t, db, "job_files", "neither"); n != 1 {
-		t.Errorf("%d job_files rows after a failed reclaim, want 1", n)
+	if n := countRows(t, db, "failed_articles", "neither"); n != 1 {
+		t.Errorf("%d failed_articles rows after a failed reclaim, want 1", n)
 	}
 }

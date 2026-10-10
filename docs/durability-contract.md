@@ -1,5 +1,13 @@
 # Download Durability & Storage Contract
 
+<!-- doccite:ok TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade — removed by the loose-record cut-over (plan Task 5.1); this barrier-era section is rewritten in Task 5.4 -->
+<!-- doccite:ok TestStopWorkers_TheShutdownBarrierCoversAJobTheYieldWouldEvict — removed by the loose-record cut-over (plan Task 5.1); this barrier-era section is rewritten in Task 5.4 -->
+<!-- doccite:ok TestFail_InTheCleanShutdownBarrier_DoesNotPersistAPartialJobForPostProcessing — removed by the loose-record cut-over (plan Task 5.1); this barrier-era section is rewritten in Task 5.4 -->
+<!-- doccite:ok TestHandleFileComplete_ANonResidentCompletionDrainedAtShutdown — removed by the loose-record cut-over (plan Task 5.1); this barrier-era section is rewritten in Task 5.4 -->
+<!-- doccite:ok TestHandleFileComplete_ACompletionDrainedAfterTheAssemblerStopsIsWithheld — removed by the loose-record cut-over (plan Task 5.1); this barrier-era section is rewritten in Task 5.4 -->
+<!-- doccite:ok TestResume_ACompletionDrainedAfterTheAssemblerStopsIsRederived — removed by the loose-record cut-over (plan Task 5.1); this barrier-era section is rewritten in Task 5.4 -->
+<!-- doccite:ok TestSweptState — removed by the loose-record cut-over (plan Task 5.1); this barrier-era section is rewritten in Task 5.4 -->
+
 This document is the contract for `internal/durability`, `internal/storagefault`,
 `internal/assembler` and `internal/directunpack`: what it means for a downloaded
 article to be *done*, when that claim may be made, what survives a crash, how a
@@ -343,10 +351,13 @@ evidence a proof cannot represent — but it means "ack before fsync is code tha
 does not compile" is true of `AckDurable` and **false as a statement about the
 queue as a whole**. The seeding doors are held by their contracts and by
 `TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade`, not by the
-compiler. `Job.InstallVerified` is a further such door, whose evidence is a
-restart's CRC readback of each `written_articles` row: it is listed in
-`job.TestDoneBitWriters_MatchTheEnumerationStatedInProse`'s `doneMarkers`, and
-is meant to be fed only `verifyJobFiles`' `Verified` rows (`internal/app/verify.go`).
+compiler. `Job.InstallVerified` and `Job.InstallCompleteFile` are further such doors,
+whose evidence is a restart's CRC readback of each `written_articles` row or
+the file's `complete=1`: they reach `markDone` through `installRows`, which is
+listed in `job.TestDoneBitWriters_MatchTheEnumerationStatedInProse`'s
+`doneMarkers` beside `Job.MarkArticleWritten`, the recorder's door for an
+article this process wrote. They are meant to be fed only `verifyJobFiles`'
+`Verified` rows (`internal/app/verify.go`).
 
 `Job.SeedFromRuns`'s half is stronger than a test: its only done-bit write is
 `progress.markDone`, which sets `p.done` and never clears it, so the additive
@@ -1496,7 +1507,7 @@ iteration and evicted at the end of it, and residency is unchanged from outside.
 `appResidency.Hydrate` and applies the correction with `Job.ReplaceFromRuns`;
 `releaseSweepHydration` then evicts it. The dispatcher never records the load
 (`markResident` is called only from `reconcileResidency` and
-`loadProgressForRename`), and `reconcileResidency` never evicts a job with
+`Dispatcher.LoadProgress`), and `reconcileResidency` never evicts a job with
 pause intent and evicts any other only if `isResident` reports it, so without
 the release the manifest would stay in memory until the job was resumed,
 removed or the dispatcher stopped.

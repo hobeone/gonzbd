@@ -156,35 +156,27 @@ func extendFileTo(path string, n int64) error {
 	return fh.Truncate(n)
 }
 
-// TestCompletedFileStaysOpenForTheBarrierThenCloses pins the handoff that
-// makes the completion truncate reachable at all.
-//
-// The assembler used to drain, fsync and CLOSE a file the moment its last part
-// arrived, and only then report it complete. Every operation
-// durability.Barrier.FinalizeFile performs — Drain, Sync, Truncate, Stat —
-// goes through that handle, so under the old order a completed file could
-// never be trimmed: it would keep pre-allocation's trailing zeros, which par2
-// reports as damage on a file whose download was perfectly healthy.
-//
-// The order is now: tombstone and report, caller finalizes, caller calls
-// CloseFile. This test walks that sequence against a real file, asserting the
-// handle is still usable in between and gone afterwards.
-func TestCompletedFileStaysOpenForTheBarrierThenCloses(t *testing.T) {
-	ctx := context.Background()
+// TestCompletedFileIsTrimmedAndClosedBeforeItIsReported pins finalizeFile's
+// order against a real file: the last part arrives, the file is fsynced,
+// trimmed from its preallocated size to the end of its last written byte and
+// closed, and only then reported complete.
+func TestCompletedFileIsTrimmedAndClosedBeforeItIsReported(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "job1_0.dat")
-	// TotalParts 1 means the single article below completes the file, which is
-	// what puts finalizeFile on the path. Every other test in this file keeps
-	// the file incomplete precisely to avoid it.
-	files := map[string]FileInfo{"job1:0": {Path: path, TotalParts: 1}}
+	// TotalParts 1: the single article below completes the file. ExpectedSize
+	// preallocates past the written extent, which is what the trim removes.
+	files := map[string]FileInfo{"job1:0": {Path: path, TotalParts: 1, ExpectedSize: 4096}}
 
-	done := make(chan struct{}, 1)
+	sizeAtReport := make(chan int64, 1)
 	opts := makeOpts(dir, files)
 	opts.OnFileComplete = func(string, int) {
-		select {
-		case done <- struct{}{}:
-		default:
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Errorf("stat at report: %v", err)
+			sizeAtReport <- -1
+			return
 		}
+		sizeAtReport <- st.Size()
 	}
 	a := startAssembler(t, opts)
 
@@ -195,61 +187,18 @@ func TestCompletedFileStaysOpenForTheBarrierThenCloses(t *testing.T) {
 		t.Fatalf("WriteArticle: %v", err)
 	}
 	select {
-	case <-done:
+	case got := <-sizeAtReport:
+		if got != 100 {
+			t.Errorf("file is %d bytes when reported complete, want 100 — the "+
+				"report came before the trim, so a caller recording it complete "+
+				"would record pre-allocation's trailing zeros", got)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the file never completed; the fixture is not exercising finalizeFile")
 	}
-
-	tgt := a.SyncTargetFor("job1")
-	if got := tgt.Files(); len(got) != 1 || got[0] != 0 {
-		t.Fatalf("Files() = %v after completion, want [0] — the handle was closed "+
-			"before the barrier could finalize the file, so it keeps pre-allocation's "+
-			"trailing zeros and its last articles are never acked", got)
-	}
-
-	if err := extendFileTo(path, 4096); err != nil {
-		t.Fatalf("extend: %v", err)
-	}
-
-	hdb, err := history.Open(t.Context(), filepath.Join(dir, "h.db"))
-	if err != nil {
-		t.Fatalf("history.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = hdb.Close() })
-	db := history.NewRepository(hdb).DB()
-	ack := &noopAcker{}
-	b := durability.NewBarrier(durability.NewStore(db, "history.db"), ack, noopStall{},
-		slog.New(slog.DiscardHandler))
-
-	trunc, ok := tgt.(durability.Truncator)
-	if !ok {
-		t.Fatal("the per-job adapter does not implement durability.Truncator")
-	}
-	if err := b.FinalizeFile(ctx, "job1", 0, trunc); err != nil {
-		t.Fatalf("FinalizeFile on a completed file: %v", err)
-	}
-	if st, err := os.Stat(path); err != nil {
-		t.Fatal(err)
-	} else if st.Size() != 100 {
-		t.Errorf("file is %d bytes after finalizing a completed file, want 100", st.Size())
-	}
-	if len(ack.acked) != 1 || ack.acked[0] != 0 {
-		t.Errorf("acked %v, want [0] — the last drain's articles are the ones a "+
-			"close-at-completion would have thrown away", ack.acked)
-	}
-
-	if err := a.CloseFile(t.Context(), "job1", 0); err != nil {
-		t.Fatalf("CloseFile: %v", err)
-	}
-	if got := tgt.Files(); len(got) != 0 {
-		t.Errorf("Files() = %v after CloseFile, want none — the handle leaks for the "+
-			"rest of the job", got)
-	}
-	// Idempotent: CancelJob, CloseJobHandles and shutdown can all get there
-	// first, and the completion consumer must not turn that race into an error.
-	if err := a.CloseFile(t.Context(), "job1", 0); err != nil {
-		t.Errorf("second CloseFile returned %v, want nil — closing an already-closed "+
-			"file is a race with cancel/shutdown, not a disagreement", err)
+	if got := a.SyncTargetFor("job1").Files(); len(got) != 0 {
+		t.Errorf("Files() = %v after completion, want none — the handle leaks for "+
+			"the rest of the job", got)
 	}
 }
 

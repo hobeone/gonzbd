@@ -43,11 +43,11 @@ func countSeeded(t *testing.T, db *sql.DB, jobID string) int {
 
 // TestSeedJobFiles_OneRowPerFile pins the shape of the seed: exactly one row
 // per file, at the file's own index, holding the derived fetch_policy and the
-// empty results the checkpointer later fills in for everything else.
+// empty results the recorder later fills in for everything else.
 //
 // The indices are asserted individually rather than only counted because a seed
 // that wrote N rows at the wrong indices would satisfy a count and still leave
-// every SaveBatch UPDATE matching nothing — the silent failure the seed exists
+// every recorder UPDATE matching nothing — the silent failure the seed exists
 // to prevent.
 //
 // fetch_policy is asserted against the derived value rather than against zero
@@ -110,8 +110,8 @@ func TestSeedJobFiles_OneRowPerFile(t *testing.T) {
 
 // TestSeedJobFiles_IsIdempotent pins the ON CONFLICT DO NOTHING clause. A job
 // re-added under the same ID must not fail, and must not disturb results the
-// checkpointer has already written — DO NOTHING rather than an upsert, because
-// an upsert would reset a completed file's filename and CRC back to empty.
+// recorder has already written — DO NOTHING rather than an upsert, because an
+// upsert would reset a completed file's filename and complete flag.
 func TestSeedJobFiles_IsIdempotent(t *testing.T) {
 	t.Parallel()
 	db := openHistoryTestDB(t)

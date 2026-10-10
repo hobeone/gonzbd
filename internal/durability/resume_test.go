@@ -278,6 +278,7 @@ func TestResume_RunReadFailureIsReturned(t *testing.T) {
 // the same way raise's final branch would and leaves the one remaining step
 // — handing the fault to Stallable — to its caller, which must not
 // re-attribute what this already got right (internal/app/resume_startup.go).
+// doccite:ok internal/app/resume_startup.go — removed in plan Task 5.1; the Resumer and this test go in Task 5.2
 func TestResume_RunReadFailureNamesTheStore(t *testing.T) {
 	t.Parallel()
 	const dbPath = "/admin/history.db"

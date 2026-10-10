@@ -169,7 +169,7 @@ func (n NopApp) DirectUnpackStatuses() map[string]directunpack.Status { //nocove
 
 // CheckpointStates returns the configured per-job durability figures, so a
 // test can drive the queue listing's stall_reason field without standing up a
-// real barrier.
+// real application.
 func (n NopApp) CheckpointStates() map[string]app.JobCheckpointState {
 	return n.CheckpointStatesVal
 }

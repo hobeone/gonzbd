@@ -178,22 +178,31 @@ type Options struct {
 	FileInfo func(jobID string, fileIdx int) (FileInfo, error)
 
 	// OnFileComplete, if non-nil, is called on the worker goroutine when all
-	// TotalParts for a file have been accounted for.
+	// TotalParts for a file have been accounted for and the file has been
+	// finished on its writing handle: fsynced, trimmed to its last owned byte,
+	// fsynced again and closed (finalizeFile). A file whose finish failed is
+	// not reported here; see OnFileUntrusted.
 	//
-	// The handle is still OPEN at that point, and stays open until the caller
-	// releases it with CloseFile. That is the handoff durability.Barrier's
-	// FinalizeFile needs: it has to Drain, Sync, Truncate and Stat the file,
-	// and all four go through this package's handle. See finalizeFile.
-	//
-	// It no longer reports a whole-file CRC. The assembler cannot compute one
-	// honestly: a resumed run is not sent the articles an earlier run
-	// completed, so the parts it sees never tile the file (#349). The verified
-	// figure is the crc32 of a file's single durable run, which the barrier
-	// builds by combining the CRCs of the articles that abut as they join it.
+	// It reports no whole-file CRC: the caller derives that from the file's
+	// written rows.
 	//
 	// The callback should be cheap; expensive work should be dispatched
 	// asynchronously.
 	OnFileComplete func(jobID string, fileIdx int)
+
+	// OnFileUntrusted, if non-nil, is called on the worker goroutine for a
+	// file whose bytes this package can no longer vouch for: its completion
+	// finish failed, or its fsync or close failed when its handle was closed
+	// at the hand-over to post-processing or at worker exit. The caller
+	// returns the file's written articles to Outstanding and removes their
+	// record. The fault itself, where there is a caller to answer, goes
+	// separately to OnWriteFault or the close-handles ack.
+	OnFileUntrusted func(jobID string, fileIdx int)
+
+	// SyncFile, if non-nil, replaces (*os.File).Sync for every fsync this
+	// package runs on a file it writes. It is a seam for tests to inject a
+	// device error; production leaves it nil.
+	SyncFile func(*os.File) error
 
 	// OnLowDisk, if non-nil, is called when free space on the target
 	// filesystem falls below MinFreeBytes. It is called on the worker goroutine
@@ -302,10 +311,10 @@ type fileKey struct {
 // the file.
 //
 // maxWritten, crcParts and crcValid are gone. Each was a fact the assembler
-// maintained about bytes on disk in order to truncate or to report a CRC, and
-// both of those decisions moved to durability.Barrier, which is the only
-// component that knows whether an fsync has happened. Keeping a shadow copy
-// here is exactly the second-writer shape S5 forbids.
+// maintained about bytes on disk in order to truncate or to report a CRC. The
+// truncate moved to FileWriter.finish, bounded by the writer's owned ranges,
+// and the CRC to the written rows (job.Job.SettleFileCRC). Keeping a shadow
+// copy here is exactly the second-writer shape S5 forbids.
 //
 // partsWritten went the same way, for the same reason at a smaller scale. It
 // is derived from the writer's seenDone and seenFailed sets, and holding it
@@ -867,17 +876,62 @@ func (a *Assembler) ForgetJob(ctx context.Context, jobID string) error {
 	}
 }
 
+// Quiesce returns once every request queued before it has been processed:
+// each article ahead of it has been written or refused, and its callbacks
+// (OnArticleWritten, OnArticleRejected, OnFileComplete) have run. A downloader
+// reload calls it after stopping the old downloader, so that an Emitted bit it
+// clears afterwards covers only an article whose bytes never reached pwrite.
+//
+// Requests enqueued after it are not waited for.
+func (a *Assembler) Quiesce(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	if !a.started {
+		a.mu.Unlock()
+		return ErrNotStarted
+	}
+	if a.stopped {
+		a.mu.Unlock()
+		return ErrStopped
+	}
+	a.wg.Add(1)
+	a.mu.Unlock()
+
+	defer a.wg.Done()
+
+	ack := make(chan error, 1)
+	control := WriteRequest{FileIdx: fileIdxQuiesce, ackCh: ack}
+	select {
+	case a.reqs <- control:
+	case <-a.stopCh:
+		return ErrStopped
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	select {
+	case <-ack:
+		return nil
+	case <-a.stopCh:
+		return ErrStopped
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // worker is the single goroutine that owns all file handles and performs disk
 // I/O. It runs until stopCh is closed and the request channel is drained.
 //
-// It performs no queue mutation of any kind. Articles it writes are reported
-// to durability.Barrier when the barrier drains this assembler, and the
-// barrier is the only component that acks them while the download is running
-// (X2). Articles this assembler never saw — those an EARLIER process wrote —
-// are resolved by the startup resume sweep instead, with no barrier involved;
-// see docs/durability-contract.md §1. The batching that used to
-// live here — pending Done/Failed maps flushed on a ticker — is gone with the
-// acks: there is nothing left to batch.
+// It mutates no queue state itself. Each article it writes is reported
+// through Options.OnArticleWritten once its WriteAt returns, and the caller's
+// handler marks it Done. Articles this assembler never saw — those an EARLIER
+// process wrote — are resolved by a restart's verification of the written
+// rows instead. The batching that used to live here — pending Done/Failed
+// maps flushed on a ticker — is gone with the acks: there is nothing left to
+// batch.
 func (a *Assembler) worker() {
 	defer a.wg.Done()
 
@@ -1059,8 +1113,11 @@ func (a *Assembler) dispatchRequest(
 				// Recorded on the ack, not swallowed: a file whose close-time
 				// sync or close failed has written bytes that may never have
 				// reached the platter, and enqueuePostProc fails the post-processing run
-				// on any fault this is, permanent or retryable.
+				// on any fault this is, permanent or retryable. The file is
+				// untrusted too: this fsync consumed the error, so no later
+				// fsync at verification would report it.
 				closeErr = errors.Join(closeErr, cerr)
+				a.noteFileUntrusted(k.jobID, k.fileIdx)
 			}
 			delete(open, k)
 			// Tombstoned per file too, unconditionally including on a failed
@@ -1096,6 +1153,12 @@ func (a *Assembler) dispatchRequest(
 		}
 		return 0
 	}
+	if req.ackCh != nil && req.FileIdx == fileIdxQuiesce {
+		// Control message: everything queued ahead of this has been written
+		// and its callbacks have run. See Assembler.Quiesce.
+		close(req.ackCh)
+		return 0
+	}
 	// Skip articles for cancelled and closed jobs.
 	if _, cancelled := cancelledJobs[req.JobID]; cancelled {
 		if req.Data != nil {
@@ -1107,58 +1170,18 @@ func (a *Assembler) dispatchRequest(
 	return 1
 }
 
-// drainAndClose drains a file's writer, fsyncs, closes it, and
-// reports whether any of the three failed.
-//
-// # What happens to the articles the drain WROTE
-//
-// They are not acked — this package has no ack authority — and no later Drain
-// reports them either, because Close throws the writer away and its retained
-// report with it.
-//
-// It is worth being exact about which step does that, because this comment
-// used to name the wrong one: it said "the Sync that follows is what discards
-// a confirmed one". FileWriter.Sync discards nothing, and says so in its own
-// doc — Confirm releases the report, and drainAndClose never calls Confirm. So
-// a reader tracing "who acks these?" was sent looking for a Sync-side discard
-// that does not exist. It is Close.
-//
-// Their Emitted bits therefore stay set, which is NOT the same as Outstanding
-// — an earlier version of this doc said "left Outstanding and re-fetched (S3)"
-// and that was only ever true of the worker-exit caller, where the next start
-// begins with them clear because emitted is never persisted. On the
-// CloseJobHandles path the process keeps running, and nothing resets them
-// until it stops or a downloader reload clears them in-process. A cleared bit
-// there re-fetches nothing, because the downloader does not dispatch a job
-// admitted to post-processing (Options.HandedOff).
-//
-// That costs nothing in the ordinary case. A clean stop runs
-// Application.shutdownCheckpoint — a full barrier, ack included — while the
-// downloader is already stopped and the handles still exist, so by the time
-// this runs there is little left to report.
+// drainAndClose drains a file's writer, fsyncs, closes it, and reports
+// whether any of the three failed. The close-handles arm and drainAndCloseAll
+// untrust the file on an error (noteFileUntrusted): a failed fsync means the
+// bytes its articles were reported written with cannot be trusted.
 //
 // # Why the fault is REPORTED and not ROUTED
 //
-// Returning it is the pattern opDrain, opSync and opTruncate already use, and
-// the reason to prefer it here is not symmetry. Routing a fault out-of-band
-// from this function was tried and is wrong three ways:
-//
-//   - It bypasses durability.ErrFaultRouted. Barrier.raise mints that marker so
-//     the application layer does not park a job twice for one condition; a
-//     fault built here carries no marker and reaches Stallable directly, so a
-//     wedged mount that already stalled the job through the barrier's own Drain
-//     stalls it again when the same file is closed.
-//   - On the CloseJobHandles path the job is already admitted to
-//     post-processing (app's postProcAdmissions). Fail cannot hand it over
-//     again — enqueuePostProc refuses an admitted job, at most attaching the
-//     reason to the admitted run, which is what enqueuePostProc does itself
-//     with any fault this returns, permanent or retryable — and Stall would
-//     pause a job whose files post-processing is using.
-//   - On the opClose path, whether the fault matters depends on whether a
-//     barrier ran first, and only the caller knows. After a finalize that
-//     committed, routing a fault from the redundant second fsync would race
-//     the completion it is part of; where this close is the file's only
-//     flush, the caller stops the completion on the returned error itself.
+// On the CloseJobHandles path the job is already admitted to post-processing
+// (app's postProcAdmissions). Fail cannot hand it over again — enqueuePostProc
+// refuses an admitted job, at most attaching the reason to the admitted run,
+// which is what enqueuePostProc does itself with any fault this returns — and
+// Stall would pause a job whose files post-processing is using.
 //
 // A permanent fault is preferred over the first one when they differ, because
 // only the permanent one preserves R20. ENOSPC on the drain followed by EROFS
@@ -1242,19 +1265,20 @@ func (a *Assembler) closeCancelledFile(f *openFile, disposition FileDisposition)
 // worker exit. Completion callbacks do NOT fire for partial files — writing
 // N-of-M parts is not a completion event.
 func (a *Assembler) drainAndCloseAll(open map[fileKey]*openFile) {
-	for _, f := range open {
-		// Nowhere to report it. This runs on worker exit, so there is no
-		// caller left to answer and no barrier to route through — and routing
-		// it out-of-band here is specifically unsafe: Application.Shutdown
-		// joins this goroutine through waitBounded, which ABANDONS its step
-		// after the budget and returns while the worker runs on. A callback
-		// firing after that lands on app.wg.Go concurrently with app.wg.Wait,
-		// which is a WaitGroup misuse panic, and it would take the process
-		// down before Shutdown's final queue.Save.
+	for k, f := range open {
+		// The fault itself has nowhere to go: this runs on worker exit, so
+		// there is no caller left to answer, and routing it to OnWriteFault is
+		// unsafe — Application.Shutdown joins this goroutine through
+		// waitBounded, which ABANDONS its step after the budget and returns
+		// while the worker runs on, and a fault handler on app.wg.Go racing
+		// app.wg.Wait is a WaitGroup misuse panic.
 		//
-		// drainAndClose has already logged each failure, and the next start re-derives the job's
-		// state from disk regardless (S3).
-		_ = a.drainAndClose(f)
+		// The file is still untrusted, synchronously on this goroutine: this
+		// fsync consumed the error, so the next start's verification fsync
+		// would not see it.
+		if err := a.drainAndClose(f); err != nil {
+			a.noteFileUntrusted(k.jobID, k.fileIdx)
+		}
 	}
 }
 
@@ -1328,79 +1352,55 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		"part", parts, "total", f.info.TotalParts,
 		"offset", req.Offset, "bytes", len(req.Data), "failed", req.FatalErr != nil)
 	if f.info.TotalParts > 0 && parts >= f.info.TotalParts {
-		a.finalizeFile(f, key, req, completed)
+		a.finalizeFile(f, key, req, open, completed)
 	}
 }
 
 // handleLateDuplicate handles articles arriving for a file that is already
-// marked completed. f is the file's still-open entry, or nil if it has been
-// closed.
+// tombstoned. f is the file's still-open entry, or nil once it is closed —
+// finalizeFile closes a file as it tombstones it, so a late article for a
+// completed file meets nil.
 //
-// The article is not written. The tombstone exists because the barrier may be
-// part-way through finalizing this file — draining, syncing, truncating — and
-// a write into it there is the race the tombstone was put down to stop.
-//
-// Ordinarily nothing else is owed either. A file that reached TotalParts is
-// one whose articles are all resolved: accepted and awaiting the barrier's
-// ack, or permanently failed. Re-asserting anything about those here would be
-// this package claiming authority it no longer has.
+// The article is not written: the file was finished, trimmed and reported
+// complete, and the job's record says what it holds.
 //
 // # The article that is owed something
 //
-// An article can reach here holding no state at all: absent from seenDone,
-// absent from seenFailed, and holding no part. FileWriter.fail puts it in
-// exactly that condition — it clears the seenDone entry and gives the part
-// back together — for every article whose write failed.
-// The rollback returned it to Outstanding, the downloader re-dispatched it,
-// and the copy that comes back arrives after its file was tombstoned.
+// An article can reach here with no record of it in the job: FileWriter.fail
+// gives the part back for every article whose write failed, the downloader
+// re-dispatches it, and the copy that comes back arrives after its file was
+// tombstoned. Dropping it would strand it — not written, not failed, and
+// Emitted again, which ForEachUnfinishedArticle skips — so the job would never
+// finish.
 //
-// An earlier version of this paragraph derived the same conclusion from
-// "partsWritten is incremented when an article is ACCEPTED and is never
-// decremented". That premise was already false when it was written — the
-// give-back existed, in rollbackPart — and it is comprehensively false now.
-// The conclusion survives the correction because it never depended on the
-// count: what strands the article is the absence of a RECORD, not the presence
-// of a part.
+// It is reported as rejected, which resolves it as permanently failed: the
+// file is finished and this package cannot write the article now or later.
+// Failing it charges its bytes against the job's par2 recovery budget, which
+// is exactly the decision par2 exists to make.
 //
-// Dropping that one strands it: not written, not acked, not failed, and
-// Emitted again from the re-dispatch — which ForEachUnfinishedArticle skips,
-// so nothing re-dispatches it a second time and the job never finishes.
-//
-// It is reported as rejected, which resolves it as permanently failed. That is
-// the honest disposition rather than a convenient one: the file is finished,
-// its content is whatever the barrier recorded, and this package cannot write
-// the article now or later. Returning it to Outstanding instead would have it
-// re-dispatched into the same tombstone forever. Failing it charges its bytes
-// against the job's par2 recovery budget, which is exactly the decision par2
-// exists to make.
-//
-// The distinction is drawn on seenDone, so it is only ever made when the
-// answer is positively known. An article the writer accepted is dropped
-// silently, as before — failing it would charge good bytes against recovery
-// and degrade the job's reported health. When the writer is gone there is nothing to consult, and dropping is the
-// older, safer behaviour.
+// Where the writer is still open the distinction is drawn on its seenDone and
+// seenFailed, and an article it resolved is dropped silently. Where it is gone
+// the article is reported regardless: Job.MarkArticleFailed is a no-op for an
+// article already Done (setFailedBits), so an accepted article costs a log
+// line and nothing else.
 func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
 	a.log.Debug("ignoring late article for completed file",
 		"job", req.JobID, "fileidx", req.FileIdx, "msgid", req.MessageID)
 	if req.Data != nil {
 		a.releaseBuffer(req.Data)
 	}
-	if f == nil {
-		return
+	if f != nil {
+		if _, accepted := f.w.seenDone[req.ArtIdx]; accepted {
+			return
+		}
+		if _, failed := f.w.seenFailed[req.ArtIdx]; failed {
+			// Already resolved in the other direction by the path that failed it.
+			return
+		}
 	}
-	if _, accepted := f.w.seenDone[req.ArtIdx]; accepted {
-		return
-	}
-	if _, failed := f.w.seenFailed[req.ArtIdx]; failed {
-		// Already resolved in the other direction by the path that failed it.
-		return
-	}
-	a.log.Warn("late article for a completed file was never accepted; recording it as "+
-		"permanently failed so the job is not left waiting on it",
-		"job", req.JobID, "fileidx", req.FileIdx, "artidx", req.ArtIdx, "msgid", req.MessageID)
 	if a.opts.OnArticleRejected != nil {
 		a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx,
-			"redelivered after its file was completed, with no record of it having been written")
+			"redelivered after its file was completed")
 	}
 }
 
@@ -1467,6 +1467,9 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 	f := &openFile{
 		w:    newFileWriter(fh, info.Path, key),
 		info: info,
+	}
+	if syncFn := a.opts.SyncFile; syncFn != nil {
+		f.w.syncFile = func() error { return syncFn(fh) }
 	}
 	a.seedOwned(f.w, info.Owned)
 	open[key] = f
@@ -1716,56 +1719,53 @@ func (a *Assembler) noteWriteFault(path string, req WriteRequest, err error) {
 	}
 }
 
-// finalizeFile records that a file's parts have all arrived and reports it.
+// finalizeFile finishes a file whose parts have all arrived and reports it.
 //
-// It no longer truncates and no longer computes a CRC. Both decisions moved to
-// durability.Barrier: the truncate bound is the highest end offset the file's
-// durable runs reach, which spans what earlier processes wrote and this one
-// never saw, and the whole-file CRC is the crc32 of a file's single run. Doing
-// either here would be this package asserting something about bytes on disk
-// that it cannot check — the shape behind #342, #349 and #350.
+// The finish runs here, on the worker and on the file's writing handle, before
+// anything is reported: fsync, truncate to the end of the last owned byte,
+// fsync again (FileWriter.finish), then close. Only a file all of that
+// succeeded for is tombstoned and reported through OnFileComplete, so a caller
+// that records the file complete records it after its fsync.
 //
-// It no longer CLOSES the file either, and that is the load-bearing part. The
-// barrier's FinalizeFile must Drain, Sync, Truncate and Stat this file, and
-// every one of those goes through the handle this package owns. Closing here
-// would leave the completed file untrimmed — pre-allocation's trailing zeros
-// intact, which par2 reports as damage — and would discard the last drain's
-// Written articles with nothing to ack them, so they would be re-fetched on
-// every restart forever.
-//
-// So the handle stays open and the file stays in `open` until the caller asks
-// for it back via CloseFile, which the completion consumer calls after the
-// barrier has finalized the file. The tombstone below is set NOW rather than at
-// close, so a late duplicate is rejected during that window instead of being
-// written into a file the barrier is finalizing.
-//
-// The cost is file descriptors, and it is worth stating the bound accurately
-// because the obvious one is wrong. A completed file holds its handle until the
-// completion consumer works through to it. That consumer is serial and its
-// event channel is bounded — but the channel is not the bound: the producer
-// side spawns a goroutine per event when the channel is full, precisely so the
-// worker here never blocks on a consumer that may need the worker. So the real
-// bound is the number of files an active job can complete before the consumer
-// catches up, which in the limit is every file of every active job.
-//
-// That is the same ORDER as the pre-existing worst case — a job's files are
-// largely open at once while they are being written, since the dispatcher fans
-// out across them — but it now persists past completion rather than ending at
-// it, and it grows when finalization is slow (a barrier per file) rather than
-// when writing is.
-//
-// Blocking here instead is not available: OnFileComplete runs on the worker,
-// and the consumer's finalize path submits control messages back to this same
-// worker, so making the worker wait for the consumer deadlocks both.
-//
-// Every path that can abandon the handoff (CancelJob, CloseJobHandles, worker
-// exit) still closes whatever is left in `open`.
-func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, completed map[fileKey]struct{}) {
+// Any error is a completion fault. The handle is closed and dropped from open,
+// but the file is NOT tombstoned: a tombstone would send every refetched
+// article to handleLateDuplicate, which writes nothing once the handle is
+// gone, so the refetch would never converge. The first refetched article
+// re-opens the file through the FileInfo resolver and a fresh writer instead.
+// OnFileUntrusted tells the caller the file's written articles are no longer
+// vouched for, and OnWriteFault routes the classified fault (Stall or Fail).
+func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest,
+	open map[fileKey]*openFile, completed map[fileKey]struct{}) {
+	err := f.w.finish()
+	if cerr := f.w.Close(); err == nil {
+		err = cerr
+	}
+	delete(open, key)
+	if err != nil {
+		a.log.Error("completed file could not be finished; its articles are refetched",
+			"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", err)
+		a.noteFileUntrusted(req.JobID, req.FileIdx)
+		fault, ok := errors.AsType[*storagefault.Fault](err)
+		if !ok {
+			fault = storagefault.Classify("finish", f.info.Path, err)
+		}
+		if a.opts.OnWriteFault != nil {
+			a.opts.OnWriteFault(req.JobID, req.FileIdx, fault)
+		}
+		return
+	}
 	completed[key] = struct{}{} // tombstone: reject late duplicates
 	telemetry.FilesCompleted.Add(1)
 	a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)
 	if a.opts.OnFileComplete != nil {
 		a.opts.OnFileComplete(req.JobID, req.FileIdx)
+	}
+}
+
+// noteFileUntrusted hands one untrusted file to its owner.
+func (a *Assembler) noteFileUntrusted(jobID string, fileIdx int) {
+	if a.opts.OnFileUntrusted != nil {
+		a.opts.OnFileUntrusted(jobID, fileIdx)
 	}
 }
 

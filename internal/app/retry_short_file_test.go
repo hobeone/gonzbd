@@ -111,14 +111,14 @@ func newShortFileRetry(t *testing.T) *shortFileRetry {
 	if n := srv.FetchCount(s.msgIDs[0]); n == 0 {
 		t.Fatal("the first attempt never asked for the missing article")
 	}
-	retained, err := repo.RetainedFiles(t.Context(), s.id)
-	if err != nil {
-		t.Fatalf("RetainedFiles: %v", err)
+	var complete int
+	if err := repo.DB().QueryRowContext(t.Context(),
+		`SELECT complete FROM job_files WHERE job_id = ? AND file_index = 0`, s.id).Scan(&complete); err != nil {
+		t.Fatalf("read file 0's job_files row: %v", err)
 	}
-	if len(retained) == 0 || retained[0].FileIndex != 0 || !retained[0].Complete {
-		t.Fatalf("retained file progress = %+v, want file 0 recorded complete: the first "+
-			"attempt did not finalize it short, so this is not the scenario under test",
-			retained)
+	if complete != 1 {
+		t.Fatalf("file 0's job_files.complete = %d, want 1: the first attempt did not "+
+			"finalize it short, so this is not the scenario under test", complete)
 	}
 	return s
 }
@@ -200,11 +200,11 @@ func (s *shortFileRetry) waitStatus(want constants.Status) {
 
 // TestRetryHistoryJob_RefetchesTheArticleAShortFileMissed: a retry of a job
 // whose first attempt finalized a file short fetches the article that attempt
-// could not, and the file ends up holding every article's bytes. The retained
-// history row still records the file as complete, since the first attempt did
-// finalize it; the retry must not take that as meaning there is nothing left
-// to fetch. That row is read from the history database, so a retry after a
-// restart inherits it just as an in-process one does.
+// could not, and the file ends up holding every article's bytes. The FAILED
+// entry's job_files row still records the file as complete, since the first
+// attempt did finalize it; the retry must not take that as meaning there is
+// nothing left to fetch. That row is read from the database, so a retry after
+// a restart inherits it just as an in-process one does.
 func TestRetryHistoryJob_RefetchesTheArticleAShortFileMissed(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

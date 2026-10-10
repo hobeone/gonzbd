@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -205,8 +204,8 @@ func (f *jobFinalizer) retryWithHeldVolumes(jobID string) bool {
 
 // persistAndCommit writes the history entry to the database, removes the job
 // from the dispatcher, and broadcasts the finalization events. Registry and
-// filesystem teardown (checkpointer prune, dispatcher removal, manifest
-// unlinking, and barrier state reset) is attempted regardless of history
+// filesystem teardown (recorder flush, dispatcher removal and manifest
+// unlinking) is attempted regardless of history
 // persistence success, and skipped with the rest when a RemoveJob took the job
 // first (errFinalizedJobRemoved). If dispatcher.RemoveJob returns an
 // error other than ErrNotFound, it is retried once. If the retry also fails, the error is logged, a
@@ -215,28 +214,27 @@ func (f *jobFinalizer) retryWithHeldVolumes(jobID string) bool {
 // or restart handling.
 // Sub-budgets within persistAndCommit are strictly partitioned against
 // starvation:
-//   - History write & files loop: 4s dbCtx, derived from
-//     context.WithoutCancel(app.ctx).
-//   - Dispatcher removal: 3s removeCtx (with an additional 3s retryCtx on
+//   - History write: 3s dbCtx, derived from context.WithoutCancel(app.ctx).
+//   - Recorder flush: 2s flushCtx, derived the same way.
+//   - Dispatcher removal: 2s removeCtx (with an additional 2s retryCtx on
 //     failure if occupyCtx is unexpired), derived from occupyCtx to retain the
 //     occupancy lease token for bypass in Dispatcher.RemoveJob.
 //   - Durability check & delete: 3s delCtx, derived from
 //     context.WithoutCancel(app.ctx).
 //
-// Within Occupy, the 12s finalCtx bounds the history write and both removal
-// attempts (4s DB + 3s initial Remove + 3s retry Remove = 10s, leaving a 2s
-// margin before Occupy expires). Sequentially across all phases including
-// durability cleanup, the maximum execution bound is 13s (10s Occupy + 3s
-// delCtx), which fits within the 15s shutdown step timeout (stepTimeout)
-// under waitBounded when terminating post-processing.
+// Within Occupy, the 12s finalCtx bounds the history write, the flush and
+// both removal attempts (3s DB + 2s flush + 2s initial Remove + 2s retry
+// Remove = 9s, leaving a 3s margin before Occupy expires). Sequentially across
+// all phases including durability cleanup, the maximum execution bound is 12s
+// (9s Occupy + 3s delCtx), which fits within the 15s shutdown step timeout
+// (stepTimeout) under waitBounded when terminating post-processing.
 //
 // The job's transition lock is waited for before finalCtx starts, for at most
 // finalizeTransitionWait and only until app.ctx ends, so it is outside that
-// 13s: Shutdown cancels app.ctx before it stops post-processing.
+// 12s: Shutdown cancels app.ctx before it stops post-processing.
 //
-// Because dbCtx, removeCtx, and delCtx are independently derived, a slow SQLite
-// write cannot starve dispatcher removal or durability cleanup. Prune operates
-// in memory. removeManifestIn unlinks the queue manifest on the filesystem
+// Because dbCtx, flushCtx, removeCtx, and delCtx are independently derived, a
+// slow SQLite write cannot starve dispatcher removal or durability cleanup. removeManifestIn unlinks the queue manifest on the filesystem
 // hosting AdminDir, and takes no context: docs/durability-contract.md notes
 // that a remote NFS/SMB mount can stall such a call, and nothing here bounds
 // it. Note that the enclosing finalize method
@@ -290,40 +288,31 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	defer finalCancel()
 
 	runCommit := func(occupyCtx context.Context) error {
-		mdir := manifestDir(app.config.GetGeneral().AdminDir)
-
 		// The history write files this run under the ID. On the fallback
 		// below no occupancy holds the ID, and what keeps a retry from taking
 		// it before the write is the finalizing record (jobTransitions).
 		var persistErr error
 		if app.historyRepo != nil && app.historyRepo.DB() != nil {
-			// Gathered before the write, because Add stores the entry and this
-			// progress in one transaction, and its doc says what rests on that.
-			var files []history.FileProgress
-			if entry.Status == string(constants.StatusFailed) {
-				files = retainedProgressFor(ppJob.Job, mdir, log)
-			}
-			// The write's deadline starts AFTER that gather, and the order is
-			// load-bearing. retainedProgressFor reads and inflates a manifest
-			// from disk, which on a wedged mount is unbounded; a deadline
-			// started before it would be spent by the time Add ran. Add failing
-			// is not recoverable here: the teardown below removes the queue row,
-			// and where that removal succeeds the reclaim rule sees neither a
-			// queue row nor a FAILED entry and takes durable_runs with it
-			// (internal/durability/reclaim.go ruleStatement), leaving a failed
-			// job with nothing to retry from. A slow read costs its own
-			// progress, which Add tolerates; it must not cost the entry.
-			dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 4*time.Second)
+			// Add failing is not recoverable here: the teardown below removes
+			// the queue row, and where that removal succeeds the reclaim rule
+			// sees neither a queue row nor a FAILED entry and takes the job's
+			// written rows with it (internal/durability/reclaim.go
+			// ruleStatement), leaving a failed job with nothing to retry from.
+			dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 3*time.Second)
 			defer dbCancel()
-			if err := app.historyRepo.Add(dbCtx, entry, files); err != nil {
+			if err := app.historyRepo.Add(dbCtx, entry); err != nil {
 				log.Error("failed to add history entry; registry and filesystem teardown completed but history entry failed to persist",
 					"job", ppJob.Job.ID(), "err", err)
 				persistErr = err
 			}
 		}
-		if app.checkpointer != nil {
-			app.checkpointer.Prune(ppJob.Job)
-		}
+		// After Add, so a failed Add does not lose progress, and before
+		// RemoveJob: once this instance is no longer the dispatcher's, the
+		// recorder's instance check drops its buffered rows, and reclaim then
+		// keeps whatever reached SQLite for a FAILED entry's retry.
+		flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 2*time.Second)
+		_ = app.recorder.flush(flushCtx) // flush logs its own failure
+		flushCancel()
 		// Not fatal, unlike the reconcile path's version: this job IS in
 		// history, so the next startup's dropJobAlreadyInHistory removes the
 		// queue row. reclaim below leaves the manifest and rows of a job the
@@ -333,18 +322,17 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 		// dispatcher.RemoveJob rather than Remove by ID, so the removal names
 		// this instance. ErrNotFound means it is not registered, so there is
 		// nothing to remove, retry or mark. The by-ID steps from here on, the
-		// operational error, reclaim and forgetJobBarrierState, act on this
-		// job's ID. The finalizing record beginFinalize set refuses a retry
+		// operational error and reclaim, act on this job's ID. The finalizing record beginFinalize set refuses a retry
 		// that would register under it at the points jobTransitions lists,
 		// and jobTransitions says why no retry can be registering under it
 		// once those checks have passed.
 		if app.dispatcher != nil {
 			jobID := ppJob.Job.ID()
-			removeCtx, removeCancel := context.WithTimeout(occupyCtx, 3*time.Second)
+			removeCtx, removeCancel := context.WithTimeout(occupyCtx, 2*time.Second)
 			err := app.dispatcher.RemoveJob(removeCtx, ppJob.Job)
 			removeCancel()
 			if err != nil && !errors.Is(err, dispatch.ErrNotFound) && occupyCtx.Err() == nil {
-				retryCtx, retryCancel := context.WithTimeout(occupyCtx, 3*time.Second)
+				retryCtx, retryCancel := context.WithTimeout(occupyCtx, 2*time.Second)
 				err = app.dispatcher.RemoveJob(retryCtx, ppJob.Job)
 				retryCancel()
 			}
@@ -358,12 +346,11 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 
 		// Unconditional: the rule decides from the queue and history as they
 		// now are, so a job still queued keeps everything, a FAILED entry
-		// keeps its durable_runs for a retry, and a persist that failed
+		// keeps its record rows for a retry, and a persist that failed
 		// against an existing FAILED entry keeps them for that entry.
 		delCtx, delCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 3*time.Second)
 		defer delCancel()
 		app.reclaim(delCtx, ppJob.Job.ID())
-		app.forgetJobBarrierState(ppJob.Job.ID())
 		if persistErr != nil {
 			app.emit(Event{Type: "queue_updated"})
 			return persistErr
@@ -440,46 +427,4 @@ func (f *jobFinalizer) fireCompletionNotification(entry history.Entry) {
 		JobName:   entry.Name,
 		Timestamp: time.Now(),
 	})
-}
-
-// retainedProgressFor renders the per-file progress a failed job's history entry
-// carries, so a retry can resume its files instead of re-fetching them.
-//
-// The manifest is what turns a file index into an article count, and it is read
-// from disk when the job is no longer resident. Returning nil is a real answer
-// rather than a failure: without a manifest there is no article count to state,
-// and a row asserting the wrong one is rejected wholesale by
-// retainedMatchesManifest at retry time — costing the retry every file's
-// progress instead of one file's.
-func retainedProgressFor(j *job.Job, mdir string, log *slog.Logger) []history.FileProgress {
-	p := j.Progress()
-	m, mErr := j.Manifest()
-	if mErr != nil && errors.Is(mErr, job.ErrNotResident) {
-		if f, oErr := openManifestIn(mdir, j.ID()); oErr == nil {
-			if diskM, dErr := decodeManifest(f); dErr == nil {
-				m, mErr = diskM, nil
-			}
-		}
-	}
-	if mErr != nil {
-		log.Error("failed to load manifest for failed job files; retained file progress not recorded",
-			"job", j.ID(), "err", mErr)
-		return nil
-	}
-	if p == nil || m == nil {
-		return nil
-	}
-	files := make([]history.FileProgress, 0, m.NumFiles())
-	for fi := range m.NumFiles() {
-		lo, hi := m.FileRange(fi)
-		files = append(files, history.FileProgress{
-			FileIndex:      fi,
-			Complete:       p.FileComplete(fi),
-			FetchPolicy:    uint8(p.FileFetchPolicy(fi)),
-			Filename:       p.FileFilename(fi),
-			AssembledCRC32: p.FileAssembledCRC32(fi),
-			ArticleCount:   hi - lo,
-		})
-	}
-	return files
 }

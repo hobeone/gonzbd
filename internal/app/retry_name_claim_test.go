@@ -55,7 +55,7 @@ func seedFailedRetry(t *testing.T, application *Application, repo *history.Repos
 		Status:    "Failed",
 		Path:      failedDir,
 		Completed: time.Now(),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	return id, jobDir, failedDir

@@ -292,7 +292,7 @@ func TestStart_SweepPreservesAFailedHistoryEntrysRuns(t *testing.T) {
 	seedDurability(t, application, failedID)
 	if err := application.historyRepo.Add(t.Context(), history.Entry{
 		NzoID: failedID, Name: failedID, Status: string(constants.StatusFailed),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -305,15 +305,15 @@ func TestStart_SweepPreservesAFailedHistoryEntrysRuns(t *testing.T) {
 
 	nr, nf := durabilityRowCounts(t, application, failedID)
 	if nr != 1 {
-		t.Errorf("a FAILED history entry's durable_runs = %d after the startup sweep, want 1: "+
-			"a retry bounds FinalizeFile's truncate from these rows", nr)
+		t.Errorf("a FAILED history entry's written_articles = %d after the startup sweep, want 1: "+
+			"a retry verifies these rows against the partial files", nr)
 	}
 	if nf != 0 {
-		t.Errorf("a FAILED history entry's failed_articles = %d after the startup sweep, want 0: "+
-			"only durable_runs is kept for a FAILED entry", nf)
+		t.Errorf("a FAILED history entry's failed_articles = %d after the startup sweep, want 0", nf)
 	}
-	if nj := jobFilesCount(t, application, failedID); nj != 0 {
-		t.Errorf("a FAILED history entry's job_files = %d after the startup sweep, want 0", nj)
+	if nj := jobFilesCount(t, application, failedID); nj != 1 {
+		t.Errorf("a FAILED history entry's job_files = %d after the startup sweep, want 1: "+
+			"a retry names its rows' files from these", nj)
 	}
 }
 

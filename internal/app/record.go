@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -51,13 +52,14 @@ func newRecorder(st recordStore, current func(id string) *job.Job, log *slog.Log
 }
 
 // noteWritten is the OnArticleWritten handler body: the row is appended first,
-// so nothing persisted depends on the Done bit, then the article is marked done.
-func (r *recorder) noteWritten(j *job.Job, row durability.WrittenRow, bytes int64, server string) {
+// so nothing persisted depends on the Done bit, then the article is marked
+// done and its row kept resident for the whole-file CRC.
+func (r *recorder) noteWritten(j *job.Job, row durability.WrittenRow) {
 	r.mu.Lock()
 	r.pending[j] = append(r.pending[j], row)
 	r.mu.Unlock()
 
-	err := j.MarkArticleDone(int(row.ArtIdx), bytes, server)
+	err := j.MarkArticleWritten(row)
 	switch {
 	case err == nil:
 	case errors.Is(err, job.ErrNotResident):
@@ -226,14 +228,16 @@ func (r *recorder) remerge(rows map[*job.Job][]durability.WrittenRow, files map[
 	}
 }
 
-// apply commits verdicts for j synchronously. j comes from the caller and
-// current is not consulted: a retry commits its verdict before the rebuilt
-// job is added to the dispatcher. It holds wmu from the purge through
-// ApplyRecord, so no flush is in flight that could write back what the verdict
-// removes, and the purge removes what is still buffered: a DeleteAll verdict
-// the file's pending rows, a DeleteArtIdxs verdict the named pending rows, and
-// any verdict that sets or clears complete the file's dirty state.
-func (r *recorder) apply(ctx context.Context, j *job.Job, v []durability.FileVerdict) error {
+// apply commits verdicts, and optionally whole file states, for j
+// synchronously. j comes from the caller and current is not consulted: a retry
+// commits before the rebuilt job is added to the dispatcher. It holds wmu from
+// the purge through ApplyRecord, so no flush is in flight that could write
+// back what the verdict removes, and the purge removes what is still
+// buffered: a DeleteAll verdict the file's pending rows, a DeleteArtIdxs
+// verdict the named pending rows, and any verdict that sets or clears
+// complete the file's dirty state. A file state given here replaces the
+// file's buffered one.
+func (r *recorder) apply(ctx context.Context, j *job.Job, v []durability.FileVerdict, files ...durability.FileState) error {
 	r.wmu.Lock()
 	defer r.wmu.Unlock()
 
@@ -241,8 +245,16 @@ func (r *recorder) apply(ctx context.Context, j *job.Job, v []durability.FileVer
 	for _, fv := range v {
 		r.purgeLocked(j, fv)
 	}
+	if m := r.dirty[j]; m != nil {
+		for _, f := range files {
+			delete(m, f.FileIdx)
+		}
+		if len(m) == 0 {
+			delete(r.dirty, j)
+		}
+	}
 	r.mu.Unlock()
-	return r.st.ApplyRecord(ctx, []durability.RecordBatch{{JobID: j.ID(), Verdicts: v}})
+	return r.st.ApplyRecord(ctx, []durability.RecordBatch{{JobID: j.ID(), Verdicts: v, Files: files}})
 }
 
 func (r *recorder) purgeLocked(j *job.Job, fv durability.FileVerdict) {
@@ -289,4 +301,112 @@ func (r *recorder) run(ctx context.Context, every time.Duration) {
 			_ = r.flush(ctx) // flush logs its own failure
 		}
 	}
+}
+
+// nopRecordStore is the recorder's store when there is no history database:
+// the record is discarded, and every restart refetches everything.
+type nopRecordStore struct{}
+
+func (nopRecordStore) ApplyRecord(context.Context, []durability.RecordBatch) error { return nil }
+
+// untrustTimeout bounds the synchronous SQLite write that untrusts a file. It
+// runs on the assembler's worker goroutine, which every job's writes wait on.
+const untrustTimeout = 5 * time.Second
+
+// lookupCurrent is the recorder's instance check: the job the dispatcher holds
+// under id, or nil.
+func (app *Application) lookupCurrent(id string) *job.Job {
+	j, ok := app.dispatcher.Job(id)
+	if !ok {
+		return nil
+	}
+	return j
+}
+
+// handleArticleWritten is the assembler's Options.OnArticleWritten: the
+// article's bytes reached pwrite, so its row is buffered and it is Done.
+func (app *Application) handleArticleWritten(jobID string, fileIdx int, artIdx int32, off, n int64, crc uint32) {
+	j, ok := app.dispatcher.Job(jobID)
+	if !ok {
+		app.log.Debug("written article not recorded; the job has left the queue",
+			"job", jobID, "fileidx", fileIdx, "artidx", artIdx)
+		return
+	}
+	app.recorder.noteWritten(j, durability.WrittenRow{
+		FileIdx: fileIdx, ArtIdx: artIdx, Offset: off, Length: n, CRC32: crc,
+	})
+}
+
+// handleFileUntrusted is the assembler's Options.OnFileUntrusted: a file's
+// fsync failed, so none of its written articles can be vouched for. It runs
+// synchronously on the assembler's worker, in this order:
+//
+//  1. The file's rows and complete flag are removed from SQLite through the
+//     recorder's synchronous path, which also purges what is still buffered
+//     for it. This has to land before the job can be evicted and re-hydrated.
+//  2. Its articles return to Outstanding in memory (Job.UntrustFile).
+//  3. The pipeline's cached FileInfo is dropped, so the first refetched
+//     article re-registers the file with a fresh part count and an empty
+//     owned set.
+//
+// It does not use app.wg: at worker exit, Shutdown may already be waiting on
+// it.
+func (app *Application) handleFileUntrusted(jobID string, fileIdx int) {
+	j, ok := app.dispatcher.Job(jobID)
+	if !ok {
+		app.log.Debug("untrusted file not recorded; the job has left the queue",
+			"job", jobID, "fileidx", fileIdx)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), untrustTimeout)
+	defer cancel()
+	if err := app.recorder.apply(ctx, j, []durability.FileVerdict{
+		{FileIdx: fileIdx, DeleteAll: true, ClearComplete: true},
+	}); err != nil {
+		app.log.Error("could not remove an untrusted file's record; its rows may be trusted at the next start",
+			"job", jobID, "fileidx", fileIdx, "err", err)
+	}
+	if err := j.UntrustFile(fileIdx); err != nil {
+		app.log.Debug("untrusted file not returned to Outstanding in memory",
+			"job", jobID, "fileidx", fileIdx, "err", err)
+	}
+	app.pipeline.forgetFile(jobID, fileIdx)
+	app.log.Warn("file untrusted after an fsync failure; its articles are fetched again",
+		"job", jobID, "fileidx", fileIdx)
+}
+
+// enqueueResumedCompletion hands the consumer of internalFileComplete a file
+// the verifier finished by path, marked Resumed.
+func (app *Application) enqueueResumedCompletion(jobID string, fileIdx int) {
+	fc := FileComplete{JobID: jobID, FileIdx: fileIdx, Resumed: true}
+	select {
+	case app.internalFileComplete <- fc:
+	default:
+		app.wg.Go(func() { app.internalFileComplete <- fc })
+	}
+}
+
+// syncFileHandle is the assembler's Options.SyncFile: the syncFile seam when a
+// test set one, otherwise the handle's own fsync.
+func (app *Application) syncFileHandle(f *os.File) error {
+	if app.syncFile != nil {
+		return app.syncFile(f)
+	}
+	return f.Sync()
+}
+
+// markFileDirty records one file's current state for the recorder's next
+// flush. The state is read from the job's progress, so Complete is true only
+// once the file was finished: complete=1 never reaches SQLite before its
+// fsync.
+func (app *Application) markFileDirty(j *job.Job, fi int) {
+	p := j.Progress()
+	if p == nil || fi < 0 || fi >= p.NumFiles() {
+		return
+	}
+	app.recorder.markDirty(j, fi, durability.FileState{
+		Complete:    p.FileComplete(fi),
+		Filename:    p.FileFilename(fi),
+		FetchPolicy: uint8(p.FileFetchPolicy(fi)),
+	})
 }

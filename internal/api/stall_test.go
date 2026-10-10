@@ -181,7 +181,7 @@ func TestQueueAPI_ReportsDurableBytesFromRecordedRuns(t *testing.T) {
 	// Now make the job's single 1024-byte article Done, through the door a
 	// resume's verified rows enter by. Asserting only the zero above pinned
 	// nothing: a bytes_durable that always answered 0 satisfied it.
-	if err := j.InstallVerified(0, []durability.WrittenRow{
+	if _, err := j.InstallVerified(0, []durability.WrittenRow{
 		{FileIdx: 0, ArtIdx: 0, Length: 1024},
 	}); err != nil {
 		t.Fatalf("InstallVerified: %v", err)

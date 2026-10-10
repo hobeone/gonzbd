@@ -158,14 +158,6 @@ file internal/app/archive_peek.go
 	_ = jobID
 --- end
 
-[the stall re-evaluation drops a blocked parked job's recovery]
-file internal/app/stall.go
---- anchor
-				if errors.Is(err, dispatch.ErrUnwantedBlocked) {
---- replace
-				if errors.Is(err, dispatch.ErrUnwantedBlocked) && false {
---- end
-
 [a retry does not read the entry's blocked standing]
 file internal/app/unwanted.go
 --- anchor

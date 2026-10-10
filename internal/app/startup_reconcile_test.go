@@ -52,7 +52,7 @@ func TestReconcileBeforeFirstTick_StopsOnACancelledContext(t *testing.T) {
 	if err := repo.Add(t.Context(), history.Entry{
 		NzoID: j.ID(), Name: "cancelled",
 		Status: string(constants.StatusCompleted), Completed: time.Now(),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("seed history entry: %v", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -129,7 +129,7 @@ func TestStart_RetentionDoesNotDefeatCrashReconciliation(t *testing.T) {
 		Name:      "reconcile",
 		Status:    string(constants.StatusCompleted),
 		Completed: time.Now().AddDate(0, 0, -30),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("seed history entry: %v", err)
 	}
 
