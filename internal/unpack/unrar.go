@@ -45,21 +45,11 @@ type Options struct {
 	// IgnoreUnrarDates discards in-archive modification timestamps and uses extraction time.
 	// Adds -tsm- to unrar arguments (matches SABnzbd's behavior).
 	IgnoreUnrarDates bool
-	// ExtractSymlinks lets the pure-Go RAR path create symlink and junction
-	// members. Default false: such members are logged and skipped, because a
-	// link target comes from the archive. Hard links and file copies are
-	// unaffected. The external unrar is not governed by this option.
-	ExtractSymlinks bool
 	// DecodeWorkers is the configured rar_decode_workers value for the
 	// pure-Go RAR path: <= 0 means auto, 1 serial, larger values decode a
 	// compressed member's blocks on that many goroutines (see
 	// DecodeWorkers). The external unrar is not governed by this option.
 	DecodeWorkers int
-	// Symlinks collects symlink members during one pure-Go RAR extraction so
-	// they can be created after the last member. Set by the extraction loop
-	// that owns it; callers leave it nil. With ExtractSymlinks true and no
-	// batch, a symlink member is refused rather than created in place.
-	Symlinks *SymlinkBatch
 	// UseGoRAR uses the pure-Go rarengine library for RAR3/RAR5 extraction
 	// instead of shelling out to unrar. No external binary required.
 	// Default true.
@@ -92,6 +82,11 @@ type Options struct {
 	// old/non-RARLAB variants don't support are stripped:
 	// -scf, -ai, -tsm-. Matches SABnzbd's RAR_PROBLEM degraded mode.
 	HasProblem bool
+	// UnrarVersion is the detected unrar version as UnrarInfo.Version
+	// reports it (e.g. 712 for 7.12); 0 when unknown. From
+	// unrarSkipSymlinksVersion on, UnRAR passes -ol- so unrar creates no
+	// symlinks.
+	UnrarVersion int
 	// OnLine is called for each line of subprocess output. May be nil.
 	OnLine func(string) `json:"-"`
 	// OnCommand is called once per subprocess invocation, just before
@@ -111,6 +106,11 @@ type Options struct {
 	// If negative (< 0), ratio checking is enforced immediately from byte 0.
 	MinBombThreshold int64
 }
+
+// unrarSkipSymlinksVersion is the first unrar with -ol-, which skips symbolic
+// links when extracting (RAR 7.00 whatsnew, item 7). An older unrar rejects
+// the switch as unknown and fails the extraction.
+const unrarSkipSymlinksVersion = 700
 
 // UnrarBinaries is the ordered list of unrar binary names tried during auto-detection.
 var UnrarBinaries = []string{"unrar", "unrar-nonfree"}
@@ -202,6 +202,9 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 	}
 	if opts.IgnoreUnrarDates && !opts.HasProblem {
 		args = append(args, "-tsm-") // don't restore modification times (not supported by free unrar)
+	}
+	if opts.UnrarVersion >= unrarSkipSymlinksVersion {
+		args = append(args, "-ol-") // create no symlinks; publishStagedExtraction drops any an older unrar makes
 	}
 	args = append(args, opts.ExtraArgs...) // user-specified extra flags
 

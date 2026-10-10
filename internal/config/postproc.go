@@ -67,13 +67,6 @@ type PostProcConfig struct {
 	// uses the extraction time instead. Passes -tsm- to unrar (matches
 	// SABnzbd's behavior).
 	IgnoreUnrarDates bool `yaml:"ignore_unrar_dates" json:"ignore_unrar_dates"`
-	// ExtractSymlinks lets the pure-Go RAR extractor create symlink and
-	// junction members. Default false: they are logged and skipped, since a
-	// link target is chosen by the archive's author. Hard links and file
-	// copies are always extracted. When true, links are created after the
-	// last member and any that resolves outside the job directory is removed.
-	// Does not govern the external unrar, which handles links itself.
-	ExtractSymlinks bool `yaml:"extract_symlinks" json:"extract_symlinks"`
 	// RarDecodeWorkers sets how many goroutines the pure-Go RAR5 extractor
 	// uses to decode one compressed member's blocks. 0 (default) means
 	// auto: min(runtime.NumCPU(), 4). 1 means the serial decoder. Values

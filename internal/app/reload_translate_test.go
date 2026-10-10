@@ -46,6 +46,18 @@ func TestUnpackConfigFromPP_ForwardsProbeHasProblem(t *testing.T) {
 	}
 }
 
+// TestUnpackConfigFromPP_ForwardsProbeUnrarVersion pins that the detected
+// unrar version reaches the unpack stage, which passes -ol- (create no
+// symlinks) only from the version that has it.
+func TestUnpackConfigFromPP_ForwardsProbeUnrarVersion(t *testing.T) {
+	t.Parallel()
+	probe := binaryProbe{UnrarInfo: unpack.UnrarInfo{Available: true, Version: 712}}
+	got := unpackConfigFromPP(config.PostProcConfig{}, probe, cmdutil.CmdConfig{}, nil)
+	if got.Base.UnrarVersion != 712 {
+		t.Errorf("Base.UnrarVersion = %d, want 712", got.Base.UnrarVersion)
+	}
+}
+
 // TestRarDecodeWorkersPlumbing pins that rar_decode_workers reaches both the
 // post-process unpack options and the DirectUnpack options.
 func TestRarDecodeWorkersPlumbing(t *testing.T) {
@@ -55,7 +67,7 @@ func TestRarDecodeWorkersPlumbing(t *testing.T) {
 	if got.Base.DecodeWorkers != 3 {
 		t.Errorf("unpackConfigFromPP Base.DecodeWorkers = %d, want 3", got.Base.DecodeWorkers)
 	}
-	du := (&directUnpackOrchestrator{}).buildOpts(false, false, false, false, pp.RarDecodeWorkers)
+	du := (&directUnpackOrchestrator{}).buildOpts(false, false, false, pp.RarDecodeWorkers)
 	if du.DecodeWorkers != 3 {
 		t.Errorf("buildOpts DecodeWorkers = %d, want 3", du.DecodeWorkers)
 	}

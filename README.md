@@ -469,7 +469,7 @@ These checks must pass before pushing your changes to the repository.
 
 GoNZBD supports **zero-dependency execution** by utilizing native, pure-Go libraries for all core post-processing operations, eliminating the need to install or shell out to external system binaries:
 
-* **Pure-Go RAR Extraction** (`use_go_rar`): Powered by `hobeone/rarengine` (RAR5). Enabled by default; falls back to external `unrar` for RAR3/4 or unsupported features. Symlink members are skipped unless `postproc.extract_symlinks: true`; when enabled, links are created after the last member and any that resolves outside the job directory is removed. Hard links and file copies are always extracted. Compressed members decode on up to 4 goroutines by default (min of CPU count and 4), tunable with `postproc.rar_decode_workers` (1 = serial).
+* **Pure-Go RAR Extraction** (`use_go_rar`): Powered by `hobeone/rarengine` (RAR5). Enabled by default; falls back to external `unrar` for RAR3/4 or unsupported features. Link members (symlinks, junctions, hard links and file references) are never created: gonzbd puts no links in a job, so each is skipped with a log line and the rest of the set is extracted. Compressed members decode on up to 4 goroutines by default (min of CPU count and 4), tunable with `postproc.rar_decode_workers` (1 = serial).
 * **Pure-Go 7-Zip Extraction** (`use_go_7z`): Powered by `bodgit/sevenzip`. Enabled by default; no `7z` binary required.
 * **Pure-Go PAR2 Verification & Repair** (`use_go_par2`): Powered by our high-performance native `github.com/hobeone/par2engine` module. Enabled by default; no `par2cmdline` binary required.
 

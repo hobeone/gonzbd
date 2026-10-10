@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 const unpackStagePrefix = ".gonzbd-tmp-unpack-"
@@ -38,6 +39,14 @@ func prepareStageDir(outDir string) (string, error) {
 // returns the relative paths of the published files (#768). When
 // opts.OverwriteFiles is false, existing destination files in outDir are
 // preserved and skipped.
+//
+// It enforces the "no links in a job" rule (see rar_links.go) on the
+// external extractors' output: unrar can leave hard links in the stage (and
+// symlinks, without -ol-), and 7z can leave symlinks. Only regular files are
+// published. A file with a name outside the stage is not published at all;
+// of several names for one inode, all inside the stage, only the first in
+// walk (lexical) order is, so the surviving name of a hard-linked pair is not
+// necessarily the archive's original member.
 func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Options) ([]string, error) {
 	root, err := os.OpenRoot(outDir)
 	if err != nil {
@@ -45,8 +54,13 @@ func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Opt
 	}
 	defer func() { _ = root.Close() }()
 
+	staged, err := countStagedNames(stageDir)
+	if err != nil {
+		return nil, err
+	}
 	stageBase := filepath.Base(stageDir)
 	var published []string
+	seen := make(map[fileID]struct{})
 	err = filepath.WalkDir(stageDir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -64,6 +78,16 @@ func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Opt
 				return err
 			}
 			return root.MkdirAll(rel, info.Mode().Perm())
+		}
+		if skip, err := isStagedLink(d, staged, seen); err != nil || skip {
+			if skip {
+				log.Warn("skipping link in extracted output: extraction creates no links in a job",
+					"path", rel, "mode", d.Type())
+				if opts.OnLine != nil {
+					opts.OnLine("Skipping link: " + rel)
+				}
+			}
+			return err
 		}
 		if !opts.OverwriteFiles {
 			if _, err := root.Lstat(rel); err == nil {
@@ -86,6 +110,68 @@ func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Opt
 		return nil
 	})
 	return published, err
+}
+
+// fileID names an inode.
+type fileID struct{ dev, ino uint64 }
+
+// multiLinked returns the inode of info, whether it has more than one
+// name and its link count. multi is false where the platform reports no link
+// count.
+func multiLinked(info os.FileInfo) (id fileID, nlink uint64, multi bool) {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || st.Nlink <= 1 {
+		return fileID{}, 0, false
+	}
+	return fileID{dev: uint64(st.Dev), ino: st.Ino}, uint64(st.Nlink), true //nolint:unconvert // Dev and Nlink widths vary by platform
+}
+
+// countStagedNames counts, for each regular file under stageDir with more
+// than one name, how many of its names are under stageDir.
+func countStagedNames(stageDir string) (map[fileID]uint64, error) {
+	counts := make(map[fileID]uint64)
+	err := filepath.WalkDir(stageDir, func(_ string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil || !d.Type().IsRegular() {
+			return walkErr
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if id, _, multi := multiLinked(info); multi {
+			counts[id]++
+		}
+		return nil
+	})
+	return counts, err
+}
+
+// isStagedLink reports whether the non-directory stage entry d must not be
+// published: anything but a regular file (a symlink above all); a regular
+// file with a name outside the stage (fewer of its names in staged, the
+// counts from countStagedNames, than its link count), which no name of may
+// reach the job; or a regular file whose inode was already met under another
+// name in seen. A first name is recorded in seen.
+func isStagedLink(d os.DirEntry, staged map[fileID]uint64, seen map[fileID]struct{}) (bool, error) {
+	if !d.Type().IsRegular() {
+		return true, nil
+	}
+	info, err := d.Info()
+	if err != nil {
+		return false, err
+	}
+	id, nlink, multi := multiLinked(info)
+	if !multi {
+		return false, nil
+	}
+	if staged[id] < nlink {
+		return true, nil
+	}
+	if _, dup := seen[id]; dup {
+		return true, nil
+	}
+	seen[id] = struct{}{}
+	return false, nil
 }
 
 // snapshotDir returns a set of all regular files (relative paths) under dir.

@@ -73,7 +73,7 @@ func NewUnpackStageWith(opts unpack.Options, cleanup bool) *UnpackStage {
 // concern) — that stays on SetEnabled.
 type UnpackConfig struct {
 	// Base is the full extraction option set, including construction-only
-	// fields (HasProblem, Sandbox.Enabled) which the caller carries forward.
+	// fields (HasProblem, UnrarVersion, Sandbox.Enabled) which the caller carries forward.
 	Base            unpack.Options
 	Permissions     string
 	PasswordFile    string
