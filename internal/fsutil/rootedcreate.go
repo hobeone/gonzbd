@@ -9,7 +9,32 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+// TempFilePrefix is the filename prefix used by RootedCreateTemp and
+// RootedCreateTempPerm for sibling temporary files before atomic rename.
+const TempFilePrefix = ".gonzbd-tmp-"
+
+// IsTempFile reports whether name (a base filename, not a path) matches the
+// ".gonzbd-tmp-<16 lowercase hex>" pattern created by RootedCreateTemp and
+// RootedCreateTempPerm.
+func IsTempFile(name string) bool {
+	if !strings.HasPrefix(name, TempFilePrefix) {
+		return false
+	}
+	suffix := name[len(TempFilePrefix):]
+	if len(suffix) != 16 {
+		return false
+	}
+	for i := range len(suffix) {
+		c := suffix[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
 
 // RootedOpenFile creates parent directories and opens a file through a rooted
 // directory handle. It calls root.MkdirAll for the parent directory, then
@@ -37,12 +62,12 @@ func RootedOpenFile(root *os.Root, rel string, flag int, perm fs.FileMode) (*os.
 	return f, nil
 }
 
-// RootedCreateTemp creates a uniquely-named temporary file in the same
-// directory as rel (so a subsequent root.Rename to rel is same-filesystem
-// and atomic), through a rooted directory handle. It calls root.MkdirAll for
-// the parent directory, then retries root.OpenFile with a random suffix on
-// name collision (mirroring os.CreateTemp's own retry behavior, since
-// os.Root has no CreateTemp of its own).
+// RootedCreateTemp creates a uniquely-named temporary file with mode 0o600 in
+// the same directory as rel (so a subsequent root.Rename to rel is
+// same-filesystem and atomic), through a rooted directory handle. It calls
+// root.MkdirAll for the parent directory, then retries root.OpenFile with a
+// random suffix on name collision (mirroring os.CreateTemp's own retry
+// behavior, since os.Root has no CreateTemp of its own).
 //
 // The temp name uses a fixed short prefix (".gonzbd-tmp-<hex>") rather than
 // rel's own basename, so an archive entry whose name is already near the
@@ -60,6 +85,14 @@ func RootedOpenFile(root *os.Root, rel string, flag int, perm fs.FileMode) (*os.
 // failure — RootedCreateTemp itself does not clean up). The caller is
 // responsible for closing the returned *os.File.
 func RootedCreateTemp(ctx context.Context, root *os.Root, rel string) (*os.File, string, error) {
+	return RootedCreateTempPerm(ctx, root, rel, 0o600)
+}
+
+// RootedCreateTempPerm is like RootedCreateTemp, but passes perm to
+// root.OpenFile so the created temporary file's mode respects perm masked by
+// the process umask (e.g. 0o666 &^ umask for joined files that do not go
+// through a separate Chmod step).
+func RootedCreateTempPerm(ctx context.Context, root *os.Root, rel string, perm fs.FileMode) (*os.File, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
@@ -78,8 +111,8 @@ func RootedCreateTemp(ctx context.Context, root *os.Root, rel string) (*os.File,
 		if _, err := rand.Read(buf[:]); err != nil {
 			return nil, "", fmt.Errorf("fsutil: generate temp suffix: %w", err)
 		}
-		tmpRel := filepath.Join(dir, ".gonzbd-tmp-"+hex.EncodeToString(buf[:]))
-		f, err := root.OpenFile(tmpRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		tmpRel := filepath.Join(dir, TempFilePrefix+hex.EncodeToString(buf[:]))
+		f, err := root.OpenFile(tmpRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
 		if err == nil {
 			return f, tmpRel, nil
 		}

@@ -274,6 +274,10 @@ type Options struct {
 	// DiskCheckTimeout bounds each FreeBytes call in checkDiskSpace.
 	// Zero selects the default (5 seconds).
 	DiskCheckTimeout time.Duration
+
+	// SyncFile, if non-nil, overrides fh.Sync on newly opened FileWriters so
+	// cross-package tests can inject fsync faults without a dead mount.
+	SyncFile func() error
 }
 
 // fileKey uniquely identifies a target file within the assembler.
@@ -303,6 +307,11 @@ type fileKey struct {
 type openFile struct {
 	w    *FileWriter
 	info FileInfo
+	// rolledBack records that a completed file's tombstone was lifted by
+	// releaseSyncRollback after a failed Drain or Sync dropped parts() below
+	// TotalParts (#760), so opTruncate answers ErrFileIncomplete until the
+	// re-fetched articles reach TotalParts again in finalizeFile.
+	rolledBack bool
 }
 
 // Assembler receives decoded article data and writes it to target files using
@@ -987,7 +996,7 @@ func (a *Assembler) dispatchRequest(
 	if req.syncOp != nil {
 		// Control message: a barrier operation. Answered on this goroutine,
 		// which owns every file handle (X1).
-		a.handleSyncOp(req.syncOp, open)
+		a.handleSyncOp(req.syncOp, open, completed)
 		return 0
 	}
 	if req.ackCh != nil && req.FileIdx == fileIdxCancelJob {
@@ -1106,10 +1115,12 @@ func (a *Assembler) dispatchRequest(
 //
 // It is worth being exact about which step does that, because this comment
 // used to name the wrong one: it said "the Sync that follows is what discards
-// a confirmed one". FileWriter.Sync discards nothing, and says so in its own
-// doc — Confirm releases the report, and drainAndClose never calls Confirm. So
-// a reader tracing "who acks these?" was sent looking for a Sync-side discard
-// that does not exist. It is Close.
+// a confirmed one". A successful FileWriter.Sync discards nothing, and says so
+// in its own doc — Confirm releases the report, and drainAndClose never calls
+// Confirm. So a reader tracing "who acks these?" was sent looking for a
+// Sync-side discard that does not exist. It is Close. (A FAILED Sync does
+// discard the report, and drainAndClose returns those articles to Outstanding
+// through releasePoisoned; see FileWriter.poisonSync.)
 //
 // Their Emitted bits therefore stay set, which is NOT the same as Outstanding
 // — an earlier version of this doc said "left Outstanding and re-fetched (S3)"
@@ -1173,7 +1184,13 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 
 	_, err := f.w.Drain()
 	note("drain file before close", err)
-	note("sync file before close", f.w.Sync())
+	if syncErr := f.w.Sync(); syncErr != nil {
+		note("sync file before close", syncErr)
+		// A failed Sync rolled the file's unconfirmed articles back into
+		// w.poisoned (#760). Close below throws the writer away with that set,
+		// so this is the only chance to return them to Outstanding.
+		a.releasePoisoned(f)
+	}
 	// A failing Close is a storage condition too, and on network-backed mounts
 	// it is frequently the first report of writes that never landed — the
 	// close is where a deferred error surfaces.
@@ -1456,6 +1473,9 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 		w:    newFileWriter(fh, info.Path, key),
 		info: info,
 	}
+	if a.opts.SyncFile != nil {
+		f.w.syncFile = a.opts.SyncFile
+	}
 	open[key] = f
 	return f, nil
 }
@@ -1573,14 +1593,14 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 		f.w.failPermanent(id.artIdx)
 		return &rejectedArticleError{reason: reason}
 	}
-	// An offset whose owner has already been reported Written is settled, and
-	// the ARRIVING article is the one refused. See FileWriter.offsetSettledBy
-	// for why the loser is chosen this way round rather than by arrival order.
+	// A range that overlaps an already-accepted article whose bytes have been
+	// reported Written is settled, and the ARRIVING article is the one
+	// refused. See FileWriter.offsetSettledBy.
 	//
 	// Checked here rather than inside Accept so the refusal travels the same
 	// route as the out-of-range one above — Accept's contract is that its error
 	// always reports STORAGE failing, and this reports the article.
-	if _, settled := f.w.offsetSettledBy(req.Offset, id); settled {
+	if _, settled := f.w.offsetSettledBy(req.Offset, int64(len(req.Data)), id); settled {
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
@@ -1708,6 +1728,7 @@ func (a *Assembler) noteWriteFault(path string, req WriteRequest, err error) {
 // exit) still closes whatever is left in `open`.
 func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, completed map[fileKey]struct{}) {
 	completed[key] = struct{}{} // tombstone: reject late duplicates
+	f.rolledBack = false
 	telemetry.FilesCompleted.Add(1)
 	a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)
 	if a.opts.OnFileComplete != nil {

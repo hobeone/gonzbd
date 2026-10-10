@@ -1,9 +1,11 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,9 +192,10 @@ func TestRestore_PostBoundaryJobConsumesTheBoundary(t *testing.T) {
 // real validation, not a trusted deserialization: a row claiming OutcomeOK
 // at Fetching (admissibleAt allows OutcomeOK only at Finalizing —
 // internal/job/admissibility.go) is not a legal sequence job.Job's doors will
-// produce, and restore must refuse it rather than register a job in a
-// position the state machine itself calls invalid.
+// produce, and restore must refuse to register a job in a position the state
+// machine itself calls invalid while logging the bad row and continuing.
 func TestRestore_RejectsAnUnreachablePosition(t *testing.T) {
+	var buf bytes.Buffer
 	st := &fakeStore{}
 	st.seed([]Persisted{{
 		ID:     "j1",
@@ -200,13 +203,19 @@ func TestRestore_RejectsAnUnreachablePosition(t *testing.T) {
 		State:  job.StateView{State: job.Fetching, Outcome: job.OutcomeOK},
 	}})
 	d := newTestDispatcher(t, withStore(st))
+	d.log = captureLogger(&buf)
 
-	err := d.restore(context.Background())
-	if err == nil {
-		t.Fatal("restore() = nil, want an error — OutcomeOK is not admissible at Fetching")
+	if err := d.restore(context.Background()); err != nil {
+		t.Fatalf("restore() = %v, want nil — an unreachable row must be logged and skipped", err)
 	}
-	if !errors.Is(err, job.ErrInvalidOutcome) {
-		t.Errorf("restore() = %v, want it to wrap job.ErrInvalidOutcome", err)
+	if _, ok := d.lookup("j1"); ok {
+		t.Fatal("restore registered j1; OutcomeOK is not admissible at Fetching")
+	}
+	if _, ok := d.lastWritten("j1"); ok {
+		t.Error("restore recorded the skipped row in d.written")
+	}
+	if out := buf.String(); !strings.Contains(out, "job_id=j1") || !strings.Contains(out, job.ErrInvalidOutcome.Error()) {
+		t.Errorf("log output %q does not record job_id=j1 and %q", out, job.ErrInvalidOutcome)
 	}
 }
 
@@ -503,48 +512,145 @@ func TestFakeStore_RowsAndOrderStayInStep(t *testing.T) {
 	}
 }
 
-// TestRestore_RollsBackWhenALaterRowFails pins that a failed startup leaves
-// the registry empty rather than half-populated.
-//
-// restore registers each row as it goes, so a row that fails partway leaves
-// every earlier row in d.byID. Start reports the error and clears started, so
-// the caller may legitimately retry once a transient store problem clears —
-// but the retry re-Loads the same rows and d.Add refuses the first one with
-// "already registered", so the dispatcher can never start again. In between,
-// List and Stop operate on a queue that was never fully restored.
-func TestRestore_RollsBackWhenALaterRowFails(t *testing.T) {
+// TestRestore_SkipsAnUnreconstructableRow pins that a stored row reconstruct
+// refuses logs at Error with its job ID and is skipped without aborting Start,
+// leaving the valid rows queued, the bad row untouched in the store and out of
+// d.written, and d.nextSeq advanced past the skipped row's SortKey.
+func TestRestore_SkipsAnUnreconstructableRow(t *testing.T) {
+	var buf bytes.Buffer
 	st := &fakeStore{}
-	// The SortKeys are explicit and ascending because restore SORTS before
-	// registering, and both rows defaulting to 0 made the ID tiebreak put
-	// "bad" first — so reconstruct failed on the first row, nothing was ever
-	// registered, and the rollback loop this test exists for ran zero times
-	// while the test still passed. Deleting d.remove(id) from restore did not
-	// turn it red.
+	// "bad" has SortKey 1 and "good" has SortKey 2 so restore encounters an
+	// unreconstructable row before "good", and "bad-high" has SortKey 50 so a
+	// skipped row also holds the highest SortKey in the store.
+	badRow := Persisted{
+		ID:      "bad",
+		SortKey: 1,
+		Header:  Header{Name: "b"},
+		State:   job.StateView{State: job.StateUnset, Next: job.Assessing},
+	}
+	goodRow := Persisted{
+		ID:      "good",
+		SortKey: 2,
+		Header:  Header{Name: "a"},
+		State:   job.StateView{State: job.Fetching},
+	}
+	badHighRow := Persisted{
+		ID:      "bad-high",
+		SortKey: 50,
+		Header:  Header{Name: "c"},
+		State:   job.StateView{State: job.StateUnset, Next: job.Assessing},
+	}
+	st.seed([]Persisted{badRow, goodRow, badHighRow})
+	d := newTestDispatcher(t, withStore(st))
+	d.log = captureLogger(&buf)
+
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("Start() = %v, want nil when rows cannot be reconstructed", err)
+	}
+
+	got := d.List()
+	if len(got) != 1 || got[0].ID != "good" {
+		t.Fatalf("List() = %+v, want only [good]", got)
+	}
+	for _, wantBad := range []Persisted{badRow, badHighRow} {
+		if storedBad, ok := st.row(wantBad.ID); !ok || storedBad != wantBad {
+			t.Errorf("%s row in store = (%+v, %v), want (%+v, true) — a skipped row must be left untouched in the store", wantBad.ID, storedBad, ok, wantBad)
+		}
+		if _, ok := d.lastWritten(wantBad.ID); ok {
+			t.Errorf("%s row was recorded in d.written; persistIfChanged must not track a skipped row", wantBad.ID)
+		}
+	}
+	if err := d.Add(context.Background(), job.New("fresh", "fresh", job.Policy{}), Header{Name: "fresh"}); err != nil {
+		t.Fatalf("Add(fresh): %v", err)
+	}
+	if gotKey := d.sortKeyOf("fresh"); gotKey <= badHighRow.SortKey {
+		t.Errorf("post-restore Add got sortKey %d, want > %d — nextSeq did not advance past the skipped row's SortKey", gotKey, badHighRow.SortKey)
+	}
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "restore failed") || !strings.Contains(out, "job_id=bad") || !strings.Contains(out, "job_id=bad-high") {
+		t.Errorf("log output %q does not contain \"restore failed\", \"job_id=bad\", and \"job_id=bad-high\"", out)
+	}
+}
+
+// TestRestore_SkipsARowRegisterRefuses pins the register-error arm of restore:
+// a row that reconstructs cleanly but is refused by register (here, a duplicate
+// job name against an earlier row) is logged at Error with its job ID, left
+// untouched in the store, omitted from d.written, and still advances d.nextSeq
+// past its SortKey so later rows and subsequent Adds sort after it.
+func TestRestore_SkipsARowRegisterRefuses(t *testing.T) {
+	var buf bytes.Buffer
+	st := &fakeStore{}
+	dupRow := Persisted{ID: "dup-name", SortKey: 2, Header: Header{Name: "shared"}, State: job.StateView{State: job.Fetching}}
+	dupHighRow := Persisted{ID: "dup-high", SortKey: 50, Header: Header{Name: "shared"}, State: job.StateView{State: job.Fetching}}
+	st.seed([]Persisted{
+		{ID: "first", SortKey: 1, Header: Header{Name: "shared"}, State: job.StateView{State: job.Fetching}},
+		dupRow,
+		{ID: "third", SortKey: 3, Header: Header{Name: "unique"}, State: job.StateView{State: job.Fetching}},
+		dupHighRow,
+	})
+	d := newTestDispatcher(t, withStore(st))
+	d.log = captureLogger(&buf)
+
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("Start() = %v, want nil when register refuses a row", err)
+	}
+
+	got := d.List()
+	if len(got) != 2 || got[0].ID != "first" || got[1].ID != "third" {
+		t.Fatalf("List() = %+v, want [first, third]", got)
+	}
+	for _, wantDup := range []Persisted{dupRow, dupHighRow} {
+		if storedDup, ok := st.row(wantDup.ID); !ok || storedDup != wantDup {
+			t.Errorf("%s row in store = (%+v, %v), want (%+v, true) — a refused row must remain untouched in the store", wantDup.ID, storedDup, ok, wantDup)
+		}
+		if _, ok := d.lastWritten(wantDup.ID); ok {
+			t.Errorf("%s was recorded in d.written despite register refusing it", wantDup.ID)
+		}
+	}
+	if err := d.Add(context.Background(), job.New("fresh", "fresh", job.Policy{}), Header{Name: "fresh"}); err != nil {
+		t.Fatalf("Add(fresh): %v", err)
+	}
+	if gotKey := d.sortKeyOf("fresh"); gotKey <= dupHighRow.SortKey {
+		t.Errorf("post-restore Add got sortKey %d, want > %d — nextSeq did not advance past the refused row's SortKey", gotKey, dupHighRow.SortKey)
+	}
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "restore failed") || !strings.Contains(out, "job_id=dup-name") || !strings.Contains(out, "job_id=dup-high") {
+		t.Errorf("log output %q does not contain \"restore failed\", \"job_id=dup-name\", and \"job_id=dup-high\"", out)
+	}
+}
+
+// TestRestore_RollsBackWhenALaterRowFails pins that a failed startup (when
+// Store.Load returns an error) leaves the dispatcher unstarted and the registry
+// empty so a subsequent Start retry succeeds once the transient store error
+// clears.
+func TestRestore_RollsBackWhenALaterRowFails(t *testing.T) {
+	st := &fakeStore{loadErr: errors.New("database is locked")}
 	st.seed([]Persisted{
 		{ID: "good", SortKey: 1, Header: Header{Name: "a"}, State: job.StateView{State: job.Fetching}},
-		// StateUnset carrying a Next is a position no attempt can hold, so
-		// reconstruct rejects it — a stand-in for any row that fails partway.
-		{ID: "bad", SortKey: 2, Header: Header{Name: "b"}, State: job.StateView{State: job.StateUnset, Next: job.Assessing}},
 	})
 	d := newTestDispatcher(t, withStore(st))
 
-	err := d.Start(context.Background())
-	if err == nil {
-		t.Fatal("Start() = nil, want an error — the second row cannot be reconstructed")
+	if err := d.Start(context.Background()); err == nil {
+		t.Fatal("Start() = nil, want an error when Store.Load fails")
 	}
 
 	if got := len(d.List()); got != 0 {
-		t.Errorf("registry holds %d jobs after a failed restore, want 0 — the "+
-			"rows registered before the failure were left behind", got)
+		t.Errorf("registry holds %d jobs after a failed restore, want 0", got)
 	}
 
-	// The retry is the consequence that bites: same store, now readable.
-	st.seed([]Persisted{
-		{ID: "good", SortKey: 1, Header: Header{Name: "a"}, State: job.StateView{State: job.Fetching}},
-	})
+	// Once the transient store error clears, a retry of Start must succeed.
+	st.mu.Lock()
+	st.loadErr = nil
+	st.mu.Unlock()
 	if err := d.Start(context.Background()); err != nil {
 		t.Fatalf("second Start: %v — a retry after a failed restore must be able "+
-			"to register the rows the first attempt left behind", err)
+			"to register the stored rows", err)
 	}
 	t.Cleanup(func() { _ = d.Stop() })
 	if got := len(d.List()); got != 1 {

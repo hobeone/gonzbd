@@ -30,6 +30,9 @@ func (s *truncTarget) Drain(context.Context, int32) ([]WrittenArticle, error) {
 func (s *truncTarget) Sync(context.Context, int32) error { return nil }
 func (s *truncTarget) Stat(int32) (int64, error)         { return 5000, nil }
 func (s *truncTarget) Truncate(_ context.Context, _ int32, bound int64) error {
+	if bound < 0 {
+		return nil
+	}
 	s.called, s.bound = true, bound
 	return nil
 }

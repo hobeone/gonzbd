@@ -135,7 +135,7 @@ func TestRemoveJob_StoreDeleteFailureLeavesTheJobsFilesOnDisk(t *testing.T) {
 	application, repo, _ := newLifecycleTestApp(t)
 	ctx := t.Context()
 
-	refusing := removeRefusingStore{Store: store.New(repo.DB())}
+	refusing := removeRefusingStore{Store: store.New(repo.DB(), nil)}
 	d := dispatch.New(
 		1, 1, time.Second, time.Now,
 		&appWorkers{app: application},
@@ -222,7 +222,7 @@ func TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability(t *testi
 		1, 1, time.Second, time.Now,
 		&appWorkers{app: application},
 		application.residency,
-		disconnectingStore{Store: store.New(repo.DB()), cancel: cancel},
+		disconnectingStore{Store: store.New(repo.DB(), nil), cancel: cancel},
 		application.runner,
 	)
 	application.dispatcher = d

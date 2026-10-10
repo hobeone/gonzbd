@@ -423,7 +423,7 @@ func TestStore_CombineUsesWholeRunLengthNotOneArticle(t *testing.T) {
 // segment until decodePayload started rejecting them (assertion E5 of
 // docs/article-validation-contract.md); a yEnc =ypart declaration that
 // duplicates another article's offset is the route that remains open, since
-// nothing at L3 rejects it. FileWriter.acceptedAt resolves that within one
+// nothing at L3 rejects it. FileWriter.accepted resolves that within one
 // open-file episode, but it is per-open-episode residency, so across a
 // restart or a close-handles cycle a second article at the same offset
 // reaches the run store beside the stored row.

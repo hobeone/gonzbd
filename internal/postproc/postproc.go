@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -434,11 +437,11 @@ func buildSummaryEntry(job *Job) StageLogEntry {
 func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (StageLogEntry, bool) {
 	// PP enforcement (M1): skip stages above the job's post-processing
 	// level. SABnzbd PP levels are cumulative:
-	//   0 = download only (skip repair + unpack)
-	//   1 = +repair (par2 verify/repair)
-	//   2 = +unpack (also does repair)
+	//   0 = download only (skip repair + par2 cleanup + unpack)
+	//   1 = +repair (par2 verify/repair + par2 cleanup)
+	//   2 = +unpack (also does repair + par2 cleanup)
 	//   3 = +delete (repair + unpack + cleanup)
-	// Quickcheck and repair require PP ≥ 1; unpack requires PP ≥ 2.
+	// Quickcheck, repair, and par2_cleanup require PP ≥ 1; unpack requires PP ≥ 2.
 	// Other stages (deobfuscate, sort, finalize, script) always run.
 	if shouldSkipForPP(stage.Name(), job.PP) {
 		p.log.Info("postproc: skipping stage (PP level)",
@@ -510,6 +513,41 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	return entry, false
 }
 
+// sweepTempFiles removes leftover .gonzbd-tmp-<16 hex> files under dir that an
+// interrupted extraction (writeEntrySafely) or split join (FileJoin) left
+// behind before its atomic rename completed.
+func sweepTempFiles(log *slog.Logger, dir string) {
+	if dir == "" {
+		return
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) && log != nil {
+			log.Warn("postproc: failed to open download dir for temp-file sweep", "dir", dir, "err", err)
+		}
+		return
+	}
+	defer root.Close() //nolint:errcheck // best-effort cleanup
+
+	_ = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return nil //nolint:nilerr // best-effort sweep continues past subdirectories and errors
+		}
+		if fsutil.IsTempFile(d.Name()) {
+			if rmErr := root.Remove(path); rmErr != nil {
+				if !errors.Is(rmErr, os.ErrNotExist) && log != nil {
+					log.Warn("postproc: failed to remove leftover temp file", "path", filepath.Join(dir, path), "err", rmErr)
+				}
+				return nil
+			}
+			if log != nil {
+				log.Info("postproc: removed leftover temp file", "path", filepath.Join(dir, path))
+			}
+		}
+		return nil
+	})
+}
+
 // processJob runs all registered stages in order for job.
 // Stage errors are recorded but do not abort the pipeline.
 //
@@ -523,6 +561,54 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 		}
 	}
 	p.log.Info("postproc: processing job", "job", job.JobID(), "name", job.Name())
+
+	sweepTempFiles(p.log, job.DownloadDir)
+
+	// L11: Pre-check — skip processing when the download directory is
+	// empty or doesn't exist, unless a per-job FinalDir already holds the
+	// delivered files from a pre-crash FinalizeStage (#767). Matches Python
+	// SABnzbd's Stage 1 pre-check (§6.2) which guards against no-op
+	// post-processing of empty jobs. The guard only fires when DownloadDir is
+	// set; stages that don't need a physical directory (unit tests, dry-run
+	// pipelines) leave it empty.
+	stages := p.stages
+	var preCheckReason string
+	if job.FailMsg == "" && job.DownloadDir != "" {
+		if entries, err := os.ReadDir(job.DownloadDir); err != nil || len(entries) == 0 {
+			if errors.Is(err, fs.ErrNotExist) && job.alreadyDelivered() {
+				// Interim crash-recovery check (#767): if the daemon died
+				// after FinalizeStage moved the job into FinalDir (including a
+				// kill while ScriptStage was running), the queue row still says
+				// Extracting and enqueuePostProc recomputes DownloadDir in the
+				// incomplete area, which is now gone. For a per-job layout
+				// (!job.FlatLayout), a non-empty FinalDir means the files were
+				// already delivered: set DownloadDir = FinalDir before building
+				// the preamble log, skip stages up to and including finalize,
+				// and run the script stage with its normal failure semantics.
+				// With a flat category (catDir ending in "*"), FinalDir is the
+				// shared complete/<category> directory and non-empty proves
+				// nothing, so the existing failure path stays.
+				//
+				// Residual risk: a stale same-named directory plus a manually
+				// removed download dir would be treated as delivered.
+				// Persisting the delivery step as its own recorded state will
+				// make this check unnecessary.
+				p.log.Info("postproc: download directory missing and per-job FinalDir is non-empty; treating as delivered",
+					"job", job.JobID(),
+					"download_dir", job.DownloadDir,
+					"final_dir", job.FinalDir,
+				)
+				job.DownloadDir = job.FinalDir
+				stages = stagesAfterFinalize(stages)
+				sweepTempFiles(p.log, job.DownloadDir)
+			} else {
+				preCheckReason = "download directory is empty"
+				if err != nil {
+					preCheckReason = fmt.Sprintf("download directory unavailable: %v", err)
+				}
+			}
+		}
+	}
 
 	job.StageLog = append(job.StageLog, buildPreambleLog(job)...)
 
@@ -538,34 +624,22 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 		})
 		return
 	}
-
-	// L11: Pre-check — skip processing when the download directory is
-	// empty or doesn't exist. Matches Python SABnzbd's Stage 1 pre-check
-	// (§6.2) which guards against no-op post-processing of empty jobs.
-	// The guard only fires when DownloadDir is set; stages that don't need
-	// a physical directory (unit tests, dry-run pipelines) leave it empty.
-	if job.DownloadDir != "" {
-		if entries, err := os.ReadDir(job.DownloadDir); err != nil || len(entries) == 0 {
-			reason := "download directory is empty"
-			if err != nil {
-				reason = fmt.Sprintf("download directory unavailable: %v", err)
-			}
-			job.FailMsg = reason
-			p.log.Warn("postproc: skipping all stages — empty job",
-				"job", job.JobID(),
-				"dir", job.DownloadDir,
-				"reason", reason,
-			)
-			job.StageLog = append(job.StageLog, StageLogEntry{
-				Stage:   "pre-check",
-				Started: time.Now(),
-				Lines:   []string{"Post-processing skipped: " + reason},
-			})
-			return
-		}
+	if preCheckReason != "" {
+		job.FailMsg = preCheckReason
+		p.log.Warn("postproc: skipping all stages — empty job",
+			"job", job.JobID(),
+			"dir", job.DownloadDir,
+			"reason", preCheckReason,
+		)
+		job.StageLog = append(job.StageLog, StageLogEntry{
+			Stage:   "pre-check",
+			Started: time.Now(),
+			Lines:   []string{"Post-processing skipped: " + preCheckReason},
+		})
+		return
 	}
 
-	for _, stage := range p.stages {
+	for _, stage := range stages {
 		entry, abort := p.runStage(ctx, stage, job)
 		job.StageLog = append(job.StageLog, entry)
 		if abort {
@@ -580,6 +654,31 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 	)
 
 	job.StageLog = append(job.StageLog, buildSummaryEntry(job))
+}
+
+// alreadyDelivered reports whether a job whose DownloadDir is missing has
+// already been delivered into a per-job FinalDir (#767). Flat-layout
+// categories share FinalDir across all jobs in the category, so non-empty
+// proves nothing and returns false. Orphaned .gonzbd-tmp-<16 hex> files do not
+// count as delivered payload.
+func (j *Job) alreadyDelivered() bool {
+	if j.FlatLayout || j.FinalDir == "" {
+		return false
+	}
+	entries, err := os.ReadDir(j.FinalDir)
+	entries = slices.DeleteFunc(entries, func(e os.DirEntry) bool { return fsutil.IsTempFile(e.Name()) })
+	return err == nil && len(entries) > 0
+}
+
+// stagesAfterFinalize returns the stages following "finalize" in stages, or
+// nil when "finalize" is not registered or is the last stage.
+func stagesAfterFinalize(stages []Stage) []Stage {
+	for i, s := range stages {
+		if s.Name() == "finalize" {
+			return stages[i+1:]
+		}
+	}
+	return nil
 }
 
 // setBusyWithJob updates busy, currentJob, and currentJobCancel
@@ -615,16 +714,16 @@ func (p *PostProcessor) addHistory(job *Job) {
 // shouldSkipForPP returns true if the named stage should be skipped because
 // the job's PP level is too low. SABnzbd PP levels are cumulative:
 //
-//	0 = download only (no repair, no unpack)
-//	1 = +repair (par2 verify/repair)
-//	2 = +unpack (includes repair)
+//	0 = download only (no repair, no par2 cleanup, no unpack)
+//	1 = +repair (par2 verify/repair and par2 cleanup)
+//	2 = +unpack (includes repair and par2 cleanup)
 //	3 = +delete (includes repair + unpack + archive cleanup)
 //
-// Stages gated by PP: quickcheck and repair (≥1), unpack (≥2). Every other
-// stage runs at every PP level.
+// Stages gated by PP: quickcheck, repair, and par2_cleanup (≥1); unpack (≥2).
+// Every other stage runs at every PP level.
 func shouldSkipForPP(stageName string, pp int) bool {
 	switch stageName {
-	case "quickcheck", "repair":
+	case "quickcheck", "repair", "par2_cleanup":
 		return pp < types.PPVerify
 	case "unpack":
 		return pp < types.PPUnpack

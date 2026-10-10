@@ -69,7 +69,7 @@ func TestResumeAtStartup_RestoredVerdictDoesNotOutrunTheSweep(t *testing.T) {
 
 	row := f.row
 	row.State.Next = job.Assessing
-	if err := dispatchstore.New(f.repo.DB()).Save(t.Context(), row); err != nil {
+	if err := dispatchstore.New(f.repo.DB(), nil).Save(t.Context(), row); err != nil {
 		t.Fatalf("store.Save: %v", err)
 	}
 

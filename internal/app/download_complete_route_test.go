@@ -93,7 +93,7 @@ func persistCompleteJob(t *testing.T, repo *history.Repository, adminDir string,
 	if err := fsutil.WriteGzAtomicBytes(filepath.Join(manifestDir, j.ID()+".json.gz"), data); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
-	if err := dispatchstore.New(repo.DB()).Save(t.Context(), dispatch.Persisted{
+	if err := dispatchstore.New(repo.DB(), nil).Save(t.Context(), dispatch.Persisted{
 		ID: j.ID(), SortKey: sortKey, Header: hdr, Policy: j.Policy(),
 		State: state, Intent: j.Intent(),
 	}); err != nil {

@@ -1,9 +1,10 @@
 # Article Validation Contract
 
-> **Status: in progress; dispositions settled.** F1, F3, A7, F6, F2, F5/B1, E5 and the
-> whole A-block have landed, and E3's CRC-withholding half has (#387: the durability
-> layer withholds the whole-file CRC on any non-abutting overlap so `par2` runs); C5, E4 and F4 remain
-> proposed, as does any E3 PREVENTION. §8 is no longer open — what each class of violation
+> **Status: in progress; dispositions settled.** F1, F3, A7, F6, F2, F5/B1, E5, E3 and the
+> whole A-block have landed (#387 withholds the whole-file CRC in the durability
+> layer on any non-abutting overlap so `par2` runs, and #759 prevents range overlaps
+> within an open-file episode in `FileWriter.offsetSettledBy`); C5, E4 and F4 remain
+> proposed. §8 is no longer open — what each class of violation
 > produces has been decided and is binding on the work that follows. This
 > document defines what GoNZBD asserts about a Usenet article, where each
 > assertion belongs, and what it deliberately does not assert. It exists to
@@ -526,7 +527,7 @@ the rows.
 | C5 | `offset + len ≤ size`; `end − begin + 1 == len` | L2 | fail article (`end=` half counts first) | — |
 | ~~D1–D4~~ | ~~NZB ↔ article disagreements~~ | L3 | **dropped** — no consumer (see §5.D) | — |
 | E1–E2 | bounds, exact-offset collision | L4 | ✅ already enforced | — |
-| E3 | range overlap | L4 detects nothing; the durability layer withholds the whole-file CRC whenever runs do not collapse to a single row covering every article | **withhold CRC** (`par2` runs), after the write | A7 **and** E5 |
+| E3 | range overlap | L4 (`FileWriter.offsetSettledBy`) refuses any arriving `[off, off+len)` that overlaps an accepted interval owned by an article already reported Written, within the open-file episode (#759); the durability layer also withholds the whole-file CRC whenever runs do not collapse to a single row covering every article (#387) | ✅ **implemented** within an open-file episode (**refuse arrival** at L4, #759) and across episodes via **withhold CRC** (`par2` runs, #387) | A7 **and** E5 |
 | E4 | part tiling / gaps | L0 + L4 | warn at ingestion | — |
 | E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | L3 | ✅ **implemented** — reject (#346) | — |
 | F1 | key `FileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
@@ -537,7 +538,7 @@ the rows.
 
 **Build order.** The F-items land first (§5.F), then the assertions:
 
-> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → ~~E5~~ → ~~F1a~~ (fixture `ArtIdx`) → ~~F1b~~ (flip the key) → E3 (CRC withholding ~~landed~~; prevention open) / E4
+> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → ~~E5~~ → ~~F1a~~ (fixture `ArtIdx`) → ~~F1b~~ (flip the key) → E3 (~~#387 CRC withholding~~ + ~~#759 in-episode interval guard~~; cross-episode no-`par2` prevention open) / E4
 
 Struck items have landed. F3 led because it was the smallest instance of the
 pattern and the cheapest place to learn its cost; doing it first is what
@@ -925,19 +926,18 @@ checked, and a warning or unacted-on counter is not a consumer.
 |---|---|---|
 | E1 | offset ≥ 0, no overflow, within `ExpectedSize` + 12.5% | ✅ enforced |
 | E2 | no two articles share an exact start offset | ✅ enforced (#385) |
-| E3 | no two articles' ranges **overlap** | ⚠ **not prevented**; whole-file CRC withheld (#387) |
+| E3 | no two articles' ranges **overlap** | ✅ **enforced** within an open-file episode (#759); whole-file CRC also withheld across episodes (#387) |
 | E4 | the parts tile `[0, size)` with no gap | ⚠ **absent** at L4; also undetected at L0 |
 
 | E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | ✅ **implemented** (#346) — `decodePayload` rejects `ErrOffsetUnknownForPart` |
 
-**E3 withholds the whole-file CRC rather than adding a hot-path range guard** (§8,
-decision 3), conditional on both A7 and E5, not on A7 alone. Both are now in
-place, so the condition holds — for the route E5 governs; see the paragraph
-after next for the route that remains outside it.
+**E3 refuses overlapping intervals at L4 within an open-file episode (#759) and
+withholds the whole-file CRC in the durability layer across episode boundaries
+(#387)** (§8, decision 3), alongside A7 and E5.
 
-E5 is what closed the route that made the conditional necessary, across both
-decode shapes that produce it. `decodePayload`'s UU fallback can only assert
-offset 0, and so can its yEnc path when the body carries no `=ypart` line
+E5 is what closed the missing-offset route across both decode shapes that
+produce it. `decodePayload`'s UU fallback can only assert offset 0, and so can
+its yEnc path when the body carries no `=ypart` line
 (`decoder.Article.HasOffset` false) — a bare `=ybegin part=N` does not save
 it, since that field is server-declared and unvalidated. Offset 0 is correct for segment 1 of a file and
 belongs to no other segment. Before this fix, a server answering, say,
@@ -959,11 +959,17 @@ that article's own bytes, same as any other E5 rejection.
 A distinct route is NOT closed by E5: two articles that both carry a genuine
 `=ypart` line, whose `begin=` values happen to overlap. Nothing at L3 rejects
 that — it is not a missing-offset decode, so E5 does not see it, and nothing at
-L3 compares one article's declared offset against another's. With A7 and
-E5 both in place, that residual route does not justify a range query on every
-accept. Because `mergeAdjacentRuns` merges only articles that abut cleanly, any
-range overlap leaves multiple `durable_runs` rows (or drops a duplicate offset)
-and withholds the whole-file CRC, so `par2` runs and repairs the file.
+L3 compares one article's declared offset against another's. Within an open-file
+episode, `FileWriter.accepted` (a sorted, pairwise-disjoint slice of
+`acceptedRange`) and `offsetSettledBy` refuse any arriving `[off, off+len)` that
+intersects an already-accepted interval owned by another article that has been
+reported Written (#759). An owner whose write faulted made no claim, and the
+arrival takes its interval. On a post with no `par2`, that refusal
+keeps the file short with a hole rather than overwriting accepted bytes and
+shipping a splice (Standing Rule 3). Across a restart or handle-close boundary,
+`mergeAdjacentRuns` merges only articles that abut cleanly, so any cross-episode
+overlap leaves multiple `durable_runs` rows (or drops a duplicate offset) and
+withholds the whole-file CRC (#387), causing `par2` to run and repair the file.
 
 E4 has an L0 half worth taking first: **a gap in NZB part numbers is decidable
 offline.** A file whose segments are numbered 1, 2, 4 parses today with no
@@ -1105,10 +1111,12 @@ has two levels, not four**:
 
 > **written-or-reported beats accepted.**
 
-That is exactly what `offsetOwner{id, written}` records and what
-`offsetSettledBy` already consults. A collision between two merely-accepted
-articles is a coin flip and either may be written; a collision with a written
-range is not, and must be refused.
+That is what `acceptedRange{off, end, id, written}` records and what
+`offsetSettledBy` consults. Every accepted article is written before a rival
+is considered, so a merely-accepted incumbent is one whose write faulted or
+whose `Sync` failed; it made no claim, and the arrival takes its range. A
+collision with a written range — exact, partial or straddling (#759) — must be
+refused.
 
 **The durable tier is deliberately collapsed into "written", because it is not
 retrievable where the decision is made.** Durability is now recorded in exactly
@@ -1120,14 +1128,15 @@ writer holds in memory distinguishes a written range from an acked-durable one:
 the `Drain`/`Confirm` cycle empties `written` and then `reported` once the
 articles are acked, so a
 derived check would read the acked case as *no* claim at all, which is why
-`offsetOwner.written` is latched on the offset instead.
+`acceptedRange.written` is latched on the interval instead.
 
 So the four-level ordering that reads naturally here — durable-and-acked beats
 written beats accepted beats claimed — **does not exist and must not be cited as
-though it does.** Anything wanting it must first push an in-memory acked set down
-from the barrier, which is a design change with a cost, not a lookup. #387's
-overwrite of an acked-durable range is the case this concession leaves open, and
-that is the honest statement of the limit.
+though it does.** Anything wanting it across a restart or handle-close boundary
+must first push an in-memory acked set down from the barrier, which is a design
+change with a cost, not a lookup. Within an open-file episode, `FileWriter.accepted`
+refuses any overlapping interval (#759); across an episode boundary, #387's
+whole-file CRC withholding ensures `par2` runs on the file.
 
 Refusal is never silent. Every refusal produces a recorded, user-visible
 disposition — which is exactly what #382's `resolve(article, disposition)`
@@ -1196,21 +1205,17 @@ later reader can tell a decision from an oversight.
    Where no side is provably wrong and nothing in the pipeline consumes the
    field (`D1`–`D4`), no check or counter is kept (see §5.D).
 
-3. **Overlaps withhold the whole-file CRC rather than gating the accept path.**
-   E3 does not gate the accept path. **Conditional on both A7 and E5**, not A7
-   alone, and both are now in place — see §5.E: E5 (#346) rejects a decode (UU,
-   or yEnc with no `=ypart`) that would default to claiming offset 0 for a
-   segment other than the first, closing the route by which such a decode
-   could claim an offset without a repeated Message-ID for A7 to catch. A
-   distinct route remains open — two articles each carrying a genuine
-   `=ypart` declaration whose `begin=` values happen to overlap — which
-   neither A7 nor E5 addresses; the durability layer withholds the whole-file
-   CRC whenever a file's runs do not collapse to a single contiguous row
-   covering every article, so `par2` runs and repairs the file.
-
-   **E5 has landed (#346), so the condition this decision rests on is met.**
-   Prevention of the general E3 overlap case is still deferred, and that
-   deferral now rests on both A7 and E5 rather than on an incomplete argument.
+3. **Overlaps are refused within an open-file episode (#759) and withhold the
+   whole-file CRC across episodes (#387).**
+   A7 and E5 (#346) closed the missing-offset and duplicate-Message-ID routes;
+   for two articles that each carry a genuine `=ypart` declaration whose byte
+   ranges overlap, `FileWriter.accepted` (a sorted, pairwise-disjoint slice of
+   `acceptedRange`) and `offsetSettledBy` refuse the arriving article at L4
+   within an open-file episode (#759), so a no-par2 download finishes short with
+   a hole rather than shipping a splice (Standing Rule 3). Across a restart or
+   handle-close boundary, the durability layer withholds the whole-file CRC
+   whenever a file's runs do not collapse to a single contiguous row covering
+   every article (#387), so `par2` runs and repairs the file.
 
 4. **The NZB's `bytes` gains no authority.** It stays advisory. `offsetOutOfRange`
    keeps its 12.5% slack unchanged, and the slack figure is not re-derived from

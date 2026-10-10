@@ -447,14 +447,17 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	log := app.log
 
-	if app.meter == nil {
-		app.meter = bpsmeter.NewMeter(10*time.Second, time.Now)
+	app.meter = bpsmeter.NewMeter(10*time.Second, time.Now)
+	if state, err := bpsmeter.LoadState(app.meterStatePath()); err == nil {
+		app.meter.Restore(state)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		log.Warn("load bpsmeter state", "err", err)
 	}
 
 	var dispatchStore dispatch.Store = nopDispatchStore{}
 	var durStore *durability.Store
 	if repo != nil && repo.DB() != nil {
-		dispatchStore = dispatchstore.New(repo.DB())
+		dispatchStore = dispatchstore.New(repo.DB(), log)
 		// repo.Path() is the one owner of this value (Standing Design Rule
 		// 2): it reports the path history.Open was actually given, in
 		// cmd/gonzbd/main.go. Re-deriving it here from adminDir would be a
@@ -1635,8 +1638,13 @@ func (app *Application) joinAndStop(stepTimeout time.Duration, errs *[]error) {
 	}
 }
 
+// meterStatePath returns the path to the persisted bandwidth meter state file.
+func (app *Application) meterStatePath() string {
+	return filepath.Join(app.config.GetGeneral().AdminDir, "bpsmeter.json")
+}
+
 // Shutdown stops the downloader, post-processor, and assembler, flushes the
-// cache, and persists the queue to disk. Safe to call multiple times.
+// cache, and persists the queue and bandwidth meter totals to disk. Safe to call multiple times.
 //
 // Ordering matters:
 //  1. Stop the downloader — no new articles are dispatched.
@@ -1646,7 +1654,8 @@ func (app *Application) joinAndStop(stepTimeout time.Duration, errs *[]error) {
 //     OnFileComplete events to watchCompletions, which is still running.
 //  4. Cancel the context — watchCompletions exits.
 //  5. Wait for background goroutines to finish.
-//  6. Stop the post-processor, save queue.
+//  6. Stop the post-processor and dispatcher.
+//  7. Flush the checkpointer and save bandwidth meter totals.
 //
 // Steps 1-3 are stopWorkers and steps 4-6 are joinAndStop; see stopWorkers' doc
 // for why the barrier sits between steps 1 and 3.
@@ -1675,6 +1684,9 @@ func (app *Application) Shutdown() error {
 		if err := app.checkpointer.Flush(context.Background()); err != nil {
 			errs = append(errs, fmt.Errorf("checkpointer flush: %w", err))
 		}
+	}
+	if err := bpsmeter.SaveState(app.meterStatePath(), app.meter.Capture()); err != nil {
+		app.log.Warn("save bpsmeter state", "err", err)
 	}
 	return errors.Join(errs...)
 }
@@ -2615,6 +2627,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			URL:                  hdr.URL,
 			DownloadDir:          downloadDir,
 			FinalDir:             finalDir,
+			FlatLayout:           flatLayout,
 			Sanitize:             sanitize,
 			Unwanted:             hdr.Unwanted,
 			FailMsg:              admittedFailMsg,
