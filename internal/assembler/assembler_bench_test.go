@@ -2,7 +2,6 @@ package assembler
 
 import (
 	"fmt"
-	"path/filepath"
 	"testing"
 )
 
@@ -15,7 +14,7 @@ func BenchmarkDiskThroughput(b *testing.B) {
 	opts := Options{
 		FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
 			return FileInfo{
-				Path:       filepath.Join(dir, fmt.Sprintf("%s_%d.dat", jobID, fileIdx)),
+				Dir: dir, Name: fmt.Sprintf("%s_%d.dat", jobID, fileIdx),
 				TotalParts: partsPerFile,
 			}, nil
 		},

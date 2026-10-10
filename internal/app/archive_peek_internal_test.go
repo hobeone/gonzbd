@@ -169,7 +169,7 @@ func newPeekAppMode(t *testing.T, action unwanted.Action, mode unwanted.Mode, ex
 			t.Fatal(err)
 		}
 		application.pipeline.mu.Lock()
-		application.pipeline.fileInfo[fileKey{jobID: j.ID(), fileIdx: i}] = assembler.FileInfo{Path: path}
+		application.pipeline.fileInfo[fileKey{jobID: j.ID(), fileIdx: i}] = assembler.FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path)}
 		application.pipeline.mu.Unlock()
 	}
 	return &peekApp{Application: application, j: j, repo: repo}

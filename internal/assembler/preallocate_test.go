@@ -182,7 +182,7 @@ func TestAssemblyWithPreallocation(t *testing.T) {
 	path := filepath.Join(dir, "prealloc_e2e.dat")
 	key := "job1:0"
 	files[key] = FileInfo{
-		Path:         path,
+		Dir: filepath.Dir(path), Name: filepath.Base(path),
 		TotalParts:   3,
 		ExpectedSize: 12, // 3 articles × 4 bytes
 	}

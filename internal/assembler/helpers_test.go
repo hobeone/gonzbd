@@ -78,7 +78,7 @@ func newHelperFile(t *testing.T, dir, name string, expectedSize int64) *openFile
 	key := fileKey{jobID: "job", fileIdx: 0}
 	return &openFile{
 		w:    newFileWriter(fh, path, key),
-		info: FileInfo{Path: path, ExpectedSize: expectedSize},
+		info: FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: expectedSize},
 	}
 }
 
@@ -201,7 +201,7 @@ func TestDrainAndClose_KeepsWrittenBytesAndClosesTheHandle(t *testing.T) {
 		t.Fatalf("drainAndClose: %v", err)
 	}
 
-	st, err := os.Stat(f.info.Path)
+	st, err := os.Stat(f.info.Path())
 	if err != nil {
 		t.Fatal(err)
 	}

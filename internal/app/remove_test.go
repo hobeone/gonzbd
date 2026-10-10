@@ -317,7 +317,7 @@ func removeJobFixture(t *testing.T, application *Application, name string) (*job
 	if err != nil {
 		t.Fatalf("resolveFileInfo: %v", err)
 	}
-	return j, info.Path
+	return j, info.Path()
 }
 
 // TestRemoveJob_KeepingFilesLeavesAFileTheAssemblerHoldsOpen pins #433.

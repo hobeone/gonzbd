@@ -128,10 +128,12 @@ type WriteRequest struct {
 // FileInfo describes a target file. The assembler requests it from the caller's
 // resolver the first time it encounters a (JobID, FileIdx) pair.
 type FileInfo struct {
-	// Path is the absolute target path, fully resolved and validated by
-	// the caller's FileInfo resolver. The assembler trusts this value without
-	// additional sandbox checks.
-	Path string
+	// Dir is the job directory the file belongs in, and Name the file's
+	// name inside it. openTargetFile creates Dir and then opens Name with
+	// fsutil.OpenNoFollow on an os.Root on Dir. A job file is always a regular
+	// file with one link; any link in its place, or a Name that is not one
+	// path component, is refused by the open rather than followed.
+	Dir, Name string
 
 	// TotalParts is the number of manifest segments in this file. Each segment
 	// counts toward it once, when it is accounted for: accepted, or resolved
@@ -161,6 +163,10 @@ type FileInfo struct {
 	Owned []Range
 }
 
+// Path is the file's path, Dir joined with Name, for messages and for readers
+// that open the finished file by path.
+func (fi FileInfo) Path() string { return filepath.Join(fi.Dir, fi.Name) }
+
 // Options configures an Assembler.
 type Options struct {
 	// QueueSize is the capacity of the internal write-request channel.
@@ -168,7 +174,8 @@ type Options struct {
 	QueueSize int
 
 	// FileInfo is called once per (JobID, FileIdx) pair to obtain the target
-	// path and expected part count. It must be non-nil; New panics otherwise.
+	// directory, name and expected part count. It must be non-nil; New panics
+	// otherwise.
 	FileInfo func(jobID string, fileIdx int) (FileInfo, error)
 
 	// OnFileComplete, if non-nil, is called on the worker goroutine when all
@@ -1156,7 +1163,7 @@ func (a *Assembler) drainAndClose(f *openFile) error {
 		if err == nil {
 			return
 		}
-		a.log.Warn(op, "path", f.info.Path, "error", err)
+		a.log.Warn(op, "path", f.info.Path(), "error", err)
 		if first == nil {
 			first = err
 		}
@@ -1223,12 +1230,12 @@ func (a *Assembler) closeCancelledFile(f *openFile, disposition FileDisposition)
 	if cerr != nil && disposition == KeepFiles {
 		a.log.Warn("failed to close a cancelled job's file that is being kept; "+
 			"unsynced bytes may not have reached the platter",
-			"path", f.info.Path, "error", cerr)
+			"path", f.info.Path(), "error", cerr)
 	}
 	if disposition == DeleteFiles {
-		if err := fsutil.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
+		if err := fsutil.Remove(f.info.Path()); err != nil && !os.IsNotExist(err) {
 			a.log.Warn("failed to remove cancelled file",
-				"path", f.info.Path, "error", err)
+				"path", f.info.Path(), "error", err)
 		}
 	}
 }
@@ -1378,6 +1385,12 @@ func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
 // openTargetFile resolves file information and creates the target file on disk
 // for a new fileKey.
 //
+// The name comes from the NZB, so it is untrusted: the file is opened through
+// openInDir, which opens that one file in FileInfo.Dir and never another. A
+// name that leads out of the job directory, or any link (symbolic or hard) in
+// the file's place, fails the open, and that failure takes the same path as
+// any other open error.
+//
 // Every failure returns a classified *storagefault.Fault rather than logging
 // and discarding the article (#357). The distinction matters because of A2: a
 // dropped article is resolved neither way, so no later run re-dispatches it and
@@ -1405,27 +1418,26 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 		return nil, storagefault.Classify("resolve", "", err)
 	}
 
-	dir := filepath.Dir(info.Path)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return nil, storagefault.Classify("mkdir", info.Path, err)
+	path := info.Path()
+	if err := os.MkdirAll(info.Dir, 0o750); err != nil {
+		return nil, storagefault.Classify("mkdir", path, err)
 	}
-	//nolint:gosec // G304: path is caller-supplied from FileInfo resolver, which is responsible for safe derivation
-	fh, err := os.OpenFile(info.Path, os.O_WRONLY|os.O_CREATE, 0o644)
+	fh, err := openInDir(info.Dir, info.Name)
 	if err != nil {
-		return nil, storagefault.Classify("open", info.Path, err)
+		return nil, storagefault.Classify("open", path, err)
 	}
 	if info.ExpectedSize > 0 {
 		telemetry.PreallocCalls.Add(1)
 		if err := preallocateFile(fh, info.ExpectedSize); err != nil {
 			a.log.Warn("file pre-allocation failed, continuing without",
-				"path", info.Path,
+				"path", path,
 				"size", info.ExpectedSize,
 				"error", err,
 			)
 		}
 	} else {
 		a.log.Debug("zero-length expected size for target file",
-			"path", info.Path,
+			"path", path,
 		)
 	}
 	// No seeded high-water mark, and no seeded write cursor. Both used to
@@ -1436,7 +1448,7 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 	// the file's ownedRanges (maxEnd, finish.go), which seedOwned fills from the
 	// record below, so there is nothing left for a seed to protect.
 	f := &openFile{
-		w:    newFileWriter(fh, info.Path, key),
+		w:    newFileWriter(fh, path, key),
 		info: info,
 	}
 	if syncFn := a.opts.SyncFile; syncFn != nil {
@@ -1445,6 +1457,21 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 	a.seedOwned(f.w, info.Owned)
 	open[key] = f
 	return f, nil
+}
+
+// openInDir opens name inside dir for writing, creating it if absent, through
+// fsutil.OpenNoFollow on an os.Root on dir. A job file is always a regular
+// file with one link; any link in name's place, or a name that is not one
+// path component, is an open error. Writing through a link to a sibling
+// would write one file's bytes into another. The root is closed before
+// returning; the file's descriptor does not depend on it.
+func openInDir(dir, name string) (*os.File, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
+	return fsutil.OpenNoFollow(root, name, os.O_WRONLY|os.O_CREATE, 0o644)
 }
 
 // seedOwned seeds w's range set from ranges verified before this process;
@@ -1496,7 +1523,7 @@ func (a *Assembler) seedOwned(w *FileWriter, owned []Range) {
 // Returns false when the article must not be counted again.
 func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 	a.log.Debug("counting failed article toward completion (skipping disk write)",
-		"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", req.FatalErr)
+		"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path(), "error", req.FatalErr)
 	admitted := f.w.admitPermanentFailure(req.ArtIdx)
 	if req.Data != nil {
 		a.releaseBuffer(req.Data)
@@ -1641,7 +1668,7 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 	if rej, ok := errors.AsType[*rejectedArticleError](err); ok {
 		a.log.Warn("article rejected; it will be recorded as permanently failed",
 			"job", req.JobID, "fileidx", req.FileIdx, "artidx", req.ArtIdx,
-			"msgid", req.MessageID, "path", f.info.Path, "reason", rej.reason)
+			"msgid", req.MessageID, "path", f.info.Path(), "reason", rej.reason)
 		if a.opts.OnArticleRejected != nil {
 			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, rej.reason)
 		}
@@ -1651,7 +1678,7 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 	// the only caller of FileWriter.fail. Its Emitted bit is still set, so it
 	// is handed back to be cleared, as the openTargetFile failure does.
 	a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
-	a.noteWriteFault(f.info.Path, req, err)
+	a.noteWriteFault(f.info.Path(), req, err)
 	return false
 }
 
@@ -1708,11 +1735,11 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest,
 	delete(open, key)
 	if err != nil {
 		a.log.Error("completed file could not be finished; its articles are refetched",
-			"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", err)
+			"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path(), "error", err)
 		a.noteFileUntrusted(req.JobID, req.FileIdx)
 		fault, ok := errors.AsType[*storagefault.Fault](err)
 		if !ok {
-			fault = storagefault.Classify("finish", f.info.Path, err)
+			fault = storagefault.Classify("finish", f.info.Path(), err)
 		}
 		if a.opts.OnWriteFault != nil {
 			a.opts.OnWriteFault(req.JobID, req.FileIdx, fault)
@@ -1721,7 +1748,7 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest,
 	}
 	completed[key] = struct{}{} // tombstone: reject late duplicates
 	telemetry.FilesCompleted.Add(1)
-	a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)
+	a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path())
 	if a.opts.OnFileComplete != nil {
 		a.opts.OnFileComplete(req.JobID, req.FileIdx)
 	}
@@ -1744,7 +1771,7 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 	// share the same directory (the common case).
 	seen := make(map[string]struct{}, len(open))
 	for _, f := range open {
-		dir := filepath.Dir(f.info.Path)
+		dir := f.info.Dir
 		if _, already := seen[dir]; already {
 			continue
 		}
@@ -1799,7 +1826,7 @@ const offsetSlackDivisor = 8
 func (a *Assembler) offsetOutOfRange(f *openFile, req WriteRequest) (string, bool) {
 	reject := func(reason string) (string, bool) {
 		a.log.Warn("rejecting out-of-range article write offset",
-			"path", f.info.Path,
+			"path", f.info.Path(),
 			"offset", req.Offset,
 			"bytes", len(req.Data),
 			"expected_size", f.info.ExpectedSize,

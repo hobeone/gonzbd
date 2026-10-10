@@ -179,7 +179,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 			"job", fc.JobID, "set", setname, "file", filename)
 	}
 
-	du.Add(app.ctx, filename, info.Path)
+	du.Add(app.ctx, filename, info.Path())
 }
 
 // buildOpts constructs DirectUnpack options from the given config-derived
