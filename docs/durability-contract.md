@@ -625,7 +625,11 @@ The per-article rows a file needs for it are kept resident in
 `JobProgress.written` until the CRC is settled — installed by
 `InstallVerified` / `InstallCompleteFile` and appended by
 `MarkArticleWritten` — so nothing on the worker path reads SQLite. A stored
-slice is never edited in place, so a `Progress()` clone shares them.
+slice is never edited in place, so a `Progress()` clone shares them. A row
+also leaves with its article's Done bit: `JobProgress.clearDone` is the one
+clearer of that bit and drops the row with it, so a resident row's article is
+Done, and `MarkArticleWritten` appends a newly-Done article's row without
+searching the file's rows for an earlier one.
 
 **Its consumer is `par2.Assess`**, reached through `FileAssembledCRC32` from
 `internal/app/par2names.go` and `internal/postproc/stage_quickcheck.go`. A

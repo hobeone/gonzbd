@@ -49,6 +49,19 @@ type JobProgress struct {
 	//
 	// TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list
 	// of doors above. Add a door onto the bit and it fails by name.
+	//
+	// The bits have two kinds of writer. The transitions markEmitted,
+	// clearEmitted, markDone and markFailed move one article and maintain the
+	// counters as they go. The rest write bits only and leave the counters to
+	// a recompute: clearDone, which every path returning a Done article to
+	// Outstanding calls (UntrustFile through markNotDone, ClearEmittedForReload
+	// through resetForReload, and ResetForRetry), each of which recomputes;
+	// and the evicted branches of MarkArticleFailed (setFailedBits) and
+	// ClearArticleEmitted, which RestoreContent's recompute folds in at the
+	// next hydration. A restart sets no bit directly: it installs through
+	// markDone (installRows) and markFailed (InstallCompleteFile).
+	// TestBitsetWriters_MatchTheEnumerationStatedInProse pins the writers of
+	// each Set and Clear.
 	done, failed, emitted bitset
 	files                 []FileProgress
 
@@ -992,10 +1005,11 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 // finds 1 line, in verified.go. Nothing on the download path may call it — an
 // ack is a one-way transition (R9).
 //
-// It clears the bit and nothing else. The figures markDone maintains are
-// deliberately NOT unwound here article by article: JobProgress.recompute
-// already derives every one of them from the bitmaps, and it applies rules a
-// per-article inverse would have to reproduce by hand — Pending counts only
+// It clears the bit through clearDone and maintains nothing else. The figures
+// markDone maintains are deliberately NOT unwound here article by article:
+// JobProgress.recompute already derives every one of them from the bitmaps,
+// and it applies rules a per-article inverse would have to reproduce by hand
+// — Pending counts only
 // files whose Fetch is FetchAlways, and only articles that are neither done
 // nor emitted. A copy of those rules that drifts is a half-inverse, and a
 // half-inverse of markDone is how #300 arose from the other direction: bits
@@ -1013,12 +1027,27 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 //
 // Returns false when it changed nothing: the article was already Outstanding,
 // or it is permanently failed.
-func (p *JobProgress) markNotDone(i int) bool {
+func (p *JobProgress) markNotDone(fi, i int) bool {
 	if !p.done.Get(i) || p.failed.Get(i) {
 		return false
 	}
-	p.done.Clear(i)
+	p.clearDone(fi, i)
 	return true
+}
+
+// clearDone returns article i of file fi to Outstanding: it clears the Done
+// and Failed bits and drops the article's resident written row. It is the one
+// clearer of a Done bit, so a resident row exists only for a Done article,
+// which is what lets MarkArticleWritten append without searching when it sets
+// the bit. TestBitsetWriters_MatchTheEnumerationStatedInProse pins it as the
+// only caller of done.Clear and failed.Clear.
+//
+// It maintains no counter: ResetForRetry, UntrustFile and ClearEmittedForReload
+// each recompute after it, and resetForReload also unwinds failedBytes itself.
+func (p *JobProgress) clearDone(fi, i int) {
+	p.done.Clear(i)
+	p.failed.Clear(i)
+	p.dropRow(fi, i)
 }
 
 // markFailed flips Done+Failed on article i and updates counters. Returns
@@ -1131,8 +1160,7 @@ func (p *JobProgress) resetForReload(m *Manifest, i int, clearEmitted bool) bool
 	bytes := int64(m.ArticleBytes(i))
 	p.failedBytes -= bytes
 	p.files[fi].FailedBytes -= bytes
-	p.done.Clear(i)
-	p.failed.Clear(i)
+	p.clearDone(fi, i)
 	return true
 }
 

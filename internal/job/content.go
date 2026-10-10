@@ -717,14 +717,15 @@ func (j *Job) ResetForRetry() {
 	j.progress.clearPar2ReleaseReason()
 	j.progress.clearDownloadStamps()
 
+	// A bulk reset: clearDone writes bits only, and the recompute below
+	// derives every counter from them.
 	m := j.manifest
 	for fi := range m.NumFiles() {
 		unresolved := false
 		lo, hi := m.FileRange(fi)
 		for i := lo; i < hi; i++ {
 			if j.progress.failed.Get(i) {
-				j.progress.done.Clear(i)
-				j.progress.failed.Clear(i)
+				j.progress.clearDone(fi, i)
 			}
 			if !j.progress.done.Get(i) {
 				unresolved = true

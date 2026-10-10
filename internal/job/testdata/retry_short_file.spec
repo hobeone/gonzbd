@@ -8,11 +8,11 @@ run TestResetForRetry_UncompletesAFileWithUndoneArticles
 [ResetForRetry clears Complete only for files whose failed articles it reset]
 file internal/job/content.go
 --- anchor
-				j.progress.failed.Clear(i)
+				j.progress.clearDone(fi, i)
 			}
 			if !j.progress.done.Get(i) {
 --- replace
-				j.progress.failed.Clear(i)
+				j.progress.clearDone(fi, i)
 				unresolved = true
 			}
 			if false {

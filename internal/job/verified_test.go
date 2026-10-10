@@ -241,26 +241,130 @@ func TestInstallRows_KeepsACopyOfTheFirstInstall(t *testing.T) {
 	}
 }
 
-// TestMarkArticleWritten_ReplacesARowAResetLeftBehind pins that a write
-// replaces its article's resident row rather than adding one, including when
-// the article's Done bit was cleared under the row: a failed article's late
-// write stores a row, and ResetForRetry clears Done and Failed but keeps it.
-func TestMarkArticleWritten_ReplacesARowAResetLeftBehind(t *testing.T) {
+// rowsWithoutDone returns the resident rows of j whose article is not Done.
+func rowsWithoutDone(j *Job) []durability.WrittenRow {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	var out []durability.WrittenRow
+	for _, rows := range j.progress.written {
+		for _, r := range rows {
+			if !j.progress.done.Get(int(r.ArtIdx)) {
+				out = append(out, r)
+			}
+		}
+	}
+	return out
+}
+
+// lateWrittenFailure fails article art of file 0 and then writes it, the
+// shape that gives a failed article a resident row: the failure takes the
+// Done bit first, and the write keeps its row.
+func lateWrittenFailure(t *testing.T, j *Job, art int, crc uint32) {
+	t.Helper()
+	if err := j.MarkArticleFailed(art); err != nil {
+		t.Fatalf("MarkArticleFailed(%d): %v", art, err)
+	}
+	row := durability.WrittenRow{FileIdx: 0, ArtIdx: int32(art), Offset: int64(art) * 100, Length: 100, CRC32: crc} //nolint:gosec // G115: test index
+	if err := j.MarkArticleWritten(row); err != nil {
+		t.Fatalf("MarkArticleWritten(%d): %v", art, err)
+	}
+}
+
+// TestDoneClearingPaths_LeaveNoRowWithoutItsBit pins that a resident row
+// exists only for a Done article, across every path that clears a Done bit.
+// MarkArticleWritten appends without searching when it sets the bit, so a
+// row that outlived its bit would be duplicated by the next write.
+func TestDoneClearingPaths_LeaveNoRowWithoutItsBit(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		clear   func(*Job) error
+		cleared []int // articles the path must return to Outstanding
+	}{
+		"ResetForRetry": {
+			clear:   func(j *Job) error { j.ResetForRetry(); return nil },
+			cleared: []int{2},
+		},
+		"ClearEmittedForReload": {
+			clear:   func(j *Job) error { j.ClearEmittedForReload(false); return nil },
+			cleared: []int{2},
+		},
+		"UntrustFile": {
+			clear:   func(j *Job) error { return j.UntrustFile(0) },
+			cleared: []int{0, 1},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			j := verifiedTestJob(t)
+			for _, r := range chainRows(chainData())[:2] {
+				if err := j.MarkArticleWritten(r); err != nil {
+					t.Fatalf("MarkArticleWritten: %v", err)
+				}
+			}
+			lateWrittenFailure(t, j, 2, 0xBAD)
+			if err := tc.clear(j); err != nil {
+				t.Fatalf("clear: %v", err)
+			}
+			p := j.Progress()
+			for _, art := range tc.cleared {
+				if p.ArticleDone(art) {
+					t.Fatalf("article %d is still Done: the path cleared nothing, so this test checks nothing", art)
+				}
+			}
+			if got := rowsWithoutDone(j); len(got) != 0 {
+				t.Errorf("resident rows whose article is not Done: %+v", got)
+			}
+		})
+	}
+}
+
+// TestClearDone_LeavesACloneItsRows pins that dropping a row stores the
+// remaining rows in a new slice: a Progress() clone taken before the drop
+// shares the old one and must still see every row it had.
+func TestClearDone_LeavesACloneItsRows(t *testing.T) {
 	t.Parallel()
 	j := verifiedTestJob(t)
-	if err := j.MarkArticleFailed(0); err != nil {
-		t.Fatalf("MarkArticleFailed: %v", err)
+	lateWrittenFailure(t, j, 0, 0xBAD)
+	for _, r := range chainRows(chainData())[1:3] {
+		if err := j.MarkArticleWritten(r); err != nil {
+			t.Fatalf("MarkArticleWritten: %v", err)
+		}
 	}
-	if err := j.MarkArticleWritten(durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1}); err != nil {
-		t.Fatalf("MarkArticleWritten: %v", err)
-	}
+	clone := j.Progress()
+	want := slices.Clone(clone.written[0])
 	j.ResetForRetry()
-	second := durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 2}
-	if err := j.MarkArticleWritten(second); err != nil {
+	if got := j.FileRows(0); len(got) != 2 {
+		t.Fatalf("FileRows(0) = %+v after the reset, want the two rows of articles still Done", got)
+	}
+	if got := clone.written[0]; !slices.Equal(got, want) {
+		t.Errorf("a clone taken before the drop sees %+v, want %+v", got, want)
+	}
+}
+
+// TestMarkArticleWritten_ARewriteAfterARetrySettlesTheCRC pins the write that
+// follows a retry reset of a failed article that had a row: the file ends with
+// one row per article, so its whole-file CRC is derived rather than NoCRC.
+func TestMarkArticleWritten_ARewriteAfterARetrySettlesTheCRC(t *testing.T) {
+	t.Parallel()
+	data := chainData()
+	rows := chainRows(data)
+	j := verifiedTestJob(t)
+	for _, r := range rows[:3] {
+		if err := j.MarkArticleWritten(r); err != nil {
+			t.Fatalf("MarkArticleWritten: %v", err)
+		}
+	}
+	lateWrittenFailure(t, j, 3, 0xBAD)
+	j.ResetForRetry()
+	if err := j.MarkArticleWritten(rows[3]); err != nil {
 		t.Fatalf("MarkArticleWritten: %v", err)
 	}
-	if got := j.FileRows(0); !slices.Equal(got, []durability.WrittenRow{second}) {
-		t.Errorf("FileRows(0) = %+v, want only the second write's row", got)
+	if got := j.FileRows(0); !slices.Equal(got, rows) {
+		t.Fatalf("FileRows(0) = %+v, want exactly one row per article", got)
+	}
+	crc, ok, err := j.SettleFileCRC(0)
+	if err != nil || !ok || crc != crc32.ChecksumIEEE(data) {
+		t.Errorf("SettleFileCRC = %08x, %v, %v; want %08x, true, nil", crc, ok, err, crc32.ChecksumIEEE(data))
 	}
 }
 
@@ -468,9 +572,9 @@ func TestUntrustFile_ReturnsTheFileToOutstanding(t *testing.T) {
 			t.Fatalf("MarkArticleWritten: %v", err)
 		}
 	}
-	if err := j.MarkArticleFailed(3); err != nil {
-		t.Fatalf("MarkArticleFailed: %v", err)
-	}
+	// A failed article written late has a row and stays Done: the untrust must
+	// release its row too.
+	lateWrittenFailure(t, j, 3, 0xBAD)
 	if err := j.MarkFileComplete(0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}
