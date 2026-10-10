@@ -205,24 +205,30 @@ func (r *appResidency) fault(ctx context.Context, j *job.Job, f *storagefault.Fa
 
 // installVerification installs one verification's outcome on a job whose
 // content is attached and has no other record yet, and returns the files the
-// verifier finished by path. Each of those is settled (Job.SettleFileCRC),
-// peeked and marked complete here, in that order, while the manifest is
-// certainly attached; the completion the caller then queues
-// (FileComplete.Resumed) runs only the steps that read progress, so it lands
-// even if the job is evicted first.
+// verifier finished by path. Each file's outcome is applied in one step under
+// the job's content lock (job.Job.InstallFileVerification), which owns the
+// order within it: the recorded filename; the recorded fetch policy when
+// restorePolicy is set; the rows, which for a complete=1 file are all its rows
+// with every other article of its range failed, and for a complete=0 file the
+// rows its read-back verified; the articles an intersection failed; and, for
+// a complete=1 file or one the verifier finished, the settled CRC. A row that cannot be placed costs its own
+// article (Standing Design Rule 3). A hydration restores the policy because
+// the record is the current truth; a retry re-derives it. Every mutation of
+// the policy marks the file dirty (markFetchPolicyDirty), so the persisted
+// value is the current one.
 //
-// peek, when non-nil, is the archive peek for a finished file. It runs before
-// the mark, because the mark is what lets the download-complete report take
-// the job to Assessing: a last file marked first could reach post-processing
-// unpeeked. A retry passes nil: its job is not registered yet, and the peek
-// reads the registered job's unwanted state.
+// Each finished file is then peeked and marked complete
+// (job.Job.MarkFileComplete), in that order, while the manifest is certainly
+// attached; the completion the caller then queues (FileComplete.Resumed) runs
+// only the steps that read progress, so it lands even if the job is evicted
+// first.
 //
-// Each file gets its recorded filename, and its recorded fetch policy when
-// restorePolicy is set. A complete=1 file's
-// rows are installed as Done with every other article of its range failed
-// (job.Job.InstallCompleteFile); a complete=0 file gets the rows its read-back
-// verified, and the articles an intersection failed. A row that cannot be
-// placed costs its own article (Standing Design Rule 3).
+// peek, when non-nil, is the archive peek for a finished file. It runs with no
+// job lock held, between the install and the mark, because the mark is what
+// lets the download-complete report take the job to Assessing: a last file
+// marked first could reach post-processing unpeeked. A retry passes nil: its
+// job is not registered yet, and the peek reads the registered job's unwanted
+// state.
 //
 // Failed bits are in memory only, so what a restart re-derives is all there is:
 // a complete=1 file's failed set is the complement of its rows, while a
@@ -239,21 +245,20 @@ func installVerification(j *job.Job, files []durability.FileRow, rows []durabili
 	}
 	for _, f := range files {
 		fi := f.FileIndex
-		_ = j.RestoreFileMeta(fi, f.Filename, false, 0)
-		// Hydration restores the persisted policy (restorePolicy); a retry
-		// re-derives it. Every mutation of the policy marks the file dirty
-		// (markFetchPolicyDirty), so the persisted value is the current one.
-		if restorePolicy {
-			_ = j.RestoreFetchPolicy(fi, job.FetchPolicy(f.FetchPolicy))
+		v := job.FileVerification{
+			FileIdx:       fi,
+			Filename:      f.Filename,
+			RestorePolicy: restorePolicy,
+			Policy:        job.FetchPolicy(f.FetchPolicy),
+			Complete:      f.Complete,
+			Rows:          res.Verified[fi],
+			Failed:        res.Failed[fi],
+			Settle:        setComplete[fi],
 		}
-
-		var dropped int
-		var err error
 		if f.Complete {
-			dropped, err = j.InstallCompleteFile(fi, byFile[fi])
-		} else if v := res.Verified[fi]; len(v) > 0 {
-			dropped, err = j.InstallVerified(fi, v)
+			v.Rows = byFile[fi]
 		}
+		dropped, err := j.InstallFileVerification(v)
 		if err != nil {
 			log.Warn("residency: install verified rows", "job", j.ID(), "fileidx", fi, "err", err)
 			continue
@@ -262,13 +267,7 @@ func installVerification(j *job.Job, files []durability.FileRow, rows []durabili
 			log.Warn("residency: dropped written rows that do not belong to their file; their articles are fetched again",
 				"job", j.ID(), "fileidx", fi, "dropped", dropped)
 		}
-		for _, a := range res.Failed[fi] {
-			_ = j.MarkArticleFailed(int(a))
-		}
 		if setComplete[fi] {
-			if _, _, err := j.SettleFileCRC(fi); err != nil {
-				log.Warn("residency: settle a finished file's CRC", "job", j.ID(), "fileidx", fi, "err", err)
-			}
 			if peek != nil {
 				peek(fi)
 			}

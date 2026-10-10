@@ -88,7 +88,7 @@ file internal/app/app.go
 # Design item 1: a complete=1 file is trusted unread, so every article of its
 # range without a row is failed (the complement), not left Outstanding.
 [a complete file leaves its rowless articles Outstanding]
-file internal/job/verified.go
+file internal/job/verification.go
 --- anchor
 		_ = p.markFailed(m, i) // a no-op for an article a row just marked Done
 --- replace
@@ -98,12 +98,11 @@ file internal/job/verified.go
 # Design item 2: the resident rows of a completed file are released once its
 # CRC is settled. A complete=1 file's CRC is settled from its rows at install.
 [a complete file's CRC is not settled at install]
-file internal/job/verified.go
+file internal/job/verification.go
 --- anchor
-	p.files[fileIdx].Complete = true
-	settleFileCRC(m, p, fileIdx)
+	if v.Complete || v.Settle {
 --- replace
-	p.files[fileIdx].Complete = true
+	if v.Settle {
 --- end
 
 # Design item 3: a row that cannot be placed costs its own article, never the
@@ -121,9 +120,9 @@ file internal/job/verified.go
 [a retry installs the stored fetch policy]
 file internal/app/residency.go
 --- anchor
-		if restorePolicy {
+			RestorePolicy: restorePolicy,
 --- replace
-		if true {
+			RestorePolicy: true,
 --- end
 
 # A retry reads every file, complete=1 or not: post-processing may have changed

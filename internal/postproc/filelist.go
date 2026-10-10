@@ -56,8 +56,9 @@ func buildDownloadFileList(j *Job) []string {
 	// volumes. They agree because nothing but a recovery volume is ever moved
 	// off FetchAlways — a property of the callers, not of JobProgress.
 	// `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' | grep -v _test.go` finds three
-	// writers: SetFileFetchPolicy (reached for a deferrable recovery volume at
-	// ingest, and by RestoreFetchPolicy replaying a row those same writers
+	// writers: setFileFetchPolicy (reached through SetFileFetchPolicy for a
+	// deferrable recovery volume at ingest, and through
+	// Job.InstallFileVerification replaying a row those same writers
 	// produced), DiscardDeferredPar2 (gated on FetchIfNeeded), and
 	// undeferRecovery (gated on FetchIfNeeded, and moving files back ONTO
 	// FetchAlways); a fresh progress starts at the FetchAlways zero. If that

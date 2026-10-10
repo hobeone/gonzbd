@@ -1380,8 +1380,9 @@ jobs are registered and queued; a query or cursor iteration failure in
 `job_files` carries no per-article blob. The first hydration after a restart
 reads the job's `written_articles` rows, reads each row of an incomplete file
 back from the device, and installs as Done only the rows whose bytes match
-their CRC (`appResidency.Hydrate` → `verifyJobFiles` → `installVerification`).
-A `complete=1` file is installed from its rows without a read, and every
+their CRC (`appResidency.Hydrate` → `verifyJobFiles` → `installVerification`
+→ `Job.InstallFileVerification`, which applies each file's outcome under one
+hold of the content lock, so no reader sees part of it). A `complete=1` file is installed from its rows without a read, and every
 article of it with no row is failed. Nothing else about resolution is stored:
 a permanent failure in an incomplete file is not persisted and comes back
 Outstanding. `docs/durability-contract.md` §3 is the contract.
@@ -1601,7 +1602,7 @@ intent after ingest, and it does not touch the file set to do it. It is not
 the only thing that moves `fetch_policy` there: `Job.undeferRecovery` reverses
 a hold back to `FetchAlways` when damage appears, and the first hydration
 after a restart re-applies whatever `job_files` holds through
-`Job.RestoreFetchPolicy` (#329). None of the three touches the file set. A
+`Job.InstallFileVerification` (#329). None of the three touches the file set. A
 recovery
 volume proven unnecessary keeps its `job_files` row exactly where it was; only
 its `fetch_policy` column moves, from `FetchIfNeeded` to `FetchNever`. That
