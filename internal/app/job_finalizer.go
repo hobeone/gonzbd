@@ -310,7 +310,7 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 		// RemoveJob: once this instance is no longer the dispatcher's, the
 		// recorder's instance check drops its buffered rows, and reclaim then
 		// keeps whatever reached SQLite for a FAILED entry's retry.
-		flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(app.ctx), 2*time.Second)
+		flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(app.ctx), recorderFlushTimeout)
 		_ = app.recorder.flush(flushCtx) // flush logs its own failure
 		flushCancel()
 		// Not fatal, unlike the reconcile path's version: this job IS in

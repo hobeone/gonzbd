@@ -2292,7 +2292,13 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	// reach SQLite before post-processing can change the bytes they describe.
 	// A file whose close-time fsync faulted was untrusted before the close
 	// returned, so its rows are already gone.
-	if err := app.recorder.flush(context.Background()); err != nil {
+	// Bounded like persistAndCommit's flush: a stalled admin_dir must not hold
+	// the admission indefinitely, and the next start's verification covers
+	// what a flush that expired here did not write.
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), recorderFlushTimeout)
+	err := app.recorder.flush(flushCtx)
+	flushCancel()
+	if err != nil {
 		app.log.Warn("recorder flush at the hand-over to post-processing failed", "job", j.ID(), "err", err)
 	}
 

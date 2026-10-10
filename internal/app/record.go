@@ -310,6 +310,10 @@ type nopRecordStore struct{}
 
 func (nopRecordStore) ApplyRecord(context.Context, []durability.RecordBatch) error { return nil }
 
+// recorderFlushTimeout bounds a flush that runs on a teardown path: the
+// finalizer's persistAndCommit and the hand-over to post-processing.
+const recorderFlushTimeout = 2 * time.Second
+
 // untrustTimeout bounds the synchronous SQLite write that untrusts a file. It
 // runs on the assembler's worker goroutine, which every job's writes wait on.
 //
