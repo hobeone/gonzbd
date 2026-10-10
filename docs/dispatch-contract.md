@@ -280,10 +280,12 @@ is not re-hydrated every tick after a residency fault parked it.
 
 Two loads happen outside this rule, both through `Dispatcher.LoadProgress`,
 which hydrates a registered job with no progress and records the load so a
-later tick evicts it when it holds nothing: `Application.hydratePausedJobs`,
-before the first tick, for every job restored paused at `Fetching`, so its
-verified progress is reported; and `SetName`, so a rename sees whether the
-job's download has begun. A hydration that cannot verify the job's files
+later tick evicts it once it holds nothing and is not paused:
+`Application.hydratePausedJobs`, before the first tick, for every job restored
+paused at `Fetching`, so its verified progress is reported — each such job
+stays resident until it is resumed or removed, since the tick's eviction arm
+skips `IntentPause` (`docs/durability-contract.md`, Accepted limitation 1);
+and `SetName`, so a rename sees whether the job's download has begun. A hydration that cannot verify the job's files
 returns an error wrapping `ErrResidencyFault`, which no caller settles: the
 job has been parked (`docs/durability-contract.md` §3).
 

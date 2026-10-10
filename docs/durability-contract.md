@@ -199,8 +199,20 @@ And two ways out:
   returns 5 lines.
 
 **The wait for `wmu` is bounded by the waiter's own context.** `wmu` is
-deliberately held across `ApplyRecord`, and some holders have no deadline (a
-hydration's commit, a retry's applies). So `flush` and `apply` take it through
+deliberately held across `ApplyRecord`, by every `flush` and `apply` call:
+`git grep -n -E '(recorder|\br)\.(flush|apply)\(' -- '*.go' ':!*_test.go'`
+returns 9 lines. Four of them run under a deadline: Shutdown's flush (its step
+budget), the hand-over's and the finalizer's flushes (`recorderFlushTimeout`),
+and the untrust's apply (`untrustTimeout`). The other five have none:
+
+| Holder | Context |
+|---|---|
+| `recorder.run`'s periodic flush | `app.ctx`, which ends at Shutdown |
+| a hydration's commit (`appResidency.commit`) | `app.ctx` from the tick and the startup reconciliation; `context.Background()` from `SetName`'s `LoadProgress` |
+| `verifyRetry`'s two applies | the retry's: an API request's context, or `app.ctx` for the automatic retry |
+| `retryHistoryJob`'s final commit | `context.Background()` |
+
+So `flush` and `apply` take it through
 `lockWriter`, which gives up when the caller's context ends and returns its
 error; a waiter that gave up took no snapshot and purged nothing. That is what
 bounds an untrust on the assembler's single worker (§4) whatever holds the
@@ -1016,7 +1028,8 @@ recorded here so the next reader does not mistake them for design.
    verifies, every job restored at `Fetching` with `IntentPause`, synchronously
    inside `Application.Start`, and `cmd/gonzbd/main.go` starts its HTTP server
    after `Start` returns. Startup time therefore grows with the recorded bytes
-   of those jobs' `complete=0` files, and a remote mount makes it slower. A
+   of those jobs' `complete=0` files. A hung hard-mounted share blocks the
+   read-back, and so `Start` and the API, indefinitely (limitation 6). A
    paused job then stays resident until it is resumed or removed, because the
    tick's eviction arm skips `IntentPause` (`reconcileResidency`,
    `internal/dispatch/tick.go`). The follow-up is asynchronous paused-job
@@ -1050,13 +1063,16 @@ recorded here so the next reader does not mistake them for design.
 
 6. **A remote NFS/SMB mount can stall untimed calls.** A `pwrite` or `fsync`
    that does not return blocks the assembler's single worker, and so every
-   job's writes; a verification read blocks the tick; a manifest read or
-   removal on the filesystem hosting `admin_dir` blocks its caller. The
-   bounded waits are the callers' (`closeHandlesTimeout`, `untrustTimeout`,
-   `recorderFlushTimeout`, the disk probe, Shutdown's step budgets), not the
-   syscalls'. A stalled record write holds `wmu` until its own context ends,
-   which for a hydration's commit or a retry's applies may be never; a waiter
-   for `wmu` gives up when its own context ends (§1).
+   job's writes; a verification read blocks the tick, or at startup
+   `hydratePausedJobs` and so `Start` and the API (limitation 1); a manifest
+   read or removal on the filesystem hosting `admin_dir` blocks its caller.
+   The bounded waits are the callers' (`closeHandlesTimeout`,
+   `untrustTimeout`, `recorderFlushTimeout`, the disk probe, Shutdown's step
+   budgets), not the syscalls'. A stalled record write holds `wmu` until its
+   own context ends, which for the five holders §1 lists without a deadline —
+   the recorder's periodic flush, a hydration's commit, `verifyRetry`'s two
+   applies and `retryHistoryJob`'s final commit — may be never; a waiter for
+   `wmu` gives up when its own context ends (§1).
 
 7. **The crash suite does not test fsync-to-platter.** See below.
 
