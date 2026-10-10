@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
@@ -203,45 +202,10 @@ type queueSlot struct {
 	// which only that map (not a per-row field) can provide.
 	StallReason string `json:"stall_reason"`
 
-	// BytesDurable is what a completed fsync covers. BytesPending is what has
-	// been written since the job's current checkpoint window opened: accepted
-	// by the OS, not yet fsynced, and lost on a power failure — the rework
-	// window made visible rather than inferred (R26).
-	//
-	// They are reported separately and MUST NOT be summed by a client, for
-	// two independent reasons. They make different claims, and a total would
-	// assert the stronger of the two about all of it. And they are not in the
-	// same unit.
-	//
-	// bytes_durable is derived from the job's progress, which counts the
-	// NZB-DECLARED size of each resolved article -- yEnc-ENCODED bytes,
-	// which run a few percent above what lands on disk. bytes_pending
-	// accumulates len(data) per accepted article -- DECODED bytes, the ones
-	// actually written. So bytes_durable - bytes_pending is not a quantity,
-	// and neither is their sum.
-	//
-	// Neither figure can be moved to the other's unit without breaking what
-	// it exists for. bytes_durable pairs with size/sizeleft/mb, which are the
-	// encoded NZB figures a client renders beside it, and summing the
-	// durability record's lengths instead -- a decoded figure -- is the exact
-	// substitution docs/job-lifecycle.md records as having overstated every
-	// non-resident job's remaining bytes.
-	// bytes_pending feeds B1's volume bound, which measures rework at risk
-	// and is therefore about bytes on disk by definition.
-	//
-	// The two are an order of magnitude apart in practice -- a checkpoint
-	// window holds megabytes where a job holds gigabytes -- so the encoding
-	// overhead is not the dominant term in any comparison a reader would
-	// make. It is documented rather than corrected because there is nothing
-	// to correct it to.
+	// BytesDurable is what a completed fsync covers: the NZB-declared size of
+	// each resolved article, in yEnc-ENCODED bytes. It pairs with size/sizeleft/mb,
+	// which are the encoded NZB figures beside it.
 	BytesDurable int64 `json:"bytes_durable"`
-	BytesPending int64 `json:"bytes_pending"`
-
-	// LastBarrierUnix is when this job's last barrier completed without
-	// error, or 0 when none has in this process. Only a SUCCESSFUL barrier
-	// stamps it, which is what tells a job that is checkpointing normally
-	// from one whose barriers have been failing since a mount went away.
-	LastBarrierUnix int64 `json:"last_barrier_unix"`
 
 	// Files is the per-file breakdown for the row's expansion drawer.
 	// Only populated when the caller requests it via files=1; otherwise
@@ -520,18 +484,7 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		Labels:            slotLabels(r.Header),
 		StallReason:       cp.StallReason,
 		BytesDurable:      durableBytes,
-		BytesPending:      cp.PendingBytes,
-		LastBarrierUnix:   unixOrZero(cp.LastBarrier),
 	}
-}
-
-// unixOrZero renders a timestamp for JSON, mapping "never" to 0 rather than to
-// time.Time's zero unix value of -6795364578871.
-func unixOrZero(t time.Time) int64 {
-	if t.IsZero() {
-		return 0
-	}
-	return t.Unix()
 }
 
 // filterQueueSlots applies the category/status/search filters to rows and

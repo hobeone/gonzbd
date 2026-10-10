@@ -503,8 +503,6 @@ type slot struct {
 	Status            string
 	StallReason       string
 	BytesDurable      int64
-	BytesPending      int64
-	LastBarrierUnix   int64
 	ArticlesRemaining int
 	MB                float64
 	MBLeft            float64
@@ -527,8 +525,6 @@ func (h *harness) Slot(jobID string) (slot, bool) {
 			Status:            str(s["status"]),
 			StallReason:       str(s["stall_reason"]),
 			BytesDurable:      i64(s["bytes_durable"]),
-			BytesPending:      i64(s["bytes_pending"]),
-			LastBarrierUnix:   i64(s["last_barrier_unix"]),
 			ArticlesRemaining: int(i64(s["articles_remaining"])),
 			MB:                f64(s["mb"]),
 			MBLeft:            f64(s["mbleft"]),

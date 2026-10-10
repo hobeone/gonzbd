@@ -378,7 +378,7 @@ func TestJobsAtRisk_KeepsAFailedBarriersBytesAtRisk(t *testing.T) {
 	}
 	if got := application.pendingBytesFor(job.ID()); got != 4096 {
 		t.Errorf("pending = %d after a failed barrier, want 4096 — the figure is read as "+
-			"reassurance and must not drop beside a last_barrier that did not move", got)
+			"reassurance and must not drop when the barrier failed", got)
 	}
 }
 

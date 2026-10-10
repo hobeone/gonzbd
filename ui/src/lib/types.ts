@@ -56,15 +56,8 @@ export interface QueueSlot {
 	/** A queue-management note — currently only "failed to remove finalized
 	 *  job from queue" when dispatcher removal fails after finalization. */
 	operational_error?: string;
-	/** Bytes a completed fsync covers, and bytes written since the current
-	 *  checkpoint window opened. NEVER sum them: the first survives a power
-	 *  loss and the second does not, so a total asserts the stronger claim
-	 *  about all of it. */
+	/** Bytes a completed fsync covers. */
 	bytes_durable: number;
-	bytes_pending: number;
-	/** Unix seconds of the last SUCCESSFUL checkpoint, or 0 when this process
-	 *  has not completed one for the job. */
-	last_barrier_unix: number;
 	failed_bytes: number;
 	recovery_bytes: number;
 	recovery_files: number;

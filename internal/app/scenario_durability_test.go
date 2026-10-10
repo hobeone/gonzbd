@@ -393,7 +393,7 @@ func heldFile(t *testing.T, server *nntptest.Scripted, name string, payload []by
 func awaitUnackedWrittenBytes(t *testing.T, a *app.Application, jobID string) {
 	t.Helper()
 	if !waitUntil(10*time.Second, func() bool {
-		hasBytes, _, _ := a.JobBarrierState(jobID)
+		hasBytes, _ := a.JobBarrierState(jobID)
 		return hasBytes
 	}) {
 		t.Fatal("no article was written through the assembler, so shutdown has nothing to " +

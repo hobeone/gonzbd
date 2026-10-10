@@ -245,7 +245,7 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 
 	// Seed barrier accumulator bytes to verify forgetJobBarrierState cleans it up.
 	application.NoteJobBytes(qJob.ID(), 1024)
-	if hasBytes, _, _ := application.JobBarrierState(qJob.ID()); !hasBytes {
+	if hasBytes, _ := application.JobBarrierState(qJob.ID()); !hasBytes {
 		t.Fatal("expected barrier bytes to be tracked before finalization")
 	}
 
@@ -286,8 +286,8 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 	}
 
 	// 5. forgetJobBarrierState still executed.
-	if hasBytes, hasMu, hasLast := application.JobBarrierState(qJob.ID()); hasBytes || hasMu || hasLast {
-		t.Errorf("expected job barrier state to be forgotten, got bytes=%v mu=%v last=%v", hasBytes, hasMu, hasLast)
+	if hasBytes, hasMu := application.JobBarrierState(qJob.ID()); hasBytes || hasMu {
+		t.Errorf("expected job barrier state to be forgotten, got bytes=%v mu=%v", hasBytes, hasMu)
 	}
 }
 

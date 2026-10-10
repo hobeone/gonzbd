@@ -2984,20 +2984,6 @@ func TestModeAddLocalFile_Direct(t *testing.T) {
 	})
 }
 
-// TestUnixOrZero_RendersNeverAsZero pins the encoding of an absent timestamp.
-// time.Time's zero value goes through Unix() as -6795364578871, which a client
-// renders as a date in 1754 rather than as "this job has never checkpointed".
-func TestUnixOrZero_RendersNeverAsZero(t *testing.T) {
-	t.Parallel()
-	if got := unixOrZero(time.Time{}); got != 0 {
-		t.Errorf("unixOrZero(zero) = %d, want 0", got)
-	}
-	at := time.Now().Truncate(time.Second)
-	if got := unixOrZero(at); got != at.Unix() {
-		t.Errorf("unixOrZero(%v) = %d, want %d", at, got, at.Unix())
-	}
-}
-
 func TestQueueChangeName_DispatcherWiredAndUnwired(t *testing.T) {
 	s := &Server{log: slog.Default()}
 	req := httptest.NewRequest(http.MethodGet, "/api?mode=queue&name=rename&value=job1&value2=newname", nil)
@@ -3053,5 +3039,18 @@ func TestBuildSlot_PercentageClamped(t *testing.T) {
 	slot := buildSlot(r, nil, false, 0, 0, nil, app.JobCheckpointState{})
 	if slot.Percentage != 0 {
 		t.Errorf("slot.Percentage = %d, want 0", slot.Percentage)
+	}
+}
+
+func TestQueueSlot_HasNoBarrierFields(t *testing.T) {
+	t.Parallel()
+	b, err := json.Marshal(queueSlot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{`"bytes_pending"`, `"last_barrier_unix"`} {
+		if bytes.Contains(b, []byte(k)) {
+			t.Errorf("queue slot still serialises %s", k)
+		}
 	}
 }

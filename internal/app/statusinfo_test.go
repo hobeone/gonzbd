@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -193,68 +192,23 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 	}
 }
 
-// TestCheckpointStates_ReportsEveryJobWithAFigureToReport pins the snapshot the
-// queue listing reads. It is one pass under each lock rather than one per job
-// because a listing is polled continuously, and a job that has any of the three
-// figures must appear even when the other two are absent — a job that has
-// written bytes but never checkpointed, and one parked before it wrote
-// anything, are both real and both invisible if the map were keyed off one
-// source.
-func TestCheckpointStates_ReportsEveryJobWithAFigureToReport(t *testing.T) {
+// TestCheckpointStates_ReportsEveryParkedJob pins the snapshot the queue listing
+// reads: a parked job appears with its reason, and a job that is not parked does
+// not appear at all.
+func TestCheckpointStates_ReportsEveryParkedJob(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	application.noteJobBytes("wrote-only", 512)
-	application.noteBarrierRun("barriered-only")
 	application.noteStall("stalled-only", &storagefault.Fault{
 		Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC,
 	}, true)
 
 	got := application.CheckpointStates()
 
-	if n := got["wrote-only"].PendingBytes; n != 512 {
-		t.Errorf("wrote-only PendingBytes = %d, want 512", n)
-	}
-	if got["barriered-only"].LastBarrier.IsZero() {
-		t.Error("barriered-only has no LastBarrier; a job that has checkpointed but written " +
-			"nothing since is missing from the snapshot entirely")
-	}
 	if r := got["stalled-only"].StallReason; !strings.Contains(r, "no space") {
 		t.Errorf("stalled-only StallReason = %q, want it to name the condition", r)
 	}
 	if _, ok := got["never-seen"]; ok {
 		t.Error("a job with nothing to report appears in the snapshot")
-	}
-}
-
-// TestJobDurability_ReportsDownloadedBytesAsDurable pins the identity the
-// listing's bytes_durable rests on: a downloaded byte IS a durable byte, so a
-// second counter would be a second representation of one fact, free to drift.
-func TestJobDurability_ReportsDownloadedBytesAsDurable(t *testing.T) {
-	t.Parallel()
-	application, j := newDurabilityTestApp(t, 1, 3)
-	if got := DurableBytesOf(j.Progress()); got != 0 {
-		t.Fatalf("fixture already reports %d durable bytes; the assertion below cannot tell "+
-			"a real figure from a leaked one", got)
-	}
-	application.noteJobBytes(j.ID(), 999)
-
-	// Two of the file's three 100-byte articles are on stable storage, as one
-	// merged run.
-	if err := j.SeedFromRuns([]durability.Run{
-		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: 200},
-	}); err != nil {
-		t.Fatalf("SeedFromRuns: %v", err)
-	}
-
-	got := application.JobDurability(j.ID())
-
-	if got.DurableBytes != 200 {
-		t.Errorf("DurableBytes = %d, want 200 — two 100-byte articles are covered by a "+
-			"recorded run and the figure does not report them", got.DurableBytes)
-	}
-	if got.PendingBytes != 999 {
-		t.Errorf("PendingBytes = %d, want 999 — the written-but-not-fsynced window is being "+
-			"folded into the durable figure or dropped", got.PendingBytes)
 	}
 }
 
@@ -290,27 +244,18 @@ func TestDurableBytesOf_ClampsNegativeValues(t *testing.T) {
 	}
 }
 
-// TestCheckpointState_ComposesTheThreeSourcesForOneJob pins the single-job form
-// the whole-queue snapshot and JobDurability both build on. The three figures
-// come from three different maps under two different locks, and a job that has
-// only one of them must still report that one.
-func TestCheckpointState_ComposesTheThreeSourcesForOneJob(t *testing.T) {
+// TestCheckpointState_ReportsTheStallReasonForOneJob pins the single-job form
+// the detail endpoint reads: a parked job reports its reason, and an unknown
+// job reports the zero value.
+func TestCheckpointState_ReportsTheStallReasonForOneJob(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	application.noteJobBytes("job-1", 128)
-	application.noteBarrierRun("job-1")
 	application.noteStall("job-1", &storagefault.Fault{
 		Op: "sync", Path: "/data/y.bin", Err: syscall.EIO,
 	}, true)
 
 	got := application.CheckpointState("job-1")
 
-	if got.PendingBytes != 128 {
-		t.Errorf("PendingBytes = %d, want 128", got.PendingBytes)
-	}
-	if got.LastBarrier.IsZero() {
-		t.Error("LastBarrier is zero although a barrier was recorded")
-	}
 	if !strings.Contains(got.StallReason, "input/output error") {
 		t.Errorf("StallReason = %q, want it to name the condition", got.StallReason)
 	}

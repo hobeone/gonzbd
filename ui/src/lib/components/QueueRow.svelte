@@ -180,29 +180,10 @@
 		};
 	});
 
-	// The durability window, spelled out rather than summed. bytes_pending is
-	// what a power loss would cost right now — written, accepted by the OS,
-	// not yet covered by an fsync — and adding it to bytes_durable would claim
-	// the whole total survives a crash. The two are always shown as two
-	// numbers for that reason.
-	//
-	// They are also not in the same unit: bytes_durable is in yEnc-encoded
-	// NZB bytes (it pairs with size/sizeleft), bytes_pending in the decoded
-	// bytes actually written. So a percentage or a difference of the two is
-	// meaningless as well as misleading. See the field doc on queueSlot in
+	// Bytes a completed fsync covers, in yEnc-encoded NZB bytes: the figure
+	// beside size/sizeleft. See the field doc on queueSlot in
 	// internal/api/queue.go.
-	let durabilityTooltip = $derived.by(() => {
-		const parts = [
-			`${formatBytes(slot.bytes_durable ?? 0)} durable (fsynced)`,
-			`${formatBytes(slot.bytes_pending ?? 0)} written but not yet fsynced`
-		];
-		parts.push(
-			slot.last_barrier_unix
-				? `last checkpoint ${new Date(slot.last_barrier_unix * 1000).toLocaleTimeString()}`
-				: 'no checkpoint yet'
-		);
-		return parts.join(' · ');
-	});
+	let durabilityTooltip = $derived(`${formatBytes(slot.bytes_durable ?? 0)} durable (fsynced)`);
 
 	// Bytes listed in the drawer that the row's size deliberately excludes.
 	// The row reports what the job expects to fetch, which leaves out par2

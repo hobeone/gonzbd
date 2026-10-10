@@ -179,17 +179,12 @@ type Application struct {
 	// happened to have nothing to do".
 	barrierRuns atomic.Int64
 
-	// barrierMu guards the two per-job maps below. It is NOT the barrier's
-	// own lock: jobBarrierMu holds those, one per job, and they are held
-	// across the barrier's I/O while this one never is.
+	// barrierMu guards jobBarrierBytes. It is NOT the barrier's own lock:
+	// jobBarrierMu holds those, one per job, and they are held across the
+	// barrier's I/O while this one never is.
 	barrierMu       sync.Mutex
 	jobBarrierMu    map[string]*barrierLock
 	jobBarrierBytes map[string]int64
-	// lastBarrier is when each job's last barrier completed without error.
-	// R26 asks a job to be able to report it, and it is the figure that tells
-	// "this job is checkpointing normally" from "this job has not had a
-	// successful barrier since the mount went away".
-	lastBarrier map[string]time.Time
 
 	// stallMu guards stalls. It is never held across I/O: every walk copies
 	// what it needs and releases first, because a re-evaluation runs barrier
@@ -417,7 +412,6 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.finalizer = newJobFinalizer(app)
 	app.jobBarrierMu = make(map[string]*barrierLock)
 	app.jobBarrierBytes = make(map[string]int64)
-	app.lastBarrier = make(map[string]time.Time)
 	app.stalls = make(map[string]*stallRecord)
 	app.barrierKick = make(chan string, 64)
 	app.stallKick = make(chan struct{}, 1)

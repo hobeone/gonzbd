@@ -55,8 +55,6 @@ describe('QueueRow', () => {
 		password: '',
 		failed_bytes: 0,
 		bytes_durable: 0,
-		bytes_pending: 0,
-		last_barrier_unix: 0,
 		repair_state: 'intact',
 		recovery_bytes: 0,
 		recovery_files: 0,
@@ -718,35 +716,14 @@ describe('QueueRow', () => {
 			expect(screen.getByText('Duplicate NZB (Forced)')).toBeInTheDocument();
 		});
 
-		it('reports durable and pending bytes as two figures, never a total', () => {
+		it('reports the durable bytes in the size tooltip', () => {
 			render(QueueRow, {
-				slot: { ...baseSlot, bytes_durable: 1048576, bytes_pending: 524288 },
+				slot: { ...baseSlot, bytes_durable: 1048576 },
 				onremove: () => {}
 			});
 			const title = screen.getByTestId('durability-tooltip').getAttribute('title') ?? '';
-			expect(title).toContain('durable');
-			expect(title).toContain('written but not yet fsynced');
+			expect(title).toContain('durable (fsynced)');
 			expect(title).toContain(formatSize(1048576));
-			expect(title).toContain(formatSize(524288));
-			// A summed figure would claim the pending bytes survive a power loss.
-			expect(title).not.toContain(formatSize(1048576 + 524288));
-		});
-
-		it('says so when a job has never checkpointed', () => {
-			render(QueueRow, { slot: { ...baseSlot, last_barrier_unix: 0 }, onremove: () => {} });
-			const title = screen.getByTestId('durability-tooltip').getAttribute('title') ?? '';
-			expect(title).toContain('no checkpoint yet');
-		});
-
-		it('names the time of the last successful checkpoint', () => {
-			const at = new Date('2026-08-11T12:34:56Z');
-			render(QueueRow, {
-				slot: { ...baseSlot, last_barrier_unix: Math.floor(at.getTime() / 1000) },
-				onremove: () => {}
-			});
-			const title = screen.getByTestId('durability-tooltip').getAttribute('title') ?? '';
-			expect(title).toContain(at.toLocaleTimeString());
-			expect(title).not.toContain('no checkpoint yet');
 		});
 	});
 });

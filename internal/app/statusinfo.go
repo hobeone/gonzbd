@@ -113,81 +113,28 @@ func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 }
 
 // JobCheckpointState is the part of a job's durability figures that lives in
-// the application rather than in the queue: what a barrier has not yet covered,
-// when the last one succeeded, and why the job is parked.
+// the application rather than in the queue: why the job is parked.
 //
-// Separate from JobDurability because the queue listing already holds every
-// job's progress and must not re-snapshot it — a listing is polled
-// continuously and re-copying every job's progress is the cost. A struct with a
-// DurableBytes field left zero on that path would be a figure that silently
-// means two things.
+// The queue listing already holds every job's progress, so the durable figure
+// is derived from that and this struct carries only what the application holds.
 type JobCheckpointState struct {
-	// PendingBytes is what has been written since this job's current
-	// checkpoint window opened: accepted by the OS, not yet fsynced, and lost
-	// on a power failure.
-	//
-	// DECODED bytes -- the accumulator is fed len(data) per accepted article,
-	// because B1's volume bound measures rework at risk and rework is
-	// measured in bytes on disk. DurableBytesOf is in ENCODED bytes. The two
-	// are not comparable; see the bytes_durable/bytes_pending field doc in
-	// internal/api/queue.go for why neither can move to the other's unit.
-	PendingBytes int64
-	// LastBarrier is when this job's last barrier completed without error, or
-	// the zero time when none has.
-	LastBarrier time.Time
 	// StallReason is the surfaced, actionable text R27 requires, or "" when
 	// the job is not parked.
 	StallReason string
 }
 
-// JobDurability is what R26 asks a job to be able to report at any time: how
-// much of it is on stable storage, how much is written but not yet covered by
-// an fsync, when its last barrier succeeded, and why it is parked.
-//
-// The two byte figures are reported separately and are never summed. They make
-// different claims — one survives a power loss, the other is the rework window
-// B1 bounds — and adding them produces a number that asserts the stronger of
-// the two about all of it.
-type JobDurability struct {
-	JobCheckpointState
-	// DurableBytes is what a completed fsync covers.
-	DurableBytes int64
-}
-
 // CheckpointState reads one job's application-side figures, for the single-job
 // detail endpoint. The whole-queue listing uses CheckpointStates instead.
 func (app *Application) CheckpointState(jobID string) JobCheckpointState {
-	var out JobCheckpointState
-	app.barrierMu.Lock()
-	out.PendingBytes = app.jobBarrierBytes[jobID]
-	out.LastBarrier = app.lastBarrier[jobID]
-	app.barrierMu.Unlock()
-	out.StallReason = app.StallReason(jobID).Reason
-	return out
+	return JobCheckpointState{StallReason: app.StallReason(jobID).Reason}
 }
 
-// CheckpointStates returns every job that has a figure worth reporting, keyed
-// by job ID.
+// CheckpointStates returns every parked job, keyed by job ID.
 //
-// One pass under each lock rather than one pass per job, for the same reason
-// DirectUnpackStatuses exists: the queue listing is polled continuously, and
-// taking these locks per slot would put every poll's cost on the write path's
-// contention.
+// One pass under the stall lock rather than one lock per job, for the same
+// reason DirectUnpackStatuses exists: the queue listing is polled continuously.
 func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 	out := make(map[string]JobCheckpointState)
-	app.barrierMu.Lock()
-	for jobID, n := range app.jobBarrierBytes {
-		st := out[jobID]
-		st.PendingBytes = n
-		out[jobID] = st
-	}
-	for jobID, at := range app.lastBarrier {
-		st := out[jobID]
-		st.LastBarrier = at
-		out[jobID] = st
-	}
-	app.barrierMu.Unlock()
-
 	app.stallMu.Lock()
 	for jobID, rec := range app.stalls {
 		if rec.reason == "" {
@@ -198,67 +145,6 @@ func (app *Application) CheckpointStates() map[string]JobCheckpointState {
 		out[jobID] = st
 	}
 	app.stallMu.Unlock()
-	return out
-}
-
-// JobDurability reports one job's durability figures. Safe to call from any
-// goroutine, and safe at any residency.
-//
-// DurableBytes comes from the job's downloaded-byte total rather than from a
-// counter of its own, because on this design they are the same quantity.
-// Everything that marks an article Done ultimately stands on a barrier's
-// fsync: Job.AckDurable, which takes a DurableProof no path outside a
-// completed barrier can mint and hands its articles to job.AckDurable; the
-// two seeding entry points — Job.SeedFromRuns, which replays the runs a
-// barrier recorded through job.SeedFromRuns, and ReplaceFromRuns, which
-// installs what the startup sweep's stat left standing; and
-// job.ApplyResolution, which replays the resolution derived from those same
-// records when a job is re-hydrated. The two markDone calls behind the first
-// two entry points moved onto unexported *Job methods in B2.4a; the entry
-// points and the evidence they require are unchanged.
-// job.setFailedBits sets the bit too, for an article whose bytes will never
-// arrive and which therefore contributes no downloaded bytes — through
-// job.markFailed, or directly from Job.MarkArticleFailed while the manifest is
-// evicted.
-//
-// One path sets the bit WITHOUT going through markDone at all, and it is named
-// here rather than left to the word "ultimately": job.newJobProgressSized
-// writes p.done directly when sizing a non-resident job's progress, because
-// markDone needs a manifest for byte arithmetic that has already been seeded
-// from job_files. Its input is the same derived resolution — done means
-// covered by a durable run — so the identity survives it, but a reader
-// grepping for markDone will not find it.
-//
-// So the identity holds at every residency, and a second counter would be a
-// second representation of one fact, free to drift (S5).
-//
-// See job.jobProgressJSON, which states the markDone-scoped version of this
-// at the bit itself, and TestJobDurability_ReportsDownloadedBytesAsDurable,
-// which pins the identity and restates the enumeration above; keep all three
-// in step. A narrowing here that says "only the barrier" belongs in none of
-// them — this list is the reason why.
-//
-// Keeping them in step is no longer left to whoever remembers to look:
-// job.TestDoneBitWriters_MatchTheEnumerationStatedInProse parses the job
-// package and fails when the set of functions reaching markDone, or setting
-// the bit directly, stops matching what these three sites say. It exists
-// because this enumeration was found short TWICE — the second time here,
-// months after the sibling copy was corrected in the since-deleted
-// internal/queue, because a grep of that package could not reach
-// internal/app.
-//
-// ReplaceFromRuns also UN-marks an article whose run the resume discarded
-// (#362), and this figure follows it down rather than needing a correction of
-// its own — which is the same property, stated for the direction the design
-// added last.
-func (app *Application) JobDurability(jobID string) JobDurability {
-	out := JobDurability{JobCheckpointState: app.CheckpointState(jobID)}
-	if app.dispatcher != nil {
-		if j, ok := app.dispatcher.Job(jobID); ok {
-			out.DurableBytes = DurableBytesOf(j)
-			return out
-		}
-	}
 	return out
 }
 

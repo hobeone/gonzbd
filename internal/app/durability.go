@@ -404,18 +404,16 @@ func (app *Application) releaseJobBarrierLock(jobID string) {
 	}
 }
 
-// forgetJobBarrierState drops a departed job's lock, byte accumulator and
-// last-barrier stamp.
+// forgetJobBarrierState drops a departed job's lock and byte accumulator.
 //
-// All three maps are keyed by job ID and would otherwise grow for the life of
-// the process, one entry per job ever downloaded. Called from the same places
+// Both maps are keyed by job ID and would otherwise grow for the life of the
+// process, one entry per job ever downloaded. Called from the same places
 // pipeline.forgetJob is, which is where a job stops being the assembler's
 // business.
 func (app *Application) forgetJobBarrierState(jobID string) {
 	app.barrierMu.Lock()
 	defer app.barrierMu.Unlock()
 	delete(app.jobBarrierBytes, jobID)
-	delete(app.lastBarrier, jobID)
 	// The mutex is NOT dropped while anyone holds it. Dropping it let the next
 	// caller mint a second mutex for the same job, so two barriers could
 	// split one job's destructive Drain between them — and the delete is
@@ -517,10 +515,8 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 	// --- Barrier serialised per job below this line ---
 
 	// Three outcomes, not two. "The barrier ran and failed" and "no barrier
-	// ran at all" are different facts, and folding the second into the first's
-	// nil-error case is how a job on a dead mount came to report a fresh
-	// last_barrier stamp every 30 seconds — the exact inversion of what R26
-	// asks that figure to distinguish.
+	// ran at all" are different facts, and a nil error from a run that
+	// covered nothing must not settle the accumulator as if it had.
 	//
 	// The reachable cases are an evicted job (syncTargetFor requires a
 	// resident manifest and returns nil when non-resident), a job that left
@@ -528,9 +524,9 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 	// assembler still holds handles for a job the dispatcher has dropped, so
 	// checkpointAll keeps listing it — and a manifest that cannot be read at all.
 	//
-	// TestCheckpointJob_DoesNotStampABarrierThatNeverRan uses the second, and
-	// asserts both halves of the fixture: no target, and the assembler still
-	// listing the job.
+	// TestCheckpointJob_LeavesPendingBytesWhenNoBarrierRan uses the second,
+	// and asserts both halves of the fixture: no target, and the assembler
+	// still listing the job.
 	tgt := app.syncTargetFor(jobID)
 	if tgt == nil {
 		mu.Unlock()
@@ -538,9 +534,8 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 		//
 		// The accumulator is deliberately NOT reset. It measures a window
 		// this call did not close, and zeroing it would report zero pending
-		// bytes beside the stale timestamp above — two figures agreeing that
-		// nothing is at risk, at the moment when everything written since the
-		// last real barrier is.
+		// bytes while everything written since the last real barrier is still
+		// unsynced.
 		app.log.Debug("checkpoint skipped, no sync target for the job", "job", jobID)
 		// UNSAFE to clear. No barrier ran, and the reachable cause — a job
 		// that left the queue while the assembler still holds its handles —
@@ -554,11 +549,9 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 	// deliberately, because the barrier has nothing useful to do with the
 	// error. Run then iterates nothing, Commit returns early on an empty
 	// slice, the ack is skipped for an empty set, and the nil that comes back
-	// is indistinguishable from a barrier that fsynced everything. Stamping it
-	// reported a fresh last_barrier every interval while nothing had reached
-	// disk since the mount went away — the inversion R26 asks that figure to
-	// prevent — and resetting the accumulator beside it reported zero bytes at
-	// risk at the same moment.
+	// is indistinguishable from a barrier that fsynced everything. Treating it
+	// as a barrier would retire the accumulator for bytes that reached no disk
+	// since the mount went away.
 	//
 	// This costs a second Files() call on the healthy path, which is one
 	// control message to a worker that is about to be asked again. On the
@@ -651,10 +644,15 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 		return true
 	}
 
-	// Read WITHOUT clearing. The accumulator is retired by settleJobBytes on
-	// the success path below, and by nothing else — a job whose barrier is
-	// still in flight therefore stays visible to jobsAtRisk, which is what
-	// stops a concurrent reload clearing its Emitted bits (#417).
+	// Read WITHOUT clearing. On the success path below, settleJobBytes is the
+	// only call that retires this window; forgetJobBarrierState is the other
+	// remover, dropping the entry on departure. A job whose barrier is still in
+	// flight therefore stays visible to jobsAtRisk, which is what stops a
+	// concurrent reload clearing its Emitted bits (#417). `git grep -n -E
+	// 'jobBarrierBytes(\[[^]]*\])? *(\+=| = )|delete\(app\.jobBarrierBytes'
+	// -- 'internal/app/*.go' ':!*_test.go'` finds 5 writers: app.go's init,
+	// forgetJobBarrierState's delete, noteJobBytes, and settleJobBytes's
+	// assignment and delete.
 	pending := app.pendingBytesFor(jobID)
 
 	app.barrierRuns.Add(1)
@@ -665,8 +663,7 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 	if err != nil {
 		// Nothing to put back: the accumulator was never cleared, so it still
 		// describes the bytes at risk. A failed barrier leaves the figure
-		// exactly where it was rather than dropping it to zero beside a
-		// last_barrier that did not move.
+		// exactly where it was rather than dropping it to zero.
 		//
 		// A failed ack is the one failure that DOES claim something. Run
 		// commits the runs and then acks, so job.ErrNotResident means the
@@ -699,38 +696,16 @@ func (app *Application) checkpointJob(ctx context.Context, jobID string) bool {
 	}
 	// Retired only now, by the run that actually earned it.
 	app.settleJobBytes(jobID, pending)
-	app.noteBarrierRun(jobID)
 	return true
 }
 
-// noteBarrierRun stamps a job's last successful barrier (R26).
-//
-// Only a barrier that returned nil counts. The figure exists to tell a job
-// that is checkpointing normally from one whose barriers have been failing
-// since the mount went away, and stamping the attempt rather than the success
-// would erase exactly that distinction.
-func (app *Application) noteBarrierRun(jobID string) {
-	app.barrierMu.Lock()
-	defer app.barrierMu.Unlock()
-	app.lastBarrier[jobID] = time.Now()
-}
-
-// hasBarrierStamp reports whether a job has ever had a barrier stamped.
-//
-// Presence rather than the time itself, because that is what R26 needs
-// distinguishable: a zero time and "no barrier has ever succeeded" are the
-// same value, and the whole point of the figure is to separate a job that is
-// checkpointing normally from one whose barriers have been failing since the
-// mount went away.
-func (app *Application) hasBarrierStamp(jobID string) bool {
-	app.barrierMu.Lock()
-	defer app.barrierMu.Unlock()
-	_, ok := app.lastBarrier[jobID]
-	return ok
-}
-
-// settleJobBytes retires the bytes a SUCCESSFUL barrier made durable, and is
-// the only thing that reduces a job's accumulator.
+// settleJobBytes retires the bytes a SUCCESSFUL barrier made durable. Of the
+// writers of the accumulator it is one of the two that reduce an entry; the
+// other is forgetJobBarrierState, which drops the whole entry on departure.
+// `git grep -n -E
+// 'jobBarrierBytes(\[[^]]*\])? *(\+=| = )|delete\(app\.jobBarrierBytes'
+// -- 'internal/app/*.go' ':!*_test.go'` finds 5 writers, as cited at
+// checkpointJob.
 //
 // It subtracts the figure the barrier read before it ran, rather than clearing
 // the entry, and the difference is the whole point. An article written while
@@ -812,9 +787,11 @@ func (app *Application) nothingAtRisk(jobID string) bool {
 // The accumulator is the right source rather than a convenient one.
 // onArticleWritten feeds it on every accepted write and its own doc says it
 // "counts accepted bytes, not durable ones: it is measuring how much work is at
-// risk between barriers". settleJobBytes is the only thing that reduces it, and
-// only a successful barrier calls it — so an absent entry means a barrier
-// really did make everything durable.
+// risk between barriers". Its entries shrink only in settleJobBytes, and a
+// departure drops an entry wholesale. `git grep -n '[s]ettleJobBytes(' --
+// 'internal/app/*.go' ':!*_test.go'` finds 2 lines: the one call in
+// checkpointJob, and the definition. So an absent entry means a successful
+// barrier retired the bytes, the job left, or it never wrote.
 //
 // That is also why this needs no in-flight case, and why it does not have to
 // take the per-job barrier mutex to be correct. A job whose barrier is running
