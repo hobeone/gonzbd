@@ -10,6 +10,22 @@ file internal/durability/reclaim.go
 	{name: "durable_runs"},
 --- end
 
+[written_articles stops being kept]
+file internal/durability/reclaim.go
+--- anchor
+	{name: "written_articles", keptForFailedEntry: true},
+--- replace
+	{name: "written_articles"},
+--- end
+
+[job_files starts being kept for a failed entry]
+file internal/durability/reclaim.go
+--- anchor
+	{name: "job_files"},
+--- replace
+	{name: "job_files", keptForFailedEntry: true},
+--- end
+
 [the rule ignores the queue]
 file internal/durability/reclaim.go
 --- anchor

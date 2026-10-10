@@ -21,8 +21,13 @@ type reclaimState struct {
 	queued    bool
 	history   constants.Status // "" for no history entry
 	keepAll   bool             // every table's rows survive
-	keepsRuns bool             // the keptForFailedEntry tables survive
+	keepsRuns bool             // the keptForFailedFixture tables survive
 }
+
+// keptForFailedFixture names the tables a FAILED history entry keeps. It is
+// stated by name rather than read from perJobTables' keptForFailedEntry, so a
+// flag flipped there fails here instead of moving both sides at once.
+var keptForFailedFixture = map[string]bool{"durable_runs": true, "written_articles": true}
 
 var reclaimStates = []reclaimState{
 	{id: "queued", queued: true, keepAll: true},
@@ -79,7 +84,7 @@ func assertReclaimed(t *testing.T, db *sql.DB, via string) {
 	for _, s := range reclaimStates {
 		for _, table := range perJobTables {
 			want := 0
-			if s.keepAll || (s.keepsRuns && table.keptForFailedEntry) {
+			if s.keepAll || (s.keepsRuns && keptForFailedFixture[table.name]) {
 				want = 1
 			}
 			if got := countRows(t, db, table.name, s.id); got != want {
