@@ -567,7 +567,9 @@ func WithStallRecheckInterval(d time.Duration) func(*Application) {
 }
 
 // WithRecordInterval overrides how often the recorder flushes written
-// articles and file state to the database.
+// articles and file state to the database. It is for tests only: the external
+// package app_test sets it (app_test.go, scenario_checkpoint_test.go,
+// scenario_durability_test.go), and production keeps the default.
 func WithRecordInterval(d time.Duration) func(*Application) {
 	return func(a *Application) { a.recordInterval = d }
 }
