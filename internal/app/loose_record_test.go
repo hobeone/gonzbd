@@ -813,13 +813,11 @@ func TestLooseRecord_ResumedCompletionSurvivesEviction(t *testing.T) {
 		t.Fatal("fixture: the job is still resident after Evict")
 	}
 
-	a2.enqueueResumedCompletion(id, 0, "")
-	// watchCompletions is one goroutine, so the sentinel is received only after
-	// the completion ahead of it has been handled in full.
-	a2.internalFileComplete <- FileComplete{JobID: "sentinel"}
-	lrWaitFor(t, "the resumed completion to be consumed", func() bool {
-		return len(a2.internalFileComplete) == 0
-	})
+	// The consumer's own door, called directly: its error is what a completion
+	// that needed the manifest would return for an evicted job.
+	if err := a2.completeFinalizedFile(FileComplete{JobID: id, FileIdx: 0, Resumed: true}); err != nil {
+		t.Fatalf("a resumed completion of an evicted job was not delivered: %v", err)
+	}
 	a2.recorder.mu.Lock()
 	_, dirtied := a2.recorder.dirty[j2][0]
 	a2.recorder.mu.Unlock()
