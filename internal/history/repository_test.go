@@ -412,6 +412,7 @@ func TestSearch_PreallocationCapBounded(t *testing.T) {
 		{"unbounded search falls back to the small default", 0, 16},
 		{"bounded, reasonable limit preallocates to it", 5, 5},
 		{"huge limit is clamped, not preallocated in full", 50_000_000, 10_000},
+		{"limit far beyond int32 is clamped", 1 << 40, 10_000},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
