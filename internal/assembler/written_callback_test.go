@@ -23,6 +23,20 @@ func TestOnArticleWritten_FiresOnlyAfterASuccessfulWrite(t *testing.T) {
 	}
 }
 
+func TestOnArticleWritten_FiresForAZeroLengthArticle(t *testing.T) {
+	a := newHelperAssembler()
+	var lens []int64
+	a.opts.OnArticleWritten = func(_ string, _ int, _ int32, _, n int64, _ uint32) {
+		lens = append(lens, n)
+	}
+	f := newHelperFile(t, t.TempDir(), "z.dat", 1<<20)
+	f.info.TotalParts = 2
+	a.handleSuccessArticle(f, WriteRequest{JobID: "j", ArtIdx: 1, MessageID: "<z@x>", Offset: 0, Data: nil})
+	if len(lens) != 1 || lens[0] != 0 {
+		t.Errorf("OnArticleWritten lengths = %v, want exactly [0]", lens)
+	}
+}
+
 func TestOnArticleWritten_ReportsRangeAndCRC(t *testing.T) {
 	a := newHelperAssembler()
 	type rec struct {
