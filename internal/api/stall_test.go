@@ -241,21 +241,3 @@ func TestQueueResume_AsksForAStallReevaluation(t *testing.T) {
 			"failed finalize stays at 100% until the next interval or a restart (R19)")
 	}
 }
-
-// TestQueueResumeAll_AsksForAStallReevaluation pins the same for the
-// queue-wide resume, which is the button a user reaches for after clearing a
-// full disk.
-func TestQueueResumeAll_AsksForAStallReevaluation(t *testing.T) {
-	t.Parallel()
-	var reevaluated atomic.Int64
-	s, _ := stallTestServer(t, nil, &reevaluated)
-
-	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=resume_all&apikey="+testAPIKey)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200", rr.Code)
-	}
-
-	if got := reevaluated.Load(); got == 0 {
-		t.Error("resume_all did not ask for a stall re-evaluation")
-	}
-}

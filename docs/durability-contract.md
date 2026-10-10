@@ -649,7 +649,7 @@ incomplete (#349, #387).
 | Write fault | The part rolls back (`FileWriter.fail`), `OnArticlesUnwritten` clears the article's Emitted bit, `OnWriteFault` → Stall or Fail. No row is written. |
 | Completion fault | §4: untrusted, no tombstone, `FileInfo` dropped, Stall or Fail. On resume the file's articles are Outstanding and are refetched. |
 | Pause, low disk, server penalty | Nothing writes the record; no hook. |
-| Reload (`ReloadDownloader`) | Stop the old downloader; `setCompletions(nil)`, which returns once every buffered result has reached the assembler's queue; `Assembler.Quiesce`, answered once everything queued ahead of it has been processed and its callbacks have run; `ClearEmittedForReload(false)` for every job not admitted to post-processing; start the new downloader. An Emitted bit still set after the quiesce covers only an article whose bytes never reached `pwrite`. If the quiesce fails, the clear is skipped and those articles stay Emitted until the next start. |
+| Reload (`ReloadDownloader`) | Stop the old downloader; `setCompletions(nil)`, which returns once every buffered result has reached the assembler's queue; `Assembler.Quiesce`, answered once everything queued ahead of it has been processed and its callbacks have run; `ClearEmittedForReload(false)` for every job not admitted to post-processing; start the new downloader, paused first if the application is paused, and swap it in, both under `app.mu`. An Emitted bit still set after the quiesce covers only an article whose bytes never reached `pwrite`. If the quiesce fails, the clear is skipped and those articles stay Emitted until the next start. |
 | Remove (`RemoveJob`) | `CancelJob` closes the job's handles; reclaim deletes its rows. A racing flush is stopped by the instance check and the `job_files` guard, and any orphan rows by the next start's `SweepOrphans`. |
 | Retry | §3 *Retry*. |
 | Clean shutdown | §*Clean shutdown*. |
@@ -721,7 +721,9 @@ one, and a restarted job keeps it until it leaves the queue.
 releases only a `Fetching` job's lease; a job that has moved on keeps its
 worker, and the pause gates its next move. `reevaluateStall` runs on an
 interval (`stallRecheckInterval`, 30 s) and on user action
-(`ReevaluateStalls`, from the API's resume handlers). It retries nothing: a
+(`ReevaluateStalls`, from the API's per-job resume and from both queue-wide
+resumes, the user's and the low-disk auto-resume, which share
+`resumeLocked`). It retries nothing: a
 write or completion fault left the affected articles Outstanding, and a
 verification fault left the job non-resident, so a resumed job refetches and
 re-verifies through the ordinary paths. If the condition has not cleared, the

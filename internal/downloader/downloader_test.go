@@ -1207,6 +1207,38 @@ func TestPauseBeforeStart(t *testing.T) {
 	d.Resume()
 }
 
+// TestStart_KeepsAPauseMadeBeforeIt pins that Start does not undo a Pause
+// made before it. ReloadDownloader starts its new downloader paused while the
+// application is paused, and a fetch context Start re-opened would let any
+// fetch that reached a connection proceed.
+func TestStart_KeepsAPauseMadeBeforeIt(t *testing.T) {
+	t.Parallel()
+
+	d := New(newTestDispatcher(t), nil, nil, Options{}, nil)
+	d.Pause()
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Stop() })
+
+	d.pauseMu.RLock()
+	afterStart := d.pauseCtx.Err()
+	d.pauseMu.RUnlock()
+	if !d.IsPaused() || afterStart == nil {
+		t.Fatalf("after Pause then Start: IsPaused=%v, fetch context err=%v; want paused "+
+			"with a cancelled fetch context", d.IsPaused(), afterStart)
+	}
+
+	d.Resume()
+	d.pauseMu.RLock()
+	afterResume := d.pauseCtx.Err()
+	d.pauseMu.RUnlock()
+	if d.IsPaused() || afterResume != nil {
+		t.Fatalf("after Resume: IsPaused=%v, fetch context err=%v; want running with a live "+
+			"fetch context", d.IsPaused(), afterResume)
+	}
+}
+
 func TestServerStatus_MeterFields(t *testing.T) {
 	t.Parallel()
 

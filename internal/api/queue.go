@@ -81,8 +81,9 @@ func (s *Server) queuePauseAll(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) queueResumeAll(w http.ResponseWriter, _ *http.Request) {
 	if s.downloads != nil {
+		// ResumeDownloads asks for the stall re-evaluation itself (R19), as
+		// the low-disk auto-resume does through the same path.
 		s.downloads.ResumeDownloads()
-		s.downloads.ReevaluateStalls()
 	}
 	s.log.Info("downloads resumed")
 	respondStatus(w)

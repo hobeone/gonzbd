@@ -38,48 +38,71 @@ file internal/app/app.go
 	}
 --- end
 
-[ResumeDownloads does not clear pauseReason]
+[resumeLocked does not clear pauseReason]
 file internal/app/app.go
 --- anchor
-func (app *Application) ResumeDownloads() {
-	app.mu.Lock()
+func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
 --- replace
-func (app *Application) ResumeDownloads() {
-	app.mu.Lock()
+func (app *Application) resumeLocked() {
 --- end
 
-[ResumeDownloads does not cancel an active low-disk watch]
+[resumeLocked does not cancel an active low-disk watch]
 file internal/app/app.go
 --- anchor
-func (app *Application) ResumeDownloads() {
-	app.mu.Lock()
+func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
 	app.stopLowDiskWatchLocked()
 --- replace
-func (app *Application) ResumeDownloads() {
-	app.mu.Lock()
+func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
 --- end
 
-[ResumeDownloads does not resume the dispatcher]
+[resumeLocked does not resume the dispatcher]
 file internal/app/app.go
 --- anchor
-func (app *Application) ResumeDownloads() {
-	app.mu.Lock()
+func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
 	app.stopLowDiskWatchLocked()
 	if app.dispatcher != nil {
 		app.dispatcher.Resume()
 	}
 --- replace
-func (app *Application) ResumeDownloads() {
-	app.mu.Lock()
+func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
 	app.stopLowDiskWatchLocked()
 	if false && app.dispatcher != nil {
 		app.dispatcher.Resume()
 	}
+--- end
+
+[resumeLocked does not resume the downloader]
+file internal/app/app.go
+--- anchor
+		app.dispatcher.Resume()
+	}
+	if app.downloader != nil {
+		app.downloader.Resume()
+	}
+	app.ReevaluateStalls()
+--- replace
+		app.dispatcher.Resume()
+	}
+	if false && app.downloader != nil {
+		app.downloader.Resume()
+	}
+	app.ReevaluateStalls()
+--- end
+
+[ResumeDownloads does not resume]
+file internal/app/app.go
+--- anchor
+func (app *Application) ResumeDownloads() {
+	app.mu.Lock()
+	app.resumeLocked()
+--- replace
+func (app *Application) ResumeDownloads() {
+	app.mu.Lock()
 --- end
 
 [handleLowDisk overwrites a user pause with pauseReasonLowDisk]
@@ -328,94 +351,31 @@ file internal/app/app.go
 	}
 --- end
 
-[tryAutoResumeLowDisk does not clear lowDiskCancel on auto-resume]
+[tryAutoResumeLowDisk does not resume]
 file internal/app/app.go
 --- anchor
 		return true
 	}
-	app.pauseReason = pauseReasonNone
-	app.stopLowDiskWatchLocked()
---- replace
-		return true
-	}
-	app.pauseReason = pauseReasonNone
---- end
-
-[tryAutoResumeLowDisk does not resume the dispatcher]
-file internal/app/app.go
---- anchor
-		return true
-	}
-	app.pauseReason = pauseReasonNone
-	app.stopLowDiskWatchLocked()
-	if app.dispatcher != nil {
-		app.dispatcher.Resume()
-	}
---- replace
-		return true
-	}
-	app.pauseReason = pauseReasonNone
-	app.stopLowDiskWatchLocked()
-	if false && app.dispatcher != nil {
-		app.dispatcher.Resume()
-	}
---- end
-
-[tryAutoResumeLowDisk does not resume the downloader]
-file internal/app/app.go
---- anchor
-		return true
-	}
-	app.pauseReason = pauseReasonNone
-	app.stopLowDiskWatchLocked()
-	if app.dispatcher != nil {
-		app.dispatcher.Resume()
-	}
-	if app.downloader != nil {
-		app.downloader.Resume()
-	}
+	app.resumeLocked()
 	app.mu.Unlock()
 --- replace
 		return true
-	}
-	app.pauseReason = pauseReasonNone
-	app.stopLowDiskWatchLocked()
-	if app.dispatcher != nil {
-		app.dispatcher.Resume()
-	}
-	if false && app.downloader != nil {
-		app.downloader.Resume()
 	}
 	app.mu.Unlock()
 --- end
 
-[tryAutoResumeLowDisk resumes the downloader outside app.mu]
+[tryAutoResumeLowDisk resumes outside app.mu]
 file internal/app/app.go
 --- anchor
 		return true
 	}
-	app.pauseReason = pauseReasonNone
-	app.stopLowDiskWatchLocked()
-	if app.dispatcher != nil {
-		app.dispatcher.Resume()
-	}
-	if app.downloader != nil {
-		app.downloader.Resume()
-	}
+	app.resumeLocked()
 	app.mu.Unlock()
 --- replace
 		return true
 	}
-	app.pauseReason = pauseReasonNone
-	app.stopLowDiskWatchLocked()
-	if app.dispatcher != nil {
-		app.dispatcher.Resume()
-	}
-	dl := app.downloader
 	app.mu.Unlock()
-	if dl != nil {
-		dl.Resume()
-	}
+	app.resumeLocked()
 --- end
 
 [tryAutoResumeLowDisk does not broadcast queue_updated]

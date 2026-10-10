@@ -121,8 +121,8 @@ type Application struct {
 	lowDiskCancel  context.CancelFunc
 	lowDiskWg      sync.WaitGroup
 	// reloadMu serializes ReloadDownloader calls end-to-end. It is separate
-	// from mu (which only guards the brief downloader/downloaderStats field
-	// swap) so concurrent reloads queue up instead of interleaving their
+	// from mu (which ReloadDownloader holds only for its opening snapshot and
+	// the closing start and downloader/downloaderStats swap) so concurrent reloads queue up instead of interleaving their
 	// Stop/setCompletions/Quiesce/ClearEmittedForReload/Start sequences, which
 	// would otherwise risk wiring app.downloader and app.pipeline's
 	// completions source to two different downloader instances.
@@ -288,6 +288,11 @@ type Application struct {
 	// startedTransitionHook, when non-nil, runs in Start right after started
 	// flips true. Same discipline as syncFile.
 	startedTransitionHook func()
+
+	// reloadBeforeStartHook, when non-nil, runs in ReloadDownloader after the
+	// pause decision and before the new downloader's Start, with app.mu held.
+	// Same discipline as syncFile.
+	reloadBeforeStartHook func(newDownloader *downloader.Downloader)
 
 	// downloadReportedHook, when non-nil, runs in completeFinalizedFile right
 	// after the report that the job's download finished, where the tick can
@@ -3108,11 +3113,26 @@ func (app *Application) PauseDownloads() {
 	app.emit(Event{Type: "queue_updated"})
 }
 
-// ResumeDownloads clears the pause reason, stops any low-disk auto-resume
-// watch, resumes the dispatcher queue and downloader, and broadcasts
-// queue_updated.
+// ResumeDownloads lifts any pause, user or low-disk, through resumeLocked,
+// and broadcasts queue_updated.
 func (app *Application) ResumeDownloads() {
 	app.mu.Lock()
+	app.resumeLocked()
+	app.mu.Unlock()
+	// --- No lock held below this line ---
+	app.emit(Event{Type: "queue_updated"})
+}
+
+// resumeLocked is the body of both queue-wide resumes, ResumeDownloads and
+// the low-disk auto-resume in tryAutoResumeLowDisk —
+// `git grep -n 'app[.]resumeLocked()' -- '*.go' ':!*_test.go'` finds 2
+// lines, one in each. It clears the pause
+// reason, stops any low-disk auto-resume watch, resumes the dispatcher queue
+// and downloader, and asks for a stall re-evaluation (R19): a job parked by a
+// storage fault during the pause, such as an ENOSPC write, is otherwise left
+// stalled until the next interval. ReevaluateStalls never blocks, so it is
+// safe under app.mu. The caller holds app.mu.
+func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
 	app.stopLowDiskWatchLocked()
 	if app.dispatcher != nil {
@@ -3121,9 +3141,7 @@ func (app *Application) ResumeDownloads() {
 	if app.downloader != nil {
 		app.downloader.Resume()
 	}
-	app.mu.Unlock()
-	// --- No lock held below this line ---
-	app.emit(Event{Type: "queue_updated"})
+	app.ReevaluateStalls()
 }
 
 // DisconnectAll drops all idle NNTP connections. Workers stay alive and
@@ -3251,14 +3269,7 @@ func (app *Application) tryAutoResumeLowDisk(ctx context.Context, dir string) bo
 		app.mu.Unlock()
 		return true
 	}
-	app.pauseReason = pauseReasonNone
-	app.stopLowDiskWatchLocked()
-	if app.dispatcher != nil {
-		app.dispatcher.Resume()
-	}
-	if app.downloader != nil {
-		app.downloader.Resume()
-	}
+	app.resumeLocked()
 	app.mu.Unlock()
 	app.log.Info("disk space recovered, downloads auto-resumed",
 		"dir", probeDir,
