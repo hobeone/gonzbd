@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run TestResetForRetry_UncompletesAFileWithUndoneArticles
+run ^TestResetForRetry_UncompletesAFile(WithUndoneArticles|WhoseOnlyGapIsAFailedArticle)$
 
 # ResetForRetry clears Complete for any file with an article that is not done,
 # not only for a file whose failed articles it reset itself: a retry restores
@@ -28,4 +28,15 @@ file internal/job/content.go
 		}
 	}
 	j.progress.recompute(j.manifest)
+--- end
+
+# The failed arm resets the article, so the file it sits in has a gap again
+# even when every other article of it is done.
+[a reset failed article leaves its file Complete]
+file internal/job/content.go
+--- anchor
+				reset = append(reset, i)
+				unresolved = true
+--- replace
+				reset = append(reset, i)
 --- end
