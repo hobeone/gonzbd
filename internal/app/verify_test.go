@@ -617,7 +617,7 @@ func outsideTarget(t *testing.T, f *verifyFixture) string {
 	return target
 }
 
-// TestReadBackFile_RefusesASymlinkOutOfTheJobDirectory pins the os.Root open:
+// TestReadBackFile_RefusesASymlinkOutOfTheJobDirectory pins the rooted open:
 // a symlink inside the job directory that points out of it is an open error,
 // so a fault, and nothing outside is read. The rows match the target's bytes,
 // so a read through the link would verify them.
@@ -675,7 +675,7 @@ func TestVerifyJobFiles_SymlinkOutOfTheJobDirectoryIsAFault(t *testing.T) {
 }
 
 // TestFinishFileByPath_RefusesASymlinkOutOfTheJobDirectory pins the finish's
-// own os.Root open: a link swapped in after the read-back is refused, and the
+// own rooted open: a link swapped in after the read-back is refused, and the
 // file it points at keeps its size.
 func TestFinishFileByPath_RefusesASymlinkOutOfTheJobDirectory(t *testing.T) {
 	t.Parallel()
@@ -692,6 +692,60 @@ func TestFinishFileByPath_RefusesASymlinkOutOfTheJobDirectory(t *testing.T) {
 	}
 	if got, want := fileSize(t, target), int64(len(f.data)+300); got != want {
 		t.Errorf("outside file size = %d, want %d", got, want)
+	}
+}
+
+// linkToSibling replaces f's file with a symlink to a sibling inside the same
+// job directory holding f's bytes plus a 300-byte tail a finish would
+// truncate, and returns the sibling's path.
+func linkToSibling(t *testing.T, f *verifyFixture) string {
+	t.Helper()
+	sibling := filepath.Join(filepath.Dir(f.path), "sibling.bin")
+	if err := os.WriteFile(sibling, append(slices.Clone(f.data), make([]byte, 300)...), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Remove(f.path); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := os.Symlink("sibling.bin", f.path); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	return sibling
+}
+
+// TestVerifyJobFiles_SymlinkToASiblingIsAFault pins the no-follow half of the
+// verifier's opens: a symlink in the file's place whose target stays inside
+// the job directory is refused too, as a fault rather than absence, on both
+// paths. Every row matches the sibling, so a read through the link would
+// verify them and a finish would truncate the sibling.
+func TestVerifyJobFiles_SymlinkToASiblingIsAFault(t *testing.T) {
+	t.Parallel()
+	f := newVerifyFixture(t)
+	sibling := linkToSibling(t, f)
+	for _, retry := range []bool{false, true} {
+		out, err := readBackFile(t.Context(), f.loc(), f.rows, make([]byte, verifyBufSize), retry)
+		if err == nil || errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("retry=%v: readBackFile = %+v, %v; want an open error that is not ENOENT", retry, out, err)
+		}
+	}
+	res, err := f.run(t, t.Context(), f.rows, false)
+	assertVerifyFault(t, res, err, f.path)
+	if got, want := fileSize(t, sibling), int64(len(f.data)+300); got != want {
+		t.Errorf("sibling size = %d, want %d: the verifier truncated a file through a link", got, want)
+	}
+}
+
+// TestFinishFileByPath_RefusesASymlinkToASibling pins the finish's own
+// no-follow open: the sibling a link names keeps its size.
+func TestFinishFileByPath_RefusesASymlinkToASibling(t *testing.T) {
+	t.Parallel()
+	f := newVerifyFixture(t)
+	sibling := linkToSibling(t, f)
+	if err := finishFileByPath(f.loc(), int64(len(f.data))); err == nil {
+		t.Error("finishFileByPath through a link to a sibling = nil, want an error")
+	}
+	if got, want := fileSize(t, sibling), int64(len(f.data)+300); got != want {
+		t.Errorf("sibling size = %d, want %d", got, want)
 	}
 }
 
@@ -785,7 +839,7 @@ func TestReadBackFile_ReadsARowLongerThanTheBuffer(t *testing.T) {
 }
 
 // TestReadBackFile_AMissingFileInAnExistingDirectoryIsGone pins the ENOENT
-// arm under the os.Root open, on both paths: a file missing from a directory
+// arm under the rooted open, on both paths: a file missing from a directory
 // that exists is a definitive deleteAll, not an error.
 func TestReadBackFile_AMissingFileInAnExistingDirectoryIsGone(t *testing.T) {
 	t.Parallel()

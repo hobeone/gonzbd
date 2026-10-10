@@ -50,9 +50,9 @@ var (
 )
 
 // jobFile locates one of a job's files: Dir is the job directory and Name the
-// file's name inside it. The verifier opens Name through an os.Root on Dir, so
-// a Name that climbs out of Dir, or a symlink inside Dir that points out of
-// it, is refused by the open itself.
+// file's name inside it. The verifier opens Name with fsutil.OpenNoFollow on
+// an os.Root on Dir, so a Name that is not one path component, or a symlink
+// in its place wherever it points, is refused by the open itself.
 type jobFile struct {
 	Dir, Name string
 }
@@ -71,17 +71,18 @@ func (f jobFile) Path() string { return filepath.Join(f.Dir, f.Name) }
 // locate resolves a recorded filename to its job directory and name. Both
 // callers pass the writer's own resolver (pipeline.jobFileLocation), so the
 // verifier reads the file the writer wrote under whatever sanitize options
-// are configured. Both opens go through an os.Root on the job directory
-// (readBackFile, finishFileByPath), which keeps them inside it.
+// are configured. Both opens (readBackFile, finishFileByPath) go through
+// fsutil.OpenNoFollow on an os.Root on the job directory, which opens that
+// one file and never another through a link.
 //
 // Per file: an empty filename deletes every row, since none can be read
 // back; ENOENT deletes every row only when the file's directory exists — at a
 // hydration a missing directory (an unmounted download root) is a fault naming
 // it, while on a retry it is absence too, unmounted root or not
-// (readBackFile); a name that resolves outside the job directory, through
-// ".." or a symlink, is an open error other than ENOENT, so a fault; an
-// fsync error on the fresh descriptor deletes every row (the file is
-// untrusted); a row with an invalid shape (WrittenRow.HasValidShape) is
+// (readBackFile); a name that is not one path component, or a symlink in the
+// file's place wherever it points, is an open error other than ENOENT, so a
+// fault; an fsync error on the fresh descriptor deletes every row (the file
+// is untrusted); a row with an invalid shape (WrittenRow.HasValidShape) is
 // deleted unread, while a zero-length row is valid and verifies against CRC 0;
 // a CRC mismatch or a short read deletes that row. Of rows whose ranges
 // intersect, the first matching one in offset order is kept and
@@ -234,7 +235,7 @@ func readBackFile(ctx context.Context, loc jobFile, rows []durability.WrittenRow
 		return fileReadback{}, &errVerifyFault{File: loc.Dir, Err: err}
 	}
 	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
-	fh, err := root.Open(loc.Name)
+	fh, err := fsutil.OpenNoFollow(root, loc.Name, os.O_RDONLY, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return fileReadback{deleteAll: true}, nil // inside a directory held open, so one that exists
 	}
@@ -375,7 +376,7 @@ func finishFileByPath(loc jobFile, maxEnd int64) (err error) {
 		return fmt.Errorf("finish %s: %w", path, err)
 	}
 	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
-	fh, err := root.OpenFile(loc.Name, os.O_RDWR, 0)
+	fh, err := fsutil.OpenNoFollow(root, loc.Name, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("finish %s: %w", path, err)
 	}

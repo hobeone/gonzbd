@@ -11,9 +11,10 @@ import (
 )
 
 // TestOpenTargetFile_RefusesToWriteOutOfTheJobDirectory pins the writer's
-// os.Root open: a symlink planted in the job directory under the target's
-// name, or a name that climbs out with "..", is an open error. The file
-// outside is neither created nor written, and the article takes the existing
+// rooted, no-follow open: a symlink planted in the job directory under the
+// target's name, whether it points out of the directory or at a sibling
+// inside it, or a name that climbs out with "..", is an open error. The file
+// it leads to is neither created nor written, and the article takes the existing
 // failed-open path: a routed "open" fault and the article handed back as
 // unwritten, with nothing left in the open map.
 func TestOpenTargetFile_RefusesToWriteOutOfTheJobDirectory(t *testing.T) {
@@ -40,6 +41,19 @@ func TestOpenTargetFile_RefusesToWriteOutOfTheJobDirectory(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.Symlink(target, filepath.Join(jobDir, "f.bin")); err != nil {
+				t.Fatal(err)
+			}
+			return "f.bin", target
+		}, []byte("ORIGINAL")},
+		{"a symlink to a sibling inside the job directory", func(t *testing.T, jobDir, _ string) (string, string) {
+			// An archive extracted into the job directory can plant one
+			// member as a link to another; a later open of the linked name
+			// must not write its bytes into the sibling.
+			target := filepath.Join(jobDir, "sibling.bin")
+			if err := os.WriteFile(target, []byte("ORIGINAL"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("sibling.bin", filepath.Join(jobDir, "f.bin")); err != nil {
 				t.Fatal(err)
 			}
 			return "f.bin", target

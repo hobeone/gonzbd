@@ -129,9 +129,10 @@ type WriteRequest struct {
 // resolver the first time it encounters a (JobID, FileIdx) pair.
 type FileInfo struct {
 	// Dir is the job directory the file belongs in, and Name the file's
-	// name inside it. openTargetFile creates Dir and then opens Name through
-	// an os.Root on Dir, so a Name that climbs out of Dir, or a symlink inside
-	// Dir that points out of it, is refused by the open rather than followed.
+	// name inside it. openTargetFile creates Dir and then opens Name with
+	// fsutil.OpenNoFollow on an os.Root on Dir, so a Name that is not one path
+	// component, or a symlink in its place wherever it points, is refused by
+	// the open rather than followed.
 	Dir, Name string
 
 	// TotalParts is the number of manifest segments in this file. Each segment
@@ -1385,9 +1386,10 @@ func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
 // for a new fileKey.
 //
 // The name comes from the NZB, so it is untrusted: the file is opened through
-// openInDir, which confines it to FileInfo.Dir. A name or a symlink that leads
-// out of the job directory fails the open, and that failure takes the same
-// path as any other open error.
+// openInDir, which opens that one file in FileInfo.Dir and never another. A
+// name that leads out of the job directory, or a symlink in the file's place
+// wherever it points, fails the open, and that failure takes the same path as
+// any other open error.
 //
 // Every failure returns a classified *storagefault.Fault rather than logging
 // and discarding the article (#357). The distinction matters because of A2: a
@@ -1458,16 +1460,18 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 }
 
 // openInDir opens name inside dir for writing, creating it if absent, through
-// an os.Root on dir: a name that leads out of dir, by ".." or by a symlink
-// inside dir that points out of it, is an open error. The root is closed
-// before returning; the file's descriptor does not depend on it.
+// fsutil.OpenNoFollow on an os.Root on dir: a name that is not one path
+// component, or a symlink in name's place wherever it points, inside dir or
+// out of it, is an open error. Following an in-directory link would write one
+// file's bytes into a sibling. The root is closed before returning; the
+// file's descriptor does not depend on it.
 func openInDir(dir, name string) (*os.File, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
-	return root.OpenFile(name, os.O_WRONLY|os.O_CREATE, 0o644)
+	return fsutil.OpenNoFollow(root, name, os.O_WRONLY|os.O_CREATE, 0o644)
 }
 
 // seedOwned seeds w's range set from ranges verified before this process;
