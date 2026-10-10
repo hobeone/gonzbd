@@ -222,7 +222,7 @@ func TestInstallVerified_NeitherKeepsNorReordersTheCallersSlice(t *testing.T) {
 
 // TestInstallRows_KeepsACopyOfTheFirstInstall pins installRows' own contract on
 // a file with no resident rows: it stores a copy, so an edit to the caller's
-// slice does not reach the job. InstallVerified and InstallCompleteFile pass
+// slice does not reach the job. InstallVerified and InstallFileVerification pass
 // it placeRows' fresh slice, so neither door can observe this; the test calls
 // installRows directly.
 func TestInstallRows_KeepsACopyOfTheFirstInstall(t *testing.T) {
@@ -411,17 +411,17 @@ func TestSettleFileCRC_DerivesStoresAndReleases(t *testing.T) {
 	}
 }
 
-// TestInstallCompleteFile_FailsTheRestAndSettles pins open design item 1: a
+// TestInstallFileVerification_CompleteFileFailsTheRestAndSettles pins open design item 1: a
 // complete=1 file's failed set is the complement of its rows, the file is
 // Complete, and a file with a failed article has no CRC.
-func TestInstallCompleteFile_FailsTheRestAndSettles(t *testing.T) {
+func TestInstallFileVerification_CompleteFileFailsTheRestAndSettles(t *testing.T) {
 	t.Parallel()
 	data := chainData()
 	rows := chainRows(data)
 
 	whole := verifiedTestJob(t)
-	if dropped, err := whole.InstallCompleteFile(0, rows); err != nil || dropped != 0 {
-		t.Fatalf("InstallCompleteFile = %d, %v", dropped, err)
+	if dropped, err := whole.InstallFileVerification(FileVerification{FileIdx: 0, Complete: true, Rows: rows}); err != nil || dropped != 0 {
+		t.Fatalf("InstallFileVerification = %d, %v", dropped, err)
 	}
 	p := whole.Progress()
 	if !p.FileComplete(0) || p.FileAssembledCRC32(0) != crc32.ChecksumIEEE(data) {
@@ -436,9 +436,9 @@ func TestInstallCompleteFile_FailsTheRestAndSettles(t *testing.T) {
 
 	holed := verifiedTestJob(t)
 	bad := durability.WrittenRow{FileIdx: 0, ArtIdx: 4, Offset: 0, Length: 100}
-	dropped, err := holed.InstallCompleteFile(0, []durability.WrittenRow{rows[0], rows[2], bad})
+	dropped, err := holed.InstallFileVerification(FileVerification{FileIdx: 0, Complete: true, Rows: []durability.WrittenRow{rows[0], rows[2], bad}})
 	if err != nil || dropped != 1 {
-		t.Fatalf("InstallCompleteFile = %d, %v; want 1, nil", dropped, err)
+		t.Fatalf("InstallFileVerification = %d, %v; want 1, nil", dropped, err)
 	}
 	p = holed.Progress()
 	for art, wantFailed := range []bool{false, true, false, true} {
@@ -566,7 +566,7 @@ func TestFileCRCFromRows(t *testing.T) {
 }
 
 // TestPlaceRows_KeepsOnlyRowsOfTheFile pins the split InstallVerified and
-// InstallCompleteFile share: a row is kept only when it names the file, lies in
+// InstallFileVerification share: a row is kept only when it names the file, lies in
 // its range and has a valid shape (a zero-length row is valid); every other row
 // is counted.
 func TestPlaceRows_KeepsOnlyRowsOfTheFile(t *testing.T) {

@@ -371,7 +371,7 @@ verdict carry `SetComplete`. An fsync or truncate error while finishing is a
 verification fault.
 
 A `complete=1` file is not read. Its rows are installed as they stand
-(`Job.InstallCompleteFile`): each row's article is Done, **every other article
+(`Job.InstallFileVerification` with `Complete` set): each row's article is Done, **every other article
 of the file's range is failed** — the failed set is the complement of the rows
 — the file is Complete, and its whole-file CRC is settled. The failed set is
 installed during hydration, before anything can consult it (the archive peek,
@@ -396,11 +396,17 @@ A context error is returned as it is, parks nothing, and settles nothing.
 
 #### Files the verifier finished
 
-`installVerification` handles each file whose verdict carries `SetComplete`
-while the manifest is certainly attached: it settles the file's CRC, runs the
-archive peek, and only then calls `MarkFileComplete` — the mark is what lets
-the download-complete report take the job to Assessing, so a last file marked
-first could reach post-processing unpeeked. The completion is then queued on
+`installVerification` installs each file's outcome in two phases while the
+manifest is certainly attached. First `Job.InstallFileVerification` applies,
+under one hold of the job's content lock, the recorded filename, the recorded
+fetch policy (hydration only), the rows, the intersection's failed articles
+and, for a file whose verdict carries `SetComplete`, the settled CRC — the
+settle comes last because it derives the CRC from the installed rows and
+releases them. No reader sees part of that step. Then, for a finished file,
+with no job lock held, it runs the archive peek, and only then calls
+`MarkFileComplete` — the mark is what lets the download-complete report take
+the job to Assessing, so a last file marked first could reach post-processing
+unpeeked. The completion is then queued on
 `internalFileComplete` as `FileComplete{Resumed: true}`
 (`enqueueResumedCompletion`), and its consumer skips the settle, the peek, the
 mark and the DirectUnpack feed, so it lands even if the job is evicted first.
@@ -526,7 +532,7 @@ single owner of which article wrote which bytes of a file.
   range owned by the same `ArtIdx` is a re-accept, not a collision.
 - **A zero-length article claims nothing.** It is reported written with
   `n == 0`, and its row (length 0, CRC 0) is valid: the next verification
-  verifies it, and `InstallCompleteFile` installs it, as for any row
+  verifies it, and `InstallFileVerification` installs it, as for any row
   (`WrittenRow.HasValidShape` is the one shape rule). It is never refetched on
   that account.
 - Intersection is detected, not only a shared start offset
@@ -617,13 +623,15 @@ Such a chain cannot overlap and cannot leave a gap.
 
 `Job.SettleFileCRC` applies it and stores the result on
 `FileProgress.AssembledCRC32` (zero when underivable, which par2 reads as
-`NoCRC`), then releases the file's resident rows. Its callers are
-`completeFinalizedFile` and, for files a restart finished or found
-`complete=1`, `installVerification` and `InstallCompleteFile`.
+`NoCRC`), then releases the file's resident rows. It is called from
+`completeFinalizedFile` (and the `jobtest.SeedFileCRC` test helper). For
+files a restart finished or found `complete=1`,
+`Job.InstallFileVerification` runs the same derivation (`settleFileCRC`)
+under the lock it already holds.
 
 The per-article rows a file needs for it are kept resident in
 `JobProgress.written` until the CRC is settled — installed by
-`InstallVerified` / `InstallCompleteFile` and appended by
+`InstallFileVerification` (or `InstallVerified`) and appended by
 `MarkArticleWritten` — so nothing on the worker path reads SQLite. A stored
 slice is never edited in place, so a `Progress()` clone shares them.
 

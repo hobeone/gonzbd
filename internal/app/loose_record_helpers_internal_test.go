@@ -142,6 +142,61 @@ func TestInstallVerification_RestoresThePolicyOnlyWhenAsked(t *testing.T) {
 	}
 }
 
+// TestInstallVerification_SettlesAndFailsBeforeThePeek pins what the peek of a
+// finished file sees: the install has failed the intersection's losers and
+// settled the file's CRC from its verified rows, releasing them, and the file
+// is not yet complete.
+func TestInstallVerification_SettlesAndFailsBeforeThePeek(t *testing.T) {
+	t.Parallel()
+	a := newLREnv(t).newApp(t)
+	j := lrBuiltJob(t, a, "settle", 2, 1)
+	m, err := j.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+	lo0, hi0 := m.FileRange(0)
+	lo1, hi1 := m.FileRange(1)
+	if hi0-lo0 != 2 || hi1-lo1 != 1 {
+		t.Fatalf("files have %d and %d articles, want 2 and 1", hi0-lo0, hi1-lo1)
+	}
+	//nolint:gosec // G115: test article indices
+	winner, loser, single := int32(lo0), int32(lo0+1), int32(lo1)
+	rows := []durability.WrittenRow{
+		{FileIdx: 0, ArtIdx: winner, Offset: 0, Length: lrArtLen, CRC32: 5},
+		{FileIdx: 1, ArtIdx: single, Offset: 0, Length: lrArtLen, CRC32: 7},
+	}
+	files := []durability.FileRow{{FileIndex: 0, Filename: "A.bin"}, {FileIndex: 1, Filename: "B.bin"}}
+	res := verifyResult{
+		Verdicts: []durability.FileVerdict{{FileIdx: 0, SetComplete: true}, {FileIdx: 1, SetComplete: true}},
+		Verified: map[int][]durability.WrittenRow{0: rows[:1], 1: rows[1:]},
+		Failed:   map[int][]int32{0: {loser}},
+	}
+
+	type atPeek struct {
+		loserFailed, complete, rowsResident bool
+		crc                                 uint32
+	}
+	seen := map[int]atPeek{}
+	finished := installVerification(j, files, rows, res, true, slog.New(slog.DiscardHandler), func(fi int) {
+		p := j.Progress()
+		seen[fi] = atPeek{
+			loserFailed:  p.ArticleFailed(int(loser)),
+			complete:     p.FileComplete(fi),
+			rowsResident: j.FileRows(fi) != nil,
+			crc:          p.FileAssembledCRC32(fi),
+		}
+	})
+	if !slices.Equal(finished, []int{0, 1}) {
+		t.Fatalf("finished = %v, want [0 1]", finished)
+	}
+	if want := (atPeek{loserFailed: true}); seen[0] != want {
+		t.Errorf("file 0 at its peek = %+v, want %+v: loser failed, no CRC, rows released, not complete", seen[0], want)
+	}
+	if want := (atPeek{loserFailed: true, crc: 7}); seen[1] != want {
+		t.Errorf("file 1 at its peek = %+v, want %+v: CRC settled from its row, rows released, not complete", seen[1], want)
+	}
+}
+
 // TestVerifyRetry_ReadsEveryFileAndReportsWhatItFinished calls the retry's
 // verification directly: complete=1 is cleared before the read, a file whose
 // every article verifies is finished by path and returned, and its complete

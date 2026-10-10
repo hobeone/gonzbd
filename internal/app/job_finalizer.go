@@ -155,9 +155,10 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // the policy setter, the release (to FetchAlways), and the discard (to
 // FetchNever); construction leaves every file at the FetchAlways zero. The
 // setter is called from ingest, with FetchIfNeeded, and from hydration
-// (`git grep -nE 'SetFileFetchPolicy\(|RestoreFetchPolicy\(' -- '*.go' ':!*_test.go'`
-// returns 5 lines: those two calls, the two declarations, and the restore
-// delegating to the setter). So its failure is filed as final. A user's
+// (`git grep -nE '[sS]etFileFetchPolicy\(' -- '*.go' ':!*_test.go'` returns
+// 5 lines: those two calls, Job.SetFileFetchPolicy's declaration and its call
+// to the shared assignment, and that assignment's declaration). So its
+// failure is filed as final. A user's
 // retry of that entry is rebuilt by ingest again, and so gets one automatic
 // retry of its own.
 func heldVolumesMightRepair(ppJob *postproc.Job) bool {

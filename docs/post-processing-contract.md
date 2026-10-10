@@ -490,7 +490,8 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    so they account for every article of the file whichever process fetched
    it — a *resumed* file supplies a CRC as readily as a fresh one. No read of
    the file is involved (R24). `Job.SettleFileCRC` derives the value when the
-   file completes, and publishes it **only when every article of the file has
+   file completes (for a file a restart or a retry finishes,
+   `Job.InstallFileVerification` runs the same derivation), and publishes it **only when every article of the file has
    exactly one row, none failed, the first row starts at offset 0, and each row
    starts where the previous one ends**. A file with a hole, a failed article,
    or rows that do not chain supplies no CRC rather than one describing bytes
@@ -624,7 +625,7 @@ carry the previous attempt's policy forward at all.
 
 Across a restart there is one path back, and it is hydration rather than a
 verdict: the first hydration after a restart restores every file's policy from
-`job_files` via `Job.RestoreFetchPolicy` (`installVerification`), so the job
+`job_files` via `Job.InstallFileVerification` (`installVerification`), so the job
 resumes with whatever the row holds. That is only safe because every mutation
 of the policy marks the job's files dirty for the recorder: both verdicts reach
 `Application.markFetchPolicyDirty`, and ingest derives the policy before the row
@@ -752,9 +753,10 @@ instance (`postProcAdmissions`) both hold.
   lines): the setter, the release, and the discard. Construction writes
   nothing: every file starts at the zero value, `FetchAlways`. The setter's two callers are ingest,
   passing `FetchIfNeeded`, and hydration
-  (`git grep -nE 'SetFileFetchPolicy\(|RestoreFetchPolicy\(' -- '*.go'
-  ':!*_test.go'` returns 5 lines: those two calls, the two declarations, and
-  the restore delegating to the setter). So the retried instance does not
+  (`git grep -nE '[sS]etFileFetchPolicy\(' -- '*.go' ':!*_test.go'` returns 5
+  lines: those two calls, `Job.SetFileFetchPolicy`'s declaration and its
+  call to the shared assignment, and that assignment's declaration). So the
+  retried instance does not
   satisfy
   `HasDeferredPar2` and its own failure is final
   (`TestFinalize_RetriedJobIsNotRetriedAgain`). A retry the user starts is

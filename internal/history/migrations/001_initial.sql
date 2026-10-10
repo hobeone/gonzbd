@@ -71,7 +71,7 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 -- would only ever be the stale one.
 --
 -- The fetch_policy CHECK is the only guard that value has -- neither
--- SetFileFetchPolicy nor RestoreFetchPolicy range-checks it.
+-- SetFileFetchPolicy nor Job.InstallFileVerification range-checks it.
 --
 -- UNIQUE(job_id, file_index) is also the access path, which is why there is no
 -- separate index on job_id.

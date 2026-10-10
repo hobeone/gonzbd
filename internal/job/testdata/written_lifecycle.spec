@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run TestPlaceRows_KeepsOnlyRowsOfTheFile|TestSettleFileCRC_DerivesStoresAndReleases|TestInstallCompleteFile_FailsTheRestAndSettles|TestUntrustFile_ReturnsTheFileToOutstanding|TestMarkArticleWritten_MarksDoneAndKeepsTheRow
+run TestPlaceRows_KeepsOnlyRowsOfTheFile|TestSettleFileCRC_DerivesStoresAndReleases|TestInstallFileVerification_CompleteFileFailsTheRestAndSettles|TestUntrustFile_ReturnsTheFileToOutstanding|TestMarkArticleWritten_MarksDoneAndKeepsTheRow
 
 # Design item 2 of the loose-record cut-over: the resident written rows
 # (JobProgress.written) exist only for the whole-file CRC. They enter at

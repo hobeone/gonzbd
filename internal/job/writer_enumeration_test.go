@@ -18,7 +18,7 @@ import (
 // field apart from an unrelated struct that happens to reuse the same field
 // name. Of the package's non-test struct types —
 // `git grep -n '^typ[e] [A-Za-z]* struct' -- 'internal/job/*.go' ':!internal/job/*_test.go'`
-// returns 20 — only the owners listed below declare any of these fields;
+// returns 21 — only the owners listed below declare any of these fields;
 // TestFieldOwners_AreTheOnlyDeclarers enforces that, so this sentence is
 // orientation rather than the guarantee.
 var fieldOwner = map[string]string{
