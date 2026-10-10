@@ -11,15 +11,19 @@ file internal/app/app.go
 		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
 			app.duOrch.maybeStart(fc)
 		}
-		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
-			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
-			return err
+		if !fc.Resumed {
+			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
+				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+				return err
+			}
 		}
 		app.markFileDirty(j, fc.FileIdx)
 --- replace
-		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
-			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
-			return err
+		if !fc.Resumed {
+			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
+				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+				return err
+			}
 		}
 		app.markFileDirty(j, fc.FileIdx)
 		if reported, _ := app.reportDownloadComplete(j, app.dispatcher); reported && app.downloadReportedHook != nil {
