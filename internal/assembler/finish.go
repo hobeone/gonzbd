@@ -11,8 +11,9 @@ import (
 // truncate to the end of the last owned byte, fsync again. A caller reports the
 // file complete only after it returns nil. finalizeFile calls it.
 //
-// The sequence is fsutil.ShrinkAndSync, shared with the restart verifier, run
-// through w.syncFile so a test can inject a device error. A file with no owned
+// The sequence is fsutil.ShrinkAndSync, run through w.syncFile so a test can
+// inject a device error. The restart verifier's finish applies the same
+// truncate rule through fsutil.ShrinkAfterSync, without the first fsync. A file with no owned
 // range is left at its preallocated size rather than truncated to zero, and a
 // file already no longer than its last owned end is not grown. A returned error
 // is a *storagefault.Fault, classified as on every other writer path.

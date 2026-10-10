@@ -15,9 +15,9 @@ file internal/fsutil/shrink.go
 	if err := sync(f); err != nil {
 		return storagefault.Classify("sync", path, err)
 	}
-	if end > 0 {
+	if _, err := shrinkTo(f, end); err != nil {
 --- replace
-	if end > 0 {
+	if _, err := shrinkTo(f, end); err != nil {
 --- end
 
 [the second fsync is skipped]
