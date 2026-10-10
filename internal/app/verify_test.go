@@ -371,6 +371,23 @@ func TestVerifyJobFiles_MissingDirectoryIsAFault(t *testing.T) {
 	}
 }
 
+// TestVerifyJobFiles_LeavesAFileWithNoRowsUntouched pins that a complete=0
+// file with no rows is not read: a file never written may have no directory
+// yet, and reading it would park a healthy job on that fault.
+func TestVerifyJobFiles_LeavesAFileWithNoRowsUntouched(t *testing.T) {
+	t.Parallel()
+	f := newVerifyFixture(t)
+	gone := filepath.Join(f.dl, "never-created")
+	f.resolve = func(filename string) string { return filepath.Join(gone, filename) }
+	res, err := f.run(t, t.Context(), nil, false)
+	if err != nil {
+		t.Fatalf("err = %v, want nil for a file with no rows", err)
+	}
+	if len(res.Verdicts) != 0 || len(res.Verified) != 0 || len(res.Failed) != 0 {
+		t.Errorf("result = %+v, want no verdict, no Verified and no Failed entry", res)
+	}
+}
+
 // TestVerifyJobFiles_OpenErrorIsAFault pins that only ENOENT is a definitive
 // absence: a permission error is a fault, never a DeleteAll.
 func TestVerifyJobFiles_OpenErrorIsAFault(t *testing.T) {
