@@ -382,6 +382,13 @@ func (app *Application) handleFileUntrusted(jobID string, fileIdx int) {
 	if err := j.UntrustFile(fileIdx); err != nil {
 		app.log.Debug("untrusted file not returned to Outstanding in memory",
 			"job", jobID, "fileidx", fileIdx, "err", err)
+	} else {
+		// The DeleteAll purge dropped the file's whole buffered FileState,
+		// filename and fetch policy with it, and registerFile marks a file
+		// dirty only when its filename is unset, which UntrustFile leaves set.
+		// Without this the next flush writes nothing for the file, and a crash
+		// before it completes leaves its later rows under an empty filename.
+		app.markFileDirty(j, fileIdx)
 	}
 	app.pipeline.forgetFile(jobID, fileIdx)
 	app.log.Warn("file untrusted after an fsync failure; its articles are fetched again",

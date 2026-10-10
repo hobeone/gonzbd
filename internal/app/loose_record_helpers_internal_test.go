@@ -368,3 +368,32 @@ func TestHydratePausedJobs_StopsOnACancelledContext(t *testing.T) {
 		t.Errorf("hydratePausedJobs with no dispatcher = %v, want nil", err)
 	}
 }
+
+// TestHandleFileUntrusted_KeepsTheFilesNameForTheNextFlush pins that an untrust
+// leaves the file's buffered state correct: the DeleteAll purge drops the dirty
+// FileState, and the untrust re-marks it, so a flush after a later article
+// still writes the filename to job_files. Without that, a crash before the file
+// completes leaves rows under an empty filename and the next start deletes
+// them all.
+func TestHandleFileUntrusted_KeepsTheFilesNameForTheNextFlush(t *testing.T) {
+	t.Parallel()
+	a := newLREnv(t).newApp(t)
+	j := a.addJob(t, "untrust-name", 2, 1)
+	if err := j.SetFileFilename(0, "A.bin"); err != nil {
+		t.Fatalf("SetFileFilename: %v", err)
+	}
+	a.markFileDirty(j, 0)
+
+	a.handleFileUntrusted(j.ID(), 0)
+	if err := a.recorder.flush(t.Context()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	var name string
+	if err := a.repo.DB().QueryRowContext(t.Context(),
+		`SELECT COALESCE(filename, '') FROM job_files WHERE job_id = ? AND file_index = 0`, j.ID()).Scan(&name); err != nil {
+		t.Fatalf("query job_files: %v", err)
+	}
+	if name != "A.bin" {
+		t.Errorf("job_files.filename = %q after an untrust and a flush, want %q", name, "A.bin")
+	}
+}
