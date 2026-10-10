@@ -1713,7 +1713,8 @@ including every failure path.
   (`(job_id, file_idx, offset)` is the primary key) and returns the discard as a
   `durability.Collision`, which leaves the survivor unable to cover every
   article index and therefore withholds the whole-file CRC, so `par2` runs and
-  repairs the file.
+  repairs the file when the post has `par2`; a no-`par2` job ships the
+  overwrite (item 6 under accepted limitations).
 - **Cross-state dedup**: an `ArtIdx` previously counted as a success arriving as
   a failure (or vice versa) does not increment `partsWritten` again.
 - **Late articles**: an article for a file already in the `completed` tombstone is
@@ -2082,7 +2083,8 @@ recorded here so the next reader does not mistake them for design.
    and the claim this paragraph needs is the filtered one.
 
 6. **A range collision is PREVENTED only within one open-file episode;
-   across a boundary it withholds the whole-file CRC so `par2` repairs it.**
+   across a boundary it withholds the whole-file CRC so `par2`, when the post
+   has it, repairs it.**
    `FileWriter.owned` records the byte range each article has written,
    and a second article whose range intersects an owned one is refused and resolved
    permanently failed — which works because that article is not yet `Done`, and
@@ -2092,7 +2094,8 @@ recorded here so the next reader does not mistake them for design.
    finalized short, reopens the file with an empty set, and the later write
    overwrites the earlier. The file then completes *wrong*.
 
-   **The bound is that both outcomes are repairable.** Across the boundary
+   **For a post with `par2`, the bound is that both outcomes are repairable.**
+   Across the boundary
    `mergeAdjacentRuns` refuses to merge non-abutting spans (and for an
    exact-offset tie `Store.commit` discards one of the two rows and returns it
    as a `durability.Collision`; see "Duplicate and late-article handling"). The

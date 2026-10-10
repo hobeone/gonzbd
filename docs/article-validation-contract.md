@@ -4,7 +4,8 @@
 > whole A-block have landed, and so has E3: `FileWriter` refuses an arrival whose
 > byte range intersects one already written (#759), within one open-file episode,
 > with the durability layer's whole-file CRC withholding (#387) as the backstop
-> across a restart; C5, E4 and F4 remain proposed. §8 is no longer open — what each class of violation
+> across a restart for a job with `par2` (a no-`par2` job that reopens the file
+> has no backstop); C5, E4 and F4 remain proposed. §8 is no longer open — what each class of violation
 > produces has been decided and is binding on the work that follows. This
 > document defines what GoNZBD asserts about a Usenet article, where each
 > assertion belongs, and what it deliberately does not assert. It exists to
@@ -527,7 +528,7 @@ the rows.
 | C5 | `offset + len ≤ size`; `end − begin + 1 == len` | L2 | fail article (`end=` half counts first) | — |
 | ~~D1–D4~~ | ~~NZB ↔ article disagreements~~ | L3 | **dropped** — no consumer (see §5.D) | — |
 | E1 | bounds | L4 | ✅ already enforced | — |
-| E2–E3 | byte-range collision and overlap | L4 | ✅ **implemented** (#759) — the first writer of a range wins and the arrival is refused; across a restart the durability layer withholds the whole-file CRC whenever runs do not collapse to a single row covering every article (`par2` runs) | — |
+| E2–E3 | byte-range collision and overlap | L4 | ✅ **implemented within an open-file episode** (#759) — the first writer of a range wins and the arrival is refused; across a restart the durability layer withholds the whole-file CRC whenever runs do not collapse to a single row covering every article, which only helps when `par2` runs: a no-`par2` job that reopens the file can still ship the splice | — |
 | E4 | part tiling / gaps | L0 + L4 | warn at ingestion | — |
 | E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | L3 | ✅ **implemented** — reject (#346) | — |
 | F1 | key `FileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
@@ -538,7 +539,7 @@ the rows.
 
 **Build order.** The F-items land first (§5.F), then the assertions:
 
-> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → ~~E5~~ → ~~F1a~~ (fixture `ArtIdx`) → ~~F1b~~ (flip the key) → ~~E3~~ / E4
+> ~~F3~~ → ~~A7~~ → ~~F6~~ → ~~A1–A6~~ → ~~F2~~ → ~~F5/B1~~ → C5 → ~~E5~~ → ~~F1a~~ (fixture `ArtIdx`) → ~~F1b~~ (flip the key) → E3 (~~within an episode~~; cross-episode no-`par2` prevention open) / E4
 
 Struck items have landed. F3 led because it was the smallest instance of the
 pattern and the cheapest place to learn its cost; doing it first is what
@@ -926,7 +927,7 @@ checked, and a warning or unacted-on counter is not a consumer.
 |---|---|---|
 | E1 | offset ≥ 0, no overflow, within `ExpectedSize` + 12.5% | ✅ enforced |
 | E2 | no two articles write intersecting byte ranges | ✅ enforced within one open-file episode (#385, #759) |
-| E3 | no two articles' ranges **overlap** | ✅ the same check as E2 (`FileWriter.owned`); across a restart `owned` starts empty and the whole-file CRC is withheld (#387) |
+| E3 | no two articles' ranges **overlap** | ✅ the same check as E2 (`FileWriter.owned`), within an open-file episode; across a restart `owned` starts empty and the whole-file CRC is withheld (#387), which only helps when `par2` runs — a no-`par2` job that reopens the file can still ship the splice |
 | E4 | the parts tile `[0, size)` with no gap | ⚠ **absent** at L4; also undetected at L0 |
 
 | E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | ✅ **implemented** (#346) — `decodePayload` rejects `ErrOffsetUnknownForPart` |
@@ -937,7 +938,9 @@ checked, and a warning or unacted-on counter is not a consumer.
 article's range. The refused article is resolved permanently failed and its
 bytes are charged to par2. It is enforced within one open-file episode; across a
 restart `owned` starts empty (until a later change seeds it from verified rows)
-and the durability layer's whole-file CRC withholding is the backstop.
+and the durability layer's whole-file CRC withholding is the backstop. That
+backstop only turns into a repair when `par2` runs: a job with no `par2` that
+reopens the file can still write an overlapping arrival and ship the splice.
 
 **The one known Rule 3 exception, recorded and not fixed.** First-writer-wins
 decides by arrival, not by which article is right. When a bogus article arrives
@@ -977,7 +980,8 @@ L3 compares one article's declared offset against another's. L4's range check
 (above) refuses the later arrival. Across a restart, because `mergeAdjacentRuns`
 merges only articles that abut cleanly, any range overlap leaves multiple
 `durable_runs` rows (or drops a duplicate offset) and withholds the whole-file
-CRC, so `par2` runs and repairs the file.
+CRC, so `par2` runs and repairs the file when the post has `par2`; without it,
+the splice ships.
 
 E4 has an L0 half worth taking first: **a gap in NZB part numbers is decidable
 offline.** A file whose segments are numbered 1, 2, 4 parses today with no
@@ -1219,7 +1223,8 @@ later reader can tell a decision from an oversight.
    segment other than the first. The check is per open-file episode; across a
    restart the durability layer withholds the whole-file CRC whenever a file's
    runs do not collapse to a single contiguous row covering every article, so
-   `par2` runs and repairs the file. The recorded cost is the Rule 3 exception in
+   `par2` runs and repairs the file when the post has `par2`; a no-`par2` job
+   that reopens the file can still ship the splice. The recorded cost is the Rule 3 exception in
    §5.E: a bogus article that arrives first gets its good neighbours refused.
 
 4. **The NZB's `bytes` gains no authority.** It stays advisory. `offsetOutOfRange`
