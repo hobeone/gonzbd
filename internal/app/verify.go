@@ -18,7 +18,9 @@ import (
 
 // verifyResult is what one verification pass established about a job's files.
 // It describes; it changes nothing. The caller commits Verdicts through
-// recorder.apply, then attaches the job's content, then installs Verified.
+// recorder.apply, then installs Verified (installVerification). A hydration
+// attaches the job's content between the two (verifyAndAttach); a retry's
+// rebuilt job is already attached (verifyRetry).
 type verifyResult struct {
 	Verdicts []durability.FileVerdict
 	Verified map[int][]durability.WrittenRow // per file, rows that matched, in offset order
@@ -342,13 +344,16 @@ func (p *pipeline) jobFilePath(jobName, filename string) string {
 // Complete flag, and so needs finishing. verifyJobFiles asks it, of the
 // articles its read-back resolved.
 //
-// FetchAlways only, matching Job.IsComplete: a deferred or discarded par2
-// recovery volume is never dispatched, so "every article resolved" is
-// vacuously true of it and completing it would claim a file nobody fetched.
+// FetchAlways only, matching Job.IsComplete. policy is the one job_files
+// stored (finishIfResolved passes FileRow.FetchPolicy), on a retry as much as
+// at a hydration. On a retry that is the failed attempt's policy, while
+// installVerification keeps the rebuilt job's: a recovery volume a damage
+// verdict released, and that was fetched whole, is finished, and the rebuilt
+// job then holds it as FetchIfNeeded with Complete set
+// (TestRetryHistoryJob_ResumesCompletedFilesFromTheRecord).
 //
-// A file with NO articles is excluded for the same reason: the loop below is
-// vacuously true over an empty range, so without this an empty file range
-// would be reported finishable on every start.
+// A file with NO articles is excluded: the loop below is vacuously true over
+// an empty range.
 func fileFinishable(m *job.Manifest, fi int, policy job.FetchPolicy, complete bool, resolved func(i int) bool) bool {
 	if m == nil || fi < 0 || fi >= m.NumFiles() {
 		return false

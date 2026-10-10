@@ -30,9 +30,10 @@ type recorder struct {
 	// it from its snapshot through ApplyRecord and any remerge, and apply holds
 	// it from its purge through ApplyRecord. Together they keep an in-flight
 	// flush from writing back, or re-merging, rows an untrust has just removed.
-	// Lock order is wmu, then mu, then the dispatcher's mu (through current,
-	// which flush calls before it takes mu). No caller of flush or apply may
-	// hold the dispatcher's mu. noteWritten and markDirty take only mu; wmu is
+	// Lock order: wmu before mu, and wmu before the dispatcher's mu, which
+	// current takes. mu and the dispatcher's mu are not nested: current's one
+	// caller, liveInstances (through isCurrent), releases mu before calling
+	// it. No caller of flush or apply may hold the dispatcher's mu. noteWritten and markDirty take only mu; wmu is
 	// taken where `git grep -n 'r\.wmu\.Lock()' internal/app/record.go` finds 2 lines.
 	wmu sync.Mutex
 
