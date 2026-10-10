@@ -1376,7 +1376,7 @@ func (app *Application) shutdownCheckpoint() {
 // manifest and rows, and lasts until an operator resumes it.
 //
 // Its rows and manifest go through reclaim, which keeps a FAILED entry's
-// durable_runs for a retry the way every departure does.
+// durable_runs and written_articles for a retry the way every departure does.
 func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID string) {
 	// With no history database there is no history to find the job in. The
 	// check lives here rather than at the call site, so the method answers

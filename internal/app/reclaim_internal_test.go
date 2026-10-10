@@ -310,7 +310,7 @@ func TestStart_SweepPreservesAFailedHistoryEntrysRuns(t *testing.T) {
 	}
 	if nf != 0 {
 		t.Errorf("a FAILED history entry's failed_articles = %d after the startup sweep, want 0: "+
-			"only durable_runs is kept for a FAILED entry", nf)
+			"only durable_runs and written_articles are kept for a FAILED entry", nf)
 	}
 	if nj := jobFilesCount(t, application, failedID); nj != 0 {
 		t.Errorf("a FAILED history entry's job_files = %d after the startup sweep, want 0", nj)

@@ -1219,8 +1219,8 @@ func (app *Application) deleteHistoryEntries(ctx context.Context, claim *transit
 	if err != nil {
 		return n, err
 	}
-	// A FAILED entry kept its job's durable_runs for a retry; with the entry
-	// gone nothing reaches them.
+	// A FAILED entry kept its job's durable_runs and written_articles for a
+	// retry; with the entry gone nothing reaches them.
 	delCtx, delCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer delCancel()
 	app.reclaim(delCtx, ids[0], ids[1:]...)
@@ -1228,9 +1228,9 @@ func (app *Application) deleteHistoryEntries(ctx context.Context, claim *transit
 }
 
 // MarkHistoryCompleted marks a history entry completed. A FAILED entry kept
-// its job's durable_runs for a retry, and a completed one has nothing to
-// retry, so they are reclaimed. It waits, for as long as ctx allows, while
-// another actor holds the job.
+// its job's durable_runs and written_articles for a retry, and a completed
+// one has nothing to retry, so they are reclaimed. It waits, for as long as
+// ctx allows, while another actor holds the job.
 func (app *Application) MarkHistoryCompleted(ctx context.Context, id string) error {
 	if app.historyRepo == nil {
 		return errors.New("history repository not wired")
@@ -2977,7 +2977,7 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 		// Not the NZB backup: the history entry still owns it, and a later
 		// retry reads it to rebuild the job. reclaim takes the manifest and the
 		// job_files rows seeded below; the entry is still FAILED, so the rule
-		// keeps its durable_runs.
+		// keeps its durable_runs and written_articles.
 		//
 		// Pruned before the reclaim, as every departure that prunes orders
 		// it: a failed FlushJob leaves j marked, and a later flush writing it

@@ -724,7 +724,7 @@ contradicted in the memory budget:
 |---|---|
 | `durability.Resumer` | a file shorter than its runs claim, or missing (§6) — `discard` calls `Store.deleteFile` (`internal/durability/resume.go:148`) |
 | `Store.DiscardRuns` | a retry re-parsing a manifest that changed shape (`RetryHistoryJob`) |
-| the reclaim rule | `Store.Reclaim` after every departure, and `Store.SweepOrphans` at startup: a job's rows go once nothing reaches it, and a FAILED history entry keeps its `durable_runs` for a retry (`internal/durability/reclaim.go`) |
+| the reclaim rule | `Store.Reclaim` after every departure, and `Store.SweepOrphans` at startup: a job's rows go once nothing reaches it, and a FAILED history entry keeps its `durable_runs` and `written_articles` for a retry (`internal/durability/reclaim.go`) |
 
 The reclaim rule is the only lifecycle deleter of `durable_runs`,
 `failed_articles` and `job_files`, and it re-derives its answer from the queue
@@ -1861,7 +1861,7 @@ articles or sparse regions.
 | Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
 | Disk probe cache | one `probeState` per directory, evicted after 10 minutes; at most one outstanding `statfs` per directory. |
 | Per-job barrier state | `jobBarrierMu` and `jobBarrierBytes` are dropped by `forgetJobBarrierState` when a job leaves the assembler's business — otherwise one entry per job ever downloaded, for the life of the process. The mutex's deletion is **deferred while anyone holds it**: dropping it let the next caller mint a second mutex for the same job, which serialises nothing, and the delete is reachable from inside a live barrier via `routeFault → Fail → maybeFinalize → enqueuePostProc`. |
-| Durability rows | `durable_runs`, `failed_articles` and `job_files`, all three deleted by the reclaim rule (`internal/durability/reclaim.go`) once nothing reaches the job; a FAILED history entry keeps its `durable_runs` for a retry and nothing else. See §6's *The barrier is the only thing that puts CONTENT into the record* for the full deleter enumeration, and do not read this row as one. None of the three has a foreign key to the queue, so nothing removes them implicitly. A crash between a departure and its reclaim strands rows until the next start, whose `SweepOrphans` takes them; there is no periodic sweep, because one would reclaim a job between `Admit` and `Dispatcher.Add`. |
+| Durability rows | `durable_runs`, `written_articles`, `failed_articles` and `job_files`, all four deleted by the reclaim rule (`internal/durability/reclaim.go`) once nothing reaches the job; a FAILED history entry keeps its `durable_runs` and `written_articles` for a retry and nothing else. See §6's *The barrier is the only thing that puts CONTENT into the record* for the full deleter enumeration, and do not read this row as one. None of the four has a foreign key to the queue, so nothing removes them implicitly. A crash between a departure and its reclaim strands rows until the next start, whose `SweepOrphans` takes them; there is no periodic sweep, because one would reclaim a job between `Admit` and `Dispatcher.Add`. |
 
 ## Failure & degradation rules
 
