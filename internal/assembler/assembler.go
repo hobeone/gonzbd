@@ -271,9 +271,11 @@ type Options struct {
 	OnArticleRejected func(jobID string, fileIdx int, artIdx int32, reason string)
 
 	// OnArticleWritten, if non-nil, is called on the worker goroutine once per
-	// article whose bytes were written without error and whose range was
-	// claimed: off and n are the range, crc the article's CRC32. It is not
-	// called for a refused article or a faulted write.
+	// article whose bytes were written without error: off and n are the range,
+	// crc the article's CRC32. It is not called for a refused article or a
+	// faulted write. A zero-length article is reported with n == 0 but claims
+	// no range (ownedRanges.claim), so a restart's verifier (app.verifyJobFiles)
+	// deletes its row and the article is fetched again.
 	//
 	// It reports a write, not durability: a later failed Sync can roll the
 	// article back (FileWriter.poisonSync), and OnArticlesUnwritten then names
