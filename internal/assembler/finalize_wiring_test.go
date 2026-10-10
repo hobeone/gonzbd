@@ -16,7 +16,7 @@ func TestCompletedFileIsTrimmedAndClosedBeforeItIsReported(t *testing.T) {
 	path := filepath.Join(dir, "job1_0.dat")
 	// TotalParts 1: the single article below completes the file. ExpectedSize
 	// preallocates past the written extent, which is what the trim removes.
-	files := map[string]FileInfo{"job1:0": {Path: path, TotalParts: 1, ExpectedSize: 4096}}
+	files := map[string]FileInfo{"job1:0": {Dir: filepath.Dir(path), Name: filepath.Base(path), TotalParts: 1, ExpectedSize: 4096}}
 
 	sizeAtReport := make(chan int64, 1)
 	opts := makeOpts(dir, files)

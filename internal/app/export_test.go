@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -102,7 +103,7 @@ func (a *Application) TriggerMaybeFinalize(jobID, failMsg string) {
 func (a *Application) InjectPipelineFileInfo(jobID string, fileIdx int, path string) {
 	a.pipeline.mu.Lock()
 	defer a.pipeline.mu.Unlock()
-	a.pipeline.fileInfo[fileKey{jobID: jobID, fileIdx: fileIdx}] = assembler.FileInfo{Path: path}
+	a.pipeline.fileInfo[fileKey{jobID: jobID, fileIdx: fileIdx}] = assembler.FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path)}
 }
 
 // InjectCtx injects a lifecycle context.

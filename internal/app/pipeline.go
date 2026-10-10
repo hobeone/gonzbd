@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -515,6 +514,8 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 		p.mu.Unlock()
 		return nil
 	}
+	p.mu.Unlock()
+	// --- No lock held below this line ---
 
 	// Use the filename stored in Subject — the NZB parser already ran
 	// ExtractFilenameFromSubject + SanitizeFilename at parse time
@@ -522,28 +523,22 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 	// its real extension (.par2, .rar, etc.). Running the extraction
 	// regex again would break filenames containing characters like '&'
 	// that aren't in the basic-filename regex's character class.
-	// Compute the job directory once from the already-sanitized job name.
-	// This guarantees every file in a job lands in the same directory — postproc
-	// derives the same path via filepath.Join(DownloadDir, job.Name) when scanning
-	// for par2 sets.
-	jobDir := filepath.Join(p.downloadDir, name)
-	p.mu.Unlock()
-	// --- No lock held below this line ---
-	// jobDir snapshots p.downloadDir; p.sanitize is set once at construction
-	// and never mutated, so both are safe to use unlocked below.
-
-	var path string
+	//
+	// jobFileLocation is the resolver the restart verifier reads with, so the
+	// writer and the verifier cannot disagree about a file's directory or
+	// name. It puts every file of a job in filepath.Join(downloadDir, job
+	// name), the directory postproc derives when scanning for par2 sets.
+	var loc jobFile
 	if filename != "" {
 		// Use the already-resolved and persisted filename directly, preventing
 		// duplicate renaming across daemon restarts.
-		path = fsutil.JoinSafe(jobDir, "", filename, p.sanitize)
+		loc = p.jobFileLocation(name, filename)
 	} else {
-		// First time resolving this file. GetUniqueFilename appends ".1", ".2" etc.
-		// when the path already exists on disk (e.g. naming collisions).
+		// First time resolving this file. uniqueJobFileName appends ".1", ".2" etc.
+		// when the name is already taken on disk (e.g. naming collisions).
 		// This is real disk I/O (an Lstat loop) and must not run under p.mu.
-		candidate := m.FileSubject(fileIdx)
-		path = fsutil.GetUniqueFilename(
-			fsutil.JoinSafe(jobDir, "", candidate, p.sanitize))
+		loc = p.jobFileLocation(name, m.FileSubject(fileIdx))
+		loc.Name = uniqueJobFileName(loc)
 	}
 
 	// Count only unfinished articles — on resume/retry, already-done
@@ -558,7 +553,8 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 	// arrival that intersects one is refused as it would be had this process
 	// written it, and the completion truncate bounds over them.
 	info := assembler.FileInfo{
-		Path:         path,
+		Dir:          loc.Dir,
+		Name:         loc.Name,
 		TotalParts:   totalParts,
 		ExpectedSize: m.FileBytes(fileIdx),
 		Owned:        ownedRanges(j.FileRows(fileIdx)),
@@ -567,7 +563,7 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 	p.mu.Lock()
 	// Third check: another goroutine may have raced us and already
 	// registered this file while we were doing unlocked disk I/O above.
-	// GetUniqueFilename only consults on-disk state (never a file this
+	// uniqueJobFileName only consults on-disk state (never a file this
 	// process creates), so a concurrent winner's resolved path is
 	// identical to ours — deferring to it is correct, not just harmless.
 	if _, exists := p.fileInfo[key]; exists {
@@ -575,12 +571,11 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 		return nil
 	}
 	if filename == "" {
-		resolvedFilename := filepath.Base(path)
 		// A job removed or evicted between the write and this registration is
 		// ordinary, and failing registerFile over it would turn a benign race
 		// into a pipeline error. Every other cause is a real failure to record
 		// the resolved on-disk name and still aborts.
-		if err := j.SetFileFilename(fileIdx, resolvedFilename); err != nil &&
+		if err := j.SetFileFilename(fileIdx, loc.Name); err != nil &&
 			!errors.Is(err, job.ErrNotResident) {
 			p.mu.Unlock()
 			return fmt.Errorf("set file filename: %w", err)
@@ -593,7 +588,7 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 	p.mu.Unlock()
 	// --- No lock held below this line ---
 	p.log.Debug("registered file",
-		"job", jobID, "fileidx", fileIdx, "path", info.Path, "parts", info.TotalParts)
+		"job", jobID, "fileidx", fileIdx, "path", info.Path(), "parts", info.TotalParts)
 
 	return nil
 }

@@ -95,7 +95,7 @@ func TestResolveFileInfo(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveFileInfo: %v", err)
 		}
-		if info.Path == "" {
+		if info.Path() == "" {
 			t.Error("resolved FileInfo has an empty Path")
 		}
 	})
@@ -118,7 +118,7 @@ func TestForgetJob(t *testing.T) {
 		}
 	}
 	_, jobB := helperJob(t, app, "forgetB", 1, 1)
-	p.fileInfo[fileKey{jobID: jobB.ID(), fileIdx: 0}] = assembler.FileInfo{Path: "/tmp/b"}
+	p.fileInfo[fileKey{jobID: jobB.ID(), fileIdx: 0}] = assembler.FileInfo{Dir: "/tmp", Name: "b"}
 
 	if len(p.fileInfo) != 3 {
 		t.Fatalf("fileInfo has %d entries, want 3", len(p.fileInfo))
