@@ -265,11 +265,11 @@ func TestCleanupPar2Backups_RemovesBackupsWithOriginal(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
 	removed := cleanupPar2Backups(dir, log)
 
-	if len(removed) != 1 {
-		t.Errorf("removed = %d, want 1", len(removed))
+	if len(removed) != 1 || removed[0] != "movie.part01.rar.1" {
+		t.Errorf("removed = %v, want [movie.part01.rar.1]", removed)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "movie.part01.rar.1")); !os.IsNotExist(err) {
-		t.Error("backup file still exists after cleanup")
+	if _, err := os.Stat(filepath.Join(dir, "movie.part01.rar.1")); err != nil {
+		t.Errorf("backup file was removed before finalize: %v", err)
 	}
 }
 

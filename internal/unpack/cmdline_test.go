@@ -49,7 +49,7 @@ func dummySZArchive() unpack.Archive {
 }
 
 // TestUnRAR_OverwriteFiles verifies that OverwriteFiles=true adds -o+
-// and that OverwriteFiles=false (default) adds -o- -or.
+// and that OverwriteFiles=false (default) adds -o- without -or.
 func TestUnRAR_OverwriteFiles(t *testing.T) {
 	t.Parallel()
 
@@ -75,8 +75,8 @@ func TestUnRAR_OverwriteFiles(t *testing.T) {
 		if !strings.Contains(*captured, "-o-") {
 			t.Errorf("OverwriteFiles=false: cmdline missing -o-: %q", *captured)
 		}
-		if !strings.Contains(*captured, "-or") {
-			t.Errorf("OverwriteFiles=false: cmdline missing -or: %q", *captured)
+		if strings.Contains(*captured, "-or") {
+			t.Errorf("OverwriteFiles=false: cmdline should NOT contain -or: %q", *captured)
 		}
 	})
 }
@@ -166,7 +166,7 @@ func TestUnRAR_NiceIoniceOptionsFlowThrough(t *testing.T) {
 }
 
 // TestSevenZip_OverwriteFiles verifies that OverwriteFiles=true adds -aoa
-// and that the default adds -aou.
+// and that the default adds -aos.
 func TestSevenZip_OverwriteFiles(t *testing.T) {
 	t.Parallel()
 
@@ -183,8 +183,11 @@ func TestSevenZip_OverwriteFiles(t *testing.T) {
 		t.Parallel()
 		opts, captured := captureCmdSZ(unpack.Options{OverwriteFiles: false})
 		_, _ = unpack.SevenZip(t.Context(), slog.Default(), dummySZArchive(), t.TempDir(), "", opts)
-		if !strings.Contains(*captured, "-aou") {
-			t.Errorf("OverwriteFiles=false: cmdline missing -aou: %q", *captured)
+		if !strings.Contains(*captured, "-aos") {
+			t.Errorf("OverwriteFiles=false: cmdline missing -aos: %q", *captured)
+		}
+		if strings.Contains(*captured, "-aou") {
+			t.Errorf("OverwriteFiles=false: cmdline should NOT contain -aou: %q", *captured)
 		}
 	})
 }

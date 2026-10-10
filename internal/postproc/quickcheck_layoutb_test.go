@@ -46,7 +46,7 @@ func layoutJob(t *testing.T, layout string, par2Files []string, payloadSrc, payl
 		t.Fatalf("write payload: %v", err)
 	}
 	j := buildQCJob(t, "layout-job", payloadName, int64(len(payload)), crc32.ChecksumIEEE(payload))
-	return &Job{Job: j, DownloadDir: dir, PP: types.PPDelete}, dir
+	return &Job{Job: j, DownloadDir: dir, FinalDir: dir, PP: types.PPDelete}, dir
 }
 
 var layoutBPar2 = []string{"feature.par2", "feature.vol0+1.par2"}
@@ -107,8 +107,10 @@ func TestLayoutB_ArchiveExtractsDespitePar2NamingItsContents(t *testing.T) {
 	qc, repair, up := layoutStages()
 	cleanup := NewPar2CleanupStage(true)
 	cleanup.Log = slog.New(slog.DiscardHandler)
+	finalize := NewFinalizeStage()
+	finalize.Log = slog.New(slog.DiscardHandler)
 
-	stageErrs := runStages(t, job, qc, repair, up, cleanup)
+	stageErrs := runStages(t, job, qc, repair, up, cleanup, finalize)
 
 	if job.ParError {
 		t.Fatalf("ParError = true after a repair of files that do not exist yet (QuickCheck=%s), so unpack was skipped; stage errors: %v",

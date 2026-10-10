@@ -39,7 +39,8 @@ func (d *DeobfuscateStage) Run(ctx context.Context, job *Job) error {
 
 	logf(ctx, log, job, slog.LevelInfo, "Starting deobfuscation in %s (useful name: %s)", job.DownloadDir, job.Name())
 
-	renames, err := deobfuscate.Deobfuscate(ctx, log, job.DownloadDir, job.Name(), job.Sanitize)
+	exclude := job.pendingDeletionSet()
+	renames, err := deobfuscate.Excluding(ctx, log, job.DownloadDir, job.Name(), job.Sanitize, exclude)
 	if len(renames) == 0 {
 		logf(ctx, log, job, slog.LevelInfo, "No files needed deobfuscation")
 	} else {
@@ -50,7 +51,7 @@ func (d *DeobfuscateStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// Subtitle alignment: rename .srt files to match the dominant video.
-	subRenames, subErr := deobfuscate.Subtitles(log, job.DownloadDir)
+	subRenames, subErr := deobfuscate.SubtitlesExcluding(log, job.DownloadDir, exclude)
 	if len(subRenames) > 0 {
 		logf(ctx, log, job, slog.LevelInfo, "Renamed %d subtitle file(s)", len(subRenames))
 		for _, r := range subRenames {
