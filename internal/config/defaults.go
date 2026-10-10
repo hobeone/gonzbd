@@ -111,7 +111,6 @@ func Default() (*Config, error) {
 			Par2MaxPacketBodySize:   67108864, // 64 MiB
 			Par2MaxJunkScanBytes:    65536,    // 64 KiB
 			IgnoreUnrarDates:        false,
-			ExtractSymlinks:         false,
 			RarDecodeWorkers:        0, // auto
 			OverwriteFiles:          false,
 			FlatUnpack:              false,

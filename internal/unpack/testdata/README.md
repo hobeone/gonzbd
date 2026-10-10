@@ -19,6 +19,7 @@ Re-run that script to regenerate. **Do not edit these files by hand.**
 | `rar5_link_hard.rar` | RAR5 | `orig.txt` and hard link `hard.txt` -> `orig.txt` (copied from rarengine testdata) |
 | `rar5_link_solid.rar` | RAR5 solid | `a.txt`, symlink `mid.lnk` -> `a.txt`, `c.txt` back-referencing `a.txt` (copied from rarengine testdata) |
 | `rar5_link_escape.rar` | RAR5 | `real.txt`, symlink `evil.lnk` -> `../../etc/passwd`, `after.txt` |
+| `rar5_link_filecopy.rar` | RAR5 | `orig.txt` and file reference `copy.txt` -> `orig.txt` (`rar a -ma5 -oi:1 -m0`, identical contents) |
 
 ## Limitations
 

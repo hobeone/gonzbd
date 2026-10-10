@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -1223,67 +1224,83 @@ func runDirectUnpackFixtureRaw(t *testing.T, archive string, opts Options, prepa
 	return extractDir, files, du.Failures()
 }
 
-func TestDirectUnpack_SymlinkMember(t *testing.T) {
-	dir, files := runDirectUnpackFixture(t, "rar5_link_symlink.rar", Options{ExtractSymlinks: true})
-	if got, err := os.Readlink(filepath.Join(dir, "link.txt")); err != nil || got != "real.txt" {
-		t.Fatalf("link.txt -> %q, %v; want real.txt", got, err)
+// hardLinkCount returns how many names the file at p has.
+func hardLinkCount(t *testing.T, p string) uint64 {
+	t.Helper()
+	fi, err := os.Lstat(p)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", p, err)
 	}
-	if b, err := os.ReadFile(filepath.Join(dir, "real.txt")); err != nil || string(b) != "real text" {
-		t.Fatalf("real.txt = %q, %v", b, err)
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("no syscall.Stat_t on this platform")
 	}
-	if len(files) != 2 {
-		t.Errorf("ExtractedFiles = %v, want 2 entries", files)
+	return uint64(st.Nlink) //nolint:unconvert // Nlink is uint32 on some platforms
+}
+
+// DirectUnpack extracts into the job directory and creates no link member:
+// symlinks, hard links and file references are skipped, the set's other
+// members are extracted, and a skipped member is not listed.
+func TestDirectUnpack_LinkMembersAreNeverCreated(t *testing.T) {
+	for _, tc := range []struct {
+		archive string
+		regular map[string]string
+		link    string
+	}{
+		{"rar5_link_symlink.rar", map[string]string{"real.txt": "real text"}, "link.txt"},
+		{"rar5_link_hard.rar", map[string]string{"orig.txt": "orig content"}, "hard.txt"},
+		{"rar5_link_solid.rar", map[string]string{"c.txt": "BBBB third member text, compressible compressible compressible a.txt"}, "mid.lnk"},
+		{"rar5_link_escape.rar", map[string]string{"real.txt": "real\n", "after.txt": "ok\n"}, "evil.lnk"},
+		{"rar5_link_filecopy.rar", map[string]string{"orig.txt": "file copy content, stored once and referenced by copy.txt\n"}, "copy.txt"},
+	} {
+		t.Run(tc.archive, func(t *testing.T) {
+			dir, files := runDirectUnpackFixture(t, tc.archive, Options{})
+			for name, want := range tc.regular {
+				if b, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(b) != want {
+					t.Errorf("%s = %q, %v; want %q", name, b, err, want)
+					continue
+				}
+				if n := hardLinkCount(t, filepath.Join(dir, name)); n != 1 {
+					t.Errorf("%s has %d names, want 1", name, n)
+				}
+			}
+			if _, err := os.Lstat(filepath.Join(dir, tc.link)); !os.IsNotExist(err) {
+				t.Errorf("link member %s was created: %v", tc.link, err)
+			}
+			for _, f := range files {
+				if filepath.Base(f) == tc.link {
+					t.Errorf("skipped link listed in ExtractedFiles: %v", files)
+				}
+			}
+		})
 	}
 }
 
-func TestDirectUnpack_HardLinkMember(t *testing.T) {
-	dir, _ := runDirectUnpackFixture(t, "rar5_link_hard.rar", Options{})
+// A hard-link member whose name is taken by a file already in the job
+// directory, standing in here for a downloaded volume, does not replace it,
+// even with OverwriteFiles on: a link there would let a later write through
+// either name change the other's bytes.
+func TestDirectUnpack_HardLinkMemberToAJobFileIsSkipped(t *testing.T) {
+	const jobBytes = "bytes of a downloaded volume"
+	dir, files, failures := runDirectUnpackFixtureRaw(t, "rar5_link_hard.rar", Options{OverwriteFiles: true}, func(dir string) {
+		if err := os.WriteFile(filepath.Join(dir, "hard.txt"), []byte(jobBytes), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got: %+v", failures)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "hard.txt")); err != nil || string(b) != jobBytes {
+		t.Fatalf("the job file at the link's name = %q, %v; want it untouched", b, err)
+	}
 	for _, name := range []string{"orig.txt", "hard.txt"} {
-		if b, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(b) != "orig content" {
-			t.Errorf("%s = %q, %v", name, b, err)
-		}
-	}
-}
-
-func TestDirectUnpack_SolidArchiveWithLink(t *testing.T) {
-	dir, _ := runDirectUnpackFixture(t, "rar5_link_solid.rar", Options{ExtractSymlinks: true})
-	want := "BBBB third member text, compressible compressible compressible a.txt"
-	if b, err := os.ReadFile(filepath.Join(dir, "c.txt")); err != nil || string(b) != want {
-		t.Fatalf("c.txt = %q, %v", b, err)
-	}
-	if got, err := os.Readlink(filepath.Join(dir, "mid.lnk")); err != nil || got != "a.txt" {
-		t.Fatalf("mid.lnk -> %q, %v", got, err)
-	}
-}
-
-func TestDirectUnpack_EscapingSymlinkRefusedSetContinues(t *testing.T) {
-	dir, files := runDirectUnpackFixture(t, "rar5_link_escape.rar", Options{ExtractSymlinks: true})
-	if _, err := os.Lstat(filepath.Join(dir, "evil.lnk")); !os.IsNotExist(err) {
-		t.Fatalf("evil.lnk was created: %v", err)
-	}
-	for _, name := range []string{"real.txt", "after.txt"} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-			t.Errorf("%s missing: %v", name, err)
+		if n := hardLinkCount(t, filepath.Join(dir, name)); n != 1 {
+			t.Errorf("%s has %d names, want 1", name, n)
 		}
 	}
 	for _, f := range files {
-		if strings.HasSuffix(f, "evil.lnk") {
-			t.Errorf("refused link listed in ExtractedFiles: %v", files)
-		}
-	}
-}
-
-func TestDirectUnpack_SymlinkMemberSkippedByDefault(t *testing.T) {
-	dir, files := runDirectUnpackFixture(t, "rar5_link_symlink.rar", Options{})
-	if _, err := os.Lstat(filepath.Join(dir, "link.txt")); !os.IsNotExist(err) {
-		t.Fatalf("link.txt created with extract_symlinks off: %v", err)
-	}
-	if b, err := os.ReadFile(filepath.Join(dir, "real.txt")); err != nil || string(b) != "real text" {
-		t.Fatalf("real.txt = %q, %v", b, err)
-	}
-	for _, f := range files {
-		if strings.HasSuffix(f, "link.txt") {
-			t.Errorf("skipped symlink listed in ExtractedFiles: %v", files)
+		if filepath.Base(f) == "hard.txt" {
+			t.Errorf("skipped link listed in ExtractedFiles: %v", files)
 		}
 	}
 }

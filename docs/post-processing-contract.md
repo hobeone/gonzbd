@@ -341,6 +341,42 @@ see `par2.relocateFile`. That is a separate guarantee, and it survives
 independently of the above: it bounds where a poster-controlled par2 name can
 write at all, rather than protecting any particular file.
 
+### No links in a job
+
+gonzbd downloads media, and an archive has no legitimate need to put a link
+into a job. Extraction therefore creates no symlink, junction or hard link, and
+no RAR file reference: each such member is skipped with a log line and an
+`OnLine` "Skipping link: <name>", and the rest of the set is extracted. There
+is no option to turn this off. A link target is the archive author's choice,
+and DirectUnpack extracts into the job directory itself, where a hard link
+could join a downloaded volume to another name so that a write through one
+changes the other.
+
+Where each extractor enforces it:
+
+- **Pure-Go RAR** (`go_unrar` and DirectUnpack): `ExtractEntryRarengine` skips
+  every member whose `LinkType` is not `LinkNone`, before reading it. Those are
+  its two callers: `git grep -n 'ExtractEntryRarengine(' -- '*.go' ':!*_test.go'`
+  returns 3 lines, the definition in `internal/unpack/go_unrar.go` and the calls
+  there and in `internal/directunpack/directunpack.go`. A RAR5 file reference
+  (`rar -oi`) is skipped too: it names its source by path, and resolving that
+  path in the job directory could copy a file that is not a member of the set,
+  any number of times.
+- **Pure-Go 7z and tar**: `extractSevenZipEntry` and `GoTar` extract only
+  regular files and directories.
+- **External `unrar` and `7z`**: both extract into a private staging directory,
+  and `publishStagedExtraction` publishes only regular files, and only the first
+  name (in lexical walk order) of an inode that has several, so the name that
+  survives a hard-linked pair is not necessarily the archive's original member.
+  `unrar` 7.00 and later (the detected version, `UnrarInfo.Version`) is also
+  passed `-ol-` and creates no symlinks at all. An older or undetected `unrar`
+  is not, since it rejects the switch: it creates symlinks in the staging
+  directory, which are not published, and itself refuses, failing the set, a
+  symlink whose target leaves its destination. `unrar` 7.12's switch list has
+  none that stops it creating hard links; it writes a file reference as an
+  independent copy. `7z` 25.01 restores a symlink member as a symlink, which is
+  not published either.
+
 ## Post-Processing (PP) Level Enforcement
 
 SABnzbd post-processing levels are cumulative integer levels on `postproc.Job.PP`

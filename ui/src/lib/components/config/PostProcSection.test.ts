@@ -20,7 +20,6 @@ describe('PostProcSection', () => {
 			enable_recursive: true,
 			direct_unpack: true,
 			flat_unpack: false,
-			extract_symlinks: false,
 			overwrite_files: false,
 			ignore_unrar_dates: false,
 			use_go_par2: true,

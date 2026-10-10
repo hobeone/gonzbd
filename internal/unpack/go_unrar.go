@@ -181,10 +181,6 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 	var extractedFiles []string
 	var outBuf strings.Builder
 
-	// Symlink members are queued here and created after the last member; see
-	// SymlinkBatch for why.
-	opts.Symlinks = NewSymlinkBatch()
-
 	for {
 		if err := ctx.Err(); err != nil {
 			return res, err
@@ -257,7 +253,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			return res, err
 		}
 
-		if ExtractedEntryExists(root, destRel, entry.Header) {
+		if ExtractedEntryExists(entry.Header) {
 			extractedFiles = append(extractedFiles, destPath)
 			displayPath := destRel
 			outBuf.WriteString("Extracting  " + displayPath + "\n")
@@ -266,16 +262,6 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 		if opts.OnLine != nil {
 			opts.OnLine("Extracting  " + entry.Header.Name)
 		}
-	}
-
-	links, linkErr := opts.Symlinks.Finish(root, opts, log)
-	for _, rel := range links {
-		extractedFiles = append(extractedFiles, filepath.Join(outDir, filepath.FromSlash(rel)))
-		outBuf.WriteString("Extracting  " + rel + "\n")
-	}
-	if linkErr != nil {
-		res.Reason = FailUnknown
-		return res, linkErr
 	}
 
 	res.ExtractedFiles = extractedFiles
@@ -314,12 +300,14 @@ func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, 
 		return root.MkdirAll(destRel, 0o750)
 	}
 
-	// A link member carries no payload: Read would return ErrLinkEntry. Handle
-	// it before the reader is touched. Both the post-processing loop and
-	// DirectUnpack reach links through this function. The caller still calls
-	// CloseMember afterwards, which is where the verdict is reported.
+	// A link member carries no payload: Read would return ErrLinkEntry. It is
+	// skipped before the reader is touched (see skipLinkEntry). Both the
+	// post-processing loop and DirectUnpack reach links through this
+	// function. The caller still calls CloseMember afterwards, which is where
+	// the verdict is reported.
 	if fh.LinkType != rarengine.LinkNone {
-		return extractLinkEntry(ctx, root, destRel, destPath, fh, opts, log)
+		skipLinkEntry(fh, opts, log)
+		return nil
 	}
 
 	// mode is masked to only the rw bits, matching go_tar/go_sevenzip's
