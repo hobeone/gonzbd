@@ -5,7 +5,6 @@ import (
 	"math"
 	"os"
 	"testing"
-	"time"
 )
 
 // A yEnc `=ypart begin=` value is attacker-controlled: it comes from the
@@ -79,8 +78,11 @@ func TestWriteOffset_OutOfRangeRejected(t *testing.T) {
 			path := registerSizedFile(t, dir, files, "job1", 0, 2, expectedSize)
 
 			opts := makeOpts(dir, files)
+			var written []int32
+			opts.OnArticleWritten = func(_ string, _ int, artIdx int32, _, _ int64, _ uint32) {
+				written = append(written, artIdx)
+			}
 			a := startAssembler(t, opts)
-			target := a.SyncTargetFor("job1")
 
 			const msgID = "under-test"
 			_ = writeArticle(t.Context(), a, WriteRequest{
@@ -90,29 +92,22 @@ func TestWriteOffset_OutOfRangeRejected(t *testing.T) {
 				MessageID: msgID,
 			})
 
-			waitUntil(t, func() bool { return len(target.Files()) == 1 }, 2*time.Second, "file to open")
-
-			// There is no ack to inspect any more (X2): whether the write
-			// landed is read straight from the barrier's own evidence
-			// surface — a rejected offset must never appear in Drain's
-			// return, and a legitimate one must.
-			got, err := target.Drain(t.Context(), 0)
-			if err != nil {
-				t.Fatalf("Drain: %v", err)
-			}
-
+			// There is no ack to inspect (X2): whether the write landed is read
+			// from OnArticleWritten, which fires only for a write that
+			// returned nil. Stop joins the worker, so written is safe to read.
 			if err := a.Stop(); err != nil {
 				t.Fatalf("Stop: %v", err)
 			}
+			got := written
 
 			present := len(got) == 1
 			if tc.wantReject {
 				if present {
-					t.Errorf("offset %d: rejected article appears in Drain (%v); an "+
+					t.Errorf("offset %d: rejected article was reported written (%v); an "+
 						"out-of-range write offset must never reach disk", tc.offset, got)
 				}
 			} else if !present {
-				t.Errorf("offset %d: legitimate article is absent from Drain (%v)", tc.offset, got)
+				t.Errorf("offset %d: legitimate article was not reported written (%v)", tc.offset, got)
 			}
 
 			// Regardless of bookkeeping, the file must never balloon to the

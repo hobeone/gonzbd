@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestRestoreJobFiles_RestoresNonDefaultFetchPolicy|TestRetryHistoryJob_ConfigurationIsHonoured|TestRetryHistoryJob_PriorRulingDoesNotSurvive|TestRetryHistoryJob_SurvivesEviction|TestAddJob_FreshRecoveryVolumeSurvivesEviction|TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing|TestRetryHistoryJob_ResumesCompletedFilesFromRetainedProgress
+run TestLooseRecord_RestoresTheStoredFetchPolicy|TestRetryHistoryJob_ConfigurationIsHonoured|TestRetryHistoryJob_PriorRulingDoesNotSurvive|TestRetryHistoryJob_SurvivesEviction|TestAddJob_FreshRecoveryVolumeSurvivesEviction|TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing|TestRetryHistoryJob_ResumesCompletedFilesFromTheRecord
 
 # A job's par2 fetch policy is derived at construction, from live config. Every
 # mutation below reintroduces one of the ways a value that was NOT derived --
@@ -14,70 +14,41 @@ run TestRestoreJobFiles_RestoresNonDefaultFetchPolicy|TestRetryHistoryJob_Config
 # residency must restore it. Dropping this call reverts every hydrated job to
 # the FetchAlways zero value, re-activating volumes the oracle had ruled out.
 #
-# This is the change's main risk and nothing caught it before: all four
-# pre-existing tests that insert job_files rows write FetchAlways, so a dropped
-# restore was invisible to every one of them.
-#
 # Neutered rather than deleted so job.FetchPolicy keeps the "job" import used
 # and the tree still builds -- a COMPILE_ERROR says nothing about the test.
 [hydration does not restore the persisted policy]
 file internal/app/residency.go
 --- anchor
-		_ = j.RestoreFetchPolicy(f.FileIndex, job.FetchPolicy(f.FetchPolicy))
+			_ = j.RestoreFetchPolicy(fi, job.FetchPolicy(f.FetchPolicy))
 --- replace
-		_ = job.FetchPolicy(f.FetchPolicy)
+			_ = job.FetchPolicy(f.FetchPolicy)
 --- end
 
 # The retry path must NOT apply the retained policy: it is the failed attempt's
-# verdict, computed against contents the retry is about to change.
-#
-# The mutation reconstructs the DEFECT rather than the deleted code. Task 1
-# removed three non-contiguous things from this file, so restoring it verbatim
-# would need three anchors; appending one call after a surviving one is a single
-# contiguous anchor, compiles, and puts the wrong value where the wrong value
-# used to land.
-#
-# FetchNever is a stronger stand-in for the pre-fix behaviour, not a
-# reproduction of it. The original defect READ history_job_files.fetch_policy
-# and applied whatever it found; this applies a literal, because restoring the
-# read would need three non-contiguous anchors (the SELECT, the Scan, and the
-# struct field) and this tool takes one.
-#
-# The consequence is worth stating, because it was got wrong once: the value
-# seeded into history_job_files does NOT decide this mutation's verdict.
-# Re-running the configuration-honoured case with that seed set to FetchAlways
-# still reports KILLED. Against the ORIGINAL defect the seed was decisive -- a
-# hardcoded 0 made the retained policy equal the derived one with on-demand par2
-# off, and the case asserted something the defect already satisfied -- which is
-# a fact about that fixture, not about this mutation.
+# verdict, computed against contents the retry is about to change. The FAILED
+# entry keeps its job_files rows, so the retry's verification reads that
+# policy and must not install it.
 [the retry path applies a policy it did not derive]
 file internal/app/app.go
 --- anchor
-			_ = j.RestoreFileMeta(f.FileIndex, f.Filename, f.Complete, f.AssembledCRC32)
+	return installVerification(j, files, rows, res, false, app.log, nil), nil
 --- replace
-			_ = j.RestoreFileMeta(f.FileIndex, f.Filename, f.Complete, f.AssembledCRC32)
-			_ = j.RestoreFetchPolicy(f.FileIndex, job.FetchNever)
+	return installVerification(j, files, rows, res, true, app.log, nil), nil
 --- end
 
-# Correcting memory is not enough: the persisted row is a second door. Failed
-# jobs keep their job_files rows on purpose, and every hydration re-applies
-# them, so without a synchronous flush an eviction between the retry and the
-# first checkpoint restores the failed attempt's value.
-#
-# Only the FlushJob is neutered, not the Mark. Marking without flushing is exactly
-# the pre-fix state: the job is dirty, and nothing has written the row yet.
-[the retry does not flush the corrected row before requeueing]
+# Correcting memory is not enough: the persisted row is a second door, which
+# a restart's hydration reads. The retry commits every file's state through
+# the recorder before the job is registered.
+[the retry does not commit the corrected row before requeueing]
 file internal/app/app.go
 --- anchor
-		if err := app.checkpointer.FlushJob(context.Background(), j); err != nil {
-			return fmt.Errorf("app: retry %s: flush checkpoint: %w", jobID, err)
-		}
+		if err := app.recorder.apply(context.Background(), j, nil, retryFileStates(j)...); err != nil {
 --- replace
-		_ = context.Background()
+		if err := error(nil); err != nil {
 --- end
 
 # A verdict that moves the policy without marking the job is undone by the next
-# eviction, because restoreJobFiles re-applies the row unconditionally. The two
+# restart, whose hydration restores the row. The two
 # call sites are mutated separately: the clean verdict's sits in its switch arm
 # and the repair verdict's in releaseRecoveryVolumes, and one being pinned says
 # nothing about the other.

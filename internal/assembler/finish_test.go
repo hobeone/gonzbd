@@ -31,10 +31,10 @@ func fileSize(t *testing.T, w *FileWriter) int64 {
 
 func TestFileWriter_FinishTruncatesToTheLastOwnedEnd(t *testing.T) {
 	w := newPreallocatedWriter(t)
-	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{1}, 100), 0); err != nil {
+	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{1}, 100)); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 100, bytes.Repeat([]byte{2}, 150), 0); err != nil {
+	if err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 100, bytes.Repeat([]byte{2}, 150)); err != nil {
 		t.Fatal(err)
 	}
 	syncs := 0
@@ -96,7 +96,7 @@ func TestFileWriter_FinishNeverGrowsAFileShorterThanItsOwnedEnd(t *testing.T) {
 
 func TestFileWriter_FinishReturnsAnFsyncErrorAndDoesNotTruncate(t *testing.T) {
 	w := newPreallocatedWriter(t)
-	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{1}, 100), 0); err != nil {
+	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{1}, 100)); err != nil {
 		t.Fatal(err)
 	}
 	boom := errors.New("injected fsync failure")
@@ -114,7 +114,7 @@ func TestFileWriter_FinishReturnsAnFsyncErrorAndDoesNotTruncate(t *testing.T) {
 
 func TestFileWriter_FinishReturnsASecondFsyncError(t *testing.T) {
 	w := newPreallocatedWriter(t)
-	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{1}, 100), 0); err != nil {
+	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{1}, 100)); err != nil {
 		t.Fatal(err)
 	}
 	boom := errors.New("injected second fsync failure")

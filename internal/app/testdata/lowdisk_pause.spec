@@ -219,10 +219,10 @@ file internal/app/app.go
 [stopWorkers does not stop the low-disk watch]
 file internal/app/app.go
 --- anchor
-func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, barrier finalBarrier) {
+func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error) {
 	app.stopLowDiskWatch()
 --- replace
-func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error, barrier finalBarrier) {
+func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error) {
 --- end
 
 [stopLowDiskWatch does not wait on lowDiskWg]

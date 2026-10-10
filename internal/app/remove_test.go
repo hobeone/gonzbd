@@ -239,19 +239,15 @@ func TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability(t *testi
 	// row of its own -- the guard below is what caught that, and it stays
 	// because a fixture that silently stops seeding turns this into a test
 	// that asserts nothing (#547).
-	commitRuns(t, realStore(t, application), j.ID(), []durability.DurableArticle{
-		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
-	})
-	if _, err := repo.DB().ExecContext(ctx,
-		`INSERT INTO failed_articles (job_id, art_idx) VALUES (?, 1)`, j.ID()); err != nil {
-		t.Fatalf("seed failed articles: %v", err)
-	}
 	if _, err := repo.DB().ExecContext(ctx,
 		`INSERT INTO job_files (job_id, file_index, complete) VALUES (?, 0, 0)`, j.ID()); err != nil {
 		t.Fatalf("seed job files: %v", err)
 	}
+	seedWritten(t, realStore(t, application), j.ID(), []durability.WrittenRow{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
+	})
 	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 1 || nf != 1 {
-		t.Fatalf("fixture recorded %d runs and %d failed rows, want 1 and 1; "+
+		t.Fatalf("fixture recorded %d runs and %d job_files rows, want 1 and 1; "+
 			"the test would pass vacuously", nr, nf)
 	}
 	if n := jobFilesCount(t, application, j.ID()); n == 0 {
@@ -273,9 +269,7 @@ func TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability(t *testi
 	//
 	// Asserted through the warning rather than through the handles themselves,
 	// because internal/app has no view of them -- Assembler exports no
-	// open-handle accessor, and syncTargetFor is nil by this point because it
-	// resolves through app.dispatcher.Job, which dispatcher.Remove has already
-	// made return false (durability.go). The warning is the only place
+	// open-handle accessor. The warning is the only place
 	// RemoveJob records whether the close was confirmed, which makes it the
 	// observable the production code actually offers.
 	if s := logs.String(); strings.Contains(s, "assembler cancel job did not confirm") {
@@ -284,7 +278,7 @@ func TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability(t *testi
 	}
 
 	if nr, nf := durabilityRowCounts(t, application, j.ID()); nr != 0 || nf != 0 {
-		t.Errorf("%d durable runs and %d failed-article rows survive a removal whose "+
+		t.Errorf("%d written rows and %d job_files rows survive a removal whose "+
 			"caller disconnected after the job left the dispatcher", nr, nf)
 	}
 	if n := jobFilesCount(t, application, j.ID()); n != 0 {

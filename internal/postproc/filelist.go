@@ -55,12 +55,12 @@ func buildDownloadFileList(j *Job) []string {
 	// file that is not FetchAlways; the loop above counts only recovery
 	// volumes. They agree because nothing but a recovery volume is ever moved
 	// off FetchAlways — a property of the callers, not of JobProgress.
-	// `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' | grep -v _test.go` finds four
+	// `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' | grep -v _test.go` finds three
 	// writers: SetFileFetchPolicy (reached for a deferrable recovery volume at
 	// ingest, and by RestoreFetchPolicy replaying a row those same writers
-	// produced), DiscardDeferredPar2 (gated on FetchIfNeeded), undeferRecovery
-	// (gated on FetchIfNeeded, and moving files back ONTO FetchAlways), and
-	// newJobProgressSized, which otherwise leaves the FetchAlways zero. If that
+	// produced), DiscardDeferredPar2 (gated on FetchIfNeeded), and
+	// undeferRecovery (gated on FetchIfNeeded, and moving files back ONTO
+	// FetchAlways); a fresh progress starts at the FetchAlways zero. If that
 	// ever changes, heldVols and heldBytes stop describing the same set and the
 	// line printing both goes wrong before anything else does.
 	heldBytes := m.TotalBytes() - p.ExpectedBytes()
@@ -151,13 +151,10 @@ func buildDownloadFileList(j *Job) []string {
 		// undeferRecovery is the only active mutation that sets
 		// par2Recovered to true (`git grep -n 'par2Recovered = true' internal/job/`
 		// finds one line). `git grep -n 'par2Recovered =' internal/job/ ':!*_test.go'`
-		// finds four: that one, ResetForRetry resetting it to false,
+		// finds three: that one, ResetForRetry resetting it to false, and
 		// restorePar2Recovered applying the value AttachContent seeds from
-		// dispatch_jobs.par2_recovered, and JobProgress.UnmarshalJSON — whose
-		// assignment is real but sits on a path nothing in production calls
-		// (`git grep -n '\.UnmarshalJSON(' -- 'internal/job/*.go'
-		// ':!*_test.go'` finds no lines), so the durable round-trip this arm
-		// depends on is the store one, not that one (#504). undeferRecovery has callers in Job.UndeferRecoveryVolumes
+		// dispatch_jobs.par2_recovered, so the durable round-trip this arm
+		// depends on is the store one (#504). undeferRecovery has callers in Job.UndeferRecoveryVolumes
 		// (reached from internal/app's releaseRecoveryVolumes, which
 		// maybeReleaseRecoveryVolumes and the finalizer's retry of a par2
 		// failure call;

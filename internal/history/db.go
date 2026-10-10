@@ -88,7 +88,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// time regardless.
 	//
 	// synchronous(FULL) fsyncs the WAL on each transaction commit rather than
-	// only at checkpoints, so a committed queue or history write survives
+	// only at WAL checkpoints, so a committed queue or history write survives
 	// power loss once its transaction returns.
 	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)&_txlock=immediate"
 	sqlDB, err := sql.Open("sqlite", dsn)
@@ -130,10 +130,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// the discarded chain built.
 	//
 	// That failure has been observed. The daemon came up clean with no
-	// durability tables at all, and every barrier failed on its commit.
-	// At the time a failed commit only logged a Warn, so nothing was ever
-	// acked, no job completed, and the only signal was a last_barrier_unix
-	// that never advanced. A failed commit now stalls the job, but the stall
+	// durability tables at all, and every commit to them failed. The stall
 	// reason names the missing table, not the cause.
 	//
 	// Checked before Up rather than by looking for the tables afterwards,

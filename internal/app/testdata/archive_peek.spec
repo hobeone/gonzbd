@@ -67,13 +67,13 @@ file internal/app/archive_peek.go
 [the failed job is filed straight after the peek, before the file is marked complete]
 file internal/app/app.go
 --- anchor
-		unwantedFail := app.peekArchiveForUnwanted(j, fc)
+			unwantedFail = app.peekArchiveForUnwanted(j, fc)
 --- replace
-		unwantedFail := app.peekArchiveForUnwanted(j, fc)
-		if unwantedFail != "" {
-			app.finalizeRegistered(j, unwantedFail, true)
-			unwantedFail = ""
-		}
+			unwantedFail = app.peekArchiveForUnwanted(j, fc)
+			if unwantedFail != "" {
+				app.finalizeRegistered(j, unwantedFail, true)
+				unwantedFail = ""
+			}
 --- end
 
 [the failed job is never filed after the mark]
@@ -156,14 +156,6 @@ file internal/app/archive_peek.go
 	app.duOrch.abortJob(jobID)
 --- replace
 	_ = jobID
---- end
-
-[the stall re-evaluation drops a blocked parked job's recovery]
-file internal/app/stall.go
---- anchor
-				if errors.Is(err, dispatch.ErrUnwantedBlocked) {
---- replace
-				if errors.Is(err, dispatch.ErrUnwantedBlocked) && false {
 --- end
 
 [a retry does not read the entry's blocked standing]

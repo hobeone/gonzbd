@@ -1,7 +1,6 @@
 package job
 
 import (
-	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -18,14 +17,46 @@ import (
 //
 //nolint:revive // stutter is preserved for consistency during queue -> job transition
 type JobProgress struct {
-	// Flat, global article index. emitted is transient and never persisted.
-	// Bitsets rather than []bool: see bitset.go for the memory argument.
+	// Flat, global article index. Bitsets rather than []bool: see bitset.go
+	// for the memory argument. JobProgress is not serialized, so none of the
+	// three is persisted, and a restart builds each job's progress afresh
+	// (newJobProgressSized). emitted in particular must not survive a
+	// restart: an article the assembler had not yet written must be
+	// re-dispatched.
+	//
+	// The done bit is what marks an article as resolved, and nothing sets it
+	// from dispatch. Its doors are MarkArticleWritten, which the recorder
+	// calls once the article's WriteAt has returned (internal/app/record.go);
+	// installRows, through InstallVerified and InstallCompleteFile, which
+	// install rows a restart or retry read back and fsynced, or rows of a
+	// complete=1 file whose fsync preceded the flag; and setFailedBits, for
+	// an article whose bytes will never arrive (that failure is in memory
+	// only: it is not persisted). Of the functions that reach markDone,
+	// MarkArticleWritten and installRows are the only two:
+	// `git grep -n -E '\bmarkDone\(' -- '*.go' ':!*_test.go'` finds 3 lines,
+	// the definition and one call in each.
+	//
+	// So a Done bit from MarkArticleWritten stands on a write, not on an
+	// fsync. What stops it outliving bytes that never reached the disk is the
+	// untrust: a failed fsync at completion (FileWriter.finish), at
+	// CloseJobHandles or at worker exit untrusts the file
+	// (Application.handleFileUntrusted), which clears its Done bits and
+	// removes its rows from the record (docs/durability-contract.md §4). What
+	// a crash loses before any fsync is caught by the next start, which reads
+	// back every row of a complete=0 file before installing it; a complete=1
+	// file is installed as it stands, because complete=1 is written only after
+	// the file's fsync.
+	//
+	// TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list
+	// of doors above. Add a door onto the bit and it fails by name.
 	done, failed, emitted bitset
 	files                 []FileProgress
 
-	// written holds, per file index, the rows InstallVerified installed, in
-	// offset order, for the whole-file CRC. It is not persisted here:
-	// written_articles is the record, and this is a resident copy of it.
+	// written holds, per file index, the written rows of a file that has not
+	// yet completed, for the whole-file CRC: verified rows and rows written
+	// this process, in no particular order. It is not persisted here:
+	// written_articles is the record, and this is a resident copy of the part
+	// of it a completion still needs. verified.go owns its lifecycle.
 	written map[int][]durability.WrittenRow
 
 	pendingArticles   int
@@ -103,11 +134,11 @@ type FileProgress struct {
 	// encoded NZB `bytes` attribute — because RemainingBytes subtracts the
 	// two, and only figures in one unit can be subtracted.
 	//
-	// That is not the unit durability works in. A durable run's Length is the
-	// DECODED payload an fsync proved, summed over the same set of articles,
-	// and runs a few percent lower. The two are not interchangeable, which is
-	// why this is summed from the manifest's per-article bytes over the
-	// resolved set rather than read off the durability record.
+	// That is not the unit the written_articles rows work in. A row's Length is
+	// the DECODED payload handed to WriteAt, summed over the same set of
+	// articles, and a few percent lower. The two are not interchangeable, which
+	// is why this is summed from the manifest's per-article bytes over the
+	// resolved set rather than read off the record.
 	//
 	// Maintained live by markDone and rebuilt by recompute at hydration, both
 	// from the manifest.
@@ -120,9 +151,10 @@ type FileProgress struct {
 	//
 	// Not persisted, and does not need to be: markFailed below computes it as
 	// m.ArticleBytes(i) summed over the failed set. The manifest knows an
-	// article's size whether or not it was ever fetched, and failed_articles
-	// supplies the set, so the durability record crossed with the manifest
-	// reproduces this figure exactly.
+	// article's size whether or not it was ever fetched. The failed set itself
+	// is in memory only: across a restart a complete=1 file rebuilds it as the
+	// complement of its written rows (InstallCompleteFile), and a complete=0
+	// file's failed articles are Outstanding again.
 	FailedBytes int64
 	// IsPar2 marks a par2 file — the index or a recovery volume — as opposed
 	// to content. Carried per file, like Bytes and FailedBytes, so
@@ -139,9 +171,9 @@ type FileProgress struct {
 	// Both used to be persisted and fed back to the assembler on resume, so
 	// the completion truncate would not cut below what earlier runs wrote
 	// (#342). The truncate no longer derives its bound from anything the
-	// queue knows: durability.Barrier computes it as the highest end offset
-	// among the file's DURABLE facts, which describes the FILE rather than
-	// the session, and needs no seed. The write cursor was only ever a
+	// queue knows: the assembler's FileWriter.finish trims to the end of the
+	// last range it owns, and a restart's verifier to the end of the last
+	// verified row, so it needs no seed. The write cursor was only ever a
 	// coalescing hint, and went with the assembler's write cache (#311, #353).
 	//
 	// They are gone rather than retained-at-zero because a field that is
@@ -157,20 +189,17 @@ const (
 	earlyAbortThreshold = 0.80
 )
 
-// FileMeta is the per-file shape needed to size a non-resident job's
-// progress without a manifest.
+// FileMeta is the per-file sizing a fresh JobProgress is built from. It
+// carries no state: every article starts Outstanding and every file
+// incomplete, at the FetchAlways zero.
 type FileMeta struct {
-	ArticleCount    int
-	Bytes           int64
-	Complete        bool
-	Fetch           FetchPolicy
-	IsPar2          bool
-	BytesDownloaded int64
-	FailedBytes     int64
-	Done            []bool
-	Failed          []bool
+	ArticleCount int
+	Bytes        int64
+	IsPar2       bool
 }
 
+// newJobProgressSized returns a fresh JobProgress sized to files: every
+// file's Pending is its article count, and no bit is set.
 func newJobProgressSized(files []FileMeta) *JobProgress {
 	total := 0
 	for _, f := range files {
@@ -183,47 +212,21 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 		files:           make([]FileProgress, len(files)),
 		pendingArticles: total,
 	}
-	var failedTotal int64
-	base := 0
 	for fi, f := range files {
 		p.files[fi].Pending = f.ArticleCount
-		p.files[fi].Complete = f.Complete
-		p.files[fi].Fetch = f.Fetch
 		p.files[fi].IsPar2 = f.IsPar2
 		p.files[fi].Bytes = f.Bytes
-		p.files[fi].BytesDownloaded = f.BytesDownloaded
-		p.files[fi].FailedBytes = f.FailedBytes
-		for i := range f.ArticleCount {
-			if i >= len(f.Done) || !f.Done[i] {
-				continue
-			}
-			p.done.Set(base + i)
-			p.files[fi].Pending--
-			p.pendingArticles--
-			p.articlesResolved++
-			if i < len(f.Failed) && f.Failed[i] {
-				p.failed.Set(base + i)
-				p.articlesFailed++
-			}
-		}
-		base += f.ArticleCount
-		failedTotal += f.FailedBytes
 	}
-	p.failedBytes = failedTotal
 	return p
 }
 
-// fileMetaFromManifest projects m into the same per-file shape
-// Store.ArticleCountsByJob returns, so newJobProgress and
-// newJobProgressSized are one code path rather than two that must be kept
-// in agreement by hand. A fresh job has nothing downloaded, nothing
-// failed, and no file complete or deferred, so every field but the sizes
-// is zero.
+// fileMetaFromManifest projects m into the per-file sizing
+// newJobProgressSized takes.
 //
 // The projection is lossless for what JobProgress needs: Manifest.TotalBytes
 // is the sum of every file's bytes, and Manifest.NumArticles is the sum of
-// every file's article count, so the totals newJobProgressSized derives
-// match the ones newJobProgress used to take from the manifest directly.
+// every file's article count, so the totals newJobProgressSized derives are
+// the manifest's.
 func fileMetaFromManifest(m *Manifest) []FileMeta {
 	files := make([]FileMeta, m.NumFiles())
 	for fi := range files {
@@ -237,17 +240,10 @@ func fileMetaFromManifest(m *Manifest) []FileMeta {
 	return files
 }
 
-// newJobProgress returns a zero-value JobProgress sized to m: every file's
-// Pending starts at its article count (all articles start undone/unemitted),
-// so RemainingBytes() — derived from per-file state, see
-// derivedRemainingBytes — starts at m.TotalBytes(). It projects m into
-// []FileMeta and delegates to newJobProgressSized, so resident and
-// non-resident construction are literally the same code and cannot drift
-// apart the way the two used to (see TestFailedBytes_NotDoubledByHydration
-// for what that drift cost). One side effect of delegating: pendingArticles
-// is now set to m.NumArticles() here too, where it used to be left at 0
-// until the first recompute — see the caller-visibility check this was
-// verified against.
+// newJobProgress returns a fresh JobProgress sized to m: every file's Pending
+// starts at its article count and pendingArticles at m.NumArticles(), so
+// RemainingBytes() — derived from per-file state, see derivedRemainingBytes —
+// starts at m.TotalBytes().
 func newJobProgress(m *Manifest) *JobProgress {
 	return newJobProgressSized(fileMetaFromManifest(m))
 }
@@ -374,19 +370,6 @@ func (p *JobProgress) ArticlesFailed() int {
 		return 0
 	}
 	return p.articlesFailed
-}
-
-// AnyArticleFailed reports whether any article has permanently failed.
-//
-// It reads the failed bits rather than ArticlesFailed, which lags them while
-// the manifest is evicted: Job.MarkArticleFailed records an evicted job's
-// failure as bits alone, and the counter catches up only at the next
-// hydration.
-func (p *JobProgress) AnyArticleFailed() bool {
-	if p == nil {
-		return false
-	}
-	return p.failed.any()
 }
 
 // EarlyAborted reports whether the early-abort heuristic has already fired for this job.
@@ -553,7 +536,7 @@ func (p *JobProgress) sizeFigures() (expected, remaining int64) {
 // because Deferred is never toggled on a file that already has resolved
 // articles: markFailed adds to the job-level failedBytes and to the
 // file's own FailedBytes unconditionally, with no check of Deferred, and
-// newJobProgressSized/recompute sum failedBytes over every file including
+// recompute sums failedBytes over every file including
 // deferred ones. Today no caller defers a file after any of its articles
 // have been dispatched, so a deferred file's FailedBytes is always zero in
 // practice — but that is an invariant of the callers, not of this
@@ -649,8 +632,8 @@ func jobStampOrZero(t time.Time) time.Time {
 // for every decoded article, so the first wins; Job.MarkDownloadFinished calls
 // setDownloadFinishedOnce; Job.ClearDownloadFinished calls
 // clearDownloadFinished; ResetForRetry calls clearDownloadStamps; and
-// UnmarshalJSON, AttachContent and RestoreProgressState install persisted
-// stamps through restoreDownloadStamps.
+// AttachContent and RestoreProgressState install persisted stamps through
+// restoreDownloadStamps.
 //
 // That claim is enforced rather than cited.
 // TestDownloadStampWriters_MatchTheEnumerationStatedInProse walks the package
@@ -730,7 +713,8 @@ func (p *JobProgress) clearDownloadStamps() {
 // code until the mistake.
 //
 // Callers: `git grep -c 'restoreDownloadStamps(' -- '*.go' ':!*_test.go'`
-// returns 2 files — this file (declaration and UnmarshalJSON) and content.go,
+// returns 2 files — this file (the declaration, and comments naming it) and
+// content.go,
 // where AttachContent seeds a fresh JobProgress from the stamps
 // RestoreProgressState recorded on the Job before hydration (#504), and
 // RestoreProgressState installs them into a live one. It reads a stamp the
@@ -879,12 +863,9 @@ func (p *JobProgress) clone() *JobProgress {
 	cp.files = slices.Clone(p.files)
 
 	cp.serverStats = maps.Clone(p.serverStats)
-	if p.written != nil {
-		cp.written = make(map[int][]durability.WrittenRow, len(p.written))
-		for fi, rows := range p.written {
-			cp.written[fi] = slices.Clone(rows)
-		}
-	}
+	// The map is copied and the row slices are shared: a stored slice is never
+	// edited in place (see verified.go), so the clone's view cannot change.
+	cp.written = maps.Clone(p.written)
 	return &cp
 }
 
@@ -896,21 +877,16 @@ func (p *JobProgress) clone() *JobProgress {
 // impractical.
 //
 // recompute is authoritative for the job-level failedBytes wherever a
-// manifest is resident, and that single ownership is what keeps hydration
-// from double-counting. The restore path replays per-article state through
-// markFailed on top of a progress that newJobProgressSized may already have
-// seeded from job_files — two sources for one figure — so an owner that
-// recomputes from the manifest is what makes the seed and the replay agree
-// instead of stacking.
+// manifest is resident: it derives the figure from the failed bits and the
+// manifest's article sizes, so it cannot stack on an earlier value.
 //
 // Between recomputes, markFailed and resetForReload maintain the value
 // incrementally; both take the manifest. While the manifest is evicted nothing
 // maintains it: Job.MarkArticleFailed sets the bits alone, and the value lags
 // them until RestoreContent recomputes at the next hydration.
 func (p *JobProgress) recompute(m *Manifest) {
-	// JobProgress and Manifest are persisted as independent JSON documents
-	// (Job.UnmarshalJSON assigns both from separate keys with nothing
-	// reconciling their lengths) and independent SQLite rows. A size
+	// m is passed in separately from p, and nothing here ties it to the
+	// manifest p was sized from (newJobProgress). A size
 	// mismatch here means every article-indexed write below — markDone's
 	// bitset.Set, byte accounting, pendingArticles — would
 	// otherwise either silently no-op (bitset.Set/Clear are deliberately
@@ -951,13 +927,8 @@ func (p *JobProgress) recompute(m *Manifest) {
 		p.files[fi].Pending = n
 		p.files[fi].BytesDownloaded = downloaded
 		p.files[fi].FailedBytes = fileFailed
-		// Bytes is deliberately not part of jobProgressJSON (see
-		// fileProgressJSON) — it is ground truth already held by the
-		// manifest, so it is restored here rather than carried over the
-		// wire a second time. Without this, a JobProgress rebuilt via
-		// UnmarshalJSON+recompute would leave every file's Bytes at its
-		// zero value and derivedRemainingBytes would report everything as
-		// already fetched.
+		// Bytes is ground truth held by the manifest; taking it from m keeps
+		// derivedRemainingBytes in the manifest's terms.
 		p.files[fi].Bytes = m.FileBytes(fi)
 		failedBytesTotal += fileFailed
 		total += n
@@ -1016,9 +987,9 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 }
 
 // markNotDone returns article i to Outstanding. It is the inverse of markDone,
-// and it exists for exactly one caller: Queue.ReplaceFromRuns, which has
-// stat'ed the file and is entitled to contradict a bit derived from a run the
-// resume then discarded (#362). Nothing on the download path may call it — an
+// and it has exactly one caller: Job.UntrustFile, which returns a file's
+// articles to Outstanding once its fsync failed — `git grep -n -E '\.markNotDone[(]' -- '*.go' ':!*_test.go'`
+// finds 1 line, in verified.go. Nothing on the download path may call it — an
 // ack is a one-way transition (R9).
 //
 // It clears the bit and nothing else. The figures markDone maintains are
@@ -1029,7 +1000,7 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 // nor emitted. A copy of those rules that drifts is a half-inverse, and a
 // half-inverse of markDone is how #300 arose from the other direction: bits
 // and derived figures disagreeing, so the job reports a health its per-article
-// state does not support. ReplaceFromRuns recomputes once for the whole job
+// state does not support. UntrustFile recomputes once for the whole file
 // instead.
 //
 // A permanently failed article is never cleared, and that is a rule about what
@@ -1129,9 +1100,13 @@ func (p *JobProgress) setFailedBits(i int) bool {
 // exists so that a caller CAN name the stored rows it may drop: now that the
 // reset is not exhaustive, a whole-job delete would forget an article that is
 // still failed in memory.
-// clearEmitted is false for a job whose reload checkpoint could not make its
-// written articles durable (#417). Only the Emitted clear is withheld — the
-// un-failing below still runs, because the two act on DISJOINT article sets and
+// clearEmitted is false when the caller passes skipEmitted=true to
+// ClearEmittedForReload, withholding the Emitted clear (#417). The production
+// caller, internal/app/reloader.go, passes false, so clearEmitted is true
+// there; the `j\.ClearEmittedForReload(` grep cited above is the enumeration
+// of production callers. Only the
+// Emitted clear is withheld — the un-failing below still
+// runs, because the two act on DISJOINT article sets and
 // withholding both would trade one permanent strand for another.
 //
 // The disjointness, since it is what makes the narrow skip correct: markFailed
@@ -1140,8 +1115,8 @@ func (p *JobProgress) setFailedBits(i int) bool {
 // caused only by the unconditional emitted.Clear on an article that is
 // emitted-and-not-done. Skipping the un-fail instead would leave an article the
 // old downloader's teardown failed — ErrNoServersLeft is terminal — failed
-// forever: markNotDone refuses a permanently failed article, a restart
-// re-applies the persisted row, and only a whole-job retry clears it.
+// for the rest of the process: markNotDone refuses a permanently failed
+// article, and only a whole-job retry clears it.
 func (p *JobProgress) resetForReload(m *Manifest, i int, clearEmitted bool) bool {
 	if clearEmitted {
 		p.emitted.Clear(i)
@@ -1159,110 +1134,6 @@ func (p *JobProgress) resetForReload(m *Manifest, i int, clearEmitted bool) bool
 	p.done.Clear(i)
 	p.failed.Clear(i)
 	return true
-}
-
-// fileProgressJSON is one file's on-disk shape. Pending and BytesDownloaded
-// are excluded — derived state, recomputed by recompute() after load.
-type fileProgressJSON struct {
-	Complete       bool        `json:"complete,omitempty"`
-	Fetch          FetchPolicy `json:"fetch_policy,omitempty"`
-	Filename       string      `json:"filename,omitempty"`
-	AssembledCRC32 uint32      `json:"assembled_crc32,omitempty"`
-}
-
-// jobProgressJSON is JobProgress's on-disk shape. emitted, pendingArticles,
-// articlesResolved, articlesFailed, and earlyAborted are all deliberately
-// excluded — these are correctness exclusions, not wire-compatibility ones.
-// emitted in particular must never survive a restart: on crash recovery, any
-// article the assembler had not yet written needs to be re-dispatched, and
-// persisting emitted would let it be silently skipped. The done bit is what
-// marks an article as resolved, and nothing sets it from dispatch: markDone is
-// reached from ackDurable, whose only caller Job.AckDurable needs a
-// DurableProof a completed fsync minted; from seedFromRuns and
-// ReplaceFromRuns, which replay runs that same fsync recorded; and from
-// applyResolution, which replays the resolution derived from those same
-// records on re-hydration; and from Job.MarkArticleDone, which calls markDone
-// with no DurableProof. The first two became unexported *Job methods in
-// B2.4a — the doors and their evidence are unchanged, only the receiver moved.
-// setFailedBits sets it too, for an article whose bytes will never arrive —
-// through markFailed, or directly from Job.MarkArticleFailed while the
-// manifest is evicted. newJobProgressSized sets the bits directly as well,
-// restoring the persisted done and failed bits of an earlier run when a
-// JobProgress is built from them. Job.MarkArticleDone's one non-test caller
-// is recorder.noteWritten in internal/app/record.go, and nothing outside tests
-// builds a recorder at this commit — `git grep -n '[n]ewRecorder(' -- '*.go'
-// ':!*_test.go'` finds 1 line, its declaration — so every persisted done bit
-// here stands on a completed fsync or a permanent failure, never on a write
-// that was merely attempted (#355), and the pair is consistent. A caller of
-// MarkArticleDone must bring its own evidence that the bytes are on disk.
-//
-// TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list above.
-// Add a door onto the bit and it fails by name.
-type jobProgressJSON struct {
-	Done   []bool             `json:"done"`
-	Failed []bool             `json:"failed"`
-	Files  []fileProgressJSON `json:"files"`
-
-	FailedBytes       int64            `json:"failed_bytes"`
-	ServerStats       map[string]int64 `json:"server_stats,omitempty"`
-	DownloadStarted   time.Time        `json:"download_started"`
-	DownloadFinished  time.Time        `json:"download_finished"`
-	Par2Recovered     bool             `json:"par2_recovered,omitempty"`
-	Par2ReleaseReason string           `json:"par2_release_reason,omitempty"`
-}
-
-// MarshalJSON implements json.Marshaler.
-func (p *JobProgress) MarshalJSON() ([]byte, error) {
-	files := make([]fileProgressJSON, len(p.files))
-	for fi, f := range p.files {
-		files[fi] = fileProgressJSON{
-			Complete:       f.Complete,
-			Fetch:          f.Fetch,
-			Filename:       f.Filename,
-			AssembledCRC32: f.AssembledCRC32,
-		}
-	}
-	return json.Marshal(jobProgressJSON{
-		Done:              p.done.ToBools(),
-		Failed:            p.failed.ToBools(),
-		Files:             files,
-		FailedBytes:       p.failedBytes,
-		ServerStats:       p.serverStats,
-		DownloadStarted:   p.downloadStarted,
-		DownloadFinished:  p.downloadFinished,
-		Par2Recovered:     p.par2Recovered,
-		Par2ReleaseReason: p.par2ReleaseReason,
-	})
-}
-
-// UnmarshalJSON implements json.Unmarshaler. pendingArticles/
-// articlesResolved/articlesFailed are left zero; a caller must invoke
-// recompute afterward to rebuild them from done/failed/emitted ground
-// truth. Reached only through Job.UnmarshalJSON, which since #298 has no
-// production caller of its own.
-func (p *JobProgress) UnmarshalJSON(data []byte) error {
-	var pj jobProgressJSON
-	if err := json.Unmarshal(data, &pj); err != nil {
-		return err
-	}
-	p.done = bitsetFromBools(pj.Done)
-	p.failed = bitsetFromBools(pj.Failed)
-	p.emitted = newBitset(len(pj.Done))
-	p.files = make([]FileProgress, len(pj.Files))
-	for fi, f := range pj.Files {
-		p.files[fi] = FileProgress{
-			Complete:       f.Complete,
-			Fetch:          f.Fetch,
-			Filename:       f.Filename,
-			AssembledCRC32: f.AssembledCRC32,
-		}
-	}
-	p.failedBytes = pj.FailedBytes
-	p.serverStats = pj.ServerStats
-	p.restoreDownloadStamps(pj.DownloadStarted, pj.DownloadFinished)
-	p.par2Recovered = pj.Par2Recovered
-	p.restorePar2ReleaseReason(pj.Par2ReleaseReason)
-	return nil
 }
 
 // isEarlyAbort returns true if the job should be aborted based on the

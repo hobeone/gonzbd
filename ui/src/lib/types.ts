@@ -56,7 +56,7 @@ export interface QueueSlot {
 	/** A queue-management note — currently only "failed to remove finalized
 	 *  job from queue" when dispatcher removal fails after finalization. */
 	operational_error?: string;
-	/** Bytes a completed fsync covers. */
+	/** Bytes written: the encoded size of resolved articles. The key keeps its old name; it does not mean fsynced. */
 	bytes_durable: number;
 	failed_bytes: number;
 	recovery_bytes: number;

@@ -4,9 +4,9 @@ run Test(ReloadDownloader_LeavesAnAdmittedJobsProgressAlone|PostProcAdmissions_U
 [the reload clears an admitted job]
 file internal/app/reloader.go
 --- anchor
-				app.postProcAdmissions.unlessAdmitted(j, func() { j.ClearEmittedForReload(skip) })
+				app.postProcAdmissions.unlessAdmitted(j, func() { j.ClearEmittedForReload(false) })
 --- replace
-				j.ClearEmittedForReload(skip)
+				j.ClearEmittedForReload(false)
 --- end
 
 [unlessAdmitted ignores the admission]

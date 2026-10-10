@@ -12,10 +12,20 @@ file internal/app/durability.go
 		if err := app.durable.SweepOrphans(ctx); err != nil {
 --- end
 
-[a failed history entry no longer keeps its durable_runs]
+# The record a retry resumes from is written_articles plus job_files; a FAILED
+# history entry keeps both.
+[a failed history entry no longer keeps its written_articles]
 file internal/durability/reclaim.go
 --- anchor
-	{name: "durable_runs", keptForFailedEntry: true},
+	{name: "written_articles", keptForFailedEntry: true},
 --- replace
-	{name: "durable_runs"},
+	{name: "written_articles"},
+--- end
+
+[a failed history entry no longer keeps its job_files]
+file internal/durability/reclaim.go
+--- anchor
+	{name: "job_files", keptForFailedEntry: true},
+--- replace
+	{name: "job_files"},
 --- end

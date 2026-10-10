@@ -1,20 +1,24 @@
 pkg ./internal/job/
-run TestFileRows_ReturnsACopy|TestInstallVerified_NeitherKeepsNorReordersTheCallersSlice|TestInstallVerified_RefusesARowItCannotPlace|TestInstallVerified_MergesALaterInstallWithTheResidentRows
+run TestFileRows_ReturnsACopy|TestInstallRows_KeepsACopyOfTheFirstInstall|TestInstallVerified_NeitherKeepsNorReordersTheCallersSlice|TestInstallVerified_ARowItCannotPlaceCostsOnlyItself|TestInstallVerified_MergesALaterInstallWithTheResidentRows
 
-[a Progress() clone shares each file's row slice]
+[a Progress() clone shares the live row map]
 file internal/job/progress.go
 --- anchor
-			cp.written[fi] = slices.Clone(rows)
+	cp.written = maps.Clone(p.written)
 --- replace
-			cp.written[fi] = rows
+	cp.written = p.written
 --- end
 
 [the first install keeps the caller's slice]
 file internal/job/verified.go
 --- anchor
-		p.written[fileIdx] = sortedClone(rows)
+	out := p.written[fileIdx]
 --- replace
+	out := p.written[fileIdx]
+	if len(out) == 0 {
 		p.written[fileIdx] = rows
+		return
+	}
 --- end
 
 [the sorted copy is sorted in place]
@@ -28,18 +32,17 @@ file internal/job/verified.go
 [the file check dropped from the placement guard]
 file internal/job/verified.go
 --- anchor
-		if r.FileIdx != fileIdx || int(r.ArtIdx) < lo || int(r.ArtIdx) >= hi {
+		if r.FileIdx != fileIdx || !m.ArticleInFile(r.FileIdx, r.ArtIdx) || !r.HasValidShape() {
 --- replace
-		if int(r.ArtIdx) < lo || int(r.ArtIdx) >= hi {
+		if !m.ArticleInFile(fileIdx, r.ArtIdx) || !r.HasValidShape() {
 --- end
 
 [a later install drops the resident rows]
 file internal/job/verified.go
 --- anchor
-	for _, r := range resident {
-		byArt[r.ArtIdx] = r
+	for k, r := range out {
+		at[r.ArtIdx] = k
 	}
 --- replace
-	for range resident {
-	}
+	out = nil
 --- end

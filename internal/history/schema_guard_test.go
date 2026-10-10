@@ -25,12 +25,9 @@ import (
 // above the highest embedded migration exercises the same branch.
 //
 // The daemon then came up CLEAN with no durability tables at all, and every
-// barrier failed on its commit. At the time a failed commit only logged a
-// Warn, so nothing was ever acked, no job ever completed, and the only signal
-// was a last_barrier_unix that never advanced — which the barrier stamps
-// anyway when a job has no open files. A failed commit now stalls the job, but
-// the stall reason names the missing table, not the stale migration history
-// behind it; refusing to open is what names that.
+// commit to them failed. A failed commit stalls the job, but the stall reason
+// names the missing table, not the stale migration history behind it;
+// refusing to open is what names that.
 func TestOpen_RefusesADatabaseFromBeforeTheMigrationCollapse(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pre-collapse.db")
 
@@ -59,8 +56,8 @@ func TestOpen_RefusesADatabaseFromBeforeTheMigrationCollapse(t *testing.T) {
 	if err == nil {
 		_ = opened.Close()
 		t.Fatal("Open succeeded against a pre-collapse database. goose applies nothing, " +
-			"so the daemon runs with no durability tables: every barrier's commit fails, " +
-			"nothing is ever acked, and a downloading job stalls on a missing table rather than " +
+			"so the daemon runs with no durability tables: every commit to them fails, " +
+			"and a downloading job stalls on a missing table rather than " +
 			"on the cause")
 	}
 	if !errors.Is(err, ErrSchemaFromTheFuture) {

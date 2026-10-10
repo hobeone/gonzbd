@@ -157,9 +157,8 @@ func TestDownload_FileSizeMatchesPayload(t *testing.T) {
 // produces a file whose size matches the original payload exactly, not the
 // pre-allocated size. This uses a more realistic scenario with varied part
 // sizes to exercise the completion truncate across out-of-order delivery. The
-// bound comes from durability.Barrier.FinalizeFile — the highest end offset
-// over the file's durable runs — not from any high-water mark the
-// assembler tracks, since it tracks none.
+// bound is the end of the last range the file's writer owns
+// (assembler.FileWriter.finish).
 func TestDownload_MultiPartFileSizeExact(t *testing.T) {
 	t.Parallel()
 

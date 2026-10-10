@@ -229,7 +229,7 @@ func TestHistorySlot_UnwantedExt(t *testing.T) {
 			Completed: time.Now().Add(-time.Duration(i) * time.Minute),
 			Unwanted:  st,
 		}
-		if err := repo.Add(t.Context(), e, nil); err != nil {
+		if err := repo.Add(t.Context(), e); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/job/jobtest"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/types"
 )
@@ -65,15 +65,7 @@ func deliveredJob(t *testing.T, layout string, fixtures []string, delivered []de
 		if err := j.SetFileFilename(i, d.name); err != nil {
 			t.Fatalf("SetFileFilename: %v", err)
 		}
-		// One article per file, so file i's article is article i.
-		idx := int32(i) //nolint:gosec // a handful of test files
-		if ok, err := j.SetFileCRC32FromRuns(i, []durability.Run{{
-			FileIdx: idx, FirstArtIdx: idx, LastArtIdx: idx,
-			Length: int64(len(d.data)),
-			CRC32:  crc32.ChecksumIEEE(d.data),
-		}}); err != nil || !ok {
-			t.Fatalf("SetFileCRC32FromRuns(%d) = %v, %v; want the CRC recorded", i, ok, err)
-		}
+		jobtest.SeedFileCRC(t, j, i, crc32.ChecksumIEEE(d.data))
 	}
 	return &Job{Job: j, DownloadDir: dir, FinalDir: dir, PP: types.PPDelete}, dir
 }

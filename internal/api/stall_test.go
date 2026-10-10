@@ -26,9 +26,9 @@ type durabilitySlot struct {
 	BytesDurable int64  `json:"bytes_durable"`
 }
 
-// stallTestServer wires a dispatcher and a NopApp whose checkpoint figures the
+// stallTestServer wires a dispatcher and a NopApp whose stall figures the
 // caller controls, then returns both so a test can assert on the wire shape
-// without standing up a real barrier.
+// without standing up a recorder.
 func stallTestServer(t *testing.T, states map[string]app.JobCheckpointState, counter *atomic.Int64) (*Server, *dispatch.Dispatcher) {
 	t.Helper()
 	disp := newTestAPIDispatcher(t)
@@ -175,13 +175,13 @@ func TestQueueAPI_ReportsDurableBytesFromRecordedRuns(t *testing.T) {
 
 	before := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), j.ID())
 	if before.BytesDurable != 0 {
-		t.Errorf("bytes_durable = %d before any barrier ran, want 0", before.BytesDurable)
+		t.Errorf("bytes_durable = %d before any article was written, want 0", before.BytesDurable)
 	}
 
 	// Now make the job's single 1024-byte article Done, through the door a
 	// resume's verified rows enter by. Asserting only the zero above pinned
 	// nothing: a bytes_durable that always answered 0 satisfied it.
-	if err := j.InstallVerified(0, []durability.WrittenRow{
+	if _, err := j.InstallVerified(0, []durability.WrittenRow{
 		{FileIdx: 0, ArtIdx: 0, Length: 1024},
 	}); err != nil {
 		t.Fatalf("InstallVerified: %v", err)
@@ -190,7 +190,7 @@ func TestQueueAPI_ReportsDurableBytesFromRecordedRuns(t *testing.T) {
 	after := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), j.ID())
 	if after.BytesDurable != 1024 {
 		t.Errorf("bytes_durable = %d after a recorded run covered the job's only article, "+
-			"want 1024 — the field reports nothing a barrier achieved", after.BytesDurable)
+			"want 1024 — the field reports nothing the written rows achieved", after.BytesDurable)
 	}
 }
 

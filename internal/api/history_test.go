@@ -55,7 +55,7 @@ func seedEntry(t *testing.T, repo *history.Repository, name, status, cat string,
 		Completed: completed,
 		Bytes:     1024 * 1024 * 100, // 100 MiB
 	}
-	if err := repo.Add(t.Context(), e, nil); err != nil {
+	if err := repo.Add(t.Context(), e); err != nil {
 		t.Fatalf("Add history entry %q: %v", nzoID, err)
 	}
 	return nzoID
@@ -595,7 +595,7 @@ func TestHistorySlot_CompletenessAndDownloaded(t *testing.T) {
 		DownloadTime: 60,
 		PostprocTime: 15,
 	}
-	if err := repo.Add(t.Context(), e, nil); err != nil {
+	if err := repo.Add(t.Context(), e); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 

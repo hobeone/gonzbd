@@ -5,12 +5,11 @@ run TestAppResidency_HydrateThenEvict
 file internal/app/residency.go
 --- anchor
 	if j.HasProgress() {
-		if err := j.RestoreContent(m); err != nil {
-			return err
-		}
-	} else if err := j.AttachContent(m); err != nil {
+		return j.RestoreContent(m)
+	}
 --- replace
 	if false {
-	} else if err := j.AttachContent(m); err != nil {
+		return j.RestoreContent(m)
+	}
 --- end
 

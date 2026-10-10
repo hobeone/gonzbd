@@ -161,7 +161,7 @@ func TestNopApp_Contract(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	repo := history.NewRepository(db)
 
-	if err := repo.Add(ctx, history.Entry{NzoID: "hjob1", Name: "History Job"}, nil); err != nil {
+	if err := repo.Add(ctx, history.Entry{NzoID: "hjob1", Name: "History Job"}); err != nil {
 		t.Fatalf("repo.Add failed: %v", err)
 	}
 

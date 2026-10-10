@@ -94,8 +94,8 @@ func untrustDuringFlush(t *testing.T, flushFails bool) *modelStore {
 	st := newModelStore(true, flushFails)
 	j := newTestJob(t, "id")
 	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10}, 10, "srv")
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Length: 10}, 10, "srv")
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Length: 10})
 	r.markDirty(j, 0, durability.FileState{Complete: true})
 
 	flushErr := make(chan error, 1)
@@ -170,7 +170,7 @@ func TestRecorder_CompleteNeverPrecedesItsRowUnderConcurrency(t *testing.T) {
 				return
 			default:
 			}
-			r.noteWritten(j, durability.WrittenRow{FileIdx: i, ArtIdx: 0, Length: 1}, 1, "srv")
+			r.noteWritten(j, durability.WrittenRow{FileIdx: i, ArtIdx: 0, Length: 1})
 			r.markDirty(j, i, durability.FileState{Complete: true})
 		}
 	}()
@@ -297,13 +297,15 @@ func TestRecorder_FlushLockedWritesNothingWhenIdleAndRemergesOnError(t *testing.
 	st := &fakeRecordStore{}
 	j := newTestJob(t, "id")
 	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
-	r.wmu.Lock()
-	defer r.wmu.Unlock()
+	if err := r.lockWriter(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer r.unlockWriter()
 	if err := r.flushLocked(context.Background()); err != nil || len(st.snapshot()) != 0 {
 		t.Fatalf("idle flushLocked = %v with %d batches, want nil and none", err, len(st.snapshot()))
 	}
 	st.failNext = true
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10}, 10, "srv")
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 	if err := r.flushLocked(context.Background()); err == nil {
 		t.Fatal("want the store error")
 	}
@@ -319,7 +321,7 @@ func TestRecorder_RunDoesNotFlushOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan struct{})
 	go func() { r.run(ctx, time.Hour); close(finished) }()
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10}, 10, "srv")
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 	cancel()
 	<-finished
 	if n := st.rowCount(); n != 0 {
@@ -334,7 +336,7 @@ func TestRecorder_RunFlushesOnTick(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan struct{})
 	go func() { r.run(ctx, time.Millisecond); close(finished) }()
-	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10}, 10, "srv")
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 	deadline := time.Now().Add(30 * time.Second)
 	for st.rowCount() == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)

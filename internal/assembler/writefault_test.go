@@ -14,8 +14,8 @@ import (
 // newFailingWriteFile builds an openFile whose every write fails with err, so
 // each accepted article fails inside writeOne.
 //
-// Every article takes this path, so a full volume fails every write while the
-// barrier's Drain has nothing to write, returns no error, and routes no fault
+// Every article takes this path, so a full volume fails every write while
+// nothing is left behind for a later fsync to fail on, and no fault is routed
 // at all.
 func newFailingWriteFile(t *testing.T, err error) (*openFile, string) {
 	t.Helper()
@@ -64,12 +64,9 @@ func TestWriteFault_IsNotCountedTowardCompletion(t *testing.T) {
 // TestWriteFault_IsRoutedOutOfTheAssembler pins the other half: the fault has
 // to leave the worker at all.
 //
-// acceptArticle's doc claimed "a storage fault is logged and left to the
-// barrier, which is what surfaces it to the job via Stallable". That was not
-// true on this path. The barrier only sees a fault that Drain, Sync, Stat or
-// Truncate returns, and a write rejected inside Accept never reaches any of
-// them — nothing is left behind for a later
-// Drain to fail on, so no fault was ever routed and the job was never stalled.
+// A write rejected inside Accept leaves nothing behind for a later fsync to
+// fail on, so unless the fault is returned and routed it never reaches the job,
+// which is then never stalled.
 func TestWriteFault_IsRoutedOutOfTheAssembler(t *testing.T) {
 	f, path := newFailingWriteFile(t, syscall.ENOSPC)
 

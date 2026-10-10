@@ -12,8 +12,14 @@ file internal/app/record.go
 [an emptied dirty map left in place]
 file internal/app/record.go
 --- anchor
+		st.Complete = fv.SetComplete
+		m[fv.FileIdx] = st
+	}
 	if len(m) == 0 {
 --- replace
+		st.Complete = fv.SetComplete
+		m[fv.FileIdx] = st
+	}
 	if false {
 --- end
 

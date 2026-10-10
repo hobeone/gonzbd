@@ -11,7 +11,7 @@ import (
 )
 
 // jobTransitions admits one actor at a time to the state keyed by a job ID:
-// its job_files, failed_articles and durable_runs rows, its queue manifest,
+// its job_files and written_articles rows, its queue manifest,
 // its NZB backup, its history entry and its download directory. A retry, a
 // finalization, a queue removal and a history change each act on that state,
 // and none of them can rely on the dispatcher to exclude the others: several

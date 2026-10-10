@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/checkpoint"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
@@ -276,11 +275,11 @@ func TestRetryHistoryJob_ResumesInTheFailedDirectory(t *testing.T) {
 // failedDirEntry files a FAILED history entry for a retryable job whose
 // download directory the finalize stage renamed, with one file in it, and
 // returns the application and the _FAILED_ and job directory paths.
-func failedDirEntry(t *testing.T, id string, wrap func(checkpoint.Store) checkpoint.Store) (a *app.Application, failedDir, jobDir string) {
+func failedDirEntry(t *testing.T, id string, failRecord bool) (a *app.Application, failedDir, jobDir string) {
 	t.Helper()
 	a, repo, adminDir := newRetryTestApp(t)
-	if wrap != nil {
-		a.WrapCheckpointStore(wrap)
+	if failRecord {
+		a.FailRecordFor(id)
 	}
 	const name = "failedentry"
 	downloadDir := a.Config().GetGeneral().DownloadDir
@@ -300,7 +299,7 @@ func failedDirEntry(t *testing.T, id string, wrap func(checkpoint.Store) checkpo
 		NZBBackup: name + ".nzb.gz",
 		Status:    string(constants.StatusFailed),
 		Path:      failedDir,
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	return a, failedDir, jobDir
@@ -312,12 +311,10 @@ func failedDirEntry(t *testing.T, id string, wrap func(checkpoint.Store) checkpo
 func TestRetryHistoryJob_AbortMovesTheFailedDirectoryBack(t *testing.T) {
 	t.Parallel()
 	const id = "failedabort00001"
-	a, failedDir, jobDir := failedDirEntry(t, id, func(s checkpoint.Store) checkpoint.Store {
-		return failForJobStore{Store: s, failID: id}
-	})
+	a, failedDir, jobDir := failedDirEntry(t, id, true)
 
-	if err := a.RetryHistoryJob(t.Context(), id); !errors.Is(err, errJobCheckpoint) {
-		t.Fatalf("RetryHistoryJob = %v, want the checkpoint write's error", err)
+	if err := a.RetryHistoryJob(t.Context(), id); !errors.Is(err, app.ErrRecordForJob) {
+		t.Fatalf("RetryHistoryJob = %v, want the record write's error", err)
 	}
 	if _, err := os.Stat(filepath.Join(failedDir, "payload.bin")); err != nil {
 		t.Errorf("the aborted retry did not move the directory back to %s: %v", failedDir, err)
@@ -333,7 +330,7 @@ func TestRetryHistoryJob_AbortMovesTheFailedDirectoryBack(t *testing.T) {
 func TestRetryHistoryJob_RefusesWhenTheJobDirectoryExists(t *testing.T) {
 	t.Parallel()
 	const id = "failedconflict01"
-	a, failedDir, jobDir := failedDirEntry(t, id, nil)
+	a, failedDir, jobDir := failedDirEntry(t, id, false)
 	if err := os.Mkdir(jobDir, 0o750); err != nil {
 		t.Fatal(err)
 	}

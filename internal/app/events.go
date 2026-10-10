@@ -7,23 +7,30 @@ import (
 	"github.com/hobeone/gonzbd/internal/downloader"
 )
 
-// FileComplete is emitted when a file assembly is finished.
+// FileComplete is emitted when a file assembly is finished: the assembler
+// finished the file on its writing handle, or verification finished it by path.
 //
-// It carries no CRC32. The assembler used to compute a whole-file value by
-// combining the per-article CRCs it happened to see, which was #349: a resumed
-// run is never sent the articles an earlier run completed, so those parts
-// never tile the file and the figure described a fragment while claiming to
-// describe the whole.
-//
-// The honest whole-file value is the crc32 of a file's single durable run.
-// A run combines the CRCs of the articles that abut as they join it, across
-// restarts, so a file whose articles all arrive collapses to one row at offset
-// 0 whose crc32 IS the file's — already computed, with no read of the file
-// (R24). Application.recordAssembledCRC threads it to Queue.SetFileCRC32FromRuns when
-// the file finalizes, which is what QuickCheck and on-demand par2 read.
+// It carries no CRC32. The whole-file CRC is derived from the file's written
+// rows when the completion is consumed (Job.SettleFileCRC).
 type FileComplete struct {
 	JobID   string
 	FileIdx int
+	// Resumed marks a completion the verifier produced at hydration rather
+	// than one this process assembled. The hydration already settled the
+	// file's CRC, peeked its archive for unwanted names and marked it
+	// complete, so its consumer skips all three and needs no manifest. It is
+	// not fed to DirectUnpack: an unpacker starts only from volume 1 of a live
+	// download, and post-processing's normal unpack is the backstop. A file
+	// the retry's verification finished is not peeked: that job is not
+	// registered when installVerification runs.
+	Resumed bool
+	// FailMsg is the failure message of the archive peek that blocked the
+	// job during the hydration that finished this file, naming the flagged
+	// files, or "". It is job-level: every Resumed completion of that
+	// hydration carries it, flagged file or not. Only enqueueResumedCompletion
+	// sets it; the consumer passes it to fileOwedUnwantedFailure in place of a
+	// peek of its own.
+	FailMsg string
 }
 
 // JobComplete is emitted when all files in a job are assembled.

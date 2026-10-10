@@ -49,43 +49,10 @@ func (b bitset) Clear(i int) {
 	b.words[i/64] &^= 1 << (uint(i) % 64)
 }
 
-// any reports whether any bit is set. Reading whole words is exact because the
-// padding bits past n stay zero: Set is the one method here that ORs a bit into
-// a word, and it refuses an index outside [0, n).
-func (b bitset) any() bool {
-	for _, w := range b.words {
-		if w != 0 {
-			return true
-		}
-	}
-	return false
-}
-
 // Clone returns an independent copy. bitset is a value type holding a
 // slice, so a plain assignment would alias the backing array.
 func (b bitset) Clone() bitset {
 	w := make([]uint64, len(b.words))
 	copy(w, b.words)
 	return bitset{words: w, n: b.n}
-}
-
-// ToBools renders the set as []bool for the on-disk JSON shape, which is
-// deliberately unchanged.
-func (b bitset) ToBools() []bool {
-	out := make([]bool, b.n)
-	for i := range b.n {
-		out[i] = b.Get(i)
-	}
-	return out
-}
-
-// bitsetFromBools builds a bitset from the on-disk []bool shape.
-func bitsetFromBools(in []bool) bitset {
-	b := newBitset(len(in))
-	for i, v := range in {
-		if v {
-			b.Set(i)
-		}
-	}
-	return b
 }

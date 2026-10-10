@@ -595,21 +595,21 @@ func TestNameHolderLocked_DirectHelperCoverage(t *testing.T) {
 	}
 }
 
-func TestLoadProgressForRename_DirectHelperCoverage(t *testing.T) {
+func TestLoadProgress_HydratesAndMarksResident(t *testing.T) {
 	res := &fakeResidency{}
 	d := newTestDispatcher(t, withResidency(res))
-	if err := d.loadProgressForRename("missing"); err != nil {
-		t.Fatalf("loadProgressForRename(missing) = %v, want nil", err)
+	if err := d.LoadProgress(context.Background(), "missing"); err != nil {
+		t.Fatalf("LoadProgress(missing) = %v, want nil", err)
 	}
 
 	j := job.New("j1", "Job 1", job.Policy{})
 	if err := d.Add(context.Background(), j, Header{Name: "Job 1"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := d.loadProgressForRename("j1"); err != nil {
-		t.Fatalf("loadProgressForRename(j1): %v", err)
+	if err := d.LoadProgress(context.Background(), "j1"); err != nil {
+		t.Fatalf("LoadProgress(j1): %v", err)
 	}
 	if !d.isResident("j1") {
-		t.Error("loadProgressForRename did not mark j1 resident after hydrating")
+		t.Error("LoadProgress did not mark j1 resident after hydrating")
 	}
 }

@@ -160,9 +160,7 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 // claim above is now enforced separately by
 // internal/sched.TestQueueDoorsReachingJob_MatchTheEnumerationStatedInProse.
 //
-// Job does no I/O. It exposes State() and the attempt accessors. The
-// checkpoint package (internal/checkpoint.Checkpointer) reads those and writes
-// the database.
+// Job does no I/O. It exposes State() and the attempt accessors.
 //
 // Lock Hierarchy:
 // - j.mu is the outer lock (guards lifecycle state, attempts, leases, metadata).
@@ -310,7 +308,7 @@ func (j *Job) State() StateView {
 // 0, nothing more. NOT whether it ever held a lease: D-I12 decoupled the two,
 // so a job that has begun an attempt and is still waiting for pool A returns
 // true here while j.lease is nil. Exact, where any predicate over bytes or
-// durable runs would conflate "did not start" with "started and got
+// written rows would conflate "did not start" with "started and got
 // nowhere".
 func (j *Job) HasRun() bool {
 	j.mu.RLock()

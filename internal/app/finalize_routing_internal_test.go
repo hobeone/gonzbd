@@ -2,29 +2,23 @@ package app
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 // TestStall_DoesNotParkAJobWhileTheProcessIsStopping pins the one pause that
 // cannot be undone.
 //
-// Shutdown's final queue.Save PERSISTS a pause taken during shutdown, the
+// A pause taken during shutdown is PERSISTED with the job's queue row, and the
 // stall list that would re-evaluate it is in-memory and dies with the process,
-// and the startup sweep skips the job because its phase is no longer active.
-// A healthy job came back Paused after a slow but normal stop, permanently.
-//
-// The trigger is ordinary: the clean-shutdown barrier runs under a fixed
-// deadline, and on a queue with many open files the fsyncs exceed it, so every
-// job it reaches raises a deadline-exceeded fault.
+// so the next start restores the job paused and only the user resumes it. A
+// healthy job came back Paused after a slow but normal stop, permanently.
 //
 // The discriminator is whether the PROCESS is stopping, not the error — see
 // the sibling test for why the error cannot serve. This test drives the
-// context half; TestStall_TheStoppingGuardCoversTheCleanShutdownBarrier drives
-// the flag, which is the half that covers Shutdown's own barrier.
+// context half; the stopping flag is the other.
 func TestStall_DoesNotParkAJobWhileTheProcessIsStopping(t *testing.T) {
 	t.Parallel()
 	application, j := newDurabilityTestApp(t, 1, 2)
@@ -33,7 +27,7 @@ func TestStall_DoesNotParkAJobWhileTheProcessIsStopping(t *testing.T) {
 	application.ctx = ctx
 	cancel() // the process is stopping
 
-	application.routeFinalizeFailure(j.ID(), 0, "/downloads/a.bin", context.DeadlineExceeded)
+	application.Stall(j.ID(), storagefault.Classify("sync", "/downloads/a.bin", context.DeadlineExceeded))
 
 	row, ok := application.dispatcher.Row(j.ID())
 	if !ok {
@@ -50,8 +44,8 @@ func TestStall_DoesNotParkAJobWhileTheProcessIsStopping(t *testing.T) {
 // guard above honest, and it is why the guard tests the context rather than
 // the error.
 //
-// A wedged mount produces the identical context.DeadlineExceeded, through
-// barrierOpTimeout rather than through shutdown. That one MUST park the job
+// A wedged mount produces the identical context.DeadlineExceeded without any
+// shutdown. That one MUST park the job
 // with a reason: a job left running against a dead mount sits at 99% with
 // nothing surfaced, which is exactly the silence A2 forbids. The two cases are
 // indistinguishable by error value, so a guard keyed on the error would have
@@ -66,69 +60,17 @@ func TestStall_StillParksOnTheSameErrorWhenNotStopping(t *testing.T) {
 		t.Fatal("the fixture is already stopping, so it cannot observe the running case")
 	}
 
-	application.routeFinalizeFailure(j.ID(), 0, "/downloads/a.bin", context.DeadlineExceeded)
+	application.Stall(j.ID(), storagefault.Classify("sync", "/downloads/a.bin", context.DeadlineExceeded))
 
 	row, ok := application.dispatcher.Row(j.ID())
 	if !ok {
 		t.Fatal("row is not found")
 	}
 	if row.Status() != constants.StatusPaused {
-		t.Fatal("a barrierOpTimeout against a wedged mount left the job running; it " +
+		t.Fatal("a deadline against a wedged mount left the job running; it " +
 			"sits at N% with no reason the operator can act on")
 	}
 	if application.StallReason(j.ID()).Reason == "" {
 		t.Error("the job was parked with no reason attached (R27)")
 	}
 }
-
-// TestRouteFinalizeFailure_DoesNotStallOnANonResidentJob pins the second
-// non-storage error to reach this path.
-//
-// AckDurable answers job.ErrNotResident when the job was evicted between
-// the barrier's file listing and the ack. retryFinalize already treats that as
-// landed and documents why — the runs are committed, so the bits are replayed
-// from the record after the resume — but the FIRST-attempt path classified it as
-// storage and stalled the job over a queue-residency condition.
-func TestRouteFinalizeFailure_DoesNotStallOnANonResidentJob(t *testing.T) {
-	t.Parallel()
-	application, j := newDurabilityTestApp(t, 1, 2)
-
-	application.routeFinalizeFailure(j.ID(), 0, "/downloads/a.bin", job.ErrNotResident)
-
-	row, ok := application.dispatcher.Row(j.ID())
-	if !ok {
-		t.Fatal("row is not found")
-	}
-	if row.Status() == constants.StatusPaused {
-		t.Errorf("the job was stalled over a queue-residency condition, not a storage "+
-			"one; retryFinalize treats the same error as landed: stall reason=%q",
-			application.StallReason(j.ID()).Reason)
-	}
-}
-
-// TestRouteFinalizeFailure_StillStallsOnARealStorageError is the grounding
-// half. The two tests above must not pass because routing was disabled
-// wholesale — an EIO on the finalize path still has to park the job with a
-// reason an operator can act on.
-func TestRouteFinalizeFailure_StillStallsOnARealStorageError(t *testing.T) {
-	t.Parallel()
-	application, j := newDurabilityTestApp(t, 1, 2)
-
-	application.routeFinalizeFailure(j.ID(), 0, "/downloads/a.bin", errRealDiskFailure)
-
-	row, ok := application.dispatcher.Row(j.ID())
-	if !ok {
-		t.Fatal("row is not found")
-	}
-	if row.Status() != constants.StatusPaused {
-		t.Fatal("a real storage error did not stall the job; the file's bytes are not " +
-			"known to be correct and it must not ship")
-	}
-	if application.StallReason(j.ID()).Reason == "" {
-		t.Error("the job was stalled with no reason attached (R27)")
-	}
-}
-
-// errRealDiskFailure stands in for an unrecognised device error, which R18
-// makes retryable by default.
-var errRealDiskFailure = errors.New("input/output error on the volume")

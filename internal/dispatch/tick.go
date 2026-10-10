@@ -268,7 +268,12 @@ func (d *Dispatcher) evictCancelledNeverRun(ctx context.Context, j *job.Job) boo
 func (d *Dispatcher) reconcileResidency(ctx context.Context, j *job.Job) error {
 	v := d.q.Render(j)
 	switch {
-	case v.Holds && !d.isResident(j.ID()):
+	// A paused job is not hydrated, as it is not evicted: a pause yields a
+	// Fetching lease (PauseJob) but not a compute slot, so a job parked by a
+	// residency fault while holding one would otherwise be re-read, and fault
+	// again, every tick. Its resume clears the intent and the next tick
+	// hydrates it.
+	case v.Holds && v.Intent != job.IntentPause && !d.isResident(j.ID()):
 		if err := d.res.Hydrate(ctx, j.ID()); err != nil {
 			// A cancelled context says nothing about the JOB. run returns on
 			// ctx.Done(), but a tick already in flight walks on with the same
@@ -300,6 +305,12 @@ func (d *Dispatcher) reconcileResidency(ctx context.Context, j *job.Job) error {
 			// given a ctx with its OWN deadline can report DeadlineExceeded
 			// while this ctx is still live.
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return fmt.Errorf("hydrate %s: %w", j.ID(), err)
+			}
+			// A residency fault is about the device, not the job: one
+			// unreadable sector must not settle the job Failed. Residency
+			// parks it, and a later hydration verifies it again.
+			if errors.Is(err, ErrResidencyFault) {
 				return fmt.Errorf("hydrate %s: %w", j.ID(), err)
 			}
 			// The job cannot run without its manifest, and it is holding

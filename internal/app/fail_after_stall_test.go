@@ -99,8 +99,7 @@ func TestFail_OnAStalledJobWithAssessingPending_ResumesItForAssessing(t *testing
 
 // TestFail_OnAUserPausedJob_DefersWithoutResumingIt: a pause the user made is
 // not lifted by a deferred Fail, with or without a stall record Stall did not
-// park (noteNeedsSeed, which a user pause's failed checkpoint ack creates).
-// The reason waits for the user's resume.
+// park. The reason waits for the user's resume.
 func TestFail_OnAUserPausedJob_DefersWithoutResumingIt(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -117,7 +116,7 @@ func TestFail_OnAUserPausedJob_DefersWithoutResumingIt(t *testing.T) {
 				t.Fatalf("the user's pause: %v", err)
 			}
 			if tc.unparkedRec {
-				f.app.noteNeedsSeed(f.j.ID())
+				f.app.noteStall(f.j.ID(), assessFault(), false)
 			}
 
 			f.app.Fail(f.j.ID(), assessFault())

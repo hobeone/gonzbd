@@ -164,14 +164,8 @@ func TestOverlap_StraddlingArticleIsRefusedAndCountedAsFailed(t *testing.T) {
 	submit(2, "c@example", 1000, 'C', 1000)
 	submit(1, "b@example", 900, 'B', 1000)
 
-	drained, err := f.w.Drain()
-	if err != nil {
-		t.Fatalf("drain: %v", err)
-	}
-	for _, d := range drained {
-		if d.ArtIdx == 1 {
-			t.Errorf("straddling article B (artIdx 1) was reported Written in Drain: %+v", d)
-		}
+	if slices.Contains(f.w.unsynced, 1) {
+		t.Errorf("straddling article B (artIdx 1) was noted as written: %v", f.w.unsynced)
 	}
 
 	got, err := os.ReadFile(f.info.Path)

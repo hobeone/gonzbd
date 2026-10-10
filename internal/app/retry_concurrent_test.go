@@ -49,8 +49,7 @@ func blockRetryInAdmit(application *Application) *blockingAdmitStore {
 
 // addRetryableEntry files a FAILED history entry for jobID with an NZB backup
 // the retry can rebuild from, and returns the backup's path. path is the
-// entry's download directory, or "" for none. No retained per-file progress is
-// filed with it, so a retry of it reaches DiscardRuns.
+// entry's download directory, or "" for none.
 func addRetryableEntry(t *testing.T, repo *history.Repository, adminDir, jobID, path string) string {
 	t.Helper()
 	backup := jobID + ".nzb.gz"
@@ -59,7 +58,7 @@ func addRetryableEntry(t *testing.T, repo *history.Repository, adminDir, jobID, 
 		NzoID: jobID, Name: "retry-" + jobID, NzbName: jobID + ".nzb",
 		NZBBackup: backup, Category: "*", Status: "Failed", Completed: time.Now(),
 		Path: path,
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	return filepath.Join(adminDir, "nzb", backup)
@@ -95,12 +94,9 @@ func TestRetryHistoryJob_RefusesWhileAnotherHolderHasTheID(t *testing.T) {
 	if !errors.Is(err, errJobInTransition) {
 		t.Fatalf("RetryHistoryJob err = %v, want errJobInTransition", err)
 	}
-	if runs, failed := durabilityRowCounts(t, application, jobID); runs != 1 || failed != 1 {
-		t.Errorf("runs, failed_articles = %d, %d, want 1, 1: the refused retry reclaimed "+
-			"state another actor holds", runs, failed)
-	}
-	if n := jobFilesCount(t, application, jobID); n != 1 {
-		t.Errorf("job_files rows = %d, want 1: the refused retry acted on them", n)
+	if written, files := durabilityRowCounts(t, application, jobID); written != 1 || files != 1 {
+		t.Errorf("written_articles, job_files = %d, %d, want 1, 1: the refused retry reclaimed "+
+			"state another actor holds", written, files)
 	}
 	if _, err := os.Stat(manifestPathOf(t, adminDir, jobID)); !os.IsNotExist(err) {
 		t.Errorf("a refused retry wrote a queue manifest (stat err = %v)", err)
@@ -145,8 +141,8 @@ func TestRetryHistoryJob_LosingConcurrentRetryIsRefusedBeforeActing(t *testing.T
 
 // TestRetryHistoryJob_RefusesAJobTheDispatcherHolds: a FAILED entry can exist
 // beside a queued job of the same ID (see errJobAlreadyQueued). A retry of it
-// must refuse before acting on the queued job's state. With
-// no retained progress filed, the retry would otherwise drop its durable runs.
+// must refuse before acting on the queued job's state, or the retry would
+// otherwise drop the queued job's written rows.
 func TestRetryHistoryJob_RefusesAJobTheDispatcherHolds(t *testing.T) {
 	t.Parallel()
 	application, repo, adminDir := newLifecycleTestApp(t)
@@ -177,7 +173,7 @@ func TestRetryHistoryJob_RefusesAJobTheDispatcherHolds(t *testing.T) {
 		t.Fatalf("RetryHistoryJob err = %v, want errJobAlreadyQueued", err)
 	}
 	if runs, _ := durabilityRowCounts(t, application, jobID); runs != 1 {
-		t.Errorf("durable runs = %d, want 1: the retry discarded a queued job's runs", runs)
+		t.Errorf("written rows = %d, want 1: the retry discarded a queued job's runs", runs)
 	}
 	manifestAfter, err := os.ReadFile(manifestPathOf(t, adminDir, jobID))
 	if err != nil {

@@ -30,7 +30,8 @@ var errRetryDirConflict = errors.New("cannot restore the failed download directo
 // already exists: it is a directory that is not this job's, and the retry would
 // write into it. It also refuses when the _FAILED_ directory is gone but
 // downloadDir/name exists, since nothing says whose that directory is. Where
-// neither exists the bytes are gone and there is nothing to move.
+// neither exists there is nothing to move: the bytes are gone, or the download
+// root is not mounted, and nothing here tells the two apart.
 //
 // It does not check whether a job holds name: its caller must have reserved it
 // (Dispatcher.ReserveName) first, which refuses a holder before anything moves.

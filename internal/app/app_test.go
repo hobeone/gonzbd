@@ -420,7 +420,7 @@ func TestRetryHistoryJob(t *testing.T) {
 		NZBBackup: "retry-test.nzb.gz",
 		Status:    string(constants.StatusFailed),
 	}
-	_ = repo.Add(ctx, entry, nil)
+	_ = repo.Add(ctx, entry)
 
 	// Pause downloads so the retried job sits at Queued long enough to
 	// inspect without racing the downloader/post-processor pipeline. This
@@ -832,8 +832,9 @@ func TestScriptCanFail_StageWiring(t *testing.T) {
 	}
 }
 
-// Fixture helpers for the download path. Only startMockNNTP is used outside
-// this file, by checkpoint_test.go; makeDeterministic, yencEncodePart,
+// Fixture helpers for the download path. startMockNNTP has callers only in
+// this file (`git grep -n 'startMockNNTP(' -- 'internal/app/*_test.go'` lists
+// only internal/app/app_test.go); makeDeterministic, yencEncodePart,
 // mockNNTP and dotStuff have no caller elsewhere in the package
 // (`git grep -l 'yencEncodePart' -- 'internal/app/*_test.go'` returns 1 file).
 // They live in an untagged file so untagged tests can reach them, which was
@@ -1221,7 +1222,7 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 	application, err := app.New(cfg, nil,
 		app.WithLogger(slog.Default()),
 		app.WithVersion("1.2.3"),
-		app.WithCheckpointInterval(time.Second),
+		app.WithRecordInterval(time.Second),
 	)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)

@@ -21,9 +21,9 @@ import (
 // TotalParts, so OnFileComplete never fires, MarkFileComplete never runs, and
 // the job sits at 100%% with zero outstanding articles across restarts.
 //
-// Counting it claims nothing about its bytes. The truncate bound is derived
-// from the file's durable runs, a rejected article is never written so no run
-// ever covers it,
+// Counting it claims nothing about its bytes. The completion trim is bounded
+// by the file's owned ranges (finish), a rejected article is never written so
+// no range ever covers it,
 // and its bytes are charged to failedBytes — so the file finishes with a hole
 // par2 repairs from, which is exactly what a permanently failed article
 // already does through handleFatalArticle.

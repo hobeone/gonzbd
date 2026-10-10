@@ -11,24 +11,25 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/hobeone/gonzbd/internal/crc32util"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // verifyResult is what one verification pass established about a job's files.
-// It describes; it changes nothing. The caller must commit Verdicts through
-// recorder.apply, then attach the job's content, then install Verified.
+// It describes; it changes nothing. The caller commits Verdicts through
+// recorder.apply, then installs Verified (installVerification). A hydration
+// attaches the job's content between the two (verifyAndAttach); a retry's
+// rebuilt job is already attached (verifyRetry).
 type verifyResult struct {
 	Verdicts []durability.FileVerdict
-	Verified map[int][]durability.WrittenRow // per file, rows that matched, in offset order
+	Verified map[int][]durability.WrittenRow // per file, rows that matched, in no particular order
 	Failed   map[int][]int32                 // per file, articles failed by an intersection
 }
 
-// errVerifyFault wraps every non-definitive error verifyJobFiles returns, so
-// a caller can park the job instead of settling it Failed; that is the
-// contract the caller is meant to honour, and no caller exists yet.
+// errVerifyFault wraps every non-definitive error verifyJobFiles returns, so a
+// hydration (appResidency.verifyAndAttach) can name the faulted file, park the
+// job and not settle it Failed; a retry (verifyRetry) returns it and aborts.
 type errVerifyFault struct {
 	File string
 	Err  error
@@ -41,31 +42,36 @@ func (e *errVerifyFault) Unwrap() error { return e.Err }
 // verifyBufSize is the one read buffer a pass reuses for every row.
 const verifyBufSize = 1 << 20
 
-// preadAt and fsyncFile are seams for tests to inject device errors.
+// preadAt, fsyncFile and statDir are seams for tests to inject device errors.
 var (
 	preadAt   = func(f *os.File, b []byte, off int64) (int, error) { return f.ReadAt(b, off) }
 	fsyncFile = func(f *os.File) error { return f.Sync() }
+	statDir   = os.Stat
 )
 
 // verifyJobFiles reads back every recorded article of every complete=0 file
 // that has rows, whatever its fetch policy, and decides what each row is
 // worth. It touches no job and no SQLite row; see verifyResult.
 //
-// It has no non-test caller at this commit: `git grep -n '[v]erifyJobFiles(' -- '*.go' ':!*_test.go'`
-// finds 1 line, its declaration. The cutover PR is meant to add the caller.
+// Its callers are a hydration (appResidency.verifyAndAttach) and a retry
+// (Application.verifyRetry): `git grep -n '[v]erifyJobFiles(' -- '*.go' ':!*_test.go'`
+// finds 3 lines, those two calls and its declaration.
 //
-// pathFor resolves a recorded filename to a path. The caller must pass the
-// writer's own resolver (pipeline.jobFilePath is meant to be it), so the
-// verifier reads the file the writer wrote under whatever sanitize options
-// are configured, and so the path stays confined to the job directory.
+// pathFor resolves a recorded filename to a path. Both callers pass the
+// writer's own resolver (pipeline.jobFilePath), so the verifier reads the file
+// the writer wrote under whatever sanitize options are configured, and the
+// path stays confined to the job directory.
 //
 // Per file: an empty filename deletes every row, since none can be read
-// back; ENOENT deletes every row only when the file's directory exists — a
-// missing directory (an unmounted download root) is a fault naming it; an
+// back; ENOENT deletes every row only when the file's directory exists — at a
+// hydration a missing directory (an unmounted download root) is a fault naming
+// it, while on a retry it is absence too, unmounted root or not
+// (readBackFile); an
 // fsync error on the fresh descriptor deletes every row (the file is
-// untrusted); a row with a negative offset or a non-positive length is
-// deleted unread; a CRC mismatch or a short read deletes that row. Of rows
-// whose ranges intersect, the first matching one in offset order is kept and
+// untrusted); a row with an invalid shape (WrittenRow.HasValidShape) is
+// deleted unread, while a zero-length row is valid and verifies against CRC 0;
+// a CRC mismatch or a short read deletes that row. Of rows whose ranges
+// intersect, the first matching one in offset order is kept and
 // each other article is failed and its row deleted.
 // A file whose articles are then all resolved (fileFinishable) is finished by
 // path and gets SetComplete. On a retry an intersection failure does not count
@@ -74,7 +80,8 @@ var (
 // A complete=1 file is not read: every row is Verified as it stands.
 //
 // Any other error — an open error other than ENOENT, a failed stat of the
-// directory, a read error, an fsync or truncate error while finishing, a
+// directory (at a hydration, or any non-ENOENT stat error on a retry), a read
+// error, an fsync or truncate error while finishing, a
 // cancelled ctx — returns the zero result and an *errVerifyFault naming the
 // file or directory.
 func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.FileRow,
@@ -103,7 +110,7 @@ func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.Fil
 		if buf == nil {
 			buf = make([]byte, verifyBufSize)
 		}
-		out, err := readBackFile(ctx, path, fr, buf)
+		out, err := readBackFile(ctx, path, fr, buf, retry)
 		if err != nil {
 			return verifyResult{}, asVerifyFault(path, err)
 		}
@@ -162,7 +169,9 @@ func finishIfResolved(ctx context.Context, m *job.Manifest, f durability.FileRow
 	}
 	var maxEnd int64
 	for _, r := range out.verified {
-		maxEnd = max(maxEnd, r.Offset+r.Length)
+		if r.Length > 0 { // a zero-length article claims no range
+			maxEnd = max(maxEnd, r.Offset+r.Length)
+		}
 	}
 	if err := finishFileByPath(path, maxEnd); err != nil {
 		return false, err
@@ -186,19 +195,25 @@ func rowsByFile(rows []durability.WrittenRow) map[int][]durability.WrittenRow {
 type fileReadback struct {
 	deleteAll bool
 	deleted   []int32                 // rows to delete: mismatched, short, or failed
-	verified  []durability.WrittenRow // in offset order
+	verified  []durability.WrittenRow // resolveRows' rows in offset order, then the zero-length rows
 	failed    []int32                 // failed by an intersection
 }
 
 // readBackFile opens, fsyncs and drops the cache of one file, then reads each
 // valid row and resolves intersections. rows are in offset order.
-func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow, buf []byte) (fileReadback, error) {
-	fh, err := os.Open(path) //nolint:gosec // G304: path comes from the resolver the caller must pass, which confines it to the job directory
+func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow, buf []byte, retry bool) (fileReadback, error) {
+	fh, err := os.Open(path) //nolint:gosec // G304: path comes from the caller's resolver, pipeline.jobFilePath, which confines it to the job directory
 	if errors.Is(err, fs.ErrNotExist) {
 		// Absence is definitive only inside a directory that exists; a
-		// missing directory says nothing about the file.
+		// missing directory says nothing about the file at a hydration,
+		// where it may be a share that has not come up. A retry treats a
+		// missing directory (ENOENT from the stat) as absence: it cannot
+		// tell an unmounted download root from a deleted job directory, and
+		// either way drops the rows and refetches. Any other stat error is a
+		// fault on both paths. This is the one place that decides fault
+		// versus gone.
 		dir := filepath.Dir(path)
-		if _, sErr := os.Stat(dir); sErr != nil {
+		if _, sErr := statDir(dir); sErr != nil && (!retry || !errors.Is(sErr, fs.ErrNotExist)) {
 			return fileReadback{}, &errVerifyFault{File: dir, Err: sErr}
 		}
 		return fileReadback{deleteAll: true}, nil
@@ -217,14 +232,21 @@ func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow
 		return fileReadback{}, err
 	}
 
+	// A zero-length row verifies zero bytes against CRC 0 and claims no byte
+	// range (docs/durability-contract.md §5), so it stays out of the
+	// intersection resolution, which orders rows by the ranges they cover.
 	valid := make([]durability.WrittenRow, 0, len(rows))
+	var empty []durability.WrittenRow
 	var invalid []int32
 	for _, r := range rows {
-		if r.Offset < 0 || r.Length <= 0 {
+		switch {
+		case !r.HasValidShape():
 			invalid = append(invalid, r.ArtIdx)
-			continue
+		case r.Length == 0:
+			empty = append(empty, r)
+		default:
+			valid = append(valid, r)
 		}
-		valid = append(valid, r)
 	}
 	match := make([]bool, len(valid))
 	for k, r := range valid {
@@ -239,6 +261,14 @@ func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow
 	}
 	out := resolveRows(valid, match)
 	out.deleted = append(out.deleted, invalid...)
+	for _, r := range empty {
+		// Zero bytes have CRC 0, so the row is judged without a read.
+		if r.CRC32 == 0 {
+			out.verified = append(out.verified, r)
+		} else {
+			out.deleted = append(out.deleted, r.ArtIdx)
+		}
+	}
 	return out, nil
 }
 
@@ -313,7 +343,7 @@ func rowMatches(fh *os.File, r durability.WrittenRow, buf []byte) (bool, error) 
 // again, and closes it. It never grows a file, and a file no article bounds
 // is left alone.
 func finishFileByPath(path string, maxEnd int64) (err error) {
-	fh, err := os.OpenFile(path, os.O_RDWR, 0) //nolint:gosec // G304: path comes from the resolver the caller must pass, which confines it to the job directory
+	fh, err := os.OpenFile(path, os.O_RDWR, 0) //nolint:gosec // G304: path comes from the caller's resolver, pipeline.jobFilePath, which confines it to the job directory
 	if err != nil {
 		return fmt.Errorf("finish %s: %w", path, err)
 	}
@@ -328,46 +358,36 @@ func finishFileByPath(path string, maxEnd int64) (err error) {
 	return nil
 }
 
-// fileCRCFromRows derives a file's whole-file CRC from its per-article rows,
-// given in offset order. It returns false (NoCRC) unless every article of
-// [lo, hi) has exactly one row, none failed, the first row is at offset 0,
-// and each row starts where the previous one ends — so the chain cannot
-// overlap or leave a gap.
-func fileCRCFromRows(rows []durability.WrittenRow, failed bool, lo, hi int) (uint32, bool) {
-	if failed || hi <= lo || len(rows) != hi-lo {
-		return 0, false
-	}
-	seen := make([]bool, hi-lo)
-	var crc uint32
-	var end int64
-	for k, r := range rows {
-		a := int(r.ArtIdx)
-		if a < lo || a >= hi || seen[a-lo] || r.Offset != end {
-			return 0, false
-		}
-		seen[a-lo] = true
-		if k == 0 {
-			crc = r.CRC32
-		} else {
-			crc = crc32util.Combine(crc, r.CRC32, r.Length)
-		}
-		end = r.Offset + r.Length
-	}
-	return crc, true
+// jobFilePath resolves the on-disk path the assembler would have used for one
+// of a job's files, from the filename the queue already recorded.
+//
+// It reads p.downloadDir under the same lock registerFile does, so the two
+// cannot disagree about which directory a job's files live in, and it applies
+// the same JoinSafe sanitisation — a verification that read a different path
+// than the writer used would find every file missing.
+func (p *pipeline) jobFilePath(jobName, filename string) string {
+	p.mu.RLock()
+	jobDir := filepath.Join(p.downloadDir, jobName)
+	sanitize := p.sanitize
+	p.mu.RUnlock()
+	// --- No lock held below this line ---
+	return fsutil.JoinSafe(jobDir, "", filename, sanitize)
 }
 
 // fileFinishable reports whether one file has every article resolved and no
-// Complete flag, and so needs finishing. It is the core of that question for
-// both strandedComplete and verifyJobFiles, which differ only in where
-// "resolved" comes from.
+// Complete flag, and so needs finishing. verifyJobFiles asks it, of the
+// articles its read-back resolved.
 //
-// FetchAlways only, matching Job.IsComplete: a deferred or discarded par2
-// recovery volume is never dispatched, so "every article resolved" is
-// vacuously true of it and completing it would claim a file nobody fetched.
+// FetchAlways only, matching Job.IsComplete. policy is the one job_files
+// stored (finishIfResolved passes FileRow.FetchPolicy), on a retry as much as
+// at a hydration. On a retry that is the failed attempt's policy, while
+// installVerification keeps the rebuilt job's: a recovery volume a damage
+// verdict released, and that was fetched whole, is finished, and the rebuilt
+// job then holds it as FetchIfNeeded with Complete set
+// (TestRetryHistoryJob_ResumesCompletedFilesFromTheRecord).
 //
-// A file with NO articles is excluded for the same reason: the loop below is
-// vacuously true over an empty range, so without this an empty file range
-// would be reported finishable on every start.
+// A file with NO articles is excluded: the loop below is vacuously true over
+// an empty range.
 func fileFinishable(m *job.Manifest, fi int, policy job.FetchPolicy, complete bool, resolved func(i int) bool) bool {
 	if m == nil || fi < 0 || fi >= m.NumFiles() {
 		return false

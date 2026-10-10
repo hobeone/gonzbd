@@ -716,13 +716,13 @@ describe('QueueRow', () => {
 			expect(screen.getByText('Duplicate NZB (Forced)')).toBeInTheDocument();
 		});
 
-		it('reports the durable bytes in the size tooltip', () => {
+		it('reports the written bytes in the size tooltip', () => {
 			render(QueueRow, {
 				slot: { ...baseSlot, bytes_durable: 1048576 },
 				onremove: () => {}
 			});
 			const title = screen.getByTestId('durability-tooltip').getAttribute('title') ?? '';
-			expect(title).toContain('durable (fsynced)');
+			expect(title).toContain('written');
 			expect(title).toContain(formatSize(1048576));
 		});
 	});

@@ -168,9 +168,8 @@ var listItemRE = regexp.MustCompile(`^(\d+)\.\s+(.*)$`)
 // or citation, without its trailing dot, and "" when there is none.
 //
 // The lowercase tail is not hypothetical: docs/TESTING.md has
-// "## 3a. Crash-Consistency Tests" and docs/durability-contract.md has
-// "### 9a. Only storage conditions reach Stallable". Rejecting lowercase left
-// the number in the word list, so a citation of the NAME could never match.
+// "## 3a. Crash-Consistency Tests". Rejecting lowercase left the number in the
+// word list, so a citation of the NAME could never match.
 func sectionNumber(s string) string {
 	i := strings.IndexByte(s, ' ')
 	first := s

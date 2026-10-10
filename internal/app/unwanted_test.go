@@ -275,7 +275,7 @@ func blockedEntry(t *testing.T, repo *history.Repository, adminDir, id string, s
 		Status:      string(constants.StatusFailed),
 		FailMessage: "Aborted, unwanted extension detected: setup.exe",
 		Unwanted:    state,
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 }

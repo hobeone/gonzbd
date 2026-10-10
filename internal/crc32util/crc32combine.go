@@ -16,9 +16,8 @@ const poly = uint32(0xEDB88320)
 //
 // Time complexity: O(log(len2)) matrix multiplications — measured at 7.47 us
 // for len2 = 1e6 on a Ryzen 9 9950X3D. It used to dominate a whole-file prefix
-// walk (~89% of it at 20 000 articles); a durable run folds one Combine in per
-// article as the article joins it, so the same total is paid incrementally
-// rather than re-derived on every checkpoint.
+// walk (~89% of it at 20 000 articles); Job.SettleFileCRC folds one Combine in
+// per article when a file completes, so the walk is paid once per file.
 //
 // # Do not hoist the shift matrix out across calls
 //

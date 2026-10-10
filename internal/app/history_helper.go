@@ -81,6 +81,7 @@ func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
 		}
 
 		completeness = downloadCompleteness(expectedBytes, failed)
+		// Bytes written (encoded), not fsynced; see DurableBytesOf.
 		downloaded = DurableBytesOf(p)
 
 		stats := p.ServerStats()

@@ -33,7 +33,7 @@ func TestDownloadBegun(t *testing.T) {
 		"attempt only":   {func(j *Job) { _ = j.BeginAttempt(stamp) }, false},
 		"failed article": {func(j *Job) { _ = j.MarkArticleFailed(0) }, false},
 		"stamp":          {func(j *Job) { _ = j.MarkJobStarted(stamp) }, true},
-		"done article":   {func(j *Job) { _ = j.MarkArticleDone(0, 100, "s") }, true},
+		"done article":   {func(j *Job) { markWritten(t, j, 0) }, true},
 	} {
 		j := New(name, name, Policy{})
 		if err := j.AttachContent(manifest()); err != nil {

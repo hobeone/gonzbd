@@ -94,7 +94,7 @@ func TestAddGetRoundTrip(t *testing.T) {
 	ctx := t.Context()
 
 	want := sampleEntry("SABnzbd_nzo_abc123", "My Show S01E01", "Completed", "TV")
-	if err := repo.Add(ctx, want, nil); err != nil {
+	if err := repo.Add(ctx, want); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -138,10 +138,10 @@ func TestAddDuplicateNzoIDErrors(t *testing.T) {
 	ctx := t.Context()
 
 	e := sampleEntry("dup_id", "show", "Completed", "TV")
-	if err := repo.Add(ctx, e, nil); err != nil {
+	if err := repo.Add(ctx, e); err != nil {
 		t.Fatalf("first Add: %v", err)
 	}
-	err := repo.Add(ctx, e, nil)
+	err := repo.Add(ctx, e)
 	if err == nil {
 		t.Fatal("second Add with duplicate nzo_id should error")
 	}
@@ -221,7 +221,7 @@ func TestSearchByStatus(t *testing.T) {
 		sampleEntry("id3", "show3", "Completed", "Movies"),
 	}
 	for _, e := range entries {
-		if err := repo.Add(ctx, e, nil); err != nil {
+		if err := repo.Add(ctx, e); err != nil {
 			t.Fatalf("Add %s: %v", e.NzoID, err)
 		}
 	}
@@ -259,7 +259,7 @@ func TestSearchByCategory(t *testing.T) {
 		sampleEntry("c2", "movie1", "Completed", "Movies"),
 		sampleEntry("c3", "show2", "Completed", "TV"),
 	} {
-		if err := repo.Add(ctx, e, nil); err != nil {
+		if err := repo.Add(ctx, e); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}
@@ -283,7 +283,7 @@ func TestSearchBySubstring(t *testing.T) {
 		sampleEntry("s2", "Better Call Saul S01E01", "Completed", "TV"),
 		sampleEntry("s3", "Sopranos S01E01", "Completed", "TV"),
 	} {
-		if err := repo.Add(ctx, e, nil); err != nil {
+		if err := repo.Add(ctx, e); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}
@@ -323,7 +323,7 @@ func TestSearchBySubstring_LIKEWildcardEscaping(t *testing.T) {
 		sampleEntry("esc2", "file_name_test", "Completed", "TV"),
 		sampleEntry("esc3", "normal show", "Completed", "TV"),
 	} {
-		if err := repo.Add(ctx, e, nil); err != nil {
+		if err := repo.Add(ctx, e); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}
@@ -363,7 +363,7 @@ func TestSearchPagination(t *testing.T) {
 			"Item",
 			"Completed", "TV",
 		)
-		if err := repo.Add(ctx, e, nil); err != nil {
+		if err := repo.Add(ctx, e); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}
@@ -432,7 +432,7 @@ func TestDeleteSingle(t *testing.T) {
 	ctx := t.Context()
 
 	e := sampleEntry("del1", "show", "Completed", "TV")
-	if err := repo.Add(ctx, e, nil); err != nil {
+	if err := repo.Add(ctx, e); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -458,7 +458,7 @@ func TestDeleteMultiple(t *testing.T) {
 	ids := []string{"dm1", "dm2", "dm3"}
 	for _, id := range ids {
 		e := sampleEntry(id, "show", "Completed", "TV")
-		if err := repo.Add(ctx, e, nil); err != nil {
+		if err := repo.Add(ctx, e); err != nil {
 			t.Fatalf("Add %s: %v", id, err)
 		}
 	}
@@ -513,7 +513,7 @@ func TestMarkCompleted(t *testing.T) {
 	before := time.Now().Truncate(time.Second)
 	e := sampleEntry("mc1", "show", "Failed", "TV")
 	e.Completed = time.Time{} // start with zero
-	if err := repo.Add(ctx, e, nil); err != nil {
+	if err := repo.Add(ctx, e); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -555,7 +555,7 @@ func TestPruneRespectsRetainDays(t *testing.T) {
 	recent.Completed = time.Now().AddDate(0, 0, -1) // 1 day ago
 
 	for _, e := range []Entry{old, recent} {
-		if err := repo.Add(ctx, e, nil); err != nil {
+		if err := repo.Add(ctx, e); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}
@@ -587,7 +587,7 @@ func TestPruneRespectsRetainFailedDays(t *testing.T) {
 	oldCompleted.Completed = time.Now().AddDate(0, 0, -20)
 
 	for _, e := range []Entry{oldFailed, recentFailed, oldCompleted} {
-		if err := repo.Add(ctx, e, nil); err != nil {
+		if err := repo.Add(ctx, e); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
 	}
@@ -616,7 +616,7 @@ func TestPruneZeroZeroIsNoop(t *testing.T) {
 
 	e := sampleEntry("noop1", "show", "Completed", "TV")
 	e.Completed = time.Now().AddDate(0, 0, -100)
-	if err := repo.Add(ctx, e, nil); err != nil {
+	if err := repo.Add(ctx, e); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 

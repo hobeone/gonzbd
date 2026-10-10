@@ -39,8 +39,8 @@ func (nopResidency) Hydrate(context.Context, string) error { return nil }
 func (nopResidency) Evict(string)                          {}
 
 // TestStall_LeavesALiveAssessingWorkerAlone pins Stall against a job that
-// has left Fetching. The checkpoint still reaches an Assessing job's open
-// handles, so a storage fault can stall one while its assess worker runs.
+// has left Fetching. A storage fault can still stall an Assessing job while
+// its assess worker runs.
 // Releasing that worker's slot let a second job take pool B's only slot
 // while the first assess was still running, and releasing its claim let the
 // resume launch a second assess of the same job.

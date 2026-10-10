@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"encoding/json"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -70,9 +71,10 @@ func deferredVolumeNZB(prefix string) *nzb.NZB {
 }
 
 // persistCompleteJob writes what a previous process leaves for a queued job
-// built from deferredVolumeNZB: its manifest, its queue row at state, and
-// job_files rows recording the payload file complete and the recovery volume
-// deferred.
+// built from deferredVolumeNZB: its manifest, its queue row at state, job_files
+// rows recording the payload file complete and the recovery volume deferred,
+// and the payload article's written_articles row (writePayload's 1024 zero
+// bytes).
 func persistCompleteJob(t *testing.T, repo *history.Repository, adminDir string,
 	j *job.Job, hdr dispatch.Header, state job.StateView, sortKey int64,
 ) {
@@ -105,10 +107,17 @@ func persistCompleteJob(t *testing.T, repo *history.Repository, adminDir string,
 			complete, fetch = 0, job.FetchIfNeeded
 		}
 		if _, err := repo.DB().ExecContext(t.Context(),
-			`INSERT INTO job_files (job_id, file_index, complete, assembled_crc32, fetch_policy, filename)
-			VALUES (?, ?, ?, 0, ?, '')`,
+			`INSERT INTO job_files (job_id, file_index, complete, fetch_policy, filename)
+			VALUES (?, ?, ?, ?, '')`,
 			j.ID(), fi, complete, int(fetch)); err != nil {
 			t.Fatalf("insert job_files: %v", err)
+		}
+		if complete == 1 {
+			lo, _ := m.FileRange(fi)
+			app.SeedWritten(t, durability.NewStore(repo.DB()), j.ID(), []durability.WrittenRow{
+				{FileIdx: fi, ArtIdx: int32(lo), Offset: 0, Length: 1024, //nolint:gosec // G115: fixture index
+					CRC32: crc32.ChecksumIEEE(make([]byte, 1024))},
+			})
 		}
 	}
 }
@@ -208,7 +217,7 @@ func assertAssessed(t *testing.T, a *app.Application, stage unassessedStage, id 
 //
 // The rows are the shapes a crash leaves. Never run: a retry of a job whose
 // files were all complete, before its first tick. Fetching with no Next: a
-// checkpoint flush recorded the last file's Complete flag, and the queue save
+// recorder flush recorded the last file's Complete flag, and the queue save
 // of the download-complete report did not happen. Fetching with Next
 // recorded is the shape whose report was saved.
 func TestRestart_CompleteJobPassesThroughAssessing(t *testing.T) {
@@ -240,7 +249,7 @@ func TestRestart_CompleteJobPassesThroughAssessing(t *testing.T) {
 					t.Fatalf("BeginAttempt: %v", err)
 				}
 			}
-			state := j.Checkpoint().State
+			state := j.State()
 			if tc.verdict {
 				state.Next = job.Assessing
 			}
@@ -270,12 +279,10 @@ func TestRetryHistoryJob_CompleteJobPassesThroughAssessing(t *testing.T) {
 		NzbName:   "retryroute.nzb",
 		NZBBackup: "retryroute.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
-	seedCompletedFile(t, repo.DB(), id, 0, 0, 2)
-	seedHistoryJobFilesRow(t, repo.DB(), id, 1, false, 1, job.FetchIfNeeded)
-	writePayload(t, downloadDir, "retryroute")
+	seedCompletedFile(t, repo.DB(), downloadDir, "retryroute", id, 0, 0, 2, "payload.bin")
 
 	if err := a.RetryHistoryJob(t.Context(), id); err != nil {
 		t.Fatalf("RetryHistoryJob: %v", err)
@@ -283,52 +290,58 @@ func TestRetryHistoryJob_CompleteJobPassesThroughAssessing(t *testing.T) {
 	assertAssessed(t, a, stage, id)
 }
 
-// TestRestart_DropsAJobAlreadyInHistoryBeforeTheResumeSweep pins where
-// startup drops a queued job that is already filed in history: before the
-// resume sweep, and so before the dispatcher's first tick. A tick routes a
-// complete job onward, so a duplicate still queued then could be
-// post-processed a second time.
+// witnessStage reports whether post-processing ever started the job it
+// watches, then holds every job until its context ends.
+type witnessStage struct {
+	id  string
+	saw *atomic.Bool
+}
+
+func (witnessStage) Name() string { return "witness" }
+
+func (s witnessStage) Run(ctx context.Context, pj *postproc.Job) error {
+	if pj.Job.ID() == s.id {
+		s.saw.Store(true)
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestRestart_DropsAJobAlreadyInHistoryBeforeItIsTicked pins that startup
+// drops a queued job already filed in history before the dispatcher can route
+// it. A tick routes a complete job onward, so a duplicate still queued then
+// could be post-processed a second time.
 //
-// The resume fixture's job is the witness: the sweep stats its named file,
-// so the wrapped resumer runs inside the sweep and looks for the duplicate.
-func TestRestart_DropsAJobAlreadyInHistoryBeforeTheResumeSweep(t *testing.T) {
+// The resume fixture's job is the witness that ticks ran: it becomes resident
+// only when a tick hydrates it.
+func TestRestart_DropsAJobAlreadyInHistoryBeforeItIsTicked(t *testing.T) {
 	t.Parallel()
 	f := newResumeFixture(t)
+	f.writePartial(0)
+	f.recordWritten(0)
+	f.stall(1, 2)
 	cfg := testConfig(f.downloadDir, f.completeDir, f.adminDir)
 	dup, hdr := buildTestJob(t, cfg, deferredVolumeNZB("dup"), types.FetchOptions{NzbName: "duplicate"})
 	if err := dup.BeginAttempt(time.Now()); err != nil {
 		t.Fatalf("BeginAttempt: %v", err)
 	}
-	persistCompleteJob(t, f.repo, f.adminDir, dup, hdr, dup.Checkpoint().State, 2)
+	persistCompleteJob(t, f.repo, f.adminDir, dup, hdr, dup.State(), 2)
 	if err := f.repo.Add(t.Context(), history.Entry{
 		NzoID: dup.ID(), Name: "duplicate", Status: string(constants.StatusCompleted),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
-	var swept, queuedDuringSweep atomic.Bool
-	a := f.startWith(1, []postproc.Stage{heldStage{}}, func(a *app.Application) {
-		a.WrapResumer(func(next app.ResumeFunc) app.ResumeFunc {
-			return func(ctx context.Context, jobID string, fileIdx int32, path string) (durability.ResumeResult, error) {
-				if jobID == f.jobID {
-					swept.Store(true)
-					if _, ok := a.Dispatcher().Job(dup.ID()); ok {
-						queuedDuringSweep.Store(true)
-					}
-				}
-				return next(ctx, jobID, fileIdx, path)
-			}
-		})
-	})
+	var saw atomic.Bool
+	a := f.startWith(1, []postproc.Stage{witnessStage{id: dup.ID(), saw: &saw}}, nil)
 
-	if !swept.Load() {
-		t.Fatal("the resume sweep never reached the witness job, so this test observed nothing")
-	}
-	if queuedDuringSweep.Load() {
-		t.Error("the job already in history was still queued during the resume sweep; " +
-			"it is dropped after the first tick, which can route it onward first")
-	}
 	if _, ok := a.Dispatcher().Job(dup.ID()); ok {
 		t.Error("the job already in history is still queued after Start")
+	}
+	f.assertDone(a, [resumeArts]bool{true, false, false})
+	// Two more ticks: a complete job reaches post-processing in two.
+	time.Sleep(2500 * time.Millisecond)
+	if saw.Load() {
+		t.Error("the job already in history reached post-processing again")
 	}
 }

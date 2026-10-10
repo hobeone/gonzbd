@@ -8,59 +8,36 @@ run TestCompleteFinalizedFile_FeedsTheLastVolumeBeforeReportingTheDownload$
 [the volume is fed after the download-finished report]
 file internal/app/app.go
 --- anchor
-		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar {
+		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
 			app.duOrch.maybeStart(fc)
 		}
-		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
-			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
-			return err
-		}
-		if app.checkpointer != nil {
-			app.checkpointer.Mark(j)
-		}
-		// A job the peek failed is filed only now: the history entry retains
-		// each file's progress as it stands when post-processing takes the
-		// job, and a finalize before the mark above would record this file as
-		// incomplete, or evict the job so the mark found it not resident. The
-		// filing is owed by the job's state, not by unwantedFail, so a
-		// completion that failed before here and is redelivered files it too.
-		app.fileOwedUnwantedFailure(j, unwantedFail)
-		// The Fetching worker's exit report. A stale one is a repeat for a
-		// job that has already moved on, and must leave its next state alone.
-		if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
-			if err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
-				app.logQueueWriteFailure("report download complete", fc.JobID, fc.FileIdx, err)
+		// A resumed completion neither marks the file nor dirties it: the
+		// hydration or retry that finished it already committed complete = 1
+		// (hydration through its SetComplete verdict; a retry through
+		// verifyRetry's verdict and its retryFileStates row).
+		if !fc.Resumed {
+			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
+				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+				return err
 			}
-			if app.downloadReportedHook != nil {
-				app.downloadReportedHook(fc.JobID)
-			}
+			app.markFileDirty(j, fc.FileIdx)
 		}
 --- replace
-		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
-			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
-			return err
-		}
-		if app.checkpointer != nil {
-			app.checkpointer.Mark(j)
-		}
-		// A job the peek failed is filed only now: the history entry retains
-		// each file's progress as it stands when post-processing takes the
-		// job, and a finalize before the mark above would record this file as
-		// incomplete, or evict the job so the mark found it not resident. The
-		// filing is owed by the job's state, not by unwantedFail, so a
-		// completion that failed before here and is redelivered files it too.
-		app.fileOwedUnwantedFailure(j, unwantedFail)
-		// The Fetching worker's exit report. A stale one is a repeat for a
-		// job that has already moved on, and must leave its next state alone.
-		if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
-			if err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
-				app.logQueueWriteFailure("report download complete", fc.JobID, fc.FileIdx, err)
+		// A resumed completion neither marks the file nor dirties it: the
+		// hydration or retry that finished it already committed complete = 1
+		// (hydration through its SetComplete verdict; a retry through
+		// verifyRetry's verdict and its retryFileStates row).
+		if !fc.Resumed {
+			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
+				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+				return err
 			}
-			if app.downloadReportedHook != nil {
-				app.downloadReportedHook(fc.JobID)
-			}
+			app.markFileDirty(j, fc.FileIdx)
 		}
-		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar {
+		if reported, _ := app.reportDownloadComplete(j, app.dispatcher); reported && app.downloadReportedHook != nil {
+			app.downloadReportedHook(fc.JobID)
+		}
+		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
 			app.duOrch.maybeStart(fc)
 		}
 --- end

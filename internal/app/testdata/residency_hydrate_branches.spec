@@ -30,11 +30,8 @@ file internal/app/residency.go
 [re-hydration ignores a refused restore]
 file internal/app/residency.go
 --- anchor
-		if err := j.RestoreContent(m); err != nil {
-			return err
-		}
+		return j.RestoreContent(m)
 --- replace
-		if err := j.RestoreContent(m); err != nil {
-			return nil
-		}
+		_ = j.RestoreContent(m)
+		return nil
 --- end

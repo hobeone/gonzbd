@@ -9,7 +9,7 @@ import (
 
 // finish makes a file's bytes durable and trims its preallocated tail: fsync,
 // truncate to the end of the last owned byte, fsync again. A caller reports the
-// file complete only after it returns nil. Nothing calls it yet.
+// file complete only after it returns nil. finalizeFile calls it.
 //
 // The sequence is fsutil.ShrinkAndSync, shared with the restart verifier, run
 // through w.syncFile so a test can inject a device error. A file with no owned

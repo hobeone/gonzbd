@@ -534,7 +534,7 @@ func TestTryAutoResumeLowDisk_DirectBranches(t *testing.T) {
 
 	// 8. stopWorkers stops any active low-disk watch and clears pauseReasonLowDisk.
 	application.handleLowDisk(dlDir, 500)
-	application.stopWorkers(time.Second, nil, false)
+	application.stopWorkers(time.Second, nil)
 	application.mu.Lock()
 	cancelAfterStopWorkers := application.lowDiskCancel
 	reasonAfterStopWorkers := application.pauseReason
@@ -620,9 +620,9 @@ func TestTryAutoResumeLowDisk_DirectBranches(t *testing.T) {
 
 // TestLowDiskPause_AssemblerCallbackAutoResumesRealDownloader exercises the
 // full assembler -> OnLowDisk (handleLowDisk) -> watchLowDisk ->
-// tryAutoResumeLowDisk -> real downloader dispatch path, and pins that a job
-// whose download finishes on the low-disk write is gated at Fetching
-// (Reason=GlobalPause) until auto-resume lifts the pause.
+// tryAutoResumeLowDisk -> real downloader dispatch path, and pins that the
+// low-disk pause holds a job interrupted mid-download at Fetching and gates a
+// job queued during it (Reason=GlobalPause) until auto-resume lifts the pause.
 func TestLowDiskPause_AssemblerCallbackAutoResumesRealDownloader(t *testing.T) {
 	t.Parallel()
 
@@ -633,13 +633,14 @@ func TestLowDiskPause_AssemblerCallbackAutoResumesRealDownloader(t *testing.T) {
 	const msg2 = "lowdisk-real-after@test"
 	srv.AddArticle(msg2, []byte("=ybegin line=128 size=4 name=part2.bin\r\ntest\r\n=yend size=4\r\n"))
 
-	// Assembler runs checkDiskSpace every 16 write requests (diskCheckInterval = 16).
-	// On the 16th write, finalizeFile queues OnFileComplete and checkDiskSpace
-	// immediately calls OnLowDisk -> handleLowDisk (pausing the dispatcher before
-	// completeFinalizedFile's barrier control ops can be processed by the assembler
-	// worker). When completeFinalizedFile then calls reportDownloadComplete
-	// (AdvanceFrom(j1, Fetching, Assessing)), GlobalPause gates j1 at Fetching.
-	const numParts = 16
+	// Assembler runs checkDiskSpace every 16 write requests (diskCheckInterval = 16),
+	// over the directories of the files it still holds open. finalizeFile closes a
+	// completed file and drops it from that set before the check runs, so the
+	// 16th write must leave part1.bin open: it has 17 parts. The check on the 16th
+	// write calls OnLowDisk -> handleLowDisk, which pauses the dispatcher and the
+	// downloader before the assembler worker takes another write, so j1 cannot
+	// leave Fetching while the pause holds.
+	const numParts = 17
 	articles := make([]nzb.Article, numParts)
 	for i := range numParts {
 		id := fmt.Sprintf("lowdisk-real-%d@test", i+1)
@@ -675,7 +676,7 @@ func TestLowDiskPause_AssemblerCallbackAutoResumesRealDownloader(t *testing.T) {
 	})
 
 	j1, hdr1, raw1 := buildTestIngestJob(t, application, &nzb.NZB{Files: []nzb.File{{
-		Subject:  `"part1.bin" yEnc (1/16)`,
+		Subject:  `"part1.bin" yEnc (1/17)`,
 		Bytes:    int64(numParts * 4),
 		Articles: articles,
 	}}}, "lowdisk-job1")
@@ -683,23 +684,22 @@ func TestLowDiskPause_AssemblerCallbackAutoResumesRealDownloader(t *testing.T) {
 		t.Fatalf("AddJob(j1): %v", err)
 	}
 
-	// Wait for the assembler's OnLowDisk callback to pause the dispatcher and for
-	// completeFinalizedFile to report j1's download complete, leaving j1 gated by
-	// GlobalPause at State=Fetching (Running=false).
+	// Wait for the assembler's OnLowDisk callback to pause the dispatcher with j1
+	// still at Fetching.
 	if !waitUntilCondition(5*time.Second, func() bool {
 		if !application.Dispatcher().Paused() {
 			return false
 		}
 		row1, ok := application.Dispatcher().Row(j1.ID())
-		return ok && row1.View.State == job.Fetching && !row1.View.Running && row1.View.Reason == job.GlobalPause
+		return ok && row1.View.State == job.Fetching
 	}) {
 		row1, ok := application.Dispatcher().Row(j1.ID())
-		t.Fatalf("timed out waiting for j1 to be gated at Fetching by GlobalPause (Paused=%v, ok=%v, view=%+v)",
+		t.Fatalf("timed out waiting for the low-disk pause with j1 at Fetching (Paused=%v, ok=%v, view=%+v)",
 			application.Dispatcher().Paused(), ok, row1.View)
 	}
 
-	// Queue a second job while low-disk paused; it must not be fetched across watcher probes,
-	// and j1 must remain gated at Fetching by GlobalPause.
+	// Queue a second job while low-disk paused; it must be gated by GlobalPause
+	// and not fetched across watcher probes, and j1 must stay at Fetching.
 	j2, hdr2, raw2 := buildTestIngestJob(t, application, &nzb.NZB{Files: []nzb.File{{
 		Subject:  `"part2.bin" yEnc (1/1)`,
 		Bytes:    4,
@@ -712,8 +712,12 @@ func TestLowDiskPause_AssemblerCallbackAutoResumesRealDownloader(t *testing.T) {
 	if got := srv.FetchCount(msg2); got != 0 {
 		t.Fatalf("srv.FetchCount(msg2) = %d while low-disk paused, want 0", got)
 	}
+	row2, ok := application.Dispatcher().Row(j2.ID())
+	if !ok || row2.View.Running || row2.View.Reason != job.GlobalPause {
+		t.Fatalf("j2 not gated by GlobalPause while low-disk paused: ok=%v view=%+v", ok, row2.View)
+	}
 	row1AfterProbes, ok := application.Dispatcher().Row(j1.ID())
-	if !ok || row1AfterProbes.View.State != job.Fetching || row1AfterProbes.View.Reason != job.GlobalPause {
+	if !ok || row1AfterProbes.View.State != job.Fetching {
 		t.Fatalf("j1 advanced while low-disk paused: ok=%v view=%+v", ok, row1AfterProbes.View)
 	}
 

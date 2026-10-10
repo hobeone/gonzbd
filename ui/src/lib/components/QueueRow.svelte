@@ -180,10 +180,10 @@
 		};
 	});
 
-	// Bytes a completed fsync covers, in yEnc-encoded NZB bytes: the figure
-	// beside size/sizeleft. See the field doc on queueSlot in
-	// internal/api/queue.go.
-	let durabilityTooltip = $derived(`${formatBytes(slot.bytes_durable ?? 0)} durable (fsynced)`);
+	// Bytes written, in yEnc-encoded NZB bytes: the figure beside
+	// size/sizeleft. The key keeps its old name but no longer means fsynced.
+	// See the field doc on queueSlot in internal/api/queue.go.
+	let durabilityTooltip = $derived(`${formatBytes(slot.bytes_durable ?? 0)} written`);
 
 	// Bytes listed in the drawer that the row's size deliberately excludes.
 	// The row reports what the job expects to fetch, which leaves out par2

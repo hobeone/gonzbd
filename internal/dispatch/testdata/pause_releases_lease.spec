@@ -39,7 +39,7 @@ file internal/dispatch/tick.go
 [a paused job is hydrated because it is paused]
 file internal/dispatch/tick.go
 --- anchor
-	case v.Holds && !d.isResident(j.ID()):
+	case v.Holds && v.Intent != job.IntentPause && !d.isResident(j.ID()):
 --- replace
 	case (v.Holds || v.Intent == job.IntentPause) && !d.isResident(j.ID()):
 --- end

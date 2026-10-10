@@ -1,8 +1,12 @@
 package app_test
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
+	"hash/crc32"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -41,26 +45,39 @@ func writeNZBFile(b *strings.Builder, filename, idPrefix string, nArticles int) 
 	b.WriteString("</segments>\n</file>\n")
 }
 
-// seedCompletedFile records file fileIdx of a FAILED history entry as complete
-// in history_job_files, together with a durable run for each of its articles
-// [firstArt, firstArt+n). The runs are the half a retry needs to believe it: a
-// file restored as complete while any of its articles is not done is
-// re-fetched (Job.ResetForRetry), and a FAILED entry keeps its durable_runs
-// for exactly this read.
-func seedCompletedFile(t *testing.T, db *sql.DB, jobID string, fileIdx, firstArt, n int32) {
+// seedCompletedFile leaves file fileIdx of a FAILED entry the way a failed
+// attempt that had finished it leaves it: the file on disk under
+// downloadDir/jobName, a complete job_files row naming it, and a
+// written_articles row per article [firstArt, firstArt+n) whose CRC matches
+// the bytes. A FAILED entry keeps both tables, and the retry reads the file
+// back against them.
+func seedCompletedFile(t *testing.T, db *sql.DB, downloadDir, jobName, jobID string,
+	fileIdx int, firstArt, n int32, filename string) {
 	t.Helper()
-	seedHistoryJobFilesRow(t, db, jobID, int(fileIdx), true, int(n), job.FetchAlways)
-	arts := make([]durability.DurableArticle, n)
-	for i := range n {
-		arts[i] = durability.DurableArticle{
-			FileIdx: fileIdx,
-			ArtIdx:  firstArt + i,
-			Offset:  int64(i) * 1024,
-			Length:  1024,
-			CRC32:   1,
-		}
+	dir := filepath.Join(downloadDir, jobName)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
 	}
-	app.CommitRuns(t, durability.NewStore(db, "history.db"), jobID, arts)
+	data := make([]byte, 0, int(n)*1024)
+	rows := make([]durability.WrittenRow, 0, n)
+	for i := range n {
+		part := bytes.Repeat([]byte{byte('A' + fileIdx*8 + int(i))}, 1024)
+		rows = append(rows, durability.WrittenRow{
+			FileIdx: fileIdx, ArtIdx: firstArt + i, Offset: int64(i) * 1024, Length: 1024,
+			CRC32: crc32.ChecksumIEEE(part),
+		})
+		data = append(data, part...)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filename), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO job_files (job_id, file_index, complete, filename, fetch_policy)
+		 VALUES (?, ?, 1, ?, ?)`,
+		jobID, fileIdx, filename, int(job.FetchAlways)); err != nil {
+		t.Fatalf("seed job_files row: %v", err)
+	}
+	app.SeedWritten(t, durability.NewStore(db), jobID, rows)
 }
 
 // recoveryFileIndex returns the one manifest index FileIsPar2Recovery
@@ -83,7 +100,7 @@ func recoveryFileIndex(t *testing.T, m *job.Manifest) int {
 }
 
 // seedJobFilesRow inserts a job_files row directly, standing in for a row a
-// failed job's reclaim did not take — a reclaim that failed, or a checkpoint
+// failed job's reclaim did not take — a reclaim that failed, or a recorder
 // flush that wrote after it. The retry reclaims such rows before it seeds.
 func seedJobFilesRow(t *testing.T, db *sql.DB, jobID string, fileIndex int, complete bool, fetch job.FetchPolicy) {
 	t.Helper()
@@ -92,61 +109,20 @@ func seedJobFilesRow(t *testing.T, db *sql.DB, jobID string, fileIndex int, comp
 		c = 1
 	}
 	if _, err := db.Exec(
-		`INSERT INTO job_files (job_id, file_index, complete, filename, assembled_crc32, fetch_policy)
-		 VALUES (?, ?, ?, '', 0, ?)`,
+		`INSERT INTO job_files (job_id, file_index, complete, filename, fetch_policy)
+		 VALUES (?, ?, ?, '', ?)`,
 		jobID, fileIndex, c, int(fetch)); err != nil {
 		t.Fatalf("seed job_files row: %v", err)
-	}
-}
-
-// seedHistoryJobFilesRow inserts a history_job_files row — the retained
-// per-file progress historyFileProgress reads to build RetryHistoryJob's
-// overlay. articleCount must match the re-parsed NZB's file range or
-// retainedMatchesManifest rejects the whole overlay before RestoreFileMeta
-// ever runs.
-//
-// fetch is a parameter so each case states the policy the failed attempt had
-// recorded, which is the scenario under test. It does not drive current
-// behaviour: nothing in production reads history_job_files.fetch_policy any
-// more — `git grep -n 'fetch_policy' -- '*.go'` finds it only in this file's
-// INSERT, fetch_policy_eviction_test.go's, and internal/history's schema
-// tests — because the retry re-derives instead of retaining.
-//
-// It mattered against the ORIGINAL defect, which did read the column: with a
-// hardcoded 0 the retained policy equalled the derived one whenever on-demand
-// par2 was off, so the configuration-honoured case below asserted something
-// the defect already satisfied. The mutation in testdata/retry_fetch_owner.spec
-// applies a literal FetchNever and so kills that case whatever is seeded here
-// — checked by re-running it with this set to FetchAlways. Seeding the scenario
-// is documentation; the mutation is the proof.
-func seedHistoryJobFilesRow(
-	t *testing.T, db *sql.DB, jobID string, fileIndex int,
-	complete bool, articleCount int, fetch job.FetchPolicy,
-) {
-	t.Helper()
-	c := 0
-	if complete {
-		c = 1
-	}
-	if _, err := db.Exec(
-		`INSERT INTO history_job_files (job_id, file_index, complete, filename, assembled_crc32, article_count, fetch_policy)
-		 VALUES (?, ?, ?, '', 0, ?, ?)`,
-		jobID, fileIndex, c, articleCount, int(fetch)); err != nil {
-		t.Fatalf("seed history_job_files row: %v", err)
 	}
 }
 
 // TestRetryHistoryJob_ConfigurationIsHonoured pins that a retry derives its
 // fetch policy from the CURRENT config, not from whatever a previous attempt
 // left behind. On-demand par2 was on when the failed attempt ran — its
-// history_job_files row holds a discarded FetchNever on the recovery volume —
-// and is off now, so the retry must fetch the volume unconditionally rather
-// than keep honouring a policy the user has since disabled (#329, case a).
-//
-// history_job_files is the table that matters here: it is what
-// historyFileProgress reads. The job_files rows seeded below are the state a
-// retry finds on disk and are what Task 3b's seed-and-flush corrects, but
-// nothing reads them before an eviction, so they cannot carry this leak.
+// job_files row, which the FAILED entry keeps and the retry reads, holds a
+// discarded FetchNever on the recovery volume — and is off now, so the retry
+// must fetch the volume unconditionally rather than keep honouring a policy
+// the user has since disabled (#329, case a).
 func TestRetryHistoryJob_ConfigurationIsHonoured(t *testing.T) {
 	t.Parallel()
 	application, repo, adminDir := newRetryTestApp(t)
@@ -161,11 +137,9 @@ func TestRetryHistoryJob_ConfigurationIsHonoured(t *testing.T) {
 		NzbName:   "cfgoff.nzb",
 		NZBBackup: "cfgoff.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
-	seedHistoryJobFilesRow(t, repo.DB(), id, 0, false, 2, job.FetchAlways)
-	seedHistoryJobFilesRow(t, repo.DB(), id, 1, false, 1, job.FetchNever)
 	seedJobFilesRow(t, repo.DB(), id, 0, false, job.FetchAlways)
 	seedJobFilesRow(t, repo.DB(), id, 1, false, job.FetchNever)
 
@@ -184,7 +158,7 @@ func TestRetryHistoryJob_ConfigurationIsHonoured(t *testing.T) {
 	idx := recoveryFileIndex(t, m)
 	if got := j.Progress().FileFetchPolicy(idx); got != job.FetchAlways {
 		t.Errorf("FileFetchPolicy(%d) = %v after a retry with on-demand par2 off, want FetchAlways — "+
-			"the retained FetchNever from history_job_files leaked through instead of the re-derived policy", idx, got)
+			"the retained FetchNever from job_files leaked through instead of the re-derived policy", idx, got)
 	}
 }
 
@@ -207,11 +181,9 @@ func TestRetryHistoryJob_PriorRulingDoesNotSurvive(t *testing.T) {
 		NzbName:   "priorruling.nzb",
 		NZBBackup: "priorruling.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
-	seedHistoryJobFilesRow(t, repo.DB(), id, 0, false, 2, job.FetchAlways)
-	seedHistoryJobFilesRow(t, repo.DB(), id, 1, false, 1, job.FetchAlways)
 	seedJobFilesRow(t, repo.DB(), id, 0, false, job.FetchAlways)
 	seedJobFilesRow(t, repo.DB(), id, 1, false, job.FetchAlways)
 
@@ -235,12 +207,12 @@ func TestRetryHistoryJob_PriorRulingDoesNotSurvive(t *testing.T) {
 	}
 }
 
-// TestRetryHistoryJob_ResumesCompletedFilesFromRetainedProgress pins where a
-// retry's file progress comes from. A failed job's job_files rows are
-// reclaimed when it leaves the queue, so the retry must resume from
-// history_job_files alone — and persist it, or the next eviction re-hydrates
-// the file from a freshly seeded row as incomplete and re-fetches it.
-func TestRetryHistoryJob_ResumesCompletedFilesFromRetainedProgress(t *testing.T) {
+// TestRetryHistoryJob_ResumesCompletedFilesFromTheRecord pins where a retry's
+// file progress comes from: the FAILED entry's job_files and written_articles
+// rows, read back against the file. The file's articles come back Done and its
+// job_files row stays complete, or the next eviction re-hydrates the file as
+// incomplete and re-fetches it.
+func TestRetryHistoryJob_ResumesCompletedFilesFromTheRecord(t *testing.T) {
 	t.Parallel()
 	application, repo, adminDir := newRetryTestApp(t)
 
@@ -253,11 +225,11 @@ func TestRetryHistoryJob_ResumesCompletedFilesFromRetainedProgress(t *testing.T)
 		NzbName:   "resumes.nzb",
 		NZBBackup: "resumes.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
-	seedHistoryJobFilesRow(t, repo.DB(), id, 0, false, 2, job.FetchAlways)
-	seedCompletedFile(t, repo.DB(), id, 1, 2, 1)
+	seedCompletedFile(t, repo.DB(), application.Config().GetGeneral().DownloadDir, "resumes", id,
+		1, 2, 1, "payload.vol000+01.par2")
 
 	if err := application.RetryHistoryJob(t.Context(), id); err != nil {
 		t.Fatalf("RetryHistoryJob: %v", err)
@@ -272,8 +244,8 @@ func TestRetryHistoryJob_ResumesCompletedFilesFromRetainedProgress(t *testing.T)
 		t.Fatalf("Manifest: %v", err)
 	}
 	idx := recoveryFileIndex(t, m)
-	if !j.Progress().FileComplete(idx) {
-		t.Errorf("FileComplete(%d) = false after retry, want true", idx)
+	if !j.Progress().ArticleDone(2) {
+		t.Errorf("file %d's article is not Done after retry; its bytes were verified on disk", idx)
 	}
 	var complete int
 	if err := repo.DB().QueryRowContext(t.Context(),
@@ -306,16 +278,15 @@ func TestRetryHistoryJob_CompletedVolumeKeepsBytes(t *testing.T) {
 		NzbName:   "keepsbytes.nzb",
 		NZBBackup: "keepsbytes.nzb.gz",
 		Status:    string(constants.StatusFailed),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
-	seedHistoryJobFilesRow(t, repo.DB(), id, 0, false, 2, job.FetchAlways)
 	// The recovery volume already finished downloading before the rest of
 	// the job failed — released to FetchAlways by a damage verdict, then
 	// completed.
-	seedCompletedFile(t, repo.DB(), id, 1, 2, 1)
+	seedCompletedFile(t, repo.DB(), application.Config().GetGeneral().DownloadDir, "keepsbytes", id,
+		1, 2, 1, "payload.vol000+01.par2")
 	seedJobFilesRow(t, repo.DB(), id, 0, false, job.FetchAlways)
-	seedJobFilesRow(t, repo.DB(), id, 1, true, job.FetchAlways)
 
 	if err := application.RetryHistoryJob(t.Context(), id); err != nil {
 		t.Fatalf("RetryHistoryJob: %v", err)
@@ -330,8 +301,8 @@ func TestRetryHistoryJob_CompletedVolumeKeepsBytes(t *testing.T) {
 		t.Fatalf("Manifest: %v", err)
 	}
 	idx := recoveryFileIndex(t, m)
-	if !j.Progress().FileComplete(idx) {
-		t.Errorf("FileComplete(%d) = false after retry, want true — a recovery volume that had "+
+	if !j.Progress().ArticleDone(2) {
+		t.Errorf("file %d's article is not Done after retry — a recovery volume that had "+
 			"already finished must not be re-fetched just because the job as a whole failed", idx)
 	}
 	if got := j.Progress().FileFetchPolicy(idx); got != job.FetchIfNeeded {

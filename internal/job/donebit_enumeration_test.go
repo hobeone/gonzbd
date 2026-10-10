@@ -13,19 +13,14 @@ import (
 
 // doneMarkers is every function in this package that reaches markDone.
 var doneMarkers = []string{
-	"AckDurable",
-	"ApplyResolution",
-	"InstallVerified",
-	"MarkArticleDone",
-	"ReplaceFromRuns",
-	"SeedFromRuns",
+	"MarkArticleWritten",
+	"installRows",
 }
 
 // doneBitSetters is every function that sets p.done WITHOUT going through
 // markDone.
 var doneBitSetters = []string{
 	"markDone",
-	"newJobProgressSized",
 	"setFailedBits",
 }
 

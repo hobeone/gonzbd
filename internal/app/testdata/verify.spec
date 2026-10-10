@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestVerifyJobFiles_Outcomes|TestVerifyJobFiles_ReadFaultChangesNothing|TestVerifyJobFiles_FsyncErrorUntrustsTheFile|TestVerifyJobFiles_RetryDoesNotFinishOverAnIntersectionFailure|TestFinishFileByPath|TestFinishFileByPath_ReturnsASecondFsyncError|TestFileCRCFromRows|TestFileFinishable|TestResolveRows|TestReadBackFile_ReadsARowLongerThanTheBuffer|TestFinishIfResolved|TestVerifyJobFiles_CancelChangesNothing|TestVerifyJobFiles_OpenErrorIsAFault|TestVerifyJobFiles_MissingDirectoryIsAFault|TestVerifyJobFiles_OpensTheResolversPath|TestVerifyJobFiles_LeavesAFileWithNoRowsUntouched
+run TestVerifyJobFiles_Outcomes|TestVerifyJobFiles_ReadFaultChangesNothing|TestVerifyJobFiles_FsyncErrorUntrustsTheFile|TestVerifyJobFiles_RetryDoesNotFinishOverAnIntersectionFailure|TestFinishFileByPath|TestFinishFileByPath_ReturnsASecondFsyncError|TestFileFinishable|TestResolveRows|TestReadBackFile_ReadsARowLongerThanTheBuffer|TestFinishIfResolved|TestVerifyJobFiles_CancelChangesNothing|TestVerifyJobFiles_OpenErrorIsAFault|TestVerifyJobFiles_MissingDirectoryIsAFault|TestVerifyJobFiles_OpensTheResolversPath|TestVerifyJobFiles_LeavesAFileWithNoRowsUntouched
 
 [(a) a CRC mismatch treated as a match]
 file internal/app/verify.go
@@ -50,14 +50,6 @@ file internal/app/verify.go
 		case errors.Is(err, io.EOF):
 --- replace
 		case err != nil:
---- end
-
-[(e) fileCRCFromRows accepts a gap]
-file internal/app/verify.go
---- anchor
-		if a < lo || a >= hi || seen[a-lo] || r.Offset != end {
---- replace
-		if a < lo || a >= hi || seen[a-lo] || r.Offset < end {
 --- end
 
 [(f) the retry guard neutered]
@@ -155,9 +147,9 @@ file internal/app/verify.go
 [(n) the impossible-range check neutered]
 file internal/app/verify.go
 --- anchor
-		if r.Offset < 0 || r.Length <= 0 {
+		case !r.HasValidShape():
 --- replace
-		if false {
+		case false:
 --- end
 
 [(o) the path derived from the name instead of the resolver]

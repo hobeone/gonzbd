@@ -86,8 +86,9 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 // It runs from completeFinalizedFile, ahead of the DirectUnpack feed and of
 // MarkFileComplete, so a flagged volume is never fed to an unpacker
 // (`git grep -n 'app\.completeFinalizedFile(' -- 'internal/app/*.go' ':!*_test.go'`
-// returns 3 lines: handleFileComplete, stall re-evaluation and the startup
-// repair of a stranded finalize).
+// returns 1 line, in handleFileComplete). A file the verifier finished at
+// hydration is peeked by installVerification instead, through
+// peekResumedFile, ahead of the same mark.
 //
 // It does nothing, and reports nothing to the job, when the job is not
 // resident or its file cannot be located, and also when:
@@ -134,10 +135,10 @@ func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) stri
 	if p == nil || hasFailedArticle(m, p, fc.FileIdx) {
 		return ""
 	}
-	// The pipeline's resolved path when it has one. The startup repair of a
-	// stranded finalize runs before the pipeline has resolved any, and then
-	// the path comes from the filename the job recorded, as
-	// resume_startup.go's sweep does; with neither, the file is not guessed at.
+	// The pipeline's resolved path when it has one. A file the verifier
+	// finished at hydration (peekResumedFile) was never registered with the
+	// pipeline, and then the path comes from the filename the job recorded;
+	// with neither, the file is not guessed at.
 	path := ""
 	if info, err := app.pipeline.resolveFileInfo(jobID, fc.FileIdx); err == nil {
 		path = info.Path
@@ -160,6 +161,15 @@ func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) stri
 	}
 
 	return app.blockForUnwanted(j, fc.FileIdx, kind, rules.Action(), found)
+}
+
+// peekResumedFile is the peek for a file the verifier finished by path at
+// hydration, installed as residency.peek. It returns the peek's failure
+// message, which the hydration carries to the file's Resumed completion
+// (FileComplete.FailMsg) so the job the peek blocked under ActionFail is filed
+// naming the flagged files.
+func (app *Application) peekResumedFile(j *job.Job, fileIdx int) string {
+	return app.peekArchiveForUnwanted(j, FileComplete{JobID: j.ID(), FileIdx: fileIdx, Resumed: true})
 }
 
 // blockForUnwanted is the acting half of the peek: it asks the dispatcher to

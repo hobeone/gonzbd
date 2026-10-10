@@ -6,9 +6,9 @@ import "testing"
 // where dropping a late article strands it.
 //
 // The tombstone means this file reached TotalParts, so ordinarily every
-// article it names is already resolved — accepted and awaiting the barrier's
-// ack, or permanently failed. Dropping a redelivery of one of those is right:
-// the barrier has the record and this package no longer has the authority.
+// article it names is already resolved — accepted and written, or permanently
+// failed. Dropping a redelivery of one of those is right: the recorder has the
+// row and this package no longer has the authority.
 //
 // The exception is an article that was counted toward TotalParts and then
 // un-done. FileWriter.fail clears an article from seenDone when its write
@@ -67,7 +67,7 @@ func TestLateDuplicate_ResolvesAnArticleTheWriterNeverAccepted(t *testing.T) {
 
 		if len(rejected) != 0 {
 			t.Errorf("OnArticleRejected calls = %v, want none — this article was accepted "+
-				"and the barrier will ack it; failing it here charges good bytes against "+
+				"and the recorder has its row; failing it here charges good bytes against "+
 				"par2's recovery budget and degrades the job's reported health", rejected)
 		}
 	})

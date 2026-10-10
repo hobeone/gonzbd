@@ -15,10 +15,9 @@ import (
 // write faulted owns nothing.
 //
 //   - Incumbent written → the range is OWNED and the ARRIVAL is rejected.
-//     Its bytes are on disk, the next Drain reports them, and the barrier
-//     records the run naming its CRC at that offset and acks it durable.
-//     Letting a later article overwrite the range makes that record
-//     unverifiable, and failing the incumbent as well would give one article
+//     Its bytes are on disk and the recorder holds the row naming its CRC at
+//     that offset. Letting a later article overwrite the range makes that
+//     record unverifiable, and failing the incumbent as well would give one article
 //     two terminal dispositions. Checked in acceptArticle, refused like any
 //     other article-level rejection.
 //   - Incumbent faulted, never written → it claimed nothing, so the arrival is
@@ -77,7 +76,7 @@ func TestCollision_ArrivalRejectedOnceIncumbentIsWritten(t *testing.T) {
 	}
 	if len(c.unwritten) != 0 {
 		t.Errorf("the written incumbent was returned to Outstanding as well as remaining in the "+
-			"barrier's evidence: %v — one article, two terminal dispositions", c.unwritten)
+			"written set: %v — one article, two terminal dispositions", c.unwritten)
 	}
 	onDisk, err := os.ReadFile(c.f.w.path)
 	if err != nil {
@@ -88,39 +87,35 @@ func TestCollision_ArrivalRejectedOnceIncumbentIsWritten(t *testing.T) {
 	}
 }
 
-// TestCollision_RangeStaysOwnedAfterConfirm is the reason the written flag
-// is recorded on the range rather than derived from the barrier's pending
-// evidence.
+// TestCollision_RangeStaysOwnedAfterSync is the reason the written flag is
+// recorded on the range rather than derived from w.unsynced.
 //
-// w.written and w.reported are what the barrier has NOT yet finished with;
-// Confirm empties both once the articles are acked durable. An article that
-// has been acked holds the strongest possible claim on its offset, but a check
-// that scanned those slices would see an empty set and read it as no claim —
-// so a collision arriving one checkpoint later would overwrite an article the
-// queue has already recorded as durably written.
-func TestCollision_RangeStaysOwnedAfterConfirm(t *testing.T) {
+// w.unsynced is what no successful Sync has covered yet; a successful Sync
+// empties it. An article whose bytes an fsync has covered holds the strongest
+// possible claim on its offset, but a check that scanned that slice would see
+// an empty set and read it as no claim — so a collision arriving after the
+// fsync would overwrite an article the recorder has already described.
+func TestCollision_RangeStaysOwnedAfterSync(t *testing.T) {
 	c := newCollisionFixture(t)
 
 	if !c.accept(1, "<first@x>", 0, []byte("AAAA")) {
 		t.Fatal("precondition: the incumbent was not counted")
 	}
-	// Complete a full barrier cycle, which is what empties the evidence.
-	if _, err := c.f.w.Drain(); err != nil {
-		t.Fatalf("drain: %v", err)
+	// A successful Sync is what empties the evidence.
+	if err := c.f.w.Sync(); err != nil {
+		t.Fatalf("sync: %v", err)
 	}
-	c.f.w.Confirm()
-	if len(c.f.w.writtenSoFar()) != 0 || len(c.f.w.unconfirmed()) != 0 {
-		t.Fatalf("precondition: the barrier's evidence is not empty (written=%d "+
-			"reported=%d), so this test cannot distinguish a latched claim from a "+
-			"derived one", len(c.f.w.writtenSoFar()), len(c.f.w.unconfirmed()))
+	if len(c.f.w.unsynced) != 0 {
+		t.Fatalf("precondition: unsynced is not empty (%d), so this test cannot "+
+			"distinguish a latched claim from a derived one", len(c.f.w.unsynced))
 	}
 
 	c.accept(2, "<second@x>", 0, []byte("BBBB"))
 
 	if len(c.rejected) != 1 || c.rejected[0] != 2 {
-		t.Errorf("OnArticleRejected = %v, want [2] — after Confirm the incumbent has "+
-			"been ACKED durable, and overwriting it now contradicts a fact the queue "+
-			"has already recorded", c.rejected)
+		t.Errorf("OnArticleRejected = %v, want [2] — after the Sync the incumbent's "+
+			"bytes are covered by an fsync, and overwriting them now contradicts a fact the "+
+			"recorder has already described", c.rejected)
 	}
 	if len(c.unwritten) != 0 {
 		t.Errorf("an already-acked article was returned to Outstanding: %v", c.unwritten)
@@ -205,7 +200,7 @@ func TestCollision_FailedReacceptKeepsTheWrittenRange(t *testing.T) {
 
 	if len(c.rejected) != 1 || c.rejected[0] != 2 {
 		t.Errorf("OnArticleRejected = %v, want [2] — the failed re-accept released the "+
-			"range, so the arrival overwrote an article the barrier has acked", c.rejected)
+			"range, so the arrival overwrote an article the recorder has described", c.rejected)
 	}
 	if len(c.unwritten) != 0 {
 		t.Errorf("OnArticlesUnwritten = %v: acceptArticle does not route, so nothing "+
@@ -227,7 +222,7 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 
 	w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
 	w.admitAccepted(id.artIdx)
-	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...), 0); err == nil {
+	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err == nil {
 		t.Fatal("precondition: the injected write fault did not surface")
 	}
 	if w.parts() != 0 {
@@ -237,7 +232,7 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 	// The re-dispatched copy, at the same offset.
 	w.writeAt = func(p []byte, _ int64) (int, error) { return len(p), nil }
 	w.admitAccepted(id.artIdx)
-	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...), 0); err != nil {
+	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
 		t.Fatalf("re-accept: %v", err)
 	}
 
@@ -261,7 +256,7 @@ func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 	realWrite := w.writeAt
 	w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
 	w.admitAccepted(first.artIdx)
-	if err := w.Accept(first, 0, []byte("AAAA"), 0); err == nil {
+	if err := w.Accept(first, 0, []byte("AAAA")); err == nil {
 		t.Fatal("precondition: the injected write fault did not surface")
 	}
 	if w.parts() != 0 {
@@ -276,7 +271,7 @@ func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 
 	w.writeAt = realWrite
 	w.admitAccepted(second.artIdx)
-	if err := w.Accept(second, 0, []byte("BBBB"), 0); err != nil {
+	if err := w.Accept(second, 0, []byte("BBBB")); err != nil {
 		t.Fatalf("accept second: %v", err)
 	}
 	if got, owned := w.owned.ownerOf(r, third); !owned || got != second {

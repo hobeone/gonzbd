@@ -63,25 +63,6 @@ func TestBitsetCloneIsIndependent(t *testing.T) {
 	}
 }
 
-// The on-disk JSON shape stays []bool, so the conversion must round-trip
-// exactly, including trailing padding bits that do not correspond to an
-// article.
-func TestBitsetBoolRoundTrip(t *testing.T) {
-	in := make([]bool, 70)
-	in[0], in[64], in[69] = true, true, true
-
-	got := bitsetFromBools(in).ToBools()
-
-	if len(got) != len(in) {
-		t.Fatalf("round trip changed length: got %d, want %d", len(got), len(in))
-	}
-	for i := range in {
-		if got[i] != in[i] {
-			t.Errorf("bit %d: got %v, want %v", i, got[i], in[i])
-		}
-	}
-}
-
 // TestBitsetOutOfRangeIsSafe pins the bounds-check branch on Get/Set/Clear:
 // callers that pass a stale or corrupt index must get a safe no-op/false
 // rather than a panic or a write past the end of words.
@@ -107,34 +88,5 @@ func TestNewBitsetNegativeSizeClampsToZero(t *testing.T) {
 	b := newBitset(-5)
 	if b.Len() != 0 {
 		t.Errorf("Len() = %d, want 0 for negative size", b.Len())
-	}
-}
-
-// TestBitsetAny pins the predicate AnyArticleFailed reads, at the word
-// boundaries a whole-word scan could get wrong.
-func TestBitsetAny(t *testing.T) {
-	for _, tc := range []struct {
-		n   int
-		set []int
-		out []int // indices Set refuses, which must not make it true
-		any bool
-	}{
-		{n: 0},
-		{n: 1},
-		{n: 70, set: []int{69}, any: true},
-		{n: 70, set: []int{64}, any: true},
-		{n: 70, set: []int{0}, any: true},
-		{n: 70, out: []int{70, 127, -1}},
-	} {
-		b := newBitset(tc.n)
-		for _, i := range tc.set {
-			b.Set(i)
-		}
-		for _, i := range tc.out {
-			b.Set(i)
-		}
-		if got := b.any(); got != tc.any {
-			t.Errorf("n=%d set=%v out=%v: any() = %v, want %v", tc.n, tc.set, tc.out, got, tc.any)
-		}
 	}
 }

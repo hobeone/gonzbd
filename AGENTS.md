@@ -169,9 +169,9 @@ before asserting" for the eight that shipped.
   grep even when — especially when — you are confident, and prefer
   grep-**then-read** over grep alone: the population you care about is usually
   the set of *arguments*, and a paraphrase carries none of your tokens.
-- **State the basis in the comment.** "Barrier is the only writer" becomes
-  "Barrier is the only writer — `INSERT` appears once, at
-  `store.go:357`". The citation is what lets the next reader re-run
+- **State the basis in the comment.** "ApplyRecord is the only writer" becomes
+  "ApplyRecord is the only writer — `INTO written_articles` appears
+  once, at `written.go:122`". The citation is what lets the next reader re-run
   your check in one command instead of re-deriving your confidence.
 - **Where the population is enumerable by a machine, write the test instead.** A
   count of call sites, a set of writers of one field, the members of a
@@ -805,7 +805,6 @@ When in doubt about which kind a behaviour is, ask.
 - **Job Record & Content Tiers:** `internal/job/` — the `Job`, its `Manifest` and `JobProgress`
 - **Scheduling Decisions:** `internal/sched/` — leases, compute slots, state transitions, no I/O
 - **Job Registry & Persistence:** `internal/dispatch/` — the ordered registry, the tick loop, manifest residency, queue-state rows
-- **Batched Progress Writes:** `internal/checkpoint/`
 - **Web UI (Svelte SPA):** `ui/` — Svelte 5 + TypeScript + Vite, embedded via `//go:embed all:dist` in `ui/embed.go`
 - **SPA Handler:** `internal/web/` — serves embedded dist with SPA catch-all fallback to index.html
 - **Configuration Schema:** `internal/config/`

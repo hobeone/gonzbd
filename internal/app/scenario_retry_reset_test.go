@@ -1,8 +1,12 @@
 package app_test
 
 import (
+	"bytes"
 	"context"
+	"hash/crc32"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,6 +15,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/job/jobtest"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/types"
 )
@@ -59,11 +64,23 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	}
 	_ = seeded.BeginAttempt(started)
 	_ = seeded.RecordDownload("mock", 123456)
-	_ = seeded.MarkArticleDone(0, 100, "mock")
-	app.CommitRuns(t, durability.NewStore(h.repo.DB(), "history.db"), jobID,
-		[]durability.DurableArticle{
-			{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 1},
-		})
+	jobtest.MarkArticleWritten(t, seeded, 0)
+	// Article 0's bytes on disk and its row, which the retry reads back.
+	part := bytes.Repeat([]byte{'R'}, 100)
+	jobDir := filepath.Join(h.cfg.GetGeneral().DownloadDir, "retry-reset")
+	if err := os.MkdirAll(jobDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "file.bin"), part, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.repo.DB().ExecContext(ctx,
+		`INSERT INTO job_files (job_id, file_index, complete, filename, fetch_policy) VALUES (?, 0, 0, 'file.bin', 0)`,
+		jobID); err != nil {
+		t.Fatalf("seed job_files: %v", err)
+	}
+	app.SeedWritten(t, durability.NewStore(h.repo.DB()), jobID,
+		[]durability.WrittenRow{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(part)}})
 	_ = seeded.MarkArticleFailed(1)
 	_, _ = seeded.Finish(job.OutcomeFailed, finished)
 
@@ -108,16 +125,15 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	}
 
 	// Without these the assertions above are vacuous. A retry rebuilds the
-	// job by re-parsing its NZB, so a job whose retained progress failed to
-	// load also has zero stats — for the wrong reason.
+	// job by re-parsing its NZB, so a job whose record failed to load also
+	// has zero stats — for the wrong reason.
 	//
-	// Article 0 succeeded and must survive: that can only happen if the
-	// overlay loaded. Article 1 failed and must come back clear: that can
-	// only happen if ResetForRetry ran over a loaded overlay. Together they
-	// separate "zeroed by reset" from "zeroed by loading nothing".
+	// Article 0 was written and must survive: that can only happen if the
+	// record was verified and installed. Article 1 failed and must come back
+	// clear: that can only happen if ResetForRetry ran after the install.
 	if !snap.Progress().ArticleDone(0) {
-		t.Error("article 0 succeeded before the failure but is not done after retry; " +
-			"the retained overlay never loaded, so the zeroed stats above prove nothing")
+		t.Error("article 0 was written before the failure but is not done after retry; " +
+			"the record never loaded, so the zeroed stats above prove nothing")
 	}
 	if snap.Progress().ArticleFailed(1) {
 		t.Error("article 1 is still marked failed; ResetForRetry did not clear it")

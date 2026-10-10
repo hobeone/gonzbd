@@ -5,13 +5,11 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
-	"github.com/hobeone/gonzbd/internal/checkpoint"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/downloader"
@@ -45,32 +43,6 @@ func (a *Application) ForceAssemblerStopped() error {
 // GetConfig returns the application config for testing.
 func (a *Application) GetConfig() *config.Config {
 	return a.config
-}
-
-// Checkpointer returns the application's checkpointer for testing.
-func (a *Application) Checkpointer() *checkpoint.Checkpointer {
-	return a.checkpointer
-}
-
-// WrapCheckpointStore rebuilds the application's checkpointer over wrap of the
-// store production gives it, and hands the new one to the pipeline too, for a
-// test that needs some checkpoint writes to fail. It mirrors the construction
-// in app.go that builds app.checkpointer over an appCheckpointStore.
-//
-// Call it before Start: Start launches the goroutines that read
-// app.checkpointer, and swapping it under them is a data race. It panics when
-// the durability store has been replaced by a double, since the rebuilt
-// checkpointer would otherwise write nothing and pass for the wrong reason.
-func (a *Application) WrapCheckpointStore(wrap func(checkpoint.Store) checkpoint.Store) {
-	if a.started.Load() {
-		panic("WrapCheckpointStore called after Start")
-	}
-	ds, ok := a.durable.(*durability.Store)
-	if !ok || ds == nil {
-		panic(fmt.Sprintf("WrapCheckpointStore: durable store is %T, want *durability.Store", a.durable))
-	}
-	a.checkpointer = checkpoint.New(wrap(&appCheckpointStore{store: ds}), time.Hour, a.log)
-	a.pipeline.checkpointer = a.checkpointer
 }
 
 // TriggerMaybeDirectUnpack drives the DirectUnpack orchestrator's start path.
@@ -234,9 +206,8 @@ func (a *Application) AssemblerMinFreeBytes() int64 {
 }
 
 // stopAndJoin performs a hard-crash teardown in Shutdown's component order
-// (state guards -> stopWorkers with noBarrierOnStop -> prune dirty checkpointer
-// entries -> joinAndStop) without running R6's clean-shutdown barrier or
-// flushing the checkpointer.
+// (state guards -> stopWorkers -> joinAndStop) without the recorder's final
+// flush, so the record holds only what an explicit or periodic flush wrote.
 func (a *Application) stopAndJoin() error {
 	if !a.stopped.CompareAndSwap(false, true) {
 		return nil
@@ -248,34 +219,21 @@ func (a *Application) stopAndJoin() error {
 
 	stepTimeout := min(a.stepTimeout(), 5*time.Second)
 	var errs []error
-	a.stopWorkers(stepTimeout, &errs, noBarrierOnStop)
-	// Prune resident jobs from the checkpointer before joinAndStop cancels the
-	// context so Checkpointer.Run's ctx.Done exit flush has nothing to write
-	// during a simulated hard crash (watchCompletions' drainCompletions pass on
-	// ctx.Done is already inert because stopWorkers has stopped the assembler,
-	// so finalizeCompletedFile fails with assembler.ErrAssemblerStopped).
-	if a.checkpointer != nil && a.dispatcher != nil {
-		for _, row := range a.dispatcher.List() {
-			if j, ok := a.dispatcher.Job(row.ID); ok {
-				a.checkpointer.Prune(j)
-			}
-		}
-	}
+	a.stopWorkers(stepTimeout, &errs)
 	a.joinAndStop(stepTimeout, &errs)
 	return errors.Join(errs...)
 }
 
-// ForceStopWorkers stops the downloader and assembler without running R6's
-// clean-shutdown barrier, prunes dirty checkpointer entries so Checkpointer.Run
-// does not flush them on context cancellation, cancels the application context,
+// ForceStopWorkers stops the downloader and assembler, cancels the application
+// context,
 // waits for background goroutines on wg to exit, and stops the post-processor
 // and dispatcher. Fails tb if any teardown step times out or errors. Used in
 // scenario tests to simulate an abrupt process termination (hard crash) without
 // calling Shutdown().
 //
-// noBarrierOnStop and checkpointer pruning are what make it a hard crash rather
-// than a quiet Shutdown: a SIGKILLed process does not get to run a final
-// checkpoint, so neither does this.
+// Skipping the recorder's final flush is what makes it a hard crash rather than
+// a quiet Shutdown: a SIGKILLed process does not get to flush, so neither does
+// this.
 func (a *Application) ForceStopWorkers(tb testing.TB) {
 	tb.Helper()
 	if err := a.stopAndJoin(); err != nil {
@@ -294,30 +252,9 @@ func (a *Application) StopAndJoin(tb testing.TB) {
 	}
 }
 
-// BarrierRuns reports how many checkpoint barriers have been started.
-//
-// The cadence tests need to tell "the barrier fired" from "the barrier had
-// nothing to do", and every externally visible effect of a barrier — an ack, a
-// committed run — is absent in both cases.
-func (a *Application) BarrierRuns() int64 { return a.barrierRuns.Load() }
-
 // Assembler returns the internal assembler for testing.
 func (a *Application) Assembler() *assembler.Assembler {
 	return a.assembler
-}
-
-// NoteJobBytes notes written bytes for a job in the barrier accumulator.
-func (a *Application) NoteJobBytes(jobID string, n int) {
-	a.noteJobBytes(jobID, n)
-}
-
-// JobBarrierState reports whether the job has tracked barrier state (bytes or mutex).
-func (a *Application) JobBarrierState(jobID string) (hasBytes bool, hasMu bool) {
-	a.barrierMu.Lock()
-	defer a.barrierMu.Unlock()
-	_, hasBytes = a.jobBarrierBytes[jobID]
-	_, hasMu = a.jobBarrierMu[jobID]
-	return
 }
 
 // PostProcessorHas reports whether post-processing holds the job instance
@@ -337,12 +274,40 @@ func (a *Application) SetShutdownStepTimeout(d time.Duration) {
 	a.shutdownStepTimeout = d
 }
 
-// CommitRuns is commitRuns for the external test package: it records arts in
-// durable_runs through a real barrier, the only route outside
-// internal/durability that can write run content.
-func CommitRuns(t *testing.T, st *durability.Store, jobID string, arts []durability.DurableArticle) []durability.Collision {
+// ErrRecordForJob is the error a store installed by FailRecordFor returns.
+var ErrRecordForJob = errors.New("test: record write failed")
+
+// AwaitHydration returns once no hydration of id is in flight. A job turns
+// Resident when its content is attached, which is before the verified rows
+// are installed; a Hydrate call made meanwhile waits for the one in flight.
+func (a *Application) AwaitHydration(ctx context.Context, id string) error {
+	return a.residency.Hydrate(ctx, id)
+}
+
+// FailRecordFor makes every record write carrying a batch for jobID fail with
+// ErrRecordForJob. Call it before Start.
+func (a *Application) FailRecordFor(jobID string) {
+	a.recorder.st = failRecordFor{recordStore: a.recorder.st, id: jobID}
+}
+
+type failRecordFor struct {
+	recordStore
+	id string
+}
+
+func (s failRecordFor) ApplyRecord(ctx context.Context, batches []durability.RecordBatch) error {
+	for _, b := range batches {
+		if b.JobID == s.id {
+			return ErrRecordForJob
+		}
+	}
+	return s.recordStore.ApplyRecord(ctx, batches)
+}
+
+// SeedWritten is seedWritten for the external test package.
+func SeedWritten(t *testing.T, st *durability.Store, jobID string, rows []durability.WrittenRow) {
 	t.Helper()
-	return commitRuns(t, st, jobID, arts)
+	seedWritten(t, st, jobID, rows)
 }
 
 // WriteJobManifest persists a job's manifest the way AddJob does.
@@ -358,21 +323,6 @@ func WriteJobManifest(adminDir string, j *job.Job) error {
 // name the file without repeating the layout manifestpath.go owns.
 func ManifestPath(adminDir, jobID string) (string, error) {
 	return manifestPath(adminDir, jobID)
-}
-
-// ResumeFunc is the resume sweep's per-file seam as a function, so the
-// external test package can wrap it without naming fileResumer.
-type ResumeFunc func(ctx context.Context, jobID string, fileIdx int32, path string) (durability.ResumeResult, error)
-
-// Resume calls f.
-func (f ResumeFunc) Resume(ctx context.Context, jobID string, fileIdx int32, path string) (durability.ResumeResult, error) {
-	return f(ctx, jobID, fileIdx, path)
-}
-
-// WrapResumer replaces the resume sweep's per-file resumer with wrap applied to
-// the current one. Call it before Start.
-func (a *Application) WrapResumer(wrap func(next ResumeFunc) ResumeFunc) {
-	a.resumer = wrap(a.resumer.Resume)
 }
 
 // SetAssessHook installs assessHook for the external test package. Call it

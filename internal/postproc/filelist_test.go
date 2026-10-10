@@ -160,7 +160,7 @@ func buildTestJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) *job.Job {
 		ackFailedIDs(t, j, m, failedIDs)
 	}
 	for fi, rs := range rows {
-		if err := j.InstallVerified(fi, rs); err != nil {
+		if _, err := j.InstallVerified(fi, rs); err != nil {
 			t.Fatalf("InstallVerified: %v", err)
 		}
 	}

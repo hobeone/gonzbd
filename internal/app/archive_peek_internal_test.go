@@ -177,7 +177,7 @@ func newPeekAppMode(t *testing.T, action unwanted.Action, mode unwanted.Mode, ex
 
 func (a *peekApp) complete(t *testing.T, i int) {
 	t.Helper()
-	if err := a.completeFinalizedFile(t.Context(), FileComplete{JobID: a.j.ID(), FileIdx: i}); err != nil {
+	if err := a.completeFinalizedFile(FileComplete{JobID: a.j.ID(), FileIdx: i}); err != nil {
 		t.Fatalf("completeFinalizedFile(%d): %v", i, err)
 	}
 }

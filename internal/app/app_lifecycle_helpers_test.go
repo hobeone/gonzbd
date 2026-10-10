@@ -71,7 +71,7 @@ func TestDeleteHistoryEntries_RemovesRowAndBackup(t *testing.T) {
 		t.Fatalf("write backup: %v", err)
 	}
 	entry := history.Entry{NzoID: "deleteentry00001", Name: "job", Status: "Failed", NZBBackup: "job.nzb.gz"}
-	if err := repo.Add(t.Context(), entry, nil); err != nil {
+	if err := repo.Add(t.Context(), entry); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestDeleteHistoryEntries_ToleratesMissingBackup(t *testing.T) {
 	t.Parallel()
 	application, repo, _ := newLifecycleTestApp(t)
 	entry := history.Entry{NzoID: "deleteentry00002", Name: "job2", Status: "Failed", NZBBackup: "gone.nzb.gz"}
-	if err := repo.Add(t.Context(), entry, nil); err != nil {
+	if err := repo.Add(t.Context(), entry); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
@@ -130,7 +130,7 @@ func TestDeleteHistoryEntries_PropagatesRepoError(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	entry := history.Entry{NzoID: "deleteentry00003", Name: "job3", Status: "Failed"}
-	if err := repo.Add(t.Context(), entry, nil); err != nil {
+	if err := repo.Add(t.Context(), entry); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -142,104 +142,12 @@ func TestDeleteHistoryEntries_PropagatesRepoError(t *testing.T) {
 	}
 }
 
-// ---------- runCheckpoint ----------
+// ---------- runStallRecheck ----------
 
-// TestRunCheckpoint_SavesWhenDirty pins that the ticker persists the checkpoint
-// once it is dirty, driving the loop directly rather than through Start so
-// the effect (DirtyCount transitioning to 0) is attributable to
-// runCheckpoint alone.
-func TestRunCheckpoint_SavesWhenDirty(t *testing.T) {
-	t.Parallel()
-	const interval = 20 * time.Millisecond
-	application, _, _ := newLifecycleTestApp(t)
-
-	parsed := &nzb.NZB{Files: []nzb.File{{
-		Subject:  "f.bin",
-		Bytes:    100,
-		Articles: []nzb.Article{{ID: "a@t", Bytes: 100, Number: 1}},
-	}}}
-	j, hdr, err := BuildIngestJob(application.config, parsed, "f.nzb", types.FetchOptions{NzbName: "checkpoint-job"}, nil)
-	if err != nil {
-		t.Fatalf("BuildIngestJob: %v", err)
-	}
-	if err := application.AddJob(t.Context(), j, hdr, nil, false); err != nil {
-		t.Fatalf("AddJob: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan struct{})
-	go func() {
-		application.runCheckpoint(ctx, interval)
-		close(done)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
-
-	application.checkpointer.Mark(j)
-	if application.checkpointer.DirtyCount() == 0 {
-		t.Fatal("fixture guard: checkpointer not dirty right after Mark")
-	}
-
-	deadline := time.Now().Add(20 * interval)
-	for time.Now().Before(deadline) {
-		if application.checkpointer.DirtyCount() == 0 {
-			return // runCheckpoint saved and cleared the dirty set
-		}
-		time.Sleep(interval / 2)
-	}
-	t.Errorf("checkpointer still dirty after %v; runCheckpoint never saved", 20*interval)
-}
-
-// TestRunCheckpoint_SkipsWhenClean pins the self-gate: the ticker must not
-// write when nothing is dirty.
-func TestRunCheckpoint_SkipsWhenClean(t *testing.T) {
-	t.Parallel()
-	const interval = 5 * time.Millisecond
-	application, _, _ := newLifecycleTestApp(t)
-
-	parsed := &nzb.NZB{Files: []nzb.File{{
-		Subject:  "f.bin",
-		Bytes:    100,
-		Articles: []nzb.Article{{ID: "a@t", Bytes: 100, Number: 1}},
-	}}}
-	j, hdr, err := BuildIngestJob(application.config, parsed, "f.nzb", types.FetchOptions{NzbName: "checkpoint-clean-job"}, nil)
-	if err != nil {
-		t.Fatalf("BuildIngestJob: %v", err)
-	}
-	if err := application.AddJob(t.Context(), j, hdr, nil, false); err != nil {
-		t.Fatalf("AddJob: %v", err)
-	}
-	// Initial flush to ensure clean state
-	if err := application.checkpointer.Flush(t.Context()); err != nil {
-		t.Fatalf("initial Flush: %v", err)
-	}
-	if application.checkpointer.DirtyCount() != 0 {
-		t.Fatal("fixture guard: checkpointer dirty right after Flush")
-	}
-
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan struct{})
-	go func() {
-		application.runCheckpoint(ctx, interval)
-		close(done)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
-
-	time.Sleep(10 * interval)
-	if application.checkpointer.DirtyCount() != 0 {
-		t.Errorf("checkpointer became dirty unexpectedly: %d", application.checkpointer.DirtyCount())
-	}
-}
-
-// TestRunCheckpoint_ExitsOnContextCancel pins that runCheckpoint returns
+// TestRunStallRecheck_ExitsOnContextCancel pins that runStallRecheck returns
 // promptly once ctx is cancelled, rather than only on the next tick or
 // never — Shutdown's wg.Wait depends on this to unblock.
-func TestRunCheckpoint_ExitsOnContextCancel(t *testing.T) {
+func TestRunStallRecheck_ExitsOnContextCancel(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 
@@ -248,7 +156,7 @@ func TestRunCheckpoint_ExitsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
-		application.runCheckpoint(ctx, time.Hour)
+		application.runStallRecheck(ctx)
 		close(done)
 	}()
 
@@ -256,7 +164,7 @@ func TestRunCheckpoint_ExitsOnContextCancel(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("runCheckpoint did not return after context cancellation")
+		t.Fatal("runStallRecheck did not return after context cancellation")
 	}
 }
 
@@ -355,8 +263,9 @@ func TestWatchCompletions_DrainsPendingOnContextCancel(t *testing.T) {
 	const nEvents = 6
 	application, j := newWatchCompletionsTestAppN(t, nEvents)
 
-	// Shutdown's order: the assembler stops before the context is cancelled,
-	// so every drained completion meets a stopped assembler.
+	// Shutdown's order: the assembler stops before the context is cancelled.
+	// A completion it sent was finished before it was sent, so the stop does
+	// not stop it being applied.
 	if err := application.assembler.Stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -380,11 +289,9 @@ func TestWatchCompletions_DrainsPendingOnContextCancel(t *testing.T) {
 		t.Fatal("watchCompletions did not return after context cancellation")
 	}
 
-	// A drained completion is withheld, because nothing trimmed its file, and
-	// recorded pending; a dropped one leaves no record.
-	pending := application.recoveryFiles(j.ID())
+	p := j.Progress()
 	for i := range nEvents {
-		if pending[i] != finalizePending {
+		if !p.FileComplete(i) {
 			t.Errorf("file %d: pending completion was dropped instead of drained on shutdown", i)
 		}
 	}
@@ -425,35 +332,5 @@ func TestHasDownloadableJobs_Branches(t *testing.T) {
 	}
 	if appReal.hasDownloadableJobs() {
 		t.Error("hasDownloadableJobs with paused job should be false")
-	}
-}
-
-func TestRetainedMatchesManifest_Branches(t *testing.T) {
-	t.Parallel()
-	j, _, err := BuildIngestJob(nil, multiVolumeNZB(), "test.nzb", types.FetchOptions{}, nil)
-	if err != nil {
-		t.Fatalf("BuildIngestJob: %v", err)
-	}
-	m, err := j.Manifest()
-	if err != nil {
-		t.Fatalf("Manifest: %v", err)
-	}
-
-	retainedBadIdx := []history.FileProgress{
-		{FileIndex: 1, ArticleCount: 2},
-		{FileIndex: 1, ArticleCount: 2},
-		{FileIndex: 2, ArticleCount: 1},
-	}
-	if retainedMatchesManifest(retainedBadIdx, m) {
-		t.Error("retainedMatchesManifest with bad file index should be false")
-	}
-
-	retainedBadCount := []history.FileProgress{
-		{FileIndex: 0, ArticleCount: 99},
-		{FileIndex: 1, ArticleCount: 2},
-		{FileIndex: 2, ArticleCount: 1},
-	}
-	if retainedMatchesManifest(retainedBadCount, m) {
-		t.Error("retainedMatchesManifest with bad article count should be false")
 	}
 }

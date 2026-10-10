@@ -169,10 +169,10 @@ type queueSlot struct {
 	// Reflects job.PendingArticles, which is updated on every state
 	// mutation (downloaded, failed, retried).
 	//
-	// This is also R26's "articles outstanding": an article is resolved only
-	// by a barrier's ack or a permanent failure, so what is left here is
-	// exactly what a crash would re-fetch, alongside the two byte figures
-	// below.
+	// This is the "articles outstanding" count: an article is resolved by
+	// being written (Done) or by a permanent failure, and a crash re-fetches
+	// what is left here plus any Done article whose row had not been flushed
+	// (docs/durability-contract.md § "The state of an article").
 	ArticlesRemaining int `json:"articles_remaining"`
 
 	// ETASeconds is RemainingBytes divided by current aggregate speed.
@@ -196,9 +196,10 @@ type queueSlot struct {
 	// which only that map (not a per-row field) can provide.
 	StallReason string `json:"stall_reason"`
 
-	// BytesDurable is what a completed fsync covers: the NZB-declared size of
-	// each resolved article, in yEnc-ENCODED bytes. It pairs with size/sizeleft/mb,
-	// which are the encoded NZB figures beside it.
+	// BytesDurable keeps its JSON key but means bytes WRITTEN, not fsynced:
+	// the NZB-declared size of each resolved article, in yEnc-ENCODED bytes.
+	// A power loss can lose written bytes the OS had not yet flushed. It pairs
+	// with size/sizeleft/mb, which are the encoded NZB figures beside it.
 	BytesDurable int64 `json:"bytes_durable"`
 
 	// Files is the per-file breakdown for the row's expansion drawer.

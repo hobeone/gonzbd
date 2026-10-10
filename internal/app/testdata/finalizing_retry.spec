@@ -56,12 +56,10 @@ file internal/app/app.go
 [a RemoveJob whose Remove failed gives its mark back]
 file internal/app/app.go
 --- anchor
-			app.checkpointer.Unprune(j)
-		}
+		// one would have.
 		return rmErr
 --- replace
-			app.checkpointer.Unprune(j)
-		}
+		// one would have.
 		app.transitions.mu.Lock()
 		for key, cleanup := range app.transitions.removed {
 			if key.Value() == j {

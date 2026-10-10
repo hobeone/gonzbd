@@ -167,9 +167,9 @@ func defaultDownloads(t *testing.T) config.DownloadConfig {
 func buildAppConfig(mockAddr, downloadDir string) *config.Config {
 	host := mockAddr
 	port := 119
-	if idx := strings.LastIndex(mockAddr, ":"); idx >= 0 {
-		host = mockAddr[:idx]
-		fmt.Sscanf(mockAddr[idx+1:], "%d", &port) //nolint:errcheck // best-effort port parse in tests
+	if before, after, found := strings.CutLast(mockAddr, ":"); found {
+		host = before
+		fmt.Sscanf(after, "%d", &port) //nolint:errcheck // best-effort port parse in tests
 	}
 	cfg, err := config.Default()
 	if err != nil {

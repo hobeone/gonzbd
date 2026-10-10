@@ -119,8 +119,8 @@ func (p *leasePool) setCapacity(c int) {
 }
 
 // slotPool is pool-B compute capacity, held by job ID. Slots have no object
-// because nothing travels with them — unlike a lease, which carries the
-// Manifest and StorageBarrier (spec §6).
+// because nothing travels with them — unlike a lease, which spec §6 ties to
+// the Manifest and StorageBarrier lifetime (the barrier is since deleted).
 type slotPool struct {
 	capacity int
 	held     map[string]bool

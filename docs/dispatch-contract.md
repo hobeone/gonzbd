@@ -198,9 +198,10 @@ and clears the claim only while the job is open at `from`.
 included) reaches it through `pauseJob`, and `BlockUnwanted`, when it pauses, sets
 the pause intent itself under `d.mu` and then calls `yieldPaused`: the downloader stops serving a paused job but
 reports nothing, so without it a paused `Fetching` job kept its lease. A
-storage fault can reach a job that has moved to `Assessing`, because the
-checkpoint still covers its open handles, and a by-ID `Yielded` there took the
-live assess worker's slot and claim, so a resume launched a second one. A pause
+storage fault can reach a job that has moved to `Assessing` — the assembler
+routes a fault on its own goroutine, so one raised before the move can land
+after it — and a by-ID `Yielded` there took the live assess worker's slot and
+claim, so a resume launched a second one. A pause
 therefore latches at any state and releases only a `Fetching` worker; any other
 worker finishes and reports, and the pause gates the move.
 `TestStall_LeavesALiveAssessingWorkerAlone` and
@@ -268,18 +269,29 @@ and hydrates (`Residency.Hydrate`) or evicts (`Residency.Evict`) accordingly.
 A paused job keeps a manifest it already has: `PauseJob` returns a `Fetching`
 job's lease while fetches it dispatched are in flight, and those land on the
 manifest, and a resume launches without re-reading it. A pause adds no
-hydration of its own: the hydrate arm still requires `Holds`, and a paused job
-is granted nothing, so a paused job restored at startup is hydrated here only
-once a resume lets it take a lease. `TestPauseJob_KeepsThePausedJobResident`,
-`TestResumeJob_ContinuesWithoutRehydrating` and
-`TestRestore_PausedJobIsNotHydratedUntilResumed` pin the three.
+hydration of its own: the hydrate arm requires `Holds` and an intent other than
+`IntentPause`, so a paused job restored at startup is hydrated here only once a
+resume lets it take a lease, and a paused job that still holds a compute slot
+is not re-hydrated every tick after a residency fault parked it.
+`TestPauseJob_KeepsThePausedJobResident`,
+`TestResumeJob_ContinuesWithoutRehydrating`,
+`TestRestore_PausedJobIsNotHydratedUntilResumed` and
+`TestReconcileResidency_DoesNotRehydrateAPausedSlotHolder` pin the four.
 
-The startup sweep borrows residency outside this rule: `Application.resumeAllJobs`
-hydrates each swept job itself, which the dispatcher does not record, and evicts
-it at the end of that job's iteration unless a keep condition holds, so no
-dispatcher state changes. See
-`docs/durability-contract.md` § *Which jobs the sweep covers*, which lists the
-keep conditions.
+Three loads happen outside this rule. Two go through `Dispatcher.LoadProgress`,
+which hydrates a registered job with no progress and records the load so a
+later tick evicts it once it holds nothing and is not paused:
+`Application.hydratePausedJobs`, before the first tick, for every job restored
+paused at `Fetching`, so its verified progress is reported — each such job
+stays resident until it is resumed or removed, since the tick's eviction arm
+skips `IntentPause` (`docs/durability-contract.md`, Accepted limitation 1);
+and `SetName`, so a rename sees whether the job's download has begun. The
+third is `Application.fileOwedUnwantedFailures`, before the first tick, which
+calls the residency's `Hydrate` directly for a restored job the archive peek
+owes a filing, so the filing sees its verified files; it records no load,
+because the job departs once filed. A hydration that cannot verify the job's files
+returns an error wrapping `ErrResidencyFault`, which no caller settles: the
+job has been parked (`docs/durability-contract.md` §3).
 
 Only the manifest tier is evictable: nothing drops a `JobProgress` once it
 exists, and header fields never leave. That is weaker than "resident for a

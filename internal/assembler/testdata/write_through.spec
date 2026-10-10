@@ -1,18 +1,5 @@
 pkg ./internal/assembler/
-run Test(FileWriter_SyncDoesNotDiscardAnArticleNoDrainReported|WriteFault_IsRoutedOutOfTheAssembler)$
-
-[Confirm also clears written]
-file internal/assembler/filewriter.go
---- anchor
-func (w *FileWriter) Confirm() {
-	w.reported = nil
-}
---- replace
-func (w *FileWriter) Confirm() {
-	w.reported = nil
-	w.written = nil
-}
---- end
+run Test(WriteFault_IsRoutedOutOfTheAssembler)$
 
 [routeAcceptFailure drops the write-fault report]
 file internal/assembler/assembler.go

@@ -112,11 +112,13 @@ func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 	return true
 }
 
-// JobCheckpointState is the part of a job's durability figures that lives in
-// the application rather than in the queue: why the job is parked.
+// JobCheckpointState is the part of a job's queue-row figures that lives in
+// the application rather than in the queue: why the job is parked. The name
+// predates the loose-record design; the type holds only stall state.
 //
-// The queue listing already holds every job's progress, so the durable figure
-// is derived from that and this struct carries only what the application holds.
+// The queue listing already holds every job's progress, so the written-bytes
+// figure is derived from that and this struct carries only what the
+// application holds.
 type JobCheckpointState struct {
 	// StallReason is the surfaced, actionable text R27 requires, or "" when
 	// the job is not parked.
@@ -153,7 +155,9 @@ type ProgressByteCounters interface {
 	ProgressFigures() (expected, remaining, failed int64)
 }
 
-// DurableBytesOf derives a job's durable byte total from its progress.
+// DurableBytesOf derives a job's written byte total from its progress. The
+// name predates the loose-record design: "durable" here means written, not
+// fsynced.
 //
 // expected - failed - remaining is the downloaded identity
 // internal/app/history_helper.go already relies on; see
@@ -162,10 +166,9 @@ type ProgressByteCounters interface {
 // taking a second snapshot per poll.
 //
 // All three legs are NZB-declared, yEnc-ENCODED bytes, so this figure is too.
-// It is deliberately not a sum over the durability record's lengths, which are
-// the DECODED payload bytes an fsync proved -- docs/job-lifecycle.md records
-// that substitution overstating every non-resident job's remaining bytes by
-// the encoding overhead.
+// It is deliberately not a sum of decoded payload lengths, which would
+// understate it by the encoding overhead -- docs/job-lifecycle.md records the
+// substitution overstating every non-resident job's remaining bytes.
 func DurableBytesOf(p ProgressByteCounters) int64 {
 	if p == nil {
 		return 0

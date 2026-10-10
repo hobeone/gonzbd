@@ -786,20 +786,20 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 		return
 	}
 
-	// The article is not marked Done here, and this package cannot mark it
-	// Done at all: Job.AckDurable takes a durability.DurableProof, which has
-	// no exported constructor outside internal/durability. Only a barrier that
-	// has drained and fsynced the file can mint one.
+	// The article is not marked Done here, and this package has no door to
+	// the bit: the recorder marks it through Job.MarkArticleWritten once the
+	// article's WriteAt has returned, and `git grep -n -E '\.MarkArticleWritten[(]' -- '*.go' ':!*_test.go' ':!internal/job/jobtest'`
+	// finds 1 line, in internal/app/record.go.
 	//
 	// MarkArticleEmitted (transient, not persisted) keeps the dispatcher from
-	// re-picking this article between now and that barrier. If the process
-	// crashes first, Emitted is lost on restart, the startup resume sweep
-	// cannot prove the bytes, and the article is re-dispatched — which is S3,
-	// absence of evidence read as absence.
+	// re-picking this article between now and then. If the process crashes
+	// first, Emitted is lost on restart, nothing proves the bytes, and the
+	// article is re-dispatched — which is S3, absence of evidence read as
+	// absence.
 	//
-	// So Done means a completed fsync covered the bytes, not merely that they
-	// reached WriteAt. See nntp-downloader-contract.md §5 and
-	// docs/durability-contract.md.
+	// So Done means the bytes reached WriteAt, not that an fsync covered
+	// them; a restart reads them back before trusting them. See
+	// nntp-downloader-contract.md §5 and docs/durability-contract.md.
 	d.markEmitted(req)
 	d.clearTried(req)
 	d.emitResult(ctx, req, name, payload.data, payload.offset, payload.crc, nil)
@@ -826,7 +826,7 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		//
 		// Job.MarkArticleEmitted means "a result for this article is on its
 		// way to the pipeline" — it is what stops the dispatcher re-picking
-		// the article between emission and the barrier that acks it. Three
+		// the article between emission and the write that marks it Done. Three
 		// callers set it through markEmitted and then call this function:
 		// applyDispatchPlan's exhausted-try-list loop, and
 		// processFetchedArticle's terminal-decode-error and success paths.
@@ -839,7 +839,7 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		//
 		// That last part is what makes this the owner's job rather than the
 		// sweep's. A bulk clear cannot tell this article — abandoned, nothing
-		// written — from one whose bytes are on disk awaiting a barrier, so it
+		// written — from one whose bytes are on disk awaiting only its Done bit, so it
 		// clears both, and clearing the second re-fetches bytes we already
 		// have (#417). Clearing here is precise, and it costs the withheld set
 		// nothing.

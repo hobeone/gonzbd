@@ -2,15 +2,7 @@ pkg ./internal/durability/
 run TestReclaim_|TestPerJobTables_|TestRuleStatement_|TestInTx_
 timeout 3m
 
-[a failed history entry no longer keeps its durable_runs]
-file internal/durability/reclaim.go
---- anchor
-	{name: "durable_runs", keptForFailedEntry: true},
---- replace
-	{name: "durable_runs"},
---- end
-
-[written_articles stops being kept]
+[a failed history entry no longer keeps its written_articles]
 file internal/durability/reclaim.go
 --- anchor
 	{name: "written_articles", keptForFailedEntry: true},
@@ -18,12 +10,12 @@ file internal/durability/reclaim.go
 	{name: "written_articles"},
 --- end
 
-[job_files starts being kept for a failed entry]
+[a failed history entry no longer keeps its job_files]
 file internal/durability/reclaim.go
 --- anchor
-	{name: "job_files"},
---- replace
 	{name: "job_files", keptForFailedEntry: true},
+--- replace
+	{name: "job_files"},
 --- end
 
 [the rule ignores the queue]
@@ -69,7 +61,7 @@ file internal/durability/reclaim.go
 [perJobTables drops a table]
 file internal/durability/reclaim.go
 --- anchor
-	{name: "failed_articles"},
+	{name: "job_files", keptForFailedEntry: true},
 --- replace
 --- end
 

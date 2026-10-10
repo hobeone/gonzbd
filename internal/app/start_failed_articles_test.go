@@ -16,7 +16,7 @@ import (
 // Previously (#523), Application.Start executed a reload-shaped ClearEmittedForReload
 // sweep over all registered jobs. For any resident job, that call invoked resetForReload,
 // clearing the failed bit and refunding failedBytes for failed articles in incomplete files,
-// undoing the failed_articles state restored from persistence and racing hydration.
+// undoing the failed-article state restored from persistence and racing hydration.
 func TestStart_PreservesPersistedFailedArticlesAcrossStartup(t *testing.T) {
 	adminDir := t.TempDir()
 	cfg := testConfigInternal(t, adminDir)

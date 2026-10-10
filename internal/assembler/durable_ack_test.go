@@ -7,17 +7,13 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
-	"time"
 )
 
-// An article's outcome is no longer an ack (X2): the assembler has no ack
-// authority at all, and durability.Barrier is the only component that tells
-// the queue anything, from Drain's return value. Where a test on this file
-// used to assert "article X was marked Done", it now asserts "article X
-// appears in FileWriter.Drain's return". Where it asserted "article X was
-// marked Failed", it now asserts "article X is ABSENT from Drain" — and,
-// where the fault is directly reachable, that a *storagefault.Fault came
-// back. See filewriter_test.go for the base pins this file specializes.
+// An article's outcome is not an ack (X2): the assembler has no ack authority
+// at all. A written article is noted for Sync (FileWriter.unsynced) and
+// reported to Options.OnArticleWritten; a failed write is absent from
+// unsynced and comes back as a *storagefault.Fault. See filewriter_test.go for
+// the base pins this file specializes.
 
 // TestFailedWrites_RetryIsWrittenNotDiscarded pins the half of the failure
 // path that is not an ack, end to end.
@@ -124,9 +120,6 @@ func TestFailedWrites_RetryIsWrittenNotDiscarded(t *testing.T) {
 	for i := range artCount {
 		send(i)
 	}
-	if _, err := w.Drain(); err != nil {
-		t.Fatalf("Drain after the retries: %v", err)
-	}
 
 	// Phase 3 — the bytes are the assertion.
 	got, err := os.ReadFile(path)
@@ -150,7 +143,7 @@ func TestFailedWrites_RetryIsWrittenNotDiscarded(t *testing.T) {
 }
 
 // TestDuplicateSuccessIsNotReAcked pins that a duplicate does not add a second
-// entry to what Drain reports. The dedup decision lives in
+// entry to unsynced. The dedup decision lives in
 // handleSuccessArticle, keyed on the FileWriter's own seenDone map (R12).
 func TestDuplicateSuccessIsNotReAcked(t *testing.T) {
 	a := newHelperAssembler()
@@ -161,8 +154,8 @@ func TestDuplicateSuccessIsNotReAcked(t *testing.T) {
 	if !a.handleSuccessArticle(f, req) {
 		t.Fatal("first copy was not accepted")
 	}
-	if got := f.w.writtenSoFar(); len(got) != 1 {
-		t.Fatalf("writtenSoFar = %v after the first copy, want exactly one entry", got)
+	if got := f.w.unsynced; len(got) != 1 {
+		t.Fatalf("unsynced = %v after the first copy, want exactly one entry", got)
 	}
 
 	dup := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("second copy")}
@@ -170,12 +163,8 @@ func TestDuplicateSuccessIsNotReAcked(t *testing.T) {
 		t.Error("a duplicate must not be counted toward TotalParts")
 	}
 
-	got, err := f.w.Drain()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 {
-		t.Errorf("Drain = %v, want exactly one entry — the duplicate must not have "+
+	if got := f.w.unsynced; len(got) != 1 {
+		t.Errorf("unsynced = %v, want exactly one entry — the duplicate must not have "+
 			"queued a second write for bytes the first copy already claims", got)
 	}
 }
@@ -201,114 +190,23 @@ func TestDuplicateAtADifferentOffsetIsNotReAcked(t *testing.T) {
 		t.Error("a duplicate must not be counted toward TotalParts")
 	}
 
-	got, err := f.w.Drain()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 {
-		t.Errorf("Drain = %v, want exactly one entry; the duplicate's mismatched "+
+	if got := f.w.unsynced; len(got) != 1 {
+		t.Errorf("unsynced = %v, want exactly one entry; the duplicate's mismatched "+
 			"offset must not queue a second write", got)
 	}
 }
 
 // TestZeroLengthArticleIsReportedWritten pins that a zero-length article takes
 // the same path as any other: the WriteAt is a no-op but the article is still
-// reported Written.
+// noted as written.
 func TestZeroLengthArticleIsReportedWritten(t *testing.T) {
 	w := newTestFileWriter(t)
-	if err := w.Accept(articleID{msgID: "msg0", artIdx: 0}, 0, nil, 0); err != nil {
+	if err := w.Accept(articleID{msgID: "msg0", artIdx: 0}, 0, nil); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	got, err := w.Drain()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || got[0].ArtIdx != 0 {
-		t.Errorf("Drain = %v, want one entry for article 0 — the write is "+
-			"a no-op but the article is still reported Written", got)
-	}
-}
-
-// TestSyncTargetDrainReportsUntilTheCycleIsConfirmed pins WHEN Drain stops
-// re-reporting an article: on the Sync that covers it, and not before.
-//
-// It replaces a pin that asserted the first Drain was the last — that every
-// article appeared once and never again. That was the wrong boundary. A
-// barrier that drains and then fails its Sync has claimed nothing, so an
-// article dropped at that point is never acked by anyone; for a COMPLETED
-// file the retry then drains nothing and FinalizeFile trims to a bound that
-// sits below bytes genuinely on disk. R12 makes at-least-once the
-// contract precisely so the report can survive that.
-func TestSyncTargetDrainReportsUntilTheCycleIsConfirmed(t *testing.T) {
-	dir := t.TempDir()
-	files := make(map[string]FileInfo)
-	const parts = 4
-	// TotalParts is one more than what's written, so the file stays open and
-	// SyncTargetFor can still reach it through the barrier's own path.
-	registerFile(t, dir, files, "job1", 0, parts+1)
-
-	a := startAssembler(t, makeOpts(dir, files))
-
-	for i := range int32(parts) {
-		req := WriteRequest{
-			JobID: "job1", FileIdx: 0, ArtIdx: i,
-			MessageID: fmt.Sprintf("msg%d", i), Offset: int64(i) * 4, Data: []byte("abcd"),
-		}
-		if err := writeArticle(t.Context(), a, req); err != nil {
-			t.Fatalf("WriteArticle %d: %v", i, err)
-		}
-	}
-
-	target := a.SyncTargetFor("job1")
-	waitUntil(t, func() bool { return len(target.Files()) == 1 }, 2*time.Second, "file 0 to open")
-
-	first, err := target.Drain(t.Context(), 0)
-	if err != nil {
-		t.Fatalf("first Drain: %v", err)
-	}
-	if len(first) != parts {
-		t.Fatalf("first Drain = %v, want %d articles", first, parts)
-	}
-
-	// No Sync in between, so nothing has confirmed the first report and the
-	// barrier is entitled to see it again.
-	second, err := target.Drain(t.Context(), 0)
-	if err != nil {
-		t.Fatalf("second Drain: %v", err)
-	}
-	if len(second) != parts {
-		t.Errorf("second Drain = %v, want the same %d articles — no Sync confirmed the "+
-			"first report, so dropping it strands articles no ack will ever reach", second, parts)
-	}
-
-	if err := target.Sync(t.Context(), 0); err != nil {
-		t.Fatalf("Sync: %v", err)
-	}
-	// A successful fsync is NOT the release point. The barrier's commit and
-	// ack still follow it and can still fail, so the report has to survive
-	// until Confirm says the whole cycle landed.
-	third, err := target.Drain(t.Context(), 0)
-	if err != nil {
-		t.Fatalf("third Drain: %v", err)
-	}
-	if len(third) != parts {
-		t.Errorf("third Drain = %v, want the same %d articles — the fsync landed but "+
-			"nothing confirmed the commit or the ack, and a failure between them would "+
-			"leave the retry with nothing to re-report", third, parts)
-	}
-
-	target.Confirm(t.Context(), 0)
-	fourth, err := target.Drain(t.Context(), 0)
-	if err != nil {
-		t.Fatalf("fourth Drain: %v", err)
-	}
-	if len(fourth) != 0 {
-		t.Errorf("fourth Drain = %v, want empty — the cycle was confirmed, so retaining "+
-			"the report past it grows it without bound", fourth)
-	}
-
-	if err := a.Stop(); err != nil {
-		t.Fatalf("Stop: %v", err)
+	if got := w.unsynced; len(got) != 1 || got[0] != 0 {
+		t.Errorf("unsynced = %v, want [0] — the write is a no-op but the article "+
+			"is still noted as written", got)
 	}
 }
 
@@ -374,27 +272,18 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 // seenFailed, but it is not the case that only admitPermanentFailure does:
 // failPermanent records there too.
 
-// TestFatalAfterAWrittenArticleCannotRetractIt replaces
-// TestFatalAfterBufferedSuccessDoesNotOutraceTheDoneAck, which the plan
-// authorised deleting because "the ordering it guards is gone once one
-// component acks".
+// TestFatalAfterAWrittenArticleCannotRetractIt pins that a FatalErr arriving
+// after an article's bytes have landed does not undo them: the assembler has one
+// reporter and one direction for an article's outcome, so there is no second
+// claim to outrace. A permanent failure produces no report here at all — it goes
+// to Job.MarkArticleFailed from the pipeline.
 //
-// That is true, but it was asserted rather than shown, so this shows it. The
-// old race was a Done ack racing a Failed ack for the same article, with the
-// loser's claim winning. Both acks are gone from this package: a success is
-// reported only by appearing in Drain, and a permanent failure produces no
-// report here at all — it goes to Job.MarkArticleFailed from the pipeline.
-// With one reporter and one direction, there is no second claim to outrace.
-//
-// What that means concretely is the assertion below: a FatalErr arriving after
-// an article's bytes have landed cannot retract the Written report. It could
-// not be demonstrated by inspection, because "nothing acks" is a claim about
-// absence — so it is demonstrated by driving both events through the real
-// worker in the losing order and reading what the barrier would see.
+// It is demonstrated by driving both events through the real worker in the
+// losing order, and reading the file.
 func TestFatalAfterAWrittenArticleCannotRetractIt(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]FileInfo{}
-	registerFile(t, dir, files, "job1", 0, 1000) // never completes
+	path := registerFile(t, dir, files, "job1", 0, 1000) // never completes
 	a := startAssembler(t, makeOpts(dir, files))
 
 	// The article's bytes land first.
@@ -412,35 +301,27 @@ func TestFatalAfterAWrittenArticleCannotRetractIt(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := a.Quiesce(t.Context()); err != nil {
+		t.Fatalf("Quiesce: %v", err)
+	}
 
-	written, err := a.SyncTargetFor("job1").Drain(t.Context(), 0)
+	got, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("Drain: %v", err)
+		t.Fatalf("read back: %v", err)
 	}
-	var found bool
-	for _, w := range written {
-		if w.ArtIdx == 0 {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("article 0 is absent from Drain after a later FatalErr — a permanent " +
-			"failure retracted bytes that are on disk, which is the ordering inversion " +
-			"the deleted test guarded")
+	if len(got) < 4 || string(got[:4]) != "abcd" {
+		t.Errorf("file starts %q, want %q — a permanent failure retracted bytes that are on disk",
+			got[:min(len(got), 4)], "abcd")
 	}
 }
 
 var errFatalProbe = errors.New("permanent article failure (test)")
 
-// TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport is S1's
-// syscall-level pin, and its scope is deliberately narrow.
-//
-// # What it pins
-//
-// That the fsync is ON THE PATH, and that the reported-set is discarded only
-// AFTER it returns nil. Before this test, deleting w.handle.Sync() outright
-// left the whole suite green — crash suite included — so the one syscall the
-// entire durability design rests on was silently deletable.
+// TestSync_ActuallyIssuesTheFsync is the syscall-level pin that the fsync is ON
+// THE PATH, and that the articles it covers leave unsynced only AFTER it
+// returns nil. Before this test, deleting w.handle.Sync() outright left the
+// whole suite green — crash suite included — so the one syscall the close-time
+// durability step rests on was silently deletable.
 //
 // # What it does NOT pin, and what a reader must not conclude
 //
@@ -452,69 +333,52 @@ var errFatalProbe = errors.New("permanent article failure (test)")
 //
 // So this is "the program calls fsync in the right order", not "the bytes are
 // on the platter". The second claim remains unverified in this repository.
-func TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport(t *testing.T) {
+func TestSync_ActuallyIssuesTheFsync(t *testing.T) {
 	w := newTestFileWriter(t)
 
 	var syncs int
-	var reportedAtSync int
+	var unsyncedAtSync int
 	w.syncFile = func() error {
 		syncs++
 		// Captured DURING the syscall: if Sync cleared the set first, the
 		// ordering bug would be invisible to an after-the-fact assertion.
-		reportedAtSync = len(w.reported)
+		unsyncedAtSync = len(w.unsynced)
 		return nil
 	}
 
-	if err := w.Accept(articleID{msgID: "m0", artIdx: 0}, 0, []byte("hello"), 0); err != nil {
+	w.admitAccepted(0)
+	if err := w.Accept(articleID{msgID: "m0", artIdx: 0}, 0, []byte("hello")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	if _, err := w.Drain(); err != nil {
-		t.Fatalf("Drain: %v", err)
-	}
-	if len(w.reported) == 0 {
-		t.Fatal("nothing was reported before Sync; the fixture proves nothing")
+	if len(w.unsynced) == 0 {
+		t.Fatal("nothing was noted before Sync; the fixture proves nothing")
 	}
 
 	if err := w.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if syncs != 1 {
-		t.Errorf("fsync issued %d times, want exactly 1; the durability of every "+
-			"ack rests on this syscall being on the path", syncs)
+		t.Errorf("fsync issued %d times, want exactly 1", syncs)
 	}
-	if reportedAtSync == 0 {
-		t.Error("the reported set was already empty when fsync was called; it must be " +
-			"discarded only AFTER a successful fsync, or a failed sync loses the report")
+	if unsyncedAtSync == 0 {
+		t.Error("unsynced was already empty when fsync was called; it must be " +
+			"cleared only AFTER a successful fsync, or a failed sync loses the articles it must roll back")
 	}
-	if len(w.reported) == 0 {
-		t.Error("the reported set was released by the fsync. The barrier's commit and " +
-			"ack follow it, so a failure between them would leave the retry with " +
-			"nothing to re-report; Confirm is the release point")
-	}
-	w.Confirm()
-	if len(w.reported) != 0 {
-		t.Errorf("reported set still holds %d after Confirm, want 0", len(w.reported))
+	if len(w.unsynced) != 0 {
+		t.Errorf("unsynced still holds %d after a successful fsync, want 0", len(w.unsynced))
 	}
 
-	// A FAILING fsync poisons the unconfirmed report (#760): Linux reports a
-	// writeback error once and marks the failed pages clean, so retaining
-	// w.reported would let a retry Sync return nil and ack bytes that never
-	// reached disk. Instead, Sync discards w.reported and rolls the affected
-	// article back into w.poisoned so it returns to Outstanding.
+	// A FAILING fsync rolls the article written since back into w.poisoned so
+	// it returns to Outstanding (#760): Linux reports a writeback error once
+	// and marks the failed pages clean, so nothing written before it can be
+	// trusted.
 	w.admitAccepted(1)
-	if err := w.Accept(articleID{msgID: "m1", artIdx: 1}, 5, []byte("world"), 0); err != nil {
+	if err := w.Accept(articleID{msgID: "m1", artIdx: 1}, 5, []byte("world")); err != nil {
 		t.Fatalf("Accept: %v", err)
-	}
-	if _, err := w.Drain(); err != nil {
-		t.Fatalf("Drain: %v", err)
 	}
 	w.syncFile = func() error { return syscall.EIO }
 	if err := w.Sync(); err == nil {
 		t.Fatal("Sync returned nil despite a failing fsync")
-	}
-	if len(w.reported) != 0 {
-		t.Errorf("a FAILED fsync kept %d articles in w.reported; a retry Sync returning "+
-			"nil would re-drain and ack bytes that never reached disk (#760)", len(w.reported))
 	}
 	if rolled := w.takePoisoned(); len(rolled) != 1 || rolled[0] != 1 {
 		t.Errorf("poisoned after failed Sync = %+v, want [artIdx 1] rolled back to Outstanding", rolled)
@@ -524,7 +388,7 @@ func TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport(t *testing.T) {
 // TestNewFileWriter_BindsSyncFileToTheRealHandle closes the one level of hole
 // the syncFile seam still had.
 //
-// TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport pins that Sync
+// TestSync_ActuallyIssuesTheFsync pins that Sync
 // CALLS w.syncFile in the right order. It says nothing about what syncFile
 // holds, because that test installs its own stub. So rebinding
 // `w.syncFile = handle.Sync` to `func() error { return nil }` in newFileWriter

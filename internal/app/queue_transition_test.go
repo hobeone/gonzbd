@@ -31,7 +31,7 @@ func TestRemoveJob_WaitsForAnInFlightTransition(t *testing.T) {
 		t.Error("RemoveJob took the job out of the queue while another actor held it")
 	}
 	if runs, _ := durabilityRowCounts(t, application, j.ID()); runs != 1 {
-		t.Errorf("durable runs = %d, want 1: RemoveJob reclaimed rows another actor holds", runs)
+		t.Errorf("written rows = %d, want 1: RemoveJob reclaimed rows another actor holds", runs)
 	}
 	claim.release()
 

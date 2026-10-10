@@ -57,7 +57,7 @@ func TestEmitResult_ClearsTheEmittedBitWhenTheResultIsDropped(t *testing.T) {
 
 // TestEmitResult_LeavesTheEmittedBitWhenTheResultIsDelivered is the other half.
 // A delivered result keeps its claim, and the bit must survive until the
-// barrier that acks the article clears it.
+// write that marks the article Done clears it.
 func TestEmitResult_LeavesTheEmittedBitWhenTheResultIsDelivered(t *testing.T) {
 	disp := newTestDispatcher(t)
 	j, m := makeJobWithArticles(t, []string{"a@h"})

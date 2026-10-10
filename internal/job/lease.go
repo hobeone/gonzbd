@@ -5,7 +5,7 @@ package job
 // and name a lease in a log line.
 //
 // Identity cannot come from the pointer. Lease had no fields while its
-// manifest and barrier waited for Half B, and Go gives distinct zero-size
+// manifest and barrier (since deleted) waited for Half B, and Go gives distinct zero-size
 // allocations the same address — so `&Lease{} == &Lease{}` was true and a
 // map[*Lease]*Job held one entry for two jobs. That is a defect which would
 // have vanished silently when B2 adds the first real field, working by
@@ -18,8 +18,8 @@ type LeaseID uint64
 const LeaseUnset LeaseID = 0
 
 // Lease is the admission token for the correctness loop. Prior spec §6:
-// pool-A capacity, the resident Manifest and the StorageBarrier have exactly
-// one lifetime between them — from a job beginning to fetch until it crosses
+// pool-A capacity, the resident Manifest and the StorageBarrier (since deleted)
+// have exactly one lifetime between them — from a job beginning to fetch until it crosses
 // the irreversible boundary — and "three things with one lifetime are one
 // object".
 //
@@ -33,10 +33,9 @@ const LeaseUnset LeaseID = 0
 // for "Half B2", on §6's argument that the three share a lifetime. Neither
 // arrived, and neither should:
 //
-//   - The BARRIER is process-level, not per-lease. §10.1's banner in
-//     2026-08-25-job-lifecycle-design.md records the refutation: one Barrier is
-//     built in app.New with a cross-job overlapKey map, and reconciling
-//     per-lease would destroy durable records for jobs in post-processing.
+//   - The BARRIER was process-level, not per-lease (§10.1's banner in
+//     2026-08-25-job-lifecycle-design.md records the refutation), and it has
+//     since been deleted, so there is no barrier to attach.
 //
 //   - The MANIFEST is keyed on holding what a position requires, not on
 //     holding a lease. grantFor runs under Queue.mu and Hydrate does disk I/O,

@@ -283,7 +283,7 @@ func TestPruneHistory_SkipsAJobBeingFinalized(t *testing.T) {
 	const id = "feedface00649a03"
 	if err := repo.Add(t.Context(), history.Entry{
 		NzoID: id, Name: id, Status: "Failed", Completed: time.Now().AddDate(0, 0, -90),
-	}, nil); err != nil {
+	}); err != nil {
 		t.Fatalf("repo.Add: %v", err)
 	}
 

@@ -164,10 +164,9 @@ single worker goroutine (`run`).
   again on the next tick, and while it holds none the dispatcher evicts its
   manifest (`docs/dispatch-contract.md` § "Manifest residency is derived from
   pool membership and pause"), which the run's download listing
-  (`buildDownloadFileList`) and the finalizer's `retainedProgressFor` read.
-  Both degrade rather than fail on an evicted job: the listing records "File
-  listing unavailable" (`internal/postproc/filelist.go`), and
-  `retainedProgressFor` reads the manifest from disk instead.
+  (`buildDownloadFileList`) reads. It degrades rather than fails on an evicted
+  job: the listing records "File listing unavailable"
+  (`internal/postproc/filelist.go`).
 - **Which copy's information wins**: a refused call hands nothing over. The
   admitted call keeps everything it gathered, including the DirectUnpack
   results, which `duOrch.collect` hands out only once. The history entry's
@@ -477,29 +476,27 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
 
    **Where QuickCheck's CRCs come from.**
    The stage compares the par2 index's per-file checksums against
-   `FileProgress.AssembledCRC32`, which is set only by `Queue.SetFileCRC32FromRuns`
-   (see below for its one caller). The assembler used to compute a
+   `FileProgress.AssembledCRC32`, which `Job.SettleFileCRC` derives from the
+   file's article rows (below). The assembler used to compute a
    whole-file value by folding the per-article CRCs it happened to see, which
    was #349 — a resumed run is never sent the articles an earlier run
    completed, so its parts do not tile the file — and that writer is gone with
    the rest of the assembler's authority (see
    [`docs/durability-contract.md`](durability-contract.md)).
 
-   The replacement is the `crc32` of the file's single **durable run**. A run
-   combines the CRCs of the articles that abut as they join it, and the runs
-   persist across restarts, so they account for every article of the file
-   whichever run fetched it — a *resumed* file supplies a CRC as readily as a
-   fresh one, which the old design could not. No read of the file is involved
-   (R24), and `Application.recordAssembledCRC` threads the value to
-   `Queue.SetFileCRC32FromRuns` when the file finalizes — which publishes it
-   **only when the file holds exactly one run, that run starts at offset 0, and
-   it covers every article of the file**. A file with an article overlapping a
-   sibling keeps that article in a row of its own, so it has more than one row;
-   a file where two articles claimed the SAME offset keeps one row but cannot
-   cover the dropped article's index. Either way it supplies no CRC rather than
-   one describing bytes it may not hold (#387). The setter takes the runs, not
-   a `uint32`, so there is no way to record a CRC without the record that
-   earned it.
+   The replacement combines the per-article CRCs of the file's
+   `written_articles` rows (`fileCRCFromRows`, `internal/job/verified.go`).
+   The rows persist across restarts and a restart installs those it verified,
+   so they account for every article of the file whichever process fetched
+   it — a *resumed* file supplies a CRC as readily as a fresh one. No read of
+   the file is involved (R24). `Job.SettleFileCRC` derives the value when the
+   file completes, and publishes it **only when every article of the file has
+   exactly one row, none failed, the first row starts at offset 0, and each row
+   starts where the previous one ends**. A file with a hole, a failed article,
+   or rows that do not chain supplies no CRC rather than one describing bytes
+   it may not hold (#387). The value is derived from the rows by one function
+   and never set from a bare `uint32`, so there is no way to record a CRC
+   without the record that earned it.
 
    **The consumer is `par2.Assess`.** This was once a distinction —
    "`par2.VerifyCRCs`, not `par2.QuickCheck`" — because relocation and CRC
@@ -625,14 +622,14 @@ source for this paragraph):
 with no file-set mutation, deletion, or renumbering involved. A retry does not
 carry the previous attempt's policy forward at all.
 
-Within one live job there is one path back, and it is hydration rather than a
-verdict: `appResidency.Hydrate` restores every file's policy from `job_files`
-via `Job.RestoreFetchPolicy`, so an eviction and re-hydration moves the
-in-memory policy to whatever the row holds. That is only safe because every
-mutation of the policy marks the job for checkpointing: both verdicts reach
+Across a restart there is one path back, and it is hydration rather than a
+verdict: the first hydration after a restart restores every file's policy from
+`job_files` via `Job.RestoreFetchPolicy` (`installVerification`), so the job
+resumes with whatever the row holds. That is only safe because every mutation
+of the policy marks the job's files dirty for the recorder: both verdicts reach
 `Application.markFetchPolicyDirty`, and ingest derives the policy before the row
 exists. A writer that changed the policy without marking would be undone by the
-next eviction, with no error anywhere — which is what made this a real defect
+next restart, with no error anywhere — which is what made this a real defect
 before #329 rather than a theoretical one.
 
 A retry is not that path back. It rebuilds the job from scratch through
@@ -750,10 +747,10 @@ instance (`postProcAdmissions`) both hold.
   par2 failure is retried automatically with them released.
 - **Loop bound**: the retry releases every volume it holds before job_files,
   which hydration restores the policy from, is seeded; and only ingest sets
-  a volume to `FetchIfNeeded`. The policy field has four writers
-  (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 4
-  lines): the setter, the release, the discard, and construction, which
-  starts every file at `FetchAlways`. The setter's two callers are ingest,
+  a volume to `FetchIfNeeded`. The policy field has three writers
+  (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 3
+  lines): the setter, the release, and the discard. Construction writes
+  nothing: every file starts at the zero value, `FetchAlways`. The setter's two callers are ingest,
   passing `FetchIfNeeded`, and hydration
   (`git grep -nE 'SetFileFetchPolicy\(|RestoreFetchPolicy\(' -- '*.go'
   ':!*_test.go'` returns 5 lines: those two calls, the two declarations, and

@@ -4,7 +4,7 @@ This is the contract for a job: what it is made of, what state it is
 guaranteed to have, who may write each piece, which operations may fail and
 which must not, and what a restart is allowed to change.
 
-The lifecycle is implemented across four packages, and the split is the
+The lifecycle is implemented across three packages, and the split is the
 contract's first fact:
 
 | Package | Owns |
@@ -12,7 +12,6 @@ contract's first fact:
 | `internal/job` | the `Job`, its four axes, `Attempt`, `Lease`, `Manifest`, `JobProgress`. No I/O, no import of any other package here except `internal/constants`. |
 | `internal/sched` | the scheduling decisions — the two pools, grant and release, `Advance`, `Cancel`, `Settle`, `Retry`, `Park`, and the rendering doors. No registry, no store, no workers. |
 | `internal/dispatch` | the registry in queue order, manifest residency, the tick loop, worker launch and exit, and the queue-state rows. |
-| `internal/checkpoint` | batched writes of the progress record. |
 
 `docs/ARCHITECTURE.md` describes the architecture. This describes its
 obligations. `internal/job/doc.go`, `internal/sched/doc.go` and
@@ -219,7 +218,7 @@ Three things follow:
   true (first-article stamp set, or a done article). A job restored at
   startup has no `JobProgress` until hydrated, and a retried job's stored
   stamps are zero, so `SetName` hydrates such a job first
-  (`loadProgressForRename`). `HasRun` is the wrong
+  (`Dispatcher.LoadProgress`). `HasRun` is the wrong
   test for this: it is true for any job the tick has opened an attempt on,
   including one still waiting behind others.
 - **`Outcome` stays genuinely write-once.** A verdict is never revised, only
@@ -533,14 +532,13 @@ attempt keeps the position it settled at, so a gate written as
 (`internal/sched/requirements.go`) answer about a **position**, never about an
 attempt, and say so.
 
-**The lease does not carry the manifest or the barrier.** An earlier design
-argued that pool-A capacity, the resident `Manifest` and the `StorageBarrier`
-share one lifetime and are therefore one object. They do not, and `lease.go`
-records the refutation at the type:
+**The lease does not carry the manifest.** An earlier design argued that
+pool-A capacity, the resident `Manifest` and a storage barrier share one
+lifetime and are therefore one object. They do not, and `lease.go` records the
+refutation at the type:
 
-- The **barrier is process-level**. One is built in `app.New` and holds
-  cross-job state; reconciling per-lease would destroy durable records for jobs
-  in post-processing.
+- The **barrier was process-level**, not per-lease, and it has since been
+  deleted.
 - The **manifest is keyed on holding what a position requires**, not on holding
   a lease. `grantFor` runs under the Queue's mutex and hydration does disk I/O,
   so there is no manifest to install at grant time; and post-processing reads
@@ -548,7 +546,7 @@ records the refutation at the type:
   lease-gated manifest would be unreadable exactly where the stage that
   verifies CRCs needs it.
 
-Do not reintroduce either field.
+Do not reintroduce a manifest field.
 
 ### One releaser, one reclaimer
 
@@ -781,8 +779,8 @@ is the common reason but not the only one: teardown, shutdown and a dead
 connection all end a worker without ending the work.
 
 Its precondition is the caller's to guarantee and cannot be checked here: the
-worker has returned and will not touch the job's lease, slot, manifest or
-barrier again. `running()` stays **true** for a worker that has yielded and not
+worker has returned and will not touch the job's lease, slot or manifest
+again. `running()` stays **true** for a worker that has yielded and not
 yet been parked — which is precisely why this door exists.
 
 ```go
@@ -917,10 +915,12 @@ pipeline consumes them before `unwanted_cleanup` and the two must judge one
 population. The peek never forks `unrar`: a RAR3 volume, or a RAR5 volume the
 engine cannot list, is skipped (RAR3 content is caught by `unwanted_cleanup`
 after unpack), while the par2 hint does not depend on the archive version. It
-runs from `completeFinalizedFile`, before the DirectUnpack feed and before
-`MarkFileComplete`, so a stall's re-evaluation and the startup repair of a
-stranded finalize get it too (`git grep -n 'app\.completeFinalizedFile('
--- 'internal/app/*.go' ':!*_test.go'` returns 3 lines). It does nothing for a
+runs from `completeFinalizedFile` for a live completion, before the
+DirectUnpack feed and before `MarkFileComplete`
+(`git grep -n 'app\.completeFinalizedFile(' -- 'internal/app/*.go'
+':!*_test.go'` returns 1 line, `handleFileComplete`), and from
+`peekResumedFile` for a file the verifier finished by path at hydration,
+before the hydration marks it complete. It does nothing for a
 job already Blocked or Approved, with the action `off`, for a file with a
 failed article (par2 and the post-unpack stage cover those), or when the
 headers cannot be read; it never fails a job for being unable to look. 7z,
@@ -942,7 +942,7 @@ approves it. The writers behind that claim are found with
 `git grep -nE '\.Unwanted\s*=[^=]' -- '*.go' ':!*_test.go'` and
 `git grep -n 'SetIntent(job[.]IntentRun)' -- '*.go' ':!*_test.go'` (one hit,
 in `resume`). The owner is called from
-`completeFinalizedFile` after `MarkFileComplete` and the checkpoint mark, with
+`completeFinalizedFile` after `MarkFileComplete` and the recorder's dirty mark, with
 the peek's message naming the files, and by `reconcileBeforeFirstTick` for every
 restored job, with none. Filing before the mark would let post-processing
 record the flagged file as incomplete in the history entry, or evict the job so
@@ -1139,21 +1139,19 @@ and `Job.ClearArticleEmitted` are reached from fetch results, from the
 downloader's drops of requests and results, and from the assembler's
 article-fault handlers — all of which can run after the job was evicted. A
 paused job is not evicted (below), so a pause does not open that window; any
-other eviction with fetches in flight does. The failed bit is what a failure's
-durable record is written from: hydration re-derives a success from `durable_runs`, but the
-`failed_articles` rows a failure is restored from are written from that bit by
-the checkpoint adapter (`appCheckpointStore.SaveBatch`). An emitted bit
-survives eviction and hides its article from `ForEachUnfinishedArticle`.
-Refusing either write therefore loses a failure or strands an article.
+other eviction with fetches in flight does. The failed bit is the only record
+of a permanent failure — it is not persisted, and a restart returns the article
+to Outstanding unless its file is `complete=1` (`docs/durability-contract.md`
+§3). An emitted bit survives eviction and hides its article from
+`ForEachUnfinishedArticle`. Refusing either write therefore loses a failure or
+strands an article.
 
 With the manifest evicted, both write the bits alone and leave the counters to
 the `recompute` in `RestoreContent` at the next hydration. Until then
 `FailedBytes`, `PendingArticles` and `ArticlesFailed` lag the bits, and the
 early par2 release a resident failure triggers is not made: held volumes wait
 for a later resident failure or, if damage is then found, for the
-Assessing-time verdict in `maybeReleaseRecoveryVolumes`. The checkpointer
-therefore decides whether to write `failed_articles` rows from the bits
-(`JobProgress.AnyArticleFailed`), not from `ArticlesFailed`.
+Assessing-time verdict in `maybeReleaseRecoveryVolumes`.
 
 **Residency is not derived from position.** Either you hold a manifest or you
 do not, and `Job.Manifest() (*Manifest, error)` makes every dependence on one a
@@ -1237,8 +1235,8 @@ install.
 
 > **A manifest is hydrated when the job holds everything its current position
 > requires, and evicted when it does not and is not paused.**
-> A paused job keeps a manifest it already has, and is never hydrated because
-> it is paused.
+> A paused job keeps a manifest it already has, and the tick never hydrates
+> it because it is paused.
 
 `Dispatcher.reconcileResidency` is the only place the rule is evaluated;
 `Remove` evicts on departure whatever the rule says, and `Stop` evicts every
@@ -1255,7 +1253,9 @@ the lease and launches the worker on the manifest already in memory.
 
 So what `reconcileResidency` keeps resident is bounded by the two pool
 capacities plus the jobs that were resident when paused, settled ones included,
-not by queue depth.
+not by queue depth. Startup adds one more: `hydratePausedJobs` hydrates every
+job restored paused at `Fetching`, so that its verified progress is reported,
+and the tick then keeps it as it keeps any paused job.
 The paused jobs are deliberately not capped; a manifest is about 1.6 MB per
 20k articles (§13).
 
@@ -1265,8 +1265,8 @@ under any lock, so a job holds without a manifest for the length of one read.
 Nothing consumes that window: worker launch runs after reconciliation, and a
 read that failed on the manifest itself settles the job here.
 
-The two hydration failure modes are not the same fact and must not be treated
-alike:
+The three hydration failure modes are not the same fact and must not be
+treated alike:
 
 - **An unreadable manifest is a fact about the job.** It can never run, and it
   is holding resources it can never use, so it is settled `Failed` — which
@@ -1282,6 +1282,11 @@ alike:
   shutdown. The sentinel tests are kept beside it, because a hydration given
   its own deadline can report `DeadlineExceeded` while the outer context is
   still live.
+- **A residency fault is a fact about the device.** Verification could not
+  read a file of the job, or its directory is missing; `Hydrate` has parked the
+  job through `Application.Stall` and returns an error wrapping
+  `dispatch.ErrResidencyFault`, which is not settled. The tick does not
+  re-hydrate a paused job, so it is not re-read until it is resumed.
 
 Two further properties follow from the manifest being immutable after parse:
 
@@ -1336,9 +1341,9 @@ restarted one, and resume re-acquires through the same grant. Pause/resume and
 crash/restart are one scheduling path, and that is a property of the design
 rather than a coincidence: both are "this job holds nothing and its work is
 unfinished". They differ only in residency: a job paused while resident keeps
-its manifest, so resume does not re-read it, while for a job restored paused
-at startup the dispatcher reads `admin/queue/manifests/<id>.json.gz` only once
-a resume grants it a lease.
+its manifest, so resume does not re-read it, and a job restored paused at
+`Fetching` is hydrated once at startup (`hydratePausedJobs`) so that its
+progress is reported, and keeps that manifest until it is resumed or removed.
 
 ### Who writes what
 
@@ -1346,12 +1351,12 @@ a resume grants it a lease.
   `dispatch_jobs` table: identity, header, queue order, `Policy`, and the four
   axes. It lives beside `internal/dispatch` rather than inside it so that
   package stays free of a SQL driver.
-- **`internal/checkpoint`** batches the progress record — per-file completion,
-  fetch policy, filename, CRC, failed and downloaded bytes, and failed-article
-  rows. `Mark` records that a job moved and never writes; the ticker and
-  `Flush` are the only things that write. It takes a `job.Checkpoint`, a
-  **value** taken under the Job's own lock, which is what lets it batch without
-  holding anything and keeps `Job` doing no I/O.
+- **The recorder** (`internal/app/record.go`) writes the article record — one
+  `written_articles` row per written article, and each file's `complete`,
+  `filename` and `fetch_policy` in `job_files` — through
+  `durability.Store.ApplyRecord`, batched on a 5 s flush and synchronous at the
+  points `docs/durability-contract.md` §1 lists. It reads file state from the
+  job's progress and does the I/O itself, so `Job` does no I/O.
 - **The unwanted-extension state** (`Header.Unwanted`) is persisted in
   `dispatch_jobs.unwanted_ext` with the rest of the header, handed to
   post-processing on `postproc.Job.Unwanted`, and filed in
@@ -1372,86 +1377,53 @@ jobs are registered and queued; a query or cursor iteration failure in
 
 ### Article resolution is derived, not stored
 
-`job_files` carries no per-article blob. Hydration reads the job's
-`durable_runs` rows and its `failed_articles` rows and produces the done/failed
-pair from them: `done` means "covered by a run", `failed` means "has a
-`failed_articles` row", and `failed` implies `done`. Storing a third copy
-beside the two records that already held the answer is exactly the second
-authority Rule 2 forbids, and the column that held it has been dropped.
+`job_files` carries no per-article blob. The first hydration after a restart
+reads the job's `written_articles` rows, reads each row of an incomplete file
+back from the device, and installs as Done only the rows whose bytes match
+their CRC (`appResidency.Hydrate` → `verifyJobFiles` → `installVerification`).
+A `complete=1` file is installed from its rows without a read, and every
+article of it with no row is failed. Nothing else about resolution is stored:
+a permanent failure in an incomplete file is not persisted and comes back
+Outstanding. `docs/durability-contract.md` §3 is the contract.
 
-Both records index articles **globally**, so replaying them needs the file
-boundaries. Those come from `Manifest.fileArticleOffsets`, the prefix sum
-`newManifest` builds over the manifest's own file list
-(`internal/job/manifest.go:104`). No per-file width is stored: `job_files`
-carries download results only, and `appResidency.restoreResolution` runs inside
-`Hydrate` after `readManifest` has attached the manifest, so the boundaries are
-always already in hand at the one moment they are needed.
+Rows index articles **globally**, so placing them needs the file boundaries.
+Those come from `Manifest.fileArticleOffsets`, the prefix sum `newManifest`
+builds over the manifest's own file list (`internal/job/manifest.go`). No
+per-file width is stored: verification runs inside `Hydrate` after
+`readManifest`, so the boundaries are always already in hand.
 
 This is why there is no cheaper non-resident replay. A job that has not been
 hydrated has no `JobProgress` at all, so it reports its header's full byte count
-as remaining (`internal/dispatch/registry.go:473` in `List`, and again at 504 in
-`Row` — the fallback is implemented independently in both) — a half-downloaded job shows
-as untouched after a restart until it is promoted. Closing that would mean
-constructing progress without a manifest, which nothing currently does; it is a
-missing constructor, not a missing column.
+as remaining (`Dispatcher.List` and `Dispatcher.Row` each fall back to it
+independently) — a half-downloaded job shows as untouched after a restart until
+it is hydrated. A job restored paused at `Fetching` is the exception:
+`hydratePausedJobs` hydrates it before the first tick, so its progress is
+reported although no tick will hydrate it until it is resumed.
 
 `emitted` is deliberately **not** restored: it is transient per-process state
 about what a downloader has in flight, and nothing that survived a restart is.
 
-### The startup sweep
+### Verification at the first hydration
 
-`Application.resumeAllJobs` runs once, synchronously, inside `Start` — in the
-`beforeFirstTick` step of `Dispatcher.StartWith` (`reconcileBeforeFirstTick`,
-after it drops any queued job already filed in history), after the dispatcher restores
-the queue and **before** its first tick and the downloader's first dispatch. It
-stats each
-downloading job's files, has `durability.Resumer` **delete** the runs of any
-file shorter than they claim, and installs what survives through
-`Job.ReplaceFromRuns` — which clears a bit no surviving run covers as well as
-setting the ones that are covered. The restored state is what the runs said
-before the stat; the sweep's finding supersedes it.
+A job's written articles are verified when it is first hydrated after a
+restart, before anything is attached: by the tick, for a job that holds what
+its position requires; by `hydratePausedJobs`, for a job restored paused at
+`Fetching` — which runs inside `Application.Start`, before the API listens
+(`docs/durability-contract.md`, Accepted limitation 1); by
+`fileOwedUnwantedFailures`, also before the first tick, for a restored job the
+archive peek owes a filing; or by a rename's `LoadProgress`. If verification
+cannot complete for a reason about the device, nothing is attached, the job is
+parked, and the next hydration starts again — so a job a hydration attached
+was verified first (a freshly ingested job has no rows to verify, and a retry
+verifies its rebuilt job itself in `verifyRetry`), and a later eviction and
+re-hydration (`RestoreContent`) has nothing to re-check.
 
-The ordering is load-bearing three times over, and only the first is about
-re-fetching. A seed that lands after dispatch has begun still marks the right
-articles done, but the request is already on the wire. The gate itself
-depends on it: `Resumer` compares a file's size against what its runs claim, so
-if the assembler had already re-created and pre-allocated a deleted partial,
-that comparison would run against a file of zeros and pass. Nothing inside
-`Resumer` can notice, so moving the sweep later breaks the guarantee silently.
-And the bound below reads each job at its restored position: a tick moves a job
-restored at `Fetching{next: Assessing}` to `Assessing`, so a sweep racing the
-ticker could skip the stranded-file repair that job still needs.
-
-**It is bounded to jobs at `Fetching`**, and that word is the guard rather than
-a description of it. In any other position something other than the assembler
-owns the job's files: par2 repairs in place, unpack reads, and a move relocates
-the file out of the download directory. Those bytes are correct and they are
-not the bytes the runs recorded, so re-deriving over them would clear real
-progress. Worse, a moved file's path no longer exists, `Resume` reports
-`Restart`, and `Resumer` **deletes the file's runs** — erasing the record that
-those bytes were ever made durable, and the erasure survives the restart the
-seed exists to survive.
-
-Running only at startup is nonetheless complete: a job admitted later has no
-runs to seed from, and a job's runs cannot *gain* content while it is not
-running, because only a barrier puts content into a row and a barrier runs only
-for a job with open files. Other paths delete rows, and a delete cannot make a
-row claim more than it already did.
-
-The sweep writes **nothing** to the durability record. Its one mutation is
-discarding the runs of a file that is missing or shorter than claimed. Every
-swept job is not resident by the time the sweep reaches it, and it matters most
-for a paused one, which `reconcileResidency` never hydrates. Each is hydrated for its own iteration and
-evicted at the end of it (`releaseSweepHydration`), so the sweep costs no
-residency, except that a job keeps its manifest if it was already resident,
-holds what its position requires, was handed to post-processing by the sweep's
-own repair, or has a recomputation that may not have reached `job_files` (a paused job kept
-for that reason stays loaded until it is resumed, removed or the dispatcher
-stops). The
-eviction is the sweep's own because the dispatcher records only the loads it
-makes itself and `reconcileResidency` never evicts a paused job's manifest
-(only removal and `Stop` do), so nothing else would drop it. See
-`docs/durability-contract.md` § *Restart* for the sweep's bounds.
+It reads every incomplete file with rows whatever the job's position, because a
+crash can leave a file finished but not yet flagged `complete=1` in a job that
+has already left `Fetching`. A file that post-processing moved is not at its
+recorded path, and its rows are deleted when the read finds it gone (or, if its
+directory is gone too, the job parks); a retry clears `complete` on every file
+and reads them all, because post-processing may have changed any of them.
 
 ---
 
@@ -1519,20 +1491,19 @@ That was decided deliberately.
 
 `FileProgress.Bytes` and `FileProgress.BytesDownloaded` are both in the
 **encoded** NZB `bytes` unit, because remaining subtracts them and only figures
-in one unit can be subtracted. That is **not** the unit durability works in: a
-durable run's length is the decoded payload an fsync proved, summed over the
-same articles, and runs a few percent lower. The two are not interchangeable.
-Routing the downloaded figure back through the durability record made every
+in one unit can be subtracted. That is **not** the unit the article record
+works in: a `written_articles` row's length is the decoded payload written,
+and runs a few percent lower. The two are not interchangeable. Routing the
+downloaded figure back through the durability record once made every
 non-resident job overstate its remaining bytes by the encoding overhead.
 
 Both figures live **only in memory**. `job_files` used to persist them, as
 `bytes_downloaded` and `failed_bytes`, defended as caches with a single writer
 rather than second authorities. Nothing ever read either column back, and the
 argument that `failed_bytes` was "the one per-file byte figure the durability
-record cannot supply" does not hold: `failed_articles` gives the set of failed
-article indices and the manifest gives each one's size via `m.ArticleBytes(i)`,
-which is exactly the sum `JobProgress.markFailed` performs. Both columns are
-gone.
+record cannot supply" did not hold: the set of failed article indices and the
+manifest give each one's size via `m.ArticleBytes(i)`, which is exactly the sum
+`JobProgress.markFailed` performs. Both columns are gone.
 
 They joined `write_cursor` and `max_written`, removed earlier for being
 maintained in parallel with facts held elsewhere. The difference is that those
@@ -1551,15 +1522,18 @@ Per article, against the field types:
 |---|---|---|
 | `Manifest` — `articleIDs []string`, `articleBytes`, `articleNumber` | ~86 B | ~1.6 MB |
 | `JobProgress` — `done`/`failed`/`emitted` as bitsets | 0.375 B | ~7.5 KB |
+| `JobProgress.written` — one `durability.WrittenRow` per article of a file whose CRC is not settled | 40 B | up to ~800 KB |
 
 The manifest figure is dominated by `articleIDs`: a 16-byte string header plus
 a realistic ~52-character Message-ID, with two `[]int` at 8 bytes each beside
-it. The progress figure is three bits.
+it. The bitset figure is three bits. The `WrittenRow` figure is its field types
+with padding, and it is transient: a file's rows are released when its CRC is
+settled at completion, or when it is untrusted.
 
 `done`/`failed`/`emitted` are **bitsets, not `[]bool`** — three `[]bool` spend
 three bytes to hold three bits, and at 20k articles that is 60 KB against 7.5.
 
-Progress is therefore roughly 0.4% of what eviction reclaims. Keeping it
+The bitsets are therefore roughly 0.4% of what eviction reclaims. Keeping it
 resident for hundreds of jobs costs a few hundred KB; keeping manifests
 resident for the same queue costs hundreds of MB. **That asymmetry is the whole
 justification for evicting one and not the other.**
@@ -1587,8 +1561,8 @@ reads progress. A cross-package API break for 7.5 KB a job is not a trade worth
 making.
 
 The rehydration half already exists and is exercised: `Retry` reopens the
-attempt, the next tick hydrates, and resolution is re-derived from
-`durable_runs` and `failed_articles`.
+attempt, the next tick hydrates, and resolution is re-derived from the
+job's verified `written_articles` rows.
 
 ---
 
@@ -1625,14 +1599,14 @@ ingest removes a file, so nothing after ingest renumbers one.
 `DiscardDeferredPar2` is the only *verdict* that changes a job's download
 intent after ingest, and it does not touch the file set to do it. It is not
 the only thing that moves `fetch_policy` there: `Job.undeferRecovery` reverses
-a hold back to `FetchAlways` when damage appears, and residency hydration
-re-applies whatever `job_files` holds through `Job.RestoreFetchPolicy` on every
-eviction and re-hydration (#329). None of the three touches the file set. A
+a hold back to `FetchAlways` when damage appears, and the first hydration
+after a restart re-applies whatever `job_files` holds through
+`Job.RestoreFetchPolicy` (#329). None of the three touches the file set. A
 recovery
 volume proven unnecessary keeps its `job_files` row exactly where it was; only
 its `fetch_policy` column moves, from `FetchIfNeeded` to `FetchNever`. That
-write is residency-independent: the checkpoint batch writes each file's row
-from the always-resident progress record, so a discard on a job with no
+write is residency-independent: the recorder's dirty mark reads each file's
+state from the always-resident progress record, so a discard on a job with no
 manifest still persists.
 
 `FetchPolicy` is a three-valued enum rather than a `Deferred` bool so that
@@ -1649,8 +1623,8 @@ trusting the hand-written list.
 Because the file set cannot change, a whole tier of machinery has no reachable
 caller and does not exist: a manifest-and-rows rewrite, the staleness
 generation counters that tracked whether persisted rows still matched a
-changing file set, and the reconciliation retry for a rewrite a checkpoint
-failed to land. All of it existed because dropping a file renumbered every
+changing file set, and the reconciliation retry for a rewrite that failed to
+land. All of it existed because dropping a file renumbered every
 `file_index` after it.
 
 ### The size guard, and what it does not cover
@@ -1893,7 +1867,7 @@ Named here so they are decisions rather than omissions.
 - **A separate `workComplete` flag.** It moves the `Finalizing` special case
   rather than removing it.
 - **`Intent` on the `Attempt`.** A paused job that is retried stays paused.
-- **Per-intent timestamps.** A history question, owned by the Checkpointer.
+- **Per-intent timestamps.** A history question.
 - **A speculative extraction area with promote/discard.** DirectUnpack extracts
   in place, and the bet that makes that safe is sound: a permanently failed
   article marks the whole set corrupt before extraction is admitted, and the

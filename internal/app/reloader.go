@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"maps"
-	"slices"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
@@ -131,7 +130,7 @@ func (app *Application) ReloadGeneralOptions(g config.GeneralConfig) {
 // concurrently with itself internally, but the API layer (modeSetConfig)
 // invokes it once per HTTP request with no serialization of its own, so two
 // concurrent server-config updates could otherwise interleave their
-// Stop/setCompletions/checkpoint/ClearEmittedForReload/Start sequences and leave app.downloader
+// Stop/setCompletions/Quiesce/ClearEmittedForReload/Start sequences and leave app.downloader
 // and app.pipeline's completions source wired to two different downloader
 // instances (leaking the loser's goroutines and stalling dispatch on the
 // orphaned one). app.mu is only held within that section to snapshot the old
@@ -161,105 +160,42 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	//
 	// The write half is why this is a quiescence point rather than a
 	// hand-off, and it did not always hold. Draining moves results onto a
-	// buffered work channel; the pwrite happens later, on a worker. The
-	// checkpoint below acks what is on disk, so anything still queued to be
-	// written would be cleared as outstanding by ClearEmittedForReload and then
-	// written immediately afterwards — #390 again, with the checkpoint in
-	// place. pipeline.setCompletions now waits for the writes, so this line
+	// buffered work channel; the pwrite happens later, on a worker. Anything
+	// still queued to be written would be cleared as outstanding by
+	// ClearEmittedForReload and then written immediately afterwards — #390
+	// again. pipeline.setCompletions now waits for the writes, so this line
 	// is what makes the ordering below sound.
 	app.pipeline.setCompletions(nil)
 
-	// Ack what the assembler has already written, BEFORE the clear below
-	// re-offers it.
+	// Every result the old downloader produced has reached the assembler's
+	// queue: setCompletions above waits for the pipeline's workers. Quiesce
+	// then waits for the assembler to process everything queued ahead of it,
+	// so each of those articles has been written and marked Done, rolled
+	// back, or failed. An Emitted bit still set after that covers only an
+	// article whose bytes never reached pwrite, and the clear below re-offers
+	// it to the new downloader.
 	//
-	// An article is Emitted from dispatch until a barrier acks it durable, so
-	// everything written since the last checkpoint sits in that window —
-	// bytes on disk that the queue still calls outstanding. Clearing Emitted
-	// without this offers them again, and #390 is what that costs: the
-	// re-fetch goes out on the wire, and if it fails terminally against the
-	// NEW server set — likeliest precisely when the reload removed the server
-	// that had the article — it is acked permanently failed while its bytes
-	// are already on disk. markDone then early-returns on the next barrier's
-	// durable ack, because done is already set, so the two disagree
-	// permanently: a durable_runs row covers the article while a
-	// failed_articles row calls it permanently failed. The
-	// inflated failedBytes can reach RepairNoCapacity or
-	// RepairBeyondCapacity, both Hopeless(), and the Early Health Gate aborts
-	// a job whose file was never damaged.
-	//
-	// context.Background() rather than app.ctx, for the reason Shutdown's
-	// checkpoint uses it: a cancellation racing this must not skip the ack
-	// and leave the clear below to run anyway, which is the bug rather than a
-	// milder version of it.
-	//
-	// reloadCheckpointTimeout is the BUDGET, not a wall-clock bound on this
-	// call — see its declaration. checkpointJob takes the per-job barrier
-	// lock before it consults any context, and sync.Mutex is not
-	// context-aware, so a job whose barrier is already running elsewhere is
-	// waited for however long that takes. reloadMu is held across all of it
-	// and stopWorkers acquires reloadMu with no timeout of its own, so a
-	// wedged barrier here delays Shutdown by the same amount. Making that
-	// bound real needs a cancellable acquisition in checkpointJob, which is
-	// its own change and is still open.
-	//
-	// The checkpoint is still BEST-EFFORT, but it is no longer silent about
-	// it: checkpointAllShare returns the jobs it could not protect, and the
-	// clear below withholds their Emitted bits rather than running over every
-	// job regardless (#417). What remains best-effort is coverage — a job the
-	// budget or a storage fault kept it from acking simply waits for a later
-	// barrier.
-	//
-	// No app.barrier nil check: checkpointAllWithBudget and checkpointJob
-	// each already return early on nil, and a third copy here would gate
-	// nothing that they do not.
-	//
-	// The narrower alternative — teach resetForReload to skip an article the
-	// WRITER still holds — remains inexpressible at the queue layer, which
-	// cannot see what the writer is holding. Ordering is the fix for that.
-	//
-	// Read that as the narrow claim it is. A queue-layer skip keyed on
-	// something the queue CAN be told is expressible, and is what the
-	// skipJobIDs argument below does: the checkpoint reports which jobs it
-	// failed to protect, per job rather than per article, and the queue acts
-	// on that answer without needing to know what any writer holds.
-	cpCtx, cancel := context.WithTimeout(context.Background(), reloadCheckpointTimeout)
-	unprotected := app.checkpointAllShare(cpCtx, reloadCheckpointTimeout)
-	cancel()
-
-	// Now it's safe to clear emitted: no more article resolutions arrive from
-	// old results, so notifyCh won't be consumed between clear and the new
-	// downloader's first dispatch pass.
-	if len(unprotected) > 0 {
-		// The new failure mode this change introduces, said out loud. These
-		// jobs make no visible progress until a later barrier acks them —
-		// ordinarily the next periodic checkpoint.
-		//
-		// The stall IS self-clearing, which it was not when this line was
-		// first written. markDone releases an Emitted bit when its article's
-		// bytes reach disk, and the one class that could not get there — an
-		// article whose result emitResult dropped on a cancelled context, its
-		// bit set and no result coming — is now un-emitted by emitResult
-		// itself. So every withheld article is one whose bytes are on disk
-		// waiting for a barrier, and a barrier is what releases it.
-		//
-		// Without this line the symptom is a job that quietly stops after a
-		// settings change, which is harder to diagnose than the corruption it
-		// replaces.
-		app.log.Warn("some jobs could not be checkpointed before the reload; their in-flight "+ //lockio: reloadMu spans this whole function by design — see ReloadDownloader's doc — and the line must precede the clear it describes
-			"articles keep their emitted bits and will not be re-dispatched until a later "+
-			"barrier acks them",
-			"jobs", len(unprotected), "jobids", slices.Sorted(maps.Keys(unprotected)))
+	// context.Background() rather than app.ctx: a cancellation racing this
+	// must not let the clear run over articles still queued to be written.
+	// If the assembler cannot answer in time the clear is skipped, which
+	// leaves those articles Emitted until the next start: a stall, where
+	// clearing would re-fetch bytes that are about to be written.
+	qCtx, qCancel := context.WithTimeout(context.Background(), reloadQuiesceTimeout)
+	qErr := app.assembler.Quiesce(qCtx)
+	qCancel()
+	if qErr != nil {
+		app.log.Warn("the assembler did not quiesce before the reload; in-flight articles keep their "+ //lockio: reloadMu spans this whole function by design — see ReloadDownloader's doc
+			"emitted bits and are not re-dispatched until the next start", "err", qErr)
 	}
 	// A job admitted to post-processing is skipped. The downloader does not
 	// dispatch it, so the clear re-offers nothing, and its un-failing would
 	// rewrite the failed-byte figures its post-processing run and history entry
 	// read. unlessAdmitted holds the admission lock across the clear, so an
 	// admission cannot begin part-way through it.
-	if app.dispatcher != nil {
+	if app.dispatcher != nil && qErr == nil {
 		for _, row := range app.dispatcher.List() {
 			if j, ok := app.dispatcher.Job(row.ID); ok {
-				_, skip := unprotected[row.ID]
-				app.postProcAdmissions.unlessAdmitted(j, func() { j.ClearEmittedForReload(skip) })
+				app.postProcAdmissions.unlessAdmitted(j, func() { j.ClearEmittedForReload(false) })
 			}
 		}
 	}

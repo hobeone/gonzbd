@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -14,10 +15,22 @@ import (
 // enforced by TestDispatchNamesNoManifestType in this package.
 //
 // Hydrate may block on disk I/O. The dispatcher calls it with no lock held.
+//
+// Hydrate's errors fall into three classes. A context error says nothing about
+// the job. An error wrapping ErrResidencyFault says the job's content could not
+// be read for a reason that is about the device, not the job — an unreadable
+// file during verification — and the implementation parks the job itself. Any
+// other error means the job can never run, and the dispatcher settles it
+// Failed.
 type Residency interface {
 	Hydrate(ctx context.Context, id string) error
 	Evict(id string)
 }
+
+// ErrResidencyFault marks a Hydrate error the dispatcher must not settle: the
+// job's content could not be read for a reason that is about the device, and
+// the job is parked rather than failed. See Residency.
+var ErrResidencyFault = errors.New("dispatch: residency fault")
 
 // Store is the persistence the dispatcher needs, and no more (D-B11): read the
 // whole queue once at Start, and write a job's four axes when they move.

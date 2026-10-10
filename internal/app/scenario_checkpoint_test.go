@@ -20,13 +20,9 @@ import (
 )
 
 // TestCheckpoint_SurvivesCrashMidDownload verifies that a crash mid-job
-// loses at most one checkpoint interval of per-article/per-file progress
-// rather than the entire in-memory state.
-//
-// The basic checkpoint machinery (dirty flag + ticker) is tested by
-// TestCheckpointFires_AfterMutation and TestCheckpointSkips_WhenClean in
-// checkpoint_test.go.  This scenario-level test exercises the full
-// crash-recovery path (no Shutdown call, reload from disk).
+// loses at most one record interval of per-article/per-file progress rather
+// than the entire in-memory state. It exercises the full crash-recovery path:
+// no Shutdown call, then a restart that verifies the record against the files.
 func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 	t.Parallel()
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
@@ -53,8 +49,8 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 	// Article 1 stalls — worker holds the connection open, no complete event arrives.
 	server.InjectFailure(msgIDs[1], nntptest.FailureStall)
 
-	// Checkpoint interval must be short enough to reliably save before crash.
-	const checkInterval = 20 * time.Millisecond
+	// The record interval must be short enough to reliably flush before crash.
+	const recordInterval = 20 * time.Millisecond
 
 	srvCfg := server.ServerConfig("srv", 2)
 	srvCfg.Timeout = 120 // stall must outlast the test
@@ -67,7 +63,7 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 	)
 
 	a1, err := app.New(cfg, repo,
-		app.WithCheckpointInterval(checkInterval),
+		app.WithRecordInterval(recordInterval),
 		app.WithPostProcStages([]postproc.Stage{noOpStage{}}),
 	)
 	if err != nil {
@@ -98,7 +94,7 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 		if !p.ArticleDone(0) || p.ArticleDone(1) || !p.ArticleDone(2) {
 			return false
 		}
-		runs, err := durability.NewStore(repo.DB(), "history.db").ForJob(t.Context(), j.ID())
+		runs, err := durability.NewStore(repo.DB()).WrittenRows(t.Context(), j.ID())
 		if err != nil {
 			return false
 		}
@@ -127,22 +123,21 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 			p := jobInst.Progress()
 			p0, p1, p2 = p.ArticleDone(0), p.ArticleDone(1), p.ArticleDone(2)
 		}
-		runs, _ := durability.NewStore(repo.DB(), "history.db").ForJob(t.Context(), j.ID())
-		t.Fatalf("timed out waiting for checkpoint on disk to capture mid-download state: stalls=%d p0=%v p1=%v p2=%v f0=%d f1=%d f2=%d runs=%+v",
+		runs, _ := durability.NewStore(repo.DB()).WrittenRows(t.Context(), j.ID())
+		t.Fatalf("timed out waiting for the recorder write on disk to capture mid-download state: stalls=%d p0=%v p1=%v p2=%v f0=%d f1=%d f2=%d runs=%+v",
 			server.StallCount(), p0, p1, p2,
 			server.FetchCount(msgIDs[0]), server.FetchCount(msgIDs[1]), server.FetchCount(msgIDs[2]), runs)
 	}
 
 	// Simulate an ungraceful hard crash via ForceStopWorkers rather than
-	// Shutdown so neither R6's clean-shutdown barrier nor Checkpointer.Run's
-	// exit flush runs.
+	// Shutdown, so the recorder's final flush does not run.
 	a1.ForceStopWorkers(t)
 	cancel1()
 
-	// Verify on disk: Articles 0 and 2 are durably marked Done, while Article 1 is NOT Done.
-	runs, err := durability.NewStore(repo.DB(), "history.db").ForJob(t.Context(), j.ID())
+	// Verify on disk: articles 0 and 2 are recorded written, article 1 is not.
+	runs, err := durability.NewStore(repo.DB()).WrittenRows(t.Context(), j.ID())
 	if err != nil {
-		t.Fatalf("load runs from disk: %v", err)
+		t.Fatalf("load written rows from disk: %v", err)
 	}
 	var has0, has1, has2 bool
 	for _, r := range runs {
@@ -157,18 +152,18 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 		}
 	}
 	if !has0 {
-		t.Fatal("expected Article 0 to be durably marked Done on disk after crash")
+		t.Fatal("expected article 0 to be recorded written on disk after crash")
 	}
 	if has1 {
-		t.Fatal("expected Article 1 to NOT be marked Done on disk after crash")
+		t.Fatal("expected article 1 NOT to be recorded written on disk after crash")
 	}
 	if !has2 {
-		t.Fatal("expected Article 2 to be durably marked Done on disk after crash")
+		t.Fatal("expected article 2 to be recorded written on disk after crash")
 	}
 
 	// Restart app.New() against clean NNTP server (stall is one-shot in nntptest).
 	a2, err := app.New(cfg, repo,
-		app.WithCheckpointInterval(checkInterval),
+		app.WithRecordInterval(recordInterval),
 		app.WithPostProcStages([]postproc.Stage{noOpStage{}}),
 	)
 	if err != nil {

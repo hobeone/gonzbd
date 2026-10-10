@@ -110,13 +110,15 @@ func TestFaultedIncumbent_TakenOverThenRedeliveryRefused(t *testing.T) {
 			"the neighbour's over [4,8)", bytesAtComplete, "BBBBCCCC")
 	}
 
-	// Any later redelivery is refused the same way and moves nothing.
+	// Any later redelivery moves nothing. The completed file's writer is
+	// finished and gone, so the tombstone rejects it again; failing an
+	// article already failed is first-writer-wins and changes no state.
 	send(0, 0, "AAAA")
 	if got, err := os.ReadFile(path); err != nil || string(got) != "BBBBCCCC" {
 		t.Errorf("file after a late redelivery = %q (err %v), want BBBBCCCC", got, err)
 	}
-	if completeCalls != 1 || !slices.Equal(rejected, []int32{0}) {
-		t.Errorf("late redelivery: completions=%d rejected=%v, want 1 and [0]",
+	if completeCalls != 1 || !slices.Equal(rejected, []int32{0, 0}) {
+		t.Errorf("late redelivery: completions=%d rejected=%v, want 1 and [0 0]",
 			completeCalls, rejected)
 	}
 }
