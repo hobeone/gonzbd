@@ -97,7 +97,7 @@ type StallInfo struct {
 	Since time.Time
 }
 
-// StallReason reports why a job is parked, for the queue listing (R26, R27).
+// StallReason reports why a job is parked, for the queue listing (R27).
 //
 // This in-memory map is the sole source, rather than a Header field: R19's
 // re-evaluation needs a list of every parked job to walk, which a

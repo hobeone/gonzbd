@@ -164,10 +164,9 @@ single worker goroutine (`run`).
   again on the next tick, and while it holds none the dispatcher evicts its
   manifest (`docs/dispatch-contract.md` § "Manifest residency is derived from
   pool membership and pause"), which the run's download listing
-  (`buildDownloadFileList`) and the finalizer's `retainedProgressFor` read.
-  Both degrade rather than fail on an evicted job: the listing records "File
-  listing unavailable" (`internal/postproc/filelist.go`), and
-  `retainedProgressFor` reads the manifest from disk instead.
+  (`buildDownloadFileList`) reads. It degrades rather than fails on an evicted
+  job: the listing records "File listing unavailable"
+  (`internal/postproc/filelist.go`).
 - **Which copy's information wins**: a refused call hands nothing over. The
   admitted call keeps everything it gathered, including the DirectUnpack
   results, which `duOrch.collect` hands out only once. The history entry's

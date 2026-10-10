@@ -137,8 +137,8 @@ func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) stri
 	}
 	// The pipeline's resolved path when it has one. The startup repair of a
 	// stranded finalize runs before the pipeline has resolved any, and then
-	// the path comes from the filename the job recorded, as
-	// resume_startup.go's sweep does; with neither, the file is not guessed at.
+	// the path comes from the filename the job recorded; with neither, the
+	// file is not guessed at.
 	path := ""
 	if info, err := app.pipeline.resolveFileInfo(jobID, fc.FileIdx); err == nil {
 		path = info.Path

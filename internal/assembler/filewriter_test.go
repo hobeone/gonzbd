@@ -85,7 +85,9 @@ func TestAssembler_HasNoAckSurface(t *testing.T) {
 }
 
 // TestNoSymbolNamesWriteAtDurable guards the naming trap: a state named durable
-// that means only "reached WriteAt" is the conflation S2 exists to prevent, and
+// that means only "reached WriteAt" is the conflation that
+// docs/durability-contract.md § "The state of an article" separates (Done is
+// a write, not an fsync; `complete=1` is the fsync), and
 // leaving one would teach the next reader the bug back.
 //
 // This test earned its place immediately — the symbol survived the first pass
