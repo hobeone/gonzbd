@@ -12,7 +12,7 @@ require (
 	github.com/mxschmitt/playwright-go v0.6201.1
 	github.com/pressly/goose/v3 v3.28.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.42.0
 	golang.org/x/time v0.16.0
 	gopkg.in/yaml.v3 v3.0.1
