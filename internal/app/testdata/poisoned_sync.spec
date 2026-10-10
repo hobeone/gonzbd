@@ -33,11 +33,11 @@ file internal/app/record.go
 [worker exit does not untrust a file whose fsync failed]
 file internal/assembler/assembler.go
 --- anchor
-		if err := a.drainAndClose(f); err != nil {
+		if err := a.syncAndClose(f); err != nil {
 			a.noteFileUntrusted(k.jobID, k.fileIdx)
 		}
 --- replace
-		if err := a.drainAndClose(f); err != nil {
+		if err := a.syncAndClose(f); err != nil {
 			_ = k
 		}
 --- end

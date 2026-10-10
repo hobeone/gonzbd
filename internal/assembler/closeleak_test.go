@@ -70,7 +70,7 @@ func TestDispatchRequest_CancelDeletingFilesRoutesNothing(t *testing.T) {
 
 // TestDispatchRequest_CancelKeepingFilesRoutesNothing is the KeepFiles half,
 // and it is the reason the keep branch calls f.w.Close rather than
-// a.drainAndClose: drainAndClose Syncs, which would stall ingest for every
+// a.syncAndClose: syncAndClose Syncs, which would stall ingest for every
 // other job on the one worker goroutine for bytes nobody will read.
 func TestDispatchRequest_CancelKeepingFilesRoutesNothing(t *testing.T) {
 	path, open, key := cancelWithoutRouting(t, "kept.dat", KeepFiles)

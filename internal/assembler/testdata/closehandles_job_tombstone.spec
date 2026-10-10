@@ -1,5 +1,5 @@
 pkg ./internal/assembler/
-run Test(CloseJobHandles_TombstonesTheWholeJob|CloseJobHandles_TombstonesEvenWhenTheDrainFailed)$
+run Test(CloseJobHandles_TombstonesTheWholeJob|CloseJobHandles_TombstonesEvenWhenTheSyncFailed)$
 
 # The close-handles arm tombstones the whole job, so an article in flight at
 # the hand-off cannot create a file the job never opened.

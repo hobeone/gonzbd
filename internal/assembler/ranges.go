@@ -23,7 +23,12 @@ type ownedRange struct {
 }
 
 // ownedRanges records which article owns each written byte range of one file.
-// Ranges never intersect: claim is called only after ownerOf found no owner.
+// Ranges never intersect, and each of the two writers holds that itself:
+// claim replaces same-article entries and panics on a different-article
+// intersection, and seed merges intersecting or abutting ranges.
+// `git grep -n 'o\.s.* = ' -- 'internal/assembler/*.go' ':!*_test.go'`
+// returns 5 lines, three in claim and two in seed; claim's copy is its other
+// write.
 type ownedRanges struct{ s []ownedRange }
 
 // ownerOf returns the owner of a range intersecting r, unless that owner is
