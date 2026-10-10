@@ -218,6 +218,9 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	if app.pauseReason != pauseReasonNone {
 		newDownloader.Pause()
 	}
+	if app.reloadBeforeStartHook != nil {
+		app.reloadBeforeStartHook(newDownloader)
+	}
 	if err := newDownloader.Start(app.ctx); err != nil {
 		app.mu.Unlock()
 		return err

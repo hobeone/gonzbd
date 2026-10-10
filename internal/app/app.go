@@ -289,6 +289,11 @@ type Application struct {
 	// flips true. Same discipline as syncFile.
 	startedTransitionHook func()
 
+	// reloadBeforeStartHook, when non-nil, runs in ReloadDownloader after the
+	// pause decision and before the new downloader's Start, with app.mu held.
+	// Same discipline as syncFile.
+	reloadBeforeStartHook func(newDownloader *downloader.Downloader)
+
 	// downloadReportedHook, when non-nil, runs in completeFinalizedFile right
 	// after the report that the job's download finished, where the tick can
 	// already have launched the job's post-processing. Same discipline as
