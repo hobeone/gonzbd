@@ -374,7 +374,7 @@ func TestVerifyJobFiles_MissingDirectoryIsAFault(t *testing.T) {
 
 // TestVerifyJobFiles_RetryTreatsAMissingDirectoryAsGone is the retry's half of
 // the rule above: the same missing directory deletes the file's rows instead of
-// parking, while a stat error other than ENOENT stays a fault.
+// parking.
 func TestVerifyJobFiles_RetryTreatsAMissingDirectoryAsGone(t *testing.T) {
 	t.Parallel()
 	f := newVerifyFixture(t)
@@ -386,6 +386,31 @@ func TestVerifyJobFiles_RetryTreatsAMissingDirectoryAsGone(t *testing.T) {
 	}
 	if len(res.Verdicts) != 1 || !res.Verdicts[0].DeleteAll || len(res.Verified) != 0 {
 		t.Errorf("result = %+v, want one DeleteAll verdict and nothing verified", res)
+	}
+}
+
+// TestVerifyJobFiles_RetryFaultsOnAnotherDirectoryStatError: on a retry only
+// ENOENT from the directory's stat is absence; an EACCES is a verification
+// fault naming the directory, as at a hydration.
+//
+// Not parallel: it replaces the package-level statDir seam.
+func TestVerifyJobFiles_RetryFaultsOnAnotherDirectoryStatError(t *testing.T) {
+	f := newVerifyFixture(t)
+	gone := filepath.Join(f.dl, "unreadable", "vjob")
+	f.resolve = func(filename string) string { return filepath.Join(gone, filename) }
+	orig := statDir
+	statDir = func(dir string) (fs.FileInfo, error) {
+		if dir == gone {
+			return nil, &fs.PathError{Op: "stat", Path: dir, Err: syscall.EACCES}
+		}
+		return orig(dir)
+	}
+	t.Cleanup(func() { statDir = orig })
+
+	res, err := f.run(t, t.Context(), f.rows, true)
+	assertVerifyFault(t, res, err, gone)
+	if !errors.Is(err, syscall.EACCES) {
+		t.Errorf("err = %v, want it to wrap the directory's EACCES", err)
 	}
 }
 

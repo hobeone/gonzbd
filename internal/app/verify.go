@@ -42,10 +42,11 @@ func (e *errVerifyFault) Unwrap() error { return e.Err }
 // verifyBufSize is the one read buffer a pass reuses for every row.
 const verifyBufSize = 1 << 20
 
-// preadAt and fsyncFile are seams for tests to inject device errors.
+// preadAt, fsyncFile and statDir are seams for tests to inject device errors.
 var (
 	preadAt   = func(f *os.File, b []byte, off int64) (int, error) { return f.ReadAt(b, off) }
 	fsyncFile = func(f *os.File) error { return f.Sync() }
+	statDir   = os.Stat
 )
 
 // verifyJobFiles reads back every recorded article of every complete=0 file
@@ -212,7 +213,7 @@ func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow
 		// fault on both paths. This is the one place that decides fault
 		// versus gone.
 		dir := filepath.Dir(path)
-		if _, sErr := os.Stat(dir); sErr != nil && (!retry || !errors.Is(sErr, fs.ErrNotExist)) {
+		if _, sErr := statDir(dir); sErr != nil && (!retry || !errors.Is(sErr, fs.ErrNotExist)) {
 			return fileReadback{}, &errVerifyFault{File: dir, Err: sErr}
 		}
 		return fileReadback{deleteAll: true}, nil
