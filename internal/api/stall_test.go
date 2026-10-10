@@ -26,7 +26,7 @@ type durabilitySlot struct {
 	BytesDurable int64  `json:"bytes_durable"`
 }
 
-// stallTestServer wires a dispatcher and a NopApp whose checkpoint figures the
+// stallTestServer wires a dispatcher and a NopApp whose stall figures the
 // caller controls, then returns both so a test can assert on the wire shape
 // without standing up a recorder.
 func stallTestServer(t *testing.T, states map[string]app.JobCheckpointState, counter *atomic.Int64) (*Server, *dispatch.Dispatcher) {

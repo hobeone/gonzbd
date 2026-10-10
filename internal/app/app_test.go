@@ -832,8 +832,9 @@ func TestScriptCanFail_StageWiring(t *testing.T) {
 	}
 }
 
-// Fixture helpers for the download path. Only startMockNNTP is used outside
-// this file, by checkpoint_test.go; makeDeterministic, yencEncodePart,
+// Fixture helpers for the download path. startMockNNTP has callers only in
+// this file (`git grep -n 'startMockNNTP(' -- 'internal/app/*_test.go'` lists
+// only internal/app/app_test.go); makeDeterministic, yencEncodePart,
 // mockNNTP and dotStuff have no caller elsewhere in the package
 // (`git grep -l 'yencEncodePart' -- 'internal/app/*_test.go'` returns 1 file).
 // They live in an untagged file so untagged tests can reach them, which was

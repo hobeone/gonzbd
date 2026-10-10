@@ -1128,9 +1128,10 @@ func (p *JobProgress) setFailedBits(i int) bool {
 // exists so that a caller CAN name the stored rows it may drop: now that the
 // reset is not exhaustive, a whole-job delete would forget an article that is
 // still failed in memory.
-// clearEmitted is false for a job whose reload checkpoint could not make its
-// written articles durable (#417). Only the Emitted clear is withheld — the
-// un-failing below still runs, because the two act on DISJOINT article sets and
+// clearEmitted is false when the caller withholds the Emitted clear (#417);
+// the only production caller, reloader.go, passes skipEmitted=false, so it is
+// true there. Only the Emitted clear is withheld — the un-failing below still
+// runs, because the two act on DISJOINT article sets and
 // withholding both would trade one permanent strand for another.
 //
 // The disjointness, since it is what makes the narrow skip correct: markFailed

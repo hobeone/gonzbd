@@ -112,11 +112,13 @@ func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 	return true
 }
 
-// JobCheckpointState is the part of a job's durability figures that lives in
-// the application rather than in the queue: why the job is parked.
+// JobCheckpointState is the part of a job's queue-row figures that lives in
+// the application rather than in the queue: why the job is parked. The name
+// predates the loose-record design; nothing here is a checkpoint.
 //
-// The queue listing already holds every job's progress, so the durable figure
-// is derived from that and this struct carries only what the application holds.
+// The queue listing already holds every job's progress, so the written-bytes
+// figure is derived from that and this struct carries only what the
+// application holds.
 type JobCheckpointState struct {
 	// StallReason is the surfaced, actionable text R27 requires, or "" when
 	// the job is not parked.

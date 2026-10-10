@@ -88,7 +88,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// time regardless.
 	//
 	// synchronous(FULL) fsyncs the WAL on each transaction commit rather than
-	// only at checkpoints, so a committed queue or history write survives
+	// only at WAL checkpoints, so a committed queue or history write survives
 	// power loss once its transaction returns.
 	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)&_txlock=immediate"
 	sqlDB, err := sql.Open("sqlite", dsn)

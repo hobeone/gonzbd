@@ -123,7 +123,7 @@ func TestSeedJobFiles_IsIdempotent(t *testing.T) {
 		`UPDATE job_files SET complete = 1, filename = 'a.rar' WHERE job_id = ? AND file_index = 1`,
 		"job-b",
 	); err != nil {
-		t.Fatalf("simulate checkpoint: %v", err)
+		t.Fatalf("simulate recorder write: %v", err)
 	}
 	if err := seedJobFiles(t.Context(), durability.NewStore(db), "job-b", 3, fetchAlwaysForAll); err != nil {
 		t.Fatalf("second seed: %v", err)
@@ -140,7 +140,7 @@ func TestSeedJobFiles_IsIdempotent(t *testing.T) {
 		t.Fatalf("read back: %v", err)
 	}
 	if complete != 1 || filename != "a.rar" {
-		t.Errorf("re-seed clobbered checkpointed results: complete=%d filename=%q, want 1 and \"a.rar\"",
+		t.Errorf("re-seed clobbered recorded results: complete=%d filename=%q, want 1 and \"a.rar\"",
 			complete, filename)
 	}
 }

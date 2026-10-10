@@ -810,8 +810,8 @@ const addPersistTimeout = 10 * time.Second
 
 // seedJobFiles seeds a job's job_files rows through the durability store,
 // translating each file's job.FetchPolicy to the store's plain type. See
-// durability.Store.Admit for why the seed must exist before the first
-// checkpoint, and why it is one transaction.
+// durability.Store.Admit for why the seed must exist before the
+// recorder's first write, and why it is one transaction.
 func seedJobFiles(ctx context.Context, st durabilityStore, jobID string, numFiles int, fetch func(int) job.FetchPolicy) error {
 	policies := make([]uint8, numFiles)
 	for i := range numFiles {

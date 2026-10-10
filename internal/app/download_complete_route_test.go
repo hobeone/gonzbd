@@ -217,7 +217,7 @@ func assertAssessed(t *testing.T, a *app.Application, stage unassessedStage, id 
 //
 // The rows are the shapes a crash leaves. Never run: a retry of a job whose
 // files were all complete, before its first tick. Fetching with no Next: a
-// checkpoint flush recorded the last file's Complete flag, and the queue save
+// recorder flush recorded the last file's Complete flag, and the queue save
 // of the download-complete report did not happen. Fetching with Next
 // recorded is the shape whose report was saved.
 func TestRestart_CompleteJobPassesThroughAssessing(t *testing.T) {

@@ -100,7 +100,7 @@ func recoveryFileIndex(t *testing.T, m *job.Manifest) int {
 }
 
 // seedJobFilesRow inserts a job_files row directly, standing in for a row a
-// failed job's reclaim did not take — a reclaim that failed, or a checkpoint
+// failed job's reclaim did not take — a reclaim that failed, or a recorder
 // flush that wrote after it. The retry reclaims such rows before it seeds.
 func seedJobFilesRow(t *testing.T, db *sql.DB, jobID string, fileIndex int, complete bool, fetch job.FetchPolicy) {
 	t.Helper()

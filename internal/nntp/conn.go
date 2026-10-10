@@ -98,8 +98,8 @@ type Conn struct {
 	// handshakeStartedHook, when non-nil, runs inside handshake once
 	// setupHandshakeDeadline has armed its ctx watcher — the earliest point
 	// at which cancelling ctx is guaranteed to reach the handshake's read
-	// rather than race the TCP dial in Dial. Same-package test seam as
-	// internal/app's checkpointHook; production Dial never sets it.
+	// rather than race the TCP dial in Dial. Same-package test seam;
+	// production Dial never sets it.
 	handshakeStartedHook func()
 }
 

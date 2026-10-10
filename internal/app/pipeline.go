@@ -290,7 +290,7 @@ func (p *pipeline) awaitInFlight(ctx context.Context) bool {
 // channel moves results onto a buffered work channel, so a caller that
 // took "drained" to mean "written" was reading a comment, not a
 // guarantee. setCompletions(nil) is a quiescence point for the old
-// downloader's output, and ReloadDownloader's checkpoint depends on it
+// downloader's output, and ReloadDownloader's Emitted clear depends on it
 // being one.
 func (p *pipeline) setCompletions(ch <-chan *downloader.ArticleResult) {
 	done := make(chan struct{})

@@ -160,11 +160,10 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	//
 	// The write half is why this is a quiescence point rather than a
 	// hand-off, and it did not always hold. Draining moves results onto a
-	// buffered work channel; the pwrite happens later, on a worker. The
-	// checkpoint below acks what is on disk, so anything still queued to be
-	// written would be cleared as outstanding by ClearEmittedForReload and then
-	// written immediately afterwards — #390 again, with the checkpoint in
-	// place. pipeline.setCompletions now waits for the writes, so this line
+	// buffered work channel; the pwrite happens later, on a worker. Anything
+	// still queued to be written would be cleared as outstanding by
+	// ClearEmittedForReload and then written immediately afterwards — #390
+	// again. pipeline.setCompletions now waits for the writes, so this line
 	// is what makes the ordering below sound.
 	app.pipeline.setCompletions(nil)
 
