@@ -9,18 +9,22 @@ import (
 )
 
 // The resident written rows (JobProgress.written) are what the whole-file CRC
-// is derived from. They enter through InstallVerified and InstallCompleteFile
-// at verification and through MarkArticleWritten as articles are written, and
-// leave when the file's CRC is settled (SettleFileCRC) or the file is
-// untrusted (UntrustFile).
+// is derived from. They enter through InstallVerified and
+// InstallFileVerification at verification and through MarkArticleWritten as
+// articles are written, and leave when the file's CRC is settled
+// (SettleFileCRC, or InstallFileVerification itself) or the file is untrusted
+// (UntrustFile).
 //
 // A slice stored in written is never edited in place after it is stored: a
 // writer appends, or builds a new slice and stores that. A Progress() clone
 // can therefore share the slices rather than copy them.
 
 // InstallVerified marks each row's article Done and keeps the rows resident
-// for the whole-file CRC. It is how a restart's verified rows enter a job;
-// the caller has already read each row's bytes back and matched its CRC.
+// for the whole-file CRC; the caller has already read each row's bytes back
+// and matched its CRC. It is the rows step of InstallFileVerification alone,
+// which is how a restart's or a retry's rows enter a job; its own callers are
+// tests seeding Done articles (`git grep -n '\.[I]nstallVerified(' -- '*.go'
+// ':!*_test.go'` returns nothing).
 //
 // A row that does not name fileIdx, names an article outside that file's
 // range, or has an invalid shape (WrittenRow.HasValidShape) is dropped and
@@ -38,35 +42,6 @@ func (j *Job) InstallVerified(fileIdx int, rows []durability.WrittenRow) (droppe
 		return 0, fmt.Errorf("job %s: %w", j.id, err)
 	}
 	installRows(j.manifest, j.progress, fileIdx, kept)
-	return dropped, nil
-}
-
-// InstallCompleteFile installs a complete=1 file at a restart: every row it
-// can place is Done, every other article of the file's range is failed, the
-// file is Complete, and its whole-file CRC is settled from the rows, which are
-// then released. No byte of the file is read: complete=1 was written only
-// after the file's fsync (docs/durability-contract.md).
-//
-// Rows are placed as InstallVerified places them, so a corrupt row costs only
-// its own article, which is then failed like any article with no row.
-func (j *Job) InstallCompleteFile(fileIdx int, rows []durability.WrittenRow) (dropped int, err error) {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
-	if j.manifest == nil || j.progress == nil {
-		return 0, fmt.Errorf("job %s: %w", j.id, ErrNotResident)
-	}
-	m, p := j.manifest, j.progress
-	kept, dropped, err := placeRows(m, fileIdx, rows)
-	if err != nil {
-		return 0, fmt.Errorf("job %s: %w", j.id, err)
-	}
-	installRows(m, p, fileIdx, kept)
-	lo, hi := m.FileRange(fileIdx)
-	for i := lo; i < hi; i++ {
-		_ = p.markFailed(m, i) // a no-op for an article a row just marked Done
-	}
-	p.files[fileIdx].Complete = true
-	settleFileCRC(m, p, fileIdx)
 	return dropped, nil
 }
 

@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run Test(InstallCompleteFile_KeepsAZeroLengthRow|InstallVerified_KeepsAZeroLengthRow|PlaceRows_KeepsOnlyRowsOfTheFile)$
+run Test(InstallFileVerification_CompleteFileKeepsAZeroLengthRow|InstallVerified_KeepsAZeroLengthRow|PlaceRows_KeepsOnlyRowsOfTheFile)$
 
 # A zero-length row MarkArticleWritten accepts live is placed after a restart
 # too.
