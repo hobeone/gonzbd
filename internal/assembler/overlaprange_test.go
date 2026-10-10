@@ -410,3 +410,45 @@ func TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// TestOverlap_ZeroLengthArrivalInsideOwnedRangeIsAccepted pins that an empty
+// article whose offset lies inside another article's owned range costs
+// nothing: ownerOf finds no intersection for it, so acceptArticle lets it
+// through, and claim must record nothing rather than panic on the entry that
+// covers its offset.
+func TestOverlap_ZeroLengthArrivalInsideOwnedRangeIsAccepted(t *testing.T) {
+	a := newHelperAssembler()
+	var rejected []int32
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+		rejected = append(rejected, artIdx)
+	}
+	f := newHelperFile(t, t.TempDir(), "empty-inside.dat", 1000)
+	f.info.TotalParts = 3
+	open := map[fileKey]*openFile{{jobID: "job", fileIdx: 0}: f}
+	completedSet := map[fileKey]struct{}{}
+
+	a.processRequest(WriteRequest{
+		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a@example",
+		Offset: 0, Data: bytes.Repeat([]byte{'A'}, 1000),
+	}, open, completedSet)
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Fatalf("an empty article at offset 500 panicked the worker: %v", p)
+			}
+		}()
+		a.processRequest(WriteRequest{
+			JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "z@example", Offset: 500,
+		}, open, completedSet)
+	}()
+
+	if len(rejected) != 0 {
+		t.Errorf("OnArticleRejected = %v, want none — an empty article occupies no bytes", rejected)
+	}
+	if got := f.w.parts(); got != 2 {
+		t.Errorf("parts = %d, want 2 — the empty article is counted toward the file", got)
+	}
+	if len(f.w.owned.s) != 1 || f.w.owned.s[0].r != (Range{0, 1000}) || f.w.owned.s[0].id.artIdx != 0 {
+		t.Errorf("owned = %+v, want only article 0's [0,1000)", f.w.owned.s)
+	}
+}
