@@ -102,6 +102,20 @@ type lrApp struct {
 // same-package seams on Application require.
 func (e *lrEnv) newApp(t *testing.T, configure ...func(*Application)) *lrApp {
 	t.Helper()
+	return e.newAppWith(t, nil, configure...)
+}
+
+// newAppSyncing is newApp with the assembler's fsync replaced by sync. The
+// seam is read when New builds the assembler, so it is set as an option to New
+// rather than by configure.
+func (e *lrEnv) newAppSyncing(t *testing.T, sync func(*os.File) error) *lrApp {
+	t.Helper()
+	return e.newAppWith(t, []func(*Application){func(a *Application) { a.syncFile = sync }})
+}
+
+// newAppWith is newApp with extra options passed to New.
+func (e *lrEnv) newAppWith(t *testing.T, opts []func(*Application), configure ...func(*Application)) *lrApp {
+	t.Helper()
 	cfg := testConfig(e.dl, e.comp, e.admin)
 	db, err := history.Open(t.Context(), filepath.Join(e.admin, "history.db"))
 	if err != nil {
@@ -114,7 +128,7 @@ func (e *lrEnv) newApp(t *testing.T, configure ...func(*Application)) *lrApp {
 	if stage == nil {
 		stage = lrStage{}
 	}
-	a, err := New(cfg, repo, WithDownloader(fd), WithPostProcStages([]postproc.Stage{stage}))
+	a, err := New(cfg, repo, append([]func(*Application){WithDownloader(fd), WithPostProcStages([]postproc.Stage{stage})}, opts...)...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -384,7 +398,7 @@ func TestLooseRecord_UntrustedSurvivesEviction(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)
 	fs := &failingFsync{}
-	a := env.newApp(t, func(a *Application) { a.syncFile = fs.sync })
+	a := env.newAppSyncing(t, fs.sync)
 	a.start(t)
 	j := a.addJob(t, "untrust", 3, 2)
 	a.deliver(t, j, 0)
@@ -431,7 +445,7 @@ func TestLooseRecord_CompletionFaultConvergesInProcess(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)
 	fs := &failingFsync{}
-	a := env.newApp(t, func(a *Application) { a.syncFile = fs.sync })
+	a := env.newAppSyncing(t, fs.sync)
 	a.start(t)
 	j := a.addJob(t, "converge", 3, 2)
 
@@ -711,7 +725,7 @@ func TestLooseRecord_CloseTimeFsyncFaultUntrusts(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)
 	fs := &failingFsync{}
-	a1 := env.newApp(t, func(a *Application) { a.syncFile = fs.sync })
+	a1 := env.newAppSyncing(t, fs.sync)
 	a1.start(t)
 	j := a1.addJob(t, "closefault", 4, 2)
 	a1.deliver(t, j, 0)
@@ -746,7 +760,7 @@ func TestLooseRecord_PoisonedSyncReturnsArticlesToOutstanding(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)
 	fs := &failingFsync{}
-	a := env.newApp(t, func(a *Application) { a.syncFile = fs.sync })
+	a := env.newAppSyncing(t, fs.sync)
 	a.start(t)
 	j := a.addJob(t, "poison", 4, 2)
 	a.deliver(t, j, 0)

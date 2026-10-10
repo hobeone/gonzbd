@@ -146,8 +146,9 @@ type Application struct {
 	recordInterval time.Duration
 
 	// syncFile, when non-nil, replaces the assembler's fsync of a file's
-	// writing handle. Same discipline as the other same-package test seams:
-	// set once, before the application is started.
+	// writing handle. New hands it to the assembler as Options.SyncFile, so a
+	// test sets it through an option to New; production leaves it nil and the
+	// assembler fsyncs the handle itself.
 	syncFile func(*os.File) error
 
 	// stallMu guards stalls. It is never held across I/O.
@@ -550,7 +551,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		OnArticleWritten:    app.handleArticleWritten,
 		OnFileUntrusted:     app.handleFileUntrusted,
 		OnFileComplete:      onFileComplete,
-		SyncFile:            app.syncFileHandle,
+		SyncFile:            app.syncFile,
 	}, log)
 	app.assembler = asm
 	p.assembler = asm

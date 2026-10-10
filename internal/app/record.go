@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"os"
 	"slices"
 	"sync"
 	"time"
@@ -426,15 +425,6 @@ func (app *Application) enqueueResumedCompletion(jobID string, fileIdx int, fail
 				"job", jobID, "fileidx", fileIdx)
 		}
 	}()
-}
-
-// syncFileHandle is the assembler's Options.SyncFile: the syncFile seam when a
-// test set one, otherwise the handle's own fsync.
-func (app *Application) syncFileHandle(f *os.File) error {
-	if app.syncFile != nil {
-		return app.syncFile(f)
-	}
-	return f.Sync()
 }
 
 // markFileDirty records one file's current state for the recorder's next
