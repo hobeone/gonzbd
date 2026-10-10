@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run TestFileRows_ReturnsACopy|TestInstallVerified_NeitherKeepsNorReordersTheCallersSlice
+run TestFileRows_ReturnsACopy|TestInstallVerified_NeitherKeepsNorReordersTheCallersSlice|TestInstallVerified_RefusesARowItCannotPlace|TestInstallVerified_MergesALaterInstallWithTheResidentRows
 
 [a Progress() clone shares each file's row slice]
 file internal/job/progress.go
@@ -23,4 +23,23 @@ file internal/job/verified.go
 	out := slices.Clone(rows)
 --- replace
 	out := rows
+--- end
+
+[the file check dropped from the placement guard]
+file internal/job/verified.go
+--- anchor
+		if r.FileIdx != fileIdx || int(r.ArtIdx) < lo || int(r.ArtIdx) >= hi {
+--- replace
+		if int(r.ArtIdx) < lo || int(r.ArtIdx) >= hi {
+--- end
+
+[a later install drops the resident rows]
+file internal/job/verified.go
+--- anchor
+	for _, r := range resident {
+		byArt[r.ArtIdx] = r
+	}
+--- replace
+	for range resident {
+	}
 --- end
