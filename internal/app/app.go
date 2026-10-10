@@ -2751,7 +2751,7 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 		}
 		// context.Background(): a client disconnect mid-request must not
 		// abort a retry that has already mutated state.
-		if err := app.recorder.apply(context.Background(), j, nil, retryFileStates(j, finished)...); err != nil {
+		if err := app.recorder.apply(context.Background(), j, nil, retryFileStates(j)...); err != nil {
 			return fmt.Errorf("app: retry %s: commit file state: %w", jobID, err)
 		}
 	}
@@ -2872,23 +2872,19 @@ func rowsFitManifest(rows []durability.WrittenRow, m *job.Manifest) bool {
 }
 
 // retryFileStates is every file's state of a retried job as its record should
-// hold it before the job is registered. A file in finished was finished by
-// path and keeps complete = 1; its completion is delivered after the job is
-// registered.
-func retryFileStates(j *job.Job, finished []int) []durability.FileState {
+// hold it before the job is registered. Complete is the job's own flag: a file
+// verification finished by path was marked complete by installVerification and
+// ResetForRetry keeps the flag of a file whose every article is still done.
+func retryFileStates(j *job.Job) []durability.FileState {
 	p := j.Progress()
 	if p == nil {
 		return nil
-	}
-	done := make(map[int]bool, len(finished))
-	for _, fi := range finished {
-		done[fi] = true
 	}
 	out := make([]durability.FileState, 0, p.NumFiles())
 	for fi := range p.NumFiles() {
 		out = append(out, durability.FileState{
 			FileIdx:     fi,
-			Complete:    p.FileComplete(fi) || done[fi],
+			Complete:    p.FileComplete(fi),
 			Filename:    p.FileFilename(fi),
 			FetchPolicy: uint8(p.FileFetchPolicy(fi)),
 		})

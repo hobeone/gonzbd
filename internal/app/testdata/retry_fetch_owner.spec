@@ -42,7 +42,7 @@ file internal/app/app.go
 [the retry does not commit the corrected row before requeueing]
 file internal/app/app.go
 --- anchor
-		if err := app.recorder.apply(context.Background(), j, nil, retryFileStates(j, finished)...); err != nil {
+		if err := app.recorder.apply(context.Background(), j, nil, retryFileStates(j)...); err != nil {
 --- replace
 		if err := error(nil); err != nil {
 --- end
