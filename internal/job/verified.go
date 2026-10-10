@@ -77,10 +77,11 @@ func placeRows(m *Manifest, fileIdx int, rows []durability.WrittenRow) (kept []d
 	if fileIdx < 0 || fileIdx >= m.NumFiles() {
 		return nil, 0, fmt.Errorf("fileIdx %d out of range (%d files)", fileIdx, m.NumFiles())
 	}
-	lo, hi := m.FileRange(fileIdx)
 	kept = make([]durability.WrittenRow, 0, len(rows))
 	for _, r := range rows {
-		if r.FileIdx != fileIdx || int(r.ArtIdx) < lo || int(r.ArtIdx) >= hi || r.Offset < 0 || r.Length <= 0 {
+		// The shape check is placeRows' own: its rows come from disk, and a
+		// row with no bytes vouches for nothing.
+		if r.FileIdx != fileIdx || !m.ArticleInFile(r.FileIdx, r.ArtIdx) || r.Offset < 0 || r.Length <= 0 {
 			dropped++
 			continue
 		}
@@ -130,12 +131,11 @@ func (j *Job) MarkArticleWritten(row durability.WrittenRow) error {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
 	m := j.manifest
-	if row.FileIdx < 0 || row.FileIdx >= m.NumFiles() {
-		return fmt.Errorf("job %s: fileIdx %d out of range", j.id, row.FileIdx)
-	}
-	lo, hi := m.FileRange(row.FileIdx)
-	if int(row.ArtIdx) < lo || int(row.ArtIdx) >= hi {
-		return fmt.Errorf("job %s: artIdx %d is not in file %d [%d,%d)", j.id, row.ArtIdx, row.FileIdx, lo, hi)
+	// The range check only: a zero-length row is valid here. The assembler
+	// reports a zero-length article through OnArticleWritten with n == 0, and
+	// unless it is Done its file never completes.
+	if !m.ArticleInFile(row.FileIdx, row.ArtIdx) {
+		return fmt.Errorf("job %s: article %d is not in file %d", j.id, row.ArtIdx, row.FileIdx)
 	}
 	p := j.progress
 	p.markDone(m, int(row.ArtIdx))

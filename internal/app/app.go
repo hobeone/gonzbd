@@ -2851,14 +2851,11 @@ func (app *Application) verifyRetry(ctx context.Context, j *job.Job, m *job.Mani
 }
 
 // rowsFitManifest reports whether every row names an article inside its
-// file's range of m.
+// file's range of m (Manifest.ArticleInFile). A retry deletes every row when
+// one does not fit: the NZB it re-parsed is not the one the rows describe.
 func rowsFitManifest(rows []durability.WrittenRow, m *job.Manifest) bool {
 	for _, r := range rows {
-		if r.FileIdx < 0 || r.FileIdx >= m.NumFiles() {
-			return false
-		}
-		lo, hi := m.FileRange(r.FileIdx)
-		if int(r.ArtIdx) < lo || int(r.ArtIdx) >= hi {
+		if !m.ArticleInFile(r.FileIdx, r.ArtIdx) {
 			return false
 		}
 	}

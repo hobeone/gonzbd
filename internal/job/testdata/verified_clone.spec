@@ -28,9 +28,9 @@ file internal/job/verified.go
 [the file check dropped from the placement guard]
 file internal/job/verified.go
 --- anchor
-		if r.FileIdx != fileIdx || int(r.ArtIdx) < lo || int(r.ArtIdx) >= hi || r.Offset < 0 || r.Length <= 0 {
+		if r.FileIdx != fileIdx || !m.ArticleInFile(r.FileIdx, r.ArtIdx) || r.Offset < 0 || r.Length <= 0 {
 --- replace
-		if int(r.ArtIdx) < lo || int(r.ArtIdx) >= hi || r.Offset < 0 || r.Length <= 0 {
+		if !m.ArticleInFile(fileIdx, r.ArtIdx) || r.Offset < 0 || r.Length <= 0 {
 --- end
 
 [a later install drops the resident rows]

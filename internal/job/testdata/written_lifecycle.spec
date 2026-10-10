@@ -29,9 +29,9 @@ file internal/job/verified.go
 [placeRows keeps a row with a negative offset]
 file internal/job/verified.go
 --- anchor
-		if r.FileIdx != fileIdx || int(r.ArtIdx) < lo || int(r.ArtIdx) >= hi || r.Offset < 0 || r.Length <= 0 {
+		if r.FileIdx != fileIdx || !m.ArticleInFile(r.FileIdx, r.ArtIdx) || r.Offset < 0 || r.Length <= 0 {
 --- replace
-		if r.FileIdx != fileIdx || int(r.ArtIdx) < lo || int(r.ArtIdx) >= hi || r.Length <= 0 {
+		if r.FileIdx != fileIdx || !m.ArticleInFile(r.FileIdx, r.ArtIdx) || r.Length <= 0 {
 --- end
 
 [a written article's row is not kept for the CRC]

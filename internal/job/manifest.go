@@ -173,6 +173,20 @@ func (m *Manifest) FileRange(fileIdx int) (lo, hi int) {
 	return m.fileArticleOffsets[fileIdx], m.fileArticleOffsets[fileIdx+1]
 }
 
+// ArticleInFile reports whether fileIdx names a file of m and artIdx an
+// article inside that file's range. It is the range check a written row
+// passes before it may resolve an article: placeRows, Job.MarkArticleWritten
+// and the retry's rowsFitManifest ask it —
+// `git grep -n '[A]rticleInFile(' -- '*.go' ':!*_test.go'` returns 4 lines,
+// those three and this declaration.
+func (m *Manifest) ArticleInFile(fileIdx int, artIdx int32) bool {
+	if fileIdx < 0 || fileIdx >= m.NumFiles() {
+		return false
+	}
+	lo, hi := m.FileRange(fileIdx)
+	return int(artIdx) >= lo && int(artIdx) < hi
+}
+
 // fileIndexForArticle returns the file index owning global article index i,
 // derived from fileArticleOffsets rather than a cached per-article
 // back-pointer — JobProgress stores no FileIdx field, since the value is

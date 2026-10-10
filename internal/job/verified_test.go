@@ -241,6 +241,41 @@ func TestInstallRows_KeepsACopyOfTheFirstInstall(t *testing.T) {
 	}
 }
 
+// TestManifestArticleInFile pins the one range check a written row passes: the
+// file must exist and the article must sit inside that file's range.
+func TestManifestArticleInFile(t *testing.T) {
+	t.Parallel()
+	m := verifiedTestJob(t).manifest // file 0 is articles [0,4), file 1 is [4,5)
+	for _, tc := range []struct {
+		file int
+		art  int32
+		want bool
+	}{
+		{0, 0, true}, {0, 3, true}, {1, 4, true},
+		{0, 4, false}, {1, 3, false}, {0, -1, false},
+		{-1, 0, false}, {2, 4, false},
+	} {
+		if got := m.ArticleInFile(tc.file, tc.art); got != tc.want {
+			t.Errorf("ArticleInFile(%d, %d) = %v, want %v", tc.file, tc.art, got, tc.want)
+		}
+	}
+}
+
+// TestMarkArticleWritten_AcceptsAZeroLengthRow pins that the range check is
+// all MarkArticleWritten asks: the assembler reports a zero-length article
+// with n == 0, and it must resolve, or its file is never fully resolved.
+func TestMarkArticleWritten_AcceptsAZeroLengthRow(t *testing.T) {
+	t.Parallel()
+	j := verifiedTestJob(t)
+	if err := j.MarkArticleWritten(durability.WrittenRow{FileIdx: 1, ArtIdx: 4, Offset: 0, Length: 0}); err != nil {
+		t.Fatalf("MarkArticleWritten of a zero-length article: %v", err)
+	}
+	p := j.Progress()
+	if !p.ArticleDone(4) || p.FilePending(1) != 0 {
+		t.Errorf("zero-length article Done = %v, file 1 pending = %d; want Done and nothing pending", p.ArticleDone(4), p.FilePending(1))
+	}
+}
+
 // TestMarkArticleWritten_MarksDoneAndKeepsTheRow pins the in-process door: the
 // article is Done, its row is resident for the CRC, and a second write of the
 // same article replaces its row.
