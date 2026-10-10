@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,15 +36,32 @@ func pauseAtFetching(t *testing.T, env *lrEnv, a *lrApp, name string) *job.Job {
 	return j
 }
 
+// releaser returns a channel and the function that closes it once; the
+// close is also registered as a cleanup, so a test that fails before
+// releasing leaves no hook blocked.
+func releaser(t *testing.T) (<-chan struct{}, func()) {
+	t.Helper()
+	release := make(chan struct{})
+	var once sync.Once
+	closeIt := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(closeIt)
+	return release, closeIt
+}
+
 // blockingLoadHook returns a pausedVerifiedHook that reports each load on
-// entered and then blocks until release is closed.
+// entered and then blocks until release is closed. A hook left blocked for
+// ten seconds returns instead, so a verification that wrongly runs on a
+// test's own goroutine cannot hang the test.
 func blockingLoadHook(entered chan<- string, release <-chan struct{}) func(string, error) {
 	return func(id string, _ error) {
 		select {
 		case entered <- id:
 		default:
 		}
-		<-release
+		select {
+		case <-release:
+		case <-time.After(10 * time.Second):
+		}
 	}
 }
 
@@ -58,18 +77,68 @@ func awaitEntered(t *testing.T, entered <-chan string) string {
 	}
 }
 
+// loadRecorder records the ID and result of every load the verifier
+// reports, from the verifier's goroutine.
+type loadRecorder struct {
+	mu   sync.Mutex
+	ids  []string
+	errs map[string]error
+}
+
+func (r *loadRecorder) hook(id string, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ids = append(r.ids, id)
+	if r.errs == nil {
+		r.errs = make(map[string]error)
+	}
+	r.errs[id] = err
+}
+
+func (r *loadRecorder) loaded() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.ids)
+}
+
+// syncEmitter records the events an Application broadcasts, from any
+// goroutine.
+type syncEmitter struct {
+	mu     sync.Mutex
+	events []Event
+}
+
+func (e *syncEmitter) Broadcast(ev Event) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.events = append(e.events, ev)
+}
+
+// queueUpdatedFor reports whether a queue_updated event naming id was
+// broadcast.
+func (e *syncEmitter) queueUpdatedFor(id string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.ContainsFunc(e.events, func(ev Event) bool {
+		return ev.Type == "queue_updated" && ev.NzoID == id
+	})
+}
+
 // TestVerifyPausedJobs_StartReturnsBeforeTheLoadEnds pins the placement: the
 // paused jobs' verification is not on Start's path, so the API can serve
-// while it runs, and its result still lands on the job.
+// while it runs; its result still lands on the job, and a queue_updated
+// event names the job once it has.
 func TestVerifyPausedJobs_StartReturnsBeforeTheLoadEnds(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)
 	j := pauseAtFetching(t, env, env.newApp(t), "paused")
 
 	entered := make(chan string, 1)
-	release := make(chan struct{})
+	release, closeRelease := releaser(t)
+	emitter := &syncEmitter{}
 	a2 := env.newApp(t, func(app *Application) {
 		app.pausedVerifiedHook = blockingLoadHook(entered, release)
+		app.emitter = emitter
 	})
 	started := make(chan error, 1)
 	go func() { started <- a2.Start(t.Context()) }()
@@ -79,7 +148,7 @@ func TestVerifyPausedJobs_StartReturnsBeforeTheLoadEnds(t *testing.T) {
 			t.Fatalf("Start: %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		close(release)
+		closeRelease()
 		t.Cleanup(func() {
 			if err := <-started; err == nil {
 				a2.StopAndJoin(t)
@@ -90,7 +159,10 @@ func TestVerifyPausedJobs_StartReturnsBeforeTheLoadEnds(t *testing.T) {
 	t.Cleanup(func() { a2.StopAndJoin(t) })
 
 	awaitEntered(t, entered)
-	close(release)
+	if emitter.queueUpdatedFor(j.ID()) {
+		t.Error("queue_updated named the job before its load had ended")
+	}
+	closeRelease()
 	j2 := a2.registered(t, j.ID())
 	lrWaitFor(t, "the paused job's verified progress", j2.HasProgress)
 	if !articleDone(j2, 0) || !articleDone(j2, 1) {
@@ -99,6 +171,7 @@ func TestVerifyPausedJobs_StartReturnsBeforeTheLoadEnds(t *testing.T) {
 	if expected, remaining, _ := j2.ProgressFigures(); remaining >= expected {
 		t.Errorf("remaining %d of %d after the verification landed; the queue would show 0%%", remaining, expected)
 	}
+	lrWaitFor(t, "a queue_updated event naming the job", func() bool { return emitter.queueUpdatedFor(j.ID()) })
 }
 
 // TestVerifyPausedJobs_OwedFilingIsNotDeferredBehindIt pins the ordering
@@ -122,12 +195,13 @@ func TestVerifyPausedJobs_OwedFilingIsNotDeferredBehindIt(t *testing.T) {
 	a1.dispatcher.Tick(t.Context()) // persists the block
 
 	entered := make(chan string, 1)
-	release := make(chan struct{})
+	release, closeRelease := releaser(t)
 	a2 := env.newApp(t, func(app *Application) {
 		app.pausedVerifiedHook = blockingLoadHook(entered, release)
 	})
 	a2.start(t)
-	t.Cleanup(func() { close(release) })
+	// Before the stop a2.start registered, which joins the verifier.
+	defer closeRelease()
 
 	owed2 := a2.registered(t, owed.ID())
 	if !a2.postProcAdmissions.has(owed2) {
@@ -139,18 +213,57 @@ func TestVerifyPausedJobs_OwedFilingIsNotDeferredBehindIt(t *testing.T) {
 	}
 }
 
+// TestVerifyPausedJobs_LoadsOnlyJobsPausedAtFetching pins the selection: a
+// job paused before it ever ran, and a running job at Fetching, are left to
+// the tick; only a job paused at Fetching is loaded.
+func TestVerifyPausedJobs_LoadsOnlyJobsPausedAtFetching(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a1 := env.newApp(t)
+	pausedAtFetching := pauseAtFetching(t, env, a1, "paused-fetching")
+	pausedQueued := a1.addJob(t, "paused-queued", 2, 1)
+	if err := a1.dispatcher.PauseJob(pausedQueued.ID()); err != nil {
+		t.Fatalf("PauseJob: %v", err)
+	}
+	running := a1.addJob(t, "running", 2, 1)
+	a1.dispatcher.Tick(t.Context())
+	a1.dispatcher.Tick(t.Context())
+	if st := running.State().State; st != job.Fetching {
+		t.Fatalf("fixture: the running job is at %v, want Fetching", st)
+	}
+	if st := pausedQueued.State().State; st == job.Fetching {
+		t.Fatal("fixture: the job paused before it ran reached Fetching")
+	}
+
+	rec := &loadRecorder{}
+	a2 := env.newApp(t, func(app *Application) { app.pausedVerifiedHook = rec.hook })
+	a2.start(t)
+	lrWaitFor(t, "the job paused at Fetching to be loaded", func() bool {
+		return slices.Contains(rec.loaded(), pausedAtFetching.ID())
+	})
+	if err := a2.Shutdown(); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if got := rec.loaded(); !slices.Equal(got, []string{pausedAtFetching.ID()}) {
+		t.Errorf("loaded %v, want only %s: a job paused before it ran, and a running job, are the tick's",
+			got, pausedAtFetching.ID())
+	}
+}
+
 // TestVerifyPausedJobs_DeadlineLeavesTheJobUnloaded pins the per-job
 // deadline: a load that exceeds it ends with the deadline's error, attaches
-// nothing, parks nothing and deletes no row, so the job's resume verifies it
-// again.
+// nothing, parks nothing, deletes no row and reports no queue_updated, so
+// the job's resume verifies it again.
 func TestVerifyPausedJobs_DeadlineLeavesTheJobUnloaded(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)
 	j := pauseAtFetching(t, env, env.newApp(t), "slow")
 
 	got := make(chan error, 1)
+	emitter := &syncEmitter{}
 	a2 := env.newApp(t, func(app *Application) {
 		app.pausedVerifyTimeout = time.Nanosecond
+		app.emitter = emitter
 		app.pausedVerifiedHook = func(_ string, err error) {
 			select {
 			case got <- err:
@@ -178,6 +291,13 @@ func TestVerifyPausedJobs_DeadlineLeavesTheJobUnloaded(t *testing.T) {
 	if reason := a2.StallReason(j.ID()).Reason; reason != "" {
 		t.Errorf("the deadline parked the job: %q", reason)
 	}
+	// Shutdown joins the verifier, so every event it would emit has been.
+	if err := a2.Shutdown(); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if emitter.queueUpdatedFor(j.ID()) {
+		t.Error("queue_updated named a job whose load did not land")
+	}
 }
 
 // TestVerifyPausedJobs_StopsAtShutdown pins the cancellation: once Shutdown
@@ -192,9 +312,10 @@ func TestVerifyPausedJobs_StopsAtShutdown(t *testing.T) {
 	second := pauseAtFetching(t, env, a1, "second")
 
 	entered := make(chan struct{}, 1)
-	release := make(chan struct{})
+	release, closeRelease := releaser(t)
 	blockingPread(t, entered, release)
-	a2 := env.newApp(t)
+	rec := &loadRecorder{}
+	a2 := env.newApp(t, func(app *Application) { app.pausedVerifiedHook = rec.hook })
 	a2.start(t)
 	select {
 	case <-entered:
@@ -204,7 +325,7 @@ func TestVerifyPausedJobs_StopsAtShutdown(t *testing.T) {
 	stopped := make(chan error, 1)
 	go func() { stopped <- a2.Shutdown() }()
 	lrWaitFor(t, "Shutdown to cancel the app's context", func() bool { return a2.ctx.Err() != nil })
-	close(release)
+	closeRelease()
 	select {
 	case err := <-stopped:
 		if err != nil {
@@ -219,6 +340,10 @@ func TestVerifyPausedJobs_StopsAtShutdown(t *testing.T) {
 	if a2.registered(t, second.ID()).HasProgress() {
 		t.Error("a paused job was loaded after Shutdown cancelled the verification")
 	}
+	if got := rec.loaded(); !slices.Equal(got, []string{first.ID()}) {
+		t.Errorf("loads reported %v, want only %s: the verifier went on to the next job after its context ended",
+			got, first.ID())
+	}
 }
 
 // TestVerifyPausedJobs_ShutdownJoinsTheVerifier pins that the verifier runs
@@ -230,7 +355,7 @@ func TestVerifyPausedJobs_ShutdownJoinsTheVerifier(t *testing.T) {
 	pauseAtFetching(t, env, env.newApp(t), "joined")
 
 	entered := make(chan string, 1)
-	release := make(chan struct{})
+	release, closeRelease := releaser(t)
 	a2 := env.newApp(t, func(app *Application) {
 		app.shutdownStepTimeout = 200 * time.Millisecond
 		app.pausedVerifiedHook = blockingLoadHook(entered, release)
@@ -238,7 +363,7 @@ func TestVerifyPausedJobs_ShutdownJoinsTheVerifier(t *testing.T) {
 	a2.start(t)
 	awaitEntered(t, entered)
 	err := a2.Shutdown()
-	close(release)
+	closeRelease()
 	if err == nil || !strings.Contains(err.Error(), "wg wait") {
 		t.Errorf("Shutdown = %v during a load in flight, want the wg.Wait step to time out: the verifier is not joined", err)
 	}
@@ -281,7 +406,7 @@ func TestVerifyPausedJobs_ResumeDuringTheLoad(t *testing.T) {
 	j := pauseAtFetching(t, env, env.newApp(t), "resumed")
 
 	entered := make(chan struct{}, 1)
-	release := make(chan struct{})
+	release, closeRelease := releaser(t)
 	blockingPread(t, entered, release)
 	a2 := env.newApp(t)
 	a2.start(t)
@@ -300,7 +425,7 @@ func TestVerifyPausedJobs_ResumeDuringTheLoad(t *testing.T) {
 	if err := a2.dispatcher.ResumeJobByUser(j.ID()); err != nil {
 		t.Fatalf("ResumeJobByUser: %v", err)
 	}
-	close(release)
+	closeRelease()
 
 	j2 := a2.registered(t, j.ID())
 	lrWaitFor(t, "the resumed job to hold its lease on the verified content", func() bool {
@@ -319,8 +444,9 @@ func TestVerifyPausedJobs_ResumeDuringTheLoad(t *testing.T) {
 }
 
 // TestVerifyPausedJobs_RemoveDuringTheLoad pins what a removal during the
-// read-back meets: RemoveJob waits for the load in flight and then removes
-// the job, its rows and its manifest, and the load leaves nothing behind.
+// read-back meets: RemoveJob waits for the load in flight (appResidency.Evict)
+// and then removes the job, its rows and its manifest, and the load leaves
+// nothing behind.
 //
 // Not parallel: preadAt is a package-level seam.
 func TestVerifyPausedJobs_RemoveDuringTheLoad(t *testing.T) {
@@ -328,7 +454,7 @@ func TestVerifyPausedJobs_RemoveDuringTheLoad(t *testing.T) {
 	j := pauseAtFetching(t, env, env.newApp(t), "removed")
 
 	entered := make(chan struct{}, 1)
-	release := make(chan struct{})
+	release, closeRelease := releaser(t)
 	blockingPread(t, entered, release)
 	a2 := env.newApp(t)
 	a2.start(t)
@@ -339,7 +465,14 @@ func TestVerifyPausedJobs_RemoveDuringTheLoad(t *testing.T) {
 	}
 	removed := make(chan error, 1)
 	go func() { removed <- a2.RemoveJob(t.Context(), j.ID(), true) }()
-	close(release)
+	// The load is still blocked in its read, so a RemoveJob that returns now
+	// did not wait for it.
+	select {
+	case err := <-removed:
+		t.Fatalf("RemoveJob returned (%v) while the job's load was still in flight", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	closeRelease()
 	select {
 	case err := <-removed:
 		if err != nil {

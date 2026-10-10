@@ -1053,9 +1053,14 @@ recorded here so the next reader does not mistake them for design.
    `IntentPause` (`reconcileResidency`, `internal/dispatch/tick.go`). A
    resume during a job's load waits for it (`appResidency.Hydrate` runs one
    hydration of a job at a time, and a waiter whose hydration did not attach
-   hydrates the job itself); a removal during it waits for it too
-   (`appResidency.Evict`), up to the deadline, and the load's verdicts reach
-   SQLite before the removal's reclaim deletes the rows.
+   hydrates the job itself). A removal or a rename during it blocks its
+   caller — the HTTP handler behind `mode=queue&name=delete`, or
+   `Dispatcher.SetName` — on `appResidency.Evict`, which takes no context and
+   waits for whichever hydration of the job is in flight to return: for this
+   verifier's load, up to the per-job deadline between rows, and for as long
+   as a read a hung mount does not return; for a tick's or a rename's
+   hydration, which has no deadline, until that read-back ends. The load's
+   verdicts then reach SQLite before the removal's reclaim deletes the rows.
 
 2. **An unreadable sector, or a missing download directory, keeps the job
    parked until the operator acts** (§3). Deleting the file refetches it; a

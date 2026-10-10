@@ -66,10 +66,11 @@ const defaultPausedVerifyTimeout = 10 * time.Minute
 // registered job with no progress. A job resumed during its load is hydrated
 // once: the tick's Hydrate waits for the load in flight, and starts its own
 // only if that one left the job non-resident. A job removed during its load
-// is removed once the load ends: RemoveJob's eviction (appResidency.Evict)
-// waits for it, so the load's verdicts reach SQLite before the removal's
-// reclaim deletes the job's rows, and the Resumed completions it queued find
-// no job.
+// is removed once the load ends: RemoveJob's eviction (appResidency.Evict,
+// which takes no context) blocks its caller until the load returns — up to
+// the deadline between rows, and for as long as a read a hung mount does not
+// return — so the load's verdicts reach SQLite before the removal's reclaim
+// deletes the job's rows, and the Resumed completions it queued find no job.
 func (app *Application) verifyPausedJobs(ctx context.Context) {
 	if app.dispatcher == nil {
 		return
@@ -104,13 +105,17 @@ func (app *Application) verifyPausedJobs(ctx context.Context) {
 // first tick, so a complete job is deferred to its Assessing worker and any
 // other is handed over before it can launch.
 //
-// It needs no ordering against verifyPausedJobs: the two select disjoint
-// jobs. This sweep loads a job only when unwantedFilingOwed holds, which
-// requires IntentRun; verifyPausedJobs loads only a job with IntentPause; and
-// no path makes a paused job owed, because Dispatcher.resume, the one writer
-// of IntentRun (`git grep -n 'SetIntent(job[.]IntentRun)' -- '*.go' ':!*_test.go'`
-// returns 1 line), approves a Blocked job on a user's resume and refuses it
-// on any other.
+// It needs no ordering against verifyPausedJobs. It completes inside
+// Dispatcher.StartWith, before Start launches the verifier, and the two
+// select disjoint jobs: this sweep loads a job only when unwantedFilingOwed
+// holds, which requires IntentRun, while verifyPausedJobs loads only a job
+// with IntentPause. Nor does a job cross from one set to the other after
+// restore, which replays each row's persisted intent (dispatch.reconstruct):
+// `git grep -n '\.SetIntent[(]' -- '*.go' ':!*_test.go'` returns 10 lines, of
+// which reconstruct's 2 replay that intent, 7 set IntentPause or
+// IntentCancel, and the 1 in Dispatcher.resume sets IntentRun — approving a
+// Blocked job on a user's resume and refusing it on any other, so a paused
+// job never becomes owed.
 func (app *Application) fileOwedUnwantedFailures(ctx context.Context) error {
 	if app.dispatcher == nil {
 		return nil
