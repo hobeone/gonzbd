@@ -383,9 +383,9 @@ const noiseFloorBPS = 1024.0 // 1 KiB/s
 // buildSlot renders one Row into the API queueSlot shape. paused is the
 // queue-wide pause flag; speed is the snapshot aggregate BPS used for
 // ETA. index is the slot's display index in the listing (0 for the
-// detail endpoint). cp carries the durability figures that live in the
+// detail endpoint). stallReason is why the job is parked, which lives in the
 // application rather than in the queue, snapshotted once per request.
-func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int, duStatus *directunpack.Status, cp app.JobCheckpointState) queueSlot {
+func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int, duStatus *directunpack.Status, stallReason string) queueSlot {
 	// remainingBytes is initialized from r.RemainingBytes, which the Dispatcher
 	// captured at listing time. If the job was unregistered between
 	// List() and Job(r.ID) (a transient race window), we retain that snapshot
@@ -477,14 +477,14 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		Par2ReleaseReason: par2ReleaseReason,
 		DirectUnpack:      duStatus,
 		Labels:            slotLabels(r.Header),
-		StallReason:       cp.StallReason,
+		StallReason:       stallReason,
 		BytesDurable:      durableBytes,
 	}
 }
 
 // filterQueueSlots applies the category/status/search filters to rows and
 // builds the resulting queueSlot list.
-func (s *Server) filterQueueSlots(rows []dispatch.Row, catFilter, statusFilter, searchLower string, paused bool, speed float64, duStatuses map[string]directunpack.Status, cpStates map[string]app.JobCheckpointState) []queueSlot {
+func (s *Server) filterQueueSlots(rows []dispatch.Row, catFilter, statusFilter, searchLower string, paused bool, speed float64, duStatuses map[string]directunpack.Status, stallReasons map[string]string) []queueSlot {
 	slots := make([]queueSlot, 0, len(rows))
 	for _, r := range rows {
 		st := string(r.Status())
@@ -507,7 +507,7 @@ func (s *Server) filterQueueSlots(rows []dispatch.Row, catFilter, statusFilter, 
 		if s.dispatcher != nil {
 			j, _ = s.dispatcher.Job(r.ID)
 		}
-		slots = append(slots, buildSlot(r, j, paused, speed, len(slots), duStatus, cpStates[r.ID]))
+		slots = append(slots, buildSlot(r, j, paused, speed, len(slots), duStatus, stallReasons[r.ID]))
 	}
 	return slots
 }
@@ -550,10 +550,10 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	// Snapshot all direct-unpack statuses once per request (OPT-12) instead
 	// of re-locking app.mu (application-wide) once per job in the loop below.
 	var duStatuses map[string]directunpack.Status
-	var cpStates map[string]app.JobCheckpointState
+	var stallReasons map[string]string
 	if s.status != nil {
 		duStatuses = s.status.DirectUnpackStatuses()
-		cpStates = s.status.CheckpointStates()
+		stallReasons = s.status.StallReasons()
 	}
 
 	var slots []queueSlot
@@ -561,7 +561,7 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	if s.dispatcher != nil {
 		rows := s.dispatcher.List()
 		paused = s.dispatcher.Paused()
-		slots = s.filterQueueSlots(rows, catFilter, statusFilter, searchLower, paused, speed, duStatuses, cpStates)
+		slots = s.filterQueueSlots(rows, catFilter, statusFilter, searchLower, paused, speed, duStatuses, stallReasons)
 	}
 
 	total := len(slots)
@@ -649,15 +649,15 @@ func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID st
 	}
 
 	var duStatus *directunpack.Status
-	var cp app.JobCheckpointState
+	var stallReason string
 	if s.status != nil {
 		if status, ok := s.status.DirectUnpackStatus(nzoID); ok {
 			duStatus = &status
 		}
-		cp = s.status.CheckpointState(nzoID)
+		stallReason = s.status.StallReason(nzoID).Reason
 	}
 	j, _ := s.dispatcher.Job(nzoID)
-	slot := buildSlot(row, j, paused, speed, 0, duStatus, cp)
+	slot := buildSlot(row, j, paused, speed, 0, duStatus, stallReason)
 	if j != nil {
 		slot.Files = buildQueueFiles(j)
 	}
