@@ -85,6 +85,7 @@ func TestLogHelpers_RecordTheJobIDAndTheError(t *testing.T) {
 		{"logAdvanceError", func(d *Dispatcher) { d.logAdvanceError("j1", wantErr) }, "advance failed"},
 		{"logResidencyError", func(d *Dispatcher) { d.logResidencyError("j1", wantErr) }, "residency reconcile failed"},
 		{"logStoreError", func(d *Dispatcher) { d.logStoreError("j1", wantErr) }, "store write failed"},
+		{"logRestoreError", func(d *Dispatcher) { d.logRestoreError("j1", wantErr) }, "restore failed"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

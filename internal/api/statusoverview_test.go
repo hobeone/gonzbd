@@ -16,13 +16,11 @@ import (
 type statusOverviewSpyApp struct {
 	apitest.NopApp
 	binaryVersions  app.BinaryVersions
-	articleCache    int64
 	downloadDirFree int64
 	downloadDirErr  error
 }
 
 func (a *statusOverviewSpyApp) BinaryVersionsInfo() app.BinaryVersions { return a.binaryVersions }
-func (a *statusOverviewSpyApp) ArticleCacheBytes() int64               { return a.articleCache }
 func (a *statusOverviewSpyApp) DownloadDirFreeBytes(context.Context) (int64, error) {
 	return a.downloadDirFree, a.downloadDirErr
 }
@@ -40,7 +38,6 @@ func TestModeStatusOverview_ReturnsGeneralAndSystemSections(t *testing.T) {
 	})
 	spy := &statusOverviewSpyApp{
 		binaryVersions:  app.BinaryVersions{Par2Version: "1.0", UnrarVersion: "6.24", SevenzVersion: "23.01"},
-		articleCache:    12345,
 		downloadDirFree: 987654321,
 	}
 	s := New(Options{Build: buildinfo.Info{Version: "v1.2.0", Commit: "abc123"}, Config: cfg, App: spy})
@@ -66,9 +63,6 @@ func TestModeStatusOverview_ReturnsGeneralAndSystemSections(t *testing.T) {
 	system, ok := m["system"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected system section, got %v", m)
-	}
-	if system["article_cache_bytes"].(float64) != 12345 {
-		t.Errorf("system.article_cache_bytes = %v; want 12345", system["article_cache_bytes"])
 	}
 	if system["download_dir_free_bytes"].(float64) != 987654321 {
 		t.Errorf("system.download_dir_free_bytes = %v; want 987654321", system["download_dir_free_bytes"])

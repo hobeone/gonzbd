@@ -240,7 +240,6 @@ export interface StatusOverviewGeneral extends BuildMeta {
 export interface StatusOverviewSystem {
 	os: string;
 	arch: string;
-	article_cache_bytes: number;
 	download_dir_free_bytes: number;
 	min_free_space_bytes: number;
 }

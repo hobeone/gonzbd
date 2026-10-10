@@ -265,8 +265,6 @@
 			<dl class="grid grid-cols-[180px_1fr] gap-x-4 gap-y-3 text-sm">
 				<dt class="text-m3-on-surface/60">OS / Arch</dt>
 				<dd class="text-m3-on-surface">{overview.system.os} / {overview.system.arch}</dd>
-				<dt class="text-m3-on-surface/60">Article cache usage</dt>
-				<dd class="text-m3-on-surface">{formatBytes(overview.system.article_cache_bytes)}</dd>
 				<dt class="text-m3-on-surface/60">Download dir free space</dt>
 				<dd class="text-m3-on-surface">
 					{formatBytes(overview.system.download_dir_free_bytes)}

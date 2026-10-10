@@ -35,17 +35,17 @@ all lower levels:
 
 | `pp` | Stages enabled |
 |------|----------------|
-| `0` | Download only — skip all post-processing (script still runs) |
-| `1` | + **Repair** — par2 verify and repair |
-| `2` | + **Unpack** — extract RAR, 7z, and split archives (implies repair) |
-| `3` | + **Delete** — remove par2 and archive files after success (implies unpack + repair) |
+| `0` | Download only — skip repair, par2 cleanup, and unpack (script still runs) |
+| `1` | + **Repair** — par2 verify, repair, and par2 cleanup |
+| `2` | + **Unpack** — extract RAR, 7z, and split archives, and delete extracted archives when `enable_rar_cleanup` is enabled (implies repair and par2 cleanup) |
+| `3` | + **Delete** — same stages as `2` in GoNZBD (archive deletion is governed by `enable_rar_cleanup` inside `unpack`) |
 
 Values outside `[0, 3]` are clamped: anything ≥ 3 is treated as 3. Legacy
 SABnzbd configs that stored `pp: 7` (a SABnzbd bitmask value) are clamped
 to 3 automatically.
 
-Your script receives this value as `SAB_PP` and can use it to adjust behavior
-(e.g., skip cleanup logic when `pp < 3` since archives weren't deleted).
+Your script receives this value as `SAB_PP` and can use it to adjust its own
+post-processing behavior based on the requested level.
 
 ## How Scripts Are Invoked
 

@@ -168,8 +168,8 @@ func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 	case d.restoring:
 		// A job interleaved into a half-rebuilt registry takes a sequence from
 		// the counter before restore has raised it past the stored keys, so it
-		// collides with a row still to be registered. It also survives a failed
-		// restore: the rollback removes only the IDs restore itself registered.
+		// collides with a row still to be registered, and remains registered if
+		// Store.Load fails Start.
 		d.mu.Unlock()
 		return errors.New("dispatch: Add: this Dispatcher is restoring; retry once Start returns")
 	}
@@ -234,10 +234,10 @@ var errPreemptedByRemoval = errors.New("a concurrent removal preempted the first
 const seqNext int64 = -1
 
 // register is the only path by which a job ENTERS the registry — the sole
-// writer of d.nextSeq, and the sole inserter into d.byID and d.order, which
-// deregister is the only other writer of (it deletes from both). Add calls it with
-// seqNext to have a sequence allocated; restore calls it with the sequence the
-// store recorded, which is what preserves queue order across a restart.
+// inserter into d.byID and d.order, which deregister is the only other writer
+// of (it deletes from both). Add calls it with seqNext to have a sequence
+// allocated; restore calls it with the sequence the store recorded, which is
+// what preserves queue order across a restart.
 //
 // One path rather than two because the alternative had already produced a
 // defect in review: a restore that registered through Add was handed a FRESH
@@ -247,9 +247,10 @@ const seqNext int64 = -1
 // is the smell Standing Design Rule 2 names, and an owner is the fix it
 // prescribes.
 //
-// Advancing d.nextSeq past seq here, rather than at the call sites, is what
-// makes "the next Add sorts after everything restored" true without a separate
-// step anyone could forget.
+// Advancing d.nextSeq past seq via advanceSeqLocked here and in restore is
+// what makes "the next Add sorts after everything restored" true even when
+// restore skips a row Loaded from dispatch_jobs on a reconstruct or register
+// error and leaves it in dispatch_jobs.
 func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 	d.mu.Lock()
 	if _, dup := d.byID[j.ID()]; dup {
@@ -277,13 +278,18 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 	}
 	d.byID[j.ID()] = &entry{j: j, h: h, seq: seq}
 	d.order = append(d.order, j.ID())
-	d.nextSeq = max(d.nextSeq, seq+1)
+	d.advanceSeqLocked(seq)
 	d.mu.Unlock()
 
 	if !added {
 		d.kick()
 	}
 	return nil
+}
+
+// advanceSeqLocked raises d.nextSeq past seq. Caller must hold d.mu.
+func (d *Dispatcher) advanceSeqLocked(seq int64) {
+	d.nextSeq = max(d.nextSeq, seq+1)
 }
 
 // sortKeyOf reports a registered job's queue-order sequence, or -1 if it is not

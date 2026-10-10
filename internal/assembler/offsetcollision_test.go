@@ -143,7 +143,9 @@ func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
 		{"an unclaimed range is not owned", func(*FileWriter) {}, arriving, Range{0, 4}, false},
 		{"the same range is owned", func(w *FileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{0, 4}, true},
 		{"a partial overlap is owned", func(w *FileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{2, 4}, true},
+		{"a partial overlap into a range's head is owned", func(w *FileWriter) { w.owned.claim(Range{1000, 1000}, owner) }, arriving, Range{900, 1000}, true},
 		{"an abutting range is not owned", func(w *FileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{4, 4}, false},
+		{"a range abutting from below is not owned", func(w *FileWriter) { w.owned.claim(Range{1000, 1000}, owner) }, arriving, Range{0, 1000}, false},
 		{"the owner does not collide with ITSELF", func(w *FileWriter) { w.owned.claim(Range{0, 4}, owner) }, owner, Range{0, 4}, false},
 	}
 

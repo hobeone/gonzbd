@@ -32,7 +32,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/bpsmeter"
 	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -249,14 +248,6 @@ func serveMode(configPath, listenOverride, logLevelsOverride, pidPath string, ve
 		}
 	}()
 
-	// Bandwidth meter. State persists across restarts so lifetime totals
-	// aren't reset by a daemon restart.
-	meter := bpsmeter.NewMeter(10*time.Second, time.Now)
-	meterStatePath := filepath.Join(adminDir, "bpsmeter.json")
-	if state, err := bpsmeter.LoadState(meterStatePath); err == nil {
-		meter.Restore(state)
-	}
-
 	// Notifier dispatcher. Build from config; sinks are registered
 	// based on the [notifications] config section.
 	notify := app.BuildNotifier(cfg.Notifications)
@@ -330,7 +321,7 @@ func serveMode(configPath, listenOverride, logLevelsOverride, pidPath string, ve
 	}
 
 	waitErr := awaitShutdownSignal(ctx, errCh, log)
-	shutdownServeMode(httpSrv, httpsSrv, application, meterStatePath, meter, log)
+	shutdownServeMode(httpSrv, httpsSrv, application, log)
 	return waitErr
 }
 
@@ -354,9 +345,8 @@ func awaitShutdownSignal(ctx context.Context, errCh <-chan error, log *slog.Logg
 // shutdownServeMode performs serveMode's best-effort graceful shutdown:
 // stop both HTTP(S) listeners concurrently, each with its own 5s timeout
 // budget (enough for in-flight API calls without keeping signal handlers
-// trapped if the pipeline is wedged), stop the application, and persist the
-// bandwidth meter's lifetime totals. Each step is independent and
-// best-effort; a failure in one does not skip the rest.
+// trapped if the pipeline is wedged), and stop the application. Each step is
+// independent and best-effort; a failure in one does not skip the rest.
 //
 // The two listeners intentionally get independent contexts rather than one
 // shared context passed to both Shutdown calls: a shared context lets a
@@ -370,7 +360,7 @@ func awaitShutdownSignal(ctx context.Context, errCh <-chan error, log *slog.Logg
 // wall-clock time between the two (verified empirically before deciding not
 // to chase this further). The two independent context.WithTimeout calls
 // below are the property to check by reading the code.
-func shutdownServeMode(httpSrv, httpsSrv *http.Server, application *app.Application, meterStatePath string, meter *bpsmeter.Meter, log *slog.Logger) {
+func shutdownServeMode(httpSrv, httpsSrv *http.Server, application *app.Application, log *slog.Logger) {
 	const shutdownTimeout = 5 * time.Second
 	var wg sync.WaitGroup
 	if httpSrv != nil {
@@ -396,11 +386,6 @@ func shutdownServeMode(httpSrv, httpsSrv *http.Server, application *app.Applicat
 	if application != nil {
 		if err := application.Shutdown(); err != nil {
 			log.Warn("application shutdown", "err", err)
-		}
-	}
-	if meter != nil && meterStatePath != "" {
-		if err := bpsmeter.SaveState(meterStatePath, meter.Capture()); err != nil {
-			log.Warn("save bpsmeter state", "err", err)
 		}
 	}
 }

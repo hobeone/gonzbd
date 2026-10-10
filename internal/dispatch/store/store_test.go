@@ -1,7 +1,9 @@
 package store_test
 
 import (
+	"bytes"
 	"database/sql"
+	"log/slog"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -34,7 +36,7 @@ func newTestStoreDB(t *testing.T) (*store.Store, *sql.DB) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	raw := history.NewRepository(db).DB()
-	return store.New(raw), raw
+	return store.New(raw, nil), raw
 }
 
 // TestStore_RoundTripsEveryAxis uses an all-true Policy deliberately. A mixed
@@ -323,7 +325,8 @@ func TestStore_DeleteAnAbsentRowIsNotAnError(t *testing.T) {
 }
 
 // TestStore_LoadRejectsAnOutOfRangeEnum pins that a value too large for the
-// uint8 the job enums are built on fails the load rather than truncating.
+// uint8 the job enums are built on is refused and skipped rather than
+// truncating or aborting the load of valid rows.
 //
 // The check belongs to database/sql's Scan rather than to this package, which
 // is exactly why it is pinned here: it is a guarantee this code DEPENDS on but
@@ -336,25 +339,56 @@ func TestStore_DeleteAnAbsentRowIsNotAnError(t *testing.T) {
 // could not object, because StateUnset is exactly the shape it accepts without
 // opening an attempt.
 func TestStore_LoadRejectsAnOutOfRangeEnum(t *testing.T) {
-	s, raw := newTestStoreDB(t)
-	if err := s.Save(t.Context(), dispatch.Persisted{ID: "j1", Header: dispatch.Header{Name: "n"}}); err != nil {
-		t.Fatalf("Save: %v", err)
+	var buf bytes.Buffer
+	_, raw := newTestStoreDB(t)
+	s := store.New(raw, slog.New(slog.NewTextHandler(&buf, nil)))
+
+	bad := dispatch.Persisted{ID: "bad", SortKey: 1, Header: dispatch.Header{Name: "bad"}}
+	good := dispatch.Persisted{
+		ID:      "good",
+		SortKey: 2,
+		Header:  dispatch.Header{Name: "good"},
+		State:   job.StateView{State: job.Fetching},
+	}
+	if err := s.Save(t.Context(), bad); err != nil {
+		t.Fatalf("Save(bad): %v", err)
+	}
+	if err := s.Save(t.Context(), good); err != nil {
+		t.Fatalf("Save(good): %v", err)
 	}
 	// 256 is chosen over an arbitrary large number because it is the exact
-	// value that truncates to StateUnset.
-	if _, err := raw.ExecContext(t.Context(), `UPDATE dispatch_jobs SET state = 256 WHERE id = ?`, "j1"); err != nil {
+	// value that truncates to StateUnset. Also insert a row with NULL id (which
+	// SQLite allows on a TEXT PRIMARY KEY without NOT NULL) to verify column 0
+	// scan failures are skipped as well.
+	if _, err := raw.ExecContext(t.Context(), `UPDATE dispatch_jobs SET state = 256 WHERE id = ?`, "bad"); err != nil {
 		t.Fatalf("corrupting the row: %v", err)
 	}
-	got, err := s.Load(t.Context())
-	if err == nil {
-		t.Fatalf("Load returned %+v and no error, want an error — 256 truncates to StateUnset, which reads as a legal never-run job", got)
+	if _, err := raw.ExecContext(t.Context(), `INSERT INTO dispatch_jobs (id, sort_key, name) VALUES (NULL, 0, 'null-id')`); err != nil {
+		t.Fatalf("inserting NULL-id row: %v", err)
 	}
-	if !strings.Contains(err.Error(), "out of range") {
-		t.Errorf("Load error = %v, want it to name the out-of-range value", err)
+	got, err := s.Load(t.Context())
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil — unscannable rows must be skipped so valid rows still load", err)
+	}
+	if len(got) != 1 || got[0] != good {
+		t.Fatalf("Load() = %+v, want only [%+v] — out-of-range and NULL-id rows must be skipped rather than truncating or aborting the load", got, good)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "job_id=bad") || !strings.Contains(out, "out of range") {
+		t.Errorf("log output %q does not contain \"job_id=bad\" and \"out of range\"", out)
+	}
+	if !strings.Contains(out, "converting NULL to string") {
+		t.Errorf("log output %q does not contain \"converting NULL to string\" for the NULL-id row", out)
+	}
+	if exists, err := s.Has(t.Context(), "bad"); err != nil || !exists {
+		t.Errorf("Has(\"bad\") = (%v, %v), want (true, nil) for the skipped row left in dispatch_jobs", exists, err)
+	}
+	if exists, err := s.Has(t.Context(), "absent"); err != nil || exists {
+		t.Errorf("Has(\"absent\") = (%v, %v), want (false, nil)", exists, err)
 	}
 }
 
-// TestStore_SurfacesDatabaseErrors pins that each of the three operations
+// TestStore_SurfacesDatabaseErrors pins that each of the four operations
 // reports a failing database rather than swallowing it.
 //
 // Dropping the table is the realistic shape of this, not an artificial one: it
@@ -375,5 +409,8 @@ func TestStore_SurfacesDatabaseErrors(t *testing.T) {
 	}
 	if err := s.Delete(t.Context(), "j1"); err == nil {
 		t.Error("Delete against a missing table returned nil, want an error — absence of a ROW is fine, absence of the TABLE is not")
+	}
+	if _, err := s.Has(t.Context(), "j1"); err == nil {
+		t.Error("Has against a missing table returned nil, want an error")
 	}
 }

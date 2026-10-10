@@ -104,7 +104,7 @@ func TestCloseFile_ReportsACloseTimeFailure(t *testing.T) {
 	f.w.syncFile = func() error { return syscall.EIO }
 
 	op := &syncOp{kind: opClose, jobID: "job", fileIdx: 0, reply: make(chan syncReply, 1)}
-	a.handleSyncOp(op, open)
+	a.handleSyncOp(op, open, nil)
 
 	r := <-op.reply
 	if r.err == nil {
