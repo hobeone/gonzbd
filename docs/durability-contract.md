@@ -1043,8 +1043,10 @@ a green run does and does not bound.
    row's CRC, or because its file was `complete=1` and not reset by a retry.
 2. `complete=1` is written only after the file's fsync and trim, and never for
    a file whose fsync failed.
-3. A file whose fsync failed has no rows and no Done bits — in memory, in the
-   recorder's buffer, or in SQLite — once its untrust has run.
+3. A file whose fsync failed has no rows and no Done bits in memory or in the
+   recorder's buffer once its untrust has run, and none in SQLite once the
+   untrust's `apply` succeeded; rows a failed `apply` leaves have `complete=0`
+   and are read back before any is trusted (§4).
 4. No two written articles of a file have intersecting byte ranges, and an
    article owns a range only once its write succeeded.
 5. The whole-file CRC exists only for a gapless, non-overlapping chain of rows
