@@ -187,7 +187,10 @@ func (r *appResidency) fault(ctx context.Context, j *job.Job, f *storagefault.Fa
 
 // installVerification installs one verification's outcome on a job whose
 // content is attached and has no other record yet, and returns the files the
-// verifier finished by path, which are owed a completion.
+// verifier finished by path. Each of those is settled (Job.SettleFileCRC) and
+// marked complete here, while the manifest is certainly attached; the
+// completion the caller then queues (FileComplete.Resumed) runs only the steps
+// that read progress, so it lands even if the job is evicted first.
 //
 // Each file gets its recorded filename, and its recorded fetch policy when
 // restorePolicy is set. A complete=1 file's
@@ -233,6 +236,13 @@ func installVerification(j *job.Job, files []durability.FileRow, rows []durabili
 			_ = j.MarkArticleFailed(int(a))
 		}
 		if setComplete[fi] {
+			if _, _, err := j.SettleFileCRC(fi); err != nil {
+				log.Warn("residency: settle a finished file's CRC", "job", j.ID(), "fileidx", fi, "err", err)
+			}
+			if err := j.MarkFileComplete(fi); err != nil {
+				log.Warn("residency: mark a finished file complete", "job", j.ID(), "fileidx", fi, "err", err)
+				continue
+			}
 			finished = append(finished, fi)
 		}
 	}

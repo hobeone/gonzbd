@@ -16,9 +16,11 @@ type FileComplete struct {
 	JobID   string
 	FileIdx int
 	// Resumed marks a completion the verifier produced at hydration rather
-	// than one this process assembled. It is not fed to DirectUnpack: an
-	// unpacker starts only from volume 1 of a live download, and
-	// post-processing's normal unpack is the backstop.
+	// than one this process assembled. The hydration already settled the
+	// file's CRC and marked it complete, so its consumer skips both and needs
+	// no manifest. It is not fed to DirectUnpack: an unpacker starts only from
+	// volume 1 of a live download, and post-processing's normal unpack is the
+	// backstop.
 	Resumed bool
 }
 

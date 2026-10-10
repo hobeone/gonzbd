@@ -10,6 +10,7 @@ import (
 	"hash/crc32"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -764,6 +765,52 @@ func TestLooseRecord_PoisonedSyncReturnsArticlesToOutstanding(t *testing.T) {
 	}
 	if got := rowsFor(t, a.repo.DB(), j.ID()); len(got) != 0 {
 		t.Errorf("%d buffered rows of a poisoned file reached SQLite", len(got))
+	}
+}
+
+// TestLooseRecord_ResumedCompletionSurvivesEviction pins that a file the
+// verifier finished by path stays complete when the job is evicted before its
+// Resumed completion is consumed: the hydration marks it, and the consumer
+// needs no manifest for what is left.
+func TestLooseRecord_ResumedCompletionSurvivesEviction(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a1 := env.newApp(t)
+	j := a1.addJob(t, "evicted", 2, 2)
+	env.writeFileA(t, j, 2, 0, 1)
+	a1.recordFileA(t, j.ID(), false, 0, 1)
+
+	var owed []int
+	a2 := env.newApp(t, func(a *Application) {
+		a.dispatcher.Pause()
+		a.residency.finished = func(_ string, fi int) { owed = append(owed, fi) }
+	})
+	a2.start(t)
+	id := j.ID()
+	if err := a2.dispatcher.LoadProgress(t.Context(), id); err != nil {
+		t.Fatalf("LoadProgress: %v", err)
+	}
+	if !slices.Equal(owed, []int{0}) {
+		t.Fatalf("fixture: the verifier finished %v, want file A", owed)
+	}
+	a2.residency.Evict(id)
+	j2 := a2.registered(t, id)
+	if j2.Resident() {
+		t.Fatal("fixture: the job is still resident after Evict")
+	}
+
+	a2.enqueueResumedCompletion(id, 0)
+	lrWaitFor(t, "the resumed completion to be consumed", func() bool {
+		a2.recorder.mu.Lock()
+		defer a2.recorder.mu.Unlock()
+		st, ok := a2.recorder.dirty[j2][0]
+		return ok && st.Complete
+	})
+	if err := a2.residency.Hydrate(t.Context(), id); err != nil {
+		t.Fatalf("re-hydrate: %v", err)
+	}
+	if !j2.Progress().FileComplete(0) {
+		t.Error("file A is not complete after an evicted job's resumed completion was consumed")
 	}
 }
 

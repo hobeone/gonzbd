@@ -1567,9 +1567,11 @@ func (app *Application) logQueueWriteFailure(op, jobID string, fileIdx int, err 
 // by the assembler, or by path by the verifier.
 func (app *Application) handleFileComplete(_ context.Context, fc FileComplete) {
 	if err := app.completeFinalizedFile(fc); err != nil {
-		// A job that left the queue, or was evicted, has nothing to mark. An
-		// evicted job's file is re-derived at its next hydration: its rows are
-		// all verified, so verification finishes it by path again.
+		// A job that left the queue has nothing to mark. A Resumed completion
+		// needs no manifest: the hydration that finished the file settled and
+		// marked it. An assembler completion that finds the job evicted is not
+		// marked in this process; its rows are in the record, so the next
+		// start's verification finishes the file by path.
 		app.log.Info("completion not delivered", "job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
 	}
 }
@@ -1580,8 +1582,12 @@ func (app *Application) handleFileComplete(_ context.Context, fc FileComplete) {
 // mark it dirty for the recorder, and report the job's download complete when
 // this was its last file.
 //
-// It returns an error when the job could not take the completion:
-// MarkFileComplete needs the job resident.
+// A Resumed completion skips the CRC settle and the mark: installVerification
+// did both while the manifest was attached, so a job evicted since still takes
+// the rest, which reads only progress.
+//
+// It returns an error when the job could not take the completion: it left the
+// queue, or, for an assembler completion, MarkFileComplete found it evicted.
 func (app *Application) completeFinalizedFile(fc FileComplete) error {
 	if app.dispatcher != nil {
 		j, ok := app.dispatcher.Job(fc.JobID)
@@ -1594,8 +1600,10 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 		// the time the download-complete report below lets the job reach
 		// post-processing through Assessing. A file whose rows do not chain
 		// gaplessly gets zero, which par2 reads as NoCRC.
-		if _, _, err := j.SettleFileCRC(fc.FileIdx); err != nil {
-			app.logQueueWriteFailure("settle file CRC", fc.JobID, fc.FileIdx, err)
+		if !fc.Resumed {
+			if _, _, err := j.SettleFileCRC(fc.FileIdx); err != nil {
+				app.logQueueWriteFailure("settle file CRC", fc.JobID, fc.FileIdx, err)
+			}
 		}
 		// The volume's headers are read before anything consumes it, so a
 		// flagged one is never fed to DirectUnpack below: the peek that blocks
@@ -1618,9 +1626,11 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
 			app.duOrch.maybeStart(fc)
 		}
-		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
-			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
-			return err
+		if !fc.Resumed {
+			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
+				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+				return err
+			}
 		}
 		app.markFileDirty(j, fc.FileIdx)
 		// A job the peek failed is filed only now: a finalize before the mark
