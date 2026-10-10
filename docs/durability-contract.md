@@ -32,7 +32,7 @@ So every rule below resolves ambiguity toward re-fetching.
 Resume must still work inside a file: files reach several GB, and refetching a
 partial file whole on every restart is not acceptable. The record that makes
 that possible is **loose and cheap to write, and proven by reading it back
-once, at the first hydration after a restart.** It replaced an article-level
+at the first successful hydration after a restart, and again on a retry.** It replaced an article-level
 durability barrier that fsynced and committed on a cadence. That design could
 not be made sound against the failure it existed for: on Linux a writeback
 error is reported to one `fsync` and the failed pages are then marked clean,
@@ -271,8 +271,11 @@ where the job has no progress yet (`verifyAndAttach`):
    (`installVerification`).
 
 If any step fails or is cancelled, nothing is attached and the next hydration
-starts again from step 1. So **a job with progress has always been verified**,
-and `Hydrate`'s early `RestoreContent` for a job with progress is sound.
+starts again from step 1. So **a job `Hydrate` attached was verified first**,
+and `Hydrate`'s early `RestoreContent` for a job with progress is sound: the
+other ways a job gains progress verify too, or have nothing to verify — a
+freshly ingested job has no rows, and a retry verifies its rebuilt job itself
+(`verifyRetry`).
 
 Every path that attaches content to a job with rows goes through this, or
 verifies itself:
@@ -453,14 +456,15 @@ callers in `internal/assembler/assembler.go`):
 **A failed close-time fsync also rolls back the articles it covered.** A
 `FileWriter` keeps `unsynced`, the articles written since the last successful
 `Sync`. A failed `Sync` moves every one into `poisoned` (`poisonSync`), and
-`releasePoisoned` returns them to Outstanding through `OnArticlesUnwritten`,
-before the untrust above clears their Done bits and rows. A rolled-back article
-keeps its owned range in that writer (`rollbackSyncedArticle` leaves `owned`
-alone), so its redelivery carries the same `ArtIdx` and rewrites the range and
-a rival intersecting it is refused. Every production call of `FileWriter.Sync`
-is `drainAndClose`'s, which closes the writer next, so that retention matters
-only within the call; a refetch after the untrust meets a fresh writer seeded
-from the file's resident rows, which the untrust cleared.
+`releasePoisoned` returns them to Outstanding through `OnArticlesUnwritten`. In
+production `FileWriter.Sync` fails only inside `drainAndClose`, its one
+production call (`git grep -n 'w\.Sync()' -- 'internal/assembler/*.go'
+':!*_test.go'` returns 1 line), which closes the writer right after, so the
+writer and its owned ranges are discarded with it. The file is then untrusted
+as above: its rows and `complete` are removed, and its articles return to
+Outstanding. A redelivery of any of them registers the file afresh and lands
+on a new writer whose `owned` is seeded from `FileRows`, which the untrust
+emptied.
 
 These two fsyncs, and the completion finish, are what report errors first. So
 no file whose error was already consumed reaches a restart with rows, and the
@@ -971,7 +975,8 @@ recorded here so the next reader does not mistake them for design.
 
 1. **Verification runs inside the dispatcher's tick.** A multi-GB resume holds
    back that tick's launches. It is a per-job startup cost — a job is verified
-   once, at its first hydration after a restart — not a steady-state one. If it
+   at its first successful hydration after a restart, and again on a retry —
+   not a steady-state one. If it
    matters, the follow-up is a `verified` gate in the dispatch plan with the
    read on the Fetching worker.
 

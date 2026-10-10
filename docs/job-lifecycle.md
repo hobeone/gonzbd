@@ -1398,9 +1398,10 @@ attached: by the tick, for a
 job that holds what its position requires; by `hydratePausedJobs`, for a job
 restored paused at `Fetching`; or by a rename's `LoadProgress`. If verification
 cannot complete for a reason about the device, nothing is attached, the job is
-parked, and the next hydration starts again — so a job with progress has
-always been verified, and a later eviction and re-hydration
-(`RestoreContent`) has nothing to re-check.
+parked, and the next hydration starts again — so a job a hydration attached
+was verified first (a freshly ingested job has no rows to verify, and a retry
+verifies its rebuilt job itself in `verifyRetry`), and a later eviction and
+re-hydration (`RestoreContent`) has nothing to re-check.
 
 It reads every incomplete file with rows whatever the job's position, because a
 crash can leave a file finished but not yet flagged `complete=1` in a job that
