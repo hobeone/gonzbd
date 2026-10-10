@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 func TestAdd_RejectsADuplicateID(t *testing.T) {
@@ -301,9 +303,8 @@ func TestAdd_RefusedOnAStoppedDispatcher(t *testing.T) {
 //
 // Two things go wrong if it can. The intruder takes a sequence from the
 // counter before restore has raised it past the stored keys, so it collides
-// with a row still to be registered; and restore's rollback removes only the
-// IDs it registered itself, so a failing restore leaves the intruder behind in
-// a dispatcher that never started.
+// with a row still to be registered; and if Store.Load fails, the intruder is
+// left behind in a dispatcher that never started.
 func TestAdd_RefusedWhileRestoring(t *testing.T) {
 	st := &fakeStore{}
 	st.seed([]Persisted{{ID: "stored", SortKey: 10, Header: Header{Name: "stored"}}})
@@ -323,7 +324,7 @@ func TestAdd_RefusedWhileRestoring(t *testing.T) {
 	}
 	for _, r := range d.List() {
 		if r.ID == "intruder" {
-			t.Error("the intruding job is in the registry; a failing restore's rollback would not have removed it")
+			t.Error("the intruding job is in the registry")
 		}
 	}
 }
@@ -525,5 +526,90 @@ func TestAdd_NormalizesZeroOrNegativeAdded(t *testing.T) {
 	}
 	if j2.Added().Unix() < before {
 		t.Errorf("j2.Added() = %v, want >= %v (negative Added must be normalized to current time)", j2.Added().Unix(), before)
+	}
+}
+
+func TestPauseJobAndResume_DirectHelperCoverage(t *testing.T) {
+	d := newTestDispatcher(t)
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(context.Background(), j, Header{Name: "Job 1", Unwanted: unwanted.StateBlocked}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := d.pauseJob(j); err != nil {
+		t.Fatalf("pauseJob: %v", err)
+	}
+	if got := j.Intent(); got != job.IntentPause {
+		t.Fatalf("Intent after pauseJob = %s, want IntentPause", got)
+	}
+
+	if err := d.resume("missing", false); !errors.Is(err, ErrNotFound) {
+		t.Errorf("resume(missing) = %v, want ErrNotFound", err)
+	}
+	if err := d.resume("j1", false); !errors.Is(err, ErrUnwantedBlocked) {
+		t.Errorf("resume(j1, byUser=false) = %v, want ErrUnwantedBlocked", err)
+	}
+	if err := d.resume("j1", true); err != nil {
+		t.Fatalf("resume(j1, byUser=true): %v", err)
+	}
+	if got := j.Intent(); got != job.IntentRun {
+		t.Errorf("Intent after resume(byUser=true) = %s, want IntentRun", got)
+	}
+	if st, ok := d.UnwantedState("j1"); !ok || st != unwanted.StateApproved {
+		t.Errorf("UnwantedState(j1) = (%v, %v), want (StateApproved, true)", st, ok)
+	}
+
+	if err := j.SetIntent(job.IntentCancel); err != nil {
+		t.Fatalf("SetIntent(IntentCancel): %v", err)
+	}
+	if err := d.pauseJob(j); err == nil {
+		t.Error("pauseJob on a cancelled job returned nil, want error")
+	}
+}
+
+func TestNameHolderLocked_DirectHelperCoverage(t *testing.T) {
+	d := newTestDispatcher(t)
+	if err := d.Add(context.Background(), job.New("j1", "NameA", job.Policy{}), Header{Name: "NameA"}); err != nil {
+		t.Fatalf("Add(j1): %v", err)
+	}
+	release, err := d.ReserveName("j2", "ReservedB")
+	if err != nil {
+		t.Fatalf("ReserveName: %v", err)
+	}
+	defer release()
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if holder, taken := d.nameHolderLocked("j1", "NameA"); taken || holder != "" {
+		t.Errorf("nameHolderLocked(j1, NameA) = (%q, %v), want (\"\", false) for own name", holder, taken)
+	}
+	if holder, taken := d.nameHolderLocked("j3", "NameA"); !taken || holder != "j1" {
+		t.Errorf("nameHolderLocked(j3, NameA) = (%q, %v), want (\"j1\", true)", holder, taken)
+	}
+	if holder, taken := d.nameHolderLocked("j3", "ReservedB"); !taken || holder != "j2" {
+		t.Errorf("nameHolderLocked(j3, ReservedB) = (%q, %v), want (\"j2\", true)", holder, taken)
+	}
+	d.advanceSeqLocked(99)
+	if d.nextSeq != 100 {
+		t.Errorf("nextSeq after advanceSeqLocked(99) = %d, want 100", d.nextSeq)
+	}
+}
+
+func TestLoadProgressForRename_DirectHelperCoverage(t *testing.T) {
+	res := &fakeResidency{}
+	d := newTestDispatcher(t, withResidency(res))
+	if err := d.loadProgressForRename("missing"); err != nil {
+		t.Fatalf("loadProgressForRename(missing) = %v, want nil", err)
+	}
+
+	j := job.New("j1", "Job 1", job.Policy{})
+	if err := d.Add(context.Background(), j, Header{Name: "Job 1"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := d.loadProgressForRename("j1"); err != nil {
+		t.Fatalf("loadProgressForRename(j1): %v", err)
+	}
+	if !d.isResident("j1") {
+		t.Error("loadProgressForRename did not mark j1 resident after hydrating")
 	}
 }

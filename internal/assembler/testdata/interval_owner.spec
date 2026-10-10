@@ -1,5 +1,5 @@
 pkg ./internal/assembler/
-run TestOverlap_PartialRangeOverwritesADurableArticle|TestOwnedRanges_IntersectionIsOwned|TestOwnedRanges_SeededRangeIsOwnedByEveryArrival|TestFileWriter_FaultedWriteOwnsNothing
+run TestOverlap_PartialRangeOverwritesADurableArticle|TestOwnedRanges_IntersectionIsOwned|TestOwnedRanges_SeededRangeIsOwnedByEveryArrival|TestFileWriter_FaultedWriteOwnsNothing|TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused|TestOverlap_ZeroLengthArrivalInsideOwnedRangeIsAccepted
 
 [intersection never reported]
 file internal/assembler/ranges.go
@@ -24,4 +24,26 @@ file internal/assembler/filewriter.go
 --- replace
 	w.owned.claim(Range{Off: off, Len: int64(len(data))}, id)
 	_, err := w.writeAt(data, off)
+--- end
+
+[acceptArticle probes only the arrival's first byte]
+file internal/assembler/assembler.go
+--- anchor
+	if _, settled := f.w.owned.ownerOf(Range{Off: req.Offset, Len: int64(len(req.Data))}, id); settled {
+--- replace
+	if _, settled := f.w.owned.ownerOf(Range{Off: req.Offset, Len: min(int64(len(req.Data)), 1)}, id); settled {
+--- end
+
+[claim records an empty range]
+file internal/assembler/ranges.go
+--- anchor
+	if r.Len <= 0 {
+		return
+	}
+	lo := sort.Search(
+--- replace
+	if false {
+		return
+	}
+	lo := sort.Search(
 --- end

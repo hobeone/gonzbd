@@ -64,31 +64,24 @@ type FileWriter struct {
 	// from a successful writeAt (S2).
 	written []durability.WrittenArticle
 
-	// reported holds what a Drain has already handed to the barrier but whose
-	// CYCLE has not been confirmed. Drain returns it again, and Confirm — not
-	// Sync — is what finally discards it.
+	// reported holds what a Drain has already handed to the barrier while its
+	// cycle awaits confirmation after a successful Sync. Drain returns it
+	// again across post-Sync failures, and Confirm is what discards it once
+	// the cycle lands; a failed Sync poisons and releases it (#760).
 	//
-	// The distinction is the whole point. A successful fsync makes the bytes
-	// durable, but the barrier still has to commit the run rows and ack the
-	// articles, and both can fail after it. Releasing on the
-	// fsync covered only the first of the failures this retention exists for,
-	// while the doc below claimed all three.
+	// A successful fsync makes the bytes durable, but the barrier still has to
+	// commit the run rows and ack the articles, and both can fail after it.
+	// Retaining the report across those post-Sync failures is R12's
+	// at-least-once delivery: without it, a retry after a failed commit or ack
+	// drains nothing, so FinalizeFile's bound sits below bytes that are
+	// genuinely on disk (#342, #350).
 	//
-	// This is R12's at-least-once delivery, which SyncTarget.Drain explicitly
-	// blesses ("re-reporting an article a previous Drain already returned is
-	// permitted and expected"), and it is load-bearing rather than tidy. A
-	// barrier that drains and then fails — the sync, the run commit, the
-	// truncate — used to lose the report outright. For a file still being
-	// written that only cost a re-fetch. For a COMPLETED file it costs bytes:
-	// the retry drains nothing, so the bound FinalizeFile trims to
-	// sits below bytes that are genuinely on disk, and the truncate destroys
-	// them. That is the #342/#350 family arriving through the recovery path.
-	//
-	// An earlier version of this comment argued the opposite — that retaining
-	// the report would "trade a bounded cost for an unbounded slice". The
-	// bound it was worried about is real but small: entries accumulate only
-	// between CONFIRMED cycles, and a job whose barriers are failing stalls
-	// (R19) and stops writing.
+	// By contrast, a failed Sync itself must NOT retain the report (#760).
+	// Linux reports a writeback error to a file descriptor once (errseq) and
+	// marks the failed pages clean, so a later fsync on the same handle can
+	// return nil even though the bytes never reached disk. On a Sync failure,
+	// poisonSync discards reported and written and rolls their articles back
+	// into poisoned so the caller returns them to Outstanding.
 	reported []durability.WrittenArticle
 
 	// seenDone and seenFailed keep duplicate handling idempotent (R12).
@@ -112,11 +105,15 @@ type FileWriter struct {
 	// refuses an arrival that intersects another article's range before Accept
 	// is called.
 	//
-	// Entries are never removed. The question is "who wrote these bytes", not
+	// Entries are never removed, including by a failed Sync's rollback (see
+	// rollbackSyncedArticle). The question is "who wrote these bytes", not
 	// "who currently holds a part", so owned is intentionally not equal to
 	// seenDone. Residency is the writer's, so this is per-open-episode.
 	owned ownedRanges
 
+	// poisoned accumulates the articles a failed Sync rolled back (#760), for
+	// releaseSyncRollback to route to Outstanding via takePoisoned.
+	poisoned []int32
 	// partsWritten counts how many of the file's parts have been accounted
 	// for, whether by a successful accept or by a permanent failure.
 	//
@@ -197,8 +194,9 @@ func (w *FileWriter) noteWritten(id articleID, off int64, n int, crc32 uint32) {
 // without draining. Used by tests to assert what a write has claimed.
 func (w *FileWriter) writtenSoFar() []durability.WrittenArticle { return w.written }
 
-// unconfirmed returns the articles a Drain has reported that no Sync has yet
-// confirmed. Used by tests to assert the report survives a failed Sync.
+// unconfirmed returns the articles a Drain has reported that no Confirm has
+// yet released. Used by tests to assert the report survives a successful Sync
+// until Confirm and is discarded by a failed Sync (#760).
 func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.reported }
 
 // rollbackPart undoes the part and seen-set state an admitted article holds,
@@ -237,11 +235,12 @@ func (w *FileWriter) rollbackPart(artIdx int32) {
 //
 // Returning the article to Outstanding is the caller's: its Emitted bit is
 // still set from dispatch and ForEachUnfinishedArticle skips a set Emitted
-// bit, so an article merely dropped here is stranded. writeOne is the only
-// caller of fail — `git grep -n '\.fail(' -- internal/assembler ':!*_test.go'`
-// finds 2 lines, this comment and the call in writeOne — so the one article
-// is the one whose Accept returned the
-// error, and routeAcceptFailure reports it.
+// bit, so an article merely dropped here is stranded. fail has two callers —
+// `git grep -n '\.fail(' -- 'internal/assembler/*.go' ':!*_test.go'` finds 3 lines,
+// this comment and the calls in writeOne and rollbackSyncedArticle. After
+// writeOne, the one article is the one whose Accept returned the error, and
+// routeAcceptFailure reports it; after rollbackSyncedArticle, it is in
+// w.poisoned and releasePoisoned reports it.
 func (w *FileWriter) fail(id articleID) {
 	w.rollbackPart(id.artIdx)
 }
@@ -309,6 +308,18 @@ func (w *FileWriter) failPermanent(artIdx int32) {
 	w.seenFailed[artIdx] = struct{}{}
 }
 
+// takePoisoned returns and clears the articles a failed Sync rolled back since
+// the last call.
+//
+// Taken rather than read, because each set must be routed exactly once: the
+// caller returns them to Outstanding, and reporting one twice would clear an
+// Emitted bit a later dispatch had legitimately set.
+func (w *FileWriter) takePoisoned() []int32 {
+	out := w.poisoned
+	w.poisoned = nil
+	return out
+}
+
 // Accept writes one article's bytes through writeOne.
 //
 // It takes ownership of data and returns it to the decoder pool on every path,
@@ -344,15 +355,18 @@ func (w *FileWriter) writeOne(id articleID, off int64, data []byte, crc32 uint32
 }
 
 // Drain returns the articles whose bytes reached WriteAt without error since
-// the last SUCCESSFUL Sync — NOT since the last Drain.
+// the last confirmed cycle (and not poisoned by a failed Sync) — NOT merely
+// since the last Drain.
 //
 // The distinction is load-bearing and this comment used to get it wrong. take()
-// re-reports everything a Drain has already handed over but no Sync has yet
-// confirmed, which is R12's at-least-once delivery. Reading "since the last
+// re-reports everything a Drain has already handed over across post-Sync
+// failures until Confirm releases it (or a failed Sync poisons and rolls it
+// back, #760), which is R12's at-least-once delivery. Reading "since the last
 // call" as the contract makes the re-report look redundant, and removing it
-// destroys bytes on a retried finalize: the retry drains nothing, so the
-// bound FinalizeFile trims to sits below bytes genuinely on disk. See
-// take() and the FileWriter.reported field doc, which are the authority.
+// destroys bytes on a retried finalize after a failed commit or ack: the retry
+// drains nothing, so the bound FinalizeFile trims to sits below bytes genuinely
+// on disk. See take() and the FileWriter.reported field doc, which are the
+// authority.
 //
 // It writes nothing: Accept writes every article before reporting it, so the
 // return value is the barrier's only evidence and holds only bytes that
@@ -384,13 +398,14 @@ func (w *FileWriter) Drain() ([]durability.WrittenArticle, error) {
 }
 
 // take moves the newly written articles into the unconfirmed set and returns
-// the whole of it — everything written since the last SUCCESSFUL Sync.
+// the whole of it — everything written since the last confirmed cycle (and not
+// poisoned by a failed Sync).
 //
-// The split between the two slices is what keeps an article written BETWEEN a
-// Drain and its Sync from being discarded by that Sync: it is still in
-// w.written, which Sync does not touch, so the next Drain reports it. Folding
-// the two together would silently drop it — covered by the fsync, but never
-// claimed, so never acked.
+// The split between w.written and w.reported is what keeps an article written
+// BETWEEN a Drain and a successful Sync from being discarded when that cycle's
+// Confirm runs: it stays in w.written, which Confirm does not touch, so the
+// next Drain reports it. Folding the two together would silently drop it —
+// covered by the fsync, but never claimed, so never acked.
 func (w *FileWriter) take() []durability.WrittenArticle {
 	w.reported = append(w.reported, w.written...)
 	w.written = nil
@@ -400,27 +415,64 @@ func (w *FileWriter) take() []durability.WrittenArticle {
 // Sync fsyncs the handle. Until this returns nil, nothing a preceding Drain
 // reported may be claimed (S1).
 //
+// If the fsync fails, poisonSync discards the retained report (and any
+// articles written since the Drain) and rolls them back into poisoned so the
+// caller returns them to Outstanding (#760): Linux reports a writeback error
+// once per file descriptor (errseq) and marks the failed pages clean, so a
+// retry fsync on the same handle can return nil even though the bytes never
+// reached disk.
+//
 // It takes no context, for the reason Drain documents at length: the guard was
 // unreachable, and reaching it would have turned a cancellation into a storage
 // fault and stalled a healthy job.
 func (w *FileWriter) Sync() error {
 	if err := w.syncFile(); err != nil {
+		w.poisonSync()
 		return storagefault.Classify("sync", w.path, err)
 	}
-	// The report is deliberately NOT discarded here. The fsync makes the
-	// bytes durable, but the runs are not yet committed and nothing is acked,
-	// and either of those can still fail. Clearing on the fsync covered only
-	// the first of the failures the retention exists for. Confirm is what
-	// releases it.
+	// The report is deliberately NOT discarded on a successful fsync. The
+	// fsync makes the bytes durable, but the runs are not yet committed and
+	// nothing is acked, and either of those can still fail. Confirm is what
+	// releases it once the cycle lands.
 	return nil
+}
+
+// poisonSync discards the unconfirmed report and rolls every article in
+// w.reported and w.written back into w.poisoned so the caller returns them to
+// Outstanding (#760).
+func (w *FileWriter) poisonSync() {
+	for _, a := range w.reported {
+		w.rollbackSyncedArticle(a.ArtIdx)
+	}
+	for _, a := range w.written {
+		w.rollbackSyncedArticle(a.ArtIdx)
+	}
+	w.reported = nil
+	w.written = nil
+}
+
+// rollbackSyncedArticle rolls the article back into w.poisoned if it is not
+// already pending there.
+//
+// It leaves w.owned alone: the article wrote its range, so it keeps it. Its
+// redelivery carries the same artIdx and is accepted to rewrite the bytes, and
+// a different article intersecting the range is refused at acceptArticle.
+func (w *FileWriter) rollbackSyncedArticle(artIdx int32) {
+	if slices.Contains(w.poisoned, artIdx) {
+		return
+	}
+	w.fail(articleID{artIdx: artIdx})
+	w.poisoned = append(w.poisoned, artIdx)
 }
 
 // Confirm releases the drain report, and is called only once the barrier has
 // committed the runs and acked the articles.
 //
-// It is what bounds the retained set. Drain re-reports across any failure, so
-// without a confirmation the set would grow to every article ever written to
-// this file and every later checkpoint would redo all of it.
+// It is what bounds the retained set across post-Sync failures. Drain
+// re-reports across any failure after a successful Sync (while a failed Sync
+// poisons and releases the report, #760), so without a confirmation the set
+// would grow to every article ever written to this file and every later
+// checkpoint would redo all of it.
 //
 // Deliberately cannot fail. It records that work already succeeded, so there
 // is no outcome for a caller to handle: a missed Confirm costs one redundant

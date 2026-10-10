@@ -496,8 +496,12 @@ func TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport(t *testing.T) {
 		t.Errorf("reported set still holds %d after Confirm, want 0", len(w.reported))
 	}
 
-	// A FAILING fsync must keep the report, or the next Drain has nothing to
-	// re-report and a retried finalize truncates below bytes that are on disk.
+	// A FAILING fsync poisons the unconfirmed report (#760): Linux reports a
+	// writeback error once and marks the failed pages clean, so retaining
+	// w.reported would let a retry Sync return nil and ack bytes that never
+	// reached disk. Instead, Sync discards w.reported and rolls the affected
+	// article back into w.poisoned so it returns to Outstanding.
+	w.admitAccepted(1)
 	if err := w.Accept(articleID{msgID: "m1", artIdx: 1}, 5, []byte("world"), 0); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
@@ -508,9 +512,12 @@ func TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport(t *testing.T) {
 	if err := w.Sync(); err == nil {
 		t.Fatal("Sync returned nil despite a failing fsync")
 	}
-	if len(w.reported) == 0 {
-		t.Error("a FAILED fsync discarded the reported set; the next Drain would " +
-			"re-report nothing and FinalizeFile would trim below real bytes")
+	if len(w.reported) != 0 {
+		t.Errorf("a FAILED fsync kept %d articles in w.reported; a retry Sync returning "+
+			"nil would re-drain and ack bytes that never reached disk (#760)", len(w.reported))
+	}
+	if rolled := w.takePoisoned(); len(rolled) != 1 || rolled[0] != 1 {
+		t.Errorf("poisoned after failed Sync = %+v, want [artIdx 1] rolled back to Outstanding", rolled)
 	}
 }
 

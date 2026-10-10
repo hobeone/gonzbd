@@ -1938,7 +1938,7 @@ func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 		}
 		// The queue must have been persisted despite the wedged downloader.
 		// Reload it the way a restart would, through the store.
-		store := dispatchstore.New(repo.DB())
+		store := dispatchstore.New(repo.DB(), nil)
 		rows, loadErr := store.Load(t.Context())
 		if loadErr != nil {
 			t.Fatalf("reload queue after shutdown: %v", loadErr)

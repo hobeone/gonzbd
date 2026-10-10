@@ -44,7 +44,7 @@ func newAppWithCustomDispatchStore(t *testing.T, failCount int) (*Application, *
 	t.Helper()
 	application, repo, _ := newLifecycleTestApp(t)
 	s := &failDeleteStore{
-		Store:     dispatchstore.New(repo.DB()),
+		Store:     dispatchstore.New(repo.DB(), nil),
 		failCount: failCount,
 	}
 	application.dispatcher = dispatch.New(

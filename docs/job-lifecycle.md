@@ -1350,10 +1350,14 @@ a resume grants it a lease.
   persisting the integer would carry external vocabulary back inside the
   internal layer.
 
-Restore is **all-or-nothing**. Registering as it goes would leave every row
-before a failing one in the registry, and since `Start` clears its started flag
-on error, a legitimate retry would re-load the same rows and be refused with
-"already registered" — so the dispatcher could never start again.
+Restore bounds the blast radius of a bad row to that row alone (Standing Design
+Rule 3). A row that fails `rows.Scan` in `Store.Load`, or fails `reconstruct`
+or `register` in `Dispatcher.restore`, is logged at `Error` with its job ID and
+skipped — left in `dispatch_jobs` for inspection and omitted from `d.written`
+so `persistIfChanged` neither rewrites nor deletes it — while the remaining
+jobs are registered and queued; a query or cursor iteration failure in
+`Store.Load` (or an error from `StartWith`'s `beforeFirstTick`) still fails
+`Start`/`StartWith`.
 
 ### Article resolution is derived, not stored
 

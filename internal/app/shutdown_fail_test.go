@@ -214,7 +214,7 @@ func runShutdownFailRestart(t *testing.T, postProcBusy, wantInHistory bool) {
 	// What Shutdown persisted, read from the store before anything restarts:
 	// a restart acts on it, so an assertion made afterwards would see the
 	// restart's own moves.
-	persisted, err := dispatchstore.New(repo.DB()).Load(t.Context())
+	persisted, err := dispatchstore.New(repo.DB(), nil).Load(t.Context())
 	if err != nil {
 		t.Fatalf("load persisted queue: %v", err)
 	}

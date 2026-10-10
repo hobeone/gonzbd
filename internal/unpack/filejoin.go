@@ -3,7 +3,6 @@ package unpack
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -38,11 +37,6 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 			fmt.Errorf("filejoin: no parts in archive")
 	}
 
-	// Validate contiguity.
-	if _, err := sortedNumericParts(archive.Parts); err != nil {
-		return Result{Err: err}, fmt.Errorf("filejoin: %w", err)
-	}
-
 	outPath := filepath.Join(outDir, archive.Name)
 	// outRel is just the archive name (a filename, no directory component),
 	// used for all root-relative operations.
@@ -63,37 +57,53 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	}
 	defer root.Close() //nolint:errcheck // close after all writes complete
 
-	// O_EXCL atomically refuses to create the file if it already exists,
-	// avoiding the TOCTOU race of a separate Stat check.
-	outFile, err := fsutil.RootedOpenFile(root, outRel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	// If a regular file already exists at the final name, treat the join as a
+	// successful no-op (§8.1). Because FileJoin writes to a .gonzbd-tmp-*
+	// sibling and renames into place only after flush, fsync, and close, an
+	// interrupted FileJoin never leaves a partial file at outRel. An existing
+	// regular file at outRel is preserved rather than overwritten: it may be
+	// the output of a previous join whose archive cleanup was interrupted
+	// (including after .001 was already unlinked, which is why this check runs
+	// before sortedNumericParts), a target recreated from the parts by par2
+	// repair before unpack ran (where overwriting with a raw concatenation of
+	// a damaged part would discard the repair without re-verifying), or a file
+	// delivered by an earlier extraction pass or the post itself.
+	if info, err := root.Lstat(outRel); err == nil && info.Mode().IsRegular() {
+		log.Info("filejoin: output already exists, skipping join", "outPath", outPath)
+		return Result{ExtractedFiles: []string{outPath}}, nil
+	}
+
+	// Validate contiguity after checking whether outRel already exists, so a
+	// crash during archive cleanup after .001 was already removed does not fail
+	// the rerun of an already-completed join.
+	parts, err := sortedNumericParts(archive.Parts)
 	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			// Output already exists — treat as successful no-op (§8.1).
-			// This handles re-runs after a crash where the join completed
-			// but source cleanup didn't finish.
-			log.Info("filejoin: output already exists, skipping join", "outPath", outPath)
-			return Result{ExtractedFiles: []string{outPath}}, nil
-		}
+		return Result{Err: err}, fmt.Errorf("filejoin: %w", err)
+	}
+
+	outFile, tmpRel, err := fsutil.RootedCreateTempPerm(ctx, root, outRel, 0o666)
+	if err != nil {
 		return Result{Err: err}, fmt.Errorf("filejoin: create output: %w", err)
 	}
 
+	var published bool
+	defer func() {
+		if !published {
+			_ = outFile.Close()     //nolint:errcheck // best-effort cleanup
+			_ = root.Remove(tmpRel) //nolint:errcheck // best-effort cleanup
+		}
+	}()
+
 	bw := bufio.NewWriterSize(outFile, joinBufSize)
 
-	cleanup := func() {
-		_ = outFile.Close()     //nolint:errcheck // best-effort cleanup
-		_ = root.Remove(outRel) //nolint:errcheck // best-effort cleanup
-	}
-
-	totalParts := len(archive.Parts)
-	for i, part := range archive.Parts {
+	totalParts := len(parts)
+	for i, part := range parts {
 		// Honour context cancellation between parts.
 		if err := ctx.Err(); err != nil {
-			cleanup()
 			return Result{Err: err}, fmt.Errorf("filejoin: cancelled: %w", err)
 		}
 
 		if err := copyPart(bw, part); err != nil {
-			cleanup()
 			return Result{Err: err}, fmt.Errorf("filejoin: copy %s: %w", part, err)
 		}
 
@@ -109,17 +119,36 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	}
 
 	if err := bw.Flush(); err != nil {
-		cleanup()
 		return Result{Err: err}, fmt.Errorf("filejoin: flush: %w", err)
 	}
 
-	if err := outFile.Close(); err != nil {
-		_ = root.Remove(outRel) //nolint:errcheck // best-effort cleanup
-		return Result{Err: err}, fmt.Errorf("filejoin: close output: %w", err)
+	if err := syncAndPublishJoin(outFile, root, tmpRel, outRel); err != nil {
+		return Result{Err: err}, err
 	}
+	published = true
 
-	log.Info("filejoin: join complete", "outPath", outPath, "parts", len(archive.Parts))
+	log.Info("filejoin: join complete", "outPath", outPath, "parts", len(parts))
 	return Result{ExtractedFiles: []string{outPath}}, nil
+}
+
+// syncAndPublishJoin fsyncs outFile, closes it, atomically renames tmpRel to
+// outRel inside root, and fsyncs the parent directory so both the joined
+// file's data blocks and its directory entry survive a power loss.
+func syncAndPublishJoin(outFile *os.File, root *os.Root, tmpRel, outRel string) error {
+	if err := outFile.Sync(); err != nil {
+		return fmt.Errorf("filejoin: sync output: %w", err)
+	}
+	if err := outFile.Close(); err != nil {
+		return fmt.Errorf("filejoin: close output: %w", err)
+	}
+	if err := root.Rename(tmpRel, outRel); err != nil {
+		return fmt.Errorf("filejoin: publish output: %w", err)
+	}
+	if dirFile, err := root.Open(filepath.Dir(outRel)); err == nil {
+		_ = dirFile.Sync()
+		_ = dirFile.Close()
+	}
+	return nil
 }
 
 // copyPart opens part and copies its contents into w.

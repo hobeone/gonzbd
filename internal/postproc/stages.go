@@ -166,6 +166,13 @@ type Job struct {
 	// of the complete directory named after the job name.
 	FinalDir string
 
+	// FlatLayout reports that FinalDir is a shared flat category directory
+	// (category Dir ending in "*") rather than a per-job directory under
+	// the complete directory. Set by Application.enqueuePostProc where
+	// FinalDir is computed:
+	// `git grep -n '[F]latLayout:' -- '*.go' ':!*_test.go'` finds 1 line.
+	FlatLayout bool
+
 	// Sanitize defines the naming replacement options for this job.
 	Sanitize fsutil.SanitizeOptions
 

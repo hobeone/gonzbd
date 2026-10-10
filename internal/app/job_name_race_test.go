@@ -28,7 +28,7 @@ func newNameRaceApp(t *testing.T) (*Application, *history.Repository) {
 		1, 1, time.Second, time.Now,
 		&appWorkers{app: application},
 		application.residency,
-		store.New(repo.DB()),
+		store.New(repo.DB(), nil),
 		application.runner,
 	)
 	return application, repo
