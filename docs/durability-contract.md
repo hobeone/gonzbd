@@ -97,7 +97,7 @@ proposed the durability record redesign, since superseded by this contract.
 | A1 | A storage fault is never recorded as an article fault, nor the reverse. |
 | A2 | Every failure has a subject and a disposition; no path may log-and-continue. **One named exception** — see *File completion and the handoff*: `enqueuePostProc`'s close-time `CloseJobHandles` call (`internal/app/app.go`), on a timeout with no fault observed, logs and continues, because no fault was observed and the handles may still flush later. |
 | B1 | Bounded rework after power loss: default 30s or 64 MiB per job, whichever comes first. |
-| B2 | Bounded memory: held for in-flight/cached article data, independent of job size, file size, and job count. |
+| B2 | Bounded memory: held for in-flight article data, independent of job size, file size, and job count. |
 | B4 | Bounded blocking: every storage syscall on the critical path is timeout-bounded. |
 | X1 | Single writer per file: exactly one component owns a file's handle and its derived state. |
 | R1 | The record is immutable/append-only. **Deleted** — see §*One record*: merging is read-modify-write. |
