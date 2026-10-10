@@ -439,7 +439,6 @@ type Config struct {
 	DownloadDir          string
 	CompleteDir          string
 	AdminDir             string
-	WriteCacheBytes      int64
 	Servers              []config.ServerConfig
 	Categories           []config.CategoryConfig
 	Nice                 string
@@ -487,7 +486,6 @@ func convertConfig(c Config) *config.Config {
 		o.General.CompleteDir = c.CompleteDir
 		o.General.AdminDir = c.AdminDir
 		o.General.ScriptDir = c.ScriptDir
-		o.Downloads.WriteCacheSize = config.ByteSize(c.WriteCacheBytes)
 		o.Downloads.ReplaceIllegalWith = "_" // sensible default
 		o.PostProc.DeobfuscateFilenames = c.DeobfuscateFilenames
 		o.PostProc.IgnoreSamples = c.IgnoreSamples

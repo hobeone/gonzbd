@@ -19,59 +19,14 @@ import (
 // where the fault is directly reachable, that a *storagefault.Fault came
 // back. See filewriter_test.go for the base pins this file specializes.
 
-// TestFailedCoalescedRunFailsEveryArticleInTheRun pins the case #355's Scope
-// section wrongly cleared, translated for FileWriter.Drain as the evidence
-// surface: buildContiguousRun coalesces every article contiguous with the
-// write cursor into one buffer and pools the originals before flushRun
-// attempts the write, so a single failing WriteAt loses all of them — not
-// just the one whose arrival triggered the flush. None of the six may appear
-// once the writer's evidence is collected.
-func TestFailedCoalescedRunFailsEveryArticleInTheRun(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(8<<20))
-	_ = w.handle.Close() // every WriteAt from here on fails
-
-	const (
-		artCount = 6
-		artSize  = 100_000
-	)
-	if artCount*artSize <= contiguousRunSize {
-		t.Fatalf("fixture does not reach the coalescing threshold: %d <= %d",
-			artCount*artSize, contiguousRunSize)
-	}
-
-	var lastErr error
-	for i := range int32(artCount) {
-		lastErr = w.Accept(articleID{msgID: fmt.Sprintf("msg%d", i), artIdx: i}, int64(i)*artSize, make([]byte, artSize), 0)
-	}
-	if lastErr == nil {
-		t.Fatal("the run-triggering Accept returned nil error against a closed handle")
-	}
-
-	if got := w.writtenSoFar(); len(got) != 0 {
-		t.Errorf("writtenSoFar = %v after the run's WriteAt failed; every article in "+
-			"a coalesced run loses its bytes together — acking only the triggering "+
-			"article would leave the rest reported Written with no bytes on disk (#355)", got)
-	}
-
-	got, err := w.Drain()
-	if err != nil {
-		t.Fatalf("Drain after the failed run: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("Drain = %v, want empty; the coalesced run's articles were already "+
-			"cleared from the cache when the run was built, so nothing is left to drain", got)
-	}
-}
-
-// TestFailedCoalescedRun_RetryIsWrittenNotDiscarded pins the half of the
-// failure path that is not an ack, end to end.
+// TestFailedWrites_RetryIsWrittenNotDiscarded pins the half of the failure
+// path that is not an ack, end to end.
 //
-// seenDone means "accepted and counted toward TotalParts". flushRun's failure
-// branch calls w.fail on every part of the run, and fail() BOTH inserts into
-// seenFailed AND deletes from seenDone. The delete is the load-bearing half:
-// without it handleSuccessArticle's duplicate branch discards the retry
+// seenDone means "accepted and counted toward TotalParts". A failed write
+// calls w.fail, which deletes from seenDone. The delete is the load-bearing
+// half: without it handleSuccessArticle's duplicate branch discards the retry
 // (assembler.go, the `if _, dup := w.seenDone[...]` arm) instead of writing it,
-// so a coalesced run that hit ENOSPC leaves the file permanently short, never
+// so articles whose writes hit ENOSPC leave the file permanently short, never
 // acked and never failed. Silent without par2.
 //
 // # Why this test drives the Assembler and not the FileWriter
@@ -86,10 +41,7 @@ func TestFailedCoalescedRunFailsEveryArticleInTheRun(t *testing.T) {
 // "seenDone is empty" re-tests fail() against itself; asserting that a retry
 // actually lands on disk is the property the maps exist to produce, and it is
 // what fails when the clear is dropped.
-func TestFailedCoalescedRun_RetryIsWrittenNotDiscarded(t *testing.T) {
-	// 6 x 100_000 = 600_000 bytes, over contiguousRunSize (512 KiB), so the
-	// sixth Accept coalesces all six into ONE run and flushes it. Five would
-	// stay buffered and never reach flushRun at all.
+func TestFailedWrites_RetryIsWrittenNotDiscarded(t *testing.T) {
 	const (
 		artCount = 6
 		artSize  = 100_000
@@ -105,7 +57,7 @@ func TestFailedCoalescedRun_RetryIsWrittenNotDiscarded(t *testing.T) {
 	t.Cleanup(func() { _ = fh.Close() })
 
 	key := fileKey{jobID: "job", fileIdx: 0}
-	w := newFileWriter(fh, path, key, newWriteCache(8<<20))
+	w := newFileWriter(fh, path, key)
 	f := &openFile{
 		w:    w,
 		info: FileInfo{Path: path, ExpectedSize: artCount * artSize},
@@ -143,12 +95,12 @@ func TestFailedCoalescedRun_RetryIsWrittenNotDiscarded(t *testing.T) {
 		rolledBack = append(rolledBack, artIdxs...)
 	}
 
-	// Phase 1 — the whole coalesced run hits ENOSPC.
+	// Phase 1 — every write hits ENOSPC.
 	for i := range artCount {
 		send(i)
 	}
 	if len(w.seenDone) != 0 {
-		t.Errorf("seenDone still holds %d articles after their run failed; a retry "+
+		t.Errorf("seenDone still holds %d articles after their writes failed; a retry "+
 			"would be discarded as a duplicate over bytes that are not on disk",
 			len(w.seenDone))
 	}
@@ -197,25 +149,20 @@ func TestFailedCoalescedRun_RetryIsWrittenNotDiscarded(t *testing.T) {
 	}
 }
 
-// TestDuplicateSuccessWhileBufferedIsNotReAcked translates the old ack-timing
-// pin: since this package no longer acks anything, "not re-acked" becomes "a
-// duplicate does not add a second entry to what Drain reports." The dedup
-// decision lives in handleSuccessArticle, keyed on the FileWriter's own
-// seenDone map (R12), and fires the same way whether the first copy's bytes
-// have reached disk yet or not — there is no ack whose timing could race any
-// more.
-func TestDuplicateSuccessWhileBufferedIsNotReAcked(t *testing.T) {
+// TestDuplicateSuccessIsNotReAcked pins that a duplicate does not add a second
+// entry to what Drain reports. The dedup decision lives in
+// handleSuccessArticle, keyed on the FileWriter's own seenDone map (R12).
+func TestDuplicateSuccessIsNotReAcked(t *testing.T) {
 	a := newHelperAssembler()
 	dir := t.TempDir()
 	f := newHelperFile(t, dir, "dup.dat", 0)
-	f.w.wc = newWriteCache(1 << 20) // cache enabled: the first copy stays buffered
 
 	req := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first copy")}
 	if !a.handleSuccessArticle(f, req) {
 		t.Fatal("first copy was not accepted")
 	}
-	if got := f.w.writtenSoFar(); len(got) != 0 {
-		t.Fatalf("writtenSoFar = %v before any drain, want empty (bytes still buffered)", got)
+	if got := f.w.writtenSoFar(); len(got) != 1 {
+		t.Fatalf("writtenSoFar = %v after the first copy, want exactly one entry", got)
 	}
 
 	dup := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("second copy")}
@@ -242,14 +189,13 @@ func TestDuplicateAtADifferentOffsetIsNotReAcked(t *testing.T) {
 	a := newHelperAssembler()
 	dir := t.TempDir()
 	f := newHelperFile(t, dir, "dupoffset.dat", 0)
-	f.w.wc = newWriteCache(1 << 20)
 
 	req := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first copy")}
 	if !a.handleSuccessArticle(f, req) {
 		t.Fatal("first copy was not accepted")
 	}
 
-	// Same Message-ID, different offset, while the first copy is buffered.
+	// Same Message-ID, different offset, after the first copy was written.
 	dup := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 4096, Data: []byte("same article, other offset")}
 	if a.handleSuccessArticle(f, dup) {
 		t.Error("a duplicate must not be counted toward TotalParts")
@@ -265,69 +211,11 @@ func TestDuplicateAtADifferentOffsetIsNotReAcked(t *testing.T) {
 	}
 }
 
-// TestDisplacedArticleIsFailed covers buffer's duplicate-offset branch. It is
-// near-unreachable behind the seen-set dedup, but an article silently
-// evicted from the cache is one that must not appear in Drain — nothing else
-// will ever write its bytes.
-func TestDisplacedArticleIsFailed(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(1<<20))
-
-	// Two different Message-IDs claiming the same offset. Upstream dedup keys
-	// on the Message-ID, so it does not catch this; the cache's own
-	// replacement branch is what sees it.
-	if err := w.Accept(articleID{msgID: "msg7", artIdx: 7}, 0, []byte("first"), 0); err != nil {
-		t.Fatalf("first article: %v", err)
-	}
-	if err := w.Accept(articleID{msgID: "msg8", artIdx: 8}, 0, []byte("second"), 0); err != nil {
-		t.Fatalf("second article: %v", err)
-	}
-
-	got, err := w.Drain()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, a := range got {
-		if a.ArtIdx == 7 {
-			t.Error("the displaced article (7) appears in Drain; its bytes were " +
-				"dropped when article 8 replaced it at the same offset")
-		}
-	}
-	if len(got) != 1 || got[0].ArtIdx != 8 {
-		t.Errorf("Drain = %v, want exactly the surviving article (8)", got)
-	}
-	if _, still := w.seenDone[7]; still {
-		t.Error("the displaced article is still in seenDone")
-	}
-	// It has to be reported to the caller, or its Emitted bit is never cleared
-	// and nothing re-dispatches it — the article is then neither Done, nor
-	// Failed, nor Outstanding for the life of the process.
-	var reported bool
-	for _, r := range w.takeFaulted() {
-		if r.id.msgID == "msg7" {
-			reported = true
-		}
-	}
-	if !reported {
-		t.Error("the displaced article was not reported as rolled back")
-	}
-}
-
-// TestZeroLengthArticleIsNotBuffered guards a hang rather than a wrong
-// answer. buildContiguousRun scans from the write cursor and advances by the
-// length of the article it finds there. A zero-length article at that offset
-// never advances it, so the loop would run forever. Kept as-is: this is pure
-// write-cache behaviour, untouched by the ack removal.
-func TestZeroLengthArticleIsNotBuffered(t *testing.T) {
-	wc := newWriteCache(1 << 20)
-	key := fileKey{jobID: "job1", fileIdx: 0}
-
-	if wc.buffer(key, bufferedArticle{offset: 0, data: nil}) {
-		t.Error("a zero-length article was buffered; it cannot advance the " +
-			"write cursor, so buildContiguousRun would never terminate")
-	}
-
-	// End to end: it takes the inline path through Accept and is reported.
-	w := newTestFileWriter(t, withCacheBytes(1<<20))
+// TestZeroLengthArticleIsReportedWritten pins that a zero-length article takes
+// the same path as any other: the WriteAt is a no-op but the article is still
+// reported Written.
+func TestZeroLengthArticleIsReportedWritten(t *testing.T) {
+	w := newTestFileWriter(t)
 	if err := w.Accept(articleID{msgID: "msg0", artIdx: 0}, 0, nil, 0); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
@@ -336,51 +224,8 @@ func TestZeroLengthArticleIsNotBuffered(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].ArtIdx != 0 {
-		t.Errorf("Drain = %v, want one entry for article 0 — the inline write is "+
+		t.Errorf("Drain = %v, want one entry for article 0 — the write is "+
 			"a no-op but the article is still reported Written", got)
-	}
-}
-
-// TestBuildContiguousRunStopsAtAZeroLengthArticle covers the second guard.
-// buffer refuses to cache such an article, so only direct construction can
-// put one in the map — which is what this does, since the cost of the scan
-// not stopping is a hung worker rather than a wrong result. Kept as-is.
-func TestBuildContiguousRunStopsAtAZeroLengthArticle(t *testing.T) {
-	wc := newWriteCache(1 << 20)
-	fb := &fileBuf{articles: make(map[int64]bufferedArticle)}
-	fb.articles[0] = bufferedArticle{offset: 0, data: []byte{}}
-
-	done := make(chan *flushRun, 1)
-	go func() { done <- wc.buildContiguousRun(fb, 1) }()
-
-	select {
-	case run := <-done:
-		if run != nil {
-			t.Errorf("run = %+v, want nil; a zero-length article cannot start a run", run)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("buildContiguousRun did not return: the scan cannot advance past " +
-			"a zero-length article at the write cursor")
-	}
-}
-
-// TestBufferedReportsUnknownKey covers the lookup that tells an article still
-// waiting in the cache from one already written. Kept as-is — pure
-// write-cache behaviour, and still exercised directly by helpers_test.go's
-// relievePressure fixture.
-func TestBufferedReportsUnknownKey(t *testing.T) {
-	wc := newWriteCache(1 << 20)
-	key := fileKey{jobID: "job1", fileIdx: 0}
-
-	if wc.buffered(key, 0) {
-		t.Error("buffered reported true for a file with no cache entry")
-	}
-	wc.buffer(key, bufferedArticle{offset: 0, data: []byte("x")})
-	if !wc.buffered(key, 0) {
-		t.Error("buffered reported false for an article sitting in the cache")
-	}
-	if wc.buffered(key, 64) {
-		t.Error("buffered reported true for an offset holding no article")
 	}
 }
 
@@ -402,9 +247,7 @@ func TestSyncTargetDrainReportsUntilTheCycleIsConfirmed(t *testing.T) {
 	// SyncTargetFor can still reach it through the barrier's own path.
 	registerFile(t, dir, files, "job1", 0, parts+1)
 
-	opts := makeOpts(dir, files)
-	opts.WriteCacheBytes = 1 << 20
-	a := startAssembler(t, opts)
+	a := startAssembler(t, makeOpts(dir, files))
 
 	for i := range int32(parts) {
 		req := WriteRequest{
@@ -506,13 +349,6 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 	// see FileWriter.fail, which applies the give-back in the same statement
 	// pair that clears seenDone. Counting an article whose bytes are not on
 	// disk is what let a file reach TotalParts and finalize over them.
-	//
-	// This comment used to name Assembler.releaseFaulted as the thing that
-	// gave the count back, and that was wrong on its own terms: this test
-	// calls w.fail directly and never calls releaseFaulted, so under the old
-	// arrangement nothing gave anything back and the assertion below passed
-	// only because a fresh seenDone insert returns true. The sentence is
-	// accurate now for a different reason than it claimed then.
 	retry := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("retry")}
 	if !a.handleSuccessArticle(f, retry) {
 		t.Error("the retry was not counted toward TotalParts, so the file can never " +
@@ -537,37 +373,6 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 // The claim it made about seenFailed was also too strong. fail does not write
 // seenFailed, but it is not the case that only admitPermanentFailure does:
 // failPermanent records there too.
-
-// TestRelievePressureForUnknownFileIsSkippedSafely covers the branch taken
-// when the cache holds articles for a file relievePressure cannot find in
-// the open map — a pairing nothing enforces (see writeCache's doc comment).
-// Production is not believed to reach it; this exercises what happens if the
-// pairing is ever broken. Before #355 this dropped only bytes; after it, and
-// now again after the ack removal, it still only drops bytes — there is no
-// ack left to lose alongside them — so the residual claim is that the worker
-// does not panic on the missing *openFile and the pressure is actually
-// relieved.
-func TestRelievePressureForUnknownFileIsSkippedSafely(t *testing.T) {
-	a := newHelperAssembler()
-	wc := newWriteCache(10) // tiny limit so pressure trips immediately
-	key := fileKey{jobID: "job1", fileIdx: 0}
-
-	wc.buffer(key, bufferedArticle{
-		offset: 0,
-		data:   []byte("orphaned bytes exceeding the limit"),
-		id:     articleID{msgID: "msg5", artIdx: 5},
-	})
-	if !wc.pressure() {
-		t.Fatal("fixture did not put the cache under pressure; the test would pass vacuously")
-	}
-
-	// The pairing broken deliberately: buffered articles, no open file.
-	a.relievePressure(wc, map[fileKey]*openFile{})
-
-	if wc.pressure() {
-		t.Error("relievePressure did not drain the orphaned entry")
-	}
-}
 
 // TestFatalAfterAWrittenArticleCannotRetractIt replaces
 // TestFatalAfterBufferedSuccessDoesNotOutraceTheDoneAck, which the plan
@@ -695,7 +500,7 @@ func TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport(t *testing.T) {
 	// writeback error once and marks the failed pages clean, so retaining
 	// w.reported would let a retry Sync return nil and ack bytes that never
 	// reached disk. Instead, Sync discards w.reported and rolls the affected
-	// article back into w.faulted so it returns to Outstanding.
+	// article back into w.poisoned so it returns to Outstanding.
 	w.admitAccepted(1)
 	if err := w.Accept(articleID{msgID: "m1", artIdx: 1}, 5, []byte("world"), 0); err != nil {
 		t.Fatalf("Accept: %v", err)
@@ -711,8 +516,8 @@ func TestSync_ActuallyIssuesTheFsyncAndKeepsTheReport(t *testing.T) {
 		t.Errorf("a FAILED fsync kept %d articles in w.reported; a retry Sync returning "+
 			"nil would re-drain and ack bytes that never reached disk (#760)", len(w.reported))
 	}
-	if rolled := w.takeFaulted(); len(rolled) != 1 || rolled[0].id.artIdx != 1 || rolled[0].displaced {
-		t.Errorf("faulted after failed Sync = %+v, want [artIdx 1] rolled back to Outstanding", rolled)
+	if rolled := w.takePoisoned(); len(rolled) != 1 || rolled[0] != 1 {
+		t.Errorf("poisoned after failed Sync = %+v, want [artIdx 1] rolled back to Outstanding", rolled)
 	}
 }
 

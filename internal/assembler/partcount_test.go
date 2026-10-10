@@ -31,9 +31,7 @@ func TestTransientWriteFault_DoesNotPermanentlyUndercountTheFile(t *testing.T) {
 	a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
 	a.opts.OnWriteFault = func(string, int, *storagefault.Fault) {}
 
-	wc := newWriteCache(0) // no coalescing: every accept is its own write
 	f := newHelperFile(t, dir, "count.dat", 0)
-	f.w.wc = wc
 	f.info.TotalParts = 3
 	key := fileKey{jobID: "job", fileIdx: 0}
 	open := map[fileKey]*openFile{key: f}
@@ -43,7 +41,7 @@ func TestTransientWriteFault_DoesNotPermanentlyUndercountTheFile(t *testing.T) {
 		a.processRequest(WriteRequest{
 			JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
 			Offset: int64(idx) * 4, Data: []byte("AAAA"),
-		}, open, completed, wc)
+		}, open, completed)
 	}
 
 	send(0, "a")

@@ -53,7 +53,7 @@ function mockApi(over: Record<string, unknown> = {}) {
 			unrar: { path: '', version: '' },
 			sevenzip: { path: '', version: '' }
 		},
-		system: { os: 'linux', arch: 'amd64', article_cache_bytes: 0, download_dir_free_bytes: 0, min_free_space_bytes: 0 }
+		system: { os: 'linux', arch: 'amd64', download_dir_free_bytes: 0, min_free_space_bytes: 0 }
 	} as never);
 	vi.mocked(fetchCheckUpdate).mockResolvedValue({ result: { status: 'unknown' } } as never);
 	vi.mocked(fetchRedactedConfig).mockResolvedValue({ config: { servers: [] } } as never);

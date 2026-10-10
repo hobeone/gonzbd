@@ -59,53 +59,31 @@ file internal/assembler/filewriter.go
 --- anchor
 		if w.accepted[i].id.artIdx == artIdx {
 			w.accepted[i].written = false
-			id = w.accepted[i].id
 		}
 --- replace
 		if w.accepted[i].id.artIdx == artIdx {
-			id = w.accepted[i].id
 		}
 --- end
 
-[rollbackSyncedArticle omits duplicate check on w.faulted]
+[rollbackSyncedArticle omits duplicate check on w.poisoned]
 file internal/assembler/filewriter.go
 --- anchor
-		if !f.displaced && f.id.artIdx == artIdx {
-			return
-		}
+	if slices.Contains(w.poisoned, artIdx) {
+		return
+	}
 --- replace
-		if false && !f.displaced && f.id.artIdx == artIdx {
-			return
-		}
+	if false && slices.Contains(w.poisoned, artIdx) {
+		return
+	}
 --- end
 
-[rollbackSyncedArticle treats displaced faulted entry as unwritten duplicate]
+[rollbackSyncedArticle omits recording the article in w.poisoned]
 file internal/assembler/filewriter.go
 --- anchor
-		if !f.displaced && f.id.artIdx == artIdx {
-			return
-		}
+	w.fail(articleID{artIdx: artIdx})
+	w.poisoned = append(w.poisoned, artIdx)
 --- replace
-		if f.id.artIdx == artIdx {
-			return
-		}
---- end
-
-[opDrain omits releaseSyncRollback after Drain]
-file internal/assembler/synctarget.go
---- anchor
-		case opDrain:
-			r.written, r.err = f.w.Drain()
-			// The barrier routes the fault; it cannot route the ARTICLES. A
-			// failed drain rolls back every article after the write that
-			// failed, and that set never crosses the SyncTarget interface —
-			// so without this they are neither Done, nor Failed, nor
-			// Outstanding, and only a restart recovers them.
-			a.releaseSyncRollback(f, key, completed)
---- replace
-		case opDrain:
-			r.written, r.err = f.w.Drain()
-			a.releaseFaulted(f, key.jobID, key.fileIdx)
+	w.fail(articleID{artIdx: artIdx})
 --- end
 
 [opSync omits releaseSyncRollback after Sync]
@@ -114,7 +92,7 @@ file internal/assembler/synctarget.go
 		case opSync:
 			r.err = f.w.Sync()
 			// A failed Sync poisons the retained report and rolls its articles
-			// back into w.faulted (#760); route them back to Outstanding and
+			// back into w.poisoned (#760); route them back to Outstanding and
 			// lift any completed tombstone if partsWritten dropped below
 			// TotalParts.
 			a.releaseSyncRollback(f, key, completed)
@@ -206,15 +184,22 @@ file internal/assembler/assembler.go
 	}
 --- end
 
-[drainAndClose omits releaseFaulted after failed Sync]
+[drainAndClose omits releasePoisoned after failed Sync]
 file internal/assembler/assembler.go
 --- anchor
-	if syncErr := f.w.Sync(); syncErr != nil {
-		note("sync file before close", syncErr)
-		a.releaseFaulted(f, key.jobID, key.fileIdx)
+		a.releasePoisoned(f)
 	}
+	// A failing Close is a storage condition too, and on network-backed mounts
 --- replace
-	if syncErr := f.w.Sync(); syncErr != nil {
-		note("sync file before close", syncErr)
 	}
+	// A failing Close is a storage condition too, and on network-backed mounts
+--- end
+
+[releaseSyncRollback omits routing the poisoned set]
+file internal/assembler/synctarget.go
+--- anchor
+	a.releasePoisoned(f)
+	if f.info.TotalParts > 0 && f.w.parts() < f.info.TotalParts {
+--- replace
+	if f.info.TotalParts > 0 && f.w.parts() < f.info.TotalParts {
 --- end

@@ -6,7 +6,6 @@ func TestReset(t *testing.T) {
 	ArticlesReceived.Add(10)
 	ArticlesWritten.Add(5)
 	DiskWrites.Add(100)
-	CacheHits.Add(50)
 	FilesCompleted.Add(3)
 	PipelineErrors.Add(ErrClassNNTPNoArticle, 7)
 
@@ -20,9 +19,6 @@ func TestReset(t *testing.T) {
 	}
 	if v := DiskWrites.Value(); v != 0 {
 		t.Errorf("DiskWrites = %d after Reset, want 0", v)
-	}
-	if v := CacheHits.Value(); v != 0 {
-		t.Errorf("CacheHits = %d after Reset, want 0", v)
 	}
 	if v := FilesCompleted.Value(); v != 0 {
 		t.Errorf("FilesCompleted = %d after Reset, want 0", v)

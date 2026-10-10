@@ -10,7 +10,7 @@
 // conclude, so it is stated before anything else.
 //
 // DESTROYED FOR REAL: everything the process held in its own memory. That is
-// the assembler's write cache, the decoded articles queued behind it, the
+// the decoded articles queued ahead of the assembler, the
 // downloader's in-flight buffers, and the queue's unsaved in-memory state. A
 // SIGKILL gives the process no chance to flush any of it, so an article that
 // was acked before its bytes left the process is an article whose bytes are
@@ -79,10 +79,6 @@ type harnessOpts struct {
 	// straight into the daemon's config file.
 	CheckpointBytes    int64
 	CheckpointInterval time.Duration
-	// WriteCacheBytes is the assembler's in-process coalescing budget. It is
-	// the memory a SIGKILL destroys, so it is part of the rework bound and a
-	// test that measures that bound must know it.
-	WriteCacheBytes int64
 	// Connections is the NNTP connection count, which bounds how many
 	// articles can be in flight and therefore also feeds the rework bound.
 	Connections int
@@ -140,9 +136,6 @@ func newHarness(t *testing.T, opts harnessOpts) *harness {
 	}
 	if opts.CheckpointInterval == 0 {
 		opts.CheckpointInterval = time.Hour
-	}
-	if opts.WriteCacheBytes == 0 {
-		opts.WriteCacheBytes = 1 << 20
 	}
 	if opts.Connections == 0 {
 		opts.Connections = 1
@@ -235,7 +228,6 @@ func (h *harness) writeConfig() {
 		c.General.ScriptDir = ""
 		c.Downloads.CheckpointBytes = config.ByteSize(h.opts.CheckpointBytes)
 		c.Downloads.CheckpointInterval = int(h.opts.CheckpointInterval.Seconds())
-		c.Downloads.WriteCacheSize = config.ByteSize(h.opts.WriteCacheBytes)
 		c.Downloads.MaxArtTries = 3
 		c.Servers = []config.ServerConfig{{
 			Name:               "mock",
@@ -371,7 +363,7 @@ func (h *harness) Stop() {
 // failure mode this comment exists to prevent:
 //
 //   - The kill is the real one. Everything the daemon held in user space —
-//     above all the assembler's write cache — is gone, with no flush. An
+//     above all the decoded articles queued ahead of the assembler — is gone, with no flush. An
 //     article acked before its bytes left the process has no bytes on disk
 //     afterwards, and the CRC read-back sees exactly that.
 //
@@ -576,8 +568,8 @@ func (h *harness) WaitForDurableBytes(jobID string, want int64) slot {
 
 // WaitForUnackedBacklog blocks until the daemon has taken delivery of at
 // least minUnacked more articles than it has acked, so that a kill issued
-// straight afterwards lands INSIDE a checkpoint window with real work in the
-// write cache.
+// straight afterwards lands INSIDE a checkpoint window with real work in
+// memory.
 //
 // It exists because the obvious fixture does not reach that state. Waiting
 // only for a durable-byte threshold returns the instant a barrier completes,

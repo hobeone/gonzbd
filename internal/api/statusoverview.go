@@ -44,11 +44,9 @@ func (s *Server) modeStatusOverview(w http.ResponseWriter, r *http.Request) {
 		minFreeSpace = int64(dl.MinFreeSpace)
 	}
 
-	var articleCacheBytes int64
 	var downloadDirFreeBytes int64
 	var bv app.BinaryVersions
 	if s.status != nil {
-		articleCacheBytes = s.status.ArticleCacheBytes()
 		ctx, cancel := context.WithTimeout(r.Context(), downloadDirFreeBytesTimeout)
 		free, err := s.status.DownloadDirFreeBytes(ctx)
 		cancel()
@@ -80,7 +78,6 @@ func (s *Server) modeStatusOverview(w http.ResponseWriter, r *http.Request) {
 	system := map[string]any{
 		"os":                      runtime.GOOS,
 		"arch":                    runtime.GOARCH,
-		"article_cache_bytes":     articleCacheBytes,
 		"download_dir_free_bytes": downloadDirFreeBytes,
 		"min_free_space_bytes":    minFreeSpace,
 	}

@@ -13,8 +13,8 @@ import (
 // A occupies [0, 1000). B occupies [500, 1500). They overlap on [500, 1000),
 // without sharing A's start offset 0.
 //
-// The write cache is disabled (newHelperFile builds newWriteCache(0)), so A's
-// bytes are on disk before B arrives.
+// Both articles go straight to WriteAt, so A's bytes are on disk before B
+// arrives.
 func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
@@ -28,9 +28,7 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 		unwritten = append(unwritten, artIdxs...)
 	}
 
-	wc := newWriteCache(0)
 	f := newHelperFile(t, dir, "overlap.dat", 0)
-	f.w.wc = wc
 	f.info.TotalParts = 2
 	key := fileKey{jobID: "job", fileIdx: 0}
 	open := map[fileKey]*openFile{key: f}
@@ -40,13 +38,13 @@ func TestOverlap_PartialRangeOverwritesADurableArticle(t *testing.T) {
 	a.processRequest(WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a@example",
 		Offset: 0, Data: bytes.Repeat([]byte("A"), 1000),
-	}, open, completed, wc)
+	}, open, completed)
 
 	// B starts 500 bytes into A's range.
 	a.processRequest(WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "b@example",
 		Offset: 500, Data: bytes.Repeat([]byte("B"), 1000),
-	}, open, completed, wc)
+	}, open, completed)
 
 	got, err := os.ReadFile(f.info.Path)
 	if err != nil {
@@ -89,9 +87,7 @@ func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 		completed++
 	}
 
-	wc := newWriteCache(0)
 	f := newHelperFile(t, dir, "contained.dat", 0)
-	f.w.wc = wc
 	f.info.TotalParts = 3
 	key := fileKey{jobID: "job", fileIdx: 0}
 	open := map[fileKey]*openFile{key: f}
@@ -101,7 +97,7 @@ func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 		a.processRequest(WriteRequest{
 			JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
 			Offset: off, Data: bytes.Repeat([]byte{b}, n),
-		}, open, completedSet, wc)
+		}, open, completedSet)
 	}
 	submit(0, "a0@example", 0, 'A', 100)
 	submit(1, "a1@example", 100, 'B', 100)
@@ -135,89 +131,72 @@ func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 // and C's head [1000, 1900). Without interval overlap detection, B overwrites
 // both neighbours and none of the three articles is charged as failed, so a
 // no-par2 job sees contentFailedBytes == 0 (RepairIntact) and ships a splice.
-//
-// Exercised with the write cache both disabled (articles written on arrival)
-// and enabled (A and C still buffered below contiguousRunSize when B arrives),
-// because in production the cache is 64 MiB by default and a 2000-byte file has
-// not flushed when B is evaluated.
 func TestOverlap_StraddlingArticleIsRefusedAndCountedAsFailed(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		cacheBytes int64
-	}{
-		{"uncached", 0},
-		{"cached", 1 << 20},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			a := newHelperAssembler()
+	dir := t.TempDir()
+	a := newHelperAssembler()
 
-			var rejected []int32
-			var unwritten []int32
-			var completed int
-			a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
-				rejected = append(rejected, artIdx)
-			}
-			a.opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
-				unwritten = append(unwritten, artIdxs...)
-			}
-			a.opts.OnFileComplete = func(_ string, _ int) {
-				completed++
-			}
+	var rejected []int32
+	var unwritten []int32
+	var completed int
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+		rejected = append(rejected, artIdx)
+	}
+	a.opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
+		unwritten = append(unwritten, artIdxs...)
+	}
+	a.opts.OnFileComplete = func(_ string, _ int) {
+		completed++
+	}
 
-			wc := newWriteCache(tc.cacheBytes)
-			f := newHelperFile(t, dir, "straddle.dat", 2000)
-			f.w.wc = wc
-			f.info.TotalParts = 3
-			key := fileKey{jobID: "job", fileIdx: 0}
-			open := map[fileKey]*openFile{key: f}
-			completedSet := map[fileKey]struct{}{}
+	f := newHelperFile(t, dir, "straddle.dat", 2000)
+	f.info.TotalParts = 3
+	key := fileKey{jobID: "job", fileIdx: 0}
+	open := map[fileKey]*openFile{key: f}
+	completedSet := map[fileKey]struct{}{}
 
-			submit := func(idx int32, msg string, off int64, b byte, n int) {
-				a.processRequest(WriteRequest{
-					JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
-					Offset: off, Data: bytes.Repeat([]byte{b}, n),
-				}, open, completedSet, wc)
-			}
+	submit := func(idx int32, msg string, off int64, b byte, n int) {
+		a.processRequest(WriteRequest{
+			JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
+			Offset: off, Data: bytes.Repeat([]byte{b}, n),
+		}, open, completedSet)
+	}
 
-			// Arrive in the order A [0, 1000), C [1000, 2000), B [900, 1900).
-			submit(0, "a@example", 0, 'A', 1000)
-			submit(2, "c@example", 1000, 'C', 1000)
-			submit(1, "b@example", 900, 'B', 1000)
+	// Arrive in the order A [0, 1000), C [1000, 2000), B [900, 1900).
+	submit(0, "a@example", 0, 'A', 1000)
+	submit(2, "c@example", 1000, 'C', 1000)
+	submit(1, "b@example", 900, 'B', 1000)
 
-			drained, err := f.w.Drain()
-			if err != nil {
-				t.Fatalf("drain: %v", err)
-			}
-			for _, d := range drained {
-				if d.ArtIdx == 1 {
-					t.Errorf("straddling article B (artIdx 1) was reported Written in Drain: %+v", d)
-				}
-			}
+	drained, err := f.w.Drain()
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	for _, d := range drained {
+		if d.ArtIdx == 1 {
+			t.Errorf("straddling article B (artIdx 1) was reported Written in Drain: %+v", d)
+		}
+	}
 
-			got, err := os.ReadFile(f.info.Path)
-			if err != nil {
-				t.Fatalf("read back: %v", err)
-			}
-			if len(got) < 2000 {
-				t.Fatalf("file length = %d, want at least 2000", len(got))
-			}
-			if !bytes.Equal(got[:1000], bytes.Repeat([]byte("A"), 1000)) {
-				t.Errorf("A's range [0,1000) was corrupted by straddling article B")
-			}
-			if !bytes.Equal(got[1000:2000], bytes.Repeat([]byte("C"), 1000)) {
-				t.Errorf("C's range [1000,2000) was corrupted by straddling article B")
-			}
-			if len(rejected) != 1 || rejected[0] != 1 {
-				t.Errorf("OnArticleRejected = %v, want [1] (B refused and counted as failed)", rejected)
-			}
-			if len(unwritten) != 0 {
-				t.Errorf("OnArticlesUnwritten = %v, want empty", unwritten)
-			}
-			if f.w.parts() != 3 || completed != 1 {
-				t.Errorf("parts = %d, completed = %d, want parts=3 completed=1", f.w.parts(), completed)
-			}
-		})
+	got, err := os.ReadFile(f.info.Path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if len(got) < 2000 {
+		t.Fatalf("file length = %d, want at least 2000", len(got))
+	}
+	if !bytes.Equal(got[:1000], bytes.Repeat([]byte("A"), 1000)) {
+		t.Errorf("A's range [0,1000) was corrupted by straddling article B")
+	}
+	if !bytes.Equal(got[1000:2000], bytes.Repeat([]byte("C"), 1000)) {
+		t.Errorf("C's range [1000,2000) was corrupted by straddling article B")
+	}
+	if len(rejected) != 1 || rejected[0] != 1 {
+		t.Errorf("OnArticleRejected = %v, want [1] (B refused and counted as failed)", rejected)
+	}
+	if len(unwritten) != 0 {
+		t.Errorf("OnArticlesUnwritten = %v, want empty", unwritten)
+	}
+	if f.w.parts() != 3 || completed != 1 {
+		t.Errorf("parts = %d, completed = %d, want parts=3 completed=1", f.w.parts(), completed)
 	}
 }
 
@@ -234,9 +213,7 @@ func TestOverlap_BadArticleArrivingFirstRefusesItsNeighbours(t *testing.T) {
 		rejected = append(rejected, artIdx)
 	}
 
-	wc := newWriteCache(1 << 20)
 	f := newHelperFile(t, dir, "bad-first.dat", 2000)
-	f.w.wc = wc
 	f.info.TotalParts = 3
 	key := fileKey{jobID: "job", fileIdx: 0}
 	open := map[fileKey]*openFile{key: f}
@@ -246,7 +223,7 @@ func TestOverlap_BadArticleArrivingFirstRefusesItsNeighbours(t *testing.T) {
 		a.processRequest(WriteRequest{
 			JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
 			Offset: off, Data: bytes.Repeat([]byte{b}, n),
-		}, open, completedSet, wc)
+		}, open, completedSet)
 	}
 
 	// B arrives first, followed by A and C.
@@ -262,12 +239,11 @@ func TestOverlap_BadArticleArrivingFirstRefusesItsNeighbours(t *testing.T) {
 	}
 }
 
-// TestOverlap_BufferedSameOffsetDifferentLengthIsRefused pins that an arriving
-// article sharing start offset 0 with an unwritten buffered incumbent [0, 1000)
-// is refused when its non-zero length differs (e.g. [0, 500) or [0, 1500)), so
-// the single write-cache slot at offset 0 is neither shrunk to leave a hole nor
-// widened to overlap the neighbour at [1000, 2000).
-func TestOverlap_BufferedSameOffsetDifferentLengthIsRefused(t *testing.T) {
+// TestOverlap_SameOffsetDifferentLengthIsRefused pins that an arriving article
+// sharing start offset 0 with a written incumbent [0, 1000) is refused whatever
+// its length (zero, [0, 500) or [0, 1500)), so the incumbent is neither
+// partially overwritten nor extended over the neighbour at [1000, 2000).
+func TestOverlap_SameOffsetDifferentLengthIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		arrivalLen int
@@ -286,9 +262,7 @@ func TestOverlap_BufferedSameOffsetDifferentLengthIsRefused(t *testing.T) {
 				rejected = append(rejected, artIdx)
 			}
 
-			wc := newWriteCache(1 << 20)
 			f := newHelperFile(t, dir, "same-off-diff-len.dat", 2000)
-			f.w.wc = wc
 			f.info.TotalParts = 3
 			key := fileKey{jobID: "job", fileIdx: 0}
 			open := map[fileKey]*openFile{key: f}
@@ -298,26 +272,17 @@ func TestOverlap_BufferedSameOffsetDifferentLengthIsRefused(t *testing.T) {
 				a.processRequest(WriteRequest{
 					JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
 					Offset: off, Data: bytes.Repeat([]byte{b}, n),
-				}, open, completedSet, wc)
+				}, open, completedSet)
 			}
 
-			// A [0, 1000) is buffered (1000 < contiguousRunSize).
 			submit(0, "a@example", 0, 'A', 1000)
-			if !wc.buffered(key, 0) {
-				t.Fatal("precondition: A [0, 1000) must still be buffered in writeCache")
-			}
-
 			// B claims the same start offset 0 with a different length.
 			submit(1, "b@example", 0, 'B', arrivalLen)
-
 			// C [1000, 2000) completes the file.
 			submit(2, "c@example", 1000, 'C', 1000)
 
 			if len(rejected) != 1 || rejected[0] != 1 {
 				t.Errorf("OnArticleRejected = %v, want [1] (B refused despite same start offset)", rejected)
-			}
-			if _, err := f.w.Drain(); err != nil {
-				t.Fatalf("drain: %v", err)
 			}
 			got, err := os.ReadFile(f.w.path)
 			if err != nil {
@@ -327,7 +292,7 @@ func TestOverlap_BufferedSameOffsetDifferentLengthIsRefused(t *testing.T) {
 				t.Fatalf("file len = %d, want 2000", len(got))
 			}
 			if !bytes.Equal(got[:1000], bytes.Repeat([]byte{'A'}, 1000)) {
-				t.Errorf("A's buffered range [0,1000) was overwritten or truncated by B (len=%d)", arrivalLen)
+				t.Errorf("A's range [0,1000) was overwritten or truncated by B (len=%d)", arrivalLen)
 			}
 			if !bytes.Equal(got[1000:2000], bytes.Repeat([]byte{'C'}, 1000)) {
 				t.Errorf("C's range [1000,2000) was overwritten by B (len=%d)", arrivalLen)
@@ -341,67 +306,52 @@ func TestOverlap_BufferedSameOffsetDifferentLengthIsRefused(t *testing.T) {
 // block a subsequent legitimate article [0, 1000) covering offset 500, nor
 // break the sorted disjoint interval invariant for later overlap checks.
 func TestOverlap_ZeroLengthArticleDoesNotBlockCoveringNeighbour(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		cacheBytes int64
-	}{
-		{"uncached", 0},
-		{"cached", 1 << 20},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			a := newHelperAssembler()
+	dir := t.TempDir()
+	a := newHelperAssembler()
 
-			var rejected []int32
-			a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
-				rejected = append(rejected, artIdx)
-			}
+	var rejected []int32
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+		rejected = append(rejected, artIdx)
+	}
 
-			wc := newWriteCache(tc.cacheBytes)
-			f := newHelperFile(t, dir, "zero-interior.dat", 2000)
-			f.w.wc = wc
-			f.info.TotalParts = 4
-			key := fileKey{jobID: "job", fileIdx: 0}
-			open := map[fileKey]*openFile{key: f}
-			completedSet := map[fileKey]struct{}{}
+	f := newHelperFile(t, dir, "zero-interior.dat", 2000)
+	f.info.TotalParts = 4
+	key := fileKey{jobID: "job", fileIdx: 0}
+	open := map[fileKey]*openFile{key: f}
+	completedSet := map[fileKey]struct{}{}
 
-			submit := func(idx int32, msg string, off int64, data []byte) {
-				a.processRequest(WriteRequest{
-					JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
-					Offset: off, Data: data,
-				}, open, completedSet, wc)
-			}
+	submit := func(idx int32, msg string, off int64, data []byte) {
+		a.processRequest(WriteRequest{
+			JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: msg,
+			Offset: off, Data: data,
+		}, open, completedSet)
+	}
 
-			// Zero-length article Z arrives first at interior offset 500.
-			submit(0, "z@example", 500, nil)
-			// Legitimate article A [0, 1000) covers offset 500 and must be accepted.
-			submit(1, "a@example", 0, bytes.Repeat([]byte{'A'}, 1000))
-			// Legitimate article C [1000, 2000) abuts A and must be accepted.
-			submit(2, "c@example", 1000, bytes.Repeat([]byte{'C'}, 1000))
-			// Overlapping article S [600, 900) inside A past offset 500 must still be refused.
-			submit(3, "s@example", 600, bytes.Repeat([]byte{'S'}, 300))
+	// Zero-length article Z arrives first at interior offset 500.
+	submit(0, "z@example", 500, nil)
+	// Legitimate article A [0, 1000) covers offset 500 and must be accepted.
+	submit(1, "a@example", 0, bytes.Repeat([]byte{'A'}, 1000))
+	// Legitimate article C [1000, 2000) abuts A and must be accepted.
+	submit(2, "c@example", 1000, bytes.Repeat([]byte{'C'}, 1000))
+	// Overlapping article S [600, 900) inside A past offset 500 must still be refused.
+	submit(3, "s@example", 600, bytes.Repeat([]byte{'S'}, 300))
 
-			if len(rejected) != 1 || rejected[0] != 3 {
-				t.Fatalf("OnArticleRejected = %v, want [3] (overlapping S refused)", rejected)
-			}
-			if _, err := f.w.Drain(); err != nil {
-				t.Fatalf("drain: %v", err)
-			}
-			got, err := os.ReadFile(f.w.path)
-			if err != nil {
-				t.Fatalf("read file: %v", err)
-			}
-			if !bytes.Equal(got[:1000], bytes.Repeat([]byte{'A'}, 1000)) {
-				t.Error("A's range [0,1000) was not written intact")
-			}
-			if !bytes.Equal(got[1000:2000], bytes.Repeat([]byte{'C'}, 1000)) {
-				t.Error("C's range [1000,2000) was not written intact")
-			}
-		})
+	if len(rejected) != 1 || rejected[0] != 3 {
+		t.Fatalf("OnArticleRejected = %v, want [3] (overlapping S refused)", rejected)
+	}
+	got, err := os.ReadFile(f.w.path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if !bytes.Equal(got[:1000], bytes.Repeat([]byte{'A'}, 1000)) {
+		t.Error("A's range [0,1000) was not written intact")
+	}
+	if !bytes.Equal(got[1000:2000], bytes.Repeat([]byte{'C'}, 1000)) {
+		t.Error("C's range [1000,2000) was not written intact")
 	}
 }
 
-func TestAcceptedRange_OverlapsAndCanBeDisplacedBy(t *testing.T) {
+func TestAcceptedRange_Overlaps(t *testing.T) {
 	r := acceptedRange{off: 100, end: 200, id: articleID{artIdx: 1}}
 
 	overlapCases := []struct {
@@ -437,30 +387,10 @@ func TestAcceptedRange_OverlapsAndCanBeDisplacedBy(t *testing.T) {
 	if !zeroIncumbent.overlaps(150, 200) {
 		t.Error("zero-length incumbent [150,150) must conflict at identical start offset 150")
 	}
-
-	if !r.canBeDisplacedBy(100, 200) {
-		t.Error("unwritten range [100,200) should be displaceable by [100,200)")
-	}
-	if r.canBeDisplacedBy(100, 100) {
-		t.Error("unwritten range [100,200) must not be displaceable by zero-length [100,100)")
-	}
-	if r.canBeDisplacedBy(100, 150) {
-		t.Error("unwritten range [100,200) must not be displaceable by shorter [100,150)")
-	}
-	if r.canBeDisplacedBy(100, 250) {
-		t.Error("unwritten range [100,200) must not be displaceable by longer [100,250)")
-	}
-	if r.canBeDisplacedBy(120, 200) {
-		t.Error("unwritten range [100,200) must not be displaceable at a different start offset")
-	}
-	writtenRange := acceptedRange{off: 100, end: 200, id: articleID{artIdx: 1}, written: true}
-	if writtenRange.canBeDisplacedBy(100, 200) {
-		t.Error("written range [100,200) must never be displaceable")
-	}
 }
 
 func TestFileWriter_RecordAccepted_MaintainsSortedDisjointIntervals(t *testing.T) {
-	w := newTestFileWriter(t, withCacheBytes(1<<20))
+	w := newTestFileWriter(t)
 	a0 := articleID{msgID: "a0", artIdx: 0}
 	a1 := articleID{msgID: "a1", artIdx: 1}
 	a2 := articleID{msgID: "a2", artIdx: 2}
@@ -495,5 +425,20 @@ func TestFileWriter_RecordAccepted_MaintainsSortedDisjointIntervals(t *testing.T
 	}
 	if owner, settled := w.offsetSettledBy(1900, 50, articleID{msgID: "stranger", artIdx: 9}); !settled || owner != a1 {
 		t.Errorf("offsetSettledBy(1900, 50) = (%+v, %v), want (a1, true)", owner, settled)
+	}
+
+	// a0 was never reported Written (as after a write fault), so it made no
+	// claim: a stranger straddling it is not settled, and recording the
+	// stranger drops a0's range rather than keeping two owners for [0, 1000).
+	stranger := articleID{msgID: "stranger", artIdx: 9}
+	if owner, settled := w.offsetSettledBy(500, 500, stranger); settled {
+		t.Errorf("offsetSettledBy(500, 500) = (%+v, true) over unwritten a0, want unsettled", owner)
+	}
+	w.recordAccepted(stranger, 500, 1000)
+	if _, ok := w.ownerAt(0); ok {
+		t.Error("ownerAt(0) still names a0 after a stranger took its unwritten range")
+	}
+	if r, ok := w.ownerAt(500); !ok || r.id != stranger || r.end != 1000 {
+		t.Errorf("ownerAt(500) = (%+v, %v), want the stranger over [500,1000)", r, ok)
 	}
 }

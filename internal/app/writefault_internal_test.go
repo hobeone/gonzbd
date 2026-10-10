@@ -23,10 +23,9 @@ import (
 // it either. Without this the article is stranded for the life of the process
 // while the job reports it as work in flight.
 //
-// It takes a SET, and that is the finding it exists for: a batch failure rolls
-// back every article in a coalesced run, or everything after the write that
-// failed in a drain, and the old single-index signature could report only one
-// of them. The rest were left neither Done, nor Failed, nor Outstanding.
+// It takes a SET, and that is the finding it exists for: a failure that rolls
+// back several articles could, under the old single-index signature, report
+// only one of them. The rest were left neither Done, nor Failed, nor Outstanding.
 func TestHandleArticlesUnwritten_ReturnsTheArticlesToOutstanding(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)

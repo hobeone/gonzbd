@@ -527,7 +527,7 @@ the rows.
 | C5 | `offset + len ≤ size`; `end − begin + 1 == len` | L2 | fail article (`end=` half counts first) | — |
 | ~~D1–D4~~ | ~~NZB ↔ article disagreements~~ | L3 | **dropped** — no consumer (see §5.D) | — |
 | E1–E2 | bounds, exact-offset collision | L4 | ✅ already enforced | — |
-| E3 | range overlap | L4 (`FileWriter.offsetSettledBy`) refuses any arriving `[off, off+len)` that overlaps an accepted interval within the open-file episode (#759), except an unwritten buffered incumbent at the exact same start offset and length (`acceptedRange.canBeDisplacedBy`); the durability layer also withholds the whole-file CRC whenever runs do not collapse to a single row covering every article (#387) | ✅ **implemented** within an open-file episode (**refuse arrival** at L4, #759) and across episodes via **withhold CRC** (`par2` runs, #387) | A7 **and** E5 |
+| E3 | range overlap | L4 (`FileWriter.offsetSettledBy`) refuses any arriving `[off, off+len)` that overlaps an accepted interval owned by an article already reported Written, within the open-file episode (#759); the durability layer also withholds the whole-file CRC whenever runs do not collapse to a single row covering every article (#387) | ✅ **implemented** within an open-file episode (**refuse arrival** at L4, #759) and across episodes via **withhold CRC** (`par2` runs, #387) | A7 **and** E5 |
 | E4 | part tiling / gaps | L0 + L4 | warn at ingestion | — |
 | E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | L3 | ✅ **implemented** — reject (#346) | — |
 | F1 | key `FileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
@@ -962,10 +962,9 @@ that — it is not a missing-offset decode, so E5 does not see it, and nothing a
 L3 compares one article's declared offset against another's. Within an open-file
 episode, `FileWriter.accepted` (a sorted, pairwise-disjoint slice of
 `acceptedRange`) and `offsetSettledBy` refuse any arriving `[off, off+len)` that
-intersects an already-accepted interval owned by another article (#759), except
-when an unwritten cached incumbent occupies the exact same start offset and
-length (`end == r.end`), which can be displaced in place. On a post with no
-`par2`, that refusal
+intersects an already-accepted interval owned by another article that has been
+reported Written (#759). An owner whose write faulted made no claim, and the
+arrival takes its interval. On a post with no `par2`, that refusal
 keeps the file short with a hole rather than overwriting accepted bytes and
 shipping a splice (Standing Rule 3). Across a restart or handle-close boundary,
 `mergeAdjacentRuns` merges only articles that abut cleanly, so any cross-episode
@@ -1113,12 +1112,11 @@ has two levels, not four**:
 > **written-or-reported beats accepted.**
 
 That is what `acceptedRange{off, end, id, written}` records and what
-`offsetSettledBy` consults. A collision between two merely-accepted articles
-occupying the exact same buffered range (`r.off == off && end == r.end`) is a
-coin flip and the arrival may displace the cached incumbent; a collision with a
-written range — or any partial/straddling interval overlap whose incumbent
-cannot be displaced in place from the offset-keyed write cache (#759) — is not,
-and must be refused.
+`offsetSettledBy` consults. Every accepted article is written before a rival
+is considered, so a merely-accepted incumbent is one whose write faulted or
+whose `Sync` failed; it made no claim, and the arrival takes its range. A
+collision with a written range — exact, partial or straddling (#759) — must be
+refused.
 
 **The durable tier is deliberately collapsed into "written", because it is not
 retrievable where the decision is made.** Durability is now recorded in exactly

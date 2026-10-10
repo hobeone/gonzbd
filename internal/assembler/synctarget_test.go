@@ -28,7 +28,7 @@ func newSyncOpFixture(t *testing.T) (*Assembler, map[fileKey]*openFile, fileKey)
 	t.Cleanup(func() { _ = fh.Close() })
 	key := fileKey{jobID: "job1", fileIdx: 0}
 	f := &openFile{
-		w:    newFileWriter(fh, path, key, newWriteCache(0)),
+		w:    newFileWriter(fh, path, key),
 		info: FileInfo{Path: path},
 	}
 	return &Assembler{log: slog.Default()}, map[fileKey]*openFile{key: f}, key
@@ -37,7 +37,7 @@ func newSyncOpFixture(t *testing.T) (*Assembler, map[fileKey]*openFile, fileKey)
 func runSyncOp(t *testing.T, a *Assembler, open map[fileKey]*openFile, op syncOp) syncReply {
 	t.Helper()
 	op.reply = make(chan syncReply, 1)
-	a.handleSyncOp(&op, open, nil, newWriteCache(0))
+	a.handleSyncOp(&op, open, nil)
 	select {
 	case r := <-op.reply:
 		return r

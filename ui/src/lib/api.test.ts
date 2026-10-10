@@ -312,7 +312,6 @@ describe('API Wrappers', () => {
 				system: {
 					os: 'linux',
 					arch: 'amd64',
-					article_cache_bytes: 1024,
 					download_dir_free_bytes: 2048,
 					min_free_space_bytes: 512
 				}

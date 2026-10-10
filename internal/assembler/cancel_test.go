@@ -185,7 +185,7 @@ func TestCloseCancelledFile_DispositionDecidesTheBytesAndNothingElse(t *testing.
 			closed := false
 			f.w.closeFile = func() error { closed = true; return nil }
 
-			a.closeCancelledFile(f.w.key, f, tc.disposition)
+			a.closeCancelledFile(f, tc.disposition)
 
 			if !closed {
 				t.Error("the file handle was not closed — a caller that deletes the " +
@@ -238,50 +238,6 @@ func TestCancelJob_KeepFilesLeavesThemOnDisk(t *testing.T) {
 		if string(got) != want {
 			t.Errorf("kept file content = %q, want %q", got, want)
 		}
-	}
-}
-
-// TestCancelJob_KeepFilesFlushesCachedArticles pins the Drain that makes
-// KeepFiles mean what it says.
-//
-// An article that is not contiguous with the write cursor sits in the write
-// cache rather than on disk. Closing without draining, which is what the
-// DeleteFiles path does, would leave the kept file short by exactly the bytes
-// the cache was holding — the file would survive and its content would not.
-//
-// This is the assertion that discriminates Drain-then-Close from a bare Close;
-// TestCancelJob_KeepFilesLeavesThemOnDisk above passes either way, because its
-// article is contiguous and went straight through.
-func TestCancelJob_KeepFilesFlushesCachedArticles(t *testing.T) {
-	dir := t.TempDir()
-	files := make(map[string]FileInfo)
-	path := registerFile(t, dir, files, "job1", 0, 8)
-
-	opts := makeOpts(dir, files)
-	opts.WriteCacheBytes = 1 << 20
-	a := startAssembler(t, opts)
-
-	// Offset 4 with nothing at 0: not contiguous with the cursor, so the
-	// cache holds it instead of writing it through.
-	_ = writeArticle(t.Context(), a, WriteRequest{
-		JobID: "job1", FileIdx: 0, ArtIdx: 1, Offset: 4, Data: []byte("LATE"),
-	})
-
-	if err := a.CancelJob(t.Context(), "job1", KeepFiles); err != nil {
-		t.Fatalf("CancelJob: %v", err)
-	}
-	if err := a.Stop(); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-
-	got, err := os.ReadFile(path) //nolint:gosec // G304: path is the fixture's own temp dir
-	if err != nil {
-		t.Fatalf("kept file is gone: %v", err)
-	}
-	if len(got) < 8 || string(got[4:8]) != "LATE" {
-		t.Errorf("kept file = %q, want %q at offset 4 — the cancel closed the file "+
-			"without flushing what the write cache still held, so a file the caller "+
-			"asked to keep is missing bytes that had already been downloaded", got, "LATE")
 	}
 }
 

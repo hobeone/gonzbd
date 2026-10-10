@@ -1,5 +1,5 @@
 pkg ./internal/assembler/
-run Test(Overlap_.*|AcceptedRange_OverlapsAndCanBeDisplacedBy|FileWriter_RecordAccepted_MaintainsSortedDisjointIntervals|FileWriter_OffsetSettledBy|Collision_.*)$
+run Test(Overlap_.*|AcceptedRange_Overlaps|FileWriter_RecordAccepted_MaintainsSortedDisjointIntervals|FileWriter_OffsetSettledBy|FileWriter_RolledBackOwnerKeepsItsOffsetUntilReplaced|Collision_.*)$
 
 [overlaps treats zero-length point at different start offset as overlapping covering range]
 file internal/assembler/filewriter.go
@@ -53,28 +53,28 @@ file internal/assembler/filewriter.go
 	return off <= r.end
 --- end
 
-[canBeDisplacedBy ignores r.written and displaces written incumbents]
+[offsetSettledBy settles against a never-written incumbent]
 file internal/assembler/filewriter.go
 --- anchor
-	return !r.written && r.off == off && end == r.end
+		if r.id.sameArticle(arriving) || !r.written {
 --- replace
-	return r.off == off && end == r.end
+		if r.id.sameArticle(arriving) {
 --- end
 
-[canBeDisplacedBy ignores r.off == off and displaces different start offsets]
+[offsetSettledBy lets an arrival past a written incumbent]
 file internal/assembler/filewriter.go
 --- anchor
-	return !r.written && r.off == off && end == r.end
+		if r.id.sameArticle(arriving) || !r.written {
 --- replace
-	return !r.written && end == r.end
+		if r.id.sameArticle(arriving) || true {
 --- end
 
-[canBeDisplacedBy ignores length check and displaces mismatched lengths]
+[recordAccepted merges a different article's unwritten range instead of dropping it]
 file internal/assembler/filewriter.go
 --- anchor
-	return !r.written && r.off == off && end == r.end
+		if r.overlaps(off, end) && r.id.sameArticle(id) {
 --- replace
-	return !r.written && r.off == off
+		if r.overlaps(off, end) {
 --- end
 
 [firstCandidateIdx omits predecessor idx-1 check]

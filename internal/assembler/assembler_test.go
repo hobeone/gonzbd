@@ -605,8 +605,7 @@ func TestTelemetryDiskWriteCounters(t *testing.T) {
 	opts := makeOpts(dir, files)
 	a := startAssembler(t, opts)
 
-	// Write 3 articles of 4 bytes each — no write cache, so each should
-	// be a direct WriteAt call.
+	// Write 3 articles of 4 bytes each — each is its own WriteAt call.
 	for i := range 3 {
 		req := WriteRequest{
 			JobID:   "job1",
@@ -626,54 +625,6 @@ func TestTelemetryDiskWriteCounters(t *testing.T) {
 
 	if got := telemetry.DiskWrites.Value(); got != 3 {
 		t.Errorf("DiskWrites = %d, want 3", got)
-	}
-	if got := telemetry.DiskWriteBytes.Value(); got != 12 {
-		t.Errorf("DiskWriteBytes = %d, want 12", got)
-	}
-}
-
-// TestTelemetryDiskWriteCountersCachedDrain ensures disk-write counters
-// include writes made by the cache-drain path. With the write cache enabled
-// and a small file (below the 512KB coalescing threshold), the articles are
-// buffered as cache hits and only reach disk when drained at file completion
-// via writeCachedArticles. Those WriteAt syscalls must still be counted.
-func TestTelemetryDiskWriteCountersCachedDrain(t *testing.T) {
-	telemetry.Reset()
-
-	dir := t.TempDir()
-	files := make(map[string]FileInfo)
-	registerFile(t, dir, files, "job1", 0, 3)
-
-	opts := makeOpts(dir, files)
-	opts.WriteCacheBytes = 1 << 20 // 1 MiB — caching enabled
-	a := startAssembler(t, opts)
-
-	// 3 small articles stay buffered (well under the 512KB run threshold)
-	// and are drained to disk when the file completes.
-	for i := range 3 {
-		req := WriteRequest{
-			JobID:   "job1",
-			FileIdx: 0,
-			ArtIdx:  testArtIdx(i),
-			Offset:  int64(i * 4),
-			Data:    []byte("XXXX"),
-		}
-		if err := writeArticle(t.Context(), a, req); err != nil {
-			t.Fatalf("WriteArticle: %v", err)
-		}
-	}
-
-	if err := a.Stop(); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-
-	// All 3 were buffered first...
-	if got := telemetry.CacheHits.Value(); got != 3 {
-		t.Errorf("CacheHits = %d, want 3", got)
-	}
-	// ...then drained to disk as 3 individual WriteAt calls totalling 12 bytes.
-	if got := telemetry.DiskWrites.Value(); got != 3 {
-		t.Errorf("DiskWrites = %d, want 3 (cache-drain writes must be counted)", got)
 	}
 	if got := telemetry.DiskWriteBytes.Value(); got != 12 {
 		t.Errorf("DiskWriteBytes = %d, want 12", got)
@@ -752,9 +703,8 @@ func TestTelemetryPreallocCalls(t *testing.T) {
 func TestAssembler_HelperMethods(t *testing.T) {
 	t.Parallel()
 
-	// handleFatalArticle and handleSuccessArticle no longer take a writeCache,
-	// open map or key — the FileWriter each openFile now owns is self-
-	// contained — and neither records an ack: pendingDone/pendingFailed and
+	// handleFatalArticle and handleSuccessArticle take no open map or key —
+	// the FileWriter each openFile owns is self-contained — and neither records an ack: pendingDone/pendingFailed and
 	// the MarkArticles* callbacks are gone with the assembler's ack authority
 	// (X2). What is left to pin is the local bookkeeping: seenDone/seenFailed
 	// dedup, now living on the FileWriter, and the true/false return that
@@ -1288,53 +1238,6 @@ func TestAssembler_StopWaitGroup(t *testing.T) {
 	}
 }
 
-func TestAssembler_CacheUsageBytes_TracksBufferedBytes(t *testing.T) {
-	dir := t.TempDir()
-	files := make(map[string]FileInfo)
-	registerFile(t, dir, files, "job1", 0, 3) // 3-part file
-
-	opts := makeOpts(dir, files)
-	opts.WriteCacheBytes = 1 << 20 // 1 MiB — caching enabled
-	a := startAssembler(t, opts)
-
-	if got := a.CacheUsageBytes(); got != 0 {
-		t.Fatalf("CacheUsageBytes() before any writes = %d, want 0", got)
-	}
-
-	// Write 2 of the file's 3 parts. Both stay buffered (well under the
-	// 512KB coalescing threshold) since the file isn't complete yet, so
-	// CacheUsageBytes must eventually reflect the buffered bytes before
-	// the 3rd (completing) write drains them to disk.
-	//
-	// WriteArticle only enqueues onto a channel (a.reqs <- req) and
-	// returns immediately — it does not wait for the worker goroutine to
-	// actually process the request. Poll to wait for the worker to process
-	// both articles.
-	for i := range 2 {
-		req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: testArtIdx(i), Offset: int64(i * 4), Data: []byte("XXXX")}
-		if err := writeArticle(t.Context(), a, req); err != nil {
-			t.Fatalf("WriteArticle: %v", err)
-		}
-	}
-
-	// Poll until we see the buffered bytes from both articles.
-	// The cache tracks bytes added to writeCache.used, updated after
-	// each dispatchRequest call via defer.
-	waitUntil(t, func() bool { return a.CacheUsageBytes() >= 8 }, 2*time.Second, "cache reaches at least 8 bytes")
-
-	// Complete the file (3rd part) — this drains all buffered articles.
-	req := WriteRequest{JobID: "job1", FileIdx: 0, ArtIdx: 2, Offset: 8, Data: []byte("XXXX")}
-	if err := writeArticle(t.Context(), a, req); err != nil {
-		t.Fatalf("WriteArticle: %v", err)
-	}
-	if err := a.Stop(); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-	if got := a.CacheUsageBytes(); got != 0 {
-		t.Errorf("CacheUsageBytes() after drain = %d, want 0", got)
-	}
-}
-
 // Dummy references to satisfy scripts/check_test_alignment. These are internal
 // goroutine workers or helper methods called in background processing.
 var (
@@ -1344,37 +1247,9 @@ var (
 	_ = (*Assembler).openTargetFile
 )
 
-// TestFileWriter_FlushRunErrorCountsPipelineError translates
-// TestAssembler_FlushRunError: flushRun moved from the assembler onto
-// FileWriter and now returns an error instead of a bool (the caller has no
-// ack to withhold any more), but the telemetry contract — a failed coalesced
-// write counts a disk_write_error — is unchanged.
-func TestFileWriter_FlushRunErrorCountsPipelineError(t *testing.T) {
-	telemetry.Reset()
-	t.Cleanup(telemetry.Reset)
-
-	tmpFile, err := os.CreateTemp(t.TempDir(), "filewriter-flush-run-err")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = tmpFile.Close() // closed handle — WriteAt will fail
-
-	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0}, newWriteCache(0))
-	run := &flushRun{data: []byte("test"), offset: 0}
-
-	if err := w.flushRun(run); err == nil {
-		t.Error("flushRun on a closed file returned nil error, want a storage fault")
-	}
-	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
-		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
-	}
-}
-
-// TestFileWriter_DirectWriteErrorCountsPipelineError translates
-// TestAssembler_WriteArticleOrBufferDiskErrorCountsPipelineError: the
-// caching-disabled direct-write branch moved from writeArticleOrBuffer onto
-// FileWriter.Accept, but the telemetry contract is unchanged. Not a
-// t.Parallel() test — PipelineErrors is process-global state.
+// TestFileWriter_DirectWriteErrorCountsPipelineError pins that a failed
+// FileWriter.Accept write counts a disk_write_error. Not a t.Parallel() test —
+// PipelineErrors is process-global state.
 func TestFileWriter_DirectWriteErrorCountsPipelineError(t *testing.T) {
 	telemetry.Reset()
 	t.Cleanup(telemetry.Reset)
@@ -1385,40 +1260,10 @@ func TestFileWriter_DirectWriteErrorCountsPipelineError(t *testing.T) {
 	}
 	tmpFile.Close() // WriteAt will fail
 
-	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0}, newWriteCache(0))
+	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0})
 
 	if err := w.Accept(articleID{msgID: "m1"}, 0, []byte("data"), 0); err == nil {
 		t.Error("Accept on a closed file returned nil error, want a storage fault")
-	}
-	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
-		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
-	}
-}
-
-// TestFileWriter_DrainWriteErrorCountsPipelineError translates
-// TestAssembler_WriteCachedArticlesDiskErrorCountsPipelineError: the
-// cache-drain WriteAt path moved from writeCachedArticles onto
-// FileWriter.Drain, but the telemetry contract is unchanged. Not a
-// t.Parallel() test — PipelineErrors is process-global state.
-func TestFileWriter_DrainWriteErrorCountsPipelineError(t *testing.T) {
-	telemetry.Reset()
-	t.Cleanup(telemetry.Reset)
-
-	tmpFile, err := os.CreateTemp(t.TempDir(), "filewriter_write_cached_err_")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0}, newWriteCache(1<<20))
-	// Buffer an article without triggering a contiguous flush, then close
-	// the handle so the drain's WriteAt fails.
-	if err := w.Accept(articleID{msgID: "m1"}, 4096, []byte("data"), 0); err != nil {
-		t.Fatalf("Accept (buffered): %v", err)
-	}
-	_ = tmpFile.Close()
-
-	if _, err := w.Drain(); err == nil {
-		t.Error("Drain after closing the handle returned nil error, want a storage fault")
 	}
 	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
 		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
@@ -1594,8 +1439,8 @@ func TestWriteArticle_RefOverridesTheRequestsOwnIdentity(t *testing.T) {
 // Message-ID, so deleting the overwrite left that assertion green — the leg
 // went vacuous the moment the maps were re-keyed, without failing.
 //
-// What still reads the field is the operator log on a displaced or rejected
-// article, which records both sides of an offset collision.
+// What still reads the field is the operator log on a rejected article, which
+// names the arrival.
 func TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports(t *testing.T) {
 	dir := t.TempDir()
 	files := make(map[string]FileInfo)
@@ -1604,7 +1449,6 @@ func TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports(t *testing.T) {
 	var logBuf strings.Builder
 	rejected := make(chan struct{}, 1)
 	opts := makeOpts(dir, files)
-	opts.WriteCacheBytes = 1 << 20
 	opts.OnArticleRejected = func(_ string, _ int, _ int32, _ string) {
 		select {
 		case rejected <- struct{}{}:
@@ -1642,10 +1486,8 @@ func TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports(t *testing.T) {
 			t.Errorf("the collision was logged as %q — the request's Message-ID "+
 				"reached the worker instead of the ref's", logged)
 		}
-		for _, want := range []string{"incumbent@id", "arrival@id"} {
-			if !strings.Contains(logged, want) {
-				t.Errorf("the collision log %q does not name %s", logged, want)
-			}
+		if !strings.Contains(logged, "arrival@id") {
+			t.Errorf("the collision log %q does not name arrival@id", logged)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("no article was rejected for two articles claiming one offset")

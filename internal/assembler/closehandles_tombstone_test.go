@@ -30,34 +30,27 @@ func TestCloseJobHandles_TombstonesEvenWhenTheDrainFailed(t *testing.T) {
 	a := newHelperAssembler()
 	a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
 
-	wc := newWriteCache(1 << 20)
 	f := newHelperFile(t, dir, "job_0.dat", 0)
-	f.w.wc = wc
 	key := fileKey{jobID: "job", fileIdx: 0}
 	open := map[fileKey]*openFile{key: f}
 	completed := map[fileKey]struct{}{}
 
-	if !a.handleSuccessArticle(f, WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a", Offset: 0, Data: []byte("AAAA"),
-	}) {
-		t.Fatal("the article was not accepted, so the fixture never buffered it")
-	}
-	f.w.writeAt = func([]byte, int64) (int, error) { return 0, syscall.ENOSPC }
+	f.w.syncFile = func() error { return syscall.EIO }
 
 	ack := make(chan error, 1)
 	cancelledJobs := map[string]struct{}{}
 	a.dispatchRequest(
 		WriteRequest{JobID: "", FileIdx: fileIdxCloseHandles, MessageID: "job", ackCh: ack},
-		open, completed, cancelledJobs, wc)
+		open, completed, cancelledJobs)
 
 	if _, tombstoned := completed[key]; !tombstoned {
-		t.Error("a file whose close-time drain failed was not tombstoned, so it sits " +
+		t.Error("a file whose close-time sync failed was not tombstoned, so it sits " +
 			"in neither open nor completed. An article still in flight now reaches " +
 			"openTargetFile and re-creates a file the job has handed to " +
 			"post-processing, leaking the fd that CloseJobHandles exists to release")
 	}
 	if _, tombstoned := cancelledJobs["job"]; !tombstoned {
-		t.Error("a job whose close-time drain failed was not tombstoned, so a late " +
+		t.Error("a job whose close-time sync failed was not tombstoned, so a late " +
 			"article for a file it never opened creates one under the post-processor")
 	}
 	if _, still := open[key]; still {
@@ -68,7 +61,7 @@ func TestCloseJobHandles_TombstonesEvenWhenTheDrainFailed(t *testing.T) {
 // TestCloseJobHandles_ArmSendsTheCloseTimeFaultOnTheAck is the other half.
 // The arm once acked with a bare close, so the fault it had just computed was
 // never sent and enqueuePostProc handed the job to par2, unrar and cleanup over
-// a file whose buffered bytes never reached the platter. The only trace was a
+// a file whose unsynced bytes never reached the platter. The only trace was a
 // Warn inside drainAndClose.
 //
 // It pins the SEND, and only the send: it drives dispatchRequest directly and
@@ -83,22 +76,15 @@ func TestCloseJobHandles_ArmSendsTheCloseTimeFaultOnTheAck(t *testing.T) {
 	a := newHelperAssembler()
 	a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
 
-	wc := newWriteCache(1 << 20)
 	f := newHelperFile(t, dir, "job_0.dat", 0)
-	f.w.wc = wc
 	open := map[fileKey]*openFile{{jobID: "job", fileIdx: 0}: f}
 
-	if !a.handleSuccessArticle(f, WriteRequest{
-		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a", Offset: 0, Data: []byte("AAAA"),
-	}) {
-		t.Fatal("the article was not accepted, so the fixture never buffered it")
-	}
-	f.w.writeAt = func([]byte, int64) (int, error) { return 0, syscall.ENOSPC }
+	f.w.syncFile = func() error { return syscall.EIO }
 
 	ack := make(chan error, 1)
 	a.dispatchRequest(
 		WriteRequest{JobID: "", FileIdx: fileIdxCloseHandles, MessageID: "job", ackCh: ack},
-		open, map[fileKey]struct{}{}, map[string]struct{}{}, wc)
+		open, map[fileKey]struct{}{}, map[string]struct{}{})
 
 	err := <-ack
 	if _, ok := errors.AsType[*storagefault.Fault](err); !ok {

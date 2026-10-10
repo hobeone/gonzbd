@@ -25,16 +25,6 @@ func (app *Application) BinaryVersionsInfo() BinaryVersions {
 	return app.binaryVersions
 }
 
-// ArticleCacheBytes returns the current number of bytes buffered in the
-// post-processing pipeline's write-coalescing cache. Safe to call from
-// any goroutine.
-func (app *Application) ArticleCacheBytes() int64 {
-	if app.assembler == nil {
-		return 0
-	}
-	return app.assembler.CacheUsageBytes()
-}
-
 // downloadDir returns the currently configured download directory path.
 func (app *Application) downloadDir() string {
 	return app.config.GetGeneral().DownloadDir

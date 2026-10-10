@@ -92,21 +92,6 @@ var (
 	// DiskWriteBytes counts total bytes written via WriteAt.
 	DiskWriteBytes = expvar.NewInt("assembler_disk_write_bytes")
 
-	// CacheHits counts articles that were buffered in the write cache
-	// instead of written immediately.
-	CacheHits = expvar.NewInt("assembler_cache_hits")
-
-	// CacheFlushes counts coalesced flush operations (each flush may
-	// write multiple articles' worth of data in a single WriteAt).
-	CacheFlushes = expvar.NewInt("assembler_cache_flushes")
-
-	// CacheFlushBytes counts total bytes written via coalesced flushes.
-	CacheFlushBytes = expvar.NewInt("assembler_cache_flush_bytes")
-
-	// CachePressureFlushes counts force-flushes triggered by memory
-	// pressure (cache > 90% of limit).
-	CachePressureFlushes = expvar.NewInt("assembler_cache_pressure_flushes")
-
 	// FilesCompleted counts target files fully assembled (all parts
 	// written, fsync'd, and closed).
 	FilesCompleted = expvar.NewInt("assembler_files_completed")
@@ -124,10 +109,6 @@ func Reset() {
 	ArticlesWritten.Set(0)
 	DiskWrites.Set(0)
 	DiskWriteBytes.Set(0)
-	CacheHits.Set(0)
-	CacheFlushes.Set(0)
-	CacheFlushBytes.Set(0)
-	CachePressureFlushes.Set(0)
 	FilesCompleted.Set(0)
 	PreallocCalls.Set(0)
 	PipelineErrors.Init()

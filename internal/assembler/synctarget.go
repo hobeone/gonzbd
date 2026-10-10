@@ -26,7 +26,7 @@ import (
 // which owns every file handle, has done the work and answered.
 //
 // That indirection is invariant X1, not ceremony. One goroutine owns all the
-// state, so the barrier can read a file's cache and handle without a lock. The
+// state, so the barrier can read a file's writer and handle without a lock. The
 // alternative — a mutex over the open-file map and the writers — would put
 // WriteAt and fsync inside a critical section, which is both a contention
 // disaster on the hot path and the thing check_lock_io exists to catch.
@@ -448,7 +448,7 @@ func (a *Assembler) OpenJobIDs(ctx context.Context) ([]string, error) {
 }
 
 // handleSyncOp performs one barrier operation on the worker goroutine.
-func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, completed map[fileKey]struct{}, wc *writeCache) {
+func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, completed map[fileKey]struct{}) {
 	var r syncReply
 	switch op.kind {
 	case opFiles:
@@ -497,16 +497,10 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, complet
 		switch op.kind {
 		case opDrain:
 			r.written, r.err = f.w.Drain()
-			// The barrier routes the fault; it cannot route the ARTICLES. A
-			// failed drain rolls back every article after the write that
-			// failed, and that set never crosses the SyncTarget interface —
-			// so without this they are neither Done, nor Failed, nor
-			// Outstanding, and only a restart recovers them.
-			a.releaseSyncRollback(f, key, completed)
 		case opSync:
 			r.err = f.w.Sync()
 			// A failed Sync poisons the retained report and rolls its articles
-			// back into w.faulted (#760); route them back to Outstanding and
+			// back into w.poisoned (#760); route them back to Outstanding and
 			// lift any completed tombstone if partsWritten dropped below
 			// TotalParts.
 			a.releaseSyncRollback(f, key, completed)
@@ -537,23 +531,29 @@ func (a *Assembler) handleSyncOp(op *syncOp, open map[fileKey]*openFile, complet
 			r.err = a.drainAndClose(f)
 			a.releaseSyncRollback(f, key, completed)
 			delete(open, key)
-			wc.forget(key)
 		case opFiles, opJobs:
 		}
 	}
 	op.reply <- r
 }
 
-// releaseSyncRollback routes any articles rolled back by a failed Drain, Sync,
-// or Close back to Outstanding, and lifts the per-file completed tombstone if
-// the rollback dropped partsWritten below TotalParts so re-fetched articles
-// can be written when they arrive.
+// releaseSyncRollback routes any articles a failed Sync rolled back to
+// Outstanding, and lifts the per-file completed tombstone if the rollback
+// dropped partsWritten below TotalParts so re-fetched articles can be written
+// when they arrive.
 func (a *Assembler) releaseSyncRollback(f *openFile, key fileKey, completed map[fileKey]struct{}) {
-	a.releaseFaulted(f, key.jobID, key.fileIdx)
+	a.releasePoisoned(f)
 	if f.info.TotalParts > 0 && f.w.parts() < f.info.TotalParts {
 		if _, wasComplete := completed[key]; wasComplete {
 			delete(completed, key)
 			f.rolledBack = true
 		}
 	}
+}
+
+// releasePoisoned returns the articles a failed Sync rolled back to
+// Outstanding. Their Emitted bits are still set from dispatch, so without this
+// they are neither Done, nor Failed, nor Outstanding.
+func (a *Assembler) releasePoisoned(f *openFile) {
+	a.noteArticlesUnwritten(f.w.key.jobID, f.w.key.fileIdx, f.w.takePoisoned())
 }

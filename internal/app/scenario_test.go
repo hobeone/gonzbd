@@ -69,9 +69,7 @@ func newScenarioHarnessWithConns(t testing.TB, conns int) *scenarioHarness {
 // adjust the config before the Application is built. tweak may be nil.
 //
 // It exists for tests that need to observe a state the defaults hide rather
-// than tests that want different defaults — the write cache is the case in
-// point: with it on, an article can be "written" and still be in userspace,
-// which is not the state a durability test means by written.
+// than tests that want different defaults.
 func newScenarioHarnessWithConfig(t testing.TB, conns int, tweak func(*config.Config)) *scenarioHarness {
 	t.Helper()
 

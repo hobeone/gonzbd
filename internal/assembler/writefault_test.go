@@ -11,14 +11,12 @@ import (
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
-// newFailingWriteFile builds an openFile whose every write fails with err and
-// whose cache is disabled, so each accepted article goes straight through
-// writeOne rather than being buffered.
+// newFailingWriteFile builds an openFile whose every write fails with err, so
+// each accepted article fails inside writeOne.
 //
-// Caching disabled is the configuration that makes the defect worst rather
-// than a convenience: with write_cache_size set to 0 every article takes this
-// path, so a full volume fails every write while the barrier's Drain finds an
-// empty cache, returns no error, and routes no fault at all.
+// Every article takes this path, so a full volume fails every write while the
+// barrier's Drain has nothing to write, returns no error, and routes no fault
+// at all.
 func newFailingWriteFile(t *testing.T, err error) (*openFile, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "movie.bin")
@@ -29,7 +27,7 @@ func newFailingWriteFile(t *testing.T, err error) (*openFile, string) {
 	t.Cleanup(func() { _ = fh.Close() })
 
 	key := fileKey{jobID: "job1", fileIdx: 0}
-	w := newFileWriter(fh, path, key, newWriteCache(0))
+	w := newFileWriter(fh, path, key)
 	w.writeAt = func([]byte, int64) (int, error) { return 0, err }
 	return &openFile{w: w, info: FileInfo{Path: path, ExpectedSize: 4096}}, path
 }
@@ -70,7 +68,7 @@ func TestWriteFault_IsNotCountedTowardCompletion(t *testing.T) {
 // barrier, which is what surfaces it to the job via Stallable". That was not
 // true on this path. The barrier only sees a fault that Drain, Sync, Stat or
 // Truncate returns, and a write rejected inside Accept never reaches any of
-// them — with the cache disabled there is nothing left buffered for a later
+// them — nothing is left behind for a later
 // Drain to fail on, so no fault was ever routed and the job was never stalled.
 func TestWriteFault_IsRoutedOutOfTheAssembler(t *testing.T) {
 	f, path := newFailingWriteFile(t, syscall.ENOSPC)

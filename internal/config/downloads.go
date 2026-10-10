@@ -18,13 +18,6 @@ type DownloadConfig struct {
 	// volume. Below this the downloader pauses.
 	MinFreeSpace ByteSize `yaml:"min_free_space" json:"min_free_space"`
 
-	// WriteCacheSize is the memory budget for write coalescing in the
-	// assembler. When positive, decoded articles are buffered in memory
-	// and flushed as larger contiguous writes, reducing I/O syscall
-	// count and improving sequential write patterns. Zero disables
-	// coalescing (each article is written individually).
-	WriteCacheSize ByteSize `yaml:"write_cache_size" json:"write_cache_size"`
-
 	// CheckpointInterval is how often, in seconds, a durability barrier runs
 	// for each job with open files. Together with CheckpointBytes it is the
 	// stated bound on how much downloaded work a power loss can cost: a

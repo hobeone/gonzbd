@@ -100,7 +100,7 @@ var ErrFaultRouted = errors.New("durability: storage fault already routed")
 var ErrFileIncomplete = errors.New("durability: file is no longer complete")
 
 // SyncTarget is the barrier's view of a job's open files. It is deliberately
-// narrow: the barrier never sees a file handle, a write cache, or a byte, so
+// narrow: the barrier never sees a file handle, a writer's state, or a byte, so
 // it cannot write, cannot ack early, and cannot be tempted to derive
 // durability from anything but a completed Sync.
 //

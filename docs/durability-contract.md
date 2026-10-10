@@ -97,7 +97,7 @@ proposed the durability record redesign, since superseded by this contract.
 | A1 | A storage fault is never recorded as an article fault, nor the reverse. |
 | A2 | Every failure has a subject and a disposition; no path may log-and-continue. **One named exception** — see *File completion and the handoff*: `enqueuePostProc`'s close-time `CloseJobHandles` call (`internal/app/app.go`), on a timeout with no fault observed, logs and continues, because no fault was observed and the handles may still flush later. |
 | B1 | Bounded rework after power loss: default 30s or 64 MiB per job, whichever comes first. |
-| B2 | Bounded memory: held for in-flight/cached article data, independent of job size, file size, and job count. |
+| B2 | Bounded memory: held for in-flight article data, independent of job size, file size, and job count. |
 | B4 | Bounded blocking: every storage syscall on the critical path is timeout-bounded. |
 | X1 | Single writer per file: exactly one component owns a file's handle and its derived state. |
 | R1 | The record is immutable/append-only. **Deleted** — see §*One record*: merging is read-modify-write. |
@@ -303,8 +303,8 @@ turns on not conflating them:
 | Tier | Component | Responsibility | Synchronization |
 |---|---|---|---|
 | **Ingest** | `Assembler.WriteArticle` / `CancelJob` / `CloseJobHandles` | Enqueue `WriteRequest` items into a bounded channel (`reqs`, cap 2048). Control messages for cancel and close-handles. | Channel send with `select` on `stopCh` and `ctx.Done()`. `wg.Add(1)` tracks every in-flight sender so `Stop()` drains cleanly. |
-| **Worker** | `Assembler.worker` goroutine | Owns the open-file map, the shared write cache, and every `FileWriter`. Routes requests, counts parts, checks disk space, performs barrier operations. | Single goroutine (X1). No locks over file handles. |
-| **Writer** | `assembler.FileWriter` (one per open file) | Owns one file's handle, its share of the write cache, its coalescing, its pre-allocation. Reports `Written`. | Worker-owned; never touched from another goroutine. |
+| **Worker** | `Assembler.worker` goroutine | Owns the open-file map and every `FileWriter`. Routes requests, counts parts, checks disk space, performs barrier operations. | Single goroutine (X1). No locks over file handles. |
+| **Writer** | `assembler.FileWriter` (one per open file) | Owns one file's handle, its write path, its pre-allocation. Reports `Written`. | Worker-owned; never touched from another goroutine. |
 | **Barrier** | `durability.Barrier` | The only place `Written → Durable → Resolved` happens **during a download**. Drains, fsyncs, commits the runs, mints the proof. Not the only place an article becomes Done: the Resume tier below resolves articles too, with no barrier and no proof — see the state diagram above and §1. | Holds no lock of its own; the cadence owner serialises it per job (`Application.jobBarrierLock`). |
 | **Cadence** | `Application.runCheckpoint`, `noteJobBytes` | *When* a barrier runs. Time bound, byte bound, file completion, clean shutdown. | One goroutine; per-job mutex around each barrier. |
 | **Resume** | `durability.Resumer`, `Application.resumeAllJobs` | One `stat` per file at startup, and no reads — and, through `Job.ReplaceFromRuns`, the second path by which an article becomes Done. Its whole mutation budget is **deletion**: a file shorter than its runs claim has them dropped. Authoritative over the files it is passed: it *clears* bits no surviving run covers. | Per-file, shares no state between calls. |
@@ -430,10 +430,10 @@ error to a file descriptor once (`errseq`) and marks the failed pages clean; a
 subsequent `fsync` on the same descriptor can return `nil` with nothing to
 write. `FileWriter.poisonSync` therefore discards `reported` and `written`,
 unlatches `written` on `accepted`, and rolls every affected article back into
-`faulted` so `opSync` (and `drainAndClose`) routes them through
+`poisoned` so `opSync` (and `drainAndClose`) routes them through
 `OnArticlesUnwritten` back to `Outstanding` to be fetched again.
 
-When that rollback (or a failed `Drain`) drops a previously completed file's
+When that rollback drops a previously completed file's
 `partsWritten` below `TotalParts`, `Assembler.releaseSyncRollback` lifts the
 `completed[key]` tombstone and marks the `openFile` rolled back (`f.rolledBack =
 true`). On the stall recovery pass (`Application.reevaluateStall` →
@@ -976,7 +976,7 @@ visible rather than assumed:
 | File completion | `Application.handleFileComplete` → `finalizeCompletedFile` → `Barrier.FinalizeFile` | per file |
 | Clean shutdown | `Application.shutdownCheckpoint` → `checkpointAllShare` | `shutdownCheckpointTimeout` (10s) for the **whole sweep**, divided evenly among the jobs it visits |
 | Downloader reload | `Application.ReloadDownloader` → `checkpointAllShare` | `reloadCheckpointTimeout` (10s), same division. See below — this is the one trigger whose *result* is consumed. |
-| Pause | **not implemented as a trigger.** No code path runs a barrier on pause; a paused job simply stops writing, and its buffered bytes wait for the next interval tick or for shutdown. R6 names it and nothing satisfies it. | — |
+| Pause | **not implemented as a trigger.** No code path runs a barrier on pause; a paused job simply stops writing, and its unsynced bytes wait for the next interval tick or for shutdown. R6 names it and nothing satisfies it. | — |
 
 ### The reload trigger is the one whose coverage is load-bearing
 
@@ -1581,7 +1581,7 @@ nothing else recovers it. Three things about the shape are load-bearing:
 `Barrier.FinalizeFile` is not re-run here and cannot be: its first act is
 `Truncator.Drain`, which answers `ErrFileNotOpen` and takes the early exit,
 because nothing reopens a file during the sweep. What the pass needs is only the
-trim — no drain (a fresh process has an empty write cache), no commit (no new
+trim — no drain (a fresh process has written nothing), no commit (no new
 articles), no ack (the sweep has already re-set the bits). `boundOver` remains
 the single owner of the bound rule; `TrimToRuns` and `FinalizeFile` differ in
 how they *apply* it, not in what it is.
@@ -1626,56 +1626,20 @@ sparse files by creating a temporary file, truncating it to 1 MiB and checking
 startup for logging; it does not gate pre-allocation. The assembler always
 attempts `fallocate` on Linux regardless of the result.
 
-## Write coalescing cache
+## Write path
 
-When `Options.WriteCacheBytes > 0`, the shared `writeCache` buffers decoded
-articles in memory and coalesces contiguous runs into larger `WriteAt` calls.
+Every accepted article is written synchronously: `FileWriter.Accept` records the
+offset's owner and calls `writeOne`, which issues one `WriteAt` and, only if it
+returns without error, reports the article Written through `noteWritten`. There
+is no assembler-side buffering of decoded articles, no coalescing and no
+memory-pressure flush, so an article's bytes are on disk (in the page cache)
+before any later article can be accepted. (`git grep -n 'writeOne(' -- internal ':!*_test.go'`
+finds 2 lines: the definition and its one call, in `Accept`.) `FileWriter.Drain` therefore writes
+nothing: it hands the barrier the articles already reported and re-reports them
+until `Confirm`.
 
-The cache is **assembler-wide, not per-writer**, because the memory bound in B2 is
-global across files: `forceFlushLargest` has to compare files against each other,
-and the coalescing scratch buffer is reused across all of them.
-
-- **Buffering**: each article is stored in `fileBuf.articles[offset]`, keyed by
-  byte offset; total memory is tracked in `writeCache.used`.
-- **A zero-length article is refused, and the contiguous scan stops at one.**
-  `offsetInRange` admits an empty write, so nothing upstream rules one out.
-  Buffering it would wedge the scan, which advances by the length of the article
-  at the cursor: a zero-length entry there never moves it and the loop never
-  terminates — on the worker goroutine that owns every file handle, so it takes
-  all assembly with it. `buffer()` returns `cached == false` so the caller writes
-  it inline, where the `WriteAt` is a no-op. `buildContiguousRun` also breaks on
-  one rather than trusting that.
-- **Contiguous flush**: after each `buffer()`, `flushContiguous()` scans from the
-  file's `writeCursor` for a contiguous run ≥ 512 KiB (`contiguousRunSize`),
-  coalesces it into the reusable `scratchBuf` and writes it as a single
-  `WriteAt`.
-- **Pressure relief**: at `used > 90%` of the limit, the file with the most
-  buffered data is force-flushed regardless of contiguity, articles written
-  individually in offset order.
-- **A drain advances the cursor and keeps the file's entry.** `drainFile()` moves
-  `writeCursor` past every article it returns — gaps included — and clears the
-  entry rather than deleting it, so the cursor survives into the next round of
-  buffering. An entry deleted here would be recreated at cursor 0, an offset
-  whose article was just written and will never be re-buffered, stranding the
-  scan for the rest of the file (#311). An article arriving later below the
-  advanced cursor is still buffered and still written by the next drain; it just
-  does not join a coalesced run.
-
-**`writeCursor` is an in-memory coalescing frontier and nothing else.** It is not
-persisted, not seeded from anything at open, and is not evidence about disk:
-`drainFile` advances it past gaps and before any write is attempted, so it sits
-above the bytes actually written whenever a write then fails. Collapsing the
-frontier and the durability anchor into one value is what made the old
-`write_cursor` column unusable. The durability question is answered elsewhere
-entirely, by `durable_runs`, which the assembler neither reads nor writes.
-
-**The cache is on by default at 64 MiB** — `constants.DefaultWriteCacheBytes`,
-seeded into `Downloads.WriteCacheSize` by `config.Default()` and threaded to
-`Options.WriteCacheBytes` in `app.New`. Setting `write_cache_size: 0` disables
-it, and each article is then written directly through `FileWriter.writeOne`. The
-default is a tuning choice, not a durability one: the barrier drains the cache
-before every fsync, so neither setting changes what may be claimed. See
-*Open gaps* for what is and is not measured about the win.
+The only memory the assembler holds ahead of the disk is the request channel
+(`reqs`, see *Memory & allocation budget*).
 
 Decoder buffers are returned to `sync.Pool` (`decoder.PutBuffer`) on every path,
 including every failure path.
@@ -1705,28 +1669,21 @@ including every failure path.
   Emitted bit survives, and `ForEachUnfinishedArticle` skips a set Emitted bit.
   The fault's route is what clears it — see the write-error rule below.
 - **Two articles claiming overlapping byte ranges** resolve one of two ways, and
-  which one depends on whether the incumbent has been reported Written and
-  whether the arrival shares the incumbent's exact start offset and length
-  (`r.off == off && end == r.end`). Detection lives in
+  which one depends on whether the incumbent has been reported Written.
+  Detection lives in
   `FileWriter.accepted`, a sorted, pairwise-disjoint slice of `acceptedRange`
   intervals recorded in `Accept`, and a collision is decided by **identity**: an
   interval already owned by the same article is a re-accept after a rollback,
   not a collision.
 
-  Detection used to live in `writeCache.buffer` and keyed on cache residency,
-  which missed the ordinary in-order case entirely — the first article was
-  flushed and evicted before its duplicate arrived, so both were counted and the
-  file completed with one part's bytes overwritten (#383). Detection is
-  per-open-episode, the same residency as `seenDone`.
+  Detection is per-open-episode, the same residency as `seenDone`.
 
-  - **Incumbent written, or partial/straddling/different-length interval overlap
-    → the range is SETTLED and the ARRIVAL is rejected** (`offsetSettledBy`,
-    checked in `acceptArticle`). When the incumbent has been written, its bytes
-    back a durable claim: the next `Drain` reports them, and the barrier records
-    the run naming its CRC at that offset and acks it. When the overlap has a
-    different start offset or length (`r.off != off || end != r.end`),
-    `writeCache` (which is keyed by start offset) cannot displace the
-    incumbent's buffered slice cleanly (#759). Letting a
+  - **Incumbent written → the range is SETTLED and the ARRIVAL is rejected**
+    (`offsetSettledBy`, checked in `acceptArticle`), whether the arrival shares
+    the incumbent's range exactly, straddles its boundary, or sits inside it
+    (#759). The incumbent's bytes back a durable claim: the next `Drain`
+    reports them, and the barrier records the run naming its CRC at that
+    offset and acks it. Letting a
     later article overwrite the range makes the record unverifiable (or ships a
     splice on a no-par2 job), and failing a written incumbent as well would give
     one article two terminal dispositions — permanently failed *and* acked
@@ -1736,47 +1693,20 @@ including every failure path.
     The `written` flag is **latched on the interval**, not derived from
     `w.written`/`w.reported`. `Confirm` empties both once the articles are
     acked, and an acked article holds the strongest claim there is — a derived
-    check would read the empty set as *no* claim and displace it one checkpoint
+    check would read the empty set as *no* claim and overwrite it one checkpoint
     later.
 
-  - **Incumbent still buffered at the exact same start offset and length
-    (`r.off == off && end == r.end`) → the INCUMBENT is displaced**, which is
-    what the write cache always did. It made
-    no claim, so failing it corrects the writer's own accounting and nothing
-    durable. It is resolved *permanently failed* rather than returned to
-    Outstanding — re-fetching it reproduces the collision, observed as a
-    ping-pong that never settles.
-
-    It **keeps its part**, and is counted for one through
-    `admitPermanentFailure` if it does not already hold one. `TotalParts` counts
-    manifest segments, so two segments claiming one offset are two parts the
-    file waits for; a file that stopped counting the loser could never reach
-    `TotalParts`, which left it permanently one short (#386). Every displaced
-    article goes through the same call, keyed on `ArtIdx`: there is no
-    Message-ID-specific case to exempt, because `seenDone` and `seenFailed` are
-    keyed on `ArtIdx` — which an NZB can never leave empty — not on the
-    Message-ID an earlier version of this code needed a separate exemption for.
-
-    `handleSuccessArticle`'s and `handleLateDuplicate`'s dedup arms test
-    `seenDone` before `seenFailed`, so a redelivery of the loser takes the
-    duplicate arm — matched by `ArtIdx` — rather than being re-written and
-    displacing the winner in turn. Before F1's re-key, those arms were gated on
-    a non-empty Message-ID, so an article carrying none needed a separate
-    record, `FileWriter.resolvedUntracked`, to get the same protection: without
-    it, every redelivery of such an article was counted afresh and displaced
-    the current owner in turn — the count climbed one per copy until it reached
-    `TotalParts` over a segment that had never arrived, and the file was
-    finalized short. `resolvedUntracked` is gone; `seenFailed` alone now does
-    that job for every article, tracked or not.
-
-    Its buffered bytes go with it, through `writeCache.discardAt`, and that call
-    is load-bearing rather than tidy. `wc.buffer` evicts the entry itself
-    whenever it accepts the arrival, but it refuses a zero-length article
-    *before* touching `fb.articles` — so without the explicit discard the
-    incumbent stays cached, and the next `Drain` writes its bytes and hands them
-    to the barrier to ack durable, for an article already reported permanently
-    failed. Detection used to BE the eviction, so the two could not disagree;
-    moving detection ahead of the cache separated them.
+  - **Incumbent never written → the arrival takes the range over.** Every
+    accepted article is written before a rival can arrive, so an article owns a
+    range without a `written` latch only when its write faulted (`fail` rolled
+    it back) or a failed `Sync` rolled it back (§3, #760). Either way it was
+    already returned to Outstanding, it keeps its `accepted` interval (entries
+    are never removed on rollback), and it made no claim, so there is nothing
+    to protect: `recordAccepted` drops its interval and records the arrival's.
+    The rolled-back article comes back later, finds the range owned by a
+    different article, and is refused like any other loser once the arrival
+    has been written. The `!r.written` test in `offsetSettledBy` is what
+    separates this case from the settled one.
 
   **This detects any interval overlap `[off, end)` within one open-file episode
   (#759).** Two articles whose byte ranges overlap — whether at the same start
@@ -1807,12 +1737,12 @@ the encoding, and the names are what the code reads.
 
 | Control | Encoding | Worker behaviour |
 |---|---|---|
-| **CancelJob** | `JobID=""`, `FileIdx=fileIdxCancelJob` (-1), `MessageID=jobID`, `disposition` | closes all open files for the job and *deletes* them under `DeleteFiles` or leaves them on disk under `KeepFiles` (draining the cache first, so a kept file holds every byte that arrived — written, not fsynced, so a crash can still lose them); tombstones the job in `cancelledJobs` and discards cached articles under **both**; closes `ackCh` |
+| **CancelJob** | `JobID=""`, `FileIdx=fileIdxCancelJob` (-1), `MessageID=jobID`, `disposition` | closes all open files for the job and *deletes* them under `DeleteFiles` or leaves them on disk under `KeepFiles` (every accepted article is already written, so a kept file holds every byte that arrived — written, not fsynced, so a crash can still lose them); tombstones the job in `cancelledJobs` under **both**; closes `ackCh` |
 | **CloseJobHandles** | `JobID=""`, `FileIdx=fileIdxCloseHandles` (-2), `MessageID=jobID` | drains, `Sync`s and `Close`s handles *without deleting*, tombstones the files and the job in `cancelledJobs`, **sends any close-time fault on `ackCh`** and closes it. Used when a job enters post-processing |
 | **Barrier op** | `JobID=""`, `FileIdx=fileIdxSyncOp` (-3), `syncOp` payload | `Files`, `Jobs`, `Drain`, `Sync`, `Stat`, `Truncate`, `Close` on one file, on the worker goroutine |
 
 The barrier-op indirection is invariant X1, not ceremony. One goroutine owns all
-the state, so the barrier can reach a file's cache and handle without a lock. The
+the state, so the barrier can reach a file's writer and handle without a lock. The
 alternative — a mutex over the open-file map and the writers — would put `WriteAt`
 and `fsync` inside a critical section, which is both a contention disaster on the
 hot path and exactly what `scripts/check_lock_io` exists to catch.
@@ -1936,9 +1866,6 @@ articles or sparse regions.
 | Component | Bound / strategy |
 |---|---|
 | Write channel (`reqs`) | 2048 requests (`defaultQueueSize`). At 128 KiB articles, ~256 MB worst-case buffered; backpressures the downloader when disk I/O is slow. |
-| Write cache | `Options.WriteCacheBytes`, pressure relief at 90%. Default 64 MiB (`constants.DefaultWriteCacheBytes`); `write_cache_size: 0` disables it. |
-| Contiguous flush threshold | 512 KiB (`contiguousRunSize`). Shorter runs stay buffered. |
-| Coalescing scratch buffer | one reusable `[]byte` per `writeCache`, grown to the largest flush. |
 | `FileWriter.written` / `.reported` | bounded by one checkpoint window; `reported` accumulates only between *successful* syncs, and a job whose syncs are failing stalls (R19) and stops writing. |
 | `internalFileComplete` | cap 128. **Not** a bound on retained fds — see the handoff section. |
 | Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
@@ -1958,11 +1885,13 @@ articles or sparse regions.
   | `Options.OnWriteFault` | the classified `*storagefault.Fault`, no article | stalls or fails the job on the usual R18 rule |
 
   They are separate because they are needed in different combinations. A fault
-  raised inside `Accept` needs both. A `Drain` or `Sync` failure reaches the
-  **barrier**, which routes the fault — but the rolled-back article set never
-  crosses the `SyncTarget` interface, so the assembler still owes the first.
-  `OnWriteFault` used to carry a single article index and do both, so every
-  batch failure reported one article and rolled the rest back silently: they
+  raised inside `Accept` needs both: `routeAcceptFailure` reports the one
+  article whose write failed to `OnArticlesUnwritten`, then the fault to
+  `OnWriteFault`. A `Sync` or `Close` failure reaches the **barrier** (or the
+  close caller), which routes the fault; no article was rolled back, so there
+  is nothing for the first.
+  `OnWriteFault` used to carry a single article index and do both, so a
+  failure that rolled back several articles reported one and rolled the rest back silently: they
   were left neither Done, nor Failed, nor Outstanding, and only a restart
   recovered them — at the time, through the `ClearEmittedForReload` sweep that
   `Application.Start` then ran.
@@ -1988,44 +1917,26 @@ articles or sparse regions.
   how the two used to drift apart. `partsWritten` lives on `FileWriter`, beside
   the `seenDone`/`seenFailed` sets it is derived from, and `FileWriter`
   applies the decrement in the same statement pair that clears the article's
-  `seenDone` entry — in `rollbackPart`, which `fail` calls before recording what
-  becomes of the article. `failDisplaced` does not: it resolves its article
-  rather than rolling it back, so it counts through `admitPermanentFailure`
-  instead. The routing callbacks decide *disposition* only. An article
+  `seenDone` entry — in `rollbackPart`, which `fail` calls. The routing callbacks decide *disposition* only. An article
   already counted as permanently **failed** keeps its part through a roll-back:
   `admitPermanentFailure` charged it, a redelivery writes bytes without
   charging a second one, and decrementing there leaves the file one part short
   of `TotalParts` forever.
 
-  `FileWriter.Close` **returns** whatever is left in the rolled-back set
-  alongside its error, so the set cannot be dropped by omission at the moment
-  the writer stops existing. It is empty at both call sites on every reachable
-  path; a non-empty one means a producer was added that nothing drains.
-  `drainAndClose` routes it — that file is closing normally and its articles
-  are still wanted — while the job-cancel arm drops it, because the file is
-  unlinked on the next line and the job is leaving the queue. Both report at
-  Error, with the article indices, since the cancel arm's log is the only
-  record that survives the drop.
-
-  A coalesced run rolls back **every** article merged into it, not just the one
-  whose arrival triggered the flush: `buildContiguousRun` pooled the originals
-  before the write was attempted, so reporting only the trigger would leave the
-  rest believed written with their bytes freed. The same holds for everything
-  after a failed write in a drain. A cache displacement contributes to the same
-  set without rolling anything back.
+  `fail` records nothing beyond that give-back: `writeOne` is its only caller
+  (`git grep -n '\.fail(' -- internal/assembler ':!*_test.go'` finds 2 lines,
+  the call and a doc comment), so the rolled-back article is the one whose
+  `Accept` returned the error, and `routeAcceptFailure` reports it by index.
+  The job-cancel arm and `drainAndClose` route nothing at close, because no
+  rolled-back articles can be pending then.
 
   A rolled-back article is **not** put in `seenFailed`. A storage fault says
   nothing about the article's availability (A1), and recording it failed made
   its redelivery take the "already counted as failed" branch — written but not
-  counted — leaving the file's part total permanently short. A *displaced*
-  article is put there, and that is not a counter-example: it is resolved
-  rather than rolled back, so its redelivery should be recognised and refused
-  rather than written again.
-- **Drain stops at the first write failure**, returning the articles that *did*
-  land plus the fault, so the barrier sees both what it may claim and why the
-  drain stopped. Continuing would be optimistic: a storage fault is a condition
-  of the device. Articles after the failure are released to the pool and rolled
-  back, so a re-delivery is not mistaken for a duplicate.
+  counted — leaving the file's part total permanently short.
+- **A write that fails** rolls back its own article only: `writeOne` releases the
+  buffer, calls `fail`, and returns the classified fault from `Accept`. Nothing
+  else was buffered behind it, so nothing else is lost with it.
 - **`FileInfo` resolution, `MkdirAll`, or `OpenFile` failure** — the article's
   data is returned to the pool, its Emitted bit is cleared through
   `OnArticlesUnwritten`, and the fault is routed. The file is never opened and
@@ -2036,8 +1947,8 @@ articles or sparse regions.
   job directory the moment `CancelJob` returns.
 
   Whether the files themselves are deleted is the caller's `FileDisposition`.
-  `DeleteFiles` unlinks each as it closes; `KeepFiles` drains the write cache
-  into it and leaves it. `KeepFiles` does **not** `Sync`: nothing reads a
+  `DeleteFiles` unlinks each as it closes; `KeepFiles` closes it and leaves
+  it. `KeepFiles` does **not** `Sync`: nothing reads a
   removed job's files, so the fsync would only stall ingest for every other
   job on the single worker goroutine. The kept bytes are therefore
   page-cache-durable, not platter-durable, and no `durable_runs` record covers
@@ -2048,7 +1959,7 @@ articles or sparse regions.
   to the expected size with holes, and (since its caller has also removed the
   job) with no manifest or `durable_runs` record left to interpret it.
 - **Shutdown (`Stop`)** — closes `stopCh`, waits for in-flight senders, drains
-  remaining channel items, flushes the write cache, and closes all open files.
+  remaining channel items, drains and fsyncs each writer, and closes all open files.
   Partial files are closed without firing `OnFileComplete`.
 
 ## Accepted limitations
@@ -2248,9 +2159,10 @@ recorded here so the next reader does not mistake them for design.
 a child process and kills it. It is the strongest evidence in the repository for
 this contract, and its scope is narrower than "durability":
 
-**It pins the assembler's in-process write cache.** A SIGKILL destroys that cache
-for real, with no flush, so an article acked before its bytes left the process has
-no bytes in the file afterwards and the CRC read-back sees it.
+**It pins the process's in-memory state.** A SIGKILL destroys the decoded articles
+queued ahead of the assembler for real, with no flush, so an article acked before
+its bytes left the process has no bytes in the file afterwards and the CRC
+read-back sees it.
 
 **It does not pin fsync-to-platter.** No unprivileged userspace call can discard
 dirty page-cache data: `POSIX_FADV_DONTNEED` invalidates clean pages and skips
@@ -2306,20 +2218,3 @@ a green run does and does not bound.
 - **The startup sweep is startup-only and resident-only.** See *Accepted
   limitations* #1.
 - **`ENOSPC` and page-cache loss are untested** (#363).
-- **In-flight coalescing still stalls on a permanently failed article.** A gap
-  the download will never fill leaves `buildContiguousRun` stranded at the cursor
-  until the next drain re-anchors it. #311 fixed the pressure-drain route to the
-  same symptom; this route remains. Its cost is memory residency rather than
-  syscalls, and two designs targeting it directly were measured and found worse
-  than leaving it alone. Measure the residency cost before attempting it again.
-- **Write coalescing has no measured win on a local filesystem.** A sweep of
-  `WriteAt` chunk sizes over the same payload found wall-clock flat on btrfs and
-  *worse* for large chunks on tmpfs, because coalescing trades N syscalls for one
-  syscall plus a second memcpy of the same bytes. The mechanism is sound where a
-  write is expensive per call — NFS/SMB, where each `pwrite` is a round trip —
-  and the local-filesystem case is unmeasured rather than known-good. Note that
-  the cache is **on by default at 64 MiB**, so this gap describes the shipped
-  configuration: the work is to measure it on a local filesystem and either
-  justify the default or change it. Do not read this bullet as advice to turn
-  the cache off; nothing here establishes that off is better, only that on is
-  unproven locally.

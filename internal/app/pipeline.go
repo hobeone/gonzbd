@@ -576,8 +576,7 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 	// The assembler is no longer told whether this file is resumed, nor
 	// seeded with an earlier run's write cursor or high-water mark. It has no
 	// use for any of them: it does not truncate, so it needs no bound of its
-	// own, and the coalescing cursor is a hint that costs syscalls rather than
-	// correctness when it starts at zero. The completion truncate now derives
+	// own. The completion truncate now derives
 	// its bound from the durable runs, which describe the file rather than
 	// the session.
 	info := assembler.FileInfo{

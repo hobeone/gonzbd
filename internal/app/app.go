@@ -391,7 +391,6 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	dlDir := gen.DownloadDir
 	completeDir := gen.CompleteDir
 	adminDir := gen.AdminDir
-	writeCacheBytes := int64(dl.WriteCacheSize)
 	minFreeBytes := int64(dl.MinFreeSpace)
 	maxActiveJobs := dl.MaxActiveJobs
 	maxComputeSlots := dl.MaxComputeSlots
@@ -499,11 +498,6 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		log.Warn(msg)
 	} else {
 		log.Info(msg)
-	}
-
-	if writeCacheBytes > 0 {
-		log.Info("write coalescing enabled",
-			"cacheMiB", writeCacheBytes/(1024*1024))
 	}
 
 	if app.downloader == nil {
@@ -661,7 +655,6 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	asm := assembler.New(assembler.Options{
 		FileInfo:            p.resolveFileInfo,
 		MinFreeBytes:        minFreeBytes,
-		WriteCacheBytes:     writeCacheBytes,
 		OnLowDisk:           app.handleLowDisk,
 		OnWriteFault:        app.handleWriteFault,
 		OnArticlesUnwritten: app.handleArticlesUnwritten,

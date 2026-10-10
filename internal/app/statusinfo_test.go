@@ -19,20 +19,6 @@ import (
 var _ = (*Application).enqueuePostProc
 var _ = (*pipeline).run
 
-func TestApplication_ArticleCacheBytes_ReturnsZeroInitially(t *testing.T) {
-	t.Parallel()
-	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
-	app, err := New(cfg, nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer app.Shutdown()
-
-	if got := app.ArticleCacheBytes(); got != 0 {
-		t.Errorf("ArticleCacheBytes() = %d, want 0 on a fresh app", got)
-	}
-}
-
 func TestApplication_DownloadDirFreeBytes_ReturnsPositiveForRealDir(t *testing.T) {
 	t.Parallel()
 	dlDir := t.TempDir()

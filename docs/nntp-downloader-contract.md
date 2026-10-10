@@ -203,7 +203,7 @@ of their failure ratio.
    evidence about disk, so it is not persisted at all.
 
    `Done` now means what it says. `durability.Barrier` drains the assembler's
-   write cache, `fsync`s the file, commits the drained articles to
+   writer, `fsync`s the file, commits the drained articles to
    `durable_runs`, and only then mints a `DurableProof` — which `Job.AckDurable` requires and which has no
    exported constructor outside `internal/durability`. No caller outside that package can name an article's
    bytes were covered by a completed `fsync`; the ack does not describe bytes
@@ -221,7 +221,7 @@ of their failure ratio.
 
    | State at the crash | Acked? | What the restart does |
    |---|---|---|
-   | still in the write cache, or never received | no | no row covers it. Outstanding, re-dispatched. This contract. |
+   | still in memory ahead of the write, or never received | no | no row covers it. Outstanding, re-dispatched. This contract. |
    | written but not yet fsynced-and-committed, whether or not the bytes survived | no | no row covers it, and nothing reads the file to find out. Outstanding, re-dispatched. |
    | covered by a completed fsync, and the file is at least as long as its rows claim | yes | the rows are adopted without reading a byte. |
    | covered by a completed fsync, but the file is shorter than its rows claim (truncated or deleted out of band) | yes | the file's rows are DELETED and every one of its articles is Outstanding. |

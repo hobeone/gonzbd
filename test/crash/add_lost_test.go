@@ -13,7 +13,6 @@ func lostAddFixture() harnessOpts {
 	return harnessOpts{
 		CheckpointBytes:    1 << 20,
 		CheckpointInterval: time.Hour,
-		WriteCacheBytes:    1 << 20,
 		Connections:        1,
 		BodyDelay:          50 * time.Millisecond,
 	}

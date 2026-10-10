@@ -11,9 +11,30 @@ import (
 	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
-// FileWriter owns one target file: its handle, its share of the write cache,
-// its coalescing, and its pre-allocation. It has no authority over anything
-// externally visible.
+// articleID identifies an article as it travels with its bytes to the write
+// that lands them, so the write can say which article it carried.
+//
+// artIdx is identity: it is what FileWriter.seenDone / seenFailed key duplicate
+// handling on, and what FileWriter.noteWritten puts on a durability.WrittenArticle,
+// so it must match the queue's numbering. msgID travels alongside it for
+// logging and telemetry. Neither reaches the queue from here: this package has
+// no ack path in either direction.
+type articleID struct {
+	msgID  string
+	artIdx int32
+}
+
+// sameArticle reports whether two identities name the same article.
+//
+// The index alone decides. msgID travels with the article for logging and
+// telemetry and is deliberately NOT compared: identity is the manifest index,
+// which is what FileWriter's seen-sets key on. Comparing the pair as well would
+// give the assembler a second, finer notion of sameness than the one its
+// accounting uses, and the two could disagree.
+func (a articleID) sameArticle(b articleID) bool { return a.artIdx == b.artIdx }
+
+// FileWriter owns one target file: its handle and its write path. It has no
+// authority over anything externally visible.
 //
 // It cannot ack an article, record a CRC part, decide a file is complete, or
 // truncate. Those decisions moved to durability.Barrier, which is the only
@@ -38,15 +59,6 @@ type FileWriter struct {
 	path   string
 	key    fileKey
 
-	// wc is the assembler-wide write cache, and fb is this file's entry in
-	// it. The brief's shape was a per-writer *fileBuf; the shared cache comes
-	// with it because the memory bound in B2 is global across files, not
-	// per-file — forceFlushLargest has to compare files against each other,
-	// and the coalescing scratch buffer is reused across all of them. A
-	// per-writer cache would make the bound per-file and multiply the scratch
-	// allocation by the number of open files.
-	wc *writeCache
-
 	// written accumulates the articles whose bytes reached WriteAt without
 	// error and have not yet been reported by a Drain. It is the ONLY evidence
 	// the barrier has, so nothing may be appended here that has not come back
@@ -70,26 +82,20 @@ type FileWriter struct {
 	// marks the failed pages clean, so a later fsync on the same handle can
 	// return nil even though the bytes never reached disk. On a Sync failure,
 	// poisonSync discards reported and written and rolls their articles back
-	// into faulted so the caller returns them to Outstanding.
+	// into poisoned so the caller returns them to Outstanding.
 	reported []durability.WrittenArticle
 
-	// seenDone and seenFailed keep duplicate handling idempotent (R12). They
-	// moved here from openFile because the writer owns the cache the first
-	// copy may still be sitting in.
+	// seenDone and seenFailed keep duplicate handling idempotent (R12).
 	//
 	// Both are keyed on ArtIdx, the article's manifest index, rather than its
 	// Message-ID. ArtIdx has no value that doubles as "absent" — an NZB may
 	// omit the Message-ID, but never the index — so every article has a key
 	// these maps can hold, and there is no empty-key class to guard against.
 	//
-	// Both are membership-only. seenDone used to carry the offset the article
-	// was accepted at, and this comment said the duplicate branch needed it in
-	// order to ask wc.buffered whether the first copy had left the cache. It
-	// never asked: handleSuccessArticle's duplicate arm releases the buffer
-	// and returns, because the answer does not change what it does — either
-	// way the second copy's bytes are redundant and re-writing them would be a
-	// second WriteAt over the same range. The offset was written and never
-	// read.
+	// Both are membership-only: handleSuccessArticle's duplicate arm releases
+	// the second copy's buffer and returns, because either way its bytes are
+	// redundant and re-writing them would be a second WriteAt over the same
+	// range.
 	seenDone   map[int32]struct{}
 	seenFailed map[int32]struct{}
 
@@ -97,20 +103,17 @@ type FileWriter struct {
 	// writer has accepted bytes for, sorted by off. It is the collision and
 	// range-overlap detector (#383, #759).
 	//
-	// Detection lives here rather than in writeCache.buffer because cache
-	// membership only sees articles still unwritten, whereas an in-order
-	// download flushes and evicts an article before a colliding or overlapping
-	// segment arrives.
-	//
 	// A collision is decided by IDENTITY, not by occupancy: a range already
 	// owned by THIS article is a re-accept, not a collision. That is what
 	// makes the set safe without removing entries on a write-fault rollback.
 	//
-	// Any arrival whose range intersects an already-accepted range owned by
-	// another article is refused in acceptArticle via offsetSettledBy, except
-	// when the sole intersecting range is an unwritten buffered incumbent at
-	// the exact same start offset and length (r.canBeDisplacedBy), which Accept
-	// displaces in place via failDisplaced.
+	// Whether an intersecting owner has been reported Written decides which
+	// article loses: offsetSettledBy refuses the ARRIVAL when it has, because
+	// the incumbent's bytes already back a durable claim. acceptArticle makes
+	// that refusal before Accept is called. An owner that has NOT been
+	// reported Written (its write faulted, or a failed Sync rolled it back)
+	// made no claim for the arrival to contradict, so recordAccepted drops its
+	// range and the arrival takes it.
 	//
 	// Entries are never removed on rollback, and that is deliberate rather
 	// than a leak. An article whose write faults is rolled back and
@@ -120,10 +123,9 @@ type FileWriter struct {
 	// a restart is invisible, exactly as seenDone's duplicate handling is.
 	accepted []acceptedRange
 
-	// faulted accumulates the articles a failed write rolled back, for the
-	// caller to route to Outstanding. See fail.
-	faulted []faultedArticle
-
+	// poisoned accumulates the articles a failed Sync rolled back (#760), for
+	// releaseSyncRollback to route to Outstanding via takePoisoned.
+	poisoned []int32
 	// partsWritten counts how many of the file's parts have been accounted
 	// for, whether by a successful accept or by a permanent failure.
 	//
@@ -168,33 +170,6 @@ type FileWriter struct {
 	closeFile func() error
 }
 
-// faultedArticle is one article a failed write rolled back, and how the caller
-// must dispose of it.
-//
-// It used to carry an uncount flag as well, reporting whether the article's
-// part had to be given back. That flag was itself derived state stored one
-// struct away from its source — the answer is exactly "was it in seenDone and
-// not in seenFailed", which fail already knows at the moment it appends here.
-// fail now applies the give-back directly and the flag is gone, so there is no
-// window in which the two can disagree.
-//
-//nolint:govet // field order follows the doc's narrative, not alignment
-type faultedArticle struct {
-	// displaced marks an article a later article at the same offset pushed
-	// out of the cache, rather than one a write failed on. See failDisplaced.
-	displaced bool
-	id        articleID
-
-	// offset and displacedBy carry the diagnosis, and are meaningful only
-	// when displaced is set.
-	//
-	// They are set by the same statement that sets displaced, which is the
-	// whole point of failDisplaced no longer patching this record after the
-	// fact: "displaced with no displacer" is not a state a caller can reach.
-	offset      int64
-	displacedBy articleID
-}
-
 // acceptedRange is one byte interval [off, end) this writer has accepted, the
 // article that owns it, and whether its bytes have been reported Written.
 //
@@ -230,22 +205,12 @@ func (r acceptedRange) overlaps(off, end int64) bool {
 	return off < r.end
 }
 
-// canBeDisplacedBy reports whether an unwritten buffered incumbent r may be
-// displaced in place by an arriving range [off, end) from another article.
-// Only a same-start-offset arrival with the exact same length (end == r.end)
-// can replace the single write-cache slot at r.off without leaving a partial
-// slice or overlapping a neighbour.
-func (r acceptedRange) canBeDisplacedBy(off, end int64) bool {
-	return !r.written && r.off == off && end == r.end
-}
-
 // newFileWriter wraps an already-open handle.
-func newFileWriter(handle *os.File, path string, key fileKey, wc *writeCache) *FileWriter {
+func newFileWriter(handle *os.File, path string, key fileKey) *FileWriter {
 	w := &FileWriter{
 		handle:     handle,
 		path:       path,
 		key:        key,
-		wc:         wc,
 		seenDone:   make(map[int32]struct{}),
 		seenFailed: make(map[int32]struct{}),
 	}
@@ -311,102 +276,13 @@ func (w *FileWriter) noteWritten(id articleID, off int64, n int, crc32 uint32) {
 }
 
 // writtenSoFar returns the articles reported Written since the last Drain,
-// without draining. Used by tests to assert that a merely-buffered article has
-// made no claim.
+// without draining. Used by tests to assert what a write has claimed.
 func (w *FileWriter) writtenSoFar() []durability.WrittenArticle { return w.written }
 
 // unconfirmed returns the articles a Drain has reported that no Confirm has
 // yet released. Used by tests to assert the report survives a successful Sync
 // until Confirm and is discarded by a failed Sync (#760).
 func (w *FileWriter) unconfirmed() []durability.WrittenArticle { return w.reported }
-
-// failDisplaced resolves an article a LATER article displaced from the same
-// offset, which is a different disposition from a write that failed.
-//
-// Its bytes are gone and nothing will write them, but it must not be returned
-// to Outstanding: the collision is a property of what the server sent — two
-// segments claiming one offset — so re-fetching it produces the same
-// collision, and the re-fetched copy displaces the article that displaced it.
-// Observed as a [0 1 0 1 0] ping-pong when this went through the un-written
-// path.
-//
-// So it is resolved permanently failed instead, which is the same disposition
-// handleLateDuplicate reaches for an article that can never be written now or
-// later. See releaseFaulted.
-//
-// # A resolved article must be COUNTED for a part, not merely keep one
-//
-// TotalParts counts manifest segments, so two segments claiming one offset are
-// two parts the file waits for: one supplies the bytes, the other is
-// permanently failed, and a file that stopped counting the loser could never
-// reach TotalParts. Giving the part back while resolving the article left the
-// file permanently one short — OnFileComplete never fired and the job sat at
-// 100% with nothing outstanding, across restarts (#386).
-//
-// admitPermanentFailure rather than failPermanent, because the incumbent is
-// not guaranteed to hold a part to keep. failPermanent only KEEPS one, which
-// suffices at acceptArticle's call sites because admitAccepted ran a statement
-// earlier. Here it does not: accepted entries are never removed, so a
-// write-faulted article keeps its range ownership after fail has taken its
-// part and its seenDone entry away, and a later arrival at that range
-// displaces a stale owner holding nothing. failPermanent would count nothing
-// for it and the file would wedge exactly as before. admitPermanentFailure
-// counts if and only if the article is not already counted.
-//
-// It also leaves the seenDone entry in place, and both duplicate-handling
-// readers — handleSuccessArticle and handleLateDuplicate — test seenDone
-// before seenFailed, so a redelivery of the loser takes the duplicate arm
-// rather than being re-written and displacing the winner in turn.
-// admitPermanentFailure itself reads the two in the opposite order, which is
-// how it tells an already-counted article from a new one.
-//
-// # Precondition: the incumbent must not have been reported Written
-//
-// This is only correct for an article that made no durability claim. One that
-// reached noteWritten is in w.written, or in w.reported after a Drain, or
-// already acked and gone from both after a Confirm — and in every one of those
-// the barrier will record it. Rolling it back here as well gives one article
-// two terminal dispositions, and lets the displacer overwrite bytes a run
-// records the incumbent's CRC over, so the record describes a range the file
-// no longer holds.
-//
-// acceptArticle enforces the precondition by refusing the ARRIVAL when the
-// range is settled, so this is reached only from the cache-eviction case it
-// was written for. Do not add a caller without checking offsetSettledBy first.
-// It does NOT delegate to fail. It used to, and then reached back to
-// specialize the record fail had appended:
-//
-//	w.fail(id)
-//	if n := len(w.faulted); n > 0 && w.faulted[n-1].id == id {
-//		w.faulted[n-1].displaced = true
-//	}
-//
-// That is the shape #375 removed from faultedArticle — a field applied to a
-// record after it was built, by a call site that had to find it again — and it
-// carried a live defect. fail returned early on an empty Message-ID at the
-// time, so for an untracked article nothing was appended, the positional
-// guard matched nothing, and the whole displacement was dropped: no report,
-// and nothing resolved the article in either direction. (That early return is
-// gone now — see fail's doc — but the reason failDisplaced still does not
-// delegate to it is independent: fail rolls a part back, and a displaced
-// article keeps its part, so delegating would decrement the wrong way
-// regardless of identity.) Keeping its part is now the correct outcome and no
-// longer part of the complaint; what was missing was the faulted record that
-// makes routeFaulted report it at all, without which it stayed Emitted
-// forever and no later run re-dispatched it.
-//
-// Building the record in one statement makes a half-specialized faultedArticle
-// unrepresentable, which is what lets Accept's diagnosis fields be added to it
-// without reopening that window.
-func (w *FileWriter) failDisplaced(id articleID, off int64, by articleID) {
-	w.admitPermanentFailure(id.artIdx)
-	w.faulted = append(w.faulted, faultedArticle{
-		id:          id,
-		displaced:   true,
-		offset:      off,
-		displacedBy: by,
-	})
-}
 
 // rollbackPart undoes the part and seen-set state an admitted article holds,
 // without deciding what becomes of the article. The caller owns that.
@@ -432,12 +308,9 @@ func (w *FileWriter) rollbackPart(artIdx int32) {
 	}
 }
 
-// fail rolls one article back to never-having-arrived, and records it so the
-// caller can return it to Outstanding.
+// fail rolls one article back to never-having-arrived after its write failed.
 //
-// # Rolled back, not marked failed
-//
-// It clears seenDone and — unlike the version this replaces — does NOT set
+// It clears seenDone and gives the article's part back, and does NOT set
 // seenFailed. A failed WRITE is a storage condition, and A1 forbids resolving
 // it against the article: the bytes are still available on the server and the
 // article is still wanted. Recording it as failed made a redelivery take the
@@ -445,37 +318,16 @@ func (w *FileWriter) rollbackPart(artIdx int32) {
 // bytes but does not count them, so the file's part total was permanently one
 // short of the truth for every rolled-back article.
 //
-// # Recording it is the whole point
-//
-// Absence from Drain's return does NOT leave the article Outstanding. Its
-// Emitted bit is still set from dispatch and ForEachUnfinishedArticle skips a
-// set Emitted bit, so an article that is merely dropped here is stranded until
-// something clears that bit: neither Done, nor Failed, nor Outstanding. A
-// restart clears it by not persisting it — jobProgressJSON excludes emitted
-// deliberately (internal/job/progress.go) — and a downloader reload clears it
-// in-process, unless #417 withholds that job's clear.
-//
-// Every batch failure rolls back MORE articles than the one that triggered it
-// — a coalesced run loses every part, a drain loses everything after the
-// write that failed — and the caller was given only one article index to
-// route. So the set is accumulated here and taken by the caller, rather than
-// inferred from an error. A cache displacement adds to the same set without
-// coming through this function, since it resolves its article rather than
-// rolling it back.
-//
-// # It gives the part back itself
-//
-// The give-back used to live in Assembler.releaseFaulted, one struct away from
-// the seenDone entry it is derived from, carried across by a stored uncount
-// flag. Both moved here: the delete and the decrement are now one statement
-// pair, so an article cannot lose its seenDone record while keeping its part.
-//
-// The rollback is exempt from the count's own > 0 clamp by construction rather
-// than by luck. An article only loses a part if it held one, which means it
-// was in seenDone and not in seenFailed, which means partsWritten counted it.
+// Returning the article to Outstanding is the caller's: its Emitted bit is
+// still set from dispatch and ForEachUnfinishedArticle skips a set Emitted
+// bit, so an article merely dropped here is stranded. fail has two callers —
+// `git grep -n '\.fail(' -- 'internal/assembler/*.go' ':!*_test.go'` finds 3 lines,
+// this comment and the calls in writeOne and rollbackSyncedArticle. After
+// writeOne, the one article is the one whose Accept returned the error, and
+// routeAcceptFailure reports it; after rollbackSyncedArticle, it is in
+// w.poisoned and releasePoisoned reports it.
 func (w *FileWriter) fail(id articleID) {
 	w.rollbackPart(id.artIdx)
-	w.faulted = append(w.faulted, faultedArticle{id: id})
 }
 
 // parts reports how many of the file's parts have been accounted for. The
@@ -483,16 +335,21 @@ func (w *FileWriter) fail(id articleID) {
 func (w *FileWriter) parts() int { return w.partsWritten }
 
 // offsetSettledBy reports the article that owns an already-accepted range
-// intersecting [off, off+length) when the ARRIVING article must be refused
-// rather than allowed to displace it (#383, #759).
+// intersecting [off, off+length) when that owner has already made a
+// durability claim, so the ARRIVING article must be refused rather than
+// allowed to overwrite it (#383, #759).
 //
-// Any overlap with an interval at a different start offset, an interval of a
-// different non-zero length, or an interval whose owner has already been
-// reported Written settles the range against the arrival so the arriving
-// article costs only its own bytes and never writes a splice over an accepted
-// neighbour. Only an unwritten buffered incumbent occupying the exact same
-// range (see acceptedRange.canBeDisplacedBy) is left unsettled here for Accept
-// to displace in place.
+// The incumbent may already be in w.written, or in w.reported after a Drain
+// handed it to the barrier, and the barrier records a run over exactly its
+// range with its CRC. Letting the arrival overwrite those bytes leaves a record
+// describing bytes the file no longer holds. Any overlap with a range whose
+// owner has been reported Written therefore settles the range against the
+// arrival, so the arriving article costs only its own bytes and never writes a
+// splice over an accepted neighbour.
+//
+// An owner that has not been reported Written has no claim to protect: the
+// `!r.written` test below is what lets a write-faulted article, which keeps
+// its range without having written, be replaced by the next arrival.
 func (w *FileWriter) offsetSettledBy(off, length int64, arriving articleID) (articleID, bool) {
 	end := off + length
 	for i := w.firstCandidateIdx(off); i < len(w.accepted); i++ {
@@ -503,7 +360,7 @@ func (w *FileWriter) offsetSettledBy(off, length int64, arriving articleID) (art
 			}
 			continue
 		}
-		if r.id.sameArticle(arriving) || r.canBeDisplacedBy(off, end) {
+		if r.id.sameArticle(arriving) || !r.written {
 			continue
 		}
 		return r.id, true
@@ -570,22 +427,29 @@ func (w *FileWriter) failPermanent(artIdx int32) {
 	w.seenFailed[artIdx] = struct{}{}
 }
 
-// takeFaulted returns and clears the articles rolled back since the last call.
+// takePoisoned returns and clears the articles a failed Sync rolled back since
+// the last call.
 //
 // Taken rather than read, because each set must be routed exactly once: the
 // caller returns them to Outstanding, and reporting one twice would clear an
 // Emitted bit a later dispatch had legitimately set.
-func (w *FileWriter) takeFaulted() []faultedArticle {
-	out := w.faulted
-	w.faulted = nil
+func (w *FileWriter) takePoisoned() []int32 {
+	out := w.poisoned
+	w.poisoned = nil
 	return out
 }
 
 // recordAccepted inserts or updates [off, end) in w.accepted while maintaining
-// its start-sorted, pairwise-disjoint invariant. Any unwritten incumbent owned
-// by a different article that overlaps [off, end) is displaced and its
-// buffered bytes are discarded; a re-accept by the same article preserves its
-// written latch and merged span.
+// its start-sorted, pairwise-disjoint invariant. A re-accept by the same
+// article preserves its written latch and merged span.
+//
+// An overlapping range owned by a different article is dropped. acceptArticle
+// has already refused the arrival against every range whose owner was
+// reported Written, so what is dropped here belongs to an article that made no
+// claim: its write faulted, or a failed Sync rolled it back, and either way it
+// was handed back to Outstanding when that happened. Dropping its range
+// resolves nothing about the article; its redelivery meets the arrival's range
+// and is refused there.
 func (w *FileWriter) recordAccepted(id articleID, off, end int64) {
 	first := w.firstCandidateIdx(off)
 	if first < len(w.accepted) {
@@ -601,14 +465,7 @@ func (w *FileWriter) recordAccepted(id articleID, off, end int64) {
 	written := false
 	for last < len(w.accepted) && (w.accepted[last].overlaps(off, end) || w.accepted[last].off < end) {
 		r := w.accepted[last]
-		if !r.overlaps(off, end) {
-			last++
-			continue
-		}
-		if !r.id.sameArticle(id) {
-			w.failDisplaced(r.id, r.off, id)
-			w.wc.discardAt(w.key, r.off)
-		} else {
+		if r.overlaps(off, end) && r.id.sameArticle(id) {
 			written = written || r.written
 			off = min(off, r.off)
 			end = max(end, r.end)
@@ -623,7 +480,7 @@ func (w *FileWriter) recordAccepted(id articleID, off, end int64) {
 	})
 }
 
-// Accept buffers or writes one article's bytes.
+// Accept writes one article's bytes through writeOne.
 //
 // It takes ownership of data and returns it to the decoder pool on every path,
 // including failure, so a caller never has to reason about who frees it.
@@ -636,66 +493,37 @@ func (w *FileWriter) recordAccepted(id articleID, off, end int64) {
 // Drain is not enough on its own — and the file goes on to complete over bytes
 // that never landed.
 func (w *FileWriter) Accept(id articleID, off int64, data []byte, crc32 uint32) error {
+	// A settled range never reaches here — acceptArticle refuses the arrival
+	// before calling Accept — so any range a different article owns that
+	// intersects this one has not been reported Written, and recordAccepted
+	// replaces it. A re-accept by the range's OWN owner keeps its written
+	// latch: what reaches that case is a write-fault RETRY, since rollbackPart
+	// deletes the seenDone entry so the redelivery is not a duplicate, but the
+	// accepted entry is never removed.
 	w.recordAccepted(id, off, off+int64(len(data)))
-
-	art := bufferedArticle{offset: off, data: data, id: id, crc32: crc32}
-	if w.wc.buffer(w.key, art) {
-		telemetry.CacheHits.Add(1)
-		if run := w.wc.flushContiguous(w.key); run != nil {
-			return w.flushRun(run)
-		}
-		return nil
-	}
-	// Caching disabled, or the article is zero-length and the cache refused
-	// it. Write it straight through.
-	return w.writeOne(art)
+	return w.writeOne(id, off, data, crc32)
 }
 
 // writeOne writes a single article and reports it Written on success.
-func (w *FileWriter) writeOne(art bufferedArticle) error {
+func (w *FileWriter) writeOne(id articleID, off int64, data []byte, crc32 uint32) error {
 	telemetry.DiskWrites.Add(1)
-	telemetry.DiskWriteBytes.Add(int64(len(art.data)))
-	_, err := w.writeAt(art.data, art.offset)
-	if art.data != nil {
-		defer decoder.PutBuffer(art.data)
+	telemetry.DiskWriteBytes.Add(int64(len(data)))
+	_, err := w.writeAt(data, off)
+	if data != nil {
+		defer decoder.PutBuffer(data)
 	}
 	if err != nil {
 		telemetry.PipelineErrors.Add(telemetry.ErrClassDiskWriteError, 1)
-		w.fail(art.id)
+		w.fail(id)
 		return storagefault.Classify("write", w.path, err)
 	}
-	w.noteWritten(art.id, art.offset, len(art.data), art.crc32)
+	w.noteWritten(id, off, len(data), crc32)
 	return nil
 }
 
-// flushRun writes a coalesced run and reports every article in it.
-//
-// On failure every article in the run loses its bytes, not just whichever one
-// triggered the flush: buildContiguousRun coalesced them all into one buffer
-// and pooled the originals before this write was attempted. Reporting only the
-// triggering article would leave the rest believed Written with their bytes
-// freed and no run able to fetch them again.
-func (w *FileWriter) flushRun(run *flushRun) error {
-	telemetry.CacheFlushes.Add(1)
-	telemetry.CacheFlushBytes.Add(int64(len(run.data)))
-	telemetry.DiskWrites.Add(1)
-	telemetry.DiskWriteBytes.Add(int64(len(run.data)))
-	if _, err := w.writeAt(run.data, run.offset); err != nil {
-		telemetry.PipelineErrors.Add(telemetry.ErrClassDiskWriteError, 1)
-		for _, p := range run.parts {
-			w.fail(p.id)
-		}
-		return storagefault.Classify("write", w.path, err)
-	}
-	for _, p := range run.parts {
-		w.noteWritten(p.id, p.offset, p.length, p.crc32)
-	}
-	return nil
-}
-
-// Drain flushes every buffered article for this file and returns the articles
-// whose bytes reached WriteAt without error since the last confirmed cycle
-// (and not poisoned by a failed Sync) — NOT merely since the last Drain.
+// Drain returns the articles whose bytes reached WriteAt without error since
+// the last confirmed cycle (and not poisoned by a failed Sync) — NOT merely
+// since the last Drain.
 //
 // The distinction is load-bearing and this comment used to get it wrong. take()
 // re-reports everything a Drain has already handed over across post-Sync
@@ -707,17 +535,10 @@ func (w *FileWriter) flushRun(run *flushRun) error {
 // on disk. See take() and the FileWriter.reported field doc, which are the
 // authority.
 //
-// It must NOT return an article that is merely buffered. S2 makes acceptance
-// and durability different things, and this return value is the only evidence
-// the barrier has — returning a buffered article here is defect #355
-// relocated: the barrier would fsync bytes that are not in the file and ack an
-// article that is not on disk.
-//
-// On the first write failure it returns the articles that DID land plus the
-// classified fault, so the barrier can see both what it may claim and why the
-// drain stopped. It stops rather than continuing, because a storage fault is
-// a condition of the device and the next write is overwhelmingly likely to hit
-// it too.
+// It writes nothing: Accept writes every article before reporting it, so the
+// return value is the barrier's only evidence and holds only bytes that
+// reached WriteAt (S2). The error result stays because durability.SyncTarget
+// declares it.
 //
 // # Why there is no context here
 //
@@ -740,28 +561,6 @@ func (w *FileWriter) flushRun(run *flushRun) error {
 // abandon it for, since the worker owns the handle and a half-finished drain
 // leaves the file's state undescribed.
 func (w *FileWriter) Drain() ([]durability.WrittenArticle, error) {
-	_, arts := w.wc.drainFile(w.key)
-	for i, art := range arts {
-		if err := w.writeOne(art); err != nil {
-			// writeOne pooled the article it just handled. Everything after it
-			// was never attempted and still holds a pooled buffer, so release
-			// those here or the decoder's pool leaks one buffer per article
-			// for the rest of the drain.
-			for _, rest := range arts[i+1:] {
-				if rest.data != nil {
-					decoder.PutBuffer(rest.data)
-				}
-			}
-			// Those articles are neither Written nor failed — they stay
-			// Outstanding, which is what S3 requires of an article whose state
-			// cannot be established. Their seen-set entries are cleared so a
-			// re-delivery is not mistaken for a duplicate.
-			for _, rest := range arts[i+1:] {
-				w.fail(rest.id)
-			}
-			return w.take(), err
-		}
-	}
 	return w.take(), nil
 }
 
@@ -784,7 +583,7 @@ func (w *FileWriter) take() []durability.WrittenArticle {
 // reported may be claimed (S1).
 //
 // If the fsync fails, poisonSync discards the retained report (and any
-// articles written since the Drain) and rolls them back into faulted so the
+// articles written since the Drain) and rolls them back into poisoned so the
 // caller returns them to Outstanding (#760): Linux reports a writeback error
 // once per file descriptor (errseq) and marks the failed pages clean, so a
 // retry fsync on the same handle can return nil even though the bytes never
@@ -806,7 +605,7 @@ func (w *FileWriter) Sync() error {
 }
 
 // poisonSync discards the unconfirmed report and rolls every article in
-// w.reported and w.written back into w.faulted so the caller returns them to
+// w.reported and w.written back into w.poisoned so the caller returns them to
 // Outstanding (#760).
 func (w *FileWriter) poisonSync() {
 	for _, a := range w.reported {
@@ -820,21 +619,18 @@ func (w *FileWriter) poisonSync() {
 }
 
 // rollbackSyncedArticle unlatches written on w.accepted for artIdx and rolls
-// the article back into w.faulted if it is not already pending there.
+// the article back into w.poisoned if it is not already pending there.
 func (w *FileWriter) rollbackSyncedArticle(artIdx int32) {
-	id := articleID{artIdx: artIdx}
 	for i := range w.accepted {
 		if w.accepted[i].id.artIdx == artIdx {
 			w.accepted[i].written = false
-			id = w.accepted[i].id
 		}
 	}
-	for _, f := range w.faulted {
-		if !f.displaced && f.id.artIdx == artIdx {
-			return
-		}
+	if slices.Contains(w.poisoned, artIdx) {
+		return
 	}
-	w.fail(id)
+	w.fail(articleID{artIdx: artIdx})
+	w.poisoned = append(w.poisoned, artIdx)
 }
 
 // Confirm releases the drain report, and is called only once the barrier has
@@ -894,52 +690,14 @@ func (w *FileWriter) Truncate(n int64) error {
 	return nil
 }
 
-// Close releases the handle, and hands back any articles that were rolled back
-// and never routed.
+// Close releases the handle.
 //
-// # Why the set is a return value
-//
-// Close is the writer's last act: everything it holds is unreachable
-// afterwards, w.faulted included. An article left in that set is neither Done,
-// nor Failed, nor Outstanding — its Emitted bit is still set from dispatch and
-// ForEachUnfinishedArticle skips a set Emitted bit — so it is stranded for the
-// life of the process unless something clears that bit. A restart clears it by
-// not persisting it — jobProgressJSON excludes emitted deliberately
-// (internal/job/progress.go) — and a downloader reload clears it in-process,
-// unless #417 withholds that job's clear.
-//
-// There are two call sites — `grep -n 'w\.Close()' internal/assembler/*.go |
-// grep -v _test.go` returns the cancel arm and drainAndClose — and the set is
-// empty at both whenever every producer of w.faulted has been drained before
-// the worker returns to its select loop, which is the ordinary case.
-//
-// One path leaves it non-empty on purpose. The cancel arm's KeepFiles branch
-// calls Drain, whose error path calls w.fail on everything it did not attempt,
-// and then deliberately skips the releaseFaulted that would empty the set
-// again — because routing those articles would re-dispatch work for a job
-// that has left the queue. So a non-empty set there is expected rather than a
-// defect, and that arm distinguishes the two cases by whether the drain
-// failed.
-//
-// This return value does not fix a leak. It converts the emptiness from a
-// property that has to be re-argued across the whole file into one the
-// compiler restates at each call site — the same reason takeFaulted is a take
-// and not a read. A caller that adds a new path into Close now has to say what
-// happens to the articles, instead of silently dropping them.
-//
-// Taken rather than read, on takeFaulted's terms: each set must be routed
-// exactly once, and reporting one twice would clear an Emitted bit a later
-// dispatch had legitimately set.
-//
-// The error is unchanged and still reports STORAGE. A non-empty set is a
-// defect in this package, not a condition of the volume, so it is deliberately
-// not folded into the error: drainAndClose classifies that error into the
-// barrier's fault handling, and a bug reported as a storage fault would stall
-// a job over a healthy disk.
-func (w *FileWriter) Close() ([]faultedArticle, error) {
-	leaked := w.takeFaulted()
+// The error reports STORAGE: on network-backed mounts the close is where a
+// deferred write error first surfaces, and drainAndClose classifies it into the
+// barrier's fault handling.
+func (w *FileWriter) Close() error {
 	if err := w.closeFile(); err != nil {
-		return leaked, storagefault.Classify("close", w.path, err)
+		return storagefault.Classify("close", w.path, err)
 	}
-	return leaked, nil
+	return nil
 }

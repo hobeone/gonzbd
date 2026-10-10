@@ -15,7 +15,6 @@ func externalFixture() harnessOpts {
 	return harnessOpts{
 		CheckpointBytes:    1 << 20,
 		CheckpointInterval: time.Hour,
-		WriteCacheBytes:    1 << 20,
 		Connections:        1,
 		BodyDelay:          4 * time.Millisecond,
 		Files:              []fileSpec{{Name: "payload.bin", Size: 8 << 20, PartSize: 128 << 10}},
