@@ -223,6 +223,11 @@ func (r *appResidency) fault(ctx context.Context, j *job.Job, f *storagefault.Fa
 // (job.Job.InstallCompleteFile); a complete=0 file gets the rows its read-back
 // verified, and the articles an intersection failed. A row that cannot be
 // placed costs its own article (Standing Design Rule 3).
+//
+// Failed bits are in memory only, so what a restart re-derives is all there is:
+// a complete=1 file's failed set is the complement of its rows, while a
+// complete=0 file's earlier permanent failures are not restored — those
+// articles are Outstanding and are fetched again.
 func installVerification(j *job.Job, files []durability.FileRow, rows []durability.WrittenRow,
 	res verifyResult, restorePolicy bool, log *slog.Logger, peek func(fileIdx int)) (finished []int) {
 	byFile := rowsByFile(rows)

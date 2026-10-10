@@ -122,9 +122,10 @@ type FileProgress struct {
 	//
 	// Not persisted, and does not need to be: markFailed below computes it as
 	// m.ArticleBytes(i) summed over the failed set. The manifest knows an
-	// article's size whether or not it was ever fetched, and the persisted
-	// failed bits supply the set, so the manifest crossed with them reproduces
-	// this figure exactly.
+	// article's size whether or not it was ever fetched. The failed set itself
+	// is in memory only: across a restart a complete=1 file rebuilds it as the
+	// complement of its written rows (InstallCompleteFile), and a complete=0
+	// file's failed articles are Outstanding again.
 	FailedBytes int64
 	// IsPar2 marks a par2 file — the index or a recovery volume — as opposed
 	// to content. Carried per file, like Bytes and FailedBytes, so
@@ -1130,8 +1131,8 @@ func (p *JobProgress) setFailedBits(i int) bool {
 // caused only by the unconditional emitted.Clear on an article that is
 // emitted-and-not-done. Skipping the un-fail instead would leave an article the
 // old downloader's teardown failed — ErrNoServersLeft is terminal — failed
-// forever: markNotDone refuses a permanently failed article, a restart
-// re-applies the persisted row, and only a whole-job retry clears it.
+// for the rest of the process: markNotDone refuses a permanently failed
+// article, and only a whole-job retry clears it.
 func (p *JobProgress) resetForReload(m *Manifest, i int, clearEmitted bool) bool {
 	if clearEmitted {
 		p.emitted.Clear(i)
@@ -1171,8 +1172,10 @@ type fileProgressJSON struct {
 // has returned (internal/app/record.go); installRows, through InstallVerified
 // and InstallCompleteFile, which install rows a restart or retry read back
 // and fsynced, or rows of a complete=1 file whose fsync preceded the flag;
-// setFailedBits, for an article whose bytes will never arrive; and
-// newJobProgressSized, restoring bits a JobProgress is built from. Of the
+// setFailedBits, for an article whose bytes will never arrive (that failure is
+// in memory only: it is not persisted); and newJobProgressSized, which takes
+// bits from FileMeta.Done and Failed, though fileMetaFromManifest, which builds
+// the FileMeta values production uses, sets neither. Of the
 // functions that reach markDone, MarkArticleWritten and installRows are the
 // only two: `git grep -n -E '\bmarkDone\(' -- '*.go' ':!*_test.go'` finds 3
 // lines, the definition and one call in each.

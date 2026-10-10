@@ -116,9 +116,9 @@ func TestMigrations_SchemaShape(t *testing.T) {
 
 	// Both figures are derivable: a failed article's size is m.ArticleBytes(i),
 	// which the manifest carries whether or not the article was fetched, and
-	// JobProgress's failed bits supply the set of i. JobProgress.markFailed
-	// performs that sum and JobProgress.recompute rebuilds both at hydration,
-	// where a manifest is always attached.
+	// JobProgress's failed bits, which are in memory only, supply the set of i.
+	// JobProgress.markFailed performs that sum and JobProgress.recompute
+	// rebuilds both at hydration, where a manifest is always attached.
 	//
 	// Asserted absent rather than merely left out, for the same reason the
 	// two-record tables below are: while a column exists, a change can
@@ -206,7 +206,7 @@ func TestMigrations_SchemaShape(t *testing.T) {
 	})
 
 	// The queue's own third copy. Article resolution is DERIVED from
-	// written_articles and the failed bits; a column here would be
+	// written_articles and the in-memory failed bits; a column here would be
 	// re-serialised wholesale on every job update and free to disagree with
 	// both.
 	t.Run("job_files does not carry articles_done", func(t *testing.T) {
