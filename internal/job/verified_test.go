@@ -135,7 +135,7 @@ func TestInstallVerified_ARowItCannotPlaceCostsOnlyItself(t *testing.T) {
 		"an article outside the file": {FileIdx: 0, ArtIdx: 4, Offset: 400, Length: 100},
 		"a negative article":          {FileIdx: 0, ArtIdx: -1, Offset: 0, Length: 100},
 		"a negative offset":           {FileIdx: 0, ArtIdx: 1, Offset: -1, Length: 100},
-		"an empty range":              {FileIdx: 0, ArtIdx: 1, Offset: 100, Length: 0},
+		"a negative length":           {FileIdx: 0, ArtIdx: 1, Offset: 100, Length: -1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -550,7 +550,8 @@ func TestFileCRCFromRows(t *testing.T) {
 
 // TestPlaceRows_KeepsOnlyRowsOfTheFile pins the split InstallVerified and
 // InstallCompleteFile share: a row is kept only when it names the file, lies in
-// its range and has a usable offset and length; every other row is counted.
+// its range and has a valid shape (a zero-length row is valid); every other row
+// is counted.
 func TestPlaceRows_KeepsOnlyRowsOfTheFile(t *testing.T) {
 	t.Parallel()
 	m := verifiedTestJob(t).manifest
@@ -560,7 +561,7 @@ func TestPlaceRows_KeepsOnlyRowsOfTheFile(t *testing.T) {
 		{FileIdx: 1, ArtIdx: 1, Offset: 100, Length: 100}, // names another file
 		{FileIdx: 0, ArtIdx: 4, Offset: 400, Length: 100}, // file 1's article
 		{FileIdx: 0, ArtIdx: 2, Offset: -1, Length: 100},  // negative offset
-		{FileIdx: 0, ArtIdx: 3, Offset: 300, Length: 0},   // empty
+		{FileIdx: 0, ArtIdx: 3, Offset: 300, Length: -1},  // negative length
 	}
 	kept, dropped, err := placeRows(m, 0, rows)
 	if err != nil {
@@ -568,6 +569,10 @@ func TestPlaceRows_KeepsOnlyRowsOfTheFile(t *testing.T) {
 	}
 	if !slices.Equal(kept, []durability.WrittenRow{good}) || dropped != 4 {
 		t.Errorf("placeRows = %+v, %d dropped; want only the good row and 4 dropped", kept, dropped)
+	}
+	empty := durability.WrittenRow{FileIdx: 0, ArtIdx: 3, Offset: 300, Length: 0}
+	if kept, dropped, _ := placeRows(m, 0, []durability.WrittenRow{empty}); !slices.Equal(kept, []durability.WrittenRow{empty}) || dropped != 0 {
+		t.Errorf("placeRows of a zero-length row = %+v, %d dropped; want it kept: the live door accepts it", kept, dropped)
 	}
 	if _, _, err := placeRows(m, 2, rows); err == nil {
 		t.Error("placeRows accepted a file index past the manifest")

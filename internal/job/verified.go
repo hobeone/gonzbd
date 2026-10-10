@@ -23,7 +23,7 @@ import (
 // the caller has already read each row's bytes back and matched its CRC.
 //
 // A row that does not name fileIdx, names an article outside that file's
-// range, or has a negative offset or a non-positive length is dropped and
+// range, or has an invalid shape (WrittenRow.HasValidShape) is dropped and
 // counted in dropped: it costs its own article and nothing else (Standing
 // Design Rule 3). A row for an article that already has one replaces it. Like
 // the other done-bit doors it needs the manifest, for the counters.
@@ -78,9 +78,10 @@ func placeRows(m *Manifest, fileIdx int, rows []durability.WrittenRow) (kept []d
 	}
 	kept = make([]durability.WrittenRow, 0, len(rows))
 	for _, r := range rows {
-		// The shape check is placeRows' own: its rows come from disk, and a
-		// row with no bytes vouches for nothing.
-		if r.FileIdx != fileIdx || !m.ArticleInFile(r.FileIdx, r.ArtIdx) || r.Offset < 0 || r.Length <= 0 {
+		// Rows come from disk. Their range is judged by
+		// WrittenRow.HasValidShape, which accepts the zero-length row
+		// MarkArticleWritten accepts live.
+		if r.FileIdx != fileIdx || !m.ArticleInFile(r.FileIdx, r.ArtIdx) || !r.HasValidShape() {
 			dropped++
 			continue
 		}

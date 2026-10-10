@@ -32,9 +32,9 @@ file internal/job/verified.go
 [the file check dropped from the placement guard]
 file internal/job/verified.go
 --- anchor
-		if r.FileIdx != fileIdx || !m.ArticleInFile(r.FileIdx, r.ArtIdx) || r.Offset < 0 || r.Length <= 0 {
+		if r.FileIdx != fileIdx || !m.ArticleInFile(r.FileIdx, r.ArtIdx) || !r.HasValidShape() {
 --- replace
-		if !m.ArticleInFile(fileIdx, r.ArtIdx) || r.Offset < 0 || r.Length <= 0 {
+		if !m.ArticleInFile(fileIdx, r.ArtIdx) || !r.HasValidShape() {
 --- end
 
 [a later install drops the resident rows]

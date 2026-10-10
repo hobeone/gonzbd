@@ -15,9 +15,9 @@ file internal/job/manifest.go
 [placeRows drops the shared predicate]
 file internal/job/verified.go
 --- anchor
-		if r.FileIdx != fileIdx || !m.ArticleInFile(r.FileIdx, r.ArtIdx) || r.Offset < 0 || r.Length <= 0 {
+		if r.FileIdx != fileIdx || !m.ArticleInFile(r.FileIdx, r.ArtIdx) || !r.HasValidShape() {
 --- replace
-		if r.FileIdx != fileIdx || r.Offset < 0 || r.Length <= 0 {
+		if r.FileIdx != fileIdx || !r.HasValidShape() {
 --- end
 
 [MarkArticleWritten drops the shared predicate]

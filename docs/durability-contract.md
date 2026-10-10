@@ -311,7 +311,8 @@ no state makes the read unnecessary. For each such file, in order:
 | `open` returns `ENOENT` and the directory is missing, or `stat` of it fails | **verification fault** (below); on a retry a missing directory (`ENOENT` from the `stat`) deletes every row of the file, like the row above |
 | any other `open` error | verification fault |
 | `fsync` on the fresh descriptor fails | every row deleted: the file is untrusted |
-| a row with `offset < 0` or `length <= 0` | that row deleted unread |
+| a row with `offset < 0` or `length < 0` | that row deleted unread |
+| a zero-length row | verified when its CRC is 0, otherwise deleted; it claims no range, so it never fails another article |
 | a row whose bytes read back with its CRC | verified |
 | a row whose CRC differs, or a short read at EOF | that row deleted; its article is Outstanding |
 | rows whose ranges intersect | in offset order, the first matching row is kept; each other article is **failed** and its row deleted, so a restart cannot alternate between them |
@@ -490,8 +491,10 @@ single owner of which article wrote which bytes of a file.
   part still counts toward `TotalParts`, and its bytes are charged to par2. A
   range owned by the same `ArtIdx` is a re-accept, not a collision.
 - **A zero-length article claims nothing.** It is reported written with
-  `n == 0`, the next verification deletes its row (a non-positive length), and
-  it is fetched again.
+  `n == 0`, and its row (length 0, CRC 0) is valid: the next verification
+  verifies it, and `InstallCompleteFile` installs it, as for any row
+  (`WrittenRow.HasValidShape` is the one shape rule). It is never refetched on
+  that account.
 - Intersection is detected, not only a shared start offset
   (`TestOverlap_PartialRangeOverwritesADurableArticle`,
   `TestOverlap_ContainedOverlapStillCompletesTheFile`).

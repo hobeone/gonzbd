@@ -66,9 +66,10 @@ var (
 // hydration a missing directory (an unmounted download root) is a fault naming
 // it, while on a retry it is absence too (readBackFile); an
 // fsync error on the fresh descriptor deletes every row (the file is
-// untrusted); a row with a negative offset or a non-positive length is
-// deleted unread; a CRC mismatch or a short read deletes that row. Of rows
-// whose ranges intersect, the first matching one in offset order is kept and
+// untrusted); a row with an invalid shape (WrittenRow.HasValidShape) is
+// deleted unread, while a zero-length row is valid and verifies against CRC 0;
+// a CRC mismatch or a short read deletes that row. Of rows whose ranges
+// intersect, the first matching one in offset order is kept and
 // each other article is failed and its row deleted.
 // A file whose articles are then all resolved (fileFinishable) is finished by
 // path and gets SetComplete. On a retry an intersection failure does not count
@@ -165,7 +166,9 @@ func finishIfResolved(ctx context.Context, m *job.Manifest, f durability.FileRow
 	}
 	var maxEnd int64
 	for _, r := range out.verified {
-		maxEnd = max(maxEnd, r.Offset+r.Length)
+		if r.Length > 0 { // a zero-length article claims no range
+			maxEnd = max(maxEnd, r.Offset+r.Length)
+		}
 	}
 	if err := finishFileByPath(path, maxEnd); err != nil {
 		return false, err
@@ -225,14 +228,21 @@ func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow
 		return fileReadback{}, err
 	}
 
+	// A zero-length row verifies zero bytes against CRC 0 and claims no byte
+	// range (docs/durability-contract.md §5), so it stays out of the
+	// intersection resolution, which orders rows by the ranges they cover.
 	valid := make([]durability.WrittenRow, 0, len(rows))
+	var empty []durability.WrittenRow
 	var invalid []int32
 	for _, r := range rows {
-		if r.Offset < 0 || r.Length <= 0 {
+		switch {
+		case !r.HasValidShape():
 			invalid = append(invalid, r.ArtIdx)
-			continue
+		case r.Length == 0:
+			empty = append(empty, r)
+		default:
+			valid = append(valid, r)
 		}
-		valid = append(valid, r)
 	}
 	match := make([]bool, len(valid))
 	for k, r := range valid {
@@ -247,6 +257,18 @@ func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow
 	}
 	out := resolveRows(valid, match)
 	out.deleted = append(out.deleted, invalid...)
+	for _, r := range empty {
+		ok, err := rowMatches(fh, r, buf)
+		if err != nil {
+			return fileReadback{}, err
+		}
+		if ok {
+			out.verified = append(out.verified, r)
+		} else {
+			out.deleted = append(out.deleted, r.ArtIdx)
+		}
+	}
+	slices.SortFunc(out.verified, durability.CompareWrittenRows)
 	return out, nil
 }
 

@@ -19,6 +19,15 @@ type WrittenRow struct {
 	CRC32   uint32
 }
 
+// HasValidShape reports whether the row's range is one a write can have
+// produced: a non-negative offset and a non-negative length. A zero-length
+// article is written with n == 0 (the assembler reports it through
+// OnArticleWritten) and its row verifies zero bytes against CRC 0, so it is
+// valid; it claims no byte range. job.placeRows and app.readBackFile judge a
+// restart's rows by this method, so a zero-length row the live door accepts
+// is not dropped after a restart.
+func (r WrittenRow) HasValidShape() bool { return r.Offset >= 0 && r.Length >= 0 }
+
 // CompareWrittenRows orders rows by offset, then article index.
 func CompareWrittenRows(a, b WrittenRow) int {
 	return cmp.Or(cmp.Compare(a.Offset, b.Offset), cmp.Compare(a.ArtIdx, b.ArtIdx))

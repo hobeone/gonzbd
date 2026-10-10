@@ -147,9 +147,9 @@ file internal/app/verify.go
 [(n) the impossible-range check neutered]
 file internal/app/verify.go
 --- anchor
-		if r.Offset < 0 || r.Length <= 0 {
+		case !r.HasValidShape():
 --- replace
-		if false {
+		case false:
 --- end
 
 [(o) the path derived from the name instead of the resolver]

@@ -244,11 +244,12 @@ func TestVerifyJobFiles_Outcomes(t *testing.T) {
 			want: outcome{verdicts: []durability.FileVerdict{{FileIdx: 0, DeleteAll: true}}},
 		},
 		{
-			// A zero-length row with CRC 0 would "match" the empty read, and a
-			// negative offset would fault the job; each costs only its row.
+			// A negative length and a negative offset cannot describe a write
+			// (a zero-length row can, and is verified: see
+			// TestReadBackFile_VerifiesAZeroLengthRow); each costs only its row.
 			name: "rows with an impossible range are deleted unread",
 			prepare: func(t *testing.T, f *verifyFixture) []durability.WrittenRow {
-				empty := durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Offset: 2 * verifyArt}
+				empty := durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Offset: 2 * verifyArt, Length: -1}
 				negative := f.rows[3]
 				negative.Offset = -1
 				return []durability.WrittenRow{f.rows[0], f.rows[1], empty, negative}
