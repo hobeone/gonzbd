@@ -322,7 +322,7 @@ type Application struct {
 	stages       builtStages
 	// probe holds the external-tool detection results captured once in New().
 	// Immutable after construction. ReloadPostProcOptions reads it to carry the
-	// construction-only option fields (unrar HasProblem, par2 Caps) forward
+	// construction-only option fields (unrar HasProblem and version, par2 Caps) forward
 	// through the whole-struct stage Apply on reload. Zero value on the
 	// customStages branch, where the concrete stages are nil and Apply is skipped.
 	probe binaryProbe
