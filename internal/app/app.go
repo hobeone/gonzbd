@@ -1580,7 +1580,10 @@ func (app *Application) handleFileComplete(_ context.Context, fc FileComplete) {
 		// needs no manifest: the hydration that finished the file settled and
 		// marked it. An assembler completion that finds the job evicted is not
 		// marked in this process; its rows are in the record, so the next
-		// start's verification finishes the file by path.
+		// start's verification finishes the file by path. The branches that
+		// reach it are Shutdown, which evicts after the assembler has
+		// stopped, and Remove, after which there is no job to mark: a paused
+		// job keeps its manifest, and no other path evicts a Fetching job.
 		app.log.Info("completion not delivered", "job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
 	}
 }

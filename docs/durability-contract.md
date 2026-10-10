@@ -988,7 +988,10 @@ recorded here so the next reader does not mistake them for design.
    marked complete in this process.** `MarkFileComplete` needs the manifest,
    so `completeFinalizedFile` reports the completion undelivered; the file's
    rows are in the record, so the next start's verification finishes it by
-   path.
+   path. The window is reachable only through `Shutdown`, which evicts after
+   the assembler has stopped, and `Remove`, after which no job is left to
+   mark. A paused job keeps its manifest and the tick evicts only a job that
+   holds nothing, so no running job is left unmarked in this process.
 
 4. **A bogus article that arrives first wins its byte range** (§5), and its good
    neighbours are refused. A par2 post repairs them; a no-par2 post ends at
