@@ -128,7 +128,10 @@ type Application struct {
 	internalFileComplete chan FileComplete
 	onFileComplete       func(jobID string, fileIdx int)
 	// resumedInFlight counts enqueueResumedCompletion's fallback senders that
-	// have not yet delivered or given up, so a test can see them exit.
+	// have not yet delivered or given up. Production code only writes it;
+	// `git grep -n 'resumedInFlight[.]Load' -- '*.go'` finds 2 lines, both in
+	// internal/app/loose_record_helpers_internal_test.go, the test helper that
+	// waits for the senders to exit.
 	resumedInFlight atomic.Int32
 
 	// durable is the store that owns a job's per-job rows: job_files and
