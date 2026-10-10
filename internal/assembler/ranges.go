@@ -72,6 +72,16 @@ func (o *ownedRanges) claim(r Range, id articleID) {
 	o.s[i] = ownedRange{r: r, id: id}
 }
 
+// maxEnd returns the largest end over all ranges, accepted and seeded alike, or
+// 0 for an empty set. The slice is sorted by Off and free of intersections, so
+// its last entry ends last.
+func (o *ownedRanges) maxEnd() int64 {
+	if len(o.s) == 0 {
+		return 0
+	}
+	return o.s[len(o.s)-1].r.end()
+}
+
 // seededOwner owns ranges verified before this process. Its index matches no
 // manifest article, so sameArticle never waves an arrival through.
 var seededOwner = articleID{artIdx: -1}

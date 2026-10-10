@@ -15,6 +15,7 @@ import (
 var doneMarkers = []string{
 	"AckDurable",
 	"ApplyResolution",
+	"InstallVerified",
 	"MarkArticleDone",
 	"ReplaceFromRuns",
 	"SeedFromRuns",

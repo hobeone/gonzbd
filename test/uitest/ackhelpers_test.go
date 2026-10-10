@@ -9,8 +9,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/durability"
 )
 
-// ackDone marks msgID durable via SeedFromRuns, the real resume path,
-// handing it the single-article Run a barrier would have recorded.
+// ackDone marks msgID Done via InstallVerified, the door a resumed job's
+// verified written rows enter by, handing it the article's one row.
 func ackDone(t *testing.T, d *dispatch.Dispatcher, jobID, msgID string) {
 	t.Helper()
 	job, ok := d.Job(jobID)
@@ -45,13 +45,18 @@ func ackDone(t *testing.T, d *dispatch.Dispatcher, jobID, msgID string) {
 		t.Fatalf("ackDone: article %d not owned by any file in job %s", target, jobID)
 	}
 
-	run := durability.Run{
-		FileIdx:     int32(fi),     //nolint:gosec // G115: file counts are far below int32
-		FirstArtIdx: int32(target), //nolint:gosec // G115: article counts are far below int32
-		LastArtIdx:  int32(target), //nolint:gosec // G115: article counts are far below int32
-		Length:      int64(m.ArticleBytes(target)),
+	lo, _ := m.FileRange(fi)
+	var off int64
+	for k := lo; k < target; k++ {
+		off += int64(m.ArticleBytes(k))
 	}
-	if err := job.SeedFromRuns([]durability.Run{run}); err != nil {
-		t.Fatalf("ackDone: SeedFromRuns: %v", err)
+	row := durability.WrittenRow{
+		FileIdx: fi,
+		ArtIdx:  int32(target), //nolint:gosec // G115: article counts are far below int32
+		Offset:  off,
+		Length:  int64(m.ArticleBytes(target)),
+	}
+	if err := job.InstallVerified(fi, []durability.WrittenRow{row}); err != nil {
+		t.Fatalf("ackDone: InstallVerified: %v", err)
 	}
 }

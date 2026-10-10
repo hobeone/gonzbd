@@ -26,6 +26,14 @@ const (
 	crashDecoded  = 2 * crashArtLen
 )
 
+// crashWindowRows is one written row per article of the fixture's file.
+func crashWindowRows() []durability.WrittenRow {
+	return []durability.WrittenRow{
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: crashArtLen},
+		{FileIdx: 0, ArtIdx: 1, Offset: crashArtLen, Length: crashArtLen},
+	}
+}
+
 // crashWindowFixture is one job with one two-article file whose bytes are on
 // disk, whose runs are recorded, and whose Complete flag is not set — the
 // state a crash between the barrier's commit and the following queue save
@@ -212,10 +220,8 @@ func TestResumeSweep_LeavesAnUnfinishedFileAlone(t *testing.T) {
 func TestStrandedComplete_Predicate(t *testing.T) {
 	t.Parallel()
 	f := newCrashWindowFixture(t, 0, 1)
-	if err := f.job.SeedFromRuns([]durability.Run{
-		{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: crashDecoded},
-	}); err != nil {
-		t.Fatalf("SeedFromRuns: %v", err)
+	if err := f.job.InstallVerified(0, crashWindowRows()); err != nil {
+		t.Fatalf("InstallVerified: %v", err)
 	}
 	m, err := f.job.Manifest()
 	if err != nil {
@@ -226,6 +232,11 @@ func TestStrandedComplete_Predicate(t *testing.T) {
 	if !strandedComplete(p, m, 0) {
 		t.Fatal("fixture guard: the file is not reported stranded, so every negative " +
 			"below passes for the wrong reason")
+	}
+
+	// No progress at all (a job not resident) is never stranded.
+	if strandedComplete(nil, m, 0) {
+		t.Error("a nil progress was reported stranded")
 	}
 
 	// An out-of-range index must not panic on p.files or m.FileRange. The
@@ -295,10 +306,8 @@ func TestCompleteStrandedFiles_ToleratesWhatItCannotRepair(t *testing.T) {
 	})
 
 	t.Run("the file is gone from disk", func(t *testing.T) {
-		if err := f.job.SeedFromRuns([]durability.Run{
-			{FileIdx: 0, FirstArtIdx: 0, LastArtIdx: 1, Offset: 0, Length: crashDecoded},
-		}); err != nil {
-			t.Fatalf("SeedFromRuns: %v", err)
+		if err := f.job.InstallVerified(0, crashWindowRows()); err != nil {
+			t.Fatalf("InstallVerified: %v", err)
 		}
 		if err := os.Remove(f.path); err != nil {
 			t.Fatalf("remove: %v", err)

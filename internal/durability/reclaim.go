@@ -14,10 +14,12 @@ import (
 // keyed by job_id.
 type perJobTable struct {
 	name string
-	// keptForFailedEntry marks the one table whose rows outlive the queue row
+	// keptForFailedEntry marks the tables whose rows outlive the queue row
 	// while the job is a FAILED history entry: a retry reads a failed job's
 	// durable_runs to bound FinalizeFile's truncate to the whole partial file
-	// (#422). job_files and failed_articles are not read by a retry.
+	// (#422). written_articles is kept so a retry can verify it against the
+	// partial file.
+	// job_files and failed_articles are not read by a retry.
 	keptForFailedEntry bool
 }
 
@@ -28,11 +30,12 @@ var perJobTables = []perJobTable{
 	{name: "job_files"},
 	{name: "failed_articles"},
 	{name: "durable_runs", keptForFailedEntry: true},
+	{name: "written_articles", keptForFailedEntry: true},
 }
 
 // The reclaim rule, as SQL: a job's rows go when nothing reaches the job — no
-// queue row, and no FAILED history entry for the one table a failed entry
-// keeps. ruleStatement is its only text. Reclaim and SweepOrphans differ only
+// queue row, and, for a table marked keptForFailedEntry, no FAILED history
+// entry. ruleStatement is its only text. Reclaim and SweepOrphans differ only
 // in the id filter appended to it, so they cannot disagree about the rule.
 //
 // NOT EXISTS rather than NOT IN: NOT IN over a subquery that yields a NULL is

@@ -343,7 +343,10 @@ evidence a proof cannot represent — but it means "ack before fsync is code tha
 does not compile" is true of `AckDurable` and **false as a statement about the
 queue as a whole**. The seeding doors are held by their contracts and by
 `TestSeedFromCommittedRuns_DoesNotClearAnAckThisProcessMade`, not by the
-compiler.
+compiler. `Job.InstallVerified` is a further such door, whose evidence is a
+restart's CRC readback of each `written_articles` row: it is listed in
+`job.TestDoneBitWriters_MatchTheEnumerationStatedInProse`'s `doneMarkers`, and
+is meant to be fed only `verifyJobFiles`' `Verified` rows (`internal/app/verify.go`).
 
 `Job.SeedFromRuns`'s half is stronger than a test: its only done-bit write is
 `progress.markDone`, which sets `p.done` and never clears it, so the additive
@@ -721,7 +724,7 @@ contradicted in the memory budget:
 |---|---|
 | `durability.Resumer` | a file shorter than its runs claim, or missing (§6) — `discard` calls `Store.deleteFile` (`internal/durability/resume.go:148`) |
 | `Store.DiscardRuns` | a retry re-parsing a manifest that changed shape (`RetryHistoryJob`) |
-| the reclaim rule | `Store.Reclaim` after every departure, and `Store.SweepOrphans` at startup: a job's rows go once nothing reaches it, and a FAILED history entry keeps its `durable_runs` for a retry (`internal/durability/reclaim.go`) |
+| the reclaim rule | `Store.Reclaim` after every departure, and `Store.SweepOrphans` at startup: a job's rows go once nothing reaches it, and a FAILED history entry keeps its `durable_runs` and `written_articles` for a retry (`internal/durability/reclaim.go`) |
 
 The reclaim rule is the only lifecycle deleter of `durable_runs`,
 `failed_articles` and `job_files`, and it re-derives its answer from the queue
@@ -1858,7 +1861,7 @@ articles or sparse regions.
 | Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
 | Disk probe cache | one `probeState` per directory, evicted after 10 minutes; at most one outstanding `statfs` per directory. |
 | Per-job barrier state | `jobBarrierMu` and `jobBarrierBytes` are dropped by `forgetJobBarrierState` when a job leaves the assembler's business — otherwise one entry per job ever downloaded, for the life of the process. The mutex's deletion is **deferred while anyone holds it**: dropping it let the next caller mint a second mutex for the same job, which serialises nothing, and the delete is reachable from inside a live barrier via `routeFault → Fail → maybeFinalize → enqueuePostProc`. |
-| Durability rows | `durable_runs`, `failed_articles` and `job_files`, all three deleted by the reclaim rule (`internal/durability/reclaim.go`) once nothing reaches the job; a FAILED history entry keeps its `durable_runs` for a retry and nothing else. See §6's *The barrier is the only thing that puts CONTENT into the record* for the full deleter enumeration, and do not read this row as one. None of the three has a foreign key to the queue, so nothing removes them implicitly. A crash between a departure and its reclaim strands rows until the next start, whose `SweepOrphans` takes them; there is no periodic sweep, because one would reclaim a job between `Admit` and `Dispatcher.Add`. |
+| Durability rows | `durable_runs`, `written_articles`, `failed_articles` and `job_files`, all four deleted by the reclaim rule (`internal/durability/reclaim.go`) once nothing reaches the job; a FAILED history entry keeps its `durable_runs` and `written_articles` for a retry and nothing else. See §6's *The barrier is the only thing that puts CONTENT into the record* for the full deleter enumeration, and do not read this row as one. None of the four has a foreign key to the queue, so nothing removes them implicitly. A crash between a departure and its reclaim strands rows until the next start, whose `SweepOrphans` takes them; there is no periodic sweep, because one would reclaim a job between `Admit` and `Dispatcher.Add`. |
 
 ## Failure & degradation rules
 
@@ -2097,32 +2100,32 @@ recorded here so the next reader does not mistake them for design.
    both cases; what differs is a short file versus a wrong one, and a
    failed-byte figure that is correct versus one that omits the loser's bytes.
 
-   **Do not try to close this by rehydrating `owned` from `durable_runs`.**
-   It cannot be done: a `Run` is a *merged* span carrying `FirstArtIdx`,
+   **Closing it means seeding `owned` from per-article rows, not from
+   `durable_runs`.** A `Run` is a *merged* span carrying `FirstArtIdx`,
    `LastArtIdx`, `Offset` and `Length`, and merging destroys the per-article
    boundaries — a row saying "articles 0–199 occupy bytes [0,20000)" cannot say
    where article 137 begins. Deriving the boundaries by walking the manifest's
    article lengths assumes articles lie contiguously in `ArtIdx` order, which is
-   exactly what a malformed post violates; the derivation would be correct for
-   every file that does not need it. Persisting ownership separately means
-   re-introducing a per-article record, which is what this design removed and
-   for the reason that two per-article records with independent writers could
-   disagree (#389, #421).
+   exactly what a malformed post violates.
 
-   **What could work, if it is ever worth it**, is a weaker question the merged
-   record *can* answer: for an incoming article at offset `O` with index `A`,
-   against a stored run `R`, treat `O ∈ R`'s byte span with `A` outside
-   `[R.FirstArtIdx, R.LastArtIdx]` as a collision — two different articles
-   claiming the same bytes — while `A` inside that span stays the ordinary R12
-   redelivery. It needs no schema change and fits the injected-callback seam
-   `openTargetFile` already uses for `FileInfo`. It costs a blocking `ForFile`
-   read on the assembler's write path at each file open, requires rewriting the
-   #342 note at `assembler.go` that currently reads as a blanket prohibition on
-   seeding the open path, and still misses an article durable but not yet
-   committed when the episode ended.
+   The loose record's `written_articles` table keeps one row per written
+   article — its offset, length and CRC — so it can say. At a restart
+   `verifyJobFiles` (`internal/app/verify.go`) reads each row of a `complete=0`
+   file back and checks its CRC; the rows it returns as `Verified` are the
+   ranges a resolver can supply as `FileInfo.Owned`, which `openTargetFile`
+   hands to `seedOwned` before any write. An arrival intersecting a seeded
+   range is then refused as it would be within one episode. A row whose
+   readback fails is deleted and its article fetched again, which costs that
+   article's own bytes (Standing Rule 3).
 
-   Not scheduled, because after #387's fix both outcomes reach par2 with a
-   warning naming the file. **The case that would change that is a post with no
+   **That path is built but not wired.** No production code sets
+   `FileInfo.Owned` — `git grep -n 'Owned:\|\.Owned =' -- '*.go' ':!*_test.go'`
+   returns nothing — so until the resolver supplies it, the prevention above
+   holds only within an open-file episode and a boundary behaves as the rest
+   of this item describes.
+
+   Until then the gap stays open, because after #387's fix both outcomes reach
+   par2 with a warning naming the file. **The case that would change that is a post with no
    par2**, where "repairable" is false and short-versus-wrong is the difference
    between a hole and an unusable file — `AGENTS.md` Standing Rule 3's case that
    needs the bound most. How common those are in practice is the open question.

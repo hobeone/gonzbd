@@ -463,16 +463,8 @@ func (app *Application) completeStrandedFiles(ctx context.Context, jobID string,
 
 // strandedComplete reports whether one file has every article resolved and no
 // Complete flag — the state a crash between the barrier's commit and the
-// following queue save leaves behind.
-//
-// FetchAlways only, matching Job.IsComplete: a deferred or discarded par2
-// recovery volume is never dispatched, so "every article resolved" is
-// vacuously true of it and completing it would claim a file nobody fetched.
-//
-// A file with NO articles is excluded for the same reason and it is not a
-// hypothetical guard: the loop below is vacuously true over an empty range,
-// so without this an empty file range would be reported stranded on every
-// start.
+// following queue save leaves behind. fileFinishable owns the rule; this
+// supplies it the job's progress.
 //
 // "Resolved" is the Done bit, which covers a permanently failed article as
 // well as a successful one. That matches what completion means everywhere
@@ -480,27 +472,10 @@ func (app *Application) completeStrandedFiles(ctx context.Context, jobID string,
 // TotalParts — so a file whose last article will never arrive is complete,
 // short, and par2's problem.
 func strandedComplete(prog *job.JobProgress, m *job.Manifest, fi int) bool {
-	if m == nil || prog == nil {
+	if prog == nil {
 		return false
 	}
-	if fi < 0 || fi >= m.NumFiles() {
-		return false
-	}
-
-	if prog.FileFetchPolicy(fi) != job.FetchAlways || prog.FileComplete(fi) {
-		return false
-	}
-
-	lo, hi := m.FileRange(fi)
-	if hi <= lo {
-		return false
-	}
-	for i := lo; i < hi; i++ {
-		if !prog.ArticleDone(i) {
-			return false
-		}
-	}
-	return true
+	return fileFinishable(m, fi, prog.FileFetchPolicy(fi), prog.FileComplete(fi), prog.ArticleDone)
 }
 
 // runsForFile selects one file's runs out of a whole job's.

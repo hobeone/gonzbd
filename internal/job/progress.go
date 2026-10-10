@@ -6,6 +6,8 @@ import (
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/durability"
 )
 
 // JobProgress is the mutable per-article and per-file state of a job:
@@ -20,6 +22,11 @@ type JobProgress struct {
 	// Bitsets rather than []bool: see bitset.go for the memory argument.
 	done, failed, emitted bitset
 	files                 []FileProgress
+
+	// written holds, per file index, the rows InstallVerified installed, in
+	// offset order, for the whole-file CRC. It is not persisted here:
+	// written_articles is the record, and this is a resident copy of it.
+	written map[int][]durability.WrittenRow
 
 	pendingArticles   int
 	articlesResolved  int
@@ -872,6 +879,12 @@ func (p *JobProgress) clone() *JobProgress {
 	cp.files = slices.Clone(p.files)
 
 	cp.serverStats = maps.Clone(p.serverStats)
+	if p.written != nil {
+		cp.written = make(map[int][]durability.WrittenRow, len(p.written))
+		for fi, rows := range p.written {
+			cp.written[fi] = slices.Clone(rows)
+		}
+	}
 	return &cp
 }
 
@@ -1175,13 +1188,13 @@ type fileProgressJSON struct {
 // through markFailed, or directly from Job.MarkArticleFailed while the
 // manifest is evicted. newJobProgressSized sets the bits directly as well,
 // restoring the persisted done and failed bits of an earlier run when a
-// JobProgress is built from them. Job.MarkArticleDone has no non-test caller
-// at this commit — `git grep -n '[M]arkArticleDone(' -- '*.go'
-// ':!*_test.go'` finds 1 line, its declaration in content.go — so every
-// persisted done bit here stands on a completed fsync or a permanent failure,
-// never on a write that was merely attempted (#355), and the pair is
-// consistent. A caller of MarkArticleDone must bring its own evidence that
-// the bytes are on disk.
+// JobProgress is built from them. Job.MarkArticleDone's one non-test caller
+// is recorder.noteWritten in internal/app/record.go, and nothing outside tests
+// builds a recorder at this commit — `git grep -n '[n]ewRecorder(' -- '*.go'
+// ':!*_test.go'` finds 1 line, its declaration — so every persisted done bit
+// here stands on a completed fsync or a permanent failure, never on a write
+// that was merely attempted (#355), and the pair is consistent. A caller of
+// MarkArticleDone must bring its own evidence that the bytes are on disk.
 //
 // TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list above.
 // Add a door onto the bit and it fails by name.
