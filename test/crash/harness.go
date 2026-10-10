@@ -76,10 +76,6 @@ type fileSpec struct {
 // harnessOpts are the knobs a test varies. Zero values take the defaults
 // applied in newHarness.
 type harnessOpts struct {
-	// CheckpointBytes and CheckpointInterval are B1's two bounds, written
-	// straight into the daemon's config file.
-	CheckpointBytes    int64
-	CheckpointInterval time.Duration
 	// Connections is the NNTP connection count, which bounds how many
 	// articles can be in flight and therefore also feeds the rework bound.
 	Connections int
@@ -131,12 +127,6 @@ func newHarness(t *testing.T, opts harnessOpts) *harness {
 	t.Helper()
 	if binPath == "" {
 		t.Fatal("newHarness: the gonzbd binary was not built; TestMain did not run")
-	}
-	if opts.CheckpointBytes == 0 {
-		opts.CheckpointBytes = 1 << 20
-	}
-	if opts.CheckpointInterval == 0 {
-		opts.CheckpointInterval = time.Hour
 	}
 	if opts.Connections == 0 {
 		opts.Connections = 1
@@ -227,8 +217,6 @@ func (h *harness) writeConfig() {
 		c.General.AdminDir = h.AdminDir
 		c.General.LogDir = h.Dir
 		c.General.ScriptDir = ""
-		c.Downloads.CheckpointBytes = config.ByteSize(h.opts.CheckpointBytes)
-		c.Downloads.CheckpointInterval = int(h.opts.CheckpointInterval.Seconds())
 		c.Downloads.MaxArtTries = 3
 		c.Servers = []config.ServerConfig{{
 			Name:               "mock",

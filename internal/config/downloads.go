@@ -18,17 +18,6 @@ type DownloadConfig struct {
 	// volume. Below this the downloader pauses.
 	MinFreeSpace ByteSize `yaml:"min_free_space" json:"min_free_space"`
 
-	// CheckpointInterval is a retained setting with no runtime reader: the
-	// durability barrier it paced was deleted (Task 5.2 of the loose-record
-	// plan). Removing it needs a config-to-UI contract change, so it stays
-	// until that is decided. 0 selects constants.DefaultCheckpointInterval.
-	CheckpointInterval int `yaml:"checkpoint_interval" json:"checkpoint_interval"`
-
-	// CheckpointBytes is retained for the same reason as CheckpointInterval
-	// and has no runtime reader either. 0 selects
-	// constants.DefaultCheckpointBytes (64 MiB).
-	CheckpointBytes ByteSize `yaml:"checkpoint_bytes" json:"checkpoint_bytes"`
-
 	// MaxArtTries is the per-article attempt count across all servers
 	// before the article is marked bad. Must be >= 1.
 	MaxArtTries int `yaml:"max_art_tries" json:"max_art_tries"`

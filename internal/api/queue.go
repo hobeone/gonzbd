@@ -201,9 +201,10 @@ type queueSlot struct {
 	// which only that map (not a per-row field) can provide.
 	StallReason string `json:"stall_reason"`
 
-	// BytesDurable is what a completed fsync covers: the NZB-declared size of
-	// each resolved article, in yEnc-ENCODED bytes. It pairs with size/sizeleft/mb,
-	// which are the encoded NZB figures beside it.
+	// BytesDurable keeps its JSON key but means bytes WRITTEN, not fsynced:
+	// the NZB-declared size of each resolved article, in yEnc-ENCODED bytes.
+	// A power loss can lose written bytes the OS had not yet flushed. It pairs
+	// with size/sizeleft/mb, which are the encoded NZB figures beside it.
 	BytesDurable int64 `json:"bytes_durable"`
 
 	// Files is the per-file breakdown for the row's expansion drawer.

@@ -153,7 +153,9 @@ type ProgressByteCounters interface {
 	ProgressFigures() (expected, remaining, failed int64)
 }
 
-// DurableBytesOf derives a job's durable byte total from its progress.
+// DurableBytesOf derives a job's written byte total from its progress. The
+// name predates the loose-record design: "durable" here means written, not
+// fsynced.
 //
 // expected - failed - remaining is the downloaded identity
 // internal/app/history_helper.go already relies on; see
@@ -162,10 +164,9 @@ type ProgressByteCounters interface {
 // taking a second snapshot per poll.
 //
 // All three legs are NZB-declared, yEnc-ENCODED bytes, so this figure is too.
-// It is deliberately not a sum over the durability record's lengths, which are
-// the DECODED payload bytes an fsync proved -- docs/job-lifecycle.md records
-// that substitution overstating every non-resident job's remaining bytes by
-// the encoding overhead.
+// It is deliberately not a sum of decoded payload lengths, which would
+// understate it by the encoding overhead -- docs/job-lifecycle.md records the
+// substitution overstating every non-resident job's remaining bytes.
 func DurableBytesOf(p ProgressByteCounters) int64 {
 	if p == nil {
 		return 0

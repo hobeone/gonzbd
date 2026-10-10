@@ -13,11 +13,9 @@ import (
 // partial at an offset it can reason about precisely.
 func externalFixture() harnessOpts {
 	return harnessOpts{
-		CheckpointBytes:    1 << 20,
-		CheckpointInterval: time.Hour,
-		Connections:        1,
-		BodyDelay:          4 * time.Millisecond,
-		Files:              []fileSpec{{Name: "payload.bin", Size: 8 << 20, PartSize: 128 << 10}},
+		Connections: 1,
+		BodyDelay:   4 * time.Millisecond,
+		Files:       []fileSpec{{Name: "payload.bin", Size: 8 << 20, PartSize: 128 << 10}},
 	}
 }
 

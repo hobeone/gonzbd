@@ -13,17 +13,6 @@ const (
 	TiB int64 = 1 << 40
 )
 
-// Checkpoint defaults. The barrier they once paced was deleted; they remain
-// only as defaults for the config fields of the same name, which have no
-// runtime reader.
-const (
-	// DefaultCheckpointInterval is the default for downloads.checkpoint_interval.
-	DefaultCheckpointInterval = 30 * time.Second
-
-	// DefaultCheckpointBytes is the default for downloads.checkpoint_bytes.
-	DefaultCheckpointBytes int64 = 64 * MiB
-)
-
 // Assembler / decoder limits.
 const (
 	// MaxAssemblerQueue is the in-flight backpressure threshold for the
