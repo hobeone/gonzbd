@@ -289,6 +289,16 @@ type Application struct {
 	// flips true. Same discipline as syncFile.
 	startedTransitionHook func()
 
+	// pausedVerifiedHook, when non-nil, runs in verifyPausedJobs right after
+	// each paused job's load, from the verifier's goroutine, with the load's
+	// result. Same discipline as syncFile.
+	pausedVerifiedHook func(id string, err error)
+
+	// pausedVerifyTimeout bounds each paused job's load in verifyPausedJobs.
+	// Set in New to defaultPausedVerifyTimeout; a test shortens it before
+	// Start.
+	pausedVerifyTimeout time.Duration
+
 	// downloadReportedHook, when non-nil, runs in completeFinalizedFile right
 	// after the report that the job's download finished, where the tick can
 	// already have launched the job's post-processing. Same discipline as
@@ -386,6 +396,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.shutdownStepTimeout = 15 * time.Second
 	app.closeHandlesTimeout = closeHandlesTimeout
 	app.metricsPushInterval = 1000 * time.Millisecond
+	app.pausedVerifyTimeout = defaultPausedVerifyTimeout
 	for _, o := range opts {
 		o(app)
 	}
@@ -1314,14 +1325,15 @@ func (app *Application) Start(ctx context.Context) error {
 	if app.startedTransitionHook != nil {
 		app.startedTransitionHook()
 	}
-	// Dropping the jobs already in history, and hydrating the paused ones, run
-	// inside the dispatcher's start, between restoring the registry and the
-	// first tick; reconcileBeforeFirstTick has that placement's argument. A
-	// complete job restored at Fetching, or never run, is reported
-	// download-complete by its Fetching worker (appRunner.runFetch) and reaches
-	// post-processing through Assessing. A file a hydration here finishes by
-	// path is queued as a Resumed completion, which watchCompletions applies
-	// once it runs.
+	// Dropping the jobs already in history, and filing the owed unwanted
+	// failures, run inside the dispatcher's start, between restoring the
+	// registry and the first tick; reconcileBeforeFirstTick has that
+	// placement's argument. A complete job restored at Fetching, or never run,
+	// is reported download-complete by its Fetching worker (appRunner.runFetch)
+	// and reaches post-processing through Assessing. A file a hydration here
+	// finishes by path is queued as a Resumed completion, which
+	// watchCompletions applies once it runs. The jobs restored paused at
+	// Fetching are verified last, below, after this method's other work.
 	if app.dispatcher != nil {
 		if err := app.dispatcher.StartWith(app.ctx, app.reconcileBeforeFirstTick); err != nil {
 			return fmt.Errorf("app: start dispatcher: %w", err)
@@ -1382,6 +1394,13 @@ func (app *Application) Start(ctx context.Context) error {
 	// Last, so it sees every departure above, and inside Start, so it runs
 	// before the API or the dir scanner can Admit a job it would reclaim.
 	app.sweepOrphans(app.ctx)
+
+	// Off the critical path: the read-back of every paused job's files runs
+	// after this method has returned and the API listens, on app.wg so that
+	// Shutdown joins it. After watchCompletions above, which consumes the
+	// Resumed completions it queues, and after sweepOrphans, which does not
+	// touch a registered job's rows but is kept ahead of a reader of them.
+	app.wg.Go(func() { app.verifyPausedJobs(app.ctx) })
 
 	succeeded = true
 	return nil

@@ -318,8 +318,8 @@ func waitResumedSenders(a *Application) int32 {
 
 // TestEnqueueResumedCompletion_StartDoesNotWaitForTheConsumer pins that more
 // Resumed completions than the channel holds, queued inside Start before
-// watchCompletions runs (as hydratePausedJobs queues them), neither block
-// Start nor are lost: each is delivered once the consumer runs.
+// watchCompletions runs (as fileOwedUnwantedFailures queues them), neither
+// block Start nor are lost: each is delivered once the consumer runs.
 func TestEnqueueResumedCompletion_StartDoesNotWaitForTheConsumer(t *testing.T) {
 	t.Parallel()
 	const n = 200
@@ -394,21 +394,11 @@ func TestMarkFileDirty_IgnoresAFileItCannotRead(t *testing.T) {
 	}
 }
 
-// TestHydratePausedJobs_StopsOnACancelledContext pins the abort: a cancelled
-// start ends the pass with the context's error rather than loading jobs.
-func TestHydratePausedJobs_StopsOnACancelledContext(t *testing.T) {
+// TestVerifyPausedJobs_LoadsNothingWithoutADispatcher pins the guard: an
+// Application with no dispatcher has nothing to verify and returns.
+func TestVerifyPausedJobs_LoadsNothingWithoutADispatcher(t *testing.T) {
 	t.Parallel()
-	env := newLREnv(t)
-	a := env.newApp(t)
-	a.addJob(t, "paused", 2, 1)
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if err := a.hydratePausedJobs(ctx); !errors.Is(err, context.Canceled) {
-		t.Errorf("hydratePausedJobs = %v, want context.Canceled", err)
-	}
-	if err := (&Application{}).hydratePausedJobs(t.Context()); err != nil {
-		t.Errorf("hydratePausedJobs with no dispatcher = %v, want nil", err)
-	}
+	(&Application{}).verifyPausedJobs(t.Context())
 }
 
 // TestHandleFileUntrusted_KeepsTheFilesNameForTheNextFlush pins that an untrust

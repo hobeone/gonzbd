@@ -162,7 +162,8 @@ func TestAppResidency_HydrateRefusesAProgressRecordOfAnotherShape(t *testing.T) 
 
 // TestAppResidency_HydrateWaitsForAHydrationInFlight pins the coalescing
 // branch: a second Hydrate for a job already being hydrated waits for the
-// first and reports its outcome instead of reading the manifest again.
+// first, is done if that one attached, and otherwise hydrates the job itself
+// rather than reporting the other's failure as its own.
 func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -171,43 +172,60 @@ func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 		writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), j)
 		return j
 	}
-	inFlight := func(j *job.Job) (*appResidency, chan struct{}) {
+	// inFlight plays a hydration of j in progress. ready is its channel; the
+	// returned function ends the hydration as Hydrate's own defer does, so a
+	// waiter that looks again finds none in flight.
+	inFlight := func(j *job.Job) (*appResidency, chan struct{}, func()) {
 		ready := make(chan struct{})
 		r := &appResidency{
 			lookup:    func(string) (*job.Job, bool) { return j, true },
 			dir:       dir,
 			hydrating: map[string]chan struct{}{"abc123": ready},
 		}
-		return r, ready
+		return r, ready, func() {
+			r.mu.Lock()
+			delete(r.hydrating, "abc123")
+			close(ready)
+			r.mu.Unlock()
+		}
 	}
 
 	t.Run("the first succeeded", func(t *testing.T) {
 		j := newJob()
-		r, ready := inFlight(j)
+		r, _, finish := inFlight(j)
 		done := make(chan error, 1)
 		go func() { done <- r.Hydrate(context.Background(), "abc123") }()
 		m := job.NewManifest([]job.JobFile{{Subject: "test.rar", Bytes: 100, Articles: []job.JobArticle{{ID: "m1", Bytes: 100, Number: 1}}}})
 		if err := j.AttachContent(m); err != nil {
 			t.Fatalf("AttachContent: %v", err)
 		}
-		close(ready)
+		finish()
 		if err := <-done; err != nil {
 			t.Errorf("Hydrate after a successful hydration in flight: %v", err)
 		}
 	})
 
 	t.Run("the first failed", func(t *testing.T) {
-		r, ready := inFlight(newJob())
+		j := newJob()
+		r, ready, finish := inFlight(j)
 		done := make(chan error, 1)
 		go func() { done <- r.Hydrate(context.Background(), "abc123") }()
-		close(ready)
-		if err := <-done; err == nil {
-			t.Error("Hydrate reported success after the hydration it waited on left the job non-resident")
+		// Production only closes ready; this send completes only once the
+		// waiter is receiving on it, so the waiter has certainly waited —
+		// a waiter that found no hydration in flight would hydrate the job
+		// itself and pass whatever the waited path does.
+		ready <- struct{}{}
+		finish()
+		if err := <-done; err != nil {
+			t.Errorf("Hydrate = %v after the hydration it waited on left the job non-resident; the waiter hydrates it itself", err)
+		}
+		if !j.Resident() {
+			t.Error("the job is not resident: the waiter did not hydrate it after the hydration it waited on failed")
 		}
 	})
 
 	t.Run("the caller gives up", func(t *testing.T) {
-		r, _ := inFlight(newJob())
+		r, _, _ := inFlight(newJob())
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		if err := r.Hydrate(ctx, "abc123"); !errors.Is(err, context.Canceled) {

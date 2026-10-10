@@ -483,8 +483,8 @@ func TestLooseRecord_CompletionFaultConvergesInProcess(t *testing.T) {
 }
 
 // TestLooseRecord_PausedJobReportsVerifiedProgress pins the startup loop: a
-// Fetching job restored paused is verified before the first tick, so the queue
-// shows its progress before the user resumes it.
+// Fetching job restored paused is verified after Start (verifyPausedJobs), so
+// the queue shows its progress before the user resumes it.
 func TestLooseRecord_PausedJobReportsVerifiedProgress(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)
@@ -508,10 +508,8 @@ func TestLooseRecord_PausedJobReportsVerifiedProgress(t *testing.T) {
 	if j2.Intent() != job.IntentPause {
 		t.Fatalf("fixture: the restored job is not paused")
 	}
+	lrWaitFor(t, "the paused job's startup verification", j2.HasProgress)
 	p := j2.Progress()
-	if p == nil {
-		t.Fatal("a paused job restored at Fetching has no progress after Start")
-	}
 	if !p.ArticleDone(0) || !p.ArticleDone(1) {
 		t.Error("the paused job's verified articles are not Done")
 	}

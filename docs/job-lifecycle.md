@@ -1253,9 +1253,10 @@ the lease and launches the worker on the manifest already in memory.
 
 So what `reconcileResidency` keeps resident is bounded by the two pool
 capacities plus the jobs that were resident when paused, settled ones included,
-not by queue depth. Startup adds one more: `hydratePausedJobs` hydrates every
-job restored paused at `Fetching`, so that its verified progress is reported,
-and the tick then keeps it as it keeps any paused job.
+not by queue depth. Startup adds one more: `verifyPausedJobs` hydrates every
+job restored paused at `Fetching`, after `Start` has returned, so that its
+verified progress is reported, and the tick then keeps it as it keeps any
+paused job.
 The paused jobs are deliberately not capped; a manifest is about 1.6 MB per
 20k articles (§13).
 
@@ -1342,7 +1343,7 @@ crash/restart are one scheduling path, and that is a property of the design
 rather than a coincidence: both are "this job holds nothing and its work is
 unfinished". They differ only in residency: a job paused while resident keeps
 its manifest, so resume does not re-read it, and a job restored paused at
-`Fetching` is hydrated once at startup (`hydratePausedJobs`) so that its
+`Fetching` is hydrated once after startup (`verifyPausedJobs`) so that its
 progress is reported, and keeps that manifest until it is resumed or removed.
 
 ### Who writes what
@@ -1397,8 +1398,9 @@ hydrated has no `JobProgress` at all, so it reports its header's full byte count
 as remaining (`Dispatcher.List` and `Dispatcher.Row` each fall back to it
 independently) — a half-downloaded job shows as untouched after a restart until
 it is hydrated. A job restored paused at `Fetching` is the exception:
-`hydratePausedJobs` hydrates it before the first tick, so its progress is
-reported although no tick will hydrate it until it is resumed.
+`verifyPausedJobs` hydrates it after `Start` returns, so its progress is
+reported, once that load lands, although no tick will hydrate it until it is
+resumed.
 
 `emitted` is deliberately **not** restored: it is transient per-process state
 about what a downloader has in flight, and nothing that survived a restart is.
@@ -1407,10 +1409,10 @@ about what a downloader has in flight, and nothing that survived a restart is.
 
 A job's written articles are verified when it is first hydrated after a
 restart, before anything is attached: by the tick, for a job that holds what
-its position requires; by `hydratePausedJobs`, for a job restored paused at
-`Fetching` — which runs inside `Application.Start`, before the API listens
-(`docs/durability-contract.md`, Accepted limitation 1); by
-`fileOwedUnwantedFailures`, also before the first tick, for a restored job the
+its position requires; by `verifyPausedJobs`, for a job restored paused at
+`Fetching` — which runs after `Application.Start` has returned, under a
+per-job deadline (`docs/durability-contract.md`, Accepted limitation 1); by
+`fileOwedUnwantedFailures`, before the first tick, for a restored job the
 archive peek owes a filing; or by a rename's `LoadProgress`. If verification
 cannot complete for a reason about the device, nothing is attached, the job is
 parked, and the next hydration starts again — so a job a hydration attached
