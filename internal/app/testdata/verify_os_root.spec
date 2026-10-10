@@ -1,5 +1,25 @@
 pkg ./internal/app/
-run Test(ReadBackFile_RefusesASymlinkOutOfTheJobDirectory|ReadBackFile_RefusesANameThatClimbsOutOfTheJobDirectory|ReadBackFile_AMissingFileInAnExistingDirectoryIsGone|VerifyJobFiles_SymlinkOutOfTheJobDirectoryIsAFault|FinishFileByPath_RefusesASymlinkOutOfTheJobDirectory|JobFileLocation_AgreesWithTheWritersJoin|VerifyJobFiles_SymlinkToASiblingIsAFault|FinishFileByPath_RefusesASymlinkToASibling)$
+run Test(ReadBackFile_RefusesASymlinkOutOfTheJobDirectory|ReadBackFile_RefusesANameThatClimbsOutOfTheJobDirectory|ReadBackFile_AMissingFileInAnExistingDirectoryIsGone|VerifyJobFiles_SymlinkOutOfTheJobDirectoryIsAFault|FinishFileByPath_RefusesASymlinkOutOfTheJobDirectory|JobFileLocation_AgreesWithTheWritersJoin|VerifyJobFiles_SymlinkToASiblingIsAFault|FinishFileByPath_RefusesASymlinkToASibling|VerifierOpens_CloseTheirRoots)$
+
+[the read-back leaves its root open]
+file internal/app/verify.go
+--- anchor
+	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
+	fh, err := fsutil.OpenNoFollow(root, loc.Name, os.O_RDONLY, 0)
+--- replace
+	defer func() { _ = root }()
+	fh, err := fsutil.OpenNoFollow(root, loc.Name, os.O_RDONLY, 0)
+--- end
+
+[the finish leaves its root open]
+file internal/app/verify.go
+--- anchor
+	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
+	fh, err := fsutil.OpenNoFollow(root, loc.Name, os.O_RDWR, 0)
+--- replace
+	defer func() { _ = root }()
+	fh, err := fsutil.OpenNoFollow(root, loc.Name, os.O_RDWR, 0)
+--- end
 
 # The verifier opens a job's files with fsutil.OpenNoFollow on an os.Root on
 # the job directory, so a name leading out of it, or a symlink in the file's
