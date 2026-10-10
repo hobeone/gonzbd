@@ -11,8 +11,9 @@ import (
 // The resident written rows (JobProgress.written) are what the whole-file CRC
 // is derived from. They enter through InstallVerified and InstallCompleteFile
 // at verification and through MarkArticleWritten as articles are written, and
-// leave when the file's CRC is settled (SettleFileCRC) or the file is
-// untrusted (UntrustFile).
+// leave when the file's CRC is settled (SettleFileCRC), when the file is
+// untrusted (UntrustFile), or one at a time when an article's Done bit is
+// cleared (JobProgress.clearDone). A resident row's article is Done.
 //
 // A slice stored in written is never edited in place after it is stored: a
 // writer appends, or builds a new slice and stores that. A Progress() clone
@@ -105,18 +106,20 @@ func installRows(m *Manifest, p *JobProgress, fileIdx int, rows []durability.Wri
 // replacing the row the article already has or appending one. It is the one
 // replace-or-append of resident rows: installRows and Job.MarkArticleWritten
 // call it (`git grep -n 'p\.[u]psertRows(' -- '*.go' ':!*_test.go'` returns 2
-// lines).
+// lines). MarkArticleWritten calls it only for an article whose Done bit was
+// already set; a newly-Done article has no row, and appendRow adds it.
 //
 // The resident rows are kept in no particular order. Their readers do not
 // assume one: FileRows and settleFileCRC each sort a copy (sortedClone).
 //
 // clone() shares p.written's slices, so a stored slice is never edited in
-// place: a replacement is made in a new slice. An append may write into the
-// stored slice's spare capacity, which no holder can see: every slice header
-// sharing that backing array was read from p.written, the stored length only
-// grows between replacements, so each holder's length is at most the stored
-// one and append writes only past it. A replacement or a delete moves
-// p.written to a new array, and nothing appends to the old one again. When the
+// place: a replacement, or dropRows' removal, is made in a new slice. An
+// append, here or in appendRow, may write into the stored slice's spare
+// capacity, which no holder can see: every slice header sharing that backing
+// array was read from p.written, the stored length only grows between
+// replacements, so each holder's length is at most the stored one and append
+// writes only past it. A replacement or a removal moves p.written to a new
+// array, and nothing appends to the old one again. When the
 // file has no resident rows the append starts a new array, so the caller's
 // slice is never kept. The caller holds contentMu.
 func (p *JobProgress) upsertRows(fileIdx int, rows []durability.WrittenRow) {
@@ -172,9 +175,44 @@ func (j *Job) MarkArticleWritten(row durability.WrittenRow) error {
 		return fmt.Errorf("job %s: article %d has an invalid range [%d, +%d)", j.id, row.ArtIdx, row.Offset, row.Length)
 	}
 	p := j.progress
-	p.markDone(m, int(row.ArtIdx))
+	if p.markDone(m, int(row.ArtIdx)) {
+		// The bit was clear, so the article has no resident row: clearDone,
+		// which clears the bit, drops the row with it.
+		p.appendRow(row)
+		return nil
+	}
 	p.upsertRows(row.FileIdx, []durability.WrittenRow{row})
 	return nil
+}
+
+// appendRow adds row to its file's resident rows, for an article that has
+// none. The caller holds contentMu. Like upsertRows' append, it may write
+// into the stored slice's spare capacity, which no clone can see.
+func (p *JobProgress) appendRow(row durability.WrittenRow) {
+	if p.written == nil {
+		p.written = make(map[int][]durability.WrittenRow)
+	}
+	p.written[row.FileIdx] = append(p.written[row.FileIdx], row)
+}
+
+// dropRows removes the resident rows of articles arts from file fi, in one
+// pass over the file's rows. When any is removed the remaining rows are stored
+// in a new slice, so a clone sharing the old one is unaffected. The caller
+// holds contentMu.
+func (p *JobProgress) dropRows(fi int, arts []int) {
+	rows := p.written[fi]
+	if len(rows) == 0 || len(arts) == 0 {
+		return
+	}
+	drop := make(map[int32]struct{}, len(arts))
+	for _, i := range arts {
+		drop[int32(i)] = struct{}{} //nolint:gosec // G115: article index fits in int32
+	}
+	dropped := func(r durability.WrittenRow) bool { _, ok := drop[r.ArtIdx]; return ok }
+	if !slices.ContainsFunc(rows, dropped) {
+		return
+	}
+	p.written[fi] = slices.DeleteFunc(slices.Clone(rows), dropped)
 }
 
 // SettleFileCRC derives a completed file's whole-file CRC from its resident
@@ -229,14 +267,16 @@ func (j *Job) UntrustFile(fileIdx int) error {
 	if fileIdx < 0 || fileIdx >= m.NumFiles() {
 		return fmt.Errorf("job %s: fileIdx %d out of range", j.id, fileIdx)
 	}
+	// The rows go in bulk first, a failed article's with them, so each
+	// markNotDone below finds no row to drop.
+	delete(p.written, fileIdx)
 	lo, hi := m.FileRange(fileIdx)
 	for i := lo; i < hi; i++ {
-		p.markNotDone(i)
+		p.markNotDone(fileIdx, i)
 	}
 	fp := &p.files[fileIdx]
 	fp.Complete = false
 	fp.AssembledCRC32 = 0
-	delete(p.written, fileIdx)
 	p.recompute(m)
 	return nil
 }

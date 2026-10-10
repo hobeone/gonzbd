@@ -18,10 +18,10 @@ file internal/job/verified.go
 [an untrusted file keeps its rows resident]
 file internal/job/verified.go
 --- anchor
-	fp.AssembledCRC32 = 0
+	// markNotDone below finds no row to drop.
 	delete(p.written, fileIdx)
 --- replace
-	fp.AssembledCRC32 = 0
+	// markNotDone below finds no row to drop.
 --- end
 
 # Design item 3: placeRows is where a row that cannot be placed is counted
