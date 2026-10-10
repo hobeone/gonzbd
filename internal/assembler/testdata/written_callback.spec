@@ -25,6 +25,14 @@ file internal/assembler/assembler.go
 		if false {
 --- end
 
+[the callback is skipped for a zero-length article]
+file internal/assembler/assembler.go
+--- anchor
+	if a.opts.OnArticleWritten != nil {
+--- replace
+	if a.opts.OnArticleWritten != nil && n > 0 {
+--- end
+
 [the callback fires even when the write faulted]
 file internal/assembler/assembler.go
 --- anchor

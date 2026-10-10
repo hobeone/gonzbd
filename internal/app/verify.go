@@ -27,8 +27,9 @@ type verifyResult struct {
 	Failed   map[int][]int32                 // per file, articles failed by an intersection
 }
 
-// errVerifyFault wraps every non-definitive error verifyJobFiles returns, so
-// reconcileResidency can park the job instead of settling it Failed.
+// errVerifyFault wraps every non-definitive error verifyJobFiles returns, so a
+// hydration (appResidency.verifyAndAttach) can name the faulted file, park the
+// job and not settle it Failed; a retry (verifyRetry) returns it and aborts.
 type errVerifyFault struct {
 	File string
 	Err  error
@@ -51,9 +52,14 @@ var (
 // that has rows, whatever its fetch policy, and decides what each row is
 // worth. It touches no job and no SQLite row; see verifyResult.
 //
-// pathFor resolves a recorded filename to a path. The caller passes the
-// writer's own resolver (pipeline.jobFilePath), so the verifier reads the
-// file the writer wrote under whatever sanitize options are configured.
+// Its callers are a hydration (appResidency.verifyAndAttach) and a retry
+// (Application.verifyRetry): `git grep -n '[v]erifyJobFiles(' -- '*.go' ':!*_test.go'`
+// finds 3 lines, those two calls and its declaration.
+//
+// pathFor resolves a recorded filename to a path. Both callers pass the
+// writer's own resolver (pipeline.jobFilePath), so the verifier reads the file
+// the writer wrote under whatever sanitize options are configured, and the
+// path stays confined to the job directory.
 //
 // Per file: an empty filename deletes every row, since none can be read
 // back; ENOENT deletes every row only when the file's directory exists — a
@@ -189,7 +195,7 @@ type fileReadback struct {
 // readBackFile opens, fsyncs and drops the cache of one file, then reads each
 // valid row and resolves intersections. rows are in offset order.
 func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow, buf []byte) (fileReadback, error) {
-	fh, err := os.Open(path) //nolint:gosec // G304: the caller's resolver confines path to the job directory
+	fh, err := os.Open(path) //nolint:gosec // G304: path comes from the caller's resolver, pipeline.jobFilePath, which confines it to the job directory
 	if errors.Is(err, fs.ErrNotExist) {
 		// Absence is definitive only inside a directory that exists; a
 		// missing directory says nothing about the file.
@@ -309,7 +315,7 @@ func rowMatches(fh *os.File, r durability.WrittenRow, buf []byte) (bool, error) 
 // again, and closes it. It never grows a file, and a file no article bounds
 // is left alone.
 func finishFileByPath(path string, maxEnd int64) (err error) {
-	fh, err := os.OpenFile(path, os.O_RDWR, 0) //nolint:gosec // G304: the caller's resolver confines path to the job directory
+	fh, err := os.OpenFile(path, os.O_RDWR, 0) //nolint:gosec // G304: path comes from the caller's resolver, pipeline.jobFilePath, which confines it to the job directory
 	if err != nil {
 		return fmt.Errorf("finish %s: %w", path, err)
 	}

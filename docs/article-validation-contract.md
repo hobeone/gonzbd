@@ -927,7 +927,7 @@ checked, and a warning or unacted-on counter is not a consumer.
 |---|---|---|
 | E1 | offset ≥ 0, no overflow, within `ExpectedSize` + 12.5% | ✅ enforced |
 | E2 | no two articles write intersecting byte ranges | ✅ enforced within one open-file episode (#385, #759) |
-| E3 | no two articles' ranges **overlap** | ✅ the same check as E2 (`FileWriter.owned`), within an open-file episode; across a restart `owned` starts empty except for the ranges the resolver supplies in `FileInfo.Owned`, and the whole-file CRC is withheld (#387), which only helps when `par2` runs — a no-`par2` job that reopens the file can still ship a splice over any range `FileInfo.Owned` did not name |
+| E3 | no two articles' ranges **overlap** | ✅ the same check as E2 (`FileWriter.owned`), within an open-file episode; across a restart `owned` starts with the ranges the resolver supplies in `FileInfo.Owned`: those of the job's resident written rows, which a restart installs for an incomplete file only after reading them back (`pipeline.registerFile`; `git grep -n 'Owned:' -- '*.go' ':!*_test.go'` finds 1 line), and the whole-file CRC is withheld (#387), which only helps when `par2` runs — a no-`par2` job that reopens the file can still ship a splice over any range `FileInfo.Owned` did not name |
 | E4 | the parts tile `[0, size)` with no gap | ⚠ **absent** at L4; also undetected at L0 |
 
 | E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | ✅ **implemented** (#346) — `decodePayload` rejects `ErrOffsetUnknownForPart` |
@@ -937,9 +937,9 @@ checked, and a warning or unacted-on counter is not a consumer.
 `acceptArticle` refuses an arrival whose `[off, off+len)` intersects another
 article's range. The refused article is resolved permanently failed and its
 bytes are charged to par2. It is enforced within one open-file episode; across a
-restart `owned` starts empty except for the ranges the resolver supplies in
-`FileInfo.Owned` (the assembler seeds from it at open), and the durability
-layer's whole-file CRC withholding is the backstop for the rest. That backstop
+restart `owned` starts with the ranges the resolver supplies in
+`FileInfo.Owned` (the assembler seeds from it at open; see the E3 row), and the
+durability layer's whole-file CRC withholding is the backstop for the rest. That backstop
 only turns into a repair when `par2` runs: a job with no `par2` that reopens
 the file can still write an arrival overlapping a range `FileInfo.Owned` did
 not name and ship the splice.
