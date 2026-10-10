@@ -371,6 +371,23 @@ func TestVerifyJobFiles_MissingDirectoryIsAFault(t *testing.T) {
 	}
 }
 
+// TestVerifyJobFiles_RetryTreatsAMissingDirectoryAsGone is the retry's half of
+// the rule above: the same missing directory deletes the file's rows instead of
+// parking, while a stat error other than ENOENT stays a fault.
+func TestVerifyJobFiles_RetryTreatsAMissingDirectoryAsGone(t *testing.T) {
+	t.Parallel()
+	f := newVerifyFixture(t)
+	gone := filepath.Join(f.dl, "deleted", "vjob")
+	f.resolve = func(filename string) string { return filepath.Join(gone, filename) }
+	res, err := f.run(t, t.Context(), f.rows, true)
+	if err != nil {
+		t.Fatalf("verifyJobFiles on a retry = %v, want the rows deleted without a fault", err)
+	}
+	if len(res.Verdicts) != 1 || !res.Verdicts[0].DeleteAll || len(res.Verified) != 0 {
+		t.Errorf("result = %+v, want one DeleteAll verdict and nothing verified", res)
+	}
+}
+
 // TestVerifyJobFiles_LeavesAFileWithNoRowsUntouched pins that a complete=0
 // file with no rows is not read: a file never written may have no directory
 // yet, and reading it would park a healthy job on that fault.
@@ -612,7 +629,7 @@ func TestReadBackFile_ReadsARowLongerThanTheBuffer(t *testing.T) {
 	t.Parallel()
 	f := newVerifyFixture(t)
 	whole := durability.WrittenRow{Offset: 0, Length: int64(len(f.data)), CRC32: crc32.ChecksumIEEE(f.data)}
-	out, err := readBackFile(t.Context(), f.path, []durability.WrittenRow{whole}, make([]byte, 1000))
+	out, err := readBackFile(t.Context(), f.path, []durability.WrittenRow{whole}, make([]byte, 1000), false)
 	if err != nil {
 		t.Fatalf("readBackFile: %v", err)
 	}
@@ -620,7 +637,7 @@ func TestReadBackFile_ReadsARowLongerThanTheBuffer(t *testing.T) {
 		t.Errorf("verified = %+v, want the one row: its CRC spans several buffer fills", out.verified)
 	}
 
-	gone, err := readBackFile(t.Context(), f.path+".missing", []durability.WrittenRow{whole}, make([]byte, 1000))
+	gone, err := readBackFile(t.Context(), f.path+".missing", []durability.WrittenRow{whole}, make([]byte, 1000), false)
 	if err != nil || !gone.deleteAll {
 		t.Errorf("missing file = %+v, %v; want deleteAll and no error", gone, err)
 	}

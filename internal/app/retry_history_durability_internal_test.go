@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/postproc"
@@ -96,6 +97,53 @@ func TestRetryHistoryJob_DiscardsRowsWhenTheManifestShapeChanged(t *testing.T) {
 	if nw, _ := durabilityRowCounts(t, application, job.ID()); nw != 0 {
 		t.Errorf("the retry kept %d written rows against a manifest whose "+
 			"shape changed; they now describe articles that are somewhere else", nw)
+	}
+}
+
+// TestRetryHistoryJob_AfterDownloadDirDeleted: a user who deleted a failed
+// job's download directory and then retries it has nothing on disk for the
+// recorded rows to describe, so the retry drops them and refetches. A
+// hydration parks on the same missing directory (an unmounted share), but a
+// retry is a user's explicit act on a download root that exists.
+func TestRetryHistoryJob_AfterDownloadDirDeleted(t *testing.T) {
+	t.Parallel()
+	const nArticles = 3
+	application, job := newDurabilityTestApp(t, 1, nArticles)
+	seedDurability(t, application, job.ID())
+	// seedDurability's job_files row has no filename, which the verifier
+	// deletes without opening anything; name the file so it has to be read.
+	err := realStore(t, application).ApplyRecord(t.Context(), []durability.RecordBatch{{
+		JobID: job.ID(),
+		Files: []durability.FileState{{FileIdx: 0, Filename: "file.bin"}},
+	}})
+	if err != nil {
+		t.Fatalf("name the file: %v", err)
+	}
+	failJobIntoHistory(t, application, job, nArticles)
+
+	jobDir := filepath.Join(application.downloadDir(), job.Name())
+	if err := os.MkdirAll(jobDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "file.bin"), make([]byte, 100), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.RemoveAll(jobDir); err != nil {
+		t.Fatalf("delete the job directory: %v", err)
+	}
+
+	if err := application.RetryHistoryJob(t.Context(), job.ID()); err != nil {
+		t.Fatalf("RetryHistoryJob after the download directory was deleted: %v", err)
+	}
+	if _, queued := application.dispatcher.Job(job.ID()); !queued {
+		t.Error("the retry succeeded but the job is not in the dispatcher")
+	}
+	if nw, _ := durabilityRowCounts(t, application, job.ID()); nw != 0 {
+		t.Errorf("the retry kept %d written rows for a file whose directory is gone", nw)
+	}
+	rj, _ := application.dispatcher.Job(job.ID())
+	if rj != nil && rj.Progress() != nil && rj.Progress().FileComplete(0) {
+		t.Error("the retried file is marked complete although its bytes are gone")
 	}
 }
 

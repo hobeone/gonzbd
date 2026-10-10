@@ -308,7 +308,7 @@ no state makes the read unnecessary. For each such file, in order:
 |---|---|
 | empty `filename` | every row deleted: none can be located |
 | `open` returns `ENOENT` **and the file's directory exists** | every row deleted; the file's articles are Outstanding |
-| `open` returns `ENOENT` and the directory is missing, or `stat` of it fails | **verification fault** (below) |
+| `open` returns `ENOENT` and the directory is missing, or `stat` of it fails | **verification fault** (below); on a retry a missing directory (`ENOENT` from the `stat`) deletes every row of the file, like the row above |
 | any other `open` error | verification fault |
 | `fsync` on the fresh descriptor fails | every row deleted: the file is untrusted |
 | a row with `offset < 0` or `length <= 0` | that row deleted unread |
@@ -321,8 +321,11 @@ no state makes the read unnecessary. For each such file, in order:
 gone only inside a directory that exists. A download root on an NFS mount that
 has not come up at boot makes every file of every job `ENOENT`; reading that as
 absence would delete every job's recorded progress. A job whose directory the
-user deleted by hand therefore parks rather than refetching, and the operator's
-resume re-verifies it.
+user deleted by hand therefore parks rather than refetching at a hydration, and
+the operator's resume re-verifies it. **A retry differs** (*Retry* below): it is
+the user's explicit act, `restoreFailedDir` has already put back a directory it
+could, and a directory still missing means the recorded bytes are gone. The
+decision lives in one place, `readBackFile`'s `retry` parameter.
 
 The fresh descriptor's fsync reports a writeback error **no earlier fsync has
 reported** (Linux ≥ 4.16). On Linux the file's cache is then dropped
@@ -398,7 +401,10 @@ completion it gives up is re-derived by the next start's verification.
 3. `verifyJobFiles` with `retry` set: an article an intersection failed is not
    counted resolved, because `Job.ResetForRetry` is about to clear that
    failure, and a finished file would contradict it. Cleared and fetched again,
-   it re-collides with the seeded winner (§5) and is refused.
+   it re-collides with the seeded winner (§5) and is refused. A file whose
+   directory no longer exists takes the `ENOENT` arm instead of the
+   verification fault (*What* above): its rows are deleted and it is refetched
+   (`TestRetryHistoryJob_AfterDownloadDirDeleted`).
 
 Each step's verdicts are committed before the next. Then `ResetForRetry`,
 `Assembler.ForgetJob`, the manifest write, `seedJobFiles`, and a synchronous
@@ -982,7 +988,9 @@ recorded here so the next reader does not mistake them for design.
 
 2. **An unreadable sector, or a missing download directory, keeps the job
    parked until the operator acts** (§3). Deleting the file refetches it; a
-   directory the user deleted by hand also parks rather than refetching.
+   directory the user deleted by hand also parks rather than refetching. A
+   retry differs: a missing download directory there deletes the recorded
+   rows and refetches (§3 *Retry*).
 
 3. **A file whose last article was written while its job was evicted is not
    marked complete in this process.** `MarkFileComplete` needs the manifest,

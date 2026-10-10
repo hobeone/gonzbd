@@ -62,8 +62,9 @@ var (
 // path stays confined to the job directory.
 //
 // Per file: an empty filename deletes every row, since none can be read
-// back; ENOENT deletes every row only when the file's directory exists — a
-// missing directory (an unmounted download root) is a fault naming it; an
+// back; ENOENT deletes every row only when the file's directory exists — at a
+// hydration a missing directory (an unmounted download root) is a fault naming
+// it, while on a retry it is absence too (readBackFile); an
 // fsync error on the fresh descriptor deletes every row (the file is
 // untrusted); a row with a negative offset or a non-positive length is
 // deleted unread; a CRC mismatch or a short read deletes that row. Of rows
@@ -105,7 +106,7 @@ func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.Fil
 		if buf == nil {
 			buf = make([]byte, verifyBufSize)
 		}
-		out, err := readBackFile(ctx, path, fr, buf)
+		out, err := readBackFile(ctx, path, fr, buf, retry)
 		if err != nil {
 			return verifyResult{}, asVerifyFault(path, err)
 		}
@@ -194,13 +195,18 @@ type fileReadback struct {
 
 // readBackFile opens, fsyncs and drops the cache of one file, then reads each
 // valid row and resolves intersections. rows are in offset order.
-func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow, buf []byte) (fileReadback, error) {
+func readBackFile(ctx context.Context, path string, rows []durability.WrittenRow, buf []byte, retry bool) (fileReadback, error) {
 	fh, err := os.Open(path) //nolint:gosec // G304: path comes from the caller's resolver, pipeline.jobFilePath, which confines it to the job directory
 	if errors.Is(err, fs.ErrNotExist) {
 		// Absence is definitive only inside a directory that exists; a
-		// missing directory says nothing about the file.
+		// missing directory says nothing about the file at a hydration,
+		// where it may be a share that has not come up. A retry is a user's
+		// act on a job whose directory restoreFailedDir has already put
+		// back if it could, so a directory still missing means the bytes the
+		// rows describe are gone, and the cost of believing it is a refetch.
+		// This is the one place that decides fault versus gone.
 		dir := filepath.Dir(path)
-		if _, sErr := os.Stat(dir); sErr != nil {
+		if _, sErr := os.Stat(dir); sErr != nil && (!retry || !errors.Is(sErr, fs.ErrNotExist)) {
 			return fileReadback{}, &errVerifyFault{File: dir, Err: sErr}
 		}
 		return fileReadback{deleteAll: true}, nil
