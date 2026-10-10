@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -412,6 +413,8 @@ func TestSearch_PreallocationCapBounded(t *testing.T) {
 		{"unbounded search falls back to the small default", 0, 16},
 		{"bounded, reasonable limit preallocates to it", 5, 5},
 		{"huge limit is clamped, not preallocated in full", 50_000_000, 10_000},
+		{"the largest int is clamped", math.MaxInt, 10_000},
+		{"negative limit falls back to the small default", -1, 16},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

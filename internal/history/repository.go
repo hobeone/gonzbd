@@ -220,14 +220,15 @@ func (r *Repository) Search(ctx context.Context, opts SearchOptions) ([]Entry, e
 	// Preallocate to the requested page size when known (OPT-11); the
 	// query can never return more than opts.Limit rows in that case. Fall
 	// back to a small hint for unbounded queries so we still avoid the
-	// first few reallocations. Cap the preallocation independently of the
-	// SQL LIMIT: opts.Limit is not bounded at this boundary, so an
-	// attacker- or caller-supplied huge value would otherwise allocate
-	// that many Entry structs up front, before a single row is read.
+	// first few reallocations. The hint is clamped to maxPrealloc because
+	// opts.Limit is unbounded at this boundary.
+	// Spelled as comparisons: CodeQL go/uncontrolled-allocation-size does not treat min as a bound.
 	const maxPrealloc = 10_000
 	capHint := 16
-	if opts.Limit > 0 {
-		capHint = min(opts.Limit, maxPrealloc)
+	if opts.Limit > maxPrealloc {
+		capHint = maxPrealloc
+	} else if opts.Limit > 0 {
+		capHint = opts.Limit
 	}
 	out := make([]Entry, 0, capHint)
 	for rows.Next() {
