@@ -220,6 +220,27 @@ func TestInstallVerified_NeitherKeepsNorReordersTheCallersSlice(t *testing.T) {
 	}
 }
 
+// TestInstallRows_KeepsACopyOfTheFirstInstall pins installRows' own contract on
+// a file with no resident rows: it stores a copy, so an edit to the caller's
+// slice does not reach the job. InstallVerified and InstallCompleteFile pass
+// it placeRows' fresh slice, so neither door can observe this; the test calls
+// installRows directly.
+func TestInstallRows_KeepsACopyOfTheFirstInstall(t *testing.T) {
+	t.Parallel()
+	j := verifiedTestJob(t)
+	rows := []durability.WrittenRow{
+		{FileIdx: 0, ArtIdx: 2, Offset: 200, Length: 100, CRC32: 0x2},
+		{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: 0x1},
+	}
+	j.contentMu.Lock()
+	installRows(j.manifest, j.progress, 0, rows)
+	j.contentMu.Unlock()
+	rows[1].CRC32 = 99
+	if got := j.FileRows(0); len(got) != 2 || got[0].CRC32 != 0x1 {
+		t.Errorf("FileRows(0) = %+v after editing the caller's slice, want article 0's CRC 1: installRows kept the caller's slice", got)
+	}
+}
+
 // TestMarkArticleWritten_MarksDoneAndKeepsTheRow pins the in-process door: the
 // article is Done, its row is resident for the CRC, and a second write of the
 // same article replaces its row.

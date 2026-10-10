@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run TestFileRows_ReturnsACopy|TestInstallVerified_NeitherKeepsNorReordersTheCallersSlice|TestInstallVerified_ARowItCannotPlaceCostsOnlyItself|TestInstallVerified_MergesALaterInstallWithTheResidentRows
+run TestFileRows_ReturnsACopy|TestInstallRows_KeepsACopyOfTheFirstInstall|TestInstallVerified_NeitherKeepsNorReordersTheCallersSlice|TestInstallVerified_ARowItCannotPlaceCostsOnlyItself|TestInstallVerified_MergesALaterInstallWithTheResidentRows
 
 [a Progress() clone shares the live row map]
 file internal/job/progress.go
@@ -7,6 +7,14 @@ file internal/job/progress.go
 	cp.written = maps.Clone(p.written)
 --- replace
 	cp.written = p.written
+--- end
+
+[the first install keeps the caller's slice]
+file internal/job/verified.go
+--- anchor
+			p.written[fileIdx] = sortedClone(rows)
+--- replace
+			p.written[fileIdx] = rows
 --- end
 
 [the sorted copy is sorted in place]

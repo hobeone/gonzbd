@@ -90,8 +90,9 @@ func placeRows(m *Manifest, fileIdx int, rows []durability.WrittenRow) (kept []d
 }
 
 // installRows marks rows Done and merges them into the file's resident rows,
-// replacing an article's earlier row. The caller holds the job's contentMu and
-// has placed the rows.
+// replacing an article's earlier row. It stores a copy, never rows itself, so
+// the caller keeps its slice. The caller holds the job's contentMu and has
+// placed the rows.
 func installRows(m *Manifest, p *JobProgress, fileIdx int, rows []durability.WrittenRow) {
 	for _, r := range rows {
 		p.markDone(m, int(r.ArtIdx))
