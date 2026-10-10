@@ -1,6 +1,7 @@
 package app
 
 import (
+	"os"
 	"slices"
 	"testing"
 
@@ -34,5 +35,32 @@ func TestReadBackFile_VerifiesAZeroLengthRow(t *testing.T) {
 	slices.Sort(out.deleted)
 	if want := []int32{2, 3}; !slices.Equal(out.deleted, want) {
 		t.Errorf("deleted = %v, want %v: the zero-length row with a CRC and the negative length", out.deleted, want)
+	}
+}
+
+// TestVerifyJobFiles_AZeroLengthRowDoesNotMoveTheTrimBound: a file finished by
+// path is truncated to the end of its last verified row that claims a range.
+// A zero-length row placed past that end claims none, so it must not hold
+// the preallocated tail on disk.
+func TestVerifyJobFiles_AZeroLengthRowDoesNotMoveTheTrimBound(t *testing.T) {
+	t.Parallel()
+	f := newVerifyFixture(t)
+	f.write(t, append(slices.Clone(f.data[:3*verifyArt]), make([]byte, 3*verifyArt)...)) // a preallocated tail
+	empty := durability.WrittenRow{FileIdx: 0, ArtIdx: 3, Offset: 5 * verifyArt, Length: 0}
+	rows := append(pick(f.rows, 0, 1, 2), empty)
+
+	res, err := f.run(t, t.Context(), rows, false)
+	if err != nil {
+		t.Fatalf("verifyJobFiles: %v", err)
+	}
+	if len(res.Verdicts) != 1 || !res.Verdicts[0].SetComplete {
+		t.Fatalf("verdicts = %+v, want the file finished (SetComplete)", res.Verdicts)
+	}
+	st, err := os.Stat(f.path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got, want := st.Size(), int64(3*verifyArt); got != want {
+		t.Errorf("finished file size = %d, want %d, the end of the last row with bytes: the zero-length row at %d moved the trim bound", got, want, empty.Offset)
 	}
 }
