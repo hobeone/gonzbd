@@ -51,8 +51,9 @@ var (
 
 // jobFile locates one of a job's files: Dir is the job directory and Name the
 // file's name inside it. The verifier opens Name with fsutil.OpenNoFollow on
-// an os.Root on Dir, so a Name that is not one path component, or a symlink
-// in its place wherever it points, is refused by the open itself.
+// an os.Root on Dir. A job file is always a regular file with one link; any
+// link in its place, or a Name that is not one path component, is refused by
+// the open itself.
 type jobFile struct {
 	Dir, Name string
 }
@@ -79,9 +80,9 @@ func (f jobFile) Path() string { return filepath.Join(f.Dir, f.Name) }
 // back; ENOENT deletes every row only when the file's directory exists — at a
 // hydration a missing directory (an unmounted download root) is a fault naming
 // it, while on a retry it is absence too, unmounted root or not
-// (readBackFile); a name that is not one path component, or a symlink in the
-// file's place wherever it points, is an open error other than ENOENT, so a
-// fault; an fsync error on the fresh descriptor deletes every row (the file
+// (readBackFile); a name that is not one path component, or any link
+// (symbolic or hard) in the file's place, is an open error other than ENOENT,
+// so a fault; an fsync error on the fresh descriptor deletes every row (the file
 // is untrusted); a row with an invalid shape (WrittenRow.HasValidShape) is
 // deleted unread, while a zero-length row is valid and verifies against CRC 0;
 // a CRC mismatch or a short read deletes that row. Of rows whose ranges

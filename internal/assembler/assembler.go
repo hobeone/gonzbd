@@ -130,9 +130,9 @@ type WriteRequest struct {
 type FileInfo struct {
 	// Dir is the job directory the file belongs in, and Name the file's
 	// name inside it. openTargetFile creates Dir and then opens Name with
-	// fsutil.OpenNoFollow on an os.Root on Dir, so a Name that is not one path
-	// component, or a symlink in its place wherever it points, is refused by
-	// the open rather than followed.
+	// fsutil.OpenNoFollow on an os.Root on Dir. A job file is always a regular
+	// file with one link; any link in its place, or a Name that is not one
+	// path component, is refused by the open rather than followed.
 	Dir, Name string
 
 	// TotalParts is the number of manifest segments in this file. Each segment
@@ -1387,8 +1387,8 @@ func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
 //
 // The name comes from the NZB, so it is untrusted: the file is opened through
 // openInDir, which opens that one file in FileInfo.Dir and never another. A
-// name that leads out of the job directory, or a symlink in the file's place
-// wherever it points, fails the open, and that failure takes the same path as
+// name that leads out of the job directory, or any link (symbolic or hard) in
+// the file's place, fails the open, and that failure takes the same path as
 // any other open error.
 //
 // Every failure returns a classified *storagefault.Fault rather than logging
@@ -1460,11 +1460,11 @@ func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileK
 }
 
 // openInDir opens name inside dir for writing, creating it if absent, through
-// fsutil.OpenNoFollow on an os.Root on dir: a name that is not one path
-// component, or a symlink in name's place wherever it points, inside dir or
-// out of it, is an open error. Following an in-directory link would write one
-// file's bytes into a sibling. The root is closed before returning; the
-// file's descriptor does not depend on it.
+// fsutil.OpenNoFollow on an os.Root on dir. A job file is always a regular
+// file with one link; any link in name's place, or a name that is not one
+// path component, is an open error. Writing through a link to a sibling
+// would write one file's bytes into another. The root is closed before
+// returning; the file's descriptor does not depend on it.
 func openInDir(dir, name string) (*os.File, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {

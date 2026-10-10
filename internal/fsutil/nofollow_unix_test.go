@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
@@ -58,6 +60,58 @@ func TestOpenNoFollow(t *testing.T) {
 		}
 		if _, err := os.Lstat(filepath.Join(dir, "missing.bin")); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("the dangling link's target was created: %v", err)
+		}
+	})
+	t.Run("a hard link is refused and its sibling is untouched", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(dir, "linked.bin"), []byte("LINKED"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(filepath.Join(dir, "linked.bin"), filepath.Join(dir, "hard.bin")); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"hard.bin", "linked.bin"} {
+			fh, err := fsutil.OpenNoFollow(root, name, os.O_RDWR|os.O_CREATE, 0o600)
+			if !errors.Is(err, fsutil.ErrMultiplyLinked) {
+				t.Errorf("%s: err = %v, want ErrMultiplyLinked", name, err)
+			}
+			if fh != nil {
+				_ = fh.Close()
+			}
+		}
+		if got, err := os.ReadFile(filepath.Join(dir, "linked.bin")); string(got) != "LINKED" {
+			t.Errorf("linked.bin = %q, %v; want it untouched", got, err)
+		}
+	})
+	t.Run("O_TRUNC is refused before the open", func(t *testing.T) {
+		if _, err := fsutil.OpenNoFollow(root, "sibling.bin", os.O_WRONLY|os.O_TRUNC, 0); err == nil {
+			t.Error("an O_TRUNC open succeeded; it truncates before the link check")
+		}
+		if got, err := os.ReadFile(filepath.Join(dir, "sibling.bin")); string(got) != "SIB" {
+			t.Errorf("sibling.bin = %q, %v; want it untouched", got, err)
+		}
+	})
+	t.Run("a FIFO is refused without blocking", func(t *testing.T) {
+		if err := syscall.Mkfifo(filepath.Join(dir, "fifo"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, flag := range []int{os.O_RDONLY, os.O_RDWR} {
+			if _, err := fsutil.OpenNoFollow(root, "fifo", flag, 0); !errors.Is(err, fsutil.ErrNotRegular) {
+				t.Errorf("flag %#x: err = %v, want ErrNotRegular", flag, err)
+			}
+		}
+	})
+	t.Run("a returned descriptor is blocking", func(t *testing.T) {
+		fh, err := fsutil.OpenNoFollow(root, "sibling.bin", os.O_RDONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = fh.Close() }()
+		fl, err := unix.FcntlInt(fh.Fd(), unix.F_GETFL, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fl&unix.O_NONBLOCK != 0 {
+			t.Errorf("descriptor flags %#x carry O_NONBLOCK", fl)
 		}
 	})
 	t.Run("a missing file is ErrNotExist", func(t *testing.T) {

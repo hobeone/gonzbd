@@ -22,3 +22,11 @@ file internal/assembler/assembler.go
 --- replace
 	return root.OpenFile(name, os.O_WRONLY|os.O_CREATE, 0o644)
 --- end
+
+[the open accepts a hard link to a sibling]
+file internal/fsutil/nofollow_unix.go
+--- anchor
+	if st.Nlink != 1 {
+--- replace
+	if false {
+--- end

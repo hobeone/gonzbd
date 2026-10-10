@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run Test(ReadBackFile_RefusesASymlinkOutOfTheJobDirectory|ReadBackFile_RefusesANameThatClimbsOutOfTheJobDirectory|ReadBackFile_AMissingFileInAnExistingDirectoryIsGone|VerifyJobFiles_SymlinkOutOfTheJobDirectoryIsAFault|FinishFileByPath_RefusesASymlinkOutOfTheJobDirectory|JobFileLocation_AgreesWithTheWritersJoin|VerifyJobFiles_SymlinkToASiblingIsAFault|FinishFileByPath_RefusesASymlinkToASibling|VerifierOpens_CloseTheirRoots)$
+run Test(ReadBackFile_RefusesASymlinkOutOfTheJobDirectory|ReadBackFile_RefusesANameThatClimbsOutOfTheJobDirectory|ReadBackFile_AMissingFileInAnExistingDirectoryIsGone|VerifyJobFiles_SymlinkOutOfTheJobDirectoryIsAFault|FinishFileByPath_RefusesASymlinkOutOfTheJobDirectory|JobFileLocation_AgreesWithTheWritersJoin|VerifyJobFiles_LinkToASiblingIsAFault|FinishFileByPath_RefusesALinkToASibling|VerifierOpens_CloseTheirRoots)$
 
 [the read-back leaves its root open]
 file internal/app/verify.go
@@ -75,4 +75,12 @@ file internal/app/verify.go
 	fh, err := fsutil.OpenNoFollow(root, loc.Name, os.O_RDWR, 0)
 --- replace
 	fh, err := root.OpenFile(loc.Name, os.O_RDWR, 0)
+--- end
+
+[the opens accept a hard link to a sibling]
+file internal/fsutil/nofollow_unix.go
+--- anchor
+	if st.Nlink != 1 {
+--- replace
+	if false {
 --- end

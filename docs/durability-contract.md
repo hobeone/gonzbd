@@ -333,7 +333,7 @@ no state makes the read unnecessary. For each such file, in order:
 | opening the job directory returns `ENOENT` | **verification fault** (below); on a retry every row of the file deleted, like the row below |
 | opening the job directory fails otherwise | verification fault |
 | `open` of the file inside the open directory returns `ENOENT` | every row deleted; the file's articles are Outstanding |
-| any other `open` error, including a name that leads out of the job directory or a symlink in the file's place, wherever it points | verification fault |
+| any other `open` error, including a name that leads out of the job directory or any link (symlink or hard link) in the file's place | verification fault |
 | `fsync` on the fresh descriptor fails | every row deleted: the file is untrusted |
 | a row with `offset < 0` or `length < 0` | that row deleted unread |
 | a zero-length row | verified when its CRC is 0, otherwise deleted; it claims no range, so it never fails another article |
@@ -359,39 +359,45 @@ on the share. Any other error opening the directory stays a verification
 fault on both paths. The decision lives in one place, `readBackFile`'s `retry`
 parameter.
 
-**Both opens are confined to the file itself.** `readBackFile` and
-`finishFileByPath` open the job directory as an `os.Root` and the file's
-sanitized name inside it (`pipeline.jobFileLocation` resolves both) with
-`fsutil.OpenNoFollow`: one `openat(2)` on the directory with `O_NOFOLLOW`, for
-a name that must be a single path component. A name that is not one component
-(`..` included), or a symlink in the file's place **wherever it points —
-outside the job directory or at a sibling inside it** — is an open error other
-than `ENOENT`, so a verification fault on both paths, never absence and never
-a read, fsync or truncate of another file. `os.Root` alone is not enough: it
-follows a link whose target stays inside the root, and ignores `O_NOFOLLOW`
-for it. A job directory that exists but cannot be opened for reading is a
-fault too, since the directory is opened before the file. The job directory
-itself is opened as resolved: the download root and the sanitized job name
-are trusted configuration, and a symlink there is followed.
+**A job file is always a regular file with one link; any link in its place
+is refused.** Every open of a job file — the writer's and both of the
+verifier's — goes through `fsutil.OpenNoFollow` on an `os.Root` on the job
+directory, for the sanitized name `pipeline.jobFileLocation` resolves, which
+must be a single path component:
 
-**The writer's open is confined the same way.** The pipeline names each file
-with the same resolver (`registerFile` calls `pipeline.jobFileLocation`) and
-hands the assembler the job directory and the name as `FileInfo.Dir` and
-`FileInfo.Name`. `openTargetFile` creates the directory, then opens the name
-`O_WRONLY|O_CREATE` with `fsutil.OpenNoFollow` on an `os.Root` on it
-(`openInDir`), so a symlink in the file's place — pointing out of the
-directory or at a sibling, as an archive extracted into the job directory can
-plant — or a name that climbs out with `..` fails the open: no file but the
-target is created or written through that name (Standing Design Rule 3). The
-failure takes the path of any other failed open: a routed `open` fault, and
-the article handed back as unwritten
-(`TestOpenTargetFile_RefusesToWriteOutOfTheJobDirectory`). The check and the
-open are one system call, so there is no window between them. The first time
-a file is named, `uniqueJobFileName` checks the name with `Lstat` through an
-`os.Root` on the job directory, so a name already held by a file or a symlink
+- the open is one `openat(2)` on the directory with `O_NOFOLLOW`, so a
+  **symlink** in the file's place fails with `ELOOP` wherever it points, out
+  of the job directory or at a sibling inside it. `os.Root` alone is not
+  enough: it follows a link whose target stays inside the root, and ignores
+  `O_NOFOLLOW` for it;
+- the opened descriptor is then `fstat`ed, and anything but a regular file
+  with a link count of one is refused, so a **hard link** sharing a sibling's
+  inode — a regular file `O_NOFOLLOW` cannot see — is refused too. Both
+  checks are on the open itself, with no window between a check and a use.
+  The open is non-blocking, so a FIFO in the file's place cannot hang it, and
+  it never carries `O_TRUNC`, which would act before the check;
+- a name that is not one component (`..` included) never reaches `openat`.
+
+On the verifier (`readBackFile`, `finishFileByPath`) a refusal is an open error
+other than `ENOENT`, so a verification fault on both paths — never absence, and
+never a read, fsync or truncate of another file. A job directory that exists
+but cannot be opened for reading is a fault too, since the directory is opened
+before the file. The job directory itself is opened as resolved: the download
+root and the sanitized job name are trusted configuration, and a symlink there
+is followed.
+
+On the writer, the pipeline names each file with the same resolver
+(`registerFile` calls `pipeline.jobFileLocation`) and hands the assembler the
+job directory and the name as `FileInfo.Dir` and `FileInfo.Name`.
+`openTargetFile` creates the directory, then opens the name `O_WRONLY|O_CREATE`
+(`openInDir`). A refusal takes the path of any other failed open: a routed
+`open` fault, and the article handed back as unwritten
+(`TestOpenTargetFile_RefusesToWriteOutOfTheJobDirectory`). So no bytes of one
+file reach another through a link (Standing Design Rule 3). The first time a
+file is named, `uniqueJobFileName` checks the name with `Lstat` through an
+`os.Root` on the job directory, so a name already held by a file or a link
 gets a numeric suffix rather than being reused; a recorded name is not
-re-checked, and the no-follow open is what refuses a link planted after it
-was chosen.
+re-checked, and the open is what refuses a link planted after it was chosen.
 
 The fresh descriptor's fsync reports a writeback error **no earlier fsync has
 reported** (Linux ≥ 4.16). On Linux the file's cache is then dropped
