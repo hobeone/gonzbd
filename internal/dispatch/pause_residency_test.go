@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -243,5 +244,54 @@ func TestPause_QueueWidePauseKeepsLeases(t *testing.T) {
 	}
 	if !res.resident("a") {
 		t.Error("a queue-wide pause evicted a working job's manifest")
+	}
+}
+
+// TestReconcileResidency_DoesNotRehydrateAPausedSlotHolder pins that a job
+// parked by a residency fault while it holds a compute slot is not re-read on
+// every tick. Its first hydration faults and parks it (a pause, as
+// Application.Stall does); a pause keeps the slot, and the ticks after that
+// must leave the job alone until it is resumed.
+func TestReconcileResidency_DoesNotRehydrateAPausedSlotHolder(t *testing.T) {
+	runner := &stateRunner{}
+	res := &fakeResidency{}
+	d := newTestDispatcher(t, withRunner(runner), withResidency(res))
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	d.tick(context.Background())
+	d.tick(context.Background())
+	if err := d.AdvanceFrom(j, job.Fetching, job.Assessing); err != nil {
+		t.Fatalf("AdvanceFrom: %v", err)
+	}
+	d.tick(context.Background())
+	if v := d.q.Render(j); !v.Holds || v.State != job.Assessing {
+		t.Fatalf("fixture: j1 does not hold a slot at Assessing: %+v", v)
+	}
+
+	// A restart's state: the slot holder has no manifest loaded, and reading
+	// its files faults.
+	res.Evict("j1")
+	d.markNotResident("j1")
+	var hydrates atomic.Int32
+	res.mu.Lock()
+	res.failOn = map[string]error{"j1": fmt.Errorf("verify: %w", ErrResidencyFault)}
+	res.mu.Unlock()
+	res.onHydrate = func(id string) {
+		hydrates.Add(1)
+		if err := d.PauseJob(id); err != nil {
+			t.Errorf("PauseJob: %v", err)
+		}
+	}
+
+	for range 20 {
+		d.tick(context.Background())
+	}
+	if got := hydrates.Load(); got != 1 {
+		t.Errorf("Hydrate ran %d times over 20 ticks for a paused slot holder, want 1", got)
+	}
+	if v := d.q.Render(j); !v.Holds {
+		t.Errorf("the paused job lost its slot: %+v", v)
 	}
 }
