@@ -1582,8 +1582,11 @@ func (app *Application) handleFileComplete(_ context.Context, fc FileComplete) {
 		// marked in this process; its rows are in the record, so the next
 		// start's verification finishes the file by path. The branches that
 		// reach it are Shutdown, which evicts after the assembler has
-		// stopped, and Remove, after which there is no job to mark: a paused
-		// job keeps its manifest, and no other path evicts a Fetching job.
+		// stopped, and Remove, after which there is no job to mark. A paused
+		// job keeps its manifest; the tick evicts a job whose Fetching lease
+		// was returned otherwise only after a cancel or a settle, which end
+		// the attempt, or the advance to Assessing, which requires every
+		// required file already marked.
 		app.log.Info("completion not delivered", "job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
 	}
 }
@@ -1646,8 +1649,9 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 			app.duOrch.maybeStart(fc)
 		}
 		// A resumed completion neither marks the file nor dirties it: the
-		// hydration or retry that finished it committed its SetComplete
-		// verdict, which is the one writer of complete = 1 for that file.
+		// hydration or retry that finished it already committed complete = 1
+		// (hydration through its SetComplete verdict; a retry through
+		// verifyRetry's verdict and its retryFileStates row).
 		if !fc.Resumed {
 			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
 				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)

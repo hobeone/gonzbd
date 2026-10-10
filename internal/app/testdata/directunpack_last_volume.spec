@@ -12,8 +12,9 @@ file internal/app/app.go
 			app.duOrch.maybeStart(fc)
 		}
 		// A resumed completion neither marks the file nor dirties it: the
-		// hydration or retry that finished it committed its SetComplete
-		// verdict, which is the one writer of complete = 1 for that file.
+		// hydration or retry that finished it already committed complete = 1
+		// (hydration through its SetComplete verdict; a retry through
+		// verifyRetry's verdict and its retryFileStates row).
 		if !fc.Resumed {
 			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
 				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
@@ -23,8 +24,9 @@ file internal/app/app.go
 		}
 --- replace
 		// A resumed completion neither marks the file nor dirties it: the
-		// hydration or retry that finished it committed its SetComplete
-		// verdict, which is the one writer of complete = 1 for that file.
+		// hydration or retry that finished it already committed complete = 1
+		// (hydration through its SetComplete verdict; a retry through
+		// verifyRetry's verdict and its retryFileStates row).
 		if !fc.Resumed {
 			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
 				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
