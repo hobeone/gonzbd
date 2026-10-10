@@ -112,39 +112,19 @@ func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 	return true
 }
 
-// JobCheckpointState is the part of a job's queue-row figures that lives in
-// the application rather than in the queue: why the job is parked. The name
-// predates the loose-record design; the type holds only stall state.
-//
-// The queue listing already holds every job's progress, so the written-bytes
-// figure is derived from that and this struct carries only what the
-// application holds.
-type JobCheckpointState struct {
-	// StallReason is the surfaced, actionable text R27 requires, or "" when
-	// the job is not parked.
-	StallReason string
-}
-
-// CheckpointState reads one job's application-side figures, for the single-job
-// detail endpoint. The whole-queue listing uses CheckpointStates instead.
-func (app *Application) CheckpointState(jobID string) JobCheckpointState {
-	return JobCheckpointState{StallReason: app.StallReason(jobID).Reason}
-}
-
-// CheckpointStates returns every parked job, keyed by job ID.
+// StallReasons returns the stall reason of every parked job, keyed by job ID.
+// A job that is not parked is absent. The single-job form is StallReason.
 //
 // One pass under the stall lock rather than one lock per job, for the same
 // reason DirectUnpackStatuses exists: the queue listing is polled continuously.
-func (app *Application) CheckpointStates() map[string]JobCheckpointState {
-	out := make(map[string]JobCheckpointState)
+func (app *Application) StallReasons() map[string]string {
+	out := make(map[string]string)
 	app.stallMu.Lock()
 	for jobID, rec := range app.stalls {
 		if rec.reason == "" {
 			continue
 		}
-		st := out[jobID]
-		st.StallReason = rec.reason
-		out[jobID] = st
+		out[jobID] = rec.reason
 	}
 	app.stallMu.Unlock()
 	return out

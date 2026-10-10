@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
-	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/dispatch"
@@ -29,7 +28,7 @@ type durabilitySlot struct {
 // stallTestServer wires a dispatcher and a NopApp whose stall figures the
 // caller controls, then returns both so a test can assert on the wire shape
 // without standing up a recorder.
-func stallTestServer(t *testing.T, states map[string]app.JobCheckpointState, counter *atomic.Int64) (*Server, *dispatch.Dispatcher) {
+func stallTestServer(t *testing.T, states map[string]string, counter *atomic.Int64) (*Server, *dispatch.Dispatcher) {
 	t.Helper()
 	disp := newTestAPIDispatcher(t)
 	s := New(Options{
@@ -37,8 +36,8 @@ func stallTestServer(t *testing.T, states map[string]app.JobCheckpointState, cou
 		Build:      buildinfo.Info{Version: "1.0.0-test"},
 		Dispatcher: disp,
 		App: apitest.NopApp{
-			CheckpointStatesVal: states,
-			ReevaluatedVal:      counter,
+			StallReasonsVal: states,
+			ReevaluatedVal:  counter,
 		},
 	})
 	return s, disp
@@ -105,8 +104,8 @@ func TestQueueAPI_ReportsStallReason(t *testing.T) {
 	s, disp := stallTestServer(t, nil, nil)
 	j := addTestDispatcherJob(t, disp, "stalled")
 	// Set after the job exists so the map key is the real ID.
-	s.status = apitest.NopApp{CheckpointStatesVal: map[string]app.JobCheckpointState{
-		j.ID(): {StallReason: `Stalled: storage retryable fault on write "/data/x.bin": no space left on device`},
+	s.status = apitest.NopApp{StallReasonsVal: map[string]string{
+		j.ID(): `Stalled: storage retryable fault on write "/data/x.bin": no space left on device`,
 	}}
 
 	slot := findDurabilitySlot(t, queueDurabilitySlots(t, s, "/api?mode=queue&apikey="+testAPIKey), j.ID())
@@ -202,8 +201,8 @@ func TestQueueAPI_DetailCarriesTheSameDurabilityFields(t *testing.T) {
 	t.Parallel()
 	s, disp := stallTestServer(t, nil, nil)
 	j := addTestDispatcherJob(t, disp, "drawer")
-	s.status = apitest.NopApp{CheckpointStatesVal: map[string]app.JobCheckpointState{
-		j.ID(): {StallReason: "Stalled: disk full"},
+	s.status = apitest.NopApp{StallReasonsVal: map[string]string{
+		j.ID(): "Stalled: disk full",
 	}}
 
 	slots := queueDurabilitySlots(t, s,
