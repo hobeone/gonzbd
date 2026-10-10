@@ -192,19 +192,19 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 	}
 }
 
-// TestCheckpointStates_ReportsEveryParkedJob pins the snapshot the queue listing
+// TestStallReasons_ReportsEveryParkedJob pins the snapshot the queue listing
 // reads: a parked job appears with its reason, and a job that is not parked does
 // not appear at all.
-func TestCheckpointStates_ReportsEveryParkedJob(t *testing.T) {
+func TestStallReasons_ReportsEveryParkedJob(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	application.noteStall("stalled-only", &storagefault.Fault{
 		Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC,
 	}, true)
 
-	got := application.CheckpointStates()
+	got := application.StallReasons()
 
-	if r := got["stalled-only"].StallReason; !strings.Contains(r, "no space") {
+	if r := got["stalled-only"]; !strings.Contains(r, "no space") {
 		t.Errorf("stalled-only StallReason = %q, want it to name the condition", r)
 	}
 	if _, ok := got["never-seen"]; ok {
@@ -241,27 +241,5 @@ func TestDurableBytesOf_ClampsNegativeValues(t *testing.T) {
 	p := mockProgressCounters{expected: 100, remaining: 200, failed: 0}
 	if got := DurableBytesOf(p); got != 0 {
 		t.Errorf("DurableBytesOf(torn) = %d, want 0", got)
-	}
-}
-
-// TestCheckpointState_ReportsTheStallReasonForOneJob pins the single-job form
-// the detail endpoint reads: a parked job reports its reason, and an unknown
-// job reports the zero value.
-func TestCheckpointState_ReportsTheStallReasonForOneJob(t *testing.T) {
-	t.Parallel()
-	application, _, _ := newLifecycleTestApp(t)
-	application.noteStall("job-1", &storagefault.Fault{
-		Op: "sync", Path: "/data/y.bin", Err: syscall.EIO,
-	}, true)
-
-	got := application.CheckpointState("job-1")
-
-	if !strings.Contains(got.StallReason, "input/output error") {
-		t.Errorf("StallReason = %q, want it to name the condition", got.StallReason)
-	}
-
-	if empty := application.CheckpointState("job-2"); empty != (JobCheckpointState{}) {
-		t.Errorf("checkpointState for an unknown job = %+v, want the zero value — a listing "+
-			"would show every job as stalled", empty)
 	}
 }

@@ -2820,7 +2820,7 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 	const speed = 1024.0 * 1024.0 // 1 MiB/s; well above the noise floor
 	duStatus := &directunpack.Status{CurrentSet: "vol01"}
 
-	slot := buildSlot(row, j, true /* queue-wide paused */, speed, 2, duStatus, app.JobCheckpointState{})
+	slot := buildSlot(row, j, true /* queue-wide paused */, speed, 2, duStatus, "")
 
 	if slot.NzoID != j.ID() {
 		t.Errorf("NzoID = %q, want %q", slot.NzoID, j.ID())
@@ -3010,7 +3010,7 @@ func TestQueueSlot_TransientNilJobPreservesProgress(t *testing.T) {
 		RemainingBytes: 200,
 	}
 
-	slot := buildSlot(r, nil, false, 0, 0, nil, app.JobCheckpointState{})
+	slot := buildSlot(r, nil, false, 0, 0, nil, "")
 
 	if slot.Percentage != 80 {
 		t.Errorf("slot.Percentage = %d, want 80", slot.Percentage)
@@ -3032,7 +3032,7 @@ func TestBuildSlot_PercentageClamped(t *testing.T) {
 		},
 		RemainingBytes: 1500,
 	}
-	slot := buildSlot(r, nil, false, 0, 0, nil, app.JobCheckpointState{})
+	slot := buildSlot(r, nil, false, 0, 0, nil, "")
 	if slot.Percentage != 0 {
 		t.Errorf("slot.Percentage = %d, want 0", slot.Percentage)
 	}

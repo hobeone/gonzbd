@@ -81,17 +81,17 @@ func TestNopApp_Contract(t *testing.T) {
 	if statuses := app.DirectUnpackStatuses(); statuses != nil {
 		t.Errorf("DirectUnpackStatuses() = %v, want nil", statuses)
 	}
-	if states := app.CheckpointStates(); states != nil {
-		t.Errorf("CheckpointStates() = %v on an unconfigured NopApp, want nil", states)
+	if states := app.StallReasons(); states != nil {
+		t.Errorf("StallReasons() = %v on an unconfigured NopApp, want nil", states)
 	}
-	if st := app.CheckpointState("job1"); st != (appkg.JobCheckpointState{}) {
-		t.Errorf("CheckpointState() = %+v on an unconfigured NopApp, want the zero value", st)
+	if st := app.StallReason("job1"); st != (appkg.StallInfo{}) {
+		t.Errorf("StallReason() = %+v on an unconfigured NopApp, want the zero value", st)
 	}
-	configured := NopApp{CheckpointStatesVal: map[string]appkg.JobCheckpointState{
-		"job1": {StallReason: "Stalled: disk full"},
+	configured := NopApp{StallReasonsVal: map[string]string{
+		"job1": "Stalled: disk full",
 	}}
-	if st := configured.CheckpointState("job1"); st.StallReason == "" {
-		t.Errorf("CheckpointState(job1) = %+v, want the configured figures — the queue detail "+
+	if st := configured.StallReason("job1"); st.Reason == "" {
+		t.Errorf("StallReason(job1) = %+v, want the configured figures — the queue detail "+
 			"endpoint reads this one, and a stub that dropped them would make its assertions "+
 			"pass against a handler that sends nothing", st)
 	}

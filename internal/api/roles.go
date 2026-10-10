@@ -72,13 +72,13 @@ type StatusReporter interface {
 	// application-wide mutex once per request instead of once per job
 	// (OPT-12).
 	DirectUnpackStatuses() map[string]directunpack.Status
-	// CheckpointStates returns each parked job's stall reason, keyed by job ID.
+	// StallReasons returns each parked job's stall reason, keyed by job ID.
 	// Snapshotted once per request for the same reason DirectUnpackStatuses is.
-	CheckpointStates() map[string]app.JobCheckpointState
-	// CheckpointState returns one job's figures, for the single-job detail
+	StallReasons() map[string]string
+	// StallReason returns one job's stall state, for the single-job detail
 	// endpoint. Separate from the map above so the drawer does not build a
 	// snapshot of every job in the queue to read one entry out of it.
-	CheckpointState(jobID string) app.JobCheckpointState
+	StallReason(jobID string) app.StallInfo
 	// BinaryVersionsInfo returns resolved external-tool version strings
 	// captured at startup, for the status page.
 	BinaryVersionsInfo() app.BinaryVersions
