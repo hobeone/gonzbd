@@ -35,6 +35,11 @@ import (
 // articles are not marked failed (A1) and their bytes are not charged against
 // par2; the next dispatch cycle will pick them up again.
 //
+// It clears Emitted only. An article a failed fsync rolled back (the
+// assembler's releasePoisoned) was already marked Done when its WriteAt
+// returned; its Done bit and buffered row go with the untrust of its file,
+// which the assembler reports right after (handleFileUntrusted).
+//
 // Thread-safe: clears the emitted bits under the job lock. It does NOT touch
 // the assembler.
 func (app *Application) handleArticlesUnwritten(jobID string, fileIdx int, artIdxs []int32) {

@@ -736,6 +736,37 @@ func TestLooseRecord_CloseTimeFsyncFaultUntrusts(t *testing.T) {
 	}
 }
 
+// TestLooseRecord_PoisonedSyncReturnsArticlesToOutstanding pins the in-process
+// half: a close-handles fsync that fails rolls its articles back
+// (OnArticlesUnwritten) and untrusts the file, so the written articles are
+// Outstanding again in this process and their buffered rows never reach
+// SQLite.
+func TestLooseRecord_PoisonedSyncReturnsArticlesToOutstanding(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	fs := &failingFsync{}
+	a := env.newApp(t, func(a *Application) { a.syncFile = fs.sync })
+	a.start(t)
+	j := a.addJob(t, "poison", 4, 2)
+	a.deliver(t, j, 0)
+	a.deliver(t, j, 1)
+	lrWaitFor(t, "two articles written", func() bool { return articleDone(j, 0) && articleDone(j, 1) })
+
+	fs.armed.Store(true)
+	if err := a.assembler.CloseJobHandles(t.Context(), j.ID()); err == nil {
+		t.Fatal("fixture: CloseJobHandles reported no fault for a failed fsync")
+	}
+	if articleDone(j, 0) || articleDone(j, 1) {
+		t.Error("an article whose fsync failed is still Done in this process")
+	}
+	if err := a.recorder.flush(t.Context()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if got := rowsFor(t, a.repo.DB(), j.ID()); len(got) != 0 {
+		t.Errorf("%d buffered rows of a poisoned file reached SQLite", len(got))
+	}
+}
+
 // TestLooseRecord_CompleteFileInstallsItsFailedSet pins open design item 1: a
 // complete=1 file's failed set is every article of its range without a row,
 // installed with the rows, so hasFailedArticle answers before anything that

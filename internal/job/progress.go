@@ -1175,25 +1175,28 @@ type fileProgressJSON struct {
 // emitted in particular must never survive a restart: on crash recovery, any
 // article the assembler had not yet written needs to be re-dispatched, and
 // persisting emitted would let it be silently skipped. The done bit is what
-// marks an article as resolved, and nothing sets it from dispatch: markDone is
-// reached from ackDurable, whose only caller Job.AckDurable needs a
-// DurableProof a completed fsync minted; from seedFromRuns and
-// ReplaceFromRuns, which replay runs that same fsync recorded; and from
-// applyResolution, which replays the resolution derived from those same
-// records on re-hydration; and from Job.MarkArticleDone, which calls markDone
-// with no DurableProof. The first two became unexported *Job methods in
-// B2.4a — the doors and their evidence are unchanged, only the receiver moved.
-// setFailedBits sets it too, for an article whose bytes will never arrive —
-// through markFailed, or directly from Job.MarkArticleFailed while the
-// manifest is evicted. newJobProgressSized sets the bits directly as well,
-// restoring the persisted done and failed bits of an earlier run when a
-// JobProgress is built from them. Job.MarkArticleDone's one non-test caller
-// is recorder.noteWritten in internal/app/record.go, and nothing outside tests
-// builds a recorder at this commit — `git grep -n '[n]ewRecorder(' -- '*.go'
-// ':!*_test.go'` finds 1 line, its declaration — so every persisted done bit
-// here stands on a completed fsync or a permanent failure, never on a write
-// that was merely attempted (#355), and the pair is consistent. A caller of
-// MarkArticleDone must bring its own evidence that the bytes are on disk.
+// marks an article as resolved, and nothing sets it from dispatch. Its doors
+// are MarkArticleWritten, which the recorder calls once the article's WriteAt
+// has returned (internal/app/record.go); installRows, through InstallVerified
+// and InstallCompleteFile, which install rows a restart or retry read back
+// and fsynced, or rows of a complete=1 file whose fsync preceded the flag;
+// setFailedBits, for an article whose bytes will never arrive; and
+// newJobProgressSized, restoring bits a JobProgress is built from. AckDurable,
+// SeedFromRuns, ReplaceFromRuns, ApplyResolution and MarkArticleDone reach
+// markDone too, and none has a caller outside this package and
+// internal/durability, whose Barrier nothing in production builds —
+// `git grep -n -E '\.(AckDurable|ApplyResolution|MarkArticleDone|ReplaceFromRuns|SeedFromRuns)\(' -- '*.go' ':!*_test.go' ':!internal/job/*' ':!internal/durability/*'`
+// finds 0 lines.
+//
+// So a Done bit from MarkArticleWritten stands on a write, not on an fsync.
+// What stops it outliving bytes that never reached the disk is the untrust:
+// a failed fsync at completion (FileWriter.finish), at CloseJobHandles or at
+// worker exit — the assembler's fsyncs of a file it writes, apart from the
+// sync target's opSync, which only the Barrier drives — untrusts the file (Application.handleFileUntrusted), which deletes its rows, purges its
+// buffered ones and clears its Done bits. What a crash loses before any fsync
+// is caught by the next start, which reads every row back before installing
+// it. A caller of MarkArticleDone must bring its own evidence that the bytes
+// are on disk.
 //
 // TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list above.
 // Add a door onto the bit and it fails by name.
