@@ -1175,9 +1175,13 @@ type fileProgressJSON struct {
 // through markFailed, or directly from Job.MarkArticleFailed while the
 // manifest is evicted. newJobProgressSized sets the bits directly as well,
 // restoring the persisted done and failed bits of an earlier run when a
-// JobProgress is built from them. So a persisted done bit always stands on a completed
-// fsync or a permanent failure — never on a write that was merely attempted
-// (#355) — and the pair is consistent.
+// JobProgress is built from them. Job.MarkArticleDone has no non-test caller
+// at this commit — `git grep -n '[M]arkArticleDone(' -- '*.go'
+// ':!*_test.go'` finds 1 line, its declaration in content.go — so every
+// persisted done bit here stands on a completed fsync or a permanent failure,
+// never on a write that was merely attempted (#355), and the pair is
+// consistent. A caller of MarkArticleDone must bring its own evidence that
+// the bytes are on disk.
 //
 // TestDoneBitWriters_MatchTheEnumerationStatedInProse enforces the list above.
 // Add a door onto the bit and it fails by name.
