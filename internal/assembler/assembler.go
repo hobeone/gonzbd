@@ -278,8 +278,9 @@ type Options struct {
 	// article whose bytes were written without error: off and n are the range,
 	// crc the article's CRC32. It is not called for a refused article or a
 	// faulted write. A zero-length article is reported with n == 0 but claims
-	// no range (ownedRanges.claim), so a restart's verifier (app.verifyJobFiles)
-	// deletes its row and the article is fetched again.
+	// no range (ownedRanges.claim); its row (length 0, CRC 0) is verified
+	// across a restart without reading the file (docs/durability-contract.md
+	// §5).
 	//
 	// It reports a write, not durability: a later failed Sync can roll the
 	// article back (FileWriter.poisonSync), and OnArticlesUnwritten then names
