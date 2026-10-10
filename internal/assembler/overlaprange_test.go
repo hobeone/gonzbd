@@ -352,3 +352,61 @@ func TestOverlap_ZeroLengthArticleDoesNotBlockCoveringNeighbour(t *testing.T) {
 		t.Error("C's range [1000,2000) was not written intact")
 	}
 }
+
+// TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused pins that
+// acceptArticle probes the arrival's whole range, not its first byte. In both
+// cases the arrival starts BEFORE the incumbent, so a probe of its first byte
+// alone finds nothing, the arrival is written over the incumbent, and claim
+// panics on the intersecting entry.
+func TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		incOff, arrOff    int64
+		incLen, arrLen    int
+		incByte, arrivals byte
+	}{
+		{"left_straddle", 1000, 900, 1000, 200, 'C', 'B'},
+		{"enclosing", 3000, 2500, 100, 1000, 'D', 'E'},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newHelperAssembler()
+			var rejected []int32
+			a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+				rejected = append(rejected, artIdx)
+			}
+			f := newHelperFile(t, t.TempDir(), "before.dat", 4000)
+			f.info.TotalParts = 2
+			open := map[fileKey]*openFile{{jobID: "job", fileIdx: 0}: f}
+			completedSet := map[fileKey]struct{}{}
+			submit := func(idx int32, off int64, b byte, n int) {
+				t.Helper()
+				defer func() {
+					if p := recover(); p != nil {
+						t.Fatalf("article %d at [%d,%d) panicked the worker: %v", idx, off, off+int64(n), p)
+					}
+				}()
+				a.processRequest(WriteRequest{
+					JobID: "job", FileIdx: 0, ArtIdx: idx, MessageID: string('a'+idx) + "@example",
+					Offset: off, Data: bytes.Repeat([]byte{b}, n),
+				}, open, completedSet)
+			}
+
+			submit(0, tc.incOff, tc.incByte, tc.incLen)
+			submit(1, tc.arrOff, tc.arrivals, tc.arrLen)
+
+			if !slices.Equal(rejected, []int32{1}) {
+				t.Errorf("OnArticleRejected = %v, want [1] — the arrival [%d,%d) intersects the "+
+					"incumbent [%d,%d)", rejected, tc.arrOff, tc.arrOff+int64(tc.arrLen),
+					tc.incOff, tc.incOff+int64(tc.incLen))
+			}
+			got, err := os.ReadFile(f.info.Path)
+			if err != nil {
+				t.Fatalf("read back: %v", err)
+			}
+			inc := got[tc.incOff : tc.incOff+int64(tc.incLen)]
+			if !bytes.Equal(inc, bytes.Repeat([]byte{tc.incByte}, tc.incLen)) {
+				t.Errorf("the incumbent's range was overwritten by the arrival")
+			}
+		})
+	}
+}
