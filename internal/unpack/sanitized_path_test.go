@@ -1,6 +1,7 @@
 package unpack_test
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -47,5 +48,52 @@ func TestNewSanitizedPath(t *testing.T) {
 				t.Errorf("Abs() = %q, want %q", got.Abs("/tmp/out"), "/tmp/out/"+tt.wantRel)
 			}
 		})
+	}
+}
+
+// MemberPath is the name check both RAR extraction loops apply to every
+// member. rarengine rewrites "../" out of names before they reach it, so a
+// fixture cannot exercise it; it is driven with the names directly.
+func TestMemberPath(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		oneFolder bool
+		wantRel   string // "" means refused
+	}{
+		{"../x", false, ""},
+		{"a/../../x", false, ""},
+		{`..\..\etc\passwd`, false, ""},
+		{"a/b\x00c", false, ""},
+		{"", false, ""},
+		{".", false, ""},
+		{"/etc/passwd", false, "etc/passwd"},
+		{`dir\sub\file.mkv`, false, "dir/sub/file.mkv"},
+		{"a/./b//c.txt", false, "a/b/c.txt"},
+		{"../x", true, "x"},
+		{"movie.mkv", false, "movie.mkv"},
+	} {
+		var lines []string
+		var logs strings.Builder
+		opts := unpack.Options{OneFolder: tc.oneFolder, OnLine: func(l string) { lines = append(lines, l) }}
+		sp, ok := unpack.MemberPath(tc.name, opts, slog.New(slog.NewTextHandler(&logs, nil)))
+		if tc.wantRel == "" {
+			if ok {
+				t.Errorf("MemberPath(%q) accepted as %q, want refused", tc.name, sp.Rel())
+			}
+			if len(lines) != 1 || lines[0] != "Skipping bad path: "+tc.name {
+				t.Errorf("MemberPath(%q) reported %v", tc.name, lines)
+			}
+			if !strings.Contains(logs.String(), "skipping entry with bad path") {
+				t.Errorf("MemberPath(%q) refusal not logged: %s", tc.name, logs.String())
+			}
+			continue
+		}
+		if !ok || sp.Rel() != tc.wantRel {
+			t.Errorf("MemberPath(%q, oneFolder=%v) = %q, %v; want %q", tc.name, tc.oneFolder, sp.Rel(), ok, tc.wantRel)
+		}
+		if len(lines) != 0 {
+			t.Errorf("MemberPath(%q) reported %v for an accepted name", tc.name, lines)
+		}
 	}
 }

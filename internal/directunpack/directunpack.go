@@ -677,50 +677,18 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader
 			return nil, fmt.Errorf("directunpack: read header: %w", err)
 		}
 
-		sp, sanitizeErr := unpack.NewSanitizedPath(entry.Header.Name, d.opts.OneFolder)
-		if sanitizeErr != nil {
-			d.log.Warn("directunpack: skipping entry with bad path", "raw_name", entry.Header.Name, "err", sanitizeErr)
-			if err := unpack.CloseMember(entry); err != nil {
-				if ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
-				return nil, fmt.Errorf("directunpack: verify %s: %w", entry.Header.Name, err)
-			}
-			continue
-		}
-
-		destRel := sp.Rel()
-		destPath := sp.Abs(d.extractDir)
-		unpackOpts := unpack.Options{
-			OneFolder:        d.opts.OneFolder,
-			OverwriteFiles:   d.opts.OverwriteFiles,
-			IgnoreUnrarDates: d.opts.IgnoreUnrarDates,
-			DecodeWorkers:    d.opts.DecodeWorkers,
-			OnLine:           d.opts.OnLine,
-		}
-		if err := unpack.ExtractEntryRarengine(ctx, root, d.extractDir, destRel, destPath, entry.Header, entry, unpackOpts, d.log); err != nil {
+		destPath, err := d.extractMember(ctx, root, entry.Header, entry)
+		if err != nil {
 			_ = r.Close()
 			_ = entry.Close()
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
 			unpack.NoteDictionaryLimit(d.log, err, entry.Header)
-			return nil, fmt.Errorf("directunpack: extract %s: %w", entry.Header.Name, err)
+			return nil, err
 		}
-
-		if err := unpack.CloseMember(entry); err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			unpack.NoteDictionaryLimit(d.log, err, entry.Header)
-			return nil, fmt.Errorf("directunpack: verify %s: %w", entry.Header.Name, err)
-		}
-
-		if unpack.ExtractedEntryExists(entry.Header) {
+		if destPath != "" {
 			extractedFiles = append(extractedFiles, destPath)
-		}
-		if d.opts.OnLine != nil {
-			d.opts.OnLine("Extracting  " + entry.Header.Name)
 		}
 	}
 
@@ -732,6 +700,42 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader
 	}
 
 	return extractedFiles, nil
+}
+
+// extractMember writes one member (header fh, content entry) into the
+// extraction directory through root and closes it, which is where its verdict
+// is reported. It returns the member's path, or "" when the member leaves
+// nothing to list: a directory, a link, or a name unpack.MemberPath refuses.
+// On an error the entry may still be open; the caller closes it.
+func (d *DirectUnpacker) extractMember(ctx context.Context, root *os.Root, fh *rarengine.FileHeader, entry io.ReadCloser) (string, error) {
+	opts := unpack.Options{
+		OneFolder:        d.opts.OneFolder,
+		OverwriteFiles:   d.opts.OverwriteFiles,
+		IgnoreUnrarDates: d.opts.IgnoreUnrarDates,
+		DecodeWorkers:    d.opts.DecodeWorkers,
+		OnLine:           d.opts.OnLine,
+	}
+	sp, ok := unpack.MemberPath(fh.Name, opts, d.log)
+	if !ok {
+		if err := unpack.CloseMember(entry); err != nil {
+			return "", fmt.Errorf("directunpack: verify skipped %s: %w", fh.Name, err)
+		}
+		return "", nil
+	}
+	destPath := sp.Abs(d.extractDir)
+	if err := unpack.ExtractEntryRarengine(ctx, root, d.extractDir, sp.Rel(), destPath, fh, entry, opts, d.log); err != nil {
+		return "", fmt.Errorf("directunpack: extract %s: %w", fh.Name, err)
+	}
+	if err := unpack.CloseMember(entry); err != nil {
+		return "", fmt.Errorf("directunpack: verify %s: %w", fh.Name, err)
+	}
+	if d.opts.OnLine != nil {
+		d.opts.OnLine("Extracting  " + fh.Name)
+	}
+	if !unpack.ExtractedEntryExists(fh) {
+		return "", nil
+	}
+	return destPath, nil
 }
 
 // waitForVolume blocks until the specified volume is in completedVols.

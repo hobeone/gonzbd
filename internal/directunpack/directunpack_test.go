@@ -4,15 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/hobeone/rarengine"
 )
 
 // testdataDir returns the path to internal/unpack/testdata/ which contains
@@ -1320,5 +1324,74 @@ func TestDirectUnpack_ContainmentViolationFailsTheRun(t *testing.T) {
 	}
 	if !strings.Contains(fmt.Sprint(failures), "containment") {
 		t.Errorf("failure does not name the containment check: %+v", failures)
+	}
+}
+
+// fakeMember stands in for a *rarengine.Entry: content to read, and the
+// verdict Close reports.
+type fakeMember struct {
+	r        io.Reader
+	closeErr error
+	closes   int
+}
+
+func (m *fakeMember) Read(p []byte) (int, error) { return m.r.Read(p) }
+func (m *fakeMember) Close() error {
+	m.closes++
+	return m.closeErr
+}
+
+// extractMember closes every member it is handed and returns the verdict
+// Close reports, whether the member was written or skipped for its name. A
+// rarengine Entry reports a bad digest from Read, and rarengine rewrites "../"
+// out of names, so both cases need a fake member and header to produce.
+func TestDirectUnpacker_ExtractMember(t *testing.T) {
+	errVerdict := errors.New("verdict at close")
+	for _, tc := range []struct {
+		name, member string
+		closeErr     error
+		wantPath     bool
+		wantErr      string
+	}{
+		{"written", "a/movie.mkv", nil, true, ""},
+		{"written, verdict at close", "movie.mkv", errVerdict, false, "directunpack: verify movie.mkv: verdict at close"},
+		{"bad name skipped", "../escape.mkv", nil, false, ""},
+		{"bad name, verdict at close", "../escape.mkv", errVerdict, false, "directunpack: verify skipped ../escape.mkv: verdict at close"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			extractDir := t.TempDir()
+			root, err := os.OpenRoot(extractDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			var lines []string
+			d := New(testLogger(t), "test-job", t.TempDir(), extractDir, Options{OnLine: func(l string) { lines = append(lines, l) }})
+			m := &fakeMember{r: strings.NewReader("content"), closeErr: tc.closeErr}
+			fh := &rarengine.FileHeader{Name: tc.member, UnpackedSize: int64(len("content"))}
+			got, err := d.extractMember(context.Background(), root, fh, m)
+			if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || err.Error() != tc.wantErr || !errors.Is(err, errVerdict)) {
+				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+			if m.closes != 1 {
+				t.Errorf("member closed %d times, want 1", m.closes)
+			}
+			if tc.wantPath {
+				if got != filepath.Join(extractDir, tc.member) {
+					t.Errorf("path = %q, want the member under the extraction dir", got)
+				}
+				if b, rerr := os.ReadFile(got); rerr != nil || string(b) != "content" {
+					t.Errorf("written member = %q, %v", b, rerr)
+				}
+				if !slices.Contains(lines, "Extracting  "+tc.member) {
+					t.Errorf("extraction not reported: %v", lines)
+				}
+			} else if got != "" {
+				t.Errorf("path = %q, want none", got)
+			}
+			if _, lerr := os.Lstat(filepath.Join(filepath.Dir(extractDir), "escape.mkv")); !os.IsNotExist(lerr) {
+				t.Errorf("a bad name was written outside the extraction dir: %v", lerr)
+			}
+		})
 	}
 }

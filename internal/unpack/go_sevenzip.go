@@ -310,9 +310,9 @@ func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, 
 	// Skip non-regular files: symlinks can escape outDir via relative
 	// targets; device/pipe/socket entries are meaningless from archives.
 	if f.Mode()&fs.ModeSymlink != 0 {
-		log.Warn("skipping symlink entry", "name", f.Name)
+		log.Warn("skipping link entry: extraction creates no links in a job", "name", f.Name)
 		if opts.OnLine != nil {
-			opts.OnLine("Skipping symlink: " + f.Name)
+			opts.OnLine("Skipping link: " + f.Name)
 		}
 		return false, nil
 	}
