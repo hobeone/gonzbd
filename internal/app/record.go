@@ -389,14 +389,40 @@ func (app *Application) handleFileUntrusted(jobID string, fileIdx int) {
 }
 
 // enqueueResumedCompletion hands the consumer of internalFileComplete a file
-// the verifier finished by path, marked Resumed.
+// the verifier finished by path, marked Resumed. It reads app.ctx, so it is
+// called only once Start has set it. Its callers are a hydration's
+// residency.finished and a retry; a hydration runs from a dispatcher tick,
+// from a rename (Dispatcher.SetName's LoadProgress), and inside Start from
+// hydratePausedJobs and fileOwedUnwantedFailures.
+//
+// When the channel is full the send moves to its own goroutine, which gives
+// up when app.ctx is cancelled. It cannot block the caller: hydratePausedJobs
+// runs synchronously inside Dispatcher.StartWith, before Start launches
+// watchCompletions, so with the channel's 128 slots full a blocking send would
+// hang Start. It is not on app.wg: the dispatcher, whose tick hydrates, stops
+// after Shutdown's app.wg.Wait (joinAndStop), so a wg.Go from a late tick
+// could race that Wait. app.ctx is cancelled on every Shutdown of a started
+// app (joinAndStop) and on every failed Start, so the goroutine cannot
+// outlive the app; a completion it gives up is re-derived by the next start's
+// verification.
 func (app *Application) enqueueResumedCompletion(jobID string, fileIdx int) {
 	fc := FileComplete{JobID: jobID, FileIdx: fileIdx, Resumed: true}
 	select {
 	case app.internalFileComplete <- fc:
+		return
 	default:
-		app.wg.Go(func() { app.internalFileComplete <- fc })
 	}
+	ctx := app.ctx
+	app.resumedInFlight.Add(1)
+	go func() {
+		defer app.resumedInFlight.Add(-1)
+		select {
+		case app.internalFileComplete <- fc:
+		case <-ctx.Done():
+			app.log.Info("resumed completion not delivered; the app is stopping",
+				"job", jobID, "fileidx", fileIdx)
+		}
+	}()
 }
 
 // syncFileHandle is the assembler's Options.SyncFile: the syncFile seam when a

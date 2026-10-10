@@ -128,6 +128,9 @@ type Application struct {
 
 	internalFileComplete chan FileComplete
 	onFileComplete       func(jobID string, fileIdx int)
+	// resumedInFlight counts enqueueResumedCompletion's fallback senders that
+	// have not yet delivered or given up, so a test can see them exit.
+	resumedInFlight atomic.Int32
 
 	// durable is the store that owns a job's per-job rows: job_files and
 	// written_articles. Nil when there is no history database.

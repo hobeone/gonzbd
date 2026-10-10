@@ -238,6 +238,9 @@ func TestHandleFileUntrusted_ReturnsArticlesToOutstandingWhenSQLiteFails(t *test
 func TestEnqueueResumedCompletion_DeliversWhenTheChannelIsFull(t *testing.T) {
 	t.Parallel()
 	a := newLREnv(t).newApp(t)
+	// The app.ctx Start would set; nothing consumes the channel but this test.
+	a.ctx, a.cancel = context.WithCancel(t.Context())
+	t.Cleanup(a.cancel)
 	for len(a.internalFileComplete) < cap(a.internalFileComplete) {
 		a.internalFileComplete <- FileComplete{JobID: "filler"}
 	}
@@ -255,6 +258,82 @@ func TestEnqueueResumedCompletion_DeliversWhenTheChannelIsFull(t *testing.T) {
 		case <-deadline:
 			t.Fatal("the resumed completion was never delivered")
 		}
+	}
+}
+
+// waitResumedSenders waits for every enqueueResumedCompletion fallback sender
+// to finish, and reports how many are left when it gives up.
+func waitResumedSenders(a *Application) int32 {
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if a.resumedInFlight.Load() == 0 {
+			return 0
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return a.resumedInFlight.Load()
+}
+
+// TestEnqueueResumedCompletion_StartDoesNotWaitForTheConsumer pins that more
+// Resumed completions than the channel holds, queued inside Start before
+// watchCompletions runs (as hydratePausedJobs queues them), neither block
+// Start nor are lost: each is delivered once the consumer runs.
+func TestEnqueueResumedCompletion_StartDoesNotWaitForTheConsumer(t *testing.T) {
+	t.Parallel()
+	const n = 200
+	a := newLREnv(t).newApp(t, func(app *Application) {
+		app.startedTransitionHook = func() {
+			for i := range n {
+				app.enqueueResumedCompletion("no-such-job", i)
+			}
+		}
+	})
+	if c := cap(a.internalFileComplete); n <= c {
+		t.Fatalf("fixture: %d completions do not overfill a channel of %d", n, c)
+	}
+	started := make(chan error, 1)
+	go func() { started <- a.Start(t.Context()) }()
+	select {
+	case err := <-started:
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		// The blocked Start resumes when t.Context is cancelled; stop it then.
+		t.Cleanup(func() {
+			if err := <-started; err == nil {
+				a.StopAndJoin(t)
+			}
+		})
+		t.Fatalf("Start did not return with %d resumed completions queued before the consumer runs", n)
+	}
+	t.Cleanup(func() { a.StopAndJoin(t) })
+	if left := waitResumedSenders(a.Application); left != 0 {
+		t.Errorf("%d resumed senders never delivered once the consumer ran", left)
+	}
+}
+
+// TestEnqueueResumedCompletion_SenderExitsAtShutdown pins the other way out:
+// a dispatcher tick can hydrate after Shutdown has stopped the consumer (the
+// dispatcher stops last), and a sender that finds the channel full then gives
+// up on app.ctx rather than outliving the app.
+func TestEnqueueResumedCompletion_SenderExitsAtShutdown(t *testing.T) {
+	t.Parallel()
+	a := newLREnv(t).newApp(t)
+	if err := a.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := a.Shutdown(); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	for len(a.internalFileComplete) < cap(a.internalFileComplete) {
+		a.internalFileComplete <- FileComplete{JobID: "filler"}
+	}
+	for i := range 20 {
+		a.enqueueResumedCompletion("late", i)
+	}
+	if left := waitResumedSenders(a.Application); left != 0 {
+		t.Errorf("%d resumed senders outlived Shutdown: a sender that cannot deliver must give up on app.ctx", left)
 	}
 }
 
