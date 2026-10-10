@@ -638,6 +638,44 @@ func TestReadBackFile_RefusesASymlinkOutOfTheJobDirectory(t *testing.T) {
 	}
 }
 
+// TestVerifierOpens_CloseTheirRoots pins that readBackFile and
+// finishFileByPath each close the os.Root they open, so a pass does not leak
+// a directory descriptor per file. A closed Root answers ErrClosed.
+//
+// Not parallel: it replaces the package-level openRoot seam.
+func TestVerifierOpens_CloseTheirRoots(t *testing.T) {
+	f := newVerifyFixture(t)
+	orig := openRoot
+	t.Cleanup(func() { openRoot = orig })
+	var opened []*os.Root
+	openRoot = func(dir string) (*os.Root, error) {
+		r, err := orig(dir)
+		if err == nil {
+			opened = append(opened, r)
+		}
+		return r, err
+	}
+	assertClosed := func(what string) {
+		t.Helper()
+		if len(opened) != 1 {
+			t.Fatalf("%s opened %d roots, want 1", what, len(opened))
+		}
+		if _, err := opened[0].Stat("."); !errors.Is(err, os.ErrClosed) {
+			t.Errorf("%s left its root open: Stat on it = %v, want ErrClosed", what, err)
+		}
+		opened = nil
+	}
+
+	if _, err := readBackFile(t.Context(), f.loc(), f.rows, make([]byte, verifyBufSize), false); err != nil {
+		t.Fatalf("readBackFile: %v", err)
+	}
+	assertClosed("readBackFile")
+	if err := finishFileByPath(f.loc(), int64(len(f.data))); err != nil {
+		t.Fatalf("finishFileByPath: %v", err)
+	}
+	assertClosed("finishFileByPath")
+}
+
 // TestReadBackFile_RefusesANameThatClimbsOutOfTheJobDirectory: a name the
 // resolver failed to sanitize is refused by the open, not followed.
 func TestReadBackFile_RefusesANameThatClimbsOutOfTheJobDirectory(t *testing.T) {

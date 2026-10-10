@@ -1,5 +1,25 @@
 pkg ./internal/app/
-run Test(ReadBackFile_RefusesASymlinkOutOfTheJobDirectory|ReadBackFile_RefusesANameThatClimbsOutOfTheJobDirectory|ReadBackFile_AMissingFileInAnExistingDirectoryIsGone|VerifyJobFiles_SymlinkOutOfTheJobDirectoryIsAFault|FinishFileByPath_RefusesASymlinkOutOfTheJobDirectory|JobFileLocation_AgreesWithTheWritersJoin)$
+run Test(ReadBackFile_RefusesASymlinkOutOfTheJobDirectory|ReadBackFile_RefusesANameThatClimbsOutOfTheJobDirectory|ReadBackFile_AMissingFileInAnExistingDirectoryIsGone|VerifyJobFiles_SymlinkOutOfTheJobDirectoryIsAFault|FinishFileByPath_RefusesASymlinkOutOfTheJobDirectory|JobFileLocation_AgreesWithTheWritersJoin|VerifierOpens_CloseTheirRoots)$
+
+[the read-back leaves its root open]
+file internal/app/verify.go
+--- anchor
+	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
+	fh, err := root.Open(loc.Name)
+--- replace
+	defer func() { _ = root }()
+	fh, err := root.Open(loc.Name)
+--- end
+
+[the finish leaves its root open]
+file internal/app/verify.go
+--- anchor
+	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
+	fh, err := root.OpenFile(loc.Name, os.O_RDWR, 0)
+--- replace
+	defer func() { _ = root }()
+	fh, err := root.OpenFile(loc.Name, os.O_RDWR, 0)
+--- end
 
 # The verifier opens a job's files through an os.Root on the job directory,
 # so a symlink or a name leading out of it is refused at the open. Each open
