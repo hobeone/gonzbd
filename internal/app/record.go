@@ -299,7 +299,11 @@ func (r *recorder) run(ctx context.Context, every time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_ = r.flush(ctx) // flush logs its own failure
+			// Bounded: the flush holds wmu, which an untrust on the assembler's
+			// worker (handleFileUntrusted) waits for.
+			fctx, cancel := context.WithTimeout(ctx, recorderFlushTimeout)
+			_ = r.flush(fctx) // flush logs its own failure
+			cancel()
 		}
 	}
 }
@@ -310,8 +314,9 @@ type nopRecordStore struct{}
 
 func (nopRecordStore) ApplyRecord(context.Context, []durability.RecordBatch) error { return nil }
 
-// recorderFlushTimeout bounds a flush that runs on a teardown path: the
-// finalizer's persistAndCommit and the hand-over to post-processing.
+// recorderFlushTimeout bounds a flush: the periodic one in run, the finalizer's
+// persistAndCommit and the hand-over to post-processing. Shutdown's flush has
+// its own step budget instead.
 const recorderFlushTimeout = 2 * time.Second
 
 // untrustTimeout bounds the synchronous SQLite write that untrusts a file. It
@@ -322,7 +327,9 @@ const recorderFlushTimeout = 2 * time.Second
 // worker's reply, and an untrust that used all of it would leave the close
 // timed out with its fault unseen. One untrust leaves the close 3s; a close
 // with several failing files spends this bound once per file. It does not
-// cover the wait for wmu behind a flush already writing.
+// cover the wait for wmu: behind a flush already writing, that wait lasts at
+// most recorderFlushTimeout (Shutdown's step budget for its own flush); behind
+// a verification's or a retry's apply, this bound does not hold it.
 const untrustTimeout = 2 * time.Second
 
 // lookupCurrent is the recorder's instance check: the job the dispatcher holds

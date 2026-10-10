@@ -178,13 +178,15 @@ And two ways out:
   and writes it in one transaction with `mu` released. On a store error it
   merges the snapshot back before releasing `wmu`. It runs every
   `defaultRecordInterval` (5 s) from `recorder.run` — which is what bounds a
-  crash's rework (B1) — and synchronously at three
+  crash's rework (B1), and which bounds each flush by `recorderFlushTimeout`
+  (2 s) because an untrust on the assembler's worker waits for `wmu` behind
+  it — and synchronously at three
   sites — `git grep -n -E 'recorder\.flush\(' -- '*.go' ':!*_test.go'` returns
   3 lines:
   - `Application.Shutdown`, after the assembler and the dispatcher have
-    stopped;
+    stopped, on Shutdown's step budget;
   - `enqueuePostProc`, after `CloseJobHandles` and before post-processing can
-    change the bytes the rows describe;
+    change the bytes the rows describe, bounded by `recorderFlushTimeout`;
   - `persistAndCommit`, after `historyRepo.Add` (so a failed `Add` does not
     lose progress) and before `RemoveJob` and reclaim, on its own 2 s budget.
 - **`apply`** commits verdicts, and optionally whole file states, for one job
