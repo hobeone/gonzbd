@@ -379,6 +379,17 @@ Where each extractor enforces it:
   independent copy. `7z` 25.01 restores a symlink member as a symlink, which is
   not published either.
 
+Moving a job creates no link either. When `finalize` falls back to moving file
+by file and a rename fails with `EXDEV`, `fsutil.MoveFile` copies only a
+regular file: a symlink, or anything else that is not a regular file, fails
+that entry with `fsutil.ErrNotRegularFile`, stays in `DownloadDir`, and turns
+the move into a partial move (see the `finalize` row above). A rename that
+succeeds — the whole-directory rename, or a per-file rename on one device —
+moves a name and creates nothing, so a link put into the download directory
+from outside gonzbd travels with it. gonzbd puts none there itself: the
+extractors above publish none, and every download write refuses a link in a
+file's place (`docs/durability-contract.md` § "3. A restart trusts only what it read back").
+
 ## Post-Processing (PP) Level Enforcement
 
 SABnzbd post-processing levels are cumulative integer levels on `postproc.Job.PP`
