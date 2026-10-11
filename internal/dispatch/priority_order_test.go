@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -44,6 +45,42 @@ func TestTick_WalksInPriorityOrderWithPositionAsTheTieBreak(t *testing.T) {
 	want := []string{"force", "high", "n1", "n2", "low"}
 	if got := walkIDs(d); !slices.Equal(got, want) {
 		t.Fatalf("tick walk order = %v, want %v", got, want)
+	}
+}
+
+// TestTick_PositionTieBreakHoldsBeyondInsertionSortThreshold pins the
+// position tie-break on a queue large enough to matter. slices.SortFunc
+// insertion-sorts fewer than 12 elements, which keeps equal elements in place,
+// so on a small fixture a comparator with no tie-break still reads as stable.
+// Forty jobs, every seventh High, takes it past that.
+func TestTick_PositionTieBreakHoldsBeyondInsertionSortThreshold(t *testing.T) {
+	d := newTestDispatcher(t)
+	var high, normal []string
+	for i := range 40 {
+		id := fmt.Sprintf("n%02d", i)
+		p := constants.NormalPriority
+		if i%7 == 3 {
+			p = constants.HighPriority
+		}
+		addAt(t, d, id, p)
+		if p == constants.HighPriority {
+			high = append(high, id)
+		} else {
+			normal = append(normal, id)
+		}
+	}
+	want := append(high, normal...)
+
+	if got := walkIDs(d); !slices.Equal(got, want) {
+		t.Fatalf("tick walk order = %v, want %v", got, want)
+	}
+	rows := d.List()
+	listed := make([]string, 0, len(rows))
+	for _, r := range rows {
+		listed = append(listed, r.ID)
+	}
+	if !slices.Equal(listed, want) {
+		t.Fatalf("List order = %v, want %v", listed, want)
 	}
 }
 

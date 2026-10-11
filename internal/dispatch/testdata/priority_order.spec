@@ -1,5 +1,5 @@
 pkg ./internal/dispatch/
-run TestTick_WalksInPriorityOrderWithPositionAsTheTieBreak|TestTick_HigherPriorityWinsTheOnlyLease|TestSetPriority_TakesEffectOnTheNextTick|TestRestore_KeepsPriorityOrder|TestList_FollowsDispatchOrder
+run TestTick_WalksInPriorityOrderWithPositionAsTheTieBreak|TestTick_HigherPriorityWinsTheOnlyLease|TestSetPriority_TakesEffectOnTheNextTick|TestRestore_KeepsPriorityOrder|TestList_FollowsDispatchOrder|TestTick_PositionTieBreakHoldsBeyondInsertionSortThreshold
 
 [the tick walks d.order and ignores priority]
 file internal/dispatch/registry.go
@@ -51,4 +51,12 @@ file internal/dispatch/registry.go
 --- replace
 	_ = e
 	d.kick()
+--- end
+
+[the position tie-break is dropped]
+file internal/dispatch/registry.go
+--- anchor
+		return cmp.Or(cmp.Compare(b.e.h.Priority, a.e.h.Priority), cmp.Compare(a.pos, b.pos))
+--- replace
+		return cmp.Compare(b.e.h.Priority, a.e.h.Priority)
 --- end
