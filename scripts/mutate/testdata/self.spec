@@ -548,3 +548,27 @@ func fail(format string, args ...any) int {
 --- end
 
 
+
+[the run lock admits a second holder]
+file scripts/mutate/runlock.go
+--- anchor
+syscall.LOCK_EX|syscall.LOCK_NB
+--- replace
+syscall.LOCK_SH|syscall.LOCK_NB
+--- end
+
+[every tree shares one lock]
+file scripts/mutate/runlock.go
+--- anchor
+sum := sha256.Sum256([]byte(key))
+--- replace
+sum := sha256.Sum256([]byte("one lock"))
+--- end
+
+[runSpec stops taking the lock]
+file scripts/mutate/main.go
+--- anchor
+release, err := acquireRunLock(root)
+--- replace
+release, err := func() (func(), error) { return func() {}, nil }()
+--- end
