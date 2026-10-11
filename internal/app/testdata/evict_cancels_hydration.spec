@@ -1,5 +1,18 @@
 pkg ./internal/app/
-run TestAppResidency_EvictEndsAHydrationBlockedInItsManifestRead|TestAppResidency_FaultAfterCancellationIsAContextError
+run TestAppResidency_EvictEndsAHydrationBlockedInItsManifestRead|TestAppResidency_EvictCancelsTheHydrationThatReplacesTheOneItCancelled|TestAppResidency_FaultAfterCancellationIsAContextError
+
+[Evict stops after the first hydration and leaves its replacement running]
+file internal/app/residency.go
+--- anchor
+		<-h.ready
+		r.mu.Lock()
+	}
+--- replace
+		<-h.ready
+		r.mu.Lock()
+		break
+	}
+--- end
 
 [Evict waits on the hydration without cancelling it]
 file internal/app/residency.go
