@@ -132,6 +132,51 @@ func TestMarkArticleFailedUncovered_ResetForgetsTheCharge(t *testing.T) {
 	checkFigures(t, j, 100)
 }
 
+// TestMarkArticleFailedUncovered_SecondFailureKeepsTheFirstCharge pins that a
+// charge is recorded only by the failure that set the failed bit. An article
+// already failed whole, whose redelivery is then refused for overlap, keeps
+// its full charge: a reduced one recorded afterwards would make recompute
+// disagree with the live figure, and a reset would subtract less than was
+// added.
+func TestMarkArticleFailedUncovered_SecondFailureKeepsTheFirstCharge(t *testing.T) {
+	t.Run("resident", func(t *testing.T) {
+		j := threeArticleJob(t)
+		if err := j.MarkArticleFailed(2); err != nil {
+			t.Fatalf("MarkArticleFailed: %v", err)
+		}
+		if err := j.MarkArticleFailedUncovered(2, 10); err != nil {
+			t.Fatalf("MarkArticleFailedUncovered: %v", err)
+		}
+		checkFigures(t, j, 100)
+
+		j.contentMu.Lock()
+		j.progress.recompute(j.manifest)
+		j.contentMu.Unlock()
+		checkFigures(t, j, 100)
+
+		j.contentMu.Lock()
+		j.progress.resetForReload(j.manifest, 0, true)
+		failed := j.progress.failedBytes
+		j.contentMu.Unlock()
+		if failed != 0 {
+			t.Errorf("failedBytes after the reset = %d, want 0", failed)
+		}
+	})
+	t.Run("evicted", func(t *testing.T) {
+		j, m := evictedThreeArticleJob(t)
+		if err := j.MarkArticleFailed(2); err != nil {
+			t.Fatalf("MarkArticleFailed: %v", err)
+		}
+		if err := j.MarkArticleFailedUncovered(2, 10); err != nil {
+			t.Fatalf("MarkArticleFailedUncovered: %v", err)
+		}
+		if err := j.RestoreContent(m); err != nil {
+			t.Fatalf("RestoreContent: %v", err)
+		}
+		checkFigures(t, j, 100)
+	})
+}
+
 // TestClone_DoesNotShareTheChargeMap pins that a clone keeps its own charges
 // when the original's are dropped.
 func TestClone_DoesNotShareTheChargeMap(t *testing.T) {

@@ -111,6 +111,31 @@ file internal/job/content.go
 	if charge, ok := j.progress.markFailedUncovered(j.manifest, artIdx, uncovered); ok || charge > 0 {
 --- end
 
+[a live charge is recorded before the failed bit is known to be new]
+file internal/job/progress.go
+--- anchor
+	if !p.setFailedBits(i) {
+		return 0, false
+	}
+	p.limitCharge(i, uncovered)
+--- replace
+	p.limitCharge(i, uncovered)
+	if !p.setFailedBits(i) {
+		return 0, false
+	}
+--- end
+
+[an evicted charge is recorded on an article already failed]
+file internal/job/content.go
+--- anchor
+		if j.progress.setFailedBits(artIdx) {
+			j.progress.limitCharge(artIdx, uncovered)
+		}
+--- replace
+		j.progress.setFailedBits(artIdx)
+		j.progress.limitCharge(artIdx, uncovered)
+--- end
+
 [a negative count is accepted]
 file internal/job/content.go
 --- anchor
