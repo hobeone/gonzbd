@@ -1,6 +1,7 @@
 package fsutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -83,6 +84,10 @@ func PathWithin(base, target string) bool {
 	}
 	return true
 }
+
+// ErrSymlinkEscape is returned by ResolveAndVerifyContainment when the
+// canonical target lies outside the canonical base.
+var ErrSymlinkEscape = errors.New("symlink target escapes source directory")
 
 // ResolveAndVerifyContainment resolves symlinks in both baseDir and
 // targetPath, then verifies that the canonical target is within or

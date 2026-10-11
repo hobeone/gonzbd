@@ -68,30 +68,31 @@ func TestCopyAndRemove_Regular(t *testing.T) {
 	}
 }
 
-func TestCopyAndRemove_Symlink(t *testing.T) {
+// The cross-device fallback refuses a symlink rather than recreating it, even
+// one whose target stays beside it: a job holds no links
+// (docs/post-processing-contract.md § "No links in a job"). The link is left
+// where it was and nothing is created at dst.
+func TestCopyAndRemove_RefusesSymlink(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-
-	target := filepath.Join(dir, "target.txt")
-	os.WriteFile(target, []byte("target"), 0644)
-
+	if err := os.WriteFile(filepath.Join(dir, "target.txt"), []byte("target"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	src := filepath.Join(dir, "link")
-	dst := filepath.Join(dir, "link-moved")
-	os.Symlink(target, src)
-
-	if err := copyAndRemove(src, dst); err != nil {
-		t.Fatalf("copyAndRemove symlink: %v", err)
+	if err := os.Symlink("target.txt", src); err != nil {
+		t.Fatal(err)
 	}
+	dst := filepath.Join(t.TempDir(), "link")
 
-	got, err := os.Readlink(dst)
-	if err != nil {
-		t.Fatalf("Readlink: %v", err)
+	err := copyAndRemove(src, dst)
+	if !errors.Is(err, ErrNotRegularFile) {
+		t.Fatalf("copyAndRemove(symlink) = %v, want ErrNotRegularFile", err)
 	}
-	if got != target {
-		t.Errorf("link target = %q, want %q", got, target)
+	if _, err := os.Lstat(dst); !os.IsNotExist(err) {
+		t.Errorf("dst created for a refused symlink: Lstat err = %v", err)
 	}
-
-	if _, err := os.Lstat(src); !os.IsNotExist(err) {
-		t.Error("source symlink should be removed")
+	if fi, err := os.Lstat(src); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("source symlink not left in place: %v, %v", fi, err)
 	}
 }
 
@@ -129,23 +130,6 @@ func TestCrossDeviceErr_Direct(t *testing.T) {
 	}
 }
 
-func TestCopyAndRemove_SymlinkEscape(t *testing.T) {
-	dir := t.TempDir()
-	sym := filepath.Join(dir, "escape.txt")
-	if err := os.Symlink("/tmp/nonexistent_escape_target", sym); err != nil {
-		t.Fatalf("Symlink: %v", err)
-	}
-	dst := filepath.Join(dir, "escape_moved.txt")
-
-	err := copyAndRemove(sym, dst)
-	if err == nil {
-		t.Fatal("expected ErrSymlinkEscape, got nil")
-	}
-	if !errors.Is(err, ErrSymlinkEscape) {
-		t.Errorf("expected ErrSymlinkEscape, got: %v", err)
-	}
-}
-
 func TestCopyAndRemove_CreateError(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src_create_err.txt")
@@ -162,39 +146,40 @@ func TestCopyAndRemove_CreateError(t *testing.T) {
 	}
 }
 
-func TestCopyAndRemove_CopyError(t *testing.T) {
+// A read error mid-copy removes the partial dst. /proc/self/mem is a regular
+// file whose read at offset 0 fails with EIO, so it reaches io.Copy past the
+// regular-file check; its own Remove is never attempted on this path.
+func TestCopyAndRemove_CopyErrorRemovesPartialDst(t *testing.T) {
+	t.Parallel()
+	const src = "/proc/self/mem"
+	if fi, err := os.Lstat(src); err != nil || !fi.Mode().IsRegular() {
+		t.Skipf("%s is not a regular file here: %v", src, err)
+	}
+	dst := filepath.Join(t.TempDir(), "dst")
+	err := copyAndRemove(src, dst)
+	if err == nil || errors.Is(err, ErrNotRegularFile) {
+		t.Fatalf("copyAndRemove(%s) = %v, want a read error", src, err)
+	}
+	if _, err := os.Lstat(dst); !os.IsNotExist(err) {
+		t.Errorf("partial dst left after copy error: Lstat err = %v", err)
+	}
+}
+
+// A directory is not a regular file either: the fallback refuses it before
+// opening anything, rather than creating dst and failing in io.Copy.
+func TestCopyAndRemove_RefusesDirectory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	srcDir := filepath.Join(dir, "src_dir")
 	if err := os.Mkdir(srcDir, 0o755); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
 	dst := filepath.Join(dir, "dst.txt")
-	// Passing a directory as src allows os.Open and os.Create to succeed, but io.Copy fails with EISDIR.
-	err := copyAndRemove(srcDir, dst)
-	if err == nil {
-		t.Fatal("expected copy error when src is a directory, got nil")
+	if err := copyAndRemove(srcDir, dst); !errors.Is(err, ErrNotRegularFile) {
+		t.Fatalf("copyAndRemove(dir) = %v, want ErrNotRegularFile", err)
 	}
-	if _, err := os.Stat(dst); !os.IsNotExist(err) {
-		t.Errorf("dst partial file should be removed after copy error: %v", err)
-	}
-}
-
-func TestCopyAndRemove_SymlinkCreateError(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "target.txt")
-	if err := os.WriteFile(target, []byte("target"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	sym := filepath.Join(dir, "sym.txt")
-	if err := os.Symlink("target.txt", sym); err != nil {
-		t.Fatalf("Symlink: %v", err)
-	}
-	// Destination in non-existent directory causes os.Symlink to fail.
-	dst := filepath.Join(dir, "nodir", "sym_dst.txt")
-
-	err := copyAndRemove(sym, dst)
-	if err == nil {
-		t.Fatal("expected symlink create error when dst dir does not exist, got nil")
+	if _, err := os.Lstat(dst); !os.IsNotExist(err) {
+		t.Errorf("dst created for a refused directory: Lstat err = %v", err)
 	}
 }
 
