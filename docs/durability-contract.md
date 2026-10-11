@@ -459,7 +459,9 @@ quickcheck from passing it clean is the CRC compare (`verifyIdentified` in
 `internal/par2/assess.go`): the CRC settled from its rows covers only the
 short prefix, so it mismatches par2's whole-file CRC and the file goes to
 par2. A file whose rows cover all of its true bytes and which carries a stale
-tail is a different case, and it can pass clean (*Accepted limitations* 9).
+tail is a different case: with par2 it is not identified, because its length
+differs from the index's, so it goes to par2; without par2 it is delivered
+with the tail (*Accepted limitations* 9).
 
 A `complete=1` file is not read. Its rows are installed as they stand
 (`Job.InstallFileVerification` with `Complete` set): each row's article is Done, **every other article
@@ -1283,15 +1285,17 @@ recorded here so the next reader does not mistake them for design.
    article whose row a later, shorter write replaced, on a file preallocation
    did not size or that a write had already grown past it — they stay. The
    rows then cover all of the file's true bytes, so the CRC settled from them
-   is the true file's. **Such a file can be delivered with its tail even when
-   the post has par2**, when par2 identifies it by name.
-   `par2.IdentifyWithOptions` checks a file's length against the index in
-   pass 0 (its par2 path), pass 2 (Hash16k) and pass 3 (CRC32), but not in
-   pass 1 (`claimName`: `MatchName`, `MatchFlattenedName`), and
-   `verifyIdentified` compares only the CRC. So a flat file matched by name
-   passes quickcheck clean on its rows' CRC and par2 never runs. The other
-   passes do not identify a file whose length differs, so it is not passed
-   clean. A
+   is the true file's. **Where the post has par2 the tail does not pass
+   clean** (#837): `par2.IdentifyWithOptions` declines a file whose length
+   differs from the packet's in every pass that matches a file to an entry
+   (pass 0, its par2 path; pass 1, `claimName`, `MatchName` and
+   `MatchFlattenedName`; pass 2, Hash16k; pass 3 keys on `{CRC32, size}`).
+   The entry is `Unaccounted`, `verifyIdentified` counts it `Unverified`,
+   and the job takes the existing path of fetching recovery volumes and
+   running par2, which trims or repairs the file. The comparisons in passes 0 to 2 are
+   `FileSize > 0` lines in `identify.go`; `git grep -n 'FileSize > 0' --
+   'internal/par2/*.go' ':!*_test.go'` returns four lines, those three and
+   the one in `relocateFile` (`fsops.go`). A
    post without par2 delivers the tail. The
    opposite choice cut par2-repaired files short (#829), and nothing recorded
    at a restart tells the two apart: the decoded size the poster declared is

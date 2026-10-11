@@ -149,7 +149,8 @@ func isIgnoredForIdentification(name string) bool {
 // Matching runs in three passes, cheapest first:
 //
 //  1. Name. A par2 entry claims the file whose basename equals its own, or
-//     whose name is its path with separators flattened to underscores.
+//     whose name is its path with separators flattened to underscores, and
+//     only when the file's length equals the packet's (where it records one).
 //  2. Hash16k. Each still-unclaimed file has the MD5 of its first 16 KB
 //     computed once and looked up among the still-unclaimed entries. This is
 //     what resolves obfuscation, and it is where the useful work happens.
@@ -285,8 +286,22 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 	// "a_b.txt" on disk, the per-entry form gives the file to "a/b.txt" by its
 	// flattened name, while "Sub/a_b.txt" matches it by basename.
 	claimName := func(ei int, fd FileDesc, name string, by MatchMethod) {
-		if _, ok := flatFiles[name]; !ok || claimedFile[name] || claimedEntry[ei] {
+		de, ok := flatFiles[name]
+		if !ok || claimedFile[name] || claimedEntry[ei] {
 			return
+		}
+		// Same length rule as passes 0 and 2. A name that matches says nothing
+		// about the bytes: a file longer than the packet records carries a
+		// stale tail the assembled CRC cannot see, and claiming it would let
+		// quickcheck pass it clean. Declined, the entry falls to Unaccounted
+		// and takes the repair path.
+		if fd.FileSize > 0 {
+			info, iErr := de.Info()
+			if iErr != nil || uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
+				log.Info("identify: name matched but the length does not",
+					"file", name, "par2path", fd.FileName)
+				return
+			}
 		}
 		claimedFile[name] = true
 		claimedEntry[ei] = true
