@@ -8,6 +8,7 @@ import (
 	"weak"
 
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/keyedlatch"
 )
 
 // jobTransitions admits one actor at a time to the state keyed by a job ID:
@@ -52,9 +53,10 @@ import (
 // finds 2 lines: retryHistoryJob's reuses an ID, and AddJob's mints one), so
 // no other instance can register under the ID while its finalizer commits.
 //
-// A channel per held ID rather than a mutex per ID, because a waiter has to be
-// able to give up when its context ends and sync.Mutex.Lock cannot. It is the
-// idiom of Dispatcher.claimLaunched / waitLaunched.
+// The held IDs are claims on a keyedlatch.Latch, the latch the dispatcher's
+// launch claim also uses, rather than a mutex per ID, because a waiter has to
+// be able to give up when its context ends. They are claimed and released
+// under mu, so a claim is one mu span with the finalizing check.
 //
 // Lock order: a holder may wait inside the dispatcher (dispatcher.Remove waits
 // on a job's launch claim), so no one may wait for this lock while holding
@@ -79,11 +81,11 @@ import (
 // instance, not ID, so a later job under the same ID is not affected; weakly,
 // so a removed job is not kept alive by this record.
 //
-// mu is never held across I/O or a wait: it guards held, removed, finalizing
-// and each claim's released flag.
+// mu is never held across I/O or a wait: it guards removed, finalizing and
+// each claim's released flag, and orders the claims and releases on held.
 type jobTransitions struct {
 	mu      sync.Mutex
-	held    map[string]chan struct{} // an ID is present only while claimed; its channel closes on release
+	held    keyedlatch.Latch
 	removed map[weak.Pointer[job.Job]]runtime.Cleanup
 	// finalizing counts the finalizers committing each ID; an ID is present
 	// only while one is.
@@ -169,7 +171,7 @@ func (t *jobTransitions) tryAcquire(ids ...string) *transitionClaim {
 		if t.finalizing[id] > 0 {
 			continue
 		}
-		if t.claimLocked(id) {
+		if t.held.TryClaim(id) {
 			c.ids[id] = struct{}{}
 		}
 	}
@@ -182,41 +184,22 @@ func (t *jobTransitions) tryAcquire(ids ...string) *transitionClaim {
 // golang.org/x/sync/semaphore.Weighted.Acquire also permits — so a finalizer
 // on a stopping process still takes a lock no one holds.
 func (t *jobTransitions) acquire(ctx context.Context, id string) (*transitionClaim, error) {
-	for {
-		holder := t.claimOrHolder(id)
-		if holder == nil {
-			return &transitionClaim{t: t, ids: map[string]struct{}{id: {}}}, nil
-		}
-		// A closed channel means that holder released, not that id is ours:
-		// every waiter wakes on the same close, so each goes round again.
-		select {
-		case <-holder:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+	for !t.claim(id) {
+		// Wait returning nil means that holder released, not that id is
+		// ours: every waiter wakes on the same release, so each goes round
+		// again.
+		if err := t.held.Wait(ctx, id); err != nil {
+			return nil, err
 		}
 	}
+	return &transitionClaim{t: t, ids: map[string]struct{}{id: {}}}, nil
 }
 
-// claimOrHolder claims id and returns nil, or returns the current holder's
-// channel without claiming.
-func (t *jobTransitions) claimOrHolder(id string) chan struct{} {
+// claim claims id under mu and reports whether it did.
+func (t *jobTransitions) claim(id string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.claimLocked(id) {
-		return nil
-	}
-	return t.held[id]
-}
-
-func (t *jobTransitions) claimLocked(id string) bool {
-	if _, busy := t.held[id]; busy {
-		return false
-	}
-	if t.held == nil {
-		t.held = make(map[string]chan struct{})
-	}
-	t.held[id] = make(chan struct{})
-	return true
+	return t.held.TryClaim(id)
 }
 
 // release frees every ID the claim holds and wakes their waiters. Releasing a
@@ -230,8 +213,7 @@ func (c *transitionClaim) release() {
 	}
 	c.released = true
 	for id := range c.ids {
-		close(c.t.held[id])
-		delete(c.t.held, id)
+		c.t.held.Release(id)
 	}
 }
 

@@ -81,19 +81,21 @@ func TestAppResidency_EvictCancelsTheHydrationThatReplacesTheOneItCancelled(t *t
 		_, err := r.readManifest(ctx2, "abc123")
 		second <- err
 		r.mu.Lock()
-		delete(r.hydrating, "abc123")
+		delete(r.cancels, "abc123")
+		r.hydrating.Release("abc123")
 		close(ready2)
 		r.mu.Unlock()
 	}()
 	waitDrained(t, w)
 
-	ready1 := make(chan struct{})
 	r.mu.Lock()
-	r.hydrating["abc123"] = hydration{ready: ready1, cancel: func() {
-		// Evict holds r.mu here.
-		r.hydrating["abc123"] = hydration{ready: ready2, cancel: cancel2}
-		close(ready1)
-	}}
+	r.hydrating.TryClaim("abc123")
+	r.cancels["abc123"] = func() {
+		// Evict holds r.mu here: end the first claim and take the second.
+		r.hydrating.Release("abc123")
+		r.hydrating.TryClaim("abc123")
+		r.cancels["abc123"] = cancel2
+	}
 	r.mu.Unlock()
 
 	evicted := make(chan struct{})

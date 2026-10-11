@@ -154,7 +154,7 @@ func TestFinishedJob_LeavesALaterInstanceAlone(t *testing.T) {
 	if s := j2.Snapshot(); s.State.Outcome.IsSettled() {
 		t.Errorf("FinishedJob with the removed instance settled the later one: outcome %v", s.State.Outcome)
 	}
-	if _, held := d.launched["j1"]; !held {
+	if !d.launched.Held("j1") {
 		t.Error("FinishedJob with the removed instance cleared the later one's launch claim")
 	}
 
@@ -164,7 +164,7 @@ func TestFinishedJob_LeavesALaterInstanceAlone(t *testing.T) {
 	if s := j2.Snapshot(); s.State.Outcome != job.OutcomeFailed {
 		t.Errorf("outcome after FinishedJob with the registered instance = %v, want %v", s.State.Outcome, job.OutcomeFailed)
 	}
-	if _, held := d.launched["j1"]; held {
+	if d.launched.Held("j1") {
 		t.Error("FinishedJob with the registered instance left its launch claim")
 	}
 	if err := d.FinishedJob(nil, job.OutcomeFailed); !errors.Is(err, ErrNotFound) {

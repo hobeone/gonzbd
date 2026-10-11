@@ -146,7 +146,7 @@ func TestResumeJob_ContinuesWithoutRehydrating(t *testing.T) {
 			"manifest the pause should have kept", got)
 	}
 	d.mu.Lock()
-	_, claimed := d.launched["a"]
+	claimed := d.launched.Held("a")
 	d.mu.Unlock()
 	if !claimed {
 		t.Error("the resumed job holds its lease but no Fetching worker was launched")

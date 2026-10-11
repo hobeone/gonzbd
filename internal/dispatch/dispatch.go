@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/keyedlatch"
 	"github.com/hobeone/gonzbd/internal/sched"
 )
 
@@ -31,7 +32,10 @@ type Dispatcher struct {
 	// resident, launched, written, removing, occupiers, occupancyTokens,
 	// occupyDrained and occupyStep are the dispatcher's own per-job bookkeeping,
 	// all guarded by mu. None may be held across a call into sched or into
-	// Residency.Hydrate — take mu, read or write one map, release.
+	// Residency.Hydrate — take mu, read or write one map, release. launched is
+	// a keyedlatch.Latch rather than a map, with a lock of its own taken
+	// inside mu; it is still claimed and cleared under mu (claimLaunched,
+	// clearLaunched), so a claim is one mu span with admitsLocked.
 	//
 	// ADDING A MAP HERE MEANS EXTENDING EVERY TEARDOWN. This has been got
 	// wrong three times on this branch — Stop not clearing resident, deregister
@@ -43,7 +47,8 @@ type Dispatcher struct {
 	// is never launchable).
 	//
 	// The teardowns, enumerated from source rather than remembered —
-	// `git grep -n 'delete(d\.\|delete(r\.d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 16 lines:
+	// `git grep -n 'delete(d\.\|delete(r\.d\.' -- 'internal/dispatch/*.go' ':!*_test.go'` finds 15 lines,
+	// and launched's one remover follows them:
 	//
 	//   - deregister (registry.go), eight lines: byID, written, resident,
 	//     removing, occupiers, occupancyTokens, occupyDrained, occupyStep. launched is cleared via clearLaunched. d.order is pruned by
@@ -55,22 +60,23 @@ type Dispatcher struct {
 	//     the map through the removal token rather than through d.
 	//   - markNotResident (tick.go), one line: resident. The per-map
 	//     accessor reconcileResidency and Stop's sweep both call.
-	//   - clearLaunched (worker.go), one line: launched. The per-map
-	//     accessor Finished, YieldedFor, clearLaunchedFor (for AdvanceFrom and
-	//     YieldedFrom), Stop's sweep, deregister and launch's failed re-check
-	//     call — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
-	//     grep -v _test.go` finds six lines, one per site.
 	//   - Occupy (occupy.go), four lines: occupancyTokens, occupiers, occupyDrained, and occupyStep when refcount drops to 0.
 	//   - ReserveName's release (registry.go), one line: reservedNames. It is
 	//     keyed by name, not job ID, and is outside deregister and Stop's
 	//     sweep: the reserving caller's release is its one remover.
+	//   - clearLaunched (worker.go): launched, by its Release —
+	//     `git grep -n 'd\.launched\.Release(' -- 'internal/dispatch/*.go' ':!*_test.go'`
+	//     finds 1 line. Finished, YieldedFor, clearLaunchedFor (for
+	//     AdvanceFrom and YieldedFrom), Stop's sweep, deregister and launch's
+	//     failed re-check call it — `grep -n 'd\.clearLaunched(' internal/dispatch/*.go |
+	//     grep -v _test.go` finds six lines, one per site.
 	//
 	// Stop's sweep therefore prunes resident and launched through those two
 	// accessors; it deliberately leaves byID, order and written intact,
 	// because a Stopped Dispatcher is still inspectable and its jobs still
 	// exist. deregister is the only site that must be total.
 	resident        map[string]bool
-	launched        map[string]chan struct{}
+	launched        keyedlatch.Latch
 	written         map[string]Persisted
 	removing        map[string]int
 	reservedNames   map[string]string // name -> the job ID holding it; see ReserveName
@@ -313,7 +319,6 @@ func New(leaseCap, slotCap int, tickEvery time.Duration, clock func() time.Time,
 	d := &Dispatcher{
 		byID:            map[string]*entry{},
 		resident:        map[string]bool{},
-		launched:        map[string]chan struct{}{},
 		written:         map[string]Persisted{},
 		removing:        make(map[string]int),
 		reservedNames:   make(map[string]string),

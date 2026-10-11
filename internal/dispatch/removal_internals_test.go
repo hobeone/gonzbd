@@ -129,7 +129,7 @@ func TestDeregister_IsTotal(t *testing.T) {
 	d.occupancyTokens["j1"] = map[any]struct{}{new(byte): {}}
 	d.occupyDrained["j1"] = make(chan struct{})
 	d.occupyStep["j1"] = make(chan struct{})
-	d.launched["j1"] = make(chan struct{})
+	d.launched.TryClaim("j1")
 	d.mu.Unlock()
 
 	d.deregister("j1")
@@ -148,7 +148,7 @@ func TestDeregister_IsTotal(t *testing.T) {
 		{"occupancyTokens", func() bool { _, ok := d.occupancyTokens["j1"]; return ok }()},
 		{"occupyDrained", func() bool { _, ok := d.occupyDrained["j1"]; return ok }()},
 		{"occupyStep", func() bool { _, ok := d.occupyStep["j1"]; return ok }()},
-		{"launched", func() bool { _, ok := d.launched["j1"]; return ok }()},
+		{"launched", d.launched.Held("j1")},
 	} {
 		if m.present {
 			t.Errorf("d.%s still holds j1 after deregister — a teardown was not extended when "+

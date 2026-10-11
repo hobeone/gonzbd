@@ -98,13 +98,13 @@ file internal/app/startup_reconcile.go
 [a removal does not wait for the hydration in flight]
 file internal/app/residency.go
 --- anchor
-		h, ok := r.hydrating[id]
-		if !ok {
+		done := r.hydrating.Done(id)
+		if done == nil {
 			break
 		}
 --- replace
-		h, ok := r.hydrating[id]
-		if !ok || true {
+		done := r.hydrating.Done(id)
+		if done == nil || true {
 			break
 		}
 --- end

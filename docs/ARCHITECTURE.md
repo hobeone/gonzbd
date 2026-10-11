@@ -31,6 +31,7 @@ The project follows a standard Go project layout:
     - `fsutil/`: File system utilities: path sanitization, atomic writes (temp+fsync+rename), symlink-safe containment checks, and cross-device move.
     - `history/`: Persistence layer for completed jobs using SQLite and `goose` migrations.
     - `humanfmt/`: Human-readable formatting helpers (sizes, durations) shared across packages.
+    - `keyedlatch/`: `Latch`, at most one claim per string key, with a context-bounded wait for its release. The dispatcher's launch claim, `internal/app`'s per-job transition lock and its in-flight hydrations are built on it.
     - `nntp/`: Low-level NNTP protocol implementation with bounded response reading. It does not validate message-IDs — see the Message-ID Validation note below.
     - `notifier/`: Dispatcher for user notifications (email, Apprise, scripts).
     - `nzb/`: NZB (XML) parsing and model definitions with input size limits.

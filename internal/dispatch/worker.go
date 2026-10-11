@@ -21,10 +21,10 @@ import (
 // it made in launch is stale the moment Finished is entered, whether or not
 // Settle goes on to succeed. External callers call it explicitly to release the
 // launch claim without waiting for goroutine teardown.
-// Clearing only on success would leave launched[id] set forever
+// Clearing only on success would leave the launch claim held forever
 // after a Settle failure (a refused Finish, a failed reclaim identity audit)
 // or the OutcomeCancelled rejection above: the job would then be permanently
-// unlaunchable, since claimLaunched never returns true for an ID already set.
+// unlaunchable, since claimLaunched never returns true for an ID already claimed.
 // Clearing unconditionally BEFORE calling Settle would be wrong the other way:
 // a concurrent tick's launch reads Render(j).Running from Queue state, which
 // Settle has not yet changed, so it could observe the job still Running with
@@ -281,7 +281,7 @@ func (d *Dispatcher) launch(j *job.Job) {
 // which never overlaps itself.
 func (d *Dispatcher) parkUnlaunched(j *job.Job) {
 	d.mu.Lock()
-	_, claimed := d.launched[j.ID()]
+	claimed := d.launched.Held(j.ID())
 	d.mu.Unlock()
 	if !claimed {
 		d.parkGrant(j)
@@ -297,8 +297,8 @@ func (d *Dispatcher) parkGrant(j *job.Job) {
 	}
 }
 
-// claimLaunched sets launched[id] under d.mu and reports whether this call was
-// the one that set it, so a later tick does not start a second worker for a
+// claimLaunched claims id on launched under d.mu, in the span that checks
+// admitsLocked, and reports whether this call took the claim, so a later tick does not start a second worker for a
 // job already being worked. finishedFor (for Finished and FinishedJob),
 // YieldedFor, clearLaunchedFor (for AdvanceFrom and YieldedFrom), Stop's sweep
 // and deregister are its five exit-path clearers, and launch clears a claim it
@@ -311,11 +311,7 @@ func (d *Dispatcher) claimLaunched(id string) bool {
 	if !d.admitsLocked(id) {
 		return false
 	}
-	if _, ok := d.launched[id]; ok {
-		return false
-	}
-	d.launched[id] = make(chan struct{})
-	return true
+	return d.launched.TryClaim(id)
 }
 
 // clearLaunchedFor clears the launch claim under j's ID only while j is the
@@ -332,34 +328,18 @@ func (d *Dispatcher) clearLaunchedFor(j *job.Job) {
 	}
 }
 
+// clearLaunched releases id's launch claim, if one is held, and wakes
+// waitLaunched.
 func (d *Dispatcher) clearLaunched(id string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if ch, ok := d.launched[id]; ok {
-		close(ch)
-		delete(d.launched, id)
-	}
+	d.launched.Release(id)
 }
 
 // waitLaunched waits for the job's launch claim latch to be cleared (by a call
 // to Finished, Yielded, AdvanceFrom or YieldedFrom). Returns nil immediately if no worker
-// is launched.
+// is launched, and ctx.Err() if ctx ends first; a clear that has happened wins
+// over an ended ctx (keyedlatch.Latch.Wait).
 func (d *Dispatcher) waitLaunched(ctx context.Context, id string) error {
-	d.mu.Lock()
-	ch := d.launched[id]
-	d.mu.Unlock()
-	if ch == nil {
-		return nil
-	}
-	select {
-	case <-ch:
-		return nil
-	default:
-	}
-	select {
-	case <-ch:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return d.launched.Wait(ctx, id)
 }

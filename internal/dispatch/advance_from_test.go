@@ -13,8 +13,7 @@ import (
 func claimHeld(d *Dispatcher, id string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	_, ok := d.launched[id]
-	return ok
+	return d.launched.Held(id)
 }
 
 // TestAdvanceFrom_LateReportLeavesTheNextStatesWorkerAlone pins the report

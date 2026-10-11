@@ -437,7 +437,7 @@ func (d *Dispatcher) dispatchOrderLocked() []*entry {
 //   - d.resident: a stale true entry makes reconcileResidency take neither
 //     branch (its hydrate arm requires !d.isResident(id)), so a reused ID
 //     never hydrates and runs without its manifest.
-//   - d.launched: a stale true entry makes claimLaunched return false
+//   - d.launched: a stale claim makes claimLaunched return false
 //     forever, so a reused ID is permanently unlaunchable.
 //   - d.occupiers / d.occupancyTokens / d.occupyDrained / d.occupyStep: a stale
 //     entry leaves callers waiting on waitLive forever or reports false
@@ -536,7 +536,7 @@ func (d *Dispatcher) beginRemovalIfIdle(id string) (rm *removal, live bool) {
 	if d.byID[id] == nil {
 		return nil, false
 	}
-	if len(d.occupancyTokens[id]) > 0 || d.launched[id] != nil {
+	if len(d.occupancyTokens[id]) > 0 || d.launched.Held(id) {
 		return nil, true
 	}
 	return d.beginRemovalLocked(id), false

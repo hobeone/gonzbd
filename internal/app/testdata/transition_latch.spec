@@ -2,44 +2,48 @@ pkg ./internal/app/
 run TestJobTransitions_(TryAcquireTakesTheFreeIDsAndSkipsTheHeld|AWokenWaiterRechecksBeforeTakingTheID|ReleaseRemovesTheIDs|RemovedForgetsACollectedJob|AcquireTakesAFreeIDOnAnEndedContext)$
 
 # jobTransitions' own exclusion, separately from its call sites
-# (transition_lock.spec). The run line leaves out the several-waiters test,
-# which a re-check mutant kills by closing a nil channel rather than on an
-# assertion.
+# (transition_lock.spec). The claim and release themselves are
+# keyedlatch.Latch's, pinned by internal/keyedlatch/testdata/latch.spec; these
+# mutations neuter jobTransitions' use of them.
 
 [an ended context refuses a free id]
 file internal/app/transition.go
 --- anchor
-		holder := t.claimOrHolder(id)
+	for !t.claim(id) {
 --- replace
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		holder := t.claimOrHolder(id)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	for !t.claim(id) {
 --- end
 
-[a claim takes an id another claim holds]
+[tryAcquire takes an id another claim holds]
 file internal/app/transition.go
 --- anchor
-	if _, busy := t.held[id]; busy {
+		if t.held.TryClaim(id) {
 --- replace
-	if _, busy := t.held[id]; busy && false {
+		if t.held.TryClaim(id) || true {
 --- end
 
 [a woken waiter takes the id without re-checking]
 file internal/app/transition.go
 --- anchor
-		case <-holder:
+		if err := t.held.Wait(ctx, id); err != nil {
+			return nil, err
+		}
 --- replace
-		case <-holder:
-			return &transitionClaim{t: t, ids: map[string]struct{}{id: {}}}, nil
+		if err := t.held.Wait(ctx, id); err != nil {
+			return nil, err
+		}
+		break
 --- end
 
-[release leaves its ids in the map]
+[release leaves its ids held]
 file internal/app/transition.go
 --- anchor
-		delete(c.t.held, id)
+		c.t.held.Release(id)
 --- replace
-		delete(c.t.held, "mut-"+id)
+		c.t.held.Release("mut-" + id)
 --- end
 
 [a removal mark outlives its job]

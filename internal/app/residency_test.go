@@ -7,7 +7,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -174,27 +178,27 @@ func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 		writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), j)
 		return j
 	}
-	// inFlight plays a hydration of j in progress. ready is its channel; the
+	// inFlight plays a hydration of j in progress, holding its claim; the
 	// returned function ends the hydration as Hydrate's own defer does, so a
 	// waiter that looks again finds none in flight.
-	inFlight := func(j *job.Job) (*appResidency, chan struct{}, func()) {
-		ready := make(chan struct{})
+	inFlight := func(j *job.Job) (*appResidency, func()) {
 		r := &appResidency{
-			lookup:    func(string) (*job.Job, bool) { return j, true },
-			dir:       dir,
-			hydrating: map[string]hydration{"abc123": {ready: ready, cancel: func() {}}},
+			lookup:  func(string) (*job.Job, bool) { return j, true },
+			dir:     dir,
+			cancels: map[string]context.CancelFunc{"abc123": func() {}},
 		}
-		return r, ready, func() {
+		r.hydrating.TryClaim("abc123")
+		return r, func() {
 			r.mu.Lock()
-			delete(r.hydrating, "abc123")
-			close(ready)
+			delete(r.cancels, "abc123")
+			r.hydrating.Release("abc123")
 			r.mu.Unlock()
 		}
 	}
 
 	t.Run("the first succeeded", func(t *testing.T) {
 		j := newJob()
-		r, _, finish := inFlight(j)
+		r, finish := inFlight(j)
 		done := make(chan error, 1)
 		go func() { done <- r.Hydrate(context.Background(), "abc123") }()
 		m := job.NewManifest([]job.JobFile{{Subject: "test.rar", Bytes: 100, Articles: []job.JobArticle{{ID: "m1", Bytes: 100, Number: 1}}}})
@@ -209,14 +213,13 @@ func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 
 	t.Run("the first failed", func(t *testing.T) {
 		j := newJob()
-		r, ready, finish := inFlight(j)
+		r, finish := inFlight(j)
 		done := make(chan error, 1)
 		go func() { done <- r.Hydrate(context.Background(), "abc123") }()
-		// Production only closes ready; this send completes only once the
-		// waiter is receiving on it, so the waiter has certainly waited —
-		// a waiter that found no hydration in flight would hydrate the job
-		// itself and pass whatever the waited path does.
-		ready <- struct{}{}
+		// The waiter must be waiting before the hydration ends: one that
+		// found no hydration in flight would hydrate the job itself and pass
+		// whatever the waited path does.
+		awaitGoroutineIn(t, "keyedlatch.(*Latch).Wait", "(*appResidency).Hydrate")
 		finish()
 		if err := <-done; err != nil {
 			t.Errorf("Hydrate = %v after the hydration it waited on left the job non-resident; the waiter hydrates it itself", err)
@@ -227,7 +230,7 @@ func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 	})
 
 	t.Run("the caller gives up", func(t *testing.T) {
-		r, _, _ := inFlight(newJob())
+		r, _ := inFlight(newJob())
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		if err := r.Hydrate(ctx, "abc123"); !errors.Is(err, context.Canceled) {
@@ -270,4 +273,22 @@ func TestAppResidency_FaultAfterCancellationIsAContextError(t *testing.T) {
 	if parked {
 		t.Error("fault after cancellation parked the job")
 	}
+}
+
+// awaitGoroutineIn returns once some goroutine's stack names every one of fns,
+// and fails the test if none does within five seconds. It is how a test knows
+// a goroutine has reached a wait that offers no seam of its own.
+func awaitGoroutineIn(t *testing.T, fns ...string) {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for g := range strings.SplitSeq(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+			if !slices.ContainsFunc(fns, func(fn string) bool { return !strings.Contains(g, fn) }) {
+				return
+			}
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("no goroutine reached %v", fns)
 }

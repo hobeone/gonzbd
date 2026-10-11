@@ -135,7 +135,7 @@ every subsequent tick re-aborts it while the job never settles.
 
 `Dispatcher.launch` (`internal/dispatch/worker.go`) starts a worker when
 `sched.Queue.Render` reports the job `Running` with `Intent == job.IntentRun`,
-via `claimLaunched` (a map insert guarding against a second launch) and the
+via `claimLaunched` (a claim on the `launched` `keyedlatch.Latch`, guarding against a second launch) and the
 injected `Runner.Run`. It re-reads the snapshot at launch time rather than
 trusting the tick's own snapshot: between `Advance` granting resources and
 `launch` running, the manifest read happens unlocked and a concurrent

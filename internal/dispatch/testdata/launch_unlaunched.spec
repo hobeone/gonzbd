@@ -22,9 +22,9 @@ file internal/dispatch/worker.go
 [a live worker's grant is parked out from under it]
 file internal/dispatch/worker.go
 --- anchor
-	_, claimed := d.launched[j.ID()]
+	claimed := d.launched.Held(j.ID())
 --- replace
-	_, claimed := d.launched[j.ID()]
+	claimed := d.launched.Held(j.ID())
 	claimed = false
 --- end
 

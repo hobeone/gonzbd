@@ -30,7 +30,7 @@ import (
 // its claim regardless of which instance the callback names. Two things are
 // asserted after cancelled returns: row.View.Running still reports the
 // scheduler lease j2 holds, and — the assertion that actually pins
-// d.launched[id]'s survival, the same way stall_worker_test.go's
+// the launch claim's survival, the same way stall_worker_test.go's
 // TestStall_LeavesALiveAssessingWorkerAlone does — a further Tick does not
 // relaunch j2: d.launch's claimLaunched (internal/dispatch/worker.go) only
 // starts a worker when the claim is not already held, so a cleared claim
