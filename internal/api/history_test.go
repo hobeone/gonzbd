@@ -578,29 +578,56 @@ func TestHistoryStageLog(t *testing.T) {
 }
 
 func TestParseStageLog_Empty(t *testing.T) {
-	result := parseStageLog("")
+	result := parseStageLog(t.Context(), slog.New(slog.DiscardHandler), "nzo1", "")
 	if len(result) != 0 {
 		t.Errorf("parseStageLog(\"\") returned %d entries; want 0", len(result))
 	}
 }
 
 func TestParseStageLog_Null(t *testing.T) {
-	result := parseStageLog("null")
+	result := parseStageLog(t.Context(), slog.New(slog.DiscardHandler), "nzo1", "null")
 	if len(result) != 0 {
 		t.Errorf("parseStageLog(\"null\") returned %d entries; want 0", len(result))
 	}
 }
 
 func TestParseStageLog_InvalidJSON(t *testing.T) {
-	result := parseStageLog("{broken")
+	result := parseStageLog(t.Context(), slog.New(slog.DiscardHandler), "nzo1", "{broken")
 	if len(result) != 0 {
 		t.Errorf("parseStageLog(broken) returned %d entries; want 0", len(result))
 	}
 }
 
+// TestParseStageLog_WarnsOnlyOnCorruption pins that malformed JSON is logged
+// with the entry id (our own writer cannot produce it, so it is corruption),
+// while the normal no-stages values "" and "null" stay silent.
+func TestParseStageLog_WarnsOnlyOnCorruption(t *testing.T) {
+	t.Parallel()
+	const msg = "history stage_log is not valid JSON"
+
+	rec := &recordHandler{}
+	log := slog.New(rec)
+	if got := parseStageLog(t.Context(), log, "nzo-bad", "{broken"); got == nil || len(got) != 0 {
+		t.Errorf("parseStageLog(broken) = %#v; want empty non-nil slice", got)
+	}
+	if !rec.hasWarn(msg, "nzo-bad", "invalid character") {
+		t.Errorf("expected warning not found in records: %v", rec.records)
+	}
+
+	quiet := &recordHandler{}
+	for _, raw := range []string{"", "null"} {
+		if got := parseStageLog(t.Context(), slog.New(quiet), "nzo-ok", raw); got == nil || len(got) != 0 {
+			t.Errorf("parseStageLog(%q) = %#v; want empty non-nil slice", raw, got)
+		}
+	}
+	if len(quiet.records) != 0 {
+		t.Errorf("empty and null stage logs logged %d records; want 0", len(quiet.records))
+	}
+}
+
 func TestParseStageLog_ValidEntries(t *testing.T) {
 	input := `[{"Stage":"repair","Elapsed":2500000000,"Err":null,"Lines":["All files are correct"]},{"Stage":"unpack","Elapsed":5300000000,"Err":null,"Lines":["Extracted: movie.mkv"]}]`
-	result := parseStageLog(input)
+	result := parseStageLog(t.Context(), slog.New(slog.DiscardHandler), "nzo1", input)
 	if len(result) != 2 {
 		t.Fatalf("parseStageLog returned %d entries; want 2", len(result))
 	}
@@ -625,7 +652,7 @@ func TestParseStageLog_ValidEntries(t *testing.T) {
 func TestParseStageLog_WithError(t *testing.T) {
 	errMsg := "repair failed: too many blocks missing"
 	input := fmt.Sprintf(`[{"Stage":"repair","Elapsed":1000000000,"Err":%q,"Lines":[]}]`, errMsg)
-	result := parseStageLog(input)
+	result := parseStageLog(t.Context(), slog.New(slog.DiscardHandler), "nzo1", input)
 	if len(result) != 1 {
 		t.Fatalf("parseStageLog returned %d entries; want 1", len(result))
 	}

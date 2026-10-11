@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -150,9 +151,9 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 	for _, e := range entries {
 		totalBytes += e.Bytes
 
-		// Deserialize the stored stage log JSON. Fall back to an empty
-		// array on any error (legacy entries may have empty or invalid JSON).
-		stages := parseStageLog(e.StageLog)
+		// Deserialize the stored stage log JSON; an unreadable one degrades
+		// to an empty array and is logged.
+		stages := parseStageLog(r.Context(), s.log, e.NzoID, e.StageLog)
 
 		slots = append(slots, historySlot{
 			NzoID:        e.NzoID,
@@ -353,14 +354,17 @@ type internalStageLogEntry struct {
 
 // parseStageLog deserializes the JSON-encoded stage log string from the
 // database into API-friendly stageLogEntry values. Returns an empty (non-nil)
-// slice on any error or empty input.
-func parseStageLog(raw string) []stageLogEntry {
+// slice on empty input, "null" and malformed JSON. Empty and "null" are a job
+// with no stages and are silent; malformed JSON is on-disk corruption, so it
+// is logged against nzoID and the response is unchanged.
+func parseStageLog(ctx context.Context, log *slog.Logger, nzoID, raw string) []stageLogEntry {
 	if raw == "" || raw == "null" {
 		return []stageLogEntry{}
 	}
 
 	var internal []internalStageLogEntry
 	if err := json.Unmarshal([]byte(raw), &internal); err != nil {
+		log.WarnContext(ctx, "history stage_log is not valid JSON", "id", nzoID, "error", err)
 		return []stageLogEntry{}
 	}
 
