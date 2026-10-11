@@ -165,8 +165,8 @@ func TestRestore_PausedJobIsNotHydratedUntilResumed(t *testing.T) {
 		Intent: job.IntentPause,
 	}})
 	res, hydrations := countingResidency()
-	d := newTestDispatcher(t, withStore(st), withResidency(res))
-	if err := d.restore(context.Background()); err != nil {
+	d := newTestDispatcher(t, withStore(st), withResidency(res), unrestored())
+	if err := d.Restore(context.Background()); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 

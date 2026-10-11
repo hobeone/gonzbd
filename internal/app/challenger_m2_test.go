@@ -45,6 +45,7 @@ func createTestApp(t *testing.T, maxActiveJobs int) (*app.Application, *history.
 	if err != nil {
 		t.Fatalf("failed to create app: %v", err)
 	}
+	restoreQueue(t, application)
 
 	return application, repo
 }

@@ -32,6 +32,7 @@ func TestStart_PreservesPersistedFailedArticlesAcrossStartup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	parsed := &nzb.NZB{Files: []nzb.File{{
 		Subject: "file.bin",

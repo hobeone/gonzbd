@@ -453,13 +453,26 @@ not a second translation.
 obligations:
 
 - **`Load(ctx) ([]Persisted, error)`** — read the whole queue once, at
-  `Dispatcher.Start` (or `Dispatcher.StartWith`, which runs one caller-supplied
-  step after the restore and before the ticker launches).
+  `Dispatcher.Restore`, or at `Dispatcher.Start` (or `Dispatcher.StartWith`,
+  which runs one caller-supplied step after the restore and before the ticker
+  launches) when `Restore` has not run.
 - **`Save(ctx, Persisted) error`** and **`Delete(ctx, id) error`** — write a
   job's row synchronously in `Dispatcher.Add` before `Add` returns (while
   `snapshotOrder` withholds the unwritten entry from `tick` via `d.written`) and
   whenever its four axes (`State`, `Intent`, plus header/policy/progress fields)
   move, and delete a row when the job is removed or evicted.
+
+**`Add` waits for the restore.** It returns `ErrNotRestored` until the stored
+rows are registered, and so also while a restore is in progress. A job
+registered earlier would take its sequence before `restore` raised `nextSeq`
+past the stored keys, and would sort ahead of every stored row (#569).
+`restore` is the one writer of the phase that gates it
+(`git grep -n 'd\.phase = ' internal/dispatch` returns 2 lines, both in
+`restore`). `Dispatcher.Restore` runs the restore without launching the
+ticker, which is how a test adds jobs it then drives by `Tick`; `Start`
+restores only when `Restore` has not run. A second `Restore` is refused.
+`TestAdd_RefusedBeforeRestore` and `TestAdd_RefusedWhileRestoring` pin the
+refusal.
 
 `d.written` is the whole of `snapshotOrder`'s gate, and there is deliberately no
 second flag beside it: presence of a row is one fact, owned by `markWritten`,
@@ -507,9 +520,7 @@ SABnzbd `PP` integer it derives from, because `PP` "does not exist past App"
 and persisting it would carry external vocabulary back inside the internal
 layer.
 
-`Dispatcher.restore` skips any stored row equal to `d.lastWritten(p.ID)` that
-was already written by a pre-`Start` `Dispatcher.Add` on the same instance, and
-rebuilds every other job by replaying it forward through
+`Dispatcher.restore` rebuilds every stored job by replaying it forward through
 `job.Job`'s own doors (`reconstruct`, `internal/dispatch/dispatch.go`) —
 `job.New` followed by `BeginAttempt` and a canonical hop sequence
 (`replayPath`) to the persisted `State` — rather than through a second
@@ -523,8 +534,10 @@ fails `rows.Scan` in `Store.Load`, or fails `reconstruct` or `register` in
 untouched in `dispatch_jobs` and omitted from `d.written` so `persistIfChanged`
 neither rewrites nor deletes it — while the remaining rows still restore
 (Standing Design Rule 3); a query or cursor iteration failure in `Store.Load`
-(or an error returned by `beforeFirstTick` in `StartWith`) still fails
-`Start`/`StartWith`. Every
+still fails the restore — `Restore`, or `Start`/`StartWith` when it is the one
+restoring — and leaves the dispatcher unrestored, so a later call can retry.
+An error returned by `beforeFirstTick` in `StartWith` fails `StartWith` too,
+but leaves the restored rows registered. Every
 restored job comes back holding no lease and no slot regardless of the
 position it was persisted at — the pools are process-local, so there is
 nothing from a previous process to reclaim — and the first tick re-acquires

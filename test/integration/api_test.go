@@ -69,6 +69,10 @@ func buildAPIServer(t *testing.T) (srv *api.Server, ts *httptest.Server, dir str
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	// Restored rather than started, so the API can add jobs with no tick running.
+	if err := application.Dispatcher().Restore(t.Context()); err != nil {
+		t.Fatalf("dispatcher.Restore: %v", err)
+	}
 
 	grabber := urlgrabber.New(urlgrabber.Config{}, nopNZBHandler{})
 

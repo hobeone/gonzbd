@@ -71,6 +71,7 @@ func TestPersistAndCommit_LeavesALaterInstancesLaunchClaimAlone(t *testing.T) {
 	runner := &stateRecorder{}
 	d := dispatch.New(1, 1, time.Hour, time.Now, &appWorkers{app: app},
 		nopResidency{}, nopDispatchStore{}, runner)
+	restoreDispatcher(t, d)
 	app.dispatcher = d
 
 	const id = "feedface00590b01"

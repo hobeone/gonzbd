@@ -31,9 +31,9 @@ func TestRestore_RegistersEveryStoredJobInOrder(t *testing.T) {
 		{ID: "a", SortKey: 2, Header: Header{Name: "a"}},
 		{ID: "c", SortKey: 1, Header: Header{Name: "c"}},
 	})
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 
-	if err := d.restore(context.Background()); err != nil {
+	if err := d.Restore(context.Background()); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 
@@ -69,9 +69,9 @@ func TestRestore_JobsComeBackHoldingNothing(t *testing.T) {
 		Header: Header{Name: "j1"},
 		State:  job.StateView{State: job.Repairing, Assessed: true},
 	}})
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 
-	if err := d.restore(context.Background()); err != nil {
+	if err := d.Restore(context.Background()); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestRestore_JobsComeBackHoldingNothing(t *testing.T) {
 // fails Start outright rather than silently starting with a partial queue.
 func TestRestore_StoreErrorFailsStart(t *testing.T) {
 	st := &fakeStore{loadErr: errors.New("database is locked")}
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 
 	if err := d.Start(context.Background()); err == nil {
 		t.Fatal("Start returned nil after a store failure, want an error — starting with a partial queue would silently drop jobs")
@@ -168,9 +168,9 @@ func TestRestore_PostBoundaryJobConsumesTheBoundary(t *testing.T) {
 		Header: Header{Name: "j1"},
 		State:  job.StateView{State: job.Finalizing, Outcome: job.OutcomeOK},
 	}})
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 
-	if err := d.restore(context.Background()); err != nil {
+	if err := d.Restore(context.Background()); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 
@@ -202,10 +202,10 @@ func TestRestore_RejectsAnUnreachablePosition(t *testing.T) {
 		Header: Header{Name: "j1"},
 		State:  job.StateView{State: job.Fetching, Outcome: job.OutcomeOK},
 	}})
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 	d.log = captureLogger(&buf)
 
-	if err := d.restore(context.Background()); err != nil {
+	if err := d.Restore(context.Background()); err != nil {
 		t.Fatalf("restore() = %v, want nil — an unreachable row must be logged and skipped", err)
 	}
 	if _, ok := d.lookup("j1"); ok {
@@ -230,9 +230,9 @@ func TestRestore_ReachesExtractingViaCross(t *testing.T) {
 		Header: Header{Name: "j1"},
 		State:  job.StateView{State: job.Extracting},
 	}})
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 
-	if err := d.restore(context.Background()); err != nil {
+	if err := d.Restore(context.Background()); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	j, ok := d.lookup("j1")
@@ -541,7 +541,7 @@ func TestRestore_SkipsAnUnreconstructableRow(t *testing.T) {
 		State:   job.StateView{State: job.StateUnset, Next: job.Assessing},
 	}
 	st.seed([]Persisted{badRow, goodRow, badHighRow})
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 	d.log = captureLogger(&buf)
 
 	if err := d.Start(context.Background()); err != nil {
@@ -591,7 +591,7 @@ func TestRestore_SkipsARowRegisterRefuses(t *testing.T) {
 		{ID: "third", SortKey: 3, Header: Header{Name: "unique"}, State: job.StateView{State: job.Fetching}},
 		dupHighRow,
 	})
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 	d.log = captureLogger(&buf)
 
 	if err := d.Start(context.Background()); err != nil {
@@ -634,7 +634,7 @@ func TestRestore_RollsBackWhenALaterRowFails(t *testing.T) {
 	st.seed([]Persisted{
 		{ID: "good", SortKey: 1, Header: Header{Name: "a"}, State: job.StateView{State: job.Fetching}},
 	})
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 
 	if err := d.Start(context.Background()); err == nil {
 		t.Fatal("Start() = nil, want an error when Store.Load fails")
@@ -721,9 +721,9 @@ func TestRestore_PreservesPolicy(t *testing.T) {
 		Policy: want,
 		State:  job.StateView{State: job.Fetching},
 	}})
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 
-	if err := d.restore(context.Background()); err != nil {
+	if err := d.Restore(context.Background()); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	j, ok := d.lookup("j1")
@@ -752,9 +752,9 @@ func TestRestore_PreservesSortKeyAndResumesAbove(t *testing.T) {
 		{ID: "b", SortKey: 50, Header: Header{Name: "b"}},
 		{ID: "c", SortKey: 100, Header: Header{Name: "c"}},
 	})
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 
-	if err := d.restore(context.Background()); err != nil {
+	if err := d.Restore(context.Background()); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	for id, want := range map[string]int64{"a": 10, "b": 50, "c": 100} {
@@ -794,8 +794,8 @@ func TestRestore_DoesNotRewriteRowsItJustRead(t *testing.T) {
 			DownloadStarted: 1700000300, DownloadFinished: 1700000400,
 			Par2ReleaseReason: "permanent article download failure", Par2Recovered: true},
 	})
-	d := newTestDispatcher(t, withStore(st))
-	if err := d.restore(context.Background()); err != nil {
+	d := newTestDispatcher(t, withStore(st), unrestored())
+	if err := d.Restore(context.Background()); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	before := st.saveCount()

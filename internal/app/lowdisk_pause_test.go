@@ -367,6 +367,7 @@ func TestTryAutoResumeLowDisk_DirectBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, application)
 	appCtx, appCancel := context.WithCancel(t.Context())
 	application.ctx = appCtx
 	t.Cleanup(func() {

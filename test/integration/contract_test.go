@@ -518,6 +518,10 @@ func buildAPIServerWithQueue(t *testing.T) (*api.Server, *httptest.Server) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	// Restored rather than started, so the API can add jobs with no tick running.
+	if err := application.Dispatcher().Restore(t.Context()); err != nil {
+		t.Fatalf("dispatcher.Restore: %v", err)
+	}
 
 	grabber := urlgrabber.New(urlgrabber.Config{}, nopNZBHandler{})
 
@@ -597,6 +601,10 @@ func buildAPIServerWithValidConfig(t *testing.T) (*api.Server, *httptest.Server)
 	application, err := app.New(cfg, repo)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
+	}
+	// Restored rather than started, so the API can add jobs with no tick running.
+	if err := application.Dispatcher().Restore(t.Context()); err != nil {
+		t.Fatalf("dispatcher.Restore: %v", err)
 	}
 
 	grabber := urlgrabber.New(urlgrabber.Config{}, nopNZBHandler{})

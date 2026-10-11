@@ -39,7 +39,7 @@ func stateOf(d *Dispatcher, id string) job.StateView {
 func TestStartWith_RunsBeforeTheFirstTick(t *testing.T) {
 	st := &fakeStore{}
 	st.seed([]Persisted{verdictRow()})
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 
 	var atHook job.StateView
 	movedDuring := false
@@ -84,7 +84,7 @@ func TestStartWith_RunsBeforeTheFirstTick(t *testing.T) {
 func TestStartWith_StepErrorFailsStart(t *testing.T) {
 	st := &fakeStore{}
 	st.seed([]Persisted{verdictRow()})
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 
 	errStep := errors.New("step failed")
 	err := d.StartWith(context.Background(), func(context.Context) error { return errStep })

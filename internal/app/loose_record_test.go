@@ -132,6 +132,7 @@ func (e *lrEnv) newAppWith(t *testing.T, opts []func(*Application), configure ..
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, a)
 	// Explicit flushes only, so a test decides what reached SQLite.
 	a.recordInterval = time.Hour
 	for _, c := range configure {

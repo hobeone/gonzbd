@@ -16,6 +16,7 @@ func newDownloadDirApp(t *testing.T) (*Application, string) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, application)
 	return application, application.downloadDir()
 }
 

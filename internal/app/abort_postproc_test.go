@@ -110,6 +110,7 @@ func heldRepairingApp(t *testing.T, stage postproc.Stage) (*Application, *job.Jo
 		dispatchstore.New(repo.DB(), nil),
 		runner,
 	)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 
@@ -217,6 +218,7 @@ func TestRemoveJob_ReleasesARepairingJobPostProcessingDoesNotHold(t *testing.T) 
 		dispatchstore.New(repo.DB(), nil),
 		runner,
 	)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 

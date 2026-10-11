@@ -64,6 +64,7 @@ func TestCompleteFinalizedFile_FeedsTheLastVolumeBeforeReportingTheDownload(t *t
 		dispatchstore.New(repo.DB(), nil),
 		runner,
 	)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 	t.Cleanup(application.duOrch.abortAll)

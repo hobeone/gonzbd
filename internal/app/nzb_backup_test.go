@@ -31,6 +31,7 @@ func newBackupTestApp(t *testing.T) (*app.Application, string) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 	return application, adminDir
 }
 

@@ -70,6 +70,7 @@ func newFailAtAssessingFixture(t *testing.T) *failAtAssessingFixture {
 	runner := &stateRecorder{}
 	d := dispatch.New(2, 1, time.Hour, time.Now, &appWorkers{app: application},
 		application.residency, dispatchstore.New(repo.DB(), nil), assessingTee{rec: runner, next: application.runner})
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 	application.runner.report = d

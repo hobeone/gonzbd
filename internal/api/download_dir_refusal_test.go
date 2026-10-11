@@ -48,6 +48,10 @@ func newDownloadDirRig(t *testing.T) *downloadDirRig {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	// Restored rather than started, so AddJob is accepted with no tick running.
+	if err := application.Dispatcher().Restore(t.Context()); err != nil {
+		t.Fatalf("dispatcher.Restore: %v", err)
+	}
 	cfgPath := filepath.Join(root, "gonzbd.yaml")
 	if err := cfg.Save(cfgPath); err != nil {
 		t.Fatalf("Save: %v", err)

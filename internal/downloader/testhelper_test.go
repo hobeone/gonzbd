@@ -32,7 +32,7 @@ func newTestDispatcher(t *testing.T) *dispatch.Dispatcher {
 	if t != nil {
 		t.Helper()
 	}
-	return dispatch.New(
+	d := dispatch.New(
 		10, 10, time.Hour,
 		func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
 		testWorkers{},
@@ -40,6 +40,14 @@ func newTestDispatcher(t *testing.T) *dispatch.Dispatcher {
 		testStore{},
 		testRunner{},
 	)
+	// Restored, not started, so a test can Add jobs and drive them by Tick.
+	if err := d.Restore(context.Background()); err != nil {
+		if t == nil {
+			panic(err)
+		}
+		t.Fatalf("dispatcher.Restore: %v", err)
+	}
+	return d
 }
 
 func addTestJob(t *testing.T, disp *dispatch.Dispatcher, j *job.Job, m *job.Manifest) *job.Job {

@@ -103,6 +103,7 @@ func newScenarioHarnessWithConfig(t testing.TB, conns int, tweak func(*config.Co
 	if err != nil {
 		t.Fatalf("scenario: app.New: %v", err)
 	}
+	restoreQueue(t, a)
 	h.app = a
 
 	t.Cleanup(func() { h.Stop() })

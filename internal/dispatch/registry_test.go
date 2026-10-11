@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -298,6 +299,81 @@ func TestAdd_RefusedOnAStoppedDispatcher(t *testing.T) {
 	}
 }
 
+// TestAdd_RefusedBeforeRestore pins #569: an Add on a dispatcher that has not
+// loaded its stored rows is refused, and leaves nothing registered or written.
+// Admitting it handed the job sequence 0 and the head of d.order, so every
+// stored row restored afterwards queued behind it.
+func TestAdd_RefusedBeforeRestore(t *testing.T) {
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withStore(st), unrestored())
+	err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"})
+	if !errors.Is(err, ErrNotRestored) {
+		t.Fatalf("Add before Restore = %v, want ErrNotRestored; admitted, the job would take sequence 0 ahead of every stored row", err)
+	}
+	if got := len(d.List()); got != 0 {
+		t.Errorf("registry holds %d jobs after a refused Add, want 0", got)
+	}
+	if _, ok := st.row("j1"); ok {
+		t.Error("a refused Add wrote a row")
+	}
+}
+
+// TestStart_AfterRestoreKeepsStoredRowsAheadOfAddedJobs pins the order #569
+// asked for: rows Restore loaded keep their place ahead of a job Added before
+// Start, and Start does not restore them a second time.
+func TestStart_AfterRestoreKeepsStoredRowsAheadOfAddedJobs(t *testing.T) {
+	var buf bytes.Buffer
+	st := &fakeStore{}
+	st.seed([]Persisted{{ID: "stored", SortKey: 5, Header: Header{Name: "stored"}}})
+	d := newTestDispatcher(t, withStore(st), unrestored())
+	d.log = captureLogger(&buf)
+
+	if err := d.Restore(context.Background()); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if err := d.Add(context.Background(), job.New("added", "a", job.Policy{}), Header{Name: "a"}); err != nil {
+		t.Fatalf("Add after Restore: %v", err)
+	}
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start after Restore: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Stop() })
+
+	rows := d.List()
+	ids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+	}
+	if !slices.Equal(ids, []string{"stored", "added"}) {
+		t.Errorf("queue order = %v, want [stored added]", ids)
+	}
+	if got, want := d.sortKeyOf("added"), int64(6); got != want {
+		t.Errorf("added job's sort key = %d, want %d, above every stored key", got, want)
+	}
+	if strings.Contains(buf.String(), "restore failed") {
+		t.Errorf("Start restored the stored rows a second time; log = %q", buf.String())
+	}
+}
+
+// TestRestore_RefusedWhenAlreadyRestoredOrStopped pins Restore's two refusals
+// outside a restore in progress: a second Restore would register every stored
+// row again, and one after Stop would register rows into a terminal
+// Dispatcher.
+func TestRestore_RefusedWhenAlreadyRestoredOrStopped(t *testing.T) {
+	d := newTestDispatcher(t)
+	if err := d.Restore(context.Background()); !errors.Is(err, errAlreadyRestored) {
+		t.Errorf("second Restore = %v, want errAlreadyRestored", err)
+	}
+
+	stopped := newTestDispatcher(t, unrestored())
+	if err := stopped.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := stopped.Restore(context.Background()); err == nil {
+		t.Error("Restore on a stopped Dispatcher returned nil")
+	}
+}
+
 // TestAdd_RefusedWhileRestoring pins that a job cannot be interleaved into the
 // registry while restore is rebuilding it.
 //
@@ -308,19 +384,24 @@ func TestAdd_RefusedOnAStoppedDispatcher(t *testing.T) {
 func TestAdd_RefusedWhileRestoring(t *testing.T) {
 	st := &fakeStore{}
 	st.seed([]Persisted{{ID: "stored", SortKey: 10, Header: Header{Name: "stored"}}})
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 
-	var addErr error
+	var addErr, restoreErr error
 	st.loadHook = func() {
+		st.loadHook = nil // a Restore admitted here would call Load, and so this hook, again
 		addErr = d.Add(context.Background(), job.New("intruder", "n", job.Policy{}), Header{Name: "n"})
+		restoreErr = d.Restore(context.Background())
 	}
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Stop() })
 
-	if addErr == nil {
-		t.Fatal("Add during restore returned nil; it would take a sequence before restore raised the counter past the stored keys")
+	if !errors.Is(addErr, ErrNotRestored) {
+		t.Fatalf("Add during restore = %v, want ErrNotRestored; admitted, it would take a sequence before restore raised the counter past the stored keys", addErr)
+	}
+	if restoreErr == nil {
+		t.Error("a Restore during Start's restore returned nil; it would register every stored row a second time")
 	}
 	for _, r := range d.List() {
 		if r.ID == "intruder" {

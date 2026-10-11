@@ -54,6 +54,7 @@ func newAppWithCustomDispatchStore(t *testing.T, failCount int) (*Application, *
 		s,
 		application.runner,
 	)
+	restoreQueue(t, application)
 	application.runner.report = application.dispatcher
 
 	j := job.New("test-remove-job", "test-job", job.Policy{})

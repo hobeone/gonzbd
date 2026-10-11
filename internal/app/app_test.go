@@ -66,6 +66,7 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	if err := application.Start(ctx); err != nil {
@@ -164,6 +165,7 @@ func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
 		// make the RepairStage fail by providing bad par2 files (which we aren't anyway).
 		// A simpler way is to just let the unpack stage fail.
 	})
+	restoreQueue(t, application)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	_ = application.Start(ctx)
@@ -257,6 +259,7 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("app.New: %v", err)
 		}
+		restoreQueue(t, application)
 
 		ctx, cancel := context.WithCancel(t.Context())
 		if err := application.Start(ctx); err != nil {
@@ -337,6 +340,7 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("app.New restart: %v", err)
 		}
+		restoreQueue(t, application)
 
 		if application.Dispatcher().Len() != 0 {
 			t.Errorf("Queue length after restart = %d, want 0", application.Dispatcher().Len())
@@ -401,6 +405,7 @@ func TestRetryHistoryJob(t *testing.T) {
 
 	emitter := &mockEmitter{}
 	application, _ := app.New(appCfg, repo, app.WithEventEmitter(emitter))
+	restoreQueue(t, application)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	_ = application.Start(ctx)
@@ -517,6 +522,7 @@ func TestQueuePersistenceAcrossRestart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("app.New (1): %v", err)
 		}
+		restoreQueue(t, application)
 
 		ctx, cancel := context.WithCancel(t.Context())
 		if err := application.Start(ctx); err != nil {
@@ -619,6 +625,7 @@ func TestFullDownloadLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -774,6 +781,7 @@ func TestScriptCanFail_StageWiring(t *testing.T) {
 			if err != nil {
 				t.Fatalf("app.New: %v", err)
 			}
+			restoreQueue(t, application)
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			if err := application.Start(ctx); err != nil {
@@ -1001,6 +1009,7 @@ func TestStart_DoubleStartReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -1045,6 +1054,7 @@ func TestStart_FailedStartResetsStartedFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	// Force the assembler into a permanently-stopped state so that Start
 	// fails at the assembler.Start step.
@@ -1227,6 +1237,7 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	// Test the setters that survived the #109 config-fan-out refactor. The
 	// stage-delegating and config-only setters (SetDirectUnpack, SetEnableUnrar,
@@ -1316,6 +1327,7 @@ func TestApplication_EdgeCases(t *testing.T) {
 
 	// 1. Test duplicate checks in AddJob (History DB and backup files)
 	application, _ := app.New(cfg, repo)
+	restoreQueue(t, application)
 
 	// Create a job, add it, wait for it to complete/fail to get in history
 	parsed := &nzb.NZB{
@@ -1538,6 +1550,7 @@ func TestApplication_PersistAndCommitError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	parsed := &nzb.NZB{
 		Files: []nzb.File{{
@@ -1666,6 +1679,7 @@ func TestApp_EventLoopStarvation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -1758,6 +1772,7 @@ func TestApp_ShutdownContextInheritance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	checker := &contextCheckingNotifier{}
 	dispatcher := notifier.NewDispatcher(slog.Default())
@@ -1900,6 +1915,7 @@ func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build app: %v", err)
 	}
+	restoreQueue(t, application)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

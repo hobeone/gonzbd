@@ -122,6 +122,7 @@ func newPeekAppMode(t *testing.T, action unwanted.Action, mode unwanted.Mode, ex
 		dispatchstore.New(repo.DB(), nil),
 		runner,
 	)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 	t.Cleanup(application.duOrch.abortAll)

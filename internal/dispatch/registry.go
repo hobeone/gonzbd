@@ -16,6 +16,10 @@ import (
 // ErrNotFound is returned when an operation names a job ID that is not registered.
 var ErrNotFound = errors.New("dispatch: job not found")
 
+// ErrNotRestored is returned by Add on a Dispatcher that has not finished
+// restoring its stored rows: neither Restore nor Start has completed one.
+var ErrNotRestored = errors.New("dispatch: the stored queue has not been restored; call Restore or Start first")
+
 // ErrInvalidJobName is SetName's refusal of a name that is not one safe path
 // component, or that another registered job has or another job has reserved.
 var ErrInvalidJobName = errors.New("dispatch: invalid job name")
@@ -149,13 +153,19 @@ type entry struct {
 // Add registers a job at the end of the queue, persists its initial queue row
 // synchronously, and wakes the tick.
 //
+// The stored queue must already be restored — by Restore, or by Start, which
+// restores first when Restore has not run — or Add returns ErrNotRestored.
+//
 // A duplicate ID is an error rather than an overwrite: the registry is the only
 // route by which a job's resources are returned, so replacing an entry would
 // strand whatever the displaced job held, with nothing left to release it.
 func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 	// The two refusals live here rather than in register, because register is
-	// also restore's door and restore runs during exactly the window the
-	// second one closes.
+	// also restore's door, and restore registers its rows while the second one
+	// is still refusing.
+	//
+	// TestAdd_RefusedBeforeRestore and TestAdd_RefusedWhileRestoring pin the
+	// second.
 	d.mu.Lock()
 	switch {
 	case d.stopped:
@@ -165,13 +175,13 @@ func (d *Dispatcher) Add(ctx context.Context, j *job.Job, h Header) error {
 		// run — a failure nothing reports.
 		d.mu.Unlock()
 		return errors.New("dispatch: Add: this Dispatcher is stopped")
-	case d.restoring:
-		// A job interleaved into a half-rebuilt registry takes a sequence from
-		// the counter before restore has raised it past the stored keys, so it
-		// collides with a row still to be registered, and remains registered if
-		// Store.Load fails Start.
+	case d.phase != phaseRestored:
+		// A job registered before or during restore takes a sequence from the
+		// counter before restore has raised it past the stored keys: it sorts
+		// ahead of every stored row and collides with any stored at the same
+		// key. Mid-restore it also stays registered if Store.Load fails the restore.
 		d.mu.Unlock()
-		return errors.New("dispatch: Add: this Dispatcher is restoring; retry once Start returns")
+		return fmt.Errorf("dispatch: Add: %w", ErrNotRestored)
 	}
 	d.mu.Unlock()
 

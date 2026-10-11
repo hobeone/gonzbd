@@ -34,6 +34,7 @@ func TestReconcileBeforeFirstTick_StopsOnACancelledContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, application)
 	parsed := &nzb.NZB{Files: []nzb.File{{
 		Subject: "file.bin", Bytes: 1024,
 		Articles: []nzb.Article{{ID: "cancelled1@t", Bytes: 1024, Number: 1}},
@@ -99,6 +100,7 @@ func TestStart_RetentionDoesNotDefeatCrashReconciliation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	// A completed job still in the queue — the state a crash between the
 	// history commit and Dispatcher.Remove leaves behind.

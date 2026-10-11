@@ -52,6 +52,7 @@ func fetchingRarApp(t *testing.T) (*Application, *job.Job) {
 		dispatchstore.New(repo.DB(), nil),
 		runner,
 	)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 	t.Cleanup(application.duOrch.abortAll)

@@ -1378,8 +1378,9 @@ or `register` in `Dispatcher.restore`, is logged at `Error` with its job ID and
 skipped — left in `dispatch_jobs` for inspection and omitted from `d.written`
 so `persistIfChanged` neither rewrites nor deletes it — while the remaining
 jobs are registered and queued; a query or cursor iteration failure in
-`Store.Load` (or an error from `StartWith`'s `beforeFirstTick`) still fails
-`Start`/`StartWith`.
+`Store.Load` still fails the restore (`Dispatcher.Restore`, or
+`Start`/`StartWith` when it is the one restoring), and an error from
+`StartWith`'s `beforeFirstTick` still fails `StartWith`.
 
 ### Article resolution is derived, not stored
 

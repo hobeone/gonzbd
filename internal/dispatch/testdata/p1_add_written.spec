@@ -1,5 +1,5 @@
 pkg ./internal/dispatch/
-run TestDeregister_LeavesAnotherRemovalsMarkerStanding|TestDeregister_IsTotal|TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess|TestAdd_PersistFailureUnwindsWithoutTickTouchingJob|TestAdd_PostPersistKickWakesTickAfterBlockedSave|TestAdd_AbortedRemovalDuringTheWriteLeavesTheJobVisible|TestRemove_OverlappingAddWithTransientDeleteErrorIsRetriedByTick|TestStart_RefusesARowThatDiffersFromTheOneAddWrote|TestAdd_SingleKickOnlyAfterPersist|TestAdd_WritesUnderTheCallersContext|TestRemovingState_SuppressesPersistAndLaunch|TestRegister_RefusesWhileARemovalIsOutstanding
+run TestDeregister_LeavesAnotherRemovalsMarkerStanding|TestDeregister_IsTotal|TestAdd_RemovalBeforeTheWriteIsNotReportedAsSuccess|TestAdd_PersistFailureUnwindsWithoutTickTouchingJob|TestAdd_PostPersistKickWakesTickAfterBlockedSave|TestAdd_AbortedRemovalDuringTheWriteLeavesTheJobVisible|TestRemove_OverlappingAddWithTransientDeleteErrorIsRetriedByTick|TestAdd_SingleKickOnlyAfterPersist|TestAdd_WritesUnderTheCallersContext|TestRemovingState_SuppressesPersistAndLaunch|TestRegister_RefusesWhileARemovalIsOutstanding
 
 [snapshotOrder written gate neutered]
 file internal/dispatch/registry.go
@@ -67,14 +67,6 @@ file internal/dispatch/registry.go
 	if true {
 		d.kick()
 	}
---- end
-
-[restore value equality check neutered]
-file internal/dispatch/dispatch.go
---- anchor
-		if w, ok := d.lastWritten(p.ID); ok && w == p {
---- replace
-		if _, ok := d.lastWritten(p.ID); ok {
 --- end
 
 [Add's check that its own write landed neutered]

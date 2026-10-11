@@ -141,6 +141,7 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	// Create and add a job to the queue
 	parsed := &nzb.NZB{

@@ -46,6 +46,7 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	const numFiles = 150
 	files := make([]nzb.File, 0, numFiles)

@@ -27,6 +27,16 @@ func testConfig(dl, comp, admin string, servers ...config.ServerConfig) *config.
 	return cfg
 }
 
+// restoreQueue restores a's dispatcher without starting it, so a test can add
+// jobs to an Application it never Starts. Start restores by itself when this
+// has not run, and skips the restore when it has.
+func restoreQueue(t testing.TB, a *app.Application) {
+	t.Helper()
+	if err := a.Dispatcher().Restore(t.Context()); err != nil {
+		t.Fatalf("restore the dispatcher's queue: %v", err)
+	}
+}
+
 func buildTestJob(t testing.TB, cfg *config.Config, parsed *nzb.NZB, opts types.FetchOptions) (*job.Job, dispatch.Header) {
 	t.Helper()
 	filename := opts.NzbName + ".nzb"
