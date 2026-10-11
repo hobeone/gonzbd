@@ -187,7 +187,7 @@ func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 
 // parkVerifyFault is the residency's parked callback: Stall for a
 // verification that could not complete, recorded as stallVerify so that only
-// an explicit resume lifts it (docs/durability-contract.md §3).
+// a resume of the job lifts it (docs/durability-contract.md §3).
 func (app *Application) parkVerifyFault(jobID string, f *storagefault.Fault) {
 	app.stall(jobID, f, stallVerify)
 }
@@ -301,8 +301,7 @@ func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 }
 
 // runStallRecheck is R19's cadence: every parked job is re-evaluated on an
-// interval, and on user action (ReevaluateStalls). Only the second lifts a
-// verification fault (reevaluateStall).
+// interval, and on user action (ReevaluateStalls).
 func (app *Application) runStallRecheck(ctx context.Context) {
 	recheck := app.stallRecheckInterval
 	if recheck <= 0 {
@@ -315,9 +314,9 @@ func (app *Application) runStallRecheck(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-stallTicker.C:
-			app.reevaluateStalls(ctx, byTimer)
+			app.reevaluateStalls(ctx)
 		case <-app.stallKick:
-			app.reevaluateStalls(ctx, byResume)
+			app.reevaluateStalls(ctx)
 		}
 	}
 }

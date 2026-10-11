@@ -30,7 +30,7 @@ func TestReevaluateStall_DoesNotUndoAUserPause(t *testing.T) {
 		t.Fatal("the fixture is not paused, so it cannot observe the pause being undone")
 	}
 
-	application.reevaluateStall(job.ID(), byResume)
+	application.reevaluateStall(job.ID())
 
 	row, ok = application.dispatcher.Row(job.ID())
 	if !ok {
@@ -61,7 +61,7 @@ func TestReevaluateStall_StillResumesWhatItParked(t *testing.T) {
 		t.Fatal("the fixture is not paused, so it cannot observe the resume")
 	}
 
-	application.reevaluateStall(job.ID(), byResume)
+	application.reevaluateStall(job.ID())
 
 	row, ok = application.dispatcher.Row(job.ID())
 	if !ok {
@@ -97,7 +97,7 @@ func TestReevaluateStall_KeepsAUserPauseStallWasCalledOn(t *testing.T) {
 		t.Error("Stall recorded the user's pause as this application's")
 	}
 
-	application.reevaluateStall(job.ID(), byResume)
+	application.reevaluateStall(job.ID())
 
 	row, ok := application.dispatcher.Row(job.ID())
 	if !ok {
@@ -125,7 +125,7 @@ func TestStall_ASecondFaultKeepsTheParkItOwns(t *testing.T) {
 	if !application.weParked(job.ID()) {
 		t.Fatal("a second fault on a job Stall parked released this application's claim on the pause")
 	}
-	application.reevaluateStall(job.ID(), byResume)
+	application.reevaluateStall(job.ID())
 	row, ok := application.dispatcher.Row(job.ID())
 	if !ok {
 		t.Fatal("the job left the queue")

@@ -37,7 +37,7 @@ func TestReevaluateStall_ForgetsAJobThatHasLeftTheQueue(t *testing.T) {
 	application, _, _ := newLifecycleTestApp(t)
 	application.noteStall("gone", testFault("write"), stallRetryable, true)
 
-	application.reevaluateStall("gone", byResume)
+	application.reevaluateStall("gone")
 
 	if got := application.stalledJobIDs(); len(got) != 0 {
 		t.Errorf("stalledJobIDs = %v, want empty for a job the queue does not have", got)
@@ -53,7 +53,7 @@ func TestReevaluateStalls_CoversEveryParkedJob(t *testing.T) {
 	application.noteStall("gone-a", testFault("write"), stallRetryable, true)
 	application.noteStall("gone-b", testFault("write"), stallRetryable, true)
 
-	application.reevaluateStalls(t.Context(), byResume)
+	application.reevaluateStalls(t.Context())
 
 	if got := application.stalledJobIDs(); len(got) != 0 {
 		t.Errorf("stalledJobIDs = %v, want empty — a sweep that stopped at the first job "+
@@ -71,7 +71,7 @@ func TestReevaluateStalls_StopsOnACancelledContext(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	application.reevaluateStalls(ctx, byResume)
+	application.reevaluateStalls(ctx)
 
 	if got := application.stalledJobIDs(); len(got) != 2 {
 		t.Errorf("stalledJobIDs = %v, want both still parked — the sweep ran anyway on a "+

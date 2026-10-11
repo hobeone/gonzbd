@@ -1,20 +1,28 @@
 pkg ./internal/app/
-run TestLooseRecord_LastingVerificationFaultStaysParked|TestReevaluateStall_TimerLeavesAVerifyFaultForTheOperator|TestReevaluateStall_TimerStillResumesAWriteFault|TestReevaluateStall_VerifyFaultOnAPausedJobKeepsItsReason|TestRunStallRecheck_ReevaluatesStallsOnItsTicker
+run TestLooseRecord_LastingVerificationFaultStaysParked|TestReevaluateStall_LeavesAVerifyFaultUntilTheJobIsResumed|TestReevaluateStall_TimerStillResumesAWriteFault|TestReevaluateStall_VerifyFaultOnAPausedJobKeepsItsReason|TestRunStallRecheck_ReevaluatesStallsOnItsTicker
 
-[the timer lifts a verification fault as it does a write fault]
+[a re-evaluation lifts a verification fault as it does a write fault]
 file internal/app/stall.go
 --- anchor
-	if by == byTimer && app.stallKindOf(jobID) == stallVerify {
+	if app.stallKindOf(jobID) == stallVerify && j.Intent() == job.IntentPause {
 --- replace
-	if false {
+	if _ = j; false {
 --- end
 
-[the timer lifts nothing, a write fault included]
+[a verification fault is never lifted, even once the job is resumed]
 file internal/app/stall.go
 --- anchor
-	if by == byTimer && app.stallKindOf(jobID) == stallVerify {
+	if app.stallKindOf(jobID) == stallVerify && j.Intent() == job.IntentPause {
 --- replace
-	if by == byTimer {
+	if _ = j; app.stallKindOf(jobID) == stallVerify {
+--- end
+
+[a write fault on a paused job is kept as a verification fault is]
+file internal/app/stall.go
+--- anchor
+	if app.stallKindOf(jobID) == stallVerify && j.Intent() == job.IntentPause {
+--- replace
+	if j.Intent() == job.IntentPause {
 --- end
 
 [the residency parks through Stall, as a retryable fault]
@@ -31,12 +39,4 @@ file internal/app/stall.go
 	app.stalls[jobID].kind = kind
 --- replace
 	app.stalls[jobID].kind = stallRetryable
---- end
-
-[a kick re-evaluates as the timer does]
-file internal/app/durability.go
---- anchor
-			app.reevaluateStalls(ctx, byResume)
---- replace
-			app.reevaluateStalls(ctx, byTimer)
 --- end

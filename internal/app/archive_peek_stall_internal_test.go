@@ -26,7 +26,7 @@ func TestReevaluateStall_ABlockedParkedJobStaysPausedForTheUser(t *testing.T) {
 		t.Fatalf("BlockUnwanted = (%v, %v), want it to move", moved, err)
 	}
 
-	application.reevaluateStall(id, byResume)
+	application.reevaluateStall(id)
 
 	if application.weParked(id) {
 		t.Error("the park was not released after the fault cleared")

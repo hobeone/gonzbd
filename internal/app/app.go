@@ -216,8 +216,9 @@ type Application struct {
 
 	// stopping is set at the top of Shutdown, BEFORE any of its steps run.
 	//
-	// It feeds Application.Stall's refusal to park a job while the process is
-	// stopping. Shutdown cancels app.ctx in joinAndStop, after the assembler
+	// Among its readers, it feeds Application.stall's refusal to park a job
+	// while the process is stopping; stall is the body of both Stall and
+	// parkVerifyFault. Shutdown cancels app.ctx in joinAndStop, after the assembler
 	// has stopped, so a fault raised while stopping the workers
 	// would otherwise pause a job, and the pause would be persisted while the
 	// stall list that re-evaluates it dies with the process.

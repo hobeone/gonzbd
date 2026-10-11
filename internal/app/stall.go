@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -19,8 +20,8 @@ import (
 // a still-broken condition costs a re-fault.
 const stallRecheckInterval = 30 * time.Second
 
-// stallKind is what may lift a stall: the timed re-evaluation, or only an
-// explicit resume.
+// stallKind is what may lift a stall: any re-evaluation, or only one that
+// follows a resume of the job.
 type stallKind uint8
 
 const (
@@ -29,21 +30,13 @@ const (
 	// clears without the operator touching the job.
 	stallRetryable stallKind = iota
 	// stallVerify is a verification fault raised by a hydration
-	// (Application.parkVerifyFault). Only a byResume re-evaluation lifts it:
-	// resuming it on the timer would have the tick hydrate the job again and
-	// re-read every recorded row, on the dispatcher's goroutine, until it
-	// reached the same unreadable range (#828).
+	// (Application.parkVerifyFault). A re-evaluation lifts it only once the
+	// job's intent is no longer IntentPause, that is once the job itself has
+	// been resumed: lifting it otherwise would have the tick hydrate the job
+	// again and re-read every recorded row, on the dispatcher's goroutine,
+	// until it reached the same unreadable range (#828), or, for a job whose
+	// pause is not ours, drop the reason of a job nothing will re-verify.
 	stallVerify
-)
-
-// stallTrigger is what asked for a re-evaluation.
-type stallTrigger uint8
-
-const (
-	// byTimer is the stallRecheckInterval ticker.
-	byTimer stallTrigger = iota
-	// byResume is ReevaluateStalls.
-	byResume
 )
 
 // stallRecord is one job's parked state: why it stopped, what may lift it, and
@@ -156,8 +149,9 @@ func (app *Application) StallReason(jobID string) StallInfo {
 }
 
 // ReevaluateStalls asks the stall loop to re-evaluate every parked job now,
-// rather than at the next interval. This is R19's "and on user action", and
-// the trigger that lifts a verification fault (stallVerify).
+// rather than at the next interval. This is R19's "and on user action". It
+// lifts a verification fault (stallVerify) only on a job the user has resumed
+// (reevaluateStall).
 //
 // Non-blocking: it is called from the API's per-job resume handler and, under
 // app.mu, from resumeLocked, neither of which may wait on a re-evaluation.
@@ -171,18 +165,20 @@ func (app *Application) ReevaluateStalls() {
 }
 
 // reevaluateStalls re-evaluates every parked job (R19).
-func (app *Application) reevaluateStalls(ctx context.Context, by stallTrigger) {
+func (app *Application) reevaluateStalls(ctx context.Context) {
 	for _, jobID := range app.stalledJobIDs() {
 		if ctx.Err() != nil {
 			return
 		}
-		app.reevaluateStall(jobID, by)
+		app.reevaluateStall(jobID)
 	}
 }
 
 // reevaluateStall gets one parked job moving again: it forgets the stall, and
 // resumes the job if this application paused it. A verification fault
-// (stallVerify) is left as it stands, reason and pause, unless by is byResume.
+// (stallVerify) on a job whose intent is still IntentPause is left as it
+// stands, reason and pause: neither the interval, a queue-wide resume, nor a
+// resume of another job lifts it, only a resume of the job itself.
 //
 // Nothing is retried here. A write or completion fault left the affected
 // articles Outstanding (a completion fault untrusts its file first), and a
@@ -192,11 +188,14 @@ func (app *Application) reevaluateStalls(ctx context.Context, by stallTrigger) {
 //
 // The record is cleared before the resume, so a fault the resumed job raises
 // at once records a stall of its own rather than this call deleting it, which
-// would leave the job paused with no reason and no owner.
-func (app *Application) reevaluateStall(jobID string, by stallTrigger) {
+// would leave the job paused with no reason and no owner. The intent read and
+// the clear are two steps, so a fault landing between them on a job just
+// resumed can still be cleared that way.
+func (app *Application) reevaluateStall(jobID string) {
+	var j *job.Job
 	exists := false
 	if app.dispatcher != nil {
-		_, exists = app.dispatcher.Job(jobID)
+		j, exists = app.dispatcher.Job(jobID)
 	}
 	if !exists {
 		app.log.Info("stall re-evaluation: the job has left the queue; forgetting its parked state",
@@ -204,7 +203,7 @@ func (app *Application) reevaluateStall(jobID string, by stallTrigger) {
 		app.clearStall(jobID)
 		return
 	}
-	if by == byTimer && app.stallKindOf(jobID) == stallVerify {
+	if app.stallKindOf(jobID) == stallVerify && j.Intent() == job.IntentPause {
 		return
 	}
 	// Only a job whose record says we paused it is resumed, so a user pause
