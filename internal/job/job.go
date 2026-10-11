@@ -233,6 +233,13 @@ type Job struct {
 	restoredDLFinished    time.Time
 	restoredPar2Recovered bool
 
+	// settleCombineHook, when non-nil, runs in SettleFileCRC after the rows
+	// are taken and before they are combined, with contentMu not held. It is
+	// a test seam: no production file assigns it
+	// (`git grep -n 'settleCombineHoo[k] =' -- '*.go' ':!*_test.go'` returns
+	// nothing).
+	settleCombineHook func()
+
 	totalBytes    int64
 	recoveryBytes int64
 	recoveryFiles int

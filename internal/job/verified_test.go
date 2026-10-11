@@ -714,3 +714,107 @@ func TestSettleFileCRC_RefusesWhatItCannotSettle(t *testing.T) {
 		t.Errorf("SettleFileCRC on an evicted job = %v, want ErrNotResident", err)
 	}
 }
+
+// writeChain writes file 0 of verifiedTestJob whole, through the live door.
+func writeChain(t *testing.T, j *Job, data []byte) {
+	t.Helper()
+	for _, r := range chainRows(data) {
+		if err := j.MarkArticleWritten(r); err != nil {
+			t.Fatalf("MarkArticleWritten: %v", err)
+		}
+	}
+}
+
+// TestSettleFileCRC_RefusesAStaleCombine pins the check between SettleFileCRC's
+// two critical sections: a change to the file's rows while they are combined
+// outside the lock must not be overwritten by a CRC combined from the rows as
+// they were. Each case changes the rows from the hook, which runs between the
+// two sections, and requires the outcome of the change followed by a settle.
+func TestSettleFileCRC_RefusesAStaleCombine(t *testing.T) {
+	t.Parallel()
+	data := chainData()
+	rewritten := slices.Clone(data)
+	for i := 200; i < 300; i++ {
+		rewritten[i] ^= 0xFF
+	}
+	tests := []struct {
+		name   string
+		change func(t *testing.T, j *Job)
+		wantOK bool
+		want   uint32
+	}{
+		{
+			name: "the file is untrusted",
+			change: func(t *testing.T, j *Job) {
+				if err := j.UntrustFile(0); err != nil {
+					t.Fatalf("UntrustFile: %v", err)
+				}
+			},
+		},
+		{
+			name: "an article is written again with other bytes",
+			change: func(t *testing.T, j *Job) {
+				if err := j.MarkArticleWritten(chainRows(rewritten)[2]); err != nil {
+					t.Fatalf("MarkArticleWritten: %v", err)
+				}
+			},
+			wantOK: true,
+			want:   crc32.ChecksumIEEE(rewritten),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			j := verifiedTestJob(t)
+			writeChain(t, j, data)
+			j.settleCombineHook = func() { tt.change(t, j) }
+			crc, ok, err := j.SettleFileCRC(0)
+			if err != nil || ok != tt.wantOK || crc != tt.want {
+				t.Fatalf("SettleFileCRC = %08x, %v, %v; want %08x, %v, nil", crc, ok, err, tt.want, tt.wantOK)
+			}
+			if got := j.Progress().FileAssembledCRC32(0); got != tt.want {
+				t.Errorf("stored CRC = %08x, want %08x: a CRC combined from rows that changed was installed", got, tt.want)
+			}
+			if got := j.FileRows(0); got != nil {
+				t.Errorf("FileRows(0) = %+v after the settle, want none", got)
+			}
+		})
+	}
+}
+
+// TestSettleFileCRC_CombinesWithoutTheLock pins the span SettleFileCRC holds
+// contentMu for: while a file's rows are being combined the job's lock is
+// free, and the assembler's door takes it for another file.
+func TestSettleFileCRC_CombinesWithoutTheLock(t *testing.T) {
+	t.Parallel()
+	data := chainData()
+	j := verifiedTestJob(t)
+	writeChain(t, j, data)
+	ran := false
+	j.settleCombineHook = func() {
+		ran = true
+		if !j.contentMu.TryLock() {
+			t.Fatal("contentMu is held while the rows are combined")
+		}
+		j.contentMu.Unlock()
+		if err := j.MarkArticleWritten(durability.WrittenRow{FileIdx: 1, ArtIdx: 4, Length: 100}); err != nil {
+			t.Errorf("MarkArticleWritten for another file during the combine: %v", err)
+		}
+	}
+	crc, ok, err := j.SettleFileCRC(0)
+	if !ran {
+		t.Fatal("the combine hook never ran")
+	}
+	if err != nil || !ok || crc != crc32.ChecksumIEEE(data) {
+		t.Fatalf("SettleFileCRC = %08x, %v, %v; want %08x, true, nil", crc, ok, err, crc32.ChecksumIEEE(data))
+	}
+	if got := j.Progress().FileAssembledCRC32(0); got != crc {
+		t.Errorf("stored CRC = %08x, want %08x", got, crc)
+	}
+	if got := j.FileRows(0); got != nil {
+		t.Errorf("FileRows(0) = %+v after the CRC settled, want none", got)
+	}
+	if got := len(j.FileRows(1)); got != 1 {
+		t.Errorf("file 1 has %d resident rows, want the 1 written during the combine", got)
+	}
+}
