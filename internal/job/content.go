@@ -223,22 +223,35 @@ func (j *Job) DownloadStarted() time.Time {
 }
 
 // DownloadBegun reports whether article bytes may exist under the job's name:
-// the first-article stamp is set, or at least one article is recorded done.
-// The second term is what a retried job needs, because ResetForRetry clears
-// the stamps but keeps the done articles. Before the job has a JobProgress it
-// reads only the restored stamp, as DownloadStarted does.
+// at least one file has a resolved on-disk filename. The pipeline's
+// registerFile sets it (SetFileFilename) before it hands the file's first
+// article to the assembler, which creates the file, on the success path and
+// the permanent-failure path alike. Verification restores it
+// (InstallFileVerification), and drops the rows of a complete=0 file recorded
+// without one (verifyJobFiles), so a restored or retried job with done articles
+// reports it too; ResetForRetry does not clear it. The writers of
+// FileProgress.Filename are those two —
+// `git grep -n '\]\.Filename = ' -- 'internal/job/*.go' ':!*_test.go'` returns 2 lines.
+//
+// Before the job has a JobProgress it reads the restored start stamp, which a
+// job with a filename may lack; Dispatcher.SetName hydrates before asking.
 //
 // A job that has begun an attempt but fetched nothing (HasRun, which
 // Queue.Advance sets for any ungated job on its first tick) does not report
-// it, and neither does one whose every article failed.
+// it, and neither does one with a failed article whose file was never
+// registered.
 func (j *Job) DownloadBegun() bool {
 	j.contentMu.RLock()
 	defer j.contentMu.RUnlock()
 	if j.progress == nil {
 		return !j.restoredDLStarted.IsZero()
 	}
-	p := j.progress
-	return !p.downloadStarted.IsZero() || p.articlesResolved > p.articlesFailed
+	for i := range j.progress.files {
+		if j.progress.files[i].Filename != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // DownloadFinished returns the time downloading completed, or zero if

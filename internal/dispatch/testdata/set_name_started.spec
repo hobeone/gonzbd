@@ -9,34 +9,26 @@ file internal/dispatch/registry.go
 	if false {
 --- end
 
-[a retried job (done articles, no stamp) may be renamed]
+[a job with a registered file (failed or retried) may be renamed]
 file internal/job/content.go
 --- anchor
-	return !p.downloadStarted.IsZero() || p.articlesResolved > p.articlesFailed
+		if j.progress.files[i].Filename != "" {
 --- replace
-	return !p.downloadStarted.IsZero()
+		if j.progress.files[i].Filename != "" && i < 0 {
 --- end
 
-[a stamped job may be renamed]
+[a job with no registered file (an attempt, an unregistered failure) is refused]
 file internal/job/content.go
 --- anchor
-	return !p.downloadStarted.IsZero() || p.articlesResolved > p.articlesFailed
+		if j.progress.files[i].Filename != "" {
+			return true
+		}
+	}
+	return false
 --- replace
-	return p.articlesResolved > p.articlesFailed
---- end
-
-[a job whose articles all failed is refused]
-file internal/job/content.go
---- anchor
-	return !p.downloadStarted.IsZero() || p.articlesResolved > p.articlesFailed
---- replace
-	return !p.downloadStarted.IsZero() || p.articlesResolved > 0
---- end
-
-[a job that merely began an attempt is refused]
-file internal/job/content.go
---- anchor
-	return !p.downloadStarted.IsZero() || p.articlesResolved > p.articlesFailed
---- replace
-	return !p.downloadStarted.IsZero() || p.articlesResolved >= p.articlesFailed
+		if j.progress.files[i].Filename != "" {
+			return true
+		}
+	}
+	return true
 --- end

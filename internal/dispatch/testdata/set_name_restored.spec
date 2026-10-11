@@ -9,10 +9,10 @@ file internal/dispatch/registry.go
 	if !ok || j.HasProgress() || true {
 --- end
 
-[a restored retried job is not refused once loaded]
+[a restored job with a recorded filename is not refused once loaded]
 file internal/job/content.go
 --- anchor
-	return !p.downloadStarted.IsZero() || p.articlesResolved > p.articlesFailed
+		if j.progress.files[i].Filename != "" {
 --- replace
-	return !p.downloadStarted.IsZero()
+		if j.progress.files[i].Filename != "" && i < 0 {
 --- end

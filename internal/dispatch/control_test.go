@@ -96,8 +96,10 @@ func TestSetName_RefusesUnsafeOrTakenNames(t *testing.T) {
 
 // TestSetName_RefusesAJobThatHasStarted pins the registry's refusal to rename
 // a job whose download has begun: its name is its download directory and a
-// rename moves nothing. A job that has only begun an attempt (which the tick
-// does for any ungated job) or whose articles all failed is still renamable.
+// rename moves nothing. A job with a registered file — a resolved filename,
+// whether its articles succeeded or failed — is refused. A job that has only
+// begun an attempt (which the tick does for any ungated job), or has a failed
+// article whose file was never registered, is still renamable.
 func TestSetName_RefusesAJobThatHasStarted(t *testing.T) {
 	d := newTestDispatcher(t)
 	manifest := func() *job.Manifest {
@@ -117,13 +119,24 @@ func TestSetName_RefusesAJobThatHasStarted(t *testing.T) {
 		}
 		return j
 	}
-	stamped := add("stamped", func(j *job.Job) {
+	register := func(j *job.Job) {
+		if err := j.SetFileFilename(0, "f"); err != nil {
+			t.Fatalf("SetFileFilename: %v", err)
+		}
+	}
+	registered := add("registered", func(j *job.Job) { // the permanent-failure path: a filename, nothing done
+		if err := j.MarkArticleFailed(0); err != nil {
+			t.Fatalf("MarkArticleFailed: %v", err)
+		}
+		register(j)
+	})
+	retried := add("retried", func(j *job.Job) { // a done article, stamps cleared by ResetForRetry
+		register(j)
+		jobtest.MarkArticleWritten(t, j, 0)
 		if err := j.MarkJobStarted(time.Now()); err != nil {
 			t.Fatalf("MarkJobStarted: %v", err)
 		}
-	})
-	retried := add("retried", func(j *job.Job) { // done article, stamps cleared as ResetForRetry leaves them
-		jobtest.MarkArticleWritten(t, j, 0)
+		j.ResetForRetry()
 	})
 	add("attempt", func(j *job.Job) {
 		if err := j.BeginAttempt(testClock()); err != nil {
@@ -139,7 +152,7 @@ func TestSetName_RefusesAJobThatHasStarted(t *testing.T) {
 	for _, tc := range []struct {
 		id string
 		j  *job.Job
-	}{{"stamped", stamped}, {"retried", retried}} {
+	}{{"registered", registered}, {"retried", retried}} {
 		err := d.SetName(tc.id, "Other "+tc.id)
 		if !errors.Is(err, ErrJobStarted) || errors.Is(err, ErrInvalidJobName) {
 			t.Errorf("SetName on %s = %v, want ErrJobStarted and not ErrInvalidJobName", tc.id, err)
@@ -157,11 +170,12 @@ func TestSetName_RefusesAJobThatHasStarted(t *testing.T) {
 
 // TestSetName_RefusesARetriedJobRestoredBeforeHydration pins the restart case:
 // a retried job's stored row carries no download stamp (ResetForRetry clears
-// it) and a restored job has no JobProgress, so only its done articles, which
-// Hydrate restores, show that bytes exist under its name. SetName must load
-// them rather than trust the empty row. The residency double stands in for
-// the real one by attaching content and marking an article done, as
-// RestoreContent plus the durable-run restore do.
+// it), nor does one whose only resolved articles failed, and a restored job has
+// no JobProgress, so only its files' recorded filenames, which Hydrate
+// restores, show that bytes may exist under its name. SetName must load them
+// rather than trust the empty row. The residency double stands in for the real
+// one by attaching content and installing the recorded filename, as
+// RestoreContent plus installVerification do.
 func TestSetName_RefusesARetriedJobRestoredBeforeHydration(t *testing.T) {
 	st := &fakeStore{}
 	st.seed([]Persisted{
@@ -181,7 +195,9 @@ func TestSetName_RefusesARetriedJobRestoredBeforeHydration(t *testing.T) {
 			t.Errorf("AttachContent: %v", err)
 		}
 		if id == "retried" {
-			jobtest.MarkArticleWritten(t, j, 0)
+			if _, err := j.InstallFileVerification(job.FileVerification{FileIdx: 0, Filename: "f"}); err != nil {
+				t.Errorf("InstallFileVerification: %v", err)
+			}
 		}
 	}
 	if err := d.restore(context.Background()); err != nil {

@@ -619,13 +619,15 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    dispatcher refuses it (`claimJobName`). `Dispatcher.SetName` also refuses
    an empty name, `.`, `..`, a separator and NUL. A rename moves no
    files, so `SetName` also refuses (`ErrJobStarted`, answered 409) a job
-   whose download has begun, as `Job.DownloadBegun` reports it: the
-   first-article stamp is set or at least one article is done. That is not
+   whose download has begun, as `Job.DownloadBegun` reports it: some file
+   has a resolved filename. The pipeline sets it when it registers the file,
+   before the assembler creates it, whether the article was fetched or
+   permanently failed, and verification restores it. That is not
    `HasRun`, which the tick sets for any ungated job before it fetches
-   anything. A same-name rename is refused too, and a restored job with no
-   progress yet is hydrated first. The done-article term is what keeps a retried job
-   refused, since `ResetForRetry` clears the stamp but keeps the articles and
-   their bytes under the name. A retry takes the name
+   anything, nor the start stamp, which a permanent failure does not set
+   and `ResetForRetry` clears while the file and its bytes stay under the
+   name. A same-name rename is refused too, and a restored job with no
+   progress yet is hydrated first. A retry takes the name
    rebuilt from its history entry rather than a freshly chosen one, because
    that directory is where its bytes are, and is refused if another
    registered job holds it.

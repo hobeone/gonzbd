@@ -6,13 +6,17 @@ import (
 )
 
 // TestDownloadBegun pins what Job.DownloadBegun reads: the restored stamp
-// before hydration, then the live stamp or any done article, and not an
-// attempt, a failed article, or an untouched job.
+// before hydration, then whether any file has a resolved filename — set live
+// (SetFileFilename) or restored (InstallFileVerification), and kept by
+// ResetForRetry — and not an attempt, a failed article, or the start stamp.
 func TestDownloadBegun(t *testing.T) {
 	manifest := func() *Manifest {
-		return NewManifest([]JobFile{{Subject: "f", Bytes: 200, Articles: []JobArticle{
-			{ID: "<a@x>", Bytes: 100, Number: 1}, {ID: "<b@x>", Bytes: 100, Number: 2},
-		}}})
+		return NewManifest([]JobFile{
+			{Subject: "f", Bytes: 200, Articles: []JobArticle{
+				{ID: "<a@x>", Bytes: 100, Number: 1}, {ID: "<b@x>", Bytes: 100, Number: 2},
+			}},
+			{Subject: "g", Bytes: 100, Articles: []JobArticle{{ID: "<c@x>", Bytes: 100, Number: 1}}},
+		})
 	}
 	stamp := time.Unix(1700000100, 0).UTC()
 
@@ -25,23 +29,45 @@ func TestDownloadBegun(t *testing.T) {
 		t.Error("a restored job with a start stamp and no progress does not report DownloadBegun")
 	}
 
+	setName := func(t *testing.T, j *Job, fi int) {
+		t.Helper()
+		if err := j.SetFileFilename(fi, "on-disk.bin"); err != nil {
+			t.Fatalf("SetFileFilename: %v", err)
+		}
+	}
 	for name, tc := range map[string]struct {
-		prep func(*Job)
+		prep func(*testing.T, *Job)
 		want bool
 	}{
-		"untouched":      {func(*Job) {}, false},
-		"attempt only":   {func(j *Job) { _ = j.BeginAttempt(stamp) }, false},
-		"failed article": {func(j *Job) { _ = j.MarkArticleFailed(0) }, false},
-		"stamp":          {func(j *Job) { _ = j.MarkJobStarted(stamp) }, true},
-		"done article":   {func(j *Job) { markWritten(t, j, 0) }, true},
+		"untouched":    {func(*testing.T, *Job) {}, false},
+		"attempt only": {func(_ *testing.T, j *Job) { _ = j.BeginAttempt(stamp) }, false},
+		// The pipeline cannot stamp a job without registering a file; the
+		// predicate reads the registration, not the stamp.
+		"stamp only":              {func(_ *testing.T, j *Job) { _ = j.MarkJobStarted(stamp) }, false},
+		"failed, not registered":  {func(_ *testing.T, j *Job) { _ = j.MarkArticleFailed(0) }, false},
+		"second file's filename":  {func(t *testing.T, j *Job) { setName(t, j, 1) }, true},
+		"failed, then registered": {func(t *testing.T, j *Job) { _ = j.MarkArticleFailed(0); setName(t, j, 0) }, true},
+		"retried": {func(t *testing.T, j *Job) {
+			setName(t, j, 0)
+			markWritten(t, j, 0)
+			_ = j.MarkJobStarted(stamp)
+			j.ResetForRetry()
+		}, true},
+		"restored filename": {func(t *testing.T, j *Job) {
+			if _, err := j.InstallFileVerification(FileVerification{FileIdx: 0, Filename: "on-disk.bin"}); err != nil {
+				t.Fatalf("InstallFileVerification: %v", err)
+			}
+		}, true},
 	} {
-		j := New(name, name, Policy{})
-		if err := j.AttachContent(manifest()); err != nil {
-			t.Fatalf("%s: AttachContent: %v", name, err)
-		}
-		tc.prep(j)
-		if got := j.DownloadBegun(); got != tc.want {
-			t.Errorf("%s: DownloadBegun = %v, want %v", name, got, tc.want)
-		}
+		t.Run(name, func(t *testing.T) {
+			j := New(name, name, Policy{})
+			if err := j.AttachContent(manifest()); err != nil {
+				t.Fatalf("AttachContent: %v", err)
+			}
+			tc.prep(t, j)
+			if got := j.DownloadBegun(); got != tc.want {
+				t.Errorf("DownloadBegun = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

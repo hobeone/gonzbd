@@ -215,9 +215,12 @@ Three things follow:
 - **A rename is refused once articles may exist under the old name.** The
   directory is keyed by name and a rename moves no files, so
   `Dispatcher.SetName` returns `ErrJobStarted` when `Job.DownloadBegun` is
-  true (first-article stamp set, or a done article). A job restored at
-  startup has no `JobProgress` until hydrated, and a retried job's stored
-  stamps are zero, so `SetName` hydrates such a job first
+  true: some file has a resolved filename, which the pipeline's
+  `registerFile` sets before the assembler creates the file, on the
+  permanent-failure path as well as the success path, and verification
+  restores. A job restored at startup has no `JobProgress` until hydrated,
+  and its stored start stamp is zero after a retry or when every resolved
+  article failed, so `SetName` hydrates such a job first
   (`Dispatcher.LoadProgress`). `HasRun` is the wrong
   test for this: it is true for any job the tick has opened an attempt on,
   including one still waiting behind others.

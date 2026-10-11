@@ -1052,9 +1052,10 @@ func (d *Dispatcher) SetName(id, name string) error {
 // removed. Hydration verifies the job's written articles, so
 // afterwards the job's progress reports them.
 //
-// SetName calls it so Job.DownloadBegun reads the job's done articles and not
-// only the restored stamp: a retried job's stamps are cleared while its done
-// articles, and their bytes under the name, are kept. The application's
+// SetName calls it so Job.DownloadBegun reads the job's restored filenames and
+// not only the restored stamp: a retried job's stamps are cleared, and a job
+// whose only resolved articles failed was never stamped, yet both may have
+// bytes under the name. The application's
 // startup verifier (Application.verifyPausedJobs) calls it, after Start has
 // returned, for every job restored paused at Fetching, which no tick hydrates
 // until it is resumed.

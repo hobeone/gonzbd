@@ -312,8 +312,9 @@ verifies itself:
   reports its progress rather than 0 % without the user resuming it;
 - `Dispatcher.SetName` → `LoadProgress`. A rename is refused once
   `Job.DownloadBegun()` is true and moves nothing on disk; verification runs
-  first, so verified rows make the job "begun" and a rename can never leave
-  rows pointing at a stale path;
+  first, so the restored filenames make the job "begun" (`verifyJobFiles`
+  deletes a complete=0 file's rows recorded without a filename rather than
+  keep them) and a rename can never leave rows pointing at a stale path;
 - `Application.verifyRetry`, for a retried job: it is rebuilt by
   `BuildIngestJob`, which attaches its manifest, so `Hydrate` would return
   early and never verify it (see *Retry* below).
