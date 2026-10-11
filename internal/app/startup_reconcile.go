@@ -66,11 +66,12 @@ const defaultPausedVerifyTimeout = 10 * time.Minute
 // registered job with no progress. A job resumed during its load is hydrated
 // once: the tick's Hydrate waits for the load in flight, and starts its own
 // only if that one left the job non-resident. A job removed during its load
-// is removed once the load ends: RemoveJob's eviction (appResidency.Evict,
-// which takes no context) blocks its caller until the load returns — up to
-// the deadline between rows, and for as long as a read a hung mount does not
-// return — so the load's verdicts reach SQLite before the removal's reclaim
-// deletes the job's rows, and the Resumed completions it queued find no job.
+// is removed once the load ends: RemoveJob's eviction (appResidency.Evict)
+// cancels the load and blocks its caller until it returns — at the next row,
+// or, for a read-back read blocked in the syscall, when that read returns — so
+// whatever verdicts the load committed reach SQLite before the removal's
+// reclaim deletes the job's rows, and the Resumed completions it queued find
+// no job.
 func (app *Application) verifyPausedJobs(ctx context.Context) {
 	if app.dispatcher == nil {
 		return

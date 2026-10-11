@@ -51,7 +51,15 @@ type appResidency struct {
 	parked   func(jobID string, f *storagefault.Fault)
 
 	mu        sync.Mutex
-	hydrating map[string]chan struct{}
+	hydrating map[string]hydration
+}
+
+// hydration is one in-flight Hydrate of a job: ready is closed when it
+// returns, and cancel cancels the context it runs under, which is how Evict
+// ends it rather than waiting for its reads.
+type hydration struct {
+	ready  chan struct{}
+	cancel context.CancelFunc
 }
 
 func newAppResidency(lookup func(string) (*job.Job, bool), dir string, store recordReader, log *slog.Logger) *appResidency {
@@ -63,7 +71,7 @@ func newAppResidency(lookup func(string) (*job.Job, bool), dir string, store rec
 		dir:       dir,
 		store:     store,
 		log:       log,
-		hydrating: make(map[string]chan struct{}),
+		hydrating: make(map[string]hydration),
 	}
 }
 
@@ -82,13 +90,13 @@ func newAppResidency(lookup func(string) (*job.Job, bool), dir string, store rec
 //
 // One hydration of a job runs at a time. A call that finds one in flight
 // waits for it, and is done if it attached; if it did not — it was cancelled,
-// its own deadline passed, or it faulted — the waiter starts its own, under
-// its own ctx. The waiter does not report the other's failure as its own:
-// Dispatcher.reconcileResidency settles a job Failed on a hydration error
-// that is neither a context error nor a residency fault, so a tick's
-// hydration that waited on the startup verification of a job the user
-// resumed (Application.verifyPausedJobs) must not turn that verification's
-// deadline into such an error.
+// by its caller or by Evict, its own deadline passed, or it faulted — the
+// waiter starts its own, under its own ctx. The waiter does not report the
+// other's failure as its own: Dispatcher.reconcileResidency settles a job
+// Failed on a hydration error that is neither a context error nor a residency
+// fault, so a tick's hydration that waited on the startup verification of a
+// job the user resumed (Application.verifyPausedJobs) must not turn that
+// verification's deadline into such an error.
 func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 	j, ok := r.lookup(id)
 	if !ok {
@@ -96,15 +104,17 @@ func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 	}
 
 	var ready chan struct{}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	for ready == nil {
 		r.mu.Lock()
 		if r.hydrating == nil {
-			r.hydrating = make(map[string]chan struct{})
+			r.hydrating = make(map[string]hydration)
 		}
 		if inFlight, ok := r.hydrating[id]; ok {
 			r.mu.Unlock()
 			select {
-			case <-inFlight:
+			case <-inFlight.ready:
 				continue
 			case <-ctx.Done():
 				return ctx.Err()
@@ -115,7 +125,7 @@ func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 			return nil
 		}
 		ready = make(chan struct{})
-		r.hydrating[id] = ready
+		r.hydrating[id] = hydration{ready: ready, cancel: cancel}
 		r.mu.Unlock()
 	}
 
@@ -204,8 +214,15 @@ func (r *appResidency) readRecord(ctx context.Context, id string) ([]durability.
 
 // fault returns a failed verification's error. A context error is returned
 // as it is; anything else parks the job and is marked a residency fault, so
-// the dispatcher leaves the job's outcome alone.
+// the dispatcher leaves the job's outcome alone. An error that comes back
+// after ctx ended is returned wrapping ctx's error, whatever it carries
+// itself: Evict cancels a tick's hydration while the tick's own context is
+// live, and Dispatcher.reconcileResidency settles the job Failed on a
+// hydration error it cannot identify as a context error.
 func (r *appResidency) fault(ctx context.Context, j *job.Job, f *storagefault.Fault, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, ctxErr) {
+		return fmt.Errorf("residency: hydrate %s: %w: %w", j.ID(), ctxErr, err)
+	}
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("residency: hydrate %s: %w", j.ID(), err)
 	}
@@ -292,14 +309,29 @@ func installVerification(j *job.Job, files []durability.FileRow, rows []durabili
 }
 
 // Evict drops the manifest. Progress stays resident by design.
+//
+// A hydration of the job in flight is cancelled and then waited for, and so
+// is any that a waiting Hydrate starts in its place while Evict waits, so that
+// none is in flight when it drops the manifest. A waiting Hydrate that wakes
+// after Evict has dropped it may still start another. The wait ends when the
+// hydration returns: its manifest read returns at the cancellation
+// (readManifest) and its read-back checks the context between rows, but a
+// read-back read blocked in the syscall holds the wait until it returns. That
+// read is not abandoned as the manifest read is, because what follows it may
+// truncate or fsync the file (verifyJobFiles).
 func (r *appResidency) Evict(id string) {
 	r.mu.Lock()
-	if ready, ok := r.hydrating[id]; ok {
+	defer r.mu.Unlock()
+	for {
+		h, ok := r.hydrating[id]
+		if !ok {
+			break
+		}
+		h.cancel()
 		r.mu.Unlock()
-		<-ready
+		<-h.ready
 		r.mu.Lock()
 	}
-	defer r.mu.Unlock()
 	j, ok := r.lookup(id)
 	if !ok {
 		return
@@ -307,12 +339,35 @@ func (r *appResidency) Evict(id string) {
 	j.Evict()
 }
 
-func (r *appResidency) readManifest(_ context.Context, id string) (*job.Manifest, error) {
-	f, err := openManifestIn(r.dir, id)
-	if err != nil {
-		return nil, err
+// readManifest opens and decodes a job's manifest, and returns ctx's error as
+// soon as ctx ends even if the read has not.
+//
+// Closing the file would not end a read blocked in the syscall: os.File.Close
+// on a regular file releases the descriptor only once the read in flight
+// returns. So the open and decode run on their own goroutine, which a
+// cancelled caller leaves behind; it writes nothing, and it closes the file
+// when the read returns.
+func (r *appResidency) readManifest(ctx context.Context, id string) (*job.Manifest, error) {
+	type result struct {
+		m   *job.Manifest
+		err error
 	}
-	return decodeManifest(f)
+	done := make(chan result, 1)
+	go func() {
+		f, err := openManifestIn(r.dir, id)
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		m, err := decodeManifest(f)
+		done <- result{m: m, err: err}
+	}()
+	select {
+	case res := <-done:
+		return res.m, res.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // decodeManifest reads and unmarshals a gzipped JSON job manifest, closing f.
@@ -323,7 +378,8 @@ func (r *appResidency) readManifest(_ context.Context, id string) (*job.Manifest
 //
 // The read is untimed. AdminDir is ordinarily local, but a remote NFS/SMB mount
 // can stall it — docs/durability-contract.md carries that failure class — so a
-// caller under a deadline gets no help from this function.
+// caller under a deadline gets no help from this function; readManifest runs
+// it on a goroutine it can abandon.
 func decodeManifest(f *os.File) (*job.Manifest, error) {
 	defer func() { _ = f.Close() }()
 
