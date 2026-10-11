@@ -430,9 +430,13 @@ can restore at any state, `Fetching` included, and the last article's row is
 a correct but short prefix. Every row then matches the repaired copy, and
 cutting it to the row's end would deliver it short once the par2 set is gone
 (#829). So the guard keys on the file, not on the job's restored state. Such
-a file is finished and set complete at its size; no row vouches for the bytes
-past the last one, and par2's identification compares a file's length with
-its index, so those bytes do not let quickcheck pass the file clean.
+a file is finished and set complete at its size. The repaired copy is already
+at the size par2's index records, so identification accepts it; what keeps
+quickcheck from passing it clean is the CRC compare (`verifyIdentified` in
+`internal/par2/assess.go`): the CRC settled from its rows covers only the
+short prefix, so it mismatches par2's whole-file CRC and the file goes to
+par2. A file whose rows cover all of its true bytes and which carries a stale
+tail is a different case, and it can pass clean (*Accepted limitations* 9).
 
 A `complete=1` file is not read. Its rows are installed as they stand
 (`Job.InstallFileVerification` with `Complete` set): each row's article is Done, **every other article
@@ -1208,10 +1212,18 @@ recorded here so the next reader does not mistake them for design.
    at its preallocated size** (§3 *What*). Where those bytes are not the
    file's — a stale tail left by an earlier, longer write of the file's last
    article whose row a later, shorter write replaced, on a file preallocation
-   did not size or that a write had already grown past it — they stay. par2's
-   identification refuses a file whose length differs from its index, so a
-   post with par2 does not pass it clean on its rows' CRC; a post without
-   par2 delivers the tail. The
+   did not size or that a write had already grown past it — they stay. The
+   rows then cover all of the file's true bytes, so the CRC settled from them
+   is the true file's. **Such a file can be delivered with its tail even when
+   the post has par2**, when par2 identifies it by name.
+   `par2.IdentifyWithOptions` checks a file's length against the index in
+   pass 0 (its par2 path), pass 2 (Hash16k) and pass 3 (CRC32), but not in
+   pass 1 (`claimName`: `MatchName`, `MatchFlattenedName`), and
+   `verifyIdentified` compares only the CRC. So a flat file matched by name
+   passes quickcheck clean on its rows' CRC and par2 never runs. The other
+   passes do not identify a file whose length differs, so it is not passed
+   clean. A
+   post without par2 delivers the tail. The
    opposite choice cut par2-repaired files short (#829), and nothing recorded
    at a restart tells the two apart: the decoded size the poster declared is
    not persisted.

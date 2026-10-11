@@ -378,10 +378,10 @@ func rowMatches(fh *os.File, r durability.WrittenRow, buf []byte) (bool, error) 
 // maxEnd but not at prealloc holds bytes preallocation did not put there,
 // and one way to produce it is par2 replacing the file with a repaired
 // copy whose tail a correct but short last row does not cover. Cutting it to
-// maxEnd would deliver it short once the par2 set is gone. No row vouches for
-// bytes left past maxEnd, and par2's identification checks a file's length
-// against its index (internal/par2/identify.go), so a file whose rows do not cover its length is not
-// passed clean on their CRC.
+// maxEnd would deliver it short once the par2 set is gone. Left at its size,
+// the repaired copy is not passed clean either: the CRC settled from its rows
+// covers only the short prefix, so par2.Assess's CRC compare
+// (verifyIdentified) reports a mismatch and the file goes to par2.
 //
 // It does not fsync before the truncate, as the assembler's finish does:
 // finishIfResolved is its one caller — `git grep -n '[f]inishFileByPath(' -- '*.go' ':!*_test.go'`
