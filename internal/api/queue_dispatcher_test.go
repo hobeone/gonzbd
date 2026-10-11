@@ -137,8 +137,13 @@ func TestQueueList_Dispatcher(t *testing.T) {
 	if len(resp.Queue.Slots) != 2 {
 		t.Fatalf("slots = %d; want 2", len(resp.Queue.Slots))
 	}
-	if resp.Queue.Slots[0].NzoID != "j1" || resp.Queue.Slots[1].NzoID != "j2" {
-		t.Errorf("slots order = [%s, %s]; want [j1, j2]", resp.Queue.Slots[0].NzoID, resp.Queue.Slots[1].NzoID)
+	// Slots are in dispatch order: j2 (High) ahead of j1 (Normal), though j1
+	// was added first. index is the slot's place in that order.
+	if resp.Queue.Slots[0].NzoID != "j2" || resp.Queue.Slots[1].NzoID != "j1" {
+		t.Errorf("slots order = [%s, %s]; want [j2, j1]", resp.Queue.Slots[0].NzoID, resp.Queue.Slots[1].NzoID)
+	}
+	if resp.Queue.Slots[0].Index != 0 || resp.Queue.Slots[1].Index != 1 {
+		t.Errorf("slot indexes = [%d, %d]; want [0, 1]", resp.Queue.Slots[0].Index, resp.Queue.Slots[1].Index)
 	}
 
 	// 2. Filter by cat=tv

@@ -1800,6 +1800,35 @@ func TestQueueChangeCat_Success(t *testing.T) {
 	}
 }
 
+// TestQueueChangeCat_DefaultPriorityResolves pins that change_cat resolves a
+// category's DefaultPriority as ingest does (config.ResolvePriority), rather
+// than storing -100, which sorts the job behind Low in dispatch order.
+func TestQueueChangeCat_DefaultPriorityResolves(t *testing.T) {
+	t.Parallel()
+	cats := []config.CategoryConfig{
+		{Name: "Default", PP: 3, Priority: int(constants.HighPriority)},
+		{Name: "tv", PP: 3, Priority: int(constants.DefaultPriority)},
+	}
+	s, q := testQueueServerWithCats(t, cats)
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb", Category: "Default"})
+
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=change_cat&value="+job.ID+"&value2=tv&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	got := q.SnapshotJob(job.ID)
+	if got == nil {
+		t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
+	}
+	if got.Category != "tv" {
+		t.Errorf("Category = %q; want tv", got.Category)
+	}
+	if got.Priority != constants.HighPriority {
+		t.Errorf("Priority = %d; want %d (the Default category's, inherited through tv's DefaultPriority)", got.Priority, constants.HighPriority)
+	}
+}
+
 func TestQueueChangeCat_EmptyValue2FallsBackToDefault(t *testing.T) {
 	t.Parallel()
 	cats := []config.CategoryConfig{

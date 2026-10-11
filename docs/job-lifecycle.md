@@ -808,23 +808,42 @@ holding whatever compute slot its position held.
 
 ### Ordering
 
-The registry keeps one job list, and both consumers — which jobs are advanced,
-and in what order the downloader serves them — read it. Priority therefore has
-exactly one meaning in the system, and there is no second fairness policy that
-would have to re-derive it.
+The registry keeps one job list, `d.order`, in **queue position**: insertion
+sequence. `entry.seq` is that sequence persisted as `Persisted.SortKey`;
+`restore` rebuilds position from `SortKey` alone, with an `(SortKey, ID)`
+tiebreak matching the store's `ORDER BY sort_key ASC, id ASC` so the sort is
+deterministic when two keys collide.
+`TestSortKey_ReproducesQueueOrderAcrossRemoval` pins that removal does not
+reorder survivors.
 
-**That order is insertion sequence, not priority.** `entry.seq` is an insertion
-sequence persisted as `Persisted.SortKey`; `restore` rebuilds order from
-`SortKey` alone, with an `(SortKey, ID)` tiebreak matching the store's
-`ORDER BY sort_key ASC, id ASC` so the sort is deterministic when two keys
-collide. `TestSortKey_ReproducesQueueOrderAcrossRemoval` pins that removal does
-not reorder survivors.
+**Dispatch order is priority, then position.** `dispatchOrderLocked`
+(`internal/dispatch/registry.go`) sorts the registry by `Header.Priority`
+descending — Force, then High, then Normal, then Low — with queue position as
+the tie-break. Its two callers are `snapshotOrder`, which the tick walks, and
+`List`, which the API's queue listing, the UI and the downloader's dispatch
+pass read — so every consumer sees one order, and none sorts on its own.
+`Advance` grants leases and compute slots in the order it is called, so a
+higher-priority job takes the next free lease, and the downloader serves
+articles to the jobs holding leases in the same order. It does not preempt a
+job that already holds a lease. The order is read from the header at each
+call, so `SetPriority` takes effect on the next tick and the next listing,
+and since priority is persisted with the header it survives a restart.
+`TestTick_WalksInPriorityOrderWithPositionAsTheTieBreak` and
+`TestList_FollowsDispatchOrder` pin it.
 
-`Header.Priority` is written at ingest, persisted, mutated by
-`Dispatcher.SetPriority` and rendered by the API, and **orders nothing** —
-`internal/sched` never reads it. The one behavioural use of priority anywhere
-is `constants.PausedPriority` at ingest, which maps to `SetIntent(IntentPause)`.
-Closing that gap is open work (§14).
+The sort is numeric, so the header's other values rank by number too:
+`RepairPriority` (3) ahead of Force, and `PausedPriority` (-2),
+`StopPriority` (-4) and `DefaultPriority` (-100) behind Low. A category's
+priority reaches the header through `config.ResolvePriority`, which resolves
+Default through the category, then the Default/`*` category, to Normal: at
+ingest, and when `change_cat` moves a job. `SetPriority` itself still admits
+-100 and -4, and the API's `name=priority` passes its value straight to it
+(#847).
+
+`ForcePriority` orders first and does nothing else: it obeys the global pause
+like every other priority, unlike SABnzbd's Force.
+`constants.PausedPriority` at ingest maps to `SetIntent(IntentPause)`;
+`SetPriority` to it does not, and only sorts the job behind Low (#847).
 
 Reorder, when it is built, is defined over fetch ordering and is **total**: the
 change is always recorded and takes effect whenever the job next competes for
@@ -1910,12 +1929,10 @@ Named here so they are decisions rather than omissions.
 
 ## 17. Open questions
 
-1. **Priority orders nothing.** `Header.Priority` is stored, persisted,
-   settable and rendered, and `internal/sched` never reads it; order is FIFO by
-   insertion sequence. Closing this means building the priority-ordered list
-   *and* the reorder resequence together — `restore` reads order from
-   `SortKey` alone, so a reorder that did not renumber would vanish at the next
-   restart.
+1. **Manual reorder is unbuilt.** Priority orders dispatch (§8, Ordering),
+   and `mode=switch` would move a job's queue position, which only breaks ties
+   within one priority. `restore` reads position from `SortKey` alone, so a
+   reorder that did not renumber would vanish at the next restart.
 2. **Does pausing a job change its queue position?** Reorder says a paused
    never-started job takes effect at the next lease issuance, but nothing says
    whether pausing itself moves it. Probably not.

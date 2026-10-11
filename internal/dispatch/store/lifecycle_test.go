@@ -106,9 +106,12 @@ func TestDispatcher_RoundTripsThroughRealSQLite(t *testing.T) {
 
 	pol := job.Policy{Verify: true, Repair: true, Unpack: true, Delete: true}
 	now := time.Now().UTC().Unix()
+	// want is in List order, which is dispatch order: priority descending,
+	// then queue position. first and second share a priority so that only
+	// position, carried by SortKey through the store, orders them.
 	want := []wantJob{
 		{"first", dispatch.Header{Name: "first", Category: "tv", Priority: 1, Bytes: 100, Added: now}, pol},
-		{"second", dispatch.Header{Name: "second", Category: "movies", Priority: 2, Bytes: 200, Added: now}, job.Policy{}},
+		{"second", dispatch.Header{Name: "second", Category: "movies", Priority: 1, Bytes: 200, Added: now}, job.Policy{}},
 		{"third", dispatch.Header{Name: "third", Bytes: 300, Added: now}, job.Policy{Verify: true}},
 	}
 

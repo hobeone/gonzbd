@@ -36,8 +36,9 @@ const (
 	// run ahead of normal user work.
 	RepairPriority Priority = 3
 
-	// ForcePriority bypasses the global pause state and downloads
-	// immediately.
+	// ForcePriority schedules ahead of HighPriority work. It obeys the
+	// global pause like every other priority: unlike SABnzbd's Force, it
+	// does not download while the queue is paused.
 	ForcePriority Priority = 2
 
 	// HighPriority schedules ahead of NormalPriority work.
