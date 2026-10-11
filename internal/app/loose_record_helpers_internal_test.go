@@ -3,15 +3,16 @@ package app
 import (
 	"context"
 	"errors"
+	"hash/crc32"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
-
-	"strings"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/durability"
@@ -326,6 +327,111 @@ func TestHandleFileUntrusted_ReturnsArticlesToOutstandingWhenSQLiteFails(t *test
 	a.handleFileUntrusted(j.ID(), 0)
 	if articleDone(j, 0) {
 		t.Error("a failed SQLite untrust left the article Done in memory")
+	}
+}
+
+// failFirstDeleteAll fails the first ApplyRecord that carries a DeleteAll
+// verdict and passes everything else through.
+type failFirstDeleteAll struct {
+	recordStore
+	failed atomic.Bool
+}
+
+func (s *failFirstDeleteAll) ApplyRecord(ctx context.Context, batches []durability.RecordBatch) error {
+	for _, b := range batches {
+		for _, v := range b.Verdicts {
+			if v.DeleteAll && s.failed.CompareAndSwap(false, true) {
+				return errors.New("injected: the untrust's delete did not land")
+			}
+		}
+	}
+	return s.recordStore.ApplyRecord(ctx, batches)
+}
+
+// TestHandleFileUntrusted_AFailedDeleteIsOwedUntilItLands pins issue #827: an
+// untrust whose SQLite delete fails leaves the file's flushed rows behind with
+// complete=0. The stalled job is resumed on the manifest already in memory,
+// with no hydration between, and the file is refetched: an article that now
+// fails permanently writes no row, so its stale row is never replaced. When
+// the file then completes, the flush that writes complete=1 must carry the
+// owed delete ahead of the file's rows, so the stale row is gone and a restart
+// derives the article failed from the absence of its row, rather than Done
+// from a row whose bytes were never fsynced.
+func TestHandleFileUntrusted_AFailedDeleteIsOwedUntilItLands(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a := env.newApp(t)
+	j := a.addJob(t, "owed", 2, 1)
+	if err := j.SetFileFilename(0, "A.bin"); err != nil {
+		t.Fatalf("SetFileFilename: %v", err)
+	}
+	a.markFileDirty(j, 0)
+	crc := func(art int) uint32 { return crc32.ChecksumIEEE(lrArticle(0, art)) }
+	a.handleArticleWritten(j.ID(), 0, 0, 0, lrArtLen, crc(0))
+	a.handleArticleWritten(j.ID(), 0, 1, lrArtLen, lrArtLen, crc(1))
+	if err := a.recorder.flush(t.Context()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if got := rowsFor(t, a.repo.DB(), j.ID()); len(got) != 2 {
+		t.Fatalf("fixture: %d rows in SQLite before the fault, want 2", len(got))
+	}
+
+	inject := &failFirstDeleteAll{recordStore: a.recorder.st}
+	a.recorder.st = inject
+	a.handleFileUntrusted(j.ID(), 0)
+	if !inject.failed.Load() {
+		t.Fatal("fixture: the untrust's delete was not failed")
+	}
+	if got := rowsFor(t, a.repo.DB(), j.ID()); len(got) != 2 {
+		t.Fatalf("fixture: %d rows in SQLite after the failed untrust, want the 2 stale ones", len(got))
+	}
+	if articleDone(j, 0) || articleDone(j, 1) {
+		t.Fatal("fixture: the untrust left an article Done in memory")
+	}
+
+	// The refetch: A0 is written again; A1 is gone from every server.
+	a.handleArticleWritten(j.ID(), 0, 0, 0, lrArtLen, crc(0))
+	if err := j.MarkArticleFailed(1); err != nil {
+		t.Fatalf("MarkArticleFailed: %v", err)
+	}
+	if err := a.completeFinalizedFile(FileComplete{JobID: j.ID(), FileIdx: 0}); err != nil {
+		t.Fatalf("completeFinalizedFile: %v", err)
+	}
+	if err := a.recorder.flush(t.Context()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	if !completeFlag(t, a.repo.DB(), j.ID()) {
+		t.Error("job_files.complete is 0 after the file completed and was flushed: the owed delete must not undo the file's newer state")
+	}
+	got := rowsFor(t, a.repo.DB(), j.ID())
+	if got[1] {
+		t.Error("A1's stale row survived the flush that wrote complete=1; the untrust's delete was never carried")
+	}
+	if !got[0] {
+		t.Error("A0's refetched row did not reach SQLite")
+	}
+
+	// The next start: a complete=1 file is installed from its rows unread.
+	m, err := j.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+	fresh := job.New(j.ID(), j.Name(), job.Policy{})
+	if err := a.residency.verifyAndAttach(t.Context(), fresh, m); err != nil {
+		t.Fatalf("verifyAndAttach: %v", err)
+	}
+	p := fresh.Progress()
+	if !p.ArticleDone(0) || p.ArticleFailed(0) {
+		t.Error("A0 is not Done after the restart")
+	}
+	// A failed article reads Done as well (setFailedBits), so Failed is the
+	// bit that tells a stale row's Done from the complement's failure.
+	if !p.ArticleFailed(1) {
+		t.Error("A1 is Done after the restart, want failed: its bytes were never fsynced and it was never refetched")
+	}
+	if c := p.FileAssembledCRC32(0); c != 0 {
+		t.Errorf("file A has whole-file CRC %08x after the restart, want none: a chain over a stale row would let par2 accept unconfirmed bytes", c)
 	}
 }
 

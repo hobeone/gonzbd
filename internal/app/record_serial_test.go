@@ -1,9 +1,12 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -149,6 +152,183 @@ func TestRecorder_UntrustAfterInFlightSuccessfulFlushWins(t *testing.T) {
 
 func TestRecorder_UntrustAfterInFlightFailedFlushWins(t *testing.T) {
 	checkUntrusted(t, untrustDuringFlush(t, true))
+}
+
+// modelRows is the model's rows as (file, art) pairs, sorted.
+func modelRows(st *modelStore) [][2]int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	out := slices.Collect(maps.Keys(st.rows))
+	slices.SortFunc(out, func(a, b [2]int) int { return cmp.Or(cmp.Compare(a[0], b[0]), cmp.Compare(a[1], b[1])) })
+	return out
+}
+
+// untrustTimedOut runs an untrust of file 0 of j that cannot take wmu within
+// its ctx, and requires that it reported its ctx's deadline.
+func untrustTimedOut(t *testing.T, r *recorder, j *job.Job) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := r.untrust(ctx, j, 0); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("untrust = %v, want its ctx's DeadlineExceeded", err)
+	}
+}
+
+// untrustOverrunsFlush is the lock-timeout half of #827: a flush holds wmu
+// inside the store with file 0's row in its snapshot, an untrust of file 0
+// gives up on wmu, and the flush then succeeds or fails. The untrust must
+// still purge what is buffered for the file and owe the delete, and the next
+// flush must carry the delete ahead of the row refetched after the untrust —
+// on a failed flush, after a remerge that did not put the overrun rows back.
+func untrustOverrunsFlush(t *testing.T, flushFails bool) (*modelStore, *recorder, *job.Job) {
+	t.Helper()
+	st := newModelStore(true, flushFails)
+	j := newTestJob(t, "id")
+	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 1, ArtIdx: 0, Length: 10})
+	// In the snapshot too: a failed flush must not put complete=1 back for
+	// the file the untrust overran.
+	r.markDirty(j, 0, durability.FileState{FileIdx: 0, Complete: true})
+
+	flushErr := make(chan error, 1)
+	go func() { flushErr <- r.flush(context.Background()) }()
+	<-st.entered
+	// Noted after the snapshot and before the untrust: stale, and still buffered.
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Length: 10})
+	r.markDirty(j, 0, durability.FileState{FileIdx: 0, Complete: true, Filename: "later"})
+
+	untrustTimedOut(t, r, j)
+	r.mu.Lock()
+	pending := slices.Clone(r.pending[j])
+	_, dirty := r.dirty[j][0]
+	owed := r.owed[j][0]
+	r.mu.Unlock()
+	if len(pending) != 0 || dirty || owed == 0 {
+		t.Fatalf("after the timed-out untrust: pending %v, file 0 dirty %v, owed %d; want the file's buffer purged and the delete owed", pending, dirty, owed)
+	}
+
+	// The refetch lands while the flush is still inside the store.
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 3, Length: 10})
+	close(st.release)
+	if err := <-flushErr; (err != nil) != flushFails {
+		t.Fatalf("flush err = %v, want failure = %v", err, flushFails)
+	}
+	return st, r, j
+}
+
+func TestRecorder_UntrustThatOverransASuccessfulFlushIsPaidByTheNext(t *testing.T) {
+	st, r, j := untrustOverrunsFlush(t, false)
+	st.mu.Lock()
+	wrote := st.complete[0]
+	st.mu.Unlock()
+	if got := modelRows(st); !slices.Equal(got, [][2]int{{0, 1}, {1, 0}}) || !wrote {
+		t.Fatalf("fixture: after the flush the untrust overran: rows %v, complete %v; want file 0's stale row and complete=1, and file 1's row", got, wrote)
+	}
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := modelRows(st); !slices.Equal(got, [][2]int{{0, 3}, {1, 0}}) {
+		t.Errorf("rows after the next flush = %v, want only the refetched row of file 0", got)
+	}
+	st.mu.Lock()
+	complete := st.complete[0]
+	st.mu.Unlock()
+	if complete {
+		t.Error("complete=1 survived the owed delete")
+	}
+	if got := owedOf(r, j); len(got) != 0 {
+		t.Errorf("owed = %v after the flush that carried it, want none", got)
+	}
+}
+
+func TestRecorder_RemergePutsBackNothingAnUntrustOverran(t *testing.T) {
+	st, r, j := untrustOverrunsFlush(t, true)
+	r.mu.Lock()
+	pending := slices.Clone(r.pending[j])
+	_, dirty := r.dirty[j][0]
+	r.mu.Unlock()
+	if len(pending) != 2 || pending[0].FileIdx != 1 || pending[1] != (durability.WrittenRow{FileIdx: 0, ArtIdx: 3, Length: 10}) || dirty {
+		t.Fatalf("after the remerge: pending %v, file 0 dirty %v; want file 1's row back, the refetched row kept, and nothing of file 0 from the snapshot", pending, dirty)
+	}
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := modelRows(st); !slices.Equal(got, [][2]int{{0, 3}, {1, 0}}) {
+		t.Errorf("rows after the retried flush = %v, want only the refetched row of file 0", got)
+	}
+	st.mu.Lock()
+	complete := st.complete[0]
+	st.mu.Unlock()
+	if complete {
+		t.Error("complete=1 reached the store for the untrusted file: the remerge put the snapshot's file state back")
+	}
+}
+
+// TestRecorder_RemergePutsBackOnlyWhatNoUntrustOverran calls remerge directly
+// with rows and file states for three files: file 0's debt is newer than the
+// one the failed write carried, file 1's is the one it carried, file 2 owes
+// nothing. Only file 0's rows and state stay out.
+func TestRecorder_RemergePutsBackOnlyWhatNoUntrustOverran(t *testing.T) {
+	j := newTestJob(t, "id")
+	r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, slog.Default())
+	r.owed[j] = map[int]uint64{0: 2, 1: 1}
+	r.pending[j] = []durability.WrittenRow{{FileIdx: 0, ArtIdx: 9}}
+	rows := map[*job.Job][]durability.WrittenRow{j: {{FileIdx: 0, ArtIdx: 1}, {FileIdx: 1, ArtIdx: 1}, {FileIdx: 2, ArtIdx: 1}}}
+	files := map[*job.Job]map[int]durability.FileState{j: {
+		0: {FileIdx: 0, Complete: true}, 1: {FileIdx: 1, Complete: true}, 2: {FileIdx: 2, Complete: true},
+	}}
+	r.remerge(rows, files, map[*job.Job]map[int]uint64{j: {0: 1, 1: 1}})
+
+	want := []durability.WrittenRow{{FileIdx: 1, ArtIdx: 1}, {FileIdx: 2, ArtIdx: 1}, {FileIdx: 0, ArtIdx: 9}}
+	if !slices.Equal(r.pending[j], want) {
+		t.Errorf("pending = %v, want %v: the overrun file's snapshot rows left out, ahead of the row noted since", r.pending[j], want)
+	}
+	if _, ok := r.dirty[j][0]; ok {
+		t.Error("the overrun file's snapshot state was put back")
+	}
+	if len(r.dirty[j]) != 2 || !r.dirty[j][1].Complete || !r.dirty[j][2].Complete {
+		t.Errorf("dirty = %v, want files 1 and 2 restored", r.dirty[j])
+	}
+}
+
+// TestRecorder_ASecondUntrustDuringTheFlushKeepsItsDebt pins the sequence
+// number: a flush carrying file 0's owed delete writes a row refetched after
+// that untrust; a second untrust of the file during the write disowns that
+// row; the flush's success settles only the debt it carried, so the next
+// flush deletes the row.
+func TestRecorder_ASecondUntrustDuringTheFlushKeepsItsDebt(t *testing.T) {
+	st := newModelStore(true, false)
+	j := newTestJob(t, "id")
+	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	if err := r.lockWriter(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	untrustTimedOut(t, r, j)
+	r.unlockWriter()
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Length: 10})
+
+	flushErr := make(chan error, 1)
+	go func() { flushErr <- r.flush(context.Background()) }()
+	<-st.entered
+	untrustTimedOut(t, r, j)
+	close(st.release)
+	if err := <-flushErr; err != nil {
+		t.Fatal(err)
+	}
+	if got := modelRows(st); !slices.Equal(got, [][2]int{{0, 2}}) {
+		t.Fatalf("fixture: rows after the flush = %v, want the row the second untrust disowned", got)
+	}
+	if got := owedOf(r, j); len(got) != 1 {
+		t.Fatalf("owed = %v after the flush, want the second untrust's debt kept", got)
+	}
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 3, Length: 10})
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := modelRows(st); !slices.Equal(got, [][2]int{{0, 3}}) {
+		t.Errorf("rows after the next flush = %v, want the disowned row gone", got)
+	}
 }
 
 // TestRecorder_CompleteNeverPrecedesItsRowUnderConcurrency has a writer note

@@ -30,9 +30,7 @@ file internal/app/residency.go
 [an untrust clears the file in memory only]
 file internal/app/record.go
 --- anchor
-	if err := app.recorder.apply(ctx, j, []durability.FileVerdict{
-		{FileIdx: fileIdx, DeleteAll: true, ClearComplete: true},
-	}); err != nil {
+	if err := app.recorder.untrust(ctx, j, fileIdx); err != nil {
 --- replace
 	if err := ctx.Err(); err != nil {
 --- end
@@ -139,11 +137,11 @@ file internal/app/app.go
 [a failed SQLite untrust skips the in-memory half]
 file internal/app/record.go
 --- anchor
-		app.log.Error("could not remove an untrusted file's record; the next start reads its rows back and checks each CRC before trusting them",
+		app.log.Error("could not remove an untrusted file's record now; the delete is owed and rides ahead of the file's rows in the recorder's next write",
 			"job", jobID, "fileidx", fileIdx, "err", err)
 	}
 --- replace
-		app.log.Error("could not remove an untrusted file's record; the next start reads its rows back and checks each CRC before trusting them",
+		app.log.Error("could not remove an untrusted file's record now; the delete is owed and rides ahead of the file's rows in the recorder's next write",
 			"job", jobID, "fileidx", fileIdx, "err", err)
 		return
 	}

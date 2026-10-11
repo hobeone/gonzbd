@@ -1,12 +1,28 @@
 pkg ./internal/app/
-run TestRecorder_FlushesADirtyOnlyJob|TestRecorder_LeavesAJobFirstBufferedAfterTheListingForTheNextFlush
+run TestRecorder_FlushesADirtyOnlyJob|TestRecorder_LeavesAJobFirstBufferedAfterTheListingForTheNextFlush|TestRecorder_OwedDeleteIsWrittenOnItsOwn
 
 [a job with dirty state and no rows left out of the listing]
 file internal/app/record.go
 --- anchor
-		if _, ok := r.pending[j]; !ok {
+	for j := range r.dirty {
+		add(j)
+	}
 --- replace
-		if false {
+	for j := range r.dirty {
+		_ = j
+	}
+--- end
+
+[a job with an owed delete and nothing buffered left out of the listing]
+file internal/app/record.go
+--- anchor
+	for j := range r.owed {
+		add(j)
+	}
+--- replace
+	for j := range r.owed {
+		_ = j
+	}
 --- end
 
 [takeRowsLocked drops a job the listing did not check]
@@ -17,6 +33,18 @@ file internal/app/record.go
 		if !checked {
 --- replace
 	for j, rows := range r.pending {
+		current, checked := live[j]
+		if false && !checked {
+--- end
+
+[owedLocked drops a job the listing did not check]
+file internal/app/record.go
+--- anchor
+	for j, o := range r.owed {
+		current, checked := live[j]
+		if !checked {
+--- replace
+	for j, o := range r.owed {
 		current, checked := live[j]
 		if false && !checked {
 --- end
