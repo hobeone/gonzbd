@@ -192,3 +192,65 @@ func TestLooseRecord_LastingVerificationFaultStaysParked(t *testing.T) {
 		t.Errorf("stall reason %q survived a resume whose verification succeeded", got)
 	}
 }
+
+// TestStallReason_FollowsTheLatestFaultsKind: a second fault on a job that is
+// already parked replaces the record's kind and fault together, so the
+// surfaced prefix and stallKindOf both follow the latest fault, in either
+// direction.
+func TestStallReason_FollowsTheLatestFaultsKind(t *testing.T) {
+	t.Parallel()
+	first := storagefault.Classify("write", "/mnt/dl/a.bin", syscall.ENOSPC)
+	second := storagefault.Classify("verify", "/mnt/dl/b.bin", syscall.EIO)
+	tests := []struct {
+		name     string
+		a, b     func(app *Application, id string, f *storagefault.Fault)
+		wantKind stallKind
+		want     string
+	}{
+		{"retryable then verification", (*Application).Stall, (*Application).parkVerifyFault, stallVerify, "Stalled (resume to retry): "},
+		{"verification then retryable", (*Application).parkVerifyFault, (*Application).Stall, stallRetryable, "Stalled: "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			application, j := newDurabilityTestApp(t, 1, 2)
+			tt.a(application, j.ID(), first)
+			tt.b(application, j.ID(), second)
+
+			if got := application.stallKindOf(j.ID()); got != tt.wantKind {
+				t.Errorf("stallKindOf = %v, want %v", got, tt.wantKind)
+			}
+			if got, want := application.StallReason(j.ID()).Reason, tt.want+second.Error(); got != want {
+				t.Errorf("stall reason = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestStallReason_SaysWhetherAResumeIsNeeded pins the surfaced wording per
+// kind: a verification fault stays parked until the job itself is resumed, so
+// its reason must say so, while a retryable fault recovers on its own and
+// keeps the plain prefix. The fault text follows the prefix in both.
+func TestStallReason_SaysWhetherAResumeIsNeeded(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		park func(a *Application, id string, f *storagefault.Fault)
+		want string
+	}{
+		{"verification fault", (*Application).parkVerifyFault, "Stalled (resume to retry): "},
+		{"retryable fault", (*Application).Stall, "Stalled: "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			application, j := newDurabilityTestApp(t, 1, 2)
+			f := storagefault.Classify("verify", "/mnt/dl/a.bin", syscall.EIO)
+			tt.park(application, j.ID(), f)
+
+			if got, want := application.StallReason(j.ID()).Reason, tt.want+f.Error(); got != want {
+				t.Errorf("stall reason = %q, want %q", got, want)
+			}
+		})
+	}
+}

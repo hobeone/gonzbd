@@ -121,10 +121,7 @@ func (app *Application) StallReasons() map[string]string {
 	out := make(map[string]string)
 	app.stallMu.Lock()
 	for jobID, rec := range app.stalls {
-		if rec.reason == "" {
-			continue
-		}
-		out[jobID] = rec.reason
+		out[jobID] = rec.reason()
 	}
 	app.stallMu.Unlock()
 	return out

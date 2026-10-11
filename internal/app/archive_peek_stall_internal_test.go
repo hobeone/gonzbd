@@ -19,7 +19,7 @@ func TestReevaluateStall_ABlockedParkedJobStaysPausedForTheUser(t *testing.T) {
 		t.Fatalf("PauseJob: %v", err)
 	}
 	application.stallMu.Lock()
-	application.setStallReasonLocked(id, "Stalled: fixture", true)
+	application.setStallReasonLocked(id, stallRetryable, "fixture", true)
 	application.stallMu.Unlock()
 
 	if moved, err := application.dispatcher.BlockUnwanted(j, true); err != nil || !moved {
