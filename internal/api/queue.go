@@ -572,6 +572,14 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 		slots = []queueSlot{}
 	}
 
+	// Queue-level size totals cover every filtered slot, so they are summed
+	// here, before start/limit cut the page out of slots.
+	var totalQueueBytes, remainQueueBytes int64
+	for _, sl := range slots {
+		totalQueueBytes += sl.Bytes
+		remainQueueBytes += sl.RemainingBytes
+	}
+
 	// Paginate.
 	if start < 0 {
 		start = 0
@@ -589,14 +597,6 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 		qStatus = "Paused"
 	} else if total > 0 {
 		qStatus = "Downloading"
-	}
-
-	// Compute queue-level aggregates across ALL filtered slots
-	// (not just the paginated page).
-	var totalQueueBytes, remainQueueBytes int64
-	for _, sl := range slots {
-		totalQueueBytes += sl.Bytes
-		remainQueueBytes += sl.RemainingBytes
 	}
 
 	respondJSON(w, http.StatusOK, queueResponse{

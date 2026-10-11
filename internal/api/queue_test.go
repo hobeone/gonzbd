@@ -560,11 +560,19 @@ func makeLargeTestNZB(t *testing.T, numSegs int) []byte {
 // addLargeTestJob enqueues a job with numSegs × 1 MiB segments.
 func addLargeTestJob(t *testing.T, q *testQueueWrapper, numSegs int) *testJob {
 	t.Helper()
+	return addNamedLargeTestJob(t, q, "big", numSegs)
+}
+
+// addNamedLargeTestJob is addLargeTestJob under a caller-chosen job name, for
+// a test that queues more than one: the dispatcher refuses a second job with
+// a name already in the queue.
+func addNamedLargeTestJob(t *testing.T, q *testQueueWrapper, name string, numSegs int) *testJob {
+	t.Helper()
 	parsed, err := nzb.Parse(bytes.NewReader(makeLargeTestNZB(t, numSegs)))
 	if err != nil {
 		t.Fatalf("parse large NZB: %v", err)
 	}
-	j, hdr, err := app.BuildIngestJob(nil, parsed, "big.nzb", types.FetchOptions{}, nil)
+	j, hdr, err := app.BuildIngestJob(nil, parsed, name+".nzb", types.FetchOptions{}, nil)
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
