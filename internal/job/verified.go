@@ -281,6 +281,9 @@ func (j *Job) installSettled(fileIdx int, in settleSnapshot, combined uint32, co
 		return 0, false, fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
 	if !sameSlice(j.progress.written[fileIdx], in.rows) {
+		if j.settleRecombineHook != nil {
+			j.settleRecombineHook()
+		}
 		crc, ok = settleFileCRC(j.manifest, j.progress, fileIdx)
 		return crc, ok, nil
 	}
@@ -290,8 +293,10 @@ func (j *Job) installSettled(fileIdx int, in settleSnapshot, combined uint32, co
 
 // sameSlice reports whether a and b are the same stored slice: the same
 // length over the same backing array. Because a stored slice is never edited
-// in place, the same slice has the same contents. Holding b keeps its array
-// alive, so a later allocation cannot take its address.
+// in place, the same slice has the same contents. An append into spare
+// capacity keeps the array and changes only the length, so both are compared.
+// Holding b keeps its array alive, so a later allocation cannot take its
+// address.
 func sameSlice(a, b []durability.WrittenRow) bool {
 	if len(a) != len(b) {
 		return false

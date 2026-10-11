@@ -17,6 +17,26 @@ file internal/job/verified.go
 	if !slices.Equal(j.progress.written[fileIdx], in.rows) {
 --- end
 
+[sameSlice ignores the length, so an append in place passes]
+file internal/job/verified.go
+--- anchor
+	if len(a) != len(b) {
+		return false
+--- replace
+	if false {
+		return false
+--- end
+
+[sameSlice refuses only a shorter slice]
+file internal/job/verified.go
+--- anchor
+	if len(a) != len(b) {
+		return false
+--- replace
+	if len(a) < len(b) {
+		return false
+--- end
+
 [sameSlice compares lengths only]
 file internal/job/verified.go
 --- anchor

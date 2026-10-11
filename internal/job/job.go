@@ -240,6 +240,13 @@ type Job struct {
 	// nothing).
 	settleCombineHook func()
 
+	// settleRecombineHook, when non-nil, runs in installSettled when it
+	// refuses a stale combine, before it settles the file again, with
+	// contentMu held. It is a test seam: no production file assigns it
+	// (`git grep -n 'settleRecombineHoo[k] =' -- '*.go' ':!*_test.go'`
+	// returns nothing).
+	settleRecombineHook func()
+
 	totalBytes    int64
 	recoveryBytes int64
 	recoveryFiles int

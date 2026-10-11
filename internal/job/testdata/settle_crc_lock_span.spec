@@ -11,3 +11,11 @@ file internal/job/verified.go
 	defer j.contentMu.Unlock()
 	if j.settleCombineHook != nil {
 --- end
+
+[an unchanged file is combined again under the lock]
+file internal/job/verified.go
+--- anchor
+	if !sameSlice(j.progress.written[fileIdx], in.rows) {
+--- replace
+	if true {
+--- end

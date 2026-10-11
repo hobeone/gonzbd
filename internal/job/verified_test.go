@@ -738,7 +738,10 @@ func TestSettleFileCRC_RefusesAStaleCombine(t *testing.T) {
 		rewritten[i] ^= 0xFF
 	}
 	tests := []struct {
-		name   string
+		name string
+		// before is how many of the chain's rows are written before the
+		// settle; zero means all four.
+		before int
 		change func(t *testing.T, j *Job)
 		wantOK bool
 		want   uint32
@@ -775,16 +778,43 @@ func TestSettleFileCRC_RefusesAStaleCombine(t *testing.T) {
 				writeChain(t, j, data)
 			},
 		},
+		{
+			// Three appends leave the stored slice at length 3, capacity 4,
+			// so the fourth is appended in place: the backing array is the
+			// one combined, and only the length differs.
+			name:   "the last article lands in the slice's spare capacity",
+			before: 3,
+			change: func(t *testing.T, j *Job) {
+				if err := j.MarkArticleWritten(chainRows(data)[3]); err != nil {
+					t.Fatalf("MarkArticleWritten: %v", err)
+				}
+			},
+			wantOK: true,
+			want:   crc32.ChecksumIEEE(data),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			j := verifiedTestJob(t)
-			writeChain(t, j, data)
+			rows := chainRows(data)
+			if tt.before > 0 {
+				rows = rows[:tt.before]
+			}
+			for _, r := range rows {
+				if err := j.MarkArticleWritten(r); err != nil {
+					t.Fatalf("MarkArticleWritten: %v", err)
+				}
+			}
 			j.settleCombineHook = func() { tt.change(t, j) }
+			recombined := false
+			j.settleRecombineHook = func() { recombined = true }
 			crc, ok, err := j.SettleFileCRC(0)
 			if err != nil || ok != tt.wantOK || crc != tt.want {
 				t.Fatalf("SettleFileCRC = %08x, %v, %v; want %08x, %v, nil", crc, ok, err, tt.want, tt.wantOK)
+			}
+			if !recombined {
+				t.Error("the stale combine was not refused: the file was not settled again under the lock")
 			}
 			if got := j.Progress().FileAssembledCRC32(0); got != tt.want {
 				t.Errorf("stored CRC = %08x, want %08x: a CRC combined from rows that changed was installed", got, tt.want)
@@ -846,6 +876,9 @@ func TestSettleFileCRC_CombinesWithoutTheLock(t *testing.T) {
 	j := verifiedTestJob(t)
 	writeChain(t, j, data)
 	ran := false
+	j.settleRecombineHook = func() {
+		t.Error("an unchanged file was combined again under the lock")
+	}
 	j.settleCombineHook = func() {
 		ran = true
 		if !j.contentMu.TryLock() {
