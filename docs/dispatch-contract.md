@@ -482,6 +482,21 @@ removal, returning `errPreemptedByRemoval`. Without that, a job admitted in
 that span is reachable by a removal it has nothing to do with: that removal's
 `Cancel` latches `IntentCancel` onto it, and its `end()` deregisters it.
 
+The same span is why a `Remove` can find its own job already gone. Another
+removal's `end()` can deregister the job while this `Remove`'s marker still
+stands, and its `Cancel` then reports `ErrNotFound`. The callers of `end()` —
+`git grep -n 'rm[.]end()' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 3
+lines — are `Add`'s unwind, `evictCancelledNeverRun` (reachable here because
+`app.RemoveJob` calls `Cancel`, which kicks the tick, before `Remove`), and
+`removeFor`'s own `end()`, for a concurrent `Remove`. Because the token was
+minted while the ID was registered, `register` refuses the ID while it is
+outstanding, and `deregister` is reached only through `end()`, a not-found
+from that `Cancel` can only mean such a peer deregistration. `removeFor`
+therefore treats it as success: it finishes its remaining steps against the
+absent job and returns nil, because the job is neither cancelled nor
+registered and a retry could only fail the same way.
+`TestRemove_PeerDeregistrationDuringRemoveIsSuccess` pins it.
+
 `internal/dispatch/store` implements this against SQLite; `internal/dispatch`
 itself stays free of a SQL driver. `Persisted` deliberately omits a
 `crossed` field: it is derivable from `State` via

@@ -876,6 +876,14 @@ func (d *Dispatcher) ResumeJobByUser(id string) error {
 // Retry contract: If Remove returns an error (e.g. context cancellation while
 // waiting for worker, or store failure), the job remains cancelled and
 // registered, allowing the caller to retry Remove safely.
+//
+// A job that another removal deregisters while this one is outstanding — an
+// Add unwinding its own registration, the tick evicting it as cancelled and
+// never run (evictCancelledNeverRun), or a concurrent Remove finishing first
+// — is gone, not cancelled and registered, so that is not an error: Remove
+// skips the Cancel it can no longer make, finishes its own steps against the
+// absent job and returns nil.
+// TestRemove_PeerDeregistrationDuringRemoveIsSuccess pins it.
 func (d *Dispatcher) Remove(ctx context.Context, id string) error {
 	return d.removeFor(ctx, id, nil)
 }
@@ -912,8 +920,23 @@ func (d *Dispatcher) removeFor(ctx context.Context, id string, expected *job.Job
 		}
 	}()
 
+	if d.removalBegunHook != nil {
+		d.removalBegunHook(id)
+	}
 	if err := d.Cancel(id); err != nil {
-		return fmt.Errorf("dispatch: remove %s: cancel: %w", id, err)
+		// Not-found here means a peer removal's end deregistered the job, so
+		// it is gone and Remove's doc reports success. rm was minted while id
+		// was registered; register refuses id while rm is outstanding
+		// (TestRegister_RefusesWhileARemovalIsOutstanding); and deregister is
+		// reached only through removal.end, whose callers —
+		// `git grep -n 'rm[.]end()' -- 'internal/dispatch/*.go' ':!*_test.go'`
+		// returns 3 lines — are Add's unwind, evictCancelledNeverRun
+		// (tick.go), and this function's own end below, for a concurrent
+		// Remove. The eviction is reachable in this window: app.RemoveJob
+		// calls Cancel, which kicks the tick, before it calls Remove.
+		if !errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("dispatch: remove %s: cancel: %w", id, err)
+		}
 	}
 	if err := d.waitLaunched(ctx, id); err != nil {
 		return fmt.Errorf("dispatch: remove %s: wait worker: %w", id, err)

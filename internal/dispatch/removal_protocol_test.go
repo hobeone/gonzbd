@@ -159,3 +159,67 @@ func TestEvictCancelledNeverRun_StoreFailureReadmitsWork(t *testing.T) {
 			"for the retry, so it must still be launchable")
 	}
 }
+
+// TestRemove_PeerDeregistrationDuringRemoveIsSuccess pins the interleave in
+// which an Add unwinds the job a Remove is already tearing down (#569).
+//
+// The Remove raises its marker after Add registered j1 and before Add's first
+// write, so persistIfChanged skips the Save and Add unwinds through
+// beginRemoval + end. That end deregisters j1 outright, leaving only the
+// Remove's marker. The Remove then reaches Cancel, which finds no job.
+//
+// Every step is ordered by a channel: persistReadHook (Add, before its
+// storeMu admission check) starts the Remove and waits for removalBegunHook,
+// and the Remove is held there until Add has returned.
+func TestRemove_PeerDeregistrationDuringRemoveIsSuccess(t *testing.T) {
+	st := &fakeStore{}
+	d := newTestDispatcher(t, withStore(st))
+
+	begun := make(chan struct{})
+	proceed := make(chan struct{})
+	removeErr := make(chan error, 1)
+	d.removalBegunHook = func(string) {
+		close(begun)
+		<-proceed
+	}
+	var hooked bool
+	d.persistReadHook = func() {
+		if hooked {
+			return
+		}
+		hooked = true
+		go func() { removeErr <- d.Remove(context.Background(), "j1") }()
+		<-begun
+	}
+
+	addErr := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"})
+	if !errors.Is(addErr, errPreemptedByRemoval) {
+		t.Fatalf("setup: Add = %v, want errPreemptedByRemoval (the Remove's marker must suppress the first write)", addErr)
+	}
+	if _, ok := d.Job("j1"); ok {
+		t.Fatal("setup: j1 still registered after Add's unwind")
+	}
+	close(proceed)
+
+	select {
+	case err := <-removeErr:
+		if err != nil {
+			t.Fatalf("Remove = %v, want nil: the job is gone, so a retry would only get ErrNotFound again", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Remove did not return")
+	}
+
+	d.mu.Lock()
+	marker := d.removing["j1"]
+	d.mu.Unlock()
+	if marker != 0 {
+		t.Errorf("d.removing[j1] = %d after Remove returned, want 0", marker)
+	}
+	if _, ok := st.row("j1"); ok {
+		t.Error("a row for j1 is in the store after Remove returned")
+	}
+	if err := d.Add(context.Background(), job.New("j1", "n", job.Policy{}), Header{Name: "n"}); err != nil {
+		t.Errorf("Add after the Remove finished = %v, want nil", err)
+	}
+}

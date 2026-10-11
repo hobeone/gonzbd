@@ -94,6 +94,11 @@ type Dispatcher struct {
 	// for a change that lands between that read and the row's Save.
 	persistReadHook func()
 
+	// removalBegunHook, when non-nil, runs in removeFor right after the
+	// removal marker is raised and before Cancel, with no lock held. Test
+	// seam for a peer removal that lands in that window.
+	removalBegunHook func(id string)
+
 	// nextSeq is the sequence register will hand the next job, and
 	// advanceSeqLocked is its sole writer: `git grep -n 'd\.nextSeq =' internal/dispatch`
 	// returns 1 line, advanceSeqLocked's own max().
