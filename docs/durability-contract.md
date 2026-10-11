@@ -594,8 +594,10 @@ resident rows — those a restart verified, and any this process wrote since —
 as `FileInfo.Owned`, and `openTargetFile` hands them to `seedOwned` before any
 write. Seeded ranges are owned by `seededOwner`, whose
 `artIdx` is -1 — `articleID.sameArticle` compares the index alone, so a zero
-sentinel would wave article 0 through. An invalid seeded range is dropped with
-a warning, which costs only a refetch of its articles.
+sentinel would wave article 0 through. A zero-length row is skipped silently
+(it claims no range). A malformed seeded range (negative offset or length, or an
+overflowing end) is dropped with a warning, which costs only a refetch of its
+articles.
 
 The verifier keeps only disjoint rows (§3), so seeding never has to choose
 between two articles.
