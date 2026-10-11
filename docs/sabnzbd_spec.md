@@ -1033,7 +1033,9 @@ GoNZBD's queue-level fields (`internal/api/queue.go`, `queueList`):
 - `speed` and `kbpersec` render one speed snapshot per request: `speed` in
   B/s, KB/s or MB/s with one decimal (binary units), `kbpersec` as KiB/s with
   one decimal. `timeleft` is `mbleft` over that speed as `h:mm:ss`, and
-  `0:00:00` while the queue is paused or the speed is below 1 KiB/s.
+  `0:00:00` unless `status` is `Downloading` and the speed is at least
+  1 KiB/s. The `nzo_id=…&files=1` detail response reports that job's own
+  `timeleft` instead.
 
 ---
 

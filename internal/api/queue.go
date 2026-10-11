@@ -406,16 +406,22 @@ func queueStatus(rows []dispatch.Row, paused bool) string {
 	return "Paused"
 }
 
-// queueSpeedFields returns the queue-level speed, kbpersec and timeleft.
-// speed is the request's snapshot in bytes per second, and remaining is the
-// bytes the ETA covers. timeleft stays "0:00:00" under the same conditions a
-// slot's does: paused, speed below noiseFloorBPS, or nothing remaining.
-func queueSpeedFields(speed float64, remaining int64, paused bool) (speedStr, kbPerSec, timeleft string) {
-	timeleft = "0:00:00"
-	if !paused && speed > noiseFloorBPS && remaining > 0 {
-		timeleft = formatDuration(int(float64(remaining) / speed))
+// queueSpeedFields returns the queue-level speed and kbpersec for speed, the
+// request's snapshot in bytes per second.
+func queueSpeedFields(speed float64) (speedStr, kbPerSec string) {
+	return formatSpeed(speed), strconv.FormatFloat(speed/(1<<10), 'f', 1, 64)
+}
+
+// queueTimeleft returns the listing's queue-level timeleft: remaining over
+// speed as h:mm:ss, or "0:00:00" unless downloading is true, speed is above
+// noiseFloorBPS and something remains. downloading is whether queueStatus
+// reported Downloading, which it never does under the global pause, so a
+// speed snapshot still decaying after the last download stopped yields no ETA.
+func queueTimeleft(speed float64, remaining int64, downloading bool) string {
+	if !downloading || speed <= noiseFloorBPS || remaining <= 0 {
+		return "0:00:00"
 	}
-	return formatSpeed(speed), strconv.FormatFloat(speed/(1<<10), 'f', 1, 64), timeleft
+	return formatDuration(int(float64(remaining) / speed))
 }
 
 // buildSlot renders one Row into the API queueSlot shape. paused is the
@@ -631,7 +637,8 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 		slots = slots[:limit]
 	}
 
-	speedStr, kbPerSec, timeleft := queueSpeedFields(speed, remainQueueBytes, paused)
+	speedStr, kbPerSec := queueSpeedFields(speed)
+	timeleft := queueTimeleft(speed, remainQueueBytes, qStatus == "Downloading")
 	respondJSON(w, http.StatusOK, queueResponse{
 		Status: true,
 		Queue: queueDetail{
@@ -696,7 +703,10 @@ func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID st
 		slot.Files = buildQueueFiles(j)
 	}
 
-	speedStr, kbPerSec, timeleft := queueSpeedFields(speed, slot.RemainingBytes, paused)
+	// The response describes this one job, so its timeleft is the slot's,
+	// which buildSlot leaves at "0:00:00" unless the job is Downloading.
+	speedStr, kbPerSec := queueSpeedFields(speed)
+	timeleft := slot.Timeleft
 	respondJSON(w, http.StatusOK, queueResponse{
 		Status: true,
 		Queue: queueDetail{

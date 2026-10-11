@@ -114,6 +114,34 @@ func TestQueueList_TimeleftZeroWhenPaused(t *testing.T) {
 	}
 }
 
+// TestQueueList_TimeleftZeroWhenNothingDownloads pins that timeleft follows
+// the queue status, not only the global pause: with the global pause off and
+// a non-zero speed snapshot (a meter still decaying), a queue whose only job
+// is individually paused reports no ETA, in the listing and in the detail
+// response for that job.
+func TestQueueList_TimeleftZeroWhenNothingDownloads(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServerWithSpeed(t, 2*1024*1024)
+	tj := addNamedLargeTestJob(t, q, "ten", 10)
+	if err := q.SetStatusIf(tj.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
+		t.Fatalf("SetStatusIf: %v", err)
+	}
+	if err := q.Pause(tj.ID); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	got := getQueueLevel(t, s, "")
+	if got.Paused || got.Status != "Paused" {
+		t.Fatalf("setup: paused = %v, status = %q; want false and Paused", got.Paused, got.Status)
+	}
+	if got.Timeleft != "0:00:00" {
+		t.Errorf("listing timeleft = %q; want 0:00:00 while nothing downloads", got.Timeleft)
+	}
+	if detail := getQueueLevel(t, s, "&nzo_id="+tj.ID+"&files=1"); detail.Timeleft != "0:00:00" {
+		t.Errorf("detail timeleft = %q; want 0:00:00 for a paused job", detail.Timeleft)
+	}
+}
+
 // TestQueueList_StatusFromSlots pins #735: the queue-level status is
 // Downloading only while some job is actually downloading.
 func TestQueueList_StatusFromSlots(t *testing.T) {
