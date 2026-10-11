@@ -37,6 +37,18 @@ file internal/app/record.go
 		if false && !checked {
 --- end
 
+[owedLocked drops a job the listing did not check]
+file internal/app/record.go
+--- anchor
+	for j, o := range r.owed {
+		current, checked := live[j]
+		if !checked {
+--- replace
+	for j, o := range r.owed {
+		current, checked := live[j]
+		if false && !checked {
+--- end
+
 [takeFilesLocked drops a job the listing did not check]
 file internal/app/record.go
 --- anchor

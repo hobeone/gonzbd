@@ -123,9 +123,16 @@ func TestRecorder_LeavesAJobFirstBufferedAfterTheListingForTheNextFlush(t *testi
 		calls++
 		if calls == 1 {
 			// j2 is buffered after liveInstances listed the jobs, so the
-			// first flush has no instance answer for it.
+			// first flush has no instance answer for it. Its untrust of file
+			// 1 cannot take wmu (this flush holds it) and leaves the delete
+			// owed.
 			r.noteWritten(j2, durability.WrittenRow{FileIdx: 0, ArtIdx: 3, Length: 10})
 			r.markDirty(j2, 0, durability.FileState{Complete: true})
+			cancelled, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := r.untrust(cancelled, j2, 1); !errors.Is(err, context.Canceled) {
+				t.Errorf("untrust during the flush = %v, want Canceled", err)
+			}
 		}
 		if id == "one" {
 			return j1
@@ -145,15 +152,20 @@ func TestRecorder_LeavesAJobFirstBufferedAfterTheListingForTheNextFlush(t *testi
 	if err := r.flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	var rows, files int
+	var rows, files, owed int
 	for _, b := range st.snapshot() {
 		if b.JobID == "two" {
 			rows += len(b.Rows)
 			files += len(b.Files)
+			for _, v := range b.Verdicts {
+				if v.FileIdx == 1 && v.DeleteAll {
+					owed++
+				}
+			}
 		}
 	}
-	if rows != 1 || files != 1 {
-		t.Errorf("job two after the second flush: %d rows, %d files, want 1 and 1 — state buffered during a listing was dropped", rows, files)
+	if rows != 1 || files != 1 || owed != 1 {
+		t.Errorf("job two after the second flush: %d rows, %d files, %d owed deletes, want 1 of each — state buffered during a listing was dropped", rows, files, owed)
 	}
 }
 

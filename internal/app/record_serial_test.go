@@ -187,13 +187,16 @@ func untrustOverrunsFlush(t *testing.T, flushFails bool) (*modelStore, *recorder
 	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 1, ArtIdx: 0, Length: 10})
+	// In the snapshot too: a failed flush must not put complete=1 back for
+	// the file the untrust overran.
+	r.markDirty(j, 0, durability.FileState{FileIdx: 0, Complete: true})
 
 	flushErr := make(chan error, 1)
 	go func() { flushErr <- r.flush(context.Background()) }()
 	<-st.entered
 	// Noted after the snapshot and before the untrust: stale, and still buffered.
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Length: 10})
-	r.markDirty(j, 0, durability.FileState{FileIdx: 0, Complete: true})
+	r.markDirty(j, 0, durability.FileState{FileIdx: 0, Complete: true, Filename: "later"})
 
 	untrustTimedOut(t, r, j)
 	r.mu.Lock()
@@ -216,8 +219,11 @@ func untrustOverrunsFlush(t *testing.T, flushFails bool) (*modelStore, *recorder
 
 func TestRecorder_UntrustThatOverransASuccessfulFlushIsPaidByTheNext(t *testing.T) {
 	st, r, j := untrustOverrunsFlush(t, false)
-	if got := modelRows(st); !slices.Equal(got, [][2]int{{0, 1}, {1, 0}}) {
-		t.Fatalf("fixture: rows after the flush the untrust overran = %v, want file 0's stale row and file 1's", got)
+	st.mu.Lock()
+	wrote := st.complete[0]
+	st.mu.Unlock()
+	if got := modelRows(st); !slices.Equal(got, [][2]int{{0, 1}, {1, 0}}) || !wrote {
+		t.Fatalf("fixture: after the flush the untrust overran: rows %v, complete %v; want file 0's stale row and complete=1, and file 1's row", got, wrote)
 	}
 	if err := r.flush(context.Background()); err != nil {
 		t.Fatal(err)
@@ -250,6 +256,39 @@ func TestRecorder_RemergePutsBackNothingAnUntrustOverran(t *testing.T) {
 	}
 	if got := modelRows(st); !slices.Equal(got, [][2]int{{0, 3}, {1, 0}}) {
 		t.Errorf("rows after the retried flush = %v, want only the refetched row of file 0", got)
+	}
+	st.mu.Lock()
+	complete := st.complete[0]
+	st.mu.Unlock()
+	if complete {
+		t.Error("complete=1 reached the store for the untrusted file: the remerge put the snapshot's file state back")
+	}
+}
+
+// TestRecorder_RemergePutsBackOnlyWhatNoUntrustOverran calls remerge directly
+// with rows and file states for three files: file 0's debt is newer than the
+// one the failed write carried, file 1's is the one it carried, file 2 owes
+// nothing. Only file 0's rows and state stay out.
+func TestRecorder_RemergePutsBackOnlyWhatNoUntrustOverran(t *testing.T) {
+	j := newTestJob(t, "id")
+	r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, slog.Default())
+	r.owed[j] = map[int]uint64{0: 2, 1: 1}
+	r.pending[j] = []durability.WrittenRow{{FileIdx: 0, ArtIdx: 9}}
+	rows := map[*job.Job][]durability.WrittenRow{j: {{FileIdx: 0, ArtIdx: 1}, {FileIdx: 1, ArtIdx: 1}, {FileIdx: 2, ArtIdx: 1}}}
+	files := map[*job.Job]map[int]durability.FileState{j: {
+		0: {FileIdx: 0, Complete: true}, 1: {FileIdx: 1, Complete: true}, 2: {FileIdx: 2, Complete: true},
+	}}
+	r.remerge(rows, files, map[*job.Job]map[int]uint64{j: {0: 1, 1: 1}})
+
+	want := []durability.WrittenRow{{FileIdx: 1, ArtIdx: 1}, {FileIdx: 2, ArtIdx: 1}, {FileIdx: 0, ArtIdx: 9}}
+	if !slices.Equal(r.pending[j], want) {
+		t.Errorf("pending = %v, want %v: the overrun file's snapshot rows left out, ahead of the row noted since", r.pending[j], want)
+	}
+	if _, ok := r.dirty[j][0]; ok {
+		t.Error("the overrun file's snapshot state was put back")
+	}
+	if len(r.dirty[j]) != 2 || !r.dirty[j][1].Complete || !r.dirty[j][2].Complete {
+		t.Errorf("dirty = %v, want files 1 and 2 restored", r.dirty[j])
 	}
 }
 

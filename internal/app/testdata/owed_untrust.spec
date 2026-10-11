@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestHandleFileUntrusted_AFailedDeleteIsOwedUntilItLands|TestRecorder_UntrustWhoseWriteFailsOwesTheDeleteToTheNextFlush|TestRecorder_OwedDeleteIsWrittenOnItsOwn|TestRecorder_DropsTheDebtOfAReplacedInstance|TestRecorder_UntrustThatOverransASuccessfulFlushIsPaidByTheNext|TestRecorder_RemergePutsBackNothingAnUntrustOverran|TestRecorder_ASecondUntrustDuringTheFlushKeepsItsDebt
+run TestHandleFileUntrusted_AFailedDeleteIsOwedUntilItLands|TestRecorder_UntrustWhoseWriteFailsOwesTheDeleteToTheNextFlush|TestRecorder_OwedDeleteIsWrittenOnItsOwn|TestRecorder_DropsTheDebtOfAReplacedInstance|TestRecorder_UntrustThatOverransASuccessfulFlushIsPaidByTheNext|TestRecorder_RemergePutsBackNothingAnUntrustOverran|TestRecorder_RemergePutsBackOnlyWhatNoUntrustOverran|TestRecorder_ASecondUntrustDuringTheFlushKeepsItsDebt
 
 # #827: an untrust whose delete does not land is owed by the recorder and
 # carried, ahead of the file's rows, by every later write for the instance.
@@ -58,9 +58,17 @@ file internal/app/record.go
 [the remerge puts back rows an untrust overran]
 file internal/app/record.go
 --- anchor
-	return ok && cur > carried[fi]
+			if !r.overrunLocked(j, carried[j], row.FileIdx) {
 --- replace
-	return ok && cur > carried[fi] && false
+			if true {
+--- end
+
+[the remerge puts back the file state an untrust overran]
+file internal/app/record.go
+--- anchor
+			if r.overrunLocked(j, carried[j], idx) {
+--- replace
+			if false {
 --- end
 
 [a replaced instance's debt is kept]
