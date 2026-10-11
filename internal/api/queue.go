@@ -381,6 +381,82 @@ func slotLabels(h dispatch.Header) []string {
 // varying ETAs (e.g. 100 hours when the meter dips for a moment).
 const noiseFloorBPS = 1024.0 // 1 KiB/s
 
+// queueStatus derives the queue-level status from the whole queue, before
+// any listing filter, taking the first rule that applies:
+//
+//  1. the global pause is on: "Paused", whether or not the queue is empty;
+//  2. a job is downloading: "Downloading";
+//  3. a job is waiting to download and not paused: "Downloading", since it
+//     starts when a slot frees;
+//  4. a job is individually paused: "Paused";
+//  5. otherwise, including an empty queue or only post-processing jobs:
+//     "Idle".
+//
+// downloading reports rule 2 alone, which is what queueTimeleft gates on.
+//
+// A running job is skipped before Reason is read, because RenderView
+// documents Reason as meaningless while Running is true.
+//
+// It reads the RenderView axes rather than branching on Row.Status(), which
+// dispatch documents as render-only. A job is downloading when it is running
+// at Fetching: the case job.ToSABnzbd renders as Downloading or Fetching.
+// Running already excludes a settled attempt (sched.Queue.running requires
+// Snapshot.IsOpen, which requires an unsettled Outcome).
+func queueStatus(rows []dispatch.Row, paused bool) (status string, downloading bool) {
+	if paused {
+		return "Paused", false
+	}
+	var waiting, held bool
+	for _, r := range rows {
+		v := r.View
+		switch {
+		case v.Running && v.State == job.Fetching:
+			return "Downloading", true
+		case v.Running || v.Outcome.IsSettled():
+		case v.Reason.IsPause():
+			held = true
+		case waitingToDownload(v):
+			waiting = true
+		}
+	}
+	switch {
+	case waiting:
+		return "Downloading", false
+	case held:
+		return "Paused", false
+	}
+	return "Idle", false
+}
+
+// waitingToDownload reports whether a job that is neither running, settled
+// nor paused is waiting to fetch articles: not yet started (StateUnset), or at
+// Fetching waiting for a lease. A job at Fetching whose Next is set has
+// finished downloading and is waiting to move on, so it does not count.
+func waitingToDownload(v job.RenderView) bool {
+	return v.Next == job.StateUnset && (v.State == job.StateUnset || v.State == job.Fetching)
+}
+
+// queueSpeedFields returns the queue-level speed and kbpersec for speed, the
+// request's snapshot in bytes per second.
+func queueSpeedFields(speed float64) (speedStr, kbPerSec string) {
+	return formatSpeed(speed), strconv.FormatFloat(speed/(1<<10), 'f', 1, 64)
+}
+
+// queueTimeleft returns the listing's queue-level timeleft: remaining over
+// speed as h:mm:ss, or "0:00:00" unless downloading is true, speed is above
+// noiseFloorBPS and something remains. downloading is queueStatus's second
+// result: whether a job is actually running at Fetching (its rule 2), not
+// whether the status string reads Downloading — a queue that only has jobs
+// waiting for a slot reads Downloading but has no ETA. It is false under the
+// global pause, so a speed snapshot still decaying after the last download
+// stopped yields no ETA.
+func queueTimeleft(speed float64, remaining int64, downloading bool) string {
+	if !downloading || speed <= noiseFloorBPS || remaining <= 0 {
+		return "0:00:00"
+	}
+	return formatDuration(int(float64(remaining) / speed))
+}
+
 // buildSlot renders one Row into the API queueSlot shape. paused is the
 // queue-wide pause flag; speed is the snapshot aggregate BPS used for
 // ETA. index is the slot's display index in the listing (0 for the
@@ -559,9 +635,12 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 
 	var slots []queueSlot
 	var paused bool
+	qStatus := "Idle"
+	var downloading bool
 	if s.dispatcher != nil {
 		rows := s.dispatcher.List()
 		paused = s.dispatcher.Paused()
+		qStatus, downloading = queueStatus(rows, paused)
 		slots = s.filterQueueSlots(rows, catFilter, statusFilter, searchLower, paused, speed, duStatuses, stallReasons)
 	}
 
@@ -570,6 +649,14 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	// Ensure slots is never nil so JSON encodes as [] not null.
 	if slots == nil {
 		slots = []queueSlot{}
+	}
+
+	// Queue-level size totals cover every filtered slot, so they are summed
+	// here, before start/limit cut the page out of slots.
+	var totalQueueBytes, remainQueueBytes int64
+	for _, sl := range slots {
+		totalQueueBytes += sl.Bytes
+		remainQueueBytes += sl.RemainingBytes
 	}
 
 	// Paginate.
@@ -584,33 +671,20 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 		slots = slots[:limit]
 	}
 
-	qStatus := "Idle"
-	if paused {
-		qStatus = "Paused"
-	} else if total > 0 {
-		qStatus = "Downloading"
-	}
-
-	// Compute queue-level aggregates across ALL filtered slots
-	// (not just the paginated page).
-	var totalQueueBytes, remainQueueBytes int64
-	for _, sl := range slots {
-		totalQueueBytes += sl.Bytes
-		remainQueueBytes += sl.RemainingBytes
-	}
-
+	speedStr, kbPerSec := queueSpeedFields(speed)
+	timeleft := queueTimeleft(speed, remainQueueBytes, downloading)
 	respondJSON(w, http.StatusOK, queueResponse{
 		Status: true,
 		Queue: queueDetail{
 			Status:         qStatus,
 			Paused:         paused,
-			Speed:          "0",
-			KBPerSec:       "0",
+			Speed:          speedStr,
+			KBPerSec:       kbPerSec,
 			MB:             toMBString(totalQueueBytes),
 			MBLeft:         toMBString(remainQueueBytes),
 			Size:           humanfmt.Bytes(totalQueueBytes),
 			SizeLeft:       humanfmt.Bytes(remainQueueBytes),
-			Timeleft:       "0:00:00",
+			Timeleft:       timeleft,
 			NoOfSlots:      len(slots),
 			NoOfSlotsTotal: total,
 			Limit:          limit,
@@ -663,11 +737,18 @@ func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID st
 		slot.Files = buildQueueFiles(j)
 	}
 
+	// The response describes this one job, so its timeleft is the slot's,
+	// which buildSlot leaves at "0:00:00" unless the job is Downloading.
+	speedStr, kbPerSec := queueSpeedFields(speed)
+	timeleft := slot.Timeleft
 	respondJSON(w, http.StatusOK, queueResponse{
 		Status: true,
 		Queue: queueDetail{
 			Status:         slot.Status,
 			Paused:         paused,
+			Speed:          speedStr,
+			KBPerSec:       kbPerSec,
+			Timeleft:       timeleft,
 			NoOfSlots:      1,
 			NoOfSlotsTotal: 1,
 			Slots:          []queueSlot{slot},

@@ -961,6 +961,7 @@ to `modeConfig`'s default branch (`internal/api/config.go`).
 {
   "queue": {
     "version": 1,
+    "status": "Downloading",
     "paused": false,
     "pause_int": "0",
     "paused_all": false,
@@ -981,8 +982,9 @@ to `modeConfig`'s default branch (`internal/api/config.go`).
     "cache_art": "0",
     "cache_size": "0 B",
     "cache_max": "500 M",
-    "kbpersec": "5000.0",
+    "kbpersec": "5120.0",
     "speed": "5.0 MB/s",
+    "timeleft": "0:04:06",
     "mbleft": "1234.5",
     "mb": "5678.9",
     "sizeleft": "1.2 GB",
@@ -1019,6 +1021,22 @@ to `modeConfig`'s default branch (`internal/api/config.go`).
   }
 }
 ```
+
+GoNZBD's queue-level fields (`internal/api/queue.go`, `queueList`):
+
+- `status` describes the whole queue, whatever the filters select. The first
+  rule that applies wins: `Paused` while the global pause is on; `Downloading`
+  while a job is downloading, or is waiting to download and not paused;
+  `Paused` while a job is individually paused; otherwise `Idle` — an empty
+  queue, or one holding only post-processing jobs.
+- `mb`, `mbleft`, `size` and `sizeleft` total every slot the `cat`, `status`
+  and `search` filters select, before `start` and `limit` cut the page.
+- `speed` and `kbpersec` render one speed snapshot per request: `speed` in
+  B/s, KB/s or MB/s with one decimal (binary units), `kbpersec` as KiB/s with
+  one decimal. `timeleft` is `mbleft` over that speed as `h:mm:ss`, and
+  `0:00:00` unless a job is actually downloading (not merely waiting to)
+  and the speed is above 1 KiB/s. The `nzo_id=…&files=1` detail response reports that job's own
+  `timeleft` instead.
 
 ---
 
