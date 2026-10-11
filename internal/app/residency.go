@@ -79,35 +79,45 @@ func newAppResidency(lookup func(string) (*job.Job, bool), dir string, store rec
 // that could not complete for a reason about the device is parked through the
 // stall and returned wrapping dispatch.ErrResidencyFault, which the dispatcher
 // does not settle.
+//
+// One hydration of a job runs at a time. A call that finds one in flight
+// waits for it, and is done if it attached; if it did not — it was cancelled,
+// its own deadline passed, or it faulted — the waiter starts its own, under
+// its own ctx. The waiter does not report the other's failure as its own:
+// Dispatcher.reconcileResidency settles a job Failed on a hydration error
+// that is neither a context error nor a residency fault, so a tick's
+// hydration that waited on the startup verification of a job the user
+// resumed (Application.verifyPausedJobs) must not turn that verification's
+// deadline into such an error.
 func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 	j, ok := r.lookup(id)
 	if !ok {
 		return fmt.Errorf("residency: hydrate %s: no such job", id)
 	}
 
-	r.mu.Lock()
-	if r.hydrating == nil {
-		r.hydrating = make(map[string]chan struct{})
-	}
-	if ready, ok := r.hydrating[id]; ok {
-		r.mu.Unlock()
-		select {
-		case <-ready:
-		case <-ctx.Done():
-			return ctx.Err()
+	var ready chan struct{}
+	for ready == nil {
+		r.mu.Lock()
+		if r.hydrating == nil {
+			r.hydrating = make(map[string]chan struct{})
 		}
-		if !j.Resident() {
-			return fmt.Errorf("residency: hydrate %s: concurrent hydration failed", id)
+		if inFlight, ok := r.hydrating[id]; ok {
+			r.mu.Unlock()
+			select {
+			case <-inFlight:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
-		return nil
-	}
-	if j.Resident() {
+		if j.Resident() {
+			r.mu.Unlock()
+			return nil
+		}
+		ready = make(chan struct{})
+		r.hydrating[id] = ready
 		r.mu.Unlock()
-		return nil
 	}
-	ready := make(chan struct{})
-	r.hydrating[id] = ready
-	r.mu.Unlock()
 
 	defer func() {
 		r.mu.Lock()

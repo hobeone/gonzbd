@@ -72,12 +72,12 @@ file internal/app/startup_reconcile.go
 			app.dropJobAlreadyInHistory(ctx, row.ID)
 		}
 	}
-	if err := app.hydratePausedJobs(ctx); err != nil {
+	return app.fileOwedUnwantedFailures(ctx)
 --- replace
 			_ = row.ID
 		}
 	}
-	if err := app.hydratePausedJobs(ctx); err != nil {
+	return app.fileOwedUnwantedFailures(ctx)
 --- end
 
 [a cancelled startup goes on dropping and sweeping jobs]
