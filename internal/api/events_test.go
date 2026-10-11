@@ -1004,19 +1004,16 @@ func TestWebSocketLifecycleLogging_AbnormalClose(t *testing.T) {
 		t.Error("missing disconnected log line")
 	}
 	// An abrupt client-side close races two independent detectors in
-	// Handle: the read goroutine's conn.Read (which normally surfaces the
-	// frame-level EOF) against the write loop's ctx.Done() case, which
-	// fires directly whenever r.Context() is canceled by net/http's own
-	// connection tracking of the same TCP close. Since conn.Read is itself
-	// bound by that same ctx, either detector can legitimately win
-	// depending on OS/goroutine scheduling — this is not deterministic and
-	// varies under CI load, so both outcomes are accepted.
-	wantReasons := map[string]bool{
-		"failed to get reader: failed to read frame header: EOF": true,
-		"context canceled": true,
-	}
-	if !wantReasons[disconnectReason] {
-		t.Errorf("abnormal disconnect reason got: %q, want one of %v", disconnectReason, wantReasons)
+	// Handle: the read goroutine's conn.Read against the write loop's
+	// ctx.Done() case. conn.Read is bound by the same ctx, so it can also
+	// report the cancellation, from any depth of the library's own wrapping
+	// (e.g. "failed to get reader: failed to acquire lock: context
+	// canceled"). Which detector wins is scheduling-dependent and the
+	// library's wording is not a contract, so assert the classification via
+	// the reason's tail: the peer went away (EOF) or the context was
+	// canceled.
+	if !strings.HasSuffix(disconnectReason, "EOF") && !strings.HasSuffix(disconnectReason, "context canceled") {
+		t.Errorf("abnormal disconnect reason got %q, want a peer-EOF or context-canceled reason", disconnectReason)
 	}
 }
 
