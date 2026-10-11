@@ -121,6 +121,45 @@ func TestBuildIngestJob_CategoryPriorityInherit(t *testing.T) {
 	}
 }
 
+// TestBuildIngestJob_CategoryDefaultPriorityResolves pins that no sentinel
+// priority reaches the dispatcher from ingest. A category whose priority is
+// DefaultPriority ("use the global default") inherits the fallback
+// category's, and Normal when that is a sentinel too. Stored raw, -100 would
+// sort the job behind Low in dispatch order and the queue listing.
+func TestBuildIngestJob_CategoryDefaultPriorityResolves(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		fallback constants.Priority
+		want     constants.Priority
+	}{
+		{"fallback category is concrete", constants.HighPriority, constants.HighPriority},
+		{"fallback category is Default too", constants.DefaultPriority, constants.NormalPriority},
+		{"fallback category is Stop", constants.StopPriority, constants.NormalPriority},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := &config.Config{
+				Categories: []config.CategoryConfig{
+					{Name: "Default", PP: 1, Priority: int(tc.fallback)},
+					{Name: "tv", PP: 1, Priority: int(constants.DefaultPriority)},
+				},
+			}
+			_, hdr, err := BuildIngestJob(cfg, multiVolumeNZB(), "movie.nzb", types.FetchOptions{
+				Category: "tv",
+				PP:       types.PPInherit,
+				Priority: constants.DefaultPriority,
+			}, nil)
+			if err != nil {
+				t.Fatalf("BuildIngestJob: %v", err)
+			}
+			if hdr.Priority != int(tc.want) {
+				t.Errorf("Priority = %d, want %d", hdr.Priority, tc.want)
+			}
+		})
+	}
+}
+
 // TestBuildIngestJob_SanitizeOptionsApplied pins the second half of the
 // one-shot bug fix: sanitize-related config (e.g. ReplaceSpacesWith) must
 // affect the derived job name, not just categories.

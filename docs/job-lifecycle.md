@@ -831,6 +831,14 @@ and since priority is persisted with the header it survives a restart.
 `TestTick_WalksInPriorityOrderWithPositionAsTheTieBreak` and
 `TestList_FollowsDispatchOrder` pin it.
 
+The sort is numeric, so the header's other values rank by number too:
+`RepairPriority` (3) ahead of Force, and `PausedPriority` (-2),
+`StopPriority` (-4) and `DefaultPriority` (-100) behind Low. Ingest stores
+none of the sentinels: `config.ResolvePriority` resolves a request for
+Default through the category, then the Default/`*` category, to Normal.
+`SetPriority`, which the API's `name=priority` and `change_cat` call,
+still admits -100 and -4.
+
 `ForcePriority` orders first and does nothing else: it obeys the global pause
 like every other priority, unlike SABnzbd's Force.
 `constants.PausedPriority` at ingest maps to `SetIntent(IntentPause)`;

@@ -75,7 +75,7 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	// Resolve sentinel values from the matching category config.
 	pp := opts.PP
 	script := opts.Script
-	priority := opts.Priority
+	priority := config.ResolvePriority(categories, opts.Category, opts.Priority)
 	ppReason := "explicit"
 	cat := config.FindCategory(categories, opts.Category)
 	if pp == types.PPInherit {
@@ -90,15 +90,6 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	} else if pp < types.PPNone {
 		pp = types.PPNone
 	}
-	if priority == constants.DefaultPriority {
-		p := cat.Priority
-		if p < -128 || p > 127 {
-			priority = constants.NormalPriority
-		} else {
-			priority = constants.Priority(p)
-		}
-	}
-
 	if logger != nil {
 		logger.Info("job PP resolved",
 			"job_name", name,

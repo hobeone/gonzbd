@@ -49,12 +49,50 @@ type CategoryConfig struct {
 	Script string `yaml:"script" json:"script"`
 
 	// Priority is the default priority for jobs added under this
-	// category. constants.DefaultPriority means "use the global default".
+	// category. constants.DefaultPriority means "use the global default":
+	// the Default/"*" category's priority, then Normal (ResolvePriority).
 	Priority int `yaml:"priority" json:"priority"`
 
 	// Dir is a subdirectory within complete_dir to receive output for
 	// this category. Empty writes directly to complete_dir.
 	Dir string `yaml:"dir" json:"dir"`
+}
+
+// ResolvePriority returns the priority a job added under category gets when
+// it asked for p. A request for constants.DefaultPriority inherits the
+// category's priority; a category priority that is itself not a concrete job
+// priority (DefaultPriority, StopPriority, or a value IsValid rejects) defers
+// to the fallback category FindCategory returns for "" (Default, then "*"),
+// and to NormalPriority when that is not concrete either. Any other p is
+// returned unchanged.
+//
+// It exists so that no sentinel reaches the dispatcher's header from a
+// category: dispatch order sorts on Header.Priority, and -100 stored raw sorts
+// a job behind Low.
+func ResolvePriority(cats []CategoryConfig, category string, p constants.Priority) constants.Priority {
+	if p != constants.DefaultPriority {
+		return p
+	}
+	if c, ok := concretePriority(FindCategory(cats, category).Priority); ok {
+		return c
+	}
+	if c, ok := concretePriority(FindCategory(cats, "").Priority); ok {
+		return c
+	}
+	return constants.NormalPriority
+}
+
+// concretePriority reports whether a configured category priority names a
+// priority a job can hold, rather than a sentinel or an unknown value.
+func concretePriority(v int) (constants.Priority, bool) {
+	if v < -128 || v > 127 {
+		return 0, false
+	}
+	p := constants.Priority(v) //nolint:gosec // G115: range checked above
+	if !p.IsValid() || p == constants.DefaultPriority || p == constants.StopPriority {
+		return 0, false
+	}
+	return p, true
 }
 
 // FindCategory looks up the CategoryConfig for the given name. If name

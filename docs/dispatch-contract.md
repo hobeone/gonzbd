@@ -77,8 +77,9 @@ nobody else can build is what makes its lifecycle statements hold.
 
 A single goroutine (`Dispatcher.run`) walks the registry on a `time.Ticker`
 and calls `sched.Queue.Advance` on each job, in dispatch order:
-`Header.Priority` descending (Force, High, Normal, Low), queue position
-within one priority (`dispatchOrderLocked`, `internal/dispatch/registry.go`).
+`Header.Priority` descending (Force, High, Normal, Low; the full numeric
+range is in `docs/job-lifecycle.md` § Ordering), queue position within one
+priority (`dispatchOrderLocked`, `internal/dispatch/registry.go`).
 `Advance` grants leases and compute slots in the order it is called, so a
 higher-priority job takes the next free lease; one already holding a lease
 keeps it. `List` reads the same computation, so the API's queue listing, the
