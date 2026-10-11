@@ -49,9 +49,6 @@ func TestSetName_WaitsForAHydrationInstallingFilenames(t *testing.T) {
 	st.seed([]Persisted{{ID: "a", SortKey: 1, Header: Header{Name: "a"}, Intent: job.IntentPause}})
 	res := &inFlightResidency{entered: make(chan struct{}, 1)}
 	d := newTestDispatcher(t, withStore(st), withResidency(res))
-	if err := d.restore(context.Background()); err != nil {
-		t.Fatalf("restore: %v", err)
-	}
 	j, ok := d.Job("a")
 	if !ok {
 		t.Fatal("job a is not registered")
@@ -115,9 +112,6 @@ func TestLoadProgress_RecordsOnlyALoadItMade(t *testing.T) {
 	st := &fakeStore{}
 	st.seed([]Persisted{{ID: "restored", SortKey: 1, Header: Header{Name: "restored"}, Intent: job.IntentPause}})
 	d2 := newTestDispatcher(t, withStore(st))
-	if err := d2.restore(context.Background()); err != nil {
-		t.Fatalf("restore: %v", err)
-	}
 	if err := d2.LoadProgress(context.Background(), "restored"); err != nil {
 		t.Fatalf("LoadProgress: %v", err)
 	}
