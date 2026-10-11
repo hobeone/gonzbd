@@ -1121,14 +1121,14 @@ recorded here so the next reader does not mistake them for design.
    `IntentPause` (`reconcileResidency`, `internal/dispatch/tick.go`). A
    resume during a job's load waits for it (`appResidency.Hydrate` runs one
    hydration of a job at a time, and a waiter whose hydration did not attach
-   hydrates the job itself). A removal or a rename during it blocks its
-   caller — the HTTP handler behind `mode=queue&name=delete`, or
-   `Dispatcher.SetName` — on `appResidency.Evict`, which takes no context and
-   waits for whichever hydration of the job is in flight to return: for this
-   verifier's load, up to the per-job deadline between rows, and for as long
-   as a read a hung mount does not return; for a tick's or a rename's
-   hydration, which has no deadline, until that read-back ends. The load's
-   verdicts then reach SQLite before the removal's reclaim deletes the rows.
+   hydrates the job itself). A removal during it — the HTTP handler behind
+   `mode=queue&name=delete` — cancels whichever hydration of the job is in
+   flight and waits for it to return (`appResidency.Evict`): a manifest read
+   returns at the cancellation, the read-back stops at its next row, and a
+   read-back read blocked in the syscall holds the removal until that read
+   returns. Whatever verdicts the load committed then reach SQLite before the
+   removal's reclaim deletes the rows. A rename (`Dispatcher.SetName`) loads
+   the job under its own deadline (`setNameLoadTimeout`, 10 minutes).
 
 2. **An unreadable sector, or a missing download directory, keeps the job
    parked until the operator acts** (§3). Deleting the file refetches it; a
@@ -1161,7 +1161,9 @@ recorded here so the next reader does not mistake them for design.
    job's writes; a verification read blocks the tick, or after startup the
    paused jobs' verifier and the `Shutdown` step that joins it (limitation
    1); a manifest read or removal on the filesystem hosting `admin_dir`
-   blocks its caller.
+   blocks its caller, except a hydration's manifest read, which its caller
+   abandons when its context ends (`appResidency.readManifest`) and leaves
+   to return on its own goroutine.
    The bounded waits are the callers' (`closeHandlesTimeout`,
    `untrustTimeout`, `recorderFlushTimeout`, the disk probe, Shutdown's step
    budgets), not the syscalls'. A stalled record write holds `wmu` until its
