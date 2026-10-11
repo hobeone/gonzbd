@@ -40,7 +40,7 @@ func newTestFileWriter(t *testing.T, opts ...fileWriterOpt) *fileWriter {
 }
 
 // TestFileWriter_AcceptNotesTheArticleForSync pins that a successful write puts
-// the article in unsynced, which is what a failed Sync rolls back.
+// the article in unsynced, which is what a failed sync rolls back.
 func TestFileWriter_AcceptNotesTheArticleForSync(t *testing.T) {
 	w := newTestFileWriter(t)
 

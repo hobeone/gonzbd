@@ -239,7 +239,7 @@ type Options struct {
 	// and losing the articles is what happened.
 	//
 	// It takes a SET because one failure can roll back several articles: a
-	// failed close-time Sync rolls back every article written since the last
+	// failed close-time sync rolls back every article written since the last
 	// successful one, and releasePoisoned delivers them in a single call.
 	//
 	// Emitted is NOT Outstanding: ForEachUnfinishedArticle skips a set Emitted
@@ -289,9 +289,9 @@ type Options struct {
 	// across a restart without reading the file (docs/durability-contract.md
 	// §5).
 	//
-	// It reports a write, not durability: a later failed Sync can roll the
+	// It reports a write, not durability: a later failed sync can roll the
 	// article back (fileWriter.poisonSync), and OnArticlesUnwritten then names
-	// it. In production that Sync is syncAndClose's, which closes the writer
+	// it. In production that sync is syncAndClose's, which closes the writer
 	// next, and the file is untrusted (OnFileUntrusted); a redelivery opens a
 	// fresh writer and calls this again with the same artIdx.
 	OnArticleWritten func(jobID string, fileIdx int, artIdx int32, off, n int64, crc uint32)
@@ -1177,12 +1177,12 @@ func (a *Assembler) syncAndClose(f *openFile) error {
 
 	if syncErr := f.w.sync(); syncErr != nil {
 		note("sync file before close", syncErr)
-		// A failed Sync rolled the file's unsynced articles back into
-		// w.poisoned (#760). Close below throws the writer away with that set,
+		// A failed sync rolled the file's unsynced articles back into
+		// w.poisoned (#760). close below throws the writer away with that set,
 		// so this is the only chance to return them to Outstanding.
 		a.releasePoisoned(f)
 	}
-	// A failing Close is a storage condition too, and on network-backed mounts
+	// A failing close is a storage condition too, and on network-backed mounts
 	// it is frequently the first report of writes that never landed — the
 	// close is where a deferred error surfaces.
 	note("close file", f.w.close())
@@ -1193,7 +1193,7 @@ func (a *Assembler) syncAndClose(f *openFile) error {
 	return first
 }
 
-// releasePoisoned returns the articles a failed Sync rolled back to
+// releasePoisoned returns the articles a failed sync rolled back to
 // Outstanding. Their Emitted bits are still set from dispatch, so without this
 // they are neither Done, nor Failed, nor Outstanding.
 func (a *Assembler) releasePoisoned(f *openFile) {
@@ -1208,7 +1208,7 @@ func (a *Assembler) releasePoisoned(f *openFile) {
 // to it. syncAndClose does something that is right for its own caller and
 // wrong here:
 //
-//   - It calls Sync. CloseJobHandles needs that fsync because par2 and unrar
+//   - It calls sync. CloseJobHandles needs that fsync because par2 and unrar
 //     are about to read the file. Nothing reads a removed job's files, and an
 //     fsync here would stall ingest for every other job on the one worker
 //     goroutine in exchange for nothing.
@@ -1511,7 +1511,7 @@ func (a *Assembler) seedOwned(w *fileWriter, owned []Range) {
 // path, matching handleSuccessArticle and fileWriter.accept's contract: the
 // caller never has to reason about who frees it. Safe here because this
 // function writes nothing to disk on any path, so it never needs the bytes to
-// survive the call — unlike Accept, which must hold them until they are
+// survive the call — unlike accept, which must hold them until they are
 // written before it can let go.
 //
 // It records no ack. A permanent failure is the queue's to record via
@@ -1619,8 +1619,8 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 	// bytes leaves a record describing bytes the file no longer holds. An article whose write faulted claimed
 	// nothing (see fileWriter.owned), so it never makes a later arrival lose.
 	//
-	// Checked here rather than inside Accept so the refusal travels the same
-	// route as the out-of-range one above — Accept's contract is that its error
+	// Checked here rather than inside accept so the refusal travels the same
+	// route as the out-of-range one above — accept's contract is that its error
 	// always reports STORAGE failing, and this reports the article.
 	if _, settled := f.w.owned.ownerOf(Range{Off: req.Offset, Len: int64(len(req.Data))}, id); settled {
 		if req.Data != nil {
@@ -1631,7 +1631,7 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 			reason: "claims a byte range already written by another article",
 		}
 	}
-	n := int64(len(req.Data)) // Accept returns the buffer to the pool
+	n := int64(len(req.Data)) // accept returns the buffer to the pool
 	if err := f.w.accept(id, req.Offset, req.Data); err != nil {
 		return err
 	}

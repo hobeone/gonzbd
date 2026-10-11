@@ -90,7 +90,7 @@ func TestCollision_ArrivalRejectedOnceIncumbentIsWritten(t *testing.T) {
 // TestCollision_RangeStaysOwnedAfterSync is the reason ownership is the owned
 // range set (fileWriter.owned) rather than derived from w.unsynced.
 //
-// w.unsynced is what no successful Sync has covered yet; a successful Sync
+// w.unsynced is what no successful sync has covered yet; a successful sync
 // empties it. An article whose bytes an fsync has covered holds the strongest
 // possible claim on its offset, but a check that scanned that slice would see
 // an empty set and read it as no claim — so a collision arriving after the
@@ -101,7 +101,7 @@ func TestCollision_RangeStaysOwnedAfterSync(t *testing.T) {
 	if !c.accept(1, "<first@x>", 0, []byte("AAAA")) {
 		t.Fatal("precondition: the incumbent was not counted")
 	}
-	// A successful Sync is what empties the evidence.
+	// A successful sync is what empties the evidence.
 	if err := c.f.w.sync(); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -168,9 +168,9 @@ func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
 // seenDone is keyed on ArtIdx, so handleSuccessArticle's dedup arm recognises a
 // PLAIN redelivery and returns before acceptArticle is called, which is why this
 // calls acceptArticle directly. The first rollback, a direct call to fail,
-// models a failed Sync rolling the article back (rollbackSyncedArticle calls
+// models a failed sync rolling the article back (rollbackSyncedArticle calls
 // fail): fail deletes the seenDone entry and never sets seenFailed, so the
-// redelivery reaches a second Accept. That second Accept's write is the one
+// redelivery reaches a second accept. That second accept's write is the one
 // that faults.
 func TestCollision_FailedReacceptKeepsTheWrittenRange(t *testing.T) {
 	c := newCollisionFixture(t)

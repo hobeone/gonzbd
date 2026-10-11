@@ -550,10 +550,10 @@ callers in `internal/assembler/assembler.go`):
 
 **A failed close-time fsync also rolls back the articles it covered.** A
 `fileWriter` keeps `unsynced`, the articles written since the last successful
-`Sync`. A failed `Sync` moves every one into `poisoned` (`poisonSync`), and
+`sync`. A failed `sync` moves every one into `poisoned` (`poisonSync`), and
 `releasePoisoned` returns them to Outstanding through `OnArticlesUnwritten`. In
 production `fileWriter.sync` fails only inside `syncAndClose`, its one
-production call (`git grep -n 'w\.Sync()' -- 'internal/assembler/*.go'
+production call (`git grep -n 'w\.sync()' -- 'internal/assembler/*.go'
 ':!*_test.go'` returns 1 line), which closes the writer right after, so the
 writer and its owned ranges are discarded with it. The file is then untrusted
 as above: its rows and `complete` are removed, and its articles return to
@@ -864,7 +864,7 @@ range and notes the article in `unsynced`. `acceptArticle` then calls
 `OnArticleWritten` with the range and the decoder's CRC. There is no
 assembler-side buffering of decoded articles, no coalescing and no
 memory-pressure flush (`git grep -n 'writeOne(' -- internal ':!*_test.go'`
-finds 2 lines: the definition and its one call, in `Accept`).
+finds 2 lines: the definition and its one call, in `accept`).
 
 The decoded bytes the assembler holds ahead of the disk are the queued requests
 in the request channel (`reqs`, see *Memory & allocation budget*), the one
@@ -1045,7 +1045,7 @@ are bounded by the flush cadence and by file size, as below.
 | Component | Bound / strategy |
 |---|---|
 | Write channel (`reqs`) | 2048 requests (`defaultQueueSize`). At 128 KiB articles, ~256 MB worst-case buffered; backpressures the downloader when disk I/O is slow. |
-| `fileWriter.unsynced` | one `int32` per article written to the file in its open episode: only a successful `Sync` clears it, and the only `Sync` is at close. |
+| `fileWriter.unsynced` | one `int32` per article written to the file in its open episode: only a successful `sync` clears it, and the only `sync` is at close. |
 | Recorder buffers | one row per article written since the last flush, and one state per dirty file. A flush that keeps failing re-merges its snapshot, so they grow while SQLite refuses writes. |
 | `JobProgress.written` | one row per written or verified article of a file whose CRC is not yet settled; released at settle or untrust. |
 | `internalFileComplete` | cap 128. A full channel moves a Resumed completion to its own goroutine (§3). |
@@ -1065,7 +1065,7 @@ are bounded by the flush cadence and by file size, as below.
   | `Options.OnWriteFault` | the classified `*storagefault.Fault`, no article | stalls or fails the job on the usual R18 rule |
 
   They are separate because they are needed in different combinations: a fault
-  raised inside `Accept` needs both, for one article; a failed close-time fsync
+  raised inside `accept` needs both, for one article; a failed close-time fsync
   rolls back a set of articles, and its fault goes on the close-handles ack, or
   nowhere at worker exit.
   A restart also clears a stranded Emitted bit, by not persisting it

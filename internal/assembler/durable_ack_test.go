@@ -10,7 +10,7 @@ import (
 )
 
 // An article's outcome is not an ack (X2): the assembler has no ack authority
-// at all. A written article is noted for Sync (fileWriter.unsynced) and
+// at all. A written article is noted for sync (fileWriter.unsynced) and
 // reported to Options.OnArticleWritten; a failed write is absent from
 // unsynced and comes back as a *storagefault.Fault. See filewriter_test.go for
 // the base pins this file specializes.
@@ -27,7 +27,7 @@ import (
 //
 // # Why this test drives the Assembler and not the fileWriter
 //
-// It replaces a version that called w.Accept on a bare fileWriter and asserted
+// It replaces a version that called w.accept on a bare fileWriter and asserted
 // len(w.seenDone) == 0. That assertion held UNCONDITIONALLY: seenDone is only
 // ever written by handleSuccessArticle, so a bare writer's map is empty no
 // matter what fail() does. Deleting the seenDone clear left the whole suite
@@ -340,7 +340,7 @@ func TestSync_ActuallyIssuesTheFsync(t *testing.T) {
 	var unsyncedAtSync int
 	w.syncFile = func() error {
 		syncs++
-		// Captured DURING the syscall: if Sync cleared the set first, the
+		// Captured DURING the syscall: if sync cleared the set first, the
 		// ordering bug would be invisible to an after-the-fact assertion.
 		unsyncedAtSync = len(w.unsynced)
 		return nil
@@ -388,7 +388,7 @@ func TestSync_ActuallyIssuesTheFsync(t *testing.T) {
 // TestNewFileWriter_BindsSyncFileToTheRealHandle closes the one level of hole
 // the syncFile seam still had.
 //
-// TestSync_ActuallyIssuesTheFsync pins that Sync
+// TestSync_ActuallyIssuesTheFsync pins that sync
 // CALLS w.syncFile in the right order. It says nothing about what syncFile
 // holds, because that test installs its own stub. So rebinding
 // `w.syncFile = handle.Sync` to `func() error { return nil }` in newFileWriter

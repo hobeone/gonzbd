@@ -64,7 +64,7 @@ func TestWriteFault_IsNotCountedTowardCompletion(t *testing.T) {
 // TestWriteFault_IsRoutedOutOfTheAssembler pins the other half: the fault has
 // to leave the worker at all.
 //
-// A write rejected inside Accept leaves nothing behind for a later fsync to
+// A write rejected inside accept leaves nothing behind for a later fsync to
 // fail on, so unless the fault is returned and routed it never reaches the job,
 // which is then never stalled.
 func TestWriteFault_IsRoutedOutOfTheAssembler(t *testing.T) {

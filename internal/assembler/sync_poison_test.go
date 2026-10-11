@@ -10,7 +10,7 @@ import (
 )
 
 // newWrittenFileWriter returns a fileWriter holding one successfully written
-// article (index 0), not yet covered by any Sync.
+// article (index 0), not yet covered by any sync.
 func newWrittenFileWriter(t *testing.T) *fileWriter {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "movie.bin")
@@ -30,8 +30,8 @@ func newWrittenFileWriter(t *testing.T) *fileWriter {
 }
 
 // TestSync_FailedSyncRollsBackEveryUnsyncedArticle pins #760 on fileWriter:
-// once Sync fails (e.g. EIO), every article written since the last successful
-// Sync is rolled back into poisoned with its part and seenDone entry cleared,
+// once sync fails (e.g. EIO), every article written since the last successful
+// sync is rolled back into poisoned with its part and seenDone entry cleared,
 // while keeping the range it wrote.
 func TestSync_FailedSyncRollsBackEveryUnsyncedArticle(t *testing.T) {
 	w := newWrittenFileWriter(t)
@@ -43,7 +43,7 @@ func TestSync_FailedSyncRollsBackEveryUnsyncedArticle(t *testing.T) {
 		t.Fatalf("precondition: parts = %d, want 2", w.parts())
 	}
 
-	// First Sync fails with EIO; a retry Sync returns nil (Linux errseq
+	// First sync fails with EIO; a retry sync returns nil (Linux errseq
 	// behaviour), which is why the failure has to be acted on at once.
 	syncCalls := 0
 	w.syncFile = func() error {
@@ -75,7 +75,7 @@ func TestSync_FailedSyncRollsBackEveryUnsyncedArticle(t *testing.T) {
 		t.Error("the rolled-back article's own redelivery was refused after a failed Sync")
 	}
 
-	// The retry Sync returns nil and has nothing left to roll back.
+	// The retry sync returns nil and has nothing left to roll back.
 	if err := w.sync(); err != nil {
 		t.Fatalf("retry Sync: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestSync_FailedSyncRollsBackEveryUnsyncedArticle(t *testing.T) {
 }
 
 // TestSync_SuccessCoversTheArticlesWrittenBeforeIt pins that a later failed
-// Sync rolls back only what it had not been covered by an earlier successful
+// sync rolls back only what it had not been covered by an earlier successful
 // one: a successful fsync made those bytes durable, so a later failure says
 // nothing about them.
 func TestSync_SuccessCoversTheArticlesWrittenBeforeIt(t *testing.T) {
@@ -155,7 +155,7 @@ func TestSyncAndClose_FailedSyncRoutesRolledBackArticles(t *testing.T) {
 
 	// CloseJobHandles and syncAndCloseAll at worker exit call syncAndClose with
 	// nothing after it, so syncAndClose must route the poisoned set itself
-	// before Close throws the writer away.
+	// before close throws the writer away.
 	key := fileKey{jobID: "job1", fileIdx: 0}
 	g := newHelperFile(t, t.TempDir(), "close-handles-sync-fail.dat", 0)
 	g.w.key = key
