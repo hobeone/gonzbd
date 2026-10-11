@@ -188,8 +188,8 @@ func TestSetStallReasonLocked_CreatesTheRecordItNeeds(t *testing.T) {
 	application, _, _ := newLifecycleTestApp(t)
 
 	application.stallMu.Lock()
-	application.setStallReasonLocked("job-1", "Stalled: first", true)
-	application.setStallReasonLocked("job-1", "Stalled: second", true)
+	application.setStallReasonLocked("job-1", stallRetryable, "first", true)
+	application.setStallReasonLocked("job-1", stallRetryable, "second", true)
 	rec := application.stalls["job-1"]
 	application.stallMu.Unlock()
 
@@ -197,7 +197,7 @@ func TestSetStallReasonLocked_CreatesTheRecordItNeeds(t *testing.T) {
 		t.Fatal("no record was created, so the job is not on the stalled list and no " +
 			"re-evaluation will ever visit it")
 	}
-	if rec.reason != "Stalled: second" {
-		t.Errorf("reason = %q, want the newer text", rec.reason)
+	if rec.reason() != "Stalled: second" {
+		t.Errorf("reason = %q, want the newer text", rec.reason())
 	}
 }

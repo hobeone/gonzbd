@@ -52,10 +52,11 @@ func (k stallKind) reasonPrefix() string {
 // stallRecord is one job's parked state: why it stopped, what may lift it, and
 // whether this application paused it.
 type stallRecord struct {
-	// reason is the rendered, surfaced text, not the fault it came from.
-	reason string
-	since  time.Time
-	// kind is the most recent fault's, as reason is.
+	// fault is the most recent fault's text, unprefixed; reason renders the
+	// surfaced text from it and kind.
+	fault string
+	since time.Time
+	// kind is the most recent fault's, as fault is.
 	kind stallKind
 	// parked records that THIS application paused the job: Stall called
 	// PauseJob on a job whose intent was not already IntentPause. A job the
@@ -64,6 +65,12 @@ type stallRecord struct {
 	// the user pauses a job while Stall's pause stands, the record stays
 	// parked, and a re-evaluation that lifts it resumes it.
 	parked bool
+}
+
+// reason is the surfaced text. It is derived on every read, so it cannot
+// disagree with kind.
+func (r *stallRecord) reason() string {
+	return r.kind.reasonPrefix() + r.fault
 }
 
 // stalledJobIDs returns the parked jobs in a stable order.
@@ -81,22 +88,23 @@ func (app *Application) stalledJobIDs() []string {
 func (app *Application) noteStall(jobID string, f *storagefault.Fault, kind stallKind, claimPause bool) {
 	app.stallMu.Lock()
 	defer app.stallMu.Unlock()
-	app.setStallReasonLocked(jobID, kind.reasonPrefix()+f.Error(), claimPause)
-	app.stalls[jobID].kind = kind
+	app.setStallReasonLocked(jobID, kind, f.Error(), claimPause)
 }
 
-// setStallReasonLocked records a reason, creating the record if needed.
+// setStallReasonLocked records a fault and its kind together, creating the
+// record if needed; the surfaced reason is derived from the pair (reason).
 //
 // claimPause marks the record parked, and nothing here clears it: a record
 // Stall already parked stays ours when a later reason arrives with
 // claimPause false.
-func (app *Application) setStallReasonLocked(jobID, reason string, claimPause bool) {
+func (app *Application) setStallReasonLocked(jobID string, kind stallKind, fault string, claimPause bool) {
 	rec, ok := app.stalls[jobID]
 	if !ok {
 		rec = &stallRecord{since: time.Now()}
 		app.stalls[jobID] = rec
 	}
-	rec.reason = reason
+	rec.fault = fault
+	rec.kind = kind
 	if claimPause {
 		rec.parked = true
 	}
@@ -152,10 +160,10 @@ func (app *Application) StallReason(jobID string) StallInfo {
 	app.stallMu.Lock()
 	defer app.stallMu.Unlock()
 	rec, ok := app.stalls[jobID]
-	if !ok || rec.reason == "" {
+	if !ok {
 		return StallInfo{}
 	}
-	return StallInfo{Reason: rec.reason, Since: rec.since}
+	return StallInfo{Reason: rec.reason(), Since: rec.since}
 }
 
 // ReevaluateStalls asks the stall loop to re-evaluate every parked job now,

@@ -872,12 +872,16 @@ resume costs one read-back pass. The re-evaluation reads the intent and then
 clears the record in two steps, so a fault landing between them is cleared
 with it, and the job is left paused with no reason.
 
-**The surfaced reason says which kind a stall is (R27).** `noteStall` leads the
-reason with `stallKind.reasonPrefix()`: `Stalled (resume to retry): ` for a
+**The surfaced reason says which kind a stall is (R27).** The record stores the
+latest fault's text and kind together (`setStallReasonLocked`), and
+`stallRecord.reason()` renders the surfaced text on every read, leading it with
+`stallKind.reasonPrefix()`: `Stalled (resume to retry): ` for a
 `stallVerify` record, which waiting does not lift, and `Stalled: ` for a
 `stallRetryable` one, which the interval lifts. The queue listing's
 `stall_reason` carries the text unchanged and the UI (`QueueRow.svelte`)
-renders it as given, so the distinction has no field of its own (`TestStallReason_SaysWhetherAResumeIsNeeded`).
+renders it as given, so the distinction has no field of its own
+(`TestStallReason_SaysWhetherAResumeIsNeeded`,
+`TestStallReason_FollowsTheLatestFaultsKind`).
 
 **A re-evaluation only resumes a job THIS application parked.**
 `stallRecord.parked` is set only by `Stall` and `parkVerifyFault`, which share

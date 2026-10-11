@@ -36,7 +36,7 @@ file internal/app/app.go
 [the record drops the fault's kind]
 file internal/app/stall.go
 --- anchor
-	app.stalls[jobID].kind = kind
+	rec.kind = kind
 --- replace
-	app.stalls[jobID].kind = stallRetryable
+	rec.kind = stallRetryable
 --- end
