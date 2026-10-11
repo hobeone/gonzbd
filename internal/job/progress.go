@@ -38,7 +38,7 @@ type JobProgress struct {
 	//
 	// So a Done bit from MarkArticleWritten stands on a write, not on an
 	// fsync. What stops it outliving bytes that never reached the disk is the
-	// untrust: a failed fsync at completion (FileWriter.finish), at
+	// untrust: a failed fsync at completion (fileWriter.finish), at
 	// CloseJobHandles or at worker exit untrusts the file
 	// (Application.handleFileUntrusted), which clears its Done bits and
 	// removes its rows from the record (docs/durability-contract.md §4). What
@@ -185,7 +185,7 @@ type FileProgress struct {
 	// Both used to be persisted and fed back to the assembler on resume, so
 	// the completion truncate would not cut below what earlier runs wrote
 	// (#342). The truncate no longer derives its bound from anything the
-	// queue knows: the assembler's FileWriter.finish trims to the end of the
+	// queue knows: the assembler's fileWriter.finish trims to the end of the
 	// last range it owns, and a restart's verifier to the end of the last
 	// verified row, so it needs no seed. The write cursor was only ever a
 	// coalescing hint, and went with the assembler's write cache (#311, #353).

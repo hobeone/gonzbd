@@ -13,7 +13,7 @@ import (
 // The leading bytes are on disk while the article is rolled back. withWriteError
 // cannot produce this shape — it writes nothing.
 func withShortWrite(n int) fileWriterOpt {
-	return func(w *FileWriter) {
+	return func(w *fileWriter) {
 		orig := w.writeAt
 		fired := false
 		w.writeAt = func(p []byte, off int64) (int, error) {
@@ -50,7 +50,7 @@ func TestFileWriter_ShortWriteLeavesNoClaimOverPartialBytes(t *testing.T) {
 	w := newTestFileWriter(t, withShortWrite(50))
 
 	w.admitAccepted(0)
-	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{0xAA}, 100)); err == nil {
+	if err := w.accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{0xAA}, 100)); err == nil {
 		t.Fatal("Accept returned nil error after a short write; the fault must reach the caller")
 	}
 

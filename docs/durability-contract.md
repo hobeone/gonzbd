@@ -142,8 +142,8 @@ for the fsync (§2), and a restart does not trust a row it has not read (§3).
 | Tier | Component | Responsibility | Synchronization |
 |---|---|---|---|
 | **Ingest** | `Assembler.WriteArticle` and the control-message senders | Enqueue `WriteRequest` items into a bounded channel (`reqs`, cap 2048). | Channel send with `select` on `stopCh` and `ctx.Done()`. `wg.Add(1)` tracks every in-flight sender so `Stop()` drains cleanly. |
-| **Worker** | `Assembler.worker` goroutine | Owns the open-file map and every `FileWriter`. Routes requests, counts parts, checks disk space, finishes completed files. | Single goroutine (X1). No locks over file handles. |
-| **Writer** | `assembler.FileWriter` (one per open file) | Owns one file's handle, its writes, its owned byte ranges, its completion finish and its close-time fsync. | Worker-owned; never touched from another goroutine. |
+| **Worker** | `Assembler.worker` goroutine | Owns the open-file map and every `fileWriter`. Routes requests, counts parts, checks disk space, finishes completed files. | Single goroutine (X1). No locks over file handles. |
+| **Writer** | `assembler.fileWriter` (one per open file) | Owns one file's handle, its writes, its owned byte ranges, its completion finish and its close-time fsync. | Worker-owned; never touched from another goroutine. |
 | **Recorder** | `app.recorder` (`internal/app/record.go`) | Buffers one row per written article and one state per dirty file, and writes them through `Store.ApplyRecord`. | `mu` over the buffers; `wmu` serialises its writes (§1). |
 | **Verifier** | `verifyJobFiles` (`internal/app/verify.go`), called from `appResidency.Hydrate` and `Application.verifyRetry` | Reads every recorded article of an incomplete file back from the device before the job's content is attached. | Runs on the hydrating goroutine; touches no job and no row itself. |
 | **Fault routing** | `internal/storagefault`, `Application.Stall` / `Fail` | Turns a storage error into a stalled or failed job with a reason a user can act on — never into a failed article. | — |
@@ -244,7 +244,7 @@ The completion trigger is `processRequest`: `partsWritten >= TotalParts`, where
 excludes articles a restart verified. `Assembler.finalizeFile` then, on the
 worker and on the writing handle:
 
-1. `FileWriter.finish` → `fsutil.ShrinkAndSync`: fsync; if the file is longer
+1. `fileWriter.finish` → `fsutil.ShrinkAndSync`: fsync; if the file is longer
    than `ownedRanges.maxEnd` — the end of the last byte range this writer
    claimed or was seeded with (§5) — and that end is positive, truncate to it;
    fsync again. It never grows a file (S6), and a file with no owned range is
@@ -549,10 +549,10 @@ callers in `internal/assembler/assembler.go`):
 | `syncAndCloseAll`, at worker exit | the close-time fsync or close | the fault is not routed: there is no caller left to answer |
 
 **A failed close-time fsync also rolls back the articles it covered.** A
-`FileWriter` keeps `unsynced`, the articles written since the last successful
+`fileWriter` keeps `unsynced`, the articles written since the last successful
 `Sync`. A failed `Sync` moves every one into `poisoned` (`poisonSync`), and
 `releasePoisoned` returns them to Outstanding through `OnArticlesUnwritten`. In
-production `FileWriter.Sync` fails only inside `syncAndClose`, its one
+production `fileWriter.sync` fails only inside `syncAndClose`, its one
 production call (`git grep -n 'w\.Sync()' -- 'internal/assembler/*.go'
 ':!*_test.go'` returns 1 line), which closes the writer right after, so the
 writer and its owned ranges are discarded with it. The file is then untrusted
@@ -568,7 +568,7 @@ the only one.
 
 ### 5. Overlapping articles: first writer wins, by byte range
 
-`FileWriter.owned` (`ownedRanges`, `internal/assembler/ranges.go`) is the
+`fileWriter.owned` (`ownedRanges`, `internal/assembler/ranges.go`) is the
 single owner of which article wrote which bytes of a file.
 
 - **Within an episode, a range is claimed only after its write returned nil**
@@ -707,7 +707,7 @@ incomplete (#349, #387).
 
 | Event | Behaviour |
 |---|---|
-| Write fault | The part rolls back (`FileWriter.fail`), `OnArticlesUnwritten` clears the article's Emitted bit, `OnWriteFault` → Stall or Fail. No row is written. |
+| Write fault | The part rolls back (`fileWriter.fail`), `OnArticlesUnwritten` clears the article's Emitted bit, `OnWriteFault` → Stall or Fail. No row is written. |
 | Completion fault | §4: untrusted, no tombstone, `FileInfo` dropped, Stall or Fail. On resume the file's articles are Outstanding and are refetched. |
 | Pause, low disk, server penalty | Nothing writes the record; no hook. |
 | Reload (`ReloadDownloader`) | Stop the old downloader; `setCompletions(nil)`, which returns once every buffered result has reached the assembler's queue; `Assembler.Quiesce`, answered once everything queued ahead of it has been processed and its callbacks have run; `ClearEmittedForReload(false)` for every job not admitted to post-processing; start the new downloader, paused first if the application is paused, and swap it in, both under `app.mu`. An Emitted bit still set after the quiesce covers only an article whose bytes never reached `pwrite`. If the quiesce fails, the clear is skipped and those articles stay Emitted until the next start. |
@@ -858,7 +858,7 @@ startup for logging; it does not gate pre-allocation.
 ## Write path
 
 Every accepted article is written synchronously: `acceptArticle` range-checks
-it and checks its owned range (§5), and `FileWriter.Accept` calls `writeOne`,
+it and checks its owned range (§5), and `fileWriter.accept` calls `writeOne`,
 which issues one `WriteAt` and, only if it returned without error, claims the
 range and notes the article in `unsynced`. `acceptArticle` then calls
 `OnArticleWritten` with the range and the decoder's CRC. There is no
@@ -885,7 +885,7 @@ including every failure path.
 - **Per-writer `seenDone` / `seenFailed`**: dedup by `ArtIdx`, membership-only
   (R12). A duplicate of an accepted article releases its buffer and returns;
   re-writing it would be a second `WriteAt` over the same range. Byte ranges
-  are owned by `FileWriter.owned`, a different index for a different question:
+  are owned by `fileWriter.owned`, a different index for a different question:
   not "has this article been seen" but "who wrote this byte range" (§5).
 - A write that **fails** moves its article out of `seenDone`, gives its part
   back (`rollbackPart`, which `fail` calls) and does **not** put it in
@@ -1045,7 +1045,7 @@ are bounded by the flush cadence and by file size, as below.
 | Component | Bound / strategy |
 |---|---|
 | Write channel (`reqs`) | 2048 requests (`defaultQueueSize`). At 128 KiB articles, ~256 MB worst-case buffered; backpressures the downloader when disk I/O is slow. |
-| `FileWriter.unsynced` | one `int32` per article written to the file in its open episode: only a successful `Sync` clears it, and the only `Sync` is at close. |
+| `fileWriter.unsynced` | one `int32` per article written to the file in its open episode: only a successful `Sync` clears it, and the only `Sync` is at close. |
 | Recorder buffers | one row per article written since the last flush, and one state per dirty file. A flush that keeps failing re-merges its snapshot, so they grow while SQLite refuses writes. |
 | `JobProgress.written` | one row per written or verified article of a file whose CRC is not yet settled; released at settle or untrust. |
 | `internalFileComplete` | cap 128. A full channel moves a Resumed completion to its own goroutine (§3). |

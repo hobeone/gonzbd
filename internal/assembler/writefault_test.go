@@ -35,7 +35,7 @@ func newFailingWriteFile(t *testing.T, err error) (*openFile, string) {
 // TestWriteFault_IsNotCountedTowardCompletion pins the half of the defect that
 // loses data outright.
 //
-// acceptArticle logged the fault from FileWriter.Accept and dropped it, and
+// acceptArticle logged the fault from fileWriter.accept and dropped it, and
 // handleSuccessArticle had already committed to returning true, so
 // processRequest ran f.partsWritten++ regardless. The file therefore reached
 // TotalParts and fired OnFileComplete over bytes that never landed — a file
@@ -111,7 +111,7 @@ func TestWriteFault_IsRoutedOutOfTheAssembler(t *testing.T) {
 // TestNoteWriteFault_KeepsAnAlreadyClassifiedFault pins the one decision
 // noteWriteFault makes on its own.
 //
-// FileWriter returns a *storagefault.Fault that already carries the op and
+// fileWriter returns a *storagefault.Fault that already carries the op and
 // path the failure actually happened on. Re-running Classify over it would
 // relabel every one of them "write" against this file's path, so a fault
 // raised on a sync or a truncate would be reported as a write fault — R27 asks
