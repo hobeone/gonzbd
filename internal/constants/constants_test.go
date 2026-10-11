@@ -52,6 +52,28 @@ func TestPriorityOrdering(t *testing.T) {
 	}
 }
 
+func TestPriorityIsConcrete(t *testing.T) {
+	tests := map[Priority]bool{
+		RepairPriority:  true,
+		ForcePriority:   true,
+		HighPriority:    true,
+		NormalPriority:  true,
+		LowPriority:     true,
+		PausedPriority:  false,
+		StopPriority:    false,
+		DefaultPriority: false,
+		Priority(7):     false,
+		Priority(-3):    false,
+	}
+	for p, want := range tests {
+		t.Run(p.String(), func(t *testing.T) {
+			if got := p.IsConcrete(); got != want {
+				t.Fatalf("%s.IsConcrete() = %v, want %v", p, got, want)
+			}
+		})
+	}
+}
+
 func TestPriorityString(t *testing.T) {
 	tests := map[Priority]string{
 		RepairPriority:  "Repair",

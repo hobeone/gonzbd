@@ -63,20 +63,29 @@ func TestIntParam(t *testing.T) {
 
 func TestPriorityParam(t *testing.T) {
 	tests := []struct {
-		name   string
-		urlStr string
-		want   constants.Priority
+		name    string
+		urlStr  string
+		want    constants.Priority
+		wantErr bool
 	}{
-		{"valid priority", "/api?priority=2", constants.Priority(2)},
-		{"missing priority", "/api", constants.DefaultPriority},
-		{"invalid priority", "/api?priority=abc", constants.NormalPriority},
+		{"valid priority", "/api?priority=2", constants.ForcePriority, false},
+		{"Repair", "/api?priority=3", constants.RepairPriority, false},
+		{"Paused", "/api?priority=-2", constants.PausedPriority, false},
+		{"explicit Default", "/api?priority=-100", constants.DefaultPriority, false},
+		{"missing priority", "/api", constants.DefaultPriority, false},
+		{"non-number", "/api?priority=abc", 0, true},
+		{"Stop", "/api?priority=-4", 0, true},
+		{"undefined", "/api?priority=-3", 0, true},
+		// 258 truncates to int8 2, Force: only the range check refuses it.
+		{"out of int8 range", "/api?priority=258", 0, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", tt.urlStr, nil)
-			if got := priorityParam(req); got != tt.want {
-				t.Errorf("priorityParam() = %v; want %v", got, tt.want)
+			got, err := priorityParam(req)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Errorf("priorityParam() = (%v, %v); want (%v, error %v)", got, err, tt.want, tt.wantErr)
 			}
 		})
 	}

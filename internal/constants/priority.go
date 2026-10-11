@@ -18,9 +18,9 @@ import "strconv"
 
 // Priority is the scheduling priority of a job in the download queue. Higher
 // numeric values are scheduled before lower ones. Values are not contiguous —
-// PausedPriority and StopPriority are sentinels used internally rather than
-// "one step lower" priorities, and DefaultPriority is a sentinel meaning
-// "inherit the priority configured for this job's category".
+// PausedPriority and StopPriority are requests rather than "one step lower"
+// priorities, and DefaultPriority is a sentinel meaning "inherit the priority
+// configured for this job's category" (IsConcrete).
 //
 // Use the named constants below; do not construct Priority values from raw
 // integers in callers.
@@ -51,24 +51,27 @@ const (
 	// LowPriority schedules behind NormalPriority work.
 	LowPriority Priority = -1
 
-	// PausedPriority marks a job as paused; the queue will not dispatch
-	// articles for it until it is unpaused.
+	// PausedPriority is a request rather than a priority a job holds:
+	// config.ResolvePriority turns it into the priority the job's category
+	// resolves to plus a pause of the job.
 	PausedPriority Priority = -2
 
-	// StopPriority is an internal sentinel used to halt processing of a
-	// job (used during shutdown / removal flows).
+	// StopPriority is SABnzbd's request to end a job. gonzbd does not
+	// implement it: the API refuses it as a requested priority.
 	StopPriority Priority = -4
 
 	// DefaultPriority is a sentinel meaning "inherit the priority
-	// configured for this job's category". It must be resolved to a
-	// concrete priority before the job is enqueued.
+	// configured for this job's category". config.ResolvePriority resolves
+	// it to a concrete priority before a job holds it.
 	DefaultPriority Priority = -100
 )
 
-// IsValid reports whether p is one of the defined Priority sentinels.
-func (p Priority) IsValid() bool {
+// IsConcrete reports whether p is a priority a job can hold: Repair, Force,
+// High, Normal or Low. Paused, Stop, Default and every undefined value are
+// not, and Dispatcher.SetPriority refuses them.
+func (p Priority) IsConcrete() bool {
 	switch p {
-	case RepairPriority, ForcePriority, HighPriority, NormalPriority, LowPriority, PausedPriority, StopPriority, DefaultPriority:
+	case RepairPriority, ForcePriority, HighPriority, NormalPriority, LowPriority:
 		return true
 	default:
 		return false

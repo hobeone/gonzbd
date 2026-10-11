@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -75,7 +74,7 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	// Resolve sentinel values from the matching category config.
 	pp := opts.PP
 	script := opts.Script
-	priority := config.ResolvePriority(categories, opts.Category, opts.Priority)
+	priority, pause := config.ResolvePriority(categories, opts.Category, opts.Priority)
 	ppReason := "explicit"
 	cat := config.FindCategory(categories, opts.Category)
 	if pp == types.PPInherit {
@@ -137,7 +136,9 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 			_ = j.SetFileFetchPolicy(fi, job.FetchIfNeeded)
 		}
 	}
-	if priority == constants.PausedPriority {
+	if pause {
+		// IntentPause is a declared intent and a new job's intent is not
+		// latched, the two refusals SetIntent has.
 		_ = j.SetIntent(job.IntentPause)
 	}
 

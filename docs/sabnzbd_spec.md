@@ -282,6 +282,11 @@ DEFAULT_PRIORITY = -100 # Inherit category default
 
 GoNZBD keeps these values but not Force's pause bypass: a Force job sorts
 first in dispatch order and obeys the global pause like any other job.
+A job holds only Repair through Low. Default and Paused are requests: Default
+takes the category's priority, then the Default category's, then Normal, and
+Paused pauses the job, which takes what Default would. GoNZBD does not
+implement Stop: `priority=` on `addfile`, `addlocalfile` and `addurl`, and
+`value2` on `name=priority`, answer 400 for Stop or an undefined value.
 GoNZBD's queue (`mode=queue` slots and `index`) and its dispatch both follow
 priority descending, then queue position (`docs/job-lifecycle.md` § Ordering).
 
@@ -863,7 +868,7 @@ Error:
 | `queue` + `name=rename` | `value=nzo_id`, `value2=name`, `value3=password` | status | Rename job. The name is the job's download directory, so it is sanitised with ingest's folder-name sanitiser (not its spam-prefix cleanup) and made unique (another queued job's name, or one on disk, gets a `.1` suffix); a name that trims to nothing, `.` or `..` answers 400; a job whose download has begun answers 409, because the rename moves no files |
 | `queue` + `name=pause` | `value=nzo_id` | status | Pause specific job |
 | `queue` + `name=resume` | `value=nzo_id` | status | Resume specific job |
-| `queue` + `name=priority` | `value=nzo_id`, `value2=priority` | priority int | Change priority |
+| `queue` + `name=priority` | `value=nzo_id`, `value2=priority` | status, nzo_ids, position | Change priority. Default (-100) resolves through the job's category and Paused (-2) pauses the job, which takes its category's priority, as at add (§4.2); Stop (-4) and undefined values answer 400. `position` is the job's index in the queue listing after the change |
 | `queue` + `name=sort` | `value=column`, `dir=asc/desc` | status | Sort queue — **NOT IMPLEMENTED** |
 | `queue` + `name=change_complete_action` | `value=action` | status | Post-queue action |
 | `queue` + `name=change_cat` | `value=nzo_id`, `value2=category` | status | Change category |

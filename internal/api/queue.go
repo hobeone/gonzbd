@@ -874,33 +874,78 @@ func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, verb str
 }
 
 // queuePriority handles name=priority. SABnzbd convention:
-// value = nzo_id, value2 = numeric priority.
+// value = nzo_id, value2 = numeric priority. The response's position is the
+// job's index in the queue listing after the change.
 func (s *Server) queuePriority(w http.ResponseWriter, r *http.Request) {
 	nzoID, ok := s.requireParam(w, r, "value", "nzo_id")
 	if !ok {
 		return
 	}
-	if _, ok := s.requireParam(w, r, "value2", "priority"); !ok {
+	raw, ok := s.requireParam(w, r, "value2", "priority")
+	if !ok {
 		return
 	}
-	pri := constants.Priority(int8(intParam(r, "value2"))) //nolint:gosec // G115: priority values fit in int8
-	var err error
-	if s.dispatcher != nil {
-		err = s.dispatcher.SetPriority(nzoID, int(pri))
-	} else {
+	requested, err := parsePriority(raw)
+	if err != nil {
+		s.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if s.dispatcher == nil {
 		s.respondError(w, http.StatusInternalServerError, "dispatcher not wired")
 		return
 	}
-	if err != nil {
-		s.respondError(w, http.StatusNotFound, err.Error())
+	row, ok := s.dispatcher.Row(nzoID)
+	if !ok {
+		s.respondError(w, http.StatusNotFound, fmt.Sprintf("set priority %s: %s", nzoID, dispatch.ErrNotFound))
 		return
 	}
-	s.log.Info("job priority changed", "job", nzoID, "priority", pri.String())
+	pri, pause, err := s.applyPriority(nzoID, row.Header.Category, requested)
+	if err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, dispatch.ErrNotFound) {
+			code = http.StatusNotFound
+		}
+		s.respondError(w, code, err.Error())
+		return
+	}
+	s.log.Info("job priority changed", "job", nzoID, "requested", requested.String(), "priority", pri.String(), "paused", pause)
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":   true,
 		"nzo_ids":  []string{nzoID},
-		"position": 0,
+		"position": s.listingPosition(nzoID),
 	})
+}
+
+// applyPriority gives the job what config.ResolvePriority makes of requested
+// under category, and pauses it when the request asks for that, as ingest
+// does for a new job. It returns the stored priority and whether it paused.
+func (s *Server) applyPriority(id, category string, requested constants.Priority) (constants.Priority, bool, error) {
+	var cats []config.CategoryConfig
+	if s.config != nil {
+		cats = s.config.GetCategories()
+	}
+	pri, pause := config.ResolvePriority(cats, category, requested)
+	if err := s.dispatcher.SetPriority(id, int(pri)); err != nil {
+		return pri, false, err
+	}
+	if pause {
+		if err := s.dispatcher.PauseJob(id); err != nil {
+			return pri, false, err
+		}
+	}
+	return pri, pause, nil
+}
+
+// listingPosition is the job's index in the unfiltered queue listing
+// (Dispatcher.List, which is in dispatch order), or -1 — SABnzbd's answer for
+// an unknown job — when it is no longer listed.
+func (s *Server) listingPosition(id string) int {
+	for i, row := range s.dispatcher.List() {
+		if row.ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // queueChangeOpts handles name=change_opts. SABnzbd convention:
@@ -964,8 +1009,12 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 		_ = s.dispatcher.SetPP(nzoID, resolvedCat.PP)
 		_ = s.dispatcher.SetScript(nzoID, resolvedCat.Script)
 		// Resolved as ingest resolves it, so a category at DefaultPriority
-		// stores the inherited rank rather than -100.
-		_ = s.dispatcher.SetPriority(nzoID, int(config.ResolvePriority(cats, cat, constants.DefaultPriority)))
+		// stores the inherited rank rather than -100, and one at Paused
+		// pauses the job.
+		if _, _, err := s.applyPriority(nzoID, cat, constants.DefaultPriority); err != nil {
+			s.respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		row, _ := s.dispatcher.Row(nzoID)
 		s.log.Info("job category changed", "job", nzoID,
 			"cat", row.Header.Category, "pp", row.Header.PP, "script", row.Header.Script, "priority", row.Header.Priority)
@@ -1114,13 +1163,18 @@ func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	priority, err := priorityParam(r)
+	if err != nil {
+		s.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	opts := types.FetchOptions{
 		Category: formValue(r, "cat"),      //nolint:gosec // body size bounded by MaxBytesReader middleware
 		Password: formValue(r, "password"), //nolint:gosec // body size bounded by MaxBytesReader middleware
 		NzbName:  formValue(r, "nzbname"),  //nolint:gosec // body size bounded by MaxBytesReader middleware
 		PP:       ppParam(r),
 		Script:   sanitizeScriptParam(formValue(r, "script")), //nolint:gosec // body size bounded by MaxBytesReader middleware
-		Priority: priorityParam(r),
+		Priority: priority,
 	}
 	ids, err := s.grabber.Fetch(r.Context(), urlStr, opts)
 	if err != nil {
@@ -1215,6 +1269,11 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 // or basename of a local path). It writes a JSON response directly and is
 // the shared implementation of modeAddFile and modeAddLocalFile.
 func (s *Server) enqueueNZBData(w http.ResponseWriter, r *http.Request, data []byte, filename string) {
+	priority, err := priorityParam(r)
+	if err != nil {
+		s.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	parsed, err := nzb.Parse(bytes.NewReader(data))
 	if err != nil {
 		s.respondError(w, http.StatusBadRequest, "parse NZB: "+err.Error())
@@ -1227,7 +1286,7 @@ func (s *Server) enqueueNZBData(w http.ResponseWriter, r *http.Request, data []b
 		Script:   sanitizeScriptParam(formValue(r, "script")), //nolint:gosec // body size bounded by MaxBytesReader middleware
 		Password: formValue(r, "password"),                    //nolint:gosec // body size bounded by MaxBytesReader middleware
 		PP:       ppParam(r),
-		Priority: priorityParam(r),
+		Priority: priority,
 	}
 	j, hdr, err := app.BuildIngestJob(s.config, parsed, filename, opts, s.log)
 	if err != nil {
