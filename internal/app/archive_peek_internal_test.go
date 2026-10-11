@@ -328,7 +328,7 @@ func TestPeek_SkipsWhenItShould(t *testing.T) {
 		{name: "action off", action: unwanted.ActionOff, files: []peekFile{{"x.rar", rar}}},
 		{name: "a failed article in the file", action: unwanted.ActionPause, files: []peekFile{{"x.rar", rar}},
 			setup: func(t *testing.T, a *peekApp) {
-				if err := a.j.MarkArticleFailed(0); err != nil {
+				if err := a.j.MarkArticleFailed(0, job.WholeArticle); err != nil {
 					t.Fatalf("MarkArticleFailed: %v", err)
 				}
 			}},

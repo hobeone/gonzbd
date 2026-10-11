@@ -44,7 +44,7 @@ func ackFailedIDs(t *testing.T, j *job.Job, m *job.Manifest, msgIDs []string) {
 	t.Helper()
 	for _, id := range msgIDs {
 		idx := int(artIdxForID(t, m, id))
-		if err := j.MarkArticleFailed(idx); err != nil {
+		if err := j.MarkArticleFailed(idx, job.WholeArticle); err != nil {
 			t.Fatalf("MarkArticleFailed: %v", err)
 		}
 	}

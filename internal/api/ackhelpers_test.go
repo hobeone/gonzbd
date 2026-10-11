@@ -97,7 +97,7 @@ func ackFailed(t *testing.T, disp *dispatch.Dispatcher, jobID string, msgIDs ...
 		t.Fatalf("ackFailed: job %s not in dispatcher", jobID)
 	}
 	for _, idx := range idxs {
-		if err := j.MarkArticleFailed(int(idx)); err != nil {
+		if err := j.MarkArticleFailed(int(idx), job.WholeArticle); err != nil {
 			t.Fatalf("ackFailed: MarkArticleFailed(%d): %v", idx, err)
 		}
 	}

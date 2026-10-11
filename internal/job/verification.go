@@ -70,7 +70,7 @@ func (j *Job) InstallFileVerification(v FileVerification) (dropped int, err erro
 		p.files[fi].Complete = true
 	}
 	for _, a := range v.Failed {
-		_ = j.markArticleFailed(int(a), wholeArticle)
+		_ = j.markArticleFailed(int(a), WholeArticle)
 	}
 	if v.Complete || v.Settle {
 		settleFileCRC(m, p, fi)

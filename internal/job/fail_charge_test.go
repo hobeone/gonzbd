@@ -1,6 +1,8 @@
 package job
 
 import (
+	"fmt"
+	"math"
 	"testing"
 )
 
@@ -42,22 +44,23 @@ func checkFigures(t *testing.T, j *Job, wantFailed int64) {
 	}
 }
 
-// TestMarkArticleFailedUncovered_ChargesTheUncoveredBytes pins #432 at the
+// TestMarkArticleFailedCharge_ChargesTheUncoveredBytes pins #432 at the
 // owner of the figure: a failure reported with an uncovered byte count charges
 // that count, capped at the article's manifest size, and the rest of the
-// article counts as downloaded.
-func TestMarkArticleFailedUncovered_ChargesTheUncoveredBytes(t *testing.T) {
+// article counts as downloaded. WholeArticle charges the whole size.
+func TestMarkArticleFailedCharge_ChargesTheUncoveredBytes(t *testing.T) {
 	cases := map[string]struct{ uncovered, want int64 }{
 		"none":               {0, 0},
 		"some":               {30, 30},
 		"all":                {100, 100},
 		"more than its size": {250, 100},
+		"whole article":      {WholeArticle, 100},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			j := threeArticleJob(t)
-			if err := j.MarkArticleFailedUncovered(2, tc.uncovered); err != nil {
-				t.Fatalf("MarkArticleFailedUncovered: %v", err)
+			if err := j.MarkArticleFailed(2, tc.uncovered); err != nil {
+				t.Fatalf("MarkArticleFailed: %v", err)
 			}
 			if !j.Progress().ArticleFailed(2) {
 				t.Fatal("article 2 is not failed")
@@ -74,25 +77,27 @@ func TestMarkArticleFailedUncovered_ChargesTheUncoveredBytes(t *testing.T) {
 	}
 }
 
-// TestMarkArticleFailedUncovered_RefusesANegativeCount pins that a negative
-// count is an error and fails nothing.
-func TestMarkArticleFailedUncovered_RefusesANegativeCount(t *testing.T) {
-	j := threeArticleJob(t)
-	if err := j.MarkArticleFailedUncovered(2, -1); err == nil {
-		t.Error("MarkArticleFailedUncovered(2, -1): nil error")
-	}
-	if j.Progress().ArticleFailed(2) {
-		t.Error("article 2 is failed after a refused call")
+// TestMarkArticleFailedCharge_RefusesANegativeCount pins that a negative
+// charge other than WholeArticle is an error and fails nothing.
+func TestMarkArticleFailedCharge_RefusesANegativeCount(t *testing.T) {
+	for _, charge := range []int64{WholeArticle - 1, math.MinInt64} {
+		j := threeArticleJob(t)
+		if err := j.MarkArticleFailed(2, charge); err == nil {
+			t.Errorf("MarkArticleFailed(2, %d): nil error", charge)
+		}
+		if j.Progress().ArticleFailed(2) {
+			t.Errorf("article 2 is failed after MarkArticleFailed(2, %d) was refused", charge)
+		}
 	}
 }
 
-// TestMarkArticleFailedUncovered_EvictedChargeHoldsAtHydration pins the
+// TestMarkArticleFailedCharge_EvictedChargeHoldsAtHydration pins the
 // evicted branch: the bits are set without the manifest, and the charge has to
 // travel with them, or the hydration's recompute charges the whole article.
-func TestMarkArticleFailedUncovered_EvictedChargeHoldsAtHydration(t *testing.T) {
+func TestMarkArticleFailedCharge_EvictedChargeHoldsAtHydration(t *testing.T) {
 	j, m := evictedThreeArticleJob(t)
-	if err := j.MarkArticleFailedUncovered(2, 30); err != nil {
-		t.Fatalf("MarkArticleFailedUncovered on an evicted job: %v", err)
+	if err := j.MarkArticleFailed(2, 30); err != nil {
+		t.Fatalf("MarkArticleFailed on an evicted job: %v", err)
 	}
 	if err := j.RestoreContent(m); err != nil {
 		t.Fatalf("RestoreContent: %v", err)
@@ -100,14 +105,14 @@ func TestMarkArticleFailedUncovered_EvictedChargeHoldsAtHydration(t *testing.T) 
 	checkFigures(t, j, 30)
 }
 
-// TestMarkArticleFailedUncovered_ResetForgetsTheCharge pins that the charge
+// TestMarkArticleFailedCharge_ResetForgetsTheCharge pins that the charge
 // leaves with the failed bit: a reload that returns the article to Outstanding
 // unwinds exactly what it charged, and a later full failure of the same
 // article charges its whole size.
-func TestMarkArticleFailedUncovered_ResetForgetsTheCharge(t *testing.T) {
+func TestMarkArticleFailedCharge_ResetForgetsTheCharge(t *testing.T) {
 	j := threeArticleJob(t)
-	if err := j.MarkArticleFailedUncovered(2, 30); err != nil {
-		t.Fatalf("MarkArticleFailedUncovered: %v", err)
+	if err := j.MarkArticleFailed(2, 30); err != nil {
+		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 
 	// resetForReload maintains the figures itself, ahead of the recompute
@@ -126,26 +131,26 @@ func TestMarkArticleFailedUncovered_ResetForgetsTheCharge(t *testing.T) {
 		t.Errorf("BytesDownloaded after the reset = %d, want 200 (articles 0 and 1)", downloaded)
 	}
 
-	if err := j.MarkArticleFailed(2); err != nil {
+	if err := j.MarkArticleFailed(2, WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 	checkFigures(t, j, 100)
 }
 
-// TestMarkArticleFailedUncovered_SecondFailureKeepsTheFirstCharge pins that a
+// TestMarkArticleFailedCharge_SecondFailureKeepsTheFirstCharge pins that a
 // charge is recorded only by the failure that set the failed bit. An article
 // already failed whole, whose redelivery is then refused for overlap, keeps
 // its full charge: a reduced one recorded afterwards would make recompute
 // disagree with the live figure, and a reset would subtract less than was
 // added.
-func TestMarkArticleFailedUncovered_SecondFailureKeepsTheFirstCharge(t *testing.T) {
+func TestMarkArticleFailedCharge_SecondFailureKeepsTheFirstCharge(t *testing.T) {
 	t.Run("resident", func(t *testing.T) {
 		j := threeArticleJob(t)
-		if err := j.MarkArticleFailed(2); err != nil {
+		if err := j.MarkArticleFailed(2, WholeArticle); err != nil {
 			t.Fatalf("MarkArticleFailed: %v", err)
 		}
-		if err := j.MarkArticleFailedUncovered(2, 10); err != nil {
-			t.Fatalf("MarkArticleFailedUncovered: %v", err)
+		if err := j.MarkArticleFailed(2, 10); err != nil {
+			t.Fatalf("MarkArticleFailed: %v", err)
 		}
 		checkFigures(t, j, 100)
 
@@ -164,11 +169,11 @@ func TestMarkArticleFailedUncovered_SecondFailureKeepsTheFirstCharge(t *testing.
 	})
 	t.Run("evicted", func(t *testing.T) {
 		j, m := evictedThreeArticleJob(t)
-		if err := j.MarkArticleFailed(2); err != nil {
+		if err := j.MarkArticleFailed(2, WholeArticle); err != nil {
 			t.Fatalf("MarkArticleFailed: %v", err)
 		}
-		if err := j.MarkArticleFailedUncovered(2, 10); err != nil {
-			t.Fatalf("MarkArticleFailedUncovered: %v", err)
+		if err := j.MarkArticleFailed(2, 10); err != nil {
+			t.Fatalf("MarkArticleFailed: %v", err)
 		}
 		if err := j.RestoreContent(m); err != nil {
 			t.Fatalf("RestoreContent: %v", err)
@@ -181,8 +186,8 @@ func TestMarkArticleFailedUncovered_SecondFailureKeepsTheFirstCharge(t *testing.
 // when the original's are dropped.
 func TestClone_DoesNotShareTheChargeMap(t *testing.T) {
 	j := threeArticleJob(t)
-	if err := j.MarkArticleFailedUncovered(2, 30); err != nil {
-		t.Fatalf("MarkArticleFailedUncovered: %v", err)
+	if err := j.MarkArticleFailed(2, 30); err != nil {
+		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 	cp := j.progress.clone()
 	j.progress.clearDone(0, 2)
@@ -191,11 +196,11 @@ func TestClone_DoesNotShareTheChargeMap(t *testing.T) {
 	}
 }
 
-// TestMarkArticleFailedUncovered_ReleasesRecoveryOnlyForACharge pins that a
+// TestMarkArticleFailedCharge_ReleasesRecoveryOnlyForACharge pins that a
 // failure charging nothing leaves held recovery volumes held: par2 has nothing
 // to repair, so fetching them spends bandwidth for nothing. One that charges a
 // byte releases them, as any permanent failure does.
-func TestMarkArticleFailedUncovered_ReleasesRecoveryOnlyForACharge(t *testing.T) {
+func TestMarkArticleFailedCharge_ReleasesRecoveryOnlyForACharge(t *testing.T) {
 	newFixture := func(t *testing.T) *Job {
 		t.Helper()
 		m := NewManifest([]JobFile{
@@ -220,11 +225,160 @@ func TestMarkArticleFailedUncovered_ReleasesRecoveryOnlyForACharge(t *testing.T)
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			j := newFixture(t)
-			if err := j.MarkArticleFailedUncovered(0, tc.uncovered); err != nil {
-				t.Fatalf("MarkArticleFailedUncovered: %v", err)
+			if err := j.MarkArticleFailed(0, tc.uncovered); err != nil {
+				t.Fatalf("MarkArticleFailed: %v", err)
 			}
 			if got := j.progress.files[1].Fetch; got != tc.want {
 				t.Errorf("recovery volume fetch policy = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCheckEarlyAbort_IgnoresARefusalThatChargesNothing pins #844: a refused
+// article whose whole range other articles wrote is charged nothing, so it is
+// resolved but not failed for the early-abort rate. A job whose every failure
+// is such a refusal loses no bytes and must not be aborted as hopeless, on the
+// live path, after a recompute, and when the failures land while the job is
+// evicted and are folded in at hydration. A charge of one byte fails each
+// article for the rate, which proves the fixture reaches the threshold.
+func TestCheckEarlyAbort_IgnoresARefusalThatChargesNothing(t *testing.T) {
+	const written, refused = 2, earlyAbortSample
+	newJob := func(t *testing.T) (*Job, *Manifest) {
+		t.Helper()
+		arts := make([]JobArticle, written+refused)
+		for i := range arts {
+			arts[i] = JobArticle{ID: fmt.Sprintf("<r%d@x>", i), Bytes: 100, Number: i + 1}
+		}
+		m := NewManifest([]JobFile{{Subject: "data.bin", Bytes: int64(100 * len(arts)), Articles: arts}})
+		j := New("refused", "refused", PolicyFromPP(3))
+		if err := j.AttachContent(m); err != nil {
+			t.Fatalf("AttachContent: %v", err)
+		}
+		for i := range written {
+			markWritten(t, j, i)
+		}
+		return j, m
+	}
+	failAll := func(t *testing.T, j *Job, charge int64) {
+		t.Helper()
+		for i := written; i < written+refused; i++ {
+			if err := j.MarkArticleFailed(i, charge); err != nil {
+				t.Fatalf("MarkArticleFailed(%d, %d): %v", i, charge, err)
+			}
+		}
+	}
+	paths := map[string]func(t *testing.T, charge int64) *Job{
+		"live": func(t *testing.T, charge int64) *Job {
+			j, _ := newJob(t)
+			failAll(t, j, charge)
+			return j
+		},
+		"recomputed": func(t *testing.T, charge int64) *Job {
+			j, _ := newJob(t)
+			failAll(t, j, charge)
+			j.contentMu.Lock()
+			j.progress.recompute(j.manifest)
+			j.contentMu.Unlock()
+			return j
+		},
+		"failed while evicted": func(t *testing.T, charge int64) *Job {
+			j, m := newJob(t)
+			j.Evict()
+			failAll(t, j, charge)
+			if err := j.RestoreContent(m); err != nil {
+				t.Fatalf("RestoreContent: %v", err)
+			}
+			return j
+		},
+	}
+	for name, run := range paths {
+		t.Run(name, func(t *testing.T) {
+			for _, tc := range []struct {
+				charge     int64
+				wantFailed int
+				wantAbort  bool
+			}{{0, 0, false}, {1, refused, true}} {
+				j := run(t, tc.charge)
+				if got := j.Progress().ArticlesFailed(); got != tc.wantFailed {
+					t.Errorf("charge %d: ArticlesFailed = %d, want %d", tc.charge, got, tc.wantFailed)
+				}
+				if got := j.CheckEarlyAbort(); got != tc.wantAbort {
+					t.Errorf("charge %d: CheckEarlyAbort = %v after %d refusals each charged %d bytes, want %v",
+						tc.charge, got, refused, tc.charge, tc.wantAbort)
+				}
+			}
+		})
+	}
+}
+
+// TestCheckEarlyAbort_AZeroChargeRefusalStaysResolved pins the other half of
+// #844: a refusal charged nothing still counts in the early-abort rate's
+// denominator. Ten whole-article failures and six zero-charge refusals, with
+// nothing written, is a rate of 10/16, under the threshold; dropping the
+// refusals from articlesResolved would make it 10/10 and abort the job. It runs
+// on the live path, after a recompute, and with the failures landing while the
+// job is evicted and folded in at hydration.
+func TestCheckEarlyAbort_AZeroChargeRefusalStaysResolved(t *testing.T) {
+	const failedWhole, refused = earlyAbortSample, 6
+	newJob := func(t *testing.T) (*Job, *Manifest) {
+		t.Helper()
+		arts := make([]JobArticle, failedWhole+refused)
+		for i := range arts {
+			arts[i] = JobArticle{ID: fmt.Sprintf("<d%d@x>", i), Bytes: 100, Number: i + 1}
+		}
+		m := NewManifest([]JobFile{{Subject: "data.bin", Bytes: int64(100 * len(arts)), Articles: arts}})
+		j := New("denominator", "denominator", PolicyFromPP(3))
+		if err := j.AttachContent(m); err != nil {
+			t.Fatalf("AttachContent: %v", err)
+		}
+		return j, m
+	}
+	failAll := func(t *testing.T, j *Job) {
+		t.Helper()
+		for i := range failedWhole + refused {
+			charge := WholeArticle
+			if i >= failedWhole {
+				charge = 0
+			}
+			if err := j.MarkArticleFailed(i, charge); err != nil {
+				t.Fatalf("MarkArticleFailed(%d, %d): %v", i, charge, err)
+			}
+		}
+	}
+	paths := map[string]func(t *testing.T) *Job{
+		"live": func(t *testing.T) *Job {
+			j, _ := newJob(t)
+			failAll(t, j)
+			return j
+		},
+		"recomputed": func(t *testing.T) *Job {
+			j, _ := newJob(t)
+			failAll(t, j)
+			j.contentMu.Lock()
+			j.progress.recompute(j.manifest)
+			j.contentMu.Unlock()
+			return j
+		},
+		"failed while evicted": func(t *testing.T) *Job {
+			j, m := newJob(t)
+			j.Evict()
+			failAll(t, j)
+			if err := j.RestoreContent(m); err != nil {
+				t.Fatalf("RestoreContent: %v", err)
+			}
+			return j
+		},
+	}
+	for name, run := range paths {
+		t.Run(name, func(t *testing.T) {
+			j := run(t)
+			if got := j.Progress().ArticlesFailed(); got != failedWhole {
+				t.Errorf("ArticlesFailed = %d, want %d", got, failedWhole)
+			}
+			if j.CheckEarlyAbort() {
+				t.Errorf("CheckEarlyAbort = true after %d whole failures and %d zero-charge refusals, "+
+					"want false: the refusals left the rate's denominator", failedWhole, refused)
 			}
 		})
 	}

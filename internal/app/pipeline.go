@@ -377,7 +377,7 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		// an article Done through the recorder (Job.MarkArticleWritten).
 		// Without this call nothing records the failure at all, and a job whose every
 		// article failed finishes as Completed with an empty fail message.
-		if err := res.Job.MarkArticleFailed(int(res.ArtIdx)); err != nil {
+		if err := res.Job.MarkArticleFailed(int(res.ArtIdx), job.WholeArticle); err != nil {
 			p.log.Warn("record permanent article failure",
 				"job", res.JobID(), "msgid", res.MessageID, "err", err)
 		}

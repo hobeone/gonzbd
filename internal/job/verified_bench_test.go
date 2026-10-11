@@ -52,7 +52,7 @@ func halfFailedJob(b *testing.B, m *Manifest) *Job {
 	}
 	for i := range m.NumArticles() {
 		if i%2 == 1 {
-			if err := j.MarkArticleFailed(i); err != nil {
+			if err := j.MarkArticleFailed(i, WholeArticle); err != nil {
 				b.Fatalf("MarkArticleFailed: %v", err)
 			}
 			continue

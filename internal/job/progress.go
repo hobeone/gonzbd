@@ -88,8 +88,15 @@ type JobProgress struct {
 	// of it a completion still needs. verified.go owns its lifecycle.
 	written map[int][]durability.WrittenRow
 
-	pendingArticles   int
-	articlesResolved  int
+	pendingArticles  int
+	articlesResolved int
+	// articlesFailed counts the failed articles whose chargeOf is above zero.
+	// One charged nothing (an overlap refusal whose whole range other
+	// articles wrote) lost no bytes, so it is resolved but not failed, and
+	// does not move the early-abort rate (#844).
+	// `git grep -n 'p[.]articlesFailed' -- '*.go' ':!*_test.go'` finds 4
+	// lines: the writers markFailedUncovered and recompute, which both apply
+	// that rule, isEarlyAbort's rate, and the ArticlesFailed accessor.
 	articlesFailed    int
 	earlyAborted      bool
 	failedBytes       int64
@@ -371,7 +378,8 @@ func (p *JobProgress) PendingArticles() int {
 	return p.pendingArticles
 }
 
-// ArticlesFailed returns the count of articles that have permanently failed.
+// ArticlesFailed returns the count of articles that have permanently failed
+// at a charge above zero bytes (see the articlesFailed field).
 func (p *JobProgress) ArticlesFailed() int {
 	if p == nil {
 		return 0
@@ -882,8 +890,8 @@ func (p *JobProgress) clone() *JobProgress {
 //
 // Between recomputes, markFailed and resetForReload maintain the value
 // incrementally; both take the manifest. While the manifest is evicted nothing
-// maintains it: Job.MarkArticleFailed sets the bits alone, and the value lags
-// them until RestoreContent recomputes at the next hydration.
+// maintains it: Job.MarkArticleFailed sets the bits and the charge alone, and
+// the value lags them until RestoreContent recomputes at the next hydration.
 func (p *JobProgress) recompute(m *Manifest) {
 	// m is passed in separately from p, and nothing here ties it to the
 	// manifest p was sized from (newJobProgress). A size
@@ -917,8 +925,10 @@ func (p *JobProgress) recompute(m *Manifest) {
 				resolved++
 				var charge int64
 				if p.failed.Get(i) {
-					failed++
 					charge = p.chargeOf(m, i)
+					if charge > 0 {
+						failed++
+					}
 					fileFailed += charge
 				}
 				downloaded += int64(m.ArticleBytes(i)) - charge
@@ -1041,21 +1051,23 @@ func (p *JobProgress) clearDone(fi int, arts ...int) {
 	p.dropRows(fi, arts)
 }
 
-// wholeArticle is markFailedUncovered's uncovered for a failure that charges
-// the article's full manifest size.
-const wholeArticle int64 = -1
+// WholeArticle is the charge Job.MarkArticleFailed takes for a failure that
+// costs the article's full manifest size, as assembler.WholeArticle is the
+// uncovered count OnArticleRejected reports for one.
+const WholeArticle int64 = -1
 
 // markFailed flips Done+Failed on article i, charging its full size, and
 // updates counters. Returns false (no-op) if the article was already Done.
 func (p *JobProgress) markFailed(m *Manifest, i int) bool {
-	_, ok := p.markFailedUncovered(m, i, wholeArticle)
+	_, ok := p.markFailedUncovered(m, i, WholeArticle)
 	return ok
 }
 
 // markFailedUncovered is markFailed for an article of which only uncovered
-// bytes are missing from the file, or wholeArticle. It returns what the
+// bytes are missing from the file, or WholeArticle. It returns what the
 // failure charged (chargeOf) and false (no-op) if the article was already
-// Done.
+// Done. A failure charged nothing is resolved but not counted in
+// articlesFailed.
 func (p *JobProgress) markFailedUncovered(m *Manifest, i int, uncovered int64) (int64, bool) {
 	wasEmitted := p.emitted.Get(i)
 	if !p.setFailedBits(i) {
@@ -1072,14 +1084,16 @@ func (p *JobProgress) markFailedUncovered(m *Manifest, i int, uncovered int64) (
 	p.files[fi].FailedBytes += charge
 	p.files[fi].BytesDownloaded += int64(m.ArticleBytes(i)) - charge
 	p.articlesResolved++
-	p.articlesFailed++
+	if charge > 0 {
+		p.articlesFailed++
+	}
 	return charge, true
 }
 
 // limitCharge records that failed article i is charged at most uncovered
-// bytes. wholeArticle records nothing, which charges the article in full.
+// bytes. WholeArticle records nothing, which charges the article in full.
 func (p *JobProgress) limitCharge(i int, uncovered int64) {
-	if uncovered == wholeArticle {
+	if uncovered == WholeArticle {
 		return
 	}
 	if p.failCharge == nil {
@@ -1207,7 +1221,9 @@ func (p *JobProgress) resetForReload(m *Manifest, fi int, clearEmitted bool) (cl
 }
 
 // isEarlyAbort returns true if the job should be aborted based on the
-// first-article failure rate. See Job.IsEarlyAbort for the heuristic.
+// first-article failure rate: at least earlyAbortSample articles resolved, and
+// at least earlyAbortThreshold of them failed. A failure charged nothing is in
+// articlesResolved but not in articlesFailed.
 func (p *JobProgress) isEarlyAbort() bool {
 	if p.earlyAborted {
 		return false

@@ -28,9 +28,9 @@ file internal/app/pipeline.go
 [a terminal failure is recorded on whatever instance holds the ID]
 file internal/app/pipeline.go
 --- anchor
-		if err := res.Job.MarkArticleFailed(int(res.ArtIdx)); err != nil {
+		if err := res.Job.MarkArticleFailed(int(res.ArtIdx), job.WholeArticle); err != nil {
 --- replace
-		if err := func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }().MarkArticleFailed(int(res.ArtIdx)); err != nil {
+		if err := func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }().MarkArticleFailed(int(res.ArtIdx), job.WholeArticle); err != nil {
 --- end
 
 [a failed fatal write returns whatever instance holds the ID to the pool]

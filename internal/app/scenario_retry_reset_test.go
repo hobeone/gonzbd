@@ -81,7 +81,7 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	}
 	app.SeedWritten(t, durability.NewStore(h.repo.DB()), jobID,
 		[]durability.WrittenRow{{FileIdx: 0, ArtIdx: 0, Offset: 0, Length: 100, CRC32: crc32.ChecksumIEEE(part)}})
-	_ = seeded.MarkArticleFailed(1)
+	_ = seeded.MarkArticleFailed(1, job.WholeArticle)
 	_, _ = seeded.Finish(job.OutcomeFailed, finished)
 
 	entry := history.Entry{

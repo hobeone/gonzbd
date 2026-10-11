@@ -304,38 +304,33 @@ func (p *JobProgress) setFileFetchPolicy(fi int, policy FetchPolicy) {
 	p.files[fi].Fetch = policy
 }
 
-// MarkArticleFailed records an article that will not be retried.
+// MarkArticleFailed records an article that will not be retried, charging
+// par2 charge bytes for it, capped at the article's manifest size. WholeArticle
+// charges that whole size. A smaller count is for an article only part of
+// whose range is missing from the file, because other articles already wrote
+// the rest (#432); zero charges nothing, and such a failure is resolved but
+// not failed for the early-abort rate (#844). Any other negative charge is an
+// error and changes nothing.
 //
 // It does not require the manifest. A fetch can complete after its job was
 // evicted, so refusing an evicted job would lose the failure. Evicted, it
-// records the bits alone: the counters and the early par2 release need the
-// manifest's file ranges and article sizes, and RestoreContent's recompute
-// derives the counters from the bits when the job is next hydrated.
-func (j *Job) MarkArticleFailed(artIdx int) error {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
-	return j.markArticleFailed(artIdx, wholeArticle)
-}
-
-// MarkArticleFailedUncovered is MarkArticleFailed for an article only part of
-// whose range is missing from the file, because other articles already wrote
-// the rest (#432). It charges par2 the uncovered bytes, capped at the
-// article's manifest size, instead of that whole size; zero charges nothing.
-// A negative uncovered is an error and changes nothing.
-func (j *Job) MarkArticleFailedUncovered(artIdx int, uncovered int64) error {
-	if uncovered < 0 {
-		return fmt.Errorf("job %s: artIdx %d: negative uncovered byte count %d", j.id, artIdx, uncovered)
+// records the bits and the charge alone: the counters and the early par2
+// release need the manifest's file ranges and article sizes, and
+// RestoreContent's recompute derives the counters from the bits when the job
+// is next hydrated.
+func (j *Job) MarkArticleFailed(artIdx int, charge int64) error {
+	if charge < 0 && charge != WholeArticle {
+		return fmt.Errorf("job %s: artIdx %d: negative charge %d", j.id, artIdx, charge)
 	}
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	return j.markArticleFailed(artIdx, uncovered)
+	return j.markArticleFailed(artIdx, charge)
 }
 
-// markArticleFailed is the body of MarkArticleFailed and
-// MarkArticleFailedUncovered, which Job.InstallFileVerification also calls.
-// uncovered is the bytes the failure charges, or wholeArticle. The caller
-// holds contentMu.
-func (j *Job) markArticleFailed(artIdx int, uncovered int64) error {
+// markArticleFailed is the body of MarkArticleFailed, which
+// Job.InstallFileVerification also calls. charge is the bytes the failure
+// charges, or WholeArticle. The caller holds contentMu.
+func (j *Job) markArticleFailed(artIdx int, charge int64) error {
 	if j.progress == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
@@ -344,13 +339,13 @@ func (j *Job) markArticleFailed(artIdx int, uncovered int64) error {
 	}
 	if j.manifest == nil {
 		if j.progress.setFailedBits(artIdx) {
-			j.progress.limitCharge(artIdx, uncovered)
+			j.progress.limitCharge(artIdx, charge)
 		}
 		return nil
 	}
 	// A failure that charges nothing leaves par2 nothing to repair, so it is
 	// no reason to fetch recovery volumes.
-	if charge, ok := j.progress.markFailedUncovered(j.manifest, artIdx, uncovered); ok && charge > 0 {
+	if charged, ok := j.progress.markFailedUncovered(j.manifest, artIdx, charge); ok && charged > 0 {
 		// Repairing never runs for a job whose Policy.Repair is false
 		// (PP=0), so releasing its recovery volumes here would only spend
 		// bandwidth nothing will use. This is the live-download half of the

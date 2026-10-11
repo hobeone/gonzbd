@@ -20,7 +20,7 @@ file internal/job/verification.go
 		p.files[fi].Complete = true
 	}
 	for _, a := range v.Failed {
-		_ = j.markArticleFailed(int(a), wholeArticle)
+		_ = j.markArticleFailed(int(a), WholeArticle)
 	}
 	if v.Complete || v.Settle {
 		settleFileCRC(m, p, fi)
@@ -38,7 +38,7 @@ file internal/job/verification.go
 		p.files[fi].Complete = true
 	}
 	for _, a := range v.Failed {
-		_ = j.markArticleFailed(int(a), wholeArticle)
+		_ = j.markArticleFailed(int(a), WholeArticle)
 	}
 --- end
 
@@ -89,7 +89,7 @@ file internal/job/verification.go
 	kept, dropped, err := placeRows(m, fi, v.Rows)
 --- replace
 	for _, a := range v.Failed {
-		_ = j.markArticleFailed(int(a), wholeArticle)
+		_ = j.markArticleFailed(int(a), WholeArticle)
 	}
 	kept, dropped, err := placeRows(m, fi, v.Rows)
 --- end

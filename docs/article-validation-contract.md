@@ -943,9 +943,12 @@ article's range. The refused article is resolved permanently failed, and par2
 is charged only the part of its range that no other article's range covers —
 often nothing, since those bytes are on disk (#432). The assembler counts that
 part at the refusal (`ownedRanges.covered`) and reports it through
-`OnArticleRejected`; `Job.MarkArticleFailedUncovered` records it beside the
-failed bit, and `JobProgress.chargeOf` reads it wherever failed bytes are
-summed. Within one open-file episode the writer enforces it;
+`OnArticleRejected`; `Job.MarkArticleFailed` records it as the article's
+charge beside the failed bit (`job.WholeArticle` charges the whole size), and
+`JobProgress.chargeOf` reads it wherever failed bytes are summed. A refusal
+charged nothing is resolved but not failed for the early-abort rate
+(`JobProgress.isEarlyAbort`, #844), so a post whose refusals lose no bytes is
+not aborted as hopeless. Within one open-file episode the writer enforces it;
 across a restart `owned` starts with the ranges the resolver supplies in
 `FileInfo.Owned` (the assembler seeds from it at open; see the E3 row). An
 article whose row had not reached SQLite before a crash is Outstanding after
@@ -957,7 +960,8 @@ same rule.
 is persisted. In a file recorded `complete=1`, a restart fails every article
 without a row as the complement of the rows (`InstallFileVerification`), and
 charges each its whole size: the refused article's range was never recorded,
-so nothing at the restart can tell what of it was covered. A redelivery of the
+so nothing at the restart can tell what of it was covered, and such an article
+counts toward the early-abort rate again. A redelivery of the
 covering article written over a shorter range than its first copy also leaves
 the bytes between the two ends uncharged (`ownedRanges.claim` replaces an
 article's own range).

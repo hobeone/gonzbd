@@ -125,7 +125,7 @@ func TestSetName_RefusesAJobThatHasStarted(t *testing.T) {
 		}
 	}
 	registered := add("registered", func(j *job.Job) { // the permanent-failure path: a filename, nothing done
-		if err := j.MarkArticleFailed(0); err != nil {
+		if err := j.MarkArticleFailed(0, job.WholeArticle); err != nil {
 			t.Fatalf("MarkArticleFailed: %v", err)
 		}
 		register(j)
@@ -144,7 +144,7 @@ func TestSetName_RefusesAJobThatHasStarted(t *testing.T) {
 		}
 	})
 	add("failed", func(j *job.Job) {
-		if err := j.MarkArticleFailed(0); err != nil {
+		if err := j.MarkArticleFailed(0, job.WholeArticle); err != nil {
 			t.Fatalf("MarkArticleFailed: %v", err)
 		}
 	})

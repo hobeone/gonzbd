@@ -66,7 +66,7 @@ func retriedUnderOneID(t *testing.T, application *Application, id string) (first
 func failAllButArticleZero(t *testing.T, j *job.Job) {
 	t.Helper()
 	for i := 1; i < staleArticles-1; i++ {
-		if err := j.MarkArticleFailed(i); err != nil {
+		if err := j.MarkArticleFailed(i, job.WholeArticle); err != nil {
 			t.Fatalf("MarkArticleFailed(%d): %v", i, err)
 		}
 	}
