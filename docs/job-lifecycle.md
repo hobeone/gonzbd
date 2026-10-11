@@ -808,23 +808,32 @@ holding whatever compute slot its position held.
 
 ### Ordering
 
-The registry keeps one job list, and both consumers — which jobs are advanced,
-and in what order the downloader serves them — read it. Priority therefore has
-exactly one meaning in the system, and there is no second fairness policy that
-would have to re-derive it.
+The registry keeps one job list, `d.order`, in **queue position**: insertion
+sequence. `entry.seq` is that sequence persisted as `Persisted.SortKey`;
+`restore` rebuilds position from `SortKey` alone, with an `(SortKey, ID)`
+tiebreak matching the store's `ORDER BY sort_key ASC, id ASC` so the sort is
+deterministic when two keys collide.
+`TestSortKey_ReproducesQueueOrderAcrossRemoval` pins that removal does not
+reorder survivors.
 
-**That order is insertion sequence, not priority.** `entry.seq` is an insertion
-sequence persisted as `Persisted.SortKey`; `restore` rebuilds order from
-`SortKey` alone, with an `(SortKey, ID)` tiebreak matching the store's
-`ORDER BY sort_key ASC, id ASC` so the sort is deterministic when two keys
-collide. `TestSortKey_ReproducesQueueOrderAcrossRemoval` pins that removal does
-not reorder survivors.
+**Dispatch order is priority, then position.** `dispatchOrderLocked`
+(`internal/dispatch/registry.go`) sorts the registry by `Header.Priority`
+descending — Force, then High, then Normal, then Low — with queue position as
+the tie-break. The tick walks it (`snapshotOrder`, its one caller), and `Advance` grants leases and compute slots in the order
+it is called, so a higher-priority job takes the next free lease. It does not
+preempt a job that already holds one. The order is read from the header at
+each walk, so `SetPriority` takes effect on the next tick, and since priority
+is persisted with the header it survives a restart.
+`TestTick_WalksInPriorityOrderWithPositionAsTheTieBreak` pins the order.
 
-`Header.Priority` is written at ingest, persisted, mutated by
-`Dispatcher.SetPriority` and rendered by the API, and **orders nothing** —
-`internal/sched` never reads it. The one behavioural use of priority anywhere
-is `constants.PausedPriority` at ingest, which maps to `SetIntent(IntentPause)`.
-Closing that gap is open work (§14).
+Two consumers still read queue position rather than dispatch order: `List`,
+which the API's queue listing renders, and the downloader's dispatch pass,
+which serves articles to the jobs holding leases in `List` order. Whether
+those follow dispatch order is an open question (§17).
+
+`ForcePriority` orders first and does nothing else: a global pause still holds
+it. `constants.PausedPriority` at ingest maps to `SetIntent(IntentPause)`;
+`SetPriority` to it does not, and only sorts the job behind Low.
 
 Reorder, when it is built, is defined over fetch ordering and is **total**: the
 change is always recorded and takes effect whenever the job next competes for
@@ -1908,12 +1917,13 @@ Named here so they are decisions rather than omissions.
 
 ## 17. Open questions
 
-1. **Priority orders nothing.** `Header.Priority` is stored, persisted,
-   settable and rendered, and `internal/sched` never reads it; order is FIFO by
-   insertion sequence. Closing this means building the priority-ordered list
-   *and* the reorder resequence together — `restore` reads order from
-   `SortKey` alone, so a reorder that did not renumber would vanish at the next
-   restart.
+1. **Priority orders the tick, not the listing.** The tick walks dispatch
+   order (§8, Ordering); `List`, the API's queue listing and the downloader's
+   article dispatch read queue position. Whether they should follow dispatch
+   order is undecided, as is whether `ForcePriority` bypasses a global pause.
+   Manual reorder (`mode=switch`) is still unbuilt — `restore` reads position
+   from `SortKey` alone, so a reorder that did not renumber would vanish at the
+   next restart.
 2. **Does pausing a job change its queue position?** Reorder says a paused
    never-started job takes effect at the next lease issuance, but nothing says
    whether pausing itself moves it. Probably not.

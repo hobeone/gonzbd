@@ -4,7 +4,7 @@ run TestDeregister_LeavesAnotherRemovalsMarkerStanding|TestDeregister_IsTotal|Te
 [snapshotOrder written gate neutered]
 file internal/dispatch/registry.go
 --- anchor
-		if _, ok := d.written[id]; !ok { // read under the held d.mu
+		if _, ok := d.written[e.j.ID()]; !ok { // read under the held d.mu
 			continue
 		}
 --- replace

@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -349,8 +350,9 @@ func (d *Dispatcher) entryFor(j *job.Job) (Header, int64, job.Snapshot, bool) {
 }
 
 // snapshotOrder returns the registered jobs that have a written queue row, in
-// queue order. It is the tick's and Stop's only view of the registry, so an
-// unwritten job is never advanced, hydrated, launched or persisted by either.
+// dispatch order (dispatchOrderLocked). It is the tick's and Stop's only view
+// of the registry, so an unwritten job is never advanced, hydrated, launched
+// or persisted by either.
 //
 // d.written is the whole gate, and that is the point: presence of a row is one
 // fact with one owner (markWritten, under the storeMu span that wrote it), so
@@ -365,13 +367,46 @@ func (d *Dispatcher) entryFor(j *job.Job) (Header, int64, job.Snapshot, bool) {
 func (d *Dispatcher) snapshotOrder() []*job.Job {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	out := make([]*job.Job, 0, len(d.order))
-	for _, id := range d.order {
-		e := d.byID[id]
-		if _, ok := d.written[id]; !ok { // read under the held d.mu
+	ordered := d.dispatchOrderLocked()
+	out := make([]*job.Job, 0, len(ordered))
+	for _, e := range ordered {
+		if _, ok := d.written[e.j.ID()]; !ok { // read under the held d.mu
 			continue
 		}
 		out = append(out, e.j)
+	}
+	return out
+}
+
+// dispatchOrderLocked computes dispatch order: Header.Priority descending
+// (Force, then High, then Normal, then Low), and queue position — the index
+// in d.order — within one priority. It reads the header at each call, so
+// SetPriority needs no step of its own to take effect on the next tick.
+// Caller must hold d.mu. snapshotOrder is its caller:
+// `git grep -n 'd\.dispatchOrderLocked()' -- 'internal/dispatch/*.go' ':!*_test.go'`
+// returns 1 line.
+//
+// The tick walks this order, and Advance grants leases and compute slots in
+// the order it is called, so a higher-priority job gets the next free lease.
+// It does not preempt: a job already holding a lease keeps it.
+//
+// d.order itself stays in queue position, because List renders it and List
+// is what the API's queue listing shows.
+func (d *Dispatcher) dispatchOrderLocked() []*entry {
+	type ranked struct {
+		e   *entry
+		pos int
+	}
+	rs := make([]ranked, len(d.order))
+	for i, id := range d.order {
+		rs[i] = ranked{e: d.byID[id], pos: i}
+	}
+	slices.SortFunc(rs, func(a, b ranked) int {
+		return cmp.Or(cmp.Compare(b.e.h.Priority, a.e.h.Priority), cmp.Compare(a.pos, b.pos))
+	})
+	out := make([]*entry, len(rs))
+	for i, r := range rs {
+		out[i] = r.e
 	}
 	return out
 }
@@ -385,9 +420,9 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 // (dispatch.go) for why "every" is the rule here rather than "the ones this
 // caller happens to care about".
 //
-// It preserves the relative order of the remaining entries: queue order is
-// the priority policy sched consults, and a swap-with-last deletion would
-// silently reorder jobs behind the removed one. evictCancelledNeverRun
+// It preserves the relative order of the remaining entries: queue position
+// is dispatch order's tie-break within one priority (dispatchOrderLocked), and
+// a swap-with-last deletion would silently reorder jobs behind the removed one. evictCancelledNeverRun
 // (tick.go) is the first caller — it guards against launched workers or active
 // occupiers before calling, and this method makes no such assumption itself.
 //
@@ -1010,6 +1045,8 @@ func (d *Dispatcher) SetOperationalError(id, msg string) error {
 }
 
 // SetPriority sets the priority for a registered job and kicks the scheduler.
+// The next tick walks the job at its new place in dispatch order:
+// dispatchOrderLocked reads Header.Priority at each walk.
 func (d *Dispatcher) SetPriority(id string, priority int) error {
 	if priority < -128 || priority > 127 || !constants.Priority(int8(priority)).IsValid() { //nolint:gosec // G115: priority fits in int8
 		return fmt.Errorf("dispatch: set priority %s: invalid priority %d", id, priority)

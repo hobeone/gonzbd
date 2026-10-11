@@ -51,8 +51,9 @@ type Persisted struct {
 	ID string
 	// SortKey is queue order: the insertion sequence register assigns, carried
 	// here so a restart can rebuild the order rather than inherit whatever
-	// order the store happened to return rows in. Queue order is the priority
-	// policy sched consults, so this is not cosmetic.
+	// order the store happened to return rows in. Queue position is dispatch
+	// order's tie-break within one priority (dispatchOrderLocked), so this is
+	// not cosmetic.
 	//
 	// Restore reads order from this field ALONE. That is what makes reordering
 	// B2.4's problem rather than a free extension: a /api?mode=switch move that
