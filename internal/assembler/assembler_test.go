@@ -706,10 +706,10 @@ func TestAssembler_HelperMethods(t *testing.T) {
 	t.Parallel()
 
 	// handleFatalArticle and handleSuccessArticle take no open map or key —
-	// the FileWriter each openFile owns is self-contained — and neither records an ack: pendingDone/pendingFailed and
+	// the fileWriter each openFile owns is self-contained — and neither records an ack: pendingDone/pendingFailed and
 	// the MarkArticles* callbacks are gone with the assembler's ack authority
 	// (X2). What is left to pin is the local bookkeeping: seenDone/seenFailed
-	// dedup, now living on the FileWriter, and the true/false return that
+	// dedup, now living on the fileWriter, and the true/false return that
 	// tells processRequest whether to count the article toward partsWritten.
 
 	t.Run("handleFatalArticle", func(t *testing.T) {
@@ -721,7 +721,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 
 		// Data is set on every case below to pin handleFatalArticle's
 		// ownership contract: it releases req.Data on every return, matching
-		// handleSuccessArticle and FileWriter.Accept, so a caller never has to
+		// handleSuccessArticle and fileWriter.accept, so a caller never has to
 		// reason about who frees it. This is a contract pin, not a production
 		// reproduction — `git grep -n 'FatalErr:' -- '*.go' ':!*_test.go'`
 		// returns one hit, internal/app/pipeline.go:376, and its request
@@ -1274,7 +1274,7 @@ var (
 )
 
 // TestFileWriter_DirectWriteErrorCountsPipelineError pins that a failed
-// FileWriter.Accept write counts a disk_write_error. Not a t.Parallel() test —
+// fileWriter.accept write counts a disk_write_error. Not a t.Parallel() test —
 // PipelineErrors is process-global state.
 func TestFileWriter_DirectWriteErrorCountsPipelineError(t *testing.T) {
 	telemetry.Reset()
@@ -1288,7 +1288,7 @@ func TestFileWriter_DirectWriteErrorCountsPipelineError(t *testing.T) {
 
 	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0})
 
-	if err := w.Accept(articleID{msgID: "m1"}, 0, []byte("data")); err == nil {
+	if err := w.accept(articleID{msgID: "m1"}, 0, []byte("data")); err == nil {
 		t.Error("Accept on a closed file returned nil error, want a storage fault")
 	}
 	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {

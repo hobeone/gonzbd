@@ -11,7 +11,7 @@ import "testing"
 // row and this package no longer has the authority.
 //
 // The exception is an article that was counted toward TotalParts and then
-// un-done. FileWriter.fail clears an article from seenDone when its write
+// un-done. fileWriter.fail clears an article from seenDone when its write
 // fails, but partsWritten was incremented when the article was
 // ACCEPTED and is never decremented — so other articles can carry the file to
 // completion while this one holds no state anywhere. Its Emitted bit was

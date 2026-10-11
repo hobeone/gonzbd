@@ -158,7 +158,7 @@ func TestDownload_FileSizeMatchesPayload(t *testing.T) {
 // pre-allocated size. This uses a more realistic scenario with varied part
 // sizes to exercise the completion truncate across out-of-order delivery. The
 // bound is the end of the last range the file's writer owns
-// (assembler.FileWriter.finish).
+// (assembler.fileWriter.finish).
 func TestDownload_MultiPartFileSizeExact(t *testing.T) {
 	t.Parallel()
 

@@ -21,7 +21,7 @@ import (
 // It takes no lock: it reads w.owned and w.handle, which the worker goroutine
 // owns, and does its I/O without holding anything. The caller must be that
 // goroutine.
-func (w *FileWriter) finish() error {
+func (w *fileWriter) finish() error {
 	err := fsutil.ShrinkAndSync(w.handle, w.owned.maxEnd(), func(*os.File) error { return w.syncFile() })
 	if err != nil {
 		return fmt.Errorf("finish %s: %w", w.path, err)

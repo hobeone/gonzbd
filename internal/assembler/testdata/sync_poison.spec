@@ -79,8 +79,8 @@ file internal/assembler/assembler.go
 --- anchor
 		a.releasePoisoned(f)
 	}
-	// A failing Close is a storage condition too, and on network-backed mounts
+	// A failing close is a storage condition too, and on network-backed mounts
 --- replace
 	}
-	// A failing Close is a storage condition too, and on network-backed mounts
+	// A failing close is a storage condition too, and on network-backed mounts
 --- end

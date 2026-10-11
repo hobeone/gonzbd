@@ -37,7 +37,7 @@ func TestSyncAndClose_ReportsTheFailureToItsCaller(t *testing.T) {
 	t.Run("a failing close", func(t *testing.T) {
 		f := newHelperFile(t, dir, "close.dat", 0)
 		// Injected through the seam rather than by pre-closing the handle.
-		// Pre-closing makes Sync fail one line earlier, so the arm under test
+		// Pre-closing makes sync fail one line earlier, so the arm under test
 		// is never reached — and Go's poll.FD answers an already-closed
 		// handle with os.ErrClosed, not EBADF, so it would not even be the
 		// permanent errno such a fixture appears to be arranging.

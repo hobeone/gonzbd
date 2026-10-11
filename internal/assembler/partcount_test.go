@@ -11,7 +11,7 @@ import (
 // of partsWritten with the seenDone record the give-back is derived from. They
 // used to be set at different moments, and the gap was permanent.
 //
-// FileWriter.admitAccepted now applies both in one method, so the pairing is
+// fileWriter.admitAccepted now applies both in one method, so the pairing is
 // structural and this test is a regression net rather than the thing that
 // establishes it. The history is worth keeping because the failure was silent
 // and permanent: a failing write decided the give-back from seenDone, which
