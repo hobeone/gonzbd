@@ -39,7 +39,7 @@ type collisionFixture struct {
 func newCollisionFixture(t *testing.T) *collisionFixture {
 	t.Helper()
 	c := &collisionFixture{a: newHelperAssembler()}
-	c.a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+	c.a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 		c.rejected = append(c.rejected, artIdx)
 	}
 	c.a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {

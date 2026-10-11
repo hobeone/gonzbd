@@ -5,7 +5,9 @@ run TestHandleArticleRejected_RecordsTheFailureOfAnEvictedJob|TestHandleArticles
 file internal/job/content.go
 --- anchor
 	if j.manifest == nil {
-		j.progress.setFailedBits(artIdx)
+		if j.progress.setFailedBits(artIdx) {
+			j.progress.limitCharge(artIdx, uncovered)
+		}
 		return nil
 	}
 --- replace
@@ -30,9 +32,11 @@ file internal/job/content.go
 [the rejection handler discards the job's error]
 file internal/app/durability.go
 --- anchor
-	if err := j.MarkArticleFailed(int(artIdx)); err != nil {
+	if err != nil {
+		app.log.Warn("record rejected article as permanently failed",
 --- replace
-	if err := j.MarkArticleFailed(int(artIdx)); false && err != nil {
+	if false && err != nil {
+		app.log.Warn("record rejected article as permanently failed",
 --- end
 
 [the roll-back handler discards the job's error]

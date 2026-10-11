@@ -19,7 +19,7 @@ func TestOverlap_PartialRangeOverlapIsRefused(t *testing.T) {
 
 	var rejected []int32
 	var unwritten []int32
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
 	a.opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
@@ -78,7 +78,7 @@ func TestOverlap_ContainedOverlapStillCompletesTheFile(t *testing.T) {
 
 	var rejected []int32
 	var completed int
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
 	a.opts.OnFileComplete = func(_ string, _ int) {
@@ -136,7 +136,7 @@ func TestOverlap_StraddlingArticleIsRefusedAndCountedAsFailed(t *testing.T) {
 	var rejected []int32
 	var unwritten []int32
 	var completed int
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
 	a.opts.OnArticlesUnwritten = func(_ string, _ int, artIdxs []int32) {
@@ -201,7 +201,7 @@ func TestOverlap_BadArticleArrivingFirstRefusesItsNeighbours(t *testing.T) {
 	a := newHelperAssembler()
 
 	var rejected []int32
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
 
@@ -253,7 +253,7 @@ func TestOverlap_SameOffsetDifferentLengthIsRefused(t *testing.T) {
 			a := newHelperAssembler()
 
 			var rejected []int32
-			a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+			a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 				rejected = append(rejected, artIdx)
 			}
 
@@ -306,7 +306,7 @@ func TestOverlap_ZeroLengthArticleDoesNotBlockCoveringNeighbour(t *testing.T) {
 	a := newHelperAssembler()
 
 	var rejected []int32
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
 
@@ -365,7 +365,7 @@ func TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newHelperAssembler()
 			var rejected []int32
-			a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+			a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 				rejected = append(rejected, artIdx)
 			}
 			f := newHelperFile(t, t.TempDir(), "before.dat", 4000)
@@ -413,7 +413,7 @@ func TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused(t *testing.T) {
 func TestOverlap_ZeroLengthArrivalInsideOwnedRangeIsAccepted(t *testing.T) {
 	a := newHelperAssembler()
 	var rejected []int32
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
 	f := newHelperFile(t, t.TempDir(), "empty-inside.dat", 1000)

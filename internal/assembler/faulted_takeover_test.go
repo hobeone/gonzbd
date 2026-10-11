@@ -37,7 +37,7 @@ func TestFaultedIncumbent_TakenOverThenRedeliveryRefused(t *testing.T) {
 	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
 		unwritten = append(unwritten, arts...)
 	}
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
 	a.opts.OnWriteFault = func(string, int, *storagefault.Fault) { faults++ }

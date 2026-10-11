@@ -28,7 +28,7 @@ func TestLateDuplicate_ResolvesAnArticleTheWriterNeverAccepted(t *testing.T) {
 	t.Run("an article the writer never accepted is reported", func(t *testing.T) {
 		a := newHelperAssembler()
 		var rejected []int32
-		a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+		a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 			rejected = append(rejected, artIdx)
 		}
 		f := newHelperFile(t, dir, "stranded.dat", 1000)
@@ -51,7 +51,7 @@ func TestLateDuplicate_ResolvesAnArticleTheWriterNeverAccepted(t *testing.T) {
 	t.Run("a redelivery of an accepted article is still dropped", func(t *testing.T) {
 		a := newHelperAssembler()
 		var rejected []int32
-		a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+		a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 			rejected = append(rejected, artIdx)
 		}
 		f := newHelperFile(t, dir, "benign.dat", 1000)

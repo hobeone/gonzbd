@@ -939,14 +939,28 @@ checked, and a warning or unacted-on counter is not a consumer.
 **E2 and E3 are one check: first-writer-wins over byte ranges** (§8, decision 3;
 #759). `fileWriter.owned` records each range once its write returned nil, and
 `acceptArticle` refuses an arrival whose `[off, off+len)` intersects another
-article's range. The refused article is resolved permanently failed and its
-bytes are charged to par2. Within one open-file episode the writer enforces it;
+article's range. The refused article is resolved permanently failed, and par2
+is charged only the part of its range that no other article's range covers —
+often nothing, since those bytes are on disk (#432). The assembler counts that
+part at the refusal (`ownedRanges.covered`) and reports it through
+`OnArticleRejected`; `Job.MarkArticleFailedUncovered` records it beside the
+failed bit, and `JobProgress.chargeOf` reads it wherever failed bytes are
+summed. Within one open-file episode the writer enforces it;
 across a restart `owned` starts with the ranges the resolver supplies in
 `FileInfo.Owned` (the assembler seeds from it at open; see the E3 row). An
 article whose row had not reached SQLite before a crash is Outstanding after
 it, and is written again under the same rule; a permanent failure is not
 persisted, so a refused article is fetched again after a restart and meets the
 same rule.
+
+**Where the reduced charge does not reach.** Neither the failure nor its charge
+is persisted. In a file recorded `complete=1`, a restart fails every article
+without a row as the complement of the rows (`InstallFileVerification`), and
+charges each its whole size: the refused article's range was never recorded,
+so nothing at the restart can tell what of it was covered. A redelivery of the
+covering article written over a shorter range than its first copy also leaves
+the bytes between the two ends uncharged (`ownedRanges.claim` replaces an
+article's own range).
 
 **The one known Rule 3 exception, recorded and not fixed.** First-writer-wins
 decides by arrival, not by which article is right. When a bogus article arrives

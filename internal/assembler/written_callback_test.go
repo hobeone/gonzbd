@@ -65,7 +65,7 @@ func TestOnArticleWritten_ReportsRangeAndCRC(t *testing.T) {
 func TestFileInfoOwned_RefusesARestartLoser(t *testing.T) {
 	a := newHelperAssembler()
 	var rejected []int32
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) { rejected = append(rejected, artIdx) }
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) { rejected = append(rejected, artIdx) }
 	f := newHelperFile(t, t.TempDir(), "s.dat", 1<<20)
 	f.info.TotalParts = 1
 	if err := f.w.owned.seed([]Range{{Off: 0, Len: 1000}}); err != nil {

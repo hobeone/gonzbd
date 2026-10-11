@@ -941,7 +941,7 @@ func TestMarkArticleFailedLocked_Branches(t *testing.T) {
 	call := func(j *Job, i int) error {
 		j.contentMu.Lock()
 		defer j.contentMu.Unlock()
-		return j.markArticleFailed(i)
+		return j.markArticleFailed(i, wholeArticle)
 	}
 
 	if err := call(New("cold", "cold", Policy{}), 0); !errors.Is(err, ErrNotResident) {

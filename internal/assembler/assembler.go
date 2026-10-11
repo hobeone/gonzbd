@@ -167,6 +167,11 @@ type FileInfo struct {
 // that open the finished file by path.
 func (fi FileInfo) Path() string { return filepath.Join(fi.Dir, fi.Name) }
 
+// WholeArticle is OnArticleRejected's uncovered for a refusal that leaves none
+// of the article's bytes on disk: the caller charges the article's full size.
+// It is negative so that no byte count can be mistaken for it.
+const WholeArticle int64 = -1
+
 // Options configures an Assembler.
 type Options struct {
 	// QueueSize is the capacity of the internal write-request channel.
@@ -262,8 +267,25 @@ type Options struct {
 	OnArticlesUnwritten func(jobID string, fileIdx int, artIdxs []int32)
 
 	// OnArticleRejected reports an article this package refused to write
-	// because the article itself is not usable — currently only an
-	// out-of-range yEnc offset (see offsetInRange).
+	// because the article itself is not usable: an out-of-range yEnc offset
+	// (offsetOutOfRange), a byte range intersecting one another article
+	// already wrote (acceptArticle), or a redelivery after its file completed
+	// (handleLateDuplicate).
+	//
+	// uncovered is how many of the article's decoded bytes the refusal leaves
+	// missing from the file, which is what the caller charges against par2.
+	// For an intersecting range it is the part no other article's range
+	// covers (ownedRanges.covered), often zero (#432); for the other two it
+	// is WholeArticle, as nothing of the article is on disk.
+	//
+	// Charging only the uncovered part does not undercount when the covering
+	// article is later lost. Its range stays in fileWriter.owned through a
+	// failed sync's rollback, and an untrusted file's articles return to
+	// Outstanding (OnFileUntrusted). Either way the covering article is
+	// fetched again, and its outcome accounts for its range: written again,
+	// or failed and charged itself. The exception is a redelivery written
+	// over a shorter range than the first copy (claim replaces the article's
+	// own range): the bytes between the two ends go uncharged.
 	//
 	// It is deliberately NOT OnWriteFault. A1 draws the line this pair sits
 	// on: a storage fault says nothing about the article and resolves against
@@ -274,12 +296,12 @@ type Options struct {
 	//
 	// The article is permanently failed from this package's point of view —
 	// the offset comes from the server and a re-fetch yields the same one —
-	// so the caller records it with Job.MarkArticleFailed. That is what
+	// so the caller records it as permanently failed in the job. That is what
 	// charges its bytes against the job's par2 recovery budget and releases
 	// on-demand recovery volumes. Without it the article stays Emitted, which
 	// is not Outstanding: ForEachUnfinishedArticle skips a set Emitted bit, so
 	// the job waits forever on an article nothing will re-dispatch.
-	OnArticleRejected func(jobID string, fileIdx int, artIdx int32, reason string)
+	OnArticleRejected func(jobID string, fileIdx int, artIdx int32, reason string, uncovered int64)
 
 	// OnArticleWritten, if non-nil, is called on the worker goroutine once per
 	// article whose bytes were written without error: off and n are the range,
@@ -1378,7 +1400,7 @@ func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
 	}
 	if a.opts.OnArticleRejected != nil {
 		a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx,
-			"redelivered after its file was completed")
+			"redelivered after its file was completed", WholeArticle)
 	}
 }
 
@@ -1586,10 +1608,11 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
 		// what handleFatalArticle already does for a permanent failure, which
 		// is the same fact arriving from the other side of the pipeline.
 		//
-		// Counting it claims nothing about its bytes: nothing wrote them, so
-		// no owned range covers it and the completion trim (finish, bounded by
-		// ownedRanges.maxEnd) never reaches past it, and its bytes are charged
-		// to failedBytes for par2 to repair from.
+		// Counting it claims nothing about its bytes: it claims no owned
+		// range, so the completion trim (finish, bounded by
+		// ownedRanges.maxEnd) never reaches past it on its account, and the
+		// bytes of it no other article wrote are charged to failedBytes for
+		// par2 to repair from.
 		return a.routeAcceptFailure(f, req, err)
 	}
 	return true
@@ -1613,7 +1636,7 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 			a.releaseBuffer(req.Data)
 		}
 		f.w.failPermanent(id.artIdx)
-		return &rejectedArticleError{reason: reason}
+		return &rejectedArticleError{reason: reason, uncovered: WholeArticle}
 	}
 	// A byte range another article has already written is owned, and the
 	// ARRIVING article is the one refused rather than the incumbent. The
@@ -1625,13 +1648,20 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 	// Checked here rather than inside accept so the refusal travels the same
 	// route as the out-of-range one above — accept's contract is that its error
 	// always reports STORAGE failing, and this reports the article.
-	if _, settled := f.w.owned.ownerOf(Range{Off: req.Offset, Len: int64(len(req.Data))}, id); settled {
+	//
+	// The refusal carries how many of the article's bytes no other article's
+	// range covers (#432): the covered ones are on disk, so only the rest is
+	// owed to par2.
+	rng := Range{Off: req.Offset, Len: int64(len(req.Data))}
+	if _, settled := f.w.owned.ownerOf(rng, id); settled {
+		uncovered := rng.Len - f.w.owned.covered(rng, id)
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
 		f.w.failPermanent(id.artIdx)
 		return &rejectedArticleError{
-			reason: "claims a byte range already written by another article",
+			reason:    "claims a byte range already written by another article",
+			uncovered: uncovered,
 		}
 	}
 	n := int64(len(req.Data)) // accept returns the buffer to the pool
@@ -1653,6 +1683,9 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 // successful part — see handleSuccessArticle.
 type rejectedArticleError struct {
 	reason string
+	// uncovered is what OnArticleRejected reports as uncovered: the article's
+	// bytes no other article's range covers, or WholeArticle.
+	uncovered int64
 }
 
 func (e *rejectedArticleError) Error() string {
@@ -1673,7 +1706,7 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 			"job", req.JobID, "fileidx", req.FileIdx, "artidx", req.ArtIdx,
 			"msgid", req.MessageID, "path", f.info.Path(), "reason", rej.reason)
 		if a.opts.OnArticleRejected != nil {
-			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, rej.reason)
+			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, rej.reason, rej.uncovered)
 		}
 		return true
 	}

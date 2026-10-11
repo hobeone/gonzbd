@@ -725,7 +725,7 @@ three outcomes:
 not read `Policy`. Two sites decide whether to act on that by releasing
 volumes, and both check `Policy.Repair` first: `maybeReleaseRecoveryVolumes`,
 before calling `releaseRecoveryVolumes` on an `outcomeRepair` verdict at
-download completion, and `Job.MarkArticleFailed`, before releasing on a
+download completion, and `Job.MarkArticleFailed`, before releasing on a charged
 permanent article failure during an active download — the same waste can
 happen well before the job ever reaches Assessing. A PP=0 job's `repair`
 stage self-gates and does no work regardless (`shouldSkipForPP` skips it

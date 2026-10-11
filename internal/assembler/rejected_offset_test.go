@@ -31,7 +31,7 @@ func TestRejectedOffsetIsFailedAndStillCompletesTheFile(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
 	var rejected []int32
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 		rejected = append(rejected, artIdx)
 	}
 	f := newHelperFile(t, dir, "hostile.dat", 1000)
@@ -85,7 +85,7 @@ func TestRouteAcceptFailure_SplitsArticleFaultsFromStorageFaults(t *testing.T) {
 		a := newHelperAssembler()
 		var rejReason string
 		var faults int
-		a.opts.OnArticleRejected = func(_ string, _ int, _ int32, reason string) { rejReason = reason }
+		a.opts.OnArticleRejected = func(_ string, _ int, _ int32, reason string, _ int64) { rejReason = reason }
 		a.opts.OnWriteFault = func(string, int, *storagefault.Fault) { faults++ }
 		f := newHelperFile(t, dir, "reject.dat", 100)
 
@@ -103,7 +103,7 @@ func TestRouteAcceptFailure_SplitsArticleFaultsFromStorageFaults(t *testing.T) {
 		a := newHelperAssembler()
 		var rejected int
 		var gotFault *storagefault.Fault
-		a.opts.OnArticleRejected = func(string, int, int32, string) { rejected++ }
+		a.opts.OnArticleRejected = func(string, int, int32, string, int64) { rejected++ }
 		a.opts.OnWriteFault = func(_ string, _ int, f *storagefault.Fault) { gotFault = f }
 		f := newHelperFile(t, dir, "fault.dat", 100)
 
@@ -153,7 +153,7 @@ func TestRejectedOffset_TheFileStillCompletes(t *testing.T) {
 	completions := make(chan int, 4)
 	opts.OnFileComplete = func(_ string, fileIdx int) { completions <- fileIdx }
 	rejected := make(chan int32, 4)
-	opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) { rejected <- artIdx }
+	opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) { rejected <- artIdx }
 
 	a := startAssembler(t, opts)
 
