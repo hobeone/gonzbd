@@ -212,6 +212,31 @@ func TestStallReasons_ReportsEveryParkedJob(t *testing.T) {
 	}
 }
 
+// TestStallReasons_AgreesWithStallReasonPerKind pins the listing's render of
+// each kind against the single-job form and the exact prefix, since the two
+// readers render the same record independently.
+func TestStallReasons_AgreesWithStallReasonPerKind(t *testing.T) {
+	t.Parallel()
+	application, _, _ := newLifecycleTestApp(t)
+	fault := &storagefault.Fault{Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC}
+	application.noteStall("retryable", fault, stallRetryable, true)
+	application.noteStall("verify", fault, stallVerify, true)
+
+	got := application.StallReasons()
+
+	for id, want := range map[string]string{
+		"retryable": "Stalled: " + fault.Error(),
+		"verify":    "Stalled (resume to retry): " + fault.Error(),
+	} {
+		if got[id] != want {
+			t.Errorf("StallReasons()[%q] = %q, want %q", id, got[id], want)
+		}
+		if single := application.StallReason(id).Reason; single != got[id] {
+			t.Errorf("StallReason(%q) = %q, but StallReasons reports %q", id, single, got[id])
+		}
+	}
+}
+
 // TestDurableBytesOf_IsSafeOnAJobWithNoProgress pins the nil case the listing
 // can reach: Job.Progress() is nil for a job whose hydration failed, and a
 // panic in a queue poll takes the whole API down.
