@@ -699,7 +699,8 @@ honouring on-demand par2 after the user has turned it off
 call, and it composes two operations in one fixed order — identify each
 on-disk file against the par2 index by content (`Hash16k`, falling back to an
 unambiguous basename or a `{CRC32, size}` match), then verify the identified
-files against the CRC recorded during download — before reporting the renames
+files against the CRC recorded during download (a name match whose length is
+not par2's counts `Unverified` without a CRC compare, #837) — before reporting the renames
 that would relocate a file to its par2-recorded path. Identification and
 verification are different questions (which entry is this file, versus is that
 file intact), and computing both from one pre-rename read of the directory is

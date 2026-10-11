@@ -399,6 +399,47 @@ func TestPar2Verdict_NothingIdentifiedIsNotACleanVerdict(t *testing.T) {
 	}
 }
 
+// A single-file post whose one file is present under its par2 name at the
+// wrong length is damage to a file par2 protects, so the volumes are fetched
+// (outcomeRepair). It must not read as "nothing identified" (outcomeUnknown,
+// volumes held): the name says which entry the file is. Shorter is the common
+// case, a last article that failed; longer is a stale tail whose rows' CRC
+// still equals par2's (#837).
+func TestPar2Verdict_NameMatchOfTheWrongLengthFetches(t *testing.T) {
+	t.Parallel()
+	log := slog.New(slog.DiscardHandler)
+
+	payload, err := os.ReadFile("../../test/fixtures/par2/data.bin")
+	if err != nil {
+		t.Skipf("par2 payload fixture unavailable: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		body []byte
+		crc  uint32
+	}{
+		{"shorter, last article failed", payload[:len(payload)-1], 0},
+		{"longer, stale tail past rows whose CRC matches", append(append([]byte{}, payload...), 0xFF), 0x1068AFA6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			copyFixturePar2(t, dir) // protects data.bin, CRC32 0x1068AFA6
+			if err := os.WriteFile(filepath.Join(dir, "data.bin"), tc.body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			qjob := buildPar2Job(t, []par2FileSpec{
+				{subject: "data.bin", crc: tc.crc, bytes: 100},
+				{subject: "data.vol000+01.par2", bytes: 1},
+			})
+			if got, reason := assessVerdict(t, dir, qjob, log); got != outcomeRepair {
+				t.Errorf("outcome = %s (reason %q), want %s: data.bin is present at the wrong length, so the "+
+					"recovery volumes must be fetched", got, reason, outcomeRepair)
+			}
+		})
+	}
+}
+
 func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 	t.Parallel()
 	log := slog.New(slog.DiscardHandler)

@@ -306,15 +306,10 @@ func TestQuickCheckStage_IdentifiedEntryStaysDamaged(t *testing.T) {
 	t.Parallel()
 
 	job, dir := layoutBJob(t, "release.rar")
-	// Put the protected file in the directory too, under its own name and at
-	// the length par2 records (a name match of any other length is declined,
-	// #837), so the set identifies it by name and still has nothing to
+	// Put the protected file in the directory too, under its own name but
+	// truncated, so the set identifies it by name and still has nothing to
 	// verify it by: the manifest lists only release.rar.
-	descs, err := par2.ParseFileDescriptions(filepath.Join(dir, "feature.par2"))
-	if err != nil || len(descs) != 1 {
-		t.Fatalf("feature.par2 descriptions = %d, err %v; want exactly one", len(descs), err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "feature.bin"), make([]byte, descs[0].FileSize), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "feature.bin"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	qc, _, _ := layoutStages()
