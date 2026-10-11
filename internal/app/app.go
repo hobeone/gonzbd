@@ -693,13 +693,9 @@ func (app *Application) detectDuplicateNZB(ctx context.Context, md5, filename st
 	}
 	if !isDuplicate && filename != "" {
 		base := filepath.Base(filename)
-		// Check for gzipped backup (current format) and uncompressed (legacy).
 		if _, err := os.Stat(filepath.Join(nzbDir, base+".gz")); err == nil {
 			isDuplicate = true
 			dupReason = "found in admin/nzb/ backup dir (filename)"
-		} else if _, err := os.Stat(filepath.Join(nzbDir, base)); err == nil {
-			isDuplicate = true
-			dupReason = "found in admin/nzb/ backup dir (filename, legacy)"
 		}
 	}
 	if !isDuplicate {
