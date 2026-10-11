@@ -308,8 +308,9 @@ func (p *JobProgress) setFileFetchPolicy(fi int, policy FetchPolicy) {
 // par2 charge bytes for it, capped at the article's manifest size. WholeArticle
 // charges that whole size. A smaller count is for an article only part of
 // whose range is missing from the file, because other articles already wrote
-// the rest (#432); zero charges nothing. Any other negative charge is an error
-// and changes nothing.
+// the rest (#432); zero charges nothing, and such a failure is resolved but
+// not failed for the early-abort rate (#844). Any other negative charge is an
+// error and changes nothing.
 //
 // It does not require the manifest. A fetch can complete after its job was
 // evicted, so refusing an evicted job would lose the failure. Evicted, it

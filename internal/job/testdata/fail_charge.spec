@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run ^(TestMarkArticleFailedCharge_|TestClone_DoesNotShareTheChargeMap$)
+run ^(TestMarkArticleFailedCharge_|TestCheckEarlyAbort_IgnoresARefusalThatChargesNothing$|TestClone_DoesNotShareTheChargeMap$)
 
 # A failed article whose range other articles partly or wholly wrote is charged
 # only its uncovered bytes (#432). chargeOf is the one computation of that
@@ -150,4 +150,31 @@ file internal/job/content.go
 	if charge < 0 && charge != WholeArticle {
 --- replace
 	if charge < 0 {
+--- end
+
+# A failure charged nothing is resolved but not failed for the early-abort
+# rate (#844). Both writers of articlesFailed apply the rule.
+
+[the early-abort rate counts a zero charge as failed, live]
+file internal/job/progress.go
+--- anchor
+	if charge > 0 {
+		p.articlesFailed++
+	}
+--- replace
+	if charge >= 0 {
+		p.articlesFailed++
+	}
+--- end
+
+[the early-abort rate counts a zero charge as failed, recomputed]
+file internal/job/progress.go
+--- anchor
+					if charge > 0 {
+						failed++
+					}
+--- replace
+					if charge >= 0 {
+						failed++
+					}
 --- end

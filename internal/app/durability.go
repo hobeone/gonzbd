@@ -134,7 +134,8 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 // uncovered is the assembler's count of the article's bytes no written article
 // covers, or assembler.WholeArticle, which maps to job.WholeArticle. A count
 // is the charge Job.MarkArticleFailed records, so only those bytes go to par2:
-// the rest of the range is on disk, written by another article (#432).
+// the rest of the range is on disk, written by another article (#432). A
+// count of zero leaves the article out of the early-abort rate (#844).
 //
 // This is the other side of the A1 split from handleWriteFault: that one
 // stalls the job and touches no article, this one fails the article and

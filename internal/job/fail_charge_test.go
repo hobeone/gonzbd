@@ -1,6 +1,7 @@
 package job
 
 import (
+	"fmt"
 	"math"
 	"testing"
 )
@@ -229,6 +230,83 @@ func TestMarkArticleFailedCharge_ReleasesRecoveryOnlyForACharge(t *testing.T) {
 			}
 			if got := j.progress.files[1].Fetch; got != tc.want {
 				t.Errorf("recovery volume fetch policy = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCheckEarlyAbort_IgnoresARefusalThatChargesNothing pins #844: a refused
+// article whose whole range other articles wrote is charged nothing, so it is
+// resolved but not failed for the early-abort rate. A job whose every failure
+// is such a refusal loses no bytes and must not be aborted as hopeless, on the
+// live path, after a recompute, and when the failures land while the job is
+// evicted and are folded in at hydration. A charge of one byte fails each
+// article for the rate, which proves the fixture reaches the threshold.
+func TestCheckEarlyAbort_IgnoresARefusalThatChargesNothing(t *testing.T) {
+	const written, refused = 2, earlyAbortSample
+	newJob := func(t *testing.T) (*Job, *Manifest) {
+		t.Helper()
+		arts := make([]JobArticle, written+refused)
+		for i := range arts {
+			arts[i] = JobArticle{ID: fmt.Sprintf("<r%d@x>", i), Bytes: 100, Number: i + 1}
+		}
+		m := NewManifest([]JobFile{{Subject: "data.bin", Bytes: int64(100 * len(arts)), Articles: arts}})
+		j := New("refused", "refused", PolicyFromPP(3))
+		if err := j.AttachContent(m); err != nil {
+			t.Fatalf("AttachContent: %v", err)
+		}
+		for i := range written {
+			markWritten(t, j, i)
+		}
+		return j, m
+	}
+	failAll := func(t *testing.T, j *Job, charge int64) {
+		t.Helper()
+		for i := written; i < written+refused; i++ {
+			if err := j.MarkArticleFailed(i, charge); err != nil {
+				t.Fatalf("MarkArticleFailed(%d, %d): %v", i, charge, err)
+			}
+		}
+	}
+	paths := map[string]func(t *testing.T, charge int64) *Job{
+		"live": func(t *testing.T, charge int64) *Job {
+			j, _ := newJob(t)
+			failAll(t, j, charge)
+			return j
+		},
+		"recomputed": func(t *testing.T, charge int64) *Job {
+			j, _ := newJob(t)
+			failAll(t, j, charge)
+			j.contentMu.Lock()
+			j.progress.recompute(j.manifest)
+			j.contentMu.Unlock()
+			return j
+		},
+		"failed while evicted": func(t *testing.T, charge int64) *Job {
+			j, m := newJob(t)
+			j.Evict()
+			failAll(t, j, charge)
+			if err := j.RestoreContent(m); err != nil {
+				t.Fatalf("RestoreContent: %v", err)
+			}
+			return j
+		},
+	}
+	for name, run := range paths {
+		t.Run(name, func(t *testing.T) {
+			for _, tc := range []struct {
+				charge     int64
+				wantFailed int
+				wantAbort  bool
+			}{{0, 0, false}, {1, refused, true}} {
+				j := run(t, tc.charge)
+				if got := j.Progress().ArticlesFailed(); got != tc.wantFailed {
+					t.Errorf("charge %d: ArticlesFailed = %d, want %d", tc.charge, got, tc.wantFailed)
+				}
+				if got := j.CheckEarlyAbort(); got != tc.wantAbort {
+					t.Errorf("charge %d: CheckEarlyAbort = %v after %d refusals each charged %d bytes, want %v",
+						tc.charge, got, refused, tc.charge, tc.wantAbort)
+				}
 			}
 		})
 	}
