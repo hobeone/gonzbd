@@ -482,6 +482,15 @@ removal, returning `errPreemptedByRemoval`. Without that, a job admitted in
 that span is reachable by a removal it has nothing to do with: that removal's
 `Cancel` latches `IntentCancel` onto it, and its `end()` deregisters it.
 
+The same span is why a `Remove` can find its own job already gone. When an
+`Add` it preempted unwinds, or a concurrent `Remove` ends first, the job leaves
+`d.byID` while this `Remove`'s marker still stands, and its `Cancel` then
+reports `ErrNotFound`. `removeFor` treats that as success only when its own
+token observes the deregistration (`removal.deregisteredByPeer`): it finishes
+its remaining steps against the absent job and returns nil, because the job is
+neither cancelled nor registered and a retry could only fail the same way.
+`TestRemove_PeerDeregistrationDuringRemoveIsSuccess` pins it.
+
 `internal/dispatch/store` implements this against SQLite; `internal/dispatch`
 itself stays free of a SQL driver. `Persisted` deliberately omits a
 `crossed` field: it is derivable from `State` via

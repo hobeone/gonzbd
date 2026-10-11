@@ -511,6 +511,20 @@ func (r *removal) abort() {
 	}
 }
 
+// deregisteredByPeer reports whether another removal's end has already
+// deregistered this token's job. While this token is outstanding its marker
+// keeps register from admitting the ID (TestRegister_RefusesWhileARemovalIsOutstanding),
+// and deregister is reached only through end, so an absent ID was erased by a
+// peer token's end — Add's unwind, or a concurrent Remove — and not replaced.
+func (r *removal) deregisteredByPeer() bool {
+	if r == nil || r.done {
+		return false
+	}
+	r.d.mu.Lock()
+	defer r.d.mu.Unlock()
+	return r.d.byID[r.id] == nil
+}
+
 // end deregisters the job, completing the teardown.
 func (r *removal) end() {
 	if r == nil || r.done {
@@ -876,6 +890,13 @@ func (d *Dispatcher) ResumeJobByUser(id string) error {
 // Retry contract: If Remove returns an error (e.g. context cancellation while
 // waiting for worker, or store failure), the job remains cancelled and
 // registered, allowing the caller to retry Remove safely.
+//
+// A job that another removal deregisters while this one is outstanding — an
+// Add unwinding its own registration, or a concurrent Remove finishing first
+// — is gone, not cancelled and registered, so that is not an error: Remove
+// skips the Cancel it can no longer make, finishes its own steps against the
+// absent job and returns nil.
+// TestRemove_PeerDeregistrationDuringRemoveIsSuccess pins it.
 func (d *Dispatcher) Remove(ctx context.Context, id string) error {
 	return d.removeFor(ctx, id, nil)
 }
@@ -912,8 +933,15 @@ func (d *Dispatcher) removeFor(ctx context.Context, id string, expected *job.Job
 		}
 	}()
 
+	if d.removalBegunHook != nil {
+		d.removalBegunHook(id)
+	}
 	if err := d.Cancel(id); err != nil {
-		return fmt.Errorf("dispatch: remove %s: cancel: %w", id, err)
+		// Not-found with a peer's deregistration observed is the job already
+		// gone, which Remove's doc reports as success.
+		if !errors.Is(err, ErrNotFound) || !rm.deregisteredByPeer() {
+			return fmt.Errorf("dispatch: remove %s: cancel: %w", id, err)
+		}
 	}
 	if err := d.waitLaunched(ctx, id); err != nil {
 		return fmt.Errorf("dispatch: remove %s: wait worker: %w", id, err)
