@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -128,8 +127,8 @@ func TestRenameJob_RefusesAJobWhoseDownloadHasStarted(t *testing.T) {
 	if !ok {
 		t.Fatalf("job %s is gone", id)
 	}
-	if err := j.MarkJobStarted(time.Now()); err != nil {
-		t.Fatalf("MarkJobStarted: %v", err)
+	if err := j.SetFileFilename(0, "first.bin"); err != nil { // as the pipeline's registerFile does
+		t.Fatalf("SetFileFilename: %v", err)
 	}
 	if _, err := a.RenameJob(id, "elsewhere"); !errors.Is(err, dispatch.ErrJobStarted) {
 		t.Errorf("RenameJob after a download began = %v, want ErrJobStarted", err)
