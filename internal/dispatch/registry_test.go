@@ -374,6 +374,68 @@ func TestRestore_RefusedWhenAlreadyRestoredOrStopped(t *testing.T) {
 	}
 }
 
+// TestRestoreHelper_PhaseBranches drives restore(ctx, reuse) directly, branch
+// by branch: a failed Load returns the phase to unrestored, a successful one
+// settles it restored, reuse on a restored dispatcher neither reloads nor
+// refuses, a plain second call is refused, and a call while one is in
+// progress is refused without touching the phase.
+func TestRestoreHelper_PhaseBranches(t *testing.T) {
+	st := &fakeStore{loadErr: errors.New("database is locked")}
+	st.seed([]Persisted{{ID: "stored", SortKey: 1, Header: Header{Name: "stored"}}})
+	loads := 0
+	st.loadHook = func() { loads++ }
+	d := newTestDispatcher(t, withStore(st), unrestored())
+	phase := func() restorePhase {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.phase
+	}
+
+	if err := d.restore(context.Background(), false); err == nil {
+		t.Fatal("restore with a failing Load returned nil")
+	}
+	if got := phase(); got != phaseUnrestored {
+		t.Fatalf("phase after a failed Load = %d, want phaseUnrestored", got)
+	}
+
+	st.mu.Lock()
+	st.loadErr = nil
+	st.mu.Unlock()
+	if err := d.restore(context.Background(), false); err != nil {
+		t.Fatalf("restore after the Load error cleared: %v", err)
+	}
+	if got := phase(); got != phaseRestored {
+		t.Fatalf("phase after a successful restore = %d, want phaseRestored", got)
+	}
+
+	if err := d.restore(context.Background(), true); err != nil {
+		t.Fatalf("restore(reuse) on a restored dispatcher = %v, want nil", err)
+	}
+	if loads != 2 {
+		t.Errorf("Load ran %d times, want 2: reuse on a restored dispatcher must not reload", loads)
+	}
+	if got := len(d.List()); got != 1 {
+		t.Errorf("registry holds %d jobs after reuse, want 1", got)
+	}
+	if err := d.restore(context.Background(), false); !errors.Is(err, errAlreadyRestored) {
+		t.Errorf("second restore = %v, want errAlreadyRestored", err)
+	}
+
+	busy := newTestDispatcher(t, unrestored())
+	busy.mu.Lock()
+	busy.phase = phaseRestoring
+	busy.mu.Unlock()
+	if err := busy.restore(context.Background(), true); err == nil {
+		t.Error("restore while one is in progress returned nil")
+	}
+	busy.mu.Lock()
+	got := busy.phase
+	busy.mu.Unlock()
+	if got != phaseRestoring {
+		t.Errorf("a refused restore moved the phase to %d", got)
+	}
+}
+
 // TestAdd_RefusedWhileRestoring pins that a job cannot be interleaved into the
 // registry while restore is rebuilding it.
 //
