@@ -669,6 +669,18 @@ func (j *Job) RecordFileFilename(fileIdx int, name, filename string) error {
 	return nil
 }
 
+// FileLocation returns the job's name and file fileIdx's recorded filename
+// ("" when none is recorded, the job has no progress, or the index names no
+// file), read together under j.mu and contentMu. SetName writes the name under
+// j.mu, so no rename falls between the two reads.
+func (j *Job) FileLocation(fileIdx int) (name, filename string) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	return j.name, j.progress.FileFilename(fileIdx)
+}
+
 // ClearEmittedForReload resets Emitted and Failed flags for reload.
 func (j *Job) ClearEmittedForReload(skipEmitted bool) (cleared, retained []int32) {
 	j.contentMu.Lock()

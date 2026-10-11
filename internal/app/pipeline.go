@@ -122,8 +122,8 @@ type pipeline struct {
 	// (Application.markFileDirty).
 	markDirty func(j *job.Job, fileIdx int)
 
-	// nameReadHook, when non-nil, runs in registerFile between its read of
-	// the job's name and its recording of the file's filename.
+	// nameReadHook, when non-nil, runs once per registerFile attempt, right
+	// after it reads the job's name and before it records the file's filename.
 	nameReadHook func(j *job.Job)
 
 	// ctx is the context passed to run(); stored so setCompletions can
@@ -531,15 +531,12 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 	jobID := j.ID()
 	key := fileKey{jobID: jobID, fileIdx: fileIdx}
 
-	// The filename is read before the name. A file with a filename makes
-	// DownloadBegun true and Job.SetName refuses every rename after it, so the
-	// name read next is final; read the other way round, a rename and a
-	// filename recorded under the new name could both land between the reads.
-	var filename string
-	if prog := j.Progress(); prog != nil {
-		filename = prog.FileFilename(fileIdx)
+	// One read of both: a file with a filename makes DownloadBegun true, so
+	// Job.SetName refuses every later rename and name is final.
+	name, filename := j.FileLocation(fileIdx)
+	if p.nameReadHook != nil {
+		p.nameReadHook(j)
 	}
-	name := j.Name()
 
 	p.mu.Lock()
 
@@ -595,9 +592,6 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 		Owned:        ownedRanges(j.FileRows(fileIdx)),
 	}
 
-	if p.nameReadHook != nil {
-		p.nameReadHook(j)
-	}
 	p.mu.Lock()
 	// Third check: another goroutine may have raced us and already
 	// registered this file while we were doing unlocked disk I/O above.

@@ -176,3 +176,30 @@ func TestRegisterFileAttempt_ReportsARenameInItsWindow(t *testing.T) {
 		t.Errorf("second attempt registered the file under %q, want renamed", got)
 	}
 }
+
+// TestRegisterFile_DoesNotRetryOtherFailures pins that registerFile retries
+// only job.ErrNameChanged: an attempt that fails for another reason (here the
+// job is evicted, so its unfinished articles cannot be counted) ends the call
+// after one attempt.
+func TestRegisterFile_DoesNotRetryOtherFailures(t *testing.T) {
+	t.Parallel()
+	a, id := renameFixture(t)
+	j, ok := a.Dispatcher().Job(id)
+	if !ok {
+		t.Fatalf("job %s is gone", id)
+	}
+	p := helperPipeline(t, a.Dispatcher())
+
+	n := 0
+	p.nameReadHook = func(j *job.Job) {
+		n++
+		j.Evict()
+	}
+	err := p.registerFile(j, 0)
+	if err == nil || errors.Is(err, job.ErrNameChanged) {
+		t.Fatalf("registerFile = %v, want the eviction's error", err)
+	}
+	if n != 1 {
+		t.Errorf("registerFile made %d attempts after a failure that is not a rename, want 1", n)
+	}
+}

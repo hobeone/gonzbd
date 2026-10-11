@@ -1070,8 +1070,8 @@ func (d *Dispatcher) SetName(id, name string) error {
 	return nil
 }
 
-// LoadProgress hydrates a registered job that has no JobProgress yet, and
-// records the load as reconcileResidency does, so a later tick evicts it when
+// LoadProgress hydrates a registered job that is not resident, and records
+// the load as reconcileResidency does, so a later tick evicts it when
 // the job holds nothing and is not paused: reconcileResidency's eviction arm
 // skips IntentPause, so a paused job stays resident until it is resumed or
 // removed. Hydration verifies the job's written articles, so
@@ -1085,17 +1085,28 @@ func (d *Dispatcher) SetName(id, name string) error {
 // returned, for every job restored paused at Fetching, which no tick hydrates
 // until it is resumed.
 //
+// It calls Hydrate even for a job that has progress, because Hydrate waits
+// for a hydration in flight: one that has attached the job's content but not
+// yet installed its verified filenames reports progress with no filename
+// set, and SetName must not read DownloadBegun from it. The application's
+// Hydrate (appResidency) returns at once for a resident job with none in
+// flight.
+//
 // It does disk I/O, so it takes no lock across Hydrate (D-B9). A job that is
-// not registered, or already has progress, is left alone.
+// not registered is left alone. The load is recorded only for a job that was
+// not resident before it.
 func (d *Dispatcher) LoadProgress(ctx context.Context, id string) error {
 	j, ok := d.Job(id)
-	if !ok || j.HasProgress() {
+	if !ok {
 		return nil
 	}
+	wasResident := j.Resident()
 	if err := d.res.Hydrate(ctx, id); err != nil {
 		return fmt.Errorf("dispatch: load progress %s: %w", id, err)
 	}
-	d.markResident(id)
+	if !wasResident {
+		d.markResident(id)
+	}
 	return nil
 }
 
