@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/humanfmt"
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -142,8 +146,83 @@ func TestQueueList_TimeleftZeroWhenNothingDownloads(t *testing.T) {
 	}
 }
 
-// TestQueueList_StatusFromSlots pins #735: the queue-level status is
-// Downloading only while some job is actually downloading.
+// TestQueueList_TimeleftZeroWhileOnlyWaiting pins that timeleft follows a
+// job actually downloading, not the status string: a queue whose only job is
+// waiting to start reads Downloading but has no ETA.
+func TestQueueList_TimeleftZeroWhileOnlyWaiting(t *testing.T) {
+	t.Parallel()
+	s, q := testUnstartedQueueServer(t, 2*1024*1024)
+	// 10 MiB at 2 MiB/s would be a 5 s ETA if timeleft keyed on the status.
+	tj := addNamedLargeTestJob(t, q, "waiting", 10)
+	if row, ok := q.disp.Row(tj.ID); !ok || row.View.Running || row.View.State != job.StateUnset {
+		t.Fatalf("setup: want a job not yet started, got ok=%v view=%+v", ok, row.View)
+	}
+	got := getQueueLevel(t, s, "")
+	if got.Status != "Downloading" {
+		t.Fatalf("setup: status = %q; want Downloading", got.Status)
+	}
+	if got.Timeleft != "0:00:00" {
+		t.Errorf("timeleft = %q; want 0:00:00 while no job is fetching", got.Timeleft)
+	}
+}
+
+// addPostProcJob queues a job and moves it past Fetching into a running
+// post-processing state.
+func addPostProcJob(t *testing.T, q *testQueueWrapper, filename string) *testJob {
+	t.Helper()
+	tj := addTestJob(t, q, testAddOptions{Filename: filename})
+	if err := q.SetStatusIf(tj.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
+		t.Fatalf("SetStatusIf: %v", err)
+	}
+	if _, err := q.SetPostProcStarted(tj.ID); err != nil {
+		t.Fatalf("SetPostProcStarted: %v", err)
+	}
+	row, ok := q.disp.Row(tj.ID)
+	if !ok || !row.View.Running || row.View.State == job.Fetching {
+		t.Fatalf("setup: want a running job past Fetching, got ok=%v view=%+v", ok, row.View)
+	}
+	return tj
+}
+
+// addHeldJob queues a job and pauses it individually.
+func addHeldJob(t *testing.T, q *testQueueWrapper, opts testAddOptions) *testJob {
+	t.Helper()
+	tj := addTestJob(t, q, opts)
+	if err := q.Pause(tj.ID); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	return tj
+}
+
+// testUnstartedQueueServer is testQueueServerWithSpeed over a dispatcher whose
+// tick loop never runs, so a queued job stays not-yet-started for the whole
+// test instead of racing the loop for a lease.
+func testUnstartedQueueServer(t *testing.T, speed float64) (*Server, *testQueueWrapper) {
+	t.Helper()
+	d := dispatch.New(2, 2, time.Hour, time.Now, &apiStubWorkers{}, &apiStubResidency{}, &apiStubStore{}, &apiStubRunner{})
+	s := New(Options{
+		Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+		Dispatcher: d,
+		App:        apitest.NopApp{Dispatcher: d, SpeedVal: speed},
+	})
+	return s, &testQueueWrapper{disp: d}
+}
+
+// addWaitingJob queues a job that has not started: not running, not paused.
+// Use it on a testUnstartedQueueServer, where no tick can start the job.
+func addWaitingJob(t *testing.T, q *testQueueWrapper, filename string) *testJob {
+	t.Helper()
+	tj := addTestJob(t, q, testAddOptions{Filename: filename})
+	row, ok := q.disp.Row(tj.ID)
+	if !ok || row.View.Running || row.View.Reason.IsPause() || row.View.State != job.StateUnset {
+		t.Fatalf("setup: want a job not yet started and not paused, got ok=%v view=%+v", ok, row.View)
+	}
+	return tj
+}
+
+// TestQueueList_StatusFromSlots pins #735: the queue-level status says
+// Paused only for a pause (global, or a job held by one), Downloading while a
+// job downloads or waits to, and Idle otherwise.
 func TestQueueList_StatusFromSlots(t *testing.T) {
 	t.Parallel()
 
@@ -170,7 +249,7 @@ func TestQueueList_StatusFromSlots(t *testing.T) {
 			t.Fatal("queue.paused = true; this case needs the global pause off")
 		}
 		if got.Status != "Paused" {
-			t.Errorf("status = %q; want Paused (nothing is downloading)", got.Status)
+			t.Errorf("status = %q; want Paused (a job is held)", got.Status)
 		}
 	})
 
@@ -181,10 +260,7 @@ func TestQueueList_StatusFromSlots(t *testing.T) {
 		if err := q.SetStatusIf(dl.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
 			t.Fatalf("SetStatusIf: %v", err)
 		}
-		held := addTestJob(t, q, testAddOptions{Filename: "held.nzb", Category: "tv"})
-		if err := q.Pause(held.ID); err != nil {
-			t.Fatalf("pause: %v", err)
-		}
+		addHeldJob(t, q, testAddOptions{Filename: "held.nzb", Category: "tv"})
 		if got := getQueueLevel(t, s, ""); got.Status != "Downloading" {
 			t.Errorf("status = %q; want Downloading", got.Status)
 		}
@@ -195,24 +271,41 @@ func TestQueueList_StatusFromSlots(t *testing.T) {
 		}
 	})
 
-	// Downloading means fetching articles: a running job past Fetching is not
-	// downloading, so a queue holding only that job is not either.
-	t.Run("only job post-processing is not Downloading", func(t *testing.T) {
+	t.Run("only job waiting to start is Downloading", func(t *testing.T) {
+		t.Parallel()
+		s, q := testUnstartedQueueServer(t, 0)
+		addWaitingJob(t, q, "waiting.nzb")
+		if got := getQueueLevel(t, s, ""); got.Status != "Downloading" {
+			t.Errorf("status = %q; want Downloading (a job waits for a slot)", got.Status)
+		}
+	})
+
+	t.Run("a waiting job beside a paused one is Downloading", func(t *testing.T) {
+		t.Parallel()
+		s, q := testUnstartedQueueServer(t, 0)
+		addHeldJob(t, q, testAddOptions{Filename: "held.nzb"})
+		addWaitingJob(t, q, "waiting.nzb")
+		if got := getQueueLevel(t, s, ""); got.Status != "Downloading" {
+			t.Errorf("status = %q; want Downloading (waiting outranks held)", got.Status)
+		}
+	})
+
+	t.Run("only job post-processing is Idle", func(t *testing.T) {
 		t.Parallel()
 		s, q := testQueueServer(t)
-		tj := addTestJob(t, q, testAddOptions{Filename: "pp.nzb"})
-		if err := q.SetStatusIf(tj.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
-			t.Fatalf("SetStatusIf: %v", err)
+		addPostProcJob(t, q, "pp.nzb")
+		if got := getQueueLevel(t, s, ""); got.Status != "Idle" {
+			t.Errorf("status = %q; want Idle (nothing downloads, waits, or is held)", got.Status)
 		}
-		if _, err := q.SetPostProcStarted(tj.ID); err != nil {
-			t.Fatalf("SetPostProcStarted: %v", err)
-		}
-		row, ok := q.disp.Row(tj.ID)
-		if !ok || !row.View.Running || row.View.State == job.Fetching {
-			t.Fatalf("setup: want a running job past Fetching, got ok=%v view=%+v", ok, row.View)
-		}
+	})
+
+	t.Run("a paused job beside a post-processing one is Paused", func(t *testing.T) {
+		t.Parallel()
+		s, q := testQueueServer(t)
+		addPostProcJob(t, q, "pp.nzb")
+		addHeldJob(t, q, testAddOptions{Filename: "held.nzb"})
 		if got := getQueueLevel(t, s, ""); got.Status != "Paused" {
-			t.Errorf("status = %q; want Paused (nothing is downloading)", got.Status)
+			t.Errorf("status = %q; want Paused (a job is held)", got.Status)
 		}
 	})
 

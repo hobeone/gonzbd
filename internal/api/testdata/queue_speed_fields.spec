@@ -1,42 +1,53 @@
 pkg ./internal/api/
-run TestQueueList_SpeedFields|TestQueueList_TimeleftZeroWhenPaused|TestQueueList_TimeleftZeroWhenNothingDownloads|TestFormatSpeed
+run TestQueueList_SpeedFields|TestQueueList_TimeleftZeroWhenPaused|TestQueueList_TimeleftZeroWhenNothingDownloads|TestQueueList_TimeleftZeroWhileOnlyWaiting|TestFormatSpeed
 
 [listing speed back to the literal (#734)]
 file internal/api/queue.go
 --- anchor
 	speedStr, kbPerSec := queueSpeedFields(speed)
-	timeleft := queueTimeleft(speed, remainQueueBytes, qStatus == "Downloading")
+	timeleft := queueTimeleft(speed, remainQueueBytes, downloading)
 --- replace
 	_, kbPerSec := queueSpeedFields(speed)
 	speedStr := "0"
-	timeleft := queueTimeleft(speed, remainQueueBytes, qStatus == "Downloading")
+	timeleft := queueTimeleft(speed, remainQueueBytes, downloading)
 --- end
 
 [listing kbpersec back to the literal (#734)]
 file internal/api/queue.go
 --- anchor
 	speedStr, kbPerSec := queueSpeedFields(speed)
-	timeleft := queueTimeleft(speed, remainQueueBytes, qStatus == "Downloading")
+	timeleft := queueTimeleft(speed, remainQueueBytes, downloading)
 --- replace
 	speedStr, _ := queueSpeedFields(speed)
 	kbPerSec := "0"
-	timeleft := queueTimeleft(speed, remainQueueBytes, qStatus == "Downloading")
+	timeleft := queueTimeleft(speed, remainQueueBytes, downloading)
 --- end
 
 [listing timeleft back to the literal (#734)]
 file internal/api/queue.go
 --- anchor
-	timeleft := queueTimeleft(speed, remainQueueBytes, qStatus == "Downloading")
+	timeleft := queueTimeleft(speed, remainQueueBytes, downloading)
 --- replace
+	_ = downloading
 	timeleft := "0:00:00"
 --- end
 
 [listing timeleft gated on the global pause alone]
 file internal/api/queue.go
 --- anchor
-	timeleft := queueTimeleft(speed, remainQueueBytes, qStatus == "Downloading")
+	timeleft := queueTimeleft(speed, remainQueueBytes, downloading)
 --- replace
+	_ = downloading
 	timeleft := queueTimeleft(speed, remainQueueBytes, !paused)
+--- end
+
+[listing timeleft gated on the status string, not a fetching job]
+file internal/api/queue.go
+--- anchor
+	timeleft := queueTimeleft(speed, remainQueueBytes, downloading)
+--- replace
+	_ = downloading
+	timeleft := queueTimeleft(speed, remainQueueBytes, qStatus == "Downloading")
 --- end
 
 [queueTimeleft ignores downloading]

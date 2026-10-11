@@ -1024,17 +1024,18 @@ to `modeConfig`'s default branch (`internal/api/config.go`).
 
 GoNZBD's queue-level fields (`internal/api/queue.go`, `queueList`):
 
-- `status` describes the whole queue, whatever the filters select: `Paused`
-  while the global pause is on, `Idle` when the queue is empty, `Downloading`
-  while at least one job is downloading, and otherwise `Paused` — including
-  when every job is individually paused and the global pause is off.
+- `status` describes the whole queue, whatever the filters select. The first
+  rule that applies wins: `Paused` while the global pause is on; `Downloading`
+  while a job is downloading, or is waiting to download and not paused;
+  `Paused` while a job is individually paused; otherwise `Idle` — an empty
+  queue, or one holding only post-processing jobs.
 - `mb`, `mbleft`, `size` and `sizeleft` total every slot the `cat`, `status`
   and `search` filters select, before `start` and `limit` cut the page.
 - `speed` and `kbpersec` render one speed snapshot per request: `speed` in
   B/s, KB/s or MB/s with one decimal (binary units), `kbpersec` as KiB/s with
   one decimal. `timeleft` is `mbleft` over that speed as `h:mm:ss`, and
-  `0:00:00` unless `status` is `Downloading` and the speed is at least
-  1 KiB/s. The `nzo_id=…&files=1` detail response reports that job's own
+  `0:00:00` unless a job is actually downloading (not merely waiting to)
+  and the speed is above 1 KiB/s. The `nzo_id=…&files=1` detail response reports that job's own
   `timeleft` instead.
 
 ---
