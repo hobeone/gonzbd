@@ -230,6 +230,61 @@ func TestHistoryDefault_SearchFilter(t *testing.T) {
 	}
 }
 
+// historyCategoryNames returns the names of the slots a history request
+// returns, in response order.
+func historyCategoryNames(t *testing.T, s *Server, query string) []string {
+	t.Helper()
+	rr := apiGet(t, s.Handler(), "/api?mode=history&"+query+"&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		History struct {
+			Slots []struct {
+				Name string `json:"name"`
+			} `json:"slots"`
+		} `json:"history"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	names := make([]string, 0, len(resp.History.Slots))
+	for _, sl := range resp.History.Slots {
+		names = append(names, sl.Name)
+	}
+	return names
+}
+
+// TestHistoryDefault_CategoryFilterNames pins that mode=history filters on
+// either parameter name (docs/sabnzbd_spec.md §10.4 documents "category"),
+// and that "cat" wins when both are present.
+func TestHistoryDefault_CategoryFilterNames(t *testing.T) {
+	t.Parallel()
+	s, repo := testHistoryServer(t)
+
+	now := time.Now()
+	seedEntry(t, repo, "ShowA", "Completed", "tv", now)
+	seedEntry(t, repo, "MovieA", "Completed", "movies", now.Add(-time.Hour))
+
+	tests := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{"cat", "cat=tv", []string{"ShowA"}},
+		{"category", "category=movies", []string{"MovieA"}},
+		{"cat wins over category", "cat=tv&category=movies", []string{"ShowA"}},
+		{"empty cat falls back to category", "cat=&category=movies", []string{"MovieA"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := historyCategoryNames(t, s, tt.query); !slices.Equal(got, tt.want) {
+				t.Errorf("names for %q = %v; want %v", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
 // --- Delete ---
 
 func TestHistoryDelete_Single(t *testing.T) {
@@ -523,29 +578,56 @@ func TestHistoryStageLog(t *testing.T) {
 }
 
 func TestParseStageLog_Empty(t *testing.T) {
-	result := parseStageLog("")
+	result := parseStageLog(t.Context(), slog.New(slog.DiscardHandler), "nzo1", "")
 	if len(result) != 0 {
 		t.Errorf("parseStageLog(\"\") returned %d entries; want 0", len(result))
 	}
 }
 
 func TestParseStageLog_Null(t *testing.T) {
-	result := parseStageLog("null")
+	result := parseStageLog(t.Context(), slog.New(slog.DiscardHandler), "nzo1", "null")
 	if len(result) != 0 {
 		t.Errorf("parseStageLog(\"null\") returned %d entries; want 0", len(result))
 	}
 }
 
 func TestParseStageLog_InvalidJSON(t *testing.T) {
-	result := parseStageLog("{broken")
+	result := parseStageLog(t.Context(), slog.New(slog.DiscardHandler), "nzo1", "{broken")
 	if len(result) != 0 {
 		t.Errorf("parseStageLog(broken) returned %d entries; want 0", len(result))
 	}
 }
 
+// TestParseStageLog_WarnsOnlyOnCorruption pins that malformed JSON is logged
+// with the entry id (our own writer cannot produce it, so it is corruption),
+// while the normal no-stages values "" and "null" stay silent.
+func TestParseStageLog_WarnsOnlyOnCorruption(t *testing.T) {
+	t.Parallel()
+	const msg = "history stage_log is not valid JSON"
+
+	rec := &recordHandler{}
+	log := slog.New(rec)
+	if got := parseStageLog(t.Context(), log, "nzo-bad", "{broken"); got == nil || len(got) != 0 {
+		t.Errorf("parseStageLog(broken) = %#v; want empty non-nil slice", got)
+	}
+	if !rec.hasWarn(msg, "nzo-bad", "invalid character") {
+		t.Errorf("expected warning not found in records: %v", rec.records)
+	}
+
+	quiet := &recordHandler{}
+	for _, raw := range []string{"", "null"} {
+		if got := parseStageLog(t.Context(), slog.New(quiet), "nzo-ok", raw); got == nil || len(got) != 0 {
+			t.Errorf("parseStageLog(%q) = %#v; want empty non-nil slice", raw, got)
+		}
+	}
+	if len(quiet.records) != 0 {
+		t.Errorf("empty and null stage logs logged %d records; want 0", len(quiet.records))
+	}
+}
+
 func TestParseStageLog_ValidEntries(t *testing.T) {
 	input := `[{"Stage":"repair","Elapsed":2500000000,"Err":null,"Lines":["All files are correct"]},{"Stage":"unpack","Elapsed":5300000000,"Err":null,"Lines":["Extracted: movie.mkv"]}]`
-	result := parseStageLog(input)
+	result := parseStageLog(t.Context(), slog.New(slog.DiscardHandler), "nzo1", input)
 	if len(result) != 2 {
 		t.Fatalf("parseStageLog returned %d entries; want 2", len(result))
 	}
@@ -570,7 +652,7 @@ func TestParseStageLog_ValidEntries(t *testing.T) {
 func TestParseStageLog_WithError(t *testing.T) {
 	errMsg := "repair failed: too many blocks missing"
 	input := fmt.Sprintf(`[{"Stage":"repair","Elapsed":1000000000,"Err":%q,"Lines":[]}]`, errMsg)
-	result := parseStageLog(input)
+	result := parseStageLog(t.Context(), slog.New(slog.DiscardHandler), "nzo1", input)
 	if len(result) != 1 {
 		t.Fatalf("parseStageLog returned %d entries; want 1", len(result))
 	}
