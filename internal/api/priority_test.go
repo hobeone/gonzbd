@@ -84,7 +84,7 @@ func TestQueuePriority_DefaultResolvesThroughCategory(t *testing.T) {
 // defined set answer 400 and leave the job's priority as it was.
 func TestQueuePriority_RefusesNonPriorities(t *testing.T) {
 	t.Parallel()
-	for _, v := range []string{"-4", "5", "7", "-3", "300", "-129", "abc"} {
+	for _, v := range []string{"3", "-4", "5", "7", "-3", "300", "-129", "abc"} {
 		t.Run(v, func(t *testing.T) {
 			t.Parallel()
 			s, q := testQueueServer(t)
@@ -194,7 +194,7 @@ func TestAddFile_PausedPriority(t *testing.T) {
 // no job.
 func TestAddFile_RefusesNonPriorities(t *testing.T) {
 	t.Parallel()
-	for _, v := range []string{"-4", "7", "300", "abc"} {
+	for _, v := range []string{"3", "-4", "7", "300", "abc"} {
 		t.Run(v, func(t *testing.T) {
 			t.Parallel()
 			s, _ := testQueueServer(t)
@@ -209,17 +209,22 @@ func TestAddFile_RefusesNonPriorities(t *testing.T) {
 	}
 }
 
-// TestAddURL_RefusesNonPriority pins that addurl refuses Stop before fetching:
-// the URL names nothing that answers, so a fetch would be a 502.
+// TestAddURL_RefusesNonPriority pins that addurl refuses Stop and Repair before
+// fetching: the URL names nothing that answers, so a fetch would be a 502.
 func TestAddURL_RefusesNonPriority(t *testing.T) {
 	t.Parallel()
-	s, _ := testQueueServer(t)
-	s.grabber = urlgrabber.New(urlgrabber.Config{AllowPrivateIPs: true}, mockGrabberHandler{id: "nzo_test1"})
+	for _, v := range []string{"-4", "3"} {
+		t.Run(v, func(t *testing.T) {
+			t.Parallel()
+			s, _ := testQueueServer(t)
+			s.grabber = urlgrabber.New(urlgrabber.Config{AllowPrivateIPs: true}, mockGrabberHandler{id: "nzo_test1"})
 
-	rr := apiGet(t, s.Handler(),
-		"/api?mode=addurl&name=http%3A%2F%2F127.0.0.1%3A1%2Fx.nzb&priority=-4&apikey="+testAPIKey)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d; want 400 (body: %s)", rr.Code, rr.Body.String())
+			rr := apiGet(t, s.Handler(),
+				"/api?mode=addurl&name=http%3A%2F%2F127.0.0.1%3A1%2Fx.nzb&priority="+v+"&apikey="+testAPIKey)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d; want 400 (body: %s)", rr.Code, rr.Body.String())
+			}
+		})
 	}
 }
 

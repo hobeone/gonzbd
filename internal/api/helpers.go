@@ -98,17 +98,20 @@ func priorityParam(r *http.Request) (constants.Priority, error) {
 	return parsePriority(s)
 }
 
-// parsePriority parses a priority a client asked for: a concrete priority
-// (constants.Priority.IsConcrete), Paused or Default, which
-// config.ResolvePriority resolves. Stop, any other number and a non-number
-// are an error. The add modes reach it through priorityParam, name=priority
-// directly.
+// parsePriority parses a priority a client asked for: Force, High, Normal or
+// Low, or Paused or Default, which config.ResolvePriority resolves. Repair,
+// which is reserved for internal use, Stop, any other number and a
+// non-number are an error. The add modes reach it through priorityParam,
+// name=priority directly.
 func parsePriority(s string) (constants.Priority, error) {
 	n, err := strconv.Atoi(s)
 	if err != nil || n < -128 || n > 127 {
 		return 0, fmt.Errorf("invalid priority %q", s)
 	}
 	p := constants.Priority(n) //nolint:gosec // G115: range checked above
+	if p == constants.RepairPriority {
+		return 0, fmt.Errorf("invalid priority %q: Repair is reserved for internal use", s)
+	}
 	if !p.IsConcrete() && p != constants.PausedPriority && p != constants.DefaultPriority {
 		return 0, fmt.Errorf("invalid priority %q: not a priority a job can be given", s)
 	}

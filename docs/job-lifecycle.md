@@ -847,8 +847,8 @@ Default/`*` category, to Normal. Paused pauses the job — `SetIntent(IntentPaus
 at ingest, `PauseJob` for a queued job — and the job holds what the same chain
 gives, so a resume leaves it at its category's rank rather than behind Low. A
 category whose priority is Paused pauses the jobs that inherit from it the
-same way. The API refuses `StopPriority` (-4) and undefined values as a
-requested priority (`parsePriority`, `internal/api/helpers.go`).
+same way. The API refuses `RepairPriority` (3), which is reserved for
+internal use, `StopPriority` (-4) and undefined values as a requested priority (`parsePriority`, `internal/api/helpers.go`).
 
 `ForcePriority` orders first and does nothing else: it obeys the global pause
 like every other priority, unlike SABnzbd's Force.

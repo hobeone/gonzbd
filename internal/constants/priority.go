@@ -33,7 +33,8 @@ type Priority int8
 // brittle and error-prone.
 const (
 	// RepairPriority is reserved for internal par2-repair jobs that must
-	// run ahead of normal user work.
+	// run ahead of normal user work. A job can hold it (IsConcrete), but
+	// the API refuses it as a priority a client asks for.
 	RepairPriority Priority = 3
 
 	// ForcePriority schedules ahead of HighPriority work. It obeys the

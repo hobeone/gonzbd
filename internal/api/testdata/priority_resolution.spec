@@ -81,6 +81,14 @@ file internal/api/helpers.go
 	if !p.IsConcrete() && p != constants.PausedPriority && p != constants.DefaultPriority && p != constants.StopPriority {
 --- end
 
+[parsePriority admits Repair]
+file internal/api/helpers.go
+--- anchor
+	if p == constants.RepairPriority {
+--- replace
+	if false {
+--- end
+
 [parsePriority truncates out-of-range values]
 file internal/api/helpers.go
 --- anchor

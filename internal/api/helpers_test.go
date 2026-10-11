@@ -69,7 +69,7 @@ func TestPriorityParam(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid priority", "/api?priority=2", constants.ForcePriority, false},
-		{"Repair", "/api?priority=3", constants.RepairPriority, false},
+		{"Repair is internal", "/api?priority=3", 0, true},
 		{"Paused", "/api?priority=-2", constants.PausedPriority, false},
 		{"explicit Default", "/api?priority=-100", constants.DefaultPriority, false},
 		{"missing priority", "/api", constants.DefaultPriority, false},
