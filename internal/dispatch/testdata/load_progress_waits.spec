@@ -17,6 +17,14 @@ file internal/dispatch/registry.go
 	wasResident := j.Resident()
 --- end
 
+[LoadProgress treats an evicted job with progress as resident]
+file internal/dispatch/registry.go
+--- anchor
+	wasResident := j.Resident()
+--- replace
+	wasResident := j.HasProgress()
+--- end
+
 [LoadProgress records a load for a job already resident]
 file internal/dispatch/registry.go
 --- anchor

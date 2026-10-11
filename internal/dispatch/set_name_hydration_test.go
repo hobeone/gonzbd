@@ -89,7 +89,8 @@ func TestSetName_WaitsForAHydrationInstallingFilenames(t *testing.T) {
 }
 
 // TestLoadProgress_RecordsOnlyALoadItMade pins that LoadProgress records a
-// load (markResident) for a job it hydrated and not for one already resident:
+// load (markResident) for a job it hydrated, whether it had no progress or was
+// evicted with progress, and not for one already resident:
 // a freshly added job holds its content without a recorded load, and a rename
 // that only waited on Hydrate must not make it a candidate for the tick's
 // eviction.
@@ -122,5 +123,35 @@ func TestLoadProgress_RecordsOnlyALoadItMade(t *testing.T) {
 	}
 	if !d2.isResident("restored") {
 		t.Error("LoadProgress did not record the load it made")
+	}
+
+	// An evicted job keeps its progress: LoadProgress reloads its manifest
+	// through Hydrate and records that load too.
+	fr := &fakeResidency{}
+	d3 := newTestDispatcher(t, withResidency(fr))
+	ev := job.New("evicted", "evicted", job.PolicyFromPP(3))
+	if err := ev.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	if err := d3.Add(context.Background(), ev, Header{Name: "evicted"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	ev.Evict()
+	if !ev.HasProgress() || ev.Resident() {
+		t.Fatal("the evicted job does not have progress without a manifest")
+	}
+	fr.onHydrate = func(string) {
+		if err := ev.RestoreContent(m); err != nil {
+			t.Errorf("RestoreContent: %v", err)
+		}
+	}
+	if err := d3.LoadProgress(context.Background(), "evicted"); err != nil {
+		t.Fatalf("LoadProgress: %v", err)
+	}
+	if !ev.Resident() {
+		t.Error("LoadProgress did not reload an evicted job's manifest")
+	}
+	if !d3.isResident("evicted") {
+		t.Error("LoadProgress did not record the load it made for an evicted job")
 	}
 }
