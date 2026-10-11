@@ -27,7 +27,7 @@ type JobProgress struct {
 	// The done bit is what marks an article as resolved, and nothing sets it
 	// from dispatch. Its doors are MarkArticleWritten, which the recorder
 	// calls once the article's WriteAt has returned (internal/app/record.go);
-	// installRows, through InstallVerified and InstallCompleteFile, which
+	// installRows, through InstallVerified and InstallFileVerification, which
 	// install rows a restart or retry read back and fsynced, or rows of a
 	// complete=1 file whose fsync preceded the flag; and setFailedBits, for
 	// an article whose bytes will never arrive (that failure is in memory
@@ -56,10 +56,11 @@ type JobProgress struct {
 	// a recompute: clearDone, which every path returning a Done article to
 	// Outstanding calls (UntrustFile through markNotDone, ClearEmittedForReload
 	// through resetForReload, and ResetForRetry), each of which recomputes;
-	// and the evicted branches of MarkArticleFailed (setFailedBits) and
+	// and the evicted branches of markArticleFailed (setFailedBits) and
 	// ClearArticleEmitted, which RestoreContent's recompute folds in at the
 	// next hydration. A restart sets no bit directly: it installs through
-	// markDone (installRows) and markFailed (InstallCompleteFile).
+	// markDone (installRows) and markFailed, both from
+	// InstallFileVerification.
 	// TestBitsetWriters_MatchTheEnumerationStatedInProse pins the writers of
 	// each Set and Clear.
 	done, failed, emitted bitset
@@ -166,7 +167,7 @@ type FileProgress struct {
 	// m.ArticleBytes(i) summed over the failed set. The manifest knows an
 	// article's size whether or not it was ever fetched. The failed set itself
 	// is in memory only: across a restart a complete=1 file rebuilds it as the
-	// complement of its written rows (InstallCompleteFile), and a complete=0
+	// complement of its written rows (InstallFileVerification), and a complete=0
 	// file's failed articles are Outstanding again.
 	FailedBytes int64
 	// IsPar2 marks a par2 file — the index or a recovery volume — as opposed

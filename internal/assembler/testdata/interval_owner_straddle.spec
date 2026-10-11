@@ -1,5 +1,5 @@
 pkg ./internal/assembler/
-run TestOverlap_PartialRangeOverwritesADurableArticle
+run TestOverlap_PartialRangeOverlapIsRefused
 
 [only a shared start offset collides]
 file internal/assembler/ranges.go

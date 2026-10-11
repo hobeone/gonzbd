@@ -505,8 +505,15 @@ func (d *Downloader) Start(ctx context.Context) error {
 	// Initialize the pause context before spawning workers — they
 	// snapshot pauseCtx in handleRequest and will panic on nil if we
 	// defer this until after the goroutines are running.
+	//
+	// A Pause made before Start is kept: the context is born cancelled, as
+	// Pause leaves it, so a downloader started paused fails any fetch until
+	// Resume.
 	d.pauseMu.Lock()
 	d.pauseCtx, d.pauseCancel = context.WithCancel(d.ctx)
+	if d.paused.Load() {
+		d.pauseCancel()
+	}
 	d.pauseMu.Unlock()
 
 	// Per-server worker pools — one goroutine per configured
@@ -567,7 +574,8 @@ func (d *Downloader) Stop() error {
 // bandwidth drops to zero immediately. Workers stay alive and will
 // re-dial on Resume. Articles whose fetch was cancelled will be
 // re-dispatched (their Emitted flag is cleared, and context
-// cancellation is not penalized).
+// cancellation is not penalized). It may be called before Start, and
+// the downloader then starts paused.
 func (d *Downloader) Pause() {
 	d.log.Info("pausing")
 	d.paused.Store(true)

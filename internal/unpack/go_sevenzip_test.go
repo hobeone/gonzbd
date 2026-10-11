@@ -933,6 +933,9 @@ func TestExtractSevenZipEntry_Coverage(t *testing.T) {
 	if err != nil || extracted {
 		t.Errorf("expected symlink skip, got extracted=%v err=%v", extracted, err)
 	}
+	if onlineMsg != "Skipping link: testlink" {
+		t.Errorf("symlink skip reported as %q, want %q", onlineMsg, "Skipping link: testlink")
+	}
 
 	// Non-regular entry (UNIX S_IFCHR 0020000 in upper 16 bits = 0x20000000)
 	charFile := *r.File[0]

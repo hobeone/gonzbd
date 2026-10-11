@@ -23,7 +23,7 @@ import (
 //   - Incumbent faulted, never written → it claimed nothing, so the arrival is
 //     accepted.
 
-// --- Settled offsets: the arrival is rejected ------------------------------
+// --- Owned ranges: the arrival is rejected ---------------------------------
 
 // collisionFixture drives two articles at one offset through the real accept
 // path and reports what came out.
@@ -87,8 +87,8 @@ func TestCollision_ArrivalRejectedOnceIncumbentIsWritten(t *testing.T) {
 	}
 }
 
-// TestCollision_RangeStaysOwnedAfterSync is the reason the written flag is
-// recorded on the range rather than derived from w.unsynced.
+// TestCollision_RangeStaysOwnedAfterSync is the reason ownership is the owned
+// range set (FileWriter.owned) rather than derived from w.unsynced.
 //
 // w.unsynced is what no successful Sync has covered yet; a successful Sync
 // empties it. An article whose bytes an fsync has covered holds the strongest
@@ -107,7 +107,7 @@ func TestCollision_RangeStaysOwnedAfterSync(t *testing.T) {
 	}
 	if len(c.f.w.unsynced) != 0 {
 		t.Fatalf("precondition: unsynced is not empty (%d), so this test cannot "+
-			"distinguish a latched claim from a derived one", len(c.f.w.unsynced))
+			"distinguish an owned range from a claim derived from unsynced", len(c.f.w.unsynced))
 	}
 
 	c.accept(2, "<second@x>", 0, []byte("BBBB"))
@@ -167,8 +167,11 @@ func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
 //
 // seenDone is keyed on ArtIdx, so handleSuccessArticle's dedup arm recognises a
 // PLAIN redelivery and returns before acceptArticle is called, which is why this
-// calls acceptArticle directly. A write fault is what reaches a second Accept:
-// fail deletes the seenDone entry and never sets seenFailed.
+// calls acceptArticle directly. The first rollback, a direct call to fail,
+// models a failed Sync rolling the article back (rollbackSyncedArticle calls
+// fail): fail deletes the seenDone entry and never sets seenFailed, so the
+// redelivery reaches a second Accept. That second Accept's write is the one
+// that faults.
 func TestCollision_FailedReacceptKeepsTheWrittenRange(t *testing.T) {
 	c := newCollisionFixture(t)
 	id := articleID{msgID: "<first@x>", artIdx: 1}

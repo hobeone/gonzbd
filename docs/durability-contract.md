@@ -255,8 +255,9 @@ worker and on the writing handle:
 
 The handle is closed at completion; nothing keeps it open for a later step.
 The one other place a file is finished is the verifier's `finishFileByPath`
-(§3), which runs the same `ShrinkAndSync` over bytes it has just read back from
-the device, and never over Done bits that came from a `pwrite`.
+(§3), which applies the same truncate rule (`fsutil.ShrinkAfterSync`) to bytes
+it has just fsynced and read back from the device, and never to Done bits that
+came from a `pwrite`.
 
 `OnFileComplete` reaches `Application.completeFinalizedFile`, which settles the
 whole-file CRC, peeks the archive, feeds DirectUnpack, calls
@@ -329,9 +330,10 @@ no state makes the read unnecessary. For each such file, in order:
 | Case | Outcome |
 |---|---|
 | empty `filename` | every row deleted: none can be located |
-| `open` returns `ENOENT` **and the file's directory exists** | every row deleted; the file's articles are Outstanding |
-| `open` returns `ENOENT` and the directory is missing, or `stat` of it fails | **verification fault** (below); on a retry a missing directory (`ENOENT` from the `stat`) deletes every row of the file, like the row above |
-| any other `open` error | verification fault |
+| opening the job directory returns `ENOENT` | **verification fault** (below); on a retry every row of the file deleted, like the row below |
+| opening the job directory fails otherwise | verification fault |
+| `open` of the file inside the open directory returns `ENOENT` | every row deleted; the file's articles are Outstanding |
+| any other `open` error, including a name or symlink that leads out of the job directory | verification fault |
 | `fsync` on the fresh descriptor fails | every row deleted: the file is untrusted |
 | a row with `offset < 0` or `length < 0` | that row deleted unread |
 | a zero-length row | verified when its CRC is 0, otherwise deleted; it claims no range, so it never fails another article |
@@ -347,15 +349,23 @@ absence would delete every job's recorded progress. A job whose directory the
 user deleted by hand therefore parks rather than refetching at a hydration, and
 the operator's resume re-verifies it. **A retry differs** (*Retry* below): it is
 the user's explicit act, and `restoreFailedDir` has already put back a
-directory it could, so a directory still missing (`ENOENT` from the `stat`) is
+directory it could, so a directory still missing (`ENOENT` opening it) is
 taken as absence. **A retry cannot tell an unmounted download root from a
 deleted job directory**. On an unmounted share `restoreFailedDir` finds
 neither the `_FAILED_` directory nor the job directory and moves nothing, and
-`readBackFile` gets `ENOENT` from the job directory's `stat`, so the retry
+`readBackFile` gets `ENOENT` opening the job directory, so the retry
 drops every file's rows and refetches the job, though the bytes may still be
-on the share. Any other `stat` error stays a verification
+on the share. Any other error opening the directory stays a verification
 fault on both paths. The decision lives in one place, `readBackFile`'s `retry`
 parameter.
+
+**Both opens are confined to the job directory.** `readBackFile` and
+`finishFileByPath` open the job directory as an `os.Root` and the file's
+sanitized name inside it (`pipeline.jobFileLocation` resolves both), so a
+symlink in the job directory that points out of it, or a name that climbs out
+with `..`, is an open error and a verification fault, never a read, fsync or
+truncate of a file elsewhere. A job directory that exists but cannot be opened
+for reading is a fault too, since the directory is opened before the file.
 
 The fresh descriptor's fsync reports a writeback error **no earlier fsync has
 reported** (Linux ≥ 4.16). On Linux the file's cache is then dropped
@@ -366,12 +376,15 @@ no-op. Rows are read in offset order through one reused 1 MiB buffer.
 A file whose articles are then all resolved is **finished by path**: the
 `fileFinishable` predicate (`FetchAlways`, not complete, a non-empty article
 range, every article resolved) decides it, `finishFileByPath` runs
-`ShrinkAndSync` with the end of the last verified row, and only then does the
-verdict carry `SetComplete`. An fsync or truncate error while finishing is a
-verification fault.
+`fsutil.ShrinkAfterSync` with the end of the last verified row — truncate if
+the file is longer, then fsync, with no fsync before the truncate and none
+when nothing was truncated, since the read-back's fsync on the fresh
+descriptor already landed the file and the verifier writes nothing to it
+in between — and only then does the verdict carry `SetComplete`. An fsync or
+truncate error while finishing is a verification fault.
 
 A `complete=1` file is not read. Its rows are installed as they stand
-(`Job.InstallCompleteFile`): each row's article is Done, **every other article
+(`Job.InstallFileVerification` with `Complete` set): each row's article is Done, **every other article
 of the file's range is failed** — the failed set is the complement of the rows
 — the file is Complete, and its whole-file CRC is settled. The failed set is
 installed during hydration, before anything can consult it (the archive peek,
@@ -396,11 +409,17 @@ A context error is returned as it is, parks nothing, and settles nothing.
 
 #### Files the verifier finished
 
-`installVerification` handles each file whose verdict carries `SetComplete`
-while the manifest is certainly attached: it settles the file's CRC, runs the
-archive peek, and only then calls `MarkFileComplete` — the mark is what lets
-the download-complete report take the job to Assessing, so a last file marked
-first could reach post-processing unpeeked. The completion is then queued on
+`installVerification` installs each file's outcome in two phases while the
+manifest is certainly attached. First `Job.InstallFileVerification` applies,
+under one hold of the job's content lock, the recorded filename, the recorded
+fetch policy (hydration only), the rows, the intersection's failed articles
+and, for a file whose verdict carries `SetComplete`, the settled CRC — the
+settle comes last because it derives the CRC from the installed rows and
+releases them. No reader sees part of that step. Then, for a finished file,
+with no job lock held, it runs the archive peek, and only then calls
+`MarkFileComplete` — the mark is what lets the download-complete report take
+the job to Assessing, so a last file marked first could reach post-processing
+unpeeked. The completion is then queued on
 `internalFileComplete` as `FileComplete{Resumed: true}`
 (`enqueueResumedCompletion`), and its consumer skips the settle, the peek, the
 mark and the DirectUnpack feed, so it lands even if the job is evicted first.
@@ -435,8 +454,8 @@ completion it gives up is re-derived by the next start's verification.
    directory is missing takes the `ENOENT` arm instead of the verification
    fault (*What* above): its rows are deleted and it is refetched
    (`TestRetryHistoryJob_AfterDownloadDirDeleted`), whether the directory was
-   deleted or its download root is not mounted. Any other `stat` error is
-   still a verification fault, and the retry aborts.
+   deleted or its download root is not mounted. Any other error opening the
+   directory is still a verification fault, and the retry aborts.
 
 Each step's verdicts are committed before the next. Then `ResetForRetry`,
 `Assembler.ForgetJob`, the manifest write, `seedJobFiles`, and a synchronous
@@ -492,13 +511,13 @@ callers in `internal/assembler/assembler.go`):
 |---|---|---|
 | `finalizeFile` | the completion finish or close (§2) | **no tombstone** — a tombstone would route every refetched article to `handleLateDuplicate`, which writes nothing once the handle is gone, so the refetch would never converge; the fault goes to `OnWriteFault` → Stall or Fail |
 | the close-handles arm of `CloseJobHandles` | the close-time fsync or close | the fault is sent on the control message's ack (*Hand-over to post-processing*) |
-| `drainAndCloseAll`, at worker exit | the close-time fsync or close | the fault is not routed: there is no caller left to answer |
+| `syncAndCloseAll`, at worker exit | the close-time fsync or close | the fault is not routed: there is no caller left to answer |
 
 **A failed close-time fsync also rolls back the articles it covered.** A
 `FileWriter` keeps `unsynced`, the articles written since the last successful
 `Sync`. A failed `Sync` moves every one into `poisoned` (`poisonSync`), and
 `releasePoisoned` returns them to Outstanding through `OnArticlesUnwritten`. In
-production `FileWriter.Sync` fails only inside `drainAndClose`, its one
+production `FileWriter.Sync` fails only inside `syncAndClose`, its one
 production call (`git grep -n 'w\.Sync()' -- 'internal/assembler/*.go'
 ':!*_test.go'` returns 1 line), which closes the writer right after, so the
 writer and its owned ranges are discarded with it. The file is then untrusted
@@ -517,7 +536,8 @@ the only one.
 `FileWriter.owned` (`ownedRanges`, `internal/assembler/ranges.go`) is the
 single owner of which article wrote which bytes of a file.
 
-- **A range is claimed only after its write returned nil** (`writeOne`). An
+- **Within an episode, a range is claimed only after its write returned nil**
+  (`writeOne`); the ranges seeded at open are the other entries (below). An
   article whose write faulted owns nothing, so it cannot cause a later article
   to be refused.
 - **An arrival whose `[off, off+len)` intersects a range another article owns
@@ -526,11 +546,11 @@ single owner of which article wrote which bytes of a file.
   range owned by the same `ArtIdx` is a re-accept, not a collision.
 - **A zero-length article claims nothing.** It is reported written with
   `n == 0`, and its row (length 0, CRC 0) is valid: the next verification
-  verifies it, and `InstallCompleteFile` installs it, as for any row
+  verifies it, and `InstallFileVerification` installs it, as for any row
   (`WrittenRow.HasValidShape` is the one shape rule). It is never refetched on
   that account.
 - Intersection is detected, not only a shared start offset
-  (`TestOverlap_PartialRangeOverwritesADurableArticle`,
+  (`TestOverlap_PartialRangeOverlapIsRefused`,
   `TestOverlap_ContainedOverlapStillCompletesTheFile`).
 
 **Within one open-file episode this is enforced by the writer. Across a
@@ -617,13 +637,15 @@ Such a chain cannot overlap and cannot leave a gap.
 
 `Job.SettleFileCRC` applies it and stores the result on
 `FileProgress.AssembledCRC32` (zero when underivable, which par2 reads as
-`NoCRC`), then releases the file's resident rows. Its callers are
-`completeFinalizedFile` and, for files a restart finished or found
-`complete=1`, `installVerification` and `InstallCompleteFile`.
+`NoCRC`), then releases the file's resident rows. It is called from
+`completeFinalizedFile` (and the `jobtest.SeedFileCRC` test helper). For
+files a restart finished or found `complete=1`,
+`Job.InstallFileVerification` runs the same derivation (`settleFileCRC`)
+under the lock it already holds.
 
 The per-article rows a file needs for it are kept resident in
 `JobProgress.written` until the CRC is settled — installed by
-`InstallVerified` / `InstallCompleteFile` and appended by
+`InstallFileVerification` (or `InstallVerified`) and appended by
 `MarkArticleWritten` — so nothing on the worker path reads SQLite. A stored
 slice is never edited in place, so a `Progress()` clone shares them. A row
 also leaves with its article's Done bit: `JobProgress.clearDone` is the one
@@ -653,7 +675,7 @@ incomplete (#349, #387).
 | Write fault | The part rolls back (`FileWriter.fail`), `OnArticlesUnwritten` clears the article's Emitted bit, `OnWriteFault` → Stall or Fail. No row is written. |
 | Completion fault | §4: untrusted, no tombstone, `FileInfo` dropped, Stall or Fail. On resume the file's articles are Outstanding and are refetched. |
 | Pause, low disk, server penalty | Nothing writes the record; no hook. |
-| Reload (`ReloadDownloader`) | Stop the old downloader; `setCompletions(nil)`, which returns once every buffered result has reached the assembler's queue; `Assembler.Quiesce`, answered once everything queued ahead of it has been processed and its callbacks have run; `ClearEmittedForReload(false)` for every job not admitted to post-processing; start the new downloader. An Emitted bit still set after the quiesce covers only an article whose bytes never reached `pwrite`. If the quiesce fails, the clear is skipped and those articles stay Emitted until the next start. |
+| Reload (`ReloadDownloader`) | Stop the old downloader; `setCompletions(nil)`, which returns once every buffered result has reached the assembler's queue; `Assembler.Quiesce`, answered once everything queued ahead of it has been processed and its callbacks have run; `ClearEmittedForReload(false)` for every job not admitted to post-processing; start the new downloader, paused first if the application is paused, and swap it in, both under `app.mu`. An Emitted bit still set after the quiesce covers only an article whose bytes never reached `pwrite`. If the quiesce fails, the clear is skipped and those articles stay Emitted until the next start. |
 | Remove (`RemoveJob`) | `CancelJob` closes the job's handles; reclaim deletes its rows. A racing flush is stopped by the instance check and the `job_files` guard, and any orphan rows by the next start's `SweepOrphans`. |
 | Retry | §3 *Retry*. |
 | Clean shutdown | §*Clean shutdown*. |
@@ -695,7 +717,7 @@ assembler's tombstones for it, and a retry whose `ForgetJob` fails is aborted.
 the context, waits for its goroutines, stops post-processing and the
 dispatcher, and **then** flushes the recorder.
 
-`Assembler.Stop` drains the request channel and then runs `drainAndCloseAll`:
+`Assembler.Stop` drains the request channel and then runs `syncAndCloseAll`:
 each open file is fsynced and closed, and one whose fsync or close failed is
 untrusted (§4). Partial files are closed without firing `OnFileComplete`. The
 flush comes after the assembler has stopped, so it carries the row of every
@@ -725,7 +747,9 @@ one, and a restarted job keeps it until it leaves the queue.
 releases only a `Fetching` job's lease; a job that has moved on keeps its
 worker, and the pause gates its next move. `reevaluateStall` runs on an
 interval (`stallRecheckInterval`, 30 s) and on user action
-(`ReevaluateStalls`, from the API's resume handlers). It retries nothing: a
+(`ReevaluateStalls`, from the API's per-job resume and from both queue-wide
+resumes, the user's and the low-disk auto-resume, which share
+`resumeLocked`). It retries nothing: a
 write or completion fault left the affected articles Outstanding, and a
 verification fault left the job non-resident, so a resumed job refetches and
 re-verifies through the ordinary paths. If the condition has not cleared, the
@@ -807,8 +831,16 @@ assembler-side buffering of decoded articles, no coalescing and no
 memory-pressure flush (`git grep -n 'writeOne(' -- internal ':!*_test.go'`
 finds 2 lines: the definition and its one call, in `Accept`).
 
-The only memory the assembler holds ahead of the disk is the request channel
-(`reqs`, see *Memory & allocation budget*).
+The decoded bytes the assembler holds ahead of the disk are the queued requests
+in the request channel (`reqs`, see *Memory & allocation budget*), the one
+request the worker is processing, and one request per `WriteArticle` caller
+blocked on the `reqs` send. No assembler field stores article bytes outside
+`reqs`: `WriteRequest.Data` is the package's one `[]byte` struct field
+(`git grep -n -E '^\s+\w+\s+\[\]byte\b' -- 'internal/assembler/*.go' ':!*_test.go'`
+returns 1 line), and `reqs` is the one field typed to hold a `WriteRequest`
+(`git grep -n 'chan WriteRequest' -- 'internal/assembler/*.go' ':!*_test.go'`
+returns 2 lines: the field and its `make`). Buffers still upstream of
+`WriteArticle`, in the downloader's decode path, are not counted here.
 
 Decoder buffers are returned to `sync.Pool` (`decoder.PutBuffer`) on every path,
 including every failure path.
@@ -1051,8 +1083,8 @@ recorded here so the next reader does not mistake them for design.
    retry differs: it cannot tell an unmounted download root from a deleted
    job directory, and either way deletes the recorded rows and refetches
    (§3 *Retry*). A retry run while the share is down therefore refetches a job
-   whose bytes are still on the share. A `stat` error other than `ENOENT`
-   stays a fault on both paths.
+   whose bytes are still on the share. An error other than `ENOENT` opening
+   the job directory stays a fault on both paths.
 
 3. **A file whose last article was written while its job was evicted is not
    marked complete in this process.** `MarkFileComplete` needs the manifest,

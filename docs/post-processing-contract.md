@@ -341,6 +341,44 @@ see `par2.relocateFile`. That is a separate guarantee, and it survives
 independently of the above: it bounds where a poster-controlled par2 name can
 write at all, rather than protecting any particular file.
 
+### No links in a job
+
+gonzbd downloads media, and an archive has no legitimate need to put a link
+into a job. Extraction therefore creates no symlink, junction or hard link, and
+no RAR file reference: each such member is skipped with a log line and an
+`OnLine` "Skipping link: <name>", and the rest of the set is extracted. There
+is no option to turn this off. A link target is the archive author's choice,
+and DirectUnpack extracts into the job directory itself, where a hard link
+could join a downloaded volume to another name so that a write through one
+changes the other.
+
+Where each extractor enforces it:
+
+- **Pure-Go RAR** (`go_unrar` and DirectUnpack): `ExtractEntryRarengine` skips
+  every member whose `LinkType` is not `LinkNone`, before reading it. Those are
+  its two callers: `git grep -n 'ExtractEntryRarengine(' -- '*.go' ':!*_test.go'`
+  returns 3 lines, the definition in `internal/unpack/go_unrar.go` and the calls
+  there and in `internal/directunpack/directunpack.go`. A RAR5 file reference
+  (`rar -oi`) is skipped too: it names its source by path, and resolving that
+  path in the job directory could copy a file that is not a member of the set,
+  any number of times.
+- **Pure-Go 7z and tar**: `extractSevenZipEntry` and `GoTar` extract only
+  regular files and directories.
+- **External `unrar` and `7z`**: both extract into a private staging directory,
+  and `publishStagedExtraction` publishes only regular files. It publishes no
+  name of a file that also has a name outside the staging directory, and only
+  the first name (in lexical walk order) of a file whose several names are all
+  inside it, so the name that survives a hard-linked pair is not necessarily
+  the archive's original member.
+  `unrar` 7.00 and later (the detected version, `UnrarInfo.Version`) is also
+  passed `-ol-` and creates no symlinks at all. An older or undetected `unrar`
+  is not, since it rejects the switch: it creates symlinks in the staging
+  directory, which are not published, and itself refuses, failing the set, a
+  symlink whose target leaves its destination. `unrar` 7.12's switch list has
+  none that stops it creating hard links; it writes a file reference as an
+  independent copy. `7z` 25.01 restores a symlink member as a symlink, which is
+  not published either.
+
 ## Post-Processing (PP) Level Enforcement
 
 SABnzbd post-processing levels are cumulative integer levels on `postproc.Job.PP`
@@ -490,7 +528,8 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    so they account for every article of the file whichever process fetched
    it — a *resumed* file supplies a CRC as readily as a fresh one. No read of
    the file is involved (R24). `Job.SettleFileCRC` derives the value when the
-   file completes, and publishes it **only when every article of the file has
+   file completes (for a file a restart or a retry finishes,
+   `Job.InstallFileVerification` runs the same derivation), and publishes it **only when every article of the file has
    exactly one row, none failed, the first row starts at offset 0, and each row
    starts where the previous one ends**. A file with a hole, a failed article,
    or rows that do not chain supplies no CRC rather than one describing bytes
@@ -624,7 +663,7 @@ carry the previous attempt's policy forward at all.
 
 Across a restart there is one path back, and it is hydration rather than a
 verdict: the first hydration after a restart restores every file's policy from
-`job_files` via `Job.RestoreFetchPolicy` (`installVerification`), so the job
+`job_files` via `Job.InstallFileVerification` (`installVerification`), so the job
 resumes with whatever the row holds. That is only safe because every mutation
 of the policy marks the job's files dirty for the recorder: both verdicts reach
 `Application.markFetchPolicyDirty`, and ingest derives the policy before the row
@@ -752,9 +791,10 @@ instance (`postProcAdmissions`) both hold.
   lines): the setter, the release, and the discard. Construction writes
   nothing: every file starts at the zero value, `FetchAlways`. The setter's two callers are ingest,
   passing `FetchIfNeeded`, and hydration
-  (`git grep -nE 'SetFileFetchPolicy\(|RestoreFetchPolicy\(' -- '*.go'
-  ':!*_test.go'` returns 5 lines: those two calls, the two declarations, and
-  the restore delegating to the setter). So the retried instance does not
+  (`git grep -nE '[sS]etFileFetchPolicy\(' -- '*.go' ':!*_test.go'` returns 5
+  lines: those two calls, `Job.SetFileFetchPolicy`'s declaration and its
+  call to the shared assignment, and that assignment's declaration). So the
+  retried instance does not
   satisfy
   `HasDeferredPar2` and its own failure is final
   (`TestFinalize_RetriedJobIsNotRetriedAgain`). A retry the user starts is

@@ -341,14 +341,6 @@ postproc:
   # original modification date.
   ignore_unrar_dates: false
 
-  # Create symlink and junction members when extracting RAR archives with the
-  # built-in extractor (default false). A link's target is chosen by the
-  # archive's author, so by default such members are logged and skipped. When
-  # true, links are created after the last member and any link that resolves
-  # outside the job directory is removed again. Hard links and file copies are
-  # always extracted. Does not affect the external unrar.
-  extract_symlinks: false
-
   # Goroutines the pure-Go RAR5 extractor uses to decode one compressed member.
   # 0 (default) picks min(CPU count, 4); 1 is the serial decoder; values above
   # 8 are clamped. Stored (uncompressed) members are unaffected. Each extra

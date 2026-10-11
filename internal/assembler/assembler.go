@@ -226,7 +226,7 @@ type Options struct {
 	// It is separate from OnWriteFault because the two are needed in different
 	// combinations, not because the split is tidier. A write fault this
 	// package routes needs both; a failed close-time fsync is reported by
-	// drainAndClose's caller, which routes the fault — but the article set
+	// syncAndClose's caller, which routes the fault — but the article set
 	// never leaves this package, so it still needs this one. Folding them
 	// together meant either double-routing the fault or losing the articles,
 	// and losing the articles is what happened.
@@ -284,7 +284,7 @@ type Options struct {
 	//
 	// It reports a write, not durability: a later failed Sync can roll the
 	// article back (FileWriter.poisonSync), and OnArticlesUnwritten then names
-	// it. In production that Sync is drainAndClose's, which closes the writer
+	// it. In production that Sync is syncAndClose's, which closes the writer
 	// next, and the file is untrusted (OnFileUntrusted); a redelivery opens a
 	// fresh writer and calls this again with the same artIdx.
 	OnArticleWritten func(jobID string, fileIdx int, artIdx int32, off, n int64, crc uint32)
@@ -747,10 +747,10 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 	select {
 	case err := <-ack:
 		// Captured, not discarded. The arm computes closeErr from every
-		// drainAndClose it performs and sends it here precisely so this
+		// syncAndClose it performs and sends it here precisely so this
 		// returns it; reading `<-ack` and returning nil made the send side
 		// dead code and handed enqueuePostProc a job whose unsynced bytes never
-		// reached the platter, with only a Warn inside drainAndClose as a
+		// reached the platter, with only a Warn inside syncAndClose as a
 		// trace. That is the defect this arm's own tombstone comment describes
 		// as fixed — it was fixed on the send side only.
 		//
@@ -925,7 +925,7 @@ mainLoop:
 				// Channel was closed; this path is not taken in normal operation
 				// (we never close reqs), but defend against it. Breaks to the
 				// shared shutdown block below rather than returning here, so
-				// this path cannot skip drainAndCloseAll and leave handles
+				// this path cannot skip syncAndCloseAll and leave handles
 				// open and files unsynced.
 				reqsClosed = true
 				break mainLoop
@@ -980,7 +980,7 @@ mainLoop:
 	// Shared shutdown, reached from every exit above so no path can skip a
 	// step. Every open file is fsynced before its handle closes, so a clean
 	// shutdown leaves nothing buffered.
-	a.drainAndCloseAll(open)
+	a.syncAndCloseAll(open)
 }
 
 // dispatchRequest handles a single request from the channel. It processes the
@@ -1068,7 +1068,7 @@ func (a *Assembler) dispatchRequest(
 			if k.jobID != targetID {
 				continue
 			}
-			cerr := a.drainAndClose(f)
+			cerr := a.syncAndClose(f)
 			if cerr != nil {
 				// Recorded on the ack, not swallowed: a file whose close-time
 				// sync or close failed has written bytes that may never have
@@ -1130,8 +1130,8 @@ func (a *Assembler) dispatchRequest(
 	return 1
 }
 
-// drainAndClose fsyncs a file and closes it, and reports whether either
-// failed. The close-handles arm and drainAndCloseAll
+// syncAndClose fsyncs a file and closes it, and reports whether either
+// failed. The close-handles arm and syncAndCloseAll
 // untrust the file on an error (noteFileUntrusted): a failed fsync means the
 // bytes its articles were reported written with cannot be trusted. A failed
 // fsync also returns the articles it poisoned to Outstanding through
@@ -1150,7 +1150,7 @@ func (a *Assembler) dispatchRequest(
 // on the close — an ext4 mounted errors=remount-ro, the Debian default — is
 // the case that makes the difference: reporting the ENOSPC alone describes the
 // condition as one that waiting can clear, when it cannot.
-func (a *Assembler) drainAndClose(f *openFile) error {
+func (a *Assembler) syncAndClose(f *openFile) error {
 	var first, permanent error
 	note := func(op string, err error) {
 		if err == nil {
@@ -1197,8 +1197,8 @@ func (a *Assembler) releasePoisoned(f *openFile) {
 // of its bytes according to disposition. Runs on the worker goroutine, which
 // owns every handle (X1).
 //
-// It is the cancel counterpart to drainAndClose, and deliberately not a call
-// to it. drainAndClose does something that is right for its own caller and
+// It is the cancel counterpart to syncAndClose, and deliberately not a call
+// to it. syncAndClose does something that is right for its own caller and
 // wrong here:
 //
 //   - It calls Sync. CloseJobHandles needs that fsync because par2 and unrar
@@ -1233,10 +1233,10 @@ func (a *Assembler) closeCancelledFile(f *openFile, disposition FileDisposition)
 	}
 }
 
-// drainAndCloseAll drains and closes every remaining open file. Called on
+// syncAndCloseAll fsyncs and closes every remaining open file. Called on
 // worker exit. Completion callbacks do NOT fire for partial files — writing
 // N-of-M parts is not a completion event.
-func (a *Assembler) drainAndCloseAll(open map[fileKey]*openFile) {
+func (a *Assembler) syncAndCloseAll(open map[fileKey]*openFile) {
 	for k, f := range open {
 		// The fault itself has nowhere to go: this runs on worker exit, so
 		// there is no caller left to answer, and routing it to OnWriteFault is
@@ -1248,7 +1248,7 @@ func (a *Assembler) drainAndCloseAll(open map[fileKey]*openFile) {
 		// The file is still untrusted, synchronously on this goroutine: this
 		// fsync consumed the error, so the next start's verification fsync
 		// would not see it.
-		if err := a.drainAndClose(f); err != nil {
+		if err := a.syncAndClose(f); err != nil {
 			a.noteFileUntrusted(k.jobID, k.fileIdx)
 		}
 	}

@@ -72,6 +72,12 @@ mkdir -p "$TMPDIR/escape"
 ( cd "$TMPDIR/escape" && echo "real" > real.txt && ln -s ../../etc/passwd evil.lnk && echo "ok" > after.txt \
 	&& rar a -ol -ep "$(cd - >/dev/null && pwd)/$OUTDIR/rar5_link_escape.rar" real.txt evil.lnk after.txt >/dev/null )
 
+# --- File reference: copy.txt stored as a reference to identical orig.txt ---
+echo "==> rar5_link_filecopy.rar"
+mkdir -p "$TMPDIR/filecopy"
+( cd "$TMPDIR/filecopy" && printf 'file copy content, stored once and referenced by copy.txt\n' > orig.txt && cp orig.txt copy.txt \
+	&& rar a -ma5 -oi:1 -m0 "$(cd - >/dev/null && pwd)/$OUTDIR/rar5_link_filecopy.rar" orig.txt copy.txt >/dev/null )
+
 echo ""
 echo "=== Generated test archives ==="
 ls -la "$OUTDIR"/*.rar "$OUTDIR"/*.r[0-9][0-9] 2>/dev/null || true

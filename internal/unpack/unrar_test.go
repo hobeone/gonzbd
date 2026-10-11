@@ -4,12 +4,43 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
+
+// TestUnRAR_SkipSymlinksFlag pins that -ol- (skip symbolic links) is passed
+// from unrar 7.00, which introduced it, and not to an older or unknown unrar,
+// which would reject the switch and fail the extraction.
+func TestUnRAR_SkipSymlinksFlag(t *testing.T) {
+	archive := unpack.Archive{
+		Type:     unpack.RarArchive,
+		Name:     "test",
+		MainFile: "/tmp/does-not-exist.rar",
+		Parts:    []string{"/tmp/does-not-exist.rar"},
+	}
+	for _, tc := range []struct {
+		version int
+		want    bool
+	}{{0, false}, {550, false}, {624, false}, {699, false}, {700, true}, {712, true}} {
+		var captured string
+		opts := unpack.Options{
+			UnrarCommand: "/nonexistent/binary",
+			UnrarVersion: tc.version,
+			OnCommand:    func(cmdLine string) { captured = cmdLine },
+		}
+		_, _ = unpack.UnRAR(t.Context(), slog.Default(), archive, t.TempDir(), "", opts)
+		if captured == "" {
+			t.Fatal("OnCommand was not called")
+		}
+		if got := slices.Contains(strings.Fields(captured), "-ol-"); got != tc.want {
+			t.Errorf("unrar %d: -ol- passed = %v, want %v: %q", tc.version, got, tc.want, captured)
+		}
+	}
+}
 
 func TestUnRAR_Integration(t *testing.T) {
 	if _, err := unpack.UnrarBin(unpack.Options{}); err != nil {

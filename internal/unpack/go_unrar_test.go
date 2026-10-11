@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1088,4 +1090,91 @@ func TestCloseMember(t *testing.T) {
 			}
 		})
 	}
+}
+
+// fakeMember stands in for a *rarengine.Entry: content to read, and the
+// verdict Close reports.
+type fakeMember struct {
+	r        io.Reader
+	closeErr error
+	closes   int
+}
+
+func (m *fakeMember) Read(p []byte) (int, error) { return m.r.Read(p) }
+func (m *fakeMember) Close() error {
+	m.closes++
+	return m.closeErr
+}
+
+// extractMember closes every member it is handed and returns the verdict
+// Close reports, whether the member was written or skipped for its name. A
+// rarengine Entry reports a bad digest from Read, so a verdict that arrives
+// only at Close after a full read needs a fake member to produce.
+func TestExtractMember(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	errVerdict := errors.New("verdict at close")
+	for _, tc := range []struct {
+		name, member string
+		closeErr     error
+		wantRel      string
+		wantErr      error
+	}{
+		{"written", "a/movie.mkv", nil, "a/movie.mkv", nil},
+		{"written, verdict at close", "movie.mkv", errVerdict, "", errVerdict},
+		{"bad name skipped", "../escape.mkv", nil, "", nil},
+		{"bad name, verdict at close", "../escape.mkv", errVerdict, "", errVerdict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			root, err := os.OpenRoot(outDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			m := &fakeMember{r: strings.NewReader("content"), closeErr: tc.closeErr}
+			fh := &rarengine.FileHeader{Name: tc.member, UnpackedSize: int64(len("content"))}
+			var lines []string
+			opts := Options{OnLine: func(l string) { lines = append(lines, l) }}
+			rel, abs, err := extractMember(context.Background(), root, outDir, fh, m, opts, log)
+			if !errors.Is(err, tc.wantErr) || (tc.wantErr == nil && err != nil) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if m.closes != 1 {
+				t.Errorf("member closed %d times, want 1", m.closes)
+			}
+			if rel != tc.wantRel {
+				t.Errorf("rel = %q, want %q", rel, tc.wantRel)
+			}
+			if tc.wantRel != "" {
+				if abs != filepath.Join(outDir, tc.wantRel) || mustRead(t, abs) != "content" {
+					t.Errorf("abs = %q, not the written member", abs)
+				}
+				if !slices.Contains(lines, "Extracting  "+tc.member) {
+					t.Errorf("extraction not reported: %v", lines)
+				}
+			}
+			if _, lerr := os.Lstat(filepath.Join(filepath.Dir(outDir), "escape.mkv")); !os.IsNotExist(lerr) {
+				t.Errorf("a bad name was written outside the root: %v", lerr)
+			}
+		})
+	}
+
+	// A directory member is created but is not a file to list.
+	t.Run("directory", func(t *testing.T) {
+		outDir := t.TempDir()
+		root, err := os.OpenRoot(outDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		m := &fakeMember{r: strings.NewReader("")}
+		fh := &rarengine.FileHeader{Name: "season1", IsDir: true}
+		rel, abs, err := extractMember(context.Background(), root, outDir, fh, m, Options{}, log)
+		if err != nil || rel != "" || abs != "" {
+			t.Fatalf("extractMember(dir) = %q, %q, %v; want nothing listed", rel, abs, err)
+		}
+		if fi, serr := os.Stat(filepath.Join(outDir, "season1")); serr != nil || !fi.IsDir() {
+			t.Errorf("directory not created: %v", serr)
+		}
+	})
 }
