@@ -4,9 +4,12 @@ run TestSetName_RefusesARetriedJobRestoredBeforeHydration
 [SetName trusts the restored row without loading progress]
 file internal/dispatch/registry.go
 --- anchor
-	if !ok || j.HasProgress() {
+	wasResident := j.Resident()
 --- replace
-	if !ok || j.HasProgress() || true {
+	if ok {
+		return nil
+	}
+	wasResident := j.Resident()
 --- end
 
 [a restored job with a recorded filename is not refused once loaded]

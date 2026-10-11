@@ -181,8 +181,8 @@ func TestPeek_PathFallsBackToTheRecordedFilename(t *testing.T) {
 				[]peekFile{{"release.part1.rar", unpackFixture(t, "single_rar5.rar")}})
 			a.pipeline.forgetJob(a.j.ID())
 			if c.recorded {
-				if err := a.j.SetFileFilename(0, "release.part1.rar"); err != nil {
-					t.Fatalf("SetFileFilename: %v", err)
+				if err := a.j.RecordFileFilename(0, a.j.Name(), "release.part1.rar"); err != nil {
+					t.Fatalf("RecordFileFilename: %v", err)
 				}
 			}
 			a.complete(t, 0)

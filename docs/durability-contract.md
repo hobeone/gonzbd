@@ -338,7 +338,10 @@ verifies itself:
   `Job.DownloadBegun()` is true and moves nothing on disk; verification runs
   first, so the restored filenames make the job "begun" (`verifyJobFiles`
   deletes a complete=0 file's rows recorded without a filename rather than
-  keep them) and a rename can never leave rows pointing at a stale path;
+  keep them) and a rename can never leave rows pointing at a stale path.
+  `LoadProgress` calls `Hydrate` even for a job with progress, so it waits
+  for a hydration that has attached content but not yet installed its
+  filenames;
 - `Application.verifyRetry`, for a retried job: it is rebuilt by
   `BuildIngestJob`, which attaches its manifest, so `Hydrate` would return
   early and never verify it (see *Retry* below).

@@ -224,6 +224,16 @@ Three things follow:
   (`Dispatcher.LoadProgress`). `HasRun` is the wrong
   test for this: it is true for any job the tick has opened an attempt on,
   including one still waiting behind others.
+  The check and the name write are one step under `Job.mu`
+  (`Job.SetName`). The two writers of a file's filename are each ordered
+  against it. `registerFile` records through `Job.RecordFileFilename`, which
+  under the same lock refuses with `ErrNameChanged` if the job is no longer
+  named what the file's directory was resolved from, so either the rename is
+  refused or the file is resolved again under the new name. A hydration
+  installs verified filenames (`Job.InstallFileVerification`) after it
+  attaches the job's content, and `LoadProgress` calls `Hydrate` even for a
+  job with progress, which waits for a hydration in flight, so `SetName`
+  checks only once the install is done.
 - **`Outcome` stays genuinely write-once.** A verdict is never revised, only
   superseded by the next attempt's.
 - **"Never started" is exact.** `HasRun()` is `len(attempts) != 0`.

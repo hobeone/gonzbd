@@ -61,9 +61,11 @@ const defaultPausedVerifyTimeout = 10 * time.Minute
 // stops when ctx (app.ctx) ends: Shutdown cancels it in joinAndStop and waits
 // for it there with the other goroutines on app.wg. Each job's load runs under
 // a context derived from ctx, so a cancellation ends the load in flight and
-// nothing is attached (appResidency.Hydrate). A job resumed, removed, or
-// hydrated by a tick before its turn is skipped: LoadProgress loads only a
-// registered job with no progress. A job resumed during its load is hydrated
+// nothing is attached (appResidency.Hydrate). A job resumed or removed before
+// its turn is skipped (its intent is no longer IntentPause, or it is no longer
+// listed), and one hydrated by a tick before its turn is not verified again: verification
+// runs only for a job with no progress, and LoadProgress's Hydrate returns at
+// once for a resident job. A job resumed during its load is hydrated
 // once: the tick's Hydrate waits for the load in flight, and starts its own
 // only if that one left the job non-resident. A job removed during its load
 // is removed once the load ends: RemoveJob's eviction (appResidency.Evict)

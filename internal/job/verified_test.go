@@ -393,8 +393,8 @@ func TestMarkArticleWritten_ReplacesWithoutReachingAClone(t *testing.T) {
 func TestJobFileState(t *testing.T) {
 	t.Parallel()
 	j := verifiedTestJob(t)
-	if err := j.SetFileFilename(1, "b.bin"); err != nil {
-		t.Fatalf("SetFileFilename: %v", err)
+	if err := j.RecordFileFilename(1, j.Name(), "b.bin"); err != nil {
+		t.Fatalf("RecordFileFilename: %v", err)
 	}
 	if err := j.SetFileFetchPolicy(1, FetchIfNeeded); err != nil {
 		t.Fatalf("SetFileFetchPolicy: %v", err)

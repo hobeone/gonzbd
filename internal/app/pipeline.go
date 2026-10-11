@@ -122,6 +122,10 @@ type pipeline struct {
 	// (Application.markFileDirty).
 	markDirty func(j *job.Job, fileIdx int)
 
+	// nameReadHook, when non-nil, runs once per registerFile attempt, right
+	// after it reads the job's name and before it records the file's filename.
+	nameReadHook func(j *job.Job)
+
 	// ctx is the context passed to run(); stored so setCompletions can
 	// avoid blocking forever if run() has already exited.
 	ctx context.Context
@@ -482,6 +486,10 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 //
 // j is the instance whose result is being handled, not a lookup of its ID:
 // handleResult has already dropped a result for any other instance.
+//
+// A rename accepted while a file is being resolved makes the attempt fail
+// with job.ErrNameChanged, and registerFile resolves the file again under the
+// new name, for at most registerNameAttempts attempts.
 func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 	jobID := j.ID()
 	key := fileKey{jobID: jobID, fileIdx: fileIdx}
@@ -497,13 +505,37 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 	if err != nil {
 		return fmt.Errorf("manifest for job %q: %w", jobID, err)
 	}
-	name := j.Name()
-	var filename string
-	if prog := j.Progress(); prog != nil {
-		filename = prog.FileFilename(fileIdx)
-	}
 	if fileIdx < 0 || fileIdx >= m.NumFiles() {
 		return fmt.Errorf("fileIdx %d out of range for job with %d files", fileIdx, m.NumFiles())
+	}
+	for attempt := 1; ; attempt++ {
+		err := p.registerFileAttempt(j, m, fileIdx)
+		if !errors.Is(err, job.ErrNameChanged) || attempt == registerNameAttempts {
+			return err
+		}
+	}
+}
+
+// registerNameAttempts bounds registerFile's attempts at one file. An attempt
+// fails with job.ErrNameChanged only when a rename was accepted inside its
+// window, so each further failure needs another rename to land within one
+// more resolution. Renames come from the API, so a run of three is not
+// expected; the bound stops a loop rather than shaping behaviour. The last
+// failure is returned, and handleSuccessResult then returns the article to
+// the dispatch pool, which fetches it again.
+const registerNameAttempts = 3
+
+// registerFileAttempt is one attempt of registerFile, for a file index already
+// checked against m.
+func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int) error {
+	jobID := j.ID()
+	key := fileKey{jobID: jobID, fileIdx: fileIdx}
+
+	// One read of both: a file with a filename makes DownloadBegun true, so
+	// Job.SetName refuses every later rename and name is final.
+	name, filename := j.FileLocation(fileIdx)
+	if p.nameReadHook != nil {
+		p.nameReadHook(j)
 	}
 
 	p.mu.Lock()
@@ -564,8 +596,9 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 	// Third check: another goroutine may have raced us and already
 	// registered this file while we were doing unlocked disk I/O above.
 	// uniqueJobFileName only consults on-disk state (never a file this
-	// process creates), so a concurrent winner's resolved path is
-	// identical to ours — deferring to it is correct, not just harmless.
+	// process creates), and the winner recorded its filename under the
+	// job's current name (RecordFileFilename), so its resolved path is the
+	// one to keep — deferring to it is correct, not just harmless.
 	if _, exists := p.fileInfo[key]; exists {
 		p.mu.Unlock()
 		return nil
@@ -573,12 +606,13 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 	if filename == "" {
 		// A job removed or evicted between the write and this registration is
 		// ordinary, and failing registerFile over it would turn a benign race
-		// into a pipeline error. Every other cause is a real failure to record
-		// the resolved on-disk name and still aborts.
-		if err := j.SetFileFilename(fileIdx, loc.Name); err != nil &&
+		// into a pipeline error. A rename since name was read is
+		// job.ErrNameChanged, which registerFile retries. Every other cause is
+		// a real failure to record the resolved on-disk name and still aborts.
+		if err := j.RecordFileFilename(fileIdx, name, loc.Name); err != nil &&
 			!errors.Is(err, job.ErrNotResident) {
 			p.mu.Unlock()
-			return fmt.Errorf("set file filename: %w", err)
+			return fmt.Errorf("record file filename: %w", err)
 		}
 		if p.markDirty != nil {
 			p.markDirty(j, fileIdx)

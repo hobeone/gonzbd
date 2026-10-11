@@ -1036,9 +1036,9 @@ const setNameLoadTimeout = 10 * time.Minute
 // (used for listings without job pointer dereference) and the Job instance (used for
 // downstream filesystem paths and finalization) atomically under d.mu.
 //
-// It refuses (ErrJobStarted) a job whose download has begun, and
-// (ErrInvalidJobName) a name that is not one safe path component or that
-// another registered job has or another job has reserved. It does not sanitise or check the disk;
+// It refuses (ErrInvalidJobName) a name that is not one safe path component or
+// that another registered job has or another job has reserved, and then
+// (ErrJobStarted) a job whose download has begun. It does not sanitise or check the disk;
 // Application.RenameJob does both before calling it — the production caller,
 // at internal/app/rename.go (`git grep -n '\.SetName(' -- '*.go' ':!*_test.go'`
 // also lists the apitest double and two Job.SetName calls).
@@ -1057,13 +1057,6 @@ func (d *Dispatcher) SetName(id, name string) error {
 	if !ok {
 		return fmt.Errorf("dispatch: set name %s: %w", id, ErrNotFound)
 	}
-	// A job with article bytes may have them under DownloadDir/<old name>,
-	// and a rename moves none. The test is Job.DownloadBegun, not HasRun:
-	// Queue.Advance opens an attempt for any ungated job on its first tick,
-	// so HasRun would refuse a job still waiting behind others.
-	if e.j.DownloadBegun() {
-		return fmt.Errorf("dispatch: set name %s to %q: %w", id, name, ErrJobStarted)
-	}
 	// The name becomes the job's download directory, DownloadDir/<name>, and
 	// post-processing deletes and moves what is under it. So it must be one
 	// path component, never "." or "..", and no other registered job's name.
@@ -1073,13 +1066,22 @@ func (d *Dispatcher) SetName(id, name string) error {
 	if otherID, taken := d.nameHolderLocked(id, name); taken {
 		return fmt.Errorf("dispatch: set name %s to %q: job %s has that name: %w", id, name, otherID, ErrJobNameTaken)
 	}
+	// A job with article bytes may have them under DownloadDir/<old name>,
+	// and a rename moves none. Job.SetName refuses it (Job.DownloadBegun, not
+	// HasRun: Queue.Advance opens an attempt for any ungated job on its first
+	// tick, so HasRun would refuse a job still waiting behind others), and
+	// makes the check and the write one step against the pipeline recording a
+	// file's filename (Job.RecordFileFilename). Its one refusal is
+	// job.ErrDownloadBegun, which reaches the caller as ErrJobStarted.
+	if err := e.j.SetName(name); err != nil {
+		return fmt.Errorf("dispatch: set name %s: %w: %w", id, ErrJobStarted, err)
+	}
 	e.h.Name = name
-	e.j.SetName(name)
 	return nil
 }
 
-// LoadProgress hydrates a registered job that has no JobProgress yet, and
-// records the load as reconcileResidency does, so a later tick evicts it when
+// LoadProgress hydrates a registered job that is not resident, and records
+// the load as reconcileResidency does, so a later tick evicts it when
 // the job holds nothing and is not paused: reconcileResidency's eviction arm
 // skips IntentPause, so a paused job stays resident until it is resumed or
 // removed. Hydration verifies the job's written articles, so
@@ -1093,17 +1095,28 @@ func (d *Dispatcher) SetName(id, name string) error {
 // returned, for every job restored paused at Fetching, which no tick hydrates
 // until it is resumed.
 //
+// It calls Hydrate even for a job that has progress, because Hydrate waits
+// for a hydration in flight: one that has attached the job's content but not
+// yet installed its verified filenames reports progress with no filename
+// set, and SetName must not read DownloadBegun from it. The application's
+// Hydrate (appResidency) returns at once for a resident job with none in
+// flight.
+//
 // It does disk I/O, so it takes no lock across Hydrate (D-B9). A job that is
-// not registered, or already has progress, is left alone.
+// not registered is left alone. The load is recorded only for a job that was
+// not resident before it.
 func (d *Dispatcher) LoadProgress(ctx context.Context, id string) error {
 	j, ok := d.Job(id)
-	if !ok || j.HasProgress() {
+	if !ok {
 		return nil
 	}
+	wasResident := j.Resident()
 	if err := d.res.Hydrate(ctx, id); err != nil {
 		return fmt.Errorf("dispatch: load progress %s: %w", id, err)
 	}
-	d.markResident(id)
+	if !wasResident {
+		d.markResident(id)
+	}
 	return nil
 }
 

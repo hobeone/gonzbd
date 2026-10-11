@@ -92,8 +92,8 @@ func newResumeFixture(t *testing.T) *resumeFixture {
 
 	cfg := testConfig(downloadDir, completeDir, adminDir, config.ServerConfig{})
 	j, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "resume-job"})
-	if err := j.SetFileFilename(0, resumeFileName); err != nil {
-		t.Fatalf("SetFileFilename: %v", err)
+	if err := j.RecordFileFilename(0, j.Name(), resumeFileName); err != nil {
+		t.Fatalf("RecordFileFilename: %v", err)
 	}
 	if err := j.BeginAttempt(time.Now()); err != nil {
 		t.Fatalf("BeginAttempt: %v", err)

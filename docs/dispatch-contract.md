@@ -279,8 +279,10 @@ is not re-hydrated every tick after a residency fault parked it.
 `TestReconcileResidency_DoesNotRehydrateAPausedSlotHolder` pin the four.
 
 Three loads happen outside this rule. Two go through `Dispatcher.LoadProgress`,
-which hydrates a registered job with no progress and records the load so a
-later tick evicts it once it holds nothing and is not paused:
+which calls `Hydrate` for any registered job (so it also waits for a
+hydration in flight, and reloads an evicted job's manifest) and records the
+load for a job that was not resident before, so a later tick evicts it once
+it holds nothing and is not paused:
 `Application.verifyPausedJobs`, on a goroutine `Start` launches last, for
 every job restored paused at `Fetching`, so its verified progress is reported
 without a resume — each such job stays resident until it is resumed or

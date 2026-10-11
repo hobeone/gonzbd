@@ -7,7 +7,7 @@ import (
 
 // TestDownloadBegun pins what Job.DownloadBegun reads: the restored stamp
 // before hydration, then whether any file has a resolved filename — set live
-// (SetFileFilename) or restored (InstallFileVerification), and kept by
+// (RecordFileFilename) or restored (InstallFileVerification), and kept by
 // ResetForRetry — and not an attempt, a failed article, or the start stamp.
 func TestDownloadBegun(t *testing.T) {
 	manifest := func() *Manifest {
@@ -31,8 +31,8 @@ func TestDownloadBegun(t *testing.T) {
 
 	setName := func(t *testing.T, j *Job, fi int) {
 		t.Helper()
-		if err := j.SetFileFilename(fi, "on-disk.bin"); err != nil {
-			t.Fatalf("SetFileFilename: %v", err)
+		if err := j.RecordFileFilename(fi, j.Name(), "on-disk.bin"); err != nil {
+			t.Fatalf("RecordFileFilename: %v", err)
 		}
 	}
 	for name, tc := range map[string]struct {

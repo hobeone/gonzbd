@@ -362,8 +362,8 @@ func TestHandleFileUntrusted_AFailedDeleteIsOwedUntilItLands(t *testing.T) {
 	env := newLREnv(t)
 	a := env.newApp(t)
 	j := a.addJob(t, "owed", 2, 1)
-	if err := j.SetFileFilename(0, "A.bin"); err != nil {
-		t.Fatalf("SetFileFilename: %v", err)
+	if err := j.RecordFileFilename(0, j.Name(), "A.bin"); err != nil {
+		t.Fatalf("RecordFileFilename: %v", err)
 	}
 	a.markFileDirty(j, 0)
 	crc := func(art int) uint32 { return crc32.ChecksumIEEE(lrArticle(0, art)) }
@@ -572,8 +572,8 @@ func TestHandleFileUntrusted_KeepsTheFilesNameForTheNextFlush(t *testing.T) {
 	t.Parallel()
 	a := newLREnv(t).newApp(t)
 	j := a.addJob(t, "untrust-name", 2, 1)
-	if err := j.SetFileFilename(0, "A.bin"); err != nil {
-		t.Fatalf("SetFileFilename: %v", err)
+	if err := j.RecordFileFilename(0, j.Name(), "A.bin"); err != nil {
+		t.Fatalf("RecordFileFilename: %v", err)
 	}
 	a.markFileDirty(j, 0)
 
