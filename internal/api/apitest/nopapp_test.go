@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,9 +17,23 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-type stubWorkers struct{}
+// stubWorkers models a worker that exits when aborted: it reports the yield
+// that clears the job's launch claim. Without that report, removing a launched
+// job waits for the claim until its context ends (#814). The report runs on
+// its own goroutine because sched calls Abort holding its lock, and
+// sched.Workers says Abort must not block.
+type stubWorkers struct {
+	d  *dispatch.Dispatcher
+	wg sync.WaitGroup
+}
 
-func (w *stubWorkers) Abort(*job.Job) {}
+func (w *stubWorkers) Abort(j *job.Job) {
+	w.wg.Go(func() {
+		// ErrNotFound means the job is no longer registered, and its claim
+		// went with it.
+		_ = w.d.YieldedJob(j)
+	})
+}
 
 type stubResidency struct{}
 
@@ -31,18 +46,51 @@ func (s *stubStore) Load(context.Context) ([]dispatch.Persisted, error) { return
 func (s *stubStore) Save(context.Context, dispatch.Persisted) error     { return nil }
 func (s *stubStore) Delete(context.Context, string) error               { return nil }
 
-type stubRunner struct{}
+// stubRunner reports each launch on launched and starts no work.
+type stubRunner struct{ launched chan string }
 
-func (r *stubRunner) Run(context.Context, string, job.State) {}
+func (r *stubRunner) Run(_ context.Context, id string, _ job.State) {
+	select {
+	case r.launched <- id:
+	default:
+	}
+}
 
-func newTestDispatcher(t *testing.T) *dispatch.Dispatcher {
+func newTestDispatcher(t *testing.T) (*dispatch.Dispatcher, <-chan string) {
 	t.Helper()
-	d := dispatch.New(2, 2, time.Hour, time.Now, &stubWorkers{}, &stubResidency{}, &stubStore{}, &stubRunner{})
+	run := &stubRunner{launched: make(chan string, 1)}
+	w := &stubWorkers{}
+	d := dispatch.New(2, 2, time.Hour, time.Now, w, &stubResidency{}, &stubStore{}, run)
+	w.d = d
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("dispatcher.Start: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Stop() })
-	return d
+	t.Cleanup(w.wg.Wait)
+	return d, run.launched
+}
+
+// awaitLaunch wakes the dispatcher until it launches id. Opening an attempt
+// and granting the lease take one tick each, and a wake that lands while one
+// is already pending is dropped, so a single Wake is not enough.
+func awaitLaunch(t *testing.T, d *dispatch.Dispatcher, launched <-chan string, id string) {
+	t.Helper()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
+	deadline := time.After(10 * time.Second)
+	for {
+		d.Wake()
+		select {
+		case got := <-launched:
+			if got != id {
+				t.Fatalf("dispatcher launched %q, want %q", got, id)
+			}
+			return
+		case <-poll.C:
+		case <-deadline:
+			t.Fatalf("dispatcher did not launch %q within 10s", id)
+		}
+	}
 }
 
 func TestNopApp_Contract(t *testing.T) {
@@ -147,7 +195,7 @@ func TestNopApp_Contract(t *testing.T) {
 	}
 
 	// 4. Wired Dispatcher and History delegation
-	disp := newTestDispatcher(t)
+	disp, launched := newTestDispatcher(t)
 	j := job.New("job1", "Test Job", job.Policy{})
 	if err := disp.Add(context.Background(), j, dispatch.Header{Name: "Test Job"}); err != nil {
 		t.Fatalf("disp.Add failed: %v", err)
@@ -186,7 +234,13 @@ func TestNopApp_Contract(t *testing.T) {
 		t.Errorf("job1 name after wired RenameJob() = %q, want Renamed", j.Name())
 	}
 
-	if err := wiredApp.RemoveJob(ctx, "job1", false); err != nil {
+	// Remove a job the dispatcher has launched, which is the case that waits
+	// for a worker to report back. Left to the race between the tick and this
+	// goroutine, the launch happens only sometimes (#814).
+	awaitLaunch(t, disp, launched, "job1")
+	removeCtx, cancelRemove := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelRemove()
+	if err := wiredApp.RemoveJob(removeCtx, "job1", false); err != nil {
 		t.Errorf("wired RemoveJob() = %v, want nil", err)
 	}
 	if _, ok := disp.Job("job1"); ok {

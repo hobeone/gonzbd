@@ -226,7 +226,7 @@ func (f *FinalizeStage) moveFileByFile(ctx context.Context, log *slog.Logger, jo
 			continue
 		}
 		dst := fsutil.JoinSafe(dest, "", e.Name(), job.Sanitize)
-		if err := moveRecursive(ctx, job.DownloadDir, src, dst, job.isPendingDeletion); err != nil {
+		if err := moveRecursive(ctx, src, dst, job.isPendingDeletion); err != nil {
 			failed = append(failed, e.Name())
 			moveErrors = append(moveErrors, fmt.Errorf("finalize: move %s -> %s: %w", src, dst, err))
 			logf(ctx, log, job, slog.LevelWarn, "Failed to move %s → %s: %v", filepath.Base(src), dst, err)
@@ -282,9 +282,10 @@ func prefixDirName(dir, prefix string) string {
 }
 
 // moveRecursive handles moving files or directories, with cross-device
-// support. root is the top of the tree being moved (the job's download
-// directory); a symlink inside it may point anywhere within root.
-func moveRecursive(ctx context.Context, root, src, dst string, isPending func(string) bool) error {
+// support. On the cross-device fallback fsutil.MoveFile moves only regular
+// files, so a symlink in the tree fails the move rather than being recreated
+// at dst.
+func moveRecursive(ctx context.Context, src, dst string, isPending func(string) bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -298,7 +299,7 @@ func moveRecursive(ctx context.Context, root, src, dst string, isPending func(st
 	}
 
 	if !info.IsDir() {
-		return fsutil.MoveFileWithin(root, src, dst)
+		return fsutil.MoveFile(src, dst)
 	}
 
 	// It's a directory — preserve source permissions.
@@ -312,7 +313,7 @@ func moveRecursive(ctx context.Context, root, src, dst string, isPending func(st
 	}
 
 	for _, e := range entries {
-		if err := moveRecursive(ctx, root, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), isPending); err != nil {
+		if err := moveRecursive(ctx, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), isPending); err != nil {
 			return err
 		}
 	}
