@@ -85,7 +85,8 @@ func installRows(m *Manifest, p *JobProgress, fileIdx int, rows []durability.Wri
 // already set; a newly-Done article has no row, and appendRow adds it.
 //
 // The resident rows are kept in no particular order. Their readers do not
-// assume one: FileRows and settleFileCRC each sort a copy (sortedClone).
+// assume one: FileRows, SettleFileCRC and settleFileCRC each sort a copy
+// (sortedClone).
 //
 // clone() shares p.written's slices, so a stored slice is never edited in
 // place: a replacement, or dropRows' removal, is made in a new slice. An
@@ -194,37 +195,148 @@ func (p *JobProgress) dropRows(fi int, arts []int) {
 // rows, stores it on the file, and releases the rows. It returns the CRC and
 // whether one could be derived; an underivable file stores zero, which par2
 // reads as NoCRC.
+//
+// The sort and the combine, one crc32util.Combine per article, run with
+// contentMu released, so this job's MarkArticleWritten and the job's other
+// writers do not wait on them. The lock is taken twice: once to read the
+// inputs (settleInputs), once to store the result (installSettled). The
+// second refuses a result whose rows changed in between and settles again
+// under the lock, so the outcome is one that running the settle and the
+// change one after the other, in some order, would have produced.
 func (j *Job) SettleFileCRC(fileIdx int) (crc uint32, ok bool, err error) {
+	in, err := j.settleInputs(fileIdx)
+	if err != nil {
+		return 0, false, err
+	}
+	// --- No lock held below this line ---
+	if j.settleCombineHook != nil {
+		j.settleCombineHook()
+	}
+	crc, ok = fileCRCFromRows(sortedClone(in.rows), in.failed, in.lo, in.hi)
+	return j.installSettled(fileIdx, in, crc, ok)
+}
+
+// settleSnapshot is what SettleFileCRC reads under the lock and combines
+// outside it. rows is the stored slice itself, not a copy: a stored slice is
+// never edited in place (see the top of this file), so it cannot change while
+// it is combined.
+type settleSnapshot struct {
+	rows   []durability.WrittenRow
+	failed bool
+	lo, hi int
+}
+
+// settleInputs takes, under contentMu, the inputs fileCRCFromRows reads for
+// one file.
+func (j *Job) settleInputs(fileIdx int) (settleSnapshot, error) {
+	j.contentMu.RLock()
+	defer j.contentMu.RUnlock()
+	if j.manifest == nil || j.progress == nil {
+		return settleSnapshot{}, fmt.Errorf("job %s: %w", j.id, ErrNotResident)
+	}
+	if fileIdx < 0 || fileIdx >= j.manifest.NumFiles() {
+		return settleSnapshot{}, fmt.Errorf("job %s: fileIdx %d out of range", j.id, fileIdx)
+	}
+	lo, hi := j.manifest.FileRange(fileIdx)
+	return settleSnapshot{
+		rows:   j.progress.written[fileIdx],
+		failed: j.progress.anyFailed(lo, hi),
+		lo:     lo,
+		hi:     hi,
+	}, nil
+}
+
+// installSettled stores a CRC combined from in, if in is still current;
+// otherwise it settles the file again from what is current, under the lock.
+//
+// in is current when the file's stored row slice is still in.rows itself
+// (sameSlice), not merely equal to it. Every store to p.written either
+// replaces the slice with a new array, grows its length, or deletes it
+// (`git grep -n 'p\.written\[[^]]*\] = \|delete(p\.written' --
+// 'internal/job/*.go' ':!*_test.go'` returns 5 lines: upsertRows, appendRow,
+// dropRows, storeSettled and UntrustFile). dropRows is reached through
+// clearDone, from ResetForRetry, markNotDone (UntrustFile) and resetForReload
+// (ClearEmittedForReload) — `git grep -n '\.clearDon[e](' --
+// 'internal/job/*.go' ':!*_test.go'` returns 3 lines. So any row written,
+// replaced or dropped since makes the result stale, including a row dropped
+// and written back with the same value. The range is not compared:
+// newManifest is the one writer of a manifest's file ranges
+// (`git grep -n 'fileArticleOffsets\[[^]]*\] =' -- 'internal/job/*.go'
+// ':!*_test.go'` returns 2 lines, both in it), and RestoreContent re-attaches
+// the job's own manifest, so the range is the one in.lo and in.hi hold.
+//
+// The failed bits are not compared, because while the slice is unchanged no
+// change to them can change the result. A bit is set only on an article that
+// is not Done (setFailedBits), and is cleared only by clearDone, which drops
+// that article's row and so replaces the slice. A combine that yielded a CRC
+// had a row for every article of the range; with the slice unchanged none of
+// those rows was dropped, so each article stayed Done and no bit could be set.
+// When in.failed was true, a bit cleared without replacing the slice belonged
+// to an article with no row, which leaves the chain short of an article, so
+// the result is NoCRC either way.
+func (j *Job) installSettled(fileIdx int, in settleSnapshot, combined uint32, combinedOK bool) (crc uint32, ok bool, err error) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	if j.manifest == nil || j.progress == nil {
 		return 0, false, fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
-	if fileIdx < 0 || fileIdx >= j.manifest.NumFiles() {
-		return 0, false, fmt.Errorf("job %s: fileIdx %d out of range", j.id, fileIdx)
+	if !sameSlice(j.progress.written[fileIdx], in.rows) {
+		if j.settleRecombineHook != nil {
+			j.settleRecombineHook()
+		}
+		crc, ok = settleFileCRC(j.manifest, j.progress, fileIdx)
+		return crc, ok, nil
 	}
-	crc, ok = settleFileCRC(j.manifest, j.progress, fileIdx)
-	return crc, ok, nil
+	j.progress.storeSettled(fileIdx, combined, combinedOK)
+	return combined, combinedOK, nil
 }
 
-// settleFileCRC is SettleFileCRC's body. The caller holds the job's contentMu
-// and has range-checked fileIdx.
+// sameSlice reports whether a and b are the same stored slice: the same
+// length over the same backing array. Because a stored slice is never edited
+// in place, the same slice has the same contents. An append into spare
+// capacity keeps the array and changes only the length, so both are compared.
+// Holding b keeps its array alive, so a later allocation cannot take its
+// address.
+func sameSlice(a, b []durability.WrittenRow) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return len(a) == 0 || &a[0] == &b[0]
+}
+
+// settleFileCRC derives and stores a file's CRC in one critical section. The
+// caller holds the job's contentMu and has range-checked fileIdx.
+// InstallFileVerification calls it, and SettleFileCRC does when the inputs it
+// combined went stale.
 func settleFileCRC(m *Manifest, p *JobProgress, fileIdx int) (uint32, bool) {
 	lo, hi := m.FileRange(fileIdx)
-	failed := false
-	for i := lo; i < hi; i++ {
-		if p.failed.Get(i) {
-			failed = true
-			break
-		}
-	}
-	crc, ok := fileCRCFromRows(sortedClone(p.written[fileIdx]), failed, lo, hi)
+	crc, ok := fileCRCFromRows(sortedClone(p.written[fileIdx]), p.anyFailed(lo, hi), lo, hi)
+	p.storeSettled(fileIdx, crc, ok)
+	return crc, ok
+}
+
+// storeSettled stores a file's derived CRC, zero when ok is false, and
+// releases its resident rows. It is the one writer of a derived
+// AssembledCRC32: the other two assignments, in UntrustFile and
+// ResetForRetry, write zero (`git grep -n 'AssembledCRC3[2] =' -- '*.go'
+// ':!*_test.go'` returns 3 lines). The caller holds contentMu.
+func (p *JobProgress) storeSettled(fileIdx int, crc uint32, ok bool) {
 	if !ok {
 		crc = 0
 	}
 	p.files[fileIdx].AssembledCRC32 = crc
 	delete(p.written, fileIdx)
-	return crc, ok
+}
+
+// anyFailed reports whether any article of [lo, hi) is failed. The caller
+// holds contentMu.
+func (p *JobProgress) anyFailed(lo, hi int) bool {
+	for i := lo; i < hi; i++ {
+		if p.failed.Get(i) {
+			return true
+		}
+	}
+	return false
 }
 
 // UntrustFile returns every written article of a file to Outstanding: its

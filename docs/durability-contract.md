@@ -734,10 +734,15 @@ Such a chain cannot overlap and cannot leave a gap.
 `Job.SettleFileCRC` applies it and stores the result on
 `FileProgress.AssembledCRC32` (zero when underivable, which par2 reads as
 `NoCRC`), then releases the file's resident rows. It is called from
-`completeFinalizedFile` (and the `jobtest.SeedFileCRC` test helper). For
-files a restart finished or found `complete=1`,
-`Job.InstallFileVerification` runs the same derivation (`settleFileCRC`)
-under the lock it already holds.
+`completeFinalizedFile` (and the `jobtest.SeedFileCRC` test helper). It
+sorts and combines the rows with the job's `contentMu` released, so the
+assembler's `MarkArticleWritten` does not wait on the combine, and stores the
+result only if the file's resident rows are unchanged when it re-takes the
+lock; otherwise it derives the CRC again under the lock from the rows as they
+are then (`TestSettleFileCRC_RefusesAStaleCombine`,
+`TestSettleFileCRC_CombinesWithoutTheLock`). For files a restart finished or
+found `complete=1`, `Job.InstallFileVerification` runs the same derivation
+(`settleFileCRC`) under the lock it already holds.
 
 The per-article rows a file needs for it are kept resident in
 `JobProgress.written` until the CRC is settled — installed by
