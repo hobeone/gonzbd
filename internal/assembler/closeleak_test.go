@@ -25,7 +25,7 @@ func cancelWithoutRouting(t *testing.T, name string, disposition FileDisposition
 			"queue, so returning its articles to Outstanding re-dispatches work for a "+
 			"job that is going away", arts)
 	}
-	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) {
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
 		t.Errorf("OnArticleRejected(%d) on the cancel path", artIdx)
 	}
 

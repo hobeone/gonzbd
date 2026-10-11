@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/assembler"
 	dispatchstore "github.com/hobeone/gonzbd/internal/dispatch/store"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/history"
@@ -130,12 +131,17 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 // paused it still records the failure, but the byte charge waits for the next
 // hydration and the release is not made: see Job.MarkArticleFailed.
 //
+// uncovered is the assembler's count of the article's bytes no written article
+// covers, or assembler.WholeArticle. A count goes to
+// Job.MarkArticleFailedUncovered, which charges only those bytes: the rest of
+// the range is on disk, written by another article (#432).
+//
 // This is the other side of the A1 split from handleWriteFault: that one
 // stalls the job and touches no article, this one fails the article and
 // touches no job state.
-func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx int32, reason string) {
+func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx int32, reason string, uncovered int64) {
 	app.log.Warn("article rejected by the assembler; recording it as permanently failed",
-		"job", jobID, "fileidx", fileIdx, "artidx", artIdx, "reason", reason)
+		"job", jobID, "fileidx", fileIdx, "artidx", artIdx, "reason", reason, "uncovered", uncovered)
 	if app.dispatcher == nil {
 		return
 	}
@@ -145,7 +151,13 @@ func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx 
 			"job", jobID, "artidx", artIdx)
 		return
 	}
-	if err := j.MarkArticleFailed(int(artIdx)); err != nil {
+	var err error
+	if uncovered == assembler.WholeArticle {
+		err = j.MarkArticleFailed(int(artIdx))
+	} else {
+		err = j.MarkArticleFailedUncovered(int(artIdx), uncovered)
+	}
+	if err != nil {
 		app.log.Warn("record rejected article as permanently failed",
 			"job", jobID, "fileidx", fileIdx, "artidx", artIdx, "err", err)
 	}

@@ -1472,9 +1472,12 @@ they hold at any residency because they read `FileProgress` alone.
 `FileProgress.Bytes` exists precisely to make that derivation independent of the
 evictable manifest.
 
-`FailedBytes` is subtracted per file because a failed article was never counted
-as downloaded but also stopped being "remaining" in any useful sense. Each
-file's contribution is clamped at zero.
+`FailedBytes` is subtracted per file because a failed article's charge was never
+counted as downloaded but also stopped being "remaining" in any useful sense.
+An article refused for overlap is charged only its uncovered bytes (#432); the
+rest of its size is counted in `BytesDownloaded`, because another article wrote
+those bytes, so the article still leaves nothing remaining. Each file's
+contribution is clamped at zero.
 
 **Remaining and the size it is paired with must share an exclusion set.** Every
 consumer that turns remaining into a percentage or a downloaded total pairs it
@@ -1511,7 +1514,9 @@ rather than second authorities. Nothing ever read either column back, and the
 argument that `failed_bytes` was "the one per-file byte figure the durability
 record cannot supply" did not hold: the set of failed article indices and the
 manifest give each one's size via `m.ArticleBytes(i)`, which is exactly the sum
-`JobProgress.markFailed` performs. Both columns are gone.
+`JobProgress.markFailed` performed then. Both columns are gone. (Since #432 a
+failed article's charge is `JobProgress.chargeOf`, which can be less than that
+size for an overlap refusal, from an in-memory record beside the failed bit.)
 
 They joined `write_cursor` and `max_written`, removed earlier for being
 maintained in parallel with facts held elsewhere. The difference is that those

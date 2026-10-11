@@ -66,6 +66,21 @@ type JobProgress struct {
 	done, failed, emitted bitset
 	files                 []FileProgress
 
+	// failCharge holds, by global article index, the bytes a failed article
+	// is charged when that is less than its manifest size: an article the
+	// assembler refused because other articles had already written part or
+	// all of its range is owed to par2 only for the rest (#432). An article
+	// absent from it is charged in full. In memory only, like the failed bit
+	// it qualifies, and dropped with that bit by clearDone.
+	//
+	// limitCharge adds the entries, called from markFailedUncovered and from
+	// markArticleFailed's evicted branch —
+	// `git grep -n 'limitCharge[(]' -- 'internal/job/*.go' ':!*_test.go'`
+	// finds 3 lines, the definition and those two calls. chargeOf reads them:
+	// `git grep -n 'failCharge\[' -- 'internal/job/*.go' ':!*_test.go'`
+	// finds 2 lines, limitCharge's write and chargeOf's read.
+	failCharge map[int]int64
+
 	// written holds, per file index, the written rows of a file that has not
 	// yet completed, for the whole-file CRC: verified rows and rows written
 	// this process, in no particular order. It is not persisted here:
@@ -144,7 +159,9 @@ type FileProgress struct {
 	//
 	Bytes int64
 	// BytesDownloaded is the sum of Bytes over this file's resolved,
-	// non-failed articles. It is in the SAME unit as Bytes above — the
+	// non-failed articles, plus the part of each failed article's size its
+	// charge leaves out (failCharge): those bytes are on disk, written by
+	// another article. It is in the SAME unit as Bytes above — the
 	// encoded NZB `bytes` attribute — because RemainingBytes subtracts the
 	// two, and only figures in one unit can be subtracted.
 	//
@@ -164,7 +181,8 @@ type FileProgress struct {
 	// would report its bytes as still to fetch forever.
 	//
 	// Not persisted, and does not need to be: markFailed below computes it as
-	// m.ArticleBytes(i) summed over the failed set. The manifest knows an
+	// chargeOf summed over the failed set — m.ArticleBytes(i), or less for an
+	// article whose range other articles partly cover. The manifest knows an
 	// article's size whether or not it was ever fetched. The failed set itself
 	// is in memory only: across a restart a complete=1 file rebuilds it as the
 	// complement of its written rows (InstallFileVerification), and a complete=0
@@ -842,6 +860,7 @@ func (p *JobProgress) clone() *JobProgress {
 	cp.failed = p.failed.Clone()
 	cp.emitted = p.emitted.Clone()
 	cp.files = slices.Clone(p.files)
+	cp.failCharge = maps.Clone(p.failCharge)
 
 	cp.serverStats = maps.Clone(p.serverStats)
 	// The map is copied and the row slices are shared: a stored slice is never
@@ -858,8 +877,8 @@ func (p *JobProgress) clone() *JobProgress {
 // impractical.
 //
 // recompute is authoritative for the job-level failedBytes wherever a
-// manifest is resident: it derives the figure from the failed bits and the
-// manifest's article sizes, so it cannot stack on an earlier value.
+// manifest is resident: it derives the figure from the failed bits and each
+// failed article's chargeOf, so it cannot stack on an earlier value.
 //
 // Between recomputes, markFailed and resetForReload maintain the value
 // incrementally; both take the manifest. While the manifest is evicted nothing
@@ -894,15 +913,15 @@ func (p *JobProgress) recompute(m *Manifest) {
 			if fetching && !p.done.Get(i) && !p.emitted.Get(i) {
 				n++
 			}
-			if p.done.Get(i) && !p.failed.Get(i) {
-				downloaded += int64(m.ArticleBytes(i))
-			}
 			if p.done.Get(i) {
 				resolved++
+				var charge int64
 				if p.failed.Get(i) {
 					failed++
-					fileFailed += int64(m.ArticleBytes(i))
+					charge = p.chargeOf(m, i)
+					fileFailed += charge
 				}
+				downloaded += int64(m.ArticleBytes(i)) - charge
 			}
 		}
 		p.files[fi].Pending = n
@@ -1017,37 +1036,79 @@ func (p *JobProgress) clearDone(fi int, arts ...int) {
 	for _, i := range arts {
 		p.done.Clear(i)
 		p.failed.Clear(i)
+		delete(p.failCharge, i)
 	}
 	p.dropRows(fi, arts)
 }
 
-// markFailed flips Done+Failed on article i and updates counters. Returns
-// false (no-op) if the article was already Done.
+// wholeArticle is markFailedUncovered's uncovered for a failure that charges
+// the article's full manifest size.
+const wholeArticle int64 = -1
+
+// markFailed flips Done+Failed on article i, charging its full size, and
+// updates counters. Returns false (no-op) if the article was already Done.
 func (p *JobProgress) markFailed(m *Manifest, i int) bool {
+	_, ok := p.markFailedUncovered(m, i, wholeArticle)
+	return ok
+}
+
+// markFailedUncovered is markFailed for an article of which only uncovered
+// bytes are missing from the file, or wholeArticle. It returns what the
+// failure charged (chargeOf) and false (no-op) if the article was already
+// Done.
+func (p *JobProgress) markFailedUncovered(m *Manifest, i int, uncovered int64) (int64, bool) {
 	wasEmitted := p.emitted.Get(i)
 	if !p.setFailedBits(i) {
-		return false
+		return 0, false
 	}
+	p.limitCharge(i, uncovered)
 	fi := m.fileIndexForArticle(i)
 	if !wasEmitted {
 		p.files[fi].Pending--
 		p.pendingArticles--
 	}
-	bytes := int64(m.ArticleBytes(i))
-	p.failedBytes += bytes
-	p.files[fi].FailedBytes += bytes
+	charge := p.chargeOf(m, i)
+	p.failedBytes += charge
+	p.files[fi].FailedBytes += charge
+	p.files[fi].BytesDownloaded += int64(m.ArticleBytes(i)) - charge
 	p.articlesResolved++
 	p.articlesFailed++
-	return true
+	return charge, true
+}
+
+// limitCharge records that failed article i is charged at most uncovered
+// bytes. wholeArticle records nothing, which charges the article in full.
+func (p *JobProgress) limitCharge(i int, uncovered int64) {
+	if uncovered == wholeArticle {
+		return
+	}
+	if p.failCharge == nil {
+		p.failCharge = make(map[int]int64)
+	}
+	p.failCharge[i] = uncovered
+}
+
+// chargeOf is what failed article i costs par2: its manifest size, or the
+// uncovered bytes limitCharge recorded when those are fewer. markFailedUncovered,
+// resetForReload and recompute each take a failed article's charge from it, so
+// the figure the live path maintains and the one a recompute derives cannot
+// disagree — `git grep -n 'chargeOf[(]' -- 'internal/job/*.go' ':!*_test.go'`
+// finds 4 lines, this definition and those three calls.
+func (p *JobProgress) chargeOf(m *Manifest, i int) int64 {
+	full := int64(m.ArticleBytes(i))
+	if c, ok := p.failCharge[i]; ok {
+		return min(c, full)
+	}
+	return full
 }
 
 // setFailedBits is the bit transition of a permanent failure: Done and Failed
 // set, Emitted cleared. Returns false (no-op) if the article was already Done.
 //
-// It needs no manifest and maintains no counter. markFailed calls it and then
-// maintains the counters itself; Job.MarkArticleFailed calls it alone for a job
-// whose manifest is evicted, leaving the counters to the recompute in
-// RestoreContent.
+// It needs no manifest and maintains no counter. markFailedUncovered calls it
+// and then maintains the counters itself; Job.markArticleFailed calls it with
+// only limitCharge for a job whose manifest is evicted, leaving the counters to
+// the recompute in RestoreContent.
 func (p *JobProgress) setFailedBits(i int) bool {
 	if p.done.Get(i) {
 		return false
@@ -1134,9 +1195,10 @@ func (p *JobProgress) resetForReload(m *Manifest, fi int, clearEmitted bool) (cl
 			retained = append(retained, int32(i)) //nolint:gosec // G115: article index fits in int32
 			continue
 		}
-		bytes := int64(m.ArticleBytes(i))
-		p.failedBytes -= bytes
-		p.files[fi].FailedBytes -= bytes
+		charge := p.chargeOf(m, i)
+		p.failedBytes -= charge
+		p.files[fi].FailedBytes -= charge
+		p.files[fi].BytesDownloaded -= int64(m.ArticleBytes(i)) - charge
 		reset = append(reset, i)
 		cleared = append(cleared, int32(i)) //nolint:gosec // G115: article index fits in int32
 	}

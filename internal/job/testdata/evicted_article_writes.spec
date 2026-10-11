@@ -5,7 +5,9 @@ run TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction|TestMarkArticl
 file internal/job/content.go
 --- anchor
 	if j.manifest == nil {
-		j.progress.setFailedBits(artIdx)
+		if j.progress.setFailedBits(artIdx) {
+			j.progress.limitCharge(artIdx, uncovered)
+		}
 		return nil
 	}
 --- replace
@@ -17,9 +19,12 @@ file internal/job/content.go
 [an evicted job's failed-bit write neutered]
 file internal/job/content.go
 --- anchor
-		j.progress.setFailedBits(artIdx)
+		if j.progress.setFailedBits(artIdx) {
+			j.progress.limitCharge(artIdx, uncovered)
+		}
 		return nil
 --- replace
+		_ = uncovered
 		return nil
 --- end
 
@@ -43,13 +48,13 @@ file internal/job/content.go
 		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
 	}
 	if j.manifest == nil {
-		j.progress.setFailedBits(artIdx)
+		if j.progress.setFailedBits(artIdx) {
 --- replace
 	if false {
 		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
 	}
 	if j.manifest == nil {
-		j.progress.setFailedBits(artIdx)
+		if j.progress.setFailedBits(artIdx) {
 --- end
 
 [an evicted job's emitted-clear index unbounded]

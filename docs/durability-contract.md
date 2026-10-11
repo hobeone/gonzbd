@@ -293,7 +293,8 @@ post-processing does not wait for the background cadence: `enqueuePostProc`
 flushes synchronously.
 
 **A truncated failed tail is still charged.** Failed bytes come from manifest
-article sizes (`JobProgress.markFailed` → `FileProgress.FailedBytes`), and
+article sizes (`JobProgress.chargeOf` → `FileProgress.FailedBytes`; an
+article refused for overlap is charged less, only its uncovered bytes), and
 nothing on the verdict path reads a file's size on disk. A no-par2 post with a
 failed tail reaches `RepairNoCapacity`; a post with par2 is repaired.
 
@@ -634,7 +635,8 @@ single owner of which article wrote which bytes of a file.
   to be refused.
 - **An arrival whose `[off, off+len)` intersects a range another article owns
   is refused** (`acceptArticle`, through `ownerOf`) and failed permanently. Its
-  part still counts toward `TotalParts`, and its bytes are charged to par2. A
+  part still counts toward `TotalParts`, and par2 is charged the bytes of its
+  range no other article's range covers (`ownedRanges.covered`, #432). A
   range owned by the same `ArtIdx` is a re-accept, not a collision.
 - **A zero-length article claims nothing.** It is reported written with
   `n == 0`, and its row (length 0, CRC 0) is valid: the next verification

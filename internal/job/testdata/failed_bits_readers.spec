@@ -11,7 +11,7 @@ file internal/job/content.go
 		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
 	}
 	if j.manifest == nil {
-		j.progress.setFailedBits(artIdx)
+		if j.progress.setFailedBits(artIdx) {
 --- replace
 		if j.manifest == nil {
 			j.progress.setFailedBits(min(max(artIdx, 0), j.progress.TotalArticles()-1))
@@ -19,7 +19,7 @@ file internal/job/content.go
 		return fmt.Errorf("job %s: artIdx %d out of range", j.id, artIdx)
 	}
 	if j.manifest == nil {
-		j.progress.setFailedBits(artIdx)
+		if j.progress.setFailedBits(artIdx) {
 --- end
 
 [a complete file's written articles are failed too]

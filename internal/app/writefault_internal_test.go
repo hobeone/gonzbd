@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
@@ -143,7 +144,7 @@ func TestHandleArticleRejected_AcksThePermanentFailure(t *testing.T) {
 	}
 	before := job.Progress().FailedBytes()
 
-	application.handleArticleRejected(job.ID(), 0, 1, "negative offset")
+	application.handleArticleRejected(job.ID(), 0, 1, "negative offset", assembler.WholeArticle)
 
 	if !job.Progress().ArticleFailed(1) {
 		t.Error("the rejected article is not marked failed; its Emitted bit is still set, " +
@@ -172,7 +173,7 @@ func TestHandleArticleRejected_RecordsTheFailureOfAnEvictedJob(t *testing.T) {
 		t.Fatal("fixture: the job is still resident after Evict")
 	}
 
-	application.handleArticleRejected(j.ID(), 0, 1, "negative offset")
+	application.handleArticleRejected(j.ID(), 0, 1, "negative offset", assembler.WholeArticle)
 
 	if !j.Progress().ArticleFailed(1) {
 		t.Fatal("the rejected article of an evicted job is not marked failed; " +
@@ -227,7 +228,7 @@ func TestArticleHandlers_LogARecordTheJobRefuses(t *testing.T) {
 	var logs syncBuffer
 	application.log = slog.New(slog.NewTextHandler(&logs, nil))
 
-	application.handleArticleRejected(j.ID(), 0, 99, "negative offset")
+	application.handleArticleRejected(j.ID(), 0, 99, "negative offset", assembler.WholeArticle)
 	application.handleArticlesUnwritten(j.ID(), 0, []int32{99})
 
 	for _, msg := range []string{
@@ -255,7 +256,7 @@ func TestHandleArticleRejected_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
 
 	// No job with this ID was ever added, which is the same state the queue
 	// presents after one is removed.
-	application.handleArticleRejected("job-that-never-existed", 0, 1, "negative offset")
+	application.handleArticleRejected("job-that-never-existed", 0, 1, "negative offset", assembler.WholeArticle)
 }
 
 // TestHandleWriteFault_DoesNotBlockTheAssemblerWorker pins the hand-off.

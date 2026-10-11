@@ -1474,7 +1474,7 @@ func TestWriteArticle_TheRefsMessageIDIsWhatTheWorkerReports(t *testing.T) {
 	var logBuf strings.Builder
 	rejected := make(chan struct{}, 1)
 	opts := makeOpts(dir, files)
-	opts.OnArticleRejected = func(_ string, _ int, _ int32, _ string) {
+	opts.OnArticleRejected = func(_ string, _ int, _ int32, _ string, _ int64) {
 		select {
 		case rejected <- struct{}{}:
 		default:
@@ -1667,7 +1667,7 @@ func TestHandleLateDuplicate_ResolvesAnArticleWhateverItsIdentity(t *testing.T) 
 
 	rejected := make(chan int32, 1)
 	opts := makeOpts(dir, files)
-	opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string) { rejected <- artIdx }
+	opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) { rejected <- artIdx }
 	a := startAssembler(t, opts)
 
 	if err := writeArticle(t.Context(), a, WriteRequest{
