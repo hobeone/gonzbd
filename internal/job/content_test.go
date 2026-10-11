@@ -1,6 +1,7 @@
 package job
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -474,6 +475,46 @@ func TestResetForRetry_ClearsDownloadStamps(t *testing.T) {
 	}
 }
 
+// TestResetForRetry_UncompletesAFileWhoseOnlyGapIsAFailedArticle: a Complete
+// file whose articles are all Done but one Failed loses Complete and its
+// assembled CRC once the retry resets that article, so the article is
+// dispatched again rather than skipped with its file.
+func TestResetForRetry_UncompletesAFileWhoseOnlyGapIsAFailedArticle(t *testing.T) {
+	t.Parallel()
+
+	m := NewManifest([]JobFile{{
+		Subject: "short.rar",
+		Bytes:   200,
+		Articles: []JobArticle{
+			{ID: "<s1@x>", Bytes: 100, Number: 1},
+			{ID: "<s2@x>", Bytes: 100, Number: 2},
+		},
+	}})
+	j := New("retry-failed-gap", "test.nzb", Policy{})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	markWritten(t, j, 1)
+	if err := j.MarkArticleFailed(0); err != nil {
+		t.Fatalf("MarkArticleFailed: %v", err)
+	}
+	j.progress.files[0].Complete = true
+	j.progress.files[0].AssembledCRC32 = 0xAAAA
+
+	j.ResetForRetry()
+
+	p := j.Progress()
+	if p.ArticleDone(0) {
+		t.Fatal("article 0 is still Done after ResetForRetry; the retry reset nothing")
+	}
+	if p.FileComplete(0) {
+		t.Error("file 0 is still Complete after ResetForRetry although its failed article was reset")
+	}
+	if got := p.FileAssembledCRC32(0); got != 0 {
+		t.Errorf("file 0 AssembledCRC32 = %#x after ResetForRetry, want 0", got)
+	}
+}
+
 // TestResetForRetry_UncompletesAFileWithUndoneArticles: a file restored as
 // Complete while one of its articles is not done loses Complete and its
 // assembled CRC, so the article is dispatched again; a Complete file whose
@@ -888,6 +929,42 @@ func TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction(t *testing.T)
 	}
 	if got := unfinishedArticles(t, j); len(got) != 0 {
 		t.Errorf("unfinished articles after re-hydration = %v, want none: a failed article is resolved", got)
+	}
+}
+
+// TestMarkArticleFailedLocked_Branches calls markArticleFailed directly, as
+// InstallFileVerification does under its own hold of contentMu: no progress is
+// an error, an out-of-range index is an error, an evicted job gets the bits
+// alone, and a resident job is charged the article's bytes.
+func TestMarkArticleFailedLocked_Branches(t *testing.T) {
+	t.Parallel()
+	call := func(j *Job, i int) error {
+		j.contentMu.Lock()
+		defer j.contentMu.Unlock()
+		return j.markArticleFailed(i)
+	}
+
+	if err := call(New("cold", "cold", Policy{}), 0); !errors.Is(err, ErrNotResident) {
+		t.Errorf("markArticleFailed with no progress = %v, want ErrNotResident", err)
+	}
+
+	evicted, _ := evictedThreeArticleJob(t)
+	if err := call(evicted, 3); err == nil {
+		t.Error("markArticleFailed(3) on a three-article job: nil error")
+	}
+	if err := call(evicted, 2); err != nil {
+		t.Fatalf("markArticleFailed on an evicted job: %v", err)
+	}
+	if p := evicted.Progress(); !p.ArticleFailed(2) || p.FailedBytes() != 0 {
+		t.Errorf("evicted: failed=%v failedBytes=%d, want the bit set and the bytes left to the next recompute", p.ArticleFailed(2), p.FailedBytes())
+	}
+
+	resident := verifiedTestJob(t)
+	if err := call(resident, 1); err != nil {
+		t.Fatalf("markArticleFailed on a resident job: %v", err)
+	}
+	if p := resident.Progress(); !p.ArticleFailed(1) || p.FailedBytes() != 100 {
+		t.Errorf("resident: failed=%v failedBytes=%d, want the bit set and 100 bytes charged", p.ArticleFailed(1), p.FailedBytes())
 	}
 }
 

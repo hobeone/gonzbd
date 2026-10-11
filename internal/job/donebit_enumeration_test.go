@@ -17,29 +17,56 @@ var doneMarkers = []string{
 	"installRows",
 }
 
-// doneBitSetters is every function that sets p.done WITHOUT going through
-// markDone.
-var doneBitSetters = []string{
-	"markDone",
-	"setFailedBits",
+// bitsetWriters is, for each write to one of JobProgress's three bitsets,
+// every function in this package's non-test sources that makes it. The prose
+// on JobProgress's bitsets and on clearDone states these sets.
+var bitsetWriters = map[string][]string{
+	"done.Set":   {"markDone", "setFailedBits"},
+	"done.Clear": {"clearDone"},
+
+	"failed.Set":   {"setFailedBits"},
+	"failed.Clear": {"clearDone"},
+
+	"emitted.Set": {"markEmitted"},
+	// ClearArticleEmitted clears the bit alone only while the manifest is
+	// evicted, leaving the counters to RestoreContent's recompute.
+	"emitted.Clear": {"ClearArticleEmitted", "clearEmitted", "markDone", "resetForReload", "setFailedBits"},
 }
 
 func TestDoneBitWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
-	markers, setters := scanDoneBitWriters(t)
+	markers, writes := scanBitsetWriters(t)
 
 	if !slices.Equal(markers, doneMarkers) {
 		t.Errorf("functions calling markDone = %v, want %v", markers, doneMarkers)
 	}
-
-	if !slices.Equal(setters, doneBitSetters) {
-		t.Errorf("functions setting p.done directly = %v, want %v", setters, doneBitSetters)
+	if got, want := writes["done.Set"], bitsetWriters["done.Set"]; !slices.Equal(got, want) {
+		t.Errorf("functions setting p.done directly = %v, want %v", got, want)
 	}
 }
 
-// scanDoneBitWriters parses this package's non-test sources and returns the
-// sorted, deduplicated names of the functions that call markDone and those
-// that call p.done.Set.
-func scanDoneBitWriters(t *testing.T) (markers, setters []string) {
+// TestBitsetWriters_MatchTheEnumerationStatedInProse pins every direct
+// Set/Clear on the done, failed and emitted bitsets to the functions named in
+// bitsetWriters, so a new writer fails here by name.
+func TestBitsetWriters_MatchTheEnumerationStatedInProse(t *testing.T) {
+	_, writes := scanBitsetWriters(t)
+
+	for op, want := range bitsetWriters {
+		if got := writes[op]; !slices.Equal(got, want) {
+			t.Errorf("functions calling %s = %v, want %v", op, got, want)
+		}
+	}
+	for op, got := range writes {
+		if _, ok := bitsetWriters[op]; !ok {
+			t.Errorf("functions calling %s = %v, and bitsetWriters does not list the operation", op, got)
+		}
+	}
+}
+
+// scanBitsetWriters parses this package's non-test sources and returns the
+// sorted, deduplicated names of the functions that call markDone, and, keyed
+// by "field.Method", of those that call Set or Clear on the done, failed or
+// emitted bitset.
+func scanBitsetWriters(t *testing.T) (markers []string, writes map[string][]string) {
 	t.Helper()
 
 	entries, err := os.ReadDir(".")
@@ -47,6 +74,7 @@ func scanDoneBitWriters(t *testing.T) (markers, setters []string) {
 		t.Fatalf("read the package directory: %v", err)
 	}
 
+	writes = make(map[string][]string)
 	fset := token.NewFileSet()
 	var scanned int
 	for _, e := range entries {
@@ -69,11 +97,11 @@ func scanDoneBitWriters(t *testing.T) (markers, setters []string) {
 				if !ok {
 					return true
 				}
-				switch {
-				case calleeName(call.Fun) == "markDone":
+				if calleeName(call.Fun) == "markDone" {
 					markers = append(markers, fn.Name.Name)
-				case setsDoneBit(call.Fun):
-					setters = append(setters, fn.Name.Name)
+				}
+				if op, ok := bitsetWrite(call.Fun); ok {
+					writes[op] = append(writes[op], fn.Name.Name)
 				}
 				return true
 			})
@@ -86,8 +114,11 @@ func scanDoneBitWriters(t *testing.T) (markers, setters []string) {
 	}
 
 	slices.Sort(markers)
-	slices.Sort(setters)
-	return slices.Compact(markers), slices.Compact(setters)
+	for op, fns := range writes {
+		slices.Sort(fns)
+		writes[op] = slices.Compact(fns)
+	}
+	return slices.Compact(markers), writes
 }
 
 // calleeName returns the identifier a call expression names, for both a bare
@@ -102,13 +133,21 @@ func calleeName(fun ast.Expr) string {
 	return ""
 }
 
-// setsDoneBit reports whether a call expression is a Set on the done bitset —
-// x.done.Set(...) for any receiver x.
-func setsDoneBit(fun ast.Expr) bool {
+// bitsetWrite reports whether a call expression is x.<field>.Set(...) or
+// x.<field>.Clear(...) on one of the three bitsets, for any receiver x, and
+// names it "field.Method".
+func bitsetWrite(fun ast.Expr) (string, bool) {
 	sel, ok := fun.(*ast.SelectorExpr)
-	if !ok || sel.Sel.Name != "Set" {
-		return false
+	if !ok || (sel.Sel.Name != "Set" && sel.Sel.Name != "Clear") {
+		return "", false
 	}
 	recv, ok := sel.X.(*ast.SelectorExpr)
-	return ok && recv.Sel.Name == "done"
+	if !ok {
+		return "", false
+	}
+	switch recv.Sel.Name {
+	case "done", "failed", "emitted":
+		return recv.Sel.Name + "." + sel.Sel.Name, true
+	}
+	return "", false
 }

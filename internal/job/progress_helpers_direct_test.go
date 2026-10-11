@@ -28,7 +28,7 @@ func TestMarkNotDone_RefusesAPermanentlyFailedArticle(t *testing.T) {
 
 	// Article 0: done via a successful path. markNotDone must undo it.
 	p.done.Set(0)
-	if !p.markNotDone(0) {
+	if !p.markNotDone(0, 0) {
 		t.Error("markNotDone(0) = false for a done, unfailed article; want true")
 	}
 	if p.done.Get(0) {
@@ -40,7 +40,7 @@ func TestMarkNotDone_RefusesAPermanentlyFailedArticle(t *testing.T) {
 	if !p.markFailed(m, 1) {
 		t.Fatal("setup: markFailed(1) = false")
 	}
-	if p.markNotDone(1) {
+	if p.markNotDone(0, 1) {
 		t.Error("markNotDone(1) = true for a permanently failed article; want false — " +
 			"clearing done here would make the article look outstanding and re-fetch bytes " +
 			"that will never arrive (docs/durability-contract.md)")
@@ -50,7 +50,7 @@ func TestMarkNotDone_RefusesAPermanentlyFailedArticle(t *testing.T) {
 	}
 
 	// Article 2: never done. Nothing to undo.
-	if p.markNotDone(2) {
+	if p.markNotDone(0, 2) {
 		t.Error("markNotDone(2) = true for an article that was never done; want false")
 	}
 }

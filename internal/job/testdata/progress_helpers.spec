@@ -7,12 +7,12 @@ file internal/job/progress.go
 	if !p.done.Get(i) || p.failed.Get(i) {
 		return false
 	}
-	p.done.Clear(i)
+	p.clearDone(fi, i)
 --- replace
 	if !p.done.Get(i) {
 		return false
 	}
-	p.done.Clear(i)
+	p.clearDone(fi, i)
 --- end
 
 [the par2 classification is dropped from the file projection]
