@@ -50,9 +50,10 @@ var (
 )
 
 // jobFile locates one of a job's files: Dir is the job directory and Name the
-// file's name inside it. The verifier opens Name through an os.Root on Dir, so
-// a Name that climbs out of Dir, or a symlink inside Dir that points out of
-// it, is refused by the open itself.
+// file's name inside it. The verifier opens Name with fsutil.OpenNoFollow on
+// an os.Root on Dir. A job file is always a regular file with one link; any
+// link in its place, or a Name that is not one path component, is refused by
+// the open itself.
 type jobFile struct {
 	Dir, Name string
 }
@@ -71,17 +72,18 @@ func (f jobFile) Path() string { return filepath.Join(f.Dir, f.Name) }
 // locate resolves a recorded filename to its job directory and name. Both
 // callers pass the writer's own resolver (pipeline.jobFileLocation), so the
 // verifier reads the file the writer wrote under whatever sanitize options
-// are configured. Both opens go through an os.Root on the job directory
-// (readBackFile, finishFileByPath), which keeps them inside it.
+// are configured. Both opens (readBackFile, finishFileByPath) go through
+// fsutil.OpenNoFollow on an os.Root on the job directory, which opens that
+// one file and never another through a link.
 //
 // Per file: an empty filename deletes every row, since none can be read
 // back; ENOENT deletes every row only when the file's directory exists — at a
 // hydration a missing directory (an unmounted download root) is a fault naming
 // it, while on a retry it is absence too, unmounted root or not
-// (readBackFile); a name that resolves outside the job directory, through
-// ".." or a symlink, is an open error other than ENOENT, so a fault; an
-// fsync error on the fresh descriptor deletes every row (the file is
-// untrusted); a row with an invalid shape (WrittenRow.HasValidShape) is
+// (readBackFile); a name that is not one path component, or any link
+// (symbolic or hard) in the file's place, is an open error other than ENOENT,
+// so a fault; an fsync error on the fresh descriptor deletes every row (the file
+// is untrusted); a row with an invalid shape (WrittenRow.HasValidShape) is
 // deleted unread, while a zero-length row is valid and verifies against CRC 0;
 // a CRC mismatch or a short read deletes that row. Of rows whose ranges
 // intersect, the first matching one in offset order is kept and
@@ -234,7 +236,7 @@ func readBackFile(ctx context.Context, loc jobFile, rows []durability.WrittenRow
 		return fileReadback{}, &errVerifyFault{File: loc.Dir, Err: err}
 	}
 	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
-	fh, err := root.Open(loc.Name)
+	fh, err := fsutil.OpenNoFollow(root, loc.Name, os.O_RDONLY, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return fileReadback{deleteAll: true}, nil // inside a directory held open, so one that exists
 	}
@@ -375,7 +377,7 @@ func finishFileByPath(loc jobFile, maxEnd int64) (err error) {
 		return fmt.Errorf("finish %s: %w", path, err)
 	}
 	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
-	fh, err := root.OpenFile(loc.Name, os.O_RDWR, 0)
+	fh, err := fsutil.OpenNoFollow(root, loc.Name, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("finish %s: %w", path, err)
 	}
@@ -390,15 +392,13 @@ func finishFileByPath(loc jobFile, maxEnd int64) (err error) {
 	return nil
 }
 
-// jobFileLocation resolves where the assembler would have put one of a job's
-// files, from the filename the queue already recorded: the job directory, and
-// the sanitized name inside it.
-//
-// It reads p.downloadDir under the same lock registerFile does, so the two
-// cannot disagree about which directory a job's files live in, and it
-// sanitizes the name as registerFile's fsutil.JoinSafe does — a verification
-// that read a different path than the writer used would find every file
-// missing. TestJobFileLocation_AgreesWithTheWritersJoin pins the agreement.
+// jobFileLocation resolves where one of a job's files lives: the job
+// directory, and the sanitized name inside it. registerFile names the writer's
+// file with it and the restart verifier reads with it, so the two cannot
+// disagree about a file's directory or name — a verification that read a
+// different path than the writer used would find every file missing. The
+// sanitized name is the one fsutil.JoinSafe would join, a single path
+// component (TestJobFileLocation_AgreesWithTheWritersJoin).
 func (p *pipeline) jobFileLocation(jobName, filename string) jobFile {
 	p.mu.RLock()
 	jobDir := filepath.Join(p.downloadDir, jobName)
@@ -411,6 +411,20 @@ func (p *pipeline) jobFileLocation(jobName, filename string) jobFile {
 // jobFilePath is jobFileLocation's path.
 func (p *pipeline) jobFilePath(jobName, filename string) string {
 	return p.jobFileLocation(jobName, filename).Path()
+}
+
+// uniqueJobFileName returns loc.Name, or the first of its ".1", ".2"… variants that
+// nothing in loc.Dir holds yet (fsutil.GetUniqueRelPath, which Lstats through
+// an os.Root on loc.Dir, so a symlink counts as taken and is never followed).
+// A directory that does not exist or cannot be opened holds no name: loc.Name
+// is returned unchanged, and the writer's own open reports any real error.
+func uniqueJobFileName(loc jobFile) string {
+	root, err := openRoot(loc.Dir)
+	if err != nil {
+		return loc.Name
+	}
+	defer func() { _ = root.Close() }() // a directory handle; nothing to lose on close
+	return fsutil.GetUniqueRelPath(root, loc.Name)
 }
 
 // fileFinishable reports whether one file has every article resolved and no

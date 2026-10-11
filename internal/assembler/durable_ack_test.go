@@ -56,7 +56,7 @@ func TestFailedWrites_RetryIsWrittenNotDiscarded(t *testing.T) {
 	w := newFileWriter(fh, path, key)
 	f := &openFile{
 		w:    w,
-		info: FileInfo{Path: path, ExpectedSize: artCount * artSize},
+		info: FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: artCount * artSize},
 	}
 
 	failWrites := true
@@ -252,7 +252,7 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 		t.Error("the retry was not counted toward TotalParts, so the file can never " +
 			"reach it: its count was given back when the first attempt was rolled back")
 	}
-	got, err := os.ReadFile(f.info.Path)
+	got, err := os.ReadFile(f.info.Path())
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}

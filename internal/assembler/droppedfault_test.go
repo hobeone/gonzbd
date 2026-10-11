@@ -86,11 +86,11 @@ func TestProcessRequest_FailedOpenReleasesTheBufferOnce(t *testing.T) {
 		}},
 		{"mkdir fails", func(string, int) (FileInfo, error) {
 			// The parent is a regular file, so MkdirAll reports ENOTDIR.
-			return FileInfo{Path: filepath.Join(notADir, "sub", "f.bin")}, nil
+			return FileInfo{Dir: filepath.Join(notADir, "sub"), Name: "f.bin"}, nil
 		}},
 		{"open fails", func(string, int) (FileInfo, error) {
 			// The target is a directory, so OpenFile(O_WRONLY) reports EISDIR.
-			return FileInfo{Path: isADir}, nil
+			return FileInfo{Dir: filepath.Dir(isADir), Name: filepath.Base(isADir)}, nil
 		}},
 	}
 	for _, tc := range cases {

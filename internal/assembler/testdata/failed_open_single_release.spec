@@ -12,17 +12,17 @@ file internal/assembler/assembler.go
 [the mkdir failure releases the buffer again]
 file internal/assembler/assembler.go
 --- anchor
-		return nil, storagefault.Classify("mkdir", info.Path, err)
+		return nil, storagefault.Classify("mkdir", path, err)
 --- replace
-		a.releaseBuffer(req.Data); return nil, storagefault.Classify("mkdir", info.Path, err)
+		a.releaseBuffer(req.Data); return nil, storagefault.Classify("mkdir", path, err)
 --- end
 
 [the open failure releases the buffer again]
 file internal/assembler/assembler.go
 --- anchor
-		return nil, storagefault.Classify("open", info.Path, err)
+		return nil, storagefault.Classify("open", path, err)
 --- replace
-		a.releaseBuffer(req.Data); return nil, storagefault.Classify("open", info.Path, err)
+		a.releaseBuffer(req.Data); return nil, storagefault.Classify("open", path, err)
 --- end
 
 [processRequest stops releasing a failed open's buffer]

@@ -27,7 +27,7 @@ func TestFaultedIncumbent_TakenOverThenRedeliveryRefused(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "takeover.dat")
 	key := fileKey{jobID: "job", fileIdx: 0}
 	a.opts.FileInfo = func(string, int) (FileInfo, error) {
-		return FileInfo{Path: path, TotalParts: 3}, nil
+		return FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), TotalParts: 3}, nil
 	}
 
 	var unwritten, rejected []int32

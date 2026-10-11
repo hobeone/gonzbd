@@ -192,7 +192,7 @@ func TestCloseCancelledFile_DispositionDecidesTheBytesAndNothingElse(t *testing.
 					"job's directory next now races the worker, which is the " +
 					"silly-rename CancelJob exists to prevent")
 			}
-			_, err := os.Stat(f.info.Path)
+			_, err := os.Stat(f.info.Path())
 			if exists := err == nil; exists != tc.wantExists {
 				t.Errorf("file exists = %v, want %v (stat: %v)", exists, tc.wantExists, err)
 			}

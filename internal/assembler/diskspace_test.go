@@ -81,7 +81,7 @@ func TestCheckDiskSpace_SurvivesHungStatfs(t *testing.T) {
 	}
 
 	open := map[fileKey]*openFile{
-		{jobID: "job1", fileIdx: 0}: {info: FileInfo{Path: dir + "/file.bin"}},
+		{jobID: "job1", fileIdx: 0}: {info: FileInfo{Dir: dir, Name: "file.bin"}},
 	}
 
 	done := make(chan struct{})

@@ -80,7 +80,7 @@ func TestOpenTargetFile_SeedsFromOwnedAndDropsInvalid(t *testing.T) {
 	a := newHelperAssembler()
 	path := filepath.Join(t.TempDir(), "o.dat")
 	a.opts.FileInfo = func(string, int) (FileInfo, error) {
-		return FileInfo{Path: path, ExpectedSize: 1 << 20, TotalParts: 1, Owned: []Range{
+		return FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: 1 << 20, TotalParts: 1, Owned: []Range{
 			{Off: -5, Len: 100},         // negative offset
 			{Off: 2000, Len: 0},         // empty
 			{Off: 3000, Len: -1},        // negative length
