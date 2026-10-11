@@ -414,6 +414,7 @@ func TestDropJobAlreadyInHistory_CancellationAfterRemoveStillClearsDurability(t 
 		disconnectingStore{Store: store.New(repo.DB(), nil), cancel: cancel},
 		application.runner,
 	)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 	application.runner.report = d
@@ -476,6 +477,7 @@ func TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails(t *
 		removeRefusingStore{Store: store.New(repo.DB(), nil)},
 		application.runner,
 	)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 	application.runner.report = d

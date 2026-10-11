@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 )
 
 func testConfig(dl, comp, admin string, servers ...config.ServerConfig) *config.Config {
@@ -30,5 +31,22 @@ func newTestApplication(t *testing.T) *Application {
 	if err != nil {
 		t.Fatalf("newTestApplication: %v", err)
 	}
+	restoreQueue(t, application)
 	return application
+}
+
+// restoreQueue restores application's dispatcher without starting it, so a
+// test can add jobs to an Application it never Starts. Start restores by
+// itself when this has not run, and skips the restore when it has.
+func restoreQueue(t *testing.T, application *Application) {
+	t.Helper()
+	restoreDispatcher(t, application.dispatcher)
+}
+
+// restoreDispatcher is restoreQueue for a dispatcher a test builds itself.
+func restoreDispatcher(t *testing.T, d *dispatch.Dispatcher) {
+	t.Helper()
+	if err := d.Restore(t.Context()); err != nil {
+		t.Fatalf("restore the dispatcher's queue: %v", err)
+	}
 }

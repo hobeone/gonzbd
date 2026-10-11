@@ -31,6 +31,7 @@ func newNameRaceApp(t *testing.T) (*Application, *history.Repository) {
 		store.New(repo.DB(), nil),
 		application.runner,
 	)
+	restoreQueue(t, application)
 	return application, repo
 }
 

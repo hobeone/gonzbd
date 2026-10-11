@@ -196,10 +196,14 @@ func addHeldJob(t *testing.T, q *testQueueWrapper, opts testAddOptions) *testJob
 
 // testUnstartedQueueServer is testQueueServerWithSpeed over a dispatcher whose
 // tick loop never runs, so a queued job stays not-yet-started for the whole
-// test instead of racing the loop for a lease.
+// test instead of racing the loop for a lease. The dispatcher is restored, not
+// started: Add requires the first and not the second.
 func testUnstartedQueueServer(t *testing.T, speed float64) (*Server, *testQueueWrapper) {
 	t.Helper()
 	d := dispatch.New(2, 2, time.Hour, time.Now, &apiStubWorkers{}, &apiStubResidency{}, &apiStubStore{}, &apiStubRunner{})
+	if err := d.Restore(t.Context()); err != nil {
+		t.Fatalf("dispatcher.Restore: %v", err)
+	}
 	s := New(Options{
 		Config:     &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
 		Dispatcher: d,

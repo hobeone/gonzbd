@@ -150,6 +150,7 @@ func startRouteApp(t *testing.T, repo *history.Repository, adminDir, downloadDir
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, a)
 	stage.app.Store(a)
 	for _, f := range beforeStart {
 		f(a)

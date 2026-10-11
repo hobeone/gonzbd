@@ -88,6 +88,7 @@ func launchedAppAt(t *testing.T, stage postproc.Stage, state job.State) (*Applic
 		dispatchstore.New(repo.DB(), nil),
 		runner,
 	)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 

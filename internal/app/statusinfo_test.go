@@ -79,6 +79,7 @@ func TestApplication_BinaryVersionsInfo_StableAcrossCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, app)
 	defer app.Shutdown()
 
 	// Whatever par2/unrar/7z are (or aren't) installed on the test
@@ -101,6 +102,7 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, app)
 
 	ctx := context.Background()
 

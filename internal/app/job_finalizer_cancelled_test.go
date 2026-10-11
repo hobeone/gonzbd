@@ -40,6 +40,7 @@ func TestJobFinalizerCancelled_LeavesALaterInstancesLaunchClaimAlone(t *testing.
 	runner := &stateRecorder{}
 	d := dispatch.New(1, 1, time.Hour, time.Now, &appWorkers{app: app},
 		nopResidency{}, nopDispatchStore{}, runner)
+	restoreDispatcher(t, d)
 	app.dispatcher = d
 
 	const id = "feedface00584f01"

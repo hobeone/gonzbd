@@ -33,6 +33,7 @@ func newRetentionApp(t *testing.T, retainDays, retainFailedDays int) (*app.Appli
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 	return application, repo, adminDir
 }
 

@@ -36,6 +36,7 @@ func newLifecycleTestApp(t *testing.T, opts ...func(*Application)) (*Application
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, application)
 	return application, repo, adminDir
 }
 
@@ -129,6 +130,7 @@ func TestDeleteHistoryEntries_PropagatesRepoError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, application)
 	entry := history.Entry{NzoID: "deleteentry00003", Name: "job3", Status: "Failed"}
 	if err := repo.Add(t.Context(), entry); err != nil {
 		t.Fatalf("repo.Add: %v", err)

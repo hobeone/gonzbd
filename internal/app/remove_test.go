@@ -52,6 +52,7 @@ func newRemoveJobTestApp(t *testing.T) *Application {
 	if err != nil {
 		t.Fatalf("New application failed: %v", err)
 	}
+	restoreQueue(t, a)
 	return a
 }
 
@@ -143,6 +144,7 @@ func TestRemoveJob_StoreDeleteFailureLeavesTheJobsFilesOnDisk(t *testing.T) {
 		refusing,
 		application.runner,
 	)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 	application.runner.report = d
@@ -225,6 +227,7 @@ func TestRemoveJob_DisconnectAfterDispatcherRemoveStillClearsDurability(t *testi
 		disconnectingStore{Store: store.New(repo.DB(), nil), cancel: cancel},
 		application.runner,
 	)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 	application.runner.report = d

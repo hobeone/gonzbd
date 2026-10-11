@@ -31,6 +31,7 @@ func newClosedCompletionsApp(t *testing.T) *Application {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, application)
 	close(application.internalFileComplete)
 	return application
 }

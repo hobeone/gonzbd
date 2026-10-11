@@ -22,6 +22,7 @@ func TestRemoveHistoryJob_NoRepositoryWired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 	if err := application.RemoveHistoryJob(t.Context(), "nowhere000000001", false); err == nil {
 		t.Fatal("removal succeeded with no history repository wired")
 	}
@@ -65,6 +66,7 @@ func TestRemoveHistoryJob_DeletesFilesWhenAsked(t *testing.T) {
 			if err != nil {
 				t.Fatalf("app.New: %v", err)
 			}
+			restoreQueue(t, application)
 
 			jobDir := filepath.Join(completeDir, "finished-job")
 			if err := os.MkdirAll(jobDir, 0o750); err != nil {

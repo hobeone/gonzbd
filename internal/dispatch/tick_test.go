@@ -155,7 +155,7 @@ func TestStop_ParksHoldersRatherThanSettlingThem(t *testing.T) {
 // runner to time out the whole package with no diagnosis.
 func TestStop_AfterAFailedStartReturnsRatherThanDeadlocking(t *testing.T) {
 	wantErr := errors.New("boom")
-	d := newTestDispatcher(t, withStore(&failingLoadStore{err: wantErr}))
+	d := newTestDispatcher(t, withStore(&failingLoadStore{err: wantErr}), unrestored())
 
 	if err := d.Start(context.Background()); !errors.Is(err, wantErr) {
 		t.Fatalf("Start() = %v, want an error wrapping %v", err, wantErr)
@@ -301,6 +301,9 @@ func TestNew_PanicsOnEachNilPort(t *testing.T) {
 func TestNew_BuildsAWorkingDispatcher(t *testing.T) {
 	runner := &fakeRunner{}
 	d := New(2, 2, time.Hour, testClock, &stubWorkers{}, &fakeResidency{}, &fakeStore{}, runner)
+	if err := d.Restore(context.Background()); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
 	j := job.New("j1", "n", job.Policy{})
 	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -372,13 +375,13 @@ func TestRun_AdvancesOnAWakeAndStopsOnContextCancel(t *testing.T) {
 // it must neither swallow a Load error nor fabricate one.
 func TestRestore_SurfacesTheStoreError(t *testing.T) {
 	wantErr := errors.New("boom")
-	d := newTestDispatcher(t, withStore(&failingLoadStore{err: wantErr}))
-	if err := d.restore(context.Background()); !errors.Is(err, wantErr) {
+	d := newTestDispatcher(t, withStore(&failingLoadStore{err: wantErr}), unrestored())
+	if err := d.Restore(context.Background()); !errors.Is(err, wantErr) {
 		t.Errorf("restore() = %v, want %v", err, wantErr)
 	}
 
-	d2 := newTestDispatcher(t)
-	if err := d2.restore(context.Background()); err != nil {
+	d2 := newTestDispatcher(t, unrestored())
+	if err := d2.Restore(context.Background()); err != nil {
 		t.Errorf("restore() = %v, want nil for a Store whose Load succeeds", err)
 	}
 }
@@ -433,7 +436,7 @@ func TestStop_ConcurrentWithAFailingStartReturnsRatherThanDeadlocking(t *testing
 		release: make(chan struct{}),
 		err:     wantErr,
 	}
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 
 	startErr := make(chan error, 1)
 	go func() { startErr <- d.Start(context.Background()) }()
@@ -554,7 +557,7 @@ func TestStart_StoppedDuringASucceedingRestoreDoesNotStart(t *testing.T) {
 		release: make(chan struct{}),
 		err:     nil, // restore SUCCEEDS — the branch the failing twin cannot reach
 	}
-	d := newTestDispatcher(t, withStore(st))
+	d := newTestDispatcher(t, withStore(st), unrestored())
 
 	startErr := make(chan error, 1)
 	go func() { startErr <- d.Start(context.Background()) }()

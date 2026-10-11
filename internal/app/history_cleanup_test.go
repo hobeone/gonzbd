@@ -28,6 +28,7 @@ func newCleanupTestApp(t *testing.T) (*app.Application, *history.Repository, str
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 	return application, repo, adminDir
 }
 

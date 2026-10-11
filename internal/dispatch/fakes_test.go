@@ -246,6 +246,10 @@ type testOpts struct {
 	store             Store
 	runner            Runner
 	workers           sched.Workers
+	// unrestored skips the Restore newTestDispatcher otherwise runs, for a
+	// test that exercises the restore itself — through Start, a Store.Load
+	// hook, or a store it seeds after construction.
+	unrestored bool
 }
 
 func newTestDispatcher(t *testing.T, mods ...func(*testOpts)) *Dispatcher {
@@ -280,8 +284,18 @@ func newTestDispatcher(t *testing.T, mods ...func(*testOpts)) *Dispatcher {
 			fr.wg.Wait()
 		}
 	})
+	// Restored by default, because Add requires it and most tests Add before
+	// any tick: this is the order production reaches through Start.
+	if !o.unrestored {
+		if err := d.Restore(t.Context()); err != nil {
+			t.Fatalf("newTestDispatcher: Restore: %v", err)
+		}
+	}
 	return d
 }
+
+// unrestored leaves the test dispatcher with its store not yet restored.
+func unrestored() func(*testOpts) { return func(o *testOpts) { o.unrestored = true } }
 
 // The with* options each vary one axis of the test dispatcher, so every
 // task's tests compile against one constructor rather than each task adding

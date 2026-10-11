@@ -38,6 +38,7 @@ func TestFinalizer_PersistError_ReleasesDispatcherResources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	parsed := &nzb.NZB{
 		Files: []nzb.File{{
@@ -132,6 +133,7 @@ func TestFinalizer_ShutdownContext_PersistSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	parsed := &nzb.NZB{
 		Files: []nzb.File{{
@@ -194,6 +196,7 @@ func TestFinalizer_PersistError_CleanupExecutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	parsed := &nzb.NZB{
 		Files: []nzb.File{{
@@ -286,6 +289,7 @@ func TestFinalizer_PostProcessorTimeout_OccupiedJobSkipsEviction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 
 	parsed := &nzb.NZB{
 		Files: []nzb.File{{

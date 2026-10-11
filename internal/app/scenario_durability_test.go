@@ -37,6 +37,7 @@ func startHeldApp(t *testing.T, name string, interval time.Duration) (*app.Appli
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, a)
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	if err := a.Start(ctx); err != nil {

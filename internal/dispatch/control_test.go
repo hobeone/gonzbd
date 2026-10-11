@@ -183,7 +183,7 @@ func TestSetName_RefusesARetriedJobRestoredBeforeHydration(t *testing.T) {
 		{ID: "fresh", SortKey: 2, Header: Header{Name: "fresh"}, Intent: job.IntentPause},
 	})
 	fr := &fakeResidency{}
-	d := newTestDispatcher(t, withStore(st), withResidency(fr))
+	d := newTestDispatcher(t, withStore(st), withResidency(fr), unrestored())
 	fr.onHydrate = func(id string) {
 		j, ok := d.Job(id)
 		if !ok {
@@ -200,7 +200,7 @@ func TestSetName_RefusesARetriedJobRestoredBeforeHydration(t *testing.T) {
 			}
 		}
 	}
-	if err := d.restore(context.Background()); err != nil {
+	if err := d.Restore(context.Background()); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 
@@ -237,8 +237,8 @@ func TestSetName_LoadsUnderADeadline(t *testing.T) {
 	st := &fakeStore{}
 	st.seed([]Persisted{{ID: "a", SortKey: 1, Header: Header{Name: "a"}, Intent: job.IntentPause}})
 	res := &deadlineResidency{}
-	d := newTestDispatcher(t, withStore(st), withResidency(res))
-	if err := d.restore(context.Background()); err != nil {
+	d := newTestDispatcher(t, withStore(st), withResidency(res), unrestored())
+	if err := d.Restore(context.Background()); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	before := time.Now()

@@ -41,6 +41,7 @@ func TestAddJob_DisconnectDuringDispatcherSaveStillPersistsQueueRow(t *testing.T
 		disconnectingSaveStore{Store: store.New(repo.DB(), nil), cancel: cancel},
 		application.runner,
 	)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 
 	parsed := &nzb.NZB{Files: []nzb.File{{
@@ -78,6 +79,7 @@ func TestRetryHistoryJob_DisconnectDuringDispatcherSaveStillPersistsQueueRow(t *
 		disconnectingSaveStore{Store: store.New(repo.DB(), nil), cancel: cancel},
 		application.runner,
 	)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 
 	adminDir := application.config.GetGeneral().AdminDir
@@ -171,6 +173,7 @@ func TestAddJob_FailedAddLeavesNoOrphanArtifacts(t *testing.T) {
 		failingSaveStore{Store: store.New(repo.DB(), nil), err: os.ErrPermission},
 		application.runner,
 	)
+	restoreQueue(t, application)
 
 	parsed := &nzb.NZB{Files: []nzb.File{{
 		Subject:  "p1-orphan.bin",
@@ -289,6 +292,7 @@ func TestRetryHistoryJob_FailedAddRemovesTheQueueManifest(t *testing.T) {
 		failingSaveStore{Store: store.New(repo.DB(), nil), err: os.ErrPermission},
 		application.runner,
 	)
+	restoreQueue(t, application)
 
 	adminDir := application.config.GetGeneral().AdminDir
 	nzbBackupDir := filepath.Join(adminDir, "nzb")

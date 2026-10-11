@@ -50,6 +50,7 @@ func TestStall_LeavesALiveAssessingWorkerAlone(t *testing.T) {
 	runner := &stateRecorder{}
 	d := dispatch.New(2, 1, time.Hour, time.Now, &appWorkers{app: application},
 		nopResidency{}, nopDispatchStore{}, runner)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 	application.runner.report = d

@@ -90,6 +90,7 @@ func TestRecordPathUnderLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, a)
 
 	var (
 		measuring atomic.Bool

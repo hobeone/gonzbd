@@ -225,6 +225,7 @@ func TestAddJob_UnwantedApprovalSurvivesRestart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("app.New: %v", err)
 		}
+		restoreQueue(t, a)
 		// Queue-wide pause, so the approved job is not granted and downloaded
 		// out from under the test; per-job state is what is under test.
 		a.Dispatcher().Pause()

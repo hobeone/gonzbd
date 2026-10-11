@@ -305,6 +305,7 @@ func TestDetectDuplicateNZB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, a)
 	defer a.Shutdown()
 
 	nzbDir := t.TempDir()
@@ -393,6 +394,7 @@ func TestPushDispatchOptions_ForwardsEachSetterToTheRunningDownloader(t *testing
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, app)
 
 	read := func() (tries, opt int, top bool, delay time.Duration) {
 		fd.mu.Lock()

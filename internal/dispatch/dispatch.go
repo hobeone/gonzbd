@@ -110,10 +110,12 @@ type Dispatcher struct {
 	// holds, which is what stops two concurrent Adds taking the same key.
 	nextSeq int64
 
-	// restoring is true for the whole of restore — from before the store read
-	// to after the last row is registered. Add refuses while it is set; see
-	// Add (registry.go) for what an interleaved registration costs.
-	restoring bool
+	// phase records how far this Dispatcher has got in loading its stored
+	// rows. restore owns it: `git grep -n '[.]phase = ' internal/dispatch`
+	// returns 2 lines, restore's claim and its deferred settle. Add refuses
+	// unless it reads phaseRestored; see Add (registry.go) for what an Add
+	// ahead of the stored rows costs.
+	phase restorePhase
 
 	q      *sched.Queue
 	wake   chan struct{}
@@ -344,7 +346,9 @@ func (d *Dispatcher) Tick(ctx context.Context) {
 }
 
 // Start registers everything the store holds, then launches the ticker and
-// returns. It does not block.
+// returns. It does not block. When Restore has already run, Start does not
+// restore a second time: it launches the ticker over the registry Restore
+// built and anything Added since.
 //
 // A second Start is an error rather than a no-op: it would create a second
 // ticker goroutine, and two concurrent walks would need locking between them
@@ -382,7 +386,8 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 //
 // An error from it fails Start the way a failed Store.Load does — the ticker
 // never launches and a later Stop returns — except that the restored rows are
-// already registered by the time beforeFirstTick runs.
+// already registered by the time beforeFirstTick runs, and stay so: a later
+// Start does not restore them again.
 func (d *Dispatcher) StartWith(ctx context.Context, beforeFirstTick func(context.Context) error) error {
 	d.mu.Lock()
 	if d.stopped {
@@ -397,7 +402,7 @@ func (d *Dispatcher) StartWith(ctx context.Context, beforeFirstTick func(context
 	d.ctx, d.cancel = context.WithCancel(ctx)
 	d.mu.Unlock()
 
-	err := d.restore(ctx)
+	err := d.restore(ctx, true)
 	if err == nil && beforeFirstTick != nil {
 		err = beforeFirstTick(ctx)
 	}
@@ -684,12 +689,55 @@ func (d *Dispatcher) Stop() error {
 	return d.stopErr
 }
 
-// restore registers everything the store holds, before the first tick.
+// restorePhase is how far a Dispatcher has got in loading its stored rows.
+// It moves forward only, except that a restore whose Store.Load fails returns
+// to phaseUnrestored so a later Restore or Start can try again.
+type restorePhase int
+
+const (
+	phaseUnrestored restorePhase = iota
+	phaseRestoring
+	phaseRestored
+)
+
+// errAlreadyRestored is Restore's refusal of a second restore: registering the
+// stored rows again would find each of them already registered.
+var errAlreadyRestored = errors.New("the stored queue is already restored")
+
+// Restore registers everything the store holds without launching the ticker,
+// which leaves the Dispatcher accepting Add. Start restores by itself when
+// Restore has not run, so a caller needs Restore only to Add jobs before
+// Start — which is what tests driving the queue through Tick do.
 //
-// It runs synchronously inside StartWith, before the ticker goroutine
-// launches — `go d.run(ctx)` follows it there, after beforeFirstTick and the
-// stop check — so it needs no locking against a concurrent tick: there is not
-// one yet.
+// It is refused on a Dispatcher that is stopped, already restored, or
+// restoring, and a failed Store.Load leaves it unrestored. A Stop that lands
+// while it runs makes it return an error; the rows it registered stay
+// registered in the stopped Dispatcher, as they do when the same happens
+// inside StartWith.
+func (d *Dispatcher) Restore(ctx context.Context) error {
+	if err := d.restore(ctx, false); err != nil {
+		return fmt.Errorf("dispatch: Restore: %w", err)
+	}
+	// restore checks stopped only on entry and runs Store.Load unlocked, so a
+	// Stop can land inside it. Report that rather than a success, as
+	// StartWith does after its own restore.
+	d.mu.Lock()
+	stopped := d.stopped
+	d.mu.Unlock()
+	if stopped {
+		return errors.New("dispatch: Restore: stopped while restoring; this Dispatcher is terminal")
+	}
+	return nil
+}
+
+// restore registers everything the store holds, before the first tick, and is
+// the one writer of d.phase. reuse is StartWith's mode: a Dispatcher Restore
+// has already restored is left as it is, rather than refused.
+//
+// It runs before the ticker goroutine launches — inside StartWith,
+// `go d.run(ctx)` follows it, after beforeFirstTick and the stop check, and
+// Restore launches no ticker at all — so it needs no locking against a
+// concurrent tick: there is not one yet.
 //
 // Every job comes back holding nothing, whatever position it was persisted
 // at. The pools are process-local: there is no lease or slot from a previous
@@ -709,13 +757,28 @@ func (d *Dispatcher) Stop() error {
 // definition, what the store already holds, so the first tick's
 // persistIfChanged has nothing new to say about it and costs no store
 // traffic until the job actually moves.
-func (d *Dispatcher) restore(ctx context.Context) error {
+func (d *Dispatcher) restore(ctx context.Context, reuse bool) error {
 	d.mu.Lock()
-	d.restoring = true
+	switch {
+	case d.stopped:
+		d.mu.Unlock()
+		return errors.New("this Dispatcher is stopped")
+	case d.phase == phaseRestored && reuse:
+		d.mu.Unlock()
+		return nil
+	case d.phase == phaseRestored:
+		d.mu.Unlock()
+		return errAlreadyRestored
+	case d.phase == phaseRestoring:
+		d.mu.Unlock()
+		return errors.New("a restore is already in progress")
+	}
+	d.phase = phaseRestoring
 	d.mu.Unlock()
+	settled := phaseUnrestored
 	defer func() {
 		d.mu.Lock()
-		d.restoring = false
+		d.phase = settled
 		d.mu.Unlock()
 	}()
 
@@ -723,6 +786,7 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dispatch: restore: load: %w", err)
 	}
+	settled = phaseRestored
 	// Sort rather than trust Load's slice order, with a tiebreak matching the
 	// SQLite store's `ORDER BY sort_key ASC, id ASC`. A sort keyed on SortKey
 	// alone disagrees with SQLite whenever two keys collide, and the
@@ -742,17 +806,7 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 	// remaining queue (Standing Design Rule 3). A skipped row is left untouched
 	// in the store for inspection and omitted from d.written so persistIfChanged
 	// neither rewrites nor deletes it.
-	registered := map[string]struct{}{}
 	for _, p := range rows {
-		// An Add before Start already registered its job and wrote p into
-		// d.written; skip the row only when it matches what this process
-		// wrote prior to restore, so a different stored row for the same ID
-		// still reaches register and is logged as a conflict.
-		if w, ok := d.lastWritten(p.ID); ok && w == p {
-			if _, mine := registered[p.ID]; !mine {
-				continue
-			}
-		}
 		// Advance nextSeq past every row Load returned before reconstruct and
 		// register so a subsequent Add sorts after rows restore skips on a
 		// reconstruct or register error as well as registered ones (rows
@@ -775,7 +829,6 @@ func (d *Dispatcher) restore(ctx context.Context) error {
 			d.logRestoreError(p.ID, fmt.Errorf("dispatch: restore: register %s: %w", p.ID, err))
 			continue
 		}
-		registered[p.ID] = struct{}{}
 		d.markWritten(p)
 	}
 	return nil

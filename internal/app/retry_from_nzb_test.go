@@ -68,6 +68,7 @@ func newRetryTestApp(t *testing.T) (*app.Application, *history.Repository, strin
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
+	restoreQueue(t, application)
 	application.PauseDownloads()
 	application.Dispatcher().Pause()
 	return application, repo, adminDir

@@ -59,6 +59,7 @@ func TestEnqueuePostProc_DeliveredCrashRecovery(t *testing.T) {
 			dispatchstore.New(repo.DB(), nil),
 			runner,
 		)
+		restoreDispatcher(t, d)
 		application.dispatcher = d
 		application.pipeline.dispatcher = d
 

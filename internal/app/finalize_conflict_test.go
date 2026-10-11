@@ -43,6 +43,7 @@ func TestFinalize_RemovesJobFromQueueWhenHistoryWriteFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, application)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if err := application.Start(ctx); err != nil {
@@ -114,6 +115,7 @@ func TestFinalize_KeepsTheRunsWhenConflictingEntryIsFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, application)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if err := application.Start(ctx); err != nil {
@@ -204,6 +206,7 @@ func TestFinalize_KeepsTheManifestWhenTheDispatcherRemoveFails(t *testing.T) {
 		removeRefusingStore{Store: store.New(repo.DB(), nil)},
 		application.runner,
 	)
+	restoreDispatcher(t, d)
 	application.dispatcher = d
 	application.pipeline.dispatcher = d
 	application.runner.report = d
@@ -258,6 +261,7 @@ func TestFinalize_PreservesDurabilityWhenHistoryLookupReturnsError(t *testing.T)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, application)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if err := application.Start(ctx); err != nil {

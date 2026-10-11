@@ -447,7 +447,7 @@ func checkUnresolved(key, ident, via, pos string, allow map[string]string, seenA
 // understate a later span). Every held span in this package today is either
 // a straight Lock...Unlock run or an `if cond { Unlock(); return }` guard
 // ahead of a final Unlock, both of which this walk tracks correctly; a
-// `switch` of the same guard shape (Add's stopped/restoring check) also
+// `switch` of the same guard shape (Add's stopped/phase check) also
 // tracks correctly, because the toggle is set only by a matched Unlock, never
 // by a branch merely being visited.
 func scanFuncForLockedQueueCalls(key string, fn *ast.FuncDecl, fset *token.FileSet, analysis packageAnalysis, allow map[string]string, seenAllow map[string]bool) (violations []string, sawLock bool) {

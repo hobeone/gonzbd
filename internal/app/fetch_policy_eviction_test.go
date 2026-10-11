@@ -98,6 +98,7 @@ func newEvictionTestApp(t *testing.T) (*Application, *history.Repository, string
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	restoreQueue(t, application)
 	application.PauseDownloads()
 	application.Dispatcher().Pause()
 	return application, repo, adminDir
