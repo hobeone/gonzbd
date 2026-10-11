@@ -74,7 +74,6 @@ func copyAndRemove(src, dst string) error {
 		_ = os.Remove(dst) // clean up partial file
 		return err
 	}
-	// Close source before removing it — on Windows, Remove fails on open files.
 	_ = in.Close() // read-only input file is being deleted regardless
 	if err := out.Close(); err != nil {
 		_ = os.Remove(dst) // clean up partial file
