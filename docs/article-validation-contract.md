@@ -943,9 +943,10 @@ article's range. The refused article is resolved permanently failed, and par2
 is charged only the part of its range that no other article's range covers —
 often nothing, since those bytes are on disk (#432). The assembler counts that
 part at the refusal (`ownedRanges.covered`) and reports it through
-`OnArticleRejected`; `Job.MarkArticleFailedUncovered` records it beside the
-failed bit, and `JobProgress.chargeOf` reads it wherever failed bytes are
-summed. Within one open-file episode the writer enforces it;
+`OnArticleRejected`; `Job.MarkArticleFailed` records it as the article's
+charge beside the failed bit (`job.WholeArticle` charges the whole size), and
+`JobProgress.chargeOf` reads it wherever failed bytes are summed. Within one
+open-file episode the writer enforces it;
 across a restart `owned` starts with the ranges the resolver supplies in
 `FileInfo.Owned` (the assembler seeds from it at open; see the E3 row). An
 article whose row had not reached SQLite before a crash is Outstanding after

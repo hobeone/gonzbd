@@ -6,7 +6,7 @@ file internal/job/content.go
 --- anchor
 	if j.manifest == nil {
 		if j.progress.setFailedBits(artIdx) {
-			j.progress.limitCharge(artIdx, uncovered)
+			j.progress.limitCharge(artIdx, charge)
 		}
 		return nil
 	}
@@ -20,11 +20,11 @@ file internal/job/content.go
 file internal/job/content.go
 --- anchor
 		if j.progress.setFailedBits(artIdx) {
-			j.progress.limitCharge(artIdx, uncovered)
+			j.progress.limitCharge(artIdx, charge)
 		}
 		return nil
 --- replace
-		_ = uncovered
+		_ = charge
 		return nil
 --- end
 

@@ -2800,7 +2800,7 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 	if err := j.BeginAttempt(time.Now().UTC()); err != nil {
 		t.Fatalf("BeginAttempt: %v", err)
 	}
-	if err := j.MarkArticleFailed(0); err != nil {
+	if err := j.MarkArticleFailed(0, job.WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/job/jobtest"
 )
 
@@ -72,7 +73,7 @@ func ackFailed(t *testing.T, disp *dispatch.Dispatcher, jobID string, msgIDs ...
 	}
 	idxs := artIdxsFor(t, disp, jobID, msgIDs...)
 	for _, a := range idxs {
-		if err := j.MarkArticleFailed(int(a)); err != nil {
+		if err := j.MarkArticleFailed(int(a), job.WholeArticle); err != nil {
 			t.Fatalf("MarkArticleFailed: %v", err)
 		}
 	}

@@ -34,7 +34,7 @@ func buildRepairHealthJob(t *testing.T, files []repairHealthFile, failIdx ...int
 		t.Fatalf("AttachContent: %v", err)
 	}
 	for _, idx := range failIdx {
-		if err := j.MarkArticleFailed(idx); err != nil {
+		if err := j.MarkArticleFailed(idx, job.WholeArticle); err != nil {
 			t.Fatalf("MarkArticleFailed: %v", err)
 		}
 	}

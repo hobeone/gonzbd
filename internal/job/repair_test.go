@@ -32,7 +32,7 @@ func TestRepairState_FailedBytesComeFromArticleSizes(t *testing.T) {
 		jobtest.MarkArticleWritten(t, j, i)
 	}
 	for i := 2; i < 4; i++ {
-		if err := j.MarkArticleFailed(i); err != nil {
+		if err := j.MarkArticleFailed(i, job.WholeArticle); err != nil {
 			t.Fatalf("MarkArticleFailed(%d): %v", i, err)
 		}
 	}

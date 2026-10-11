@@ -132,9 +132,9 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 // hydration and the release is not made: see Job.MarkArticleFailed.
 //
 // uncovered is the assembler's count of the article's bytes no written article
-// covers, or assembler.WholeArticle. A count goes to
-// Job.MarkArticleFailedUncovered, which charges only those bytes: the rest of
-// the range is on disk, written by another article (#432).
+// covers, or assembler.WholeArticle, which maps to job.WholeArticle. A count
+// is the charge Job.MarkArticleFailed records, so only those bytes go to par2:
+// the rest of the range is on disk, written by another article (#432).
 //
 // This is the other side of the A1 split from handleWriteFault: that one
 // stalls the job and touches no article, this one fails the article and
@@ -151,13 +151,11 @@ func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx 
 			"job", jobID, "artidx", artIdx)
 		return
 	}
-	var err error
+	charge := uncovered
 	if uncovered == assembler.WholeArticle {
-		err = j.MarkArticleFailed(int(artIdx))
-	} else {
-		err = j.MarkArticleFailedUncovered(int(artIdx), uncovered)
+		charge = job.WholeArticle
 	}
-	if err != nil {
+	if err := j.MarkArticleFailed(int(artIdx), charge); err != nil {
 		app.log.Warn("record rejected article as permanently failed",
 			"job", jobID, "fileidx", fileIdx, "artidx", artIdx, "err", err)
 	}

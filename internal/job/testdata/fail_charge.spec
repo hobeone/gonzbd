@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run ^(TestMarkArticleFailedUncovered_|TestClone_DoesNotShareTheChargeMap$)
+run ^(TestMarkArticleFailedCharge_|TestClone_DoesNotShareTheChargeMap$)
 
 # A failed article whose range other articles partly or wholly wrote is charged
 # only its uncovered bytes (#432). chargeOf is the one computation of that
@@ -24,7 +24,7 @@ file internal/job/progress.go
 [the whole-article sentinel is recorded as a charge]
 file internal/job/progress.go
 --- anchor
-	if uncovered == wholeArticle {
+	if uncovered == WholeArticle {
 --- replace
 	if false {
 --- end
@@ -98,17 +98,17 @@ file internal/job/progress.go
 [an evicted failure records no charge]
 file internal/job/content.go
 --- anchor
-			j.progress.limitCharge(artIdx, uncovered)
+			j.progress.limitCharge(artIdx, charge)
 --- replace
-			_ = uncovered
+			_ = charge
 --- end
 
 [a failure charging nothing releases recovery volumes]
 file internal/job/content.go
 --- anchor
-	if charge, ok := j.progress.markFailedUncovered(j.manifest, artIdx, uncovered); ok && charge > 0 {
+	if charged, ok := j.progress.markFailedUncovered(j.manifest, artIdx, charge); ok && charged > 0 {
 --- replace
-	if charge, ok := j.progress.markFailedUncovered(j.manifest, artIdx, uncovered); ok || charge > 0 {
+	if charged, ok := j.progress.markFailedUncovered(j.manifest, artIdx, charge); ok || charged > 0 {
 --- end
 
 [a live charge is recorded before the failed bit is known to be new]
@@ -129,17 +129,25 @@ file internal/job/progress.go
 file internal/job/content.go
 --- anchor
 		if j.progress.setFailedBits(artIdx) {
-			j.progress.limitCharge(artIdx, uncovered)
+			j.progress.limitCharge(artIdx, charge)
 		}
 --- replace
 		j.progress.setFailedBits(artIdx)
-		j.progress.limitCharge(artIdx, uncovered)
+		j.progress.limitCharge(artIdx, charge)
 --- end
 
-[a negative count is accepted]
+[a negative charge is accepted]
 file internal/job/content.go
 --- anchor
-	if uncovered < 0 {
+	if charge < 0 && charge != WholeArticle {
 --- replace
 	if false {
+--- end
+
+[the whole-article charge is refused as negative]
+file internal/job/content.go
+--- anchor
+	if charge < 0 && charge != WholeArticle {
+--- replace
+	if charge < 0 {
 --- end

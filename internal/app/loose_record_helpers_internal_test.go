@@ -391,7 +391,7 @@ func TestHandleFileUntrusted_AFailedDeleteIsOwedUntilItLands(t *testing.T) {
 
 	// The refetch: A0 is written again; A1 is gone from every server.
 	a.handleArticleWritten(j.ID(), 0, 0, 0, lrArtLen, crc(0))
-	if err := j.MarkArticleFailed(1); err != nil {
+	if err := j.MarkArticleFailed(1, job.WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 	if err := a.completeFinalizedFile(FileComplete{JobID: j.ID(), FileIdx: 0}); err != nil {

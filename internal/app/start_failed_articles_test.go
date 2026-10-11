@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/types"
 )
@@ -51,7 +52,7 @@ func TestStart_PreservesPersistedFailedArticlesAcrossStartup(t *testing.T) {
 	}
 
 	// Mark article 0 as failed so the job carries a failed article into startup.
-	if err := j.MarkArticleFailed(0); err != nil {
+	if err := j.MarkArticleFailed(0, job.WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 	if !j.Progress().ArticleFailed(0) {

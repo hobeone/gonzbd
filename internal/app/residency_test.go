@@ -109,7 +109,7 @@ func TestAppResidency_RehydrationKeepsAFailureRecordedWhileEvicted(t *testing.T)
 		t.Fatalf("MarkArticleEmitted: %v", err)
 	}
 	r.Evict("abc123")
-	if err := j.MarkArticleFailed(0); err != nil {
+	if err := j.MarkArticleFailed(0, job.WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed while evicted: %v", err)
 	}
 

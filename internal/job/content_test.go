@@ -123,7 +123,7 @@ func TestJob_ContentMethods(t *testing.T) {
 	}
 
 	// MarkArticleFailed triggers on-demand par2 release
-	if err := j.MarkArticleFailed(0); err != nil {
+	if err := j.MarkArticleFailed(0, WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 	if len(j.DeferredRecoveryIndices()) != 0 {
@@ -361,7 +361,7 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 		t.Fatalf("AttachContent: %v", err)
 	}
 
-	if err := jResident.MarkArticleFailed(0); err != nil {
+	if err := jResident.MarkArticleFailed(0, WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 	// Mark file 0 complete so the failed article is retained rather than reset
@@ -495,7 +495,7 @@ func TestResetForRetry_UncompletesAFileWhoseOnlyGapIsAFailedArticle(t *testing.T
 		t.Fatalf("AttachContent: %v", err)
 	}
 	markWritten(t, j, 1)
-	if err := j.MarkArticleFailed(0); err != nil {
+	if err := j.MarkArticleFailed(0, WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 	j.progress.files[0].Complete = true
@@ -766,7 +766,7 @@ func TestJob_ProgressAccessors(t *testing.T) {
 	}
 	markWritten(t, j, 0)
 	// MarkArticleFailed triggers on-demand par2 release and sets Par2ReleaseReason
-	if err := j.MarkArticleFailed(1); err != nil {
+	if err := j.MarkArticleFailed(1, WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 	if err := j.MarkDownloadFinished(finish); err != nil {
@@ -899,7 +899,7 @@ func unfinishedArticles(t *testing.T, j *Job) []int32 {
 func TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction(t *testing.T) {
 	j, m := evictedThreeArticleJob(t)
 
-	if err := j.MarkArticleFailed(2); err != nil {
+	if err := j.MarkArticleFailed(2, WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed on an evicted job: %v", err)
 	}
 	p := j.Progress()
@@ -941,7 +941,7 @@ func TestMarkArticleFailedLocked_Branches(t *testing.T) {
 	call := func(j *Job, i int) error {
 		j.contentMu.Lock()
 		defer j.contentMu.Unlock()
-		return j.markArticleFailed(i, wholeArticle)
+		return j.markArticleFailed(i, WholeArticle)
 	}
 
 	if err := call(New("cold", "cold", Policy{}), 0); !errors.Is(err, ErrNotResident) {
@@ -973,7 +973,7 @@ func TestMarkArticleFailedLocked_Branches(t *testing.T) {
 func TestMarkArticleFailed_EvictedRejectsAnOutOfRangeIndex(t *testing.T) {
 	j, _ := evictedThreeArticleJob(t)
 	for _, idx := range []int{-1, 3} {
-		if err := j.MarkArticleFailed(idx); err == nil {
+		if err := j.MarkArticleFailed(idx, WholeArticle); err == nil {
 			t.Errorf("MarkArticleFailed(%d) on an evicted three-article job: nil error", idx)
 		}
 		if err := j.ClearArticleEmitted(idx); err == nil {
@@ -1034,7 +1034,7 @@ func TestRestoreContent_KeepsWritesMadeWhileEvicted(t *testing.T) {
 	}
 
 	started := time.Unix(1_700_000_000, 0)
-	if err := j.MarkArticleFailed(2); err != nil {
+	if err := j.MarkArticleFailed(2, WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 	if err := j.MarkJobStarted(started); err != nil {
@@ -1096,7 +1096,7 @@ func TestMarkArticleFailed_ResidentEmittedArticleLeavesPendingOnce(t *testing.T)
 		t.Fatalf("fixture: PendingArticles after emitting one of two = %d, want 1", got)
 	}
 
-	if err := j.MarkArticleFailed(1); err != nil {
+	if err := j.MarkArticleFailed(1, WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 

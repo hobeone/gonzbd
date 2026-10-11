@@ -279,7 +279,7 @@ func TestMarkArticleFailed_RespectsRepairPolicy(t *testing.T) {
 
 	t.Run("Repair false (PP=0) holds the volume", func(t *testing.T) {
 		j := newFixture(t, Policy{}) // zero value: Repair == false, matching PP=0
-		if err := j.MarkArticleFailed(0); err != nil {
+		if err := j.MarkArticleFailed(0, WholeArticle); err != nil {
 			t.Fatalf("MarkArticleFailed: %v", err)
 		}
 		if got := j.progress.files[1].Fetch; got != FetchIfNeeded {
@@ -293,7 +293,7 @@ func TestMarkArticleFailed_RespectsRepairPolicy(t *testing.T) {
 
 	t.Run("Repair true (PPRepair) releases the volume", func(t *testing.T) {
 		j := newFixture(t, PolicyFromPP(1)) // PPRepair: Repair true, Unpack/Delete false
-		if err := j.MarkArticleFailed(0); err != nil {
+		if err := j.MarkArticleFailed(0, WholeArticle); err != nil {
 			t.Fatalf("MarkArticleFailed: %v", err)
 		}
 		if got := j.progress.files[1].Fetch; got != FetchAlways {

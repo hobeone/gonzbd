@@ -1041,19 +1041,20 @@ func (p *JobProgress) clearDone(fi int, arts ...int) {
 	p.dropRows(fi, arts)
 }
 
-// wholeArticle is markFailedUncovered's uncovered for a failure that charges
-// the article's full manifest size.
-const wholeArticle int64 = -1
+// WholeArticle is the charge Job.MarkArticleFailed takes for a failure that
+// costs the article's full manifest size, as assembler.WholeArticle is the
+// uncovered count OnArticleRejected reports for one.
+const WholeArticle int64 = -1
 
 // markFailed flips Done+Failed on article i, charging its full size, and
 // updates counters. Returns false (no-op) if the article was already Done.
 func (p *JobProgress) markFailed(m *Manifest, i int) bool {
-	_, ok := p.markFailedUncovered(m, i, wholeArticle)
+	_, ok := p.markFailedUncovered(m, i, WholeArticle)
 	return ok
 }
 
 // markFailedUncovered is markFailed for an article of which only uncovered
-// bytes are missing from the file, or wholeArticle. It returns what the
+// bytes are missing from the file, or WholeArticle. It returns what the
 // failure charged (chargeOf) and false (no-op) if the article was already
 // Done.
 func (p *JobProgress) markFailedUncovered(m *Manifest, i int, uncovered int64) (int64, bool) {
@@ -1077,9 +1078,9 @@ func (p *JobProgress) markFailedUncovered(m *Manifest, i int, uncovered int64) (
 }
 
 // limitCharge records that failed article i is charged at most uncovered
-// bytes. wholeArticle records nothing, which charges the article in full.
+// bytes. WholeArticle records nothing, which charges the article in full.
 func (p *JobProgress) limitCharge(i int, uncovered int64) {
-	if uncovered == wholeArticle {
+	if uncovered == WholeArticle {
 		return
 	}
 	if p.failCharge == nil {

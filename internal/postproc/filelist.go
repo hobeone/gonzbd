@@ -160,8 +160,8 @@ func buildDownloadFileList(j *Job) []string {
 		// maybeReleaseRecoveryVolumes and the finalizer's retry of a par2
 		// failure call;
 		// `git grep -n 'func (j \*Job) UndeferRecoveryVolumes' internal/job/` finds one line)
-		// and Job.markArticleFailed, the body of Job.MarkArticleFailed and
-		// Job.MarkArticleFailedUncovered (`git grep -n 'func (j \*Job) markArticleFailed' internal/job/`
+		// and Job.markArticleFailed, the body of Job.MarkArticleFailed
+		// (`git grep -n 'func (j \*Job) markArticleFailed' internal/job/`
 		// finds one line). Both pass
 		// job.progress.DeferredRecoveryIndices() — every deferred index at
 		// once — so a real job's held volumes go from "all deferred" to

@@ -261,7 +261,7 @@ func rowsWithoutDone(j *Job) []durability.WrittenRow {
 // Done bit first, and the write keeps its row.
 func lateWrittenFailure(t *testing.T, j *Job, art int, crc uint32) {
 	t.Helper()
-	if err := j.MarkArticleFailed(art); err != nil {
+	if err := j.MarkArticleFailed(art, WholeArticle); err != nil {
 		t.Fatalf("MarkArticleFailed(%d): %v", art, err)
 	}
 	row := durability.WrittenRow{FileIdx: 0, ArtIdx: int32(art), Offset: int64(art) * 100, Length: 100, CRC32: crc} //nolint:gosec // G115: test index
@@ -772,7 +772,7 @@ func TestSettleFileCRC_RefusesAStaleCombine(t *testing.T) {
 				if err := j.UntrustFile(0); err != nil {
 					t.Fatalf("UntrustFile: %v", err)
 				}
-				if err := j.MarkArticleFailed(3); err != nil {
+				if err := j.MarkArticleFailed(3, WholeArticle); err != nil {
 					t.Fatalf("MarkArticleFailed: %v", err)
 				}
 				writeChain(t, j, data)
@@ -840,7 +840,7 @@ func TestSettleFileCRC_AFailedArticleWithARowIsNoCRC(t *testing.T) {
 			j := verifiedTestJob(t)
 			// The last article of the range, so a scan that stops one short
 			// misses it.
-			if err := j.MarkArticleFailed(3); err != nil {
+			if err := j.MarkArticleFailed(3, WholeArticle); err != nil {
 				t.Fatalf("MarkArticleFailed: %v", err)
 			}
 			writeChain(t, j, data)

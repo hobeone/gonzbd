@@ -6,7 +6,7 @@ file internal/job/content.go
 --- anchor
 	if j.manifest == nil {
 		if j.progress.setFailedBits(artIdx) {
-			j.progress.limitCharge(artIdx, uncovered)
+			j.progress.limitCharge(artIdx, charge)
 		}
 		return nil
 	}
@@ -32,10 +32,10 @@ file internal/job/content.go
 [the rejection handler discards the job's error]
 file internal/app/durability.go
 --- anchor
-	if err != nil {
+	if err := j.MarkArticleFailed(int(artIdx), charge); err != nil {
 		app.log.Warn("record rejected article as permanently failed",
 --- replace
-	if false && err != nil {
+	if err := j.MarkArticleFailed(int(artIdx), charge); false && err != nil {
 		app.log.Warn("record rejected article as permanently failed",
 --- end
 

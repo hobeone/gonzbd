@@ -44,9 +44,9 @@ func TestDownloadBegun(t *testing.T) {
 		// The pipeline cannot stamp a job without registering a file; the
 		// predicate reads the registration, not the stamp.
 		"stamp only":              {func(_ *testing.T, j *Job) { _ = j.MarkJobStarted(stamp) }, false},
-		"failed, not registered":  {func(_ *testing.T, j *Job) { _ = j.MarkArticleFailed(0) }, false},
+		"failed, not registered":  {func(_ *testing.T, j *Job) { _ = j.MarkArticleFailed(0, WholeArticle) }, false},
 		"second file's filename":  {func(t *testing.T, j *Job) { setName(t, j, 1) }, true},
-		"failed, then registered": {func(t *testing.T, j *Job) { _ = j.MarkArticleFailed(0); setName(t, j, 0) }, true},
+		"failed, then registered": {func(t *testing.T, j *Job) { _ = j.MarkArticleFailed(0, WholeArticle); setName(t, j, 0) }, true},
 		"retried": {func(t *testing.T, j *Job) {
 			setName(t, j, 0)
 			markWritten(t, j, 0)
