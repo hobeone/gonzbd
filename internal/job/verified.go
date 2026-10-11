@@ -249,35 +249,54 @@ func (j *Job) settleInputs(fileIdx int) (settleSnapshot, error) {
 // installSettled stores a CRC combined from in, if in is still current;
 // otherwise it settles the file again from what is current, under the lock.
 //
-// in is current when the file's resident rows are equal to in.rows. A row
-// written, replaced or dropped since (MarkArticleWritten, InstallVerified,
-// InstallFileVerification, UntrustFile, ResetForRetry's clearDone), or
-// another settle releasing the rows, makes the result stale. The range is not
-// compared: newManifest is the one writer of a manifest's file ranges
+// in is current when the file's stored row slice is still in.rows itself
+// (sameSlice), not merely equal to it. Every store to p.written either
+// replaces the slice with a new array, grows its length, or deletes it
+// (`git grep -n 'p\.written\[[^]]*\] = \|delete(p\.written' --
+// 'internal/job/*.go' ':!*_test.go'` returns 5 lines: upsertRows, appendRow,
+// dropRows, storeSettled and UntrustFile). dropRows is reached through
+// clearDone, from ResetForRetry, markNotDone (UntrustFile) and resetForReload
+// (ClearEmittedForReload) — `git grep -n '\.clearDon[e](' --
+// 'internal/job/*.go' ':!*_test.go'` returns 3 lines. So any row written,
+// replaced or dropped since makes the result stale, including a row dropped
+// and written back with the same value. The range is not compared:
+// newManifest is the one writer of a manifest's file ranges
 // (`git grep -n 'fileArticleOffsets\[[^]]*\] =' -- 'internal/job/*.go'
 // ':!*_test.go'` returns 2 lines, both in it), and RestoreContent re-attaches
 // the job's own manifest, so the range is the one in.lo and in.hi hold.
 //
-// The failed bits are the one input not compared, because no change to them
-// alone can change the result. A bit is set only on an article that is not
-// Done (setFailedBits), and is cleared only by clearDone, which drops that
-// article's row with it. A set bit only turns a CRC into NoCRC, and a combine
-// that yielded a CRC had a row for every article of the range, each Done, so
-// no bit could be set. When in.failed was true, a cleared bit whose article
-// had a row changed the rows, and one whose article had none leaves the chain
-// short of an article, so the result is NoCRC either way.
+// The failed bits are not compared, because while the slice is unchanged no
+// change to them can change the result. A bit is set only on an article that
+// is not Done (setFailedBits), and is cleared only by clearDone, which drops
+// that article's row and so replaces the slice. A combine that yielded a CRC
+// had a row for every article of the range; with the slice unchanged none of
+// those rows was dropped, so each article stayed Done and no bit could be set.
+// When in.failed was true, a bit cleared without replacing the slice belonged
+// to an article with no row, which leaves the chain short of an article, so
+// the result is NoCRC either way.
 func (j *Job) installSettled(fileIdx int, in settleSnapshot, combined uint32, combinedOK bool) (crc uint32, ok bool, err error) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	if j.manifest == nil || j.progress == nil {
 		return 0, false, fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
-	if !slices.Equal(j.progress.written[fileIdx], in.rows) {
+	if !sameSlice(j.progress.written[fileIdx], in.rows) {
 		crc, ok = settleFileCRC(j.manifest, j.progress, fileIdx)
 		return crc, ok, nil
 	}
 	j.progress.storeSettled(fileIdx, combined, combinedOK)
 	return combined, combinedOK, nil
+}
+
+// sameSlice reports whether a and b are the same stored slice: the same
+// length over the same backing array. Because a stored slice is never edited
+// in place, the same slice has the same contents. Holding b keeps its array
+// alive, so a later allocation cannot take its address.
+func sameSlice(a, b []durability.WrittenRow) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return len(a) == 0 || &a[0] == &b[0]
 }
 
 // settleFileCRC derives and stores a file's CRC in one critical section. The
