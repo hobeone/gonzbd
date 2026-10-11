@@ -511,20 +511,6 @@ func (r *removal) abort() {
 	}
 }
 
-// deregisteredByPeer reports whether another removal's end has already
-// deregistered this token's job. While this token is outstanding its marker
-// keeps register from admitting the ID (TestRegister_RefusesWhileARemovalIsOutstanding),
-// and deregister is reached only through end, so an absent ID was erased by a
-// peer token's end — Add's unwind, or a concurrent Remove — and not replaced.
-func (r *removal) deregisteredByPeer() bool {
-	if r == nil || r.done {
-		return false
-	}
-	r.d.mu.Lock()
-	defer r.d.mu.Unlock()
-	return r.d.byID[r.id] == nil
-}
-
 // end deregisters the job, completing the teardown.
 func (r *removal) end() {
 	if r == nil || r.done {
@@ -892,7 +878,8 @@ func (d *Dispatcher) ResumeJobByUser(id string) error {
 // registered, allowing the caller to retry Remove safely.
 //
 // A job that another removal deregisters while this one is outstanding — an
-// Add unwinding its own registration, or a concurrent Remove finishing first
+// Add unwinding its own registration, the tick evicting it as cancelled and
+// never run (evictCancelledNeverRun), or a concurrent Remove finishing first
 // — is gone, not cancelled and registered, so that is not an error: Remove
 // skips the Cancel it can no longer make, finishes its own steps against the
 // absent job and returns nil.
@@ -937,9 +924,17 @@ func (d *Dispatcher) removeFor(ctx context.Context, id string, expected *job.Job
 		d.removalBegunHook(id)
 	}
 	if err := d.Cancel(id); err != nil {
-		// Not-found with a peer's deregistration observed is the job already
-		// gone, which Remove's doc reports as success.
-		if !errors.Is(err, ErrNotFound) || !rm.deregisteredByPeer() {
+		// Not-found here means a peer removal's end deregistered the job, so
+		// it is gone and Remove's doc reports success. rm was minted while id
+		// was registered; register refuses id while rm is outstanding
+		// (TestRegister_RefusesWhileARemovalIsOutstanding); and deregister is
+		// reached only through removal.end, whose callers —
+		// `git grep -n 'rm[.]end()' -- 'internal/dispatch/*.go' ':!*_test.go'`
+		// returns 3 lines — are Add's unwind, evictCancelledNeverRun
+		// (tick.go), and this function's own end below, for a concurrent
+		// Remove. The eviction is reachable in this window: app.RemoveJob
+		// calls Cancel, which kicks the tick, before it calls Remove.
+		if !errors.Is(err, ErrNotFound) {
 			return fmt.Errorf("dispatch: remove %s: cancel: %w", id, err)
 		}
 	}
