@@ -64,6 +64,13 @@ type Identified struct {
 	Desc FileDesc
 	// By is how the match was made.
 	By MatchMethod
+
+	// lengthDiffers is set when the file's on-disk length is not the one
+	// Desc.FileSize records (where it records one). Only a name match can
+	// carry it — claimName in IdentifyWithOptions writes it; the other passes
+	// do not claim a file of a different length — and verifyIdentified reads
+	// it to count the file Unverified whatever its CRC says.
+	lengthDiffers bool
 }
 
 // NeedsRename reports whether acting on this identification would move the
@@ -149,7 +156,10 @@ func isIgnoredForIdentification(name string) bool {
 // Matching runs in three passes, cheapest first:
 //
 //  1. Name. A par2 entry claims the file whose basename equals its own, or
-//     whose name is its path with separators flattened to underscores.
+//     whose name is its path with separators flattened to underscores. The
+//     file is claimed whatever its length; one that differs from the packet's
+//     (where it records one) is marked so that verification counts it
+//     Unverified. Passes 0, 2 and 3 instead skip a file of a different length.
 //  2. Hash16k. Each still-unclaimed file has the MD5 of its first 16 KB
 //     computed once and looked up among the still-unclaimed entries. This is
 //     what resolves obfuscation, and it is where the useful work happens.
@@ -285,12 +295,30 @@ func IdentifyWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOpt
 	// "a_b.txt" on disk, the per-entry form gives the file to "a/b.txt" by its
 	// flattened name, while "Sub/a_b.txt" matches it by basename.
 	claimName := func(ei int, fd FileDesc, name string, by MatchMethod) {
-		if _, ok := flatFiles[name]; !ok || claimedFile[name] || claimedEntry[ei] {
+		de, ok := flatFiles[name]
+		if !ok || claimedFile[name] || claimedEntry[ei] {
 			return
+		}
+		// A name match is claimed whatever its length: the name says which
+		// entry the file is, and a wrong length makes it that entry damaged,
+		// not some other entry's. Declining it would leave the entry
+		// Unaccounted, and where every entry is such a match (a single-file
+		// post) the set reads as NothingIdentified and its volumes are held.
+		// The length is recorded instead, and verifyIdentified counts the file
+		// Unverified rather than trusting its CRC, which is settled from
+		// written-article rows and cannot see a stale tail (#837).
+		var lengthDiffers bool
+		if fd.FileSize > 0 {
+			info, iErr := de.Info()
+			lengthDiffers = iErr != nil || uint64(info.Size()) != fd.FileSize //nolint:gosec // size is non-negative
+		}
+		if lengthDiffers {
+			log.Info("identify: name matched but the length does not",
+				"file", name, "par2path", fd.FileName, "want", fd.FileSize)
 		}
 		claimedFile[name] = true
 		claimedEntry[ei] = true
-		id.Files = append(id.Files, Identified{OnDisk: name, Desc: fd, By: by})
+		id.Files = append(id.Files, Identified{OnDisk: name, Desc: fd, By: by, lengthDiffers: lengthDiffers})
 	}
 	for ei, fd := range manifest {
 		claimName(ei, fd, filepath.Base(filepath.ToSlash(fd.FileName)), MatchName)

@@ -42,10 +42,14 @@ type CRCVerifyResult struct {
 	// Unverified is the count of par2 entries that could not be checked
 	// against any delivered file's CRC.
 	//
-	// Two things reach it, and both are now genuine rather than artefacts of
-	// name matching: a par2 entry that identification could not match to any
-	// file in the directory, and a file identified in the directory that the
-	// caller lists no assembled CRC for.
+	// Three things reach it in verifyIdentified, and all are genuine rather
+	// than artefacts of name matching: a par2 entry that identification could
+	// not match to any file in the directory, a file identified in the
+	// directory that the caller lists no assembled CRC for, and a file matched
+	// by name whose on-disk length is not the one par2 records (its CRC,
+	// settled from written-article rows, cannot see a stale tail; #837).
+	// `git grep -n 'Unverified[+]+' -- '*.go'` returns 3 lines, those three,
+	// all in assess.go.
 	//
 	// What it no longer means is "the names did not line up". Identification
 	// runs first and matches by CONTENT, so an entry reaching here was not

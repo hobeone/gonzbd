@@ -53,6 +53,34 @@ func (id Identification) Accounted() bool { return len(id.Unaccounted) == 0 }
 func (id Identification) Accounted() bool { return true }
 --- end
 
+# A name match of the wrong length is that entry, damaged (#837). Declining it
+# leaves a one-entry set with nothing identified, so the volumes are held
+# rather than fetched.
+[the name pass declines a file of a different length]
+file internal/par2/identify.go
+--- anchor
+		claimedFile[name] = true
+		claimedEntry[ei] = true
+		id.Files = append(id.Files, Identified{OnDisk: name, Desc: fd, By: by, lengthDiffers: lengthDiffers})
+--- replace
+		if lengthDiffers {
+			return
+		}
+		claimedFile[name] = true
+		claimedEntry[ei] = true
+		id.Files = append(id.Files, Identified{OnDisk: name, Desc: fd, By: by, lengthDiffers: lengthDiffers})
+--- end
+
+# Claimed but verified on its CRC alone, a stale tail whose rows' CRC equals
+# par2's verifies clean and par2 never runs.
+[verification ignores a wrong length]
+file internal/par2/assess.go
+--- anchor
+		case f.lengthDiffers:
+--- replace
+		case false:
+--- end
+
 # The download path must not move files.
 #
 # It did, so that name-based verification would have corrected names to work

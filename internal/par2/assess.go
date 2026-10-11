@@ -215,6 +215,13 @@ func verifyIdentified(id Identification, files []AssembledFile, log *slog.Logger
 		d.matched = true
 
 		switch {
+		case f.lengthDiffers:
+			// A name match whose length is not par2's. The assembled CRC is
+			// settled from written-article rows, so a stale tail past the
+			// last row leaves it equal to par2's; it cannot clear the file.
+			r.Unverified++
+			r.UnverifiedFiles = append(r.UnverifiedFiles, f.Desc.FileName)
+			log.Warn("assess: par2-tracked file is not the length par2 records", "file", f.OnDisk)
 		case d.crc == 0:
 			// R23's "unavailable", not a CRC of zero. A failed download is
 			// one cause; so is a resumed file that is perfectly intact, whose
