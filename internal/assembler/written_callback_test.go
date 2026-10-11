@@ -1,7 +1,10 @@
 package assembler
 
 import (
+	"bytes"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -78,11 +81,12 @@ func TestFileInfoOwned_RefusesARestartLoser(t *testing.T) {
 func TestOpenTargetFile_SeedsFromOwnedAndDropsInvalid(t *testing.T) {
 	const maxInt64 = int64(^uint64(0) >> 1)
 	a := newHelperAssembler()
+	var logs bytes.Buffer
+	a.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	path := filepath.Join(t.TempDir(), "o.dat")
 	a.opts.FileInfo = func(string, int) (FileInfo, error) {
 		return FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: 1 << 20, TotalParts: 1, Owned: []Range{
 			{Off: -5, Len: 100},         // negative offset
-			{Off: 2000, Len: 0},         // empty
 			{Off: 3000, Len: -1},        // negative length
 			{Off: maxInt64 - 1, Len: 5}, // overflows
 			{Off: 0, Len: 1000},         // valid
@@ -104,5 +108,39 @@ func TestOpenTargetFile_SeedsFromOwnedAndDropsInvalid(t *testing.T) {
 	}
 	if _, owned := f.w.owned.ownerOf(Range{Off: 2000, Len: 10}, articleID{artIdx: 3}); owned {
 		t.Error("invalid range was seeded")
+	}
+	if n := strings.Count(logs.String(), "dropping invalid owned range"); n != 3 {
+		t.Errorf("%d invalid-range warnings, want 3 (negative offset, negative length, overflow):\n%s", n, logs.String())
+	}
+}
+
+// A zero-length article is a valid, Done article whose row (length 0, CRC 0)
+// is resident after a restart (durability-contract.md "A zero-length article claims nothing"). It claims no range,
+// so seeding skips it without a warning: a warning would read as corruption.
+func TestOpenTargetFile_ZeroLengthOwnedRowIsSilent(t *testing.T) {
+	a := newHelperAssembler()
+	var logs bytes.Buffer
+	a.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	path := filepath.Join(t.TempDir(), "z.dat")
+	a.opts.FileInfo = func(string, int) (FileInfo, error) {
+		return FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: 1 << 20, TotalParts: 1, Owned: []Range{
+			{Off: 0, Len: 1000},
+			{Off: 1000, Len: 0}, // abuts the first range
+			{Off: 5000, Len: 0}, // does not abut anything
+		}}, nil
+	}
+	f, err := a.openTargetFile(fileKey{jobID: "j"}, WriteRequest{JobID: "j"}, map[fileKey]*openFile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.w.handle.Close() })
+	if logs.Len() != 0 {
+		t.Errorf("zero-length row logged:\n%s", logs.String())
+	}
+	if s := f.w.owned.s; len(s) != 1 || s[0].r != (Range{Off: 0, Len: 1000}) {
+		t.Errorf("seeded ranges = %+v, want exactly [{0 1000}]", s)
+	}
+	if got := f.w.owned.maxEnd(); got != 1000 {
+		t.Errorf("maxEnd = %d, want 1000", got)
 	}
 }

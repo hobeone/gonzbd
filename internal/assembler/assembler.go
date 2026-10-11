@@ -1477,10 +1477,13 @@ func openInDir(dir, name string) (*os.File, error) {
 // seedOwned seeds w's range set from ranges verified before this process;
 // openTargetFile passes it FileInfo.Owned.
 //
-// The ranges come from disk, so each is checked first: Off >= 0, Len > 0 and
-// Off+Len not overflowing. An invalid range is dropped with a warning. That is
-// safe under Standing Design Rule 3: an unseeded range only means its articles
-// are fetched again, which costs their own bytes.
+// A zero-length range is a valid row (a zero-length article is Done and claims
+// no range, durability-contract.md "A zero-length article claims nothing"): it
+// passes this check silently, ownedRanges.seed discards it, and it is not
+// refetched. The ranges come from disk, so each is checked first: Off >= 0,
+// Len >= 0 and Off+Len not overflowing. A malformed range is dropped
+// with a warning. That is safe under Standing Design Rule 3: an unseeded range
+// only means its articles are fetched again, which costs their own bytes.
 //
 // seed fails only on a non-empty set, and this runs on a fresh writer, so its
 // error is a programming error and is logged at Error level rather than
@@ -1491,7 +1494,7 @@ func (a *Assembler) seedOwned(w *fileWriter, owned []Range) {
 	}
 	valid := make([]Range, 0, len(owned))
 	for _, r := range owned {
-		if r.Off < 0 || r.Len <= 0 || r.Off > math.MaxInt64-r.Len {
+		if r.Off < 0 || r.Len < 0 || r.Off > math.MaxInt64-r.Len {
 			a.log.Warn("dropping invalid owned range",
 				"job", w.key.jobID, "fileidx", w.key.fileIdx, "off", r.Off, "len", r.Len)
 			continue

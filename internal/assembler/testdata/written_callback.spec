@@ -1,5 +1,5 @@
 pkg ./internal/assembler/
-run TestOnArticleWritten|TestFileInfoOwned|TestOpenTargetFile_Seeds
+run TestOnArticleWritten|TestFileInfoOwned|TestOpenTargetFile_
 
 [the callback call neutered]
 file internal/assembler/assembler.go
@@ -20,7 +20,7 @@ file internal/assembler/assembler.go
 [range validation neutered so an invalid range is seeded]
 file internal/assembler/assembler.go
 --- anchor
-		if r.Off < 0 || r.Len <= 0 || r.Off > math.MaxInt64-r.Len {
+		if r.Off < 0 || r.Len < 0 || r.Off > math.MaxInt64-r.Len {
 --- replace
 		if false {
 --- end
