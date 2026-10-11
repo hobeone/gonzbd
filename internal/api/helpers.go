@@ -16,6 +16,20 @@ func toMBString(n int64) string {
 	return strconv.FormatFloat(float64(n)/float64(1<<20), 'f', 2, 64)
 }
 
+// formatSpeed renders a bytes-per-second figure for the queue-level speed
+// field, in the units and precision of the web UI's formatSpeed
+// (ui/src/lib/utils.ts).
+func formatSpeed(bps float64) string {
+	switch {
+	case bps < 1<<10:
+		return fmt.Sprintf("%.0f B/s", bps)
+	case bps < 1<<20:
+		return fmt.Sprintf("%.1f KB/s", bps/(1<<10))
+	default:
+		return fmt.Sprintf("%.1f MB/s", bps/(1<<20))
+	}
+}
+
 // intParam reads a query parameter as int, returning 0 if absent or unparseable.
 func intParam(r *http.Request, key string) int {
 	v := formValue(r, key)

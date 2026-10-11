@@ -381,6 +381,18 @@ func slotLabels(h dispatch.Header) []string {
 // varying ETAs (e.g. 100 hours when the meter dips for a moment).
 const noiseFloorBPS = 1024.0 // 1 KiB/s
 
+// queueSpeedFields returns the queue-level speed, kbpersec and timeleft.
+// speed is the request's snapshot in bytes per second, and remaining is the
+// bytes the ETA covers. timeleft stays "0:00:00" under the same conditions a
+// slot's does: paused, speed below noiseFloorBPS, or nothing remaining.
+func queueSpeedFields(speed float64, remaining int64, paused bool) (speedStr, kbPerSec, timeleft string) {
+	timeleft = "0:00:00"
+	if !paused && speed > noiseFloorBPS && remaining > 0 {
+		timeleft = formatDuration(int(float64(remaining) / speed))
+	}
+	return formatSpeed(speed), strconv.FormatFloat(speed/(1<<10), 'f', 1, 64), timeleft
+}
+
 // buildSlot renders one Row into the API queueSlot shape. paused is the
 // queue-wide pause flag; speed is the snapshot aggregate BPS used for
 // ETA. index is the slot's display index in the listing (0 for the
@@ -599,18 +611,19 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 		qStatus = "Downloading"
 	}
 
+	speedStr, kbPerSec, timeleft := queueSpeedFields(speed, remainQueueBytes, paused)
 	respondJSON(w, http.StatusOK, queueResponse{
 		Status: true,
 		Queue: queueDetail{
 			Status:         qStatus,
 			Paused:         paused,
-			Speed:          "0",
-			KBPerSec:       "0",
+			Speed:          speedStr,
+			KBPerSec:       kbPerSec,
 			MB:             toMBString(totalQueueBytes),
 			MBLeft:         toMBString(remainQueueBytes),
 			Size:           humanfmt.Bytes(totalQueueBytes),
 			SizeLeft:       humanfmt.Bytes(remainQueueBytes),
-			Timeleft:       "0:00:00",
+			Timeleft:       timeleft,
 			NoOfSlots:      len(slots),
 			NoOfSlotsTotal: total,
 			Limit:          limit,
@@ -663,11 +676,15 @@ func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID st
 		slot.Files = buildQueueFiles(j)
 	}
 
+	speedStr, kbPerSec, timeleft := queueSpeedFields(speed, slot.RemainingBytes, paused)
 	respondJSON(w, http.StatusOK, queueResponse{
 		Status: true,
 		Queue: queueDetail{
 			Status:         slot.Status,
 			Paused:         paused,
+			Speed:          speedStr,
+			KBPerSec:       kbPerSec,
+			Timeleft:       timeleft,
 			NoOfSlots:      1,
 			NoOfSlotsTotal: 1,
 			Slots:          []queueSlot{slot},

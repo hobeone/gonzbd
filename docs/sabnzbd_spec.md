@@ -981,8 +981,9 @@ to `modeConfig`'s default branch (`internal/api/config.go`).
     "cache_art": "0",
     "cache_size": "0 B",
     "cache_max": "500 M",
-    "kbpersec": "5000.0",
+    "kbpersec": "5120.0",
     "speed": "5.0 MB/s",
+    "timeleft": "0:04:06",
     "mbleft": "1234.5",
     "mb": "5678.9",
     "sizeleft": "1.2 GB",
@@ -1019,6 +1020,15 @@ to `modeConfig`'s default branch (`internal/api/config.go`).
   }
 }
 ```
+
+GoNZBD's queue-level fields (`internal/api/queue.go`, `queueList`):
+
+- `mb`, `mbleft`, `size` and `sizeleft` total every slot the `cat`, `status`
+  and `search` filters select, before `start` and `limit` cut the page.
+- `speed` and `kbpersec` render one speed snapshot per request: `speed` in
+  B/s, KB/s or MB/s with one decimal (binary units), `kbpersec` as KiB/s with
+  one decimal. `timeleft` is `mbleft` over that speed as `h:mm:ss`, and
+  `0:00:00` while the queue is paused or the speed is below 1 KiB/s.
 
 ---
 
