@@ -419,8 +419,8 @@ func TestResumeAtStartup_StorageFaultStallsAndDoesNotFailArticles(t *testing.T) 
 			if !waitUntil(10*time.Second, func() bool { return a.StallReason(f.jobID).Reason != "" }) {
 				t.Fatal("the read fault never parked the job")
 			}
-			if stallReason := a.StallReason(f.jobID).Reason; !strings.HasPrefix(stallReason, "Stalled: ") {
-				t.Errorf("stall reason = %q, want a surfaced stall reason beginning \"Stalled: \" (R27); "+
+			if stallReason := a.StallReason(f.jobID).Reason; !strings.HasPrefix(stallReason, "Stalled (resume to retry): ") {
+				t.Errorf("stall reason = %q, want a surfaced stall reason beginning \"Stalled (resume to retry): \" (R27); "+
 					"a \"Failed: \" reason here means the fault was routed as terminal", stallReason)
 			}
 			row, ok := a.Dispatcher().Row(f.jobID)

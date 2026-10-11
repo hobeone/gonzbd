@@ -39,6 +39,16 @@ const (
 	stallVerify
 )
 
+// reasonPrefix is the text that leads a stall's surfaced reason. A stall only
+// a resume of the job lifts says so, because nothing else tells the user that
+// waiting will not help; a retryable one recovers by itself and does not.
+func (k stallKind) reasonPrefix() string {
+	if k == stallVerify {
+		return "Stalled (resume to retry): "
+	}
+	return "Stalled: "
+}
+
 // stallRecord is one job's parked state: why it stopped, what may lift it, and
 // whether this application paused it.
 type stallRecord struct {
@@ -71,7 +81,7 @@ func (app *Application) stalledJobIDs() []string {
 func (app *Application) noteStall(jobID string, f *storagefault.Fault, kind stallKind, claimPause bool) {
 	app.stallMu.Lock()
 	defer app.stallMu.Unlock()
-	app.setStallReasonLocked(jobID, "Stalled: "+f.Error(), claimPause)
+	app.setStallReasonLocked(jobID, kind.reasonPrefix()+f.Error(), claimPause)
 	app.stalls[jobID].kind = kind
 }
 

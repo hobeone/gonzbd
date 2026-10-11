@@ -192,3 +192,31 @@ func TestLooseRecord_LastingVerificationFaultStaysParked(t *testing.T) {
 		t.Errorf("stall reason %q survived a resume whose verification succeeded", got)
 	}
 }
+
+// TestStallReason_SaysWhetherAResumeIsNeeded pins the surfaced wording per
+// kind: a verification fault stays parked until the job itself is resumed, so
+// its reason must say so, while a retryable fault recovers on its own and
+// keeps the plain prefix. The fault text follows the prefix in both.
+func TestStallReason_SaysWhetherAResumeIsNeeded(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		park func(a *Application, id string, f *storagefault.Fault)
+		want string
+	}{
+		{"verification fault", (*Application).parkVerifyFault, "Stalled (resume to retry): "},
+		{"retryable fault", (*Application).Stall, "Stalled: "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			application, j := newDurabilityTestApp(t, 1, 2)
+			f := storagefault.Classify("verify", "/mnt/dl/a.bin", syscall.EIO)
+			tt.park(application, j.ID(), f)
+
+			if got, want := application.StallReason(j.ID()).Reason, tt.want+f.Error(); got != want {
+				t.Errorf("stall reason = %q, want %q", got, want)
+			}
+		})
+	}
+}
