@@ -556,7 +556,7 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 		Dir:          loc.Dir,
 		Name:         loc.Name,
 		TotalParts:   totalParts,
-		ExpectedSize: m.FileBytes(fileIdx),
+		ExpectedSize: preallocSize(m, fileIdx),
 		Owned:        ownedRanges(j.FileRows(fileIdx)),
 	}
 

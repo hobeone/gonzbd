@@ -40,14 +40,15 @@ func TestReadBackFile_VerifiesAZeroLengthRow(t *testing.T) {
 }
 
 // TestVerifyJobFiles_AZeroLengthRowDoesNotMoveTheTrimBound: a file finished by
-// path is truncated to the end of its last verified row that claims a range.
+// path at its preallocated size is truncated to the end of its last verified
+// row that claims a range.
 // A zero-length row placed past that end claims none, so it must not hold
 // the preallocated tail on disk.
 func TestVerifyJobFiles_AZeroLengthRowDoesNotMoveTheTrimBound(t *testing.T) {
 	t.Parallel()
 	f := newVerifyFixture(t)
-	f.write(t, append(slices.Clone(f.data[:3*verifyArt]), make([]byte, 3*verifyArt)...)) // a preallocated tail
-	empty := durability.WrittenRow{FileIdx: 0, ArtIdx: 3, Offset: 5 * verifyArt, Length: 0}
+	f.write(t, f.preallocated(f.data[:3*verifyArt]))
+	empty := durability.WrittenRow{FileIdx: 0, ArtIdx: 3, Offset: verifyPrealloc + verifyArt, Length: 0}
 	rows := append(pick(f.rows, 0, 1, 2), empty)
 
 	res, err := f.run(t, t.Context(), rows, false)

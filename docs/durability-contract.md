@@ -257,7 +257,9 @@ The handle is closed at completion; nothing keeps it open for a later step.
 The one other place a file is finished is the verifier's `finishFileByPath`
 (§3), which applies the same truncate rule (`fsutil.ShrinkAfterSync`) to bytes
 it has just fsynced and read back from the device, and never to Done bits that
-came from a `pwrite`.
+came from a `pwrite` — and only while the file is at its preallocated size,
+since by the next start post-processing may have replaced the file (§3
+*What*).
 
 `OnFileComplete` reaches `Application.completeFinalizedFile`, which settles the
 whole-file CRC, peeks the archive, feeds DirectUnpack, calls
@@ -414,8 +416,23 @@ range, every article resolved) decides it, `finishFileByPath` runs
 the file is longer, then fsync, with no fsync before the truncate and none
 when nothing was truncated, since the read-back's fsync on the fresh
 descriptor already landed the file and the verifier writes nothing to it
-in between — and only then does the verdict carry `SetComplete`. An fsync or
-truncate error while finishing is a verification fault.
+in between — and only then does the verdict carry `SetComplete`. A stat,
+fsync or truncate error while finishing is a verification fault.
+
+**The finish truncates only a file at its preallocated size** (`preallocSize`,
+the manifest's declared byte count, which `registerFile` also hands the
+assembler as `FileInfo.ExpectedSize`). The trim exists to drop the zeros
+preallocation left past the last article (*Pre-allocation*). A file longer
+than its last row's end at any other size holds bytes preallocation did not
+put there. One way to produce it: par2 replaces the file with a repaired copy,
+in a job whose `complete=1` and queue state never reached SQLite, so the job
+can restore at any state, `Fetching` included, and the last article's row is
+a correct but short prefix. Every row then matches the repaired copy, and
+cutting it to the row's end would deliver it short once the par2 set is gone
+(#829). So the guard keys on the file, not on the job's restored state. Such
+a file is finished and set complete at its size; no row vouches for the bytes
+past the last one, and par2's identification compares a file's length with
+its index, so those bytes do not let quickcheck pass the file clean.
 
 A `complete=1` file is not read. Its rows are installed as they stand
 (`Job.InstallFileVerification` with `Complete` set): each row's article is Done, **every other article
@@ -835,7 +852,8 @@ runs ~2% above the file's decoded size. That difference is why a completed file
 on a `fallocate`-capable filesystem must be trimmed: left in place it is trailing
 zeros, which par2 reports as damage on a download that was perfectly healthy. The
 trim bound is the end of the file's last owned range (§2); `openFile` records no
-high-water mark or resume state of its own.
+high-water mark or resume state of its own. A restart's finish by path trims
+only a file still at exactly this size (§3 *What*).
 
 Every first open in an open episode calls `preallocateFile` again, including a
 reopen of an existing partial (the handle is `O_WRONLY|O_CREATE`, never
@@ -1185,6 +1203,18 @@ recorded here so the next reader does not mistake them for design.
    A crash between staging and the link leaves the `.staging` file, which no
    sweep removes; the directory is not fsynced after the link. Manifests are
    written temp → fsync → rename (`fsutil.WriteGzAtomic`).
+
+9. **A restart's finish by path keeps bytes past the last row of a file not
+   at its preallocated size** (§3 *What*). Where those bytes are not the
+   file's — a stale tail left by an earlier, longer write of the file's last
+   article whose row a later, shorter write replaced, on a file preallocation
+   did not size or that a write had already grown past it — they stay. par2's
+   identification refuses a file whose length differs from its index, so a
+   post with par2 does not pass it clean on its rows' CRC; a post without
+   par2 delivers the tail. The
+   opposite choice cut par2-repaired files short (#829), and nothing recorded
+   at a restart tells the two apart: the decoded size the poster declared is
+   not persisted.
 
 ## What the crash suite actually pins
 

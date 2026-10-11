@@ -14,6 +14,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 // verifyResult is what one verification pass established about a job's files.
@@ -96,7 +97,7 @@ func (f jobFile) Path() string { return filepath.Join(f.Dir, f.Name) }
 //
 // Any other error — an open error other than ENOENT, a failed open of the
 // directory (at a hydration, or any non-ENOENT error on a retry), a read
-// error, an fsync or truncate error while finishing, a
+// error, a stat, fsync or truncate error while finishing, a
 // cancelled ctx — returns the zero result and an *errVerifyFault naming the
 // file or directory.
 func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.FileRow,
@@ -190,11 +191,17 @@ func finishIfResolved(ctx context.Context, m *job.Manifest, f durability.FileRow
 			maxEnd = max(maxEnd, r.Offset+r.Length)
 		}
 	}
-	if err := finishFileByPath(loc, maxEnd); err != nil {
+	if err := finishFileByPath(loc, maxEnd, preallocSize(m, f.FileIndex)); err != nil {
 		return false, err
 	}
 	return true, nil
 }
+
+// preallocSize is the size the writer preallocates file fi to: the NZB's
+// declared, encoded byte count. registerFile hands it to the assembler as
+// FileInfo.ExpectedSize, and finishIfResolved hands it to finishFileByPath,
+// so the finish recognises a file preallocation sized by the same figure.
+func preallocSize(m *job.Manifest, fi int) int64 { return m.FileBytes(fi) }
 
 // rowsByFile groups rows by file, each group in offset order.
 func rowsByFile(rows []durability.WrittenRow) map[int][]durability.WrittenRow {
@@ -360,17 +367,28 @@ func rowMatches(fh *os.File, r durability.WrittenRow, buf []byte) (bool, error) 
 	return crc == r.CRC32, nil
 }
 
-// finishFileByPath truncates a file whose every article was just read back
-// from the device to maxEnd if it is larger and maxEnd > 0, fsyncs it if it
-// truncated, and closes it. It never grows a file, and a file no article
-// bounds is left alone.
+// finishFileByPath finishes a file whose every article was just read back
+// from the device: when the file is at its preallocated size (prealloc), it
+// truncates it to maxEnd if maxEnd > 0 and the file is larger, and fsyncs it
+// if it truncated; then it closes it. It never grows a file, and a file no
+// article bounds is left alone.
+//
+// A file at any other size is not truncated (#829). The trim exists to drop
+// the zeros preallocation left past the last article; a file longer than
+// maxEnd but not at prealloc holds bytes preallocation did not put there,
+// and one way to produce it is par2 replacing the file with a repaired
+// copy whose tail a correct but short last row does not cover. Cutting it to
+// maxEnd would deliver it short once the par2 set is gone. No row vouches for
+// bytes left past maxEnd, and par2's identification checks a file's length
+// against its index (internal/par2/identify.go), so a file whose rows do not cover its length is not
+// passed clean on their CRC.
 //
 // It does not fsync before the truncate, as the assembler's finish does:
 // finishIfResolved is its one caller — `git grep -n '[f]inishFileByPath(' -- '*.go' ':!*_test.go'`
 // finds 2 lines, that call and this declaration — and runs it only on a
 // readBackFile result that is not deleteAll, which follows readBackFile's own
 // successful fsync of this file, with only reads in between.
-func finishFileByPath(loc jobFile, maxEnd int64) (err error) {
+func finishFileByPath(loc jobFile, maxEnd, prealloc int64) (err error) {
 	path := loc.Path()
 	root, err := openRoot(loc.Dir)
 	if err != nil {
@@ -386,7 +404,15 @@ func finishFileByPath(loc jobFile, maxEnd int64) (err error) {
 			err = fmt.Errorf("finish %s: close: %w", path, cErr)
 		}
 	}()
-	if err := fsutil.ShrinkAfterSync(fh, maxEnd, fsyncFile); err != nil {
+	st, err := fh.Stat()
+	if err != nil {
+		return fmt.Errorf("finish %s: %w", path, storagefault.Classify("stat", path, err))
+	}
+	end := int64(0) // ShrinkAfterSync leaves the size alone
+	if st.Size() == prealloc {
+		end = maxEnd
+	}
+	if err := fsutil.ShrinkAfterSync(fh, end, fsyncFile); err != nil {
 		return fmt.Errorf("finish %s: %w", path, err)
 	}
 	return nil
