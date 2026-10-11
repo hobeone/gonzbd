@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run ^(TestMarkArticleFailedCharge_|TestCheckEarlyAbort_IgnoresARefusalThatChargesNothing$|TestClone_DoesNotShareTheChargeMap$)
+run ^(TestMarkArticleFailedCharge_|TestCheckEarlyAbort_IgnoresARefusalThatChargesNothing$|TestCheckEarlyAbort_AZeroChargeRefusalStaysResolved$|TestClone_DoesNotShareTheChargeMap$)
 
 # A failed article whose range other articles partly or wholly wrote is charged
 # only its uncovered bytes (#432). chargeOf is the one computation of that
@@ -177,4 +177,32 @@ file internal/job/progress.go
 					if charge >= 0 {
 						failed++
 					}
+--- end
+
+# The same refusal stays resolved: it is in the rate's denominator.
+
+[the early-abort rate leaves a zero charge unresolved, live]
+file internal/job/progress.go
+--- anchor
+	p.articlesResolved++
+	if charge > 0 {
+		p.articlesFailed++
+	}
+--- replace
+	if charge > 0 {
+		p.articlesResolved++
+		p.articlesFailed++
+	}
+--- end
+
+[the early-abort rate leaves a zero charge unresolved, recomputed]
+file internal/job/progress.go
+--- anchor
+			if p.done.Get(i) {
+				resolved++
+--- replace
+			if p.done.Get(i) {
+				if !p.failed.Get(i) || p.chargeOf(m, i) > 0 {
+					resolved++
+				}
 --- end

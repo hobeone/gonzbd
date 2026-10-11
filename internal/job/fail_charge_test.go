@@ -311,3 +311,75 @@ func TestCheckEarlyAbort_IgnoresARefusalThatChargesNothing(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckEarlyAbort_AZeroChargeRefusalStaysResolved pins the other half of
+// #844: a refusal charged nothing still counts in the early-abort rate's
+// denominator. Ten whole-article failures and six zero-charge refusals, with
+// nothing written, is a rate of 10/16, under the threshold; dropping the
+// refusals from articlesResolved would make it 10/10 and abort the job. It runs
+// on the live path, after a recompute, and with the failures landing while the
+// job is evicted and folded in at hydration.
+func TestCheckEarlyAbort_AZeroChargeRefusalStaysResolved(t *testing.T) {
+	const failedWhole, refused = earlyAbortSample, 6
+	newJob := func(t *testing.T) (*Job, *Manifest) {
+		t.Helper()
+		arts := make([]JobArticle, failedWhole+refused)
+		for i := range arts {
+			arts[i] = JobArticle{ID: fmt.Sprintf("<d%d@x>", i), Bytes: 100, Number: i + 1}
+		}
+		m := NewManifest([]JobFile{{Subject: "data.bin", Bytes: int64(100 * len(arts)), Articles: arts}})
+		j := New("denominator", "denominator", PolicyFromPP(3))
+		if err := j.AttachContent(m); err != nil {
+			t.Fatalf("AttachContent: %v", err)
+		}
+		return j, m
+	}
+	failAll := func(t *testing.T, j *Job) {
+		t.Helper()
+		for i := range failedWhole + refused {
+			charge := WholeArticle
+			if i >= failedWhole {
+				charge = 0
+			}
+			if err := j.MarkArticleFailed(i, charge); err != nil {
+				t.Fatalf("MarkArticleFailed(%d, %d): %v", i, charge, err)
+			}
+		}
+	}
+	paths := map[string]func(t *testing.T) *Job{
+		"live": func(t *testing.T) *Job {
+			j, _ := newJob(t)
+			failAll(t, j)
+			return j
+		},
+		"recomputed": func(t *testing.T) *Job {
+			j, _ := newJob(t)
+			failAll(t, j)
+			j.contentMu.Lock()
+			j.progress.recompute(j.manifest)
+			j.contentMu.Unlock()
+			return j
+		},
+		"failed while evicted": func(t *testing.T) *Job {
+			j, m := newJob(t)
+			j.Evict()
+			failAll(t, j)
+			if err := j.RestoreContent(m); err != nil {
+				t.Fatalf("RestoreContent: %v", err)
+			}
+			return j
+		},
+	}
+	for name, run := range paths {
+		t.Run(name, func(t *testing.T) {
+			j := run(t)
+			if got := j.Progress().ArticlesFailed(); got != failedWhole {
+				t.Errorf("ArticlesFailed = %d, want %d", got, failedWhole)
+			}
+			if j.CheckEarlyAbort() {
+				t.Errorf("CheckEarlyAbort = true after %d whole failures and %d zero-charge refusals, "+
+					"want false: the refusals left the rate's denominator", failedWhole, refused)
+			}
+		})
+	}
+}
