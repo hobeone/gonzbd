@@ -19,3 +19,11 @@ file internal/assembler/assembler.go
 --- replace
 			a.log.Debug("dropping invalid owned range",
 --- end
+
+[seed keeps a zero-length range]
+file internal/assembler/ranges.go
+--- anchor
+	sorted := slices.DeleteFunc(slices.Clone(rs), func(r Range) bool { return r.Len <= 0 })
+--- replace
+	sorted := slices.DeleteFunc(slices.Clone(rs), func(r Range) bool { return r.Len < 0 })
+--- end

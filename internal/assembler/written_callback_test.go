@@ -125,7 +125,8 @@ func TestOpenTargetFile_ZeroLengthOwnedRowIsSilent(t *testing.T) {
 	a.opts.FileInfo = func(string, int) (FileInfo, error) {
 		return FileInfo{Dir: filepath.Dir(path), Name: filepath.Base(path), ExpectedSize: 1 << 20, TotalParts: 1, Owned: []Range{
 			{Off: 0, Len: 1000},
-			{Off: 1000, Len: 0},
+			{Off: 1000, Len: 0}, // abuts the first range
+			{Off: 5000, Len: 0}, // does not abut anything
 		}}, nil
 	}
 	f, err := a.openTargetFile(fileKey{jobID: "j"}, WriteRequest{JobID: "j"}, map[fileKey]*openFile{})
@@ -138,5 +139,8 @@ func TestOpenTargetFile_ZeroLengthOwnedRowIsSilent(t *testing.T) {
 	}
 	if s := f.w.owned.s; len(s) != 1 || s[0].r != (Range{Off: 0, Len: 1000}) {
 		t.Errorf("seeded ranges = %+v, want exactly [{0 1000}]", s)
+	}
+	if got := f.w.owned.maxEnd(); got != 1000 {
+		t.Errorf("maxEnd = %d, want 1000", got)
 	}
 }
