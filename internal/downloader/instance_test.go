@@ -59,6 +59,34 @@ func markEmittedOn(t *testing.T, j *job.Job, artIdx int32) {
 	}
 }
 
+// articleOffered reports whether j's ForEachUnfinishedArticle would offer
+// artIdx to the dispatcher. The article must sit in a FetchAlways file that is
+// neither complete nor out of pending work, or it is never offered whatever its
+// own state.
+func articleOffered(t *testing.T, j *job.Job, artIdx int32) bool {
+	t.Helper()
+	offered := false
+	if err := j.ForEachUnfinishedArticle(func(_ int, a int32, _ string, _ int, _ int, _ string) bool {
+		if a == artIdx {
+			offered = true
+			return false
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("ForEachUnfinishedArticle: %v", err)
+	}
+	return offered
+}
+
+// articleInFlight reports whether artIdx is unresolved yet withheld from the
+// dispatcher, which is the state a set Emitted bit puts it in. Only meaningful
+// for an article in a FetchAlways file, which is where articleOffered is
+// defined.
+func articleInFlight(t *testing.T, j *job.Job, artIdx int32) bool {
+	t.Helper()
+	return !j.Progress().ArticleDone(int(artIdx)) && !articleOffered(t, j, artIdx)
+}
+
 // TestDownloader_MarksOnlyTheInstanceAFetchWasDispatchedFor: every Emitted
 // mark the downloader makes for a request lands on the instance the request
 // was dispatched for. A mark on a later instance under the same ID claims a
@@ -88,10 +116,10 @@ func TestDownloader_MarksOnlyTheInstanceAFetchWasDispatchedFor(t *testing.T) {
 
 			tc.run(t, d, req)
 
-			if second.Progress().ArticleEmitted(int(req.artIdx)) {
+			if articleInFlight(t, second, req.artIdx) {
 				t.Errorf("the second instance's article %d is marked emitted by a fetch dispatched for the first instance", req.artIdx)
 			}
-			if !req.job.Progress().ArticleEmitted(int(req.artIdx)) {
+			if !articleInFlight(t, req.job, req.artIdx) {
 				t.Errorf("the request's own instance's article %d is not marked emitted after a result was sent for it", req.artIdx)
 			}
 		})
@@ -112,10 +140,10 @@ func TestEmitResult_ClearsOnlyTheInstanceADroppedResultWasFor(t *testing.T) {
 	cancel()
 	d.emitResult(ctx, req, "s1", nil, 0, 0, nil)
 
-	if !second.Progress().ArticleEmitted(int(req.artIdx)) {
+	if !articleInFlight(t, second, req.artIdx) {
 		t.Errorf("the second instance's article %d lost its emitted mark to a request dispatched for the first instance", req.artIdx)
 	}
-	if req.job.Progress().ArticleEmitted(int(req.artIdx)) {
+	if articleInFlight(t, req.job, req.artIdx) {
 		t.Errorf("the request's own instance's article %d is still marked emitted after its result was dropped", req.artIdx)
 	}
 }
@@ -161,10 +189,10 @@ func TestFetchArticle_DropsARequestForAnInstanceNoLongerRegistered(t *testing.T)
 			if strings.Contains(logged.String(), "msg=dialing") {
 				t.Errorf("fetchArticle dialed for a request whose instance is no longer registered; log was %q", logged.String())
 			}
-			if !second.Progress().ArticleEmitted(int(req.artIdx)) {
+			if !articleInFlight(t, second, req.artIdx) {
 				t.Errorf("the second instance's article %d lost its emitted mark to a request dispatched for another instance", req.artIdx)
 			}
-			if req.job.Progress().ArticleEmitted(int(req.artIdx)) {
+			if articleInFlight(t, req.job, req.artIdx) {
 				t.Errorf("the request's own instance's article %d is still marked emitted after the request was dropped", req.artIdx)
 			}
 		})
@@ -191,7 +219,7 @@ func TestFetchArticle_GlobalPauseClearsTheRequestsOwnMark(t *testing.T) {
 		t.Fatal("fetchArticle fetched a body under a global pause")
 	}
 
-	if j.Progress().ArticleEmitted(int(artIdx)) {
+	if articleInFlight(t, j, artIdx) {
 		t.Errorf("article %d is still marked emitted after a global pause drained its request, so it is never re-dispatched", artIdx)
 	}
 }

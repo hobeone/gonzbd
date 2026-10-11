@@ -264,29 +264,14 @@ type manifestJSONFile struct {
 
 // manifestJSON is Manifest's on-disk shape.
 //
-// The recovery figures are excluded, and recomputed on load from the
-// per-file is_par2_recovery flags this format already carries. They were
-// persisted while DiscardDeferredPar2 rebuilt the manifest against a reduced
-// file set, because the discard deliberately left them describing the larger
-// pre-discard job and a recomputation would have erased that. #331 removed
-// the rebuild, so there is no staleness left to preserve — only the risk that
-// a stored copy drifts from the file list it claims to summarize.
-//
-// Dropping the two keys is a soft landing for manifests written by an earlier
-// build: encoding/json ignores keys with no matching field, and the
-// recomputation produces the corrected figure regardless of what they carried.
-// Note it does not reproduce them — an older build counted the par2 index, so
-// a legacy blob's par2_bytes is larger than the recovery figure derived from
-// the same file list. That difference is the point of the change, not a loss.
+// No summary figure is persisted: the total and the recovery pair are all
+// recomputed on load by newManifest from the per-file bytes and
+// is_par2_recovery flags this format carries. A derived value that is also
+// stored is a second source of truth, and the stored copy is the one that
+// drifts. encoding/json ignores keys with no matching field, so a stray
+// total_bytes in a blob is read by no one.
 type manifestJSON struct {
 	Files []manifestJSONFile `json:"files"`
-
-	// TotalBytes is still written, so a manifest this build produces stays
-	// readable by tooling that expects the key, but it is NOT read back:
-	// UnmarshalJSON derives the total from Files via newManifest. A derived
-	// value that is also persisted is a second source of truth, and the
-	// stored copy is the one that can drift.
-	TotalBytes int64 `json:"total_bytes"`
 }
 
 // MarshalJSON implements json.Marshaler.
@@ -310,10 +295,7 @@ func (m *Manifest) MarshalJSON() ([]byte, error) {
 			Articles:       articles,
 		}
 	}
-	return json.Marshal(manifestJSON{
-		Files:      files,
-		TotalBytes: m.totalBytes,
-	})
+	return json.Marshal(manifestJSON{Files: files})
 }
 
 // UnmarshalJSON implements json.Unmarshaler.
@@ -324,9 +306,8 @@ func (m *Manifest) MarshalJSON() ([]byte, error) {
 // same eight fields by its own code path is one edit away from disagreeing
 // with the first, and the two had already diverged over totalBytes — this
 // path trusted the persisted total while newManifest derived it from the
-// files. Deriving on load means the stored total cannot drift from the file
-// list it claims to summarise, so manifestJSON.TotalBytes is now written for
-// compatibility with nothing and read by no one.
+// files. Deriving on load means no stored total exists to drift from the file
+// list it would summarise.
 //
 // It also re-checks each Message-ID, which is the sole thing here that does
 // not trust this package's own earlier output — see the comment at the check

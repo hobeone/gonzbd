@@ -908,7 +908,7 @@ func TestMarkArticleFailed_RecordsAFailureThatArrivesAfterEviction(t *testing.T)
 			"the failure was dropped, and nothing re-derives it at hydration",
 			p.ArticleDone(2), p.ArticleFailed(2))
 	}
-	if p.ArticleEmitted(2) {
+	if p.emitted.Get(2) {
 		t.Error("article 2 is still Emitted after its failure was recorded")
 	}
 
@@ -1001,7 +1001,7 @@ func TestClearArticleEmitted_ReturnsAnEvictedArticleToOutstanding(t *testing.T) 
 	if err := j.ClearArticleEmitted(2); err != nil {
 		t.Fatalf("ClearArticleEmitted on an evicted job: %v", err)
 	}
-	if j.Progress().ArticleEmitted(2) {
+	if j.progress.emitted.Get(2) {
 		t.Fatal("article 2 is still Emitted after the clear")
 	}
 
@@ -1053,9 +1053,9 @@ func TestRestoreContent_KeepsWritesMadeWhileEvicted(t *testing.T) {
 	}
 
 	p := j.Progress()
-	if !p.ArticleFailed(2) || p.ArticleEmitted(2) {
+	if !p.ArticleFailed(2) || p.emitted.Get(2) {
 		t.Errorf("article 2 after re-hydration: failed=%v emitted=%v, want failed and not emitted — "+
-			"the failure recorded while evicted was replaced by a stale record", p.ArticleFailed(2), p.ArticleEmitted(2))
+			"the failure recorded while evicted was replaced by a stale record", p.ArticleFailed(2), p.emitted.Get(2))
 	}
 	if got := j.FailedBytes(); got != 100 {
 		t.Errorf("FailedBytes after re-hydration = %d, want 100", got)
@@ -1104,8 +1104,8 @@ func TestMarkArticleFailed_ResidentEmittedArticleLeavesPendingOnce(t *testing.T)
 		t.Errorf("PendingArticles after failing the emitted article = %d, want 1: "+
 			"the article was taken out of the count twice", got)
 	}
-	if got := j.Progress().FilePending(0); got != 1 {
-		t.Errorf("FilePending(0) = %d, want 1", got)
+	if got := j.progress.files[0].Pending; got != 1 {
+		t.Errorf("files[0].Pending = %d, want 1", got)
 	}
 	if got := unfinishedArticles(t, j); len(got) != 1 || got[0] != 0 {
 		t.Errorf("unfinished articles = %v, want [0]", got)

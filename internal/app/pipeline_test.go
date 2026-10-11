@@ -171,7 +171,7 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	if !ok || gotJob == nil {
 		t.Fatalf("job %s vanished from the dispatcher after a retryable failure", j.ID())
 	}
-	if gotJob.Progress().ArticleEmitted(0) {
+	if articleInFlight(t, gotJob, 0) {
 		t.Error("expected Emitted to be cleared after retryable failure")
 	}
 	if got := telemetry.ArticlesRetried.Value(); got != retriesBefore+1 {
@@ -226,7 +226,7 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 	if _, ok := p.fileInfo[fileKey{jobID: j.ID(), fileIdx: 0}]; !ok {
 		t.Error("expected fileInfo map to be populated by registerFile")
 	}
-	if gotJob.Progress().ArticleEmitted(0) {
+	if articleInFlight(t, gotJob, 0) {
 		t.Error("expected Emitted to be cleared when WriteArticle fails")
 	}
 	if got := telemetry.ArticlesWritten.Value(); got != writtenBefore {
@@ -338,7 +338,7 @@ func TestHandleSuccessResult_ReturnsTheArticleWhenTheFileCannotBeRegistered(t *t
 	if !ok {
 		t.Fatal("job not found in dispatcher")
 	}
-	if gotJob.Progress().ArticleEmitted(0) {
+	if articleInFlight(t, gotJob, 0) {
 		t.Error("the article was left marked Emitted after a registration failure")
 	}
 }

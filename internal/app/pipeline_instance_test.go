@@ -96,6 +96,27 @@ var staleResultCases = []staleResultCase{
 	{name: "success", data: []byte("payload")},
 }
 
+// articleInFlight reports whether artIdx is unresolved yet withheld from
+// ForEachUnfinishedArticle, which is the state a set Emitted bit puts it in.
+// Only meaningful for an article in a FetchAlways file that is not complete.
+func articleInFlight(t *testing.T, j *job.Job, artIdx int) bool {
+	t.Helper()
+	if j.Progress().ArticleDone(artIdx) {
+		return false
+	}
+	offered := false
+	if err := j.ForEachUnfinishedArticle(func(_ int, a int32, _ string, _ int, _ int, _ string) bool {
+		if int(a) == artIdx {
+			offered = true
+			return false
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("ForEachUnfinishedArticle: %v", err)
+	}
+	return !offered
+}
+
 // assertProgressUntouched fails if anything the pipeline records for article
 // 0 changed on j since the fixture set it up: it is still emitted, not
 // failed, and no download was credited.
@@ -105,7 +126,7 @@ func assertProgressUntouched(t *testing.T, which string, j *job.Job) {
 	if prog.ArticleFailed(0) {
 		t.Errorf("the %s instance's article 0 is marked failed by a stale result", which)
 	}
-	if !prog.ArticleEmitted(0) {
+	if !articleInFlight(t, j, 0) {
 		t.Errorf("the %s instance's article 0 lost its emitted mark to a stale result", which)
 	}
 	if got := prog.DownloadStarted(); !got.IsZero() {
@@ -242,10 +263,10 @@ func TestHandlers_ActOnTheResultsOwnInstance(t *testing.T) {
 				p.handleSuccessResult(t.Context(), res)
 			}
 
-			if first.Progress().ArticleEmitted(0) {
+			if articleInFlight(t, first, 0) {
 				t.Error("the result's own instance's article 0 is still marked emitted after it was returned to the pool")
 			}
-			if !second.Progress().ArticleEmitted(0) {
+			if !articleInFlight(t, second, 0) {
 				t.Error("the registered instance's article 0 lost its emitted mark to a result for another instance")
 			}
 			if tc.check != nil {

@@ -36,14 +36,14 @@ func TestHandleArticlesUnwritten_ReturnsTheArticlesToOutstanding(t *testing.T) {
 	}
 	// Grounding: without this the assertions below pass on a fixture that
 	// never reached the state under test.
-	if !job.Progress().ArticleEmitted(0) || !job.Progress().ArticleEmitted(1) {
+	if !articleInFlight(t, job, 0) || !articleInFlight(t, job, 1) {
 		t.Fatal("fixture never emitted both articles, so it cannot observe the bits being cleared")
 	}
 
 	application.handleArticlesUnwritten(job.ID(), 0, []int32{0, 1})
 
 	for _, idx := range []int32{0, 1} {
-		if job.Progress().ArticleEmitted(int(idx)) {
+		if articleInFlight(t, job, int(idx)) {
 			t.Errorf("article %d is still Emitted after its write failed. "+
 				"ForEachUnfinishedArticle skips a set Emitted bit, so it is never "+
 				"re-dispatched and the job cannot finish", idx)
@@ -138,7 +138,7 @@ func TestHandleArticleRejected_AcksThePermanentFailure(t *testing.T) {
 	if err := job.MarkArticleEmitted(1); err != nil {
 		t.Fatalf("MarkArticleEmitted: %v", err)
 	}
-	if !job.Progress().ArticleEmitted(1) {
+	if !articleInFlight(t, job, 1) {
 		t.Fatal("fixture never emitted article 1, so it cannot observe the article being resolved")
 	}
 	before := job.Progress().FailedBytes()
@@ -194,6 +194,10 @@ func TestHandleArticlesUnwritten_ClearsTheBitsOfAnEvictedJob(t *testing.T) {
 			t.Fatalf("MarkArticleEmitted(%d): %v", idx, err)
 		}
 	}
+	m, err := j.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
 	application.residency.Evict(j.ID())
 	if j.Resident() {
 		t.Fatal("fixture: the job is still resident after Evict")
@@ -201,8 +205,14 @@ func TestHandleArticlesUnwritten_ClearsTheBitsOfAnEvictedJob(t *testing.T) {
 
 	application.handleArticlesUnwritten(j.ID(), 0, []int32{0, 1})
 
+	// Eviction keeps the bits, so the roll-back is only visible once the job is
+	// resident again (the fixture has no manifest on disk to Hydrate from) and
+	// can be asked what it offers.
+	if err := j.RestoreContent(m); err != nil {
+		t.Fatalf("RestoreContent: %v", err)
+	}
 	for _, idx := range []int{0, 1} {
-		if j.Progress().ArticleEmitted(idx) {
+		if articleInFlight(t, j, idx) {
 			t.Errorf("article %d is still Emitted after an evicted job's roll-back", idx)
 		}
 	}

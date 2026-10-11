@@ -1084,7 +1084,7 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 	if ok || body != nil {
 		t.Errorf("fetchArticle = (%v, %v), want (nil, false) on cancelled job", body, ok)
 	}
-	if j3.Progress().ArticleEmitted(0) {
+	if articleInFlight(t, j3, 0) {
 		t.Error("expected emitted bit to be cleared for cancelled job")
 	}
 }

@@ -114,24 +114,17 @@ func nextUnfinishedArticle(t *testing.T, disp *dispatch.Dispatcher, jobID string
 	if !ok {
 		t.Fatalf("job %s not found", jobID)
 	}
-	m, err := j.Manifest()
-	if err != nil {
-		t.Fatalf("Manifest: %v", err)
+	first := int32(-1)
+	if err := j.ForEachUnfinishedArticle(func(_ int, a int32, _ string, _ int, _ int, _ string) bool {
+		first = a
+		return false
+	}); err != nil {
+		t.Fatalf("ForEachUnfinishedArticle: %v", err)
 	}
-	p := j.Progress()
-	if p == nil {
-		t.Fatalf("Progress is nil")
+	if first < 0 {
+		t.Fatal("no unfinished article found")
 	}
-	for fi := range m.NumFiles() {
-		lo, hi := m.FileRange(fi)
-		for i := lo; i < hi; i++ {
-			if !p.ArticleDone(i) && !p.ArticleEmitted(i) {
-				return int32(i)
-			}
-		}
-	}
-	t.Fatal("no unfinished article found")
-	return -1
+	return first
 }
 
 func countOffered(disp *dispatch.Dispatcher) int {
@@ -141,22 +134,7 @@ func countOffered(disp *dispatch.Dispatcher) int {
 		if !ok || !j.Resident() {
 			continue
 		}
-		m, err := j.Manifest()
-		if err != nil {
-			continue
-		}
-		p := j.Progress()
-		if p == nil {
-			continue
-		}
-		for fi := range m.NumFiles() {
-			lo, hi := m.FileRange(fi)
-			for i := lo; i < hi; i++ {
-				if !p.ArticleDone(i) && !p.ArticleEmitted(i) {
-					n++
-				}
-			}
-		}
+		n += j.PendingArticles()
 	}
 	return n
 }

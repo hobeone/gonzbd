@@ -116,9 +116,9 @@ func TestAppResidency_RehydrationKeepsAFailureRecordedWhileEvicted(t *testing.T)
 	if err := r.Hydrate(context.Background(), "abc123"); err != nil {
 		t.Fatalf("re-Hydrate: %v", err)
 	}
-	if p := j.Progress(); !p.ArticleFailed(0) || p.ArticleEmitted(0) {
-		t.Errorf("article 0 after re-hydration: failed=%v emitted=%v, want failed and not emitted",
-			p.ArticleFailed(0), p.ArticleEmitted(0))
+	if p := j.Progress(); !p.ArticleFailed(0) || !p.ArticleDone(0) {
+		t.Errorf("article 0 after re-hydration: failed=%v done=%v, want both",
+			p.ArticleFailed(0), p.ArticleDone(0))
 	}
 	if got := j.FailedBytes(); got != 100 {
 		t.Errorf("FailedBytes after re-hydration = %d, want 100", got)
