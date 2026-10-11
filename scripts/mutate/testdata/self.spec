@@ -557,12 +557,20 @@ syscall.LOCK_EX|syscall.LOCK_NB
 syscall.LOCK_SH|syscall.LOCK_NB
 --- end
 
-[every tree shares one lock]
+[a non-git tree shares one lock with every other]
 file scripts/mutate/runlock.go
 --- anchor
-sum := sha256.Sum256([]byte(key))
+	fallback := filepath.Join(root, runLockName)
 --- replace
-sum := sha256.Sum256([]byte("one lock"))
+	fallback := filepath.Join(os.TempDir(), runLockName)
+--- end
+
+[the lock moves back under TMPDIR]
+file scripts/mutate/runlock.go
+--- anchor
+	p := strings.TrimSpace(string(out))
+--- replace
+	p := filepath.Join(os.TempDir(), runLockName) + string(out)[:0]
 --- end
 
 [runSpec stops taking the lock]

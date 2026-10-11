@@ -1,33 +1,43 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 )
 
-// runLockPath is where a working tree's run lock lives. It is keyed on the
-// tree's root path (repoRoot is `git rev-parse --show-toplevel`, which is
-// per worktree), so sibling worktrees get different locks and
-// scripts/run_tests.sh's one-worktree-per-worker sweep is not serialized.
-// It sits in the temp dir rather than in the tree so a mutation run never
-// dirties the tree it is protecting, and so a root that is not a git
-// checkout still works.
+// runLockName is the lock file's name, both in the git dir and in the
+// fallback location.
+const runLockName = "gonzbd-mutate.lock"
+
+// runLockPath is where a working tree's run lock lives: the path
+// `git rev-parse --git-path gonzbd-mutate.lock` names when run in root. That
+// is inside the tree's own git dir, which is per worktree (so sibling
+// worktrees do not block each other, and scripts/run_tests.sh's
+// one-worktree-per-worker sweep is not serialized), outside the work tree's
+// status, and independent of TMPDIR. A root that is not a git checkout
+// falls back to a file inside root, which is where a test's t.TempDir()
+// cleans it up.
 func runLockPath(root string) string {
-	key := root
-	if abs, err := filepath.Abs(root); err == nil {
-		key = abs
+	fallback := filepath.Join(root, runLockName)
+	cmd := exec.Command("git", "rev-parse", "--git-path", runLockName)
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return fallback
 	}
-	if resolved, err := filepath.EvalSymlinks(key); err == nil {
-		key = resolved
+	p := strings.TrimSpace(string(out))
+	if p == "" {
+		return fallback
 	}
-	sum := sha256.Sum256([]byte(key))
-	return filepath.Join(os.TempDir(), "gonzbd-mutate-"+hex.EncodeToString(sum[:8])+".lock")
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(root, p)
+	}
+	return p
 }
 
 // acquireRunLock takes an exclusive, non-blocking flock for root's working
@@ -36,10 +46,11 @@ func runLockPath(root string) string {
 // mutation, or record the other's mutated bytes as their "original" (#812).
 //
 // The kernel drops an flock when the process dies, so a hard-killed run
-// leaves nothing stale to clean up.
+// leaves nothing stale to clean up. O_NOFOLLOW refuses a lock path that has
+// been replaced by a symlink.
 func acquireRunLock(root string) (release func(), err error) {
 	path := runLockPath(root)
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600) //nolint:gosec // G304: path is derived from a hash of the repo root under os.TempDir
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600) //nolint:gosec // G304: path is git's own --git-path answer for root, or a fixed name inside root
 	if err != nil {
 		return nil, fmt.Errorf("open run lock %s: %w", path, err)
 	}

@@ -773,9 +773,12 @@ func TestRunSpec_ReturnsExitCodeTwoOnErrors(t *testing.T) {
 	})
 
 	t.Run("baseline goTest launch error", func(t *testing.T) {
+		// An empty PATH makes `go` unlaunchable. A missing root no longer
+		// reaches the launch: the run lock lives in root and cannot be opened.
+		t.Setenv("PATH", "")
 		var code int
 		_, errOut := captureOutput(t, func() {
-			code = runSpec(filepath.Join(root, "missing-root"), specPath, runOpts{
+			code = runSpec(root, specPath, runOpts{
 				skipRunfilter: true,
 				skipBaseline:  false,
 			})

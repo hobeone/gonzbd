@@ -97,8 +97,10 @@
 // A spec run (including -chunk) rewrites source files in place, so a second
 // run in the same tree would build the first run's mutation or restore its
 // bytes as if they were an edit. runSpec therefore takes an exclusive,
-// non-blocking flock (runlock.go) keyed on the working tree's root, and a
-// refused run exits 2 with a message naming the lock file. -check,
+// non-blocking flock (runlock.go) on `git rev-parse --git-path
+// gonzbd-mutate.lock` (inside the tree's own git dir, so it does not depend
+// on TMPDIR; a root that is not a git checkout uses a file inside root), and
+// a refused run exits 2 with a message naming the lock file. -check,
 // -check-all and -affected only read, so they never take it. The key is the
 // tree, not the repository: sibling worktrees do not block each other, which
 // is what lets scripts/run_tests.sh run one worker per worktree in parallel.
