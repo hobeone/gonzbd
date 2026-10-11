@@ -84,7 +84,7 @@ Unlike the original Python implementation's single-threaded selector loop, GoNZB
 
 ### Job Management & Scheduling (`internal/job`, `internal/sched`, `internal/dispatch`)
 
-- **State Ownership**: The `Dispatcher` (`internal/dispatch`) owns the ordered registry of `Job` records (`internal/job`) and executes scheduling transitions via `internal/sched`.
+- **State Ownership**: The `Dispatcher` (`internal/dispatch`) owns the ordered registry of `Job` records (`internal/job`) — one dispatch order, priority descending then queue position, which the tick, the downloader and the queue listing all read (`docs/job-lifecycle.md` § Ordering) — and executes scheduling transitions via `internal/sched`.
 - **Pure Decision Core**: `internal/sched` decides pool allocations (Pool A leases, Pool B compute slots) and state transitions with zero I/O.
 - **Manifest/Progress Separation**: A `Job` holds an immutable `Manifest` (parsed-once article/file structure — subjects, byte counts, flat article arrays) and a mutable `JobProgress` (per-article done/failed/emitted state, per-file assembly bookkeeping, job-level counters).
 - **Compiler-Enforced Residency**: Manifest residency is bounded by what a job holds: a manifest is hydrated when the job holds what its position requires, and a paused job keeps one it already has. After startup every job restored paused at `Fetching` is hydrated too (`verifyPausedJobs`), and then stays resident until it is resumed or removed (see [`docs/job-lifecycle.md`](job-lifecycle.md) § *Residency is bounded by what a job holds*). A non-resident job holds no manifest in RAM, and `Job.Manifest()` answers it with `job.ErrNotResident`.

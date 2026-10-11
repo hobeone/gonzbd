@@ -1,15 +1,30 @@
 pkg ./internal/dispatch/
-run TestTick_WalksInPriorityOrderWithPositionAsTheTieBreak|TestTick_HigherPriorityWinsTheOnlyLease|TestSetPriority_TakesEffectOnTheNextTick|TestRestore_KeepsPriorityOrder
+run TestTick_WalksInPriorityOrderWithPositionAsTheTieBreak|TestTick_HigherPriorityWinsTheOnlyLease|TestSetPriority_TakesEffectOnTheNextTick|TestRestore_KeepsPriorityOrder|TestList_FollowsDispatchOrder
 
 [the tick walks d.order and ignores priority]
 file internal/dispatch/registry.go
 --- anchor
 	ordered := d.dispatchOrderLocked()
+	out := make([]*job.Job, 0, len(ordered))
 --- replace
 	ordered := make([]*entry, 0, len(d.order))
 	for _, id := range d.order {
 		ordered = append(ordered, d.byID[id])
 	}
+	out := make([]*job.Job, 0, len(ordered))
+--- end
+
+[List reads d.order and ignores priority]
+file internal/dispatch/registry.go
+--- anchor
+	ordered := d.dispatchOrderLocked()
+	ids := make([]string, 0, len(ordered))
+--- replace
+	ordered := make([]*entry, 0, len(d.order))
+	for _, id := range d.order {
+		ordered = append(ordered, d.byID[id])
+	}
+	ids := make([]string, 0, len(ordered))
 --- end
 
 [lower priority sorts first]

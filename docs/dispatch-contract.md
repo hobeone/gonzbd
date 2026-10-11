@@ -81,7 +81,9 @@ and calls `sched.Queue.Advance` on each job, in dispatch order:
 within one priority (`dispatchOrderLocked`, `internal/dispatch/registry.go`).
 `Advance` grants leases and compute slots in the order it is called, so a
 higher-priority job takes the next free lease; one already holding a lease
-keeps it. `List` and the API's queue listing stay in queue position. `Dispatcher.kick` performs a
+keeps it. `List` reads the same computation, so the API's queue listing, the
+UI and the downloader's article dispatch see the order the tick walks.
+`Dispatcher.kick` performs a
 non-blocking send on a size-1 buffered channel (`wake`) to wake the loop
 early; `Add`, `Cancel`, `Pause`, `Resume`, `SetCaps`, `Finished`,
 `YieldedFor`, and `handoff` for `AdvanceFrom` and `YieldedFrom` all call it.

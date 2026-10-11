@@ -280,6 +280,11 @@ STOP_PRIORITY   = -4   # Internal: stop signal
 DEFAULT_PRIORITY = -100 # Inherit category default
 ```
 
+GoNZBD keeps these values but not Force's pause bypass: a Force job sorts
+first in dispatch order and obeys the global pause like any other job.
+GoNZBD's queue (`mode=queue` slots and `index`) and its dispatch both follow
+priority descending, then queue position (`docs/job-lifecycle.md` § Ordering).
+
 ### 4.3 Job Statuses
 
 ```
@@ -1029,6 +1034,10 @@ GoNZBD's queue-level fields (`internal/api/queue.go`, `queueList`):
   while a job is downloading, or is waiting to download and not paused;
   `Paused` while a job is individually paused; otherwise `Idle` — an empty
   queue, or one holding only post-processing jobs.
+- `slots` are in dispatch order — priority descending (Force, High, Normal,
+  Low), then queue position — and a slot's `index` is its place in that
+  order among the slots the `cat`, `status` and `search` filters select. It is the order the dispatcher grants jobs leases in, so raising a
+  job's priority moves its slot.
 - `mb`, `mbleft`, `size` and `sizeleft` total every slot the `cat`, `status`
   and `search` filters select, before `start` and `limit` cut the page.
 - `speed` and `kbpersec` render one speed snapshot per request: `speed` in

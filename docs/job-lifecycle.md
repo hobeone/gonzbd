@@ -819,21 +819,22 @@ reorder survivors.
 **Dispatch order is priority, then position.** `dispatchOrderLocked`
 (`internal/dispatch/registry.go`) sorts the registry by `Header.Priority`
 descending — Force, then High, then Normal, then Low — with queue position as
-the tie-break. The tick walks it (`snapshotOrder`, its one caller), and `Advance` grants leases and compute slots in the order
-it is called, so a higher-priority job takes the next free lease. It does not
-preempt a job that already holds one. The order is read from the header at
-each walk, so `SetPriority` takes effect on the next tick, and since priority
-is persisted with the header it survives a restart.
-`TestTick_WalksInPriorityOrderWithPositionAsTheTieBreak` pins the order.
+the tie-break. Its two callers are `snapshotOrder`, which the tick walks, and
+`List`, which the API's queue listing, the UI and the downloader's dispatch
+pass read — so every consumer sees one order, and none sorts on its own.
+`Advance` grants leases and compute slots in the order it is called, so a
+higher-priority job takes the next free lease, and the downloader serves
+articles to the jobs holding leases in the same order. It does not preempt a
+job that already holds a lease. The order is read from the header at each
+call, so `SetPriority` takes effect on the next tick and the next listing,
+and since priority is persisted with the header it survives a restart.
+`TestTick_WalksInPriorityOrderWithPositionAsTheTieBreak` and
+`TestList_FollowsDispatchOrder` pin it.
 
-Two consumers still read queue position rather than dispatch order: `List`,
-which the API's queue listing renders, and the downloader's dispatch pass,
-which serves articles to the jobs holding leases in `List` order. Whether
-those follow dispatch order is an open question (§17).
-
-`ForcePriority` orders first and does nothing else: a global pause still holds
-it. `constants.PausedPriority` at ingest maps to `SetIntent(IntentPause)`;
-`SetPriority` to it does not, and only sorts the job behind Low.
+`ForcePriority` orders first and does nothing else: it obeys the global pause
+like every other priority, unlike SABnzbd's Force.
+`constants.PausedPriority` at ingest maps to `SetIntent(IntentPause)`;
+`SetPriority` to it does not, and only sorts the job behind Low (#847).
 
 Reorder, when it is built, is defined over fetch ordering and is **total**: the
 change is always recorded and takes effect whenever the job next competes for
@@ -1917,13 +1918,10 @@ Named here so they are decisions rather than omissions.
 
 ## 17. Open questions
 
-1. **Priority orders the tick, not the listing.** The tick walks dispatch
-   order (§8, Ordering); `List`, the API's queue listing and the downloader's
-   article dispatch read queue position. Whether they should follow dispatch
-   order is undecided, as is whether `ForcePriority` bypasses a global pause.
-   Manual reorder (`mode=switch`) is still unbuilt — `restore` reads position
-   from `SortKey` alone, so a reorder that did not renumber would vanish at the
-   next restart.
+1. **Manual reorder is unbuilt.** Priority orders dispatch (§8, Ordering),
+   and `mode=switch` would move a job's queue position, which only breaks ties
+   within one priority. `restore` reads position from `SortKey` alone, so a
+   reorder that did not renumber would vanish at the next restart.
 2. **Does pausing a job change its queue position?** Reorder says a paused
    never-started job takes effect at the next lease issuance, but nothing says
    whether pausing itself moves it. Probably not.

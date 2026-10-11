@@ -45,15 +45,30 @@ func TestTick_WalksInPriorityOrderWithPositionAsTheTieBreak(t *testing.T) {
 	if got := walkIDs(d); !slices.Equal(got, want) {
 		t.Fatalf("tick walk order = %v, want %v", got, want)
 	}
-	// List is queue position, not dispatch order: it is what the API renders,
-	// and changing it is a separate decision.
+}
+
+// TestList_FollowsDispatchOrder pins that List — what the API's queue listing,
+// the UI and the downloader's article dispatch read — shows the order the tick
+// walks, not insertion order. Same fixture as the walk-order test, so the two
+// orders it rules out (insertion, and no tie-break) are both wrong here too.
+func TestList_FollowsDispatchOrder(t *testing.T) {
+	d := newTestDispatcher(t)
+	addAt(t, d, "low", constants.LowPriority)
+	addAt(t, d, "n1", constants.NormalPriority)
+	addAt(t, d, "high", constants.HighPriority)
+	addAt(t, d, "n2", constants.NormalPriority)
+	addAt(t, d, "force", constants.ForcePriority)
+
 	rows := d.List()
 	listed := make([]string, 0, len(rows))
 	for _, r := range rows {
 		listed = append(listed, r.ID)
 	}
-	if want := []string{"low", "n1", "high", "n2", "force"}; !slices.Equal(listed, want) {
-		t.Fatalf("List order = %v, want queue position %v", listed, want)
+	if want := walkIDs(d); !slices.Equal(listed, want) {
+		t.Fatalf("List order = %v, want the tick's walk order %v", listed, want)
+	}
+	if want := []string{"force", "high", "n1", "n2", "low"}; !slices.Equal(listed, want) {
+		t.Fatalf("List order = %v, want %v", listed, want)
 	}
 }
 

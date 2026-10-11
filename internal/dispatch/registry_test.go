@@ -27,6 +27,9 @@ func TestAdd_RejectsADuplicateID(t *testing.T) {
 	}
 }
 
+// TestList_PreservesInsertionOrder pins the tie-break half of List's order:
+// jobs at one priority are listed in queue position. The priority half is
+// TestList_FollowsDispatchOrder's.
 func TestList_PreservesInsertionOrder(t *testing.T) {
 	d := newTestDispatcher(t)
 	for _, id := range []string{"c", "a", "b"} {
@@ -41,7 +44,7 @@ func TestList_PreservesInsertionOrder(t *testing.T) {
 	}
 	for i := range want {
 		if got[i].ID != want[i] {
-			t.Errorf("row %d is %s, want %s — List is queue position and must not reorder it", i, got[i].ID, want[i])
+			t.Errorf("row %d is %s, want %s — within one priority List must keep queue position", i, got[i].ID, want[i])
 		}
 	}
 }

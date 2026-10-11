@@ -1218,7 +1218,7 @@ recorded here so the next reader does not mistake them for design.
    starts its HTTP server after `Start` returns, so the read-back runs while
    the API serves. Until a job's load lands, `mode=queue` reports its header's
    byte count as remaining (0 %), as it does for any restored job before its
-   first hydration; the loads run in queue order, so a job low in the queue
+   first hydration; the loads run in listing (dispatch) order, so a job low in the queue
    waits behind the bytes of those above it. Each load runs under a per-job
    deadline (`pausedVerifyTimeout`, 10 minutes): a job whose read-back exceeds
    it is left unloaded, parks nothing and keeps its rows, and reports 0 %

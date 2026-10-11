@@ -382,16 +382,18 @@ func (d *Dispatcher) snapshotOrder() []*job.Job {
 // (Force, then High, then Normal, then Low), and queue position — the index
 // in d.order — within one priority. It reads the header at each call, so
 // SetPriority needs no step of its own to take effect on the next tick.
-// Caller must hold d.mu. snapshotOrder is its caller:
+// Caller must hold d.mu. Its callers are snapshotOrder (the tick and Stop)
+// and List (the API's queue listing, the UI and the downloader), so all of
+// them see one order:
 // `git grep -n 'd\.dispatchOrderLocked()' -- 'internal/dispatch/*.go' ':!*_test.go'`
-// returns 1 line.
+// returns 2 lines.
 //
 // The tick walks this order, and Advance grants leases and compute slots in
 // the order it is called, so a higher-priority job gets the next free lease.
 // It does not preempt: a job already holding a lease keeps it.
 //
-// d.order itself stays in queue position, because List renders it and List
-// is what the API's queue listing shows.
+// d.order itself stays in queue position: it is the tie-break this sorts by,
+// and its keys (entry.seq) are what restore rebuilds it from.
 func (d *Dispatcher) dispatchOrderLocked() []*entry {
 	type ranked struct {
 		e   *entry
@@ -630,17 +632,20 @@ func (d *Dispatcher) Len() int {
 	return len(d.order)
 }
 
-// List composes the queue listing. It takes Queue.mu exactly once, through
-// RenderAll, so every row's scheduler StateView is from one instant.
-// RemainingBytes is read per job from live progress under contentMu.RLock.
+// List composes the queue listing, in dispatch order (dispatchOrderLocked):
+// the order the tick walks, so the API's queue listing, the UI and the
+// downloader's article dispatch all see the order jobs are granted in. It
+// takes Queue.mu exactly once, through RenderAll, so every row's scheduler
+// StateView is from one instant. RemainingBytes is read per job from live
+// progress under contentMu.RLock.
 func (d *Dispatcher) List() []Row {
 	d.mu.Lock()
-	ids := make([]string, len(d.order))
-	copy(ids, d.order)
-	js := make([]*job.Job, 0, len(ids))
-	hs := make([]Header, 0, len(ids))
-	for _, id := range ids {
-		e := d.byID[id]
+	ordered := d.dispatchOrderLocked()
+	ids := make([]string, 0, len(ordered))
+	js := make([]*job.Job, 0, len(ordered))
+	hs := make([]Header, 0, len(ordered))
+	for _, e := range ordered {
+		ids = append(ids, e.j.ID())
 		js = append(js, e.j)
 		hs = append(hs, e.h)
 	}
