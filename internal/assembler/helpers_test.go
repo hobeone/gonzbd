@@ -193,7 +193,7 @@ func TestSyncAndClose_KeepsWrittenBytesAndClosesTheHandle(t *testing.T) {
 	a := newHelperAssembler()
 	f := newHelperFile(t, dir, "syncclose.dat", 0)
 
-	if err := f.w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("abcdefgh")); err != nil {
+	if err := f.w.accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("abcdefgh")); err != nil {
 		t.Fatal(err)
 	}
 

@@ -30,7 +30,7 @@ func cancelWithoutRouting(t *testing.T, name string, disposition FileDisposition
 	}
 
 	f := newHelperFile(t, t.TempDir(), name, 0)
-	if err := f.w.Accept(articleID{msgID: "a5", artIdx: 5}, 0, []byte("AAAA")); err != nil {
+	if err := f.w.accept(articleID{msgID: "a5", artIdx: 5}, 0, []byte("AAAA")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
 	key = f.w.key
@@ -69,7 +69,7 @@ func TestDispatchRequest_CancelDeletingFilesRoutesNothing(t *testing.T) {
 }
 
 // TestDispatchRequest_CancelKeepingFilesRoutesNothing is the KeepFiles half,
-// and it is the reason the keep branch calls f.w.Close rather than
+// and it is the reason the keep branch calls f.w.close rather than
 // a.syncAndClose: syncAndClose Syncs, which would stall ingest for every
 // other job on the one worker goroutine for bytes nobody will read.
 func TestDispatchRequest_CancelKeepingFilesRoutesNothing(t *testing.T) {

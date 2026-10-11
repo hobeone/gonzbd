@@ -124,19 +124,19 @@ func TestFileWriter_FailKeepsThePartOfAnAlreadyFailedArticle(t *testing.T) {
 func TestFileWriter_RollbackPart(t *testing.T) {
 	tests := []struct {
 		name      string
-		setup     func(w *FileWriter)
+		setup     func(w *fileWriter)
 		id        articleID
 		wantParts int
 	}{
 		{
 			name:      "an accepted article gives its part back",
-			setup:     func(w *FileWriter) { w.admitAccepted(1) },
+			setup:     func(w *fileWriter) { w.admitAccepted(1) },
 			id:        articleID{msgID: "m1", artIdx: 1},
 			wantParts: 0,
 		},
 		{
 			name: "an already-failed article keeps its part",
-			setup: func(w *FileWriter) {
+			setup: func(w *fileWriter) {
 				w.admitPermanentFailure(1)
 				w.admitRetryOfFailed(1)
 			},
@@ -145,7 +145,7 @@ func TestFileWriter_RollbackPart(t *testing.T) {
 		},
 		{
 			name:      "an article that never held a part takes none away",
-			setup:     func(w *FileWriter) { w.admitAccepted(99) },
+			setup:     func(w *fileWriter) { w.admitAccepted(99) },
 			id:        articleID{msgID: "m1", artIdx: 1},
 			wantParts: 1,
 		},

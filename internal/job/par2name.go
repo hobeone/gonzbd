@@ -7,8 +7,13 @@ import "regexp"
 // The index par2 (e.g. "movie.par2", no .volNNN block suffix) does NOT
 // match — it carries the per-file checksums and is never deferred.
 //
+// In the "+" form the number is a block count, so ".vol000+00.par2" declares
+// no recovery blocks and does not match: it is classified as content, which is
+// always fetched and never counted as capacity. In the "-" form the second
+// number is a volume number, so "-00" carries no such implication.
+//
 // Decoupled from internal/par2 to simplify imports.
-var recoveryVolumePattern = regexp.MustCompile(`(?i)\.vol\d+[-+]\d+\.par2(?:[^a-zA-Z0-9.]|$)`)
+var recoveryVolumePattern = regexp.MustCompile(`(?i)\.vol\d+(?:-\d+|\+0*[1-9]\d*)\.par2(?:[^a-zA-Z0-9.]|$)`)
 
 // IsRecoveryVolume reports whether filename names a par2 recovery volume.
 func IsRecoveryVolume(filename string) bool {

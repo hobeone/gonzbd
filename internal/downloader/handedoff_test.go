@@ -56,7 +56,7 @@ func TestFetchArticle_HandedOffJobIsNotFetched(t *testing.T) {
 	// Pre-set the emitted bit so the assertion below actually exercises
 	// ClearArticleEmitted, the way TestFetchArticle_DropsARequestForAn
 	// InstanceNoLongerRegistered (instance_test.go) does: a fresh job's
-	// article starts unemitted, so checking ArticleEmitted without this
+	// article starts unemitted, so checking articleInFlight without this
 	// would pass whether or not the drop path clears anything.
 	markEmittedOn(t, j, artIdx)
 
@@ -79,7 +79,7 @@ func TestFetchArticle_HandedOffJobIsNotFetched(t *testing.T) {
 	if got := ms.fetches.Load(); got != 0 {
 		t.Errorf("fetchArticle for a handed-off job: ok=%v, BODY fetches=%d, want no fetch", ok, got)
 	}
-	if j.Progress().ArticleEmitted(int(artIdx)) {
+	if articleInFlight(t, j, artIdx) {
 		t.Errorf("article %d is still marked emitted after a handed-off job's request was dropped", artIdx)
 	}
 

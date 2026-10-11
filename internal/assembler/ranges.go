@@ -51,10 +51,10 @@ func (o *ownedRanges) ownerOf(r Range, arriving articleID) (articleID, bool) {
 // write a different length). An intersecting entry of a DIFFERENT article
 // panics rather than being refused: the caller must have found no owner via
 // ownerOf first, and the one production path, acceptArticle, does so
-// immediately before Accept on the file's single goroutine —
+// immediately before accept on the file's single goroutine —
 // `git grep -n '\.claim(' -- 'internal/assembler/*.go' ':!*_test.go' ':!internal/assembler/diskprobe.go'`
 // finds 2 lines, this comment and the one call, in writeOne, reached from
-// Accept, whose one non-test caller is acceptArticle.
+// accept, whose one non-test caller is acceptArticle.
 // A refusal here could not return the article's accounting, since its bytes
 // are already written.
 func (o *ownedRanges) claim(r Range, id articleID) {
@@ -95,7 +95,7 @@ var seededOwner = articleID{artIdx: -1}
 var errSeedNotEmpty = errors.New("assembler: seed on a non-empty range set")
 
 // seed marks rs as owned by seededOwner. It runs once, at file open, before any
-// Accept: on a non-empty set it returns errSeedNotEmpty and changes nothing.
+// accept: on a non-empty set it returns errSeedNotEmpty and changes nothing.
 //
 // seed drops ranges with Len <= 0 and checks nothing else: a negative Off or an
 // Off+Len that overflows int64 must be rejected by the caller before seed.

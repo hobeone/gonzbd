@@ -10,7 +10,7 @@ import (
 )
 
 // An article's outcome is not an ack (X2): the assembler has no ack authority
-// at all. A written article is noted for Sync (FileWriter.unsynced) and
+// at all. A written article is noted for sync (fileWriter.unsynced) and
 // reported to Options.OnArticleWritten; a failed write is absent from
 // unsynced and comes back as a *storagefault.Fault. See filewriter_test.go for
 // the base pins this file specializes.
@@ -25,9 +25,9 @@ import (
 // so articles whose writes hit ENOSPC leave the file permanently short, never
 // acked and never failed. Silent without par2.
 //
-// # Why this test drives the Assembler and not the FileWriter
+// # Why this test drives the Assembler and not the fileWriter
 //
-// It replaces a version that called w.Accept on a bare FileWriter and asserted
+// It replaces a version that called w.accept on a bare fileWriter and asserted
 // len(w.seenDone) == 0. That assertion held UNCONDITIONALLY: seenDone is only
 // ever written by handleSuccessArticle, so a bare writer's map is empty no
 // matter what fail() does. Deleting the seenDone clear left the whole suite
@@ -144,7 +144,7 @@ func TestFailedWrites_RetryIsWrittenNotDiscarded(t *testing.T) {
 
 // TestDuplicateSuccessIsNotReAcked pins that a duplicate does not add a second
 // entry to unsynced. The dedup decision lives in
-// handleSuccessArticle, keyed on the FileWriter's own seenDone map (R12).
+// handleSuccessArticle, keyed on the fileWriter's own seenDone map (R12).
 func TestDuplicateSuccessIsNotReAcked(t *testing.T) {
 	a := newHelperAssembler()
 	dir := t.TempDir()
@@ -201,7 +201,7 @@ func TestDuplicateAtADifferentOffsetIsNotReAcked(t *testing.T) {
 // noted as written.
 func TestZeroLengthArticleIsReportedWritten(t *testing.T) {
 	w := newTestFileWriter(t)
-	if err := w.Accept(articleID{msgID: "msg0", artIdx: 0}, 0, nil); err != nil {
+	if err := w.accept(articleID{msgID: "msg0", artIdx: 0}, 0, nil); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
 	if got := w.unsynced; len(got) != 1 || got[0] != 0 {
@@ -212,7 +212,7 @@ func TestZeroLengthArticleIsReportedWritten(t *testing.T) {
 
 // TestRetryAfterFailedWriteLandsOnDisk translates
 // TestFailArticleMovesTheArticleOutOfSeenDone. The dedup lives in
-// handleSuccessArticle, keyed on the FileWriter's seenDone/seenFailed maps.
+// handleSuccessArticle, keyed on the fileWriter's seenDone/seenFailed maps.
 // A write failure must move the article out of seenDone so its retry is not
 // silently discarded as an already-accepted duplicate — it has no bytes on
 // disk to be a duplicate of.
@@ -244,7 +244,7 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 	// The consequence the move exists for: the retry's bytes reach the file.
 	//
 	// It IS counted again, because the roll-back above gave the count back —
-	// see FileWriter.fail, which applies the give-back in the same statement
+	// see fileWriter.fail, which applies the give-back in the same statement
 	// pair that clears seenDone. Counting an article whose bytes are not on
 	// disk is what let a file reach TotalParts and finalize over them.
 	retry := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("retry")}
@@ -340,21 +340,21 @@ func TestSync_ActuallyIssuesTheFsync(t *testing.T) {
 	var unsyncedAtSync int
 	w.syncFile = func() error {
 		syncs++
-		// Captured DURING the syscall: if Sync cleared the set first, the
+		// Captured DURING the syscall: if sync cleared the set first, the
 		// ordering bug would be invisible to an after-the-fact assertion.
 		unsyncedAtSync = len(w.unsynced)
 		return nil
 	}
 
 	w.admitAccepted(0)
-	if err := w.Accept(articleID{msgID: "m0", artIdx: 0}, 0, []byte("hello")); err != nil {
+	if err := w.accept(articleID{msgID: "m0", artIdx: 0}, 0, []byte("hello")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
 	if len(w.unsynced) == 0 {
 		t.Fatal("nothing was noted before Sync; the fixture proves nothing")
 	}
 
-	if err := w.Sync(); err != nil {
+	if err := w.sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if syncs != 1 {
@@ -373,11 +373,11 @@ func TestSync_ActuallyIssuesTheFsync(t *testing.T) {
 	// and marks the failed pages clean, so nothing written before it can be
 	// trusted.
 	w.admitAccepted(1)
-	if err := w.Accept(articleID{msgID: "m1", artIdx: 1}, 5, []byte("world")); err != nil {
+	if err := w.accept(articleID{msgID: "m1", artIdx: 1}, 5, []byte("world")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
 	w.syncFile = func() error { return syscall.EIO }
-	if err := w.Sync(); err == nil {
+	if err := w.sync(); err == nil {
 		t.Fatal("Sync returned nil despite a failing fsync")
 	}
 	if rolled := w.takePoisoned(); len(rolled) != 1 || rolled[0] != 1 {
@@ -388,7 +388,7 @@ func TestSync_ActuallyIssuesTheFsync(t *testing.T) {
 // TestNewFileWriter_BindsSyncFileToTheRealHandle closes the one level of hole
 // the syncFile seam still had.
 //
-// TestSync_ActuallyIssuesTheFsync pins that Sync
+// TestSync_ActuallyIssuesTheFsync pins that sync
 // CALLS w.syncFile in the right order. It says nothing about what syncFile
 // holds, because that test installs its own stub. So rebinding
 // `w.syncFile = handle.Sync` to `func() error { return nil }` in newFileWriter

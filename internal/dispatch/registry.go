@@ -992,6 +992,13 @@ func (d *Dispatcher) SetPriority(id string, priority int) error {
 	return nil
 }
 
+// setNameLoadTimeout bounds SetName's hydration of a job with no progress. The
+// hydration verifies the job's written articles against the disk, so it is
+// sized, like the app's startup verification of paused jobs, for a large job on
+// a remote mount. A rename that exceeds it fails, attaches nothing, and can be
+// retried.
+const setNameLoadTimeout = 10 * time.Minute
+
 // SetName updates the job's display and filesystem name across both the Header
 // (used for listings without job pointer dereference) and the Job instance (used for
 // downstream filesystem paths and finalization) atomically under d.mu.
@@ -1002,8 +1009,13 @@ func (d *Dispatcher) SetPriority(id string, priority int) error {
 // Application.RenameJob does both before calling it — the production caller,
 // at internal/app/rename.go (`git grep -n '\.SetName(' -- '*.go' ':!*_test.go'`
 // also lists the apitest double and two Job.SetName calls).
+//
+// It first loads the job's progress (LoadProgress), for at most
+// setNameLoadTimeout.
 func (d *Dispatcher) SetName(id, name string) error {
-	if err := d.LoadProgress(context.Background(), id); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), setNameLoadTimeout)
+	defer cancel()
+	if err := d.LoadProgress(ctx, id); err != nil {
 		return fmt.Errorf("dispatch: set name %s: %w", id, err)
 	}
 	d.mu.Lock()

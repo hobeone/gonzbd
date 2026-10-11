@@ -213,7 +213,7 @@ type Options struct {
 	// OnWriteFault, if non-nil, is called on the worker goroutine when a
 	// write for an article fails.
 	//
-	// It exists because a fault raised inside FileWriter.Accept has no other
+	// It exists because a fault raised inside fileWriter.accept has no other
 	// way out: a rejected write leaves nothing behind for a later fsync to
 	// fail on. The article is not failed by this: a storage fault says nothing
 	// about the article's availability (A1), so the caller stalls the job and
@@ -239,7 +239,7 @@ type Options struct {
 	// and losing the articles is what happened.
 	//
 	// It takes a SET because one failure can roll back several articles: a
-	// failed close-time Sync rolls back every article written since the last
+	// failed close-time sync rolls back every article written since the last
 	// successful one, and releasePoisoned delivers them in a single call.
 	//
 	// Emitted is NOT Outstanding: ForEachUnfinishedArticle skips a set Emitted
@@ -289,9 +289,9 @@ type Options struct {
 	// across a restart without reading the file (docs/durability-contract.md
 	// §5).
 	//
-	// It reports a write, not durability: a later failed Sync can roll the
-	// article back (FileWriter.poisonSync), and OnArticlesUnwritten then names
-	// it. In production that Sync is syncAndClose's, which closes the writer
+	// It reports a write, not durability: a later failed sync can roll the
+	// article back (fileWriter.poisonSync), and OnArticlesUnwritten then names
+	// it. In production that sync is syncAndClose's, which closes the writer
 	// next, and the file is untrusted (OnFileUntrusted); a redelivery opens a
 	// fresh writer and calls this again with the same artIdx.
 	OnArticleWritten func(jobID string, fileIdx int, artIdx int32, off, n int64, crc uint32)
@@ -313,23 +313,23 @@ type fileKey struct {
 // openFile tracks an in-progress file being assembled.
 //
 // It is now bookkeeping only: the file's handle and every byte that
-// moves belong to its FileWriter. What is left here is what the WORKER needs
+// moves belong to its fileWriter. What is left here is what the WORKER needs
 // to route a request — where the file's writer is, and what it was told about
 // the file.
 //
 // maxWritten, crcParts and crcValid are gone. Each was a fact the assembler
 // maintained about bytes on disk in order to truncate or to report a CRC. The
-// truncate moved to FileWriter.finish, bounded by the writer's owned ranges,
+// truncate moved to fileWriter.finish, bounded by the writer's owned ranges,
 // and the CRC to the written rows (job.Job.SettleFileCRC). Keeping a shadow
 // copy here is exactly the second-writer shape S5 forbids.
 //
 // partsWritten went the same way, for the same reason at a smaller scale. It
 // is derived from the writer's seenDone and seenFailed sets, and holding it
 // here made every mutation a synchronisation obligation between two structs
-// that nothing enforced. It now lives on FileWriter and is read through
+// that nothing enforced. It now lives on fileWriter and is read through
 // parts().
 type openFile struct {
-	w    *FileWriter
+	w    *fileWriter
 	info FileInfo
 }
 
@@ -1142,7 +1142,7 @@ func (a *Assembler) dispatchRequest(
 // untrust the file on an error (noteFileUntrusted): a failed fsync means the
 // bytes its articles were reported written with cannot be trusted. A failed
 // fsync also returns the articles it poisoned to Outstanding through
-// releasePoisoned (FileWriter.poisonSync).
+// releasePoisoned (fileWriter.poisonSync).
 //
 // # Why the fault is REPORTED and not ROUTED
 //
@@ -1175,17 +1175,17 @@ func (a *Assembler) syncAndClose(f *openFile) error {
 		}
 	}
 
-	if syncErr := f.w.Sync(); syncErr != nil {
+	if syncErr := f.w.sync(); syncErr != nil {
 		note("sync file before close", syncErr)
-		// A failed Sync rolled the file's unsynced articles back into
-		// w.poisoned (#760). Close below throws the writer away with that set,
+		// A failed sync rolled the file's unsynced articles back into
+		// w.poisoned (#760). close below throws the writer away with that set,
 		// so this is the only chance to return them to Outstanding.
 		a.releasePoisoned(f)
 	}
-	// A failing Close is a storage condition too, and on network-backed mounts
+	// A failing close is a storage condition too, and on network-backed mounts
 	// it is frequently the first report of writes that never landed — the
 	// close is where a deferred error surfaces.
-	note("close file", f.w.Close())
+	note("close file", f.w.close())
 
 	if permanent != nil {
 		return permanent
@@ -1193,7 +1193,7 @@ func (a *Assembler) syncAndClose(f *openFile) error {
 	return first
 }
 
-// releasePoisoned returns the articles a failed Sync rolled back to
+// releasePoisoned returns the articles a failed sync rolled back to
 // Outstanding. Their Emitted bits are still set from dispatch, so without this
 // they are neither Done, nor Failed, nor Outstanding.
 func (a *Assembler) releasePoisoned(f *openFile) {
@@ -1208,7 +1208,7 @@ func (a *Assembler) releasePoisoned(f *openFile) {
 // to it. syncAndClose does something that is right for its own caller and
 // wrong here:
 //
-//   - It calls Sync. CloseJobHandles needs that fsync because par2 and unrar
+//   - It calls sync. CloseJobHandles needs that fsync because par2 and unrar
 //     are about to read the file. Nothing reads a removed job's files, and an
 //     fsync here would stall ingest for every other job on the one worker
 //     goroutine in exchange for nothing.
@@ -1226,7 +1226,7 @@ func (a *Assembler) closeCancelledFile(f *openFile, disposition FileDisposition)
 	// unlinked below and nothing it failed to flush could ever be read. Under
 	// KeepFiles the file survives, so the same error means a kept file may be
 	// missing bytes, and it is logged rather than discarded.
-	cerr := f.w.Close()
+	cerr := f.w.close()
 	if cerr != nil && disposition == KeepFiles {
 		a.log.Warn("failed to close a cancelled job's file that is being kept; "+
 			"unsynced bytes may not have reached the platter",
@@ -1264,7 +1264,7 @@ func (a *Assembler) syncAndCloseAll(open map[fileKey]*openFile) {
 // processRequest performs the WriteAt for a single WriteRequest. It resolves
 // the target file on first encounter, caches the handle, and fires
 // OnFileComplete when all TotalParts have been written. Each article is
-// written individually, through FileWriter.Accept.
+// written individually, through fileWriter.accept.
 func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile, completed map[fileKey]struct{}) {
 	key := fileKey{jobID: req.JobID, fileIdx: req.FileIdx}
 
@@ -1291,7 +1291,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 			// relabelling it. Re-resolving here would call the FileInfo
 			// resolver a second time on a path where the resolver is itself
 			// the thing that may have failed.
-			// Reported alongside the fault: there is no FileWriter to have
+			// Reported alongside the fault: there is no fileWriter to have
 			// rolled it back, because the file was never opened. The article
 			// is nevertheless un-written and still Emitted, which is not
 			// Outstanding.
@@ -1305,7 +1305,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	}
 
 	// admitted reports whether the article was taken on as a part of this
-	// file. The COUNT is not applied here — it belongs to FileWriter, applied
+	// file. The COUNT is not applied here — it belongs to fileWriter, applied
 	// by admitAccepted and admitPermanentFailure in the same breath as the
 	// seen-set record it is derived from. A count applied here, after the
 	// write, could be rolled back by that write's own failure: w.fail decides
@@ -1344,7 +1344,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 //
 // # The article that is owed something
 //
-// An article can reach here with no record of it in the job: FileWriter.fail
+// An article can reach here with no record of it in the job: fileWriter.fail
 // gives the part back for every article whose write failed, the downloader
 // re-dispatches it, and the copy that comes back arrives after its file was
 // tombstoned. Dropping it would strand it — not written, not failed, and
@@ -1485,7 +1485,7 @@ func openInDir(dir, name string) (*os.File, error) {
 // seed fails only on a non-empty set, and this runs on a fresh writer, so its
 // error is a programming error and is logged at Error level rather than
 // returned: the file still opens, unseeded, and the cost is the same refetch.
-func (a *Assembler) seedOwned(w *FileWriter, owned []Range) {
+func (a *Assembler) seedOwned(w *fileWriter, owned []Range) {
 	if len(owned) == 0 {
 		return
 	}
@@ -1508,10 +1508,10 @@ func (a *Assembler) seedOwned(w *FileWriter, owned []Range) {
 // part total without writing anything.
 //
 // It takes ownership of req.Data and releases it before returning, on every
-// path, matching handleSuccessArticle and FileWriter.Accept's contract: the
+// path, matching handleSuccessArticle and fileWriter.accept's contract: the
 // caller never has to reason about who frees it. Safe here because this
 // function writes nothing to disk on any path, so it never needs the bytes to
-// survive the call — unlike Accept, which must hold them until they are
+// survive the call — unlike accept, which must hold them until they are
 // written before it can let go.
 //
 // It records no ack. A permanent failure is the queue's to record via
@@ -1617,10 +1617,10 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 	// incumbent's row may already be buffered by the recorder
 	// (OnArticleWritten) over exactly its range with its CRC; overwriting those
 	// bytes leaves a record describing bytes the file no longer holds. An article whose write faulted claimed
-	// nothing (see FileWriter.owned), so it never makes a later arrival lose.
+	// nothing (see fileWriter.owned), so it never makes a later arrival lose.
 	//
-	// Checked here rather than inside Accept so the refusal travels the same
-	// route as the out-of-range one above — Accept's contract is that its error
+	// Checked here rather than inside accept so the refusal travels the same
+	// route as the out-of-range one above — accept's contract is that its error
 	// always reports STORAGE failing, and this reports the article.
 	if _, settled := f.w.owned.ownerOf(Range{Off: req.Offset, Len: int64(len(req.Data))}, id); settled {
 		if req.Data != nil {
@@ -1631,8 +1631,8 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 			reason: "claims a byte range already written by another article",
 		}
 	}
-	n := int64(len(req.Data)) // Accept returns the buffer to the pool
-	if err := f.w.Accept(id, req.Offset, req.Data); err != nil {
+	n := int64(len(req.Data)) // accept returns the buffer to the pool
+	if err := f.w.accept(id, req.Offset, req.Data); err != nil {
 		return err
 	}
 	if a.opts.OnArticleWritten != nil {
@@ -1675,7 +1675,7 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 		return true
 	}
 	// The rolled-back article is the one whose write just failed: writeOne is
-	// the only caller of FileWriter.fail. Its Emitted bit is still set, so it
+	// the only caller of fileWriter.fail. Its Emitted bit is still set, so it
 	// is handed back to be cleared, as the openTargetFile failure does.
 	a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
 	a.noteWriteFault(f.info.Path(), req, err)
@@ -1715,7 +1715,7 @@ func (a *Assembler) noteWriteFault(path string, req WriteRequest, err error) {
 //
 // The finish runs here, on the worker and on the file's writing handle, before
 // anything is reported: fsync, truncate to the end of the last owned byte,
-// fsync again (FileWriter.finish), then close. Only a file all of that
+// fsync again (fileWriter.finish), then close. Only a file all of that
 // succeeded for is tombstoned and reported through OnFileComplete, so a caller
 // that records the file complete records it after its fsync.
 //
@@ -1729,7 +1729,7 @@ func (a *Assembler) noteWriteFault(path string, req WriteRequest, err error) {
 func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest,
 	open map[fileKey]*openFile, completed map[fileKey]struct{}) {
 	err := f.w.finish()
-	if cerr := f.w.Close(); err == nil {
+	if cerr := f.w.close(); err == nil {
 		err = cerr
 	}
 	delete(open, key)

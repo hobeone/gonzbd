@@ -14,17 +14,17 @@ import (
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
-type fileWriterOpt func(*FileWriter)
+type fileWriterOpt func(*fileWriter)
 
 // withWriteError makes every WriteAt fail with err, injected on the writeAt
 // field before first use — the same override shape diskProbe.statfs uses.
 func withWriteError(err error) fileWriterOpt {
-	return func(w *FileWriter) {
+	return func(w *fileWriter) {
 		w.writeAt = func([]byte, int64) (int, error) { return 0, err }
 	}
 }
 
-func newTestFileWriter(t *testing.T, opts ...fileWriterOpt) *FileWriter {
+func newTestFileWriter(t *testing.T, opts ...fileWriterOpt) *fileWriter {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "target.dat")
 	fh, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
@@ -40,11 +40,11 @@ func newTestFileWriter(t *testing.T, opts ...fileWriterOpt) *FileWriter {
 }
 
 // TestFileWriter_AcceptNotesTheArticleForSync pins that a successful write puts
-// the article in unsynced, which is what a failed Sync rolls back.
+// the article in unsynced, which is what a failed sync rolls back.
 func TestFileWriter_AcceptNotesTheArticleForSync(t *testing.T) {
 	w := newTestFileWriter(t)
 
-	if err := w.Accept(articleID{msgID: "a5", artIdx: 5}, 4096, bytes.Repeat([]byte{1}, 100)); err != nil {
+	if err := w.accept(articleID{msgID: "a5", artIdx: 5}, 4096, bytes.Repeat([]byte{1}, 100)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -58,7 +58,7 @@ func TestFileWriter_AcceptNotesTheArticleForSync(t *testing.T) {
 func TestFileWriter_DirectWriteFailureIsNotNoted(t *testing.T) {
 	w := newTestFileWriter(t, withWriteError(syscall.EIO))
 
-	err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 0, bytes.Repeat([]byte{7}, 64))
+	err := w.accept(articleID{msgID: "a1", artIdx: 1}, 0, bytes.Repeat([]byte{7}, 64))
 	if err == nil {
 		t.Fatal("Accept returned nil error after EIO")
 	}

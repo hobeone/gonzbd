@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/job/jobtest"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 func writeTestManifest(t *testing.T, path string, _ *job.Job) {
@@ -114,9 +116,9 @@ func TestAppResidency_RehydrationKeepsAFailureRecordedWhileEvicted(t *testing.T)
 	if err := r.Hydrate(context.Background(), "abc123"); err != nil {
 		t.Fatalf("re-Hydrate: %v", err)
 	}
-	if p := j.Progress(); !p.ArticleFailed(0) || p.ArticleEmitted(0) {
-		t.Errorf("article 0 after re-hydration: failed=%v emitted=%v, want failed and not emitted",
-			p.ArticleFailed(0), p.ArticleEmitted(0))
+	if p := j.Progress(); !p.ArticleFailed(0) || !p.ArticleDone(0) {
+		t.Errorf("article 0 after re-hydration: failed=%v done=%v, want both",
+			p.ArticleFailed(0), p.ArticleDone(0))
 	}
 	if got := j.FailedBytes(); got != 100 {
 		t.Errorf("FailedBytes after re-hydration = %d, want 100", got)
@@ -180,7 +182,7 @@ func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 		r := &appResidency{
 			lookup:    func(string) (*job.Job, bool) { return j, true },
 			dir:       dir,
-			hydrating: map[string]chan struct{}{"abc123": ready},
+			hydrating: map[string]hydration{"abc123": {ready: ready, cancel: func() {}}},
 		}
 		return r, ready, func() {
 			r.mu.Lock()
@@ -243,4 +245,29 @@ func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 			t.Error("the job is not resident after Hydrate")
 		}
 	})
+}
+
+// TestAppResidency_FaultAfterCancellationIsAContextError pins that a
+// verification error returned after the hydration's context ended is reported
+// as a context error even when it does not carry one itself, and parks
+// nothing: Evict cancels a tick's hydration while the tick's context is live,
+// and the tick settles a job Failed on a hydration error it cannot identify.
+func TestAppResidency_FaultAfterCancellationIsAContextError(t *testing.T) {
+	t.Parallel()
+	j := job.New("abc123", "test", job.PolicyFromPP(3))
+	parked := false
+	r := &appResidency{parked: func(string, *storagefault.Fault) { parked = true }}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	readErr := errors.New("read: file already closed")
+	err := r.fault(ctx, j, storagefault.Classify("verify", "", readErr), readErr)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("fault after cancellation = %v, want it to wrap context.Canceled", err)
+	}
+	if errors.Is(err, dispatch.ErrResidencyFault) {
+		t.Errorf("fault after cancellation = %v, want no residency fault", err)
+	}
+	if parked {
+		t.Error("fault after cancellation parked the job")
+	}
 }

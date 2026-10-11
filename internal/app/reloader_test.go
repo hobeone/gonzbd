@@ -362,6 +362,17 @@ func TestDetectDuplicateNZB(t *testing.T) {
 			t.Errorf("warning = %q, want %q", warning, "Duplicate NZB")
 		}
 	})
+
+	t.Run("bare uncompressed file in backup dir is not a duplicate", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(nzbDir, "bare.nzb"), []byte("x"), 0o600); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+
+		isDup, _ := a.detectDuplicateNZB(t.Context(), "unrelated-md5-bare", "bare.nzb", false, nzbDir)
+		if isDup {
+			t.Errorf("isDuplicate = true, want false: the backup probe looks for <name>.gz")
+		}
+	})
 }
 
 // TestPushDispatchOptions_ForwardsEachSetterToTheRunningDownloader pins the

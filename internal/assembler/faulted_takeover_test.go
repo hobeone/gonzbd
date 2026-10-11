@@ -16,7 +16,7 @@ import (
 // redelivery.
 //
 // The faulted article is handed back to Outstanding once, at the fault, and
-// owns nothing (FileWriter.owned is claimed only after a nil write). The rival
+// owns nothing (fileWriter.owned is claimed only after a nil write). The rival
 // writes the unowned range and must not resolve the faulted article a second
 // time: failing it permanently on top of that OnArticlesUnwritten would give
 // one article two dispositions. Its redelivery is then refused against the
@@ -66,7 +66,7 @@ func TestFaultedIncumbent_TakenOverThenRedeliveryRefused(t *testing.T) {
 	if f == nil {
 		t.Fatal("precondition: the first article did not open the file")
 	}
-	t.Cleanup(func() { _ = f.w.Close() })
+	t.Cleanup(func() { _ = f.w.close() })
 
 	// The incumbent's write faults.
 	realWrite := f.w.writeAt

@@ -341,7 +341,7 @@ These rules are distilled from real bugs found across dozens of audit and harden
 
 - **Track and close file descriptors for cancelled jobs.** The assembler holds open file handles per job. When a job is cancelled, `CancelJob` must close all associated FDs via a control message to the worker goroutine, or FDs leak indefinitely.
 
-- **Use tombstone sets to reject late/duplicate messages.** After a file is completed and closed, late duplicate articles can re-open it, leaking FDs. Maintain a tombstone set to reject them. The assembler's are `seenDone` and `seenFailed` on `FileWriter`, keyed on `ArtIdx` rather than Message-ID.
+- **Use tombstone sets to reject late/duplicate messages.** After a file is completed and closed, late duplicate articles can re-open it, leaking FDs. Maintain a tombstone set to reject them. The assembler's are `seenDone` and `seenFailed` on `fileWriter`, keyed on `ArtIdx` rather than Message-ID.
 
 - **Add idle read deadlines on long-lived network sockets.** NNTP connections without read deadlines hang silently when the remote end disappears. Use `SetReadDeadline` and reset on each successful read.
 

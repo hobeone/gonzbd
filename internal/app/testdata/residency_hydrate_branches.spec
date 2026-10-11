@@ -5,12 +5,12 @@ run TestAppResidency_HydrateWaitsForAHydrationInFlight|TestAppResidency_HydrateR
 file internal/app/residency.go
 --- anchor
 			select {
-			case <-inFlight:
+			case <-inFlight.ready:
 				continue
 			case <-ctx.Done():
 --- replace
 			select {
-			case <-inFlight:
+			case <-inFlight.ready:
 				return fmt.Errorf("residency: hydrate %s: concurrent hydration failed", id)
 			case <-ctx.Done():
 --- end

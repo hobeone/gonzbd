@@ -92,6 +92,21 @@
 // sibling branch's specs against this tree's source (see run_tests.sh's own
 // comment on this, which this command's discovery matches on purpose).
 //
+// # One run per working tree
+//
+// A spec run (including -chunk) rewrites source files in place, so a second
+// run in the same tree would build the first run's mutation or restore its
+// bytes as if they were an edit. runSpec therefore takes an exclusive,
+// non-blocking flock (runlock.go) on `git rev-parse --git-path
+// gonzbd-mutate.lock` (inside the tree's own git dir, so it does not depend
+// on TMPDIR; a root that is not a git checkout uses a file inside root), and
+// a refused run exits 2 with a message naming the lock file. -check,
+// -check-all and -affected only read, so they never take it. The key is the
+// tree, not the repository: sibling worktrees do not block each other, which
+// is what lets scripts/run_tests.sh run one worker per worktree in parallel.
+// The kernel releases an flock when the process dies, so a killed run leaves
+// no stale lock.
+//
 // # Restoring
 //
 // The source file is restored from a copy this command wrote, on every exit
@@ -317,6 +332,11 @@ func main() {
 // commit body records, so quiet is opt-in rather than the default.
 func runSpec(root, path string, opts runOpts) int {
 	start := time.Now()
+	release, err := acquireRunLock(root)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer release()
 	sp, err := parseSpec(path)
 	if err != nil {
 		return fail("%s: %v", path, err)

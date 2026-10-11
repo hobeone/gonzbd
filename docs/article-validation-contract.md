@@ -2,7 +2,7 @@
 
 > **Status: in progress; dispositions settled.** F1, F3, A7, F6, F2, F5/B1, E5 and the
 > whole A-block have landed, and so has E3: `acceptArticle` refuses an arrival
-> whose byte range intersects one `FileWriter.owned` records as already written
+> whose byte range intersects one `fileWriter.owned` records as already written
 > (#759), within one open-file episode
 > and, through ranges seeded from a restart's verified rows, across one; C5, E4
 > and F4 remain proposed. §8 is no longer open — what each class of violation
@@ -129,7 +129,7 @@ holds for restored jobs as well as newly-parsed ones, which unblocked F2 (§5.A,
 ### State has one owner
 
 The second rule is the one that has retired the most defects in this codebase —
-#372 gave every `FileWriter` product a consumer, #378 gave the article
+#372 gave every `fileWriter` product a consumer, #378 gave the article
 accounting an owner, #385 made offset collisions exact.
 
 > **Every piece of derived state has exactly one function that computes it and
@@ -531,7 +531,7 @@ the rows.
 | E2–E3 | byte-range collision and overlap | L4 | ✅ **implemented** (#759) — the first writer of a range wins and the arrival is refused; across a restart the writer is seeded with the ranges of the job's verified rows (`FileInfo.Owned`) | — |
 | E4 | part tiling / gaps | L0 + L4 | warn at ingestion | — |
 | E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | L3 | ✅ **implemented** — reject (#346) | — |
-| F1 | key `FileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
+| F1 | key `fileWriter` dedup on `ArtIdx`, not `msgID` (§5.F) | — | ✅ **implemented** — the empty-key state stops existing | — |
 | F2, F5 | structural (§5.F) | — | ✅ **implemented** — the state stops existing | — |
 | F3 | structural (§5.F) | — | ✅ **done** (`d4f92cee`) — the state stops existing | — |
 | F4 | structural (§5.F) | — | proposed — the state stops existing | — |
@@ -642,7 +642,7 @@ which is a different and worse failure — that half rejects.
 **A7 is enforced.** `partitionSegments` carries a document-wide seen-set and
 drops any segment whose Message-ID an accepted segment already claimed. F2
 removed the last by-ID lookup **in `internal/queue`**, and F1 removed the last
-one **in `internal/assembler`**: `FileWriter.seenDone` and `.seenFailed` now
+one **in `internal/assembler`**: `fileWriter.seenDone` and `.seenFailed` now
 key on `ArtIdx`, so two articles sharing a Message-ID no longer risk the second
 being taken for a duplicate of the first. **A7 is no longer load-bearing for
 correctness anywhere downstream** — nothing left keys on Message-ID uniqueness
@@ -712,6 +712,10 @@ does not.)
 That said, the *reason* the invariant survives a round-trip is worth stating,
 because it is tier 2 and not luck: the manifest's articles are written by the
 same parser that enforces A7, and nothing between there and disk may add one.
+`TestNoArticleProducedOutsideNZBPackage` (`internal/nzb/producer_gate_test.go`)
+enforces the second half: it fails if non-test code outside `internal/nzb`
+names `nzb.Article` at all. It does not catch a write to an article already
+in a `File.Articles` slice, since the fields are exported (#404).
 Preserving that is what makes `newManifest` the right sole owner (Ground rules)
 — an `UnmarshalJSON` that builds the manifest by its own separate path is one
 edit away from being able to violate an invariant its sibling constructor
@@ -927,13 +931,13 @@ checked, and a warning or unacted-on counter is not a consumer.
 |---|---|---|
 | E1 | offset ≥ 0, no overflow, within `ExpectedSize` + 12.5% | ✅ enforced |
 | E2 | no two articles write intersecting byte ranges | ✅ enforced within one open-file episode (#385, #759) |
-| E3 | no two articles' ranges **overlap** | ✅ the same check as E2 (`FileWriter.owned`); across a restart `owned` starts with the ranges the resolver supplies in `FileInfo.Owned`: those of the job's resident written rows, which a restart installs for an incomplete file only after reading them back and resolving any two that intersect (`pipeline.registerFile`; `git grep -n 'Owned:' -- '*.go' ':!*_test.go'` finds 1 line) |
+| E3 | no two articles' ranges **overlap** | ✅ the same check as E2 (`fileWriter.owned`); across a restart `owned` starts with the ranges the resolver supplies in `FileInfo.Owned`: those of the job's resident written rows, which a restart installs for an incomplete file only after reading them back and resolving any two that intersect (`pipeline.registerFile`; `git grep -n 'Owned:' -- '*.go' ':!*_test.go'` finds 1 line) |
 | E4 | the parts tile `[0, size)` with no gap | ⚠ **absent** at L4; also undetected at L0 |
 
 | E5 | a decode with no genuine offset (UU, or yEnc with no `=ypart`) only satisfies segment 1 | ✅ **implemented** (#346) — `decodePayload` rejects `ErrOffsetUnknownForPart` |
 
 **E2 and E3 are one check: first-writer-wins over byte ranges** (§8, decision 3;
-#759). `FileWriter.owned` records each range once its write returned nil, and
+#759). `fileWriter.owned` records each range once its write returned nil, and
 `acceptArticle` refuses an arrival whose `[off, off+len)` intersects another
 article's range. The refused article is resolved permanently failed and its
 bytes are charged to par2. Within one open-file episode the writer enforces it;
@@ -1007,7 +1011,7 @@ already thrown away.
 
 | # | Change | Deletes |
 |---|---|---|
-| F1 | ✅ **done** — key `FileWriter.seenDone`/`seenFailed` on `ArtIdx int32`, not `msgID string` | `resolvedUntracked`, `giveBackUntrackedPart`, the `resolvedUntracked` consult in `handleSuccessArticle`, and every `msgID == ""` early return in `fail` / `failPermanent` / `failDisplaced` — i.e. #392 |
+| F1 | ✅ **done** — key `fileWriter.seenDone`/`seenFailed` on `ArtIdx int32`, not `msgID string` | `resolvedUntracked`, `giveBackUntrackedPart`, the `resolvedUntracked` consult in `handleSuccessArticle`, and every `msgID == ""` early return in `fail` / `failPermanent` / `failDisplaced` — i.e. #392 |
 | F2 | ✅ **done** — call the by-index `MarkArticleEmittedByIdx` / `ClearArticleEmittedByIdx` everywhere | `Queue.MarkArticleEmitted`, `Queue.ClearArticleEmitted`, `Manifest.articleIndexByID`, `buildMessageIDIndex`, `dropMessageIDIndex`, the `messageIDIndex` field, three eager build sites |
 | F3 | ✅ **done** (`d4f92cee`) — key `dispatchTracker.tryList`/`.inFlight` on `(jobID, artIdx)`, not bare `messageID` | three `//nolint:unparam` directives, and the cross-job try-list aliasing bug |
 | F4 | split control messages out of `WriteRequest` | the `FileIdx` sentinels, the `JobID == ""` discrimination, the "control message convention" comment class |
@@ -1122,7 +1126,7 @@ has two levels, not four**:
 
 > **written-or-reported beats accepted.**
 
-That is exactly what `FileWriter.owned` records (a range is claimed only after
+That is exactly what `fileWriter.owned` records (a range is claimed only after
 its write returned nil, or seeded at open from rows a restart verified) and what `acceptArticle` consults via `ownedRanges.ownerOf`. A collision with a
 written range must be refused.
 
@@ -1132,9 +1136,9 @@ proves a row by reading its bytes back rather than by trusting an fsync. So
 the four-level ordering that reads naturally here — durable beats written
 beats accepted beats claimed — **does not exist and must not be cited as
 though it does.** Within an open-file episode `acceptArticle` refuses any
-arrival intersecting another article's written range in `FileWriter.owned`
+arrival intersecting another article's written range in `fileWriter.owned`
 (#759); across a restart the verified rows' ranges are seeded into
-`FileWriter.owned` before any write, and they are "written" in the same sense.
+`fileWriter.owned` before any write, and they are "written" in the same sense.
 
 Refusal is never silent. Every refusal produces a recorded, user-visible
 disposition — which is exactly what #382's `resolve(article, disposition)`
@@ -1205,7 +1209,7 @@ later reader can tell a decision from an oversight.
 
 3. **Overlaps are refused at the accept path, first writer wins (#759).**
    This reverses the earlier decision to withhold the whole-file CRC instead of
-   guarding the accept path. `FileWriter.owned` is a sorted per-file range set
+   guarding the accept path. `fileWriter.owned` is a sorted per-file range set
    claimed after each successful write, and `acceptArticle` refuses an arrival
    whose range intersects one — see §5.E. E5 (#346) still rejects a decode (UU,
    or yEnc with no `=ypart`) that would default to claiming offset 0 for a

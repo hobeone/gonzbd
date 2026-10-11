@@ -548,3 +548,35 @@ func fail(format string, args ...any) int {
 --- end
 
 
+
+[the run lock admits a second holder]
+file scripts/mutate/runlock.go
+--- anchor
+syscall.LOCK_EX|syscall.LOCK_NB
+--- replace
+syscall.LOCK_SH|syscall.LOCK_NB
+--- end
+
+[a non-git tree shares one lock with every other]
+file scripts/mutate/runlock.go
+--- anchor
+	fallback := filepath.Join(root, runLockName)
+--- replace
+	fallback := filepath.Join(os.TempDir(), runLockName)
+--- end
+
+[the lock moves back under TMPDIR]
+file scripts/mutate/runlock.go
+--- anchor
+	p := strings.TrimSpace(string(out))
+--- replace
+	p := filepath.Join(os.TempDir(), runLockName) + string(out)[:0]
+--- end
+
+[runSpec stops taking the lock]
+file scripts/mutate/main.go
+--- anchor
+release, err := acquireRunLock(root)
+--- replace
+release, err := func() (func(), error) { return func() {}, nil }()
+--- end

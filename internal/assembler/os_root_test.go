@@ -100,7 +100,7 @@ func TestOpenTargetFile_RefusesToWriteOutOfTheJobDirectory(t *testing.T) {
 				Offset: 0, Data: []byte("PAYLOAD!"),
 			}, open, map[fileKey]struct{}{})
 			for _, f := range open {
-				_ = f.w.Close()
+				_ = f.w.close()
 			}
 
 			got, err := os.ReadFile(target)

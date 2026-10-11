@@ -9,9 +9,9 @@ import (
 	"testing"
 )
 
-// newWrittenFileWriter returns a FileWriter holding one successfully written
-// article (index 0), not yet covered by any Sync.
-func newWrittenFileWriter(t *testing.T) *FileWriter {
+// newWrittenFileWriter returns a fileWriter holding one successfully written
+// article (index 0), not yet covered by any sync.
+func newWrittenFileWriter(t *testing.T) *fileWriter {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "movie.bin")
 	fh, err := os.Create(path)
@@ -23,27 +23,27 @@ func newWrittenFileWriter(t *testing.T) *FileWriter {
 	key := fileKey{jobID: "job1", fileIdx: 0}
 	w := newFileWriter(fh, path, key)
 	w.admitAccepted(0)
-	if err := w.Accept(articleID{msgID: "m1", artIdx: 0}, 0, []byte("AAAA")); err != nil {
+	if err := w.accept(articleID{msgID: "m1", artIdx: 0}, 0, []byte("AAAA")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
 	return w
 }
 
-// TestSync_FailedSyncRollsBackEveryUnsyncedArticle pins #760 on FileWriter:
-// once Sync fails (e.g. EIO), every article written since the last successful
-// Sync is rolled back into poisoned with its part and seenDone entry cleared,
+// TestSync_FailedSyncRollsBackEveryUnsyncedArticle pins #760 on fileWriter:
+// once sync fails (e.g. EIO), every article written since the last successful
+// sync is rolled back into poisoned with its part and seenDone entry cleared,
 // while keeping the range it wrote.
 func TestSync_FailedSyncRollsBackEveryUnsyncedArticle(t *testing.T) {
 	w := newWrittenFileWriter(t)
 	w.admitAccepted(1)
-	if err := w.Accept(articleID{msgID: "m2", artIdx: 1}, 4, []byte("BBBB")); err != nil {
+	if err := w.accept(articleID{msgID: "m2", artIdx: 1}, 4, []byte("BBBB")); err != nil {
 		t.Fatalf("Accept m2: %v", err)
 	}
 	if w.parts() != 2 {
 		t.Fatalf("precondition: parts = %d, want 2", w.parts())
 	}
 
-	// First Sync fails with EIO; a retry Sync returns nil (Linux errseq
+	// First sync fails with EIO; a retry sync returns nil (Linux errseq
 	// behaviour), which is why the failure has to be acted on at once.
 	syncCalls := 0
 	w.syncFile = func() error {
@@ -53,7 +53,7 @@ func TestSync_FailedSyncRollsBackEveryUnsyncedArticle(t *testing.T) {
 		}
 		return nil
 	}
-	if err := w.Sync(); err == nil {
+	if err := w.sync(); err == nil {
 		t.Fatal("first Sync returned nil, want error")
 	}
 
@@ -75,8 +75,8 @@ func TestSync_FailedSyncRollsBackEveryUnsyncedArticle(t *testing.T) {
 		t.Error("the rolled-back article's own redelivery was refused after a failed Sync")
 	}
 
-	// The retry Sync returns nil and has nothing left to roll back.
-	if err := w.Sync(); err != nil {
+	// The retry sync returns nil and has nothing left to roll back.
+	if err := w.sync(); err != nil {
 		t.Fatalf("retry Sync: %v", err)
 	}
 	if rolled := w.takePoisoned(); len(rolled) != 0 {
@@ -85,22 +85,22 @@ func TestSync_FailedSyncRollsBackEveryUnsyncedArticle(t *testing.T) {
 }
 
 // TestSync_SuccessCoversTheArticlesWrittenBeforeIt pins that a later failed
-// Sync rolls back only what it had not been covered by an earlier successful
+// sync rolls back only what it had not been covered by an earlier successful
 // one: a successful fsync made those bytes durable, so a later failure says
 // nothing about them.
 func TestSync_SuccessCoversTheArticlesWrittenBeforeIt(t *testing.T) {
 	w := newWrittenFileWriter(t)
 	w.syncFile = func() error { return nil }
-	if err := w.Sync(); err != nil {
+	if err := w.sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 
 	w.admitAccepted(1)
-	if err := w.Accept(articleID{msgID: "m2", artIdx: 1}, 4, []byte("BBBB")); err != nil {
+	if err := w.accept(articleID{msgID: "m2", artIdx: 1}, 4, []byte("BBBB")); err != nil {
 		t.Fatalf("Accept m2: %v", err)
 	}
 	w.syncFile = func() error { return syscall.EIO }
-	if err := w.Sync(); err == nil {
+	if err := w.sync(); err == nil {
 		t.Fatal("second Sync returned nil, want error")
 	}
 
@@ -155,12 +155,12 @@ func TestSyncAndClose_FailedSyncRoutesRolledBackArticles(t *testing.T) {
 
 	// CloseJobHandles and syncAndCloseAll at worker exit call syncAndClose with
 	// nothing after it, so syncAndClose must route the poisoned set itself
-	// before Close throws the writer away.
+	// before close throws the writer away.
 	key := fileKey{jobID: "job1", fileIdx: 0}
 	g := newHelperFile(t, t.TempDir(), "close-handles-sync-fail.dat", 0)
 	g.w.key = key
 	g.w.admitAccepted(8)
-	if err := g.w.Accept(articleID{msgID: "m8", artIdx: 8}, 0, []byte("abcd")); err != nil {
+	if err := g.w.accept(articleID{msgID: "m8", artIdx: 8}, 0, []byte("abcd")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
 	g.w.syncFile = func() error { return syscall.EIO }

@@ -1,6 +1,7 @@
 package job
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 	"time"
@@ -66,23 +67,29 @@ func TestManifestRoundTripMatchesDirectConstruction(t *testing.T) {
 	}
 }
 
-// total_bytes is written but not read. A blob whose stored total disagrees
-// with its own file list must load with the DERIVED figure, not the stored
-// one — otherwise the persisted copy is a second source of truth and the one
-// that can drift.
-func TestManifestDerivesTotalBytesRatherThanTrustingTheBlob(t *testing.T) {
+// No total is persisted. A stored copy of a value recomputable from the file
+// list is a second source of truth, and the one that can drift; the blob
+// carries only the files, and a stray total_bytes key in one is read by no one.
+func TestManifestDoesNotPersistTotalBytes(t *testing.T) {
 	t.Parallel()
-	blob := []byte(`{"files":[{"subject":"a.bin","bytes":300,"articles":[` +
-		`{"id":"a1@h","bytes":100,"number":1},{"id":"a2@h","bytes":200,"number":2}]}],` +
-		`"total_bytes":999999}`)
+	m := newManifest([]JobFile{{Subject: "a.bin", Bytes: 300, Articles: []JobArticle{
+		{ID: "a1@h", Bytes: 100, Number: 1}, {ID: "a2@h", Bytes: 200, Number: 2},
+	}}})
 
-	var m Manifest
-	if err := json.Unmarshal(blob, &m); err != nil {
+	blob, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if bytes.Contains(blob, []byte("total_bytes")) {
+		t.Errorf("marshalled manifest carries a total_bytes key: %s", blob)
+	}
+
+	var loaded Manifest
+	if err := json.Unmarshal(blob, &loaded); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if got := m.TotalBytes(); got != 300 {
-		t.Errorf("TotalBytes = %d, want 300 derived from the file list, not the "+
-			"stored 999999", got)
+	if got := loaded.TotalBytes(); got != 300 {
+		t.Errorf("TotalBytes after round trip = %d, want 300 derived from the file list", got)
 	}
 }
 

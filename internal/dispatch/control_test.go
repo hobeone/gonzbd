@@ -199,6 +199,50 @@ func TestSetName_RefusesARetriedJobRestoredBeforeHydration(t *testing.T) {
 	}
 }
 
+// deadlineResidency is a fakeResidency that records the deadline of each
+// Hydrate's context.
+type deadlineResidency struct {
+	fakeResidency
+	deadlines []time.Time
+}
+
+func (r *deadlineResidency) Hydrate(ctx context.Context, id string) error {
+	dl, _ := ctx.Deadline() // zero when there is none
+	r.mu.Lock()
+	r.deadlines = append(r.deadlines, dl)
+	r.mu.Unlock()
+	return r.fakeResidency.Hydrate(ctx, id)
+}
+
+// TestSetName_LoadsUnderADeadline pins that a rename's hydration runs under a
+// deadline (#811): under context.Background() a read that never returns held
+// the rename, and the removal waiting on that hydration, forever.
+func TestSetName_LoadsUnderADeadline(t *testing.T) {
+	st := &fakeStore{}
+	st.seed([]Persisted{{ID: "a", SortKey: 1, Header: Header{Name: "a"}, Intent: job.IntentPause}})
+	res := &deadlineResidency{}
+	d := newTestDispatcher(t, withStore(st), withResidency(res))
+	if err := d.restore(context.Background()); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	before := time.Now()
+	if err := d.SetName("a", "Renamed"); err != nil {
+		t.Fatalf("SetName: %v", err)
+	}
+	res.mu.Lock()
+	defer res.mu.Unlock()
+	if len(res.deadlines) != 1 {
+		t.Fatalf("SetName hydrated %d times, want 1", len(res.deadlines))
+	}
+	dl := res.deadlines[0]
+	if dl.IsZero() {
+		t.Fatal("SetName hydrated under a context with no deadline")
+	}
+	if dl.After(time.Now().Add(setNameLoadTimeout)) || dl.Before(before.Add(setNameLoadTimeout)) {
+		t.Errorf("SetName's hydration deadline is %v from the call, want setNameLoadTimeout (%v)", dl.Sub(before), setNameLoadTimeout)
+	}
+}
+
 // TestAdd_RefusesANameAnotherJobHas pins the registration half of the name
 // invariant: two callers that each chose a name the queue did not yet hold
 // cannot both register under it, because Add checks under the same d.mu span

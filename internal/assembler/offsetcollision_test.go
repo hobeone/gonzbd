@@ -88,9 +88,9 @@ func TestCollision_ArrivalRejectedOnceIncumbentIsWritten(t *testing.T) {
 }
 
 // TestCollision_RangeStaysOwnedAfterSync is the reason ownership is the owned
-// range set (FileWriter.owned) rather than derived from w.unsynced.
+// range set (fileWriter.owned) rather than derived from w.unsynced.
 //
-// w.unsynced is what no successful Sync has covered yet; a successful Sync
+// w.unsynced is what no successful sync has covered yet; a successful sync
 // empties it. An article whose bytes an fsync has covered holds the strongest
 // possible claim on its offset, but a check that scanned that slice would see
 // an empty set and read it as no claim — so a collision arriving after the
@@ -101,8 +101,8 @@ func TestCollision_RangeStaysOwnedAfterSync(t *testing.T) {
 	if !c.accept(1, "<first@x>", 0, []byte("AAAA")) {
 		t.Fatal("precondition: the incumbent was not counted")
 	}
-	// A successful Sync is what empties the evidence.
-	if err := c.f.w.Sync(); err != nil {
+	// A successful sync is what empties the evidence.
+	if err := c.f.w.sync(); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 	if len(c.f.w.unsynced) != 0 {
@@ -130,18 +130,18 @@ func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		seed      func(w *FileWriter)
+		seed      func(w *fileWriter)
 		arriving  articleID
 		r         Range
 		wantOwned bool
 	}{
-		{"an unclaimed range is not owned", func(*FileWriter) {}, arriving, Range{0, 4}, false},
-		{"the same range is owned", func(w *FileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{0, 4}, true},
-		{"a partial overlap is owned", func(w *FileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{2, 4}, true},
-		{"a partial overlap into a range's head is owned", func(w *FileWriter) { w.owned.claim(Range{1000, 1000}, owner) }, arriving, Range{900, 1000}, true},
-		{"an abutting range is not owned", func(w *FileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{4, 4}, false},
-		{"a range abutting from below is not owned", func(w *FileWriter) { w.owned.claim(Range{1000, 1000}, owner) }, arriving, Range{0, 1000}, false},
-		{"the owner does not collide with ITSELF", func(w *FileWriter) { w.owned.claim(Range{0, 4}, owner) }, owner, Range{0, 4}, false},
+		{"an unclaimed range is not owned", func(*fileWriter) {}, arriving, Range{0, 4}, false},
+		{"the same range is owned", func(w *fileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{0, 4}, true},
+		{"a partial overlap is owned", func(w *fileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{2, 4}, true},
+		{"a partial overlap into a range's head is owned", func(w *fileWriter) { w.owned.claim(Range{1000, 1000}, owner) }, arriving, Range{900, 1000}, true},
+		{"an abutting range is not owned", func(w *fileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{4, 4}, false},
+		{"a range abutting from below is not owned", func(w *fileWriter) { w.owned.claim(Range{1000, 1000}, owner) }, arriving, Range{0, 1000}, false},
+		{"the owner does not collide with ITSELF", func(w *fileWriter) { w.owned.claim(Range{0, 4}, owner) }, owner, Range{0, 4}, false},
 	}
 
 	for _, tc := range tests {
@@ -168,9 +168,9 @@ func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
 // seenDone is keyed on ArtIdx, so handleSuccessArticle's dedup arm recognises a
 // PLAIN redelivery and returns before acceptArticle is called, which is why this
 // calls acceptArticle directly. The first rollback, a direct call to fail,
-// models a failed Sync rolling the article back (rollbackSyncedArticle calls
+// models a failed sync rolling the article back (rollbackSyncedArticle calls
 // fail): fail deletes the seenDone entry and never sets seenFailed, so the
-// redelivery reaches a second Accept. That second Accept's write is the one
+// redelivery reaches a second accept. That second accept's write is the one
 // that faults.
 func TestCollision_FailedReacceptKeepsTheWrittenRange(t *testing.T) {
 	c := newCollisionFixture(t)
@@ -225,7 +225,7 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 
 	w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
 	w.admitAccepted(id.artIdx)
-	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err == nil {
+	if err := w.accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err == nil {
 		t.Fatal("precondition: the injected write fault did not surface")
 	}
 	if w.parts() != 0 {
@@ -235,7 +235,7 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 	// The re-dispatched copy, at the same offset.
 	w.writeAt = func(p []byte, _ int64) (int, error) { return len(p), nil }
 	w.admitAccepted(id.artIdx)
-	if err := w.Accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
+	if err := w.accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
 		t.Fatalf("re-accept: %v", err)
 	}
 
@@ -259,7 +259,7 @@ func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 	realWrite := w.writeAt
 	w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
 	w.admitAccepted(first.artIdx)
-	if err := w.Accept(first, 0, []byte("AAAA")); err == nil {
+	if err := w.accept(first, 0, []byte("AAAA")); err == nil {
 		t.Fatal("precondition: the injected write fault did not surface")
 	}
 	if w.parts() != 0 {
@@ -274,7 +274,7 @@ func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 
 	w.writeAt = realWrite
 	w.admitAccepted(second.artIdx)
-	if err := w.Accept(second, 0, []byte("BBBB")); err != nil {
+	if err := w.accept(second, 0, []byte("BBBB")); err != nil {
 		t.Fatalf("accept second: %v", err)
 	}
 	if got, owned := w.owned.ownerOf(r, third); !owned || got != second {

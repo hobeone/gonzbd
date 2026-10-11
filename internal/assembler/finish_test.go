@@ -11,7 +11,7 @@ const finishPrealloc = 1000
 
 // newPreallocatedWriter returns a writer over a file preallocated to
 // finishPrealloc bytes, as the assembler leaves one before its articles land.
-func newPreallocatedWriter(t *testing.T) *FileWriter {
+func newPreallocatedWriter(t *testing.T) *fileWriter {
 	t.Helper()
 	w := newTestFileWriter(t)
 	if err := w.handle.Truncate(finishPrealloc); err != nil {
@@ -20,7 +20,7 @@ func newPreallocatedWriter(t *testing.T) *FileWriter {
 	return w
 }
 
-func fileSize(t *testing.T, w *FileWriter) int64 {
+func fileSize(t *testing.T, w *fileWriter) int64 {
 	t.Helper()
 	st, err := os.Stat(w.path)
 	if err != nil {
@@ -31,10 +31,10 @@ func fileSize(t *testing.T, w *FileWriter) int64 {
 
 func TestFileWriter_FinishTruncatesToTheLastOwnedEnd(t *testing.T) {
 	w := newPreallocatedWriter(t)
-	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{1}, 100)); err != nil {
+	if err := w.accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{1}, 100)); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Accept(articleID{msgID: "a1", artIdx: 1}, 100, bytes.Repeat([]byte{2}, 150)); err != nil {
+	if err := w.accept(articleID{msgID: "a1", artIdx: 1}, 100, bytes.Repeat([]byte{2}, 150)); err != nil {
 		t.Fatal(err)
 	}
 	syncs := 0
@@ -96,7 +96,7 @@ func TestFileWriter_FinishNeverGrowsAFileShorterThanItsOwnedEnd(t *testing.T) {
 
 func TestFileWriter_FinishReturnsAnFsyncErrorAndDoesNotTruncate(t *testing.T) {
 	w := newPreallocatedWriter(t)
-	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{1}, 100)); err != nil {
+	if err := w.accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{1}, 100)); err != nil {
 		t.Fatal(err)
 	}
 	boom := errors.New("injected fsync failure")
@@ -114,7 +114,7 @@ func TestFileWriter_FinishReturnsAnFsyncErrorAndDoesNotTruncate(t *testing.T) {
 
 func TestFileWriter_FinishReturnsASecondFsyncError(t *testing.T) {
 	w := newPreallocatedWriter(t)
-	if err := w.Accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{1}, 100)); err != nil {
+	if err := w.accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{1}, 100)); err != nil {
 		t.Fatal(err)
 	}
 	boom := errors.New("injected second fsync failure")
