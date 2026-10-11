@@ -82,6 +82,7 @@ func TestArticleNamingDetector(t *testing.T) {
 		{"type alias", head + "type A = nzb.Article", 1},
 		{"new", head + "var _ = new(nzb.Article)", 1},
 		{"renamed import", "package p\nimport n \"" + nzbImportPath + "\"\nvar _ = n.Article{}", 1},
+		{"second import name", head + "import zz \"" + nzbImportPath + "\"\nvar _ = nzb.Article{}", 1},
 		{"dot import", "package p\nimport . \"" + nzbImportPath + "\"\nvar _ = Article{}", 1},
 		{"other nzb member", head + "var _ nzb.File", 0},
 		{"reading File.Articles", head + "func f(x nzb.File) int { return len(x.Articles) }", 0},
@@ -108,7 +109,7 @@ func TestArticleNamingDetector(t *testing.T) {
 // walk keys on.
 func articleNamings(f *ast.File) []token.Pos {
 	var out []token.Pos
-	local := ""
+	local := map[string]bool{}
 	for _, imp := range f.Imports {
 		p, err := strconv.Unquote(imp.Path.Value)
 		if err != nil || p != nzbImportPath {
@@ -116,14 +117,14 @@ func articleNamings(f *ast.File) []token.Pos {
 		}
 		switch {
 		case imp.Name == nil:
-			local = "nzb"
+			local["nzb"] = true
 		case imp.Name.Name == ".":
 			out = append(out, imp.Pos())
 		case imp.Name.Name != "_":
-			local = imp.Name.Name
+			local[imp.Name.Name] = true
 		}
 	}
-	if local == "" {
+	if len(local) == 0 {
 		return out
 	}
 	ast.Inspect(f, func(n ast.Node) bool {
@@ -131,7 +132,7 @@ func articleNamings(f *ast.File) []token.Pos {
 		if !ok || sel.Sel.Name != "Article" {
 			return true
 		}
-		if id, ok := sel.X.(*ast.Ident); ok && id.Name == local {
+		if id, ok := sel.X.(*ast.Ident); ok && local[id.Name] {
 			out = append(out, sel.Pos())
 		}
 		return true
