@@ -712,6 +712,10 @@ does not.)
 That said, the *reason* the invariant survives a round-trip is worth stating,
 because it is tier 2 and not luck: the manifest's articles are written by the
 same parser that enforces A7, and nothing between there and disk may add one.
+`TestNoArticleProducedOutsideNZBPackage` (`internal/nzb/producer_gate_test.go`)
+enforces the second half: it fails if non-test code outside `internal/nzb`
+names `nzb.Article` at all. It does not catch a write to an article already
+in a `File.Articles` slice, since the fields are exported (#404).
 Preserving that is what makes `newManifest` the right sole owner (Ground rules)
 — an `UnmarshalJSON` that builds the manifest by its own separate path is one
 edit away from being able to violate an invariant its sibling constructor
