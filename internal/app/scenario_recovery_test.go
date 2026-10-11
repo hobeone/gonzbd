@@ -35,7 +35,7 @@ func seedCompletedJob(t *testing.T, repo *history.Repository, adminDir, id, name
 	}}
 	cfg := &config.Config{}
 	j, hdr := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: name, JobID: id})
-	_ = j.SetFileFilename(0, "recovery.bin")
+	_ = j.RecordFileFilename(0, j.Name(), "recovery.bin")
 	_ = j.BeginAttempt(time.Now())
 	jobtest.MarkArticleWritten(t, j, 0)
 	_ = j.MarkFileComplete(0)

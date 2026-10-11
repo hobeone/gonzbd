@@ -792,7 +792,9 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	}
 	if _, err := app.claimJobName(snap, baseName, func(name string) error {
 		hdr.Name = name
-		j.SetName(name)
+		if err := j.SetName(name); err != nil {
+			return err
+		}
 		if app.dispatcher == nil {
 			return nil
 		}

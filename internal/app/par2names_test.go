@@ -26,8 +26,8 @@ func TestResolvedName(t *testing.T) {
 		t.Errorf("with nothing recorded, resolvedName = %q, want the subject", got)
 	}
 
-	if err := j.SetFileFilename(0, "actual-on-disk.bin"); err != nil {
-		t.Fatalf("SetFileFilename: %v", err)
+	if err := j.RecordFileFilename(0, j.Name(), "actual-on-disk.bin"); err != nil {
+		t.Fatalf("RecordFileFilename: %v", err)
 	}
 	if got := resolvedName(m, j.Progress(), 0); got != "actual-on-disk.bin" {
 		t.Errorf("with a name recorded, resolvedName = %q, want the recorded name", got)
@@ -48,8 +48,8 @@ func TestAssembledFiles(t *testing.T) {
 		t.Fatalf("AttachContent: %v", err)
 	}
 
-	if err := j.SetFileFilename(0, "7xq6N6P340dCh9Lnih5hY3jsArfSN1"); err != nil {
-		t.Fatalf("SetFileFilename: %v", err)
+	if err := j.RecordFileFilename(0, j.Name(), "7xq6N6P340dCh9Lnih5hY3jsArfSN1"); err != nil {
+		t.Fatalf("RecordFileFilename: %v", err)
 	}
 	jobtest.SeedFileCRC(t, j, 0, 0x1068AFA6)
 

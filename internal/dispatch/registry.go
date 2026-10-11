@@ -1026,9 +1026,9 @@ const setNameLoadTimeout = 10 * time.Minute
 // (used for listings without job pointer dereference) and the Job instance (used for
 // downstream filesystem paths and finalization) atomically under d.mu.
 //
-// It refuses (ErrJobStarted) a job whose download has begun, and
-// (ErrInvalidJobName) a name that is not one safe path component or that
-// another registered job has or another job has reserved. It does not sanitise or check the disk;
+// It refuses (ErrInvalidJobName) a name that is not one safe path component or
+// that another registered job has or another job has reserved, and then
+// (ErrJobStarted) a job whose download has begun. It does not sanitise or check the disk;
 // Application.RenameJob does both before calling it — the production caller,
 // at internal/app/rename.go (`git grep -n '\.SetName(' -- '*.go' ':!*_test.go'`
 // also lists the apitest double and two Job.SetName calls).
@@ -1047,13 +1047,6 @@ func (d *Dispatcher) SetName(id, name string) error {
 	if !ok {
 		return fmt.Errorf("dispatch: set name %s: %w", id, ErrNotFound)
 	}
-	// A job with article bytes may have them under DownloadDir/<old name>,
-	// and a rename moves none. The test is Job.DownloadBegun, not HasRun:
-	// Queue.Advance opens an attempt for any ungated job on its first tick,
-	// so HasRun would refuse a job still waiting behind others.
-	if e.j.DownloadBegun() {
-		return fmt.Errorf("dispatch: set name %s to %q: %w", id, name, ErrJobStarted)
-	}
 	// The name becomes the job's download directory, DownloadDir/<name>, and
 	// post-processing deletes and moves what is under it. So it must be one
 	// path component, never "." or "..", and no other registered job's name.
@@ -1063,8 +1056,17 @@ func (d *Dispatcher) SetName(id, name string) error {
 	if otherID, taken := d.nameHolderLocked(id, name); taken {
 		return fmt.Errorf("dispatch: set name %s to %q: job %s has that name: %w", id, name, otherID, ErrJobNameTaken)
 	}
+	// A job with article bytes may have them under DownloadDir/<old name>,
+	// and a rename moves none. Job.SetName refuses it (Job.DownloadBegun, not
+	// HasRun: Queue.Advance opens an attempt for any ungated job on its first
+	// tick, so HasRun would refuse a job still waiting behind others), and
+	// makes the check and the write one step against the pipeline recording a
+	// file's filename (Job.RecordFileFilename). Its one refusal is
+	// job.ErrDownloadBegun, which reaches the caller as ErrJobStarted.
+	if err := e.j.SetName(name); err != nil {
+		return fmt.Errorf("dispatch: set name %s: %w: %w", id, ErrJobStarted, err)
+	}
 	e.h.Name = name
-	e.j.SetName(name)
 	return nil
 }
 

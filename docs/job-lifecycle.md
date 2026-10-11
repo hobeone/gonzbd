@@ -224,6 +224,12 @@ Three things follow:
   (`Dispatcher.LoadProgress`). `HasRun` is the wrong
   test for this: it is true for any job the tick has opened an attempt on,
   including one still waiting behind others.
+  The check and the name write are one step under `Job.mu`
+  (`Job.SetName`), and `registerFile` records a filename through
+  `Job.RecordFileFilename`, which under the same lock refuses with
+  `ErrNameChanged` if the job is no longer named what the file's directory
+  was resolved from. So exactly one wins: the rename is refused, or the file
+  is resolved again under the new name.
 - **`Outcome` stays genuinely write-once.** A verdict is never revised, only
   superseded by the next attempt's.
 - **"Never started" is exact.** `HasRun()` is `len(attempts) != 0`.

@@ -224,7 +224,7 @@ func (j *Job) DownloadStarted() time.Time {
 
 // DownloadBegun reports whether article bytes may exist under the job's name:
 // at least one file has a resolved on-disk filename. The pipeline's
-// registerFile sets it (SetFileFilename) before it hands the file's first
+// registerFile sets it (RecordFileFilename) before it hands the file's first
 // article to the assembler, which creates the file, on the success path and
 // the permanent-failure path alike. Verification restores it
 // (InstallFileVerification), and drops the rows of a complete=0 file recorded
@@ -234,7 +234,8 @@ func (j *Job) DownloadStarted() time.Time {
 // `git grep -n '\]\.Filename = ' -- 'internal/job/*.go' ':!*_test.go'` returns 2 lines.
 //
 // Before the job has a JobProgress it reads the restored start stamp, which a
-// job with a filename may lack; Dispatcher.SetName hydrates before asking.
+// job with a filename may lack; Dispatcher.SetName hydrates before Job.SetName
+// asks.
 //
 // A job that has begun an attempt but fetched nothing (HasRun, which
 // Queue.Advance sets for any ungated job on its first tick) does not report
@@ -637,8 +638,25 @@ func (j *Job) FileFetchPolicy(fi int) FetchPolicy {
 	return j.progress.FileFetchPolicy(fi)
 }
 
-// SetFileFilename stores the resolved final filename on a file.
-func (j *Job) SetFileFilename(fileIdx int, filename string) error {
+// ErrNameChanged is RecordFileFilename's refusal of a filename resolved under a
+// job name that SetName has since replaced.
+var ErrNameChanged = errors.New("job: name changed since it was read")
+
+// RecordFileFilename stores the resolved final filename on a file, provided
+// the job is still named name: the name the caller resolved the file's
+// directory from. Otherwise it records nothing and returns ErrNameChanged, and
+// the caller resolves the file again under the current name.
+//
+// It holds j.mu across the name check and the write, and SetName holds it
+// across its DownloadBegun check and its name write, so the two are ordered:
+// either the filename is recorded first and SetName refuses with
+// ErrDownloadBegun, or the rename lands first and this refuses.
+func (j *Job) RecordFileFilename(fileIdx int, name, filename string) error {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	if j.name != name {
+		return fmt.Errorf("job %s: file %d resolved under %q, now named %q: %w", j.id, fileIdx, name, j.name, ErrNameChanged)
+	}
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	if j.manifest == nil || j.progress == nil {

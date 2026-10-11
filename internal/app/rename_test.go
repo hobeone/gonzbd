@@ -127,8 +127,8 @@ func TestRenameJob_RefusesAJobWhoseDownloadHasStarted(t *testing.T) {
 	if !ok {
 		t.Fatalf("job %s is gone", id)
 	}
-	if err := j.SetFileFilename(0, "first.bin"); err != nil { // as the pipeline's registerFile does
-		t.Fatalf("SetFileFilename: %v", err)
+	if err := j.RecordFileFilename(0, j.Name(), "first.bin"); err != nil { // as the pipeline's registerFile does
+		t.Fatalf("RecordFileFilename: %v", err)
 	}
 	if _, err := a.RenameJob(id, "elsewhere"); !errors.Is(err, dispatch.ErrJobStarted) {
 		t.Errorf("RenameJob after a download began = %v, want ErrJobStarted", err)

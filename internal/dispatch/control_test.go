@@ -120,8 +120,8 @@ func TestSetName_RefusesAJobThatHasStarted(t *testing.T) {
 		return j
 	}
 	register := func(j *job.Job) {
-		if err := j.SetFileFilename(0, "f"); err != nil {
-			t.Fatalf("SetFileFilename: %v", err)
+		if err := j.RecordFileFilename(0, j.Name(), "f"); err != nil {
+			t.Fatalf("RecordFileFilename: %v", err)
 		}
 	}
 	registered := add("registered", func(j *job.Job) { // the permanent-failure path: a filename, nothing done

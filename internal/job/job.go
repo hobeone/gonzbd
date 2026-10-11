@@ -256,11 +256,25 @@ func (j *Job) Name() string {
 	return j.name
 }
 
-// SetName updates the job's display name.
-func (j *Job) SetName(name string) {
+// ErrDownloadBegun is SetName's refusal of a job whose download has begun
+// (DownloadBegun): its files may be under the old name, and a rename moves
+// none.
+var ErrDownloadBegun = errors.New("job: download has begun")
+
+// SetName updates the job's display name, which is also its download
+// directory's name, unless the job's download has begun.
+//
+// It holds j.mu across the DownloadBegun check and the write, as
+// RecordFileFilename holds it across its name check and its filename write,
+// so RecordFileFilename never records a filename under a name this replaces.
+func (j *Job) SetName(name string) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.DownloadBegun() { // takes contentMu, the inner lock
+		return fmt.Errorf("job %s: rename to %q: %w", j.id, name, ErrDownloadBegun)
+	}
 	j.name = name
+	return nil
 }
 
 // Policy returns the job's retry/repair policy.

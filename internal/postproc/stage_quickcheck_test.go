@@ -28,8 +28,8 @@ func buildQCJob(t *testing.T, id, filename string, bytes int64, crc uint32) *job
 	if err := j.AttachContent(m); err != nil {
 		t.Fatalf("AttachContent: %v", err)
 	}
-	if err := j.SetFileFilename(0, filename); err != nil {
-		t.Fatalf("SetFileFilename: %v", err)
+	if err := j.RecordFileFilename(0, j.Name(), filename); err != nil {
+		t.Fatalf("RecordFileFilename: %v", err)
 	}
 	if crc != 0 {
 		jobtest.SeedFileCRC(t, j, 0, crc)

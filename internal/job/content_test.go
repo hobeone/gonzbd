@@ -114,9 +114,9 @@ func TestJob_ContentMethods(t *testing.T) {
 		t.Fatalf("CountUnfinishedArticles = %d, err = %v, want 2, nil", count, err)
 	}
 
-	// SetFileFilename
-	if err := j.SetFileFilename(0, "renamed.rar"); err != nil {
-		t.Fatalf("SetFileFilename: %v", err)
+	// RecordFileFilename
+	if err := j.RecordFileFilename(0, j.Name(), "renamed.rar"); err != nil {
+		t.Fatalf("RecordFileFilename: %v", err)
 	}
 	if got := j.Progress().FileFilename(0); got != "renamed.rar" {
 		t.Fatalf("FileFilename = %q, want renamed.rar", got)
@@ -334,8 +334,8 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 		t.Error("UndeferRecoveryVolumes on unattached job should error")
 	}
 	j.SetPar2ReleaseReason("reason")
-	if err := j.SetFileFilename(0, "fn"); err == nil {
-		t.Error("SetFileFilename on unattached job should error")
+	if err := j.RecordFileFilename(0, j.Name(), "fn"); err == nil {
+		t.Error("RecordFileFilename on unattached job should error")
 	}
 	if cleared, retained := j.ClearEmittedForReload(false); cleared != nil || retained != nil {
 		t.Error("ClearEmittedForReload on unattached job should return nil, nil")

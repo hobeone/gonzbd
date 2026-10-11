@@ -134,7 +134,9 @@ func (n NopApp) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, raw
 				return err
 			}
 			hdr.Name = fmt.Sprintf("%s.%d", base, i)
-			j.SetName(hdr.Name)
+			if err := j.SetName(hdr.Name); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

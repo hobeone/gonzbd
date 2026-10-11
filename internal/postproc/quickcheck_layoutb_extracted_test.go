@@ -62,8 +62,8 @@ func deliveredJob(t *testing.T, layout string, fixtures []string, delivered []de
 		t.Fatalf("AttachContent: %v", err)
 	}
 	for i, d := range delivered {
-		if err := j.SetFileFilename(i, d.name); err != nil {
-			t.Fatalf("SetFileFilename: %v", err)
+		if err := j.RecordFileFilename(i, j.Name(), d.name); err != nil {
+			t.Fatalf("RecordFileFilename: %v", err)
 		}
 		jobtest.SeedFileCRC(t, j, i, crc32.ChecksumIEEE(d.data))
 	}
