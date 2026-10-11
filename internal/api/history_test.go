@@ -230,6 +230,61 @@ func TestHistoryDefault_SearchFilter(t *testing.T) {
 	}
 }
 
+// historyCategoryNames returns the names of the slots a history request
+// returns, in response order.
+func historyCategoryNames(t *testing.T, s *Server, query string) []string {
+	t.Helper()
+	rr := apiGet(t, s.Handler(), "/api?mode=history&"+query+"&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		History struct {
+			Slots []struct {
+				Name string `json:"name"`
+			} `json:"slots"`
+		} `json:"history"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	names := make([]string, 0, len(resp.History.Slots))
+	for _, sl := range resp.History.Slots {
+		names = append(names, sl.Name)
+	}
+	return names
+}
+
+// TestHistoryDefault_CategoryFilterNames pins that mode=history filters on
+// either parameter name (docs/sabnzbd_spec.md §10.4 documents "category"),
+// and that "cat" wins when both are present.
+func TestHistoryDefault_CategoryFilterNames(t *testing.T) {
+	t.Parallel()
+	s, repo := testHistoryServer(t)
+
+	now := time.Now()
+	seedEntry(t, repo, "ShowA", "Completed", "tv", now)
+	seedEntry(t, repo, "MovieA", "Completed", "movies", now.Add(-time.Hour))
+
+	tests := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{"cat", "cat=tv", []string{"ShowA"}},
+		{"category", "category=movies", []string{"MovieA"}},
+		{"cat wins over category", "cat=tv&category=movies", []string{"ShowA"}},
+		{"empty cat falls back to category", "cat=&category=movies", []string{"MovieA"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := historyCategoryNames(t, s, tt.query); !slices.Equal(got, tt.want) {
+				t.Errorf("names for %q = %v; want %v", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
 // --- Delete ---
 
 func TestHistoryDelete_Single(t *testing.T) {

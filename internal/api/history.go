@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -92,7 +93,8 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 	rawLimit := formValue(r, "limit")
 	limit := intParam(r, "limit")
 	search := formValue(r, "search")
-	catFilter := formValue(r, "cat")
+	// "cat" wins; "category" is the name docs/sabnzbd_spec.md §10.4 documents.
+	catFilter := cmp.Or(formValue(r, "cat"), formValue(r, "category"))
 	statusFilter := formValue(r, "status")
 	failedOnly := formValue(r, "failed_only") == "1"
 	nzoIDs := formValue(r, "nzo_ids") // comma-separated IDs to fetch
