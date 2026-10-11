@@ -13,15 +13,12 @@ run TestLooseRecord_RestoresTheStoredFetchPolicy|TestRetryHistoryJob_Configurati
 # Hydration is the one case where the persisted policy IS the current truth, so
 # residency must restore it. Dropping this call reverts every hydrated job to
 # the FetchAlways zero value, re-activating volumes the oracle had ruled out.
-#
-# Neutered rather than deleted so job.FetchPolicy keeps the "job" import used
-# and the tree still builds -- a COMPILE_ERROR says nothing about the test.
 [hydration does not restore the persisted policy]
 file internal/app/residency.go
 --- anchor
-			_ = j.RestoreFetchPolicy(fi, job.FetchPolicy(f.FetchPolicy))
+			RestorePolicy: restorePolicy,
 --- replace
-			_ = job.FetchPolicy(f.FetchPolicy)
+			RestorePolicy: false,
 --- end
 
 # The retry path must NOT apply the retained policy: it is the failed attempt's

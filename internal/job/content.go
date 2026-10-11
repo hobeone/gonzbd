@@ -274,8 +274,20 @@ func (j *Job) SetFileFetchPolicy(fi int, policy FetchPolicy) error {
 	if fi < 0 || fi >= len(j.progress.files) {
 		return fmt.Errorf("job %s: file index %d out of range", j.id, fi)
 	}
-	j.progress.files[fi].Fetch = policy
+	j.progress.setFileFetchPolicy(fi, policy)
 	return nil
+}
+
+// setFileFetchPolicy is the assignment SetFileFetchPolicy and
+// Job.InstallFileVerification share, so setting a policy and restoring one
+// cannot drift apart. The field has three assignment sites —
+// `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` finds 3 lines:
+// this one, undeferRecovery and DiscardDeferredPar2. A fresh progress starts
+// at the FetchAlways zero. The `job_files.fetch_policy` CHECK (0-2) is the
+// only range guard a restored value has. The caller holds contentMu and has
+// range-checked fi.
+func (p *JobProgress) setFileFetchPolicy(fi int, policy FetchPolicy) {
+	p.files[fi].Fetch = policy
 }
 
 // MarkArticleFailed records an article that will not be retried.
@@ -288,6 +300,12 @@ func (j *Job) SetFileFetchPolicy(fi int, policy FetchPolicy) error {
 func (j *Job) MarkArticleFailed(artIdx int) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
+	return j.markArticleFailed(artIdx)
+}
+
+// markArticleFailed is MarkArticleFailed's body, which
+// Job.InstallFileVerification also calls. The caller holds contentMu.
+func (j *Job) markArticleFailed(artIdx int) error {
 	if j.progress == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
@@ -618,52 +636,6 @@ func (j *Job) SetFileFilename(fileIdx int, filename string) error {
 	}
 	j.progress.files[fileIdx].Filename = filename
 	return nil
-}
-
-// RestoreFileMeta restores a file's persisted metadata from storage. It does
-// not touch the fetch policy — that is RestoreFetchPolicy's door, called
-// separately by whichever caller actually wants the persisted value applied.
-func (j *Job) RestoreFileMeta(fileIdx int, filename string, complete bool, crc uint32) error {
-	j.contentMu.Lock()
-	defer j.contentMu.Unlock()
-	if j.progress == nil {
-		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
-	}
-	if fileIdx < 0 || fileIdx >= len(j.progress.files) {
-		return fmt.Errorf("job %s: fileIdx %d out of range", j.id, fileIdx)
-	}
-	if filename != "" {
-		j.progress.files[fileIdx].Filename = filename
-	}
-	if complete {
-		j.progress.files[fileIdx].Complete = true
-	}
-	if crc != 0 {
-		j.progress.files[fileIdx].AssembledCRC32 = crc
-	}
-	return nil
-}
-
-// RestoreFetchPolicy restores a file's persisted fetch policy from storage.
-// It is a separate door from RestoreFileMeta so a caller must ask for the
-// persisted policy by name rather than inheriting it as a side effect of
-// restoring the rest of a file's metadata — residency hydration is the one
-// caller for which the persisted value is the current truth; a rebuilt job
-// (e.g. a retry) must not call this and instead keeps the value its own
-// construction derived.
-//
-// The door is a name, not a second writer: it delegates to
-// SetFileFetchPolicy rather than repeating the lock, the bounds check and the
-// assignment, so restoring a policy and setting one cannot drift apart.
-// SetFileFetchPolicy is the only entry point OUTSIDE this file that assigns
-// the field — `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' | grep -v _test.go`
-// finds three assignment sites, and the other two are package-internal:
-// undeferRecovery and DiscardDeferredPar2. A fresh progress starts at the
-// FetchAlways zero.
-// The `job_files.fetch_policy` CHECK (0-2) is the only range guard the value
-// has; neither door range-checks it.
-func (j *Job) RestoreFetchPolicy(fileIdx int, p FetchPolicy) error {
-	return j.SetFileFetchPolicy(fileIdx, p)
 }
 
 // ClearEmittedForReload resets Emitted and Failed flags for reload.

@@ -70,12 +70,14 @@ type FileWriter struct {
 	seenDone   map[int32]struct{}
 	seenFailed map[int32]struct{}
 
-	// owned records which article owns each byte range this writer has
-	// WRITTEN: first writer wins (#383, #759). A range is claimed only after
-	// its write returned nil, so an article whose write faulted owns nothing and
-	// its retry, or a rival at the same range, is accepted. acceptArticle
-	// refuses an arrival that intersects another article's range before Accept
-	// is called.
+	// owned records which article owns each byte range of the file: first
+	// writer wins (#383, #759). It is filled two ways. At open,
+	// Assembler.seedOwned seeds it with the ranges a restart verified
+	// (FileInfo.Owned), owned by seededOwner. After that, writeOne claims a
+	// range only once its write returned nil, so an article whose write
+	// faulted owns nothing and its retry, or a rival at the same range, is
+	// accepted. acceptArticle refuses an arrival that intersects another
+	// article's range before Accept is called.
 	//
 	// Entries are never removed, including by a failed Sync's rollback (see
 	// rollbackSyncedArticle). The question is "who wrote these bytes", not
@@ -122,7 +124,7 @@ type FileWriter struct {
 	// closeFile is handle.Close in production, on the same terms as writeAt
 	// and syncFile.
 	//
-	// It exists because the close arm of drainAndClose is documented as
+	// It exists because the close arm of syncAndClose is documented as
 	// load-bearing — on network-backed mounts the close is frequently where a
 	// deferred write error first surfaces — and had no coverage at all. The
 	// only way to fail a real Close is to close the handle first, which makes
@@ -154,14 +156,9 @@ func (w *FileWriter) noteWritten(id articleID) {
 // rollbackPart undoes the part and seen-set state an admitted article holds,
 // without deciding what becomes of the article. The caller owns that.
 //
-// fail is the only caller, and it is the whole give-back — routeAcceptFailure
-// no longer routes a decrement of its own around it. It used to reach a
-// giveBackUntrackedPart branch here for an article with no Message-ID, since
-// no Message-ID-keyed map could record one. Keying on ArtIdx instead means
-// every article has a key this function's maps can hold, and that branch is
-// gone rather than reachable only from a test. giveBackUntrackedPart itself is
-// gone too: with fail no longer returning early on any identity, it was the
-// only caller that decrement needed.
+// fail is its one caller —
+// `git grep -n 'w\.rollbackPart(' -- 'internal/assembler/*.go' ':!*_test.go'`
+// returns 1 line, in fail.
 func (w *FileWriter) rollbackPart(artIdx int32) {
 	_, wasDone := w.seenDone[artIdx]
 	_, wasFailed := w.seenFailed[artIdx]
@@ -349,7 +346,7 @@ func (w *FileWriter) rollbackSyncedArticle(artIdx int32) {
 // Close releases the handle.
 //
 // The error reports STORAGE: on network-backed mounts the close is where a
-// deferred write error first surfaces, and drainAndClose reports it.
+// deferred write error first surfaces, and syncAndClose reports it.
 func (w *FileWriter) Close() error {
 	if err := w.closeFile(); err != nil {
 		return storagefault.Classify("close", w.path, err)

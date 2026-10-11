@@ -18,10 +18,10 @@ func zeroLengthRows(data []byte) []durability.WrittenRow {
 	}
 }
 
-// TestInstallCompleteFile_KeepsAZeroLengthRow: the live door accepts a
+// TestInstallFileVerification_CompleteFileKeepsAZeroLengthRow: the live door accepts a
 // zero-length article's row, so the same persisted rows must install after a
 // restart with the same whole-file CRC, nothing dropped and no article failed.
-func TestInstallCompleteFile_KeepsAZeroLengthRow(t *testing.T) {
+func TestInstallFileVerification_CompleteFileKeepsAZeroLengthRow(t *testing.T) {
 	t.Parallel()
 	data := chainData()[:300]
 	rows := zeroLengthRows(data)
@@ -38,9 +38,9 @@ func TestInstallCompleteFile_KeepsAZeroLengthRow(t *testing.T) {
 	}
 
 	restarted := verifiedTestJob(t)
-	dropped, err := restarted.InstallCompleteFile(0, rows)
+	dropped, err := restarted.InstallFileVerification(FileVerification{FileIdx: 0, Complete: true, Rows: rows})
 	if err != nil || dropped != 0 {
-		t.Fatalf("InstallCompleteFile = %d, %v; want 0, nil", dropped, err)
+		t.Fatalf("InstallFileVerification = %d, %v; want 0, nil", dropped, err)
 	}
 	p := restarted.Progress()
 	if got := p.FileAssembledCRC32(0); got != liveCRC {

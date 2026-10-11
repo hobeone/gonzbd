@@ -261,18 +261,14 @@ func TestJob_AdditionalMethods(t *testing.T) {
 		t.Errorf("ForEachUnfinishedArticle visited %d articles, want 2", len(visited))
 	}
 
-	// RestoreFileMeta
-	if err := j.RestoreFileMeta(0, "f1.rar", true, 0x1234); err != nil {
-		t.Errorf("RestoreFileMeta: %v", err)
-	}
-	if err := j.RestoreFetchPolicy(0, FetchIfNeeded); err != nil {
-		t.Errorf("RestoreFetchPolicy: %v", err)
+	if err := j.SetFileFetchPolicy(0, FetchIfNeeded); err != nil {
+		t.Errorf("SetFileFetchPolicy: %v", err)
 	}
 	if got := j.Progress().FileFetchPolicy(0); got != FetchIfNeeded {
-		t.Errorf("FileFetchPolicy(0) after RestoreFetchPolicy = %v, want FetchIfNeeded", got)
+		t.Errorf("FileFetchPolicy(0) after SetFileFetchPolicy = %v, want FetchIfNeeded", got)
 	}
-	if err := j.RestoreFetchPolicy(99, FetchIfNeeded); err == nil {
-		t.Error("RestoreFetchPolicy with an out-of-range file index should error")
+	if err := j.SetFileFetchPolicy(99, FetchIfNeeded); err == nil {
+		t.Error("SetFileFetchPolicy with an out-of-range file index should error")
 	}
 
 	// RestoreContent needs a progress record of the job's own to restore onto.
@@ -317,9 +313,6 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 
 	if err := j.SetFileFetchPolicy(0, FetchAlways); err == nil {
 		t.Error("SetFileFetchPolicy on unattached job should error")
-	}
-	if err := j.RestoreFetchPolicy(0, FetchAlways); err == nil {
-		t.Error("RestoreFetchPolicy on unattached job should error")
 	}
 	if err := j.MarkArticleWritten(durability.WrittenRow{}); err == nil {
 		t.Error("MarkArticleWritten on unattached job should error")
@@ -513,9 +506,8 @@ func TestResetForRetry_UncompletesAFileWithUndoneArticles(t *testing.T) {
 	markWritten(t, j, 1)
 	markWritten(t, j, 2)
 	for fi, crc := range []uint32{0xAAAA, 0xBBBB} {
-		if err := j.RestoreFileMeta(fi, "", true, crc); err != nil {
-			t.Fatalf("RestoreFileMeta(%d): %v", fi, err)
-		}
+		j.progress.files[fi].Complete = true
+		j.progress.files[fi].AssembledCRC32 = crc
 	}
 
 	j.ResetForRetry()
@@ -554,8 +546,8 @@ func TestResetForRetry_UncompletesAFileWithUndoneArticles(t *testing.T) {
 // FetchIfNeeded here. Ownership of a fresh job's policy belongs to
 // BuildIngestJob's derivation, not to a repair branch in ResetForRetry — see
 // the plan for #329. After Task 1 nothing on the production retry path can
-// reach this branch with FetchNever any more (RestoreFileMeta no longer
-// restores the policy), so this must be an internal/job unit test that calls
+// reach this branch with FetchNever any more (a retry's install does not
+// restore the policy), so this must be an internal/job unit test that calls
 // ResetForRetry directly.
 func TestResetForRetry_LeavesFetchNeverAlone(t *testing.T) {
 	t.Parallel()

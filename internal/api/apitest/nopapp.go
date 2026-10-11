@@ -27,8 +27,8 @@ type NopApp struct {
 	History            *history.Repository
 	SpeedVal           float64
 	ServerSnapshotsVal []downloader.ServerSnapshot
-	// CheckpointStatesVal is what CheckpointStates reports, keyed by job ID.
-	CheckpointStatesVal map[string]app.JobCheckpointState
+	// StallReasonsVal is what StallReasons reports, keyed by job ID.
+	StallReasonsVal map[string]string
 	// ReevaluatedVal counts ReevaluateStalls calls when non-nil, so a test can
 	// assert the API asked for one rather than only that it did not crash.
 	ReevaluatedVal *atomic.Int64
@@ -175,16 +175,16 @@ func (n NopApp) DirectUnpackStatuses() map[string]directunpack.Status { //nocove
 	return nil
 }
 
-// CheckpointStates returns the configured per-job stall figures, so a
+// StallReasons returns the configured per-job stall reasons, so a
 // test can drive the queue listing's stall_reason field without standing up a
 // real application.
-func (n NopApp) CheckpointStates() map[string]app.JobCheckpointState {
-	return n.CheckpointStatesVal
+func (n NopApp) StallReasons() map[string]string {
+	return n.StallReasonsVal
 }
 
-// CheckpointState returns one job's configured figures, or the zero value.
-func (n NopApp) CheckpointState(jobID string) app.JobCheckpointState {
-	return n.CheckpointStatesVal[jobID]
+// StallReason returns one job's configured stall state, or the zero value.
+func (n NopApp) StallReason(jobID string) app.StallInfo {
+	return app.StallInfo{Reason: n.StallReasonsVal[jobID]}
 }
 
 // BinaryVersionsInfo is a stub.

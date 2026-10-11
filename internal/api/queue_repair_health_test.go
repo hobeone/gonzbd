@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/job"
 )
@@ -138,7 +137,7 @@ func TestBuildSlot_SendsTheVerdictNotItsInputs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			j, row := buildRepairHealthJob(t, tc.files, tc.failIdx...)
-			slot := buildSlot(row, j, false, 0, 0, nil, app.JobCheckpointState{})
+			slot := buildSlot(row, j, false, 0, 0, nil, "")
 
 			if slot.RepairState != tc.want {
 				t.Errorf("RepairState = %q, want %q", slot.RepairState, tc.want)
@@ -164,7 +163,7 @@ func TestBuildSlot_FailedBytesStaysTheTotal(t *testing.T) {
 		{subject: "movie.par2", bytes: 50},
 	}, 1)
 
-	slot := buildSlot(row, j, false, 0, 0, nil, app.JobCheckpointState{})
+	slot := buildSlot(row, j, false, 0, 0, nil, "")
 	if slot.FailedBytes != 50 {
 		t.Errorf("FailedBytes = %d, want 50 — the par2 index's failure is still a failure to report",
 			slot.FailedBytes)

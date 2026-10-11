@@ -13,7 +13,7 @@ import (
 // mapping, used identically at construction (buildStages) and on hot reload
 // (ReloadPostProcOptions) so the two paths cannot drift.
 //
-// probe supplies the construction-only HasProblem flag; extraUnrarArgs is
+// probe supplies the construction-only HasProblem flag and unrar version; extraUnrarArgs is
 // pre-parsed by the caller (parsing can fail and is handled there). The
 // function itself is pure and cannot fail.
 func unpackConfigFromPP(pp config.PostProcConfig, probe binaryProbe, cmdCfg cmdutil.CmdConfig, extraUnrarArgs []string) postproc.UnpackConfig {
@@ -23,7 +23,6 @@ func unpackConfigFromPP(pp config.PostProcConfig, probe binaryProbe, cmdCfg cmdu
 			SevenZipCommand:  pp.SevenzCommand,
 			OverwriteFiles:   pp.OverwriteFiles,
 			IgnoreUnrarDates: pp.IgnoreUnrarDates,
-			ExtractSymlinks:  pp.ExtractSymlinks,
 			DecodeWorkers:    pp.RarDecodeWorkers,
 			OneFolder:        pp.FlatUnpack,
 			UseGoRAR:         pp.UseGoRAR,
@@ -31,6 +30,7 @@ func unpackConfigFromPP(pp config.PostProcConfig, probe binaryProbe, cmdCfg cmdu
 			UseGo7z:          pp.UseGo7z,
 			Go7zFallback:     pp.Go7zFallback,
 			HasProblem:       probe.UnrarInfo.HasProblem,
+			UnrarVersion:     probe.UnrarInfo.Version,
 			CmdCfg:           cmdCfg,
 			Sandbox:          cmdutil.SandboxConfig{Enabled: true, Strict: pp.StrictSandbox},
 			ExtraArgs:        extraUnrarArgs,

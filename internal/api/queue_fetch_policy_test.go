@@ -2,8 +2,6 @@ package api
 
 import (
 	"testing"
-
-	"github.com/hobeone/gonzbd/internal/app"
 )
 
 // TestFileState_DistinguishesHeldFromSkipped pins the two reasons a file is
@@ -50,7 +48,7 @@ func TestBuildSlot_Par2HeldStaysTrueAfterDiscard(t *testing.T) {
 	}
 
 	rows := disp.List()
-	slot := buildSlot(rows[0], job, false, 0, 0, nil, app.JobCheckpointState{})
+	slot := buildSlot(rows[0], job, false, 0, 0, nil, "")
 	if !slot.Par2Held {
 		t.Error("Par2Held = false after DiscardDeferredPar2, want true — the badge must not disappear once the verdict comes back clean")
 	}

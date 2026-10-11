@@ -1,8 +1,9 @@
 # Article Validation Contract
 
 > **Status: in progress; dispositions settled.** F1, F3, A7, F6, F2, F5/B1, E5 and the
-> whole A-block have landed, and so has E3: `FileWriter` refuses an arrival whose
-> byte range intersects one already written (#759), within one open-file episode
+> whole A-block have landed, and so has E3: `acceptArticle` refuses an arrival
+> whose byte range intersects one `FileWriter.owned` records as already written
+> (#759), within one open-file episode
 > and, through ranges seeded from a restart's verified rows, across one; C5, E4
 > and F4 remain proposed. §8 is no longer open — what each class of violation
 > produces has been decided and is binding on the work that follows. This
@@ -1122,7 +1123,7 @@ has two levels, not four**:
 > **written-or-reported beats accepted.**
 
 That is exactly what `FileWriter.owned` records (a range is claimed only after
-its write returned nil) and what `acceptArticle` consults via `ownedRanges.ownerOf`. A collision with a
+its write returned nil, or seeded at open from rows a restart verified) and what `acceptArticle` consults via `ownedRanges.ownerOf`. A collision with a
 written range must be refused.
 
 **There is no durable tier above "written".** No record says a range is
@@ -1130,10 +1131,10 @@ fsynced: `written_articles` describes what `pwrite` accepted, and a restart
 proves a row by reading its bytes back rather than by trusting an fsync. So
 the four-level ordering that reads naturally here — durable beats written
 beats accepted beats claimed — **does not exist and must not be cited as
-though it does.** Within an open-file episode `FileWriter.owned` refuses any
-arrival intersecting another article's written range (#759); across a restart
-the verified rows' ranges are seeded into it before any write, and they are
-"written" in the same sense.
+though it does.** Within an open-file episode `acceptArticle` refuses any
+arrival intersecting another article's written range in `FileWriter.owned`
+(#759); across a restart the verified rows' ranges are seeded into
+`FileWriter.owned` before any write, and they are "written" in the same sense.
 
 Refusal is never silent. Every refusal produces a recorded, user-visible
 disposition — which is exactly what #382's `resolve(article, disposition)`

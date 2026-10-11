@@ -1,5 +1,5 @@
 pkg ./internal/job/
-run ^(TestMarkArticleFailed_EvictedRejectsAnOutOfRangeIndex|TestInstallCompleteFile_FailsTheRestAndSettles)$
+run ^(TestMarkArticleFailed_EvictedRejectsAnOutOfRangeIndex|TestInstallFileVerification_CompleteFileFailsTheRestAndSettles)$
 
 # The failed-bit checks that replaced AnyArticleFailed: an out-of-range
 # failure sets no article's bit, and a whole complete file fails none of its
@@ -23,7 +23,7 @@ file internal/job/content.go
 --- end
 
 [a complete file's written articles are failed too]
-file internal/job/verified.go
+file internal/job/verification.go
 --- anchor
 		_ = p.markFailed(m, i) // a no-op for an article a row just marked Done
 --- replace

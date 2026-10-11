@@ -2,6 +2,7 @@ package unpack
 
 import (
 	"fmt"
+	"log/slog"
 	"path"
 	"path/filepath"
 	"strings"
@@ -70,4 +71,23 @@ func SanitizeArchivePath(name string, oneFolder bool) (string, error) {
 		return "", fmt.Errorf("archive path is empty after sanitization")
 	}
 	return name, nil
+}
+
+// MemberPath is the per-member name check of the RAR extractors
+// (extractMember in go_unrar.go and in directunpack). It sanitizes name with
+// NewSanitizedPath; a name that fails (a ".." escape, a NUL byte, nothing
+// left) is logged and reported on opts.OnLine, and ok is false so the caller
+// skips the member. rarengine already strips a leading "../" from RAR member
+// names ("../e.txt" arrives as "e.txt"), so this is the backstop for a name
+// it lets through.
+func MemberPath(name string, opts Options, log *slog.Logger) (SanitizedPath, bool) {
+	sp, err := NewSanitizedPath(name, opts.OneFolder)
+	if err != nil {
+		log.Warn("skipping entry with bad path", "raw_name", name, "err", err)
+		if opts.OnLine != nil {
+			opts.OnLine("Skipping bad path: " + name)
+		}
+		return SanitizedPath{}, false
+	}
+	return sp, true
 }

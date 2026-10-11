@@ -714,7 +714,6 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `flat_unpack` | bool | false | Extract all to single folder |
 | `use_go_rar` | bool | true | Use pure-Go rarengine for RAR5 extraction (falls back to external unrar for RAR3 and unsupported formats) |
 | `go_rar_fallback` | bool | true | When pure-Go RAR extraction fails, retry with the external unrar binary; only relevant when `use_go_rar` is true, and when false a go_unrar failure is final |
-| `extract_symlinks` | bool | false | Let the pure-Go RAR extractor create symlink and junction members; off, they are logged and skipped. Links are created after the last member and any that resolves outside the job directory is removed. Hard links and file copies are always extracted. Does not govern the external unrar |
 | `rar_decode_workers` | int | 0 | Goroutines the pure-Go RAR5 extractor uses to decode one compressed member; 0 = auto (min(CPU count, 4)), 1 = serial, above 8 clamped, negative treated as 0 |
 | `extra_unrar_params` | string | `` | Extra unrar flags (allowlist: -mlp, -om*, -ri*) |
 | `extra_par2_params` | string | `` | Extra par2 flags |

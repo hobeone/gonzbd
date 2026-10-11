@@ -181,10 +181,6 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 	var extractedFiles []string
 	var outBuf strings.Builder
 
-	// Symlink members are queued here and created after the last member; see
-	// SymlinkBatch for why.
-	opts.Symlinks = NewSymlinkBatch()
-
 	for {
 		if err := ctx.Err(); err != nil {
 			return res, err
@@ -205,35 +201,9 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			return res, fmt.Errorf("go_unrar: read header: %w", err)
 		}
 
-		sp, sanitizeErr := NewSanitizedPath(entry.Header.Name, opts.OneFolder)
-		if sanitizeErr != nil {
-			log.Warn("skipping entry with bad path", "raw_name", entry.Header.Name, "err", sanitizeErr)
-			if opts.OnLine != nil {
-				opts.OnLine("Skipping bad path: " + entry.Header.Name)
-			}
-			if err := CloseMember(entry); err != nil {
-				if ctx.Err() != nil {
-					return res, ctx.Err()
-				}
-				res.Reason = ClassifyRarEngineError(err)
-				if opts.OnLine != nil {
-					opts.OnLine(fmt.Sprintf("ERROR: %s: %v", entry.Header.Name, err))
-				}
-				return res, err
-			}
-			continue
-		}
-
-		destRel := sp.Rel()
-		destPath := sp.Abs(outDir)
-
-		if opts.OneFolder && !opts.OverwriteFiles {
-			destRel = uniquePath(root, destRel)
-			destPath = filepath.Join(outDir, destRel)
-		}
-
-		if err := ExtractEntryRarengine(ctx, root, outDir, destRel, destPath, entry.Header, entry, opts, log); err != nil {
-			_ = entry.Close()
+		rel, abs, err := extractMember(ctx, root, outDir, entry.Header, entry, opts, log)
+		if err != nil {
+			_ = entry.Close() // idempotent; closes a member a write failure left open
 			if ctx.Err() != nil {
 				return res, ctx.Err()
 			}
@@ -244,38 +214,10 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			}
 			return res, err
 		}
-
-		if err := CloseMember(entry); err != nil {
-			if ctx.Err() != nil {
-				return res, ctx.Err()
-			}
-			NoteDictionaryLimit(log, err, entry.Header)
-			res.Reason = ClassifyRarEngineError(err)
-			if opts.OnLine != nil {
-				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", entry.Header.Name, err))
-			}
-			return res, err
+		if abs != "" {
+			extractedFiles = append(extractedFiles, abs)
+			outBuf.WriteString("Extracting  " + rel + "\n")
 		}
-
-		if ExtractedEntryExists(root, destRel, entry.Header) {
-			extractedFiles = append(extractedFiles, destPath)
-			displayPath := destRel
-			outBuf.WriteString("Extracting  " + displayPath + "\n")
-		}
-
-		if opts.OnLine != nil {
-			opts.OnLine("Extracting  " + entry.Header.Name)
-		}
-	}
-
-	links, linkErr := opts.Symlinks.Finish(root, opts, log)
-	for _, rel := range links {
-		extractedFiles = append(extractedFiles, filepath.Join(outDir, filepath.FromSlash(rel)))
-		outBuf.WriteString("Extracting  " + rel + "\n")
-	}
-	if linkErr != nil {
-		res.Reason = FailUnknown
-		return res, linkErr
 	}
 
 	res.ExtractedFiles = extractedFiles
@@ -283,6 +225,36 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 	res.Output = outBuf.String()
 
 	return res, nil
+}
+
+// extractMember writes one member (header fh, content entry) through root
+// and closes it, which is where its verdict is reported. It returns the
+// member's path relative to root and under outDir, both empty when the member
+// leaves nothing to list: a directory, a link, or a name MemberPath refuses.
+// On an error the entry may still be open; the caller closes it.
+func extractMember(ctx context.Context, root *os.Root, outDir string, fh *rarengine.FileHeader, entry io.ReadCloser, opts Options, log *slog.Logger) (rel, abs string, err error) {
+	sp, ok := MemberPath(fh.Name, opts, log)
+	if !ok {
+		return "", "", CloseMember(entry)
+	}
+	rel, abs = sp.Rel(), sp.Abs(outDir)
+	if opts.OneFolder && !opts.OverwriteFiles {
+		rel = uniquePath(root, rel)
+		abs = filepath.Join(outDir, rel)
+	}
+	if err := ExtractEntryRarengine(ctx, root, outDir, rel, abs, fh, entry, opts, log); err != nil {
+		return "", "", err
+	}
+	if err := CloseMember(entry); err != nil {
+		return "", "", err
+	}
+	if opts.OnLine != nil {
+		opts.OnLine("Extracting  " + fh.Name)
+	}
+	if !ExtractedEntryExists(fh) {
+		return "", "", nil
+	}
+	return rel, abs, nil
 }
 
 // rarEntryReader wraps an io.Reader (typically a *rarengine.Entry) to convert
@@ -314,12 +286,14 @@ func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, 
 		return root.MkdirAll(destRel, 0o750)
 	}
 
-	// A link member carries no payload: Read would return ErrLinkEntry. Handle
-	// it before the reader is touched. Both the post-processing loop and
-	// DirectUnpack reach links through this function. The caller still calls
-	// CloseMember afterwards, which is where the verdict is reported.
+	// A link member carries no payload: Read would return ErrLinkEntry. It is
+	// skipped before the reader is touched (see skipLinkEntry). Both the
+	// post-processing loop and DirectUnpack reach links through this
+	// function. The caller still calls CloseMember afterwards, which is where
+	// the verdict is reported.
 	if fh.LinkType != rarengine.LinkNone {
-		return extractLinkEntry(ctx, root, destRel, destPath, fh, opts, log)
+		skipLinkEntry(fh, opts, log)
+		return nil
 	}
 
 	// mode is masked to only the rw bits, matching go_tar/go_sevenzip's

@@ -1,38 +1,38 @@
 pkg ./internal/app/
-run Test(RetryHistoryJob_AfterDownloadDirDeleted|VerifyAndAttach_MissingDirectoryParksTheJob|VerifyJobFiles_RetryTreatsAMissingDirectoryAsGone|VerifyJobFiles_MissingDirectoryIsAFault|VerifyJobFiles_RetryFaultsOnAnotherDirectoryStatError)$
+run Test(RetryHistoryJob_AfterDownloadDirDeleted|VerifyAndAttach_MissingDirectoryParksTheJob|VerifyJobFiles_RetryTreatsAMissingDirectoryAsGone|VerifyJobFiles_MissingDirectoryIsAFault|VerifyJobFiles_RetryFaultsOnAnotherDirectoryOpenError)$
 
 # A retry of a job whose download directory is gone drops the recorded rows
-# and refetches; a hydration of the same job still parks on the fault. A stat
-# error other than ENOENT is a fault on both paths.
+# and refetches; a hydration of the same job still parks on the fault. An
+# error opening the directory other than ENOENT is a fault on both paths.
 
 [a retry faults on the missing directory as a hydration does]
 file internal/app/verify.go
 --- anchor
-		if _, sErr := statDir(dir); sErr != nil && (!retry || !errors.Is(sErr, fs.ErrNotExist)) {
+		if retry && errors.Is(err, fs.ErrNotExist) {
 --- replace
-		if _, sErr := statDir(dir); sErr != nil {
+		if false {
 --- end
 
 [a hydration treats a missing directory as absence]
 file internal/app/verify.go
 --- anchor
-		if _, sErr := statDir(dir); sErr != nil && (!retry || !errors.Is(sErr, fs.ErrNotExist)) {
+		if retry && errors.Is(err, fs.ErrNotExist) {
 --- replace
-		if _, sErr := statDir(dir); sErr != nil && !errors.Is(sErr, fs.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 --- end
 
-[a retry treats any stat error as absence]
+[a retry treats any directory open error as absence]
 file internal/app/verify.go
 --- anchor
-		if _, sErr := statDir(dir); sErr != nil && (!retry || !errors.Is(sErr, fs.ErrNotExist)) {
+		if retry && errors.Is(err, fs.ErrNotExist) {
 --- replace
-		if _, sErr := statDir(dir); sErr != nil && !retry {
+		if retry {
 --- end
 
 [a hydration verifies as a retry does]
 file internal/app/residency.go
 --- anchor
-	res, err := verifyJobFiles(ctx, m, files, rows, pathFor, false)
+	res, err := verifyJobFiles(ctx, m, files, rows, locate, false)
 --- replace
-	res, err := verifyJobFiles(ctx, m, files, rows, pathFor, true)
+	res, err := verifyJobFiles(ctx, m, files, rows, locate, true)
 --- end

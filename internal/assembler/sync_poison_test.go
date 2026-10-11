@@ -146,15 +146,15 @@ func TestFileWriter_PoisonSyncAndRollbackSyncedArticle(t *testing.T) {
 	}
 }
 
-func TestDrainAndClose_FailedSyncRoutesRolledBackArticles(t *testing.T) {
+func TestSyncAndClose_FailedSyncRoutesRolledBackArticles(t *testing.T) {
 	a := newHelperAssembler()
 	var unwritten []int32
 	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
 		unwritten = append(unwritten, arts...)
 	}
 
-	// CloseJobHandles and the worker-exit drain call drainAndClose with
-	// nothing after it, so drainAndClose must route the poisoned set itself
+	// CloseJobHandles and syncAndCloseAll at worker exit call syncAndClose with
+	// nothing after it, so syncAndClose must route the poisoned set itself
 	// before Close throws the writer away.
 	key := fileKey{jobID: "job1", fileIdx: 0}
 	g := newHelperFile(t, t.TempDir(), "close-handles-sync-fail.dat", 0)
@@ -164,10 +164,10 @@ func TestDrainAndClose_FailedSyncRoutesRolledBackArticles(t *testing.T) {
 		t.Fatalf("Accept: %v", err)
 	}
 	g.w.syncFile = func() error { return syscall.EIO }
-	if err := a.drainAndClose(g); !errors.Is(err, syscall.EIO) {
-		t.Fatalf("drainAndClose = %v, want EIO", err)
+	if err := a.syncAndClose(g); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("syncAndClose = %v, want EIO", err)
 	}
 	if !slices.Equal(unwritten, []int32{8}) {
-		t.Errorf("OnArticlesUnwritten = %v, want [8] from drainAndClose's failed Sync", unwritten)
+		t.Errorf("OnArticlesUnwritten = %v, want [8] from syncAndClose's failed Sync", unwritten)
 	}
 }

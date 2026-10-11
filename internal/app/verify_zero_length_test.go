@@ -22,7 +22,7 @@ func TestReadBackFile_VerifiesAZeroLengthRow(t *testing.T) {
 	rows := []durability.WrittenRow{first, empty, badEmpty, negative}
 	slices.SortFunc(rows, durability.CompareWrittenRows)
 
-	out, err := readBackFile(t.Context(), f.path, rows, make([]byte, 1000), false)
+	out, err := readBackFile(t.Context(), f.loc(), rows, make([]byte, 1000), false)
 	if err != nil {
 		t.Fatalf("readBackFile: %v", err)
 	}

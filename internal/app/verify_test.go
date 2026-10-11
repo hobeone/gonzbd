@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/durability"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
@@ -25,11 +26,21 @@ const verifyArt = 1024
 // disk, and a row per article carrying the true CRC of its bytes.
 type verifyFixture struct {
 	dl, name, path string
-	resolve        func(filename string) string // the writer's path for a recorded name
+	resolve        func(filename string) jobFile // the writer's location for a recorded name
 	m              *job.Manifest
 	data           []byte
 	rows           []durability.WrittenRow
 	files          []durability.FileRow
+}
+
+// loc is the fixture file's location.
+func (f *verifyFixture) loc() jobFile {
+	return jobFile{Dir: filepath.Dir(f.path), Name: filepath.Base(f.path)}
+}
+
+// in resolves every recorded name inside dir.
+func in(dir string) func(string) jobFile {
+	return func(filename string) jobFile { return jobFile{Dir: dir, Name: filename} }
 }
 
 func newVerifyFixture(t *testing.T) *verifyFixture {
@@ -56,8 +67,7 @@ func newVerifyFixture(t *testing.T) *verifyFixture {
 		f.rows = append(f.rows, f.rowAt(i, int64(i*verifyArt)))
 	}
 	f.files = []durability.FileRow{{FileIndex: 0, Filename: "v.bin"}}
-	dir := filepath.Dir(f.path)
-	f.resolve = func(filename string) string { return filepath.Join(dir, filename) }
+	f.resolve = in(filepath.Dir(f.path))
 	return f
 }
 
@@ -347,8 +357,8 @@ func TestVerifyJobFiles_OpensTheResolversPath(t *testing.T) {
 		t.Fatalf("rename: %v", err)
 	}
 	f.files[0].Filename = "a b.bin"
-	f.resolve = func(filename string) string {
-		return filepath.Join(dir, strings.ReplaceAll(filename, " ", "_"))
+	f.resolve = func(filename string) jobFile {
+		return jobFile{Dir: dir, Name: strings.ReplaceAll(filename, " ", "_")}
 	}
 	res, err := f.run(t, t.Context(), pick(f.rows, 0, 1), false)
 	if err != nil {
@@ -364,7 +374,7 @@ func TestVerifyJobFiles_MissingDirectoryIsAFault(t *testing.T) {
 	t.Parallel()
 	f := newVerifyFixture(t)
 	gone := filepath.Join(f.dl, "unmounted", "vjob")
-	f.resolve = func(filename string) string { return filepath.Join(gone, filename) }
+	f.resolve = in(gone)
 	res, err := f.run(t, t.Context(), f.rows, false)
 	assertVerifyFault(t, res, err, gone)
 	if !errors.Is(err, fs.ErrNotExist) {
@@ -379,7 +389,7 @@ func TestVerifyJobFiles_RetryTreatsAMissingDirectoryAsGone(t *testing.T) {
 	t.Parallel()
 	f := newVerifyFixture(t)
 	gone := filepath.Join(f.dl, "deleted", "vjob")
-	f.resolve = func(filename string) string { return filepath.Join(gone, filename) }
+	f.resolve = in(gone)
 	res, err := f.run(t, t.Context(), f.rows, true)
 	if err != nil {
 		t.Fatalf("verifyJobFiles on a retry = %v, want the rows deleted without a fault", err)
@@ -389,23 +399,23 @@ func TestVerifyJobFiles_RetryTreatsAMissingDirectoryAsGone(t *testing.T) {
 	}
 }
 
-// TestVerifyJobFiles_RetryFaultsOnAnotherDirectoryStatError: on a retry only
-// ENOENT from the directory's stat is absence; an EACCES is a verification
+// TestVerifyJobFiles_RetryFaultsOnAnotherDirectoryOpenError: on a retry only
+// ENOENT from opening the directory is absence; an EACCES is a verification
 // fault naming the directory, as at a hydration.
 //
-// Not parallel: it replaces the package-level statDir seam.
-func TestVerifyJobFiles_RetryFaultsOnAnotherDirectoryStatError(t *testing.T) {
+// Not parallel: it replaces the package-level openRoot seam.
+func TestVerifyJobFiles_RetryFaultsOnAnotherDirectoryOpenError(t *testing.T) {
 	f := newVerifyFixture(t)
 	gone := filepath.Join(f.dl, "unreadable", "vjob")
-	f.resolve = func(filename string) string { return filepath.Join(gone, filename) }
-	orig := statDir
-	statDir = func(dir string) (fs.FileInfo, error) {
+	f.resolve = in(gone)
+	orig := openRoot
+	openRoot = func(dir string) (*os.Root, error) {
 		if dir == gone {
-			return nil, &fs.PathError{Op: "stat", Path: dir, Err: syscall.EACCES}
+			return nil, &fs.PathError{Op: "open", Path: dir, Err: syscall.EACCES}
 		}
 		return orig(dir)
 	}
-	t.Cleanup(func() { statDir = orig })
+	t.Cleanup(func() { openRoot = orig })
 
 	res, err := f.run(t, t.Context(), f.rows, true)
 	assertVerifyFault(t, res, err, gone)
@@ -420,8 +430,7 @@ func TestVerifyJobFiles_RetryFaultsOnAnotherDirectoryStatError(t *testing.T) {
 func TestVerifyJobFiles_LeavesAFileWithNoRowsUntouched(t *testing.T) {
 	t.Parallel()
 	f := newVerifyFixture(t)
-	gone := filepath.Join(f.dl, "never-created")
-	f.resolve = func(filename string) string { return filepath.Join(gone, filename) }
+	f.resolve = in(filepath.Join(f.dl, "never-created"))
 	res, err := f.run(t, t.Context(), nil, false)
 	if err != nil {
 		t.Fatalf("err = %v, want nil for a file with no rows", err)
@@ -525,53 +534,202 @@ func TestFinishFileByPath(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			path := filepath.Join(t.TempDir(), "f.bin")
-			if err := os.WriteFile(path, make([]byte, tc.size), 0o600); err != nil {
+			loc := jobFile{Dir: t.TempDir(), Name: "f.bin"}
+			if err := os.WriteFile(loc.Path(), make([]byte, tc.size), 0o600); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			if err := finishFileByPath(path, tc.maxEnd); err != nil {
+			if err := finishFileByPath(loc, tc.maxEnd); err != nil {
 				t.Fatalf("finishFileByPath: %v", err)
 			}
-			if got := fileSize(t, path); got != tc.want {
+			if got := fileSize(t, loc.Path()); got != tc.want {
 				t.Errorf("size = %d, want %d", got, tc.want)
 			}
 		})
 	}
 	t.Run("a missing file is an error naming it", func(t *testing.T) {
 		t.Parallel()
-		path := filepath.Join(t.TempDir(), "gone.bin")
-		err := finishFileByPath(path, 10)
-		if err == nil || !strings.Contains(err.Error(), path) {
-			t.Errorf("err = %v, want an error naming %s", err, path)
+		loc := jobFile{Dir: t.TempDir(), Name: "gone.bin"}
+		err := finishFileByPath(loc, 10)
+		if err == nil || !strings.Contains(err.Error(), loc.Path()) {
+			t.Errorf("err = %v, want an error naming %s", err, loc.Path())
 		}
 	})
 }
 
-// TestFinishFileByPath_ReturnsASecondFsyncError pins that a failing fsync
-// after the truncate is returned.
+// TestFinishFileByPath_FsyncsOnlyAfterATruncate pins that the finish adds no
+// fsync of its own to the read-back's: one after a truncate, none when the
+// file is left at its size.
 //
 // Not parallel: it replaces the package-level fsyncFile seam.
-func TestFinishFileByPath_ReturnsASecondFsyncError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "f.bin")
-	if err := os.WriteFile(path, make([]byte, 5000), 0o600); err != nil {
+func TestFinishFileByPath_FsyncsOnlyAfterATruncate(t *testing.T) {
+	orig := fsyncFile
+	t.Cleanup(func() { fsyncFile = orig })
+	for _, tc := range []struct {
+		name         string
+		size, maxEnd int64
+		want         int
+	}{
+		{"larger is truncated", 5000, 4096, 1},
+		{"smaller is left alone", 3000, 4096, 0},
+		{"no bound leaves it alone", 5000, 0, 0},
+	} {
+		loc := jobFile{Dir: t.TempDir(), Name: "f.bin"}
+		if err := os.WriteFile(loc.Path(), make([]byte, tc.size), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		calls := 0
+		fsyncFile = func(f *os.File) error { calls++; return orig(f) }
+		if err := finishFileByPath(loc, tc.maxEnd); err != nil {
+			t.Fatalf("%s: finishFileByPath: %v", tc.name, err)
+		}
+		if calls != tc.want {
+			t.Errorf("%s: fsynced %d times, want %d", tc.name, calls, tc.want)
+		}
+	}
+}
+
+// TestFinishFileByPath_ReturnsTheFsyncErrorAfterATruncate pins that a failing
+// fsync after the truncate is returned.
+//
+// Not parallel: it replaces the package-level fsyncFile seam.
+func TestFinishFileByPath_ReturnsTheFsyncErrorAfterATruncate(t *testing.T) {
+	loc := jobFile{Dir: t.TempDir(), Name: "f.bin"}
+	if err := os.WriteFile(loc.Path(), make([]byte, 5000), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	orig := fsyncFile
 	t.Cleanup(func() { fsyncFile = orig })
-	calls := 0
-	fsyncFile = func(f *os.File) error {
-		calls++
-		if calls == 2 {
-			return syscall.EIO
-		}
-		return orig(f)
-	}
-	err := finishFileByPath(path, 4096)
+	fsyncFile = func(*os.File) error { return syscall.EIO }
+	err := finishFileByPath(loc, 4096)
 	if !errors.Is(err, syscall.EIO) {
-		t.Errorf("err = %v, want one wrapping EIO from the second fsync", err)
+		t.Errorf("err = %v, want one wrapping EIO from the fsync after the truncate", err)
 	}
-	if calls != 2 {
-		t.Errorf("fsynced %d times, want 2", calls)
+}
+
+// outsideTarget writes data, with a 300-byte tail a finish would truncate, to
+// a file in a directory outside f's job directory, and returns its path.
+func outsideTarget(t *testing.T, f *verifyFixture) string {
+	t.Helper()
+	target := filepath.Join(t.TempDir(), "outside.bin")
+	if err := os.WriteFile(target, append(slices.Clone(f.data), make([]byte, 300)...), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return target
+}
+
+// TestReadBackFile_RefusesASymlinkOutOfTheJobDirectory pins the os.Root open:
+// a symlink inside the job directory that points out of it is an open error,
+// so a fault, and nothing outside is read. The rows match the target's bytes,
+// so a read through the link would verify them.
+func TestReadBackFile_RefusesASymlinkOutOfTheJobDirectory(t *testing.T) {
+	t.Parallel()
+	f := newVerifyFixture(t)
+	if err := os.Remove(f.path); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := os.Symlink(outsideTarget(t, f), f.path); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	for _, retry := range []bool{false, true} {
+		out, err := readBackFile(t.Context(), f.loc(), f.rows, make([]byte, verifyBufSize), retry)
+		if err == nil || errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("retry=%v: readBackFile = %+v, %v; want an open error that is not ENOENT", retry, out, err)
+		}
+	}
+}
+
+// TestVerifierOpens_CloseTheirRoots pins that readBackFile and
+// finishFileByPath each close the os.Root they open, so a pass does not leak
+// a directory descriptor per file. A closed Root answers ErrClosed.
+//
+// Not parallel: it replaces the package-level openRoot seam.
+func TestVerifierOpens_CloseTheirRoots(t *testing.T) {
+	f := newVerifyFixture(t)
+	orig := openRoot
+	t.Cleanup(func() { openRoot = orig })
+	var opened []*os.Root
+	openRoot = func(dir string) (*os.Root, error) {
+		r, err := orig(dir)
+		if err == nil {
+			opened = append(opened, r)
+		}
+		return r, err
+	}
+	assertClosed := func(what string) {
+		t.Helper()
+		if len(opened) != 1 {
+			t.Fatalf("%s opened %d roots, want 1", what, len(opened))
+		}
+		if _, err := opened[0].Stat("."); !errors.Is(err, os.ErrClosed) {
+			t.Errorf("%s left its root open: Stat on it = %v, want ErrClosed", what, err)
+		}
+		opened = nil
+	}
+
+	if _, err := readBackFile(t.Context(), f.loc(), f.rows, make([]byte, verifyBufSize), false); err != nil {
+		t.Fatalf("readBackFile: %v", err)
+	}
+	assertClosed("readBackFile")
+	if err := finishFileByPath(f.loc(), int64(len(f.data))); err != nil {
+		t.Fatalf("finishFileByPath: %v", err)
+	}
+	assertClosed("finishFileByPath")
+}
+
+// TestReadBackFile_RefusesANameThatClimbsOutOfTheJobDirectory: a name the
+// resolver failed to sanitize is refused by the open, not followed.
+func TestReadBackFile_RefusesANameThatClimbsOutOfTheJobDirectory(t *testing.T) {
+	t.Parallel()
+	f := newVerifyFixture(t)
+	if err := os.Rename(f.path, filepath.Join(f.dl, "v.bin")); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	loc := jobFile{Dir: filepath.Dir(f.path), Name: filepath.Join("..", "v.bin")}
+	out, err := readBackFile(t.Context(), loc, f.rows, make([]byte, verifyBufSize), false)
+	if err == nil || errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("readBackFile = %+v, %v; want an open error that is not ENOENT", out, err)
+	}
+}
+
+// TestVerifyJobFiles_SymlinkOutOfTheJobDirectoryIsAFault is the same refusal
+// through the whole pass: the job parks on a fault naming the file, and the
+// file the link points at is neither verified nor truncated, though every row
+// matches it and a finish would shrink it.
+func TestVerifyJobFiles_SymlinkOutOfTheJobDirectoryIsAFault(t *testing.T) {
+	t.Parallel()
+	f := newVerifyFixture(t)
+	target := outsideTarget(t, f)
+	if err := os.Remove(f.path); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := os.Symlink(target, f.path); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	res, err := f.run(t, t.Context(), f.rows, false)
+	assertVerifyFault(t, res, err, f.path)
+	if got, want := fileSize(t, target), int64(len(f.data)+300); got != want {
+		t.Errorf("outside file size = %d, want %d: the verifier truncated a file outside the job directory", got, want)
+	}
+}
+
+// TestFinishFileByPath_RefusesASymlinkOutOfTheJobDirectory pins the finish's
+// own os.Root open: a link swapped in after the read-back is refused, and the
+// file it points at keeps its size.
+func TestFinishFileByPath_RefusesASymlinkOutOfTheJobDirectory(t *testing.T) {
+	t.Parallel()
+	f := newVerifyFixture(t)
+	target := outsideTarget(t, f)
+	if err := os.Remove(f.path); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := os.Symlink(target, f.path); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if err := finishFileByPath(f.loc(), int64(len(f.data))); err == nil {
+		t.Error("finishFileByPath through a link out of the job directory = nil, want an error")
+	}
+	if got, want := fileSize(t, target), int64(len(f.data)+300); got != want {
+		t.Errorf("outside file size = %d, want %d", got, want)
 	}
 }
 
@@ -655,17 +813,27 @@ func TestReadBackFile_ReadsARowLongerThanTheBuffer(t *testing.T) {
 	t.Parallel()
 	f := newVerifyFixture(t)
 	whole := durability.WrittenRow{Offset: 0, Length: int64(len(f.data)), CRC32: crc32.ChecksumIEEE(f.data)}
-	out, err := readBackFile(t.Context(), f.path, []durability.WrittenRow{whole}, make([]byte, 1000), false)
+	out, err := readBackFile(t.Context(), f.loc(), []durability.WrittenRow{whole}, make([]byte, 1000), false)
 	if err != nil {
 		t.Fatalf("readBackFile: %v", err)
 	}
 	if !slices.Equal(out.verified, []durability.WrittenRow{whole}) {
 		t.Errorf("verified = %+v, want the one row: its CRC spans several buffer fills", out.verified)
 	}
+}
 
-	gone, err := readBackFile(t.Context(), f.path+".missing", []durability.WrittenRow{whole}, make([]byte, 1000), false)
-	if err != nil || !gone.deleteAll {
-		t.Errorf("missing file = %+v, %v; want deleteAll and no error", gone, err)
+// TestReadBackFile_AMissingFileInAnExistingDirectoryIsGone pins the ENOENT
+// arm under the os.Root open, on both paths: a file missing from a directory
+// that exists is a definitive deleteAll, not an error.
+func TestReadBackFile_AMissingFileInAnExistingDirectoryIsGone(t *testing.T) {
+	t.Parallel()
+	f := newVerifyFixture(t)
+	missing := jobFile{Dir: filepath.Dir(f.path), Name: "missing.bin"}
+	for _, retry := range []bool{false, true} {
+		gone, err := readBackFile(t.Context(), missing, f.rows, make([]byte, 1000), retry)
+		if err != nil || !gone.deleteAll {
+			t.Errorf("retry=%v: missing file = %+v, %v; want deleteAll and no error", retry, gone, err)
+		}
 	}
 }
 
@@ -678,21 +846,22 @@ func TestFinishIfResolved(t *testing.T) {
 	fr := f.files[0]
 	every := fileReadback{verified: f.rows}
 
-	if ok, err := finishIfResolved(t.Context(), f.m, fr, f.path, fileReadback{deleteAll: true}, false); ok || err != nil {
+	if ok, err := finishIfResolved(t.Context(), f.m, fr, f.loc(), fileReadback{deleteAll: true}, false); ok || err != nil {
 		t.Errorf("untrusted file: finished=%v err=%v, want neither", ok, err)
 	}
-	if ok, err := finishIfResolved(t.Context(), f.m, fr, f.path, fileReadback{}, false); ok || err != nil {
+	if ok, err := finishIfResolved(t.Context(), f.m, fr, f.loc(), fileReadback{}, false); ok || err != nil {
 		t.Errorf("nothing verified: finished=%v err=%v, want neither", ok, err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if ok, err := finishIfResolved(ctx, f.m, fr, f.path, every, false); ok || !errors.Is(err, context.Canceled) {
+	if ok, err := finishIfResolved(ctx, f.m, fr, f.loc(), every, false); ok || !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled: finished=%v err=%v, want a context error", ok, err)
 	}
-	if ok, err := finishIfResolved(t.Context(), f.m, fr, f.path+".missing", every, false); ok || err == nil {
+	missing := jobFile{Dir: filepath.Dir(f.path), Name: "missing.bin"}
+	if ok, err := finishIfResolved(t.Context(), f.m, fr, missing, every, false); ok || err == nil {
 		t.Errorf("finish fails: finished=%v err=%v, want the error", ok, err)
 	}
-	if ok, err := finishIfResolved(t.Context(), f.m, fr, f.path, every, false); !ok || err != nil {
+	if ok, err := finishIfResolved(t.Context(), f.m, fr, f.loc(), every, false); !ok || err != nil {
 		t.Errorf("every article verified: finished=%v err=%v, want finished", ok, err)
 	}
 }
@@ -732,6 +901,28 @@ func TestJobFilePath_ResolvesUnderTheJobDirectory(t *testing.T) {
 	jobDir := filepath.Join(root, "a job")
 	if !bytes.HasPrefix([]byte(escape), []byte(jobDir+string(os.PathSeparator))) {
 		t.Errorf("jobFilePath = %q, want it confined to %q", escape, jobDir)
+	}
+}
+
+// TestJobFileLocation_AgreesWithTheWritersJoin pins that the verifier's
+// directory and name join to the path registerFile's fsutil.JoinSafe gives
+// the writer, so the two cannot disagree about which file a name means.
+func TestJobFileLocation_AgreesWithTheWritersJoin(t *testing.T) {
+	t.Parallel()
+	application, _, _ := newLifecycleTestApp(t)
+	p := application.pipeline
+	jobDir := filepath.Join(p.downloadDir, "a job")
+	for _, name := range []string{"file.bin", "../../etc/passwd", "a b:c?.bin", "..", "con.txt", "trailing. "} {
+		got := p.jobFileLocation("a job", name)
+		if got.Dir != jobDir {
+			t.Errorf("%q: Dir = %q, want %q", name, got.Dir, jobDir)
+		}
+		if want := fsutil.JoinSafe(jobDir, "", name, p.sanitize); got.Path() != want {
+			t.Errorf("%q: Path = %q, want the writer's %q", name, got.Path(), want)
+		}
+		if filepath.Base(got.Name) != got.Name {
+			t.Errorf("%q: Name = %q, want one path component", name, got.Name)
+		}
 	}
 }
 
