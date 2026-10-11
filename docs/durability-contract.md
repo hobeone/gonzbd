@@ -55,10 +55,11 @@ when quickcheck matches the CRC combined from a file's rows (*The whole-file
 CRC*). That is sound because every row of a `complete=1` file describes bytes
 written before the writing handle's fsync (§2); every row of a `complete=0`
 file became `Done` after a restart only by a device read that matched its CRC
-(§3); and a file whose fsync failed has no rows (§4). A change that marks a
-file complete before its fsync, installs rows without the read, or keeps rows
-past an fsync fault reopens the hole: par2 would be skipped over a file whose
-bytes are not what the CRC describes.
+(§3); and a file whose fsync failed has no rows once its untrust's delete
+lands, which no `complete=1` for the file can precede (§4). A change that
+marks a file complete before its fsync, installs rows without the read, or
+lets `complete=1` land over rows an fsync fault left behind reopens the hole:
+par2 would be skipped over a file whose bytes are not what the CRC describes.
 
 Sections below also cite short labels (`S3`, `A1`, `R19`, …) for rules that
 predate this record. This table is their definition.
@@ -156,7 +157,8 @@ for the fsync (§2), and a restart does not trust a row it has not read (§3).
 `Store.ApplyRecord` is the only production writer of `written_articles` rows
 and of `job_files`' `complete`, `filename` and `fetch_policy`, and the recorder
 is its only caller: `git grep -n -E '\.ApplyRecord[(]' -- '*.go' ':!*_test.go'`
-returns 2 lines, both in `internal/app/record.go` (`flushLocked` and `apply`).
+returns 3 lines, all in `internal/app/record.go` (`flushLocked`, `apply` and
+`untrust`).
 `Store.Admit` is the one other writer of `job_files`, and it only inserts the
 seed rows (§6).
 
@@ -171,12 +173,13 @@ The recorder has two ways in:
   `fetch_policy` read from the job's progress (`Application.markFileDirty`), so
   `complete` reads true only once the file was finished (§2).
 
-And two ways out:
+And three ways out:
 
-- **`flush`** takes **one** snapshot of the pending rows and dirty files under
-  `mu`, so a file's `complete=1` cannot land without the rows noted before it,
-  and writes it in one transaction with `mu` released. On a store error it
-  merges the snapshot back before releasing `wmu`. It runs every
+- **`flush`** takes **one** snapshot of the pending rows, dirty files and owed
+  deletes under `mu`, so a file's `complete=1` cannot land without the rows
+  noted before it, nor with rows an untrust removed, and writes it in one
+  transaction with `mu` released. On a store error it merges the snapshot
+  back before releasing `wmu`. It runs every
   `defaultRecordInterval` (5 s) from `recorder.run`, under `app.ctx`, which
   is what bounds a crash's rework (B1); and synchronously at three
   sites — `git grep -n -E 'recorder\.flush\(' -- '*.go' ':!*_test.go'` returns
@@ -194,16 +197,34 @@ And two ways out:
   purge removes what is still buffered for the file it names — a `DeleteAll`
   verdict's pending rows, a `DeleteArtIdxs` verdict's named rows, the pending
   `complete` of a verdict that sets or clears it — so no flush can write back
-  what the verdict removed. Its callers are verification, the retry, and the
-  untrust of a file (§4): `git grep -n -E 'recorder\.apply\(' -- '*.go' ':!*_test.go'`
-  returns 5 lines.
+  what the verdict removed. Its callers are verification and the retry:
+  `git grep -n -E 'recorder\.apply\(' -- '*.go' ':!*_test.go'` returns 4
+  lines. Neither names an instance that owes a delete (below): a hydration
+  verifies a job with no progress in this process, so one that wrote no row
+  here, and a retry's instance is new.
+- **`untrust`** removes one file's record (§4). It purges what is still
+  buffered for the file under `mu` **first**, records the file's
+  `DeleteAll` + `ClearComplete` verdict as **owed** by the job instance, and
+  only then takes `wmu` and writes the verdict. The debt is settled by the
+  write that carries it and succeeds — the untrust's own, or a later `flush`,
+  which carries every owed verdict of a current instance ahead of its rows in
+  the same batch, leaving `complete` to a file state the batch also carries,
+  since that state was marked after the untrust. A flush that fails keeps the
+  debt and, in its remerge, puts back nothing of a file an untrust overran
+  while it was in flight. An untrust that lands while a write carrying its
+  file's earlier debt is in flight is a new debt: each is numbered, and a
+  write settles only the number it carried. The debt of an instance the
+  dispatcher no longer holds is dropped with its rows: a retry verifies every
+  row before it registers, and the reclaim rule deletes a departed job's rows
+  or keeps them for that retry.
 
 **The wait for `wmu` is bounded by the waiter's own context.** `wmu` is
-deliberately held across `ApplyRecord`, by every `flush` and `apply` call:
-`git grep -n -E '(recorder|\br)\.(flush|apply)\(' -- '*.go' ':!*_test.go'`
+deliberately held across `ApplyRecord`, by every `flush`, `apply` and
+`untrust` call:
+`git grep -n -E '(recorder|\br)\.(flush|apply|untrust)\(' -- '*.go' ':!*_test.go'`
 returns 9 lines. Four of them run under a deadline: Shutdown's flush (its step
 budget), the hand-over's and the finalizer's flushes (`recorderFlushTimeout`),
-and the untrust's apply (`untrustTimeout`). The other five have none:
+and the untrust (`untrustTimeout`). The other five have none:
 
 | Holder | Context |
 |---|---|
@@ -212,9 +233,10 @@ and the untrust's apply (`untrustTimeout`). The other five have none:
 | `verifyRetry`'s two applies | the retry's: an API request's context, or `app.ctx` for the automatic retry |
 | `retryHistoryJob`'s final commit | `context.Background()` |
 
-So `flush` and `apply` take it through
+So `flush`, `apply` and `untrust` take it through
 `lockWriter`, which gives up when the caller's context ends and returns its
-error; a waiter that gave up took no snapshot and purged nothing. That is what
+error; a `flush` or `apply` that gave up took no snapshot and purged nothing,
+and an `untrust` that gave up has purged and owes. That is what
 bounds an untrust on the assembler's single worker (§4) whatever holds the
 lock.
 
@@ -518,8 +540,9 @@ a second fsync on any descriptor may return nil over the lost pages. So the
 worker, in this order:
 
 1. The file's rows and `complete` are removed from SQLite through
-   `recorder.apply` (a `DeleteAll` + `ClearComplete` verdict), which also
-   purges what is still buffered for it. This has to land before the job can be
+   `recorder.untrust` (a `DeleteAll` + `ClearComplete` verdict), which first
+   purges what is still buffered for it and records the delete as owed (§1).
+   This has to land before the job can be
    evicted and re-hydrated: hydration restores `complete` from `job_files` and
    would otherwise reinstate a stale `complete=1`. It is bounded by
    `untrustTimeout` (2 s), the wait for `wmu` included (§1), shorter than
@@ -532,12 +555,17 @@ worker, in this order:
    article re-registers the file — recounting `TotalParts` and seeding owned
    ranges from the now-empty rows — and opens a fresh writer.
 
-If the SQLite write fails, what stays there is rows flushed earlier with
-`complete` still 0 (the purge already dropped the buffered ones, and
-`complete=1` is written only after a successful fsync). If the wait for `wmu`
-timed out instead, nothing was purged either, and a later flush also writes
-the file's buffered rows, still with `complete=0`. Either way the next
-hydration or retry reads every such row back before trusting it.
+If the SQLite write fails, or the wait for `wmu` runs out, what stays in
+SQLite is rows flushed earlier with `complete` still 0: the purge dropped the
+buffered ones before the wait, and `complete=1` is written only after a
+successful fsync. The delete stays owed, and every later write for the job
+instance carries it ahead of the file's rows until one succeeds (§1), so a
+refetch that completes the file in this process cannot write `complete=1`
+over a row of the failed episode — the row an article that now fails
+permanently would otherwise leave behind, to be installed Done at the next
+start and chained into a whole-file CRC over bytes the fsync disowned
+(#827). A restart before any such write finds the rows with `complete=0` and
+reads each back before trusting it.
 
 The assembler untrusts a file at three points (`noteFileUntrusted` has three
 callers in `internal/assembler/assembler.go`):
@@ -1046,7 +1074,7 @@ are bounded by the flush cadence and by file size, as below.
 |---|---|
 | Write channel (`reqs`) | 2048 requests (`defaultQueueSize`). At 128 KiB articles, ~256 MB worst-case buffered; backpressures the downloader when disk I/O is slow. |
 | `fileWriter.unsynced` | one `int32` per article written to the file in its open episode: only a successful `sync` clears it, and the only `sync` is at close. |
-| Recorder buffers | one row per article written since the last flush, and one state per dirty file. A flush that keeps failing re-merges its snapshot, so they grow while SQLite refuses writes. |
+| Recorder buffers | one row per article written since the last flush, one state per dirty file, and one owed delete per untrusted file whose delete has not landed. A flush that keeps failing re-merges its snapshot, so they grow while SQLite refuses writes. |
 | `JobProgress.written` | one row per written or verified article of a file whose CRC is not yet settled; released at settle or untrust. |
 | `internalFileComplete` | cap 128. A full channel moves a Resumed completion to its own goroutine (§3). |
 | Decoder buffers | every `req.Data` returns to `decoder.PutBuffer` after write, error or discard. |
@@ -1216,10 +1244,12 @@ a green run does and does not bound.
 2. `complete=1` is written only after the file's fsync and trim, and never for
    a file whose fsync failed.
 3. A file whose fsync failed has no rows and no Done bits in memory once its
-   untrust has run, none in the recorder's buffer once the untrust's `apply`
-   took `wmu`, and none in SQLite once that `apply` succeeded; rows a failed or
-   timed-out `apply` leaves have `complete=0` and are read back before any is
-   trusted (§4).
+   untrust has run, none in the recorder's buffer once the untrust purged it,
+   and none in SQLite once a write carrying its delete succeeded — the
+   untrust's own, or a later flush, which carries the owed delete ahead of
+   the file's rows; until then the rows it leaves have `complete=0`, no write
+   can set `complete=1` over them, and a restart reads each back before any
+   is trusted (§4).
 4. No two written articles of a file have intersecting byte ranges, and an
    article owns a range only once its write succeeded.
 5. The whole-file CRC exists only for a gapless, non-overlapping chain of rows

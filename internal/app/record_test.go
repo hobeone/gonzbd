@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 	"testing"
 
@@ -240,6 +241,107 @@ func TestRecorder_UntrustPurgesPendingRows(t *testing.T) {
 	}
 	if n := st.rowCount(); n != 1 {
 		t.Errorf("rows = %d, want only file 1's row", n)
+	}
+}
+
+// owedOf is the owed deletes the recorder holds for j, by file.
+func owedOf(r *recorder, j *job.Job) map[int]uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return maps.Clone(r.owed[j])
+}
+
+// TestRecorder_UntrustWhoseWriteFailsOwesTheDeleteToTheNextFlush pins the
+// write-failure half of #827: the untrust's own ApplyRecord fails, so the
+// next flush carries the DeleteAll ahead of the rows noted since, leaves
+// complete to the file's newer state in the same batch, and settles the debt.
+func TestRecorder_UntrustWhoseWriteFailsOwesTheDeleteToTheNextFlush(t *testing.T) {
+	st := &fakeRecordStore{failNext: true}
+	j := newTestJob(t, "id")
+	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 1, ArtIdx: 0, Length: 10})
+	if err := r.untrust(context.Background(), j, 0); err == nil {
+		t.Fatal("want the injected store error")
+	}
+	if got := owedOf(r, j); len(got) != 1 || got[0] == 0 {
+		t.Fatalf("owed after the failed untrust = %v, want file 0", got)
+	}
+
+	// The refetch of article 1 and the file's completion.
+	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 20})
+	r.markDirty(j, 0, durability.FileState{FileIdx: 0, Complete: true})
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	b := st.snapshot()
+	if len(b) != 1 {
+		t.Fatalf("batches = %+v, want one", b)
+	}
+	if v := b[0].Verdicts; len(v) != 1 || v[0].FileIdx != 0 || !v[0].DeleteAll || v[0].ClearComplete {
+		t.Errorf("verdicts = %+v, want file 0's DeleteAll alone, with complete left to the batch's file state", v)
+	}
+	for _, row := range b[0].Rows {
+		if row.FileIdx == 0 && row.Length != 20 {
+			t.Errorf("the batch carries a row noted before the untrust: %+v", row)
+		}
+	}
+	if len(b[0].Rows) != 2 || len(b[0].Files) != 1 || !b[0].Files[0].Complete {
+		t.Errorf("batch = %+v, want file 1's row, the refetched row and file 0 complete", b[0])
+	}
+	if got := owedOf(r, j); len(got) != 0 {
+		t.Errorf("owed after the flush that carried it = %v, want none", got)
+	}
+}
+
+// TestRecorder_OwedDeleteIsWrittenOnItsOwn pins that a debt with nothing else
+// buffered still gets a batch, with ClearComplete since no file state is in
+// it, and is settled by it.
+func TestRecorder_OwedDeleteIsWrittenOnItsOwn(t *testing.T) {
+	st := &fakeRecordStore{failNext: true}
+	j := newTestJob(t, "id")
+	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	if err := r.untrust(context.Background(), j, 0); err == nil {
+		t.Fatal("want the injected store error")
+	}
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	b := st.snapshot()
+	if len(b) != 1 || len(b[0].Rows) != 0 || len(b[0].Files) != 0 {
+		t.Fatalf("batches = %+v, want one carrying the verdict alone", b)
+	}
+	if v := b[0].Verdicts; len(v) != 1 || v[0].FileIdx != 0 || !v[0].DeleteAll || !v[0].ClearComplete {
+		t.Errorf("verdicts = %+v, want file 0's DeleteAll + ClearComplete", v)
+	}
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.snapshot(); len(got) != 1 {
+		t.Errorf("a settled debt was written again: %+v", got[1:])
+	}
+}
+
+// TestRecorder_DropsTheDebtOfAReplacedInstance pins the instance check on the
+// owed deletes: a retry under the same ID verifies every row itself, so the
+// old instance's debt is dropped rather than carried or kept.
+func TestRecorder_DropsTheDebtOfAReplacedInstance(t *testing.T) {
+	st := &fakeRecordStore{failNext: true}
+	old, cur := newTestJob(t, "id"), newTestJob(t, "id")
+	r := newRecorder(st, func(string) *job.Job { return cur }, slog.Default())
+	if err := r.untrust(context.Background(), old, 0); err == nil {
+		t.Fatal("want the injected store error")
+	}
+	if err := r.flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.snapshot(); len(got) != 0 {
+		t.Errorf("a replaced instance's debt was written: %+v", got)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.owed) != 0 {
+		t.Errorf("owed = %v after the flush, want the replaced instance's entry dropped", r.owed)
 	}
 }
 
