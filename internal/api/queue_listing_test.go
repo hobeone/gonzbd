@@ -332,6 +332,49 @@ func TestQueueList_StatusFromSlots(t *testing.T) {
 	})
 }
 
+// TestQueueStatus covers queueStatus on RenderViews the listing fixtures
+// cannot reach: a job at Fetching waiting for a lease, one that finished
+// Fetching and waits to move on, a running job whose Reason would read as a
+// pause, and a settled job.
+func TestQueueStatus(t *testing.T) {
+	t.Parallel()
+	row := func(v job.RenderView) dispatch.Row { return dispatch.Row{ID: "x", View: v} }
+	fetching := job.StateView{State: job.Fetching}
+	tests := []struct {
+		name            string
+		rows            []dispatch.Row
+		paused          bool
+		wantStatus      string
+		wantDownloading bool
+	}{
+		{"empty", nil, false, "Idle", false},
+		{"empty, global pause", nil, true, "Paused", false},
+		{"fetching", []dispatch.Row{row(job.RenderView{StateView: fetching, Running: true})}, false, "Downloading", true},
+		{"global pause outranks fetching", []dispatch.Row{row(job.RenderView{StateView: fetching, Running: true})}, true, "Paused", false},
+		{"at Fetching waiting for a lease", []dispatch.Row{row(job.RenderView{StateView: fetching, Reason: job.NoLease})}, false, "Downloading", false},
+		{"not yet started", []dispatch.Row{row(job.RenderView{Reason: job.NoLease})}, false, "Downloading", false},
+		{"finished Fetching, waiting to move on", []dispatch.Row{row(job.RenderView{State: job.Fetching, Next: job.Assessing})}, false, "Idle", false},
+		{"waiting for a compute slot", []dispatch.Row{row(job.RenderView{State: job.Assessing})}, false, "Idle", false},
+		{"running post-processing", []dispatch.Row{row(job.RenderView{State: job.Extracting, Running: true})}, false, "Idle", false},
+		{"running, Reason not consulted", []dispatch.Row{row(job.RenderView{State: job.Extracting, Running: true, Reason: job.UserPaused})}, false, "Idle", false},
+		{"held", []dispatch.Row{row(job.RenderView{StateView: fetching, Reason: job.UserPaused})}, false, "Paused", false},
+		{"settled", []dispatch.Row{row(job.RenderView{State: job.Fetching, Outcome: job.OutcomeFailed})}, false, "Idle", false},
+		{"waiting outranks held", []dispatch.Row{
+			row(job.RenderView{StateView: fetching, Reason: job.UserPaused}),
+			row(job.RenderView{Reason: job.NoLease}),
+		}, false, "Downloading", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			status, downloading := queueStatus(tt.rows, tt.paused)
+			if status != tt.wantStatus || downloading != tt.wantDownloading {
+				t.Errorf("queueStatus = (%q, %v); want (%q, %v)", status, downloading, tt.wantStatus, tt.wantDownloading)
+			}
+		})
+	}
+}
+
 func TestFormatSpeed(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {

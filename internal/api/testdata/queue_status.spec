@@ -1,5 +1,5 @@
 pkg ./internal/api/
-run TestQueueList_StatusFromSlots
+run TestQueueList_StatusFromSlots|TestQueueStatus
 
 [any non-empty queue reads Downloading (#735)]
 file internal/api/queue.go
@@ -79,4 +79,44 @@ file internal/api/queue.go
 		return "Paused", false
 	}
 	return "Paused", false
+--- end
+
+[a running job's Reason is read]
+file internal/api/queue.go
+--- anchor
+		case v.Running || v.Outcome.IsSettled():
+--- replace
+		case v.Outcome.IsSettled():
+--- end
+
+[a settled job is classified]
+file internal/api/queue.go
+--- anchor
+		case v.Running || v.Outcome.IsSettled():
+--- replace
+		case v.Running:
+--- end
+
+[a job whose Fetching has ended still counts as waiting]
+file internal/api/queue.go
+--- anchor
+	return v.Next == job.StateUnset && (v.State == job.StateUnset || v.State == job.Fetching)
+--- replace
+	return v.State == job.StateUnset || v.State == job.Fetching
+--- end
+
+[a job at Fetching waiting for a lease is not waiting]
+file internal/api/queue.go
+--- anchor
+	return v.Next == job.StateUnset && (v.State == job.StateUnset || v.State == job.Fetching)
+--- replace
+	return v.Next == job.StateUnset && v.State == job.StateUnset
+--- end
+
+[a job not yet started is not waiting]
+file internal/api/queue.go
+--- anchor
+	return v.Next == job.StateUnset && (v.State == job.StateUnset || v.State == job.Fetching)
+--- replace
+	return v.Next == job.StateUnset && v.State == job.Fetching
 --- end
