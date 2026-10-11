@@ -1159,7 +1159,9 @@ to Outstanding unless its file is `complete=1` (`docs/durability-contract.md`
 `ForEachUnfinishedArticle`. Refusing either write therefore loses a failure or
 strands an article.
 
-With the manifest evicted, both write the bits alone and leave the counters to
+With the manifest evicted, `ClearArticleEmitted` writes the bit alone and
+`MarkArticleFailed` writes the bits and the failure's charge, so a reduced
+charge (#432) survives; both leave the counters to
 the `recompute` in `RestoreContent` at the next hydration. Until then
 `FailedBytes`, `PendingArticles` and `ArticlesFailed` lag the bits, and the
 early par2 release a resident failure triggers is not made: held volumes wait

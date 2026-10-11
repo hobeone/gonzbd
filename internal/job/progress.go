@@ -890,8 +890,8 @@ func (p *JobProgress) clone() *JobProgress {
 //
 // Between recomputes, markFailed and resetForReload maintain the value
 // incrementally; both take the manifest. While the manifest is evicted nothing
-// maintains it: Job.MarkArticleFailed sets the bits alone, and the value lags
-// them until RestoreContent recomputes at the next hydration.
+// maintains it: Job.MarkArticleFailed sets the bits and the charge alone, and
+// the value lags them until RestoreContent recomputes at the next hydration.
 func (p *JobProgress) recompute(m *Manifest) {
 	// m is passed in separately from p, and nothing here ties it to the
 	// manifest p was sized from (newJobProgress). A size
