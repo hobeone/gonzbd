@@ -833,11 +833,12 @@ and since priority is persisted with the header it survives a restart.
 
 The sort is numeric, so the header's other values rank by number too:
 `RepairPriority` (3) ahead of Force, and `PausedPriority` (-2),
-`StopPriority` (-4) and `DefaultPriority` (-100) behind Low. Ingest stores
-none of the sentinels: `config.ResolvePriority` resolves a request for
-Default through the category, then the Default/`*` category, to Normal.
-`SetPriority`, which the API's `name=priority` and `change_cat` call,
-still admits -100 and -4.
+`StopPriority` (-4) and `DefaultPriority` (-100) behind Low. A category's
+priority reaches the header through `config.ResolvePriority`, which resolves
+Default through the category, then the Default/`*` category, to Normal: at
+ingest, and when `change_cat` moves a job. `SetPriority` itself still admits
+-100 and -4, and the API's `name=priority` passes its value straight to it
+(#847).
 
 `ForcePriority` orders first and does nothing else: it obeys the global pause
 like every other priority, unlike SABnzbd's Force.

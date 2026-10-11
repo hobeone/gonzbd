@@ -963,7 +963,9 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = s.dispatcher.SetPP(nzoID, resolvedCat.PP)
 		_ = s.dispatcher.SetScript(nzoID, resolvedCat.Script)
-		_ = s.dispatcher.SetPriority(nzoID, resolvedCat.Priority)
+		// Resolved as ingest resolves it, so a category at DefaultPriority
+		// stores the inherited rank rather than -100.
+		_ = s.dispatcher.SetPriority(nzoID, int(config.ResolvePriority(cats, cat, constants.DefaultPriority)))
 		row, _ := s.dispatcher.Row(nzoID)
 		s.log.Info("job category changed", "job", nzoID,
 			"cat", row.Header.Category, "pp", row.Header.PP, "script", row.Header.Script, "priority", row.Header.Priority)
