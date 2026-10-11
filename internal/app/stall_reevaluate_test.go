@@ -24,7 +24,7 @@ func TestReevaluateStall_ResumesAJobWithNothingToRetry(t *testing.T) {
 		t.Fatalf("status = %v after Stall, want Paused", row.Status())
 	}
 
-	application.reevaluateStalls(t.Context())
+	application.reevaluateStalls(t.Context(), byResume)
 
 	row, ok := application.dispatcher.Row(job.ID())
 	if !ok || row.Status() == constants.StatusPaused {
@@ -47,7 +47,7 @@ func TestReevaluateStall_ForgetsADepartedJob(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	application.reevaluateStall(job.ID())
+	application.reevaluateStall(job.ID(), byResume)
 
 	if got := application.stalledJobIDs(); len(got) != 0 {
 		t.Errorf("stalledJobIDs = %v, want empty — a job that has left the queue has nothing "+

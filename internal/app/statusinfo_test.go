@@ -200,7 +200,7 @@ func TestStallReasons_ReportsEveryParkedJob(t *testing.T) {
 	application, _, _ := newLifecycleTestApp(t)
 	application.noteStall("stalled-only", &storagefault.Fault{
 		Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC,
-	}, true)
+	}, stallRetryable, true)
 
 	got := application.StallReasons()
 

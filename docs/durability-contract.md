@@ -431,12 +431,20 @@ or length, is dropped at install (`placeRows`) and costs its own article
 #### A verification fault parks the job; it never fails it
 
 `verifyJobFiles` returns an `*errVerifyFault` naming the file or directory.
-`Hydrate` classifies it through `storagefault.Classify`, calls `Application.Stall`
-with it — whether the fault classifies retryable or permanent — and returns an
-error wrapping `dispatch.ErrResidencyFault`, which `reconcileResidency` does not
-settle. The job stays non-resident and paused with a reason naming the file.
-Resuming it hydrates and verifies again. A sector that stays unreadable keeps
-the job parked until the operator acts — deleting the file sends it down the
+`Hydrate` classifies it through `storagefault.Classify`, parks the job through
+its `parked` callback, `Application.parkVerifyFault` — whether the fault
+classifies retryable or permanent — and returns an error wrapping
+`dispatch.ErrResidencyFault`, which `reconcileResidency` does not settle. The
+job stays non-resident and paused, with a reason naming the file in the queue
+listing's `stall_reason`.
+
+`parkVerifyFault` is `Stall` with the record marked `stallVerify`, which the
+timed re-evaluation leaves in place, pause and reason both (*Stalls and their
+re-evaluation*). Resuming the job hydrates and verifies it again. A sector
+that stays unreadable therefore keeps the job parked until a resume, and each
+resume costs one read-back pass — two when a per-job resume's own hydration
+faults before the re-evaluation that resume asks for has run, since that
+re-evaluation then lifts the new stall. Deleting the file sends it down the
 `ENOENT` arm and refetches it.
 
 A context error is returned as it is, parks nothing, and settles nothing.
@@ -788,10 +796,26 @@ resumes, the user's and the low-disk auto-resume, which share
 write or completion fault left the affected articles Outstanding, and a
 verification fault left the job non-resident, so a resumed job refetches and
 re-verifies through the ordinary paths. If the condition has not cleared, the
-next fault parks the job again.
+next fault parks the job again. The record is cleared before the job is
+resumed, so a fault the resumed job raises at once records a stall of its own.
+
+**A verification fault is lifted only by a resume.** `stallRecord.kind` is the
+latest fault's: `stallRetryable` from `Stall`, `stallVerify` from
+`parkVerifyFault`. The interval re-evaluation (`byTimer`) leaves a
+`stallVerify` record as it is, pause and reason; only `ReevaluateStalls`
+(`byResume`) lifts it. Resuming such a job on the interval would have the
+tick hydrate it again, re-reading every recorded row on the dispatcher's
+goroutine until it met the same unreadable range, once per interval for as
+long as the fault lasted (#828). `ReevaluateStalls` is called by the per-job
+resume and by `resumeLocked`
+(`git grep -n 'ReevaluateStalls()' -- '*.go' ':!*_test.go'` returns 5 lines:
+those two calls and three declarations), and `resumeLocked` serves both queue-wide
+resumes, so the low-disk auto-resume lifts a verification fault too, once
+per low-disk episode, at one read-back pass of each such job.
 
 **A re-evaluation only resumes a job THIS application parked.**
-`stallRecord.parked` is set only by `Stall`, and only when the job's intent was
+`stallRecord.parked` is set only by `Stall` and `parkVerifyFault`, which share
+one body (`Application.stall`), and only when the job's intent was
 not already `IntentPause` when `Stall` fired — a pause the user made first is
 left in place, and the re-evaluation clears only the reason. The intent `Stall`
 reads can be the user's pause, the application's own (a duplicate NZB or a
@@ -1094,9 +1118,11 @@ These are known, deliberate, and **not** claims about correctness. They are
 recorded here so the next reader does not mistake them for design.
 
 1. **Verification runs inside the dispatcher's tick.** A multi-GB resume holds
-   back that tick's launches. It is a per-job startup cost — a job is verified
-   at its first successful hydration after a restart, and again on a retry —
-   not a steady-state one. If it
+   back that tick's launches. It is a per-job cost paid at a restart, a
+   retry or a resume, not a steady-state one: a job is verified at its first
+   successful hydration after a restart, again on a retry, and once per
+   resume while it is parked on a verification fault (§3), which the timed
+   stall re-evaluation does not resume. If it
    matters, the follow-up is a `verified` gate in the dispatch plan with the
    read on the Fetching worker.
 
@@ -1131,7 +1157,10 @@ recorded here so the next reader does not mistake them for design.
    the job under its own deadline (`setNameLoadTimeout`, 10 minutes).
 
 2. **An unreadable sector, or a missing download directory, keeps the job
-   parked until the operator acts** (§3). Deleting the file refetches it; a
+   parked until it is resumed** (§3), with the fault as its `stall_reason`.
+   The resumes that lift it are the user's, per job or queue-wide, and the
+   low-disk auto-resume (*Stalls and their re-evaluation*); each costs one
+   read-back pass, or two (§3). Deleting the file refetches it; a
    directory the user deleted by hand also parks rather than refetching. A
    retry differs: it cannot tell an unmounted download root from a deleted
    job directory, and either way deletes the recorded rows and refetches

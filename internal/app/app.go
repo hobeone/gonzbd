@@ -450,7 +450,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	app.residency.finished = app.enqueueResumedCompletion
 	app.residency.peek = app.peekResumedFile
-	app.residency.parked = app.Stall
+	app.residency.parked = app.parkVerifyFault
 	app.runner = newAppRunner(app)
 	app.dispatcher = dispatch.New(
 		leaseCap,

@@ -116,7 +116,7 @@ func TestFail_OnAUserPausedJob_DefersWithoutResumingIt(t *testing.T) {
 				t.Fatalf("the user's pause: %v", err)
 			}
 			if tc.unparkedRec {
-				f.app.noteStall(f.j.ID(), assessFault(), false)
+				f.app.noteStall(f.j.ID(), assessFault(), stallRetryable, false)
 			}
 
 			f.app.Fail(f.j.ID(), assessFault())
