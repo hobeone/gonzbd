@@ -294,15 +294,6 @@ func (p *JobProgress) ArticleFailed(i int) bool {
 	return p.failed.Get(i)
 }
 
-// ArticleEmitted reports whether global article index i has an in-flight result
-// handed to the assembler but not yet made durable.
-func (p *JobProgress) ArticleEmitted(i int) bool {
-	if p == nil || i < 0 || i >= p.emitted.Len() {
-		return false
-	}
-	return p.emitted.Get(i)
-}
-
 // FileComplete reports whether file fileIdx has been fully assembled on disk.
 func (p *JobProgress) FileComplete(fi int) bool {
 	if p == nil || fi < 0 || fi >= len(p.files) {
@@ -319,14 +310,6 @@ func (p *JobProgress) FileFetchPolicy(fi int) FetchPolicy {
 		return FetchAlways
 	}
 	return p.files[fi].Fetch
-}
-
-// FilePending returns the count of not-yet-resolved articles in file fileIdx.
-func (p *JobProgress) FilePending(fi int) int {
-	if p == nil || fi < 0 || fi >= len(p.files) {
-		return 0
-	}
-	return p.files[fi].Pending
 }
 
 // FileBytesDownloaded returns the sum of successfully downloaded article bytes in file fileIdx.
@@ -370,28 +353,12 @@ func (p *JobProgress) PendingArticles() int {
 	return p.pendingArticles
 }
 
-// ArticlesResolved returns the count of articles that have resolved (success or failure).
-func (p *JobProgress) ArticlesResolved() int {
-	if p == nil {
-		return 0
-	}
-	return p.articlesResolved
-}
-
 // ArticlesFailed returns the count of articles that have permanently failed.
 func (p *JobProgress) ArticlesFailed() int {
 	if p == nil {
 		return 0
 	}
 	return p.articlesFailed
-}
-
-// EarlyAborted reports whether the early-abort heuristic has already fired for this job.
-func (p *JobProgress) EarlyAborted() bool {
-	if p == nil {
-		return false
-	}
-	return p.earlyAborted
 }
 
 // ContentFailedBytes returns the failed bytes that represent damaged content —

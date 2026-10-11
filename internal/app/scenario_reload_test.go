@@ -79,8 +79,8 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 					lo, hi := m.FileRange(fi)
 					t.Logf("  file[%d]: complete=%v articles=%d", fi, p.FileComplete(fi), hi-lo)
 					for i := lo; i < hi; i++ {
-						t.Logf("    article[%d]: done=%v failed=%v emitted=%v id=%s",
-							i-lo, p.ArticleDone(i), p.ArticleFailed(i), p.ArticleEmitted(i), m.ArticleID(i))
+						t.Logf("    article[%d]: done=%v failed=%v id=%s",
+							i-lo, p.ArticleDone(i), p.ArticleFailed(i), m.ArticleID(i))
 					}
 				}
 			}

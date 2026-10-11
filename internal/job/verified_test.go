@@ -443,8 +443,8 @@ func TestMarkArticleWritten_AcceptsAZeroLengthRow(t *testing.T) {
 		t.Fatalf("MarkArticleWritten of a zero-length article: %v", err)
 	}
 	p := j.Progress()
-	if !p.ArticleDone(4) || p.FilePending(1) != 0 {
-		t.Errorf("zero-length article Done = %v, file 1 pending = %d; want Done and nothing pending", p.ArticleDone(4), p.FilePending(1))
+	if !p.ArticleDone(4) || p.files[1].Pending != 0 {
+		t.Errorf("zero-length article Done = %v, file 1 pending = %d; want Done and nothing pending", p.ArticleDone(4), p.files[1].Pending)
 	}
 }
 

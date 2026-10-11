@@ -188,7 +188,7 @@ func TestProcessFetchedArticle_OffsetUnknownForPartIsTerminal(t *testing.T) {
 	if got := telemetry.ErrorCount(telemetry.ErrClassDecodeFailed); got != 0 {
 		t.Errorf("PipelineErrors[decode_failed] = %d, want 0 — the rejection must not double-count into the generic bucket", got)
 	}
-	if !j.Progress().ArticleEmitted(int(artIdx)) {
+	if !articleInFlight(t, j, artIdx) {
 		t.Error("article was not marked emitted — a terminal decode error must stop the dispatcher from re-picking it")
 	}
 }

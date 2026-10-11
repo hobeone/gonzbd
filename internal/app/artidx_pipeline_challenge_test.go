@@ -95,15 +95,17 @@ func TestPipeline_MultiFile_ArtIdx_EndToEnd(t *testing.T) {
 	// Mark article 3 (first article of File 1) done by ArtIdx
 	ackDoneIdx(t, disp, j.ID(), 3)
 
-	p := j.Progress()
-	if p.FilePending(0) != 3 {
-		t.Errorf("File 0 pending should be 3, got %d", p.FilePending(0))
+	pendingByFile := map[int]int{}
+	if err := j.ForEachUnfinishedArticle(func(fileIdx int, _ int32, _ string, _ int, _ int, _ string) bool {
+		pendingByFile[fileIdx]++
+		return true
+	}); err != nil {
+		t.Fatalf("ForEachUnfinishedArticle: %v", err)
 	}
-	if p.FilePending(1) != 1 {
-		t.Errorf("File 1 pending should be 1 (since 1 of 2 done), got %d", p.FilePending(1))
-	}
-	if p.FilePending(2) != 4 {
-		t.Errorf("File 2 pending should be 4, got %d", p.FilePending(2))
+	for fi, want := range map[int]int{0: 3, 1: 1, 2: 4} {
+		if got := pendingByFile[fi]; got != want {
+			t.Errorf("file %d still offers %d unfinished articles, want %d", fi, got, want)
+		}
 	}
 
 	// Mark all articles done by ArtIdx
@@ -113,11 +115,13 @@ func TestPipeline_MultiFile_ArtIdx_EndToEnd(t *testing.T) {
 	}
 	ackDoneIdx(t, disp, j.ID(), allIdxs...)
 
-	p = j.Progress()
+	p := j.Progress()
 	if p.PendingArticles() != 0 {
 		t.Errorf("Expected 0 pending articles after marking all done, got %d", p.PendingArticles())
 	}
-	if p.ArticlesResolved() != 9 {
-		t.Errorf("Expected 9 resolved articles, got %d", p.ArticlesResolved())
+	for i := range 9 {
+		if !p.ArticleDone(i) {
+			t.Errorf("article %d is not resolved after every article was acked done", i)
+		}
 	}
 }
