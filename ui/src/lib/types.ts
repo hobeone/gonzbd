@@ -43,7 +43,8 @@ export interface QueueSlot {
 	/** Why the job is parked on a storage fault — a full disk, a wedged
 	 *  mount — or absent when it is not. Render it; the backend has already
 	 *  decided that the condition is one the user can act on, and it is
-	 *  re-evaluated on an interval and when the job is resumed. */
+	 *  re-evaluated on an interval and when a job or the queue is resumed. A
+	 *  fault verifying the job's files is lifted only by resuming that job. */
 	stall_reason?: string;
 	/** Why a permanent storage fault stopped the job (R20/R27). Live only
 	 *  for the brief window before the job finalizes into history. */

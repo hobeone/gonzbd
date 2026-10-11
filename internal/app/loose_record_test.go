@@ -709,6 +709,11 @@ func TestLooseRecord_VerificationFaultParksNeverFails(t *testing.T) {
 	}
 
 	failing.Store(false)
+	// The user's per-job resume, as the API makes it: a re-evaluation alone
+	// does not lift a verification fault on a job nobody resumed.
+	if err := a2.dispatcher.ResumeJobByUser(j.ID()); err != nil {
+		t.Fatalf("ResumeJobByUser: %v", err)
+	}
 	a2.ReevaluateStalls()
 	lrWaitFor(t, "a resume to verify and attach the job", func() bool { return articleDone(j2, 1) })
 	if !articleDone(j2, 0) {

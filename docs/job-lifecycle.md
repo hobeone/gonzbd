@@ -1288,9 +1288,11 @@ treated alike:
   still live.
 - **A residency fault is a fact about the device.** Verification could not
   read a file of the job, or its directory is missing; `Hydrate` has parked the
-  job through `Application.Stall` and returns an error wrapping
+  job through `Application.parkVerifyFault` and returns an error wrapping
   `dispatch.ErrResidencyFault`, which is not settled. The tick does not
-  re-hydrate a paused job, so it is not re-read until it is resumed.
+  re-hydrate a paused job, and no stall re-evaluation resumes one parked
+  this way, so it is not re-read until the user resumes that job
+  (`docs/durability-contract.md` § "Stalls and their re-evaluation").
 
 Two further properties follow from the manifest being immutable after parse:
 
@@ -1419,7 +1421,7 @@ per-job deadline (`docs/durability-contract.md`, Accepted limitation 1); by
 `fileOwedUnwantedFailures`, before the first tick, for a restored job the
 archive peek owes a filing; or by a rename's `LoadProgress`. If verification
 cannot complete for a reason about the device, nothing is attached, the job is
-parked, and the next hydration starts again — so a job a hydration attached
+parked until the user resumes that job, and the next hydration starts again — so a job a hydration attached
 was verified first (a freshly ingested job has no rows to verify, and a retry
 verifies its rebuilt job itself in `verifyRetry`), and a later eviction and
 re-hydration (`RestoreContent`) has nothing to re-check.

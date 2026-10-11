@@ -35,7 +35,7 @@ func TestStallReason_ReportsNothingForAJobThatIsNotParked(t *testing.T) {
 func TestReevaluateStall_ForgetsAJobThatHasLeftTheQueue(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	application.noteStall("gone", testFault("write"), true)
+	application.noteStall("gone", testFault("write"), stallRetryable, true)
 
 	application.reevaluateStall("gone")
 
@@ -50,8 +50,8 @@ func TestReevaluateStall_ForgetsAJobThatHasLeftTheQueue(t *testing.T) {
 func TestReevaluateStalls_CoversEveryParkedJob(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	application.noteStall("gone-a", testFault("write"), true)
-	application.noteStall("gone-b", testFault("write"), true)
+	application.noteStall("gone-a", testFault("write"), stallRetryable, true)
+	application.noteStall("gone-b", testFault("write"), stallRetryable, true)
 
 	application.reevaluateStalls(t.Context())
 
@@ -66,8 +66,8 @@ func TestReevaluateStalls_CoversEveryParkedJob(t *testing.T) {
 func TestReevaluateStalls_StopsOnACancelledContext(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	application.noteStall("gone-a", testFault("write"), true)
-	application.noteStall("gone-b", testFault("write"), true)
+	application.noteStall("gone-a", testFault("write"), stallRetryable, true)
+	application.noteStall("gone-b", testFault("write"), stallRetryable, true)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

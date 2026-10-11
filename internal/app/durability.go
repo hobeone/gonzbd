@@ -182,6 +182,18 @@ func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx 
 // assembler drains and closes its files. The context test covers a SIGTERM-cancelled parent context, which
 // arrives without Shutdown having been entered.
 func (app *Application) Stall(jobID string, f *storagefault.Fault) {
+	app.stall(jobID, f, stallRetryable)
+}
+
+// parkVerifyFault is the residency's parked callback: Stall for a
+// verification that could not complete, recorded as stallVerify so that only
+// a resume of the job lifts it (docs/durability-contract.md §3).
+func (app *Application) parkVerifyFault(jobID string, f *storagefault.Fault) {
+	app.stall(jobID, f, stallVerify)
+}
+
+// stall is the body of Stall and parkVerifyFault; kind is what may lift it.
+func (app *Application) stall(jobID string, f *storagefault.Fault, kind stallKind) {
 	if app.stopping.Load() || (app.ctx != nil && app.ctx.Err() != nil) {
 		// Not silent (A2): the condition is real, and the next run's
 		// hydration verifies the job's files regardless.
@@ -211,7 +223,7 @@ func (app *Application) Stall(jobID string, f *storagefault.Fault) {
 			claimPause = false
 		}
 	}
-	app.noteStall(jobID, f, claimPause)
+	app.noteStall(jobID, f, kind, claimPause)
 	if app.dispatcher != nil {
 		// The pause is latched whatever the state, and PauseJob releases only
 		// a Fetching job's lease, the worker whose writes the fault
