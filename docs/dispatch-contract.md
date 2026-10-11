@@ -467,7 +467,7 @@ rows are registered, and so also while a restore is in progress. A job
 registered earlier would take its sequence before `restore` raised `nextSeq`
 past the stored keys, and would sort ahead of every stored row (#569).
 `restore` is the one writer of the phase that gates it
-(`git grep -n 'd\.phase = ' internal/dispatch` returns 2 lines, both in
+(`git grep -n '[.]phase = ' internal/dispatch` returns 2 lines, both in
 `restore`). `Dispatcher.Restore` runs the restore without launching the
 ticker, which is how a test adds jobs it then drives by `Tick`; `Start`
 restores only when `Restore` has not run. A second `Restore` is refused.

@@ -365,12 +365,17 @@ func TestRestore_RefusedWhenAlreadyRestoredOrStopped(t *testing.T) {
 		t.Errorf("second Restore = %v, want errAlreadyRestored", err)
 	}
 
-	stopped := newTestDispatcher(t, unrestored())
+	st := &fakeStore{}
+	st.seed([]Persisted{{ID: "stored", SortKey: 1, Header: Header{Name: "stored"}}})
+	stopped := newTestDispatcher(t, withStore(st), unrestored())
 	if err := stopped.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	if err := stopped.Restore(context.Background()); err == nil {
 		t.Error("Restore on a stopped Dispatcher returned nil")
+	}
+	if got := len(stopped.List()); got != 0 {
+		t.Errorf("a Restore refused after Stop registered %d stored rows, want 0", got)
 	}
 }
 
@@ -421,18 +426,50 @@ func TestRestoreHelper_PhaseBranches(t *testing.T) {
 		t.Errorf("second restore = %v, want errAlreadyRestored", err)
 	}
 
-	busy := newTestDispatcher(t, unrestored())
-	busy.mu.Lock()
-	busy.phase = phaseRestoring
-	busy.mu.Unlock()
-	if err := busy.restore(context.Background(), true); err == nil {
+	// A call made from inside another restore's Load, so the outer call holds
+	// phaseRestoring through restore itself rather than through a test write.
+	busySt := &fakeStore{}
+	busy := newTestDispatcher(t, withStore(busySt), unrestored())
+	var innerErr error
+	var innerPhase restorePhase
+	busySt.loadHook = func() {
+		busySt.loadHook = nil // an admitted inner restore would call Load, and so this hook, again
+		innerErr = busy.restore(context.Background(), true)
+		busy.mu.Lock()
+		innerPhase = busy.phase
+		busy.mu.Unlock()
+	}
+	if err := busy.restore(context.Background(), false); err != nil {
+		t.Fatalf("outer restore: %v", err)
+	}
+	if innerErr == nil {
 		t.Error("restore while one is in progress returned nil")
+	}
+	if innerPhase != phaseRestoring {
+		t.Errorf("phase after the refused inner restore = %d, want phaseRestoring", innerPhase)
 	}
 	busy.mu.Lock()
 	got := busy.phase
 	busy.mu.Unlock()
-	if got != phaseRestoring {
-		t.Errorf("a refused restore moved the phase to %d", got)
+	if got != phaseRestored {
+		t.Errorf("outer restore settled at phase %d, want phaseRestored", got)
+	}
+}
+
+// TestRestore_StoppedDuringRestoreIsReported pins that a Stop landing while
+// Restore's Store.Load runs makes Restore return an error rather than report
+// success for a terminal Dispatcher.
+func TestRestore_StoppedDuringRestoreIsReported(t *testing.T) {
+	st := &fakeStore{}
+	st.seed([]Persisted{{ID: "stored", SortKey: 1, Header: Header{Name: "stored"}}})
+	d := newTestDispatcher(t, withStore(st), unrestored())
+	var stopErr error
+	st.loadHook = func() { stopErr = d.Stop() }
+	if err := d.Restore(context.Background()); err == nil {
+		t.Error("Restore returned nil after a Stop landed inside it")
+	}
+	if stopErr != nil {
+		t.Errorf("Stop: %v", stopErr)
 	}
 }
 

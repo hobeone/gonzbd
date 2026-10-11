@@ -1,5 +1,5 @@
 pkg ./internal/dispatch/
-run TestAdd_RefusedBeforeRestore|TestAdd_RefusedWhileRestoring|TestStart_AfterRestoreKeepsStoredRowsAheadOfAddedJobs|TestRestore_RefusedWhenAlreadyRestoredOrStopped|TestRestore_RollsBackWhenALaterRowFails|TestAdd_RejectsADuplicateID|TestRestoreHelper_PhaseBranches
+run TestAdd_RefusedBeforeRestore|TestAdd_RefusedWhileRestoring|TestStart_AfterRestoreKeepsStoredRowsAheadOfAddedJobs|TestRestore_RefusedWhenAlreadyRestoredOrStopped|TestRestore_RollsBackWhenALaterRowFails|TestAdd_RejectsADuplicateID|TestRestoreHelper_PhaseBranches|TestRestore_StoppedDuringRestoreIsReported
 
 [Add admits a job before the stored rows are restored]
 file internal/dispatch/registry.go
@@ -69,4 +69,14 @@ file internal/dispatch/dispatch.go
 	settled := phaseUnrestored
 --- replace
 	settled := phaseRestored
+--- end
+
+[Restore reports success after a Stop landed inside it]
+file internal/dispatch/dispatch.go
+--- anchor
+	if stopped {
+		return errors.New("dispatch: Restore: stopped while restoring; this Dispatcher is terminal")
+--- replace
+	if stopped && false {
+		return errors.New("dispatch: Restore: stopped while restoring; this Dispatcher is terminal")
 --- end

@@ -111,7 +111,7 @@ type Dispatcher struct {
 	nextSeq int64
 
 	// phase records how far this Dispatcher has got in loading its stored
-	// rows. restore owns it: `git grep -n 'd\.phase = ' internal/dispatch`
+	// rows. restore owns it: `git grep -n '[.]phase = ' internal/dispatch`
 	// returns 2 lines, restore's claim and its deferred settle. Add refuses
 	// unless it reads phaseRestored; see Add (registry.go) for what an Add
 	// ahead of the stored rows costs.
@@ -710,10 +710,22 @@ var errAlreadyRestored = errors.New("the stored queue is already restored")
 // Start — which is what tests driving the queue through Tick do.
 //
 // It is refused on a Dispatcher that is stopped, already restored, or
-// restoring, and a failed Store.Load leaves it unrestored.
+// restoring, and a failed Store.Load leaves it unrestored. A Stop that lands
+// while it runs makes it return an error; the rows it registered stay
+// registered in the stopped Dispatcher, as they do when the same happens
+// inside StartWith.
 func (d *Dispatcher) Restore(ctx context.Context) error {
 	if err := d.restore(ctx, false); err != nil {
 		return fmt.Errorf("dispatch: Restore: %w", err)
+	}
+	// restore checks stopped only on entry and runs Store.Load unlocked, so a
+	// Stop can land inside it. Report that rather than a success, as
+	// StartWith does after its own restore.
+	d.mu.Lock()
+	stopped := d.stopped
+	d.mu.Unlock()
+	if stopped {
+		return errors.New("dispatch: Restore: stopped while restoring; this Dispatcher is terminal")
 	}
 	return nil
 }
