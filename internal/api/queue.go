@@ -381,6 +381,31 @@ func slotLabels(h dispatch.Header) []string {
 // varying ETAs (e.g. 100 hours when the meter dips for a moment).
 const noiseFloorBPS = 1024.0 // 1 KiB/s
 
+// queueStatus derives the queue-level status from the whole queue, before
+// any listing filter: "Paused" under the global pause, "Idle" when the queue
+// is empty, "Downloading" while at least one job is downloading, and
+// otherwise "Paused" — including when every job is individually paused.
+//
+// It reads the RenderView axes rather than branching on Row.Status(), which
+// dispatch documents as render-only. A job is downloading when it is running
+// at Fetching: the case job.ToSABnzbd renders as Downloading or Fetching.
+// Running already excludes a settled attempt (sched.Queue.running requires
+// Snapshot.IsOpen, which requires an unsettled Outcome).
+func queueStatus(rows []dispatch.Row, paused bool) string {
+	if paused {
+		return "Paused"
+	}
+	if len(rows) == 0 {
+		return "Idle"
+	}
+	for _, r := range rows {
+		if r.View.Running && r.View.State == job.Fetching {
+			return "Downloading"
+		}
+	}
+	return "Paused"
+}
+
 // queueSpeedFields returns the queue-level speed, kbpersec and timeleft.
 // speed is the request's snapshot in bytes per second, and remaining is the
 // bytes the ETA covers. timeleft stays "0:00:00" under the same conditions a
@@ -571,9 +596,11 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 
 	var slots []queueSlot
 	var paused bool
+	qStatus := "Idle"
 	if s.dispatcher != nil {
 		rows := s.dispatcher.List()
 		paused = s.dispatcher.Paused()
+		qStatus = queueStatus(rows, paused)
 		slots = s.filterQueueSlots(rows, catFilter, statusFilter, searchLower, paused, speed, duStatuses, stallReasons)
 	}
 
@@ -602,13 +629,6 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	slots = slots[start:]
 	if limit > 0 && limit < len(slots) {
 		slots = slots[:limit]
-	}
-
-	qStatus := "Idle"
-	if paused {
-		qStatus = "Paused"
-	} else if total > 0 {
-		qStatus = "Downloading"
 	}
 
 	speedStr, kbPerSec, timeleft := queueSpeedFields(speed, remainQueueBytes, paused)

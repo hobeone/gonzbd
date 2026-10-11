@@ -7,6 +7,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/humanfmt"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // queueLevel is the queue-level part of a mode=queue listing that these tests
@@ -111,6 +112,103 @@ func TestQueueList_TimeleftZeroWhenPaused(t *testing.T) {
 	if got := getQueueLevel(t, s, ""); got.Timeleft != "0:00:00" {
 		t.Errorf("timeleft = %q; want 0:00:00 while paused", got.Timeleft)
 	}
+}
+
+// TestQueueList_StatusFromSlots pins #735: the queue-level status is
+// Downloading only while some job is actually downloading.
+func TestQueueList_StatusFromSlots(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty queue is Idle", func(t *testing.T) {
+		t.Parallel()
+		s, _ := testQueueServer(t)
+		if got := getQueueLevel(t, s, ""); got.Status != "Idle" {
+			t.Errorf("status = %q; want Idle", got.Status)
+		}
+	})
+
+	t.Run("only job individually paused is Paused", func(t *testing.T) {
+		t.Parallel()
+		s, q := testQueueServer(t)
+		tj := addTestJob(t, q, testAddOptions{Filename: "held.nzb"})
+		if err := q.SetStatusIf(tj.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
+			t.Fatalf("SetStatusIf: %v", err)
+		}
+		if err := q.Pause(tj.ID); err != nil {
+			t.Fatalf("pause: %v", err)
+		}
+		got := getQueueLevel(t, s, "")
+		if got.Paused {
+			t.Fatal("queue.paused = true; this case needs the global pause off")
+		}
+		if got.Status != "Paused" {
+			t.Errorf("status = %q; want Paused (nothing is downloading)", got.Status)
+		}
+	})
+
+	t.Run("one downloading job beside a paused one is Downloading", func(t *testing.T) {
+		t.Parallel()
+		s, q := testQueueServer(t)
+		dl := addTestJob(t, q, testAddOptions{Filename: "running.nzb", Category: "movies"})
+		if err := q.SetStatusIf(dl.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
+			t.Fatalf("SetStatusIf: %v", err)
+		}
+		held := addTestJob(t, q, testAddOptions{Filename: "held.nzb", Category: "tv"})
+		if err := q.Pause(held.ID); err != nil {
+			t.Fatalf("pause: %v", err)
+		}
+		if got := getQueueLevel(t, s, ""); got.Status != "Downloading" {
+			t.Errorf("status = %q; want Downloading", got.Status)
+		}
+		// The status describes the queue, so a filter that selects only the
+		// paused job does not change it.
+		if got := getQueueLevel(t, s, "&cat=tv"); got.Status != "Downloading" {
+			t.Errorf("cat=tv: status = %q; want Downloading", got.Status)
+		}
+	})
+
+	// Downloading means fetching articles: a running job past Fetching is not
+	// downloading, so a queue holding only that job is not either.
+	t.Run("only job post-processing is not Downloading", func(t *testing.T) {
+		t.Parallel()
+		s, q := testQueueServer(t)
+		tj := addTestJob(t, q, testAddOptions{Filename: "pp.nzb"})
+		if err := q.SetStatusIf(tj.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
+			t.Fatalf("SetStatusIf: %v", err)
+		}
+		if _, err := q.SetPostProcStarted(tj.ID); err != nil {
+			t.Fatalf("SetPostProcStarted: %v", err)
+		}
+		row, ok := q.disp.Row(tj.ID)
+		if !ok || !row.View.Running || row.View.State == job.Fetching {
+			t.Fatalf("setup: want a running job past Fetching, got ok=%v view=%+v", ok, row.View)
+		}
+		if got := getQueueLevel(t, s, ""); got.Status != "Paused" {
+			t.Errorf("status = %q; want Paused (nothing is downloading)", got.Status)
+		}
+	})
+
+	t.Run("empty queue under global pause is Paused", func(t *testing.T) {
+		t.Parallel()
+		s, q := testQueueServer(t)
+		q.PauseAll()
+		if got := getQueueLevel(t, s, ""); got.Status != "Paused" {
+			t.Errorf("status = %q; want Paused", got.Status)
+		}
+	})
+
+	t.Run("global pause is Paused", func(t *testing.T) {
+		t.Parallel()
+		s, q := testQueueServer(t)
+		tj := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
+		if err := q.SetStatusIf(tj.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
+			t.Fatalf("SetStatusIf: %v", err)
+		}
+		q.PauseAll()
+		if got := getQueueLevel(t, s, ""); got.Status != "Paused" {
+			t.Errorf("status = %q; want Paused", got.Status)
+		}
+	})
 }
 
 func TestFormatSpeed(t *testing.T) {

@@ -961,6 +961,7 @@ to `modeConfig`'s default branch (`internal/api/config.go`).
 {
   "queue": {
     "version": 1,
+    "status": "Downloading",
     "paused": false,
     "pause_int": "0",
     "paused_all": false,
@@ -1023,6 +1024,10 @@ to `modeConfig`'s default branch (`internal/api/config.go`).
 
 GoNZBD's queue-level fields (`internal/api/queue.go`, `queueList`):
 
+- `status` describes the whole queue, whatever the filters select: `Paused`
+  while the global pause is on, `Idle` when the queue is empty, `Downloading`
+  while at least one job is downloading, and otherwise `Paused` — including
+  when every job is individually paused and the global pause is off.
 - `mb`, `mbleft`, `size` and `sizeleft` total every slot the `cat`, `status`
   and `search` filters select, before `start` and `limit` cut the page.
 - `speed` and `kbpersec` render one speed snapshot per request: `speed` in
