@@ -22,6 +22,11 @@ import (
 
 const verifyArt = 1024
 
+// verifyPrealloc is the fixture file's NZB-declared size, which is what the
+// writer preallocates (preallocSize): like a real post's encoded byte count,
+// it runs past the decoded bytes, here by 300.
+const verifyPrealloc = 4*verifyArt + 300
+
 // verifyFixture is one job of one file with four 1 KiB articles, written to
 // disk, and a row per article carrying the true CRC of its bytes.
 type verifyFixture struct {
@@ -52,7 +57,7 @@ func newVerifyFixture(t *testing.T) *verifyFixture {
 	f := &verifyFixture{
 		dl:   t.TempDir(),
 		name: "vjob",
-		m:    job.NewManifest([]job.JobFile{{Subject: "v.bin", Bytes: 4 * verifyArt, Articles: arts}}),
+		m:    job.NewManifest([]job.JobFile{{Subject: "v.bin", Bytes: verifyPrealloc, Articles: arts}}),
 		data: make([]byte, 4*verifyArt),
 	}
 	for i := range f.data {
@@ -69,6 +74,13 @@ func newVerifyFixture(t *testing.T) *verifyFixture {
 	f.files = []durability.FileRow{{FileIndex: 0, Filename: "v.bin"}}
 	f.resolve = in(filepath.Dir(f.path))
 	return f
+}
+
+// preallocated is b padded with zeros to the size the writer preallocates:
+// the file as it is on disk when every article was written and the
+// completion trim did not run.
+func (f *verifyFixture) preallocated(b []byte) []byte {
+	return append(slices.Clone(b), make([]byte, verifyPrealloc-len(b))...)
 }
 
 func (f *verifyFixture) write(t *testing.T, b []byte) {
@@ -201,7 +213,7 @@ func TestVerifyJobFiles_Outcomes(t *testing.T) {
 			name: "every article present and matching",
 			prepare: func(t *testing.T, f *verifyFixture) []durability.WrittenRow {
 				// Pre-allocation left a tail past the last article.
-				f.write(t, append(slices.Clone(f.data), make([]byte, 300)...))
+				f.write(t, f.preallocated(f.data))
 				return f.rows
 			},
 			want: outcome{
@@ -295,6 +307,32 @@ func TestVerifyJobFiles_Outcomes(t *testing.T) {
 				tc.after(t, f)
 			}
 		})
+	}
+}
+
+// TestVerifyJobFiles_KeepsARepairedFilePastAShortLastRow (#829): a file whose
+// last row is a correct but short prefix of its last article, and which is
+// longer than that row's end without being at its preallocated size, holds
+// bytes the rows do not describe and the writer did not preallocate — par2's
+// repaired copy, after a crash that kept complete=1 out of SQLite. The
+// restart finishes it, and must not cut it back to the row's end.
+func TestVerifyJobFiles_KeepsARepairedFilePastAShortLastRow(t *testing.T) {
+	t.Parallel()
+	f := newVerifyFixture(t)
+	const short = 100
+	last := f.rows[3]
+	last.Length -= short
+	last.CRC32 = crc32.ChecksumIEEE(f.data[last.Offset : last.Offset+last.Length])
+	rows := append(pick(f.rows, 0, 1, 2), last)
+
+	res, err := f.run(t, t.Context(), rows, false)
+	if err != nil {
+		t.Fatalf("verifyJobFiles: %v", err)
+	}
+	checkVerifyResult(t, res, []durability.FileVerdict{{FileIdx: 0, SetComplete: true}}, rows, nil, []int{0})
+	if got, want := fileSize(t, f.path), int64(len(f.data)); got != want {
+		t.Errorf("finished file size = %d, want %d: the finish cut the file back to its last row's end (%d)",
+			got, want, last.Offset+last.Length)
 	}
 }
 
@@ -519,18 +557,22 @@ func TestVerifyJobFiles_RetryDoesNotFinishOverAnIntersectionFailure(t *testing.T
 	}
 }
 
-// TestFinishFileByPath pins the bound rule: shrink to maxEnd, never grow, and
-// leave a file alone when no article gave it a bound.
+// TestFinishFileByPath pins the bound rule: a file at its preallocated size
+// shrinks to maxEnd; a file at any other size is left alone (#829); a file is
+// never grown, and is left alone when no article gave it a bound.
 func TestFinishFileByPath(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name         string
-		size, maxEnd int64
-		want         int64
+		name                   string
+		size, maxEnd, prealloc int64
+		want                   int64
 	}{
-		{"larger is truncated", 5000, 4096, 4096},
-		{"smaller is not grown", 3000, 4096, 3000},
-		{"no bound leaves it alone", 5000, 0, 5000},
+		{"larger, at its preallocated size, is truncated", 5000, 4096, 5000, 4096},
+		{"larger, under its preallocated size, is left alone", 4500, 4096, 5000, 4500},
+		{"larger, over its preallocated size, is left alone", 5500, 4096, 5000, 5500},
+		{"larger, with nothing preallocated, is left alone", 5000, 4096, 0, 5000},
+		{"smaller is not grown", 3000, 4096, 3000, 3000},
+		{"no bound leaves it alone", 5000, 0, 5000, 5000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -538,7 +580,7 @@ func TestFinishFileByPath(t *testing.T) {
 			if err := os.WriteFile(loc.Path(), make([]byte, tc.size), 0o600); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			if err := finishFileByPath(loc, tc.maxEnd); err != nil {
+			if err := finishFileByPath(loc, tc.maxEnd, tc.prealloc); err != nil {
 				t.Fatalf("finishFileByPath: %v", err)
 			}
 			if got := fileSize(t, loc.Path()); got != tc.want {
@@ -549,7 +591,7 @@ func TestFinishFileByPath(t *testing.T) {
 	t.Run("a missing file is an error naming it", func(t *testing.T) {
 		t.Parallel()
 		loc := jobFile{Dir: t.TempDir(), Name: "gone.bin"}
-		err := finishFileByPath(loc, 10)
+		err := finishFileByPath(loc, 10, 20)
 		if err == nil || !strings.Contains(err.Error(), loc.Path()) {
 			t.Errorf("err = %v, want an error naming %s", err, loc.Path())
 		}
@@ -572,14 +614,14 @@ func TestFinishFileByPath_FsyncsOnlyAfterATruncate(t *testing.T) {
 		{"larger is truncated", 5000, 4096, 1},
 		{"smaller is left alone", 3000, 4096, 0},
 		{"no bound leaves it alone", 5000, 0, 0},
-	} {
+	} { // each file is at its preallocated size, so only maxEnd decides
 		loc := jobFile{Dir: t.TempDir(), Name: "f.bin"}
 		if err := os.WriteFile(loc.Path(), make([]byte, tc.size), 0o600); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 		calls := 0
 		fsyncFile = func(f *os.File) error { calls++; return orig(f) }
-		if err := finishFileByPath(loc, tc.maxEnd); err != nil {
+		if err := finishFileByPath(loc, tc.maxEnd, tc.size); err != nil {
 			t.Fatalf("%s: finishFileByPath: %v", tc.name, err)
 		}
 		if calls != tc.want {
@@ -600,18 +642,19 @@ func TestFinishFileByPath_ReturnsTheFsyncErrorAfterATruncate(t *testing.T) {
 	orig := fsyncFile
 	t.Cleanup(func() { fsyncFile = orig })
 	fsyncFile = func(*os.File) error { return syscall.EIO }
-	err := finishFileByPath(loc, 4096)
+	err := finishFileByPath(loc, 4096, 5000)
 	if !errors.Is(err, syscall.EIO) {
 		t.Errorf("err = %v, want one wrapping EIO from the fsync after the truncate", err)
 	}
 }
 
-// outsideTarget writes data, with a 300-byte tail a finish would truncate, to
-// a file in a directory outside f's job directory, and returns its path.
+// outsideTarget writes data, padded to its preallocated size so a finish
+// would truncate it, to a file in a directory outside f's job directory, and
+// returns its path.
 func outsideTarget(t *testing.T, f *verifyFixture) string {
 	t.Helper()
 	target := filepath.Join(t.TempDir(), "outside.bin")
-	if err := os.WriteFile(target, append(slices.Clone(f.data), make([]byte, 300)...), 0o600); err != nil {
+	if err := os.WriteFile(target, f.preallocated(f.data), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	return target
@@ -670,7 +713,7 @@ func TestVerifierOpens_CloseTheirRoots(t *testing.T) {
 		t.Fatalf("readBackFile: %v", err)
 	}
 	assertClosed("readBackFile")
-	if err := finishFileByPath(f.loc(), int64(len(f.data))); err != nil {
+	if err := finishFileByPath(f.loc(), int64(len(f.data)), verifyPrealloc); err != nil {
 		t.Fatalf("finishFileByPath: %v", err)
 	}
 	assertClosed("finishFileByPath")
@@ -707,7 +750,7 @@ func TestVerifyJobFiles_SymlinkOutOfTheJobDirectoryIsAFault(t *testing.T) {
 	}
 	res, err := f.run(t, t.Context(), f.rows, false)
 	assertVerifyFault(t, res, err, f.path)
-	if got, want := fileSize(t, target), int64(len(f.data)+300); got != want {
+	if got, want := fileSize(t, target), int64(verifyPrealloc); got != want {
 		t.Errorf("outside file size = %d, want %d: the verifier truncated a file outside the job directory", got, want)
 	}
 }
@@ -725,10 +768,10 @@ func TestFinishFileByPath_RefusesASymlinkOutOfTheJobDirectory(t *testing.T) {
 	if err := os.Symlink(target, f.path); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
-	if err := finishFileByPath(f.loc(), int64(len(f.data))); err == nil {
+	if err := finishFileByPath(f.loc(), int64(len(f.data)), verifyPrealloc); err == nil {
 		t.Error("finishFileByPath through a link out of the job directory = nil, want an error")
 	}
-	if got, want := fileSize(t, target), int64(len(f.data)+300); got != want {
+	if got, want := fileSize(t, target), int64(verifyPrealloc); got != want {
 		t.Errorf("outside file size = %d, want %d", got, want)
 	}
 }
@@ -744,12 +787,13 @@ var siblingLinks = []struct {
 }
 
 // linkToSibling replaces f's file with a link made by link to a sibling
-// inside the same job directory holding f's bytes plus a 300-byte tail a
-// finish would truncate, and returns the sibling's path.
+// inside the same job directory holding f's bytes padded to their
+// preallocated size, which a finish would truncate, and returns the
+// sibling's path.
 func linkToSibling(t *testing.T, f *verifyFixture, link func(sibling, name string) error) string {
 	t.Helper()
 	sibling := filepath.Join(filepath.Dir(f.path), "sibling.bin")
-	if err := os.WriteFile(sibling, append(slices.Clone(f.data), make([]byte, 300)...), 0o600); err != nil {
+	if err := os.WriteFile(sibling, f.preallocated(f.data), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if err := os.Remove(f.path); err != nil {
@@ -781,7 +825,7 @@ func TestVerifyJobFiles_LinkToASiblingIsAFault(t *testing.T) {
 			}
 			res, err := f.run(t, t.Context(), f.rows, false)
 			assertVerifyFault(t, res, err, f.path)
-			if got, want := fileSize(t, sibling), int64(len(f.data)+300); got != want {
+			if got, want := fileSize(t, sibling), int64(verifyPrealloc); got != want {
 				t.Errorf("sibling size = %d, want %d: the verifier truncated a file through a link", got, want)
 			}
 		})
@@ -797,10 +841,10 @@ func TestFinishFileByPath_RefusesALinkToASibling(t *testing.T) {
 			t.Parallel()
 			f := newVerifyFixture(t)
 			sibling := linkToSibling(t, f, l.link)
-			if err := finishFileByPath(f.loc(), int64(len(f.data))); err == nil {
+			if err := finishFileByPath(f.loc(), int64(len(f.data)), verifyPrealloc); err == nil {
 				t.Error("finishFileByPath through a link to a sibling = nil, want an error")
 			}
-			if got, want := fileSize(t, sibling), int64(len(f.data)+300); got != want {
+			if got, want := fileSize(t, sibling), int64(verifyPrealloc); got != want {
 				t.Errorf("sibling size = %d, want %d", got, want)
 			}
 		})

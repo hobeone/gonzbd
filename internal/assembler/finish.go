@@ -13,7 +13,8 @@ import (
 //
 // The sequence is fsutil.ShrinkAndSync, run through w.syncFile so a test can
 // inject a device error. The restart verifier's finish applies the same
-// truncate rule through fsutil.ShrinkAfterSync, without the first fsync. A file with no owned
+// truncate rule through fsutil.ShrinkAfterSync, without the first fsync, and
+// only to a file still at its preallocated size. A file with no owned
 // range is left at its preallocated size rather than truncated to zero, and a
 // file already no longer than its last owned end is not grown. A returned error
 // is a *storagefault.Fault, classified as on every other writer path.
