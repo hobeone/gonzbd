@@ -162,7 +162,7 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 		return res, res.Err
 	}
 
-	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts)
+	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, false)
 	if pubErr != nil {
 		res.Err = fmt.Errorf("7zip: publish staged files: %w", pubErr)
 		return res, res.Err

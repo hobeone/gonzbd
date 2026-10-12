@@ -1146,8 +1146,32 @@ articles or sparse regions.
    hand-off cannot leave the collected unpacker awaited without its volume
    (`TestHandOff_LastFileCompletingAtTheCollect_LeavesNoUnpackerAwaitedWithoutAVolume`).
 9. **Path traversal safety**: `extractEntries` opens an `os.Root` anchored at
-   `extractDir` and writes every entry through it, so archive entries with `..`
-   components, absolute paths, or symlinked path components cannot escape.
+   the set's staging directory and writes every entry through it, so archive
+   entries with `..` components, absolute paths, or symlinked path components
+   cannot escape.
+10. **A set is staged, and published whole or not at all** (#855): `extractSet`
+    extracts each set through `unpack.ExtractStaged` into a
+    `.gonzbd-tmp-unpack-*` directory inside `extractDir` (the job directory).
+    Only when extraction, the volume feed and the corrupt-set backstop all pass
+    are the set's regular files renamed into `extractDir` by
+    `publishStagedExtraction`; under `flat_unpack` without `overwrite_files` a
+    name the job directory already holds is published under a `_N` name, as
+    `ExtractMember` does inside the stage. A failed or aborted set has its stage
+    removed and leaves nothing in the job directory, so the unpack stage's
+    re-extraction of it meets no earlier copy
+    (`TestDirectUnpack_FailedSetLeavesNothingInTheJobDir`,
+    `TestDirectUnpack_AbortedSetLeavesNothingInTheJobDir`,
+    `TestDirectUnpack_FailedSetReextractedFlatHasNoDuplicate`). A stage left
+    by a crash is removed by `unpack.CleanupStageDirs`, which `sweepTempFiles`
+    runs at the start of post-processing and `ExtractStaged` runs before
+    making a stage. Members that did reach the job directory are extracted
+    again by the unpack stage whenever the set is missing from
+    `DirectUnpackSets`, and under `flat_unpack` without `overwrite_files` a
+    `go_unrar` re-extraction writes `_N` copies of them (external `unrar`
+    skips the taken names). The cases found: a publish that fails
+    part way, a set that succeeded before `Abort`, whose success `Abort` clears
+    (item 8), and a restart before post-processing, which loses the in-memory
+    result (item 2).
 
 ## Memory & allocation budget
 
@@ -1258,8 +1282,12 @@ recorded here so the next reader does not mistake them for design.
    the job directory stays a fault on both paths.
 
 3. **A file whose last article was written while its job was evicted is not
-   marked complete in this process.** `MarkFileComplete` needs the manifest,
-   so `completeFinalizedFile` reports the completion undelivered; the file's
+   marked complete in this process.** The CRC settle, the archive peek and
+   the DirectUnpack feed that precede the mark need the manifest and do
+   nothing for an evicted job, so `completeFinalizedFile` checks residency
+   before the mark and reports the completion undelivered (`MarkFileComplete`
+   itself needs only progress, so an eviction after that check still takes
+   the mark); the file's
    rows are in the record, so the next start's verification finishes it by
    path. The window is reachable only through `Shutdown`, which evicts after
    the assembler has stopped, and `Remove`, after which no job is left to

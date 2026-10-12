@@ -603,7 +603,7 @@ describe('QueueRow', () => {
 
 		it.each([
 			['intact', 'Healthy', false],
-			['repairable', 'Repairable', false],
+			['repairable', 'Within repair data', false],
 			['unknown', 'Repair data unknown', false],
 			['no_capacity', 'No repair data', true],
 			['beyond_capacity', 'Beyond repair', true]
@@ -611,6 +611,11 @@ describe('QueueRow', () => {
 			const health = await healthOf(state, 200);
 			expect(health.textContent).toBe(text);
 			expect(/text-red/.test(health.className)).toBe(isRed);
+		});
+
+		it('explains in a tooltip that within-capacity is not a proven repair', async () => {
+			const health = await healthOf('repairable', 200);
+			expect(health.getAttribute('title')).toMatch(/not (a guarantee|proven)/i);
 		});
 
 		// The two states the backend uses to decline a verdict must never render

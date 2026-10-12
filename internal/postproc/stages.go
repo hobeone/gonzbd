@@ -181,6 +181,18 @@ type Job struct {
 	outputFilesSet bool
 	outputFilesErr error
 
+	// outputFiles is the job's file list exported to scripts as SAB_FILES:
+	// sorted, slash-separated paths relative to DownloadDir as the script
+	// stage sees it. outputFilesErr is set instead when finalize could not
+	// produce one. They are assigned only inside recordOutputFiles and
+	// recordOutputFilesErr (`git grep -n 'j\.outputFiles[A-Za-z]* = ' -- '*.go' ':!*_test.go'`
+	// finds 6 lines, all in stage_finalize.go) and read by outputFileList;
+	// neither is persisted, so a job reloaded after a restart has neither
+	// (see the delivered-recovery branch in postproc.go).
+	outputFiles    []string
+	outputFilesSet bool
+	outputFilesErr error
+
 	// Sanitize defines the naming replacement options for this job.
 	Sanitize fsutil.SanitizeOptions
 

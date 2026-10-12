@@ -49,6 +49,17 @@ echo "==> multi_new.partNN.rar"
 # rar creates multi_new.part1.rar, multi_new.part2.rar, etc.
 echo "   Created: $(ls "$OUTDIR"/multi_new.part*.rar 2>/dev/null | tr '\n' ' ')"
 
+# --- Multi-volume RAR5 with two members ---
+# first.txt ends in volume 1 and second.txt spans the rest, so a damaged later
+# volume fails the set after its first member is already extracted. Stored
+# (-m0), so a byte flipped in a middle volume lands in second.txt's data.
+echo "==> two_members.partN.rar"
+echo "first member, complete in volume 1" > "$TMPDIR/first.txt"
+for i in $(seq 0 199); do
+	printf 'second member line %04d\n' "$i"
+done > "$TMPDIR/second.txt"
+( cd "$TMPDIR" && rar a -ma5 -m0 -ep -v1k "$(cd - >/dev/null && pwd)/$OUTDIR/two_members.rar" first.txt second.txt >/dev/null )
+
 # --- Password-protected RAR5 ---
 echo "==> password_rar5.rar (password: 'testpass')"
 ( cd "$TMPDIR" && rar a -ptestpass "$(cd - >/dev/null && pwd)/$OUTDIR/password_rar5.rar" file1.txt >/dev/null )

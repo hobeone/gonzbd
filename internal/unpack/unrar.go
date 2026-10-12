@@ -280,7 +280,7 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 				var stageSnap map[string]struct{}
 				stageSnap, snapErr = snapshotDir(stageDir)
 				if snapErr == nil && len(stageSnap) > 0 {
-					published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts)
+					published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, false)
 					if pubErr != nil {
 						res.Err = fmt.Errorf("unrar: publish staged files: %w", pubErr)
 						return res, res.Err
@@ -318,7 +318,7 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 		return res, res.Err
 	}
 
-	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts)
+	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, false)
 	if pubErr != nil {
 		res.Err = fmt.Errorf("unrar: publish staged files: %w", pubErr)
 		return res, res.Err
