@@ -413,23 +413,33 @@ func (h *verdictRecorder) WithGroup(name string) slog.Handler {
 }
 
 // addCandidateFiles registers each of candidates with the decoder via
-// AddCandidateFile and returns how many it registered. A candidate is a path,
-// absolute or relative to parDir (the par2 file's directory), to a file under
-// parDir: par2engine takes it relative to parDir and refuses one that leaves
-// it. The caller chooses the list; this reads no directory. A candidate that
-// cannot be registered is skipped, and the returned error names each one.
+// AddCandidateFile and returns how many it registered. parDir (the par2
+// file's directory) and each candidate are paths as the caller would open
+// them, absolute or relative to the working directory; both are made absolute
+// before the candidate is taken relative to parDir, because par2engine
+// resolves it under parDir and refuses one that leaves it. The caller chooses
+// the list; this reads no directory. A candidate that cannot be registered is
+// skipped, and the returned error names each one.
 func addCandidateFiles(d *par2engine.Decoder, parDir string, candidates []string) (int, error) {
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+	absDir, err := filepath.Abs(parDir)
+	if err != nil {
+		return 0, fmt.Errorf("resolve %s: %w", parDir, err)
+	}
 	var n int
 	var errs []error
 	for _, c := range candidates {
-		rel := c
-		if filepath.IsAbs(c) {
-			r, err := filepath.Rel(parDir, c)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", c, err))
-				continue
-			}
-			rel = r
+		abs, err := filepath.Abs(c)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", c, err))
+			continue
+		}
+		rel, err := filepath.Rel(absDir, abs)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", c, err))
+			continue
 		}
 		if err := d.AddCandidateFile(rel); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", c, err))

@@ -731,10 +731,11 @@ func TestNewDecoder_InvalidParfile_ReturnsError(t *testing.T) {
 
 // ---------- addCandidateFiles ----------
 
-// TestAddCandidateFiles_RegistersAbsoluteAndRelativePaths calls
-// addCandidateFiles against a real *par2engine.Decoder with one absolute and
-// one relative candidate, and requires both to count.
-func TestAddCandidateFiles_RegistersAbsoluteAndRelativePaths(t *testing.T) {
+// TestAddCandidateFiles_RegistersAbsolutePaths calls addCandidateFiles
+// against a real *par2engine.Decoder with two absolute candidates, and
+// requires both to count. TestGoRepair_RelativeDownloadDir_FindsCandidates
+// covers relative ones.
+func TestAddCandidateFiles_RegistersAbsolutePaths(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -749,7 +750,7 @@ func TestAddCandidateFiles_RegistersAbsoluteAndRelativePaths(t *testing.T) {
 	}
 	defer d.Close() //nolint:errcheck // read-only
 
-	n, err := addCandidateFiles(d, dir, []string{filepath.Join(dir, "data.bin"), "extra.txt"})
+	n, err := addCandidateFiles(d, dir, []string{filepath.Join(dir, "data.bin"), filepath.Join(dir, "extra.txt")})
 	if err != nil {
 		t.Fatalf("addCandidateFiles: %v", err)
 	}
@@ -780,6 +781,34 @@ func TestAddCandidateFiles_PathOutsideParDir_IsRefused(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("count = %d, want 1 (data.bin)", n)
+	}
+}
+
+// TestGoRepair_RelativeDownloadDir_FindsCandidates pins that candidates and
+// parfile given relative to the working directory, as a relative download_dir
+// (the default) produces them, still reach the engine: the only copy of the
+// protected file is a candidate under another name, so repair succeeds only
+// if that candidate is found.
+func TestGoRepair_RelativeDownloadDir_FindsCandidates(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join("Downloads", "incomplete", "job")
+	if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyPar2Fixtures(t, filepath.Join(root, dir)) // the fixture path is relative to the package
+	t.Chdir(root)
+	mainFile := filepath.Join(dir, "data.par2")
+	if err := os.Rename(filepath.Join(dir, "data.bin"), filepath.Join(dir, "renamed.bin")); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := GoRepair(context.Background(), discardLogger(), mainFile,
+		[]string{filepath.Join(dir, "renamed.bin")}, nil)
+	if err != nil {
+		t.Fatalf("GoRepair: %v", err)
+	}
+	if strings.Contains(res.Output, "could not register") || !res.Success {
+		t.Errorf("Success = %v with the protected file's only copy among the candidates\nOutput: %s", res.Success, res.Output)
 	}
 }
 
