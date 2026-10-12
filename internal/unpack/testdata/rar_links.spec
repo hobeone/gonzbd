@@ -88,7 +88,7 @@ file internal/unpack/unrar.go
 	if true {
 --- end
 
-[ExtractedEntryExists includes directories]
+[extractedEntryExists includes directories]
 file internal/unpack/rar_links.go
 --- anchor
 	return !fh.IsDir && fh.LinkType == rarengine.LinkNone

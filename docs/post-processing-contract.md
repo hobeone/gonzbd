@@ -354,11 +354,11 @@ changes the other.
 
 Where each extractor enforces it:
 
-- **Pure-Go RAR** (`go_unrar` and DirectUnpack): `ExtractEntryRarengine` skips
-  every member whose `LinkType` is not `LinkNone`, before reading it. Those are
-  its two callers: `git grep -n 'ExtractEntryRarengine(' -- '*.go' ':!*_test.go'`
-  returns 3 lines, the definition in `internal/unpack/go_unrar.go` and the calls
-  there and in `internal/directunpack/directunpack.go`. A RAR5 file reference
+- **Pure-Go RAR** (`go_unrar` and DirectUnpack): `extractEntryRarengine` skips
+  every member whose `LinkType` is not `LinkNone`, before reading it. Both
+  extractors reach it through `ExtractMember`, its only production caller:
+  `git grep -n 'extractEntryRarengine(' -- '*.go' ':!*_test.go'` returns 2
+  lines, the definition and the call, both in `internal/unpack/go_unrar.go`. A RAR5 file reference
   (`rar -oi`) is skipped too: it names its source by path, and resolving that
   path in the job directory could copy a file that is not a member of the set,
   any number of times.
@@ -492,7 +492,7 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    own per-member checksum is not enough on its own: `go_rar` verifies CRC32
    and plain BLAKE2sp digests, but cannot check a key-derived MAC digest, an encrypted
    member's BLAKE2sp digest (rarengine hashes only a member that is not
-   encrypted and not MAC-keyed), or a header that records no digest (`unpack.CloseMember` filters
+   encrypted and not MAC-keyed), or a header that records no digest (`closeMember` filters
    `ErrChecksumUnsupported`), `go_7z` skips a member that records no CRC,
    and damage in a stored archive's member passes through. A set
    `extracted_repair` cannot verify or repair sets `ParError`, which fails

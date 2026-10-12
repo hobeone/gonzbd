@@ -10,30 +10,30 @@ run TestDirectUnpacker_ExtractMember
 [DirectUnpack ignores the name check]
 file internal/unpack/go_unrar.go
 --- anchor
-	sp, ok := MemberPath(fh.Name, opts, log)
+	sp, ok := memberPath(fh.Name, opts, log)
 	if !ok {
 --- replace
-	sp, ok := MemberPath(fh.Name, opts, log)
+	sp, ok := memberPath(fh.Name, opts, log)
 	if false && !ok {
 --- end
 
 [DirectUnpack drops the close verdict of a member skipped for its name]
 file internal/unpack/go_unrar.go
 --- anchor
-		return "", "", CloseMember(entry)
+		return "", "", closeMember(entry)
 --- replace
-		_ = CloseMember(entry)
+		_ = closeMember(entry)
 		return "", "", nil
 --- end
 
 [DirectUnpack drops the close verdict of a written member]
 file internal/unpack/go_unrar.go
 --- anchor
-	if err := CloseMember(entry); err != nil {
+	if err := closeMember(entry); err != nil {
 		return "", "", err
 	}
 --- replace
-	_ = CloseMember(entry)
+	_ = closeMember(entry)
 --- end
 
 [DirectUnpack drops the member step's error]

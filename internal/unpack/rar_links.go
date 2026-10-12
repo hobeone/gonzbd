@@ -15,9 +15,9 @@ import (
 // change the other. A media download has no need for any of them, and
 // skipping one costs only that member.
 
-// ExtractedEntryExists reports whether the entry belongs in a result's file
+// extractedEntryExists reports whether the entry belongs in a result's file
 // list: a regular member does, a directory or link member does not.
-func ExtractedEntryExists(fh *rarengine.FileHeader) bool {
+func extractedEntryExists(fh *rarengine.FileHeader) bool {
 	return !fh.IsDir && fh.LinkType == rarengine.LinkNone
 }
 

@@ -4,7 +4,7 @@ run TestMemberPath|TestExtractMember
 # The per-member name check of the RAR extraction loops, and the go_unrar
 # member step that applies it and reports each member's close verdict.
 
-[MemberPath accepts every name]
+[memberPath accepts every name]
 file internal/unpack/sanitized_path.go
 --- anchor
 	if err != nil {
@@ -17,28 +17,28 @@ file internal/unpack/sanitized_path.go
 [go_unrar's member step ignores the name check]
 file internal/unpack/go_unrar.go
 --- anchor
-	sp, ok := MemberPath(fh.Name, opts, log)
+	sp, ok := memberPath(fh.Name, opts, log)
 	if !ok {
 --- replace
-	sp, ok := MemberPath(fh.Name, opts, log)
+	sp, ok := memberPath(fh.Name, opts, log)
 	if false && !ok {
 --- end
 
 [go_unrar drops the close verdict of a member skipped for its name]
 file internal/unpack/go_unrar.go
 --- anchor
-		return "", "", CloseMember(entry)
+		return "", "", closeMember(entry)
 --- replace
-		_ = CloseMember(entry)
+		_ = closeMember(entry)
 		return "", "", nil
 --- end
 
 [go_unrar drops the close verdict of a written member]
 file internal/unpack/go_unrar.go
 --- anchor
-	if err := CloseMember(entry); err != nil {
+	if err := closeMember(entry); err != nil {
 		return "", "", err
 	}
 --- replace
-	_ = CloseMember(entry)
+	_ = closeMember(entry)
 --- end
