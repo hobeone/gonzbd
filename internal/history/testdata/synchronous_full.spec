@@ -19,8 +19,7 @@ file internal/history/db.go
 	}
 
 	if err := sqlDB.PingContext(ctx); err != nil {
-		_ = sqlDB.Close() // superseded by ping error
-		return nil, fmt.Errorf("error pinging database: %s, %w", path, err)
+		return nil, errors.Join(fmt.Errorf("error pinging database: %s, %w", path, err), sqlDB.Close())
 	}
 
 	// WAL mode is database-scoped (persists on disk) — only needs
@@ -34,13 +33,11 @@ file internal/history/db.go
 	}
 
 	if err := sqlDB.PingContext(ctx); err != nil {
-		_ = sqlDB.Close() // superseded by ping error
-		return nil, fmt.Errorf("error pinging database: %s, %w", path, err)
+		return nil, errors.Join(fmt.Errorf("error pinging database: %s, %w", path, err), sqlDB.Close())
 	}
 
 	if _, err := sqlDB.ExecContext(ctx, "PRAGMA synchronous=FULL"); err != nil {
-		_ = sqlDB.Close()
-		return nil, err
+		return nil, errors.Join(err, sqlDB.Close())
 	}
 
 	// WAL mode is database-scoped (persists on disk) — only needs
@@ -58,8 +55,7 @@ file internal/history/db.go
 	}
 
 	if err := sqlDB.PingContext(ctx); err != nil {
-		_ = sqlDB.Close() // superseded by ping error
-		return nil, fmt.Errorf("error pinging database: %s, %w", path, err)
+		return nil, errors.Join(fmt.Errorf("error pinging database: %s, %w", path, err), sqlDB.Close())
 	}
 
 	// WAL mode is database-scoped (persists on disk) — only needs
@@ -73,13 +69,11 @@ file internal/history/db.go
 	}
 
 	if err := sqlDB.PingContext(ctx); err != nil {
-		_ = sqlDB.Close() // superseded by ping error
-		return nil, fmt.Errorf("error pinging database: %s, %w", path, err)
+		return nil, errors.Join(fmt.Errorf("error pinging database: %s, %w", path, err), sqlDB.Close())
 	}
 
 	if _, err := sqlDB.ExecContext(ctx, "PRAGMA foreign_keys=1; PRAGMA busy_timeout=5000"); err != nil {
-		_ = sqlDB.Close()
-		return nil, err
+		return nil, errors.Join(err, sqlDB.Close())
 	}
 
 	// WAL mode is database-scoped (persists on disk) — only needs
