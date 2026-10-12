@@ -22,6 +22,10 @@ type Config struct {
 	Servers       []ServerConfig     `yaml:"servers" json:"servers"`
 	Categories    []CategoryConfig   `yaml:"categories" json:"categories"`
 	Notifications NotificationConfig `yaml:"notifications,omitempty" json:"notifications"`
+
+	// generated is set by Load when it generated a key, and cleared by
+	// PersistGeneratedKeys once the key is in the file.
+	generated *generatedKeys
 }
 
 // GetGeneral returns a value-copy snapshot of the GeneralConfig section,

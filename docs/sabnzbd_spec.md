@@ -667,8 +667,8 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `https_port` | int | `0` | HTTPS port (0=disabled) |
 | `https_cert` | path | | TLS certificate path |
 | `https_key` | path | | TLS key path |
-| `api_key` | string | (generated) | 16-char hex API key |
-| `nzb_key` | string | (generated) | 16-char hex NZB upload key |
+| `api_key` | string | (generated) | 16-char hex API key; empty or left out, generated at start and written back to the file |
+| `nzb_key` | string | (generated) | 16-char hex NZB upload key; generated like `api_key` |
 | `local_ranges` | list | | Client IP ranges (CIDRs or bare IPs) trusted to receive/use the web UI session cookie, in addition to loopback (always trusted). Empty = loopback-only; non-loopback clients (LAN/Docker/reverse-proxy) get no admin cookie unless listed. Does not affect API-key/NZB-key auth. |
 | `verify_xff_header` | bool | `false` | When true, every hop in the header named by `trusted_forward_header` must also be trusted once the direct peer qualifies. When false, trust is based on the peer alone, except that a loopback peer with any forwarding header present fails closed (a same-host reverse proxy makes the peer look loopback regardless of the real client); a non-loopback peer in `local_ranges` is trusted with or without a forwarding header. Set true to also require every forwarded hop to be trusted. Never consulted for an untrusted peer, so it cannot be spoofed. |
 | `trusted_forward_header` | string | `""` (→ `x-forwarded-for`) | Which single forwarding header your reverse proxy actually manages: `x-forwarded-for`, `forwarded` (RFC 7239), or `x-real-ip`. Only consulted when `verify_xff_header` is true. The other two headers are ignored for hop-trust purposes even if present — this prevents a client from injecting a forged value into whichever header you're not relying on (mirrors nginx's `real_ip_header` directive). |

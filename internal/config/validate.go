@@ -73,7 +73,7 @@ var (
 
 // keyRemedy is the refusal for an api_key or nzb_key that does not match
 // apiKeyPattern.
-const keyRemedy = "must be 16 lowercase hex characters; generate one with `openssl rand -hex 8`"
+const keyRemedy = "must be 16 lowercase hex characters; generate one with `openssl rand -hex 8`, or leave it empty for gonzbd to generate one at start"
 
 // validateUniqueNames returns an error if any name appears more than once.
 // Empty names are reported as a separate "must not be empty" error.

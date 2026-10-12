@@ -136,10 +136,16 @@ func usage() {
 // that generated default is written back to configPath: serve mode persists
 // it so the file exists on disk for the operator to edit; one-shot (--nzb)
 // mode does not bother, since it isn't expected to be re-run against the
-// same path the way the daemon is.
+// same path the way the daemon is. persist likewise decides whether an
+// api_key/nzb_key Load generated for an existing file is written back to it.
 func loadOrCreateConfig(configPath string, persist bool) (*config.Config, error) {
 	cfg, err := config.Load(configPath)
 	if err == nil {
+		if persist {
+			if err := cfg.PersistGeneratedKeys(); err != nil {
+				return nil, fmt.Errorf("load config: %w", err)
+			}
+		}
 		return cfg, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {

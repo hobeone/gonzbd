@@ -123,6 +123,11 @@ func TestLoadAndSetAgree(t *testing.T) {
 	t.Setenv(unsetEnvVar, "")
 	for _, a := range setAttempts() {
 		t.Run(a.section+"/"+a.keyword+"="+a.value, func(t *testing.T) {
+			if (a.keyword == "api_key" || a.keyword == "nzb_key") && a.value == "" {
+				// By design: Load generates a key the file leaves empty
+				// (generateMissingKeys); set_config refuses an empty one.
+				t.Skip("an empty key is generated at load and refused by Set")
+			}
 			base, err := Default()
 			if err != nil {
 				t.Fatalf("Default: %v", err)

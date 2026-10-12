@@ -22,21 +22,26 @@ import (
 //
 // The returned *Config has its mutex initialized; callers may immediately
 // hand it to subsystems.
+//
+// An api_key or nzb_key the file leaves empty or out is generated here. It
+// stays in memory only until the caller runs PersistGeneratedKeys.
 func Load(path string) (*Config, error) {
-	f, err := os.Open(path) //nolint:gosec // path is operator-supplied
+	raw, err := os.ReadFile(path) //nolint:gosec // path is operator-supplied
 	if err != nil {
 		return nil, fmt.Errorf("config: open %q: %w", path, err)
 	}
-	//nolint:errcheck // read-only handle: if Decode succeeded the data is already consumed, and if it failed the decode error is the actionable one.
-	defer f.Close()
 
-	cfg, unknowns, err := decode(f)
+	cfg, unknowns, err := decode(bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("config: decode %q: %w", path, err)
 	}
 	log := slog.Default().With("component", "config")
 	for _, u := range unknowns {
 		log.Warn("config: unknown field ignored", "detail", u, "path", path)
+	}
+	if api, nzb := cfg.generateMissingKeys(); api || nzb {
+		cfg.generated = &generatedKeys{path: path, raw: raw, api: api, nzb: nzb}
+		log.Info("config: generated missing keys", "path", path, "api_key", api, "nzb_key", nzb)
 	}
 	if err := cfg.finish(); err != nil {
 		return nil, fmt.Errorf("config: validate %q: %w", path, err)
@@ -175,6 +180,10 @@ func decode(r io.Reader) (*Config, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// A key the file leaves out must read as empty, so Load generates it and
+	// PersistGeneratedKeys writes it back, rather than keeping Default's,
+	// which nothing saves.
+	cfg.General.APIKey, cfg.General.NZBKey = "", ""
 
 	// NOTE: We intentionally do NOT call os.ExpandEnv on the raw YAML.
 	// Doing so would silently corrupt any value containing '$' characters

@@ -381,15 +381,11 @@ docker run -d \
 
    - `general.host` / `general.port` — the listen address (`127.0.0.1:4289`
      by default).
-   - `general.api_key` — pre-populated with a placeholder key. **Replace it
-     with a fresh random key** before exposing the daemon beyond localhost:
-
-     ```bash
-     head -c 8 /dev/urandom | xxd -p
-     ```
-
-     Paste the output into the `api_key:` field. (The same format is
-     accepted for `nzb_key:`.)
+   - `general.api_key` / `general.nzb_key` — empty in the sample. The first
+     start generates both and writes them into the config file, changing
+     only those two lines, so the file must be writable by gonzbd. To
+     choose your own instead, set 16 lowercase hex characters
+     (`openssl rand -hex 8`).
 
    - `general.https_port` — set to a port (e.g., `8443`) to enable
      HTTPS alongside the HTTP listener. See [HTTPS](#https) below.

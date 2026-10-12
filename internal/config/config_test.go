@@ -215,15 +215,15 @@ func TestValidate_KeyErrorNamesARealRemedy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Default: %v", err)
 	}
-	cfg.General.APIKey = ""
-	cfg.General.NZBKey = ""
+	cfg.General.APIKey = "not-hex"
+	cfg.General.NZBKey = "not-hex"
 	err = cfg.Validate()
 	if err == nil {
-		t.Fatal("Validate accepted empty keys")
+		t.Fatal("Validate accepted malformed keys")
 	}
 	msg := err.Error()
 	for _, key := range []string{"api_key", "nzb_key"} {
-		if !strings.Contains(msg, key+": must be 16 lowercase hex characters; generate one with `openssl rand -hex 8`") {
+		if !strings.Contains(msg, key+": must be 16 lowercase hex characters; generate one with `openssl rand -hex 8`, or leave it empty") {
 			t.Errorf("error does not name the remedy for %s: %v", key, err)
 		}
 	}
