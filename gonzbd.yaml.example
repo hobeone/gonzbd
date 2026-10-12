@@ -3,8 +3,10 @@
 # =============================================================================
 # Copy this file to gonzbd.yaml and customize for your setup.
 # When no config file exists, gonzbd writes a default one with generated
-# API keys on first run. If you start from this file instead, set api_key
-# and nzb_key yourself: an empty key is refused at load.
+# API keys on first run. If you start from this file instead, replace the
+# placeholder api_key and nzb_key below with your own keys before you
+# expose gonzbd to anything: everyone who has read this file knows the
+# placeholders. `openssl rand -hex 8` prints a key in the right format.
 #
 # Values that accept sizes use K/M/G/T suffixes (base-1024).
 # Path fields support $ENV_VAR expansion.
@@ -24,15 +26,17 @@ general:
   https_cert: ""
   https_key: ""
 
-  # API key for authenticating API requests. 16-character lowercase hex.
-  # Generated only when gonzbd creates a default config on first run.
-  # Required for external tools like Sonarr, Radarr, and NZB360 to
-  # communicate with gonzbd.
-  api_key: ""
+  # API key for authenticating API requests. 16-character lowercase hex;
+  # any other value, including an empty one, is refused at load.
+  # Generated when gonzbd creates a default config on first run. Required
+  # for external tools like Sonarr, Radarr, and NZB360 to communicate
+  # with gonzbd. PLACEHOLDER: replace it (see the header).
+  api_key: 0123456789abcdef
 
   # Separate API key for NZB-upload endpoints only. Allows giving
   # upload-only access to indexers without exposing the full API key.
-  nzb_key: ""
+  # PLACEHOLDER: replace it (see the header).
+  nzb_key: fedcba9876543210
 
   # Client IP ranges trusted to receive and use the web UI's ephemeral
   # session cookie, IN ADDITION to loopback (127.0.0.1/::1), which is always

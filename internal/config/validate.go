@@ -71,6 +71,10 @@ var (
 	apiKeyPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
 )
 
+// keyRemedy is the refusal for an api_key or nzb_key that does not match
+// apiKeyPattern.
+const keyRemedy = "must be 16 lowercase hex characters; generate one with `openssl rand -hex 8`"
+
 // validateUniqueNames returns an error if any name appears more than once.
 // Empty names are reported as a separate "must not be empty" error.
 func validateUniqueNames(kind string, names []string) error {
@@ -143,10 +147,10 @@ func (g *GeneralConfig) validate() error {
 		}
 	}
 	if !apiKeyPattern.MatchString(g.APIKey) {
-		errs = append(errs, fmt.Errorf("api_key: must be 16 lowercase hex characters; regenerate via `gonzbd init`"))
+		errs = append(errs, fmt.Errorf("api_key: %s", keyRemedy))
 	}
 	if !apiKeyPattern.MatchString(g.NZBKey) {
-		errs = append(errs, fmt.Errorf("nzb_key: must be 16 lowercase hex characters; regenerate via `gonzbd init`"))
+		errs = append(errs, fmt.Errorf("nzb_key: %s", keyRemedy))
 	}
 	if err := nonNegative("history_retention_days", g.HistoryRetentionDays); err != nil {
 		errs = append(errs, err)

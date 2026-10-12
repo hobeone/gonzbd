@@ -187,6 +187,51 @@ func TestRoundTripFixture(t *testing.T) {
 	}
 }
 
+// TestExampleConfigLoads pins that the shipped gonzbd.yaml.example loads as
+// written, with no key the decoder does not know (#910).
+func TestExampleConfigLoads(t *testing.T) {
+	example := filepath.Join("..", "..", "gonzbd.yaml.example")
+	f, err := os.Open(example)
+	if err != nil {
+		t.Fatalf("open %s: %v", example, err)
+	}
+	defer f.Close() //nolint:errcheck // read-only handle
+	_, unknowns, err := decode(f)
+	if err != nil {
+		t.Fatalf("decode %s: %v", example, err)
+	}
+	if len(unknowns) != 0 {
+		t.Errorf("%s has keys the config does not know: %q", example, unknowns)
+	}
+	if _, err := Load(example); err != nil {
+		t.Fatalf("Load %s: %v", example, err)
+	}
+}
+
+// TestValidate_KeyErrorNamesARealRemedy pins that the api_key/nzb_key refusal
+// tells the operator something they can run: there is no `gonzbd init`.
+func TestValidate_KeyErrorNamesARealRemedy(t *testing.T) {
+	cfg, err := Default()
+	if err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	cfg.General.APIKey = ""
+	cfg.General.NZBKey = ""
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted empty keys")
+	}
+	msg := err.Error()
+	for _, key := range []string{"api_key", "nzb_key"} {
+		if !strings.Contains(msg, key+": must be 16 lowercase hex characters; generate one with `openssl rand -hex 8`") {
+			t.Errorf("error does not name the remedy for %s: %v", key, err)
+		}
+	}
+	if strings.Contains(msg, "gonzbd init") {
+		t.Errorf("error names a command that does not exist: %v", err)
+	}
+}
+
 func TestParseByteSize(t *testing.T) {
 	tests := []struct {
 		in      string
