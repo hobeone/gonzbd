@@ -798,12 +798,14 @@ func TestLooseRecord_ResumedCompletionSurvivesEviction(t *testing.T) {
 	env.writeFileA(t, j, 2, 0, 1)
 	a1.recordFileA(t, j.ID(), false, 0, 1)
 
+	// Not started, so no tick reconciles the job behind the test: LoadProgress
+	// marks it resident in the dispatcher, a tick then evicts it as unpaused
+	// and holding nothing (reconcileResidency), and that eviction would cancel
+	// the re-hydration below if it landed inside it.
 	var owed []int
 	a2 := env.newApp(t, func(a *Application) {
-		a.dispatcher.Pause()
 		a.residency.finished = func(_ string, fi int, _ string) { owed = append(owed, fi) }
 	})
-	a2.start(t)
 	id := j.ID()
 	if err := a2.dispatcher.LoadProgress(t.Context(), id); err != nil {
 		t.Fatalf("LoadProgress: %v", err)
