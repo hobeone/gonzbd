@@ -1,9 +1,11 @@
 package unpack
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -501,44 +503,103 @@ func writeVolumes(t *testing.T, dir string) []string {
 // A before-attempt snapshot that fails must not let a wrong-password
 // cleanup run: with no record of what was there, every file in outDir —
 // the archive volumes included — would read as a partial from the attempt.
-func TestWithPasswords_BeforeSnapshotFailurePreservesVolumes(t *testing.T) {
+// It must not fail an attempt that succeeds either, since only that
+// cleanup needs the snapshot.
+func TestWithPasswords_BeforeSnapshotFailure(t *testing.T) {
+	tests := []struct {
+		name      string
+		wrongPW   bool
+		wantWalk  bool // err carries the walk error, and the loop stopped
+		wantNoErr bool
+	}{
+		{name: "wrong password returns the snapshot error and keeps the volumes", wrongPW: true, wantWalk: true},
+		{name: "a succeeding attempt still extracts", wantNoErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			vols := writeVolumes(t, outDir)
+			locked := filepath.Join(outDir, "locked")
+			if err := os.Mkdir(locked, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			lockDir(t, locked, 0)
+
+			calls := 0
+			extract := func(_ context.Context, _ *slog.Logger, _ Archive, outDir, _ string, _ Options) (Result, error) {
+				calls++
+				if !tc.wrongPW {
+					return Result{}, nil
+				}
+				// Unlock so an after-attempt scan would succeed, and leave a partial.
+				if err := os.Chmod(locked, 0o700); err != nil { //nolint:gosec // test fixture directory
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(outDir, "partial.bin"), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return Result{Reason: FailWrongPassword}, errors.New("wrong password")
+			}
+			opts := Options{Passwords: []string{"pw1", "pw2"}}
+			res, err := withPasswords(context.Background(), slog.Default(), Archive{MainFile: vols[0]}, outDir, opts, extract,
+				func(int, string) bool { return false }, "mock", nil)
+
+			for _, v := range vols {
+				if _, statErr := os.Stat(v); statErr != nil {
+					t.Errorf("archive volume %s removed after a failed before-snapshot: %v", filepath.Base(v), statErr)
+				}
+			}
+			if calls != 1 {
+				t.Errorf("extract called %d times, want 1", calls)
+			}
+			if tc.wantNoErr && err != nil {
+				t.Errorf("err = %v, want nil: a failed snapshot must not fail an attempt that succeeds", err)
+			}
+			if tc.wantWalk {
+				if !errors.Is(err, fs.ErrPermission) {
+					t.Errorf("err = %v, want the snapshot's walk error (fs.ErrPermission) in the chain", err)
+				}
+				if res.Reason != FailUnknown || res.Err == nil {
+					t.Errorf("res = {Reason: %v, Err: %v}, want FailUnknown with the snapshot error", res.Reason, res.Err)
+				}
+			}
+		})
+	}
+}
+
+// cleanupPartialFiles owns the nil-snapshot refusal, so a caller that drops
+// snapshotDir's error cannot wipe outDir.
+func TestCleanupPartialFiles_RefusesANilSnapshot(t *testing.T) {
 	outDir := t.TempDir()
 	vols := writeVolumes(t, outDir)
-	locked := filepath.Join(outDir, "locked")
-	if err := os.Mkdir(locked, 0o700); err != nil {
-		t.Fatal(err)
+	if err := cleanupPartialFiles(outDir, nil, slog.Default(), "mock", 1); err == nil {
+		t.Error("cleanupPartialFiles(nil snapshot) returned nil, want a refusal")
 	}
-	lockDir(t, locked, 0)
-
-	calls := 0
-	extract := func(_ context.Context, _ *slog.Logger, _ Archive, outDir, _ string, _ Options) (Result, error) {
-		calls++
-		// Unlock so the after-attempt scan succeeds, and leave a partial.
-		if err := os.Chmod(locked, 0o700); err != nil { //nolint:gosec // test fixture directory
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(outDir, "partial.bin"), []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return Result{Reason: FailWrongPassword}, errors.New("wrong password")
-	}
-	opts := Options{Passwords: []string{"pw1", "pw2"}}
-	res, err := withPasswords(context.Background(), slog.Default(), Archive{MainFile: vols[0]}, outDir, opts, extract,
-		func(int, string) bool { return false }, "mock", nil)
-
 	for _, v := range vols {
-		if _, statErr := os.Stat(v); statErr != nil {
-			t.Errorf("archive volume %s removed after a failed before-snapshot: %v", filepath.Base(v), statErr)
+		if _, err := os.Stat(v); err != nil {
+			t.Errorf("archive volume %s removed with a nil snapshot: %v", filepath.Base(v), err)
 		}
 	}
-	if err == nil || errors.Is(err, ErrWrongPassword) {
-		t.Errorf("err = %v, want the snapshot error", err)
+}
+
+// A partial that is already gone counts as removed, so it cannot stop the
+// password loop.
+func TestRemovePartials_AVanishedPartialIsNotAFailure(t *testing.T) {
+	outDir := t.TempDir()
+	if err := removePartials(outDir, []string{"gone.bin"}, slog.Default(), "mock", 1); err != nil {
+		t.Errorf("removePartials(vanished file) = %v, want nil", err)
 	}
-	if res.Err == nil {
-		t.Errorf("res.Err = nil, want the snapshot error")
-	}
-	if calls != 0 {
-		t.Errorf("extract called %d times, want 0: no attempt may run without a before-snapshot", calls)
+}
+
+// discardPartialFiles' caller is already returning an extraction error, so
+// a cleanup failure must reach the log.
+func TestDiscardPartialFiles_LogsACleanupFailure(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	outDir := t.TempDir()
+	discardPartialFiles(outDir, nil, log, "mock")
+	if !strings.Contains(buf.String(), "not fully removed") {
+		t.Errorf("log = %q, want the cleanup failure", buf.String())
 	}
 }
 

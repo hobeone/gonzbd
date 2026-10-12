@@ -1,19 +1,69 @@
 pkg ./internal/unpack/
-run TestWithPasswords_BeforeSnapshotFailurePreservesVolumes|TestWithPasswords_AfterSnapshotFailureAborts|TestCleanupPartialFiles_RemoveFailureReturnsError
+run TestWithPasswords_BeforeSnapshotFailure|TestWithPasswords_AfterSnapshotFailureAborts|TestCleanupPartialFiles_RemoveFailureReturnsError|TestCleanupPartialFiles_RefusesANilSnapshot|TestRemovePartials_AVanishedPartialIsNotAFailure|TestDiscardPartialFiles_LogsACleanupFailure
 
 # withPasswords ran a wrong-password cleanup against a nil before-snapshot
 # when the pre-attempt scan of outDir failed, so every file in outDir, the
 # archive volumes included, was removed as a partial of the attempt.
 
-# The before-snapshot guard neutered: the shape the loop had before.
-[an attempt runs without a before-snapshot]
+# The owner check neutered: a nil snapshot diffs as "every file is new".
+[cleanupPartialFiles accepts a nil snapshot]
 file internal/unpack/passwords.go
 --- anchor
-		if snapErr != nil {
-			err := fmt.Errorf("%s: snapshot %s before password attempt %d: %w", toolName, outDir, i+1, snapErr)
+	if beforeSnap == nil {
 --- replace
-		if snapErr != nil && false {
-			err := fmt.Errorf("%s: snapshot %s before password attempt %d: %w", toolName, outDir, i+1, snapErr)
+	if beforeSnap == nil && false {
+--- end
+
+# withPasswords' own check neutered: the owner still refuses, but the walk
+# error is lost from the chain.
+[the snapshot error is not returned at the cleanup]
+file internal/unpack/passwords.go
+--- anchor
+			if snapErr != nil {
+				res.Reason = FailUnknown
+--- replace
+			if snapErr != nil && false {
+				res.Reason = FailUnknown
+--- end
+
+# The abort moved back before the attempt, failing an archive the attempt
+# would have extracted.
+[a failed snapshot stops an attempt that would succeed]
+file internal/unpack/passwords.go
+--- anchor
+		beforeSnap, snapErr := snapshotDir(outDir)
+--- replace
+		beforeSnap, snapErr := snapshotDir(outDir)
+		if snapErr != nil {
+			return Result{}, snapErr
+		}
+--- end
+
+# The walk error formatted rather than wrapped.
+[the snapshot error is not wrapped]
+file internal/unpack/passwords.go
+--- anchor
+				res.Err = fmt.Errorf("%s: snapshot %s before password attempt %d: %w", toolName, outDir, i+1, snapErr)
+--- replace
+				res.Err = fmt.Errorf("%s: snapshot %s before password attempt %d: %v", toolName, outDir, i+1, snapErr)
+--- end
+
+# A partial that is already gone counted as a removal failure.
+[a vanished partial is a failure]
+file internal/unpack/passwords.go
+--- anchor
+		} else if !errors.Is(rmErr, os.ErrNotExist) {
+--- replace
+		} else {
+--- end
+
+# discardPartialFiles swallows the cleanup failure.
+[a cleanup failure is not logged]
+file internal/unpack/passwords.go
+--- anchor
+	if err := cleanupPartialFiles(outDir, beforeSnap, log, toolName, 1); err != nil {
+--- replace
+	if err := cleanupPartialFiles(outDir, beforeSnap, log, toolName, 1); err != nil && false {
 --- end
 
 # A cleanup that could not finish no longer stops the loop.
