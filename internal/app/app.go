@@ -1487,7 +1487,7 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error) {
 	}
 
 	// Abort all active DirectUnpackers before stopping the assembler.
-	// This kills unrar subprocesses and cleans up partial extracts.
+	// Each stops its extraction, which removes its set's staging directory.
 	app.duOrch.abortAll()
 
 	if app.assembler != nil {

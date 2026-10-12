@@ -1,14 +1,20 @@
 // Package directunpack implements streaming RAR extraction during download.
 //
-// When enabled, completed RAR volumes are fed to an interactive `unrar -vp`
-// subprocess as they arrive. The subprocess pauses at each volume boundary
-// and waits for the next volume to be signaled. This overlaps download I/O
-// with extraction I/O, reducing total pipeline wall-clock time.
+// When enabled, each RAR5 set is extracted in-process by rarengine while the
+// job downloads: completed volumes are handed to its reader in order as they
+// arrive, and it blocks at a volume boundary until the next volume is fed.
+// This overlaps download I/O with extraction I/O, reducing total pipeline
+// wall-clock time. A set that is not RAR5 is skipped and left to the
+// post-processing unpack stage.
 //
-// DirectUnpack is purely additive — it never modifies the existing unpack
-// stage. On any error the subprocess is killed, partial extracts are cleaned
-// up, and the standard post-processing unpack stage runs as if DirectUnpack
-// never existed.
+// Each set is extracted into its own .gonzbd-tmp-unpack-* staging directory
+// inside the job directory (unpack.ExtractStaged). Its members are published
+// into the job directory only when the whole set extracts without an error; a
+// set that fails or is aborted has its staging directory removed and leaves
+// nothing in the job directory for the post-processing unpack stage, which
+// extracts it again, to collide with. A staging directory a crash leaves
+// behind is removed by unpack.CleanupStageDirs, which post-processing's temp
+// sweep runs on the job directory.
 package directunpack
 
 import "github.com/hobeone/gonzbd/internal/rarheader"

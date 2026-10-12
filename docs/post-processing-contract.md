@@ -348,9 +348,9 @@ into a job. Extraction therefore creates no symlink, junction or hard link, and
 no RAR file reference: each such member is skipped with a log line and an
 `OnLine` "Skipping link: <name>", and the rest of the set is extracted. There
 is no option to turn this off. A link target is the archive author's choice,
-and DirectUnpack extracts into the job directory itself, where a hard link
-could join a downloaded volume to another name so that a write through one
-changes the other.
+and DirectUnpack extracts into a staging directory inside the job directory
+itself, where a hard link could join a downloaded volume to another name so
+that a write through one changes the other.
 
 Where each extractor enforces it:
 
@@ -361,7 +361,9 @@ Where each extractor enforces it:
   lines, the definition and the call, both in `internal/unpack/go_unrar.go`. A RAR5 file reference
   (`rar -oi`) is skipped too: it names its source by path, and resolving that
   path in the job directory could copy a file that is not a member of the set,
-  any number of times.
+  any number of times. DirectUnpack then publishes its staged set through
+  `publishStagedExtraction` (see the external `unrar` and `7z` item below), so its checks
+  apply to its output too.
 - **Pure-Go 7z and tar**: `extractSevenZipEntry` and `GoTar` extract only
   regular files and directories.
 - **External `unrar` and `7z`**: both extract into a private staging directory,

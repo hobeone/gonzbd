@@ -1146,8 +1146,32 @@ articles or sparse regions.
    hand-off cannot leave the collected unpacker awaited without its volume
    (`TestHandOff_LastFileCompletingAtTheCollect_LeavesNoUnpackerAwaitedWithoutAVolume`).
 9. **Path traversal safety**: `extractEntries` opens an `os.Root` anchored at
-   `extractDir` and writes every entry through it, so archive entries with `..`
-   components, absolute paths, or symlinked path components cannot escape.
+   the set's staging directory and writes every entry through it, so archive
+   entries with `..` components, absolute paths, or symlinked path components
+   cannot escape.
+10. **A set is staged, and published whole or not at all** (#855): `extractSet`
+    extracts each set through `unpack.ExtractStaged` into a
+    `.gonzbd-tmp-unpack-*` directory inside `extractDir` (the job directory).
+    Only when extraction, the volume feed and the corrupt-set backstop all pass
+    are the set's regular files renamed into `extractDir` by
+    `publishStagedExtraction`; under `flat_unpack` without `overwrite_files` a
+    name the job directory already holds is published under a `_N` name, as
+    `ExtractMember` does inside the stage. A failed or aborted set has its stage
+    removed and leaves nothing in the job directory, so the unpack stage's
+    re-extraction of it meets no earlier copy
+    (`TestDirectUnpack_FailedSetLeavesNothingInTheJobDir`,
+    `TestDirectUnpack_AbortedSetLeavesNothingInTheJobDir`,
+    `TestDirectUnpack_FailedSetReextractedFlatHasNoDuplicate`). A stage left
+    by a crash is removed by `unpack.CleanupStageDirs`, which `sweepTempFiles`
+    runs at the start of post-processing and `ExtractStaged` runs before
+    making a stage. Members that did reach the job directory are extracted
+    again by the unpack stage whenever the set is missing from
+    `DirectUnpackSets`, and under `flat_unpack` without `overwrite_files` a
+    `go_unrar` re-extraction writes `_N` copies of them (external `unrar`
+    skips the taken names). The cases found: a publish that fails
+    part way, a set that succeeded before `Abort`, whose success `Abort` clears
+    (item 8), and a restart before post-processing, which loses the in-memory
+    result (item 2).
 
 ## Memory & allocation budget
 

@@ -149,14 +149,14 @@ func TestRecordSkipped(t *testing.T) {
 // these checks below the read would dereference the nil and fail loudly rather
 // than silently stop being an early exit.
 func TestExtractEntries_ExitsBeforeReadingTheArchive(t *testing.T) {
-	t.Run("an unusable extract dir is reported", func(t *testing.T) {
+	t.Run("an unusable stage dir is reported", func(t *testing.T) {
 		notADir := filepath.Join(t.TempDir(), "file")
 		if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
-		d := &DirectUnpacker{extractDir: notADir}
+		d := &DirectUnpacker{extractDir: filepath.Dir(notADir)}
 
-		files, err := d.extractEntries(context.Background(), nil)
+		err := d.extractEntries(context.Background(), nil, notADir)
 
 		if err == nil {
 			t.Fatal("extractEntries() error = nil, want an open-root failure")
@@ -164,36 +164,29 @@ func TestExtractEntries_ExitsBeforeReadingTheArchive(t *testing.T) {
 		if !strings.Contains(err.Error(), "open root") {
 			t.Errorf("error = %v, want it to mention open root", err)
 		}
-		if files != nil {
-			t.Errorf("extractedFiles = %v, want nil", files)
-		}
 	})
 
 	t.Run("a cancelled context stops the loop", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		d := &DirectUnpacker{extractDir: t.TempDir()}
+		dir := t.TempDir()
+		d := &DirectUnpacker{extractDir: dir}
 
-		files, err := d.extractEntries(ctx, nil)
+		err := d.extractEntries(ctx, nil, dir)
 
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("extractEntries() error = %v, want context.Canceled", err)
 		}
-		if files != nil {
-			t.Errorf("extractedFiles = %v, want nil", files)
-		}
 	})
 
 	t.Run("an aborted unpacker stops the loop", func(t *testing.T) {
-		d := &DirectUnpacker{extractDir: t.TempDir(), killed: true}
+		dir := t.TempDir()
+		d := &DirectUnpacker{extractDir: dir, killed: true}
 
-		files, err := d.extractEntries(context.Background(), nil)
+		err := d.extractEntries(context.Background(), nil, dir)
 
 		if err == nil || !strings.Contains(err.Error(), "killed") {
 			t.Errorf("extractEntries() error = %v, want it to mention killed", err)
-		}
-		if files != nil {
-			t.Errorf("extractedFiles = %v, want nil", files)
 		}
 	})
 }
