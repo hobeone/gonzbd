@@ -681,48 +681,19 @@ func TestMaybeReleaseRecoveryVolumes_RespectsRepairPolicy(t *testing.T) {
 	}
 }
 
-// TestMarkFetchPolicyDirty_Guards covers markFetchPolicyDirty's own branches:
-// a nil job marks nothing, and a job is marked for the recorder's next flush.
-func TestMarkFetchPolicyDirty_Guards(t *testing.T) {
-	t.Parallel()
-
-	j, _ := newPar2Job(t, "guard-job", "guard-name", []par2FileSpec{
-		{subject: "data.bin", bytes: 100},
-	})
-
-	t.Run("nil job is a no-op", func(t *testing.T) {
-		app := newTestApplication(t)
-		before := dirtyJobs(app.recorder)
-		app.markFetchPolicyDirty(nil)
-		if got := dirtyJobs(app.recorder); got != before {
-			t.Errorf("dirty jobs = %d after marking a nil job, want %d unchanged", got, before)
-		}
-	})
-
-	t.Run("a job is marked", func(t *testing.T) {
-		app := newTestApplication(t)
-		if err := app.recorder.flush(t.Context()); err != nil {
-			t.Fatalf("Flush: %v", err)
-		}
-		app.markFetchPolicyDirty(j)
-		if got := dirtyJobs(app.recorder); got != 1 {
-			t.Errorf("DirtyCount = %d after marking one job, want 1", got)
-		}
-	})
-}
-
 // TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing pins that a
-// par2 verdict marks the job for the recorder, for both outcomes that move a
-// fetch policy.
+// par2 verdict's policy change reaches the recorder, for both outcomes that
+// move a fetch policy: the job holds the change (job.Job.TakeFetchPolicyChanges)
+// and the flush's take marks the job dirty.
 //
-// Without the mark the verdict lives only in JobProgress, and a restart
-// verifies the job against the job_files row, which still holds the old
-// policy. Nothing else marks the job here: the verdict runs at
-// download-complete, after the MarkFileComplete path has stopped firing (#329).
+// Without it the verdict lives only in JobProgress, and a restart verifies the
+// job against the job_files row, which still holds the old policy. Nothing
+// else marks the job here: the verdict runs at download-complete, after the
+// MarkFileComplete path has stopped firing (#329).
 //
 // The recorder's dirty set rather than a job_files read: the claim is that the
-// verdict marked the job, and a row read would be satisfied just as well by
-// some other path having marked it for an unrelated reason.
+// verdict's change was taken, and a row read would be satisfied just as well
+// by some other path having marked it for an unrelated reason.
 func TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -778,6 +749,7 @@ func TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing(t *testing.T
 			}
 
 			app.maybeReleaseRecoveryVolumes(t.Context(), j)
+			app.recorder.takeFetchPolicyChanges()
 
 			if n := dirtyJobs(app.recorder); n == 0 {
 				t.Errorf("DirtyCount = 0 after a par2 verdict moved the fetch policy on job %s, want the job marked — "+

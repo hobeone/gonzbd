@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/durability"
 )
 
 // ErrNotResident is returned by Manifest when the job's content tier is not
@@ -292,16 +294,63 @@ func (j *Job) SetFileFetchPolicy(fi int, policy FetchPolicy) error {
 	return nil
 }
 
-// setFileFetchPolicy is the assignment SetFileFetchPolicy and
-// Job.InstallFileVerification share, so setting a policy and restoring one
-// cannot drift apart. The field has three assignment sites —
-// `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` finds 3 lines:
-// this one, undeferRecovery and DiscardDeferredPar2. A fresh progress starts
-// at the FetchAlways zero. The `job_files.fetch_policy` CHECK (0-2) is the
-// only range guard a restored value has. The caller holds contentMu and has
-// range-checked fi.
+// setFileFetchPolicy is the one writer of a file's fetch policy:
+// `git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` finds 1 line, the
+// assignment below. SetFileFetchPolicy, Job.InstallFileVerification's
+// restore, undeferRecovery and DiscardDeferredPar2 all call it. A fresh
+// progress starts at the FetchAlways zero. The `job_files.fetch_policy` CHECK
+// (0-2) is the only range guard a restored value has. The caller holds
+// contentMu and has range-checked fi.
+//
+// It marks the file for Job.TakeFetchPolicyChanges whenever the stored value
+// differs from the one the caller asked for or from the previous one, so the
+// record learns of every change without its caller having to say so.
+//
+// A hold is not set over a release: once par2Recovered is set nothing
+// releases a volume again, so FetchIfNeeded then becomes FetchAlways. A
+// hydration restores a hold over a release in two ways — job_files and
+// dispatch_jobs' par2_recovered are written by different writers, so a crash
+// can land one release and not the other; and a content file's lost article
+// releases the volumes installed before it, ahead of a later volume's
+// restore.
 func (p *JobProgress) setFileFetchPolicy(fi int, policy FetchPolicy) {
-	p.files[fi].Fetch = policy
+	stored := policy
+	if stored == FetchIfNeeded && p.par2Recovered {
+		stored = FetchAlways
+	}
+	f := &p.files[fi]
+	if f.Fetch == stored && stored == policy {
+		return
+	}
+	f.Fetch = stored
+	if !f.fetchChanged {
+		f.fetchChanged = true
+		p.fetchChanges++
+	}
+}
+
+// TakeFetchPolicyChanges returns the record state of every file whose fetch
+// policy changed since the last take, and forgets the changes. The recorder
+// takes them at each flush, so a fetch policy reaches job_files whichever
+// path changed it. It returns nil when the job has no progress.
+func (j *Job) TakeFetchPolicyChanges() []durability.FileState {
+	j.contentMu.Lock()
+	defer j.contentMu.Unlock()
+	p := j.progress
+	if p == nil || p.fetchChanges == 0 {
+		return nil
+	}
+	out := make([]durability.FileState, 0, p.fetchChanges)
+	for fi := range p.files {
+		f := &p.files[fi]
+		if !f.fetchChanged {
+			continue
+		}
+		f.fetchChanged = false
+		out = append(out, p.fileState(fi))
+	}
+	p.fetchChanges = 0
+	return out
 }
 
 // MarkArticleFailed records an article that will not be retried, charging
@@ -518,7 +567,7 @@ func (j *Job) undeferRecovery(fileIdxs []int) bool {
 		if fi < 0 || fi >= j.manifest.NumFiles() || j.progress.files[fi].Fetch != FetchIfNeeded {
 			continue
 		}
-		j.progress.files[fi].Fetch = FetchAlways
+		j.progress.setFileFetchPolicy(fi, FetchAlways)
 		changed = true
 	}
 	if changed {
@@ -588,7 +637,7 @@ func (j *Job) DiscardDeferredPar2() bool {
 	changed := false
 	for fi := range len(j.progress.files) {
 		if j.progress.files[fi].Fetch == FetchIfNeeded {
-			j.progress.files[fi].Fetch = FetchNever
+			j.progress.setFileFetchPolicy(fi, FetchNever)
 			changed = true
 		}
 	}

@@ -65,6 +65,9 @@ type JobProgress struct {
 	// each Set and Clear.
 	done, failed, emitted bitset
 	files                 []FileProgress
+	// fetchChanges counts the files whose fetchChanged is set, so a take
+	// from a job with none returns without walking its files.
+	fetchChanges int
 
 	// failCharge holds, by global article index, the bytes a failed article
 	// is charged when that is less than its manifest size: an article the
@@ -221,6 +224,10 @@ type FileProgress struct {
 	// it, see it return 0, and conclude the bug is back.
 	Filename       string // resolved on-disk filename; empty until resolved
 	AssembledCRC32 uint32
+
+	// fetchChanged marks a Fetch the record has not been handed yet.
+	// setFileFetchPolicy sets it and Job.TakeFetchPolicyChanges clears it.
+	fetchChanged bool
 }
 
 const (

@@ -133,7 +133,16 @@ func TestJob_ContentMethods(t *testing.T) {
 		t.Fatal("Par2ReleaseReason should be set on failure release")
 	}
 
-	// DiscardDeferredPar2
+	// A hold is not set over that release.
+	if err := j.SetFileFetchPolicy(1, FetchIfNeeded); err != nil {
+		t.Fatalf("SetFileFetchPolicy: %v", err)
+	}
+	if got := j.Progress().FileFetchPolicy(1); got != FetchAlways {
+		t.Fatalf("Fetch policy = %v after a hold over a release, want FetchAlways", got)
+	}
+
+	// DiscardDeferredPar2, on a job no release has reached.
+	j.progress.restorePar2Recovered(false)
 	if err := j.SetFileFetchPolicy(1, FetchIfNeeded); err != nil {
 		t.Fatalf("SetFileFetchPolicy: %v", err)
 	}

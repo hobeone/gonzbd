@@ -677,12 +677,17 @@ carry the previous attempt's policy forward at all.
 Across a restart there is one path back, and it is hydration rather than a
 verdict: the first hydration after a restart restores every file's policy from
 `job_files` via `Job.InstallFileVerification` (`installVerification`), so the job
-resumes with whatever the row holds. That is only safe because every mutation
-of the policy marks the job's files dirty for the recorder: both verdicts reach
-`Application.markFetchPolicyDirty`, and ingest derives the policy before the row
-exists. A writer that changed the policy without marking would be undone by the
-next restart, with no error anywhere — which is what made this a real defect
-before #329 rather than a theoretical one.
+resumes with whatever the row holds. That is only safe because every change to
+the policy reaches the record: the field has one writer,
+`JobProgress.setFileFetchPolicy`, which records each change it makes, and the
+recorder's flush takes those changes (`Job.TakeFetchPolicyChanges`) for every
+job the dispatcher holds; ingest also derives the policy before the row exists.
+A change that reached no flush would be undone by the next restart, with no
+error anywhere — which is what made this a real defect before #329, and again
+for the early release on a permanent article failure before #858. The writer
+also refuses to restore a hold over a release: once `Par2Recovered` is set
+nothing releases a volume again, so a restored `FetchIfNeeded` becomes
+`FetchAlways`.
 
 A retry is not that path back. It rebuilds the job from scratch through
 `BuildIngestJob` (`internal/app/app.go`'s `rebuildJobFromNZB`), whose own
@@ -800,14 +805,16 @@ instance (`postProcAdmissions`) both hold.
   par2 failure is retried automatically with them released.
 - **Loop bound**: the retry releases every volume it holds before job_files,
   which hydration restores the policy from, is seeded; and only ingest sets
-  a volume to `FetchIfNeeded`. The policy field has three writers
-  (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 3
-  lines): the setter, the release, and the discard. Construction writes
-  nothing: every file starts at the zero value, `FetchAlways`. The setter's two callers are ingest,
-  passing `FetchIfNeeded`, and hydration
-  (`git grep -nE '[sS]etFileFetchPolicy\(' -- '*.go' ':!*_test.go'` returns 5
-  lines: those two calls, `Job.SetFileFetchPolicy`'s declaration and its
-  call to the shared assignment, and that assignment's declaration). So the
+  a volume to `FetchIfNeeded`. The policy field has one writer
+  (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 1
+  line), `JobProgress.setFileFetchPolicy`. Construction writes
+  nothing: every file starts at the zero value, `FetchAlways`. The writer's
+  callers (`git grep -nE '[sS]etFileFetchPolicy\(' -- '*.go' ':!*_test.go'`
+  returns 7 lines: the two declarations, `Job.SetFileFetchPolicy`'s call,
+  and four calls) are ingest, passing `FetchIfNeeded` through
+  `Job.SetFileFetchPolicy`; the release, passing `FetchAlways`; the discard,
+  passing `FetchNever`; and hydration, passing the recorded policy, which
+  the writer does not let restore a hold once the volumes were released. So the
   retried instance does not
   satisfy
   `HasDeferredPar2` and its own failure is final

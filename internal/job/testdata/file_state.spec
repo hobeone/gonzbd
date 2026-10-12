@@ -7,9 +7,9 @@ run ^TestJobFileState$
 [the filename is not read]
 file internal/job/verified.go
 --- anchor
-	return durability.FileState{FileIdx: fi, Complete: f.Complete, Filename: f.Filename, FetchPolicy: uint8(f.Fetch)}, true
+	return durability.FileState{FileIdx: fi, Complete: f.Complete, Filename: f.Filename, FetchPolicy: uint8(f.Fetch)}
 --- replace
-	return durability.FileState{FileIdx: fi, Complete: f.Complete, FetchPolicy: uint8(f.Fetch)}, true
+	return durability.FileState{FileIdx: fi, Complete: f.Complete, FetchPolicy: uint8(f.Fetch)}
 --- end
 
 [the upper bound is not checked]

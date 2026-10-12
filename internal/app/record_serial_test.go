@@ -96,7 +96,7 @@ func untrustDuringFlush(t *testing.T, flushFails bool) *modelStore {
 	t.Helper()
 	st := newModelStore(true, flushFails)
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Length: 10})
 	r.markDirty(j, 0, durability.FileState{Complete: true})
@@ -184,7 +184,7 @@ func untrustOverrunsFlush(t *testing.T, flushFails bool) (*modelStore, *recorder
 	t.Helper()
 	st := newModelStore(true, flushFails)
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 1, ArtIdx: 0, Length: 10})
 	// In the snapshot too: a failed flush must not put complete=1 back for
@@ -271,7 +271,7 @@ func TestRecorder_RemergePutsBackNothingAnUntrustOverran(t *testing.T) {
 // nothing. Only file 0's rows and state stay out.
 func TestRecorder_RemergePutsBackOnlyWhatNoUntrustOverran(t *testing.T) {
 	j := newTestJob(t, "id")
-	r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, nil, slog.Default())
 	r.owed[j] = map[int]uint64{0: 2, 1: 1}
 	r.pending[j] = []durability.WrittenRow{{FileIdx: 0, ArtIdx: 9}}
 	rows := map[*job.Job][]durability.WrittenRow{j: {{FileIdx: 0, ArtIdx: 1}, {FileIdx: 1, ArtIdx: 1}, {FileIdx: 2, ArtIdx: 1}}}
@@ -300,7 +300,7 @@ func TestRecorder_RemergePutsBackOnlyWhatNoUntrustOverran(t *testing.T) {
 func TestRecorder_ASecondUntrustDuringTheFlushKeepsItsDebt(t *testing.T) {
 	st := newModelStore(true, false)
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	if err := r.lockWriter(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +338,7 @@ func TestRecorder_ASecondUntrustDuringTheFlushKeepsItsDebt(t *testing.T) {
 func TestRecorder_CompleteNeverPrecedesItsRowUnderConcurrency(t *testing.T) {
 	st := &fakeRecordStore{}
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 
 	stop := make(chan struct{})
 	done := make(chan struct{})
@@ -400,7 +400,7 @@ func TestRecorder_PurgeLocked(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			j := newTestJob(t, "id")
-			r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, slog.Default())
+			r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, nil, slog.Default())
 			r.pending[j] = rows()
 			r.dirty[j] = map[int]durability.FileState{0: {FileIdx: 0}, 1: {FileIdx: 1}}
 			r.purgeLocked(j, tc.verdict)
@@ -439,7 +439,7 @@ func TestRecorder_PurgeLockedCompleteVerdictKeepsFileStateButOverridesComplete(t
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			j := newTestJob(t, "id")
-			r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, slog.Default())
+			r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, nil, slog.Default())
 			r.dirty[j] = map[int]durability.FileState{0: {FileIdx: 0, Complete: !tc.want, Filename: "a.bin", FetchPolicy: 2}}
 			r.purgeLocked(j, tc.v)
 			got, ok := r.dirty[j][0]
@@ -455,7 +455,7 @@ func TestRecorder_PurgeLockedCompleteVerdictKeepsFileStateButOverridesComplete(t
 
 func TestRecorder_PurgeLockedLeavesNoEmptyDirtyEntry(t *testing.T) {
 	j := newTestJob(t, "id")
-	r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, nil, slog.Default())
 	r.dirty[j] = map[int]durability.FileState{0: {FileIdx: 0}}
 	r.purgeLocked(j, durability.FileVerdict{FileIdx: 0, DeleteAll: true})
 	if _, ok := r.dirty[j]; ok {
@@ -465,7 +465,7 @@ func TestRecorder_PurgeLockedLeavesNoEmptyDirtyEntry(t *testing.T) {
 
 func TestRecorder_PurgeLockedLeavesNoEmptyPendingEntry(t *testing.T) {
 	j := newTestJob(t, "id")
-	r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(&fakeRecordStore{}, func(string) *job.Job { return j }, nil, slog.Default())
 	r.pending[j] = []durability.WrittenRow{{FileIdx: 0, ArtIdx: 1}}
 	r.purgeLocked(j, durability.FileVerdict{FileIdx: 0, DeleteAll: true})
 	if _, ok := r.pending[j]; ok {
@@ -476,7 +476,7 @@ func TestRecorder_PurgeLockedLeavesNoEmptyPendingEntry(t *testing.T) {
 func TestRecorder_FlushLockedWritesNothingWhenIdleAndRemergesOnError(t *testing.T) {
 	st := &fakeRecordStore{}
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	if err := r.lockWriter(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +497,7 @@ func TestRecorder_FlushLockedWritesNothingWhenIdleAndRemergesOnError(t *testing.
 func TestRecorder_RunDoesNotFlushOnCancel(t *testing.T) {
 	st := &fakeRecordStore{}
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan struct{})
 	go func() { r.run(ctx, time.Hour); close(finished) }()
@@ -512,7 +512,7 @@ func TestRecorder_RunDoesNotFlushOnCancel(t *testing.T) {
 func TestRecorder_RunFlushesOnTick(t *testing.T) {
 	st := &fakeRecordStore{}
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan struct{})
 	go func() { r.run(ctx, time.Millisecond); close(finished) }()

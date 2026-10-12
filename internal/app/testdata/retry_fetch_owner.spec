@@ -44,31 +44,12 @@ file internal/app/app.go
 		if err := error(nil); err != nil {
 --- end
 
-# A verdict that moves the policy without marking the job is undone by the next
-# restart, whose hydration restores the row. The two
-# call sites are mutated separately: the clean verdict's sits in its switch arm
-# and the repair verdict's in releaseRecoveryVolumes, and one being pinned says
-# nothing about the other.
-#
-# The verdict call is left in place and only the mark removed, which is exactly
-# the pre-fix state -- the policy moves in memory and nothing records it.
-[the clean verdict does not mark the job for checkpointing]
-file internal/app/app.go
---- anchor
-		_ = j.DiscardDeferredPar2()
-		app.markFetchPolicyDirty(j)
---- replace
-		_ = j.DiscardDeferredPar2()
---- end
-
-[the repair verdict does not mark the job for checkpointing]
-file internal/app/app.go
---- anchor
-	app.markFetchPolicyDirty(j)
-	return len(idxs), nil
---- replace
-	return len(idxs), nil
---- end
+# A verdict that moves the policy no longer marks the job itself: the policy's
+# one writer records the change and the recorder's flush takes it (#858).
+# fetch_policy_record.spec neuters each half against
+# TestPermanentArticleFailure_ReleasedVolumeReachesTheRecord, and
+# TestMaybeReleaseRecoveryVolumes_MarksThePolicyForCheckpointing, run here,
+# pins that both verdicts' changes are taken.
 
 # The ingest path's instance, and the unconditional one: seedJobFiles wrote a
 # hardcoded 0 (FetchAlways) while BuildIngestJob had already put FetchIfNeeded

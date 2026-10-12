@@ -31,7 +31,7 @@ func TestRecorder_WriterLockWaitEndsWithTheWaitersCtx(t *testing.T) {
 			release := sync.OnceFunc(func() { close(st.release) })
 			t.Cleanup(release)
 			j := newTestJob(t, "id")
-			r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+			r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 			r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 
 			holder := make(chan error, 1)
