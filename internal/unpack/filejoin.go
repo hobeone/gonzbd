@@ -122,7 +122,7 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 		return Result{Err: err}, fmt.Errorf("filejoin: flush: %w", err)
 	}
 
-	if err := syncAndPublishJoin(outFile, root, tmpRel, outRel); err != nil {
+	if err := syncAndPublishJoin(outFile, root, tmpRel, outRel, (*os.File).Sync); err != nil {
 		return Result{Err: err}, err
 	}
 	published = true
@@ -133,8 +133,10 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 
 // syncAndPublishJoin fsyncs outFile, closes it, atomically renames tmpRel to
 // outRel inside root, and fsyncs the parent directory so both the joined
-// file's data blocks and its directory entry survive a power loss.
-func syncAndPublishJoin(outFile *os.File, root *os.Root, tmpRel, outRel string) error {
+// file's data blocks and its directory entry survive a power loss. syncDir
+// performs the directory fsync; a failure to open or fsync the directory is
+// returned, since the caller deletes the parts once the join reports success.
+func syncAndPublishJoin(outFile *os.File, root *os.Root, tmpRel, outRel string, syncDir func(*os.File) error) error {
 	if err := outFile.Sync(); err != nil {
 		return fmt.Errorf("filejoin: sync output: %w", err)
 	}
@@ -144,9 +146,13 @@ func syncAndPublishJoin(outFile *os.File, root *os.Root, tmpRel, outRel string) 
 	if err := root.Rename(tmpRel, outRel); err != nil {
 		return fmt.Errorf("filejoin: publish output: %w", err)
 	}
-	if dirFile, err := root.Open(filepath.Dir(outRel)); err == nil {
-		_ = dirFile.Sync()
-		_ = dirFile.Close()
+	dirFile, err := root.Open(filepath.Dir(outRel))
+	if err != nil {
+		return fmt.Errorf("filejoin: open output directory: %w", err)
+	}
+	defer dirFile.Close() //nolint:errcheck // read-only directory handle
+	if err := syncDir(dirFile); err != nil {
+		return fmt.Errorf("filejoin: sync output directory: %w", err)
 	}
 	return nil
 }

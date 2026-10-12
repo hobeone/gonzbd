@@ -700,7 +700,7 @@ func TestSyncAndPublishJoin_SyncsBeforeCloseAndRename(t *testing.T) {
 	defer r.Close()
 	defer w.Close()
 
-	err = syncAndPublishJoin(w, root, tmpRel, "movie")
+	err = syncAndPublishJoin(w, root, tmpRel, "movie", (*os.File).Sync)
 	if err == nil || !strings.Contains(err.Error(), "filejoin: sync output") {
 		t.Fatalf("syncAndPublishJoin(pipe) = %v, want filejoin: sync output error", err)
 	}
@@ -714,11 +714,72 @@ func TestSyncAndPublishJoin_SyncsBeforeCloseAndRename(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = syncAndPublishJoin(f, root, "missing-temp", "movie")
+	err = syncAndPublishJoin(f, root, "missing-temp", "movie", (*os.File).Sync)
 	if err == nil || !strings.Contains(err.Error(), "filejoin: publish output") {
 		t.Fatalf("syncAndPublishJoin(missing temp) = %v, want filejoin: publish output error", err)
 	}
 	if closeErr := f.Close(); !errors.Is(closeErr, os.ErrClosed) {
 		t.Errorf("outFile.Close() after syncAndPublishJoin = %v, want os.ErrClosed", closeErr)
+	}
+}
+
+// publishFixture creates outDir with a temp file named tmpRel and returns the
+// rooted handle and an open regular file to hand to syncAndPublishJoin.
+func publishFixture(t *testing.T, tmpRel string) (string, *os.Root, *os.File) {
+	t.Helper()
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	if err := os.WriteFile(filepath.Join(outDir, tmpRel), []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(filepath.Join(outDir, tmpRel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return outDir, root, f
+}
+
+func TestSyncAndPublishJoin_ReturnsDirectorySyncError(t *testing.T) {
+	t.Parallel()
+	const tmpRel = ".gonzbd-tmp-dirsync"
+	_, root, f := publishFixture(t, tmpRel)
+
+	errDirSync := errors.New("injected directory fsync failure")
+	calls := 0
+	syncDir := func(*os.File) error {
+		calls++
+		return errDirSync
+	}
+	err := syncAndPublishJoin(f, root, tmpRel, "movie", syncDir)
+	if !errors.Is(err, errDirSync) || !strings.Contains(err.Error(), "filejoin: sync output directory") {
+		t.Fatalf("syncAndPublishJoin = %v, want filejoin: sync output directory wrapping %v", err, errDirSync)
+	}
+	if calls != 1 {
+		t.Errorf("syncDir called %d times, want once", calls)
+	}
+}
+
+func TestSyncAndPublishJoin_ReturnsDirectoryOpenError(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory read permission")
+	}
+	const tmpRel = ".gonzbd-tmp-diropen"
+	outDir, root, f := publishFixture(t, tmpRel)
+
+	// Write+search permission lets the rename through; without read
+	// permission the directory itself cannot be opened for the fsync.
+	if err := os.Chmod(outDir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(outDir, 0o700) })
+
+	err := syncAndPublishJoin(f, root, tmpRel, "movie", (*os.File).Sync)
+	if !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "filejoin: open output directory") {
+		t.Fatalf("syncAndPublishJoin = %v, want filejoin: open output directory permission error", err)
 	}
 }

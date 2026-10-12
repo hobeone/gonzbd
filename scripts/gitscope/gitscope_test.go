@@ -1,6 +1,7 @@
 package gitscope
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -355,6 +356,87 @@ func TestDiff_UnbornHeadDegradesQuietly(t *testing.T) {
 	}
 }
 
+// `git diff --no-index` exits 1 by design for an untracked file, but any other
+// failure must not be mistaken for that: swallowing it drops the file from the
+// diff, and the gates read the missing file as "nothing changed". An unborn
+// HEAD keeps the base diff out of the way, so the untracked diff is the only
+// git diff that runs, and a missing diff.external fails it with exit 128.
+func TestDiff_FailedUntrackedDiffIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	gitIn(t, dir, "init", "-q", "-b", "main", dir)
+	t.Chdir(dir)
+	writeFile(t, dir, "brand_new.go", "package p\n\nfunc B() {}\n")
+	gitIn(t, dir, "config", "diff.external", "/nonexistent/prog")
+
+	diff, err := Diff()
+	if err == nil {
+		t.Fatalf("Diff() returned nil error when the untracked diff failed; brand_new.go is missing from:\n%q", diff)
+	}
+	if !strings.Contains(err.Error(), "brand_new.go") {
+		t.Errorf("Diff() error = %v, want it to name brand_new.go", err)
+	}
+}
+
+// The other exit-1 meaning: git cannot access the path. A directory with read
+// but no search permission lets ls-files list the file inside it while the
+// --no-index diff prints "error: Could not access" and exits 1 with no output.
+func TestDiff_UntrackedPathGitCannotAccessIsAnError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory search permission")
+	}
+	dir := t.TempDir()
+	gitIn(t, dir, "init", "-q", "-b", "main", dir)
+	t.Chdir(dir)
+	writeFile(t, dir, "d/brand_new.go", "package p\n\nfunc B() {}\n")
+	sub := filepath.Join(dir, "d")
+	if err := os.Chmod(sub, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
+
+	diff, err := Diff()
+	if err == nil {
+		t.Fatalf("Diff() returned nil error when git could not access d/brand_new.go; it is missing from:\n%q", diff)
+	}
+	if !strings.Contains(err.Error(), "d/brand_new.go") {
+		t.Errorf("Diff() error = %v, want it to name d/brand_new.go", err)
+	}
+}
+
+func TestUntrackedDiffErr(t *testing.T) {
+	exitStatus := func(code int) error {
+		t.Helper()
+		err := exec.Command("sh", "-c", "exit "+strconv.Itoa(code)).Run()
+		if _, ok := errors.AsType[*exec.ExitError](err); !ok {
+			t.Fatalf("sh exit %d: got %v, want an *exec.ExitError", code, err)
+		}
+		return err
+	}
+	const header = "diff --git a/x b/x\nnew file mode 100644\n"
+	tests := []struct {
+		name    string
+		out     string
+		err     error
+		wantErr bool
+	}{
+		{"exit 1 with a diff", header, exitStatus(1), false},
+		{"exit 1 with no output", "", exitStatus(1), true},
+		{"exit 128", header, exitStatus(128), true},
+		{"git could not run", header, fmt.Errorf("start: %w", exec.ErrNotFound), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := untrackedDiffErr(tt.out, tt.err)
+			if (got != nil) != tt.wantErr {
+				t.Errorf("untrackedDiffErr(%q, %v) = %v, want error: %v", tt.out, tt.err, got, tt.wantErr)
+			}
+			if tt.wantErr && !errors.Is(got, tt.err) {
+				t.Errorf("untrackedDiffErr returned %v, want it to wrap %v", got, tt.err)
+			}
+		})
+	}
+}
+
 // The middle rung of baseCommit's fallback chain: a branch with history but
 // no origin/main, as in a shallow clone or an unfetched remote. Covered
 // separately because the other two rungs take different code paths.
@@ -383,12 +465,13 @@ func TestDiff_FallsBackToHeadTildeOneWithoutOriginMain(t *testing.T) {
 // git quotes non-ASCII paths C-style by default (core.quotePath), which
 // breaks this package in two places at once. `ls-files --others` emits
 // "caf\303\251.go" instead of café.go, which is not a path the --no-index
-// diff can open — so the file is dropped and the error tolerated. And a diff
-// header comes out as `+++ "b/caf\303\251.go"`, which does not match the
-// `+++ b/` prefix consumers split on — so the file's line ranges go
-// unattributed even when the diff did run.
+// diff can access — it exits 1 with no output, which Diff now returns as an
+// error (TestUntrackedDiffErr). And a diff header comes out as
+// `+++ "b/caf\303\251.go"`, which does not match the `+++ b/` prefix
+// consumers split on — so the file's line ranges go unattributed even when
+// the diff did run.
 //
-// Both are silent. The tracked case matters more than the untracked one: it
+// The header case is silent, and it matters more than the untracked one: it
 // is the ordinary path for a gate, and there the file is present in the diff
 // yet invisible to the parser reading it.
 func TestNonASCIIPathsAreUsableNotQuoted(t *testing.T) {

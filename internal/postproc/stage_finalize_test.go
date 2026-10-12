@@ -91,6 +91,44 @@ func TestFinalizeHelpers(t *testing.T) {
 			t.Errorf("job.DownloadDir = %q, want %q", job.DownloadDir, finalDir)
 		}
 	})
+
+	t.Run("moveFileByFile source removal failure is reported", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses directory write permission")
+		}
+		f := NewFinalizeStage()
+		base := t.TempDir()
+		parent := filepath.Join(base, "parent")
+		srcDir := filepath.Join(parent, "src")
+		dest := filepath.Join(base, "dest")
+		if err := os.MkdirAll(srcDir, 0o750); err != nil {
+			t.Fatalf("mkdir src: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("a"), 0o600); err != nil {
+			t.Fatalf("write a.txt: %v", err)
+		}
+		// srcDir stays writable so a.txt moves out of it; a read-only parent
+		// refuses the final rmdir of srcDir itself.
+		if err := os.Chmod(parent, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+
+		job := &Job{DownloadDir: srcDir, FinalDir: dest}
+		if err := f.moveFileByFile(t.Context(), slog.Default(), job, dest, false); err != nil {
+			t.Fatalf("moveFileByFile: %v", err)
+		}
+		if _, err := os.Stat(srcDir); err != nil {
+			t.Fatalf("stat srcDir: %v; the fixture should have kept it", err)
+		}
+		out := strings.Join(job.OutputLines, "\n")
+		if strings.Contains(out, "Removed empty source directory") {
+			t.Errorf("OutputLines report a removal that failed:\n%s", out)
+		}
+		if !strings.Contains(out, "Failed to remove source directory "+srcDir) {
+			t.Errorf("OutputLines lack the removal failure:\n%s", out)
+		}
+	})
 }
 
 // TestFinalizeStage_MoveFailureSetsFailMsg verifies #761: when FinalizeStage
