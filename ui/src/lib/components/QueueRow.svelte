@@ -9,23 +9,13 @@
 	import { showToast } from '#lib/stores/warnings.svelte.js';
 	import { subscribeWS } from '#lib/stores/websocket.svelte.js';
 	import { cn, formatSize as formatBytes, formatETA } from '#lib/utils.js';
+	import { PP_LEVELS } from '#lib/pp.js';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import Edit2 from '@lucide/svelte/icons/edit-2';
 	import AlertTriangle from '@lucide/svelte/icons/alert-triangle';
 	import Play from '@lucide/svelte/icons/play';
 	import Pause from '@lucide/svelte/icons/pause';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
-
-	const PP_LABELS: Record<string, string> = {
-		'0': 'Download',
-		'1': '+Repair',
-		'2': '+Unpack',
-		'3': '+Delete',
-	};
-
-	function ppLabel(pp: string): string {
-		return PP_LABELS[pp] ?? `PP${pp}`;
-	}
 
 	function formatFailureReason(reason: string | undefined): string {
 		if (!reason) return 'Unknown error';
@@ -645,8 +635,8 @@
 							class="h-7 rounded-lg border border-m3-outline bg-transparent px-2 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-m3-primary cursor-pointer text-m3-on-surface"
 							title="Post-processing level: 0=Download, 1=+Repair, 2=+Unpack, 3=+Delete"
 						>
-							{#each Object.entries(PP_LABELS) as [val, label] (val)}
-								<option value={val} selected={val === slot.pp}>{label}</option>
+							{#each PP_LEVELS as l (l.level)}
+								<option value={String(l.level)} selected={String(l.level) === slot.pp}>{l.label}</option>
 							{/each}
 						</select>
 					</div>

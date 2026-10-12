@@ -512,7 +512,11 @@ Controlled per-job and per-category as a cumulative integer level:
 | 2 | +unpack | Extract archives (implies repair) |
 | 3 | +delete | Delete source archives after extraction (implies repair and unpack) |
 
-PP value is a cumulative level (`0`–`3`). (GoNZBD clamps legacy bitmask values above `3` such as `7` to `3`, and gates its separate `par2_cleanup` stage on `PP >= 1` via `shouldSkipForPP`.)
+PP value is a cumulative level (`0`–`3`). GoNZBD gates its separate `par2_cleanup` stage on `PP >= 1` via `shouldSkipForPP`. What happens to a value outside `[0,3]`, such as the SABnzbd-style `7`, depends on where it arrives:
+
+- A category's `pp` (config file or `set_config`) is rejected by `CategoryConfig.validate` in `internal/config/validate.go`.
+- `mode=queue&name=change_opts` rejects it with HTTP 400 (`queueChangeOpts` in `internal/api/queue.go`).
+- The `pp` parameter of `addfile`, `addlocalfile` and `addurl` is clamped into `[0,3]` by `BuildIngestJob` in `internal/app/ingest.go`, so `7` becomes `3`.
 
 ### 8.3 External Tool Invocations
 
@@ -747,6 +751,8 @@ Categories are named groups with per-category defaults:
   newzbin = ""    # (legacy)
   order = 0       # Display order
 ```
+
+This is SABnzbd's own INI format. GoNZBD's YAML config takes `pp` as the cumulative `0`–`3` level of §8.2 and refuses `pp: 7` when the config loads.
 
 **Special categories**: `Default` (fallback), `*` (catch-all).
 

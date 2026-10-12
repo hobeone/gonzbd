@@ -4,6 +4,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import type { CategoryConfig } from '#lib/types.js';
 	import { fetchScripts } from '#lib/api.js';
+	import { PP_LEVELS, NEW_CATEGORY_PP, parsePPLevel } from '#lib/pp.js';
 
 	let {
 		open = $bindable(false),
@@ -17,7 +18,7 @@
 
 	let draft = $state<CategoryConfig>({
 		name: '',
-		pp: 7,
+		pp: NEW_CATEGORY_PP,
 		script: 'None',
 		priority: 0,
 		dir: '',
@@ -37,7 +38,7 @@
 			} else {
 				draft = {
 					name: '',
-					pp: 7,
+					pp: NEW_CATEGORY_PP,
 					script: 'None',
 					priority: 0,
 					dir: '',
@@ -48,22 +49,9 @@
 		}
 	});
 
-	let repair = $state(true);
-	let unpack = $state(true);
-	let del = $state(true);
-
-	$effect(() => {
-		repair = (draft.pp & 1) !== 0;
-		unpack = (draft.pp & 2) !== 0;
-		del = (draft.pp & 4) !== 0;
-	});
-
-	function updatePP() {
-		let val = 0;
-		if (repair) val |= 1;
-		if (unpack) val |= 2;
-		if (del) val |= 4;
-		draft.pp = val;
+	function updatePP(e: Event) {
+		const level = parsePPLevel((e.target as HTMLSelectElement).value);
+		if (level !== null) draft.pp = level;
 	}
 
 	function handleSave() {
@@ -98,22 +86,13 @@
 			</select>
 		</div>
 
-		<div class="space-y-2">
-			<span class="text-sm font-medium">Post-Processing</span>
-			<div class="flex flex-wrap gap-4 rounded-md border p-3">
-				<label class="flex items-center gap-2 text-sm cursor-pointer">
-					<input type="checkbox" bind:checked={repair} onchange={updatePP} class="rounded border-border" />
-					Repair
-				</label>
-				<label class="flex items-center gap-2 text-sm cursor-pointer">
-					<input type="checkbox" bind:checked={unpack} onchange={updatePP} class="rounded border-border" />
-					Unpack
-				</label>
-				<label class="flex items-center gap-2 text-sm cursor-pointer">
-					<input type="checkbox" bind:checked={del} onchange={updatePP} class="rounded border-border" />
-					Delete
-				</label>
-			</div>
+		<div class="space-y-1.5">
+			<label for="cat-pp" class="text-sm font-medium">Post-Processing</label>
+			<select id="cat-pp" value={String(draft.pp)} onchange={updatePP} class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+				{#each PP_LEVELS as l (l.level)}
+					<option value={String(l.level)}>{l.description}</option>
+				{/each}
+			</select>
 		</div>
 
 		<div class="space-y-1.5">
