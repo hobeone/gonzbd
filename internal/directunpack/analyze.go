@@ -13,10 +13,11 @@
 // set whose extraction fails or is aborted has its staging directory removed
 // and leaves nothing in the job directory for the post-processing unpack
 // stage, which extracts it again, to collide with. Members do remain in the
-// job directory after a publish that fails part way, and after an Abort that
-// arrives once a set has published, which clears its success. A staging
-// directory a crash leaves behind is removed by unpack.CleanupStageDirs, which
-// post-processing's temp sweep runs on the job directory.
+// job directory after a publish that fails part way. A set that published is
+// reported in Results even when Abort follows, and the post-processing unpack
+// stage skips a set it is handed as extracted. A staging directory a crash
+// leaves behind is removed by unpack.CleanupStageDirs, which post-processing's
+// temp sweep runs on the job directory.
 package directunpack
 
 import "github.com/hobeone/gonzbd/internal/rarheader"

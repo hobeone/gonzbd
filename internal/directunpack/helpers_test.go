@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// The four helpers below were untested when this file was added. They are
+// The helpers below were untested when this file was added. They are
 // small, but each owns a piece of state the rest of the package reads, and
 // check_test_alignment surfaced them as gaps in a file a fix had touched.
 
@@ -114,38 +114,40 @@ func TestSetAdmitted(t *testing.T) {
 	}
 }
 
-func TestRecordFailure(t *testing.T) {
-	d := &DirectUnpacker{failedSets: make(map[string]FailedSet)}
-
-	d.recordFailure("movie", "corrupt archive")
-
-	if got := d.failedSets["movie"].Reason; got != "corrupt archive" {
-		t.Errorf("failedSets[\"movie\"].Reason = %q, want %q", got, "corrupt archive")
+func TestSettleLocked(t *testing.T) {
+	tests := []struct {
+		name        string
+		killed      bool
+		err         error
+		wantSuccess bool
+		wantSkip    string
+		wantFail    string
+	}{
+		{"a published set", false, nil, true, "", ""},
+		{"a published set after Abort", true, nil, true, "", ""},
+		{"not RAR5", false, errNotRAR, false, "not RAR5; handled by normal unpack", ""},
+		{"a queued set at Abort", true, errNotStarted, false, "", "aborted (not started)"},
+		{"an error after Abort", true, errors.New("killed"), false, "", "aborted"},
+		{"an error", false, errors.New("bad CRC"), false, "", "bad CRC"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := New(slog.New(slog.DiscardHandler), "job", "", "", Options{})
+			d.killed = tt.killed
+			res := SuccessSet{ExtractedFiles: []string{"f"}}
 
-	// A second failure for the same set replaces the first, so the reason the
-	// caller last supplied is the one Status reports.
-	d.recordFailure("movie", "missing volume")
+			d.settleLocked("s", res, tt.err)
 
-	if got := d.failedSets["movie"].Reason; got != "missing volume" {
-		t.Errorf("after re-record, Reason = %q, want %q", got, "missing volume")
-	}
-	if len(d.failedSets) != 1 {
-		t.Errorf("failedSets has %d entries, want 1", len(d.failedSets))
-	}
-}
-
-func TestRecordSkipped(t *testing.T) {
-	d := &DirectUnpacker{skippedSets: make(map[string]SkippedSet)}
-
-	d.recordSkipped("movie", "not RAR5")
-	d.recordSkipped("show", "not RAR5")
-
-	if got := d.skippedSets["movie"].Reason; got != "not RAR5" {
-		t.Errorf("skippedSets[\"movie\"].Reason = %q, want %q", got, "not RAR5")
-	}
-	if len(d.skippedSets) != 2 {
-		t.Errorf("skippedSets has %d entries, want 2", len(d.skippedSets))
+			if _, ok := d.successSets["s"]; ok != tt.wantSuccess {
+				t.Errorf("successSets has s = %v, want %v", ok, tt.wantSuccess)
+			}
+			if got := d.skippedSets["s"].Reason; got != tt.wantSkip {
+				t.Errorf("skip reason = %q, want %q", got, tt.wantSkip)
+			}
+			if got := d.failedSets["s"].Reason; got != tt.wantFail {
+				t.Errorf("failure reason = %q, want %q", got, tt.wantFail)
+			}
+		})
 	}
 }
 

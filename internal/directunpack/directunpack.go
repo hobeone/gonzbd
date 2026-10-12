@@ -29,6 +29,10 @@ import (
 // pure-Go path is rarengine too.
 var errNotRAR = errors.New("not a RAR5 archive")
 
+// errNotStarted is the outcome Abort settles for a set still queued: one that
+// never became current, so nothing of it was extracted.
+var errNotStarted = errors.New("aborted before the set started")
+
 // SuccessSet records the outcome of a successfully extracted RAR set.
 type SuccessSet struct {
 	// RarParts lists absolute paths of the RAR volume files consumed.
@@ -341,7 +345,12 @@ func (d *DirectUnpacker) buildVolumeMap() {
 	}
 }
 
-// Abort stops the DirectUnpacker. Results are cleared.
+// Abort stops the DirectUnpacker and returns once run has exited. Each queued
+// set is recorded as failed, "aborted (not started)". The set being extracted
+// gets its outcome from run, through settleLocked: a success if it was
+// published before run saw the abort, otherwise an "aborted" failure. Sets
+// that finished before Abort keep their outcomes, so a set Results reports was
+// published into the extract dir, whether or not Abort was called.
 // Safe to call multiple times and concurrently.
 func (d *DirectUnpacker) Abort() {
 	d.mu.Lock()
@@ -351,16 +360,9 @@ func (d *DirectUnpacker) Abort() {
 	}
 	d.killed = true
 
-	// Record failures for the current and any queued sets.
-	if d.curSetname != "" {
-		d.recordFailure(d.curSetname, "aborted")
-	}
 	for _, s := range d.nextSets {
-		d.recordFailure(s, "aborted (not started)")
+		d.settleLocked(s, SuccessSet{}, errNotStarted)
 	}
-
-	// Clear results.
-	d.successSets = make(map[string]SuccessSet)
 	d.nextSets = nil
 
 	// If run() never started, it will never close d.done. Close it here so
@@ -456,16 +458,27 @@ func (d *DirectUnpacker) Skipped() map[string]SkippedSet {
 	return out
 }
 
-// recordFailure adds a failure entry for setname. Must be called with mu
-// held.
-func (d *DirectUnpacker) recordFailure(setname, reason string) {
-	d.failedSets[setname] = FailedSet{Reason: reason}
-}
-
-// recordSkipped adds a skipped entry for setname. Must be called with mu
-// held.
-func (d *DirectUnpacker) recordSkipped(setname, reason string) {
-	d.skippedSets[setname] = SkippedSet{Reason: reason}
+// settleLocked records setname's outcome from what extracting it returned: a
+// success when err is nil, a skip for errNotRAR, and otherwise a failure, whose
+// reason is "aborted" once Abort has set killed. It is the one writer of
+// successSets, failedSets and skippedSets after New makes them — `git grep -nE
+// '(successSets|failedSets|skippedSets)\[[a-z]+\] =' -- internal/directunpack/directunpack.go`
+// returns 5 lines, all in this function. A published set is a success
+// whether or not killed is set, since its members are in the extract dir. Must
+// be called with mu held.
+func (d *DirectUnpacker) settleLocked(setname string, res SuccessSet, err error) {
+	switch {
+	case err == nil:
+		d.successSets[setname] = res
+	case errors.Is(err, errNotRAR):
+		d.skippedSets[setname] = SkippedSet{Reason: "not RAR5; handled by normal unpack"}
+	case errors.Is(err, errNotStarted):
+		d.failedSets[setname] = FailedSet{Reason: "aborted (not started)"}
+	case d.killed:
+		d.failedSets[setname] = FailedSet{Reason: "aborted"}
+	default:
+		d.failedSets[setname] = FailedSet{Reason: err.Error()}
+	}
 }
 
 // run is the main goroutine that manages extraction.
@@ -476,34 +489,30 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 	}()
 
 	for {
+		// No killed check here: the current set is owed an outcome even when
+		// Abort lands before its extraction starts, and extractSet returns
+		// at once when killed (waitForVolume).
 		d.mu.Lock()
-		if d.killed {
-			d.mu.Unlock()
-			return
-		}
 		setname := d.curSetname
 		d.mu.Unlock()
 
-		if err := d.extractSet(ctx, setname); err != nil {
-			d.mu.Lock()
-			killed := d.killed
-			if !killed {
-				if errors.Is(err, errNotRAR) {
-					d.recordSkipped(setname, "not RAR5; handled by normal unpack")
-				} else {
-					d.recordFailure(setname, err.Error())
-				}
-			}
-			d.mu.Unlock()
-			if !killed {
-				if errors.Is(err, errNotRAR) {
-					d.log.Info("skipping set, not a RAR5 archive", "set", setname)
-				} else {
-					d.log.Error("extraction failed", "set", setname, "err", err)
-				}
-				d.notifyChange()
-			}
+		res, err := d.extractSet(ctx, setname)
+		d.mu.Lock()
+		d.settleLocked(setname, res, err)
+		killed := d.killed
+		d.mu.Unlock()
+		switch {
+		case err == nil:
+			d.log.Info("set extraction complete", "set", setname,
+				"parts", len(res.RarParts), "files", len(res.ExtractedFiles))
+		case errors.Is(err, errNotRAR):
+			d.log.Info("skipping set, not a RAR5 archive", "set", setname)
+		case killed:
+			d.log.Info("set extraction aborted", "set", setname, "err", err)
+		default:
+			d.log.Error("extraction failed", "set", setname, "err", err)
 		}
+		d.notifyChange()
 
 		// Check if we should start the next set.
 		d.mu.Lock()
@@ -511,7 +520,6 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 			d.mu.Unlock()
 			return
 		}
-
 		nextSet := d.nextSets[0]
 		d.makeCurrentLocked(nextSet)
 		d.mu.Unlock()
@@ -523,12 +531,13 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 }
 
 // extractSet extracts one complete RAR set using rarengine with sequential
-// volume channel streaming. The cmdutil.SafeEngineRun wrapper recovers
-// rarengine panics and must remain in this function — it only protects the
-// call stack of the goroutine that called extractSet, not the feeder
-// goroutine.
-func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) error {
-	return cmdutil.SafeEngineRun("directunpack: rarengine panic", func() error {
+// volume channel streaming, and returns what it published. It records no
+// outcome; run passes its result to settleLocked. The cmdutil.SafeEngineRun
+// wrapper recovers rarengine panics and must remain in this function — it only
+// protects the call stack of the goroutine that called extractSet, not the
+// feeder goroutine.
+func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (res SuccessSet, err error) {
+	err = cmdutil.SafeEngineRun("directunpack: rarengine panic", func() error {
 		// Derive a cancellable context so any early return from extractSet unblocks
 		// the volume feeder goroutine (which only watches this ctx). Without this,
 		// an early error from extractEntries leaks the feeder and its open *os.File
@@ -606,25 +615,16 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) error {
 			extractedFiles = append(extractedFiles, filepath.Join(d.extractDir, rel))
 		}
 
-		// Record success.
 		d.mu.Lock()
 		var rarParts []string
 		for _, p := range d.completedVols[setname] {
 			rarParts = append(rarParts, p)
 		}
-		d.successSets[setname] = SuccessSet{
-			RarParts:       rarParts,
-			ExtractedFiles: extractedFiles,
-		}
 		d.mu.Unlock()
-
-		d.notifyChange()
-
-		d.log.Info("set extraction complete", "set", setname,
-			"parts", len(rarParts), "files", len(extractedFiles))
-
+		res = SuccessSet{RarParts: rarParts, ExtractedFiles: extractedFiles}
 		return nil
 	})
+	return res, err
 }
 
 // startVolumeFeed spawns a goroutine that opens each completed RAR volume in

@@ -364,7 +364,7 @@ func TestDirectUnpack_Abort(t *testing.T) {
 		t.Fatal("Wait() did not return after Abort()")
 	}
 
-	// Results should be empty after abort.
+	// No set published before the abort, so there are no results.
 	results := du.Results()
 	if len(results) != 0 {
 		t.Fatalf("expected empty results after abort, got %d", len(results))
@@ -570,10 +570,109 @@ func TestDirectUnpack_Abort_RecordsFailures(t *testing.T) {
 		t.Errorf("expected 'aborted' reason for single_rar5, got: %q", f.Reason)
 	}
 
-	// Results should be empty after abort.
+	// No set published before the abort, so there are no results.
 	results := du.Results()
 	if len(results) != 0 {
 		t.Fatalf("expected empty results after abort, got %d", len(results))
+	}
+}
+
+// A set that published before Abort is a success: its members are in the
+// extract dir, so reporting it failed would have post-processing extract it
+// again on top of them. The set Abort interrupts is a failure, and no set is
+// reported both ways.
+func TestDirectUnpack_AbortKeepsASetPublishedBeforeIt(t *testing.T) {
+	srcDir := testdataDir(t)
+	workDir := t.TempDir()
+	extractDir := t.TempDir()
+	single := copyRAR(t, srcDir, workDir, "single_rar5.rar")
+	part01 := copyRAR(t, srcDir, workDir, "multi_new.part01.rar")
+
+	du := New(testLogger(t), "test-job", workDir, extractDir, Options{})
+	du.SetAllFilenames([]string{"single_rar5.rar", "multi_new.part01.rar", "multi_new.part02.rar"})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// single_rar5 starts and completes; multi_new then waits for volume 2.
+	du.Add(ctx, "single_rar5.rar", single)
+	du.Add(ctx, "multi_new.part01.rar", part01)
+	for du.Status().CurrentSet != "multi_new" {
+		if ctx.Err() != nil {
+			t.Fatalf("multi_new never became the current set: %+v", du.Status())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	du.Abort()
+
+	results, failures := du.Results(), du.Failures()
+	if got := results["single_rar5"].ExtractedFiles; len(got) == 0 {
+		t.Errorf("Results()[single_rar5] = %+v, want the set published before Abort", results["single_rar5"])
+	}
+	if _, ok := failures["single_rar5"]; ok {
+		t.Errorf("single_rar5 is reported failed (%+v) as well as extracted", failures["single_rar5"])
+	}
+	if f, ok := failures["multi_new"]; !ok || !strings.HasPrefix(f.Reason, "aborted") {
+		t.Errorf("Failures()[multi_new] = %+v, %v; want an aborted failure", f, ok)
+	}
+	if _, ok := results["multi_new"]; ok {
+		t.Error("the set Abort interrupted is reported extracted")
+	}
+}
+
+// An Abort that lands after a set published, but before run records the set's
+// outcome, does not record an outcome for that set itself, and the set is then
+// recorded a success. An Abort before the set's extraction failed has the
+// failure recorded as aborted.
+func TestDirectUnpack_AbortBeforeTheVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		err         error
+		wantSuccess bool
+	}{
+		{"published", nil, true},
+		{"failed", errors.New("killed"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			du := New(testLogger(t), "test-job", t.TempDir(), t.TempDir(), Options{})
+			du.started = true
+			du.curSetname = "s"
+			close(du.done) // run has nothing left to do but record the verdict
+
+			du.Abort()
+			if _, ok := du.Failures()["s"]; ok {
+				t.Fatalf("Abort recorded the current set's outcome (%+v); run owns it", du.Failures()["s"])
+			}
+
+			du.mu.Lock()
+			du.settleLocked("s", SuccessSet{ExtractedFiles: []string{"f"}}, tc.err)
+			du.mu.Unlock()
+
+			_, succeeded := du.Results()["s"]
+			f, failed := du.Failures()["s"]
+			if succeeded != tc.wantSuccess || failed == tc.wantSuccess {
+				t.Fatalf("succeeded=%v failed=%v (%+v), want succeeded=%v and the other not",
+					succeeded, failed, f, tc.wantSuccess)
+			}
+			if failed && f.Reason != "aborted" {
+				t.Errorf("failure reason = %q, want aborted", f.Reason)
+			}
+		})
+	}
+}
+
+// An Abort that lands after Add made a set current, but before run looked at
+// it, still leaves that set an outcome: run records it as aborted.
+func TestDirectUnpack_AbortBeforeRunStartsTheSet(t *testing.T) {
+	du := New(testLogger(t), "test-job", t.TempDir(), t.TempDir(), Options{})
+	du.started = true
+	du.curSetname = "s"
+	du.killed = true // what Abort sets before it waits for run
+
+	du.run(t.Context())
+
+	if f, ok := du.Failures()["s"]; !ok || f.Reason != "aborted" {
+		t.Errorf("Failures()[s] = %+v, %v; want an aborted failure", f, ok)
 	}
 }
 
@@ -964,7 +1063,8 @@ func TestDirectUnpack_ExtractSet_FeederNoLeakOnEarlyError(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- du.extractSet(ctx, setname)
+		_, err := du.extractSet(ctx, setname)
+		errCh <- err
 	}()
 
 	select {

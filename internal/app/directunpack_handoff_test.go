@@ -50,8 +50,9 @@ func TestFail_FromFetching_AbortsTheDirectUnpack(t *testing.T) {
 // TestHandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults: a job
 // whose download finished has every volume its DirectUnpacker will get, so
 // the hand-over waits for it rather than aborting it, and the post-processor
-// is given what it extracted. An abort clears the unpacker's results even after
-// it has finished, so an aborting hand-over loses them.
+// is given what it extracted. The unpacker is still extracting the set at the
+// hand-over, because an abort keeps a set already published: only the set an
+// abort interrupts is lost.
 func TestHandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults(t *testing.T) {
 	t.Parallel()
 	stage := finishedStage()
@@ -69,29 +70,37 @@ func TestHandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults(t *testin
 	duDir := t.TempDir()
 	du := directunpack.New(slog.New(slog.DiscardHandler), id, duDir, t.TempDir(), directunpack.Options{})
 	du.SetAllFilenames(names)
-	for _, name := range names {
+	paths := make([]string, volumes)
+	for i, name := range names {
 		data, err := os.ReadFile(filepath.Join("../unpack/testdata", name))
 		if err != nil {
 			t.Fatalf("read test archive: %v", err)
 		}
-		path := filepath.Join(duDir, name)
-		if err := os.WriteFile(path, data, 0o600); err != nil {
+		paths[i] = filepath.Join(duDir, name)
+		if err := os.WriteFile(paths[i], data, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		du.Add(t.Context(), name, path)
+	}
+	// Every volume but the last: the unpacker waits for it inside the set.
+	for i := range volumes - 1 {
+		du.Add(t.Context(), names[i], paths[i])
 	}
 	t.Cleanup(du.Abort)
+	application.duOrch.inject(id, du)
+
+	application.maybeFinalize(id, "")
+	select {
+	case <-du.Done():
+		t.Fatalf("the hand-over stopped the unpacker of a job whose download had finished; failures %v",
+			du.Failures())
+	case <-time.After(time.Second):
+	}
+	du.Add(t.Context(), names[volumes-1], paths[volumes-1])
 	select {
 	case <-du.Done():
 	case <-time.After(10 * time.Second):
 		t.Fatal("the DirectUnpacker never finished extracting the set")
 	}
-	if len(du.Results()) == 0 {
-		t.Fatalf("precondition: the DirectUnpacker extracted nothing; failures %v", du.Failures())
-	}
-	application.duOrch.inject(id, du)
-
-	application.maybeFinalize(id, "")
 	awaitAdmissionsEnded(t, application)
 
 	hist := application.postProcessor.History()
