@@ -137,7 +137,9 @@ func TestCleanupPartialFiles(t *testing.T) {
 	}
 
 	// Call cleanupPartialFiles
-	cleanupPartialFiles(tmp, beforeSnap, slog.Default(), "test", 1)
+	if err := cleanupPartialFiles(tmp, beforeSnap, slog.Default(), "test", 1); err != nil {
+		t.Fatalf("cleanupPartialFiles: %v", err)
+	}
 
 	// Verify f1 still exists, but f2 and f3 are deleted
 	if _, err := os.Stat(f1); err != nil {
@@ -466,4 +468,141 @@ func TestRarPreVerify_FallsThroughWhenUncertain(t *testing.T) {
 			t.Error("rarPreVerify() = true for an unencrypted archive, want false (fall through)")
 		}
 	})
+}
+
+// lockDir sets dir's mode and restores it at cleanup so t.TempDir can
+// remove it. Permission bits do not bind root, so the test is skipped there.
+func lockDir(t *testing.T, dir string, mode os.FileMode) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("permission bits do not bind root")
+	}
+	if err := os.Chmod(dir, mode); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // test cleanup of a t.TempDir subdirectory
+}
+
+// writeVolumes creates two archive volumes in dir and returns their paths.
+func writeVolumes(t *testing.T, dir string) []string {
+	t.Helper()
+	names := []string{"a.part1.rar", "a.part2.rar"}
+	vols := make([]string, 0, len(names))
+	for _, name := range names {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("volume"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		vols = append(vols, p)
+	}
+	return vols
+}
+
+// A before-attempt snapshot that fails must not let a wrong-password
+// cleanup run: with no record of what was there, every file in outDir —
+// the archive volumes included — would read as a partial from the attempt.
+func TestWithPasswords_BeforeSnapshotFailurePreservesVolumes(t *testing.T) {
+	outDir := t.TempDir()
+	vols := writeVolumes(t, outDir)
+	locked := filepath.Join(outDir, "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lockDir(t, locked, 0)
+
+	calls := 0
+	extract := func(_ context.Context, _ *slog.Logger, _ Archive, outDir, _ string, _ Options) (Result, error) {
+		calls++
+		// Unlock so the after-attempt scan succeeds, and leave a partial.
+		if err := os.Chmod(locked, 0o700); err != nil { //nolint:gosec // test fixture directory
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(outDir, "partial.bin"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return Result{Reason: FailWrongPassword}, errors.New("wrong password")
+	}
+	opts := Options{Passwords: []string{"pw1", "pw2"}}
+	res, err := withPasswords(context.Background(), slog.Default(), Archive{MainFile: vols[0]}, outDir, opts, extract,
+		func(int, string) bool { return false }, "mock", nil)
+
+	for _, v := range vols {
+		if _, statErr := os.Stat(v); statErr != nil {
+			t.Errorf("archive volume %s removed after a failed before-snapshot: %v", filepath.Base(v), statErr)
+		}
+	}
+	if err == nil || errors.Is(err, ErrWrongPassword) {
+		t.Errorf("err = %v, want the snapshot error", err)
+	}
+	if res.Err == nil {
+		t.Errorf("res.Err = nil, want the snapshot error")
+	}
+	if calls != 0 {
+		t.Errorf("extract called %d times, want 0: no attempt may run without a before-snapshot", calls)
+	}
+}
+
+// An after-attempt scan that fails leaves the attempt's partial files in
+// place, so the loop must stop rather than run the next password over them.
+// One password: with two, the still-locked directory would fail the next
+// attempt's before-snapshot and stop the loop by another path.
+func TestWithPasswords_AfterSnapshotFailureAborts(t *testing.T) {
+	outDir := t.TempDir()
+	vols := writeVolumes(t, outDir)
+
+	calls := 0
+	extract := func(_ context.Context, _ *slog.Logger, _ Archive, outDir, _ string, _ Options) (Result, error) {
+		calls++
+		locked := filepath.Join(outDir, "locked")
+		if err := os.Mkdir(locked, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		lockDir(t, locked, 0)
+		return Result{Reason: FailWrongPassword}, errors.New("wrong password")
+	}
+	opts := Options{Passwords: []string{"pw1"}}
+	res, err := withPasswords(context.Background(), slog.Default(), Archive{MainFile: vols[0]}, outDir, opts, extract,
+		func(int, string) bool { return false }, "mock", nil)
+
+	if err == nil || errors.Is(err, ErrWrongPassword) {
+		t.Errorf("err = %v, want the cleanup error", err)
+	}
+	if res.Reason != FailUnknown {
+		t.Errorf("res.Reason = %v, want FailUnknown: the failure is the cleanup, not the password", res.Reason)
+	}
+	if calls != 1 {
+		t.Errorf("extract called %d times, want 1: the loop must stop when cleanup cannot run", calls)
+	}
+}
+
+// A partial that cannot be removed is reported, not silently left behind,
+// and the removals that can succeed still happen.
+func TestCleanupPartialFiles_RemoveFailureReturnsError(t *testing.T) {
+	outDir := t.TempDir()
+	before, err := snapshotDir(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sorts after "sub/stuck.bin", so it is removed after the failure.
+	removable := filepath.Join(outDir, "z_partial.bin")
+	if err := os.WriteFile(removable, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(outDir, "sub")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "stuck.bin"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Readable and searchable, so the scan succeeds; not writable, so the
+	// unlink of stuck.bin fails.
+	lockDir(t, sub, 0o500)
+
+	if err := cleanupPartialFiles(outDir, before, slog.Default(), "mock", 1); err == nil {
+		t.Error("cleanupPartialFiles returned nil, want the remove error")
+	}
+	if _, err := os.Stat(removable); err == nil {
+		t.Error("z_partial.bin was not removed after an earlier remove failed")
+	}
 }
