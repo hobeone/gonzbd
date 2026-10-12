@@ -457,32 +457,20 @@ func TestQueueChangeOpts_Direct(t *testing.T) {
 		}
 	})
 
-	t.Run("out-of-range pp is a 400", func(t *testing.T) {
-		t.Parallel()
-		s, q := testQueueServer(t)
-		job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
-		req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+"&value2=5", nil)
-		rr := httptest.NewRecorder()
-		s.queueChangeOpts(rr, req)
-
-		if rr.Code != http.StatusBadRequest {
-			t.Errorf("status = %d; want 400", rr.Code)
-		}
-	})
-
-	// Both edges of job.ParsePP's range, one value either side of each.
-	// Testing only an interior value and one well outside the range leaves
-	// both comparisons free to move by one without any test noticing: with
-	// only pp=3 and pp=5, widening the upper bound by one still rejects 5,
-	// and no negative value at all leaves the lower bound unpinned entirely.
+	// Both edges, one value either side of each: the refusal of a negative
+	// level, and ClampPP's saturation above 3. Testing only an interior value
+	// and one well outside the range leaves both free to move by one without
+	// any test noticing.
 	for _, tc := range []struct {
-		name string
-		pp   string
-		want int
+		name   string
+		pp     string
+		want   int
+		wantPP int
 	}{
-		{"lower boundary is valid", "0", http.StatusOK},
-		{"one below the lower boundary is a 400", "-1", http.StatusBadRequest},
-		{"one above the upper boundary is a 400", "4", http.StatusBadRequest},
+		{"lower boundary is valid", "0", http.StatusOK, 0},
+		{"one below the lower boundary is a 400", "-1", http.StatusBadRequest, 0},
+		{"upper boundary is valid", "3", http.StatusOK, 3},
+		{"one above the upper boundary runs as 3", "4", http.StatusOK, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -502,8 +490,8 @@ func TestQueueChangeOpts_Direct(t *testing.T) {
 			if updated == nil {
 				t.Fatalf("SnapshotJob(%s): job not in queue", job.ID)
 			}
-			if updated.PP != 0 {
-				t.Errorf("PP = %d; want 0", updated.PP)
+			if updated.PP != tc.wantPP {
+				t.Errorf("PP = %d; want %d", updated.PP, tc.wantPP)
 			}
 		})
 	}

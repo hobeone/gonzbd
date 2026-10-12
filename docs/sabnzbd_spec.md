@@ -512,11 +512,7 @@ Controlled per-job and per-category as a cumulative integer level:
 | 2 | +unpack | Extract archives (implies repair) |
 | 3 | +delete | Delete source archives after extraction (implies repair and unpack) |
 
-PP value is a cumulative level (`0`–`3`). GoNZBD gates its separate `par2_cleanup` stage on `PP >= 1` via `shouldSkipForPP`. What happens to a value outside `[0,3]`, such as the SABnzbd-style `7`, depends on where it arrives:
-
-- A category's `pp` (config file or `set_config`) is rejected by `CategoryConfig.validate` in `internal/config/validate.go`.
-- `mode=queue&name=change_opts` rejects it with HTTP 400 (`queueChangeOpts` in `internal/api/queue.go`).
-- The `pp` parameter of `addfile`, `addlocalfile` and `addurl` is clamped into `[0,3]` by `BuildIngestJob` in `internal/app/ingest.go`, so `7` becomes `3`.
+PP value is a cumulative level (`0`–`3`). GoNZBD gates its separate `par2_cleanup` stage on `PP >= 1` via `shouldSkipForPP`. A `pp` above `3` in the API (`addfile`, `addlocalfile`, `addurl`, `change_opts`), such as the SABnzbd-style `7`, runs as `3` (`job.ClampPP`). A negative `pp` is refused by `change_opts` with HTTP 400 and runs as `0` on an add, except `-1`, which inherits the category's; the config refuses a category `pp` outside `[0,3]`.
 
 ### 8.3 External Tool Invocations
 

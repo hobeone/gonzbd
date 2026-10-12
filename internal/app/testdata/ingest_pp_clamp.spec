@@ -1,10 +1,13 @@
 pkg ./internal/app/
 run TestBuildIngestJob_ClampsAnOutOfRangePP$
 
-[BuildIngestJob refuses an out-of-range pp to download-only instead of saturating it]
+[BuildIngestJob takes an out-of-range pp as download-only instead of saturating it]
 file internal/app/ingest.go
 --- anchor
 	pp := job.ClampPP(level)
 --- replace
-	pp, _ := job.ParsePP(level)
+	pp := job.ClampPP(level)
+	if level > 3 {
+		pp = job.ClampPP(0)
+	}
 --- end

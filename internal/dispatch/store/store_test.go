@@ -388,32 +388,36 @@ func TestStore_LoadRejectsAnOutOfRangeEnum(t *testing.T) {
 	}
 }
 
-// TestStore_LoadSkipsAnOutOfRangePP pins that a pp column outside [0,3] is
-// built by job.ParsePP, which refuses it, so the row is skipped as an
-// unscannable one is rather than restored with a level no writer can produce.
-func TestStore_LoadSkipsAnOutOfRangePP(t *testing.T) {
-	var buf bytes.Buffer
+// TestStore_LoadSaturatesAnOutOfRangePP pins that a pp column outside [0,3]
+// is built by job.ClampPP, so the row restores at the nearest level, as every
+// other path that builds a PP would have it.
+func TestStore_LoadSaturatesAnOutOfRangePP(t *testing.T) {
 	_, raw := newTestStoreDB(t)
-	s := store.New(raw, slog.New(slog.NewTextHandler(&buf, nil)))
+	s := store.New(raw, nil)
 
-	good := dispatch.Persisted{ID: "good", SortKey: 2, Header: dispatch.Header{Name: "good", PP: job.ClampPP(2)}}
-	for _, p := range []dispatch.Persisted{{ID: "bad", SortKey: 1, Header: dispatch.Header{Name: "bad"}}, good} {
-		if err := s.Save(t.Context(), p); err != nil {
-			t.Fatalf("Save(%s): %v", p.ID, err)
+	for _, tc := range []struct {
+		id     string
+		stored int
+	}{{"high", 7}, {"low", -5}} {
+		if err := s.Save(t.Context(), dispatch.Persisted{ID: tc.id, Header: dispatch.Header{Name: tc.id, PP: job.ClampPP(1)}}); err != nil {
+			t.Fatalf("Save(%s): %v", tc.id, err)
 		}
-	}
-	if _, err := raw.ExecContext(t.Context(), `UPDATE dispatch_jobs SET pp = 7 WHERE id = ?`, "bad"); err != nil {
-		t.Fatalf("corrupting the row: %v", err)
+		if _, err := raw.ExecContext(t.Context(), `UPDATE dispatch_jobs SET pp = ? WHERE id = ?`, tc.stored, tc.id); err != nil {
+			t.Fatalf("writing pp %d: %v", tc.stored, err)
+		}
 	}
 	got, err := s.Load(t.Context())
 	if err != nil {
 		t.Fatalf("Load() error = %v, want nil", err)
 	}
-	if len(got) != 1 || got[0] != good {
-		t.Fatalf("Load() = %+v, want only [%+v]", got, good)
+	want := map[string]int{"high": 3, "low": 0}
+	if len(got) != len(want) {
+		t.Fatalf("Load() returned %d rows, want %d", len(got), len(want))
 	}
-	if out := buf.String(); !strings.Contains(out, "job_id=bad") || !strings.Contains(out, "pp must be 0-3, got 7") {
-		t.Errorf("log output %q does not contain \"job_id=bad\" and \"pp must be 0-3, got 7\"", out)
+	for _, p := range got {
+		if p.Header.PP.Int() != want[p.ID] {
+			t.Errorf("Load() row %s PP = %d, want %d", p.ID, p.Header.PP.Int(), want[p.ID])
+		}
 	}
 }
 

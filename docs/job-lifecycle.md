@@ -56,8 +56,8 @@ at the boundary and never stored internally. **The integer does not exist past
 `App`.** `PolicyFromPP` saturates at both ends without an explicit clamp,
 because each field's `>=` comparison already does. Where the level itself is
 held — `dispatch.Header.PP` and the queue row's `pp` column — it is a `job.PP`
-(`internal/job/pp.go`), which cannot hold a level outside `[0,3]`: `ParsePP`
-refuses one and `ClampPP` saturates it, and `PP.Policy` translates the level.
+(`internal/job/pp.go`), which cannot hold a level outside `[0,3]`: `ClampPP`
+saturates one into it, and `PP.Policy` translates the level.
 
 **Every state runs at every policy.** At `Verify: false` the Assessor returns
 `Complete` without doing work and the job crosses the boundary immediately.

@@ -975,11 +975,15 @@ func (s *Server) queueChangeOpts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireParam(w, r, "value2", "pp level"); !ok {
 		return
 	}
-	pp, err := job.ParsePP(intParam(r, "value2"))
-	if err != nil {
-		s.respondError(w, http.StatusBadRequest, err.Error())
+	// A negative level is refused, as SABnzbd's change_opts refuses one; a
+	// level above 3 runs as 3 (docs/sabnzbd_spec.md §8.2).
+	level := intParam(r, "value2")
+	if level < 0 {
+		s.respondError(w, http.StatusBadRequest, fmt.Sprintf("pp must not be negative, got %d", level))
 		return
 	}
+	pp := job.ClampPP(level)
+	var err error
 	if s.dispatcher != nil {
 		err = s.dispatcher.SetPP(nzoID, pp)
 	} else {

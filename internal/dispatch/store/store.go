@@ -84,8 +84,8 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 		//
 		// Unlike the other columns, pp is not scanned straight into its field:
 		// job.PP has no exported field to scan into, so it is read into an int
-		// and built by job.ParsePP, and a row whose level is outside [0,3] is
-		// skipped as a failed scan is.
+		// and built by job.ClampPP, which saturates a level outside [0,3] as
+		// every other path that builds a PP does.
 		var p dispatch.Persisted
 		var pp int
 		if err := rows.Scan(
@@ -104,11 +104,7 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 			s.log.Error("dispatch/store: load scan failed", "job_id", p.ID, "err", err)
 			continue
 		}
-		var err error
-		if p.Header.PP, err = job.ParsePP(pp); err != nil {
-			s.log.Error("dispatch/store: load scan failed", "job_id", p.ID, "err", err)
-			continue
-		}
+		p.Header.PP = job.ClampPP(pp)
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
