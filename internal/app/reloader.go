@@ -25,10 +25,12 @@ import (
 // config.Config's lock (this is called from the API's reloadSection after it
 // snapshots cfg; sync.RWMutex is not reentrant).
 //
-// Config-only fields (DirectUnpack, DirectUnpackThreads, EnableUnrar, Enable7zip)
-// are not applied here: they are read from config at dispatch time, and the API
-// has already written them to config before this runs, so no propagation is
-// needed.
+// DirectUnpack and DirectUnpackThreads are not applied here: they are read
+// from config when a file completes (completeFinalizedFile, maybeStart), and
+// the API has already written them to config before this runs, so no
+// propagation is needed. EnableUnrar is read there too, and is also applied
+// here, with Enable7zip, EnableFileJoin and EnableTar, to the unpack stage's
+// enabled flag.
 func (app *Application) ReloadPostProcOptions(pp config.PostProcConfig, scriptDir string) {
 	cmdCfg := cmdutil.CmdConfig{Nice: pp.Nice, Ionice: pp.Ionice}
 
@@ -275,9 +277,9 @@ func (app *Application) SetPropagationDelay(minutes int) {
 	app.pushDispatchOptions()
 }
 
-// pushDispatchOptions reads the current mutable dispatch fields under app.mu
-// and forwards them to the running downloader. Must not be called while
-// holding app.mu.
+// pushDispatchOptions reads the current mutable dispatch fields from config
+// and forwards them to the running downloader, which it snapshots under
+// app.mu. Must not be called while holding app.mu.
 func (app *Application) pushDispatchOptions() {
 	dlCfg := app.config.GetDownloads()
 	maxArtTries := dlCfg.MaxArtTries

@@ -82,8 +82,8 @@ func (app *Application) handleArticlesUnwritten(jobID string, fileIdx int, artId
 //     calling it. A guaranteed self-deadlock, resolved only by the 5s
 //     closeHandlesTimeout expiring — after which the handles are still open,
 //     so the NFS silly-rename that call exists to prevent is not prevented
-//     either. maybeFinalize then also does a queue.Save and enqueues
-//     post-processing, both on the worker.
+//     either. enqueuePostProc then also runs a synchronous recorder flush
+//     to SQLite and enqueues post-processing, both on the worker.
 //   - Retryable → Application.Stall → Dispatcher.PauseJob, which updates intent
 //     manifest from disk and calls into SQLite. On the worker, that is the
 //     single goroutine every write for every job passes through.
@@ -102,7 +102,7 @@ func (app *Application) handleArticlesUnwritten(jobID string, fileIdx int, artId
 // its 15s budget lets Shutdown proceed to app.wg.Wait() with the worker still
 // draining — and a write fault raised after that point reaches this function
 // and Adds to a WaitGroup that already has a waiter, which panics and takes
-// the process down before Shutdown's final queue.Save.
+// the process down before Shutdown's final recorder flush.
 //
 // The window is narrow and this is not the place to close it; what matters
 // here is that the claim is bounded rather than absolute, so nobody builds on

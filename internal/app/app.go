@@ -1,8 +1,8 @@
-// Package app wires the download pipeline: queue → downloader → decoder →
-// assembler. It owns the lifecycle of each subsystem (Start, Shutdown) and
-// bridges between them via a pipeline goroutine that decodes raw NNTP bodies
-// and hands decoded parts to the assembler for pwrite-based out-of-order
-// assembly.
+// Package app wires the download pipeline: dispatcher → downloader, which
+// fetches and decodes each article → pipeline → assembler. It owns the
+// lifecycle of each subsystem (Start, Shutdown) and bridges between them via a
+// pipeline goroutine that hands the downloader's decoded articles to the
+// assembler for pwrite-based out-of-order assembly.
 package app
 
 import (
@@ -1264,7 +1264,8 @@ func (app *Application) GetHistory(ctx context.Context, id string) (*history.Ent
 	return app.historyRepo.Get(ctx, id)
 }
 
-// JobComplete returns the channel signalled when all files in a job are done.
+// JobComplete returns the channel signalled when a job is handed to the
+// post-processor (see the JobComplete type).
 func (app *Application) JobComplete() <-chan JobComplete { return app.jobComplete }
 
 // PostProcComplete returns the channel signalled when post-processing finishes.
@@ -1313,12 +1314,11 @@ func (app *Application) Start(ctx context.Context) error {
 		// started guard returns early once this defer clears the flag, so on
 		// every error return nothing else would ever call cancel.
 		//
-		// This matters most for the late failure paths. By the time the
-		// waitBounded steps can fail, four long-lived goroutines are already
-		// running against app.ctx — pipeline.run, watchCompletions,
-		// runStallRecheck and runMetricsPush. Without this cancel they would run
-		// forever, and nothing would join them either, since app.wg.Wait lives
-		// only in Shutdown.
+		// It matters for the late failure paths. Every error return precedes
+		// the goroutines Start launches on app.wg, but a failure of the
+		// assembler's, the downloader's or the post-processor's Start comes
+		// after the dispatcher, and then the assembler and the downloader,
+		// were started with app.ctx.
 		if app.dispatcher != nil {
 			if err := app.dispatcher.Stop(); err != nil {
 				app.log.Warn("start failed: stopping the dispatcher failed", "err", err)
@@ -1357,7 +1357,7 @@ func (app *Application) Start(ctx context.Context) error {
 		return err
 	}
 	// Snapshot app.downloader under app.mu once and reuse it below. started
-	// flips true (via CompareAndSwap) before this point, so a concurrent
+	// flips true (via a plain Store) before this point, so a concurrent
 	// ReloadDownloader call could otherwise race an unguarded read of
 	// app.downloader against its own field swap — the same torn-read class
 	// fixed in #98. See stopWorkers for the same pattern.
@@ -2140,7 +2140,7 @@ func (app *Application) drainCompletions(ctx context.Context) {
 	}
 }
 
-// hasFailedArticle reports whether any article in jf permanently failed
+// hasFailedArticle reports whether any article of file fileIdx permanently failed
 // (exhausted retries on all servers). Such a file can still reach the
 // "complete" state — the assembler fires OnFileComplete once every article
 // is Done-or-Failed, leaving gaps in the written file rather than blocking
@@ -2557,10 +2557,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	return false
 }
 
-// SetQuickCheckEnabled enables or disables the CRC pre-verify pass at runtime
-// without restarting. Takes effect for the next job that enters post-processing.
-
-// rebuildJobFromNZB reconstructs a queue.Job for a history entry by
+// rebuildJobFromNZB reconstructs a *job.Job for a history entry by
 // re-parsing the gzipped NZB backup recorded on it.
 //
 // This is where the article message-IDs come back. They are not in SQLite —
@@ -3335,9 +3332,10 @@ func failMsgForCounters(p failureByteCounters, state string, recBytes int64, rec
 		return ""
 	}
 
-	// Promoted scalars and JobProgress, never job.Manifest(): this runs from
-	// the startup recovery walk over the dispatcher snapshot, where a job may have
-	// no resident manifest and a manifest read would nil-deref.
+	// Promoted scalars and JobProgress, never job.Manifest(): failMsgForJob's
+	// callers (the two OnJobHopeless callbacks, and appRunner's failHopeless
+	// and runPostProc) check no residency first, and a manifest read on an
+	// evicted job fails with job.ErrNotResident.
 	//
 	// Two different failure figures, and the difference matters. The
 	// all-failed check below asks "did everything we set out to fetch fail",
@@ -3369,10 +3367,11 @@ func failMsgForCounters(p failureByteCounters, state string, recBytes int64, rec
 	// The verdict itself lives in job.RepairStateFrom, which the dispatcher's
 	// Early Health Gate and the queue listing also read. Only the wording of
 	// each outcome belongs here: when these sites derived the comparison
-	// separately they drifted, and OnJobHopeless passes this function's result
-	// into maybeFinalize with no fallback string — so a dispatcher that
-	// declares a job hopeless while this one still considers it repairable
-	// finalizes the job with an empty reason and shows the user nothing.
+	// separately they drifted, and appRunner.failHopeless passes this
+	// function's result into maybeFinalizeJob with no fallback string — so a
+	// hopeless verdict this function does not word hands the job over with an
+	// empty reason and shows the user nothing. (The OnJobHopeless callbacks
+	// substitute the early-abort message for "".)
 	switch state {
 	case string(job.RepairIntact), string(job.RepairPossible), string(job.RepairUnknown):
 		// RepairIntact: only par2 failed, so there is nothing to repair and
@@ -3395,13 +3394,13 @@ func failMsgForCounters(p failureByteCounters, state string, recBytes int64, rec
 			failedMB,
 		)
 	default:
-		// A state added to queue.RepairState that nobody taught this function
+		// A state added to job.RepairState that nobody taught this function
 		// to word. Falling through to "" would be the precise failure the
 		// comment above warns about: Hopeless() is opt-in per state and the
 		// wording above is opt-in per state, as two separate lists, so a new
-		// hopeless state would abort the job in the dispatcher while this
-		// returned no reason at all — and OnJobHopeless hands that straight to
-		// maybeFinalize with no fallback, showing the user nothing.
+		// hopeless state would fail the job at Assessing while this returned
+		// no reason at all — and appRunner.failHopeless hands that straight to
+		// maybeFinalizeJob with no fallback, showing the user nothing.
 		//
 		// TestFailMsgForJob_WordsEveryHopelessState fails when a state reaches
 		// here; this arm only bounds the damage until someone reads it.

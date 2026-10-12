@@ -141,7 +141,7 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	// Quick-check stage: relocate flat files into par2-expected subdirs
 	// and CRC-verify assembled files before repair runs. The stage is
 	// always in the pipeline so it can be toggled at runtime via
-	// Application.SetQuickCheckEnabled without restarting.
+	// Application.ReloadPostProcOptions without restarting.
 	qcStage := postproc.NewQuickCheckStage()
 	qcStage.Log = ppLog
 	qcStage.ParseOpts = par2ParseOpts
