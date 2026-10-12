@@ -45,7 +45,10 @@ type Options struct {
 	SevenZipCommand string
 	// OverwriteFiles controls whether extraction overwrites existing files.
 	// true = overwrite (-o+ for unrar, -aoa for 7z); false = skip (-o- for unrar, -aos for 7z).
-	// Default (false) preserves existing files.
+	// Default (false) preserves existing files. With OneFolder also set,
+	// false means skip only for UnRAR and SevenZip: GoUnRAR (ExtractMember),
+	// GoSevenZip, GoTar and ExtractStaged instead write a taken name under
+	// a uniquePath "_N" name.
 	OverwriteFiles bool
 	// IgnoreUnrarDates discards in-archive modification timestamps and uses extraction time.
 	// Adds -tsm- to unrar arguments (matches SABnzbd's behavior).
