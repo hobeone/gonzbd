@@ -1194,8 +1194,8 @@ articles or sparse regions.
     making a stage. Members that did reach the job directory are extracted
     again by the unpack stage whenever the set is missing from
     `DirectUnpackSets`, and under `flat_unpack` without `overwrite_files` a
-    `go_unrar` re-extraction writes `_N` copies of them (external `unrar`
-    skips the taken names). The cases found: a publish that fails
+    re-extraction, by any engine, writes `_N` copies of them. The cases
+    found: a publish that fails
     part way, a set that succeeded before `Abort`, whose success `Abort` clears
     (item 8), and a restart before post-processing, which loses the in-memory
     result (item 2).

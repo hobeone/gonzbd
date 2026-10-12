@@ -84,6 +84,51 @@ exit 1
 	}
 }
 
+// TestUnRAR_CannotCreateAutoFixFlatRenamesTakenName verifies that the
+// auto-fix path publishes a flat extraction as the success path does: a name
+// outDir already holds is published under a "_N" name, not skipped (#897).
+func TestUnRAR_CannotCreateAutoFixFlatRenamesTakenName(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	outDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outDir, "file_corrected.txt"), []byte("pre"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	scriptPath := filepath.Join(dir, "mock-unrar")
+	script := `#!/bin/sh
+eval "OUTDIR=\${$#}"
+echo "Cannot create file.txt"
+echo "Attempting to correct the filename"
+printf member > "${OUTDIR}file_corrected.txt"
+exit 1
+`
+	writeScript(t, scriptPath, []byte(script))
+	archive := unpack.Archive{
+		Type:     unpack.RarArchive,
+		Name:     "archive",
+		MainFile: filepath.Join(dir, "archive.rar"),
+		Parts:    []string{filepath.Join(dir, "archive.rar")},
+	}
+
+	res, err := unpack.UnRAR(t.Context(), slog.Default(), archive, outDir, "", unpack.Options{
+		UnrarCommand: scriptPath,
+		OneFolder:    true,
+	})
+	if err != nil {
+		t.Fatalf("UnRAR: %v", err)
+	}
+	if len(res.ExtractedFiles) != 1 || res.ExtractedFiles[0] != "file_corrected_1.txt" {
+		t.Errorf("ExtractedFiles = %q, want [file_corrected_1.txt]", res.ExtractedFiles)
+	}
+	for name, want := range map[string]string{"file_corrected.txt": "pre", "file_corrected_1.txt": "member"} {
+		if got, err := os.ReadFile(filepath.Join(outDir, name)); err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+}
+
 // TestUnRAR_CannotCreateNoAutoFix verifies that "Cannot create"
 // WITHOUT "Attempting to correct" keeps the error.
 func TestUnRAR_CannotCreateNoAutoFix(t *testing.T) {

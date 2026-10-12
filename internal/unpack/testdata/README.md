@@ -21,6 +21,8 @@ Re-run that script to regenerate. **Do not edit these files by hand.**
 | `rar5_link_solid.rar` | RAR5 solid | `a.txt`, symlink `mid.lnk` -> `a.txt`, `c.txt` back-referencing `a.txt` (copied from rarengine testdata) |
 | `rar5_link_escape.rar` | RAR5 | `real.txt`, symlink `evil.lnk` -> `../../etc/passwd`, `after.txt` |
 | `rar5_link_filecopy.rar` | RAR5 | `orig.txt` and file reference `copy.txt` -> `orig.txt` (`rar a -ma5 -oi:1 -m0`, identical contents) |
+| `flat_collide.rar`, `flat_collide.7z` | RAR5, 7z | `a/f.txt`=`one` and `b/f.txt`=`two`, which flatten to one name |
+| `flat_dir_file.rar`, `flat_dir_file.7z` | RAR5, 7z | File `a/x`=`file` and directory `b/x` holding `b/x/y`=`y`; RAR stores the file before the directory, 7z the directories first |
 
 ## Limitations
 

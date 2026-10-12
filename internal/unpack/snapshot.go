@@ -125,9 +125,12 @@ func ExtractStaged(log *slog.Logger, outDir string, opts Options, extract func(s
 // walk (lexical) order is, so the surviving name of a hard-linked pair is not
 // necessarily the archive's original member.
 //
-// A directory is created in outDir with 0o750 whatever mode the archive
-// stored for it; the stage's own directories are first made owner-writable
-// by ownStageDirs, so their files can be renamed out (#862).
+// Under opts.OneFolder a directory in the stage creates nothing in outDir:
+// a flat extraction keeps no directories (7z e still creates the archive's).
+// Otherwise a directory is created in outDir with 0o750 whatever mode the
+// archive stored for it. Either way the stage's own directories are first
+// made owner-writable by ownStageDirs, so their files can be renamed out
+// (#862).
 func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Options, renameTaken bool) ([]string, error) {
 	root, err := os.OpenRoot(outDir)
 	if err != nil {
@@ -157,6 +160,9 @@ func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Opt
 			return err
 		}
 		if d.IsDir() {
+			if opts.OneFolder {
+				return nil
+			}
 			return root.MkdirAll(rel, 0o750)
 		}
 		if skip, err := isStagedLink(d, staged, seen); err != nil || skip {

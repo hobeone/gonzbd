@@ -3,6 +3,7 @@ package unpack
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -73,21 +74,38 @@ func SanitizeArchivePath(name string, oneFolder bool) (string, error) {
 	return name, nil
 }
 
-// memberPath is the per-member name check of the RAR extractors
-// (ExtractMember in go_unrar.go, which directunpack also calls). It
-// sanitizes name with NewSanitizedPath; a name that fails (a ".." escape, a NUL byte, nothing
-// left) is logged and reported on opts.OnLine, and ok is false so the caller
-// skips the member. rarengine already strips a leading "../" from RAR member
-// names ("../e.txt" arrives as "e.txt"), so this is the backstop for a name
-// it lets through.
-func memberPath(name string, opts Options, log *slog.Logger) (SanitizedPath, bool) {
+// memberPath is the per-member destination rule of the in-process
+// extractors: ExtractMember (go_unrar, and DirectUnpack through it),
+// extractSevenZipEntry (go_7z) and extractTarEntry (go_tar). It returns the
+// member's path relative to root, and ok false when the member creates
+// nothing:
+//   - a name NewSanitizedPath refuses (a ".." escape, a NUL byte, nothing
+//     left), which is logged and reported on opts.OnLine. rarengine already
+//     strips a leading "../" from RAR member names ("../e.txt" arrives as
+//     "e.txt"), so for RAR this is the backstop for a name it lets through;
+//   - with OneFolder, a directory. A flat extraction keeps no directories,
+//     and one made under its base name would take a name a file member
+//     needs (#897).
+//
+// With OneFolder and without OverwriteFiles, a file whose flattened name root
+// already holds is given a uniquePath name rather than skipped.
+func memberPath(root *os.Root, name string, isDir bool, opts Options, log *slog.Logger) (string, bool) {
 	sp, err := NewSanitizedPath(name, opts.OneFolder)
 	if err != nil {
 		log.Warn("skipping entry with bad path", "raw_name", name, "err", err)
 		if opts.OnLine != nil {
 			opts.OnLine("Skipping bad path: " + name)
 		}
-		return SanitizedPath{}, false
+		return "", false
 	}
-	return sp, true
+	if !opts.OneFolder {
+		return sp.Rel(), true
+	}
+	if isDir {
+		return "", false
+	}
+	if opts.OverwriteFiles {
+		return sp.Rel(), true
+	}
+	return uniquePath(root, sp.Rel()), true
 }

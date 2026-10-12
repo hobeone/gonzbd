@@ -234,23 +234,19 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 // ExtractMember writes one member (header fh, content entry) through root
 // and closes it, which is where its verdict is reported. It returns the
 // member's path relative to root and under outDir, both empty when the member
-// leaves nothing to list: a directory, a link, or a name memberPath refuses.
-// With OneFolder and without OverwriteFiles, a member whose flattened name is
-// already taken is written under a uniquePath name instead of being skipped.
+// leaves nothing to list: a directory, a link, or a member memberPath refuses.
+// memberPath decides the name, and under OneFolder makes a directory member
+// create nothing.
 // On an error the entry may still be open; the caller closes it.
 //
 // It is the member step of goUnRAREngineInternal's loop and of DirectUnpack's
 // (internal/directunpack), which calls it rather than keeping its own copy.
 func ExtractMember(ctx context.Context, root *os.Root, outDir string, fh *rarengine.FileHeader, entry io.ReadCloser, opts Options, log *slog.Logger) (rel, abs string, err error) {
-	sp, ok := memberPath(fh.Name, opts, log)
+	rel, ok := memberPath(root, fh.Name, fh.IsDir, opts, log)
 	if !ok {
 		return "", "", closeMember(entry)
 	}
-	rel, abs = sp.Rel(), sp.Abs(outDir)
-	if opts.OneFolder && !opts.OverwriteFiles {
-		rel = uniquePath(root, rel)
-		abs = filepath.Join(outDir, rel)
-	}
+	abs = filepath.Join(outDir, rel)
 	if err := extractEntryRarengine(ctx, root, rel, abs, fh, entry, opts, log); err != nil {
 		return "", "", err
 	}

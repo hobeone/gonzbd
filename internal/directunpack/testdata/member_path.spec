@@ -10,10 +10,10 @@ run TestDirectUnpacker_ExtractMember
 [DirectUnpack ignores the name check]
 file internal/unpack/go_unrar.go
 --- anchor
-	sp, ok := memberPath(fh.Name, opts, log)
+	rel, ok := memberPath(root, fh.Name, fh.IsDir, opts, log)
 	if !ok {
 --- replace
-	sp, ok := memberPath(fh.Name, opts, log)
+	rel, ok := memberPath(root, fh.Name, fh.IsDir, opts, log)
 	if false && !ok {
 --- end
 
@@ -45,13 +45,11 @@ file internal/directunpack/directunpack.go
 --- end
 
 [a flat collision is skipped instead of renamed]
-file internal/unpack/go_unrar.go
+file internal/unpack/sanitized_path.go
 --- anchor
-	if opts.OneFolder && !opts.OverwriteFiles {
-		rel = uniquePath(root, rel)
+	return uniquePath(root, sp.Rel()), true
 --- replace
-	if false {
-		rel = uniquePath(root, rel)
+	return sp.Rel(), true
 --- end
 
 [DirectUnpack does not pass flat_unpack to the member step]

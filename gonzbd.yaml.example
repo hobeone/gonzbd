@@ -355,8 +355,9 @@ postproc:
   rar_decode_workers: 0
 
   # Allow extraction to overwrite existing files in the destination.
-  # When false, existing files are preserved and extraction may fail
-  # if a name collision occurs.
+  # When false, existing files are preserved: a member whose name is
+  # already taken is skipped, or, with flat_unpack, extracted under a
+  # renamed copy ("name_1.ext"; external unrar writes "name(1).ext").
   overwrite_files: false
 
   # Write all extracted files flat into the job directory, ignoring
