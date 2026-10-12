@@ -476,7 +476,9 @@ func TestPostProcConfig_PermissionsRequireOwnerRWX(t *testing.T) {
 		{"0555", true}, // same, 4-digit form
 		{"644", true},  // owner has no execute: directories untraversable
 		{"500", true},
-		{"070", true}, // owner has nothing
+		{"355", true},  // owner has no read: directories cannot be listed
+		{"0300", true}, // owner has only write+execute
+		{"070", true},  // owner has nothing
 		{"755", false},
 		{"750", false},
 		{"700", false},
