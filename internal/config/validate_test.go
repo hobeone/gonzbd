@@ -466,6 +466,42 @@ func TestPostProcConfig_ValidateDirect(t *testing.T) {
 	}
 }
 
+func TestPostProcConfig_PermissionsRequireOwnerRWX(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		perm    string
+		wantErr bool
+	}{
+		{"555", true},  // owner has no write
+		{"0555", true}, // same, 4-digit form
+		{"644", true},  // owner has no execute: directories untraversable
+		{"500", true},
+		{"070", true}, // owner has nothing
+		{"755", false},
+		{"750", false},
+		{"700", false},
+		{"0775", false},
+		{"", false}, // unset means do not change permissions
+	}
+	for _, tc := range tests {
+		t.Run(tc.perm, func(t *testing.T) {
+			t.Parallel()
+			p := PostProcConfig{Permissions: tc.perm}
+			err := p.validate()
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("permissions %q: err = %v, wantErr %v", tc.perm, err, tc.wantErr)
+			}
+			if err != nil {
+				for _, want := range []string{"permissions", tc.perm, "owner", "read/write/execute"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q lacks %q", err, want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestPostProcConfig_Par2LimitsValidation(t *testing.T) {
 	t.Parallel()
 

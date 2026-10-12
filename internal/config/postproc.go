@@ -180,7 +180,9 @@ type PostProcConfig struct {
 	// recursively to extracted files after successful unpacking.
 	// Directories receive the full permission; files have execute bits
 	// stripped (e.g. "755" → dirs=0755, files=0644).
-	// Matches SABnzbd's cfg.permissions(). Empty disables chmod.
+	// The owner digit must be 7 (rwx): validation rejects anything else,
+	// since finalize cannot move files through a directory the owner cannot
+	// write. Matches SABnzbd's cfg.permissions(). Empty disables chmod.
 	Permissions string `yaml:"permissions" json:"permissions"`
 
 	// PasswordFile is the path to a text file containing one password per

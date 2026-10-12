@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
@@ -240,10 +241,20 @@ func (p *PostProcConfig) validateWithOS(goos string) error {
 		if len(p.Permissions) < 3 || len(p.Permissions) > 4 {
 			errs = append(errs, fmt.Errorf("permissions: %q must be 3 or 4 octal digits (e.g. \"755\")", p.Permissions))
 		} else {
+			octal := true
 			for _, c := range p.Permissions {
 				if c < '0' || c > '7' {
 					errs = append(errs, fmt.Errorf("permissions: %q contains non-octal character %q", p.Permissions, c))
+					octal = false
 					break
+				}
+			}
+			// The mode is applied to directories as written, and finalize
+			// moves files into and out of them one by one, which needs
+			// the owner to list, create and remove entries (rwx).
+			if octal {
+				if mode, err := strconv.ParseUint(p.Permissions, 8, 32); err == nil && mode&0o700 != 0o700 {
+					errs = append(errs, fmt.Errorf("permissions: %q must keep read/write/execute for the owner (owner digit 7, e.g. \"755\"); a directory without owner rwx cannot be moved or removed by finalize", p.Permissions))
 				}
 			}
 		}
