@@ -44,6 +44,25 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
+// candidatesIn returns the absolute path of every non-directory, non-.par2
+// file in dir: the candidate list a caller with nothing to exclude hands
+// GoRepair and GoVerify.
+func candidatesIn(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() || strings.EqualFold(filepath.Ext(e.Name()), ".par2") {
+			continue
+		}
+		out = append(out, filepath.Join(dir, e.Name()))
+	}
+	return out
+}
+
 // ---------- monitorProgress / runWithProgress ----------
 
 // TestRunWithProgress_NoLeakOnPanic proves the monitor goroutine spawned by
@@ -82,7 +101,7 @@ func TestGoRepair_HealthyData(t *testing.T) {
 	dir := t.TempDir()
 	mainFile := copyPar2Fixtures(t, dir)
 
-	res, err := GoRepair(context.Background(), discardLogger(), mainFile, dir, nil)
+	res, err := GoRepair(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), nil)
 	if err != nil {
 		t.Fatalf("GoRepair: %v", err)
 	}
@@ -102,7 +121,7 @@ func TestGoRepair_InvalidPar2File(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	res, err := GoRepair(context.Background(), discardLogger(), bad, dir, nil)
+	res, err := GoRepair(context.Background(), discardLogger(), bad, candidatesIn(t, dir), nil)
 	if err == nil {
 		t.Fatal("GoRepair: expected error for invalid par2, got nil")
 	}
@@ -120,7 +139,7 @@ func TestGoRepair_OutputAccumulated(t *testing.T) {
 	mainFile := copyPar2Fixtures(t, dir)
 
 	var lines []string
-	res, err := GoRepair(context.Background(), discardLogger(), mainFile, dir, func(line string) {
+	res, err := GoRepair(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), func(line string) {
 		lines = append(lines, line)
 	})
 	if err != nil {
@@ -141,7 +160,7 @@ func TestGoRepair_CommandLineSet(t *testing.T) {
 	dir := t.TempDir()
 	mainFile := copyPar2Fixtures(t, dir)
 
-	res, _ := GoRepair(context.Background(), discardLogger(), mainFile, dir, nil)
+	res, _ := GoRepair(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), nil)
 	if res.CommandLine == "" {
 		t.Error("CommandLine is empty; want non-empty")
 	}
@@ -158,7 +177,7 @@ func TestGoVerify_HealthyData(t *testing.T) {
 	mainFile := copyPar2Fixtures(t, dir)
 
 	var lines []string
-	res, err := GoVerify(context.Background(), discardLogger(), mainFile, dir, func(l string) {
+	res, err := GoVerify(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), func(l string) {
 		lines = append(lines, l)
 	})
 	if err != nil {
@@ -191,7 +210,7 @@ func TestGoVerify_RepairPossible_CallsOnLine(t *testing.T) {
 	}
 
 	var lines []string
-	res, err := GoVerify(context.Background(), discardLogger(), mainFile, dir, func(l string) {
+	res, err := GoVerify(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), func(l string) {
 		lines = append(lines, l)
 	})
 	if err != nil {
@@ -212,9 +231,10 @@ func TestGoVerify_RepairPossible_CallsOnLine(t *testing.T) {
 	}
 }
 
-// TestGoVerify_MissingCandidateDir_LogsWarning verifies that a missing candidateDir
-// logs a warning during GoVerify setup.
-func TestGoVerify_MissingCandidateDir_LogsWarning(t *testing.T) {
+// TestGoVerify_CandidateOutsideParDir_LogsWarning verifies that a candidate
+// par2engine refuses, here one outside the par2 file's directory, logs a
+// warning during GoVerify setup.
+func TestGoVerify_CandidateOutsideParDir_LogsWarning(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -223,7 +243,8 @@ func TestGoVerify_MissingCandidateDir_LogsWarning(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
-	_, err := GoVerify(context.Background(), logger, mainFile, filepath.Join(dir, "nonexistent"), nil)
+	outside := filepath.Join(filepath.Dir(dir), "outside.bin")
+	_, err := GoVerify(context.Background(), logger, mainFile, []string{outside}, nil)
 	if err != nil {
 		t.Fatalf("GoVerify: %v", err)
 	}
@@ -243,7 +264,7 @@ func TestGoVerify_InvalidPar2File(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	res, err := GoVerify(context.Background(), discardLogger(), bad, dir, nil)
+	res, err := GoVerify(context.Background(), discardLogger(), bad, candidatesIn(t, dir), nil)
 	if err == nil {
 		t.Fatal("GoVerify: expected error for invalid par2, got nil")
 	}
@@ -315,40 +336,6 @@ func TestNewPar2UILogger_NonNilOnLineWrapsTeeHandler(t *testing.T) {
 	}
 }
 
-// ---------- addCandidateFiles ----------
-
-// TestAddCandidateFiles_SkipsPar2Files verifies that .par2 files are excluded
-// from registration (the decoder already knows about them) and that regular
-// files are counted.
-func TestAddCandidateFiles_SkipsPar2Files(t *testing.T) {
-	t.Parallel()
-
-	// Use the real fixture dir — it has data.bin (1 non-par2 file) and 2 par2 files.
-	// We can't actually call d.AddCandidateFile without a real decoder, so we
-	// test the filtering logic indirectly by verifying the fixture directory
-	// layout matches our expectations (regression guard).
-	entries, err := os.ReadDir(par2FixtureDir)
-	if err != nil {
-		t.Fatalf("ReadDir: %v", err)
-	}
-	var nonPar2, par2Files int
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		// Mimic the filtering in addCandidateFiles.
-		if len(e.Name()) >= 5 && e.Name()[len(e.Name())-5:] == ".par2" {
-			par2Files++
-		} else if e.Name() != "data.bin.sha256" { // sha256 is a metadata file
-			nonPar2++
-		}
-	}
-	// Fixture must have at least 1 non-par2 data file.
-	if nonPar2 == 0 {
-		t.Errorf("fixture dir has no non-par2 files; fixture layout may have changed")
-	}
-}
-
 // TestGoVerify_ConcurrentOnLine asserts that the onLine callback passed to
 // GoVerify does not cause a data race when called concurrently.
 func TestGoVerify_ConcurrentOnLine(t *testing.T) {
@@ -356,7 +343,7 @@ func TestGoVerify_ConcurrentOnLine(t *testing.T) {
 	mainFile := copyPar2Fixtures(t, dir)
 
 	var allLines []string
-	_, err := GoVerify(context.Background(), discardLogger(), mainFile, dir, func(line string) {
+	_, err := GoVerify(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), func(line string) {
 		allLines = append(allLines, line)
 	})
 	if err != nil {
@@ -380,7 +367,7 @@ func TestGoVerify_DamagedData(t *testing.T) {
 	}
 
 	var lines []string
-	res, err := GoVerify(context.Background(), discardLogger(), mainFile, dir, func(line string) {
+	res, err := GoVerify(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), func(line string) {
 		lines = append(lines, line)
 	})
 	if err != nil {
@@ -413,7 +400,7 @@ func TestGoRepair_ConcurrentOnLine(t *testing.T) {
 	mainFile := copyPar2Fixtures(t, dir)
 
 	var lines []string
-	_, err := GoRepair(context.Background(), discardLogger(), mainFile, dir, func(line string) {
+	_, err := GoRepair(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), func(line string) {
 		lines = append(lines, line)
 	})
 	if err != nil {
@@ -469,7 +456,7 @@ func TestGoRepair_DamagedAndRepaired(t *testing.T) {
 	}
 
 	var onLineCalled bool
-	res, err := GoRepair(context.Background(), discardLogger(), mainFile, dir, func(line string) {
+	res, err := GoRepair(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), func(line string) {
 		onLineCalled = true
 	})
 	if err != nil {
@@ -513,7 +500,7 @@ func TestGoRepair_RepairNotPossible(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	res, err := GoRepair(context.Background(), discardLogger(), mainFile, dir, nil)
+	res, err := GoRepair(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), nil)
 	if err != nil {
 		t.Fatalf("GoRepair returned error: %v", err)
 	}
@@ -616,7 +603,7 @@ func TestGoRepair_MissingFileFoundElsewhere_DoesNotReportSuccess(t *testing.T) {
 		t.Fatalf("write container.bin: %v", err)
 	}
 
-	res, err := GoRepair(context.Background(), discardLogger(), mainFile, dir, nil)
+	res, err := GoRepair(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), nil)
 	if err != nil {
 		t.Fatalf("GoRepair: %v", err)
 	}
@@ -628,26 +615,26 @@ func TestGoRepair_MissingFileFoundElsewhere_DoesNotReportSuccess(t *testing.T) {
 	}
 }
 
-// ---------- newDecoderForDir ----------
+// ---------- newDecoder ----------
 
-// TestNewDecoderForDir_ValidParfile_RegistersCandidatesAndReturnsDecoder
+// TestNewDecoder_ValidParfile_RegistersCandidatesAndReturnsDecoder
 // verifies the success path: a valid index opens, the directory's one
 // non-par2 file is registered as a candidate, and onInfo (not onWarn) is
 // called with the registered count.
-func TestNewDecoderForDir_ValidParfile_RegistersCandidatesAndReturnsDecoder(t *testing.T) {
+func TestNewDecoder_ValidParfile_RegistersCandidatesAndReturnsDecoder(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	mainFile := copyPar2Fixtures(t, dir)
 
 	var warnMsgs, infoMsgs, uiLines []string
-	d, _, err := newDecoderForDir(context.Background(), discardLogger(), mainFile, dir,
+	d, _, err := newDecoder(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir),
 		func(s string) { warnMsgs = append(warnMsgs, s) },
 		func(s string) { infoMsgs = append(infoMsgs, s) },
 		func(s string) { uiLines = append(uiLines, s) },
 	)
 	if err != nil {
-		t.Fatalf("newDecoderForDir: %v", err)
+		t.Fatalf("newDecoder: %v", err)
 	}
 	defer d.Close() //nolint:errcheck // read-only
 
@@ -668,62 +655,60 @@ func TestNewDecoderForDir_ValidParfile_RegistersCandidatesAndReturnsDecoder(t *t
 	}
 }
 
-// TestNewDecoderForDir_EmptyCandidateDir_SkipsRegistration verifies that an
-// empty candidateDir ("") — the documented way to opt out of candidate
-// registration — never calls addCandidateFiles at all, so neither callback
-// fires.
-func TestNewDecoderForDir_EmptyCandidateDir_SkipsRegistration(t *testing.T) {
+// TestNewDecoder_NoCandidates_SkipsRegistration verifies that a nil candidate
+// list registers nothing and reports nothing: neither callback fires.
+func TestNewDecoder_NoCandidates_SkipsRegistration(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	mainFile := copyPar2Fixtures(t, dir)
 
 	var warnMsgs, infoMsgs []string
-	d, _, err := newDecoderForDir(context.Background(), discardLogger(), mainFile, "",
+	d, _, err := newDecoder(context.Background(), discardLogger(), mainFile, nil,
 		func(s string) { warnMsgs = append(warnMsgs, s) },
 		func(s string) { infoMsgs = append(infoMsgs, s) },
 		nil,
 	)
 	if err != nil {
-		t.Fatalf("newDecoderForDir: %v", err)
+		t.Fatalf("newDecoder: %v", err)
 	}
 	defer d.Close() //nolint:errcheck // read-only
 
 	if len(warnMsgs) != 0 || len(infoMsgs) != 0 {
-		t.Errorf("expected no candidate-registration callbacks with an empty candidateDir, got warn=%v info=%v", warnMsgs, infoMsgs)
+		t.Errorf("expected no candidate-registration callbacks with no candidates, got warn=%v info=%v", warnMsgs, infoMsgs)
 	}
 }
 
-// TestNewDecoderForDir_UnreadableCandidateDir_WarnsButStillReturnsDecoder
-// verifies that a candidateDir addCandidateFiles cannot read is reported
-// through onWarn rather than failing the whole call — the decoder itself
-// opened fine, so the caller still gets it back.
-func TestNewDecoderForDir_UnreadableCandidateDir_WarnsButStillReturnsDecoder(t *testing.T) {
+// TestNewDecoder_RefusedCandidate_WarnsButStillReturnsDecoder verifies that
+// a candidate par2engine refuses is reported through onWarn rather than
+// failing the whole call — the decoder itself opened fine, so the caller
+// still gets it back.
+func TestNewDecoder_RefusedCandidate_WarnsButStillReturnsDecoder(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	mainFile := copyPar2Fixtures(t, dir)
 
 	var warnMsgs []string
-	d, _, err := newDecoderForDir(context.Background(), discardLogger(), mainFile, filepath.Join(dir, "nonexistent"),
+	d, _, err := newDecoder(context.Background(), discardLogger(), mainFile, []string{"../outside.bin"},
 		func(s string) { warnMsgs = append(warnMsgs, s) },
 		func(s string) {},
 		nil,
 	)
 	if err != nil {
-		t.Fatalf("newDecoderForDir: %v", err)
+		t.Fatalf("newDecoder: %v", err)
 	}
 	defer d.Close() //nolint:errcheck // read-only
 
 	if len(warnMsgs) == 0 {
-		t.Error("expected an onWarn call when the candidate directory cannot be read")
+		t.Error("expected an onWarn call when a candidate is refused")
 	}
 }
 
-// TestNewDecoderForDir_InvalidParfile_ReturnsError verifies the failure path:
+// TestNewDecoder_InvalidParfile_ReturnsError verifies the failure path:
 // an unparseable index returns an error and a nil decoder, regardless of
-// candidateDir.
-func TestNewDecoderForDir_InvalidParfile_ReturnsError(t *testing.T) {
+// the candidates.
+func TestNewDecoder_InvalidParfile_ReturnsError(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -732,7 +717,7 @@ func TestNewDecoderForDir_InvalidParfile_ReturnsError(t *testing.T) {
 		t.Fatalf("write bad.par2: %v", err)
 	}
 
-	d, _, err := newDecoderForDir(context.Background(), discardLogger(), bad, dir, nil, nil, nil)
+	d, _, err := newDecoder(context.Background(), discardLogger(), bad, candidatesIn(t, dir), nil, nil, nil)
 	if err == nil {
 		if d != nil {
 			d.Close() //nolint:errcheck // read-only
@@ -746,19 +731,14 @@ func TestNewDecoderForDir_InvalidParfile_ReturnsError(t *testing.T) {
 
 // ---------- addCandidateFiles ----------
 
-// TestAddCandidateFiles_RegistersNonPar2FilesAndSkipsPar2 is the direct
-// counterpart to TestAddCandidateFiles_SkipsPar2Files, which only pins the
-// fixture layout addCandidateFiles's filtering assumes. This test calls
-// addCandidateFiles itself, against a real *par2engine.Decoder, and checks
-// the returned count includes every non-.par2 file and excludes every
-// .par2 file.
-func TestAddCandidateFiles_RegistersNonPar2FilesAndSkipsPar2(t *testing.T) {
+// TestAddCandidateFiles_RegistersAbsoluteAndRelativePaths calls
+// addCandidateFiles against a real *par2engine.Decoder with one absolute and
+// one relative candidate, and requires both to count.
+func TestAddCandidateFiles_RegistersAbsoluteAndRelativePaths(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	mainFile := copyPar2Fixtures(t, dir)
-	// A second non-par2 file distinguishes "registered" from "the fixture
-	// happens to have exactly one".
 	if err := os.WriteFile(filepath.Join(dir, "extra.txt"), []byte("hello"), 0o600); err != nil {
 		t.Fatalf("write extra.txt: %v", err)
 	}
@@ -769,20 +749,19 @@ func TestAddCandidateFiles_RegistersNonPar2FilesAndSkipsPar2(t *testing.T) {
 	}
 	defer d.Close() //nolint:errcheck // read-only
 
-	n, err := addCandidateFiles(d, dir)
+	n, err := addCandidateFiles(d, dir, []string{filepath.Join(dir, "data.bin"), "extra.txt"})
 	if err != nil {
 		t.Fatalf("addCandidateFiles: %v", err)
 	}
-	// data.bin (fixture payload) and extra.txt; data.par2 and
-	// data.vol000+102.par2 are both skipped.
 	if n != 2 {
 		t.Errorf("addCandidateFiles registered %d file(s), want 2 (data.bin, extra.txt)", n)
 	}
 }
 
-// TestAddCandidateFiles_UnreadableDir_ReturnsError verifies the ReadDir
-// failure path returns a non-nil error and a zero count.
-func TestAddCandidateFiles_UnreadableDir_ReturnsError(t *testing.T) {
+// TestAddCandidateFiles_PathOutsideParDir_IsRefused verifies that a candidate
+// outside the par2 file's directory is not registered and is named in the
+// returned error, while the others still register.
+func TestAddCandidateFiles_PathOutsideParDir_IsRefused(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -794,12 +773,42 @@ func TestAddCandidateFiles_UnreadableDir_ReturnsError(t *testing.T) {
 	}
 	defer d.Close() //nolint:errcheck // read-only
 
-	n, err := addCandidateFiles(d, filepath.Join(dir, "nonexistent"))
-	if err == nil {
-		t.Error("expected an error reading a nonexistent candidate directory")
+	outside := filepath.Join(filepath.Dir(dir), "outside.bin")
+	n, err := addCandidateFiles(d, dir, []string{outside, filepath.Join(dir, "data.bin")})
+	if err == nil || !strings.Contains(err.Error(), outside) {
+		t.Errorf("err = %v, want one naming %s", err, outside)
 	}
-	if n != 0 {
-		t.Errorf("count = %d, want 0 on a ReadDir failure", n)
+	if n != 1 {
+		t.Errorf("count = %d, want 1 (data.bin)", n)
+	}
+}
+
+// TestGoRepair_ScansOnlyTheGivenCandidates pins that the native engine reads
+// the caller's candidate list, not the directory: a file beside the par2 set
+// that the caller left out is neither registered nor scanned (#906). The
+// external engine is handed the same list as extra arguments.
+func TestGoRepair_ScansOnlyTheGivenCandidates(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "left-out.rar"), []byte("pending deletion"), 0o600); err != nil {
+		t.Fatalf("write left-out.rar: %v", err)
+	}
+
+	res, err := GoRepair(context.Background(), discardLogger(), mainFile,
+		[]string{filepath.Join(dir, "data.bin")}, nil)
+	if err != nil {
+		t.Fatalf("GoRepair: %v", err)
+	}
+	if !res.Success {
+		t.Errorf("Success = false for an intact set\nOutput: %s", res.Output)
+	}
+	if strings.Contains(res.Output, "left-out.rar") {
+		t.Errorf("go_par2 registered a file the caller did not hand it\nOutput: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "registered candidate files count=1") {
+		t.Errorf("want exactly the one given candidate registered\nOutput: %s", res.Output)
 	}
 }
 

@@ -181,10 +181,10 @@ func (s *RepairStage) repairSets(ctx context.Context, log *slog.Logger, job *Job
 
 	logf(ctx, log, job, slog.LevelInfo, "Found %d par2 set(s)", len(sets))
 
-	// Collect all non-par2 files in the download directory to pass as
-	// extra arguments. This lets par2 checksum-match files even when
-	// their names don't match the par2 set's expectations (e.g.
-	// obfuscated or renamed files).
+	// The candidate files every set's par2 run may checksum-match, whatever
+	// their names (obfuscated or renamed files): the non-par2 files in the
+	// download directory less the ones recorded for deletion. This is the one
+	// list both engines are handed, by dispatchRepairTool.
 	dataFiles, scanErr := listNonPar2Files(job.DownloadDir)
 	if scanErr != nil {
 		job.ParError = true
@@ -350,7 +350,7 @@ func dispatchRepairTool(
 	// onLine feeds job.OnOutput (UI/history) only — go_par2's teeHandler
 	// already writes each engine log record to the structured log via its
 	// embedded base handler, so re-logging here would duplicate every line.
-	res, err := par2.GoRepair(ctx, log, main, job.DownloadDir, func(line string) {
+	res, err := par2.GoRepair(ctx, log, main, dataFiles, func(line string) {
 		if job.OnOutput != nil {
 			job.OnOutput("par2", line)
 		}

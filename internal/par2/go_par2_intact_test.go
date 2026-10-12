@@ -71,7 +71,7 @@ func TestGoRepair_CorruptFileWithAllBlocksPresent_IsNotSuccess(t *testing.T) {
 			t.Parallel()
 			dir, mainFile, intact := setUpCorruptCase(t, tc)
 
-			res, err := GoRepair(context.Background(), discardLogger(), mainFile, dir, nil)
+			res, err := GoRepair(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), nil)
 			if err != nil {
 				t.Fatalf("GoRepair: %v", err)
 			}
@@ -98,7 +98,7 @@ func TestGoVerify_CorruptFileWithAllBlocksPresent_IsNotAllFilesOK(t *testing.T) 
 			t.Parallel()
 			dir, mainFile, _ := setUpCorruptCase(t, tc)
 
-			res, err := GoVerify(context.Background(), discardLogger(), mainFile, dir, nil)
+			res, err := GoVerify(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), nil)
 			if err != nil {
 				t.Fatalf("GoVerify: %v", err)
 			}
@@ -228,9 +228,9 @@ func TestVerdictRecorder_RecordsEngineOKReport(t *testing.T) {
 	dir := t.TempDir()
 	mainFile := copyPar2Fixtures(t, dir)
 
-	d, verified, err := newDecoderForDir(context.Background(), discardLogger(), mainFile, dir, nil, nil, nil)
+	d, verified, err := newDecoder(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), nil, nil, nil)
 	if err != nil {
-		t.Fatalf("newDecoderForDir: %v", err)
+		t.Fatalf("newDecoder: %v", err)
 	}
 	defer d.Close() //nolint:errcheck // read-only
 	if err := d.VerifyScans(context.Background(), nil); err != nil {
