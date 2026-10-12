@@ -524,7 +524,7 @@ func sweepTempFiles(log *slog.Logger, dir string) {
 		return
 	}
 	unpack.CleanupStageDirs(dir)
-	_ = os.Remove(filepath.Join(dir, pendingDeletionsFile))
+	removePendingSidecar(log, dir)
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) && log != nil {

@@ -55,7 +55,7 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	if job.DownloadDir != "" {
-		_ = os.Remove(filepath.Join(job.DownloadDir, pendingDeletionsFile))
+		removePendingSidecar(log, job.DownloadDir)
 	}
 
 	if job.DownloadDir == job.FinalDir {
@@ -87,6 +87,17 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 }
 
 const pendingDeletionsFile = ".gonzbd-pending-deletions"
+
+// removePendingSidecar unlinks the pending-deletions sidecar in dir. A sidecar
+// left behind moves with dir to the final location, and recoverUnpackFinalDir
+// deletes what it lists, so a failure is logged; a sidecar already gone is
+// not a failure. log may be nil.
+func removePendingSidecar(log *slog.Logger, dir string) {
+	err := os.Remove(filepath.Join(dir, pendingDeletionsFile))
+	if err != nil && !errors.Is(err, os.ErrNotExist) && log != nil {
+		log.Warn("postproc: failed to remove the pending-deletions sidecar", "dir", dir, "err", err)
+	}
+}
 
 // deletePending removes the extracted archives and par2/backup files recorded
 // in job.PendingDeletions under job.DownloadDir (#768). When a top-level
@@ -125,7 +136,7 @@ func (f *FinalizeStage) deletePending(ctx context.Context, log *slog.Logger, job
 	if deleted > 0 {
 		logf(ctx, log, job, slog.LevelInfo, "Cleaned up %d pending file(s)", deleted)
 	}
-	_ = os.Remove(filepath.Join(job.DownloadDir, pendingDeletionsFile))
+	removePendingSidecar(log, job.DownloadDir)
 	job.PendingDeletions = nil
 }
 
@@ -197,10 +208,10 @@ func (f *FinalizeStage) moveToDest(ctx context.Context, log *slog.Logger, job *J
 		}
 		return nil
 	} else if !fsutil.IsRenameMergeNeeded(err) {
-		_ = os.Remove(sidecar)
+		removePendingSidecar(log, job.DownloadDir)
 		return fmt.Errorf("finalize: rename %s -> %s: %w", job.DownloadDir, dest, err)
 	} else {
-		_ = os.Remove(sidecar)
+		removePendingSidecar(log, job.DownloadDir)
 		logf(ctx, log, job, slog.LevelInfo, "Atomic rename failed (%v), falling back to file-by-file move", err)
 	}
 
