@@ -126,6 +126,11 @@ type pipeline struct {
 	// after it reads the job's name and before it records the file's filename.
 	nameReadHook func(j *job.Job)
 
+	// countedHook, when non-nil, runs once per registerFile attempt, right
+	// after it counts the file's unfinished articles and before it records
+	// the file's filename.
+	countedHook func(j *job.Job)
+
 	// ctx is the context passed to run(); stored so setCompletions can
 	// avoid blocking forever if run() has already exited.
 	ctx context.Context
@@ -591,6 +596,9 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 	if err != nil {
 		return fmt.Errorf("count unfinished articles: %w", err)
 	}
+	if p.countedHook != nil {
+		p.countedHook(j)
+	}
 
 	// Owned seeds the writer's ranges with the file's verified rows, so an
 	// arrival that intersects one is refused as it would be had this process
@@ -615,13 +623,14 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 		return nil
 	}
 	if filename == "" {
-		// A job removed or evicted between the write and this registration is
-		// ordinary, and failing registerFile over it would turn a benign race
-		// into a pipeline error. A rename since name was read is
-		// job.ErrNameChanged, which registerFile retries. Every other cause is
-		// a real failure to record the resolved on-disk name and still aborts.
-		if err := j.RecordFileFilename(fileIdx, name, loc.Name); err != nil &&
-			!errors.Is(err, job.ErrNotResident) {
+		// RecordFileFilename writes the progress record alone, so it records
+		// the filename on a job evicted or removed since CountUnfinishedArticles
+		// read the manifest: both drop only the manifest. A rename since name
+		// was read is job.ErrNameChanged, which registerFile retries. Any
+		// refusal aborts with nothing cached, so the next article for the file
+		// registers it again rather than taking the cached entry of a file
+		// whose filename was never recorded.
+		if err := j.RecordFileFilename(fileIdx, name, loc.Name); err != nil {
 			p.mu.Unlock()
 			return fmt.Errorf("record file filename: %w", err)
 		}
