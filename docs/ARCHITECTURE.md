@@ -44,7 +44,7 @@ The project follows a standard Go project layout:
     - `storagefault/`: Classification of storage errors into retryable (stall the job) and permanent (fail the job), carrying the operation and path for a reason a user can act on.
     - `telemetry/`: Runtime metrics collection and export.
     - `types/`: Shared type definitions used across packages.
-    - `unpack/`: Archive extraction wrappers for RAR, 7z, and split file joining.
+    - `unpack/`: Archive detection and extraction for RAR, 7z, tar, and split file joining (pure-Go engines, plus external `unrar`/`7z`).
     - `urlgrabber/`: Fetches NZB files from URLs with SSRF protection (private IP blocking, redirect validation).
     - `web/`: Glue code for serving the embedded web UI and integrating with the API.
 - `ui/`: Svelte 5 + TypeScript + Vite frontend.
