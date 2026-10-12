@@ -43,15 +43,20 @@ type Options struct {
 	UnrarCommand string
 	// SevenZipCommand overrides the 7z binary path. Empty uses auto-detection.
 	SevenZipCommand string
-	// OverwriteFiles controls whether extraction overwrites existing files.
-	// true = overwrite (-o+ for unrar, -aoa for 7z); false = skip (-o- for unrar, -aos for 7z).
-	// Default (false) preserves existing files. With OneFolder also set,
-	// false renames a member whose flattened name is taken rather than
-	// skipping it: unrar is passed -or ("name(1).ext") and 7z -aou
-	// ("name_1.ext"), and GoUnRAR (ExtractMember), GoSevenZip, GoTar and the
-	// publish of a staged extraction use a uniquePath "_N" name. The one
-	// exception is unrar with HasProblem set, which is not passed -or and
-	// skips a member whose flattened name an earlier member took.
+	// OverwriteFiles controls what extraction does with a name that is
+	// already taken. true overwrites it, in every engine (-o+ for unrar, -aoa
+	// for 7z). false (the default) never overwrites, and what it does
+	// instead depends on OneFolder:
+	//   - without OneFolder, the member is skipped and the existing file
+	//     kept: unrar is passed -o-, 7z -aos, the in-process engines
+	//     (GoUnRAR, GoSevenZip, GoTar) skip the write, and the publish of a
+	//     staged extraction skips the name;
+	//   - with OneFolder, the member is renamed rather than skipped: unrar is
+	//     passed -o- -or ("name(1).ext"), 7z -aou ("name_1.ext"), and the
+	//     in-process engines and the publish of a staged extraction use a
+	//     uniquePath "_N" name. The one exception is unrar with HasProblem
+	//     set, which is passed -o- alone and skips a member whose flattened
+	//     name an earlier member took.
 	OverwriteFiles bool
 	// IgnoreUnrarDates discards in-archive modification timestamps and uses extraction time.
 	// Adds -tsm- to unrar arguments (matches SABnzbd's behavior).
