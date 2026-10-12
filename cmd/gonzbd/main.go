@@ -838,7 +838,10 @@ func ensureRuntimeDirs(cfg *config.Config, dlDir, adminDir string, log *slog.Log
 		dirs = append(dirs, struct{ name, path string }{"watch", cfg.General.DirscanDir})
 	}
 	for _, d := range dirs {
-		absPath, _ := filepath.Abs(d.path)
+		absPath, err := filepath.Abs(d.path)
+		if err != nil {
+			absPath = d.path // Abs needs the working directory; name the path as configured
+		}
 		if err := os.MkdirAll(d.path, 0o750); err != nil {
 			return fmt.Errorf("create %s dir %s: %w", d.name, absPath, err)
 		}
