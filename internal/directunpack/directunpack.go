@@ -32,7 +32,8 @@ var errNotRAR = errors.New("not a RAR5 archive")
 type SuccessSet struct {
 	// RarParts lists absolute paths of the RAR volume files consumed.
 	RarParts []string
-	// ExtractedFiles lists absolute paths of files created by extraction.
+	// ExtractedFiles lists absolute paths of the files the set published into
+	// the extraction directory.
 	ExtractedFiles []string
 }
 
@@ -85,7 +86,7 @@ type DirectUnpacker struct {
 
 	jobID       string
 	downloadDir string // where assembled RAR volumes appear
-	extractDir  string // where extraction writes output
+	extractDir  string // where a set's staging directory is made and its members published
 
 	// Volume tracking.
 	killed        bool
@@ -556,29 +557,43 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) error {
 			r.SetPasswords([]string{d.opts.Password})
 		}
 
-		extractedFiles, err := d.extractEntries(ctx, r)
+		// The set is extracted into a staging directory inside extractDir, and
+		// its members reach extractDir only if every check in this callback
+		// passes; a set that fails or is aborted leaves nothing there.
+		published, err := unpack.ExtractStaged(d.log, d.extractDir, d.unpackOptions(), func(stageDir string) error {
+			if err := d.extractEntries(ctx, r, stageDir); err != nil {
+				return err
+			}
+
+			select {
+			case feedErr := <-feedErrChan:
+				return feedErr
+			default:
+			}
+
+			// Backstop: a volume needed for this set may have been marked
+			// corrupt (failed/missing download articles) after waitForVolume's
+			// own check — e.g. all volumes had already arrived and extraction
+			// never went back through waitForVolume again. Nothing of a set is
+			// published once any of its volumes is known to be assembled from
+			// incomplete data.
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			if reason, corrupt := d.corruptSets[setname]; corrupt {
+				return fmt.Errorf("directunpack: %s", reason)
+			}
+			return nil
+		})
 		if err != nil {
 			return err
 		}
-
-		select {
-		case feedErr := <-feedErrChan:
-			return feedErr
-		default:
-		}
-
-		d.mu.Lock()
-		// Backstop: a volume needed for this set may have been marked corrupt
-		// (failed/missing download articles) after waitForVolume's own check —
-		// e.g. all volumes had already arrived and extraction never went back
-		// through waitForVolume again. Never record success once any volume of
-		// this set is known to be assembled from incomplete data.
-		if reason, corrupt := d.corruptSets[setname]; corrupt {
-			d.mu.Unlock()
-			return fmt.Errorf("directunpack: %s", reason)
+		extractedFiles := make([]string, 0, len(published))
+		for _, rel := range published {
+			extractedFiles = append(extractedFiles, filepath.Join(d.extractDir, rel))
 		}
 
 		// Record success.
+		d.mu.Lock()
 		var rarParts []string
 		for _, p := range d.completedVols[setname] {
 			rarParts = append(rarParts, p)
@@ -638,32 +653,29 @@ func (d *DirectUnpacker) startVolumeFeed(ctx context.Context, setname string, ma
 	return volumesChan, feedErrChan
 }
 
-// extractEntries drives the rarengine Reader entry-by-entry, writing
-// each archive entry to disk. It opens an os.Root anchored at d.extractDir
-// once for the entire session; all entry writes go through that rooted handle
-// so they cannot escape d.extractDir via "..", an absolute path, or a
-// symlinked path component. Returns the list of extracted file paths on
-// success, or the first error encountered.
-func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader) ([]string, error) {
-	root, err := os.OpenRoot(d.extractDir)
+// extractEntries drives the rarengine Reader entry-by-entry, writing each
+// archive entry into stageDir. It opens an os.Root anchored at stageDir once
+// for the entire session; all entry writes go through that rooted handle so
+// they cannot escape stageDir via "..", an absolute path, or a symlinked path
+// component. It returns the first error encountered.
+func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader, stageDir string) error {
+	root, err := os.OpenRoot(stageDir)
 	if err != nil {
-		return nil, fmt.Errorf("directunpack: open root %s: %w", d.extractDir, err)
+		return fmt.Errorf("directunpack: open root %s: %w", stageDir, err)
 	}
 	// Close after all entries are processed. Not deferred inside the loop to
 	// avoid the deferInLoop lint finding; we close explicitly here.
 	defer root.Close() //nolint:errcheck // read-only close after all writes are complete
 
-	var extractedFiles []string
-
 	for {
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return ctx.Err()
 		}
 		d.mu.Lock()
 		killed := d.killed
 		d.mu.Unlock()
 		if killed {
-			return nil, fmt.Errorf("killed")
+			return fmt.Errorf("killed")
 		}
 
 		entry, err := r.NextEntry()
@@ -672,54 +684,54 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader
 				break
 			}
 			if errors.Is(err, rarengine.ErrReaderClosed) && ctx.Err() != nil {
-				return nil, ctx.Err()
+				return ctx.Err()
 			}
-			return nil, fmt.Errorf("directunpack: read header: %w", err)
+			return fmt.Errorf("directunpack: read header: %w", err)
 		}
 
-		destPath, err := d.extractMember(ctx, root, entry.Header, entry)
-		if err != nil {
+		if err := d.extractMember(ctx, root, entry.Header, entry); err != nil {
 			_ = r.Close()     //nolint:errcheck // read-side archive reader; the extraction error is the one returned
 			_ = entry.Close() //nolint:errcheck // read-side archive member; the extraction error is the one returned
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return ctx.Err()
 			}
 			unpack.NoteDictionaryLimit(d.log, err, entry.Header)
-			return nil, err
-		}
-		if destPath != "" {
-			extractedFiles = append(extractedFiles, destPath)
+			return err
 		}
 	}
 
 	// The same post-extraction gate post-processing applies to its own
-	// results: nothing under the extraction directory may resolve outside it.
-	// DirectUnpack's results are otherwise accepted as they stand.
+	// results: nothing under the job directory, the stage included, may
+	// resolve outside it. DirectUnpack's results are otherwise accepted as
+	// they stand.
 	if cErr := fsutil.CheckContainment(d.extractDir); cErr != nil {
-		return nil, fmt.Errorf("directunpack: containment check: %w", cErr)
+		return fmt.Errorf("directunpack: containment check: %w", cErr)
 	}
 
-	return extractedFiles, nil
+	return nil
 }
 
-// extractMember extracts one member into the extraction directory through
-// unpack.ExtractMember, the member step of unpack's in-process RAR extractor,
-// with this unpacker's options. It returns the member's path, or "" when the
-// member leaves nothing to list. On an error the entry may still be open; the
-// caller closes it.
-func (d *DirectUnpacker) extractMember(ctx context.Context, root *os.Root, fh *rarengine.FileHeader, entry io.ReadCloser) (string, error) {
-	opts := unpack.Options{
+// unpackOptions is this unpacker's options in the form unpack.ExtractMember
+// and unpack.ExtractStaged take.
+func (d *DirectUnpacker) unpackOptions() unpack.Options {
+	return unpack.Options{
 		OneFolder:        d.opts.OneFolder,
 		OverwriteFiles:   d.opts.OverwriteFiles,
 		IgnoreUnrarDates: d.opts.IgnoreUnrarDates,
 		DecodeWorkers:    d.opts.DecodeWorkers,
 		OnLine:           d.opts.OnLine,
 	}
-	_, abs, err := unpack.ExtractMember(ctx, root, d.extractDir, fh, entry, opts, d.log)
-	if err != nil {
-		return "", fmt.Errorf("directunpack: extract %s: %w", fh.Name, err)
+}
+
+// extractMember extracts one member into root's directory through
+// unpack.ExtractMember, the member step of unpack's in-process RAR extractor,
+// with this unpacker's options. On an error the entry may still be open; the
+// caller closes it.
+func (d *DirectUnpacker) extractMember(ctx context.Context, root *os.Root, fh *rarengine.FileHeader, entry io.ReadCloser) error {
+	if _, _, err := unpack.ExtractMember(ctx, root, root.Name(), fh, entry, d.unpackOptions(), d.log); err != nil {
+		return fmt.Errorf("directunpack: extract %s: %w", fh.Name, err)
 	}
-	return abs, nil
+	return nil
 }
 
 // waitForVolume blocks until the specified volume is in completedVols.

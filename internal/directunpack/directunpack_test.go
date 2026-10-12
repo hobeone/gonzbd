@@ -1242,9 +1242,10 @@ func hardLinkCount(t *testing.T, p string) uint64 {
 	return uint64(st.Nlink) //nolint:unconvert // Nlink is uint32 on some platforms
 }
 
-// DirectUnpack extracts into the job directory and creates no link member:
-// symlinks, hard links and file references are skipped, the set's other
-// members are extracted, and a skipped member is not listed.
+// DirectUnpack extracts into a staging directory inside the job directory and
+// creates no link member: symlinks, hard links and file references are
+// skipped, the set's other members are extracted, and a skipped member is not
+// listed.
 func TestDirectUnpack_LinkMembersAreNeverCreated(t *testing.T) {
 	for _, tc := range []struct {
 		archive string
@@ -1369,7 +1370,7 @@ func TestDirectUnpacker_ExtractMember(t *testing.T) {
 			d := New(testLogger(t), "test-job", t.TempDir(), extractDir, Options{OnLine: func(l string) { lines = append(lines, l) }})
 			m := &fakeMember{r: strings.NewReader("content"), closeErr: tc.closeErr}
 			fh := &rarengine.FileHeader{Name: tc.member, UnpackedSize: int64(len("content"))}
-			got, err := d.extractMember(context.Background(), root, fh, m)
+			err = d.extractMember(context.Background(), root, fh, m)
 			if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || err.Error() != tc.wantErr || !errors.Is(err, errVerdict)) {
 				t.Fatalf("err = %v, want %q", err, tc.wantErr)
 			}
@@ -1377,17 +1378,12 @@ func TestDirectUnpacker_ExtractMember(t *testing.T) {
 				t.Errorf("member closed %d times, want 1", m.closes)
 			}
 			if tc.wantPath {
-				if got != filepath.Join(extractDir, tc.member) {
-					t.Errorf("path = %q, want the member under the extraction dir", got)
-				}
-				if b, rerr := os.ReadFile(got); rerr != nil || string(b) != "content" {
+				if b, rerr := os.ReadFile(filepath.Join(extractDir, tc.member)); rerr != nil || string(b) != "content" {
 					t.Errorf("written member = %q, %v", b, rerr)
 				}
 				if !slices.Contains(lines, "Extracting  "+tc.member) {
 					t.Errorf("extraction not reported: %v", lines)
 				}
-			} else if got != "" {
-				t.Errorf("path = %q, want none", got)
 			}
 			if _, lerr := os.Lstat(filepath.Join(filepath.Dir(extractDir), "escape.mkv")); !os.IsNotExist(lerr) {
 				t.Errorf("a bad name was written outside the extraction dir: %v", lerr)
@@ -1408,22 +1404,16 @@ func TestDirectUnpacker_ExtractMember(t *testing.T) {
 		}
 		defer root.Close()
 		d := New(testLogger(t), "test-job", t.TempDir(), extractDir, Options{OneFolder: true})
-		got := make([]string, 0, 2)
 		for _, m := range []struct{ name, body string }{
 			{"CD1/track01.flac", "disc one"},
 			{"CD2/track01.flac", "disc two"},
 		} {
 			fh := &rarengine.FileHeader{Name: m.name, UnpackedSize: int64(len(m.body))}
-			p, err := d.extractMember(context.Background(), root, fh, &fakeMember{r: strings.NewReader(m.body)})
-			if err != nil {
+			if err := d.extractMember(context.Background(), root, fh, &fakeMember{r: strings.NewReader(m.body)}); err != nil {
 				t.Fatalf("extractMember(%s): %v", m.name, err)
 			}
-			got = append(got, p)
 		}
 		want := []string{filepath.Join(extractDir, "track01.flac"), filepath.Join(extractDir, "track01_1.flac")}
-		if !slices.Equal(got, want) {
-			t.Errorf("listed paths = %q, want %q", got, want)
-		}
 		for i, body := range []string{"disc one", "disc two"} {
 			if b, rerr := os.ReadFile(want[i]); rerr != nil || string(b) != body {
 				t.Errorf("%s = %q, %v; want %q", filepath.Base(want[i]), b, rerr, body)
@@ -1441,9 +1431,8 @@ func TestDirectUnpacker_ExtractMember(t *testing.T) {
 		defer root.Close()
 		d := New(testLogger(t), "test-job", t.TempDir(), extractDir, Options{})
 		fh := &rarengine.FileHeader{Name: "season1", IsDir: true}
-		got, err := d.extractMember(context.Background(), root, fh, &fakeMember{r: strings.NewReader("")})
-		if err != nil || got != "" {
-			t.Fatalf("extractMember(dir) = %q, %v; want nothing listed", got, err)
+		if err := d.extractMember(context.Background(), root, fh, &fakeMember{r: strings.NewReader("")}); err != nil {
+			t.Fatalf("extractMember(dir) = %v", err)
 		}
 		if fi, serr := os.Stat(filepath.Join(extractDir, "season1")); serr != nil || !fi.IsDir() {
 			t.Errorf("directory not created: %v", serr)

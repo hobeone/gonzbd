@@ -39,11 +39,9 @@ file internal/unpack/go_unrar.go
 [DirectUnpack drops the member step's error]
 file internal/directunpack/directunpack.go
 --- anchor
-	_, abs, err := unpack.ExtractMember(ctx, root, d.extractDir, fh, entry, opts, d.log)
-	if err != nil {
+	if _, _, err := unpack.ExtractMember(ctx, root, root.Name(), fh, entry, d.unpackOptions(), d.log); err != nil {
 --- replace
-	_, abs, err := unpack.ExtractMember(ctx, root, d.extractDir, fh, entry, opts, d.log)
-	if err != nil && false {
+	if _, _, err := unpack.ExtractMember(ctx, root, root.Name(), fh, entry, d.unpackOptions(), d.log); err != nil && false {
 --- end
 
 [a flat collision is skipped instead of renamed]

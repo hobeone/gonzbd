@@ -9,8 +9,9 @@ file internal/directunpack/directunpack.go
 	if cErr := fsutil.CheckContainment(d.extractDir); cErr != nil && false {
 --- end
 
-# DirectUnpack extracts into the job directory; these re-enable link creation
-# in the extractor it shares with post-processing.
+# DirectUnpack extracts into a staging directory inside the job directory;
+# these re-enable link creation in the extractor it shares with
+# post-processing.
 
 [DirectUnpack creates hard-link members over job files]
 file internal/unpack/go_unrar.go
@@ -54,20 +55,4 @@ file internal/unpack/go_unrar.go
 		}
 		skipLinkEntry(fh, opts, log)
 		return nil
---- end
-
-[DirectUnpack lists skipped link members]
-file internal/unpack/rar_links.go
---- anchor
-	return !fh.IsDir && fh.LinkType == rarengine.LinkNone
---- replace
-	return !fh.IsDir
---- end
-
-[DirectUnpack lists directory members]
-file internal/unpack/rar_links.go
---- anchor
-	return !fh.IsDir && fh.LinkType == rarengine.LinkNone
---- replace
-	return fh.LinkType == rarengine.LinkNone
 --- end
