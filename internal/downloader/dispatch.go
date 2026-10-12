@@ -115,7 +115,7 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 
 		jobAdded := j.Added()
 		stopAll := false
-		_ = j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
+		_ = j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool { //nolint:errcheck // an evicted job (ErrNotResident, its one refusal) has nothing to dispatch this pass
 			a := UnfinishedArticle{
 				Job:         j,
 				JobAdded:    jobAdded,
@@ -866,7 +866,7 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		// On the request's own instance: a later instance under the same ID
 		// set its bit for a fetch of its own, whose result is still coming.
 		if err := req.job.ClearArticleEmitted(int(req.artIdx)); err != nil {
-			d.log.Warn("clear the emitted bit for a dropped result",
+			d.log.Error("clear the emitted bit for a dropped result",
 				"job", req.jobID(), "msgid", req.messageID, "err", err)
 		}
 	}

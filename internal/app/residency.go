@@ -388,7 +388,7 @@ func (r *appResidency) readManifest(ctx context.Context, id string) (*job.Manife
 // caller under a deadline gets no help from this function; readManifest runs
 // it on a goroutine it can abandon.
 func decodeManifest(f *os.File) (*job.Manifest, error) {
-	defer func() { _ = f.Close() }()
+	defer func() { _ = f.Close() }() //nolint:errcheck // read-only manifest file
 
 	zr, err := gzip.NewReader(f)
 	if err != nil {

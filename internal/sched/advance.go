@@ -160,7 +160,7 @@ func (q *Queue) grantFor(j *job.Job, s job.State) bool {
 			// cannot happen "here". "Here" means through Advance; it does
 			// not mean grantFor is guarded against being called any other
 			// way.
-			_ = q.reclaim(l)
+			_ = q.reclaim(l) //nolint:errcheck // l was issued above and handed to no job, so ErrNotOutstanding, reclaim's one refusal (pool.go), cannot fire
 			return false
 		}
 	}

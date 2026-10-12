@@ -5,17 +5,14 @@ run TestOpen_DoesNotVacuum
 file internal/history/db.go
 --- anchor
 	if _, err := provider.Up(ctx); err != nil {
-		_ = sqlDB.Close() // superseded by migration error
-		return nil, fmt.Errorf("history: run migrations: %w", err)
+		return nil, errors.Join(fmt.Errorf("history: run migrations: %w", err), sqlDB.Close())
 	}
 --- replace
 	if _, err := provider.Up(ctx); err != nil {
-		_ = sqlDB.Close() // superseded by migration error
-		return nil, fmt.Errorf("history: run migrations: %w", err)
+		return nil, errors.Join(fmt.Errorf("history: run migrations: %w", err), sqlDB.Close())
 	}
 
 	if _, err := sqlDB.ExecContext(ctx, "VACUUM"); err != nil {
-		_ = sqlDB.Close() // superseded by vacuum error
-		return nil, fmt.Errorf("history: VACUUM: %w", err)
+		return nil, errors.Join(fmt.Errorf("history: VACUUM: %w", err), sqlDB.Close())
 	}
 --- end

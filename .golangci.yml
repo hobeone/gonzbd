@@ -37,7 +37,22 @@ linters:
   settings:
     errcheck:
       check-type-assertions: true
-      check-blank: false
+      check-blank: true
+      # Discarding these errors is correct by category, so each call site
+      # would otherwise carry the same //nolint reason. Each close below
+      # releases a read-side or abandon-side handle, so nothing written is
+      # lost when it fails; errors.AsType is listed for the reason on its
+      # line. (*os.File).Close and os.Remove/RemoveAll are deliberately
+      # absent — a close after a write and a removal that matters must stay
+      # visible at the call site.
+      exclude-functions:
+        - (*os.Root).Close              # a directory handle; nothing buffered
+        - (*database/sql.Rows).Close    # read cursor; rows.Err() carries iteration errors
+        - (*database/sql.Tx).Rollback   # deferred after Commit; ErrTxDone on the success path
+        - (*database/sql.Stmt).Close    # prepared statement; the Tx owns the outcome
+        - (io.ReadCloser).Close         # read side (HTTP response bodies, readers)
+        - (*compress/gzip.Reader).Close # read side; the checksum error surfaces from Read
+        - errors.AsType                 # the discarded first result is the matched error itself
     gocritic:
       enabled-tags:
         - diagnostic
@@ -68,6 +83,11 @@ linters:
           - errcheck
           - gocritic
           - unparam
+      # The crash-consistency harness is test code behind the crash build
+      # tag rather than a _test.go file, so the rule above cannot reach it.
+      - path: ^test/crash/
+        linters:
+          - errcheck
 
 formatters:
   enable:

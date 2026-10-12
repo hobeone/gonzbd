@@ -2370,6 +2370,25 @@ func TestClearEmitted_RefusalIsLoggedAtError(t *testing.T) {
 	}
 }
 
+// TestEmitResult_DroppedResultRefusedClearIsLoggedAtError pins that a result
+// dropped by cancellation, whose emitted bit then cannot be cleared on the
+// instance the request was built from, is logged at Error like the gated
+// clears above.
+func TestEmitResult_DroppedResultRefusedClearIsLoggedAtError(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	d := &Downloader{
+		log:         slog.New(slog.NewTextHandler(&logs, nil)),
+		completions: make(chan *ArticleResult), // never read, so the send loses to ctx
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.emitResult(ctx, &articleRequest{job: job.New("j1", "n", job.Policy{}), messageID: "a@b"}, "srv", nil, 0, 0, nil)
+	if !strings.Contains(logs.String(), "level=ERROR") {
+		t.Errorf("a refused clear for a dropped result was not logged at Error; log:\n%s", logs.String())
+	}
+}
+
 // TestApplyDispatchPlan_HopelessFallbackLogsRefusalUnlessGone pins the
 // fallback pause made when no onJobHopeless is set: a refusal for a job no
 // longer registered is dropped, and any other (here, a cancel already

@@ -59,7 +59,7 @@ func acquireRunLock(root string) (release func(), err error) {
 		if b, rerr := os.ReadFile(path); rerr == nil && strings.TrimSpace(string(b)) != "" { //nolint:gosec // G304: same path as above
 			holder = "pid " + strings.TrimSpace(string(b))
 		}
-		_ = f.Close()
+		_ = f.Close() //nolint:errcheck // the flock was refused, so nothing is held; the refusal is returned
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, fmt.Errorf("another mutate run is active in this working tree (%s), holding %s (%s); "+
 				"two runs would mutate each other's source, so wait for it to finish", root, path, holder)
@@ -67,7 +67,7 @@ func acquireRunLock(root string) (release func(), err error) {
 		return nil, fmt.Errorf("lock %s: %w", path, err)
 	}
 	// Best effort: the pid only decorates the refusal message.
-	_ = f.Truncate(0)
-	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
-	return func() { _ = f.Close() }, nil
+	_ = f.Truncate(0)                          //nolint:errcheck // best effort: the pid only decorates the refusal message
+	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid()) //nolint:errcheck // best effort: the pid only decorates the refusal message
+	return func() { _ = f.Close() }, nil       //nolint:errcheck // closing drops the flock, which the kernel also drops at exit
 }

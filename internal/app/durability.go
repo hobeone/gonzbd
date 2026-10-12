@@ -302,7 +302,7 @@ func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 		// removing it synchronously, so history.Entry.FailMessage (this
 		// reason's eventual permanent home) does not exist yet — this is
 		// the only live signal for the window until it does.
-		_ = app.dispatcher.SetFailReason(jobID, reason)
+		warnUnlessGone(app.log, "record the fail reason", jobID, app.dispatcher.SetFailReason(jobID, reason))
 	}
 	if app.maybeFinalize(jobID, reason) && parked {
 		// The reason waits for an Assessing worker the tick launches only for
@@ -432,8 +432,8 @@ func (app *Application) holdUnreconciledJob(jobID string, lookupErr error) {
 			"job", jobID, "err", err)
 		return
 	}
-	_ = app.dispatcher.SetOperationalError(jobID, "history lookup failed at startup: "+
-		"this job may already be in history; resume it only once it is known not to be")
+	warnUnlessGone(app.log, "record the operational error", jobID, app.dispatcher.SetOperationalError(jobID,
+		"history lookup failed at startup: this job may already be in history; resume it only once it is known not to be"))
 }
 
 // reclaim applies durability's reclaim rule to the named jobs, then unlinks

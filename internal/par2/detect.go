@@ -49,11 +49,11 @@ func DetectCapabilities(ctx context.Context, par2Bin string) Caps {
 	// Run par2 -h (or --help) — different builds use different flags
 	// but -h is most universal. par2 -h returns exit code 1 on most
 	// builds, so we ignore exit errors.
-	out, _ := exec.CommandContext(ctx, par2Bin, "-h").CombinedOutput() //nolint:gosec // binary path from config
+	out, _ := exec.CommandContext(ctx, par2Bin, "-h").CombinedOutput() //nolint:errcheck,gosec // par2 -h exits non-zero on most builds; a missing binary yields empty output and no capabilities; binary path from config
 	help := string(out)
 
 	// Also try -V for version detection.
-	vOut, _ := exec.CommandContext(ctx, par2Bin, "-V").CombinedOutput() //nolint:gosec // binary path from config
+	vOut, _ := exec.CommandContext(ctx, par2Bin, "-V").CombinedOutput() //nolint:errcheck,gosec // a failed -V leaves the version empty; binary path from config
 	versionStr := strings.TrimSpace(string(vOut))
 
 	var caps Caps

@@ -20,7 +20,7 @@ file internal/job/verification.go
 		p.files[fi].Complete = true
 	}
 	for _, a := range v.Failed {
-		_ = j.markArticleFailed(int(a), WholeArticle)
+		_ = j.markArticleFailed(int(a), WholeArticle) //nolint:errcheck // residency is checked above; an index out of range costs only its own article (Standing Design Rule 3)
 	}
 	if v.Complete || v.Settle {
 		settleFileCRC(m, p, fi)
@@ -38,7 +38,7 @@ file internal/job/verification.go
 		p.files[fi].Complete = true
 	}
 	for _, a := range v.Failed {
-		_ = j.markArticleFailed(int(a), WholeArticle)
+		_ = j.markArticleFailed(int(a), WholeArticle) //nolint:errcheck // residency is checked above; an index out of range costs only its own article (Standing Design Rule 3)
 	}
 --- end
 
@@ -89,7 +89,7 @@ file internal/job/verification.go
 	kept, dropped, err := placeRows(m, fi, v.Rows)
 --- replace
 	for _, a := range v.Failed {
-		_ = j.markArticleFailed(int(a), WholeArticle)
+		_ = j.markArticleFailed(int(a), WholeArticle) //nolint:errcheck // residency is checked above; an index out of range costs only its own article (Standing Design Rule 3)
 	}
 	kept, dropped, err := placeRows(m, fi, v.Rows)
 --- end

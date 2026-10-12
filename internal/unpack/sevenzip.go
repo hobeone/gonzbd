@@ -118,7 +118,7 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 	if err != nil {
 		return Result{CommandLine: cmdLine, Err: err, Reason: FailUnknown, Engine: "7z"}, err
 	}
-	defer func() { _ = os.RemoveAll(stageDir) }()
+	defer removeStageDir(log, stageDir)
 
 	execArgs := append(append([]string(nil), args...), archive.MainFile, "-o"+stageDir, sscFlag)
 	if password != "" {

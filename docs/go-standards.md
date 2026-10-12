@@ -20,7 +20,7 @@ docs-only or UI-only change.
 ### Anti-Patterns (Forbidden)
 
 - **No `panic` for control flow.** Panic is for unrecoverable programmer errors only.
-- **No silent error swallowing.** `_ = doSomething()` requires a comment explaining why the error is intentionally ignored.
+- **No silent error swallowing.** errcheck runs with `check-blank: true`, so `_ = doSomething()` and `v, _ := f()` fail lint. Prefer handling the error: join a cleanup failure on an error path into the error being returned (`errors.Join(err, f.Close())`), and log a removal that matters. Where discarding is genuinely right, mark the line `//nolint:errcheck // <reason>` with a reason specific to that site. A discard that is right for every call of one function belongs in `.golangci.yml`'s errcheck `exclude-functions`, not in a marker per site.
 - **No `time.Sleep` in tests** for synchronization. Use channels, `sync.WaitGroup`, or `chan struct{}` signals.
 - **No `init()` functions** for non-trivial setup. Use explicit `New*` constructors called from `main`.
 - **No global mutable state.** Configuration, loggers, and dependencies are passed explicitly.

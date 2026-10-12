@@ -22,8 +22,17 @@ func CleanupStageDirs(outDir string) {
 	}
 	for _, e := range entries {
 		if e.IsDir() && strings.HasPrefix(e.Name(), unpackStagePrefix) {
-			_ = os.RemoveAll(filepath.Join(outDir, e.Name()))
+			_ = os.RemoveAll(filepath.Join(outDir, e.Name())) //nolint:errcheck // best effort; a stage left behind is retried by every later CleanupStageDirs
 		}
+	}
+}
+
+// removeStageDir removes an external extractor's staging directory once the
+// extraction is over. A stage left behind sits inside outDir, which may be
+// the job's output, until a later CleanupStageDirs, so a failure is logged.
+func removeStageDir(log *slog.Logger, stageDir string) {
+	if err := os.RemoveAll(stageDir); err != nil {
+		log.Warn("unpack: failed to remove the staging directory", "dir", stageDir, "err", err)
 	}
 }
 

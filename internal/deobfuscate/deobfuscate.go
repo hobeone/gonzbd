@@ -656,7 +656,7 @@ func extractRARUsefulName(root *os.Root, dir string, log *slog.Logger, exclude m
 			continue
 		}
 		isRAR, rerr := rarheader.IsRARReader(f)
-		_ = f.Close()
+		_ = f.Close() //nolint:errcheck // read-only signature probe
 		if rerr != nil || !isRAR {
 			continue
 		}

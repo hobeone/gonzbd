@@ -55,7 +55,7 @@ func withFailureNotes(ppJob *postproc.Job, notes []string, extra ...string) *pos
 // completed post-processing job. It reads only from ppJob and produces no side
 // effects, making it independently testable.
 func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
-	stageLogJSON, _ := json.Marshal(ppJob.StageLog)
+	stageLogJSON, _ := json.Marshal(ppJob.StageLog) //nolint:errcheck // StageLogEntry.MarshalJSON fails only for a Started time outside years 0-9999
 
 	var expectedBytes, downloaded, completeness int64
 	var downloadDuration int64

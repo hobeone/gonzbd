@@ -94,7 +94,7 @@ func (e *EmailNotifier) sendPlainOrSTARTTLS(ctx context.Context, addr string, au
 		//nolint:gosec // G402: InsecureSkipVerify intentionally false; no flag exposed yet
 		tlsCfg := &tls.Config{ServerName: e.cfg.Host, InsecureSkipVerify: false}
 		if err := c.StartTLS(tlsCfg); err != nil {
-			_ = c.Close() // prevent TCP/fd leak
+			_ = c.Close() //nolint:errcheck // releases the connection; the StartTLS error is the one returned
 			return fmt.Errorf("email: starttls: %w", err)
 		}
 	}
@@ -114,9 +114,9 @@ const smtpOperationTimeout = 60 * time.Second
 // slow or tarpitting SMTP servers.
 func setConnDeadline(ctx context.Context, conn net.Conn) {
 	if dl, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(dl)
+		_ = conn.SetDeadline(dl) //nolint:errcheck // fails only on a closed conn, which the next SMTP command reports
 	} else {
-		_ = conn.SetDeadline(time.Now().Add(smtpOperationTimeout))
+		_ = conn.SetDeadline(time.Now().Add(smtpOperationTimeout)) //nolint:errcheck // fails only on a closed conn, which the next SMTP command reports
 	}
 }
 
@@ -124,7 +124,7 @@ func (e *EmailNotifier) finishSend(c *smtp.Client, auth smtp.Auth, msg []byte) e
 	defer func() {
 		//nolint:errcheck // best-effort close; connection already done at this point
 		_ = c.Quit()
-		_ = c.Close() // Quit may fail without closing the underlying TCP conn
+		_ = c.Close() //nolint:errcheck // Quit may fail without closing the TCP conn; the send's outcome is already decided
 	}()
 
 	if auth != nil {

@@ -64,24 +64,20 @@ func copyAndRemove(src, dst string) error {
 
 	out, err := os.Create(dst) //nolint:gosec // G304: path from caller, not user input
 	if err != nil {
-		_ = in.Close() // cleanup opened input on create error
-		return err
+		return errors.Join(err, in.Close())
 	}
 
+	// A cleanup failure below is joined to the error that triggered it, so a
+	// partial dst left behind is reported rather than silent.
 	if _, err = io.Copy(out, in); err != nil {
-		_ = in.Close()     // cleanup opened input on copy error
-		_ = out.Close()    // cleanup opened output on copy error
-		_ = os.Remove(dst) // clean up partial file
-		return err
+		return errors.Join(err, in.Close(), out.Close(), os.Remove(dst))
 	}
-	_ = in.Close() // read-only input file is being deleted regardless
+	_ = in.Close() //nolint:errcheck // read-only input, and src is removed below regardless
 	if err := out.Close(); err != nil {
-		_ = os.Remove(dst) // clean up partial file
-		return err
+		return errors.Join(err, os.Remove(dst))
 	}
 	if err := os.Chmod(dst, mode); err != nil {
-		_ = os.Remove(dst) // clean up partial file
-		return err
+		return errors.Join(err, os.Remove(dst))
 	}
 	return os.Remove(src)
 }

@@ -220,8 +220,7 @@ file scripts/mutate/main.go
 [the backup temp dir leaks on a failed write]
 file scripts/mutate/main.go
 --- anchor
-		_ = os.RemoveAll(dir)
-		return "", err
+		return "", errors.Join(err, os.RemoveAll(dir))
 --- replace
 		return "", err
 --- end

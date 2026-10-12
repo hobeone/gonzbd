@@ -97,27 +97,23 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	}
 
 	if err := sqlDB.PingContext(ctx); err != nil {
-		_ = sqlDB.Close() // superseded by ping error
-		return nil, fmt.Errorf("error pinging database: %s, %w", path, err)
+		return nil, errors.Join(fmt.Errorf("error pinging database: %s, %w", path, err), sqlDB.Close())
 	}
 
 	// WAL mode is database-scoped (persists on disk) — only needs
 	// to run once, not per-connection.
 	if _, err := sqlDB.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
-		_ = sqlDB.Close() // superseded by open error
-		return nil, fmt.Errorf("history: PRAGMA journal_mode=WAL: %w", err)
+		return nil, errors.Join(fmt.Errorf("history: PRAGMA journal_mode=WAL: %w", err), sqlDB.Close())
 	}
 
 	subFS, err := fs.Sub(embedMigrations, "migrations")
 	if err != nil {
-		_ = sqlDB.Close() // superseded by sub fs error
-		return nil, fmt.Errorf("history: sub fs: %w", err)
+		return nil, errors.Join(fmt.Errorf("history: sub fs: %w", err), sqlDB.Close())
 	}
 
 	provider, err := goose.NewProvider(goose.DialectSQLite3, sqlDB, subFS)
 	if err != nil {
-		_ = sqlDB.Close() // superseded by goose provider error
-		return nil, fmt.Errorf("history: new goose provider: %w", err)
+		return nil, errors.Join(fmt.Errorf("history: new goose provider: %w", err), sqlDB.Close())
 	}
 
 	// Refuse a database recording a migration version ABOVE the highest this
@@ -162,13 +158,11 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	//     that already has that table, not by this guard. The message is worse
 	//     and there is no upgrade either way.
 	if err := refuseUnknownSchema(ctx, sqlDB, subFS); err != nil {
-		_ = sqlDB.Close() // superseded by schema error
-		return nil, err
+		return nil, errors.Join(err, sqlDB.Close())
 	}
 
 	if _, err := provider.Up(ctx); err != nil {
-		_ = sqlDB.Close() // superseded by migration error
-		return nil, fmt.Errorf("history: run migrations: %w", err)
+		return nil, errors.Join(fmt.Errorf("history: run migrations: %w", err), sqlDB.Close())
 	}
 
 	// A database that is already fully migrated and already in WAL mode has
@@ -180,12 +174,10 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// changes nothing, so an unwritable file is refused here instead.
 	var userVersion int64
 	if err := sqlDB.QueryRowContext(ctx, "PRAGMA user_version").Scan(&userVersion); err != nil {
-		_ = sqlDB.Close() // superseded by read error
-		return nil, fmt.Errorf("history: read user_version: %w", err)
+		return nil, errors.Join(fmt.Errorf("history: read user_version: %w", err), sqlDB.Close())
 	}
 	if _, err := sqlDB.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", userVersion)); err != nil {
-		_ = sqlDB.Close() // superseded by write error
-		return nil, fmt.Errorf("history: database is not writable: %w", err)
+		return nil, errors.Join(fmt.Errorf("history: database is not writable: %w", err), sqlDB.Close())
 	}
 
 	// 25 is deliberate headroom, not a measured figure: actual API

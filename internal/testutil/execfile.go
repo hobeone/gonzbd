@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -74,12 +75,10 @@ func writeAndClose(path, content string, open openFunc) error {
 	// file. Chmod the descriptor to make the mode umask-independent. Using
 	// the descriptor rather than the path avoids re-resolving it.
 	if err := f.Chmod(0o755); err != nil {
-		_ = f.Close()
-		return err
+		return errors.Join(err, f.Close())
 	}
 	if _, err := f.WriteString(content); err != nil {
-		_ = f.Close()
-		return err
+		return errors.Join(err, f.Close())
 	}
 	return f.Close()
 }

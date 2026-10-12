@@ -33,18 +33,18 @@ file internal/unpack/sevenzip.go
 	execArgs := append(append([]string(nil), args...), archive.MainFile, "-o"+outDir, sscFlag)
 --- end
 
-[UnRAR omits deferred os.RemoveAll(stageDir)]
+[UnRAR omits the deferred removeStageDir]
 file internal/unpack/unrar.go
 --- anchor
-	defer func() { _ = os.RemoveAll(stageDir) }()
+	defer removeStageDir(log, stageDir)
 --- replace
 	_ = stageDir
 --- end
 
-[SevenZip omits deferred os.RemoveAll(stageDir)]
+[SevenZip omits the deferred removeStageDir]
 file internal/unpack/sevenzip.go
 --- anchor
-	defer func() { _ = os.RemoveAll(stageDir) }()
+	defer removeStageDir(log, stageDir)
 --- replace
 	_ = stageDir
 --- end

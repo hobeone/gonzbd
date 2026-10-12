@@ -28,7 +28,7 @@ var contextCopyBufPool = sync.Pool{
 // cancellation, it returns the context error immediately, allowing
 // long-running copies of large files to be interrupted.
 func contextCopy(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
-	bp, _ := contextCopyBufPool.Get().(*[]byte)
+	bp, _ := contextCopyBufPool.Get().(*[]byte) //nolint:errcheck // the pool's New and every Put hold *[]byte
 	defer contextCopyBufPool.Put(bp)
 	buf := *bp
 

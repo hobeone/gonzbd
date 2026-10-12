@@ -186,7 +186,7 @@ func checkSource(path string, src []byte) ([]finding, error) {
 	// 1) File name check: Any file under internal/ or cmd/ whose filename
 	// matches *test*.go (excluding *_test.go) MUST have a test //go:build tag
 	// (test, integration, uitest, crash).
-	matched, _ := filepath.Match("*test*.go", base)
+	matched, _ := filepath.Match("*test*.go", base) //nolint:errcheck // a constant pattern; Match fails only on a malformed one
 	if matched && !hasTestBuildTag {
 		if !hasFileLevelSuppression {
 			findings = append(findings, finding{

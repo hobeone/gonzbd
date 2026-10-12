@@ -269,11 +269,11 @@ file internal/postproc/postproc.go
 file internal/postproc/stage_finalize.go
 --- anchor
 	if job.DownloadDir != "" {
-		_ = os.Remove(filepath.Join(job.DownloadDir, pendingDeletionsFile))
+		removePendingSidecar(log, job.DownloadDir)
 	}
 --- replace
 	if false && job.DownloadDir != "" {
-		_ = os.Remove(filepath.Join(job.DownloadDir, pendingDeletionsFile))
+		removePendingSidecar(log, job.DownloadDir)
 	}
 --- end
 
@@ -289,6 +289,7 @@ file internal/postproc/stage_finalize.go
 	}
 --- replace
 	_ = json.Marshal
+	_ = sidecar
 --- end
 
 [moveToDest skips logging warning when WriteAtomicBytesPerm fails]
@@ -307,7 +308,7 @@ file internal/postproc/stage_finalize.go
 file internal/postproc/stage_finalize.go
 --- anchor
 	} else {
-		_ = os.Remove(sidecar)
+		removePendingSidecar(log, job.DownloadDir)
 		logf(ctx, log, job, slog.LevelInfo, "Atomic rename failed (%v), falling back to file-by-file move", err)
 	}
 --- replace
@@ -328,7 +329,7 @@ file internal/postproc/stage_finalize.go
 	if len(job.PendingDeletions) == 0 || job.DownloadDir == "" {
 		return
 	}
-	_ = os.Remove(filepath.Join(job.DownloadDir, pendingDeletionsFile))
+	removePendingSidecar(log, job.DownloadDir)
 	var deleted int
 	for _, rel := range job.PendingDeletions {
 --- end
@@ -339,7 +340,7 @@ file internal/postproc/stage_finalize.go
 	if deleted > 0 {
 		logf(ctx, log, job, slog.LevelInfo, "Cleaned up %d pending file(s)", deleted)
 	}
-	_ = os.Remove(filepath.Join(job.DownloadDir, pendingDeletionsFile))
+	removePendingSidecar(log, job.DownloadDir)
 --- replace
 	if deleted > 0 {
 		logf(ctx, log, job, slog.LevelInfo, "Cleaned up %d pending file(s)", deleted)

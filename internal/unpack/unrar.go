@@ -238,7 +238,7 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 	if err != nil {
 		return Result{CommandLine: cmdLine, Err: err, Reason: FailUnknown, Engine: "unrar"}, err
 	}
-	defer func() { _ = os.RemoveAll(stageDir) }()
+	defer removeStageDir(log, stageDir)
 
 	execArgs := append(append([]string(nil), args...), archive.MainFile, stageDir+"/")
 	if password != "" {
@@ -270,31 +270,42 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 			// invalid filenames. In this case the extraction usually
 			// succeeds despite the non-zero exit code. Downgrade to
 			// a warning. Matches SABnzbd's handling in newsunpack.py.
-			stageSnap, _ := snapshotDir(stageDir)
+			//
+			// A stage that cannot be read cannot be checked for corrected
+			// files, so the extraction stays failed and the read error is
+			// reported with the exit status.
+			var snapErr error
 			if strings.Contains(res.Output, "Cannot create") &&
-				strings.Contains(res.Output, "Attempting to correct") &&
-				len(stageSnap) > 0 {
-				published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts)
-				if pubErr != nil {
-					res.Err = fmt.Errorf("unrar: publish staged files: %w", pubErr)
-					return res, res.Err
+				strings.Contains(res.Output, "Attempting to correct") {
+				var stageSnap map[string]struct{}
+				stageSnap, snapErr = snapshotDir(stageDir)
+				if snapErr == nil && len(stageSnap) > 0 {
+					published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts)
+					if pubErr != nil {
+						res.Err = fmt.Errorf("unrar: publish staged files: %w", pubErr)
+						return res, res.Err
+					}
+					res.ExtractedFiles = published
+					log.Warn("unrar: auto-corrected invalid filename(s)",
+						"archive", archive.MainFile,
+						"extractedCount", len(published),
+					)
+					// Clear the error — extraction succeeded with corrections.
+					res.Err = nil
+					res.ExitCode = 0
+					return res, nil
 				}
-				res.ExtractedFiles = published
-				log.Warn("unrar: auto-corrected invalid filename(s)",
-					"archive", archive.MainFile,
-					"extractedCount", len(published),
-				)
-				// Clear the error — extraction succeeded with corrections.
-				res.Err = nil
-				res.ExitCode = 0
-				return res, nil
 			}
 			res.Err = fmt.Errorf("unrar exited %d (%s): %w", res.ExitCode, res.Reason, runErr)
+			if snapErr != nil {
+				res.Err = errors.Join(res.Err, fmt.Errorf("unrar: read staged files: %w", snapErr))
+			}
 			log.Error("unrar: extraction failed",
 				"archive", archive.MainFile,
 				"exitCode", res.ExitCode,
 				"reason", res.Reason.String(),
 				"output", res.Output,
+				"err", res.Err,
 			)
 		} else {
 			res.Err = fmt.Errorf("unrar: %w", runErr)

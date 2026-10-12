@@ -250,7 +250,7 @@ func readBackFile(ctx context.Context, loc jobFile, rows []durability.WrittenRow
 	if err != nil {
 		return fileReadback{}, err
 	}
-	defer func() { _ = fh.Close() }() // read-only descriptor; nothing to lose on close
+	defer func() { _ = fh.Close() }() //nolint:errcheck // read-only descriptor; nothing to lose on close
 
 	// A writeback error no earlier fsync reported is reported to this fresh
 	// descriptor: the file's bytes cannot be trusted.

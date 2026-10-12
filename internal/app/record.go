@@ -483,7 +483,7 @@ func (r *recorder) run(ctx context.Context, every time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_ = r.flush(ctx) // flush logs its own failure
+			_ = r.flush(ctx) //nolint:errcheck // flush logs its own failure
 		}
 	}
 }

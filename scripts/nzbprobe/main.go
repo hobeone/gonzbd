@@ -113,7 +113,7 @@ func parseNZB(path string) (*nzb.NZB, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = f.Close() }() //nolint:errcheck // read-only file
 
 	var r io.Reader = f
 	if strings.HasSuffix(strings.ToLower(path), ".gz") {
@@ -216,7 +216,7 @@ func probeIndex(cfgPath string, doc *nzb.NZB, full bool) error {
 	if conn == nil {
 		return errors.New("no server accepted a connection")
 	}
-	defer func() { _ = conn.Close() }()
+	defer func() { _ = conn.Close() }() //nolint:errcheck // diagnostic tool's connection teardown
 
 	// One article per file, to learn the yEnc-declared name and size.
 	//
@@ -308,7 +308,7 @@ func probeIndex(cfgPath string, doc *nzb.NZB, full bool) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.RemoveAll(tmp) }()
+	defer func() { _ = os.RemoveAll(tmp) }() //nolint:errcheck // best-effort removal of the tool's own temp dir
 	indexPath := filepath.Join(tmp, indexName)
 	if wErr := os.WriteFile(indexPath, assembled, 0o600); wErr != nil {
 		return wErr
