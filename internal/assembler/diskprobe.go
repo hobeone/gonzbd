@@ -184,7 +184,8 @@ func (p *DiskProbe) evictStaleLocked() {
 // probe runs the actual statfs call detached from any single caller's ctx —
 // it must outlive whichever caller triggered it so it can finish and
 // populate the cache for later callers even if this one gave up waiting.
-// It is the sole writer of st.free/st.err/st.fetchedAt/st.pending.
+// It is the sole writer of st.free/st.err/st.fetchedAt, and the one that
+// clears st.pending, which claim sets.
 func (p *DiskProbe) probe(st *probeState, dir string, pending chan struct{}) {
 	free, err := statfsFreeBytes(dir, p.statfs)
 	st.mu.Lock()
