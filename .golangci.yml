@@ -37,7 +37,7 @@ linters:
   settings:
     errcheck:
       check-type-assertions: true
-      check-blank: false
+      check-blank: true
       # Discarding these errors is correct by category, so each call site
       # would otherwise carry the same //nolint reason. Each close below
       # releases a read-side or abandon-side handle, so nothing written is
