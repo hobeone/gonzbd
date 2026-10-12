@@ -355,6 +355,27 @@ func TestDiff_UnbornHeadDegradesQuietly(t *testing.T) {
 	}
 }
 
+// `git diff --no-index` exits 1 by design for an untracked file, but any other
+// failure must not be mistaken for that: swallowing it drops the file from the
+// diff, and the gates read the missing file as "nothing changed". An unborn
+// HEAD keeps the base diff out of the way, so the untracked diff is the only
+// git diff that runs, and a missing diff.external fails it with exit 128.
+func TestDiff_FailedUntrackedDiffIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	gitIn(t, dir, "init", "-q", "-b", "main", dir)
+	t.Chdir(dir)
+	writeFile(t, dir, "brand_new.go", "package p\n\nfunc B() {}\n")
+	gitIn(t, dir, "config", "diff.external", "/nonexistent/prog")
+
+	diff, err := Diff()
+	if err == nil {
+		t.Fatalf("Diff() returned nil error when the untracked diff failed; brand_new.go is missing from:\n%q", diff)
+	}
+	if !strings.Contains(err.Error(), "brand_new.go") {
+		t.Errorf("Diff() error = %v, want it to name brand_new.go", err)
+	}
+}
+
 // The middle rung of baseCommit's fallback chain: a branch with history but
 // no origin/main, as in a shallow clone or an unfetched remote. Covered
 // separately because the other two rungs take different code paths.
@@ -383,12 +404,12 @@ func TestDiff_FallsBackToHeadTildeOneWithoutOriginMain(t *testing.T) {
 // git quotes non-ASCII paths C-style by default (core.quotePath), which
 // breaks this package in two places at once. `ls-files --others` emits
 // "caf\303\251.go" instead of café.go, which is not a path the --no-index
-// diff can open — so the file is dropped and the error tolerated. And a diff
+// diff can open — so that diff fails. And a diff
 // header comes out as `+++ "b/caf\303\251.go"`, which does not match the
 // `+++ b/` prefix consumers split on — so the file's line ranges go
 // unattributed even when the diff did run.
 //
-// Both are silent. The tracked case matters more than the untracked one: it
+// The header case is silent, and it matters more than the untracked one: it
 // is the ordinary path for a gate, and there the file is present in the diff
 // yet invisible to the parser reading it.
 func TestNonASCIIPathsAreUsableNotQuoted(t *testing.T) {

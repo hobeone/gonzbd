@@ -22,6 +22,7 @@ package gitscope
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -86,7 +87,7 @@ func baseCommit() (string, bool) {
 // renders any non-ASCII path in C-quoted form: café.go appears as
 // "caf\303\251.go" in ls-files output and as `+++ "b/caf\303\251.go"` in a
 // diff header. Neither is a path. The first cannot be opened, so Diff's
-// --no-index call fails and drops the file; the second does not match the
+// --no-index call fails; the second does not match the
 // `+++ b/` prefix consumers split on, so the file's line ranges are silently
 // unattributed. Setting it here rather than per-call covers both, and any
 // path-bearing command added later.
@@ -161,7 +162,8 @@ func Files() ([]string, error) {
 // TestDiff_CommittedHunksUseWorkingTreeLineNumbers, which pins both the
 // false positive and the false negative.
 //
-// Unlike Files, a failure of the base diff is returned rather than tolerated.
+// Unlike Files, a failure of the base diff, or an untracked file's diff
+// exiting with any status but 1, is returned rather than tolerated.
 // Diff has exactly one call covering all committed and uncommitted work, so
 // swallowing its error yields a diff with no hunks — which every consumer
 // reads as "nothing changed" and reports as a pass. An unresolvable base is
@@ -183,8 +185,12 @@ func Diff() (string, error) {
 	}
 	for _, f := range untracked {
 		// --no-index exits 1 whenever the inputs differ, which is always true
-		// here, so the error is expected and the output is what matters.
-		out, _ := git("diff", "--no-index", "-U0", "/dev/null", f)
+		// here. Any other failure (an unreadable file, a broken diff driver)
+		// would drop the file from the diff and read as "nothing changed".
+		out, err := git("diff", "--no-index", "-U0", "/dev/null", f)
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); err != nil && (!ok || exitErr.ExitCode() != 1) {
+			return "", fmt.Errorf("gitscope: git diff --no-index %s: %w", f, err)
+		}
 		b.WriteString(out)
 	}
 	return b.String(), nil
