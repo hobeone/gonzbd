@@ -1052,9 +1052,13 @@ func (d *Dispatcher) SetOperationalError(id, msg string) error {
 // SetPriority sets the priority for a registered job and kicks the scheduler.
 // The next tick walks the job at its new place in dispatch order:
 // dispatchOrderLocked reads Header.Priority at each walk.
+//
+// It refuses a priority a job cannot hold (constants.Priority.IsConcrete):
+// Default and Paused are requests config.ResolvePriority resolves before a
+// caller gets here, and Stop and undefined values are not priorities at all.
 func (d *Dispatcher) SetPriority(id string, priority int) error {
-	if priority < -128 || priority > 127 || !constants.Priority(int8(priority)).IsValid() { //nolint:gosec // G115: priority fits in int8
-		return fmt.Errorf("dispatch: set priority %s: invalid priority %d", id, priority)
+	if priority < -128 || priority > 127 || !constants.Priority(int8(priority)).IsConcrete() { //nolint:gosec // G115: priority fits in int8
+		return fmt.Errorf("dispatch: set priority %s: %d is not a concrete priority", id, priority)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()

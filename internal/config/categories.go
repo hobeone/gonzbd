@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -50,7 +51,8 @@ type CategoryConfig struct {
 
 	// Priority is the default priority for jobs added under this
 	// category. constants.DefaultPriority means "use the global default":
-	// the Default/"*" category's priority, then Normal (ResolvePriority).
+	// the Default/"*" category's priority, then Normal; PausedPriority
+	// pauses those jobs, which take the global default (ResolvePriority).
 	Priority int `yaml:"priority" json:"priority"`
 
 	// Dir is a subdirectory within complete_dir to receive output for
@@ -58,38 +60,58 @@ type CategoryConfig struct {
 	Dir string `yaml:"dir" json:"dir"`
 }
 
-// ResolvePriority returns the priority a job added under category gets when
-// it asked for p. A request for constants.DefaultPriority inherits the
-// category's priority; a category priority that is itself not a concrete job
-// priority (DefaultPriority, StopPriority, or a value IsValid rejects) defers
-// to the fallback category FindCategory returns for "" (Default, then "*"),
-// and to NormalPriority when that is not concrete either. Any other p is
-// returned unchanged.
+// ResolvePriority turns the priority a job under category was asked for into
+// the priority it holds, and reports whether the request also pauses it.
+// Ingest (BuildIngestJob) and the API's name=priority and change_cat
+// (Server.applyPriority) share it:
+// `git grep -n 'config\.ResolvePriority(' -- '*.go' ':!*_test.go'` returns 2 lines.
 //
-// It exists so that no sentinel reaches the dispatcher's header from a
-// category: dispatch order sorts on Header.Priority, and -100 stored raw sorts
-// a job behind Low.
-func ResolvePriority(cats []CategoryConfig, category string, p constants.Priority) constants.Priority {
-	if p != constants.DefaultPriority {
-		return p
+//   - A concrete p (constants.Priority.IsConcrete) is returned unchanged.
+//   - constants.DefaultPriority inherits the category's priority. A category
+//     priority of Paused pauses the job and keeps looking; one that is
+//     Repair, Default, Stop or undefined is skipped. The search runs over
+//     the category, then the fallback FindCategory returns for "" (Default,
+//     then "*"), and ends at NormalPriority.
+//   - constants.PausedPriority pauses the job, which holds what the same
+//     search finds.
+//
+// Any other p — Stop or an undefined value — is an error, so no caller can
+// store it: dispatch order sorts on Header.Priority, and a sentinel stored
+// raw sorts a job behind Low, an undefined value anywhere at all.
+func ResolvePriority(cats []CategoryConfig, category string, p constants.Priority) (constants.Priority, bool, error) {
+	pause := p == constants.PausedPriority
+	if p != constants.DefaultPriority && !pause {
+		if !p.IsConcrete() {
+			return 0, false, fmt.Errorf("priority %d is not a priority a job can be given", p)
+		}
+		return p, false, nil
 	}
-	if c, ok := concretePriority(FindCategory(cats, category).Priority); ok {
-		return c
+	for _, name := range []string{category, ""} {
+		c, ok := categoryPriority(FindCategory(cats, name).Priority)
+		if !ok {
+			continue
+		}
+		if c == constants.PausedPriority {
+			pause = true
+			continue
+		}
+		return c, pause, nil
 	}
-	if c, ok := concretePriority(FindCategory(cats, "").Priority); ok {
-		return c
-	}
-	return constants.NormalPriority
+	return constants.NormalPriority, pause, nil
 }
 
-// concretePriority reports whether a configured category priority names a
-// priority a job can hold, rather than a sentinel or an unknown value.
-func concretePriority(v int) (constants.Priority, bool) {
+// categoryPriority reports whether a configured category priority is Force,
+// High, Normal, Low or Paused. Repair, which configuration may not give a
+// job, Default, Stop and unknown values are not.
+func categoryPriority(v int) (constants.Priority, bool) {
 	if v < -128 || v > 127 {
 		return 0, false
 	}
 	p := constants.Priority(v) //nolint:gosec // G115: range checked above
-	if !p.IsValid() || p == constants.DefaultPriority || p == constants.StopPriority {
+	if p == constants.RepairPriority {
+		return 0, false
+	}
+	if !p.IsConcrete() && p != constants.PausedPriority {
 		return 0, false
 	}
 	return p, true

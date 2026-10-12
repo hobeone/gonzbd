@@ -831,19 +831,32 @@ and since priority is persisted with the header it survives a restart.
 `TestTick_WalksInPriorityOrderWithPositionAsTheTieBreak` and
 `TestList_FollowsDispatchOrder` pin it.
 
-The sort is numeric, so the header's other values rank by number too:
-`RepairPriority` (3) ahead of Force, and `PausedPriority` (-2),
-`StopPriority` (-4) and `DefaultPriority` (-100) behind Low. A category's
-priority reaches the header through `config.ResolvePriority`, which resolves
-Default through the category, then the Default/`*` category, to Normal: at
-ingest, and when `change_cat` moves a job. `SetPriority` itself still admits
--100 and -4, and the API's `name=priority` passes its value straight to it
-(#847).
+The sort is numeric, so `RepairPriority` (3) ranks ahead of Force. A header
+holds a concrete priority (`constants.Priority.IsConcrete`: Repair, Force,
+High, Normal, Low). Restore aside, its two writers each refuse anything
+else: `SetPriority` (`e.h.Priority =`), and ingest's header literal in
+`internal/app/ingest.go`, which stores what `config.ResolvePriority`
+returns — and that answers an error for a request that is neither concrete,
+Default nor Paused.
+
+`PausedPriority` (-2) and `DefaultPriority` (-100) are requests.
+Default resolves through the job's category, then the Default/`*` category,
+to Normal — at ingest, for the API's `name=priority`, and when `change_cat`
+moves a job. Paused at ingest pauses the new job (`SetIntent(IntentPause)`),
+which takes what Default would give, so a resume leaves it at its category's
+rank rather than behind Low. Paused through `name=priority` pauses a queued
+job (`PauseJob`) and keeps the priority it holds. A category whose priority
+is Paused pauses the jobs that inherit from it, which take the fallback
+category's priority; through `change_cat`, the pause comes before the
+priority is written, so no tick leases the job at its new rank and a refused
+pause changes nothing. A category priority of Repair is treated like an
+unset one. The API refuses `RepairPriority` (3), `StopPriority` (-4) and
+undefined values as a requested priority (`parsePriority`,
+`internal/api/helpers.go`), so Repair is reachable only by an internal
+`SetPriority` call, and nothing makes one today.
 
 `ForcePriority` orders first and does nothing else: it obeys the global pause
 like every other priority, unlike SABnzbd's Force.
-`constants.PausedPriority` at ingest maps to `SetIntent(IntentPause)`;
-`SetPriority` to it does not, and only sorts the job behind Low (#847).
 
 Reorder, when it is built, is defined over fetch ordering and is **total**: the
 change is always recorded and takes effect whenever the job next competes for

@@ -4,54 +4,88 @@ run TestResolvePriority
 [the category's own priority is not consulted]
 file internal/config/categories.go
 --- anchor
-	if c, ok := concretePriority(FindCategory(cats, category).Priority); ok {
+	for _, name := range []string{category, ""} {
 --- replace
-	if c, ok := concretePriority(FindCategory(cats, category).Priority); ok && false {
+	for _, name := range []string{""} {
 --- end
 
 [the fallback category is not consulted]
 file internal/config/categories.go
 --- anchor
-	if c, ok := concretePriority(FindCategory(cats, "").Priority); ok {
+	for _, name := range []string{category, ""} {
 --- replace
-	if c, ok := concretePriority(FindCategory(cats, "").Priority); ok && false {
+	for _, name := range []string{category} {
 --- end
 
 [a sentinel survives the chain]
 file internal/config/categories.go
 --- anchor
-	return constants.NormalPriority
+	return constants.NormalPriority, pause, nil
 }
 --- replace
-	return p
+	return p, pause, nil
 }
 --- end
 
-[DefaultPriority counts as concrete]
+[a Paused category priority does not pause]
 file internal/config/categories.go
 --- anchor
-	if !p.IsValid() || p == constants.DefaultPriority || p == constants.StopPriority {
+		if c == constants.PausedPriority {
+			pause = true
 --- replace
-	if !p.IsValid() || p == constants.StopPriority {
+		if c == constants.PausedPriority {
+			pause = false
 --- end
 
-[StopPriority counts as concrete]
+[a Paused category priority is held as the job's priority]
 file internal/config/categories.go
 --- anchor
-	if !p.IsValid() || p == constants.DefaultPriority || p == constants.StopPriority {
+		if c == constants.PausedPriority {
 --- replace
-	if !p.IsValid() || p == constants.DefaultPriority {
+		if false {
 --- end
 
-[an unknown value counts as concrete]
+[a Paused request does not pause]
 file internal/config/categories.go
 --- anchor
-	if !p.IsValid() || p == constants.DefaultPriority || p == constants.StopPriority {
+	pause := p == constants.PausedPriority
 --- replace
-	if p == constants.DefaultPriority || p == constants.StopPriority {
+	pause := false
 --- end
 
-[an out-of-range value counts as concrete]
+[a Paused request is held unresolved]
+file internal/config/categories.go
+--- anchor
+	if p != constants.DefaultPriority && !pause {
+--- replace
+	if p != constants.DefaultPriority {
+--- end
+
+[DefaultPriority counts as a category priority]
+file internal/config/categories.go
+--- anchor
+	if !p.IsConcrete() && p != constants.PausedPriority {
+--- replace
+	if !p.IsConcrete() && p != constants.PausedPriority && p != constants.DefaultPriority {
+--- end
+
+[StopPriority counts as a category priority]
+file internal/config/categories.go
+--- anchor
+	if !p.IsConcrete() && p != constants.PausedPriority {
+--- replace
+	if !p.IsConcrete() && p != constants.PausedPriority && p != constants.StopPriority {
+--- end
+
+[an unknown value counts as a category priority]
+file internal/config/categories.go
+--- anchor
+	if !p.IsConcrete() && p != constants.PausedPriority {
+--- replace
+	if !p.IsConcrete() && p != constants.PausedPriority && p != 7 {
+--- end
+
+[an out-of-range value counts as a category priority]
 file internal/config/categories.go
 --- anchor
 	if v < -128 || v > 127 {
@@ -66,11 +100,25 @@ file internal/config/categories.go
 [an explicit request is resolved anyway]
 file internal/config/categories.go
 --- anchor
-	if p != constants.DefaultPriority {
-		return p
-	}
+	if p != constants.DefaultPriority && !pause {
 --- replace
 	if false {
-		return p
-	}
+--- end
+
+[a request that is not a priority is accepted]
+file internal/config/categories.go
+--- anchor
+		if !p.IsConcrete() {
+			return 0, false, fmt.Errorf(
+--- replace
+		if false {
+			return 0, false, fmt.Errorf(
+--- end
+
+[a Repair category priority counts]
+file internal/config/categories.go
+--- anchor
+	if p == constants.RepairPriority {
+--- replace
+	if false {
 --- end

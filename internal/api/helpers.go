@@ -87,14 +87,35 @@ func (s *Server) requireParam(w http.ResponseWriter, r *http.Request, key, label
 	return v, true
 }
 
-// priorityParam reads the priority= query parameter and maps it to a Priority constant.
-// Returns DefaultPriority (inherit from category) when the parameter is absent.
-func priorityParam(r *http.Request) constants.Priority {
+// priorityParam reads the priority= parameter of an add mode. It returns
+// DefaultPriority (inherit from category) when the parameter is absent, and
+// otherwise what parsePriority makes of it.
+func priorityParam(r *http.Request) (constants.Priority, error) {
 	s := formValue(r, "priority")
 	if s == "" {
-		return constants.DefaultPriority
+		return constants.DefaultPriority, nil
 	}
-	return constants.Priority(int8(intParam(r, "priority"))) //nolint:gosec // G115: priority values fit in int8 by design
+	return parsePriority(s)
+}
+
+// parsePriority parses a priority a client asked for: Force, High, Normal or
+// Low, or Paused or Default, which config.ResolvePriority resolves. Repair,
+// which is reserved for internal use, Stop, any other number and a
+// non-number are an error. The add modes reach it through priorityParam,
+// name=priority directly.
+func parsePriority(s string) (constants.Priority, error) {
+	n, err := strconv.Atoi(s)
+	if err != nil || n < -128 || n > 127 {
+		return 0, fmt.Errorf("invalid priority %q", s)
+	}
+	p := constants.Priority(n) //nolint:gosec // G115: range checked above
+	if p == constants.RepairPriority {
+		return 0, fmt.Errorf("invalid priority %q: Repair is reserved for internal use", s)
+	}
+	if !p.IsConcrete() && p != constants.PausedPriority && p != constants.DefaultPriority {
+		return 0, fmt.Errorf("invalid priority %q: not a priority a job can be given", s)
+	}
+	return p, nil
 }
 
 // ppParam extracts the post-processing level from the request.
