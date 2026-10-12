@@ -818,20 +818,25 @@ func TestLooseRecord_CloseTimeFsyncFaultUntrusts(t *testing.T) {
 	}
 }
 
-// TestLooseRecord_PoisonedSyncReturnsArticlesToOutstanding pins the in-process
-// half: a close-handles fsync that fails rolls its articles back
-// (OnArticlesUnwritten) and untrusts the file, so the written articles are
-// Outstanding again in this process and their buffered rows never reach
+// TestLooseRecord_FailedCloseSyncReturnsArticlesToOutstanding pins the
+// in-process half: a close-handles fsync that fails untrusts the file, so the
+// written articles are Outstanding again in this process — offered for
+// dispatch, neither Done nor Emitted — and their buffered rows never reach
 // SQLite.
-func TestLooseRecord_PoisonedSyncReturnsArticlesToOutstanding(t *testing.T) {
+func TestLooseRecord_FailedCloseSyncReturnsArticlesToOutstanding(t *testing.T) {
 	t.Parallel()
 	env := newLREnv(t)
 	fs := &failingFsync{}
 	a := env.newAppSyncing(t, fs.sync)
 	a.start(t)
-	j := a.addJob(t, "poison", 4, 2)
-	a.deliver(t, j, 0)
-	a.deliver(t, j, 1)
+	j := a.addJob(t, "closesync", 4, 2)
+	for art := range 2 {
+		// As dispatch does, so the write's Done is what clears Emitted.
+		if err := j.MarkArticleEmitted(art); err != nil {
+			t.Fatalf("fixture: MarkArticleEmitted(%d): %v", art, err)
+		}
+		a.deliver(t, j, art)
+	}
 	lrWaitFor(t, "two articles written", func() bool { return articleDone(j, 0) && articleDone(j, 1) })
 
 	fs.armed.Store(true)
@@ -841,11 +846,23 @@ func TestLooseRecord_PoisonedSyncReturnsArticlesToOutstanding(t *testing.T) {
 	if articleDone(j, 0) || articleDone(j, 1) {
 		t.Error("an article whose fsync failed is still Done in this process")
 	}
+	var offered []int32
+	if err := j.ForEachUnfinishedArticle(func(fi int, art int32, _ string, _, _ int, _ string) bool {
+		if fi == 0 {
+			offered = append(offered, art)
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("ForEachUnfinishedArticle: %v", err)
+	}
+	if !slices.Contains(offered, 0) || !slices.Contains(offered, 1) {
+		t.Errorf("file A's unfinished articles = %v, want 0 and 1 offered for refetch", offered)
+	}
 	if err := a.recorder.flush(t.Context()); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	if got := rowsFor(t, a.repo.DB(), j.ID()); len(got) != 0 {
-		t.Errorf("%d buffered rows of a poisoned file reached SQLite", len(got))
+		t.Errorf("%d buffered rows of an untrusted file reached SQLite", len(got))
 	}
 }
 

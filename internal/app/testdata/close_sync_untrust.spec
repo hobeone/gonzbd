@@ -1,9 +1,9 @@
 pkg ./internal/app/
-run TestLooseRecord_PoisonedSyncReturnsArticlesToOutstanding|TestLooseRecord_CloseTimeFsyncFaultUntrusts
+run TestLooseRecord_FailedCloseSyncReturnsArticlesToOutstanding|TestLooseRecord_CloseTimeFsyncFaultUntrusts
 
-# A Sync-poisoned article was marked Done by the recorder when its WriteAt
-# returned. The failed fsync untrusts its file, which is what clears that Done
-# bit and withdraws the buffered row; OnArticlesUnwritten only clears Emitted.
+# An article a failed close-time fsync covered was marked Done by the recorder
+# when its WriteAt returned. The failed fsync untrusts its file, which is what
+# clears that Done bit and withdraws the buffered row.
 
 [the close-handles arm does not untrust a file whose fsync failed]
 file internal/assembler/assembler.go

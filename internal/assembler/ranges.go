@@ -46,8 +46,8 @@ func (o *ownedRanges) ownerOf(r Range, arriving articleID) (articleID, bool) {
 // covered returns how many bytes of r lie inside ranges owned by an article
 // other than arriving. The ranges are disjoint, so their intersections with r
 // sum without counting a byte twice. A range arriving owns itself is not
-// cover: an article holds one while arriving again after a failed sync rolled
-// it back (rollbackSyncedArticle), and those bytes are not trusted.
+// cover: an article's own earlier write says nothing about whether its bytes
+// are on disk now.
 func (o *ownedRanges) covered(r Range, arriving articleID) int64 {
 	var n int64
 	i := sort.Search(len(o.s), func(i int) bool { return o.s[i].r.end() > r.Off })

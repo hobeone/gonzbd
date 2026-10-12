@@ -793,8 +793,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if _, ok := f.w.seenDone[0]; !ok {
 			t.Error("expected seenDone to contain artidx 0")
 		}
-		if got := f.w.unsynced; len(got) != 1 {
-			t.Fatalf("unsynced = %v, want 1 entry — the bytes reached WriteAt", got)
+		if got := ownedBy(f.w, 0); len(got) != 1 {
+			t.Fatalf("ranges owned by artidx 0 = %v, want 1 — the bytes reached WriteAt", got)
 		}
 
 		// Duplicate success.
@@ -947,8 +947,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 				"completion, so the file reaches TotalParts and finalizes over bytes "+
 				"that never reached disk", f.w.parts())
 		}
-		if got := f.w.unsynced; len(got) != 0 {
-			t.Errorf("unsynced = %v after a failed write, want empty", got)
+		if got := ownedBy(f.w, 0); len(got) != 0 {
+			t.Errorf("ranges owned by artidx 0 = %v after a failed write, want none", got)
 		}
 		if _, ok := f.w.seenFailed[0]; ok {
 			t.Error("artidx 0 was recorded as FAILED by a storage fault, which A1 forbids: " +

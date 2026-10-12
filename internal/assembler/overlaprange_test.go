@@ -164,8 +164,8 @@ func TestOverlap_StraddlingArticleIsRefusedAndCountedAsFailed(t *testing.T) {
 	submit(2, "c@example", 1000, 'C', 1000)
 	submit(1, "b@example", 900, 'B', 1000)
 
-	if slices.Contains(f.w.unsynced, 1) {
-		t.Errorf("straddling article B (artIdx 1) was noted as written: %v", f.w.unsynced)
+	if got := ownedBy(f.w, 1); len(got) != 0 {
+		t.Errorf("straddling article B (artIdx 1) owns %v, want nothing: it was refused", got)
 	}
 
 	got, err := os.ReadFile(f.info.Path())

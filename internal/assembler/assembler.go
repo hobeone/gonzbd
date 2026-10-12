@@ -237,22 +237,16 @@ type Options struct {
 	OnWriteFault func(jobID string, fileIdx int, f *storagefault.Fault)
 
 	// OnArticlesUnwritten, if non-nil, is called on the worker goroutine with
-	// articles whose bytes did not reach disk: one whose write faulted, one
-	// whose file could not be opened, or every article a failed close-time
-	// sync rolled back (releasePoisoned). The caller returns them to
-	// Outstanding by clearing their Emitted bits.
+	// articles whose bytes did not reach disk: one whose write faulted, or one
+	// whose file could not be opened. The caller returns them to Outstanding
+	// by clearing their Emitted bits.
 	//
-	// It is separate from OnWriteFault because the two are needed in different
-	// combinations, not because the split is tidier. A write fault this
-	// package routes needs both; a failed close-time fsync is reported by
-	// syncAndClose's caller, which routes the fault — but the article set
-	// never leaves this package, so it still needs this one. Folding them
-	// together meant either double-routing the fault or losing the articles,
-	// and losing the articles is what happened.
+	// It is not how a failed fsync returns articles. Those were written, so
+	// they are Done rather than Emitted, and OnFileUntrusted returns them.
 	//
-	// It takes a SET because one failure can roll back several articles: a
-	// failed close-time sync rolls back every article written since the last
-	// successful one, and releasePoisoned delivers them in a single call.
+	// It is separate from OnWriteFault, which carries the fault and no
+	// article, so that what the fault rolled back is never inferred from the
+	// fault itself.
 	//
 	// Emitted is NOT Outstanding: ForEachUnfinishedArticle skips a set Emitted
 	// bit, so an article reported by neither is stranded for the life of the
@@ -286,13 +280,13 @@ type Options struct {
 	// is WholeArticle, as nothing of the article is on disk.
 	//
 	// Charging only the uncovered part does not undercount when the covering
-	// article is later lost. Its range stays in fileWriter.owned through a
-	// failed sync's rollback, and an untrusted file's articles return to
-	// Outstanding (OnFileUntrusted). Either way the covering article is
-	// fetched again, and its outcome accounts for its range: written again,
-	// or failed and charged itself. The exception is a redelivery written
-	// over a shorter range than the first copy (claim replaces the article's
-	// own range): the bytes between the two ends go uncharged.
+	// article is later lost: an untrusted file's articles return to
+	// Outstanding (OnFileUntrusted), so the covering article is fetched again,
+	// and its outcome accounts for its range: written again, or failed and
+	// charged itself. The refetch lands on a fresh writer: each untrust closes
+	// the file's writer first — `git grep -n 'a\.noteFileUntrusted(' --
+	// 'internal/assembler/*.go' ':!*_test.go'` returns 3 lines, in
+	// finalizeFile and syncAndClose's two callers.
 	//
 	// It is deliberately NOT OnWriteFault. A1 draws the line this pair sits
 	// on: a storage fault says nothing about the article and resolves against
@@ -318,11 +312,10 @@ type Options struct {
 	// across a restart without reading the file (docs/durability-contract.md
 	// §5).
 	//
-	// It reports a write, not durability: a later failed sync can roll the
-	// article back (fileWriter.poisonSync), and OnArticlesUnwritten then names
-	// it. In production that sync is syncAndClose's, which closes the writer
-	// next, and the file is untrusted (OnFileUntrusted); a redelivery opens a
-	// fresh writer and calls this again with the same artIdx.
+	// It reports a write, not durability: a later failed fsync of the file
+	// untrusts it (OnFileUntrusted), which returns the article to Outstanding;
+	// a redelivery opens a fresh writer and calls this again with the same
+	// artIdx.
 	OnArticleWritten func(jobID string, fileIdx int, artIdx int32, off, n int64, crc uint32)
 
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.
@@ -1169,9 +1162,10 @@ func (a *Assembler) dispatchRequest(
 // syncAndClose fsyncs a file and closes it, and reports whether either
 // failed. The close-handles arm and syncAndCloseAll
 // untrust the file on an error (noteFileUntrusted): a failed fsync means the
-// bytes its articles were reported written with cannot be trusted. A failed
-// fsync also returns the articles it poisoned to Outstanding through
-// releasePoisoned (fileWriter.poisonSync).
+// bytes its articles were reported written with cannot be trusted, and the
+// untrust is what returns those articles to Outstanding. This returns nothing
+// itself: the articles were written, so they are Done, not Emitted, and
+// OnArticlesUnwritten would have nothing to clear.
 //
 // # Why the fault is REPORTED and not ROUTED
 //
@@ -1204,13 +1198,7 @@ func (a *Assembler) syncAndClose(f *openFile) error {
 		}
 	}
 
-	if syncErr := f.w.sync(); syncErr != nil {
-		note("sync file before close", syncErr)
-		// A failed sync rolled the file's unsynced articles back into
-		// w.poisoned (#760). close below throws the writer away with that set,
-		// so this is the only chance to return them to Outstanding.
-		a.releasePoisoned(f)
-	}
+	note("sync file before close", f.w.sync())
 	// A failing close is a storage condition too, and on network-backed mounts
 	// it is frequently the first report of writes that never landed — the
 	// close is where a deferred error surfaces.
@@ -1220,13 +1208,6 @@ func (a *Assembler) syncAndClose(f *openFile) error {
 		return permanent
 	}
 	return first
-}
-
-// releasePoisoned returns the articles a failed sync rolled back to
-// Outstanding. Their Emitted bits are still set from dispatch, so without this
-// they are neither Done, nor Failed, nor Outstanding.
-func (a *Assembler) releasePoisoned(f *openFile) {
-	a.noteArticlesUnwritten(f.w.key.jobID, f.w.key.fileIdx, f.w.takePoisoned())
 }
 
 // closeCancelledFile releases one open file of a cancelled job, and disposes
@@ -1239,8 +1220,8 @@ func (a *Assembler) releasePoisoned(f *openFile) {
 // an fsync here would stall ingest for every other job on the one worker
 // goroutine in exchange for nothing.
 //
-// Skipping the sync also skips releasePoisoned, so nothing is routed: no
-// OnArticlesUnwritten, no OnArticleRejected. The job has already left the
+// Nothing is routed: no OnFileUntrusted, no OnArticlesUnwritten, no
+// OnArticleRejected. The job has already left the
 // queue, so returning its articles to Outstanding would re-dispatch work for a
 // job that is going away, under either disposition (closeleak_test.go).
 //

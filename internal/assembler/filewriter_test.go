@@ -39,22 +39,22 @@ func newTestFileWriter(t *testing.T, opts ...fileWriterOpt) *fileWriter {
 	return w
 }
 
-// TestFileWriter_AcceptNotesTheArticleForSync pins that a successful write puts
-// the article in unsynced, which is what a failed sync rolls back.
-func TestFileWriter_AcceptNotesTheArticleForSync(t *testing.T) {
+// TestFileWriter_AcceptClaimsTheWrittenRange pins that a successful write
+// records the article as the owner of the range it wrote.
+func TestFileWriter_AcceptClaimsTheWrittenRange(t *testing.T) {
 	w := newTestFileWriter(t)
 
 	if err := w.accept(articleID{msgID: "a5", artIdx: 5}, 4096, bytes.Repeat([]byte{1}, 100)); err != nil {
 		t.Fatal(err)
 	}
 
-	if !slices.Equal(w.unsynced, []int32{5}) {
-		t.Fatalf("unsynced = %v, want [5] — a failed Sync could not roll back an article it was never told about", w.unsynced)
+	if got := ownedBy(w, 5); !slices.Equal(got, []Range{{Off: 4096, Len: 100}}) {
+		t.Fatalf("ranges owned by article 5 = %v, want [{4096 100}]", got)
 	}
 }
 
 // TestFileWriter_DirectWriteFailureIsNotNoted pins that an article whose
-// WriteAt failed is absent from unsynced and the fault comes back classified.
+// WriteAt failed claims no range and the fault comes back classified.
 func TestFileWriter_DirectWriteFailureIsNotNoted(t *testing.T) {
 	w := newTestFileWriter(t, withWriteError(syscall.EIO))
 
@@ -65,8 +65,8 @@ func TestFileWriter_DirectWriteFailureIsNotNoted(t *testing.T) {
 	if _, ok := errors.AsType[*storagefault.Fault](err); !ok {
 		t.Fatalf("Accept error = %T, want *storagefault.Fault", err)
 	}
-	if got := w.unsynced; len(got) != 0 {
-		t.Fatalf("unsynced = %v after a failed direct write, want empty", got)
+	if got := ownedBy(w, 1); len(got) != 0 {
+		t.Fatalf("ranges owned by article 1 = %v after a failed direct write, want none", got)
 	}
 }
 
@@ -152,7 +152,7 @@ func TestFileWriter_WriteOneFailureTouchesNoAccounting(t *testing.T) {
 	if got := stateOf(w, 9); got != before {
 		t.Errorf("state after a failed writeOne = %+v, want %+v unchanged", got, before)
 	}
-	if got := w.unsynced; len(got) != 0 {
-		t.Errorf("unsynced = %v after a failed write, want empty", got)
+	if got := ownedBy(w, 9); len(got) != 0 {
+		t.Errorf("ranges owned by article 9 = %v after a failed write, want none", got)
 	}
 }

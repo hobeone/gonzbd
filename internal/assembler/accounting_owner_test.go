@@ -28,11 +28,11 @@ var accountingReaders = map[string][]string{
 
 // resolveCallers is every function in this package's non-test sources that
 // calls resolve, as resolve's own comment states it.
-var resolveCallers = []string{"handleFatalArticle", "handleSuccessArticle", "rollbackSyncedArticle"}
+var resolveCallers = []string{"handleFatalArticle", "handleSuccessArticle"}
 
 // TestFileWriterAccounting_HasOneOwner pins that the writer's accounting is
 // read and moved only by the functions accountingReaders names, and that
-// resolve is reached only from the three callers its comment enumerates.
+// resolve is reached only from the two callers its comment enumerates.
 func TestFileWriterAccounting_HasOneOwner(t *testing.T) {
 	readers, callers := scanAccountingUses(t)
 

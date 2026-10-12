@@ -291,6 +291,7 @@ func TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice(t *testing.
 			f.w.parts())
 	}
 
+	writes := countWrites(f.w)
 	a.handleSuccessArticle(f, WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "m0",
 		Offset: 0, Data: []byte("abcd"),
@@ -302,9 +303,9 @@ func TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice(t *testing.
 			"articles are still outstanding", got)
 	}
 	// The bytes are still written, because they are still the file's content.
-	if got := f.w.unsynced; len(got) != 1 {
-		t.Errorf("unsynced = %v, want one article — the redelivery is not counted, "+
-			"but its bytes are the file's content and must still land", got)
+	if *writes != 1 {
+		t.Errorf("WriteAt called %d times, want 1 — the redelivery is not counted, "+
+			"but its bytes are the file's content and must still land", *writes)
 	}
 }
 
