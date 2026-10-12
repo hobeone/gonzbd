@@ -2,7 +2,7 @@
 #
 # gen_test_archives.sh — Generate test RAR archives for internal/unpack/testdata/
 #
-# Prerequisites: rar (WinRAR CLI >= 7.0), unrar
+# Prerequisites: rar (WinRAR CLI >= 7.0), unrar, 7z (for the flat_*.7z fixtures)
 # Run from the repo root: ./scripts/gen_test_archives.sh
 #
 # NOTE: RAR 7.x only creates RAR5 archives (-ma4 removed). RAR4 test fixtures
@@ -88,6 +88,23 @@ echo "==> rar5_link_filecopy.rar"
 mkdir -p "$TMPDIR/filecopy"
 ( cd "$TMPDIR/filecopy" && printf 'file copy content, stored once and referenced by copy.txt\n' > orig.txt && cp orig.txt copy.txt \
 	&& rar a -ma5 -oi:1 -m0 "$(cd - >/dev/null && pwd)/$OUTDIR/rar5_link_filecopy.rar" orig.txt copy.txt >/dev/null )
+
+# --- Flattening collisions (flat_unpack), as RAR5 and 7z (#897) ---
+# flat_collide: a/f.txt="one" and b/f.txt="two" flatten to one name.
+# flat_dir_file: file a/x and directory b/x (holding b/x/y) flatten to one
+# name. rar stores the file member before the directory; 7z stores the
+# directories first.
+echo "==> flat_collide.{rar,7z} flat_dir_file.{rar,7z}"
+mkdir -p "$TMPDIR/collide/a" "$TMPDIR/collide/b" "$TMPDIR/dirfile/a" "$TMPDIR/dirfile/b/x"
+printf 'one' > "$TMPDIR/collide/a/f.txt"
+printf 'two' > "$TMPDIR/collide/b/f.txt"
+printf 'file' > "$TMPDIR/dirfile/a/x"
+printf 'y' > "$TMPDIR/dirfile/b/x/y"
+rm -f "$OUTDIR/flat_collide.7z" "$OUTDIR/flat_dir_file.7z"
+( cd "$TMPDIR/collide" && rar a -ma5 -r "$(cd - >/dev/null && pwd)/$OUTDIR/flat_collide.rar" a b >/dev/null \
+	&& 7z a -bd "$(cd - >/dev/null && pwd)/$OUTDIR/flat_collide.7z" a b >/dev/null )
+( cd "$TMPDIR/dirfile" && rar a -ma5 -r "$(cd - >/dev/null && pwd)/$OUTDIR/flat_dir_file.rar" a b >/dev/null \
+	&& 7z a -bd "$(cd - >/dev/null && pwd)/$OUTDIR/flat_dir_file.7z" a b >/dev/null )
 
 echo ""
 echo "=== Generated test archives ==="

@@ -2,6 +2,7 @@ package unpack_test
 
 import (
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 
@@ -79,6 +80,31 @@ func TestUnRAR_OverwriteFiles(t *testing.T) {
 			t.Errorf("OverwriteFiles=false: cmdline should NOT contain -or: %q", *captured)
 		}
 	})
+}
+
+// TestUnRAR_FlatRenamesTakenNames verifies that a flat extraction without
+// overwrite passes -or, so a member whose flattened name is taken is renamed
+// rather than skipped, and that a degraded unrar is not passed it (#897).
+func TestUnRAR_FlatRenamesTakenNames(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		opts   unpack.Options
+		wantOr bool
+	}{
+		{"flat", unpack.Options{OneFolder: true}, true},
+		{"flat with a degraded unrar", unpack.Options{OneFolder: true, HasProblem: true}, false},
+		{"flat with overwrite", unpack.Options{OneFolder: true, OverwriteFiles: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			opts, captured := captureCmd(tc.opts)
+			_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), "", opts)
+			if got := slices.Contains(strings.Fields(*captured), "-or"); got != tc.wantOr {
+				t.Errorf("-or passed = %v, want %v: %q", got, tc.wantOr, *captured)
+			}
+		})
+	}
 }
 
 // TestUnRAR_IgnoreUnrarDatesPositive verifies that IgnoreUnrarDates=true
@@ -190,6 +216,19 @@ func TestSevenZip_OverwriteFiles(t *testing.T) {
 			t.Errorf("OverwriteFiles=false: cmdline should NOT contain -aou: %q", *captured)
 		}
 	})
+}
+
+// TestSevenZip_FlatRenamesTakenNames verifies that a flat extraction without
+// overwrite passes -aou rather than -aos, so a member whose flattened name is
+// taken is renamed rather than skipped (#897).
+func TestSevenZip_FlatRenamesTakenNames(t *testing.T) {
+	t.Parallel()
+	opts, captured := captureCmdSZ(unpack.Options{OneFolder: true})
+	_, _ = unpack.SevenZip(t.Context(), slog.Default(), dummySZArchive(), t.TempDir(), "", opts)
+	args := strings.Fields(*captured)
+	if !slices.Contains(args, "-aou") || slices.Contains(args, "-aos") {
+		t.Errorf("OneFolder=true: want -aou and no -aos: %q", *captured)
+	}
 }
 
 // TestSevenZip_FlatExtraction verifies 'e' vs 'x' mode for 7z.
