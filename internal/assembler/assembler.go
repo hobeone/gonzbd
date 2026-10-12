@@ -1418,11 +1418,9 @@ func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
 // dropped article is resolved neither way, so no later run re-dispatches it and
 // the job stalls at 99% forever.
 //
-// Returning the fault is necessary but not currently sufficient, and an
-// earlier version of this comment claimed otherwise ("a returned fault leaves
-// it Outstanding, which costs a re-fetch and nothing else"). processRequest
-// drops what this returns, and the article keeps its Emitted bit either way —
-// see the KNOWN GAP note at the call site.
+// processRequest, the caller, acts on a returned fault: it returns the article
+// to Outstanding through OnArticlesUnwritten and hands the fault to
+// OnWriteFault, which stalls or fails the job by the fault's class.
 //
 // A failing FileInfo resolver is classified against the path it could not
 // produce, which is empty — the honest answer, since the resolver failed before
@@ -1710,9 +1708,17 @@ func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error)
 		}
 		return true
 	}
-	// The rolled-back article is the one whose write just failed: writeOne is
-	// the only caller of fileWriter.fail. Its Emitted bit is still set, so it
-	// is handed back to be cleared, as the openTargetFile failure does.
+	// The rolled-back article is the one whose write just failed. fileWriter.fail
+	// has two callers, writeOne and rollbackSyncedArticle —
+	// `git grep -n '[.]fail[(]' -- 'internal/assembler/*.go' ':!*_test.go'`
+	// returns 3 lines, those two calls and fail's own doc quoting a pattern —
+	// and only writeOne's failure reaches here. Both call sites of this
+	// function — `git grep -n 'a[.]routeAcceptFailure[(]' -- internal/assembler/assembler.go`
+	// returns 2 lines — pass acceptArticle's error, whose storage faults come
+	// from f.w.accept, which calls writeOne. rollbackSyncedArticle's articles
+	// go out through releasePoisoned instead. The failed article's Emitted bit
+	// is still set, so it is handed back to be cleared, as the openTargetFile
+	// failure does.
 	a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
 	a.noteWriteFault(f.info.Path(), req, err)
 	return false
