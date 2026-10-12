@@ -248,8 +248,13 @@ func (f *FinalizeStage) moveFileByFile(ctx context.Context, log *slog.Logger, jo
 	// All payload files moved successfully — unlink pending archives/par2
 	// files in place and clean up the source directory.
 	f.deletePending(ctx, log, job)
-	_ = fsutil.RemoveAll(job.DownloadDir)
-	logf(ctx, log, job, slog.LevelInfo, "Removed empty source directory: %s", job.DownloadDir)
+	if err := fsutil.RemoveAll(job.DownloadDir); err != nil {
+		// Every payload file already moved, so a leftover source directory
+		// costs disk clutter, not data: warn and carry on.
+		logf(ctx, log, job, slog.LevelWarn, "Failed to remove source directory %s: %v", job.DownloadDir, err)
+	} else {
+		logf(ctx, log, job, slog.LevelInfo, "Removed empty source directory: %s", job.DownloadDir)
+	}
 
 	// Update DownloadDir.
 	job.DownloadDir = dest
