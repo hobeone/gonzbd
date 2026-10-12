@@ -1,5 +1,5 @@
 pkg ./internal/api/
-run TestQueuePriority_|TestAddFile_PausedPriority|TestAddFile_RefusesNonPriorities|TestAddURL_RefusesNonPriority|TestQueueChangeCat_|TestPriorityParam|TestApplyPriority_|TestListingPosition_
+run TestQueuePriority_|TestAddFile_PausedPriority|TestAddFile_RefusesNonPriorities|TestAddURL_RefusesNonPriority|TestQueueChangeCat_|TestPriorityParam|TestParsePriority|TestApplyPriority_|TestListingPosition_
 
 [applyPriority stores the request unresolved]
 file internal/api/queue.go

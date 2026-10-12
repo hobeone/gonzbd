@@ -61,6 +61,23 @@ func TestIntParam(t *testing.T) {
 	}
 }
 
+// TestParsePriority pins the set a client may request: Force through Low,
+// Paused and Default. Repair, Stop, any other number, a value outside int8
+// and a non-number are refused.
+func TestParsePriority(t *testing.T) {
+	t.Parallel()
+	for _, s := range []string{"2", "1", "0", "-1", "-2", "-100"} {
+		if _, err := parsePriority(s); err != nil {
+			t.Errorf("parsePriority(%q) = %v; want accepted", s, err)
+		}
+	}
+	for _, s := range []string{"3", "-4", "-3", "7", "128", "-129", "258", "", "x"} {
+		if p, err := parsePriority(s); err == nil {
+			t.Errorf("parsePriority(%q) = %s, nil; want an error", s, p)
+		}
+	}
+}
+
 func TestPriorityParam(t *testing.T) {
 	tests := []struct {
 		name    string
