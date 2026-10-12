@@ -7,10 +7,12 @@ file internal/postproc/stage_finalize.go
 	if job.FinalDir == "" {
 		err := errors.New("finalize: FinalDir not set")
 		job.FailMsg = err.Error()
+		recordWalkedOutputFiles(job)
 		return err
 	}
 --- replace
 	if job.FinalDir == "" {
+		recordWalkedOutputFiles(job)
 		return errors.New("finalize: FinalDir not set")
 	}
 --- end
@@ -20,10 +22,16 @@ file internal/postproc/stage_finalize.go
 --- anchor
 	if err := f.moveToDest(ctx, log, job, dest, stageViaUnpackPrefix); err != nil {
 		job.FailMsg = err.Error()
+		// The failed move left the unmoved files in the job's own
+		// DownloadDir, which the script is still handed.
+		recordWalkedOutputFiles(job)
 		return err
 	}
 --- replace
 	if err := f.moveToDest(ctx, log, job, dest, stageViaUnpackPrefix); err != nil {
+		// The failed move left the unmoved files in the job's own
+		// DownloadDir, which the script is still handed.
+		recordWalkedOutputFiles(job)
 		return err
 	}
 --- end

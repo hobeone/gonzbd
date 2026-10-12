@@ -133,10 +133,10 @@ type ScriptInput struct {
 	// SevenzCommand is the 7z binary path (SAB_7ZIP_COMMAND).
 	SevenzCommand string
 
-	// Files is the sorted list of regular files under FinalDir, as
-	// slash-separated paths relative to it (SAB_FILES env-only, a JSON
-	// array). The caller computes it once (ScriptStage.Run via
-	// walkJobFiles); buildEnv only encodes it, and nil encodes as [].
+	// Files is the sorted list of regular files the job delivered, as
+	// slash-separated paths relative to FinalDir (SAB_FILES env-only, a JSON
+	// array). Finalize records it on the job (recordOutputFiles) and
+	// ScriptStage.Run copies it here; buildEnv only encodes it, nil as [].
 	Files []string
 
 	// OnLine is called for each line of subprocess output. May be nil.

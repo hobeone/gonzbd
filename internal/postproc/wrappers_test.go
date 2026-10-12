@@ -33,11 +33,15 @@ func stageJob(t *testing.T) (*Job, string) {
 	dir := t.TempDir()
 	j := newQueueJob(t, "test-job-id", 0)
 	j.SetName("test.job")
-	return &Job{
+	pj := &Job{
 		Job:         j,
 		Filename:    "test.nzb",
 		DownloadDir: dir,
-	}, dir
+	}
+	// Stands in for finalize's file list, which the script stage requires;
+	// the tests of the list itself run the real FinalizeStage.
+	pj.recordOutputFiles(nil)
+	return pj, dir
 }
 
 func TestRepairStage_Name(t *testing.T) {

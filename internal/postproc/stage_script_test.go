@@ -1,7 +1,6 @@
 package postproc
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -255,6 +254,7 @@ func TestScriptStage_BytesExcludesDiscardedPar2(t *testing.T) {
 	}
 
 	job := &Job{Job: j, DownloadDir: t.TempDir()}
+	job.recordOutputFiles(nil)
 
 	scriptDir := t.TempDir()
 	outFile := filepath.Join(scriptDir, "bytes.txt")
@@ -291,124 +291,5 @@ func TestScriptStage_ValidScriptAllowed(t *testing.T) {
 
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Errorf("Run with valid script sonarr.sh expected nil, got %v", err)
-	}
-}
-
-// runFilesScript runs a script that writes $SAB_FILES to a file through the
-// stage against j and returns the raw variable, plus the stage error.
-func runFilesScript(t *testing.T, j *Job) (string, error) {
-	t.Helper()
-	scriptDir := t.TempDir()
-	outFile := filepath.Join(scriptDir, "files.json")
-	writeScript(t, filepath.Join(scriptDir, "files.sh"),
-		fmt.Appendf(nil, "#!/bin/sh\nprintf '%%s' \"$SAB_FILES\" > %s\n", outFile))
-	j.Script = "files.sh"
-	err := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "").Run(t.Context(), j)
-	data, readErr := os.ReadFile(outFile)
-	if readErr != nil && err == nil {
-		t.Fatalf("script wrote no output: %v", readErr)
-	}
-	return string(data), err
-}
-
-func TestScriptStage_SABFilesNestedSorted(t *testing.T) {
-	t.Parallel()
-	j, dir := stageJob(t)
-	// "a.txt" must sort before "a/z.txt" ('.' < '/'), which is the reverse of
-	// the order a directory walk visits them in, so only an explicit sort
-	// over the full relative paths yields the want below.
-	for _, rel := range []string{"b.mkv", "a/z.txt", "a.txt", "sub/deep/c.nfo", "sub/d.srt"} {
-		p := filepath.Join(dir, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// A directory holding no file is not listed.
-	if err := os.MkdirAll(filepath.Join(dir, "emptydir"), 0o750); err != nil {
-		t.Fatal(err)
-	}
-	// A symlink is neither listed nor followed.
-	if err := os.Symlink(filepath.Join(dir, "b.mkv"), filepath.Join(dir, "link.mkv")); err != nil {
-		t.Fatal(err)
-	}
-
-	raw, err := runFilesScript(t, j)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	var got []string
-	if err := json.Unmarshal([]byte(raw), &got); err != nil {
-		t.Fatalf("SAB_FILES %q is not a JSON array: %v", raw, err)
-	}
-	want := []string{"a.txt", "a/z.txt", "b.mkv", "sub/d.srt", "sub/deep/c.nfo"}
-	if !slices.Equal(got, want) {
-		t.Errorf("SAB_FILES = %v, want %v", got, want)
-	}
-}
-
-func TestScriptStage_SABFilesEmptyDir(t *testing.T) {
-	t.Parallel()
-	j, _ := stageJob(t)
-	raw, err := runFilesScript(t, j)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if raw != "[]" {
-		t.Errorf("SAB_FILES = %q, want %q", raw, "[]")
-	}
-}
-
-func TestScriptStage_SABFilesWalkErrorFailsStage(t *testing.T) {
-	t.Parallel()
-	if os.Geteuid() == 0 {
-		t.Skip("root reads a mode-0 directory, so no walk error can be provoked")
-	}
-	j, dir := stageJob(t)
-	// The directory itself stays usable as the script's working directory, so
-	// only the walk can be what fails the stage.
-	locked := filepath.Join(dir, "locked")
-	if err := os.Mkdir(locked, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(locked, "f"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(locked, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o750) }) //nolint:errcheck // best-effort so TempDir cleanup can remove it
-	scriptDir := t.TempDir()
-	ran := filepath.Join(scriptDir, "ran")
-	writeScript(t, filepath.Join(scriptDir, "files.sh"), fmt.Appendf(nil, "#!/bin/sh\ntouch %s\n", ran))
-	j.Script = "files.sh"
-
-	err := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "").Run(t.Context(), j)
-	if err == nil {
-		t.Fatal("expected the stage to report the walk error")
-	}
-	if _, statErr := os.Stat(ran); statErr == nil {
-		t.Error("script ran despite the failed walk")
-	}
-}
-
-func TestScriptStage_SABFilesTooLargeFailsStage(t *testing.T) {
-	t.Parallel()
-	j, dir := stageJob(t)
-	sub := filepath.Join(dir, strings.Repeat("d", 200))
-	if err := os.MkdirAll(sub, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	// 300 paths of ~400 bytes encode to over 100 KiB.
-	for i := range 300 {
-		name := fmt.Sprintf("%s%03d", strings.Repeat("n", 197), i)
-		if err := os.WriteFile(filepath.Join(sub, name), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := runFilesScript(t, j); err == nil {
-		t.Fatal("expected an error when SAB_FILES would exceed the per-variable limit")
 	}
 }

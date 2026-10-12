@@ -127,13 +127,11 @@ file internal/postproc/stage_finalize.go
 	if job.DownloadDir == job.FinalDir {
 		logf(ctx, log, job, slog.LevelInfo, "Already at final location: %s", job.FinalDir)
 		f.deletePending(ctx, log, job)
-		return nil // Already there (e.g. one-shot download directly to target)
-	}
+		if job.FlatLayout {
 --- replace
 	if job.DownloadDir == job.FinalDir {
 		logf(ctx, log, job, slog.LevelInfo, "Already at final location: %s", job.FinalDir)
-		return nil // Already there (e.g. one-shot download directly to target)
-	}
+		if job.FlatLayout {
 --- end
 
 [finalize skips deleting pending files after moveToDest]
@@ -194,12 +192,18 @@ file internal/postproc/stage_finalize.go
 --- anchor
 	if err := f.moveToDest(ctx, log, job, dest, stageViaUnpackPrefix); err != nil {
 		job.FailMsg = err.Error()
+		// The failed move left the unmoved files in the job's own
+		// DownloadDir, which the script is still handed.
+		recordWalkedOutputFiles(job)
 		return err
 	}
 --- replace
 	if err := f.moveToDest(ctx, log, job, dest, stageViaUnpackPrefix); err != nil {
 		f.deletePending(ctx, log, job)
 		job.FailMsg = err.Error()
+		// The failed move left the unmoved files in the job's own
+		// DownloadDir, which the script is still handed.
+		recordWalkedOutputFiles(job)
 		return err
 	}
 --- end

@@ -637,11 +637,15 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    and environment variables: `SAB_COMPLETE_DIR`, `SAB_FILENAME`, `SAB_FINAL_NAME`,
    `SAB_CAT`, `SAB_GROUP`, `SAB_PP_STATUS`, `SAB_PP`, `SAB_SCRIPT`, `SAB_VERSION`,
    `SAB_API_KEY`, `SAB_FINAL_PROCESSING_DIR`, `SAB_FILES`, etc. `SAB_FILES` is a
-   JSON array (`[]` when empty) of the regular files under the script's
-   directory as sorted `/`-separated relative paths, computed once by
-   `ScriptStage.Run` (`walkJobFiles`) and only encoded by `buildEnv`; a walk
-   error, or an array over `maxFilesEnvBytes`, fails the stage before the script
-   runs. Scripts support `RedactSecrets` (masking `SAB_API_KEY`/`SAB_PASSWORD` as `**REDACTED**`) and `ScriptCanFail` (when true, a non-zero exit code fails the job; default false records the exit without failing the job).
+   JSON array (`[]` when empty) of the job's regular files as sorted
+   `/`-separated paths relative to `SAB_FINAL_PROCESSING_DIR`. `FinalizeStage`
+   is its single owner: it records the list on the job (`recordOutputFiles`),
+   by walking the job's own folder or, in a flat layout whose directory is
+   shared, from the files it moved; `ScriptStage` only reads it. The record is
+   in memory, so the delivered-recovery branch of `processJob` re-derives it by
+   walking `FinalDir` (per-job layouts only; a flat job in that state fails the
+   pre-check). No recorded list, or an array over `maxFilesEnvBytes`, fails the
+   stage before the script runs. Scripts support `RedactSecrets` (masking `SAB_API_KEY`/`SAB_PASSWORD` as `**REDACTED**`) and `ScriptCanFail` (when true, a non-zero exit code fails the job; default false records the exit without failing the job).
 6. **Log output cap**: Tool output lines (par2, unrar, script stdout) captured in
    `OutputLines` and `StageLogEntry.Lines` are capped at `MaxLogBytes = 512 KiB`
    per script execution to prevent memory exhaustion from verbose tools.

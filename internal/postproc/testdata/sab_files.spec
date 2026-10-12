@@ -1,16 +1,16 @@
 pkg ./internal/postproc/
-run TestScriptStage_SABFiles|TestBuildEnv_FilesAlwaysValidJSONArray
+run TestSABFiles|TestBuildEnv_FilesAlwaysValidJSONArray|TestPreCheck_AlreadyDeliveredPerJobFinalDir
 
-[the sort of the listed paths dropped]
-file internal/postproc/stage_script.go
+[the sort of the recorded paths dropped]
+file internal/postproc/stage_finalize.go
 --- anchor
 	slices.Sort(files)
 --- replace
 	_ = slices.Sort[[]string]
 --- end
 
-[paths listed absolute instead of relative to the job directory]
-file internal/postproc/stage_script.go
+[paths recorded absolute instead of relative to the job directory]
+file internal/postproc/stage_finalize.go
 --- anchor
 		files = append(files, filepath.ToSlash(rel))
 --- replace
@@ -19,7 +19,7 @@ file internal/postproc/stage_script.go
 --- end
 
 [the walk error swallowed]
-file internal/postproc/stage_script.go
+file internal/postproc/stage_finalize.go
 --- anchor
 		if err != nil {
 			return err
@@ -32,6 +32,50 @@ file internal/postproc/stage_script.go
 		if !d.Type().IsRegular() {
 --- end
 
+[directories and symlinks listed with the files]
+file internal/postproc/stage_finalize.go
+--- anchor
+		if !d.Type().IsRegular() {
+--- replace
+		if false {
+--- end
+
+[a flat job's moved files not recorded]
+file internal/postproc/stage_finalize.go
+--- anchor
+			delivered = append(delivered, filepath.ToSlash(rel))
+--- replace
+			_ = rel
+--- end
+
+[a flat job's list taken by walking the shared directory]
+file internal/postproc/stage_finalize.go
+--- anchor
+	if job.FlatLayout {
+		job.recordOutputFiles(delivered)
+--- replace
+	if false {
+		job.recordOutputFiles(delivered)
+--- end
+
+[a failed job's remaining files not recorded]
+file internal/postproc/stage_finalize.go
+--- anchor
+	recordWalkedOutputFiles(job)
+	logf(ctx, log, job, slog.LevelInfo, "Skipped final move
+--- replace
+	logf(ctx, log, job, slog.LevelInfo, "Skipped final move
+--- end
+
+[the list not re-derived when a delivered job resumes]
+file internal/postproc/postproc.go
+--- anchor
+				recordWalkedOutputFiles(job)
+				stages = stagesAfterFinalize(stages)
+--- replace
+				stages = stagesAfterFinalize(stages)
+--- end
+
 [an empty list encoded as null]
 file internal/postproc/script.go
 --- anchor
@@ -39,14 +83,6 @@ file internal/postproc/script.go
 		return "[]"
 	}
 --- replace
---- end
-
-[directories and symlinks listed with the files]
-file internal/postproc/stage_script.go
---- anchor
-		if !d.Type().IsRegular() {
---- replace
-		if false {
 --- end
 
 [the encoded-size bound dropped]
