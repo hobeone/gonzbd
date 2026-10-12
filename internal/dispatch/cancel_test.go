@@ -118,6 +118,38 @@ func TestEvictCancelledNeverRun_CalledDirectly(t *testing.T) {
 	}
 }
 
+// TestCancelledNeverRunJob_ManifestIsEvicted pins that removing a cancelled
+// never-run job evicts it first, as removeFor does. A never-run job can be
+// resident — LoadProgress, which SetName calls, hydrates it — and the app's
+// Residency drops the manifest of a job it finds through the dispatcher by ID,
+// so an Evict after deregistration would leave the manifest installed.
+func TestCancelledNeverRunJob_ManifestIsEvicted(t *testing.T) {
+	res := &fakeResidency{}
+	d := newTestDispatcher(t, withResidency(res))
+	j := job.New("j1", "n", job.Policy{})
+	if err := d.Add(context.Background(), j, Header{}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := d.LoadProgress(context.Background(), "j1"); err != nil {
+		t.Fatalf("LoadProgress: %v", err)
+	}
+	if !res.resident("j1") {
+		t.Fatal("fixture: LoadProgress did not hydrate j1")
+	}
+	if err := d.Cancel("j1"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	d.tick(context.Background())
+
+	if _, ok := d.Job("j1"); ok {
+		t.Fatal("fixture: the cancelled never-run job is still registered after a tick")
+	}
+	if res.resident("j1") {
+		t.Error("j1 was deregistered without being evicted; its manifest is still resident")
+	}
+}
+
 // TestCancelledRunningJob_IsNotEvicted distinguishes the never-run case from
 // a job that HAS run: eviction is gated on StateUnset, so a job past that
 // point stays in the listing where the user can see what happened to it.

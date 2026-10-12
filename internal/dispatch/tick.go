@@ -232,6 +232,11 @@ func (d *Dispatcher) evictCancelledNeverRun(ctx context.Context, j *job.Job) boo
 		d.logStoreError(j.ID(), err)
 		return true
 	}
+	// Evict before end, as removeFor does: the app's Residency drops the
+	// manifest of the job it finds through this dispatcher by ID, and after
+	// deregistration it finds none. A never-run job can be resident through
+	// LoadProgress, which SetName calls.
+	d.res.Evict(j.ID())
 	rm.end()
 	return true
 }
