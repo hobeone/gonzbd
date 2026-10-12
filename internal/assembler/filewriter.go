@@ -15,9 +15,10 @@ import (
 //
 // artIdx is identity: it is what fileWriter.seenDone / seenFailed key duplicate
 // handling on, and what fileWriter.noteWritten records for a failed fsync to roll back, so it
-// must match the queue's numbering. msgID travels alongside it for
-// logging and telemetry. Neither reaches the queue from here: this package has
-// no ack path in either direction.
+// must match the queue's numbering. msgID is set alongside it, but no code
+// reads it back: the log lines that name a Message-ID take it from the
+// WriteRequest. Neither reaches the queue from here: this package has no ack
+// path in either direction.
 type articleID struct {
 	msgID  string
 	artIdx int32
@@ -25,9 +26,9 @@ type articleID struct {
 
 // sameArticle reports whether two identities name the same article.
 //
-// The index alone decides. msgID travels with the article for logging and
-// telemetry and is deliberately NOT compared: identity is the manifest index,
-// which is what fileWriter's seen-sets key on. Comparing the pair as well would
+// The index alone decides. msgID is deliberately NOT compared: identity is
+// the manifest index, which is what fileWriter's seen-sets key on. Comparing
+// the pair as well would
 // give the assembler a second, finer notion of sameness than the one its
 // accounting uses, and the two could disagree.
 func (a articleID) sameArticle(b articleID) bool { return a.artIdx == b.artIdx }
