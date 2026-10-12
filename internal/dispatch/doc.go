@@ -15,7 +15,9 @@
 // is aborted, surrenders nothing, and finishCancel re-aborts it every tick
 // forever while the job never settles.
 //
-// It imports internal/sched, internal/job and the standard library. It must not
-// import internal/downloader or internal/postproc: the dependency points from
-// dispatch to them, never the reverse.
+// Its non-test files import internal/sched, internal/job, internal/constants,
+// internal/keyedlatch, internal/unwanted and the standard library. It must not
+// import internal/downloader or internal/postproc. The one edge between them
+// points the other way: internal/downloader's non-test files import dispatch,
+// and internal/postproc's do not import it.
 package dispatch

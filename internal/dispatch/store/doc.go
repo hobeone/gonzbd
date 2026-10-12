@@ -5,7 +5,9 @@
 // its consumer and satisfied here, the same shape dispatch.Residency and
 // dispatch.Runner already have.
 //
-// It is the only reader or writer of the dispatch_jobs table. That table is
+// It is the only non-test code that writes rows to the dispatch_jobs table. It
+// is not the only reader: internal/durability's reclaim rule (reclaim.go) reads
+// the table to decide whether a job still has a queue row. That table is
 // deliberately separate from `jobs`, which belonged to the since-deleted
 // internal/queue — see the table's own comment block in
 // internal/history/migrations/001_initial.sql for the argument that separated

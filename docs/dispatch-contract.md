@@ -46,10 +46,10 @@ constructs it in `New` and nothing else holds a reference (`sched.New` is
 called from exactly one production site, `dispatch.New` —
 `git grep -n 'sched.New(' -- '*.go' | grep -v _test.go` returns one line).
 This is forced by the eviction described below, not a matter of taste: only
-the dispatcher has a registry to evict a job from, so if a caller could reach
-`sched.Cancel` directly, that path would latch the cancel intent and skip the
-eviction, reintroducing a job that renders as queued forever through a
-second door.
+the dispatcher has a registry to evict a job from, so the eviction of a
+cancelled never-run job runs in its tick (`evictCancelledNeverRun`), keyed on
+the latched intent, and `Dispatcher.Cancel` latches through `sched` and kicks
+the tick so the eviction runs without waiting for the timer.
 
 The Dispatcher additionally owns:
 
@@ -57,7 +57,8 @@ The Dispatcher additionally owns:
   `internal/dispatch/registry.go`.
 - **Manifest residency bookkeeping** (`resident`) and the `Residency`
   interface (`Hydrate`/`Evict`) that does the actual I/O.
-- **The tick loop** (`run`/`tick` in `internal/dispatch/tick.go`).
+- **The tick loop** (`run` in `internal/dispatch/dispatch.go`, `tick` in
+  `internal/dispatch/tick.go`).
 - **Worker lifecycle**: `launched`, the `Runner` interface, and the
   `Finished`/`Yielded`/`AdvanceFrom`/`YieldedFrom` exit doors
   (`internal/dispatch/worker.go`).
@@ -66,9 +67,9 @@ The Dispatcher additionally owns:
   teardown safe under concurrent callers.
 
 `internal/dispatch` is **constructed** from exactly one production call site —
-`dispatch.New` appears once outside tests, at `internal/app/app.go:375`
+`dispatch.New` appears once outside tests, in `internal/app/app.go`
 (`git grep -n 'dispatch\.New(' -- '*.go' ':!*_test.go'`). The package itself is
-imported far more widely: 12 non-test files, across `cmd/gonzbd`, `internal/api`,
+imported far more widely: 19 non-test files, across `cmd/gonzbd`, `internal/api`,
 `internal/app`, `internal/downloader` and `internal/dispatch/store`. It is the
 single constructor that matters here, not a single importer — a `Dispatcher`
 nobody else can build is what makes its lifecycle statements hold.
@@ -123,7 +124,7 @@ goroutine for such a marker to guard against.
 **The tick alone cannot discharge every liveness contract.** It supplies
 *when* to ask, not the one fact `sched.Queue` structurally cannot know:
 whether a worker is still working. `Advance`'s branch 2
-(`internal/sched/advance.go:210-221`) tests `q.holds` before `q.gatedBy` and
+(the `s.State.Next == job.StateUnset` arm in `internal/sched/advance.go`) tests `q.holds` before `q.gatedBy` and
 returns early when a job still holds its resources, because the Queue cannot
 distinguish "holding and working" from "holding and yielded", and stripping
 a live worker's lease is the worse failure. That is why the dispatcher must
@@ -566,9 +567,10 @@ first, so a cancel value is not supposed to reach the render path), so
 as queued, forever.
 
 `Dispatcher.tick` closes this: after `sched.Queue.Advance`,
-`evictCancelledNeverRun` (`internal/dispatch/tick.go`) removes any job with
+`evictCancelledNeverRun` (`internal/dispatch/tick.go`) removes a job with
 `State == StateUnset && Intent == IntentCancel` from the registry and the
-store, evicting its manifest before it deregisters the job, as `removeFor`
+store, unless it has an active occupier or a held launch claim
+(`beginRemovalIfIdle`), in which case a later tick retries, evicting its manifest before it deregisters the job, as `removeFor`
 does. `appResidency.Evict` (`internal/app/residency.go`) waits out a hydration
 in flight and then drops the manifest of the job it finds through the
 dispatcher by ID; after deregistration that lookup fails and the manifest stays
@@ -653,13 +655,14 @@ directly rather than being parked).
   constructs today.
 - **No pool-utilisation telemetry** (`LeasesOutstanding`, `SlotsOutstanding`)
   is exported from `sched`; nothing consumes it.
-- **No per-job cancellation surface in `internal/downloader`.** Cancel's
-  interrupt arm calls `Workers.Abort`, whose production implementation is
-  `appWorkers` (`internal/app/dispatcher_wiring.go`); `internal/postproc`
-  already exposes `PostProcessor.CancelJob(j)` for jobs in post-processing
-  (`Repairing`/`Extracting`/`Finalizing`),
-  but a `Fetching` worker has no equivalent per-job stop today (only global
-  pause/stop/disconnect on the downloader).
+- **No per-job worker stop of their own.** Cancel's interrupt arm calls `Workers.Abort`, whose production implementation is
+  `appWorkers` (`internal/app/dispatcher_wiring.go`). For the downloader it
+  calls `Downloader.CancelJob(jobID)`, which drops the job's try-list and
+  in-flight tracker entries (`reapTracker`), then wakes the downloader and,
+  unless post-processing holds the job, yields it through
+  `Dispatcher.YieldedJob` on a goroutine of its own. `internal/postproc`
+  exposes `PostProcessor.CancelJob(j)` for jobs in post-processing
+  (`Repairing`/`Extracting`/`Finalizing`).
 
 ## Open question
 

@@ -90,10 +90,13 @@ type Header struct {
 	// it.
 	DuplicateReason string
 
-	// OperationalError is a free-text note set once by persistAndCommit
-	// (internal/app/job_finalizer.go) when removing a finalized job from
-	// the dispatcher fails and it remains registered for retry or restart
-	// handling. Unlike IngestAnomaly/DuplicateReason it is not an ingest-time
+	// OperationalError is a free-text note set through SetOperationalError —
+	// `git grep -n 'SetOperationalError(' -- 'internal/app/*.go' ':!*_test.go'`
+	// returns 2 lines, one in each of its callers: persistAndCommit
+	// (internal/app/job_finalizer.go), when removing a finalized job from the
+	// dispatcher fails and it remains registered for retry or restart
+	// handling, and holdUnreconciledJob (internal/app/durability.go), when a
+	// job's history lookup fails at startup and the job is paused. Unlike IngestAnomaly/DuplicateReason it is not an ingest-time
 	// fact about the NZB — it can be set on any job — so it is kept in its
 	// own field rather than joined into one of them.
 	OperationalError string
@@ -413,36 +416,6 @@ func (d *Dispatcher) dispatchOrderLocked() []*entry {
 	return out
 }
 
-// deregister deletes a job from EVERY per-job structure — d.byID, d.order,
-// d.written, d.resident, d.launched, d.removing, d.occupiers, d.occupancyTokens,
-// d.occupyDrained and d.occupyStep — under one d.mu span. It is the single
-// internal registry eraser. External callers drain launched workers and external
-// occupiers before calling, while the finalizer's own Remove proceeds with its
-// own lease token active. See the Dispatcher struct's per-job map comment
-// (dispatch.go) for why "every" is the rule here rather than "the ones this
-// caller happens to care about".
-//
-// It preserves the relative order of the remaining entries: queue position
-// is dispatch order's tie-break within one priority (dispatchOrderLocked), and
-// a swap-with-last deletion would silently reorder jobs behind the removed one. evictCancelledNeverRun
-// (tick.go) is the first caller — it guards against launched workers or active
-// occupiers before calling, and this method makes no such assumption itself.
-//
-// What each prune buys, since none of them is obviously load-bearing on its
-// own and all three were omitted at least once:
-//
-//   - d.written: a job removed from the registry would keep its last-Persisted
-//     entry forever, and a reused job ID's first persistIfChanged would
-//     compare against the dead job's stale row and wrongly suppress a Save.
-//   - d.resident: a stale true entry makes reconcileResidency take neither
-//     branch (its hydrate arm requires !d.isResident(id)), so a reused ID
-//     never hydrates and runs without its manifest.
-//   - d.launched: a stale claim makes claimLaunched return false
-//     forever, so a reused ID is permanently unlaunchable.
-//   - d.occupiers / d.occupancyTokens / d.occupyDrained / d.occupyStep: a stale
-//     entry leaves callers waiting on waitLive forever or reports false
-//     occupancy.
-//
 // admitsLocked reports whether job id may take on new work: it is registered,
 // and no teardown is outstanding against it. Caller must hold d.mu.
 //
@@ -567,7 +540,37 @@ func (r *removal) end() {
 	r.d.deregister(r.id)
 }
 
-// deregister erases every trace of a job from the registry.
+// deregister erases every trace of a job from the registry: it deletes the job
+// from EVERY per-job structure — d.byID, d.order, d.written, d.resident,
+// d.launched, d.removing, d.occupiers, d.occupancyTokens, d.occupyDrained and
+// d.occupyStep — under one d.mu span. It is the single internal registry
+// eraser. External callers drain launched workers and external occupiers
+// before calling, while the finalizer's own Remove proceeds with its own lease
+// token active. See the Dispatcher struct's per-job map comment (dispatch.go)
+// for why "every" is the rule here rather than "the ones this caller happens to
+// care about".
+//
+// It preserves the relative order of the remaining entries: queue position
+// is dispatch order's tie-break within one priority (dispatchOrderLocked), and
+// a swap-with-last deletion would silently reorder jobs behind the removed one.
+// evictCancelledNeverRun (tick.go) reaches it through removal.end, after
+// beginRemovalIfIdle has refused a job with a launched worker or an active
+// occupier; this method makes no such assumption itself.
+//
+// What each prune buys, since none of them is obviously load-bearing on its
+// own and the first three were each omitted at least once:
+//
+//   - d.written: a job removed from the registry would keep its last-Persisted
+//     entry forever, and a reused job ID's first persistIfChanged would
+//     compare against the dead job's stale row and wrongly suppress a Save.
+//   - d.resident: a stale true entry makes reconcileResidency take neither
+//     branch (its hydrate arm requires !d.isResident(id)), so a reused ID
+//     never hydrates and runs without its manifest.
+//   - d.launched: a stale claim makes claimLaunched return false
+//     forever, so a reused ID is permanently unlaunchable.
+//   - d.occupiers / d.occupancyTokens / d.occupyDrained / d.occupyStep: a stale
+//     entry leaves callers waiting on waitLive forever or reports false
+//     occupancy.
 //
 // removal.end is its only caller, which is what makes the marker impossible
 // to skip: `git grep -n 'deregister(r\.id)' -- 'internal/dispatch/*.go'` finds
