@@ -2490,7 +2490,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			Category:             hdr.Category,
 			Password:             hdr.Password,
 			Script:               hdr.Script,
-			PP:                   hdr.PP,
+			PP:                   hdr.PP.Int(),
 			URL:                  hdr.URL,
 			DownloadDir:          downloadDir,
 			FinalDir:             finalDir,

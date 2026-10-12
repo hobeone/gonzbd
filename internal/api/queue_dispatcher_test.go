@@ -258,8 +258,8 @@ func TestQueueMutators_Dispatcher(t *testing.T) {
 		t.Fatalf("status = %d; want 200", w.Code)
 	}
 	row, _ = d.Row("j1")
-	if row.Header.PP != 3 || !j1.Policy().Delete {
-		t.Errorf("PP = %d, Policy = %+v; want PP 3", row.Header.PP, j1.Policy())
+	if row.Header.PP.Int() != 3 || !j1.Policy().Delete {
+		t.Errorf("PP = %d, Policy = %+v; want PP 3", row.Header.PP.Int(), j1.Policy())
 	}
 
 	// 3. Change cat
@@ -268,9 +268,9 @@ func TestQueueMutators_Dispatcher(t *testing.T) {
 		t.Fatalf("status = %d; want 200", w.Code)
 	}
 	row, _ = d.Row("j1")
-	if row.Header.Category != "tv" || row.Header.PP != 2 || row.Header.Script != "tv.sh" || row.Header.Priority != 1 {
+	if row.Header.Category != "tv" || row.Header.PP.Int() != 2 || row.Header.Script != "tv.sh" || row.Header.Priority != 1 {
 		t.Errorf("Cat = %q, PP = %d, Script = %q, Priority = %d; want tv, 2, tv.sh, 1",
-			row.Header.Category, row.Header.PP, row.Header.Script, row.Header.Priority)
+			row.Header.Category, row.Header.PP.Int(), row.Header.Script, row.Header.Priority)
 	}
 
 	// 4. Rename

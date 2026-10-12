@@ -538,7 +538,7 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		Percentage:        pct,
 		Timeleft:          timeleft,
 		ETA:               etaStr,
-		PP:                strconv.Itoa(r.Header.PP),
+		PP:                strconv.Itoa(r.Header.PP.Int()),
 		IngestAnomaly:     r.Header.IngestAnomaly,
 		FailReason:        r.Header.FailReason,
 		DuplicateReason:   r.Header.DuplicateReason,
@@ -975,12 +975,11 @@ func (s *Server) queueChangeOpts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireParam(w, r, "value2", "pp level"); !ok {
 		return
 	}
-	pp := intParam(r, "value2")
-	if pp < 0 || pp > 3 {
-		s.respondError(w, http.StatusBadRequest, fmt.Sprintf("pp must be 0-3, got %d", pp))
+	pp, err := job.ParsePP(intParam(r, "value2"))
+	if err != nil {
+		s.respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	var err error
 	if s.dispatcher != nil {
 		err = s.dispatcher.SetPP(nzoID, pp)
 	} else {
@@ -991,7 +990,7 @@ func (s *Server) queueChangeOpts(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	s.log.Info("job PP changed", "job", nzoID, "pp", pp)
+	s.log.Info("job PP changed", "job", nzoID, "pp", pp.Int())
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":  true,
 		"nzo_ids": []string{nzoID},
@@ -1029,7 +1028,7 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := errors.Join(
 			s.dispatcher.SetCategory(nzoID, cat),
-			s.dispatcher.SetPP(nzoID, resolvedCat.PP),
+			s.dispatcher.SetPP(nzoID, job.ClampPP(resolvedCat.PP)),
 			s.dispatcher.SetScript(nzoID, resolvedCat.Script),
 		); err != nil {
 			s.respondError(w, priorityErrorStatus(err), err.Error())
@@ -1037,7 +1036,7 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 		}
 		row, _ := s.dispatcher.Row(nzoID)
 		s.log.Info("job category changed", "job", nzoID,
-			"cat", row.Header.Category, "pp", row.Header.PP, "script", row.Header.Script, "priority", row.Header.Priority)
+			"cat", row.Header.Category, "pp", row.Header.PP.Int(), "script", row.Header.Script, "priority", row.Header.Priority)
 		respondJSON(w, http.StatusOK, map[string]any{
 			"status":  true,
 			"nzo_ids": []string{nzoID},

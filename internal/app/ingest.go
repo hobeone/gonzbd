@@ -72,7 +72,7 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	name = fsutil.SanitizeFolderName(name, sOpts)
 
 	// Resolve sentinel values from the matching category config.
-	pp := opts.PP
+	level := opts.PP
 	script := opts.Script
 	priority, pause, err := config.ResolvePriority(categories, opts.Category, opts.Priority)
 	if err != nil {
@@ -80,24 +80,22 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	}
 	ppReason := "explicit"
 	cat := config.FindCategory(categories, opts.Category)
-	if pp == types.PPInherit {
-		pp = cat.PP
+	if level == types.PPInherit {
+		level = cat.PP
 		ppReason = fmt.Sprintf("category %q", cat.Name)
 	}
 	if script == "" {
 		script = cat.Script
 	}
-	if pp > types.PPDelete {
-		pp = types.PPDelete
-	} else if pp < types.PPNone {
-		pp = types.PPNone
-	}
+	// A level outside [0,3] is saturated, so pp=7 runs as 3
+	// (docs/sabnzbd_spec.md §8.2).
+	pp := job.ClampPP(level)
 	if logger != nil {
 		logger.Info("job PP resolved",
 			"job_name", name,
 			"category", opts.Category,
 			"requested_pp", opts.PP,
-			"resolved_pp", pp,
+			"resolved_pp", pp.Int(),
 			"reason", ppReason,
 			"script", script,
 			"priority", priority.String(),
@@ -130,7 +128,7 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	job.SortJobFiles(files)
 
 	manifest := job.NewManifest(files)
-	j := job.New(id, name, job.PolicyFromPP(pp))
+	j := job.New(id, name, pp.Policy())
 	if err := j.AttachContent(manifest); err != nil {
 		return nil, dispatch.Header{}, fmt.Errorf("create job %q: %w", filename, err)
 	}

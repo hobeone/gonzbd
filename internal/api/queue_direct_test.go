@@ -470,11 +470,11 @@ func TestQueueChangeOpts_Direct(t *testing.T) {
 		}
 	})
 
-	// Both edges of `pp < 0 || pp > 3`, one value either side of each.
+	// Both edges of job.ParsePP's range, one value either side of each.
 	// Testing only an interior value and one well outside the range leaves
 	// both comparisons free to move by one without any test noticing: with
-	// only pp=3 and pp=5, widening the upper bound to `pp > 4` still rejects
-	// 5, and no negative value at all leaves `pp < 0` unpinned entirely.
+	// only pp=3 and pp=5, widening the upper bound by one still rejects 5,
+	// and no negative value at all leaves the lower bound unpinned entirely.
 	for _, tc := range []struct {
 		name string
 		pp   string

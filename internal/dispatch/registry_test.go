@@ -612,7 +612,7 @@ func TestDispatcher_Mutators(t *testing.T) {
 		func() error { return d.SetPriority("unknown", 1) },
 		func() error { return d.SetName("unknown", "n") },
 		func() error { return d.SetCategory("unknown", "c") },
-		func() error { return d.SetPP("unknown", 2) },
+		func() error { return d.SetPP("unknown", job.ClampPP(2)) },
 		func() error { return d.SetScript("unknown", "s") },
 	} {
 		if err := fn(); err == nil {
@@ -633,7 +633,7 @@ func TestDispatcher_Mutators(t *testing.T) {
 		t.Fatalf("SetCategory: %v", err)
 	}
 	// PP
-	if err := d.SetPP("j1", 3); err != nil {
+	if err := d.SetPP("j1", job.ClampPP(3)); err != nil {
 		t.Fatalf("SetPP: %v", err)
 	}
 	// Script
@@ -654,8 +654,8 @@ func TestDispatcher_Mutators(t *testing.T) {
 	if row.Header.Category != "tv" {
 		t.Errorf("Category = %q, want 'tv'", row.Header.Category)
 	}
-	if row.Header.PP != 3 || !j.Policy().Delete {
-		t.Errorf("PP = %d, Policy = %+v, want PP 3 / Delete: true", row.Header.PP, j.Policy())
+	if row.Header.PP.Int() != 3 || !j.Policy().Delete {
+		t.Errorf("PP = %d, Policy = %+v, want PP 3 / Delete: true", row.Header.PP.Int(), j.Policy())
 	}
 	if row.Header.Script != "notify.sh" {
 		t.Errorf("Script = %q, want 'notify.sh'", row.Header.Script)

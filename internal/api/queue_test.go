@@ -109,7 +109,7 @@ func (w *testQueueWrapper) SetName(id, name string) error {
 }
 
 func (w *testQueueWrapper) SetPP(id string, pp int) error {
-	return w.disp.SetPP(id, pp)
+	return w.disp.SetPP(id, job.ClampPP(pp))
 }
 
 func (w *testQueueWrapper) SetStatus(id string, status constants.Status) error {
@@ -177,7 +177,7 @@ func (w *testQueueWrapper) SnapshotJob(id string) *testJobSnapshot {
 		Name:     row.Header.Name,
 		Category: row.Header.Category,
 		Priority: row.Header.Priority,
-		PP:       row.Header.PP,
+		PP:       row.Header.PP.Int(),
 		Script:   row.Header.Script,
 		Status:   row.Status(),
 	}
@@ -2884,7 +2884,7 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 			Name:             "large.file",
 			Filename:         "large.file.nzb",
 			Bytes:            m.TotalBytes(),
-			PP:               3,
+			PP:               job.ClampPP(3),
 			Password:         "hunter2",
 			Script:           "post.py",
 			IngestAnomaly:    "1 empty message-id",

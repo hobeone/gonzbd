@@ -94,7 +94,7 @@ func TestStore_AllHeaderFieldsAndTimestampsSurviveRoundTrip(t *testing.T) {
 			OperationalError: "failed to remove finalized job from queue",
 			Script:           "notify.sh",
 			Password:         "secret123",
-			PP:               3,
+			PP:               job.ClampPP(3),
 			NZBBackup:        "/backup/ubuntu.iso.nzb.gz",
 			URL:              "https://index.example.com/nzb/123",
 			MD5:              "0123456789abcdef0123456789abcdef",
@@ -385,6 +385,35 @@ func TestStore_LoadRejectsAnOutOfRangeEnum(t *testing.T) {
 	}
 	if exists, err := s.Has(t.Context(), "absent"); err != nil || exists {
 		t.Errorf("Has(\"absent\") = (%v, %v), want (false, nil)", exists, err)
+	}
+}
+
+// TestStore_LoadSkipsAnOutOfRangePP pins that a pp column outside [0,3] is
+// built by job.ParsePP, which refuses it, so the row is skipped as an
+// unscannable one is rather than restored with a level no writer can produce.
+func TestStore_LoadSkipsAnOutOfRangePP(t *testing.T) {
+	var buf bytes.Buffer
+	_, raw := newTestStoreDB(t)
+	s := store.New(raw, slog.New(slog.NewTextHandler(&buf, nil)))
+
+	good := dispatch.Persisted{ID: "good", SortKey: 2, Header: dispatch.Header{Name: "good", PP: job.ClampPP(2)}}
+	for _, p := range []dispatch.Persisted{{ID: "bad", SortKey: 1, Header: dispatch.Header{Name: "bad"}}, good} {
+		if err := s.Save(t.Context(), p); err != nil {
+			t.Fatalf("Save(%s): %v", p.ID, err)
+		}
+	}
+	if _, err := raw.ExecContext(t.Context(), `UPDATE dispatch_jobs SET pp = 7 WHERE id = ?`, "bad"); err != nil {
+		t.Fatalf("corrupting the row: %v", err)
+	}
+	got, err := s.Load(t.Context())
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+	if len(got) != 1 || got[0] != good {
+		t.Fatalf("Load() = %+v, want only [%+v]", got, good)
+	}
+	if out := buf.String(); !strings.Contains(out, "job_id=bad") || !strings.Contains(out, "pp must be 0-3, got 7") {
+		t.Errorf("log output %q does not contain \"job_id=bad\" and \"pp must be 0-3, got 7\"", out)
 	}
 }
 

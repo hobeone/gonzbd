@@ -146,8 +146,8 @@ func TestRetryHistoryJob_PreservesJobOptions(t *testing.T) {
 	if !ok {
 		t.Fatal("retried job is not in the queue")
 	}
-	if row.Header.PP != 3 {
-		t.Errorf("PP = %d, want 3", row.Header.PP)
+	if row.Header.PP.Int() != 3 {
+		t.Errorf("PP = %d, want 3", row.Header.PP.Int())
 	}
 	if row.Header.Script != "notify.sh" {
 		t.Errorf("Script = %q, want %q", row.Header.Script, "notify.sh")

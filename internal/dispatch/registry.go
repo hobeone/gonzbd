@@ -113,7 +113,7 @@ type Header struct {
 
 	Script    string
 	Password  string
-	PP        int
+	PP        job.PP
 	NZBBackup string
 	URL       string
 	MD5       string
@@ -1280,8 +1280,9 @@ func (d *Dispatcher) SetCategory(id, category string) error {
 	return nil
 }
 
-// SetPP sets the post-processing level for a registered job.
-func (d *Dispatcher) SetPP(id string, pp int) error {
+// SetPP sets the post-processing level for a registered job, and the policy it
+// translates to. job.PP holds the level's range, so there is nothing to refuse.
+func (d *Dispatcher) SetPP(id string, pp job.PP) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	e, ok := d.byID[id]
@@ -1289,7 +1290,7 @@ func (d *Dispatcher) SetPP(id string, pp int) error {
 		return fmt.Errorf("dispatch: set pp %s: %w", id, ErrNotFound)
 	}
 	e.h.PP = pp
-	e.j.SetPolicy(job.PolicyFromPP(pp))
+	e.j.SetPolicy(pp.Policy())
 	return nil
 }
 

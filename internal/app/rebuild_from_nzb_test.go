@@ -84,9 +84,9 @@ func TestRebuildJobFromNZB_Success(t *testing.T) {
 	if hdr.NZBBackup != "show.nzb.gz" {
 		t.Errorf("NZBBackup = %q, want it carried onto the rebuilt job", hdr.NZBBackup)
 	}
-	if hdr.Category != "tv" || hdr.Script != "post.sh" || hdr.Password != "pw" || hdr.PP != 3 {
+	if hdr.Category != "tv" || hdr.Script != "post.sh" || hdr.Password != "pw" || hdr.PP.Int() != 3 {
 		t.Errorf("options lost: category=%q script=%q password=%q pp=%d",
-			hdr.Category, hdr.Script, hdr.Password, hdr.PP)
+			hdr.Category, hdr.Script, hdr.Password, hdr.PP.Int())
 	}
 	m, err := job.Manifest()
 	if err != nil {
