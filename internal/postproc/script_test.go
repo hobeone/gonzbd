@@ -258,19 +258,24 @@ func TestRunScript_LastLine(t *testing.T) {
 func TestRunScript_LogCap(t *testing.T) {
 	skipIfNoShell(t)
 	dir := t.TempDir()
-	// Write ~1 MiB (well beyond 512 KiB) of lines. Each line is "x" * 99 + newline = 100 bytes.
-	// 10000 such lines = 1,000,000 bytes > MaxLogBytes (524288).
+	// Write 1,000,000 bytes of lines: 10000 lines of 99 "x" and a newline,
+	// beyond MaxLogBytes (524288), which is not a multiple of 100, so the cap
+	// lands mid-line. No brace expansion: /bin/sh need not be bash.
 	scriptPath := makeScript(t, dir, "biglog.sh",
-		`i=0; while [ $i -lt 10000 ]; do printf '%0.s-' {1..99}; echo; i=$((i+1)); done`)
+		"yes "+strings.Repeat("x", 99)+" | head -n 10000")
 
 	result := RunScript(t.Context(), scriptPath, ScriptInput{FinalDir: dir})
-	// Non-zero exit is fine; we care about the log cap.
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
 
 	if len(result.LogBody) > MaxLogBytes {
 		t.Errorf("LogBody too large: %d > %d", len(result.LogBody), MaxLogBytes)
 	}
-	if len(result.LogBody) == 0 {
-		t.Errorf("LogBody is empty — script may not have run")
+	// The output exceeded the cap, so LogBody must be nearly full: within
+	// one line of it. A short body means the script never reached the cap.
+	if len(result.LogBody) <= MaxLogBytes-100 {
+		t.Errorf("LogBody = %d bytes, want within one 100-byte line of %d", len(result.LogBody), MaxLogBytes)
 	}
 	// LogBody must end on a line boundary (last byte is '\n' or log is empty).
 	if len(result.LogBody) > 0 && result.LogBody[len(result.LogBody)-1] != '\n' {
