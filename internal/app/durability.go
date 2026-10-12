@@ -242,7 +242,7 @@ func (app *Application) stall(jobID string, f *storagefault.Fault, kind stallKin
 		// worker and its resources.
 		// That worker finishes and reports through AdvanceFrom, and the pause
 		// then gates the move.
-		_ = app.dispatcher.PauseJob(jobID)
+		warnUnlessGone(app.log, "stall: pausing the job failed", jobID, app.dispatcher.PauseJob(jobID))
 	}
 	app.emit(Event{Type: "queue_updated", NzoID: jobID})
 }

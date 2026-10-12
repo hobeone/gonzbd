@@ -393,7 +393,7 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 			p.log.Warn("write fatal article failed, returning to dispatch pool",
 				"job", res.JobID(), "msgid", res.MessageID, "err", writeErr)
-			_ = res.Job.ClearArticleEmitted(int(res.ArtIdx))
+			p.clearEmitted(res)
 		}
 		telemetry.ArticlesFailed.Add(1)
 
@@ -413,8 +413,19 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		// article on the next pass.
 		p.log.Debug("fetch error, returning to dispatch pool",
 			"job", res.JobID(), "msgid", res.MessageID, "server", res.ServerName, "err", res.Err)
-		_ = res.Job.ClearArticleEmitted(int(res.ArtIdx))
+		p.clearEmitted(res)
 		telemetry.ArticlesRetried.Add(1)
+	}
+}
+
+// clearEmitted returns res's article to the dispatch pool by clearing its
+// emitted bit on res's own instance. A refusal is logged at Error: it means
+// the instance has no progress or the result's index is outside it, and a
+// result is only made for an article dispatched from that progress.
+func (p *pipeline) clearEmitted(res *downloader.ArticleResult) {
+	if err := res.Job.ClearArticleEmitted(int(res.ArtIdx)); err != nil {
+		p.log.Error("return article to the dispatch pool",
+			"job", res.JobID(), "msgid", res.MessageID, "err", err)
 	}
 }
 
@@ -441,7 +452,7 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	if err := p.registerFile(res.Job, res.FileIdx); err != nil {
 		p.log.Warn("register file failed",
 			"job", res.JobID(), "fileidx", res.FileIdx, "err", err)
-		_ = res.Job.ClearArticleEmitted(int(res.ArtIdx))
+		p.clearEmitted(res)
 		return
 	}
 
@@ -471,7 +482,7 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 		p.log.Warn("write article failed, returning to dispatch pool",
 			"job", res.JobID(), "msgid", res.MessageID, "err", writeErr)
-		_ = res.Job.ClearArticleEmitted(int(res.ArtIdx))
+		p.clearEmitted(res)
 	} else if writeErr == nil {
 		bufferConsumed = true // assembler owns the buffer now
 		telemetry.ArticlesWritten.Add(1)

@@ -828,7 +828,8 @@ func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
 
 // queueSetPaused applies action (Pause or Resume) to each job ID in the
 // CSV value= parameter, logging the result with the given verb. Not-found
-// IDs are silently ignored, matching SABnzbd's lenient bulk semantics.
+// IDs are silently ignored, matching SABnzbd's lenient bulk semantics. Any
+// other refusal is logged at Warn, and the response is the same success.
 //
 // A resume is also the approval of a job the unwanted-extension check
 // blocked, and approval needs the full API key: a caller with only the NZB
@@ -854,13 +855,22 @@ func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, verb str
 	for _, id := range ids {
 		var name string
 		if s.dispatcher != nil {
+			var err error
 			switch {
 			case verb == "paused":
-				_ = s.dispatcher.PauseJob(id)
+				err = s.dispatcher.PauseJob(id)
 			case approve:
-				_ = s.dispatcher.ResumeJobByUser(id)
+				err = s.dispatcher.ResumeJobByUser(id)
 			default:
-				_ = s.dispatcher.ResumeJob(id)
+				err = s.dispatcher.ResumeJob(id)
+			}
+			if errors.Is(err, dispatch.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				// Logged rather than reported as done.
+				s.log.Warn("job not "+verb, "job", id, "err", err)
+				continue
 			}
 			if row, ok := s.dispatcher.Row(id); ok {
 				name = row.Header.Name

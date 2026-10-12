@@ -1,11 +1,13 @@
 package downloader
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2352,5 +2354,18 @@ func TestHasDownloadableJobs_SkipsAHandedOffJob(t *testing.T) {
 	d.opts.HandedOff = func(x *job.Job) bool { return x == j }
 	if d.hasDownloadableJobs() {
 		t.Error("hasDownloadableJobs() = true for a job handed to post-processing, want false")
+	}
+}
+
+// TestClearEmitted_RefusalIsLoggedAtError pins clearEmitted's log: a gated
+// request whose instance cannot clear the bit (here, one with no progress) is
+// logged at Error rather than dropped.
+func TestClearEmitted_RefusalIsLoggedAtError(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	d := &Downloader{log: slog.New(slog.NewTextHandler(&logs, nil))}
+	d.clearEmitted(&articleRequest{job: job.New("j1", "n", job.Policy{}), messageID: "a@b"}, "global pause")
+	if !strings.Contains(logs.String(), "level=ERROR") {
+		t.Errorf("a refused clear was not logged at Error; log:\n%s", logs.String())
 	}
 }

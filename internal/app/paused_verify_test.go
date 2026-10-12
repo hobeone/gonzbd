@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -210,6 +211,48 @@ func TestVerifyPausedJobs_OwedFilingIsNotDeferredBehindIt(t *testing.T) {
 	paused2 := a2.registered(t, paused.ID())
 	if paused2.Intent() != job.IntentPause {
 		t.Errorf("the paused job's intent is %v after Start, want IntentPause", paused2.Intent())
+	}
+}
+
+// TestFileOwedUnwantedFailures_FailedHydrationIsLoggedAndFiled pins the
+// sweep's handling of a job it cannot load: the hydration's error is logged
+// at Warn, and the job is filed anyway rather than left to run.
+func TestFileOwedUnwantedFailures_FailedHydrationIsLoggedAndFiled(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	a1 := env.newApp(t)
+	owed := a1.addJob(t, "owed", 2, 1)
+	a1.dispatcher.Tick(t.Context())
+	a1.dispatcher.Tick(t.Context())
+	if st := owed.State().State; st != job.Fetching {
+		t.Fatalf("fixture: the owed job is at %v, want Fetching", st)
+	}
+	if moved, err := a1.dispatcher.BlockUnwanted(owed, false); err != nil || !moved {
+		t.Fatalf("BlockUnwanted = (%v, %v)", moved, err)
+	}
+	a1.dispatcher.Tick(t.Context()) // persists the block
+	path, err := manifestPath(env.admin, owed.ID())
+	if err != nil {
+		t.Fatalf("manifestPath: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove the manifest: %v", err)
+	}
+
+	logs := &syncBuffer{}
+	a2 := env.newApp(t, func(app *Application) {
+		app.log = slog.New(slog.NewTextHandler(logs, nil))
+	})
+	if err := a2.fileOwedUnwantedFailures(t.Context()); err != nil {
+		t.Fatalf("fileOwedUnwantedFailures: %v", err)
+	}
+
+	owed2 := a2.registered(t, owed.ID())
+	if !a2.postProcAdmissions.has(owed2) {
+		t.Error("a job whose hydration failed was not filed")
+	}
+	if got := logs.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "filing it anyway") {
+		t.Errorf("the failed hydration was not logged at Warn; log:\n%s", got)
 	}
 }
 

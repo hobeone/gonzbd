@@ -72,9 +72,7 @@ func newAppRunner(app *Application) *appRunner {
 
 func (r *appRunner) Run(ctx context.Context, id string, state job.State) {
 	if r.app != nil && r.app.stopping.Load() {
-		if r.report != nil {
-			_ = r.report.Yielded(id)
-		}
+		r.yield(id)
 		return
 	}
 	switch state {
@@ -88,12 +86,18 @@ func (r *appRunner) Run(ctx context.Context, id string, state job.State) {
 		// A state with no work is still a state the dispatcher leased. Yield
 		// rather than return silently, or the lease is never released.
 		r.log.Warn("runner: no work for state; yielding", "job", id, "state", state)
-		if r.report != nil {
-			if err := r.report.Yielded(id); err != nil {
-				r.log.Error("runner: yield failed", "job", id, "error", err)
-			}
-		}
+		r.yield(id)
 	}
+}
+
+// yield reports, by ID, that the worker for id stopped without running its
+// state's work, which releases the job's launch claim and resources. A refusal
+// other than the job being gone is logged: the job may still hold them.
+func (r *appRunner) yield(id string) {
+	if r.report == nil {
+		return
+	}
+	warnUnlessGone(r.log, "runner: yield failed", id, r.report.Yielded(id))
 }
 
 // runFetch hands off work to the downstream downloader pool by poking
@@ -112,9 +116,7 @@ func (r *appRunner) Run(ctx context.Context, id string, state job.State) {
 // for a job already admitted to post-processing.
 func (r *appRunner) runFetch(_ context.Context, id string) {
 	if r.app == nil {
-		if r.report != nil {
-			_ = r.report.Yielded(id)
-		}
+		r.yield(id)
 		return
 	}
 	var j *job.Job
@@ -122,9 +124,7 @@ func (r *appRunner) runFetch(_ context.Context, id string) {
 		j, _ = r.app.dispatcher.Job(id)
 	}
 	if j == nil {
-		if r.report != nil {
-			_ = r.report.Yielded(id)
-		}
+		r.yield(id)
 		return
 	}
 	if r.report != nil {
@@ -157,9 +157,7 @@ func (r *appRunner) runFetch(_ context.Context, id string) {
 // (handOverLate), when the job no longer reads as at Assessing.
 func (r *appRunner) runAssess(ctx context.Context, id string) {
 	if r.app == nil {
-		if r.report != nil {
-			_ = r.report.Yielded(id)
-		}
+		r.yield(id)
 		return
 	}
 	var j *job.Job
@@ -167,9 +165,7 @@ func (r *appRunner) runAssess(ctx context.Context, id string) {
 		j, _ = r.app.dispatcher.Job(id)
 	}
 	if j == nil {
-		if r.report != nil {
-			_ = r.report.Yielded(id)
-		}
+		r.yield(id)
 		return
 	}
 	visit := r.app.postProcAdmissions.beginAssess(j)
@@ -215,7 +211,8 @@ func (r *appRunner) failWith(j *job.Job, reasons []string) {
 		r.app.maybeFinalizeJob(j, reason)
 	}
 	if r.report != nil {
-		_ = r.report.FinishedJob(j, job.OutcomeFailed)
+		warnUnlessGone(r.log, "runner: settling the job failed", j.ID(),
+			r.report.FinishedJob(j, job.OutcomeFailed))
 	}
 }
 
@@ -279,9 +276,7 @@ func (r *appRunner) logAdvance(j *job.Job, from, next job.State, err error) {
 // postProcessor.Stop during Application.Shutdown.
 func (r *appRunner) runPostProc(_ context.Context, id string, _ job.State) {
 	if r.app == nil {
-		if r.report != nil {
-			_ = r.report.Yielded(id)
-		}
+		r.yield(id)
 		return
 	}
 	var j *job.Job
@@ -293,9 +288,7 @@ func (r *appRunner) runPostProc(_ context.Context, id string, _ job.State) {
 		j, _ = r.app.dispatcher.Job(id)
 	}
 	if j == nil || r.app.postProcessor == nil {
-		if r.report != nil {
-			_ = r.report.Yielded(id)
-		}
+		r.yield(id)
 		return
 	}
 

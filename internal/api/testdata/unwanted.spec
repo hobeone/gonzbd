@@ -4,9 +4,9 @@ run TestQueueResume_ApprovesAnUnwantedBlockedJob|TestQueueSlot_UnwantedLabel|Tes
 [the user's resume does not approve]
 file internal/api/queue.go
 --- anchor
-				_ = s.dispatcher.ResumeJobByUser(id)
+				err = s.dispatcher.ResumeJobByUser(id)
 --- replace
-				_ = s.dispatcher.ResumeJob(id)
+				err = s.dispatcher.ResumeJob(id)
 --- end
 
 [the NZB key may approve]

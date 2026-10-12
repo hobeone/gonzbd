@@ -37,12 +37,12 @@ file internal/app/pipeline.go
 file internal/app/pipeline.go
 --- anchor
 "job", res.JobID(), "msgid", res.MessageID, "err", writeErr)
-			_ = res.Job.ClearArticleEmitted(int(res.ArtIdx))
+			p.clearEmitted(res)
 		}
 		telemetry.ArticlesFailed.Add(1)
 --- replace
 "job", res.JobID(), "msgid", res.MessageID, "err", writeErr)
-			_ = func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }().ClearArticleEmitted(int(res.ArtIdx))
+			p.clearEmitted(func() *downloader.ArticleResult { c := *res; c.Job, _ = p.dispatcher.Job(res.JobID()); return &c }())
 		}
 		telemetry.ArticlesFailed.Add(1)
 --- end
@@ -59,11 +59,11 @@ file internal/app/pipeline.go
 file internal/app/pipeline.go
 --- anchor
 "err", res.Err)
-		_ = res.Job.ClearArticleEmitted(int(res.ArtIdx))
+		p.clearEmitted(res)
 		telemetry.ArticlesRetried.Add(1)
 --- replace
 "err", res.Err)
-		_ = func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }().ClearArticleEmitted(int(res.ArtIdx))
+		p.clearEmitted(func() *downloader.ArticleResult { c := *res; c.Job, _ = p.dispatcher.Job(res.JobID()); return &c }())
 		telemetry.ArticlesRetried.Add(1)
 --- end
 
@@ -97,11 +97,11 @@ file internal/app/pipeline.go
 file internal/app/pipeline.go
 --- anchor
 "fileidx", res.FileIdx, "err", err)
-		_ = res.Job.ClearArticleEmitted(int(res.ArtIdx))
+		p.clearEmitted(res)
 		return
 --- replace
 "fileidx", res.FileIdx, "err", err)
-		_ = func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }().ClearArticleEmitted(int(res.ArtIdx))
+		p.clearEmitted(func() *downloader.ArticleResult { c := *res; c.Job, _ = p.dispatcher.Job(res.JobID()); return &c }())
 		return
 --- end
 
@@ -109,10 +109,10 @@ file internal/app/pipeline.go
 file internal/app/pipeline.go
 --- anchor
 "err", writeErr)
-		_ = res.Job.ClearArticleEmitted(int(res.ArtIdx))
+		p.clearEmitted(res)
 	} else if writeErr == nil {
 --- replace
 "err", writeErr)
-		_ = func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }().ClearArticleEmitted(int(res.ArtIdx))
+		p.clearEmitted(func() *downloader.ArticleResult { c := *res; c.Job, _ = p.dispatcher.Job(res.JobID()); return &c }())
 	} else if writeErr == nil {
 --- end
