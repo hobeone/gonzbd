@@ -1,6 +1,8 @@
 package unpack
 
 import (
+	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -22,7 +24,7 @@ func CleanupStageDirs(outDir string) {
 	}
 	for _, e := range entries {
 		if e.IsDir() && strings.HasPrefix(e.Name(), unpackStagePrefix) {
-			_ = os.RemoveAll(filepath.Join(outDir, e.Name())) //nolint:errcheck // best effort; a stage left behind is retried by every later CleanupStageDirs
+			_ = removeStageTree(filepath.Join(outDir, e.Name())) //nolint:errcheck // best effort; a stage left behind is retried by every later CleanupStageDirs
 		}
 	}
 }
@@ -31,9 +33,51 @@ func CleanupStageDirs(outDir string) {
 // extraction is over. A stage left behind sits inside outDir, which may be
 // the job's output, until a later CleanupStageDirs, so a failure is logged.
 func removeStageDir(log *slog.Logger, stageDir string) {
-	if err := os.RemoveAll(stageDir); err != nil {
+	if err := removeStageTree(stageDir); err != nil {
 		log.Warn("unpack: failed to remove the staging directory", "dir", stageDir, "err", err)
 	}
+}
+
+// removeStageTree removes stageDir and everything under it. A directory the
+// extractor left without owner write or search permission stops
+// os.RemoveAll, so on failure it grants the owner those bits and tries again
+// (#862).
+func removeStageTree(stageDir string) error {
+	err := os.RemoveAll(stageDir)
+	if err == nil {
+		return nil
+	}
+	if ownErr := ownStageDirs(stageDir); ownErr != nil {
+		return errors.Join(err, ownErr)
+	}
+	return os.RemoveAll(stageDir)
+}
+
+// ownStageDirs gives the owner read, write and search permission on stageDir
+// and every directory under it. An external extractor restores the
+// directory modes the archive stores, and a directory without owner write
+// can have no entry renamed out of it or removed from it (#862). A directory
+// is changed before its entries are read, so one without owner read or
+// search is walked too.
+func ownStageDirs(stageDir string) (err error) {
+	root, err := os.OpenRoot(stageDir)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, root.Close()) }()
+	return fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || !d.IsDir() {
+			return walkErr
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if perm := info.Mode().Perm(); perm&0o700 != 0o700 {
+			return root.Chmod(path, perm|0o700)
+		}
+		return nil
+	})
 }
 
 // prepareStageDir cleans up any leftover .gonzbd-tmp-unpack-* directories in
@@ -56,6 +100,10 @@ func prepareStageDir(outDir string) (string, error) {
 // of several names for one inode, all inside the stage, only the first in
 // walk (lexical) order is, so the surviving name of a hard-linked pair is not
 // necessarily the archive's original member.
+//
+// A directory is created in outDir with 0o750 whatever mode the archive
+// stored for it; the stage's own directories are first made owner-writable
+// by ownStageDirs, so their files can be renamed out (#862).
 func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Options) ([]string, error) {
 	root, err := os.OpenRoot(outDir)
 	if err != nil {
@@ -63,6 +111,9 @@ func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Opt
 	}
 	defer func() { _ = root.Close() }()
 
+	if err := ownStageDirs(stageDir); err != nil {
+		return nil, err
+	}
 	staged, err := countStagedNames(stageDir)
 	if err != nil {
 		return nil, err
@@ -82,11 +133,7 @@ func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Opt
 			return err
 		}
 		if d.IsDir() {
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			return root.MkdirAll(rel, info.Mode().Perm())
+			return root.MkdirAll(rel, 0o750)
 		}
 		if skip, err := isStagedLink(d, staged, seen); err != nil || skip {
 			if skip {
