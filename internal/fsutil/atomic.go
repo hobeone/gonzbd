@@ -3,6 +3,7 @@ package fsutil
 import (
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,7 +32,7 @@ func WriteAtomicPerm(path string, perm os.FileMode, write func(w io.Writer) erro
 	return writeAtomic(path, perm, true, write)
 }
 
-func writeAtomic(path string, perm os.FileMode, chmod bool, write func(w io.Writer) error) error {
+func writeAtomic(path string, perm os.FileMode, chmod bool, write func(w io.Writer) error) (err error) {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
 
@@ -44,15 +45,13 @@ func writeAtomic(path string, perm os.FileMode, chmod bool, write func(w io.Writ
 	// keep is set only on the fully successful path (after a successful
 	// rename). Until then, the deferred cleanup closes the fd and removes the
 	// temp file — this runs on any error return AND on a panic in write(),
-	// so neither leaks a descriptor nor a stray temp file. The final Close()
-	// on the success path means these are no-ops (double Close returns an
-	// ignored error); on the rename-error path the temp still exists and is
-	// removed here.
+	// so neither leaks a descriptor nor a stray temp file. A cleanup failure
+	// is joined to the error being returned, so a temp file left behind is
+	// reported rather than silent.
 	var keep bool
 	defer func() {
 		if !keep {
-			_ = tmp.Close()        // no-op if already closed on the success path
-			_ = os.Remove(tmpName) // remove the unpublished temp file
+			err = errors.Join(err, discardTemp(tmp, tmpName))
 		}
 	}()
 
@@ -77,6 +76,20 @@ func writeAtomic(path string, perm os.FileMode, chmod bool, write func(w io.Writ
 	}
 	keep = true
 	return nil
+}
+
+// discardTemp closes and removes an unpublished temp file. A file the caller
+// already closed, or one already gone, is not a failure.
+func discardTemp(f *os.File, name string) error {
+	cerr := f.Close()
+	if errors.Is(cerr, os.ErrClosed) {
+		cerr = nil
+	}
+	rerr := os.Remove(name)
+	if errors.Is(rerr, os.ErrNotExist) {
+		rerr = nil
+	}
+	return errors.Join(cerr, rerr)
 }
 
 // WriteAtomicBytes writes data to path atomically. It is a convenience
@@ -108,8 +121,7 @@ func WriteGzAtomic(path string, write func(gz io.Writer) error) error {
 	return WriteAtomic(path, func(w io.Writer) error {
 		gz := gzip.NewWriter(w)
 		if err := write(gz); err != nil {
-			_ = gz.Close() // cleanup gzip writer on write error
-			return err
+			return errors.Join(err, gz.Close())
 		}
 		return gz.Close()
 	})

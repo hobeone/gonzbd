@@ -20,8 +20,7 @@ file internal/fsutil/move.go
 [a copy error leaves the partial dst behind]
 file internal/fsutil/move.go
 --- anchor
-		_ = out.Close()    // cleanup opened output on copy error
-		_ = os.Remove(dst) // clean up partial file
+		return errors.Join(err, in.Close(), out.Close(), os.Remove(dst))
 --- replace
-		_ = out.Close() // cleanup opened output on copy error
+		return errors.Join(err, in.Close(), out.Close())
 --- end

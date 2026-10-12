@@ -331,3 +331,73 @@ func TestWriteAtomic_PanicSafety(t *testing.T) {
 		panic("intentional crash in write callback")
 	})
 }
+
+// TestWriteAtomic_FailedTempRemovalIsReturned pins that a temp file the
+// cleanup could not remove is reported with the failure that abandoned it,
+// rather than left behind silently.
+func TestWriteAtomic_FailedTempRemovalIsReturned(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory permission this test relies on")
+	}
+	dir := t.TempDir()
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	writeErr := errors.New("simulated encode failure")
+	err := fsutil.WriteAtomic(filepath.Join(dir, "out.bin"), func(io.Writer) error {
+		// The temp file exists by now; a read-only parent refuses its unlink.
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		return writeErr
+	})
+	if !errors.Is(err, writeErr) {
+		t.Errorf("err = %v, want it to carry the write error", err)
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Errorf("err = %v, want it to carry the refused temp removal", err)
+	}
+}
+
+// TestWriteAtomic_CleanupReportsNoFalseFailure pins the two cleanup outcomes
+// that are not failures: closing a temp file the success path already closed
+// (a refused rename), and removing one that is already gone.
+func TestWriteAtomic_CleanupReportsNoFalseFailure(t *testing.T) {
+	t.Parallel()
+	t.Run("already closed", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "target")
+		// A non-empty directory at the target refuses the rename, after the
+		// temp file was closed.
+		if err := os.MkdirAll(filepath.Join(path, "child"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		err := fsutil.WriteAtomicBytes(path, []byte("data"))
+		if err == nil {
+			t.Fatal("expected the rename to be refused")
+		}
+		if errors.Is(err, os.ErrClosed) {
+			t.Errorf("err = %v, want no close failure for a temp file already closed", err)
+		}
+	})
+	t.Run("already gone", func(t *testing.T) {
+		t.Parallel()
+		writeErr := errors.New("simulated encode failure")
+		err := fsutil.WriteAtomic(filepath.Join(t.TempDir(), "out.bin"), func(w io.Writer) error {
+			f, ok := w.(*os.File)
+			if !ok {
+				t.Fatal("expected *os.File")
+			}
+			if err := os.Remove(f.Name()); err != nil {
+				t.Fatal(err)
+			}
+			return writeErr
+		})
+		if !errors.Is(err, writeErr) {
+			t.Errorf("err = %v, want it to carry the write error", err)
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			t.Errorf("err = %v, want no removal failure for a temp file already gone", err)
+		}
+	})
+}
