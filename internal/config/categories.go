@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -68,24 +69,22 @@ type CategoryConfig struct {
 //   - A concrete p (constants.Priority.IsConcrete) is returned unchanged.
 //   - constants.DefaultPriority inherits the category's priority. A category
 //     priority of Paused pauses the job and keeps looking; one that is
-//     Default, Stop or undefined is skipped. The search runs over the
-//     category, then the fallback FindCategory returns for "" (Default, then
-//     "*"), and ends at NormalPriority.
+//     Repair, Default, Stop or undefined is skipped. The search runs over
+//     the category, then the fallback FindCategory returns for "" (Default,
+//     then "*"), and ends at NormalPriority.
 //   - constants.PausedPriority pauses the job, which holds what the same
 //     search finds.
 //
-// Any other p — Stop or an undefined value — is not a request this resolves:
-// it is returned unchanged with no pause, for the caller's validation to
-// refuse. The API refuses it before resolving (internal/api, parsePriority),
-// and Dispatcher.SetPriority refuses to store it.
-//
-// It exists so that no sentinel reaches the dispatcher's header: dispatch
-// order sorts on Header.Priority, and -100 or -2 stored raw sorts a job
-// behind Low.
-func ResolvePriority(cats []CategoryConfig, category string, p constants.Priority) (constants.Priority, bool) {
+// Any other p — Stop or an undefined value — is an error, so no caller can
+// store it: dispatch order sorts on Header.Priority, and a sentinel stored
+// raw sorts a job behind Low, an undefined value anywhere at all.
+func ResolvePriority(cats []CategoryConfig, category string, p constants.Priority) (constants.Priority, bool, error) {
 	pause := p == constants.PausedPriority
 	if p != constants.DefaultPriority && !pause {
-		return p, false
+		if !p.IsConcrete() {
+			return 0, false, fmt.Errorf("priority %d is not a priority a job can be given", p)
+		}
+		return p, false, nil
 	}
 	for _, name := range []string{category, ""} {
 		c, ok := categoryPriority(FindCategory(cats, name).Priority)
@@ -96,19 +95,22 @@ func ResolvePriority(cats []CategoryConfig, category string, p constants.Priorit
 			pause = true
 			continue
 		}
-		return c, pause
+		return c, pause, nil
 	}
-	return constants.NormalPriority, pause
+	return constants.NormalPriority, pause, nil
 }
 
-// categoryPriority reports whether a configured category priority names a
-// priority a job can hold or the Paused request, rather than Default, Stop or
-// an unknown value.
+// categoryPriority reports whether a configured category priority is Force,
+// High, Normal, Low or Paused. Repair, which configuration may not give a
+// job, Default, Stop and unknown values are not.
 func categoryPriority(v int) (constants.Priority, bool) {
 	if v < -128 || v > 127 {
 		return 0, false
 	}
 	p := constants.Priority(v) //nolint:gosec // G115: range checked above
+	if p == constants.RepairPriority {
+		return 0, false
+	}
 	if !p.IsConcrete() && p != constants.PausedPriority {
 		return 0, false
 	}

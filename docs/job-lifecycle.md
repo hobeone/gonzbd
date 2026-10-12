@@ -832,23 +832,28 @@ and since priority is persisted with the header it survives a restart.
 `TestList_FollowsDispatchOrder` pin it.
 
 The sort is numeric, so `RepairPriority` (3) ranks ahead of Force. A header
-is meant to hold a concrete priority (`constants.Priority.IsConcrete`:
-Repair, Force, High, Normal, Low), and `SetPriority` refuses any other value.
-Ingest does not go through `SetPriority`; it stores what `ResolvePriority`
-returns. Its callers pass Default (the watch folder, the one-shot CLI),
-Normal (a retry, whose `FetchOptions` leaves `Priority` zero), or a priority
-the API has already checked (`addfile`, `addlocalfile`, `addurl`) — the
-`BuildIngestJob(` call sites outside tests.
-`PausedPriority` (-2) and `DefaultPriority` (-100) are requests that
-`config.ResolvePriority` turns into a concrete priority before the header
-holds it — at ingest, for the API's `name=priority`, and when `change_cat`
-moves a job. Default resolves through the job's category, then the
-Default/`*` category, to Normal. Paused pauses the job — `SetIntent(IntentPause)`
-at ingest, `PauseJob` for a queued job — and the job holds what the same chain
-gives, so a resume leaves it at its category's rank rather than behind Low. A
-category whose priority is Paused pauses the jobs that inherit from it the
-same way. The API refuses `RepairPriority` (3), which is reserved for
-internal use, `StopPriority` (-4) and undefined values as a requested priority (`parsePriority`, `internal/api/helpers.go`).
+holds a concrete priority (`constants.Priority.IsConcrete`: Repair, Force,
+High, Normal, Low). Restore aside, its two writers each refuse anything
+else: `SetPriority` (`e.h.Priority =`), and ingest's header literal in
+`internal/app/ingest.go`, which stores what `config.ResolvePriority`
+returns — and that answers an error for a request that is neither concrete,
+Default nor Paused.
+
+`PausedPriority` (-2) and `DefaultPriority` (-100) are requests.
+Default resolves through the job's category, then the Default/`*` category,
+to Normal — at ingest, for the API's `name=priority`, and when `change_cat`
+moves a job. Paused at ingest pauses the new job (`SetIntent(IntentPause)`),
+which takes what Default would give, so a resume leaves it at its category's
+rank rather than behind Low. Paused through `name=priority` pauses a queued
+job (`PauseJob`) and keeps the priority it holds. A category whose priority
+is Paused pauses the jobs that inherit from it, which take the fallback
+category's priority; through `change_cat`, the pause comes before the
+priority is written, so no tick leases the job at its new rank and a refused
+pause changes nothing. A category priority of Repair is treated like an
+unset one. The API refuses `RepairPriority` (3), `StopPriority` (-4) and
+undefined values as a requested priority (`parsePriority`,
+`internal/api/helpers.go`), so Repair is reachable only by an internal
+`SetPriority` call, and nothing makes one today.
 
 `ForcePriority` orders first and does nothing else: it obeys the global pause
 like every other priority, unlike SABnzbd's Force.

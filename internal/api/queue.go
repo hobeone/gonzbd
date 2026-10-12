@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -894,21 +895,21 @@ func (s *Server) queuePriority(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, http.StatusInternalServerError, "dispatcher not wired")
 		return
 	}
-	row, ok := s.dispatcher.Row(nzoID)
-	if !ok {
-		s.respondError(w, http.StatusNotFound, fmt.Sprintf("set priority %s: %s", nzoID, dispatch.ErrNotFound))
-		return
+	// An unknown job reads as category "", and the write below answers 404.
+	row, _ := s.dispatcher.Row(nzoID)
+	if requested == constants.PausedPriority {
+		// A queued job already holds a concrete priority, which a pause keeps.
+		err = s.dispatcher.PauseJob(nzoID)
+	} else {
+		err = s.applyPriority(nzoID, row.Header.Category, requested)
 	}
-	pri, pause, err := s.applyPriority(nzoID, row.Header.Category, requested)
 	if err != nil {
-		code := http.StatusInternalServerError
-		if errors.Is(err, dispatch.ErrNotFound) {
-			code = http.StatusNotFound
-		}
-		s.respondError(w, code, err.Error())
+		s.respondError(w, priorityErrorStatus(err), err.Error())
 		return
 	}
-	s.log.Info("job priority changed", "job", nzoID, "requested", requested.String(), "priority", pri.String(), "paused", pause)
+	row, _ = s.dispatcher.Row(nzoID)
+	s.log.Info("job priority changed", "job", nzoID, "requested", requested.String(),
+		"priority", constants.Priority(int8(row.Header.Priority)).String()) //nolint:gosec // G115: SetPriority stores only int8 priorities
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":   true,
 		"nzo_ids":  []string{nzoID},
@@ -916,36 +917,42 @@ func (s *Server) queuePriority(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// priorityErrorStatus is the HTTP status for an error from setting a job's
+// priority: 404 for a job the dispatcher does not hold, 500 otherwise.
+func priorityErrorStatus(err error) int {
+	if errors.Is(err, dispatch.ErrNotFound) {
+		return http.StatusNotFound
+	}
+	return http.StatusInternalServerError
+}
+
 // applyPriority gives the job what config.ResolvePriority makes of requested
-// under category, and pauses it when the request asks for that, as ingest
-// does for a new job. It returns the stored priority and whether it paused.
-func (s *Server) applyPriority(id, category string, requested constants.Priority) (constants.Priority, bool, error) {
+// under category, and pauses it when the resolution says to, as ingest does
+// for a new job. The pause comes first: SetPriority kicks the tick, which
+// could otherwise lease the job at its new rank, and a refused pause leaves
+// the priority as it was.
+func (s *Server) applyPriority(id, category string, requested constants.Priority) error {
 	var cats []config.CategoryConfig
 	if s.config != nil {
 		cats = s.config.GetCategories()
 	}
-	pri, pause := config.ResolvePriority(cats, category, requested)
-	if err := s.dispatcher.SetPriority(id, int(pri)); err != nil {
-		return pri, false, err
+	pri, pause, err := config.ResolvePriority(cats, category, requested)
+	if err != nil {
+		return err
 	}
 	if pause {
 		if err := s.dispatcher.PauseJob(id); err != nil {
-			return pri, false, err
+			return err
 		}
 	}
-	return pri, pause, nil
+	return s.dispatcher.SetPriority(id, int(pri))
 }
 
 // listingPosition is the job's index in the unfiltered queue listing
 // (Dispatcher.List, which is in dispatch order), or -1 — SABnzbd's answer for
 // an unknown job — when it is no longer listed.
 func (s *Server) listingPosition(id string) int {
-	for i, row := range s.dispatcher.List() {
-		if row.ID == id {
-			return i
-		}
-	}
-	return -1
+	return slices.IndexFunc(s.dispatcher.List(), func(r dispatch.Row) bool { return r.ID == id })
 }
 
 // queueChangeOpts handles name=change_opts. SABnzbd convention:
@@ -1002,17 +1009,20 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 	if s.dispatcher != nil {
 		resolvedCat := config.FindCategory(cats, cat)
 		cat = resolvedCat.Name
-		if err := s.dispatcher.SetCategory(nzoID, cat); err != nil {
-			s.respondError(w, http.StatusNotFound, err.Error())
-			return
-		}
-		_ = s.dispatcher.SetPP(nzoID, resolvedCat.PP)
-		_ = s.dispatcher.SetScript(nzoID, resolvedCat.Script)
 		// Resolved as ingest resolves it, so a category at DefaultPriority
 		// stores the inherited rank rather than -100, and one at Paused
-		// pauses the job.
-		if _, _, err := s.applyPriority(nzoID, cat, constants.DefaultPriority); err != nil {
-			s.respondError(w, http.StatusInternalServerError, err.Error())
+		// pauses the job. First, so a refused pause or an unknown job changes
+		// nothing else.
+		if err := s.applyPriority(nzoID, cat, constants.DefaultPriority); err != nil {
+			s.respondError(w, priorityErrorStatus(err), err.Error())
+			return
+		}
+		if err := errors.Join(
+			s.dispatcher.SetCategory(nzoID, cat),
+			s.dispatcher.SetPP(nzoID, resolvedCat.PP),
+			s.dispatcher.SetScript(nzoID, resolvedCat.Script),
+		); err != nil {
+			s.respondError(w, priorityErrorStatus(err), err.Error())
 			return
 		}
 		row, _ := s.dispatcher.Row(nzoID)

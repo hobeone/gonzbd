@@ -37,14 +37,27 @@ func TestResolvePriority(t *testing.T) {
 		{"no categories gives the builtin Normal", nil, constants.DefaultPriority, constants.NormalPriority, false},
 		{"Paused request pauses and holds the category's", cats(int(constants.HighPriority), int(constants.LowPriority)), constants.PausedPriority, constants.HighPriority, true},
 		{"Paused request under a Paused category holds the fallback's", cats(int(constants.PausedPriority), int(constants.LowPriority)), constants.PausedPriority, constants.LowPriority, true},
-		{"Stop is not resolved", cats(int(constants.HighPriority), 0), constants.StopPriority, constants.StopPriority, false},
+		// Configuration may not give a job Repair: a category at 3 is
+		// treated like an unset one.
+		{"category Repair defers to the fallback", cats(int(constants.RepairPriority), int(constants.LowPriority)), constants.DefaultPriority, constants.LowPriority, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, pause := ResolvePriority(tc.cats, "tv", tc.req)
-			if got != tc.want || pause != tc.wantPause {
-				t.Errorf("ResolvePriority = (%s, %v), want (%s, %v)", got, pause, tc.want, tc.wantPause)
+			got, pause, err := ResolvePriority(tc.cats, "tv", tc.req)
+			if err != nil || got != tc.want || pause != tc.wantPause {
+				t.Errorf("ResolvePriority = (%s, %v, %v), want (%s, %v, nil)", got, pause, err, tc.want, tc.wantPause)
 			}
 		})
+	}
+}
+
+// TestResolvePriority_RefusesNonRequests pins that a request that is neither
+// concrete, Default nor Paused is an error, so ingest cannot store it.
+func TestResolvePriority_RefusesNonRequests(t *testing.T) {
+	t.Parallel()
+	for _, p := range []constants.Priority{constants.StopPriority, 7, -3} {
+		if got, pause, err := ResolvePriority(nil, "tv", p); err == nil {
+			t.Errorf("ResolvePriority(%s) = (%s, %v, nil), want an error", p, got, pause)
+		}
 	}
 }

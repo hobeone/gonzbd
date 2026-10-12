@@ -32,9 +32,11 @@ type Priority int8
 // out-of-range DefaultPriority (-100), would make iota-based numbering
 // brittle and error-prone.
 const (
-	// RepairPriority is reserved for internal par2-repair jobs that must
-	// run ahead of normal user work. A job can hold it (IsConcrete), but
-	// the API refuses it as a priority a client asks for.
+	// RepairPriority ranks ahead of ForcePriority and is reserved for
+	// internal use; nothing assigns it today. The API (parsePriority)
+	// refuses it as a requested priority and configuration
+	// (config.ResolvePriority) refuses it as a category priority, while
+	// Dispatcher.SetPriority accepts it (IsConcrete).
 	RepairPriority Priority = 3
 
 	// ForcePriority schedules ahead of HighPriority work. It obeys the

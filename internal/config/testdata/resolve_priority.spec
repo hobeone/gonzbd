@@ -20,10 +20,10 @@ file internal/config/categories.go
 [a sentinel survives the chain]
 file internal/config/categories.go
 --- anchor
-	return constants.NormalPriority, pause
+	return constants.NormalPriority, pause, nil
 }
 --- replace
-	return p, pause
+	return p, pause, nil
 }
 --- end
 
@@ -101,10 +101,24 @@ file internal/config/categories.go
 file internal/config/categories.go
 --- anchor
 	if p != constants.DefaultPriority && !pause {
-		return p, false
-	}
 --- replace
 	if false {
-		return p, false
-	}
+--- end
+
+[a request that is not a priority is accepted]
+file internal/config/categories.go
+--- anchor
+		if !p.IsConcrete() {
+			return 0, false, fmt.Errorf(
+--- replace
+		if false {
+			return 0, false, fmt.Errorf(
+--- end
+
+[a Repair category priority counts]
+file internal/config/categories.go
+--- anchor
+	if p == constants.RepairPriority {
+--- replace
+	if false {
 --- end

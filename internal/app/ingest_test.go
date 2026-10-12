@@ -195,6 +195,22 @@ func TestBuildIngestJob_NilConfig(t *testing.T) {
 	}
 }
 
+// TestBuildIngestJob_RefusesNonConcretePriority pins that ingest refuses a
+// request ResolvePriority cannot turn into a concrete priority, so no ingest
+// source can store Stop or an undefined value in a header.
+func TestBuildIngestJob_RefusesNonConcretePriority(t *testing.T) {
+	t.Parallel()
+	for _, p := range []constants.Priority{constants.StopPriority, 7} {
+		t.Run(p.String(), func(t *testing.T) {
+			t.Parallel()
+			_, hdr, err := BuildIngestJob(&config.Config{}, multiVolumeNZB(), "movie.nzb", types.FetchOptions{Priority: p}, nil)
+			if err == nil {
+				t.Fatalf("BuildIngestJob(priority %s) = header priority %d, nil; want an error", p, hdr.Priority)
+			}
+		})
+	}
+}
+
 // TestBuildIngestJob_PausedPriority pins that a Paused request pauses the job
 // and gives it the priority its category resolves to, not the -2 sentinel,
 // which would sort it behind Low and keep it there after a resume.

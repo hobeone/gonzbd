@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
 )
@@ -41,13 +43,16 @@ func jobIntent(t *testing.T, q *testQueueWrapper, id string) job.Intent {
 	return j.Intent()
 }
 
-// TestQueuePriority_PausedPausesJob pins that value2=-2 pauses the job as
-// ingest does, and stores the priority its category resolves to rather than
-// the -2 sentinel, which would sort it behind Low.
+// TestQueuePriority_PausedPausesJob pins that value2=-2 pauses a queued job
+// and keeps the priority it holds: neither the -2 sentinel, which would sort
+// it behind Low, nor its category's priority (tv is High; the job is Low).
 func TestQueuePriority_PausedPausesJob(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServerWithCats(t, priorityTestCats())
 	jb := addTestJob(t, q, testAddOptions{Filename: "job.nzb", Category: "tv"})
+	if rr := setPriority(t, s, jb.ID, "-1"); rr.Code != http.StatusOK {
+		t.Fatalf("value2=-1: status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
 
 	rr := setPriority(t, s, jb.ID, "-2")
 	if rr.Code != http.StatusOK {
@@ -56,8 +61,114 @@ func TestQueuePriority_PausedPausesJob(t *testing.T) {
 	if got := jobIntent(t, q, jb.ID); got != job.IntentPause {
 		t.Errorf("Intent = %v; want %v", got, job.IntentPause)
 	}
+	if got := q.SnapshotJob(jb.ID).Priority; got != constants.LowPriority {
+		t.Errorf("Priority = %s; want Low, the priority the job held", got)
+	}
+}
+
+// unstartedServerWithCats is testUnstartedQueueServer with categories: no tick
+// runs, so a cancelled job stays registered instead of being evicted.
+func unstartedServerWithCats(t *testing.T, cats []config.CategoryConfig) (*Server, *testQueueWrapper) {
+	t.Helper()
+	s, q := testUnstartedQueueServer(t, 0)
+	s.config.Categories = cats
+	return s, q
+}
+
+// cancelJob latches IntentCancel on a registered job, which makes every later
+// pause of it fail (Job.SetIntent refuses to replace a latched intent). Use it
+// on an unstartedServerWithCats, where no tick evicts the cancelled job.
+func cancelJob(t *testing.T, q *testQueueWrapper, id string) {
+	t.Helper()
+	j, ok := q.disp.Job(id)
+	if !ok {
+		t.Fatalf("Job(%s): not registered", id)
+	}
+	if err := j.SetIntent(job.IntentCancel); err != nil {
+		t.Fatalf("SetIntent(IntentCancel): %v", err)
+	}
+}
+
+// TestQueuePriority_RefusedPauseIsAServerError pins that a pause the job
+// refuses answers 500, not success.
+func TestQueuePriority_RefusedPauseIsAServerError(t *testing.T) {
+	t.Parallel()
+	s, q := unstartedServerWithCats(t, priorityTestCats())
+	jb := addTestJob(t, q, testAddOptions{Filename: "job.nzb", Category: "tv"})
+	cancelJob(t, q, jb.ID)
+
+	rr := setPriority(t, s, jb.ID, "-2")
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500 (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestQueuePriority_UnknownJobIs404 pins the not-found answer for each kind
+// of request: a pause, a Default resolution and a concrete priority.
+func TestQueuePriority_UnknownJobIs404(t *testing.T) {
+	t.Parallel()
+	for _, v := range []string{"-2", "-100", "1"} {
+		t.Run(v, func(t *testing.T) {
+			t.Parallel()
+			s, _ := testQueueServer(t)
+			if rr := setPriority(t, s, "nonexistent", v); rr.Code != http.StatusNotFound {
+				t.Errorf("status = %d; want 404 (body: %s)", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// TestApplyPriority_Errors pins that applyPriority returns the resolver's
+// refusal and SetPriority's, rather than reporting success.
+func TestApplyPriority_Errors(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	jb := addTestJob(t, q, testAddOptions{Filename: "job.nzb", Priority: constants.HighPriority})
+	if err := s.applyPriority(jb.ID, "", constants.StopPriority); err == nil {
+		t.Error("applyPriority(Stop) = nil; want the resolver's error")
+	}
 	if got := q.SnapshotJob(jb.ID).Priority; got != constants.HighPriority {
-		t.Errorf("Priority = %s; want High (tv's, in place of the Paused sentinel)", got)
+		t.Errorf("Priority after a refused Stop = %s; want High, unchanged", got)
+	}
+	if err := s.applyPriority("nonexistent", "", constants.NormalPriority); !errors.Is(err, dispatch.ErrNotFound) {
+		t.Errorf("applyPriority(unknown job) = %v; want ErrNotFound", err)
+	}
+}
+
+// TestQueueChangeCat_RefusedPauseChangesNothing pins that change_cat into a
+// Paused category pauses before it writes anything: a job that refuses the
+// pause answers 500 and keeps its category and priority.
+func TestQueueChangeCat_RefusedPauseChangesNothing(t *testing.T) {
+	t.Parallel()
+	cats := []config.CategoryConfig{
+		{Name: "Default", PP: 3, Priority: int(constants.HighPriority)},
+		{Name: "hold", PP: 3, Priority: int(constants.PausedPriority)},
+	}
+	s, q := unstartedServerWithCats(t, cats)
+	jb := addTestJob(t, q, testAddOptions{Filename: "job.nzb", Category: "Default"})
+	cancelJob(t, q, jb.ID)
+
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=change_cat&value="+jb.ID+"&value2=hold&apikey="+testAPIKey)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500 (body: %s)", rr.Code, rr.Body.String())
+	}
+	got := q.SnapshotJob(jb.ID)
+	if got.Priority != constants.NormalPriority {
+		t.Errorf("Priority = %s; want Normal, unchanged", got.Priority)
+	}
+	if got.Category != "Default" {
+		t.Errorf("Category = %q; want Default, unchanged", got.Category)
+	}
+}
+
+// TestListingPosition_NotListed pins -1, SABnzbd's answer for an unknown job.
+func TestListingPosition_NotListed(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	_ = addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
+	if got := s.listingPosition("nonexistent"); got != -1 {
+		t.Errorf("listingPosition = %d; want -1", got)
 	}
 }
 

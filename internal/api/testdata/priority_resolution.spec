@@ -1,22 +1,119 @@
 pkg ./internal/api/
-run TestQueuePriority_|TestAddFile_PausedPriority|TestAddFile_RefusesNonPriorities|TestAddURL_RefusesNonPriority|TestQueueChangeCat_PausedCategoryPauses|TestPriorityParam
+run TestQueuePriority_|TestAddFile_PausedPriority|TestAddFile_RefusesNonPriorities|TestAddURL_RefusesNonPriority|TestQueueChangeCat_|TestPriorityParam|TestApplyPriority_|TestListingPosition_
 
-[name=priority stores the request unresolved]
+[applyPriority stores the request unresolved]
 file internal/api/queue.go
 --- anchor
-	pri, pause := config.ResolvePriority(cats, category, requested)
+	pri, pause, err := config.ResolvePriority(cats, category, requested)
 --- replace
-	pri, pause, _ := requested, requested == constants.PausedPriority, cats
+	pri, pause, err := requested, false, error(nil)
+	_ = cats
 --- end
 
-[name=priority does not pause on a Paused request]
+[applyPriority ignores the resolver's error]
+file internal/api/queue.go
+--- anchor
+	if err != nil {
+		return err
+	}
+	if pause {
+--- replace
+	if false {
+		return err
+	}
+	if pause {
+--- end
+
+[applyPriority does not pause when the resolution says to]
 file internal/api/queue.go
 --- anchor
 	if pause {
 		if err := s.dispatcher.PauseJob(id); err != nil {
 --- replace
-	if false {
+	if pause && false {
 		if err := s.dispatcher.PauseJob(id); err != nil {
+--- end
+
+[applyPriority ignores a refused pause]
+file internal/api/queue.go
+--- anchor
+		if err := s.dispatcher.PauseJob(id); err != nil {
+--- replace
+		if err := s.dispatcher.PauseJob(id); err != nil && false {
+--- end
+
+[applyPriority writes the priority before it pauses]
+file internal/api/queue.go
+--- anchor
+	if pause {
+		if err := s.dispatcher.PauseJob(id); err != nil {
+			return err
+		}
+	}
+	return s.dispatcher.SetPriority(id, int(pri))
+--- replace
+	if err := s.dispatcher.SetPriority(id, int(pri)); err != nil {
+		return err
+	}
+	if pause {
+		if err := s.dispatcher.PauseJob(id); err != nil {
+			return err
+		}
+	}
+	return nil
+--- end
+
+[applyPriority ignores SetPriority's error]
+file internal/api/queue.go
+--- anchor
+	return s.dispatcher.SetPriority(id, int(pri))
+--- replace
+	_ = s.dispatcher.SetPriority(id, int(pri))
+	return nil
+--- end
+
+[name=priority re-resolves a Paused request]
+file internal/api/queue.go
+--- anchor
+	if requested == constants.PausedPriority {
+--- replace
+	if false {
+--- end
+
+[name=priority does not pause on a Paused request]
+file internal/api/queue.go
+--- anchor
+		err = s.dispatcher.PauseJob(nzoID)
+--- replace
+		err = nil
+--- end
+
+[name=priority reports success for a failed write]
+file internal/api/queue.go
+--- anchor
+	if err != nil {
+		s.respondError(w, priorityErrorStatus(err), err.Error())
+--- replace
+	if err != nil && false {
+		s.respondError(w, priorityErrorStatus(err), err.Error())
+--- end
+
+[an unknown job is a server error]
+file internal/api/queue.go
+--- anchor
+	if errors.Is(err, dispatch.ErrNotFound) {
+		return http.StatusNotFound
+--- replace
+	if false {
+		return http.StatusNotFound
+--- end
+
+[listingPosition matches any row]
+file internal/api/queue.go
+--- anchor
+	return slices.IndexFunc(s.dispatcher.List(), func(r dispatch.Row) bool { return r.ID == id })
+--- replace
+	return slices.IndexFunc(s.dispatcher.List(), func(r dispatch.Row) bool { return true })
 --- end
 
 [name=priority accepts what parsePriority refuses]
