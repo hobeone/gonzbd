@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -20,6 +21,41 @@ func TestCategoryConfig_validate_PPBounds(t *testing.T) {
 		if err := c.validate(); err != nil {
 			t.Errorf("CategoryConfig{PP: %d}.validate() = %v, want nil", pp, err)
 		}
+	}
+}
+
+// A trailing "*" on a category dir used to select a shared flat directory.
+// The suffix is now refused with an error that names the dir, so a config
+// written for the old behaviour fails to load instead of delivering into a
+// directory literally named "movies*".
+func TestCategoryConfig_validate_RejectsFlatDir(t *testing.T) {
+	for _, dir := range []string{"movies*", "*", "a/b*"} {
+		c := CategoryConfig{Name: "movies", Dir: dir}
+		err := c.validate()
+		if err == nil {
+			t.Fatalf("CategoryConfig{Dir: %q}.validate() = nil, want an error", dir)
+		}
+		if !strings.Contains(err.Error(), "flat categories") || !strings.Contains(err.Error(), dir) {
+			t.Errorf("validate() = %q, want it to name the dir %q and say flat categories are unsupported", err, dir)
+		}
+	}
+	for _, dir := range []string{"", "movies", "mo*vies", "movies/*/x"} {
+		c := CategoryConfig{Name: "movies", Dir: dir}
+		if err := c.validate(); err != nil {
+			t.Errorf("CategoryConfig{Dir: %q}.validate() = %v, want nil", dir, err)
+		}
+	}
+}
+
+func TestConfigValidate_NamesFlatCategory(t *testing.T) {
+	cfg, err := Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	cfg.Categories = append(cfg.Categories, CategoryConfig{Name: "flatcat", Dir: "flat*"})
+	err = cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), `"flatcat"`) || !strings.Contains(err.Error(), "flat categories") {
+		t.Fatalf("Validate() = %v, want an error naming category flatcat and flat categories", err)
 	}
 }
 

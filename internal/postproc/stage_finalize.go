@@ -64,13 +64,7 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	if job.DownloadDir == job.FinalDir {
 		logf(ctx, log, job, slog.LevelInfo, "Already at final location: %s", job.FinalDir)
 		f.deletePending(ctx, log, job)
-		if job.FlatLayout {
-			// The directory is shared with other jobs and nothing here
-			// recorded which of its files are this job's.
-			job.recordOutputFilesErr(errors.New("job was delivered in place into a shared flat category directory, so its files are not known"))
-		} else {
-			recordWalkedOutputFiles(job)
-		}
+		recordWalkedOutputFiles(job)
 		return nil // Already there (e.g. one-shot download directly to target)
 	}
 
@@ -179,8 +173,6 @@ func (f *FinalizeStage) handleFailure(ctx context.Context, log *slog.Logger, job
 		}
 	}
 
-	// DownloadDir is the job's own incomplete directory here, shared with no
-	// other job even in a flat category, so walking it is safe.
 	recordWalkedOutputFiles(job)
 	logf(ctx, log, job, slog.LevelInfo, "Skipped final move: files remain in download directory (%s)", strings.Join(reasons, "; "))
 	return nil // Skip move if failed, so files stay in DownloadDir for retry
@@ -199,14 +191,6 @@ func (f *FinalizeStage) moveToDest(ctx context.Context, log *slog.Logger, job *J
 				logf(ctx, log, job, slog.LevelWarn, "Failed to write pending deletions sidecar: %v", err)
 			}
 		}
-	}
-
-	// A flat category's destination is shared with other jobs, so the job's
-	// files are recorded as they are moved, which only the file-by-file
-	// path does; the atomic rename below is for a per-job directory.
-	if job.FlatLayout {
-		removePendingSidecar(log, job.DownloadDir)
-		return f.moveFileByFile(ctx, log, job, dest, folderRename)
 	}
 
 	// If the source directory exists, rename it to the target.
@@ -256,19 +240,13 @@ func (f *FinalizeStage) moveFileByFile(ctx context.Context, log *slog.Logger, jo
 
 	var moved, failed []string
 	var moveErrors []error
-	var delivered []string // dest-relative paths of the regular files moved
-	onFile := func(dst string) {
-		if rel, err := filepath.Rel(dest, dst); err == nil {
-			delivered = append(delivered, filepath.ToSlash(rel))
-		}
-	}
 	for _, e := range entries {
 		src := filepath.Join(job.DownloadDir, e.Name())
 		if job.isPendingDeletion(src) {
 			continue
 		}
 		dst := fsutil.JoinSafe(dest, "", e.Name(), job.Sanitize)
-		if err := moveRecursive(ctx, src, dst, job.isPendingDeletion, onFile); err != nil {
+		if err := moveRecursive(ctx, src, dst, job.isPendingDeletion); err != nil {
 			failed = append(failed, e.Name())
 			moveErrors = append(moveErrors, fmt.Errorf("finalize: move %s -> %s: %w", src, dst, err))
 			logf(ctx, log, job, slog.LevelWarn, "Failed to move %s → %s: %v", filepath.Base(src), dst, err)
@@ -311,11 +289,7 @@ func (f *FinalizeStage) moveFileByFile(ctx context.Context, log *slog.Logger, jo
 		}
 	}
 
-	if job.FlatLayout {
-		job.recordOutputFiles(delivered)
-	} else {
-		recordWalkedOutputFiles(job)
-	}
+	recordWalkedOutputFiles(job)
 	return nil
 }
 
@@ -338,9 +312,8 @@ func (j *Job) recordOutputFilesErr(err error) {
 }
 
 // recordWalkedOutputFiles records the regular files under job.DownloadDir.
-// Callers use it only where DownloadDir is the job's own directory, never a
-// flat category's shared one. It is also what a resumed job's script stage
-// relies on (postproc.go, the delivered-recovery branch).
+// It is also what a resumed job's script stage relies on (postproc.go, the
+// delivered-recovery branch).
 func recordWalkedOutputFiles(job *Job) {
 	files, err := walkFiles(job.DownloadDir)
 	if err != nil {
@@ -394,7 +367,7 @@ func prefixDirName(dir, prefix string) string {
 // support. On the cross-device fallback fsutil.MoveFile moves only regular
 // files, so a symlink in the tree fails the move rather than being recreated
 // at dst.
-func moveRecursive(ctx context.Context, src, dst string, isPending func(string) bool, onFile func(dst string)) error {
+func moveRecursive(ctx context.Context, src, dst string, isPending func(string) bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -408,13 +381,7 @@ func moveRecursive(ctx context.Context, src, dst string, isPending func(string) 
 	}
 
 	if !info.IsDir() {
-		if err := fsutil.MoveFile(src, dst); err != nil {
-			return err
-		}
-		if onFile != nil && info.Mode().IsRegular() {
-			onFile(dst)
-		}
-		return nil
+		return fsutil.MoveFile(src, dst)
 	}
 
 	// It's a directory — preserve source permissions.
@@ -428,7 +395,7 @@ func moveRecursive(ctx context.Context, src, dst string, isPending func(string) 
 	}
 
 	for _, e := range entries {
-		if err := moveRecursive(ctx, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), isPending, onFile); err != nil {
+		if err := moveRecursive(ctx, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), isPending); err != nil {
 			return err
 		}
 	}

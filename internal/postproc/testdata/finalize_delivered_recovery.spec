@@ -50,14 +50,6 @@ file internal/postproc/postproc.go
 				_ = stagesAfterFinalize(stages)
 --- end
 
-[alreadyDelivered accepts flat layout FinalDir]
-file internal/postproc/postproc.go
---- anchor
-	if j.FlatLayout || j.FinalDir == "" {
---- replace
-	if j.FinalDir == "" {
---- end
-
 [alreadyDelivered accepts empty FinalDir]
 file internal/postproc/postproc.go
 --- anchor

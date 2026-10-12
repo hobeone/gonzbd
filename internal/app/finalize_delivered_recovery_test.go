@@ -17,18 +17,14 @@ import (
 
 // TestEnqueuePostProc_DeliveredCrashRecovery verifies #767 end-to-end through
 // Application.enqueuePostProc -> PostProcessor -> buildHistoryEntry:
-//   - For a per-job category destination (catDir not ending in "*"), when
-//     DownloadDir is missing and FinalDir exists and is non-empty, the job is
-//     treated as already delivered: finalize is skipped, script runs against
-//     FinalDir, and history records Status == "Completed" with Path == FinalDir.
-//   - For a flat category destination (catDir ending in "*"), enqueuePostProc
-//     sets FlatLayout = true on the postproc.Job, so a non-empty shared
-//     FinalDir does not rescue the missing DownloadDir and the job is filed
-//     Failed with Path == DownloadDir.
+//   - When DownloadDir is missing and FinalDir exists and is non-empty, the
+//     job is treated as already delivered: finalize is skipped, script runs
+//     against FinalDir, and history records Status == "Completed" with
+//     Path == FinalDir.
 func TestEnqueuePostProc_DeliveredCrashRecovery(t *testing.T) {
 	t.Parallel()
 
-	runCase := func(t *testing.T, catDir, scriptBody string) (entryStatus, entryPath, entryStorage, entryStageLog, scriptStatus, scriptDirOut, downloadDir, finalDir string) {
+	runCase := func(t *testing.T, scriptBody string) (entryStatus, entryPath, entryStorage, entryStageLog, scriptStatus, scriptDirOut, finalDir string) {
 		t.Helper()
 
 		scriptDir := t.TempDir()
@@ -47,7 +43,7 @@ func TestEnqueuePostProc_DeliveredCrashRecovery(t *testing.T) {
 		application.config.With(func(c *config.Config) {
 			c.PostProc.ScriptCanFail = true
 			c.Categories = []config.CategoryConfig{
-				{Name: "movies", Dir: catDir},
+				{Name: "movies", Dir: "movies"},
 			}
 		})
 
@@ -86,15 +82,9 @@ func TestEnqueuePostProc_DeliveredCrashRecovery(t *testing.T) {
 		}
 
 		gen := application.config.GetGeneral()
-		downloadDir = filepath.Join(gen.DownloadDir, j.Name())
 		// Deliberately leave downloadDir missing (already moved before crash)
 		// and populate finalDir instead.
-		cleanCat := strings.TrimSuffix(catDir, "*")
-		if strings.HasSuffix(catDir, "*") {
-			finalDir = filepath.Join(gen.CompleteDir, cleanCat)
-		} else {
-			finalDir = filepath.Join(gen.CompleteDir, cleanCat, j.Name())
-		}
+		finalDir = filepath.Join(gen.CompleteDir, "movies", j.Name())
 		if err := os.MkdirAll(finalDir, 0o750); err != nil {
 			t.Fatalf("mkdir finalDir: %v", err)
 		}
@@ -111,12 +101,12 @@ func TestEnqueuePostProc_DeliveredCrashRecovery(t *testing.T) {
 		return entry.Status, entry.Path, entry.Storage, entry.StageLog,
 			strings.TrimSpace(string(gotStatus)),
 			strings.TrimSpace(string(gotDir)),
-			downloadDir, finalDir
+			finalDir
 	}
 
 	t.Run("per-job category completes and runs script", func(t *testing.T) {
 		t.Parallel()
-		status, path, storage, stageLog, scriptStatus, scriptDirOut, _, finalDir := runCase(t, "movies", "")
+		status, path, storage, stageLog, scriptStatus, scriptDirOut, finalDir := runCase(t, "")
 		if status != "Completed" {
 			t.Errorf("history Status = %q, want %q", status, "Completed")
 		}
@@ -145,7 +135,7 @@ func TestEnqueuePostProc_DeliveredCrashRecovery(t *testing.T) {
 
 	t.Run("per-job category with failing script files Failed with Path and Storage at FinalDir", func(t *testing.T) {
 		t.Parallel()
-		status, path, storage, stageLog, scriptStatus, scriptDirOut, _, finalDir := runCase(t, "movies", "exit 7\n")
+		status, path, storage, stageLog, scriptStatus, scriptDirOut, finalDir := runCase(t, "exit 7\n")
 		if status != "Failed" {
 			t.Errorf("history Status = %q, want %q", status, "Failed")
 		}
@@ -163,23 +153,6 @@ func TestEnqueuePostProc_DeliveredCrashRecovery(t *testing.T) {
 		}
 		if scriptDirOut != finalDir {
 			t.Errorf("script SAB_FINAL_PROCESSING_DIR = %q, want FinalDir %q", scriptDirOut, finalDir)
-		}
-	})
-
-	t.Run("flat category dir ending in * still files Failed", func(t *testing.T) {
-		t.Parallel()
-		status, path, storage, _, scriptStatus, _, downloadDir, _ := runCase(t, "movies*", "")
-		if status != "Failed" {
-			t.Errorf("history Status = %q, want %q", status, "Failed")
-		}
-		if path != downloadDir {
-			t.Errorf("history Path = %q, want missing DownloadDir %q", path, downloadDir)
-		}
-		if storage != downloadDir {
-			t.Errorf("history Storage = %q, want missing DownloadDir %q", storage, downloadDir)
-		}
-		if scriptStatus != "" {
-			t.Errorf("script ran on flat-layout missing-DownloadDir job (status = %q)", scriptStatus)
 		}
 	})
 }

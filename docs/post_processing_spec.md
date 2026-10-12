@@ -594,8 +594,9 @@ While work is in progress: directory is named `_UNPACK_<final_name>` (if
 `cfg.folder_rename()` is on); renamed to `<final_name>` on success or
 `_FAILED_<final_name>` on failure.
 
-**Category dir trailing `*`**: suppresses the per-job subfolder — files are
-moved directly into the category dir. This is the "flat" layout escape hatch.
+**Category dir trailing `*`**: SABnzbd suppresses the per-job subfolder with
+it. GoNZBD does not support this "flat" layout: every job has its own
+directory, and a category `dir` ending in `*` is refused by config validation.
 
 ### 6.7 History DB schema (sqlite, `history.db`)
 
@@ -1350,7 +1351,7 @@ behavior any reimplementation must preserve.**
 | 26 | Windows rename retries on `winerror 32`/`5` for 3 attempts × 2 s | `test_renamer_busy_retry` |
 | 27 | macOS sanitizes `:` (par2 metadata uses it) | `test_sanitize_filename_macos` |
 | 28 | Path collision adds `.1`/`.2`/… suffix before extension | `test_get_unique_filename` |
-| 29 | Category dir ending in `*` suppresses per-job subfolder | `test_prepare_extraction_path` (param) |
+| 29 | Category dir ending in `*` suppresses per-job subfolder (SABnzbd only; GoNZBD refuses such a dir) | `test_prepare_extraction_path` (param) |
 | 30 | `_UNPACK_` prefix used iff `folder_rename` is on | `test_prepare_extraction_path` (param) |
 | 31 | Script runs even when job failed; receives `status=1/2/3` arg | `postproc.py:585` |
 | 32 | Script non-zero exit only fails job if `cfg.script_can_fail()` | `postproc.py:596` |

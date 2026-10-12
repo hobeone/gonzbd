@@ -56,7 +56,9 @@ type CategoryConfig struct {
 	Priority int `yaml:"priority" json:"priority"`
 
 	// Dir is a subdirectory within complete_dir to receive output for
-	// this category. Empty writes directly to complete_dir.
+	// this category; each job lands in its own directory beneath it. Empty
+	// puts the job directories directly in complete_dir. A trailing "*" is
+	// refused by validate.
 	Dir string `yaml:"dir" json:"dir"`
 }
 

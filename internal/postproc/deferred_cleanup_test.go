@@ -417,10 +417,6 @@ func TestDeferredCleanup_RerunAfterCrashBeforeFinalize(t *testing.T) {
 		if !strings.Contains(roJob.FailMsg, roUnpack) {
 			t.Errorf("roJob.FailMsg = %q, want mention of %s", roJob.FailMsg, roUnpack)
 		}
-
-		if err := pp.recoverUnpackFinalDir(t.Context(), &Job{FlatLayout: true, FinalDir: subFinalDir}); err != nil {
-			t.Errorf("recoverUnpackFinalDir(FlatLayout=true) = %v, want nil", err)
-		}
 	})
 }
 
