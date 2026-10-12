@@ -28,9 +28,9 @@ type Options struct {
 	// hands the whole of Passwords to rarengine (go_unrar.go's
 	// r.SetPasswords(opts.Passwords)).
 	Passwords []string
-	// OneFolder extracts all files flat into outDir (no path preservation).
-	// For unrar this selects the 'e' command; for 7z this selects 'e'
-	// instead of 'x'.
+	// OneFolder extracts all files flat into outDir (no path preservation),
+	// and a directory member creates nothing. For unrar this selects the
+	// 'e' command; for 7z this selects 'e' instead of 'x'.
 	OneFolder bool
 	// KeepOriginals controls whether the caller should delete the source Parts
 	// after a successful extraction.  The extractors do not read it and do
@@ -43,12 +43,20 @@ type Options struct {
 	UnrarCommand string
 	// SevenZipCommand overrides the 7z binary path. Empty uses auto-detection.
 	SevenZipCommand string
-	// OverwriteFiles controls whether extraction overwrites existing files.
-	// true = overwrite (-o+ for unrar, -aoa for 7z); false = skip (-o- for unrar, -aos for 7z).
-	// Default (false) preserves existing files. With OneFolder also set,
-	// false means skip only for UnRAR and SevenZip: GoUnRAR (ExtractMember),
-	// GoSevenZip, GoTar and ExtractStaged instead write a taken name under
-	// a uniquePath "_N" name.
+	// OverwriteFiles controls what extraction does with a name that is
+	// already taken. true overwrites it, in every engine (-o+ for unrar, -aoa
+	// for 7z). false (the default) never overwrites, and what it does
+	// instead depends on OneFolder:
+	//   - without OneFolder, the member is skipped and the existing file
+	//     kept: unrar is passed -o-, 7z -aos, the in-process engines
+	//     (GoUnRAR, GoSevenZip, GoTar) skip the write, and the publish of a
+	//     staged extraction skips the name;
+	//   - with OneFolder, the member is renamed rather than skipped: unrar is
+	//     passed -o- -or ("name(1).ext"), 7z -aou ("name_1.ext"), and the
+	//     in-process engines and the publish of a staged extraction use a
+	//     uniquePath "_N" name. The one exception is unrar with HasProblem
+	//     set, which is passed -o- alone and skips a member whose flattened
+	//     name an earlier member took.
 	OverwriteFiles bool
 	// IgnoreUnrarDates discards in-archive modification timestamps and uses extraction time.
 	// Adds -tsm- to unrar arguments (matches SABnzbd's behavior).
@@ -178,7 +186,7 @@ type Result struct {
 //
 // Argv construction:
 //
-//	unrar <mode> -y -idp [-scf -ai] -p<pw>|-p- -o+|-o- [-tsm-] [-ol-] [ExtraArgs] <mainfile> <stagedir>/
+//	unrar <mode> -y -idp [-scf -ai] -p<pw>|-p- -o+|-o- [-or] [-tsm-] [-ol-] [ExtraArgs] <mainfile> <stagedir>/
 //
 // where mode is 'e' (flat extract) when opts.OneFolder is true, or 'x'
 // (preserve paths) otherwise.  -p- suppresses the interactive password
@@ -216,10 +224,16 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 	flagIdx := len(args)
 	args = append(args, argFlag)
 
-	// Extraction flags from config.
-	if opts.OverwriteFiles {
+	// Extraction flags from config. Under OneFolder, -or renames a member
+	// whose flattened name an earlier member took, as "name(1).ext", where
+	// -o- alone would skip it. A degraded unrar is not passed -or, as
+	// SABnzbd does not pass it to one.
+	switch {
+	case opts.OverwriteFiles:
 		args = append(args, "-o+")
-	} else {
+	case opts.OneFolder && !opts.HasProblem:
+		args = append(args, "-o-", "-or")
+	default:
 		args = append(args, "-o-") // skip existing files
 	}
 	if opts.IgnoreUnrarDates && !opts.HasProblem {
@@ -302,7 +316,7 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 				var stageSnap map[string]struct{}
 				stageSnap, snapErr = snapshotDir(stageDir)
 				if snapErr == nil && len(stageSnap) > 0 {
-					published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, false)
+					published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
 					if pubErr != nil {
 						res.Err = fmt.Errorf("unrar: publish staged files: %w", pubErr)
 						return res, res.Err
@@ -340,7 +354,7 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 		return res, res.Err
 	}
 
-	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, false)
+	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
 	if pubErr != nil {
 		res.Err = fmt.Errorf("unrar: publish staged files: %w", pubErr)
 		return res, res.Err

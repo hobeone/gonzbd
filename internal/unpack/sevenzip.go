@@ -49,7 +49,7 @@ func SevenZipBin(opts Options) (string, error) {
 //
 // Argv construction:
 //
-//	7zz x|e -y -bd -bsp0 -p<pw> -aoa|-aos <mainfile> -o<stagedir> -ssc|-ssc-
+//	7zz x|e -y -bd -bsp0 -p<pw> -aoa|-aou|-aos <mainfile> -o<stagedir> -ssc|-ssc-
 //
 // 'x' preserves directory structure; 'e' flattens paths (when opts.OneFolder
 // is true, matching SABnzbd's cfg.flat_unpack).  -bsp0 suppresses the
@@ -82,10 +82,15 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 	flagIdx := len(args)
 	args = append(args, argFlag)
 
-	// Overwrite behavior.
-	if opts.OverwriteFiles {
+	// Overwrite behavior. Under OneFolder, -aou renames a member whose
+	// flattened name an earlier member took, as "name_1.ext", where -aos
+	// would skip it.
+	switch {
+	case opts.OverwriteFiles:
 		args = append(args, "-aoa") // overwrite all existing files (SABnzbd default)
-	} else {
+	case opts.OneFolder:
+		args = append(args, "-aou")
+	default:
 		args = append(args, "-aos") // skip extracting of existing files
 	}
 
@@ -165,7 +170,7 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 		return res, res.Err
 	}
 
-	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, false)
+	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
 	if pubErr != nil {
 		res.Err = fmt.Errorf("7zip: publish staged files: %w", pubErr)
 		return res, res.Err
