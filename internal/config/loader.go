@@ -180,6 +180,16 @@ func decode(r io.Reader) (*Config, []string, error) {
 		}
 	}
 
+	// The strict pass above zero-filled each server's omitted keys;
+	// decodeServers re-decodes the entries onto their defaults.
+	servers, err := decodeServers(b)
+	if err != nil {
+		return nil, unknowns, wrapYAMLError(err, b)
+	}
+	if servers != nil {
+		cfg.Servers = servers
+	}
+
 	// Sticky defaults: if these fields are empty after decoding, it means
 	// they were either missing from the YAML or explicitly set to empty.
 	// We restore defaults for critical naming options to ensure the UI

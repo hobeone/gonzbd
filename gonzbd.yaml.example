@@ -461,7 +461,7 @@ servers:
     # Certificate verification level:
     #   0 = none (insecure), 1 = chain only (no hostname check),
     #   2 = hostname match (recommended), 3 = strict (currently verifies
-    #   exactly as 2 does).
+    #   exactly as 2 does). A server that leaves this key out gets 2.
     ssl_verify: 2
     # OpenSSL cipher string. Empty uses system defaults.
     ssl_ciphers: ""
