@@ -126,6 +126,8 @@ func staticTests(ctx build.Context, dir string) ([]string, error) {
 // taking *M is the binary's entry hook, not a test. A Test-named function with
 // the wrong signature fails `go test` outright, so it is an error here too
 // rather than a silently missing name.
+//
+//doccite:ok cmd/go/internal/load/test.go — a file in the Go toolchain's source tree, not this repository
 func testFuncs(file *ast.File) ([]string, error) {
 	var names []string
 	for _, d := range file.Decls {
