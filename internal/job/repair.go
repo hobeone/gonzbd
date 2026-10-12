@@ -87,10 +87,10 @@ func (s RepairState) Hopeless() bool {
 
 // RepairStateFrom derives the verdict from the three quantities it depends on.
 //
-// Exported in this form, rather than only as a method, because the dispatch
-// snapshot already holds these figures under the queue lock and reads them
-// from the manifest directly. Routing it back through Job's accessors there
-// would take a second mutex inside the first for values it already has.
+// Its one non-test caller is Job.RepairState, which reads the three figures
+// under contentMu — `git grep -n 'RepairStateFro[m](' -- '*.go' ':!*_test.go'`
+// returns 2 lines, that call and this declaration. Code outside this package
+// asks Job.RepairState rather than calling this with figures of its own.
 //
 // contentFailedBytes must exclude par2 files (see JobProgress.ContentFailedBytes):
 // a failed par2 file is lost capacity, not damage needing repair. Passing the

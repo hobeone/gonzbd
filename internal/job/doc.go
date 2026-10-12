@@ -156,21 +156,22 @@
 //
 // # What this package does not do
 //
-// No I/O, no locking beyond its own Job.mu, and no import of any other
-// package in this repository except internal/constants — which, among this
-// package's non-test sources, appears in sabnzbd.go alone, for the one-way
-// translation to the legacy API vocabulary.
-// `go list -deps ./internal/job/ | grep hobeone` names exactly
-// internal/constants and internal/job itself, but that check is blind to
-// test files by construction — sabnzbd_test.go is package job and also
-// imports internal/constants, which `go list -deps` cannot see either way.
-// TestOnlyOneNonTestFileImportsConstants (sabnzbd_test.go) enforces the
-// narrower, actual claim: sabnzbd.go is the sole NON-TEST file importing
-// internal/constants. It explicitly skips every "_test.go" file while
-// scanning, so a _test.go file's own import of internal/constants — as
-// sabnzbd_test.go has, to write its constants.Status table — is outside that
-// test's scope, and outside what `go list -deps` can see either way, for the
-// same reason.
+// No I/O, and no locking beyond the Job's own two mutexes, Job.mu and
+// Job.contentMu. Its non-test sources import five other packages in this
+// repository, each for types or pure functions:
+// `git grep -n 'gonzbd/interna[l]' -- 'internal/job/*.go' ':!internal/job/*_test.go' ':!internal/job/jobtest/*'`
+// returns 8 import lines — internal/constants (sabnzbd.go, for the one-way
+// translation to the legacy API vocabulary), internal/durability (the
+// written-row and file-state types, in content.go, progress.go,
+// verification.go and verified.go), internal/crc32util (verified.go's CRC
+// combine), internal/nzb (manifest.go's Message-ID check) and
+// internal/rarheader (filesort.go's volume-name parse). None of them is
+// internal/sched or internal/dispatch.
+// TestOnlyOneNonTestFileImportsConstants (sabnzbd_test.go) enforces one part
+// of that: sabnzbd.go is the sole NON-TEST file importing internal/constants.
+// It explicitly skips every "_test.go" file while scanning, so a _test.go
+// file's own import of internal/constants — as sabnzbd_test.go has, to write
+// its constants.Status table — is outside that test's scope.
 //
 // A Job method never calls a Queue method. That holds structurally today
 // because this package cannot see a Queue — nothing here imports it. Whether

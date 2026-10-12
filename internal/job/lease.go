@@ -42,8 +42,10 @@ const LeaseUnset LeaseID = 0
 //     so there is no manifest to install at grant time
 //     (internal/dispatch/tick.go, reconcileResidency). And post-processing
 //     reads the manifest at Extracting/Finalizing, where needsLease is false
-//     (internal/sched/requirements.go) — four sites, `grep -n 'Manifest()'
-//     internal/postproc/*.go | grep -v _test` — so a lease-gated manifest
+//     (internal/sched/requirements.go) — `grep -n 'Manifest()'
+//     internal/postproc/*.go | grep -v _test` returns 6 lines: four reads in
+//     filelist.go and stage_quickcheck.go, and postproc.Job's own Manifest
+//     wrapper (its declaration and its delegating call) — so a lease-gated manifest
 //     would be unreadable exactly where the stage that verifies CRCs needs it.
 //
 // Residency lives on job.Job and is driven by dispatch.Residency against
