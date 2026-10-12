@@ -393,6 +393,10 @@ func runSpec(root, path string, opts runOpts) int {
 				"mutation changed. A test that already fails yields KILLED for any\n"+
 				"mutation, and none of them mean anything.\n\n"+
 				"command: %s\n\n%s\n", baselineCmd, indent(out))
+			if d, ok := timedOut(out); ok {
+				fmt.Fprintf(os.Stderr, "\nthe unmutated test ran out of time (-timeout %s). If it needs that\n"+
+					"long, give the spec a `timeout` line; one that sets none gets %s.\n", d, defaultTestTimeout)
+			}
 			return 1
 		}
 		if ranNothing(out) {
@@ -480,6 +484,9 @@ func run(root string, sp *spec, m mutation, verbose bool) result {
 		// mutation rather than about the tree in general.
 		return widenOnPass(root, sp, m, verbose)
 	default:
+		if d, ok := timedOut(out); ok {
+			return result{mutation: m, verdict: killed, evidence: "the mutated test never finished: go test timed out after " + d}
+		}
 		return result{mutation: m, verdict: killed, evidence: firstAssertion(out)}
 	}
 }
@@ -857,9 +864,7 @@ func testArgs(sp *spec) []string {
 	if sp.run != "" {
 		args = append(args, "-run", sp.run)
 	}
-	if sp.timeout > 0 {
-		args = append(args, "-timeout", sp.timeout.String())
-	}
+	args = append(args, "-timeout", sp.testTimeout().String())
 	if sp.parallel > 0 {
 		args = append(args, "-parallel", strconv.Itoa(sp.parallel))
 	}
@@ -867,6 +872,42 @@ func testArgs(sp *spec) []string {
 		args = append(args, "-gcflags="+sp.gcflags)
 	}
 	return args
+}
+
+// defaultTestTimeout is go test's -timeout for a spec with no `timeout` line.
+// go test's own default is ten minutes, so a mutation that removes a loop
+// exit or a channel close would hold a sweep worker that long before being
+// killed. It sits far above the slowest unmutated run a full sweep measured
+// (the commit that set it records the figures); a spec whose tests need
+// longer says so with its own `timeout` line.
+//
+// A run that reaches it is classified like any other non-zero exit: a mutated
+// run that times out is KILLED (the mutation made the test hang, and timedOut
+// names that in the evidence), and a baseline that times out is a failed
+// baseline, so a deadline too short for the unmutated tests can never be
+// recorded as a kill.
+const defaultTestTimeout = 3 * time.Minute
+
+// testTimeout is the -timeout every go test for this spec runs with.
+func (sp *spec) testTimeout() time.Duration {
+	if sp.timeout > 0 {
+		return sp.timeout
+	}
+	return defaultTestTimeout
+}
+
+// timedOutRe matches the panic the testing package raises when -timeout
+// expires. It is anchored to the start of a line so a test's own message
+// quoting the phrase does not match.
+var timedOutRe = regexp.MustCompile(`(?m)^panic: test timed out after (\S+)$`)
+
+// timedOut reports whether go test's deadline ended the run, and the deadline.
+func timedOut(out string) (string, bool) {
+	m := timedOutRe.FindStringSubmatch(out)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
 }
 
 // testWaitEnv names the wait budget every go test this command runs is given,
@@ -1151,7 +1192,7 @@ func fatal(format string, args ...any) {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] [-parallel N] [-gcflags FLAGS] [-chunk K/M] <spec-file>
+	fmt.Fprintf(os.Stderr, `usage: go run ./scripts/mutate [-v | -q] [-parallel N] [-gcflags FLAGS] [-chunk K/M] <spec-file>
        go run ./scripts/mutate -check <spec-file>...
        go run ./scripts/mutate -check-all
        go run ./scripts/mutate -affected REF
@@ -1176,6 +1217,10 @@ rebuilds the package under test, so the default '-N -l' (no optimization, no
 inlining) makes that rebuild cheaper. A test that depends on inlining or escape
 analysis sees a different build than a plain go test; -gcflags= (empty) passes
 nothing.
+
+Every go test run gets the spec's timeout, or %s when the spec sets none, in
+place of go test's ten-minute default. A mutation whose test runs out of that
+time is KILLED; a baseline that does is BASELINE FAILED.
 
 Every go test run gets GONZBD_TEST_WAIT=3s unless the environment sets it:
 the budget a test's hang-guard wait uses in place of its generous default, so
@@ -1227,5 +1272,5 @@ counted by check_citations against the citation that enumerates it.
 Outside a block, blank lines and lines starting with # are ignored. Between
 --- anchor and --- replace, and between --- replace and --- end, every line is
 taken literally.
-`)
+`, defaultTestTimeout)
 }
