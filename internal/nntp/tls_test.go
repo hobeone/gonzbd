@@ -8,9 +8,13 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 func TestParseCipherListDirect(t *testing.T) {
@@ -169,5 +173,45 @@ func TestVerifyConnectionIgnoreHostname_ManualVerify(t *testing.T) {
 	// Verify that the error is "verify peer chain" (tls.go:92:9 negation)
 	if !strings.Contains(err.Error(), "verify peer chain") {
 		t.Errorf("expected error to contain 'verify peer chain', got: %v", err)
+	}
+}
+
+// TestBuildTLSConfig_LoadedServerWithoutSSLVerifyVerifies loads a config file
+// whose server entry leaves out ssl_verify and requires the TLS config built
+// from it to verify the peer: an omitted key must not mean level 0.
+func TestBuildTLSConfig_LoadedServerWithoutSSLVerifyVerifies(t *testing.T) {
+	t.Parallel()
+	base, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "gonzbd.yaml")
+	if err := base.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	const server = "servers:\n  - name: s1\n    host: news.example.com\n    connections: 1\n    ssl: true\n    pipelining_requests: 2\n    timeout: 60\n    enable: true\n"
+	withServer := strings.Replace(string(b), "servers: []\n", server, 1)
+	if withServer == string(b) {
+		t.Fatal(`"servers: []" not found in the saved default config; fixture assumption is stale`)
+	}
+	if err := os.WriteFile(path, []byte(withServer), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	srv := cfg.Servers[0]
+	tc, err := buildTLSConfig(srv.Host, srv.SSLVerify, srv.SSLCiphers)
+	if err != nil {
+		t.Fatalf("buildTLSConfig: %v", err)
+	}
+	if tc.InsecureSkipVerify {
+		t.Errorf("InsecureSkipVerify = true for a server that omits ssl_verify (level %d), want chain and hostname verification", srv.SSLVerify)
 	}
 }

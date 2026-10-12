@@ -394,7 +394,7 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sslVerifyStr := formValue(r, "ssl_verify")
-	sslVerify := config.SSLVerifyHostname // safe default
+	sslVerify := config.DefaultSSLVerify
 	if sslVerifyStr != "" {
 		if v, err := strconv.ParseInt(sslVerifyStr, 10, 8); err == nil {
 			sslVerify = config.SSLVerify(v)
