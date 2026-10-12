@@ -56,8 +56,8 @@ func TestPeek_FailActionFilesTheJobAfterTheFileIsMarkedComplete(t *testing.T) {
 }
 
 // The filing is owed by the job's state, not by a message carried in one
-// call: a completion whose mark fails (the job was evicted after the peek
-// blocked it) leaves the job Blocked and running, and the redelivered
+// call: a completion refused before its mark (the job was evicted after the
+// peek blocked it) leaves the job Blocked and running, and the redelivered
 // completion, which finds the job already Blocked, files it.
 func TestPeek_FailActionFilingSurvivesAnEvictionBeforeTheMark(t *testing.T) {
 	t.Parallel()

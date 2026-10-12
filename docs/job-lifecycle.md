@@ -991,7 +991,7 @@ in `resume`). The owner is called from
 the peek's message naming the files, and by `reconcileBeforeFirstTick` for every
 restored job, with none. Filing before the mark would let post-processing
 record the flagged file as incomplete in the history entry, or evict the job so
-the mark found it not resident; and because the debt is derived, a completion
+the completion found it evicted and refused the mark; and because the debt is derived, a completion
 whose mark failed and is redelivered files it too, and a job restored Blocked
 and running is filed before the first tick instead of downloading on. A filing
 without the peek's message (a redelivery, a restart) carries the prefix alone,
@@ -1173,7 +1173,7 @@ The tiering is that boundary made explicit.
 | Tier | Needs | May fail? |
 |---|---|---|
 | **Header** — remove, reorder, priority, ID/name lookups | neither | **Never** |
-| **Progress** — all reporting, counters, completion and abort checks; recording a permanent failure, clearing an emitted bit, or recording a file's resolved filename | `JobProgress` | **Never**, once it exists, for an index in range |
+| **Progress** — all reporting, counters, completion and abort checks; recording a permanent failure, clearing an emitted bit, recording a file's resolved filename, or marking a file complete | `JobProgress` | **Never**, once it exists, for an index in range |
 | **Manifest** — dispatch, article indexing, byte accounting | `Manifest` (evictable) | Yes, and must say so |
 
 Counter maintenance needs article byte counts and the file↔article mapping.
@@ -1223,7 +1223,11 @@ any residency, using the manifest only for the counters (above).
 `RecordFileFilename` was the same defect too: it refused an evicted job, the
 pipeline registered the file anyway, and the filename that locates the file's
 rows after a restart was never recorded. It now writes the progress record at
-any residency.
+any residency. `MarkFileComplete` too (#868); its caller,
+`completeFinalizedFile`, still refuses a completion that finds the job
+evicted before the mark, because the CRC settle, the archive peek and the
+DirectUnpack feed that must precede the mark do need the manifest
+(`docs/durability-contract.md` § "Accepted limitations", item 3).
 
 The gate on `*Job` is `j.manifest == nil` returning `job.ErrNotResident`,
 pinned by `TestManifestAccessIsGated`

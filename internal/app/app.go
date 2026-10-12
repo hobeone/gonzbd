@@ -317,6 +317,11 @@ type Application struct {
 	// syncFile.
 	peekedHook func()
 
+	// residentCheckedHook, when non-nil, runs in completeFinalizedFile right
+	// after the residency check and before the file is marked complete. Same
+	// discipline as syncFile.
+	residentCheckedHook func(j *job.Job)
+
 	// assessHook, when non-nil, runs in runAssess once the worker has resolved
 	// its job and before it assesses it, where the worker is live at
 	// Assessing. Same discipline as syncFile.
@@ -1680,7 +1685,7 @@ func (app *Application) handleFileComplete(_ context.Context, fc FileComplete) {
 // progress.
 //
 // It returns an error when the job could not take the completion: it left the
-// queue, or, for an assembler completion, MarkFileComplete found it evicted.
+// queue, or, for an assembler completion, it was evicted before the mark.
 func (app *Application) completeFinalizedFile(fc FileComplete) error {
 	if app.dispatcher != nil {
 		j, ok := app.dispatcher.Job(fc.JobID)
@@ -1729,7 +1734,24 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 		// hydration or retry that finished it already committed complete = 1
 		// (hydration through its SetComplete verdict; a retry through
 		// verifyRetry's verdict and its retryFileStates row).
+		//
+		// The settle, the peek and the feed above each read the manifest and
+		// do nothing for an evicted job, and the mark is what lets the job
+		// reach Assessing. So a completion that finds the job evicted here is
+		// not marked: one of them may have been skipped. The check reads
+		// residency now, not at each step, so an eviction and a re-hydration
+		// both landing after a step and before it go unseen. MarkFileComplete
+		// itself needs only progress (#868), so an eviction after this check
+		// still takes the mark, behind a settle, peek and feed that ran.
 		if !fc.Resumed {
+			if !j.Resident() {
+				err := fmt.Errorf("job %s: %w", fc.JobID, job.ErrNotResident)
+				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+				return err
+			}
+			if app.residentCheckedHook != nil {
+				app.residentCheckedHook(j)
+			}
 			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
 				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 				return err
@@ -1737,7 +1759,7 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 			app.markFileDirty(j, fc.FileIdx)
 		}
 		// A job the peek failed is filed only now: a finalize before the mark
-		// above would evict the job so the mark found it not resident. The
+		// above would evict the job so the residency check refused the mark. The
 		// filing is owed by the job's state, not by unwantedFail, so a
 		// completion that failed before here and is redelivered files it too.
 		app.fileOwedUnwantedFailure(j, unwantedFail)
