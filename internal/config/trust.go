@@ -229,12 +229,14 @@ func forwardedAddrOf(val string) string {
 // operator-facing log line; reason is empty when trusted is true.
 //
 // A source is trusted only if its direct peer IP is loopback or falls within
-// one of the configured local_ranges. If any forwarding header is present but
-// verifyXFF is false, the request fails closed: the header's mere presence
-// means a proxy may be interposed, and an unverified peer address proves
-// nothing about the real client. When verifyXFF is true and the peer already
-// qualifies, every hop in the forwarding chain must ALSO be trusted; a single
-// untrusted or unparseable hop makes the request untrusted.
+// one of the configured local_ranges. If any forwarding header is present,
+// verifyXFF is false and the peer is loopback, the request fails closed: a
+// same-host proxy makes every request arrive from loopback, so that peer
+// proves nothing about the real client. A non-loopback peer within
+// local_ranges is trusted in that case without inspecting the headers. When
+// verifyXFF is true and the peer already qualifies, every hop in the
+// forwarding chain must ALSO be trusted; a single untrusted or unparseable
+// hop makes the request untrusted.
 //
 // This mirrors SABnzbd's model: forwarding headers are consulted only after
 // the direct peer is already trusted, so a public client that appends a

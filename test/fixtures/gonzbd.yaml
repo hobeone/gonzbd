@@ -70,9 +70,9 @@ postproc:
   unrar_command: ""
   sevenz_command: ""
   par2_turbo: false
-  # Maximum payload size (in bytes) of a single PAR2 packet body (default: 67108864 [64 MiB], min: 65536 [64 KiB]; 0 or below-floor uses the default). Prevents OOM on corrupt files.
+  # Maximum payload size (in bytes) of a single PAR2 packet body (default: 67108864 [64 MiB], min: 65536 [64 KiB]; 0 uses the default, a non-zero value below the minimum is rejected). Prevents OOM on corrupt files.
   par2_max_packet_body_size: 67108864
-  # Maximum forward search distance (in bytes) when scanning for PAR2 magic headers (default: 65536 [64 KiB], min: 1024 [1 KiB]; 0 or below-floor uses the default).
+  # Maximum forward search distance (in bytes) when scanning for PAR2 magic headers (default: 65536 [64 KiB], min: 1024 [1 KiB]; 0 uses the default, a non-zero value below the minimum is rejected).
   par2_max_junk_scan_bytes: 65536
   ignore_unrar_dates: false
   # Decode goroutines per compressed RAR5 member (0 = auto: min(CPU count, 4); 1 = serial).

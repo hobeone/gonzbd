@@ -33,8 +33,9 @@ func BuiltinDefaultCategory() CategoryConfig {
 // flags, and destination subdirectory. See spec §9.5.
 type CategoryConfig struct {
 	// Name is the unique category identifier. The reserved names
-	// "Default" and "*" select fallback / catch-all behavior; both must
-	// always exist in a valid configuration.
+	// "Default" and "*" select fallback / catch-all behavior. Validate
+	// does not require either to exist: FindCategory falls back to
+	// BuiltinDefaultCategory when both are missing.
 	Name string `yaml:"name" json:"name"`
 
 	// PP is the post-processing level (cumulative, not a bitmask):
@@ -42,7 +43,7 @@ type CategoryConfig struct {
 	//   1 = + Repair (par2 verify/repair)
 	//   2 = + Unpack (implies repair)
 	//   3 = + Delete sources (implies unpack + repair)
-	// Values > 3 are treated as 3 for compatibility with SABnzbd configs.
+	// Validate rejects any value outside [0,3].
 	PP int `yaml:"pp" json:"pp"`
 
 	// Script is the user post-processing script name to run. The literal

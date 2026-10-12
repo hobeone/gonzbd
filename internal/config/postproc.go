@@ -50,17 +50,19 @@ type PostProcConfig struct {
 	// Par2MaxPacketBodySize limits the maximum payload size (in bytes) of a
 	// single PAR2 packet. Packets with bodies larger than this are rejected
 	// to prevent memory exhaustion from malformed or malicious PAR2 files.
-	// This is a safety limit with no "unlimited" setting: a value of 0 (or
-	// any value below the 65536-byte / 64 KiB floor) falls back to the
-	// default of 67108864 (64 MiB). To permit genuinely large recovery
-	// packets, set an explicit larger value.
+	// This is a safety limit with no "unlimited" setting: 0 selects the
+	// default of 67108864 (64 MiB), and a non-zero value below the
+	// 65536-byte / 64 KiB floor (MinPar2PacketBodySize) is rejected by
+	// Validate. To permit genuinely large recovery packets, set an explicit
+	// larger value.
 	Par2MaxPacketBodySize uint64 `yaml:"par2_max_packet_body_size" json:"par2_max_packet_body_size"`
 
 	// Par2MaxJunkScanBytes limits how many bytes of unrecognized non-PAR2
 	// header data can be scanned before giving up when searching for a valid
 	// PAR2 packet header in a file. Prevents excessive CPU and I/O time spent
-	// scanning large corrupt files. A value of 0 (or any value below the
-	// 1024-byte / 1 KiB floor) falls back to the default of 65536 (64 KiB).
+	// scanning large corrupt files. 0 selects the default of 65536 (64 KiB);
+	// a non-zero value below the 1024-byte / 1 KiB floor
+	// (MinPar2JunkScanBytes) is rejected by Validate.
 	Par2MaxJunkScanBytes int64 `yaml:"par2_max_junk_scan_bytes" json:"par2_max_junk_scan_bytes"`
 
 	// IgnoreUnrarDates discards in-archive modification timestamps and
@@ -91,7 +93,8 @@ type PostProcConfig struct {
 	// UseGoPar2 uses the native par2engine library for PAR2 verification
 	// and repair instead of shelling out to par2/par2cmdline. No external
 	// binary required. When true and native verification/repair fails,
-	// falls back to the external par2 binary if available.
+	// falls back to the external par2 binary if available, unless
+	// GoPar2Fallback is false.
 	// Default true.
 	UseGoPar2 bool `yaml:"use_go_par2" json:"use_go_par2"`
 	// EnableRarVolumeRecovery attempts to recover a fully obfuscated RAR5
@@ -140,7 +143,9 @@ type PostProcConfig struct {
 	// immediately when OS-level sandboxing (bwrap on Linux — the only
 	// supported platform) cannot be established. Setting this to true on
 	// any other platform is rejected at startup and at live config reload,
-	// since there is no working sandbox backend there. Defaults to true.
+	// since there is no working sandbox backend there. Defaults to true,
+	// except in the official Docker image (GONZBD_DOCKER=1), whose
+	// generated default is false; see runningInDockerImage.
 	StrictSandbox bool `yaml:"strict_sandbox" json:"strict_sandbox"`
 
 	// DeobfuscateFilenames renames obfuscated files (random hex/UUIDs)
@@ -193,9 +198,9 @@ type PostProcConfig struct {
 	PasswordFile string `yaml:"password_file" json:"password_file"`
 
 	// ExtraUnrarParams holds additional command-line arguments appended to
-	// every unrar invocation. Validated at startup — only flags starting
-	// with '-' are allowed. Example: "-sl100000" (skip files >100KB).
-	// Matches SABnzbd's extra unrar parameters concept.
+	// every unrar invocation. Validated on load and on every Set — each
+	// token must start with one of SABnzbd's allowlisted prefixes "-mlp",
+	// "-om" or "-ri" (cmdutil.ValidateUnrarParams). Example: "-ri10:5".
 	ExtraUnrarParams string `yaml:"extra_unrar_params" json:"extra_unrar_params"`
 
 	// ExtraPar2Params holds additional command-line arguments appended to

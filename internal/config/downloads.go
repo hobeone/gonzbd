@@ -22,7 +22,9 @@ type DownloadConfig struct {
 	// before the article is marked bad. Must be >= 1.
 	MaxArtTries int `yaml:"max_art_tries" json:"max_art_tries"`
 	// MaxArtOpt is the per-article attempt count on optional (backup)
-	// servers specifically. Must be >= 0.
+	// servers specifically: once an article has been tried on this many
+	// optional servers it is offered no further optional ones. Must be
+	// >= 0; 0 means no limit.
 	MaxArtOpt int `yaml:"max_art_opt" json:"max_art_opt"`
 
 	// MaxActiveJobs is the maximum number of jobs processing (downloading or
