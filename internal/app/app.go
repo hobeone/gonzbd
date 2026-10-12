@@ -2760,7 +2760,10 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 		}
 	}()
 
-	m, _ := j.Manifest()
+	m, err := j.Manifest()
+	if err != nil {
+		return fmt.Errorf("app: retry %s: %w", jobID, err)
+	}
 	finished, err := app.verifyRetry(ctx, j, m)
 	if err != nil {
 		return fmt.Errorf("app: retry %s: %w", jobID, err)
@@ -2819,7 +2822,7 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	// dispatcher.Add. The background flush cannot carry it: its instance check
 	// drops state for a job the dispatcher does not hold yet. A file the
 	// verification finished keeps complete = 1.
-	if app.durable != nil && m != nil {
+	if app.durable != nil {
 		if err := seedJobFiles(ctx, app.durable, jobID, m.NumFiles(), j.FileFetchPolicy); err != nil {
 			return fmt.Errorf("app: retry %s: seed job_files: %w", jobID, err)
 		}
@@ -2888,7 +2891,7 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 //
 // Each step's verdicts are committed through the recorder before the next.
 func (app *Application) verifyRetry(ctx context.Context, j *job.Job, m *job.Manifest) ([]int, error) {
-	if app.durable == nil || m == nil {
+	if app.durable == nil {
 		return nil, nil
 	}
 	files, err := app.durable.FileRows(ctx, j.ID())
