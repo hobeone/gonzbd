@@ -361,9 +361,18 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		p.log.Warn("article permanently failed",
 			"job", res.JobID(), "msgid", res.MessageID, "file", res.Subject, "err", res.Err)
 
+		// An unregistered file cannot take the failure: the assembler resolves
+		// it through the same fileInfo map and would raise a retryable
+		// "resolve" write fault, stalling a job with no storage problem. The
+		// article goes back to Outstanding, as handleSuccessResult does, and
+		// is NOT marked failed first: the file may yet be registered by
+		// another result, and a failure it never receives is a part its
+		// TotalParts count can never reach.
 		if err := p.registerFile(res.Job, res.FileIdx); err != nil {
-			p.log.Warn("register fallback file failed",
-				"job", res.JobID(), "fileidx", res.FileIdx, "err", err)
+			p.log.Warn("register file for a permanent failure failed, returning to dispatch pool",
+				"job", res.JobID(), "fileidx", res.FileIdx, "msgid", res.MessageID, "err", err)
+			p.clearEmitted(res)
+			return
 		}
 
 		// Record the permanent failure directly. R10 keeps this off the write

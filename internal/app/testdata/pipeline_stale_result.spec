@@ -19,10 +19,10 @@ file internal/app/pipeline.go
 file internal/app/pipeline.go
 --- anchor
 		if err := p.registerFile(res.Job, res.FileIdx); err != nil {
-			p.log.Warn("register fallback file failed",
+			p.log.Warn("register file for a permanent failure failed, returning to dispatch pool",
 --- replace
 		if err := p.registerFile(func() *job.Job { j, _ := p.dispatcher.Job(res.JobID()); return j }(), res.FileIdx); err != nil {
-			p.log.Warn("register fallback file failed",
+			p.log.Warn("register file for a permanent failure failed, returning to dispatch pool",
 --- end
 
 [a terminal failure is recorded on whatever instance holds the ID]

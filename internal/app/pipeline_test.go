@@ -19,6 +19,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/storagefault"
 	"github.com/hobeone/gonzbd/internal/telemetry"
 	"github.com/hobeone/gonzbd/internal/types"
 )
@@ -176,6 +177,80 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	}
 	if got := telemetry.ArticlesRetried.Value(); got != retriesBefore+1 {
 		t.Errorf("ArticlesRetried = %d, want %d", got, retriesBefore+1)
+	}
+}
+
+// TestPipeline_HandleFailureResult_UnregisterableFileIsNotForwarded: a
+// permanent failure whose file cannot be registered — here because the job's
+// manifest was evicted, as a delete of a running job does while its fetches are
+// still in flight — must not reach the assembler. Forwarded, the assembler
+// cannot resolve the file either and raises a retryable "resolve" write fault,
+// which stalls a job with no storage problem. The article goes back to the
+// dispatch pool instead, as handleSuccessResult does for the same failure.
+func TestPipeline_HandleFailureResult_UnregisterableFileIsNotForwarded(t *testing.T) {
+	t.Parallel()
+	app := newTestApplication(t)
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "movie.mkv", Bytes: 200, Articles: []nzb.Article{
+			{ID: "a1@x", Bytes: 100, Number: 1},
+			{ID: "a2@x", Bytes: 100, Number: 2},
+		}},
+	}}
+	j, hdr, err := BuildIngestJob(app.config, parsed, "m.nzb", types.FetchOptions{NzbName: "m.nzb"}, nil)
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	if err := app.Dispatcher().Add(context.Background(), j, hdr); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := j.MarkArticleEmitted(0); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+	m, err := j.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+	j.Evict()
+
+	p := helperPipeline(t, app.Dispatcher())
+	faults := make(chan string, 4)
+	a := assembler.New(assembler.Options{
+		FileInfo: p.resolveFileInfo,
+		OnWriteFault: func(jobID string, fileIdx int, f *storagefault.Fault) {
+			faults <- fmt.Sprintf("job %s file %d: %v", jobID, fileIdx, f)
+		},
+	}, nil)
+	if err := a.Start(t.Context()); err != nil {
+		t.Fatalf("assembler Start: %v", err)
+	}
+	p.assembler = a
+
+	p.handleFailureResult(t.Context(), &downloader.ArticleResult{
+		Job:       j,
+		FileIdx:   0,
+		ArtIdx:    0,
+		MessageID: "a1@x",
+		Err:       downloader.ErrNoServersLeft,
+		Subject:   "movie.mkv",
+	})
+	// Stop drains every queued request, so a forwarded one has been
+	// processed, and its fault reported, before this returns.
+	if err := a.Stop(); err != nil {
+		t.Fatalf("assembler Stop: %v", err)
+	}
+	close(faults)
+	for f := range faults {
+		t.Errorf("OnWriteFault fired for a failure whose file was never registered: %s", f)
+	}
+
+	if err := j.RestoreContent(m); err != nil {
+		t.Fatalf("RestoreContent: %v", err)
+	}
+	if j.Progress().ArticleFailed(0) {
+		t.Error("article 0 was marked failed without being forwarded to its file")
+	}
+	if articleInFlight(t, j, 0) {
+		t.Error("article 0 is still Emitted; it should be back in the dispatch pool")
 	}
 }
 
