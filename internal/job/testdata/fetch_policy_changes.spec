@@ -37,3 +37,11 @@ file internal/job/content.go
 --- replace
 	if f.Fetch == stored {
 --- end
+
+[the take hands over the policy alone]
+file internal/job/content.go
+--- anchor
+		out = append(out, p.fileState(fi))
+--- replace
+		out = append(out, durability.FileState{FileIdx: fi, FetchPolicy: uint8(f.Fetch)})
+--- end

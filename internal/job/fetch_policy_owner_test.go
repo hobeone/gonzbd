@@ -146,6 +146,29 @@ func TestTakeFetchPolicyChanges(t *testing.T) {
 			t.Errorf("after the discard, took %+v, want file 2 at FetchNever", states)
 		}
 	})
+	t.Run("hands over the file's whole record state", func(t *testing.T) {
+		t.Parallel()
+		// The take's state replaces the file's whole job_files row, so a
+		// policy change must not also clear its complete flag or filename.
+		j := newInterleavedRecoveryJob(t, false)
+		if err := j.RecordFileFilename(2, j.Name(), "a.vol01+02.par2"); err != nil {
+			t.Fatalf("RecordFileFilename: %v", err)
+		}
+		if err := j.MarkFileComplete(2); err != nil {
+			t.Fatalf("MarkFileComplete: %v", err)
+		}
+		if err := j.SetFileFetchPolicy(2, FetchNever); err != nil {
+			t.Fatalf("SetFileFetchPolicy: %v", err)
+		}
+		want, ok := j.FileState(2)
+		if !ok || !want.Complete || want.Filename != "a.vol01+02.par2" || FetchPolicy(want.FetchPolicy) != FetchNever {
+			t.Fatalf("precondition: FileState(2) = %+v, %v; want complete, named, FetchNever", want, ok)
+		}
+		states := j.TakeFetchPolicyChanges()
+		if len(states) != 1 || states[0] != want {
+			t.Errorf("took %+v, want exactly [%+v], the file's whole record state", states, want)
+		}
+	})
 	t.Run("no progress", func(t *testing.T) {
 		t.Parallel()
 		if got := New("j", "j", Policy{}).TakeFetchPolicyChanges(); got != nil {
