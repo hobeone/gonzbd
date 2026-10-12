@@ -252,59 +252,68 @@ func TestDirectUnpack_MultiVolume_Delayed(t *testing.T) {
 	}
 }
 
+// A set whose later volumes arrive before volume 1 is queued by those volumes
+// and becomes current when volume 1 arrives. It is extracted once: a second
+// pass would report no files under default options, and publish a "_1" copy of
+// every member under OneFolder.
 func TestDirectUnpack_MultiVolume_OutOfOrder(t *testing.T) {
-	srcDir := testdataDir(t)
-	workDir := t.TempDir()
-	extractDir := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		opts Options
+	}{
+		{"default", Options{}},
+		{"flat", Options{OneFolder: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srcDir := testdataDir(t)
+			workDir := t.TempDir()
+			extractDir := t.TempDir()
 
-	// Copy all multi-volume parts.
-	var names []string
-	for i := 1; i <= 10; i++ {
-		name := fmt.Sprintf("multi_new.part%02d.rar", i)
-		copyRAR(t, srcDir, workDir, name)
-		names = append(names, name)
-	}
+			// Copy all multi-volume parts.
+			var names []string
+			for i := 1; i <= 10; i++ {
+				name := fmt.Sprintf("multi_new.part%02d.rar", i)
+				copyRAR(t, srcDir, workDir, name)
+				names = append(names, name)
+			}
 
-	du := New(
-		testLogger(t),
-		"test-job",
-		workDir,
-		extractDir,
-		Options{},
-	)
+			du := New(testLogger(t), "test-job", workDir, extractDir, tc.opts)
+			du.SetAllFilenames(names)
 
-	du.SetAllFilenames(names)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+			// Feed out of order: 5, 3, 1, 7, 2, 4, 6, 8, 9, 10
+			order := []string{
+				"multi_new.part05.rar",
+				"multi_new.part03.rar",
+				"multi_new.part01.rar", // Triggers start
+				"multi_new.part07.rar",
+				"multi_new.part02.rar",
+				"multi_new.part04.rar",
+				"multi_new.part06.rar",
+				"multi_new.part08.rar",
+				"multi_new.part09.rar",
+				"multi_new.part10.rar",
+			}
+			for _, name := range order {
+				du.Add(ctx, name, filepath.Join(workDir, name))
+				time.Sleep(10 * time.Millisecond)
+			}
 
-	// Feed out of order: 5, 3, 1, 7, 2, 4, 6, 8, 9, 10
-	order := []string{
-		"multi_new.part05.rar",
-		"multi_new.part03.rar",
-		"multi_new.part01.rar", // Triggers start
-		"multi_new.part07.rar",
-		"multi_new.part02.rar",
-		"multi_new.part04.rar",
-		"multi_new.part06.rar",
-		"multi_new.part08.rar",
-		"multi_new.part09.rar",
-		"multi_new.part10.rar",
-	}
-	for _, name := range order {
-		du.Add(ctx, name, filepath.Join(workDir, name))
-		time.Sleep(10 * time.Millisecond)
-	}
+			du.Wait()
 
-	du.Wait()
-
-	results := du.Results()
-	failures := du.Failures()
-	if len(failures) != 0 {
-		t.Fatalf("expected no failures, got: %+v", failures)
-	}
-	if len(results) == 0 {
-		t.Fatal("expected success, got 0 results")
+			if failures := du.Failures(); len(failures) != 0 {
+				t.Fatalf("expected no failures, got: %+v", failures)
+			}
+			want := []string{filepath.Join(extractDir, "bigfile.bin")}
+			if got := du.Results()["multi_new"].ExtractedFiles; !slices.Equal(got, want) {
+				t.Errorf("ExtractedFiles = %q, want %q: the set was extracted more than once", got, want)
+			}
+			if got := dirNames(t, extractDir); !slices.Equal(got, []string{"bigfile.bin"}) {
+				t.Errorf("extract dir = %q, want only bigfile.bin", got)
+			}
+		})
 	}
 }
 

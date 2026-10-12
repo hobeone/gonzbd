@@ -3,6 +3,7 @@ package directunpack
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -68,23 +69,27 @@ func TestBuildVolumeMap(t *testing.T) {
 	}
 }
 
-func TestSetQueued(t *testing.T) {
+func TestSetAdmitted(t *testing.T) {
 	tests := []struct {
 		name       string
 		nextSets   []string
 		curSetname string
+		settled    func(d *DirectUnpacker)
 		query      string
 		want       bool
 	}{
-		{"queued behind others", []string{"a", "b"}, "cur", "b", true},
-		{"the first queued set", []string{"a", "b"}, "cur", "a", true},
-		{"the set currently extracting", nil, "cur", "cur", true},
-		{"neither queued nor current", []string{"a"}, "cur", "other", false},
-		{"nothing queued and nothing current", nil, "", "a", false},
-		{"queued while nothing is extracting", []string{"a"}, "", "a", true},
+		{"queued behind others", []string{"a", "b"}, "cur", nil, "b", true},
+		{"the first queued set", []string{"a", "b"}, "cur", nil, "a", true},
+		{"the set currently extracting", nil, "cur", nil, "cur", true},
+		{"neither queued nor current", []string{"a"}, "cur", nil, "other", false},
+		{"nothing queued and nothing current", nil, "", nil, "a", false},
+		{"queued while nothing is extracting", []string{"a"}, "", nil, "a", true},
+		{"a set that succeeded", nil, "cur", func(d *DirectUnpacker) { d.successSets["a"] = SuccessSet{} }, "a", true},
+		{"a set that failed", nil, "cur", func(d *DirectUnpacker) { d.failedSets["a"] = FailedSet{} }, "a", true},
+		{"a set that was skipped", nil, "cur", func(d *DirectUnpacker) { d.skippedSets["a"] = SkippedSet{} }, "a", true},
 	}
 
-	// setQueued("") is deliberately not a case here. Add returns before
+	// setAdmitted("") is deliberately not a case here. Add returns before
 	// touching any state when AnalyzeRarFilename yields "" (directunpack.go,
 	// "not a RAR volume"), so "" never reaches nextSets or curSetname and the
 	// question is unreachable. It answers true on an idle unpacker only
@@ -95,13 +100,15 @@ func TestSetQueued(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := &DirectUnpacker{
-				nextSets:   slices.Clone(tt.nextSets),
-				curSetname: tt.curSetname,
+			d := New(slog.New(slog.DiscardHandler), "job", "", "", Options{})
+			d.nextSets = slices.Clone(tt.nextSets)
+			d.curSetname = tt.curSetname
+			if tt.settled != nil {
+				tt.settled(d)
 			}
 
-			if got := d.setQueued(tt.query); got != tt.want {
-				t.Errorf("setQueued(%q) = %v, want %v", tt.query, got, tt.want)
+			if got := d.setAdmitted(tt.query); got != tt.want {
+				t.Errorf("setAdmitted(%q) = %v, want %v", tt.query, got, tt.want)
 			}
 		})
 	}

@@ -268,18 +268,14 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 	totalForSet := d.totalVolumes[setname]
 
 	needStart := false
-	if !d.started {
-		// First RAR volume: determine if we can start.
-		if vol == 1 {
-			d.curSetname = setname
-			d.started = true
-			needStart = true
-		} else if !d.setQueued(setname) {
-			// Vol 1 hasn't arrived yet — queue the set for later.
-			d.nextSets = append(d.nextSets, setname)
-		}
-	} else if setname != d.curSetname && !d.setQueued(setname) {
-		// Different set than what we're currently extracting — queue it.
+	switch {
+	case !d.started && vol == 1:
+		// The first set to reach volume 1 starts extraction, leaving the
+		// queue if a later volume of it arrived first.
+		d.makeCurrentLocked(setname)
+		d.started = true
+		needStart = true
+	case !d.setAdmitted(setname):
 		d.nextSets = append(d.nextSets, setname)
 	}
 
@@ -308,13 +304,26 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 	}
 }
 
-// setQueued returns true if setname is already in nextSets or is curSetname.
-// Must be called with mu held.
-func (d *DirectUnpacker) setQueued(setname string) bool {
-	if slices.Contains(d.nextSets, setname) {
+// setAdmitted reports whether setname has already entered the queue: it is in
+// nextSets, is curSetname, or has an outcome. A set is admitted once, so it is
+// extracted at most once and gets at most one outcome. Must be called with mu
+// held.
+func (d *DirectUnpacker) setAdmitted(setname string) bool {
+	if slices.Contains(d.nextSets, setname) || setname == d.curSetname {
 		return true
 	}
-	return setname == d.curSetname
+	_, succeeded := d.successSets[setname]
+	_, failed := d.failedSets[setname]
+	_, skipped := d.skippedSets[setname]
+	return succeeded || failed || skipped
+}
+
+// makeCurrentLocked moves setname from the queue to curSetname: the transition
+// for both the first set, which Add starts, and every later one, which run
+// pops. Must be called with mu held.
+func (d *DirectUnpacker) makeCurrentLocked(setname string) {
+	d.nextSets = slices.DeleteFunc(d.nextSets, func(s string) bool { return s == setname })
+	d.curSetname = setname
 }
 
 // buildVolumeMap populates totalVolumes from allFilenames. Must be called
@@ -503,10 +512,8 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 			return
 		}
 
-		// Pop next set.
 		nextSet := d.nextSets[0]
-		d.nextSets = d.nextSets[1:]
-		d.curSetname = nextSet
+		d.makeCurrentLocked(nextSet)
 		d.mu.Unlock()
 
 		d.notifyChange()

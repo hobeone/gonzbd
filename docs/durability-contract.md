@@ -1158,7 +1158,12 @@ articles or sparse regions.
    RAR2/RAR3, and non-RAR files identified by filename go to post-processing.
 8. **Abort/kill**: `Abort()` sets `killed`, records failures for the current and
    queued sets, clears success results, and signals the reader goroutine. If
-   `run()` was never started it closes `done` directly. `enqueuePostProc`
+   `run()` was never started it closes `done` directly. A set enters the queue
+   once: `Add` admits a set that is not queued, current or settled
+   (`setAdmitted`), and `makeCurrentLocked` moves it from the queue to
+   current, for the first set `Add` starts and each later one `run()` pops, so
+   a set whose later volumes arrive before volume 1 is extracted once
+   (`TestDirectUnpack_MultiVolume_OutOfOrder`). `enqueuePostProc`
    aborts the unpacker of a job handed to post-processing before its download
    finished (`Job.IsComplete` false: `Application.Fail`, a hopeless
    callback), because the downloader no longer fetches an admitted job and
