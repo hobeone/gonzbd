@@ -45,9 +45,13 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, pas
 
 	log.Info("go_unrar: detected RAR archive version, using rarengine", "rar_version", ver)
 	beforeSnap, snapErr := snapshotDir(outDir)
+	if snapErr != nil {
+		log.Warn("go_unrar: cannot snapshot output dir; partial files of a failed extraction will be left in place",
+			"dir", outDir, "err", snapErr)
+	}
 	res, err = GoUnRAREngine(ctx, log, archive, outDir, password, opts)
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && snapErr == nil {
-		cleanupPartialFiles(outDir, beforeSnap, log, "go_unrar_rarengine", 1)
+		discardPartialFiles(outDir, beforeSnap, log, "go_unrar_rarengine")
 	}
 	return res, err
 }

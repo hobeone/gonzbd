@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/rarheader"
@@ -123,9 +124,11 @@ func withPasswords(
 			continue
 		}
 
-		// Snapshot outDir before attempt so we can clean up partial
-		// files if this password turns out to be wrong (S2 fix).
-		beforeSnap, _ := snapshotDir(outDir)
+		// Snapshot outDir before the attempt so a wrong password's partial
+		// files can be told apart from what was already there. Only that
+		// cleanup needs it, so a failed snapshot is checked there and an
+		// attempt that succeeds is unaffected.
+		beforeSnap, snapErr := snapshotDir(outDir)
 
 		res, err := extract(ctx, log, archive, outDir, pw, opts)
 		res.Engine = toolName
@@ -154,8 +157,20 @@ func withPasswords(
 		if res.Reason == FailWrongPassword || isWrongPW(res.ExitCode, res.Output) {
 			// Clean up any partial files from this failed attempt.
 			// Without this, OverwriteFiles=false would skip corrupt
-			// partials on the next attempt with the correct password.
-			cleanupPartialFiles(outDir, beforeSnap, log, toolName, i+1)
+			// partials on the next attempt with the correct password, so
+			// a cleanup that cannot run or finish stops the loop. The
+			// snapshot error is returned here, rather than left to
+			// cleanupPartialFiles' nil refusal, to keep the walk error.
+			if snapErr != nil {
+				res.Reason = FailUnknown
+				res.Err = fmt.Errorf("%s: snapshot %s before password attempt %d: %w", toolName, outDir, i+1, snapErr)
+				return res, res.Err
+			}
+			if cleanErr := cleanupPartialFiles(outDir, beforeSnap, log, toolName, i+1); cleanErr != nil {
+				res.Reason = FailUnknown
+				res.Err = fmt.Errorf("%s: clean up after wrong password attempt %d: %w", toolName, i+1, cleanErr)
+				return res, res.Err
+			}
 
 			log.Info(toolName+": wrong password, trying next",
 				"attempt", i+1, "total", len(passwords), "archive", archive.MainFile)
@@ -176,23 +191,54 @@ func withPasswords(
 }
 
 // cleanupPartialFiles removes files that were created during a failed
-// password attempt. It diffs the current directory state against the
+// extraction attempt. It diffs the current directory state against the
 // pre-attempt snapshot and removes any new files.
-func cleanupPartialFiles(outDir string, beforeSnap map[string]struct{}, log *slog.Logger, toolName string, attempt int) {
+//
+// It refuses a nil beforeSnap: diffing against nil reads every file in
+// outDir, archive volumes included, as new. snapshotDir returns nil only
+// with an error (its success path returns the map it makes at
+// snapshot.go:179), so nil always means "no snapshot".
+//
+// It returns an error when it refuses, when the post-attempt scan fails,
+// or when a partial file cannot be removed; it still tries every removal.
+func cleanupPartialFiles(outDir string, beforeSnap map[string]struct{}, log *slog.Logger, toolName string, attempt int) error {
+	if beforeSnap == nil {
+		return fmt.Errorf("clean up %s: no before-snapshot; refusing to treat every file as new", outDir)
+	}
 	afterSnap, err := snapshotDir(outDir)
 	if err != nil {
-		return
+		return fmt.Errorf("snapshot %s after attempt: %w", outDir, err)
 	}
 	newFiles := diffSnapshot(beforeSnap, afterSnap)
-	if len(newFiles) == 0 {
-		return
-	}
+	slices.Sort(newFiles)
+	return removePartials(outDir, newFiles, log, toolName, attempt)
+}
+
+// removePartials removes each of newFiles (relative to outDir), counting one
+// that is already gone as removed, and returns the joined failures of the
+// rest.
+func removePartials(outDir string, newFiles []string, log *slog.Logger, toolName string, attempt int) error {
+	var errs []error
 	for _, rel := range newFiles {
 		full := filepath.Join(outDir, rel)
-		if rmErr := os.Remove(full); rmErr == nil {
-			log.Debug(toolName+": removed partial file from wrong password attempt",
+		rmErr := os.Remove(full)
+		if rmErr == nil {
+			log.Debug(toolName+": removed partial file from failed attempt",
 				"file", rel, "attempt", attempt)
+		} else if !errors.Is(rmErr, os.ErrNotExist) {
+			errs = append(errs, rmErr)
 		}
+	}
+	return errors.Join(errs...)
+}
+
+// discardPartialFiles runs cleanupPartialFiles inside an extractor whose
+// attempt has failed, where the extraction error is what the caller returns
+// and a cleanup failure can only be logged.
+func discardPartialFiles(outDir string, beforeSnap map[string]struct{}, log *slog.Logger, toolName string) {
+	if err := cleanupPartialFiles(outDir, beforeSnap, log, toolName, 1); err != nil {
+		log.Warn(toolName+": partial files of the failed extraction not fully removed",
+			"dir", outDir, "err", err)
 	}
 }
 

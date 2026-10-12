@@ -100,7 +100,7 @@ func goTarInternal(ctx context.Context, log *slog.Logger, archive Archive, outDi
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: corrupt tar header: %v", nextErr))
 			}
-			cleanupPartialFiles(outDir, before, log, "go_tar", 1)
+			discardPartialFiles(outDir, before, log, "go_tar")
 			return res, fmt.Errorf("go_tar: read header: %w", nextErr)
 		}
 
@@ -111,7 +111,7 @@ func goTarInternal(ctx context.Context, log *slog.Logger, archive Archive, outDi
 				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", hdr.Name, entryErr))
 			}
 			if !errors.Is(entryErr, context.Canceled) && !errors.Is(entryErr, context.DeadlineExceeded) {
-				cleanupPartialFiles(outDir, before, log, "go_tar", 1)
+				discardPartialFiles(outDir, before, log, "go_tar")
 			}
 			return res, entryErr
 		}

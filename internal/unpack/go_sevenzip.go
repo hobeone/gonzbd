@@ -109,7 +109,7 @@ func goSevenZipInternal(ctx context.Context, log *slog.Logger, archive Archive, 
 				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", f.Name, err))
 			}
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				cleanupPartialFiles(outDir, before, log, "go_7z", 1)
+				discardPartialFiles(outDir, before, log, "go_7z")
 			}
 			return res, err
 		}
