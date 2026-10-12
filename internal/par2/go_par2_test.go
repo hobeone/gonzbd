@@ -628,84 +628,6 @@ func TestGoRepair_MissingFileFoundElsewhere_DoesNotReportSuccess(t *testing.T) {
 	}
 }
 
-// ---------- verifyProtectedFilesExist ----------
-
-// TestVerifyProtectedFilesExist_AllPresent verifies that the post-repair
-// existence check leaves a Success result untouched when every protected
-// file is actually on disk.
-func TestVerifyProtectedFilesExist_AllPresent(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	const sliceSize = 16
-	payload := bytes.Repeat([]byte{0x11}, sliceSize*2)
-	mainFile := buildMinimalPar2Index(t, dir, "present.bin", payload, sliceSize)
-	if err := os.WriteFile(filepath.Join(dir, "present.bin"), payload, 0o600); err != nil {
-		t.Fatalf("write present.bin: %v", err)
-	}
-
-	res := RepairResult{Success: true}
-	if err := verifyProtectedFilesExist(&res, mainFile, nil); err != nil {
-		t.Fatalf("verifyProtectedFilesExist: %v", err)
-	}
-	if !res.Success {
-		t.Error("Success flipped to false though the protected file exists on disk")
-	}
-	if res.Output != "" {
-		t.Errorf("Output = %q; want no diagnostic appended when nothing is missing", res.Output)
-	}
-}
-
-// TestVerifyProtectedFilesExist_MissingFile_FlipsSuccessFalse is the direct
-// unit test for the guard TestGoRepair_MissingFileFoundElsewhere_DoesNotReportSuccess
-// pins end-to-end through GoRepair: given a RepairResult that already claims
-// Success, a protected file absent from disk must flip it back to false and
-// name the file in both Output and the onLine callback.
-func TestVerifyProtectedFilesExist_MissingFile_FlipsSuccessFalse(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	const sliceSize = 16
-	payload := bytes.Repeat([]byte{0x22}, sliceSize*2)
-	mainFile := buildMinimalPar2Index(t, dir, "absent.bin", payload, sliceSize)
-	// absent.bin is deliberately never written to dir.
-
-	var lines []string
-	res := RepairResult{Success: true}
-	if err := verifyProtectedFilesExist(&res, mainFile, func(l string) { lines = append(lines, l) }); err != nil {
-		t.Fatalf("verifyProtectedFilesExist: %v", err)
-	}
-	if res.Success {
-		t.Error("Success stayed true though the protected file is missing from disk")
-	}
-	if !strings.Contains(res.Output, "absent.bin") {
-		t.Errorf("Output = %q; want it to name the missing file", res.Output)
-	}
-	if len(lines) == 0 {
-		t.Error("onLine was never called with the missing-file diagnostic")
-	}
-}
-
-// TestVerifyProtectedFilesExist_ParseFailure_LeavesSuccessUntouched verifies
-// that an index the check cannot even read reports an error without
-// asserting anything about the RepairResult it was handed — "the check could
-// not run" is a different condition from "the check ran and found a file
-// absent", and only the second should ever flip Success.
-func TestVerifyProtectedFilesExist_ParseFailure_LeavesSuccessUntouched(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	missingIndex := filepath.Join(dir, "does-not-exist.par2")
-
-	res := RepairResult{Success: true}
-	if err := verifyProtectedFilesExist(&res, missingIndex, nil); err == nil {
-		t.Fatal("verifyProtectedFilesExist: expected an error for an unreadable par2 index")
-	}
-	if !res.Success {
-		t.Error("Success was flipped to false by a parse failure; it should have been left untouched")
-	}
-}
-
 // ---------- newDecoderForDir ----------
 
 // TestNewDecoderForDir_ValidParfile_RegistersCandidatesAndReturnsDecoder
@@ -719,7 +641,7 @@ func TestNewDecoderForDir_ValidParfile_RegistersCandidatesAndReturnsDecoder(t *t
 	mainFile := copyPar2Fixtures(t, dir)
 
 	var warnMsgs, infoMsgs, uiLines []string
-	d, err := newDecoderForDir(context.Background(), discardLogger(), mainFile, dir,
+	d, _, err := newDecoderForDir(context.Background(), discardLogger(), mainFile, dir,
 		func(s string) { warnMsgs = append(warnMsgs, s) },
 		func(s string) { infoMsgs = append(infoMsgs, s) },
 		func(s string) { uiLines = append(uiLines, s) },
@@ -757,7 +679,7 @@ func TestNewDecoderForDir_EmptyCandidateDir_SkipsRegistration(t *testing.T) {
 	mainFile := copyPar2Fixtures(t, dir)
 
 	var warnMsgs, infoMsgs []string
-	d, err := newDecoderForDir(context.Background(), discardLogger(), mainFile, "",
+	d, _, err := newDecoderForDir(context.Background(), discardLogger(), mainFile, "",
 		func(s string) { warnMsgs = append(warnMsgs, s) },
 		func(s string) { infoMsgs = append(infoMsgs, s) },
 		nil,
@@ -783,7 +705,7 @@ func TestNewDecoderForDir_UnreadableCandidateDir_WarnsButStillReturnsDecoder(t *
 	mainFile := copyPar2Fixtures(t, dir)
 
 	var warnMsgs []string
-	d, err := newDecoderForDir(context.Background(), discardLogger(), mainFile, filepath.Join(dir, "nonexistent"),
+	d, _, err := newDecoderForDir(context.Background(), discardLogger(), mainFile, filepath.Join(dir, "nonexistent"),
 		func(s string) { warnMsgs = append(warnMsgs, s) },
 		func(s string) {},
 		nil,
@@ -810,7 +732,7 @@ func TestNewDecoderForDir_InvalidParfile_ReturnsError(t *testing.T) {
 		t.Fatalf("write bad.par2: %v", err)
 	}
 
-	d, err := newDecoderForDir(context.Background(), discardLogger(), bad, dir, nil, nil, nil)
+	d, _, err := newDecoderForDir(context.Background(), discardLogger(), bad, dir, nil, nil, nil)
 	if err == nil {
 		if d != nil {
 			d.Close() //nolint:errcheck // read-only

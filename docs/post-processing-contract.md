@@ -419,6 +419,8 @@ booleans; see `docs/dispatch-contract.md`) and forwarded to `postproc.Job.PP`
 
 External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as automatic fallbacks only when native execution reports inconclusive errors or fails (`GoPar2Fallback`, `GoRarFallback`, `Go7zFallback`) or when native engines are explicitly disabled in configuration.
 
+`go_par2` reports a set clean only when every file its par2 index protects is a regular file at its recorded name whose full-file MD5 matches the index (`protectedFilesIntact` in `internal/par2/go_par2.go`). par2engine's own "nothing to repair" signal is not enough: it counts a block found in any file as present, so a damaged file whose correct blocks exist elsewhere (an intact copy under another name, or its own blocks shifted by inserted bytes) would otherwise be reported repaired. A file that fails the check makes the native run unsuccessful, which sends it to the external `par2` fallback above.
+
 ## Core Pipeline Invariants
 
 1. **Non-aborting stage loop**: A stage returning a non-nil error records the error
