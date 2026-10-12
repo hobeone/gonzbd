@@ -2,6 +2,8 @@ package unpack
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -240,5 +242,151 @@ func TestExternalExtract_PasswordReachesSubprocess(t *testing.T) {
 		if err != nil || string(got) != "decrypted-7z" {
 			t.Fatalf("secret.txt = %q, %v; want decrypted-7z", got, err)
 		}
+	})
+}
+
+// lockedStageDirs are the directories makeLockedStage creates, each holding a
+// file f, with the mode each is left at, deepest first so a directory is
+// locked only after its children were made. They are what an unrar run
+// without -ai leaves for an archive that stores such modes (#862): ro has no
+// owner write, locked and locked/deeper have no owner permission at all, and
+// noread has owner write and search but no read.
+var lockedStageDirs = []struct {
+	rel  string
+	mode os.FileMode
+}{
+	{filepath.Join("locked", "deeper"), 0o000},
+	{"locked", 0o000},
+	{"noread", 0o300},
+	{"ro", 0o555},
+}
+
+// lockedStagePublished is what publishing makeLockedStage's stage yields,
+// in walk order.
+var lockedStagePublished = []string{
+	filepath.Join("locked", "deeper", "f"),
+	filepath.Join("locked", "f"),
+	filepath.Join("noread", "f"),
+	filepath.Join("ro", "f"),
+}
+
+// makeLockedStage creates a staging directory in outDir holding
+// lockedStageDirs. Its cleanup gives every directory under outDir its owner
+// bits back, visiting each before reading it, so the temp directory can be
+// removed whatever the code under test did.
+func makeLockedStage(t *testing.T, outDir string) string {
+	t.Helper()
+	stageDir, err := prepareStageDir(outDir)
+	if err != nil {
+		t.Fatalf("prepareStageDir: %v", err)
+	}
+	t.Cleanup(func() {
+		err := filepath.WalkDir(outDir, func(path string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil || !d.IsDir() {
+				return walkErr
+			}
+			return os.Chmod(path, 0o700)
+		})
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("restore stage modes: %v", err)
+		}
+	})
+	for _, d := range lockedStageDirs {
+		dir := filepath.Join(stageDir, d.rel)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", d.rel, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "f"), []byte("payload"), 0o600); err != nil {
+			t.Fatalf("write %s/f: %v", d.rel, err)
+		}
+	}
+	for _, d := range lockedStageDirs {
+		if err := os.Chmod(filepath.Join(stageDir, d.rel), d.mode); err != nil {
+			t.Fatalf("chmod %s: %v", d.rel, err)
+		}
+	}
+	return stageDir
+}
+
+func TestPublishStagedExtraction_ReadOnlyStagedDir(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("permission bits do not bind root")
+	}
+	outDir := t.TempDir()
+	stageDir := makeLockedStage(t, outDir)
+	// open has owner rwx already, so ownStageDirs leaves it at 0o711. With
+	// no group read, a copy of that mode cannot be masked into 0o750 by any
+	// umask, as 0o755 or 0o777 would be by 0o027.
+	open := filepath.Join(stageDir, "open")
+	if err := os.Mkdir(open, 0o750); err != nil {
+		t.Fatalf("mkdir open: %v", err)
+	}
+	if err := os.Chmod(open, 0o711); err != nil {
+		t.Fatalf("chmod open: %v", err)
+	}
+
+	published, err := publishStagedExtraction(slog.New(slog.DiscardHandler), outDir, stageDir, Options{})
+	if err != nil {
+		t.Fatalf("publishStagedExtraction: %v", err)
+	}
+	if !slices.Equal(published, lockedStagePublished) {
+		t.Errorf("published = %v, want %v", published, lockedStagePublished)
+	}
+	for _, rel := range lockedStagePublished {
+		if got, err := os.ReadFile(filepath.Join(outDir, rel)); err != nil || string(got) != "payload" {
+			t.Errorf("%s = %q, %v; want payload", rel, got, err)
+		}
+	}
+
+	// A published directory gets 0o750, not the archive's mode. Comparing
+	// with a directory made with 0o750 applies the process umask to both.
+	ref := filepath.Join(t.TempDir(), "ref")
+	if err := os.Mkdir(ref, 0o750); err != nil {
+		t.Fatalf("mkdir ref: %v", err)
+	}
+	refInfo, err := os.Stat(ref)
+	if err != nil {
+		t.Fatalf("stat ref: %v", err)
+	}
+	for _, dir := range []string{"locked", "noread", "ro", "open"} {
+		info, err := os.Stat(filepath.Join(outDir, dir))
+		if err != nil {
+			t.Fatalf("stat published %s: %v", dir, err)
+		}
+		if info.Mode().Perm() != refInfo.Mode().Perm() {
+			t.Errorf("published %s mode = %v, want %v", dir, info.Mode().Perm(), refInfo.Mode().Perm())
+		}
+	}
+
+	if err := os.RemoveAll(stageDir); err != nil {
+		t.Fatalf("RemoveAll(stage) after publish: %v", err)
+	}
+}
+
+func TestRemoveStage_ReadOnlyStagedDir(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("permission bits do not bind root")
+	}
+
+	t.Run("removeStageDir", func(t *testing.T) {
+		t.Parallel()
+		outDir := t.TempDir()
+		stageDir := makeLockedStage(t, outDir)
+		var logBuf bytes.Buffer
+		removeStageDir(slog.New(slog.NewTextHandler(&logBuf, nil)), stageDir)
+		assertNoStageDir(t, outDir)
+		if logBuf.Len() != 0 {
+			t.Errorf("removeStageDir logged %q, want nothing", logBuf.String())
+		}
+	})
+
+	t.Run("CleanupStageDirs", func(t *testing.T) {
+		t.Parallel()
+		outDir := t.TempDir()
+		makeLockedStage(t, outDir)
+		CleanupStageDirs(outDir)
+		assertNoStageDir(t, outDir)
 	})
 }

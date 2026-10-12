@@ -174,6 +174,9 @@ func TestUnRAR_UnreadableStageIsReportedAndLogged(t *testing.T) {
 		})
 	})
 
+	// The locked directory makes the stage unreadable. It no longer keeps
+	// the stage from being removed (#862), so the script also takes write
+	// permission away from outDir, the stage's parent.
 	scriptPath := filepath.Join(dir, "mock-unrar")
 	script := `#!/bin/sh
 eval "OUTDIR=\${$#}"
@@ -183,6 +186,7 @@ touch "${OUTDIR}file_corrected.txt"
 mkdir "${OUTDIR}locked"
 touch "${OUTDIR}locked/inner"
 chmod 000 "${OUTDIR}locked"
+chmod 555 "${OUTDIR}.."
 exit 1
 `
 	writeScript(t, scriptPath, []byte(script))

@@ -19,9 +19,9 @@ file internal/unpack/unrar.go
 [a staging directory left behind is not logged]
 file internal/unpack/snapshot.go
 --- anchor
-	if err := os.RemoveAll(stageDir); err != nil {
+	if err := removeStageTree(stageDir); err != nil {
 --- replace
-	if err := os.RemoveAll(stageDir); false && err != nil {
+	if err := removeStageTree(stageDir); false && err != nil {
 --- end
 
 [the entry's temp-file cleanup failure is discarded]
