@@ -118,14 +118,32 @@ func TestEvictCancelledNeverRun_CalledDirectly(t *testing.T) {
 	}
 }
 
+// lookupResidency is a fakeResidency whose Evict, like appResidency.Evict
+// (internal/app/residency.go), drops only a job it can still find through the
+// dispatcher by ID. The plain fake evicts by ID regardless, so it cannot tell
+// an Evict before deregistration from one after it.
+type lookupResidency struct {
+	*fakeResidency
+	d *Dispatcher
+}
+
+func (r *lookupResidency) Evict(id string) {
+	if _, ok := r.d.Job(id); !ok {
+		return
+	}
+	r.fakeResidency.Evict(id)
+}
+
 // TestCancelledNeverRunJob_ManifestIsEvicted pins that removing a cancelled
 // never-run job evicts it first, as removeFor does. A never-run job can be
 // resident — LoadProgress, which SetName calls, hydrates it — and the app's
 // Residency drops the manifest of a job it finds through the dispatcher by ID,
 // so an Evict after deregistration would leave the manifest installed.
+// lookupResidency reproduces that lookup, so the order is what is tested.
 func TestCancelledNeverRunJob_ManifestIsEvicted(t *testing.T) {
-	res := &fakeResidency{}
+	res := &lookupResidency{fakeResidency: &fakeResidency{}}
 	d := newTestDispatcher(t, withResidency(res))
+	res.d = d
 	j := job.New("j1", "n", job.Policy{})
 	if err := d.Add(context.Background(), j, Header{}); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -146,7 +164,7 @@ func TestCancelledNeverRunJob_ManifestIsEvicted(t *testing.T) {
 		t.Fatal("fixture: the cancelled never-run job is still registered after a tick")
 	}
 	if res.resident("j1") {
-		t.Error("j1 was deregistered without being evicted; its manifest is still resident")
+		t.Error("j1's manifest is still resident: it was not evicted while it was still registered")
 	}
 }
 

@@ -14,3 +14,15 @@ file internal/dispatch/tick.go
 	rm.end()
 	return true
 --- end
+
+[the job is deregistered before it is evicted]
+file internal/dispatch/tick.go
+--- anchor
+	d.res.Evict(j.ID())
+	rm.end()
+	return true
+--- replace
+	rm.end()
+	d.res.Evict(j.ID())
+	return true
+--- end
