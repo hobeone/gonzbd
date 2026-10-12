@@ -146,7 +146,22 @@ func TestJobTransitions_AcquireGivesUpWithItsContext(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	c, err := tr.acquire(ctx, "x")
+	type result struct {
+		c   *transitionClaim
+		err error
+	}
+	got := make(chan result, 1)
+	go func() {
+		c, err := tr.acquire(ctx, "x")
+		got <- result{c, err}
+	}()
+	var r result
+	select {
+	case r = <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("acquire did not return after its context ended")
+	}
+	c, err := r.c, r.err
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("acquire err = %v, want DeadlineExceeded", err)
 	}

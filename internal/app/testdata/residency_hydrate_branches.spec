@@ -14,6 +14,14 @@ file internal/app/residency.go
 		return fmt.Errorf("residency: hydrate %s: concurrent hydration failed", id)
 --- end
 
+[a waiter never waits on the hydration in flight]
+file internal/app/residency.go
+--- anchor
+		if err := r.hydrating.Wait(ctx, id); err != nil {
+--- replace
+		if err := ctx.Err(); err != nil {
+--- end
+
 [a waiter ignores its cancelled context]
 file internal/app/residency.go
 --- anchor

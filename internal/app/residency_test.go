@@ -5,10 +5,10 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -219,7 +219,7 @@ func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 		// The waiter must be waiting before the hydration ends: one that
 		// found no hydration in flight would hydrate the job itself and pass
 		// whatever the waited path does.
-		awaitGoroutineIn(t, "keyedlatch.(*Latch).Wait", "(*appResidency).Hydrate")
+		awaitHydrateWaiting(t, r)
 		finish()
 		if err := <-done; err != nil {
 			t.Errorf("Hydrate = %v after the hydration it waited on left the job non-resident; the waiter hydrates it itself", err)
@@ -275,20 +275,66 @@ func TestAppResidency_FaultAfterCancellationIsAContextError(t *testing.T) {
 	}
 }
 
-// awaitGoroutineIn returns once some goroutine's stack names every one of fns,
-// and fails the test if none does within five seconds. It is how a test knows
-// a goroutine has reached a wait that offers no seam of its own.
-func awaitGoroutineIn(t *testing.T, fns ...string) {
+// awaitHydrateWaiting returns once r's own Hydrate is blocked in the latch
+// Wait, and fails the test if it is not within five seconds. The match is on
+// one goroutine's stack holding both frames, with r as Hydrate's printed
+// receiver (exact, or marked ? when the traceback is unsure of it), so a
+// parallel test's Hydrate waiting on another residency does not satisfy it.
+// The dump is grown until runtime.Stack no longer fills the buffer, so the
+// waiter cannot be cut off the end of it.
+func awaitHydrateWaiting(t *testing.T, r *appResidency) {
 	t.Helper()
-	buf := make([]byte, 1<<20)
+	recv := fmt.Sprintf("(*appResidency).Hydrate(%p", r)
+	buf := make([]byte, 1<<16)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		for g := range strings.SplitSeq(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
-			if !slices.ContainsFunc(fns, func(fn string) bool { return !strings.Contains(g, fn) }) {
+		n := runtime.Stack(buf, true)
+		if n == len(buf) {
+			buf = make([]byte, 2*len(buf))
+			continue
+		}
+		for g := range strings.SplitSeq(string(buf[:n]), "\n\n") {
+			if strings.Contains(g, "keyedlatch.(*Latch).Wait(") &&
+				(strings.Contains(g, recv+",") || strings.Contains(g, recv+"?,")) {
 				return
 			}
 		}
 		runtime.Gosched()
 	}
-	t.Fatalf("no goroutine reached %v", fns)
+	n := runtime.Stack(buf, true)
+	t.Fatalf("r's Hydrate never waited on the latch; goroutines:\n%s", buf[:n])
+}
+
+// TestAppResidency_HydrateLeavesNoCancelBehind pins that Hydrate's deferred
+// release drops the hydration's cancel along with its claim, on the return
+// that attached and on one whose manifest read failed. A cancel left behind
+// would sit in r.cancels for the life of the process, one per job ever
+// hydrated.
+func TestAppResidency_HydrateLeavesNoCancelBehind(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	attached := job.New("abc123", "test", job.PolicyFromPP(3))
+	writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), attached)
+	missing := job.New("def456", "test", job.PolicyFromPP(3)) // no manifest written
+	jobs := map[string]*job.Job{"abc123": attached, "def456": missing}
+	r := newAppResidency(func(id string) (*job.Job, bool) {
+		j, found := jobs[id]
+		return j, found
+	}, dir, nil, nil)
+
+	for _, c := range []struct {
+		id      string
+		wantErr bool
+	}{{"abc123", false}, {"def456", true}} {
+		err := r.Hydrate(context.Background(), c.id)
+		if (err != nil) != c.wantErr {
+			t.Fatalf("Hydrate(%s) = %v, want an error: %v", c.id, err, c.wantErr)
+		}
+		r.mu.Lock()
+		n, held := len(r.cancels), r.hydrating.Held(c.id)
+		r.mu.Unlock()
+		if n != 0 || held {
+			t.Errorf("after Hydrate(%s): %d cancels left and claim held = %v; want 0 and false", c.id, n, held)
+		}
+	}
 }

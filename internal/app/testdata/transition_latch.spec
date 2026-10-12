@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestJobTransitions_(TryAcquireTakesTheFreeIDsAndSkipsTheHeld|AWokenWaiterRechecksBeforeTakingTheID|ReleaseRemovesTheIDs|RemovedForgetsACollectedJob|AcquireTakesAFreeIDOnAnEndedContext)$
+run TestJobTransitions_(TryAcquireTakesTheFreeIDsAndSkipsTheHeld|AWokenWaiterRechecksBeforeTakingTheID|ReleaseRemovesTheIDs|RemovedForgetsACollectedJob|AcquireTakesAFreeIDOnAnEndedContext|AcquireGivesUpWithItsContext)$
 
 # jobTransitions' own exclusion, separately from its call sites
 # (transition_lock.spec). The claim and release themselves are
@@ -36,6 +36,14 @@ file internal/app/transition.go
 			return nil, err
 		}
 		break
+--- end
+
+[acquire ignores its context while it waits]
+file internal/app/transition.go
+--- anchor
+		if err := t.held.Wait(ctx, id); err != nil {
+--- replace
+		if err := t.held.Wait(context.Background(), id); err != nil {
 --- end
 
 [release leaves its ids held]

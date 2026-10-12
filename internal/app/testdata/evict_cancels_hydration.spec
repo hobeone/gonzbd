@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run TestAppResidency_EvictEndsAHydrationBlockedInItsManifestRead|TestAppResidency_EvictCancelsTheHydrationThatReplacesTheOneItCancelled|TestAppResidency_FaultAfterCancellationIsAContextError
+run TestAppResidency_EvictEndsAHydrationBlockedInItsManifestRead|TestAppResidency_EvictCancelsTheHydrationThatReplacesTheOneItCancelled|TestAppResidency_FaultAfterCancellationIsAContextError|TestAppResidency_HydrateLeavesNoCancelBehind
 
 [Evict stops after the first hydration and leaves its replacement running]
 file internal/app/residency.go
@@ -21,6 +21,15 @@ file internal/app/residency.go
 --- replace
 		_ = done
 		_ = r.hydrating.Wait(context.Background(), id)
+--- end
+
+[a finished hydration leaves its cancel behind]
+file internal/app/residency.go
+--- anchor
+		delete(r.cancels, id)
+		r.hydrating.Release(id)
+--- replace
+		r.hydrating.Release(id)
 --- end
 
 [Evict waits on the hydration without cancelling it]

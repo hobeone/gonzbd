@@ -54,11 +54,13 @@ type appResidency struct {
 	// hydrating holds a claim on each job ID a Hydrate is in flight for,
 	// released when it returns; cancels holds the cancel of the context it
 	// runs under, which is how Evict ends it rather than waiting for its
-	// reads. An ID is in cancels exactly while it is claimed in hydrating:
-	// both change together under mu, at Hydrate's one claim and its deferred
-	// release (`git grep -n 'r\.hydrating\.\(TryClaim\|Release\)(' -- 'internal/app/*.go' ':!*_test.go'`
+	// reads. Under mu, an ID is in cancels exactly while a hydration holds
+	// its claim. Both change only under mu
+	// (`git grep -n 'r\.hydrating\.\(TryClaim\|Release\)(' -- 'internal/app/*.go' ':!*_test.go'`
 	// returns 3 lines: the claim, the release of a claim taken for a job
-	// already resident, and the deferred release).
+	// already resident, and the deferred release). The resident job's claim
+	// is taken and given back inside one mu span and never enters cancels, so
+	// no holder of mu sees it.
 	mu        sync.Mutex
 	hydrating keyedlatch.Latch
 	cancels   map[string]context.CancelFunc
