@@ -1064,6 +1064,10 @@ func TestScriptCanFail_True(t *testing.T) {
 	})
 
 	job := makeJob(t, "script-can-fail")
+	job.DownloadDir = t.TempDir() // the script stage walks it for SAB_FILES
+	if err := os.WriteFile(filepath.Join(job.DownloadDir, "f.bin"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	job.Script = "test.sh"
 	p.Process(job)
 

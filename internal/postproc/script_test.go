@@ -469,6 +469,28 @@ func TestScriptHelperFunctionsDirect(t *testing.T) {
 	})
 }
 
+func TestBuildEnv_FilesAlwaysValidJSONArray(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		files []string
+		want  string
+	}{
+		{"nil", nil, "[]"},
+		{"empty", []string{}, "[]"},
+		{"some", []string{"a.txt", "d/b \"q\".txt"}, `["a.txt","d/b \"q\".txt"]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := buildEnvMap(ScriptInput{Files: tc.files})
+			if got := m["SAB_FILES"]; got != tc.want {
+				t.Errorf("SAB_FILES = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuildEnv_SecretsExposedByDefault(t *testing.T) {
 	t.Parallel()
 	in := fullInput(t)

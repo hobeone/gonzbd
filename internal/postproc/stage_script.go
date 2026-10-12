@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -76,6 +77,34 @@ func NewScriptStage(scriptDir, completeDir, version, apiKey, apiURL string) *Scr
 // Name returns the stage identifier.
 func (*ScriptStage) Name() string { return "script" }
 
+// walkJobFiles returns the regular files under dir as sorted, slash-separated
+// paths relative to dir. Directories are not listed. A symlink or any other
+// non-regular entry is skipped without being followed, since a job's output
+// holds no links (a link in it is a defect, not content to report). The
+// first walk error is returned and no partial list with it.
+func walkJobFiles(dir string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	slices.Sort(files)
+	return files, nil
+}
+
 // Run builds a ScriptInput from the job and invokes RunScript. Returns nil
 // when no script is configured, the script exits 0, or the script exits
 // non-zero while scriptCanFail is false; wraps the RunScript error otherwise.
@@ -139,8 +168,19 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		expectedBytes = prog.ExpectedBytes()
 	}
 
+	files, err := walkJobFiles(job.DownloadDir)
+	if err == nil && len(encodeFiles(files)) > maxFilesEnvBytes {
+		err = fmt.Errorf("%d files do not fit the %d-byte SAB_FILES limit", len(files), maxFilesEnvBytes)
+	}
+	if err != nil {
+		err = fmt.Errorf("script %q: listing %s for SAB_FILES: %w", name, job.DownloadDir, err)
+		logf(ctx, log, job, slog.LevelWarn, "Error: %v", err)
+		return err
+	}
+
 	in := ScriptInput{
 		FinalDir:    job.DownloadDir,
+		Files:       files,
 		CompleteDir: s.CompleteDir,
 		NZBName:     job.Filename,
 		JobName:     job.Name(),

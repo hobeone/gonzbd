@@ -124,6 +124,21 @@ scripts. GoNZBD adds a few extensions (marked below).
 | `SAB_AVG_BPS` | Average download speed (bytes/sec) | `8947848` |
 | `SAB_AGE` | Age of NZB in days since posting date | `3` |
 
+### Files
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `SAB_FILES` | JSON array of the job's regular files, sorted, as `/`-separated paths relative to `SAB_FINAL_PROCESSING_DIR` *(Go extension; SABnzbd's list is relative to `SAB_COMPLETE_DIR`)* | `["My.Show.S01E01.mkv","Subs/en.srt"]` |
+
+`SAB_FILES` is a walk of the processed directory taken just before the script
+starts. Directories are not listed, and a symlink or other non-regular entry
+is skipped, not followed. An empty directory gives `[]`, so the value is
+always a valid JSON array. If the walk fails, or the encoded array would
+exceed 100 KiB (Linux refuses an environment string over 128 KiB), the script
+is not run and the stage reports the error. A category with a flat layout
+(`dir` ending in `*`) shares one directory between jobs, so there the list
+covers every file in that shared directory.
+
 ### Status & Errors
 
 | Variable | Description | Example |
