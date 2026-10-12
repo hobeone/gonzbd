@@ -20,9 +20,10 @@ file internal/unpack/snapshot.go
 --- end
 
 # The destination copies the staged directory's mode again. ownStageDirs has
-# already run, so the rename still succeeds; the test sees ro published with
-# 0o755 (0o555 plus the owner bits) instead of 0o750. Under a umask that
-# clears 0o027 both modes collapse to 0o750 and this mutation survives.
+# already run, so the rename still succeeds; the test sees open, staged at
+# 0o711, published with that mode instead of 0o750. 0o711 has no group read,
+# so no umask masks it onto 0o750 (0o027 gives 0o710), where 0o755 or 0o777
+# would collapse to 0o750 under umask 0o027.
 [publish copies the staged directory's mode]
 file internal/unpack/snapshot.go
 --- anchor
@@ -52,6 +53,26 @@ file internal/unpack/snapshot.go
 	if perm := info.Mode().Perm(); perm&0o700 != 0o700 {
 --- replace
 	if perm := info.Mode().Perm(); false && perm&0o700 != 0o700 {
+--- end
+
+# Owner search is not granted: the 0o000 locked directory becomes 0o600 and
+# cannot be walked into.
+[ownStageDirs grants no owner search]
+file internal/unpack/snapshot.go
+--- anchor
+		return root.Chmod(path, perm|0o700)
+--- replace
+		return root.Chmod(path, perm|0o600)
+--- end
+
+# Only a directory missing owner write is changed: noread, at 0o300, keeps
+# its missing read bit and cannot be listed.
+[ownStageDirs fixes only a missing write bit]
+file internal/unpack/snapshot.go
+--- anchor
+	if perm := info.Mode().Perm(); perm&0o700 != 0o700 {
+--- replace
+	if perm := info.Mode().Perm(); perm&0o200 == 0 {
 --- end
 
 # CleanupStageDirs goes back to a bare os.RemoveAll.
