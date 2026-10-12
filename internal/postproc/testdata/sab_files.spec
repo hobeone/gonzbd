@@ -40,24 +40,6 @@ file internal/postproc/stage_finalize.go
 		if false {
 --- end
 
-[a flat job's moved files not recorded]
-file internal/postproc/stage_finalize.go
---- anchor
-			delivered = append(delivered, filepath.ToSlash(rel))
---- replace
-			_ = rel
---- end
-
-[a flat job's list taken by walking the shared directory]
-file internal/postproc/stage_finalize.go
---- anchor
-	if job.FlatLayout {
-		job.recordOutputFiles(delivered)
---- replace
-	if false {
-		job.recordOutputFiles(delivered)
---- end
-
 [a failed job's remaining files not recorded]
 file internal/postproc/stage_finalize.go
 --- anchor

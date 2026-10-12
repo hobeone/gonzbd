@@ -343,6 +343,12 @@ func (c *CategoryConfig) validate() error {
 	if c.PP < 0 || c.PP > 3 {
 		return fmt.Errorf("pp: %d outside [0,3] (0=download, 1=+repair, 2=+unpack, 3=+delete)", c.PP)
 	}
+	// A trailing "*" once delivered every job into one shared directory.
+	// Each job has its own final directory now, so the suffix is refused
+	// rather than read as a literal part of the directory name.
+	if before, ok := strings.CutSuffix(c.Dir, "*"); ok {
+		return fmt.Errorf("dir: %q ends in \"*\"; flat categories (all jobs delivered into one shared directory) are not supported, so put the category under its own subdirectory instead (e.g. %q)", c.Dir, before)
+	}
 	return nil
 }
 

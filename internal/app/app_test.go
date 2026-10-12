@@ -1429,23 +1429,23 @@ func TestApplication_EdgeCases(t *testing.T) {
 	// Valid job ID (triggers maybeFinalize and enqueuePostProc)
 	downloaderOpts.OnJobHopeless(job.ID())
 
-	// Add category with flat layout to config
+	// Add a category to config
 	cfg.With(func(c *config.Config) {
 		c.Categories = append(c.Categories, config.CategoryConfig{
-			Name: "flatcat",
-			Dir:  "flat*",
+			Name: "dircat",
+			Dir:  "dircat",
 		})
 	})
-	jobFlat, hdrFlat := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "flat-test", Category: "flatcat", PP: 3})
-	_ = application.Dispatcher().Add(context.Background(), jobFlat, hdrFlat)
+	jobDir, hdrDir := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "dircat-test", Category: "dircat", PP: 3})
+	_ = application.Dispatcher().Add(context.Background(), jobDir, hdrDir)
 
 	// Inject a dummy direct unpacker to test enqueuePostProc direct unpack handoff
-	duEdge := directunpack.New(slog.Default(), jobFlat.ID(), t.TempDir(), t.TempDir(), directunpack.Options{})
-	application.InjectDirectUnpacker(jobFlat.ID(), duEdge)
+	duHandoff := directunpack.New(slog.Default(), jobDir.ID(), t.TempDir(), t.TempDir(), directunpack.Options{})
+	application.InjectDirectUnpacker(jobDir.ID(), duHandoff)
 
-	// Trigger hopeless on flat job
-	_ = jobFlat.BeginAttempt(time.Now())
-	downloaderOpts.OnJobHopeless(jobFlat.ID())
+	// Trigger hopeless on the categorised job
+	_ = jobDir.BeginAttempt(time.Now())
+	downloaderOpts.OnJobHopeless(jobDir.ID())
 
 	// 4. Test handleFileComplete branches
 	// Nonexistent job (early return)

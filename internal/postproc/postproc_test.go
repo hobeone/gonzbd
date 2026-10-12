@@ -1461,8 +1461,6 @@ func TestBuildSummaryEntry_AllSuccess(t *testing.T) {
 // a per-job FinalDir exists and is non-empty, processJob sets
 // DownloadDir = FinalDir, skips stages up to and including finalize, runs
 // script with its normal failure semantics, and completes with FailMsg == "".
-// With a flat layout (FlatLayout == true), FinalDir is shared across jobs so
-// non-empty proves nothing and the job is still filed Failed.
 func TestPreCheck_AlreadyDeliveredPerJobFinalDir(t *testing.T) {
 	t.Parallel()
 
@@ -1495,7 +1493,6 @@ func TestPreCheck_AlreadyDeliveredPerJobFinalDir(t *testing.T) {
 			PP:          3,
 			DownloadDir: missingDownloadDir,
 			FinalDir:    finalDir,
-			FlatLayout:  false,
 			Script:      "notify.sh",
 		}
 
@@ -1617,57 +1614,6 @@ func TestPreCheck_AlreadyDeliveredPerJobFinalDir(t *testing.T) {
 		}
 		if job.DownloadDir != finalDir {
 			t.Errorf("job.DownloadDir = %q, want FinalDir %q", job.DownloadDir, finalDir)
-		}
-	})
-
-	t.Run("flat layout still files Failed", func(t *testing.T) {
-		t.Parallel()
-
-		missingDownloadDir := filepath.Join(t.TempDir(), "missing-download-dir")
-		flatFinalDir := filepath.Join(t.TempDir(), "complete", "movies")
-		if err := os.MkdirAll(flatFinalDir, 0o750); err != nil {
-			t.Fatalf("mkdir flatFinalDir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(flatFinalDir, "other_job.mkv"), []byte("video"), 0o600); err != nil {
-			t.Fatalf("write other_job.mkv: %v", err)
-		}
-
-		scriptDir := t.TempDir()
-		ranFile := filepath.Join(scriptDir, "ran.txt")
-		writeScript(t, filepath.Join(scriptDir, "notify.sh"),
-			[]byte("#!/bin/sh\necho ran > "+ranFile+"\n"))
-
-		qjob := newQueueJob(t, "delivered-flat", 3)
-		qjob.SetName("MyRelease")
-		job := &Job{
-			Job:         qjob,
-			Filename:    "MyRelease.nzb",
-			PP:          3,
-			DownloadDir: missingDownloadDir,
-			FinalDir:    flatFinalDir,
-			FlatLayout:  true,
-			Script:      "notify.sh",
-		}
-
-		pp := New(Options{
-			Stages: []Stage{
-				NewFinalizeStage(),
-				NewScriptStage(scriptDir, filepath.Dir(flatFinalDir), "test", "", ""),
-			},
-		})
-		pp.processJob(t.Context(), job)
-
-		if !strings.Contains(job.FailMsg, "download directory unavailable") {
-			t.Errorf("job.FailMsg = %q, want download directory unavailable error", job.FailMsg)
-		}
-		if len(job.StageLog) != 2 || job.StageLog[0].Stage != "download" || job.StageLog[1].Stage != "pre-check" {
-			t.Errorf("job.StageLog = %+v, want [download, pre-check]", job.StageLog)
-		}
-		if job.DownloadDir != missingDownloadDir {
-			t.Errorf("job.DownloadDir = %q, want original %q", job.DownloadDir, missingDownloadDir)
-		}
-		if _, err := os.Stat(ranFile); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("script ran on flat-layout missing-DownloadDir job (stat err = %v)", err)
 		}
 	})
 
@@ -1806,8 +1752,7 @@ func TestPreCheck_AlreadyDeliveredPerJobFinalDir(t *testing.T) {
 			{name: "unset FinalDir", job: Job{}, want: false},
 			{name: "missing FinalDir", job: Job{FinalDir: filepath.Join(t.TempDir(), "missing")}, want: false},
 			{name: "empty FinalDir", job: Job{FinalDir: emptyFinal}, want: false},
-			{name: "flat layout with populated FinalDir", job: Job{FinalDir: populatedFinal, FlatLayout: true}, want: false},
-			{name: "per-job layout with populated FinalDir", job: Job{FinalDir: populatedFinal, FlatLayout: false}, want: true},
+			{name: "populated FinalDir", job: Job{FinalDir: populatedFinal}, want: true},
 		} {
 			if got := tc.job.alreadyDelivered(); got != tc.want {
 				t.Errorf("%s: alreadyDelivered() = %v, want %v", tc.name, got, tc.want)

@@ -127,11 +127,11 @@ file internal/postproc/stage_finalize.go
 	if job.DownloadDir == job.FinalDir {
 		logf(ctx, log, job, slog.LevelInfo, "Already at final location: %s", job.FinalDir)
 		f.deletePending(ctx, log, job)
-		if job.FlatLayout {
+		recordWalkedOutputFiles(job)
 --- replace
 	if job.DownloadDir == job.FinalDir {
 		logf(ctx, log, job, slog.LevelInfo, "Already at final location: %s", job.FinalDir)
-		if job.FlatLayout {
+		recordWalkedOutputFiles(job)
 --- end
 
 [finalize skips deleting pending files after moveToDest]

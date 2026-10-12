@@ -28,13 +28,12 @@ func writeTree(t *testing.T, dir, content string, rels ...string) {
 // filesJob returns a job whose DownloadDir is a fresh directory holding
 // rels, destined for finalDir. Unlike stageJob it records no file list: the
 // real FinalizeStage must.
-func filesJob(t *testing.T, finalDir string, flat bool, rels ...string) *Job {
+func filesJob(t *testing.T, finalDir string, rels ...string) *Job {
 	t.Helper()
 	j, dir := stageJob(t)
 	j.outputFiles, j.outputFilesSet = nil, false
 	writeTree(t, dir, "x", rels...)
 	j.FinalDir = finalDir
-	j.FlatLayout = flat
 	return j
 }
 
@@ -74,7 +73,7 @@ func TestSABFiles_PerJobNestedSorted(t *testing.T) {
 	// "a.txt" must sort before "a/z.txt" ('.' < '/'), the reverse of the
 	// order a directory walk visits them in, so only a sort over the full
 	// relative paths yields the want below.
-	j := filesJob(t, final, false, "b.mkv", "a/z.txt", "a.txt", "sub/deep/c.nfo", "sub/d.srt")
+	j := filesJob(t, final, "b.mkv", "a/z.txt", "a.txt", "sub/deep/c.nfo", "sub/d.srt")
 	if err := os.MkdirAll(filepath.Join(j.DownloadDir, "emptydir"), 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +93,7 @@ func TestSABFiles_PerJobNestedSorted(t *testing.T) {
 
 func TestSABFiles_EmptyDir(t *testing.T) {
 	t.Parallel()
-	j := filesJob(t, filepath.Join(t.TempDir(), "complete", "Rel"), false)
+	j := filesJob(t, filepath.Join(t.TempDir(), "complete", "Rel"))
 	raw, err := runFinalizeThenScript(t, j)
 	if err != nil {
 		t.Fatalf("script stage: %v", err)
@@ -104,45 +103,12 @@ func TestSABFiles_EmptyDir(t *testing.T) {
 	}
 }
 
-// A flat category's directory is shared, so each job's list must be the files
-// finalize moved for it, not whatever the directory holds. "common.nfo" is
-// delivered by both jobs to one path: the second overwrites the first (the
-// move is os.Rename), and each job's list still names the path it produced.
-func TestSABFiles_FlatLayoutListsOnlyOwnFiles(t *testing.T) {
+// A file removed by pending deletions (extracted archives) is not delivered
+// and so is not listed.
+func TestSABFiles_SkipsPendingDeletions(t *testing.T) {
 	t.Parallel()
-	shared := filepath.Join(t.TempDir(), "complete", "movies")
-	writeTree(t, shared, "x", "earlier-job.mkv")
-
-	a := filesJob(t, shared, true, "a.mkv", "sub/a.nfo", "common.nfo")
-	b := filesJob(t, shared, true, "b.mkv", "sub/b.nfo", "common.nfo")
-
-	gotA, err := runFinalizeThenScript(t, a)
-	if err != nil {
-		t.Fatalf("job a script stage: %v", err)
-	}
-	gotB, err := runFinalizeThenScript(t, b)
-	if err != nil {
-		t.Fatalf("job b script stage: %v", err)
-	}
-	if want := []string{"a.mkv", "common.nfo", "sub/a.nfo"}; !slices.Equal(decodeFiles(t, gotA), want) {
-		t.Errorf("job a SAB_FILES = %s, want %v", gotA, want)
-	}
-	if want := []string{"b.mkv", "common.nfo", "sub/b.nfo"}; !slices.Equal(decodeFiles(t, gotB), want) {
-		t.Errorf("job b SAB_FILES = %s, want %v", gotB, want)
-	}
-	for _, rel := range []string{"earlier-job.mkv", "a.mkv", "b.mkv", "sub/a.nfo", "sub/b.nfo", "common.nfo"} {
-		if _, err := os.Stat(filepath.Join(shared, filepath.FromSlash(rel))); err != nil {
-			t.Errorf("shared dir lacks %s: %v", rel, err)
-		}
-	}
-}
-
-// A flat job's file removed by pending deletions (extracted archives) is not
-// delivered and so is not listed.
-func TestSABFiles_FlatLayoutSkipsPendingDeletions(t *testing.T) {
-	t.Parallel()
-	shared := filepath.Join(t.TempDir(), "complete", "movies")
-	j := filesJob(t, shared, true, "movie.mkv", "movie.rar")
+	final := filepath.Join(t.TempDir(), "complete", "Rel")
+	j := filesJob(t, final, "movie.mkv", "movie.rar")
 	j.PendingDeletions = []string{"movie.rar"}
 
 	raw, err := runFinalizeThenScript(t, j)
@@ -158,7 +124,7 @@ func TestSABFiles_FlatLayoutSkipsPendingDeletions(t *testing.T) {
 // is handed, so that is what is listed.
 func TestSABFiles_FailedJobListsDownloadDir(t *testing.T) {
 	t.Parallel()
-	j := filesJob(t, filepath.Join(t.TempDir(), "complete", "Rel"), true, "left.bin")
+	j := filesJob(t, filepath.Join(t.TempDir(), "complete", "Rel"), "left.bin")
 	j.UnpackError = true
 
 	raw, err := runFinalizeThenScript(t, j)
@@ -176,7 +142,7 @@ func TestSABFiles_WalkErrorFailsStage(t *testing.T) {
 		t.Skip("root reads a mode-0 directory, so no walk error can be provoked")
 	}
 	final := filepath.Join(t.TempDir(), "complete", "Rel")
-	j := filesJob(t, final, false, "ok.mkv", "locked/f")
+	j := filesJob(t, final, "ok.mkv", "locked/f")
 	// The directory renames fine and stays usable as the script's working
 	// directory; only listing it can fail.
 	if err := os.Chmod(filepath.Join(j.DownloadDir, "locked"), 0); err != nil {
@@ -206,7 +172,7 @@ func TestSABFiles_TooLargeFailsStage(t *testing.T) {
 	for i := range rels {
 		rels[i] = strings.Repeat("d", 200) + "/" + fmt.Sprintf("%s%03d", strings.Repeat("n", 197), i)
 	}
-	j := filesJob(t, filepath.Join(t.TempDir(), "complete", "Rel"), false, rels...) // ~400 bytes each, over 100 KiB
+	j := filesJob(t, filepath.Join(t.TempDir(), "complete", "Rel"), rels...) // ~400 bytes each, over 100 KiB
 	if _, err := runFinalizeThenScript(t, j); err == nil {
 		t.Fatal("expected an error when SAB_FILES would exceed the per-variable limit")
 	}

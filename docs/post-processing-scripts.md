@@ -131,18 +131,14 @@ scripts. GoNZBD adds a few extensions (marked below).
 | `SAB_FILES` | JSON array of the job's regular files, sorted, as `/`-separated paths relative to `SAB_FINAL_PROCESSING_DIR` *(Go extension; SABnzbd's list is relative to `SAB_COMPLETE_DIR`)* | `["My.Show.S01E01.mkv","Subs/en.srt"]` |
 
 `SAB_FILES` is the list `FinalizeStage` recorded for the job, so it names only
-this job's files. A per-job folder is listed by walking the folder after the
-move. A flat-layout category (`dir` ending in `*`), whose directory other jobs
-share, is listed from the files the move delivered; the shared directory is
-never walked. A failed job lists what remains in its download directory.
+this job's files. The job's own folder is listed by walking it after the move.
+A failed job lists what remains in its download directory.
 Directories are not listed, and a symlink or other non-regular entry is
 skipped, not followed. The value is always a valid JSON array (`[]` when
 empty). If no list could be produced (a failed listing, or an array over
 100 KiB, since Linux refuses an environment string over 128 KiB), the script
-is not run and the stage reports the error. A per-job job resumed after a
-restart between finalize and the script is re-listed from its folder; a
-flat-layout job in that state is failed by the pre-check before any script
-runs.
+is not run and the stage reports the error. A job resumed after a
+restart between finalize and the script is re-listed from its folder.
 
 ### Status & Errors
 

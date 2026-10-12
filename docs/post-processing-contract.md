@@ -428,10 +428,8 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    check failed) or `job.DownloadDir` is empty/missing, all processing stages are
    skipped, a synthetic `pre-check` entry is appended to `StageLog`, and the job
    completes directly to history as `Failed` — with one crash-recovery exception
-   (#767): when `job.DownloadDir` is missing (`fs.ErrNotExist`), the job uses a
-   per-job destination (`!job.FlatLayout`, set by `Application.enqueuePostProc`
-   from whether the category `Dir` ends in `*`), and `job.FinalDir` exists and is
-   non-empty (`PostProcessor.recoverUnpackFinalDir` first completes any
+   (#767): when `job.DownloadDir` is missing (`fs.ErrNotExist`) and
+   `job.FinalDir` — the job's own directory — exists and is non-empty (`PostProcessor.recoverUnpackFinalDir` first completes any
    interrupted `_UNPACK_<FinalDir>` → `FinalDir` rename after sweeping the
    `.gonzbd-pending-deletions` sidecar via `FinalizeStage.deletePending`; then
    `Job.alreadyDelivered` checks `FinalDir`; #768), `processJob` treats the job as already
@@ -441,9 +439,10 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    files the history entry with `Path = FinalDir` and `Storage = FinalDir` as
    `Completed` when `script` succeeds (or `Failed` if `script` fails and
    `script_can_fail` is true) (`TestPreCheck_AlreadyDeliveredPerJobFinalDir`,
-   `TestEnqueuePostProc_DeliveredCrashRecovery`). With a flat category
-   (`FlatLayout == true`), `FinalDir` is the shared `complete/<category>`
-   directory where non-empty proves nothing, so the pre-check abort still fires.
+   `TestEnqueuePostProc_DeliveredCrashRecovery`). Because no other job delivers
+   into `FinalDir`, its being non-empty is evidence of this job's delivery; a
+   category `dir` ending in `*` (the retired flat layout) is refused by config
+   validation, so no shared destination exists to weaken that.
    Residual risk until the delivery step is persisted as its own state: a stale
    same-named directory under `complete/` plus a manually removed `DownloadDir`
    is also treated as delivered.
@@ -640,11 +639,9 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    JSON array (`[]` when empty) of the job's regular files as sorted
    `/`-separated paths relative to `SAB_FINAL_PROCESSING_DIR`. `FinalizeStage`
    is its single owner: it records the list on the job (`recordOutputFiles`),
-   by walking the job's own folder or, in a flat layout whose directory is
-   shared, from the files it moved; `ScriptStage` only reads it. The record is
+   by walking the job's own folder after the move; `ScriptStage` only reads it. The record is
    in memory, so the delivered-recovery branch of `processJob` re-derives it by
-   walking `FinalDir` (per-job layouts only; a flat job in that state fails the
-   pre-check). No recorded list, or an array over `maxFilesEnvBytes`, fails the
+   walking `FinalDir`. No recorded list, or an array over `maxFilesEnvBytes`, fails the
    stage before the script runs. Scripts support `RedactSecrets` (masking `SAB_API_KEY`/`SAB_PASSWORD` as `**REDACTED**`) and `ScriptCanFail` (when true, a non-zero exit code fails the job; default false records the exit without failing the job).
 6. **Log output cap**: Tool output lines (par2, unrar, script stdout) captured in
    `OutputLines` and `StageLogEntry.Lines` are capped at `MaxLogBytes = 512 KiB`

@@ -589,14 +589,11 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 				// after FinalizeStage moved the job into FinalDir (including a
 				// kill while ScriptStage was running), the queue row still says
 				// Extracting and enqueuePostProc recomputes DownloadDir in the
-				// incomplete area, which is now gone. For a per-job layout
-				// (!job.FlatLayout), a non-empty FinalDir means the files were
+				// incomplete area, which is now gone. FinalDir is the job's
+				// own directory, so a non-empty one means the files were
 				// already delivered: set DownloadDir = FinalDir before building
 				// the preamble log, skip stages up to and including finalize,
 				// and run the script stage with its normal failure semantics.
-				// With a flat category (catDir ending in "*"), FinalDir is the
-				// shared complete/<category> directory and non-empty proves
-				// nothing, so the existing failure path stays.
 				//
 				// Residual risk: a stale same-named directory plus a manually
 				// removed download dir would be treated as delivered.
@@ -610,8 +607,7 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 				job.DownloadDir = job.FinalDir
 				// The skipped finalize stage recorded the script's file
 				// list in a run that is gone; re-derive it the way
-				// finalize does for a per-job directory. A flat category
-				// never reaches here (alreadyDelivered is false for it).
+				// finalize does.
 				recordWalkedOutputFiles(job)
 				stages = stagesAfterFinalize(stages)
 				sweepTempFiles(p.log, job.DownloadDir)
@@ -679,7 +675,7 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 // deletePending to finish unlinking the recorded archives and par2 files before
 // renaming _UNPACK_<FinalDir> to FinalDir.
 func (p *PostProcessor) recoverUnpackFinalDir(ctx context.Context, job *Job) error {
-	if job.FlatLayout || job.FinalDir == "" {
+	if job.FinalDir == "" {
 		return nil
 	}
 	if _, err := os.Lstat(job.FinalDir); !errors.Is(err, fs.ErrNotExist) {
@@ -715,12 +711,11 @@ func (p *PostProcessor) recoverUnpackFinalDir(ctx context.Context, job *Job) err
 }
 
 // alreadyDelivered reports whether a job whose DownloadDir is missing has
-// already been delivered into a per-job FinalDir (#767). Flat-layout
-// categories share FinalDir across all jobs in the category, so non-empty
-// proves nothing and returns false. Orphaned .gonzbd-tmp-<16 hex> files do not
+// already been delivered into its FinalDir (#767), which belongs to the job
+// alone, so a non-empty one is evidence of delivery. Orphaned .gonzbd-tmp-<16 hex> files do not
 // count as delivered payload.
 func (j *Job) alreadyDelivered() bool {
-	if j.FlatLayout || j.FinalDir == "" {
+	if j.FinalDir == "" {
 		return false
 	}
 	entries, err := os.ReadDir(j.FinalDir)

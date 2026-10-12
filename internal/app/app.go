@@ -2424,19 +2424,9 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	}
 
 	cat := config.FindCategory(categories, hdr.Category)
-	catDir := cat.Dir
-	// P6: Category dir trailing '*' suppresses the per-job subfolder.
-	// Files go directly into the category directory ("flat layout").
-	// e.g. catDir="movies*" → complete_dir/movies/file.mkv
-	//      catDir="movies"  → complete_dir/movies/JobName/file.mkv
-	flatLayout := strings.HasSuffix(catDir, "*")
-	if flatLayout {
-		catDir = strings.TrimSuffix(catDir, "*")
-	}
-	finalDir := filepath.Join(completeDir, catDir, j.Name())
-	if flatLayout {
-		finalDir = filepath.Join(completeDir, catDir)
-	}
+	// Every job gets its own directory under the category's: config
+	// validation refuses a category dir ending in "*".
+	finalDir := filepath.Join(completeDir, cat.Dir, j.Name())
 	// Collect DirectUnpack results (if any) before enqueuing post-processing.
 	// When du != nil, Wait() is executed inside an asynchronous worker
 	// goroutine on app.wg so the completion event consumer (watchCompletions)
@@ -2486,7 +2476,6 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			URL:                  hdr.URL,
 			DownloadDir:          downloadDir,
 			FinalDir:             finalDir,
-			FlatLayout:           flatLayout,
 			Sanitize:             sanitize,
 			Unwanted:             hdr.Unwanted,
 			FailMsg:              admittedFailMsg,
