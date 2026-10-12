@@ -15,12 +15,17 @@ import (
 	"github.com/hobeone/gonzbd/internal/sched"
 )
 
-// Dispatcher drives sched.Queue. It owns the Queue outright (D-B13): a caller
-// reaching sched.Cancel directly would latch the cancel intent and skip the
-// eviction Cancel below performs, reintroducing the defect where a deleted job
-// renders as queued forever.
+// Dispatcher drives sched.Queue. It owns the Queue outright (D-B13): q is
+// unexported, so every Queue call is made through one of its doors. A cancel
+// goes through Cancel, which latches the intent through sched and kicks the
+// tick; the eviction of a cancelled never-run job, which sched cannot perform
+// for want of a registry, runs in the tick (evictCancelledNeverRun, tick.go).
 //
-// res and store are read by restore and reconcileResidency; runner is read by
+// res is read by reconcileResidency, LoadProgress, evictCancelledNeverRun,
+// removeFor and Stop, and store by restore, persistIfChanged,
+// evictCancelledNeverRun and removeFor —
+// `git grep -n 'd\.res\.\|d\.store\.' -- 'internal/dispatch/*.go' ':!*_test.go'`
+// returns 10 lines. runner is read by
 // launch; tickEvery/stop/done/started/stopped drive Start/Stop/run; log backs
 // the log helpers below; written is persistIfChanged's and restore's record
 // of what the store already holds.

@@ -9,7 +9,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/downloader"
 )
 
 // ReloadPostProcOptions applies all hot-applicable postproc settings from pp
@@ -25,10 +24,12 @@ import (
 // config.Config's lock (this is called from the API's reloadSection after it
 // snapshots cfg; sync.RWMutex is not reentrant).
 //
-// Config-only fields (DirectUnpack, DirectUnpackThreads, EnableUnrar, Enable7zip)
-// are not applied here: they are read from config at dispatch time, and the API
-// has already written them to config before this runs, so no propagation is
-// needed.
+// DirectUnpack and DirectUnpackThreads are not applied here: they are read
+// from config when a file completes (completeFinalizedFile, maybeStart), and
+// the API has already written them to config before this runs, so no
+// propagation is needed. EnableUnrar is read there too, and is also applied
+// here, with Enable7zip, EnableFileJoin and EnableTar, to the unpack stage's
+// enabled flag.
 func (app *Application) ReloadPostProcOptions(pp config.PostProcConfig, scriptDir string) {
 	cmdCfg := cmdutil.CmdConfig{Nice: pp.Nice, Ionice: pp.Ionice}
 
@@ -134,9 +135,9 @@ func (app *Application) ReloadGeneralOptions(g config.GeneralConfig) {
 // and app.pipeline's completions source wired to two different downloader
 // instances (leaking the loser's goroutines and stalling dispatch on the
 // orphaned one). app.mu is only held within that section to snapshot the old
-// downloader and, at the end, to start the new one and swap it in — stopping
-// the old downloader, quiescing the pipeline and building the new one happen
-// without app.mu held, so app.mu-guarded reads (Speed, ServerStatus,
+// downloader and, at the end, to build, start and swap in the new one — the
+// build only allocates. Stopping the old downloader and quiescing the pipeline
+// happen without app.mu held, so app.mu-guarded reads (Speed, ServerStatus,
 // PauseDownloads, etc.) are never blocked on downloader shutdown. Start only
 // launches goroutines. See AGENTS.md "never hold a mutex during disk I/O or
 // network calls" and issue #118.
@@ -201,20 +202,18 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 		}
 	}
 
-	servers := make([]*downloader.Server, len(scs))
-	for i, sc := range scs {
-		servers[i] = downloader.NewServer(sc)
-	}
-	newDownloader := downloader.New(app.dispatcher, servers, app.meter, app.buildDownloaderOptions(), app.log)
+	opts := app.buildDownloaderOptions()
 
-	// The pause decision, Start and the swap share one app.mu span, so the
-	// new downloader is paused before any of its workers exist (#791), and a
-	// pause or resume cannot fall between the decision and the swap and
-	// reach only the old downloader. pauseReason is written only under
-	// app.mu: `git grep -n 'app[.]pauseReason = ' -- '*.go' ':!*_test.go'`
-	// finds 4 lines, each inside an app.mu span. Start dials nothing;
-	// connection workers dial on their first request.
+	// The build, the pause decision, Start and the swap share one app.mu
+	// span, so the new downloader is paused before any of its workers exist
+	// (#791), and a pause, resume or SetSpeedLimit cannot fall between the
+	// build and the swap and reach only the old downloader. pauseReason is
+	// written only under app.mu:
+	// `git grep -n 'app[.]pauseReason = ' -- '*.go' ':!*_test.go'`
+	// finds 4 lines, each inside an app.mu span. The build allocates and
+	// Start dials nothing; connection workers dial on their first request.
 	app.mu.Lock()
+	newDownloader := app.newDownloaderLocked(scs, opts)
 	if app.pauseReason != pauseReasonNone {
 		newDownloader.Pause()
 	}
@@ -275,9 +274,9 @@ func (app *Application) SetPropagationDelay(minutes int) {
 	app.pushDispatchOptions()
 }
 
-// pushDispatchOptions reads the current mutable dispatch fields under app.mu
-// and forwards them to the running downloader. Must not be called while
-// holding app.mu.
+// pushDispatchOptions reads the current mutable dispatch fields from config
+// and forwards them to the running downloader, which it snapshots under
+// app.mu. Must not be called while holding app.mu.
 func (app *Application) pushDispatchOptions() {
 	dlCfg := app.config.GetDownloads()
 	maxArtTries := dlCfg.MaxArtTries

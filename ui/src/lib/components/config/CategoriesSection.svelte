@@ -3,6 +3,7 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import type { CategoryConfig } from '#lib/types.js';
+	import { ppStages } from '#lib/pp.js';
 
 	let {
 		configData,
@@ -40,14 +41,15 @@
 				</thead>
 				<tbody class="divide-y">
 					{#each configData.categories as cat (cat.name)}
+						{@const stages = ppStages(cat.pp)}
 						<tr>
 							<td class="px-4 py-3 font-medium">{cat.name}</td>
 							<td class="px-4 py-3 text-gray-600 dark:text-gray-400">{cat.dir || '(default)'}</td>
 							<td class="px-4 py-3">
 								<div class="flex gap-1">
-									{#if cat.pp & 1}<Badge variant="outline" class="px-1 py-0 text-[10px]">R</Badge>{/if}
-									{#if cat.pp & 2}<Badge variant="outline" class="px-1 py-0 text-[10px]">U</Badge>{/if}
-									{#if cat.pp & 4}<Badge variant="outline" class="px-1 py-0 text-[10px]">D</Badge>{/if}
+									{#if stages.repair}<Badge variant="outline" class="px-1 py-0 text-[10px]">R</Badge>{/if}
+									{#if stages.unpack}<Badge variant="outline" class="px-1 py-0 text-[10px]">U</Badge>{/if}
+									{#if stages.del}<Badge variant="outline" class="px-1 py-0 text-[10px]">D</Badge>{/if}
 								</div>
 							</td>
 							<td class="px-4 py-3 text-right">

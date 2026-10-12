@@ -261,7 +261,8 @@ func isStagedLink(d os.DirEntry, staged map[fileID]uint64, seen map[fileID]struc
 	return false, nil
 }
 
-// snapshotDir returns a set of all regular files (relative paths) under dir.
+// snapshotDir returns a set of every non-directory entry (relative paths)
+// under dir: regular files, and also symlinks or other special files.
 // Used to diff before/after extraction to determine which files were created.
 func snapshotDir(dir string) (map[string]struct{}, error) {
 	files := make(map[string]struct{})

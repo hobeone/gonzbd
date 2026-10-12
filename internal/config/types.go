@@ -241,10 +241,12 @@ const (
 	// SSLVerifyMinimal accepts any valid chain regardless of hostname.
 	SSLVerifyMinimal SSLVerify = 1
 	// SSLVerifyHostname requires the certificate to match the configured
-	// host (this is the default).
+	// host. It is DefaultSSLVerify, the level of a server entry that
+	// omits ssl_verify.
 	SSLVerifyHostname SSLVerify = 2
-	// SSLVerifyStrict enables hostname verification plus extra checks
-	// (e.g. revocation, when supported by the runtime).
+	// SSLVerifyStrict is accepted for config parity with SABnzbd and
+	// verifies exactly as SSLVerifyHostname does: the nntp package's TLS
+	// setup handles the two levels in one case and adds no extra checks.
 	SSLVerifyStrict SSLVerify = 3
 )
 

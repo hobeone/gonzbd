@@ -8,8 +8,9 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 )
 
-// tick is one pass over the registry. It is called only from run, so it never
-// overlaps itself and needs no locking against another tick.
+// tick is one pass over the registry. Its callers are run and Tick, and Tick
+// has no production caller, so in production it runs only on run's goroutine,
+// never overlaps itself, and needs no locking against another tick.
 //
 // It copies the registry under d.mu and releases it before the first Advance:
 // D-B9 forbids holding d.mu across such a call, because Workers.Abort runs

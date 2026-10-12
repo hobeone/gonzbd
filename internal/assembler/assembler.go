@@ -69,9 +69,9 @@ type WriteRequest struct {
 	ArtIdx int32
 
 	// MessageID is the article's NNTP Message-ID on the article path, and the
-	// job ID on a control message. The assembler uses the former to mark the
-	// article Done (on success, after fsync) or Failed (on FatalErr) in the
-	// queue. See the block above.
+	// job ID on a control message. On the article path the assembler only
+	// logs it; it marks nothing Done or Failed in the queue (handleFatalArticle
+	// says why). See the block above.
 	MessageID string
 
 	// Offset is the byte position within the target file where Data should
@@ -97,9 +97,10 @@ type WriteRequest struct {
 	// ackCh, when non-nil, is closed by the worker immediately after this
 	// control message has been fully processed -- for a cancel, after the
 	// job's open file handles have been closed and its files disposed of.
-	// Never used by ordinary write requests. Set by the three control-message
-	// senders and nothing else: `grep -n 'ackCh:' internal/assembler/*.go`
-	// outside tests returns CancelJob, CloseJobHandles and ForgetJob.
+	// Never used by ordinary write requests. Set by the four control-message
+	// senders and nothing else: `grep -n 'ackCh:' internal/assembler/*.go |
+	// grep -v '_test.go' | grep -v '// '` returns 4 lines, in CancelJob,
+	// CloseJobHandles, ForgetJob and Quiesce.
 	//
 	// It carries an error for the control messages that can fail. A sender
 	// with nothing to report closes it without sending, so a receiver reading
@@ -139,7 +140,8 @@ type FileInfo struct {
 	// counts toward it once, when it is accounted for: accepted, or resolved
 	// permanently failed (which includes the loser of two segments claiming one
 	// offset). A repeated ArtIdx is not counted again. When the count reaches
-	// TotalParts, the assembler closes the file handle and fires OnFileComplete.
+	// TotalParts, the assembler finishes and closes the file (finalizeFile),
+	// and fires OnFileComplete only if both succeeded.
 	TotalParts int
 
 	// ExpectedSize is the NZB's declared *encoded* byte count for this file
@@ -151,9 +153,11 @@ type FileInfo struct {
 	//
 	// Pre-allocating to the encoded figure is why a completed file has to be
 	// truncated back down to its decoded extent: the difference would
-	// otherwise remain as trailing zeros, which par2 reports as damage. Both
-	// consumers depend on this being the larger of the two figures — see
-	// finalizeFile and offsetInRange.
+	// otherwise remain as trailing zeros, which par2 reports as damage. That
+	// trim (fileWriter.finish) does not read this field; it is bounded by the
+	// writer's owned ranges. Its readers in this package are openTargetFile, which
+	// preallocates to it, and offsetOutOfRange, whose limit depends on this
+	// being the larger of the two figures.
 	ExpectedSize int64
 
 	// Owned lists byte ranges verified before this process started. An arrival
@@ -216,7 +220,8 @@ type Options struct {
 	OnLowDisk func(dir string, free int64)
 
 	// OnWriteFault, if non-nil, is called on the worker goroutine when a
-	// write for an article fails.
+	// write for an article fails, when the file an article targets cannot be
+	// opened, or when a completed file's finish or close fails (finalizeFile).
 	//
 	// It exists because a fault raised inside fileWriter.accept has no other
 	// way out: a rejected write leaves nothing behind for a later fsync to
@@ -232,7 +237,9 @@ type Options struct {
 	OnWriteFault func(jobID string, fileIdx int, f *storagefault.Fault)
 
 	// OnArticlesUnwritten, if non-nil, is called on the worker goroutine with
-	// every article a failed write rolled back. The caller returns them to
+	// articles whose bytes did not reach disk: one whose write faulted, one
+	// whose file could not be opened, or every article a failed close-time
+	// sync rolled back (releasePoisoned). The caller returns them to
 	// Outstanding by clearing their Emitted bits.
 	//
 	// It is separate from OnWriteFault because the two are needed in different
@@ -631,7 +638,7 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string, disposition Fil
 	// front removes the randomness at its source instead of tuning it.
 	//
 	// Matches the pre-check convention already used in this package by
-	// filewriter.go and diskspace.go.
+	// diskspace.go's freeBytes and WriteSpeedMBPerSec.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -735,7 +742,7 @@ func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
 	// front removes the randomness at its source instead of tuning it.
 	//
 	// Matches the pre-check convention already used in this package by
-	// filewriter.go and diskspace.go.
+	// diskspace.go's freeBytes and WriteSpeedMBPerSec.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1042,9 +1049,9 @@ func (a *Assembler) dispatchRequest(
 	// internal/assembler can have it set, and the confusion is
 	// unrepresentable rather than rejected.
 	//
-	// A zero WriteRequest is excluded by the same test, which matters for the
-	// shutdown drain loop below: it dispatches zero values when the channel is
-	// closed, and they must reach processRequest rather than any arm here.
+	// A zero WriteRequest is excluded by the same test, so it would reach
+	// processRequest rather than any arm here. The worker does not dispatch
+	// one: both of its receive loops break on a closed channel instead.
 	if req.ackCh != nil && req.FileIdx == fileIdxCancelJob {
 		// Control message: cancel a job. Close every open file for the job
 		// encoded in MessageID, and unlink them or leave them on disk
@@ -1227,21 +1234,23 @@ func (a *Assembler) releasePoisoned(f *openFile) {
 // owns every handle (X1).
 //
 // It is the cancel counterpart to syncAndClose, and deliberately not a call
-// to it. syncAndClose does something that is right for its own caller and
-// wrong here:
+// to it. syncAndClose calls sync, which CloseJobHandles needs because par2 and
+// unrar are about to read the file. Nothing reads a removed job's files, and
+// an fsync here would stall ingest for every other job on the one worker
+// goroutine in exchange for nothing.
 //
-//   - It calls sync. CloseJobHandles needs that fsync because par2 and unrar
-//     are about to read the file. Nothing reads a removed job's files, and an
-//     fsync here would stall ingest for every other job on the one worker
-//     goroutine in exchange for nothing.
+// Skipping the sync also skips releasePoisoned, so nothing is routed: no
+// OnArticlesUnwritten, no OnArticleRejected. The job has already left the
+// queue, so returning its articles to Outstanding would re-dispatch work for a
+// job that is going away, under either disposition (closeleak_test.go).
 //
 // "Already left the queue" is exact rather than hedging: RemoveJob is the only
 // production caller of this CancelJob — `git grep -n 'assembler\.CancelJob(' -- '*.go' ':!*_test.go'`
 // returns 1 line, in Application.RemoveJob — and since #376 it removes the job
 // from the queue BEFORE calling in, returning early if that fails.
 //
-// The caller keeps the bookkeeping: the open-map delete, the per-file
-// completed tombstone is unconditional and none of it is this function's
+// The caller keeps the bookkeeping: the open-map delete and the per-file
+// completed tombstone are unconditional, and neither is this function's
 // business.
 func (a *Assembler) closeCancelledFile(f *openFile, disposition FileDisposition) {
 	// The close error is best-effort only under DeleteFiles, where the file is
@@ -1284,8 +1293,8 @@ func (a *Assembler) syncAndCloseAll(open map[fileKey]*openFile) {
 }
 
 // processRequest performs the WriteAt for a single WriteRequest. It resolves
-// the target file on first encounter, caches the handle, and fires
-// OnFileComplete when all TotalParts have been written. Each article is
+// the target file on first encounter, caches the handle, and hands the file to
+// finalizeFile once all TotalParts have been accounted for. Each article is
 // written individually, through fileWriter.accept.
 func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile, completed map[fileKey]struct{}) {
 	key := fileKey{jobID: req.JobID, fileIdx: req.FileIdx}
@@ -1821,7 +1830,7 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 // offsetSlackDivisor bounds how far past FileInfo.ExpectedSize a write may
 // land before it is rejected. ExpectedSize is the NZB's declared *encoded*
 // byte count, which already runs ~2% above the decoded size (see
-// preallocateFile), so a legitimate decoded write never exceeds it. NZB
+// FileInfo.ExpectedSize), so a legitimate decoded write never exceeds it. NZB
 // `bytes` attributes are advisory though, so allow ExpectedSize/8 (12.5%)
 // of slack rather than treating it as an exact bound.
 const offsetSlackDivisor = 8

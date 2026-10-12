@@ -2,7 +2,9 @@
 # GoNZBD Configuration — Example
 # =============================================================================
 # Copy this file to gonzbd.yaml and customize for your setup.
-# gonzbd will auto-generate API keys on first run if they are empty.
+# When no config file exists, gonzbd writes a default one with generated
+# API keys on first run. If you start from this file instead, set api_key
+# and nzb_key yourself: an empty key is refused at load.
 #
 # Values that accept sizes use K/M/G/T suffixes (base-1024).
 # Path fields support $ENV_VAR expansion.
@@ -23,8 +25,9 @@ general:
   https_key: ""
 
   # API key for authenticating API requests. 16-character lowercase hex.
-  # Auto-generated on first run. Required for external tools like
-  # Sonarr, Radarr, and NZB360 to communicate with gonzbd.
+  # Generated only when gonzbd creates a default config on first run.
+  # Required for external tools like Sonarr, Radarr, and NZB360 to
+  # communicate with gonzbd.
   api_key: ""
 
   # Separate API key for NZB-upload endpoints only. Allows giving
@@ -45,26 +48,28 @@ general:
   # Traefik, etc.), even one on the same host: the proxy makes every request
   # arrive with a loopback/local remote address regardless of who the real
   # client is. Set local_ranges to the proxy's own address AND set
-  # verify_xff_header: true below — otherwise cookie-based web UI login is
-  # refused for every client once a forwarding header is present (see
-  # verify_xff_header). API-key/NZB-key auth is unaffected either way.
+  # verify_xff_header: true below. With a same-host (loopback) proxy and
+  # verify_xff_header: false, cookie-based web UI login is refused for every
+  # client once a forwarding header is present; with a non-loopback proxy
+  # listed here and verify_xff_header: false, every client the proxy
+  # forwards is trusted (see verify_xff_header). API-key/NZB-key auth is
+  # unaffected either way.
   local_ranges: []
 
   # When true, the forwarding header selected by trusted_forward_header
   # below is also validated: once the direct peer is trusted (loopback or
   # local_ranges), every forwarded hop in that header must also be trusted
-  # or the request is treated as untrusted. When false (the default) and
-  # NO forwarding header is present,
-  # trust is based on the peer address alone, same as before. But if ANY of
-  # those headers IS present while this is false, the request now fails
-  # closed (rejected) rather than trusting the peer address blindly — a
-  # header's mere presence means a proxy may be interposed, and an unverified
-  # peer address (which the proxy controls) proves nothing about the real
-  # client. This is a deliberate fail-closed default: do not set this to
-  # false as a way to "make cookie auth work" behind a proxy — set it to
-  # true and configure local_ranges to the proxy's address instead. The
-  # header is never consulted when the direct peer is untrusted, so it
-  # cannot be spoofed by a public client.
+  # or the request is treated as untrusted. When false (the default), trust
+  # is based on the peer address alone, with one exception: a loopback peer
+  # with ANY of those headers present fails closed (rejected), because a
+  # same-host proxy makes every request arrive from loopback and that peer
+  # address proves nothing about the real client. A non-loopback peer listed
+  # in local_ranges is trusted whether or not a forwarding header is
+  # present, so with this false every client such a proxy forwards is
+  # trusted. Do not set this to false as a way to "make cookie auth work"
+  # behind a proxy — set it to true and configure local_ranges to the
+  # proxy's address instead. The header is never consulted when the direct
+  # peer is untrusted, so it cannot be spoofed by a public client.
   verify_xff_header: false
 
   # Which single forwarding header your reverse proxy actually manages
@@ -171,8 +176,8 @@ downloads:
   # marking the article as permanently failed. Must be >= 1.
   max_art_tries: 3
 
-  # Maximum retry attempts per article on optional (backup) servers
-  # specifically. Must be >= 0.
+  # Maximum number of optional (backup) servers an article is tried on.
+  # Must be >= 0; 0 means no limit.
   max_art_opt: 1
 
   # Maximum number of jobs downloading or repairing concurrently.
@@ -197,11 +202,13 @@ downloads:
   propagation_delay: 0
 
   # Character used to replace illegal filesystem characters
-  # (\ / : * ? " < > |) in filenames. Default: "_".
+  # (\ / : * ? " < > |) in filenames. Default: "_". May not itself
+  # contain any of those characters or a control character.
   replace_illegal_with: _
 
   # Character used to replace spaces in filenames. Empty string means
-  # keep spaces as-is.
+  # keep spaces as-is. May not contain \ / : * ? " < > | or a control
+  # character.
   replace_spaces_with: ""
 
   # When true, replace accented/diacritical characters with ASCII
@@ -324,16 +331,16 @@ postproc:
 
   # Maximum payload size (in bytes) of a single PAR2 packet body. A safety
   # limit that prevents memory exhaustion from malformed or malicious PAR2
-  # files. Default 67108864 (64 MiB); minimum floor 65536 (64 KiB). A value
-  # of 0 (or below the floor) falls back to the default — there is no
-  # "unlimited" setting; raise this explicitly for genuinely large recovery
-  # packets.
+  # files. Default 67108864 (64 MiB); minimum 65536 (64 KiB). 0 uses the
+  # default; a non-zero value below the minimum is refused at load. There is
+  # no "unlimited" setting; raise this explicitly for genuinely large
+  # recovery packets.
   par2_max_packet_body_size: 67108864
 
   # Maximum forward search distance (in bytes) when scanning a file for the
   # next PAR2 magic header. Bounds CPU/IO spent on corrupt files. Default
-  # 65536 (64 KiB); minimum floor 1024 (1 KiB). 0 or below-floor uses the
-  # default.
+  # 65536 (64 KiB); minimum 1024 (1 KiB). 0 uses the default; a non-zero
+  # value below the minimum is refused at load.
   par2_max_junk_scan_bytes: 65536
 
   # Discard in-archive modification timestamps during extraction (passes
@@ -360,15 +367,13 @@ postproc:
   # shelling out to the unrar binary. No external binary required.
   # Falls back to subprocess unrar on extraction error or for RAR3/4.
   # Default true.
-  prefer_go_rar: true
+  use_go_rar: true
 
   # Begin extracting files while the download is still in progress.
-  # Completed RAR volumes are fed to an interactive unrar subprocess as
-  # they arrive, overlapping download and extraction I/O. Falls back to
-  # standard unpack on failure. Requires enable_unrar=true and is
-  # incompatible with prefer_7zip (7z does not support unrar's -vp
-  # interactive protocol). When both are enabled, a startup warning is
-  # logged and DirectUnpack is effectively disabled.
+  # Completed volumes of each RAR5 set are fed to the in-process pure-Go
+  # extractor as they arrive, overlapping download and extraction I/O. A
+  # set that is not RAR5, or that fails, is left to the standard unpack
+  # stage. Requires enable_unrar=true.
   direct_unpack: false
 
   # Limit the number of concurrent DirectUnpack workers across all jobs.
@@ -408,7 +413,8 @@ postproc:
   password_file: ""
 
   # Extra command-line arguments appended to every unrar invocation.
-  # Each argument must start with '-'. Example: "-sl100000".
+  # Each argument must start with one of SABnzbd's allowlisted prefixes
+  # -mlp, -om or -ri; anything else is refused at load. Example: "-ri10:5".
   extra_unrar_params: ""
 
   # Extra command-line arguments appended to every par2 invocation.
@@ -456,7 +462,8 @@ servers:
     ssl: true
     # Certificate verification level:
     #   0 = none (insecure), 1 = chain only (no hostname check),
-    #   2 = hostname match (recommended), 3 = strict (extra checks).
+    #   2 = hostname match (recommended), 3 = strict (currently verifies
+    #   exactly as 2 does). A server that leaves this key out gets 2.
     ssl_verify: 2
     # OpenSSL cipher string. Empty uses system defaults.
     ssl_ciphers: ""
@@ -485,13 +492,14 @@ categories:
   # or by the user. The category determines which post-processing stages
   # run and where completed files land.
   #
-  # "Default" and "*" are required fallback categories and must always exist.
+  # "Default" and "*" are the fallback categories: a job whose category
+  # matches none falls back to "Default", then "*". Neither is required;
+  # with both missing, a built-in default (pp 3, no script) applies.
 
   - name: Default
-    # Post-processing flags (bitmask):
+    # Post-processing level (cumulative, 0-3; other values are refused):
     #   0 = nothing, 1 = repair only, 2 = repair + unpack,
-    #   3 = repair + unpack + delete archives,
-    #   7 = all of the above (repair + unpack + delete + deobfuscate)
+    #   3 = repair + unpack + delete archives
     pp: 3
     # Post-processing script name from script_dir. "None" = no script.
     script: None
@@ -507,14 +515,14 @@ categories:
     dir: ""
 
   - name: tv
-    pp: 7
+    pp: 3
     script: None
     priority: 0
     # TV shows land in complete_dir/tv/.
     dir: tv
 
   - name: movies
-    pp: 7
+    pp: 3
     script: None
     priority: 0
     dir: movies

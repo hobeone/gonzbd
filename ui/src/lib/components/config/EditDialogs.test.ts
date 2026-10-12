@@ -183,6 +183,38 @@ describe('CategoryEditDialog', () => {
 		});
 		expect(screen.queryByText('Add Category')).not.toBeInTheDocument();
 	});
+
+	// pp is the cumulative 0-3 level the API defines, not a bitmask: the
+	// backend rejects anything outside [0,3], and 3 means delete sources.
+	it('saves a new category with the backend default level 3', async () => {
+		const onsave = vi.fn();
+		render(CategoryEditDialog, { props: { open: true, onsave } });
+		await fireEvent.input(screen.getByLabelText('Category Name'), { target: { value: 'tv' } });
+		await fireEvent.click(screen.getByText('Save'));
+		expect(onsave).toHaveBeenCalledWith(expect.objectContaining({ name: 'tv', pp: 3 }));
+	});
+
+	it.each([0, 1, 2, 3])('saves the chosen level %i unchanged', async (level) => {
+		const onsave = vi.fn();
+		render(CategoryEditDialog, { props: { open: true, onsave } });
+		await fireEvent.input(screen.getByLabelText('Category Name'), { target: { value: 'tv' } });
+		await fireEvent.change(screen.getByLabelText('Post-Processing'), {
+			target: { value: String(level) }
+		});
+		await fireEvent.click(screen.getByText('Save'));
+		expect(onsave).toHaveBeenCalledWith(expect.objectContaining({ pp: level }));
+	});
+
+	it('shows an existing category at its stored level', () => {
+		render(CategoryEditDialog, {
+			props: {
+				open: true,
+				category: { name: 'tv', pp: 2, script: 'None', priority: 0, dir: '', order: 0 },
+				onsave: vi.fn()
+			}
+		});
+		expect(screen.getByLabelText('Post-Processing')).toHaveValue('2');
+	});
 });
 
 

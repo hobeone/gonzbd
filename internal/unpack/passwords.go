@@ -85,8 +85,9 @@ func allPasswords(opts Options) []string {
 	return result
 }
 
-// withPasswords is the generic password-iteration loop used by both
-// UnRARWithPasswords and SevenZipWithPasswords. It tries each password
+// withPasswords is the generic password-iteration loop used by
+// UnRARWithPasswords, GoUnRARWithPasswords, SevenZipWithPasswords and
+// GoSevenZipWithPasswords. It tries each password
 // from allPasswords(opts) in order, calling extract for each attempt.
 // isWrongPW classifies whether a failure was due to a wrong password
 // (retry) vs. something else (abort).
@@ -197,7 +198,7 @@ func withPasswords(
 // It refuses a nil beforeSnap: diffing against nil reads every file in
 // outDir, archive volumes included, as new. snapshotDir returns nil only
 // with an error (its success path returns the map it makes at
-// snapshot.go:179), so nil always means "no snapshot".
+// snapshot.go:286), so nil always means "no snapshot".
 //
 // It returns an error when it refuses, when the post-attempt scan fails,
 // or when a partial file cannot be removed; it still tries every removal.

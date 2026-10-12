@@ -580,6 +580,55 @@ func TestDispatchRepairTool_FallbackRunsWhenBinaryPresent(t *testing.T) {
 	}
 }
 
+// TestDispatchRepairTool_CorruptFileWithBlocksElsewhere_FallsBack pins the
+// stage-level effect of go_par2's intactness verdict: a damaged data.bin
+// whose every block exists in an intact copy under another name must reach
+// the external par2 retry instead of being filed as repaired.
+func TestDispatchRepairTool_CorruptFileWithBlocksElsewhere_FallsBack(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	for _, name := range []string{"data.par2", "data.vol000+102.par2", "data.bin"} {
+		body, err := os.ReadFile(filepath.Join("..", "..", "test", "fixtures", "par2", name))
+		if err != nil {
+			t.Fatalf("read fixture %s: %v", name, err)
+		}
+		if name == "data.bin" {
+			if err := os.WriteFile(filepath.Join(dir, "a8f3c0d2e1"), body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			body[len(body)/2] ^= 0xFF
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var retried bool
+	job := &Job{
+		Job:         newQueueJob(t, "testjob", 0),
+		DownloadDir: dir,
+		OnOutput: func(_ string, line string) {
+			if strings.Contains(line, "retrying with external") {
+				retried = true
+			}
+		},
+	}
+	res, _ := dispatchRepairTool(
+		t.Context(), slog.Default(), job,
+		filepath.Join(dir, "data.par2"), []string{filepath.Join(dir, "data.bin")},
+		par2.RunOptions{Command: writeStubBinary(t)},
+		true, // useGoPar2
+		true, // fallback
+	)
+	if !retried {
+		t.Error("go_par2 accepted a corrupt data.bin; the external par2 retry did not run")
+	}
+	if res.Success {
+		t.Errorf("Success = true; the stub external par2 exits 1\nOutput: %s", res.Output)
+	}
+}
+
 func TestRepairHelpers(t *testing.T) {
 	t.Parallel()
 

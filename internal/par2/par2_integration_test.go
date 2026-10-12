@@ -3,6 +3,7 @@
 package par2
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,4 +102,34 @@ func TestVerifyAndRepair(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestExternalRepair_CorruptFileWithAllBlocksPresent shows that the external
+// par2 binary — the fallback GoRepair's refusal hands these cases to — repairs
+// the shapes par2engine v1.0.7 leaves corrupt while reporting success.
+func TestExternalRepair_CorruptFileWithAllBlocksPresent(t *testing.T) {
+	if _, ok := hasPar2(); !ok {
+		t.Skip("par2 binary not found in PATH; skipping integration tests")
+	}
+	for _, tc := range corruptButAllBlocksPresentCases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, mainFile, intact := setUpCorruptCase(t, tc)
+			dataFile := filepath.Join(dir, "data.bin")
+
+			res, err := RepairWith(t.Context(), RunOptions{}, mainFile, dataFile)
+			if err != nil {
+				t.Fatalf("repair: %v", err)
+			}
+			if !res.Success {
+				t.Errorf("Repair.Success = false\nOutput: %s", res.Output)
+			}
+			got, err := os.ReadFile(dataFile)
+			if err != nil {
+				t.Fatalf("read data.bin: %v", err)
+			}
+			if !bytes.Equal(got, intact) {
+				t.Error("data.bin does not match the intact fixture after external repair")
+			}
+		})
+	}
 }

@@ -11,7 +11,7 @@ type DownloadConfig struct {
 	// BandwidthMax is the upper bandwidth ceiling. 0 = unlimited.
 	BandwidthMax ByteSize `yaml:"bandwidth_max" json:"bandwidth_max"`
 	// BandwidthPerc is the percentage of BandwidthMax actually used.
-	// 0-100. Defaults to 100.
+	// 0-100, where 0 means 100 (see EffectiveBandwidthPerc). Defaults to 100.
 	BandwidthPerc Percent `yaml:"bandwidth_perc" json:"bandwidth_perc"`
 
 	// MinFreeSpace is the minimum free disk space on the download
@@ -22,7 +22,9 @@ type DownloadConfig struct {
 	// before the article is marked bad. Must be >= 1.
 	MaxArtTries int `yaml:"max_art_tries" json:"max_art_tries"`
 	// MaxArtOpt is the per-article attempt count on optional (backup)
-	// servers specifically. Must be >= 0.
+	// servers specifically: once an article has been tried on this many
+	// optional servers it is offered no further optional ones. Must be
+	// >= 0; 0 means no limit.
 	MaxArtOpt int `yaml:"max_art_opt" json:"max_art_opt"`
 
 	// MaxActiveJobs is the maximum number of jobs processing (downloading or
@@ -53,10 +55,12 @@ type DownloadConfig struct {
 	PropagationDelay int `yaml:"propagation_delay" json:"propagation_delay"`
 
 	// ReplaceIllegalWith is the string used to replace illegal filesystem
-	// characters (e.g. \/:*?"<>|). Defaults to "_".
+	// characters (e.g. \/:*?"<>|). Defaults to "_". Validation refuses a
+	// value holding one of those characters (fsutil.CheckReplacement).
 	ReplaceIllegalWith string `yaml:"replace_illegal_with" json:"replace_illegal_with"`
 	// ReplaceSpacesWith is the string used to replace spaces in folder and
-	// filenames. Defaults to "" (keep spaces).
+	// filenames. Defaults to "" (keep spaces). Validation refuses the same
+	// values as for ReplaceIllegalWith.
 	ReplaceSpacesWith string `yaml:"replace_spaces_with" json:"replace_spaces_with"`
 
 	// StripDiacritics, if true, will replace accented characters with their
@@ -88,6 +92,25 @@ type DownloadConfig struct {
 	// also deleted after unpack, except from a job the user approved.
 	// Default: pause.
 	ActionOnUnwantedExtensions unwanted.Action `yaml:"action_on_unwanted_extensions" json:"action_on_unwanted_extensions"`
+}
+
+// EffectiveBandwidthPerc is the percentage of BandwidthMax in force: 0, or a
+// value outside 1-100, means 100.
+func (c DownloadConfig) EffectiveBandwidthPerc() int {
+	perc := int(c.BandwidthPerc)
+	if perc <= 0 || perc > 100 {
+		return 100
+	}
+	return perc
+}
+
+// SpeedLimit is the download rate cap in bytes per second these settings
+// describe, BandwidthMax scaled by EffectiveBandwidthPerc. 0 means unlimited.
+func (c DownloadConfig) SpeedLimit() int64 {
+	if c.BandwidthMax <= 0 {
+		return 0
+	}
+	return int64(c.BandwidthMax) * int64(c.EffectiveBandwidthPerc()) / 100
 }
 
 // UnwantedRules returns the unwanted-extension rules these settings

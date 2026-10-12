@@ -21,8 +21,9 @@ var ErrNotFound = errors.New("dispatch: job not found")
 // restoring its stored rows: neither Restore nor Start has completed one.
 var ErrNotRestored = errors.New("dispatch: the stored queue has not been restored; call Restore or Start first")
 
-// ErrInvalidJobName is SetName's refusal of a name that is not one safe path
-// component, or that another registered job has or another job has reserved.
+// ErrInvalidJobName is the refusal of a name that is not one safe path
+// component, or that another registered job has or another job has reserved,
+// by registration (Add, and restore), SetName and ReserveName (admitNameLocked).
 var ErrInvalidJobName = errors.New("dispatch: invalid job name")
 
 // ErrJobStarted is SetName's refusal of a job whose download has begun
@@ -48,10 +49,11 @@ var ErrUnwantedBlocked = errors.New("dispatch: the job is blocked for unwanted e
 // purpose: it lets a listing be composed from Header alone, without the
 // registry handing out *job.Job pointers to do it. Header.Name is read by,
 // among others, API queue listing and search (internal/api/queue.go), the
-// registry's own name check (nameHolderLocked) and Application.queuedName
+// registry's own name check (admitNameLocked) and Application.queuedName
 // (internal/app/retry_failed_dir.go), while downstream filesystem
-// paths and finalization read Job.Name(). SetName updates both under d.mu so the
-// two copies stay in lockstep.
+// paths and finalization read Job.Name(). register takes Header.Name from
+// Job.Name(), and SetName updates both under d.mu, so the two copies stay in
+// lockstep.
 //
 // Below, a comment naming one function as a field's "only" or "sole" runtime
 // writer is scoped to that: Dispatcher.restore (dispatch.go) also populates
@@ -90,10 +92,13 @@ type Header struct {
 	// it.
 	DuplicateReason string
 
-	// OperationalError is a free-text note set once by persistAndCommit
-	// (internal/app/job_finalizer.go) when removing a finalized job from
-	// the dispatcher fails and it remains registered for retry or restart
-	// handling. Unlike IngestAnomaly/DuplicateReason it is not an ingest-time
+	// OperationalError is a free-text note set through SetOperationalError —
+	// `git grep -n 'SetOperationalError(' -- 'internal/app/*.go' ':!*_test.go'`
+	// returns 2 lines, one in each of its callers: persistAndCommit
+	// (internal/app/job_finalizer.go), when removing a finalized job from the
+	// dispatcher fails and it remains registered for retry or restart
+	// handling, and holdUnreconciledJob (internal/app/durability.go), when a
+	// job's history lookup fails at startup and the job is paused. Unlike IngestAnomaly/DuplicateReason it is not an ingest-time
 	// fact about the NZB — it can be set on any job — so it is kept in its
 	// own field rather than joined into one of them.
 	OperationalError string
@@ -279,9 +284,13 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: register: %s: %w", j.ID(), errPreemptedByRemoval)
 	}
-	if otherID, taken := d.nameHolderLocked(j.ID(), h.Name); taken {
+	// The header's name is taken from the job's, which is what the job's
+	// directory is joined from, so the name admitNameLocked tests and the
+	// one the filesystem sees cannot differ.
+	h.Name = j.Name()
+	if err := d.admitNameLocked(j.ID(), h.Name); err != nil {
 		d.mu.Unlock()
-		return fmt.Errorf("dispatch: register %s as %q: job %s has that name: %w", j.ID(), h.Name, otherID, ErrJobNameTaken)
+		return fmt.Errorf("dispatch: register %s: %w", j.ID(), err)
 	}
 	added := seq == seqNext
 	if added {
@@ -413,36 +422,6 @@ func (d *Dispatcher) dispatchOrderLocked() []*entry {
 	return out
 }
 
-// deregister deletes a job from EVERY per-job structure — d.byID, d.order,
-// d.written, d.resident, d.launched, d.removing, d.occupiers, d.occupancyTokens,
-// d.occupyDrained and d.occupyStep — under one d.mu span. It is the single
-// internal registry eraser. External callers drain launched workers and external
-// occupiers before calling, while the finalizer's own Remove proceeds with its
-// own lease token active. See the Dispatcher struct's per-job map comment
-// (dispatch.go) for why "every" is the rule here rather than "the ones this
-// caller happens to care about".
-//
-// It preserves the relative order of the remaining entries: queue position
-// is dispatch order's tie-break within one priority (dispatchOrderLocked), and
-// a swap-with-last deletion would silently reorder jobs behind the removed one. evictCancelledNeverRun
-// (tick.go) is the first caller — it guards against launched workers or active
-// occupiers before calling, and this method makes no such assumption itself.
-//
-// What each prune buys, since none of them is obviously load-bearing on its
-// own and all three were omitted at least once:
-//
-//   - d.written: a job removed from the registry would keep its last-Persisted
-//     entry forever, and a reused job ID's first persistIfChanged would
-//     compare against the dead job's stale row and wrongly suppress a Save.
-//   - d.resident: a stale true entry makes reconcileResidency take neither
-//     branch (its hydrate arm requires !d.isResident(id)), so a reused ID
-//     never hydrates and runs without its manifest.
-//   - d.launched: a stale claim makes claimLaunched return false
-//     forever, so a reused ID is permanently unlaunchable.
-//   - d.occupiers / d.occupancyTokens / d.occupyDrained / d.occupyStep: a stale
-//     entry leaves callers waiting on waitLive forever or reports false
-//     occupancy.
-//
 // admitsLocked reports whether job id may take on new work: it is registered,
 // and no teardown is outstanding against it. Caller must hold d.mu.
 //
@@ -567,7 +546,37 @@ func (r *removal) end() {
 	r.d.deregister(r.id)
 }
 
-// deregister erases every trace of a job from the registry.
+// deregister erases every trace of a job from the registry: it deletes the job
+// from EVERY per-job structure — d.byID, d.order, d.written, d.resident,
+// d.launched, d.removing, d.occupiers, d.occupancyTokens, d.occupyDrained and
+// d.occupyStep — under one d.mu span. It is the single internal registry
+// eraser. External callers drain launched workers and external occupiers
+// before calling, while the finalizer's own Remove proceeds with its own lease
+// token active. See the Dispatcher struct's per-job map comment (dispatch.go)
+// for why "every" is the rule here rather than "the ones this caller happens to
+// care about".
+//
+// It preserves the relative order of the remaining entries: queue position
+// is dispatch order's tie-break within one priority (dispatchOrderLocked), and
+// a swap-with-last deletion would silently reorder jobs behind the removed one.
+// evictCancelledNeverRun (tick.go) reaches it through removal.end, after
+// beginRemovalIfIdle has refused a job with a launched worker or an active
+// occupier; this method makes no such assumption itself.
+//
+// What each prune buys, since none of them is obviously load-bearing on its
+// own and the first three were each omitted at least once:
+//
+//   - d.written: a job removed from the registry would keep its last-Persisted
+//     entry forever, and a reused job ID's first persistIfChanged would
+//     compare against the dead job's stale row and wrongly suppress a Save.
+//   - d.resident: a stale true entry makes reconcileResidency take neither
+//     branch (its hydrate arm requires !d.isResident(id)), so a reused ID
+//     never hydrates and runs without its manifest.
+//   - d.launched: a stale claim makes claimLaunched return false
+//     forever, so a reused ID is permanently unlaunchable.
+//   - d.occupiers / d.occupancyTokens / d.occupyDrained / d.occupyStep: a stale
+//     entry leaves callers waiting on waitLive forever or reports false
+//     occupancy.
 //
 // removal.end is its only caller, which is what makes the marker impossible
 // to skip: `git grep -n 'deregister(r\.id)' -- 'internal/dispatch/*.go'` finds
@@ -1103,14 +1112,8 @@ func (d *Dispatcher) SetName(id, name string) error {
 	if !ok {
 		return fmt.Errorf("dispatch: set name %s: %w", id, ErrNotFound)
 	}
-	// The name becomes the job's download directory, DownloadDir/<name>, and
-	// post-processing deletes and moves what is under it. So it must be one
-	// path component, never "." or "..", and no other registered job's name.
-	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
-		return fmt.Errorf("dispatch: set name %s to %q: not a single path component: %w", id, name, ErrInvalidJobName)
-	}
-	if otherID, taken := d.nameHolderLocked(id, name); taken {
-		return fmt.Errorf("dispatch: set name %s to %q: job %s has that name: %w", id, name, otherID, ErrJobNameTaken)
+	if err := d.admitNameLocked(id, name); err != nil {
+		return fmt.Errorf("dispatch: set name %s: %w", id, err)
 	}
 	// A job with article bytes may have them under DownloadDir/<old name>,
 	// and a rename moves none. Job.SetName refuses it (Job.DownloadBegun, not
@@ -1169,8 +1172,10 @@ func (d *Dispatcher) LoadProgress(ctx context.Context, id string) error {
 // ReserveName holds name for the job id before that job is registered, for a
 // caller that must move something on disk to name first and so cannot let
 // another job take it in between: a retry restoring a failed job's directory.
-// It refuses with ErrJobNameTaken, changing nothing, when a registered job
-// other than id has the name or anyone, id included, has reserved it: a
+// It refuses with ErrInvalidJobName, changing nothing, a name that is not
+// one safe path component (admitNameLocked), and with ErrJobNameTaken when a
+// registered job other than id has the name or anyone, id included, has
+// reserved it: a
 // reservation is not re-entrant, so each is held by exactly one caller and
 // that caller's release frees it. While it is held,
 // register and SetName refuse the name to every job but id; since no other
@@ -1188,11 +1193,11 @@ func (d *Dispatcher) LoadProgress(ctx context.Context, id string) error {
 func (d *Dispatcher) ReserveName(id, name string) (release func(), err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if err := d.admitNameLocked(id, name); err != nil {
+		return nil, fmt.Errorf("dispatch: reserve for %s: %w", id, err)
+	}
 	if _, held := d.reservedNames[name]; held {
 		return nil, fmt.Errorf("dispatch: reserve %q for %s: already reserved: %w", name, id, ErrJobNameTaken)
-	}
-	if otherID, taken := d.nameHolderLocked(id, name); taken {
-		return nil, fmt.Errorf("dispatch: reserve %q for %s: job %s has that name: %w", name, id, otherID, ErrJobNameTaken)
 	}
 	d.reservedNames[name] = id
 	return func() {
@@ -1204,14 +1209,33 @@ func (d *Dispatcher) ReserveName(id, name string) (release func(), err error) {
 	}, nil
 }
 
+// admitNameLocked is the registry's test of whether id may take name. It
+// refuses (ErrInvalidJobName) a name that is not one safe path component —
+// empty, "." or "..", or holding a separator or NUL — because the name is the
+// job's download directory, DownloadDir/<name>, which filepath.Join cleans,
+// so "a/../../etc" would put the job's writes and post-processing's moves and
+// deletes outside DownloadDir. It then refuses (ErrJobNameTaken) a name
+// another job holds (nameHolderLocked).
+//
+// register applies it to a job entering the registry (Add and restore),
+// SetName to a rename and ReserveName to a reservation, each under the d.mu
+// span that then writes the name, so of two callers that chose one name
+// concurrently, the registry admits only one.
+// `git grep -n 'd\.admitNameLocked(' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 3 lines.
+// Caller must hold d.mu.
+func (d *Dispatcher) admitNameLocked(id, name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
+		return fmt.Errorf("name %q is not a single path component: %w", name, ErrInvalidJobName)
+	}
+	if otherID, taken := d.nameHolderLocked(id, name); taken {
+		return fmt.Errorf("name %q: job %s has it: %w", name, otherID, ErrJobNameTaken)
+	}
+	return nil
+}
+
 // nameHolderLocked reports the job other than id that holds name: a
-// registered job named it, or ReserveName reserved it. It is the registry's
-// one test of "no two jobs share a name": register applies it to a job
-// entering the registry (Add and restore), SetName to a rename and
-// ReserveName to a reservation, all under the d.mu span that then writes the
-// name, so of two callers that chose one name concurrently, the registry
-// admits only one.
-// `git grep -n 'd\.nameHolderLocked(' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 3 lines.
+// registered job named it, or ReserveName reserved it. admitNameLocked is
+// its caller.
 // Caller must hold d.mu.
 func (d *Dispatcher) nameHolderLocked(id, name string) (string, bool) {
 	for otherID, other := range d.byID {

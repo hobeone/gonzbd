@@ -23,20 +23,12 @@ file internal/app/app.go
 	}
 --- end
 
-[New does not wire app.meter into downloader.New]
+[newDownloaderLocked does not wire app.meter into downloader.New]
 file internal/app/app.go
 --- anchor
-		realDL := downloader.New(app.dispatcher, servers, app.meter, app.buildDownloaderOptions(), log)
+	d := downloader.New(app.dispatcher, servers, app.meter, opts, app.log)
 --- replace
-		realDL := downloader.New(app.dispatcher, servers, bpsmeter.NewMeter(10*time.Second, time.Now), app.buildDownloaderOptions(), log)
---- end
-
-[ReloadDownloader does not wire app.meter into downloader.New]
-file internal/app/reloader.go
---- anchor
-	newDownloader := downloader.New(app.dispatcher, servers, app.meter, app.buildDownloaderOptions(), app.log)
---- replace
-	newDownloader := downloader.New(app.dispatcher, servers, nil, app.buildDownloaderOptions(), app.log)
+	d := downloader.New(app.dispatcher, servers, bpsmeter.NewMeter(10*time.Second, time.Now), opts, app.log)
 --- end
 
 [Shutdown does not persist app.meter state]

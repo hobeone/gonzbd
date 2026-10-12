@@ -86,6 +86,11 @@ func NewDiskProbe(ttl time.Duration) *DiskProbe {
 // ctx must be non-nil and cancellable (ctx.Done() != nil), matching
 // FreeBytes' invariant — a nil-Done() ctx would make the caller's select
 // below degenerate into an unbounded wait.
+//
+// Unlike FreeBytes it does not check for an already-cancelled ctx: a cache
+// hit returns the cached result regardless of ctx, and when the probe has
+// also finished, the select below picks at random between its result and
+// ctx.Err().
 func (p *DiskProbe) FreeBytes(ctx context.Context, dir string) (int64, error) {
 	if ctx == nil || ctx.Done() == nil {
 		return 0, fmt.Errorf("assembler: DiskProbe.FreeBytes requires a cancellable context; " +
@@ -184,7 +189,8 @@ func (p *DiskProbe) evictStaleLocked() {
 // probe runs the actual statfs call detached from any single caller's ctx —
 // it must outlive whichever caller triggered it so it can finish and
 // populate the cache for later callers even if this one gave up waiting.
-// It is the sole writer of st.free/st.err/st.fetchedAt/st.pending.
+// It is the sole writer of st.free/st.err/st.fetchedAt, and the one that
+// clears st.pending, which claim sets.
 func (p *DiskProbe) probe(st *probeState, dir string, pending chan struct{}) {
 	free, err := statfsFreeBytes(dir, p.statfs)
 	st.mu.Lock()

@@ -42,8 +42,8 @@ func TestTick_PromotesWithoutAKick(t *testing.T) {
 func TestTick_WalksInQueueOrder(t *testing.T) {
 	// One lease, two jobs: the first in queue order must win it.
 	d := newTestDispatcher(t, withCaps(1, 1))
-	first := job.New("first", "n", job.Policy{})
-	second := job.New("second", "n", job.Policy{})
+	first := job.New("first", "first", job.Policy{})
+	second := job.New("second", "second", job.Policy{})
 	for _, j := range []*job.Job{first, second} {
 		if err := d.Add(context.Background(), j, Header{Name: j.ID()}); err != nil {
 			t.Fatalf("Add: %v", err)

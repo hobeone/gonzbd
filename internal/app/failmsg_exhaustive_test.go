@@ -14,8 +14,9 @@ import (
 // decide a job's fate: RepairState.Hopeless() decides whether the dispatcher
 // stops work, and failMsgForJob's switch decides what the user is told. They
 // are not derived from each other. A new hopeless state added to the first and
-// not the second aborts the job with an empty reason, because OnJobHopeless
-// passes this function's result into maybeFinalize with no fallback string.
+// not the second aborts the job with an empty reason, because
+// appRunner.failHopeless passes this function's result into maybeFinalizeJob
+// with no fallback string.
 //
 // Every abort path in this package therefore has to produce text for every
 // state Hopeless() covers. This walks job.AllRepairStates rather than a

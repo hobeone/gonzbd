@@ -2,7 +2,9 @@ package par2
 
 import (
 	"context"
+	"crypto/md5" //nolint:gosec // MD5 is mandated by the PAR2 format, not security-sensitive
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -19,16 +21,22 @@ import (
 // large releases; 1 GB covers all realistic NZB download sizes.
 const par2FileSizeLimit = 1 * 1024 * 1024 * 1024 // 1 GiB
 
-// newDecoderForDir handles setup and candidate file registration for a PAR2 decoder.
-func newDecoderForDir(ctx context.Context, log *slog.Logger, parfile, candidateDir string, onWarn, onInfo, onUILine func(string)) (*par2engine.Decoder, error) {
-	engineLog := newPar2UILogger(log.With("component", "go_par2"), onUILine)
+// newDecoderForDir handles setup and candidate file registration for a PAR2
+// decoder. The returned engineVerified fills in as the decoder's verification
+// report is logged; protectedFilesIntact reads it.
+func newDecoderForDir(ctx context.Context, log *slog.Logger, parfile, candidateDir string, onWarn, onInfo, onUILine func(string)) (*par2engine.Decoder, *engineVerified, error) {
+	verified := &engineVerified{names: make(map[string]struct{})}
+	engineLog := slog.New(&verdictRecorder{
+		Handler:  newPar2UILogger(log.With("component", "go_par2"), onUILine).Handler(),
+		verified: verified,
+	})
 
 	d, err := par2engine.NewDecoder(ctx, parfile, par2engine.DecoderOptions{
 		MaxFileSize: par2FileSizeLimit,
 		Logger:      engineLog,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("open decoder: %w", err)
+		return nil, nil, fmt.Errorf("open decoder: %w", err)
 	}
 
 	if candidateDir != "" {
@@ -43,7 +51,7 @@ func newDecoderForDir(ctx context.Context, log *slog.Logger, parfile, candidateD
 		}
 	}
 
-	return d, nil
+	return d, verified, nil
 }
 
 // monitorProgress spawns a background goroutine to format and track progress
@@ -101,7 +109,7 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 			}
 		}
 
-		d, decErr := newDecoderForDir(ctx, log, parfile, candidateDir,
+		d, verified, decErr := newDecoderForDir(ctx, log, parfile, candidateDir,
 			func(msg string) { log.Warn("go_par2: "+msg, "dir", candidateDir) },
 			func(msg string) { log.Info("go_par2: "+msg, "dir", candidateDir) },
 			safeOnLine,
@@ -132,6 +140,15 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 
 		switch {
 		case !counts.RepairNeeded():
+			if problem := protectedFilesIntact(parfile, verified); problem != "" {
+				// The engine sees nothing to repair, so whether repair is
+				// possible is not something it can answer here.
+				res.Status = StatusRepairRequired
+				if safeOnLine != nil {
+					safeOnLine(fmt.Sprintf("[go_par2] Engine reported %q, but %s", "All files are correct", problem))
+				}
+				break
+			}
 			res.Status = StatusAllFilesOK
 			if safeOnLine != nil {
 				safeOnLine("[go_par2] All files are correct")
@@ -163,6 +180,7 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 // registered via AddCandidateFile so the engine can content-match files
 // regardless of their on-disk names. Pass an empty string to skip.
 // onLine is called for each progress update and diagnostic message (may be nil).
+// Success is set only when protectedFilesIntact confirms the set after the run.
 func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir string, onLine func(string)) (res RepairResult, err error) {
 	err = cmdutil.SafeEngineRun("go_par2: par2engine panic during repair", func() error {
 		var mu sync.Mutex
@@ -177,7 +195,7 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 			}
 		}
 
-		d, decErr := newDecoderForDir(ctx, log, parfile, candidateDir,
+		d, verified, decErr := newDecoderForDir(ctx, log, parfile, candidateDir,
 			func(msg string) { accumulate(fmt.Sprintf("[go_par2] WARN: %s", msg)) },
 			func(msg string) { accumulate(fmt.Sprintf("[go_par2] %s", msg)) },
 			accumulate,
@@ -187,6 +205,18 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 			return fmt.Errorf("go_par2: %w", decErr)
 		}
 		defer d.Close() //nolint:errcheck // best-effort close
+
+		// succeed is the exit for every run the engine calls a success: the
+		// verdict is the engine's AND protectedFilesIntact's.
+		succeed := func(engineVerdict string) {
+			if problem := protectedFilesIntact(parfile, verified); problem != "" {
+				accumulate(fmt.Sprintf("[go_par2] Engine reported %q, but %s", engineVerdict, problem))
+			} else {
+				res.Success = true
+				accumulate("[go_par2] " + engineVerdict)
+			}
+			res.Output = output.String()
+		}
 
 		res.CommandLine = fmt.Sprintf("go_par2 repair %s", parfile)
 
@@ -201,9 +231,7 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 		counts := d.ShardCounts()
 
 		if !counts.RepairNeeded() {
-			res.Success = true
-			accumulate("[go_par2] All files are correct")
-			res.Output = output.String()
+			succeed("All files are correct")
 			return nil
 		}
 
@@ -230,82 +258,161 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 			return fmt.Errorf("go_par2: repair: %w", repairErr)
 		}
 
-		res.Success = true
-		accumulate("[go_par2] Repair complete")
-		res.Output = output.String()
-
+		succeed("Repair complete")
 		return nil
 	})
-
-	if err == nil && res.Success {
-		if verifyErr := verifyProtectedFilesExist(&res, parfile, onLine); verifyErr != nil {
-			log.Warn("go_par2: post-repair existence check failed", "parfile", parfile, "err", verifyErr)
-		}
-	}
 
 	return res, err
 }
 
-// verifyProtectedFilesExist re-parses the par2 index independently of
-// par2engine's own bookkeeping and confirms that every file it protects
-// exists on disk at its recorded name, downgrading res.Success to false and
-// recording a diagnostic line when one does not.
+// protectedFilesIntact is the native engine's verdict on whether a par2 set is
+// intact on disk after a run: every file the index at parfile protects is a
+// regular file at its recorded name whose full-file MD5 matches the index. It
+// returns "" when that holds and otherwise a description of what does not,
+// for the caller to log and to refuse success on. GoVerify and GoRepair each
+// report a set clean at one site, behind this check:
+// `git grep -n -e 'Status = StatusAllFilesOK$' -e 'Success = true$' -- internal/par2/go_par2.go`
+// returns 2 lines, one in each.
 //
-// This exists because par2engine's block scanner can locate a missing
-// protected file's shards wherever their bytes happen to sit inside another
-// on-disk file — an uncompressed, stored archive member is the case that
-// reaches this in practice — and its final shard tally counts a located
-// shard as usable regardless of whether the file that owns it was ever
-// found. RepairNeeded() then comes back false, and a file that was never
-// written is reported as a success. Re-deriving "does the file exist" from
-// an independent parse of the same on-disk index, rather than trusting the
-// engine's internal Missing bookkeeping, is what catches that.
+// par2engine v1.0.7's own success signal, ShardCounts.RepairNeeded(), is not
+// that verdict. It counts a block as usable wherever the scan located it, in
+// any file, and ignores the per-file hash result, so it reports nothing to
+// repair when a damaged file's correct blocks exist elsewhere: an intact copy
+// under another name, a stored archive member, or the file's own blocks
+// shifted by inserted bytes. Repair() returns early on the same signal.
 //
-// An error parsing the index is reported to the caller but does not itself
-// flip Success: that failure means the check could not run, which is a
-// different condition from the check running and finding a file absent, and
-// conflating the two would turn "the check was inconclusive" into a false
-// repair failure.
-func verifyProtectedFilesExist(res *RepairResult, parfile string, onLine func(string)) error {
+// A file par2engine's verification report logged as OK (engineVerified) has
+// already had its full-file MD5 matched by the engine with every block at its
+// own offset, and Repair() writes only to a file that is flagged or has a
+// block elsewhere (buildNeedsWrite in par2engine's repair.go), so hashing it
+// again would only repeat a read. Every other protected file is hashed here.
+// That trust fails closed: if the engine's report changes shape, nothing is
+// recorded as verified and every file is hashed.
+//
+// A check that cannot run — the index does not parse, the directory does not
+// open, a file cannot be read — is also a refusal: the caller cannot report a
+// set clean that it could not confirm, and a refusal sends the stage to the
+// external par2 fallback rather than to a false success.
+func protectedFilesIntact(parfile string, verified *engineVerified) string {
 	descs, err := ParseFileDescriptions(parfile)
 	if err != nil {
-		return fmt.Errorf("parse par2 index for post-repair existence check: %w", err)
-	}
-	if len(descs) == 0 {
-		return nil
+		return fmt.Sprintf("the par2 index could not be re-read to confirm it: %v", err)
 	}
 
 	dir := filepath.Dir(parfile)
 	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return fmt.Errorf("open %s for post-repair existence check: %w", dir, err)
+		return fmt.Sprintf("%s could not be opened to confirm it: %v", dir, err)
 	}
 	defer root.Close() //nolint:errcheck // read-only
 
-	var missing []string
+	var bad []string
 	for _, fd := range descs {
-		// fd.FileName is poster-controlled, so confinement is os.Root rather
-		// than a lexical join — see relocateFile's doc comment in fsops.go
-		// for the argument. Lstat, not Stat, for the same reason relocateFile
-		// checks the source with Lstat: a symlink planted at the expected
-		// path should not read as "the file exists" on its target's say-so.
-		info, statErr := root.Lstat(filepath.FromSlash(fd.FileName))
-		if statErr != nil || !info.Mode().IsRegular() {
-			missing = append(missing, fd.FileName)
+		if problem := protectedFileProblem(root, fd, verified); problem != "" {
+			bad = append(bad, fd.FileName+" ("+problem+")")
 		}
 	}
-	if len(missing) == 0 {
+	if len(bad) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d protected file(s) are not intact: %s", len(bad), strings.Join(bad, ", "))
+}
+
+// protectedFileProblem returns "" when fd's file is intact on disk under
+// root, and otherwise why it is not.
+func protectedFileProblem(root *os.Root, fd FileDesc, verified *engineVerified) string {
+	// fd.FileName is poster-controlled, so confinement is os.Root rather than
+	// a lexical join — see relocateFile's doc comment in fsops.go for the
+	// argument. Lstat, not Stat, for the same reason relocateFile checks the
+	// source with Lstat: a symlink planted at the expected path should not
+	// read as "the file exists" on its target's say-so.
+	name := filepath.FromSlash(fd.FileName)
+	info, err := root.Lstat(name)
+	if err != nil || !info.Mode().IsRegular() {
+		return "missing"
+	}
+	if verified.has(fd.FileName) {
+		return ""
+	}
+	f, err := root.Open(name)
+	if err != nil {
+		return fmt.Sprintf("unreadable: %v", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	h := md5.New()  //nolint:gosec // par2 mandates MD5, not security-sensitive
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Sprintf("unreadable: %v", err)
+	}
+	if [16]byte(h.Sum(nil)) != fd.FullHash {
+		return "hash mismatch"
+	}
+	return ""
+}
+
+// engineFileOKMessage is the message par2engine v1.0.7's verification report
+// (Decoder.logVerificationReport) logs, with a "file" attribute naming the
+// par2 entry, for a protected file whose MD5 it matched.
+const engineFileOKMessage = "File status: OK"
+
+// engineVerified is the set of par2 entry names par2engine's verification
+// report logged as OK. verdictRecorder writes it; protectedFilesIntact reads
+// it.
+type engineVerified struct {
+	mu    sync.Mutex
+	names map[string]struct{}
+}
+
+func (v *engineVerified) add(name string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.names[name] = struct{}{}
+}
+
+// has reports whether name was logged as OK. A nil set holds nothing.
+func (v *engineVerified) has(name string) bool {
+	if v == nil {
+		return false
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	_, ok := v.names[name]
+	return ok
+}
+
+// verdictRecorder is an slog.Handler on par2engine's logger that records each
+// engineFileOKMessage into verified, whether or not the wrapped handler is
+// enabled at that level, and otherwise passes records through unchanged.
+type verdictRecorder struct {
+	slog.Handler
+	verified *engineVerified
+}
+
+func (h *verdictRecorder) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= slog.LevelInfo || h.Handler.Enabled(ctx, level)
+}
+
+func (h *verdictRecorder) Handle(ctx context.Context, r slog.Record) error {
+	if r.Message == engineFileOKMessage {
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "file" {
+				h.verified.add(a.Value.String())
+				return false
+			}
+			return true
+		})
+	}
+	if !h.Handler.Enabled(ctx, r.Level) {
 		return nil
 	}
+	return h.Handler.Handle(ctx, r)
+}
 
-	res.Success = false
-	msg := fmt.Sprintf("[go_par2] Repair reported success but %d protected file(s) are still missing: %s",
-		len(missing), strings.Join(missing, ", "))
-	res.Output += msg + "\n"
-	if onLine != nil {
-		onLine(msg)
-	}
-	return nil
+func (h *verdictRecorder) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &verdictRecorder{Handler: h.Handler.WithAttrs(attrs), verified: h.verified}
+}
+
+func (h *verdictRecorder) WithGroup(name string) slog.Handler {
+	return &verdictRecorder{Handler: h.Handler.WithGroup(name), verified: h.verified}
 }
 
 // addCandidateFiles reads dir and registers every non-directory, non-par2 file

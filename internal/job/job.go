@@ -117,14 +117,12 @@ var ErrLeaseAfterBoundary = errors.New("job: Grant: attempt has crossed into Pro
 // through a method here. id and name are set once in New and never written again
 // (except name via SetName which locks mu). policy and created are guarded by mu.
 //
-// What is established now: a Job method never calls any other repository
-// package's method, because this package imports nothing from the rest of
-// the daemon except internal/constants, imported only by sabnzbd.go among
-// this package's non-test sources — see doc.go and
-// TestOnlyOneNonTestFileImportsConstants (sabnzbd_test.go), which is what
-// checks that; `go list -deps` cannot, since it does not see test files, and
-// sabnzbd_test.go itself imports internal/constants. In particular Job
-// cannot call Queue, because Job cannot see Queue.
+// What is established now: Job cannot call Queue, because Job cannot see
+// Queue. The repository packages this package's non-test sources import are
+// internal/constants, internal/durability, internal/crc32util, internal/nzb
+// and internal/rarheader, used for types and pure functions — doc.go, "What
+// this package does not do", lists where each is used — and none of them is
+// internal/sched.
 //
 // The ordering half of this is now enforced, not merely intent: internal/sched
 // defines Queue (Half B1) and takes Queue.mu before every call into a *Job —
@@ -199,6 +197,7 @@ type Job struct {
 	// surrenderLocked writing nil. Cross and Finish both settle a job's need
 	// for its lease and both yield it by calling surrenderLocked, not the
 	// exported Surrender — see surrenderLocked's comment for why the
+	// exported form would deadlock from either door.
 	lease *Lease
 
 	// contentMu guards the manifest/progress POINTER PAIR, and the restored*

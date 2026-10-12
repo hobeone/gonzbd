@@ -282,6 +282,93 @@ func TestDecode_UnknownFieldStillNormalizes(t *testing.T) {
 	}
 }
 
+// ---------- server ssl_verify default ----------
+
+func TestDecode_ServerSSLVerifyOmittedDefaultsToHostname(t *testing.T) {
+	t.Parallel()
+	// The second entry reaches its mapping through an alias, the third
+	// through a merge key: both shapes must still start from the default.
+	yaml := withServersYAML(t, "servers:\n"+
+		"  - &base\n    name: s1\n    host: news.example.com\n    connections: 1\n    ssl: true\n"+
+		"  - <<: *base\n    name: s2\n"+
+		"  - name: s3\n    host: news.example.com\n    connections: 1\n    ssl: true\n    bogus_key: 1\n")
+	cfg, unknowns, err := decode(strings.NewReader(yaml))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(unknowns) != 1 {
+		t.Errorf("unknowns = %v, want the one bogus_key warning", unknowns)
+	}
+	if len(cfg.Servers) != 3 {
+		t.Fatalf("got %d servers, want 3", len(cfg.Servers))
+	}
+	for i, s := range cfg.Servers {
+		if s.SSLVerify != SSLVerifyHostname {
+			t.Errorf("Servers[%d] (%s).SSLVerify = %d, want %d (omitted key means hostname verification)",
+				i, s.Name, s.SSLVerify, SSLVerifyHostname)
+		}
+	}
+	if cfg.Servers[1].Host != "news.example.com" || cfg.Servers[1].Port != 563 {
+		t.Errorf("merged server = %+v, want host and SSL port inherited from the anchor", cfg.Servers[1])
+	}
+}
+
+func TestDecode_ServerSSLVerifyExplicitZeroKept(t *testing.T) {
+	t.Parallel()
+	yaml := withServersYAML(t, "servers:\n  - name: s1\n    host: news.example.com\n    connections: 1\n    ssl: true\n    ssl_verify: 0\n")
+	cfg, _, err := decode(strings.NewReader(yaml))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := cfg.Servers[0].SSLVerify; got != SSLVerifyNone {
+		t.Errorf("SSLVerify = %d, want 0 (an explicit opt-out is honoured)", got)
+	}
+}
+
+func TestDecode_ServerTypeErrorStillFatal(t *testing.T) {
+	t.Parallel()
+	yaml := withServersYAML(t, "servers:\n  - name: s1\n    host: news.example.com\n    connections: many\n")
+	if _, _, err := decode(strings.NewReader(yaml)); err == nil {
+		t.Fatal("decode accepted connections: many, want a fatal type error")
+	}
+}
+
+func TestDecodeServersDirect(t *testing.T) {
+	t.Parallel()
+	if got, err := decodeServers([]byte("general: {}\n")); err != nil || got != nil {
+		t.Errorf("no servers key: got %v, %v; want nil, nil", got, err)
+	}
+	if _, err := decodeServers([]byte("servers: [\n")); err == nil {
+		t.Error("malformed YAML: want an error")
+	}
+	if _, err := decodeServers([]byte("servers:\n  - connections: many\n")); err == nil {
+		t.Error("type mismatch in an entry: want an error")
+	}
+	got, err := decodeServers([]byte("servers: []\n"))
+	if err != nil || got == nil || len(got) != 0 {
+		t.Errorf("empty servers: got %#v, %v; want an empty non-nil slice", got, err)
+	}
+}
+
+func TestSet_ServersSSLVerifyOmittedDefaultsToHostname(t *testing.T) {
+	t.Parallel()
+	cfg, err := Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	const base = `"host": "news.example.com", "port": 563, "ssl": true, "connections": 1, "enable": true, "timeout": 60, "pipelining_requests": 2`
+	err = cfg.Set("servers", "", `[{"name": "omitted", `+base+`}, {"name": "zero", "ssl_verify": 0, `+base+`}]`)
+	if err != nil {
+		t.Fatalf("Set servers: %v", err)
+	}
+	if got := cfg.Servers[0].SSLVerify; got != SSLVerifyHostname {
+		t.Errorf("omitted ssl_verify = %d, want %d", got, SSLVerifyHostname)
+	}
+	if got := cfg.Servers[1].SSLVerify; got != SSLVerifyNone {
+		t.Errorf("explicit ssl_verify 0 = %d, want 0", got)
+	}
+}
+
 // ---------- helper ----------
 
 // minimalYAML returns a YAML string that passes Validate() and is suitable

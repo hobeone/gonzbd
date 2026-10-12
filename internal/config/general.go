@@ -39,15 +39,15 @@ type GeneralConfig struct {
 	// X-Forwarded-For/Forwarded/X-Real-IP chain: once the direct peer
 	// qualifies as trusted (loopback or LocalRanges), every forwarded hop
 	// must also be trusted or the request is treated as untrusted. When
-	// false (the default) and no forwarding header is present, trust is
-	// based on the peer address alone — but if any such header IS present
-	// while this is false, the request fails closed rather than trusting
-	// the (proxy-controlled) peer address blindly: a same-host reverse
-	// proxy makes every request arrive with a loopback remote address
-	// regardless of the real client, so an unverified peer proves nothing
-	// once a forwarding header shows a proxy is interposed. Set this to
-	// true and add the proxy's address to LocalRanges to trust it
-	// explicitly. The header is never consulted when the direct peer is
+	// false (the default), trust is based on the peer address alone, with
+	// one exception: if the peer is loopback and any such header IS
+	// present, the request fails closed, because a same-host reverse proxy
+	// makes every request arrive with a loopback remote address regardless
+	// of the real client. A non-loopback peer listed in LocalRanges is
+	// trusted whether or not a forwarding header is present, so listing a
+	// proxy's address there with this false trusts every client it
+	// forwards. Set this to true to also require every forwarded hop to be
+	// trusted. The header is never consulted when the direct peer is
 	// untrusted, so it cannot be spoofed by a public client.
 	VerifyXFFHeader bool `yaml:"verify_xff_header" json:"verify_xff_header"`
 	// TrustedForwardHeader names the single forwarding header your reverse

@@ -243,7 +243,7 @@ servers:
     password: your_password
     connections: 8
     ssl: true
-    ssl_verify: 2           # 0=none, 1=cert, 2=hostname
+    ssl_verify: 2           # 0=none, 1=cert, 2=hostname (used when omitted)
     priority: 0
     pipelining_requests: 2  # commands in-flight per connection (1-10)
     enable: true

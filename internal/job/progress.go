@@ -12,8 +12,8 @@ import (
 // JobProgress is the mutable per-article and per-file state of a job:
 // which articles are done/failed/emitted, per-file assembly bookkeeping,
 // and job-level counters. Always sized to match its Manifest's
-// NumArticles()/NumFiles(). Deep-copied on every Snapshot/SnapshotJob
-// (unlike Manifest, which is shared).
+// NumArticles()/NumFiles(). Job.Progress returns a deep copy (clone),
+// unlike Job.Manifest, which returns the shared Manifest.
 //
 //nolint:revive // stutter is preserved for consistency during queue -> job transition
 type JobProgress struct {
@@ -59,7 +59,7 @@ type JobProgress struct {
 	// and the evicted branches of markArticleFailed (setFailedBits) and
 	// ClearArticleEmitted, which RestoreContent's recompute folds in at the
 	// next hydration. A restart sets no bit directly: it installs through
-	// markDone (installRows) and markFailed, both from
+	// markDone (installRows), markFailed and markArticleFailed, all three from
 	// InstallFileVerification.
 	// TestBitsetWriters_MatchTheEnumerationStatedInProse pins the writers of
 	// each Set and Clear.
@@ -181,8 +181,9 @@ type FileProgress struct {
 	// is why this is summed from the manifest's per-article bytes over the
 	// resolved set rather than read off the record.
 	//
-	// Maintained live by markDone and rebuilt by recompute at hydration, both
-	// from the manifest.
+	// Maintained live by markDone, markFailedUncovered (the uncharged part of
+	// a failed article) and resetForReload (which takes that part back out),
+	// and rebuilt by recompute, all from the manifest.
 	BytesDownloaded int64
 	// FailedBytes is the sum of bytes belonging to this file's permanently
 	// failed articles. Carried per file, not just job-wide, so remaining
@@ -478,9 +479,10 @@ func (p *JobProgress) RemainingBytes() int64 {
 //
 // Failed bytes are subtracted because the counter this replaces means
 // unresolved bytes, not un-downloaded ones: markFailed decrements it without
-// ever adding to BytesDownloaded. internal/app/history_helper.go computes
-// downloaded as expectedBytes - FailedBytes() - RemainingBytes(), an identity
-// that only closes under that meaning.
+// ever adding to BytesDownloaded. internal/app's DurableBytesOf
+// (statusinfo.go), which history_helper.go calls, computes downloaded as
+// expected - failed - remaining from ProgressFigures, an identity that only
+// closes under that meaning.
 //
 // Files the job is not fetching contribute nothing because their articles are
 // never dispatched — both FetchIfNeeded and FetchNever, since neither is being
@@ -576,8 +578,8 @@ func (p *JobProgress) ProgressFigures() (expected, remaining, failed int64) {
 	return expected, remaining, p.failedBytes
 }
 
-// ServerStats returns a defensive copy, matching cloneJob's current
-// maps.Copy behavior — callers cannot mutate the job's live map through it.
+// ServerStats returns a defensive copy, as clone's maps.Clone of the same map
+// does — callers cannot mutate the job's live map through it.
 func (p *JobProgress) ServerStats() map[string]int64 {
 	if p == nil {
 		return nil
@@ -855,11 +857,10 @@ func (p *JobProgress) DeferredRecoveryIndices() []int {
 // Store.ReplaceManifest write and now happens only through on-disk
 // corruption (the file set is immutable after Add, and ReplaceManifest is
 // gone). It does NOT detect job_files rows altered out of band:
-// SQLiteStore.RestoreJobProgress fills progress.files by file_index without
-// resizing it, so a row deleted or renumbered outside this process still
-// satisfies this size check and silently attaches its state to the wrong
-// file. See ErrManifestStale for the boot-path gap (#278), which this
-// guard does not cover either.
+// Job.InstallFileVerification applies each file's restored state by its
+// FileIdx without resizing progress, so a row renumbered outside this
+// process to another in-range index satisfies this size check and attaches
+// its state to the wrong file.
 func (p *JobProgress) describesSameJobAs(m *Manifest) bool {
 	if p == nil || m == nil {
 		return false
@@ -867,7 +868,7 @@ func (p *JobProgress) describesSameJobAs(m *Manifest) bool {
 	return p.done.Len() == m.NumArticles() && len(p.files) == m.NumFiles()
 }
 
-// clone returns a deep copy, used by cloneJob.
+// clone returns a deep copy, used by Job.Progress.
 func (p *JobProgress) clone() *JobProgress {
 	cp := *p
 
@@ -887,16 +888,20 @@ func (p *JobProgress) clone() *JobProgress {
 // recompute recalculates each file's Pending and the job-level
 // pendingArticles/articlesResolved/articlesFailed/failedBytes counters from
 // the ground truth (done/failed/emitted flags), against m's file ranges.
-// Called after Add and Load, and after any bulk state change
-// (ClearEmittedForReload, undeferRecovery) where incremental tracking is
-// impractical.
+// Called by RestoreContent when a manifest is re-attached, and after each
+// bulk state change where incremental tracking is impractical:
+// `git grep -n '\.recomput[e](' -- '*.go' ':!*_test.go'` returns 6 lines —
+// RestoreContent, undeferRecovery, DiscardDeferredPar2, ClearEmittedForReload,
+// ResetForRetry and UntrustFile. AttachContent does not call it; it builds a
+// fresh record with newJobProgress.
 //
 // recompute is authoritative for the job-level failedBytes wherever a
 // manifest is resident: it derives the figure from the failed bits and each
 // failed article's chargeOf, so it cannot stack on an earlier value.
 //
-// Between recomputes, markFailed and resetForReload maintain the value
-// incrementally; both take the manifest. While the manifest is evicted nothing
+// Between recomputes, markFailedUncovered (markFailed's body) and
+// resetForReload maintain the value incrementally; both take the manifest.
+// While the manifest is evicted nothing
 // maintains it: Job.MarkArticleFailed sets the bits and the charge alone, and
 // the value lags them until RestoreContent recomputes at the next hydration.
 func (p *JobProgress) recompute(m *Manifest) {
