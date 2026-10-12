@@ -114,9 +114,9 @@ func TestMarkEmittedClearEmitted_Pair(t *testing.T) {
 
 // TestResetForReload_FailedArticle pins the branch that matters: an article
 // that had permanently failed is reset to retryable — Done and Failed both
-// cleared, and its bytes unwound from both the per-file FailedBytes-style
-// total (via markFailed's bookkeeping) and remainingBytes. Emitted must also
-// be cleared, matching the not-failed path.
+// cleared, and, once the recompute ClearEmittedForReload follows it with has
+// run, its bytes unwound from both failedBytes and remainingBytes. Emitted must
+// also be cleared, matching the not-failed path.
 func TestResetForReload_FailedArticle(t *testing.T) {
 	// dupcomment:ok the two resetForReload fixtures state the same constraint
 	// because they set up the same manifest for the same reason. The third
@@ -140,7 +140,8 @@ func TestResetForReload_FailedArticle(t *testing.T) {
 		t.Fatal("fixture: markFailed should have recorded failed bytes")
 	}
 
-	p.resetForReload(m, 0, true)
+	p.resetForReload(0, true)
+	p.recompute(m)
 
 	if p.emitted.Get(0) {
 		t.Error("Emitted was not cleared")
@@ -185,7 +186,8 @@ func TestResetForReload_NotFailedArticle(t *testing.T) {
 	remainingBefore := p.RemainingBytes()
 	doneBefore := p.done.Get(0)
 
-	p.resetForReload(m, 0, true)
+	p.resetForReload(0, true)
+	p.recompute(m)
 
 	if p.emitted.Get(0) {
 		t.Error("Emitted was not cleared")

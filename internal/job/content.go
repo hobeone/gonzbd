@@ -70,8 +70,9 @@ func (j *Job) AttachContent(m *Manifest) error {
 // already holds.
 //
 // The record is recomputed in place, under the same lock its writers take, and
-// never replaced. Writes that need no manifest — MarkArticleFailed and
-// ClearArticleEmitted while evicted, and the progress-tier setters — land on
+// never replaced. Writes that need no manifest — MarkArticleFailed,
+// ClearArticleEmitted and ClearEmittedForReload while evicted, and the
+// progress-tier setters — land on
 // that record at any time, so a copy taken earlier and installed here would
 // silently discard whatever arrived in between. recompute is what folds the
 // bits those writes left into the counters.
@@ -760,21 +761,29 @@ func (j *Job) FileLocation(fileIdx int) (name, filename string) {
 	return j.name, j.progress.FileFilename(fileIdx)
 }
 
-// ClearEmittedForReload resets Emitted and Failed flags for reload.
+// ClearEmittedForReload resets Emitted and Failed flags for reload
+// (resetForReload, per file).
+//
+// It does not require the manifest. A job evicted when the reload runs still
+// holds the failures the old servers recorded, through MarkArticleFailed at
+// any residency, and skipping it would keep them failed for the rest of the
+// process (#904). Evicted, it writes the bits alone, and RestoreContent's
+// recompute derives the counters at the next hydration. Resident, it
+// recomputes here, whatever the reset touched: a cleared emitted bit returns
+// its article to Pending as surely as an un-failed one does.
 func (j *Job) ClearEmittedForReload(skipEmitted bool) (cleared, retained []int32) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	if j.manifest == nil || j.progress == nil {
+	if j.progress == nil {
 		return nil, nil
 	}
-	m := j.manifest
-	for fi := range m.NumFiles() {
-		c, r := j.progress.resetForReload(m, fi, !skipEmitted)
+	for fi := range j.progress.files {
+		c, r := j.progress.resetForReload(fi, !skipEmitted)
 		cleared = append(cleared, c...)
 		retained = append(retained, r...)
 	}
-	if len(cleared) > 0 || len(retained) > 0 {
-		j.progress.recompute(m)
+	if j.manifest != nil {
+		j.progress.recompute(j.manifest)
 	}
 	return cleared, retained
 }

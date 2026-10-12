@@ -55,9 +55,10 @@ type JobProgress struct {
 	// counters as they go. The rest write bits only and leave the counters to
 	// a recompute: clearDone, which every path returning a Done article to
 	// Outstanding calls (UntrustFile through markNotDone, ClearEmittedForReload
-	// through resetForReload, and ResetForRetry), each of which recomputes;
-	// and the evicted branches of markArticleFailed (setFailedBits) and
-	// ClearArticleEmitted, which RestoreContent's recompute folds in at the
+	// through resetForReload, and ResetForRetry), each of which recomputes
+	// when the manifest is resident; and the evicted branches of
+	// markArticleFailed (setFailedBits), ClearArticleEmitted and
+	// ClearEmittedForReload, which RestoreContent's recompute folds in at the
 	// next hydration. A restart sets no bit directly: it installs through
 	// markDone (installRows), markFailed and markArticleFailed, all three from
 	// InstallFileVerification.
@@ -188,9 +189,8 @@ type FileProgress struct {
 	// is why this is summed from the manifest's per-article bytes over the
 	// resolved set rather than read off the record.
 	//
-	// Maintained live by markDone, markFailedUncovered (the uncharged part of
-	// a failed article) and resetForReload (which takes that part back out),
-	// and rebuilt by recompute, all from the manifest.
+	// Maintained live by markDone and markFailedUncovered (the uncharged part
+	// of a failed article), and rebuilt by recompute, all from the manifest.
 	BytesDownloaded int64
 	// FailedBytes is the sum of bytes belonging to this file's permanently
 	// failed articles. Carried per file, not just job-wide, so remaining
@@ -966,11 +966,11 @@ func (p *JobProgress) clone() *JobProgress {
 // manifest is resident: it derives the figure from the failed bits and each
 // failed article's chargeOf, so it cannot stack on an earlier value.
 //
-// Between recomputes, markFailedUncovered (markFailed's body) and
-// resetForReload maintain the value incrementally; both take the manifest.
-// While the manifest is evicted nothing
-// maintains it: Job.MarkArticleFailed sets the bits and the charge alone, and
-// the value lags them until RestoreContent recomputes at the next hydration.
+// Between recomputes, markFailedUncovered (markFailed's body) maintains the
+// value incrementally, and takes the manifest to do it. While the manifest is
+// evicted nothing maintains it: Job.MarkArticleFailed sets the bits and the
+// charge alone, Job.ClearEmittedForReload clears them alone, and the value
+// lags them until RestoreContent recomputes at the next hydration.
 func (p *JobProgress) recompute(m *Manifest) {
 	// m is passed in separately from p, and nothing here ties it to the
 	// manifest p was sized from (newJobProgress). A size
@@ -1108,7 +1108,8 @@ func (p *JobProgress) markNotDone(fi, i int) bool {
 // caller of done.Clear and failed.Clear.
 //
 // It maintains no counter: ResetForRetry, UntrustFile and ClearEmittedForReload
-// each recompute after it, and resetForReload also unwinds failedBytes itself.
+// each recompute after it, ClearEmittedForReload only when the manifest is
+// resident and RestoreContent's recompute otherwise.
 func (p *JobProgress) clearDone(fi int, arts ...int) {
 	for _, i := range arts {
 		p.done.Clear(i)
@@ -1169,11 +1170,11 @@ func (p *JobProgress) limitCharge(i int, uncovered int64) {
 }
 
 // chargeOf is what failed article i costs par2: its manifest size, or the
-// uncovered bytes limitCharge recorded when those are fewer. markFailedUncovered,
-// resetForReload and recompute each take a failed article's charge from it, so
-// the figure the live path maintains and the one a recompute derives cannot
-// disagree — `git grep -n 'chargeOf[(]' -- 'internal/job/*.go' ':!*_test.go'`
-// finds 4 lines, this definition and those three calls.
+// uncovered bytes limitCharge recorded when those are fewer. markFailedUncovered
+// and recompute each take a failed article's charge from it, so the figure the
+// live path maintains and the one a recompute derives cannot disagree —
+// `git grep -n 'chargeOf[(]' -- 'internal/job/*.go' ':!*_test.go'` finds 3
+// lines, this definition and those two calls.
 func (p *JobProgress) chargeOf(m *Manifest, i int) int64 {
 	full := int64(m.ArticleBytes(i))
 	if c, ok := p.failCharge[i]; ok {
@@ -1201,14 +1202,12 @@ func (p *JobProgress) setFailedBits(i int) bool {
 
 // resetForReload clears the transient Emitted flag on each article of file
 // fi and, if the file is still open for writing, resets each Failed one to
-// retryable (Done=false, Failed=false, through one clearDone for the file),
-// subtracting its bytes from FailedBytes.
-// RemainingBytes needs no restoring of its own: it derives from
-// BytesDownloaded/FailedBytes on read, and an article that was never
-// downloaded leaves BytesDownloaded untouched, so undoing FailedBytes here is
-// what makes the article's bytes reappear as remaining. Used by
-// ClearEmittedForReload on a downloader reload; recompute must be called afterward
-// to rebuild Pending counters from the resulting ground truth.
+// retryable (Done=false, Failed=false, through one clearDone for the file).
+// It writes bits only and needs no manifest, so ClearEmittedForReload runs it
+// at any residency; every counter it moves — Pending, the failed bytes and
+// counts, BytesDownloaded — is left to a recompute, which derives them from
+// the bits: ClearEmittedForReload's own when the manifest is resident,
+// RestoreContent's at the next hydration otherwise (#904).
 //
 // # Why a Complete file's article is left resolved (#426)
 //
@@ -1260,8 +1259,8 @@ func (p *JobProgress) setFailedBits(i int) bool {
 // old downloader's teardown failed — ErrNoServersLeft is terminal — failed
 // for the rest of the process: markNotDone refuses a permanently failed
 // article, and only a whole-job retry clears it.
-func (p *JobProgress) resetForReload(m *Manifest, fi int, clearEmitted bool) (cleared, retained []int32) {
-	lo, hi := m.FileRange(fi)
+func (p *JobProgress) resetForReload(fi int, clearEmitted bool) (cleared, retained []int32) {
+	lo, hi := p.fileRange(fi)
 	complete := p.files[fi].Complete
 	var reset []int
 	for i := lo; i < hi; i++ {
@@ -1275,10 +1274,6 @@ func (p *JobProgress) resetForReload(m *Manifest, fi int, clearEmitted bool) (cl
 			retained = append(retained, int32(i)) //nolint:gosec // G115: article index fits in int32
 			continue
 		}
-		charge := p.chargeOf(m, i)
-		p.failedBytes -= charge
-		p.files[fi].FailedBytes -= charge
-		p.files[fi].BytesDownloaded -= int64(m.ArticleBytes(i)) - charge
 		reset = append(reset, i)
 		cleared = append(cleared, int32(i)) //nolint:gosec // G115: article index fits in int32
 	}
