@@ -12,7 +12,7 @@ file internal/app/rename.go
 [registration does not check the name]
 file internal/dispatch/registry.go
 --- anchor
-	if otherID, taken := d.nameHolderLocked(j.ID(), h.Name); taken {
+	if err := d.admitNameLocked(j.ID(), h.Name); err != nil {
 --- replace
-	if otherID, taken := d.nameHolderLocked(j.ID(), h.Name); false && taken {
+	if err := d.admitNameLocked(j.ID(), h.Name); false && err != nil {
 --- end

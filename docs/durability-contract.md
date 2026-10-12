@@ -413,6 +413,13 @@ must be a single path component:
   it never carries `O_TRUNC`, which would act before the check;
 - a name that is not one component (`..` included) never reaches `openat`.
 
+The `os.Root` confines the file name only. The job directory is `DownloadDir`
+joined with the job's name, already cleaned by `filepath.Join`, and it stays
+under `DownloadDir` because the dispatcher admits only a name that is one safe
+path component (`Dispatcher.admitNameLocked`). The sanitized file name is one
+component whatever the sanitize options hold, because the sanitizers never use
+a replacement string `fsutil.CheckReplacement` refuses.
+
 On the verifier (`readBackFile`, `finishFileByPath`) a refusal is an open error
 other than `ENOENT`, so a verification fault on both paths — never absence, and
 never a read, fsync or truncate of another file. A job directory that exists
