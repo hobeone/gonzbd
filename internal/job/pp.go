@@ -15,7 +15,12 @@ type PP struct{ level uint8 }
 // ClampPP returns the PP for level n saturated into [0,3]: below 0 is 0, above
 // 3 is 3.
 func ClampPP(n int) PP {
-	return PP{level: uint8(min(max(n, 0), maxPP))} //nolint:gosec // G115: min/max bound it to [0,3]
+	if n < 0 {
+		n = 0
+	} else if n > maxPP {
+		n = maxPP
+	}
+	return PP{level: uint8(n)}
 }
 
 // Int returns the level as an integer in [0,3].
