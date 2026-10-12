@@ -4,7 +4,7 @@ run TestCategoryConfig_validate_RejectsFlatDir|TestConfigValidate_NamesFlatCateg
 [the trailing-star refusal is removed]
 file internal/config/validate.go
 --- anchor
-	if strings.HasSuffix(c.Dir, "*") {
+	if before, ok := strings.CutSuffix(c.Dir, "*"); ok {
 --- replace
-	if false {
+	if before, ok := "", false; ok {
 --- end
