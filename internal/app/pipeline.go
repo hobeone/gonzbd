@@ -97,8 +97,9 @@ func refFor(res *downloader.ArticleResult) assembler.ArticleRef {
 	}
 }
 
-// pipeline plumbs Downloader.Completions() → decoder → assembler.
-// The reader goroutine (run) fans out ArticleResults to a pool of worker
+// pipeline plumbs Downloader.Completions() → assembler; the downloader has
+// already decoded each body (internal/downloader's dispatch.go calls the
+// decoder). The reader goroutine (run) fans out ArticleResults to a pool of worker
 // goroutines that call handleResult concurrently. The fileInfo map is
 // populated by workers and read by the assembler worker via resolveFileInfo,
 // so access is protected by mu.
@@ -313,13 +314,16 @@ func (p *pipeline) setCompletions(ch <-chan *downloader.ArticleResult) {
 	}
 }
 
-// handleResult processes one downloader output: decodes the body if there
-// was no fetch error, registers file info on first encounter, and hands the
-// decoded part to the assembler for pwrite.
+// handleResult processes one downloader output, whose body the downloader has
+// already decoded: it drops a result for a job instance no longer registered,
+// and otherwise hands it to handleFailureResult or handleSuccessResult, which
+// register the file on first encounter and hand the article to the assembler.
 //
-// Errors at every stage are currently logged and discarded. Full fail-job
-// handling (marking the NzbObject failed, pushing to post-processor) is
-// Phase 5's problem.
+// A retryable failure, or an article that cannot be registered, or that the
+// assembler refuses for a reason other than context.Canceled, goes back to
+// the dispatch pool (clearEmitted); a permanent failure is
+// recorded on the job (Job.MarkArticleFailed) and can trigger the early-abort
+// hand-off (onJobHopeless).
 func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResult) {
 	telemetry.ArticlesReceived.Add(1)
 	if p.onHeartbeat != nil {
@@ -505,9 +509,9 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 
 // registerFile ensures the assembler knows the destination path and part
 // count for a file before any of its articles are written. Subsequent calls are
-// no-ops. It extracts the real filename from the NZB subject line (matching
-// Python SABnzbd's approach) so par2 files already have their .par2
-// extension when the repair stage scans the directory.
+// no-ops. It names the file from the manifest's FileSubject, the filename the
+// NZB parser already extracted from the subject line, so par2 files already
+// have their .par2 extension when the repair stage scans the directory.
 //
 // j is the instance whose result is being handled, not a lookup of its ID:
 // handleResult has already dropped a result for any other instance.
@@ -546,8 +550,9 @@ func (p *pipeline) registerFile(j *job.Job, fileIdx int) error {
 // window, so each further failure needs another rename to land within one
 // more resolution. Renames come from the API, so a run of three is not
 // expected; the bound stops a loop rather than shaping behaviour. The last
-// failure is returned, and handleSuccessResult then returns the article to
-// the dispatch pool, which fetches it again.
+// failure is returned, and the calling handler (handleSuccessResult or
+// handleFailureResult) then returns the article to the dispatch pool, which
+// fetches it again.
 const registerNameAttempts = 3
 
 // registerFileAttempt is one attempt of registerFile, for a file index already

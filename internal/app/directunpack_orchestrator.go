@@ -183,9 +183,9 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 }
 
 // buildOpts constructs DirectUnpack options from the given config-derived
-// values. The caller reads them (alongside the concurrency limit and download
-// dir) from value getters, so the orchestrator lock isn't held across
-// two separate config reads.
+// values. The caller reads them, alongside the concurrency limit and download
+// dir, from one config.Snapshot taken under o.mu, so they come from a single
+// config read.
 func (o *directUnpackOrchestrator) buildOpts(flatUnpack, overwriteFiles, ignoreUnrarDates bool, decodeWorkers int) directunpack.Options {
 	return directunpack.Options{
 		Password:         "", // per-job passwords are pre-checked; DU skips password jobs
@@ -224,7 +224,9 @@ func (o *directUnpackOrchestrator) statuses() map[string]directunpack.Status {
 }
 
 // abortJob aborts and removes the DirectUnpacker for one job (if any). Used
-// when a job is removed from the queue.
+// when a job is removed from the queue (RemoveJob), and when it is blocked for
+// an unwanted extension (blockForUnwanted, and maybeStart for a job already
+// Blocked).
 func (o *directUnpackOrchestrator) abortJob(id string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()

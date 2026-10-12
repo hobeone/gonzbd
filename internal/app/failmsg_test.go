@@ -164,6 +164,35 @@ func TestFailMsgForCounters_Direct(t *testing.T) {
 	}
 }
 
+// TestFailMsgForCounters_UnwordedAndNil pins the two arms no RepairState
+// fixture reaches: no progress at all, and a state the switch does not name,
+// which is worded only when the caller says it is hopeless.
+func TestFailMsgForCounters_UnwordedAndNil(t *testing.T) {
+	t.Parallel()
+	const mb = 1024 * 1024
+	partial := fakeProgressCounters{failed: 3 * mb, content: 3 * mb, exp: 10 * mb}
+	tests := []struct {
+		name     string
+		p        failureByteCounters
+		state    string
+		hopeless bool
+		want     string
+	}{
+		{name: "no progress", p: nil, state: "beyond_capacity", hopeless: true, want: ""},
+		{name: "unworded hopeless state", p: partial, state: "some_new_state", hopeless: true,
+			want: "Aborted: 3.0 MB failed (some_new_state). Job is beyond repair"},
+		{name: "unworded state not hopeless", p: partial, state: "some_new_state", hopeless: false, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := failMsgForCounters(tt.p, tt.state, 0, 0, tt.hopeless); got != tt.want {
+				t.Errorf("failMsgForCounters(%q, hopeless=%v) = %q, want %q", tt.state, tt.hopeless, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFailMsgForJob_NilJob(t *testing.T) {
 	t.Parallel()
 	if got := failMsgForJob(nil); got != "" {

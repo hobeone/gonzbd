@@ -165,7 +165,7 @@ func heldVolumesMightRepair(ppJob *postproc.Job) bool {
 // What the note tells the user to do heals the job. A retry rebuilds it
 // through BuildIngestJob, which holds the recovery volumes back again
 // (`git grep -n 'SetFileFetchPolicy[(]fi, job\.FetchIfNeeded)' -- '*.go' ':!*_test.go'`
-// returns 1 line, internal/app/ingest.go:146, while downloads.on_demand_par2
+// returns 1 line, internal/app/ingest.go:139, while downloads.on_demand_par2
 // is on). Its post-processing then fails par2 with those volumes held, and
 // this finalizer retries it with them released. With on_demand_par2 off the
 // rebuilt job fetches every volume at once.
@@ -230,8 +230,9 @@ func (f *jobFinalizer) retryWithHeldVolumes(jobID string) bool {
 // hosting AdminDir, and takes no context: docs/durability-contract.md notes
 // that a remote NFS/SMB mount can stall such a call, and nothing here bounds
 // it. Note that the enclosing finalize method
-// also executes completion notifications and asynchronous history pruning
-// under its own 30s context outside of persistAndCommit.
+// also runs the completion notification (when it does not retry the job) and
+// the history retention sweep synchronously, each under its own 30s context,
+// outside of persistAndCommit.
 //
 // Returns a non-nil error if persistence failed, errFinalizedJobRemoved if
 // a RemoveJob took this job instance before it was committed, or

@@ -33,7 +33,11 @@ type FileComplete struct {
 	FailMsg string
 }
 
-// JobComplete is emitted when all files in a job are assembled.
+// JobComplete is emitted when enqueuePostProc hands a job to the
+// post-processor: after a complete download, or after a failure (such as a
+// storage fault or a hopeless verdict) handed it over before every file was
+// assembled.
+// The send does not block; it is dropped when the channel is full.
 type JobComplete struct {
 	JobID string
 }
