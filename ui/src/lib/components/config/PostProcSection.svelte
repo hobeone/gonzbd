@@ -77,7 +77,7 @@
 			<ConfigSwitch section="postproc" keyword="ignore_samples" label="Delete sample files" value={configData.postproc.ignore_samples} description="Remove files matching 'sample' or 'proof' patterns after extraction." onupdate={onFieldUpdate} />
 			<ConfigSwitch section="postproc" keyword="folder_rename" label="Folder rename (_UNPACK_ prefix)" value={configData.postproc.folder_rename} description="Prefix destination with _UNPACK_ during processing and _FAILED_ on error. Prevents media managers from importing incomplete downloads." onupdate={onFieldUpdate} />
 			<ConfigTextarea section="postproc" keyword="cleanup_extensions" label="Cleanup extensions" value={configData.postproc.cleanup_extensions ?? []} description="File extensions to delete after successful unpack (one per line, without leading dot). Common: nfo, txt, url, srr, sfv, nzb." onupdate={onFieldUpdate} />
-			<ConfigInput section="postproc" keyword="permissions" label="File permissions" placeholder="e.g. 755 (empty = no chmod)" value={configData.postproc.permissions} description="Octal permission string applied to extracted files. Directories get the full value; files have execute bits stripped." onupdate={onFieldUpdate} />
+			<ConfigInput section="postproc" keyword="permissions" label="File permissions" placeholder="e.g. 755 (empty = no chmod)" value={configData.postproc.permissions} description="Octal permission string applied to extracted files. Directories get the full value; files have execute bits stripped. The owner digit must be 7 (rwx)." onupdate={onFieldUpdate} />
 		</div>
 	</div>
 

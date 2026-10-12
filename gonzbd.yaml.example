@@ -396,7 +396,9 @@ postproc:
   # after successful unpacking. Directories receive the full mode;
   # regular files have execute bits stripped (e.g. "755" gives
   # dirs 0755, files 0644). Matches SABnzbd's cfg.permissions().
-  # Empty disables permission setting.
+  # The owner must keep read/write/execute (owner digit 7, e.g. "755",
+  # "750", "700"); other values are refused at load. Empty disables
+  # permission setting.
   permissions: ""
 
   # Path to a text file containing one password per line. Blank lines
