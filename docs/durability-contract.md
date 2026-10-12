@@ -1111,7 +1111,7 @@ It reads fully assembled RAR volume files from disk; it never reads partial
 articles or sparse regions.
 
 1. **Volume completion signal**: `OnFileComplete` reports a volume only after
-   the assembler has fsynced, trimmed and closed it (§2), so unrar never sees
+   the assembler has fsynced, trimmed and closed it (§2), so rarengine never sees
    pre-allocation's trailing zeros. `completeFinalizedFile` feeds the volume
    before it marks the file complete, and so before the download-finished
    report (`Dispatcher.AdvanceFrom`) from which the tick can launch the job's
@@ -1134,16 +1134,19 @@ articles or sparse regions.
    the set is in `corruptSets`.
 4. **Sequential volume feeding**: `startVolumeFeed()` opens completed volumes in
    order and sends their `*os.File` handles to `rarengine.NewReader(volumesChan)`.
-5. **Corrupt volume handling**: `MarkCorrupt(setname, reason)` is called by the
-   queue when a volume was assembled from a download with missing or failed
-   articles. Once marked, the set can never be reported as successfully
-   extracted — `waitForVolume` checks on each wake, and `extractSet` re-checks
-   after extraction as a backstop for volumes that arrived before the corruption
-   was detected.
+5. **Corrupt volume handling**: `MarkCorrupt(setname, reason)` is called by
+   `directUnpackOrchestrator.maybeStart`, ahead of that volume's `Add`, when
+   the volume was assembled from a download with missing or failed articles.
+   Once marked, the set can never be reported as successfully extracted —
+   `waitForVolume` checks on each wake, and `extractSet` re-checks after
+   extraction as a backstop for volumes that arrived before the corruption was
+   detected.
 6. **Non-RAR handling**: `extractSet` calls `rarheader.Version()` on the first
    volume's magic bytes. Any error — including I/O errors, not just format
    mismatches — yields `errNotRAR` and the set is recorded as `SkippedSet`, not
-   failed; the normal unpack stage's external `unrar` handles it.
+   failed, and left to the normal unpack stage. That stage extracts RAR3 only
+   through an external `unrar` binary it finds; its pure-Go path is
+   `rarengine` too, and fails a RAR3 set.
 7. **Format support**: `rarengine` (pure Go RAR5). Other formats, legacy
    RAR2/RAR3, and non-RAR files identified by filename go to post-processing.
 8. **Abort/kill**: `Abort()` sets `killed`, records failures for the current and

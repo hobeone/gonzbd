@@ -24,8 +24,9 @@ import (
 // errNotRAR is returned by extractSet when the first volume of a set isn't
 // a RAR archive rarengine can read (RAR5 only). It is handled specially
 // by run(): the set is recorded as skipped (not failed) and logged at Info
-// level, since the normal unpack stage's external unrar handles other
-// formats correctly.
+// level, and the set is left to the post-processing unpack stage. That stage
+// can extract RAR3 only through an external unrar binary it finds; its
+// pure-Go path is rarengine too.
 var errNotRAR = errors.New("not a RAR5 archive")
 
 // SuccessSet records the outcome of a successfully extracted RAR set.
@@ -46,9 +47,9 @@ type FailedSet struct {
 // SkippedSet records a set that DirectUnpack did not attempt because it
 // isn't a RAR5 archive. rarengine (the pure-Go decompressor used by
 // DirectUnpack) only supports RAR5; other formats (e.g. RAR3, legacy RAR2,
-// or non-RAR archives misidentified by filename) are handled correctly by
-// the normal unpack stage's external unrar fallback. This is expected, not
-// an error.
+// or non-RAR archives misidentified by filename) are left to the
+// post-processing unpack stage, which extracts RAR3 only when it finds an
+// external unrar binary. This is expected, not an error.
 type SkippedSet struct {
 	// Reason is a human-readable description of why the set was skipped.
 	Reason string
@@ -78,8 +79,9 @@ type Options struct {
 // DirectUnpacker manages pure-Go RAR extraction as volumes complete during
 // download. It uses rarengine with a blocking volume channel.
 //
-// It is safe for concurrent use by the assembler (calling Add) and the
-// app (calling Abort, Wait, Results).
+// It is safe for concurrent use by the app's file-completion path (calling
+// MarkCorrupt and Add, through directUnpackOrchestrator.maybeStart) and the
+// rest of the app (calling Abort, Wait, Results).
 type DirectUnpacker struct {
 	log *slog.Logger
 	mu  sync.Mutex
@@ -306,8 +308,8 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 	}
 }
 
-// setQueued returns true if setname is already in nextSets. Must be called
-// with mu held.
+// setQueued returns true if setname is already in nextSets or is curSetname.
+// Must be called with mu held.
 func (d *DirectUnpacker) setQueued(setname string) bool {
 	if slices.Contains(d.nextSets, setname) {
 		return true
@@ -391,7 +393,9 @@ func (d *DirectUnpacker) Wait() {
 	<-d.done
 }
 
-// Done returns a channel that is closed when the DirectUnpacker finishes.
+// Done returns a channel that is closed when run exits, or by Abort when run
+// was never started. An unpacker that is never started and never aborted
+// never closes it.
 func (d *DirectUnpacker) Done() <-chan struct{} {
 	return d.done
 }
@@ -443,14 +447,14 @@ func (d *DirectUnpacker) Skipped() map[string]SkippedSet {
 	return out
 }
 
-// recordFailure adds a failure entry for the current set. Must be called
-// with mu held.
+// recordFailure adds a failure entry for setname. Must be called with mu
+// held.
 func (d *DirectUnpacker) recordFailure(setname, reason string) {
 	d.failedSets[setname] = FailedSet{Reason: reason}
 }
 
-// recordSkipped adds a skipped entry for the current set. Must be called
-// with mu held.
+// recordSkipped adds a skipped entry for setname. Must be called with mu
+// held.
 func (d *DirectUnpacker) recordSkipped(setname, reason string) {
 	d.skippedSets[setname] = SkippedSet{Reason: reason}
 }
@@ -512,9 +516,10 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 }
 
 // extractSet extracts one complete RAR set using rarengine with sequential
-// volume channel streaming. The deferred panic recovery catches rarengine
-// panics and must remain in this function — it only protects the call stack
-// of the goroutine that called extractSet, not the feeder goroutine.
+// volume channel streaming. The cmdutil.SafeEngineRun wrapper recovers
+// rarengine panics and must remain in this function — it only protects the
+// call stack of the goroutine that called extractSet, not the feeder
+// goroutine.
 func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) error {
 	return cmdutil.SafeEngineRun("directunpack: rarengine panic", func() error {
 		// Derive a cancellable context so any early return from extractSet unblocks
@@ -538,7 +543,7 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) error {
 
 		// rarengine only supports RAR5 archives. Check the first volume's magic
 		// bytes before streaming so non-RAR5 formats (including RAR3) are
-		// skipped immediately and fall back to stage_unpack's external unrar.
+		// skipped immediately and left to stage_unpack.
 		ver, err := rarheader.Version(vol1Path)
 		if err != nil || ver != 5 {
 			return errNotRAR
@@ -559,7 +564,9 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) error {
 
 		// The set is extracted into a staging directory inside extractDir, and
 		// its members reach extractDir only if every check in this callback
-		// passes; a set that fails or is aborted leaves nothing there.
+		// passes; a set that fails or is aborted inside it leaves nothing there.
+		// A publish that fails part way leaves what it already renamed
+		// (unpack.ExtractStaged).
 		published, err := unpack.ExtractStaged(d.log, d.extractDir, d.unpackOptions(), func(stageDir string) error {
 			if err := d.extractEntries(ctx, r, stageDir); err != nil {
 				return err
@@ -616,7 +623,8 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) error {
 // startVolumeFeed spawns a goroutine that opens each completed RAR volume in
 // order and sends it on the returned channel. The goroutine closes volumesChan
 // on completion or error. Any error is delivered on the returned buffered
-// errChan; the caller must drain volumesChan to let the goroutine exit cleanly.
+// errChan. The goroutine exits after sending the last volume, on an error, or
+// when ctx is cancelled; extractSet cancels ctx on every return.
 func (d *DirectUnpacker) startVolumeFeed(ctx context.Context, setname string, maxVol int) (volumes <-chan io.ReadCloser, errs <-chan error) {
 	volumesChan := make(chan io.ReadCloser)
 	feedErrChan := make(chan error, 1)
@@ -632,7 +640,7 @@ func (d *DirectUnpacker) startVolumeFeed(ctx context.Context, setname string, ma
 			volPath := d.completedVols[setname][vol]
 			d.mu.Unlock()
 
-			f, err := os.Open(volPath) //nolint:gosec // volPath is a job-owned directory path set by AddVolume
+			f, err := os.Open(volPath) //nolint:gosec // volPath is a job-owned directory path set by Add
 			if err != nil {
 				feedErrChan <- err
 				return
