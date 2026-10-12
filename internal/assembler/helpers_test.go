@@ -58,6 +58,31 @@ func testArtIdx(i int) int32 {
 	return int32(i) //nolint:gosec // G115: test article counts are far below int32
 }
 
+// ownedBy returns the byte ranges the writer records artIdx as having written.
+// A range is claimed only below a WriteAt that returned nil, so an empty
+// result for a non-empty article means its bytes were not written.
+func ownedBy(w *fileWriter, artIdx int32) []Range {
+	var out []Range
+	for _, o := range w.owned.s {
+		if o.id.artIdx == artIdx {
+			out = append(out, o.r)
+		}
+	}
+	return out
+}
+
+// countWrites wraps the writer's WriteAt seam and returns the number of calls
+// that reach it from here on.
+func countWrites(w *fileWriter) *int {
+	n := new(int)
+	next := w.writeAt
+	w.writeAt = func(p []byte, off int64) (int, error) {
+		*n++
+		return next(p, off)
+	}
+	return n
+}
+
 // newHelperAssembler builds an Assembler as a literal, without Start, for
 // tests that drive one helper. Nothing here reads a.reqs or the worker state.
 func newHelperAssembler() *Assembler {
@@ -193,7 +218,7 @@ func TestSyncAndClose_KeepsWrittenBytesAndClosesTheHandle(t *testing.T) {
 	a := newHelperAssembler()
 	f := newHelperFile(t, dir, "syncclose.dat", 0)
 
-	if err := f.w.accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("abcdefgh")); err != nil {
+	if err := f.w.accept(articleID{artIdx: 0}, 0, []byte("abcdefgh")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -215,21 +240,22 @@ func TestSyncAndClose_KeepsWrittenBytesAndClosesTheHandle(t *testing.T) {
 
 // TestAcceptArticle_OutOfRangeOffsetIsNotReported pins the security check's
 // effect on the record. offsetOutOfRange rejects an attacker-supplied yEnc
-// offset; the article must then be absent from what the writer notes as
-// written, or the record describes an article whose bytes were deliberately
-// never written.
+// offset; the article must then own no range of the file, or the record
+// describes an article whose bytes were deliberately never written.
 func TestAcceptArticle_OutOfRangeOffsetIsNotReported(t *testing.T) {
 	dir := t.TempDir()
 	a := newHelperAssembler()
 	f := newHelperFile(t, dir, "oor.dat", 1024)
+	writes := countWrites(f.w)
 
-	o := a.acceptArticle(f, articleID{msgID: "bad", artIdx: 4}, WriteRequest{
+	o := a.acceptArticle(f, articleID{artIdx: 4}, WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 4, MessageID: "bad",
 		Offset: 1 << 40, Data: []byte("evil"),
 	})
 
-	if got := f.w.unsynced; len(got) != 0 {
-		t.Errorf("unsynced = %v after a rejected offset, want empty", got)
+	if *writes != 0 || len(ownedBy(f.w, 4)) != 0 {
+		t.Errorf("a rejected offset reached WriteAt %d times and owns %v, want neither",
+			*writes, ownedBy(f.w, 4))
 	}
 	if o.disposition != dispositionRejected {
 		t.Errorf("disposition = %s, want rejected: the article is resolved permanently failed, not written", o.disposition)
@@ -286,7 +312,7 @@ func TestHandleLateDuplicate_ReturnsTheBufferAndClaimsNothing(t *testing.T) {
 	data := []byte("xyz")
 	// nil writer: the buffer must come back whether or not there is a writer
 	// left to consult about the article's state.
-	a.handleLateDuplicate(nil, WriteRequest{
+	a.handleLateDuplicate(WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", Data: data,
 	})
 
@@ -304,7 +330,7 @@ func TestHandleLateDuplicate_ReturnsTheBufferAndClaimsNothing(t *testing.T) {
 	// slice to the pool is not the same as not calling it. Without this the
 	// FatalErr arm has no coverage at all.
 	released = nil
-	a.handleLateDuplicate(nil, WriteRequest{
+	a.handleLateDuplicate(WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", FatalErr: os.ErrClosed,
 	})
 	if len(released) != 0 {

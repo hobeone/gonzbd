@@ -291,6 +291,7 @@ func TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice(t *testing.
 			f.w.parts())
 	}
 
+	writes := countWrites(f.w)
 	a.handleSuccessArticle(f, WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "m0",
 		Offset: 0, Data: []byte("abcd"),
@@ -302,39 +303,27 @@ func TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice(t *testing.
 			"articles are still outstanding", got)
 	}
 	// The bytes are still written, because they are still the file's content.
-	if got := f.w.unsynced; len(got) != 1 {
-		t.Errorf("unsynced = %v, want one article — the redelivery is not counted, "+
-			"but its bytes are the file's content and must still land", got)
+	if *writes != 1 {
+		t.Errorf("WriteAt called %d times, want 1 — the redelivery is not counted, "+
+			"but its bytes are the file's content and must still land", *writes)
 	}
 }
 
-// TestFileWriter_RolledBackKeepsNoIdentityDependentPath pins that the
-// roll-back keys on ArtIdx alone: an article with an empty Message-ID loses
-// its part exactly as one with a Message-ID does. Constructible only
-// in-package; no production path produces the empty one. It is the input an
-// identity-dependent early return would skip.
-func TestFileWriter_RolledBackKeepsNoIdentityDependentPath(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		msgID string
-	}{
-		{"with a Message-ID", "a@t"},
-		{"with none", ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			w := newTestFileWriter(t, withWriteError(os.ErrClosed))
-			id := articleID{msgID: tc.msgID, artIdx: 7}
+// TestFileWriter_RolledBackHoldsNothing pins that a write fault's roll-back
+// leaves the article holding nothing: no part, no seenDone entry, and no
+// seenFailed entry, since a storage fault says nothing about the article (A1).
+func TestFileWriter_RolledBackHoldsNothing(t *testing.T) {
+	w := newTestFileWriter(t, withWriteError(os.ErrClosed))
+	id := articleID{artIdx: 7}
 
-			w.admit(id.artIdx)
-			if err := w.accept(id, 0, []byte("xy")); err == nil {
-				t.Fatal("accept returned nil after an injected write error")
-			}
-			w.resolve(id.artIdx, dispositionRolledBack)
+	w.admit(id.artIdx)
+	if err := w.accept(id, 0, []byte("xy")); err == nil {
+		t.Fatal("accept returned nil after an injected write error")
+	}
+	w.resolve(id.artIdx, dispositionRolledBack)
 
-			if got := stateOf(w, id.artIdx); got != (writerState{}) {
-				t.Errorf("state after the roll-back = %+v, want nothing held: the part "+
-					"was not given back, or the article was resolved against itself", got)
-			}
-		})
+	if got := stateOf(w, id.artIdx); got != (writerState{}) {
+		t.Errorf("state after the roll-back = %+v, want nothing held: the part "+
+			"was not given back, or the article was resolved against itself", got)
 	}
 }

@@ -3,7 +3,6 @@ package assembler
 import (
 	"fmt"
 	"os"
-	"slices"
 
 	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/storagefault"
@@ -14,23 +13,16 @@ import (
 // that lands them, so the write can say which article it carried.
 //
 // artIdx is identity: it is what fileWriter.seenDone / seenFailed key duplicate
-// handling on, and what fileWriter.noteWritten records for a failed fsync to roll back, so it
-// must match the queue's numbering. msgID is set alongside it, but no code
-// reads it back: the log lines that name a Message-ID take it from the
-// WriteRequest. Neither reaches the queue from here: this package has no ack
-// path in either direction.
+// handling on and what fileWriter.owned names a range's owner by, so it must
+// match the queue's numbering. It carries no Message-ID: the log lines that
+// name one take it from the WriteRequest. Nothing reaches the queue from here:
+// this package has no ack path in either direction.
 type articleID struct {
-	msgID  string
 	artIdx int32
 }
 
-// sameArticle reports whether two identities name the same article.
-//
-// The index alone decides. msgID is deliberately NOT compared: identity is
-// the manifest index, which is what fileWriter's seen-sets key on. Comparing
-// the pair as well would
-// give the assembler a second, finer notion of sameness than the one its
-// accounting uses, and the two could disagree.
+// sameArticle reports whether two identities name the same article: the
+// manifest index, which is what fileWriter's seen-sets key on.
 func (a articleID) sameArticle(b articleID) bool { return a.artIdx == b.artIdx }
 
 // disposition is how an article leaves the writer's accounting: the one value
@@ -45,8 +37,7 @@ type disposition uint8
 
 const (
 	// dispositionWritten: the article's bytes reached WriteAt without error.
-	// The admission stands — seenDone kept, the part kept — and the article
-	// waits in unsynced for the fsync that covers it.
+	// The admission stands: seenDone kept, the part kept.
 	dispositionWritten disposition = iota + 1
 
 	// dispositionRejected: this package refused the article's bytes because
@@ -66,11 +57,11 @@ const (
 	// are not retracted by a later failure to fetch them again.
 	dispositionFetchFailed
 
-	// dispositionRolledBack: storage failed — the article's write, or the
-	// fsync that was to cover it. A storage fault says nothing about the
-	// article (A1), so it is rolled back to never-having-arrived: seenDone
-	// cleared, the part given back if the admission charged one, seenFailed
-	// untouched. The caller returns it to Outstanding.
+	// dispositionRolledBack: storage failed the article's write. A storage
+	// fault says nothing about the article (A1), so it is rolled back to
+	// never-having-arrived: seenDone cleared, the part given back if the
+	// admission charged one, seenFailed untouched. The caller returns it to
+	// Outstanding.
 	dispositionRolledBack
 )
 
@@ -96,8 +87,8 @@ func (d disposition) String() string {
 //
 // It cannot ack an article, record a CRC part or decide a file is complete.
 // Its durability steps are finish (fsync, trim to its owned ranges, fsync) and
-// sync, the fsync at close; a failed sync rolls back the articles it had not
-// yet covered (poisonSync).
+// sync, the fsync at close. A failed sync changes nothing here: the writer is
+// closed right after, and its caller untrusts the file (OnFileUntrusted).
 //
 // Single-goroutine, no locking, like everything else the assembler worker
 // owns (X1).
@@ -105,16 +96,6 @@ type fileWriter struct {
 	handle *os.File
 	path   string
 	key    fileKey
-
-	// unsynced holds the articles whose bytes reached WriteAt without error and
-	// that no successful sync has covered since. A failed sync rolls every one
-	// back (poisonSync): Linux reports a writeback error to a file descriptor
-	// once (errseq) and marks the failed pages clean, so a later fsync on the
-	// same handle can return nil even though the bytes never reached disk, and
-	// the only safe reading of a failed fsync is that none of these landed
-	// (#760). Appended only by noteWritten, which is reached only from below a
-	// successful writeAt.
-	unsynced []int32
 
 	// seenDone and seenFailed keep duplicate handling idempotent (R12).
 	//
@@ -149,15 +130,11 @@ type fileWriter struct {
 	// accepted. acceptArticle refuses an arrival that intersects another
 	// article's range before accept is called.
 	//
-	// Entries are never removed, including by a failed sync's rollback (see
-	// rollbackSyncedArticle). The question is "who wrote these bytes", not
-	// "who currently holds a part", so owned is intentionally not equal to
+	// Entries are never removed. The question is "who wrote these bytes",
+	// not "who currently holds a part", so owned is intentionally not equal to
 	// seenDone. Residency is the writer's, so this is per-open-episode.
 	owned ownedRanges
 
-	// poisoned accumulates the articles a failed sync rolled back (#760), for
-	// releasePoisoned to route to Outstanding via takePoisoned.
-	poisoned []int32
 	// partsWritten counts how many of the file's parts have been accounted
 	// for, whether by a successful accept or by a permanent failure.
 	//
@@ -217,12 +194,6 @@ func newFileWriter(handle *os.File, path string, key fileKey) *fileWriter {
 	return w
 }
 
-// noteWritten records an article whose bytes reached WriteAt without error, so
-// a failed sync can roll it back.
-func (w *fileWriter) noteWritten(id articleID) {
-	w.unsynced = append(w.unsynced, id.artIdx)
-}
-
 // parts reports how many of the file's parts have been accounted for. The
 // caller compares it to FileInfo.TotalParts to decide the file is complete.
 func (w *fileWriter) parts() int { return w.partsWritten }
@@ -230,9 +201,7 @@ func (w *fileWriter) parts() int { return w.partsWritten }
 // holdsPart reports whether the article is counted toward the file's part
 // total — accepted, resolved permanently failed, or both.
 //
-// It is the question handleLateDuplicate asks before reporting a redelivery
-// for a finished file: an article this writer accounted for is resolved and
-// is dropped, and one it never saw is owed a disposition.
+// admit asks it to decide whether an admission charges a part.
 func (w *fileWriter) holdsPart(artIdx int32) bool {
 	if _, done := w.seenDone[artIdx]; done {
 		return true
@@ -273,19 +242,18 @@ func (w *fileWriter) admit(artIdx int32) bool {
 
 // resolve is the one exit from the writer's accounting: it applies the
 // transition d names for one article, and nothing else moves seenDone,
-// seenFailed or partsWritten (see the field comments). Three callers reach
+// seenFailed or partsWritten (see the field comments). Two callers reach
 // it — `git grep -n 'w\.resolve(' -- 'internal/assembler/*.go' ':!*_test.go'`
-// returns 3 lines: handleSuccessArticle, for the outcome of an admitted
-// article's write; handleFatalArticle, for a FetchFailed; and
-// rollbackSyncedArticle, for a Written article a failed sync disowned.
+// returns 2 lines: handleSuccessArticle, for the outcome of an admitted
+// article's write, and handleFatalArticle, for a FetchFailed.
 //
 // Written, Rejected and RolledBack resolve an admission, so they require the
 // article to be in seenDone and panic otherwise: an article nobody admitted
 // has no part to settle, and one already resolved out (Rejected or
 // RolledBack cleared its entry) would be getting a second disposition. That
 // panic is an invariant violation failing loudly (R28), never a condition
-// production reaches — every production caller admits first, and a Written
-// article stays in seenDone until the one failed sync that rolls it back.
+// production reaches — the one production caller of those three,
+// handleSuccessArticle, resolves only an article its own admit just took on.
 //
 // FetchFailed has no admission to resolve, since a fatal article never enters
 // the write path, and a second copy of one is ordinary duplicate delivery
@@ -302,8 +270,7 @@ func (w *fileWriter) resolve(artIdx int32, d disposition) {
 	}
 	switch d {
 	case dispositionWritten:
-		// The admission stands: seenDone kept, the part kept. The article is
-		// noted for sync by writeOne, below the WriteAt that landed it.
+		// The admission stands: seenDone kept, the part kept.
 	case dispositionRejected:
 		// Keeps its part: the article is resolved permanently failed through
 		// OnArticleRejected and will not arrive again, so a file that stopped
@@ -336,18 +303,6 @@ func (w *fileWriter) resolve(artIdx int32, d disposition) {
 	}
 }
 
-// takePoisoned returns and clears the articles a failed sync rolled back since
-// the last call.
-//
-// Taken rather than read, because each set must be routed exactly once: the
-// caller returns them to Outstanding, and reporting one twice would clear an
-// Emitted bit a later dispatch had legitimately set.
-func (w *fileWriter) takePoisoned() []int32 {
-	out := w.poisoned
-	w.poisoned = nil
-	return out
-}
-
 // accept writes one article's bytes through writeOne.
 //
 // It takes ownership of data and returns it to the decoder pool on every path,
@@ -364,7 +319,7 @@ func (w *fileWriter) accept(id articleID, off int64, data []byte) error {
 	return w.writeOne(id, off, data)
 }
 
-// writeOne writes a single article and notes it for sync on success.
+// writeOne writes a single article and claims its range on success.
 func (w *fileWriter) writeOne(id articleID, off int64, data []byte) error {
 	telemetry.DiskWrites.Add(1)
 	telemetry.DiskWriteBytes.Add(int64(len(data)))
@@ -377,48 +332,26 @@ func (w *fileWriter) writeOne(id articleID, off int64, data []byte) error {
 		return storagefault.Classify("write", w.path, err)
 	}
 	w.owned.claim(Range{Off: off, Len: int64(len(data))}, id)
-	w.noteWritten(id)
 	return nil
 }
 
-// sync fsyncs the handle. If the fsync fails, poisonSync rolls back every
-// article written since the last successful sync into poisoned, so the caller
-// returns them to Outstanding (#760) — see fileWriter.unsynced for why none of
-// them can be trusted.
+// sync fsyncs the handle and reports a failure as a classified fault.
+//
+// It keeps no record of what the fsync covered, because a failure is answered
+// for the whole file: Linux reports a writeback error to a file descriptor
+// once (errseq) and marks the failed pages clean, so a later fsync on the same
+// handle can return nil over bytes that never reached disk (#760), and the
+// only safe reading is that none of the file's writes landed. syncAndClose's
+// callers untrust the file (OnFileUntrusted), which returns every written
+// article of it to Outstanding.
 //
 // It takes no context: its only caller is the assembler worker, which has none
 // to pass, and a cancellation is not a storage fault.
 func (w *fileWriter) sync() error {
 	if err := w.syncFile(); err != nil {
-		w.poisonSync()
 		return storagefault.Classify("sync", w.path, err)
 	}
-	// Covered by this fsync: a later failure says nothing about these.
-	w.unsynced = nil
 	return nil
-}
-
-// poisonSync rolls every article in w.unsynced back into w.poisoned so the
-// caller returns them to Outstanding (#760).
-func (w *fileWriter) poisonSync() {
-	for _, a := range w.unsynced {
-		w.rollbackSyncedArticle(a)
-	}
-	w.unsynced = nil
-}
-
-// rollbackSyncedArticle rolls the article back into w.poisoned if it is not
-// already pending there.
-//
-// It leaves w.owned alone: the article wrote its range, so it keeps it. Its
-// redelivery carries the same artIdx and is accepted to rewrite the bytes, and
-// a different article intersecting the range is refused at acceptArticle.
-func (w *fileWriter) rollbackSyncedArticle(artIdx int32) {
-	if slices.Contains(w.poisoned, artIdx) {
-		return
-	}
-	w.resolve(artIdx, dispositionRolledBack)
-	w.poisoned = append(w.poisoned, artIdx)
 }
 
 // close releases the handle.

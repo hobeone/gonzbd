@@ -47,9 +47,8 @@ file internal/assembler/ranges.go
 file internal/assembler/filewriter.go
 --- anchor
 	w.owned.claim(Range{Off: off, Len: int64(len(data))}, id)
-	w.noteWritten(id)
 --- replace
-	w.noteWritten(id)
+	_ = id
 --- end
 
 [acceptArticle probes a zero-length range]

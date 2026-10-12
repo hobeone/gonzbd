@@ -187,10 +187,14 @@ file internal/assembler/assembler.go
 	a.routeOutcome(f, req, o)
 --- end
 
-[handleLateDuplicate reports an article the writer holds a part for]
+[handleLateDuplicate drops a late article without resolving it]
 file internal/assembler/assembler.go
 --- anchor
-	if f != nil && f.w.holdsPart(req.ArtIdx) {
+	if a.opts.OnArticleRejected != nil {
+		a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx,
+			"redelivered after its file was completed", WholeArticle)
 --- replace
 	if false {
+		a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx,
+			"redelivered after its file was completed", WholeArticle)
 --- end

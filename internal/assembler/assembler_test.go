@@ -793,8 +793,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if _, ok := f.w.seenDone[0]; !ok {
 			t.Error("expected seenDone to contain artidx 0")
 		}
-		if got := f.w.unsynced; len(got) != 1 {
-			t.Fatalf("unsynced = %v, want 1 entry — the bytes reached WriteAt", got)
+		if got := ownedBy(f.w, 0); len(got) != 1 {
+			t.Fatalf("ranges owned by artidx 0 = %v, want 1 — the bytes reached WriteAt", got)
 		}
 
 		// Duplicate success.
@@ -947,8 +947,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 				"completion, so the file reaches TotalParts and finalizes over bytes "+
 				"that never reached disk", f.w.parts())
 		}
-		if got := f.w.unsynced; len(got) != 0 {
-			t.Errorf("unsynced = %v after a failed write, want empty", got)
+		if got := ownedBy(f.w, 0); len(got) != 0 {
+			t.Errorf("ranges owned by artidx 0 = %v after a failed write, want none", got)
 		}
 		if _, ok := f.w.seenFailed[0]; ok {
 			t.Error("artidx 0 was recorded as FAILED by a storage fault, which A1 forbids: " +
@@ -1294,7 +1294,7 @@ func TestFileWriter_DirectWriteErrorCountsPipelineError(t *testing.T) {
 
 	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0})
 
-	if err := w.accept(articleID{msgID: "m1"}, 0, []byte("data")); err == nil {
+	if err := w.accept(articleID{}, 0, []byte("data")); err == nil {
 		t.Error("Accept on a closed file returned nil error, want a storage fault")
 	}
 	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
@@ -1698,17 +1698,5 @@ func TestHandleLateDuplicate_ResolvesAnArticleWhateverItsIdentity(t *testing.T) 
 		t.Fatal("the late article was never resolved, so the job waits on it " +
 			"forever: handleLateDuplicate still returns early when the article " +
 			"carries no Message-ID")
-	}
-}
-
-// TestArticleID_IdentityIsTheIndexAlone pins that msgID is not compared.
-func TestArticleID_IdentityIsTheIndexAlone(t *testing.T) {
-	a := articleID{msgID: "one@t", artIdx: 4}
-	b := articleID{msgID: "two@t", artIdx: 4}
-	if !a.sameArticle(b) {
-		t.Error("two identities with one index compared unequal; msgID is still part of identity")
-	}
-	if a.sameArticle(articleID{msgID: "one@t", artIdx: 5}) {
-		t.Error("two identities with different indices compared equal")
 	}
 }

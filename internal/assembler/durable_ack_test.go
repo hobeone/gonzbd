@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
 // An article's outcome is not an ack (X2): the assembler has no ack authority
-// at all. A written article is noted for sync (fileWriter.unsynced) and
-// reported to Options.OnArticleWritten; a failed write is absent from
-// unsynced and comes back as a *storagefault.Fault. See filewriter_test.go for
+// at all. A written article claims its range (fileWriter.owned) and is
+// reported to Options.OnArticleWritten; a failed write claims nothing and
+// comes back as a *storagefault.Fault. See filewriter_test.go for
 // the base pins this file specializes.
 
 // TestFailedWrites_RetryIsWrittenNotDiscarded pins the half of the failure
@@ -142,21 +144,22 @@ func TestFailedWrites_RetryIsWrittenNotDiscarded(t *testing.T) {
 	}
 }
 
-// TestDuplicateSuccessIsNotReAcked pins that a duplicate does not add a second
-// entry to unsynced. The dedup decision lives in
+// TestDuplicateSuccessIsNotReAcked pins that a duplicate does not reach
+// WriteAt a second time. The dedup decision lives in
 // handleSuccessArticle, keyed on the fileWriter's own seenDone map (R12).
 func TestDuplicateSuccessIsNotReAcked(t *testing.T) {
 	a := newHelperAssembler()
 	dir := t.TempDir()
 	f := newHelperFile(t, dir, "dup.dat", 0)
+	writes := countWrites(f.w)
 
 	req := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first copy")}
 	a.handleSuccessArticle(f, req)
 	if f.w.parts() != 1 {
 		t.Fatal("first copy was not accepted")
 	}
-	if got := f.w.unsynced; len(got) != 1 {
-		t.Fatalf("unsynced = %v after the first copy, want exactly one entry", got)
+	if *writes != 1 {
+		t.Fatalf("WriteAt called %d times for the first copy, want exactly 1", *writes)
 	}
 
 	dup := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("second copy")}
@@ -165,9 +168,9 @@ func TestDuplicateSuccessIsNotReAcked(t *testing.T) {
 		t.Error("a duplicate must not be counted toward TotalParts")
 	}
 
-	if got := f.w.unsynced; len(got) != 1 {
-		t.Errorf("unsynced = %v, want exactly one entry — the duplicate must not have "+
-			"queued a second write for bytes the first copy already claims", got)
+	if *writes != 1 {
+		t.Errorf("WriteAt called %d times, want exactly 1 — the duplicate must not "+
+			"write a second time over bytes the first copy already claims", *writes)
 	}
 }
 
@@ -180,6 +183,7 @@ func TestDuplicateAtADifferentOffsetIsNotReAcked(t *testing.T) {
 	a := newHelperAssembler()
 	dir := t.TempDir()
 	f := newHelperFile(t, dir, "dupoffset.dat", 0)
+	writes := countWrites(f.w)
 
 	req := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first copy")}
 	a.handleSuccessArticle(f, req)
@@ -194,23 +198,9 @@ func TestDuplicateAtADifferentOffsetIsNotReAcked(t *testing.T) {
 		t.Error("a duplicate must not be counted toward TotalParts")
 	}
 
-	if got := f.w.unsynced; len(got) != 1 {
-		t.Errorf("unsynced = %v, want exactly one entry; the duplicate's mismatched "+
-			"offset must not queue a second write", got)
-	}
-}
-
-// TestZeroLengthArticleIsReportedWritten pins that a zero-length article takes
-// the same path as any other: the WriteAt is a no-op but the article is still
-// noted as written.
-func TestZeroLengthArticleIsReportedWritten(t *testing.T) {
-	w := newTestFileWriter(t)
-	if err := w.accept(articleID{msgID: "msg0", artIdx: 0}, 0, nil); err != nil {
-		t.Fatalf("Accept: %v", err)
-	}
-	if got := w.unsynced; len(got) != 1 || got[0] != 0 {
-		t.Errorf("unsynced = %v, want [0] — the write is a no-op but the article "+
-			"is still noted as written", got)
+	if *writes != 1 {
+		t.Errorf("WriteAt called %d times, want exactly 1; the duplicate's mismatched "+
+			"offset must not write", *writes)
 	}
 }
 
@@ -268,13 +258,6 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 	}
 }
 
-// The test that stood here, TestFailToleratesAnEmptyMessageID, translated
-// TestFailArticleWithoutAMessageIDStillAcks and has been folded into
-// accounting_test.go's TestFileWriter_RolledBackKeepsNoIdentityDependentPath,
-// whose table runs the empty-Message-ID identity alongside a real one. Its
-// one distinct assertion — that a roll-back leaves seenFailed alone — moved
-// with it.
-
 // TestFatalAfterAWrittenArticleCannotRetractIt pins that a FatalErr arriving
 // after an article's bytes have landed does not undo them: the assembler has one
 // reporter and one direction for an article's outcome, so there is no second
@@ -321,10 +304,10 @@ func TestFatalAfterAWrittenArticleCannotRetractIt(t *testing.T) {
 var errFatalProbe = errors.New("permanent article failure (test)")
 
 // TestSync_ActuallyIssuesTheFsync is the syscall-level pin that the fsync is ON
-// THE PATH, and that the articles it covers leave unsynced only AFTER it
-// returns nil. Before this test, deleting w.handle.Sync() outright left the
-// whole suite green — crash suite included — so the one syscall the close-time
-// durability step rests on was silently deletable.
+// THE PATH, and that its failure is reported rather than swallowed. Before this
+// test, deleting w.handle.Sync() outright left the whole suite green — crash
+// suite included — so the one syscall the close-time durability step rests on
+// was silently deletable.
 //
 // # What it does NOT pin, and what a reader must not conclude
 //
@@ -334,57 +317,36 @@ var errFatalProbe = errors.New("permanent article failure (test)")
 // Real coverage needs a device-mapper log-writes or flakey target, which needs
 // root. See docs/durability-contract.md, Accepted limitations #7, and #363.
 //
-// So this is "the program calls fsync in the right order", not "the bytes are
-// on the platter". The second claim remains unverified in this repository.
+// So this is "the program calls fsync", not "the bytes are on the platter".
+// The second claim remains unverified in this repository.
 func TestSync_ActuallyIssuesTheFsync(t *testing.T) {
 	w := newTestFileWriter(t)
 
 	var syncs int
-	var unsyncedAtSync int
 	w.syncFile = func() error {
 		syncs++
-		// Captured DURING the syscall: if sync cleared the set first, the
-		// ordering bug would be invisible to an after-the-fact assertion.
-		unsyncedAtSync = len(w.unsynced)
 		return nil
 	}
 
 	w.admit(0)
-	if err := w.accept(articleID{msgID: "m0", artIdx: 0}, 0, []byte("hello")); err != nil {
+	if err := w.accept(articleID{artIdx: 0}, 0, []byte("hello")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	if len(w.unsynced) == 0 {
-		t.Fatal("nothing was noted before Sync; the fixture proves nothing")
-	}
-
 	if err := w.sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if syncs != 1 {
 		t.Errorf("fsync issued %d times, want exactly 1", syncs)
 	}
-	if unsyncedAtSync == 0 {
-		t.Error("unsynced was already empty when fsync was called; it must be " +
-			"cleared only AFTER a successful fsync, or a failed sync loses the articles it must roll back")
-	}
-	if len(w.unsynced) != 0 {
-		t.Errorf("unsynced still holds %d after a successful fsync, want 0", len(w.unsynced))
-	}
 
-	// A FAILING fsync rolls the article written since back into w.poisoned so
-	// it returns to Outstanding (#760): Linux reports a writeback error once
-	// and marks the failed pages clean, so nothing written before it can be
-	// trusted.
-	w.admit(1)
-	if err := w.accept(articleID{msgID: "m1", artIdx: 1}, 5, []byte("world")); err != nil {
-		t.Fatalf("Accept: %v", err)
-	}
+	// A FAILING fsync is reported as a classified fault, for the caller to
+	// untrust the file (#760): Linux reports a writeback error once and marks
+	// the failed pages clean, so nothing written before it can be trusted.
 	w.syncFile = func() error { return syscall.EIO }
-	if err := w.sync(); err == nil {
-		t.Fatal("Sync returned nil despite a failing fsync")
-	}
-	if rolled := w.takePoisoned(); len(rolled) != 1 || rolled[0] != 1 {
-		t.Errorf("poisoned after failed Sync = %+v, want [artIdx 1] rolled back to Outstanding", rolled)
+	err := w.sync()
+	fault, ok := errors.AsType[*storagefault.Fault](err)
+	if !ok || fault.Op != "sync" || !errors.Is(err, syscall.EIO) {
+		t.Errorf("Sync with a failing fsync = %v, want a \"sync\" *storagefault.Fault wrapping EIO", err)
 	}
 }
 

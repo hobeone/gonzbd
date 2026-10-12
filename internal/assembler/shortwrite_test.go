@@ -74,9 +74,9 @@ func TestFileWriter_ShortWriteLeavesNoClaimOverPartialBytes(t *testing.T) {
 			"so it cannot pin what happens to the bytes one leaves behind")
 	}
 
-	if len(w.unsynced) != 0 {
-		t.Errorf("%d articles noted written for a write that failed; a record built "+
-			"from them would claim bytes that are only partly on disk", len(w.unsynced))
+	if got := ownedBy(w, 0); len(got) != 0 {
+		t.Errorf("the article owns %v after a write that failed; a record built "+
+			"from it would claim bytes that are only partly on disk", got)
 	}
 	if _, failed := w.seenFailed[0]; failed {
 		t.Error("a storage fault resolved the article against itself (A1); the file " +

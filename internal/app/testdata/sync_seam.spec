@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run ^(TestLooseRecord_UntrustedSurvivesEviction|TestLooseRecord_PoisonedSyncReturnsArticlesToOutstanding)$
+run ^(TestLooseRecord_UntrustedSurvivesEviction|TestLooseRecord_FailedCloseSyncReturnsArticlesToOutstanding)$
 
 # The syncFile seam reaches the assembler through New; production leaves it
 # nil and the assembler fsyncs the handle itself.

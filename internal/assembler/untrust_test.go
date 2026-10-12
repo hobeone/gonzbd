@@ -9,22 +9,66 @@ import (
 	"testing"
 )
 
+// fsyncReleaseRecorder records both callbacks that could return a file's
+// articles to Outstanding, so a test can require that a failed fsync releases
+// them through OnFileUntrusted, once, and through nothing else.
+type fsyncReleaseRecorder struct {
+	untrusted []fileKey
+	unwritten []int32
+}
+
+func (r *fsyncReleaseRecorder) install(a *Assembler) {
+	a.opts.OnFileUntrusted = func(jobID string, fileIdx int) {
+		r.untrusted = append(r.untrusted, fileKey{jobID: jobID, fileIdx: fileIdx})
+	}
+	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
+		r.unwritten = append(r.unwritten, arts...)
+	}
+}
+
+// check requires that want, and only want, was untrusted, once, and that no
+// article was released one by one alongside it.
+func (r *fsyncReleaseRecorder) check(t *testing.T, want fileKey) {
+	t.Helper()
+	if len(r.untrusted) != 1 || r.untrusted[0] != want {
+		t.Errorf("untrusted %v, want exactly [%v] — the file whose fsync failed, once", r.untrusted, want)
+	}
+	if len(r.unwritten) != 0 {
+		t.Errorf("OnArticlesUnwritten = %v after a failed fsync, want none: the "+
+			"untrust of the file is what returns its written articles to Outstanding", r.unwritten)
+	}
+}
+
+// writeHelperArticle writes article artIdx through the production success
+// path, so the file holds a written article for its fsync to fail under.
+func writeHelperArticle(t *testing.T, a *Assembler, f *openFile, artIdx int32) {
+	t.Helper()
+	a.handleSuccessArticle(f, WriteRequest{
+		JobID: f.w.key.jobID, FileIdx: f.w.key.fileIdx, ArtIdx: artIdx, MessageID: "m",
+		Offset: int64(artIdx) * 4, Data: []byte("abcd"),
+	})
+	if f.w.parts() != 1 {
+		t.Fatalf("fixture: parts = %d after writing article %d, want 1", f.w.parts(), artIdx)
+	}
+}
+
 // TestCloseJobHandles_UntrustsAFileWhoseCloseTimeSyncFailed pins that the
-// close-handles arm hands a file whose fsync failed to OnFileUntrusted. That
-// fsync consumed the error, so the verification fsync at the next start would
-// return 0 and the file's rows would be trusted.
+// close-handles arm hands a file whose fsync failed to OnFileUntrusted, once,
+// and that this is the whole of the release. That fsync consumed the error, so
+// the verification fsync at the next start would return 0 and the file's rows
+// would be trusted.
 func TestCloseJobHandles_UntrustsAFileWhoseCloseTimeSyncFailed(t *testing.T) {
 	a := newHelperAssembler()
-	a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
-	var got []fileKey
-	a.opts.OnFileUntrusted = func(jobID string, fileIdx int) {
-		got = append(got, fileKey{jobID: jobID, fileIdx: fileIdx})
-	}
+	var r fsyncReleaseRecorder
+	r.install(a)
 
 	dir := t.TempDir()
 	bad := newHelperFile(t, dir, "bad.dat", 0)
+	writeHelperArticle(t, a, bad, 0)
 	bad.w.syncFile = func() error { return syscall.EIO }
 	good := newHelperFile(t, dir, "good.dat", 0)
+	good.w.key.fileIdx = 1
+	writeHelperArticle(t, a, good, 0)
 	open := map[fileKey]*openFile{
 		{jobID: "job", fileIdx: 0}: bad,
 		{jobID: "job", fileIdx: 1}: good,
@@ -34,37 +78,35 @@ func TestCloseJobHandles_UntrustsAFileWhoseCloseTimeSyncFailed(t *testing.T) {
 	a.dispatchRequest(
 		WriteRequest{FileIdx: fileIdxCloseHandles, MessageID: "job", ackCh: ack},
 		open, map[fileKey]struct{}{}, map[string]struct{}{})
-	<-ack
-
-	if len(got) != 1 || got[0] != (fileKey{jobID: "job", fileIdx: 0}) {
-		t.Errorf("untrusted %v, want only job file 0 — the file whose close-time "+
-			"fsync failed", got)
+	if err := <-ack; !errors.Is(err, syscall.EIO) {
+		t.Errorf("close-handles ack = %v, want the fsync's EIO", err)
 	}
+
+	r.check(t, fileKey{jobID: "job", fileIdx: 0})
 }
 
 // TestSyncAndCloseAll_UntrustsAFileWhoseSyncFailed is the worker-exit half:
 // a clean shutdown's fsync that fails untrusts its file, synchronously, before
-// the recorder's final flush.
+// the recorder's final flush, and releases nothing else.
 func TestSyncAndCloseAll_UntrustsAFileWhoseSyncFailed(t *testing.T) {
 	a := newHelperAssembler()
-	a.opts.OnArticlesUnwritten = func(string, int, []int32) {}
-	var got []fileKey
-	a.opts.OnFileUntrusted = func(jobID string, fileIdx int) {
-		got = append(got, fileKey{jobID: jobID, fileIdx: fileIdx})
-	}
+	var r fsyncReleaseRecorder
+	r.install(a)
 
 	dir := t.TempDir()
 	bad := newHelperFile(t, dir, "bad.dat", 0)
+	bad.w.key.fileIdx = 3
+	writeHelperArticle(t, a, bad, 0)
 	bad.w.syncFile = func() error { return syscall.EIO }
 	good := newHelperFile(t, dir, "good.dat", 0)
+	good.w.key.fileIdx = 4
+	writeHelperArticle(t, a, good, 0)
 	a.syncAndCloseAll(map[fileKey]*openFile{
 		{jobID: "job", fileIdx: 3}: bad,
 		{jobID: "job", fileIdx: 4}: good,
 	})
 
-	if len(got) != 1 || got[0] != (fileKey{jobID: "job", fileIdx: 3}) {
-		t.Errorf("untrusted %v, want only job file 3 — the file whose fsync failed", got)
-	}
+	r.check(t, fileKey{jobID: "job", fileIdx: 3})
 }
 
 // TestQuiesce_ReturnsAfterEverythingQueuedAheadOfIt pins Quiesce's one

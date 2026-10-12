@@ -91,27 +91,19 @@ func TestCollision_ArrivalRejectedOnceIncumbentIsWritten(t *testing.T) {
 	}
 }
 
-// TestCollision_RangeStaysOwnedAfterSync is the reason ownership is the owned
-// range set (fileWriter.owned) rather than derived from w.unsynced.
-//
-// w.unsynced is what no successful sync has covered yet; a successful sync
-// empties it. An article whose bytes an fsync has covered holds the strongest
-// possible claim on its offset, but a check that scanned that slice would see
-// an empty set and read it as no claim — so a collision arriving after the
-// fsync would overwrite an article the recorder has already described.
+// TestCollision_RangeStaysOwnedAfterSync pins that a successful sync does not
+// release a range. An article whose bytes an fsync has covered holds the
+// strongest possible claim on its offset, so a collision arriving after the
+// fsync must still be refused rather than overwrite an article the recorder
+// has already described.
 func TestCollision_RangeStaysOwnedAfterSync(t *testing.T) {
 	c := newCollisionFixture(t)
 
 	if !c.accept(1, "<first@x>", 0, []byte("AAAA")) {
 		t.Fatal("precondition: the incumbent was not counted")
 	}
-	// A successful sync is what empties the evidence.
 	if err := c.f.w.sync(); err != nil {
 		t.Fatalf("sync: %v", err)
-	}
-	if len(c.f.w.unsynced) != 0 {
-		t.Fatalf("precondition: unsynced is not empty (%d), so this test cannot "+
-			"distinguish an owned range from a claim derived from unsynced", len(c.f.w.unsynced))
 	}
 
 	c.accept(2, "<second@x>", 0, []byte("BBBB"))
@@ -129,8 +121,8 @@ func TestCollision_RangeStaysOwnedAfterSync(t *testing.T) {
 // TestOwnedRanges_ArrivalVerdicts covers the predicate that decides whether an
 // arrival is refused, directly, including the ways it must answer "no".
 func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
-	owner := articleID{msgID: "owner", artIdx: 1}
-	arriving := articleID{msgID: "arriving", artIdx: 2}
+	owner := articleID{artIdx: 1}
+	arriving := articleID{artIdx: 2}
 
 	tests := []struct {
 		name      string
@@ -171,14 +163,15 @@ func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
 //
 // seenDone is keyed on ArtIdx, so admit answers "duplicate" for a PLAIN
 // redelivery and handleSuccessArticle returns before acceptArticle is called,
-// which is why this calls acceptArticle directly. The first roll-back, a
-// direct resolve, models a failed sync rolling the article back
-// (rollbackSyncedArticle resolves RolledBack): it deletes the seenDone entry
-// and never sets seenFailed, so the redelivery reaches a second accept. That
-// second accept's write is the one that faults.
+// which is why this calls acceptArticle directly. The first roll-back is a
+// direct resolve that leaves the article's range owned: it deletes the
+// seenDone entry and never sets seenFailed, so the redelivery reaches a second
+// accept. That second accept's write is the one that faults. The state is
+// built by hand; what it pins is writeOne's, that a failed write leaves the
+// owned ranges as it found them.
 func TestCollision_FailedReacceptKeepsTheWrittenRange(t *testing.T) {
 	c := newCollisionFixture(t)
-	id := articleID{msgID: "<first@x>", artIdx: 1}
+	id := articleID{artIdx: 1}
 	req := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "<first@x>", Offset: 0}
 
 	c.f.w.admit(id.artIdx)
@@ -200,7 +193,7 @@ func TestCollision_FailedReacceptKeepsTheWrittenRange(t *testing.T) {
 	}
 	c.f.w.resolve(id.artIdx, dispositionRolledBack)
 
-	second := articleID{msgID: "<second@x>", artIdx: 2}
+	second := articleID{artIdx: 2}
 	req2 := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "<second@x>", Offset: 0, Data: []byte("BBBB")}
 	c.f.w.admit(second.artIdx)
 	o := c.a.acceptArticle(c.f, second, req2)
@@ -227,7 +220,7 @@ func TestCollision_FailedReacceptKeepsTheWrittenRange(t *testing.T) {
 // itself, on a path that is common and where the current code is correct.
 func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 	w := newTestFileWriter(t)
-	id := articleID{msgID: "retried", artIdx: 7}
+	id := articleID{artIdx: 7}
 
 	w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
 	w.admit(id.artIdx)
@@ -258,9 +251,9 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 // against a third.
 func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 	w := newTestFileWriter(t)
-	first := articleID{msgID: "first", artIdx: 1}
-	second := articleID{msgID: "second", artIdx: 2}
-	third := articleID{msgID: "third", artIdx: 3}
+	first := articleID{artIdx: 1}
+	second := articleID{artIdx: 2}
+	third := articleID{artIdx: 3}
 	r := Range{0, 4}
 
 	realWrite := w.writeAt

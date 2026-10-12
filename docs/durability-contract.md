@@ -622,18 +622,20 @@ callers in `internal/assembler/assembler.go`):
 | the close-handles arm of `CloseJobHandles` | the close-time fsync or close | the fault is sent on the control message's ack (*Hand-over to post-processing*) |
 | `syncAndCloseAll`, at worker exit | the close-time fsync or close | the fault is not routed: there is no caller left to answer |
 
-**A failed close-time fsync also rolls back the articles it covered.** A
-`fileWriter` keeps `unsynced`, the articles written since the last successful
-`sync`. A failed `sync` moves every one into `poisoned` (`poisonSync`), and
-`releasePoisoned` returns them to Outstanding through `OnArticlesUnwritten`. In
-production `fileWriter.sync` fails only inside `syncAndClose`, its one
-production call (`git grep -n 'w\.sync()' -- 'internal/assembler/*.go'
+**The untrust is the whole of the release after a failed fsync.** The writer
+keeps no record of which articles an fsync covered: Linux reports a writeback
+error to a descriptor once and marks the failed pages clean, so a failed fsync
+is answered for the whole file. Its articles were written, so they are `Done`
+rather than `Emitted`, and `OnArticlesUnwritten` has nothing to clear for them;
+`Job.UntrustFile` clears their `Done` bits. It returns `ErrNotResident` for a
+job whose manifest is evicted, and the release is then skipped; a job is
+evicted with writes still in flight only once it has settled or been removed,
+and neither is dispatched again in this process. `fileWriter.sync` is called only
+inside `syncAndClose` (`git grep -n 'w\.sync()' -- 'internal/assembler/*.go'
 ':!*_test.go'` returns 1 line), which closes the writer right after, so the
-writer and its owned ranges are discarded with it. The file is then untrusted
-as above: its rows and `complete` are removed, and its articles return to
-Outstanding. A redelivery of any of them registers the file afresh and lands
-on a new writer whose `owned` is seeded from `FileRows`, which the untrust
-emptied.
+writer and its owned ranges are discarded with it. A redelivery of any of the
+file's articles registers the file afresh and lands on a new writer whose
+`owned` is seeded from `FileRows`, which the untrust emptied.
 
 These two fsyncs, and the completion finish, are what report errors first. So
 no file whose error was already consumed reaches a restart with rows, and the
@@ -979,7 +981,7 @@ startup for logging; it does not gate pre-allocation.
 Every accepted article is written synchronously: `acceptArticle` range-checks
 it and checks its owned range (§5), and `fileWriter.accept` calls `writeOne`,
 which issues one `WriteAt` and, only if it returned without error, claims the
-range and notes the article in `unsynced`. `handleSuccessArticle` then
+range. `handleSuccessArticle` then
 resolves the article `Written` and `routeOutcome` calls `OnArticleWritten`
 with the range and the decoder's CRC. There is no
 assembler-side buffering of decoded articles, no coalescing and no
@@ -1208,7 +1210,6 @@ are bounded by the flush cadence and by file size, as below.
 | Component | Bound / strategy |
 |---|---|
 | Write channel (`reqs`) | 2048 requests (`defaultQueueSize`). At 128 KiB articles, ~256 MB worst-case buffered; backpressures the downloader when disk I/O is slow. |
-| `fileWriter.unsynced` | one `int32` per article written to the file in its open episode: only a successful `sync` clears it, and the only `sync` is at close. |
 | Recorder buffers | one row per article written since the last flush, one state per dirty file, and one owed delete per untrusted file whose delete has not landed. A flush that keeps failing re-merges its snapshot, so they grow while SQLite refuses writes. |
 | `JobProgress.written` | one row per written or verified article of a file whose CRC is not yet settled; released at settle or untrust. |
 | `internalFileComplete` | cap 128. A full channel moves a Resumed completion to its own goroutine (§3). |
@@ -1224,13 +1225,13 @@ are bounded by the flush cadence and by file size, as below.
 
   | Callback | Carries | Does |
   |---|---|---|
-  | `Options.OnArticlesUnwritten` | every article the failure rolled back | clears their Emitted bits, returning them to Outstanding |
+  | `Options.OnArticlesUnwritten` | the article the failure rolled back | clears its Emitted bit, returning it to Outstanding |
   | `Options.OnWriteFault` | the classified `*storagefault.Fault`, no article | stalls or fails the job on the usual R18 rule |
 
-  They are separate because they are needed in different combinations: a fault
-  raised inside `accept` needs both, for one article; a failed close-time fsync
-  rolls back a set of articles, and its fault goes on the close-handles ack, or
-  nowhere at worker exit.
+  A failed fsync takes neither: its articles were written, so they are `Done`,
+  and the untrust of their file returns them (§4); its fault goes to
+  `OnWriteFault` from `finalizeFile`, on the close-handles ack, or nowhere at
+  worker exit.
   A restart also clears a stranded Emitted bit, by not persisting it
   (`JobProgress` is not serialized), and so does a downloader reload
   (`git grep -n 'j\.ClearEmittedForReload(' -- '*.go' ':!*_test.go'` finds 1

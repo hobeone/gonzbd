@@ -30,18 +30,18 @@ import (
 // with no Emitted bit set (internal/job/progress.go) — and a downloader reload
 // clears them in-process once the assembler has quiesced.
 //
-// It takes a SET rather than one article, and that is the point. The assembler
-// used to carry a single index alongside the fault, so a failure that rolled
-// back several articles reported only whichever article happened to be first.
+// It takes a set, though each call the assembler makes today names one article
+// (`git grep -n 'a\.noteArticlesUnwritten(' -- 'internal/assembler/*.go'
+// ':!*_test.go'` returns 2 lines, each passing `[]int32{req.ArtIdx}`).
 //
 // R17: returns each article to Outstanding by clearing its emitted bit. The
 // articles are not marked failed (A1) and their bytes are not charged against
 // par2; the next dispatch cycle will pick them up again.
 //
-// It clears Emitted only. An article a failed fsync rolled back (the
-// assembler's releasePoisoned) was already marked Done when its WriteAt
-// returned; its Done bit and buffered row go with the untrust of its file,
-// which the assembler reports right after (handleFileUntrusted).
+// It clears Emitted only, and a failed fsync does not reach it: the articles
+// that fsync covered were marked Done when their WriteAt returned, and their
+// Done bits and buffered rows go with the untrust of their file
+// (handleFileUntrusted).
 //
 // Thread-safe: clears the emitted bits under the job lock. It does NOT touch
 // the assembler.
