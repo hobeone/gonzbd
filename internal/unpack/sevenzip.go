@@ -43,16 +43,19 @@ func SevenZipBin(opts Options) (string, error) {
 }
 
 // SevenZip extracts archive.MainFile into outDir by shelling out to the 7-zip
-// binary (resolved via sevenZipBin).  ctx cancellation kills the subprocess.
+// binary (resolved via SevenZipBin).  ctx cancellation kills the subprocess.
+// 7z writes into a staging directory inside outDir, and
+// publishStagedExtraction moves the result into outDir once the run succeeds.
 //
 // Argv construction:
 //
-//	7zz x|e -y -bsp0 -p<pw> <mainfile> -o<outdir>
+//	7zz x|e -y -bd -bsp0 -p<pw> -aoa|-aos <mainfile> -o<stagedir> -ssc|-ssc-
 //
 // 'x' preserves directory structure; 'e' flattens paths (when opts.OneFolder
 // is true, matching SABnzbd's cfg.flat_unpack).  -bsp0 suppresses the
 // progress stream.  -p with an empty value is safe for 7zz — it does not
-// prompt on stdin when -p is supplied.
+// prompt on stdin when -p is supplied. The command line logged and passed to
+// OnLine/OnCommand names -o<outdir> in place of -o<stagedir>.
 func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
 	log = log.With("component", "sevenzip")
 	bin, err := SevenZipBin(opts)

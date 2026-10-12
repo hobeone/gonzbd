@@ -1,6 +1,8 @@
 // Package unpack provides functions for detecting, classifying, and extracting
-// archive files (RAR, 7-zip, and split-file sets) by shelling out to the
-// appropriate command-line tools.
+// archive files (RAR, 7-zip, tar, and split-file sets). RAR and 7-zip have
+// both a pure-Go extractor (GoUnRAR, GoSevenZip) and one that shells out to
+// the external tool (UnRAR, SevenZip); tar (GoTar) and split-file joining
+// (FileJoin) are pure Go only.
 package unpack
 
 import (

@@ -21,17 +21,22 @@ type Options struct {
 	// exactly one password can still set a single-element list.
 	//
 	// UnRAR, SevenZip, GoUnRAR, and GoSevenZip take the password for one
-	// attempt as an explicit function parameter, not from this struct --
-	// only the *WithPasswords wrappers (via withPasswords) read Passwords,
-	// iterating it and calling the underlying extractor once per candidate.
+	// attempt as an explicit function parameter. The *WithPasswords
+	// wrappers (via withPasswords) iterate Passwords, calling the
+	// underlying extractor once per candidate. GoUnRAR (through
+	// GoUnRAREngine) also reads it: given an empty password parameter, it
+	// hands the whole of Passwords to rarengine (go_unrar.go's
+	// r.SetPasswords(opts.Passwords)).
 	Passwords []string
 	// OneFolder extracts all files flat into outDir (no path preservation).
 	// For unrar this selects the 'e' command; for 7z this selects 'e'
 	// instead of 'x'.
 	OneFolder bool
 	// KeepOriginals controls whether the caller should delete the source Parts
-	// after a successful extraction.  The unpack functions themselves never
-	// delete files; deletion is the caller's responsibility.
+	// after a successful extraction.  The extractors do not read it and do
+	// not delete the source Parts; that deletion is the caller's
+	// responsibility. (They do remove their own staging directories, temp
+	// files, and the partial output of a failed attempt.)
 	KeepOriginals bool
 
 	// UnrarCommand overrides the unrar binary path. Empty defaults to "unrar".
@@ -93,13 +98,16 @@ type Options struct {
 	// exec, with the full display-safe command line (passwords redacted).
 	OnCommand func(string) `json:"-"`
 
-	// MaxSize sets the maximum allowed uncompressed size in bytes for a single
-	// entry in pure-Go extractors to prevent decompression bombs.
-	// If 0, default (250 GiB) is used.
+	// MaxSize sets the maximum allowed uncompressed size in bytes, summed
+	// over every entry of one extraction (not per entry), enforced by GoTar
+	// and GoSevenZip to prevent decompression bombs. GoUnRAR does not read
+	// it; rarengine applies its own limits.
+	// If <= 0, default (250 GiB) is used.
 	MaxSize int64
-	// MaxRatio sets the maximum allowed compression ratio (uncompressed / compressed)
-	// for decompression bomb protection in pure-Go extractors.
-	// If 0, default (250) is used.
+	// MaxRatio sets the maximum allowed ratio of the uncompressed bytes
+	// read so far to archive.MainFile's size, for decompression bomb
+	// protection in GoTar and GoSevenZip.
+	// If <= 0, default (250) is used.
 	MaxRatio int64
 	// MinBombThreshold sets the minimum uncompressed bytes extracted before
 	// ratio limit checking is enforced. If 0, default (10 MiB) is used.
@@ -136,10 +144,17 @@ type Result struct {
 	// CommandLine is the display-safe command line that was executed.
 	// Passwords are redacted.
 	CommandLine string
-	// ExtractedFiles lists files created by the extraction, determined by
-	// diffing the output directory before and after the subprocess call.
+	// ExtractedFiles lists the files the extraction put in the output
+	// directory. UnRAR and SevenZip list what publishStagedExtraction
+	// renamed out of the staging directory; GoSevenZip and GoTar diff
+	// snapshots of the output directory taken before and after; GoUnRAR
+	// lists what ExtractMember wrote. The paths are relative to the output
+	// directory, except from GoUnRAR and FileJoin, which list absolute
+	// paths.
 	ExtractedFiles []string
-	// Output is the captured stdout+stderr from the subprocess.
+	// Output is the captured stdout+stderr of UnRAR's and SevenZip's
+	// subprocess; GoUnRAR, GoSevenZip and GoTar fill it with one
+	// "Extracting  <name>" line per extracted file.
 	Output string
 	// ExitCode is the process exit code (0 on success).
 	ExitCode int
@@ -154,16 +169,20 @@ type Result struct {
 }
 
 // UnRAR extracts archive.MainFile into outDir by shelling out to the `unrar`
-// binary.  ctx cancellation kills the subprocess.
+// binary.  ctx cancellation kills the subprocess. unrar writes into a
+// staging directory inside outDir, and publishStagedExtraction moves the
+// result into outDir once the run succeeds.
 //
 // Argv construction:
 //
-//	unrar <mode> -y -idp -p<pw>|-p- <mainfile> <outdir>/
+//	unrar <mode> -y -idp [-scf -ai] -p<pw>|-p- -o+|-o- [-tsm-] [-ol-] [ExtraArgs] <mainfile> <stagedir>/
 //
 // where mode is 'e' (flat extract) when opts.OneFolder is true, or 'x'
 // (preserve paths) otherwise.  -p- suppresses the interactive password
 // prompt when no password is supplied, preventing the subprocess from
-// blocking on stdin.
+// blocking on stdin. The bracketed flags depend on opts (see HasProblem,
+// IgnoreUnrarDates, UnrarVersion and ExtraArgs). The command line logged and
+// passed to OnLine/OnCommand names <outdir>/ in place of <stagedir>/.
 func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
 	log = log.With("component", "unrar")
 	mode := "x"

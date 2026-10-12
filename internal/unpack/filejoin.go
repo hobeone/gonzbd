@@ -22,7 +22,8 @@ const joinBufSize = 16 * 1024 * 1024 // 16 MiB write buffer (SABnzbd uses 24 MiB
 // writing; a gap in the sequence (e.g. .001, .003) results in an error.
 //
 // If opts.KeepOriginals is false, the caller is responsible for deleting
-// archive.Parts after a successful join; FileJoin itself never deletes files.
+// archive.Parts after a successful join; FileJoin itself never deletes them
+// (it removes only its own temporary output file on failure).
 //
 // ctx is checked between parts; cancellation stops the join and removes the
 // partial output file.
