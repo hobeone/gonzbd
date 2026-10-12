@@ -11,7 +11,7 @@ type DownloadConfig struct {
 	// BandwidthMax is the upper bandwidth ceiling. 0 = unlimited.
 	BandwidthMax ByteSize `yaml:"bandwidth_max" json:"bandwidth_max"`
 	// BandwidthPerc is the percentage of BandwidthMax actually used.
-	// 0-100. Defaults to 100.
+	// 0-100, where 0 means 100 (see EffectiveBandwidthPerc). Defaults to 100.
 	BandwidthPerc Percent `yaml:"bandwidth_perc" json:"bandwidth_perc"`
 
 	// MinFreeSpace is the minimum free disk space on the download
@@ -90,6 +90,25 @@ type DownloadConfig struct {
 	// also deleted after unpack, except from a job the user approved.
 	// Default: pause.
 	ActionOnUnwantedExtensions unwanted.Action `yaml:"action_on_unwanted_extensions" json:"action_on_unwanted_extensions"`
+}
+
+// EffectiveBandwidthPerc is the percentage of BandwidthMax in force: 0, or a
+// value outside 1-100, means 100.
+func (c DownloadConfig) EffectiveBandwidthPerc() int {
+	perc := int(c.BandwidthPerc)
+	if perc <= 0 || perc > 100 {
+		return 100
+	}
+	return perc
+}
+
+// SpeedLimit is the download rate cap in bytes per second these settings
+// describe, BandwidthMax scaled by EffectiveBandwidthPerc. 0 means unlimited.
+func (c DownloadConfig) SpeedLimit() int64 {
+	if c.BandwidthMax <= 0 {
+		return 0
+	}
+	return int64(c.BandwidthMax) * int64(c.EffectiveBandwidthPerc()) / 100
 }
 
 // UnwantedRules returns the unwanted-extension rules these settings
