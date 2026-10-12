@@ -186,15 +186,64 @@ func (a *lrApp) deliver(t *testing.T, j *job.Job, art int) {
 	}
 }
 
-// lrWaitFor polls cond until it holds or the deadline passes.
+// lrWaitBudget is how long a wait lasts at most in an ordinary run. A wait is
+// a hang guard, not a correctness bound, so the budget is generous enough
+// that load on the machine does not exhaust it.
+const lrWaitBudget = 60 * time.Second
+
+// lrWaitBudgetEnv, when set, replaces lrWaitBudget. scripts/mutate sets it to
+// a few seconds on every go test it runs, baseline included, so a mutation
+// that removes the awaited event is killed quickly.
+const lrWaitBudgetEnv = "GONZBD_TEST_WAIT"
+
+// lrWaitDeadline is when a wait gives up: the budget from now, or earlier
+// when the test binary's -timeout is nearer. In that case it stops a fifth of
+// the remaining time, at most 30 seconds, short of the binary's deadline, so
+// the test reports which wait failed and runs its cleanups before the
+// binary's own timeout panics.
+func lrWaitDeadline(t *testing.T) time.Time {
+	t.Helper()
+	budget := lrWaitBudget
+	if v, ok := os.LookupEnv(lrWaitBudgetEnv); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			t.Fatalf("%s=%q is not a positive duration", lrWaitBudgetEnv, v)
+		}
+		budget = d
+	}
+	deadline := time.Now().Add(budget)
+	if d, ok := t.Deadline(); ok {
+		if clamp := d.Add(-min(time.Until(d)/5, 30*time.Second)); clamp.Before(deadline) {
+			deadline = clamp
+		}
+	}
+	return deadline
+}
+
+// lrWaitFor polls cond until it holds or lrWaitDeadline passes.
 func lrWaitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := lrWaitDeadline(t)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// lrAwait receives one value from ch, or fails the test at lrWaitDeadline.
+func lrAwait[T any](t *testing.T, what string, ch <-chan T) T { //nolint:ireturn // T is the channel's element type, concrete at each call site, not an interface
+	t.Helper()
+	timer := time.NewTimer(time.Until(lrWaitDeadline(t)))
+	defer timer.Stop()
+	select {
+	case v := <-ch:
+		return v
+	case <-timer.C:
+		t.Fatalf("timed out waiting for %s", what)
+		var zero T
+		return zero
 	}
 }
 
@@ -503,13 +552,27 @@ func TestLooseRecord_PausedJobReportsVerifiedProgress(t *testing.T) {
 	}
 	a1.dispatcher.Tick(t.Context())
 
-	a2 := env.newApp(t)
+	// verifyPausedJobs reports each paused job's load through the hook, so the
+	// test waits on the load itself rather than polling for its effect.
+	verified := make(chan error, 1)
+	a2 := env.newApp(t, func(a *Application) {
+		a.pausedVerifiedHook = func(id string, err error) {
+			if id == j.ID() {
+				verified <- err
+			}
+		}
+	})
 	a2.start(t)
 	j2 := a2.registered(t, j.ID())
 	if j2.Intent() != job.IntentPause {
 		t.Fatalf("fixture: the restored job is not paused")
 	}
-	lrWaitFor(t, "the paused job's startup verification", j2.HasProgress)
+	if err := lrAwait(t, "the paused job's startup verification", verified); err != nil {
+		t.Fatalf("the paused job's startup verification failed: %v", err)
+	}
+	if !j2.HasProgress() {
+		t.Fatal("the paused job has no progress after its startup verification")
+	}
 	p := j2.Progress()
 	if !p.ArticleDone(0) || !p.ArticleDone(1) {
 		t.Error("the paused job's verified articles are not Done")
@@ -1001,19 +1064,24 @@ func (a *lrApp) deliverAll(t *testing.T, j *job.Job, nA, nB int) {
 	}
 }
 
-// lrWaitForEntry waits for the job's history entry and returns its status.
-func (a *lrApp) lrWaitForEntry(t *testing.T, id string) string {
+// lrWaitFinalized waits for the finalizer to report the job's
+// post-processing complete and returns its history entry's status.
+// persistAndCommit sends PostProcComplete after it has filed the entry,
+// flushed the recorder and called RemoveJob; it is the one sender
+// (`git grep -n 'postProcComplete <-' -- '*.go' ':!*_test.go'` returns 1 line).
+func (a *lrApp) lrWaitFinalized(t *testing.T, id string) string {
 	t.Helper()
-	var status string
-	lrWaitFor(t, "the job's history entry", func() bool {
-		e, err := a.repo.Get(t.Context(), id)
-		if err != nil || e == nil {
-			return false
+	for {
+		done := lrAwait(t, "the job's post-processing to complete", a.PostProcComplete())
+		if done.JobID == id {
+			break
 		}
-		status = e.Status
-		return true
-	})
-	return status
+	}
+	e, err := a.repo.Get(t.Context(), id)
+	if err != nil || e == nil {
+		t.Fatalf("no history entry for a job whose post-processing completed: %v", err)
+	}
+	return e.Status
 }
 
 // TestLooseRecord_HandOverFlushesBeforePostProcessing pins enqueuePostProc's
@@ -1033,7 +1101,7 @@ func TestLooseRecord_HandOverFlushesBeforePostProcessing(t *testing.T) {
 	a.start(t)
 	j := a.addJob(t, "handover", 3, 2)
 	a.deliverAll(t, j, 3, 2)
-	a.lrWaitForEntry(t, j.ID())
+	a.lrWaitFinalized(t, j.ID())
 	if got := seen.Load(); got != 3 {
 		t.Errorf("post-processing saw %d of file A's 3 rows in SQLite, want all 3", got)
 	}
@@ -1070,15 +1138,12 @@ func TestLooseRecord_FinalizerFlushesBeforeTheJobLeaves(t *testing.T) {
 	a.start(t)
 	j := a.addJob(t, "finflush", 3, 2)
 	a.deliverAll(t, j, 3, 2)
-	if status := a.lrWaitForEntry(t, j.ID()); status != "Failed" {
+	if status := a.lrWaitFinalized(t, j.ID()); status != "Failed" {
 		t.Fatalf("fixture: the job was filed %q, want Failed so its rows are kept", status)
 	}
-	// The flush runs after the history Add and before RemoveJob, so the
-	// entry's appearance does not mean it has run; the job leaving does.
-	lrWaitFor(t, "the job to leave the dispatcher", func() bool {
-		_, held := a.dispatcher.Job(j.ID())
-		return !held
-	})
+	if _, held := a.dispatcher.Job(j.ID()); held {
+		t.Fatal("fixture: the job is still in the dispatcher after its post-processing completed")
+	}
 	if got := len(rowsFor(t, a.repo.DB(), j.ID())); got != 3 {
 		t.Errorf("the FAILED entry keeps %d of file A's 3 rows, want all 3", got)
 	}
