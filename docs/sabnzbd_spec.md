@@ -286,7 +286,8 @@ A job holds only Repair through Low. Default and Paused are requests: Default
 takes the category's priority, then the Default category's, then Normal. On
 an add, Paused pauses the new job, which takes what Default would; on
 `name=priority`, it pauses the queued job and keeps its priority. A category
-priority of Repair counts as unset. GoNZBD does not implement Stop:
+priority of Repair, Stop or an undefined value is refused by config
+validation (`CategoryConfig.validate`). GoNZBD does not implement Stop:
 `priority=` on `addfile`, `addlocalfile` and `addurl`, and `value2` on
 `name=priority`, answer 400 for Stop or an undefined value, and for Repair,
 which is reserved for internal use.
@@ -681,7 +682,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `log_dir` | path | | Log file directory |
 | `log_level` | string | `info` | Minimum log level (debug, info, warn, error) |
 | `log_levels` | map | | Per-component log level overrides (e.g., `api: warn`, `nntp: error`, `downloader: debug`). Valid levels: debug, info, warn, error, off. Components not listed inherit `log_level`. |
-| `admin_dir` | path | | Admin/state file directory |
+| `admin_dir` | path | `admin` | Admin/state file directory; must not be empty |
 | `history_retention_days` | int | `0` | Days to keep a finished job in history; 0 = keep forever. See §11.4 |
 | `history_failed_retention_days` | int | `0` | Same threshold for failed jobs, so a failure can outlive a success; 0 = keep forever. See §11.4 |
 | `language` | string | `en` | UI language |
@@ -696,7 +697,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `max_art_tries` | int | `3` | Max tries per article before marking bad |
 | `max_art_opt` | int | `1` | Max optional servers an article is tried on (0 = no limit) |
 | `max_active_jobs` | int | `4` | Maximum number of active/processing jobs concurrently |
-| `max_compute_slots` | int | `2` | Maximum number of concurrent compute/post-processing jobs |
+| `max_compute_slots` | int | `2` | Maximum number of concurrent compute/post-processing jobs; must be >= 1 |
 | `top_only` | bool | false | Only use top-priority server |
 | `no_penalties` | bool | false | Use minimal penalty times |
 | `propagation_delay` | int | `0` | Minutes to wait before downloading |
@@ -715,7 +716,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `enable_tsjoin` | bool | true | Enable TS file joining (.ts.001/.ts.002) |
 | `enable_recursive` | bool | true | Recursive unpack up to 3 levels |
 | `direct_unpack` | bool | false | Extract RAR volumes during download (requires enable_unrar) |
-| `direct_unpack_threads` | int | 3 | Max concurrent DirectUnpack workers (0=unlimited) |
+| `direct_unpack_threads` | int | 3 | Max concurrent DirectUnpack workers (0=unlimited; negative is refused) |
 | `enable_par_cleanup` | bool | true | Delete par2 after repair |
 | `enable_rar_cleanup` | bool | true | Delete archive files after extraction |
 | `process_unpacked_par2` | bool | true | Use unpacked par2 for filename recovery |

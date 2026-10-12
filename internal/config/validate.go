@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
@@ -159,6 +160,9 @@ func (g *GeneralConfig) validate() error {
 	if strings.TrimSpace(g.CompleteDir) == "" {
 		errs = append(errs, fmt.Errorf("complete_dir: %w", errEmpty))
 	}
+	if strings.TrimSpace(g.AdminDir) == "" {
+		errs = append(errs, fmt.Errorf("admin_dir: %w", errEmpty))
+	}
 	if g.DirscanDir != "" {
 		if err := positive("dirscan_speed", g.DirscanSpeed); err != nil {
 			errs = append(errs, err)
@@ -202,6 +206,9 @@ func (d *DownloadConfig) validate() error {
 		errs = append(errs, err)
 	}
 	if err := positive("max_active_jobs", d.MaxActiveJobs); err != nil {
+		errs = append(errs, err)
+	}
+	if err := positive("max_compute_slots", d.MaxComputeSlots); err != nil {
 		errs = append(errs, err)
 	}
 	if err := nonNegative("propagation_delay", d.PropagationDelay); err != nil {
@@ -284,6 +291,11 @@ func (p *PostProcConfig) validateWithOS(goos string) error {
 		errs = append(errs, err)
 	}
 
+	// 0 means no limit, so only a negative value is refused.
+	if err := nonNegative("direct_unpack_threads", p.DirectUnpackThreads); err != nil {
+		errs = append(errs, err)
+	}
+
 	if err := cmdutil.ValidatePriorityArgs("nice", p.Nice); err != nil {
 		errs = append(errs, err)
 	}
@@ -355,6 +367,11 @@ func (s *ServerConfig) validate() error {
 func (c *CategoryConfig) validate() error {
 	if c.PP < 0 || c.PP > 3 {
 		return fmt.Errorf("pp: %d outside [0,3] (0=download, 1=+repair, 2=+unpack, 3=+delete)", c.PP)
+	}
+	// categoryPriority decides which values ResolvePriority uses; any other
+	// value but Default (inherit) would be skipped there without a word.
+	if _, ok := categoryPriority(c.Priority); !ok && c.Priority != int(constants.DefaultPriority) {
+		return fmt.Errorf("priority: %d is not a category priority (2=force, 1=high, 0=normal, -1=low, -2=paused, -100=inherit)", c.Priority)
 	}
 	// A trailing "*" once delivered every job into one shared directory.
 	// Each job has its own final directory now, so the suffix is refused

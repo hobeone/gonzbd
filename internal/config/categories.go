@@ -54,6 +54,7 @@ type CategoryConfig struct {
 	// category. constants.DefaultPriority means "use the global default":
 	// the Default/"*" category's priority, then Normal; PausedPriority
 	// pauses those jobs, which take the global default (ResolvePriority).
+	// Validate refuses any other value categoryPriority does not accept.
 	Priority int `yaml:"priority" json:"priority"`
 
 	// Dir is a subdirectory within complete_dir to receive output for

@@ -44,13 +44,13 @@ func TestResolveDirs_UsesConfigDownloadDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.General.DownloadDir = "/data/dl"
-	cfg.General.AdminDir = ""
+	cfg.General.AdminDir = "/data/admin"
 	dl, admin, err := resolveDirs(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dl != "/data/dl" || admin != "/data/dl/admin" {
-		t.Fatalf("resolveDirs = %q, %q; want /data/dl, /data/dl/admin", dl, admin)
+	if dl != "/data/dl" || admin != "/data/admin" {
+		t.Fatalf("resolveDirs = %q, %q; want /data/dl, /data/admin", dl, admin)
 	}
 	cfg.General.DownloadDir = ""
 	if _, _, err := resolveDirs(cfg); err == nil {

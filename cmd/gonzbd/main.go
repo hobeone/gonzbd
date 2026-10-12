@@ -861,11 +861,10 @@ func resolveDirs(cfg *config.Config) (dlDir, adminDir string, err error) {
 		return "", "", fmt.Errorf("download directory is empty (set general.download_dir in config)")
 	}
 
-	adminDir = cfg.General.AdminDir
-	if adminDir == "" {
-		adminDir = filepath.Join(dlDir, "admin")
-	}
-	return dlDir, adminDir, nil
+	// config.Validate refuses an empty admin_dir, so the value is used as
+	// written: the lock and history.db sit where internal/app puts manifests
+	// and NZB backups.
+	return dlDir, cfg.General.AdminDir, nil
 }
 
 // configureLogging computes the effective base log level and installs the
