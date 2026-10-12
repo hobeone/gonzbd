@@ -812,6 +812,37 @@ func TestGoRepair_RelativeDownloadDir_FindsCandidates(t *testing.T) {
 	}
 }
 
+// TestAddCandidateFiles_UnresolvableWorkingDir_IsReported covers a relative
+// path that cannot be made absolute because the working directory is gone:
+// a relative parDir fails the whole call, and a relative candidate is skipped
+// and named in the error while an absolute one still registers.
+func TestAddCandidateFiles_UnresolvableWorkingDir_IsReported(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+	d, err := par2engine.NewDecoder(context.Background(), mainFile, par2engine.DecoderOptions{Logger: discardLogger()})
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	defer d.Close() //nolint:errcheck // read-only
+
+	gone := filepath.Join(t.TempDir(), "gone")
+	if err := os.Mkdir(gone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(gone)
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	if n, err := addCandidateFiles(d, "job", []string{"data.bin"}); err == nil || n != 0 {
+		t.Errorf("relative parDir: n = %d, err = %v; want 0 and an error", n, err)
+	}
+	n, err := addCandidateFiles(d, dir, []string{"data.bin", filepath.Join(dir, "data.bin")})
+	if err == nil || !strings.Contains(err.Error(), "data.bin") || n != 1 {
+		t.Errorf("relative candidate: n = %d, err = %v; want 1 and an error naming data.bin", n, err)
+	}
+}
+
 // TestGoRepair_ScansOnlyTheGivenCandidates pins that the native engine reads
 // the caller's candidate list, not the directory: a file beside the par2 set
 // that the caller left out is neither registered nor scanned (#906). The
