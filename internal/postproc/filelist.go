@@ -12,8 +12,8 @@ import (
 )
 
 // buildDownloadFileList creates the lines for the synthetic "download"
-// StageLogEntry. It scans job.DownloadDir (non-recursively) and produces
-// a human-readable listing that includes:
+// StageLogEntry. It scans job.DownloadDir recursively (buildDirTree) and
+// produces a human-readable listing that includes:
 //   - per-file name and size
 //   - download duration and total size
 //   - article completion stats from the queue

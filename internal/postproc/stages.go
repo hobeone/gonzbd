@@ -1,6 +1,5 @@
 // Package postproc implements the post-processing orchestrator for gonzbd.
-// It mirrors the Python sabnzbd/postproc.py behaviour: a single-worker pipeline
-// with a fast queue (for DirectUnpack-assisted jobs) and a slow queue, running
+// A single worker goroutine drains one FIFO queue (ppQueue), running the
 // registered Stage implementations in order for each job.
 package postproc
 
@@ -130,7 +129,7 @@ func (o QuickCheckOutcome) String() string {
 type Stage interface {
 	// Name returns a short, stable identifier used in log output and the
 	// StageLog.  It should be lowercase with no spaces (e.g. "repair",
-	// "unpack", "sort").
+	// "unpack", "finalize").
 	Name() string
 
 	// Run executes the stage.  The supplied ctx is cancelled either when the
@@ -160,7 +159,7 @@ type Job struct {
 
 	// DownloadDir is the absolute path where the assembler wrote the job's
 	// files — the working directory for in-place stages (par2, unpack,
-	// deobfuscate, pre-sort). Mirrors Python's nzo.download_path. Must be
+	// deobfuscate). Mirrors Python's nzo.download_path. Must be
 	// set by the caller before the job is pushed to the PostProcessor.
 	DownloadDir string
 
@@ -193,14 +192,17 @@ type Job struct {
 	// StageLog accumulates one entry per stage, in execution order.
 	StageLog []StageLogEntry
 
-	// FailMsg is set by a stage that considers the whole job failed.
-	// The orchestrator does not inspect it; it is preserved for history/UI.
+	// FailMsg is set by a stage that considers the whole job failed, or by
+	// the caller before the job is pushed. processJob skips every stage for
+	// a job that arrives with it set, sets it itself when the pre-check finds
+	// no usable download directory, and reads it for the summary's
+	// Completed/Failed headline; it is also preserved for history/UI.
 	FailMsg string
 
-	// ParError and UnpackError are set by the repair and unpack stages
-	// respectively (Steps 5.2/5.3).  Downstream stages (sort, script) read
-	// them; scripts in particular surface these via the pp_status argv and
-	// SAB_PP_STATUS env var.
+	// ParError is set by the repair and extracted_repair stages, UnpackError
+	// by the unpack stage. unpack reads ParError; extracted_repair,
+	// par2_cleanup, unwanted_cleanup, finalize and script read both, and
+	// scripts surface them via the pp_status argv and SAB_PP_STATUS env var.
 	ParError    bool
 	UnpackError bool
 
@@ -223,7 +225,7 @@ type Job struct {
 	DeferredPar2Verified bool
 
 	// OutputLines is a scratch buffer that stages populate with tool output
-	// lines (e.g. par2 stdout, unrar output). processJob moves these into
+	// lines (e.g. par2 stdout, unrar output). runStage moves these into
 	// StageLogEntry.Lines after each stage runs and clears the buffer.
 	// Stages should append to this slice rather than writing to Lines
 	// directly, since StageLogEntry is created by the orchestrator.
@@ -235,9 +237,9 @@ type Job struct {
 	ConsumedFiles map[string]struct{}
 
 	// Par2Renames maps par2's canonical filename → actual on-disk filename.
-	// Populated from par2's "is a match for" output during repair. Used by
-	// downstream stages (deobfuscate, sort) to apply par2-discovered renames.
-	// Matches SABnzbd's nzo.renamed_file(renames) behavior.
+	// Populated from par2's "is a match for" output during repair. No
+	// production code reads it: outside tests it appears only in this
+	// declaration and recordRepairSuccess (stage_repair.go).
 	Par2Renames map[string]string
 
 	// OnOutput is called by stages when a subprocess emits a line of output.
@@ -256,9 +258,8 @@ type Job struct {
 	DirectUnpackFailures map[string]directunpack.FailedSet
 
 	// DirectUnpackSkipped holds sets that DirectUnpack did not attempt
-	// because they aren't RAR3/RAR5 (the only formats rarengine supports).
-	// These sets are handled normally by the unpack stage's external unrar
-	// fallback; this is expected, not an error.
+	// because they are not RAR5. The unpack stage extracts these sets
+	// normally; this is expected, not an error.
 	DirectUnpackSkipped map[string]directunpack.SkippedSet
 
 	// PendingDeletions lists paths relative to DownloadDir of extracted
@@ -286,9 +287,8 @@ type StageLogEntry struct {
 	// Err is the error returned by Stage.Run, or nil on success.
 	Err error
 
-	// Lines holds any structured log lines emitted by the stage.
-	// Stages append to this slice via the helper below; the orchestrator
-	// passes a *StageLogEntry to each stage (Steps 5.2+).
+	// Lines holds any log lines emitted by the stage. Stages do not see the
+	// entry: they append to Job.OutputLines, which runStage moves here.
 	Lines []string
 }
 

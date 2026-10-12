@@ -68,7 +68,3 @@ func (r *RecoverPar2NamesStage) Run(ctx context.Context, job *Job) error {
 	}
 	return nil
 }
-
-// DeobfuscateStage renames obfuscated files in place using the job's
-// display name as the rename target. Scope matches the deobfuscate
-// package — see its doc for the skipped Python behaviors.

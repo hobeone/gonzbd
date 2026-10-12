@@ -69,6 +69,3 @@ func (d *DeobfuscateStage) Run(ctx context.Context, job *Job) error {
 	}
 	return nil
 }
-
-// ScriptStage invokes the user's post-processing script (if any). A job
-// with Script == "" or Script == "None" is skipped (matching Python).

@@ -39,11 +39,13 @@ type UnpackStage struct {
 	// These are appended after per-job passwords during extraction.
 	PasswordFile string
 	// EnableFileJoin enables split file joining (.001/.002).
-	// When false, SplitArchive types are skipped. Default true.
+	// When false, SplitArchive types are skipped. The config default
+	// (postproc.enable_filejoin) is true; the stage's zero value is false.
 	EnableFileJoin bool
 	// EnableTar enables plain .tar extraction. When false, TarArchive
 	// types are skipped entirely (matching the EnableFileJoin pattern).
-	// Default true.
+	// The config default (postproc.enable_tar) is true; the stage's zero
+	// value is false.
 	EnableTar bool
 	// EnableRecursive enables recursive unpacking (re-scan after each
 	// pass, up to maxUnpackDepth). When false, only one pass runs.
@@ -199,7 +201,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		}
 	}
 
-	// Delete source archive files after successful extraction.
+	// Record extracted source archives for deletion at finalize (#768).
 	u.cleanupArchives(ctx, log, job, allSuccessful)
 
 	// Apply permissions recursively after extraction.
