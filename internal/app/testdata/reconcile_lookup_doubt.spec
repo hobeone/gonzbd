@@ -40,9 +40,9 @@ file internal/app/durability.go
 [the hold pauses the job without telling the operator why]
 file internal/app/durability.go
 --- anchor
-	_ = app.dispatcher.SetOperationalError(jobID, "history lookup failed at startup: "+
+		"history lookup failed at startup: this job may already be in history; resume it only once it is known not to be"))
 --- replace
-	_ = app.dispatcher.SetOperationalError(jobID, ""+
+		""))
 --- end
 
 [a hold with no dispatcher reaches for one]
@@ -65,9 +65,9 @@ file internal/app/durability.go
 			"job", jobID, "err", err)
 		return
 	}
-	_ = app.dispatcher.SetOperationalError(jobID, "history lookup failed at startup: "+
+	warnUnlessGone(app.log, "record the operational error", jobID, app.dispatcher.SetOperationalError(jobID,
 --- replace
 			"job", jobID, "err", err)
 	}
-	_ = app.dispatcher.SetOperationalError(jobID, "history lookup failed at startup: "+
+	warnUnlessGone(app.log, "record the operational error", jobID, app.dispatcher.SetOperationalError(jobID,
 --- end

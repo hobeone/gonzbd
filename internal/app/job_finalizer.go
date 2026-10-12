@@ -330,7 +330,8 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 			if err != nil && !errors.Is(err, dispatch.ErrNotFound) {
 				log.Error("failed to remove job from dispatcher after post-proc retry; job remains in queue and history until restart, with its manifest and durability rows left in place for the next startup to reconcile",
 					"job", jobID, "err", err)
-				_ = app.dispatcher.SetOperationalError(jobID, "failed to remove finalized job from queue: "+err.Error())
+				warnUnlessGone(log, "record the operational error", jobID,
+					app.dispatcher.SetOperationalError(jobID, "failed to remove finalized job from queue: "+err.Error()))
 				app.emit(Event{Type: "queue_updated"})
 			}
 		}

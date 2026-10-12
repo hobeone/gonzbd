@@ -3471,8 +3471,7 @@ func writeNZBBackup(nzbDir, filename string, rawNZB []byte, chosen func(name str
 	// filepath.Base leaves no separator and the ".gz" suffix rules out "." and "..".
 	root, err := os.OpenRoot(nzbDir)
 	if err != nil {
-		_ = os.Remove(staged)
-		return "", fmt.Errorf("open NZB backup directory: %w", err)
+		return "", errors.Join(fmt.Errorf("open NZB backup directory: %w", err), os.Remove(staged))
 	}
 	defer func() { _ = root.Close() }()
 	stagedName := filepath.Base(staged)
@@ -3533,8 +3532,7 @@ func stageGzFile(dir string, data []byte) (string, error) {
 		err = cerr
 	}
 	if err != nil {
-		_ = os.Remove(path)
-		return "", fmt.Errorf("stage NZB backup: %w", err)
+		return "", errors.Join(fmt.Errorf("stage NZB backup: %w", err), os.Remove(path))
 	}
 	return path, nil
 }
