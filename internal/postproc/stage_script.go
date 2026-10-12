@@ -139,8 +139,19 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		expectedBytes = prog.ExpectedBytes()
 	}
 
+	files, err := job.outputFileList()
+	if err == nil && len(encodeFiles(files)) > maxFilesEnvBytes {
+		err = fmt.Errorf("%d files do not fit the %d-byte SAB_FILES limit", len(files), maxFilesEnvBytes)
+	}
+	if err != nil {
+		err = fmt.Errorf("script %q: SAB_FILES: %w", name, err)
+		logf(ctx, log, job, slog.LevelWarn, "Error: %v", err)
+		return err
+	}
+
 	in := ScriptInput{
 		FinalDir:    job.DownloadDir,
+		Files:       files,
 		CompleteDir: s.CompleteDir,
 		NZBName:     job.Filename,
 		JobName:     job.Name(),

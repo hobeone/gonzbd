@@ -29,30 +29,24 @@ file internal/postproc/postproc.go
 file internal/postproc/postproc.go
 --- anchor
 				job.DownloadDir = job.FinalDir
-				stages = stagesAfterFinalize(stages)
 --- replace
 				job.StageLog = append(job.StageLog, buildPreambleLog(job)...)
 				job.DownloadDir = job.FinalDir
-				stages = stagesAfterFinalize(stages)
 --- end
 
 [delivered recovery leaves DownloadDir at missing path]
 file internal/postproc/postproc.go
 --- anchor
 				job.DownloadDir = job.FinalDir
-				stages = stagesAfterFinalize(stages)
 --- replace
 				_ = job.FinalDir
-				stages = stagesAfterFinalize(stages)
 --- end
 
 [delivered recovery runs finalize and earlier stages again]
 file internal/postproc/postproc.go
 --- anchor
-				job.DownloadDir = job.FinalDir
 				stages = stagesAfterFinalize(stages)
 --- replace
-				job.DownloadDir = job.FinalDir
 				_ = stagesAfterFinalize(stages)
 --- end
 

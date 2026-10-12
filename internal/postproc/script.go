@@ -2,6 +2,7 @@ package postproc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -132,6 +133,12 @@ type ScriptInput struct {
 	// SevenzCommand is the 7z binary path (SAB_7ZIP_COMMAND).
 	SevenzCommand string
 
+	// Files is the sorted list of regular files the job delivered, as
+	// slash-separated paths relative to FinalDir (SAB_FILES env-only, a JSON
+	// array). Finalize records it on the job (recordOutputFiles) and
+	// ScriptStage.Run copies it here; buildEnv only encodes it, nil as [].
+	Files []string
+
 	// OnLine is called for each line of subprocess output. May be nil.
 	OnLine func(string)
 
@@ -222,8 +229,28 @@ func buildEnv(in ScriptInput) []string {
 		fmt.Sprintf("SAB_FINAL_PROCESSING_DIR=%s", in.FinalDir),
 		fmt.Sprintf("SAB_NZB_NAME=%s", in.NZBName), // alias for SAB_FILENAME for clarity
 		fmt.Sprintf("SAB_REPORTNAME=%s", in.ReportName),
+		"SAB_FILES=" + encodeFiles(in.Files),
 	}
 	return append(base, sab...)
+}
+
+// maxFilesEnvBytes bounds the encoded SAB_FILES value. Linux rejects an
+// exec whose single environment string exceeds 128 KiB (MAX_ARG_STRLEN),
+// which would fail every script for a job with enough files; the bound
+// leaves room for the "SAB_FILES=" prefix.
+const maxFilesEnvBytes = 100 * 1024
+
+// encodeFiles renders files as the SAB_FILES JSON array. A nil or empty list
+// encodes as "[]", never "null". json.Marshal cannot fail on a []string.
+func encodeFiles(files []string) string {
+	if len(files) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(files)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 // buildArgv constructs the positional argv for the script, matching Python's

@@ -254,6 +254,7 @@ func TestScriptStage_BytesExcludesDiscardedPar2(t *testing.T) {
 	}
 
 	job := &Job{Job: j, DownloadDir: t.TempDir()}
+	job.recordOutputFiles(nil)
 
 	scriptDir := t.TempDir()
 	outFile := filepath.Join(scriptDir, "bytes.txt")
