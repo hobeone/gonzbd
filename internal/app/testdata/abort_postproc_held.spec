@@ -41,7 +41,7 @@ file internal/app/dispatcher_wiring.go
 [RemoveJob cancels post-processing before the dispatcher again]
 file internal/app/app.go
 --- anchor
-	_ = app.dispatcher.Cancel(id)
+	warnUnlessGone(app.log, "remove: cancelling the job failed", id, app.dispatcher.Cancel(id))
 	if app.removeCancelGapHook != nil {
 		app.removeCancelGapHook(id)
 	}
@@ -51,5 +51,5 @@ file internal/app/app.go
 	if app.removeCancelGapHook != nil {
 		app.removeCancelGapHook(id)
 	}
-	_ = app.dispatcher.Cancel(id)
+	warnUnlessGone(app.log, "remove: cancelling the job failed", id, app.dispatcher.Cancel(id))
 --- end

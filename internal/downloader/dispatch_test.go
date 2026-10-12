@@ -1,11 +1,13 @@
 package downloader
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2352,5 +2354,44 @@ func TestHasDownloadableJobs_SkipsAHandedOffJob(t *testing.T) {
 	d.opts.HandedOff = func(x *job.Job) bool { return x == j }
 	if d.hasDownloadableJobs() {
 		t.Error("hasDownloadableJobs() = true for a job handed to post-processing, want false")
+	}
+}
+
+// TestClearEmitted_RefusalIsLoggedAtError pins clearEmitted's log: a gated
+// request whose instance cannot clear the bit (here, one with no progress) is
+// logged at Error rather than dropped.
+func TestClearEmitted_RefusalIsLoggedAtError(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	d := &Downloader{log: slog.New(slog.NewTextHandler(&logs, nil))}
+	d.clearEmitted(&articleRequest{job: job.New("j1", "n", job.Policy{}), messageID: "a@b"}, "global pause")
+	if !strings.Contains(logs.String(), "level=ERROR") {
+		t.Errorf("a refused clear was not logged at Error; log:\n%s", logs.String())
+	}
+}
+
+// TestApplyDispatchPlan_HopelessFallbackLogsRefusalUnlessGone pins the
+// fallback pause made when no onJobHopeless is set: a refusal for a job no
+// longer registered is dropped, and any other (here, a cancel already
+// latched) is logged at Warn.
+func TestApplyDispatchPlan_HopelessFallbackLogsRefusalUnlessGone(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	d := newDispatchDownloader(nil)
+	d.log = slog.New(slog.NewTextHandler(&logs, nil))
+	j := addTestJob(t, d.dispatcher, bareJob("cancelled"), nil)
+	if err := d.dispatcher.Cancel(j.ID()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	plan := dispatchPlan{hopelessJobs: map[string]struct{}{j.ID(): {}, "gone": {}}}
+	d.applyDispatchPlan(context.Background(), plan, dispatchOpts{})
+	var refusals []string
+	for line := range strings.Lines(logs.String()) {
+		if strings.Contains(line, `msg="pause hopeless job"`) {
+			refusals = append(refusals, line)
+		}
+	}
+	if len(refusals) != 1 || !strings.Contains(refusals[0], "job=cancelled") {
+		t.Errorf("refusals logged = %q, want one, for the cancelled job only; log:\n%s", refusals, logs.String())
 	}
 }

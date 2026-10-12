@@ -136,8 +136,13 @@ func (app *Application) fileOwedUnwantedFailures(ctx context.Context) error {
 		if _, owed := app.unwantedFilingOwed(j); !owed {
 			continue
 		}
+		// A failed hydration does not stop the filing: the job is filed
+		// without its verified files rather than left to run.
 		if app.residency != nil {
-			_ = app.residency.Hydrate(ctx, row.ID)
+			if err := app.residency.Hydrate(ctx, row.ID); err != nil {
+				app.log.Warn("startup: loading a job owed an unwanted-extension filing failed; filing it anyway",
+					"job", row.ID, "err", err)
+			}
 		}
 		app.fileOwedUnwantedFailure(j, "")
 	}

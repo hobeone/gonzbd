@@ -77,16 +77,6 @@ func (f *jobFinalizer) cancelled(ppJob *postproc.Job) {
 		app.dispatcher.YieldedJob(ppJob.Job))
 }
 
-// warnUnlessGone logs err at Warn unless it is nil or dispatch.ErrNotFound,
-// which from an instance-bound dispatcher call means the instance is no
-// longer registered and its launch claim went with it.
-func warnUnlessGone(log *slog.Logger, msg, id string, err error) {
-	if err == nil || errors.Is(err, dispatch.ErrNotFound) {
-		return
-	}
-	log.Warn(msg, "job", id, "err", err)
-}
-
 // finalize is called by the post-processor (OnJobDone) when a job is done
 // (success or failure).
 //

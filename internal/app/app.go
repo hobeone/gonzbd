@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -943,7 +944,9 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// dispatcher.Remove does not wait for its stage to return. The other
 	// order let such a job run its whole pipeline uncancelled while
 	// dispatcher.Remove waited on a claim nothing released until it ended.
-	_ = app.dispatcher.Cancel(id)
+	// A failed cancel is not returned: dispatcher.Remove below cancels again
+	// and returns that refusal, after the post-processing cancel has run.
+	warnUnlessGone(app.log, "remove: cancelling the job failed", id, app.dispatcher.Cancel(id))
 	if app.removeCancelGapHook != nil {
 		app.removeCancelGapHook(id)
 	}
@@ -1312,7 +1315,9 @@ func (app *Application) Start(ctx context.Context) error {
 		// forever, and nothing would join them either, since app.wg.Wait lives
 		// only in Shutdown.
 		if app.dispatcher != nil {
-			_ = app.dispatcher.Stop()
+			if err := app.dispatcher.Stop(); err != nil {
+				app.log.Warn("start failed: stopping the dispatcher failed", "err", err)
+			}
 		}
 		if app.cancel != nil {
 			app.cancel()
@@ -1478,11 +1483,7 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error) {
 	// Dispatcher.Stop can cleanly park and evict. If dl.Stop timed out, do NOT yield,
 	// so Dispatcher.Stop observes wait worker timeout and skips eviction.
 	if dl != nil && dlErr == nil && app.dispatcher != nil {
-		for _, row := range app.dispatcher.List() {
-			if row.View.State == job.Fetching {
-				_ = app.dispatcher.Yielded(row.ID)
-			}
-		}
+		app.yieldStoppedWorkers(errs, job.Fetching)
 	}
 
 	// Abort all active DirectUnpackers before stopping the assembler.
@@ -1492,6 +1493,22 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error) {
 	if app.assembler != nil {
 		if err := waitBounded("assembler", stepTimeout, app.assembler.Stop, app.log); err != nil && errs != nil {
 			*errs = append(*errs, fmt.Errorf("assembler stop: %w", err))
+		}
+	}
+}
+
+// yieldStoppedWorkers yields every registered job at one of states, once the
+// subsystem that works those states has stopped, so Dispatcher.Stop finds
+// them parked. A refusal other than the job being gone (unlessGone) is
+// appended to errs when errs is non-nil, as stopWorkers treats its own steps'
+// errors.
+func (app *Application) yieldStoppedWorkers(errs *[]error, states ...job.State) {
+	for _, row := range app.dispatcher.List() {
+		if !slices.Contains(states, row.View.State) {
+			continue
+		}
+		if err := unlessGone(app.dispatcher.Yielded(row.ID)); err != nil && errs != nil {
+			*errs = append(*errs, fmt.Errorf("yield %s: %w", row.ID, err))
 		}
 	}
 }
@@ -1521,11 +1538,7 @@ func (app *Application) joinAndStop(stepTimeout time.Duration, errs *[]error) {
 		*errs = append(*errs, fmt.Errorf("postprocessor stop: %w", ppErr))
 	}
 	if app.dispatcher != nil && ppErr == nil {
-		for _, row := range app.dispatcher.List() {
-			if row.View.State == job.Repairing || row.View.State == job.Extracting || row.View.State == job.Finalizing {
-				_ = app.dispatcher.Yielded(row.ID)
-			}
-		}
+		app.yieldStoppedWorkers(errs, job.Repairing, job.Extracting, job.Finalizing)
 	}
 
 	if app.dispatcher != nil {

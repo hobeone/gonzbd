@@ -242,7 +242,14 @@ func (app *Application) stall(jobID string, f *storagefault.Fault, kind stallKin
 		// worker and its resources.
 		// That worker finishes and reports through AdvanceFrom, and the pause
 		// then gates the move.
-		_ = app.dispatcher.PauseJob(jobID)
+		//
+		// A cancel latched first refuses the pause with job.ErrIntentLatched:
+		// a fault from writes already queued can land between RemoveJob's
+		// Cancel and its Remove. The job is going away, so that is no failure
+		// of the stall.
+		if err := app.dispatcher.PauseJob(jobID); !errors.Is(err, job.ErrIntentLatched) {
+			warnUnlessGone(app.log, "stall: pausing the job failed", jobID, err)
+		}
 	}
 	app.emit(Event{Type: "queue_updated", NzoID: jobID})
 }

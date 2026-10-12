@@ -54,11 +54,11 @@ file internal/downloader/dispatch.go
 --- anchor
 	if d.paused.Load() || d.dispatcher.Paused() {
 		d.unmarkTried(req, serverIdx)
-		_ = req.job.ClearArticleEmitted(int(req.artIdx))
+		d.clearEmitted(req, "global pause")
 --- replace
 	if d.paused.Load() || d.dispatcher.Paused() {
 		d.unmarkTried(req, serverIdx)
-		_ = req.job.ClearArticleEmitted(-1)
+		d.clearEmitted(&articleRequest{job: req.job, artIdx: -1, messageID: req.messageID}, "global pause")
 --- end
 
 [the pre-fetch check ignores which instance holds the ID]
@@ -74,12 +74,12 @@ file internal/downloader/dispatch.go
 --- anchor
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
 		d.unmarkTried(req, serverIdx)
-		_ = req.job.ClearArticleEmitted(int(req.artIdx))
+		d.clearEmitted(req, "per-job gate")
 --- replace
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
 		d.unmarkTried(req, serverIdx)
 		if ok {
-			_ = cur.ClearArticleEmitted(int(req.artIdx))
+			d.clearEmitted(&articleRequest{job: cur, artIdx: req.artIdx, messageID: req.messageID}, "per-job gate")
 		}
 --- end
 
@@ -88,9 +88,9 @@ file internal/downloader/dispatch.go
 --- anchor
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
 		d.unmarkTried(req, serverIdx)
-		_ = req.job.ClearArticleEmitted(int(req.artIdx))
+		d.clearEmitted(req, "per-job gate")
 --- replace
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
 		d.unmarkTried(req, serverIdx)
-		_ = req.job.ClearArticleEmitted(-1)
+		d.clearEmitted(&articleRequest{job: req.job, artIdx: -1, messageID: req.messageID}, "per-job gate")
 --- end

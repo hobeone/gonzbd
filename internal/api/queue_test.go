@@ -914,6 +914,65 @@ func TestQueueResume(t *testing.T) {
 	}
 }
 
+// TestQueueSetPaused_RefusalIsNotLoggedAsDone pins queueSetPaused's handling
+// of a refused pause or resume: the response is the same success a done one
+// gets, and the refusal is logged at Warn instead of as "job paused" or "job
+// resumed". A cancelled job refuses both, since its cancel intent is latched.
+func TestQueueSetPaused_RefusalIsNotLoggedAsDone(t *testing.T) {
+	t.Parallel()
+	for _, verb := range []string{"pause", "resume"} {
+		t.Run(verb, func(t *testing.T) {
+			t.Parallel()
+			s, q := testQueueServer(t)
+			var logs bytes.Buffer
+			s.log = slog.New(slog.NewTextHandler(&logs, nil))
+			tj := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
+			// Running first, so the cancel leaves the job registered: a
+			// cancelled job that never ran is evicted by the next tick.
+			if err := q.SetStatus(tj.ID, constants.StatusDownloading); err != nil {
+				t.Fatalf("SetStatus: %v", err)
+			}
+			if err := q.disp.Cancel(tj.ID); err != nil {
+				t.Fatalf("Cancel: %v", err)
+			}
+
+			rr := apiGet(t, s.Handler(), "/api?mode=queue&name="+verb+"&value="+tj.ID+"&apikey="+testAPIKey)
+			if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"status":true`) {
+				t.Errorf("response = %d %s, want 200 with status true", rr.Code, rr.Body.String())
+			}
+			got := logs.String()
+			if strings.Contains(got, `msg="job paused"`) || strings.Contains(got, `msg="job resumed"`) {
+				t.Errorf("a refused %s was logged as done:\n%s", verb, got)
+			}
+			if !strings.Contains(got, "level=WARN") || !strings.Contains(got, "job not") {
+				t.Errorf("the refused %s was not logged at Warn:\n%s", verb, got)
+			}
+		})
+	}
+}
+
+// TestQueueSetPaused_UnknownIDIsNotLogged pins the other half: an ID the
+// dispatcher does not hold is passed over silently, neither warned about nor
+// logged as done.
+func TestQueueSetPaused_UnknownIDIsNotLogged(t *testing.T) {
+	t.Parallel()
+	for _, verb := range []string{"pause", "resume"} {
+		t.Run(verb, func(t *testing.T) {
+			t.Parallel()
+			s, _ := testQueueServer(t)
+			var logs bytes.Buffer
+			s.log = slog.New(slog.NewTextHandler(&logs, nil))
+			rr := apiGet(t, s.Handler(), "/api?mode=queue&name="+verb+"&value=nonexistent_id&apikey="+testAPIKey)
+			if rr.Code != http.StatusOK {
+				t.Errorf("status = %d, want 200", rr.Code)
+			}
+			if got := logs.String(); strings.Contains(got, "level=WARN") || strings.Contains(got, `msg="job `) {
+				t.Errorf("an unknown ID was logged:\n%s", got)
+			}
+		})
+	}
+}
+
 // --- Delete ---
 
 func TestQueueDelete_Single(t *testing.T) {

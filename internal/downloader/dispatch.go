@@ -13,6 +13,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/decoder"
+	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/telemetry"
@@ -194,7 +195,10 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 		if opts.onJobHopeless != nil {
 			opts.onJobHopeless(jobID)
 		} else {
-			_ = d.dispatcher.PauseJob(jobID) // Fallback if no callback
+			// Fallback if no callback. A job removed meanwhile needs no pause.
+			if err := d.dispatcher.PauseJob(jobID); err != nil && !errors.Is(err, dispatch.ErrNotFound) {
+				d.log.Warn("pause hopeless job", "job", jobID, "err", err)
+			}
 		}
 	}
 
@@ -630,6 +634,17 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 	d.processFetchedArticle(ctx, srv, req, body)
 }
 
+// clearEmitted returns req's article to the dispatch pool, on req's own
+// instance, when a gate drops it before it is fetched. A refusal is logged at
+// Error: it means the instance has no progress or req's index is outside it,
+// and req was built from that progress.
+func (d *Downloader) clearEmitted(req *articleRequest, gate string) {
+	if err := req.job.ClearArticleEmitted(int(req.artIdx)); err != nil {
+		d.log.Error("return a gated article to the dispatch pool",
+			"job", req.jobID(), "msgid", req.messageID, "gate", gate, "err", err)
+	}
+}
+
 // fetchArticle performs network I/O and penalty tracking for a single article request.
 // Returns (body, true) if the article payload was successfully fetched.
 // Returns (nil, false) if the request was handled via pause/retry/error emission.
@@ -658,7 +673,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 	// further dispatch pass to read it.
 	if cur, ok := d.dispatcher.Job(req.jobID()); !ok || cur != req.job || req.job.Intent() != job.IntentRun || d.handedOff(req.job) {
 		d.unmarkTried(req, serverIdx)
-		_ = req.job.ClearArticleEmitted(int(req.artIdx))
+		d.clearEmitted(req, "per-job gate")
 		return nil, false
 	}
 
@@ -667,7 +682,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 	// sitting in the workCh buffer still need to be drained.
 	if d.paused.Load() || d.dispatcher.Paused() {
 		d.unmarkTried(req, serverIdx)
-		_ = req.job.ClearArticleEmitted(int(req.artIdx))
+		d.clearEmitted(req, "global pause")
 		return nil, false
 	}
 

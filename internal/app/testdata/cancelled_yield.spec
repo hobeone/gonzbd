@@ -59,15 +59,15 @@ file internal/app/job_finalizer.go
 --- end
 
 [a vanished instance is reported as a failure]
-file internal/app/job_finalizer.go
+file internal/app/dispatch_refusal.go
 --- anchor
-	if err == nil || errors.Is(err, dispatch.ErrNotFound) {
+	if errors.Is(err, dispatch.ErrNotFound) {
 --- replace
-	if err == nil || (false && errors.Is(err, dispatch.ErrNotFound)) {
+	if errors.Is(err, dispatch.ErrNotFound) && false {
 --- end
 
 [a failure is not logged]
-file internal/app/job_finalizer.go
+file internal/app/dispatch_refusal.go
 --- anchor
 	log.Warn(msg, "job", id, "err", err)
 --- replace
