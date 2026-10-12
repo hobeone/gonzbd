@@ -21,8 +21,9 @@ var ErrNotFound = errors.New("dispatch: job not found")
 // restoring its stored rows: neither Restore nor Start has completed one.
 var ErrNotRestored = errors.New("dispatch: the stored queue has not been restored; call Restore or Start first")
 
-// ErrInvalidJobName is SetName's refusal of a name that is not one safe path
-// component, or that another registered job has or another job has reserved.
+// ErrInvalidJobName is the refusal of a name that is not one safe path
+// component, or that another registered job has or another job has reserved,
+// by registration (Add, and restore), SetName and ReserveName (admitNameLocked).
 var ErrInvalidJobName = errors.New("dispatch: invalid job name")
 
 // ErrJobStarted is SetName's refusal of a job whose download has begun
@@ -48,10 +49,11 @@ var ErrUnwantedBlocked = errors.New("dispatch: the job is blocked for unwanted e
 // purpose: it lets a listing be composed from Header alone, without the
 // registry handing out *job.Job pointers to do it. Header.Name is read by,
 // among others, API queue listing and search (internal/api/queue.go), the
-// registry's own name check (nameHolderLocked) and Application.queuedName
+// registry's own name check (admitNameLocked) and Application.queuedName
 // (internal/app/retry_failed_dir.go), while downstream filesystem
-// paths and finalization read Job.Name(). SetName updates both under d.mu so the
-// two copies stay in lockstep.
+// paths and finalization read Job.Name(). register takes Header.Name from
+// Job.Name(), and SetName updates both under d.mu, so the two copies stay in
+// lockstep.
 //
 // Below, a comment naming one function as a field's "only" or "sole" runtime
 // writer is scoped to that: Dispatcher.restore (dispatch.go) also populates
@@ -282,9 +284,13 @@ func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: register: %s: %w", j.ID(), errPreemptedByRemoval)
 	}
-	if otherID, taken := d.nameHolderLocked(j.ID(), h.Name); taken {
+	// The header's name is taken from the job's, which is what the job's
+	// directory is joined from, so the name admitNameLocked tests and the
+	// one the filesystem sees cannot differ.
+	h.Name = j.Name()
+	if err := d.admitNameLocked(j.ID(), h.Name); err != nil {
 		d.mu.Unlock()
-		return fmt.Errorf("dispatch: register %s as %q: job %s has that name: %w", j.ID(), h.Name, otherID, ErrJobNameTaken)
+		return fmt.Errorf("dispatch: register %s: %w", j.ID(), err)
 	}
 	added := seq == seqNext
 	if added {
@@ -1106,14 +1112,8 @@ func (d *Dispatcher) SetName(id, name string) error {
 	if !ok {
 		return fmt.Errorf("dispatch: set name %s: %w", id, ErrNotFound)
 	}
-	// The name becomes the job's download directory, DownloadDir/<name>, and
-	// post-processing deletes and moves what is under it. So it must be one
-	// path component, never "." or "..", and no other registered job's name.
-	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
-		return fmt.Errorf("dispatch: set name %s to %q: not a single path component: %w", id, name, ErrInvalidJobName)
-	}
-	if otherID, taken := d.nameHolderLocked(id, name); taken {
-		return fmt.Errorf("dispatch: set name %s to %q: job %s has that name: %w", id, name, otherID, ErrJobNameTaken)
+	if err := d.admitNameLocked(id, name); err != nil {
+		return fmt.Errorf("dispatch: set name %s: %w", id, err)
 	}
 	// A job with article bytes may have them under DownloadDir/<old name>,
 	// and a rename moves none. Job.SetName refuses it (Job.DownloadBegun, not
@@ -1172,8 +1172,10 @@ func (d *Dispatcher) LoadProgress(ctx context.Context, id string) error {
 // ReserveName holds name for the job id before that job is registered, for a
 // caller that must move something on disk to name first and so cannot let
 // another job take it in between: a retry restoring a failed job's directory.
-// It refuses with ErrJobNameTaken, changing nothing, when a registered job
-// other than id has the name or anyone, id included, has reserved it: a
+// It refuses with ErrInvalidJobName, changing nothing, a name that is not
+// one safe path component (admitNameLocked), and with ErrJobNameTaken when a
+// registered job other than id has the name or anyone, id included, has
+// reserved it: a
 // reservation is not re-entrant, so each is held by exactly one caller and
 // that caller's release frees it. While it is held,
 // register and SetName refuse the name to every job but id; since no other
@@ -1191,11 +1193,11 @@ func (d *Dispatcher) LoadProgress(ctx context.Context, id string) error {
 func (d *Dispatcher) ReserveName(id, name string) (release func(), err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if err := d.admitNameLocked(id, name); err != nil {
+		return nil, fmt.Errorf("dispatch: reserve for %s: %w", id, err)
+	}
 	if _, held := d.reservedNames[name]; held {
 		return nil, fmt.Errorf("dispatch: reserve %q for %s: already reserved: %w", name, id, ErrJobNameTaken)
-	}
-	if otherID, taken := d.nameHolderLocked(id, name); taken {
-		return nil, fmt.Errorf("dispatch: reserve %q for %s: job %s has that name: %w", name, id, otherID, ErrJobNameTaken)
 	}
 	d.reservedNames[name] = id
 	return func() {
@@ -1207,14 +1209,33 @@ func (d *Dispatcher) ReserveName(id, name string) (release func(), err error) {
 	}, nil
 }
 
+// admitNameLocked is the registry's test of whether id may take name. It
+// refuses (ErrInvalidJobName) a name that is not one safe path component —
+// empty, "." or "..", or holding a separator or NUL — because the name is the
+// job's download directory, DownloadDir/<name>, which filepath.Join cleans,
+// so "a/../../etc" would put the job's writes and post-processing's moves and
+// deletes outside DownloadDir. It then refuses (ErrJobNameTaken) a name
+// another job holds (nameHolderLocked).
+//
+// register applies it to a job entering the registry (Add and restore),
+// SetName to a rename and ReserveName to a reservation, each under the d.mu
+// span that then writes the name, so of two callers that chose one name
+// concurrently, the registry admits only one.
+// `git grep -n 'd\.admitNameLocked(' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 3 lines.
+// Caller must hold d.mu.
+func (d *Dispatcher) admitNameLocked(id, name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
+		return fmt.Errorf("name %q is not a single path component: %w", name, ErrInvalidJobName)
+	}
+	if otherID, taken := d.nameHolderLocked(id, name); taken {
+		return fmt.Errorf("name %q: job %s has it: %w", name, otherID, ErrJobNameTaken)
+	}
+	return nil
+}
+
 // nameHolderLocked reports the job other than id that holds name: a
-// registered job named it, or ReserveName reserved it. It is the registry's
-// one test of "no two jobs share a name": register applies it to a job
-// entering the registry (Add and restore), SetName to a rename and
-// ReserveName to a reservation, all under the d.mu span that then writes the
-// name, so of two callers that chose one name concurrently, the registry
-// admits only one.
-// `git grep -n 'd\.nameHolderLocked(' -- 'internal/dispatch/*.go' ':!*_test.go'` returns 3 lines.
+// registered job named it, or ReserveName reserved it. admitNameLocked is
+// its caller.
 // Caller must hold d.mu.
 func (d *Dispatcher) nameHolderLocked(id, name string) (string, bool) {
 	for otherID, other := range d.byID {

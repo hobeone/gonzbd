@@ -2740,7 +2740,7 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	// registry is what refuses a second job that name, so it is claimed there
 	// first: a refusal then happens before anything moves, and no other job can
 	// register or be renamed to the name between the restore and the Add (both
-	// go through nameHolderLocked, which honours the reservation). The claim
+	// go through admitNameLocked, which honours the reservation). The claim
 	// is released when this call returns, after the restore's undo below (defers
 	// run last to first) so the name stays held while that moves the directory
 	// back, and after a successful Add, which holds the name itself.

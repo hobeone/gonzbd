@@ -1066,7 +1066,7 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 	}
 
 	// 3. Cancelled job check coverage (job cancelled)
-	j3 := job.New("j3", "test.nzb", job.Policy{})
+	j3 := job.New("j3", "test3.nzb", job.Policy{})
 	_, m3 := makeJobWithArticles(t, []string{"msg-cancel"})
 	addTestJob(t, disp, j3, m3)
 	if err := j3.MarkArticleEmitted(0); err != nil {

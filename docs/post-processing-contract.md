@@ -610,15 +610,17 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    whose action is `off`, so this stage still runs for every one of those.
    That directory is the download directory joined with the job's name, and
    no two jobs share a name, registered or reserved. The dispatcher owns that rule:
-   `Dispatcher.nameHolderLocked` is checked under `d.mu` when a job is
+   `Dispatcher.admitNameLocked` is checked under `d.mu` when a job is
    registered (`Add`, and restore at startup), when it is renamed
    (`SetName`) and when a name is reserved (`ReserveName`, which a retry
    takes before it restores its directory), so of two callers that chose one
    name concurrently, only one is admitted. `AddJob` and `Application.RenameJob` (the API's rename)
    choose a name with `uniqueName` and `jobNameTaken`, which also rejects a
    name with something on disk under it, and choose again when the
-   dispatcher refuses it (`claimJobName`). `Dispatcher.SetName` also refuses
-   an empty name, `.`, `..`, a separator and NUL. A rename moves no
+   dispatcher refuses it (`claimJobName`). The same check also refuses, at
+   every one of those doors, an empty name, `.`, `..`, a separator and NUL:
+   `filepath.Join` cleans the joined path, so a name like `a/../../etc`
+   would put the job outside the download directory. A rename moves no
    files, so `SetName` also refuses (`ErrJobStarted`, answered 409) a job
    whose download has begun, as `Job.DownloadBegun` reports it: some file
    has a resolved filename. The pipeline sets it when it registers the file,
@@ -908,7 +910,7 @@ recorded entirely through the fetch-policy discard, not through this field.
 - `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`/`Unidentified`) bypass logic & DirectUnpack zero-failure verification bypass.
 - Per-set deferral of Layout B par2 sets (`DeferredPar2Sets`) and their par2 verify+repair after unpack (`extracted_repair`).
 - A par2 failure with recovery volumes held back retries the job once with them released (`jobFinalizer.retryWithHeldVolumes`, #651).
-- Per-job `DownloadDir` isolation across cleanup stages (`Dispatcher.nameHolderLocked`, `ReserveName`).
+- Per-job `DownloadDir` isolation across cleanup stages (`Dispatcher.admitNameLocked`, `ReserveName`).
 - Python-compatible 8-arg positional and `SAB_*` environment contract for user scripts with 512 KiB log caps, `RedactSecrets`, and `ScriptCanFail` runtime toggleability (a non-zero script exit when `ScriptCanFail == true` sets `job.FailMsg`, pinned by `TestScriptStage_CanFailTrue_SetsFailMsg`).
 - Native Go engine dispatch (`go_par2`, `go_rar`, `go_7z`, `go_tar`, `filejoin`) with external CLI fallbacks.
 - Synthetic `download`, `direct unpack`, and `summary` StageLog cards for history UI rendering.

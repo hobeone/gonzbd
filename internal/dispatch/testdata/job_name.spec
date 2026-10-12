@@ -44,25 +44,25 @@ file internal/dispatch/registry.go
 [registration does not check the name]
 file internal/dispatch/registry.go
 --- anchor
-	if otherID, taken := d.nameHolderLocked(j.ID(), h.Name); taken {
+	if err := d.admitNameLocked(j.ID(), h.Name); err != nil {
 --- replace
-	if otherID, taken := d.nameHolderLocked(j.ID(), h.Name); false && taken {
+	if err := d.admitNameLocked(j.ID(), h.Name); false && err != nil {
 --- end
 
 [a rename does not check the name]
 file internal/dispatch/registry.go
 --- anchor
-	if otherID, taken := d.nameHolderLocked(id, name); taken {
-		return fmt.Errorf("dispatch: set name %s to %q: job %s has that name: %w", id, name, otherID, ErrJobNameTaken)
+	if err := d.admitNameLocked(id, name); err != nil {
+		return fmt.Errorf("dispatch: set name %s: %w", id, err)
 --- replace
-	if otherID, taken := d.nameHolderLocked(id, name); false && taken {
-		return fmt.Errorf("dispatch: set name %s to %q: job %s has that name: %w", id, name, otherID, ErrJobNameTaken)
+	if err := d.admitNameLocked(id, name); false && err != nil {
+		return fmt.Errorf("dispatch: set name %s: %w", id, err)
 --- end
 
 [a taken name is refused as merely invalid]
 file internal/dispatch/registry.go
 --- anchor
-		return fmt.Errorf("dispatch: register %s as %q: job %s has that name: %w", j.ID(), h.Name, otherID, ErrJobNameTaken)
+		return fmt.Errorf("name %q: job %s has it: %w", name, otherID, ErrJobNameTaken)
 --- replace
-		return fmt.Errorf("dispatch: register %s as %q: job %s has that name: %w", j.ID(), h.Name, otherID, ErrInvalidJobName)
+		return fmt.Errorf("name %q: job %s has it: %w", name, otherID, ErrInvalidJobName)
 --- end
