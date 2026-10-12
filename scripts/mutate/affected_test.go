@@ -96,47 +96,6 @@ func TestChangedSince_ARefThatLooksLikeAnOptionIsNotRunAsOne(t *testing.T) {
 	}
 }
 
-func TestAffectedSpecs_SelectsOnTheSpecOrAMutatedFileAndNothingElse(t *testing.T) {
-	t.Parallel()
-
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "specs"), 0o750); err != nil {
-		t.Fatal(err)
-	}
-	body := func(file string) string {
-		return "pkg ./p/\n[m]\nfile " + file + "\n--- anchor\nx\n--- replace\ny\n--- end\n"
-	}
-	mustWrite(t, filepath.Join(root, "specs/mutates_x.spec"), body("x.go"))
-	mustWrite(t, filepath.Join(root, "specs/mutates_y.spec"), body("y.go"))
-	mustWrite(t, filepath.Join(root, "specs/mutates_z.spec"), body("z.go"))
-	specs := []string{"specs/mutates_x.spec", "specs/mutates_y.spec", "specs/mutates_z.spec"}
-
-	cases := []struct {
-		name    string
-		changed []string
-		want    []string
-	}{
-		{"a mutated file", []string{"x.go"}, []string{"specs/mutates_x.spec"}},
-		{"the spec itself", []string{"specs/mutates_y.spec"}, []string{"specs/mutates_y.spec"}},
-		{"both", []string{"x.go", "specs/mutates_y.spec"}, []string{"specs/mutates_x.spec", "specs/mutates_y.spec"}},
-		{"a test file no spec mutates", []string{"x_test.go"}, nil},
-		{"a file no spec names", []string{"other.go"}, nil},
-		{"nothing", nil, nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := affectedSpecs(root, specs, tc.changed)
-			if err != nil {
-				t.Fatalf("affectedSpecs: %v", err)
-			}
-			if !slices.Equal(got, tc.want) {
-				t.Errorf("affectedSpecs(%v) = %v, want %v", tc.changed, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestAffectedSpecs_AnUnreadableSpecIsAnError(t *testing.T) {
 	t.Parallel()
 

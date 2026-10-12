@@ -1226,13 +1226,17 @@ Every go test run gets GONZBD_TEST_WAIT=3s unless the environment sets it:
 the budget a test's hang-guard wait uses in place of its generous default, so
 a mutation that removes what the wait is for is killed in seconds.
 
--affected REF prints the specs, one per line, that a change since REF can move:
-the spec file itself changed, or a file one of its mutations edits did. Tracked
-files are compared with the working tree, and untracked files that are not
-gitignored also count. It is a fast loop, not a gate. A change to any other
-file selects nothing, including the test a spec runs and the package it
-targets, so it misses a spec whose pinned behaviour such a file altered; only
-the full sweep covers that.
+-affected REF prints the specs, one per line, that a change since REF can move.
+Tracked files are compared with the working tree, and untracked files that are
+not gitignored also count. A spec is selected when the spec file changed; when
+a changed .go file is in the directory of a file it mutates, or of any package
+of this module its test binary is built from (its own package, its tests, and
+everything they import, under its tags); or when its test binary runs go or
+git, which every change selects. A changed file that is neither .go nor a spec
+(a fixture, a document, go.mod) selects every spec, because tests read such
+files by path and the import graph cannot say which. It reads package
+metadata with go list and compiles nothing. It is a fast loop, not the gate:
+the full sweep stays the check before a merge.
 
 -q is for sweeping every spec: a spec that passes prints one line, and one that
 does not prints only its failing rows and the command to rerun it with the full
