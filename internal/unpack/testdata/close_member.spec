@@ -25,7 +25,7 @@ file internal/unpack/go_unrar.go
 # that only checked the ErrChecksumUnsupported case would survive this.
 #
 # All four anchors carry the `return err` / `return nil` tail. That is no longer
-# strictly required -- CloseMember now owns the check, so the bare `if` line
+# strictly required -- closeMember now owns the check, so the bare `if` line
 # appears once in the file and a short anchor would resolve. It was required
 # when this spec was written, because the two extraction paths still inlined the
 # same condition and the short form matched three sites; the tool refused it,

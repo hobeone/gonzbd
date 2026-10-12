@@ -164,7 +164,7 @@ func TestWriteEntrySafely_SkipExisting_DrainErrorPropagates(t *testing.T) {
 
 // TestWriteEntrySafely_PathEscape verifies that os.Root refuses to write
 // through a symlinked path component that resolves outside outDir, mirroring
-// the existing ExtractEntryRarengine zip-slip regression tests (see
+// the existing extractEntryRarengine zip-slip regression tests (see
 // TestExtractEntryRarengine_ZipSlip_SymlinkComponent in go_unrar_test.go).
 func TestWriteEntrySafely_PathEscape(t *testing.T) {
 	t.Parallel()

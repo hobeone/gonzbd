@@ -539,7 +539,7 @@ func TestGoUnRAR_OverwriteFilesTrue(t *testing.T) {
 	}
 }
 
-// --- os.Root zip-slip regression tests for ExtractEntryRarengine ---
+// --- os.Root zip-slip regression tests for extractEntryRarengine ---
 
 // TestExtractEntryRarengine_Normal verifies that a normal entry is extracted
 // correctly when written through an os.Root.
@@ -556,11 +556,11 @@ func TestExtractEntryRarengine_Normal(t *testing.T) {
 	destRel := "subdir/hello.txt"
 	destPath := filepath.Join(outDir, destRel)
 
-	if err := ExtractEntryRarengine(
-		context.Background(), root, outDir, destRel, destPath,
+	if err := extractEntryRarengine(
+		context.Background(), root, destRel, destPath,
 		fh, strings.NewReader(string(content)), Options{}, slog.Default(),
 	); err != nil {
-		t.Fatalf("ExtractEntryRarengine: %v", err)
+		t.Fatalf("extractEntryRarengine: %v", err)
 	}
 
 	got, err := os.ReadFile(destPath)
@@ -594,8 +594,8 @@ func TestExtractEntryRarengine_TempFileUnlinkedMidWrite(t *testing.T) {
 	destPath := filepath.Join(outDir, destRel)
 
 	ctx := &unlinkingContext{Context: context.Background(), destPath: destPath}
-	err = ExtractEntryRarengine(
-		ctx, root, outDir, destRel, destPath,
+	err = extractEntryRarengine(
+		ctx, root, destRel, destPath,
 		fh, strings.NewReader("hello world"), Options{
 			OverwriteFiles:   true,
 			IgnoreUnrarDates: false,
@@ -612,10 +612,10 @@ func TestExtractEntryRarengine_TempFileUnlinkedMidWrite(t *testing.T) {
 	// write and publish must surface as a real extraction error, not
 	// silently succeed with a file that was never actually published.
 	if err == nil {
-		t.Fatal("ExtractEntryRarengine: expected a publish error, got nil")
+		t.Fatal("extractEntryRarengine: expected a publish error, got nil")
 	}
 	if !strings.Contains(err.Error(), "publish") {
-		t.Errorf("ExtractEntryRarengine error = %v, want a publish-step error", err)
+		t.Errorf("extractEntryRarengine error = %v, want a publish-step error", err)
 	}
 
 	handler.mu.Lock()
@@ -664,8 +664,8 @@ func TestExtractEntryRarengine_ZipSlip_SymlinkComponent(t *testing.T) {
 	destRel := "link/evil.txt"
 	destPath := filepath.Join(outDir, destRel) // lexically inside, resolves outside
 
-	extractErr := ExtractEntryRarengine(
-		context.Background(), root, outDir, destRel, destPath,
+	extractErr := extractEntryRarengine(
+		context.Background(), root, destRel, destPath,
 		fh, strings.NewReader("EVIL"), Options{}, slog.Default(),
 	)
 	if extractErr == nil {
@@ -697,8 +697,8 @@ func TestExtractEntryRarengine_ZipSlip_DotDot(t *testing.T) {
 	destRel := "../escape.txt"
 	destPath := filepath.Join(outDir, destRel)
 
-	extractErr := ExtractEntryRarengine(
-		context.Background(), root, outDir, destRel, destPath,
+	extractErr := extractEntryRarengine(
+		context.Background(), root, destRel, destPath,
 		fh, strings.NewReader("EVIL"), Options{}, slog.Default(),
 	)
 	if extractErr == nil {
@@ -1074,19 +1074,19 @@ func TestCloseMember(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			spy := &closeSpy{err: tt.closeErr}
-			err := CloseMember(spy)
+			err := closeMember(spy)
 
 			if spy.calls != 1 {
 				t.Errorf("Close called %d times, want exactly 1", spy.calls)
 			}
 			if tt.wantErr == nil {
 				if err != nil {
-					t.Errorf("CloseMember() = %v, want nil", err)
+					t.Errorf("closeMember() = %v, want nil", err)
 				}
 				return
 			}
 			if !errors.Is(err, tt.wantErr) {
-				t.Errorf("CloseMember() = %v, want %v", err, tt.wantErr)
+				t.Errorf("closeMember() = %v, want %v", err, tt.wantErr)
 			}
 		})
 	}

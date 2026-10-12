@@ -81,7 +81,7 @@ func ClassifyRarEngineError(err error) FailReason {
 	}
 }
 
-// CloseMember closes an archive member and reports its verdict, filtering the
+// closeMember closes an archive member and reports its verdict, filtering the
 // one verdict that carries no failure. It is the only place the two extraction
 // loops decide which CLOSE verdict matters: `git grep -n
 // 'Err[C]hecksumUnsupported' -- internal/unpack/go_unrar.go
@@ -114,7 +114,7 @@ func ClassifyRarEngineError(err error) FailReason {
 // regardless. (A plain BLAKE2sp digest is verified, and a mismatch is
 // ErrCRCMismatch.) Every other verdict is returned to the
 // caller, which decides what it means for the archive.
-func CloseMember(entry io.Closer) error {
+func closeMember(entry io.Closer) error {
 	if err := entry.Close(); err != nil && !errors.Is(err, rarengine.ErrChecksumUnsupported) {
 		return err
 	}
@@ -234,7 +234,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 // ExtractMember writes one member (header fh, content entry) through root
 // and closes it, which is where its verdict is reported. It returns the
 // member's path relative to root and under outDir, both empty when the member
-// leaves nothing to list: a directory, a link, or a name MemberPath refuses.
+// leaves nothing to list: a directory, a link, or a name memberPath refuses.
 // With OneFolder and without OverwriteFiles, a member whose flattened name is
 // already taken is written under a uniquePath name instead of being skipped.
 // On an error the entry may still be open; the caller closes it.
@@ -242,25 +242,25 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 // It is the member step of goUnRAREngineInternal's loop and of DirectUnpack's
 // (internal/directunpack), which calls it rather than keeping its own copy.
 func ExtractMember(ctx context.Context, root *os.Root, outDir string, fh *rarengine.FileHeader, entry io.ReadCloser, opts Options, log *slog.Logger) (rel, abs string, err error) {
-	sp, ok := MemberPath(fh.Name, opts, log)
+	sp, ok := memberPath(fh.Name, opts, log)
 	if !ok {
-		return "", "", CloseMember(entry)
+		return "", "", closeMember(entry)
 	}
 	rel, abs = sp.Rel(), sp.Abs(outDir)
 	if opts.OneFolder && !opts.OverwriteFiles {
 		rel = uniquePath(root, rel)
 		abs = filepath.Join(outDir, rel)
 	}
-	if err := ExtractEntryRarengine(ctx, root, outDir, rel, abs, fh, entry, opts, log); err != nil {
+	if err := extractEntryRarengine(ctx, root, rel, abs, fh, entry, opts, log); err != nil {
 		return "", "", err
 	}
-	if err := CloseMember(entry); err != nil {
+	if err := closeMember(entry); err != nil {
 		return "", "", err
 	}
 	if opts.OnLine != nil {
 		opts.OnLine("Extracting  " + fh.Name)
 	}
-	if !ExtractedEntryExists(fh) {
+	if !extractedEntryExists(fh) {
 		return "", "", nil
 	}
 	return rel, abs, nil
@@ -284,13 +284,13 @@ func (er rarEntryReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// ExtractEntryRarengine writes a single rarengine entry through root, an
+// extractEntryRarengine writes a single rarengine entry through root, an
 // os.Root anchored at the extraction output directory. root must be opened by
 // the caller (once per extraction session) and closed after all entries have
 // been written. destRel is the sanitized path relative to root's base
 // directory (output of SanitizeArchivePath); destPath is the absolute path
 // (filepath.Join(outDir, destRel)) used only for skip-check logging.
-func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, destPath string, fh *rarengine.FileHeader, r io.Reader, opts Options, log *slog.Logger) error {
+func extractEntryRarengine(ctx context.Context, root *os.Root, destRel, destPath string, fh *rarengine.FileHeader, r io.Reader, opts Options, log *slog.Logger) error {
 	if fh.IsDir {
 		return root.MkdirAll(destRel, 0o750)
 	}
@@ -298,7 +298,7 @@ func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, 
 	// A link member carries no payload: Read would return ErrLinkEntry. It is
 	// skipped before the reader is touched (see skipLinkEntry). Both the
 	// post-processing loop and DirectUnpack reach links through this
-	// function. The caller still calls CloseMember afterwards, which is where
+	// function. The caller still calls closeMember afterwards, which is where
 	// the verdict is reported.
 	if fh.LinkType != rarengine.LinkNone {
 		skipLinkEntry(fh, opts, log)

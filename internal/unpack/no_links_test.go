@@ -114,7 +114,7 @@ func TestExtractEntryRarengine_LinkMemberLeavesTheRootUntouched(t *testing.T) {
 			log := slog.New(slog.NewTextHandler(&buf, nil))
 			fh := &rarengine.FileHeader{Name: "job.part02.rar", LinkType: lt, LinkTarget: "job.part01.rar"}
 			// A nil reader proves the link path never reads.
-			err = ExtractEntryRarengine(context.Background(), root, outDir, "job.part02.rar", vol2, fh, nil, Options{OverwriteFiles: true}, log)
+			err = extractEntryRarengine(context.Background(), root, "job.part02.rar", vol2, fh, nil, Options{OverwriteFiles: true}, log)
 			if err != nil {
 				t.Fatalf("a link member must be skipped, not fail: %v", err)
 			}
@@ -129,7 +129,7 @@ func TestExtractEntryRarengine_LinkMemberLeavesTheRootUntouched(t *testing.T) {
 					t.Errorf("%s has %d names, want 1", filepath.Base(p), n)
 				}
 			}
-			if ExtractedEntryExists(fh) {
+			if extractedEntryExists(fh) {
 				t.Error("a skipped link member is reported as extracted")
 			}
 			if !strings.Contains(buf.String(), "skipping link entry") {
