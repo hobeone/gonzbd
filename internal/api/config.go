@@ -235,11 +235,8 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 func (s *Server) applySpeedLimit() {
 	dl := s.config.GetDownloads()
 	maxBytes := int64(dl.BandwidthMax)
-	perc := int(dl.BandwidthPerc)
-	if perc <= 0 || perc > 100 {
-		perc = 100
-	}
-	bytesPerSec := maxBytes * int64(perc) / 100
+	perc := dl.EffectiveBandwidthPerc()
+	bytesPerSec := dl.SpeedLimit()
 	s.downloads.SetSpeedLimit(bytesPerSec)
 	s.downloads.SetBandwidthMax(maxBytes)
 	s.downloads.SetBandwidthPerc(perc)

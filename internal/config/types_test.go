@@ -288,3 +288,32 @@ func TestSanitizeOptions(t *testing.T) {
 		t.Errorf("CleanupList len = %d, want 1", len(opts.CleanupList))
 	}
 }
+
+// ---------- SpeedLimit ----------
+
+func TestDownloadConfig_SpeedLimit(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		max      ByteSize
+		perc     Percent
+		wantPerc int
+		want     int64
+	}{
+		{"unlimited", 0, 50, 50, 0},
+		{"half", 1000000, 50, 50, 500000},
+		{"full", 1000000, 100, 100, 1000000},
+		{"zero percent means full", 1000000, 0, 100, 1000000},
+		{"over 100 means full", 1000000, 150, 100, 1000000},
+		{"negative percent means full", 1000000, -5, 100, 1000000},
+	}
+	for _, tt := range tests {
+		dc := DownloadConfig{BandwidthMax: tt.max, BandwidthPerc: tt.perc}
+		if got := dc.EffectiveBandwidthPerc(); got != tt.wantPerc {
+			t.Errorf("%s: EffectiveBandwidthPerc() = %d, want %d", tt.name, got, tt.wantPerc)
+		}
+		if got := dc.SpeedLimit(); got != tt.want {
+			t.Errorf("%s: SpeedLimit() = %d, want %d", tt.name, got, tt.want)
+		}
+	}
+}

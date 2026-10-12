@@ -17,6 +17,7 @@ file internal/app/reloader.go
 file internal/app/reloader.go
 --- anchor
 	app.mu.Lock()
+	newDownloader := app.newDownloaderLocked(scs, opts)
 	if app.pauseReason != pauseReasonNone {
 		newDownloader.Pause()
 	}
@@ -30,6 +31,7 @@ file internal/app/reloader.go
 	app.downloader = newDownloader
 --- replace
 	app.mu.Lock()
+	newDownloader := app.newDownloaderLocked(scs, opts)
 	paused := app.pauseReason != pauseReasonNone
 	hook := app.reloadBeforeStartHook
 	app.mu.Unlock()

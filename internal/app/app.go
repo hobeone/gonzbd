@@ -340,6 +340,13 @@ type Application struct {
 	bandwidthMax  atomic.Int64 // configured bandwidth ceiling in bytes/sec
 	bandwidthPerc atomic.Int32 // configured bandwidth percentage (1-100)
 
+	// speedLimit is the rate cap in bytes per second, 0 for unlimited, that
+	// newDownloaderLocked gives each downloader it builds. Guarded by mu. New
+	// seeds it from config.DownloadConfig.SpeedLimit and SetSpeedLimit
+	// replaces it, so a reload keeps the limit last in force:
+	// `git grep -n 'app[.]speedLimit = ' -- '*.go' ':!*_test.go'` finds 2 lines.
+	speedLimit int64
+
 	customStages []postproc.Stage
 	stages       builtStages
 	// probe holds the external-tool detection results captured once in New().
@@ -479,29 +486,18 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		log.Info(msg)
 	}
 
+	dl = app.config.GetDownloads()
+	app.bandwidthMax.Store(int64(dl.BandwidthMax))
+	app.bandwidthPerc.Store(int32(dl.EffectiveBandwidthPerc())) //nolint:gosec // G115: EffectiveBandwidthPerc is 1-100
+	app.speedLimit = dl.SpeedLimit()
 	if app.downloader == nil {
-		servers := make([]*downloader.Server, len(serversConfig))
-		for i, sc := range serversConfig {
-			servers[i] = downloader.NewServer(sc)
-		}
-		realDL := downloader.New(app.dispatcher, servers, app.meter, app.buildDownloaderOptions(), log)
+		realDL := app.newDownloaderLocked(serversConfig, app.buildDownloaderOptions())
 		app.downloader = realDL
 		app.downloaderStats = realDL
-	}
-
-	// Apply initial bandwidth limit from config.
-	dl = app.config.GetDownloads()
-	bandwidthMax := int64(dl.BandwidthMax)
-	bandwidthPerc := int(dl.BandwidthPerc)
-
-	app.bandwidthMax.Store(bandwidthMax)
-	perc := bandwidthPerc
-	if perc <= 0 || perc > 100 {
-		perc = 100
-	}
-	app.bandwidthPerc.Store(int32(perc))
-	if bandwidthMax > 0 {
-		app.downloader.SetSpeedLimit(bandwidthMax * int64(perc) / 100)
+	} else {
+		// A downloader WithDownloader injected runs at the limit a built one
+		// would.
+		app.downloader.SetSpeedLimit(app.speedLimit)
 	}
 
 	p := &pipeline{
@@ -3045,10 +3041,28 @@ func WithEventEmitter(e EventEmitter) func(*Application) {
 	}
 }
 
-// SetSpeedLimit updates the download speed limit. bytesPerSec <= 0 means unlimited.
+// newDownloaderLocked builds a downloader over scs that runs at app.speedLimit.
+// Every downloader the Application builds comes from here, so none starts
+// unlimited while a limit is in force:
+// `git grep -n 'downloader[.]New(' -- 'internal/app/*.go' ':!*_test.go'`
+// finds 1 line. The caller holds app.mu, or is New before the Application is
+// shared.
+func (app *Application) newDownloaderLocked(scs []config.ServerConfig, opts downloader.Options) *downloader.Downloader {
+	servers := make([]*downloader.Server, len(scs))
+	for i, sc := range scs {
+		servers[i] = downloader.NewServer(sc)
+	}
+	d := downloader.New(app.dispatcher, servers, app.meter, opts, app.log)
+	d.SetSpeedLimit(app.speedLimit)
+	return d
+}
+
+// SetSpeedLimit updates the download speed limit, for the running downloader
+// and every one a later reload builds. bytesPerSec <= 0 means unlimited.
 func (app *Application) SetSpeedLimit(bytesPerSec int64) {
 	app.mu.Lock()
 	defer app.mu.Unlock()
+	app.speedLimit = bytesPerSec
 	if app.downloader != nil {
 		app.downloader.SetSpeedLimit(bytesPerSec)
 	}
