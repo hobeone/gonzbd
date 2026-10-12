@@ -69,7 +69,7 @@ func selectorPath(e ast.Expr) []string {
 //
 // Enumerated from the same scan classifyMember's own comment cites below:
 // of the two-level bases that scan finds (mu, storeMu, q, res, store,
-// runner, log, stopOnce), q is handled by its own case, and res/store/runner
+// runner, log, launched, stopOnce), q is handled by its own case, and res/store/runner
 // are deliberately ABSENT here — they are the interfaces this gate exists to
 // catch, so they must fall through to the catch-all callUnresolved case
 // rather than be declared safe.
@@ -77,6 +77,7 @@ var dispatcherSafeFields = map[string]string{
 	"mu":       "sync.Mutex; muField intercepts every Lock/RLock/Unlock/RUnlock call on it before classifyCall ever runs in scanFuncForLockedQueueCalls, and a mutex has no other exported method a CallExpr could target",
 	"storeMu":  "a second, unrelated sync.Mutex guarding store writes; same reasoning as mu, and it is never read inside a d.mu span (TestStoreMuLockNesting_MatchesEnumeration, lock_enumeration_test.go, pins the one place the two nest)",
 	"log":      "*slog.Logger; its methods only format and emit a record, never call back into this package",
+	"launched": "keyedlatch.Latch; its methods touch only its own map and leaf mutex, and keyedlatch imports no other package of this module (`go list -deps ./internal/keyedlatch`), so it cannot reach sched.Queue",
 	"stopOnce": "sync.Once; the call on stopOnce itself is just Do(closure) — the closure's own calls are inspected separately, as sibling nodes of the same ast.Inspect walk, not skipped by ignoring Do",
 }
 
@@ -90,9 +91,9 @@ var dispatcherSafeFields = map[string]string{
 // and the `d\.[A-Za-z_]+\.[A-Za-z_]+\(` and `r\.d\.` variants — finds exactly
 // these shapes: every bare `d.<name>(` is either a real *Dispatcher method or
 // the func-typed beforeClaim field, and every `d.<field>.<method>(` reaches
-// through one of q, res, store, runner, log, mu, storeMu or stopOnce. Of
-// those, mu, storeMu, log and stopOnce are declared safe in
-// dispatcherSafeFields; q gets its own case; everything else two levels deep
+// through one of q, res, store, runner, log, launched, mu, storeMu or
+// stopOnce. Of those, mu, storeMu, log, launched and stopOnce are declared
+// safe in dispatcherSafeFields; q gets its own case; everything else two levels deep
 // — res, store, runner today, and any field this package adds later that is
 // itself callable this same way — falls to the final callUnresolved case, so
 // a NEW two-level call through a field is flagged for review rather than

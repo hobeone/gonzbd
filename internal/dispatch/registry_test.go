@@ -142,10 +142,10 @@ func TestRemove_PrunesTheResidentAndLaunchedFlags(t *testing.T) {
 		t.Error("isResident(j1) = true after remove — a reused ID would never hydrate, since reconcileResidency only hydrates when !isResident")
 	}
 	d.mu.Lock()
-	_, launched := d.launched["j1"]
+	launched := d.launched.Held("j1")
 	d.mu.Unlock()
 	if launched {
-		t.Error("launched[j1] = true after remove")
+		t.Error("j1 still holds its launch claim after remove")
 	}
 
 	// Re-add to simulate ID reuse: must be launchable.

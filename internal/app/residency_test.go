@@ -5,9 +5,13 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/job"
@@ -174,27 +178,27 @@ func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 		writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), j)
 		return j
 	}
-	// inFlight plays a hydration of j in progress. ready is its channel; the
+	// inFlight plays a hydration of j in progress, holding its claim; the
 	// returned function ends the hydration as Hydrate's own defer does, so a
 	// waiter that looks again finds none in flight.
-	inFlight := func(j *job.Job) (*appResidency, chan struct{}, func()) {
-		ready := make(chan struct{})
+	inFlight := func(j *job.Job) (*appResidency, func()) {
 		r := &appResidency{
-			lookup:    func(string) (*job.Job, bool) { return j, true },
-			dir:       dir,
-			hydrating: map[string]hydration{"abc123": {ready: ready, cancel: func() {}}},
+			lookup:  func(string) (*job.Job, bool) { return j, true },
+			dir:     dir,
+			cancels: map[string]context.CancelFunc{"abc123": func() {}},
 		}
-		return r, ready, func() {
+		r.hydrating.TryClaim("abc123")
+		return r, func() {
 			r.mu.Lock()
-			delete(r.hydrating, "abc123")
-			close(ready)
+			delete(r.cancels, "abc123")
+			r.hydrating.Release("abc123")
 			r.mu.Unlock()
 		}
 	}
 
 	t.Run("the first succeeded", func(t *testing.T) {
 		j := newJob()
-		r, _, finish := inFlight(j)
+		r, finish := inFlight(j)
 		done := make(chan error, 1)
 		go func() { done <- r.Hydrate(context.Background(), "abc123") }()
 		m := job.NewManifest([]job.JobFile{{Subject: "test.rar", Bytes: 100, Articles: []job.JobArticle{{ID: "m1", Bytes: 100, Number: 1}}}})
@@ -209,14 +213,13 @@ func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 
 	t.Run("the first failed", func(t *testing.T) {
 		j := newJob()
-		r, ready, finish := inFlight(j)
+		r, finish := inFlight(j)
 		done := make(chan error, 1)
 		go func() { done <- r.Hydrate(context.Background(), "abc123") }()
-		// Production only closes ready; this send completes only once the
-		// waiter is receiving on it, so the waiter has certainly waited —
-		// a waiter that found no hydration in flight would hydrate the job
-		// itself and pass whatever the waited path does.
-		ready <- struct{}{}
+		// The waiter must be waiting before the hydration ends: one that
+		// found no hydration in flight would hydrate the job itself and pass
+		// whatever the waited path does.
+		awaitHydrateWaiting(t, r)
 		finish()
 		if err := <-done; err != nil {
 			t.Errorf("Hydrate = %v after the hydration it waited on left the job non-resident; the waiter hydrates it itself", err)
@@ -227,7 +230,7 @@ func TestAppResidency_HydrateWaitsForAHydrationInFlight(t *testing.T) {
 	})
 
 	t.Run("the caller gives up", func(t *testing.T) {
-		r, _, _ := inFlight(newJob())
+		r, _ := inFlight(newJob())
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		if err := r.Hydrate(ctx, "abc123"); !errors.Is(err, context.Canceled) {
@@ -269,5 +272,69 @@ func TestAppResidency_FaultAfterCancellationIsAContextError(t *testing.T) {
 	}
 	if parked {
 		t.Error("fault after cancellation parked the job")
+	}
+}
+
+// awaitHydrateWaiting returns once r's own Hydrate is blocked in the latch
+// Wait, and fails the test if it is not within five seconds. The match is on
+// one goroutine's stack holding both frames, with r as Hydrate's printed
+// receiver (exact, or marked ? when the traceback is unsure of it), so a
+// parallel test's Hydrate waiting on another residency does not satisfy it.
+// The dump is grown until runtime.Stack no longer fills the buffer, so the
+// waiter cannot be cut off the end of it.
+func awaitHydrateWaiting(t *testing.T, r *appResidency) {
+	t.Helper()
+	recv := fmt.Sprintf("(*appResidency).Hydrate(%p", r)
+	buf := make([]byte, 1<<16)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		n := runtime.Stack(buf, true)
+		if n == len(buf) {
+			buf = make([]byte, 2*len(buf))
+			continue
+		}
+		for g := range strings.SplitSeq(string(buf[:n]), "\n\n") {
+			if strings.Contains(g, "keyedlatch.(*Latch).Wait(") &&
+				(strings.Contains(g, recv+",") || strings.Contains(g, recv+"?,")) {
+				return
+			}
+		}
+		runtime.Gosched()
+	}
+	n := runtime.Stack(buf, true)
+	t.Fatalf("r's Hydrate never waited on the latch; goroutines:\n%s", buf[:n])
+}
+
+// TestAppResidency_HydrateLeavesNoCancelBehind pins that Hydrate's deferred
+// release drops the hydration's cancel along with its claim, on the return
+// that attached and on one whose manifest read failed. A cancel left behind
+// would sit in r.cancels for the life of the process, one per job ever
+// hydrated.
+func TestAppResidency_HydrateLeavesNoCancelBehind(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	attached := job.New("abc123", "test", job.PolicyFromPP(3))
+	writeTestManifest(t, filepath.Join(dir, "abc123.json.gz"), attached)
+	missing := job.New("def456", "test", job.PolicyFromPP(3)) // no manifest written
+	jobs := map[string]*job.Job{"abc123": attached, "def456": missing}
+	r := newAppResidency(func(id string) (*job.Job, bool) {
+		j, found := jobs[id]
+		return j, found
+	}, dir, nil, nil)
+
+	for _, c := range []struct {
+		id      string
+		wantErr bool
+	}{{"abc123", false}, {"def456", true}} {
+		err := r.Hydrate(context.Background(), c.id)
+		if (err != nil) != c.wantErr {
+			t.Fatalf("Hydrate(%s) = %v, want an error: %v", c.id, err, c.wantErr)
+		}
+		r.mu.Lock()
+		n, held := len(r.cancels), r.hydrating.Held(c.id)
+		r.mu.Unlock()
+		if n != 0 || held {
+			t.Errorf("after Hydrate(%s): %d cancels left and claim held = %v; want 0 and false", c.id, n, held)
+		}
 	}
 }

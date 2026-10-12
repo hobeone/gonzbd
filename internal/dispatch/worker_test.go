@@ -353,9 +353,9 @@ func TestClaimLaunched_GuardsAgainstRemovingAndEvictedJobs(t *testing.T) {
 		t.Fatal("claimLaunched succeeded while job was marked removing")
 	}
 	d.mu.Lock()
-	if _, ok := d.launched["j1"]; ok {
+	if d.launched.Held("j1") {
 		d.mu.Unlock()
-		t.Fatal("claimLaunched leaked a channel in d.launched while removing")
+		t.Fatal("claimLaunched left a claim in d.launched while removing")
 	}
 	d.mu.Unlock()
 	rm.abort()
@@ -371,9 +371,9 @@ func TestClaimLaunched_GuardsAgainstRemovingAndEvictedJobs(t *testing.T) {
 		t.Fatal("claimLaunched succeeded for job not in byID")
 	}
 	d.mu.Lock()
-	if _, ok := d.launched["j1"]; ok {
+	if d.launched.Held("j1") {
 		d.mu.Unlock()
-		t.Fatal("claimLaunched leaked a channel in d.launched for evicted job")
+		t.Fatal("claimLaunched left a claim in d.launched for evicted job")
 	}
 	d.mu.Unlock()
 }
@@ -435,45 +435,6 @@ func TestRemove_RefcountsConcurrentRemovals(t *testing.T) {
 	}
 }
 
-// TestWaitLaunched_PrefersClosedChannelOverCancelledContext verifies that when
-// both the worker channel is closed and ctx is expired, waitLaunched prioritizes
-// the closed channel via its pre-select rather than returning ctx.Err() at random.
-func TestWaitLaunched_PrefersClosedChannelOverCancelledContext(t *testing.T) {
-	d := newTestDispatcher(t)
-	j := job.New("j1", "n", job.Policy{})
-	if err := d.Add(context.Background(), j, Header{}); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-
-	for i := range 200 {
-		if !d.claimLaunched("j1") {
-			t.Fatalf("iteration %d: claimLaunched failed", i)
-		}
-		// Close the channel (worker exited).
-		d.clearLaunched("j1")
-
-		// Re-populate launched map with a closed channel to test waitLaunched directly
-		// while id is in launched. Note clearLaunched deletes it from launched, so
-		// re-add a closed channel to test waitLaunched when ch != nil.
-		closedCh := make(chan struct{})
-		close(closedCh)
-		d.mu.Lock()
-		d.launched["j1"] = closedCh
-		d.mu.Unlock()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // context is cancelled immediately
-
-		if err := d.waitLaunched(ctx, "j1"); err != nil {
-			t.Fatalf("iteration %d: waitLaunched returned %v, want nil (closed channel must take priority over cancelled context)", i, err)
-		}
-
-		d.mu.Lock()
-		delete(d.launched, "j1")
-		d.mu.Unlock()
-	}
-}
-
 func TestYieldedFor_JobMismatch_NoOpsAndPreservesNewAttempt(t *testing.T) {
 	d := newTestDispatcher(t)
 	j1 := job.New("j1", "first", job.Policy{})
@@ -512,9 +473,9 @@ func TestYieldedFor_JobMismatch_NoOpsAndPreservesNewAttempt(t *testing.T) {
 
 	// Assert j2's launched latch was NOT cleared
 	d.mu.Lock()
-	launchedCh := d.launched["j1"]
+	launchedHeld := d.launched.Held("j1")
 	d.mu.Unlock()
-	if launchedCh == nil {
+	if !launchedHeld {
 		t.Error("YieldedFor with stale job object cleared the new attempt's launched latch")
 	}
 }
@@ -540,9 +501,9 @@ func TestYieldedJob(t *testing.T) {
 		t.Errorf("YieldedJob(j) = %v, want nil", err)
 	}
 	d.mu.Lock()
-	ch := d.launched["j1"]
+	held := d.launched.Held("j1")
 	d.mu.Unlock()
-	if ch != nil {
+	if held {
 		t.Error("YieldedJob did not clear launched latch")
 	}
 }

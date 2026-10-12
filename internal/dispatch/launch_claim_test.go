@@ -157,7 +157,7 @@ func TestLaunch_ReportBeforeClaimLeavesNoStrandedClaim(t *testing.T) {
 	}
 
 	d.mu.Lock()
-	_, claimed := d.launched[j.ID()]
+	claimed := d.launched.Held(j.ID())
 	d.mu.Unlock()
 	if claimed {
 		t.Errorf("launch claim held for %s after launch, with no worker that will ever report; runs = %v", j.ID(), runner.ran())

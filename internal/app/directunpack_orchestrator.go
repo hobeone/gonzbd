@@ -96,7 +96,8 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		// fed, since the collect may not have taken it yet.
 		//
 		// Lock order: o.mu, then jobTransitions.mu, whose holders take no
-		// other lock: it is taken only in transition.go
+		// other lock but the leaf lock inside its keyedlatch.Latch: it is
+		// taken only in transition.go
 		// (`git grep -n 't\.mu\.Lock()' -- 'internal/app/*.go' ':!*_test.go'`
 		// returns 9 lines, all there), by jobTransitions and transitionClaim
 		// methods that call no function of this package outside that file

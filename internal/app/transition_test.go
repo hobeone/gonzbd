@@ -75,30 +75,21 @@ func TestJobTransitions_FinalizingRecordIsCountedAndSkippedByTryAcquire(t *testi
 	again.release()
 }
 
-// TestJobTransitions_ClaimHelpers: claimLocked takes a free ID once, and
-// claimOrHolder claims a free ID or hands back the holder's channel, which
-// closes when the holder releases.
-func TestJobTransitions_ClaimHelpers(t *testing.T) {
+// TestJobTransitions_ClaimHelper: claim takes a free ID once, and again once
+// the claim on it is released.
+func TestJobTransitions_ClaimHelper(t *testing.T) {
 	t.Parallel()
 	var tr jobTransitions
-	tr.mu.Lock()
-	first, second := tr.claimLocked("a"), tr.claimLocked("a")
-	tr.mu.Unlock()
+	first, second := tr.claim("a"), tr.claim("a")
 	if !first || second {
-		t.Errorf("claimLocked(a) twice = (%v, %v), want (true, false)", first, second)
+		t.Errorf("claim(a) twice = (%v, %v), want (true, false)", first, second)
 	}
-	holder := tr.claimOrHolder("a")
-	if holder == nil {
-		t.Fatal("claimOrHolder(a) claimed an ID another claim holds")
-	}
-	if ch := tr.claimOrHolder("b"); ch != nil {
-		t.Error("claimOrHolder(b) did not claim a free ID")
+	if !tr.claim("b") {
+		t.Error("claim(b) did not claim a free ID")
 	}
 	(&transitionClaim{t: &tr, ids: map[string]struct{}{"a": {}}}).release()
-	select {
-	case <-holder:
-	default:
-		t.Error("the holder's channel stayed open after it released")
+	if !tr.claim("a") {
+		t.Error("claim(a) after its release = false, want true")
 	}
 }
 
@@ -155,7 +146,22 @@ func TestJobTransitions_AcquireGivesUpWithItsContext(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	c, err := tr.acquire(ctx, "x")
+	type result struct {
+		c   *transitionClaim
+		err error
+	}
+	got := make(chan result, 1)
+	go func() {
+		c, err := tr.acquire(ctx, "x")
+		got <- result{c, err}
+	}()
+	var r result
+	select {
+	case r = <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("acquire did not return after its context ended")
+	}
+	c, err := r.c, r.err
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("acquire err = %v, want DeadlineExceeded", err)
 	}
@@ -204,8 +210,8 @@ func TestJobTransitions_AWokenWaiterRechecksBeforeTakingTheID(t *testing.T) {
 	}
 
 	tr.mu.Lock()
-	close(tr.held["x"])
-	tr.held["x"] = make(chan struct{})
+	tr.held.Release("x")
+	tr.held.TryClaim("x")
 	tr.mu.Unlock()
 	second := &transitionClaim{t: &tr, ids: map[string]struct{}{"x": {}}}
 
@@ -275,11 +281,10 @@ func TestJobTransitions_ReleaseRemovesTheIDs(t *testing.T) {
 	var tr jobTransitions
 	c := tr.tryAcquire("a", "b")
 	c.release()
-	tr.mu.Lock()
-	n := len(tr.held)
-	tr.mu.Unlock()
-	if n != 0 {
-		t.Errorf("%d ids still in the map after release, want 0: it would grow with every job ever touched", n)
+	for _, id := range []string{"a", "b"} {
+		if tr.held.Held(id) {
+			t.Errorf("%s still held after release", id)
+		}
 	}
 }
 

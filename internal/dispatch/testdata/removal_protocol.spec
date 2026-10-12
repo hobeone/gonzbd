@@ -22,7 +22,7 @@ file internal/dispatch/registry.go
 [the liveness check split back out of the marker's lock span]
 file internal/dispatch/registry.go
 --- anchor
-	if len(d.occupancyTokens[id]) > 0 || d.launched[id] != nil {
+	if len(d.occupancyTokens[id]) > 0 || d.launched.Held(id) {
 		return nil, true
 	}
 --- replace
@@ -60,11 +60,11 @@ file internal/dispatch/registry.go
 [a refused beginRemovalIfIdle leaves its marker behind]
 file internal/dispatch/registry.go
 --- anchor
-	if len(d.occupancyTokens[id]) > 0 || d.launched[id] != nil {
+	if len(d.occupancyTokens[id]) > 0 || d.launched.Held(id) {
 		return nil, true
 	}
 --- replace
-	if len(d.occupancyTokens[id]) > 0 || d.launched[id] != nil {
+	if len(d.occupancyTokens[id]) > 0 || d.launched.Held(id) {
 		d.removing[id]++
 		return nil, true
 	}

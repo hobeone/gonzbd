@@ -13,6 +13,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/dispatch"
 	"github.com/hobeone/gonzbd/internal/durability"
 	"github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/keyedlatch"
 	"github.com/hobeone/gonzbd/internal/storagefault"
 )
 
@@ -50,16 +51,19 @@ type appResidency struct {
 	peek     func(j *job.Job, fileIdx int) string
 	parked   func(jobID string, f *storagefault.Fault)
 
+	// hydrating holds a claim on each job ID a Hydrate is in flight for,
+	// released when it returns; cancels holds the cancel of the context it
+	// runs under, which is how Evict ends it rather than waiting for its
+	// reads. Under mu, an ID is in cancels exactly while a hydration holds
+	// its claim. Both change only under mu
+	// (`git grep -n 'r\.hydrating\.\(TryClaim\|Release\)(' -- 'internal/app/*.go' ':!*_test.go'`
+	// returns 3 lines: the claim, the release of a claim taken for a job
+	// already resident, and the deferred release). The resident job's claim
+	// is taken and given back inside one mu span and never enters cancels, so
+	// no holder of mu sees it.
 	mu        sync.Mutex
-	hydrating map[string]hydration
-}
-
-// hydration is one in-flight Hydrate of a job: ready is closed when it
-// returns, and cancel cancels the context it runs under, which is how Evict
-// ends it rather than waiting for its reads.
-type hydration struct {
-	ready  chan struct{}
-	cancel context.CancelFunc
+	hydrating keyedlatch.Latch
+	cancels   map[string]context.CancelFunc
 }
 
 func newAppResidency(lookup func(string) (*job.Job, bool), dir string, store recordReader, log *slog.Logger) *appResidency {
@@ -67,11 +71,11 @@ func newAppResidency(lookup func(string) (*job.Job, bool), dir string, store rec
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &appResidency{
-		lookup:    lookup,
-		dir:       dir,
-		store:     store,
-		log:       log,
-		hydrating: make(map[string]hydration),
+		lookup:  lookup,
+		dir:     dir,
+		store:   store,
+		log:     log,
+		cancels: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -103,36 +107,36 @@ func (r *appResidency) Hydrate(ctx context.Context, id string) error {
 		return fmt.Errorf("residency: hydrate %s: no such job", id)
 	}
 
-	var ready chan struct{}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	for ready == nil {
+	for {
 		r.mu.Lock()
-		if r.hydrating == nil {
-			r.hydrating = make(map[string]hydration)
-		}
-		if inFlight, ok := r.hydrating[id]; ok {
-			r.mu.Unlock()
-			select {
-			case <-inFlight.ready:
-				continue
-			case <-ctx.Done():
-				return ctx.Err()
+		if r.hydrating.TryClaim(id) {
+			// Taken and, for a resident job, given back in one mu span, so
+			// Evict, which looks under mu, never finds it; a waiter that
+			// finds it wakes at once and goes round again.
+			if j.Resident() {
+				r.hydrating.Release(id)
+				r.mu.Unlock()
+				return nil
 			}
-		}
-		if j.Resident() {
+			if r.cancels == nil {
+				r.cancels = make(map[string]context.CancelFunc)
+			}
+			r.cancels[id] = cancel
 			r.mu.Unlock()
-			return nil
+			break
 		}
-		ready = make(chan struct{})
-		r.hydrating[id] = hydration{ready: ready, cancel: cancel}
 		r.mu.Unlock()
+		if err := r.hydrating.Wait(ctx, id); err != nil {
+			return err
+		}
 	}
 
 	defer func() {
 		r.mu.Lock()
-		delete(r.hydrating, id)
-		close(ready)
+		delete(r.cancels, id)
+		r.hydrating.Release(id)
 		r.mu.Unlock()
 	}()
 
@@ -323,13 +327,16 @@ func (r *appResidency) Evict(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for {
-		h, ok := r.hydrating[id]
-		if !ok {
+		// Done, not Wait: the channel is taken under mu with the cancel, so
+		// Evict waits on the hydration it cancelled and not on one that
+		// replaced it after mu was released.
+		done := r.hydrating.Done(id)
+		if done == nil {
 			break
 		}
-		h.cancel()
+		r.cancels[id]()
 		r.mu.Unlock()
-		<-h.ready
+		<-done
 		r.mu.Lock()
 	}
 	j, ok := r.lookup(id)
