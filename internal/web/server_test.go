@@ -1,9 +1,12 @@
 package web
 
 import (
+	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/fstest"
 )
 
 func TestHandler(t *testing.T) {
@@ -25,5 +28,24 @@ func TestHandler(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("GET / status code = %v, want %v", rr.Code, http.StatusOK)
+	}
+}
+
+// failingSubFS is an fs.SubFS whose Sub always fails, the one way to make
+// fs.Sub return an error for the valid path "dist".
+type failingSubFS struct{ fstest.MapFS }
+
+var errSub = errors.New("injected Sub failure")
+
+func (failingSubFS) Sub(string) (fs.FS, error) { return nil, errSub }
+
+func TestHandlerFrom_ReturnsSubError(t *testing.T) {
+	t.Parallel()
+	handler, err := handlerFrom(failingSubFS{}, func() string { return "k" }, alwaysTrusted)
+	if !errors.Is(err, errSub) {
+		t.Fatalf("handlerFrom() error = %v, want wrapping %v", err, errSub)
+	}
+	if handler != nil {
+		t.Errorf("handlerFrom() handler = %v, want nil on error", handler)
 	}
 }
