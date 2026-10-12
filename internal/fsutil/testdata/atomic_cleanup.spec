@@ -8,9 +8,9 @@ run ^(TestWriteAtomic_FailedTempRemovalIsReturned|TestWriteAtomic_CleanupReports
 [the cleanup failure is discarded]
 file internal/fsutil/atomic.go
 --- anchor
-			err = errors.Join(err, discardTemp(tmp, tmpName))
+			err = errors.Join(err, DiscardTemp(tmp, func() error { return os.Remove(tmpName) }))
 --- replace
-			_ = discardTemp(tmp, tmpName)
+			_ = DiscardTemp(tmp, func() error { return os.Remove(tmpName) })
 --- end
 
 [a close of an already-closed temp file is reported]

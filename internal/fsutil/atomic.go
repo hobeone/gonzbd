@@ -51,7 +51,7 @@ func writeAtomic(path string, perm os.FileMode, chmod bool, write func(w io.Writ
 	var keep bool
 	defer func() {
 		if !keep {
-			err = errors.Join(err, discardTemp(tmp, tmpName))
+			err = errors.Join(err, DiscardTemp(tmp, func() error { return os.Remove(tmpName) }))
 		}
 	}()
 
@@ -78,14 +78,16 @@ func writeAtomic(path string, perm os.FileMode, chmod bool, write func(w io.Writ
 	return nil
 }
 
-// discardTemp closes and removes an unpublished temp file. A file the caller
-// already closed, or one already gone, is not a failure.
-func discardTemp(f *os.File, name string) error {
+// DiscardTemp closes an unpublished temp file and unlinks it through remove,
+// which names it in whatever way the caller opened it (a path, or a name
+// under an os.Root). A file the caller already closed, or one already gone,
+// is not a failure.
+func DiscardTemp(f *os.File, remove func() error) error {
 	cerr := f.Close()
 	if errors.Is(cerr, os.ErrClosed) {
 		cerr = nil
 	}
-	rerr := os.Remove(name)
+	rerr := remove()
 	if errors.Is(rerr, os.ErrNotExist) {
 		rerr = nil
 	}
