@@ -3,6 +3,7 @@ package par2
 import (
 	"context"
 	"crypto/md5" //nolint:gosec // MD5 is mandated by the PAR2 format, not security-sensitive
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,10 +22,10 @@ import (
 // large releases; 1 GB covers all realistic NZB download sizes.
 const par2FileSizeLimit = 1 * 1024 * 1024 * 1024 // 1 GiB
 
-// newDecoderForDir handles setup and candidate file registration for a PAR2
+// newDecoder handles setup and candidate file registration for a PAR2
 // decoder. The returned engineVerified fills in as the decoder's verification
 // report is logged; protectedFilesIntact reads it.
-func newDecoderForDir(ctx context.Context, log *slog.Logger, parfile, candidateDir string, onWarn, onInfo, onUILine func(string)) (*par2engine.Decoder, *engineVerified, error) {
+func newDecoder(ctx context.Context, log *slog.Logger, parfile string, candidates []string, onWarn, onInfo, onUILine func(string)) (*par2engine.Decoder, *engineVerified, error) {
 	verified := &engineVerified{names: make(map[string]struct{})}
 	engineLog := slog.New(&verdictRecorder{
 		Handler:  newPar2UILogger(log.With("component", "go_par2"), onUILine).Handler(),
@@ -39,16 +40,12 @@ func newDecoderForDir(ctx context.Context, log *slog.Logger, parfile, candidateD
 		return nil, nil, fmt.Errorf("open decoder: %w", err)
 	}
 
-	if candidateDir != "" {
-		if n, addErr := addCandidateFiles(d, candidateDir); addErr != nil {
-			if onWarn != nil {
-				onWarn(fmt.Sprintf("could not register all candidate files: %v", addErr))
-			}
-		} else if n > 0 {
-			if onInfo != nil {
-				onInfo(fmt.Sprintf("registered candidate files count=%d", n))
-			}
-		}
+	n, addErr := addCandidateFiles(d, filepath.Dir(parfile), candidates)
+	if addErr != nil && onWarn != nil {
+		onWarn(fmt.Sprintf("could not register all candidate files: %v", addErr))
+	}
+	if n > 0 && onInfo != nil {
+		onInfo(fmt.Sprintf("registered candidate files count=%d", n))
 	}
 
 	return d, verified, nil
@@ -93,11 +90,13 @@ func runWithProgress(label string, onUpdate func(string), engineCall func(chan p
 
 // GoVerify runs a native Go-based PAR2 verification using par2engine.
 // It returns a VerifyResult compatible with the existing par2 package API.
-// candidateDir is the NZB download directory; every non-par2 file in it is
-// registered via AddCandidateFile so the engine can content-match files
-// regardless of their on-disk names. Pass an empty string to skip.
+// candidates are the files beside parfile that the engine may content-match
+// against the set regardless of their names: the list RepairWith takes as
+// extra files (see addCandidateFiles). nil registers none. par2engine v1.0.7
+// lists the directory once, in loadVolumeFiles, and keeps only .par2 names
+// from it, so a file in neither this list nor the set is not scanned.
 // onLine is called for progress updates and diagnostic messages (may be nil).
-func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir string, onLine func(string)) (res VerifyResult, err error) {
+func GoVerify(ctx context.Context, log *slog.Logger, parfile string, candidates []string, onLine func(string)) (res VerifyResult, err error) {
 	err = cmdutil.SafeEngineRun("go_par2: par2engine panic during verify", func() error {
 		var mu sync.Mutex
 		var safeOnLine func(string)
@@ -109,9 +108,9 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 			}
 		}
 
-		d, verified, decErr := newDecoderForDir(ctx, log, parfile, candidateDir,
-			func(msg string) { log.Warn("go_par2: "+msg, "dir", candidateDir) },
-			func(msg string) { log.Info("go_par2: "+msg, "dir", candidateDir) },
+		d, verified, decErr := newDecoder(ctx, log, parfile, candidates,
+			func(msg string) { log.Warn("go_par2: "+msg, "parfile", parfile) },
+			func(msg string) { log.Info("go_par2: "+msg, "parfile", parfile) },
 			safeOnLine,
 		)
 		if decErr != nil {
@@ -176,12 +175,10 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 
 // GoRepair runs a native Go-based PAR2 verification and repair using par2engine.
 // It returns a RepairResult compatible with the existing par2 package API.
-// candidateDir is the NZB download directory; every non-par2 file in it is
-// registered via AddCandidateFile so the engine can content-match files
-// regardless of their on-disk names. Pass an empty string to skip.
+// candidates are as for GoVerify.
 // onLine is called for each progress update and diagnostic message (may be nil).
 // Success is set only when protectedFilesIntact confirms the set after the run.
-func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir string, onLine func(string)) (res RepairResult, err error) {
+func GoRepair(ctx context.Context, log *slog.Logger, parfile string, candidates []string, onLine func(string)) (res RepairResult, err error) {
 	err = cmdutil.SafeEngineRun("go_par2: par2engine panic during repair", func() error {
 		var mu sync.Mutex
 		var output strings.Builder
@@ -195,7 +192,7 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 			}
 		}
 
-		d, verified, decErr := newDecoderForDir(ctx, log, parfile, candidateDir,
+		d, verified, decErr := newDecoder(ctx, log, parfile, candidates,
 			func(msg string) { accumulate(fmt.Sprintf("[go_par2] WARN: %s", msg)) },
 			func(msg string) { accumulate(fmt.Sprintf("[go_par2] %s", msg)) },
 			accumulate,
@@ -415,33 +412,42 @@ func (h *verdictRecorder) WithGroup(name string) slog.Handler {
 	return &verdictRecorder{Handler: h.Handler.WithGroup(name), verified: h.verified}
 }
 
-// addCandidateFiles reads dir and registers every non-directory, non-par2 file
-// with the decoder via AddCandidateFile. The paths are relative to the par2
-// file's directory (which is the same as the NZB download directory). Files
-// that fail registration are logged as warnings; the count of successfully
-// registered files is returned. A non-nil error means ReadDir failed.
-func addCandidateFiles(d *par2engine.Decoder, dir string) (int, error) {
-	entries, err := os.ReadDir(dir)
+// addCandidateFiles registers each of candidates with the decoder via
+// AddCandidateFile and returns how many it registered. parDir (the par2
+// file's directory) and each candidate are paths as the caller would open
+// them, absolute or relative to the working directory; both are made absolute
+// before the candidate is taken relative to parDir, because par2engine
+// resolves it under parDir and refuses one that leaves it. The caller chooses
+// the list; this reads no directory. A candidate that cannot be registered is
+// skipped, and the returned error names each one.
+func addCandidateFiles(d *par2engine.Decoder, parDir string, candidates []string) (int, error) {
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+	absDir, err := filepath.Abs(parDir)
 	if err != nil {
-		return 0, fmt.Errorf("read candidate dir: %w", err)
+		return 0, fmt.Errorf("resolve %s: %w", parDir, err)
 	}
 	var n int
-	for _, e := range entries {
-		if e.IsDir() {
+	var errs []error
+	for _, c := range candidates {
+		abs, err := filepath.Abs(c)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", c, err))
 			continue
 		}
-		name := e.Name()
-		// Skip par2 files — the decoder already knows about them.
-		if strings.EqualFold(filepath.Ext(name), ".par2") {
+		rel, err := filepath.Rel(absDir, abs)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", c, err))
 			continue
 		}
-		if addErr := d.AddCandidateFile(name); addErr != nil {
-			// Non-fatal: log and continue so a single bad path doesn't abort.
+		if err := d.AddCandidateFile(rel); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", c, err))
 			continue
 		}
 		n++
 	}
-	return n, nil
+	return n, errors.Join(errs...)
 }
 
 // newPar2UILogger wraps base with a teeHandler so that Error and Warn records

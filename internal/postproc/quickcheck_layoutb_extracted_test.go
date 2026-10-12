@@ -18,6 +18,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/job/jobtest"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/types"
+	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // deliveredFile is one file a test job downloaded: its bytes and the name it
@@ -291,6 +292,43 @@ func TestExtractedRepairStage_Skips(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// extracted_repair on the native engine is handed the same candidate files as
+// the external one: the archive volume unpack recorded for deletion is not one
+// of them, so go_par2 neither registers nor scans it (#906).
+func TestExtractedRepairStage_NativeEngineSkipsPendingDeletions(t *testing.T) {
+	t.Parallel()
+
+	job, dir := deliveredJob(t, "layout_b", layoutBPar2, []deliveredFile{
+		{name: "release.rar", data: fixtureBytes(t, "layout_b", "release.rar")},
+	})
+	qc, repair, _ := layoutStages()
+	up := NewUnpackStageWith(unpack.Options{UseGoRAR: true, UseGo7z: true}, true)
+	up.SetEnabled(true)
+	qc.Unpack = up
+	if errs := runStages(t, job, qc, repair, up); len(errs) > 0 {
+		t.Fatalf("stages before extracted_repair: %v", errs)
+	}
+	if !job.isPendingDeletion("release.rar") {
+		t.Fatalf("release.rar is not pending deletion (PendingDeletions=%v); the test no longer sets up what it checks", job.PendingDeletions)
+	}
+	assertFeatureExtracted(t, dir)
+
+	var engineLines []string
+	job.OnOutput = func(_, line string) { engineLines = append(engineLines, line) }
+	if err := NewExtractedRepairStage(repair).Run(t.Context(), job); err != nil {
+		t.Fatalf("extracted_repair: %v", err)
+	}
+
+	if !job.DeferredPar2Verified {
+		t.Errorf("DeferredPar2Verified = false; output: %v", job.OutputLines)
+	}
+	for _, line := range engineLines {
+		if strings.Contains(line, "release.rar") {
+			t.Errorf("go_par2 was handed the pending-deletion volume: %q", line)
+		}
 	}
 }
 
