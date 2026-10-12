@@ -405,15 +405,19 @@
 	 * on, and no search of the Go source could find it doing so. Add a case
 	 * here, never a condition.
 	 */
-	const HEALTH_LABELS: Record<RepairState, { text: string; color: string }> = {
+	const HEALTH_LABELS: Record<RepairState, { text: string; color: string; hint?: string }> = {
 		intact: { text: 'Healthy', color: 'text-emerald-600 dark:text-emerald-400' },
-		repairable: { text: 'Repairable', color: 'text-amber-600 dark:text-amber-400' },
+		repairable: {
+			text: 'Within repair data',
+			color: 'text-amber-600 dark:text-amber-400',
+			hint: 'The damage found so far does not exceed the recovery data recognized in this post. That is not a guarantee it can be repaired; par2 decides after download.'
+		},
 		unknown: { text: 'Repair data unknown', color: 'text-amber-600 dark:text-amber-400' },
 		no_capacity: { text: 'No repair data', color: 'text-red-600 dark:text-red-400' },
 		beyond_capacity: { text: 'Beyond repair', color: 'text-red-600 dark:text-red-400' }
 	};
 
-	function healthLabel(): { text: string; color: string } {
+	function healthLabel(): { text: string; color: string; hint?: string } {
 		// An unrecognized state is a backend the UI has not caught up with.
 		// Reporting that beats guessing a verdict for it.
 		return HEALTH_LABELS[slot.repair_state] ?? { text: 'Unknown', color: 'text-m3-on-surface-variant' };
@@ -622,7 +626,7 @@
 				</div>
 				<div>
 					<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Health</span>
-					<div class={cn('font-bold mt-0.5', healthLabel().color)}>{healthLabel().text}</div>
+					<div class={cn('font-bold mt-0.5', healthLabel().color)} title={healthLabel().hint}>{healthLabel().text}</div>
 				</div>
 				<div>
 					<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Downloaded</span>
