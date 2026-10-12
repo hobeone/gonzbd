@@ -702,11 +702,11 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader
 	return extractedFiles, nil
 }
 
-// extractMember writes one member (header fh, content entry) into the
-// extraction directory through root and closes it, which is where its verdict
-// is reported. It returns the member's path, or "" when the member leaves
-// nothing to list: a directory, a link, or a name unpack.MemberPath refuses.
-// On an error the entry may still be open; the caller closes it.
+// extractMember extracts one member into the extraction directory through
+// unpack.ExtractMember, the member step of unpack's in-process RAR extractor,
+// with this unpacker's options. It returns the member's path, or "" when the
+// member leaves nothing to list. On an error the entry may still be open; the
+// caller closes it.
 func (d *DirectUnpacker) extractMember(ctx context.Context, root *os.Root, fh *rarengine.FileHeader, entry io.ReadCloser) (string, error) {
 	opts := unpack.Options{
 		OneFolder:        d.opts.OneFolder,
@@ -715,27 +715,11 @@ func (d *DirectUnpacker) extractMember(ctx context.Context, root *os.Root, fh *r
 		DecodeWorkers:    d.opts.DecodeWorkers,
 		OnLine:           d.opts.OnLine,
 	}
-	sp, ok := unpack.MemberPath(fh.Name, opts, d.log)
-	if !ok {
-		if err := unpack.CloseMember(entry); err != nil {
-			return "", fmt.Errorf("directunpack: verify skipped %s: %w", fh.Name, err)
-		}
-		return "", nil
-	}
-	destPath := sp.Abs(d.extractDir)
-	if err := unpack.ExtractEntryRarengine(ctx, root, d.extractDir, sp.Rel(), destPath, fh, entry, opts, d.log); err != nil {
+	_, abs, err := unpack.ExtractMember(ctx, root, d.extractDir, fh, entry, opts, d.log)
+	if err != nil {
 		return "", fmt.Errorf("directunpack: extract %s: %w", fh.Name, err)
 	}
-	if err := unpack.CloseMember(entry); err != nil {
-		return "", fmt.Errorf("directunpack: verify %s: %w", fh.Name, err)
-	}
-	if d.opts.OnLine != nil {
-		d.opts.OnLine("Extracting  " + fh.Name)
-	}
-	if !unpack.ExtractedEntryExists(fh) {
-		return "", nil
-	}
-	return destPath, nil
+	return abs, nil
 }
 
 // waitForVolume blocks until the specified volume is in completedVols.

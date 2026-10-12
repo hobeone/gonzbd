@@ -205,7 +205,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			return res, fmt.Errorf("go_unrar: read header: %w", err)
 		}
 
-		rel, abs, err := extractMember(ctx, root, outDir, entry.Header, entry, opts, log)
+		rel, abs, err := ExtractMember(ctx, root, outDir, entry.Header, entry, opts, log)
 		if err != nil {
 			_ = entry.Close() //nolint:errcheck // idempotent; closes a member a write failure left open, and the extraction error is the one returned
 			if ctx.Err() != nil {
@@ -231,12 +231,17 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 	return res, nil
 }
 
-// extractMember writes one member (header fh, content entry) through root
+// ExtractMember writes one member (header fh, content entry) through root
 // and closes it, which is where its verdict is reported. It returns the
 // member's path relative to root and under outDir, both empty when the member
 // leaves nothing to list: a directory, a link, or a name MemberPath refuses.
+// With OneFolder and without OverwriteFiles, a member whose flattened name is
+// already taken is written under a uniquePath name instead of being skipped.
 // On an error the entry may still be open; the caller closes it.
-func extractMember(ctx context.Context, root *os.Root, outDir string, fh *rarengine.FileHeader, entry io.ReadCloser, opts Options, log *slog.Logger) (rel, abs string, err error) {
+//
+// It is the member step of goUnRAREngineInternal's loop and of DirectUnpack's
+// (internal/directunpack), which calls it rather than keeping its own copy.
+func ExtractMember(ctx context.Context, root *os.Root, outDir string, fh *rarengine.FileHeader, entry io.ReadCloser, opts Options, log *slog.Logger) (rel, abs string, err error) {
 	sp, ok := MemberPath(fh.Name, opts, log)
 	if !ok {
 		return "", "", CloseMember(entry)
