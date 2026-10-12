@@ -2369,3 +2369,29 @@ func TestClearEmitted_RefusalIsLoggedAtError(t *testing.T) {
 		t.Errorf("a refused clear was not logged at Error; log:\n%s", logs.String())
 	}
 }
+
+// TestApplyDispatchPlan_HopelessFallbackLogsRefusalUnlessGone pins the
+// fallback pause made when no onJobHopeless is set: a refusal for a job no
+// longer registered is dropped, and any other (here, a cancel already
+// latched) is logged at Warn.
+func TestApplyDispatchPlan_HopelessFallbackLogsRefusalUnlessGone(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	d := newDispatchDownloader(nil)
+	d.log = slog.New(slog.NewTextHandler(&logs, nil))
+	j := addTestJob(t, d.dispatcher, bareJob("cancelled"), nil)
+	if err := d.dispatcher.Cancel(j.ID()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	plan := dispatchPlan{hopelessJobs: map[string]struct{}{j.ID(): {}, "gone": {}}}
+	d.applyDispatchPlan(context.Background(), plan, dispatchOpts{})
+	var refusals []string
+	for line := range strings.Lines(logs.String()) {
+		if strings.Contains(line, `msg="pause hopeless job"`) {
+			refusals = append(refusals, line)
+		}
+	}
+	if len(refusals) != 1 || !strings.Contains(refusals[0], "job=cancelled") {
+		t.Errorf("refusals logged = %q, want one, for the cancelled job only; log:\n%s", refusals, logs.String())
+	}
+}

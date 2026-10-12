@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run ^(TestUnlessGone|TestWarnUnlessGone|TestAppRunner_RefusedReportIsLoggedUnlessGone|TestPipelineClearEmitted_RefusalIsLoggedAtError|TestFileOwedUnwantedFailures_FailedHydrationIsLoggedAndFiled)$
+run ^(TestUnlessGone|TestWarnUnlessGone|TestAppRunner_RefusedReportIsLoggedUnlessGone|TestPipelineClearEmitted_RefusalIsLoggedAtError|TestFileOwedUnwantedFailures_FailedHydrationIsLoggedAndFiled|TestYieldStoppedWorkers_YieldsOnlyTheNamedStates|TestYieldStoppedWorkers_CollectsARefusal|TestStopWorkers_YieldsFetchingJobs|TestStall_RefusedPauseIsLogged|TestStall_PauseRefusedByARemovalIsNotLogged|TestRemoveJob_RefusedCancelIsLogged|TestApplication_ShutdownWithOptions|TestShutdown_PropagatesErrors|TestApplication_Shutdown_WedgedComponent|TestStopAndJoin_WaitsForWgBeforePostProcAndReportsTimeout|TestCheckpoint_SurvivesCrashMidPostProc|TestRestart_CompleteJobPassesThroughAssessing)$
 
 # Dispatcher refusals and ClearArticleEmitted refusals that used to be
 # discarded (#286): a refusal for a job that is gone is dropped, any other is
@@ -75,4 +75,60 @@ file internal/app/startup_reconcile.go
 					"job", row.ID, "err", err)
 				continue
 			}
+--- end
+
+[the shutdown yield inverts its state filter]
+file internal/app/app.go
+--- anchor
+		if !slices.Contains(states, row.View.State) {
+--- replace
+		if slices.Contains(states, row.View.State) {
+--- end
+
+[a refused shutdown yield is not collected]
+file internal/app/app.go
+--- anchor
+		if err := unlessGone(app.dispatcher.Yielded(row.ID)); err != nil && errs != nil {
+--- replace
+		if err := unlessGone(app.dispatcher.Yielded(row.ID)); err != nil && false {
+--- end
+
+[stopWorkers yields the post-processing states instead of Fetching]
+file internal/app/app.go
+--- anchor
+		app.yieldStoppedWorkers(errs, job.Fetching)
+--- replace
+		app.yieldStoppedWorkers(errs, job.Repairing, job.Extracting, job.Finalizing)
+--- end
+
+[joinAndStop yields Fetching instead of the post-processing states]
+file internal/app/app.go
+--- anchor
+		app.yieldStoppedWorkers(errs, job.Repairing, job.Extracting, job.Finalizing)
+--- replace
+		app.yieldStoppedWorkers(errs, job.Fetching)
+--- end
+
+[stall discards a refused pause]
+file internal/app/durability.go
+--- anchor
+		if err := app.dispatcher.PauseJob(jobID); !errors.Is(err, job.ErrIntentLatched) {
+--- replace
+		if err := app.dispatcher.PauseJob(jobID); false && !errors.Is(err, job.ErrIntentLatched) {
+--- end
+
+[stall warns about a pause refused by a removal's latched cancel]
+file internal/app/durability.go
+--- anchor
+		if err := app.dispatcher.PauseJob(jobID); !errors.Is(err, job.ErrIntentLatched) {
+--- replace
+		if err := app.dispatcher.PauseJob(jobID); err != nil || !errors.Is(err, job.ErrIntentLatched) {
+--- end
+
+[RemoveJob discards a refused cancel]
+file internal/app/app.go
+--- anchor
+	warnUnlessGone(app.log, "remove: cancelling the job failed", id, app.dispatcher.Cancel(id))
+--- replace
+	_ = app.dispatcher.Cancel(id)
 --- end
