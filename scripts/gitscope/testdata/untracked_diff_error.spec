@@ -1,26 +1,42 @@
 pkg ./scripts/gitscope/
-run TestDiff_FailedUntrackedDiffIsAnError|TestDiff_RendersUntrackedFileWithParseableHeader
+run TestDiff_FailedUntrackedDiffIsAnError|TestDiff_UntrackedPathGitCannotAccessIsAnError|TestDiff_RendersUntrackedFileWithParseableHeader|TestUntrackedDiffErr
 
 [Diff drops a failed untracked diff]
 file scripts/gitscope/gitscope.go
 --- anchor
-		if exitErr, ok := errors.AsType[*exec.ExitError](err); err != nil && (!ok || exitErr.ExitCode() != 1) {
+		if err := untrackedDiffErr(out, err); err != nil {
 --- replace
-		if exitErr, ok := errors.AsType[*exec.ExitError](err); false && err != nil && (!ok || exitErr.ExitCode() != 1) {
+		if err := untrackedDiffErr(out, err); false && err != nil {
 --- end
 
-[Diff accepts any exit status from the untracked diff]
+[untrackedDiffErr accepts any exit status]
 file scripts/gitscope/gitscope.go
 --- anchor
-		if exitErr, ok := errors.AsType[*exec.ExitError](err); err != nil && (!ok || exitErr.ExitCode() != 1) {
+	if !ok || exitErr.ExitCode() != 1 || out == "" {
 --- replace
-		if exitErr, ok := errors.AsType[*exec.ExitError](err); err != nil && (!ok || exitErr.ExitCode() < 0) {
+	if !ok || exitErr.ExitCode() < 0 || out == "" {
 --- end
 
-[Diff rejects exit status 1, the expected "inputs differ" result]
+[untrackedDiffErr rejects exit status 1, the expected "inputs differ" result]
 file scripts/gitscope/gitscope.go
 --- anchor
-		if exitErr, ok := errors.AsType[*exec.ExitError](err); err != nil && (!ok || exitErr.ExitCode() != 1) {
+	if !ok || exitErr.ExitCode() != 1 || out == "" {
 --- replace
-		if exitErr, ok := errors.AsType[*exec.ExitError](err); err != nil && (!ok || exitErr.ExitCode() != 2) {
+	if !ok || exitErr.ExitCode() != 2 || out == "" {
+--- end
+
+[untrackedDiffErr accepts exit 1 with no output (git could not access the path)]
+file scripts/gitscope/gitscope.go
+--- anchor
+	if !ok || exitErr.ExitCode() != 1 || out == "" {
+--- replace
+	if !ok || exitErr.ExitCode() != 1 {
+--- end
+
+[untrackedDiffErr accepts a failure that is not an ExitError]
+file scripts/gitscope/gitscope.go
+--- anchor
+	if !ok || exitErr.ExitCode() != 1 || out == "" {
+--- replace
+	if ok && (exitErr.ExitCode() != 1 || out == "") {
 --- end

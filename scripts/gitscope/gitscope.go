@@ -86,8 +86,9 @@ func baseCommit() (string, bool) {
 // core.quotePath is disabled for every invocation, because git otherwise
 // renders any non-ASCII path in C-quoted form: café.go appears as
 // "caf\303\251.go" in ls-files output and as `+++ "b/caf\303\251.go"` in a
-// diff header. Neither is a path. The first cannot be opened, so Diff's
-// --no-index call fails; the second does not match the
+// diff header. Neither is a path. git cannot access the first, so Diff's
+// --no-index call exits 1 with no output and Diff returns an error; the
+// second does not match the
 // `+++ b/` prefix consumers split on, so the file's line ranges are silently
 // unattributed. Setting it here rather than per-call covers both, and any
 // path-bearing command added later.
@@ -162,8 +163,8 @@ func Files() ([]string, error) {
 // TestDiff_CommittedHunksUseWorkingTreeLineNumbers, which pins both the
 // false positive and the false negative.
 //
-// Unlike Files, a failure of the base diff, or an untracked file's diff
-// exiting with any status but 1, is returned rather than tolerated.
+// Unlike Files, a failure of the base diff, or of an untracked file's diff
+// (see untrackedDiffErr), is returned rather than tolerated.
 // Diff has exactly one call covering all committed and uncommitted work, so
 // swallowing its error yields a diff with no hunks — which every consumer
 // reads as "nothing changed" and reports as a pass. An unresolvable base is
@@ -184,16 +185,31 @@ func Diff() (string, error) {
 		return "", err
 	}
 	for _, f := range untracked {
-		// --no-index exits 1 whenever the inputs differ, which is always true
-		// here. Any other failure (an unreadable file, a broken diff driver)
-		// would drop the file from the diff and read as "nothing changed".
 		out, err := git("diff", "--no-index", "-U0", "/dev/null", f)
-		if exitErr, ok := errors.AsType[*exec.ExitError](err); err != nil && (!ok || exitErr.ExitCode() != 1) {
+		if err := untrackedDiffErr(out, err); err != nil {
 			return "", fmt.Errorf("gitscope: git diff --no-index %s: %w", f, err)
 		}
 		b.WriteString(out)
 	}
 	return b.String(), nil
+}
+
+// untrackedDiffErr classifies the result of `git diff --no-index /dev/null f`.
+// git exits 1 both when the inputs differ and when it cannot access f
+// ("error: Could not access"); only the first writes a diff, since even an
+// empty new file gets a "diff --git" header. So exit 1 with output is the
+// expected result, and exit 1 with no output, any other exit status, or a
+// failure to run git at all is returned: each would otherwise drop f from
+// the diff, which a consumer reads as "nothing changed".
+func untrackedDiffErr(out string, err error) error {
+	if err == nil {
+		return nil
+	}
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	if !ok || exitErr.ExitCode() != 1 || out == "" {
+		return err
+	}
+	return nil
 }
 
 func splitLines(s string) []string {
