@@ -454,6 +454,47 @@ func TestWriteEntrySafely_VerifyFailureLeavesNoPublishedFile(t *testing.T) {
 	}
 }
 
+// TestWriteEntrySafely_FailedTempRemovalIsReturned pins that a temp file the
+// cleanup could not remove is reported with the failure that abandoned it,
+// and that the close of a temp file already closed before verify is not.
+func TestWriteEntrySafely_FailedTempRemovalIsReturned(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory permission this test relies on")
+	}
+
+	outDir := t.TempDir()
+	t.Cleanup(func() { _ = os.Chmod(outDir, 0o700) })
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("os.OpenRoot: %v", err)
+	}
+	defer root.Close() //nolint:errcheck // test cleanup, best-effort
+
+	wantErr := errors.New("simulated checksum mismatch")
+	verify := func() error {
+		// A read-only parent refuses the temp file's unlink.
+		if err := os.Chmod(outDir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		return wantErr
+	}
+
+	_, err = writeEntrySafely(
+		t.Context(), root, "corrupt.txt", filepath.Join(outDir, "corrupt.txt"),
+		strings.NewReader("data"), nil, true, 0o644, time.Time{}, Options{}, "corrupt.txt", "go_test", slog.Default(), verify,
+	)
+	if !errors.Is(err, wantErr) {
+		t.Errorf("err = %v, want it to carry the verify failure", err)
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Errorf("err = %v, want it to carry the refused temp removal", err)
+	}
+	if errors.Is(err, os.ErrClosed) {
+		t.Errorf("err = %v, want no close failure for a temp file already closed", err)
+	}
+}
+
 // TestWriteEntrySafely_NoTempFileLeftOnSuccess verifies that a successful
 // write leaves exactly the published file behind — no leftover
 // ".gonzbd-tmp-*" sibling from the atomic-publish temp file.

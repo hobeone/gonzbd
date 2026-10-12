@@ -27,6 +27,15 @@ func CleanupStageDirs(outDir string) {
 	}
 }
 
+// removeStageDir removes an external extractor's staging directory once the
+// extraction is over. A stage left behind sits inside outDir, which may be
+// the job's output, until a later CleanupStageDirs, so a failure is logged.
+func removeStageDir(log *slog.Logger, stageDir string) {
+	if err := os.RemoveAll(stageDir); err != nil {
+		log.Warn("unpack: failed to remove the staging directory", "dir", stageDir, "err", err)
+	}
+}
+
 // prepareStageDir cleans up any leftover .gonzbd-tmp-unpack-* directories in
 // outDir and creates a fresh staging directory inside outDir (#768).
 func prepareStageDir(outDir string) (string, error) {

@@ -152,7 +152,7 @@ func writeEntrySafely(
 	entryName, errPrefix string,
 	log *slog.Logger,
 	verify func() error,
-) (bool, error) {
+) (wrote bool, err error) {
 	if !opts.OverwriteFiles {
 		// Lstat, not Stat, for the reason given on fsutil.GetUniqueRelPath.
 		// This one is not a containment hole — the write goes to a temp file
@@ -187,12 +187,11 @@ func writeEntrySafely(
 	// published is set only once the rename below succeeds. Until then, this
 	// cleans up the unpublished temp file on every return path (error or
 	// panic) — destRel itself is never touched unless the write and verify
-	// both succeeded.
+	// both succeeded. A cleanup failure is joined to the error returned.
 	var published bool
 	defer func() {
 		if !published {
-			_ = out.Close() // no-op if already closed on the success path
-			_ = root.Remove(tmpRel)
+			err = errors.Join(err, fsutil.DiscardTemp(out, func() error { return root.Remove(tmpRel) }))
 		}
 	}()
 

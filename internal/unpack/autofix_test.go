@@ -1,9 +1,13 @@
 package unpack_test
 
 import (
+	"bytes"
+	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/testutil"
@@ -143,5 +147,64 @@ exit 1
 	// Since 0 files were extracted, it should NOT auto-correct and the error must persist.
 	if err == nil {
 		t.Error("expected error to persist when zero files were extracted")
+	}
+}
+
+// TestUnRAR_UnreadableStageIsReportedAndLogged pins two failures around the
+// auto-correction check that used to vanish: a staging directory that cannot
+// be read is part of the returned error, and one that cannot be removed
+// afterwards is logged.
+func TestUnRAR_UnreadableStageIsReportedAndLogged(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory permission this test relies on")
+	}
+
+	dir := t.TempDir()
+	outDir := t.TempDir()
+	// Registered after TempDir, so it runs first and lets TempDir remove
+	// the locked directory the script leaves behind. WalkDir visits a
+	// directory before reading it, so each is unlocked in time.
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(outDir, func(path string, d fs.DirEntry, _ error) error {
+			if d != nil && d.IsDir() {
+				_ = os.Chmod(path, 0o700)
+			}
+			return nil
+		})
+	})
+
+	scriptPath := filepath.Join(dir, "mock-unrar")
+	script := `#!/bin/sh
+eval "OUTDIR=\${$#}"
+echo "Cannot create file.txt"
+echo "Attempting to correct the filename"
+touch "${OUTDIR}file_corrected.txt"
+mkdir "${OUTDIR}locked"
+touch "${OUTDIR}locked/inner"
+chmod 000 "${OUTDIR}locked"
+exit 1
+`
+	writeScript(t, scriptPath, []byte(script))
+
+	archive := unpack.Archive{
+		Type:     unpack.RarArchive,
+		Name:     "archive",
+		MainFile: filepath.Join(dir, "archive.rar"),
+		Parts:    []string{filepath.Join(dir, "archive.rar")},
+	}
+	if err := os.WriteFile(archive.MainFile, []byte("rar"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	_, err := unpack.UnRAR(t.Context(), slog.New(slog.NewTextHandler(&logs, nil)), archive, outDir, "", unpack.Options{
+		UnrarCommand: scriptPath,
+	})
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("err = %v, want it to carry the unreadable staging directory", err)
+	}
+	if !strings.Contains(logs.String(), `msg="unpack: failed to remove the staging directory"`) {
+		t.Errorf("a staging directory left behind was not logged; log:\n%s", logs.String())
 	}
 }
