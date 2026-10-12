@@ -59,9 +59,9 @@ const (
 
 	// dispositionRolledBack: storage failed the article's write. A storage
 	// fault says nothing about the article (A1), so it is rolled back to
-	// never-having-arrived: seenDone
-	// cleared, the part given back if the admission charged one, seenFailed
-	// untouched. The caller returns it to Outstanding.
+	// never-having-arrived: seenDone cleared, the part given back if the
+	// admission charged one, seenFailed untouched. The caller returns it to
+	// Outstanding.
 	dispositionRolledBack
 )
 
@@ -252,8 +252,8 @@ func (w *fileWriter) admit(artIdx int32) bool {
 // has no part to settle, and one already resolved out (Rejected or
 // RolledBack cleared its entry) would be getting a second disposition. That
 // panic is an invariant violation failing loudly (R28), never a condition
-// production reaches — every production caller admits first, and admit
-// refuses an article already in seenDone.
+// production reaches — the one production caller of those three,
+// handleSuccessArticle, resolves only an article its own admit just took on.
 //
 // FetchFailed has no admission to resolve, since a fatal article never enters
 // the write path, and a second copy of one is ordinary duplicate delivery
