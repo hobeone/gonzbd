@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // Validate checks the configuration for required-field, range, and
@@ -204,6 +205,14 @@ func (d *DownloadConfig) validate() error {
 	}
 	if err := validateCleanupList(d.CleanupList); err != nil {
 		errs = append(errs, err)
+	}
+	// Both replacements are applied to indexer-supplied names that become
+	// job directories and file names, so neither may hold a separator.
+	if err := fsutil.CheckReplacement(d.ReplaceIllegalWith); err != nil {
+		errs = append(errs, fmt.Errorf("replace_illegal_with: %w", err))
+	}
+	if err := fsutil.CheckReplacement(d.ReplaceSpacesWith); err != nil {
+		errs = append(errs, fmt.Errorf("replace_spaces_with: %w", err))
 	}
 	if _, err := d.UnwantedRules(); err != nil {
 		errs = append(errs, fmt.Errorf("unwanted_extensions: %w", err))

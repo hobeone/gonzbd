@@ -202,11 +202,13 @@ downloads:
   propagation_delay: 0
 
   # Character used to replace illegal filesystem characters
-  # (\ / : * ? " < > |) in filenames. Default: "_".
+  # (\ / : * ? " < > |) in filenames. Default: "_". May not itself
+  # contain any of those characters or a control character.
   replace_illegal_with: _
 
   # Character used to replace spaces in filenames. Empty string means
-  # keep spaces as-is.
+  # keep spaces as-is. May not contain \ / : * ? " < > | or a control
+  # character.
   replace_spaces_with: ""
 
   # When true, replace accented/diacritical characters with ASCII

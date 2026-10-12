@@ -679,3 +679,55 @@ func TestGetUniqueFilename_AllCases(t *testing.T) {
 		}
 	})
 }
+
+// TestSanitize_ResultIsOneComponentWhateverTheReplacements pins that the
+// sanitizers' result is one path component under any replacement strings,
+// since the result is joined onto a directory: a replacement that carries a
+// separator would otherwise rebuild the very separators the illegal-character
+// step removed, turning an indexer-supplied name into a path that climbs out.
+func TestSanitize_ResultIsOneComponentWhateverTheReplacements(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		opts SanitizeOptions
+	}{
+		{"spaces to slash", "a .. .. etc", SanitizeOptions{ReplaceSpacesWith: "/"}},
+		{"spaces to backslash", `a .. .. etc`, SanitizeOptions{ReplaceSpacesWith: `\`}},
+		{"spaces to NUL", "a b", SanitizeOptions{ReplaceSpacesWith: "\x00"}},
+		{"illegal to slash", "x:..:..:etc", SanitizeOptions{ReplaceIllegalWith: "/"}},
+		{"illegal to slash, slash input", "a/../b", SanitizeOptions{ReplaceIllegalWith: "/"}},
+		{"illegal to dot-dot-slash", `a\b`, SanitizeOptions{ReplaceIllegalWith: "../"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for fn, got := range map[string]string{
+				"SanitizeFolderName": SanitizeFolderName(tc.in, tc.opts),
+				"SanitizeFilename":   SanitizeFilename(tc.in, tc.opts),
+			} {
+				if strings.ContainsAny(got, "/\\\x00") || got == "." || got == ".." {
+					t.Errorf("%s(%q, %+v) = %q, not one path component", fn, tc.in, tc.opts, got)
+				}
+			}
+		})
+	}
+}
+
+// TestCheckReplacement pins which replacement strings are refused: any that
+// holds a character the sanitizers replace, which includes both separators
+// and NUL. Dots are allowed — "." for spaces is a common naming style, and
+// neither sanitizer can return "." or ".." because both trim trailing dots.
+func TestCheckReplacement(t *testing.T) {
+	t.Parallel()
+	for _, ok := range []string{"", "_", "-", ".", "..", " ", "_x_"} {
+		if err := CheckReplacement(ok); err != nil {
+			t.Errorf("CheckReplacement(%q) = %v, want nil", ok, err)
+		}
+	}
+	for _, bad := range []string{"/", `\`, "\x00", "a/b", "../", ":", "\n"} {
+		if err := CheckReplacement(bad); err == nil {
+			t.Errorf("CheckReplacement(%q) = nil, want an error", bad)
+		}
+	}
+}

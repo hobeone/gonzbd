@@ -55,10 +55,12 @@ type DownloadConfig struct {
 	PropagationDelay int `yaml:"propagation_delay" json:"propagation_delay"`
 
 	// ReplaceIllegalWith is the string used to replace illegal filesystem
-	// characters (e.g. \/:*?"<>|). Defaults to "_".
+	// characters (e.g. \/:*?"<>|). Defaults to "_". Validation refuses a
+	// value holding one of those characters (fsutil.CheckReplacement).
 	ReplaceIllegalWith string `yaml:"replace_illegal_with" json:"replace_illegal_with"`
 	// ReplaceSpacesWith is the string used to replace spaces in folder and
-	// filenames. Defaults to "" (keep spaces).
+	// filenames. Defaults to "" (keep spaces). Validation refuses the same
+	// values as for ReplaceIllegalWith.
 	ReplaceSpacesWith string `yaml:"replace_spaces_with" json:"replace_spaces_with"`
 
 	// StripDiacritics, if true, will replace accented characters with their

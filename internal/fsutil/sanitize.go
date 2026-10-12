@@ -73,6 +73,10 @@ func JoinSafe(base, folder, file string, opts SanitizeOptions) string {
 // illegal characters replaced, Windows reserved names defused, trailing
 // dots/spaces stripped, and the result truncated to NAME_MAX bytes
 // preserving the extension. Follows SABnzbd's sanitize_filename.
+//
+// The result is one path component whatever opts holds: no separator or NUL
+// (sanitizeCore uses no replacement CheckReplacement refuses), and never "."
+// or "..", since trailing dots are trimmed.
 func SanitizeFilename(filename string, opts SanitizeOptions) string {
 	if filename == "" {
 		return "unknown"
@@ -92,6 +96,9 @@ func SanitizeFilename(filename string, opts SanitizeOptions) string {
 // SanitizeFolderName cleans a folder name. Unlike filenames, truncation
 // happens before trailing-dot stripping so a truncated folder never ends
 // in a dot. Follows SABnzbd's sanitize_foldername.
+//
+// The result is one path component whatever opts holds, as for
+// SanitizeFilename.
 func SanitizeFolderName(foldername string, opts SanitizeOptions) string {
 	if foldername == "" {
 		return "unknown"
@@ -105,6 +112,27 @@ func SanitizeFolderName(foldername string, opts SanitizeOptions) string {
 		return "unknown"
 	}
 	return foldername
+}
+
+// illegalChars are the characters sanitizeCore replaces: control characters
+// 0-31, which include NUL, and the Windows reserved characters, which include
+// both path separators.
+const illegalChars = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f" +
+	"\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f" +
+	`\/:*?"<>|`
+
+// CheckReplacement refuses a ReplaceIllegalWith or ReplaceSpacesWith value
+// that holds a character sanitizeCore replaces. Such a value would put back
+// what the illegal-character step took out — a "/" rebuilds the separators,
+// so "a .. .. etc" with spaces replaced by "/" is "a/../../etc".
+//
+// Dots are allowed: neither sanitizer can return "." or "..", because both
+// trim trailing dots, and a dot inside a component is harmless.
+func CheckReplacement(s string) error {
+	if i := strings.IndexAny(s, illegalChars); i >= 0 {
+		return fmt.Errorf("%q holds %q, a character names are sanitized of", s, s[i])
+	}
+	return nil
 }
 
 // sanitizeCore applies the shared sanitization steps used by both
@@ -123,19 +151,20 @@ func sanitizeCore(name string, opts SanitizeOptions) string {
 	}
 
 	// 3. Remove illegal characters (control characters 0-31 and Windows reserved characters).
-	illegal := "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f" +
-		"\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f" +
-		`\/:*?"<>|`
+	// A replacement CheckReplacement refuses is not used, so the result is
+	// one path component whatever the options hold: the illegal one falls
+	// back to "_", and spaces are kept. Config validation refuses both
+	// values, so only a caller that builds SanitizeOptions by hand meets this.
 	illegalReplacement := opts.ReplaceIllegalWith
-	if illegalReplacement == "" {
+	if illegalReplacement == "" || CheckReplacement(illegalReplacement) != nil {
 		illegalReplacement = "_"
 	}
-	for _, char := range illegal {
+	for _, char := range illegalChars {
 		name = strings.ReplaceAll(name, string(char), illegalReplacement)
 	}
 
 	// 4. Replace spaces if configured.
-	if opts.ReplaceSpacesWith != "" {
+	if opts.ReplaceSpacesWith != "" && CheckReplacement(opts.ReplaceSpacesWith) == nil {
 		name = strings.ReplaceAll(name, " ", opts.ReplaceSpacesWith)
 	}
 
