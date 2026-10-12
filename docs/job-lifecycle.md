@@ -1173,11 +1173,15 @@ The tiering is that boundary made explicit.
 | Tier | Needs | May fail? |
 |---|---|---|
 | **Header** — remove, reorder, priority, ID/name lookups | neither | **Never** |
-| **Progress** — all reporting, counters, completion and abort checks; recording a permanent failure, clearing an emitted bit, recording a file's resolved filename, or marking a file complete | `JobProgress` | **Never**, once it exists, for an index in range |
+| **Progress** — all reporting, counters, completion and abort checks; recording a permanent failure, clearing an emitted bit, recording a file's resolved filename, marking a file complete, or changing a file's fetch policy | `JobProgress` | **Never**, once it exists, for an index in range |
 | **Manifest** — dispatch, article indexing, byte accounting | `Manifest` (evictable) | Yes, and must say so |
 
 Counter maintenance needs article byte counts and the file↔article mapping.
-Reads do not, and neither does a per-article bit.
+Reads do not, and neither does a per-article bit. The progress record holds
+each file's article range itself (`JobProgress.fileStarts`, built with the
+record), so a pending count, which needs no byte count, can be derived at any
+residency: a fetch-policy change re-derives its file's count in
+`setFileFetchPolicy`, whether or not the manifest is resident (#903).
 
 **Two article writes do not wait for the manifest.** `Job.MarkArticleFailed`
 and `Job.ClearArticleEmitted` are reached from fetch results, from the
@@ -1199,6 +1203,14 @@ the `recompute` in `RestoreContent` at the next hydration. Until then
 early par2 release a resident failure triggers is not made: held volumes wait
 for a later resident failure or, if damage is then found, for the
 Assessing-time verdict in `maybeReleaseRecoveryVolumes`.
+
+A downloader reload's sweep, `Job.ClearEmittedForReload`, follows the same
+rule (#904). It un-fails the failed articles of each incomplete file so the new
+server set retries them, and a job the reload finds evicted holds failures
+recorded through `MarkArticleFailed` at any residency; skipping it kept them
+failed for the rest of the process. Evicted, it resets the emitted and failed
+bits alone, using the file ranges the progress record holds, and leaves the
+counters to the same `recompute` in `RestoreContent`.
 
 **Residency is not derived from position.** Either you hold a manifest or you
 do not, and `Job.Manifest() (*Manifest, error)` makes every dependence on one a

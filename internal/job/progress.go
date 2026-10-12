@@ -55,9 +55,10 @@ type JobProgress struct {
 	// counters as they go. The rest write bits only and leave the counters to
 	// a recompute: clearDone, which every path returning a Done article to
 	// Outstanding calls (UntrustFile through markNotDone, ClearEmittedForReload
-	// through resetForReload, and ResetForRetry), each of which recomputes;
-	// and the evicted branches of markArticleFailed (setFailedBits) and
-	// ClearArticleEmitted, which RestoreContent's recompute folds in at the
+	// through resetForReload, and ResetForRetry), each of which recomputes
+	// when the manifest is resident; and the evicted branches of
+	// markArticleFailed (setFailedBits), ClearArticleEmitted and
+	// ClearEmittedForReload, which RestoreContent's recompute folds in at the
 	// next hydration. A restart sets no bit directly: it installs through
 	// markDone (installRows), markFailed and markArticleFailed, all three from
 	// InstallFileVerification.
@@ -65,6 +66,13 @@ type JobProgress struct {
 	// each Set and Clear.
 	done, failed, emitted bitset
 	files                 []FileProgress
+	// fileStarts[fi]..fileStarts[fi+1] is file fi's global article range, the
+	// manifest's own prefix sum (Manifest.FileRange) held on the progress
+	// tier so that a write needing only the file of an article runs at any
+	// residency. newJobProgressSized builds it and nothing changes it after,
+	// so a clone shares it; describesSameJobAs refuses a manifest whose
+	// ranges differ.
+	fileStarts []int
 	// fetchChanges counts the files whose fetchChanged is set, so a take
 	// from a job with none returns without walking its files.
 	fetchChanges int
@@ -181,9 +189,8 @@ type FileProgress struct {
 	// is why this is summed from the manifest's per-article bytes over the
 	// resolved set rather than read off the record.
 	//
-	// Maintained live by markDone, markFailedUncovered (the uncharged part of
-	// a failed article) and resetForReload (which takes that part back out),
-	// and rebuilt by recompute, all from the manifest.
+	// Maintained live by markDone and markFailedUncovered (the uncharged part
+	// of a failed article), and rebuilt by recompute, all from the manifest.
 	BytesDownloaded int64
 	// FailedBytes is the sum of bytes belonging to this file's permanently
 	// failed articles. Carried per file, not just job-wide, so remaining
@@ -257,14 +264,64 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 		failed:          newBitset(total),
 		emitted:         newBitset(total),
 		files:           make([]FileProgress, len(files)),
+		fileStarts:      make([]int, len(files)+1),
 		pendingArticles: total,
 	}
 	for fi, f := range files {
 		p.files[fi].Pending = f.ArticleCount
 		p.files[fi].IsPar2 = f.IsPar2
 		p.files[fi].Bytes = f.Bytes
+		p.fileStarts[fi+1] = p.fileStarts[fi] + f.ArticleCount
 	}
 	return p
+}
+
+// fileRange returns file fi's global article range, [lo, hi).
+func (p *JobProgress) fileRange(fi int) (lo, hi int) {
+	return p.fileStarts[fi], p.fileStarts[fi+1]
+}
+
+// countsPending reports whether file fi's outstanding articles count as
+// pending work: only a file the job is fetching is dispatched, so a held or
+// discarded recovery volume owes nothing.
+func (p *JobProgress) countsPending(fi int) bool {
+	return p.files[fi].Fetch == FetchAlways
+}
+
+// pendingOf derives file fi's Pending from its bits: every article neither
+// done nor emitted, in a file that counts pending work. recompute applies it to
+// every file and setFileFetchPolicy to the file whose policy it moved.
+func (p *JobProgress) pendingOf(fi int) int {
+	if !p.countsPending(fi) {
+		return 0
+	}
+	n := 0
+	lo, hi := p.fileRange(fi)
+	for i := lo; i < hi; i++ {
+		if !p.done.Get(i) && !p.emitted.Get(i) {
+			n++
+		}
+	}
+	return n
+}
+
+// setPending stores file fi's Pending as n and moves pendingArticles by the
+// difference.
+func (p *JobProgress) setPending(fi, n int) {
+	p.pendingArticles += n - p.files[fi].Pending
+	p.files[fi].Pending = n
+}
+
+// movePending applies one article's transition to file fi's pending count:
+// delta -1 as the article leaves Outstanding, +1 as it returns. A file that
+// does not count pending work (countsPending) is left at the zero pendingOf
+// gives it.
+func (p *JobProgress) movePending(fi, delta int) {
+	if !p.countsPending(fi) {
+		return
+	}
+	p.files[fi].Pending += delta
+	p.pendingArticles += delta
 }
 
 // fileMetaFromManifest projects m into the per-file sizing
@@ -851,12 +908,13 @@ func (p *JobProgress) DeferredRecoveryIndices() []int {
 // freshly read Manifest has to satisfy, and recompute panics when it does
 // not hold.
 //
-// This compares sizes only — NumFiles/NumArticles against
-// len(p.files)/p.done.Len() — so it detects a manifest blob whose shape
-// disagrees with progress, which used to happen through a torn
-// Store.ReplaceManifest write and now happens only through on-disk
-// corruption (the file set is immutable after Add, and ReplaceManifest is
-// gone). It does NOT detect job_files rows altered out of band:
+// This compares shape only — NumFiles/NumArticles against
+// len(p.files)/p.done.Len(), and each file's article range against
+// fileStarts — so it detects a manifest blob whose shape disagrees with
+// progress, which used to happen through a torn Store.ReplaceManifest write
+// and now happens only through on-disk corruption (the file set is immutable
+// after Add, and ReplaceManifest is gone). It does NOT detect job_files rows
+// altered out of band:
 // Job.InstallFileVerification applies each file's restored state by its
 // FileIdx without resizing progress, so a row renumbered outside this
 // process to another in-range index satisfies this size check and attaches
@@ -865,7 +923,15 @@ func (p *JobProgress) describesSameJobAs(m *Manifest) bool {
 	if p == nil || m == nil {
 		return false
 	}
-	return p.done.Len() == m.NumArticles() && len(p.files) == m.NumFiles()
+	if p.done.Len() != m.NumArticles() || len(p.files) != m.NumFiles() {
+		return false
+	}
+	for fi := range p.files {
+		if lo, hi := m.FileRange(fi); lo != p.fileStarts[fi] || hi != p.fileStarts[fi+1] {
+			return false
+		}
+	}
+	return true
 }
 
 // clone returns a deep copy, used by Job.Progress.
@@ -890,20 +956,21 @@ func (p *JobProgress) clone() *JobProgress {
 // the ground truth (done/failed/emitted flags), against m's file ranges.
 // Called by RestoreContent when a manifest is re-attached, and after each
 // bulk state change where incremental tracking is impractical:
-// `git grep -n '\.recomput[e](' -- '*.go' ':!*_test.go'` returns 6 lines —
-// RestoreContent, undeferRecovery, DiscardDeferredPar2, ClearEmittedForReload,
-// ResetForRetry and UntrustFile. AttachContent does not call it; it builds a
-// fresh record with newJobProgress.
+// `git grep -n '\.recomput[e](' -- '*.go' ':!*_test.go'` returns 4 lines —
+// RestoreContent, ClearEmittedForReload, ResetForRetry and UntrustFile.
+// AttachContent does not call it; it builds a fresh record with
+// newJobProgress. A fetch-policy change does not need it: setFileFetchPolicy
+// re-derives the one file's Pending through the same pendingOf.
 //
 // recompute is authoritative for the job-level failedBytes wherever a
 // manifest is resident: it derives the figure from the failed bits and each
 // failed article's chargeOf, so it cannot stack on an earlier value.
 //
-// Between recomputes, markFailedUncovered (markFailed's body) and
-// resetForReload maintain the value incrementally; both take the manifest.
-// While the manifest is evicted nothing
-// maintains it: Job.MarkArticleFailed sets the bits and the charge alone, and
-// the value lags them until RestoreContent recomputes at the next hydration.
+// Between recomputes, markFailedUncovered (markFailed's body) maintains the
+// value incrementally, and takes the manifest to do it. While the manifest is
+// evicted nothing maintains it: Job.MarkArticleFailed sets the bits and the
+// charge alone, Job.ClearEmittedForReload clears them alone, and the value
+// lags them until RestoreContent recomputes at the next hydration.
 func (p *JobProgress) recompute(m *Manifest) {
 	// m is passed in separately from p, and nothing here ties it to the
 	// manifest p was sized from (newJobProgress). A size
@@ -923,16 +990,9 @@ func (p *JobProgress) recompute(m *Manifest) {
 	var failedBytesTotal int64
 	for fi := range m.NumFiles() {
 		lo, hi := m.FileRange(fi)
-		n := 0
+		n := p.pendingOf(fi)
 		var downloaded, fileFailed int64
-		// Files that are not being fetched (on-demand par2 recovery volumes,
-		// held or discarded) are never dispatched, so they contribute zero
-		// pending work.
-		fetching := p.files[fi].Fetch == FetchAlways
 		for i := lo; i < hi; i++ {
-			if fetching && !p.done.Get(i) && !p.emitted.Get(i) {
-				n++
-			}
 			if p.done.Get(i) {
 				resolved++
 				var charge int64
@@ -969,9 +1029,7 @@ func (p *JobProgress) markEmitted(m *Manifest, i int) {
 		return
 	}
 	p.emitted.Set(i)
-	fi := m.fileIndexForArticle(i)
-	p.files[fi].Pending--
-	p.pendingArticles--
+	p.movePending(m.fileIndexForArticle(i), -1)
 }
 
 // clearEmitted resets the transient Emitted flag on article i, restoring it
@@ -979,9 +1037,7 @@ func (p *JobProgress) markEmitted(m *Manifest, i int) {
 func (p *JobProgress) clearEmitted(m *Manifest, i int) {
 	if p.emitted.Get(i) && !p.done.Get(i) {
 		p.emitted.Clear(i)
-		fi := m.fileIndexForArticle(i)
-		p.files[fi].Pending++
-		p.pendingArticles++
+		p.movePending(m.fileIndexForArticle(i), +1)
 	} else if p.emitted.Get(i) {
 		p.emitted.Clear(i)
 	}
@@ -997,8 +1053,7 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 	}
 	fi := m.fileIndexForArticle(i)
 	if !p.emitted.Get(i) {
-		p.files[fi].Pending--
-		p.pendingArticles--
+		p.movePending(fi, -1)
 	}
 	p.done.Set(i)
 	p.emitted.Clear(i)
@@ -1053,7 +1108,8 @@ func (p *JobProgress) markNotDone(fi, i int) bool {
 // caller of done.Clear and failed.Clear.
 //
 // It maintains no counter: ResetForRetry, UntrustFile and ClearEmittedForReload
-// each recompute after it, and resetForReload also unwinds failedBytes itself.
+// each recompute after it, ClearEmittedForReload only when the manifest is
+// resident and RestoreContent's recompute otherwise.
 func (p *JobProgress) clearDone(fi int, arts ...int) {
 	for _, i := range arts {
 		p.done.Clear(i)
@@ -1088,8 +1144,7 @@ func (p *JobProgress) markFailedUncovered(m *Manifest, i int, uncovered int64) (
 	p.limitCharge(i, uncovered)
 	fi := m.fileIndexForArticle(i)
 	if !wasEmitted {
-		p.files[fi].Pending--
-		p.pendingArticles--
+		p.movePending(fi, -1)
 	}
 	charge := p.chargeOf(m, i)
 	p.failedBytes += charge
@@ -1115,11 +1170,11 @@ func (p *JobProgress) limitCharge(i int, uncovered int64) {
 }
 
 // chargeOf is what failed article i costs par2: its manifest size, or the
-// uncovered bytes limitCharge recorded when those are fewer. markFailedUncovered,
-// resetForReload and recompute each take a failed article's charge from it, so
-// the figure the live path maintains and the one a recompute derives cannot
-// disagree — `git grep -n 'chargeOf[(]' -- 'internal/job/*.go' ':!*_test.go'`
-// finds 4 lines, this definition and those three calls.
+// uncovered bytes limitCharge recorded when those are fewer. markFailedUncovered
+// and recompute each take a failed article's charge from it, so the figure the
+// live path maintains and the one a recompute derives cannot disagree —
+// `git grep -n 'chargeOf[(]' -- 'internal/job/*.go' ':!*_test.go'` finds 3
+// lines, this definition and those two calls.
 func (p *JobProgress) chargeOf(m *Manifest, i int) int64 {
 	full := int64(m.ArticleBytes(i))
 	if c, ok := p.failCharge[i]; ok {
@@ -1147,14 +1202,12 @@ func (p *JobProgress) setFailedBits(i int) bool {
 
 // resetForReload clears the transient Emitted flag on each article of file
 // fi and, if the file is still open for writing, resets each Failed one to
-// retryable (Done=false, Failed=false, through one clearDone for the file),
-// subtracting its bytes from FailedBytes.
-// RemainingBytes needs no restoring of its own: it derives from
-// BytesDownloaded/FailedBytes on read, and an article that was never
-// downloaded leaves BytesDownloaded untouched, so undoing FailedBytes here is
-// what makes the article's bytes reappear as remaining. Used by
-// ClearEmittedForReload on a downloader reload; recompute must be called afterward
-// to rebuild Pending counters from the resulting ground truth.
+// retryable (Done=false, Failed=false, through one clearDone for the file).
+// It writes bits only and needs no manifest, so ClearEmittedForReload runs it
+// at any residency; every counter it moves — Pending, the failed bytes and
+// counts, BytesDownloaded — is left to a recompute, which derives them from
+// the bits: ClearEmittedForReload's own when the manifest is resident,
+// RestoreContent's at the next hydration otherwise (#904).
 //
 // # Why a Complete file's article is left resolved (#426)
 //
@@ -1206,8 +1259,8 @@ func (p *JobProgress) setFailedBits(i int) bool {
 // old downloader's teardown failed — ErrNoServersLeft is terminal — failed
 // for the rest of the process: markNotDone refuses a permanently failed
 // article, and only a whole-job retry clears it.
-func (p *JobProgress) resetForReload(m *Manifest, fi int, clearEmitted bool) (cleared, retained []int32) {
-	lo, hi := m.FileRange(fi)
+func (p *JobProgress) resetForReload(fi int, clearEmitted bool) (cleared, retained []int32) {
+	lo, hi := p.fileRange(fi)
 	complete := p.files[fi].Complete
 	var reset []int
 	for i := lo; i < hi; i++ {
@@ -1221,10 +1274,6 @@ func (p *JobProgress) resetForReload(m *Manifest, fi int, clearEmitted bool) (cl
 			retained = append(retained, int32(i)) //nolint:gosec // G115: article index fits in int32
 			continue
 		}
-		charge := p.chargeOf(m, i)
-		p.failedBytes -= charge
-		p.files[fi].FailedBytes -= charge
-		p.files[fi].BytesDownloaded -= int64(m.ArticleBytes(i)) - charge
 		reset = append(reset, i)
 		cleared = append(cleared, int32(i)) //nolint:gosec // G115: article index fits in int32
 	}

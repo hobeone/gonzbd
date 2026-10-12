@@ -63,22 +63,6 @@ file internal/job/progress.go
 				}
 --- end
 
-[a reload unwinds the whole article]
-file internal/job/progress.go
---- anchor
-		p.failedBytes -= charge
---- replace
-		p.failedBytes -= int64(m.ArticleBytes(i))
---- end
-
-[a reload leaves the covered bytes downloaded]
-file internal/job/progress.go
---- anchor
-		p.files[fi].BytesDownloaded -= int64(m.ArticleBytes(i)) - charge
---- replace
-		p.files[fi].BytesDownloaded -= 0
---- end
-
 [clearing the failed bit keeps the charge]
 file internal/job/progress.go
 --- anchor

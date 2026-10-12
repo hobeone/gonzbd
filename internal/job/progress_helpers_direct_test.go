@@ -191,6 +191,25 @@ func TestDescribesSameJobAs_GuardsBothDimensions(t *testing.T) {
 	if p.describesSameJobAs(oneFile) {
 		t.Error("progress for 2 files accepted a 1-file manifest with the same article count")
 	}
+	// A trailing file with no articles leaves every range p knows unchanged,
+	// so only the file count tells the two apart.
+	trailingEmpty := newManifest([]JobFile{
+		{Subject: "a.rar", Bytes: 100, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}}},
+		{Subject: "b.rar", Bytes: 100, Articles: []JobArticle{{ID: "<2@x>", Bytes: 100}}},
+		{Subject: "c.rar"},
+	})
+	if p.describesSameJobAs(trailingEmpty) {
+		t.Error("progress for 2 files accepted a 3-file manifest whose third file has no articles")
+	}
+
+	// Equal counts split differently between the files.
+	shifted := newManifest([]JobFile{
+		{Subject: "a.rar", Bytes: 0},
+		{Subject: "b.rar", Bytes: 200, Articles: []JobArticle{{ID: "<1@x>", Bytes: 100}, {ID: "<2@x>", Bytes: 100}}},
+	})
+	if p.describesSameJobAs(shifted) {
+		t.Error("progress accepted a manifest whose files split the articles differently")
+	}
 
 	// Nil on either side is not a match. This is defence in depth rather than
 	// the guard that keeps a null manifest out of recompute: RestoreContent

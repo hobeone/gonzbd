@@ -25,11 +25,9 @@ var manifestGateExempt = map[string]string{
 	"Job.Evict":                 "clears the manifest; runs precisely to drop residency",
 	"Job.Resident":              "reports residency state directly",
 	"Job.NumFiles":              "reads manifest count only if progress is not resident as a fallback",
-	"Job.undeferRecovery":       "helper called only with the manifest resident: by UndeferRecoveryVolumes after its gate, and by markArticleFailed after its j.manifest == nil branch returns",
 	"Job.markArticleFailed":     "MarkArticleFailed's body; records a permanent failure's bits on progress alone when the manifest is evicted, since the failure is in memory only and the bit is all of it; the counters and the par2 release need the manifest, and RestoreContent's recompute derives the counters at the next hydration",
 	"Job.ClearArticleEmitted":   "clears the emitted bit on progress alone when the manifest is evicted, since a refused clear strands the article; only the pending counts need the manifest, and RestoreContent's recompute derives them at the next hydration",
-	"Job.DiscardDeferredPar2":   "updates fetch policy and recomputes progress against manifest if resident",
-	"Job.ClearEmittedForReload": "sweeps articles to clear emitted state for reload; returns nil if manifest is not resident",
+	"Job.ClearEmittedForReload": "resets the emitted and failed bits on progress alone when the manifest is evicted, since skipping an evicted job keeps the old servers' failures for the rest of the process; only the counters need the manifest, and RestoreContent's recompute derives them at the next hydration",
 	"Job.ResetForRetry":         "carries deliberate early return for retry; both callers hydrate first, so the skip is unreachable and an error return would change an exported signature for a branch that cannot execute",
 }
 

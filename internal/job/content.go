@@ -70,8 +70,9 @@ func (j *Job) AttachContent(m *Manifest) error {
 // already holds.
 //
 // The record is recomputed in place, under the same lock its writers take, and
-// never replaced. Writes that need no manifest — MarkArticleFailed and
-// ClearArticleEmitted while evicted, and the progress-tier setters — land on
+// never replaced. Writes that need no manifest — MarkArticleFailed,
+// ClearArticleEmitted and ClearEmittedForReload while evicted, and the
+// progress-tier setters — land on
 // that record at any time, so a copy taken earlier and installed here would
 // silently discard whatever arrived in between. recompute is what folds the
 // bits those writes left into the counters.
@@ -302,6 +303,12 @@ func (j *Job) SetFileFetchPolicy(fi int, policy FetchPolicy) error {
 // (0-2) is the only range guard a restored value has. The caller holds
 // contentMu and has range-checked fi.
 //
+// It owns what the policy decides about the pending counters: a file counts
+// pending work only while FetchAlways (countsPending), so it re-derives the
+// file's Pending from its bits (pendingOf) in the same critical section. That
+// needs no manifest, so it holds at any residency, and the four callers named
+// above leave the counters to it (#903).
+//
 // It marks the file for Job.TakeFetchPolicyChanges whenever the stored value
 // differs from the one the caller asked for or from the previous one, so the
 // record learns of every change without its caller having to say so.
@@ -323,6 +330,7 @@ func (p *JobProgress) setFileFetchPolicy(fi int, policy FetchPolicy) {
 		return
 	}
 	f.Fetch = stored
+	p.setPending(fi, p.pendingOf(fi))
 	if !f.fetchChanged {
 		f.fetchChanged = true
 		p.fetchChanges++
@@ -559,10 +567,13 @@ func (j *Job) NumFiles() int {
 	return 0
 }
 
+// undeferRecovery releases each held volume of fileIdxs to FetchAlways and
+// sets par2Recovered, reporting whether any was held. The caller holds
+// contentMu and the job has progress.
 func (j *Job) undeferRecovery(fileIdxs []int) bool {
 	changed := false
 	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= j.manifest.NumFiles() || j.progress.files[fi].Fetch != FetchIfNeeded {
+		if fi < 0 || fi >= len(j.progress.files) || j.progress.files[fi].Fetch != FetchIfNeeded {
 			continue
 		}
 		j.progress.setFileFetchPolicy(fi, FetchAlways)
@@ -570,21 +581,25 @@ func (j *Job) undeferRecovery(fileIdxs []int) bool {
 	}
 	if changed {
 		j.progress.par2Recovered = true
-		j.progress.recompute(j.manifest)
 	}
 	return changed
 }
 
 // UndeferRecoveryVolumes marks the specified deferred recovery volumes as
 // FetchAlways, re-activating them for download when repair is needed.
+//
+// Like DiscardDeferredPar2 it is a progress-tier write and takes effect at any
+// residency: the policy, its pending counts and par2Recovered all live on the
+// progress record, and an evicted job's articles are offered only after the
+// hydration that re-attaches its manifest.
 func (j *Job) UndeferRecoveryVolumes(fileIdxs []int) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	if j.manifest == nil || j.progress == nil {
+	if j.progress == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
 	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= j.manifest.NumFiles() {
+		if fi < 0 || fi >= len(j.progress.files) {
 			return fmt.Errorf("job %s: fileIdx %d out of range", j.id, fi)
 		}
 	}
@@ -625,7 +640,8 @@ func (j *Job) UsesOnDemandPar2() bool {
 }
 
 // DiscardDeferredPar2 marks every recovery volume still awaiting the CRC
-// verdict as never-fetch, reporting whether any file changed.
+// verdict as never-fetch, reporting whether any file changed. Like the
+// release, it takes effect at any residency.
 func (j *Job) DiscardDeferredPar2() bool {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
@@ -638,9 +654,6 @@ func (j *Job) DiscardDeferredPar2() bool {
 			j.progress.setFileFetchPolicy(fi, FetchNever)
 			changed = true
 		}
-	}
-	if changed && j.manifest != nil {
-		j.progress.recompute(j.manifest)
 	}
 	return changed
 }
@@ -748,21 +761,29 @@ func (j *Job) FileLocation(fileIdx int) (name, filename string) {
 	return j.name, j.progress.FileFilename(fileIdx)
 }
 
-// ClearEmittedForReload resets Emitted and Failed flags for reload.
+// ClearEmittedForReload resets Emitted and Failed flags for reload
+// (resetForReload, per file).
+//
+// It does not require the manifest. A job evicted when the reload runs still
+// holds the failures the old servers recorded, through MarkArticleFailed at
+// any residency, and skipping it would keep them failed for the rest of the
+// process (#904). Evicted, it writes the bits alone, and RestoreContent's
+// recompute derives the counters at the next hydration. Resident, it
+// recomputes here, whatever the reset touched: a cleared emitted bit returns
+// its article to Pending as surely as an un-failed one does.
 func (j *Job) ClearEmittedForReload(skipEmitted bool) (cleared, retained []int32) {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	if j.manifest == nil || j.progress == nil {
+	if j.progress == nil {
 		return nil, nil
 	}
-	m := j.manifest
-	for fi := range m.NumFiles() {
-		c, r := j.progress.resetForReload(m, fi, !skipEmitted)
+	for fi := range j.progress.files {
+		c, r := j.progress.resetForReload(fi, !skipEmitted)
 		cleared = append(cleared, c...)
 		retained = append(retained, r...)
 	}
-	if len(cleared) > 0 || len(retained) > 0 {
-		j.progress.recompute(m)
+	if j.manifest != nil {
+		j.progress.recompute(j.manifest)
 	}
 	return cleared, retained
 }

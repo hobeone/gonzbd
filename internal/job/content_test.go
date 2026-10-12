@@ -754,8 +754,10 @@ func TestJob_ProgressAccessors(t *testing.T) {
 	if got := j.ContentFailedBytes(); got != 0 {
 		t.Errorf("ContentFailedBytes() = %d, want 0", got)
 	}
-	if got := j.PendingArticles(); got != 3 {
-		t.Errorf("PendingArticles() = %d, want 3", got)
+	// The held volume's article is not pending: only a FetchAlways file is
+	// dispatched (#903).
+	if got := j.PendingArticles(); got != 2 {
+		t.Errorf("PendingArticles() = %d, want 2", got)
 	}
 	if got := j.DownloadStarted(); !got.IsZero() {
 		t.Errorf("DownloadStarted() = %v, want zero", got)

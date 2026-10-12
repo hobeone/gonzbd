@@ -115,10 +115,8 @@ func TestMarkArticleFailedCharge_ResetForgetsTheCharge(t *testing.T) {
 		t.Fatalf("MarkArticleFailed: %v", err)
 	}
 
-	// resetForReload maintains the figures itself, ahead of the recompute
-	// ClearEmittedForReload runs after it, so it is checked on its own.
+	cleared, _ := j.ClearEmittedForReload(false)
 	j.contentMu.Lock()
-	cleared, _ := j.progress.resetForReload(j.manifest, 0, true)
 	failed, downloaded := j.progress.failedBytes, j.progress.files[0].BytesDownloaded
 	j.contentMu.Unlock()
 	if len(cleared) != 1 || cleared[0] != 2 {
@@ -159,8 +157,8 @@ func TestMarkArticleFailedCharge_SecondFailureKeepsTheFirstCharge(t *testing.T) 
 		j.contentMu.Unlock()
 		checkFigures(t, j, 100)
 
+		j.ClearEmittedForReload(false)
 		j.contentMu.Lock()
-		j.progress.resetForReload(j.manifest, 0, true)
 		failed := j.progress.failedBytes
 		j.contentMu.Unlock()
 		if failed != 0 {
