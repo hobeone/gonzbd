@@ -9,7 +9,7 @@ contract's first fact:
 
 | Package | Owns |
 |---|---|
-| `internal/job` | the `Job`, its four axes, `Attempt`, `Lease`, `Manifest`, `JobProgress`. No I/O, no import of any other package here except `internal/constants`. |
+| `internal/job` | the `Job`, its four axes, `Attempt`, `Lease`, `Manifest`, `JobProgress`. No I/O. Of this repository's packages it imports only `internal/constants`, `internal/durability`, `internal/crc32util`, `internal/nzb` and `internal/rarheader`, for types and pure functions (`internal/job/doc.go`). |
 | `internal/sched` | the scheduling decisions — the two pools, grant and release, `Advance`, `Cancel`, `Settle`, `Retry`, `Park`, and the rendering doors. No registry, no store, no workers. |
 | `internal/dispatch` | the registry in queue order, manifest residency, the tick loop, worker launch and exit, and the queue-state rows. |
 
@@ -27,7 +27,7 @@ A `Job` is an identity (`ID`, `Name`), a `Policy`, a list of `Attempt`s, an
 `Intent`, and — when resident — a `Manifest` and a `JobProgress`.
 
 `job.New(id, name, Policy)` is the **only** constructor
-(`git grep -n 'func New(' internal/job/` returns one line, `job.go:245`).
+(`git grep -n 'func New(' internal/job/` returns one line, in `job.go`).
 A restore does not get a second one: `dispatch.reconstruct` rebuilds a
 persisted job by calling `New` and then replaying it forward through the
 exported doors along `replayPath` (`internal/dispatch/dispatch.go`). A second
@@ -1243,9 +1243,11 @@ anything else keeps its Warn.
 
 ### Always resident, and the one window where progress is not
 
-**Always resident once it exists:** header fields, `JobProgress`, and the five
-manifest-derived scalars (`TotalBytes`, `NumFiles`, `NumArticles`,
-`RecoveryBytes`, `RecoveryFiles`). These are computed once at ingest and never
+**Always resident once it exists:** header fields, `JobProgress`, and the
+manifest-derived sizes — `Job.TotalBytes`, `Job.RecoveryBytes` and
+`Job.RecoveryFiles`, held on the `Job`, and the file and article counts
+`Job.NumFiles` and `JobProgress.TotalArticles` read from the `JobProgress`
+sized to the manifest. These are computed once at ingest and never
 change, so they live in the always-resident tier rather than behind a fallible
 handle. `Evict` clears only the manifest, and `AttachContent` is the only
 writer of the progress pointer

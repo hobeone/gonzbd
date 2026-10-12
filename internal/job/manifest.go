@@ -12,8 +12,8 @@ import (
 
 // Manifest is the immutable article/file structure of a job: parsed once
 // from the NZB (or loaded once from disk) and never mutated afterward.
-// Safe to share by reference across Job and every Snapshot/SnapshotJob
-// clone of it — there is no aliasing hazard, because the only writes to a
+// Safe to share by reference — Job.Manifest hands every caller the same
+// pointer — and there is no aliasing hazard, because the only writes to a
 // Manifest's fields happen during construction, and newManifest is the sole
 // place that construction occurs (UnmarshalJSON reaches it too, replacing
 // the whole value rather than editing fields).
@@ -45,9 +45,10 @@ type manifestFile struct {
 	isPar2Recovery bool
 }
 
-// JobFile is the intermediate, NZB-parsed shape NewJob builds before
-// converting into a Manifest/JobProgress pair. It is not part of Job's
-// runtime state — construction scaffolding only.
+// JobFile is the intermediate, NZB-parsed shape NewManifest converts into a
+// Manifest; internal/app's BuildIngestJob builds it, and UnmarshalJSON
+// decodes to it. It is not part of Job's runtime state — construction
+// scaffolding only.
 //
 //nolint:revive // stutter is preserved for consistency during queue -> job transition
 type JobFile struct {
@@ -58,7 +59,9 @@ type JobFile struct {
 	IsPar2Recovery bool
 	// Deferred marks a file whose articles are intentionally held back from
 	// dispatch (on-demand par2: recovery volumes not downloaded until repair
-	// is shown to be needed).
+	// is shown to be needed). newManifest does not read it: the Manifest
+	// carries no fetch policy, and the builder applies it after
+	// AttachContent, through SetFileFetchPolicy with FetchIfNeeded.
 	Deferred bool
 }
 
@@ -81,7 +84,9 @@ func NewManifest(files []JobFile) *Manifest {
 // articles into the parallel global arrays and computing the
 // fileArticleOffsets prefix sum, totalBytes, and the recovery figures.
 //
-// NewJob and UnmarshalJSON are the only callers, which is the point: every
+// NewManifest and UnmarshalJSON are the only callers (`git grep -n
+// 'newManifes[t](' -- '*.go' ':!*_test.go'` returns 3 lines: those two calls
+// and this declaration), which is the point: every
 // Manifest in the process, however it arrived, has its derived state computed
 // here and nowhere else. DiscardDeferredPar2 used to call it too, to rebuild
 // against a reduced file set, and that rebuild is why the recovery
@@ -144,10 +149,12 @@ func recoveryFigures(files []manifestFile) (bytes int64, count int) {
 }
 
 // isPar2File reports whether subject names a par2 file (index or recovery
-// volume). NewJob is the only caller: it pairs this with isRecoveryVolume to
-// decide JobFile.IsPar2Recovery, which is the classification everything else
-// keys on. Manifest's own figures no longer use it — see recoveryFigures for
-// why a name-based test is the wrong predicate for repair capacity.
+// volume). It has two callers: IsPar2File, which internal/app's
+// BuildIngestJob pairs with IsRecoveryVolume to decide
+// JobFile.IsPar2Recovery, and fileMetaFromManifest, which classifies
+// FileProgress.IsPar2 with it. Manifest's own figures do not use it — see
+// recoveryFigures for why a name-based test is the wrong predicate for repair
+// capacity.
 func isPar2File(subject string) bool {
 	return strings.Contains(strings.ToLower(subject), ".par2")
 }
@@ -300,7 +307,7 @@ func (m *Manifest) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements json.Unmarshaler.
 //
-// It decodes to the same []JobFile shape NewJob passes and delegates to
+// It decodes to the same []JobFile shape NewManifest takes and delegates to
 // newManifest, rather than populating the fields itself. newManifest is the
 // sole owner of a Manifest's derived state; a second constructor filling the
 // same eight fields by its own code path is one edit away from disagreeing
