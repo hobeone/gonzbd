@@ -107,6 +107,18 @@
 // The kernel releases an flock when the process dies, so a killed run leaves
 // no stale lock.
 //
+// # The wait budget
+//
+// Every go test this command runs — the baseline, each mutation and the
+// package-wide re-runs — gets GONZBD_TEST_WAIT=3s in its environment, unless
+// the operator's environment already sets it (testEnv). A test that waits for
+// asynchronous work under a hang-guard deadline uses it in place of its own
+// default, which is generous so that machine load cannot expire it. Without
+// it, a mutation that removes the event such a wait is for is killed only once
+// that generous default runs out. The baseline gets the same value, so a
+// budget too short for an unmutated wait shows up as a failed baseline, never
+// as a KILLED.
+//
 // # Restoring
 //
 // The source file is restored from a copy this command wrote, on every exit
@@ -853,6 +865,29 @@ func testArgs(sp *spec) []string {
 	return args
 }
 
+// testWaitEnv names the wait budget every go test this command runs is given,
+// and defaultTestWait is its value unless the operator's environment already
+// sets one. A test that polls for asynchronous work under a hang-guard
+// deadline reads it in place of its own generous default (internal/app's
+// lrWaitDeadline), so a mutation that removes the awaited event is killed in
+// seconds rather than at that default. The baseline runs with the same value,
+// so a budget too short for an unmutated wait fails the baseline loudly; it
+// cannot pass as a kill.
+const (
+	testWaitEnv     = "GONZBD_TEST_WAIT"
+	defaultTestWait = "3s"
+)
+
+// testEnv is the environment goTest runs go test in: this process's, plus
+// testWaitEnv when it does not already carry one.
+func testEnv() []string {
+	env := os.Environ()
+	if _, ok := os.LookupEnv(testWaitEnv); !ok {
+		env = append(env, testWaitEnv+"="+defaultTestWait)
+	}
+	return env
+}
+
 // goTest runs the spec's test. -count=1 is not optional: Go caches a passing
 // result keyed on the binary and its inputs, so a mutation run without it can
 // replay the pre-mutation pass and report ok — which reads as "the test does
@@ -866,6 +901,7 @@ func goTest(root string, sp *spec) (output string, exitCode int, launchErr error
 	// it in. The binary is always "go".
 	cmd := exec.CommandContext(ctx, "go", testArgs(sp)...) //nolint:gosec // G204: argv comes from the operator's own spec
 	cmd.Dir = root
+	cmd.Env = testEnv()
 
 	pending.Lock()
 	pending.cancel = cancel
@@ -1136,6 +1172,10 @@ rebuilds the package under test, so the default '-N -l' (no optimization, no
 inlining) makes that rebuild cheaper. A test that depends on inlining or escape
 analysis sees a different build than a plain go test; -gcflags= (empty) passes
 nothing.
+
+Every go test run gets GONZBD_TEST_WAIT=3s unless the environment sets it:
+the budget a test's hang-guard wait uses in place of its generous default, so
+a mutation that removes what the wait is for is killed in seconds.
 
 -affected REF prints the specs, one per line, that a change since REF can move:
 the spec file itself changed, or a file one of its mutations edits did. Tracked

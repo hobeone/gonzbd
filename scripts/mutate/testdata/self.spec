@@ -579,3 +579,19 @@ release, err := acquireRunLock(root)
 --- replace
 release, err := func() (func(), error) { return func() {}, nil }()
 --- end
+
+[go test runs without the wait budget]
+file scripts/mutate/main.go
+--- anchor
+	cmd.Env = testEnv()
+--- replace
+	cmd.Env = os.Environ()
+--- end
+
+[the wait budget overrides the caller's own]
+file scripts/mutate/main.go
+--- anchor
+	if _, ok := os.LookupEnv(testWaitEnv); !ok {
+--- replace
+	if _, ok := os.LookupEnv(testWaitEnv); ok || !ok {
+--- end

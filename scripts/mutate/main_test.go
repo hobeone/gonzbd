@@ -426,6 +426,65 @@ func TestGoTest_ReportsALaunchFailureRatherThanAFailedTest(t *testing.T) {
 	}
 }
 
+// waitModule writes a module whose one test fails unless GONZBD_TEST_WAIT
+// equals WANT_WAIT, both read from the environment go test runs it in.
+func waitModule(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	files := map[string]string{
+		"go.mod": "module waitprobe\n\ngo 1.21\n",
+		"probe_test.go": `package waitprobe
+
+import (
+	"os"
+	"testing"
+)
+
+func TestWait(t *testing.T) {
+	if got, want := os.Getenv("GONZBD_TEST_WAIT"), os.Getenv("WANT_WAIT"); got != want {
+		t.Fatalf("GONZBD_TEST_WAIT = %q, want %q", got, want)
+	}
+}
+`,
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// TestGoTest_GivesTheTestTheWaitBudget pins testEnv's wiring into goTest: a
+// go test this command runs sees defaultTestWait when the caller's
+// environment has no budget, and the caller's own value when it has one.
+// Not parallel: it changes this process's environment.
+func TestGoTest_GivesTheTestTheWaitBudget(t *testing.T) {
+	dir := waitModule(t)
+
+	// t.Setenv registers the restore; the Unsetenv then removes the variable
+	// for the duration of the subtest.
+	t.Run("unset", func(t *testing.T) {
+		t.Setenv(testWaitEnv, "")
+		if err := os.Unsetenv(testWaitEnv); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("WANT_WAIT", defaultTestWait)
+		out, code, err := goTest(dir, &spec{pkg: "./..."})
+		if err != nil || code != 0 {
+			t.Fatalf("goTest = exit %d, err %v; output:\n%s", code, err, out)
+		}
+	})
+	t.Run("set by the caller", func(t *testing.T) {
+		t.Setenv(testWaitEnv, "7s")
+		t.Setenv("WANT_WAIT", "7s")
+		out, code, err := goTest(dir, &spec{pkg: "./..."})
+		if err != nil || code != 0 {
+			t.Fatalf("goTest = exit %d, err %v; output:\n%s", code, err, out)
+		}
+	})
+}
+
 func TestNote_ExplainsOnlyTheVerdictsThatGetMisread(t *testing.T) {
 	t.Parallel()
 
