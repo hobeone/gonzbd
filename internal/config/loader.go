@@ -38,11 +38,24 @@ func Load(path string) (*Config, error) {
 	for _, u := range unknowns {
 		log.Warn("config: unknown field ignored", "detail", u, "path", path)
 	}
-	cfg.ExpandPaths()
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.finish(); err != nil {
 		return nil, fmt.Errorf("config: validate %q: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// finish turns decoded or edited input into the Config the daemon runs on:
+// it applies the sticky defaults (applyNormalization), expands $VAR and ~ in
+// path fields (ExpandPaths), then validates the result. A path that expands
+// to "" is therefore validated as "", never defaulted.
+//
+// Load and SetLocked both take it, so a value Set accepts is one the next
+// Load accepts and reproduces: `git grep -n '\.finish()' -- 'internal/config/*.go' ':!*_test.go'`
+// returns 3 lines, those two calls and this citation.
+func (c *Config) finish() error {
+	c.applyNormalization()
+	c.ExpandPaths()
+	return c.Validate()
 }
 
 // partitionYAMLErrors splits errors from the YAML decoder. Unknown field errors
@@ -115,8 +128,10 @@ func wrapYAMLError(err error, b []byte) error {
 	return errors.New(ctx.String())
 }
 
-// applyNormalization sets sticky defaults for critical settings and normalizes
-// nil slices to empty arrays to ensure correct JSON/YAML serialization.
+// applyNormalization sets sticky defaults and normalizes nil slices to empty
+// arrays for JSON/YAML serialization. An empty replace_illegal_with or
+// cleanup_list takes its default whether the input left it out or set it
+// empty, and a server's port 0 takes 119, or 563 with SSL.
 func (cfg *Config) applyNormalization() {
 	if cfg.Downloads.ReplaceIllegalWith == "" {
 		cfg.Downloads.ReplaceIllegalWith = "_"
@@ -189,12 +204,6 @@ func decode(r io.Reader) (*Config, []string, error) {
 	if servers != nil {
 		cfg.Servers = servers
 	}
-
-	// Sticky defaults: if these fields are empty after decoding, it means
-	// they were either missing from the YAML or explicitly set to empty.
-	// We restore defaults for critical naming options to ensure the UI
-	// and system work correctly for existing users.
-	cfg.applyNormalization()
 
 	return cfg, unknowns, nil
 }

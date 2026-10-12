@@ -2,6 +2,7 @@ package config
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -147,12 +148,14 @@ func TestConfig_Set(t *testing.T) {
 			},
 		},
 		{
+			// The sticky default Load applies to an empty list applies here
+			// too, so the live value is the one the next start reads back.
 			"set empty string slice",
 			"downloads", "cleanup_list", `[]`,
 			false,
 			func(t *testing.T, c *Config) {
-				if len(c.Downloads.CleanupList) != 0 {
-					t.Fatalf("len(CleanupList) = %d, want 0", len(c.Downloads.CleanupList))
+				if !slices.Equal(c.Downloads.CleanupList, DefaultCleanupList) {
+					t.Fatalf("CleanupList = %q, want DefaultCleanupList", c.Downloads.CleanupList)
 				}
 			},
 		},

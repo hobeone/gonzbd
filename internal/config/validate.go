@@ -164,7 +164,11 @@ func (g *GeneralConfig) validate() error {
 			errs = append(errs, err)
 		}
 	}
-	// Validate per-component log level overrides at load time.
+	// An invalid level stops cmd/gonzbd at startup (configureLogging), so it
+	// is refused here, where set_config sees it before it is saved.
+	if _, err := g.ParseLogLevel(); err != nil {
+		errs = append(errs, fmt.Errorf("log_level: %w", err))
+	}
 	if _, err := g.ParseLogLevels(); err != nil {
 		errs = append(errs, fmt.Errorf("log_levels: %w", err))
 	}
