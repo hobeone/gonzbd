@@ -243,8 +243,9 @@ const (
 	// SSLVerifyHostname requires the certificate to match the configured
 	// host (this is the default).
 	SSLVerifyHostname SSLVerify = 2
-	// SSLVerifyStrict enables hostname verification plus extra checks
-	// (e.g. revocation, when supported by the runtime).
+	// SSLVerifyStrict is accepted for config parity with SABnzbd and
+	// verifies exactly as SSLVerifyHostname does: the nntp package's TLS
+	// setup handles the two levels in one case and adds no extra checks.
 	SSLVerifyStrict SSLVerify = 3
 )
 

@@ -7,10 +7,10 @@ config schema or config UI.
 
 ## Config Documentation Sync
 
-The root `gonzbd.yaml` contains inline comments above every directive documenting
-its purpose, valid values, and important considerations. When adding, renaming,
+The root `gonzbd.yaml.example` contains inline comments above most directives documenting
+their purpose, valid values, and important considerations. When adding, renaming,
 or removing config fields in `internal/config/`, you MUST update the
-corresponding comments in `gonzbd.yaml` and `test/fixtures/gonzbd.yaml` to stay
+corresponding comments in `gonzbd.yaml.example` and `test/fixtures/gonzbd.yaml` to stay
 in sync. Also update the settings tables in `docs/sabnzbd_spec.md` §9.
 
 ## `download_dir` cannot change under a queued job
@@ -77,7 +77,10 @@ Known limitations:
 which enforces the config↔UI contract. **It maintains no list.** It walks
 `ui/src/lib/components/config/`, extracts every `section=` / `keyword=` pair
 from `ConfigInput`, `ConfigSwitch`, `ConfigTextarea` and `ConfigSelect` with a
-regex, and asserts each one resolves to a settable Go config tag. So the Svelte
+regex, and asserts that `Config.Set` finds a Go field with that tag. It does not
+assert that `Set` can convert a value for the field: `Set` returns
+"unsupported field type" for a `uint64` field such as
+`par2_max_packet_body_size`, and the test passes regardless. So the Svelte
 components are the source of truth and the test follows them:
 
 - When you **add a new `keyword=` prop** to any of those four components, nothing needs adding to the test — it discovers the prop on the next run, and fails if the Go field it names does not exist.
