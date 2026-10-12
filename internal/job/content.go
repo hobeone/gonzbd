@@ -666,6 +666,11 @@ var ErrNameChanged = errors.New("job: name changed since it was read")
 // across its DownloadBegun check and its name write, so the two are ordered:
 // either the filename is recorded first and SetName refuses with
 // ErrDownloadBegun, or the rename lands first and this refuses.
+//
+// It writes the progress record alone, so it does not need the manifest and
+// records at any residency: an eviction between the caller's resolution and
+// this write must not lose the filename. It returns ErrNotResident only when
+// the job has no progress record.
 func (j *Job) RecordFileFilename(fileIdx int, name, filename string) error {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
@@ -674,10 +679,10 @@ func (j *Job) RecordFileFilename(fileIdx int, name, filename string) error {
 	}
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	if j.manifest == nil || j.progress == nil {
+	if j.progress == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
-	if fileIdx < 0 || fileIdx >= j.manifest.NumFiles() {
+	if fileIdx < 0 || fileIdx >= len(j.progress.files) {
 		return fmt.Errorf("job %s: fileIdx %d out of range", j.id, fileIdx)
 	}
 	j.progress.files[fileIdx].Filename = filename

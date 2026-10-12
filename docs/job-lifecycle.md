@@ -1173,7 +1173,7 @@ The tiering is that boundary made explicit.
 | Tier | Needs | May fail? |
 |---|---|---|
 | **Header** — remove, reorder, priority, ID/name lookups | neither | **Never** |
-| **Progress** — all reporting, counters, completion and abort checks; recording a permanent failure or clearing an emitted bit | `JobProgress` | **Never**, once it exists, for an index in range |
+| **Progress** — all reporting, counters, completion and abort checks; recording a permanent failure, clearing an emitted bit, or recording a file's resolved filename | `JobProgress` | **Never**, once it exists, for an index in range |
 | **Manifest** — dispatch, article indexing, byte accounting | `Manifest` (evictable) | Yes, and must say so |
 
 Counter maintenance needs article byte counts and the file↔article mapping.
@@ -1220,6 +1220,10 @@ discarded for precisely the non-resident jobs the on-demand par2 path acts on.
 `MarkArticleFailed` and `ClearArticleEmitted` were the same defect at a higher
 price — a lost failure and a stranded article — and now do their bit write at
 any residency, using the manifest only for the counters (above).
+`RecordFileFilename` was the same defect too: it refused an evicted job, the
+pipeline registered the file anyway, and the filename that locates the file's
+rows after a restart was never recorded. It now writes the progress record at
+any residency.
 
 The gate on `*Job` is `j.manifest == nil` returning `job.ErrNotResident`,
 pinned by `TestManifestAccessIsGated`

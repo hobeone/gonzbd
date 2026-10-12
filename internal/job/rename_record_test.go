@@ -38,3 +38,28 @@ func TestSetNameAndRecordFileFilename_OneWins(t *testing.T) {
 		t.Errorf("a refused SetName changed the name to %q", got)
 	}
 }
+
+// TestRecordFileFilename_RecordsWhenEvicted pins #854: the filename lives on
+// the progress record, which eviction keeps, so an evicted job records it, and
+// an index outside the progress record's files is refused without a write.
+func TestRecordFileFilename_RecordsWhenEvicted(t *testing.T) {
+	t.Parallel()
+	j := New("id", "name", Policy{})
+	m := NewManifest([]JobFile{{Subject: "f", Bytes: 100, Articles: []JobArticle{{ID: "<a@x>", Bytes: 100, Number: 1}}}})
+	if err := j.AttachContent(m); err != nil {
+		t.Fatalf("AttachContent: %v", err)
+	}
+	j.Evict()
+
+	if err := j.RecordFileFilename(0, "name", "on-disk.bin"); err != nil {
+		t.Fatalf("RecordFileFilename on an evicted job: %v", err)
+	}
+	if got := j.Progress().FileFilename(0); got != "on-disk.bin" {
+		t.Errorf("recorded filename %q, want on-disk.bin", got)
+	}
+	for _, fi := range []int{-1, 1} {
+		if err := j.RecordFileFilename(fi, "name", "x"); err == nil {
+			t.Errorf("RecordFileFilename(%d) on a one-file job succeeded, want out of range", fi)
+		}
+	}
+}
