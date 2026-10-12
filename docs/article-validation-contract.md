@@ -1159,8 +1159,9 @@ arrival intersecting another article's written range in `fileWriter.owned`
 `fileWriter.owned` before any write, and they are "written" in the same sense.
 
 Refusal is never silent. Every refusal produces a recorded, user-visible
-disposition — which is exactly what #382's `resolve(article, disposition)`
-enumeration is for.
+disposition — which is what `fileWriter.resolve`'s enumerated disposition
+exists to make structural (#382): `acceptArticle` returns the disposition it
+decided on every path, and `resolve` refuses one it does not know.
 
 ## 8. Settled decisions
 

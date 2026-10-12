@@ -30,13 +30,13 @@ file internal/assembler/assembler.go
 --- anchor
 	if a.opts.OnArticleWritten != nil {
 --- replace
-	if a.opts.OnArticleWritten != nil && n > 0 {
+	if a.opts.OnArticleWritten != nil && o.n > 0 {
 --- end
 
-[the callback fires even when the write faulted]
+[a faulted write is resolved Written, so the callback fires for it]
 file internal/assembler/assembler.go
 --- anchor
-	if err := f.w.accept(id, req.Offset, req.Data); err != nil {
+		return outcome{disposition: dispositionRolledBack, fault: err}
 --- replace
-	if err := f.w.accept(id, req.Offset, req.Data); err != nil && false {
+		return outcome{disposition: dispositionWritten, n: n}
 --- end

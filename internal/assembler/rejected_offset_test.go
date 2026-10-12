@@ -41,7 +41,8 @@ func TestRejectedOffsetIsFailedAndStillCompletesTheFile(t *testing.T) {
 		JobID: "job", FileIdx: 0, ArtIdx: 7, MessageID: "<evil@x>",
 		Offset: 1 << 40, Data: []byte("x"),
 	}
-	if !a.handleSuccessArticle(f, req) {
+	a.handleSuccessArticle(f, req)
+	if f.w.parts() != 1 {
 		t.Error("a rejected article was not counted toward the file's part total; the " +
 			"file can never reach TotalParts, so OnFileComplete never fires and the job " +
 			"sits at 100% with nothing outstanding, across restarts")
@@ -63,38 +64,40 @@ func TestRejectedOffsetIsFailedAndStillCompletesTheFile(t *testing.T) {
 	// A redelivery is a new fetch and decode, so it arrives in its own buffer.
 	// Reusing req.Data would release one slice twice (#574).
 	req.Data = []byte("x")
-	if a.handleSuccessArticle(f, req) {
+	a.handleSuccessArticle(f, req)
+	if f.w.parts() != 1 {
 		t.Error("a redelivery of the rejected article was counted again")
 	}
 }
 
-// TestRouteAcceptFailure_SplitsArticleFaultsFromStorageFaults pins the A1
-// split at the one place that makes it, and pins both directions because
-// either mistake is silent and expensive.
+// TestRouteOutcome_SplitsArticleFaultsFromStorageFaults pins the A1 split at
+// the one place that makes it, and pins both directions because either
+// mistake is silent and expensive.
 //
 // A storage fault sent to OnArticleRejected marks a perfectly good article
 // permanently failed and burns it against par2's recovery budget over a full
 // disk the user fixes in seconds. A rejected article sent to OnWriteFault
 // stalls the whole job on a healthy device, waiting for a condition that will
 // never clear because there is no condition.
-func TestRouteAcceptFailure_SplitsArticleFaultsFromStorageFaults(t *testing.T) {
+func TestRouteOutcome_SplitsArticleFaultsFromStorageFaults(t *testing.T) {
 	dir := t.TempDir()
 	req := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 3}
 
 	t.Run("a rejected article goes to OnArticleRejected", func(t *testing.T) {
 		a := newHelperAssembler()
 		var rejReason string
-		var faults int
+		var faults, unwritten int
 		a.opts.OnArticleRejected = func(_ string, _ int, _ int32, reason string, _ int64) { rejReason = reason }
 		a.opts.OnWriteFault = func(string, int, *storagefault.Fault) { faults++ }
+		a.opts.OnArticlesUnwritten = func(string, int, []int32) { unwritten++ }
 		f := newHelperFile(t, dir, "reject.dat", 100)
 
-		a.routeAcceptFailure(f, req, &rejectedArticleError{reason: "negative offset"})
+		a.routeOutcome(f, req, outcome{disposition: dispositionRejected, reason: "negative offset", uncovered: WholeArticle})
 
 		if rejReason != "negative offset" {
 			t.Errorf("OnArticleRejected reason = %q, want %q", rejReason, "negative offset")
 		}
-		if faults != 0 {
+		if faults != 0 || unwritten != 0 {
 			t.Error("a rejected article was routed as a storage fault; the job stalls on a healthy disk")
 		}
 	})
@@ -103,11 +106,13 @@ func TestRouteAcceptFailure_SplitsArticleFaultsFromStorageFaults(t *testing.T) {
 		a := newHelperAssembler()
 		var rejected int
 		var gotFault *storagefault.Fault
+		var unwritten []int32
 		a.opts.OnArticleRejected = func(string, int, int32, string, int64) { rejected++ }
 		a.opts.OnWriteFault = func(_ string, _ int, f *storagefault.Fault) { gotFault = f }
+		a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) { unwritten = append(unwritten, arts...) }
 		f := newHelperFile(t, dir, "fault.dat", 100)
 
-		a.routeAcceptFailure(f, req, syscall.ENOSPC)
+		a.routeOutcome(f, req, outcome{disposition: dispositionRolledBack, fault: syscall.ENOSPC})
 
 		if gotFault == nil {
 			t.Fatal("a storage fault reached no callback at all")
@@ -115,22 +120,49 @@ func TestRouteAcceptFailure_SplitsArticleFaultsFromStorageFaults(t *testing.T) {
 		if !errors.Is(gotFault, syscall.ENOSPC) {
 			t.Errorf("routed fault = %v, want it to wrap ENOSPC", gotFault)
 		}
+		if len(unwritten) != 1 || unwritten[0] != 3 {
+			t.Errorf("OnArticlesUnwritten = %v, want [3]: the rolled-back article's Emitted bit "+
+				"is still set, and nothing else clears it", unwritten)
+		}
 		if rejected != 0 {
 			t.Error("a full disk was recorded against the article; its retry budget is burned " +
 				"and its bytes count against par2's recovery budget")
 		}
 	})
-}
 
-// TestRejectedArticleError_NamesTheReason pins that the reason survives into
-// the error text. It is what the operator sees in the log line above the ack,
-// and an error that rendered as a bare "article rejected" would leave a
-// permanently failed article with no recorded cause.
-func TestRejectedArticleError_NamesTheReason(t *testing.T) {
-	err := &rejectedArticleError{reason: "write extends past declared file size"}
-	if got, want := err.Error(), "assembler: article rejected: write extends past declared file size"; got != want {
-		t.Errorf("Error() = %q, want %q", got, want)
-	}
+	t.Run("a written article goes to OnArticleWritten with its length", func(t *testing.T) {
+		a := newHelperAssembler()
+		var gotN int64 = -1
+		var rejected, faults int
+		a.opts.OnArticleWritten = func(_ string, _ int, _ int32, _, n int64, _ uint32) { gotN = n }
+		a.opts.OnArticleRejected = func(string, int, int32, string, int64) { rejected++ }
+		a.opts.OnWriteFault = func(string, int, *storagefault.Fault) { faults++ }
+		f := newHelperFile(t, dir, "written.dat", 100)
+
+		a.routeOutcome(f, req, outcome{disposition: dispositionWritten, n: 42})
+
+		if gotN != 42 {
+			t.Errorf("OnArticleWritten n = %d, want 42", gotN)
+		}
+		if rejected != 0 || faults != 0 {
+			t.Error("a written article was reported as refused or faulted")
+		}
+	})
+
+	t.Run("a disposition acceptArticle never produces is refused", func(t *testing.T) {
+		a := newHelperAssembler()
+		f := newHelperFile(t, dir, "fetchfailed.dat", 100)
+		for _, d := range []disposition{disposition(0), dispositionFetchFailed} {
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Errorf("routeOutcome accepted %s; an outcome no arm owns would be dropped silently", d)
+					}
+				}()
+				a.routeOutcome(f, req, outcome{disposition: d})
+			}()
+		}
+	})
 }
 
 // TestRejectedOffset_TheFileStillCompletes is the consequence the unit test

@@ -2,10 +2,10 @@ package assembler
 
 import (
 	"context"
-	"math"
-
 	"errors"
+	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -1326,27 +1326,33 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		}
 	}
 
-	// admitted reports whether the article was taken on as a part of this
-	// file. The COUNT is not applied here — it belongs to fileWriter, applied
-	// by admitAccepted and admitPermanentFailure in the same breath as the
-	// seen-set record it is derived from. A count applied here, after the
-	// write, could be rolled back by that write's own failure: w.fail decides
-	// the give-back from seenDone membership, so the two were set at different
-	// moments and the rollback reversed a count that had not been applied yet.
-	// Every transient accept-time write fault undercounted the file by one,
-	// permanently, and partsWritten >= TotalParts became unreachable.
-	var admitted bool
+	// The part count is the writer's: fileWriter.admit and fileWriter.resolve
+	// move it, in the same breath as the seen-set record it is derived from,
+	// and the handlers below report nothing back. A count applied here, after
+	// the write, could be rolled back by that write's own failure: the
+	// give-back is decided from seenDone membership, so the two were set at
+	// different moments and the rollback reversed a count that had not been
+	// applied yet. Every transient accept-time write fault undercounted the
+	// file by one, permanently, and partsWritten >= TotalParts became
+	// unreachable.
+	//
+	// Whether this request moved the count is read from the writer rather
+	// than relayed by the handler. A request that moved nothing — a duplicate,
+	// a retry of an article already counted, a rolled-back write — is not a
+	// processed part, so it is neither logged as one nor checked against
+	// TotalParts.
+	before := f.w.parts()
 	if req.FatalErr != nil {
-		admitted = a.handleFatalArticle(f, req)
+		a.handleFatalArticle(f, req)
 	} else {
-		admitted = a.handleSuccessArticle(f, req)
-	}
-	if !admitted {
-		return
+		a.handleSuccessArticle(f, req)
 	}
 	// Read once, so the count the log reports is provably the count the
 	// comparison below decided on.
 	parts := f.w.parts()
+	if parts == before {
+		return
+	}
 	a.log.Debug("processed part",
 		"job", req.JobID, "fileidx", req.FileIdx,
 		"part", parts, "total", f.info.TotalParts,
@@ -1366,7 +1372,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 //
 // # The article that is owed something
 //
-// An article can reach here with no record of it in the job: fileWriter.fail
+// An article can reach here with no record of it in the job: a RolledBack
 // gives the part back for every article whose write failed, the downloader
 // re-dispatches it, and the copy that comes back arrives after its file was
 // tombstoned. Dropping it would strand it — not written, not failed, and
@@ -1378,25 +1384,20 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 // Failing it charges its bytes against the job's par2 recovery budget, which
 // is exactly the decision par2 exists to make.
 //
-// Where the writer is still open the distinction is drawn on its seenDone and
-// seenFailed, and an article it resolved is dropped silently. Where it is gone
-// the article is reported regardless: Job.MarkArticleFailed is a no-op for an
-// article already Done (setFailedBits), so an accepted article costs a log
-// line and nothing else.
+// Where the writer is still open the distinction is the writer's to draw
+// (fileWriter.holdsPart), and an article it accounted for — accepted, or
+// resolved permanently failed by the path that failed it — is dropped
+// silently. Where it is gone the article is reported regardless:
+// Job.MarkArticleFailed is a no-op for an article already Done
+// (setFailedBits), so an accepted article costs a log line and nothing else.
 func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
 	a.log.Debug("ignoring late article for completed file",
 		"job", req.JobID, "fileidx", req.FileIdx, "msgid", req.MessageID)
 	if req.Data != nil {
 		a.releaseBuffer(req.Data)
 	}
-	if f != nil {
-		if _, accepted := f.w.seenDone[req.ArtIdx]; accepted {
-			return
-		}
-		if _, failed := f.w.seenFailed[req.ArtIdx]; failed {
-			// Already resolved in the other direction by the path that failed it.
-			return
-		}
+	if f != nil && f.w.holdsPart(req.ArtIdx) {
+		return
 	}
 	if a.opts.OnArticleRejected != nil {
 		a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx,
@@ -1541,100 +1542,97 @@ func (a *Assembler) seedOwned(w *fileWriter, owned []Range) {
 // Job.MarkArticleFailed (R10), and this package no longer has an ack path in
 // either direction. The dedup that keeps partsWritten from overshooting
 // TotalParts is purely local bookkeeping, and it lives on the writer with the
-// seen-sets it reads and the counter it moves — see admitPermanentFailure.
-//
-// Returns false when the article must not be counted again.
-func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
+// seen-sets it reads and the counter it moves — resolve's FetchFailed arm.
+func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) {
 	a.log.Debug("counting failed article toward completion (skipping disk write)",
 		"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path(), "error", req.FatalErr)
-	admitted := f.w.admitPermanentFailure(req.ArtIdx)
+	f.w.resolve(req.ArtIdx, dispositionFetchFailed)
 	if req.Data != nil {
 		a.releaseBuffer(req.Data)
 	}
-	return admitted
 }
 
-// handleSuccessArticle hands one article's bytes to the file's writer.
+// handleSuccessArticle hands one article's bytes to the file's writer and
+// resolves what came of it.
 //
-// Returns false when the article must not be counted toward the file's part
-// total: a duplicate, a retry of an article already counted as failed, or a
-// write the storage layer refused. A REJECTED article does count — it is
-// resolved permanently failed, so a file waiting for it waits forever. See the
-// accept-failure branch below for both halves.
-func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) bool {
+// The shape is the point: one admission, one outcome, one resolve, one route.
+// acceptArticle decides the disposition and returns it as a value, so every
+// return path there has to name one; fileWriter.resolve applies the
+// accounting that disposition owes, so this function never chooses it; and
+// routeOutcome reports it to the callback that owns that disposition. The
+// caller reads the part count afterwards (processRequest), so nothing here
+// has to say whether the article counted.
+func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) {
 	w := f.w
 	id := articleID{msgID: req.MessageID, artIdx: req.ArtIdx}
-	if _, dup := w.seenDone[req.ArtIdx]; dup {
+	// Admitted before the write is attempted, not after, so the write's own
+	// failure can roll the admission back — and admitted in the same breath
+	// as the count, which is what admit exists to make inseparable. Whether
+	// the admission charges a part is the writer's to decide: a retry of an
+	// article already counted as failed is admitted so its bytes are written,
+	// without counting it twice.
+	if !w.admit(req.ArtIdx) {
 		// A duplicate of an article already accepted. Its first copy is
-		// already written; this copy's
-		// bytes are redundant, and re-writing them would be a second
-		// WriteAt for the same range.
+		// already written; this copy's bytes are redundant, and re-writing
+		// them would be a second WriteAt for the same range.
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
-		return false
+		return
 	}
-	if _, was := w.seenFailed[req.ArtIdx]; was {
-		// A retry of an article already counted as failed. The false
-		// return keeps partsWritten from counting it twice; the bytes are
-		// still written, because they are still the file's content.
-		w.admitRetryOfFailed(req.ArtIdx)
-		if err := a.acceptArticle(f, id, req); err != nil {
-			a.routeAcceptFailure(f, req, err)
-		}
-		return false
-	}
-	// Recorded before the write is attempted, not after, so a write path that
-	// fails can move the article to seenFailed without this function putting
-	// it straight back — and recorded in the same breath as the count, which
-	// is what admitAccepted exists to make inseparable.
-	w.admitAccepted(req.ArtIdx)
-	if err := a.acceptArticle(f, id, req); err != nil {
-		// Whether it still counts depends on WHICH failure it was, and that is
-		// the A1 split reaching the part total.
-		//
-		// A storage fault must not count. Counting it is what let a file reach
-		// TotalParts and finalize over bytes that never landed, reporting full
-		// health on a job whose volume was full. Its article stays Outstanding
-		// and arrives again, so the part total is not lost — it is deferred.
-		//
-		// A REJECTED article must count, and for the mirror reason: it is
-		// resolved permanently failed and will never arrive again. Declining
-		// to count it means partsWritten can never reach TotalParts, so
-		// OnFileComplete never fires, MarkFileComplete never runs, and the job
-		// sits at 100% with zero outstanding articles across restarts. This is
-		// what handleFatalArticle already does for a permanent failure, which
-		// is the same fact arriving from the other side of the pipeline.
-		//
-		// Counting it claims nothing about its bytes: it claims no owned
-		// range, so the completion trim (finish, bounded by
-		// ownedRanges.maxEnd) never reaches past it on its account, and the
-		// bytes of it no other article wrote are charged to failedBytes for
-		// par2 to repair from.
-		return a.routeAcceptFailure(f, req, err)
-	}
-	return true
+	o := a.acceptArticle(f, id, req)
+	w.resolve(req.ArtIdx, o.disposition)
+	a.routeOutcome(f, req, o)
+}
+
+// outcome is what acceptArticle decided for one admitted article: its
+// disposition, and what the route for that disposition reports. Each field
+// after the disposition belongs to one arm and is zero for the others; every
+// literal that builds one sets the disposition and its fields in one
+// statement, so a half-built outcome is not a state a caller can reach.
+type outcome struct {
+	disposition disposition
+
+	// n is the length of the bytes handed to WriteAt, for OnArticleWritten
+	// (dispositionWritten).
+	n int64
+
+	// reason and uncovered are OnArticleRejected's (dispositionRejected): why
+	// the article was refused, and how many of its bytes no other article's
+	// range covers, or WholeArticle when none of it is on disk.
+	reason    string
+	uncovered int64
+
+	// fault is the *storagefault.Fault the write raised
+	// (dispositionRolledBack).
+	fault error
 }
 
 // acceptArticle range-checks the write and hands it to the file's writer,
-// returning any storage fault the write raised.
+// returning the article's disposition with what its route needs.
 //
-// A write rejected here leaves nothing behind for a later fsync to fail on, so
-// the fault has to be returned to be routed at all. Nor is the article
-// Outstanding: its Emitted bit is still set, and ForEachUnfinishedArticle
-// skips it, so it is never re-dispatched.
+// It applies no accounting and reports nothing: the caller resolves the
+// disposition with the writer and routes the outcome. Returning the
+// disposition as a value is what makes a new exit path loud rather than
+// silent — a path that returns here has to say what it decided, and an
+// outcome that says nothing reaches resolve as the zero disposition, which
+// resolve refuses.
+//
+// A write refused or faulted here leaves nothing behind for a later fsync to
+// fail on, so the outcome is the only way the fact gets out. Nor is a faulted
+// article Outstanding: its Emitted bit is still set, and
+// ForEachUnfinishedArticle skips it, so it is never re-dispatched.
 //
 // Returning the fault is what makes A1 true rather than merely asserted: the
-// caller declines to count the part, returns the rolled-back articles through
+// caller rolls the part back, returns the article through
 // OnArticlesUnwritten, hands the fault to OnWriteFault, and the job stalls on a
 // storage condition without any article being recorded as damaged.
-func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) error {
+func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) outcome {
 	if reason, ok := a.offsetOutOfRange(f, req); ok {
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
-		f.w.failPermanent(id.artIdx)
-		return &rejectedArticleError{reason: reason, uncovered: WholeArticle}
+		return outcome{disposition: dispositionRejected, reason: reason, uncovered: WholeArticle}
 	}
 	// A byte range another article has already written is owned, and the
 	// ARRIVING article is the one refused rather than the incumbent. The
@@ -1656,72 +1654,50 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) e
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}
-		f.w.failPermanent(id.artIdx)
-		return &rejectedArticleError{
-			reason:    "claims a byte range already written by another article",
-			uncovered: uncovered,
+		return outcome{
+			disposition: dispositionRejected,
+			reason:      "claims a byte range already written by another article",
+			uncovered:   uncovered,
 		}
 	}
 	n := int64(len(req.Data)) // accept returns the buffer to the pool
 	if err := f.w.accept(id, req.Offset, req.Data); err != nil {
-		return err
+		return outcome{disposition: dispositionRolledBack, fault: err}
 	}
-	if a.opts.OnArticleWritten != nil {
-		a.opts.OnArticleWritten(req.JobID, req.FileIdx, req.ArtIdx, req.Offset, n, req.CRC32)
-	}
-	return nil
+	return outcome{disposition: dispositionWritten, n: n}
 }
 
-// rejectedArticleError marks a refusal that is about the ARTICLE, so the
-// caller can tell it apart from a storage fault and route it to
-// OnArticleRejected instead of OnWriteFault (A1).
+// routeOutcome reports one resolved article to the callback its disposition
+// owns, which is the A1 split in one place: a rejection says nothing about
+// storage and goes to OnArticleRejected; a storage fault says nothing about
+// the article and goes to OnWriteFault, with the rolled-back article handed
+// to OnArticlesUnwritten because its Emitted bit is still set and nothing
+// else clears it, as the openTargetFile failure does.
 //
-// It returns an error rather than a bool because acceptArticle's other failure
-// is already an error, and a rejection that returned nil was counted as a
-// successful part — see handleSuccessArticle.
-type rejectedArticleError struct {
-	reason string
-	// uncovered is what OnArticleRejected reports as uncovered: the article's
-	// bytes no other article's range covers, or WholeArticle.
-	uncovered int64
-}
-
-func (e *rejectedArticleError) Error() string {
-	return "assembler: article rejected: " + e.reason
-}
-
-// routeAcceptFailure sends one acceptArticle failure to the callback that
-// matches what actually failed, which is the A1 split in one place.
-//
-// It reports whether the article still counts toward the file's part total.
-// True for a rejection — the article is resolved and will never arrive again,
-// so a file waiting for it waits forever — and false for a storage fault,
-// whose article stays Outstanding and arrives again. See handleSuccessArticle,
-// which is where the consequence of each is written out.
-func (a *Assembler) routeAcceptFailure(f *openFile, req WriteRequest, err error) bool {
-	if rej, ok := errors.AsType[*rejectedArticleError](err); ok {
+// Only the three dispositions acceptArticle produces have an arm. A
+// FetchFailed never comes through here — handleFatalArticle resolves it and
+// the queue already holds the failure — and the zero disposition is refused
+// by resolve before this runs, so the default arm is unreachable by
+// construction and panics rather than dropping a report.
+func (a *Assembler) routeOutcome(f *openFile, req WriteRequest, o outcome) {
+	switch o.disposition {
+	case dispositionWritten:
+		if a.opts.OnArticleWritten != nil {
+			a.opts.OnArticleWritten(req.JobID, req.FileIdx, req.ArtIdx, req.Offset, o.n, req.CRC32)
+		}
+	case dispositionRejected:
 		a.log.Warn("article rejected; it will be recorded as permanently failed",
 			"job", req.JobID, "fileidx", req.FileIdx, "artidx", req.ArtIdx,
-			"msgid", req.MessageID, "path", f.info.Path(), "reason", rej.reason)
+			"msgid", req.MessageID, "path", f.info.Path(), "reason", o.reason)
 		if a.opts.OnArticleRejected != nil {
-			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, rej.reason, rej.uncovered)
+			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, o.reason, o.uncovered)
 		}
-		return true
+	case dispositionRolledBack:
+		a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
+		a.noteWriteFault(f.info.Path(), req, o.fault)
+	default:
+		panic(fmt.Sprintf("assembler: article %d routed with %s, which acceptArticle does not produce", req.ArtIdx, o.disposition))
 	}
-	// The rolled-back article is the one whose write just failed. fileWriter.fail
-	// has two callers, writeOne and rollbackSyncedArticle —
-	// `git grep -n '[.]fail[(]' -- 'internal/assembler/*.go' ':!*_test.go'`
-	// returns 3 lines, those two calls and fail's own doc quoting a pattern —
-	// and only writeOne's failure reaches here. Both call sites of this
-	// function — `git grep -n 'a[.]routeAcceptFailure[(]' -- internal/assembler/assembler.go`
-	// returns 2 lines — pass acceptArticle's error, whose storage faults come
-	// from f.w.accept, which calls writeOne. rollbackSyncedArticle's articles
-	// go out through releasePoisoned instead. The failed article's Emitted bit
-	// is still set, so it is handed back to be cleared, as the openTargetFile
-	// failure does.
-	a.noteArticlesUnwritten(req.JobID, req.FileIdx, []int32{req.ArtIdx})
-	a.noteWriteFault(f.info.Path(), req, err)
-	return false
 }
 
 // noteArticlesUnwritten hands one set of un-written articles to their owner.

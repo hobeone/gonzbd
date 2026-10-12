@@ -60,10 +60,19 @@ file internal/assembler/filewriter.go
 [rollbackSyncedArticle omits recording the article in w.poisoned]
 file internal/assembler/filewriter.go
 --- anchor
-	w.fail(articleID{artIdx: artIdx})
+	w.resolve(artIdx, dispositionRolledBack)
 	w.poisoned = append(w.poisoned, artIdx)
 --- replace
-	w.fail(articleID{artIdx: artIdx})
+	w.resolve(artIdx, dispositionRolledBack)
+--- end
+
+[rollbackSyncedArticle omits rolling the article's part back]
+file internal/assembler/filewriter.go
+--- anchor
+	w.resolve(artIdx, dispositionRolledBack)
+	w.poisoned = append(w.poisoned, artIdx)
+--- replace
+	w.poisoned = append(w.poisoned, artIdx)
 --- end
 
 [openTargetFile omits wiring Options.SyncFile]

@@ -223,7 +223,7 @@ func TestAcceptArticle_OutOfRangeOffsetIsNotReported(t *testing.T) {
 	a := newHelperAssembler()
 	f := newHelperFile(t, dir, "oor.dat", 1024)
 
-	a.acceptArticle(f, articleID{msgID: "bad", artIdx: 4}, WriteRequest{
+	o := a.acceptArticle(f, articleID{msgID: "bad", artIdx: 4}, WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 4, MessageID: "bad",
 		Offset: 1 << 40, Data: []byte("evil"),
 	})
@@ -231,8 +231,8 @@ func TestAcceptArticle_OutOfRangeOffsetIsNotReported(t *testing.T) {
 	if got := f.w.unsynced; len(got) != 0 {
 		t.Errorf("unsynced = %v after a rejected offset, want empty", got)
 	}
-	if _, failed := f.w.seenFailed[4]; !failed {
-		t.Error("the rejected article was not moved to seenFailed")
+	if o.disposition != dispositionRejected {
+		t.Errorf("disposition = %s, want rejected: the article is resolved permanently failed, not written", o.disposition)
 	}
 }
 
