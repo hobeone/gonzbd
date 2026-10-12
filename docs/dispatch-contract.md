@@ -568,7 +568,11 @@ as queued, forever.
 `Dispatcher.tick` closes this: after `sched.Queue.Advance`,
 `evictCancelledNeverRun` (`internal/dispatch/tick.go`) removes any job with
 `State == StateUnset && Intent == IntentCancel` from the registry and the
-store. `Advance` routes `IntentCancel` to `finishCancel` before every other
+store, evicting its manifest before it deregisters the job, as `removeFor`
+does. `appResidency.Evict` (`internal/app/residency.go`) waits out a hydration
+in flight and then drops the manifest of the job it finds through the
+dispatcher by ID; after deregistration that lookup fails and the manifest stays
+installed. `Advance` routes `IntentCancel` to `finishCancel` before every other
 branch, so eviction cannot race a settle, and it frees no pools —
 `TestRequirements_StateUnsetRequiresNothing`
 (`internal/sched/requirements_test.go`) pins that `StateUnset` requires
