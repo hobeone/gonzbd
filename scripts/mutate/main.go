@@ -737,8 +737,7 @@ func writeBackup(path string, content []byte) (string, error) {
 	if err := writeFile(backup, content, 0o600); err != nil {
 		// Nothing has registered this directory yet, so no defer and no
 		// signal handler will ever come back for it.
-		_ = os.RemoveAll(dir)
-		return "", err
+		return "", errors.Join(err, os.RemoveAll(dir))
 	}
 	pending.Lock()
 	pending.path, pending.backup, pending.original = path, backup, content
