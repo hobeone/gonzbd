@@ -736,7 +736,7 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 	isDuplicate, dupReason := app.detectDuplicateNZB(ctx, hdr.MD5, hdr.Filename, force, nzbDir)
 	if isDuplicate {
 		if !force {
-			_ = j.SetIntent(job.IntentPause)
+			_ = j.SetIntent(job.IntentPause) //nolint:errcheck // IntentPause is declared, and a cancel latched first rightly wins over this pause
 		}
 		// Its own field rather than appended to IngestAnomaly: BuildIngestJob
 		// may already have set that field, and a job can be both a duplicate
@@ -1361,12 +1361,12 @@ func (app *Application) Start(ctx context.Context) error {
 	app.mu.Unlock()
 	// --- No lock held below this line ---
 	if err := dl.Start(app.ctx); err != nil {
-		_ = app.assembler.Stop()
+		_ = app.assembler.Stop() //nolint:errcheck // Start's own error is returned; Stop returns nil on every path (assembler.go)
 		return err
 	}
 	if err := app.postProcessor.Start(app.ctx); err != nil {
-		_ = dl.Stop()
-		_ = app.assembler.Stop()
+		_ = dl.Stop()            //nolint:errcheck // Start's own error is returned; Stop returns nil on every path (downloader.go)
+		_ = app.assembler.Stop() //nolint:errcheck // Start's own error is returned; Stop returns nil on every path (assembler.go)
 		return err
 	}
 	app.pipeline.ctx = app.ctx // must be set before goroutine launch (setCompletions reads it)
@@ -2427,7 +2427,7 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 	entries, err := os.ReadDir(downloadDir)
 	if err == nil {
 		for _, e := range entries {
-			info, _ := e.Info()
+			info, _ := e.Info() //nolint:errcheck // the size only decorates a log line; a nil info logs 0
 			var sz int64
 			if info != nil {
 				sz = info.Size()
@@ -2592,7 +2592,7 @@ func (app *Application) rebuildJobFromNZB(entry history.Entry) (*job.Job, dispat
 	if err != nil {
 		return nil, dispatch.Header{}, fmt.Errorf("app: retry %s: open NZB backup %q: %w", entry.NzoID, entry.NZBBackup, err)
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = f.Close() }() //nolint:errcheck // read-only NZB backup
 
 	gz, err := gzip.NewReader(f)
 	if err != nil {
@@ -3477,7 +3477,7 @@ func writeNZBBackup(nzbDir, filename string, rawNZB []byte, chosen func(name str
 	stagedName := filepath.Base(staged)
 	// The backup name is a second link to the same inode; this removes only
 	// the staging name.
-	defer func() { _ = root.Remove(stagedName) }()
+	defer func() { _ = root.Remove(stagedName) }() //nolint:errcheck // a leftover hidden .staging name links the published backup's inode and costs only its entry
 
 	base := filepath.Base(filename)
 	for range maxNZBBackupAttempts {

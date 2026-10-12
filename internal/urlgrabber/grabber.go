@@ -366,7 +366,7 @@ func selectAndValidateIP(ips []string, allowPrivate bool) (string, error) {
 		return "", fmt.Errorf("no IPs found")
 	}
 
-	_, cgNatNet, _ := net.ParseCIDR("100.64.0.0/10")
+	_, cgNatNet, _ := net.ParseCIDR("100.64.0.0/10") //nolint:errcheck // a constant CIDR literal
 	var validIP string
 	for _, ipStr := range ips {
 		ip := net.ParseIP(ipStr)

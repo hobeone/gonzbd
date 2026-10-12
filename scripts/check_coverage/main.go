@@ -147,8 +147,8 @@ func runPkgCoverage(pkgDir string, coverData map[string]float64) error {
 		return fmt.Errorf("creating temp cover profile for package %s: %w", pkgDir, err)
 	}
 	coverProfile := tmpFile.Name()
-	_ = tmpFile.Close()
-	defer func() { _ = os.Remove(coverProfile) }() // best-effort cleanup before return
+	_ = tmpFile.Close()                            //nolint:errcheck // an empty file just created; go test writes the profile
+	defer func() { _ = os.Remove(coverProfile) }() //nolint:errcheck // best-effort removal of a temp profile
 
 	cmd := exec.Command("go", "test", "-coverprofile="+coverProfile, "./"+pkgDir) //nolint:gosec // dev tool, fixed command args
 	var stdout, stderr bytes.Buffer

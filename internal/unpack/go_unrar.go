@@ -207,7 +207,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 
 		rel, abs, err := extractMember(ctx, root, outDir, entry.Header, entry, opts, log)
 		if err != nil {
-			_ = entry.Close() // idempotent; closes a member a write failure left open
+			_ = entry.Close() //nolint:errcheck // idempotent; closes a member a write failure left open, and the extraction error is the one returned
 			if ctx.Err() != nil {
 				return res, ctx.Err()
 			}

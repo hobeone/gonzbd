@@ -39,8 +39,8 @@ func parseUnrarOutput(output string) UnrarInfo {
 
 	// Parse version: "UNRAR 5.50 freeware" or "UNRAR 7.21 freeware"
 	if m := unrarVersionRE.FindStringSubmatch(output); len(m) == 3 {
-		major, _ := strconv.Atoi(m[1])
-		minor, _ := strconv.Atoi(m[2])
+		major, _ := strconv.Atoi(m[1]) //nolint:errcheck // the regexp admits only digits
+		minor, _ := strconv.Atoi(m[2]) //nolint:errcheck // the regexp admits only digits
 		info.Version = major*100 + minor
 		info.VersionStr = m[1] + "." + m[2]
 	}

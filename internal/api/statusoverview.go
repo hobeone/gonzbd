@@ -21,7 +21,7 @@ const downloadDirFreeBytesTimeout = 3 * time.Second
 // never delays this handler, and excludes per-server data (already
 // available, live, via mode=server_stats).
 func (s *Server) modeStatusOverview(w http.ResponseWriter, r *http.Request) {
-	hostname, _ := os.Hostname()
+	hostname, _ := os.Hostname() //nolint:errcheck // display only; a failure shows an empty hostname
 
 	var (
 		downloadDir, completeDir, adminDir, scriptDir, logDir string

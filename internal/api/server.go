@@ -253,7 +253,7 @@ func (s *Server) getAuth() AuthConfig {
 	// LocalRanges is validated at load time, so a parse error here is
 	// not expected; on the off chance one slips through, fall back to
 	// loopback-only (nil ranges) rather than trusting everything.
-	auth.TrustedRanges, _ = config.ParseLocalRanges(gen.LocalRanges)
+	auth.TrustedRanges, _ = config.ParseLocalRanges(gen.LocalRanges) //nolint:errcheck // validated at config load; a nil result trusts loopback only, so a failure fails closed
 	auth.VerifyXFF = gen.VerifyXFFHeader
 	auth.ForwardHeader = gen.TrustedForwardHeader
 	auth.SessionKey = s.sessionKey

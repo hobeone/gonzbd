@@ -115,7 +115,7 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 
 		jobAdded := j.Added()
 		stopAll := false
-		_ = j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool {
+		_ = j.ForEachUnfinishedArticle(func(fi int, artIdx int32, id string, bytes int, number int, subject string) bool { //nolint:errcheck // an evicted job (ErrNotResident, its one refusal) has nothing to dispatch this pass
 			a := UnfinishedArticle{
 				Job:         j,
 				JobAdded:    jobAdded,

@@ -19,7 +19,7 @@ import (
 // local/public IPv4, hostname, configured directory paths, and
 // resolved binary paths for post-processing tools.
 func (s *Server) modeAbout(w http.ResponseWriter, r *http.Request) {
-	hostname, _ := os.Hostname()
+	hostname, _ := os.Hostname() //nolint:errcheck // display only; a failure shows an empty hostname
 
 	var (
 		downloadDir string

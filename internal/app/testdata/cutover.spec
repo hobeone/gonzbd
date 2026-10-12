@@ -41,7 +41,7 @@ file internal/app/record.go
 [the finalizer does not flush before the instance leaves the dispatcher]
 file internal/app/job_finalizer.go
 --- anchor
-		_ = app.recorder.flush(flushCtx) // flush logs its own failure
+		_ = app.recorder.flush(flushCtx) //nolint:errcheck // flush logs its own failure
 --- replace
 		_ = flushCtx
 --- end

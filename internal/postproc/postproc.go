@@ -534,7 +534,7 @@ func sweepTempFiles(log *slog.Logger, dir string) {
 	}
 	defer root.Close() //nolint:errcheck // best-effort cleanup
 
-	_ = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
+	_ = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error { //nolint:errcheck // the callback returns nil for every entry, so WalkDir has no error to return
 		if walkErr != nil || d.IsDir() {
 			return nil //nolint:nilerr // best-effort sweep continues past subdirectories and errors
 		}

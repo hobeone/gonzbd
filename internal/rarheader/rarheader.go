@@ -126,14 +126,14 @@ func InspectRar5(p string) (info Info, err error) {
 		if openErr != nil {
 			return openErr
 		}
-		defer func() { _ = f.Close() }() // cleanup error in defer
+		defer func() { _ = f.Close() }() //nolint:errcheck // read-only file
 
 		volumesChan := make(chan io.ReadCloser, 1)
 		volumesChan <- f
 		close(volumesChan)
 
 		r := rarengine.NewReader(volumesChan)
-		defer func() { _ = r.Close() }()
+		defer func() { _ = r.Close() }() //nolint:errcheck // read-side archive reader
 
 		for {
 			entry, nextErr := r.NextEntry()
@@ -184,7 +184,7 @@ func VerifyPassword(mainFilePath, password string) (verified, hasCheckValue bool
 	if err != nil {
 		return false, false, err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = f.Close() }() //nolint:errcheck // read-only file
 
 	return rarengine.VerifyPassword(f, password)
 }
@@ -219,7 +219,7 @@ func RecoverVolumeExtension(p string) (volumeIndex int, multiVolume bool, err er
 	if err != nil {
 		return 0, false, err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = f.Close() }() //nolint:errcheck // read-only file
 
 	return rarengine.VolumeNumber(f)
 }
@@ -316,7 +316,7 @@ func readMagic(p string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("rarheader: open %s: %w", p, err)
 	}
-	defer func() { _ = f.Close() }() // cleanup error in defer
+	defer func() { _ = f.Close() }() //nolint:errcheck // read-only file
 
 	buf := make([]byte, 8)
 	n, err := io.ReadFull(f, buf)

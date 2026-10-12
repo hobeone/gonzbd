@@ -61,11 +61,11 @@ func (d *Dispatcher) tick(ctx context.Context) {
 			// Advance's branch above deliberately does NOT do this. A
 			// position Advance reached and then failed on is not one this
 			// Queue accepted, so the store keeps the last one it did.
-			_ = d.persistIfChanged(ctx, j)
+			_ = d.persistIfChanged(ctx, j) //nolint:errcheck // persistIfChanged logs a failed Save (logStoreError) and the next tick retries it
 			continue
 		}
 		d.launch(j)
-		_ = d.persistIfChanged(ctx, j)
+		_ = d.persistIfChanged(ctx, j) //nolint:errcheck // persistIfChanged logs a failed Save (logStoreError) and the next tick retries it
 	}
 }
 

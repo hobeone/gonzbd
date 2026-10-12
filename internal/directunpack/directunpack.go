@@ -628,7 +628,7 @@ func (d *DirectUnpacker) startVolumeFeed(ctx context.Context, setname string, ma
 			select {
 			case volumesChan <- f:
 			case <-ctx.Done():
-				_ = f.Close() // best-effort cleanup on cancellation
+				_ = f.Close() //nolint:errcheck // a volume never handed to the reader; the cancellation is what is reported
 				feedErrChan <- ctx.Err()
 				return
 			}
@@ -679,8 +679,8 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, r *rarengine.Reader
 
 		destPath, err := d.extractMember(ctx, root, entry.Header, entry)
 		if err != nil {
-			_ = r.Close()
-			_ = entry.Close()
+			_ = r.Close()     //nolint:errcheck // read-side archive reader; the extraction error is the one returned
+			_ = entry.Close() //nolint:errcheck // read-side archive member; the extraction error is the one returned
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}

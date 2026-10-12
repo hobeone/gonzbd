@@ -69,7 +69,7 @@ func OpenNoFollow(root *os.Root, name string, flag int, perm os.FileMode) (*os.F
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = dir.Close() }() // a directory handle; nothing to lose on close
+	defer func() { _ = dir.Close() }() //nolint:errcheck // a directory handle; nothing to lose on close
 	var fd int
 	for {
 		// EINTR: an open on a network or FUSE mount can be interrupted by the
@@ -84,11 +84,11 @@ func OpenNoFollow(root *os.Root, name string, flag int, perm os.FileMode) (*os.F
 		return nil, &os.PathError{Op: "openat", Path: path, Err: err}
 	}
 	if err := checkSoleRegular(fd); err != nil {
-		_ = unix.Close(fd) // refused before any use; nothing to lose on close
+		_ = unix.Close(fd) //nolint:errcheck // refused before any use; nothing to lose on close
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}
 	if err := unix.SetNonblock(fd, false); err != nil {
-		_ = unix.Close(fd) // unused descriptor; nothing to lose on close
+		_ = unix.Close(fd) //nolint:errcheck // unused descriptor; nothing to lose on close
 		return nil, &os.PathError{Op: "fcntl", Path: path, Err: err}
 	}
 	return os.NewFile(uintptr(fd), path), nil

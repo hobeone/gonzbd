@@ -780,7 +780,7 @@ func restoreLocked(path, backup string, original []byte) error {
 		return fmt.Errorf("file differs from the original after restore")
 	}
 	pending.path, pending.backup, pending.original = "", "", nil
-	_ = os.RemoveAll(filepath.Dir(backup)) //nolint:gosec // G703: removes the os.MkdirTemp directory this run created
+	_ = os.RemoveAll(filepath.Dir(backup)) //nolint:errcheck,gosec // the source is already restored and verified; a leftover backup costs only temp space; G703: removes the os.MkdirTemp directory this run created
 	return nil
 }
 

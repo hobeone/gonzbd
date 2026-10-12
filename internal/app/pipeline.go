@@ -442,8 +442,8 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	}()
 
 	// Record download stats
-	_ = res.Job.MarkJobStarted(time.Now())
-	_ = res.Job.RecordDownload(res.ServerName, len(res.Data))
+	_ = res.Job.MarkJobStarted(time.Now())                    //nolint:errcheck // telemetry; a non-resident job, its one refusal, loses only this stamp
+	_ = res.Job.RecordDownload(res.ServerName, len(res.Data)) //nolint:errcheck // telemetry; a non-resident job, its one refusal, loses only these stats
 
 	p.log.Debug("decoded article received",
 		"job", res.JobID(), "msgid", res.MessageID,

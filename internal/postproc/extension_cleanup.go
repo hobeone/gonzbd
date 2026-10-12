@@ -145,7 +145,7 @@ func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 func cleanupEmptyDirs(root *os.Root) {
 	// Walk bottom-up by collecting dirs first, then processing in reverse.
 	var dirs []string
-	_ = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
+	_ = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error { //nolint:errcheck // the callback returns nil for every entry, so WalkDir has no error to return
 		if err != nil {
 			//nolint:nilerr // ignore walk errors to do a best-effort empty directory cleanup
 			return nil
@@ -161,9 +161,9 @@ func cleanupEmptyDirs(root *os.Root) {
 		d, err := root.Open(dirPath)
 		if err == nil {
 			entries, rerr := d.ReadDir(-1)
-			_ = d.Close()
+			_ = d.Close() //nolint:errcheck // read-only directory handle
 			if rerr == nil && len(entries) == 0 {
-				_ = root.Remove(dirPath)
+				_ = root.Remove(dirPath) //nolint:errcheck // best effort; an empty directory left behind is cosmetic
 			}
 		}
 	}

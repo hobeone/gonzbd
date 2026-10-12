@@ -120,7 +120,7 @@ func (n NopApp) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Header, raw
 					hdr.DuplicateReason = "Duplicate NZB (Forced)"
 				} else {
 					hdr.DuplicateReason = "Duplicate NZB"
-					_ = j.SetIntent(job.IntentPause)
+					_ = j.SetIntent(job.IntentPause) //nolint:errcheck // IntentPause is declared and a job being added has no latched intent, SetIntent's two refusals
 				}
 				break
 			}

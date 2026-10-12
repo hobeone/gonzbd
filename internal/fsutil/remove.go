@@ -105,7 +105,7 @@ func RemoveAll(path string) error {
 
 	// Tier 2: Check if failure is solely due to lingering NFS/SMB silly renames.
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
-		if ok, silly, _ := ContainsOnlySillyRenames(path); ok {
+		if ok, silly, _ := ContainsOnlySillyRenames(path); ok { //nolint:errcheck // a walk error leaves ok false, so the removal's own error is returned below
 			slog.Warn("directory removal delayed: lingering NFS/SMB silly-rename files detected",
 				"path", path,
 				"silly_files_count", len(silly),
@@ -170,7 +170,7 @@ func RemoveRootAll(root *os.Root, rel, fullPath string) error {
 	}
 
 	if info, err := os.Stat(fullPath); err == nil && info.IsDir() {
-		if ok, silly, _ := ContainsOnlySillyRenames(fullPath); ok {
+		if ok, silly, _ := ContainsOnlySillyRenames(fullPath); ok { //nolint:errcheck // a walk error leaves ok false, so the removal's own error is returned below
 			slog.Warn("directory removal delayed: lingering NFS/SMB silly-rename files detected",
 				"path", fullPath,
 				"silly_files_count", len(silly),

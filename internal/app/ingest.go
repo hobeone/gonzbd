@@ -136,13 +136,13 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	}
 	for fi, jf := range files {
 		if jf.Deferred {
-			_ = j.SetFileFetchPolicy(fi, job.FetchIfNeeded)
+			_ = j.SetFileFetchPolicy(fi, job.FetchIfNeeded) //nolint:errcheck // AttachContent above made the job resident and fi ranges over its files, the setter's two refusals
 		}
 	}
 	if pause {
 		// IntentPause is a declared intent and a new job's intent is not
 		// latched, the two refusals SetIntent has.
-		_ = j.SetIntent(job.IntentPause)
+		_ = j.SetIntent(job.IntentPause) //nolint:errcheck // IntentPause is declared and a new job's intent is not latched, SetIntent's two refusals
 	}
 
 	hdr := dispatch.Header{

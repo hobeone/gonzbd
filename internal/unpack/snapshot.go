@@ -22,7 +22,7 @@ func CleanupStageDirs(outDir string) {
 	}
 	for _, e := range entries {
 		if e.IsDir() && strings.HasPrefix(e.Name(), unpackStagePrefix) {
-			_ = os.RemoveAll(filepath.Join(outDir, e.Name()))
+			_ = os.RemoveAll(filepath.Join(outDir, e.Name())) //nolint:errcheck // best effort; a stage left behind is retried by every later CleanupStageDirs
 		}
 	}
 }

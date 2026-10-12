@@ -203,7 +203,7 @@ func scan(path string, minLines, minChars int) (blocks map[string][]occurrence, 
 	if err != nil {
 		return nil, nil, err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = f.Close() }() //nolint:errcheck // read-only file
 
 	blocks = map[string][]occurrence{}
 	var cur []string

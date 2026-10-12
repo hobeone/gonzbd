@@ -153,7 +153,7 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	app.mu.Unlock()
 	// --- No lock held below this line ---
 
-	_ = oldDownloader.Stop()
+	_ = oldDownloader.Stop() //nolint:errcheck // Stop returns nil on every path (downloader.go); its signature is kept
 
 	// Quiesce the old downloader's output: setCompletions(nil) returns only
 	// once every buffered result has been drained AND written by a pipeline

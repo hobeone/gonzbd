@@ -234,7 +234,7 @@ func buildDirTree(dir, indent string) (lines []string, count int, err error) {
 			count += subCount
 			continue
 		}
-		info, _ := e.Info()
+		info, _ := e.Info() //nolint:errcheck // the size only decorates the listing; a nil info lists 0
 		var sz int64
 		if info != nil {
 			sz = info.Size()
@@ -339,7 +339,7 @@ func buildFinalFileList(j *Job) []string {
 	var totalSize int64
 	lines = append(lines, fmt.Sprintf("Final files (%d):", len(entries)))
 	for _, e := range entries {
-		info, _ := e.Info()
+		info, _ := e.Info() //nolint:errcheck // the size only decorates the listing; a nil info lists 0
 		var sz int64
 		if info != nil {
 			sz = info.Size()
