@@ -121,7 +121,8 @@ func TestMaybeReleaseRecoveryVolumes_WithStore_CorruptData(t *testing.T) {
 // The unreadable-manifest branch, which #289 added: a job can arrive with its
 // volumes still deferred and its manifest unreadable at once. That combination
 // is the branch: the CRC comparison cannot be made, and finalizing would ship
-// a download that may need a repair nothing checked for.
+// a download that may need a repair nothing checked for. So the volumes are
+// released, which is a progress-tier write and takes at any residency (#903).
 func TestMaybeReleaseRecoveryVolumes_UnreadableManifest(t *testing.T) {
 	t.Parallel()
 	downloadDir := t.TempDir()
@@ -151,14 +152,14 @@ func TestMaybeReleaseRecoveryVolumes_UnreadableManifest(t *testing.T) {
 	var logBuf bytes.Buffer
 	app.log = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	if got := app.maybeReleaseRecoveryVolumes(t.Context(), qjob); got {
-		t.Errorf("maybeReleaseRecoveryVolumes = true, want false: the un-defer cannot succeed while the job is non-resident")
+	if !app.maybeReleaseRecoveryVolumes(t.Context(), qjob) {
+		t.Error("maybeReleaseRecoveryVolumes = false, want true: an unverifiable download fetches its recovery volumes")
+	}
+	if qjob.HasDeferredPar2() {
+		t.Error("a recovery volume is still held after the release")
 	}
 	logged := logBuf.String()
 	if !strings.Contains(logged, "cannot verify without the manifest") {
 		t.Errorf("the unverifiable manifest was not reported:\n%s", logged)
-	}
-	if !strings.Contains(logged, "un-defer failed") {
-		t.Errorf("the failed un-defer was not reported, so finalizing without recovery volumes happens silently:\n%s", logged)
 	}
 }

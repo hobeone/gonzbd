@@ -345,7 +345,7 @@ func TestHeldVolumesMightRepair(t *testing.T) {
 }
 
 // releaseRecoveryVolumes releases every held volume, records the reason, and
-// reports how many it released; a job with no manifest resident refuses.
+// reports how many it released, whether or not the manifest is resident.
 func TestReleaseRecoveryVolumes(t *testing.T) {
 	t.Parallel()
 	h := newHeldRecoveryApp(t, "feedface0651a008")
@@ -363,8 +363,11 @@ func TestReleaseRecoveryVolumes(t *testing.T) {
 
 	evicted := newHeldRecoveryApp(t, "feedface0651a009")
 	evicted.job.Evict()
-	if _, err := evicted.app.releaseRecoveryVolumes(evicted.job, "because"); !errors.Is(err, job.ErrNotResident) {
-		t.Errorf("releaseRecoveryVolumes on an evicted job = %v, want ErrNotResident", err)
+	if n, err := evicted.app.releaseRecoveryVolumes(evicted.job, "because"); err != nil || n != want {
+		t.Errorf("releaseRecoveryVolumes on an evicted job = %d, %v; want %d, nil", n, err, want)
+	}
+	if evicted.job.HasDeferredPar2() {
+		t.Error("a volume is still held after the release on an evicted job")
 	}
 }
 

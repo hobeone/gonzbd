@@ -302,6 +302,12 @@ func (j *Job) SetFileFetchPolicy(fi int, policy FetchPolicy) error {
 // (0-2) is the only range guard a restored value has. The caller holds
 // contentMu and has range-checked fi.
 //
+// It owns what the policy decides about the pending counters: a file counts
+// pending work only while FetchAlways (countsPending), so it re-derives the
+// file's Pending from its bits (pendingOf) in the same critical section. That
+// needs no manifest, so it holds at any residency, and the four callers named
+// above leave the counters to it (#903).
+//
 // It marks the file for Job.TakeFetchPolicyChanges whenever the stored value
 // differs from the one the caller asked for or from the previous one, so the
 // record learns of every change without its caller having to say so.
@@ -323,6 +329,7 @@ func (p *JobProgress) setFileFetchPolicy(fi int, policy FetchPolicy) {
 		return
 	}
 	f.Fetch = stored
+	p.setPending(fi, p.pendingOf(fi))
 	if !f.fetchChanged {
 		f.fetchChanged = true
 		p.fetchChanges++
@@ -559,10 +566,13 @@ func (j *Job) NumFiles() int {
 	return 0
 }
 
+// undeferRecovery releases each held volume of fileIdxs to FetchAlways and
+// sets par2Recovered, reporting whether any was held. The caller holds
+// contentMu and the job has progress.
 func (j *Job) undeferRecovery(fileIdxs []int) bool {
 	changed := false
 	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= j.manifest.NumFiles() || j.progress.files[fi].Fetch != FetchIfNeeded {
+		if fi < 0 || fi >= len(j.progress.files) || j.progress.files[fi].Fetch != FetchIfNeeded {
 			continue
 		}
 		j.progress.setFileFetchPolicy(fi, FetchAlways)
@@ -570,21 +580,25 @@ func (j *Job) undeferRecovery(fileIdxs []int) bool {
 	}
 	if changed {
 		j.progress.par2Recovered = true
-		j.progress.recompute(j.manifest)
 	}
 	return changed
 }
 
 // UndeferRecoveryVolumes marks the specified deferred recovery volumes as
 // FetchAlways, re-activating them for download when repair is needed.
+//
+// Like DiscardDeferredPar2 it is a progress-tier write and takes effect at any
+// residency: the policy, its pending counts and par2Recovered all live on the
+// progress record, and an evicted job's articles are offered only after the
+// hydration that re-attaches its manifest.
 func (j *Job) UndeferRecoveryVolumes(fileIdxs []int) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
-	if j.manifest == nil || j.progress == nil {
+	if j.progress == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
 	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= j.manifest.NumFiles() {
+		if fi < 0 || fi >= len(j.progress.files) {
 			return fmt.Errorf("job %s: fileIdx %d out of range", j.id, fi)
 		}
 	}
@@ -625,7 +639,8 @@ func (j *Job) UsesOnDemandPar2() bool {
 }
 
 // DiscardDeferredPar2 marks every recovery volume still awaiting the CRC
-// verdict as never-fetch, reporting whether any file changed.
+// verdict as never-fetch, reporting whether any file changed. Like the
+// release, it takes effect at any residency.
 func (j *Job) DiscardDeferredPar2() bool {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
@@ -638,9 +653,6 @@ func (j *Job) DiscardDeferredPar2() bool {
 			j.progress.setFileFetchPolicy(fi, FetchNever)
 			changed = true
 		}
-	}
-	if changed && j.manifest != nil {
-		j.progress.recompute(j.manifest)
 	}
 	return changed
 }

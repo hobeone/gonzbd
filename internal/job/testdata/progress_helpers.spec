@@ -36,9 +36,9 @@ func (p *JobProgress) clearPar2ReleaseReason() {
 [describesSameJobAs stops checking the file dimension]
 file internal/job/progress.go
 --- anchor
-	return p.done.Len() == m.NumArticles() && len(p.files) == m.NumFiles()
+	if p.done.Len() != m.NumArticles() || len(p.files) != m.NumFiles() {
 --- replace
-	return p.done.Len() == m.NumArticles()
+	if p.done.Len() != m.NumArticles() {
 --- end
 
 [sizeFigures counts a file the job is not fetching]

@@ -1173,11 +1173,15 @@ The tiering is that boundary made explicit.
 | Tier | Needs | May fail? |
 |---|---|---|
 | **Header** — remove, reorder, priority, ID/name lookups | neither | **Never** |
-| **Progress** — all reporting, counters, completion and abort checks; recording a permanent failure, clearing an emitted bit, recording a file's resolved filename, or marking a file complete | `JobProgress` | **Never**, once it exists, for an index in range |
+| **Progress** — all reporting, counters, completion and abort checks; recording a permanent failure, clearing an emitted bit, recording a file's resolved filename, marking a file complete, or changing a file's fetch policy | `JobProgress` | **Never**, once it exists, for an index in range |
 | **Manifest** — dispatch, article indexing, byte accounting | `Manifest` (evictable) | Yes, and must say so |
 
 Counter maintenance needs article byte counts and the file↔article mapping.
-Reads do not, and neither does a per-article bit.
+Reads do not, and neither does a per-article bit. The progress record holds
+each file's article range itself (`JobProgress.fileStarts`, built with the
+record), so a pending count, which needs no byte count, can be derived at any
+residency: a fetch-policy change re-derives its file's count in
+`setFileFetchPolicy`, whether or not the manifest is resident (#903).
 
 **Two article writes do not wait for the manifest.** `Job.MarkArticleFailed`
 and `Job.ClearArticleEmitted` are reached from fetch results, from the
