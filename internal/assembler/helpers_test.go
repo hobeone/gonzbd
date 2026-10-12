@@ -312,7 +312,7 @@ func TestHandleLateDuplicate_ReturnsTheBufferAndClaimsNothing(t *testing.T) {
 	data := []byte("xyz")
 	// nil writer: the buffer must come back whether or not there is a writer
 	// left to consult about the article's state.
-	a.handleLateDuplicate(nil, WriteRequest{
+	a.handleLateDuplicate(WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", Data: data,
 	})
 
@@ -330,7 +330,7 @@ func TestHandleLateDuplicate_ReturnsTheBufferAndClaimsNothing(t *testing.T) {
 	// slice to the pool is not the same as not calling it. Without this the
 	// FatalErr arm has no coverage at all.
 	released = nil
-	a.handleLateDuplicate(nil, WriteRequest{
+	a.handleLateDuplicate(WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "late", FatalErr: os.ErrClosed,
 	})
 	if len(released) != 0 {

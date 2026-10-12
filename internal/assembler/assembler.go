@@ -1281,7 +1281,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	key := fileKey{jobID: req.JobID, fileIdx: req.FileIdx}
 
 	if _, done := completed[key]; done {
-		a.handleLateDuplicate(open[key], req)
+		a.handleLateDuplicate(req)
 		return
 	}
 
@@ -1353,9 +1353,11 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 }
 
 // handleLateDuplicate handles articles arriving for a file that is already
-// tombstoned. f is the file's still-open entry, or nil once it is closed —
-// finalizeFile closes a file as it tombstones it, so a late article for a
-// completed file meets nil.
+// tombstoned. The file's writer is gone by then: each tombstone is written
+// right after its file leaves open (`git grep -n -E 'completed\[[a-z]+\] = '
+// -- 'internal/assembler/*.go' ':!*_test.go'` returns 3 lines, each preceded
+// by a `delete(open, ...)`), and openTargetFile, the one insert into open, is
+// reached only past processRequest's tombstone check.
 //
 // The article is not written: the file was finished, trimmed and reported
 // complete, and the job's record says what it holds.
@@ -1374,20 +1376,15 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 // Failing it charges its bytes against the job's par2 recovery budget, which
 // is exactly the decision par2 exists to make.
 //
-// Where the writer is still open the distinction is the writer's to draw
-// (fileWriter.holdsPart), and an article it accounted for — accepted, or
-// resolved permanently failed by the path that failed it — is dropped
-// silently. Where it is gone the article is reported regardless:
-// Job.MarkArticleFailed is a no-op for an article already Done
-// (setFailedBits), so an accepted article costs a log line and nothing else.
-func (a *Assembler) handleLateDuplicate(f *openFile, req WriteRequest) {
+// With the writer gone nothing here knows which articles it accounted for, so
+// every late article is reported: Job.MarkArticleFailed is a no-op for an
+// article already Done (setFailedBits), so an accepted article costs a log
+// line and nothing else.
+func (a *Assembler) handleLateDuplicate(req WriteRequest) {
 	a.log.Debug("ignoring late article for completed file",
 		"job", req.JobID, "fileidx", req.FileIdx, "msgid", req.MessageID)
 	if req.Data != nil {
 		a.releaseBuffer(req.Data)
-	}
-	if f != nil && f.w.holdsPart(req.ArtIdx) {
-		return
 	}
 	if a.opts.OnArticleRejected != nil {
 		a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx,

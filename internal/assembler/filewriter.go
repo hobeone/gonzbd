@@ -201,9 +201,7 @@ func (w *fileWriter) parts() int { return w.partsWritten }
 // holdsPart reports whether the article is counted toward the file's part
 // total — accepted, resolved permanently failed, or both.
 //
-// It is the question handleLateDuplicate asks before reporting a redelivery
-// for a finished file: an article this writer accounted for is resolved and
-// is dropped, and one it never saw is owed a disposition.
+// admit asks it to decide whether an admission charges a part.
 func (w *fileWriter) holdsPart(artIdx int32) bool {
 	if _, done := w.seenDone[artIdx]; done {
 		return true
