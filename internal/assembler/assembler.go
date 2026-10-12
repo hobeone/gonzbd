@@ -1554,7 +1554,7 @@ func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) {
 // has to say whether the article counted.
 func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest) {
 	w := f.w
-	id := articleID{msgID: req.MessageID, artIdx: req.ArtIdx}
+	id := articleID{artIdx: req.ArtIdx}
 	// Admitted before the write is attempted, not after, so the write's own
 	// failure can roll the admission back — and admitted in the same breath
 	// as the count, which is what admit exists to make inseparable. Whether

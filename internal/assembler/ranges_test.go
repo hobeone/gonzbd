@@ -52,8 +52,8 @@ func TestOwnedRanges_SeedOnNonEmptySetChangesNothing(t *testing.T) {
 
 func TestOwnedRanges_IntersectionIsOwned(t *testing.T) {
 	var o ownedRanges
-	a := articleID{artIdx: 1, msgID: "<a@x>"}
-	b := articleID{artIdx: 2, msgID: "<b@x>"}
+	a := articleID{artIdx: 1}
+	b := articleID{artIdx: 2}
 	o.claim(Range{Off: 0, Len: 1000}, a)
 
 	cases := []struct {
@@ -112,7 +112,7 @@ func TestOwnedRanges_ClaimKeepsOffsetOrder(t *testing.T) {
 }
 
 func TestOwnedRanges_ReclaimBySameArticleLeavesOneEntry(t *testing.T) {
-	a := articleID{artIdx: 1, msgID: "<a@x>"}
+	a := articleID{artIdx: 1}
 	probe := articleID{artIdx: 9}
 	for _, tc := range []struct {
 		name   string

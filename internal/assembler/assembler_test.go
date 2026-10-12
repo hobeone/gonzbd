@@ -1294,7 +1294,7 @@ func TestFileWriter_DirectWriteErrorCountsPipelineError(t *testing.T) {
 
 	w := newFileWriter(tmpFile, tmpFile.Name(), fileKey{jobID: "job1", fileIdx: 0})
 
-	if err := w.accept(articleID{msgID: "m1"}, 0, []byte("data")); err == nil {
+	if err := w.accept(articleID{}, 0, []byte("data")); err == nil {
 		t.Error("Accept on a closed file returned nil error, want a storage fault")
 	}
 	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
@@ -1698,17 +1698,5 @@ func TestHandleLateDuplicate_ResolvesAnArticleWhateverItsIdentity(t *testing.T) 
 		t.Fatal("the late article was never resolved, so the job waits on it " +
 			"forever: handleLateDuplicate still returns early when the article " +
 			"carries no Message-ID")
-	}
-}
-
-// TestArticleID_IdentityIsTheIndexAlone pins that msgID is not compared.
-func TestArticleID_IdentityIsTheIndexAlone(t *testing.T) {
-	a := articleID{msgID: "one@t", artIdx: 4}
-	b := articleID{msgID: "two@t", artIdx: 4}
-	if !a.sameArticle(b) {
-		t.Error("two identities with one index compared unequal; msgID is still part of identity")
-	}
-	if a.sameArticle(articleID{msgID: "one@t", artIdx: 5}) {
-		t.Error("two identities with different indices compared equal")
 	}
 }

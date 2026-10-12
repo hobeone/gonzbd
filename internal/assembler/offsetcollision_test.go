@@ -121,8 +121,8 @@ func TestCollision_RangeStaysOwnedAfterSync(t *testing.T) {
 // TestOwnedRanges_ArrivalVerdicts covers the predicate that decides whether an
 // arrival is refused, directly, including the ways it must answer "no".
 func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
-	owner := articleID{msgID: "owner", artIdx: 1}
-	arriving := articleID{msgID: "arriving", artIdx: 2}
+	owner := articleID{artIdx: 1}
+	arriving := articleID{artIdx: 2}
 
 	tests := []struct {
 		name      string
@@ -171,7 +171,7 @@ func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
 // owned ranges as it found them.
 func TestCollision_FailedReacceptKeepsTheWrittenRange(t *testing.T) {
 	c := newCollisionFixture(t)
-	id := articleID{msgID: "<first@x>", artIdx: 1}
+	id := articleID{artIdx: 1}
 	req := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "<first@x>", Offset: 0}
 
 	c.f.w.admit(id.artIdx)
@@ -193,7 +193,7 @@ func TestCollision_FailedReacceptKeepsTheWrittenRange(t *testing.T) {
 	}
 	c.f.w.resolve(id.artIdx, dispositionRolledBack)
 
-	second := articleID{msgID: "<second@x>", artIdx: 2}
+	second := articleID{artIdx: 2}
 	req2 := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "<second@x>", Offset: 0, Data: []byte("BBBB")}
 	c.f.w.admit(second.artIdx)
 	o := c.a.acceptArticle(c.f, second, req2)
@@ -220,7 +220,7 @@ func TestCollision_FailedReacceptKeepsTheWrittenRange(t *testing.T) {
 // itself, on a path that is common and where the current code is correct.
 func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 	w := newTestFileWriter(t)
-	id := articleID{msgID: "retried", artIdx: 7}
+	id := articleID{artIdx: 7}
 
 	w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
 	w.admit(id.artIdx)
@@ -251,9 +251,9 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 // against a third.
 func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 	w := newTestFileWriter(t)
-	first := articleID{msgID: "first", artIdx: 1}
-	second := articleID{msgID: "second", artIdx: 2}
-	third := articleID{msgID: "third", artIdx: 3}
+	first := articleID{artIdx: 1}
+	second := articleID{artIdx: 2}
+	third := articleID{artIdx: 3}
 	r := Range{0, 4}
 
 	realWrite := w.writeAt

@@ -14,22 +14,15 @@ import (
 //
 // artIdx is identity: it is what fileWriter.seenDone / seenFailed key duplicate
 // handling on and what fileWriter.owned names a range's owner by, so it must
-// match the queue's numbering. msgID is set alongside it, but no code
-// reads it back: the log lines that name a Message-ID take it from the
-// WriteRequest. Neither reaches the queue from here: this package has no ack
-// path in either direction.
+// match the queue's numbering. It carries no Message-ID: the log lines that
+// name one take it from the WriteRequest. Nothing reaches the queue from here:
+// this package has no ack path in either direction.
 type articleID struct {
-	msgID  string
 	artIdx int32
 }
 
-// sameArticle reports whether two identities name the same article.
-//
-// The index alone decides. msgID is deliberately NOT compared: identity is
-// the manifest index, which is what fileWriter's seen-sets key on. Comparing
-// the pair as well would
-// give the assembler a second, finer notion of sameness than the one its
-// accounting uses, and the two could disagree.
+// sameArticle reports whether two identities name the same article: the
+// manifest index, which is what fileWriter's seen-sets key on.
 func (a articleID) sameArticle(b articleID) bool { return a.artIdx == b.artIdx }
 
 // disposition is how an article leaves the writer's accounting: the one value

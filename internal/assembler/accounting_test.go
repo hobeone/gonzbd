@@ -309,33 +309,21 @@ func TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice(t *testing.
 	}
 }
 
-// TestFileWriter_RolledBackKeepsNoIdentityDependentPath pins that the
-// roll-back keys on ArtIdx alone: an article with an empty Message-ID loses
-// its part exactly as one with a Message-ID does. Constructible only
-// in-package; no production path produces the empty one. It is the input an
-// identity-dependent early return would skip.
-func TestFileWriter_RolledBackKeepsNoIdentityDependentPath(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		msgID string
-	}{
-		{"with a Message-ID", "a@t"},
-		{"with none", ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			w := newTestFileWriter(t, withWriteError(os.ErrClosed))
-			id := articleID{msgID: tc.msgID, artIdx: 7}
+// TestFileWriter_RolledBackHoldsNothing pins that a write fault's roll-back
+// leaves the article holding nothing: no part, no seenDone entry, and no
+// seenFailed entry, since a storage fault says nothing about the article (A1).
+func TestFileWriter_RolledBackHoldsNothing(t *testing.T) {
+	w := newTestFileWriter(t, withWriteError(os.ErrClosed))
+	id := articleID{artIdx: 7}
 
-			w.admit(id.artIdx)
-			if err := w.accept(id, 0, []byte("xy")); err == nil {
-				t.Fatal("accept returned nil after an injected write error")
-			}
-			w.resolve(id.artIdx, dispositionRolledBack)
+	w.admit(id.artIdx)
+	if err := w.accept(id, 0, []byte("xy")); err == nil {
+		t.Fatal("accept returned nil after an injected write error")
+	}
+	w.resolve(id.artIdx, dispositionRolledBack)
 
-			if got := stateOf(w, id.artIdx); got != (writerState{}) {
-				t.Errorf("state after the roll-back = %+v, want nothing held: the part "+
-					"was not given back, or the article was resolved against itself", got)
-			}
-		})
+	if got := stateOf(w, id.artIdx); got != (writerState{}) {
+		t.Errorf("state after the roll-back = %+v, want nothing held: the part "+
+			"was not given back, or the article was resolved against itself", got)
 	}
 }

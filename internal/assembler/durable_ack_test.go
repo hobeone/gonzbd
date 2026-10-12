@@ -258,13 +258,6 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 	}
 }
 
-// The test that stood here, TestFailToleratesAnEmptyMessageID, translated
-// TestFailArticleWithoutAMessageIDStillAcks and has been folded into
-// accounting_test.go's TestFileWriter_RolledBackKeepsNoIdentityDependentPath,
-// whose table runs the empty-Message-ID identity alongside a real one. Its
-// one distinct assertion — that a roll-back leaves seenFailed alone — moved
-// with it.
-
 // TestFatalAfterAWrittenArticleCannotRetractIt pins that a FatalErr arriving
 // after an article's bytes have landed does not undo them: the assembler has one
 // reporter and one direction for an article's outcome, so there is no second
@@ -336,7 +329,7 @@ func TestSync_ActuallyIssuesTheFsync(t *testing.T) {
 	}
 
 	w.admit(0)
-	if err := w.accept(articleID{msgID: "m0", artIdx: 0}, 0, []byte("hello")); err != nil {
+	if err := w.accept(articleID{artIdx: 0}, 0, []byte("hello")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
 	if err := w.sync(); err != nil {

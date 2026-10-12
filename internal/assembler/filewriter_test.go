@@ -44,7 +44,7 @@ func newTestFileWriter(t *testing.T, opts ...fileWriterOpt) *fileWriter {
 func TestFileWriter_AcceptClaimsTheWrittenRange(t *testing.T) {
 	w := newTestFileWriter(t)
 
-	if err := w.accept(articleID{msgID: "a5", artIdx: 5}, 4096, bytes.Repeat([]byte{1}, 100)); err != nil {
+	if err := w.accept(articleID{artIdx: 5}, 4096, bytes.Repeat([]byte{1}, 100)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -58,7 +58,7 @@ func TestFileWriter_AcceptClaimsTheWrittenRange(t *testing.T) {
 func TestFileWriter_DirectWriteFailureIsNotNoted(t *testing.T) {
 	w := newTestFileWriter(t, withWriteError(syscall.EIO))
 
-	err := w.accept(articleID{msgID: "a1", artIdx: 1}, 0, bytes.Repeat([]byte{7}, 64))
+	err := w.accept(articleID{artIdx: 1}, 0, bytes.Repeat([]byte{7}, 64))
 	if err == nil {
 		t.Fatal("Accept returned nil error after EIO")
 	}
@@ -146,7 +146,7 @@ func TestFileWriter_WriteOneFailureTouchesNoAccounting(t *testing.T) {
 	w.admit(9)
 	before := stateOf(w, 9)
 
-	if err := w.writeOne(articleID{msgID: "a9", artIdx: 9}, 0, []byte("xy")); err == nil {
+	if err := w.writeOne(articleID{artIdx: 9}, 0, []byte("xy")); err == nil {
 		t.Fatal("writeOne returned nil after EIO")
 	}
 	if got := stateOf(w, 9); got != before {

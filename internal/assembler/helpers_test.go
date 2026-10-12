@@ -218,7 +218,7 @@ func TestSyncAndClose_KeepsWrittenBytesAndClosesTheHandle(t *testing.T) {
 	a := newHelperAssembler()
 	f := newHelperFile(t, dir, "syncclose.dat", 0)
 
-	if err := f.w.accept(articleID{msgID: "a0", artIdx: 0}, 0, []byte("abcdefgh")); err != nil {
+	if err := f.w.accept(articleID{artIdx: 0}, 0, []byte("abcdefgh")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -248,7 +248,7 @@ func TestAcceptArticle_OutOfRangeOffsetIsNotReported(t *testing.T) {
 	f := newHelperFile(t, dir, "oor.dat", 1024)
 	writes := countWrites(f.w)
 
-	o := a.acceptArticle(f, articleID{msgID: "bad", artIdx: 4}, WriteRequest{
+	o := a.acceptArticle(f, articleID{artIdx: 4}, WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 4, MessageID: "bad",
 		Offset: 1 << 40, Data: []byte("evil"),
 	})
