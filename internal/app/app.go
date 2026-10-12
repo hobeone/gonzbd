@@ -436,7 +436,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		recStore = durStore
 		reader = durStore
 	}
-	app.recorder = newRecorder(recStore, app.lookupCurrent, log)
+	app.recorder = newRecorder(recStore, app.lookupCurrent, app.queuedJobs, log)
 	leaseCap := maxActiveJobs
 	if leaseCap <= 0 {
 		leaseCap = 4
@@ -1792,22 +1792,6 @@ func (app *Application) reportDownloadComplete(j *job.Job, rep reporter) (bool, 
 	return true, rep.AdvanceFrom(j, job.Fetching, job.Assessing)
 }
 
-// markFetchPolicyDirty marks every file of a job whose fetch policy a par2
-// verdict just changed, so the job_files rows catch up to memory at the
-// recorder's next flush. A verdict is not a request for synchronous I/O.
-func (app *Application) markFetchPolicyDirty(j *job.Job) {
-	if j == nil {
-		return
-	}
-	p := j.Progress()
-	if p == nil {
-		return
-	}
-	for fi := range p.NumFiles() {
-		app.markFileDirty(j, fi)
-	}
-}
-
 // maybeReleaseRecoveryVolumes gives j's on-demand par2 verdict, acts on it on
 // j alone, not on whatever instance holds j's ID by then, and reports whether
 // it un-deferred recovery volumes to fetch.
@@ -1863,7 +1847,6 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, j *job.
 	case outcomeClean:
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
 		_ = j.DiscardDeferredPar2()
-		app.markFetchPolicyDirty(j)
 		return false
 	case outcomeUnknown:
 		j.SetPar2ReleaseReason(reason)
@@ -1912,7 +1895,6 @@ func (app *Application) releaseRecoveryVolumes(j *job.Job, reason string) (int, 
 	if err := j.UndeferRecoveryVolumes(idxs); err != nil {
 		return 0, err
 	}
-	app.markFetchPolicyDirty(j)
 	return len(idxs), nil
 }
 

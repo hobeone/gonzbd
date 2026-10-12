@@ -171,7 +171,11 @@ The recorder has two ways in:
   expected for a job evicted mid-write and is logged at Debug.
 - **`markDirty`**, called with a file's current `complete`, `filename` and
   `fetch_policy` read from the job's progress (`Application.markFileDirty`), so
-  `complete` reads true only once the file was finished (§2).
+  `complete` reads true only once the file was finished (§2). `flush` also
+  calls it first for every file whose fetch policy changed since its last
+  take, for each job the dispatcher holds (`recorder.takeFetchPolicyChanges`,
+  `Job.TakeFetchPolicyChanges`), so no path that moves a policy has to mark
+  it.
 
 And three ways out:
 

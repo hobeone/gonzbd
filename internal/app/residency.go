@@ -244,9 +244,11 @@ func (r *appResidency) fault(ctx context.Context, j *job.Job, f *storagefault.Fa
 // rows its read-back verified; the articles an intersection failed; and, for
 // a complete=1 file or one the verifier finished, the settled CRC. A row that cannot be placed costs its own
 // article (Standing Design Rule 3). A hydration restores the policy because
-// the record is the current truth; a retry re-derives it. Every mutation of
-// the policy marks the file dirty (markFetchPolicyDirty), so the persisted
-// value is the current one.
+// the record is the current truth; a retry re-derives it. The policy's one
+// writer records every change it makes, and the recorder's next flush writes
+// it (job.Job.TakeFetchPolicyChanges), so the persisted value catches up to
+// memory within a flush. A restored hold over a release is set as FetchAlways
+// instead (see JobProgress.setFileFetchPolicy).
 //
 // Each finished file is then peeked and marked complete
 // (job.Job.MarkFileComplete), in that order, while the manifest is certainly

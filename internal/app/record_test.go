@@ -65,7 +65,7 @@ func (s *fakeRecordStore) snapshot() []durability.RecordBatch {
 func TestRecorder_DropsRowsOfAReplacedInstance(t *testing.T) {
 	st := &fakeRecordStore{}
 	old, cur := newTestJob(t, "id"), newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return cur }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return cur }, nil, slog.Default())
 	r.noteWritten(old, durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Length: 10})
 	if err := r.flush(context.Background()); err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestRecorder_DropsRowsOfAReplacedInstance(t *testing.T) {
 func TestRecorder_ApplyIgnoresTheInstanceCheck(t *testing.T) {
 	st := &fakeRecordStore{}
 	rebuilt := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return nil }, slog.Default()) // not yet Added
+	r := newRecorder(st, func(string) *job.Job { return nil }, nil, slog.Default()) // not yet Added
 	if err := r.apply(context.Background(), rebuilt, []durability.FileVerdict{{FileIdx: 0, ClearComplete: true}}); err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestRecorder_ApplyIgnoresTheInstanceCheck(t *testing.T) {
 func TestRecorder_CompleteNeverLandsWithoutItsLastRow(t *testing.T) {
 	st := &fakeRecordStore{}
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 4, Length: 10})
 	r.markDirty(j, 0, durability.FileState{FileIdx: 0, Complete: true})
 	_ = r.flush(context.Background())
@@ -103,7 +103,7 @@ func TestRecorder_CompleteNeverLandsWithoutItsLastRow(t *testing.T) {
 func TestRecorder_FlushesADirtyOnlyJob(t *testing.T) {
 	st := &fakeRecordStore{}
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	r.markDirty(j, 0, durability.FileState{Complete: true, Filename: "f.bin"})
 	if err := r.flush(context.Background()); err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ func TestRecorder_LeavesAJobFirstBufferedAfterTheListingForTheNextFlush(t *testi
 			return j1
 		}
 		return j2
-	}, slog.Default())
+	}, nil, slog.Default())
 	r.noteWritten(j1, durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Length: 10})
 
 	if err := r.flush(context.Background()); err != nil {
@@ -172,7 +172,7 @@ func TestRecorder_LeavesAJobFirstBufferedAfterTheListingForTheNextFlush(t *testi
 func TestRecorder_RemergesOnError(t *testing.T) {
 	st := &fakeRecordStore{failNext: true}
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 	if err := r.flush(context.Background()); err == nil {
 		t.Fatal("want the store error")
@@ -203,7 +203,7 @@ func (s *failingOnce) ApplyRecord(ctx context.Context, b []durability.RecordBatc
 func TestRecorder_RemergeKeepsNewerFileStateAndRowOrder(t *testing.T) {
 	st := &failingOnce{}
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 	r.markDirty(j, 0, durability.FileState{Complete: false, Filename: "old"})
 	st.during = func() {
@@ -228,7 +228,7 @@ func TestRecorder_RemergeKeepsNewerFileStateAndRowOrder(t *testing.T) {
 func TestRecorder_UntrustPurgesPendingRows(t *testing.T) {
 	st := &fakeRecordStore{}
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Length: 10})
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 1, ArtIdx: 0, Length: 10})
@@ -270,7 +270,7 @@ func owedOf(r *recorder, j *job.Job) map[int]uint64 {
 func TestRecorder_UntrustWhoseWriteFailsOwesTheDeleteToTheNextFlush(t *testing.T) {
 	st := &fakeRecordStore{failNext: true}
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 1, ArtIdx: 0, Length: 10})
 	if err := r.untrust(context.Background(), j, 0); err == nil {
@@ -312,7 +312,7 @@ func TestRecorder_UntrustWhoseWriteFailsOwesTheDeleteToTheNextFlush(t *testing.T
 func TestRecorder_OwedDeleteIsWrittenOnItsOwn(t *testing.T) {
 	st := &fakeRecordStore{failNext: true}
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	if err := r.untrust(context.Background(), j, 0); err == nil {
 		t.Fatal("want the injected store error")
 	}
@@ -340,7 +340,7 @@ func TestRecorder_OwedDeleteIsWrittenOnItsOwn(t *testing.T) {
 func TestRecorder_DropsTheDebtOfAReplacedInstance(t *testing.T) {
 	st := &fakeRecordStore{failNext: true}
 	old, cur := newTestJob(t, "id"), newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return cur }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return cur }, nil, slog.Default())
 	if err := r.untrust(context.Background(), old, 0); err == nil {
 		t.Fatal("want the injected store error")
 	}
@@ -360,7 +360,7 @@ func TestRecorder_DropsTheDebtOfAReplacedInstance(t *testing.T) {
 func TestRecorder_UntrustArtIdxsPurgesOnlyNamedRows(t *testing.T) {
 	st := &fakeRecordStore{}
 	j := newTestJob(t, "id")
-	r := newRecorder(st, func(string) *job.Job { return j }, slog.Default())
+	r := newRecorder(st, func(string) *job.Job { return j }, nil, slog.Default())
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 1, Length: 10})
 	r.noteWritten(j, durability.WrittenRow{FileIdx: 0, ArtIdx: 2, Length: 10})
 	if err := r.apply(context.Background(), j, []durability.FileVerdict{{FileIdx: 0, DeleteArtIdxs: []int32{1}}}); err != nil {
@@ -381,7 +381,7 @@ func TestRecorder_UntrustArtIdxsPurgesOnlyNamedRows(t *testing.T) {
 func TestRecorder_NoteWrittenKeepsRowForNonResidentJob(t *testing.T) {
 	st := &fakeRecordStore{}
 	bare := job.New("bare", "bare", job.PolicyFromPP(3)) // no content attached
-	r2 := newRecorder(st, func(string) *job.Job { return bare }, slog.Default())
+	r2 := newRecorder(st, func(string) *job.Job { return bare }, nil, slog.Default())
 	r2.noteWritten(bare, durability.WrittenRow{FileIdx: 0, ArtIdx: 0, Length: 1})
 	if err := r2.flush(context.Background()); err != nil {
 		t.Fatal(err)

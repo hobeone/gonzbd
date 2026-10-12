@@ -24,7 +24,10 @@ type recordStore interface {
 type recorder struct {
 	st      recordStore
 	current func(id string) *job.Job
-	log     *slog.Logger
+	// jobs lists the jobs the dispatcher holds, whose fetch-policy changes
+	// each flush takes (takeFetchPolicyChanges). Nil takes none.
+	jobs func() []*job.Job
+	log  *slog.Logger
 
 	// wmu is a deliberate serialising writer lock, held across I/O: flush holds
 	// it from its snapshot through ApplyRecord and any remerge, apply holds
@@ -32,9 +35,10 @@ type recorder struct {
 	// through the settle. Together they keep an in-flight flush from writing
 	// back, or re-merging, rows an untrust has just removed.
 	// Lock order: wmu before mu, and wmu before the dispatcher's mu, which
-	// current takes. mu and the dispatcher's mu are not nested: current's one
-	// caller, liveInstances (through isCurrent), releases mu before calling
-	// it. No caller of flush or apply may hold the dispatcher's mu.
+	// current and jobs take. mu and the dispatcher's mu are not nested:
+	// current's one caller, liveInstances (through isCurrent), releases mu
+	// before calling it, and jobs' one caller, takeFetchPolicyChanges, holds
+	// no mu. No caller of flush or apply may hold the dispatcher's mu.
 	// noteWritten, markDirty and untrust's purge take only mu; wmu is taken
 	// where `git grep -n 'r\.lockWriter(' internal/app/record.go` finds 3
 	// lines.
@@ -61,10 +65,11 @@ type recorder struct {
 	owedSeq uint64
 }
 
-func newRecorder(st recordStore, current func(id string) *job.Job, log *slog.Logger) *recorder {
+func newRecorder(st recordStore, current func(id string) *job.Job, jobs func() []*job.Job, log *slog.Logger) *recorder {
 	return &recorder{
 		st:      st,
 		current: current,
+		jobs:    jobs,
 		log:     log,
 		wmu:     make(chan struct{}, 1),
 		pending: make(map[*job.Job][]durability.WrittenRow),
@@ -108,6 +113,21 @@ func (r *recorder) markDirty(j *job.Job, fileIdx int, st durability.FileState) {
 	}
 	st.FileIdx = fileIdx
 	m[fileIdx] = st
+}
+
+// takeFetchPolicyChanges marks dirty every file of a listed job whose fetch
+// policy changed since the last take (job.Job.TakeFetchPolicyChanges), so the
+// flush that calls it writes the change whichever path made it. It calls jobs
+// and the jobs with mu released.
+func (r *recorder) takeFetchPolicyChanges() {
+	if r.jobs == nil {
+		return
+	}
+	for _, j := range r.jobs() {
+		for _, st := range j.TakeFetchPolicyChanges() {
+			r.markDirty(j, st.FileIdx, st)
+		}
+	}
 }
 
 // isCurrent is the instance check: a job that is no longer what the dispatcher
@@ -251,12 +271,13 @@ func (r *recorder) lockWriter(ctx context.Context) error {
 // unlockWriter releases wmu; the caller holds it.
 func (r *recorder) unlockWriter() { <-r.wmu }
 
-// flush takes ONE snapshot of the pending rows, dirty files and owed deletes
-// under mu, so a file's complete flag cannot land without the rows noted
-// before it was marked, nor with rows an untrust removed, and writes it with
-// mu released but wmu held. On a store error the snapshot is merged back for
-// the next flush before wmu is released. If ctx ends before wmu is free, it
-// returns ctx's error having taken no snapshot.
+// flush first marks dirty every fetch-policy change the listed jobs hold
+// (takeFetchPolicyChanges), then takes ONE snapshot of the pending rows, dirty
+// files and owed deletes under mu, so a file's complete flag cannot land
+// without the rows noted before it was marked, nor with rows an untrust
+// removed, and writes it with mu released but wmu held. On a store error the
+// snapshot is merged back for the next flush before wmu is released. If ctx
+// ends before wmu is free, it returns ctx's error having taken no snapshot.
 func (r *recorder) flush(ctx context.Context) error {
 	err := r.lockWriter(ctx)
 	if err == nil {
@@ -271,6 +292,7 @@ func (r *recorder) flush(ctx context.Context) error {
 
 // flushLocked is flush's body; the caller holds wmu.
 func (r *recorder) flushLocked(ctx context.Context) error {
+	r.takeFetchPolicyChanges()
 	live := r.liveInstances()
 	r.mu.Lock()
 	rows := r.takeRowsLocked(live)
@@ -519,6 +541,19 @@ func (app *Application) lookupCurrent(id string) *job.Job {
 		return nil
 	}
 	return j
+}
+
+// queuedJobs is the recorder's job listing: every job the dispatcher holds. A
+// job removed between the listing and its lookup is left out.
+func (app *Application) queuedJobs() []*job.Job {
+	rows := app.dispatcher.List()
+	out := make([]*job.Job, 0, len(rows))
+	for _, row := range rows {
+		if j, ok := app.dispatcher.Job(row.ID); ok {
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 // handleArticleWritten is the assembler's Options.OnArticleWritten: the

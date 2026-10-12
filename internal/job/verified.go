@@ -389,8 +389,15 @@ func (j *Job) FileState(fi int) (st durability.FileState, ok bool) {
 	if p == nil || fi < 0 || fi >= len(p.files) {
 		return durability.FileState{}, false
 	}
+	return p.fileState(fi), true
+}
+
+// fileState is file fi's state as the record stores it, for Job.FileState and
+// Job.TakeFetchPolicyChanges. The caller holds contentMu and has range-checked
+// fi.
+func (p *JobProgress) fileState(fi int) durability.FileState {
 	f := p.files[fi]
-	return durability.FileState{FileIdx: fi, Complete: f.Complete, Filename: f.Filename, FetchPolicy: uint8(f.Fetch)}, true
+	return durability.FileState{FileIdx: fi, Complete: f.Complete, Filename: f.Filename, FetchPolicy: uint8(f.Fetch)}
 }
 
 // sortedClone returns rows copied into offset order.

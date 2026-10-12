@@ -140,15 +140,16 @@ func (f *jobFinalizer) finalize(ppJob *postproc.Job) {
 // violation. Those cost one retry. The retry does not trigger another: it
 // releases every volume its rebuilt job holds before seeding job_files, which
 // hydration restores the policy from, and nothing else sets a volume to
-// FetchIfNeeded. The policy field is written in three places
-// (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 3 lines):
-// the policy setter, the release (to FetchAlways), and the discard (to
-// FetchNever); construction leaves every file at the FetchAlways zero. The
-// setter is called from ingest, with FetchIfNeeded, and from hydration
+// FetchIfNeeded. The policy field is written in one place
+// (`git grep -nE '\.Fetch\s*=[^=]' -- '*.go' ':!*_test.go'` returns 1 line),
+// JobProgress.setFileFetchPolicy; construction leaves every file at the
+// FetchAlways zero. Its callers
 // (`git grep -nE '[sS]etFileFetchPolicy\(' -- '*.go' ':!*_test.go'` returns
-// 5 lines: those two calls, Job.SetFileFetchPolicy's declaration and its call
-// to the shared assignment, and that assignment's declaration). So its
-// failure is filed as final. A user's
+// 7 lines: the two declarations, Job.SetFileFetchPolicy's call, and four
+// calls) are ingest, with FetchIfNeeded, through Job.SetFileFetchPolicy; the
+// release, with FetchAlways; the discard, with FetchNever; and hydration,
+// with the recorded policy. And the writer sets no hold on a job whose
+// volumes were released. So its failure is filed as final. A user's
 // retry of that entry is rebuilt by ingest again, and so gets one automatic
 // retry of its own.
 func heldVolumesMightRepair(ppJob *postproc.Job) bool {
