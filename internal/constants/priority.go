@@ -71,7 +71,7 @@ const (
 
 // IsConcrete reports whether p is a priority a job can hold: Repair, Force,
 // High, Normal or Low. Paused, Stop, Default and every undefined value are
-// not, and Dispatcher.SetPriority refuses them.
+// not, and the dispatcher refuses them in Add, restore and SetPriority.
 func (p Priority) IsConcrete() bool {
 	switch p {
 	case RepairPriority, ForcePriority, HighPriority, NormalPriority, LowPriority:

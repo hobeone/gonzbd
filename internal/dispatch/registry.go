@@ -161,6 +161,7 @@ type entry struct {
 //
 // The stored queue must already be restored — by Restore, or by Start, which
 // restores first when Restore has not run — or Add returns ErrNotRestored.
+// register refuses a Header.Priority a job cannot hold (checkPriority).
 //
 // A duplicate ID is an error rather than an overwrite: the registry is the only
 // route by which a job's resources are returned, so replacing an entry would
@@ -268,6 +269,9 @@ const seqNext int64 = -1
 // restore skips a row Loaded from dispatch_jobs on a reconstruct or register
 // error and leaves it in dispatch_jobs.
 func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
+	if err := checkPriority(h.Priority); err != nil {
+		return fmt.Errorf("dispatch: register %s: %w", j.ID(), err)
+	}
 	d.mu.Lock()
 	if _, dup := d.byID[j.ID()]; dup {
 		d.mu.Unlock()
@@ -1058,16 +1062,31 @@ func (d *Dispatcher) SetOperationalError(id, msg string) error {
 	return nil
 }
 
+// checkPriority refuses a priority a job cannot hold
+// (constants.Priority.IsConcrete): Default and Paused are requests
+// config.ResolvePriority resolves before a caller gets here, and Stop and
+// undefined values are not priorities at all. Stored, any of them would sort
+// the job behind Low.
+//
+// Header.Priority has two writers, register (the whole Header, for Add and
+// restore) and SetPriority, and both call this:
+// `git grep -n 'checkPriority(' -- 'internal/dispatch/*.go' ':!*_test.go'`
+// returns 4 lines: this comment, the declaration and those two calls.
+func checkPriority(p constants.Priority) error {
+	if !p.IsConcrete() {
+		return fmt.Errorf("%d is not a concrete priority", p)
+	}
+	return nil
+}
+
 // SetPriority sets the priority for a registered job and kicks the scheduler.
 // The next tick walks the job at its new place in dispatch order:
 // dispatchOrderLocked reads Header.Priority at each walk.
 //
-// It refuses a priority a job cannot hold (constants.Priority.IsConcrete):
-// Default and Paused are requests config.ResolvePriority resolves before a
-// caller gets here, and Stop and undefined values are not priorities at all.
+// It refuses a priority a job cannot hold (checkPriority).
 func (d *Dispatcher) SetPriority(id string, priority constants.Priority) error {
-	if !priority.IsConcrete() {
-		return fmt.Errorf("dispatch: set priority %s: %d is not a concrete priority", id, priority)
+	if err := checkPriority(priority); err != nil {
+		return fmt.Errorf("dispatch: set priority %s: %w", id, err)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()

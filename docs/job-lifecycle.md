@@ -833,11 +833,13 @@ and since priority is persisted with the header it survives a restart.
 
 The sort is numeric, so `RepairPriority` (3) ranks ahead of Force. A header
 holds a concrete priority (`constants.Priority.IsConcrete`: Repair, Force,
-High, Normal, Low). Restore aside, its two writers each refuse anything
-else: `SetPriority` (`e.h.Priority =`), and ingest's header literal in
-`internal/app/ingest.go`, which stores what `config.ResolvePriority`
-returns — and that answers an error for a request that is neither concrete,
-Default nor Paused.
+High, Normal, Low). Its two writers, `register` (the whole header, for `Add`
+and restore) and `SetPriority` (`e.h.Priority =`), both refuse anything else
+through `checkPriority` (`internal/dispatch/registry.go`), and the field is a
+`constants.Priority`, so nothing outside int8 reaches it. Ingest's header
+literal in `internal/app/ingest.go` stores what `config.ResolvePriority`
+returns, which is concrete for every request it does not answer with an
+error.
 
 `PausedPriority` (-2) and `DefaultPriority` (-100) are requests.
 Default resolves through the job's category, then the Default/`*` category,

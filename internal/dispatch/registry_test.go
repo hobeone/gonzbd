@@ -666,6 +666,29 @@ func TestDispatcher_Mutators(t *testing.T) {
 	}
 }
 
+// TestAdd_RefusesANonConcretePriority pins that Add refuses the priorities
+// SetPriority refuses, so a caller that skipped config.ResolvePriority cannot
+// store a sentinel that sorts the job behind Low.
+func TestAdd_RefusesANonConcretePriority(t *testing.T) {
+	d := newTestDispatcher(t)
+	for i, p := range []constants.Priority{99, -3, constants.DefaultPriority, constants.PausedPriority, constants.StopPriority} {
+		id := fmt.Sprintf("j%d", i)
+		if err := d.Add(context.Background(), job.New(id, id, job.Policy{}), Header{Name: id, Priority: p}); err == nil {
+			t.Errorf("Add(priority %d) = nil, want error for a non-concrete priority", p)
+		}
+	}
+	if got := d.Len(); got != 0 {
+		t.Errorf("Len() after refusals = %d, want 0", got)
+	}
+
+	if err := d.Add(context.Background(), job.New("ok", "ok", job.Policy{}), Header{Name: "ok", Priority: constants.LowPriority}); err != nil {
+		t.Fatalf("Add(LowPriority): %v", err)
+	}
+	if row, _ := d.Row("ok"); row.Header.Priority != constants.LowPriority {
+		t.Errorf("Priority = %s, want Low", row.Header.Priority)
+	}
+}
+
 func TestSetPriority_Validation(t *testing.T) {
 	d := newTestDispatcher(t)
 	j := job.New("j1", "test-job", job.Policy{})
