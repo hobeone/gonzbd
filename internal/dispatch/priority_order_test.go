@@ -23,7 +23,7 @@ func walkIDs(d *Dispatcher) []string {
 func addAt(t *testing.T, d *Dispatcher, id string, p constants.Priority) *job.Job {
 	t.Helper()
 	j := job.New(id, id, job.Policy{})
-	if err := d.Add(context.Background(), j, Header{Name: id, Priority: int(p)}); err != nil {
+	if err := d.Add(context.Background(), j, Header{Name: id, Priority: p}); err != nil {
 		t.Fatalf("Add(%s): %v", id, err)
 	}
 	return j
@@ -134,7 +134,7 @@ func TestSetPriority_TakesEffectOnTheNextTick(t *testing.T) {
 	first := addAt(t, d, "first", constants.NormalPriority)
 	second := addAt(t, d, "second", constants.NormalPriority)
 
-	if err := d.SetPriority("second", int(constants.ForcePriority)); err != nil {
+	if err := d.SetPriority("second", constants.ForcePriority); err != nil {
 		t.Fatalf("SetPriority: %v", err)
 	}
 	d.tick(context.Background())
@@ -154,10 +154,10 @@ func TestSetPriority_TakesEffectOnTheNextTick(t *testing.T) {
 func TestRestore_KeepsPriorityOrder(t *testing.T) {
 	st := &fakeStore{}
 	st.seed([]Persisted{
-		{ID: "a", SortKey: 1, Header: Header{Name: "a", Priority: int(constants.NormalPriority)}},
-		{ID: "b", SortKey: 2, Header: Header{Name: "b", Priority: int(constants.LowPriority)}},
-		{ID: "c", SortKey: 3, Header: Header{Name: "c", Priority: int(constants.HighPriority)}},
-		{ID: "d", SortKey: 4, Header: Header{Name: "d", Priority: int(constants.NormalPriority)}},
+		{ID: "a", SortKey: 1, Header: Header{Name: "a", Priority: constants.NormalPriority}},
+		{ID: "b", SortKey: 2, Header: Header{Name: "b", Priority: constants.LowPriority}},
+		{ID: "c", SortKey: 3, Header: Header{Name: "c", Priority: constants.HighPriority}},
+		{ID: "d", SortKey: 4, Header: Header{Name: "d", Priority: constants.NormalPriority}},
 	})
 	d := newTestDispatcher(t, withStore(st))
 

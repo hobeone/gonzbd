@@ -116,7 +116,7 @@ func TestBuildIngestJob_CategoryPriorityInherit(t *testing.T) {
 	if hdr.Script != "custom.sh" {
 		t.Errorf("Script = %q, want %q (from configured Default category)", hdr.Script, "custom.sh")
 	}
-	if hdr.Priority != int(constants.HighPriority) {
+	if hdr.Priority != constants.HighPriority {
 		t.Errorf("Priority = %d, want %d (from configured Default category)", hdr.Priority, constants.HighPriority)
 	}
 }
@@ -153,7 +153,7 @@ func TestBuildIngestJob_CategoryDefaultPriorityResolves(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildIngestJob: %v", err)
 			}
-			if hdr.Priority != int(tc.want) {
+			if hdr.Priority != tc.want {
 				t.Errorf("Priority = %d, want %d", hdr.Priority, tc.want)
 			}
 		})
@@ -228,7 +228,7 @@ func TestBuildIngestJob_PausedPriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if hdr.Priority != int(constants.HighPriority) {
+	if hdr.Priority != constants.HighPriority {
 		t.Errorf("Priority = %v, want %v (tv's)", hdr.Priority, constants.HighPriority)
 	}
 	if j.Intent() != job.IntentPause {

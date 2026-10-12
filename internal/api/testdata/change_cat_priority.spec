@@ -6,7 +6,7 @@ file internal/api/queue.go
 --- anchor
 		if err := s.applyPriority(nzoID, cat, constants.DefaultPriority); err != nil {
 --- replace
-		if err := s.dispatcher.SetPriority(nzoID, resolvedCat.Priority); err != nil {
+		if err := s.dispatcher.SetPriority(nzoID, constants.Priority(resolvedCat.Priority)); err != nil {
 --- end
 
 [change_cat does not resolve through the category]

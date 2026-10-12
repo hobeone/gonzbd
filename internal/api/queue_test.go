@@ -176,7 +176,7 @@ func (w *testQueueWrapper) SnapshotJob(id string) *testJobSnapshot {
 		ID:       id,
 		Name:     row.Header.Name,
 		Category: row.Header.Category,
-		Priority: constants.Priority(row.Header.Priority),
+		Priority: row.Header.Priority,
 		PP:       row.Header.PP,
 		Script:   row.Header.Script,
 		Status:   row.Status(),

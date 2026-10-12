@@ -525,7 +525,7 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		Name:              r.Header.Name,
 		Category:          r.Header.Category,
 		Index:             index,
-		Priority:          constants.Priority(int8(r.Header.Priority)).String(), //nolint:gosec // G115: priority values fit in int8
+		Priority:          r.Header.Priority.String(),
 		Status:            string(displayStatus),
 		Script:            nonEmpty(r.Header.Script, "none"),
 		Password:          r.Header.Password,
@@ -919,7 +919,7 @@ func (s *Server) queuePriority(w http.ResponseWriter, r *http.Request) {
 	}
 	row, _ = s.dispatcher.Row(nzoID)
 	s.log.Info("job priority changed", "job", nzoID, "requested", requested.String(),
-		"priority", constants.Priority(int8(row.Header.Priority)).String()) //nolint:gosec // G115: SetPriority stores only int8 priorities
+		"priority", row.Header.Priority.String())
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":   true,
 		"nzo_ids":  []string{nzoID},
@@ -955,7 +955,7 @@ func (s *Server) applyPriority(id, category string, requested constants.Priority
 			return err
 		}
 	}
-	return s.dispatcher.SetPriority(id, int(pri))
+	return s.dispatcher.SetPriority(id, pri)
 }
 
 // listingPosition is the job's index in the unfiltered queue listing

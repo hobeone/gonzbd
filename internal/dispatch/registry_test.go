@@ -676,23 +676,23 @@ func TestSetPriority_Validation(t *testing.T) {
 	// Each sentinel is refused, not only undefined values: a caller that
 	// skipped config.ResolvePriority would otherwise store a value that sorts
 	// the job behind Low.
-	for _, p := range []int{99, -3, int(constants.DefaultPriority), int(constants.PausedPriority), int(constants.StopPriority)} {
+	for _, p := range []constants.Priority{99, -3, constants.DefaultPriority, constants.PausedPriority, constants.StopPriority} {
 		if err := d.SetPriority("j1", p); err == nil {
 			t.Errorf("SetPriority(j1, %d) = nil, want error for a non-concrete priority", p)
 		}
 	}
-	if row, _ := d.Row("j1"); row.Header.Priority != int(constants.NormalPriority) {
+	if row, _ := d.Row("j1"); row.Header.Priority != constants.NormalPriority {
 		t.Errorf("Priority after refusals = %d, want %d, unchanged", row.Header.Priority, constants.NormalPriority)
 	}
 
-	if err := d.SetPriority("j1", int(constants.HighPriority)); err != nil {
+	if err := d.SetPriority("j1", constants.HighPriority); err != nil {
 		t.Fatalf("SetPriority(j1, HighPriority): %v", err)
 	}
 	row, ok := d.Row("j1")
 	if !ok {
 		t.Fatalf("Row(j1) not found")
 	}
-	if row.Header.Priority != int(constants.HighPriority) {
+	if row.Header.Priority != constants.HighPriority {
 		t.Errorf("Priority = %d, want %d", row.Header.Priority, constants.HighPriority)
 	}
 }

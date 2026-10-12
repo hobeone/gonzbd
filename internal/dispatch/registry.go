@@ -65,7 +65,7 @@ type Header struct {
 	Name     string
 	Filename string
 	Category string
-	Priority int
+	Priority constants.Priority
 	Bytes    int64
 
 	// IngestAnomaly summarizes NZB segments the parser discarded as unusable
@@ -1065,8 +1065,8 @@ func (d *Dispatcher) SetOperationalError(id, msg string) error {
 // It refuses a priority a job cannot hold (constants.Priority.IsConcrete):
 // Default and Paused are requests config.ResolvePriority resolves before a
 // caller gets here, and Stop and undefined values are not priorities at all.
-func (d *Dispatcher) SetPriority(id string, priority int) error {
-	if priority < -128 || priority > 127 || !constants.Priority(int8(priority)).IsConcrete() { //nolint:gosec // G115: priority fits in int8
+func (d *Dispatcher) SetPriority(id string, priority constants.Priority) error {
+	if !priority.IsConcrete() {
 		return fmt.Errorf("dispatch: set priority %s: %d is not a concrete priority", id, priority)
 	}
 	d.mu.Lock()
