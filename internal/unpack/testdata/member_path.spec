@@ -1,7 +1,7 @@
 pkg ./internal/unpack/
 run TestMemberPath|TestExtractMember
 
-# The per-member name check of the RAR extraction loops, and the go_unrar
+# The per-member name check of the in-process extractors, and the go_unrar
 # member step that applies it and reports each member's close verdict.
 
 [memberPath accepts every name]
@@ -17,10 +17,10 @@ file internal/unpack/sanitized_path.go
 [go_unrar's member step ignores the name check]
 file internal/unpack/go_unrar.go
 --- anchor
-	sp, ok := memberPath(fh.Name, opts, log)
+	rel, ok := memberPath(root, fh.Name, fh.IsDir, opts, log)
 	if !ok {
 --- replace
-	sp, ok := memberPath(fh.Name, opts, log)
+	rel, ok := memberPath(root, fh.Name, fh.IsDir, opts, log)
 	if false && !ok {
 --- end
 

@@ -1,6 +1,7 @@
 package unpack
 
 import (
+	"archive/tar"
 	"context"
 	"io/fs"
 	"log/slog"
@@ -136,4 +137,42 @@ func TestFlatCollisions_SevenZip(t *testing.T) {
 	runFlatCases(t, func(ctx context.Context, log *slog.Logger, a Archive, outDir string, opts Options) (Result, error) {
 		return SevenZip(ctx, log, a, outDir, "", opts)
 	}, fixtureArchive(SevenZipArchive, ".7z"))
+}
+
+func TestFlatCollisions_GoUnRAR(t *testing.T) {
+	runFlatCases(t, func(ctx context.Context, log *slog.Logger, a Archive, outDir string, opts Options) (Result, error) {
+		return GoUnRAR(ctx, log, a, outDir, "", opts)
+	}, fixtureArchive(RarArchive, ".rar"))
+}
+
+func TestFlatCollisions_GoSevenZip(t *testing.T) {
+	runFlatCases(t, func(ctx context.Context, log *slog.Logger, a Archive, outDir string, opts Options) (Result, error) {
+		return GoSevenZip(ctx, log, a, outDir, "", opts)
+	}, fixtureArchive(SevenZipArchive, ".7z"))
+}
+
+// TestFlatCollisions_GoTar builds the two shapes as tars in the order `tar c`
+// writes them, each directory before its contents, so the directory b/x
+// comes after the file a/x has taken the name x.
+func TestFlatCollisions_GoTar(t *testing.T) {
+	shapes := map[string][]tarEntry{
+		"flat_collide": {
+			{name: "a/", typeflag: tar.TypeDir},
+			{name: "a/f.txt", content: []byte("one")},
+			{name: "b/", typeflag: tar.TypeDir},
+			{name: "b/f.txt", content: []byte("two")},
+		},
+		"flat_dir_file": {
+			{name: "a/", typeflag: tar.TypeDir},
+			{name: "a/x", content: []byte("file")},
+			{name: "b/", typeflag: tar.TypeDir},
+			{name: "b/x/", typeflag: tar.TypeDir},
+			{name: "b/x/y", content: []byte("y")},
+		},
+	}
+	runFlatCases(t, GoTar, func(t *testing.T, fixture string) Archive {
+		t.Helper()
+		p := buildTar(t, t.TempDir(), fixture+".tar", shapes[fixture])
+		return Archive{Type: TarArchive, Name: fixture, MainFile: p, Parts: []string{p}}
+	})
 }

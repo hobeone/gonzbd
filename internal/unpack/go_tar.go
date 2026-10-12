@@ -155,13 +155,12 @@ func extractTarEntry(ctx context.Context, root *os.Root, outDir string, tr *tar.
 	case tar.TypeReg:
 		// handled below
 	case tar.TypeDir:
-		sp, sanitizeErr := NewSanitizedPath(hdr.Name, opts.OneFolder)
-		if sanitizeErr != nil {
-			log.Warn("skipping directory entry with bad path", "raw_name", hdr.Name, "err", sanitizeErr)
+		rel, ok := memberPath(root, hdr.Name, true, opts, log)
+		if !ok {
 			return false, nil
 		}
-		if err := root.MkdirAll(sp.Rel(), 0o750); err != nil {
-			return false, fmt.Errorf("go_tar: mkdir %s: %w", sp.Rel(), err)
+		if err := root.MkdirAll(rel, 0o750); err != nil {
+			return false, fmt.Errorf("go_tar: mkdir %s: %w", rel, err)
 		}
 		return false, nil
 	default:
@@ -177,25 +176,11 @@ func extractTarEntry(ctx context.Context, root *os.Root, outDir string, tr *tar.
 		return false, nil
 	}
 
-	sp, sanitizeErr := NewSanitizedPath(hdr.Name, opts.OneFolder)
-	if sanitizeErr != nil {
-		log.Warn("skipping entry with bad path", "raw_name", hdr.Name, "err", sanitizeErr)
-		if opts.OnLine != nil {
-			opts.OnLine("Skipping bad path: " + hdr.Name)
-		}
+	destRel, ok := memberPath(root, hdr.Name, false, opts, log)
+	if !ok {
 		return false, nil
 	}
-
-	destRel := sp.Rel()
-	destPath := sp.Abs(outDir)
-
-	if opts.OneFolder && !opts.OverwriteFiles {
-		// uniquePath works in root-relative terms, so there is no absolute
-		// path to convert back and no escape to re-check: the name it returns
-		// is destRel with a suffix on its base.
-		destRel = uniquePath(root, destRel)
-		destPath = filepath.Join(outDir, destRel)
-	}
+	destPath := filepath.Join(outDir, destRel)
 
 	if err := extractTarFile(ctx, root, destRel, destPath, tr, hdr, opts, arcSize, totalRead, log); err != nil {
 		return false, err

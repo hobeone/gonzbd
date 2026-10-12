@@ -28,9 +28,9 @@ type Options struct {
 	// hands the whole of Passwords to rarengine (go_unrar.go's
 	// r.SetPasswords(opts.Passwords)).
 	Passwords []string
-	// OneFolder extracts all files flat into outDir (no path preservation).
-	// For unrar this selects the 'e' command; for 7z this selects 'e'
-	// instead of 'x'.
+	// OneFolder extracts all files flat into outDir (no path preservation),
+	// and a directory member creates nothing. For unrar this selects the
+	// 'e' command; for 7z this selects 'e' instead of 'x'.
 	OneFolder bool
 	// KeepOriginals controls whether the caller should delete the source Parts
 	// after a successful extraction.  The extractors do not read it and do
