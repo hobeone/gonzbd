@@ -709,8 +709,8 @@ func TestAssembler_HelperMethods(t *testing.T) {
 	// the fileWriter each openFile owns is self-contained — and neither records an ack: pendingDone/pendingFailed and
 	// the MarkArticles* callbacks are gone with the assembler's ack authority
 	// (X2). What is left to pin is the local bookkeeping: seenDone/seenFailed
-	// dedup, now living on the fileWriter, and the true/false return that
-	// tells processRequest whether to count the article toward partsWritten.
+	// dedup, living on the fileWriter, observed through the part count
+	// processRequest compares to TotalParts.
 
 	t.Run("handleFatalArticle", func(t *testing.T) {
 		a := newHelperAssembler()
@@ -736,8 +736,9 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		}
 
 		// First-time failure.
-		if !a.handleFatalArticle(f, req) {
-			t.Error("expected handleFatalArticle to return true for first-time failure")
+		a.handleFatalArticle(f, req)
+		if f.w.parts() != 1 {
+			t.Errorf("parts = %d after a first-time failure, want 1", f.w.parts())
 		}
 		if _, ok := f.w.seenFailed[0]; !ok {
 			t.Error("expected seenFailed to contain artidx 0")
@@ -746,26 +747,28 @@ func TestAssembler_HelperMethods(t *testing.T) {
 			t.Errorf("released the buffer %d times after the first failure, want 1", len(released))
 		}
 
-		// Duplicate failure: admitPermanentFailure's dup return.
+		// Duplicate failure: resolve's FetchFailed arm counts nothing.
 		req.Data = []byte("duplicate")
-		if a.handleFatalArticle(f, req) {
-			t.Error("expected handleFatalArticle to return false for duplicate failure")
+		a.handleFatalArticle(f, req)
+		if f.w.parts() != 1 {
+			t.Errorf("parts = %d after a duplicate failure, want 1", f.w.parts())
 		}
 		if len(released) != 2 {
 			t.Errorf("released the buffer %d times after the duplicate failure, want 2 — "+
-				"the false return must not leave the buffer unreleased", len(released))
+				"a duplicate must not leave the buffer unreleased", len(released))
 		}
 
 		// Cross-check: already counted as success.
 		f.w.seenFailed = make(map[int32]struct{})
 		f.w.seenDone[0] = struct{}{}
 		req.Data = []byte("already-counted")
-		if a.handleFatalArticle(f, req) {
-			t.Error("expected handleFatalArticle to return false when already counted as success")
+		a.handleFatalArticle(f, req)
+		if f.w.parts() != 1 {
+			t.Errorf("parts = %d after a failure of an article already counted as success, want 1", f.w.parts())
 		}
 		if len(released) != 3 {
 			t.Fatalf("released the buffer %d times after the already-counted return, want 3 — "+
-				"the false return must not leave the buffer unreleased", len(released))
+				"an already-counted article must not leave the buffer unreleased", len(released))
 		}
 	})
 
@@ -783,8 +786,9 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		}
 
 		// First-time success.
-		if !a.handleSuccessArticle(f, req) {
-			t.Error("expected handleSuccessArticle to return true")
+		a.handleSuccessArticle(f, req)
+		if f.w.parts() != 1 {
+			t.Errorf("parts = %d after a first-time success, want 1", f.w.parts())
 		}
 		if _, ok := f.w.seenDone[0]; !ok {
 			t.Error("expected seenDone to contain artidx 0")
@@ -795,8 +799,9 @@ func TestAssembler_HelperMethods(t *testing.T) {
 
 		// Duplicate success.
 		req2 := WriteRequest{JobID: "job1", ArtIdx: 0, MessageID: "msg1", Offset: 0, Data: []byte("hello success")}
-		if a.handleSuccessArticle(f, req2) {
-			t.Error("expected handleSuccessArticle to return false for duplicate success")
+		a.handleSuccessArticle(f, req2)
+		if f.w.parts() != 1 {
+			t.Errorf("parts = %d after a duplicate success, want 1", f.w.parts())
 		}
 
 		// Cross-check: already counted as failure. The retry still writes —
@@ -805,8 +810,9 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		f.w.seenDone = make(map[int32]struct{})
 		f.w.seenFailed[0] = struct{}{}
 		req3 := WriteRequest{JobID: "job1", ArtIdx: 0, MessageID: "msg1", Offset: 20, Data: []byte("world")}
-		if a.handleSuccessArticle(f, req3) {
-			t.Error("expected handleSuccessArticle to return false when already counted as failure")
+		a.handleSuccessArticle(f, req3)
+		if f.w.parts() != 1 {
+			t.Errorf("parts = %d after a retry of an article already counted as failed, want 1", f.w.parts())
 		}
 		if _, ok := f.w.seenDone[0]; !ok {
 			t.Error("expected seenDone to contain artidx 0 after the retry")
@@ -935,11 +941,11 @@ func TestAssembler_HelperMethods(t *testing.T) {
 			Data:      []byte("data that will not be written"),
 		}
 
-		got := a.handleSuccessArticle(f, req)
-		if got {
-			t.Error("handleSuccessArticle counted a failed write toward completion; " +
-				"processRequest increments partsWritten on this return, so the file " +
-				"reaches TotalParts and finalizes over bytes that never reached disk")
+		a.handleSuccessArticle(f, req)
+		if f.w.parts() != 0 {
+			t.Errorf("parts = %d: handleSuccessArticle counted a failed write toward "+
+				"completion, so the file reaches TotalParts and finalizes over bytes "+
+				"that never reached disk", f.w.parts())
 		}
 		if got := f.w.unsynced; len(got) != 0 {
 			t.Errorf("unsynced = %v after a failed write, want empty", got)

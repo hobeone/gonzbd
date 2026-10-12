@@ -4,28 +4,25 @@ run TestAssembler_HelperMethods/handleFatalArticle
 [handleFatalArticle stops releasing req.Data on every return]
 file internal/assembler/assembler.go
 --- anchor
-	admitted := f.w.admitPermanentFailure(req.ArtIdx)
+	f.w.resolve(req.ArtIdx, dispositionFetchFailed)
 	if req.Data != nil {
 		a.releaseBuffer(req.Data)
 	}
-	return admitted
 --- replace
-	admitted := f.w.admitPermanentFailure(req.ArtIdx)
-	return admitted
+	f.w.resolve(req.ArtIdx, dispositionFetchFailed)
 --- end
 
-[handleFatalArticle regresses to gating the release on admitted, as processRequest used to]
+[handleFatalArticle regresses to gating the release on a counted part, as processRequest used to]
 file internal/assembler/assembler.go
 --- anchor
-	admitted := f.w.admitPermanentFailure(req.ArtIdx)
+	f.w.resolve(req.ArtIdx, dispositionFetchFailed)
 	if req.Data != nil {
 		a.releaseBuffer(req.Data)
 	}
-	return admitted
 --- replace
-	admitted := f.w.admitPermanentFailure(req.ArtIdx)
-	if admitted && req.Data != nil {
+	before := f.w.parts()
+	f.w.resolve(req.ArtIdx, dispositionFetchFailed)
+	if f.w.parts() > before && req.Data != nil {
 		a.releaseBuffer(req.Data)
 	}
-	return admitted
 --- end

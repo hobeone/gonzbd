@@ -9,174 +9,272 @@ import (
 //
 // partsWritten is a cached aggregate of seenDone and seenFailed, and every
 // defect it produced came from the cache and its source moving at different
-// moments. The methods here are the only things that move it, so these are the
-// tests that pin the arithmetic; the suites that drive processRequest pin the
-// routing around them.
+// moments. admit and resolve are the only things that move it, so these are
+// the tests that pin the arithmetic; the suites that drive processRequest pin
+// the routing around them.
 
-// TestFileWriter_AdmitPermanentFailureDedupsRepeatedArtIdx pins that
-// admitPermanentFailure dedups on ArtIdx, so a redelivery of the same fatal
-// article is not counted twice.
-//
-// Two articles are required. One passes whether or not the dedup is there, so a
-// single-article test would not discriminate.
-func TestFileWriter_AdmitPermanentFailureDedupsRepeatedArtIdx(t *testing.T) {
-	w := newTestFileWriter(t)
-
-	if !w.admitPermanentFailure(1) {
-		t.Fatal("the first fatal article was not admitted; it has to be counted or the " +
-			"file can never reach TotalParts")
-	}
-	if got := w.parts(); got != 1 {
-		t.Fatalf("parts() = %d after the first, want 1", got)
-	}
-
-	if w.admitPermanentFailure(1) {
-		t.Error("a second fatal article with the same ArtIdx was admitted again; " +
-			"counting it twice carries the file past TotalParts")
-	}
-	if got := w.parts(); got != 1 {
-		t.Errorf("parts() = %d after the second, want 1 — the dedup on the seenFailed "+
-			"entry is what stops the count running away", got)
-	}
+// writerState is what one transition leaves behind, read back through the
+// writer's own questions where it has them and its maps where it does not.
+type writerState struct {
+	parts        int
+	done, failed bool
 }
 
-// TestFileWriter_AdmitRetryOfFailedDoesNotCount pins the arm that records
-// without counting.
-//
-// A redelivery of an article already resolved permanently failed still has its
-// bytes written, because they are still the file's content. But the part was
-// charged when the article was failed, and charging it again would carry the
-// file past TotalParts with one article holding two parts.
-func TestFileWriter_AdmitRetryOfFailedDoesNotCount(t *testing.T) {
-	w := newTestFileWriter(t)
-
-	if !w.admitPermanentFailure(1) {
-		t.Fatal("precondition: the fatal article should have been admitted")
-	}
-	before := w.parts()
-
-	w.admitRetryOfFailed(1)
-
-	if _, recorded := w.seenDone[1]; !recorded {
-		t.Error("the retry was not recorded in seenDone, so a later copy would be " +
-			"written a second time over the same range")
-	}
-	if got := w.parts(); got != before {
-		t.Errorf("parts() = %d after a retry of an already-failed article, want %d — the "+
-			"part was charged when it was failed", got, before)
-	}
+func stateOf(w *fileWriter, artIdx int32) writerState {
+	_, done := w.seenDone[artIdx]
+	_, failed := w.seenFailed[artIdx]
+	return writerState{parts: w.parts(), done: done, failed: failed}
 }
 
-// TestFileWriter_FailKeepsThePartOfAnAlreadyFailedArticle pins the !wasFailed
-// half of fail's give-back, which nothing else in the package observes.
+// TestFileWriter_Admit pins the entry: a fresh article is counted and
+// recorded, a retry of an article already counted as failed is recorded
+// without counting, and a duplicate of an accepted article is refused with
+// nothing moved.
 //
-// The two halves of the condition guard opposite mistakes and only one of them
-// was pinned. An article counted as WRITTEN must lose its part when a write
-// rolls it back; an article counted as permanently FAILED must NOT, because
-// admitPermanentFailure charged that part against the seenFailed record and a
-// redelivery writes its bytes without charging a second one
-// (admitRetryOfFailed). Giving a part back that this path never took leaves the
-// file permanently one short: partsWritten >= TotalParts becomes unreachable,
-// OnFileComplete never fires, MarkFileComplete never runs, and the job sits at
-// 100% with nothing outstanding across restarts.
-//
-// Confirmed discriminating: neutering `!wasFailed` in fail leaves every other
-// test in the package green.
-func TestFileWriter_FailKeepsThePartOfAnAlreadyFailedArticle(t *testing.T) {
-	w := newTestFileWriter(t)
-	if !w.admitPermanentFailure(1) {
-		t.Fatal("precondition: the fatal article should have been admitted")
-	}
-	// The redelivery: its bytes are the file's content, but the part was
-	// charged when the article was failed, so nothing is counted here.
-	w.admitRetryOfFailed(1)
-	if w.parts() != 1 {
-		t.Fatalf("parts() = %d, want 1; the fixture did not reach the state under test",
-			w.parts())
-	}
-
-	// The write of that redelivery fails.
-	w.fail(articleID{msgID: "m1", artIdx: 1})
-
-	if got := w.parts(); got != 1 {
-		t.Errorf("parts() = %d after rolling back a retry of an already-failed "+
-			"article, want 1 — the part belongs to the permanent failure, and giving "+
-			"back one this path never took leaves the file one short of TotalParts "+
-			"forever", got)
-	}
-	if _, still := w.seenDone[1]; still {
-		t.Error("m1 is still in seenDone after the roll-back, so a redelivery would " +
-			"be read as a duplicate and its bytes never written")
-	}
-}
-
-// TestFileWriter_RollbackPart covers the give-back both dispositions share.
-//
-// rollbackPart is fail's alone.
-//
-// It is tested directly because the branching lives here rather than at either
-// call site, so a change to fail's accounting cannot pass unnoticed.
-//
-// There is no untracked case any more. fail no longer returns early on any
-// identity, so the branch that used to handle an empty Message-ID separately
-// was removed with its last caller rather than left reachable only from this
-// test.
-func TestFileWriter_RollbackPart(t *testing.T) {
+// The retry case is the one that discriminates: admit decides whether to
+// charge a part from what the writer already holds, so a caller cannot reach
+// for a counting admission when a non-counting one was owed. That mistake was
+// a one-token change at the call site when two admissions existed, with no
+// compile-time signal, and it carried the file past TotalParts.
+func TestFileWriter_Admit(t *testing.T) {
 	tests := []struct {
-		name      string
-		setup     func(w *fileWriter)
-		id        articleID
-		wantParts int
+		name  string
+		setup func(w *fileWriter)
+		want  bool
+		state writerState
 	}{
 		{
-			name:      "an accepted article gives its part back",
-			setup:     func(w *fileWriter) { w.admitAccepted(1) },
-			id:        articleID{msgID: "m1", artIdx: 1},
-			wantParts: 0,
+			name:  "a fresh article is counted and recorded",
+			setup: func(*fileWriter) {},
+			want:  true,
+			state: writerState{parts: 1, done: true},
 		},
 		{
-			name: "an already-failed article keeps its part",
-			setup: func(w *fileWriter) {
-				w.admitPermanentFailure(1)
-				w.admitRetryOfFailed(1)
-			},
-			id:        articleID{msgID: "m1", artIdx: 1},
-			wantParts: 1,
+			name:  "a retry of an article already counted as failed is recorded without counting",
+			setup: func(w *fileWriter) { w.resolve(1, dispositionFetchFailed) },
+			want:  true,
+			state: writerState{parts: 1, done: true, failed: true},
 		},
 		{
-			name:      "an article that never held a part takes none away",
-			setup:     func(w *fileWriter) { w.admitAccepted(99) },
-			id:        articleID{msgID: "m1", artIdx: 1},
-			wantParts: 1,
+			name:  "a duplicate of an accepted article is refused with nothing moved",
+			setup: func(w *fileWriter) { w.admit(1) },
+			want:  false,
+			state: writerState{parts: 1, done: true},
 		},
 	}
-
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newTestFileWriter(t)
 			tc.setup(w)
 
-			w.rollbackPart(tc.id.artIdx)
-
-			if got := w.parts(); got != tc.wantParts {
-				t.Errorf("parts() = %d, want %d", got, tc.wantParts)
+			if got := w.admit(1); got != tc.want {
+				t.Errorf("admit = %v, want %v", got, tc.want)
 			}
-			if _, still := w.seenDone[tc.id.artIdx]; still {
-				t.Errorf("%d is still in seenDone, so a redelivery would be read "+
-					"as a duplicate and its bytes never written", tc.id.artIdx)
+			if got := stateOf(w, 1); got != tc.state {
+				t.Errorf("state after admit = %+v, want %+v", got, tc.state)
 			}
 		})
 	}
 }
 
-// TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice pins the
-// CALL SITE, which the method-level tests above cannot.
+// TestFileWriter_Resolve pins the accounting each disposition applies, from
+// each state an admitted article can be in when it is resolved.
 //
-// admitAccepted and admitRetryOfFailed differ only in whether they count, so
-// handleSuccessArticle's seenFailed arm reaching for the wrong one is a
-// one-token mistake with no compile-time signal. Confirmed discriminating:
-// swapping the call for admitAccepted left the whole package green before this
-// test existed.
+// The table is the spec: one row per (prior state, disposition) pair that a
+// production path reaches. The rows that discriminate are the ones where two
+// dispositions differ on one column — Rejected and RolledBack both clear
+// seenDone, and differ only on the part — and the ones where one disposition
+// differs by prior state: RolledBack gives a part back only when the admission
+// charged it, so a retry of a failed article keeps the part its failure holds.
+func TestFileWriter_Resolve(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(w *fileWriter)
+		d     disposition
+		want  writerState
+	}{
+		{
+			name:  "Written keeps the admission",
+			setup: func(w *fileWriter) { w.admit(1) },
+			d:     dispositionWritten,
+			want:  writerState{parts: 1, done: true},
+		},
+		{
+			name:  "Rejected keeps the part and moves the article to seenFailed",
+			setup: func(w *fileWriter) { w.admit(1) },
+			d:     dispositionRejected,
+			want:  writerState{parts: 1, failed: true},
+		},
+		{
+			name: "Rejected after a retry of a failed article keeps the one part the failure holds",
+			setup: func(w *fileWriter) {
+				w.resolve(1, dispositionFetchFailed)
+				w.admit(1)
+			},
+			d:    dispositionRejected,
+			want: writerState{parts: 1, failed: true},
+		},
+		{
+			name:  "RolledBack gives the admission's part back and records no failure",
+			setup: func(w *fileWriter) { w.admit(1) },
+			d:     dispositionRolledBack,
+			want:  writerState{parts: 0},
+		},
+		{
+			name: "RolledBack after a retry of a failed article keeps the part the failure holds",
+			setup: func(w *fileWriter) {
+				w.resolve(1, dispositionFetchFailed)
+				w.admit(1)
+			},
+			d:    dispositionRolledBack,
+			want: writerState{parts: 1, failed: true},
+		},
+		{
+			name:  "RolledBack after Written is the failed-sync rollback",
+			setup: func(w *fileWriter) { w.admit(1); w.resolve(1, dispositionWritten) },
+			d:     dispositionRolledBack,
+			want:  writerState{parts: 0},
+		},
+		{
+			name:  "FetchFailed charges a part for an article the writer never saw",
+			setup: func(*fileWriter) {},
+			d:     dispositionFetchFailed,
+			want:  writerState{parts: 1, failed: true},
+		},
+		{
+			name:  "FetchFailed after Written keeps the written copy and counts nothing",
+			setup: func(w *fileWriter) { w.admit(1); w.resolve(1, dispositionWritten) },
+			d:     dispositionFetchFailed,
+			want:  writerState{parts: 1, done: true, failed: true},
+		},
+		{
+			name:  "a second FetchFailed counts nothing",
+			setup: func(w *fileWriter) { w.resolve(1, dispositionFetchFailed) },
+			d:     dispositionFetchFailed,
+			want:  writerState{parts: 1, failed: true},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newTestFileWriter(t)
+			// A bystander holding a part, so a transition that touched the
+			// wrong article or decremented past its own part would show.
+			w.admit(99)
+			tc.setup(w)
+
+			w.resolve(1, tc.d)
+
+			want := tc.want
+			want.parts++ // the bystander's
+			if got := stateOf(w, 1); got != want {
+				t.Errorf("state after %s = %+v, want %+v", tc.d, got, want)
+			}
+		})
+	}
+}
+
+// TestFileWriter_ResolveRefusesWhatWasNeverAdmitted pins the loud half of the
+// seam: a disposition that resolves an admission is refused for an article
+// not in seenDone — never admitted, or already resolved out — and the zero
+// disposition is refused for every article.
+//
+// This is the form "an article cannot leave in-flight without a disposition,
+// and cannot leave twice" takes where the type system cannot express it. A
+// path that forgets to admit, resolves twice, or returns an outcome it never
+// filled in fails the first test that walks it rather than undercounting the
+// file silently.
+func TestFileWriter_ResolveRefusesWhatWasNeverAdmitted(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(w *fileWriter)
+		d     disposition
+	}{
+		{"Written of an article never admitted", func(*fileWriter) {}, dispositionWritten},
+		{"Rejected of an article never admitted", func(*fileWriter) {}, dispositionRejected},
+		{"RolledBack of an article never admitted", func(*fileWriter) {}, dispositionRolledBack},
+		{"Rejected twice", func(w *fileWriter) { w.admit(1); w.resolve(1, dispositionRejected) }, dispositionRejected},
+		{"RolledBack twice", func(w *fileWriter) { w.admit(1); w.resolve(1, dispositionRolledBack) }, dispositionRolledBack},
+		{"RolledBack after Rejected", func(w *fileWriter) { w.admit(1); w.resolve(1, dispositionRejected) }, dispositionRolledBack},
+		{"the zero disposition", func(w *fileWriter) { w.admit(1) }, disposition(0)},
+		{"a disposition past the last", func(w *fileWriter) { w.admit(1) }, dispositionRolledBack + 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newTestFileWriter(t)
+			tc.setup(w)
+			before := stateOf(w, 1)
+
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatalf("resolve(1, %s) returned; it must refuse an article it cannot settle", tc.d)
+				}
+				if got := stateOf(w, 1); got != before {
+					t.Errorf("state moved from %+v to %+v before the refusal", before, got)
+				}
+			}()
+			w.resolve(1, tc.d)
+		})
+	}
+}
+
+// TestFileWriter_PartsIsTheSizeOfTheUnion pins the identity partsWritten is
+// derived from, across every transition in sequence: it equals the size of
+// seenDone ∪ seenFailed after each step, which is what makes the cached
+// aggregate a cache and not a second opinion.
+func TestFileWriter_PartsIsTheSizeOfTheUnion(t *testing.T) {
+	w := newTestFileWriter(t)
+	check := func(step string) {
+		t.Helper()
+		union := make(map[int32]struct{}, len(w.seenDone)+len(w.seenFailed))
+		for a := range w.seenDone {
+			union[a] = struct{}{}
+		}
+		for a := range w.seenFailed {
+			union[a] = struct{}{}
+		}
+		if got := w.parts(); got != len(union) {
+			t.Errorf("after %s: parts() = %d, |seenDone ∪ seenFailed| = %d", step, got, len(union))
+		}
+	}
+
+	w.admit(1)
+	check("admit 1")
+	w.resolve(1, dispositionWritten)
+	check("1 written")
+	w.admit(2)
+	check("admit 2")
+	w.resolve(2, dispositionRolledBack)
+	check("2 rolled back")
+	w.admit(3)
+	check("admit 3")
+	w.resolve(3, dispositionRejected)
+	check("3 rejected")
+	w.resolve(4, dispositionFetchFailed)
+	check("4 fetch-failed")
+	w.resolve(4, dispositionFetchFailed)
+	check("4 fetch-failed again")
+	w.admit(4)
+	check("admit 4 as a retry of a failure")
+	w.resolve(4, dispositionRolledBack)
+	check("4's retry rolled back")
+	w.admit(4)
+	check("admit 4 again")
+	w.resolve(4, dispositionWritten)
+	check("4 written")
+	w.resolve(1, dispositionFetchFailed)
+	check("1 fetch-failed after being written")
+	w.resolve(1, dispositionRolledBack)
+	check("1 rolled back by a failed sync")
+	w.admit(2)
+	check("admit 2 again")
+	w.resolve(2, dispositionWritten)
+	check("2 written")
+}
+
+// TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice pins the
+// CALL SITE, which the method-level tests above cannot: a redelivery of an
+// article already resolved permanently failed has its bytes written but is
+// not counted a second time.
 //
 // Counting the retry a second time carries the file PAST TotalParts, so
 // finalizeFile fires while other articles are still outstanding — a completion
@@ -185,25 +283,19 @@ func TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice(t *testing.
 	a := newHelperAssembler()
 	f := newHelperFile(t, t.TempDir(), "retry-count.dat", 0)
 
-	if !a.handleFatalArticle(f, WriteRequest{
+	a.handleFatalArticle(f, WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "m0", FatalErr: os.ErrClosed,
-	}) {
-		t.Fatal("precondition: the permanently failed article was not counted")
-	}
+	})
 	if f.w.parts() != 1 {
 		t.Fatalf("parts() = %d, want 1; the fixture did not reach the state under test",
 			f.w.parts())
 	}
 
-	counted := a.handleSuccessArticle(f, WriteRequest{
+	a.handleSuccessArticle(f, WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "m0",
 		Offset: 0, Data: []byte("abcd"),
 	})
 
-	if counted {
-		t.Error("the redelivery was reported as a new part; its part was charged when " +
-			"the article was failed")
-	}
 	if got := f.w.parts(); got != 1 {
 		t.Errorf("parts() = %d after the redelivery, want 1 — one article holding two "+
 			"parts carries the file past TotalParts, so finalizeFile fires while other "+
@@ -216,46 +308,32 @@ func TestHandleSuccessArticle_RetryOfAFailedArticleIsNotCountedTwice(t *testing.
 	}
 }
 
-// TestFileWriter_FailRollsBackEveryArticlesPart pins that fail decrements the
-// part count for any admitted article, with no identity-dependent early return.
-//
-// rollbackPart keys on ArtIdx, so the Message-ID plays no part in the
-// rollback: an article with an empty one loses its part exactly as one with a
-// Message-ID does.
-func TestFileWriter_FailRollsBackEveryArticlesPart(t *testing.T) {
+// TestFileWriter_RolledBackKeepsNoIdentityDependentPath pins that the
+// roll-back keys on ArtIdx alone: an article with an empty Message-ID loses
+// its part exactly as one with a Message-ID does. Constructible only
+// in-package; no production path produces the empty one. It is the input an
+// identity-dependent early return would skip.
+func TestFileWriter_RolledBackKeepsNoIdentityDependentPath(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		msgID string
 	}{
 		{"with a Message-ID", "a@t"},
-		// Constructible only in-package; no production path produces it. It
-		// is the input an identity-dependent early return in fail would skip.
 		{"with none", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := newTestFileWriter(t)
+			w := newTestFileWriter(t, withWriteError(os.ErrClosed))
 			id := articleID{msgID: tc.msgID, artIdx: 7}
 
-			w.admitAccepted(id.artIdx)
-			if got := w.parts(); got != 1 {
-				t.Fatalf("parts() = %d after admit, want 1", got)
+			w.admit(id.artIdx)
+			if err := w.accept(id, 0, []byte("xy")); err == nil {
+				t.Fatal("accept returned nil after an injected write error")
 			}
-			w.fail(id)
-			if got := w.parts(); got != 0 {
-				t.Errorf("parts() = %d after fail, want 0 — the part was not "+
-					"rolled back, so fail still returns early on this identity", got)
-			}
-			if _, still := w.seenDone[id.artIdx]; still {
-				t.Error("the article kept its seenDone entry after fail")
-			}
-			// fail rolls the article back without deciding what becomes of it,
-			// so it must not resolve the article as failed. The permanent
-			// dispositions — admitPermanentFailure and failPermanent — are what
-			// write seenFailed.
-			if len(w.seenFailed) != 0 {
-				t.Errorf("seenFailed = %v after fail; rolling an article back is "+
-					"not resolving it, and a seenFailed entry would stop a "+
-					"redelivery being counted", w.seenFailed)
+			w.resolve(id.artIdx, dispositionRolledBack)
+
+			if got := stateOf(w, id.artIdx); got != (writerState{}) {
+				t.Errorf("state after the roll-back = %+v, want nothing held: the part "+
+					"was not given back, or the article was resolved against itself", got)
 			}
 		})
 	}

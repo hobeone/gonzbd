@@ -22,7 +22,7 @@ func newWrittenFileWriter(t *testing.T) *fileWriter {
 
 	key := fileKey{jobID: "job1", fileIdx: 0}
 	w := newFileWriter(fh, path, key)
-	w.admitAccepted(0)
+	w.admit(0)
 	if err := w.accept(articleID{msgID: "m1", artIdx: 0}, 0, []byte("AAAA")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
@@ -35,7 +35,7 @@ func newWrittenFileWriter(t *testing.T) *fileWriter {
 // while keeping the range it wrote.
 func TestSync_FailedSyncRollsBackEveryUnsyncedArticle(t *testing.T) {
 	w := newWrittenFileWriter(t)
-	w.admitAccepted(1)
+	w.admit(1)
 	if err := w.accept(articleID{msgID: "m2", artIdx: 1}, 4, []byte("BBBB")); err != nil {
 		t.Fatalf("Accept m2: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestSync_SuccessCoversTheArticlesWrittenBeforeIt(t *testing.T) {
 		t.Fatalf("Sync: %v", err)
 	}
 
-	w.admitAccepted(1)
+	w.admit(1)
 	if err := w.accept(articleID{msgID: "m2", artIdx: 1}, 4, []byte("BBBB")); err != nil {
 		t.Fatalf("Accept m2: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestFileWriter_PoisonSyncAndRollbackSyncedArticle(t *testing.T) {
 		t.Fatalf("len(w.poisoned) = %d after duplicate rollbackSyncedArticle, want 1", got)
 	}
 	// A different article is still rolled back alongside it.
-	w.admitAccepted(1)
+	w.admit(1)
 	w.rollbackSyncedArticle(1)
 	if !slices.Equal(w.poisoned, []int32{0, 1}) {
 		t.Fatalf("w.poisoned = %v, want [0 1]", w.poisoned)
@@ -159,7 +159,7 @@ func TestSyncAndClose_FailedSyncRoutesRolledBackArticles(t *testing.T) {
 	key := fileKey{jobID: "job1", fileIdx: 0}
 	g := newHelperFile(t, t.TempDir(), "close-handles-sync-fail.dat", 0)
 	g.w.key = key
-	g.w.admitAccepted(8)
+	g.w.admit(8)
 	if err := g.w.accept(articleID{msgID: "m8", artIdx: 8}, 0, []byte("abcd")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}

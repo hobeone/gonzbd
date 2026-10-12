@@ -42,22 +42,22 @@ func newFailingWriteFile(t *testing.T, err error) (*openFile, string) {
 // finalized as complete, holding pre-allocation zeros, at 100% reported
 // health.
 //
-// The return value IS the observable: it is the only thing standing between a
-// failed write and the increment, so the assertion is on it rather than on a
-// completion callback that a unit-level fixture cannot reach.
+// The part count IS the observable: processRequest compares it to TotalParts,
+// so the assertion is on it rather than on a completion callback that a
+// unit-level fixture cannot reach.
 func TestWriteFault_IsNotCountedTowardCompletion(t *testing.T) {
 	f, _ := newFailingWriteFile(t, syscall.ENOSPC)
 	a := New(makeOpts(t.TempDir(), map[string]FileInfo{}), slog.New(slog.DiscardHandler))
 
-	counted := a.handleSuccessArticle(f, WriteRequest{
+	a.handleSuccessArticle(f, WriteRequest{
 		JobID: "job1", FileIdx: 0, ArtIdx: 7, MessageID: "m1",
 		Offset: 0, Data: []byte("AAAA"),
 	})
 
-	if counted {
-		t.Fatal("a write that failed was counted toward file completion. " +
-			"processRequest increments partsWritten on this return, so the file " +
-			"reaches TotalParts and finalizes over bytes that never reached disk")
+	if got := f.w.parts(); got != 0 {
+		t.Fatalf("parts = %d after a failed write, want 0: a write that failed was counted "+
+			"toward file completion, so the file reaches TotalParts and finalizes over "+
+			"bytes that never reached disk", got)
 	}
 }
 

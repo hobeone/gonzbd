@@ -137,38 +137,22 @@ func repoRoot() (string, error) {
 	}
 }
 
-// TestFileWriter_WriteOneFailureClearsSeenDone pins the seen-set correction on
-// a failed write. seenDone means "accepted and counted"; after the write is
-// lost the article is not on its way to disk, and leaving it there makes a
-// re-delivery look like a duplicate to skip.
-//
-// It must NOT move to seenFailed. A failed write is a storage condition and
-// says nothing about the article's availability (A1), and recording it failed
-// made the redelivery take the "already counted as failed" branch — written
-// but not counted, leaving the file's part total permanently short.
-func TestFileWriter_WriteOneFailureClearsSeenDone(t *testing.T) {
+// TestFileWriter_WriteOneFailureTouchesNoAccounting pins that a failed write
+// leaves the admission exactly as it found it: the roll-back is resolve's, at
+// the one call site that holds the outcome, and a writeOne that applied half
+// of it on its own would be a second owner of the part count.
+func TestFileWriter_WriteOneFailureTouchesNoAccounting(t *testing.T) {
 	w := newTestFileWriter(t, withWriteError(syscall.EIO))
-	// Admitted rather than inserted into seenDone by hand, so the article
-	// actually holds the part the roll-back below has to give back.
-	w.admitAccepted(9)
-	if w.parts() != 1 {
-		t.Fatalf("parts() = %d, want 1; the fixture did not admit the article", w.parts())
-	}
+	w.admit(9)
+	before := stateOf(w, 9)
 
 	if err := w.writeOne(articleID{msgID: "a9", artIdx: 9}, 0, []byte("xy")); err == nil {
 		t.Fatal("writeOne returned nil after EIO")
 	}
-	if _, still := w.seenDone[9]; still {
-		t.Error("a9 is still in seenDone after its write failed; a re-delivery would be skipped as a duplicate")
+	if got := stateOf(w, 9); got != before {
+		t.Errorf("state after a failed writeOne = %+v, want %+v unchanged", got, before)
 	}
-	if _, failed := w.seenFailed[9]; failed {
-		t.Error("a9 was recorded as FAILED by a storage fault, which A1 forbids")
-	}
-	// Asserted on the counter: the roll-back applies the give-back itself, and
-	// this is the observation that pins it.
-	if got := w.parts(); got != 0 {
-		t.Errorf("parts() = %d after the roll-back, want 0 — a9 was accepted and "+
-			"counted, so the roll-back must give its count back; otherwise the file "+
-			"reaches TotalParts over bytes that are not there", got)
+	if got := w.unsynced; len(got) != 0 {
+		t.Errorf("unsynced = %v after a failed write, want empty", got)
 	}
 }

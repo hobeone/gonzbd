@@ -15,17 +15,17 @@ file internal/assembler/assembler.go
 [the rejection route drops the reported count]
 file internal/assembler/assembler.go
 --- anchor
-			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, rej.reason, rej.uncovered)
+			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, o.reason, o.uncovered)
 --- replace
-			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, rej.reason, WholeArticle)
+			a.opts.OnArticleRejected(req.JobID, req.FileIdx, req.ArtIdx, o.reason, WholeArticle)
 --- end
 
 [an out-of-range offset reports nothing uncovered]
 file internal/assembler/assembler.go
 --- anchor
-		return &rejectedArticleError{reason: reason, uncovered: WholeArticle}
+		return outcome{disposition: dispositionRejected, reason: reason, uncovered: WholeArticle}
 --- replace
-		return &rejectedArticleError{reason: reason, uncovered: 0}
+		return outcome{disposition: dispositionRejected, reason: reason, uncovered: 0}
 --- end
 
 [the arriving article's own range counts as cover]
