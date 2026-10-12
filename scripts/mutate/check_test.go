@@ -124,7 +124,7 @@ func TestRunCheck_ReportsAParseErrorAndReturnsNonZero(t *testing.T) {
 func TestRunCheck_NamesDeadRunFilterAlternativeAndReturnsNonZero(t *testing.T) {
 	root := mustModule(t, "func TestReal(t *testing.T) {}\n")
 	mustWrite(t, filepath.Join(root, "a.go"), "package m\n\nfunc one() {}\n")
-	specFile := write(t, "pkg ./...\nrun TestReal|TestDeadName\n[m]\nfile a.go\n--- anchor\nfunc one() {}\n--- replace\nfunc oneX() {}\n--- end\n")
+	specFile := write(t, "pkg .\nrun TestReal|TestDeadName\n[m]\nfile a.go\n--- anchor\nfunc one() {}\n--- replace\nfunc oneX() {}\n--- end\n")
 
 	var code int
 	out := captureStdout(t, func() {

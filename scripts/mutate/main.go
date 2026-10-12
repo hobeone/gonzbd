@@ -43,7 +43,8 @@
 // silently — the remaining alternatives still select real tests, the
 // baseline still passes, and the phantom name reads as though it were part
 // of the pin. Before the baseline runs, deadRunFilterNames lists the
-// package's declared tests with `go test -list` and checks every alternative
+// package's declared tests — reading the test files' declarations rather than
+// compiling them (listTests, testlist.go) — and checks every alternative
 // of a plain `run` line — one that is nothing but test names joined by `|`,
 // in one of three shapes: bare (`A|B`), the whole thing wrapped
 // (`^(A|B)$`), or a shared prefix sitting outside the group
@@ -84,8 +85,11 @@
 //
 // -check parses one or more specs, resolves every anchor with the same
 // strings.Count checkAnchor uses, and reports any that do not match exactly
-// one site — without compiling, running a test, or writing to the working
-// tree. -check-all does the same over every spec this checkout has, found
+// one site; then it checks every plain-alternation `run` line against
+// listTests, as the pre-flight does. It writes nothing to the working tree,
+// and it compiles nothing unless a spec's pkg is a pattern or GOFLAGS is set,
+// the two cases listTests hands to `go test -list`. -check-all does the same
+// over every spec this checkout has, found
 // the way scripts/run_tests.sh finds them: `git ls-files --cached --others
 // --exclude-standard -- '*testdata/*.spec'`, never `find` or filepath.Walk —
 // both descend into the gitignored `.claude/worktrees/` and would check a
@@ -1191,8 +1195,11 @@ table. Without it the evidence column is printed for every mutation, which is
 what a commit body records.
 
 -check parses the given spec(s) and reports every anchor that resolves to
-zero or several sites, without compiling anything, running a test, or writing
-to the working tree. -check-all does the same over every spec this checkout
+zero or several sites, and every name in a plain-alternation run line that
+declares no test, without running a test or writing to the working tree. Tests
+are found by reading the package's test files, not by compiling them, unless
+the pkg line is a pattern or GOFLAGS is set. -check-all does the same over
+every spec this checkout
 has, discovered with 'git ls-files --cached --others --exclude-standard --
 *testdata/*.spec' — the same command scripts/run_tests.sh uses, and for the
 same reason: 'find' and filepath.Walk both descend into the gitignored

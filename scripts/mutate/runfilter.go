@@ -2,15 +2,13 @@ package main
 
 import (
 	"fmt"
-	"os/exec"
 	"regexp"
 	"slices"
 	"strings"
 )
 
 // testNameRe matches a bare Go test function name: what a spec's `run` line
-// names when it is a plain alternation, and what `go test -list ^Test`
-// prints for each declared test.
+// names when it is a plain alternation.
 var testNameRe = regexp.MustCompile(`^Test[A-Za-z0-9_]*$`)
 
 // plainAlternation splits a spec's `run` line into its alternatives when it
@@ -88,40 +86,6 @@ func selects(listed []string, alt string, startAnchored, endAnchored bool) bool 
 	return slices.ContainsFunc(listed, re.MatchString)
 }
 
-// listArgs builds the argv for listing a package's declared tests, honouring
-// the spec's build tags the same way testArgs does for the baseline run.
-func listArgs(sp *spec) []string {
-	args := []string{"test", "-list", "^Test"}
-	if sp.tags != "" {
-		args = append(args, "-tags="+sp.tags)
-	}
-	args = append(args, sp.pkg)
-	return args
-}
-
-// listTests names every top-level Test function `go test -list` reports for
-// the spec's package. It excludes Example, Benchmark and Fuzz entries: a
-// spec's `run` line in this format only ever names tests.
-//
-// This compiles the test binary — `go test -list` still builds the package
-// to enumerate its tests — which is why it runs once, before the baseline,
-// rather than for every mutation.
-func listTests(root string, sp *spec) ([]string, error) {
-	cmd := exec.Command("go", listArgs(sp)...) //nolint:gosec // G204: argv comes from the operator's own spec, the same trust level as testArgs
-	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("list tests in %s: %w\n%s", sp.pkg, err, indent(string(out)))
-	}
-	var names []string
-	for line := range strings.SplitSeq(string(out), "\n") {
-		if s := strings.TrimSpace(line); testNameRe.MatchString(s) {
-			names = append(names, s)
-		}
-	}
-	return names, nil
-}
-
 // filterMatchesName reports whether go test's `-run` pattern would select a
 // test named name — a bare top-level name or a `/`-separated subtest path —
 // the way `go test` itself does: split both run and name on `/` and match
@@ -173,7 +137,7 @@ func deadFilterAlternatives(listed []string, sp *spec) []string {
 }
 
 // deadRunFilterNames names every alternative of a plain `run` line that
-// selects no test `go test -list` reports for the spec's package. It returns
+// selects no test listTests finds in the spec's package. It returns
 // nil, nil for a `run` that is not a plain alternation (see
 // plainAlternation) or that names none at all.
 func deadRunFilterNames(root string, sp *spec) ([]string, error) {

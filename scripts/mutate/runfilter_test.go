@@ -58,8 +58,8 @@ func TestPlainAlternation_FallsBackForAnythingThatIsNotABareNameList(t *testing.
 	t.Parallel()
 
 	// Each of these must fall back to the baseline's existing ranNothing
-	// check rather than being split: an empty run, a subtest path (go test
-	// -list never reports subtests), a regexp carrying metacharacters other
+	// check rather than being split: an empty run, a subtest path (listTests
+	// names top-level tests only), a regexp carrying metacharacters other
 	// than the `|` alternation this check understands, a single name
 	// anchored the ^…$ way rather than a `(`…`)$` group, a leading `^` with
 	// no group at all, a prefixed group whose expansion is not a valid test
@@ -83,7 +83,7 @@ func TestListTests_ListsOnlyTopLevelTestFunctions(t *testing.T) {
 			"func BenchmarkX(b *testing.B) {}\n"+
 			"func Example() {}\n")
 
-	got, err := listTests(root, &spec{pkg: "./..."})
+	got, err := listTests(root, &spec{pkg: "."})
 	if err != nil {
 		t.Fatalf("listTests: %v", err)
 	}
@@ -94,11 +94,29 @@ func TestListTests_ListsOnlyTopLevelTestFunctions(t *testing.T) {
 	}
 }
 
+func TestListTests_DoesNotCompileThePackage(t *testing.T) {
+	t.Parallel()
+
+	// The non-test file does not type-check, so anything that builds the
+	// package — `go test -list` included — fails. Listing reads declarations,
+	// so it must still name the test.
+	root := mustModule(t, "func TestDeclared(t *testing.T) {}\n")
+	mustWrite(t, filepath.Join(root, "broken.go"), "package m\n\nvar x int = \"not an int\"\n")
+
+	got, err := listTests(root, &spec{pkg: "."})
+	if err != nil {
+		t.Fatalf("listTests: %v", err)
+	}
+	if !slices.Equal(got, []string{"TestDeclared"}) {
+		t.Errorf("listTests = %v, want [TestDeclared]", got)
+	}
+}
+
 func TestDeadRunFilterNames_NamesTheAlternativeThatMatchesNoTest(t *testing.T) {
 	t.Parallel()
 
 	root := mustModule(t, selectedPasses+omittedPasses) // declares TestSelected and TestOmitted
-	sp := &spec{pkg: "./...", run: "TestSelected|TestDoesNotExist"}
+	sp := &spec{pkg: ".", run: "TestSelected|TestDoesNotExist"}
 
 	got, err := deadRunFilterNames(root, sp)
 	if err != nil {
@@ -113,7 +131,7 @@ func TestDeadRunFilterNames_ReportsNothingWhenEveryAlternativeExists(t *testing.
 	t.Parallel()
 
 	root := mustModule(t, selectedPasses+omittedPasses)
-	sp := &spec{pkg: "./...", run: "TestSelected|TestOmitted"}
+	sp := &spec{pkg: ".", run: "TestSelected|TestOmitted"}
 
 	got, err := deadRunFilterNames(root, sp)
 	if err != nil {
@@ -139,7 +157,7 @@ func TestDeadRunFilterNames_PrefixedGroupNamesEachAlternativeLive(t *testing.T) 
 	// The shape issue #633 added: the shared "Test" prefix sits outside the
 	// group, as it does in the six specs the issue found.
 	root := mustModule(t, selectedPasses+omittedPasses) // declares TestSelected and TestOmitted
-	sp := &spec{pkg: "./...", run: "Test(Selected|Omitted)$"}
+	sp := &spec{pkg: ".", run: "Test(Selected|Omitted)$"}
 
 	got, err := deadRunFilterNames(root, sp)
 	if err != nil {
@@ -154,7 +172,7 @@ func TestDeadRunFilterNames_PrefixedGroupNamesTheDeadAlternative(t *testing.T) {
 	t.Parallel()
 
 	root := mustModule(t, selectedPasses+omittedPasses)
-	sp := &spec{pkg: "./...", run: "Test(Selected|DoesNotExist)$"}
+	sp := &spec{pkg: ".", run: "Test(Selected|DoesNotExist)$"}
 
 	got, err := deadRunFilterNames(root, sp)
 	if err != nil {
@@ -173,7 +191,7 @@ func TestDeadRunFilterNames_PrefixedGroupWithoutCaretMatchesALongerTestNameBySuf
 	// TestWrapTestSelected ends with it, even though no test is named
 	// exactly "TestSelected".
 	root := mustModule(t, "func TestWrapTestSelected(t *testing.T) {}\n")
-	sp := &spec{pkg: "./...", run: "Test(Selected)$"}
+	sp := &spec{pkg: ".", run: "Test(Selected)$"}
 
 	got, err := deadRunFilterNames(root, sp)
 	if err != nil {
@@ -191,7 +209,7 @@ func TestDeadRunFilterNames_PrefixedGroupEndAnchorRejectsAPrefixOfALongerName(t 
 	// prefix of its name, not a suffix, so it must NOT count as a match —
 	// unlike the bare, unanchored form where containment anywhere is enough.
 	root := mustModule(t, "func TestSelectedFoo(t *testing.T) {}\n")
-	sp := &spec{pkg: "./...", run: "Test(Selected)$"}
+	sp := &spec{pkg: ".", run: "Test(Selected)$"}
 
 	got, err := deadRunFilterNames(root, sp)
 	if err != nil {
@@ -209,7 +227,7 @@ func TestDeadRunFilterNames_LeadingCaretOnAPrefixedGroupRequiresExactEquality(t 
 	// TestWrapTestSelected no longer counts, since it is not literally equal
 	// to "TestSelected".
 	root := mustModule(t, "func TestWrapTestSelected(t *testing.T) {}\n")
-	sp := &spec{pkg: "./...", run: "^Test(Selected)$"}
+	sp := &spec{pkg: ".", run: "^Test(Selected)$"}
 
 	got, err := deadRunFilterNames(root, sp)
 	if err != nil {
@@ -226,7 +244,7 @@ func TestDeadRunFilterNames_AcceptsAnUnanchoredPrefixOfARealTest(t *testing.T) {
 	// go test -run matches unanchored, so a prefix of a declared test's name
 	// selects that test and is a live alternative, not a dead one.
 	root := mustModule(t, selectedPasses+omittedPasses)
-	sp := &spec{pkg: "./...", run: "TestSel|TestOmitted"}
+	sp := &spec{pkg: ".", run: "TestSel|TestOmitted"}
 
 	got, err := deadRunFilterNames(root, sp)
 	if err != nil {
@@ -242,7 +260,7 @@ func TestDeadRunFilterNames_AnchoredPrefixSelectsNothing(t *testing.T) {
 
 	// Wrapped in ^(…)$, TestSel must equal a test name, and none is.
 	root := mustModule(t, selectedPasses+omittedPasses)
-	sp := &spec{pkg: "./...", run: "^(TestSel|TestOmitted)$"}
+	sp := &spec{pkg: ".", run: "^(TestSel|TestOmitted)$"}
 
 	got, err := deadRunFilterNames(root, sp)
 	if err != nil {
@@ -259,9 +277,9 @@ func TestDeadRunFilterNames_SkipsANonPlainAlternationRunWithoutListingTests(t *t
 	// A root that cannot possibly be listed against — if this fell through to
 	// listTests, the call would fail and this would return a non-nil error
 	// instead of (nil, nil). That is the pin: the non-plain `run` line below
-	// must never reach `go test -list` at all.
+	// must never reach listTests at all.
 	unusable := filepath.Join(t.TempDir(), "does-not-exist")
-	sp := &spec{pkg: "./...", run: "TestFoo.*"}
+	sp := &spec{pkg: ".", run: "TestFoo.*"}
 
 	got, err := deadRunFilterNames(unusable, sp)
 	if err != nil {

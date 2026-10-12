@@ -88,8 +88,8 @@ func discoverSpecs(root string) ([]string, error) {
 
 // runCheck implements -check and -check-all: it resolves every anchor in
 // every named spec and reports the ones that do not resolve to exactly one
-// site, without compiling anything, running a test, or writing to the
-// working tree.
+// site, then checks each plain-alternation `run` line against listTests,
+// without running a test or writing to the working tree.
 //
 // display and actual are parallel slices of equal length. actual is what
 // checkSpecAnchors reads; display is what an issue is reported against. They
