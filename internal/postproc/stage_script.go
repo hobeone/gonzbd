@@ -77,8 +77,11 @@ func NewScriptStage(scriptDir, completeDir, version, apiKey, apiURL string) *Scr
 func (*ScriptStage) Name() string { return "script" }
 
 // Run builds a ScriptInput from the job and invokes RunScript. Returns nil
-// when no script is configured, the script exits 0, or the script exits
-// non-zero while scriptCanFail is false; wraps the RunScript error otherwise.
+// when no script is configured ("", "none" or "default", case-insensitive),
+// the script exits 0, or the script exits non-zero while scriptCanFail is
+// false. Otherwise it returns an error: before the script runs, for an unset
+// script_dir, an absolute or escaping script path, a missing script, or no
+// usable SAB_FILES list; after it, wrapping the RunScript error.
 func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	s.mu.RLock()
 	scriptDir := s.ScriptDir
@@ -210,15 +213,3 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	}
 	return nil
 }
-
-// FinalizeStage moves the completed job from job.DownloadDir to job.FinalDir.
-// If FinalDir is not set, it defaults to placing the job folder (named after
-// its ID) in the system's complete directory.
-//
-// When FolderRename is true:
-//   - On success: destination gets _UNPACK_ prefix during move, then prefix
-//     is stripped after the rename completes. This prevents media managers
-//     (Sonarr, Plex) from importing incomplete downloads.
-//   - On failure: the download directory is renamed in-place with a _FAILED_
-//     prefix (e.g. /incomplete/MyRelease → /incomplete/_FAILED_MyRelease).
-//     Files stay in the incomplete area so retry can find them.

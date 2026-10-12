@@ -134,11 +134,11 @@ Post-processing runs a chain of `Stage` implementations in order for each comple
 |-------|-------|---------|-------------|
 | 1 | `quickcheck` | `postproc` | CRC-verify assembled files against PAR2 metadata; relocate flat files into expected subdirectories |
 | 2 | `repair` | `par2` | PAR2 verification and repair (skipped when quickcheck passes; skips par2 sets quickcheck deferred until after unpack) |
-| 3 | `rar_volume_recovery` | `postproc` | Reconstruct a missing RAR volume from PAR2 data before extraction |
+| 3 | `rar_volume_recovery` | `postproc` | When no archive is found by name, rename an obfuscated RAR5 volume set to part-numbered names from the volume sequence in each file's RAR5 header (no PAR2 involved) |
 | 4 | `unpack` | `unpack` | RAR, 7z extraction and split file joining |
 | 5 | `extracted_repair` | `par2` | PAR2 verification and repair of the deferred sets, against the files unpack extracted |
 | 6 | `sample_cleanup` | `postproc` | Delete sample video files (when enabled) |
-| 7 | `par2names` | `postproc` | Recover original filenames from PAR2 metadata |
+| 7 | `recover_par2_names` | `postproc` | Recover original filenames from PAR2 metadata |
 | 8 | `par2_cleanup` | `postproc` | Delete `.par2` files after repair/rename (when enabled) |
 | 9 | `deobfuscate` | `deobfuscate` | Rename obfuscated files using NZB hints and PAR2 filenames |
 | 10 | `unwanted_cleanup` | `postproc` | Delete every file under the job's download directory whose extension the unwanted-extension rules exclude, unless the user approved the job. Backstop for `app.peekArchiveForUnwanted`, which blocks a job early from RAR5 volume and par2 headers while it downloads (RAR3 content is caught here) |
@@ -149,7 +149,7 @@ Post-processing runs a chain of `Stage` implementations in order for each comple
 > **Note:** Sorting/renaming (TV, movie, date templates) is intentionally not implemented.
 > This functionality is handled by external tools such as Sonarr, Radarr, and similar media managers.
 
-Stage errors are recorded in the `StageLog` but do **not** abort the pipeline — subsequent stages still run. Each stage self-gates based on job flags (`ParError`, `UnpackError`, `FailMsg`) to decide whether to skip when a prior stage has failed. The only reason to abort remaining stages is context cancellation, either daemon shutdown or a single job being cancelled mid-processing (`Cancel`). The processor has no pause/resume control of its own — downloads can be paused via `pause`/`resume`, which transitively stalls the post-processing queue since no new jobs finish downloading.
+Stage errors are recorded in the `StageLog` but do **not** abort the pipeline — subsequent stages still run. Each stage self-gates based on job flags (`ParError`, `UnpackError`, `FailMsg`) to decide whether to skip when a prior stage has failed. The only reason to abort remaining stages is context cancellation, either daemon shutdown or a single job being cancelled mid-processing (`CancelJob`). The processor has no pause/resume control of its own — downloads can be paused via `pause`/`resume`, which transitively stalls the post-processing queue since no new jobs finish downloading.
 
 #### External subprocess containment (`internal/cmdutil`, `internal/unpack`)
 

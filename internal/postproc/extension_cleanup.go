@@ -14,7 +14,7 @@ import (
 // ExtensionCleanupStage deletes files whose extension matches a user-
 // configured list from job.DownloadDir after unpack has run. Mirrors
 // SABnzbd's postproc.py:cleanup_list() — extension-based cleanup runs
-// after deobfuscation and sorting, before the final move.
+// after deobfuscation, before the final move.
 //
 // Extensions are case-insensitive and should be stored without a leading
 // dot (e.g. "nfo", "txt", "sfv"). An NZB extension in the cleanup list

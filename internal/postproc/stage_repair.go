@@ -16,7 +16,9 @@ import (
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
-// RepairStage verifies and repairs extracted files using par2 recovery data.
+// RepairStage verifies and repairs the downloaded files using par2 recovery
+// data, before unpack. The sets quickcheck deferred are left to
+// ExtractedRepairStage, which runs them against the extracted files.
 type RepairStage struct {
 	mu sync.RWMutex
 	// Par2Opts configures the par2 binary path and turbo mode.
@@ -416,7 +418,7 @@ func nativeRepairReason(res par2.RepairResult, err error) string {
 }
 
 // recordRepairSuccess updates job state after a successful par2 repair:
-// records consumed par2 files, wires renames for downstream deobfuscation, and
+// records consumed par2 files, records par2's renames on Job.Par2Renames, and
 // protects joinables and repair sources from premature cleanup deletion.
 //
 // The verdict itself is not recorded anywhere that outlives the run.
@@ -438,7 +440,7 @@ func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, jo
 		return
 	}
 
-	// I1: Wire par2 renames to Job for downstream deobfuscation.
+	// I1: Record par2 renames on the Job (see Job.Par2Renames for its readers).
 	// Matches SABnzbd's nzo.renamed_file(renames) in par2cmdline_verify.
 	if len(res.Parsed.Renames) > 0 {
 		if job.Par2Renames == nil {

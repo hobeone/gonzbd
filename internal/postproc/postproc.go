@@ -192,10 +192,12 @@ func (p *PostProcessor) Empty() bool {
 	return empty
 }
 
-// History returns a deep-copy snapshot of all jobs that have passed through
-// the post-processor (including currently in-flight jobs). The copies prevent
-// data races between the worker mutating StageLog and callers reading the
-// snapshot.
+// History returns a snapshot of the jobs the worker has finished, the most
+// recent 1000 at most (addHistory). A job is added only after processJob
+// returns, so an in-flight job, a cancelled one and one a shutdown
+// interrupted are absent. Each Job is a shallow copy with a fresh StageLog
+// slice; its other slices and maps, and each entry's Lines, still share
+// backing storage with the original.
 func (p *PostProcessor) History() []*Job {
 	p.historyMu.RLock()
 	defer p.historyMu.RUnlock()
@@ -251,7 +253,7 @@ func (p *PostProcessor) run() {
 			return
 		}
 
-		// jobCtx is cancelled independently of workerCtx by Cancel() when
+		// jobCtx is cancelled independently of workerCtx by CancelJob when
 		// this specific job is removed mid-processing. Unlike a shutdown,
 		// the job is gone for good: record no history and do not fire
 		// onJobDone. Hand it back through onJobCancelled, which runs only
@@ -444,7 +446,7 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	//   2 = +unpack (also does repair + par2 cleanup)
 	//   3 = +delete (repair + unpack + cleanup)
 	// Quickcheck, repair, and par2_cleanup require PP ≥ 1; unpack requires PP ≥ 2.
-	// Other stages (deobfuscate, sort, finalize, script) always run.
+	// Every other stage runs at every PP level.
 	if shouldSkipForPP(stage.Name(), job.PP) {
 		p.log.Info("postproc: skipping stage (PP level)",
 			"stage", stage.Name(),
@@ -508,7 +510,7 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 	}
 
 	// Note: when the repair stage finds insufficient blocks or a corrupt
-	// main par2 file, it sets job.ParError (which stage_unpack.go:128 uses
+	// main par2 file, it sets job.ParError (which stage_unpack.go:130 uses
 	// to skip extraction) and logs the block/diagnosis detail itself — it
 	// does not abort the pipeline. Downstream stages (unpack, finalize,
 	// script) still run so the job completes to history.
@@ -751,7 +753,7 @@ func (p *PostProcessor) addHistory(job *Job) {
 	p.history = append(p.history, job)
 	// Cap in-memory history to prevent unbounded growth in long-running
 	// daemons. The authoritative history lives in the SQLite DB; this
-	// slice is only for the API's "recent postproc" view.
+	// slice backs History.
 	const maxHistory = 1000
 	if len(p.history) > maxHistory {
 		// Drop the oldest entries and nil out for GC.

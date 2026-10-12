@@ -405,8 +405,3 @@ func moveRecursive(ctx context.Context, src, dst string, isPending func(string) 
 	}
 	return fsutil.Remove(src)
 }
-
-// listNonPar2Files returns the full paths of all regular (non-directory)
-// files in dir that are not .par2 files. These are passed as extra
-// arguments to par2 repair so it can checksum-match files regardless of
-// whether their names match the par2 set's file list.

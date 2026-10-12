@@ -22,8 +22,9 @@ const MaxLogBytes = 512 * 1024 // 512 KiB
 var ErrNonZeroExit = errors.New("post-processing script exited non-zero")
 
 // ScriptInput is the fully-resolved input to a user post-processing script.
-// Every string is included in both the positional argv and as an SAB_* env
-// var for backwards compatibility with scripts written for Python SABnzbd.
+// The eight fields marked "positional" below appear both in argv and as an
+// SAB_* env var, for scripts written for Python SABnzbd; every other field
+// is env-only.
 //
 // Positional order (matching Python's external_processing argv):
 //
@@ -156,7 +157,7 @@ type ScriptResult struct {
 	// LogBody is combined stdout+stderr, up to MaxLogBytes.
 	LogBody string
 
-	// LastLine is the last non-empty line of LogBody (used in history UI).
+	// LastLine is the last non-empty line of LogBody (see lastNonEmptyLine).
 	LastLine string
 
 	// Duration is how long the script ran.
@@ -347,7 +348,7 @@ func RunScript(ctx context.Context, scriptPath string, in ScriptInput) ScriptRes
 	var startErr error
 	for attempt := range maxRetries {
 		if attempt > 0 {
-			// Exponential backoff: 1ms, 2ms, 4ms, 8ms, 16ms.
+			// Exponential backoff before each of the 4 retries: 1ms, 2ms, 4ms, 8ms.
 			time.Sleep(time.Millisecond << uint(attempt-1))
 
 			// Rebuild the command because exec.Cmd is not reusable after Start.

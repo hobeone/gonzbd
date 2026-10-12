@@ -51,13 +51,13 @@ post-processing behavior based on the requested level.
 
 - **No shell**: The script is executed directly (not via `/bin/sh`). Use a
   shebang (`#!/bin/bash`) if you need shell features.
-- **Working directory**: Set to the job's final directory (`SAB_COMPLETE_DIR`).
+- **Working directory**: Set to the job's processed directory (`SAB_FINAL_PROCESSING_DIR`).
 - **Timeout**: none. A post-processing script runs until it exits or until the
   job's context is cancelled; there is no per-script deadline and no config key
   for one. (`internal/notifier` has a 30 s script timeout, but that is the
   event-notification runner, not this path.)
 - **Process group**: The script runs in its own process group
-  (`internal/postproc/script.go:297`). On cancellation the entire group
+  (`internal/postproc/script.go:328`). On cancellation the entire group
   (including child processes) is killed.
 - **Output capture**: stdout and stderr are combined and stored in the history
   database (up to 512 KiB). The last non-empty line is shown in the UI.

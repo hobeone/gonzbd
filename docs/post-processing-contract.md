@@ -278,7 +278,7 @@ or modify its behavior:
 > `par2.ApplyRenames` has exactly one caller in the tree
 > (`stage_quickcheck.go:100`); and `QuickCheckClean` is the only
 > verdict that lets `repair` skip spawning par2 on a set it has checked
-> (`stage_repair.go:110`). The
+> (`stage_repair.go:108`). The
 > download path cannot host either — it *"decides; it never renames"*
 > (`docs/ARCHITECTURE.md`) and performs no I/O by design.
 >
@@ -395,15 +395,16 @@ file's place (`docs/durability-contract.md` § "3. A restart trusts only what it
 ## Post-Processing (PP) Level Enforcement
 
 SABnzbd post-processing levels are cumulative integer levels on `postproc.Job.PP`
-(`internal/postproc/stages.go:154`) — post-processing's own job struct, not
-`internal/job.Job`. `PP` is persisted on `dispatch.Header.PP`
-(`internal/dispatch/store/store.go:29`, alongside the resolved `job.Policy`
-booleans; see `docs/dispatch-contract.md`) and forwarded to `postproc.Job.PP`
-(`internal/app/app.go:2621`):
+(`internal/postproc/stages.go:157`) — post-processing's own job struct, not
+`internal/job.Job`. `PP` is held on `dispatch.Header.PP`
+(`internal/dispatch/registry.go:116`), persisted in the queue row's `pp`
+column (`internal/dispatch/store/store.go`, alongside the resolved
+`job.Policy` booleans; see `docs/dispatch-contract.md`) and forwarded to
+`postproc.Job.PP` (`internal/app/app.go:2493`):
 
 - **PP = 0 (Download Only)**: Skips `quickcheck`, `repair`, `par2_cleanup`, and `unpack` (preserving `.par2` files since nothing verified or repaired). Runs the remaining cleanup stages (`sample_cleanup`, `unwanted_cleanup`, `extension_cleanup`), finalize, and script.
 - **PP = 1 (Repair Only)**: Runs `quickcheck`, `repair`, and `par2_cleanup`. Skips `unpack`.
-- **PP = 2 (Repair + Unpack)**: Runs `quickcheck`, `repair`, `unpack` (including queuing extracted archives for deletion at `finalize` when `enable_rar_cleanup` is enabled; `internal/postproc/stage_unpack.go:361`), and `par2_cleanup`.
+- **PP = 2 (Repair + Unpack)**: Runs `quickcheck`, `repair`, `unpack` (including queuing extracted archives for deletion at `finalize` when `enable_rar_cleanup` is enabled; `internal/postproc/stage_unpack.go:363`), and `par2_cleanup`.
 - **PP = 3 (Repair + Unpack + Delete)**: Runs the same stage set as `PP = 2` (`shouldSkipForPP` does not gate on `PPDelete`; gating archive deletion on `PP = 3` is a separate question from #769).
 
 `shouldSkipForPP(stageName, pp)` enforces these bounds centrally. Stages like
@@ -883,7 +884,7 @@ recorded entirely through the fetch-policy discard, not through this field.
 - **Insufficient Recovery Blocks**: When `par2` reports it needs more blocks
   than are on disk, `repair` sets `ParError = true` and leaves the block count
   in its own log line rather than on `Job` — `unpack` reads `ParError` to skip
-  extraction (`internal/postproc/stage_unpack.go:128`). Downstream stages
+  extraction (`internal/postproc/stage_unpack.go:130`). Downstream stages
   continue running so the job still reaches a deterministic finished state.
   A job that held recovery volumes back is then retried once with them
   released (see "Held volumes after a failed repair (#651)").
@@ -905,7 +906,7 @@ recorded entirely through the fetch-policy discard, not through this field.
 ## Status
 
 ### Landed
-- Single worker goroutine with `ppQueue` FIFO scheduling and safe cancellation (`Cancel`).
+- Single worker goroutine with `ppQueue` FIFO scheduling and safe cancellation (`CancelJob`).
 - At most one post-processing run of a job instance, including after that run has ended (`postProcAdmissions`); a failure reason reported before the run is handed over fails it, and a later one is recorded as a stage-log warning.
 - A failure reason reported by job ID for a job at `Assessing` is handed over by the job's Assessing worker, so post-processing does not run beside `runAssess` (`postProcAdmissions.admitUnlessAssessing`).
 - Complete 13-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
