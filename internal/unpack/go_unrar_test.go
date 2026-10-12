@@ -1106,7 +1106,7 @@ func (m *fakeMember) Close() error {
 	return m.closeErr
 }
 
-// extractMember closes every member it is handed and returns the verdict
+// ExtractMember closes every member it is handed and returns the verdict
 // Close reports, whether the member was written or skipped for its name. A
 // rarengine Entry reports a bad digest from Read, so a verdict that arrives
 // only at Close after a full read needs a fake member to produce.
@@ -1135,7 +1135,7 @@ func TestExtractMember(t *testing.T) {
 			fh := &rarengine.FileHeader{Name: tc.member, UnpackedSize: int64(len("content"))}
 			var lines []string
 			opts := Options{OnLine: func(l string) { lines = append(lines, l) }}
-			rel, abs, err := extractMember(context.Background(), root, outDir, fh, m, opts, log)
+			rel, abs, err := ExtractMember(context.Background(), root, outDir, fh, m, opts, log)
 			if !errors.Is(err, tc.wantErr) || (tc.wantErr == nil && err != nil) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
@@ -1169,9 +1169,9 @@ func TestExtractMember(t *testing.T) {
 		defer root.Close()
 		m := &fakeMember{r: strings.NewReader("")}
 		fh := &rarengine.FileHeader{Name: "season1", IsDir: true}
-		rel, abs, err := extractMember(context.Background(), root, outDir, fh, m, Options{}, log)
+		rel, abs, err := ExtractMember(context.Background(), root, outDir, fh, m, Options{}, log)
 		if err != nil || rel != "" || abs != "" {
-			t.Fatalf("extractMember(dir) = %q, %q, %v; want nothing listed", rel, abs, err)
+			t.Fatalf("ExtractMember(dir) = %q, %q, %v; want nothing listed", rel, abs, err)
 		}
 		if fi, serr := os.Stat(filepath.Join(outDir, "season1")); serr != nil || !fi.IsDir() {
 			t.Errorf("directory not created: %v", serr)

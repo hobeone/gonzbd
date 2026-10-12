@@ -1,35 +1,73 @@
 pkg ./internal/directunpack/
 run TestDirectUnpacker_ExtractMember
 
-# DirectUnpack's member step: it applies unpack.MemberPath and reports each
-# member's close verdict.
+# DirectUnpack's member step is unpack.ExtractMember, called with this
+# unpacker's options. These mutate the shared step and DirectUnpack's call into
+# it, and require DirectUnpack's own test to notice: the name check, both close
+# verdicts, and the flat-collision rename (#860, where DirectUnpack's former copy
+# lacked the rename and skipped the second member).
 
 [DirectUnpack ignores the name check]
-file internal/directunpack/directunpack.go
+file internal/unpack/go_unrar.go
 --- anchor
-	sp, ok := unpack.MemberPath(fh.Name, opts, d.log)
+	sp, ok := MemberPath(fh.Name, opts, log)
 	if !ok {
 --- replace
-	sp, ok := unpack.MemberPath(fh.Name, opts, d.log)
+	sp, ok := MemberPath(fh.Name, opts, log)
 	if false && !ok {
 --- end
 
 [DirectUnpack drops the close verdict of a member skipped for its name]
-file internal/directunpack/directunpack.go
+file internal/unpack/go_unrar.go
 --- anchor
-		if err := unpack.CloseMember(entry); err != nil {
-			return "", fmt.Errorf("directunpack: verify skipped %s: %w", fh.Name, err)
+		return "", "", CloseMember(entry)
 --- replace
-		if err := unpack.CloseMember(entry); err != nil && false {
-			return "", fmt.Errorf("directunpack: verify skipped %s: %w", fh.Name, err)
+		_ = CloseMember(entry)
+		return "", "", nil
 --- end
 
 [DirectUnpack drops the close verdict of a written member]
+file internal/unpack/go_unrar.go
+--- anchor
+	if err := CloseMember(entry); err != nil {
+		return "", "", err
+	}
+--- replace
+	_ = CloseMember(entry)
+--- end
+
+[DirectUnpack drops the member step's error]
 file internal/directunpack/directunpack.go
 --- anchor
-	if err := unpack.CloseMember(entry); err != nil {
-		return "", fmt.Errorf("directunpack: verify %s: %w", fh.Name, err)
+	_, abs, err := unpack.ExtractMember(ctx, root, d.extractDir, fh, entry, opts, d.log)
+	if err != nil {
 --- replace
-	if err := unpack.CloseMember(entry); err != nil && false {
-		return "", fmt.Errorf("directunpack: verify %s: %w", fh.Name, err)
+	_, abs, err := unpack.ExtractMember(ctx, root, d.extractDir, fh, entry, opts, d.log)
+	if err != nil && false {
+--- end
+
+[a flat collision is skipped instead of renamed]
+file internal/unpack/go_unrar.go
+--- anchor
+	if opts.OneFolder && !opts.OverwriteFiles {
+		rel = uniquePath(root, rel)
+--- replace
+	if false {
+		rel = uniquePath(root, rel)
+--- end
+
+[DirectUnpack does not pass flat_unpack to the member step]
+file internal/directunpack/directunpack.go
+--- anchor
+		OneFolder:        d.opts.OneFolder,
+--- replace
+		OneFolder:        false,
+--- end
+
+[DirectUnpack does not pass overwrite_files to the member step]
+file internal/directunpack/directunpack.go
+--- anchor
+		OverwriteFiles:   d.opts.OverwriteFiles,
+--- replace
+		OverwriteFiles:   true,
 --- end

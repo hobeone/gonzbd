@@ -1354,9 +1354,9 @@ func TestDirectUnpacker_ExtractMember(t *testing.T) {
 		wantErr      string
 	}{
 		{"written", "a/movie.mkv", nil, true, ""},
-		{"written, verdict at close", "movie.mkv", errVerdict, false, "directunpack: verify movie.mkv: verdict at close"},
+		{"written, verdict at close", "movie.mkv", errVerdict, false, "directunpack: extract movie.mkv: verdict at close"},
 		{"bad name skipped", "../escape.mkv", nil, false, ""},
-		{"bad name, verdict at close", "../escape.mkv", errVerdict, false, "directunpack: verify skipped ../escape.mkv: verdict at close"},
+		{"bad name, verdict at close", "../escape.mkv", errVerdict, false, "directunpack: extract ../escape.mkv: verdict at close"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			extractDir := t.TempDir()
@@ -1394,6 +1394,42 @@ func TestDirectUnpacker_ExtractMember(t *testing.T) {
 			}
 		})
 	}
+
+	// flat_unpack drops the directories, so two members that differ only in
+	// their directory collide on one name. Without overwrite_files the second
+	// is renamed rather than skipped: a skip would end the set successfully
+	// with one member missing, and post-processing does not re-extract a set
+	// DirectUnpack finished.
+	t.Run("flat collision renamed", func(t *testing.T) {
+		extractDir := t.TempDir()
+		root, err := os.OpenRoot(extractDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		d := New(testLogger(t), "test-job", t.TempDir(), extractDir, Options{OneFolder: true})
+		got := make([]string, 0, 2)
+		for _, m := range []struct{ name, body string }{
+			{"CD1/track01.flac", "disc one"},
+			{"CD2/track01.flac", "disc two"},
+		} {
+			fh := &rarengine.FileHeader{Name: m.name, UnpackedSize: int64(len(m.body))}
+			p, err := d.extractMember(context.Background(), root, fh, &fakeMember{r: strings.NewReader(m.body)})
+			if err != nil {
+				t.Fatalf("extractMember(%s): %v", m.name, err)
+			}
+			got = append(got, p)
+		}
+		want := []string{filepath.Join(extractDir, "track01.flac"), filepath.Join(extractDir, "track01_1.flac")}
+		if !slices.Equal(got, want) {
+			t.Errorf("listed paths = %q, want %q", got, want)
+		}
+		for i, body := range []string{"disc one", "disc two"} {
+			if b, rerr := os.ReadFile(want[i]); rerr != nil || string(b) != body {
+				t.Errorf("%s = %q, %v; want %q", filepath.Base(want[i]), b, rerr, body)
+			}
+		}
+	})
 
 	// A directory member is created but is not a file to list.
 	t.Run("directory", func(t *testing.T) {

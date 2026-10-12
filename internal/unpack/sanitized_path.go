@@ -74,8 +74,8 @@ func SanitizeArchivePath(name string, oneFolder bool) (string, error) {
 }
 
 // MemberPath is the per-member name check of the RAR extractors
-// (extractMember in go_unrar.go and in directunpack). It sanitizes name with
-// NewSanitizedPath; a name that fails (a ".." escape, a NUL byte, nothing
+// (ExtractMember in go_unrar.go, which directunpack also calls). It
+// sanitizes name with NewSanitizedPath; a name that fails (a ".." escape, a NUL byte, nothing
 // left) is logged and reported on opts.OnLine, and ok is false so the caller
 // skips the member. rarengine already strips a leading "../" from RAR member
 // names ("../e.txt" arrives as "e.txt"), so this is the backstop for a name
