@@ -479,20 +479,18 @@ func (j *Job) ForEachUnfinishedArticle(fn func(fileIdx int, artIdx int32, id str
 }
 
 // MarkFileComplete records that a file's articles have all been assembled.
+//
+// It writes the progress record alone, so it does not require the manifest:
+// an evicted job takes the mark (#868). What must precede the mark — the CRC
+// settle, the archive peek, the DirectUnpack feed — does need the manifest,
+// and ordering the mark after it is the caller's.
 func (j *Job) MarkFileComplete(fileIdx int) error {
 	j.contentMu.Lock()
 	defer j.contentMu.Unlock()
 	if j.progress == nil {
 		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
 	}
-	return j.markFileComplete(fileIdx)
-}
-
-func (j *Job) markFileComplete(fileIdx int) error {
-	if j.manifest == nil {
-		return fmt.Errorf("job %s: %w", j.id, ErrNotResident)
-	}
-	if fileIdx < 0 || fileIdx >= j.manifest.NumFiles() {
+	if fileIdx < 0 || fileIdx >= len(j.progress.files) {
 		return fmt.Errorf("job %s: fileIdx %d out of range", j.id, fileIdx)
 	}
 	j.progress.files[fileIdx].Complete = true

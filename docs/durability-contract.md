@@ -1258,8 +1258,12 @@ recorded here so the next reader does not mistake them for design.
    the job directory stays a fault on both paths.
 
 3. **A file whose last article was written while its job was evicted is not
-   marked complete in this process.** `MarkFileComplete` needs the manifest,
-   so `completeFinalizedFile` reports the completion undelivered; the file's
+   marked complete in this process.** The CRC settle, the archive peek and
+   the DirectUnpack feed that precede the mark need the manifest and do
+   nothing for an evicted job, so `completeFinalizedFile` checks residency
+   before the mark and reports the completion undelivered (`MarkFileComplete`
+   itself needs only progress, so an eviction after that check still takes
+   the mark); the file's
    rows are in the record, so the next start's verification finishes it by
    path. The window is reachable only through `Shutdown`, which evicts after
    the assembler has stopped, and `Remove`, after which no job is left to

@@ -336,8 +336,8 @@ func TestContentMethods_UnattachedJobAndRunsErrors(t *testing.T) {
 	if err := j.ForEachUnfinishedArticle(func(int, int32, string, int, int, string) bool { return true }); err == nil {
 		t.Error("ForEachUnfinishedArticle on unattached job should error")
 	}
-	if err := j.markFileComplete(0); err == nil {
-		t.Error("markFileComplete on unattached job should error")
+	if err := j.MarkFileComplete(0); err == nil {
+		t.Error("MarkFileComplete on unattached job should error")
 	}
 	if err := j.UndeferRecoveryVolumes(nil); err == nil {
 		t.Error("UndeferRecoveryVolumes on unattached job should error")
