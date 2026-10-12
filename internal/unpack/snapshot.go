@@ -13,7 +13,7 @@ import (
 const unpackStagePrefix = ".gonzbd-tmp-unpack-"
 
 // CleanupStageDirs removes any leftover .gonzbd-tmp-unpack-* staging
-// directories from an earlier interrupted external extraction in outDir (#768).
+// directories from an earlier interrupted staged extraction in outDir (#768).
 func CleanupStageDirs(outDir string) {
 	if outDir == "" {
 		return
@@ -29,8 +29,7 @@ func CleanupStageDirs(outDir string) {
 	}
 }
 
-// removeStageDir removes an external extractor's staging directory once the
-// extraction is over. A stage left behind sits inside outDir, which may be
+// removeStageDir removes a staging directory once its extraction is over. A stage left behind sits inside outDir, which may be
 // the job's output, until a later CleanupStageDirs, so a failure is logged.
 func removeStageDir(log *slog.Logger, stageDir string) {
 	if err := removeStageTree(stageDir); err != nil {
@@ -87,14 +86,39 @@ func prepareStageDir(outDir string) (string, error) {
 	return os.MkdirTemp(outDir, unpackStagePrefix+"*")
 }
 
-// publishStagedExtraction atomically renames each completed file from stageDir
-// into outDir after an external extractor (unrar or 7z) exits cleanly, and
-// returns the relative paths of the published files (#768). When
-// opts.OverwriteFiles is false, existing destination files in outDir are
-// preserved and skipped.
+// ExtractStaged runs extract on a fresh staging directory inside outDir and,
+// only when extract returns nil, publishes the files it wrote there into outDir
+// through publishStagedExtraction, returning their paths relative to outDir.
+// The stage is removed on every return, so a failed or abandoned extraction
+// leaves nothing in outDir. A stage a crash leaves behind carries the
+// .gonzbd-tmp-unpack- prefix, so the next CleanupStageDirs of outDir removes it.
 //
-// It enforces the "no links in a job" rule (see rar_links.go) on the
-// external extractors' output: unrar can leave hard links in the stage (and
+// It is for an in-process extraction that writes members through ExtractMember
+// rooted at the stage. With opts.OneFolder and without opts.OverwriteFiles, a
+// file whose name outDir already holds is published under a uniquePath name,
+// the rule ExtractMember applies inside the stage, rather than skipped.
+//
+// A publish that fails part way leaves the files it already renamed in outDir.
+func ExtractStaged(log *slog.Logger, outDir string, opts Options, extract func(stageDir string) error) ([]string, error) {
+	stageDir, err := prepareStageDir(outDir)
+	if err != nil {
+		return nil, err
+	}
+	defer removeStageDir(log, stageDir)
+	if err := extract(stageDir); err != nil {
+		return nil, err
+	}
+	return publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
+}
+
+// publishStagedExtraction atomically renames each completed file from stageDir
+// into outDir after an extraction into the stage has succeeded, and returns
+// the relative paths of the published files (#768). When opts.OverwriteFiles
+// is false, a file whose name outDir already holds is skipped, the existing
+// file preserved — or, with renameTaken, published under a uniquePath name.
+//
+// It enforces the "no links in a job" rule (see rar_links.go) on whatever the
+// extraction left in the stage: unrar can leave hard links there (and
 // symlinks, without -ol-), and 7z can leave symlinks. Only regular files are
 // published. A file with a name outside the stage is not published at all;
 // of several names for one inode, all inside the stage, only the first in
@@ -104,7 +128,7 @@ func prepareStageDir(outDir string) (string, error) {
 // A directory is created in outDir with 0o750 whatever mode the archive
 // stored for it; the stage's own directories are first made owner-writable
 // by ownStageDirs, so their files can be renamed out (#862).
-func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Options) ([]string, error) {
+func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Options, renameTaken bool) ([]string, error) {
 	root, err := os.OpenRoot(outDir)
 	if err != nil {
 		return nil, err
@@ -145,8 +169,15 @@ func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Opt
 			}
 			return err
 		}
+		// uniquePath returns rel itself when rel is free, and when it finds
+		// no free name, so the check below still skips a name it could not
+		// replace.
+		dest := rel
+		if renameTaken && !opts.OverwriteFiles {
+			dest = uniquePath(root, rel)
+		}
 		if !opts.OverwriteFiles {
-			if _, err := root.Lstat(rel); err == nil {
+			if _, err := root.Lstat(dest); err == nil {
 				log.Info("skipping existing file", "path", filepath.Join(outDir, rel))
 				if opts.OnLine != nil {
 					opts.OnLine("Skipping existing: " + rel)
@@ -154,15 +185,15 @@ func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Opt
 				return nil
 			}
 		}
-		if dir := filepath.Dir(rel); dir != "." {
+		if dir := filepath.Dir(dest); dir != "." {
 			if err := root.MkdirAll(dir, 0o750); err != nil {
 				return err
 			}
 		}
-		if err := root.Rename(filepath.Join(stageBase, rel), rel); err != nil {
+		if err := root.Rename(filepath.Join(stageBase, rel), dest); err != nil {
 			return err
 		}
-		published = append(published, rel)
+		published = append(published, dest)
 		return nil
 	})
 	return published, err

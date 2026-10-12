@@ -15,7 +15,24 @@ file internal/app/app.go
 		// hydration or retry that finished it already committed complete = 1
 		// (hydration through its SetComplete verdict; a retry through
 		// verifyRetry's verdict and its retryFileStates row).
+		//
+		// The settle, the peek and the feed above each read the manifest and
+		// do nothing for an evicted job, and the mark is what lets the job
+		// reach Assessing. So a completion that finds the job evicted here is
+		// not marked: one of them may have been skipped. The check reads
+		// residency now, not at each step, so an eviction and a re-hydration
+		// both landing after a step and before it go unseen. MarkFileComplete
+		// itself needs only progress (#868), so an eviction after this check
+		// still takes the mark, behind a settle, peek and feed that ran.
 		if !fc.Resumed {
+			if !j.Resident() {
+				err := fmt.Errorf("job %s: %w", fc.JobID, job.ErrNotResident)
+				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+				return err
+			}
+			if app.residentCheckedHook != nil {
+				app.residentCheckedHook(j)
+			}
 			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
 				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 				return err
@@ -23,11 +40,15 @@ file internal/app/app.go
 			app.markFileDirty(j, fc.FileIdx)
 		}
 --- replace
-		// A resumed completion neither marks the file nor dirties it: the
-		// hydration or retry that finished it already committed complete = 1
-		// (hydration through its SetComplete verdict; a retry through
-		// verifyRetry's verdict and its retryFileStates row).
 		if !fc.Resumed {
+			if !j.Resident() {
+				err := fmt.Errorf("job %s: %w", fc.JobID, job.ErrNotResident)
+				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+				return err
+			}
+			if app.residentCheckedHook != nil {
+				app.residentCheckedHook(j)
+			}
 			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
 				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 				return err

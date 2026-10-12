@@ -63,7 +63,7 @@ func TestStagedSubprocessExtraction(t *testing.T) {
 
 		var logBuf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&logBuf, nil))
-		published, err := publishStagedExtraction(log, outDir, stageDir, Options{OverwriteFiles: false})
+		published, err := publishStagedExtraction(log, outDir, stageDir, Options{OverwriteFiles: false}, false)
 		if err != nil || len(published) != 2 {
 			t.Fatalf("publishStagedExtraction = %v, %v; want 2 files", published, err)
 		}
@@ -78,7 +78,7 @@ func TestStagedSubprocessExtraction(t *testing.T) {
 		published, err = publishStagedExtraction(log, outDir, stageDir, Options{
 			OverwriteFiles: false,
 			OnLine:         func(line string) { lines = append(lines, line) },
-		})
+		}, false)
 		if err != nil || len(published) != 0 {
 			t.Fatalf("publishStagedExtraction(overwrite=false) = %v, %v; want 0", published, err)
 		}
@@ -94,7 +94,7 @@ func TestStagedSubprocessExtraction(t *testing.T) {
 		}
 
 		// OverwriteFiles=true replaces existing movie.mkv.
-		published, err = publishStagedExtraction(log, outDir, stageDir, Options{OverwriteFiles: true})
+		published, err = publishStagedExtraction(log, outDir, stageDir, Options{OverwriteFiles: true}, false)
 		if err != nil || len(published) != 1 {
 			t.Fatalf("publishStagedExtraction(overwrite=true) = %v, %v; want 1", published, err)
 		}
@@ -326,7 +326,7 @@ func TestPublishStagedExtraction_ReadOnlyStagedDir(t *testing.T) {
 		t.Fatalf("chmod open: %v", err)
 	}
 
-	published, err := publishStagedExtraction(slog.New(slog.DiscardHandler), outDir, stageDir, Options{})
+	published, err := publishStagedExtraction(slog.New(slog.DiscardHandler), outDir, stageDir, Options{}, false)
 	if err != nil {
 		t.Fatalf("publishStagedExtraction: %v", err)
 	}
@@ -388,5 +388,89 @@ func TestRemoveStage_ReadOnlyStagedDir(t *testing.T) {
 		makeLockedStage(t, outDir)
 		CleanupStageDirs(outDir)
 		assertNoStageDir(t, outDir)
+	})
+}
+
+// ExtractStaged publishes what extract wrote only when extract succeeds, and
+// removes the stage either way. With OneFolder and without OverwriteFiles a
+// name outDir already holds is published under a uniquePath name; without
+// OneFolder it is skipped, as the external extractors' publish does.
+func TestExtractStaged(t *testing.T) {
+	t.Parallel()
+	log := slog.New(slog.DiscardHandler)
+	write := func(name, body string) func(string) error {
+		return func(stageDir string) error {
+			return os.WriteFile(filepath.Join(stageDir, name), []byte(body), 0o600)
+		}
+	}
+
+	t.Run("a failed extraction publishes nothing", func(t *testing.T) {
+		t.Parallel()
+		outDir := t.TempDir()
+		errExtract := errors.New("member two failed")
+		published, err := ExtractStaged(log, outDir, Options{}, func(stageDir string) error {
+			if err := write("one.mkv", "member one")(stageDir); err != nil {
+				return err
+			}
+			return errExtract
+		})
+		if !errors.Is(err, errExtract) || published != nil {
+			t.Fatalf("ExtractStaged = %v, %v; want nil, %v", published, err, errExtract)
+		}
+		if entries, _ := os.ReadDir(outDir); len(entries) != 0 {
+			t.Errorf("outDir holds %v after a failed extraction, want nothing", entries)
+		}
+	})
+
+	t.Run("a successful extraction is published", func(t *testing.T) {
+		t.Parallel()
+		outDir := t.TempDir()
+		published, err := ExtractStaged(log, outDir, Options{}, write("one.mkv", "member one"))
+		if err != nil || !slices.Equal(published, []string{"one.mkv"}) {
+			t.Fatalf("ExtractStaged = %v, %v; want [one.mkv]", published, err)
+		}
+		if b, err := os.ReadFile(filepath.Join(outDir, "one.mkv")); err != nil || string(b) != "member one" {
+			t.Errorf("one.mkv = %q, %v", b, err)
+		}
+		assertNoStageDir(t, outDir)
+	})
+
+	for _, tc := range []struct {
+		name      string
+		opts      Options
+		published []string
+		taken     string
+	}{
+		{"flat renames a taken name", Options{OneFolder: true}, []string{"one_1.mkv"}, "earlier"},
+		{"not flat skips a taken name", Options{}, nil, "earlier"},
+		{"overwrite replaces a taken name", Options{OneFolder: true, OverwriteFiles: true}, []string{"one.mkv"}, "member one"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			outDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(outDir, "one.mkv"), []byte("earlier"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			published, err := ExtractStaged(log, outDir, tc.opts, write("one.mkv", "member one"))
+			if err != nil || !slices.Equal(published, tc.published) {
+				t.Fatalf("ExtractStaged = %v, %v; want %v", published, err, tc.published)
+			}
+			if b, err := os.ReadFile(filepath.Join(outDir, "one.mkv")); err != nil || string(b) != tc.taken {
+				t.Errorf("one.mkv = %q, %v; want %q", b, err, tc.taken)
+			}
+			assertNoStageDir(t, outDir)
+		})
+	}
+
+	t.Run("a stage that cannot be made is reported", func(t *testing.T) {
+		t.Parallel()
+		called := false
+		_, err := ExtractStaged(log, filepath.Join(t.TempDir(), "missing"), Options{}, func(string) error {
+			called = true
+			return nil
+		})
+		if err == nil || called {
+			t.Fatalf("ExtractStaged into a missing dir = %v, extract called %v; want an error and no call", err, called)
+		}
 	})
 }

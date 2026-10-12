@@ -11,6 +11,7 @@ Re-run that script to regenerate. **Do not edit these files by hand.**
 | `single_rar5.rar` | RAR5 | Two text files + one nested in `subdir/` |
 | `compressed_rar5.rar` | RAR5 (`-m3`) | 6000 deterministic text lines, the only compressed member here; drives the block decoder's worker path |
 | `multi_new.part01-10.rar` | RAR5 multi-volume | 8 KiB of random data split into 1 KiB volumes |
+| `two_members.part1-6.rar` | RAR5 multi-volume, stored | `first.txt` (35 bytes) ends in volume 1; `second.txt` (200 lines of `second member line NNNN`) spans volumes 1-6 |
 | `password_rar5.rar` | RAR5 | Password: `testpass` |
 | `encrypted_header.rar` | RAR5 | Header-encrypted, password: `testpass` |
 | `corrupt.rar` | RAR5 (damaged) | Bytes overwritten at offset 20 |

@@ -348,9 +348,9 @@ into a job. Extraction therefore creates no symlink, junction or hard link, and
 no RAR file reference: each such member is skipped with a log line and an
 `OnLine` "Skipping link: <name>", and the rest of the set is extracted. There
 is no option to turn this off. A link target is the archive author's choice,
-and DirectUnpack extracts into the job directory itself, where a hard link
-could join a downloaded volume to another name so that a write through one
-changes the other.
+and DirectUnpack extracts into a staging directory inside the job directory
+itself, where a hard link could join a downloaded volume to another name so
+that a write through one changes the other.
 
 Where each extractor enforces it:
 
@@ -361,7 +361,9 @@ Where each extractor enforces it:
   lines, the definition and the call, both in `internal/unpack/go_unrar.go`. A RAR5 file reference
   (`rar -oi`) is skipped too: it names its source by path, and resolving that
   path in the job directory could copy a file that is not a member of the set,
-  any number of times.
+  any number of times. DirectUnpack then publishes its staged set through
+  `publishStagedExtraction` (see the external `unrar` and `7z` item below), so its checks
+  apply to its output too.
 - **Pure-Go 7z and tar**: `extractSevenZipEntry` and `GoTar` extract only
   regular files and directories.
 - **External `unrar` and `7z`**: both extract into a private staging directory,
@@ -636,7 +638,16 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    `script <complete_dir> <nzb_name> <job_name> <report_name> <category> <group> <status> <failure_url>`
    and environment variables: `SAB_COMPLETE_DIR`, `SAB_FILENAME`, `SAB_FINAL_NAME`,
    `SAB_CAT`, `SAB_GROUP`, `SAB_PP_STATUS`, `SAB_PP`, `SAB_SCRIPT`, `SAB_VERSION`,
-   `SAB_API_KEY`, `SAB_FINAL_PROCESSING_DIR`, etc. Scripts support `RedactSecrets` (masking `SAB_API_KEY`/`SAB_PASSWORD` as `**REDACTED**`) and `ScriptCanFail` (when true, a non-zero exit code fails the job; default false records the exit without failing the job).
+   `SAB_API_KEY`, `SAB_FINAL_PROCESSING_DIR`, `SAB_FILES`, etc. `SAB_FILES` is a
+   JSON array (`[]` when empty) of the job's regular files as sorted
+   `/`-separated paths relative to `SAB_FINAL_PROCESSING_DIR`. `FinalizeStage`
+   is its single owner: it records the list on the job (`recordOutputFiles`),
+   by walking the job's own folder or, in a flat layout whose directory is
+   shared, from the files it moved; `ScriptStage` only reads it. The record is
+   in memory, so the delivered-recovery branch of `processJob` re-derives it by
+   walking `FinalDir` (per-job layouts only; a flat job in that state fails the
+   pre-check). No recorded list, or an array over `maxFilesEnvBytes`, fails the
+   stage before the script runs. Scripts support `RedactSecrets` (masking `SAB_API_KEY`/`SAB_PASSWORD` as `**REDACTED**`) and `ScriptCanFail` (when true, a non-zero exit code fails the job; default false records the exit without failing the job).
 6. **Log output cap**: Tool output lines (par2, unrar, script stdout) captured in
    `OutputLines` and `StageLogEntry.Lines` are capped at `MaxLogBytes = 512 KiB`
    per script execution to prevent memory exhaustion from verbose tools.

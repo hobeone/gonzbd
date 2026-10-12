@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -34,8 +35,8 @@ func withShortWrite(n int) fileWriterOpt {
 // cannot tell it from a total failure and rolls the article back, which is safe
 // only because of what it does with the article.
 //
-// The load-bearing property is the last two assertions: the article is
-// rolled back, not permanently failed, and routeAcceptFailure returns it to
+// The load-bearing property is the last three assertions: the article is
+// rolled back, not permanently failed, and routeOutcome returns it to
 // OUTSTANDING. A1 forbids a storage fault from
 // resolving an article, so it is coming back. The file therefore cannot reach
 // TotalParts, OnFileComplete cannot fire, and no truncate runs while the
@@ -43,16 +44,20 @@ func withShortWrite(n int) fileWriterOpt {
 // article has either been re-fetched — overwriting the partial bytes at the
 // same offset — or failed through server exhaustion, which writes nothing.
 //
-// Change fail to resolve these permanently and the file can finalize with
-// partial bytes above a bound derived from the other articles' records, which
-// is silent corruption rather than a repairable hole.
+// Resolve a short write Rejected instead of RolledBack and the file can
+// finalize with partial bytes above a bound derived from the other articles'
+// records, which is silent corruption rather than a repairable hole.
 func TestFileWriter_ShortWriteLeavesNoClaimOverPartialBytes(t *testing.T) {
 	w := newTestFileWriter(t, withShortWrite(50))
+	a := newHelperAssembler()
+	var unwritten []int32
+	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) { unwritten = append(unwritten, arts...) }
+	f := &openFile{w: w, info: FileInfo{Dir: filepath.Dir(w.path), Name: filepath.Base(w.path), ExpectedSize: 1000}}
 
-	w.admitAccepted(0)
-	if err := w.accept(articleID{msgID: "a0", artIdx: 0}, 0, bytes.Repeat([]byte{0xAA}, 100)); err == nil {
-		t.Fatal("Accept returned nil error after a short write; the fault must reach the caller")
-	}
+	a.handleSuccessArticle(f, WriteRequest{
+		JobID: "job", FileIdx: 0, ArtIdx: 0, MessageID: "a0",
+		Offset: 0, Data: bytes.Repeat([]byte{0xAA}, 100),
+	})
 
 	onDisk, rerr := os.ReadFile(w.path)
 	if rerr != nil {
@@ -79,5 +84,9 @@ func TestFileWriter_ShortWriteLeavesNoClaimOverPartialBytes(t *testing.T) {
 	}
 	if w.parts() != 0 {
 		t.Errorf("parts = %d, want 0: the rolled-back article gave its part back", w.parts())
+	}
+	if len(unwritten) != 1 || unwritten[0] != 0 {
+		t.Errorf("OnArticlesUnwritten = %v, want [0]: the article is Outstanding again, "+
+			"so its re-fetch overwrites the partial bytes before the file can finalize", unwritten)
 	}
 }

@@ -50,11 +50,15 @@ func newCollisionFixture(t *testing.T) *collisionFixture {
 	return c
 }
 
+// accept drives one article through handleSuccessArticle and reports whether
+// it was counted toward the file's part total.
 func (c *collisionFixture) accept(artIdx int32, msgID string, off int64, data []byte) bool {
-	return c.a.handleSuccessArticle(c.f, WriteRequest{
+	before := c.f.w.parts()
+	c.a.handleSuccessArticle(c.f, WriteRequest{
 		JobID: "job", FileIdx: 0, ArtIdx: artIdx, MessageID: msgID,
 		Offset: off, Data: data,
 	})
+	return c.f.w.parts() > before
 }
 
 // TestCollision_ArrivalRejectedOnceIncumbentIsWritten is the #383 pin: an
@@ -165,41 +169,43 @@ func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
 // a re-accept by its own owner whose write then FAILS: the owner keeps the
 // range it wrote, so the next article to claim it is still refused.
 //
-// seenDone is keyed on ArtIdx, so handleSuccessArticle's dedup arm recognises a
-// PLAIN redelivery and returns before acceptArticle is called, which is why this
-// calls acceptArticle directly. The first rollback, a direct call to fail,
-// models a failed sync rolling the article back (rollbackSyncedArticle calls
-// fail): fail deletes the seenDone entry and never sets seenFailed, so the
-// redelivery reaches a second accept. That second accept's write is the one
-// that faults.
+// seenDone is keyed on ArtIdx, so admit answers "duplicate" for a PLAIN
+// redelivery and handleSuccessArticle returns before acceptArticle is called,
+// which is why this calls acceptArticle directly. The first roll-back, a
+// direct resolve, models a failed sync rolling the article back
+// (rollbackSyncedArticle resolves RolledBack): it deletes the seenDone entry
+// and never sets seenFailed, so the redelivery reaches a second accept. That
+// second accept's write is the one that faults.
 func TestCollision_FailedReacceptKeepsTheWrittenRange(t *testing.T) {
 	c := newCollisionFixture(t)
 	id := articleID{msgID: "<first@x>", artIdx: 1}
 	req := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "<first@x>", Offset: 0}
 
-	c.f.w.admitAccepted(id.artIdx)
+	c.f.w.admit(id.artIdx)
 	req.Data = []byte("AAAA")
-	if err := c.a.acceptArticle(c.f, id, req); err != nil {
-		t.Fatalf("accept incumbent: %v", err)
+	if o := c.a.acceptArticle(c.f, id, req); o.disposition != dispositionWritten {
+		t.Fatalf("accept incumbent: %s (%v)", o.disposition, o.fault)
 	}
+	c.f.w.resolve(id.artIdx, dispositionWritten)
 	if owner, owned := c.f.w.owned.ownerOf(Range{0, 4}, articleID{artIdx: 99}); !owned || owner != id {
 		t.Fatalf("precondition: ownerOf = %+v, %v; want the incumbent", owner, owned)
 	}
 
-	c.f.w.fail(id)
-	c.f.w.admitAccepted(id.artIdx)
+	c.f.w.resolve(id.artIdx, dispositionRolledBack)
+	c.f.w.admit(id.artIdx)
 	c.f.w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
 	req.Data = []byte("AAAA")
-	if err := c.a.acceptArticle(c.f, id, req); err == nil {
-		t.Fatal("precondition: the injected write fault did not surface")
+	if o := c.a.acceptArticle(c.f, id, req); o.disposition != dispositionRolledBack {
+		t.Fatalf("precondition: the injected write fault did not surface; got %s", o.disposition)
 	}
+	c.f.w.resolve(id.artIdx, dispositionRolledBack)
 
 	second := articleID{msgID: "<second@x>", artIdx: 2}
 	req2 := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "<second@x>", Offset: 0, Data: []byte("BBBB")}
-	c.f.w.admitAccepted(second.artIdx)
-	if err := c.a.acceptArticle(c.f, second, req2); err != nil {
-		c.a.routeAcceptFailure(c.f, req2, err)
-	}
+	c.f.w.admit(second.artIdx)
+	o := c.a.acceptArticle(c.f, second, req2)
+	c.f.w.resolve(second.artIdx, o.disposition)
+	c.a.routeOutcome(c.f, req2, o)
 
 	if len(c.rejected) != 1 || c.rejected[0] != 2 {
 		t.Errorf("OnArticleRejected = %v, want [2] — the failed re-accept released the "+
@@ -224,17 +230,18 @@ func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
 	id := articleID{msgID: "retried", artIdx: 7}
 
 	w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
-	w.admitAccepted(id.artIdx)
+	w.admit(id.artIdx)
 	if err := w.accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err == nil {
 		t.Fatal("precondition: the injected write fault did not surface")
 	}
+	w.resolve(id.artIdx, dispositionRolledBack)
 	if w.parts() != 0 {
 		t.Fatalf("precondition: parts = %d after the rollback, want 0", w.parts())
 	}
 
 	// The re-dispatched copy, at the same offset.
 	w.writeAt = func(p []byte, _ int64) (int, error) { return len(p), nil }
-	w.admitAccepted(id.artIdx)
+	w.admit(id.artIdx)
 	if err := w.accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
 		t.Fatalf("re-accept: %v", err)
 	}
@@ -258,10 +265,11 @@ func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 
 	realWrite := w.writeAt
 	w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
-	w.admitAccepted(first.artIdx)
+	w.admit(first.artIdx)
 	if err := w.accept(first, 0, []byte("AAAA")); err == nil {
 		t.Fatal("precondition: the injected write fault did not surface")
 	}
+	w.resolve(first.artIdx, dispositionRolledBack)
 	if w.parts() != 0 {
 		t.Fatalf("parts = %d after the rollback, want 0", w.parts())
 	}
@@ -273,7 +281,7 @@ func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 	}
 
 	w.writeAt = realWrite
-	w.admitAccepted(second.artIdx)
+	w.admit(second.artIdx)
 	if err := w.accept(second, 0, []byte("BBBB")); err != nil {
 		t.Fatalf("accept second: %v", err)
 	}

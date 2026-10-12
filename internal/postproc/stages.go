@@ -7,6 +7,7 @@ package postproc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -174,6 +175,18 @@ type Job struct {
 	// FinalDir is computed:
 	// `git grep -n '[F]latLayout:' -- '*.go' ':!*_test.go'` finds 1 line.
 	FlatLayout bool
+
+	// outputFiles is the job's file list exported to scripts as SAB_FILES:
+	// sorted, slash-separated paths relative to DownloadDir as the script
+	// stage sees it. outputFilesErr is set instead when finalize could not
+	// produce one. They are assigned only inside recordOutputFiles and
+	// recordOutputFilesErr (`git grep -n 'j\.outputFiles[A-Za-z]* = ' -- '*.go' ':!*_test.go'`
+	// finds 6 lines, all in stage_finalize.go) and read by outputFileList;
+	// neither is persisted, so a job reloaded after a restart has neither
+	// (see the delivered-recovery branch in postproc.go).
+	outputFiles    []string
+	outputFilesSet bool
+	outputFilesErr error
 
 	// Sanitize defines the naming replacement options for this job.
 	Sanitize fsutil.SanitizeOptions
@@ -369,6 +382,19 @@ func (j *Job) isPendingDeletion(path string) bool {
 	}
 	rel, ok := j.pendingDeletionRel(path)
 	return ok && slices.Contains(j.PendingDeletions, rel)
+}
+
+// outputFileList returns the list finalize recorded, or the error it recorded
+// instead. A job finalize never ran for has neither, which is an error here
+// rather than an empty list: an exported [] must mean "no files".
+func (j *Job) outputFileList() ([]string, error) {
+	switch {
+	case j.outputFilesErr != nil:
+		return nil, j.outputFilesErr
+	case !j.outputFilesSet:
+		return nil, errors.New("no file list was recorded for the job (finalize did not run)")
+	}
+	return j.outputFiles, nil
 }
 
 // pendingDeletionSet returns a set of the relative paths in PendingDeletions,

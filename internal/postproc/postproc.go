@@ -608,6 +608,11 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 					"final_dir", job.FinalDir,
 				)
 				job.DownloadDir = job.FinalDir
+				// The skipped finalize stage recorded the script's file
+				// list in a run that is gone; re-derive it the way
+				// finalize does for a per-job directory. A flat category
+				// never reaches here (alreadyDelivered is false for it).
+				recordWalkedOutputFiles(job)
 				stages = stagesAfterFinalize(stages)
 				sweepTempFiles(p.log, job.DownloadDir)
 			} else {

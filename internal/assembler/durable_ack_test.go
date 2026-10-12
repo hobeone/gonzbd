@@ -18,25 +18,25 @@ import (
 // TestFailedWrites_RetryIsWrittenNotDiscarded pins the half of the failure
 // path that is not an ack, end to end.
 //
-// seenDone means "accepted and counted toward TotalParts". A failed write
-// calls w.fail, which deletes from seenDone. The delete is the load-bearing
-// half: without it handleSuccessArticle's duplicate branch discards the retry
-// (assembler.go, the `if _, dup := w.seenDone[...]` arm) instead of writing it,
-// so articles whose writes hit ENOSPC leave the file permanently short, never
-// acked and never failed. Silent without par2.
+// seenDone means "admitted and counted toward TotalParts". A failed write is
+// resolved RolledBack, which deletes from seenDone. The delete is the
+// load-bearing half: without it admit answers "duplicate" for the retry and
+// handleSuccessArticle discards it instead of writing it, so articles whose
+// writes hit ENOSPC leave the file permanently short, never acked and never
+// failed. Silent without par2.
 //
 // # Why this test drives the Assembler and not the fileWriter
 //
 // It replaces a version that called w.accept on a bare fileWriter and asserted
 // len(w.seenDone) == 0. That assertion held UNCONDITIONALLY: seenDone is only
-// ever written by handleSuccessArticle, so a bare writer's map is empty no
-// matter what fail() does. Deleting the seenDone clear left the whole suite
-// green. Reaching the map at all requires the real Assembler path.
+// ever written through admit, so a bare writer's map is empty no matter what
+// the roll-back does. Deleting the seenDone clear left the whole suite green.
+// Reaching the map at all requires the real Assembler path.
 //
 // The assertion is also deliberately the BYTES, not the maps. Asserting
-// "seenDone is empty" re-tests fail() against itself; asserting that a retry
-// actually lands on disk is the property the maps exist to produce, and it is
-// what fails when the clear is dropped.
+// "seenDone is empty" re-tests the roll-back against itself; asserting that a
+// retry actually lands on disk is the property the maps exist to produce, and
+// it is what fails when the clear is dropped.
 func TestFailedWrites_RetryIsWrittenNotDiscarded(t *testing.T) {
 	const (
 		artCount = 6
@@ -151,7 +151,8 @@ func TestDuplicateSuccessIsNotReAcked(t *testing.T) {
 	f := newHelperFile(t, dir, "dup.dat", 0)
 
 	req := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first copy")}
-	if !a.handleSuccessArticle(f, req) {
+	a.handleSuccessArticle(f, req)
+	if f.w.parts() != 1 {
 		t.Fatal("first copy was not accepted")
 	}
 	if got := f.w.unsynced; len(got) != 1 {
@@ -159,7 +160,8 @@ func TestDuplicateSuccessIsNotReAcked(t *testing.T) {
 	}
 
 	dup := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("second copy")}
-	if a.handleSuccessArticle(f, dup) {
+	a.handleSuccessArticle(f, dup)
+	if f.w.parts() != 1 {
 		t.Error("a duplicate must not be counted toward TotalParts")
 	}
 
@@ -180,13 +182,15 @@ func TestDuplicateAtADifferentOffsetIsNotReAcked(t *testing.T) {
 	f := newHelperFile(t, dir, "dupoffset.dat", 0)
 
 	req := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first copy")}
-	if !a.handleSuccessArticle(f, req) {
+	a.handleSuccessArticle(f, req)
+	if f.w.parts() != 1 {
 		t.Fatal("first copy was not accepted")
 	}
 
 	// Same Message-ID, different offset, after the first copy was written.
 	dup := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 4096, Data: []byte("same article, other offset")}
-	if a.handleSuccessArticle(f, dup) {
+	a.handleSuccessArticle(f, dup)
+	if f.w.parts() != 1 {
 		t.Error("a duplicate must not be counted toward TotalParts")
 	}
 
@@ -212,25 +216,26 @@ func TestZeroLengthArticleIsReportedWritten(t *testing.T) {
 
 // TestRetryAfterFailedWriteLandsOnDisk translates
 // TestFailArticleMovesTheArticleOutOfSeenDone. The dedup lives in
-// handleSuccessArticle, keyed on the fileWriter's seenDone/seenFailed maps.
-// A write failure must move the article out of seenDone so its retry is not
-// silently discarded as an already-accepted duplicate — it has no bytes on
-// disk to be a duplicate of.
+// fileWriter.admit, keyed on the writer's seenDone map. A write failure must
+// move the article out of seenDone so its retry is not silently discarded as
+// an already-accepted duplicate — it has no bytes on disk to be a duplicate
+// of.
 func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 	a := newHelperAssembler()
 	dir := t.TempDir()
 	f := newHelperFile(t, dir, "retry.dat", 0)
 
 	req := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("first")}
-	if !a.handleSuccessArticle(f, req) {
+	a.handleSuccessArticle(f, req)
+	if f.w.parts() != 1 {
 		t.Fatal("article was not accepted")
 	}
 	if _, ok := f.w.seenDone[0]; !ok {
 		t.Fatal("precondition: accepting the article should record it in seenDone")
 	}
 
-	// Force the write to fail directly, mirroring what a storage fault does.
-	f.w.fail(articleID{msgID: "msg0", artIdx: 0})
+	// Roll the article back directly, as a failed sync does.
+	f.w.resolve(0, dispositionRolledBack)
 	if _, stillDone := f.w.seenDone[0]; stillDone {
 		t.Error("the failed article is still in seenDone; its retry would take " +
 			"the discard branch and never be written")
@@ -244,11 +249,12 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 	// The consequence the move exists for: the retry's bytes reach the file.
 	//
 	// It IS counted again, because the roll-back above gave the count back —
-	// see fileWriter.fail, which applies the give-back in the same statement
+	// resolve's RolledBack arm applies the give-back in the same statement
 	// pair that clears seenDone. Counting an article whose bytes are not on
 	// disk is what let a file reach TotalParts and finalize over them.
 	retry := WriteRequest{JobID: "job", MessageID: "msg0", ArtIdx: 0, Offset: 0, Data: []byte("retry")}
-	if !a.handleSuccessArticle(f, retry) {
+	a.handleSuccessArticle(f, retry)
+	if f.w.parts() != 1 {
 		t.Error("the retry was not counted toward TotalParts, so the file can never " +
 			"reach it: its count was given back when the first attempt was rolled back")
 	}
@@ -264,13 +270,10 @@ func TestRetryAfterFailedWriteLandsOnDisk(t *testing.T) {
 
 // The test that stood here, TestFailToleratesAnEmptyMessageID, translated
 // TestFailArticleWithoutAMessageIDStillAcks and has been folded into
-// accounting_test.go's TestFileWriter_FailRollsBackEveryArticlesPart, whose
-// table already runs the empty-Message-ID identity alongside a real one. Its
-// one distinct assertion — that fail leaves seenFailed alone — moved with it.
-//
-// The claim it made about seenFailed was also too strong. fail does not write
-// seenFailed, but it is not the case that only admitPermanentFailure does:
-// failPermanent records there too.
+// accounting_test.go's TestFileWriter_RolledBackKeepsNoIdentityDependentPath,
+// whose table runs the empty-Message-ID identity alongside a real one. Its
+// one distinct assertion — that a roll-back leaves seenFailed alone — moved
+// with it.
 
 // TestFatalAfterAWrittenArticleCannotRetractIt pins that a FatalErr arriving
 // after an article's bytes have landed does not undo them: the assembler has one
@@ -346,7 +349,7 @@ func TestSync_ActuallyIssuesTheFsync(t *testing.T) {
 		return nil
 	}
 
-	w.admitAccepted(0)
+	w.admit(0)
 	if err := w.accept(articleID{msgID: "m0", artIdx: 0}, 0, []byte("hello")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
@@ -372,7 +375,7 @@ func TestSync_ActuallyIssuesTheFsync(t *testing.T) {
 	// it returns to Outstanding (#760): Linux reports a writeback error once
 	// and marks the failed pages clean, so nothing written before it can be
 	// trusted.
-	w.admitAccepted(1)
+	w.admit(1)
 	if err := w.accept(articleID{msgID: "m1", artIdx: 1}, 5, []byte("world")); err != nil {
 		t.Fatalf("Accept: %v", err)
 	}

@@ -1,6 +1,7 @@
 package assembler
 
 import (
+	"fmt"
 	"os"
 	"slices"
 
@@ -30,6 +31,64 @@ type articleID struct {
 // give the assembler a second, finer notion of sameness than the one its
 // accounting uses, and the two could disagree.
 func (a articleID) sameArticle(b articleID) bool { return a.artIdx == b.artIdx }
+
+// disposition is how an article leaves the writer's accounting: the one value
+// resolve dispatches on, so that every exit is a named arm of one switch and
+// an exit nobody named is a panic rather than a fallthrough.
+//
+// The zero value is deliberately not a disposition. An outcome built without
+// one reaches resolve as zero and is refused there (R28), which is what makes
+// "left in flight with no disposition" loud at the first test that walks the
+// path, instead of a silent undercount discovered at TotalParts.
+type disposition uint8
+
+const (
+	// dispositionWritten: the article's bytes reached WriteAt without error.
+	// The admission stands — seenDone kept, the part kept — and the article
+	// waits in unsynced for the fsync that covers it.
+	dispositionWritten disposition = iota + 1
+
+	// dispositionRejected: this package refused the article's bytes because
+	// of the article — an out-of-range offset, or a range another article
+	// already wrote. It is resolved permanently failed (OnArticleRejected) and
+	// will not arrive again, so it keeps the part its admission charged and
+	// moves from seenDone to seenFailed. Keeping the part claims nothing
+	// about its bytes: it owns no range, so the completion trim (finish,
+	// bounded by ownedRanges.maxEnd) never reaches past it on its account.
+	dispositionRejected
+
+	// dispositionFetchFailed: the downloader could not fetch the article
+	// (WriteRequest.FatalErr). It never enters the write path and is never
+	// admitted, so this is the one disposition with no admission to resolve:
+	// it charges a part unless the article already holds one, and records
+	// seenFailed. A copy already in seenDone keeps it: the bytes that landed
+	// are not retracted by a later failure to fetch them again.
+	dispositionFetchFailed
+
+	// dispositionRolledBack: storage failed — the article's write, or the
+	// fsync that was to cover it. A storage fault says nothing about the
+	// article (A1), so it is rolled back to never-having-arrived: seenDone
+	// cleared, the part given back if the admission charged one, seenFailed
+	// untouched. The caller returns it to Outstanding.
+	dispositionRolledBack
+)
+
+// String names the disposition for the panic resolve raises on one it does
+// not know. Every other reader switches on the value.
+func (d disposition) String() string {
+	switch d {
+	case dispositionWritten:
+		return "written"
+	case dispositionRejected:
+		return "rejected"
+	case dispositionFetchFailed:
+		return "fetch-failed"
+	case dispositionRolledBack:
+		return "rolled-back"
+	default:
+		return fmt.Sprintf("disposition(%d)", uint8(d))
+	}
+}
 
 // fileWriter owns one target file: its handle and its write path. It has no
 // authority over anything externally visible.
@@ -63,10 +122,20 @@ type fileWriter struct {
 	// omit the Message-ID, but never the index — so every article has a key
 	// these maps can hold, and there is no empty-key class to guard against.
 	//
-	// Both are membership-only: handleSuccessArticle's duplicate arm releases
-	// the second copy's buffer and returns, because either way its bytes are
-	// redundant and re-writing them would be a second WriteAt over the same
-	// range.
+	// Both are membership-only: admit's duplicate answer releases the second
+	// copy's buffer at the caller, because either way its bytes are redundant
+	// and re-writing them would be a second WriteAt over the same range.
+	//
+	// seenDone is also the record of admission: an article is in it from
+	// admit until resolve moves it out (Rejected, RolledBack) or leaves it
+	// (Written, FetchFailed). resolve refuses a Written, Rejected or
+	// RolledBack for an article not in it, which is how resolving an article
+	// twice, or one nobody admitted, fails loudly.
+	//
+	// Read and written only here: `git grep -n -E 'w\.seen(Done|Failed)' --
+	// 'internal/assembler/*.go' ':!*_test.go'` returns 10 lines, all in this
+	// file, inside holdsPart, admit and resolve.
+	// TestFileWriterAccounting_HasOneOwner enumerates the functions.
 	seenDone   map[int32]struct{}
 	seenFailed map[int32]struct{}
 
@@ -91,16 +160,16 @@ type fileWriter struct {
 	// partsWritten counts how many of the file's parts have been accounted
 	// for, whether by a successful accept or by a permanent failure.
 	//
-	// It lives here rather than on openFile because it is DERIVED from
-	// seenDone and seenFailed — it is their combined size. Kept one struct
-	// away from its source and maintained by four external call sites, every
-	// defect it produced was the same one: the count and the record moved at
-	// different moments, and something in between observed the disagreement.
+	// It is DERIVED from seenDone and seenFailed: it equals the size of their
+	// union, and TestFileWriter_PartsIsTheSizeOfTheUnion walks every
+	// transition checking that. Kept one struct away from its source and
+	// maintained by four external call sites, every defect it produced was
+	// the same one: the count and the record moved at different moments, and
+	// something in between observed the disagreement.
 	//
 	// Recomputing it on demand would be O(n) per article, so it stays a cached
-	// aggregate. What changes is that only this file may move it, and each
-	// mover applies a complete transition — admitAccepted, admitRetryOfFailed,
-	// admitPermanentFailure, fail — so a partial application is not
+	// aggregate. What changes is that only admit and resolve may move it,
+	// and each applies a complete transition, so a partial application is not
 	// expressible rather than merely not written.
 	partsWritten int
 
@@ -153,108 +222,117 @@ func (w *fileWriter) noteWritten(id articleID) {
 	w.unsynced = append(w.unsynced, id.artIdx)
 }
 
-// rollbackPart undoes the part and seen-set state an admitted article holds,
-// without deciding what becomes of the article. The caller owns that.
-//
-// fail is its one caller —
-// `git grep -n 'w\.rollbackPart(' -- 'internal/assembler/*.go' ':!*_test.go'`
-// returns 1 line, in fail.
-func (w *fileWriter) rollbackPart(artIdx int32) {
-	_, wasDone := w.seenDone[artIdx]
-	_, wasFailed := w.seenFailed[artIdx]
-	delete(w.seenDone, artIdx)
-	// An article already counted as permanently FAILED keeps its count:
-	// admitPermanentFailure counted it, and a later retry whose write fails
-	// must not decrement what a different code path added. Only an article
-	// counted as WRITTEN loses its count here.
-	if wasDone && !wasFailed && w.partsWritten > 0 {
-		w.partsWritten--
-	}
-}
-
-// fail rolls one article back to never-having-arrived after its write failed.
-//
-// It clears seenDone and gives the article's part back, and does NOT set
-// seenFailed. A failed WRITE is a storage condition, and A1 forbids resolving
-// it against the article: the bytes are still available on the server and the
-// article is still wanted. Recording it as failed made a redelivery take the
-// "retry of an article already counted as failed" branch, which writes the
-// bytes but does not count them, so the file's part total was permanently one
-// short of the truth for every rolled-back article.
-//
-// Returning the article to Outstanding is the caller's: its Emitted bit is
-// still set from dispatch and ForEachUnfinishedArticle skips a set Emitted
-// bit, so an article merely dropped here is stranded. fail has two callers —
-// `git grep -n '\.fail(' -- 'internal/assembler/*.go' ':!*_test.go'` finds 3 lines,
-// this comment and the calls in writeOne and rollbackSyncedArticle. After
-// writeOne, the one article is the one whose accept returned the error, and
-// routeAcceptFailure reports it; after rollbackSyncedArticle, it is in
-// w.poisoned and releasePoisoned reports it.
-func (w *fileWriter) fail(id articleID) {
-	w.rollbackPart(id.artIdx)
-}
-
 // parts reports how many of the file's parts have been accounted for. The
 // caller compares it to FileInfo.TotalParts to decide the file is complete.
 func (w *fileWriter) parts() int { return w.partsWritten }
 
-// admitAccepted takes an article on as a part of this file, before its bytes
-// are handed to accept.
+// holdsPart reports whether the article is counted toward the file's part
+// total — accepted, resolved permanently failed, or both.
+//
+// It is the question handleLateDuplicate asks before reporting a redelivery
+// for a finished file: an article this writer accounted for is resolved and
+// is dropped, and one it never saw is owed a disposition.
+func (w *fileWriter) holdsPart(artIdx int32) bool {
+	if _, done := w.seenDone[artIdx]; done {
+		return true
+	}
+	_, failed := w.seenFailed[artIdx]
+	return failed
+}
+
+// admit takes an article on as a part of this file, before its bytes are
+// handed to accept, and reports whether it did. False means the article is a
+// duplicate of one already accepted: its first copy is written or in flight,
+// so this copy's bytes are redundant and the caller releases them.
 //
 // The seenDone record and the count are applied together, and that pairing is
-// the point of the method. fail decides whether to give a part back by asking
-// whether the article is in seenDone, so seenDone is the de facto record of
-// "this article holds a part". While the two lived at separate call sites the
-// count could be applied after a write that had already rolled it back, and
-// every transient accept-time write fault undercounted the file by one,
-// permanently, putting partsWritten >= TotalParts out of reach.
-func (w *fileWriter) admitAccepted(artIdx int32) {
-	w.seenDone[artIdx] = struct{}{}
-	w.partsWritten++
-}
-
-// admitRetryOfFailed records a redelivery of an article already counted as
-// permanently failed, WITHOUT counting it again.
+// the point of the method. resolve decides whether a RolledBack gives a part
+// back by asking whether the article is in seenDone, so seenDone is the de
+// facto record of "this article holds a part". While the two lived at
+// separate call sites the count could be applied after a write that had
+// already rolled it back, and every transient accept-time write fault
+// undercounted the file by one, permanently, putting
+// partsWritten >= TotalParts out of reach.
 //
-// Its bytes are still written, because they are still the file's content, but
-// the part was charged when the article was failed and charging it twice would
-// carry the file past TotalParts.
-func (w *fileWriter) admitRetryOfFailed(artIdx int32) {
-	w.seenDone[artIdx] = struct{}{}
-}
-
-// admitPermanentFailure counts a permanently failed article toward the file's
-// part total, and reports whether it was newly admitted.
-//
-// It records no ack. A permanent failure is the queue's to record via
-// Job.MarkArticleFailed (R10). What is left here is the dedup that keeps
-// partsWritten from overshooting TotalParts, which is purely local
-// bookkeeping.
-func (w *fileWriter) admitPermanentFailure(artIdx int32) bool {
-	if _, dup := w.seenFailed[artIdx]; dup {
+// Whether the admission charges a part is the writer's to decide, not the
+// caller's: an article already counted as permanently failed is admitted so
+// its bytes are written — they are still the file's content — but the part
+// was charged when it was failed, and charging it twice would carry the file
+// past TotalParts.
+func (w *fileWriter) admit(artIdx int32) bool {
+	if _, dup := w.seenDone[artIdx]; dup {
 		return false
 	}
-	_, alreadyCounted := w.seenDone[artIdx]
-	w.seenFailed[artIdx] = struct{}{}
-	// An article already counted as a success must not increment the part
-	// total a second time.
-	if alreadyCounted {
-		return false
+	if !w.holdsPart(artIdx) {
+		w.partsWritten++
 	}
-	w.partsWritten++
+	w.seenDone[artIdx] = struct{}{}
 	return true
 }
 
-// failPermanent records an article this package will never write, keeping its
-// count toward the file's part total.
+// resolve is the one exit from the writer's accounting: it applies the
+// transition d names for one article, and nothing else moves seenDone,
+// seenFailed or partsWritten (see the field comments). Three callers reach
+// it — `git grep -n 'w\.resolve(' -- 'internal/assembler/*.go' ':!*_test.go'`
+// returns 3 lines: handleSuccessArticle, for the outcome of an admitted
+// article's write; handleFatalArticle, for a FetchFailed; and
+// rollbackSyncedArticle, for a Written article a failed sync disowned.
 //
-// The article is resolved elsewhere — Options.OnArticleRejected carries it to
-// the queue — so it will not arrive again, and a file that stopped counting it
-// could never reach TotalParts. That is the opposite of fail's case, where the
-// article is coming back.
-func (w *fileWriter) failPermanent(artIdx int32) {
-	delete(w.seenDone, artIdx)
-	w.seenFailed[artIdx] = struct{}{}
+// Written, Rejected and RolledBack resolve an admission, so they require the
+// article to be in seenDone and panic otherwise: an article nobody admitted
+// has no part to settle, and one already resolved out (Rejected or
+// RolledBack cleared its entry) would be getting a second disposition. That
+// panic is an invariant violation failing loudly (R28), never a condition
+// production reaches — every production caller admits first, and a Written
+// article stays in seenDone until the one failed sync that rolls it back.
+//
+// FetchFailed has no admission to resolve, since a fatal article never enters
+// the write path, and a second copy of one is ordinary duplicate delivery
+// (R12) rather than a programming error, so it is total: a duplicate changes
+// nothing.
+//
+// The accounting each arm applies is the whole of the arm. The caller does
+// not choose it and cannot apply half of it.
+func (w *fileWriter) resolve(artIdx int32, d disposition) {
+	_, wasDone := w.seenDone[artIdx]
+	_, wasFailed := w.seenFailed[artIdx]
+	if d != dispositionFetchFailed && !wasDone {
+		panic(fmt.Sprintf("assembler: article %d resolved %s without being admitted, or resolved twice", artIdx, d))
+	}
+	switch d {
+	case dispositionWritten:
+		// The admission stands: seenDone kept, the part kept. The article is
+		// noted for sync by writeOne, below the WriteAt that landed it.
+	case dispositionRejected:
+		// Keeps its part: the article is resolved permanently failed through
+		// OnArticleRejected and will not arrive again, so a file that stopped
+		// counting it could never reach TotalParts. The part was charged by
+		// admit, or earlier by a FetchFailed if this was a retry of one.
+		delete(w.seenDone, artIdx)
+		w.seenFailed[artIdx] = struct{}{}
+	case dispositionFetchFailed:
+		// A part is charged only for an article holding none: a copy already
+		// written, or already failed, was counted when it arrived.
+		if !wasDone && !wasFailed {
+			w.partsWritten++
+		}
+		w.seenFailed[artIdx] = struct{}{}
+	case dispositionRolledBack:
+		// An article already counted as permanently FAILED keeps its count:
+		// FetchFailed charged it, and a retry whose write fails must not
+		// decrement what a different disposition added. Only an article
+		// counted by its admission loses its count here. seenFailed is left
+		// alone: a storage fault says nothing about the article (A1), and
+		// recording it failed made a redelivery take the retry-of-failed
+		// path, which writes the bytes but does not count them, so the file's
+		// part total was permanently one short for every rolled-back article.
+		delete(w.seenDone, artIdx)
+		if !wasFailed {
+			w.partsWritten--
+		}
+	default:
+		panic(fmt.Sprintf("assembler: article %d resolved with %s, which is not a disposition", artIdx, d))
+	}
 }
 
 // takePoisoned returns and clears the articles a failed sync rolled back since
@@ -277,10 +355,10 @@ func (w *fileWriter) takePoisoned() []int32 {
 // A returned error is always a *storagefault.Fault. It reports that STORAGE
 // failed, never that the article did (A1, R19).
 //
-// The caller must not discard it. Dropping it neither stalls the job nor
-// returns the article to Outstanding (its Emitted bit stays set; see fail's
-// doc), and the file goes on to complete over bytes
-// that never landed.
+// It applies no accounting. The caller resolves the article RolledBack on an
+// error and Written on nil; dropping the error neither stalls the job nor
+// returns the article to Outstanding (its Emitted bit stays set), and the
+// file goes on to complete over bytes that never landed.
 func (w *fileWriter) accept(id articleID, off int64, data []byte) error {
 	return w.writeOne(id, off, data)
 }
@@ -295,7 +373,6 @@ func (w *fileWriter) writeOne(id articleID, off int64, data []byte) error {
 	}
 	if err != nil {
 		telemetry.PipelineErrors.Add(telemetry.ErrClassDiskWriteError, 1)
-		w.fail(id)
 		return storagefault.Classify("write", w.path, err)
 	}
 	w.owned.claim(Range{Off: off, Len: int64(len(data))}, id)
@@ -339,7 +416,7 @@ func (w *fileWriter) rollbackSyncedArticle(artIdx int32) {
 	if slices.Contains(w.poisoned, artIdx) {
 		return
 	}
-	w.fail(articleID{artIdx: artIdx})
+	w.resolve(artIdx, dispositionRolledBack)
 	w.poisoned = append(w.poisoned, artIdx)
 }
 

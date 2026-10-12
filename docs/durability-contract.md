@@ -782,7 +782,7 @@ incomplete (#349, #387).
 
 | Event | Behaviour |
 |---|---|
-| Write fault | The part rolls back (`fileWriter.fail`), `OnArticlesUnwritten` clears the article's Emitted bit, `OnWriteFault` → Stall or Fail. No row is written. |
+| Write fault | The article is resolved `RolledBack` (`fileWriter.resolve`) and its part rolls back, `OnArticlesUnwritten` clears its Emitted bit, `OnWriteFault` → Stall or Fail. No row is written. |
 | Completion fault | §4: untrusted, no tombstone, `FileInfo` dropped, Stall or Fail. On resume the file's articles are Outstanding and are refetched. |
 | Pause, low disk, server penalty | Nothing writes the record; no hook. |
 | Reload (`ReloadDownloader`) | Stop the old downloader; `setCompletions(nil)`, which returns once every buffered result has reached the assembler's queue; `Assembler.Quiesce`, answered once everything queued ahead of it has been processed and its callbacks have run; `ClearEmittedForReload(false)` for every job not admitted to post-processing; start the new downloader, paused first if the application is paused, and swap it in, both under `app.mu`. An Emitted bit still set after the quiesce covers only an article whose bytes never reached `pwrite`. If the quiesce fails, the clear is skipped and those articles stay Emitted until the next start. |
@@ -972,8 +972,9 @@ startup for logging; it does not gate pre-allocation.
 Every accepted article is written synchronously: `acceptArticle` range-checks
 it and checks its owned range (§5), and `fileWriter.accept` calls `writeOne`,
 which issues one `WriteAt` and, only if it returned without error, claims the
-range and notes the article in `unsynced`. `acceptArticle` then calls
-`OnArticleWritten` with the range and the decoder's CRC. There is no
+range and notes the article in `unsynced`. `handleSuccessArticle` then
+resolves the article `Written` and `routeOutcome` calls `OnArticleWritten`
+with the range and the decoder's CRC. There is no
 assembler-side buffering of decoded articles, no coalescing and no
 memory-pressure flush (`git grep -n 'writeOne(' -- internal ':!*_test.go'`
 finds 2 lines: the definition and its one call, in `accept`).
@@ -995,22 +996,38 @@ including every failure path.
 ## Duplicate and late-article handling
 
 - **Per-writer `seenDone` / `seenFailed`**: dedup by `ArtIdx`, membership-only
-  (R12). A duplicate of an accepted article releases its buffer and returns;
-  re-writing it would be a second `WriteAt` over the same range. Byte ranges
-  are owned by `fileWriter.owned`, a different index for a different question:
-  not "has this article been seen" but "who wrote this byte range" (§5).
-- A write that **fails** moves its article out of `seenDone`, gives its part
-  back (`rollbackPart`, which `fail` calls) and does **not** put it in
-  `seenFailed`: a storage fault says nothing about the article (A1), and
-  recording it failed made its redelivery take the already-counted-as-failed
-  branch, leaving the file's part total permanently short. Its Emitted bit is
-  cleared by `OnArticlesUnwritten`, not by the writer — `ForEachUnfinishedArticle`
-  skips a set Emitted bit, so the route is what makes it Outstanding.
+  (R12). A duplicate of an accepted article is refused by `fileWriter.admit`;
+  the caller releases its buffer and returns, since re-writing it would be a
+  second `WriteAt` over the same range. Byte ranges are owned by
+  `fileWriter.owned`, a different index for a different question: not "has
+  this article been seen" but "who wrote this byte range" (§5).
+- **One entry, one exit.** `admit` is the only way an article takes on a part,
+  and `resolve(artIdx, disposition)` the only way its accounting settles, with
+  one arm per disposition: `Written` (the admission stands), `Rejected` (the
+  part kept, `seenDone` → `seenFailed`), `FetchFailed` (a part charged unless
+  the article holds one, `seenFailed` set, never admitted), `RolledBack`
+  (`seenDone` cleared, the part given back if the admission charged it).
+  `acceptArticle` returns the disposition it decided as a value, so every
+  return path names one; a zero disposition, or a `Written`, `Rejected` or
+  `RolledBack` for an article not in `seenDone` (never admitted, or already
+  resolved out), is refused by `resolve` with a panic (R28).
+  `TestFileWriterAccounting_HasOneOwner` enumerates the functions that touch
+  the two sets and the counter.
+- A write that **fails** is resolved `RolledBack`: its article leaves
+  `seenDone`, gives its part back and does **not** enter `seenFailed`: a
+  storage fault says nothing about the article (A1), and recording it failed
+  made its redelivery take the already-counted-as-failed path, leaving the
+  file's part total permanently short. Its Emitted bit is cleared by
+  `OnArticlesUnwritten`, not by the writer — `ForEachUnfinishedArticle` skips
+  a set Emitted bit, so the route is what makes it Outstanding.
 - An article already counted as permanently **failed** keeps its part through a
-  rollback: `admitPermanentFailure` charged it, and a redelivery writes bytes
-  without charging a second one (`admitRetryOfFailed`).
+  rollback: the `FetchFailed` charged it, and a redelivery is admitted so its
+  bytes are written without charging a second one — `admit` decides that from
+  what the writer holds, not from anything the caller says.
 - **Cross-state dedup**: an `ArtIdx` previously counted as a success arriving as
-  a failure (or vice versa) does not increment `partsWritten` again.
+  a failure (or vice versa) does not increment `partsWritten` again, which is
+  the identity `partsWritten == |seenDone ∪ seenFailed|`
+  (`TestFileWriter_PartsIsTheSizeOfTheUnion`).
 - **Late articles**: an article for a file already in the `completed` tombstone
   is handled by `handleLateDuplicate` — data returned to the pool, no disk
   write. The writer was closed at completion, so the article is reported
@@ -1146,8 +1163,32 @@ articles or sparse regions.
    hand-off cannot leave the collected unpacker awaited without its volume
    (`TestHandOff_LastFileCompletingAtTheCollect_LeavesNoUnpackerAwaitedWithoutAVolume`).
 9. **Path traversal safety**: `extractEntries` opens an `os.Root` anchored at
-   `extractDir` and writes every entry through it, so archive entries with `..`
-   components, absolute paths, or symlinked path components cannot escape.
+   the set's staging directory and writes every entry through it, so archive
+   entries with `..` components, absolute paths, or symlinked path components
+   cannot escape.
+10. **A set is staged, and published whole or not at all** (#855): `extractSet`
+    extracts each set through `unpack.ExtractStaged` into a
+    `.gonzbd-tmp-unpack-*` directory inside `extractDir` (the job directory).
+    Only when extraction, the volume feed and the corrupt-set backstop all pass
+    are the set's regular files renamed into `extractDir` by
+    `publishStagedExtraction`; under `flat_unpack` without `overwrite_files` a
+    name the job directory already holds is published under a `_N` name, as
+    `ExtractMember` does inside the stage. A failed or aborted set has its stage
+    removed and leaves nothing in the job directory, so the unpack stage's
+    re-extraction of it meets no earlier copy
+    (`TestDirectUnpack_FailedSetLeavesNothingInTheJobDir`,
+    `TestDirectUnpack_AbortedSetLeavesNothingInTheJobDir`,
+    `TestDirectUnpack_FailedSetReextractedFlatHasNoDuplicate`). A stage left
+    by a crash is removed by `unpack.CleanupStageDirs`, which `sweepTempFiles`
+    runs at the start of post-processing and `ExtractStaged` runs before
+    making a stage. Members that did reach the job directory are extracted
+    again by the unpack stage whenever the set is missing from
+    `DirectUnpackSets`, and under `flat_unpack` without `overwrite_files` a
+    `go_unrar` re-extraction writes `_N` copies of them (external `unrar`
+    skips the taken names). The cases found: a publish that fails
+    part way, a set that succeeded before `Abort`, whose success `Abort` clears
+    (item 8), and a restart before post-processing, which loses the in-memory
+    result (item 2).
 
 ## Memory & allocation budget
 
@@ -1258,8 +1299,12 @@ recorded here so the next reader does not mistake them for design.
    the job directory stays a fault on both paths.
 
 3. **A file whose last article was written while its job was evicted is not
-   marked complete in this process.** `MarkFileComplete` needs the manifest,
-   so `completeFinalizedFile` reports the completion undelivered; the file's
+   marked complete in this process.** The CRC settle, the archive peek and
+   the DirectUnpack feed that precede the mark need the manifest and do
+   nothing for an evicted job, so `completeFinalizedFile` checks residency
+   before the mark and reports the completion undelivered (`MarkFileComplete`
+   itself needs only progress, so an eviction after that check still takes
+   the mark); the file's
    rows are in the record, so the next start's verification finishes it by
    path. The window is reachable only through `Shutdown`, which evicts after
    the assembler has stopped, and `Remove`, after which no job is left to

@@ -1064,6 +1064,7 @@ func TestScriptCanFail_True(t *testing.T) {
 	})
 
 	job := makeJob(t, "script-can-fail")
+	job.recordOutputFiles(nil) // the script stage needs finalize's file list; finalize here is a mock
 	job.Script = "test.sh"
 	p.Process(job)
 
@@ -1481,7 +1482,7 @@ func TestPreCheck_AlreadyDeliveredPerJobFinalDir(t *testing.T) {
 		statusFile := filepath.Join(scriptDir, "status.txt")
 		dirFile := filepath.Join(scriptDir, "dir.txt")
 		writeScript(t, filepath.Join(scriptDir, "notify.sh"),
-			[]byte("#!/bin/sh\necho \"$SAB_PP_STATUS\" > "+statusFile+"\necho \"$SAB_FINAL_PROCESSING_DIR\" > "+dirFile+"\n"))
+			[]byte("#!/bin/sh\necho \"$SAB_PP_STATUS\" > "+statusFile+"\necho \"$SAB_FINAL_PROCESSING_DIR\" > "+dirFile+"\nprintf %s \"$SAB_FILES\" > "+filepath.Join(scriptDir, "files.json")+"\n"))
 
 		qjob := newQueueJob(t, "delivered-per-job", 3)
 		qjob.SetName("MyRelease")
@@ -1563,6 +1564,15 @@ func TestPreCheck_AlreadyDeliveredPerJobFinalDir(t *testing.T) {
 		}
 		if strings.TrimSpace(string(gotDir)) != finalDir {
 			t.Errorf("script SAB_FINAL_PROCESSING_DIR = %q, want FinalDir %q", strings.TrimSpace(string(gotDir)), finalDir)
+		}
+		// Finalize was skipped, so the list is the one re-derived from
+		// FinalDir on resume.
+		gotFiles, err := os.ReadFile(filepath.Join(scriptDir, "files.json"))
+		if err != nil {
+			t.Fatalf("read script files output: %v", err)
+		}
+		if string(gotFiles) != `["movie.mkv"]` {
+			t.Errorf("script SAB_FILES = %q, want %q", gotFiles, `["movie.mkv"]`)
 		}
 	})
 
