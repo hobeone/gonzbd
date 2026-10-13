@@ -607,8 +607,11 @@ func TestArchiveTypeName_KnownTypes(t *testing.T) {
 
 // assertExtractEngine checks that an extractArchive scenario against a
 // nonexistent archive failed and was handled by the expected engine.
-func assertExtractEngine(t *testing.T, scenario string, res unpack.Result, err error, wantEngine string) {
+func assertExtractEngine(t *testing.T, scenario string, res unpack.Result, attempted bool, err error, wantEngine string) {
 	t.Helper()
+	if !attempted {
+		t.Errorf("%s: attempted = false; an extractor ran", scenario)
+	}
 	if err == nil {
 		t.Errorf("%s: expected error", scenario)
 	}
@@ -698,8 +701,8 @@ func TestUnpackHelpers(t *testing.T) {
 		a := unpack.Archive{Type: unpack.RarArchive, Name: "nonexistent.rar"}
 
 		// Scenario A: Native Go, no fallback
-		resA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: false}, true, true)
-		assertExtractEngine(t, "scenario A", resA, errA, "go_unrar")
+		resA, attemptedA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: false}, true, true)
+		assertExtractEngine(t, "scenario A", resA, attemptedA, errA, "go_unrar")
 
 		// Scenarios B and C exercise the external unrar path. Use a stub
 		// binary rather than a skip-guard, so these scenarios always run
@@ -709,14 +712,14 @@ func TestUnpackHelpers(t *testing.T) {
 		stub := writeStubBinary(t)
 
 		// Scenario B: External only
-		resB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false, UnrarCommand: stub}, true, true)
-		assertExtractEngine(t, "scenario B", resB, errB, "unrar")
+		resB, attemptedB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false, UnrarCommand: stub}, true, true)
+		assertExtractEngine(t, "scenario B", resB, attemptedB, errB, "unrar")
 
 		// Scenario C: Native Go with external fallback -- should behave like
 		// B (fallback ran and switched engines away from go_unrar), proving
 		// the fallback path actually executed rather than silently no-oping.
-		resC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true, UnrarCommand: stub}, true, true)
-		assertExtractEngine(t, "scenario C", resC, errC, "unrar")
+		resC, attemptedC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true, UnrarCommand: stub}, true, true)
+		assertExtractEngine(t, "scenario C", resC, attemptedC, errC, "unrar")
 	})
 
 	// 4. Test extractArchive 7-Zip scenarios
@@ -729,37 +732,46 @@ func TestUnpackHelpers(t *testing.T) {
 		a := unpack.Archive{Type: unpack.SevenZipArchive, Name: "nonexistent.7z"}
 
 		// Scenario A: Native Go, no fallback
-		resA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: false}, true, true)
-		assertExtractEngine(t, "scenario A", resA, errA, "go_7z")
+		resA, attemptedA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: false}, true, true)
+		assertExtractEngine(t, "scenario A", resA, attemptedA, errA, "go_7z")
 
 		// Scenarios B and C exercise the external 7z path. Use a stub binary
 		// (see the RAR subtest above) instead of a skip-guard.
 		stub := writeStubBinary(t)
 
 		// Scenario B: External only
-		resB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false, SevenZipCommand: stub}, true, true)
-		assertExtractEngine(t, "scenario B", resB, errB, "7z")
+		resB, attemptedB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false, SevenZipCommand: stub}, true, true)
+		assertExtractEngine(t, "scenario B", resB, attemptedB, errB, "7z")
 
 		// Scenario C: Native Go with external fallback -- should behave like
 		// B (fallback ran and switched engines away from go_7z).
-		resC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true, SevenZipCommand: stub}, true, true)
-		assertExtractEngine(t, "scenario C", resC, errC, "7z")
+		resC, attemptedC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true, SevenZipCommand: stub}, true, true)
+		assertExtractEngine(t, "scenario C", resC, attemptedC, errC, "7z")
 	})
 
-	// 5. Test extractArchive (SplitArchive disabled)
-	t.Run("extractArchive SplitArchive disabled", func(t *testing.T) {
+	// 5. Test extractArchive skips (SplitArchive and TarArchive disabled,
+	// an unrecognised type) without attempting an extraction.
+	t.Run("extractArchive skipped types", func(t *testing.T) {
 		u := NewUnpackStage()
 		job := &Job{
 			Job:         newQueueJob(t, "testjob", 0),
 			DownloadDir: t.TempDir(),
 		}
-		a := unpack.Archive{Type: unpack.SplitArchive, MainFile: "test.001"}
-		res, err := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{}, false, false)
-		if err != nil {
-			t.Fatalf("unexpected err: %v", err)
-		}
-		if res.Engine != "" || res.ExitCode != 0 {
-			t.Errorf("expected zero-value Result for disabled join, got %+v", res)
+		for _, a := range []unpack.Archive{
+			{Type: unpack.SplitArchive, MainFile: "test.001"},
+			{Type: unpack.TarArchive, MainFile: "test.tar"},
+			{Type: unpack.UnknownArchive, MainFile: "test.bin"},
+		} {
+			res, attempted, err := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{}, false, false)
+			if err != nil {
+				t.Fatalf("%s: unexpected err: %v", a.MainFile, err)
+			}
+			if attempted {
+				t.Errorf("%s: attempted = true; want a skip", a.MainFile)
+			}
+			if res.Engine != "" || res.ExitCode != 0 {
+				t.Errorf("%s: expected zero-value Result for a skip, got %+v", a.MainFile, res)
+			}
 		}
 	})
 
