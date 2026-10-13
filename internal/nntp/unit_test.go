@@ -263,71 +263,46 @@ func TestDefaultCapabilities(t *testing.T) {
 
 // ---------- newDialOptions ----------
 
-func TestNewDialOptions_DefaultPorts(t *testing.T) {
+// TestNewDialOptions_PortAsGiven pins that the dial takes the checked port as
+// it stands: a port of 0 is resolved by config.ServerConfig.Checked before a
+// server reaches this package, so nntp keeps no copy of that rule.
+func TestNewDialOptions_PortAsGiven(t *testing.T) {
 	t.Parallel()
-	// Plain (no SSL).
-	opts, err := newDialOptions(config.ServerConfig{Host: "news.example.com"})
-	if err != nil {
-		t.Fatalf("newDialOptions: %v", err)
-	}
-	if opts.port != 119 {
-		t.Errorf("plain port = %d, want 119", opts.port)
-	}
-	if opts.readBuf != 256*1024 {
-		t.Errorf("readBuf = %d, want 262144", opts.readBuf)
-	}
-
-	// SSL.
-	opts, err = newDialOptions(config.ServerConfig{Host: "news.example.com", SSL: true})
-	if err != nil {
-		t.Fatalf("newDialOptions: %v", err)
-	}
-	if opts.port != 563 {
-		t.Errorf("SSL port = %d, want 563", opts.port)
+	for _, tc := range []struct {
+		ssl  bool
+		port int
+	}{{false, 119}, {true, 119}, {true, 563}, {false, 8119}} {
+		srv := checked(t, config.ServerConfig{Host: "news.example.com", SSL: tc.ssl, Port: tc.port, Connections: 1, Timeout: 10, PipeliningRequests: 1})
+		opts, err := newDialOptions(srv)
+		if err != nil {
+			t.Fatalf("newDialOptions: %v", err)
+		}
+		if opts.port != tc.port {
+			t.Errorf("ssl=%v port %d: dial port = %d, want %d", tc.ssl, tc.port, opts.port, tc.port)
+		}
+		if opts.readBuf != 256*1024 {
+			t.Errorf("readBuf = %d, want 262144", opts.readBuf)
+		}
 	}
 }
 
-func TestNewDialOptions_TimeoutNonZero(t *testing.T) {
+// TestNewDialOptions_TakesCheckedValues pins that the timeout and pipelining
+// depth reach the dial unchanged; Checked refuses the zeroes nntp used to
+// replace with 60s and 1.
+func TestNewDialOptions_TakesCheckedValues(t *testing.T) {
 	t.Parallel()
-	opts, err := newDialOptions(config.ServerConfig{Host: "x", Timeout: 10})
-	if err != nil {
-		t.Fatalf("newDialOptions: %v", err)
-	}
-	if opts.dialer.Timeout != 10*time.Second {
-		t.Errorf("timeout = %v, want 10s", opts.dialer.Timeout)
-	}
-}
-
-func TestNewDialOptions_ExplicitPort(t *testing.T) {
-	t.Parallel()
-	opts, err := newDialOptions(config.ServerConfig{Host: "news.example.com", Port: 8080})
-	if err != nil {
-		t.Fatalf("newDialOptions: %v", err)
-	}
-	if opts.port != 8080 {
-		t.Errorf("port = %d, want 8080", opts.port)
-	}
-}
-
-func TestNewDialOptions_PipeliningMin(t *testing.T) {
-	t.Parallel()
-	opts, err := newDialOptions(config.ServerConfig{Host: "x", PipeliningRequests: 0})
-	if err != nil {
-		t.Fatalf("newDialOptions: %v", err)
-	}
-	if opts.pipelining != 1 {
-		t.Errorf("pipelining = %d, want 1 (minimum)", opts.pipelining)
-	}
-}
-
-func TestNewDialOptions_TimeoutDefault(t *testing.T) {
-	t.Parallel()
-	opts, err := newDialOptions(config.ServerConfig{Host: "x", Timeout: 0})
-	if err != nil {
-		t.Fatalf("newDialOptions: %v", err)
-	}
-	if opts.dialer.Timeout.Seconds() != 60 {
-		t.Errorf("timeout = %v, want 60s", opts.dialer.Timeout)
+	for _, tc := range []struct{ timeout, pipe int }{{1, 1}, {10, 3}, {90, 8}} {
+		srv := checked(t, config.ServerConfig{Host: "x", Connections: 1, Timeout: tc.timeout, PipeliningRequests: tc.pipe})
+		opts, err := newDialOptions(srv)
+		if err != nil {
+			t.Fatalf("newDialOptions: %v", err)
+		}
+		if opts.dialer.Timeout != time.Duration(tc.timeout)*time.Second {
+			t.Errorf("timeout = %v, want %ds", opts.dialer.Timeout, tc.timeout)
+		}
+		if opts.pipelining != tc.pipe {
+			t.Errorf("pipelining = %d, want %d", opts.pipelining, tc.pipe)
+		}
 	}
 }
 

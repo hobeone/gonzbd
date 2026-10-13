@@ -127,11 +127,7 @@ func shouldDeactivateOptional(s *Server) bool {
 	if !s.cfg.Optional || s.cfg.Required {
 		return false
 	}
-	total := s.cfg.Connections
-	if total <= 0 {
-		return false
-	}
 	bad := s.badConns.Load()
-	ratio := float64(bad) / float64(total)
+	ratio := float64(bad) / float64(s.cfg.Connections)
 	return ratio > constants.OptionalDeactivationThreshold
 }

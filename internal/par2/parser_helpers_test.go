@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 // openBytes writes content to a temp file and opens it for reading.
@@ -30,7 +32,7 @@ func TestReadNextPacketWithOptions(t *testing.T) {
 
 	setID := [16]byte{1}
 	creator := buildPacket(setID, typeCreator, []byte("gonzbd test\x00"))
-	big := buildPacket(setID, typeCreator, bytes.Repeat([]byte{'x'}, int(MinPar2PacketBodySize)+4))
+	big := buildPacket(setID, typeCreator, bytes.Repeat([]byte{'x'}, int(constants.MinPar2PacketBodySize)+4))
 	badMD5 := append([]byte(nil), creator...)
 	badMD5[len(badMD5)-2] ^= 0xff
 	shortLen := append([]byte(nil), creator...)
@@ -49,7 +51,7 @@ func TestReadNextPacketWithOptions(t *testing.T) {
 		{name: "valid packet", content: creator, wantBody: len(creator) - 64},
 		{name: "junk before the packet is skipped", content: append(bytes.Repeat([]byte{0xAA}, 200), creator...), wantBody: len(creator) - 64},
 		{name: "a packet failing its MD5 is dropped", content: append(append([]byte(nil), badMD5...), creator...), wantBody: len(creator) - 64},
-		{name: "body over the limit", content: big, opts: ParseOptions{MaxPacketBodySize: MinPar2PacketBodySize}, wantErr: ErrPacketBodySizeExceeded},
+		{name: "body over the limit", content: big, opts: ParseOptions{MaxPacketBodySize: constants.MinPar2PacketBodySize}, wantErr: ErrPacketBodySizeExceeded},
 		{name: "a limit under the minimum means the default", content: big, opts: ParseOptions{MaxPacketBodySize: 10}, wantBody: len(big) - 64},
 		{name: "length shorter than a header", content: shortLen},
 		{name: "empty file", content: nil, wantErr: io.EOF},
@@ -97,7 +99,7 @@ func TestScanForMagicWithOptions(t *testing.T) {
 		wantErr   error
 	}{
 		{name: "magic within the limit", content: withJunk(2000), limit: 4096, wantFound: true, wantPos: 2000},
-		{name: "magic past the limit", content: withJunk(4000), limit: MinPar2JunkScanBytes, wantErr: ErrJunkScanLimitExceeded},
+		{name: "magic past the limit", content: withJunk(4000), limit: constants.MinPar2JunkScanBytes, wantErr: ErrJunkScanLimitExceeded},
 		{name: "a limit under the minimum means the default", content: withJunk(4000), limit: 10, wantFound: true, wantPos: 4000},
 		{name: "no magic before end of file", content: bytes.Repeat([]byte{0x55}, 300), limit: 4096},
 	}

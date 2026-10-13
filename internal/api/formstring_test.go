@@ -74,7 +74,8 @@ type privateIPTestApp struct {
 	calledHost string
 }
 
-func (p *privateIPTestApp) TestNNTPServer(_ context.Context, cfg config.ServerConfig) (app.NNTPTestResult, error) {
+func (p *privateIPTestApp) TestNNTPServer(_ context.Context, srv config.Server) (app.NNTPTestResult, error) {
+	cfg := srv.Config()
 	p.calledHost = cfg.Host
 	return app.NNTPTestResult{}, errors.New("dial tcp " + cfg.Host + ":119: connect: network is unreachable")
 }

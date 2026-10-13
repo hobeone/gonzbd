@@ -192,8 +192,11 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Hot-reload core components if their configuration changed.
 	if section == "servers" && s.reload != nil {
-		servers := s.config.GetServers()
-		if err := s.reload.ReloadDownloader(servers); err != nil {
+		servers, err := s.config.CheckedServers()
+		if err == nil {
+			err = s.reload.ReloadDownloader(servers)
+		}
+		if err != nil {
 			s.log.Error("reload servers", "error", err)
 			// Return 200 because the config was saved, but add a warning.
 			respondJSON(w, http.StatusOK, map[string]any{
@@ -317,7 +320,9 @@ func (s *Server) modeConfig(w http.ResponseWriter, r *http.Request) {
 //   - "0" or empty disables limiting.
 //
 // The limit is applied immediately to the running downloader and also
-// persisted to the config so it survives a restart.
+// persisted to the config so it survives a restart: as bandwidth_max, with
+// bandwidth_perc set to 100 in the same locked step, so the saved config's
+// SpeedLimit is the rate this request put in force.
 func (s *Server) configSpeedLimit(w http.ResponseWriter, r *http.Request) {
 	if s.downloads == nil {
 		s.respondError(w, http.StatusServiceUnavailable, "application not running")
@@ -343,10 +348,20 @@ func (s *Server) configSpeedLimit(w http.ResponseWriter, r *http.Request) {
 
 	s.downloads.SetSpeedLimit(bytesPerSec)
 
-	// Persist as the new bandwidth_max so restarts honour the change.
 	if s.config != nil {
 		bsVal := config.ByteSize(bytesPerSec)
-		_ = s.config.Set("downloads", "bandwidth_max", bsVal.String()) //nolint:errcheck // in-memory update failure is ignored; Save will catch disk errors
+		var setErr error
+		s.config.With(func(c *config.Config) {
+			if setErr = c.SetLocked("downloads", "bandwidth_max", bsVal.String()); setErr == nil {
+				setErr = c.SetLocked("downloads", "bandwidth_perc", "100")
+			}
+		})
+		if setErr != nil {
+			// The running limit is already applied; only the saved copy is refused.
+			s.log.Warn("speed limit not saved to config", "bytes_per_sec", bytesPerSec, "error", setErr)
+		} else {
+			s.applySpeedLimit()
+		}
 		if s.configPath != "" {
 			if err := s.config.Save(s.configPath); err != nil {
 				s.log.Error("persist speed limit", "error", err)
@@ -361,6 +376,39 @@ func (s *Server) configSpeedLimit(w http.ResponseWriter, r *http.Request) {
 }
 
 const testServerTimeout = 15 * time.Second
+
+// testServerConfig builds the server test_server dials from the request: a
+// single connection with the test timeout, and the remaining keys as a
+// server entry with those values holds, through config.ServerConfig.Checked.
+// A port or ssl_verify that is present but not a number is refused rather
+// than replaced by its default.
+func testServerConfig(r *http.Request, host string) (config.Server, error) {
+	cfg := config.DefaultServerConfig()
+	cfg.Name = "test"
+	cfg.Host = host
+	cfg.Username = formValue(r, "username")
+	cfg.Password = formValue(r, "password")
+	cfg.SSL = formValue(r, "ssl") == "1"
+	cfg.Connections = 1
+	cfg.Timeout = int(testServerTimeout.Seconds())
+	cfg.PipeliningRequests = 1
+	cfg.Enable = true
+	if v := formValue(r, "port"); v != "" {
+		port, err := strconv.Atoi(v)
+		if err != nil {
+			return config.Server{}, fmt.Errorf("port: %q is not a number", v)
+		}
+		cfg.Port = port
+	}
+	if v := formValue(r, "ssl_verify"); v != "" {
+		level, err := strconv.ParseInt(v, 10, 8)
+		if err != nil {
+			return config.Server{}, fmt.Errorf("ssl_verify: %q is not a number", v)
+		}
+		cfg.SSLVerify = config.SSLVerify(level)
+	}
+	return cfg.Checked()
+}
 
 // configTestServer dials an NNTP server using the parameters from the
 // request, verifies the greeting and authentication, then closes the
@@ -381,46 +429,16 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	port, _ := strconv.Atoi(formValue(r, "port")) //nolint:errcheck // handled by port == 0 check
-	if port == 0 {
-		port = 119
-	}
-	ssl := formValue(r, "ssl") == "1"
-	if ssl && port == 119 {
-		port = 563
-	}
-
-	sslVerifyStr := formValue(r, "ssl_verify")
-	sslVerify := config.DefaultSSLVerify
-	if sslVerifyStr != "" {
-		if v, err := strconv.ParseInt(sslVerifyStr, 10, 8); err == nil {
-			sslVerify = config.SSLVerify(v)
-		}
-	}
-	if err := sslVerify.Validate(); err != nil {
-		s.respondError(w, http.StatusBadRequest, "invalid ssl_verify value: "+err.Error())
+	srv, err := testServerConfig(r, host)
+	if err != nil {
+		s.respondError(w, http.StatusBadRequest, "invalid server: "+err.Error())
 		return
 	}
-
-	cfg := config.ServerConfig{
-		Name:        "test",
-		Host:        host,
-		Port:        port,
-		Username:    formValue(r, "username"),
-		Password:    formValue(r, "password"),
-		SSL:         ssl,
-		SSLVerify:   sslVerify,
-		Connections: 1,
-		Timeout:     int(testServerTimeout.Seconds()),
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), testServerTimeout)
 	defer cancel()
 
-	_, err := s.status.TestNNTPServer(ctx, cfg)
-	if err != nil {
-
-		s.log.Warn("test_server failed", "host", host, "port", port, "error", err)
+	if _, err := s.status.TestNNTPServer(ctx, srv); err != nil {
+		s.log.Warn("test_server failed", "host", host, "port", srv.Config().Port, "error", err)
 		respondOK(w, "result", map[string]any{
 			"passed":  false,
 			"message": err.Error(),
@@ -428,7 +446,7 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.log.Info("test_server passed", "host", host, "port", port)
+	s.log.Info("test_server passed", "host", host, "port", srv.Config().Port)
 	respondOK(w, "result", map[string]any{
 		"passed":  true,
 		"message": "Connection successful!",

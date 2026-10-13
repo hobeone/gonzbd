@@ -282,7 +282,7 @@ func serveMode(configPath, listenOverride, logLevelsOverride, pidPath string, ve
 	// middleware enforces the matching acceptance-side gate.
 	trustedFn := func(r *http.Request) bool {
 		gen := cfg.GetGeneral()
-		ranges, _ := config.ParseLocalRanges(gen.LocalRanges) //nolint:errcheck // validated at config load; a nil result trusts loopback only, so a failure fails closed
+		ranges := gen.TrustedRanges()
 		fh := config.ForwardedHeaders{
 			XForwardedFor: r.Header.Get("X-Forwarded-For"),
 			Forwarded:     r.Header.Get("Forwarded"),

@@ -123,6 +123,30 @@ func TestConfigSpeedLimit_Conversions(t *testing.T) {
 		})
 	}
 
+	t.Run("the saved config describes the rate in force", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := config.Default()
+		if err != nil {
+			t.Fatalf("Default(): %v", err)
+		}
+		cfg.With(func(c *config.Config) { c.Downloads.BandwidthPerc = 50 })
+		spy := &setConfigSpyApp{}
+		s := testServerWithConfig(t, cfg)
+		s.setAppServices(spy)
+
+		rr := directCall(t, s.configSpeedLimit, "/api?mode=config&name=speedlimit&value=1M")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
+		}
+		dl := cfg.GetDownloads()
+		if dl.BandwidthMax != 1<<20 || dl.BandwidthPerc != 100 {
+			t.Errorf("saved bandwidth_max = %d, bandwidth_perc = %d; want %d and 100", dl.BandwidthMax, dl.BandwidthPerc, 1<<20)
+		}
+		if got := dl.SpeedLimit(); got != 1<<20 {
+			t.Errorf("limit the saved config describes = %d, want the %d in force", got, 1<<20)
+		}
+	})
+
 	t.Run("application not running", func(t *testing.T) {
 		t.Parallel()
 		s := New(Options{Config: &config.Config{}})
@@ -139,10 +163,10 @@ type nntpProbeApp struct {
 	got config.ServerConfig
 }
 
-func (a *nntpProbeApp) TestNNTPServer(_ context.Context, cfg config.ServerConfig) (app.NNTPTestResult, error) {
+func (a *nntpProbeApp) TestNNTPServer(_ context.Context, srv config.Server) (app.NNTPTestResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.got = cfg
+	a.got = srv.Config()
 	return app.NNTPTestResult{}, nil
 }
 
@@ -184,6 +208,47 @@ func TestConfigTestServer_RequestParameters(t *testing.T) {
 			t.Errorf("probed port = %d, want 119", probe.got.Port)
 		}
 	})
+	t.Run("an explicit port 119 with ssl is kept", func(t *testing.T) {
+		t.Parallel()
+		probe := &nntpProbeApp{}
+		s := testServer()
+		s.setAppServices(probe)
+		directCall(t, s.configTestServer, "/api?mode=config&name=test_server&host=news.example.com&port=119&ssl=1")
+		probe.mu.Lock()
+		defer probe.mu.Unlock()
+		if probe.got.Port != 119 || !probe.got.SSL {
+			t.Errorf("probed %+v, want port 119 with ssl on, as a saved server with those values dials", probe.got)
+		}
+	})
+	t.Run("an omitted ssl_verify takes the server default", func(t *testing.T) {
+		t.Parallel()
+		probe := &nntpProbeApp{}
+		s := testServer()
+		s.setAppServices(probe)
+		directCall(t, s.configTestServer, "/api?mode=config&name=test_server&host=news.example.com&ssl=1")
+		probe.mu.Lock()
+		defer probe.mu.Unlock()
+		if probe.got.SSLVerify != config.DefaultSSLVerify {
+			t.Errorf("probed ssl_verify = %d, want %d", probe.got.SSLVerify, config.DefaultSSLVerify)
+		}
+	})
+	for _, bad := range []string{"ssl_verify=abc", "port=abc", "port=70000"} {
+		t.Run("malformed "+bad+" is rejected", func(t *testing.T) {
+			t.Parallel()
+			probe := &nntpProbeApp{}
+			s := testServer()
+			s.setAppServices(probe)
+			rr := directCall(t, s.configTestServer, "/api?mode=config&name=test_server&host=h&"+bad)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 (body: %s)", rr.Code, rr.Body.String())
+			}
+			probe.mu.Lock()
+			defer probe.mu.Unlock()
+			if probe.got.Host != "" {
+				t.Errorf("probed %+v, want no dial", probe.got)
+			}
+		})
+	}
 	t.Run("out of range ssl_verify is rejected", func(t *testing.T) {
 		t.Parallel()
 		s := testServer()

@@ -44,6 +44,18 @@ func ParseLocalRanges(entries []string) ([]netip.Prefix, error) {
 	return out, nil
 }
 
+// TrustedRanges returns local_ranges as the prefixes IsTrustedRemote trusts
+// beside loopback. Validate refuses a list ParseLocalRanges rejects, so the
+// nil returned for one is reachable only for a GeneralConfig that was never
+// validated; nil trusts loopback alone, so that case fails closed.
+func (g GeneralConfig) TrustedRanges() []netip.Prefix {
+	ranges, err := ParseLocalRanges(g.LocalRanges)
+	if err != nil {
+		return nil
+	}
+	return ranges
+}
+
 // normalizeMappedPrefix rewrites an IPv4-mapped IPv6 prefix (e.g.
 // "::ffff:192.168.1.0/120") into its plain IPv4 form ("192.168.1.0/24").
 // Without this, the prefix would never match anything: ipTrusted unmaps the

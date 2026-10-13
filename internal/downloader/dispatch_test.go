@@ -46,7 +46,7 @@ func newDispatchDownloader(servers []*Server) *Downloader {
 // fakeSrv returns a Server with the given name/priority/enabled state.
 // No TCP address is required because tryDispatch never dials.
 func fakeSrv(name string, priority int, enabled bool) *Server {
-	return NewServer(config.ServerConfig{
+	return checkedServer(config.ServerConfig{
 		Name:        name,
 		Priority:    priority,
 		Connections: 1,
@@ -956,7 +956,7 @@ func TestDownloader_ProcessFetchedArticle_Coverage(t *testing.T) {
 	}
 
 	cfg := config.ServerConfig{Name: "test-server"}
-	srv := NewServer(cfg)
+	srv := checkedServer(cfg)
 
 	req := &articleRequest{
 		job:       bareJob("job1"),
@@ -1037,7 +1037,7 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 	defer d.pauseCancel()
 
 	cfg := config.ServerConfig{Name: "test-server"}
-	srv := NewServer(cfg)
+	srv := checkedServer(cfg)
 
 	j, m := makeJobWithArticles(t, []string{"msg1"})
 	addTestJob(t, disp, j, m)
@@ -1222,9 +1222,9 @@ func TestFetchArticle_NoPenaltiesClampsPenaltyDuration(t *testing.T) {
 func TestSelectServerForArticle_MaxArtOptCapsOptionalServerTries(t *testing.T) {
 	t.Parallel()
 
-	optA := NewServer(config.ServerConfig{Name: "optA", Priority: 0, Connections: 1, Enable: true, Optional: true})
-	optB := NewServer(config.ServerConfig{Name: "optB", Priority: 0, Connections: 1, Enable: true, Optional: true})
-	required := NewServer(config.ServerConfig{Name: "required", Priority: 0, Connections: 1, Enable: true})
+	optA := checkedServer(config.ServerConfig{Name: "optA", Priority: 0, Connections: 1, Enable: true, Optional: true})
+	optB := checkedServer(config.ServerConfig{Name: "optB", Priority: 0, Connections: 1, Enable: true, Optional: true})
+	required := checkedServer(config.ServerConfig{Name: "required", Priority: 0, Connections: 1, Enable: true})
 	d := newDispatchDownloader([]*Server{optA, optB, required})
 
 	// optA (idx 0) already tried; optB (idx 1) and required (idx 2) are not.

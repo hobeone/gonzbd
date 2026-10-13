@@ -235,13 +235,6 @@ func (d *DownloadConfig) validate() error {
 	return errors.Join(errs...)
 }
 
-const (
-	// MinPar2PacketBodySize is the minimum allowed non-zero value for Par2MaxPacketBodySize (64 KiB).
-	MinPar2PacketBodySize uint64 = 65536
-	// MinPar2JunkScanBytes is the minimum allowed non-zero value for Par2MaxJunkScanBytes (1 KiB).
-	MinPar2JunkScanBytes int64 = 1024
-)
-
 func (p *PostProcConfig) validate() error {
 	return p.validateWithOS(runtime.GOOS)
 }
@@ -253,11 +246,11 @@ func (p *PostProcConfig) validateWithOS(goos string) error {
 		errs = append(errs, fmt.Errorf("strict_sandbox is not supported on %s (only linux); disable strict_sandbox or run on linux", goos))
 	}
 
-	if p.Par2MaxPacketBodySize != 0 && p.Par2MaxPacketBodySize < MinPar2PacketBodySize {
-		errs = append(errs, fmt.Errorf("par2_max_packet_body_size (%d) must be at least %d bytes (64 KiB)", p.Par2MaxPacketBodySize, MinPar2PacketBodySize))
+	if p.Par2MaxPacketBodySize != 0 && p.Par2MaxPacketBodySize < constants.MinPar2PacketBodySize {
+		errs = append(errs, fmt.Errorf("par2_max_packet_body_size (%d) must be at least %d bytes (64 KiB)", p.Par2MaxPacketBodySize, constants.MinPar2PacketBodySize))
 	}
-	if p.Par2MaxJunkScanBytes != 0 && p.Par2MaxJunkScanBytes < MinPar2JunkScanBytes {
-		errs = append(errs, fmt.Errorf("par2_max_junk_scan_bytes (%d) must be at least %d bytes (1 KiB)", p.Par2MaxJunkScanBytes, MinPar2JunkScanBytes))
+	if p.Par2MaxJunkScanBytes != 0 && p.Par2MaxJunkScanBytes < constants.MinPar2JunkScanBytes {
+		errs = append(errs, fmt.Errorf("par2_max_junk_scan_bytes (%d) must be at least %d bytes (1 KiB)", p.Par2MaxJunkScanBytes, constants.MinPar2JunkScanBytes))
 	}
 
 	// Permissions must be valid 3- or 4-digit octal if set.
@@ -284,14 +277,10 @@ func (p *PostProcConfig) validateWithOS(goos string) error {
 		}
 	}
 
-	// Extra params must be valid flags (each token starts with '-'), and unrar
-	// params must only use SABnzbd allowlisted prefixes (-mlp, -om*, -ri*).
-	if args, err := cmdutil.ParseExtraParams(p.ExtraUnrarParams); err != nil {
-		errs = append(errs, fmt.Errorf("extra_unrar_params: %w", err))
-	} else if err := cmdutil.ValidateUnrarParams(args); err != nil {
-		errs = append(errs, fmt.Errorf("extra_unrar_params: %w", err))
+	if _, err := p.UnrarExtraArgs(); err != nil {
+		errs = append(errs, err)
 	}
-	if err := validateExtraParams("extra_par2_params", p.ExtraPar2Params); err != nil {
+	if _, err := p.Par2ExtraArgs(); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -308,21 +297,6 @@ func (p *PostProcConfig) validateWithOS(goos string) error {
 	}
 
 	return errors.Join(errs...)
-}
-
-// validateExtraParams checks that every whitespace-separated token in s
-// starts with '-'. This prevents accidental injection of non-flag
-// arguments into external tool invocations.
-func validateExtraParams(field, s string) error {
-	if s == "" {
-		return nil
-	}
-	for tok := range strings.FieldsSeq(s) {
-		if !strings.HasPrefix(tok, "-") {
-			return fmt.Errorf("%s: token %q does not start with '-'", field, tok)
-		}
-	}
-	return nil
 }
 
 // validateCleanupList checks that every pattern in the cleanup list is a valid regular expression.

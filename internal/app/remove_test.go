@@ -46,7 +46,7 @@ func newRemoveJobTestApp(t *testing.T) *Application {
 		downloadDir,
 		filepath.Join(dir, "complete"),
 		adminDir,
-		config.ServerConfig{Name: "test"},
+		config.ServerConfig{Name: "test", Host: "127.0.0.1", Connections: 1, Timeout: 60, PipeliningRequests: 1},
 	)
 	a, err := New(cfg, repo)
 	if err != nil {

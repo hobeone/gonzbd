@@ -125,7 +125,7 @@ func TestModeStatus_TestConnection_ServerUnavailableSetsLikelyConnectionLimit(t 
 	cfg.With(func(c *config.Config) {
 		c.General.APIKey = testAPIKey
 		c.Servers = []config.ServerConfig{{
-			Name: "s1", Host: host, Port: port, Connections: 1, Timeout: 5,
+			Name: "s1", Host: host, Port: port, Connections: 1, Timeout: 5, PipeliningRequests: 1,
 		}}
 	})
 	s := New(Options{Config: cfg, App: dialingApp(t)})

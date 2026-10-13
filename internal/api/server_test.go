@@ -6,7 +6,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -181,6 +183,11 @@ func TestGetAuth_ReadsLiveConfig(t *testing.T) {
 	cfg.With(func(c *config.Config) { c.General.APIKey = "0123456789abcdef" })
 	if got := s.getAuth().APIKey; got != "0123456789abcdef" {
 		t.Errorf("APIKey after rotation = %q; want the new key", got)
+	}
+
+	cfg.With(func(c *config.Config) { c.General.LocalRanges = []string{"10.0.0.0/8"} })
+	if got, want := s.getAuth().TrustedRanges, []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}; !slices.Equal(got, want) {
+		t.Errorf("TrustedRanges = %v; want %v", got, want)
 	}
 }
 

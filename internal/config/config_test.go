@@ -831,3 +831,87 @@ func TestRarDecodeWorkers(t *testing.T) {
 		t.Errorf("RarDecodeWorkers = %d, want 1", pp.RarDecodeWorkers)
 	}
 }
+
+// TestServerConfig_Checked pins that Checked gives a server outside a Config
+// what Config.finish gives a configured one: the port default for port 0, an
+// explicit port kept as entered, and the same refusals as Validate.
+func TestServerConfig_Checked(t *testing.T) {
+	t.Parallel()
+	valid := func() ServerConfig {
+		s := DefaultServerConfig()
+		s.Host = "news.example.com"
+		s.Connections = 1
+		s.Timeout = 15
+		s.PipeliningRequests = 1
+		return s
+	}
+	tests := []struct {
+		name     string
+		edit     func(*ServerConfig)
+		wantPort int
+		wantErr  string
+	}{
+		{name: "plain port 0 takes 119", edit: func(*ServerConfig) {}, wantPort: 119},
+		{name: "ssl port 0 takes 563", edit: func(s *ServerConfig) { s.SSL = true }, wantPort: 563},
+		{name: "explicit 119 with ssl is kept", edit: func(s *ServerConfig) { s.SSL = true; s.Port = 119 }, wantPort: 119},
+		{name: "port out of range", edit: func(s *ServerConfig) { s.Port = 70000 }, wantErr: "port: 70000 outside [1,65535]"},
+		{name: "no pipelining", edit: func(s *ServerConfig) { s.PipeliningRequests = 0 }, wantErr: "pipelining_requests: 0 must be > 0"},
+		{name: "ssl_verify out of range", edit: func(s *ServerConfig) { s.SSLVerify = 9 }, wantErr: "ssl_verify: 9 outside [0,3]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			in := valid()
+			tt.edit(&in)
+			got, err := in.Checked()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Checked() error = %v, want one containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Checked() error = %v", err)
+			}
+			if got.Config().Port != tt.wantPort {
+				t.Errorf("Port = %d, want %d", got.Config().Port, tt.wantPort)
+			}
+		})
+	}
+}
+
+// TestServer_ZeroValuePanics pins that a Server Checked did not produce
+// cannot be read, so nothing dials its zeroes.
+func TestServer_ZeroValuePanics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if recover() == nil {
+			t.Error("Server{}.Config() did not panic")
+		}
+	}()
+	_ = Server{}.Config()
+}
+
+func TestConfig_CheckedServers(t *testing.T) {
+	t.Parallel()
+	cfg, err := Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	ok := ServerConfig{Name: "a", Host: "news.example.com", Connections: 2, Timeout: 30, PipeliningRequests: 2, SSL: true}
+	cfg.With(func(c *Config) {
+		c.Servers = []ServerConfig{ok, {Name: "b", Host: "h", Connections: 1, Timeout: 30, PipeliningRequests: 1}}
+	})
+	got, err := cfg.CheckedServers()
+	if err != nil {
+		t.Fatalf("CheckedServers() error = %v", err)
+	}
+	if len(got) != 2 || got[0].Config().Name != "a" || got[0].Config().Port != 563 || got[1].Config().Port != 119 {
+		t.Errorf("CheckedServers() = %+v, want a (563) then b (119)", got)
+	}
+
+	cfg.With(func(c *Config) { c.Servers[1].PipeliningRequests = 0 })
+	if _, err := cfg.CheckedServers(); err == nil || !strings.Contains(err.Error(), `servers[1] ("b"): pipelining_requests: 0 must be > 0`) {
+		t.Errorf("CheckedServers() error = %v, want one naming servers[1] and pipelining_requests", err)
+	}
+}

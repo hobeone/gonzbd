@@ -451,10 +451,8 @@ func New(disp *dispatch.Dispatcher, servers []*Server, meter *bpsmeter.Meter, op
 		name := srv.Cfg().Name
 		perServer := opts.PerServerQueue
 		if perServer <= 0 {
-			pipelineDepth := max(1, srv.Cfg().PipeliningRequests)
-			perServer = 2 * srv.Connections() * pipelineDepth
+			perServer = 2 * srv.Connections() * srv.Cfg().PipeliningRequests
 		}
-		perServer = max(1, perServer)
 		d.workCh[name] = make(chan *articleRequest, perServer)
 
 		// Disabled servers are kept in d.servers (so ServerStatus can still
@@ -466,7 +464,7 @@ func New(disp *dispatch.Dispatcher, servers []*Server, meter *bpsmeter.Meter, op
 		}
 
 		// Pre-populate connection activity entries (all idle).
-		conns := max(srv.Connections(), 1)
+		conns := srv.Connections()
 		for i := range conns {
 			wid := fmt.Sprintf("%s#%d", name, i)
 			d.connActivity[wid] = &ConnActivity{
@@ -524,7 +522,7 @@ func (d *Downloader) Start(ctx context.Context) error {
 			d.log.Info("server disabled, skipping connection setup", "server", srv.Cfg().Name)
 			continue
 		}
-		conns := max(srv.Connections(), 1)
+		conns := srv.Connections()
 		for j := range conns {
 			wid := fmt.Sprintf("%s#%d", srv.Cfg().Name, j)
 			d.wg.Go(func() {
@@ -884,25 +882,17 @@ func (d *Downloader) ServerStatus() []ServerSnapshot {
 		//
 		// ActiveConns cannot exceed MaxConnections, and that holds by
 		// construction rather than by arithmetic here. New pre-populates
-		// connActivity with max(srv.Connections(), 1) entries for each
+		// connActivity with srv.Connections() entries for each
 		// ENABLED server, one per workerID, and that is the only insertion
 		// — `git grep -n 'd.connActivity\[wid\] = ' internal/downloader`
 		// finds 1, and `git grep -n 'delete(.*connActivity' internal/downloader`
 		// finds 1, which is this comment quoting the pattern at itself
 		// rather than any code — so len(conns) never moves after startup.
 		//
-		// Two branches make len(conns) and MaxConnections differ, and
-		// neither breaks the inequality:
-		//
-		//   - Disabled server: New allocates it no entries at all, so
-		//     len(conns) is 0 while MaxConnections still reports the
-		//     configured count. activeCount is then 0, which is <= any
-		//     MaxConnections.
-		//   - cfg.Connections < 1: the max(..., 1) above would allocate one
-		//     entry against a MaxConnections of 0, and activeCount could
-		//     reach 1. Unreachable through a validated config —
-		//     config.validate calls positive("connections", ...) — so the
-		//     inequality assumes a server that came through validation.
+		// A disabled server makes len(conns) and MaxConnections differ:
+		// New allocates it no entries at all, so len(conns) is 0 while
+		// MaxConnections still reports the configured count. activeCount is
+		// then 0, which is <= any MaxConnections.
 		activeCount := 0
 		for _, c := range conns {
 			if c.ArticleID != "" {

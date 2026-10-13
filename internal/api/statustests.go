@@ -49,11 +49,16 @@ func (s *Server) statusTestConnection(w http.ResponseWriter, r *http.Request) {
 		respondOK(w, "result", map[string]any{"ok": false, "error": "server not found: " + name})
 		return
 	}
+	srv, err := target.Checked()
+	if err != nil {
+		respondOK(w, "result", map[string]any{"ok": false, "error": "invalid server " + name + ": " + err.Error()})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), testConnectionTimeout)
 	defer cancel()
 
-	res, err := s.status.TestNNTPServer(ctx, *target)
+	res, err := s.status.TestNNTPServer(ctx, srv)
 	if err != nil {
 		s.log.Warn("test_connection failed", "server", name, "error", err)
 		respondOK(w, "result", map[string]any{

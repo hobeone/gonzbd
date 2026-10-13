@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/types"
@@ -112,9 +111,9 @@ func TestReload_DoesNotReFetchAWrittenArticle(t *testing.T) {
 
 	// Reload onto the same server set. The server identity is irrelevant —
 	// what matters is that ReloadDownloader clears every Emitted bit.
-	if err := h.app.ReloadDownloader([]config.ServerConfig{
+	if err := h.app.ReloadDownloader(checkedServers(t,
 		h.server.ServerConfig("scenario", 2),
-	}); err != nil {
+	)); err != nil {
 		t.Fatalf("ReloadDownloader: %v", err)
 	}
 

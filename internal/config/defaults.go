@@ -108,8 +108,8 @@ func Default() (*Config, error) {
 			UnrarCommand:            "", // auto-detect
 			SevenzCommand:           "", // auto-detect
 			Par2Turbo:               false,
-			Par2MaxPacketBodySize:   67108864, // 64 MiB
-			Par2MaxJunkScanBytes:    65536,    // 64 KiB
+			Par2MaxPacketBodySize:   constants.DefaultPar2MaxPacketBodySize,
+			Par2MaxJunkScanBytes:    constants.DefaultPar2MaxJunkScanBytes,
 			IgnoreUnrarDates:        false,
 			RarDecodeWorkers:        0, // auto
 			OverwriteFiles:          false,

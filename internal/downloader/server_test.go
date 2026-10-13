@@ -24,7 +24,32 @@ func newTestServer(cfg config.ServerConfig) *Server {
 	if cfg.Connections == 0 {
 		cfg.Connections = 10
 	}
-	return NewServer(cfg)
+	return checkedServer(cfg)
+}
+
+// checkedServer builds a Server from cfg through config.ServerConfig.Checked,
+// the only way to get the config.Server NewServer takes. Keys Checked requires
+// that a fixture leaves zero get a working value first (a host, one
+// connection, a 5s timeout, a pipelining depth of 1), so a fixture names only
+// what its test is about. It panics if Checked still refuses cfg.
+func checkedServer(cfg config.ServerConfig) *Server {
+	if cfg.Host == "" {
+		cfg.Host = "news.invalid"
+	}
+	if cfg.Connections == 0 {
+		cfg.Connections = 1
+	}
+	if cfg.Timeout == 0 {
+		cfg.Timeout = 5
+	}
+	if cfg.PipeliningRequests == 0 {
+		cfg.PipeliningRequests = 1
+	}
+	srv, err := cfg.Checked()
+	if err != nil {
+		panic("checkedServer: " + err.Error())
+	}
+	return NewServer(srv)
 }
 
 // ---------------------------------------------------------------------------
@@ -158,10 +183,9 @@ func TestShouldDeactivateOptional(t *testing.T) {
 		},
 		{
 			name:     "required server never deactivated even at high ratio",
-			optional: true,
 			required: true,
 			bad:      99,
-			conns:    10, // ratio 9.9 — would deactivate if not required
+			conns:    10, // ratio 9.9 — would deactivate if optional
 			want:     false,
 		},
 		{
@@ -171,19 +195,12 @@ func TestShouldDeactivateOptional(t *testing.T) {
 			conns:    10,
 			want:     false,
 		},
-		{
-			name:     "zero connections — guard against div-by-zero",
-			optional: true,
-			bad:      1,
-			conns:    0, // guarded — function returns false
-			want:     false,
-		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			s := NewServer(config.ServerConfig{
+			s := checkedServer(config.ServerConfig{
 				Enable:      true,
 				Optional:    tc.optional,
 				Required:    tc.required,

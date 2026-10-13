@@ -9,14 +9,6 @@ file internal/api/config.go
 		bytesPerSec = n
 --- end
 
-[ssl no longer moves the default port]
-file internal/api/config.go
---- anchor
-	if ssl && port == 119 {
---- replace
-	if false {
---- end
-
 [an unknown section stops being an empty object]
 file internal/api/config.go
 --- anchor

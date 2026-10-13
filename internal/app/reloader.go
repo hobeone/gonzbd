@@ -33,21 +33,19 @@ import (
 func (app *Application) ReloadPostProcOptions(pp config.PostProcConfig, scriptDir string) {
 	cmdCfg := cmdutil.CmdConfig{Nice: pp.Nice, Ionice: pp.Ionice}
 
-	// Extra params are validated at config load/mutation (config.Validate), so
-	// a parse error here is not expected; warn and fall back to no extra args,
-	// mirroring the former SetExtraParams warn-and-continue behaviour. A failed
-	// unrar validation is a warning only — the args are still applied.
-	extraPar2Args, err := cmdutil.ParseExtraParams(pp.ExtraPar2Params)
+	// config's accessors refuse what Validate refuses, and the one production
+	// caller passes a snapshot taken after config.Set validated it, so neither
+	// error is expected. `git grep -n 'ReloadPostProcOptions(' -- '*.go' ':!*_test.go'`
+	// finds 5 lines: this comment, this declaration, the interface in
+	// internal/api, its apitest stub, and that call in internal/api/config.go.
+	// A refused value is never applied: the stage runs with no extra args.
+	extraPar2Args, err := pp.Par2ExtraArgs()
 	if err != nil {
-		app.log.Warn("Failed to parse extra par2 params", "err", err)
-		extraPar2Args = nil
+		app.log.Error("extra par2 params refused; running par2 without them", "err", err)
 	}
-	extraUnrarArgs, err := cmdutil.ParseExtraParams(pp.ExtraUnrarParams)
+	extraUnrarArgs, err := pp.UnrarExtraArgs()
 	if err != nil {
-		app.log.Warn("Failed to parse extra unrar params", "err", err)
-		extraUnrarArgs = nil
-	} else if verr := cmdutil.ValidateUnrarParams(extraUnrarArgs); verr != nil {
-		app.log.Warn("extra_unrar_params contains non-standard flags", "err", verr)
+		app.log.Error("extra unrar params refused; running unrar without them", "err", err)
 	}
 
 	// Heavy stages: one atomic Apply each, via the shared translator.
@@ -139,7 +137,7 @@ func (app *Application) ReloadGeneralOptions(g config.GeneralConfig) {
 // PauseDownloads, etc.) are never blocked on downloader shutdown. Start only
 // launches goroutines. See AGENTS.md "never hold a mutex during disk I/O or
 // network calls" and issue #118.
-func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
+func (app *Application) ReloadDownloader(scs []config.Server) error {
 	app.reloadMu.Lock()
 	defer app.reloadMu.Unlock()
 

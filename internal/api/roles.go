@@ -50,7 +50,7 @@ type DownloaderControl interface {
 
 // ConfigReloader covers hot-reload of configuration subsections.
 type ConfigReloader interface {
-	ReloadDownloader(scs []config.ServerConfig) error
+	ReloadDownloader(scs []config.Server) error
 	ReloadPostProcOptions(pp config.PostProcConfig, scriptDir string)
 	// ReloadDownloadOptions applies all hot-applicable download settings.
 	// Same locking note as ReloadPostProcOptions.
@@ -91,7 +91,7 @@ type StatusReporter interface {
 	// IsPipelineHealthy returns true if the application and pipeline are non-stalled.
 	IsPipelineHealthy(ctx context.Context) bool
 	// TestNNTPServer dials an NNTP server to verify connectivity and credentials.
-	TestNNTPServer(ctx context.Context, cfg config.ServerConfig) (app.NNTPTestResult, error)
+	TestNNTPServer(ctx context.Context, srv config.Server) (app.NNTPTestResult, error)
 }
 
 // AppServices is the aggregate of every role the API server needs from the

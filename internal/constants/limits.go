@@ -119,3 +119,21 @@ const (
 	// everything else that would live there is in SQLite or the per-instance
 	// AdminDirName above. See docs/post-processing-contract.md.
 )
+
+// PAR2 parser bounds. config validates the configured values against the
+// floors, and the par2 parser substitutes the default for a value under one.
+const (
+	// DefaultPar2MaxPacketBodySize is the PAR2 packet body cap used when
+	// postproc.par2_max_packet_body_size is 0 (64 MiB).
+	DefaultPar2MaxPacketBodySize = 64 * MiB
+	// MinPar2PacketBodySize is the smallest non-zero packet body cap
+	// config accepts (64 KiB).
+	MinPar2PacketBodySize = 64 * KiB
+
+	// DefaultPar2MaxJunkScanBytes is the junk-scan distance used when
+	// postproc.par2_max_junk_scan_bytes is 0 (64 KiB).
+	DefaultPar2MaxJunkScanBytes = 64 * KiB
+	// MinPar2JunkScanBytes is the smallest non-zero junk-scan distance
+	// config accepts (1 KiB).
+	MinPar2JunkScanBytes = 1 * KiB
+)

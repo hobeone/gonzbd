@@ -333,7 +333,7 @@ func testConfigInternal(t *testing.T, adminDir string) *config.Config {
 	cfg.General.DownloadDir = t.TempDir()
 	cfg.General.CompleteDir = t.TempDir()
 	cfg.Servers = []config.ServerConfig{{
-		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false, Connections: 1,
+		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false, Connections: 1, Timeout: 5, PipeliningRequests: 1,
 	}}
 	return cfg
 }

@@ -3,6 +3,8 @@ package nntptest_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +19,7 @@ func TestScripted_FetchHappyPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	conn, err := nntp.Dial(ctx, s.ServerConfig("test", 1))
+	conn, err := nntp.Dial(ctx, s.Server("test", 1))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -39,7 +41,7 @@ func TestScripted_DotStuffing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	conn, err := nntp.Dial(ctx, s.ServerConfig("test", 1))
+	conn, err := nntp.Dial(ctx, s.Server("test", 1))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -60,7 +62,7 @@ func TestScripted_UnknownMessageIDReturns430(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	conn, err := nntp.Dial(ctx, s.ServerConfig("test", 1))
+	conn, err := nntp.Dial(ctx, s.Server("test", 1))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -80,7 +82,7 @@ func TestScripted_FailureNotFoundIsOneShot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	conn, err := nntp.Dial(ctx, s.ServerConfig("test", 1))
+	conn, err := nntp.Dial(ctx, s.Server("test", 1))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -106,7 +108,7 @@ func TestScripted_DropMidBodyClosesConnection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	conn, err := nntp.Dial(ctx, s.ServerConfig("test", 1))
+	conn, err := nntp.Dial(ctx, s.Server("test", 1))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -125,7 +127,7 @@ func TestScripted_StallIsCancellable(t *testing.T) {
 	dialCtx, dialCancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer dialCancel()
 
-	conn, err := nntp.Dial(dialCtx, s.ServerConfig("test", 1))
+	conn, err := nntp.Dial(dialCtx, s.Server("test", 1))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -152,7 +154,7 @@ func TestScripted_MultipleConnectionsServedConcurrently(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	cfg := s.ServerConfig("test", 2)
+	cfg := s.Server("test", 2)
 	conn1, err := nntp.Dial(ctx, cfg)
 	if err != nil {
 		t.Fatalf("Dial 1: %v", err)
@@ -190,7 +192,7 @@ func TestScripted_FetchCount(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	conn, err := nntp.Dial(ctx, s.ServerConfig("test", 1))
+	conn, err := nntp.Dial(ctx, s.Server("test", 1))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -210,5 +212,23 @@ func TestScripted_FetchCount(t *testing.T) {
 
 	if got := s.FetchCount(msgID); got != 2 {
 		t.Fatalf("FetchCount after second fetch = %d, want 2", got)
+	}
+}
+
+// fatalRecorder records Fatalf instead of stopping the test, so a helper's
+// refusal can be observed.
+type fatalRecorder struct {
+	testing.TB
+	msg string
+}
+
+func (f *fatalRecorder) Fatalf(format string, args ...any) { f.msg = fmt.Sprintf(format, args...) }
+
+func TestScripted_ServerRefusedByChecked(t *testing.T) {
+	rec := &fatalRecorder{TB: t}
+	s := nntptest.New(rec)
+	s.Server("test", 0)
+	if !strings.Contains(rec.msg, "connections: 0 must be > 0") {
+		t.Errorf("Fatalf message = %q, want Checked's refusal of 0 connections", rec.msg)
 	}
 }

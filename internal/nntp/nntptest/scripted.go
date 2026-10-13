@@ -129,6 +129,17 @@ func (s *Scripted) ServerConfig(name string, connections int) config.ServerConfi
 	}
 }
 
+// Server returns ServerConfig(name, connections) through
+// config.ServerConfig.Checked, the form nntp.Dial takes, and fails the test
+// if Checked refuses it.
+func (s *Scripted) Server(name string, connections int) config.Server {
+	srv, err := s.ServerConfig(name, connections).Checked()
+	if err != nil {
+		s.t.Fatalf("nntptest: Checked: %v", err)
+	}
+	return srv
+}
+
 // AddArticle stores body under msgID. The body is plain bytes; the
 // server handles CRLF framing and dot-stuffing at the wire level.
 // Lines are split on '\n' (with an optional preceding '\r' trimmed).

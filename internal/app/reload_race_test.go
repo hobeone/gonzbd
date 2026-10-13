@@ -5,8 +5,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // raceLoadDuration is how long runReloadUnderLoad drives its readers against a
@@ -59,7 +57,7 @@ func runReloadUnderLoad(t *testing.T, app *Application, d time.Duration) {
 		// An empty server list keeps this cheap: downloader.New builds no
 		// connection workers, so no sockets are dialled, but the field write
 		// on app.downloader / app.downloaderStats still happens.
-		_ = app.ReloadDownloader([]config.ServerConfig{})
+		_ = app.ReloadDownloader(nil)
 	})
 
 	time.Sleep(d)
@@ -197,7 +195,7 @@ func TestReloadDownloader_SerializesConcurrentCalls(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					_ = app.ReloadDownloader([]config.ServerConfig{})
+					_ = app.ReloadDownloader(nil)
 				}
 			}
 		})

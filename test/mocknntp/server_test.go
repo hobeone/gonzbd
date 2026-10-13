@@ -13,6 +13,17 @@ import (
 	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
+// checked passes cfg through config.ServerConfig.Checked, the form nntp.Dial
+// takes. It panics if Checked refuses cfg, since some callers run off the
+// test goroutine.
+func checked(cfg config.ServerConfig) config.Server {
+	srv, err := cfg.Checked()
+	if err != nil {
+		panic("checked: " + err.Error())
+	}
+	return srv
+}
+
 // makeCfg builds a ServerConfig pointing at the given host:port.
 func makeCfg(addr string) config.ServerConfig {
 	host, portStr, _ := net.SplitHostPort(addr)
@@ -64,7 +75,7 @@ func TestServerGreetingAndCapabilities(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	conn, err := nntp.Dial(ctx, makeCfg(srv.Addr()))
+	conn, err := nntp.Dial(ctx, checked(makeCfg(srv.Addr())))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -94,7 +105,7 @@ func TestServerBody(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	conn, err := nntp.Dial(ctx, makeCfg(srv.Addr()))
+	conn, err := nntp.Dial(ctx, checked(makeCfg(srv.Addr())))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -126,7 +137,7 @@ func TestServerBodyUnregisteredID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	conn, err := nntp.Dial(ctx, makeCfg(srv.Addr()))
+	conn, err := nntp.Dial(ctx, checked(makeCfg(srv.Addr())))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -151,7 +162,7 @@ func TestServerAuthRequired_NoCreds(t *testing.T) {
 	defer cancel()
 
 	// Connect without credentials; Dial succeeds but Fetch should return 480.
-	conn, err := nntp.Dial(ctx, makeCfg(srv.Addr()))
+	conn, err := nntp.Dial(ctx, checked(makeCfg(srv.Addr())))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -182,7 +193,7 @@ func TestServerAuthRequired_WithCreds(t *testing.T) {
 	cfg.Username = "alice"
 	cfg.Password = "secret"
 
-	conn, err := nntp.Dial(ctx, cfg)
+	conn, err := nntp.Dial(ctx, checked(cfg))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -212,7 +223,7 @@ func TestServerAuthRejected_WrongPassword(t *testing.T) {
 	cfg.Username = "alice"
 	cfg.Password = "wrong"
 
-	_, err := nntp.Dial(ctx, cfg)
+	_, err := nntp.Dial(ctx, checked(cfg))
 	if !errors.Is(err, nntp.ErrAuthRejected) {
 		t.Fatalf("Dial wrong password = %v, want ErrAuthRejected", err)
 	}
@@ -240,7 +251,7 @@ func TestServerConcurrentFetches(t *testing.T) {
 	for i := range n {
 		wg.Go(func() {
 			cfg := makeCfg(srv.Addr())
-			conn, err := nntp.Dial(ctx, cfg)
+			conn, err := nntp.Dial(ctx, checked(cfg))
 			if err != nil {
 				errs <- err
 				return
@@ -292,7 +303,7 @@ func TestServerCustomGreeting201(t *testing.T) {
 	defer cancel()
 
 	// Dial should succeed on a 201 greeting (posting not allowed but reading ok).
-	conn, err := nntp.Dial(ctx, makeCfg(srv.Addr()))
+	conn, err := nntp.Dial(ctx, checked(makeCfg(srv.Addr())))
 	if err != nil {
 		t.Fatalf("Dial on 201 greeting: %v", err)
 	}
@@ -321,7 +332,7 @@ func TestArticlesServed_CountsOnlyDeliveredBodies(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	conn, err := nntp.Dial(ctx, makeCfg(srv.Addr()))
+	conn, err := nntp.Dial(ctx, checked(makeCfg(srv.Addr())))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}

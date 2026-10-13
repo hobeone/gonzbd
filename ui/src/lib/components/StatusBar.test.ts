@@ -89,6 +89,23 @@ describe('StatusBar', () => {
 		expect(screen.getByText('PAUSED')).toBeInTheDocument();
 	});
 
+	it('labels the limit with the rate the server reports in force', () => {
+		// A speedlimit call sets the rate directly, so it can differ from
+		// bandwidth_max scaled by bandwidth_perc.
+		vi.mocked(getSpeedLimitBytesPerSec).mockReturnValue(5 * 1024 * 1024);
+		vi.mocked(getBandwidthMaxBytesPerSec).mockReturnValue(10 * 1024 * 1024);
+		vi.mocked(getBandwidthPerc).mockReturnValue(100);
+		render(StatusBar);
+		expect(screen.getByText('5M')).toBeInTheDocument();
+	});
+
+	it('labels no limit as Unlim', () => {
+		vi.mocked(getSpeedLimitBytesPerSec).mockReturnValue(0);
+		vi.mocked(getBandwidthMaxBytesPerSec).mockReturnValue(0);
+		render(StatusBar);
+		expect(screen.getByText('Unlim')).toBeInTheDocument();
+	});
+
 	it('does not show PAUSED when not paused', () => {
 		vi.mocked(isPaused).mockReturnValue(false);
 		render(StatusBar);

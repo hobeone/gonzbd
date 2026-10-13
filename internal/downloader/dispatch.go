@@ -546,7 +546,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 
 	d.log.Debug("connection worker started", "server", srv.Cfg().Name, "worker", workerID)
 
-	pipelineDepth := max(srv.Cfg().PipeliningRequests, 1)
+	pipelineDepth := srv.Cfg().PipeliningRequests
 	// Bound outstanding goroutines per connection to prevent one fast
 	// connWorker from eagerly draining the entire workCh. We size
 	// the limit to pipelineDepth*2 to allow decode overlap: up to
@@ -964,7 +964,7 @@ func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, worke
 		dialOpts = append(dialOpts, nntp.WithRecorder(d.meter, name))
 	}
 
-	c, err := nntp.Dial(ctx, srv.Cfg(), dialOpts...) //lockio: see managedConn doc comment — mu is also the dial-coalescing lock
+	c, err := nntp.Dial(ctx, srv.srv, dialOpts...) //lockio: see managedConn doc comment — mu is also the dial-coalescing lock
 	if err != nil {
 		return nil, err
 	}

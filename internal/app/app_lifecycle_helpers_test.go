@@ -24,7 +24,7 @@ func newLifecycleTestApp(t *testing.T, opts ...func(*Application)) (*Application
 	t.Helper()
 	adminDir := t.TempDir()
 	cfg := testConfig(t.TempDir(), t.TempDir(), adminDir, config.ServerConfig{
-		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false,
+		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false, Connections: 1, Timeout: 5, PipeliningRequests: 1,
 	})
 	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	if err != nil {
@@ -119,7 +119,7 @@ func TestDeleteHistoryEntries_PropagatesRepoError(t *testing.T) {
 	t.Parallel()
 	adminDir := t.TempDir()
 	cfg := testConfig(t.TempDir(), t.TempDir(), adminDir, config.ServerConfig{
-		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false,
+		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false, Connections: 1, Timeout: 5, PipeliningRequests: 1,
 	})
 	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	if err != nil {

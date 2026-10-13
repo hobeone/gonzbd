@@ -127,8 +127,6 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	scriptCanFail := pp.ScriptCanFail
 	nice := pp.Nice
 	ionice := pp.Ionice
-	extraPar2Params := pp.ExtraPar2Params
-	extraUnrarParams := pp.ExtraUnrarParams
 	cleanupExtensions := pp.CleanupExtensions
 	scriptDir := gen.ScriptDir
 	completeDir := gen.CompleteDir
@@ -151,19 +149,13 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	// Build nice/ionice wrapping config for all external tool commands.
 	cmdCfg := cmdutil.CmdConfig{Nice: nice, Ionice: ionice}
 
-	// Parse user-supplied extra params (validated: must start with '-').
-	extraPar2Args, err := cmdutil.ParseExtraParams(extraPar2Params)
+	extraPar2Args, err := pp.Par2ExtraArgs()
 	if err != nil {
-		return builtStages{}, fmt.Errorf("extra_par2_params: %w", err)
+		return builtStages{}, err
 	}
-	extraUnrarArgs, err := cmdutil.ParseExtraParams(extraUnrarParams)
+	extraUnrarArgs, err := pp.UnrarExtraArgs()
 	if err != nil {
-		return builtStages{}, fmt.Errorf("extra_unrar_params: %w", err)
-	}
-	// Sanity assert: extra unrar params must conform to SABnzbd's allowlist
-	// (enforced at config load and mutation boundaries via Validate()).
-	if err := cmdutil.ValidateUnrarParams(extraUnrarArgs); err != nil {
-		return builtStages{}, fmt.Errorf("extra_unrar_params: %w", err)
+		return builtStages{}, err
 	}
 
 	// Repair stage. Config-driven options come from the shared translator

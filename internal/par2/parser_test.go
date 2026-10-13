@@ -1058,7 +1058,7 @@ func TestParsePar2Set_MaxPacketBodySizeBoundary(t *testing.T) {
 	packetLen := defaultMaxPacketBodySize + 64
 	buf := make([]byte, 64)
 	copy(buf[0:8], magic)
-	binary.LittleEndian.PutUint64(buf[8:16], packetLen)
+	binary.LittleEndian.PutUint64(buf[8:16], uint64(packetLen))
 
 	f, err := os.Create(parPath)
 	if err != nil {
@@ -1068,7 +1068,7 @@ func TestParsePar2Set_MaxPacketBodySizeBoundary(t *testing.T) {
 		f.Close()
 		t.Fatalf("Write: %v", err)
 	}
-	if err := f.Truncate(int64(packetLen)); err != nil {
+	if err := f.Truncate(packetLen); err != nil {
 		f.Close()
 		t.Fatalf("Truncate: %v", err)
 	}
@@ -1084,7 +1084,7 @@ func TestParsePar2Set_PacketBodySizeExceeded(t *testing.T) {
 	tmpDir := t.TempDir()
 	parPath := filepath.Join(tmpDir, "test_large_body.par2")
 
-	// Packet body size 70000 bytes (> MinPar2PacketBodySize 65536)
+	// Packet body size 70000 bytes (> constants.MinPar2PacketBodySize 65536)
 	bodyLen := uint64(70000)
 	packetLen := 64 + bodyLen
 	buf := make([]byte, 64)
@@ -1171,7 +1171,7 @@ func TestParsePar2Set_MinimumSafetyFloors(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	// Below safety floor values: MaxPacketBodySize=10 (< MinPar2PacketBodySize 65536), MaxJunkScanBytes=50 (< MinPar2JunkScanBytes 1024)
+	// Below safety floor values: MaxPacketBodySize=10 (< constants.MinPar2PacketBodySize 65536), MaxJunkScanBytes=50 (< constants.MinPar2JunkScanBytes 1024)
 	// Should trigger fallback to defaults (64 MiB packet body, 64 KiB junk scan), allowing the 24-byte mainPkt body to parse successfully.
 	opts := ParseOptions{
 		MaxPacketBodySize: 10,
