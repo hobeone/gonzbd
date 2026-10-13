@@ -91,7 +91,7 @@ func TestFail_WhilePostProcessing_IsNotedAndLeavesTheStatusToTheStages(t *testin
 	application, j := admittedApp(t, stage)
 	id := j.ID()
 
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 	awaitStage(t, stage.entered)
 
 	fault := storagefault.Classify("write", "/mnt/ro/held.bin", syscall.EROFS)
@@ -120,7 +120,7 @@ func TestRemoveJob_EndsThePostProcessingAdmission(t *testing.T) {
 	stage := gatedStage{entered: make(chan string, 4), finish: make(chan struct{})}
 	application, j := admittedApp(t, stage)
 
-	application.maybeFinalize(j.ID(), "")
+	application.maybeFinalizeJob(j, "")
 	awaitStage(t, stage.entered)
 	removeWithinBudget(t, application, j.ID())
 	waitFor(t, func() bool { return admissionsHeld(&application.postProcAdmissions) == 0 })
@@ -163,7 +163,7 @@ func TestRunPostProc_DuringTheFinalizerTail_EnqueuesNoSecondCopy(t *testing.T) {
 		}
 	}
 
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 	awaitStage(t, stage.entered)
 	close(stage.finish)
 	<-inTail
@@ -212,7 +212,7 @@ func TestEnqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy(t *testing.T) {
 	t.Cleanup(du.Abort)
 	application.duOrch.inject(id, du)
 
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 	fault := storagefault.Classify("write", "/mnt/ro/held.bin", syscall.EROFS)
 	application.Fail(j, fault)
 	newAppRunner(application).runPostProc(t.Context(), id, job.Repairing)

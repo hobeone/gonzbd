@@ -22,7 +22,7 @@ func closeFaultRun(t *testing.T, closeErr error) (status, failMsg string, stageR
 	id := j.ID()
 	application.closeJobHandlesHook = func(context.Context, string) error { return closeErr }
 
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 	awaitFinalized(t, application, id)
 
 	entry := historyEntry(t, application, id)
@@ -76,7 +76,7 @@ func TestEnqueuePostProc_ACloseFaultIsNotedBehindAnEarlierReason(t *testing.T) {
 	fault := storagefault.Classify("close", "/mnt/dl/b.bin", syscall.EROFS)
 	application.closeJobHandlesHook = func(context.Context, string) error { return fault }
 
-	application.maybeFinalize(id, "Failed: earlier")
+	application.maybeFinalizeJob(j, "Failed: earlier")
 	awaitFinalized(t, application, id)
 
 	entry := historyEntry(t, application, id)

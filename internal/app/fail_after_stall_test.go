@@ -133,18 +133,18 @@ func TestFail_OnAUserPausedJob_DefersWithoutResumingIt(t *testing.T) {
 	}
 }
 
-// TestMaybeFinalize_AnEmptyReasonAtAssessing_IsNoFailure: a hand-off by ID
-// with no reason, deferred to the Assessing worker, is a plain hand-over, as
-// admit reads "". The worker reports its verdict rather than settling the job
-// Failed.
-func TestMaybeFinalize_AnEmptyReasonAtAssessing_IsNoFailure(t *testing.T) {
+// TestFinalizeRegistered_AnEmptyReasonAtAssessing_IsNoFailure: a deferring
+// hand-off with no reason, deferred to the Assessing worker, is a plain
+// hand-over, as admit reads "". The worker reports its verdict rather than
+// settling the job Failed.
+func TestFinalizeRegistered_AnEmptyReasonAtAssessing_IsNoFailure(t *testing.T) {
 	t.Parallel()
 	f := newFailAtAssessingFixture(t)
 	if err := f.d.AdvanceFrom(f.j, job.Fetching, job.Assessing); err != nil {
 		t.Fatalf("AdvanceFrom: %v", err)
 	}
-	if deferred := f.app.maybeFinalize(f.j.ID(), ""); !deferred {
-		t.Fatal("precondition: maybeFinalize did not defer a job with Assessing pending")
+	if deferred := f.app.finalizeRegistered(f.j, "", true); !deferred {
+		t.Fatal("precondition: finalizeRegistered did not defer a job with Assessing pending")
 	}
 
 	f.d.Tick(t.Context())

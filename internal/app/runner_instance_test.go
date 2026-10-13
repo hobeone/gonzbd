@@ -58,23 +58,23 @@ func TestFailHopeless_LeavesALaterInstanceAlone(t *testing.T) {
 	}
 }
 
-// TestMaybeFinalize_HandsOverTheInstanceHoldingTheID: the by-ID door hands
-// over whichever instance is registered under the ID now, and does nothing
-// for an ID nothing holds.
-func TestMaybeFinalize_HandsOverTheInstanceHoldingTheID(t *testing.T) {
+// TestFinalizeHopeless_HandsOverTheInstanceHoldingTheID: the hopeless
+// detectors' by-ID door hands over whichever instance is registered under the
+// ID now, and does nothing for an ID nothing holds.
+func TestFinalizeHopeless_HandsOverTheInstanceHoldingTheID(t *testing.T) {
 	t.Parallel()
 	application := newTestApplication(t)
 	const id = "feedface00656a03"
 	j1, j2 := retryUnderStaleID(t, application, id)
 
-	application.maybeFinalize("feedface00656aff", "no such job")
-	application.maybeFinalize(id, "failed")
+	application.finalizeHopeless("feedface00656aff", hopelessHealthGate)
+	application.finalizeHopeless(id, hopelessHealthGate)
 
 	if !application.postProcAdmissions.has(j2) {
-		t.Error("maybeFinalize did not admit the instance registered under the ID")
+		t.Error("finalizeHopeless did not admit the instance registered under the ID")
 	}
 	if application.postProcAdmissions.has(j1) {
-		t.Error("maybeFinalize admitted an instance that has left the dispatcher")
+		t.Error("finalizeHopeless admitted an instance that has left the dispatcher")
 	}
 }
 

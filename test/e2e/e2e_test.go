@@ -281,8 +281,8 @@ func waitAndVerify(t *testing.T, a *app.Application, jobID, downloadDir, filenam
 
 // waitForFilesComplete polls until every file at fileIdxs is marked complete
 // on jobID, or the job has left the active queue. On the success path a job
-// only leaves the active queue via maybeFinalize after IsComplete(), so a
-// nil snapshot usually means assembly already resolved. maybeFinalize also
+// only leaves the active queue via the post-processing hand-over after
+// IsComplete(), so a nil snapshot usually means assembly already resolved. The hand-over also
 // has IsComplete()-unguarded callers (e.g. OnJobHopeless, when too much of
 // a multi-file job's data is unrecoverable) that can remove a job before
 // every fileIdx has actually completed — that false positive isn't caught

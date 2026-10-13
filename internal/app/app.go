@@ -2142,19 +2142,6 @@ func (app *Application) DirectUnpackStatuses() map[string]directunpack.Status {
 	return app.duOrch.statuses()
 }
 
-// maybeFinalize hands the job registered under jobID to post-processing with
-// failMsg, as maybeFinalizeJob does, unless the job is at, or due at,
-// Assessing (awaitsAssessing): then failMsg is left for its Assessing worker,
-// which hands the job over (postProcAdmissions.admitUnlessAssessing). It is for a caller that holds
-// only the ID and means whichever instance holds it now. It reports whether it
-// deferred to the Assessing worker.
-func (app *Application) maybeFinalize(jobID, failMsg string) (deferred bool) {
-	if j, ok := app.dispatcher.Job(jobID); ok {
-		return app.finalizeRegistered(j, failMsg, true)
-	}
-	return false
-}
-
 // maybeFinalizeJob hands j to post-processing with failMsg, only while j is the
 // instance registered under its ID. RowJob reads the header in the same span
 // that finds j registered, so a caller holding a removed instance hands over
@@ -2163,9 +2150,12 @@ func (app *Application) maybeFinalizeJob(j *job.Job, failMsg string) {
 	app.finalizeRegistered(j, failMsg, false)
 }
 
-// finalizeRegistered is maybeFinalize's and maybeFinalizeJob's body, and the
-// hand-over Fail and finalizeHopeless make with the instance they hold. It
-// reports enqueuePostProc's deferral.
+// finalizeRegistered is maybeFinalizeJob's body, and the hand-over Fail and
+// finalizeHopeless make with the instance they hold. With deferAtAssessing a
+// job at, or due at, Assessing (awaitsAssessing) is not handed over: failMsg
+// is left for its Assessing worker, which hands the job over
+// (postProcAdmissions.admitUnlessAssessing). It reports enqueuePostProc's
+// deferral.
 func (app *Application) finalizeRegistered(j *job.Job, failMsg string, deferAtAssessing bool) (deferred bool) {
 	row, ok := app.dispatcher.RowJob(j)
 	if !ok {

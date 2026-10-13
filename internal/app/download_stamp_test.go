@@ -25,7 +25,7 @@ func TestEnqueuePostProc_FromFetching_StampsTheFinishWhenNoneIsSet(t *testing.T)
 		t.Fatal("fixture: the finish was stamped before the hand-off")
 	}
 
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 	awaitStage(t, stage.entered)
 
 	gotFinish := j.DownloadFinished()
@@ -61,7 +61,7 @@ func TestEnqueuePostProc_KeepsTheFinishAJobLeftFetchingWith(t *testing.T) {
 		t.Fatalf("MarkDownloadFinished: %v", err)
 	}
 
-	application.maybeFinalize(j.ID(), "")
+	application.maybeFinalizeJob(j, "")
 	awaitStage(t, stage.entered)
 	if got := j.DownloadFinished(); !got.Equal(finish) {
 		t.Errorf("the hand-over moved the finish from %v to %v", finish, got)

@@ -1445,13 +1445,13 @@ func TestApplication_EdgeCases(t *testing.T) {
 		t.Error("expected RemoveJob to fail for nonexistent job")
 	}
 
-	// 3. Test buildDownloaderOptions and OnJobHopeless callback (triggers maybeFinalize and enqueuePostProc)
+	// 3. Test buildDownloaderOptions and OnJobHopeless callback (triggers finalizeHopeless and enqueuePostProc)
 	downloaderOpts := application.TriggerBuildDownloaderOptions()
 
 	// Nonexistent job ID (nil snap return)
 	downloaderOpts.OnJobHopeless("nonexistent")
 
-	// Valid job ID (triggers maybeFinalize and enqueuePostProc)
+	// Valid job ID (triggers finalizeHopeless and enqueuePostProc)
 	downloaderOpts.OnJobHopeless(job.ID())
 
 	// Add a category to config
@@ -1493,22 +1493,22 @@ func TestApplication_EdgeCases(t *testing.T) {
 	application.SendFileComplete(app.FileComplete{JobID: "nonexistent", FileIdx: 0})
 	application.TriggerDrainCompletions(t.Context())
 
-	// 6. Test maybeFinalize double start branch (returns early when already started)
-	application.TriggerMaybeFinalize(job.ID(), "")
+	// 6. Test maybeFinalizeJob double start branch (returns early when already started)
+	application.TriggerMaybeFinalizeJob(job, "")
 
-	// 7. Test maybeFinalize queue save error branch (triggers warning log)
+	// 7. Test maybeFinalizeJob queue save error branch (triggers warning log)
 	_ = jobCollision.BeginAttempt(time.Now())
 	cfg.With(func(c *config.Config) {
 		c.General.AdminDir = "/nonexistent-permission-denied"
 	})
-	application.TriggerMaybeFinalize(jobCollision.ID(), "")
+	application.TriggerMaybeFinalizeJob(jobCollision, "")
 
-	// 7b. Test maybeFinalize assembler close success branch
+	// 7b. Test maybeFinalizeJob assembler close success branch
 	jobSucc, hdrSucc := buildTestJob(t, cfg, parsed, types.FetchOptions{NzbName: "succ-job", PP: 3})
 	_ = application.AddJob(t.Context(), jobSucc, hdrSucc, []byte("nzb content"), false)
 	_ = jobSucc.BeginAttempt(time.Now())
 	_ = application.Assembler().Start(t.Context())
-	application.TriggerMaybeFinalize(jobSucc.ID(), "")
+	application.TriggerMaybeFinalizeJob(jobSucc, "")
 	_ = application.Assembler().Stop()
 
 	// 8. Test maybeDirectUnpack branches

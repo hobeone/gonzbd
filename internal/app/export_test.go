@@ -91,9 +91,9 @@ func (a *Application) SendFileComplete(fc FileComplete) {
 	a.internalFileComplete <- fc
 }
 
-// TriggerMaybeFinalize calls the unexported maybeFinalize method.
-func (a *Application) TriggerMaybeFinalize(jobID, failMsg string) {
-	a.maybeFinalize(jobID, failMsg)
+// TriggerMaybeFinalizeJob calls the unexported maybeFinalizeJob method.
+func (a *Application) TriggerMaybeFinalizeJob(j *job.Job, failMsg string) {
+	a.maybeFinalizeJob(j, failMsg)
 }
 
 // InjectPipelineFileInfo inserts a file path in the pipeline's fileInfo cache.

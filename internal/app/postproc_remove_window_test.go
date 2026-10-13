@@ -188,7 +188,7 @@ func TestRemoveJob_DuringTheDirectUnpackWait_PostProcessingDoesNotRun(t *testing
 			id := j.ID()
 			waitingDirectUnpack(t, application, id)
 
-			application.maybeFinalize(id, "")
+			application.maybeFinalizeJob(j, "")
 			removeWithinBudget(t, application, id)
 			awaitAdmissionsEnded(t, application)
 
@@ -248,7 +248,7 @@ func TestRemoveJob_WaitsForTheDirectUnpackToStop(t *testing.T) {
 		}
 	}
 
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 	removeWithinBudget(t, application, id)
 	select {
 	case stillRunning := <-fromRemoveJob:
@@ -318,7 +318,7 @@ func TestRemoveJob_InterruptsTheDirectUnpackWait(t *testing.T) {
 	id := j.ID()
 	waitingDirectUnpack(t, application, id)
 
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 	removeWithinBudget(t, application, id)
 	awaitAdmissionsEnded(t, application)
 

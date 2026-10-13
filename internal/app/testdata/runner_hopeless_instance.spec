@@ -11,7 +11,9 @@ file internal/app/runner.go
 		r.app.maybeFinalizeJob(j, reason)
 --- replace
 	for _, reason := range reasons {
-		r.app.maybeFinalize(j.ID(), reason)
+		if cur, ok := r.app.dispatcher.Job(j.ID()); ok {
+			r.app.maybeFinalizeJob(cur, reason)
+		}
 --- end
 
 [the hopeless verdict settles whatever instance holds the ID]

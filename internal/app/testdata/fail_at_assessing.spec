@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run ^(TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches|TestFail_OnACompleteJobAtFetching_DefersToAssessing|TestFail_BetweenTheVerdictAndItsReport_IsHandedOffAfterTheReport|TestAwaitsAssessing|TestAdmitUnlessAssessing_DefersToTheVisit|TestBeginAssess_AnEarlierVisitsEndTakesNothingDeferredToALaterOne|TestAdmitUnlessAssessing_AVisitNoWorkerOwnsGoesWithItsJob|TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing|TestFail_OnAUserPausedJob_DefersWithoutResumingIt|TestAdmitUnlessAssessing_KeepsNoEmptyReason|TestMaybeFinalize_AnEmptyReasonAtAssessing_IsNoFailure)$
+run ^(TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches|TestFail_OnACompleteJobAtFetching_DefersToAssessing|TestFail_BetweenTheVerdictAndItsReport_IsHandedOffAfterTheReport|TestAwaitsAssessing|TestAdmitUnlessAssessing_DefersToTheVisit|TestBeginAssess_AnEarlierVisitsEndTakesNothingDeferredToALaterOne|TestAdmitUnlessAssessing_AVisitNoWorkerOwnsGoesWithItsJob|TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing|TestFail_OnAUserPausedJob_DefersWithoutResumingIt|TestAdmitUnlessAssessing_KeepsNoEmptyReason|TestFinalizeRegistered_AnEmptyReasonAtAssessing_IsNoFailure|TestHopelessCallbacks_CarryTheirTrigger)$
 timeout 5m
 
 # A deferring hand-off (Fail, the hopeless callbacks) does not admit a job at
@@ -16,13 +16,13 @@ run ^TestAdmitUnlessAssessing_DefersToTheVisit$
 	if false {
 --- end
 
-[maybeFinalize does not defer]
+[the hopeless callbacks' hand-over does not defer]
 file internal/app/app.go
-run ^TestMaybeFinalize_AnEmptyReasonAtAssessing_IsNoFailure$
+run ^TestHopelessCallbacks_CarryTheirTrigger$
 --- anchor
-		return app.finalizeRegistered(j, failMsg, true)
+	app.finalizeRegistered(j, hopelessReason(j, trigger), true)
 --- replace
-		return app.finalizeRegistered(j, failMsg, false)
+	app.finalizeRegistered(j, hopelessReason(j, trigger), false)
 --- end
 
 [Fail's hand-over does not defer]
@@ -107,7 +107,7 @@ run ^TestFail_BetweenTheVerdictAndItsReport_IsHandedOffAfterTheReport$
 
 [the Assessing worker begins no visit]
 file internal/app/runner.go
-run ^TestMaybeFinalize_AnEmptyReasonAtAssessing_IsNoFailure$
+run ^TestFinalizeRegistered_AnEmptyReasonAtAssessing_IsNoFailure$
 --- anchor
 	visit := r.app.postProcAdmissions.beginAssess(j)
 --- replace

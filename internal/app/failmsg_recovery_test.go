@@ -45,10 +45,10 @@ func TestFailMsgForJob_IndexIsNotCountedAsRecognizedCapacity(t *testing.T) {
 // failMsgForJob here, and the downloader's Early Health Gate, which compares
 // UnfinishedArticle.RecoveryBytes against failed bytes. Moving one without the
 // other opens a window where they disagree, and the disagreement is not
-// benign: app.go's OnJobHopeless passes failMsgForJob's result straight into
-// maybeFinalize with no fallback string, so a job the dispatcher declares
-// hopeless while failMsgForJob still considers it repairable is finalized
-// with an *empty* reason — no message for the user at all.
+// benign: app.go's OnJobHopeless words its reason from failMsgForJob first
+// (hopelessReason), so a job the dispatcher declares hopeless while
+// failMsgForJob still considers it repairable is failed with the trigger's
+// generic wording, not the figures that put it beyond repair.
 //
 // The fixture is chosen to sit in the only band where the two denominators
 // disagree, recoveryBytes < failedBytes <= par2Bytes:

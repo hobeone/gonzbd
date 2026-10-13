@@ -91,7 +91,7 @@ func TestPersistAndCommit_RefusesARetryWhileItCommits(t *testing.T) {
 //
 // Stood in for: the hand-over of that instance to post-processing, which in
 // production is a hand-over that resolved the ID to this instance
-// (finalizeHopeless, or Fail's maybeFinalize) paused before beginHandOver, is
+// (finalizeHopeless, or Fail) paused before beginHandOver, is
 // replaced by calling persistAndCommit on the instance directly.
 func failedRemovalEvicted(t *testing.T, application *Application, id string) *job.Job {
 	t.Helper()
