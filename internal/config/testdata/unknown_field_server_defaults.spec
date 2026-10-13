@@ -1,7 +1,7 @@
 pkg ./internal/config/
-run TestDecode_UnknownFieldStillNormalizes$
+run TestDecode_UnknownFieldStillDefaultsServers$
 
-[early return on unknown YAML fields skips applyNormalization]
+[early return on unknown YAML fields skips decodeServers]
 file internal/config/loader.go
 --- anchor
 		if fatal != nil {

@@ -77,7 +77,8 @@ type GeneralConfig struct {
 	ScriptDir string `yaml:"script_dir" json:"script_dir"`
 	// LogDir holds the server's own log files.
 	LogDir string `yaml:"log_dir" json:"log_dir"`
-	// AdminDir holds queue / state files.
+	// AdminDir holds queue / state files. Validate refuses an empty value
+	// (including one that expands to empty).
 	AdminDir string `yaml:"admin_dir" json:"admin_dir"`
 
 	// HistoryRetentionDays is how long a finished job stays in history,

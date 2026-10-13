@@ -23,62 +23,46 @@ func (c *Config) Set(section, keyword, value string) error {
 // SetLocked updates a single configuration value like Set, but assumes the
 // caller already holds the write lock (e.g. from within a With callback).
 //
-// After applying the change, Validate() is run against the full config. If
-// validation fails, the previous value is restored and the validation error
-// is returned, ensuring invalid state is never persisted.
+// The change is made on a copy, which then goes through finish — the same
+// normalize, expand and validate Load runs — and replaces c only if finish
+// accepts it. A refused value therefore leaves c untouched, and an accepted
+// one leaves c holding what the next Load of the saved file produces.
 func (c *Config) SetLocked(section, keyword, value string) error {
+	next := c.cloneLocked()
+	if err := next.assign(section, keyword, value); err != nil {
+		return err
+	}
+	if err := next.finish(); err != nil {
+		return fmt.Errorf("config: validation failed: %w", err)
+	}
+	c.replaceLocked(next)
+	return nil
+}
 
-	// 1. Find the section field
+// assign writes the raw value into the field section and keyword name,
+// converting it to the field's type. It neither normalizes nor validates.
+func (c *Config) assign(section, keyword, value string) error {
 	v := reflect.ValueOf(c).Elem()
 	sectionField := findFieldByTag(v, section)
 	if !sectionField.IsValid() {
 		return fmt.Errorf("config: invalid section %q", section)
 	}
 
-	// 2. Handle array-based sections (Servers, Categories) via JSON
+	// Array-based sections (Servers, Categories) take a JSON array.
 	if keyword == "" && sectionField.Kind() == reflect.Slice {
-		prev := reflect.New(sectionField.Type()).Elem()
-		prev.Set(sectionField)
-
-		if err := setSliceValue(sectionField, value); err != nil {
-			return err
-		}
-		if err := c.validateLocked(); err != nil {
-			sectionField.Set(prev) // rollback
-			return fmt.Errorf("config: validation failed: %w", err)
-		}
-		c.ExpandPaths()
-		return nil
+		return setSliceValue(sectionField, value)
 	}
 
-	// 3. Handle flat sections (General, Downloads, PostProc)
+	// Flat sections (General, Downloads, PostProc).
 	if sectionField.Kind() == reflect.Struct {
 		field := findFieldByTag(sectionField, keyword)
 		if !field.IsValid() {
 			return fmt.Errorf("config: invalid keyword %q in section %q", keyword, section)
 		}
-
-		prev := reflect.New(field.Type()).Elem()
-		prev.Set(field)
-
-		if err := setFieldValue(field, value); err != nil {
-			return err
-		}
-		if err := c.validateLocked(); err != nil {
-			field.Set(prev) // rollback
-			return fmt.Errorf("config: validation failed: %w", err)
-		}
-		c.ExpandPaths()
-		return nil
+		return setFieldValue(field, value)
 	}
 
 	return fmt.Errorf("config: section %q (kind %v) does not support Set with keyword %q", section, sectionField.Kind(), keyword)
-}
-
-// validateLocked runs Validate without re-acquiring the mutex.
-// Validate only reads fields so this is safe under the write lock.
-func (c *Config) validateLocked() error {
-	return c.Validate()
 }
 
 func setSliceValue(f reflect.Value, val string) error {

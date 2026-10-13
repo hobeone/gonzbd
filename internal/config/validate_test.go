@@ -353,6 +353,7 @@ func TestGeneralConfig_ValidateDirect(t *testing.T) {
 		Port:        8080,
 		DownloadDir: "/tmp/download",
 		CompleteDir: "/tmp/complete",
+		AdminDir:    "/tmp/admin",
 		APIKey:      "abcdef0123456789",
 		NZBKey:      "0123456789abcdef",
 	}
@@ -400,10 +401,11 @@ func TestGeneralConfig_ValidateDirect(t *testing.T) {
 func TestDownloadConfig_ValidateDirect(t *testing.T) {
 	t.Parallel()
 	d := DownloadConfig{
-		BandwidthMax:  100,
-		BandwidthPerc: 50,
-		MaxArtTries:   3,
-		MaxActiveJobs: 4,
+		BandwidthMax:    100,
+		BandwidthPerc:   50,
+		MaxArtTries:     3,
+		MaxActiveJobs:   4,
+		MaxComputeSlots: 2,
 
 		UnwantedExtensionsMode:     unwanted.ModeBlacklist,
 		ActionOnUnwantedExtensions: unwanted.ActionOff,

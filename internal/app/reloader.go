@@ -97,7 +97,7 @@ func (app *Application) ReloadDownloadOptions(d config.DownloadConfig) {
 	app.SetMaxArtOpt(d.MaxArtOpt)
 	app.SetTopOnly(d.TopOnly)
 	app.SetPropagationDelay(d.PropagationDelay)
-	if app.dispatcher != nil && d.MaxActiveJobs > 0 {
+	if app.dispatcher != nil {
 		app.dispatcher.SetCaps(d.MaxActiveJobs, app.dispatcher.SlotCap())
 	}
 }

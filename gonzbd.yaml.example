@@ -3,8 +3,10 @@
 # =============================================================================
 # Copy this file to gonzbd.yaml and customize for your setup.
 # When no config file exists, gonzbd writes a default one with generated
-# API keys on first run. If you start from this file instead, set api_key
-# and nzb_key yourself: an empty key is refused at load.
+# API keys on first run. If you start from this file instead, leave
+# api_key and nzb_key empty: the first start generates both and writes
+# them into this file, changing only those two lines. The file must be
+# writable for that, or the start fails.
 #
 # Values that accept sizes use K/M/G/T suffixes (base-1024).
 # Path fields support $ENV_VAR expansion.
@@ -25,13 +27,15 @@ general:
   https_key: ""
 
   # API key for authenticating API requests. 16-character lowercase hex.
-  # Generated only when gonzbd creates a default config on first run.
+  # Empty (or left out): generated at start and written back here. Any
+  # other value that is not 16 lowercase hex characters is refused.
   # Required for external tools like Sonarr, Radarr, and NZB360 to
   # communicate with gonzbd.
   api_key: ""
 
   # Separate API key for NZB-upload endpoints only. Allows giving
   # upload-only access to indexers without exposing the full API key.
+  # Generated the same way as api_key when empty.
   nzb_key: ""
 
   # Client IP ranges trusted to receive and use the web UI's ephemeral
@@ -113,10 +117,10 @@ general:
   # stderr-only (no file logging). Only used in serve mode.
   log_dir: ""
 
-  # Directory for queue state and admin data. Stores the persistent
-  # job queue in SQLite (queue.db) and immutable manifests in
-  # manifests/<id>.json.gz between restarts. Defaults to
-  # <download_dir>/admin if empty.
+  # Directory for queue state and admin data: history.db (history and
+  # the job queue), gonzbd.lock, queue/manifests/<id>.json.gz, and the
+  # NZB backups under nzb/ that a retry re-reads. Must not be empty. A
+  # relative path is resolved against the directory gonzbd starts in.
   admin_dir: admin
 
   # How long a finished job stays in history, in days. 0 keeps it
@@ -186,7 +190,7 @@ downloads:
 
   # Maximum number of jobs concurrently performing compute- or disk-heavy
   # post-processing stages (Assessing, Repairing, Extracting, Finalizing).
-  # Defaults to 2.
+  # Must be at least 1. Defaults to 2.
   max_compute_slots: 2
 
   # When true, only dispatch articles to the highest-priority server.
@@ -378,7 +382,8 @@ postproc:
   direct_unpack: false
 
   # Limit the number of concurrent DirectUnpack workers across all jobs.
-  # 0 means no limit (one per active job). Default 3 (matching SABnzbd).
+  # 0 means no limit (one per active job); a negative value is refused.
+  # Default 3 (matching SABnzbd).
   direct_unpack_threads: 3
 
   # Rename obfuscated files (random hex strings, UUIDs) to use the
@@ -504,7 +509,9 @@ categories:
     pp: 3
     # Post-processing script name from script_dir. "None" = no script.
     script: None
-    # Default job priority. 0 = normal.
+    # Priority for jobs added under this category: 2 = force, 1 = high,
+    # 0 = normal, -1 = low, -2 = paused, -100 = inherit the Default
+    # category's. Other values are refused.
     priority: 0
     # Subdirectory within complete_dir. Empty = write to complete_dir root.
     dir: ""

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
@@ -69,6 +70,10 @@ func (c *Config) ValidateWithOS(goos string) error {
 var (
 	apiKeyPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
 )
+
+// keyRemedy is the refusal for an api_key or nzb_key that does not match
+// apiKeyPattern.
+const keyRemedy = "must be 16 lowercase hex characters; generate one with `openssl rand -hex 8`, or leave it empty for gonzbd to generate one at start"
 
 // validateUniqueNames returns an error if any name appears more than once.
 // Empty names are reported as a separate "must not be empty" error.
@@ -142,10 +147,10 @@ func (g *GeneralConfig) validate() error {
 		}
 	}
 	if !apiKeyPattern.MatchString(g.APIKey) {
-		errs = append(errs, fmt.Errorf("api_key: must be 16 lowercase hex characters; regenerate via `gonzbd init`"))
+		errs = append(errs, fmt.Errorf("api_key: %s", keyRemedy))
 	}
 	if !apiKeyPattern.MatchString(g.NZBKey) {
-		errs = append(errs, fmt.Errorf("nzb_key: must be 16 lowercase hex characters; regenerate via `gonzbd init`"))
+		errs = append(errs, fmt.Errorf("nzb_key: %s", keyRemedy))
 	}
 	if err := nonNegative("history_retention_days", g.HistoryRetentionDays); err != nil {
 		errs = append(errs, err)
@@ -159,12 +164,19 @@ func (g *GeneralConfig) validate() error {
 	if strings.TrimSpace(g.CompleteDir) == "" {
 		errs = append(errs, fmt.Errorf("complete_dir: %w", errEmpty))
 	}
+	if strings.TrimSpace(g.AdminDir) == "" {
+		errs = append(errs, fmt.Errorf("admin_dir: %w", errEmpty))
+	}
 	if g.DirscanDir != "" {
 		if err := positive("dirscan_speed", g.DirscanSpeed); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	// Validate per-component log level overrides at load time.
+	// An invalid level stops cmd/gonzbd at startup (configureLogging), so it
+	// is refused here, where set_config sees it before it is saved.
+	if _, err := g.ParseLogLevel(); err != nil {
+		errs = append(errs, fmt.Errorf("log_level: %w", err))
+	}
 	if _, err := g.ParseLogLevels(); err != nil {
 		errs = append(errs, fmt.Errorf("log_levels: %w", err))
 	}
@@ -198,6 +210,9 @@ func (d *DownloadConfig) validate() error {
 		errs = append(errs, err)
 	}
 	if err := positive("max_active_jobs", d.MaxActiveJobs); err != nil {
+		errs = append(errs, err)
+	}
+	if err := positive("max_compute_slots", d.MaxComputeSlots); err != nil {
 		errs = append(errs, err)
 	}
 	if err := nonNegative("propagation_delay", d.PropagationDelay); err != nil {
@@ -280,6 +295,11 @@ func (p *PostProcConfig) validateWithOS(goos string) error {
 		errs = append(errs, err)
 	}
 
+	// 0 means no limit, so only a negative value is refused.
+	if err := nonNegative("direct_unpack_threads", p.DirectUnpackThreads); err != nil {
+		errs = append(errs, err)
+	}
+
 	if err := cmdutil.ValidatePriorityArgs("nice", p.Nice); err != nil {
 		errs = append(errs, err)
 	}
@@ -351,6 +371,11 @@ func (s *ServerConfig) validate() error {
 func (c *CategoryConfig) validate() error {
 	if c.PP < 0 || c.PP > 3 {
 		return fmt.Errorf("pp: %d outside [0,3] (0=download, 1=+repair, 2=+unpack, 3=+delete)", c.PP)
+	}
+	// categoryPriority decides which values ResolvePriority uses; any other
+	// value but Default (inherit) would be skipped there without a word.
+	if _, ok := categoryPriority(c.Priority); !ok && c.Priority != int(constants.DefaultPriority) {
+		return fmt.Errorf("priority: %d is not a category priority (2=force, 1=high, 0=normal, -1=low, -2=paused, -100=inherit)", c.Priority)
 	}
 	// A trailing "*" once delivered every job into one shared directory.
 	// Each job has its own final directory now, so the suffix is refused

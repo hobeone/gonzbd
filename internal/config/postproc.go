@@ -135,8 +135,8 @@ type PostProcConfig struct {
 	// Default false.
 	DirectUnpack bool `yaml:"direct_unpack" json:"direct_unpack"`
 	// DirectUnpackThreads limits the number of concurrent DirectUnpack
-	// workers across all jobs. 0 means no limit (one per active job).
-	// Default 3 (matching SABnzbd).
+	// workers across all jobs. 0 means no limit (one per active job);
+	// Validate refuses a negative value. Default 3 (matching SABnzbd).
 	DirectUnpackThreads int `yaml:"direct_unpack_threads" json:"direct_unpack_threads"`
 
 	// StrictSandbox determines if external unpacker execution must abort

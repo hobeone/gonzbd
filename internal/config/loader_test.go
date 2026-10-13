@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -38,7 +39,7 @@ func TestDecode_StickyReplaceIllegalWith(t *testing.T) {
 	// Replace the existing value in the full config YAML; appending a
 	// duplicate key would be a fatal YAML error.
 	yaml := strings.ReplaceAll(minimalYAML(t), "replace_illegal_with: _", "replace_illegal_with: \"\"")
-	cfg, _, err := decode(strings.NewReader(yaml))
+	cfg, _, err := decodeNormalized(strings.NewReader(yaml))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestDecode_StickyCleanupList(t *testing.T) {
 	}
 	yaml := strings.Join(out, "\n")
 
-	cfg, _, err := decode(strings.NewReader(yaml))
+	cfg, _, err := decodeNormalized(strings.NewReader(yaml))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestDecode_NilServersNormalized(t *testing.T) {
 		out = append(out, line)
 	}
 
-	cfg, _, err := decode(strings.NewReader(strings.Join(out, "\n")))
+	cfg, _, err := decodeNormalized(strings.NewReader(strings.Join(out, "\n")))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -222,7 +223,7 @@ func withServersYAML(t *testing.T, serversBlock string) string {
 func TestDecode_ServerPortDefaultsPlain(t *testing.T) {
 	t.Parallel()
 	yaml := withServersYAML(t, "servers:\n  - name: s1\n    host: news.example.com\n    connections: 1\n")
-	cfg, _, err := decode(strings.NewReader(yaml))
+	cfg, _, err := decodeNormalized(strings.NewReader(yaml))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -237,7 +238,7 @@ func TestDecode_ServerPortDefaultsPlain(t *testing.T) {
 func TestDecode_ServerPortDefaultsSSL(t *testing.T) {
 	t.Parallel()
 	yaml := withServersYAML(t, "servers:\n  - name: s1\n    host: news.example.com\n    connections: 1\n    ssl: true\n")
-	cfg, _, err := decode(strings.NewReader(yaml))
+	cfg, _, err := decodeNormalized(strings.NewReader(yaml))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -261,7 +262,9 @@ func TestDecode_ServerPortExplicitNotOverridden(t *testing.T) {
 	}
 }
 
-func TestDecode_UnknownFieldStillNormalizes(t *testing.T) {
+// TestDecode_UnknownFieldStillDefaultsServers pins that an unknown key does
+// not end decode before decodeServers starts each entry from its defaults.
+func TestDecode_UnknownFieldStillDefaultsServers(t *testing.T) {
 	t.Parallel()
 	yaml := withServersYAML(t, "servers:\n  - name: plain\n    host: news.example.com\n    connections: 1\n  - name: tls\n    host: ssl.example.com\n    connections: 1\n    ssl: true\n") + "\nunknown_legacy_key: true\n"
 	cfg, unknowns, err := decode(strings.NewReader(yaml))
@@ -274,12 +277,22 @@ func TestDecode_UnknownFieldStillNormalizes(t *testing.T) {
 	if len(cfg.Servers) != 2 {
 		t.Fatalf("got %d servers, want 2", len(cfg.Servers))
 	}
-	if cfg.Servers[0].Port != 119 {
-		t.Errorf("Servers[0].Port = %d, want 119", cfg.Servers[0].Port)
+	for i, s := range cfg.Servers {
+		if s.SSLVerify != DefaultSSLVerify {
+			t.Errorf("Servers[%d].SSLVerify = %d, want the default %d", i, s.SSLVerify, DefaultSSLVerify)
+		}
 	}
-	if cfg.Servers[1].Port != 563 {
-		t.Errorf("Servers[1].Port = %d, want 563", cfg.Servers[1].Port)
+}
+
+// decodeNormalized is decode followed by the normalization finish applies
+// first, without the path expansion and validation finish applies after it.
+func decodeNormalized(r io.Reader) (*Config, []string, error) {
+	cfg, unknowns, err := decode(r)
+	if err != nil {
+		return cfg, unknowns, err
 	}
+	cfg.applyNormalization()
+	return cfg, unknowns, nil
 }
 
 // ---------- server ssl_verify default ----------
@@ -292,7 +305,7 @@ func TestDecode_ServerSSLVerifyOmittedDefaultsToHostname(t *testing.T) {
 		"  - &base\n    name: s1\n    host: news.example.com\n    connections: 1\n    ssl: true\n"+
 		"  - <<: *base\n    name: s2\n"+
 		"  - name: s3\n    host: news.example.com\n    connections: 1\n    ssl: true\n    bogus_key: 1\n")
-	cfg, unknowns, err := decode(strings.NewReader(yaml))
+	cfg, unknowns, err := decodeNormalized(strings.NewReader(yaml))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}

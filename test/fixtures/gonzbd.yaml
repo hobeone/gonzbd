@@ -7,8 +7,9 @@ general:
   https_port: 0
   https_cert: ""
   https_key: ""
-  api_key: 0123456789abcdef
-  nzb_key: fedcba9876543210
+  # Empty: generated at the first start and written back into this file.
+  api_key: ""
+  nzb_key: ""
   # Client IP ranges trusted for the web session cookie, in addition to
   # loopback. Empty = loopback-only. See gonzbd.yaml.example for details.
   local_ranges:

@@ -22,6 +22,10 @@ type Config struct {
 	Servers       []ServerConfig     `yaml:"servers" json:"servers"`
 	Categories    []CategoryConfig   `yaml:"categories" json:"categories"`
 	Notifications NotificationConfig `yaml:"notifications,omitempty" json:"notifications"`
+
+	// generated is set by Load when it generated a key, and cleared by
+	// PersistGeneratedKeys once the key is in the file.
+	generated *generatedKeys
 }
 
 // GetGeneral returns a value-copy snapshot of the GeneralConfig section,
@@ -108,6 +112,11 @@ func (c *Config) IngestSnapshot() IngestSnapshot {
 func (c *Config) Snapshot() *Config {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	return c.cloneLocked()
+}
+
+// cloneLocked is Snapshot for a caller that already holds c.mu.
+func (c *Config) cloneLocked() *Config {
 	res := &Config{
 		General:       c.General,
 		Downloads:     c.Downloads,
@@ -126,6 +135,18 @@ func (c *Config) Snapshot() *Config {
 	res.Notifications.Apprise.Events = slices.Clone(c.Notifications.Apprise.Events)
 	res.Notifications.Script.Events = slices.Clone(c.Notifications.Script.Events)
 	return res
+}
+
+// replaceLocked makes every section of c the corresponding section of next.
+// The caller holds c.mu and does not use next afterwards, so nothing else
+// shares the reference fields c takes over.
+func (c *Config) replaceLocked(next *Config) {
+	c.General = next.General
+	c.Downloads = next.Downloads
+	c.PostProc = next.PostProc
+	c.Servers = next.Servers
+	c.Categories = next.Categories
+	c.Notifications = next.Notifications
 }
 
 // With invokes fn with a write lock held. fn may freely mutate any

@@ -449,14 +449,6 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		reader = durStore
 	}
 	app.recorder = newRecorder(recStore, app.lookupCurrent, app.queuedJobs, log)
-	leaseCap := maxActiveJobs
-	if leaseCap <= 0 {
-		leaseCap = 4
-	}
-	slotCap := maxComputeSlots
-	if slotCap <= 0 {
-		slotCap = 2
-	}
 	mdir := manifestDir(adminDir)
 	app.residency = newAppResidency(app.lookupJob, mdir, reader, log)
 	app.residency.commit = func(ctx context.Context, j *job.Job, v []durability.FileVerdict) error {
@@ -467,8 +459,8 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.residency.parked = app.parkVerifyFault
 	app.runner = newAppRunner(app)
 	app.dispatcher = dispatch.New(
-		leaseCap,
-		slotCap,
+		maxActiveJobs, // config.Validate refuses a value below 1
+		maxComputeSlots,
 		time.Second,
 		time.Now,
 		&appWorkers{app: app},

@@ -849,8 +849,9 @@ job (`PauseJob`) and keeps the priority it holds. A category whose priority
 is Paused pauses the jobs that inherit from it, which take the fallback
 category's priority; through `change_cat`, the pause comes before the
 priority is written, so no tick leases the job at its new rank and a refused
-pause changes nothing. A category priority of Repair is treated like an
-unset one. The API refuses `RepairPriority` (3), `StopPriority` (-4) and
+pause changes nothing. A category priority of Repair, Stop or an undefined
+value is refused when the config is loaded or set (`CategoryConfig.validate`).
+The API refuses `RepairPriority` (3), `StopPriority` (-4) and
 undefined values as a requested priority (`parsePriority`,
 `internal/api/helpers.go`), so Repair is reachable only by an internal
 `SetPriority` call, and nothing makes one today.
