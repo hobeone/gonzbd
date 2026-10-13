@@ -83,6 +83,8 @@ func TestRepairStage_ARarSetDirectUnpackDidNotSettleDoesNotSkip(t *testing.T) {
 		{"every set extracted", []string{"movie.part01.rar", "movie.part02.rar"}, true},
 		{"an extracted archive", []string{"movie.part01.rar", "inner.rar"}, true},
 		{"a set with no outcome", []string{"movie.part01.rar", "extra.part01.rar"}, false},
+		{"a 7z archive beside the set", []string{"movie.part01.rar", "extra.7z"}, false},
+		{"a split archive beside the set", []string{"movie.part01.rar", "extra.bin.001"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -128,7 +130,8 @@ func TestDirectUnpackExtractedAll(t *testing.T) {
 		{name: "a set skipped", sets: ok, skipped: map[string]directunpack.SkippedSet{"x": {}}, want: false},
 		{name: "the scan fails", sets: ok, noDir: true, want: false},
 		{name: "a volume matched by base name", sets: ok, files: []string{"movie.part01.rar"}, want: true},
-		{name: "a 7z archive is not DirectUnpack's", sets: ok, files: []string{"movie.part01.rar", "other.7z"}, want: true},
+		{name: "a 7z archive it never handles", sets: ok, files: []string{"movie.part01.rar", "other.7z"}, want: false},
+		{name: "a split archive it never handles", sets: ok, files: []string{"movie.part01.rar", "other.bin.001"}, want: false},
 		{name: "a RAR set it has no outcome for", sets: ok, files: []string{"movie.part01.rar", "other.rar"}, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

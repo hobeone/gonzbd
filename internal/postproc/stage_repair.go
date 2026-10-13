@@ -143,14 +143,15 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	return err
 }
 
-// directUnpackExtractedAll reports whether DirectUnpack extracted every RAR
-// set in job.DownloadDir: it extracted at least one set, none failed or was
-// skipped, and each RAR archive unpack.Scan finds there is one of its sets
-// (its main volume is among a set's RarParts, matched by base name as
-// UnpackStage.handleDirectUnpack marks them) or a file a set extracted. A set
-// DirectUnpack has no outcome for, such as one it was never fed, matches
-// neither, so it keeps the job from counting as clean. A scan that fails
-// counts as not clean.
+// directUnpackExtractedAll reports whether DirectUnpack extracted every
+// archive in job.DownloadDir: it extracted at least one set, none failed or
+// was skipped, and each archive unpack.Scan finds there, of any type, is one
+// of its sets (its main volume is among a set's RarParts, matched by base
+// name as UnpackStage.handleDirectUnpack marks them) or a file a set
+// extracted. An archive DirectUnpack has no outcome for, a RAR set it was
+// never fed or a 7z, tar or split archive it never handles, matches neither,
+// so it keeps the job from counting as clean. A scan that fails counts as not
+// clean.
 func directUnpackExtractedAll(ctx context.Context, log *slog.Logger, job *Job) bool {
 	if len(job.DirectUnpackSets) == 0 || len(job.DirectUnpackFailures) > 0 || len(job.DirectUnpackSkipped) > 0 {
 		return false
@@ -170,9 +171,6 @@ func directUnpackExtractedAll(ctx context.Context, log *slog.Logger, job *Job) b
 		}
 	}
 	for _, a := range archives {
-		if a.Type != unpack.RarArchive {
-			continue
-		}
 		if !covered[filepath.Base(a.MainFile)] && !covered[filepath.Clean(a.MainFile)] {
 			logf(ctx, log, job, slog.LevelInfo, "[repair] Direct Unpack did not extract %s", filepath.Base(a.MainFile))
 			return false
