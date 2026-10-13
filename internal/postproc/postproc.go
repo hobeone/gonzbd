@@ -357,9 +357,13 @@ func buildPreambleLog(job *Job) []StageLogEntry {
 			}
 		}
 		for setname, failure := range job.DirectUnpackFailures {
+			kind := ""
+			if failure.Kind != unpack.FailUnknown {
+				kind = " (" + failure.Kind.String() + ")"
+			}
 			duLines = append(duLines,
-				fmt.Sprintf("Error: Set %q failed → %s (will retry in normal unpack)",
-					setname, failure.Reason))
+				fmt.Sprintf("Error: Set %q failed%s → %s (will retry in normal unpack)",
+					setname, kind, failure.Reason))
 		}
 		for setname, skipped := range job.DirectUnpackSkipped {
 			duLines = append(duLines,

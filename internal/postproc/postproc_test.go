@@ -18,6 +18,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/types"
+	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // ---------------------------------------------------------------------------
@@ -1254,6 +1255,7 @@ func TestPostProc_HelperMethods(t *testing.T) {
 		}
 		job.DirectUnpackFailures = map[string]directunpack.FailedSet{
 			"set2": {Reason: "password error"},
+			"set3": {Reason: "no space left on device", Kind: unpack.FailDiskFull},
 		}
 
 		entries = buildPreambleLog(job)
@@ -1270,6 +1272,9 @@ func TestPostProc_HelperMethods(t *testing.T) {
 		}
 		if !strings.Contains(linesStr, `Error: Set "set2" failed → password error (will retry in normal unpack)`) {
 			t.Errorf("expected line showing set2 failure, got lines: %v", entries[1].Lines)
+		}
+		if !strings.Contains(linesStr, `Error: Set "set3" failed (disk full) → no space left on device (will retry in normal unpack)`) {
+			t.Errorf("expected line showing set3 failure as disk full, got lines: %v", entries[1].Lines)
 		}
 	})
 

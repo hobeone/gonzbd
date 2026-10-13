@@ -132,6 +132,9 @@ func ExtractStaged(log *slog.Logger, outDir string, opts Options, extract func(s
 // Every archive extractor goes through it: `git grep -n 'extractInStag[e]('
 // -- 'internal/unpack/*.go' ':!*_test.go'` returns 6 lines, this definition
 // and the calls in GoUnRAR, GoSevenZip, GoTar, UnRAR and SevenZip.
+// DirectUnpack calls ExtractStaged itself, and applies the free-space bound
+// and the disk-full classification through CheckRarVolumesFreeSpace and
+// IsDiskFull.
 func extractInStage(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options, extract func(stageDir string) (Result, error)) (Result, error) {
 	if err := checkFreeSpace(ctx, log, archive, outDir, password, opts.MinFreeSpace); err != nil {
 		if opts.OnLine != nil {

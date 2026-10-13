@@ -67,8 +67,25 @@ func TestRarDecodeWorkersPlumbing(t *testing.T) {
 	if got.Base.DecodeWorkers != 3 {
 		t.Errorf("unpackConfigFromPP Base.DecodeWorkers = %d, want 3", got.Base.DecodeWorkers)
 	}
-	du := (&directUnpackOrchestrator{}).buildOpts(false, false, false, pp.RarDecodeWorkers)
+	du := (&directUnpackOrchestrator{}).buildOpts(&config.Config{PostProc: pp})
 	if du.DecodeWorkers != 3 {
 		t.Errorf("buildOpts DecodeWorkers = %d, want 3", du.DecodeWorkers)
+	}
+}
+
+// TestDirectUnpackOptsFromConfig pins that each setting DirectUnpack takes
+// reaches its options, downloads.min_free_space among them.
+func TestDirectUnpackOptsFromConfig(t *testing.T) {
+	t.Parallel()
+	snap := &config.Config{
+		Downloads: config.DownloadConfig{MinFreeSpace: 5 << 20},
+		PostProc: config.PostProcConfig{
+			FlatUnpack: true, OverwriteFiles: true, IgnoreUnrarDates: true, RarDecodeWorkers: 2,
+		},
+	}
+	got := (&directUnpackOrchestrator{}).buildOpts(snap)
+	if got.MinFreeSpace != 5<<20 || !got.OneFolder || !got.OverwriteFiles || !got.IgnoreUnrarDates || got.DecodeWorkers != 2 {
+		t.Errorf("buildOpts = %+v, want MinFreeSpace %d, OneFolder, OverwriteFiles, IgnoreUnrarDates, DecodeWorkers 2",
+			got, 5<<20)
 	}
 }

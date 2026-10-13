@@ -51,6 +51,10 @@ type SuccessSet struct {
 type FailedSet struct {
 	// Reason is a human-readable description of why extraction failed.
 	Reason string
+	// Kind classifies the failure as post-processing's extractors classify
+	// theirs: unpack.FailDiskFull for a set refused for lack of space or one
+	// that filled the disk (unpack.IsDiskFull), otherwise unpack.FailUnknown.
+	Kind unpack.FailReason
 }
 
 // SkippedSet records a set that DirectUnpack did not attempt because it
@@ -77,6 +81,10 @@ type Options struct {
 	// DecodeWorkers is the configured rar_decode_workers value (see
 	// unpack.Options.DecodeWorkers). <= 0 means auto.
 	DecodeWorkers int
+	// MinFreeSpace is downloads.min_free_space: the bytes a set's extraction
+	// must leave free on the extract dir's filesystem
+	// (unpack.CheckRarVolumesFreeSpace).
+	MinFreeSpace int64
 
 	// OnLine is called for each line of extraction output. May be nil.
 	OnLine func(string)
@@ -524,7 +532,11 @@ func (d *DirectUnpacker) settleLocked(setname string, res SuccessSet, err error)
 	case d.killed:
 		d.failedSets[setname] = FailedSet{Reason: "aborted"}
 	default:
-		d.failedSets[setname] = FailedSet{Reason: err.Error()}
+		kind := unpack.FailUnknown
+		if unpack.IsDiskFull(err) {
+			kind = unpack.FailDiskFull
+		}
+		d.failedSets[setname] = FailedSet{Reason: err.Error(), Kind: kind}
 	}
 }
 
@@ -641,6 +653,13 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (res Su
 		}
 		d.log.Info("starting extraction", "set", setname, "rar_version", ver)
 
+		// The free-space bound post-processing applies to an archive, over
+		// the volumes on disk now: later volumes may still be downloading.
+		if err := unpack.CheckRarVolumesFreeSpace(ctx, d.log, setname, d.leadingVolumes(setname),
+			d.extractDir, d.opts.MinFreeSpace); err != nil {
+			return err
+		}
+
 		volumesChan, feedErrChan := d.startVolumeFeed(ctx, setname, maxVol)
 
 		r := rarengine.NewReader(volumesChan)
@@ -700,6 +719,21 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (res Su
 		return nil
 	})
 	return res, err
+}
+
+// leadingVolumes returns the paths of setname's volumes added so far that
+// form an unbroken run from volume 1, in volume order.
+func (d *DirectUnpacker) leadingVolumes(setname string) []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var vols []string
+	for vol := 1; ; vol++ {
+		p, ok := d.completedVols[setname][vol]
+		if !ok {
+			return vols
+		}
+		vols = append(vols, p)
+	}
 }
 
 // startVolumeFeed spawns a goroutine that opens each completed RAR volume in

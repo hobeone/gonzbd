@@ -911,11 +911,21 @@ recorded entirely through the fetch-policy discard, not through this field.
   their size (RAR headers encrypted without the password) is not checked. An
   extraction that fills the disk anyway fails as `FailDiskFull` whichever
   engine ran it. There is no compression-ratio or total-size limit besides
-  this (#901). DirectUnpack, which calls `unpack.ExtractStaged` directly, does
-  not run the check.
+  this (#901). DirectUnpack, which calls `unpack.ExtractStaged` directly,
+  applies the same comparison to a set through
+  `unpack.CheckRarVolumesFreeSpace` once volume 1 is on disk. It counts the
+  volumes on disk then, from volume 1 up to the first one missing: a member
+  whose header starts in one of them counts at the full size the header
+  declares, and a member starting in a later volume is not counted. A set
+  refused for space, or one that fills the disk, is a `FailedSet` of `Kind`
+  `FailDiskFull` (`unpack.IsDiskFull`), and the unpack stage extracts it
+  again under its own check.
   (`TestExtractors_RefuseWhatDoesNotFit`,
   `TestExtractInStage_DiskFullIsFailDiskFull`,
-  `TestMinFreeSpace_ReachesUnpackStage`.)
+  `TestMinFreeSpace_ReachesUnpackStage`,
+  `TestCheckRarVolumesFreeSpace`,
+  `TestDirectUnpack_RefusesASetThatDoesNotFit`,
+  `TestDirectUnpackOptsFromConfig`.)
 - **Insufficient Recovery Blocks**: When `par2` reports it needs more blocks
   than are on disk, `repair` sets `ParError = true` and leaves the block count
   in its own log line rather than on `Job` — `unpack` reads `ParError` to skip

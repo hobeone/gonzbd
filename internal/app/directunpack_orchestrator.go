@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/unwanted"
 )
@@ -116,12 +117,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		}
 		cfgSnap := app.config.Snapshot()
 		downloadDirBase := cfgSnap.General.DownloadDir
-		pp := &cfgSnap.PostProc
-		limit := pp.DirectUnpackThreads
-		flatUnpack := pp.FlatUnpack
-		overwriteFiles := pp.OverwriteFiles
-		ignoreUnrarDates := pp.IgnoreUnrarDates
-		decodeWorkers := pp.RarDecodeWorkers
+		limit := cfgSnap.PostProc.DirectUnpackThreads
 		if limit > 0 && o.active >= limit {
 			o.mu.Unlock()
 			app.log.Debug("directunpack: skipping, concurrency limit reached",
@@ -132,7 +128,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		du = directunpack.New(
 			app.log.With("component", "directunpack", "job", fc.JobID),
 			fc.JobID, downloadDir, downloadDir,
-			o.buildOpts(flatUnpack, overwriteFiles, ignoreUnrarDates, decodeWorkers),
+			o.buildOpts(cfgSnap),
 		)
 		// Provide all filenames so the DU can compute total volume counts.
 		allNames := make([]string, m.NumFiles())
@@ -179,17 +175,18 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	du.Add(app.ctx, filename, info.Path())
 }
 
-// buildOpts constructs DirectUnpack options from the given config-derived
-// values. The caller reads them, alongside the concurrency limit and download
-// dir, from one config.Snapshot taken under o.mu, so they come from a single
-// config read.
-func (o *directUnpackOrchestrator) buildOpts(flatUnpack, overwriteFiles, ignoreUnrarDates bool, decodeWorkers int) directunpack.Options {
+// buildOpts constructs DirectUnpack options from snap. The caller reads the
+// concurrency limit and download dir from the same config.Snapshot, taken
+// under o.mu, so they all come from a single config read.
+func (o *directUnpackOrchestrator) buildOpts(snap *config.Config) directunpack.Options {
+	pp := &snap.PostProc
 	return directunpack.Options{
 		Password:         "", // per-job passwords are pre-checked; DU skips password jobs
-		OneFolder:        flatUnpack,
-		OverwriteFiles:   overwriteFiles,
-		IgnoreUnrarDates: ignoreUnrarDates,
-		DecodeWorkers:    decodeWorkers,
+		OneFolder:        pp.FlatUnpack,
+		OverwriteFiles:   pp.OverwriteFiles,
+		IgnoreUnrarDates: pp.IgnoreUnrarDates,
+		DecodeWorkers:    pp.RarDecodeWorkers,
+		MinFreeSpace:     int64(snap.Downloads.MinFreeSpace),
 		OnStatusChange: func() {
 			o.app.emit(Event{Type: "queue_updated"})
 		},

@@ -1,5 +1,5 @@
 pkg ./internal/unpack/
-run ^(TestDeclaredSize_MatchesWhatExtractionWrites|TestDeclaredSize_Unknown|TestFits|TestExtractors_RefuseWhatDoesNotFit|TestCheckFreeSpace_UnknownSizeProceeds|TestExtractInStage_DiskFullIsFailDiskFull)$
+run ^(TestDeclaredSize_MatchesWhatExtractionWrites|TestDeclaredSize_Unknown|TestFits|TestExtractors_RefuseWhatDoesNotFit|TestCheckFreeSpace_UnknownSizeProceeds|TestExtractInStage_DiskFullIsFailDiskFull|TestCheckRarVolumesFreeSpace)$
 
 # One free-space guard replaces the archive-bomb limits (#901): before an
 # extraction, the archive's declared unpacked size is compared with the free
@@ -33,17 +33,17 @@ file internal/unpack/snapshot.go
 [a refusal is not FailDiskFull]
 file internal/unpack/free_space.go
 --- anchor
-	if errors.Is(err, syscall.ENOSPC) || errors.Is(err, ErrInsufficientSpace) {
+	return errors.Is(err, syscall.ENOSPC) || errors.Is(err, ErrInsufficientSpace)
 --- replace
-	if errors.Is(err, syscall.ENOSPC) {
+	return errors.Is(err, syscall.ENOSPC)
 --- end
 
 [a disk-full attempt is not FailDiskFull]
 file internal/unpack/free_space.go
 --- anchor
-	if errors.Is(err, syscall.ENOSPC) || errors.Is(err, ErrInsufficientSpace) {
+	return errors.Is(err, syscall.ENOSPC) || errors.Is(err, ErrInsufficientSpace)
 --- replace
-	if errors.Is(err, syscall.Errno(0)) || errors.Is(err, ErrInsufficientSpace) {
+	return errors.Is(err, syscall.Errno(0)) || errors.Is(err, ErrInsufficientSpace)
 --- end
 
 [a failed attempt is not classified]
@@ -74,7 +74,7 @@ file internal/unpack/filejoin.go
 file internal/unpack/free_space.go
 --- anchor
 		log.Info("unpack: no free-space check, the archive's unpacked size is not known",
-			"archive", archive.MainFile, "err", err)
+			"archive", mainFile, "err", sizeErr)
 		return nil
 --- replace
 		return ErrInsufficientSpace
@@ -115,7 +115,15 @@ file internal/unpack/free_space.go
 [encrypted RAR headers read as a size]
 file internal/unpack/free_space.go
 --- anchor
-		if errors.Is(err, rarheader.ErrSizeUnknown) {
+	if errors.Is(err, rarheader.ErrSizeUnknown) {
 --- replace
-		if false {
+	if false {
+--- end
+
+[DirectUnpack's bound counts no volume]
+file internal/unpack/free_space.go
+--- anchor
+	declared, err := rarDeclaredSize(volumes)
+--- replace
+	declared, err := rarDeclaredSize(volumes[1:])
 --- end
