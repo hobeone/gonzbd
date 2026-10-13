@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
-	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/buildinfo"
 	"github.com/hobeone/gonzbd/internal/config"
 )
@@ -208,7 +207,7 @@ func TestModeConfig_TestServer_MissingHost(t *testing.T) {
 func TestModeConfig_TestServer_UnreachableHost(t *testing.T) {
 	t.Parallel()
 	s := testServer()
-	s.setAppServices(&app.Application{})
+	s.setAppServices(dialingApp(t))
 
 	rr := apiGet(t, s.Handler(), "/api?mode=config&name=test_server&host=127.0.0.1&port=1&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {

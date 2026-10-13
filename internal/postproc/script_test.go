@@ -393,12 +393,32 @@ func TestLastNonEmptyLineDirect(t *testing.T) {
 		{
 			name:  "trailing space only line",
 			input: "line1\nline2  \n \n",
-			want:  "",
+			want:  "line2",
 		},
 		{
 			name:  "whitespace only",
 			input: "   \n  \n",
 			want:  "",
+		},
+		{
+			name:  "149 runes kept whole",
+			input: strings.Repeat("é", 149) + "\n",
+			want:  strings.Repeat("é", 149),
+		},
+		{
+			name:  "150 runes cut to 147 and an ellipsis",
+			input: strings.Repeat("é", 150) + "\n",
+			want:  strings.Repeat("é", 147) + "...",
+		},
+		{
+			name:  "markup becomes spaces",
+			input: "<p>done</p>\n<br>\n",
+			want:  "done",
+		},
+		{
+			name:  "tabs trimmed",
+			input: "\tdone\t\r\n",
+			want:  "done",
 		},
 	}
 

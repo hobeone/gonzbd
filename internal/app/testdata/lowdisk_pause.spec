@@ -27,15 +27,11 @@ file internal/app/app.go
 --- anchor
 	app.pauseReason = pauseReasonUser
 	app.stopLowDiskWatchLocked()
-	if app.dispatcher != nil {
-		app.dispatcher.Pause()
-	}
+	app.dispatcher.Pause()
 --- replace
 	app.pauseReason = pauseReasonUser
 	app.stopLowDiskWatchLocked()
-	if false && app.dispatcher != nil {
-		app.dispatcher.Pause()
-	}
+	_ = app.dispatcher
 --- end
 
 [resumeLocked does not clear pauseReason]
@@ -64,30 +60,24 @@ file internal/app/app.go
 func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
 	app.stopLowDiskWatchLocked()
-	if app.dispatcher != nil {
-		app.dispatcher.Resume()
-	}
+	app.dispatcher.Resume()
 --- replace
 func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
 	app.stopLowDiskWatchLocked()
-	if false && app.dispatcher != nil {
-		app.dispatcher.Resume()
-	}
+	_ = app.dispatcher
 --- end
 
 [resumeLocked does not resume the downloader]
 file internal/app/app.go
 --- anchor
-		app.dispatcher.Resume()
-	}
+	app.dispatcher.Resume()
 	if app.downloader != nil {
 		app.downloader.Resume()
 	}
 	app.ReevaluateStalls()
 --- replace
-		app.dispatcher.Resume()
-	}
+	app.dispatcher.Resume()
 	if false && app.downloader != nil {
 		app.downloader.Resume()
 	}
@@ -135,16 +125,12 @@ file internal/app/app.go
 	if app.pauseReason != pauseReasonUser {
 		app.pauseReason = pauseReasonLowDisk
 	}
-	if app.dispatcher != nil {
-		app.dispatcher.Pause()
-	}
+	app.dispatcher.Pause()
 --- replace
 	if app.pauseReason != pauseReasonUser {
 		app.pauseReason = pauseReasonLowDisk
 	}
-	if false && app.dispatcher != nil {
-		app.dispatcher.Pause()
-	}
+	_ = app.dispatcher
 --- end
 
 [handleLowDisk does not pause the downloader]
@@ -153,9 +139,7 @@ file internal/app/app.go
 	if app.pauseReason != pauseReasonUser {
 		app.pauseReason = pauseReasonLowDisk
 	}
-	if app.dispatcher != nil {
-		app.dispatcher.Pause()
-	}
+	app.dispatcher.Pause()
 	if app.downloader != nil {
 		app.downloader.Pause()
 	}
@@ -163,9 +147,7 @@ file internal/app/app.go
 	if app.pauseReason != pauseReasonUser {
 		app.pauseReason = pauseReasonLowDisk
 	}
-	if app.dispatcher != nil {
-		app.dispatcher.Pause()
-	}
+	app.dispatcher.Pause()
 	if false && app.downloader != nil {
 		app.downloader.Pause()
 	}

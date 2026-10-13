@@ -97,9 +97,7 @@ func (app *Application) ReloadDownloadOptions(d config.DownloadConfig) {
 	app.SetMaxArtOpt(d.MaxArtOpt)
 	app.SetTopOnly(d.TopOnly)
 	app.SetPropagationDelay(d.PropagationDelay)
-	if app.dispatcher != nil {
-		app.dispatcher.SetCaps(d.MaxActiveJobs, app.dispatcher.SlotCap())
-	}
+	app.dispatcher.SetCaps(d.MaxActiveJobs, app.dispatcher.SlotCap())
 }
 
 // ReloadGeneralOptions applies all hot-applicable general settings from g
@@ -194,7 +192,7 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	// rewrite the failed-byte figures its post-processing run and history entry
 	// read. unlessAdmitted holds the admission lock across the clear, so an
 	// admission cannot begin part-way through it.
-	if app.dispatcher != nil && qErr == nil {
+	if qErr == nil {
 		for _, row := range app.dispatcher.List() {
 			if j, ok := app.dispatcher.Job(row.ID); ok {
 				app.postProcAdmissions.unlessAdmitted(j, func() { j.ClearEmittedForReload(false) })

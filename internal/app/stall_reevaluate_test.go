@@ -19,7 +19,7 @@ func TestReevaluateStall_ResumesAJobWithNothingToRetry(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 
-	application.Stall(job.ID(), &storagefault.Fault{Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC})
+	application.Stall(job, &storagefault.Fault{Op: "write", Path: "/data/x.bin", Err: syscall.ENOSPC})
 	if row, ok := application.dispatcher.Row(job.ID()); !ok || row.Status() != constants.StatusPaused {
 		t.Fatalf("status = %v after Stall, want Paused", row.Status())
 	}
@@ -42,7 +42,7 @@ func TestReevaluateStall_ForgetsADepartedJob(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 1)
 	writeFixtureArticle(t, application, job.ID(), 0, 0)
-	application.Stall(job.ID(), &storagefault.Fault{Op: "sync", Path: "/data/x.bin", Err: syscall.EIO})
+	application.Stall(job, &storagefault.Fault{Op: "sync", Path: "/data/x.bin", Err: syscall.EIO})
 	if err := application.dispatcher.Remove(t.Context(), job.ID()); err != nil {
 		t.Fatal(err)
 	}

@@ -32,8 +32,9 @@ func TestLogQueueWriteFailure_LevelsBySeverity(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			app := &Application{log: slog.New(slog.NewTextHandler(&buf,
-				&slog.HandlerOptions{Level: slog.LevelDebug}))}
+			app := newTestApplication(t, WithLogger(slog.New(slog.NewTextHandler(&buf,
+				&slog.HandlerOptions{Level: slog.LevelDebug}))))
+			buf.Reset() // New's own log lines
 
 			app.logQueueWriteFailure("set file CRC32", "j1", 3, tc.err)
 

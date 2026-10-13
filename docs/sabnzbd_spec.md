@@ -603,7 +603,7 @@ forms — argv is unreliable (arg 4 is a hardcoded empty string) and incomplete.
    `SAB_FINAL_PROCESSING_DIR` is NOT emitted by Python; use `SAB_COMPLETE_DIR`.
 
 3. **Return code**: Non-zero is recorded in history; marks the job failed only when `script_can_fail` is `true` (default `false` logs without failing the job).
-4. **stdout+stderr**: Combined stream captured and stored as `script_log` in history (gzip-compressed BLOB).
+4. **stdout+stderr**: Combined stream captured and stored as `script_log` in history (SABnzbd: a zlib-compressed BLOB; GoNZBD: uncompressed, capped at 512 KiB). Its one-line summary is stored as `script_line`: the last non-blank line (markup replaced by spaces, cut to 147 characters plus `...` at 150 or more), `Exit(N): <line>` after a non-zero exit, `Script exit code is N` when that exit printed nothing, `Ran <script>` when a clean run printed nothing, and `Exit(-1): Cannot run script <script>` when the script could not start.
 
 ### 8.5 Direct Unpack
 
@@ -934,7 +934,7 @@ and `change_opts` are real, but as `queue` sub-actions; see the table above.)
 
 | Mode | Parameters | Response | Description |
 |------|-----------|----------|-------------|
-| `history` | `start`, `limit`, `search`, `category`, `nzo_ids`, `failed_only` | history list | Get history entries |
+| `history` | `start`, `limit`, `search`, `category`, `nzo_ids`, `failed_only` | history list | Get history entries. Each slot's `script_line` is the stored summary of the job's script run (§8.4); `script_log` is present and always empty, as SABnzbd's history list omits the log. |
 | `history` + `name=delete` | `value=nzo_id[,...]\|failed` | status | Delete history entries |
 | `history` + `name=mark_as_completed` | `value=nzo_id` | status | Mark failed as completed |
 | `history` + `name=retry` | `value=nzo_id`, `allow_unwanted=1` | status, nzo_id | Requeue a history entry. `allow_unwanted=1` approves the job's unwanted extensions, and needs the full API key (the NZB key gets 403); without it, a retry the unwanted-extension check refuses answers 409 with the reason. Each history slot carries `unwanted_ext` (0 none, 1 blocked, 2 approved). |
@@ -1093,7 +1093,7 @@ Its indexes are specified alongside it, in the same section.
 1. Created in PostProcessor on job start
 2. Updated at each stage (stage_log accumulated)
 3. Finalized with `status`, `completed` timestamp, `path` on success or failure
-4. `script_log` compressed with gzip and stored as BLOB
+4. `script_log` stored as a BLOB (SABnzbd compresses it with zlib; GoNZBD stores it uncompressed), and `script_line` as text (§8.4)
 
 ### 11.4 Pruning
 

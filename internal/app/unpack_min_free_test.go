@@ -20,14 +20,14 @@ func TestMinFreeSpace_ReachesUnpackStage(t *testing.T) {
 	t.Parallel()
 
 	const noRoom = int64(1) << 62
-	cfg := convertConfig(Config{DownloadDir: t.TempDir(), CompleteDir: t.TempDir()})
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	cfg.With(func(c *config.Config) {
 		c.PostProc.EnableTar = true
 		c.Downloads.MinFreeSpace = config.ByteSize(noRoom)
 	})
-	built, err := buildStages(cfg, "", discardLog(), emptyProbe())
+	app, err := New(cfg, nil)
 	if err != nil {
-		t.Fatalf("buildStages: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 
 	// unpackTar runs the unpack stage on a job holding one small tar and
@@ -50,7 +50,7 @@ func TestMinFreeSpace_ReachesUnpackStage(t *testing.T) {
 			t.Fatal(err)
 		}
 		j := &postproc.Job{Job: job.New(id, "minfree", job.PolicyFromPP(3)), DownloadDir: dir}
-		err := built.Unpack.Run(t.Context(), j)
+		err := app.stages.Unpack.Run(t.Context(), j)
 		if err != nil && !errors.Is(err, unpack.ErrInsufficientSpace) {
 			t.Fatalf("Run: %v", err)
 		}
@@ -60,7 +60,6 @@ func TestMinFreeSpace_ReachesUnpackStage(t *testing.T) {
 	if !unpackTar("minfreebuild0001") {
 		t.Error("min_free_space from the config at construction did not reach the unpack stage")
 	}
-	app := &Application{config: cfg, stages: built}
 	app.SetMinFreeSpace(0)
 	if unpackTar("minfreeset000001") {
 		t.Error("SetMinFreeSpace(0) did not reach the unpack stage")

@@ -263,8 +263,6 @@ func TestFileWriter_PartsIsTheSizeOfTheUnion(t *testing.T) {
 	check("4 written")
 	w.resolve(1, dispositionFetchFailed)
 	check("1 fetch-failed after being written")
-	w.resolve(1, dispositionRolledBack)
-	check("1 rolled back by a failed sync")
 	w.admit(2)
 	check("admit 2 again")
 	w.resolve(2, dispositionWritten)

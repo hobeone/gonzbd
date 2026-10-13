@@ -27,8 +27,8 @@ func TestQuickCheckStage_UnreadableDownloadDirIsInconclusive(t *testing.T) {
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if job.QuickCheck != QuickCheckInconclusive {
-		t.Errorf("QuickCheck = %s after an unreadable download directory, want inconclusive", job.QuickCheck)
+	if job.quickCheck != QuickCheckInconclusive {
+		t.Errorf("QuickCheck = %s after an unreadable download directory, want inconclusive", job.quickCheck)
 	}
 }
 
@@ -46,8 +46,8 @@ func TestQuickCheckStage_NoPar2FilesIsNotRun(t *testing.T) {
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if job.QuickCheck != QuickCheckNotRun {
-		t.Errorf("QuickCheck = %s for a readable directory with no par2 files, want not-run", job.QuickCheck)
+	if job.quickCheck != QuickCheckNotRun {
+		t.Errorf("QuickCheck = %s for a readable directory with no par2 files, want not-run", job.quickCheck)
 	}
 }
 
@@ -110,12 +110,9 @@ func TestRepairStage_InconclusiveQuickCheckOverridesDirectUnpackSuccess(t *testi
 	}
 	// QuickCheck tried and could not finish — it has no verdict to offer,
 	// which is not the same as offering a clean one.
-	job.QuickCheck = QuickCheckInconclusive
+	job.quickCheck = QuickCheckInconclusive
 
-	stage := &RepairStage{
-		UseGoPar2: true,
-		Log:       slog.New(slog.DiscardHandler),
-	}
+	stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -154,12 +151,9 @@ func TestRepairStage_CleanQuickCheckIsTheReportedSkipReason(t *testing.T) {
 	job.DirectUnpackSets = map[string]directunpack.SuccessSet{
 		"ok": {RarParts: []string{"data.bin"}, ExtractedFiles: []string{"data.out"}},
 	}
-	job.QuickCheck = QuickCheckClean
+	job.quickCheck = QuickCheckClean
 
-	stage := &RepairStage{
-		UseGoPar2: true,
-		Log:       slog.New(slog.DiscardHandler),
-	}
+	stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -192,12 +186,9 @@ func TestRepairStage_NotRunQuickCheckStillAllowsTheDirectUnpackSkip(t *testing.T
 	job.DirectUnpackSets = map[string]directunpack.SuccessSet{
 		"ok": {RarParts: []string{"data.bin"}, ExtractedFiles: []string{"data.out"}},
 	}
-	job.QuickCheck = QuickCheckNotRun
+	job.quickCheck = QuickCheckNotRun
 
-	stage := &RepairStage{
-		UseGoPar2: true,
-		Log:       slog.New(slog.DiscardHandler),
-	}
+	stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

@@ -107,9 +107,9 @@ file internal/app/durability.go
 [reclaim unlinks the manifest of a job the dispatcher still holds]
 file internal/app/durability.go
 --- anchor
-			if _, held := app.dispatcher.Job(jobID); held {
+		if _, held := app.dispatcher.Job(jobID); held {
 --- replace
-			if _, held := app.dispatcher.Job(jobID); held && false {
+		if _, held := app.dispatcher.Job(jobID); held && false {
 --- end
 
 [unlinkDepartedManifests unlinks the manifest of an unrestored queue row]

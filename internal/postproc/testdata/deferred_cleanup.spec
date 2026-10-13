@@ -179,12 +179,12 @@ file internal/postproc/stage_finalize.go
 		f.deletePending(ctx, log, job)
 --- end
 
-[finalize skips staging via _UNPACK_ prefix when folderRename is false and PendingDeletions is non-empty]
+[finalize skips staging via _UNPACK_ prefix when folderRename is false and pendingDeletions is non-empty]
 file internal/postproc/stage_finalize.go
 --- anchor
-	if !stageViaUnpackPrefix && len(job.PendingDeletions) > 0 {
+	if !stageViaUnpackPrefix && len(job.pendingDeletions) > 0 {
 --- replace
-	if false && !stageViaUnpackPrefix && len(job.PendingDeletions) > 0 {
+	if false && !stageViaUnpackPrefix && len(job.pendingDeletions) > 0 {
 --- end
 
 [finalize deletes pending files even when moveToDest fails]
@@ -284,8 +284,8 @@ file internal/postproc/stage_finalize.go
 [finalize skips writing pendingDeletionsFile sidecar before rename]
 file internal/postproc/stage_finalize.go
 --- anchor
-	if len(job.PendingDeletions) > 0 {
-		if data, err := json.Marshal(job.PendingDeletions); err == nil {
+	if len(job.pendingDeletions) > 0 {
+		if data, err := json.Marshal(job.pendingDeletions); err == nil {
 			if err := fsutil.WriteAtomicBytesPerm(sidecar, data, 0o600); err != nil {
 				logf(ctx, log, job, slog.LevelWarn, "Failed to write pending deletions sidecar: %v", err)
 			}
@@ -324,18 +324,18 @@ file internal/postproc/stage_finalize.go
 [deletePending removes pendingDeletionsFile sidecar before loop instead of after]
 file internal/postproc/stage_finalize.go
 --- anchor
-	if len(job.PendingDeletions) == 0 || job.DownloadDir == "" {
+	if len(job.pendingDeletions) == 0 || job.DownloadDir == "" {
 		return
 	}
 	var deleted int
-	for _, rel := range job.PendingDeletions {
+	for _, rel := range job.pendingDeletions {
 --- replace
-	if len(job.PendingDeletions) == 0 || job.DownloadDir == "" {
+	if len(job.pendingDeletions) == 0 || job.DownloadDir == "" {
 		return
 	}
 	removePendingSidecar(log, job.DownloadDir)
 	var deleted int
-	for _, rel := range job.PendingDeletions {
+	for _, rel := range job.pendingDeletions {
 --- end
 
 [deletePending skips removing pendingDeletionsFile sidecar after loop]

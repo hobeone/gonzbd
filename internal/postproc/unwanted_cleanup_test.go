@@ -74,8 +74,8 @@ func TestUnwantedCleanup_RemovesUnwantedFiles(t *testing.T) {
 	}
 }
 
-// TestUnwantedCleanup_RemovesNothing covers each reason the stage leaves the
-// job's files alone.
+// TestUnwantedCleanup_RemovesNothing covers each reason the stage itself
+// leaves the job's files alone.
 func TestUnwantedCleanup_RemovesNothing(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -84,8 +84,8 @@ func TestUnwantedCleanup_RemovesNothing(t *testing.T) {
 	}{
 		{"approved job", unwanted.ActionPause, func(j *Job) { j.Unwanted = unwanted.StateApproved }},
 		{"action off", unwanted.ActionOff, func(*Job) {}},
-		{"failed job", unwanted.ActionFail, func(j *Job) { j.UnpackError = true }},
-		{"job with a fail message", unwanted.ActionFail, func(j *Job) { j.FailMsg = "beyond repair" }},
+		// A failed job is kept by runStage, not by the stage itself:
+		// TestFailedJob_DeletingStagesKeepItsFiles.
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

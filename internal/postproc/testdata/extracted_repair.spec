@@ -6,7 +6,7 @@ run TestLayoutB_ExtractedFileIsVerifiedAgainstPar2|TestLayoutB_UnrepairableExtra
 [extracted_repair never runs]
 file internal/postproc/stage_extracted_repair.go
 --- anchor
-	if len(job.DeferredPar2Sets) == 0 {
+	if len(job.deferredPar2Sets) == 0 {
 --- replace
 	if true {
 --- end
@@ -30,7 +30,7 @@ file internal/postproc/stage_extracted_repair.go
 [a deferred set that is gone counts as verified]
 file internal/postproc/stage_extracted_repair.go
 --- anchor
-	if ran < len(job.DeferredPar2Sets) {
+	if ran < len(job.deferredPar2Sets) {
 --- replace
 	if false {
 --- end
@@ -38,7 +38,7 @@ file internal/postproc/stage_extracted_repair.go
 [a verified set is never recorded as verified]
 file internal/postproc/stage_extracted_repair.go
 --- anchor
-	job.DeferredPar2Verified = true
+	job.deferredPar2Verified = true
 --- replace
 --- end
 
@@ -46,9 +46,9 @@ file internal/postproc/stage_extracted_repair.go
 [par2_cleanup keeps a verified deferred set]
 file internal/postproc/stage_par2cleanup.go
 --- anchor
-	if len(job.DeferredPar2Sets) > 0 && !job.DeferredPar2Verified {
+	if len(job.deferredPar2Sets) > 0 && !job.deferredPar2Verified {
 --- replace
-	if len(job.DeferredPar2Sets) > 0 {
+	if len(job.deferredPar2Sets) > 0 {
 --- end
 
 # repair's side of the per-set split: without the filter it runs a deferred
@@ -65,9 +65,9 @@ file internal/postproc/stage_repair.go
 [quickcheck does not record the deferred sets]
 file internal/postproc/stage_quickcheck.go
 --- anchor
-	job.DeferredPar2Sets = deferred
+	job.deferredPar2Sets = deferred
 --- replace
-	job.DeferredPar2Sets = nil
+	job.deferredPar2Sets = nil
 --- end
 
 # The verdict read over every set, deferred ones included: a deferred set's

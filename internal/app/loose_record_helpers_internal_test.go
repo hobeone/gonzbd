@@ -269,7 +269,7 @@ func TestReadRecord_ReturnsEitherReadsError(t *testing.T) {
 func TestResidencyFault_ParksOnlyADeviceFault(t *testing.T) {
 	t.Parallel()
 	var parked []string
-	r := &appResidency{parked: func(id string, _ *storagefault.Fault) { parked = append(parked, id) }}
+	r := &appResidency{parked: func(j *job.Job, _ *storagefault.Fault) { parked = append(parked, j.ID()) }}
 	j := job.New("fault-job", "fault-job", job.Policy{})
 	f := storagefault.Classify("verify", "A.bin", syscall.EIO)
 
@@ -553,13 +553,6 @@ func TestMarkFileDirty_IgnoresAFileItCannotRead(t *testing.T) {
 	if len(a.recorder.dirty) != 0 {
 		t.Errorf("markFileDirty buffered %d jobs' states for files it cannot read", len(a.recorder.dirty))
 	}
-}
-
-// TestVerifyPausedJobs_LoadsNothingWithoutADispatcher pins the guard: an
-// Application with no dispatcher has nothing to verify and returns.
-func TestVerifyPausedJobs_LoadsNothingWithoutADispatcher(t *testing.T) {
-	t.Parallel()
-	(&Application{}).verifyPausedJobs(t.Context())
 }
 
 // TestHandleFileUntrusted_KeepsTheFilesNameForTheNextFlush pins that an untrust

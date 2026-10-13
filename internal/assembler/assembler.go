@@ -1636,8 +1636,8 @@ func (a *Assembler) acceptArticle(f *openFile, id articleID, req WriteRequest) o
 	// range covers (#432): the covered ones are on disk, so only the rest is
 	// owed to par2.
 	rng := Range{Off: req.Offset, Len: int64(len(req.Data))}
-	if _, settled := f.w.owned.ownerOf(rng, id); settled {
-		uncovered := rng.Len - f.w.owned.covered(rng, id)
+	if _, settled := f.w.owned.ownerOf(rng); settled {
+		uncovered := rng.Len - f.w.owned.covered(rng)
 		if req.Data != nil {
 			a.releaseBuffer(req.Data)
 		}

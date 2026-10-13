@@ -73,14 +73,14 @@ func intactLayoutARar(t *testing.T) string {
 // extension_cleanup, and finalize.
 func buildPipelineForDeferredCleanup(unpackCleanup, par2Cleanup bool, extraAfterUnpack ...Stage) []Stage {
 	discard := slog.New(slog.DiscardHandler)
-	up := NewUnpackStageWith(unpack.Options{UseGoRAR: true, UseGo7z: true}, unpackCleanup)
+	up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true, UseGo7z: true}, Cleanup: unpackCleanup})
 	up.SetEnabled(true)
 	up.Log = discard
 
 	qc := &QuickCheckStage{Log: discard, Unpack: up}
 	qc.SetEnabled(true)
 
-	repair := &RepairStage{UseGoPar2: true, Log: discard}
+	repair := appliedRepairStage(RepairConfig{UseGoPar2: true}, discard)
 
 	par2Clean := NewPar2CleanupStage(par2Cleanup)
 	par2Clean.Log = discard
@@ -158,8 +158,8 @@ func TestDeferredCleanup_RerunAfterCrashBeforeFinalize(t *testing.T) {
 	})
 	pp2.processJob(t.Context(), job2)
 
-	if job2.QuickCheck == QuickCheckDamaged {
-		t.Errorf("rerun QuickCheck = %s, want not Damaged (archives must survive until finalize)", job2.QuickCheck)
+	if job2.quickCheck == QuickCheckDamaged {
+		t.Errorf("rerun QuickCheck = %s, want not Damaged (archives must survive until finalize)", job2.quickCheck)
 	}
 	if job2.ParError {
 		t.Errorf("rerun ParError = true, want false")
@@ -195,7 +195,7 @@ func TestDeferredCleanup_RerunAfterCrashBeforeFinalize(t *testing.T) {
 		}
 
 		discard := slog.New(slog.DiscardHandler)
-		up := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true)
+		up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
 		up.SetEnabled(true)
 		up.Log = discard
 		finalize := NewFinalizeStage()
@@ -223,7 +223,7 @@ func TestDeferredCleanup_RerunAfterCrashBeforeFinalize(t *testing.T) {
 		baseDir := t.TempDir()
 
 		// 1. An untrusted .gonzbd-pending-deletions file in DownloadDir when
-		// PendingDeletions is empty must be removed and never delete payload.
+		// pendingDeletions is empty must be removed and never delete payload.
 		untrustedJob, untrustedDir := stageJob(t)
 		untrustedFinal := filepath.Join(baseDir, "complete", "Untrusted.Sidecar")
 		untrustedJob.FinalDir = untrustedFinal
@@ -247,7 +247,7 @@ func TestDeferredCleanup_RerunAfterCrashBeforeFinalize(t *testing.T) {
 		partialJob, partialDir := stageJob(t)
 		partialFinal := filepath.Join(baseDir, "complete", "Partial.Delete")
 		partialJob.FinalDir = partialFinal
-		partialJob.PendingDeletions = []string{"part1.rar", filepath.Join("sub", "part2.rar")}
+		partialJob.pendingDeletions = []string{"part1.rar", filepath.Join("sub", "part2.rar")}
 		if err := os.MkdirAll(filepath.Join(partialDir, "sub"), 0o750); err != nil {
 			t.Fatalf("mkdir partial sub: %v", err)
 		}
@@ -284,7 +284,7 @@ func TestDeferredCleanup_RerunAfterCrashBeforeFinalize(t *testing.T) {
 		warnJob, warnDir := stageJob(t)
 		warnFinal := filepath.Join(baseDir, "complete", "Warn.Sidecar")
 		warnJob.FinalDir = warnFinal
-		warnJob.PendingDeletions = []string{"part1.rar"}
+		warnJob.pendingDeletions = []string{"part1.rar"}
 		if err := os.WriteFile(filepath.Join(warnDir, "movie.mkv"), []byte("delivered"), 0o600); err != nil {
 			t.Fatalf("write movie.mkv: %v", err)
 		}
@@ -309,7 +309,7 @@ func TestDeferredCleanup_RerunAfterCrashBeforeFinalize(t *testing.T) {
 		cancelJob, cancelDir := stageJob(t)
 		cancelFinal := filepath.Join(baseDir, "complete", "Cancelled.Finalize")
 		cancelJob.FinalDir = cancelFinal
-		cancelJob.PendingDeletions = []string{"part1.rar", "part2.par2"}
+		cancelJob.pendingDeletions = []string{"part1.rar", "part2.par2"}
 		for name, content := range map[string]string{
 			"movie.mkv":  "delivered",
 			"part1.rar":  "archive-1",
@@ -461,12 +461,12 @@ func TestDeferredCleanup_CleanupFlagsHonouredAtFinalize(t *testing.T) {
 			// archives/par2 files aren't rejected by the test's unwanted rule when
 			// cleanup is off.
 			discard := slog.New(slog.DiscardHandler)
-			up := NewUnpackStageWith(unpack.Options{UseGoRAR: true, UseGo7z: true}, tc.unpackCleanup)
+			up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true, UseGo7z: true}, Cleanup: tc.unpackCleanup})
 			up.SetEnabled(true)
 			up.Log = discard
 			qc := &QuickCheckStage{Log: discard, Unpack: up}
 			qc.SetEnabled(true)
-			repair := &RepairStage{UseGoPar2: true, Log: discard}
+			repair := appliedRepairStage(RepairConfig{UseGoPar2: true}, discard)
 			par2Clean := NewPar2CleanupStage(tc.par2Cleanup)
 			par2Clean.Log = discard
 			extClean := NewExtensionCleanupStage([]string{"sfv"})
@@ -612,9 +612,9 @@ func TestDeferredCleanup_CleanupFlagsHonouredAtFinalize(t *testing.T) {
 		}
 
 		discard := slog.New(slog.DiscardHandler)
-		up := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true)
+		up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
 		up.SetEnabled(true)
-		up.EnableRecursive = true
+		editUnpackConfig(up, func(c *UnpackConfig) { c.EnableRecursive = true })
 		up.Log = discard
 		finalize := NewFinalizeStage()
 		finalize.Log = discard
@@ -710,9 +710,9 @@ func TestDeferredCleanup_RerunAfterDeobfuscateOrPar2Rename(t *testing.T) {
 
 		discard := slog.New(slog.DiscardHandler)
 		makeStages := func(extra ...Stage) []Stage {
-			up := NewUnpackStageWith(unpack.Options{}, true)
+			up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, Cleanup: true})
 			up.SetEnabled(true)
-			up.EnableTar = true
+			editUnpackConfig(up, func(c *UnpackConfig) { c.EnableTar = true })
 			up.Log = discard
 			deob := NewDeobfuscateStage()
 			deob.SetEnabled(true)
@@ -778,9 +778,9 @@ func TestDeferredCleanup_RerunAfterDeobfuscateOrPar2Rename(t *testing.T) {
 
 		discard := slog.New(slog.DiscardHandler)
 		makeStages := func(extra ...Stage) []Stage {
-			up := NewUnpackStageWith(unpack.Options{}, true)
+			up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, Cleanup: true})
 			up.SetEnabled(true)
-			up.EnableTar = true
+			editUnpackConfig(up, func(c *UnpackConfig) { c.EnableTar = true })
 			up.Log = discard
 			par2Names := NewRecoverPar2NamesStage()
 			par2Names.Log = discard
@@ -844,9 +844,9 @@ func TestDeferredCleanup_RerunAfterDeobfuscateOrPar2Rename(t *testing.T) {
 		writeSingleFileTar(t, filepath.Join(dir, "extras.tar"), "notes.txt", []byte("extra release notes"))
 
 		discard := slog.New(slog.DiscardHandler)
-		up := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true)
+		up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
 		up.SetEnabled(true)
-		up.EnableTar = true
+		editUnpackConfig(up, func(c *UnpackConfig) { c.EnableTar = true })
 		up.Log = discard
 		deob := NewDeobfuscateStage()
 		deob.SetEnabled(true)
@@ -889,7 +889,7 @@ func TestDeferredCleanup_RerunAfterDeobfuscateOrPar2Rename(t *testing.T) {
 		discard := slog.New(slog.DiscardHandler)
 		par2Names := NewRecoverPar2NamesStage()
 		par2Names.Log = discard
-		up := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true)
+		up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
 		up.SetEnabled(true)
 		up.Log = discard
 		par2Clean := NewPar2CleanupStage(true)
@@ -909,7 +909,7 @@ func TestDeferredCleanup_RerunAfterDeobfuscateOrPar2Rename(t *testing.T) {
 }
 
 // TestDeferredCleanup_RepairSetsExcludesPendingDeletionsFromDataFiles verifies
-// that repairSets excludes job.PendingDeletions from the extra dataFiles passed
+// that repairSets excludes job.pendingDeletions from the extra dataFiles passed
 // to par2 (#768).
 func TestDeferredCleanup_RepairSetsExcludesPendingDeletionsFromDataFiles(t *testing.T) {
 	t.Parallel()
@@ -921,7 +921,7 @@ func TestDeferredCleanup_RepairSetsExcludesPendingDeletionsFromDataFiles(t *test
 	}
 	job.recordPendingDeletion("pending_archive.rar")
 
-	repair := &RepairStage{UseGoPar2: true, Log: slog.New(slog.DiscardHandler)}
+	repair := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	if err := repair.Run(t.Context(), job); err != nil {
 		t.Fatalf("RepairStage.Run: %v", err)
 	}
@@ -979,9 +979,9 @@ func TestDeferredCleanup_ExcludedFromIntermediateStages(t *testing.T) {
 	writeMinimalPar2File(t, filepath.Join(dir, "movie.par2"), "Par2_Renamed.tar", tarBytes)
 
 	discard := slog.New(slog.DiscardHandler)
-	up := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true)
+	up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
 	up.SetEnabled(true)
-	up.EnableTar = true
+	editUnpackConfig(up, func(c *UnpackConfig) { c.EnableTar = true })
 	up.Log = discard
 
 	sampleClean := NewSampleCleanupStage()
@@ -1092,11 +1092,11 @@ func TestPendingDeletionHelpers(t *testing.T) {
 	if !j.recordPendingDeletion("My Dir/part.par2") {
 		t.Fatal("recordPendingDeletion(My Dir/part.par2) = false, want true")
 	}
-	if len(j.PendingDeletions) != 2 {
-		t.Fatalf("PendingDeletions = %v, want 2 deduplicated entries", j.PendingDeletions)
+	if len(j.pendingDeletions) != 2 {
+		t.Fatalf("pendingDeletions = %v, want 2 deduplicated entries", j.pendingDeletions)
 	}
 	if !j.isPendingDeletion(filepath.Join(dir, "movie.rar")) || !j.isPendingDeletion("My Dir/part.par2") {
-		t.Errorf("isPendingDeletion failed for recorded entries: %v", j.PendingDeletions)
+		t.Errorf("isPendingDeletion failed for recorded entries: %v", j.pendingDeletions)
 	}
 	set := j.pendingDeletionSet()
 	if _, ok := set["movie.rar"]; !ok {
@@ -1121,7 +1121,7 @@ func TestPendingDeletionHelpers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(parentDir, "outside.txt"), []byte("keep"), 0o600); err != nil {
 		t.Fatalf("write outside.txt: %v", err)
 	}
-	j.PendingDeletions = append(j.PendingDeletions, "../outside.txt")
+	j.pendingDeletions = append(j.pendingDeletions, "../outside.txt")
 
 	f := NewFinalizeStage()
 	f.Log = slog.New(slog.DiscardHandler)

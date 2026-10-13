@@ -22,52 +22,47 @@ import (
 type UnpackStage struct {
 	// toggle provides the thread-safe SetEnabled/enabled flag.
 	toggle
-	// mu protects BaseOpts, Permissions, PasswordFile, EnableFileJoin, EnableTar, and EnableRecursive.
-	// These are replaced atomically via Apply from the API goroutine while a job runs.
+	// mu protects baseOpts, permissions, passwordFile, enableFileJoin,
+	// enableTar and enableRecursive. Apply replaces them together, from the
+	// API goroutine while a job runs.
 	mu sync.RWMutex
-	// BaseOpts holds config-driven extraction options (tool paths, flags).
+	// baseOpts holds config-driven extraction options (tool paths, flags).
 	// The job's password is merged at runtime.
-	BaseOpts unpack.Options
-	// Permissions is an octal string (e.g. "755") applied recursively
+	baseOpts unpack.Options
+	// permissions is an octal string (e.g. "755") applied recursively
 	// after successful extraction. Dirs get the full mode, files get
 	// execute bits stripped. Empty disables chmod.
-	Permissions string
+	permissions string
 
 	// cleanup is set atomically (by Apply) so it can be updated from any goroutine.
 	cleanup atomic.Bool
 	// minFreeSpace is downloads.min_free_space, set by SetMinFreeSpace. Run
 	// passes it to every extraction as Options.MinFreeSpace, in place of
-	// BaseOpts' own.
+	// baseOpts' own.
 	minFreeSpace atomic.Int64
-	// PasswordFile is the path to a text file with one password per line.
+	// passwordFile is the path to a text file with one password per line.
 	// These are appended after per-job passwords during extraction.
-	PasswordFile string
-	// EnableFileJoin enables split file joining (.001/.002).
+	passwordFile string
+	// enableFileJoin enables split file joining (.001/.002).
 	// When false, SplitArchive types are skipped. The config default
 	// (postproc.enable_filejoin) is true; the stage's zero value is false.
-	EnableFileJoin bool
-	// EnableTar enables plain .tar extraction. When false, TarArchive
-	// types are skipped entirely (matching the EnableFileJoin pattern).
+	enableFileJoin bool
+	// enableTar enables plain .tar extraction. When false, TarArchive
+	// types are skipped entirely (matching the enableFileJoin pattern).
 	// The config default (postproc.enable_tar) is true; the stage's zero
 	// value is false.
-	EnableTar bool
-	// EnableRecursive enables recursive unpacking (re-scan after each
+	enableTar bool
+	// enableRecursive enables recursive unpacking (re-scan after each
 	// pass, up to maxUnpackDepth). When false, only one pass runs.
-	EnableRecursive bool
+	enableRecursive bool
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
 }
 
-// NewUnpackStage constructs an UnpackStage with default settings.
+// NewUnpackStage constructs an UnpackStage with default settings; Apply
+// installs the configured ones.
 func NewUnpackStage() *UnpackStage {
 	return &UnpackStage{}
-}
-
-// NewUnpackStageWith constructs an UnpackStage with the given base options.
-func NewUnpackStageWith(opts unpack.Options, cleanup bool) *UnpackStage {
-	s := &UnpackStage{BaseOpts: opts}
-	s.cleanup.Store(cleanup)
-	return s
 }
 
 // UnpackConfig is the full set of runtime-mutable UnpackStage settings, applied
@@ -97,12 +92,28 @@ func (u *UnpackStage) Apply(c UnpackConfig) {
 	u.cleanup.Store(c.Cleanup) // atomic, matching the former SetCleanup
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.BaseOpts = c.Base
-	u.Permissions = c.Permissions
-	u.PasswordFile = c.PasswordFile
-	u.EnableFileJoin = c.EnableFileJoin
-	u.EnableTar = c.EnableTar
-	u.EnableRecursive = c.EnableRecursive
+	u.baseOpts = c.Base
+	u.permissions = c.Permissions
+	u.passwordFile = c.PasswordFile
+	u.enableFileJoin = c.EnableFileJoin
+	u.enableTar = c.EnableTar
+	u.enableRecursive = c.EnableRecursive
+}
+
+// Config returns the settings the last Apply installed, read under the same
+// lock. Thread-safe.
+func (u *UnpackStage) Config() UnpackConfig {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	return UnpackConfig{
+		Base:            u.baseOpts,
+		Permissions:     u.permissions,
+		PasswordFile:    u.passwordFile,
+		EnableFileJoin:  u.enableFileJoin,
+		EnableTar:       u.enableTar,
+		EnableRecursive: u.enableRecursive,
+		Cleanup:         u.cleanup.Load(),
+	}
 }
 
 // SetMinFreeSpace sets the free space, in bytes, an extraction must leave on
@@ -144,12 +155,12 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 
 	// Snapshot mutable fields under RLock so a concurrent Apply doesn't race.
 	u.mu.RLock()
-	opts := u.BaseOpts
-	permissions := u.Permissions
-	passwordFile := u.PasswordFile
-	enableFileJoin := u.EnableFileJoin
-	enableTar := u.EnableTar
-	enableRecursive := u.EnableRecursive
+	opts := u.baseOpts
+	permissions := u.permissions
+	passwordFile := u.passwordFile
+	enableFileJoin := u.enableFileJoin
+	enableTar := u.enableTar
+	enableRecursive := u.enableRecursive
 	u.mu.RUnlock()
 	opts.MinFreeSpace = u.minFreeSpace.Load()
 

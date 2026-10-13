@@ -272,6 +272,107 @@ func TestTestArgs_PassesGcflagsOnlyWhenTheSpecSetsThem(t *testing.T) {
 	}
 }
 
+func TestTestArgs_PassesFailfastOnlyWhenTheSpecSetsIt(t *testing.T) {
+	t.Parallel()
+
+	args := testArgs(&spec{pkg: "./p/", failfast: true})
+	if !slices.Contains(args, "-failfast") {
+		t.Errorf("testArgs = %q, want -failfast", args)
+	}
+
+	if bare := strings.Join(testArgs(&spec{pkg: "./p/"}), " "); strings.Contains(bare, "-failfast") {
+		t.Errorf("testArgs = %q, want no -failfast when failfast is false", bare)
+	}
+}
+
+func TestRunSpec_StopsAfterFirstFailingTestOnMutation(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "go.mod"), "module mutatetest\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(root, "target.go"), "package mutatetest\n\nfunc Value() int {\n\treturn 1\n}\n")
+	mustWrite(t, filepath.Join(root, "target_test.go"), `package mutatetest
+
+import (
+	"os"
+	"testing"
+)
+
+func TestFirst(t *testing.T) {
+	if Value() != 1 {
+		t.Fatal("TestFirst caught the mutation")
+	}
+}
+
+func TestSecond(t *testing.T) {
+	if Value() == 1 {
+		_ = os.WriteFile("ran_second_baseline", []byte("1"), 0o600)
+		return
+	}
+	_ = os.WriteFile("ran_second_mutated", []byte("1"), 0o600)
+}
+`)
+
+	specPath := filepath.Join(root, "test.spec")
+	mustWrite(t, specPath, "pkg .\nrun TestFirst|TestSecond\n\n[mut]\nfile target.go\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
+
+	var code int
+	out, _ := captureOutput(t, func() {
+		code = runSpec(root, specPath, runOpts{skipRunfilter: true})
+	})
+	if code != 0 {
+		t.Fatalf("runSpec = %d, want 0; out:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "ran_second_baseline")); err != nil {
+		t.Errorf("TestSecond did not run in the baseline: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "ran_second_mutated")); !os.IsNotExist(err) {
+		t.Errorf("TestSecond ran after TestFirst already killed the mutation (stat err = %v); want -failfast on the mutated run", err)
+	}
+}
+
+func TestRunSpec_PerMutationRunOverridesSpecRun(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "go.mod"), "module mutatetest\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(root, "target.go"), "package mutatetest\n\nfunc One() int { return 1 }\nfunc Two() int { return 2 }\n")
+	mustWrite(t, filepath.Join(root, "target_test.go"), `package mutatetest
+
+import (
+	"os"
+	"testing"
+)
+
+func TestOne(t *testing.T) {
+	if Two() != 2 {
+		_ = os.WriteFile("one_saw_two_mutation", []byte("1"), 0o600)
+	}
+	if One() != 1 {
+		t.Fatal("One was mutated")
+	}
+}
+
+func TestTwo(t *testing.T) {
+	if Two() != 2 {
+		t.Fatal("Two was mutated")
+	}
+}
+`)
+
+	specPath := filepath.Join(root, "test.spec")
+	mustWrite(t, specPath, "pkg .\nrun TestOne|TestTwo\n\n"+
+		"[one]\nfile target.go\n--- anchor\nfunc One() int { return 1 }\n--- replace\nfunc One() int { return 0 }\n--- end\n"+
+		"[two]\nfile target.go\nrun TestTwo\n--- anchor\nfunc Two() int { return 2 }\n--- replace\nfunc Two() int { return 0 }\n--- end\n")
+
+	var code int
+	out, _ := captureOutput(t, func() {
+		code = runSpec(root, specPath, runOpts{skipRunfilter: true})
+	})
+	if code != 0 {
+		t.Fatalf("runSpec = %d, want 0; out:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "one_saw_two_mutation")); !os.IsNotExist(err) {
+		t.Errorf("TestOne ran during [two] despite `run TestTwo` on the block (stat err = %v)", err)
+	}
+}
+
 func TestRestore_ProvesTheBytesRatherThanTrustingTheWrite(t *testing.T) {
 	t.Parallel()
 
@@ -882,6 +983,113 @@ func TestRunSpec_ReturnsExitCodeTwoOnErrors(t *testing.T) {
 		}
 		if !strings.Contains(errOut, "confirming package-wide test") {
 			t.Errorf("confirmExclusions launch error stderr lacks 'confirming package-wide test':\n%s", errOut)
+		}
+	})
+}
+
+func TestRunSpec_BaselinesPerMutationRun(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "go.mod"), "module mutatetest\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(root, "target.go"), "package mutatetest\n\nfunc Value() int {\n\treturn 1\n}\n")
+	mustWrite(t, filepath.Join(root, "target_test.go"), `package mutatetest
+
+import (
+	"os"
+	"testing"
+)
+
+func TestOK(t *testing.T) {
+	if Value() != 1 {
+		_ = os.WriteFile("mutated_ran", []byte("1"), 0o600)
+		t.Fatal("Value was mutated")
+	}
+}
+
+func TestBroken(t *testing.T) {
+	if Value() != 1 {
+		_ = os.WriteFile("mutated_ran", []byte("1"), 0o600)
+	}
+	t.Fatal("TestBroken already fails unmutated")
+}
+`)
+
+	t.Run("per-mutation run naming an already-failing test fails baseline", func(t *testing.T) {
+		_ = os.Remove(filepath.Join(root, "mutated_ran"))
+		specPath := filepath.Join(root, "broken_block.spec")
+		mustWrite(t, specPath, "pkg .\nrun ^TestOK$\n\n[mut]\nfile target.go\nrun ^TestBroken$\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
+
+		var code int
+		out, errOut := captureOutput(t, func() {
+			code = runSpec(root, specPath, runOpts{skipRunfilter: true})
+		})
+		if code != 1 {
+			t.Errorf("runSpec = %d, want 1 (BASELINE FAILED); stdout:\n%s\nstderr:\n%s", code, out, errOut)
+		}
+		if !strings.Contains(errOut, "BASELINE FAILED") {
+			t.Errorf("stderr lacks 'BASELINE FAILED':\n%s", errOut)
+		}
+		if _, err := os.Stat(filepath.Join(root, "mutated_ran")); !os.IsNotExist(err) {
+			t.Errorf("mutation was applied despite a broken per-mutation baseline (stat err = %v)", err)
+		}
+	})
+
+	t.Run("per-mutation run regex matching no test fails baseline", func(t *testing.T) {
+		_ = os.Remove(filepath.Join(root, "mutated_ran"))
+		specPath := filepath.Join(root, "empty_block.spec")
+		mustWrite(t, specPath, "pkg .\nrun ^TestOK$\n\n[mut]\nfile target.go\nrun ^TestNoSuch.*$\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
+
+		var code int
+		out, errOut := captureOutput(t, func() {
+			code = runSpec(root, specPath, runOpts{skipRunfilter: true})
+		})
+		if code != 1 {
+			t.Errorf("runSpec = %d, want 1 (BASELINE RAN NO TESTS); stdout:\n%s\nstderr:\n%s", code, out, errOut)
+		}
+		if !strings.Contains(errOut, "BASELINE RAN NO TESTS") {
+			t.Errorf("stderr lacks 'BASELINE RAN NO TESTS':\n%s", errOut)
+		}
+		if _, err := os.Stat(filepath.Join(root, "mutated_ran")); !os.IsNotExist(err) {
+			t.Errorf("mutation was applied despite a per-mutation run matching no test (stat err = %v)", err)
+		}
+	})
+
+	t.Run("per-mutation run in chunk 2 is still baselined by chunk 1", func(t *testing.T) {
+		_ = os.Remove(filepath.Join(root, "mutated_ran"))
+		specPath := filepath.Join(root, "chunked_broken_block.spec")
+		mustWrite(t, specPath, "pkg .\nrun ^TestOK$\n\n[mut1]\nfile target.go\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n\n[mut2]\nfile target.go\nrun ^TestBroken$\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
+
+		var code int
+		out, errOut := captureOutput(t, func() {
+			code = runSpec(root, specPath, runOpts{skipRunfilter: true, chunk: "1/2"})
+		})
+		if code != 1 {
+			t.Errorf("runSpec(chunk 1/2) = %d, want 1 (BASELINE FAILED); stdout:\n%s\nstderr:\n%s", code, out, errOut)
+		}
+		if !strings.Contains(errOut, "BASELINE FAILED") {
+			t.Errorf("stderr lacks 'BASELINE FAILED':\n%s", errOut)
+		}
+		if _, err := os.Stat(filepath.Join(root, "mutated_ran")); !os.IsNotExist(err) {
+			t.Errorf("chunk 1 mutation was applied despite a broken chunk 2 per-mutation baseline (stat err = %v)", err)
+		}
+	})
+
+	t.Run("covered per-mutation run is not re-run at baseline", func(t *testing.T) {
+		listed := []string{"TestOK", "TestBroken"}
+		spCovered := &spec{
+			pkg:       ".",
+			run:       "^(TestOK|TestBroken)$",
+			mutations: []mutation{{name: "m", run: "^TestOK$"}},
+		}
+		if got := spCovered.baselineRuns(spCovered.mutations, listed); !slices.Equal(got, []string{"^(TestOK|TestBroken)$"}) {
+			t.Errorf("baselineRuns(covered) = %v, want only the top-level filter", got)
+		}
+		spSubtest := &spec{
+			pkg:       ".",
+			run:       "TestOK|TestOther/sub",
+			mutations: []mutation{{name: "m", run: "^TestOK$"}},
+		}
+		if got := spSubtest.baselineRuns(spSubtest.mutations, listed); !slices.Equal(got, []string{"TestOK|TestOther/sub", "^TestOK$"}) {
+			t.Errorf("baselineRuns(subtest) = %v, want both filters when '/' is present", got)
 		}
 	})
 }

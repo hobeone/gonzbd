@@ -90,8 +90,8 @@ func TestPersistAndCommit_RefusesARetryWhileItCommits(t *testing.T) {
 // evicted instance, whose finalizer a test then runs against a retry of id.
 //
 // Stood in for: the hand-over of that instance to post-processing, which in
-// production is a by-ID maybeFinalize caller (pipeline.onJobHopeless, the
-// downloader's OnJobHopeless, or Fail) paused before beginHandOver, is
+// production is a hand-over that resolved the ID to this instance
+// (finalizeHopeless, or Fail's maybeFinalize) paused before beginHandOver, is
 // replaced by calling persistAndCommit on the instance directly.
 func failedRemovalEvicted(t *testing.T, application *Application, id string) *job.Job {
 	t.Helper()

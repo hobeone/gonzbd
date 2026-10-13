@@ -99,16 +99,14 @@ func TestServerStatus_DelegatesToDownloaderStats(t *testing.T) {
 }
 
 // TestHandleLowDisk_NilDownloader pins the nil-guard: the assembler's
-// low-disk callback must not panic when app.downloader is nil (e.g. a
-// low-disk event racing Application construction, or a fresh &Application{}
-// used by other white-box tests in this package). Prior to this change, the
-// callback called app.downloader.Pause() unconditionally. New() always wires
-// a real downloader when one isn't injected, so this branch is exercised via
-// direct struct construction rather than the public constructor, matching
-// the pattern used by TestBuildDownloaderOptions_Defaults.
+// low-disk callback must not panic when app.downloader is nil. New() always
+// wires a real downloader when one isn't injected, so the test clears it
+// after construction.
 func TestHandleLowDisk_NilDownloader(t *testing.T) {
 	t.Parallel()
-	app := &Application{log: slog.New(slog.DiscardHandler), emitter: dummyEmitter{}}
+	app := newTestApplication(t, WithLogger(slog.New(slog.DiscardHandler)))
+	app.downloader = nil
+	t.Cleanup(app.stopLowDiskWatch) // New set a recheck interval, so the call starts the watch
 
 	app.handleLowDisk("/tmp/somewhere", 1024)
 }
@@ -118,7 +116,8 @@ func TestHandleLowDisk_NilDownloader(t *testing.T) {
 func TestHandleLowDisk_PausesDownloader(t *testing.T) {
 	t.Parallel()
 	fd := newFakeDownloader()
-	app := &Application{log: slog.New(slog.DiscardHandler), emitter: dummyEmitter{}, downloader: fd}
+	app := newTestApplication(t, WithLogger(slog.New(slog.DiscardHandler)), WithDownloader(fd))
+	t.Cleanup(app.stopLowDiskWatch) // New set a recheck interval, so the call starts the watch
 
 	app.handleLowDisk("/tmp/somewhere", 1024)
 

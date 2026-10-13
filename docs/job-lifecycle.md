@@ -934,13 +934,12 @@ refuses a blocked job (`ErrUnwantedBlocked`), decided under the registry
 lock. So `ResumeJobByUser` is the one way to unblock a registered job (a
 retry with `allow_unwanted=1` registers a new one already approved), even for a resume
 that races a retry registering the job blocked after the API's own check.
-`ResumeJob` is called by the application's own resumes (a stall's
-re-evaluation, and `Fail` handing a parked job to its Assessing worker),
-which log a refusal and leave the job paused, and by a resume from a caller
-holding only the NZB key
-(`git grep -n '\.ResumeJob(' -- '*.go' ':!*_test.go'` returns 3 lines, in
-`internal/app/durability.go`, `internal/app/stall.go` and
-`internal/api/queue.go`). An approved job
+`ResumeJob` is called by a stall's re-evaluation, which logs a refusal and
+leaves the job paused, and by a resume from a caller holding only the NZB key
+(`git grep -n '\.ResumeJob(' -- '*.go' ':!*_test.go'` returns 2 lines, in
+`internal/app/stall.go` and `internal/api/queue.go`). `Fail` handing a parked
+job to its Assessing worker resumes through `ResumeInstance`, the same door
+bound to one instance, and logs a refusal the same way. An approved job
 is not paused by the check again, keeps its files through `unwanted_cleanup`,
 and carries the approval into history, so a later retry is approved too.
 
@@ -1012,7 +1011,7 @@ approves it. The same holds for a job a stall had already parked when a flagged
 completion reached it: `BlockUnwanted` with no pause finds the intent already
 `IntentPause`, so the job is never filed and ends held for approval, with the
 UNWANTED label. For that job `fail` is downgraded to `pause`, which is still
-safe. `ResumeJob` and `ResumeJobByUser` share one body
+safe. `ResumeJob`, `ResumeInstance` and `ResumeJobByUser` share one body
 (`resume`) that sets the intent in the same `d.mu` span as its decision, as
 `BlockUnwanted` does, so a resume cannot leave a Blocked job running; a stall re-evaluation whose resume is refused as blocked releases its
 park and still delivers the files it holds. The state reaches `dispatch_jobs` at the next persist

@@ -43,10 +43,10 @@ file internal/app/app.go
 [a file completion reports the download past the owner]
 file internal/app/app.go
 --- anchor
-		if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
+	if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
 --- replace
-		if reported := j.IsComplete(); reported {
-			err := app.dispatcher.AdvanceFrom(j, job.Fetching, job.Assessing)
+	if reported := j.IsComplete(); reported {
+		err := app.dispatcher.AdvanceFrom(j, job.Fetching, job.Assessing)
 --- end
 
 [the Fetching worker reports the download past the owner]
@@ -69,13 +69,11 @@ file internal/app/runner.go
 [the job already in history is not dropped before the first tick]
 file internal/app/startup_reconcile.go
 --- anchor
-			app.dropJobAlreadyInHistory(ctx, row.ID)
-		}
+		app.dropJobAlreadyInHistory(ctx, row.ID)
 	}
 	return app.fileOwedUnwantedFailures(ctx)
 --- replace
-			_ = row.ID
-		}
+		_ = row.ID
 	}
 	return app.fileOwedUnwantedFailures(ctx)
 --- end
@@ -83,35 +81,27 @@ file internal/app/startup_reconcile.go
 [a cancelled startup goes on dropping and sweeping jobs]
 file internal/app/startup_reconcile.go
 --- anchor
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("app: startup reconciliation aborted: %w", err)
-			}
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("app: startup reconciliation aborted: %w", err)
+		}
+		app.dropJobAlreadyInHistory(ctx, row.ID)
 --- replace
-			if err := ctx.Err(); err != nil {
-				_ = fmt.Errorf("app: startup reconciliation aborted: %w", err)
-			}
+		if err := ctx.Err(); err != nil {
+			_ = fmt.Errorf("app: startup reconciliation aborted: %w", err)
+		}
+		app.dropJobAlreadyInHistory(ctx, row.ID)
 --- end
 
 [a cancelled startup reaches one more job before it stops]
 file internal/app/startup_reconcile.go
 --- anchor
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("app: startup reconciliation aborted: %w", err)
-			}
-			app.dropJobAlreadyInHistory(ctx, row.ID)
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("app: startup reconciliation aborted: %w", err)
+		}
+		app.dropJobAlreadyInHistory(ctx, row.ID)
 --- replace
-			app.dropJobAlreadyInHistory(ctx, row.ID)
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("app: startup reconciliation aborted: %w", err)
-			}
---- end
-
-[an application with no dispatcher is reconciled anyway]
-file internal/app/startup_reconcile.go
---- anchor
-	if app.dispatcher != nil {
-		for _, row := range app.dispatcher.List() {
---- replace
-	if true {
-		for _, row := range app.dispatcher.List() {
+		app.dropJobAlreadyInHistory(ctx, row.ID)
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("app: startup reconciliation aborted: %w", err)
+		}
 --- end

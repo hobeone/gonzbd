@@ -28,9 +28,8 @@ func TestUnpackStage_MinFreeSpaceReachesExtraction(t *testing.T) {
 			buildTestTar(t, dir, "archive.tar")
 
 			// BaseOpts' own value is replaced by the stage's.
-			s := NewUnpackStageWith(unpack.Options{MinFreeSpace: int64(1) << 62}, false)
+			s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{MinFreeSpace: int64(1) << 62}, EnableTar: true})
 			s.SetEnabled(true)
-			s.EnableTar = true
 			s.SetMinFreeSpace(tc.minFree)
 
 			err := s.Run(t.Context(), job)

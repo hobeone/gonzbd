@@ -92,10 +92,8 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 			return
 		case <-ticker.C:
 			var remaining int64
-			if app.dispatcher != nil {
-				for _, row := range app.dispatcher.List() {
-					remaining += row.RemainingBytes
-				}
+			for _, row := range app.dispatcher.List() {
+				remaining += row.RemainingBytes
 			}
 			app.mu.Lock()
 			stats := app.downloaderStats

@@ -15,14 +15,9 @@ import (
 )
 
 // TestReconcileBeforeFirstTick_StopsOnACancelledContext pins that the step
-// gives up on a cancelled startup before it reaches a queued job, and that an
-// application with no dispatcher has nothing to reconcile.
+// gives up on a cancelled startup before it reaches a queued job.
 func TestReconcileBeforeFirstTick_StopsOnACancelledContext(t *testing.T) {
 	t.Parallel()
-	if err := (&Application{}).reconcileBeforeFirstTick(t.Context()); err != nil {
-		t.Errorf("no dispatcher: err = %v, want nil", err)
-	}
-
 	adminDir := t.TempDir()
 	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	if err != nil {

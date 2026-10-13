@@ -210,11 +210,7 @@ func (app *Application) reevaluateStalls(ctx context.Context) {
 // the clear are two steps, so a fault landing between them on a job just
 // resumed can still be cleared that way.
 func (app *Application) reevaluateStall(jobID string) {
-	var j *job.Job
-	exists := false
-	if app.dispatcher != nil {
-		j, exists = app.dispatcher.Job(jobID)
-	}
+	j, exists := app.dispatcher.Job(jobID)
 	if !exists {
 		app.log.Info("stall re-evaluation: the job has left the queue; forgetting its parked state",
 			"job", jobID)

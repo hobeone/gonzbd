@@ -96,12 +96,9 @@ func TestRestoreFailedDir(t *testing.T) {
 }
 
 // TestQueuedName: queuedName reports a name only while a job the dispatcher
-// holds carries it, and nothing without a dispatcher.
+// holds carries it.
 func TestQueuedName(t *testing.T) {
 	t.Parallel()
-	if (&Application{}).queuedName("any") {
-		t.Error("queuedName = true without a dispatcher")
-	}
 	a := newTestApplication(t)
 	if a.queuedName("held") {
 		t.Error("queuedName(held) = true before any job was added")

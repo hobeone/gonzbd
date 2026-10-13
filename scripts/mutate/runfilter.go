@@ -2,15 +2,13 @@ package main
 
 import (
 	"fmt"
-	"os/exec"
 	"regexp"
 	"slices"
 	"strings"
 )
 
 // testNameRe matches a bare Go test function name: what a spec's `run` line
-// names when it is a plain alternation, and what `go test -list ^Test`
-// prints for each declared test.
+// names when it is a plain alternation.
 var testNameRe = regexp.MustCompile(`^Test[A-Za-z0-9_]*$`)
 
 // plainAlternation splits a spec's `run` line into its alternatives when it
@@ -88,40 +86,6 @@ func selects(listed []string, alt string, startAnchored, endAnchored bool) bool 
 	return slices.ContainsFunc(listed, re.MatchString)
 }
 
-// listArgs builds the argv for listing a package's declared tests, honouring
-// the spec's build tags the same way testArgs does for the baseline run.
-func listArgs(sp *spec) []string {
-	args := []string{"test", "-list", "^Test"}
-	if sp.tags != "" {
-		args = append(args, "-tags="+sp.tags)
-	}
-	args = append(args, sp.pkg)
-	return args
-}
-
-// listTests names every top-level Test function `go test -list` reports for
-// the spec's package. It excludes Example, Benchmark and Fuzz entries: a
-// spec's `run` line in this format only ever names tests.
-//
-// This compiles the test binary — `go test -list` still builds the package
-// to enumerate its tests — which is why it runs once, before the baseline,
-// rather than for every mutation.
-func listTests(root string, sp *spec) ([]string, error) {
-	cmd := exec.Command("go", listArgs(sp)...) //nolint:gosec // G204: argv comes from the operator's own spec, the same trust level as testArgs
-	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("list tests in %s: %w\n%s", sp.pkg, err, indent(string(out)))
-	}
-	var names []string
-	for line := range strings.SplitSeq(string(out), "\n") {
-		if s := strings.TrimSpace(line); testNameRe.MatchString(s) {
-			names = append(names, s)
-		}
-	}
-	return names, nil
-}
-
 // filterMatchesName reports whether go test's `-run` pattern would select a
 // test named name — a bare top-level name or a `/`-separated subtest path —
 // the way `go test` itself does: split both run and name on `/` and match
@@ -155,29 +119,55 @@ func filterMatchesName(run, name string) bool {
 	return true
 }
 
+// runFilters returns the spec's top-level `run` pattern and every
+// per-mutation `run` pattern, in declaration order.
+func (sp *spec) runFilters() []string {
+	filters := make([]string, 0, 1+len(sp.mutations))
+	if sp.run != "" {
+		filters = append(filters, sp.run)
+	}
+	for _, m := range sp.mutations {
+		if m.run != "" {
+			filters = append(filters, m.run)
+		}
+	}
+	return filters
+}
+
+// hasPlainAlternation reports whether the spec or any of its mutations has a
+// plain-alternation `run` line that deadFilterAlternatives can check.
+func hasPlainAlternation(sp *spec) bool {
+	return slices.ContainsFunc(sp.runFilters(), func(r string) bool {
+		_, _, _, ok := plainAlternation(r)
+		return ok
+	})
+}
+
 // deadFilterAlternatives checks a list of test names against the spec's parsed
-// run filter alternatives. It returns nil for a run that is not a plain
+// run filter alternatives. It ignores any run pattern that is not a plain
 // alternation.
 func deadFilterAlternatives(listed []string, sp *spec) []string {
-	alts, startAnchored, endAnchored, ok := plainAlternation(sp.run)
-	if !ok {
-		return nil
-	}
 	var dead []string
-	for _, alt := range alts {
-		if !selects(listed, alt, startAnchored, endAnchored) {
-			dead = append(dead, alt)
+	for _, r := range sp.runFilters() {
+		alts, startAnchored, endAnchored, ok := plainAlternation(r)
+		if !ok {
+			continue
+		}
+		for _, alt := range alts {
+			if !selects(listed, alt, startAnchored, endAnchored) && !slices.Contains(dead, alt) {
+				dead = append(dead, alt)
+			}
 		}
 	}
 	return dead
 }
 
 // deadRunFilterNames names every alternative of a plain `run` line that
-// selects no test `go test -list` reports for the spec's package. It returns
-// nil, nil for a `run` that is not a plain alternation (see
-// plainAlternation) or that names none at all.
+// selects no test listTests finds in the spec's package. It returns
+// nil, nil when neither the spec nor any mutation has a plain-alternation
+// `run` line (see plainAlternation) or when every alternative matches.
 func deadRunFilterNames(root string, sp *spec) ([]string, error) {
-	if _, _, _, ok := plainAlternation(sp.run); !ok {
+	if !hasPlainAlternation(sp) {
 		return nil, nil
 	}
 	listed, err := listTests(root, sp)

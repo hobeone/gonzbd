@@ -46,7 +46,7 @@ func copyToDir(t *testing.T, src, dstDir string) string {
 // enabledUnpackStage builds an UnpackStage that is enabled and uses
 // pure-Go RAR extraction so tests run without an external unrar binary.
 func enabledUnpackStage() *UnpackStage {
-	s := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, false)
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: false})
 	s.SetEnabled(true)
 	return s
 }
@@ -122,7 +122,7 @@ func TestUnpackStage_CleanupDeletesArchiveParts(t *testing.T) {
 		output = append(output, fmt.Sprintf("[%s] %s", tool, line))
 	}
 
-	s := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true /* cleanup */)
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -132,7 +132,7 @@ func TestUnpackStage_CleanupDeletesArchiveParts(t *testing.T) {
 		t.Errorf("archive removed before finalize: %v", err)
 	}
 	if !job.isPendingDeletion(rarPath) {
-		t.Errorf("archive %s not recorded in PendingDeletions: %v", rarPath, job.PendingDeletions)
+		t.Errorf("archive %s not recorded in pendingDeletions: %v", rarPath, job.pendingDeletions)
 	}
 	job.FinalDir = dir
 	if err := NewFinalizeStage().Run(t.Context(), job); err != nil {
@@ -199,14 +199,14 @@ func TestUnpackStage_DirectUnpackPrePopulated(t *testing.T) {
 		},
 	}
 
-	s := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true /* cleanup */)
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if !job.isPendingDeletion(fakePart) {
-		t.Errorf("DirectUnpack part %s not recorded in PendingDeletions", fakePart)
+		t.Errorf("DirectUnpack part %s not recorded in pendingDeletions", fakePart)
 	}
 	job.FinalDir = dir
 	if err := NewFinalizeStage().Run(t.Context(), job); err != nil {
@@ -226,7 +226,7 @@ func TestUnpackStage_DisabledSkips(t *testing.T) {
 	job, dir := stageJob(t)
 	copyToDir(t, unpackFixture("single_rar5.rar"), dir)
 
-	s := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, false)
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: false})
 	// deliberately NOT calling s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -287,9 +287,9 @@ func TestUnpackStage_ExtractTarArchive(t *testing.T) {
 	var outputs []string
 	job.OnOutput = func(_, line string) { outputs = append(outputs, line) }
 
-	s := NewUnpackStageWith(unpack.Options{}, false)
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, Cleanup: false})
 	s.SetEnabled(true)
-	s.EnableTar = true
+	editUnpackConfig(s, func(c *UnpackConfig) { c.EnableTar = true })
 
 	if err := s.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -333,9 +333,9 @@ func TestUnpackStage_TarDisabledSkips(t *testing.T) {
 	job, dir := stageJob(t)
 	buildTestTar(t, dir, "archive.tar")
 
-	s := NewUnpackStageWith(unpack.Options{}, false)
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, Cleanup: false})
 	s.SetEnabled(true)
-	s.EnableTar = false
+	editUnpackConfig(s, func(c *UnpackConfig) { c.EnableTar = false })
 
 	if err := s.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -368,7 +368,7 @@ func TestUnpackStage_MixedTarAndRarArchives(t *testing.T) {
 	job.OnOutput = func(_, line string) { outputs = append(outputs, line) }
 
 	s := enabledUnpackStage()
-	s.EnableTar = true
+	editUnpackConfig(s, func(c *UnpackConfig) { c.EnableTar = true })
 
 	if err := s.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -481,9 +481,9 @@ func TestUnpackStage_TarTraversalDoesNotTripContainmentCleanup(t *testing.T) {
 	job, dir := stageJob(t)
 	buildTraversalTar(t, dir, "traversal.tar")
 
-	s := NewUnpackStageWith(unpack.Options{}, false)
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, Cleanup: false})
 	s.SetEnabled(true)
-	s.EnableTar = true
+	editUnpackConfig(s, func(c *UnpackConfig) { c.EnableTar = true })
 
 	if err := s.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -889,7 +889,7 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip(t *testing.T) {
 	collector := newLogCollector(false)
 	job.OnOutput = collector.Callback()
 
-	s := NewUnpackStageWith(unpack.Options{UseGo7z: true}, false)
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGo7z: true}, Cleanup: false})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -932,11 +932,11 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip_Fallback(t *testing.T) {
 	job.OnOutput = collector.Callback()
 
 	// We must configure Go7zFallback: true, UseGo7z: true, and ensure SevenZipCommand is set/detectable
-	s := NewUnpackStageWith(unpack.Options{
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
 		UseGo7z:         true,
 		Go7zFallback:    true,
 		SevenZipCommand: "7z",
-	}, false)
+	}, Cleanup: false})
 	s.SetEnabled(true)
 
 	// We expect this to fail eventually because it's not a real 7z archive.
@@ -983,11 +983,11 @@ func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback(t *testing.T) {
 	collector := newLogCollector(true)
 	job.OnOutput = collector.Callback()
 
-	s := NewUnpackStageWith(unpack.Options{
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
 		UseGoRAR:      true,
 		GoRarFallback: true,
 		UnrarCommand:  "unrar",
-	}, false)
+	}, Cleanup: false})
 	s.SetEnabled(true)
 
 	_ = s.Run(t.Context(), job)
@@ -1085,11 +1085,11 @@ exit 0
 	collector := newLogCollector(true)
 	job.OnOutput = collector.Callback()
 
-	s := NewUnpackStageWith(unpack.Options{
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
 		UseGoRAR:      true,
 		GoRarFallback: true,
 		UnrarCommand:  unrarPath,
-	}, false)
+	}, Cleanup: false})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -1171,11 +1171,11 @@ exit 0
 	collector := newLogCollector(true)
 	job.OnOutput = collector.Callback()
 
-	s := NewUnpackStageWith(unpack.Options{
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
 		UseGo7z:         true,
 		Go7zFallback:    true,
 		SevenZipCommand: szPath,
-	}, false)
+	}, Cleanup: false})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -1240,10 +1240,10 @@ exit 0
 	collector := newLogCollector(true)
 	job.OnOutput = collector.Callback()
 
-	s := NewUnpackStageWith(unpack.Options{
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
 		UseGo7z:         false,
 		SevenZipCommand: szPath,
-	}, false)
+	}, Cleanup: false})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -1282,10 +1282,10 @@ exit 0
 	job, dir := stageJob(t)
 	copyToDir(t, sevenZipFixture("lzma2.7z"), dir)
 
-	s := NewUnpackStageWith(unpack.Options{
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
 		UseGo7z:         false,
 		SevenZipCommand: "", // empty initially, should be discovered from GONZBD_SEVENZIP_BIN and assigned in onExternal
-	}, false)
+	}, Cleanup: false})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -1309,10 +1309,10 @@ exit 0
 	collector := newLogCollector(true)
 	job.OnOutput = collector.Callback()
 
-	s := NewUnpackStageWith(unpack.Options{
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
 		UseGoRAR:     false,
 		UnrarCommand: unrarPath,
-	}, false)
+	}, Cleanup: false})
 	s.SetEnabled(true)
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -1367,10 +1367,10 @@ exit 0
 `, escapedFile)
 	createDummyExecutable(t, t.TempDir(), "fake_unrar.sh", scriptContent)
 
-	s := NewUnpackStageWith(unpack.Options{
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
 		UseGoRAR:     false,
 		UnrarCommand: scriptPath,
-	}, true)
+	}, Cleanup: true})
 	s.SetEnabled(true)
 
 	_ = s.Run(t.Context(), job)
@@ -1453,24 +1453,22 @@ func TestCleanupContainmentViolation_Direct(t *testing.T) {
 }
 
 func TestUnpackStage_ApplyStrictSandbox(t *testing.T) {
-	s := NewUnpackStageWith(unpack.Options{
+	s := appliedUnpackStage(UnpackConfig{Base: unpack.Options{
 		Sandbox: cmdutil.SandboxConfig{
 			Enabled: true,
 			Strict:  true,
 		},
-	}, false)
+	}, Cleanup: false})
 
 	s.Apply(UnpackConfig{Base: unpack.Options{Sandbox: cmdutil.SandboxConfig{Enabled: true, Strict: false}}})
-	s.mu.RLock()
-	strict := s.BaseOpts.Sandbox.Strict
-	s.mu.RUnlock()
+	strict := s.Config().Base.Sandbox.Strict
 	if strict {
-		t.Error("expected Apply with Strict=false to update BaseOpts.Sandbox.Strict")
+		t.Error("expected Apply with Strict=false to update Base.Sandbox.Strict")
 	}
 
 	s.Apply(UnpackConfig{Base: unpack.Options{Sandbox: cmdutil.SandboxConfig{Enabled: true, Strict: true}}})
 	job := &Job{DownloadDir: "/tmp/test-sandbox-target", Job: newQueueJob(t, "sandbox-target", 0)}
-	opts := s.prepareOptions(t.Context(), slog.Default(), job, s.BaseOpts, "")
+	opts := s.prepareOptions(t.Context(), slog.Default(), job, s.Config().Base, "")
 	if opts.Sandbox.TargetDir != "/tmp/test-sandbox-target" {
 		t.Errorf("expected prepareOptions to set TargetDir to %q, got %q", job.DownloadDir, opts.Sandbox.TargetDir)
 	}
@@ -1566,7 +1564,7 @@ func TestUnpackStage_CleanupArchives(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	u := NewUnpackStageWith(unpack.Options{}, true)
+	u := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, Cleanup: true})
 
 	job := &Job{
 		DownloadDir: dir,
@@ -1581,7 +1579,7 @@ func TestUnpackStage_CleanupArchives(t *testing.T) {
 	u.cleanupArchives(t.Context(), slog.Default(), job, allSuccessful)
 
 	if !job.isPendingDeletion(archiveFile) {
-		t.Errorf("cleanupArchives did not record %s in PendingDeletions", archiveFile)
+		t.Errorf("cleanupArchives did not record %s in pendingDeletions", archiveFile)
 	}
 	job.FinalDir = dir
 	if err := NewFinalizeStage().Run(t.Context(), job); err != nil {

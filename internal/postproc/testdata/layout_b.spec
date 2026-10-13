@@ -110,7 +110,7 @@ file internal/postproc/stage_repair.go
 [par2_cleanup deletes an unverified deferred set]
 file internal/postproc/stage_par2cleanup.go
 --- anchor
-	if len(job.DeferredPar2Sets) > 0 && !job.DeferredPar2Verified {
+	if len(job.deferredPar2Sets) > 0 && !job.deferredPar2Verified {
 --- replace
 	if false {
 --- end

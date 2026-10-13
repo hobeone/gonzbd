@@ -66,7 +66,7 @@ func TestRepairStage_EmptyDir(t *testing.T) {
 func TestRepairStage_SkippedWhenQuickCheckPassed(t *testing.T) {
 	t.Parallel()
 	job, _ := stageJob(t)
-	job.QuickCheck = QuickCheckClean
+	job.quickCheck = QuickCheckClean
 
 	// Create a par2 file so the stage has something to find, but should skip.
 	os.WriteFile(filepath.Join(job.DownloadDir, "movie.par2"), []byte("fake"), 0o644)
@@ -319,7 +319,7 @@ func TestRepairStage_NoCleanupInRepair(t *testing.T) {
 		DownloadDir: dir,
 	}
 
-	stage := NewRepairStageWith(par2.RunOptions{Command: "/nonexistent/par2"})
+	stage := appliedRepairStage(RepairConfig{Par2: par2.RunOptions{Command: "/nonexistent/par2"}}, nil)
 	_ = stage.Run(t.Context(), job)
 
 	// Par2 files should still exist — repair stage no longer deletes them.

@@ -46,7 +46,7 @@ type reporter interface {
 //     item 3 lists.
 //  2. Assessing: discharges directly within runAssess via AdvanceFrom (intact,
 //     repairable, or deferred recovery) or FinishedJob(OutcomeFailed) (hopeless,
-//     or a failure reason left for it by maybeFinalize).
+//     or a failure reason left for it by a deferring hand-over, finalizeRegistered).
 //  3. Repairing/Extracting/Finalizing: hands off to postProcessor.Process
 //     (enqueuePostProc). Post-processing completes and yields via
 //     jobFinalizer.persistAndCommit (`git grep -n 'func (f \*jobFinalizer) persistAndCommit' internal/app/`),
@@ -119,10 +119,7 @@ func (r *appRunner) runFetch(_ context.Context, id string) {
 		r.yield(id)
 		return
 	}
-	var j *job.Job
-	if r.app.dispatcher != nil {
-		j, _ = r.app.dispatcher.Job(id)
-	}
+	j, _ := r.app.dispatcher.Job(id)
 	if j == nil {
 		r.yield(id)
 		return
@@ -160,10 +157,7 @@ func (r *appRunner) runAssess(ctx context.Context, id string) {
 		r.yield(id)
 		return
 	}
-	var j *job.Job
-	if r.app.dispatcher != nil {
-		j, _ = r.app.dispatcher.Job(id)
-	}
+	j, _ := r.app.dispatcher.Job(id)
 	if j == nil {
 		r.yield(id)
 		return
@@ -279,14 +273,11 @@ func (r *appRunner) runPostProc(_ context.Context, id string, _ job.State) {
 		r.yield(id)
 		return
 	}
-	var j *job.Job
 	var hdr dispatch.Header
-	if r.app.dispatcher != nil {
-		if row, ok := r.app.dispatcher.Row(id); ok {
-			hdr = row.Header
-		}
-		j, _ = r.app.dispatcher.Job(id)
+	if row, ok := r.app.dispatcher.Row(id); ok {
+		hdr = row.Header
 	}
+	j, _ := r.app.dispatcher.Job(id)
 	if j == nil || r.app.postProcessor == nil {
 		r.yield(id)
 		return

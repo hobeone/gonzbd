@@ -993,7 +993,7 @@ func TestQuickCheckPassedSkipsRepair(t *testing.T) {
 	quickcheck := newRecordStage("quickcheck")
 	quickcheck.runFn = func(_ context.Context, job *Job) error {
 		// Simulate QuickCheck setting the flag.
-		job.QuickCheck = QuickCheckClean
+		job.quickCheck = QuickCheckClean
 		return nil
 	}
 	repair := newRecordStage("repair")
@@ -1023,7 +1023,7 @@ func TestQuickCheckPassedSkipsRepair(t *testing.T) {
 		t.Fatalf("quickcheck ran %d times, want 1", quickcheck.CallCount())
 	}
 	// The repair stage still runs through the pipeline; it's the real
-	// RepairStage.Run that checks job.QuickCheck. Our mock just records.
+	// RepairStage.Run that checks job.quickCheck. Our mock just records.
 	if repair.CallCount() != 1 {
 		t.Fatalf("repair ran %d times, want 1", repair.CallCount())
 	}
@@ -1031,8 +1031,8 @@ func TestQuickCheckPassedSkipsRepair(t *testing.T) {
 		t.Fatalf("finalize ran %d times, want 1", finalize.CallCount())
 	}
 	// The outcome should be recorded on the job.
-	if job.QuickCheck != QuickCheckClean {
-		t.Errorf("QuickCheck = %s after the quickcheck stage, want clean", job.QuickCheck)
+	if job.quickCheck != QuickCheckClean {
+		t.Errorf("QuickCheck = %s after the quickcheck stage, want clean", job.quickCheck)
 	}
 }
 

@@ -961,10 +961,7 @@ is persisted. In a file recorded `complete=1`, a restart fails every article
 without a row as the complement of the rows (`InstallFileVerification`), and
 charges each its whole size: the refused article's range was never recorded,
 so nothing at the restart can tell what of it was covered, and such an article
-counts toward the early-abort rate again. A redelivery of the
-covering article written over a shorter range than its first copy also leaves
-the bytes between the two ends uncharged (`ownedRanges.claim` replaces an
-article's own range).
+counts toward the early-abort rate again.
 
 **The one known Rule 3 exception, recorded and not fixed.** First-writer-wins
 decides by arrival, not by which article is right. When a bogus article arrives

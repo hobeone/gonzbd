@@ -138,7 +138,7 @@ func TestWithEventEmitter_Custom(t *testing.T) {
 
 func TestSetNotifier(t *testing.T) {
 	t.Parallel()
-	app := &Application{}
+	app := newTestApplication(t)
 	d := notifier.NewDispatcher(nil)
 	app.SetNotifier(d)
 	if app.notifyDispatcher != d {

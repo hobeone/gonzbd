@@ -263,7 +263,7 @@ func TestHandleArticleRejected_SurvivesAJobThatHasLeftTheQueue(t *testing.T) {
 //
 // This callback runs on the assembler's single worker goroutine, and both of
 // its branches block on that same goroutine if run inline. The permanent one is
-// a guaranteed self-deadlock: Fail → maybeFinalize → CloseJobHandles enqueues a
+// a guaranteed self-deadlock: Fail → finalizeRegistered → CloseJobHandles enqueues a
 // control message on a.reqs and waits for the worker that is calling it,
 // resolved only by closeHandlesTimeout expiring five seconds later — after
 // which the handles are still open, so the NFS silly-rename that call exists to
@@ -283,7 +283,7 @@ func TestHandleWriteFault_DoesNotBlockTheAssemblerWorker(t *testing.T) {
 
 	if elapsed > time.Second {
 		t.Errorf("the callback took %v to return. It runs on the assembler's worker, and "+
-			"Fail → maybeFinalize → CloseJobHandles enqueues a control message on that "+
+			"Fail → finalizeRegistered → CloseJobHandles enqueues a control message on that "+
 			"same worker and waits for it: every write for every job is stopped until "+
 			"the 5s timeout expires, and the handles are still open afterwards", elapsed)
 	}
