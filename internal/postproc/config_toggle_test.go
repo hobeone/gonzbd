@@ -1,8 +1,10 @@
 package postproc
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/unpack"
@@ -38,6 +40,94 @@ func TestUnpackStage_EnableFileJoinFalse_SkipsSplitArchive(t *testing.T) {
 	// Original parts should still exist.
 	if _, err := os.Stat(filepath.Join(dir, "data.001")); err != nil {
 		t.Error("data.001 should still exist")
+	}
+}
+
+// TestUnpackStage_DisabledArchiveType_IsDelivered verifies that an archive
+// whose type is disabled (enable_filejoin or enable_tar off) is delivered
+// untouched: it is not reported as extracted, its parts are not queued for
+// deletion, the stage's permissions are not applied, and finalize moves it to
+// FinalDir (#943).
+func TestUnpackStage_DisabledArchiveType_IsDelivered(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		files    []string
+		joinOn   bool
+		tarOn    bool
+		mainBase string
+	}{
+		{name: "split with filejoin off", files: []string{"data.001", "data.002"}, tarOn: true, mainBase: "data"},
+		{name: "tar with tar off", files: []string{"x.tar"}, joinOn: true, mainBase: "x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			job, dir := stageJob(t)
+			job.FinalDir = filepath.Join(t.TempDir(), "final")
+			for _, f := range tc.files {
+				p := filepath.Join(dir, f)
+				if err := os.WriteFile(p, []byte("payload "+f), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				// WriteFile's mode is masked by the umask; the mode
+				// assertion below needs exactly 0644.
+				if err := os.Chmod(p, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			stage := appliedUnpackStage(UnpackConfig{
+				EnableFileJoin:  tc.joinOn,
+				EnableTar:       tc.tarOn,
+				EnableRecursive: true,
+				Cleanup:         true,
+				Permissions:     "700",
+			})
+			stage.Log = slog.New(slog.DiscardHandler)
+			if err := stage.Run(t.Context(), job); err != nil {
+				t.Fatalf("unpack Run: %v", err)
+			}
+			if job.UnpackError {
+				t.Error("UnpackError = true; a disabled archive type is skipped, not failed")
+			}
+			if len(job.pendingDeletions) != 0 {
+				t.Errorf("pendingDeletions = %v; want none for a skipped archive", job.pendingDeletions)
+			}
+			for _, line := range job.OutputLines {
+				if strings.Contains(line, "Extracted "+tc.mainBase+" successfully") {
+					t.Errorf("stage log reports a skipped archive as extracted: %q", line)
+				}
+				// Run's second scan logs "(pass 2/3)", then "(pass 2)" on
+				// its result; a skip extracts nothing, so no second scan.
+				if strings.Contains(line, "(pass 2") {
+					t.Errorf("a skipped archive triggered a second scan: %q", line)
+				}
+			}
+			info, err := os.Stat(filepath.Join(dir, tc.files[0]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != 0o644 {
+				t.Errorf("%s mode = %o; want 644 (permissions apply only after an extraction)", tc.files[0], got)
+			}
+
+			fin := NewFinalizeStage()
+			fin.Log = slog.New(slog.DiscardHandler)
+			if err := fin.Run(t.Context(), job); err != nil {
+				t.Fatalf("finalize Run: %v", err)
+			}
+			for _, f := range tc.files {
+				got, err := os.ReadFile(filepath.Join(job.FinalDir, f))
+				if err != nil {
+					t.Errorf("%s not delivered to FinalDir: %v", f, err)
+					continue
+				}
+				if string(got) != "payload "+f {
+					t.Errorf("%s content = %q; want %q", f, got, "payload "+f)
+				}
+			}
+		})
 	}
 }
 
