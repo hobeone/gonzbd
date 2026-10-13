@@ -46,6 +46,13 @@ func unpackConfigFromPP(pp config.PostProcConfig, probe binaryProbe, cmdCfg cmdu
 	}
 }
 
+// unpackStageEnabled reports whether the unpack stage runs at all: when any
+// archive type is enabled. Which types it extracts is UnpackConfig's per-type
+// toggles, so this only spares a scan when none is.
+func unpackStageEnabled(pp config.PostProcConfig) bool {
+	return pp.EnableUnrar || pp.Enable7zip || pp.EnableFileJoin || pp.EnableTar
+}
+
 // repairConfigFromPP maps a PostProcConfig snapshot to the RepairStage's own
 // config bundle. Single source of truth for the config→repair mapping, used at
 // construction and on reload. probe supplies the construction-only par2 Caps

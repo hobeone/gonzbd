@@ -84,6 +84,27 @@ func TestUnpackConfigFromPP_ForwardsArchiveTypeToggles(t *testing.T) {
 	}
 }
 
+// TestUnpackStageEnabled_AnyArchiveType pins that the unpack stage runs when
+// any one archive type is enabled, and not when none is.
+func TestUnpackStageEnabled_AnyArchiveType(t *testing.T) {
+	t.Parallel()
+	if unpackStageEnabled(config.PostProcConfig{}) {
+		t.Error("unpackStageEnabled with every archive type off = true, want false")
+	}
+	for name, on := range map[string]func(*config.PostProcConfig){
+		"enable_unrar":    func(p *config.PostProcConfig) { p.EnableUnrar = true },
+		"enable_7zip":     func(p *config.PostProcConfig) { p.Enable7zip = true },
+		"enable_filejoin": func(p *config.PostProcConfig) { p.EnableFileJoin = true },
+		"enable_tar":      func(p *config.PostProcConfig) { p.EnableTar = true },
+	} {
+		var pp config.PostProcConfig
+		on(&pp)
+		if !unpackStageEnabled(pp) {
+			t.Errorf("unpackStageEnabled with only %s on = false, want true", name)
+		}
+	}
+}
+
 // TestRarDecodeWorkersPlumbing pins that rar_decode_workers reaches both the
 // post-process unpack options and the DirectUnpack options.
 func TestRarDecodeWorkersPlumbing(t *testing.T) {

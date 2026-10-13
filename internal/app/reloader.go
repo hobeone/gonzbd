@@ -30,7 +30,8 @@ import (
 // propagation is needed. EnableUnrar is read there too, and is also applied
 // here, with Enable7zip, EnableFileJoin and EnableTar, to the unpack stage:
 // each through unpackConfigFromPP as the archive type it lets the stage
-// extract, and together as the stage's enabled flag.
+// extract, and together through unpackStageEnabled as the stage's enabled
+// flag.
 func (app *Application) ReloadPostProcOptions(pp config.PostProcConfig, scriptDir string) {
 	cmdCfg := cmdutil.CmdConfig{Nice: pp.Nice, Ionice: pp.Ionice}
 
@@ -52,7 +53,7 @@ func (app *Application) ReloadPostProcOptions(pp config.PostProcConfig, scriptDi
 	// Heavy stages: one atomic Apply each, via the shared translator.
 	if app.stages.Unpack != nil {
 		app.stages.Unpack.Apply(unpackConfigFromPP(pp, app.probe, cmdCfg, extraUnrarArgs))
-		app.stages.Unpack.SetEnabled(pp.EnableUnrar || pp.Enable7zip || pp.EnableFileJoin || pp.EnableTar)
+		app.stages.Unpack.SetEnabled(unpackStageEnabled(pp))
 	}
 	if app.stages.Repair != nil {
 		app.stages.Repair.Apply(repairConfigFromPP(pp, app.probe, cmdCfg, extraPar2Args))
