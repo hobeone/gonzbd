@@ -2024,8 +2024,12 @@ func TestApplication_TestNNTPServer(t *testing.T) {
 
 func TestApplication_TestNNTPServer_Reachable(t *testing.T) {
 	t.Parallel()
+	appInst, err := app.New(testConfig(t.TempDir(), t.TempDir(), t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
 	s := nntptest.New(t)
-	res, err := (&app.Application{}).TestNNTPServer(t.Context(), s.Server("scripted", 1))
+	res, err := appInst.TestNNTPServer(t.Context(), s.Server("scripted", 1))
 	if err != nil {
 		t.Fatalf("TestNNTPServer: %v", err)
 	}
