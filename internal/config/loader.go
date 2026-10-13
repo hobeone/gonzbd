@@ -136,7 +136,7 @@ func wrapYAMLError(err error, b []byte) error {
 // applyNormalization sets sticky defaults and normalizes nil slices to empty
 // arrays for JSON/YAML serialization. An empty replace_illegal_with or
 // cleanup_list takes its default whether the input left it out or set it
-// empty, and a server's port 0 takes 119, or 563 with SSL.
+// empty, and each server is normalized (ServerConfig.normalize).
 func (cfg *Config) applyNormalization() {
 	if cfg.Downloads.ReplaceIllegalWith == "" {
 		cfg.Downloads.ReplaceIllegalWith = "_"
@@ -151,13 +151,7 @@ func (cfg *Config) applyNormalization() {
 		cfg.Categories = []CategoryConfig{}
 	}
 	for i := range cfg.Servers {
-		if cfg.Servers[i].Port == 0 {
-			if cfg.Servers[i].SSL {
-				cfg.Servers[i].Port = 563
-			} else {
-				cfg.Servers[i].Port = 119
-			}
-		}
+		cfg.Servers[i].normalize()
 	}
 }
 

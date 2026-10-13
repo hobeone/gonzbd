@@ -73,19 +73,45 @@ type ServerConfig struct {
 // key out. An explicit `ssl_verify: 0` still means SSLVerifyNone.
 const DefaultSSLVerify = SSLVerifyHostname
 
-// defaultServerConfig is the value a server entry holds before any of its
+// DefaultServerConfig is the value a server entry holds before any of its
 // keys are decoded, so it defines what each omitted key means. Both decoders
 // start every entry from it: decodeServers (YAML) and
-// ServerConfig.UnmarshalJSON (set_config).
-func defaultServerConfig() ServerConfig {
+// ServerConfig.UnmarshalJSON (set_config). test_server's request decoding
+// starts from it too, then passes the result to Checked.
+func DefaultServerConfig() ServerConfig {
 	return ServerConfig{SSLVerify: DefaultSSLVerify}
 }
 
-// UnmarshalJSON decodes a server entry onto defaultServerConfig, so a key the
+// normalize fills the values a server entry may leave zero and that depend
+// on its other keys, so they cannot be set before decoding: a port of 0
+// means 119, or 563 with SSL.
+func (s *ServerConfig) normalize() {
+	if s.Port == 0 {
+		if s.SSL {
+			s.Port = 563
+		} else {
+			s.Port = 119
+		}
+	}
+}
+
+// Checked returns s as Config.finish leaves a configured server, normalized
+// and then validated, or the error validation reports. The API's test_server
+// builds its server through it (internal/api/config.go testServerConfig), so
+// the test dials what a saved entry with the same values would.
+func (s ServerConfig) Checked() (ServerConfig, error) {
+	s.normalize()
+	if err := s.validate(); err != nil {
+		return ServerConfig{}, err
+	}
+	return s, nil
+}
+
+// UnmarshalJSON decodes a server entry onto DefaultServerConfig, so a key the
 // JSON leaves out keeps its default instead of the zero value.
 func (s *ServerConfig) UnmarshalJSON(b []byte) error {
 	type plain ServerConfig // has no UnmarshalJSON, so the decode below does not recurse
-	p := plain(defaultServerConfig())
+	p := plain(DefaultServerConfig())
 	if err := json.Unmarshal(b, &p); err != nil {
 		return err
 	}
@@ -94,7 +120,7 @@ func (s *ServerConfig) UnmarshalJSON(b []byte) error {
 }
 
 // decodeServers decodes the YAML document's servers sequence with each entry
-// started from defaultServerConfig. It returns nil when the document has no
+// started from DefaultServerConfig. It returns nil when the document has no
 // servers sequence.
 //
 // It is a second pass over b, after decode's strict pass has reported unknown
@@ -115,7 +141,7 @@ func decodeServers(b []byte) ([]ServerConfig, error) {
 	}
 	servers := make([]ServerConfig, len(raw.Servers))
 	for i := range raw.Servers {
-		servers[i] = defaultServerConfig()
+		servers[i] = DefaultServerConfig()
 		if err := raw.Servers[i].Decode(&servers[i]); err != nil {
 			return nil, err
 		}

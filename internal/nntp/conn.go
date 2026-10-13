@@ -202,17 +202,12 @@ type dialOptions struct {
 	handshakeFailedHook func()
 }
 
-// newDialOptions derives the per-dial knobs from a ServerConfig,
-// filling defaults where the config is zero-valued.
+// newDialOptions derives the per-dial knobs from a ServerConfig. The port
+// is dialled as given: what a port of 0 means is config's to decide
+// (ServerConfig.Checked), not this package's. A zero pipelining depth or
+// timeout still takes a floor here, since either would stall a connection
+// rather than fail it.
 func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
-	port := cfg.Port
-	if port == 0 {
-		if cfg.SSL {
-			port = 563
-		} else {
-			port = 119
-		}
-	}
 	pipe := max(1, cfg.PipeliningRequests)
 	timeout := time.Duration(cfg.Timeout) * time.Second
 	if cfg.Timeout <= 0 {
@@ -221,7 +216,7 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 
 	opts := &dialOptions{
 		host:       cfg.Host,
-		port:       port,
+		port:       cfg.Port,
 		useTLS:     cfg.SSL,
 		dialer:     &net.Dialer{Timeout: timeout},
 		pipelining: pipe,

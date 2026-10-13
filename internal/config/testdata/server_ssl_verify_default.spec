@@ -24,7 +24,7 @@ file internal/config/loader.go
 [decodeServers starts each YAML entry from the zero value]
 file internal/config/servers.go
 --- anchor
-		servers[i] = defaultServerConfig()
+		servers[i] = DefaultServerConfig()
 --- replace
 		servers[i] = ServerConfig{}
 --- end
@@ -32,7 +32,7 @@ file internal/config/servers.go
 [UnmarshalJSON starts each set_config entry from the zero value]
 file internal/config/servers.go
 --- anchor
-	p := plain(defaultServerConfig())
+	p := plain(DefaultServerConfig())
 --- replace
 	p := plain{}
 --- end

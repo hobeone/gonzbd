@@ -831,3 +831,51 @@ func TestRarDecodeWorkers(t *testing.T) {
 		t.Errorf("RarDecodeWorkers = %d, want 1", pp.RarDecodeWorkers)
 	}
 }
+
+// TestServerConfig_Checked pins that Checked gives a server outside a Config
+// what Config.finish gives a configured one: the port default for port 0, an
+// explicit port kept as entered, and the same refusals as Validate.
+func TestServerConfig_Checked(t *testing.T) {
+	t.Parallel()
+	valid := func() ServerConfig {
+		s := DefaultServerConfig()
+		s.Host = "news.example.com"
+		s.Connections = 1
+		s.Timeout = 15
+		s.PipeliningRequests = 1
+		return s
+	}
+	tests := []struct {
+		name     string
+		edit     func(*ServerConfig)
+		wantPort int
+		wantErr  string
+	}{
+		{name: "plain port 0 takes 119", edit: func(*ServerConfig) {}, wantPort: 119},
+		{name: "ssl port 0 takes 563", edit: func(s *ServerConfig) { s.SSL = true }, wantPort: 563},
+		{name: "explicit 119 with ssl is kept", edit: func(s *ServerConfig) { s.SSL = true; s.Port = 119 }, wantPort: 119},
+		{name: "port out of range", edit: func(s *ServerConfig) { s.Port = 70000 }, wantErr: "port: 70000 outside [1,65535]"},
+		{name: "no pipelining", edit: func(s *ServerConfig) { s.PipeliningRequests = 0 }, wantErr: "pipelining_requests: 0 must be > 0"},
+		{name: "ssl_verify out of range", edit: func(s *ServerConfig) { s.SSLVerify = 9 }, wantErr: "ssl_verify: 9 outside [0,3]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			in := valid()
+			tt.edit(&in)
+			got, err := in.Checked()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Checked() error = %v, want one containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Checked() error = %v", err)
+			}
+			if got.Port != tt.wantPort {
+				t.Errorf("Port = %d, want %d", got.Port, tt.wantPort)
+			}
+		})
+	}
+}

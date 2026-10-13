@@ -362,6 +362,39 @@ func (s *Server) configSpeedLimit(w http.ResponseWriter, r *http.Request) {
 
 const testServerTimeout = 15 * time.Second
 
+// testServerConfig builds the server test_server dials from the request: a
+// single connection with the test timeout, and the remaining keys as a
+// server entry with those values holds, through config.ServerConfig.Checked.
+// A port or ssl_verify that is present but not a number is refused rather
+// than replaced by its default.
+func testServerConfig(r *http.Request, host string) (config.ServerConfig, error) {
+	cfg := config.DefaultServerConfig()
+	cfg.Name = "test"
+	cfg.Host = host
+	cfg.Username = formValue(r, "username")
+	cfg.Password = formValue(r, "password")
+	cfg.SSL = formValue(r, "ssl") == "1"
+	cfg.Connections = 1
+	cfg.Timeout = int(testServerTimeout.Seconds())
+	cfg.PipeliningRequests = 1
+	cfg.Enable = true
+	if v := formValue(r, "port"); v != "" {
+		port, err := strconv.Atoi(v)
+		if err != nil {
+			return config.ServerConfig{}, fmt.Errorf("port: %q is not a number", v)
+		}
+		cfg.Port = port
+	}
+	if v := formValue(r, "ssl_verify"); v != "" {
+		level, err := strconv.ParseInt(v, 10, 8)
+		if err != nil {
+			return config.ServerConfig{}, fmt.Errorf("ssl_verify: %q is not a number", v)
+		}
+		cfg.SSLVerify = config.SSLVerify(level)
+	}
+	return cfg.Checked()
+}
+
 // configTestServer dials an NNTP server using the parameters from the
 // request, verifies the greeting and authentication, then closes the
 // connection. The result tells the caller whether the server is reachable
@@ -381,46 +414,16 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	port, _ := strconv.Atoi(formValue(r, "port")) //nolint:errcheck // handled by port == 0 check
-	if port == 0 {
-		port = 119
-	}
-	ssl := formValue(r, "ssl") == "1"
-	if ssl && port == 119 {
-		port = 563
-	}
-
-	sslVerifyStr := formValue(r, "ssl_verify")
-	sslVerify := config.DefaultSSLVerify
-	if sslVerifyStr != "" {
-		if v, err := strconv.ParseInt(sslVerifyStr, 10, 8); err == nil {
-			sslVerify = config.SSLVerify(v)
-		}
-	}
-	if err := sslVerify.Validate(); err != nil {
-		s.respondError(w, http.StatusBadRequest, "invalid ssl_verify value: "+err.Error())
+	cfg, err := testServerConfig(r, host)
+	if err != nil {
+		s.respondError(w, http.StatusBadRequest, "invalid server: "+err.Error())
 		return
 	}
-
-	cfg := config.ServerConfig{
-		Name:        "test",
-		Host:        host,
-		Port:        port,
-		Username:    formValue(r, "username"),
-		Password:    formValue(r, "password"),
-		SSL:         ssl,
-		SSLVerify:   sslVerify,
-		Connections: 1,
-		Timeout:     int(testServerTimeout.Seconds()),
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), testServerTimeout)
 	defer cancel()
 
-	_, err := s.status.TestNNTPServer(ctx, cfg)
-	if err != nil {
-
-		s.log.Warn("test_server failed", "host", host, "port", port, "error", err)
+	if _, err := s.status.TestNNTPServer(ctx, cfg); err != nil {
+		s.log.Warn("test_server failed", "host", host, "port", cfg.Port, "error", err)
 		respondOK(w, "result", map[string]any{
 			"passed":  false,
 			"message": err.Error(),
@@ -428,7 +431,7 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.log.Info("test_server passed", "host", host, "port", port)
+	s.log.Info("test_server passed", "host", host, "port", cfg.Port)
 	respondOK(w, "result", map[string]any{
 		"passed":  true,
 		"message": "Connection successful!",

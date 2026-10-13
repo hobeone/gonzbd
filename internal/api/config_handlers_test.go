@@ -184,6 +184,47 @@ func TestConfigTestServer_RequestParameters(t *testing.T) {
 			t.Errorf("probed port = %d, want 119", probe.got.Port)
 		}
 	})
+	t.Run("an explicit port 119 with ssl is kept", func(t *testing.T) {
+		t.Parallel()
+		probe := &nntpProbeApp{}
+		s := testServer()
+		s.setAppServices(probe)
+		directCall(t, s.configTestServer, "/api?mode=config&name=test_server&host=news.example.com&port=119&ssl=1")
+		probe.mu.Lock()
+		defer probe.mu.Unlock()
+		if probe.got.Port != 119 || !probe.got.SSL {
+			t.Errorf("probed %+v, want port 119 with ssl on, as a saved server with those values dials", probe.got)
+		}
+	})
+	t.Run("an omitted ssl_verify takes the server default", func(t *testing.T) {
+		t.Parallel()
+		probe := &nntpProbeApp{}
+		s := testServer()
+		s.setAppServices(probe)
+		directCall(t, s.configTestServer, "/api?mode=config&name=test_server&host=news.example.com&ssl=1")
+		probe.mu.Lock()
+		defer probe.mu.Unlock()
+		if probe.got.SSLVerify != config.DefaultSSLVerify {
+			t.Errorf("probed ssl_verify = %d, want %d", probe.got.SSLVerify, config.DefaultSSLVerify)
+		}
+	})
+	for _, bad := range []string{"ssl_verify=abc", "port=abc", "port=70000"} {
+		t.Run("malformed "+bad+" is rejected", func(t *testing.T) {
+			t.Parallel()
+			probe := &nntpProbeApp{}
+			s := testServer()
+			s.setAppServices(probe)
+			rr := directCall(t, s.configTestServer, "/api?mode=config&name=test_server&host=h&"+bad)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 (body: %s)", rr.Code, rr.Body.String())
+			}
+			probe.mu.Lock()
+			defer probe.mu.Unlock()
+			if probe.got.Host != "" {
+				t.Errorf("probed %+v, want no dial", probe.got)
+			}
+		})
+	}
 	t.Run("out of range ssl_verify is rejected", func(t *testing.T) {
 		t.Parallel()
 		s := testServer()
