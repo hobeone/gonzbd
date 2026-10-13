@@ -192,20 +192,20 @@ func TestApplication_ReloadPostProcOptions_RefusedArgsNotApplied(t *testing.T) {
 	pp.ExtraPar2Params = "-v notaflag"
 	app.ReloadPostProcOptions(pp, "")
 
-	if got := app.stages.Unpack.BaseOpts.ExtraArgs; got != nil {
+	if got := app.stages.Unpack.Config().Base.ExtraArgs; got != nil {
 		t.Errorf("unrar ExtraArgs = %q, want nil for a value off the allowlist", got)
 	}
-	if got := app.stages.Repair.Par2Opts.ExtraArgs; got != nil {
+	if got := app.stages.Repair.Config().Par2.ExtraArgs; got != nil {
 		t.Errorf("par2 ExtraArgs = %q, want nil for a token without '-'", got)
 	}
 
 	pp.ExtraUnrarParams = "-ri1"
 	pp.ExtraPar2Params = "-v"
 	app.ReloadPostProcOptions(pp, "")
-	if got := app.stages.Unpack.BaseOpts.ExtraArgs; !slices.Equal(got, []string{"-ri1"}) {
+	if got := app.stages.Unpack.Config().Base.ExtraArgs; !slices.Equal(got, []string{"-ri1"}) {
 		t.Errorf("unrar ExtraArgs = %q, want [-ri1]", got)
 	}
-	if got := app.stages.Repair.Par2Opts.ExtraArgs; !slices.Equal(got, []string{"-v"}) {
+	if got := app.stages.Repair.Config().Par2.ExtraArgs; !slices.Equal(got, []string{"-v"}) {
 		t.Errorf("par2 ExtraArgs = %q, want [-v]", got)
 	}
 }
