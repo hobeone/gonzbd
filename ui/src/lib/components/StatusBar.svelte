@@ -65,11 +65,9 @@
 		return `${bytes}B`;
 	}
 
-	let limitLabel = $derived(
-		bandwidthMax > 0 && bandwidthPerc < 100
-			? formatCompact(bandwidthMax * bandwidthPerc / 100)
-			: formatCompact(bandwidthMax)
-	);
+	// The rate the server reports in force, not one re-derived here from
+	// bandwidth_max and bandwidth_perc: a speedlimit call sets it directly.
+	let limitLabel = $derived(formatCompact(speedLimit));
 
 	function togglePopover() {
 		if (!showPopover) {
