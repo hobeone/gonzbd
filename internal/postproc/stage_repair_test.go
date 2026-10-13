@@ -582,26 +582,6 @@ func TestDispatchRepairTool_FallbackRunsWhenBinaryPresent(t *testing.T) {
 	}
 }
 
-// copyDataPar2Set copies the shared data.bin par2 set into a fresh directory
-// and returns the directory and data.bin's intact bytes.
-func copyDataPar2Set(t *testing.T) (dir string, intact []byte) {
-	t.Helper()
-	dir = t.TempDir()
-	for _, name := range []string{"data.par2", "data.vol000+102.par2", "data.bin"} {
-		body, err := os.ReadFile(filepath.Join("..", "..", "test", "fixtures", "par2", name))
-		if err != nil {
-			t.Fatalf("read fixture %s: %v", name, err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if name == "data.bin" {
-			intact = body
-		}
-	}
-	return dir, intact
-}
-
 // dispatchWithStubFallback runs dispatchRepairTool on dir's data.par2 with
 // go_par2 enabled and a stub external par2 that exits 1, and reports whether
 // the external retry ran.
@@ -633,7 +613,12 @@ func dispatchWithStubFallback(t *testing.T, dir string) (par2.RepairResult, bool
 func TestDispatchRepairTool_CorruptFileWithBlocksElsewhere_RepairedNatively(t *testing.T) {
 	t.Parallel()
 
-	dir, intact := copyDataPar2Set(t)
+	dir := t.TempDir()
+	copyPar2Fixtures(t, dir)
+	intact, err := os.ReadFile(par2Fixture("data.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "a8f3c0d2e1"), intact, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -663,7 +648,8 @@ func TestDispatchRepairTool_CorruptFileWithBlocksElsewhere_RepairedNatively(t *t
 func TestDispatchRepairTool_SymlinkAtProtectedName_FallsBack(t *testing.T) {
 	t.Parallel()
 
-	dir, _ := copyDataPar2Set(t)
+	dir := t.TempDir()
+	copyPar2Fixtures(t, dir)
 	if err := os.Rename(filepath.Join(dir, "data.bin"), filepath.Join(dir, "payload")); err != nil {
 		t.Fatal(err)
 	}
