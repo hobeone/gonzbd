@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
@@ -511,7 +512,7 @@ func TestPostProcConfig_Par2LimitsValidation(t *testing.T) {
 
 	tests := []struct {
 		name                  string
-		par2MaxPacketBodySize uint64
+		par2MaxPacketBodySize int64
 		par2MaxJunkScanBytes  int64
 		wantErr               bool
 		wantSub               string
@@ -530,13 +531,13 @@ func TestPostProcConfig_Par2LimitsValidation(t *testing.T) {
 		},
 		{
 			name:                  "valid exact floors",
-			par2MaxPacketBodySize: MinPar2PacketBodySize,
-			par2MaxJunkScanBytes:  MinPar2JunkScanBytes,
+			par2MaxPacketBodySize: constants.MinPar2PacketBodySize,
+			par2MaxJunkScanBytes:  constants.MinPar2JunkScanBytes,
 			wantErr:               false,
 		},
 		{
 			name:                  "below packet body size floor",
-			par2MaxPacketBodySize: MinPar2PacketBodySize - 1,
+			par2MaxPacketBodySize: constants.MinPar2PacketBodySize - 1,
 			par2MaxJunkScanBytes:  65536,
 			wantErr:               true,
 			wantSub:               "par2_max_packet_body_size (65535) must be at least 65536 bytes (64 KiB)",
@@ -544,9 +545,16 @@ func TestPostProcConfig_Par2LimitsValidation(t *testing.T) {
 		{
 			name:                  "below junk scan bytes floor",
 			par2MaxPacketBodySize: 67108864,
-			par2MaxJunkScanBytes:  MinPar2JunkScanBytes - 1,
+			par2MaxJunkScanBytes:  constants.MinPar2JunkScanBytes - 1,
 			wantErr:               true,
 			wantSub:               "par2_max_junk_scan_bytes (1023) must be at least 1024 bytes (1 KiB)",
+		},
+		{
+			name:                  "negative packet body size",
+			par2MaxPacketBodySize: -1,
+			par2MaxJunkScanBytes:  65536,
+			wantErr:               true,
+			wantSub:               "par2_max_packet_body_size (-1) must be at least 65536 bytes (64 KiB)",
 		},
 	}
 

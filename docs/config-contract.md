@@ -77,11 +77,11 @@ Known limitations:
 which enforces the config↔UI contract. **It maintains no list.** It walks
 `ui/src/lib/components/config/`, extracts every `section=` / `keyword=` pair
 from `ConfigInput`, `ConfigSwitch`, `ConfigTextarea` and `ConfigSelect` with a
-regex, and asserts that `Config.Set` finds a Go field with that tag. It does not
-assert that `Set` can convert a value for the field: `Set` returns
-"unsupported field type" for a `uint64` field such as
-`par2_max_packet_body_size`, and the test passes regardless. So the Svelte
-components are the source of truth and the test follows them:
+regex, and asserts that `Config.Set` finds a Go field with that tag.
+`TestUIKeywordsAcceptTheirOwnValue`, beside it, walks the same pairs and sets
+each flat-section keyword to the value `get_config` reports for it, in the form
+the UI sends back, so a field whose Go kind `Set` cannot convert fails there.
+So the Svelte components are the source of truth and the tests follow them:
 
 - When you **add a new `keyword=` prop** to any of those four components, nothing needs adding to the test — it discovers the prop on the next run, and fails if the Go field it names does not exist.
 - When you **remove or rename a Svelte keyword**, likewise: the test follows the component.

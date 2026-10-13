@@ -13,6 +13,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/crc32util"
 )
 
@@ -92,14 +93,12 @@ var (
 	typeCreator  = [16]byte{'P', 'A', 'R', ' ', '2', '.', '0', 0x00, 'C', 'r', 'e', 'a', 't', 'o', 'r', 0x00}
 )
 
+// The bounds are constants.DefaultPar2MaxJunkScanBytes,
+// constants.DefaultPar2MaxPacketBodySize and their floors, which config
+// validates the configured values against.
 const (
-	defaultMaxJunkScan       int64  = 65536    // 64 * 1024: default max bytes to scan forward looking for magic
-	defaultMaxPacketBodySize uint64 = 67108864 // 64 * 1024 * 1024 (64 MiB)
-
-	// MinPar2PacketBodySize defines the minimum allowed floor for PAR2 packet body size limit (64 KiB).
-	MinPar2PacketBodySize uint64 = 65536
-	// MinPar2JunkScanBytes defines the minimum allowed floor for PAR2 header junk scan distance (1 KiB).
-	MinPar2JunkScanBytes int64 = 1024
+	defaultMaxJunkScan       = constants.DefaultPar2MaxJunkScanBytes
+	defaultMaxPacketBodySize = constants.DefaultPar2MaxPacketBodySize
 )
 
 // ParseOptions defines configurable safety and memory bounds for parsing PAR2 sets.
@@ -110,7 +109,7 @@ type ParseOptions struct {
 	MaxJunkScanBytes int64
 
 	// MaxPacketBodySize is the maximum permitted allocation size in bytes for an individual PAR2 packet body.
-	MaxPacketBodySize uint64
+	MaxPacketBodySize int64
 }
 
 // DefaultParseOptions returns standard safety limits for PAR2 parsing (64 KiB junk scan, 64 MiB packet size cap).
@@ -147,10 +146,10 @@ func ParsePar2Set(path string, opts ...ParseOptions) (*ParsedSet, error) {
 // ParsePar2SetWithOptions reads path (a .par2 file) using caller-specified ParseOptions bounds.
 // It returns a *ParsedSet or an error if packet allocations exceed opts.MaxPacketBodySize or I/O fails.
 func ParsePar2SetWithOptions(path string, opts ParseOptions) (*ParsedSet, error) {
-	if opts.MaxJunkScanBytes < MinPar2JunkScanBytes {
+	if opts.MaxJunkScanBytes < constants.MinPar2JunkScanBytes {
 		opts.MaxJunkScanBytes = defaultMaxJunkScan
 	}
-	if opts.MaxPacketBodySize < MinPar2PacketBodySize {
+	if opts.MaxPacketBodySize < constants.MinPar2PacketBodySize {
 		opts.MaxPacketBodySize = defaultMaxPacketBodySize
 	}
 
@@ -220,7 +219,7 @@ func readNextPacket(f *os.File, fileSize uint64, header []byte) (packetType [16]
 
 // readNextPacketWithOptions reads the next valid packet using configured limits.
 func readNextPacketWithOptions(f *os.File, fileSize uint64, header []byte, opts ParseOptions) (packetType [16]byte, body []byte, err error) {
-	if opts.MaxPacketBodySize < MinPar2PacketBodySize {
+	if opts.MaxPacketBodySize < constants.MinPar2PacketBodySize {
 		opts.MaxPacketBodySize = defaultMaxPacketBodySize
 	}
 	for {
@@ -247,7 +246,7 @@ func readNextPacketWithOptions(f *os.File, fileSize uint64, header []byte, opts 
 		}
 
 		bodyLen := packetLen - 64
-		if bodyLen > opts.MaxPacketBodySize {
+		if bodyLen > uint64(opts.MaxPacketBodySize) { //nolint:gosec // G115: clamped to at least constants.MinPar2PacketBodySize above
 			return [16]byte{}, nil, fmt.Errorf("par2 packet body size (%d bytes) exceeds configured limit (%d bytes); increase 'par2_max_packet_body_size' in Settings -> Post-Processing if this is a valid ultra-large file: %w", bodyLen, opts.MaxPacketBodySize, ErrPacketBodySizeExceeded)
 		}
 		body := make([]byte, bodyLen)
@@ -473,7 +472,7 @@ func scanForMagic(f *os.File, magic []byte) (bool, error) {
 
 // scanForMagicWithOptions scans forward up to maxJunkScan bytes to find the next magic.
 func scanForMagicWithOptions(f *os.File, magic []byte, maxJunkScan int64) (bool, error) {
-	if maxJunkScan < MinPar2JunkScanBytes {
+	if maxJunkScan < constants.MinPar2JunkScanBytes {
 		maxJunkScan = defaultMaxJunkScan
 	}
 	if _, seekErr := f.Seek(-63, io.SeekCurrent); seekErr != nil {

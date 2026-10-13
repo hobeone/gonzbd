@@ -52,17 +52,17 @@ type PostProcConfig struct {
 	// to prevent memory exhaustion from malformed or malicious PAR2 files.
 	// This is a safety limit with no "unlimited" setting: 0 selects the
 	// default of 67108864 (64 MiB), and a non-zero value below the
-	// 65536-byte / 64 KiB floor (MinPar2PacketBodySize) is rejected by
-	// Validate. To permit genuinely large recovery packets, set an explicit
-	// larger value.
-	Par2MaxPacketBodySize uint64 `yaml:"par2_max_packet_body_size" json:"par2_max_packet_body_size"`
+	// 65536-byte / 64 KiB floor (constants.MinPar2PacketBodySize) is
+	// rejected by Validate. To permit genuinely large recovery packets, set
+	// an explicit larger value.
+	Par2MaxPacketBodySize int64 `yaml:"par2_max_packet_body_size" json:"par2_max_packet_body_size"`
 
 	// Par2MaxJunkScanBytes limits how many bytes of unrecognized non-PAR2
 	// header data can be scanned before giving up when searching for a valid
 	// PAR2 packet header in a file. Prevents excessive CPU and I/O time spent
 	// scanning large corrupt files. 0 selects the default of 65536 (64 KiB);
 	// a non-zero value below the 1024-byte / 1 KiB floor
-	// (MinPar2JunkScanBytes) is rejected by Validate.
+	// (constants.MinPar2JunkScanBytes) is rejected by Validate.
 	Par2MaxJunkScanBytes int64 `yaml:"par2_max_junk_scan_bytes" json:"par2_max_junk_scan_bytes"`
 
 	// IgnoreUnrarDates discards in-archive modification timestamps and
