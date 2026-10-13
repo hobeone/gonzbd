@@ -66,7 +66,13 @@ func TestUnpackStage_DisabledArchiveType_IsDelivered(t *testing.T) {
 			job, dir := stageJob(t)
 			job.FinalDir = filepath.Join(t.TempDir(), "final")
 			for _, f := range tc.files {
-				if err := os.WriteFile(filepath.Join(dir, f), []byte("payload "+f), 0o644); err != nil {
+				p := filepath.Join(dir, f)
+				if err := os.WriteFile(p, []byte("payload "+f), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				// WriteFile's mode is masked by the umask; the mode
+				// assertion below needs exactly 0644.
+				if err := os.Chmod(p, 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -91,6 +97,11 @@ func TestUnpackStage_DisabledArchiveType_IsDelivered(t *testing.T) {
 			for _, line := range job.OutputLines {
 				if strings.Contains(line, "Extracted "+tc.mainBase+" successfully") {
 					t.Errorf("stage log reports a skipped archive as extracted: %q", line)
+				}
+				// Run's second scan logs "(pass 2/3)", then "(pass 2)" on
+				// its result; a skip extracts nothing, so no second scan.
+				if strings.Contains(line, "(pass 2") {
+					t.Errorf("a skipped archive triggered a second scan: %q", line)
 				}
 			}
 			info, err := os.Stat(filepath.Join(dir, tc.files[0]))

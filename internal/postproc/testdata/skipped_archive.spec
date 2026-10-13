@@ -43,6 +43,15 @@ file internal/postproc/stage_unpack.go
 	return res, false, err
 --- end
 
+[skip sets extractedAny]
+file internal/postproc/stage_unpack.go
+--- anchor
+		if !attempted {
+--- replace
+		if !attempted {
+			extractedAny = true
+--- end
+
 [extractPendingArchives ignores the skip verdict]
 file internal/postproc/stage_unpack.go
 --- anchor
