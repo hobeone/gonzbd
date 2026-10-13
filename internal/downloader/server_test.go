@@ -182,7 +182,7 @@ func TestShouldDeactivateOptional(t *testing.T) {
 			want:     true,
 		},
 		{
-			name:     "required server never deactivated even at high ratio",
+			name:     "required server (validation makes it non-optional) never deactivated",
 			required: true,
 			bad:      99,
 			conns:    10, // ratio 9.9 — would deactivate if optional

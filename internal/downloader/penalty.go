@@ -111,20 +111,18 @@ func classifyConnError(err error) string {
 }
 
 // shouldDeactivateOptional returns true when server s is an optional
-// (non-required) server whose bad-connection ratio exceeds
-// constants.OptionalDeactivationThreshold (0.3). Required servers are
-// never deactivated regardless of their ratio.
+// server whose bad-connection ratio exceeds
+// constants.OptionalDeactivationThreshold (0.3). It owns the rule that a
+// non-optional server is never deactivated; a required server is one of
+// those, since ServerConfig.validate refuses Required and Optional together
+// and NewServer takes only a config.Server that ServerConfig.Checked
+// validated.
 //
 // The function is called with s.mu held in ApplyPenalty; it reads the
 // atomic counters directly so it does not need to acquire a lock of its
 // own.
-//
-// Optional and Required are independent boolean flags in ServerConfig.
-// The deactivation logic only fires when Optional==true AND
-// Required==false; a server that is both optional and required is
-// treated as required (never auto-deactivated).
 func shouldDeactivateOptional(s *Server) bool {
-	if !s.cfg.Optional || s.cfg.Required {
+	if !s.cfg.Optional {
 		return false
 	}
 	bad := s.badConns.Load()

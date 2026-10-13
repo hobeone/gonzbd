@@ -92,7 +92,7 @@ func (s *Server) RecordGoodConnection() {
 
 // ApplyPenalty sets the penalty-expiry to now+d and, when
 // shouldDeactivateOptional returns true, marks the server as
-// deactivated. Required servers are never deactivated by penalty.
+// deactivated. That function decides which servers can be deactivated.
 //
 // The now argument is passed explicitly (rather than calling time.Now
 // internally) so callers and tests can control the clock.
@@ -101,7 +101,7 @@ func (s *Server) ApplyPenalty(d time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.penaltyExpiry = now.Add(d)
-	if !s.cfg.Required && shouldDeactivateOptional(s) {
+	if shouldDeactivateOptional(s) {
 		s.deactivated = true
 	}
 }
