@@ -135,8 +135,9 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile string, candidates 
 
 		counts := d.ShardCounts()
 		res.CommandLine = fmt.Sprintf("go_par2 verify %s", parfile)
-		res.Stdout = fmt.Sprintf("usable_data=%d unusable_data=%d usable_parity=%d",
-			counts.UsableDataShardCount, counts.UnusableDataShardCount, counts.UsableParityShardCount)
+		res.Stdout = fmt.Sprintf("usable_data=%d unusable_data=%d usable_parity=%d files_to_rebuild=%d files_to_rename=%d",
+			counts.UsableDataShardCount, counts.UnusableDataShardCount, counts.UsableParityShardCount,
+			counts.FilesNeedingRebuild, counts.RenamesNeeded)
 
 		switch {
 		case !counts.RepairNeeded():
@@ -156,8 +157,7 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile string, candidates 
 		case counts.RepairPossible():
 			res.Status = StatusRepairPossible
 			if safeOnLine != nil {
-				safeOnLine(fmt.Sprintf("[go_par2] Repair needed: %d blocks missing, %d parity available",
-					counts.UnusableDataShardCount, counts.UsableParityShardCount))
+				safeOnLine("[go_par2] Repair needed: " + repairWork(counts))
 			}
 		default:
 			res.Status = StatusRepairNotPossible
@@ -242,8 +242,7 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile string, candidates 
 		}
 
 		// Phase 2: Repair
-		accumulate(fmt.Sprintf("[go_par2] Repair required: %d missing blocks, %d parity available",
-			counts.UnusableDataShardCount, counts.UsableParityShardCount))
+		accumulate("[go_par2] Repair required: " + repairWork(counts))
 
 		repairErr := runWithProgress("Repairing", accumulate, func(progress chan par2engine.Progress) error {
 			return d.Repair(ctx, progress)
@@ -261,6 +260,14 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile string, candidates 
 	})
 
 	return res, err
+}
+
+// repairWork describes the work a repair the engine has called possible
+// will do. A rebuild-only set has no missing blocks, so the block count alone
+// would read as nothing to do.
+func repairWork(counts par2engine.ShardCounts) string {
+	return fmt.Sprintf("%d missing blocks, %d damaged file(s) to rebuild, %d misnamed file(s) to rename, %d parity available",
+		counts.UnusableDataShardCount, counts.FilesNeedingRebuild, counts.RenamesNeeded, counts.UsableParityShardCount)
 }
 
 // protectedFilesIntact is the native engine's verdict on whether a par2 set is

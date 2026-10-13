@@ -100,16 +100,20 @@ func TestGoVerify_CorruptFileWithAllBlocksPresent_IsRepairPossible(t *testing.T)
 	}
 }
 
-// requireRebuildPossible fails t unless res reports a repair that is possible.
+// requireRebuildPossible fails t unless res reports a repair that is possible
+// and rebuilds one damaged file.
 func requireRebuildPossible(t *testing.T, res VerifyResult) {
 	t.Helper()
 	if res.Status != StatusRepairPossible {
 		t.Errorf("Status = %v, want StatusRepairPossible\nOutput: %s", res.Status, res.Stdout)
 	}
+	if !strings.Contains(res.Stdout, "files_to_rebuild=1") {
+		t.Errorf("Stdout does not report the rebuild: %s", res.Stdout)
+	}
 }
 
 // requireRepairedNatively fails t unless res is a native success that left
-// path holding want.
+// path holding want, with the rebuild named in the output.
 func requireRepairedNatively(t *testing.T, res RepairResult, path string, want []byte) {
 	t.Helper()
 	got, err := os.ReadFile(path)
@@ -121,6 +125,9 @@ func requireRepairedNatively(t *testing.T, res RepairResult, path string, want [
 	}
 	if !res.Success {
 		t.Errorf("Success = false; want the native engine to rebuild the file from its located blocks\nOutput: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "1 damaged file(s) to rebuild") {
+		t.Errorf("output does not report the rebuild\nOutput: %s", res.Output)
 	}
 }
 
