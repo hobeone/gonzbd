@@ -759,7 +759,23 @@ func (d *Dispatcher) Job(id string) (*job.Job, bool) {
 // The job's manifest stays resident through the pause (reconcileResidency):
 // fetches already in flight land on it.
 func (d *Dispatcher) PauseJob(id string) error {
-	j, ok := d.Job(id)
+	return d.pauseFor(id, nil)
+}
+
+// PauseInstance is PauseJob for one instance of a job: it pauses only if j is
+// the job registered under j.ID(), and otherwise returns ErrNotFound having
+// done nothing, so a caller still holding a removed instance cannot pause a
+// later attempt registered under the same ID.
+func (d *Dispatcher) PauseInstance(j *job.Job) error {
+	if j == nil {
+		return fmt.Errorf("dispatch: pause: nil job: %w", ErrNotFound)
+	}
+	return d.pauseFor(j.ID(), j)
+}
+
+// pauseFor is PauseJob and PauseInstance; expected is as for lookupFor.
+func (d *Dispatcher) pauseFor(id string, expected *job.Job) error {
+	j, ok := d.lookupFor(id, expected)
 	if !ok {
 		return fmt.Errorf("dispatch: pause %s: %w", id, ErrNotFound)
 	}
@@ -865,11 +881,24 @@ func (d *Dispatcher) BlockUnwanted(j *job.Job, pause bool) (moved bool, err erro
 // It refuses a job the unwanted-extension check blocked
 // (ErrUnwantedBlocked), so ResumeJobByUser is the one way to unblock one.
 func (d *Dispatcher) ResumeJob(id string) error {
-	return d.resume(id, false)
+	return d.resume(id, nil, false)
 }
 
-// resume is the one body of ResumeJob and ResumeJobByUser: the decision, the
-// approval (byUser only) and the intent change happen in one d.mu span.
+// ResumeInstance is ResumeJob for one instance of a job: it resumes only if j
+// is the job registered under j.ID(), and otherwise returns ErrNotFound having
+// done nothing, so a caller still holding a removed instance cannot resume a
+// later attempt registered under the same ID.
+func (d *Dispatcher) ResumeInstance(j *job.Job) error {
+	if j == nil {
+		return fmt.Errorf("dispatch: resume: nil job: %w", ErrNotFound)
+	}
+	return d.resume(j.ID(), j, false)
+}
+
+// resume is the one body of ResumeJob, ResumeInstance and ResumeJobByUser:
+// the decision, the approval (byUser only) and the intent change happen in one
+// d.mu span. When expected is non-nil the entry must hold it, as for
+// lookupFor; the check is made in the same span.
 // BlockUnwanted decides and sets its pause under d.mu too, so the two
 // serialise and a Blocked job is not left running. The writers of IntentRun
 // are enumerated by `git grep -n 'SetIntent(job[.]IntentRun)' -- '*.go' ':!*_test.go'`,
@@ -880,10 +909,10 @@ func (d *Dispatcher) ResumeJob(id string) error {
 // no tick can see the job running while still blocked. A resume refused
 // because the job is cancelled leaves a cancelled job approved, which nothing
 // reads.
-func (d *Dispatcher) resume(id string, byUser bool) error {
+func (d *Dispatcher) resume(id string, expected *job.Job, byUser bool) error {
 	d.mu.Lock()
 	e, ok := d.byID[id]
-	if !ok {
+	if !ok || (expected != nil && e.j != expected) {
 		d.mu.Unlock()
 		return fmt.Errorf("dispatch: resume %s: %w", id, ErrNotFound)
 	}
@@ -924,7 +953,7 @@ func (d *Dispatcher) resume(id string, byUser bool) error {
 //
 // See resume for the ordering of the approval and the intent.
 func (d *Dispatcher) ResumeJobByUser(id string) error {
-	return d.resume(id, true)
+	return d.resume(id, nil, true)
 }
 
 // Remove cancels a job, waits for its launch claim latch to be cleared via
@@ -1033,14 +1062,21 @@ func (d *Dispatcher) removeFor(ctx context.Context, id string, expected *job.Job
 	return nil
 }
 
-// SetFailReason sets the permanent-failure reason for a registered job. It
-// is the only runtime writer of Header.FailReason — see the field's doc
-// comment (and the Header struct comment) for the restore exception.
-func (d *Dispatcher) SetFailReason(id, reason string) error {
+// SetFailReason sets the permanent-failure reason of j. It writes only if j
+// is the job registered under j.ID(), and otherwise returns ErrNotFound having
+// written nothing, so a caller still holding a removed instance cannot set the
+// reason of a later attempt registered under the same ID. It is the only
+// runtime writer of Header.FailReason — see the field's doc comment (and the
+// Header struct comment) for the restore exception.
+func (d *Dispatcher) SetFailReason(j *job.Job, reason string) error {
+	if j == nil {
+		return fmt.Errorf("dispatch: set fail reason: nil job: %w", ErrNotFound)
+	}
+	id := j.ID()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	e, ok := d.byID[id]
-	if !ok {
+	if !ok || e.j != j {
 		return fmt.Errorf("dispatch: set fail reason %s: %w", id, ErrNotFound)
 	}
 	e.h.FailReason = reason

@@ -132,6 +132,8 @@ type Application struct {
 	emitter  EventEmitter
 	meter    *bpsmeter.Meter
 
+	// dispatcher is set by New and read without a nil check. New is the one
+	// constructor of an Application (TestApplicationLiterals_OnlyInNew).
 	dispatcher      *dispatch.Dispatcher
 	residency       *appResidency
 	runner          *appRunner
@@ -333,6 +335,11 @@ type Application struct {
 	// syncFile.
 	closeJobHandlesHook func(ctx context.Context, jobID string) error
 
+	// writeFaultRoutedHook, when non-nil, runs in handleWriteFault's
+	// goroutine before it stalls or fails the job it resolved. Same
+	// discipline as syncFile.
+	writeFaultRoutedHook func(j *job.Job)
+
 	shutdownStepTimeout time.Duration
 	closeHandlesTimeout time.Duration
 	metricsPushInterval time.Duration
@@ -500,16 +507,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		sanitize:    sanitize,
 		onHeartbeat: app.RecordHeartbeat,
 		onJobHopeless: func(jobID string) {
-			var msg string
-			if app.dispatcher != nil {
-				if j, ok := app.dispatcher.Job(jobID); ok {
-					msg = failMsgForJob(j)
-				}
-			}
-			if msg == "" {
-				msg = "Aborted: 80%+ of first articles failed (DMCA'd or expired)"
-			}
-			app.maybeFinalize(jobID, msg)
+			app.finalizeHopeless(jobID, hopelessEarlyAbort)
 		},
 		markDirty: app.markFileDirty,
 		updateCh:  make(chan completionSwap, 1),
@@ -670,7 +668,7 @@ func (app *Application) Speed() float64 {
 // duplicate-detection branching from queue insertion (OPT-9).
 func (app *Application) detectDuplicateNZB(ctx context.Context, md5, filename string, force bool, nzbDir string) (isDuplicate bool, duplicateReason string) {
 	dupReason := ""
-	if app.dispatcher != nil && md5 != "" {
+	if md5 != "" {
 		for _, row := range app.dispatcher.List() {
 			if row.Header.MD5 != "" && row.Header.MD5 == md5 {
 				isDuplicate = true
@@ -789,9 +787,6 @@ func (app *Application) AddJob(ctx context.Context, j *job.Job, hdr dispatch.Hea
 		if err := j.SetName(name); err != nil {
 			return err
 		}
-		if app.dispatcher == nil {
-			return nil
-		}
 		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
 		defer addCancel()
 		return app.dispatcher.Add(addCtx, j, hdr)
@@ -890,9 +885,6 @@ func seedJobFiles(ctx context.Context, st durabilityStore, jobID string, numFile
 // returns ctx's error before acting on anything; a job no one holds is taken
 // even on an ended ctx.
 func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
-	if app.dispatcher == nil {
-		return fmt.Errorf("job %q not found", id)
-	}
 	claim, err := app.transitions.acquire(ctx, id)
 	if err != nil {
 		return fmt.Errorf("app: remove job %s: %w", id, err)
@@ -1046,7 +1038,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 }
 
 func (app *Application) hasDownloadableJobs() bool {
-	if app.dispatcher == nil || app.dispatcher.Paused() {
+	if app.dispatcher.Paused() {
 		return false
 	}
 	for _, row := range app.dispatcher.List() {
@@ -1307,10 +1299,8 @@ func (app *Application) Start(ctx context.Context) error {
 		// assembler's, the downloader's or the post-processor's Start comes
 		// after the dispatcher, and then the assembler and the downloader,
 		// were started with app.ctx.
-		if app.dispatcher != nil {
-			if err := app.dispatcher.Stop(); err != nil {
-				app.log.Warn("start failed: stopping the dispatcher failed", "err", err)
-			}
+		if err := app.dispatcher.Stop(); err != nil {
+			app.log.Warn("start failed: stopping the dispatcher failed", "err", err)
 		}
 		if app.cancel != nil {
 			app.cancel()
@@ -1336,10 +1326,8 @@ func (app *Application) Start(ctx context.Context) error {
 	// finishes by path is queued as a Resumed completion, which
 	// watchCompletions applies once it runs. The jobs restored paused at
 	// Fetching are verified last, below, after this method's other work.
-	if app.dispatcher != nil {
-		if err := app.dispatcher.StartWith(app.ctx, app.reconcileBeforeFirstTick); err != nil {
-			return fmt.Errorf("app: start dispatcher: %w", err)
-		}
+	if err := app.dispatcher.StartWith(app.ctx, app.reconcileBeforeFirstTick); err != nil {
+		return fmt.Errorf("app: start dispatcher: %w", err)
 	}
 	if err := app.assembler.Start(app.ctx); err != nil {
 		return err
@@ -1475,7 +1463,7 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error) {
 	// exited and will not touch manifests again. Yield Fetching jobs so
 	// Dispatcher.Stop can cleanly park and evict. If dl.Stop timed out, do NOT yield,
 	// so Dispatcher.Stop observes wait worker timeout and skips eviction.
-	if dl != nil && dlErr == nil && app.dispatcher != nil {
+	if dl != nil && dlErr == nil {
 		app.yieldStoppedWorkers(errs, job.Fetching)
 	}
 
@@ -1530,14 +1518,12 @@ func (app *Application) joinAndStop(stepTimeout time.Duration, errs *[]error) {
 	if ppErr != nil {
 		*errs = append(*errs, fmt.Errorf("postprocessor stop: %w", ppErr))
 	}
-	if app.dispatcher != nil && ppErr == nil {
+	if ppErr == nil {
 		app.yieldStoppedWorkers(errs, job.Repairing, job.Extracting, job.Finalizing)
 	}
 
-	if app.dispatcher != nil {
-		if err := waitBounded("dispatcher", stepTimeout, app.dispatcher.Stop, app.log); err != nil {
-			*errs = append(*errs, fmt.Errorf("dispatcher stop: %w", err))
-		}
+	if err := waitBounded("dispatcher", stepTimeout, app.dispatcher.Stop, app.log); err != nil {
+		*errs = append(*errs, fmt.Errorf("dispatcher stop: %w", err))
 	}
 }
 
@@ -1574,9 +1560,7 @@ func (app *Application) Shutdown() error {
 	// Pause the dispatcher queue immediately: sets q.paused, which blocks new
 	// lease/slot grants by Advance and prevents job state moves during teardown,
 	// eliminating state churn between worker yield and dispatcher stop.
-	if app.dispatcher != nil {
-		app.dispatcher.Pause()
-	}
+	app.dispatcher.Pause()
 
 	var errs []error
 	stepTimeout := app.stepTimeout()
@@ -1675,91 +1659,89 @@ func (app *Application) handleFileComplete(_ context.Context, fc FileComplete) {
 // It returns an error when the job could not take the completion: it left the
 // queue, or, for an assembler completion, it was evicted before the mark.
 func (app *Application) completeFinalizedFile(fc FileComplete) error {
-	if app.dispatcher != nil {
-		j, ok := app.dispatcher.Job(fc.JobID)
-		if !ok {
-			err := job.ErrNotResident
+	j, ok := app.dispatcher.Job(fc.JobID)
+	if !ok {
+		err := job.ErrNotResident
+		app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+		return err
+	}
+	// Before MarkFileComplete, so the value is on the progress record by
+	// the time the download-complete report below lets the job reach
+	// post-processing through Assessing. A file whose rows do not chain
+	// gaplessly gets zero, which par2 reads as NoCRC.
+	if !fc.Resumed {
+		if _, _, err := j.SettleFileCRC(fc.FileIdx); err != nil {
+			app.logQueueWriteFailure("settle file CRC", fc.JobID, fc.FileIdx, err)
+		}
+	}
+	// The volume's headers are read before anything consumes it, so a
+	// flagged one is never fed to DirectUnpack below: the peek that blocks
+	// a job aborts its unpacker, and maybeStart refuses a Blocked job.
+	//
+	// A Resumed completion was peeked by installVerification, ahead of the
+	// mark that lets the job reach Assessing, so it is not peeked again.
+	unwantedFail := fc.FailMsg
+	if !fc.Resumed {
+		unwantedFail = app.peekArchiveForUnwanted(j, fc)
+		if app.peekedHook != nil {
+			app.peekedHook()
+		}
+	}
+	// DirectUnpack is fed the volume before the file is marked complete,
+	// and so before the download-finished report below. From that report
+	// the tick can launch the job's post-processing, whose enqueuePostProc
+	// collects the unpacker and waits for its volumes: a feed after the
+	// collect finds the job admitted and starts no unpacker (maybeStart),
+	// so the collected one would wait for the volume and the wait would
+	// not end. enqueuePostProc reads the job complete only once every
+	// file is marked, so a feed ahead of the mark is one the collected
+	// unpacker has.
+	//
+	// A resumed completion is not fed: see FileComplete.Resumed.
+	if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
+		app.duOrch.maybeStart(fc)
+	}
+	// A resumed completion neither marks the file nor dirties it: the
+	// hydration or retry that finished it already committed complete = 1
+	// (hydration through its SetComplete verdict; a retry through
+	// verifyRetry's verdict and its retryFileStates row).
+	//
+	// The settle, the peek and the feed above each read the manifest and
+	// do nothing for an evicted job, and the mark is what lets the job
+	// reach Assessing. So a completion that finds the job evicted here is
+	// not marked: one of them may have been skipped. The check reads
+	// residency now, not at each step, so an eviction and a re-hydration
+	// both landing after a step and before it go unseen. MarkFileComplete
+	// itself needs only progress (#868), so an eviction after this check
+	// still takes the mark, behind a settle, peek and feed that ran.
+	if !fc.Resumed {
+		if !j.Resident() {
+			err := fmt.Errorf("job %s: %w", fc.JobID, job.ErrNotResident)
 			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 			return err
 		}
-		// Before MarkFileComplete, so the value is on the progress record by
-		// the time the download-complete report below lets the job reach
-		// post-processing through Assessing. A file whose rows do not chain
-		// gaplessly gets zero, which par2 reads as NoCRC.
-		if !fc.Resumed {
-			if _, _, err := j.SettleFileCRC(fc.FileIdx); err != nil {
-				app.logQueueWriteFailure("settle file CRC", fc.JobID, fc.FileIdx, err)
-			}
+		if app.residentCheckedHook != nil {
+			app.residentCheckedHook(j)
 		}
-		// The volume's headers are read before anything consumes it, so a
-		// flagged one is never fed to DirectUnpack below: the peek that blocks
-		// a job aborts its unpacker, and maybeStart refuses a Blocked job.
-		//
-		// A Resumed completion was peeked by installVerification, ahead of the
-		// mark that lets the job reach Assessing, so it is not peeked again.
-		unwantedFail := fc.FailMsg
-		if !fc.Resumed {
-			unwantedFail = app.peekArchiveForUnwanted(j, fc)
-			if app.peekedHook != nil {
-				app.peekedHook()
-			}
+		if err := j.MarkFileComplete(fc.FileIdx); err != nil {
+			app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
+			return err
 		}
-		// DirectUnpack is fed the volume before the file is marked complete,
-		// and so before the download-finished report below. From that report
-		// the tick can launch the job's post-processing, whose enqueuePostProc
-		// collects the unpacker and waits for its volumes: a feed after the
-		// collect finds the job admitted and starts no unpacker (maybeStart),
-		// so the collected one would wait for the volume and the wait would
-		// not end. enqueuePostProc reads the job complete only once every
-		// file is marked, so a feed ahead of the mark is one the collected
-		// unpacker has.
-		//
-		// A resumed completion is not fed: see FileComplete.Resumed.
-		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
-			app.duOrch.maybeStart(fc)
+		app.markFileDirty(j, fc.FileIdx)
+	}
+	// A job the peek failed is filed only now: a finalize before the mark
+	// above would evict the job so the residency check refused the mark. The
+	// filing is owed by the job's state, not by unwantedFail, so a
+	// completion that failed before here and is redelivered files it too.
+	app.fileOwedUnwantedFailure(j, unwantedFail)
+	// The Fetching worker's exit report. A stale one is a repeat for a
+	// job that has already moved on, and must leave its next state alone.
+	if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
+		if err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
+			app.logQueueWriteFailure("report download complete", fc.JobID, fc.FileIdx, err)
 		}
-		// A resumed completion neither marks the file nor dirties it: the
-		// hydration or retry that finished it already committed complete = 1
-		// (hydration through its SetComplete verdict; a retry through
-		// verifyRetry's verdict and its retryFileStates row).
-		//
-		// The settle, the peek and the feed above each read the manifest and
-		// do nothing for an evicted job, and the mark is what lets the job
-		// reach Assessing. So a completion that finds the job evicted here is
-		// not marked: one of them may have been skipped. The check reads
-		// residency now, not at each step, so an eviction and a re-hydration
-		// both landing after a step and before it go unseen. MarkFileComplete
-		// itself needs only progress (#868), so an eviction after this check
-		// still takes the mark, behind a settle, peek and feed that ran.
-		if !fc.Resumed {
-			if !j.Resident() {
-				err := fmt.Errorf("job %s: %w", fc.JobID, job.ErrNotResident)
-				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
-				return err
-			}
-			if app.residentCheckedHook != nil {
-				app.residentCheckedHook(j)
-			}
-			if err := j.MarkFileComplete(fc.FileIdx); err != nil {
-				app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
-				return err
-			}
-			app.markFileDirty(j, fc.FileIdx)
-		}
-		// A job the peek failed is filed only now: a finalize before the mark
-		// above would evict the job so the residency check refused the mark. The
-		// filing is owed by the job's state, not by unwantedFail, so a
-		// completion that failed before here and is redelivered files it too.
-		app.fileOwedUnwantedFailure(j, unwantedFail)
-		// The Fetching worker's exit report. A stale one is a repeat for a
-		// job that has already moved on, and must leave its next state alone.
-		if reported, err := app.reportDownloadComplete(j, app.dispatcher); reported {
-			if err != nil && !errors.Is(err, dispatch.ErrStaleReport) {
-				app.logQueueWriteFailure("report download complete", fc.JobID, fc.FileIdx, err)
-			}
-			if app.downloadReportedHook != nil {
-				app.downloadReportedHook(fc.JobID)
-			}
+		if app.downloadReportedHook != nil {
+			app.downloadReportedHook(fc.JobID)
 		}
 	}
 	app.emit(Event{Type: "queue_updated"})
@@ -2164,9 +2146,6 @@ func (app *Application) DirectUnpackStatuses() map[string]directunpack.Status {
 // only the ID and means whichever instance holds it now. It reports whether it
 // deferred to the Assessing worker.
 func (app *Application) maybeFinalize(jobID, failMsg string) (deferred bool) {
-	if app.dispatcher == nil {
-		return false
-	}
 	if j, ok := app.dispatcher.Job(jobID); ok {
 		return app.finalizeRegistered(j, failMsg, true)
 	}
@@ -2181,12 +2160,10 @@ func (app *Application) maybeFinalizeJob(j *job.Job, failMsg string) {
 	app.finalizeRegistered(j, failMsg, false)
 }
 
-// finalizeRegistered is maybeFinalize's and maybeFinalizeJob's body. It
+// finalizeRegistered is maybeFinalize's and maybeFinalizeJob's body, and the
+// hand-over Fail and finalizeHopeless make with the instance they hold. It
 // reports enqueuePostProc's deferral.
 func (app *Application) finalizeRegistered(j *job.Job, failMsg string, deferAtAssessing bool) (deferred bool) {
-	if app.dispatcher == nil {
-		return false
-	}
 	row, ok := app.dispatcher.RowJob(j)
 	if !ok {
 		return false
@@ -2688,10 +2665,8 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 		return fmt.Errorf("app: retry %s: only failed jobs can be retried, this one is %q",
 			jobID, entry.Status)
 	}
-	if app.dispatcher != nil {
-		if _, held := app.dispatcher.Job(jobID); held {
-			return fmt.Errorf("app: retry %s: %w", jobID, errJobAlreadyQueued)
-		}
+	if _, held := app.dispatcher.Job(jobID); held {
+		return fmt.Errorf("app: retry %s: %w", jobID, errJobAlreadyQueued)
 	}
 	// After the registration check and before anything below changes state.
 	// A finalizer that started after the claim above proceeds without the
@@ -2729,13 +2704,11 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	// is released when this call returns, after the restore's undo below (defers
 	// run last to first) so the name stays held while that moves the directory
 	// back, and after a successful Add, which holds the name itself.
-	if app.dispatcher != nil {
-		releaseName, err := app.dispatcher.ReserveName(jobID, j.Name())
-		if err != nil {
-			return fmt.Errorf("app: retry %s: %w: %w", jobID, errRetryDirConflict, err)
-		}
-		defer releaseName()
+	releaseName, err := app.dispatcher.ReserveName(jobID, j.Name())
+	if err != nil {
+		return fmt.Errorf("app: retry %s: %w: %w", jobID, errRetryDirConflict, err)
 	}
+	defer releaseName()
 	restoredFrom, err := restoreFailedDir(entry.Path, downloadDir, j.Name())
 	if err != nil {
 		return fmt.Errorf("app: retry %s: restore download directory: %w", jobID, err)
@@ -2827,17 +2800,15 @@ func (app *Application) retryHistoryJob(ctx context.Context, jobID string, allow
 	if app.retryRegisteringHook != nil {
 		app.retryRegisteringHook(jobID)
 	}
-	if app.dispatcher != nil {
-		addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
-		err := app.dispatcher.Add(addCtx, j, hdr)
-		addCancel()
-		// A refusal for the name is not reachable here while ReserveName holds
-		// it, so none is handled; the retry keeps its name rather than
-		// choosing another as AddJob does, because it is the directory holding
-		// the bytes the retained progress describes.
-		if err != nil {
-			return err
-		}
+	addCtx, addCancel := context.WithTimeout(context.WithoutCancel(ctx), addPersistTimeout)
+	addErr := app.dispatcher.Add(addCtx, j, hdr)
+	addCancel()
+	// A refusal for the name is not reachable here while ReserveName holds
+	// it, so none is handled; the retry keeps its name rather than
+	// choosing another as AddJob does, because it is the directory holding
+	// the bytes the retained progress describes.
+	if addErr != nil {
+		return addErr
 	}
 	admitted = true
 	restoreKept = true
@@ -2978,16 +2949,7 @@ func (app *Application) buildDownloaderOptions() downloader.Options {
 		MaxPenalty:       app.maxPenalty,
 		PropagationDelay: time.Duration(propDelay) * time.Minute,
 		OnJobHopeless: func(jobID string) {
-			var msg string
-			if app.dispatcher != nil {
-				if j, ok := app.dispatcher.Job(jobID); ok {
-					msg = failMsgForJob(j)
-				}
-			}
-			if msg == "" {
-				msg = "Aborted: 80%+ of first articles failed (DMCA'd or expired)"
-			}
-			app.maybeFinalize(jobID, msg)
+			app.finalizeHopeless(jobID, hopelessHealthGate)
 		},
 		HandedOff: app.postProcAdmissions.has,
 	}
@@ -3088,11 +3050,9 @@ func (app *Application) SetDownloadDir(dir string) error {
 	if filepath.Clean(dir) == filepath.Clean(app.downloadDir()) {
 		return nil
 	}
-	if app.dispatcher != nil {
-		for _, row := range app.dispatcher.List() {
-			if !row.View.Outcome.IsSettled() {
-				return ErrDownloadDirBusy
-			}
+	for _, row := range app.dispatcher.List() {
+		if !row.View.Outcome.IsSettled() {
+			return ErrDownloadDirBusy
 		}
 	}
 	app.mu.Lock()
@@ -3132,9 +3092,7 @@ func (app *Application) PauseDownloads() {
 	app.mu.Lock()
 	app.pauseReason = pauseReasonUser
 	app.stopLowDiskWatchLocked()
-	if app.dispatcher != nil {
-		app.dispatcher.Pause()
-	}
+	app.dispatcher.Pause()
 	if app.downloader != nil {
 		app.downloader.Pause()
 	}
@@ -3165,9 +3123,7 @@ func (app *Application) ResumeDownloads() {
 func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
 	app.stopLowDiskWatchLocked()
-	if app.dispatcher != nil {
-		app.dispatcher.Resume()
-	}
+	app.dispatcher.Resume()
 	if app.downloader != nil {
 		app.downloader.Resume()
 	}
@@ -3213,9 +3169,7 @@ func (app *Application) handleLowDisk(dir string, freeBytes int64) {
 	if app.pauseReason != pauseReasonUser {
 		app.pauseReason = pauseReasonLowDisk
 	}
-	if app.dispatcher != nil {
-		app.dispatcher.Pause()
-	}
+	app.dispatcher.Pause()
 	if app.downloader != nil {
 		app.downloader.Pause()
 	}
@@ -3320,6 +3274,46 @@ func (app *Application) ServerStatus() []downloader.ServerSnapshot {
 	return nil
 }
 
+// hopelessTrigger names which detector declared a job hopeless while it was
+// still downloading.
+type hopelessTrigger uint8
+
+const (
+	// hopelessEarlyAbort is the pipeline's early-abort heuristic
+	// (Job.CheckEarlyAbort): most of the first articles failed.
+	hopelessEarlyAbort hopelessTrigger = iota
+	// hopelessHealthGate is the downloader's Early Health Gate: the job's
+	// RepairState is Hopeless.
+	hopelessHealthGate
+)
+
+// finalizeHopeless hands the job registered under jobID to post-processing with
+// the reason hopelessReason gives for trigger. It is the body of both
+// detectors' callbacks: the pipeline's onJobHopeless and the downloader's
+// OnJobHopeless. The reason is worded from the instance it hands over.
+func (app *Application) finalizeHopeless(jobID string, trigger hopelessTrigger) {
+	j, ok := app.dispatcher.Job(jobID)
+	if !ok {
+		return
+	}
+	app.finalizeRegistered(j, hopelessReason(j, trigger), true)
+}
+
+// hopelessReason is the failure reason of a job a detector declared hopeless,
+// and it is never "". failMsgForJob's verdict comes first, since it words the
+// job's figures as they stand; when it has none, as for a job the early-abort
+// heuristic stopped while its RepairState is still repairable, the reason
+// names the trigger.
+func hopelessReason(j *job.Job, trigger hopelessTrigger) string {
+	if msg := failMsgForJob(j); msg != "" {
+		return msg
+	}
+	if trigger == hopelessEarlyAbort {
+		return "Aborted: 80%+ of first articles failed (DMCA'd or expired)"
+	}
+	return "Aborted: failed articles exceeded the job's repair capacity. Job is beyond repair"
+}
+
 func failMsgForJob(j *job.Job) string {
 	if j == nil {
 		return ""
@@ -3339,7 +3333,7 @@ func failMsgForCounters(p failureByteCounters, state string, recBytes int64, rec
 	}
 
 	// Promoted scalars and JobProgress, never job.Manifest(): failMsgForJob's
-	// callers (the two OnJobHopeless callbacks, and appRunner's failHopeless
+	// callers (hopelessReason, and appRunner's failHopeless
 	// and runPostProc) check no residency first, and a manifest read on an
 	// evicted job fails with job.ErrNotResident.
 	//
@@ -3376,8 +3370,8 @@ func failMsgForCounters(p failureByteCounters, state string, recBytes int64, rec
 	// separately they drifted, and appRunner.failHopeless passes this
 	// function's result into maybeFinalizeJob with no fallback string — so a
 	// hopeless verdict this function does not word hands the job over with an
-	// empty reason and shows the user nothing. (The OnJobHopeless callbacks
-	// substitute the early-abort message for "".)
+	// empty reason and shows the user nothing. (The hopeless detectors'
+	// callbacks go through hopelessReason, which words a "" by its trigger.)
 	switch state {
 	case string(job.RepairIntact), string(job.RepairPossible), string(job.RepairUnknown):
 		// RepairIntact: only par2 failed, so there is nothing to repair and

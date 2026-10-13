@@ -9,19 +9,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/history"
 )
 
-// rebuildTestApp returns an Application wired with just enough to run
-// rebuildJobFromNZB: a config with an admin dir, and a logger.
+// rebuildTestApp returns an Application for rebuildJobFromNZB, and its admin
+// dir.
 func rebuildTestApp(t *testing.T) (*Application, string) {
 	t.Helper()
-	adminDir := t.TempDir()
-	return &Application{
-		config: &config.Config{General: config.GeneralConfig{AdminDir: adminDir}},
-		log:    slog.New(slog.DiscardHandler),
-	}, adminDir
+	application := newTestApplication(t, WithLogger(slog.New(slog.DiscardHandler)))
+	return application, application.config.GetGeneral().AdminDir
 }
 
 // writeBackup gzips body into adminDir/nzb/<name>, creating the directory.

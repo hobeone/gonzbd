@@ -60,9 +60,8 @@ func TestBuildDownloaderOptions_FieldMapping(t *testing.T) {
 		c.Downloads.PropagationDelay = 10 // minutes
 	})
 
-	app := &Application{
-		config: cfg,
-	}
+	app := newTestApplication(t)
+	app.config = cfg
 
 	opts := app.buildDownloaderOptions()
 
@@ -91,8 +90,8 @@ func TestBuildDownloaderOptions_FieldMapping(t *testing.T) {
 func TestBuildDownloaderOptions_Defaults(t *testing.T) {
 	t.Parallel()
 
-	cfg := &config.Config{}
-	app := &Application{config: cfg}
+	app := newTestApplication(t)
+	app.config = &config.Config{}
 
 	opts := app.buildDownloaderOptions()
 

@@ -735,7 +735,13 @@ on disk, over an `EACCES` on a mount that has not finished coming up.
 
 `OnWriteFault` routes on another goroutine (`handleWriteFault`): run inline on
 the worker, `Fail` → `CloseJobHandles` would wait for the very worker calling
-it.
+it. The job instance is resolved on the worker before the hand-off, and `Stall`
+and `Fail` act on that instance alone, through the dispatcher's instance doors
+(`PauseInstance`, `SetFailReason`, `ResumeInstance`): an instance no longer
+registered under its ID is neither parked nor failed, so a retry registered
+under the ID before the goroutine runs is left alone
+(`TestHandleWriteFault_ActsOnTheAttemptRegisteredOnTheWorker`,
+`TestStallAndFail_LeaveALaterInstanceAlone`).
 
 The one thing that must **not** go through fault routing is a bookkeeping
 defect — a row or an index the manifest does not have. Those fail loudly as
@@ -925,8 +931,8 @@ pause stands, a pause the user adds on top is indistinguishable from it, and
 the re-evaluation resumes it.
 
 Two races are accepted. A user pause landing between `Stall`'s intent read and
-its `PauseJob` is claimed by `Stall` and resumed once the fault clears. A user
-resume landing in the same window leaves `Stall`'s `PauseJob` pausing the job
+its `PauseInstance` is claimed by `Stall` and resumed once the fault clears. A user
+resume landing in the same window leaves `Stall`'s `PauseInstance` pausing the job
 with no owner: it stays paused after the fault clears, with no reason shown.
 Closing the second needs an atomic prior-intent swap in the dispatcher.
 

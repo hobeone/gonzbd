@@ -6,12 +6,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/postproc"
 )
 
 func TestModeStatus_TestConnection_UnknownServer(t *testing.T) {
@@ -21,7 +23,7 @@ func TestModeStatus_TestConnection_UnknownServer(t *testing.T) {
 		t.Fatalf("Default(): %v", err)
 	}
 	cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
-	s := New(Options{Config: cfg, App: &app.Application{}})
+	s := New(Options{Config: cfg, App: apitest.NopApp{}})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=status&name=test_connection&value=nonexistent&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -44,7 +46,7 @@ func TestModeStatus_TestConnection_MissingValue(t *testing.T) {
 		t.Fatalf("Default(): %v", err)
 	}
 	cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
-	s := New(Options{Config: cfg, App: &app.Application{}})
+	s := New(Options{Config: cfg, App: apitest.NopApp{}})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=status&name=test_connection&apikey="+testAPIKey)
 	if rr.Code != http.StatusBadRequest {
@@ -65,7 +67,7 @@ func TestModeStatus_TestConnection_UnreachableHost(t *testing.T) {
 			Connections: 1, Timeout: 2,
 		}}
 	})
-	s := New(Options{Config: cfg, App: &app.Application{}})
+	s := New(Options{Config: cfg, App: dialingApp(t)})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=status&name=test_connection&value=s1&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -126,7 +128,7 @@ func TestModeStatus_TestConnection_ServerUnavailableSetsLikelyConnectionLimit(t 
 			Name: "s1", Host: host, Port: port, Connections: 1, Timeout: 5,
 		}}
 	})
-	s := New(Options{Config: cfg, App: &app.Application{}})
+	s := New(Options{Config: cfg, App: dialingApp(t)})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=status&name=test_connection&value=s1&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -213,11 +215,33 @@ func TestServer_StatusTestConnection_DirectCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Default(): %v", err)
 	}
-	s := New(Options{Config: cfg, App: &app.Application{}})
+	s := New(Options{Config: cfg, App: apitest.NopApp{}})
 	req := httptest.NewRequest(http.MethodGet, "/api?mode=status&name=test_connection&value=missing", nil)
 	w := httptest.NewRecorder()
 	s.statusTestConnection(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("statusTestConnection code = %d, want 200", w.Code)
 	}
+}
+
+// dialingApp is an Application built by app.New, for the tests whose request
+// reaches Application.TestNNTPServer and so needs it to dial for real. It has
+// no history database and no post-processing stages, so New probes no tools.
+func dialingApp(t *testing.T) *app.Application {
+	t.Helper()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	root := t.TempDir()
+	cfg.With(func(c *config.Config) {
+		c.General.AdminDir = filepath.Join(root, "admin")
+		c.General.DownloadDir = filepath.Join(root, "incomplete")
+		c.General.CompleteDir = filepath.Join(root, "complete")
+	})
+	application, err := app.New(cfg, nil, app.WithPostProcStages([]postproc.Stage{}))
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+	return application
 }

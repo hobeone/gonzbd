@@ -9,9 +9,9 @@ run TestFinalize_KeepsTheManifestWhenTheDispatcherRemoveFails
 [reclaim no longer checks whether the dispatcher still holds the job]
 file internal/app/durability.go
 --- anchor
-			if _, held := app.dispatcher.Job(jobID); held {
+		if _, held := app.dispatcher.Job(jobID); held {
 --- replace
-			if _, held := app.dispatcher.Job(jobID); held && false {
+		if _, held := app.dispatcher.Job(jobID); held && false {
 --- end
 
 [the reclaim rule no longer checks for a queue row]

@@ -8,8 +8,8 @@ run TestDropJobAlreadyInHistory_KeepsEverythingWhenTheDispatcherRemoveFails
 [the duplicate is never handed to Dispatcher.Remove, so it stays runnable]
 file internal/app/durability.go
 --- anchor
-		rmErr := app.dispatcher.Remove(rmCtx, jobID)
+	rmErr := app.dispatcher.Remove(rmCtx, jobID)
 --- replace
-		var rmErr error
-		_ = rmCtx
+	var rmErr error
+	_ = rmCtx
 --- end

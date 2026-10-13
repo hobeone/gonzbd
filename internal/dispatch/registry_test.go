@@ -554,7 +554,7 @@ func TestDispatcherRow_ReturnsOneJobWithoutRenderingTheRest(t *testing.T) {
 func TestDispatcher_HeaderStringSetters(t *testing.T) {
 	cases := []struct {
 		name   string
-		set    func(d *Dispatcher, id, val string) error
+		set    func(d *Dispatcher, j *job.Job, val string) error
 		get    func(h Header) string
 		errTag string
 	}{
@@ -566,7 +566,7 @@ func TestDispatcher_HeaderStringSetters(t *testing.T) {
 		},
 		{
 			name:   "SetOperationalError",
-			set:    (*Dispatcher).SetOperationalError,
+			set:    func(d *Dispatcher, j *job.Job, val string) error { return d.SetOperationalError(j.ID(), val) },
 			get:    func(h Header) string { return h.OperationalError },
 			errTag: "set operational error",
 		},
@@ -579,13 +579,13 @@ func TestDispatcher_HeaderStringSetters(t *testing.T) {
 				t.Fatalf("Add: %v", err)
 			}
 
-			if err := tc.set(d, "unknown", "value"); err == nil {
+			if err := tc.set(d, job.New("unknown", "unknown", job.Policy{}), "value"); err == nil {
 				t.Fatalf("%s on unknown job should error", tc.name)
 			} else if !strings.Contains(err.Error(), tc.errTag) {
 				t.Errorf("%s error = %q, want it to name the operation (%q)", tc.name, err, tc.errTag)
 			}
 
-			if err := tc.set(d, "j1", "the value"); err != nil {
+			if err := tc.set(d, j, "the value"); err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
 			}
 
@@ -757,13 +757,13 @@ func TestPauseJobAndResume_DirectHelperCoverage(t *testing.T) {
 		t.Fatalf("Intent after pauseJob = %s, want IntentPause", got)
 	}
 
-	if err := d.resume("missing", false); !errors.Is(err, ErrNotFound) {
+	if err := d.resume("missing", nil, false); !errors.Is(err, ErrNotFound) {
 		t.Errorf("resume(missing) = %v, want ErrNotFound", err)
 	}
-	if err := d.resume("j1", false); !errors.Is(err, ErrUnwantedBlocked) {
+	if err := d.resume("j1", nil, false); !errors.Is(err, ErrUnwantedBlocked) {
 		t.Errorf("resume(j1, byUser=false) = %v, want ErrUnwantedBlocked", err)
 	}
-	if err := d.resume("j1", true); err != nil {
+	if err := d.resume("j1", nil, true); err != nil {
 		t.Fatalf("resume(j1, byUser=true): %v", err)
 	}
 	if got := j.Intent(); got != job.IntentRun {

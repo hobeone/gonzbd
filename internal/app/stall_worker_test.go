@@ -74,7 +74,7 @@ func TestStall_LeavesALiveAssessingWorkerAlone(t *testing.T) {
 	}
 	d.Tick(ctx) // j2 waits for the slot
 
-	application.Stall(j1.ID(), testFault("sync"))
+	application.Stall(j1, testFault("sync"))
 	d.Tick(ctx)
 	if got := runner.ran(j2.ID()); slices.Contains(got, job.Assessing) {
 		t.Errorf("j2 launched at Assessing while j1's assess still ran on pool B's only slot: j2 runs = %v", got)

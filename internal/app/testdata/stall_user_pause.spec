@@ -4,9 +4,9 @@ run TestReevaluateStall_KeepsAUserPauseStallWasCalledOn|TestStall_OnAnUnparkedRe
 [Stall claims a pause the user already set]
 file internal/app/durability.go
 --- anchor
-		if j, ok := app.dispatcher.Job(jobID); ok && j.Intent() == job.IntentPause {
+	claimPause := j.Intent() != job.IntentPause
 --- replace
-		if j, ok := app.dispatcher.Job(jobID); ok && j.Intent() == job.IntentPause && false {
+	claimPause := true
 --- end
 
 [a second fault releases the claim on a pause Stall made]

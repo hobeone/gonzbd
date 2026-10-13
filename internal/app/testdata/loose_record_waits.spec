@@ -31,7 +31,7 @@ file internal/app/startup_reconcile.go
 [a write fault never stalls the job]
 file internal/app/durability.go
 --- anchor
-		app.Stall(jobID, f)
+		app.Stall(j, f)
 --- replace
 		_ = f
 --- end

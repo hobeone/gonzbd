@@ -14,23 +14,23 @@ run TestPersistAndCommit_(LeavesALaterInstanceAlone|WithoutTheLock_LeavesARetryR
 [the teardown removes whatever instance holds the ID]
 file internal/app/job_finalizer.go
 --- anchor
-			err := app.dispatcher.RemoveJob(removeCtx, ppJob.Job)
+		err := app.dispatcher.RemoveJob(removeCtx, ppJob.Job)
 --- replace
-			err := app.dispatcher.Remove(removeCtx, jobID)
+		err := app.dispatcher.Remove(removeCtx, jobID)
 --- end
 
 [a removal that found no instance is reported on whatever instance holds the ID]
 file internal/app/job_finalizer.go
 --- anchor
-			if err != nil && !errors.Is(err, dispatch.ErrNotFound) {
+		if err != nil && !errors.Is(err, dispatch.ErrNotFound) {
 --- replace
-			if err != nil {
+		if err != nil {
 --- end
 
 [the commit occupies whatever instance holds the ID]
 file internal/app/job_finalizer.go
 --- anchor
-		if err := app.dispatcher.OccupyJob(finalCtx, ppJob.Job, func(occupyCtx context.Context) {
+	if err := app.dispatcher.OccupyJob(finalCtx, ppJob.Job, func(occupyCtx context.Context) {
 --- replace
-		if err := app.dispatcher.Occupy(finalCtx, ppJob.Job.ID(), func(occupyCtx context.Context) {
+	if err := app.dispatcher.Occupy(finalCtx, ppJob.Job.ID(), func(occupyCtx context.Context) {
 --- end

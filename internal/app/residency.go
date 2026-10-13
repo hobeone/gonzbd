@@ -49,7 +49,7 @@ type appResidency struct {
 	commit   func(ctx context.Context, j *job.Job, v []durability.FileVerdict) error
 	finished func(jobID string, fileIdx int, failMsg string)
 	peek     func(j *job.Job, fileIdx int) string
-	parked   func(jobID string, f *storagefault.Fault)
+	parked   func(j *job.Job, f *storagefault.Fault)
 
 	// hydrating holds a claim on each job ID a Hydrate is in flight for,
 	// released when it returns; cancels holds the cancel of the context it
@@ -230,7 +230,7 @@ func (r *appResidency) fault(ctx context.Context, j *job.Job, f *storagefault.Fa
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("residency: hydrate %s: %w", j.ID(), err)
 	}
-	r.parked(j.ID(), f)
+	r.parked(j, f)
 	return fmt.Errorf("residency: hydrate %s: %w: %w", j.ID(), dispatch.ErrResidencyFault, err)
 }
 

@@ -88,7 +88,7 @@ func TestReevaluateStall_KeepsAUserPauseStallWasCalledOn(t *testing.T) {
 	if err := application.dispatcher.PauseJob(job.ID()); err != nil {
 		t.Fatalf("the user's pause: %v", err)
 	}
-	application.Stall(job.ID(), storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO))
+	application.Stall(job, storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO))
 
 	if application.StallReason(job.ID()).Reason == "" {
 		t.Fatal("Stall recorded no reason, so the fixture cannot observe it being cleared")
@@ -119,8 +119,8 @@ func TestStall_ASecondFaultKeepsTheParkItOwns(t *testing.T) {
 	application, job := newDurabilityTestApp(t, 1, 2)
 	fault := storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO)
 
-	application.Stall(job.ID(), fault)
-	application.Stall(job.ID(), fault)
+	application.Stall(job, fault)
+	application.Stall(job, fault)
 
 	if !application.weParked(job.ID()) {
 		t.Fatal("a second fault on a job Stall parked released this application's claim on the pause")
@@ -145,7 +145,7 @@ func TestStall_OnAnUnparkedRecordOfAUserPausedJob(t *testing.T) {
 	}
 	application.noteStall(job.ID(), storagefault.Classify("write", "/mnt/dl/a.bin", syscall.ENOSPC), stallRetryable, false)
 
-	application.Stall(job.ID(), storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO))
+	application.Stall(job, storagefault.Classify("write", "/mnt/dl/a.bin", syscall.EIO))
 
 	if application.weParked(job.ID()) {
 		t.Error("Stall claimed the pause of a job the user had paused, on an existing record")

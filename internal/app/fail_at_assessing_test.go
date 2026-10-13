@@ -203,7 +203,7 @@ func TestFail_AtAssessingWithALiveWorker_DefersToTheWorkersExit(t *testing.T) {
 	}
 
 	fault := assessFault()
-	f.app.Fail(f.j.ID(), fault)
+	f.app.Fail(f.j, fault)
 	f.requireNotAdmitted(t, "Fail with the Assessing worker live", job.StateView{State: job.Assessing}, true)
 
 	resumeWorker()
@@ -222,7 +222,7 @@ func TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches(t *testing.T
 	}
 
 	fault := assessFault()
-	f.app.Fail(f.j.ID(), fault)
+	f.app.Fail(f.j, fault)
 	f.requireNotAdmitted(t, "Fail with Assessing pending", job.StateView{State: job.Fetching, Next: job.Assessing}, false)
 
 	f.d.Tick(t.Context())
@@ -241,7 +241,7 @@ func TestFail_OnACompleteJobAtFetching_DefersToAssessing(t *testing.T) {
 	f := newFailAtAssessingFixture(t)
 
 	fault := assessFault()
-	f.app.Fail(f.j.ID(), fault)
+	f.app.Fail(f.j, fault)
 	f.requireNotAdmitted(t, "Fail on a complete job at Fetching", job.StateView{State: job.Fetching}, true)
 
 	if err := f.d.AdvanceFrom(f.j, job.Fetching, job.Assessing); err != nil {
@@ -261,7 +261,7 @@ func TestFail_BetweenTheVerdictAndItsReport_IsHandedOffAfterTheReport(t *testing
 	fault := assessFault()
 	var admittedBeforeReport atomic.Bool
 	f.app.runner.report = interceptReporter{reporter: f.d, before: func(j *job.Job) {
-		f.app.Fail(j.ID(), fault)
+		f.app.Fail(j, fault)
 		admittedBeforeReport.Store(f.app.postProcAdmissions.has(j))
 	}}
 

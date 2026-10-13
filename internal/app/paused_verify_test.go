@@ -535,3 +535,25 @@ func TestVerifyPausedJobs_RemoveDuringTheLoad(t *testing.T) {
 	}
 	lrWaitFor(t, "the verifier to finish", func() bool { return waitResumedSenders(a2.Application) == 0 })
 }
+
+// TestVerifyPausedJobs_StopsAtTheFirstLoadOnceTheAppIsStopping calls the
+// verifier directly with its context already done: it reports the first job
+// paused at Fetching and returns, rather than walking on to the next.
+func TestVerifyPausedJobs_StopsAtTheFirstLoadOnceTheAppIsStopping(t *testing.T) {
+	t.Parallel()
+	env := newLREnv(t)
+	rec := &loadRecorder{}
+	a := env.newApp(t, func(app *Application) { app.pausedVerifiedHook = rec.hook })
+	first := pauseAtFetching(t, env, a, "paused-first")
+	second := pauseAtFetching(t, env, a, "paused-second")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	a.verifyPausedJobs(ctx)
+
+	got := rec.loaded()
+	if len(got) != 1 || (got[0] != first.ID() && got[0] != second.ID()) {
+		t.Errorf("loaded %v, want exactly one of %s and %s: a stopping app walks no further",
+			got, first.ID(), second.ID())
+	}
+}

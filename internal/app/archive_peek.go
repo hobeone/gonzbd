@@ -111,9 +111,6 @@ func archiveMemberNames(path string, par2Opts par2.ParseOptions) (names []string
 // filing is owed by the job's state, so it does not depend on this return. No lock
 // is held across the header read or the file I/O.
 func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) string {
-	if app.dispatcher == nil {
-		return ""
-	}
 	jobID := fc.JobID
 	if st, ok := app.dispatcher.UnwantedState(jobID); !ok || st != unwanted.StateNone {
 		return ""

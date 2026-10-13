@@ -21,7 +21,7 @@ func TestStall_StillParksWhenTheProcessIsNotStopping(t *testing.T) {
 		t.Fatal("the fixture is already stopping, so it cannot observe the running case")
 	}
 
-	application.Stall(job.ID(), storagefault.Classify("sync", "/d/a.bin", syscall.ETIMEDOUT))
+	application.Stall(job, storagefault.Classify("sync", "/d/a.bin", syscall.ETIMEDOUT))
 
 	row, ok := application.dispatcher.Row(job.ID())
 	if !ok {
@@ -69,9 +69,10 @@ func TestStopAndJoin_WaitsForWgBeforePostProcAndReportsTimeout(t *testing.T) {
 
 	t.Run("reports error when wg.Wait times out", func(t *testing.T) {
 		t.Parallel()
-		var zeroApp Application
-		if got := zeroApp.stepTimeout(); got != defaultShutdownStepTimeout {
-			t.Errorf("zeroApp.stepTimeout() = %v, want %v", got, defaultShutdownStepTimeout)
+		unsetApp := newTestApplication(t)
+		unsetApp.shutdownStepTimeout = 0
+		if got := unsetApp.stepTimeout(); got != defaultShutdownStepTimeout {
+			t.Errorf("stepTimeout() with no timeout set = %v, want %v", got, defaultShutdownStepTimeout)
 		}
 
 		appStuck, _, _ := newLifecycleTestApp(t)

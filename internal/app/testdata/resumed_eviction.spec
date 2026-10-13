@@ -16,9 +16,9 @@ file internal/app/residency.go
 [the consumer runs a resumed completion through the residency check and the mark]
 file internal/app/app.go
 --- anchor
-		if !fc.Resumed {
-			if !j.Resident() {
+	if !fc.Resumed {
+		if !j.Resident() {
 --- replace
-		if true {
-			if !j.Resident() {
+	if true {
+		if !j.Resident() {
 --- end

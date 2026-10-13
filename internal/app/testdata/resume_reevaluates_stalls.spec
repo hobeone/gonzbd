@@ -26,9 +26,7 @@ file internal/app/app.go
 	}
 	app.pauseReason = pauseReasonNone
 	app.stopLowDiskWatchLocked()
-	if app.dispatcher != nil {
-		app.dispatcher.Resume()
-	}
+	app.dispatcher.Resume()
 	if app.downloader != nil {
 		app.downloader.Resume()
 	}
@@ -46,9 +44,7 @@ func (app *Application) ResumeDownloads() {
 	app.mu.Lock()
 	app.pauseReason = pauseReasonNone
 	app.stopLowDiskWatchLocked()
-	if app.dispatcher != nil {
-		app.dispatcher.Resume()
-	}
+	app.dispatcher.Resume()
 	if app.downloader != nil {
 		app.downloader.Resume()
 	}

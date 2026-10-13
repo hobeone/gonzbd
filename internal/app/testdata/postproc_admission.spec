@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run Test(Fail_WhilePostProcessing_IsNotedAndLeavesTheStatusToTheStages|RunPostProc_DuringTheFinalizerTail_EnqueuesNoSecondCopy|Enqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy|RemoveJob_EndsThePostProcessingAdmission|JobFinalizerCancelled_EndsTheAdmissionWithoutADispatcher|PostProcAdmissions_AdmitsEachInstanceOnce|PostProcAdmissions_KeepsTheFirstFailureReason|WithFailureNotes_LeavesThePostProcessorsJobAlone)$
+run Test(Fail_WhilePostProcessing_IsNotedAndLeavesTheStatusToTheStages|RunPostProc_DuringTheFinalizerTail_EnqueuesNoSecondCopy|Enqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy|RemoveJob_EndsThePostProcessingAdmission|JobFinalizerCancelled_EndsTheAdmissionOfAnUnregisteredJob|PostProcAdmissions_AdmitsEachInstanceOnce|PostProcAdmissions_KeepsTheFirstFailureReason|WithFailureNotes_LeavesThePostProcessorsJobAlone)$
 
 # enqueuePostProc admitting at most one post-processing run of a job instance
 # at a time; a refused call's failure reason reaching the run only before the
@@ -65,9 +65,9 @@ file internal/app/history_helper.go
 file internal/app/job_finalizer.go
 --- anchor
 	defer app.postProcAdmissions.release(ppJob.Job)
-	if app.dispatcher == nil {
+	// Cancel first, so the tick cannot relaunch the job between the yield and
 --- replace
-	if app.dispatcher == nil {
+	// Cancel first, so the tick cannot relaunch the job between the yield and
 --- end
 
 [the post-processor is handed the reason the admitting call carried, not the admission's]

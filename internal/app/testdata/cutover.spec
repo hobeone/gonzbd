@@ -84,9 +84,9 @@ run TestRecorder_DropsRowsOfAReplacedInstance
 file internal/app/app.go
 run TestLooseRecord_ResumedCompletionIsNotFedToDirectUnpack
 --- anchor
-		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
+	if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
 --- replace
-		if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar {
+	if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar {
 --- end
 
 # Design item 1: a complete=1 file is trusted unread, so every article of its

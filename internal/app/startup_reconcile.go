@@ -26,13 +26,11 @@ import (
 // verifies them after Start has returned, so that their read-back does not
 // delay the API's start.
 func (app *Application) reconcileBeforeFirstTick(ctx context.Context) error {
-	if app.dispatcher != nil {
-		for _, row := range app.dispatcher.List() {
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("app: startup reconciliation aborted: %w", err)
-			}
-			app.dropJobAlreadyInHistory(ctx, row.ID)
+	for _, row := range app.dispatcher.List() {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("app: startup reconciliation aborted: %w", err)
 		}
+		app.dropJobAlreadyInHistory(ctx, row.ID)
 	}
 	return app.fileOwedUnwantedFailures(ctx)
 }
@@ -75,9 +73,6 @@ const defaultPausedVerifyTimeout = 10 * time.Minute
 // reclaim deletes the job's rows, and the Resumed completions it queued find
 // no job.
 func (app *Application) verifyPausedJobs(ctx context.Context) {
-	if app.dispatcher == nil {
-		return
-	}
 	for _, row := range app.dispatcher.List() {
 		j, ok := app.dispatcher.Job(row.ID)
 		if !ok || row.View.State != job.Fetching || j.Intent() != job.IntentPause {
@@ -120,9 +115,6 @@ func (app *Application) verifyPausedJobs(ctx context.Context) {
 // Blocked job on a user's resume and refusing it on any other, so a paused
 // job never becomes owed.
 func (app *Application) fileOwedUnwantedFailures(ctx context.Context) error {
-	if app.dispatcher == nil {
-		return nil
-	}
 	for _, row := range app.dispatcher.List() {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("app: startup reconciliation aborted: %w", err)

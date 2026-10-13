@@ -102,9 +102,6 @@ func renameWithin(base, oldPath, newPath string) error {
 
 // queuedName reports whether a job the dispatcher holds is named name.
 func (app *Application) queuedName(name string) bool {
-	if app.dispatcher == nil {
-		return false
-	}
 	for _, row := range app.dispatcher.List() {
 		if row.Header.Name == name {
 			return true

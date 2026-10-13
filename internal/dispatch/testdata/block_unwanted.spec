@@ -56,8 +56,12 @@ file internal/dispatch/tick.go
 file internal/dispatch/registry.go
 --- anchor
 	if !ok || e.j != j {
+		d.mu.Unlock()
+		return false, fmt.Errorf("dispatch: block %s: %w", id, ErrNotFound)
 --- replace
 	if !ok {
+		d.mu.Unlock()
+		return false, fmt.Errorf("dispatch: block %s: %w", id, ErrNotFound)
 --- end
 
 [a block without the pause request pauses anyway]
