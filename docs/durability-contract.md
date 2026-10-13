@@ -1239,12 +1239,20 @@ articles or sparse regions.
    after the previous set settled is still extracted
    (`TestDirectUnpack_SetAddedAfterTheQueueEmptiedIsExtracted`). `Wait`
    declares that every volume has been added, which the awaited unpacker of a
-   finished download satisfies, and `Add` refuses a volume once the unpacker
-   has finished (`TestDirectUnpack_AddAfterWaitIsRefused`,
+   finished download satisfies, and `Add` refuses a volume once `Wait` or
+   `Abort` has ended the input, or the unpacker has finished
+   (`TestDirectUnpack_AddAfterWaitIsRefused`,
+   `TestDirectUnpack_AddWhileWaitIsExtractingIsRefused`,
    `TestDirectUnpack_AddAfterAStartedRunFinishedIsRefused`). End of input is
-   final for every volume: a set missing any volume, the first or a later
-   one, when `Wait` ends the input is recorded as failed, "volume N of set S
-   never arrived" (`volumeMissing`), and post-processing re-extracts it.
+   final for every volume up to a set's highest listed volume
+   (`totalVolumes`, read from the job's filenames): a set missing one of
+   them, the first or a later one, when `Wait` ends the input is recorded as
+   failed, "volume N of set S never arrived" (`volumeMissing`), and
+   post-processing re-extracts it. A set whose final volumes are absent from
+   the job's filenames is not known to be missing them: the feed ends after
+   the highest listed volume, and the set fails with the RAR reader's error
+   that the volume stream closed, which post-processing re-extracts the
+   same way.
    `waitForVolume` returns that for a volume not yet added once the input has
    ended, and `Wait` on an unpacker whose `run()` never started settles its
    queue itself and closes `done`
@@ -1252,7 +1260,7 @@ articles or sparse regions.
    `TestDirectUnpack_WaitSettlesSetsWhoseFirstVolumeNeverArrived`,
    `TestDirectUnpack_WaitSettlesASetMissingALaterVolume`). So a finished
    download whose unpacker was not fed a volume, whether the volume is absent
-   from the NZB or a feed was skipped (`maybeStart` returning before `Add`,
+   from the NZB below the highest listed one or a feed was skipped (`maybeStart` returning before `Add`,
    or `completeFinalizedFile`'s `direct_unpack`/`enable_unrar` gate), does
    not hold the job at the hand-over
    (`TestHandOver_AVolumeNeverFedToTheDirectUnpack_DoesNotHoldTheJob`). When

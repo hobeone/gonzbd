@@ -1,5 +1,5 @@
 pkg ./internal/directunpack/
-run ^(TestDirectUnpack_SetAddedAfterTheQueueEmptiedIsExtracted|TestDirectUnpack_WaitSettlesSetsWhoseFirstVolumeNeverArrived|TestDirectUnpack_AddAfterWaitIsRefused|TestDirectUnpack_WaitSettlesALateSetWithoutVolume1|TestDirectUnpack_ParkedRunWakes|TestDirectUnpack_AddAfterAStartedRunFinishedIsRefused|TestDirectUnpack_WaitSettlesASetMissingALaterVolume)$
+run ^(TestDirectUnpack_SetAddedAfterTheQueueEmptiedIsExtracted|TestDirectUnpack_WaitSettlesSetsWhoseFirstVolumeNeverArrived|TestDirectUnpack_AddAfterWaitIsRefused|TestDirectUnpack_WaitSettlesALateSetWithoutVolume1|TestDirectUnpack_ParkedRunWakes|TestDirectUnpack_AddAfterAStartedRunFinishedIsRefused|TestDirectUnpack_WaitSettlesASetMissingALaterVolume|TestDirectUnpack_AddWhileWaitIsExtractingIsRefused|TestDirectUnpack_AddAfterRunExitedOnCancellationIsRefused)$
 
 # Every set the unpacker admits gets an outcome: run waits for a set queued
 # after the queue emptied until Wait ends the input, Wait settles the sets of
@@ -31,12 +31,20 @@ file internal/directunpack/directunpack.go
 			_ = s
 --- end
 
-[Add admits a volume after the unpacker finished]
+[Add admits a volume after run exited on cancellation]
 file internal/directunpack/directunpack.go
 --- anchor
-	if d.killed || d.finished {
+	if d.killed || d.inputEnded || d.finished {
 --- replace
-	if d.killed {
+	if d.killed || d.inputEnded {
+--- end
+
+[Add admits a volume after Wait while run is still extracting]
+file internal/directunpack/directunpack.go
+--- anchor
+	if d.killed || d.inputEnded || d.finished {
+--- replace
+	if d.killed || d.finished {
 --- end
 
 [a set run took without volume 1 waits for it after the input ended]

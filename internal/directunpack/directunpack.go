@@ -129,7 +129,7 @@ type DirectUnpacker struct {
 	queued      chan struct{} // signaled when a set is queued or input ends; awaitNextSet waits on it
 	done        chan struct{} // closed when run exits, or by Wait or Abort when run never started
 	started     bool          // whether the goroutine has been started
-	inputEnded  bool          // Wait or Abort was called: no more volumes will be added
+	inputEnded  bool          // Wait or Abort was called: Add admits nothing more
 	finished    bool          // done is closed or run is exiting: Add admits nothing more
 	idle        bool          // awaitNextSet is waiting on queued with nothing queued
 
@@ -266,8 +266,10 @@ func (d *DirectUnpacker) MarkCorrupt(setname, reason string) {
 // On the first call, it scans all job filenames to build the volume map.
 // If this is vol 1 of the first set, it starts extraction.
 //
-// A volume added once the unpacker has finished (Wait or Abort has returned,
-// or run is exiting) is refused: no run is left to extract its set.
+// A volume added once the input has ended (Wait or Abort has been called) or
+// the unpacker has finished (run is exiting) is refused: Wait declared that
+// no more volumes are coming, and waitForVolume may already have failed a set
+// for this one.
 func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 	setname, vol := AnalyzeRarFilename(filename)
 	if setname == "" {
@@ -276,11 +278,11 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 
 	d.mu.Lock()
 
-	if d.killed || d.finished {
+	if d.killed || d.inputEnded || d.finished {
 		late := !d.killed
 		d.mu.Unlock()
 		if late {
-			d.log.Warn("directunpack: volume added after the unpacker finished; left to post-processing",
+			d.log.Warn("directunpack: volume added after the unpacker's input ended; left to post-processing",
 				"set", setname, "vol", vol)
 		}
 		return
@@ -428,10 +430,14 @@ func (d *DirectUnpacker) Abort() {
 
 // Wait declares that every volume has been added, and blocks until each set
 // the unpacker admitted has an outcome and run has exited. A volume added
-// once the unpacker has finished is refused (Add). A set missing any volume,
-// volume 1 or a later one, when Wait is called is recorded as failed, "volume
-// N of set S never arrived": waitForVolume returns that for a volume not yet
-// added once the input has ended, so Wait does not wait for a volume.
+// once Wait has been called is refused (Add). A set missing a volume numbered
+// up to its highest listed volume (totalVolumes, from SetAllFilenames), volume
+// 1 or a later one, when Wait is called is recorded as failed, "volume N of
+// set S never arrived": waitForVolume returns that for a volume not yet added
+// once the input has ended, so Wait does not wait for a volume. A set whose
+// final volumes are absent from the job's filenames is not known to be
+// missing them: the feed ends after the highest listed volume, and the set
+// fails with the RAR reader's error that the volume stream closed.
 //
 // When run never started, no set's volume 1 was added, so each queued set is
 // recorded as failed here, and Wait returns at once.
@@ -874,8 +880,8 @@ func (d *DirectUnpacker) extractMember(ctx context.Context, root *os.Root, fh *r
 
 // waitForVolume blocks until the specified volume is in completedVols, and
 // returns an error instead once the unpacker is killed, the set is marked
-// corrupt, the input has ended without the volume (volumeMissing: no volume
-// is added after Wait or Abort), or ctx is done.
+// corrupt, the input has ended without the volume (volumeMissing: Add
+// refuses a volume once inputEnded is set, by Wait or Abort), or ctx is done.
 func (d *DirectUnpacker) waitForVolume(ctx context.Context, setname string, vol int) error {
 	for {
 		d.mu.Lock()
