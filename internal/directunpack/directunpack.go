@@ -128,6 +128,7 @@ type DirectUnpacker struct {
 	started     bool          // whether the goroutine has been started
 	inputEnded  bool          // Wait or Abort was called: no more volumes will be added
 	finished    bool          // done is closed or run is exiting: Add admits nothing more
+	idle        bool          // awaitNextSet is waiting on queued with nothing queued
 
 	// Config.
 	opts Options
@@ -423,12 +424,14 @@ func (d *DirectUnpacker) Abort() {
 
 // Wait declares that every volume has been added, and blocks until each set
 // the unpacker admitted has an outcome and run has exited. A volume added
-// once the unpacker has finished is refused (Add). A set run is extracting
-// when Wait is called is still waited for volume by volume, so a volume of
-// it that is never added keeps Wait blocked until Abort.
+// once the unpacker has finished is refused (Add). A set whose volume 1 has
+// not been added by then is recorded as failed, "volume 1 never arrived":
+// waitForVolume returns that for volume 1 once the input has ended. A set
+// past volume 1 is still waited for volume by volume, so a later volume of it
+// that is never added keeps Wait blocked until Abort.
 //
 // When run never started, no set's volume 1 was added, so each queued set is
-// recorded as failed, "volume 1 never arrived", and Wait returns at once.
+// recorded as failed here, and Wait returns at once.
 func (d *DirectUnpacker) Wait() {
 	d.mu.Lock()
 	d.inputEnded = true
@@ -442,7 +445,9 @@ func (d *DirectUnpacker) Wait() {
 		return
 	}
 	d.mu.Unlock()
+	// Wake run whether it waits for a set or for a set's volume 1.
 	signal(d.queued)
+	signal(d.volumeReady)
 	<-d.done
 }
 
@@ -593,6 +598,7 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 func (d *DirectUnpacker) awaitNextSet(ctx context.Context) (string, bool) {
 	for {
 		d.mu.Lock()
+		d.idle = false
 		switch {
 		case d.killed:
 			d.finished = true
@@ -608,6 +614,7 @@ func (d *DirectUnpacker) awaitNextSet(ctx context.Context) (string, bool) {
 			d.mu.Unlock()
 			return "", false
 		}
+		d.idle = true
 		d.mu.Unlock()
 
 		select {
@@ -875,6 +882,10 @@ func (d *DirectUnpacker) waitForVolume(ctx context.Context, setname string, vol 
 				d.mu.Unlock()
 				return nil
 			}
+		}
+		if vol == 1 && d.inputEnded {
+			d.mu.Unlock()
+			return errFirstVolumeMissing
 		}
 		d.mu.Unlock()
 

@@ -1164,7 +1164,8 @@ articles or sparse regions.
    normal unpack is the backstop.
 3. **Volume waiting**: `waitForVolume()` blocks on `volumeReady` until the
    requested volume number appears in `completedVols`, and returns immediately if
-   the set is in `corruptSets`.
+   the set is in `corruptSets`, or, for volume 1, once `Wait` or `Abort` has
+   ended the input (item 8).
 4. **Sequential volume feeding**: `startVolumeFeed()` opens completed volumes in
    order and sends their `*os.File` handles to `rarengine.NewReader(volumesChan)`.
 5. **Corrupt volume handling**: `MarkCorrupt(setname, reason)` is called by
@@ -1216,10 +1217,15 @@ articles or sparse regions.
    (`TestDirectUnpack_SetAddedAfterTheQueueEmptiedIsExtracted`). `Wait`
    declares that every volume has been added, which the awaited unpacker of a
    finished download satisfies, and `Add` refuses a volume once the unpacker
-   has finished (`TestDirectUnpack_AddAfterWaitIsRefused`). `Wait` on an
-   unpacker whose `run()` never started records each queued set as failed,
-   "volume 1 never arrived", and closes `done`
-   (`TestDirectUnpack_WaitSettlesSetsWhoseFirstVolumeNeverArrived`).
+   has finished (`TestDirectUnpack_AddAfterWaitIsRefused`,
+   `TestDirectUnpack_AddAfterAStartedRunFinishedIsRefused`). A set whose
+   volume 1 has not arrived when `Wait` ends the input is recorded as failed,
+   "volume 1 never arrived": `waitForVolume` returns that for volume 1 once
+   the input has ended, and `Wait` on an unpacker whose `run()` never started
+   settles its queue itself and closes `done`
+   (`TestDirectUnpack_WaitSettlesALateSetWithoutVolume1`,
+   `TestDirectUnpack_WaitSettlesSetsWhoseFirstVolumeNeverArrived`). A set
+   past volume 1 is still waited for volume by volume.
 9. **Path traversal safety**: `extractEntries` opens an `os.Root` anchored at
    the set's staging directory and writes every entry through it, so archive
    entries with `..` components, absolute paths, or symlinked path components
