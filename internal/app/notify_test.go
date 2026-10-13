@@ -65,7 +65,7 @@ func TestBuildNotifier_ScriptTimeoutCases(t *testing.T) {
 	}
 }
 
-func TestBuildNotifier_EmailAndAppriseCarryConfig(t *testing.T) {
+func TestBuildNotifier_SinksCarryConfig(t *testing.T) {
 	t.Parallel()
 	cfg := config.NotificationConfig{
 		Email: config.EmailNotificationConfig{
@@ -85,10 +85,15 @@ func TestBuildNotifier_EmailAndAppriseCarryConfig(t *testing.T) {
 			ServiceURL: "json://svc.invalid",
 			Events:     []string{"QueueDone"},
 		},
+		Script: config.ScriptNotificationConfig{
+			Enable: true,
+			Path:   "/bin/true",
+			Events: []string{"Warning"},
+		},
 	}
 	ns := BuildNotifier(cfg).Notifiers()
-	if len(ns) != 2 {
-		t.Fatalf("got %d notifiers, want 2", len(ns))
+	if len(ns) != 3 {
+		t.Fatalf("got %d notifiers, want 3", len(ns))
 	}
 
 	en, ok := ns[0].(*notifier.EmailNotifier)
@@ -114,5 +119,16 @@ func TestBuildNotifier_EmailAndAppriseCarryConfig(t *testing.T) {
 	}
 	if !an.Accepts(notifier.QueueDone) || an.Accepts(notifier.DownloadFailed) {
 		t.Error("apprise event mask not taken from cfg.Apprise.Events")
+	}
+
+	sn, ok := ns[2].(*notifier.ScriptNotifier)
+	if !ok {
+		t.Fatalf("notifier 2 is %T, want *notifier.ScriptNotifier", ns[2])
+	}
+	if sn.Config().Path != "/bin/true" {
+		t.Errorf("script path not carried through: %q", sn.Config().Path)
+	}
+	if !sn.Accepts(notifier.Warning) || sn.Accepts(notifier.DownloadFailed) || sn.Accepts(notifier.QueueDone) {
+		t.Error("script event mask not taken from cfg.Script.Events")
 	}
 }
