@@ -175,6 +175,115 @@ func TestGoRepair_DamagedBlockWhoseContentRecurs_IsRepairedNatively(t *testing.T
 	})
 }
 
+// misnamedOnly builds the par2 fixture set in a fresh directory with data.bin
+// moved, intact, to an obfuscated name: a set whose only repair is a rename.
+func misnamedOnly(t *testing.T) (dir, mainFile string, intact []byte) {
+	t.Helper()
+	dir = t.TempDir()
+	mainFile = copyPar2Fixtures(t, dir)
+	intact, err := os.ReadFile(filepath.Join(dir, "data.bin"))
+	if err != nil {
+		t.Fatalf("read data.bin: %v", err)
+	}
+	if err := os.Rename(filepath.Join(dir, "data.bin"), filepath.Join(dir, "a8f3c0d2e1")); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	return dir, mainFile, intact
+}
+
+// TestGoVerify_RenameOnly_ReportsTheRename pins that a set needing only a
+// rename is reported as a possible repair, counted as a rename and not as a
+// rebuild, in both Stdout and the summary line.
+func TestGoVerify_RenameOnly_ReportsTheRename(t *testing.T) {
+	t.Parallel()
+	dir, mainFile, _ := misnamedOnly(t)
+
+	var lines []string
+	res, err := GoVerify(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), func(l string) {
+		lines = append(lines, l)
+	})
+	if err != nil {
+		t.Fatalf("GoVerify: %v", err)
+	}
+	if res.Status != StatusRepairPossible {
+		t.Errorf("Status = %v, want StatusRepairPossible\nOutput: %s", res.Status, res.Stdout)
+	}
+	for _, want := range []string{"files_to_rename=1", "files_to_rebuild=0"} {
+		if !strings.Contains(res.Stdout, want) {
+			t.Errorf("Stdout lacks %q: %s", want, res.Stdout)
+		}
+	}
+	if !slices.ContainsFunc(lines, func(l string) bool {
+		return strings.Contains(l, "Repair needed:") && strings.Contains(l, "1 misnamed file(s) to rename")
+	}) {
+		t.Errorf("no summary line reports the rename: %v", lines)
+	}
+}
+
+// TestGoRepair_RenameOnly_RestoresTheName pins GoRepair's half: data.bin is
+// back under its own name with its original bytes.
+func TestGoRepair_RenameOnly_RestoresTheName(t *testing.T) {
+	t.Parallel()
+	dir, mainFile, intact := misnamedOnly(t)
+
+	res, err := GoRepair(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), nil)
+	if err != nil {
+		t.Fatalf("GoRepair: %v", err)
+	}
+	if !res.Success {
+		t.Errorf("Success = false\nOutput: %s", res.Output)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "data.bin")); err != nil || !bytes.Equal(got, intact) {
+		t.Errorf("data.bin does not hold its original bytes (err=%v)\nOutput: %s", err, res.Output)
+	}
+}
+
+// TestGoRepair_ParityAndRebuildInOneSet covers a set where one file needs
+// recovery data and another needs only a rebuild. testdata/mixed holds a
+// par2cmdline 0.8.1 set made with
+//
+//	par2 create -s1024 -c2 -n1 set.par2 a.bin b.bin
+//
+// over a.bin = payload(0x10, 8192) and b.bin = payload(0x60, 4096). Here a.bin
+// has one byte flipped, so one block is missing and parity rebuilds it, and
+// b.bin is missing while its bytes sit inside container.bin after a header,
+// so every block of it is located but not as a rename.
+func TestGoRepair_ParityAndRebuildInOneSet(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, name := range []string{"set.par2", "set.vol0+2.par2"} {
+		body, err := os.ReadFile(filepath.Join("testdata", "mixed", name))
+		if err != nil {
+			t.Fatalf("read fixture %s: %v", name, err)
+		}
+		writeFile(t, dir, name, body)
+	}
+	a, b := payload(0x10, 8192), payload(0x60, 4096)
+	damaged := bytes.Clone(a)
+	// The flip is a block's first byte. A flip mid-block in this payload makes
+	// par2engine count the blocks after it missing too, which this set's two
+	// recovery blocks cannot cover.
+	damaged[2048] ^= 0xFF
+	writeFile(t, dir, "a.bin", damaged)
+	writeFile(t, dir, "container.bin", append([]byte("HEADER-NOT-PART-OF-PAYLOAD-"), b...))
+
+	res, err := GoRepair(context.Background(), discardLogger(), filepath.Join(dir, "set.par2"), candidatesIn(t, dir), nil)
+	if err != nil {
+		t.Fatalf("GoRepair: %v\nOutput: %s", err, res.Output)
+	}
+	if !res.Success {
+		t.Errorf("Success = false\nOutput: %s", res.Output)
+	}
+	for name, want := range map[string][]byte{"a.bin": a, "b.bin": b} {
+		if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || !bytes.Equal(got, want) {
+			t.Errorf("%s does not hold its original bytes (err=%v)", name, err)
+		}
+	}
+	if !strings.Contains(res.Output, "Repair required: 1 missing blocks, 2 damaged file(s) to rebuild") {
+		t.Errorf("output does not report both the missing block and the rebuilds\nOutput: %s", res.Output)
+	}
+}
+
 // symlinkAtProtectedName builds the par2 fixture set in a fresh directory and
 // replaces data.bin with a symlink to an intact copy in the same directory.
 // par2engine opens the name through os.Root, which follows a link whose
