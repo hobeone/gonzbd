@@ -46,7 +46,7 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	// Snapshot once; used in multiple branches below.
 	folderRename := f.folderRename.Load()
 
-	if job.ParError || job.UnpackError || job.FailMsg != "" {
+	if job.Failed() {
 		return f.handleFailure(ctx, log, job, folderRename)
 	}
 

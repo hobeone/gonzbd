@@ -57,6 +57,8 @@ func (s *ExtensionCleanupStage) SetExtensions(extensions []string) {
 // Name implements Stage.
 func (*ExtensionCleanupStage) Name() string { return "extension_cleanup" }
 
+func (*ExtensionCleanupStage) deletesPayload() {} //nocover: payloadDeleter marker, no body
+
 // Run walks job.DownloadDir recursively, matches file extensions against
 // the configured cleanup list, and deletes matches. Best-effort: errors
 // from individual deletions are logged but don't fail the pipeline.

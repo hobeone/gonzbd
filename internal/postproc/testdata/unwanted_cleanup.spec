@@ -9,14 +9,6 @@ file internal/postproc/unwanted_cleanup.go
 	if false && job.Unwanted == unwanted.StateApproved {
 --- end
 
-[a failed job is cleaned anyway]
-file internal/postproc/unwanted_cleanup.go
---- anchor
-	if job.ParError || job.UnpackError || job.FailMsg != "" {
---- replace
-	if job.ParError {
---- end
-
 [a rules error lets the job through]
 file internal/postproc/unwanted_cleanup.go
 --- anchor

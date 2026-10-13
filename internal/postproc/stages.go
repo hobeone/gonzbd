@@ -125,7 +125,8 @@ func (o QuickCheckOutcome) String() string {
 // Stage is the interface every post-processing stage must implement.
 // Stages are registered once at construction time and run in that order
 // for every job. Stage errors are recorded but the pipeline continues; each
-// stage self-gates based on job flags (ParError, UnpackError).
+// stage self-gates based on job flags (ParError, UnpackError), except that
+// runStage itself skips a payloadDeleter on a failed job.
 type Stage interface {
 	// Name returns a short, stable identifier used in log output and the
 	// StageLog.  It should be lowercase with no spaces (e.g. "repair",
@@ -201,8 +202,8 @@ type Job struct {
 
 	// ParError is set by the repair and extracted_repair stages, UnpackError
 	// by the unpack stage. unpack reads ParError; extracted_repair,
-	// par2_cleanup, unwanted_cleanup, finalize and script read both, and
-	// scripts surface them via the pp_status argv and SAB_PP_STATUS env var.
+	// par2_cleanup and script read both, and Failed reads both with FailMsg.
+	// Scripts surface them via the pp_status argv and SAB_PP_STATUS env var.
 	ParError    bool
 	UnpackError bool
 
@@ -317,6 +318,26 @@ func (e StageLogEntry) MarshalJSON() ([]byte, error) {
 		j.Err = &s
 	}
 	return json.Marshal(j)
+}
+
+// Failed reports whether the job has failed: repair or unpack failed, or a
+// stage or the caller set FailMsg. It is the one definition of a failed job.
+// Its readers are finalize, the summary headline, runStage's payloadDeleter
+// gate and the history entry (`git grep -n '[.]Failed()' -- '*.go' ':!*_test.go'`
+// finds 4 lines).
+func (j *Job) Failed() bool {
+	return j.ParError || j.UnpackError || j.FailMsg != ""
+}
+
+// payloadDeleter marks a stage that removes files from DownloadDir as it runs,
+// rather than recording them in PendingDeletions for finalize. runStage does
+// not run such a stage for a failed job (Job.Failed): a failed job's
+// directory stays as it is, for a retry to resume from (#907). The marked
+// stages are sample_cleanup, unwanted_cleanup and extension_cleanup
+// (`git grep -n '^func .* deletesPayload()' -- '*.go'` finds 3 lines).
+type payloadDeleter interface {
+	Stage
+	deletesPayload()
 }
 
 // HasRecord reports whether this post-processing job wraps a download job record.

@@ -140,7 +140,7 @@ func buildHistoryEntry(ppJob *postproc.Job) history.Entry {
 		Meta:         strings.Join(serverStatsParts, ", "),
 		Unwanted:     ppJob.Unwanted,
 	}
-	if ppJob.ParError || ppJob.UnpackError || ppJob.FailMsg != "" {
+	if ppJob.Failed() {
 		entry.Status = "Failed"
 		entry.FailMessage = ppJob.FailMsg
 		entry.Storage = ppJob.DownloadDir

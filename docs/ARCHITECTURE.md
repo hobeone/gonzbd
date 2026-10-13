@@ -149,7 +149,7 @@ Post-processing runs a chain of `Stage` implementations in order for each comple
 > **Note:** Sorting/renaming (TV, movie, date templates) is intentionally not implemented.
 > This functionality is handled by external tools such as Sonarr, Radarr, and similar media managers.
 
-Stage errors are recorded in the `StageLog` but do **not** abort the pipeline — subsequent stages still run. Each stage self-gates based on job flags (`ParError`, `UnpackError`, `FailMsg`) to decide whether to skip when a prior stage has failed. The only reason to abort remaining stages is context cancellation, either daemon shutdown or a single job being cancelled mid-processing (`CancelJob`). The processor has no pause/resume control of its own — downloads can be paused via `pause`/`resume`, which transitively stalls the post-processing queue since no new jobs finish downloading.
+Stage errors are recorded in the `StageLog` but do **not** abort the pipeline — subsequent stages still run. Each stage self-gates based on job flags (`ParError`, `UnpackError`, `FailMsg`) to decide whether to skip when a prior stage has failed, and the pipeline itself skips each stage that deletes files from the download directory as it runs once the job has failed (`Job.Failed`), so a failed job keeps its files for a retry. The only reason to abort remaining stages is context cancellation, either daemon shutdown or a single job being cancelled mid-processing (`CancelJob`). The processor has no pause/resume control of its own — downloads can be paused via `pause`/`resume`, which transitively stalls the post-processing queue since no new jobs finish downloading.
 
 #### External subprocess containment (`internal/cmdutil`, `internal/unpack`)
 
