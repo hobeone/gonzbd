@@ -1158,9 +1158,21 @@ articles or sparse regions.
    `rarengine` too, and fails a RAR3 set.
 7. **Format support**: `rarengine` (pure Go RAR5). Other formats, legacy
    RAR2/RAR3, and non-RAR files identified by filename go to post-processing.
-8. **Abort/kill**: `Abort()` sets `killed`, records failures for the current and
-   queued sets, clears success results, and signals the reader goroutine. If
-   `run()` was never started it closes `done` directly. `enqueuePostProc`
+8. **Abort/kill**: `Abort()` sets `killed`, records each queued set as failed
+   ("aborted (not started)"), signals the reader goroutine and waits for
+   `run()` to exit. If `run()` was never started it closes `done` directly.
+   Every outcome is written by `settleLocked`, and the current set's by `run()`
+   once `extractSet` returns: a set that published is a success even when
+   `Abort` landed meanwhile, since its members are in the job directory, and a
+   set that did not is an "aborted" failure. Sets that finished before `Abort`
+   keep their outcomes, so no set is reported both extracted and failed
+   (`TestDirectUnpack_AbortKeepsASetPublishedBeforeIt`,
+   `TestDirectUnpack_AbortBeforeTheVerdict`). A set enters the queue once:
+   `Add` admits a set that is not queued, current or settled (`setAdmitted`),
+   and `makeCurrentLocked` moves it from the queue to current, for the first
+   set `Add` starts and each later one `run()` pops, so a set whose later
+   volumes arrive before volume 1 is extracted once
+   (`TestDirectUnpack_MultiVolume_OutOfOrder`). `enqueuePostProc`
    aborts the unpacker of a job handed to post-processing before its download
    finished (`Job.IsComplete` false: `Application.Fail`, a hopeless
    callback), because the downloader no longer fetches an admitted job and
@@ -1197,10 +1209,9 @@ articles or sparse regions.
     again by the unpack stage whenever the set is missing from
     `DirectUnpackSets`, and under `flat_unpack` without `overwrite_files` a
     re-extraction, by any engine, writes `_N` copies of them. The cases
-    found: a publish that fails
-    part way, a set that succeeded before `Abort`, whose success `Abort` clears
-    (item 8), and a restart before post-processing, which loses the in-memory
-    result (item 2).
+    found: a publish that fails part way, and a restart before
+    post-processing, which loses the in-memory result (item 2). A set that
+    succeeded before `Abort` keeps its success (item 8).
 
 ## Memory & allocation budget
 

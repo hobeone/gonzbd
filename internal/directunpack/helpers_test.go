@@ -3,6 +3,7 @@ package directunpack
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,7 +11,7 @@ import (
 	"testing"
 )
 
-// The four helpers below were untested when this file was added. They are
+// The helpers below were untested when this file was added. They are
 // small, but each owns a piece of state the rest of the package reads, and
 // check_test_alignment surfaced them as gaps in a file a fix had touched.
 
@@ -68,23 +69,27 @@ func TestBuildVolumeMap(t *testing.T) {
 	}
 }
 
-func TestSetQueued(t *testing.T) {
+func TestSetAdmitted(t *testing.T) {
 	tests := []struct {
 		name       string
 		nextSets   []string
 		curSetname string
+		settled    func(d *DirectUnpacker)
 		query      string
 		want       bool
 	}{
-		{"queued behind others", []string{"a", "b"}, "cur", "b", true},
-		{"the first queued set", []string{"a", "b"}, "cur", "a", true},
-		{"the set currently extracting", nil, "cur", "cur", true},
-		{"neither queued nor current", []string{"a"}, "cur", "other", false},
-		{"nothing queued and nothing current", nil, "", "a", false},
-		{"queued while nothing is extracting", []string{"a"}, "", "a", true},
+		{"queued behind others", []string{"a", "b"}, "cur", nil, "b", true},
+		{"the first queued set", []string{"a", "b"}, "cur", nil, "a", true},
+		{"the set currently extracting", nil, "cur", nil, "cur", true},
+		{"neither queued nor current", []string{"a"}, "cur", nil, "other", false},
+		{"nothing queued and nothing current", nil, "", nil, "a", false},
+		{"queued while nothing is extracting", []string{"a"}, "", nil, "a", true},
+		{"a set that succeeded", nil, "cur", func(d *DirectUnpacker) { d.successSets["a"] = SuccessSet{} }, "a", true},
+		{"a set that failed", nil, "cur", func(d *DirectUnpacker) { d.failedSets["a"] = FailedSet{} }, "a", true},
+		{"a set that was skipped", nil, "cur", func(d *DirectUnpacker) { d.skippedSets["a"] = SkippedSet{} }, "a", true},
 	}
 
-	// setQueued("") is deliberately not a case here. Add returns before
+	// setAdmitted("") is deliberately not a case here. Add returns before
 	// touching any state when AnalyzeRarFilename yields "" (directunpack.go,
 	// "not a RAR volume"), so "" never reaches nextSets or curSetname and the
 	// question is unreachable. It answers true on an idle unpacker only
@@ -95,50 +100,54 @@ func TestSetQueued(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := &DirectUnpacker{
-				nextSets:   slices.Clone(tt.nextSets),
-				curSetname: tt.curSetname,
+			d := New(slog.New(slog.DiscardHandler), "job", "", "", Options{})
+			d.nextSets = slices.Clone(tt.nextSets)
+			d.curSetname = tt.curSetname
+			if tt.settled != nil {
+				tt.settled(d)
 			}
 
-			if got := d.setQueued(tt.query); got != tt.want {
-				t.Errorf("setQueued(%q) = %v, want %v", tt.query, got, tt.want)
+			if got := d.setAdmitted(tt.query); got != tt.want {
+				t.Errorf("setAdmitted(%q) = %v, want %v", tt.query, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestRecordFailure(t *testing.T) {
-	d := &DirectUnpacker{failedSets: make(map[string]FailedSet)}
-
-	d.recordFailure("movie", "corrupt archive")
-
-	if got := d.failedSets["movie"].Reason; got != "corrupt archive" {
-		t.Errorf("failedSets[\"movie\"].Reason = %q, want %q", got, "corrupt archive")
+func TestSettleLocked(t *testing.T) {
+	tests := []struct {
+		name        string
+		killed      bool
+		err         error
+		wantSuccess bool
+		wantSkip    string
+		wantFail    string
+	}{
+		{"a published set", false, nil, true, "", ""},
+		{"a published set after Abort", true, nil, true, "", ""},
+		{"not RAR5", false, errNotRAR, false, "not RAR5; handled by normal unpack", ""},
+		{"a queued set at Abort", true, errNotStarted, false, "", "aborted (not started)"},
+		{"an error after Abort", true, errors.New("killed"), false, "", "aborted"},
+		{"an error", false, errors.New("bad CRC"), false, "", "bad CRC"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := New(slog.New(slog.DiscardHandler), "job", "", "", Options{})
+			d.killed = tt.killed
+			res := SuccessSet{ExtractedFiles: []string{"f"}}
 
-	// A second failure for the same set replaces the first, so the reason the
-	// caller last supplied is the one Status reports.
-	d.recordFailure("movie", "missing volume")
+			d.settleLocked("s", res, tt.err)
 
-	if got := d.failedSets["movie"].Reason; got != "missing volume" {
-		t.Errorf("after re-record, Reason = %q, want %q", got, "missing volume")
-	}
-	if len(d.failedSets) != 1 {
-		t.Errorf("failedSets has %d entries, want 1", len(d.failedSets))
-	}
-}
-
-func TestRecordSkipped(t *testing.T) {
-	d := &DirectUnpacker{skippedSets: make(map[string]SkippedSet)}
-
-	d.recordSkipped("movie", "not RAR5")
-	d.recordSkipped("show", "not RAR5")
-
-	if got := d.skippedSets["movie"].Reason; got != "not RAR5" {
-		t.Errorf("skippedSets[\"movie\"].Reason = %q, want %q", got, "not RAR5")
-	}
-	if len(d.skippedSets) != 2 {
-		t.Errorf("skippedSets has %d entries, want 2", len(d.skippedSets))
+			if _, ok := d.successSets["s"]; ok != tt.wantSuccess {
+				t.Errorf("successSets has s = %v, want %v", ok, tt.wantSuccess)
+			}
+			if got := d.skippedSets["s"].Reason; got != tt.wantSkip {
+				t.Errorf("skip reason = %q, want %q", got, tt.wantSkip)
+			}
+			if got := d.failedSets["s"].Reason; got != tt.wantFail {
+				t.Errorf("failure reason = %q, want %q", got, tt.wantFail)
+			}
+		})
 	}
 }
 
