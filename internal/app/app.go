@@ -500,16 +500,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		sanitize:    sanitize,
 		onHeartbeat: app.RecordHeartbeat,
 		onJobHopeless: func(jobID string) {
-			var msg string
-			if app.dispatcher != nil {
-				if j, ok := app.dispatcher.Job(jobID); ok {
-					msg = failMsgForJob(j)
-				}
-			}
-			if msg == "" {
-				msg = "Aborted: 80%+ of first articles failed (DMCA'd or expired)"
-			}
-			app.maybeFinalize(jobID, msg)
+			app.finalizeHopeless(jobID, hopelessEarlyAbort)
 		},
 		markDirty: app.markFileDirty,
 		updateCh:  make(chan completionSwap, 1),
@@ -2978,16 +2969,7 @@ func (app *Application) buildDownloaderOptions() downloader.Options {
 		MaxPenalty:       app.maxPenalty,
 		PropagationDelay: time.Duration(propDelay) * time.Minute,
 		OnJobHopeless: func(jobID string) {
-			var msg string
-			if app.dispatcher != nil {
-				if j, ok := app.dispatcher.Job(jobID); ok {
-					msg = failMsgForJob(j)
-				}
-			}
-			if msg == "" {
-				msg = "Aborted: 80%+ of first articles failed (DMCA'd or expired)"
-			}
-			app.maybeFinalize(jobID, msg)
+			app.finalizeHopeless(jobID, hopelessHealthGate)
 		},
 		HandedOff: app.postProcAdmissions.has,
 	}
@@ -3320,6 +3302,46 @@ func (app *Application) ServerStatus() []downloader.ServerSnapshot {
 	return nil
 }
 
+// hopelessTrigger names which detector declared a job hopeless while it was
+// still downloading.
+type hopelessTrigger uint8
+
+const (
+	// hopelessEarlyAbort is the pipeline's early-abort heuristic
+	// (Job.CheckEarlyAbort): most of the first articles failed.
+	hopelessEarlyAbort hopelessTrigger = iota
+	// hopelessHealthGate is the downloader's Early Health Gate: the job's
+	// RepairState is Hopeless.
+	hopelessHealthGate
+)
+
+// finalizeHopeless hands the job registered under jobID to post-processing with
+// the reason hopelessReason gives for trigger. It is the body of both
+// detectors' callbacks: the pipeline's onJobHopeless and the downloader's
+// OnJobHopeless. The reason is worded from the instance it hands over.
+func (app *Application) finalizeHopeless(jobID string, trigger hopelessTrigger) {
+	j, ok := app.dispatcher.Job(jobID)
+	if !ok {
+		return
+	}
+	app.finalizeRegistered(j, hopelessReason(j, trigger), true)
+}
+
+// hopelessReason is the failure reason of a job a detector declared hopeless,
+// and it is never "". failMsgForJob's verdict comes first, since it words the
+// job's figures as they stand; when it has none, as for a job the early-abort
+// heuristic stopped while its RepairState is still repairable, the reason
+// names the trigger.
+func hopelessReason(j *job.Job, trigger hopelessTrigger) string {
+	if msg := failMsgForJob(j); msg != "" {
+		return msg
+	}
+	if trigger == hopelessEarlyAbort {
+		return "Aborted: 80%+ of first articles failed (DMCA'd or expired)"
+	}
+	return "Aborted: failed articles exceeded the job's repair capacity. Job is beyond repair"
+}
+
 func failMsgForJob(j *job.Job) string {
 	if j == nil {
 		return ""
@@ -3339,7 +3361,7 @@ func failMsgForCounters(p failureByteCounters, state string, recBytes int64, rec
 	}
 
 	// Promoted scalars and JobProgress, never job.Manifest(): failMsgForJob's
-	// callers (the two OnJobHopeless callbacks, and appRunner's failHopeless
+	// callers (hopelessReason, and appRunner's failHopeless
 	// and runPostProc) check no residency first, and a manifest read on an
 	// evicted job fails with job.ErrNotResident.
 	//
@@ -3376,8 +3398,8 @@ func failMsgForCounters(p failureByteCounters, state string, recBytes int64, rec
 	// separately they drifted, and appRunner.failHopeless passes this
 	// function's result into maybeFinalizeJob with no fallback string — so a
 	// hopeless verdict this function does not word hands the job over with an
-	// empty reason and shows the user nothing. (The OnJobHopeless callbacks
-	// substitute the early-abort message for "".)
+	// empty reason and shows the user nothing. (The hopeless detectors'
+	// callbacks go through hopelessReason, which words a "" by its trigger.)
 	switch state {
 	case string(job.RepairIntact), string(job.RepairPossible), string(job.RepairUnknown):
 		// RepairIntact: only par2 failed, so there is nothing to repair and
