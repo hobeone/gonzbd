@@ -29,6 +29,25 @@ func TestFinalizeHopeless_ClearsTheStallOfTheJobItHandsOver(t *testing.T) {
 	}
 }
 
+// TestHandOverStall_AJobGoneSinceIsForgottenNotResumed: a deferred hand-over
+// whose job left the dispatcher before the resume still clears the record
+// Stall left, and the refused resume is not fatal.
+func TestHandOverStall_AJobGoneSinceIsForgottenNotResumed(t *testing.T) {
+	t.Parallel()
+	application, _, _ := newLifecycleTestApp(t)
+	gone := job.New("feedface00944a01", "gone", job.Policy{})
+	application.noteStall(gone.ID(), testFault("write"), stallRetryable, true)
+
+	application.handOverStall(gone, true)
+
+	if got := application.StallReason(gone.ID()).Reason; got != "" {
+		t.Errorf("after the hand-over StallReason = %q, want none", got)
+	}
+	if _, ok := application.dispatcher.Job(gone.ID()); ok {
+		t.Error("the resume registered a job that had left the dispatcher")
+	}
+}
+
 // TestFinalizeHopeless_OnAStalledJobAwaitingAssessing_ResumesItForAssessing:
 // a hopeless hand-over deferred to the Assessing worker of a job Stall parked
 // clears the record and lifts Stall's pause, as Fail's does, so the tick

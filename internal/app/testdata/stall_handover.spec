@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run ^(TestFinalizeHopeless_ClearsTheStallOfTheJobItHandsOver|TestFinalizeHopeless_OnAStalledJobAwaitingAssessing_ResumesItForAssessing)$
+run ^(TestFinalizeHopeless_ClearsTheStallOfTheJobItHandsOver|TestFinalizeHopeless_OnAStalledJobAwaitingAssessing_ResumesItForAssessing|TestHandOverStall_AJobGoneSinceIsForgottenNotResumed)$
 
 # A job leaves the stalled list when it is handed to post-processing, on the
 # admission and on a deferral to its Assessing worker, whichever door handed it
