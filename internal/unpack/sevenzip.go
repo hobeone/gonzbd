@@ -57,10 +57,15 @@ func SevenZipBin(opts Options) (string, error) {
 // prompt on stdin when -p is supplied. The command line logged and passed to
 // OnLine/OnCommand names -o<outdir> in place of -o<stagedir>.
 func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
-	log = log.With("component", "sevenzip")
+	res, err := sevenZip(ctx, log.With("component", "sevenzip"), archive, outDir, password, opts)
+	res.Engine = "7z"
+	return res, err
+}
+
+func sevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
 	bin, err := SevenZipBin(opts)
 	if err != nil {
-		return Result{Err: err}, err
+		return Result{}, err
 	}
 
 	argFlag := "-p"
@@ -122,19 +127,27 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 		opts.OnCommand(cmdLine)
 	}
 
-	stageDir, err := prepareStageDir(outDir)
+	res, err := extractInStage(ctx, log, archive, outDir, password, opts, func(stageDir string) (Result, error) {
+		execArgs := append(append([]string(nil), args...), archive.MainFile, "-o"+stageDir, sscFlag)
+		if password != "" {
+			execArgs[flagIdx] = "-p" + password
+		}
+		return runSevenZip(ctx, log, archive, bin, execArgs, opts)
+	})
+	res.CommandLine = cmdLine
 	if err != nil {
-		return Result{CommandLine: cmdLine, Err: err, Reason: FailUnknown, Engine: "7z"}, err
+		return res, err
 	}
-	defer removeStageDir(log, stageDir)
+	log.Info("7zip: extraction succeeded", "archive", archive.MainFile)
+	return res, nil
+}
 
-	execArgs := append(append([]string(nil), args...), archive.MainFile, "-o"+stageDir, sscFlag)
-	if password != "" {
-		execArgs[flagIdx] = "-p" + password
-	}
+// runSevenZip runs one 7z invocation, whose argv names the stage it extracts
+// into.
+func runSevenZip(ctx context.Context, log *slog.Logger, archive Archive, bin string, execArgs []string, opts Options) (Result, error) {
 	cmd, err := cmdutil.BuildSandboxedCommand(ctx, log, opts.CmdCfg, opts.Sandbox, bin, execArgs...) //nolint:gosec // bin and args are caller-supplied, not shell-expanded
 	if err != nil {
-		return Result{CommandLine: cmdLine, Err: err, Reason: FailUnknown, Engine: "7z"}, err
+		return Result{Reason: FailUnknown}, err
 	}
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
 	cmd.Stdout = streamer
@@ -143,40 +156,25 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 	runErr := cmd.Run()
 	streamer.Flush()
 
-	res := Result{
-		CommandLine: cmdLine,
-		Output:      streamer.String(),
+	res := Result{Output: streamer.String()}
+	if runErr == nil {
+		return res, nil
 	}
-
-	if runErr != nil {
-		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
-			res.ExitCode = exitErr.ExitCode()
-			res.Reason = Classify7zOutput(res.Output)
-			res.Err = fmt.Errorf("7zip exited %d (%s): %w", res.ExitCode, res.Reason, runErr)
-			log.Error("7zip: extraction failed",
-				"archive", archive.MainFile,
-				"exitCode", res.ExitCode,
-				"reason", res.Reason.String(),
-				"output", res.Output,
-			)
-		} else {
-			res.Err = fmt.Errorf("7zip: %w", runErr)
-			log.Error("7zip: failed to start process",
-				"archive", archive.MainFile,
-				"err", runErr,
-			)
-			return res, res.Err
-		}
-		return res, res.Err
+	exitErr, ok := errors.AsType[*exec.ExitError](runErr)
+	if !ok {
+		log.Error("7zip: failed to start process",
+			"archive", archive.MainFile,
+			"err", runErr,
+		)
+		return res, fmt.Errorf("7zip: %w", runErr)
 	}
-
-	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
-	if pubErr != nil {
-		res.Err = fmt.Errorf("7zip: publish staged files: %w", pubErr)
-		return res, res.Err
-	}
-	res.ExtractedFiles = published
-
-	log.Info("7zip: extraction succeeded", "archive", archive.MainFile)
-	return res, nil
+	res.ExitCode = exitErr.ExitCode()
+	res.Reason = Classify7zOutput(res.Output)
+	log.Error("7zip: extraction failed",
+		"archive", archive.MainFile,
+		"exitCode", res.ExitCode,
+		"reason", res.Reason.String(),
+		"output", res.Output,
+	)
+	return res, fmt.Errorf("7zip exited %d (%s): %w", res.ExitCode, res.Reason, runErr)
 }

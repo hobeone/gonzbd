@@ -10,17 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
-
-// errTarBomb is returned when a tar entry's declared or actually-read size
-// exceeds opts.MaxSize/MaxRatio. Plain (uncompressed) tar is not immune to
-// decompression-bomb-style attacks: GNU/PAX sparse-file headers let
-// Header.Size vastly exceed the physical bytes present in the stream, and
-// archive/tar transparently materializes the holes as zero bytes on Read.
-var errTarBomb = errors.New("go_tar: decompression bomb detected: size or ratio exceeds limits")
 
 // GoTar extracts archive.MainFile, a plain (uncompressed) .tar file, into
 // outDir using the stdlib archive/tar package. Unlike GoUnRAR/GoSevenZip,
@@ -28,8 +20,8 @@ var errTarBomb = errors.New("go_tar: decompression bomb detected: size or ratio 
 // and no *WithPasswords wrapper -- callers dispatch directly.
 //
 // Go's archive/tar has zero built-in protection against path traversal,
-// symlink/hardlink escapes, setuid/setgid bits, or sparse-file bombs, so
-// this function implements all of them:
+// symlink/hardlink escapes, or setuid/setgid bits, so this function
+// implements all of them:
 //   - entry paths are sanitized via SanitizeArchivePath (rejects ".."
 //     components, strips leading "/"), the same helper GoUnRAR/GoSevenZip
 //     use.
@@ -38,29 +30,35 @@ var errTarBomb = errors.New("go_tar: decompression bomb detected: size or ratio 
 //   - setuid/setgid/sticky bits are stripped from extracted file modes
 //     (only rw bits are kept, matching GoUnRAR/GoSevenZip's policy of
 //     stripping all "unwanted" bits from untrusted archives).
-//   - opts.MaxSize/MaxRatio/MinBombThreshold are enforced against both the
-//     entry's declared Header.Size and the bytes actually read, via the
-//     shared boundReader also used by GoSevenZip.
-func GoTar(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (res Result, err error) {
-	err = cmdutil.SafeEngineRun("go_tar: tar panic", func() error {
-		res, err = goTarInternal(ctx, log, archive, outDir, opts)
-		return err
-	}, func(p any) {
-		res.Reason = FailCorrupt
-		if opts.OnLine != nil {
-			opts.OnLine(fmt.Sprintf("ERROR: tar panic: %v", p))
-		}
+//
+// A GNU/PAX sparse entry's Header.Size can far exceed the bytes in the
+// stream, since archive/tar materializes the holes as zeros on Read. The
+// free-space check counts that declared size (declaredSize), so such an
+// entry is refused up front when it cannot fit.
+//
+// It extracts into a staging directory inside outDir and publishes the result
+// only on success (extractInStage).
+func GoTar(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+	res, err := extractInStage(ctx, log, archive, outDir, "", opts, func(stageDir string) (res Result, err error) {
+		err = cmdutil.SafeEngineRun("go_tar: tar panic", func() error {
+			res, err = goTarInternal(ctx, log, archive, stageDir, opts)
+			return err
+		}, func(p any) {
+			res.Reason = FailCorrupt
+			if opts.OnLine != nil {
+				opts.OnLine(fmt.Sprintf("ERROR: tar panic: %v", p))
+			}
+		})
+		return res, err
 	})
+	res.CommandLine = fmt.Sprintf("go_tar %s -> %s", archive.MainFile, outDir)
+	res.Engine = "go_tar"
 	return res, err
 }
 
-func goTarInternal(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (res Result, err error) {
+// goTarInternal extracts archive into stageDir.
+func goTarInternal(ctx context.Context, log *slog.Logger, archive Archive, stageDir string, opts Options) (res Result, err error) {
 	log = log.With("component", "go_tar", "archive", archive.MainFile)
-
-	before, snapErr := snapshotDir(outDir)
-	if snapErr != nil {
-		return res, fmt.Errorf("go_tar: snapshot dir: %w", snapErr)
-	}
 
 	f, err := os.Open(archive.MainFile) //nolint:gosec // read-only open of an archive path resolved by unpack.Scan
 	if err != nil {
@@ -73,17 +71,13 @@ func goTarInternal(ctx context.Context, log *slog.Logger, archive Archive, outDi
 	}
 	defer f.Close() //nolint:errcheck // best-effort close, read-only
 
-	root, err := os.OpenRoot(outDir)
+	root, err := os.OpenRoot(stageDir)
 	if err != nil {
 		return res, fmt.Errorf("go_tar: open root: %w", err)
 	}
 	defer root.Close() //nolint:errcheck // close after all writes; not in a loop
 
-	var arcSize int64
-	if st, statErr := os.Stat(archive.MainFile); statErr == nil {
-		arcSize = st.Size()
-	}
-	var totalRead int64
+	var outBuf strings.Builder
 
 	tr := tar.NewReader(f)
 	for {
@@ -100,48 +94,25 @@ func goTarInternal(ctx context.Context, log *slog.Logger, archive Archive, outDi
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: corrupt tar header: %v", nextErr))
 			}
-			discardPartialFiles(outDir, before, log, "go_tar")
 			return res, fmt.Errorf("go_tar: read header: %w", nextErr)
 		}
 
-		extracted, entryErr := extractTarEntry(ctx, root, outDir, tr, hdr, opts, arcSize, &totalRead, log)
+		extracted, entryErr := extractTarEntry(ctx, root, stageDir, tr, hdr, opts, log)
 		if entryErr != nil {
 			res.Reason = classifyTarError(entryErr)
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", hdr.Name, entryErr))
 			}
-			if !errors.Is(entryErr, context.Canceled) && !errors.Is(entryErr, context.DeadlineExceeded) {
-				discardPartialFiles(outDir, before, log, "go_tar")
-			}
 			return res, entryErr
 		}
-		if extracted && opts.OnLine != nil {
-			opts.OnLine("Extracting  " + hdr.Name)
-		}
-	}
-
-	after, snapErr := snapshotDir(outDir)
-	if snapErr != nil {
-		return res, fmt.Errorf("go_tar: snapshot after: %w", snapErr)
-	}
-	res.ExtractedFiles = diffSnapshot(before, after)
-	res.CommandLine = fmt.Sprintf("go_tar %s -> %s", archive.MainFile, outDir)
-
-	var outBuf strings.Builder
-	for _, ef := range res.ExtractedFiles {
-		displayPath := ef
-		if filepath.IsAbs(ef) {
-			if rel, relErr := filepath.Rel(outDir, ef); relErr == nil && !strings.HasPrefix(rel, "..") {
-				displayPath = rel
-			} else {
-				displayPath = filepath.Base(ef)
+		if extracted {
+			outBuf.WriteString("Extracting  " + hdr.Name + "\n")
+			if opts.OnLine != nil {
+				opts.OnLine("Extracting  " + hdr.Name)
 			}
 		}
-		outBuf.WriteString("Extracting  " + displayPath + "\n")
 	}
 	res.Output = outBuf.String()
-
-	log.Info("extraction complete", "extracted", len(res.ExtractedFiles))
 	return res, nil
 }
 
@@ -150,7 +121,7 @@ func goTarInternal(ctx context.Context, log *slog.Logger, archive Archive, outDi
 // extraction for a single tar entry. root is an os.Root anchored at outDir,
 // opened once by the caller. Returns true if the entry was extracted
 // (regular file), or false if it was skipped or was a directory.
-func extractTarEntry(ctx context.Context, root *os.Root, outDir string, tr *tar.Reader, hdr *tar.Header, opts Options, arcSize int64, totalRead *int64, log *slog.Logger) (bool, error) {
+func extractTarEntry(ctx context.Context, root *os.Root, outDir string, tr *tar.Reader, hdr *tar.Header, opts Options, log *slog.Logger) (bool, error) {
 	switch hdr.Typeflag {
 	case tar.TypeReg:
 		// handled below
@@ -182,27 +153,15 @@ func extractTarEntry(ctx context.Context, root *os.Root, outDir string, tr *tar.
 	}
 	destPath := filepath.Join(outDir, destRel)
 
-	if err := extractTarFile(ctx, root, destRel, destPath, tr, hdr, opts, arcSize, totalRead, log); err != nil {
+	if err := extractTarFile(ctx, root, destRel, destPath, tr, hdr, opts, log); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
 // extractTarFile writes a single regular-file tar entry to disk through
-// root. It enforces decompression-bomb limits against both the entry's
-// declared Header.Size (projected, before any bytes are read -- catches an
-// oversized sparse-file claim immediately) and the bytes actually read (via
-// boundReader, the same enforcement used by GoSevenZip).
-func extractTarFile(ctx context.Context, root *os.Root, destRel, destPath string, tr *tar.Reader, hdr *tar.Header, opts Options, arcSize int64, totalRead *int64, log *slog.Logger) error {
-	if hdr.Size < 0 {
-		return fmt.Errorf("%w: entry %q has negative declared size %d", errTarBomb, hdr.Name, hdr.Size)
-	}
-	if err := projectedBombCheck(uint64(hdr.Size), arcSize, totalRead, opts, hdr.Name, "declared", errTarBomb, "go_tar"); err != nil {
-		return err
-	}
-
-	br := newBoundReader(tr, totalRead, arcSize, opts, hdr.Name, errTarBomb, "go_tar")
-
+// root.
+func extractTarFile(ctx context.Context, root *os.Root, destRel, destPath string, tr *tar.Reader, hdr *tar.Header, opts Options, log *slog.Logger) error {
 	// Permissions: strip setuid/setgid/sticky bits (and, matching
 	// GoUnRAR/GoSevenZip's policy for untrusted archives, all execute
 	// bits) by keeping only the rw permission bits. hdr.Mode holds raw
@@ -213,7 +172,7 @@ func extractTarFile(ctx context.Context, root *os.Root, destRel, destPath string
 	// the existing extractors' "only rw bits" convention.
 	mode := os.FileMode(hdr.Mode & 0o666) //nolint:gosec // hdr.Mode&0o666 is bounded to valid permission bits
 
-	_, err := writeEntrySafely(ctx, root, destRel, destPath, br, nil, true, mode, hdr.ModTime, opts, hdr.Name, "go_tar", log, nil)
+	_, err := writeEntrySafely(ctx, root, destRel, destPath, tr, nil, true, mode, hdr.ModTime, opts, hdr.Name, "go_tar", log, nil)
 	return err
 }
 
@@ -222,14 +181,8 @@ func classifyTarError(err error) FailReason {
 	if err == nil {
 		return FailUnknown
 	}
-	if errors.Is(err, errTarBomb) {
-		return FailCorrupt
-	}
 	if errors.Is(err, tar.ErrHeader) {
 		return FailCorrupt
-	}
-	if errno, ok := errors.AsType[syscall.Errno](err); ok && errno == syscall.ENOSPC {
-		return FailDiskFull
 	}
 	return FailUnknown
 }

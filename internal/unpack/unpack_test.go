@@ -312,12 +312,9 @@ func TestFileJoin_TSFiles(t *testing.T) {
 		},
 	}
 
-	res, err := unpack.FileJoin(t.Context(), slog.Default(), archive, outDir, unpack.Options{})
+	_, err := unpack.FileJoin(t.Context(), slog.Default(), archive, outDir, unpack.Options{})
 	if err != nil {
 		t.Fatalf("FileJoin: %v", err)
-	}
-	if res.Err != nil {
-		t.Fatalf("Result.Err: %v", res.Err)
 	}
 
 	outPath := filepath.Join(outDir, "show.ts")

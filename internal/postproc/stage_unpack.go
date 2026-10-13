@@ -36,6 +36,10 @@ type UnpackStage struct {
 
 	// cleanup is set atomically (by Apply) so it can be updated from any goroutine.
 	cleanup atomic.Bool
+	// minFreeSpace is downloads.min_free_space, set by SetMinFreeSpace. Run
+	// passes it to every extraction as Options.MinFreeSpace, in place of
+	// baseOpts' own.
+	minFreeSpace atomic.Int64
 	// passwordFile is the path to a text file with one password per line.
 	// These are appended after per-job passwords during extraction.
 	passwordFile string
@@ -112,6 +116,12 @@ func (u *UnpackStage) Config() UnpackConfig {
 	}
 }
 
+// SetMinFreeSpace sets the free space, in bytes, an extraction must leave on
+// the output filesystem (downloads.min_free_space). It is a download setting,
+// not a post-processing one, so it is set apart from Apply. Thread-safe;
+// takes effect for the next job.
+func (u *UnpackStage) SetMinFreeSpace(bytes int64) { u.minFreeSpace.Store(bytes) }
+
 // Name returns the stage identifier.
 func (*UnpackStage) Name() string { return "unpack" }
 
@@ -152,6 +162,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	enableTar := u.enableTar
 	enableRecursive := u.enableRecursive
 	u.mu.RUnlock()
+	opts.MinFreeSpace = u.minFreeSpace.Load()
 
 	opts = u.prepareOptions(ctx, log, job, opts, passwordFile)
 
@@ -238,12 +249,8 @@ func (u *UnpackStage) extractPendingArchives(
 		processed[a.MainFile] = true
 
 		res, err := u.extractArchive(ctx, log, job, a, opts, enableFileJoin, enableTar)
-		failErr := err
-		if failErr == nil {
-			failErr = res.Err
-		}
-		if failErr != nil {
-			recordUnpackFailure(ctx, log, job, a, res, failErr, firstErr)
+		if err != nil {
+			recordUnpackFailure(ctx, log, job, a, res, err, firstErr)
 			continue
 		}
 
@@ -251,7 +258,7 @@ func (u *UnpackStage) extractPendingArchives(
 		// Record command line in stage log for successful extractions too.
 		if res.CommandLine != "" {
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[%s] %s", cmp.Or(res.Engine, archiveTypeName(a.Type)), a.Name),
+				fmt.Sprintf("[%s] %s", res.Engine, a.Name),
 				"Command: "+res.CommandLine)
 		}
 
@@ -271,7 +278,7 @@ func (u *UnpackStage) extractPendingArchives(
 		// Capture tool output on success.
 		if res.Output != "" {
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[%s] %s", cmp.Or(res.Engine, archiveTypeName(a.Type)), a.Name))
+				fmt.Sprintf("[%s] %s", res.Engine, a.Name))
 			job.OutputLines = append(job.OutputLines,
 				toolOutputLines(res.Output)...)
 		}
@@ -452,7 +459,7 @@ func extractWithDriver(ctx context.Context, log *slog.Logger, job *Job, a unpack
 			job.OnOutput(d.toolName, fmt.Sprintf("Unpacking: %s (using external %s)", a.Name, d.toolName))
 		}
 		res, err := d.runExternal(ctx, log, a, job.DownloadDir, extOpts)
-		if err == nil && res.Err == nil {
+		if err == nil {
 			if job.OnOutput != nil {
 				job.OnOutput(d.toolName, fmt.Sprintf("Unpacking complete: %s (using external %s)", a.Name, d.toolName))
 			}
@@ -471,16 +478,13 @@ func extractWithDriver(ctx context.Context, log *slog.Logger, job *Job, a unpack
 		}
 	}
 	res, err := d.runGo(ctx, log, a, job.DownloadDir, goOpts)
-	if err == nil && res.Err == nil {
+	if err == nil {
 		if job.OnOutput != nil {
 			job.OnOutput(d.goToolName, fmt.Sprintf("%s: unpacking complete: %s", d.goToolName, a.Name))
 		}
 	}
 
 	goErr := err
-	if goErr == nil {
-		goErr = res.Err
-	}
 	if goErr != nil && d.fallback {
 		extBin, binErr := d.findBin(opts)
 		if binErr == nil {
@@ -506,7 +510,7 @@ func extractWithDriver(ctx context.Context, log *slog.Logger, job *Job, a unpack
 				}
 			}
 			res, err := d.runExternal(ctx, log, a, job.DownloadDir, extOpts)
-			if err == nil && res.Err == nil {
+			if err == nil {
 				if job.OnOutput != nil {
 					job.OnOutput(d.toolName, fmt.Sprintf("Unpacking complete: %s (using external %s)", a.Name, d.toolName))
 				}
@@ -576,7 +580,7 @@ func extractTarArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack
 		}
 	}
 	res, err := unpack.GoTar(ctx, log, a, job.DownloadDir, tarOpts)
-	if err == nil && res.Err == nil {
+	if err == nil {
 		if job.OnOutput != nil {
 			job.OnOutput("go_tar", fmt.Sprintf("go_tar: unpacking complete: %s", a.Name))
 		}
@@ -637,7 +641,7 @@ func applyPermissions(dir, permStr string) (int, error) {
 // command/output lines for diagnostics.
 func recordUnpackFailure(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, res unpack.Result, failErr error, firstErr *error) { //nolint:gocritic // ptrToRefParam: pointer required to set caller's first-error sentinel
 	job.UnpackError = true
-	engine := cmp.Or(res.Engine, archiveTypeName(a.Type))
+	engine := res.Engine
 	logf(ctx, log, job, slog.LevelWarn, "Error: extraction failed for %q (%s): %v", a.Name, engine, failErr)
 	if *firstErr == nil {
 		*firstErr = fmt.Errorf("unpack %q: %w", a.Name, failErr)
@@ -693,13 +697,11 @@ func archiveTypePriority(t unpack.ArchiveType) int {
 // symlink (e.g. link -> /home/user) inside outDir, and following it to
 // os.RemoveAll the target would let the archive destroy arbitrary pre-existing
 // files. Unlinking the symlink itself neutralizes the escape while leaving the
-// victim untouched.
+// victim untouched. extractedFiles are relative to outDir, the form every
+// extractor's Result.ExtractedFiles takes.
 func cleanupContainmentViolation(outDir string, extractedFiles []string, log *slog.Logger) {
 	for _, f := range extractedFiles {
-		absPath := f
-		if !filepath.IsAbs(f) {
-			absPath = filepath.Join(outDir, f)
-		}
+		absPath := filepath.Join(outDir, f)
 		// Guard lexically against the extracted path itself (not its symlink
 		// target) so an escaping symlink is unlinked here rather than followed.
 		if !fsutil.PathWithin(outDir, absPath) {
@@ -710,7 +712,7 @@ func cleanupContainmentViolation(outDir string, extractedFiles []string, log *sl
 		}
 		// fsutil.Remove unlinks a symlink without following it, so an out-of-bounds
 		// symlink target is left intact. Extracted entries are regular files
-		// (directories are never recorded by the snapshot diff), so Remove
+		// (the publish of a staged extraction lists no directory), so Remove
 		// suffices and avoids recursively deleting through a bad path.
 		if rmErr := fsutil.Remove(absPath); rmErr == nil && log != nil {
 			log.Warn("containment: removed extracted file after containment check failure", "file", absPath)

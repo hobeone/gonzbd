@@ -29,7 +29,7 @@ func writeScript(t *testing.T, path string, content []byte) {
 
 // TestUnRAR_CannotCreateAutoFix verifies (N4) that when unrar output
 // contains "Cannot create" AND "Attempting to correct" AND files were
-// extracted, the error is downgraded and res.Err is cleared.
+// extracted, the error is downgraded and nil is returned.
 func TestUnRAR_CannotCreateAutoFix(t *testing.T) {
 	t.Parallel()
 
@@ -71,9 +71,6 @@ exit 1
 	// N4: Error should be cleared because extraction succeeded with corrections.
 	if err != nil {
 		t.Errorf("expected nil error after auto-fix, got: %v", err)
-	}
-	if res.Err != nil {
-		t.Errorf("expected nil res.Err after auto-fix, got: %v", res.Err)
 	}
 	if res.ExitCode != 0 {
 		t.Errorf("expected ExitCode=0 after auto-fix, got: %d", res.ExitCode)

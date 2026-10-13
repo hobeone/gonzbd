@@ -41,14 +41,15 @@ file internal/unpack/unique_path.go
 --- end
 
 # A third site in this package, and this one is not about picking a unique
-# name: writeEntrySafely's OverwriteFiles=false skip check. Same
-# Stat-answers-about-the-target bug, different consequence -- the entry silently
-# replaces an existing dangling symlink instead of being skipped, which is not
-# what the flag promises.
+# name: the OverwriteFiles=false skip check against what the output directory
+# already holds, which publishStagedExtraction makes when it moves a staged
+# file in. Same Stat-answers-about-the-target bug, different consequence --
+# the entry silently replaces an existing dangling symlink instead of being
+# skipped, which is not what the flag promises.
 [the overwrite skip check follows the link]
-file internal/unpack/write_entry.go
+file internal/unpack/snapshot.go
 --- anchor
-		if _, statErr := root.Lstat(destRel); statErr == nil {
+			if _, err := root.Lstat(dest); err == nil {
 --- replace
-		if _, statErr := root.Stat(destRel); statErr == nil {
+			if _, err := root.Stat(dest); err == nil {
 --- end

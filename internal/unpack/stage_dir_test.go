@@ -63,7 +63,7 @@ func TestStagedSubprocessExtraction(t *testing.T) {
 
 		var logBuf bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&logBuf, nil))
-		published, err := publishStagedExtraction(log, outDir, stageDir, Options{OverwriteFiles: false}, false)
+		published, err := publishStagedExtraction(log, outDir, stageDir, Options{OverwriteFiles: false})
 		if err != nil || len(published) != 2 {
 			t.Fatalf("publishStagedExtraction = %v, %v; want 2 files", published, err)
 		}
@@ -78,7 +78,7 @@ func TestStagedSubprocessExtraction(t *testing.T) {
 		published, err = publishStagedExtraction(log, outDir, stageDir, Options{
 			OverwriteFiles: false,
 			OnLine:         func(line string) { lines = append(lines, line) },
-		}, false)
+		})
 		if err != nil || len(published) != 0 {
 			t.Fatalf("publishStagedExtraction(overwrite=false) = %v, %v; want 0", published, err)
 		}
@@ -94,7 +94,7 @@ func TestStagedSubprocessExtraction(t *testing.T) {
 		}
 
 		// OverwriteFiles=true replaces existing movie.mkv.
-		published, err = publishStagedExtraction(log, outDir, stageDir, Options{OverwriteFiles: true}, false)
+		published, err = publishStagedExtraction(log, outDir, stageDir, Options{OverwriteFiles: true})
 		if err != nil || len(published) != 1 {
 			t.Fatalf("publishStagedExtraction(overwrite=true) = %v, %v; want 1", published, err)
 		}
@@ -326,7 +326,7 @@ func TestPublishStagedExtraction_ReadOnlyStagedDir(t *testing.T) {
 		t.Fatalf("chmod open: %v", err)
 	}
 
-	published, err := publishStagedExtraction(slog.New(slog.DiscardHandler), outDir, stageDir, Options{}, false)
+	published, err := publishStagedExtraction(slog.New(slog.DiscardHandler), outDir, stageDir, Options{})
 	if err != nil {
 		t.Fatalf("publishStagedExtraction: %v", err)
 	}

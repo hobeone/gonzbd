@@ -172,8 +172,9 @@ downloads:
   bandwidth_perc: 100
 
   # Minimum free disk space on the download volume. The downloader
-  # pauses when free space drops below this threshold. Accepts K/M/G
-  # suffixes. Default: 1G.
+  # pauses when free space drops below this threshold, and an unpack
+  # whose archive would leave less than this free is refused before it
+  # starts. Accepts K/M/G suffixes. Default: 1G.
   min_free_space: 1G
 
   # Maximum retry attempts per article across all servers before

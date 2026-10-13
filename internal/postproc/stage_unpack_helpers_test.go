@@ -193,19 +193,6 @@ func TestRecordUnpackFailure(t *testing.T) {
 			}
 		}
 	})
-
-	t.Run("falls back to the archive type when the engine is unset", func(t *testing.T) {
-		t.Parallel()
-		job := &Job{Job: newQueueJob(t, "failjob3", 0)}
-		a := unpack.Archive{Name: "movie.tar", Type: unpack.TarArchive}
-		firstErr := error(nil)
-		recordUnpackFailure(t.Context(), slog.New(slog.DiscardHandler), job, a,
-			unpack.Result{}, errors.New("boom"), &firstErr)
-
-		if joined := strings.Join(job.OutputLines, "\n"); !strings.Contains(joined, "[tar]") {
-			t.Errorf("OutputLines = %q; want the archive type as the engine name", joined)
-		}
-	})
 }
 
 // TestExtractTarArchive pins the tar path end to end, including that the
@@ -246,12 +233,9 @@ func TestExtractTarArchive(t *testing.T) {
 	}
 	a := unpack.Archive{Name: "bundle.tar", Type: unpack.TarArchive, MainFile: tarPath}
 
-	res, err := extractTarArchive(t.Context(), slog.New(slog.DiscardHandler), job, a, unpack.Options{})
+	_, err = extractTarArchive(t.Context(), slog.New(slog.DiscardHandler), job, a, unpack.Options{})
 	if err != nil {
 		t.Fatalf("extractTarArchive: %v", err)
-	}
-	if res.Err != nil {
-		t.Fatalf("result error: %v", res.Err)
 	}
 
 	got, rErr := os.ReadFile(filepath.Join(dir, "inner.txt"))

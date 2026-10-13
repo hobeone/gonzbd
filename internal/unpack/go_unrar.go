@@ -20,14 +20,21 @@ import (
 	"github.com/hobeone/gonzbd/internal/rarheader"
 )
 
-// GoUnRAR extracts archive.MainFile into outDir using pure-Go rarengine.
+// GoUnRAR extracts archive.MainFile into outDir using pure-Go rarengine. It
+// extracts into a staging directory inside outDir and publishes the result
+// only on success (extractInStage).
 // It does not fall back to the external unrar binary itself — that decision
 // belongs to the caller (see stage_unpack.go's GoRarFallback-gated retry),
-// so a Result's Engine/CommandLine always accurately reflect which tool
-// actually ran, and so opts.GoRarFallback=false reliably means "never shell
-// out," with no other path silently overriding it.
+// so opts.GoRarFallback=false reliably means "never shell out," with no
+// other path silently overriding it.
 // It is equivalent to UnRAR.
-func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
+func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
+	res, err := goUnRAR(ctx, log, archive, outDir, password, opts)
+	res.Engine = "go_unrar"
+	return res, err
+}
+
+func goUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
 	ver, detectErr := rarheader.Version(archive.MainFile)
 	if detectErr != nil {
 		reason := FailUnknown
@@ -44,15 +51,10 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, pas
 	}
 
 	log.Info("go_unrar: detected RAR archive version, using rarengine", "rar_version", ver)
-	beforeSnap, snapErr := snapshotDir(outDir)
-	if snapErr != nil {
-		log.Warn("go_unrar: cannot snapshot output dir; partial files of a failed extraction will be left in place",
-			"dir", outDir, "err", snapErr)
-	}
-	res, err = GoUnRAREngine(ctx, log, archive, outDir, password, opts)
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && snapErr == nil {
-		discardPartialFiles(outDir, beforeSnap, log, "go_unrar_rarengine")
-	}
+	res, err := extractInStage(ctx, log, archive, outDir, password, opts, func(stageDir string) (Result, error) {
+		return goUnRAREngine(ctx, log, archive, stageDir, password, opts)
+	})
+	res.CommandLine = fmt.Sprintf("go_unrar %s -> %s", archive.MainFile, outDir)
 	return res, err
 }
 
@@ -121,10 +123,11 @@ func closeMember(entry io.Closer) error {
 	return nil
 }
 
-// GoUnRAREngine extracts a RAR archive using the pure-Go rarengine library.
-func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
+// goUnRAREngine extracts a RAR archive into stageDir using the pure-Go
+// rarengine library, recovering a panic in it as an error.
+func goUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, stageDir, password string, opts Options) (res Result, err error) {
 	err = cmdutil.SafeEngineRun("go_unrar: rarengine panic", func() error {
-		res, err = goUnRAREngineInternal(ctx, log, archive, outDir, password, opts)
+		res, err = goUnRAREngineInternal(ctx, log, archive, stageDir, password, opts)
 		return err
 	}, func(p any) {
 		res.Reason = FailCorrupt
@@ -135,10 +138,10 @@ func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDi
 	return res, err
 }
 
-func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
+func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archive, stageDir, password string, opts Options) (res Result, err error) {
 	log = log.With("component", "go_unrar_engine", "archive", archive.MainFile)
 
-	root, err := os.OpenRoot(outDir)
+	root, err := os.OpenRoot(stageDir)
 	if err != nil {
 		return res, fmt.Errorf("go_unrar: open root: %w", err)
 	}
@@ -182,7 +185,6 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 		r.SetPasswords(opts.Passwords)
 	}
 
-	var extractedFiles []string
 	var outBuf strings.Builder
 
 	for {
@@ -205,7 +207,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			return res, fmt.Errorf("go_unrar: read header: %w", err)
 		}
 
-		rel, abs, err := ExtractMember(ctx, root, outDir, entry.Header, entry, opts, log)
+		rel, _, err := ExtractMember(ctx, root, stageDir, entry.Header, entry, opts, log)
 		if err != nil {
 			_ = entry.Close() //nolint:errcheck // idempotent; closes a member a write failure left open, and the extraction error is the one returned
 			if ctx.Err() != nil {
@@ -218,16 +220,12 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			}
 			return res, err
 		}
-		if abs != "" {
-			extractedFiles = append(extractedFiles, abs)
+		if rel != "" {
 			outBuf.WriteString("Extracting  " + rel + "\n")
 		}
 	}
 
-	res.ExtractedFiles = extractedFiles
-	res.CommandLine = fmt.Sprintf("go_unrar %s -> %s", archive.MainFile, outDir)
 	res.Output = outBuf.String()
-
 	return res, nil
 }
 
@@ -312,11 +310,10 @@ func extractEntryRarengine(ctx context.Context, root *os.Root, destRel, destPath
 		mode = 0
 	}
 
-	// No bomb-limit check here: rarengine enforces its own decompression-
-	// bomb limits internally (see rarengine.ErrRarBombDetected, surfaced via
-	// ClassifyRarEngineError). r is wrapped in rarEntryReader to tolerate
-	// unverifiable checksums (a key-derived MAC or no digest), but is not wrapped in a
-	// boundReader before writing.
+	// r is wrapped in rarEntryReader to tolerate unverifiable checksums (a
+	// key-derived MAC or no digest). rarengine caps a member's output at the
+	// unpacked size its header declares, the size the free-space check
+	// counted (checkFreeSpace).
 	entryReader := &rarEntryReader{r: r}
 	_, err := writeEntrySafely(ctx, root, destRel, destPath, entryReader, nil, true, mode, fh.ModificationTime, opts, fh.Name, "go_unrar", log, nil)
 	return err

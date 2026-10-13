@@ -39,7 +39,7 @@ file internal/unpack/filejoin.go
 --- anchor
 	if info, err := root.Lstat(outRel); err == nil && info.Mode().IsRegular() {
 		log.Info("filejoin: output already exists, skipping join", "outPath", outPath)
-		return Result{ExtractedFiles: []string{outPath}}, nil
+		return Result{ExtractedFiles: []string{outRel}}, nil
 	}
 
 	// Validate contiguity after checking whether outRel already exists, so a
@@ -47,16 +47,16 @@ file internal/unpack/filejoin.go
 	// the rerun of an already-completed join.
 	parts, err := sortedNumericParts(archive.Parts)
 	if err != nil {
-		return Result{Err: err}, fmt.Errorf("filejoin: %w", err)
+		return Result{}, fmt.Errorf("filejoin: %w", err)
 	}
 --- replace
 	parts, err := sortedNumericParts(archive.Parts)
 	if err != nil {
-		return Result{Err: err}, fmt.Errorf("filejoin: %w", err)
+		return Result{}, fmt.Errorf("filejoin: %w", err)
 	}
 	if info, err := root.Lstat(outRel); err == nil && info.Mode().IsRegular() {
 		log.Info("filejoin: output already exists, skipping join", "outPath", outPath)
-		return Result{ExtractedFiles: []string{outPath}}, nil
+		return Result{ExtractedFiles: []string{outRel}}, nil
 	}
 --- end
 

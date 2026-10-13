@@ -1,16 +1,16 @@
 package unpack
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/testutil"
 )
 
 func TestAllPasswords_DeduplicatesAndOrders(t *testing.T) {
@@ -111,50 +111,6 @@ func TestIs7zWrongPassword(t *testing.T) {
 	}
 }
 
-func TestCleanupPartialFiles(t *testing.T) {
-	tmp := t.TempDir()
-
-	// Create initial file
-	f1 := filepath.Join(tmp, "initial.txt")
-	if err := os.WriteFile(f1, []byte("initial"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	beforeSnap, err := snapshotDir(tmp)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Create partial files
-	f2 := filepath.Join(tmp, "partial1.txt")
-	if err := os.WriteFile(f2, []byte("partial"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	f3 := filepath.Join(tmp, "subdir", "partial2.txt")
-	if err := os.MkdirAll(filepath.Dir(f3), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(f3, []byte("partial2"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	// Call cleanupPartialFiles
-	if err := cleanupPartialFiles(tmp, beforeSnap, slog.Default(), "test", 1); err != nil {
-		t.Fatalf("cleanupPartialFiles: %v", err)
-	}
-
-	// Verify f1 still exists, but f2 and f3 are deleted
-	if _, err := os.Stat(f1); err != nil {
-		t.Errorf("initial file was deleted: %v", err)
-	}
-	if _, err := os.Stat(f2); err == nil {
-		t.Errorf("partial1.txt was not cleaned up")
-	}
-	if _, err := os.Stat(f3); err == nil {
-		t.Errorf("subdir/partial2.txt was not cleaned up")
-	}
-}
-
 func TestWithPasswords_Mocked(t *testing.T) {
 	ctx := context.Background()
 	log := slog.Default()
@@ -172,7 +128,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 		}
 
 		opts := Options{}
-		res, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock", nil)
+		res, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock")
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
@@ -195,7 +151,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 		}
 
 		opts := Options{Passwords: []string{"pass1", "pass2"}}
-		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock", nil)
+		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock")
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
@@ -212,10 +168,6 @@ func TestWithPasswords_Mocked(t *testing.T) {
 				if password != "wrong" {
 					t.Errorf("first attempt expected 'wrong', got %q", password)
 				}
-				// Simulate creating a partial file to verify cleanup is triggered
-				pfile := filepath.Join(outDir, "partial.txt")
-				_ = os.WriteFile(pfile, []byte("partial"), 0600)
-
 				return Result{ExitCode: 2, Output: "wrong password!"}, errors.New("extract failed")
 			}
 			if calls == 2 {
@@ -232,7 +184,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 		}
 
 		opts := Options{Passwords: []string{"wrong", "right"}}
-		res, err := withPasswords(ctx, log, archive, outDir, opts, extract, isWrongPW, "mock", nil)
+		res, err := withPasswords(ctx, log, archive, outDir, opts, extract, isWrongPW, "mock")
 		if err != nil {
 			t.Fatalf("expected success, got error %v", err)
 		}
@@ -241,12 +193,6 @@ func TestWithPasswords_Mocked(t *testing.T) {
 		}
 		if res.ExitCode != 0 {
 			t.Errorf("expected ExitCode 0, got %d", res.ExitCode)
-		}
-
-		// Verify partial file was cleaned up
-		pfile := filepath.Join(outDir, "partial.txt")
-		if _, err := os.Stat(pfile); err == nil {
-			t.Error("partial.txt should have been cleaned up")
 		}
 	})
 
@@ -262,7 +208,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 		}
 
 		opts := Options{Passwords: []string{"wrong1", "wrong2"}}
-		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, isWrongPW, "mock", nil)
+		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, isWrongPW, "mock")
 		if !errors.Is(err, ErrWrongPassword) {
 			t.Fatalf("expected ErrWrongPassword, got %v", err)
 		}
@@ -281,7 +227,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 		}
 
 		opts := Options{Passwords: []string{"wrong1", "wrong2"}}
-		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock", nil)
+		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock")
 		if !errors.Is(err, sysErr) {
 			t.Fatalf("expected system error, got %v", err)
 		}
@@ -316,7 +262,7 @@ func TestWithPasswords_GoNativeWrongPasswordRetries(t *testing.T) {
 	}
 
 	opts := Options{Passwords: []string{"wrong", "correct"}}
-	res, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock", nil)
+	res, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock")
 	if err != nil {
 		t.Fatalf("expected retry to succeed with the correct password, got error: %v", err)
 	}
@@ -328,110 +274,81 @@ func TestWithPasswords_GoNativeWrongPasswordRetries(t *testing.T) {
 	}
 }
 
-// TestWithPasswords_PreVerifySkipsProvablyWrongCandidates proves the Task 1
-// pre-verification wiring: preVerify is consulted before extract for each
-// password candidate, and a candidate it can prove wrong (skip=true) never
-// reaches extract at all -- for UnRARWithPasswords, that means zero unrar
-// subprocess spawns for those candidates.
-func TestWithPasswords_PreVerifySkipsProvablyWrongCandidates(t *testing.T) {
-	ctx := context.Background()
-	log := slog.Default()
-	archive := Archive{MainFile: "test.rar"}
-	outDir := t.TempDir()
-
-	var attempted []string
-	extract := func(_ context.Context, _ *slog.Logger, _ Archive, _ string, password string, _ Options) (Result, error) {
-		attempted = append(attempted, password)
-		if password == "correct" {
-			return Result{ExitCode: 0}, nil
-		}
-		return Result{ExitCode: 2, Output: "should never be called"}, errors.New("extract failed")
-	}
-
-	// Pre-verify proves "wrong1" and "wrong2" wrong; can't tell about
-	// "correct" (simulates hasCheckValue=false/uncertain) so it must fall
-	// through to a real attempt, which then succeeds.
-	preVerify := func(_ Archive, password string) bool {
-		return password == "wrong1" || password == "wrong2"
-	}
-
-	opts := Options{Passwords: []string{"wrong1", "wrong2", "correct"}}
-	res, err := withPasswords(ctx, log, archive, outDir, opts, extract, isUnrarWrongPassword, "unrar", preVerify)
-	if err != nil {
-		t.Fatalf("expected success, got error %v", err)
-	}
-	if res.ExitCode != 0 {
-		t.Errorf("expected successful result, got %+v", res)
-	}
-	if len(attempted) != 1 || attempted[0] != "correct" {
-		t.Errorf("expected extract to be called only once with 'correct' (pre-verified candidates skipped), got %v", attempted)
-	}
+// recordingUnrar writes a fake unrar that appends its -p argument to a log
+// and extracts one file, and returns the script's path and the log's.
+func recordingUnrar(t *testing.T) (bin, logPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	logPath = filepath.Join(dir, "passwords.log")
+	bin = filepath.Join(dir, "unrar")
+	testutil.WriteExecutable(t, bin, fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do case "$a" in -p*) echo "$a" >> %q;; esac; done
+eval "OUTDIR=\${$#}"
+echo x > "${OUTDIR}out.txt"
+exit 0
+`, logPath))
+	return bin, logPath
 }
 
-// TestWithPasswords_PreVerifySkipEmitsOnLine proves the pre-verify skip
-// path reports progress through opts.OnLine, same as the existing
-// subprocess-detected wrong-password path does.
-func TestWithPasswords_PreVerifySkipEmitsOnLine(t *testing.T) {
-	ctx := context.Background()
-	log := slog.Default()
-	archive := Archive{MainFile: "test.rar"}
-	outDir := t.TempDir()
-
-	extract := func(_ context.Context, _ *slog.Logger, _ Archive, _ string, _ string, _ Options) (Result, error) {
-		return Result{ExitCode: 0}, nil
-	}
-	preVerify := func(_ Archive, password string) bool { return password == "wrong1" }
-
+// A password the archive's own check value proves wrong never reaches
+// unrar: UnRAR refuses it as a wrong password, and the loop goes on to the
+// next candidate.
+func TestUnRARWithPasswords_PreVerifiedWrongPasswordsRunNoUnrar(t *testing.T) {
+	t.Parallel()
+	bin, logPath := recordingUnrar(t)
+	archive := Archive{Type: RarArchive, MainFile: filepath.Join("testdata", "password_rar5.rar")}
 	var lines []string
 	opts := Options{
-		Passwords: []string{"wrong1", "correct"},
-		OnLine:    func(s string) { lines = append(lines, s) },
+		UnrarCommand: bin,
+		Passwords:    []string{"wrong1", "wrong2", "testpass"},
+		OnLine:       func(l string) { lines = append(lines, l) },
 	}
-	if _, err := withPasswords(ctx, log, archive, outDir, opts, extract, isUnrarWrongPassword, "unrar", preVerify); err != nil {
-		t.Fatalf("expected success, got error %v", err)
+	res, err := UnRARWithPasswords(context.Background(), slog.Default(), archive, t.TempDir(), opts)
+	if err != nil {
+		t.Fatalf("UnRARWithPasswords: %v", err)
 	}
-
-	found := false
+	if res.Engine != "unrar" {
+		t.Errorf("Engine = %q, want unrar", res.Engine)
+	}
+	got, readErr := os.ReadFile(logPath) //nolint:gosec // test path
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "-ptestpass\n" {
+		t.Errorf("unrar ran with %q, want only -ptestpass", got)
+	}
+	skipped := 0
 	for _, l := range lines {
 		if strings.Contains(l, "Skipping known-wrong password") {
-			found = true
+			skipped++
 		}
 	}
-	if !found {
-		t.Errorf("expected an OnLine callback mentioning the pre-verify skip, got lines %v", lines)
+	if skipped != 2 {
+		t.Errorf("OnLine reported %d pre-verified skips, want 2; lines %q", skipped, lines)
 	}
 }
 
-// TestWithPasswords_PreVerifyExhaustedStillReportsWrongPassword proves that
-// when every candidate is pre-verified wrong, withPasswords still reports
-// ErrWrongPassword (matching the existing "exhaust all passwords" contract)
-// without ever calling extract.
-func TestWithPasswords_PreVerifyExhaustedStillReportsWrongPassword(t *testing.T) {
-	ctx := context.Background()
-	log := slog.Default()
-	archive := Archive{MainFile: "test.rar"}
-	outDir := t.TempDir()
-
-	calls := 0
-	extract := func(_ context.Context, _ *slog.Logger, _ Archive, _ string, _ string, _ Options) (Result, error) {
-		calls++
-		return Result{}, fmt.Errorf("extract should never be called")
-	}
-
-	preVerify := func(_ Archive, _ string) bool { return true }
-
-	opts := Options{Passwords: []string{"wrong1", "wrong2"}}
-	_, err := withPasswords(ctx, log, archive, outDir, opts, extract, isUnrarWrongPassword, "unrar", preVerify)
+// Every candidate proven wrong still ends in ErrWrongPassword, with unrar
+// never run, and the Result names the engine.
+func TestUnRARWithPasswords_AllPreVerifiedWrong(t *testing.T) {
+	t.Parallel()
+	bin, logPath := recordingUnrar(t)
+	archive := Archive{Type: RarArchive, MainFile: filepath.Join("testdata", "password_rar5.rar")}
+	opts := Options{UnrarCommand: bin, Passwords: []string{"wrong1", "wrong2"}}
+	res, err := UnRARWithPasswords(context.Background(), slog.Default(), archive, t.TempDir(), opts)
 	if !errors.Is(err, ErrWrongPassword) {
-		t.Fatalf("expected ErrWrongPassword, got %v", err)
+		t.Fatalf("err = %v, want ErrWrongPassword", err)
 	}
-	if calls != 0 {
-		t.Errorf("expected extract never called, got %d calls", calls)
+	if res.Engine != "unrar" || res.Reason != FailWrongPassword {
+		t.Errorf("res = {Engine: %q, Reason: %v}, want unrar and FailWrongPassword", res.Engine, res.Reason)
+	}
+	if _, statErr := os.Stat(logPath); !os.IsNotExist(statErr) {
+		t.Errorf("unrar ran (log stat err = %v), want no run", statErr)
 	}
 }
 
-// TestRarPreVerify_ContentEncrypted proves rarPreVerify (the preVerifyFunc
-// wired into UnRARWithPasswords) correctly classifies a correct vs. wrong
+// TestRarPreVerify_ContentEncrypted proves rarPreVerify (which UnRAR
+// consults before running unrar) correctly classifies a correct vs. wrong
 // password against a real password-protected RAR5 fixture.
 func TestRarPreVerify_ContentEncrypted(t *testing.T) {
 	path := filepath.Join("testdata", "password_rar5.rar")
@@ -470,200 +387,4 @@ func TestRarPreVerify_FallsThroughWhenUncertain(t *testing.T) {
 			t.Error("rarPreVerify() = true for an unencrypted archive, want false (fall through)")
 		}
 	})
-}
-
-// lockDir sets dir's mode and restores it at cleanup so t.TempDir can
-// remove it. Permission bits do not bind root, so the test is skipped there.
-func lockDir(t *testing.T, dir string, mode os.FileMode) {
-	t.Helper()
-	if os.Geteuid() == 0 {
-		t.Skip("permission bits do not bind root")
-	}
-	if err := os.Chmod(dir, mode); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // test cleanup of a t.TempDir subdirectory
-}
-
-// writeVolumes creates two archive volumes in dir and returns their paths.
-func writeVolumes(t *testing.T, dir string) []string {
-	t.Helper()
-	names := []string{"a.part1.rar", "a.part2.rar"}
-	vols := make([]string, 0, len(names))
-	for _, name := range names {
-		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, []byte("volume"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		vols = append(vols, p)
-	}
-	return vols
-}
-
-// A before-attempt snapshot that fails must not let a wrong-password
-// cleanup run: with no record of what was there, every file in outDir —
-// the archive volumes included — would read as a partial from the attempt.
-// It must not fail an attempt that succeeds either, since only that
-// cleanup needs the snapshot.
-func TestWithPasswords_BeforeSnapshotFailure(t *testing.T) {
-	tests := []struct {
-		name      string
-		wrongPW   bool
-		wantWalk  bool // err carries the walk error, and the loop stopped
-		wantNoErr bool
-	}{
-		{name: "wrong password returns the snapshot error and keeps the volumes", wrongPW: true, wantWalk: true},
-		{name: "a succeeding attempt still extracts", wantNoErr: true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			outDir := t.TempDir()
-			vols := writeVolumes(t, outDir)
-			locked := filepath.Join(outDir, "locked")
-			if err := os.Mkdir(locked, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			lockDir(t, locked, 0)
-
-			calls := 0
-			extract := func(_ context.Context, _ *slog.Logger, _ Archive, outDir, _ string, _ Options) (Result, error) {
-				calls++
-				if !tc.wrongPW {
-					return Result{}, nil
-				}
-				// Unlock so an after-attempt scan would succeed, and leave a partial.
-				if err := os.Chmod(locked, 0o700); err != nil { //nolint:gosec // test fixture directory
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(outDir, "partial.bin"), []byte("x"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				return Result{Reason: FailWrongPassword}, errors.New("wrong password")
-			}
-			opts := Options{Passwords: []string{"pw1", "pw2"}}
-			res, err := withPasswords(context.Background(), slog.Default(), Archive{MainFile: vols[0]}, outDir, opts, extract,
-				func(int, string) bool { return false }, "mock", nil)
-
-			for _, v := range vols {
-				if _, statErr := os.Stat(v); statErr != nil {
-					t.Errorf("archive volume %s removed after a failed before-snapshot: %v", filepath.Base(v), statErr)
-				}
-			}
-			if calls != 1 {
-				t.Errorf("extract called %d times, want 1", calls)
-			}
-			if tc.wantNoErr && err != nil {
-				t.Errorf("err = %v, want nil: a failed snapshot must not fail an attempt that succeeds", err)
-			}
-			if tc.wantWalk {
-				if !errors.Is(err, fs.ErrPermission) {
-					t.Errorf("err = %v, want the snapshot's walk error (fs.ErrPermission) in the chain", err)
-				}
-				if res.Reason != FailUnknown || res.Err == nil {
-					t.Errorf("res = {Reason: %v, Err: %v}, want FailUnknown with the snapshot error", res.Reason, res.Err)
-				}
-			}
-		})
-	}
-}
-
-// cleanupPartialFiles owns the nil-snapshot refusal, so a caller that drops
-// snapshotDir's error cannot wipe outDir.
-func TestCleanupPartialFiles_RefusesANilSnapshot(t *testing.T) {
-	outDir := t.TempDir()
-	vols := writeVolumes(t, outDir)
-	if err := cleanupPartialFiles(outDir, nil, slog.Default(), "mock", 1); err == nil {
-		t.Error("cleanupPartialFiles(nil snapshot) returned nil, want a refusal")
-	}
-	for _, v := range vols {
-		if _, err := os.Stat(v); err != nil {
-			t.Errorf("archive volume %s removed with a nil snapshot: %v", filepath.Base(v), err)
-		}
-	}
-}
-
-// A partial that is already gone counts as removed, so it cannot stop the
-// password loop.
-func TestRemovePartials_AVanishedPartialIsNotAFailure(t *testing.T) {
-	outDir := t.TempDir()
-	if err := removePartials(outDir, []string{"gone.bin"}, slog.Default(), "mock", 1); err != nil {
-		t.Errorf("removePartials(vanished file) = %v, want nil", err)
-	}
-}
-
-// discardPartialFiles' caller is already returning an extraction error, so
-// a cleanup failure must reach the log.
-func TestDiscardPartialFiles_LogsACleanupFailure(t *testing.T) {
-	var buf bytes.Buffer
-	log := slog.New(slog.NewTextHandler(&buf, nil))
-	outDir := t.TempDir()
-	discardPartialFiles(outDir, nil, log, "mock")
-	if !strings.Contains(buf.String(), "not fully removed") {
-		t.Errorf("log = %q, want the cleanup failure", buf.String())
-	}
-}
-
-// An after-attempt scan that fails leaves the attempt's partial files in
-// place, so the loop must stop rather than run the next password over them.
-// One password: with two, the still-locked directory would fail the next
-// attempt's before-snapshot and stop the loop by another path.
-func TestWithPasswords_AfterSnapshotFailureAborts(t *testing.T) {
-	outDir := t.TempDir()
-	vols := writeVolumes(t, outDir)
-
-	calls := 0
-	extract := func(_ context.Context, _ *slog.Logger, _ Archive, outDir, _ string, _ Options) (Result, error) {
-		calls++
-		locked := filepath.Join(outDir, "locked")
-		if err := os.Mkdir(locked, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		lockDir(t, locked, 0)
-		return Result{Reason: FailWrongPassword}, errors.New("wrong password")
-	}
-	opts := Options{Passwords: []string{"pw1"}}
-	res, err := withPasswords(context.Background(), slog.Default(), Archive{MainFile: vols[0]}, outDir, opts, extract,
-		func(int, string) bool { return false }, "mock", nil)
-
-	if err == nil || errors.Is(err, ErrWrongPassword) {
-		t.Errorf("err = %v, want the cleanup error", err)
-	}
-	if res.Reason != FailUnknown {
-		t.Errorf("res.Reason = %v, want FailUnknown: the failure is the cleanup, not the password", res.Reason)
-	}
-	if calls != 1 {
-		t.Errorf("extract called %d times, want 1: the loop must stop when cleanup cannot run", calls)
-	}
-}
-
-// A partial that cannot be removed is reported, not silently left behind,
-// and the removals that can succeed still happen.
-func TestCleanupPartialFiles_RemoveFailureReturnsError(t *testing.T) {
-	outDir := t.TempDir()
-	before, err := snapshotDir(outDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Sorts after "sub/stuck.bin", so it is removed after the failure.
-	removable := filepath.Join(outDir, "z_partial.bin")
-	if err := os.WriteFile(removable, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	sub := filepath.Join(outDir, "sub")
-	if err := os.Mkdir(sub, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sub, "stuck.bin"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// Readable and searchable, so the scan succeeds; not writable, so the
-	// unlink of stuck.bin fails.
-	lockDir(t, sub, 0o500)
-
-	if err := cleanupPartialFiles(outDir, before, slog.Default(), "mock", 1); err == nil {
-		t.Error("cleanupPartialFiles returned nil, want the remove error")
-	}
-	if _, err := os.Stat(removable); err == nil {
-		t.Error("z_partial.bin was not removed after an earlier remove failed")
-	}
 }
