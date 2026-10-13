@@ -310,9 +310,10 @@ func faultReason(f *storagefault.Fault) string {
 // Header.FailReason is the persisted one, and a restarted job keeps it until
 // it leaves the queue.
 //
-// j is the attempt the fault belongs to, and every step acts on it alone: a j
-// no longer registered under its ID fails nothing, and leaves alone the stall
-// record and the job of a later attempt registered under the ID.
+// j is the attempt the fault belongs to. A j no longer registered under its ID
+// fails nothing. Otherwise the reason, the hand-over and the resume go through
+// instance doors, and the stall record, which is keyed by ID, is cleared only
+// after the check that j holds the ID.
 func (app *Application) Fail(j *job.Job, f *storagefault.Fault) {
 	jobID := j.ID()
 	reason := faultReason(f)
