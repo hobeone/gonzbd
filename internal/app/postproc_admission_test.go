@@ -95,7 +95,7 @@ func TestFail_WhilePostProcessing_IsNotedAndLeavesTheStatusToTheStages(t *testin
 	awaitStage(t, stage.entered)
 
 	fault := storagefault.Classify("write", "/mnt/ro/held.bin", syscall.EROFS)
-	application.Fail(id, fault)
+	application.Fail(j, fault)
 	close(stage.finish)
 	awaitFinalized(t, application, id)
 
@@ -214,7 +214,7 @@ func TestEnqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy(t *testing.T) {
 
 	application.maybeFinalize(id, "")
 	fault := storagefault.Classify("write", "/mnt/ro/held.bin", syscall.EROFS)
-	application.Fail(id, fault)
+	application.Fail(j, fault)
 	newAppRunner(application).runPostProc(t.Context(), id, job.Repairing)
 	handedOver := application.postProcessor.HasJob(j)
 

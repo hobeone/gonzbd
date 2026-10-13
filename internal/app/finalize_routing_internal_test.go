@@ -27,7 +27,7 @@ func TestStall_DoesNotParkAJobWhileTheProcessIsStopping(t *testing.T) {
 	application.ctx = ctx
 	cancel() // the process is stopping
 
-	application.Stall(j.ID(), storagefault.Classify("sync", "/downloads/a.bin", context.DeadlineExceeded))
+	application.Stall(j, storagefault.Classify("sync", "/downloads/a.bin", context.DeadlineExceeded))
 
 	row, ok := application.dispatcher.Row(j.ID())
 	if !ok {
@@ -60,7 +60,7 @@ func TestStall_StillParksOnTheSameErrorWhenNotStopping(t *testing.T) {
 		t.Fatal("the fixture is already stopping, so it cannot observe the running case")
 	}
 
-	application.Stall(j.ID(), storagefault.Classify("sync", "/downloads/a.bin", context.DeadlineExceeded))
+	application.Stall(j, storagefault.Classify("sync", "/downloads/a.bin", context.DeadlineExceeded))
 
 	row, ok := application.dispatcher.Row(j.ID())
 	if !ok {

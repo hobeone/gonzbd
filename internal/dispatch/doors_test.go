@@ -159,3 +159,96 @@ func TestCancelFor_LatchesOnlyTheJobItFinds(t *testing.T) {
 		t.Errorf("cancelFor(j1) left intent %v, want IntentCancel", got)
 	}
 }
+
+// staleAndRegistered registers an instance under id, removes it, and registers
+// a second instance under the same ID, returning both.
+func staleAndRegistered(t *testing.T, d *Dispatcher, id string) (stale, registered *job.Job) {
+	t.Helper()
+	stale = job.New(id, "first", job.Policy{})
+	if err := d.Add(context.Background(), stale, Header{}); err != nil {
+		t.Fatalf("Add(first): %v", err)
+	}
+	if err := d.Remove(context.Background(), id); err != nil {
+		t.Fatalf("Remove(first): %v", err)
+	}
+	registered = job.New(id, "second", job.Policy{})
+	if err := d.Add(context.Background(), registered, Header{}); err != nil {
+		t.Fatalf("Add(second): %v", err)
+	}
+	return stale, registered
+}
+
+// TestPauseInstance_LeavesALaterInstanceAlone: a pause carrying a removed
+// instance does not pause the attempt since registered under the same ID,
+// while one carrying the registered instance does.
+func TestPauseInstance_LeavesALaterInstanceAlone(t *testing.T) {
+	d := newTestDispatcher(t)
+	stale, registered := staleAndRegistered(t, d, "j1")
+
+	if err := d.PauseInstance(stale); !errors.Is(err, ErrNotFound) {
+		t.Errorf("PauseInstance(removed instance) = %v, want ErrNotFound", err)
+	}
+	if got := registered.Intent(); got != job.IntentRun {
+		t.Fatalf("PauseInstance with the removed instance left the later one at %v, want IntentRun", got)
+	}
+	if err := d.PauseInstance(registered); err != nil {
+		t.Fatalf("PauseInstance(registered instance): %v", err)
+	}
+	if got := registered.Intent(); got != job.IntentPause {
+		t.Errorf("PauseInstance with the registered instance left intent %v, want IntentPause", got)
+	}
+	if err := d.PauseInstance(nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("PauseInstance(nil) = %v, want ErrNotFound", err)
+	}
+}
+
+// TestResumeInstance_LeavesALaterInstanceAlone: a resume carrying a removed
+// instance does not resume the attempt since registered under the same ID,
+// while one carrying the registered instance does.
+func TestResumeInstance_LeavesALaterInstanceAlone(t *testing.T) {
+	d := newTestDispatcher(t)
+	stale, registered := staleAndRegistered(t, d, "j1")
+	if err := d.PauseJob("j1"); err != nil {
+		t.Fatalf("PauseJob: %v", err)
+	}
+
+	if err := d.ResumeInstance(stale); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ResumeInstance(removed instance) = %v, want ErrNotFound", err)
+	}
+	if got := registered.Intent(); got != job.IntentPause {
+		t.Fatalf("ResumeInstance with the removed instance left the later one at %v, want IntentPause", got)
+	}
+	if err := d.ResumeInstance(registered); err != nil {
+		t.Fatalf("ResumeInstance(registered instance): %v", err)
+	}
+	if got := registered.Intent(); got != job.IntentRun {
+		t.Errorf("ResumeInstance with the registered instance left intent %v, want IntentRun", got)
+	}
+	if err := d.ResumeInstance(nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ResumeInstance(nil) = %v, want ErrNotFound", err)
+	}
+}
+
+// TestSetFailReason_LeavesALaterInstanceAlone: a fail reason carrying a
+// removed instance is not written to the attempt since registered under the
+// same ID, while one carrying the registered instance is.
+func TestSetFailReason_LeavesALaterInstanceAlone(t *testing.T) {
+	d := newTestDispatcher(t)
+	stale, registered := staleAndRegistered(t, d, "j1")
+
+	if err := d.SetFailReason(stale, "stale"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetFailReason(removed instance) = %v, want ErrNotFound", err)
+	}
+	if row, _ := d.Row("j1"); row.Header.FailReason != "" {
+		t.Fatalf("SetFailReason with the removed instance wrote %q on the later one", row.Header.FailReason)
+	}
+	if err := d.SetFailReason(registered, "current"); err != nil {
+		t.Fatalf("SetFailReason(registered instance): %v", err)
+	}
+	if row, _ := d.Row("j1"); row.Header.FailReason != "current" {
+		t.Errorf("SetFailReason with the registered instance left %q, want %q", row.Header.FailReason, "current")
+	}
+	if err := d.SetFailReason(nil, "x"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetFailReason(nil) = %v, want ErrNotFound", err)
+	}
+}

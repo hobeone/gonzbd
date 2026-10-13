@@ -23,6 +23,13 @@ func (app *Application) lookupJob(id string) (*job.Job, bool) {
 	return app.dispatcher.Job(id)
 }
 
+// registered reports whether j is the instance the dispatcher holds under its
+// ID.
+func (app *Application) registered(j *job.Job) bool {
+	_, ok := app.dispatcher.RowJob(j)
+	return ok
+}
+
 // appWorkers satisfies sched.Workers.
 type appWorkers struct {
 	app *Application

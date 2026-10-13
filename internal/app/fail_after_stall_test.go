@@ -16,7 +16,7 @@ func stallFault() *storagefault.Fault {
 // stall parks the fixture's job as a retryable storage fault does.
 func (f *failAtAssessingFixture) stall(t *testing.T) {
 	t.Helper()
-	f.app.Stall(f.j.ID(), stallFault())
+	f.app.Stall(f.j, stallFault())
 	if got := f.j.Intent(); got != job.IntentPause {
 		t.Fatalf("precondition: intent after Stall = %v, want IntentPause", got)
 	}
@@ -66,7 +66,7 @@ func TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing(t *testing.T
 	f.stall(t)
 
 	fault := assessFault()
-	f.app.Fail(f.j.ID(), fault)
+	f.app.Fail(f.j, fault)
 	f.requireResumedForAssessing(t)
 
 	// The relaunched Fetching worker reports the complete job, as runFetch does.
@@ -90,7 +90,7 @@ func TestFail_OnAStalledJobWithAssessingPending_ResumesItForAssessing(t *testing
 	}
 
 	fault := assessFault()
-	f.app.Fail(f.j.ID(), fault)
+	f.app.Fail(f.j, fault)
 	f.requireResumedForAssessing(t)
 
 	f.tickUntilRan(t, []job.State{job.Fetching, job.Assessing})
@@ -119,7 +119,7 @@ func TestFail_OnAUserPausedJob_DefersWithoutResumingIt(t *testing.T) {
 				f.app.noteStall(f.j.ID(), assessFault(), stallRetryable, false)
 			}
 
-			f.app.Fail(f.j.ID(), assessFault())
+			f.app.Fail(f.j, assessFault())
 			if f.app.postProcAdmissions.has(f.j) {
 				t.Fatal("Fail admitted the job; its Assessing worker must hand it over")
 			}

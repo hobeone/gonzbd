@@ -101,7 +101,7 @@ func TestRetryHistoryJob_InProcessRetryDownloads(t *testing.T) {
 		t.Fatalf("AddJob: %v", err)
 	}
 	id := j.ID()
-	a.Fail(id, storagefault.Classify("write", filepath.Join(downloadDir, name), syscall.EACCES))
+	a.Fail(j, storagefault.Classify("write", filepath.Join(downloadDir, name), syscall.EACCES))
 	waitStatus := func(want constants.Status) {
 		t.Helper()
 		var got string

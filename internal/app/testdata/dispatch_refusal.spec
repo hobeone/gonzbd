@@ -112,17 +112,17 @@ file internal/app/app.go
 [stall discards a refused pause]
 file internal/app/durability.go
 --- anchor
-	if err := app.dispatcher.PauseJob(jobID); !errors.Is(err, job.ErrIntentLatched) {
+	if err := app.dispatcher.PauseInstance(j); !errors.Is(err, job.ErrIntentLatched) {
 --- replace
-	if err := app.dispatcher.PauseJob(jobID); false && !errors.Is(err, job.ErrIntentLatched) {
+	if err := app.dispatcher.PauseInstance(j); false && !errors.Is(err, job.ErrIntentLatched) {
 --- end
 
 [stall warns about a pause refused by a removal's latched cancel]
 file internal/app/durability.go
 --- anchor
-	if err := app.dispatcher.PauseJob(jobID); !errors.Is(err, job.ErrIntentLatched) {
+	if err := app.dispatcher.PauseInstance(j); !errors.Is(err, job.ErrIntentLatched) {
 --- replace
-	if err := app.dispatcher.PauseJob(jobID); err != nil || !errors.Is(err, job.ErrIntentLatched) {
+	if err := app.dispatcher.PauseInstance(j); err != nil || !errors.Is(err, job.ErrIntentLatched) {
 --- end
 
 [RemoveJob discards a refused cancel]

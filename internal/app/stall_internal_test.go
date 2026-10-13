@@ -111,7 +111,7 @@ func TestRunStallRecheck_ReevaluatesStallsOnItsTicker(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t, WithStallRecheckInterval(10*time.Millisecond))
 	job := addStallTestJob(t, application, "ticker-job")
-	application.Stall(job.ID(), testFault("write"))
+	application.Stall(job, testFault("write"))
 	if row, ok := application.dispatcher.Row(job.ID()); !ok || row.Status() != constants.StatusPaused {
 		t.Fatalf("status = %v after Stall, want Paused; the fixture is not parked", row.Status())
 	}
@@ -134,7 +134,7 @@ func TestRunStallRecheck_ReevaluatesStallsOnAKick(t *testing.T) {
 	// resumed job.
 	application, _, _ := newLifecycleTestApp(t, WithStallRecheckInterval(time.Hour))
 	job := addStallTestJob(t, application, "kick-job")
-	application.Stall(job.ID(), testFault("write"))
+	application.Stall(job, testFault("write"))
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

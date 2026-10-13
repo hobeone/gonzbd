@@ -74,14 +74,14 @@ func (app *Application) handleArticlesUnwritten(jobID string, fileIdx int, artId
 // This runs on the ASSEMBLER'S WORKER GOROUTINE, and both branches block on
 // that same goroutine if run inline:
 //
-//   - Permanent → Application.Fail → maybeFinalize → CloseJobHandles, which
+//   - Permanent → Application.Fail → finalizeRegistered → CloseJobHandles, which
 //     enqueues a control message on a.reqs and waits for the worker that is
 //     calling it. A guaranteed self-deadlock, resolved only by the 5s
 //     closeHandlesTimeout expiring — after which the handles are still open,
 //     so the NFS silly-rename that call exists to prevent is not prevented
 //     either. enqueuePostProc then also runs a synchronous recorder flush
 //     to SQLite and enqueues post-processing, both on the worker.
-//   - Retryable → Application.Stall → Dispatcher.PauseJob, which updates intent
+//   - Retryable → Application.Stall → Dispatcher.PauseInstance, which updates intent
 //     manifest from disk and calls into SQLite. On the worker, that is the
 //     single goroutine every write for every job passes through.
 //
@@ -105,13 +105,32 @@ func (app *Application) handleArticlesUnwritten(jobID string, fileIdx int, artId
 // here is that the claim is bounded rather than absolute, so nobody builds on
 // it. Assembler.syncAndCloseAll declines to route faults at all for exactly
 // this reason.
+//
+// # The instance is resolved here, not in the goroutine
+//
+// Stall and Fail act on the instance they are given, through the dispatcher's
+// instance doors. It is looked up on the worker, while the write that faulted
+// is being processed, so a retry registered under the same ID before the
+// goroutine runs is left alone (#914). The lookup identifies the attempt as
+// well as the worker's own queue does: a write of an earlier attempt still
+// blocked in Assembler.WriteArticle when a retry's ForgetJob reached the
+// worker would fault against the retry.
 func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fault) {
+	j, ok := app.dispatcher.Job(jobID)
+	if !ok {
+		app.log.Warn("storage fault for a job that has left the queue; nothing to stall or fail",
+			"job", jobID, "fault", f.Error())
+		return
+	}
 	app.wg.Go(func() {
+		if app.writeFaultRoutedHook != nil {
+			app.writeFaultRoutedHook(j)
+		}
 		if f.Permanent {
-			app.Fail(jobID, f)
+			app.Fail(j, f)
 			return
 		}
-		app.Stall(jobID, f)
+		app.Stall(j, f)
 	})
 }
 
@@ -186,23 +205,35 @@ func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx 
 // assembler has stopped, so the flag is what covers a fault raised while the
 // assembler drains and closes its files. The context test covers a SIGTERM-cancelled parent context, which
 // arrives without Shutdown having been entered.
-func (app *Application) Stall(jobID string, f *storagefault.Fault) {
-	app.stall(jobID, f, stallRetryable)
+//
+// # Only the instance it is given
+//
+// j is the attempt the fault belongs to. A j no longer registered under its ID
+// parks nothing: the stall record is keyed by ID, and a later attempt
+// registered under it is not the one that faulted.
+func (app *Application) Stall(j *job.Job, f *storagefault.Fault) {
+	app.stall(j, f, stallRetryable)
 }
 
 // parkVerifyFault is the residency's parked callback: Stall for a
 // verification that could not complete, recorded as stallVerify so that only
 // a resume of the job lifts it (docs/durability-contract.md §3).
-func (app *Application) parkVerifyFault(jobID string, f *storagefault.Fault) {
-	app.stall(jobID, f, stallVerify)
+func (app *Application) parkVerifyFault(j *job.Job, f *storagefault.Fault) {
+	app.stall(j, f, stallVerify)
 }
 
 // stall is the body of Stall and parkVerifyFault; kind is what may lift it.
-func (app *Application) stall(jobID string, f *storagefault.Fault, kind stallKind) {
+func (app *Application) stall(j *job.Job, f *storagefault.Fault, kind stallKind) {
+	jobID := j.ID()
 	if app.stopping.Load() || (app.ctx != nil && app.ctx.Err() != nil) {
 		// Not silent (A2): the condition is real, and the next run's
 		// hydration verifies the job's files regardless.
 		app.log.Warn("storage fault during shutdown; the job is not parked for it",
+			"job", jobID, "fault", f.Error())
+		return
+	}
+	if !app.registered(j) {
+		app.log.Info("storage fault for an attempt that has left the queue; nothing is parked",
 			"job", jobID, "fault", f.Error())
 		return
 	}
@@ -214,20 +245,17 @@ func (app *Application) stall(jobID string, f *storagefault.Fault, kind stallKin
 	// reevaluateStall).
 	//
 	// The pause is claimed only when the user has not already paused the job:
-	// the intent is read before PauseJob. IntentPause there is not
+	// the intent is read before the pause. IntentPause there is not
 	// necessarily the user's: AddJob pauses a duplicate NZB and a
 	// paused-priority ingest, and a re-stall meets Stall's own earlier pause,
 	// which stays ours because setStallReasonLocked never clears parked.
 	// Read with no lock held, so two races are accepted: a user pause landing
-	// between the read and PauseJob is claimed by us and resumed once the
-	// fault clears, and a user resume in the same window leaves PauseJob
-	// pausing a job nobody owns (docs/durability-contract.md).
-	claimPause := true
-	if j, ok := app.dispatcher.Job(jobID); ok && j.Intent() == job.IntentPause {
-		claimPause = false
-	}
+	// between the read and the pause is claimed by us and resumed once the
+	// fault clears, and a user resume in the same window leaves the pause
+	// on a job nobody owns (docs/durability-contract.md).
+	claimPause := j.Intent() != job.IntentPause
 	app.noteStall(jobID, f, kind, claimPause)
-	// The pause is latched whatever the state, and PauseJob releases only
+	// The pause is latched whatever the state, and PauseInstance releases only
 	// a Fetching job's lease, the worker whose writes the fault
 	// interrupts. A job that has moved on — Assessing, say — keeps its
 	// worker and its resources.
@@ -238,7 +266,7 @@ func (app *Application) stall(jobID string, f *storagefault.Fault, kind stallKin
 	// a fault from writes already queued can land between RemoveJob's
 	// Cancel and its Remove. The job is going away, so that is no failure
 	// of the stall.
-	if err := app.dispatcher.PauseJob(jobID); !errors.Is(err, job.ErrIntentLatched) {
+	if err := app.dispatcher.PauseInstance(j); !errors.Is(err, job.ErrIntentLatched) {
 		warnUnlessGone(app.log, "stall: pausing the job failed", jobID, err)
 	}
 	app.emit(Event{Type: "queue_updated", NzoID: jobID})
@@ -257,10 +285,11 @@ func faultReason(f *storagefault.Fault) string {
 // any article's availability, and recording it as article damage would make
 // the job's health figure describe the disk instead of the download.
 //
-// maybeFinalize is how every other terminal condition leaves the queue — the
-// job carries its reason into history rather than sitting in the queue in a
-// state nothing will move it out of. A job at Assessing, or due there, is not
-// handed over here: maybeFinalize leaves the reason for the job's Assessing
+// The hand-over to post-processing (finalizeRegistered) is how every other
+// terminal condition leaves the queue — the job carries its reason into
+// history rather than sitting in the queue in a state nothing will move it out
+// of. A job at Assessing, or due there, is not handed over here: the hand-over
+// leaves the reason for the job's Assessing
 // worker, which hands the job over itself
 // (postProcAdmissions.admitUnlessAssessing), so the finalize does not run
 // beside runAssess. Fail resumes such a job if Stall paused it, so that
@@ -280,8 +309,18 @@ func faultReason(f *storagefault.Fault) string {
 // was in, its outstanding articles offered again. Of the fields Fail writes,
 // Header.FailReason is the persisted one, and a restarted job keeps it until
 // it leaves the queue.
-func (app *Application) Fail(jobID string, f *storagefault.Fault) {
+//
+// j is the attempt the fault belongs to, and every step acts on it alone: a j
+// no longer registered under its ID fails nothing, and leaves alone the stall
+// record and the job of a later attempt registered under the ID.
+func (app *Application) Fail(j *job.Job, f *storagefault.Fault) {
+	jobID := j.ID()
 	reason := faultReason(f)
+	if !app.registered(j) {
+		app.log.Info("permanent storage fault for an attempt that has left the queue; nothing is failed",
+			"job", jobID, "fault", f.Error())
+		return
+	}
 	app.log.Error("job failed by a permanent storage fault", "job", jobID, "fault", f.Error())
 	// A permanent fault is not re-evaluated (R20), so the job leaves the
 	// stalled list: a job handed over is on its way to history, and the
@@ -291,15 +330,15 @@ func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 	// removing it synchronously, so history.Entry.FailMessage (this
 	// reason's eventual permanent home) does not exist yet — this is
 	// the only live signal for the window until it does.
-	warnUnlessGone(app.log, "record the fail reason", jobID, app.dispatcher.SetFailReason(jobID, reason))
-	if app.maybeFinalize(jobID, reason) && parked {
+	warnUnlessGone(app.log, "record the fail reason", jobID, app.dispatcher.SetFailReason(j, reason))
+	if app.finalizeRegistered(j, reason, true) && parked {
 		// The reason waits for an Assessing worker the tick launches only for
 		// a job not paused, and the pause is Stall's, whose record was just
 		// cleared: nothing else would resume it. Resumed as the re-evaluation
 		// resumes a job Stall parked (reevaluateStall). A pause the
 		// user made has no parked record, and holds the reason until the user
 		// resumes the job.
-		if err := app.dispatcher.ResumeJob(jobID); err != nil {
+		if err := app.dispatcher.ResumeInstance(j); err != nil {
 			// Removed or cancelled since: nothing is left to hand over.
 			app.log.Info("failed job could not be resumed for its Assessing worker", "job", jobID, "err", err)
 		}

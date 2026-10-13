@@ -70,7 +70,7 @@ func TestFail_AJobInPostProcessingIsNotDispatched(t *testing.T) {
 	a.Dispatcher().Pause()
 	failed, failedMsg := addJob("handoff-failed")
 	dir := filepath.Join(downloadDir, failed.Name())
-	a.Fail(failed.ID(), storagefault.Classify("write", filepath.Join(dir, "x.bin"), syscall.EFBIG))
+	a.Fail(failed, storagefault.Classify("write", filepath.Join(dir, "x.bin"), syscall.EFBIG))
 	if !waitUntil(recoveryLiveness, func() bool { return a.PostProcessorHas(failed.ID()) }) {
 		t.Fatal("the failed job never reached the post-processing queue")
 	}

@@ -109,7 +109,7 @@ func TestStall_PausesTheJobAndSurfacesTheReason(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	application.Stall(job.ID(), storagefault.Classify("sync", "/mnt/full/A.bin", syscall.ENOSPC))
+	application.Stall(job, storagefault.Classify("sync", "/mnt/full/A.bin", syscall.ENOSPC))
 
 	row, ok := application.dispatcher.Row(job.ID())
 	if !ok {
@@ -149,7 +149,7 @@ func TestFail_SurfacesTheReasonAndStillFailsNoArticle(t *testing.T) {
 	t.Parallel()
 	application, job := newDurabilityTestApp(t, 1, 2)
 
-	application.Fail(job.ID(), storagefault.Classify("write", "/mnt/ro/A.bin", syscall.EROFS))
+	application.Fail(job, storagefault.Classify("write", "/mnt/ro/A.bin", syscall.EROFS))
 
 	row, ok := application.dispatcher.Row(job.ID())
 	if !ok {
@@ -231,18 +231,6 @@ func (f failingRuleStore) Reclaim(context.Context, string, ...string) error { re
 
 func (f failingRuleStore) SweepOrphans(context.Context) error { return f.err }
 
-// TestStall_ReportsRatherThanPanicsOnAJobThatHasLeft pins the case a storage
-// fault most easily hits: the assembler finds the fault, and by the time the
-// stall reaches the queue the job has been removed. Both queue writes fail and
-// neither may take the process down or abort the other.
-func TestStall_ReportsRatherThanPanicsOnAJobThatHasLeft(t *testing.T) {
-	t.Parallel()
-	application, _, _ := newLifecycleTestApp(t)
-
-	application.Stall("no-such-job", storagefault.Classify("sync", "/x", syscall.ENOSPC))
-	application.Fail("no-such-job", storagefault.Classify("write", "/x", syscall.EROFS))
-}
-
 // ---------- event emission ----------
 
 // recordingEmitter captures the events an Application broadcasts.
@@ -268,7 +256,7 @@ func TestEmit_ReachesTheRegisteredEmitter(t *testing.T) {
 		t.Fatalf("emit delivered %+v, want one queue_updated for \"direct\"", rec.events)
 	}
 
-	application.Stall(job.ID(), storagefault.Classify("sync", "/mnt/full/A.bin", syscall.ENOSPC))
+	application.Stall(job, storagefault.Classify("sync", "/mnt/full/A.bin", syscall.ENOSPC))
 	var sawStallUpdate bool
 	for _, e := range rec.events[1:] {
 		if e.Type == "queue_updated" && e.NzoID == job.ID() {

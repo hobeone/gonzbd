@@ -122,7 +122,7 @@ func TestStall_RefusedPauseIsLogged(t *testing.T) {
 	a, logs := refusalApp(t)
 	j := fetchingJob(t, a, "stranded")
 	strandUnissuedLease(t, a, j)
-	a.Stall(j.ID(), stallTestFault())
+	a.Stall(j, stallTestFault())
 	if got := logs.String(); !strings.Contains(got, "stall: pausing the job failed") {
 		t.Errorf("a refused pause was not logged; log:\n%s", got)
 	}
@@ -136,8 +136,8 @@ func TestStall_PauseRefusedByARemovalIsNotLogged(t *testing.T) {
 	a, logs := refusalApp(t)
 	j := a.addJob(t, "removed", 2, 1)
 	stalled := false
-	a.removeCancelGapHook = func(id string) {
-		a.Stall(id, stallTestFault())
+	a.removeCancelGapHook = func(string) {
+		a.Stall(j, stallTestFault())
 		stalled = true
 	}
 	if err := a.RemoveJob(t.Context(), j.ID(), false); err != nil {

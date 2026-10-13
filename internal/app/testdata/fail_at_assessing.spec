@@ -2,7 +2,7 @@ pkg ./internal/app/
 run ^(TestFail_AtAssessingWithALiveWorker_DefersToTheWorkersExit|TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches|TestFail_OnACompleteJobAtFetching_DefersToAssessing|TestFail_BetweenTheVerdictAndItsReport_IsHandedOffAfterTheReport|TestAwaitsAssessing|TestAdmitUnlessAssessing_DefersToTheVisit|TestAdmitUnlessAssessing_AdmitsWhatIsNotAtAssessing|TestBeginAssess_AnEarlierVisitsEndTakesNothingDeferredToALaterOne|TestAdmitUnlessAssessing_AVisitNoWorkerOwnsGoesWithItsJob|TestAdmitLocked_Outcomes|TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing|TestFail_OnAStalledJobWithAssessingPending_ResumesItForAssessing|TestFail_OnAUserPausedJob_DefersWithoutResumingIt|TestAdmitUnlessAssessing_KeepsNoEmptyReason|TestMaybeFinalize_AnEmptyReasonAtAssessing_IsNoFailure)$
 timeout 5m
 
-# A hand-off by job ID (Fail, the hopeless callbacks) does not admit a job at
+# A deferring hand-off (Fail, the hopeless callbacks) does not admit a job at
 # Assessing. Its reason waits for the job's Assessing worker, which hands the
 # job over in place of its verdict, or after its report for a reason that
 # arrived after it last looked.
@@ -21,6 +21,14 @@ file internal/app/app.go
 		return app.finalizeRegistered(j, failMsg, true)
 --- replace
 		return app.finalizeRegistered(j, failMsg, false)
+--- end
+
+[Fail's hand-over does not defer]
+file internal/app/durability.go
+--- anchor
+	if app.finalizeRegistered(j, reason, true) && parked {
+--- replace
+	if app.finalizeRegistered(j, reason, false) && parked {
 --- end
 
 [enqueuePostProc ignores the deferral]
@@ -127,17 +135,17 @@ file internal/app/postproc_admission.go
 [a deferred Fail leaves Stall's pause in place]
 file internal/app/durability.go
 --- anchor
-	if app.maybeFinalize(jobID, reason) && parked {
+	if app.finalizeRegistered(j, reason, true) && parked {
 --- replace
-	if app.maybeFinalize(jobID, reason) && parked && false {
+	if app.finalizeRegistered(j, reason, true) && parked && false {
 --- end
 
 [a deferred Fail resumes a pause the user made]
 file internal/app/durability.go
 --- anchor
-	if app.maybeFinalize(jobID, reason) && parked {
+	if app.finalizeRegistered(j, reason, true) && parked {
 --- replace
-	if app.maybeFinalize(jobID, reason) && (parked || true) {
+	if app.finalizeRegistered(j, reason, true) && (parked || true) {
 --- end
 
 [a stall record Stall did not park counts as its pause]

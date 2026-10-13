@@ -259,7 +259,7 @@ func TestAppResidency_FaultAfterCancellationIsAContextError(t *testing.T) {
 	t.Parallel()
 	j := job.New("abc123", "test", job.PolicyFromPP(3))
 	parked := false
-	r := &appResidency{parked: func(string, *storagefault.Fault) { parked = true }}
+	r := &appResidency{parked: func(*job.Job, *storagefault.Fault) { parked = true }}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	readErr := errors.New("read: file already closed")

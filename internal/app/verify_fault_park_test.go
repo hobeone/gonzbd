@@ -20,7 +20,7 @@ import (
 func TestReevaluateStall_LeavesAVerifyFaultUntilTheJobIsResumed(t *testing.T) {
 	t.Parallel()
 	application, j := newDurabilityTestApp(t, 1, 2)
-	application.parkVerifyFault(j.ID(), storagefault.Classify("verify", "/mnt/dl/a.bin", syscall.EIO))
+	application.parkVerifyFault(j, storagefault.Classify("verify", "/mnt/dl/a.bin", syscall.EIO))
 	if j.Intent() != job.IntentPause || !application.weParked(j.ID()) {
 		t.Fatal("parkVerifyFault did not park an unpaused job as this application's")
 	}
@@ -51,7 +51,7 @@ func TestReevaluateStall_LeavesAVerifyFaultUntilTheJobIsResumed(t *testing.T) {
 func TestReevaluateStall_TimerStillResumesAWriteFault(t *testing.T) {
 	t.Parallel()
 	application, j := newDurabilityTestApp(t, 1, 2)
-	application.Stall(j.ID(), storagefault.Classify("write", "/mnt/dl/a.bin", syscall.ENOSPC))
+	application.Stall(j, storagefault.Classify("write", "/mnt/dl/a.bin", syscall.ENOSPC))
 	if j.Intent() != job.IntentPause {
 		t.Fatal("Stall did not pause the job")
 	}
@@ -78,7 +78,7 @@ func TestReevaluateStall_VerifyFaultOnAPausedJobKeepsItsReason(t *testing.T) {
 	if err := application.dispatcher.PauseJob(j.ID()); err != nil {
 		t.Fatalf("PauseJob: %v", err)
 	}
-	application.parkVerifyFault(j.ID(), storagefault.Classify("verify", "/mnt/dl/a.bin", syscall.EIO))
+	application.parkVerifyFault(j, storagefault.Classify("verify", "/mnt/dl/a.bin", syscall.EIO))
 	if application.weParked(j.ID()) {
 		t.Fatal("parkVerifyFault claimed a pause that predates it")
 	}
@@ -203,7 +203,7 @@ func TestStallReason_FollowsTheLatestFaultsKind(t *testing.T) {
 	second := storagefault.Classify("verify", "/mnt/dl/b.bin", syscall.EIO)
 	tests := []struct {
 		name     string
-		a, b     func(app *Application, id string, f *storagefault.Fault)
+		a, b     func(app *Application, j *job.Job, f *storagefault.Fault)
 		wantKind stallKind
 		want     string
 	}{
@@ -214,8 +214,8 @@ func TestStallReason_FollowsTheLatestFaultsKind(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			application, j := newDurabilityTestApp(t, 1, 2)
-			tt.a(application, j.ID(), first)
-			tt.b(application, j.ID(), second)
+			tt.a(application, j, first)
+			tt.b(application, j, second)
 
 			if got := application.stallKindOf(j.ID()); got != tt.wantKind {
 				t.Errorf("stallKindOf = %v, want %v", got, tt.wantKind)
@@ -235,7 +235,7 @@ func TestStallReason_SaysWhetherAResumeIsNeeded(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		park func(a *Application, id string, f *storagefault.Fault)
+		park func(a *Application, j *job.Job, f *storagefault.Fault)
 		want string
 	}{
 		{"verification fault", (*Application).parkVerifyFault, "Stalled (resume to retry): "},
@@ -246,7 +246,7 @@ func TestStallReason_SaysWhetherAResumeIsNeeded(t *testing.T) {
 			t.Parallel()
 			application, j := newDurabilityTestApp(t, 1, 2)
 			f := storagefault.Classify("verify", "/mnt/dl/a.bin", syscall.EIO)
-			tt.park(application, j.ID(), f)
+			tt.park(application, j, f)
 
 			if got, want := application.StallReason(j.ID()).Reason, tt.want+f.Error(); got != want {
 				t.Errorf("stall reason = %q, want %q", got, want)

@@ -21,7 +21,7 @@ func TestStall_StillParksWhenTheProcessIsNotStopping(t *testing.T) {
 		t.Fatal("the fixture is already stopping, so it cannot observe the running case")
 	}
 
-	application.Stall(job.ID(), storagefault.Classify("sync", "/d/a.bin", syscall.ETIMEDOUT))
+	application.Stall(job, storagefault.Classify("sync", "/d/a.bin", syscall.ETIMEDOUT))
 
 	row, ok := application.dispatcher.Row(job.ID())
 	if !ok {

@@ -269,7 +269,7 @@ func TestReadRecord_ReturnsEitherReadsError(t *testing.T) {
 func TestResidencyFault_ParksOnlyADeviceFault(t *testing.T) {
 	t.Parallel()
 	var parked []string
-	r := &appResidency{parked: func(id string, _ *storagefault.Fault) { parked = append(parked, id) }}
+	r := &appResidency{parked: func(j *job.Job, _ *storagefault.Fault) { parked = append(parked, j.ID()) }}
 	j := job.New("fault-job", "fault-job", job.Policy{})
 	f := storagefault.Classify("verify", "A.bin", syscall.EIO)
 

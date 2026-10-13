@@ -65,7 +65,8 @@ import (
 // enqueuePostProc's entry admission takes admit, or admitUnlessAssessing, as a
 // value rather than calling it there.
 //
-// A hand-off by job ID (maybeFinalize) is not admitted while the job is at
+// A deferring hand-off (finalizeRegistered with deferAtAssessing: Fail, the
+// hopeless callbacks, maybeFinalize) is not admitted while the job is at
 // Assessing; see admitUnlessAssessing. Its reason waits in assessing for the
 // job's Assessing worker, which hands the job over itself.
 type postProcAdmissions struct {

@@ -335,6 +335,11 @@ type Application struct {
 	// syncFile.
 	closeJobHandlesHook func(ctx context.Context, jobID string) error
 
+	// writeFaultRoutedHook, when non-nil, runs in handleWriteFault's
+	// goroutine before it stalls or fails the job it resolved. Same
+	// discipline as syncFile.
+	writeFaultRoutedHook func(j *job.Job)
+
 	shutdownStepTimeout time.Duration
 	closeHandlesTimeout time.Duration
 	metricsPushInterval time.Duration
@@ -2155,7 +2160,8 @@ func (app *Application) maybeFinalizeJob(j *job.Job, failMsg string) {
 	app.finalizeRegistered(j, failMsg, false)
 }
 
-// finalizeRegistered is maybeFinalize's and maybeFinalizeJob's body. It
+// finalizeRegistered is maybeFinalize's and maybeFinalizeJob's body, and the
+// hand-over Fail and finalizeHopeless make with the instance they hold. It
 // reports enqueuePostProc's deferral.
 func (app *Application) finalizeRegistered(j *job.Job, failMsg string, deferAtAssessing bool) (deferred bool) {
 	row, ok := app.dispatcher.RowJob(j)
