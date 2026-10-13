@@ -248,7 +248,13 @@ func (u *UnpackStage) extractPendingArchives(
 	for _, a := range pending {
 		processed[a.MainFile] = true
 
-		res, err := u.extractArchive(ctx, log, job, a, opts, enableFileJoin, enableTar)
+		res, attempted, err := u.extractArchive(ctx, log, job, a, opts, enableFileJoin, enableTar)
+		if !attempted {
+			// A skipped archive stays out of allSuccessful, so its parts are
+			// not queued for deletion, and it does not set extractedAny: it
+			// put nothing new on disk for a further pass to find.
+			continue
+		}
 		if err != nil {
 			recordUnpackFailure(ctx, log, job, a, res, err, firstErr)
 			continue
@@ -350,29 +356,35 @@ func (u *UnpackStage) filterPending(archives []unpack.Archive, processed map[str
 	return pending
 }
 
-// extractArchive executes extraction based on the archive type.
-func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options, enableFileJoin, enableTar bool) (unpack.Result, error) {
+// extractArchive executes extraction based on the archive type. It is where
+// an archive is decided to be skipped: attempted is false when no extractor
+// ran (its type is disabled or unrecognised), and the archive's bytes are then
+// untouched, so the caller must treat it as neither extracted nor failed.
+// err is nil whenever attempted is false.
+func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options, enableFileJoin, enableTar bool) (res unpack.Result, attempted bool, err error) {
 	switch a.Type {
 	case unpack.RarArchive:
-		return extractRARArchive(ctx, log, job, a, opts)
+		res, err = extractRARArchive(ctx, log, job, a, opts)
 	case unpack.SevenZipArchive:
-		return extractSevenZipArchive(ctx, log, job, a, opts)
+		res, err = extractSevenZipArchive(ctx, log, job, a, opts)
 	case unpack.SplitArchive:
 		if !enableFileJoin {
 			logf(ctx, log, job, slog.LevelInfo, "Skipping file join (disabled): %s", filepath.Base(a.MainFile))
-			return unpack.Result{}, nil
+			return unpack.Result{}, false, nil
 		}
 		logf(ctx, log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
-		return unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)
+		res, err = unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)
 	case unpack.TarArchive:
 		if !enableTar {
 			logf(ctx, log, job, slog.LevelInfo, "Skipping tar archive (disabled): %s", filepath.Base(a.MainFile))
-			return unpack.Result{}, nil
+			return unpack.Result{}, false, nil
 		}
-		return extractTarArchive(ctx, log, job, a, opts)
+		res, err = extractTarArchive(ctx, log, job, a, opts)
 	default:
-		return unpack.Result{}, nil
+		logf(ctx, log, job, slog.LevelInfo, "Skipping unrecognised archive type: %s", filepath.Base(a.MainFile))
+		return unpack.Result{}, false, nil
 	}
+	return res, true, err
 }
 
 // cleanupArchives records source archive files for deletion after FinalizeStage
