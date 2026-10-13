@@ -149,6 +149,9 @@ func TestCompleteFinalizedFile_FeedsTheLastVolumeBeforeReportingTheDownload(t *t
 		t.Error("an unpacker was started after post-processing collected the job's: " +
 			"the last volume went to an unpacker nothing collects")
 	}
+	// Awaited as enqueuePostProc awaits it: a Wait that the set's last volume
+	// never reached blocks in the set.
+	go collected.Wait()
 	select {
 	case <-collected.Done():
 	case <-time.After(10 * time.Second):

@@ -1210,6 +1210,16 @@ articles or sparse regions.
    incomplete, so the last file of a download that finishes during the
    hand-off cannot leave the collected unpacker awaited without its volume
    (`TestHandOff_LastFileCompletingAtTheCollect_LeavesNoUnpackerAwaitedWithoutAVolume`).
+   `run()` does not exit when its queue empties: it waits for another set
+   until `Wait` or `Abort` ends the input, so a set whose volume 1 arrives
+   after the previous set settled is still extracted
+   (`TestDirectUnpack_SetAddedAfterTheQueueEmptiedIsExtracted`). `Wait`
+   declares that every volume has been added, which the awaited unpacker of a
+   finished download satisfies, and `Add` refuses a volume once the unpacker
+   has finished (`TestDirectUnpack_AddAfterWaitIsRefused`). `Wait` on an
+   unpacker whose `run()` never started records each queued set as failed,
+   "volume 1 never arrived", and closes `done`
+   (`TestDirectUnpack_WaitSettlesSetsWhoseFirstVolumeNeverArrived`).
 9. **Path traversal safety**: `extractEntries` opens an `os.Root` anchored at
    the set's staging directory and writes every entry through it, so archive
    entries with `..` components, absolute paths, or symlinked path components
