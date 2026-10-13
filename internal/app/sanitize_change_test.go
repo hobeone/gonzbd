@@ -1,10 +1,13 @@
 package app
 
 import (
+	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/unwanted"
 )
 
 // TestRecordedFileName_SurvivesASanitizeChange pins that a file's recorded
@@ -60,6 +63,74 @@ func TestRecordedFileName_SurvivesASanitizeChange(t *testing.T) {
 			t.Errorf("re-registered at %q, want the writer's %q", again.Path(), written)
 		}
 	})
+}
+
+// TestVerifyJobFiles_ARefusedRecordedNameIsAFault pins that a recorded name
+// jobFileLocation refuses is a verification fault on the retry path, even
+// when the job directory is missing — where an open would have read the file
+// as absent and dropped its rows.
+func TestVerifyJobFiles_ARefusedRecordedNameIsAFault(t *testing.T) {
+	t.Parallel()
+	application, _, _ := newLifecycleTestApp(t)
+	f := newVerifyFixture(t)
+	f.files[0].Filename = "../v.bin"
+	f.resolve = func(fn string) (jobFile, error) {
+		return application.pipeline.jobFileLocation("no such job", fn)
+	}
+	res, err := f.run(t, t.Context(), f.rows, true)
+	want, _ := application.pipeline.jobFileLocation("no such job", "../v.bin")
+	assertVerifyFault(t, res, err, want.Path())
+	if !errors.Is(err, fsutil.ErrNotOneComponent) {
+		t.Errorf("err = %v, want it to wrap ErrNotOneComponent", err)
+	}
+}
+
+// TestRegisterFile_ARefusedRecordedNameFailsTheRegistration pins that a
+// recorded name jobFileLocation refuses fails registerFile and caches
+// nothing, so no write is ever handed a path out of the job directory.
+func TestRegisterFile_ARefusedRecordedNameFailsTheRegistration(t *testing.T) {
+	t.Parallel()
+	for _, recorded := range []string{"../x.bin", "a/b.bin"} {
+		t.Run(recorded, func(t *testing.T) {
+			t.Parallel()
+			application, j := newDurabilityTestApp(t, 1, 1)
+			p := application.pipeline
+			if err := j.RecordFileFilename(0, j.Name(), recorded); err != nil {
+				t.Fatalf("RecordFileFilename: %v", err)
+			}
+			if err := p.registerFile(j, 0); !errors.Is(err, fsutil.ErrNotOneComponent) {
+				t.Errorf("registerFile = %v, want an error wrapping ErrNotOneComponent", err)
+			}
+			if info, err := p.resolveFileInfo(j.ID(), 0); err == nil {
+				t.Errorf("registerFile cached %q for a refused name", info.Path())
+			}
+		})
+	}
+}
+
+// TestPeek_ARefusedRecordedNameIsNotOpened pins that the peek of a file the
+// verifier finished skips a recorded name jobFileLocation refuses rather than
+// opening it: here "../outside.rar" names a flagged archive beside the job
+// directory, which would block the job if it were read.
+func TestPeek_ARefusedRecordedNameIsNotOpened(t *testing.T) {
+	t.Parallel()
+	data := unpackFixture(t, "single_rar5.rar")
+	a := newPeekApp(t, unwanted.ActionPause, onlyTxt, false, []peekFile{{"release.part1.rar", data}})
+	dir := filepath.Join(a.config.GetGeneral().DownloadDir, a.j.Name())
+	if err := os.Rename(filepath.Join(dir, "release.part1.rar"), filepath.Join(dir, "..", "outside.rar")); err != nil {
+		t.Fatal(err)
+	}
+	a.pipeline.forgetFile(a.j.ID(), 0) // as for a file finished at hydration
+	if err := a.j.RecordFileFilename(0, a.j.Name(), "../outside.rar"); err != nil {
+		t.Fatalf("RecordFileFilename: %v", err)
+	}
+
+	if msg := a.peekResumedFile(a.j, 0); msg != "" {
+		t.Errorf("peek = %q, want no message", msg)
+	}
+	if got := a.state(t); got != unwanted.StateNone {
+		t.Errorf("Unwanted = %d, want none: the peek read an archive outside the job directory", got)
+	}
 }
 
 // TestReloadDownloadOptions_NamesNewFilesWithTheNewSanitizeOptions pins that

@@ -24,3 +24,34 @@ file internal/app/verify.go
 --- replace
 	return loc, nil
 --- end
+
+[the verifier ignores a name the resolver refuses]
+file internal/app/verify.go
+run ^TestVerifyJobFiles_ARefusedRecordedNameIsAFault$
+--- anchor
+		loc, err := locate(f.Filename)
+		path := loc.Path()
+		if err != nil {
+--- replace
+		loc, err := locate(f.Filename)
+		path := loc.Path()
+		if false && err != nil {
+--- end
+
+[registerFile ignores a recorded name the resolver refuses]
+file internal/app/pipeline.go
+run ^TestRegisterFile_ARefusedRecordedNameFailsTheRegistration$
+--- anchor
+		if loc, err = p.jobFileLocation(name, filename); err != nil {
+--- replace
+		if loc, err = p.jobFileLocation(name, filename); false && err != nil {
+--- end
+
+[the archive peek opens a recorded name the resolver refuses]
+file internal/app/archive_peek.go
+run ^TestPeek_ARefusedRecordedNameIsNotOpened$
+--- anchor
+		if loc, err := app.pipeline.jobFileLocation(j.Name(), name); err == nil {
+--- replace
+		if loc, err := app.pipeline.jobFileLocation(j.Name(), name); err == nil || true {
+--- end
