@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"github.com/hobeone/gonzbd/internal/dispatch"
+	"github.com/hobeone/gonzbd/internal/job"
 )
 
 // Store persists the dispatcher's queue in the dispatch_jobs table.
@@ -80,7 +81,13 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 		// can fail; if id is NULL (SQLite allows NULL in a TEXT PRIMARY KEY
 		// column declared without NOT NULL), Scan fails on column 0 with p.ID
 		// left empty.
+		//
+		// Unlike the other columns, pp is not scanned straight into its field:
+		// job.PP has no exported field to scan into, so it is read into an int
+		// and built by job.ClampPP, which saturates a level outside [0,3] as
+		// every other path that builds a PP does.
 		var p dispatch.Persisted
+		var pp int
 		if err := rows.Scan(
 			&p.ID, &p.SortKey,
 			&p.Header.Name, &p.Header.Category, &p.Header.Priority, &p.Header.Bytes,
@@ -90,13 +97,14 @@ func (s *Store) Load(ctx context.Context) ([]dispatch.Persisted, error) {
 			&p.Header.Filename, &p.Header.IngestAnomaly, &p.Header.FailReason,
 			&p.Header.DuplicateReason, &p.Header.OperationalError,
 			&p.Header.Script, &p.Header.Password,
-			&p.Header.PP, &p.Header.NZBBackup, &p.Header.URL, &p.Header.MD5,
+			&pp, &p.Header.NZBBackup, &p.Header.URL, &p.Header.MD5,
 			&p.Header.Added, &p.DownloadStarted, &p.DownloadFinished, &p.Par2ReleaseReason,
 			&p.RecoveryBytes, &p.Par2Recovered, &p.Header.Unwanted,
 		); err != nil {
 			s.log.Error("dispatch/store: load scan failed", "job_id", p.ID, "err", err)
 			continue
 		}
+		p.Header.PP = job.ClampPP(pp)
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -144,7 +152,7 @@ func (s *Store) Save(ctx context.Context, p dispatch.Persisted) error {
 		p.Header.Filename, p.Header.IngestAnomaly, p.Header.FailReason,
 		p.Header.DuplicateReason, p.Header.OperationalError,
 		p.Header.Script, p.Header.Password,
-		p.Header.PP, p.Header.NZBBackup, p.Header.URL, p.Header.MD5,
+		p.Header.PP.Int(), p.Header.NZBBackup, p.Header.URL, p.Header.MD5,
 		p.Header.Added, p.DownloadStarted, p.DownloadFinished, p.Par2ReleaseReason,
 		p.RecoveryBytes, p.Par2Recovered, p.Header.Unwanted,
 	)

@@ -54,7 +54,10 @@ PP 0–3 is a cumulative integer mask inherited from upstream, and it is the sam
 *kind* of thing as upstream's status strings: external vocabulary, translated
 at the boundary and never stored internally. **The integer does not exist past
 `App`.** `PolicyFromPP` saturates at both ends without an explicit clamp,
-because each field's `>=` comparison already does.
+because each field's `>=` comparison already does. Where the level itself is
+held — `dispatch.Header.PP` and the queue row's `pp` column — it is a `job.PP`
+(`internal/job/pp.go`), which cannot hold a level outside `[0,3]`: `ClampPP`
+saturates one into it, and `PP.Policy` translates the level.
 
 **Every state runs at every policy.** At `Verify: false` the Assessor returns
 `Complete` without doing work and the job crosses the boundary immediately.
@@ -833,11 +836,13 @@ and since priority is persisted with the header it survives a restart.
 
 The sort is numeric, so `RepairPriority` (3) ranks ahead of Force. A header
 holds a concrete priority (`constants.Priority.IsConcrete`: Repair, Force,
-High, Normal, Low). Restore aside, its two writers each refuse anything
-else: `SetPriority` (`e.h.Priority =`), and ingest's header literal in
-`internal/app/ingest.go`, which stores what `config.ResolvePriority`
-returns — and that answers an error for a request that is neither concrete,
-Default nor Paused.
+High, Normal, Low). Its two writers, `register` (the whole header, for `Add`
+and restore) and `SetPriority` (`e.h.Priority =`), both refuse anything else
+through `checkPriority` (`internal/dispatch/registry.go`), and the field is a
+`constants.Priority`, so nothing outside int8 reaches it. Ingest's header
+literal in `internal/app/ingest.go` stores what `config.ResolvePriority`
+returns, which is concrete for every request it does not answer with an
+error.
 
 `PausedPriority` (-2) and `DefaultPriority` (-100) are requests.
 Default resolves through the job's category, then the Default/`*` category,

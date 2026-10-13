@@ -50,9 +50,9 @@ file internal/api/queue.go
 			return err
 		}
 	}
-	return s.dispatcher.SetPriority(id, int(pri))
+	return s.dispatcher.SetPriority(id, pri)
 --- replace
-	if err := s.dispatcher.SetPriority(id, int(pri)); err != nil {
+	if err := s.dispatcher.SetPriority(id, pri); err != nil {
 		return err
 	}
 	if pause {
@@ -66,9 +66,9 @@ file internal/api/queue.go
 [applyPriority ignores SetPriority's error]
 file internal/api/queue.go
 --- anchor
-	return s.dispatcher.SetPriority(id, int(pri))
+	return s.dispatcher.SetPriority(id, pri)
 --- replace
-	_ = s.dispatcher.SetPriority(id, int(pri))
+	_ = s.dispatcher.SetPriority(id, pri)
 	return nil
 --- end
 

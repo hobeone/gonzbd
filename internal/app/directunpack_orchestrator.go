@@ -61,7 +61,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	}
 	// Skip DU for jobs that don't want unpacking (PP < 2) or have a password
 	// (DU would fail on the password and fall back anyway).
-	if row.Header.PP < 2 || row.Header.Password != "" {
+	if row.Header.PP.Int() < 2 || row.Header.Password != "" {
 		return
 	}
 	m, mErr := j.Manifest()

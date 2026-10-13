@@ -109,7 +109,7 @@ func (w *testQueueWrapper) SetName(id, name string) error {
 }
 
 func (w *testQueueWrapper) SetPP(id string, pp int) error {
-	return w.disp.SetPP(id, pp)
+	return w.disp.SetPP(id, job.ClampPP(pp))
 }
 
 func (w *testQueueWrapper) SetStatus(id string, status constants.Status) error {
@@ -176,8 +176,8 @@ func (w *testQueueWrapper) SnapshotJob(id string) *testJobSnapshot {
 		ID:       id,
 		Name:     row.Header.Name,
 		Category: row.Header.Category,
-		Priority: constants.Priority(row.Header.Priority),
-		PP:       row.Header.PP,
+		Priority: row.Header.Priority,
+		PP:       row.Header.PP.Int(),
 		Script:   row.Header.Script,
 		Status:   row.Status(),
 	}
@@ -1765,14 +1765,33 @@ func TestQueueChangeOpts_MissingValue2(t *testing.T) {
 	}
 }
 
-func TestQueueChangeOpts_InvalidPP(t *testing.T) {
+func TestQueueChangeOpts_NegativePP(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb"})
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb", PP: 2})
 	rr := apiGet(t, s.Handler(),
-		"/api?mode=queue&name=change_opts&value="+job.ID+"&value2=5&apikey="+testAPIKey)
+		"/api?mode=queue&name=change_opts&value="+job.ID+"&value2=-1&apikey="+testAPIKey)
 	if rr.Code != http.StatusBadRequest {
-		t.Errorf("status = %d; want 400 for out-of-range PP", rr.Code)
+		t.Errorf("status = %d; want 400 for a negative PP", rr.Code)
+	}
+	if got := q.SnapshotJob(job.ID); got == nil || got.PP != 2 {
+		t.Errorf("SnapshotJob(%s) = %+v; want PP 2, unchanged", job.ID, got)
+	}
+}
+
+// TestQueueChangeOpts_SaturatesAboveThree pins docs/sabnzbd_spec.md §8.2: a
+// pp above 3, such as the SABnzbd-style 7, runs as 3 rather than being refused.
+func TestQueueChangeOpts_SaturatesAboveThree(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	job := addTestJob(t, q, testAddOptions{Filename: "job.nzb", PP: 1})
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=change_opts&value="+job.ID+"&value2=7&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	if got := q.SnapshotJob(job.ID); got == nil || got.PP != 3 {
+		t.Errorf("SnapshotJob(%s) = %+v; want PP 3", job.ID, got)
 	}
 }
 
@@ -2884,7 +2903,7 @@ func TestBuildSlot_MapsJobFields(t *testing.T) {
 			Name:             "large.file",
 			Filename:         "large.file.nzb",
 			Bytes:            m.TotalBytes(),
-			PP:               3,
+			PP:               job.ClampPP(3),
 			Password:         "hunter2",
 			Script:           "post.py",
 			IngestAnomaly:    "1 empty message-id",

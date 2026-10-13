@@ -40,9 +40,9 @@ all lower levels:
 | `2` | + **Unpack** — extract RAR, 7z, and split archives, and delete extracted archives when `enable_rar_cleanup` is enabled (implies repair and par2 cleanup) |
 | `3` | + **Delete** — same stages as `2` in GoNZBD (archive deletion is governed by `enable_rar_cleanup` inside `unpack`) |
 
-Values outside `[0, 3]` are clamped: anything ≥ 3 is treated as 3. A
-category's `pp` in the config file is not clamped: a value outside `[0, 3]`,
-such as the SABnzbd bitmask value `pp: 7`, is refused when the config loads.
+A `pp` above 3 passed to the API (an add or `change_opts`) is treated as 3. A
+category's `pp` in the config file is not: a value outside `[0, 3]`, such as
+the SABnzbd bitmask value `pp: 7`, is refused when the config loads.
 
 Your script receives this value as `SAB_PP` and can use it to adjust its own
 post-processing behavior based on the requested level.

@@ -612,7 +612,7 @@ func TestDispatcher_Mutators(t *testing.T) {
 		func() error { return d.SetPriority("unknown", 1) },
 		func() error { return d.SetName("unknown", "n") },
 		func() error { return d.SetCategory("unknown", "c") },
-		func() error { return d.SetPP("unknown", 2) },
+		func() error { return d.SetPP("unknown", job.ClampPP(2)) },
 		func() error { return d.SetScript("unknown", "s") },
 	} {
 		if err := fn(); err == nil {
@@ -633,7 +633,7 @@ func TestDispatcher_Mutators(t *testing.T) {
 		t.Fatalf("SetCategory: %v", err)
 	}
 	// PP
-	if err := d.SetPP("j1", 3); err != nil {
+	if err := d.SetPP("j1", job.ClampPP(3)); err != nil {
 		t.Fatalf("SetPP: %v", err)
 	}
 	// Script
@@ -654,8 +654,8 @@ func TestDispatcher_Mutators(t *testing.T) {
 	if row.Header.Category != "tv" {
 		t.Errorf("Category = %q, want 'tv'", row.Header.Category)
 	}
-	if row.Header.PP != 3 || !j.Policy().Delete {
-		t.Errorf("PP = %d, Policy = %+v, want PP 3 / Delete: true", row.Header.PP, j.Policy())
+	if row.Header.PP.Int() != 3 || !j.Policy().Delete {
+		t.Errorf("PP = %d, Policy = %+v, want PP 3 / Delete: true", row.Header.PP.Int(), j.Policy())
 	}
 	if row.Header.Script != "notify.sh" {
 		t.Errorf("Script = %q, want 'notify.sh'", row.Header.Script)
@@ -663,6 +663,29 @@ func TestDispatcher_Mutators(t *testing.T) {
 
 	if got := d.Len(); got != 1 {
 		t.Errorf("Len() = %d, want 1", got)
+	}
+}
+
+// TestAdd_RefusesANonConcretePriority pins that Add refuses the priorities
+// SetPriority refuses, so a caller that skipped config.ResolvePriority cannot
+// store a sentinel that sorts the job behind Low.
+func TestAdd_RefusesANonConcretePriority(t *testing.T) {
+	d := newTestDispatcher(t)
+	for i, p := range []constants.Priority{99, -3, constants.DefaultPriority, constants.PausedPriority, constants.StopPriority} {
+		id := fmt.Sprintf("j%d", i)
+		if err := d.Add(context.Background(), job.New(id, id, job.Policy{}), Header{Name: id, Priority: p}); err == nil {
+			t.Errorf("Add(priority %d) = nil, want error for a non-concrete priority", p)
+		}
+	}
+	if got := d.Len(); got != 0 {
+		t.Errorf("Len() after refusals = %d, want 0", got)
+	}
+
+	if err := d.Add(context.Background(), job.New("ok", "ok", job.Policy{}), Header{Name: "ok", Priority: constants.LowPriority}); err != nil {
+		t.Fatalf("Add(LowPriority): %v", err)
+	}
+	if row, _ := d.Row("ok"); row.Header.Priority != constants.LowPriority {
+		t.Errorf("Priority = %s, want Low", row.Header.Priority)
 	}
 }
 
@@ -676,23 +699,23 @@ func TestSetPriority_Validation(t *testing.T) {
 	// Each sentinel is refused, not only undefined values: a caller that
 	// skipped config.ResolvePriority would otherwise store a value that sorts
 	// the job behind Low.
-	for _, p := range []int{99, -3, int(constants.DefaultPriority), int(constants.PausedPriority), int(constants.StopPriority)} {
+	for _, p := range []constants.Priority{99, -3, constants.DefaultPriority, constants.PausedPriority, constants.StopPriority} {
 		if err := d.SetPriority("j1", p); err == nil {
 			t.Errorf("SetPriority(j1, %d) = nil, want error for a non-concrete priority", p)
 		}
 	}
-	if row, _ := d.Row("j1"); row.Header.Priority != int(constants.NormalPriority) {
+	if row, _ := d.Row("j1"); row.Header.Priority != constants.NormalPriority {
 		t.Errorf("Priority after refusals = %d, want %d, unchanged", row.Header.Priority, constants.NormalPriority)
 	}
 
-	if err := d.SetPriority("j1", int(constants.HighPriority)); err != nil {
+	if err := d.SetPriority("j1", constants.HighPriority); err != nil {
 		t.Fatalf("SetPriority(j1, HighPriority): %v", err)
 	}
 	row, ok := d.Row("j1")
 	if !ok {
 		t.Fatalf("Row(j1) not found")
 	}
-	if row.Header.Priority != int(constants.HighPriority) {
+	if row.Header.Priority != constants.HighPriority {
 		t.Errorf("Priority = %d, want %d", row.Header.Priority, constants.HighPriority)
 	}
 }

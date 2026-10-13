@@ -8,7 +8,7 @@ run TestBuildIngestJob_PolicyMatchesPolicyFromPP$
 [BuildIngestJob stops using the canonical job.PolicyFromPP translator]
 file internal/app/ingest.go
 --- anchor
-	j := job.New(id, name, job.PolicyFromPP(pp))
+	j := job.New(id, name, pp.Policy())
 --- replace
-	j := job.New(id, name, job.Policy{Repair: pp >= types.PPRepair, Unpack: pp >= types.PPUnpack, Delete: pp >= types.PPDelete})
+	j := job.New(id, name, job.Policy{Repair: pp.Int() >= types.PPRepair, Unpack: pp.Int() >= types.PPUnpack, Delete: pp.Int() >= types.PPDelete})
 --- end

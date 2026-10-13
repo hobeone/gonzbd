@@ -65,7 +65,7 @@ type Header struct {
 	Name     string
 	Filename string
 	Category string
-	Priority int
+	Priority constants.Priority
 	Bytes    int64
 
 	// IngestAnomaly summarizes NZB segments the parser discarded as unusable
@@ -113,7 +113,7 @@ type Header struct {
 
 	Script    string
 	Password  string
-	PP        int
+	PP        job.PP
 	NZBBackup string
 	URL       string
 	MD5       string
@@ -161,6 +161,7 @@ type entry struct {
 //
 // The stored queue must already be restored — by Restore, or by Start, which
 // restores first when Restore has not run — or Add returns ErrNotRestored.
+// register refuses a Header.Priority a job cannot hold (checkPriority).
 //
 // A duplicate ID is an error rather than an overwrite: the registry is the only
 // route by which a job's resources are returned, so replacing an entry would
@@ -268,6 +269,9 @@ const seqNext int64 = -1
 // restore skips a row Loaded from dispatch_jobs on a reconstruct or register
 // error and leaves it in dispatch_jobs.
 func (d *Dispatcher) register(j *job.Job, h Header, seq int64) error {
+	if err := checkPriority(h.Priority); err != nil {
+		return fmt.Errorf("dispatch: register %s: %w", j.ID(), err)
+	}
 	d.mu.Lock()
 	if _, dup := d.byID[j.ID()]; dup {
 		d.mu.Unlock()
@@ -1058,16 +1062,31 @@ func (d *Dispatcher) SetOperationalError(id, msg string) error {
 	return nil
 }
 
+// checkPriority refuses a priority a job cannot hold
+// (constants.Priority.IsConcrete): Default and Paused are requests
+// config.ResolvePriority resolves before a caller gets here, and Stop and
+// undefined values are not priorities at all. Stored, any of them would sort
+// the job behind Low.
+//
+// Header.Priority has two writers, register (the whole Header, for Add and
+// restore) and SetPriority, and both call this:
+// `git grep -n 'checkPriority(' -- 'internal/dispatch/*.go' ':!*_test.go'`
+// returns 4 lines: this comment, the declaration and those two calls.
+func checkPriority(p constants.Priority) error {
+	if !p.IsConcrete() {
+		return fmt.Errorf("%d is not a concrete priority", p)
+	}
+	return nil
+}
+
 // SetPriority sets the priority for a registered job and kicks the scheduler.
 // The next tick walks the job at its new place in dispatch order:
 // dispatchOrderLocked reads Header.Priority at each walk.
 //
-// It refuses a priority a job cannot hold (constants.Priority.IsConcrete):
-// Default and Paused are requests config.ResolvePriority resolves before a
-// caller gets here, and Stop and undefined values are not priorities at all.
-func (d *Dispatcher) SetPriority(id string, priority int) error {
-	if priority < -128 || priority > 127 || !constants.Priority(int8(priority)).IsConcrete() { //nolint:gosec // G115: priority fits in int8
-		return fmt.Errorf("dispatch: set priority %s: %d is not a concrete priority", id, priority)
+// It refuses a priority a job cannot hold (checkPriority).
+func (d *Dispatcher) SetPriority(id string, priority constants.Priority) error {
+	if err := checkPriority(priority); err != nil {
+		return fmt.Errorf("dispatch: set priority %s: %w", id, err)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -1261,8 +1280,9 @@ func (d *Dispatcher) SetCategory(id, category string) error {
 	return nil
 }
 
-// SetPP sets the post-processing level for a registered job.
-func (d *Dispatcher) SetPP(id string, pp int) error {
+// SetPP sets the post-processing level for a registered job, and the policy it
+// translates to. job.PP holds the level's range, so there is nothing to refuse.
+func (d *Dispatcher) SetPP(id string, pp job.PP) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	e, ok := d.byID[id]
@@ -1270,7 +1290,7 @@ func (d *Dispatcher) SetPP(id string, pp int) error {
 		return fmt.Errorf("dispatch: set pp %s: %w", id, ErrNotFound)
 	}
 	e.h.PP = pp
-	e.j.SetPolicy(job.PolicyFromPP(pp))
+	e.j.SetPolicy(pp.Policy())
 	return nil
 }
 

@@ -89,7 +89,7 @@ func TestCompleteFinalizedFile_FeedsTheLastVolumeBeforeReportingTheDownload(t *t
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	hdr.PP = 3
+	hdr.PP = job.ClampPP(3)
 	if err := j.BeginAttempt(time.Now()); err != nil {
 		t.Fatalf("BeginAttempt: %v", err)
 	}

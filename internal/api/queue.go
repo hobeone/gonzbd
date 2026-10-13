@@ -525,7 +525,7 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		Name:              r.Header.Name,
 		Category:          r.Header.Category,
 		Index:             index,
-		Priority:          constants.Priority(int8(r.Header.Priority)).String(), //nolint:gosec // G115: priority values fit in int8
+		Priority:          r.Header.Priority.String(),
 		Status:            string(displayStatus),
 		Script:            nonEmpty(r.Header.Script, "none"),
 		Password:          r.Header.Password,
@@ -538,7 +538,7 @@ func buildSlot(r dispatch.Row, j *job.Job, paused bool, speed float64, index int
 		Percentage:        pct,
 		Timeleft:          timeleft,
 		ETA:               etaStr,
-		PP:                strconv.Itoa(r.Header.PP),
+		PP:                strconv.Itoa(r.Header.PP.Int()),
 		IngestAnomaly:     r.Header.IngestAnomaly,
 		FailReason:        r.Header.FailReason,
 		DuplicateReason:   r.Header.DuplicateReason,
@@ -919,7 +919,7 @@ func (s *Server) queuePriority(w http.ResponseWriter, r *http.Request) {
 	}
 	row, _ = s.dispatcher.Row(nzoID)
 	s.log.Info("job priority changed", "job", nzoID, "requested", requested.String(),
-		"priority", constants.Priority(int8(row.Header.Priority)).String()) //nolint:gosec // G115: SetPriority stores only int8 priorities
+		"priority", row.Header.Priority.String())
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":   true,
 		"nzo_ids":  []string{nzoID},
@@ -955,7 +955,7 @@ func (s *Server) applyPriority(id, category string, requested constants.Priority
 			return err
 		}
 	}
-	return s.dispatcher.SetPriority(id, int(pri))
+	return s.dispatcher.SetPriority(id, pri)
 }
 
 // listingPosition is the job's index in the unfiltered queue listing
@@ -975,11 +975,14 @@ func (s *Server) queueChangeOpts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireParam(w, r, "value2", "pp level"); !ok {
 		return
 	}
-	pp := intParam(r, "value2")
-	if pp < 0 || pp > 3 {
-		s.respondError(w, http.StatusBadRequest, fmt.Sprintf("pp must be 0-3, got %d", pp))
+	// A negative level is refused, as SABnzbd's change_opts refuses one; a
+	// level above 3 runs as 3 (docs/sabnzbd_spec.md §8.2).
+	level := intParam(r, "value2")
+	if level < 0 {
+		s.respondError(w, http.StatusBadRequest, fmt.Sprintf("pp must not be negative, got %d", level))
 		return
 	}
+	pp := job.ClampPP(level)
 	var err error
 	if s.dispatcher != nil {
 		err = s.dispatcher.SetPP(nzoID, pp)
@@ -991,7 +994,7 @@ func (s *Server) queueChangeOpts(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	s.log.Info("job PP changed", "job", nzoID, "pp", pp)
+	s.log.Info("job PP changed", "job", nzoID, "pp", pp.Int())
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":  true,
 		"nzo_ids": []string{nzoID},
@@ -1029,7 +1032,7 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := errors.Join(
 			s.dispatcher.SetCategory(nzoID, cat),
-			s.dispatcher.SetPP(nzoID, resolvedCat.PP),
+			s.dispatcher.SetPP(nzoID, job.ClampPP(resolvedCat.PP)),
 			s.dispatcher.SetScript(nzoID, resolvedCat.Script),
 		); err != nil {
 			s.respondError(w, priorityErrorStatus(err), err.Error())
@@ -1037,7 +1040,7 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 		}
 		row, _ := s.dispatcher.Row(nzoID)
 		s.log.Info("job category changed", "job", nzoID,
-			"cat", row.Header.Category, "pp", row.Header.PP, "script", row.Header.Script, "priority", row.Header.Priority)
+			"cat", row.Header.Category, "pp", row.Header.PP.Int(), "script", row.Header.Script, "priority", row.Header.Priority)
 		respondJSON(w, http.StatusOK, map[string]any{
 			"status":  true,
 			"nzo_ids": []string{nzoID},

@@ -90,6 +90,24 @@ func TestBuildIngestJob_PolicyMatchesPolicyFromPP(t *testing.T) {
 	}
 }
 
+// TestBuildIngestJob_ClampsAnOutOfRangePP pins docs/sabnzbd_spec.md §8.2's
+// rule for an add's pp: a level outside [0,3] is saturated, so pp=7 runs as 3
+// and pp=-5 as 0, in the header and in the job's Policy alike.
+func TestBuildIngestJob_ClampsAnOutOfRangePP(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ in, want int }{{7, 3}, {4, 3}, {-5, 0}} {
+		j, hdr, err := BuildIngestJob(&config.Config{}, multiVolumeNZB(), "movie.nzb",
+			types.FetchOptions{PP: tc.in}, nil)
+		if err != nil {
+			t.Fatalf("BuildIngestJob(pp=%d): %v", tc.in, err)
+		}
+		if hdr.PP.Int() != tc.want || j.Policy() != job.PolicyFromPP(tc.want) {
+			t.Errorf("BuildIngestJob(pp=%d) = header PP %d, Policy %+v; want %d, %+v",
+				tc.in, hdr.PP.Int(), j.Policy(), tc.want, job.PolicyFromPP(tc.want))
+		}
+	}
+}
+
 // TestBuildIngestJob_CategoryPriorityInherit pins the bug fixed by this
 // consolidation: the one-shot CLI path previously passed a nil Categories
 // slice, so a custom Default category's Priority (and PP/Script) were
@@ -110,13 +128,13 @@ func TestBuildIngestJob_CategoryPriorityInherit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if hdr.PP != 1 {
-		t.Errorf("PP = %d, want 1 (from configured Default category)", hdr.PP)
+	if hdr.PP.Int() != 1 {
+		t.Errorf("PP = %d, want 1 (from configured Default category)", hdr.PP.Int())
 	}
 	if hdr.Script != "custom.sh" {
 		t.Errorf("Script = %q, want %q (from configured Default category)", hdr.Script, "custom.sh")
 	}
-	if hdr.Priority != int(constants.HighPriority) {
+	if hdr.Priority != constants.HighPriority {
 		t.Errorf("Priority = %d, want %d (from configured Default category)", hdr.Priority, constants.HighPriority)
 	}
 }
@@ -153,7 +171,7 @@ func TestBuildIngestJob_CategoryDefaultPriorityResolves(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildIngestJob: %v", err)
 			}
-			if hdr.Priority != int(tc.want) {
+			if hdr.Priority != tc.want {
 				t.Errorf("Priority = %d, want %d", hdr.Priority, tc.want)
 			}
 		})
@@ -190,8 +208,8 @@ func TestBuildIngestJob_NilConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if hdr.PP != 3 {
-		t.Errorf("PP = %d, want 3 (builtin default category fallback)", hdr.PP)
+	if hdr.PP.Int() != 3 {
+		t.Errorf("PP = %d, want 3 (builtin default category fallback)", hdr.PP.Int())
 	}
 }
 
@@ -228,7 +246,7 @@ func TestBuildIngestJob_PausedPriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildIngestJob: %v", err)
 	}
-	if hdr.Priority != int(constants.HighPriority) {
+	if hdr.Priority != constants.HighPriority {
 		t.Errorf("Priority = %v, want %v (tv's)", hdr.Priority, constants.HighPriority)
 	}
 	if j.Intent() != job.IntentPause {

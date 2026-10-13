@@ -94,7 +94,7 @@ func TestStore_AllHeaderFieldsAndTimestampsSurviveRoundTrip(t *testing.T) {
 			OperationalError: "failed to remove finalized job from queue",
 			Script:           "notify.sh",
 			Password:         "secret123",
-			PP:               3,
+			PP:               job.ClampPP(3),
 			NZBBackup:        "/backup/ubuntu.iso.nzb.gz",
 			URL:              "https://index.example.com/nzb/123",
 			MD5:              "0123456789abcdef0123456789abcdef",
@@ -385,6 +385,39 @@ func TestStore_LoadRejectsAnOutOfRangeEnum(t *testing.T) {
 	}
 	if exists, err := s.Has(t.Context(), "absent"); err != nil || exists {
 		t.Errorf("Has(\"absent\") = (%v, %v), want (false, nil)", exists, err)
+	}
+}
+
+// TestStore_LoadSaturatesAnOutOfRangePP pins that a pp column outside [0,3]
+// is built by job.ClampPP, so the row restores at the nearest level, as every
+// other path that builds a PP would have it.
+func TestStore_LoadSaturatesAnOutOfRangePP(t *testing.T) {
+	_, raw := newTestStoreDB(t)
+	s := store.New(raw, nil)
+
+	for _, tc := range []struct {
+		id     string
+		stored int
+	}{{"high", 7}, {"low", -5}} {
+		if err := s.Save(t.Context(), dispatch.Persisted{ID: tc.id, Header: dispatch.Header{Name: tc.id, PP: job.ClampPP(1)}}); err != nil {
+			t.Fatalf("Save(%s): %v", tc.id, err)
+		}
+		if _, err := raw.ExecContext(t.Context(), `UPDATE dispatch_jobs SET pp = ? WHERE id = ?`, tc.stored, tc.id); err != nil {
+			t.Fatalf("writing pp %d: %v", tc.stored, err)
+		}
+	}
+	got, err := s.Load(t.Context())
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+	want := map[string]int{"high": 3, "low": 0}
+	if len(got) != len(want) {
+		t.Fatalf("Load() returned %d rows, want %d", len(got), len(want))
+	}
+	for _, p := range got {
+		if p.Header.PP.Int() != want[p.ID] {
+			t.Errorf("Load() row %s PP = %d, want %d", p.ID, p.Header.PP.Int(), want[p.ID])
+		}
 	}
 }
 
