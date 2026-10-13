@@ -1689,12 +1689,12 @@ func (app *Application) completeFinalizedFile(fc FileComplete) error {
 	// DirectUnpack is fed the volume before the file is marked complete,
 	// and so before the download-finished report below. From that report
 	// the tick can launch the job's post-processing, whose enqueuePostProc
-	// collects the unpacker and waits for its volumes: a feed after the
-	// collect finds the job admitted and starts no unpacker (maybeStart),
-	// so the collected one would wait for the volume and the wait would
-	// not end. enqueuePostProc reads the job complete only once every
-	// file is marked, so a feed ahead of the mark is one the collected
-	// unpacker has.
+	// collects the unpacker and waits for it: a feed after the collect
+	// finds the job admitted and starts no unpacker (maybeStart), so the
+	// collected one would fail the volume's set as never arrived.
+	// enqueuePostProc reads the job complete only once every file is
+	// marked, so a feed ahead of the mark is one the collected unpacker
+	// has.
 	//
 	// A resumed completion is not fed: see FileComplete.Resumed.
 	if pp := app.config.GetPostProc(); pp.DirectUnpack && pp.EnableUnrar && !fc.Resumed {
@@ -2177,8 +2177,8 @@ type directUnpackWaiter interface {
 // This exists because a du handed to the async completion goroutine has already
 // been removed from the orchestrator's unpackers map (via duOrch.collect), so
 // neither Shutdown()'s abortAll nor RemoveJob's duOrch.abortJob can reach it;
-// without this, a du.Wait() that blocks forever would hang app.wg.Wait() during
-// shutdown, and hold a removed job's admission until then.
+// without this, a du.Wait() blocked in a long extraction would hold
+// app.wg.Wait() during shutdown, and a removed job's admission until it ends.
 func awaitDirectUnpackOrAbort(ctx context.Context, removed <-chan struct{}, du directUnpackWaiter) bool {
 	waited := make(chan struct{})
 	go func() {
@@ -2277,15 +2277,18 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 
 	// A job handed over before its download finished (Fail, a hopeless
 	// callback) gets no more files: the downloader skips an admitted job. Its
-	// unpacker would wait for a volume that never arrives, so it is aborted
-	// rather than awaited. Read after the admission, which is what stops the
-	// download, and before the pipeline.forgetJob and the duOrch.collect
-	// below. completeFinalizedFile feeds a volume before it marks the file
-	// complete, so a job that reads complete here has had every volume fed,
-	// each feed having resolved its path before forgetJob drops the paths,
-	// and the collect takes the unpacker that has them: maybeStart starts no
-	// unpacker for an admitted job. A file that completes after this read
-	// leaves the job reading incomplete, and its unpacker is aborted.
+	// unpacker is aborted rather than awaited, so extraction stops at once
+	// rather than finishing a set of a download that did not finish. Read
+	// after the admission, which is what stops the download, and before the
+	// pipeline.forgetJob and the duOrch.collect below. completeFinalizedFile
+	// feeds a volume before it marks the file complete, so a job that reads
+	// complete here has had every feed it will get, each feed having resolved
+	// its path before forgetJob drops the paths, and the collect takes the
+	// unpacker that has them: maybeStart starts no unpacker for an admitted
+	// job. A file that completes after this read leaves the job reading
+	// incomplete, and its unpacker is aborted. An awaited unpacker missing a
+	// volume, one completeFinalizedFile or maybeStart did not feed, fails
+	// that volume's set rather than waiting for it (Wait).
 	downloadFinished := j.IsComplete()
 
 	// Close any open assembler file handles for this job so post-processing
@@ -2477,9 +2480,9 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 		app.wg.Go(func() {
 			// du has already been removed from the orchestrator's unpackers map
 			// above (via duOrch.collect), so neither Shutdown()'s abortAll nor
-			// RemoveJob's duOrch.abortJob can reach it. du.Wait() can
-			// block indefinitely (e.g. waiting on a RAR volume that never
-			// arrives), which would hang Shutdown() at app.wg.Wait(). Watch the
+			// RemoveJob's duOrch.abortJob can reach it. du.Wait() blocks
+			// for as long as a set's extraction runs, which would hold
+			// Shutdown() at app.wg.Wait(). Watch the
 			// lifecycle context and the admission's removal, and Abort() the du
 			// on either so Wait() returns; skip dispatch on the first, since we
 			// are tearing down. The wait step ends only once du has stopped, so

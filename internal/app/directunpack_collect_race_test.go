@@ -130,8 +130,8 @@ func completeFile(t *testing.T, application *Application, id string, i int) {
 // hopeless callback) reads whether the download finished and collects the
 // job's DirectUnpacker, and the completion of the job's last file can land
 // between the two. The unpacker the hand-off collected must then either have
-// every volume or be aborted: one awaited with a volume missing never
-// finishes, and holds the job's admission until removal or shutdown.
+// every volume or be aborted: one awaited with a volume missing fails its set
+// for that volume, though the volume is on disk.
 func TestHandOff_LastFileCompletingAtTheCollect_LeavesNoUnpackerAwaitedWithoutAVolume(t *testing.T) {
 	t.Parallel()
 	application, j := fetchingRarApp(t)
