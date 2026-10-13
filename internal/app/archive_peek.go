@@ -140,7 +140,9 @@ func (app *Application) peekArchiveForUnwanted(j *job.Job, fc FileComplete) stri
 	if info, err := app.pipeline.resolveFileInfo(jobID, fc.FileIdx); err == nil {
 		path = info.Path()
 	} else if name := p.FileFilename(fc.FileIdx); name != "" {
-		path = app.pipeline.jobFilePath(j.Name(), name)
+		if loc, err := app.pipeline.jobFileLocation(j.Name(), name); err == nil {
+			path = loc.Path()
+		}
 	}
 	if path == "" {
 		return ""

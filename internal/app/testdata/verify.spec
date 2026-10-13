@@ -182,9 +182,10 @@ run ^TestVerifyJobFiles_Outcomes$
 file internal/app/verify.go
 run ^TestVerifyJobFiles_OpensTheResolversPath$
 --- anchor
-		loc := locate(f.Filename)
+		loc, err := locate(f.Filename)
 --- replace
-		loc := jobFile{Dir: locate("x").Dir, Name: f.Filename}
+		loc, err := locate("x")
+		loc.Name = f.Filename
 --- end
 
 [(p) a file with no rows is read back]

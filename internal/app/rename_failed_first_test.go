@@ -71,7 +71,7 @@ func TestInstallVerification_FilenameWithoutRowsMarksBegun(t *testing.T) {
 	files := []durability.FileRow{{FileIndex: 0, Filename: "file0.rar"}, {FileIndex: 1}}
 	dir := t.TempDir()
 	res, err := verifyJobFiles(t.Context(), m, files, nil,
-		func(name string) jobFile { return jobFile{Dir: dir, Name: name} }, false)
+		in(dir), false)
 	if err != nil {
 		t.Fatalf("verifyJobFiles: %v", err)
 	}

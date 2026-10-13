@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run Test(ReadBackFile_RefusesASymlinkOutOfTheJobDirectory|ReadBackFile_RefusesANameThatClimbsOutOfTheJobDirectory|ReadBackFile_AMissingFileInAnExistingDirectoryIsGone|VerifyJobFiles_SymlinkOutOfTheJobDirectoryIsAFault|FinishFileByPath_RefusesASymlinkOutOfTheJobDirectory|JobFileLocation_AgreesWithTheWritersJoin|VerifyJobFiles_LinkToASiblingIsAFault|FinishFileByPath_RefusesALinkToASibling|VerifierOpens_CloseTheirRoots)$
+run Test(ReadBackFile_RefusesASymlinkOutOfTheJobDirectory|ReadBackFile_RefusesANameThatClimbsOutOfTheJobDirectory|ReadBackFile_AMissingFileInAnExistingDirectoryIsGone|VerifyJobFiles_SymlinkOutOfTheJobDirectoryIsAFault|FinishFileByPath_RefusesASymlinkOutOfTheJobDirectory|NewJobFileLocation_AgreesWithTheWritersJoin|VerifyJobFiles_LinkToASiblingIsAFault|FinishFileByPath_RefusesALinkToASibling|VerifierOpens_CloseTheirRoots)$
 
 [the read-back leaves its root open]
 file internal/app/verify.go
@@ -53,12 +53,12 @@ file internal/app/verify.go
 		return fileReadback{deleteAll: true}, nil // inside a directory held open, so one that exists
 --- end
 
-[the resolver does not sanitize the name as the writer does]
+[a new file's name is not sanitized as the writer's join does]
 file internal/app/verify.go
 --- anchor
-	return jobFile{Dir: jobDir, Name: fsutil.SanitizeFilename(filename, sanitize)}
+	loc := jobFile{Dir: jobDir, Name: fsutil.SanitizeFilename(subject, sanitize)}
 --- replace
-	return jobFile{Dir: jobDir, Name: fsutil.SanitizeFilename(filepath.Base(filename), sanitize)}
+	loc := jobFile{Dir: jobDir, Name: fsutil.SanitizeFilename(filepath.Base(subject), sanitize)}
 --- end
 
 [the read-back follows a link inside the job directory]
