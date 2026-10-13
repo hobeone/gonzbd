@@ -524,8 +524,11 @@ func TestGoSevenZipInternal_Direct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("goSevenZipInternal() error: %v", err)
 	}
-	if len(res.ExtractedFiles) == 0 {
-		t.Fatal("goSevenZipInternal() extracted no files")
+	if !strings.Contains(res.Output, "Extracting  ") {
+		t.Fatalf("goSevenZipInternal() Output = %q, want an Extracting line", res.Output)
+	}
+	if got := dirTree(t, outDir); len(got) == 0 {
+		t.Fatal("goSevenZipInternal() wrote nothing into the directory it was given")
 	}
 }
 
@@ -704,8 +707,8 @@ func TestBoundReader_Direct(t *testing.T) {
 
 // TestExtractSevenZipFile_ChecksumMismatchNeverPublishes is the regression
 // guard for issue #82 at the level closest to the bug: it calls
-// extractSevenZipFile directly (bypassing goSevenZipInternal's own
-// cleanupPartialFiles safety net) with a tampered CRC32, and verifies the
+// extractSevenZipFile directly (bypassing GoSevenZip's staging directory,
+// which would discard a failed attempt's files) with a tampered CRC32, and verifies the
 // corrupt content never becomes visible at destPath in the first place --
 // not that it's cleaned up afterward, but that the CRC check gates
 // publishing before any rename occurs.

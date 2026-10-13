@@ -24,7 +24,7 @@ type Options struct {
 	// attempt as an explicit function parameter. The *WithPasswords
 	// wrappers (via withPasswords) iterate Passwords, calling the
 	// underlying extractor once per candidate. GoUnRAR (through
-	// GoUnRAREngine) also reads it: given an empty password parameter, it
+	// goUnRAREngine) also reads it: given an empty password parameter, it
 	// hands the whole of Passwords to rarengine (go_unrar.go's
 	// r.SetPasswords(opts.Passwords)).
 	Passwords []string
@@ -35,8 +35,8 @@ type Options struct {
 	// KeepOriginals controls whether the caller should delete the source Parts
 	// after a successful extraction.  The extractors do not read it and do
 	// not delete the source Parts; that deletion is the caller's
-	// responsibility. (They do remove their own staging directories, temp
-	// files, and the partial output of a failed attempt.)
+	// responsibility. (They do remove their own staging directories and
+	// temp files.)
 	KeepOriginals bool
 
 	// UnrarCommand overrides the unrar binary path. Empty defaults to "unrar".
@@ -44,19 +44,21 @@ type Options struct {
 	// SevenZipCommand overrides the 7z binary path. Empty uses auto-detection.
 	SevenZipCommand string
 	// OverwriteFiles controls what extraction does with a name that is
-	// already taken. true overwrites it, in every engine (-o+ for unrar, -aoa
-	// for 7z). false (the default) never overwrites, and what it does
-	// instead depends on OneFolder:
+	// already taken, by an earlier member inside the staging directory every
+	// extractor writes into, or by a file in outDir when the stage is
+	// published. true overwrites it, in every engine (-o+ for unrar, -aoa
+	// for 7z) and at publish. false (the default) never overwrites, and what
+	// it does instead depends on OneFolder:
 	//   - without OneFolder, the member is skipped and the existing file
 	//     kept: unrar is passed -o-, 7z -aos, the in-process engines
-	//     (GoUnRAR, GoSevenZip, GoTar) skip the write, and the publish of a
-	//     staged extraction skips the name;
+	//     (GoUnRAR, GoSevenZip, GoTar) skip the write, and the publish
+	//     skips the name;
 	//   - with OneFolder, the member is renamed rather than skipped: unrar is
 	//     passed -o- -or ("name(1).ext"), 7z -aou ("name_1.ext"), and the
-	//     in-process engines and the publish of a staged extraction use a
-	//     uniquePath "_N" name. The one exception is unrar with HasProblem
-	//     set, which is passed -o- alone and skips a member whose flattened
-	//     name an earlier member took.
+	//     in-process engines and the publish use a uniquePath "_N" name. The
+	//     one exception is unrar with HasProblem set, which is passed -o-
+	//     alone and skips a member whose flattened name an earlier member
+	//     took.
 	OverwriteFiles bool
 	// IgnoreUnrarDates discards in-archive modification timestamps and uses extraction time.
 	// Adds -tsm- to unrar arguments (matches SABnzbd's behavior).
@@ -156,12 +158,10 @@ type Result struct {
 	// Passwords are redacted.
 	CommandLine string
 	// ExtractedFiles lists the files the extraction put in the output
-	// directory. UnRAR and SevenZip list what publishStagedExtraction
-	// renamed out of the staging directory; GoSevenZip and GoTar diff
-	// snapshots of the output directory taken before and after; GoUnRAR
-	// lists what ExtractMember wrote. The paths are relative to the output
-	// directory, except from GoUnRAR and FileJoin, which list absolute
-	// paths.
+	// directory. Every archive extractor lists what publishStagedExtraction
+	// renamed out of its staging directory (extractInStage), relative to
+	// the output directory. FileJoin lists the absolute path of the joined
+	// file.
 	ExtractedFiles []string
 	// Output is the captured stdout+stderr of UnRAR's and SevenZip's
 	// subprocess; GoUnRAR, GoSevenZip and GoTar fill it with one
@@ -270,19 +270,28 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 		opts.OnCommand(cmdLine)
 	}
 
-	stageDir, err := prepareStageDir(outDir)
+	res, err := extractInStage(log, outDir, opts, func(stageDir string) (Result, error) {
+		execArgs := append(append([]string(nil), args...), archive.MainFile, stageDir+"/")
+		if password != "" {
+			execArgs[flagIdx] = "-p" + password
+		}
+		return runUnrar(ctx, log, archive, stageDir, bin, execArgs, opts)
+	})
+	res.CommandLine = cmdLine
 	if err != nil {
-		return Result{CommandLine: cmdLine, Err: err, Reason: FailUnknown, Engine: "unrar"}, err
+		res.Err = err
+		return res, err
 	}
-	defer removeStageDir(log, stageDir)
+	log.Info("unrar: extraction succeeded", "archive", archive.MainFile)
+	return res, nil
+}
 
-	execArgs := append(append([]string(nil), args...), archive.MainFile, stageDir+"/")
-	if password != "" {
-		execArgs[flagIdx] = "-p" + password
-	}
+// runUnrar runs one unrar invocation that extracts into stageDir, and reports
+// whether what it left there is to be published.
+func runUnrar(ctx context.Context, log *slog.Logger, archive Archive, stageDir, bin string, execArgs []string, opts Options) (Result, error) {
 	cmd, err := cmdutil.BuildSandboxedCommand(ctx, log, opts.CmdCfg, opts.Sandbox, bin, execArgs...) //nolint:gosec // args are caller-supplied, not shell-expanded
 	if err != nil {
-		return Result{CommandLine: cmdLine, Err: err, Reason: FailUnknown, Engine: "unrar"}, err
+		return Result{Reason: FailUnknown}, err
 	}
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
 	cmd.Stdout = streamer
@@ -291,76 +300,54 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 	runErr := cmd.Run()
 	streamer.Flush()
 
-	res := Result{
-		CommandLine: cmdLine,
-		Output:      streamer.String(),
+	res := Result{Output: streamer.String()}
+	if runErr == nil {
+		return res, nil
 	}
+	exitErr, ok := errors.AsType[*exec.ExitError](runErr)
+	if !ok {
+		log.Error("unrar: failed to start process",
+			"archive", archive.MainFile,
+			"err", runErr,
+		)
+		return res, fmt.Errorf("unrar: %w", runErr)
+	}
+	res.ExitCode = exitErr.ExitCode()
+	res.Reason = ClassifyUnrarOutput(res.Output)
 
-	if runErr != nil {
-		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
-			res.ExitCode = exitErr.ExitCode()
-			res.Reason = ClassifyUnrarOutput(res.Output)
-
-			// N4: When unrar prints "Cannot create" followed by
-			// "Attempting to correct the filename", it auto-fixes
-			// invalid filenames. In this case the extraction usually
-			// succeeds despite the non-zero exit code. Downgrade to
-			// a warning. Matches SABnzbd's handling in newsunpack.py.
-			//
-			// A stage that cannot be read cannot be checked for corrected
-			// files, so the extraction stays failed and the read error is
-			// reported with the exit status.
-			var snapErr error
-			if strings.Contains(res.Output, "Cannot create") &&
-				strings.Contains(res.Output, "Attempting to correct") {
-				var stageSnap map[string]struct{}
-				stageSnap, snapErr = snapshotDir(stageDir)
-				if snapErr == nil && len(stageSnap) > 0 {
-					published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
-					if pubErr != nil {
-						res.Err = fmt.Errorf("unrar: publish staged files: %w", pubErr)
-						return res, res.Err
-					}
-					res.ExtractedFiles = published
-					log.Warn("unrar: auto-corrected invalid filename(s)",
-						"archive", archive.MainFile,
-						"extractedCount", len(published),
-					)
-					// Clear the error — extraction succeeded with corrections.
-					res.Err = nil
-					res.ExitCode = 0
-					return res, nil
-				}
-			}
-			res.Err = fmt.Errorf("unrar exited %d (%s): %w", res.ExitCode, res.Reason, runErr)
-			if snapErr != nil {
-				res.Err = errors.Join(res.Err, fmt.Errorf("unrar: read staged files: %w", snapErr))
-			}
-			log.Error("unrar: extraction failed",
+	// N4: When unrar prints "Cannot create" followed by "Attempting to
+	// correct the filename", it auto-fixes invalid filenames. In this case
+	// the extraction usually succeeds despite the non-zero exit code.
+	// Downgrade to a warning. Matches SABnzbd's handling in newsunpack.py.
+	//
+	// A stage that cannot be read cannot be checked for corrected files, so
+	// the extraction stays failed and the read error is reported with the
+	// exit status.
+	var snapErr error
+	if strings.Contains(res.Output, "Cannot create") &&
+		strings.Contains(res.Output, "Attempting to correct") {
+		var stageSnap map[string]struct{}
+		stageSnap, snapErr = snapshotDir(stageDir)
+		if snapErr == nil && len(stageSnap) > 0 {
+			log.Warn("unrar: auto-corrected invalid filename(s)",
 				"archive", archive.MainFile,
-				"exitCode", res.ExitCode,
-				"reason", res.Reason.String(),
-				"output", res.Output,
-				"err", res.Err,
+				"stagedCount", len(stageSnap),
 			)
-		} else {
-			res.Err = fmt.Errorf("unrar: %w", runErr)
-			log.Error("unrar: failed to start process",
-				"archive", archive.MainFile,
-				"err", runErr,
-			)
-			return res, res.Err
+			res.ExitCode = 0
+			res.Reason = FailUnknown
+			return res, nil
 		}
-		return res, res.Err
 	}
-
-	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
-	if pubErr != nil {
-		res.Err = fmt.Errorf("unrar: publish staged files: %w", pubErr)
-		return res, res.Err
+	err = fmt.Errorf("unrar exited %d (%s): %w", res.ExitCode, res.Reason, runErr)
+	if snapErr != nil {
+		err = errors.Join(err, fmt.Errorf("unrar: read staged files: %w", snapErr))
 	}
-	res.ExtractedFiles = published
-
-	log.Info("unrar: extraction succeeded", "archive", archive.MainFile)
-	return res, nil
+	log.Error("unrar: extraction failed",
+		"archive", archive.MainFile,
+		"exitCode", res.ExitCode,
+		"reason", res.Reason.String(),
+		"output", res.Output,
+		"err", err,
+	)
+	return res, err
 }

@@ -699,7 +699,7 @@ func cleanupContainmentViolation(outDir string, extractedFiles []string, log *sl
 		}
 		// fsutil.Remove unlinks a symlink without following it, so an out-of-bounds
 		// symlink target is left intact. Extracted entries are regular files
-		// (directories are never recorded by the snapshot diff), so Remove
+		// (the publish of a staged extraction lists no directory), so Remove
 		// suffices and avoids recursively deleting through a bad path.
 		if rmErr := fsutil.Remove(absPath); rmErr == nil && log != nil {
 			log.Warn("containment: removed extracted file after containment check failure", "file", absPath)

@@ -33,68 +33,36 @@ file internal/unpack/sevenzip.go
 	execArgs := append(append([]string(nil), args...), archive.MainFile, "-o"+outDir, sscFlag)
 --- end
 
-[UnRAR omits the deferred removeStageDir]
-file internal/unpack/unrar.go
---- anchor
-	defer removeStageDir(log, stageDir)
---- replace
-	_ = stageDir
---- end
-
-[SevenZip omits the deferred removeStageDir]
-file internal/unpack/sevenzip.go
---- anchor
-	defer removeStageDir(log, stageDir)
---- replace
-	_ = stageDir
---- end
-
 [UnRAR omits substituting real password into execArgs]
 file internal/unpack/unrar.go
 --- anchor
-	if password != "" {
-		execArgs[flagIdx] = "-p" + password
-	}
+			execArgs[flagIdx] = "-p" + password
 --- replace
-	if false && password != "" {
-		execArgs[flagIdx] = "-p" + password
-	}
+			_, _ = flagIdx, password
 --- end
 
 [UnRAR shifts flagIdx by 1 when substituting password]
 file internal/unpack/unrar.go
 --- anchor
-	if password != "" {
-		execArgs[flagIdx] = "-p" + password
-	}
+			execArgs[flagIdx] = "-p" + password
 --- replace
-	if password != "" {
-		execArgs[flagIdx+1] = "-p" + password
-	}
+			execArgs[flagIdx+1] = "-p" + password
 --- end
 
 [SevenZip omits substituting real password into execArgs]
 file internal/unpack/sevenzip.go
 --- anchor
-	if password != "" {
-		execArgs[flagIdx] = "-p" + password
-	}
+			execArgs[flagIdx] = "-p" + password
 --- replace
-	if false && password != "" {
-		execArgs[flagIdx] = "-p" + password
-	}
+			_, _ = flagIdx, password
 --- end
 
 [SevenZip shifts flagIdx by 1 when substituting password]
 file internal/unpack/sevenzip.go
 --- anchor
-	if password != "" {
-		execArgs[flagIdx] = "-p" + password
-	}
+			execArgs[flagIdx] = "-p" + password
 --- replace
-	if password != "" {
-		execArgs[flagIdx+1] = "-p" + password
-	}
+			execArgs[flagIdx+1] = "-p" + password
 --- end
 
 [publishStagedExtraction overwrites existing files when overwrite is false]

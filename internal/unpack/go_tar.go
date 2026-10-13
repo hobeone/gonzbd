@@ -41,26 +41,29 @@ var errTarBomb = errors.New("go_tar: decompression bomb detected: size or ratio 
 //   - opts.MaxSize/MaxRatio/MinBombThreshold are enforced against both the
 //     entry's declared Header.Size and the bytes actually read, via the
 //     shared boundReader also used by GoSevenZip.
-func GoTar(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (res Result, err error) {
-	err = cmdutil.SafeEngineRun("go_tar: tar panic", func() error {
-		res, err = goTarInternal(ctx, log, archive, outDir, opts)
-		return err
-	}, func(p any) {
-		res.Reason = FailCorrupt
-		if opts.OnLine != nil {
-			opts.OnLine(fmt.Sprintf("ERROR: tar panic: %v", p))
-		}
+//
+// It extracts into a staging directory inside outDir and publishes the result
+// only on success (extractInStage).
+func GoTar(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+	res, err := extractInStage(log, outDir, opts, func(stageDir string) (res Result, err error) {
+		err = cmdutil.SafeEngineRun("go_tar: tar panic", func() error {
+			res, err = goTarInternal(ctx, log, archive, stageDir, opts)
+			return err
+		}, func(p any) {
+			res.Reason = FailCorrupt
+			if opts.OnLine != nil {
+				opts.OnLine(fmt.Sprintf("ERROR: tar panic: %v", p))
+			}
+		})
+		return res, err
 	})
+	res.CommandLine = fmt.Sprintf("go_tar %s -> %s", archive.MainFile, outDir)
 	return res, err
 }
 
-func goTarInternal(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (res Result, err error) {
+// goTarInternal extracts archive into stageDir.
+func goTarInternal(ctx context.Context, log *slog.Logger, archive Archive, stageDir string, opts Options) (res Result, err error) {
 	log = log.With("component", "go_tar", "archive", archive.MainFile)
-
-	before, snapErr := snapshotDir(outDir)
-	if snapErr != nil {
-		return res, fmt.Errorf("go_tar: snapshot dir: %w", snapErr)
-	}
 
 	f, err := os.Open(archive.MainFile) //nolint:gosec // read-only open of an archive path resolved by unpack.Scan
 	if err != nil {
@@ -73,7 +76,7 @@ func goTarInternal(ctx context.Context, log *slog.Logger, archive Archive, outDi
 	}
 	defer f.Close() //nolint:errcheck // best-effort close, read-only
 
-	root, err := os.OpenRoot(outDir)
+	root, err := os.OpenRoot(stageDir)
 	if err != nil {
 		return res, fmt.Errorf("go_tar: open root: %w", err)
 	}
@@ -84,6 +87,7 @@ func goTarInternal(ctx context.Context, log *slog.Logger, archive Archive, outDi
 		arcSize = st.Size()
 	}
 	var totalRead int64
+	var outBuf strings.Builder
 
 	tr := tar.NewReader(f)
 	for {
@@ -100,48 +104,25 @@ func goTarInternal(ctx context.Context, log *slog.Logger, archive Archive, outDi
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: corrupt tar header: %v", nextErr))
 			}
-			discardPartialFiles(outDir, before, log, "go_tar")
 			return res, fmt.Errorf("go_tar: read header: %w", nextErr)
 		}
 
-		extracted, entryErr := extractTarEntry(ctx, root, outDir, tr, hdr, opts, arcSize, &totalRead, log)
+		extracted, entryErr := extractTarEntry(ctx, root, stageDir, tr, hdr, opts, arcSize, &totalRead, log)
 		if entryErr != nil {
 			res.Reason = classifyTarError(entryErr)
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", hdr.Name, entryErr))
 			}
-			if !errors.Is(entryErr, context.Canceled) && !errors.Is(entryErr, context.DeadlineExceeded) {
-				discardPartialFiles(outDir, before, log, "go_tar")
-			}
 			return res, entryErr
 		}
-		if extracted && opts.OnLine != nil {
-			opts.OnLine("Extracting  " + hdr.Name)
-		}
-	}
-
-	after, snapErr := snapshotDir(outDir)
-	if snapErr != nil {
-		return res, fmt.Errorf("go_tar: snapshot after: %w", snapErr)
-	}
-	res.ExtractedFiles = diffSnapshot(before, after)
-	res.CommandLine = fmt.Sprintf("go_tar %s -> %s", archive.MainFile, outDir)
-
-	var outBuf strings.Builder
-	for _, ef := range res.ExtractedFiles {
-		displayPath := ef
-		if filepath.IsAbs(ef) {
-			if rel, relErr := filepath.Rel(outDir, ef); relErr == nil && !strings.HasPrefix(rel, "..") {
-				displayPath = rel
-			} else {
-				displayPath = filepath.Base(ef)
+		if extracted {
+			outBuf.WriteString("Extracting  " + hdr.Name + "\n")
+			if opts.OnLine != nil {
+				opts.OnLine("Extracting  " + hdr.Name)
 			}
 		}
-		outBuf.WriteString("Extracting  " + displayPath + "\n")
 	}
 	res.Output = outBuf.String()
-
-	log.Info("extraction complete", "extracted", len(res.ExtractedFiles))
 	return res, nil
 }
 

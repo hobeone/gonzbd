@@ -37,30 +37,30 @@ var (
 // bodgit/sevenzip library. It is equivalent to SevenZip (subprocess) but
 // requires no external binary.
 //
-// Files are extracted in natural archive order and each file's reader is
-// closed before opening the next, enabling the library's stream reuse
-// optimisation for solid archives.
-func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
-	err = cmdutil.SafeEngineRun("go_7z: sevenzip panic", func() error {
-		res, err = goSevenZipInternal(ctx, log, archive, outDir, password, opts)
-		return err
-	}, func(p any) {
-		res.Reason = FailCorrupt
-		if opts.OnLine != nil {
-			opts.OnLine(fmt.Sprintf("ERROR: sevenzip panic: %v", p))
-		}
+// It extracts into a staging directory inside outDir and publishes the result
+// only on success (extractInStage). Files are extracted in natural archive
+// order and each file's reader is closed before opening the next, enabling
+// the library's stream reuse optimisation for solid archives.
+func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
+	res, err := extractInStage(log, outDir, opts, func(stageDir string) (res Result, err error) {
+		err = cmdutil.SafeEngineRun("go_7z: sevenzip panic", func() error {
+			res, err = goSevenZipInternal(ctx, log, archive, stageDir, password, opts)
+			return err
+		}, func(p any) {
+			res.Reason = FailCorrupt
+			if opts.OnLine != nil {
+				opts.OnLine(fmt.Sprintf("ERROR: sevenzip panic: %v", p))
+			}
+		})
+		return res, err
 	})
+	res.CommandLine = fmt.Sprintf("go_7z %s -> %s", archive.MainFile, outDir)
 	return res, err
 }
 
-func goSevenZipInternal(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
+// goSevenZipInternal extracts archive into stageDir.
+func goSevenZipInternal(ctx context.Context, log *slog.Logger, archive Archive, stageDir, password string, opts Options) (res Result, err error) {
 	log = log.With("component", "go_7z", "archive", archive.MainFile)
-
-	// Snapshot directory before extraction.
-	before, snapErr := snapshotDir(outDir)
-	if snapErr != nil {
-		return res, fmt.Errorf("go_7z: snapshot dir: %w", snapErr)
-	}
 
 	var r *sevenzip.ReadCloser
 	if password != "" {
@@ -78,14 +78,14 @@ func goSevenZipInternal(ctx context.Context, log *slog.Logger, archive Archive, 
 	defer r.Close() //nolint:errcheck // best-effort close
 
 	log.Info("starting extraction",
-		"outDir", outDir,
+		"stageDir", stageDir,
 		"files", len(r.File),
 	)
 
-	// Open the output directory as an os.Root once for the entire extraction.
-	// All entry writes go through this rooted handle so they cannot escape
-	// outDir via "..", an absolute path, or a symlinked path component.
-	root, err := os.OpenRoot(outDir)
+	// Open the stage as an os.Root once for the entire extraction. All entry
+	// writes go through this rooted handle so they cannot escape the stage
+	// via "..", an absolute path, or a symlinked path component.
+	root, err := os.OpenRoot(stageDir)
 	if err != nil {
 		return res, fmt.Errorf("go_7z: open root: %w", err)
 	}
@@ -96,54 +96,30 @@ func goSevenZipInternal(ctx context.Context, log *slog.Logger, archive Archive, 
 		arcSize = st.Size()
 	}
 	var totalRead int64
+	var outBuf strings.Builder
 
 	for _, f := range r.File {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
 
-		extracted, err := extractSevenZipEntry(ctx, f, outDir, root, opts, arcSize, &totalRead, log)
+		extracted, err := extractSevenZipEntry(ctx, f, stageDir, root, opts, arcSize, &totalRead, log)
 		if err != nil {
 			res.Reason = classifySevenZipError(err)
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", f.Name, err))
 			}
-			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				discardPartialFiles(outDir, before, log, "go_7z")
-			}
 			return res, err
 		}
 
-		if extracted && opts.OnLine != nil {
-			opts.OnLine("Extracting  " + f.Name)
-		}
-	}
-
-	// Diff output directory to find extracted files.
-	after, snapErr := snapshotDir(outDir)
-	if snapErr != nil {
-		return res, fmt.Errorf("go_7z: snapshot after: %w", snapErr)
-	}
-	res.ExtractedFiles = diffSnapshot(before, after)
-	res.CommandLine = fmt.Sprintf("go_7z %s -> %s", archive.MainFile, outDir)
-
-	var outBuf strings.Builder
-	for _, f := range res.ExtractedFiles {
-		displayPath := f
-		if filepath.IsAbs(f) {
-			if rel, err := filepath.Rel(outDir, f); err == nil && !strings.HasPrefix(rel, "..") {
-				displayPath = rel
-			} else {
-				displayPath = filepath.Base(f)
+		if extracted {
+			outBuf.WriteString("Extracting  " + f.Name + "\n")
+			if opts.OnLine != nil {
+				opts.OnLine("Extracting  " + f.Name)
 			}
 		}
-		outBuf.WriteString("Extracting  " + displayPath + "\n")
 	}
 	res.Output = outBuf.String()
-
-	log.Info("extraction complete",
-		"extracted", len(res.ExtractedFiles))
-
 	return res, nil
 }
 

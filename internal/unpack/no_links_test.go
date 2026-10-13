@@ -177,7 +177,7 @@ func TestPublishStagedExtraction_PublishesNoLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	var lines []string
-	published, err := publishStagedExtraction(slog.New(slog.DiscardHandler), outDir, stageDir, Options{OnLine: func(l string) { lines = append(lines, l) }}, false)
+	published, err := publishStagedExtraction(slog.New(slog.DiscardHandler), outDir, stageDir, Options{OnLine: func(l string) { lines = append(lines, l) }})
 	if err != nil {
 		t.Fatalf("publishStagedExtraction: %v", err)
 	}

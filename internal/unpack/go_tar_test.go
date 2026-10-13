@@ -1203,12 +1203,10 @@ func TestGoTar_EmptyArchive(t *testing.T) {
 
 // TestGoTar_DirectoryOnlyArchive verifies an archive containing only
 // tar.TypeDir entries (no regular files) creates the directories on disk.
-// snapshotDir/diffSnapshot (used to populate res.ExtractedFiles) only track
-// regular files -- see snapshot.go's snapshotDir, which explicitly skips
-// d.IsDir() -- matching go_sevenzip.go/go_unrar.go's convention of listing
-// only regular files in ExtractedFiles, never directories. So a directory-only
-// archive must report zero ExtractedFiles despite successfully creating
-// directories.
+// ExtractedFiles is the list publishStagedExtraction returns, which names
+// only the files it renamed into outDir, never a directory it created. So a
+// directory-only archive must report zero ExtractedFiles despite
+// successfully creating directories.
 func TestGoTar_DirectoryOnlyArchive(t *testing.T) {
 	t.Parallel()
 
@@ -1236,8 +1234,7 @@ func TestGoTar_DirectoryOnlyArchive(t *testing.T) {
 		}
 	}
 
-	// Matches the codebase convention (snapshotDir skips directories): no
-	// regular files were created, so ExtractedFiles must be empty.
+	// No regular file was published, so ExtractedFiles must be empty.
 	if len(res.ExtractedFiles) != 0 {
 		t.Errorf("ExtractedFiles = %v, want empty (directories aren't tracked)", res.ExtractedFiles)
 	}
@@ -1388,23 +1385,15 @@ func TestGoTar_ContextCancellationMidExtraction(t *testing.T) {
 		t.Errorf("expected err to be/wrap context.Canceled, got: %v", err)
 	}
 
-	// res.ExtractedFiles is intentionally not asserted here: goTarInternal
-	// only computes it on the success-completion path (after the loop
-	// exits via io.EOF), matching every other early-return error branch in
-	// the loop (corrupt header, per-entry extraction errors) -- none of
-	// those populate ExtractedFiles either. The observable proof that
-	// extraction actually stopped early is on disk: the first entry's file
-	// must exist (it was written before the callback canceled the
-	// context), and later entries -- which the top-of-loop ctx.Err() check
-	// must prevent tr.Next() from ever reaching -- must not.
-	if _, statErr := os.Stat(filepath.Join(outDir, "file0.txt")); statErr != nil {
-		t.Errorf("expected file0.txt to have been extracted before cancellation, stat err: %v", statErr)
+	// The proof that extraction stopped early is the one "Extracting" line:
+	// the top-of-loop ctx.Err() check must keep tr.Next() from reaching the
+	// later entries. Nothing reaches outDir, since a cancelled extraction is
+	// never published (extractInStage).
+	if len(lines) != 1 {
+		t.Errorf("OnLine lines = %q, want only the first entry's", lines)
 	}
-	for i := 1; i < numEntries; i++ {
-		name := fmt.Sprintf("file%d.txt", i)
-		if _, statErr := os.Stat(filepath.Join(outDir, name)); !os.IsNotExist(statErr) {
-			t.Errorf("expected %s to NOT be extracted after cancellation, stat err: %v", name, statErr)
-		}
+	if got := dirTree(t, outDir); len(got) != 0 {
+		t.Errorf("outDir after a cancelled extraction = %q, want empty", got)
 	}
 }
 
