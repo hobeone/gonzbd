@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -52,7 +53,10 @@ func TestFail_FromFetching_AbortsTheDirectUnpack(t *testing.T) {
 // the hand-over waits for it rather than aborting it, and the post-processor
 // is given what it extracted. The unpacker is still extracting the set at the
 // hand-over, because an abort keeps a set already published: only the set an
-// abort interrupts is lost.
+// abort interrupts is lost. It has every volume, as a finished download's
+// unpacker has, and is held inside the set's extraction by its OnLine
+// callback, which runs after each member is written and before the set is
+// published.
 func TestHandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults(t *testing.T) {
 	t.Parallel()
 	stage := finishedStage()
@@ -68,7 +72,16 @@ func TestHandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults(t *testin
 		names[i] = fmt.Sprintf("multi_new.part%02d.rar", i+1)
 	}
 	duDir := t.TempDir()
-	du := directunpack.New(slog.New(slog.DiscardHandler), id, duDir, t.TempDir(), directunpack.Options{})
+	extracting, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	du := directunpack.New(slog.New(slog.DiscardHandler), id, duDir, t.TempDir(), directunpack.Options{
+		OnLine: func(string) {
+			once.Do(func() {
+				close(extracting)
+				<-release
+			})
+		},
+	})
 	du.SetAllFilenames(names)
 	paths := make([]string, volumes)
 	for i, name := range names {
@@ -81,21 +94,32 @@ func TestHandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults(t *testin
 			t.Fatal(err)
 		}
 	}
-	// Every volume but the last: the unpacker waits for it inside the set.
-	for i := range volumes - 1 {
+	t.Cleanup(du.Abort)
+	var releaseOnce sync.Once
+	releaseExtraction := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseExtraction) // runs before du.Abort, which waits for run
+	for i := range volumes {
 		du.Add(t.Context(), names[i], paths[i])
 	}
-	t.Cleanup(du.Abort)
 	application.duOrch.inject(id, du)
+	select {
+	case <-extracting:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the DirectUnpacker never reached the set's first member")
+	}
 
 	application.maybeFinalizeJob(j, "")
-	select {
-	case <-du.Done():
-		t.Fatalf("the hand-over stopped the unpacker of a job whose download had finished; failures %v",
-			du.Failures())
-	case <-time.After(time.Second):
+	// An abort sets killed, which Status reports as inactive at once, while
+	// run is still held in OnLine.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if !du.Status().Active {
+			t.Fatalf("the hand-over stopped the unpacker of a job whose download had finished (status %+v)",
+				du.Status())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	du.Add(t.Context(), names[volumes-1], paths[volumes-1])
+	releaseExtraction()
 	select {
 	case <-du.Done():
 	case <-time.After(10 * time.Second):

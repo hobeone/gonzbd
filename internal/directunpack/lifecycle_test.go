@@ -133,8 +133,8 @@ func TestDirectUnpack_WaitSettlesALateSetWithoutVolume1(t *testing.T) {
 
 	waitReturns(t, du, 5*time.Second)
 
-	if f, ok := du.Failures()["multi_new"]; !ok || f.Reason != errFirstVolumeMissing.Error() {
-		t.Errorf("Failures()[multi_new] = %+v, %v; want %q", f, ok, errFirstVolumeMissing)
+	if f, ok := du.Failures()["multi_new"]; !ok || f.Reason != volumeMissing("multi_new", 1).Error() {
+		t.Errorf("Failures()[multi_new] = %+v, %v; want %q", f, ok, volumeMissing("multi_new", 1))
 	}
 }
 
@@ -211,8 +211,8 @@ func TestDirectUnpack_WaitSettlesSetsWhoseFirstVolumeNeverArrived(t *testing.T) 
 
 	waitReturns(t, du, 2*time.Second)
 
-	if f, ok := du.Failures()["multi_new"]; !ok || f.Reason != errFirstVolumeMissing.Error() {
-		t.Errorf("Failures()[multi_new] = %+v, %v; want %q", f, ok, errFirstVolumeMissing)
+	if f, ok := du.Failures()["multi_new"]; !ok || f.Reason != volumeMissing("multi_new", 1).Error() {
+		t.Errorf("Failures()[multi_new] = %+v, %v; want %q", f, ok, volumeMissing("multi_new", 1))
 	}
 	select {
 	case <-du.Done():
@@ -234,5 +234,56 @@ func TestDirectUnpack_AddAfterWaitIsRefused(t *testing.T) {
 	if du.started || len(du.nextSets) != 0 || du.curSetname != "" {
 		t.Errorf("Add after Wait admitted the set: started %v, nextSets %q, current %q",
 			du.started, du.nextSets, du.curSetname)
+	}
+}
+
+// A set whose volume 1 arrived but a later volume never does is settled when
+// Wait ends the input, rather than holding Wait until Abort: the feeder is
+// waiting for that volume, and none is coming. The volume is either absent
+// from the job's files (an incomplete post: the total is read from the
+// highest listed volume) or listed but never fed to Add.
+func TestDirectUnpack_WaitSettlesASetMissingALaterVolume(t *testing.T) {
+	cases := []struct {
+		name   string
+		listed bool // part05 is among the job's filenames
+	}{
+		{name: "absent from the job's files", listed: false},
+		{name: "listed but never added", listed: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srcDir := testdataDir(t)
+			workDir := t.TempDir()
+			var listed, added []string
+			for i := 1; i <= 10; i++ {
+				name := fmt.Sprintf("multi_new.part%02d.rar", i)
+				if i == 5 && !tc.listed {
+					continue
+				}
+				listed = append(listed, name)
+				if i == 5 {
+					continue
+				}
+				copyRAR(t, srcDir, workDir, name)
+				added = append(added, name)
+			}
+
+			du := New(testLogger(t), "test-job", workDir, t.TempDir(), Options{})
+			du.SetAllFilenames(listed)
+			t.Cleanup(du.Abort)
+			for _, name := range added {
+				du.Add(t.Context(), name, filepath.Join(workDir, name))
+			}
+
+			waitReturns(t, du, 5*time.Second)
+
+			if r, ok := du.Results()["multi_new"]; ok {
+				t.Errorf("multi_new reported extracted without volume 5: %+v", r)
+			}
+			const want = "volume 5 of set multi_new never arrived"
+			if f, ok := du.Failures()["multi_new"]; !ok || f.Reason != want {
+				t.Errorf("Failures()[multi_new] = %+v, %v; want reason %q", f, ok, want)
+			}
+		})
 	}
 }

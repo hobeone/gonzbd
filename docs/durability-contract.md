@@ -1187,7 +1187,7 @@ articles or sparse regions.
    normal unpack is the backstop.
 3. **Volume waiting**: `waitForVolume()` blocks on `volumeReady` until the
    requested volume number appears in `completedVols`, and returns immediately if
-   the set is in `corruptSets`, or, for volume 1, once `Wait` or `Abort` has
+   the set is in `corruptSets`, or, for any volume, once `Wait` or `Abort` has
    ended the input (item 8).
 4. **Sequential volume feeding**: `startVolumeFeed()` opens completed volumes in
    order and sends their `*os.File` handles to `rarengine.NewReader(volumesChan)`.
@@ -1223,9 +1223,9 @@ articles or sparse regions.
    (`TestDirectUnpack_MultiVolume_OutOfOrder`). `enqueuePostProc`
    aborts the unpacker of a job handed to post-processing before its download
    finished (`Job.IsComplete` false: `Application.Fail`, a hopeless
-   callback), because the downloader no longer fetches an admitted job and
-   `waitForVolume` would wait for its missing volumes forever. A job whose
-   download finished has every volume, so its unpacker is awaited
+   callback): the downloader no longer fetches an admitted job, so the
+   abort stops its extraction at once. A job whose download finished has
+   had every feed it will get, so its unpacker is awaited
    (`TestFail_FromFetching_AbortsTheDirectUnpack`,
    `TestHandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults`).
    `enqueuePostProc` reads `Job.IsComplete` right after the admission,
@@ -1241,14 +1241,23 @@ articles or sparse regions.
    declares that every volume has been added, which the awaited unpacker of a
    finished download satisfies, and `Add` refuses a volume once the unpacker
    has finished (`TestDirectUnpack_AddAfterWaitIsRefused`,
-   `TestDirectUnpack_AddAfterAStartedRunFinishedIsRefused`). A set whose
-   volume 1 has not arrived when `Wait` ends the input is recorded as failed,
-   "volume 1 never arrived": `waitForVolume` returns that for volume 1 once
-   the input has ended, and `Wait` on an unpacker whose `run()` never started
-   settles its queue itself and closes `done`
+   `TestDirectUnpack_AddAfterAStartedRunFinishedIsRefused`). End of input is
+   final for every volume: a set missing any volume, the first or a later
+   one, when `Wait` ends the input is recorded as failed, "volume N of set S
+   never arrived" (`volumeMissing`), and post-processing re-extracts it.
+   `waitForVolume` returns that for a volume not yet added once the input has
+   ended, and `Wait` on an unpacker whose `run()` never started settles its
+   queue itself and closes `done`
    (`TestDirectUnpack_WaitSettlesALateSetWithoutVolume1`,
-   `TestDirectUnpack_WaitSettlesSetsWhoseFirstVolumeNeverArrived`). A set
-   past volume 1 is still waited for volume by volume.
+   `TestDirectUnpack_WaitSettlesSetsWhoseFirstVolumeNeverArrived`,
+   `TestDirectUnpack_WaitSettlesASetMissingALaterVolume`). So a finished
+   download whose unpacker was not fed a volume, whether the volume is absent
+   from the NZB or a feed was skipped (`maybeStart` returning before `Add`,
+   or `completeFinalizedFile`'s `direct_unpack`/`enable_unrar` gate), does
+   not hold the job at the hand-over
+   (`TestHandOver_AVolumeNeverFedToTheDirectUnpack_DoesNotHoldTheJob`). When
+   the volume feed fails, `extractSet` reports the feed's error rather than
+   the reader's, which only sees the volume stream end.
 9. **Path traversal safety**: `extractEntries` opens an `os.Root` anchored at
    the set's staging directory and writes every entry through it, so archive
    entries with `..` components, absolute paths, or symlinked path components

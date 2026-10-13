@@ -1714,28 +1714,37 @@ func TestApp_EventLoopStarvation(t *testing.T) {
 	defer application.Shutdown()
 
 	// Read test RAR archive from unpack testdata to simulate DirectUnpack blocking
-	rarData, err := os.ReadFile("../unpack/testdata/multi_new.part01.rar")
+	const rarName = "single_rar5.rar"
+	rarData, err := os.ReadFile(filepath.Join("../unpack/testdata", rarName))
 	if err != nil {
 		t.Fatalf("failed to read test archive: %v", err)
 	}
-	rarPath := filepath.Join(dl, "multi_new.part01.rar")
+	rarPath := filepath.Join(dl, rarName)
 	if err := os.WriteFile(rarPath, rarData, 0644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 
-	// 1. Add job1 (will use DirectUnpack and block on vol 2)
-	parsed1 := nzb.NZB{Files: []nzb.File{{Subject: "multi_new.part01.rar", Bytes: 1024}}}
+	// 1. Add job1 (its DirectUnpack is held inside the set's extraction)
+	parsed1 := nzb.NZB{Files: []nzb.File{{Subject: rarName, Bytes: 1024}}}
 	job1, hdr1 := buildTestJob(t, cfg, &parsed1, types.FetchOptions{NzbName: "job1-du", PP: 3})
 	if err := application.Dispatcher().Add(context.Background(), job1, hdr1); err != nil {
 		t.Fatalf("add job1: %v", err)
 	}
 	_ = job1.BeginAttempt(time.Now())
 
-	du := directunpack.New(slog.Default(), job1.ID(), dl, comp, directunpack.Options{})
-	du.SetAllFilenames([]string{"multi_new.part01.rar", "multi_new.part02.rar"})
-	du.Add(ctx, "multi_new.part01.rar", rarPath)
+	// OnLine runs after each member is written, before the set is published,
+	// so du.Wait() blocks until release. Released before Shutdown, whose
+	// Abort waits for run to exit.
+	release := make(chan struct{})
+	var holdOnce sync.Once
+	du := directunpack.New(slog.Default(), job1.ID(), dl, comp, directunpack.Options{
+		OnLine: func(string) { holdOnce.Do(func() { <-release }) },
+	})
+	du.SetAllFilenames([]string{rarName})
+	du.Add(ctx, rarName, rarPath)
 	application.InjectDirectUnpacker(job1.ID(), du)
 	defer du.Abort()
+	defer close(release)
 
 	// 2. Add job2 (normal job without DirectUnpack)
 	parsed2 := nzb.NZB{Files: []nzb.File{{Subject: "normal.txt", Bytes: 100}}}
@@ -1755,7 +1764,7 @@ func TestApp_EventLoopStarvation(t *testing.T) {
 	select {
 	case jc := <-application.JobComplete():
 		if jc.JobID == job1.ID() {
-			t.Fatalf("job1 completed prematurely; expected du.Wait() to block on vol 2")
+			t.Fatalf("job1 completed prematurely; expected du.Wait() to block inside the extraction")
 		}
 		if jc.JobID != job2.ID() {
 			t.Fatalf("expected job2 to complete, got job %q", jc.JobID)

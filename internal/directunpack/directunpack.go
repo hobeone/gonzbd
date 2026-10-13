@@ -33,10 +33,13 @@ var errNotRAR = errors.New("not a RAR5 archive")
 // never became current, so nothing of it was extracted.
 var errNotStarted = errors.New("aborted before the set started")
 
-// errFirstVolumeMissing is the outcome Wait settles for each queued set when
-// run never started: no set's volume 1 was added, and Wait's caller has added
-// every volume it will.
-var errFirstVolumeMissing = errors.New("volume 1 never arrived")
+// volumeMissing is the error a set fails with when the input has ended (Wait
+// or Abort) without its volume vol being added: waitForVolume's, for a set
+// run took, and Wait's for each set queued on an unpacker whose run never
+// started, which is missing volume 1. Its text is the set's failure reason.
+func volumeMissing(setname string, vol int) error {
+	return fmt.Errorf("volume %d of set %s never arrived", vol, setname)
+}
 
 // SuccessSet records the outcome of a successfully extracted RAR set.
 type SuccessSet struct {
@@ -424,11 +427,10 @@ func (d *DirectUnpacker) Abort() {
 
 // Wait declares that every volume has been added, and blocks until each set
 // the unpacker admitted has an outcome and run has exited. A volume added
-// once the unpacker has finished is refused (Add). A set whose volume 1 has
-// not been added by then is recorded as failed, "volume 1 never arrived":
-// waitForVolume returns that for volume 1 once the input has ended. A set
-// past volume 1 is still waited for volume by volume, so a later volume of it
-// that is never added keeps Wait blocked until Abort.
+// once the unpacker has finished is refused (Add). A set missing any volume,
+// volume 1 or a later one, when Wait is called is recorded as failed, "volume
+// N of set S never arrived": waitForVolume returns that for a volume not yet
+// added once the input has ended, so Wait does not wait for a volume.
 //
 // When run never started, no set's volume 1 was added, so each queued set is
 // recorded as failed here, and Wait returns at once.
@@ -437,7 +439,7 @@ func (d *DirectUnpacker) Wait() {
 	d.inputEnded = true
 	if !d.started {
 		for _, s := range d.nextSets {
-			d.settleLocked(s, SuccessSet{}, errFirstVolumeMissing)
+			d.settleLocked(s, SuccessSet{}, volumeMissing(s, 1))
 		}
 		d.nextSets = nil
 		d.finishUnstartedLocked()
@@ -445,7 +447,8 @@ func (d *DirectUnpacker) Wait() {
 		return
 	}
 	d.mu.Unlock()
-	// Wake run whether it waits for a set or for a set's volume 1.
+	// Wake run waiting for a set or for volume 1, or the feeder waiting for
+	// a later volume.
 	signal(d.queued)
 	signal(d.volumeReady)
 	<-d.done
@@ -685,14 +688,17 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (res Su
 		// A publish that fails part way leaves what it already renamed
 		// (unpack.ExtractStaged).
 		published, err := unpack.ExtractStaged(d.log, d.extractDir, d.unpackOptions(), func(stageDir string) error {
-			if err := d.extractEntries(ctx, r, stageDir); err != nil {
-				return err
-			}
-
+			extractErr := d.extractEntries(ctx, r, stageDir)
+			// A feed error is preferred over the reader's: the feeder sends
+			// it before it closes the volume stream, so a reader that failed
+			// on the stream ending early failed because of it.
 			select {
 			case feedErr := <-feedErrChan:
 				return feedErr
 			default:
+			}
+			if extractErr != nil {
+				return extractErr
 			}
 
 			// Backstop: a volume needed for this set may have been marked
@@ -865,7 +871,10 @@ func (d *DirectUnpacker) extractMember(ctx context.Context, root *os.Root, fh *r
 	return nil
 }
 
-// waitForVolume blocks until the specified volume is in completedVols.
+// waitForVolume blocks until the specified volume is in completedVols, and
+// returns an error instead once the unpacker is killed, the set is marked
+// corrupt, the input has ended without the volume (volumeMissing: no volume
+// is added after Wait or Abort), or ctx is done.
 func (d *DirectUnpacker) waitForVolume(ctx context.Context, setname string, vol int) error {
 	for {
 		d.mu.Lock()
@@ -883,9 +892,9 @@ func (d *DirectUnpacker) waitForVolume(ctx context.Context, setname string, vol 
 				return nil
 			}
 		}
-		if vol == 1 && d.inputEnded {
+		if d.inputEnded {
 			d.mu.Unlock()
-			return errFirstVolumeMissing
+			return volumeMissing(setname, vol)
 		}
 		d.mu.Unlock()
 

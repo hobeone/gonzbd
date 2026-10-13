@@ -160,7 +160,9 @@ single worker goroutine (`run`).
   the job's file paths (`pipeline.forgetJob`) and collects the unpacker, and
   `directUnpackOrchestrator.maybeStart` starts no unpacker for an admitted
   job, so none is started after the collect while the admission lasts, and
-  the collected one is awaited only when every volume reached it; see
+  the collected one is awaited only once the download finished, when it
+  has had every feed it will get; a volume it was not fed fails that set,
+  which the unpack stage then re-extracts; see
   `docs/durability-contract.md` § "DirectUnpack streaming contract".
   Unless the user pauses it, such a job keeps its pool-A lease until the
   finalizer's `CancelJob`, as a `Repairing` job waiting in the queue does

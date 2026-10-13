@@ -1,5 +1,5 @@
 pkg ./internal/app/
-run Test(Fail_FromFetching_AbortsTheDirectUnpack|HandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults)$
+run Test(Fail_FromFetching_AbortsTheDirectUnpack|HandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults|HandOff_LastFileCompletingAtTheCollect_LeavesNoUnpackerAwaitedWithoutAVolume)$
 
 # A job handed to post-processing before its download finished has its
 # DirectUnpacker aborted rather than awaited; one whose download finished
