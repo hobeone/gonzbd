@@ -555,13 +555,6 @@ func TestMarkFileDirty_IgnoresAFileItCannotRead(t *testing.T) {
 	}
 }
 
-// TestVerifyPausedJobs_LoadsNothingWithoutADispatcher pins the guard: an
-// Application with no dispatcher has nothing to verify and returns.
-func TestVerifyPausedJobs_LoadsNothingWithoutADispatcher(t *testing.T) {
-	t.Parallel()
-	(&Application{}).verifyPausedJobs(t.Context())
-}
-
 // TestHandleFileUntrusted_KeepsTheFilesNameForTheNextFlush pins that an untrust
 // leaves the file's buffered state correct: the DeleteAll purge drops the dirty
 // FileState, and the untrust re-marks it, so a flush after a later article

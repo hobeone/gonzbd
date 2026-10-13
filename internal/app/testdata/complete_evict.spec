@@ -26,7 +26,7 @@ file internal/job/content.go
 [the residency check before the mark dropped]
 file internal/app/app.go
 --- anchor
-			if !j.Resident() {
+		if !j.Resident() {
 --- replace
-			if false {
+		if false {
 --- end

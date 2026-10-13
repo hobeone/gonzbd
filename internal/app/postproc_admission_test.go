@@ -126,13 +126,13 @@ func TestRemoveJob_EndsThePostProcessingAdmission(t *testing.T) {
 	waitFor(t, func() bool { return admissionsHeld(&application.postProcAdmissions) == 0 })
 }
 
-// TestJobFinalizerCancelled_EndsTheAdmissionWithoutADispatcher: the admission
-// is ended even where there is no dispatcher to release a claim on.
-func TestJobFinalizerCancelled_EndsTheAdmissionWithoutADispatcher(t *testing.T) {
+// TestJobFinalizerCancelled_EndsTheAdmissionOfAnUnregisteredJob: the
+// admission is ended even where the dispatcher holds no claim to release.
+func TestJobFinalizerCancelled_EndsTheAdmissionOfAnUnregisteredJob(t *testing.T) {
 	t.Parallel()
-	application := &Application{}
+	application := newTestApplication(t)
 	f := newJobFinalizer(application)
-	j := job.New("no-dispatcher", "no-dispatcher", job.Policy{})
+	j := job.New("unregistered", "unregistered", job.Policy{})
 	application.postProcAdmissions.admit(j, "")
 
 	f.cancelled(&postproc.Job{Job: j})

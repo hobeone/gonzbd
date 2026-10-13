@@ -535,11 +535,6 @@ func TestPeek_HitWhileDirectUnpackRuns_AbortsIt(t *testing.T) {
 	}
 }
 
-func TestPeek_WithoutADispatcherDoesNothing(t *testing.T) {
-	t.Parallel()
-	(&Application{}).peekArchiveForUnwanted(nil, FileComplete{})
-}
-
 func TestArchiveMemberNames(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

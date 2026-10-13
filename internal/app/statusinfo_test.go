@@ -37,22 +37,6 @@ func TestApplication_DownloadDirFreeBytes_ReturnsPositiveForRealDir(t *testing.T
 	}
 }
 
-func TestApplication_DownloadDirFreeBytes_NilDiskProbeFallback(t *testing.T) {
-	t.Parallel()
-	dlDir := t.TempDir()
-	appNoProbe := &Application{
-		config: testConfig(dlDir, t.TempDir(), t.TempDir()),
-	}
-
-	free, err := appNoProbe.DownloadDirFreeBytes(t.Context())
-	if err != nil {
-		t.Fatalf("DownloadDirFreeBytes: %v", err)
-	}
-	if free <= 0 {
-		t.Errorf("DownloadDirFreeBytes() = %d, want > 0 for a real temp dir", free)
-	}
-}
-
 func TestApplication_TestDownloadDirWriteSpeedMBPerSec_ReturnsPositive(t *testing.T) {
 	t.Parallel()
 	dlDir := t.TempDir()
@@ -169,13 +153,6 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 		t.Error("expected IsPipelineHealthy=true when dispatcher is paused")
 	}
 	app.Dispatcher().Resume()
-
-	// App with nil dispatcher is considered healthy when started
-	appNoDispatcher := &Application{}
-	appNoDispatcher.started.Store(true)
-	if !appNoDispatcher.IsPipelineHealthy(ctx) {
-		t.Error("expected IsPipelineHealthy=true for started app with nil dispatcher")
-	}
 
 	// PingDB with real repository
 	histPath := filepath.Join(t.TempDir(), "hist.db")

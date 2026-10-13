@@ -60,9 +60,6 @@ func (app *Application) jobNameTaken(snap *config.Config, name string) bool {
 // refuses anything that is still not one path component or that another
 // job took meanwhile.
 func (app *Application) RenameJob(id, name string) (string, error) {
-	if app.dispatcher == nil {
-		return "", errors.New("app: rename: dispatcher not wired")
-	}
 	if strings.Trim(name, " .") == "" {
 		return "", fmt.Errorf("app: rename %s to %q: %w", id, name, ErrInvalidJobName)
 	}

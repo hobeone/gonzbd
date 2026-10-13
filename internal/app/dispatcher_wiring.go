@@ -20,10 +20,7 @@ func (app *Application) Config() *config.Config {
 }
 
 func (app *Application) lookupJob(id string) (*job.Job, bool) {
-	if app.dispatcher != nil {
-		return app.dispatcher.Job(id)
-	}
-	return nil, false
+	return app.dispatcher.Job(id)
 }
 
 // appWorkers satisfies sched.Workers.
@@ -81,22 +78,20 @@ func (w *appWorkers) Abort(j *job.Job) {
 	if pp != nil && pp.HasJob(j) {
 		return
 	}
-	if disp != nil {
-		// Yield asynchronously: Abort is invoked inside sched.Queue.mu's lock span
-		// during Cancel. Calling disp.YieldedJob directly would deadlock on Queue.mu.
-		// If the job was already removed via Dispatcher.Remove or replaced by a new
-		// attempt under the same ID, disp.YieldedJob returns an ErrNotFound which is
-		// benign and logged at debug level.
-		go func() {
-			if err := disp.YieldedJob(j); err != nil && log != nil {
-				if errors.Is(err, dispatch.ErrNotFound) {
-					log.Debug("abort: worker yield completed with notice", "job", jobID, "err", err)
-				} else {
-					log.Warn("abort: worker yield failed", "job", jobID, "err", err)
-				}
+	// Yield asynchronously: Abort is invoked inside sched.Queue.mu's lock span
+	// during Cancel. Calling disp.YieldedJob directly would deadlock on Queue.mu.
+	// If the job was already removed via Dispatcher.Remove or replaced by a new
+	// attempt under the same ID, disp.YieldedJob returns an ErrNotFound which is
+	// benign and logged at debug level.
+	go func() {
+		if err := disp.YieldedJob(j); err != nil && log != nil {
+			if errors.Is(err, dispatch.ErrNotFound) {
+				log.Debug("abort: worker yield completed with notice", "job", jobID, "err", err)
+			} else {
+				log.Warn("abort: worker yield failed", "job", jobID, "err", err)
 			}
-		}()
-	}
+		}
+	}()
 }
 
 type nopDispatchStore struct{}

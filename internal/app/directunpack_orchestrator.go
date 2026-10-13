@@ -48,9 +48,6 @@ func newDirectUnpackOrchestrator(app *Application) *directUnpackOrchestrator {
 // job is eligible for extraction-while-downloading.
 func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	app := o.app
-	if app.dispatcher == nil {
-		return
-	}
 	j, ok := app.dispatcher.Job(fc.JobID)
 	if !ok {
 		return

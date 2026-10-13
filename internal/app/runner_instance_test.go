@@ -60,7 +60,7 @@ func TestFailHopeless_LeavesALaterInstanceAlone(t *testing.T) {
 
 // TestMaybeFinalize_HandsOverTheInstanceHoldingTheID: the by-ID door hands
 // over whichever instance is registered under the ID now, and does nothing
-// for an ID nothing holds or on an application without a dispatcher.
+// for an ID nothing holds.
 func TestMaybeFinalize_HandsOverTheInstanceHoldingTheID(t *testing.T) {
 	t.Parallel()
 	application := newTestApplication(t)
@@ -76,10 +76,6 @@ func TestMaybeFinalize_HandsOverTheInstanceHoldingTheID(t *testing.T) {
 	if application.postProcAdmissions.has(j1) {
 		t.Error("maybeFinalize admitted an instance that has left the dispatcher")
 	}
-
-	bare := &Application{}
-	bare.maybeFinalize(id, "failed")
-	bare.maybeFinalizeJob(j2, "failed")
 }
 
 // TestFailHopeless_HandsOverAndSettlesItsOwnInstance: the verdict for the

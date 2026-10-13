@@ -46,9 +46,6 @@ import (
 // Thread-safe: clears the emitted bits under the job lock. It does NOT touch
 // the assembler.
 func (app *Application) handleArticlesUnwritten(jobID string, fileIdx int, artIdxs []int32) {
-	if app.dispatcher == nil {
-		return
-	}
 	j, ok := app.dispatcher.Job(jobID)
 	if !ok {
 		app.log.Debug("unwritten articles not returned to Outstanding; the job has left the queue",
@@ -143,9 +140,6 @@ func (app *Application) handleWriteFault(jobID string, _ int, f *storagefault.Fa
 func (app *Application) handleArticleRejected(jobID string, fileIdx int, artIdx int32, reason string, uncovered int64) {
 	app.log.Warn("article rejected by the assembler; recording it as permanently failed",
 		"job", jobID, "fileidx", fileIdx, "artidx", artIdx, "reason", reason, "uncovered", uncovered)
-	if app.dispatcher == nil {
-		return
-	}
 	j, ok := app.dispatcher.Job(jobID)
 	if !ok {
 		app.log.Debug("rejected article not recorded; the job has left the queue",
@@ -229,27 +223,23 @@ func (app *Application) stall(jobID string, f *storagefault.Fault, kind stallKin
 	// fault clears, and a user resume in the same window leaves PauseJob
 	// pausing a job nobody owns (docs/durability-contract.md).
 	claimPause := true
-	if app.dispatcher != nil {
-		if j, ok := app.dispatcher.Job(jobID); ok && j.Intent() == job.IntentPause {
-			claimPause = false
-		}
+	if j, ok := app.dispatcher.Job(jobID); ok && j.Intent() == job.IntentPause {
+		claimPause = false
 	}
 	app.noteStall(jobID, f, kind, claimPause)
-	if app.dispatcher != nil {
-		// The pause is latched whatever the state, and PauseJob releases only
-		// a Fetching job's lease, the worker whose writes the fault
-		// interrupts. A job that has moved on — Assessing, say — keeps its
-		// worker and its resources.
-		// That worker finishes and reports through AdvanceFrom, and the pause
-		// then gates the move.
-		//
-		// A cancel latched first refuses the pause with job.ErrIntentLatched:
-		// a fault from writes already queued can land between RemoveJob's
-		// Cancel and its Remove. The job is going away, so that is no failure
-		// of the stall.
-		if err := app.dispatcher.PauseJob(jobID); !errors.Is(err, job.ErrIntentLatched) {
-			warnUnlessGone(app.log, "stall: pausing the job failed", jobID, err)
-		}
+	// The pause is latched whatever the state, and PauseJob releases only
+	// a Fetching job's lease, the worker whose writes the fault
+	// interrupts. A job that has moved on — Assessing, say — keeps its
+	// worker and its resources.
+	// That worker finishes and reports through AdvanceFrom, and the pause
+	// then gates the move.
+	//
+	// A cancel latched first refuses the pause with job.ErrIntentLatched:
+	// a fault from writes already queued can land between RemoveJob's
+	// Cancel and its Remove. The job is going away, so that is no failure
+	// of the stall.
+	if err := app.dispatcher.PauseJob(jobID); !errors.Is(err, job.ErrIntentLatched) {
+		warnUnlessGone(app.log, "stall: pausing the job failed", jobID, err)
 	}
 	app.emit(Event{Type: "queue_updated", NzoID: jobID})
 }
@@ -297,13 +287,11 @@ func (app *Application) Fail(jobID string, f *storagefault.Fault) {
 	// stalled list: a job handed over is on its way to history, and the
 	// re-evaluation would resume it there.
 	parked := app.clearStall(jobID)
-	if app.dispatcher != nil {
-		// enqueuePostProc hands the job to the postproc queue rather than
-		// removing it synchronously, so history.Entry.FailMessage (this
-		// reason's eventual permanent home) does not exist yet — this is
-		// the only live signal for the window until it does.
-		warnUnlessGone(app.log, "record the fail reason", jobID, app.dispatcher.SetFailReason(jobID, reason))
-	}
+	// enqueuePostProc hands the job to the postproc queue rather than
+	// removing it synchronously, so history.Entry.FailMessage (this
+	// reason's eventual permanent home) does not exist yet — this is
+	// the only live signal for the window until it does.
+	warnUnlessGone(app.log, "record the fail reason", jobID, app.dispatcher.SetFailReason(jobID, reason))
 	if app.maybeFinalize(jobID, reason) && parked {
 		// The reason waits for an Assessing worker the tick launches only for
 		// a job not paused, and the pause is Stall's, whose record was just
@@ -390,15 +378,13 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 	// waits on worker launch, on live leases and on the store -- so an
 	// unbounded call here blocks startup until an operator sends a signal.
 	// Thirty seconds matches the bound RemoveJob puts on this same call.
-	if app.dispatcher != nil {
-		rmCtx, rmCancel := context.WithTimeout(ctx, 30*time.Second)
-		rmErr := app.dispatcher.Remove(rmCtx, jobID)
-		rmCancel()
-		if rmErr != nil {
-			app.log.Error("failed to remove duplicate job from dispatcher; leaving its "+
-				"manifest and durability rows for the next startup to reconcile",
-				"job", jobID, "err", rmErr)
-		}
+	rmCtx, rmCancel := context.WithTimeout(ctx, 30*time.Second)
+	rmErr := app.dispatcher.Remove(rmCtx, jobID)
+	rmCancel()
+	if rmErr != nil {
+		app.log.Error("failed to remove duplicate job from dispatcher; leaving its "+
+			"manifest and durability rows for the next startup to reconcile",
+			"job", jobID, "err", rmErr)
 	}
 	// Detached, for the reason RemoveJob's own cleanup is: the queue row is
 	// already gone, so a cancellation landing here strands the rows with
@@ -424,9 +410,6 @@ func (app *Application) dropJobAlreadyInHistory(ctx context.Context, jobID strin
 func (app *Application) holdUnreconciledJob(jobID string, lookupErr error) {
 	app.log.Error("history lookup failed; pausing this job, which may already be filed, "+
 		"until an operator resumes it", "job", jobID, "err", lookupErr)
-	if app.dispatcher == nil {
-		return
-	}
 	if err := app.dispatcher.PauseJob(jobID); err != nil {
 		app.log.Error("failed to pause a job whose history lookup failed",
 			"job", jobID, "err", err)
@@ -466,10 +449,8 @@ func (app *Application) reclaim(ctx context.Context, id string, more ...string) 
 func (app *Application) unlinkDepartedManifests(ids []string) {
 	dir := manifestDir(app.config.GetGeneral().AdminDir)
 	for _, jobID := range ids {
-		if app.dispatcher != nil {
-			if _, held := app.dispatcher.Job(jobID); held {
-				continue
-			}
+		if _, held := app.dispatcher.Job(jobID); held {
+			continue
 		}
 		if app.hasUnrestoredQueueRow(jobID) {
 			continue
@@ -487,10 +468,8 @@ func (app *Application) unlinkDepartedManifests(ids []string) {
 // transient database fault during the startup orphan sweep never unlinks a
 // skipped job's manifest.
 func (app *Application) hasUnrestoredQueueRow(jobID string) bool {
-	if app.dispatcher != nil {
-		if _, held := app.dispatcher.Job(jobID); held {
-			return false
-		}
+	if _, held := app.dispatcher.Job(jobID); held {
+		return false
 	}
 	if app.durable == nil || app.historyRepo == nil || app.historyRepo.DB() == nil {
 		return false

@@ -69,9 +69,10 @@ func TestStopAndJoin_WaitsForWgBeforePostProcAndReportsTimeout(t *testing.T) {
 
 	t.Run("reports error when wg.Wait times out", func(t *testing.T) {
 		t.Parallel()
-		var zeroApp Application
-		if got := zeroApp.stepTimeout(); got != defaultShutdownStepTimeout {
-			t.Errorf("zeroApp.stepTimeout() = %v, want %v", got, defaultShutdownStepTimeout)
+		unsetApp := newTestApplication(t)
+		unsetApp.shutdownStepTimeout = 0
+		if got := unsetApp.stepTimeout(); got != defaultShutdownStepTimeout {
+			t.Errorf("stepTimeout() with no timeout set = %v, want %v", got, defaultShutdownStepTimeout)
 		}
 
 		appStuck, _, _ := newLifecycleTestApp(t)

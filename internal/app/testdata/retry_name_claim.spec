@@ -5,18 +5,16 @@ run TestRetryHistoryJob_NoJobCanTakeItsNameAfterTheRestore|TestRetryHistoryJob_A
 [the retry moves the directory without claiming its name]
 file internal/app/app.go
 --- anchor
-	if app.dispatcher != nil {
-		releaseName, err := app.dispatcher.ReserveName(jobID, j.Name())
+	releaseName, err := app.dispatcher.ReserveName(jobID, j.Name())
 --- replace
-	if false {
-		releaseName, err := app.dispatcher.ReserveName(jobID, j.Name())
+	releaseName, err := func() {}, error(nil)
 --- end
 
 # The claim lives only as long as the retry.
 [the retry never releases its name]
 file internal/app/app.go
 --- anchor
-		defer releaseName()
+	defer releaseName()
 --- replace
-		_ = releaseName
+	_ = releaseName
 --- end

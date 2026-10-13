@@ -67,31 +67,31 @@ file internal/app/archive_peek.go
 [the failed job is filed straight after the peek, before the file is marked complete]
 file internal/app/app.go
 --- anchor
-			unwantedFail = app.peekArchiveForUnwanted(j, fc)
+		unwantedFail = app.peekArchiveForUnwanted(j, fc)
 --- replace
-			unwantedFail = app.peekArchiveForUnwanted(j, fc)
-			if unwantedFail != "" {
-				app.finalizeRegistered(j, unwantedFail, true)
-				unwantedFail = ""
-			}
+		unwantedFail = app.peekArchiveForUnwanted(j, fc)
+		if unwantedFail != "" {
+			app.finalizeRegistered(j, unwantedFail, true)
+			unwantedFail = ""
+		}
 --- end
 
 [the failed job is never filed after the mark]
 file internal/app/app.go
 --- anchor
-		app.fileOwedUnwantedFailure(j, unwantedFail)
+	app.fileOwedUnwantedFailure(j, unwantedFail)
 --- replace
-		_ = unwantedFail
+	_ = unwantedFail
 --- end
 
 [the filing is carried by the message alone, so a redelivery cannot file it]
 file internal/app/app.go
 --- anchor
-		app.fileOwedUnwantedFailure(j, unwantedFail)
+	app.fileOwedUnwantedFailure(j, unwantedFail)
 --- replace
-		if unwantedFail != "" {
-			app.finalizeRegistered(j, unwantedFail, true)
-		}
+	if unwantedFail != "" {
+		app.finalizeRegistered(j, unwantedFail, true)
+	}
 --- end
 
 [the owed filing ignores the job's state]

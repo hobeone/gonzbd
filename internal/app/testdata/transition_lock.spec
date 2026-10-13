@@ -18,9 +18,9 @@ file internal/app/app.go
 [the retry acts on a job the dispatcher already holds]
 file internal/app/app.go
 --- anchor
-		if _, held := app.dispatcher.Job(jobID); held {
+	if _, held := app.dispatcher.Job(jobID); held {
 --- replace
-		if _, held := app.dispatcher.Job(jobID); held && false {
+	if _, held := app.dispatcher.Job(jobID); held && false {
 --- end
 
 [a history removal claims a key no other actor uses]

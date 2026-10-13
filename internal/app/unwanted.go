@@ -71,9 +71,6 @@ func (app *Application) fileOwedUnwantedFailure(j *job.Job, failMsg string) {
 // a paused Blocked job is never loaded for it. It returns j's row, read in the
 // same call.
 func (app *Application) unwantedFilingOwed(j *job.Job) (dispatch.Row, bool) {
-	if app.dispatcher == nil {
-		return dispatch.Row{}, false
-	}
 	row, ok := app.dispatcher.RowJob(j)
 	if !ok || row.Header.Unwanted != unwanted.StateBlocked || j.Intent() != job.IntentRun {
 		return dispatch.Row{}, false

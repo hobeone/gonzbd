@@ -206,7 +206,11 @@ func TestDropJobAlreadyInHistory_DoesNothingWithoutAHistoryDatabase(t *testing.T
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			application := &Application{historyRepo: repo, log: slog.New(slog.DiscardHandler)}
+			cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+			application, err := New(cfg, repo, WithLogger(slog.New(slog.DiscardHandler)))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
 			application.dropJobAlreadyInHistory(t.Context(), "job-a")
 		})
 	}
@@ -577,14 +581,11 @@ func TestDropJobAlreadyInHistory_KeepsTheJobWhenTheHistoryLookupFails(t *testing
 	}
 }
 
-// TestHoldUnreconciledJob_LeavesACancelledJobAlone pins the two cases the
-// hold cannot pause: with no dispatcher there is nothing to pause, and a
-// cancelled job's intent is latched. Neither is routed onward, and a job the
-// hold did not pause gets no note saying it did.
+// TestHoldUnreconciledJob_LeavesACancelledJobAlone pins the case the hold
+// cannot pause: a cancelled job's intent is latched. It is not routed onward,
+// and a job the hold did not pause gets no note saying it did.
 func TestHoldUnreconciledJob_LeavesACancelledJobAlone(t *testing.T) {
 	t.Parallel()
-	(&Application{log: slog.New(slog.DiscardHandler)}).holdUnreconciledJob("job-a", errors.New("lookup failed"))
-
 	application, _, _ := newLifecycleTestApp(t)
 	j, _ := removeJobFixture(t, application, "cancelledhold")
 	if err := application.Dispatcher().Cancel(j.ID()); err != nil {

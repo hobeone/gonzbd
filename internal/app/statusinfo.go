@@ -41,11 +41,6 @@ func (app *Application) downloadDir() string {
 // API on every HTTP request — without deduping, each poll against a stuck
 // mount would abandon its own goroutine forever.
 func (app *Application) DownloadDirFreeBytes(ctx context.Context) (int64, error) {
-	if app.diskProbe == nil {
-		// Defensive fallback for a zero-value Application (not constructed
-		// via New()); production code always goes through the cached path.
-		return assembler.FreeBytes(ctx, app.downloadDir())
-	}
 	return app.diskProbe.FreeBytes(ctx, app.downloadDir())
 }
 
@@ -77,9 +72,6 @@ func (app *Application) PingDB(ctx context.Context) error {
 func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 	if !app.started.Load() || app.stopped.Load() {
 		return false
-	}
-	if app.dispatcher == nil {
-		return true
 	}
 	if app.dispatcher.Paused() {
 		app.RecordHeartbeat()

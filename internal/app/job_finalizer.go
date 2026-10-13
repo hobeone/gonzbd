@@ -64,9 +64,6 @@ func newJobFinalizer(app *Application) *jobFinalizer {
 func (f *jobFinalizer) cancelled(ppJob *postproc.Job) {
 	app := f.app
 	defer app.postProcAdmissions.release(ppJob.Job)
-	if app.dispatcher == nil {
-		return
-	}
 	// Cancel first, so the tick cannot relaunch the job between the yield and
 	// the cancel intent. Both calls carry this instance, so a callback for a
 	// removed instance leaves alone a retry registered since under the same ID.
@@ -246,13 +243,11 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	// lists, which is what keeps the by-ID steps below on this job when the
 	// lock is bypassed, within the bounds jobTransitions states.
 	defer app.transitions.beginFinalize(ppJob.Job.ID())()
-	if app.dispatcher != nil {
-		id := ppJob.Job.ID()
-		warnUnlessGone(log, "finalize: cancelling the job failed", id,
-			app.dispatcher.CancelJob(ppJob.Job))
-		warnUnlessGone(log, "finalize: releasing the job's launch claim failed", id,
-			app.dispatcher.YieldedJob(ppJob.Job))
-	}
+	id := ppJob.Job.ID()
+	warnUnlessGone(log, "finalize: cancelling the job failed", id,
+		app.dispatcher.CancelJob(ppJob.Job))
+	warnUnlessGone(log, "finalize: releasing the job's launch claim failed", id,
+		app.dispatcher.YieldedJob(ppJob.Job))
 	// Taken after YieldedJob, which clears post-processing's launch claim on the
 	// job: a RemoveJob holding this lock waits on that claim in
 	// dispatcher.Remove.
@@ -319,23 +314,21 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 		// that would register under it at the points jobTransitions lists,
 		// and jobTransitions says why no retry can be registering under it
 		// once those checks have passed.
-		if app.dispatcher != nil {
-			jobID := ppJob.Job.ID()
-			removeCtx, removeCancel := context.WithTimeout(occupyCtx, 2*time.Second)
-			err := app.dispatcher.RemoveJob(removeCtx, ppJob.Job)
-			removeCancel()
-			if err != nil && !errors.Is(err, dispatch.ErrNotFound) && occupyCtx.Err() == nil {
-				retryCtx, retryCancel := context.WithTimeout(occupyCtx, 2*time.Second)
-				err = app.dispatcher.RemoveJob(retryCtx, ppJob.Job)
-				retryCancel()
-			}
-			if err != nil && !errors.Is(err, dispatch.ErrNotFound) {
-				log.Error("failed to remove job from dispatcher after post-proc retry; job remains in queue and history until restart, with its manifest and durability rows left in place for the next startup to reconcile",
-					"job", jobID, "err", err)
-				warnUnlessGone(log, "record the operational error", jobID,
-					app.dispatcher.SetOperationalError(jobID, "failed to remove finalized job from queue: "+err.Error()))
-				app.emit(Event{Type: "queue_updated"})
-			}
+		jobID := ppJob.Job.ID()
+		removeCtx, removeCancel := context.WithTimeout(occupyCtx, 2*time.Second)
+		err := app.dispatcher.RemoveJob(removeCtx, ppJob.Job)
+		removeCancel()
+		if err != nil && !errors.Is(err, dispatch.ErrNotFound) && occupyCtx.Err() == nil {
+			retryCtx, retryCancel := context.WithTimeout(occupyCtx, 2*time.Second)
+			err = app.dispatcher.RemoveJob(retryCtx, ppJob.Job)
+			retryCancel()
+		}
+		if err != nil && !errors.Is(err, dispatch.ErrNotFound) {
+			log.Error("failed to remove job from dispatcher after post-proc retry; job remains in queue and history until restart, with its manifest and durability rows left in place for the next startup to reconcile",
+				"job", jobID, "err", err)
+			warnUnlessGone(log, "record the operational error", jobID,
+				app.dispatcher.SetOperationalError(jobID, "failed to remove finalized job from queue: "+err.Error()))
+			app.emit(Event{Type: "queue_updated"})
 		}
 
 		// Unconditional: the rule decides from the queue and history as they
@@ -378,25 +371,22 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, p
 	// began found no instance under the ID, so a RemoveJob marked this one
 	// (jobTransitions says why), and this function has already returned at
 	// the wasRemoved check above.
-	if app.dispatcher != nil {
-		var runErr error
-		if err := app.dispatcher.OccupyJob(finalCtx, ppJob.Job, func(occupyCtx context.Context) {
-			runErr = runCommit(occupyCtx)
-		}); err != nil {
-			if cur, ok := app.dispatcher.Job(ppJob.Job.ID()); ok && cur != ppJob.Job {
-				log.Warn("finalize: a later instance of the job holds its ID; not filing this run",
-					"job", ppJob.Job.ID())
-				return errFinalizedJobSuperseded
-			}
-			// This instance is not registered, such as a never-run job the
-			// tick evicted after the Cancel above, or a removal of it is in
-			// progress. It is still filed, without the occupancy.
-			log.Warn("occupy failed during finalize; proceeding with fallback teardown", "job", ppJob.Job.ID(), "err", err)
-			return runCommit(finalCtx)
+	var runErr error
+	if err := app.dispatcher.OccupyJob(finalCtx, ppJob.Job, func(occupyCtx context.Context) {
+		runErr = runCommit(occupyCtx)
+	}); err != nil {
+		if cur, ok := app.dispatcher.Job(ppJob.Job.ID()); ok && cur != ppJob.Job {
+			log.Warn("finalize: a later instance of the job holds its ID; not filing this run",
+				"job", ppJob.Job.ID())
+			return errFinalizedJobSuperseded
 		}
-		return runErr
+		// This instance is not registered, such as a never-run job the
+		// tick evicted after the Cancel above, or a removal of it is in
+		// progress. It is still filed, without the occupancy.
+		log.Warn("occupy failed during finalize; proceeding with fallback teardown", "job", ppJob.Job.ID(), "err", err)
+		return runCommit(finalCtx)
 	}
-	return runCommit(finalCtx)
+	return runErr
 }
 
 // fireCompletionNotification sends a push notification for a finished job.
