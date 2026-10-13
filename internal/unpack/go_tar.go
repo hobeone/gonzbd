@@ -58,6 +58,7 @@ func GoTar(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 		return res, err
 	})
 	res.CommandLine = fmt.Sprintf("go_tar %s -> %s", archive.MainFile, outDir)
+	res.Engine = "go_tar"
 	return res, err
 }
 

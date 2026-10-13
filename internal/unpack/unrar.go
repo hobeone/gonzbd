@@ -169,13 +169,16 @@ type Result struct {
 	Output string
 	// ExitCode is the process exit code (0 on success).
 	ExitCode int
-	// Reason classifies why the extraction failed (only meaningful when Err != nil).
+	// Reason classifies why the extraction failed (only meaningful when the
+	// extractor returned an error, which is the one record of the failure).
 	Reason FailReason
-	// Err is non-nil when the extraction failed.
-	Err error
-	// Engine identifies which extractor produced this result (e.g. "unrar",
-	// "go_unrar", "7z", "go_7z"), so callers can label log output by the
-	// engine actually used rather than just the archive type.
+	// Engine names the extractor that produced this result, so callers can
+	// label log output by the engine actually used rather than just the
+	// archive type. Each extractor sets its own name on every return:
+	// "unrar" (UnRAR), "7z" (SevenZip), "go_unrar" (GoUnRAR), "go_7z"
+	// (GoSevenZip), "go_tar" (GoTar) and "filejoin" (FileJoin). Those are
+	// its only writers: `git grep -n 'res.Engin[e] = ' -- 'internal/unpack/*.go'
+	// ':!*_test.go'` returns 6 lines, one in each.
 	Engine string
 }
 
@@ -194,8 +197,27 @@ type Result struct {
 // blocking on stdin. The bracketed flags depend on opts (see HasProblem,
 // IgnoreUnrarDates, UnrarVersion and ExtraArgs). The command line logged and
 // passed to OnLine/OnCommand names <outdir>/ in place of <stagedir>/.
+//
+// A password that the archive's own check value proves wrong (rarPreVerify)
+// is refused with FailWrongPassword without running unrar at all.
 func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
-	log = log.With("component", "unrar")
+	res, err := unRAR(ctx, log.With("component", "unrar"), archive, outDir, password, opts)
+	res.Engine = "unrar"
+	return res, err
+}
+
+// errPreVerifiedWrong is returned for a password the archive's own check
+// value proves wrong, which UnRAR refuses without running unrar.
+var errPreVerifiedWrong = errors.New("unrar: password does not match the archive's check value")
+
+func unRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
+	if password != "" && rarPreVerify(archive, password) {
+		log.Info("unrar: skipping known-wrong password (pre-verified)", "archive", archive.MainFile)
+		if opts.OnLine != nil {
+			opts.OnLine("Skipping known-wrong password (pre-verified)")
+		}
+		return Result{Reason: FailWrongPassword}, errPreVerifiedWrong
+	}
 	mode := "x"
 	if opts.OneFolder {
 		mode = "e"
@@ -279,7 +301,6 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 	})
 	res.CommandLine = cmdLine
 	if err != nil {
-		res.Err = err
 		return res, err
 	}
 	log.Info("unrar: extraction succeeded", "archive", archive.MainFile)

@@ -117,8 +117,8 @@ func TestGoTar_NormalExtraction(t *testing.T) {
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
 	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	data, readErr := os.ReadFile(filepath.Join(outDir, "hello.txt"))
@@ -156,9 +156,9 @@ func TestGoTar_PathTraversalRejected(t *testing.T) {
 	})
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	// The safe entry must extract normally.
@@ -216,9 +216,9 @@ func TestGoTar_NonRegularEntryTypesSkipped(t *testing.T) {
 			})
 
 			archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-			res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
-			if err != nil || res.Err != nil {
-				t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+			_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+			if err != nil {
+				t.Fatalf("GoTar failed: err=%v", err)
 			}
 
 			if _, statErr := os.Lstat(filepath.Join(outDir, tc.entryName)); !os.IsNotExist(statErr) {
@@ -257,9 +257,9 @@ func TestGoTar_AbsolutePathEntryDefanged(t *testing.T) {
 	})
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	if _, statErr := os.Stat(filepath.Join(outDir, "safe.txt")); statErr != nil {
@@ -308,9 +308,9 @@ func TestGoTar_SymlinkNameWithTraversal(t *testing.T) {
 	})
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	if _, statErr := os.Stat(filepath.Join(outDir, "safe.txt")); statErr != nil {
@@ -345,9 +345,9 @@ func TestGoTar_SetuidSetgidBitsStripped(t *testing.T) {
 	})
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	fi, statErr := os.Stat(filepath.Join(outDir, "suid-file"))
@@ -387,7 +387,7 @@ func TestGoTar_SparseBombRejected(t *testing.T) {
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
 	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{MaxSize: maxSize})
-	if err == nil && res.Err == nil {
+	if err == nil {
 		t.Fatalf("expected bomb rejection, got success")
 	}
 	if res.Reason != FailCorrupt {
@@ -463,9 +463,9 @@ func TestGoTar_OneFolderFlattens(t *testing.T) {
 	})
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{OneFolder: true})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{OneFolder: true})
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	if _, statErr := os.Stat(filepath.Join(outDir, "a")); statErr == nil {
@@ -496,9 +496,9 @@ func TestGoTar_OneFolderCollisionRenamesWhenNotOverwriting(t *testing.T) {
 	})
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{OneFolder: true, OverwriteFiles: false})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{OneFolder: true, OverwriteFiles: false})
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	first, readErr := os.ReadFile(filepath.Join(outDir, "same.txt"))
@@ -531,7 +531,7 @@ func TestGoTar_NotAnArchive(t *testing.T) {
 
 	archive := Archive{Type: TarArchive, MainFile: notATar, Parts: []string{notATar}}
 	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
-	if err == nil && res.Err == nil {
+	if err == nil {
 		t.Fatalf("expected error extracting garbage as tar, got success")
 	}
 	if res.Reason != FailCorrupt {
@@ -555,11 +555,11 @@ func TestGoTar_OnLineCallback_NormalExtraction(t *testing.T) {
 
 	var lines []string
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{
 		OnLine: func(line string) { lines = append(lines, line) },
 	})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 	if len(lines) == 0 {
 		t.Fatal("OnLine was never called")
@@ -591,10 +591,10 @@ func TestGoTar_OnLineCallback_CorruptHeaderError(t *testing.T) {
 
 	var lines []string
 	archive := Archive{Type: TarArchive, MainFile: notATar, Parts: []string{notATar}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{
 		OnLine: func(line string) { lines = append(lines, line) },
 	})
-	if err == nil && res.Err == nil {
+	if err == nil {
 		t.Fatalf("expected error, got success")
 	}
 	if len(lines) == 0 {
@@ -623,11 +623,11 @@ func TestGoTar_OnLineCallback_EntryError(t *testing.T) {
 
 	var lines []string
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{
 		MaxSize: maxSize,
 		OnLine:  func(line string) { lines = append(lines, line) },
 	})
-	if err == nil && res.Err == nil {
+	if err == nil {
 		t.Fatalf("expected bomb rejection, got success")
 	}
 	if len(lines) == 0 {
@@ -655,9 +655,9 @@ func TestGoTar_DirectoryEntryBadPathSkipped(t *testing.T) {
 	})
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	escaped := filepath.Join(filepath.Dir(filepath.Dir(outDir)), "evil-dir")
@@ -698,7 +698,7 @@ func TestGoTar_CumulativeSizeAcrossEntriesTriggersBomb(t *testing.T) {
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
 	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{MaxSize: maxSize})
-	if err == nil && res.Err == nil {
+	if err == nil {
 		t.Fatalf("expected cumulative bomb rejection, got success")
 	}
 	if res.Reason != FailCorrupt {
@@ -971,9 +971,9 @@ func TestGoTar_ZeroPermissionBitsSkipsChmod(t *testing.T) {
 	})
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	fi, statErr := os.Stat(filepath.Join(outDir, "exec-only"))
@@ -1008,11 +1008,11 @@ func TestExtractTarEntry_OnLineCallbacks_NonRegularAndBadPath(t *testing.T) {
 
 	var lines []string
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{
 		OnLine: func(line string) { lines = append(lines, line) },
 	})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	var sawNonRegular, sawBadPath bool
@@ -1054,12 +1054,12 @@ func TestGoTar_SkipExistingFileOnLineCallback(t *testing.T) {
 
 	var lines []string
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{
 		OverwriteFiles: false,
 		OnLine:         func(line string) { lines = append(lines, line) },
 	})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	data, readErr := os.ReadFile(filepath.Join(outDir, "payload.txt"))
@@ -1161,9 +1161,9 @@ func TestGoTar_IgnoreUnrarDatesSkipsTimestampRestore(t *testing.T) {
 	before := time.Now().Add(-time.Second)
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{IgnoreUnrarDates: true})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{IgnoreUnrarDates: true})
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	fi, statErr := os.Stat(filepath.Join(outDir, "dated.txt"))
@@ -1193,8 +1193,8 @@ func TestGoTar_EmptyArchive(t *testing.T) {
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
 	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 	if len(res.ExtractedFiles) != 0 {
 		t.Errorf("ExtractedFiles = %v, want empty", res.ExtractedFiles)
@@ -1220,8 +1220,8 @@ func TestGoTar_DirectoryOnlyArchive(t *testing.T) {
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
 	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	for _, dir := range []string{"top", "top/nested"} {
@@ -1273,8 +1273,8 @@ func TestGoTar_PAXLongNameEntry(t *testing.T) {
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
 	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	data, readErr := os.ReadFile(filepath.Join(outDir, "subdir", longFileName))
@@ -1316,8 +1316,8 @@ func TestGoTar_NonUTF8Filename(t *testing.T) {
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
 	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	if err != nil {
+		t.Fatalf("GoTar failed: err=%v", err)
 	}
 
 	data, readErr := os.ReadFile(filepath.Join(outDir, badName))
@@ -1512,9 +1512,9 @@ func TestGoTarInternal_Direct(t *testing.T) {
 	})
 
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := goTarInternal(context.Background(), testLogger(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("goTarInternal failed: err=%v res.Err=%v", err, res.Err)
+	_, err := goTarInternal(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil {
+		t.Fatalf("goTarInternal failed: err=%v", err)
 	}
 
 	data, readErr := os.ReadFile(filepath.Join(outDir, "direct.txt"))

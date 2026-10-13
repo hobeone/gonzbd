@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/testutil"
 )
 
 func TestAllPasswords_DeduplicatesAndOrders(t *testing.T) {
@@ -126,7 +128,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 		}
 
 		opts := Options{}
-		res, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock", nil)
+		res, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock")
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
@@ -149,7 +151,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 		}
 
 		opts := Options{Passwords: []string{"pass1", "pass2"}}
-		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock", nil)
+		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock")
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
@@ -182,7 +184,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 		}
 
 		opts := Options{Passwords: []string{"wrong", "right"}}
-		res, err := withPasswords(ctx, log, archive, outDir, opts, extract, isWrongPW, "mock", nil)
+		res, err := withPasswords(ctx, log, archive, outDir, opts, extract, isWrongPW, "mock")
 		if err != nil {
 			t.Fatalf("expected success, got error %v", err)
 		}
@@ -206,7 +208,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 		}
 
 		opts := Options{Passwords: []string{"wrong1", "wrong2"}}
-		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, isWrongPW, "mock", nil)
+		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, isWrongPW, "mock")
 		if !errors.Is(err, ErrWrongPassword) {
 			t.Fatalf("expected ErrWrongPassword, got %v", err)
 		}
@@ -225,7 +227,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 		}
 
 		opts := Options{Passwords: []string{"wrong1", "wrong2"}}
-		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock", nil)
+		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock")
 		if !errors.Is(err, sysErr) {
 			t.Fatalf("expected system error, got %v", err)
 		}
@@ -260,7 +262,7 @@ func TestWithPasswords_GoNativeWrongPasswordRetries(t *testing.T) {
 	}
 
 	opts := Options{Passwords: []string{"wrong", "correct"}}
-	res, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock", nil)
+	res, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock")
 	if err != nil {
 		t.Fatalf("expected retry to succeed with the correct password, got error: %v", err)
 	}
@@ -272,110 +274,81 @@ func TestWithPasswords_GoNativeWrongPasswordRetries(t *testing.T) {
 	}
 }
 
-// TestWithPasswords_PreVerifySkipsProvablyWrongCandidates proves the Task 1
-// pre-verification wiring: preVerify is consulted before extract for each
-// password candidate, and a candidate it can prove wrong (skip=true) never
-// reaches extract at all -- for UnRARWithPasswords, that means zero unrar
-// subprocess spawns for those candidates.
-func TestWithPasswords_PreVerifySkipsProvablyWrongCandidates(t *testing.T) {
-	ctx := context.Background()
-	log := slog.Default()
-	archive := Archive{MainFile: "test.rar"}
-	outDir := t.TempDir()
-
-	var attempted []string
-	extract := func(_ context.Context, _ *slog.Logger, _ Archive, _ string, password string, _ Options) (Result, error) {
-		attempted = append(attempted, password)
-		if password == "correct" {
-			return Result{ExitCode: 0}, nil
-		}
-		return Result{ExitCode: 2, Output: "should never be called"}, errors.New("extract failed")
-	}
-
-	// Pre-verify proves "wrong1" and "wrong2" wrong; can't tell about
-	// "correct" (simulates hasCheckValue=false/uncertain) so it must fall
-	// through to a real attempt, which then succeeds.
-	preVerify := func(_ Archive, password string) bool {
-		return password == "wrong1" || password == "wrong2"
-	}
-
-	opts := Options{Passwords: []string{"wrong1", "wrong2", "correct"}}
-	res, err := withPasswords(ctx, log, archive, outDir, opts, extract, isUnrarWrongPassword, "unrar", preVerify)
-	if err != nil {
-		t.Fatalf("expected success, got error %v", err)
-	}
-	if res.ExitCode != 0 {
-		t.Errorf("expected successful result, got %+v", res)
-	}
-	if len(attempted) != 1 || attempted[0] != "correct" {
-		t.Errorf("expected extract to be called only once with 'correct' (pre-verified candidates skipped), got %v", attempted)
-	}
+// recordingUnrar writes a fake unrar that appends its -p argument to a log
+// and extracts one file, and returns the script's path and the log's.
+func recordingUnrar(t *testing.T) (bin, logPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	logPath = filepath.Join(dir, "passwords.log")
+	bin = filepath.Join(dir, "unrar")
+	testutil.WriteExecutable(t, bin, fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do case "$a" in -p*) echo "$a" >> %q;; esac; done
+eval "OUTDIR=\${$#}"
+echo x > "${OUTDIR}out.txt"
+exit 0
+`, logPath))
+	return bin, logPath
 }
 
-// TestWithPasswords_PreVerifySkipEmitsOnLine proves the pre-verify skip
-// path reports progress through opts.OnLine, same as the existing
-// subprocess-detected wrong-password path does.
-func TestWithPasswords_PreVerifySkipEmitsOnLine(t *testing.T) {
-	ctx := context.Background()
-	log := slog.Default()
-	archive := Archive{MainFile: "test.rar"}
-	outDir := t.TempDir()
-
-	extract := func(_ context.Context, _ *slog.Logger, _ Archive, _ string, _ string, _ Options) (Result, error) {
-		return Result{ExitCode: 0}, nil
-	}
-	preVerify := func(_ Archive, password string) bool { return password == "wrong1" }
-
+// A password the archive's own check value proves wrong never reaches
+// unrar: UnRAR refuses it as a wrong password, and the loop goes on to the
+// next candidate.
+func TestUnRARWithPasswords_PreVerifiedWrongPasswordsRunNoUnrar(t *testing.T) {
+	t.Parallel()
+	bin, logPath := recordingUnrar(t)
+	archive := Archive{Type: RarArchive, MainFile: filepath.Join("testdata", "password_rar5.rar")}
 	var lines []string
 	opts := Options{
-		Passwords: []string{"wrong1", "correct"},
-		OnLine:    func(s string) { lines = append(lines, s) },
+		UnrarCommand: bin,
+		Passwords:    []string{"wrong1", "wrong2", "testpass"},
+		OnLine:       func(l string) { lines = append(lines, l) },
 	}
-	if _, err := withPasswords(ctx, log, archive, outDir, opts, extract, isUnrarWrongPassword, "unrar", preVerify); err != nil {
-		t.Fatalf("expected success, got error %v", err)
+	res, err := UnRARWithPasswords(context.Background(), slog.Default(), archive, t.TempDir(), opts)
+	if err != nil {
+		t.Fatalf("UnRARWithPasswords: %v", err)
 	}
-
-	found := false
+	if res.Engine != "unrar" {
+		t.Errorf("Engine = %q, want unrar", res.Engine)
+	}
+	got, readErr := os.ReadFile(logPath) //nolint:gosec // test path
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "-ptestpass\n" {
+		t.Errorf("unrar ran with %q, want only -ptestpass", got)
+	}
+	skipped := 0
 	for _, l := range lines {
 		if strings.Contains(l, "Skipping known-wrong password") {
-			found = true
+			skipped++
 		}
 	}
-	if !found {
-		t.Errorf("expected an OnLine callback mentioning the pre-verify skip, got lines %v", lines)
+	if skipped != 2 {
+		t.Errorf("OnLine reported %d pre-verified skips, want 2; lines %q", skipped, lines)
 	}
 }
 
-// TestWithPasswords_PreVerifyExhaustedStillReportsWrongPassword proves that
-// when every candidate is pre-verified wrong, withPasswords still reports
-// ErrWrongPassword (matching the existing "exhaust all passwords" contract)
-// without ever calling extract.
-func TestWithPasswords_PreVerifyExhaustedStillReportsWrongPassword(t *testing.T) {
-	ctx := context.Background()
-	log := slog.Default()
-	archive := Archive{MainFile: "test.rar"}
-	outDir := t.TempDir()
-
-	calls := 0
-	extract := func(_ context.Context, _ *slog.Logger, _ Archive, _ string, _ string, _ Options) (Result, error) {
-		calls++
-		return Result{}, fmt.Errorf("extract should never be called")
-	}
-
-	preVerify := func(_ Archive, _ string) bool { return true }
-
-	opts := Options{Passwords: []string{"wrong1", "wrong2"}}
-	_, err := withPasswords(ctx, log, archive, outDir, opts, extract, isUnrarWrongPassword, "unrar", preVerify)
+// Every candidate proven wrong still ends in ErrWrongPassword, with unrar
+// never run, and the Result names the engine.
+func TestUnRARWithPasswords_AllPreVerifiedWrong(t *testing.T) {
+	t.Parallel()
+	bin, logPath := recordingUnrar(t)
+	archive := Archive{Type: RarArchive, MainFile: filepath.Join("testdata", "password_rar5.rar")}
+	opts := Options{UnrarCommand: bin, Passwords: []string{"wrong1", "wrong2"}}
+	res, err := UnRARWithPasswords(context.Background(), slog.Default(), archive, t.TempDir(), opts)
 	if !errors.Is(err, ErrWrongPassword) {
-		t.Fatalf("expected ErrWrongPassword, got %v", err)
+		t.Fatalf("err = %v, want ErrWrongPassword", err)
 	}
-	if calls != 0 {
-		t.Errorf("expected extract never called, got %d calls", calls)
+	if res.Engine != "unrar" || res.Reason != FailWrongPassword {
+		t.Errorf("res = {Engine: %q, Reason: %v}, want unrar and FailWrongPassword", res.Engine, res.Reason)
+	}
+	if _, statErr := os.Stat(logPath); !os.IsNotExist(statErr) {
+		t.Errorf("unrar ran (log stat err = %v), want no run", statErr)
 	}
 }
 
-// TestRarPreVerify_ContentEncrypted proves rarPreVerify (the preVerifyFunc
-// wired into UnRARWithPasswords) correctly classifies a correct vs. wrong
+// TestRarPreVerify_ContentEncrypted proves rarPreVerify (which UnRAR
+// consults before running unrar) correctly classifies a correct vs. wrong
 // password against a real password-protected RAR5 fixture.
 func TestRarPreVerify_ContentEncrypted(t *testing.T) {
 	path := filepath.Join("testdata", "password_rar5.rar")

@@ -41,12 +41,9 @@ func TestFileJoin_Success(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
 
-	res, err := FileJoin(t.Context(), logger, archive, outDir, Options{})
+	_, err := FileJoin(t.Context(), logger, archive, outDir, Options{})
 	if err != nil {
 		t.Fatalf("FileJoin: %v", err)
-	}
-	if res.Err != nil {
-		t.Fatalf("Result.Err: %v", res.Err)
 	}
 
 	logStr := logBuf.String()
@@ -104,12 +101,9 @@ func TestFileJoin_OutputAlreadyExists(t *testing.T) {
 		Parts:    []string{partPath},
 	}
 
-	res, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
+	_, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
 	if err != nil {
 		t.Fatalf("expected no-op success when output exists, got error: %v", err)
-	}
-	if res.Err != nil {
-		t.Fatalf("expected no-op success, got Result.Err: %v", res.Err)
 	}
 	// Existing content should be preserved (not overwritten).
 	got, _ := os.ReadFile(filepath.Join(outDir, "data"))
@@ -554,9 +548,9 @@ func TestFileJoin_AtomicTempPublish(t *testing.T) {
 	}
 
 	// A subsequent run on the same outDir completes and leaves no temp file.
-	res, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("rerun FileJoin: err=%v res.Err=%v", err, res.Err)
+	_, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
+	if err != nil {
+		t.Fatalf("rerun FileJoin: err=%v", err)
 	}
 	info, err := os.Stat(filepath.Join(outDir, "movie"))
 	if err != nil {
@@ -616,9 +610,9 @@ func TestFileJoin_OutputAlreadyExists_MissingFirstPart(t *testing.T) {
 		Parts:    []string{part2, part3},
 	}
 
-	res, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("expected no-op success when joined output exists despite missing .001, got err=%v res.Err=%v", err, res.Err)
+	_, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
+	if err != nil {
+		t.Fatalf("expected no-op success when joined output exists despite missing .001, got err=%v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(outDir, "data"))
 	if err != nil {
@@ -656,9 +650,9 @@ func TestFileJoin_OutputNonRegularNotTreatedAsExisting(t *testing.T) {
 		Parts:    []string{part1, part2},
 	}
 
-	res, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
-	if err != nil || res.Err != nil {
-		t.Fatalf("FileJoin with symlink at outRel failed: err=%v res.Err=%v", err, res.Err)
+	_, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
+	if err != nil {
+		t.Fatalf("FileJoin with symlink at outRel failed: err=%v", err)
 	}
 	info, err := os.Lstat(filepath.Join(outDir, "data"))
 	if err != nil {

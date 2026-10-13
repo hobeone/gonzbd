@@ -23,21 +23,14 @@ type extractFunc func(ctx context.Context, log *slog.Logger, archive Archive, ou
 // to determine whether the failure was caused by a wrong password.
 type wrongPasswordFunc func(exitCode int, output string) bool
 
-// preVerifyFunc cheaply checks a password candidate against the archive's
-// own embedded check value, without spawning any extraction subprocess.
-// It returns skip=true only when it can positively prove the candidate is
-// wrong; any uncertainty (parse error, no check value present, not a
-// supported format) must return false so the real extraction attempt
-// still runs.
-type preVerifyFunc func(archive Archive, password string) (skip bool)
-
-// rarPreVerify implements preVerifyFunc for RAR5 archives using
-// rarheader.VerifyPassword's cheap embedded-check-value comparison. It is
-// wired into UnRARWithPasswords only (the external-unrar-subprocess path) —
-// GoUnRARWithPasswords doesn't need it: rarengine already verifies the
-// password against the same check value lazily, inline, during
-// decompression setup, failing fast on the very first Read() without
-// spawning any subprocess.
+// rarPreVerify cheaply checks a password candidate against a RAR5 archive's
+// own embedded check value (rarheader.VerifyPassword), without spawning any
+// extraction subprocess. It returns skip=true only when it can positively
+// prove the candidate wrong; any uncertainty (parse error, no check value
+// present, not RAR5) returns false so the real extraction attempt still
+// runs. UnRAR consults it before running unrar. GoUnRAR doesn't need it:
+// rarengine verifies the password against the same check value during
+// decompression setup, failing on the very first Read().
 func rarPreVerify(archive Archive, password string) bool {
 	verified, hasCheckValue, err := rarheader.VerifyPassword(archive.MainFile, password)
 	if err != nil || !hasCheckValue {
@@ -87,7 +80,8 @@ func allPasswords(opts Options) []string {
 // GoSevenZipWithPasswords. It tries each password
 // from allPasswords(opts) in order, calling extract for each attempt.
 // isWrongPW classifies whether a failure was due to a wrong password
-// (retry) vs. something else (abort).
+// (retry) vs. something else (abort). It returns the last attempt's Result
+// as extract returned it; toolName only labels its log lines.
 func withPasswords(
 	ctx context.Context,
 	log *slog.Logger,
@@ -97,33 +91,16 @@ func withPasswords(
 	extract extractFunc,
 	isWrongPW wrongPasswordFunc,
 	toolName string,
-	preVerify preVerifyFunc,
 ) (Result, error) {
 	passwords := allPasswords(opts)
 	if len(passwords) == 0 {
 		// No password list — single attempt (no-password).
-		res, err := extract(ctx, log, archive, outDir, "", opts)
-		res.Engine = toolName
-		return res, err
+		return extract(ctx, log, archive, outDir, "", opts)
 	}
 
 	var lastRes Result
 	for i, pw := range passwords {
-		if preVerify != nil && preVerify(archive, pw) {
-			// Provably wrong against the archive's own embedded check
-			// value — skip the real extraction attempt (subprocess spawn,
-			// for external tools) entirely.
-			log.Info(toolName+": skipping known-wrong password (pre-verified), trying next",
-				"attempt", i+1, "total", len(passwords), "archive", archive.MainFile)
-			if opts.OnLine != nil {
-				opts.OnLine(fmt.Sprintf("Skipping known-wrong password (attempt %d/%d), trying next…", i+1, len(passwords)))
-			}
-			lastRes = Result{Engine: toolName, Reason: FailWrongPassword}
-			continue
-		}
-
 		res, err := extract(ctx, log, archive, outDir, pw, opts)
-		res.Engine = toolName
 
 		// System-level error: binary not found, context cancelled, etc.
 		// For subprocess extractors, ExitCode==0 with an error means the
@@ -163,7 +140,6 @@ func withPasswords(
 	}
 
 	// All passwords exhausted.
-	lastRes.Err = ErrWrongPassword
 	return lastRes, ErrWrongPassword
 }
 
@@ -174,7 +150,7 @@ func withPasswords(
 //
 // When no passwords are configured, this delegates directly to UnRAR.
 func UnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
-	return withPasswords(ctx, log, archive, outDir, opts, UnRAR, isUnrarWrongPassword, "unrar", rarPreVerify)
+	return withPasswords(ctx, log, archive, outDir, opts, UnRAR, isUnrarWrongPassword, "unrar")
 }
 
 // GoUnRARWithPasswords tries extracting with each password in opts.Passwords
@@ -187,7 +163,7 @@ func GoUnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive
 	// Wrong-password detection works via res.Reason == FailWrongPassword
 	// in the withPasswords loop.
 	never := func(int, string) bool { return false }
-	return withPasswords(ctx, log, archive, outDir, opts, GoUnRAR, never, "go_unrar", nil)
+	return withPasswords(ctx, log, archive, outDir, opts, GoUnRAR, never, "go_unrar")
 }
 
 // SevenZipWithPasswords tries extracting with each password in opts.Passwords
@@ -195,7 +171,7 @@ func GoUnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive
 //
 // When no passwords are configured, this delegates directly to SevenZip.
 func SevenZipWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
-	return withPasswords(ctx, log, archive, outDir, opts, SevenZip, is7zWrongPassword, "7zip", nil)
+	return withPasswords(ctx, log, archive, outDir, opts, SevenZip, is7zWrongPassword, "7z")
 }
 
 // GoSevenZipWithPasswords tries extracting with each password using the
@@ -207,5 +183,5 @@ func GoSevenZipWithPasswords(ctx context.Context, log *slog.Logger, archive Arch
 	// Wrong-password detection works via res.Reason == FailWrongPassword
 	// in the withPasswords loop.
 	never := func(int, string) bool { return false }
-	return withPasswords(ctx, log, archive, outDir, opts, GoSevenZip, never, "go_7z", nil)
+	return withPasswords(ctx, log, archive, outDir, opts, GoSevenZip, never, "go_7z")
 }

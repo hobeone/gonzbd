@@ -28,7 +28,13 @@ import (
 // so opts.GoRarFallback=false reliably means "never shell out," with no
 // other path silently overriding it.
 // It is equivalent to UnRAR.
-func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
+func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
+	res, err := goUnRAR(ctx, log, archive, outDir, password, opts)
+	res.Engine = "go_unrar"
+	return res, err
+}
+
+func goUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
 	ver, detectErr := rarheader.Version(archive.MainFile)
 	if detectErr != nil {
 		reason := FailUnknown
@@ -45,7 +51,7 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, pas
 	}
 
 	log.Info("go_unrar: detected RAR archive version, using rarengine", "rar_version", ver)
-	res, err = extractInStage(log, outDir, opts, func(stageDir string) (Result, error) {
+	res, err := extractInStage(log, outDir, opts, func(stageDir string) (Result, error) {
 		return goUnRAREngine(ctx, log, archive, stageDir, password, opts)
 	})
 	res.CommandLine = fmt.Sprintf("go_unrar %s -> %s", archive.MainFile, outDir)

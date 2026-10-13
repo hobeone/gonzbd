@@ -57,10 +57,15 @@ func SevenZipBin(opts Options) (string, error) {
 // prompt on stdin when -p is supplied. The command line logged and passed to
 // OnLine/OnCommand names -o<outdir> in place of -o<stagedir>.
 func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
-	log = log.With("component", "sevenzip")
+	res, err := sevenZip(ctx, log.With("component", "sevenzip"), archive, outDir, password, opts)
+	res.Engine = "7z"
+	return res, err
+}
+
+func sevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
 	bin, err := SevenZipBin(opts)
 	if err != nil {
-		return Result{Err: err}, err
+		return Result{}, err
 	}
 
 	argFlag := "-p"
@@ -131,7 +136,6 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 	})
 	res.CommandLine = cmdLine
 	if err != nil {
-		res.Err = err
 		return res, err
 	}
 	log.Info("7zip: extraction succeeded", "archive", archive.MainFile)

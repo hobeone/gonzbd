@@ -55,6 +55,7 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, 
 		return res, err
 	})
 	res.CommandLine = fmt.Sprintf("go_7z %s -> %s", archive.MainFile, outDir)
+	res.Engine = "go_7z"
 	return res, err
 }
 

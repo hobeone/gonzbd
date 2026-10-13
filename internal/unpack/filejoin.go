@@ -27,15 +27,20 @@ const joinBufSize = 16 * 1024 * 1024 // 16 MiB write buffer (SABnzbd uses 24 MiB
 //
 // ctx is checked between parts; cancellation stops the join and removes the
 // partial output file.
-func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir string, _ Options) (Result, error) {
-	log = log.With("component", "filejoin")
+//
+// The Result's ExtractedFiles names the joined file relative to outDir.
+func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+	res, err := fileJoin(ctx, log.With("component", "filejoin"), archive, outDir, opts)
+	res.Engine = "filejoin"
+	return res, err
+}
+
+func fileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir string, _ Options) (Result, error) {
 	if archive.Type != SplitArchive {
-		return Result{Err: fmt.Errorf("filejoin: archive type is not SplitArchive")},
-			fmt.Errorf("filejoin: archive type is not SplitArchive")
+		return Result{}, fmt.Errorf("filejoin: archive type is not SplitArchive")
 	}
 	if len(archive.Parts) == 0 {
-		return Result{Err: fmt.Errorf("filejoin: no parts in archive")},
-			fmt.Errorf("filejoin: no parts in archive")
+		return Result{}, fmt.Errorf("filejoin: no parts in archive")
 	}
 
 	outPath := filepath.Join(outDir, archive.Name)
@@ -54,7 +59,7 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	// absolute path, or a symlinked path component.
 	root, err := os.OpenRoot(outDir)
 	if err != nil {
-		return Result{Err: err}, fmt.Errorf("filejoin: open root: %w", err)
+		return Result{}, fmt.Errorf("filejoin: open root: %w", err)
 	}
 	defer root.Close() //nolint:errcheck // close after all writes complete
 
@@ -71,7 +76,7 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	// delivered by an earlier extraction pass or the post itself.
 	if info, err := root.Lstat(outRel); err == nil && info.Mode().IsRegular() {
 		log.Info("filejoin: output already exists, skipping join", "outPath", outPath)
-		return Result{ExtractedFiles: []string{outPath}}, nil
+		return Result{ExtractedFiles: []string{outRel}}, nil
 	}
 
 	// Validate contiguity after checking whether outRel already exists, so a
@@ -79,12 +84,12 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	// the rerun of an already-completed join.
 	parts, err := sortedNumericParts(archive.Parts)
 	if err != nil {
-		return Result{Err: err}, fmt.Errorf("filejoin: %w", err)
+		return Result{}, fmt.Errorf("filejoin: %w", err)
 	}
 
 	outFile, tmpRel, err := fsutil.RootedCreateTempPerm(ctx, root, outRel, 0o666)
 	if err != nil {
-		return Result{Err: err}, fmt.Errorf("filejoin: create output: %w", err)
+		return Result{}, fmt.Errorf("filejoin: create output: %w", err)
 	}
 
 	var published bool
@@ -101,11 +106,11 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	for i, part := range parts {
 		// Honour context cancellation between parts.
 		if err := ctx.Err(); err != nil {
-			return Result{Err: err}, fmt.Errorf("filejoin: cancelled: %w", err)
+			return Result{}, fmt.Errorf("filejoin: cancelled: %w", err)
 		}
 
 		if err := copyPart(bw, part); err != nil {
-			return Result{Err: err}, fmt.Errorf("filejoin: copy %s: %w", part, err)
+			return Result{}, fmt.Errorf("filejoin: copy %s: %w", part, err)
 		}
 
 		// N2: Report progress after each part (matches SABnzbd's
@@ -120,16 +125,16 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	}
 
 	if err := bw.Flush(); err != nil {
-		return Result{Err: err}, fmt.Errorf("filejoin: flush: %w", err)
+		return Result{}, fmt.Errorf("filejoin: flush: %w", err)
 	}
 
 	if err := syncAndPublishJoin(outFile, root, tmpRel, outRel, (*os.File).Sync); err != nil {
-		return Result{Err: err}, err
+		return Result{}, err
 	}
 	published = true
 
 	log.Info("filejoin: join complete", "outPath", outPath, "parts", len(parts))
-	return Result{ExtractedFiles: []string{outPath}}, nil
+	return Result{ExtractedFiles: []string{outRel}}, nil
 }
 
 // syncAndPublishJoin fsyncs outFile, closes it, atomically renames tmpRel to

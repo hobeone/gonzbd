@@ -227,12 +227,8 @@ func (u *UnpackStage) extractPendingArchives(
 		processed[a.MainFile] = true
 
 		res, err := u.extractArchive(ctx, log, job, a, opts, enableFileJoin, enableTar)
-		failErr := err
-		if failErr == nil {
-			failErr = res.Err
-		}
-		if failErr != nil {
-			recordUnpackFailure(ctx, log, job, a, res, failErr, firstErr)
+		if err != nil {
+			recordUnpackFailure(ctx, log, job, a, res, err, firstErr)
 			continue
 		}
 
@@ -240,7 +236,7 @@ func (u *UnpackStage) extractPendingArchives(
 		// Record command line in stage log for successful extractions too.
 		if res.CommandLine != "" {
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[%s] %s", cmp.Or(res.Engine, archiveTypeName(a.Type)), a.Name),
+				fmt.Sprintf("[%s] %s", res.Engine, a.Name),
 				"Command: "+res.CommandLine)
 		}
 
@@ -260,7 +256,7 @@ func (u *UnpackStage) extractPendingArchives(
 		// Capture tool output on success.
 		if res.Output != "" {
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[%s] %s", cmp.Or(res.Engine, archiveTypeName(a.Type)), a.Name))
+				fmt.Sprintf("[%s] %s", res.Engine, a.Name))
 			job.OutputLines = append(job.OutputLines,
 				toolOutputLines(res.Output)...)
 		}
@@ -441,7 +437,7 @@ func extractWithDriver(ctx context.Context, log *slog.Logger, job *Job, a unpack
 			job.OnOutput(d.toolName, fmt.Sprintf("Unpacking: %s (using external %s)", a.Name, d.toolName))
 		}
 		res, err := d.runExternal(ctx, log, a, job.DownloadDir, extOpts)
-		if err == nil && res.Err == nil {
+		if err == nil {
 			if job.OnOutput != nil {
 				job.OnOutput(d.toolName, fmt.Sprintf("Unpacking complete: %s (using external %s)", a.Name, d.toolName))
 			}
@@ -460,16 +456,13 @@ func extractWithDriver(ctx context.Context, log *slog.Logger, job *Job, a unpack
 		}
 	}
 	res, err := d.runGo(ctx, log, a, job.DownloadDir, goOpts)
-	if err == nil && res.Err == nil {
+	if err == nil {
 		if job.OnOutput != nil {
 			job.OnOutput(d.goToolName, fmt.Sprintf("%s: unpacking complete: %s", d.goToolName, a.Name))
 		}
 	}
 
 	goErr := err
-	if goErr == nil {
-		goErr = res.Err
-	}
 	if goErr != nil && d.fallback {
 		extBin, binErr := d.findBin(opts)
 		if binErr == nil {
@@ -495,7 +488,7 @@ func extractWithDriver(ctx context.Context, log *slog.Logger, job *Job, a unpack
 				}
 			}
 			res, err := d.runExternal(ctx, log, a, job.DownloadDir, extOpts)
-			if err == nil && res.Err == nil {
+			if err == nil {
 				if job.OnOutput != nil {
 					job.OnOutput(d.toolName, fmt.Sprintf("Unpacking complete: %s (using external %s)", a.Name, d.toolName))
 				}
@@ -565,7 +558,7 @@ func extractTarArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack
 		}
 	}
 	res, err := unpack.GoTar(ctx, log, a, job.DownloadDir, tarOpts)
-	if err == nil && res.Err == nil {
+	if err == nil {
 		if job.OnOutput != nil {
 			job.OnOutput("go_tar", fmt.Sprintf("go_tar: unpacking complete: %s", a.Name))
 		}
@@ -626,7 +619,7 @@ func applyPermissions(dir, permStr string) (int, error) {
 // command/output lines for diagnostics.
 func recordUnpackFailure(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, res unpack.Result, failErr error, firstErr *error) { //nolint:gocritic // ptrToRefParam: pointer required to set caller's first-error sentinel
 	job.UnpackError = true
-	engine := cmp.Or(res.Engine, archiveTypeName(a.Type))
+	engine := res.Engine
 	logf(ctx, log, job, slog.LevelWarn, "Error: extraction failed for %q (%s): %v", a.Name, engine, failErr)
 	if *firstErr == nil {
 		*firstErr = fmt.Errorf("unpack %q: %w", a.Name, failErr)
@@ -682,13 +675,11 @@ func archiveTypePriority(t unpack.ArchiveType) int {
 // symlink (e.g. link -> /home/user) inside outDir, and following it to
 // os.RemoveAll the target would let the archive destroy arbitrary pre-existing
 // files. Unlinking the symlink itself neutralizes the escape while leaving the
-// victim untouched.
+// victim untouched. extractedFiles are relative to outDir, the form every
+// extractor's Result.ExtractedFiles takes.
 func cleanupContainmentViolation(outDir string, extractedFiles []string, log *slog.Logger) {
 	for _, f := range extractedFiles {
-		absPath := f
-		if !filepath.IsAbs(f) {
-			absPath = filepath.Join(outDir, f)
-		}
+		absPath := filepath.Join(outDir, f)
 		// Guard lexically against the extracted path itself (not its symlink
 		// target) so an escaping symlink is unlinked here rather than followed.
 		if !fsutil.PathWithin(outDir, absPath) {
