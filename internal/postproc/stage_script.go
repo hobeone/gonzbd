@@ -76,6 +76,14 @@ func NewScriptStage(scriptDir, completeDir, version, apiKey, apiURL string) *Scr
 // Name returns the stage identifier.
 func (*ScriptStage) Name() string { return "script" }
 
+// recordScriptOutput records the run of the script named name for history:
+// its captured output, and the summary formatScriptLine makes of it. It is
+// the only writer of Job.scriptLog and Job.scriptLine.
+func (j *Job) recordScriptOutput(name string, res ScriptResult) {
+	j.scriptLog = res.LogBody
+	j.scriptLine = formatScriptLine(name, res)
+}
+
 // Run builds a ScriptInput from the job and invokes RunScript. Returns nil
 // when no script is configured ("", "none" or "default", case-insensitive),
 // the script exits 0, or the script exits non-zero while scriptCanFail is
@@ -187,6 +195,7 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		in.FinalDir, in.Category, in.Status, in.JobName)
 
 	res := RunScript(ctx, scriptPath, in)
+	job.recordScriptOutput(name, res)
 
 	// Capture script output for the stage log.
 	if res.LogBody != "" {

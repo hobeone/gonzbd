@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -157,7 +159,8 @@ type ScriptResult struct {
 	// LogBody is combined stdout+stderr, up to MaxLogBytes.
 	LogBody string
 
-	// LastLine is the last non-empty line of LogBody (see lastNonEmptyLine).
+	// LastLine is the last non-blank line of LogBody (see lastNonEmptyLine);
+	// formatScriptLine builds history's script_line from it.
 	LastLine string
 
 	// Duration is how long the script ran.
@@ -271,18 +274,49 @@ func buildArgv(in ScriptInput) []string {
 	}
 }
 
-// lastNonEmptyLine returns the content after the final newline in s, trimmed
-// of trailing whitespace. If the final segment is whitespace-only it returns
-// "". For typical script output (which ends with a meaningful line) this is
-// equivalent to "last non-empty line", but it does NOT walk backwards through
-// prior lines when the last segment is blank.
+// markupTag matches an HTML tag, or an unterminated one at a line's end.
+var markupTag = regexp.MustCompile(`<[^>\n]*>?`)
+
+// maxScriptLineRunes caps the line lastNonEmptyLine returns.
+const maxScriptLineRunes = 150
+
+// lastNonEmptyLine returns the last line of s that is not blank once markup
+// is replaced by spaces, trimmed of spaces, tabs and carriage returns, and
+// cut to 147 runes plus "..." when it is 150 runes or longer. It returns ""
+// when every line is blank.
 func lastNonEmptyLine(s string) string {
-	s = strings.TrimRight(s, "\r\n")
-	idx := strings.LastIndexAny(s, "\n")
-	if idx < 0 {
-		return strings.TrimRight(s, "\r\n ")
+	lines := strings.Split(markupTag.ReplaceAllString(s, " "), "\n")
+	for _, line := range slices.Backward(lines) {
+		line = strings.Trim(line, "\r\t ")
+		if line == "" {
+			continue
+		}
+		if r := []rune(line); len(r) >= maxScriptLineRunes {
+			return string(r[:maxScriptLineRunes-3]) + "..."
+		}
+		return line
 	}
-	return strings.TrimRight(s[idx+1:], "\r\n ")
+	return ""
+}
+
+// formatScriptLine is the one-line summary of a script run that history files
+// as script_line: the last non-blank output line after a clean exit, or "Ran
+// <name>" when there was none; "Exit(N): <line>" after a non-zero exit, or
+// "Script exit code is N" when it printed nothing; and "Exit(-1): Cannot run
+// script <name>" when the script could not be started.
+func formatScriptLine(name string, res ScriptResult) string {
+	switch {
+	case res.Err == nil && res.LastLine != "":
+		return res.LastLine
+	case res.Err == nil:
+		return "Ran " + name
+	case !errors.Is(res.Err, ErrNonZeroExit):
+		return "Exit(-1): Cannot run script " + name
+	case res.LastLine != "":
+		return fmt.Sprintf("Exit(%d): %s", res.ExitCode, res.LastLine)
+	default:
+		return fmt.Sprintf("Script exit code is %d", res.ExitCode)
+	}
 }
 
 // RunScript invokes the user script at scriptPath with positional args

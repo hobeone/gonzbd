@@ -182,6 +182,14 @@ type Job struct {
 	outputFilesSet bool
 	outputFilesErr error
 
+	// scriptLog and scriptLine are the user script's captured output and its
+	// one-line summary, both empty when no script ran. recordScriptOutput is
+	// their only writer (`git grep -nE 'j[.]script(Log|Line) = ' -- '*.go' ':!*_test.go'`
+	// finds 2 lines, both in it); history files them as script_log and
+	// script_line.
+	scriptLog  string
+	scriptLine string
+
 	// Sanitize defines the naming replacement options for this job.
 	Sanitize fsutil.SanitizeOptions
 
@@ -346,6 +354,14 @@ type payloadDeleter interface {
 	Stage
 	deletesPayload()
 }
+
+// ScriptLog returns the user script's combined stdout and stderr, as
+// captured up to MaxLogBytes, or "" when no script ran.
+func (j *Job) ScriptLog() string { return j.scriptLog } //nocover: single-field getter
+
+// ScriptLine returns the one-line summary of the user script's run
+// (formatScriptLine), or "" when no script ran.
+func (j *Job) ScriptLine() string { return j.scriptLine } //nocover: single-field getter
 
 // HasRecord reports whether this post-processing job wraps a download job record.
 func (j *Job) HasRecord() bool {
