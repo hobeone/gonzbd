@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -126,22 +127,42 @@ func finishedStage() gatedStage {
 	return stage
 }
 
-// waitingDirectUnpack registers a DirectUnpacker for id that has the first of
-// two volumes and waits for the second, which never arrives.
+// waitingDirectUnpack registers a DirectUnpacker for id that has every volume
+// of a one-volume set and is held inside its extraction, so Wait does not
+// return until the unpacker is aborted. The hold is the OnLine callback, which
+// runs after the set's first member is written and before the set is
+// published. It lets go once an Abort has set killed, which Status reports as
+// inactive at once, or when the test ends; the cleanup's Abort then returns.
 func waitingDirectUnpack(t *testing.T, application *Application, id string) *directunpack.DirectUnpacker {
 	t.Helper()
-	rarData, err := os.ReadFile("../unpack/testdata/multi_new.part01.rar")
+	const name = "single_rar5.rar"
+	rarData, err := os.ReadFile(filepath.Join("../unpack/testdata", name))
 	if err != nil {
 		t.Fatalf("read test archive: %v", err)
 	}
 	duDir := t.TempDir()
-	rarPath := filepath.Join(duDir, "multi_new.part01.rar")
+	rarPath := filepath.Join(duDir, name)
 	if err := os.WriteFile(rarPath, rarData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	du := directunpack.New(slog.New(slog.DiscardHandler), id, duDir, t.TempDir(), directunpack.Options{})
-	du.SetAllFilenames([]string{"multi_new.part01.rar", "multi_new.part02.rar"})
-	du.Add(t.Context(), "multi_new.part01.rar", rarPath)
+	testDone := t.Context().Done()
+	var du *directunpack.DirectUnpacker
+	var hold sync.Once
+	du = directunpack.New(slog.New(slog.DiscardHandler), id, duDir, t.TempDir(), directunpack.Options{
+		OnLine: func(string) {
+			hold.Do(func() {
+				for du.Status().Active {
+					select {
+					case <-testDone:
+						return
+					case <-time.After(5 * time.Millisecond):
+					}
+				}
+			})
+		},
+	})
+	du.SetAllFilenames([]string{name})
+	du.Add(t.Context(), name, rarPath)
 	t.Cleanup(du.Abort)
 	application.duOrch.inject(id, du)
 	return du

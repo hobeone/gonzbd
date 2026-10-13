@@ -16,10 +16,10 @@ import (
 )
 
 // TestFail_FromFetching_AbortsTheDirectUnpack: a job handed to
-// post-processing before its download finished gets no more files, so its
-// DirectUnpacker, part-way through a multi-volume set, would wait for a volume
-// that never arrives. The hand-over aborts it instead, and the job is
-// post-processed and its admission ends.
+// post-processing before its download finished gets no more files, and the
+// hand-over aborts its DirectUnpacker rather than awaiting it. The unpacker is
+// held inside a set's extraction (waitingDirectUnpack), so only the abort ends
+// it: the job is post-processed and its admission ends.
 func TestFail_FromFetching_AbortsTheDirectUnpack(t *testing.T) {
 	t.Parallel()
 	stage := finishedStage()
