@@ -1033,9 +1033,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 		dl := app.downloader
 		app.mu.Unlock()
 		// --- No lock held below this line ---
-		if dl != nil {
-			dl.DisconnectAll()
-		}
+		dl.DisconnectAll()
 	}
 	return nil
 }
@@ -1456,17 +1454,15 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error) {
 	// --- No lock held below this line ---
 
 	var dlErr error
-	if dl != nil {
-		if dlErr = waitBounded("downloader", stepTimeout, dl.Stop, app.log); dlErr != nil && errs != nil {
-			*errs = append(*errs, fmt.Errorf("downloader stop: %w", dlErr))
-		}
+	if dlErr = waitBounded("downloader", stepTimeout, dl.Stop, app.log); dlErr != nil && errs != nil {
+		*errs = append(*errs, fmt.Errorf("downloader stop: %w", dlErr))
 	}
 
 	// If dl.Stop returned cleanly with no error, all downloader workers have definitely
 	// exited and will not touch manifests again. Yield Fetching jobs so
 	// Dispatcher.Stop can cleanly park and evict. If dl.Stop timed out, do NOT yield,
 	// so Dispatcher.Stop observes wait worker timeout and skips eviction.
-	if dl != nil && dlErr == nil {
+	if dlErr == nil {
 		app.yieldStoppedWorkers(errs, job.Fetching)
 	}
 
@@ -2142,19 +2138,6 @@ func (app *Application) DirectUnpackStatuses() map[string]directunpack.Status {
 	return app.duOrch.statuses()
 }
 
-// maybeFinalize hands the job registered under jobID to post-processing with
-// failMsg, as maybeFinalizeJob does, unless the job is at, or due at,
-// Assessing (awaitsAssessing): then failMsg is left for its Assessing worker,
-// which hands the job over (postProcAdmissions.admitUnlessAssessing). It is for a caller that holds
-// only the ID and means whichever instance holds it now. It reports whether it
-// deferred to the Assessing worker.
-func (app *Application) maybeFinalize(jobID, failMsg string) (deferred bool) {
-	if j, ok := app.dispatcher.Job(jobID); ok {
-		return app.finalizeRegistered(j, failMsg, true)
-	}
-	return false
-}
-
 // maybeFinalizeJob hands j to post-processing with failMsg, only while j is the
 // instance registered under its ID. RowJob reads the header in the same span
 // that finds j registered, so a caller holding a removed instance hands over
@@ -2163,15 +2146,17 @@ func (app *Application) maybeFinalizeJob(j *job.Job, failMsg string) {
 	app.finalizeRegistered(j, failMsg, false)
 }
 
-// finalizeRegistered is maybeFinalize's and maybeFinalizeJob's body, and the
-// hand-over Fail and finalizeHopeless make with the instance they hold. It
-// reports enqueuePostProc's deferral.
-func (app *Application) finalizeRegistered(j *job.Job, failMsg string, deferAtAssessing bool) (deferred bool) {
+// finalizeRegistered is maybeFinalizeJob's body, and the hand-over Fail and
+// finalizeHopeless make with the instance they hold. With deferAtAssessing a
+// job at, or due at, Assessing (awaitsAssessing) is not handed over: failMsg
+// is left for its Assessing worker, which hands the job over
+// (postProcAdmissions.admitUnlessAssessing).
+func (app *Application) finalizeRegistered(j *job.Job, failMsg string, deferAtAssessing bool) {
 	row, ok := app.dispatcher.RowJob(j)
 	if !ok {
-		return false
+		return
 	}
-	return app.enqueuePostProc(j, row.Header, failMsg, deferAtAssessing)
+	app.enqueuePostProc(j, row.Header, failMsg, deferAtAssessing)
 }
 
 // directUnpackWaiter is the subset of *directunpack.DirectUnpacker that
@@ -2239,35 +2224,43 @@ func faultIn(err error) *storagefault.Fault {
 // this instance is already admitted, or has been and ended
 // (postProcAdmissions). In the first case it does nothing but offer failMsg to
 // the admitted run; in the second, nothing. With deferAtAssessing it hands over
-// no job at, or due at, Assessing (awaitsAssessing), leaves failMsg for the
-// job's Assessing worker, and reports that it deferred.
-func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg string, deferAtAssessing bool) (deferred bool) {
+// no job at, or due at, Assessing (awaitsAssessing), and leaves failMsg for the
+// job's Assessing worker.
+//
+// It is every hand-over's door: `git grep -n 'enqueuePostProc[(]' -- '*.go'
+// ':!*_test.go'` returns 4 lines, this definition and its callers
+// finalizeRegistered, appRunner.runPostProc and fileOwedUnwantedFailure. So
+// the job's stall record is settled here (handOverStall), on the admission
+// and on the deferral, and no caller has to remember it.
+func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg string, deferAtAssessing bool) {
 	admit := app.postProcAdmissions.admit
 	if deferAtAssessing {
 		admit = app.postProcAdmissions.admitUnlessAssessing
 	}
 	switch admit(j, failMsg) {
 	case admitted:
+		app.handOverStall(j, false)
 	case deferredToAssessing:
+		app.handOverStall(j, true)
 		app.log.Info("postproc: job is at Assessing; its Assessing worker hands it over",
 			"job", j.ID(), "fail_msg", failMsg)
-		return true
+		return
 	case refused:
 		// Debug: a refusal that brings no reason loses nothing.
 		app.log.Debug("postproc: job already admitted; not enqueuing it again", "job", j.ID())
-		return false
+		return
 	case refusedReasonKept:
 		app.log.Info("postproc: job already admitted; its failure reason becomes the admitted run's",
 			"job", j.ID(), "fail_msg", failMsg)
-		return false
+		return
 	case refusedReasonNoted:
 		app.log.Warn("postproc: job already admitted with another failure reason or already handed over; this reason is noted in its history entry's stage log and does not change its status",
 			"job", j.ID(), "fail_msg", failMsg)
-		return false
+		return
 	case refusedEnded:
 		app.log.Warn("postproc: this job instance's post-processing has already ended; not running it again",
 			"job", j.ID(), "fail_msg", failMsg)
-		return false
+		return
 	}
 
 	// A job handed over while still at Fetching (Fail, a hopeless callback)
@@ -2519,10 +2512,9 @@ func (app *Application) enqueuePostProc(j *job.Job, hdr dispatch.Header, failMsg
 			}
 			enqueue(duResults, duFailures, duSkipped)
 		})
-		return false
+		return
 	}
 	enqueue(nil, nil, nil)
-	return false
 }
 
 // rebuildJobFromNZB reconstructs a *job.Job for a history entry by
@@ -3017,9 +3009,7 @@ func (app *Application) SetSpeedLimit(bytesPerSec int64) {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 	app.speedLimit = bytesPerSec
-	if app.downloader != nil {
-		app.downloader.SetSpeedLimit(bytesPerSec)
-	}
+	app.downloader.SetSpeedLimit(bytesPerSec)
 }
 
 // SetBandwidthMax updates the configured bandwidth ceiling reported to the UI.
@@ -3096,9 +3086,7 @@ func (app *Application) PauseDownloads() {
 	app.pauseReason = pauseReasonUser
 	app.stopLowDiskWatchLocked()
 	app.dispatcher.Pause()
-	if app.downloader != nil {
-		app.downloader.Pause()
-	}
+	app.downloader.Pause()
 	app.mu.Unlock()
 	// --- No lock held below this line ---
 	app.emit(Event{Type: "queue_updated"})
@@ -3127,9 +3115,7 @@ func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
 	app.stopLowDiskWatchLocked()
 	app.dispatcher.Resume()
-	if app.downloader != nil {
-		app.downloader.Resume()
-	}
+	app.downloader.Resume()
 	app.ReevaluateStalls()
 }
 
@@ -3138,21 +3124,16 @@ func (app *Application) resumeLocked() {
 func (app *Application) DisconnectAll() {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	if app.downloader != nil {
-		app.downloader.DisconnectAll()
-	}
+	app.downloader.DisconnectAll()
 }
 
 // UnblockServer clears any active penalty on the named server, returning
 // it to the dispatch pool immediately. Returns false if the server is not
-// found or the downloader is not running.
+// found.
 func (app *Application) UnblockServer(name string) bool {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	if app.downloader != nil {
-		return app.downloader.UnblockServer(name)
-	}
-	return false
+	return app.downloader.UnblockServer(name)
 }
 
 // handleLowDisk is invoked by the assembler worker goroutine when free space
@@ -3173,9 +3154,7 @@ func (app *Application) handleLowDisk(dir string, freeBytes int64) {
 		app.pauseReason = pauseReasonLowDisk
 	}
 	app.dispatcher.Pause()
-	if app.downloader != nil {
-		app.downloader.Pause()
-	}
+	app.downloader.Pause()
 	if app.pauseReason == pauseReasonLowDisk && !app.stopping.Load() && !app.stopped.Load() && app.lowDiskRecheckInterval > 0 && app.lowDiskCancel == nil {
 		watchCtx, cancel := context.WithCancel(app.ctx)
 		app.lowDiskCancel = cancel
@@ -3267,7 +3246,8 @@ func (app *Application) tryAutoResumeLowDisk(ctx context.Context, dir string) bo
 
 // ServerStatus returns a point-in-time snapshot of all servers,
 // including per-connection article activity. Returns nil when the
-// downloader is not running.
+// downloader reports no statistics: one WithDownloader injected that is not
+// a DownloaderStats.
 func (app *Application) ServerStatus() []downloader.ServerSnapshot {
 	app.mu.Lock()
 	defer app.mu.Unlock()

@@ -92,7 +92,7 @@ func waitFor(t *testing.T, pred func() bool) {
 // other job's advance -- not just this one's.
 func TestAppRunner_ReturnsPromptly(t *testing.T) {
 	t.Parallel()
-	r := newAppRunner(newTestApplication(t))
+	r := newTestApplication(t).runner
 
 	done := make(chan struct{})
 	go func() {
@@ -257,10 +257,6 @@ func TestAppRunner_RunAssessBranches(t *testing.T) {
 	if got := rec.calls(); got != 1 {
 		t.Fatalf("default state should yield once; got %d", got)
 	}
-
-	// Nil app in runAssess
-	rNil := &appRunner{report: rec}
-	rNil.runAssess(context.Background(), "unknown")
 
 	// 1. Hopeless job
 	jHopeless := buildRunnerJob(t, app, []failMsgFile{

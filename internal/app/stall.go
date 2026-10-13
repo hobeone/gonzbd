@@ -140,6 +140,33 @@ func (app *Application) clearStall(jobID string) (parked bool) {
 	return ok && rec.parked
 }
 
+// handOverStall forgets j's stall record as enqueuePostProc admits j, or
+// defers its hand-over to j's Assessing worker (deferred). Either way the job
+// is on its way to history: a record left behind would report it stalled until
+// the next re-evaluation, and that re-evaluation could resume it, or a retry
+// registered under its ID since (retryHistoryJob reuses the ID).
+//
+// enqueuePostProc's callers pass the instance registered under its ID
+// (finalizeRegistered and fileOwedUnwantedFailure read it with RowJob,
+// runPostProc with Job), which is what makes the ID-keyed clear this
+// instance's.
+//
+// A deferred hand-over waits for an Assessing worker the tick launches only
+// for a job not paused. When the pause is Stall's, whose record this clears,
+// nothing else would resume the job, so it is resumed here, as reevaluateStall
+// resumes a job Stall parked. A pause the user made has no parked record, and
+// holds the reason until the user resumes the job. An admitted job needs no
+// resume: the post-processor runs it paused or not.
+func (app *Application) handOverStall(j *job.Job, deferred bool) {
+	if !app.clearStall(j.ID()) || !deferred {
+		return
+	}
+	if err := app.dispatcher.ResumeInstance(j); err != nil {
+		// Removed or cancelled since: nothing is left to hand over.
+		app.log.Info("handed-over job could not be resumed for its Assessing worker", "job", j.ID(), "err", err)
+	}
+}
+
 // StallInfo is what a job's parked state looks like from outside the package.
 type StallInfo struct {
 	// Reason is the surfaced, actionable text R27 requires, or "" when the job

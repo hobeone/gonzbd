@@ -289,7 +289,5 @@ func (app *Application) pushDispatchOptions() {
 	dl := app.downloader
 	app.mu.Unlock()
 	// --- No lock held below this line ---
-	if dl != nil {
-		dl.SetDispatchOptions(maxArtTries, maxArtOpt, topOnly, time.Duration(propDelay)*time.Minute)
-	}
+	dl.SetDispatchOptions(maxArtTries, maxArtOpt, topOnly, time.Duration(propDelay)*time.Minute)
 }

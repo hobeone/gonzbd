@@ -221,8 +221,8 @@ func TestDownload_MissingArticle(t *testing.T) {
 
 // waitForFileComplete polls until Files[fileIdx] is marked complete on
 // jobID, or the job has left the active queue. On the success path a job
-// only leaves the active queue via maybeFinalize after IsComplete(), so a
-// nil snapshot usually means assembly already resolved. maybeFinalize also
+// only leaves the active queue via the post-processing hand-over after
+// IsComplete(), so a nil snapshot usually means assembly already resolved. The hand-over also
 // has IsComplete()-unguarded callers (e.g. OnJobHopeless) that could in
 // principle remove a job before fileIdx completed; callers relying on this
 // helper for a scenario where that path is reachable should verify the

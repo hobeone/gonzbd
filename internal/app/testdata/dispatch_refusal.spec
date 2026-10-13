@@ -49,10 +49,10 @@ run ^TestAppRunner_RefusedReportIsLoggedUnlessGone$
 file internal/app/runner.go
 run ^TestAppRunner_RefusedReportIsLoggedUnlessGone$
 --- anchor
-		warnUnlessGone(r.log, "runner: settling the job failed", j.ID(),
-			r.report.FinishedJob(j, job.OutcomeFailed))
+	warnUnlessGone(r.log, "runner: settling the job failed", j.ID(),
+		r.report.FinishedJob(j, job.OutcomeFailed))
 --- replace
-		_ = r.report.FinishedJob(j, job.OutcomeFailed)
+	_ = r.report.FinishedJob(j, job.OutcomeFailed)
 --- end
 
 [the pipeline discards a refused clear]

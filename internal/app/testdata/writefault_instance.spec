@@ -37,15 +37,10 @@ file internal/app/durability.go
 		app.log.Info("storage fault for an attempt that has left the queue; nothing is parked",
 --- end
 
-[Fail clears the stall record of a later attempt]
-file internal/app/durability.go
---- anchor
-	if !app.registered(j) {
-		app.log.Info("permanent storage fault for an attempt that has left the queue; nothing is failed",
---- replace
-	if false {
-		app.log.Info("permanent storage fault for an attempt that has left the queue; nothing is failed",
---- end
+# Fail's own registered check is not mutated here: a stale attempt's Fail
+# reaches the ID-keyed stall clear only through finalizeRegistered, whose
+# RowJob refuses it, and through SetFailReason, an instance door. That RowJob
+# is pinned by runner_hopeless_instance.spec.
 
 [registered asks about the ID, not the instance]
 file internal/app/dispatcher_wiring.go

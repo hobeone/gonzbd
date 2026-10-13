@@ -11,18 +11,20 @@ file internal/app/runner.go
 		r.app.maybeFinalizeJob(j, reason)
 --- replace
 	for _, reason := range reasons {
-		r.app.maybeFinalize(j.ID(), reason)
+		if cur, ok := r.app.dispatcher.Job(j.ID()); ok {
+			r.app.maybeFinalizeJob(cur, reason)
+		}
 --- end
 
 [the hopeless verdict settles whatever instance holds the ID]
 file internal/app/runner.go
 --- anchor
-		warnUnlessGone(r.log, "runner: settling the job failed", j.ID(),
-			r.report.FinishedJob(j, job.OutcomeFailed))
+	warnUnlessGone(r.log, "runner: settling the job failed", j.ID(),
+		r.report.FinishedJob(j, job.OutcomeFailed))
 --- replace
-		if cur, ok := r.app.dispatcher.Job(j.ID()); ok {
-			_ = r.report.FinishedJob(cur, job.OutcomeFailed)
-		}
+	if cur, ok := r.app.dispatcher.Job(j.ID()); ok {
+		_ = r.report.FinishedJob(cur, job.OutcomeFailed)
+	}
 --- end
 
 [the hand-over reads the header of whatever instance holds the ID]

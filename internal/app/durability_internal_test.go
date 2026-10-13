@@ -164,7 +164,7 @@ func TestFail_SurfacesTheReasonAndStillFailsNoArticle(t *testing.T) {
 
 	row, ok := application.dispatcher.Row(job.ID())
 	if !ok {
-		// maybeFinalize can carry the job straight out of the queue, which is
+		// Fail's hand-over can carry the job straight out of the queue, which is
 		// the intended terminal path; the article assertions below need a
 		// snapshot, so the reason is checked against history instead.
 		t.Skip("job left the dispatcher for history; see TestFail on a resident job")

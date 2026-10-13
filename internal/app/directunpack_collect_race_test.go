@@ -147,7 +147,7 @@ func TestHandOff_LastFileCompletingAtTheCollect_LeavesNoUnpackerAwaitedWithoutAV
 		completeFile(t, application, id, rarVolumes-1)
 	}
 
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 
 	select {
 	case <-du.Done():
@@ -189,7 +189,7 @@ func TestHandOff_CompletionAfterTheCollect_StartsNoUnpacker(t *testing.T) {
 
 	// No failure reason, so the stages run and the held stage keeps the job
 	// registered: a reason skips them, and the finalizer deregisters it.
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 	if !application.postProcAdmissions.has(j) {
 		t.Fatal("precondition: the hand-off did not admit the job")
 	}

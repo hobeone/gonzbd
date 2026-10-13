@@ -63,7 +63,7 @@ type appWorkers struct {
 // `git grep -n 'q\.mu\.Lock()\|busyMu\.Lock()' -- internal/postproc/postproc.go internal/postproc/queue.go internal/postproc/has.go internal/postproc/cancel.go`
 // returns 12 lines, the spans that claim covers.
 func (w *appWorkers) Abort(j *job.Job) {
-	if w.app == nil || j == nil {
+	if j == nil {
 		return
 	}
 	jobID := j.ID()
@@ -74,13 +74,11 @@ func (w *appWorkers) Abort(j *job.Job) {
 	w.app.mu.Unlock()
 	pp := w.app.postProcessor
 
-	if dl != nil {
-		if c, ok := dl.(interface{ CancelJob(string) }); ok {
-			c.CancelJob(jobID)
-		}
-		if wk, ok := dl.(interface{ Wake() }); ok {
-			wk.Wake()
-		}
+	if c, ok := dl.(interface{ CancelJob(string) }); ok {
+		c.CancelJob(jobID)
+	}
+	if wk, ok := dl.(interface{ Wake() }); ok {
+		wk.Wake()
 	}
 	if pp != nil && pp.HasJob(j) {
 		return

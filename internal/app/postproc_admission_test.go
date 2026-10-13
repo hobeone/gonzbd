@@ -91,7 +91,7 @@ func TestFail_WhilePostProcessing_IsNotedAndLeavesTheStatusToTheStages(t *testin
 	application, j := admittedApp(t, stage)
 	id := j.ID()
 
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 	awaitStage(t, stage.entered)
 
 	fault := storagefault.Classify("write", "/mnt/ro/held.bin", syscall.EROFS)
@@ -120,7 +120,7 @@ func TestRemoveJob_EndsThePostProcessingAdmission(t *testing.T) {
 	stage := gatedStage{entered: make(chan string, 4), finish: make(chan struct{})}
 	application, j := admittedApp(t, stage)
 
-	application.maybeFinalize(j.ID(), "")
+	application.maybeFinalizeJob(j, "")
 	awaitStage(t, stage.entered)
 	removeWithinBudget(t, application, j.ID())
 	waitFor(t, func() bool { return admissionsHeld(&application.postProcAdmissions) == 0 })
@@ -163,7 +163,7 @@ func TestRunPostProc_DuringTheFinalizerTail_EnqueuesNoSecondCopy(t *testing.T) {
 		}
 	}
 
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 	awaitStage(t, stage.entered)
 	close(stage.finish)
 	<-inTail
@@ -171,7 +171,7 @@ func TestRunPostProc_DuringTheFinalizerTail_EnqueuesNoSecondCopy(t *testing.T) {
 		t.Fatal("the post-processor still reports the job inside OnJobDone, so this would not test the tail")
 	}
 
-	newAppRunner(application).runPostProc(t.Context(), id, job.Repairing)
+	application.runner.runPostProc(t.Context(), id, job.Repairing)
 	queuedAgain := application.postProcessor.HasJob(j)
 	close(leaveTail)
 	awaitFinalized(t, application, id)
@@ -212,10 +212,10 @@ func TestEnqueue_DuringTheDirectUnpackWait_EnqueuesNoSecondCopy(t *testing.T) {
 	t.Cleanup(du.Abort)
 	application.duOrch.inject(id, du)
 
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 	fault := storagefault.Classify("write", "/mnt/ro/held.bin", syscall.EROFS)
 	application.Fail(j, fault)
-	newAppRunner(application).runPostProc(t.Context(), id, job.Repairing)
+	application.runner.runPostProc(t.Context(), id, job.Repairing)
 	handedOver := application.postProcessor.HasJob(j)
 
 	du.Abort()

@@ -48,7 +48,7 @@ func (r refusingReporter) AdvanceFrom(*job.Job, job.State, job.State) error { re
 // TestAppRunner_RefusedReportIsLoggedUnlessGone pins the runner's handling of
 // a refused Yielded or FinishedJob: a refusal for a job that is gone is
 // dropped, and any other is logged at Warn, since the job may still hold its
-// lease or slot. The no-application branches of runFetch, runAssess and
+// lease or slot. The unregistered-job branches of runFetch, runAssess and
 // runPostProc reach Yielded through yield; failWith reaches FinishedJob.
 func TestAppRunner_RefusedReportIsLoggedUnlessGone(t *testing.T) {
 	t.Parallel()
@@ -70,7 +70,7 @@ func TestAppRunner_RefusedReportIsLoggedUnlessGone(t *testing.T) {
 		for errName, tc := range errs {
 			t.Run(callName+"/"+errName, func(t *testing.T) {
 				var logs bytes.Buffer
-				r := &appRunner{report: refusingReporter{err: tc.err}, log: slog.New(slog.NewTextHandler(&logs, nil))}
+				r := &appRunner{app: newTestApplication(t), report: refusingReporter{err: tc.err}, log: slog.New(slog.NewTextHandler(&logs, nil))}
 				call(r)
 				if got := strings.Contains(logs.String(), "level=WARN"); got != tc.warn {
 					t.Errorf("warned = %v, want %v; log:\n%s", got, tc.warn, logs.String())

@@ -25,8 +25,8 @@ func (f *failAtAssessingFixture) stall(t *testing.T) {
 	}
 }
 
-// requireResumedForAssessing fails unless Fail left the job unadmitted, off
-// the stalled list, and resumed, so the tick can launch the worker its reason
+// requireResumedForAssessing fails unless Fail's hand-over left the job
+// unadmitted, off the stalled list, and resumed (handOverStall), so the tick can launch the worker its reason
 // waits for.
 func (f *failAtAssessingFixture) requireResumedForAssessing(t *testing.T) {
 	t.Helper()
@@ -56,10 +56,11 @@ func (f *failAtAssessingFixture) tickUntilRan(t *testing.T, want []job.State) {
 }
 
 // TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing: Stall pauses
-// a complete job at Fetching, then a permanent fault reaches Fail. Fail defers
-// the reason to an Assessing worker, which the tick launches only for a job
-// not paused, and clears the stall record the re-evaluation would have resumed
-// it from; so Fail resumes the job itself.
+// a complete job at Fetching, then a permanent fault reaches Fail. Fail's
+// hand-over defers the reason to an Assessing worker, which the tick launches
+// only for a job not paused. The hand-over also clears the stall record the
+// re-evaluation would have resumed the job from, so it resumes the job itself
+// (handOverStall).
 func TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing(t *testing.T) {
 	t.Parallel()
 	f := newFailAtAssessingFixture(t)
@@ -133,18 +134,19 @@ func TestFail_OnAUserPausedJob_DefersWithoutResumingIt(t *testing.T) {
 	}
 }
 
-// TestMaybeFinalize_AnEmptyReasonAtAssessing_IsNoFailure: a hand-off by ID
-// with no reason, deferred to the Assessing worker, is a plain hand-over, as
-// admit reads "". The worker reports its verdict rather than settling the job
-// Failed.
-func TestMaybeFinalize_AnEmptyReasonAtAssessing_IsNoFailure(t *testing.T) {
+// TestFinalizeRegistered_AnEmptyReasonAtAssessing_IsNoFailure: a deferring
+// hand-off with no reason, deferred to the Assessing worker, is a plain
+// hand-over, as admit reads "". The worker reports its verdict rather than
+// settling the job Failed.
+func TestFinalizeRegistered_AnEmptyReasonAtAssessing_IsNoFailure(t *testing.T) {
 	t.Parallel()
 	f := newFailAtAssessingFixture(t)
 	if err := f.d.AdvanceFrom(f.j, job.Fetching, job.Assessing); err != nil {
 		t.Fatalf("AdvanceFrom: %v", err)
 	}
-	if deferred := f.app.maybeFinalize(f.j.ID(), ""); !deferred {
-		t.Fatal("precondition: maybeFinalize did not defer a job with Assessing pending")
+	f.app.finalizeRegistered(f.j, "", true)
+	if f.app.postProcAdmissions.has(f.j) {
+		t.Fatal("precondition: finalizeRegistered admitted a job with Assessing pending; it must defer")
 	}
 
 	f.d.Tick(t.Context())

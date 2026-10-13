@@ -953,6 +953,29 @@ Closing the second needs an atomic prior-intent swap in the dispatcher.
 The claim is in memory and the intent is persisted. A job `Stall` paused before
 a restart comes back as a pause nobody owns.
 
+**The hand-over to post-processing clears the job's stall record at once.**
+`enqueuePostProc`, the door every hand-over goes through
+(`git grep -n 'enqueuePostProc[(]' -- 'internal/*.go' ':!*_test.go'` returns
+its definition and three callers: `finalizeRegistered`, the body of `Fail`,
+`finalizeHopeless` and `maybeFinalizeJob`; `appRunner.runPostProc`; and
+`fileOwedUnwantedFailure`), clears the record when it admits the job or defers it to its
+Assessing worker (`handOverStall`). So the record that was there at the
+hand-over does not go on reporting the job stalled, and no re-evaluation of
+it resumes the job, or a retry later registered under its ID. **That holds
+for the record the hand-over cleared, not for one made after it.**
+`Application.stall` checks only that the job is registered, not whether it
+has been admitted, and an admitted job stays registered until its finalizer
+removes it. A retryable fault on a write still in flight when a job is
+handed over from `Fetching` can therefore park it again, before
+`enqueuePostProc` closes its handles. That record reports the job stalled,
+and the next re-evaluation calls `ResumeJob` on it. A deferred job `Stall` paused is resumed there, since
+the tick launches no Assessing worker for a paused job and the record that
+would have resumed it is gone; a pause the user made is kept
+(`TestFinalizeHopeless_ClearsTheStallOfTheJobItHandsOver`,
+`TestFinalizeHopeless_OnAStalledJobAwaitingAssessing_ResumesItForAssessing`).
+A job removed by `RemoveJob` keeps its record until the next re-evaluation
+finds it gone and forgets it.
+
 **A user Resume is outside the guarantee.** `mode=queue&name=resume` and
 `name=resume_all` unpause the job and then ask for a re-evaluation, because a
 user who has cleared the condition is entitled to have their job run. If it

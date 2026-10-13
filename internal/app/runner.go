@@ -52,7 +52,7 @@ type reporter interface {
 //     jobFinalizer.persistAndCommit (`git grep -n 'func (f \*jobFinalizer) persistAndCommit' internal/app/`),
 //     via jobFinalizer.cancelled (`git grep -n 'func (f \*jobFinalizer) cancelled' internal/app/`)
 //     for a job postProcessor.CancelJob took or the hand-over refused as removed, or via Shutdown (`git grep -n 'func (app \*Application) Shutdown' internal/app/`).
-//  4. Guard branches (missing app, missing job, app.stopping, unhandled states):
+//  4. Guard branches (missing job, app.stopping, unhandled states):
 //     discharges synchronously via immediate Yielded.
 type appRunner struct {
 	app    *Application
@@ -61,17 +61,11 @@ type appRunner struct {
 }
 
 func newAppRunner(app *Application) *appRunner {
-	var l *slog.Logger
-	if app != nil && app.log != nil {
-		l = app.log
-	} else {
-		l = slog.New(slog.DiscardHandler)
-	}
-	return &appRunner{app: app, log: l}
+	return &appRunner{app: app, log: app.log}
 }
 
 func (r *appRunner) Run(ctx context.Context, id string, state job.State) {
-	if r.app != nil && r.app.stopping.Load() {
+	if r.app.stopping.Load() {
 		r.yield(id)
 		return
 	}
@@ -94,9 +88,6 @@ func (r *appRunner) Run(ctx context.Context, id string, state job.State) {
 // state's work, which releases the job's launch claim and resources. A refusal
 // other than the job being gone is logged: the job may still hold them.
 func (r *appRunner) yield(id string) {
-	if r.report == nil {
-		return
-	}
 	warnUnlessGone(r.log, "runner: yield failed", id, r.report.Yielded(id))
 }
 
@@ -115,29 +106,21 @@ func (r *appRunner) yield(id string) {
 // ErrStaleReport and changes nothing. reportDownloadComplete makes no report
 // for a job already admitted to post-processing.
 func (r *appRunner) runFetch(_ context.Context, id string) {
-	if r.app == nil {
-		r.yield(id)
-		return
-	}
 	j, _ := r.app.dispatcher.Job(id)
 	if j == nil {
 		r.yield(id)
 		return
 	}
-	if r.report != nil {
-		if reported, err := r.app.reportDownloadComplete(j, r.report); reported {
-			r.logAdvance(j, job.Fetching, job.Assessing, err)
-			return
-		}
+	if reported, err := r.app.reportDownloadComplete(j, r.report); reported {
+		r.logAdvance(j, job.Fetching, job.Assessing, err)
+		return
 	}
 
 	r.app.mu.Lock()
 	dl := r.app.downloader
 	r.app.mu.Unlock()
-	if dl != nil {
-		if w, ok := dl.(interface{ Wake() }); ok {
-			w.Wake()
-		}
+	if w, ok := dl.(interface{ Wake() }); ok {
+		w.Wake()
 	}
 }
 
@@ -153,10 +136,6 @@ func (r *appRunner) runFetch(_ context.Context, id string) {
 // that look and before the report is handed over once the report is made
 // (handOverLate), when the job no longer reads as at Assessing.
 func (r *appRunner) runAssess(ctx context.Context, id string) {
-	if r.app == nil {
-		r.yield(id)
-		return
-	}
 	j, _ := r.app.dispatcher.Job(id)
 	if j == nil {
 		r.yield(id)
@@ -204,10 +183,8 @@ func (r *appRunner) failWith(j *job.Job, reasons []string) {
 	for _, reason := range reasons {
 		r.app.maybeFinalizeJob(j, reason)
 	}
-	if r.report != nil {
-		warnUnlessGone(r.log, "runner: settling the job failed", j.ID(),
-			r.report.FinishedJob(j, job.OutcomeFailed))
-	}
+	warnUnlessGone(r.log, "runner: settling the job failed", j.ID(),
+		r.report.FinishedJob(j, job.OutcomeFailed))
 }
 
 // handOverLate hands j to post-processing with the reasons deferred to visit
@@ -224,29 +201,23 @@ func (r *appRunner) handOverLate(j *job.Job, visit *assessVisit) {
 // job continues to next. The report records next and releases the job in one
 // dispatcher call, so no tick can move the job between the two. The verdict is
 // replaced by failWith when a failure reason was deferred to the job's
-// Assessing worker; r.app is nil only for a runner built without an
-// application, which defers nothing.
+// Assessing worker.
 func (r *appRunner) advance(j *job.Job, next job.State) {
-	if r.report == nil {
+	if reasons := r.app.postProcAdmissions.takeDeferred(j); len(reasons) > 0 {
+		r.failWith(j, reasons)
 		return
 	}
-	if r.app != nil {
-		if reasons := r.app.postProcAdmissions.takeDeferred(j); len(reasons) > 0 {
-			r.failWith(j, reasons)
-			return
-		}
-		// A report to Fetching is the demotion. The finish stamped on the way
-		// out is no longer the job's last exit from Fetching, so the slot
-		// reopens and the job takes a new stamp when it leaves again. It is
-		// reopened after a deferred failure reason has had the job, because
-		// that hand-over keeps the finish the job left Fetching with. This is
-		// the only production call: `git grep -n '[C]learDownloadFinished()'
-		// -- '*.go' ':!*_test.go'` returns 2 lines, this one and the
-		// declaration.
-		if next == job.Fetching {
-			if err := j.ClearDownloadFinished(); err != nil {
-				r.log.Warn("runner: could not reopen the download finish", "job", j.ID(), "err", err)
-			}
+	// A report to Fetching is the demotion. The finish stamped on the way
+	// out is no longer the job's last exit from Fetching, so the slot
+	// reopens and the job takes a new stamp when it leaves again. It is
+	// reopened after a deferred failure reason has had the job, because
+	// that hand-over keeps the finish the job left Fetching with. This is
+	// the only production call: `git grep -n '[C]learDownloadFinished()'
+	// -- '*.go' ':!*_test.go'` returns 2 lines, this one and the
+	// declaration.
+	if next == job.Fetching {
+		if err := j.ClearDownloadFinished(); err != nil {
+			r.log.Warn("runner: could not reopen the download finish", "job", j.ID(), "err", err)
 		}
 	}
 	r.logAdvance(j, job.Assessing, next, r.report.AdvanceFrom(j, job.Assessing, next))
@@ -269,10 +240,6 @@ func (r *appRunner) logAdvance(j *job.Job, from, next job.State, err error) {
 // enqueuePostProc. Post-processor worker goroutines are cancelled and drained by
 // postProcessor.Stop during Application.Shutdown.
 func (r *appRunner) runPostProc(_ context.Context, id string, _ job.State) {
-	if r.app == nil {
-		r.yield(id)
-		return
-	}
 	var hdr dispatch.Header
 	if row, ok := r.app.dispatcher.Row(id); ok {
 		hdr = row.Header

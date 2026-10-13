@@ -52,18 +52,18 @@ file internal/app/app.go
 [the Fetching worker reports the download past the owner]
 file internal/app/runner.go
 --- anchor
-		if reported, err := r.app.reportDownloadComplete(j, r.report); reported {
+	if reported, err := r.app.reportDownloadComplete(j, r.report); reported {
 --- replace
-		if reported := j.IsComplete(); reported {
-			err := r.report.AdvanceFrom(j, job.Fetching, job.Assessing)
+	if reported := j.IsComplete(); reported {
+		err := r.report.AdvanceFrom(j, job.Fetching, job.Assessing)
 --- end
 
 [the Assessing worker settles its verdict Failed]
 file internal/app/runner.go
 --- anchor
-		if reasons := r.app.postProcAdmissions.takeDeferred(j); len(reasons) > 0 {
+	if reasons := r.app.postProcAdmissions.takeDeferred(j); len(reasons) > 0 {
 --- replace
-		if reasons := r.app.postProcAdmissions.takeDeferred(j); true {
+	if reasons := r.app.postProcAdmissions.takeDeferred(j); true {
 --- end
 
 [the job already in history is not dropped before the first tick]

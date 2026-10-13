@@ -72,15 +72,10 @@ func (app *Application) resumeLocked() {
 file internal/app/app.go
 --- anchor
 	app.dispatcher.Resume()
-	if app.downloader != nil {
-		app.downloader.Resume()
-	}
+	app.downloader.Resume()
 	app.ReevaluateStalls()
 --- replace
 	app.dispatcher.Resume()
-	if false && app.downloader != nil {
-		app.downloader.Resume()
-	}
 	app.ReevaluateStalls()
 --- end
 
@@ -140,25 +135,18 @@ file internal/app/app.go
 		app.pauseReason = pauseReasonLowDisk
 	}
 	app.dispatcher.Pause()
-	if app.downloader != nil {
-		app.downloader.Pause()
-	}
+	app.downloader.Pause()
 --- replace
 	if app.pauseReason != pauseReasonUser {
 		app.pauseReason = pauseReasonLowDisk
 	}
 	app.dispatcher.Pause()
-	if false && app.downloader != nil {
-		app.downloader.Pause()
-	}
 --- end
 
 [handleLowDisk pauses the downloader outside app.mu]
 file internal/app/app.go
 --- anchor
-	if app.downloader != nil {
-		app.downloader.Pause()
-	}
+	app.downloader.Pause()
 	if app.pauseReason == pauseReasonLowDisk && !app.stopping.Load() && !app.stopped.Load() && app.lowDiskRecheckInterval > 0 && app.lowDiskCancel == nil {
 		watchCtx, cancel := context.WithCancel(app.ctx)
 		app.lowDiskCancel = cancel
@@ -179,9 +167,7 @@ file internal/app/app.go
 		})
 	}
 	app.mu.Unlock()
-	if dl != nil {
-		dl.Pause()
-	}
+	dl.Pause()
 --- end
 
 [handleLowDisk spawns a duplicate watcher when lowDiskCancel is already set]

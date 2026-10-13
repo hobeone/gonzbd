@@ -46,16 +46,18 @@ single worker goroutine (`run`).
   including one whose ID is already queued or running. The app admits at most
   one post-processing run of a job instance, ever, in
   `Application.enqueuePostProc`, which keeps the admission record
-  (`postProcAdmissions`). It has two callers: `appRunner.runPostProc`, and
-  `finalizeRegistered`, which hands over only the instance it is given while
-  that instance is registered. It is the body of `maybeFinalizeJob`, which
-  `runAssess` calls with the instance it resolved, and of `maybeFinalize`,
-  which resolves the instance registered under an ID; `Application.Fail`
-  calls it with the instance its storage fault belongs to, and
-  `finalizeHopeless`, the body of the downloader's and the pipeline's hopeless
-  callbacks, with the instance it resolved
+  (`postProcAdmissions`). It has three callers
+  (`git grep -n 'enqueuePostProc(' -- 'internal/*.go' ':!*_test.go'`
+  returns them and the definition): `appRunner.runPostProc`,
+  `fileOwedUnwantedFailure`, and `finalizeRegistered`, which hands over only
+  the instance it is given while that instance is registered. It is the body
+  of `maybeFinalizeJob`, which `runAssess` and the unwanted-extension ingest
+  check call with the instance they hold; `Application.Fail` calls it with
+  the instance its storage fault belongs to, and `finalizeHopeless`, the body
+  of the downloader's and the pipeline's hopeless callbacks, with the
+  instance it resolved
   (`git grep -n 'finalizeRegistered(' -- 'internal/*.go' ':!*_test.go'`
-  returns those 4 call sites and the definition). An admission starts before the DirectUnpack wait and
+  returns those 3 call sites and the definition). An admission starts before the DirectUnpack wait and
   ends once `jobFinalizer.finalize` or `jobFinalizer.cancelled` has run, so it
   covers the two windows `HasJob` does not see: the wait before `Process`, and
   the callback tail after the worker clears its busy marker. Ending it does not
@@ -95,8 +97,8 @@ single worker goroutine (`run`).
   instance proceeds as the failed one would have
   (`TestFinalize_SkipsAJobWhoseRemovalFailed`).
 - **A job at Assessing is handed over by its Assessing worker**:
-  a deferring hand-over (`finalizeRegistered` with `deferAtAssessing`, as
-  `Fail`, `finalizeHopeless` and `maybeFinalize` make it) admits no job
+  a deferring hand-over (`enqueuePostProc` with `deferAtAssessing`, as
+  `Fail`, `finalizeHopeless` and `fileOwedUnwantedFailure` make it) admits no job
   whose open attempt is at `Assessing`, has
   `Assessing` recorded as its next state, or is complete at `Fetching`, where
   the download-complete report records it
@@ -114,11 +116,12 @@ single worker goroutine (`run`).
   job complete before it reads the admission, so it finds that admission and
   makes no report. A reason waits for a worker the tick has yet to launch, and
   the tick launches none for a paused job. A job `Stall` paused is resumed by
-  `Fail` when it defers, since `Fail` clears the stall record the
-  re-evaluation would have resumed it from; a job the user paused keeps the
-  reason until the user resumes it
+  the deferring hand-over (`enqueuePostProc`'s `handOverStall`), since the
+  hand-over clears the stall record the re-evaluation would have resumed it
+  from; a job the user paused keeps the reason until the user resumes it
   (`TestFail_OnAStalledCompleteJobAtFetching_ResumesItForAssessing`,
-  `TestFail_OnAUserPausedJob_DefersWithoutResumingIt`). A reason `Fail`
+  `TestFail_OnAUserPausedJob_DefersWithoutResumingIt`,
+  `TestFinalizeHopeless_OnAStalledJobAwaitingAssessing_ResumesItForAssessing`). A reason `Fail`
   deferred shows meanwhile as `Header.FailReason`, which `Fail` sets before
   it hands off; a hopeless callback sets no such field. It is held in memory, as an
   admission is, and dies with the process

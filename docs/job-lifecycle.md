@@ -937,8 +937,9 @@ that races a retry registering the job blocked after the API's own check.
 `ResumeJob` is called by a stall's re-evaluation, which logs a refusal and
 leaves the job paused, and by a resume from a caller holding only the NZB key
 (`git grep -n '\.ResumeJob(' -- '*.go' ':!*_test.go'` returns 2 lines, in
-`internal/app/stall.go` and `internal/api/queue.go`). `Fail` handing a parked
-job to its Assessing worker resumes through `ResumeInstance`, the same door
+`internal/app/stall.go` and `internal/api/queue.go`). A hand-over that defers
+a parked job to its Assessing worker (`handOverStall`) resumes it through
+`ResumeInstance`, the same door
 bound to one instance, and logs a refusal the same way. An approved job
 is not paused by the check again, keeps its files through `unwanted_cleanup`,
 and carries the approval into history, so a later retry is approved too.
@@ -948,8 +949,8 @@ Under `fail`, `AddJob` registers the job paused and blocked
 `maybeFinalizeJob`. The two steps are not atomic. A crash between them
 brings the job back as a paused, blocked queue job instead of a Failed
 history entry. That is still fail-closed: the job is paused by the check,
-not parked by Stall, so neither the stall re-evaluation nor `Fail` resumes
-it, and only a user's resume with the full key approves it.
+not parked by Stall, so neither the stall re-evaluation nor a deferring
+hand-over (`handOverStall`) resumes it, and only a user's resume with the full key approves it.
 
 The ingest check runs only when a job is added or retried. A settings change
 does not re-screen jobs already queued, as in SABnzbd. The post-unpack stage

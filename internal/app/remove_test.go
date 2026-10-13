@@ -98,24 +98,6 @@ func TestRemoveJob(t *testing.T) {
 	}
 }
 
-// TestRemoveJob_NilDownloader pins the nil-guard on RemoveJob's final
-// DisconnectAll call. New() always wires a real downloader, so app.downloader
-// is nilled out directly (white-box, same package) after construction to
-// exercise the branch.
-func TestRemoveJob_NilDownloader(t *testing.T) {
-	t.Parallel()
-	a := newRemoveJobTestApp(t)
-	a.downloader = nil
-
-	parsed := &nzb.NZB{}
-	j, hdr, _ := BuildIngestJob(a.config, parsed, "to-delete.nzb", types.FetchOptions{NzbName: "to-delete"}, nil)
-	_ = a.Dispatcher().Add(context.Background(), j, hdr)
-
-	if err := a.RemoveJob(t.Context(), j.ID(), false); err != nil {
-		t.Fatalf("RemoveJob with nil downloader: %v", err)
-	}
-}
-
 // errStoreDeleteRefused is the injected store-level failure.
 var errStoreDeleteRefused = errors.New("store refused the delete")
 

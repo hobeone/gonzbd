@@ -101,8 +101,9 @@ func (r *errReporter) AdvanceFrom(j *job.Job, from, next job.State) error {
 
 // TestAppRunner_AdvanceLogsByCause pins advance's logging: a verdict refused
 // because the job was cancelled or removed is expected and logged at Debug,
-// any other refusal at Warn, and a runner with no reporter reports nothing.
+// any other refusal at Warn.
 func TestAppRunner_AdvanceLogsByCause(t *testing.T) {
+	application := newTestApplication(t)
 	j := job.New("j1", "n", job.Policy{})
 	tests := []struct {
 		err  error
@@ -116,7 +117,7 @@ func TestAppRunner_AdvanceLogsByCause(t *testing.T) {
 	for _, tc := range tests {
 		var logs bytes.Buffer
 		rec := &errReporter{err: tc.err}
-		r := &appRunner{report: rec, log: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+		r := &appRunner{app: application, report: rec, log: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
 		r.advance(j, job.Extracting)
 		if got, want := rec.advance(j.ID()), [2]job.State{job.Assessing, job.Extracting}; got != want {
 			t.Errorf("err %v: reported %v, want %v", tc.err, got, want)
@@ -130,6 +131,4 @@ func TestAppRunner_AdvanceLogsByCause(t *testing.T) {
 		}
 	}
 
-	nilReport := &appRunner{log: slog.New(slog.DiscardHandler)}
-	nilReport.advance(j, job.Extracting) // must not panic
 }

@@ -22,7 +22,7 @@ func TestCompleteFinalizedFile_AdmittedJobIsNotReportedDownloaded(t *testing.T) 
 
 	// No failure reason, so the held stage keeps the job registered at
 	// Fetching: a reason skips the stages, and the finalizer deregisters it.
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 	if !application.postProcAdmissions.has(j) {
 		t.Fatal("precondition: the hand-off did not admit the job")
 	}

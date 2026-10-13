@@ -88,7 +88,7 @@ func TestHandOver_AfterTheDownloadFinished_KeepsTheDirectUnpackResults(t *testin
 	t.Cleanup(du.Abort)
 	application.duOrch.inject(id, du)
 
-	application.maybeFinalize(id, "")
+	application.maybeFinalizeJob(j, "")
 	select {
 	case <-du.Done():
 		t.Fatalf("the hand-over stopped the unpacker of a job whose download had finished; failures %v",
