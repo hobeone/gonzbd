@@ -1,7 +1,9 @@
 package unpack
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -90,13 +92,15 @@ func prepareStageDir(outDir string) (string, error) {
 // only when extract returns nil, publishes the files it wrote there into outDir
 // through publishStagedExtraction, returning their paths relative to outDir.
 // The stage is removed on every return, so a failed or abandoned extraction
-// leaves nothing in outDir. A stage a crash leaves behind carries the
-// .gonzbd-tmp-unpack- prefix, so the next CleanupStageDirs of outDir removes it.
+// leaves nothing in outDir: no file, no directory, and no file it would have
+// replaced. A stage a crash leaves behind carries the .gonzbd-tmp-unpack-
+// prefix, so the next CleanupStageDirs of outDir removes it.
 //
-// It is for an in-process extraction that writes members through ExtractMember
-// rooted at the stage. With opts.OneFolder and without opts.OverwriteFiles, a
-// file whose name outDir already holds is published under a uniquePath name,
-// the rule ExtractMember applies inside the stage, rather than skipped.
+// It is the staging step of every archive extractor of this package (through
+// extractInStage) and of DirectUnpack. With opts.OneFolder and without
+// opts.OverwriteFiles, a file whose name outDir already holds is published
+// under a uniquePath name, the rule memberPath applies inside the stage,
+// rather than skipped.
 //
 // A publish that fails part way leaves the files it already renamed in outDir.
 func ExtractStaged(log *slog.Logger, outDir string, opts Options, extract func(stageDir string) error) ([]string, error) {
@@ -108,14 +112,51 @@ func ExtractStaged(log *slog.Logger, outDir string, opts Options, extract func(s
 	if err := extract(stageDir); err != nil {
 		return nil, err
 	}
-	return publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
+	published, err := publishStagedExtraction(log, outDir, stageDir, opts)
+	if err != nil {
+		return published, fmt.Errorf("unpack: publish staged files: %w", err)
+	}
+	return published, nil
+}
+
+// extractInStage runs one extraction attempt of an archive extractor through
+// ExtractStaged, so the attempt reaches outDir only if it succeeds. extract
+// writes into the stage it is given and returns the attempt's Result, whose
+// ExtractedFiles it leaves empty: on success extractInStage sets it to what
+// the publish moved into outDir, relative to outDir.
+//
+// Before the attempt it refuses an archive whose declared unpacked size does
+// not fit above opts.MinFreeSpace (checkFreeSpace), and it classifies an
+// attempt that filled the disk as FailDiskFull (withDiskFull).
+//
+// Every archive extractor goes through it: `git grep -n 'extractInStag[e]('
+// -- 'internal/unpack/*.go' ':!*_test.go'` returns 6 lines, this definition
+// and the calls in GoUnRAR, GoSevenZip, GoTar, UnRAR and SevenZip.
+func extractInStage(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options, extract func(stageDir string) (Result, error)) (Result, error) {
+	if err := checkFreeSpace(ctx, log, archive, outDir, password, opts.MinFreeSpace); err != nil {
+		if opts.OnLine != nil {
+			opts.OnLine("ERROR: " + err.Error())
+		}
+		return withDiskFull(Result{}, err)
+	}
+	var res Result
+	published, err := ExtractStaged(log, outDir, opts, func(stageDir string) error {
+		var err error
+		res, err = extract(stageDir)
+		return err
+	})
+	if err != nil {
+		return withDiskFull(res, err)
+	}
+	res.ExtractedFiles = published
+	return res, nil
 }
 
 // publishStagedExtraction atomically renames each completed file from stageDir
 // into outDir after an extraction into the stage has succeeded, and returns
 // the relative paths of the published files (#768). When opts.OverwriteFiles
 // is false, a file whose name outDir already holds is skipped, the existing
-// file preserved — or, with renameTaken, published under a uniquePath name.
+// file preserved — or, with opts.OneFolder, published under a uniquePath name.
 //
 // It enforces the "no links in a job" rule (see rar_links.go) on whatever the
 // extraction left in the stage: unrar can leave hard links there (and
@@ -131,7 +172,7 @@ func ExtractStaged(log *slog.Logger, outDir string, opts Options, extract func(s
 // archive stored for it. Either way the stage's own directories are first
 // made owner-writable by ownStageDirs, so their files can be renamed out
 // (#862).
-func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Options, renameTaken bool) ([]string, error) {
+func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Options) ([]string, error) {
 	root, err := os.OpenRoot(outDir)
 	if err != nil {
 		return nil, err
@@ -179,7 +220,7 @@ func publishStagedExtraction(log *slog.Logger, outDir, stageDir string, opts Opt
 		// no free name, so the check below still skips a name it could not
 		// replace.
 		dest := rel
-		if renameTaken && !opts.OverwriteFiles {
+		if opts.OneFolder && !opts.OverwriteFiles {
 			dest = uniquePath(root, rel)
 		}
 		if !opts.OverwriteFiles {
@@ -268,8 +309,9 @@ func isStagedLink(d os.DirEntry, staged map[fileID]uint64, seen map[fileID]struc
 }
 
 // snapshotDir returns a set of every non-directory entry (relative paths)
-// under dir: regular files, and also symlinks or other special files.
-// Used to diff before/after extraction to determine which files were created.
+// under dir: regular files, and also symlinks or other special files. UnRAR
+// reads it to tell whether an unrar that corrected a filename and exited
+// non-zero left anything in its stage.
 func snapshotDir(dir string) (map[string]struct{}, error) {
 	files := make(map[string]struct{})
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
@@ -290,15 +332,4 @@ func snapshotDir(dir string) (map[string]struct{}, error) {
 		return nil, err
 	}
 	return files, nil
-}
-
-// diffSnapshot returns files present in after but not in before (i.e. new files).
-func diffSnapshot(before, after map[string]struct{}) []string {
-	var newFiles []string
-	for f := range after {
-		if _, ok := before[f]; !ok {
-			newFiles = append(newFiles, f)
-		}
-	}
-	return newFiles
 }

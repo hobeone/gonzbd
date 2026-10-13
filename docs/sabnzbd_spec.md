@@ -689,7 +689,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 |-----|------|---------|-------------|
 | `bandwidth_max` | string | `` | Max bandwidth (e.g., `10M`, `1G`, `0`=unlimited) |
 | `bandwidth_perc` | int | `100` | Percentage of max to use |
-| `min_free_space` | string (`ByteSize`) | `1G` | Min free disk space before pause (accepts K/M/G/T suffixes) |
+| `min_free_space` | string (`ByteSize`) | `1G` | Min free disk space before pause; an unpack that would leave less is refused (accepts K/M/G/T suffixes) |
 | `max_art_tries` | int | `3` | Max tries per article before marking bad |
 | `max_art_opt` | int | `1` | Max optional servers an article is tried on (0 = no limit) |
 | `max_active_jobs` | int | `4` | Maximum number of active/processing jobs concurrently |

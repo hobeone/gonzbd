@@ -21,11 +21,15 @@ type flatCase struct {
 	fixture string // flat_collide or flat_dir_file
 	taken   bool   // outDir already holds f.txt="pre"
 	want    []string
+	// names, when set, is the sorted names of the regular files in outDir.
+	names []string
 }
 
 var flatCases = []flatCase{
 	{name: "file collides with file", fixture: "flat_collide", want: []string{"one", "two"}},
-	{name: "file collides with directory", fixture: "flat_dir_file", want: []string{"file", "y"}},
+	// A directory member takes no name, so the file keeps x even where the
+	// archive stores the directory b/x before it (7z, and the tar shape).
+	{name: "file collides with directory", fixture: "flat_dir_file", want: []string{"file", "y"}, names: []string{"x", "y"}},
 	{name: "file collides with the output directory", fixture: "flat_collide", taken: true, want: []string{"one", "pre", "two"}},
 }
 
@@ -34,8 +38,11 @@ type flatEngine func(ctx context.Context, log *slog.Logger, archive Archive, out
 // runFlatCases runs engine over every flatCase with OneFolder on and
 // OverwriteFiles off, and requires that every member reached outDir as a
 // regular file of its own, that no directory was created, and that the
-// Result lists each new file.
-func runFlatCases(t *testing.T, engine flatEngine, archiveFor func(t *testing.T, fixture string) Archive) {
+// Result lists each new file. With checkNames it also requires each case's
+// names: the in-process engines decide them through memberPath, while an
+// external tool's flat mode makes its own (7z e creates the directory x in
+// the stage, so its file x is published as x_1).
+func runFlatCases(t *testing.T, engine flatEngine, archiveFor func(t *testing.T, fixture string) Archive, checkNames bool) {
 	t.Helper()
 	for _, tc := range flatCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,9 +56,12 @@ func runFlatCases(t *testing.T, engine flatEngine, archiveFor func(t *testing.T,
 			if err != nil {
 				t.Fatalf("extract: %v\noutput:\n%s", err, res.Output)
 			}
-			contents, dirs := flatOutput(t, outDir)
+			contents, names, dirs := flatOutput(t, outDir)
 			if !slices.Equal(contents, tc.want) {
 				t.Errorf("contents of the regular files in outDir = %q, want %q (every member kept)", contents, tc.want)
+			}
+			if checkNames && tc.names != nil && !slices.Equal(names, tc.names) {
+				t.Errorf("names of the regular files in outDir = %q, want %q (a directory member took a file's name)", names, tc.names)
 			}
 			if len(dirs) != 0 {
 				t.Errorf("flat extraction created directories %q, want none", dirs)
@@ -70,9 +80,10 @@ func runFlatCases(t *testing.T, engine flatEngine, archiveFor func(t *testing.T,
 	}
 }
 
-// flatOutput returns the sorted contents of every regular file under dir and
-// the relative path of every directory under it.
-func flatOutput(t *testing.T, dir string) (contents, dirs []string) {
+// flatOutput returns the sorted contents and the sorted relative names of
+// every regular file under dir, and the relative path of every directory
+// under it.
+func flatOutput(t *testing.T, dir string) (contents, names, dirs []string) {
 	t.Helper()
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || path == dir {
@@ -91,13 +102,15 @@ func flatOutput(t *testing.T, dir string) (contents, dirs []string) {
 			return err
 		}
 		contents = append(contents, string(b))
+		names = append(names, rel)
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	slices.Sort(contents)
-	return contents, dirs
+	slices.Sort(names)
+	return contents, names, dirs
 }
 
 func fixtureArchive(typ ArchiveType, ext string) func(t *testing.T, fixture string) Archive {
@@ -129,31 +142,31 @@ func TestFlatCollisions_UnRAR(t *testing.T) {
 	requireBinary(t, UnrarBin)
 	runFlatCases(t, func(ctx context.Context, log *slog.Logger, a Archive, outDir string, opts Options) (Result, error) {
 		return UnRAR(ctx, log, a, outDir, "", opts)
-	}, fixtureArchive(RarArchive, ".rar"))
+	}, fixtureArchive(RarArchive, ".rar"), false)
 }
 
 func TestFlatCollisions_SevenZip(t *testing.T) {
 	requireBinary(t, SevenZipBin)
 	runFlatCases(t, func(ctx context.Context, log *slog.Logger, a Archive, outDir string, opts Options) (Result, error) {
 		return SevenZip(ctx, log, a, outDir, "", opts)
-	}, fixtureArchive(SevenZipArchive, ".7z"))
+	}, fixtureArchive(SevenZipArchive, ".7z"), false)
 }
 
 func TestFlatCollisions_GoUnRAR(t *testing.T) {
 	runFlatCases(t, func(ctx context.Context, log *slog.Logger, a Archive, outDir string, opts Options) (Result, error) {
 		return GoUnRAR(ctx, log, a, outDir, "", opts)
-	}, fixtureArchive(RarArchive, ".rar"))
+	}, fixtureArchive(RarArchive, ".rar"), true)
 }
 
 func TestFlatCollisions_GoSevenZip(t *testing.T) {
 	runFlatCases(t, func(ctx context.Context, log *slog.Logger, a Archive, outDir string, opts Options) (Result, error) {
 		return GoSevenZip(ctx, log, a, outDir, "", opts)
-	}, fixtureArchive(SevenZipArchive, ".7z"))
+	}, fixtureArchive(SevenZipArchive, ".7z"), true)
 }
 
-// TestFlatCollisions_GoTar builds the two shapes as tars in the order `tar c`
-// writes them, each directory before its contents, so the directory b/x
-// comes after the file a/x has taken the name x.
+// TestFlatCollisions_GoTar builds the two shapes as tars in the order
+// `tar c b a` writes them, each directory before its contents, so the
+// directory b/x comes before the file a/x that flattens to the same name.
 func TestFlatCollisions_GoTar(t *testing.T) {
 	shapes := map[string][]tarEntry{
 		"flat_collide": {
@@ -163,16 +176,16 @@ func TestFlatCollisions_GoTar(t *testing.T) {
 			{name: "b/f.txt", content: []byte("two")},
 		},
 		"flat_dir_file": {
-			{name: "a/", typeflag: tar.TypeDir},
-			{name: "a/x", content: []byte("file")},
 			{name: "b/", typeflag: tar.TypeDir},
 			{name: "b/x/", typeflag: tar.TypeDir},
 			{name: "b/x/y", content: []byte("y")},
+			{name: "a/", typeflag: tar.TypeDir},
+			{name: "a/x", content: []byte("file")},
 		},
 	}
 	runFlatCases(t, GoTar, func(t *testing.T, fixture string) Archive {
 		t.Helper()
 		p := buildTar(t, t.TempDir(), fixture+".tar", shapes[fixture])
 		return Archive{Type: TarArchive, Name: fixture, MainFile: p, Parts: []string{p}}
-	})
+	}, true)
 }

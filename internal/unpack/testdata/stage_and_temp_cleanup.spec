@@ -9,11 +9,11 @@ run ^(TestUnRAR_UnreadableStageIsReportedAndLogged|TestWriteEntrySafely_FailedTe
 [the unreadable stage is not reported]
 file internal/unpack/unrar.go
 --- anchor
-			if snapErr != nil {
-				res.Err = errors.Join(res.Err, fmt.Errorf("unrar: read staged files: %w", snapErr))
+	if snapErr != nil {
+		err = errors.Join(err, fmt.Errorf("unrar: read staged files: %w", snapErr))
 --- replace
-			if false {
-				res.Err = errors.Join(res.Err, fmt.Errorf("unrar: read staged files: %w", snapErr))
+	if false {
+		err = errors.Join(err, fmt.Errorf("unrar: read staged files: %w", snapErr))
 --- end
 
 [a staging directory left behind is not logged]

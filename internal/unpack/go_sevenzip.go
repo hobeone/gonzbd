@@ -5,14 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
-	"io"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
-	"syscall"
 
 	"github.com/bodgit/sevenzip"
 
@@ -28,39 +25,37 @@ import (
 // assembled from an incomplete download) extracts without error. The
 // "checksum error" substring matches classifySevenZipError's existing
 // FailCorrupt heuristic, used for the library's own checksum errors.
-var (
-	errSevenZipChecksum = errors.New("go_7z: checksum error: content does not match archive CRC32")
-	errSevenZipBomb     = errors.New("go_7z: decompression bomb detected: size or ratio exceeds limits")
-)
+var errSevenZipChecksum = errors.New("go_7z: checksum error: content does not match archive CRC32")
 
 // GoSevenZip extracts archive.MainFile into outDir using the pure-Go
 // bodgit/sevenzip library. It is equivalent to SevenZip (subprocess) but
 // requires no external binary.
 //
-// Files are extracted in natural archive order and each file's reader is
-// closed before opening the next, enabling the library's stream reuse
-// optimisation for solid archives.
-func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
-	err = cmdutil.SafeEngineRun("go_7z: sevenzip panic", func() error {
-		res, err = goSevenZipInternal(ctx, log, archive, outDir, password, opts)
-		return err
-	}, func(p any) {
-		res.Reason = FailCorrupt
-		if opts.OnLine != nil {
-			opts.OnLine(fmt.Sprintf("ERROR: sevenzip panic: %v", p))
-		}
+// It extracts into a staging directory inside outDir and publishes the result
+// only on success (extractInStage). Files are extracted in natural archive
+// order and each file's reader is closed before opening the next, enabling
+// the library's stream reuse optimisation for solid archives.
+func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
+	res, err := extractInStage(ctx, log, archive, outDir, password, opts, func(stageDir string) (res Result, err error) {
+		err = cmdutil.SafeEngineRun("go_7z: sevenzip panic", func() error {
+			res, err = goSevenZipInternal(ctx, log, archive, stageDir, password, opts)
+			return err
+		}, func(p any) {
+			res.Reason = FailCorrupt
+			if opts.OnLine != nil {
+				opts.OnLine(fmt.Sprintf("ERROR: sevenzip panic: %v", p))
+			}
+		})
+		return res, err
 	})
+	res.CommandLine = fmt.Sprintf("go_7z %s -> %s", archive.MainFile, outDir)
+	res.Engine = "go_7z"
 	return res, err
 }
 
-func goSevenZipInternal(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
+// goSevenZipInternal extracts archive into stageDir.
+func goSevenZipInternal(ctx context.Context, log *slog.Logger, archive Archive, stageDir, password string, opts Options) (res Result, err error) {
 	log = log.With("component", "go_7z", "archive", archive.MainFile)
-
-	// Snapshot directory before extraction.
-	before, snapErr := snapshotDir(outDir)
-	if snapErr != nil {
-		return res, fmt.Errorf("go_7z: snapshot dir: %w", snapErr)
-	}
 
 	var r *sevenzip.ReadCloser
 	if password != "" {
@@ -78,113 +73,44 @@ func goSevenZipInternal(ctx context.Context, log *slog.Logger, archive Archive, 
 	defer r.Close() //nolint:errcheck // best-effort close
 
 	log.Info("starting extraction",
-		"outDir", outDir,
+		"stageDir", stageDir,
 		"files", len(r.File),
 	)
 
-	// Open the output directory as an os.Root once for the entire extraction.
-	// All entry writes go through this rooted handle so they cannot escape
-	// outDir via "..", an absolute path, or a symlinked path component.
-	root, err := os.OpenRoot(outDir)
+	// Open the stage as an os.Root once for the entire extraction. All entry
+	// writes go through this rooted handle so they cannot escape the stage
+	// via "..", an absolute path, or a symlinked path component.
+	root, err := os.OpenRoot(stageDir)
 	if err != nil {
 		return res, fmt.Errorf("go_7z: open root: %w", err)
 	}
 	defer root.Close() //nolint:errcheck // close after all writes; not in a loop
 
-	var arcSize int64
-	if st, statErr := os.Stat(archive.MainFile); statErr == nil {
-		arcSize = st.Size()
-	}
-	var totalRead int64
+	var outBuf strings.Builder
 
 	for _, f := range r.File {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
 
-		extracted, err := extractSevenZipEntry(ctx, f, outDir, root, opts, arcSize, &totalRead, log)
+		extracted, err := extractSevenZipEntry(ctx, f, stageDir, root, opts, log)
 		if err != nil {
 			res.Reason = classifySevenZipError(err)
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", f.Name, err))
 			}
-			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				discardPartialFiles(outDir, before, log, "go_7z")
-			}
 			return res, err
 		}
 
-		if extracted && opts.OnLine != nil {
-			opts.OnLine("Extracting  " + f.Name)
-		}
-	}
-
-	// Diff output directory to find extracted files.
-	after, snapErr := snapshotDir(outDir)
-	if snapErr != nil {
-		return res, fmt.Errorf("go_7z: snapshot after: %w", snapErr)
-	}
-	res.ExtractedFiles = diffSnapshot(before, after)
-	res.CommandLine = fmt.Sprintf("go_7z %s -> %s", archive.MainFile, outDir)
-
-	var outBuf strings.Builder
-	for _, f := range res.ExtractedFiles {
-		displayPath := f
-		if filepath.IsAbs(f) {
-			if rel, err := filepath.Rel(outDir, f); err == nil && !strings.HasPrefix(rel, "..") {
-				displayPath = rel
-			} else {
-				displayPath = filepath.Base(f)
+		if extracted {
+			outBuf.WriteString("Extracting  " + f.Name + "\n")
+			if opts.OnLine != nil {
+				opts.OnLine("Extracting  " + f.Name)
 			}
 		}
-		outBuf.WriteString("Extracting  " + displayPath + "\n")
 	}
 	res.Output = outBuf.String()
-
-	log.Info("extraction complete",
-		"extracted", len(res.ExtractedFiles))
-
 	return res, nil
-}
-
-// boundReader enforces decompression-bomb limits (total bytes read and
-// compression ratio) on a streaming reader. It is shared across pure-Go
-// extractors (go_7z, go_tar) so the size/ratio enforcement algorithm has
-// exactly one implementation; errBomb and errPrefix let each caller report
-// its own sentinel error and message prefix rather than hardcoding go_7z's.
-type boundReader struct {
-	r            io.Reader
-	totalRead    *int64
-	maxSize      int64
-	maxRatio     int64
-	arcSize      int64
-	minThreshold int64
-	name         string
-	errBomb      error
-	errPrefix    string
-}
-
-func (b *boundReader) Read(p []byte) (int, error) {
-	n, err := b.r.Read(p)
-	if n > 0 {
-		atomic.AddInt64(b.totalRead, int64(n))
-		currTotal := atomic.LoadInt64(b.totalRead)
-		if currTotal < 0 {
-			return n, fmt.Errorf("%s: invalid negative total read count: %d", b.errPrefix, currTotal)
-		}
-		if b.maxSize > 0 && currTotal > b.maxSize {
-			return n, fmt.Errorf("%w: total read (%d bytes) exceeds ceiling (%d bytes)", b.errBomb, currTotal, b.maxSize)
-		}
-		// Compute the ratio ceiling in uint64 to avoid int64 overflow on very
-		// large archives (matching the projected-size check in
-		// extractSevenZipFile). currTotal, arcSize and maxRatio are all
-		// positive in this branch, so the conversions are safe.
-		if b.arcSize > 0 && b.maxRatio > 0 && currTotal > b.minThreshold &&
-			uint64(currTotal) > uint64(b.arcSize)*uint64(b.maxRatio) {
-			return n, fmt.Errorf("%w: archive ratio exceeds limit (%d)", b.errBomb, b.maxRatio)
-		}
-	}
-	return n, err
 }
 
 // extractSevenZipFile extracts a single file from the archive to disk through
@@ -193,11 +119,7 @@ func (b *boundReader) Read(p []byte) (int, error) {
 // path used only for skip-check logging. The file's reader is opened and
 // closed within this function to enable the library's stream reuse
 // optimisation for solid archives.
-func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath string, f *sevenzip.File, opts Options, arcSize int64, totalRead *int64, log *slog.Logger) error {
-	if err := projectedBombCheck(f.UncompressedSize, arcSize, totalRead, opts, f.Name, "uncompressed", errSevenZipBomb, "go_7z"); err != nil {
-		return err
-	}
-
+func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath string, f *sevenzip.File, opts Options, log *slog.Logger) error {
 	rc, err := f.Open()
 	if err != nil {
 		return fmt.Errorf("go_7z: open entry %s: %w", f.Name, err)
@@ -209,7 +131,6 @@ func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath s
 	// against f.CRC32 below — the library itself never does this (see
 	// errSevenZipChecksum).
 	hasher := crc32.NewIEEE()
-	br := newBoundReader(rc, totalRead, arcSize, opts, f.Name, errSevenZipBomb, "go_7z")
 
 	// Permissions: strip executable bits from untrusted archives.
 	// Only keep rw bits (mode & 0o666). If the archive entry has an
@@ -238,7 +159,7 @@ func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath s
 	// skip-existing -- the deferred rc.Close() above is enough, and not
 	// draining preserves the library's stream-reuse optimisation for solid
 	// archives across skipped entries.
-	_, err = writeEntrySafely(ctx, root, destRel, destPath, br, hasher, false, mode, f.Modified, opts, f.Name, "go_7z", log, verifyChecksum)
+	_, err = writeEntrySafely(ctx, root, destRel, destPath, rc, hasher, false, mode, f.Modified, opts, f.Name, "go_7z", log, verifyChecksum)
 	return err
 }
 
@@ -259,18 +180,12 @@ func classifySevenZipError(err error) FailReason {
 	if strings.Contains(errStr, "not a valid 7-zip file") {
 		return FailNotArchive
 	}
-	if strings.Contains(errStr, "checksum error") || errors.Is(err, errSevenZipBomb) || strings.Contains(errStr, "decompression bomb") {
+	if strings.Contains(errStr, "checksum error") {
 		return FailCorrupt
 	}
 	if strings.Contains(errStr, "unsupported compression algorithm") {
 		return FailCorrupt
 	}
-
-	// Disk full.
-	if errno, ok := errors.AsType[syscall.Errno](err); ok && errno == syscall.ENOSPC {
-		return FailDiskFull
-	}
-
 	return FailUnknown
 }
 
@@ -278,7 +193,7 @@ func classifySevenZipError(err error) FailReason {
 // and file extraction for a single 7-zip archive entry. root is an os.Root
 // anchored at outDir opened once by the caller. Returns true if the entry was
 // extracted (regular file), or false if it was skipped or a directory.
-func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, root *os.Root, opts Options, arcSize int64, totalRead *int64, log *slog.Logger) (bool, error) {
+func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, root *os.Root, opts Options, log *slog.Logger) (bool, error) {
 	destRel, ok := memberPath(root, f.Name, f.FileInfo().IsDir(), opts, log)
 	if !ok {
 		return false, nil
@@ -309,7 +224,7 @@ func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, 
 		return false, nil
 	}
 
-	if err := extractSevenZipFile(ctx, root, destRel, destPath, f, opts, arcSize, totalRead, log); err != nil {
+	if err := extractSevenZipFile(ctx, root, destRel, destPath, f, opts, log); err != nil {
 		return false, err
 	}
 

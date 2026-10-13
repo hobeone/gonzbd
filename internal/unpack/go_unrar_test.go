@@ -822,7 +822,7 @@ func TestDetectRarVersionDirect(t *testing.T) {
 	})
 }
 
-// TestGoUnRAREngine_NilLoggerPanicRecovery verifies that GoUnRAREngine's
+// TestGoUnRAREngine_NilLoggerPanicRecovery verifies that goUnRAREngine's
 // cmdutil.SafeEngineRun wrapper recovers from a panic triggered by a caller
 // passing a nil *slog.Logger: goUnRAREngineInternal calls log.With(...)
 // unconditionally, which panics on a nil receiver. This is a caller-contract
@@ -833,7 +833,7 @@ func TestGoUnRAREngine_NilLoggerPanicRecovery(t *testing.T) {
 		MainFile: "dummy.rar",
 	}
 	var onlineMsg string
-	res, err := GoUnRAREngine(context.Background(), nil, archive, t.TempDir(), "", Options{
+	res, err := goUnRAREngine(context.Background(), nil, archive, t.TempDir(), "", Options{
 		OnLine: func(msg string) { onlineMsg = msg },
 	})
 	if err == nil {
@@ -862,8 +862,11 @@ func TestGoUnRAREngineInternal_Direct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("goUnRAREngineInternal() error: %v", err)
 	}
-	if len(res.ExtractedFiles) == 0 {
-		t.Fatal("goUnRAREngineInternal() extracted no files")
+	if !strings.Contains(res.Output, "Extracting  file1.txt") {
+		t.Fatalf("goUnRAREngineInternal() Output = %q, want a line for file1.txt", res.Output)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "file1.txt")); err != nil {
+		t.Fatalf("file1.txt not written into the directory it was given: %v", err)
 	}
 }
 

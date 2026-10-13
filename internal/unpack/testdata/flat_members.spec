@@ -39,13 +39,12 @@ file internal/unpack/sanitized_path.go
 	}
 --- end
 
-[go_unrar does not say a member is a directory]
-file internal/unpack/go_unrar.go
---- anchor
-	rel, ok := memberPath(root, fh.Name, fh.IsDir, opts, log)
---- replace
-	rel, ok := memberPath(root, fh.Name, false, opts, log)
---- end
+# Every extraction is staged, and the publish creates no directory under
+# OneFolder, so a directory member read as a file is visible only when it
+# comes before a file of the same flattened name and pushes it to x_1. 7z and
+# `tar c b a` store the directory first; rar stores every directory record
+# after its contents, so go_unrar's argument has no observable effect on an
+# archive rar writes and is not mutated here.
 
 [go_7z does not say a member is a directory]
 file internal/unpack/go_sevenzip.go

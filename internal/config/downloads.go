@@ -15,7 +15,8 @@ type DownloadConfig struct {
 	BandwidthPerc Percent `yaml:"bandwidth_perc" json:"bandwidth_perc"`
 
 	// MinFreeSpace is the minimum free disk space on the download
-	// volume. Below this the downloader pauses.
+	// volume. Below this the downloader pauses, and an unpack whose
+	// archive declares more than the free space above it is refused.
 	MinFreeSpace ByteSize `yaml:"min_free_space" json:"min_free_space"`
 
 	// MaxArtTries is the per-article attempt count across all servers

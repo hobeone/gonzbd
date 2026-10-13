@@ -21,7 +21,7 @@ file internal/unpack/snapshot.go
 	}
 --- replace
 	if err := extract(stageDir); err != nil {
-		_, _ = publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
+		_, _ = publishStagedExtraction(log, outDir, stageDir, opts)
 		return nil, err
 	}
 --- end
@@ -42,9 +42,9 @@ file internal/unpack/snapshot.go
 [a succeeded set is not published]
 file internal/unpack/snapshot.go
 --- anchor
-	return publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
+	published, err := publishStagedExtraction(log, outDir, stageDir, opts)
 --- replace
-	return nil, nil
+	published, err := []string(nil), error(nil)
 --- end
 
 [ExtractedFiles lists names relative to the job directory]
@@ -55,18 +55,10 @@ file internal/directunpack/directunpack.go
 			extractedFiles = append(extractedFiles, rel)
 --- end
 
-[ExtractStaged does not ask publish to rename a taken name]
+[publish skips a taken name under OneFolder]
 file internal/unpack/snapshot.go
 --- anchor
-	return publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
+		if opts.OneFolder && !opts.OverwriteFiles {
 --- replace
-	return publishStagedExtraction(log, outDir, stageDir, opts, false)
---- end
-
-[publish skips a taken name it was asked to rename]
-file internal/unpack/snapshot.go
---- anchor
-		if renameTaken && !opts.OverwriteFiles {
---- replace
-		if false && renameTaken && !opts.OverwriteFiles {
+		if false {
 --- end

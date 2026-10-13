@@ -275,7 +275,7 @@ func buildTestTar(t *testing.T, dir, name string) string {
 
 // TestUnpackStage_ExtractTarArchive verifies a plain .tar archive is
 // extracted successfully when EnableTar is true, and that extractTarArchive
-// reports completion via job.OnOutput (proving the "err == nil && res.Err ==
+// reports completion via job.OnOutput (proving the "err == nil"
 // nil" success branch actually gates the "unpacking complete" callback,
 // rather than firing unconditionally or never).
 func TestUnpackStage_ExtractTarArchive(t *testing.T) {
@@ -356,8 +356,7 @@ func TestUnpackStage_TarDisabledSkips(t *testing.T) {
 // containing both a plain .tar and a RAR archive extracts both in a single
 // UnpackStage.Run pass, each dispatched to its correct engine (go_tar for
 // the tar, go_unrar for the RAR — proven via the per-engine OnOutput lines
-// each dispatcher emits, since job.OutputLines labels tar with the generic
-// "tar" archiveTypeName rather than "go_tar").
+// each dispatcher emits).
 func TestUnpackStage_MixedTarAndRarArchives(t *testing.T) {
 	t.Parallel()
 
@@ -739,12 +738,12 @@ func TestUnpackHelpers(t *testing.T) {
 
 		// Scenario B: External only
 		resB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false, SevenZipCommand: stub}, true, true)
-		assertExtractEngine(t, "scenario B", resB, errB, "7zip")
+		assertExtractEngine(t, "scenario B", resB, errB, "7z")
 
 		// Scenario C: Native Go with external fallback -- should behave like
 		// B (fallback ran and switched engines away from go_7z).
 		resC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true, SevenZipCommand: stub}, true, true)
-		assertExtractEngine(t, "scenario C", resC, errC, "7zip")
+		assertExtractEngine(t, "scenario C", resC, errC, "7z")
 	})
 
 	// 5. Test extractArchive (SplitArchive disabled)
@@ -759,7 +758,7 @@ func TestUnpackHelpers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
-		if res.Engine != "" || res.ExitCode != 0 || res.Err != nil {
+		if res.Engine != "" || res.ExitCode != 0 {
 			t.Errorf("expected zero-value Result for disabled join, got %+v", res)
 		}
 	})
@@ -1420,9 +1419,9 @@ func TestCleanupContainmentViolation_Direct(t *testing.T) {
 
 	// We pass:
 	// 1. "link.txt" (relative path to symlink pointing out of bounds)
-	// 2. normalFile (absolute path to normal file inside outDir)
+	// 2. "normal.txt" (a normal file inside outDir)
 	// 3. "nonexistent.txt" (to cover error path when file doesn't exist)
-	cleanupContainmentViolation(outDir, []string{"link.txt", normalFile, "nonexistent.txt"}, log)
+	cleanupContainmentViolation(outDir, []string{"link.txt", "normal.txt", "nonexistent.txt"}, log)
 
 	// The out-of-bounds symlink target is a pre-existing victim file: it MUST
 	// be preserved. Following the symlink to delete it would let a malicious
@@ -1606,7 +1605,8 @@ func TestCleanupContainmentViolation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanupContainmentViolation(dir, []string{"valid.txt", outsideFile}, slog.Default())
+	// ExtractedFiles is relative to outDir; one that climbs out is refused.
+	cleanupContainmentViolation(dir, []string{"valid.txt", "../outside.txt"}, slog.Default())
 
 	if _, err := os.Stat(validFile); !os.IsNotExist(err) {
 		t.Errorf("expected valid.txt to be deleted")

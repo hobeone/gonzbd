@@ -307,8 +307,9 @@ The qualifier is load-bearing. The extraction path does write into that
 directory transiently: `fsutil.RootedCreateTemp` and
 `fsutil.RootedCreateTempPerm` put a `.gonzbd-tmp-<16 lowercase hex>`
 (`fsutil.IsTempFile`) file beside each entry they are about to rename into
-place (`writeEntrySafely` and `FileJoin`), and the four `unpack` engines open
-their root at the same directory. Those are removed on the deferred path, and
+place (`writeEntrySafely` and `FileJoin`), and the in-process `unpack`
+engines open their root at a `.gonzbd-tmp-unpack-*` staging directory inside
+it. Those are removed on the deferred path, and
 any orphan left behind by a crash or a kill mid-extraction is swept at the
 start of the next post-processing run (`sweepTempFiles` in `processJob`). What
 does not exist any more is a file we later READ BACK and act on — which is the
@@ -369,13 +370,12 @@ Where each extractor enforces it:
   lines, the definition and the call, both in `internal/unpack/go_unrar.go`. A RAR5 file reference
   (`rar -oi`) is skipped too: it names its source by path, and resolving that
   path in the job directory could copy a file that is not a member of the set,
-  any number of times. DirectUnpack then publishes its staged set through
-  `publishStagedExtraction` (see the external `unrar` and `7z` item below), so its checks
-  apply to its output too.
+  any number of times.
 - **Pure-Go 7z and tar**: `extractSevenZipEntry` and `GoTar` extract only
   regular files and directories.
-- **External `unrar` and `7z`**: both extract into a private staging directory,
-  and `publishStagedExtraction` publishes only regular files. It publishes no
+- **Every extractor, external `unrar` and `7z` included**: each extracts into
+  a private staging directory (`unpack.ExtractStaged`; see "Unpack Failure"
+  below), and `publishStagedExtraction` publishes only regular files. It publishes no
   name of a file that also has a name outside the staging directory, and only
   the first name (in lexical walk order) of a file whose several names are all
   inside it, so the name that survives a hard-linked pair is not necessarily
@@ -891,6 +891,31 @@ recorded entirely through the fetch-policy discard, not through this field.
 - **Unpack Failure (`UnpackError = true`)**: Extraction errors (bad password,
   corrupt archive) set `UnpackError = true`. Original archive files and `.par2` recovery files are
   preserved in `DownloadDir` for manual recovery.
+  An archive extraction changes `DownloadDir` only when it succeeds: every
+  archive extractor (`go_unrar`, `go_7z`, `go_tar`, `unrar`, `7z`, and
+  DirectUnpack) writes into a `.gonzbd-tmp-unpack-*` staging directory inside
+  it through `unpack.ExtractStaged`, which publishes the stage's files on
+  success and removes the stage on every return. A failed or cancelled
+  attempt therefore leaves no member, no directory, and no replaced file
+  behind, and a later attempt meets nothing of it
+  (`TestInProcessExtraction_CancelledLeavesNothing`,
+  `TestGoTar_FailedExtractionChangesNothing`). A publish that fails part way
+  leaves the files it already renamed. `FileJoin` is not staged: it writes one
+  temporary file and renames it into place only when the join completes.
+- **Not enough disk space (`FailDiskFull`)**: Before it writes, each
+  extraction by the `unpack` stage compares the unpacked size the archive's
+  headers declare with the free space on `DownloadDir`'s filesystem, and
+  refuses the archive (`unpack.ErrInsufficientSpace`) when it would leave less
+  than `downloads.min_free_space` free (`unpack.checkFreeSpace`, called by
+  every extractor and by `FileJoin`). An archive whose headers do not declare
+  their size (RAR headers encrypted without the password) is not checked. An
+  extraction that fills the disk anyway fails as `FailDiskFull` whichever
+  engine ran it. There is no compression-ratio or total-size limit besides
+  this (#901). DirectUnpack, which calls `unpack.ExtractStaged` directly, does
+  not run the check.
+  (`TestExtractors_RefuseWhatDoesNotFit`,
+  `TestExtractInStage_DiskFullIsFailDiskFull`,
+  `TestMinFreeSpace_ReachesUnpackStage`.)
 - **Insufficient Recovery Blocks**: When `par2` reports it needs more blocks
   than are on disk, `repair` sets `ParError = true` and leaves the block count
   in its own log line rather than on `Job` — `unpack` reads `ParError` to skip

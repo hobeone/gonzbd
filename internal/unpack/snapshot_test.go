@@ -4,11 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"testing"
 )
 
-func TestSnapshotDirAndDiff(t *testing.T) {
+func TestSnapshotDir(t *testing.T) {
 	tmp := t.TempDir()
 
 	// 1. Empty snapshot
@@ -43,25 +42,5 @@ func TestSnapshotDirAndDiff(t *testing.T) {
 	}
 	if !reflect.DeepEqual(snap2, expectedSnap2) {
 		t.Errorf("got snapshot %v, want %v", snap2, expectedSnap2)
-	}
-
-	// 3. Diff
-	diff := diffSnapshot(snap1, snap2)
-	slices.Sort(diff)
-	expectedDiff := []string{"file1.txt", "subdir/file2.txt"}
-	if !reflect.DeepEqual(diff, expectedDiff) {
-		t.Errorf("diffSnapshot = %v, want %v", diff, expectedDiff)
-	}
-
-	// 4. No new files
-	diffEmpty := diffSnapshot(snap2, snap2)
-	if len(diffEmpty) != 0 {
-		t.Errorf("expected empty diff, got %v", diffEmpty)
-	}
-
-	// 5. Reverse diff (files present in earlier snapshot but absent in later)
-	diffReverse := diffSnapshot(snap2, snap1)
-	if len(diffReverse) != 0 {
-		t.Errorf("diffSnapshot(snap2, snap1) = %v, want empty (only new files reported)", diffReverse)
 	}
 }

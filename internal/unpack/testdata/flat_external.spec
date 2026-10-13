@@ -31,30 +31,12 @@ file internal/unpack/sevenzip.go
 		args = append(args, "-aos")
 --- end
 
-[unrar's publish skips a name the output directory holds]
-file internal/unpack/unrar.go
+[publish skips a name the output directory holds]
+file internal/unpack/snapshot.go
 --- anchor
-	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
-	if pubErr != nil {
+		if opts.OneFolder && !opts.OverwriteFiles {
 --- replace
-	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, false)
-	if pubErr != nil {
---- end
-
-[unrar's auto-fix publish skips a name the output directory holds]
-file internal/unpack/unrar.go
---- anchor
-					published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
---- replace
-					published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, false)
---- end
-
-[7z's publish skips a name the output directory holds]
-file internal/unpack/sevenzip.go
---- anchor
-	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, opts.OneFolder)
---- replace
-	published, pubErr := publishStagedExtraction(log, outDir, stageDir, opts, false)
+		if false {
 --- end
 
 [publish creates the stage's directories under OneFolder]

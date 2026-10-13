@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/rarheader"
@@ -26,21 +23,14 @@ type extractFunc func(ctx context.Context, log *slog.Logger, archive Archive, ou
 // to determine whether the failure was caused by a wrong password.
 type wrongPasswordFunc func(exitCode int, output string) bool
 
-// preVerifyFunc cheaply checks a password candidate against the archive's
-// own embedded check value, without spawning any extraction subprocess.
-// It returns skip=true only when it can positively prove the candidate is
-// wrong; any uncertainty (parse error, no check value present, not a
-// supported format) must return false so the real extraction attempt
-// still runs.
-type preVerifyFunc func(archive Archive, password string) (skip bool)
-
-// rarPreVerify implements preVerifyFunc for RAR5 archives using
-// rarheader.VerifyPassword's cheap embedded-check-value comparison. It is
-// wired into UnRARWithPasswords only (the external-unrar-subprocess path) —
-// GoUnRARWithPasswords doesn't need it: rarengine already verifies the
-// password against the same check value lazily, inline, during
-// decompression setup, failing fast on the very first Read() without
-// spawning any subprocess.
+// rarPreVerify cheaply checks a password candidate against a RAR5 archive's
+// own embedded check value (rarheader.VerifyPassword), without spawning any
+// extraction subprocess. It returns skip=true only when it can positively
+// prove the candidate wrong; any uncertainty (parse error, no check value
+// present, not RAR5) returns false so the real extraction attempt still
+// runs. UnRAR consults it before running unrar. GoUnRAR doesn't need it:
+// rarengine verifies the password against the same check value during
+// decompression setup, failing on the very first Read().
 func rarPreVerify(archive Archive, password string) bool {
 	verified, hasCheckValue, err := rarheader.VerifyPassword(archive.MainFile, password)
 	if err != nil || !hasCheckValue {
@@ -90,7 +80,8 @@ func allPasswords(opts Options) []string {
 // GoSevenZipWithPasswords. It tries each password
 // from allPasswords(opts) in order, calling extract for each attempt.
 // isWrongPW classifies whether a failure was due to a wrong password
-// (retry) vs. something else (abort).
+// (retry) vs. something else (abort). It returns the last attempt's Result
+// as extract returned it; toolName only labels its log lines.
 func withPasswords(
 	ctx context.Context,
 	log *slog.Logger,
@@ -100,39 +91,16 @@ func withPasswords(
 	extract extractFunc,
 	isWrongPW wrongPasswordFunc,
 	toolName string,
-	preVerify preVerifyFunc,
 ) (Result, error) {
 	passwords := allPasswords(opts)
 	if len(passwords) == 0 {
 		// No password list — single attempt (no-password).
-		res, err := extract(ctx, log, archive, outDir, "", opts)
-		res.Engine = toolName
-		return res, err
+		return extract(ctx, log, archive, outDir, "", opts)
 	}
 
 	var lastRes Result
 	for i, pw := range passwords {
-		if preVerify != nil && preVerify(archive, pw) {
-			// Provably wrong against the archive's own embedded check
-			// value — skip the real extraction attempt (subprocess spawn,
-			// for external tools) entirely.
-			log.Info(toolName+": skipping known-wrong password (pre-verified), trying next",
-				"attempt", i+1, "total", len(passwords), "archive", archive.MainFile)
-			if opts.OnLine != nil {
-				opts.OnLine(fmt.Sprintf("Skipping known-wrong password (attempt %d/%d), trying next…", i+1, len(passwords)))
-			}
-			lastRes = Result{Engine: toolName, Reason: FailWrongPassword}
-			continue
-		}
-
-		// Snapshot outDir before the attempt so a wrong password's partial
-		// files can be told apart from what was already there. Only that
-		// cleanup needs it, so a failed snapshot is checked there and an
-		// attempt that succeeds is unaffected.
-		beforeSnap, snapErr := snapshotDir(outDir)
-
 		res, err := extract(ctx, log, archive, outDir, pw, opts)
-		res.Engine = toolName
 
 		// System-level error: binary not found, context cancelled, etc.
 		// For subprocess extractors, ExitCode==0 with an error means the
@@ -155,24 +123,9 @@ func withPasswords(
 		// Check if wrong password — try next.
 		// Check res.Reason first (for GoUnRAR which classifies errors directly),
 		// then fall back to isWrongPW callback (for subprocess output parsing).
+		// A failed attempt left nothing in outDir (extractInStage), so the
+		// next one starts from what was there before.
 		if res.Reason == FailWrongPassword || isWrongPW(res.ExitCode, res.Output) {
-			// Clean up any partial files from this failed attempt.
-			// Without this, OverwriteFiles=false would skip corrupt
-			// partials on the next attempt with the correct password, so
-			// a cleanup that cannot run or finish stops the loop. The
-			// snapshot error is returned here, rather than left to
-			// cleanupPartialFiles' nil refusal, to keep the walk error.
-			if snapErr != nil {
-				res.Reason = FailUnknown
-				res.Err = fmt.Errorf("%s: snapshot %s before password attempt %d: %w", toolName, outDir, i+1, snapErr)
-				return res, res.Err
-			}
-			if cleanErr := cleanupPartialFiles(outDir, beforeSnap, log, toolName, i+1); cleanErr != nil {
-				res.Reason = FailUnknown
-				res.Err = fmt.Errorf("%s: clean up after wrong password attempt %d: %w", toolName, i+1, cleanErr)
-				return res, res.Err
-			}
-
 			log.Info(toolName+": wrong password, trying next",
 				"attempt", i+1, "total", len(passwords), "archive", archive.MainFile)
 			if opts.OnLine != nil {
@@ -187,60 +140,7 @@ func withPasswords(
 	}
 
 	// All passwords exhausted.
-	lastRes.Err = ErrWrongPassword
 	return lastRes, ErrWrongPassword
-}
-
-// cleanupPartialFiles removes files that were created during a failed
-// extraction attempt. It diffs the current directory state against the
-// pre-attempt snapshot and removes any new files.
-//
-// It refuses a nil beforeSnap: diffing against nil reads every file in
-// outDir, archive volumes included, as new. snapshotDir returns nil only
-// with an error (its success path returns the map it makes at
-// snapshot.go:286), so nil always means "no snapshot".
-//
-// It returns an error when it refuses, when the post-attempt scan fails,
-// or when a partial file cannot be removed; it still tries every removal.
-func cleanupPartialFiles(outDir string, beforeSnap map[string]struct{}, log *slog.Logger, toolName string, attempt int) error {
-	if beforeSnap == nil {
-		return fmt.Errorf("clean up %s: no before-snapshot; refusing to treat every file as new", outDir)
-	}
-	afterSnap, err := snapshotDir(outDir)
-	if err != nil {
-		return fmt.Errorf("snapshot %s after attempt: %w", outDir, err)
-	}
-	newFiles := diffSnapshot(beforeSnap, afterSnap)
-	slices.Sort(newFiles)
-	return removePartials(outDir, newFiles, log, toolName, attempt)
-}
-
-// removePartials removes each of newFiles (relative to outDir), counting one
-// that is already gone as removed, and returns the joined failures of the
-// rest.
-func removePartials(outDir string, newFiles []string, log *slog.Logger, toolName string, attempt int) error {
-	var errs []error
-	for _, rel := range newFiles {
-		full := filepath.Join(outDir, rel)
-		rmErr := os.Remove(full)
-		if rmErr == nil {
-			log.Debug(toolName+": removed partial file from failed attempt",
-				"file", rel, "attempt", attempt)
-		} else if !errors.Is(rmErr, os.ErrNotExist) {
-			errs = append(errs, rmErr)
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// discardPartialFiles runs cleanupPartialFiles inside an extractor whose
-// attempt has failed, where the extraction error is what the caller returns
-// and a cleanup failure can only be logged.
-func discardPartialFiles(outDir string, beforeSnap map[string]struct{}, log *slog.Logger, toolName string) {
-	if err := cleanupPartialFiles(outDir, beforeSnap, log, toolName, 1); err != nil {
-		log.Warn(toolName+": partial files of the failed extraction not fully removed",
-			"dir", outDir, "err", err)
-	}
 }
 
 // UnRARWithPasswords tries extracting with each password in opts.Passwords
@@ -250,7 +150,7 @@ func discardPartialFiles(outDir string, beforeSnap map[string]struct{}, log *slo
 //
 // When no passwords are configured, this delegates directly to UnRAR.
 func UnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
-	return withPasswords(ctx, log, archive, outDir, opts, UnRAR, isUnrarWrongPassword, "unrar", rarPreVerify)
+	return withPasswords(ctx, log, archive, outDir, opts, UnRAR, isUnrarWrongPassword, "unrar")
 }
 
 // GoUnRARWithPasswords tries extracting with each password in opts.Passwords
@@ -263,7 +163,7 @@ func GoUnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive
 	// Wrong-password detection works via res.Reason == FailWrongPassword
 	// in the withPasswords loop.
 	never := func(int, string) bool { return false }
-	return withPasswords(ctx, log, archive, outDir, opts, GoUnRAR, never, "go_unrar", nil)
+	return withPasswords(ctx, log, archive, outDir, opts, GoUnRAR, never, "go_unrar")
 }
 
 // SevenZipWithPasswords tries extracting with each password in opts.Passwords
@@ -271,7 +171,7 @@ func GoUnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive
 //
 // When no passwords are configured, this delegates directly to SevenZip.
 func SevenZipWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
-	return withPasswords(ctx, log, archive, outDir, opts, SevenZip, is7zWrongPassword, "7zip", nil)
+	return withPasswords(ctx, log, archive, outDir, opts, SevenZip, is7zWrongPassword, "7z")
 }
 
 // GoSevenZipWithPasswords tries extracting with each password using the
@@ -283,5 +183,5 @@ func GoSevenZipWithPasswords(ctx context.Context, log *slog.Logger, archive Arch
 	// Wrong-password detection works via res.Reason == FailWrongPassword
 	// in the withPasswords loop.
 	never := func(int, string) bool { return false }
-	return withPasswords(ctx, log, archive, outDir, opts, GoSevenZip, never, "go_7z", nil)
+	return withPasswords(ctx, log, archive, outDir, opts, GoSevenZip, never, "go_7z")
 }
