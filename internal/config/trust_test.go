@@ -2,9 +2,22 @@ package config
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestGeneralConfig_TrustedRanges(t *testing.T) {
+	t.Parallel()
+	got := GeneralConfig{LocalRanges: []string{"10.0.0.0/8", "192.168.1.5"}}.TrustedRanges()
+	want := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("192.168.1.5/32")}
+	if !slices.Equal(got, want) {
+		t.Errorf("TrustedRanges() = %v, want %v", got, want)
+	}
+	if got := (GeneralConfig{LocalRanges: []string{"10.0.0.0/8", "not-an-ip"}}).TrustedRanges(); got != nil {
+		t.Errorf("TrustedRanges() for an unparsable list = %v, want nil (loopback only)", got)
+	}
+}
 
 func TestParseLocalRanges(t *testing.T) {
 	t.Parallel()
