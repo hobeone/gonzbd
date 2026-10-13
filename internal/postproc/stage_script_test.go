@@ -293,3 +293,15 @@ func TestScriptStage_ValidScriptAllowed(t *testing.T) {
 		t.Errorf("Run with valid script sonarr.sh expected nil, got %v", err)
 	}
 }
+
+// TestScriptStage_SetScriptDirTakesEffect pins that the directory a reload
+// installs is the one the next run resolves the script against.
+func TestScriptStage_SetScriptDirTakesEffect(t *testing.T) {
+	t.Parallel()
+	s := NewScriptStage(t.TempDir(), "", "", "", "")
+	s.SetScriptDir("")
+	err := s.Run(t.Context(), &Job{Job: newQueueJob(t, "j", 3), Script: "post.sh"})
+	if err == nil || !strings.Contains(err.Error(), "no script_dir is set") {
+		t.Fatalf("Run after SetScriptDir(\"\") = %v, want the no-script_dir error", err)
+	}
+}

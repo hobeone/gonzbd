@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/job"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
+	"github.com/hobeone/gonzbd/internal/testutil"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -286,5 +289,35 @@ func TestBuildHistoryEntry_FinalizeFailureUsesDownloadDir(t *testing.T) {
 	}
 	if entry.Storage != ppJob.DownloadDir {
 		t.Errorf("entry.Storage = %q, want DownloadDir %q", entry.Storage, ppJob.DownloadDir)
+	}
+}
+
+// TestBuildHistoryEntry_FilesTheScriptOutput pins that the history entry
+// carries what the script stage recorded: its log and its one-line summary
+// (#908). The job runs the real finalize and script stages, which are what
+// record them.
+func TestBuildHistoryEntry_FilesTheScriptOutput(t *testing.T) {
+	t.Parallel()
+	_, qjob := buildHistoryTestJob(t, "hist-script", "MyRelease", time.Now(), 1)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "movie.mkv"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scriptDir := t.TempDir()
+	testutil.WriteExecutable(t, filepath.Join(scriptDir, "notify.sh"), "#!/bin/sh\necho working\necho notified\n")
+	ppJob := &postproc.Job{Job: qjob, DownloadDir: dir, FinalDir: dir, Script: "notify.sh"}
+	if err := postproc.NewFinalizeStage().Run(t.Context(), ppJob); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if err := postproc.NewScriptStage(scriptDir, "", "", "", "").Run(t.Context(), ppJob); err != nil {
+		t.Fatalf("script: %v", err)
+	}
+
+	entry := buildHistoryEntry(ppJob)
+	if entry.ScriptLine != "notified" {
+		t.Errorf("entry.ScriptLine = %q, want %q", entry.ScriptLine, "notified")
+	}
+	if string(entry.ScriptLog) != "working\nnotified\n" {
+		t.Errorf("entry.ScriptLog = %q, want %q", entry.ScriptLog, "working\nnotified\n")
 	}
 }

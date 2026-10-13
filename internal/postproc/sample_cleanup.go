@@ -50,6 +50,8 @@ func NewSampleCleanupStage() *SampleCleanupStage {
 // Name implements Stage.
 func (*SampleCleanupStage) Name() string { return "sample_cleanup" }
 
+func (*SampleCleanupStage) deletesPayload() {} //nocover: payloadDeleter marker, no body
+
 // Run walks job.DownloadDir recursively, collects sample matches, and
 // deletes them. Honors ctx cancellation between deletions but never
 // fails the pipeline — best-effort cleanup is preferred over a

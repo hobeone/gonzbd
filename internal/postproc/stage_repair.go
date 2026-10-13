@@ -20,21 +20,23 @@ import (
 // data, before unpack. The sets quickcheck deferred are left to
 // ExtractedRepairStage, which runs them against the extracted files.
 type RepairStage struct {
+	// mu guards par2Opts, useGoPar2 and goPar2Fallback. Apply writes them
+	// (`git grep -nE 's[.](par2Opts|useGoPar2|goPar2Fallback) =' -- '*.go'`
+	// finds 3 lines, all in Apply).
 	mu sync.RWMutex
-	// Par2Opts configures the par2 binary path and turbo mode.
-	Par2Opts par2.RunOptions
+	// par2Opts configures the par2 binary path and turbo mode.
+	par2Opts par2.RunOptions
 	// ParseOpts defines safety limits for PAR2 parsing. Applied only at stage
 	// construction; unlike the other fields it is not runtime-mutable (Apply
 	// deliberately leaves it untouched).
 	ParseOpts par2.ParseOptions
-	// UseGoPar2 enables the native par2engine library for verification
+	// useGoPar2 enables the native par2engine library for verification
 	// and repair. When true and native repair fails, falls back to the
-	// external par2 binary if available (subject to GoPar2Fallback).
-	UseGoPar2 bool
-	// GoPar2Fallback allows a failed native par2 repair to retry with the
-	// external par2 binary. Only relevant when UseGoPar2 is true.
-	// Default true.
-	GoPar2Fallback bool
+	// external par2 binary if available (subject to goPar2Fallback).
+	useGoPar2 bool
+	// goPar2Fallback allows a failed native par2 repair to retry with the
+	// external par2 binary. Only relevant when useGoPar2 is true.
+	goPar2Fallback bool
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
 }
@@ -60,24 +62,28 @@ type RepairConfig struct {
 func (s *RepairStage) Apply(c RepairConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Par2Opts = c.Par2
-	s.UseGoPar2 = c.UseGoPar2
-	s.GoPar2Fallback = c.GoPar2Fallback
+	s.par2Opts = c.Par2
+	s.useGoPar2 = c.UseGoPar2
+	s.goPar2Fallback = c.GoPar2Fallback
 }
 
-// NewRepairStage constructs a RepairStage with default settings.
+// Config returns the settings the last Apply installed, read under the same
+// lock. Thread-safe.
+func (s *RepairStage) Config() RepairConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return RepairConfig{Par2: s.par2Opts, UseGoPar2: s.useGoPar2, GoPar2Fallback: s.goPar2Fallback}
+}
+
+// NewRepairStage constructs a RepairStage with default settings; Apply
+// installs the configured ones.
 func NewRepairStage() *RepairStage { return &RepairStage{} }
-
-// NewRepairStageWith constructs a RepairStage with the given options.
-func NewRepairStageWith(par2Opts par2.RunOptions) *RepairStage {
-	return &RepairStage{Par2Opts: par2Opts}
-}
 
 // Name returns the stage identifier.
 func (*RepairStage) Name() string { return "repair" }
 
 // Run finds par2 sets in job.DownloadDir and repairs each one quickcheck did
-// not defer until after unpack (Job.DeferredPar2Sets). No-op when the job has
+// not defer until after unpack (Job.deferredPar2Sets). No-op when the job has
 // no par2 files.
 func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	log := s.Log
@@ -99,7 +105,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	// only one of them means QuickCheck looked (#294).
 	directUnpackClean := len(job.DirectUnpackSets) > 0 &&
 		len(job.DirectUnpackFailures) == 0 && len(job.DirectUnpackSkipped) == 0
-	switch job.QuickCheck {
+	switch job.quickCheck {
 	case QuickCheckNotRun:
 		if directUnpackClean {
 			logf(ctx, log, job, slog.LevelInfo, "[repair] Skipped: Direct Unpack successfully extracted all archives during download")
@@ -124,14 +130,14 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	case QuickCheckDamaged, QuickCheckInconclusive:
 		// Repair runs. Damaged has a verdict to act on; Inconclusive has
 		// none, which is the reason to look rather than a reason not to.
-		logf(ctx, log, job, slog.LevelInfo, "[repair] Running: QuickCheck reported %s", job.QuickCheck)
+		logf(ctx, log, job, slog.LevelInfo, "[repair] Running: QuickCheck reported %s", job.quickCheck)
 	default:
 		// An outcome added to the enum and not handled above. Running repair
 		// is the fail-safe reading, and saying so is the point: a silent
 		// fall-through would look identical to a deliberate decision.
 		// TestRepairStage_HandlesEveryQuickCheckOutcome is what makes this
 		// arm unreachable in practice.
-		logf(ctx, log, job, slog.LevelWarn, "[repair] Running: unhandled QuickCheck outcome %s", job.QuickCheck)
+		logf(ctx, log, job, slog.LevelWarn, "[repair] Running: unhandled QuickCheck outcome %s", job.quickCheck)
 	}
 
 	_, err := s.repairSets(ctx, log, job, false)
@@ -146,10 +152,10 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 // returned.
 func (s *RepairStage) repairSets(ctx context.Context, log *slog.Logger, job *Job, deferred bool) (int, error) {
 	s.mu.RLock()
-	par2Opts := s.Par2Opts
+	par2Opts := s.par2Opts
 	parseOpts := s.ParseOpts
-	useGoPar2Val := s.UseGoPar2
-	goPar2FallbackVal := s.GoPar2Fallback
+	useGoPar2Val := s.useGoPar2
+	goPar2FallbackVal := s.goPar2Fallback
 	s.mu.RUnlock()
 
 	logf(ctx, log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)

@@ -60,11 +60,11 @@ func layoutBJob(t *testing.T, payloadName string) (*Job, string) {
 // layoutStages returns quickcheck wired to an enabled native unpack stage, as
 // buildStages wires them, and a native repair stage.
 func layoutStages() (*QuickCheckStage, *RepairStage, *UnpackStage) {
-	up := NewUnpackStageWith(unpack.Options{UseGoRAR: true, UseGo7z: true}, false)
+	up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true, UseGo7z: true}, Cleanup: false})
 	up.SetEnabled(true)
 	qc := &QuickCheckStage{Log: slog.New(slog.DiscardHandler), Unpack: up}
 	qc.SetEnabled(true)
-	repair := &RepairStage{UseGoPar2: true, Log: slog.New(slog.DiscardHandler)}
+	repair := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	return qc, repair, up
 }
 
@@ -114,7 +114,7 @@ func TestLayoutB_ArchiveExtractsDespitePar2NamingItsContents(t *testing.T) {
 
 	if job.ParError {
 		t.Fatalf("ParError = true after a repair of files that do not exist yet (QuickCheck=%s), so unpack was skipped; stage errors: %v",
-			job.QuickCheck, stageErrs)
+			job.quickCheck, stageErrs)
 	}
 	if job.UnpackError {
 		t.Fatal("UnpackError = true; want a clean extraction")
@@ -167,8 +167,8 @@ func TestLayoutB_DamagedArchiveFailsTheJob(t *testing.T) {
 
 	runStages(t, job, qc, repair, up)
 
-	if job.QuickCheck != QuickCheckUnidentified {
-		t.Fatalf("QuickCheck = %s, want unidentified: this test is about what stands in for the skipped repair", job.QuickCheck)
+	if job.quickCheck != QuickCheckUnidentified {
+		t.Fatalf("QuickCheck = %s, want unidentified: this test is about what stands in for the skipped repair", job.quickCheck)
 	}
 	if job.ParError {
 		t.Error("ParError = true; repair should have been skipped")
@@ -249,8 +249,8 @@ func TestQuickCheckStage_UnidentifiedNeedsEveryCondition(t *testing.T) {
 				tc.mutate(t, job, qc)
 			}
 			runQuickCheck(t, qc, job)
-			if job.QuickCheck != tc.want {
-				t.Errorf("QuickCheck = %s, want %s", job.QuickCheck, tc.want)
+			if job.quickCheck != tc.want {
+				t.Errorf("QuickCheck = %s, want %s", job.quickCheck, tc.want)
 			}
 		})
 	}
@@ -268,8 +268,8 @@ func TestLayoutB_RepairOnlyJobKeepsRepair(t *testing.T) {
 
 	runStages(t, job, qc, repair)
 
-	if job.QuickCheck != QuickCheckDamaged {
-		t.Errorf("QuickCheck = %s at PP=%d, want damaged", job.QuickCheck, job.PP)
+	if job.quickCheck != QuickCheckDamaged {
+		t.Errorf("QuickCheck = %s at PP=%d, want damaged", job.quickCheck, job.PP)
 	}
 	if !job.ParError {
 		t.Error("ParError = false at PP=1: repair was skipped and nothing verified the job")
@@ -288,8 +288,8 @@ func TestLayoutA_ObfuscatedDamagedArchiveIsRepaired(t *testing.T) {
 
 	stageErrs := runStages(t, job, qc, repair)
 
-	if job.QuickCheck != QuickCheckDamaged {
-		t.Fatalf("QuickCheck = %s, want damaged", job.QuickCheck)
+	if job.quickCheck != QuickCheckDamaged {
+		t.Fatalf("QuickCheck = %s, want damaged", job.quickCheck)
 	}
 	if job.ParError {
 		t.Fatalf("ParError = true; the recovery volume covers the damage. stage errors: %v", stageErrs)
@@ -314,8 +314,8 @@ func TestQuickCheckStage_IdentifiedEntryStaysDamaged(t *testing.T) {
 	}
 	qc, _, _ := layoutStages()
 	runQuickCheck(t, qc, job)
-	if job.QuickCheck != QuickCheckDamaged {
-		t.Errorf("QuickCheck = %s with a par2 entry identified in the directory, want damaged", job.QuickCheck)
+	if job.quickCheck != QuickCheckDamaged {
+		t.Errorf("QuickCheck = %s with a par2 entry identified in the directory, want damaged", job.quickCheck)
 	}
 }
 
@@ -390,8 +390,8 @@ func TestHeldArchiveMembers_ListingErrorIsNotHeld(t *testing.T) {
 	}
 	qc, _, _ := layoutStages()
 	runQuickCheck(t, qc, job)
-	if job.QuickCheck != QuickCheckDamaged {
-		t.Errorf("QuickCheck = %s with an archive that cannot be listed, want damaged", job.QuickCheck)
+	if job.quickCheck != QuickCheckDamaged {
+		t.Errorf("QuickCheck = %s with an archive that cannot be listed, want damaged", job.quickCheck)
 	}
 }
 
@@ -402,9 +402,9 @@ func TestRepairStage_DeclinesWhenQuickCheckUnidentified(t *testing.T) {
 	t.Parallel()
 
 	job, _ := layoutBJob(t, "release.rar")
-	job.QuickCheck = QuickCheckUnidentified
+	job.quickCheck = QuickCheckUnidentified
 
-	stage := &RepairStage{UseGoPar2: true, Log: slog.New(slog.DiscardHandler)}
+	stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

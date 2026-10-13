@@ -138,10 +138,10 @@ func TestExtensionCleanup_NormalizesInput(t *testing.T) {
 	// Test that dots and spaces are stripped from the input.
 	stage := NewExtensionCleanupStage([]string{".NFO", " txt ", "..sfv"})
 	want := map[string]bool{"nfo": true, "txt": true, "sfv": true}
-	if len(stage.Extensions) != len(want) {
-		t.Fatalf("Extensions = %v, want 3 entries", stage.Extensions)
+	if len(stage.extensions) != len(want) {
+		t.Fatalf("Extensions = %v, want 3 entries", stage.extensions)
 	}
-	for _, ext := range stage.Extensions {
+	for _, ext := range stage.extensions {
 		if !want[ext] {
 			t.Errorf("unexpected extension %q", ext)
 		}

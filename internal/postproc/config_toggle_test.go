@@ -20,10 +20,10 @@ func TestUnpackStage_EnableFileJoinFalse_SkipsSplitArchive(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "data.001"), []byte("part1"), 0o644)
 	os.WriteFile(filepath.Join(dir, "data.002"), []byte("part2"), 0o644)
 
-	stage := &UnpackStage{
+	stage := appliedUnpackStage(UnpackConfig{
 		EnableFileJoin:  false,
 		EnableRecursive: false,
-	}
+	})
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -50,10 +50,10 @@ func TestUnpackStage_EnableFileJoinTrue_JoinsSplitArchive(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "data.001"), []byte("part1"), 0o644)
 	os.WriteFile(filepath.Join(dir, "data.002"), []byte("part2"), 0o644)
 
-	stage := &UnpackStage{
+	stage := appliedUnpackStage(UnpackConfig{
 		EnableFileJoin:  true,
 		EnableRecursive: false,
-	}
+	})
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -82,10 +82,10 @@ func TestUnpackStage_EnableRecursiveFalse_SinglePass(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "data.001"), []byte("hello"), 0o644)
 	os.WriteFile(filepath.Join(dir, "data.002"), []byte("world"), 0o644)
 
-	stage := &UnpackStage{
+	stage := appliedUnpackStage(UnpackConfig{
 		EnableFileJoin:  true,
 		EnableRecursive: false,
-	}
+	})
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -117,14 +117,14 @@ func TestUnpackStage_JoinBeforeExtract(t *testing.T) {
 	// but the join should still succeed first due to ordering).
 	os.WriteFile(filepath.Join(dir, "archive.part01.rar"), []byte("not-a-rar"), 0o644)
 
-	stage := &UnpackStage{
+	stage := appliedUnpackStage(UnpackConfig{
 		EnableFileJoin:  true,
 		EnableRecursive: false,
-		BaseOpts: unpack.Options{
+		Base: unpack.Options{
 			UnrarCommand:    "/nonexistent/unrar",
 			SevenZipCommand: "/nonexistent/7z",
 		},
-	}
+	})
 	// Will have an error due to RAR, but join should succeed.
 	_ = stage.Run(t.Context(), job)
 

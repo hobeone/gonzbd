@@ -87,12 +87,9 @@ func TestRepairStage_QuickCheckProblemOverridesDirectUnpackSuccess(t *testing.T)
 		"ok": {RarParts: []string{"data.bin"}, ExtractedFiles: []string{"data.out"}},
 	}
 	// ...but QuickCheck ran and found a problem (unverifiable/mismatched CRC).
-	job.QuickCheck = QuickCheckDamaged
+	job.quickCheck = QuickCheckDamaged
 
-	stage := &RepairStage{
-		UseGoPar2: true,
-		Log:       slog.New(slog.DiscardHandler),
-	}
+	stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -116,10 +113,7 @@ func TestRepairStage_GoRepairHealthyData(t *testing.T) {
 	job, dir := stageJob(t)
 	copyPar2Fixtures(t, dir)
 
-	stage := &RepairStage{
-		UseGoPar2: true,
-		Log:       slog.New(slog.DiscardHandler),
-	}
+	stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -176,10 +170,7 @@ func TestRepairStage_GoRepairDoesNotDuplicateEngineLogLines(t *testing.T) {
 	}
 
 	handler := newCountingHandler()
-	stage := &RepairStage{
-		UseGoPar2: true,
-		Log:       slog.New(handler),
-	}
+	stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(handler))
 
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
