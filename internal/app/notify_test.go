@@ -64,3 +64,55 @@ func TestBuildNotifier_ScriptTimeoutCases(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildNotifier_EmailAndAppriseCarryConfig(t *testing.T) {
+	t.Parallel()
+	cfg := config.NotificationConfig{
+		Email: config.EmailNotificationConfig{
+			Enable:   true,
+			Host:     "smtp.invalid",
+			Port:     587,
+			Username: "u",
+			Password: "p",
+			From:     "from@invalid",
+			To:       []string{"to@invalid"},
+			UseTLS:   true,
+			Events:   []string{"DownloadFailed"},
+		},
+		Apprise: config.AppriseNotificationConfig{
+			Enable:     true,
+			URL:        "http://apprise.invalid/notify",
+			ServiceURL: "json://svc.invalid",
+			Events:     []string{"QueueDone"},
+		},
+	}
+	ns := BuildNotifier(cfg).Notifiers()
+	if len(ns) != 2 {
+		t.Fatalf("got %d notifiers, want 2", len(ns))
+	}
+
+	en, ok := ns[0].(*notifier.EmailNotifier)
+	if !ok {
+		t.Fatalf("notifier 0 is %T, want *notifier.EmailNotifier", ns[0])
+	}
+	ec := en.Config()
+	if ec.Host != "smtp.invalid" || ec.Port != 587 || ec.Username != "u" || ec.Password != "p" ||
+		ec.From != "from@invalid" || len(ec.To) != 1 || ec.To[0] != "to@invalid" || !ec.UseTLS || ec.UseSSL {
+		t.Errorf("email config not carried through: %+v", ec)
+	}
+	if !en.Accepts(notifier.DownloadFailed) || en.Accepts(notifier.QueueDone) {
+		t.Error("email event mask not taken from cfg.Email.Events")
+	}
+
+	an, ok := ns[1].(*notifier.AppriseNotifier)
+	if !ok {
+		t.Fatalf("notifier 1 is %T, want *notifier.AppriseNotifier", ns[1])
+	}
+	ac := an.Config()
+	if ac.URL != "http://apprise.invalid/notify" || ac.ServiceURL != "json://svc.invalid" {
+		t.Errorf("apprise config not carried through: %+v", ac)
+	}
+	if !an.Accepts(notifier.QueueDone) || an.Accepts(notifier.DownloadFailed) {
+		t.Error("apprise event mask not taken from cfg.Apprise.Events")
+	}
+}
