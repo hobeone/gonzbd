@@ -1093,13 +1093,22 @@ func TestDirectUnpack_Status(t *testing.T) {
 
 	var statusChanges int
 	var mu sync.Mutex
+	var du *DirectUnpacker
+	var activeStatus Status
+	foundActive := false
+	// Sampled on each change rather than by polling: a 62-byte set is
+	// extracted and settled in far less than a polling interval.
 	onStatusChange := func() {
+		st := du.Status()
 		mu.Lock()
 		statusChanges++
+		if st.Active && !foundActive {
+			activeStatus, foundActive = st, true
+		}
 		mu.Unlock()
 	}
 
-	du := New(
+	du = New(
 		testLogger(t),
 		"test-job",
 		workDir,
@@ -1125,19 +1134,10 @@ func TestDirectUnpack_Status(t *testing.T) {
 
 	du.Add(ctx, "single_rar5.rar", volPath)
 
-	// Check status during extraction.
-	var activeStatus Status
-	foundActive := false
-	for start := time.Now(); time.Since(start) < 2*time.Second; {
-		st := du.Status()
-		if st.Active {
-			activeStatus = st
-			foundActive = true
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	du.Wait()
 
+	mu.Lock()
+	defer mu.Unlock()
 	if !foundActive {
 		t.Error("never observed active direct unpack status")
 	} else {
@@ -1149,8 +1149,6 @@ func TestDirectUnpack_Status(t *testing.T) {
 		}
 	}
 
-	du.Wait()
-
 	// Final status check.
 	finalStatus := du.Status()
 	if finalStatus.Active {
@@ -1160,10 +1158,7 @@ func TestDirectUnpack_Status(t *testing.T) {
 		t.Errorf("expected success sets to be ['single_rar5'], got %+v", finalStatus.SuccessSets)
 	}
 
-	mu.Lock()
-	changes := statusChanges
-	mu.Unlock()
-	if changes == 0 {
+	if statusChanges == 0 {
 		t.Error("expected status changes callback to be called, got 0")
 	}
 }
