@@ -1033,9 +1033,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 		dl := app.downloader
 		app.mu.Unlock()
 		// --- No lock held below this line ---
-		if dl != nil {
-			dl.DisconnectAll()
-		}
+		dl.DisconnectAll()
 	}
 	return nil
 }
@@ -1456,17 +1454,15 @@ func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error) {
 	// --- No lock held below this line ---
 
 	var dlErr error
-	if dl != nil {
-		if dlErr = waitBounded("downloader", stepTimeout, dl.Stop, app.log); dlErr != nil && errs != nil {
-			*errs = append(*errs, fmt.Errorf("downloader stop: %w", dlErr))
-		}
+	if dlErr = waitBounded("downloader", stepTimeout, dl.Stop, app.log); dlErr != nil && errs != nil {
+		*errs = append(*errs, fmt.Errorf("downloader stop: %w", dlErr))
 	}
 
 	// If dl.Stop returned cleanly with no error, all downloader workers have definitely
 	// exited and will not touch manifests again. Yield Fetching jobs so
 	// Dispatcher.Stop can cleanly park and evict. If dl.Stop timed out, do NOT yield,
 	// so Dispatcher.Stop observes wait worker timeout and skips eviction.
-	if dl != nil && dlErr == nil {
+	if dlErr == nil {
 		app.yieldStoppedWorkers(errs, job.Fetching)
 	}
 
@@ -3013,9 +3009,7 @@ func (app *Application) SetSpeedLimit(bytesPerSec int64) {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 	app.speedLimit = bytesPerSec
-	if app.downloader != nil {
-		app.downloader.SetSpeedLimit(bytesPerSec)
-	}
+	app.downloader.SetSpeedLimit(bytesPerSec)
 }
 
 // SetBandwidthMax updates the configured bandwidth ceiling reported to the UI.
@@ -3092,9 +3086,7 @@ func (app *Application) PauseDownloads() {
 	app.pauseReason = pauseReasonUser
 	app.stopLowDiskWatchLocked()
 	app.dispatcher.Pause()
-	if app.downloader != nil {
-		app.downloader.Pause()
-	}
+	app.downloader.Pause()
 	app.mu.Unlock()
 	// --- No lock held below this line ---
 	app.emit(Event{Type: "queue_updated"})
@@ -3123,9 +3115,7 @@ func (app *Application) resumeLocked() {
 	app.pauseReason = pauseReasonNone
 	app.stopLowDiskWatchLocked()
 	app.dispatcher.Resume()
-	if app.downloader != nil {
-		app.downloader.Resume()
-	}
+	app.downloader.Resume()
 	app.ReevaluateStalls()
 }
 
@@ -3134,21 +3124,16 @@ func (app *Application) resumeLocked() {
 func (app *Application) DisconnectAll() {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	if app.downloader != nil {
-		app.downloader.DisconnectAll()
-	}
+	app.downloader.DisconnectAll()
 }
 
 // UnblockServer clears any active penalty on the named server, returning
 // it to the dispatch pool immediately. Returns false if the server is not
-// found or the downloader is not running.
+// found.
 func (app *Application) UnblockServer(name string) bool {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	if app.downloader != nil {
-		return app.downloader.UnblockServer(name)
-	}
-	return false
+	return app.downloader.UnblockServer(name)
 }
 
 // handleLowDisk is invoked by the assembler worker goroutine when free space
@@ -3169,9 +3154,7 @@ func (app *Application) handleLowDisk(dir string, freeBytes int64) {
 		app.pauseReason = pauseReasonLowDisk
 	}
 	app.dispatcher.Pause()
-	if app.downloader != nil {
-		app.downloader.Pause()
-	}
+	app.downloader.Pause()
 	if app.pauseReason == pauseReasonLowDisk && !app.stopping.Load() && !app.stopped.Load() && app.lowDiskRecheckInterval > 0 && app.lowDiskCancel == nil {
 		watchCtx, cancel := context.WithCancel(app.ctx)
 		app.lowDiskCancel = cancel
@@ -3263,7 +3246,8 @@ func (app *Application) tryAutoResumeLowDisk(ctx context.Context, dir string) bo
 
 // ServerStatus returns a point-in-time snapshot of all servers,
 // including per-connection article activity. Returns nil when the
-// downloader is not running.
+// downloader reports no statistics: one WithDownloader injected that is not
+// a DownloaderStats.
 func (app *Application) ServerStatus() []downloader.ServerSnapshot {
 	app.mu.Lock()
 	defer app.mu.Unlock()

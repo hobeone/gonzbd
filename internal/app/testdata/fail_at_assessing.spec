@@ -91,9 +91,9 @@ run ^TestAwaitsAssessing$
 file internal/app/runner.go
 run ^TestFail_WithAssessingPending_DefersToTheWorkerTheTickLaunches$
 --- anchor
-		if reasons := r.app.postProcAdmissions.takeDeferred(j); len(reasons) > 0 {
+	if reasons := r.app.postProcAdmissions.takeDeferred(j); len(reasons) > 0 {
 --- replace
-		if reasons := []string(nil); len(reasons) > 0 {
+	if reasons := []string(nil); len(reasons) > 0 {
 --- end
 
 [a reason deferred after the worker looked is never handed over]

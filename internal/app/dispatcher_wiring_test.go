@@ -56,16 +56,13 @@ func (m *mockCancelWakeDownloader) Wake() {
 
 func TestAppWorkers_Abort(t *testing.T) {
 	t.Parallel()
-	// 1. Nil app should safely return without panic.
-	wNil := &appWorkers{app: nil}
-	wNil.Abort(job.New("job-nil", "Job Nil", job.Policy{}))
-
-	// Nil job should safely return without panic.
-	wNil.Abort(nil)
-
-	// 2. App with wired mock downloader and real dispatcher.
 	app := newTestApplication(t)
 	w := &appWorkers{app: app}
+
+	// A nil job should safely return without panic.
+	w.Abort(nil)
+
+	// A wired mock downloader and a real dispatcher.
 
 	j := job.New("job-abort", "Test Job", job.PolicyFromPP(3))
 	if err := app.dispatcher.Add(context.Background(), j, dispatch.Header{Name: "Test Job"}); err != nil {

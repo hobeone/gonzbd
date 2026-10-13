@@ -472,31 +472,3 @@ func TestPushDispatchOptions_ForwardsEachSetterToTheRunningDownloader(t *testing
 		t.Errorf("SetPropagationDelay clobbered the rest: tries=%d opt=%d top=%v", tries, opt, top)
 	}
 }
-
-// TestPushDispatchOptions_NoDownloaderIsANoOp pins the nil guard, and pins what
-// it is worth: the state is forced here rather than reached, because New always
-// installs a real downloader when WithDownloader supplies none, so no
-// constructor leaves the field nil.
-//
-// The guard is therefore defensive, and the test says so rather than dressing
-// it as reachable. What it does establish is the direction of the defence — a
-// nil downloader must make the push a no-op and leave the config write intact,
-// not panic and lose it — which is the only behaviour a later change to this
-// helper could get wrong without any other test noticing.
-func TestPushDispatchOptions_NoDownloaderIsANoOp(t *testing.T) {
-	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
-	app, err := New(cfg, nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	app.mu.Lock()
-	app.downloader = nil
-	app.mu.Unlock()
-
-	app.pushDispatchOptions() // must not panic
-	app.SetMaxArtTries(4)     // and neither must the setter that calls it
-
-	if got := app.config.GetDownloads().MaxArtTries; got != 4 {
-		t.Errorf("MaxArtTries = %d, want 4 — the config write must still land", got)
-	}
-}

@@ -98,19 +98,6 @@ func TestServerStatus_DelegatesToDownloaderStats(t *testing.T) {
 	}
 }
 
-// TestHandleLowDisk_NilDownloader pins the nil-guard: the assembler's
-// low-disk callback must not panic when app.downloader is nil. New() always
-// wires a real downloader when one isn't injected, so the test clears it
-// after construction.
-func TestHandleLowDisk_NilDownloader(t *testing.T) {
-	t.Parallel()
-	app := newTestApplication(t, WithLogger(slog.New(slog.DiscardHandler)))
-	app.downloader = nil
-	t.Cleanup(app.stopLowDiskWatch) // New set a recheck interval, so the call starts the watch
-
-	app.handleLowDisk("/tmp/somewhere", 1024)
-}
-
 // TestHandleLowDisk_PausesDownloader pins the non-nil branch: a real
 // downloader must be paused when free disk space drops below threshold.
 func TestHandleLowDisk_PausesDownloader(t *testing.T) {

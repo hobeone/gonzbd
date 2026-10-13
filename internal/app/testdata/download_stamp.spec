@@ -22,20 +22,18 @@ file internal/app/app.go
 [the demotion to Fetching keeps the finish it recorded on the way out]
 file internal/app/runner.go
 --- anchor
-		if next == job.Fetching {
+	if next == job.Fetching {
 --- replace
-		if false {
+	if false {
 --- end
 
 [the demotion reopens the finish before the deferred failure reason has had the job]
 file internal/app/runner.go
 --- anchor
-	if r.app != nil {
-		if reasons := r.app.postProcAdmissions.takeDeferred(j); len(reasons) > 0 {
+	if reasons := r.app.postProcAdmissions.takeDeferred(j); len(reasons) > 0 {
 --- replace
-	if r.app != nil {
-		if next == job.Fetching {
-			_ = j.ClearDownloadFinished()
-		}
-		if reasons := r.app.postProcAdmissions.takeDeferred(j); len(reasons) > 0 {
+	if next == job.Fetching {
+		_ = j.ClearDownloadFinished()
+	}
+	if reasons := r.app.postProcAdmissions.takeDeferred(j); len(reasons) > 0 {
 --- end

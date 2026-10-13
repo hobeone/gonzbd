@@ -4,13 +4,11 @@ run ^TestResume_ReevaluatesStalls$
 [a queue-wide resume does not re-evaluate stalls (#792)]
 file internal/app/app.go
 --- anchor
-		app.downloader.Resume()
-	}
+	app.downloader.Resume()
 	app.ReevaluateStalls()
 }
 --- replace
-		app.downloader.Resume()
-	}
+	app.downloader.Resume()
 }
 --- end
 
