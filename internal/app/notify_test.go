@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/notifier"
 )
 
@@ -15,14 +16,14 @@ func TestBuildNotifier_ScriptTimeoutCases(t *testing.T) {
 		expectedTimeout time.Duration
 	}{
 		{
-			name:            "ZeroTimeoutDefaultsTo30s",
+			name:            "ZeroTimeoutTakesDefault",
 			inputTimeout:    0,
-			expectedTimeout: 30 * time.Second,
+			expectedTimeout: constants.DefaultScriptTimeout,
 		},
 		{
-			name:            "NegativeTimeoutDefaultsTo30s",
+			name:            "NegativeTimeoutTakesDefault",
 			inputTimeout:    -5,
-			expectedTimeout: 30 * time.Second,
+			expectedTimeout: constants.DefaultScriptTimeout,
 		},
 		{
 			name:            "PositiveTimeoutPreserved",

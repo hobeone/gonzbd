@@ -219,6 +219,7 @@ func TestNetworkTimeouts(t *testing.T) {
 		{"DefaultNetworkingTestTimeout", DefaultNetworkingTestTimeout, 5 * time.Second},
 		{"DefaultNetworkingShortTimeout", DefaultNetworkingShortTimeout, 3 * time.Second},
 		{"DefaultDirScanRate", DefaultDirScanRate, 5 * time.Second},
+		{"DefaultScriptTimeout", DefaultScriptTimeout, 30 * time.Second},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

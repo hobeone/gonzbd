@@ -44,6 +44,6 @@ type AppriseNotificationConfig struct {
 type ScriptNotificationConfig struct {
 	Enable  bool     `yaml:"enable" json:"enable"`
 	Path    string   `yaml:"path" json:"path"`
-	Timeout int      `yaml:"timeout" json:"timeout"` // seconds; 0 = 30s default
+	Timeout int      `yaml:"timeout" json:"timeout"` // seconds; <= 0 means constants.DefaultScriptTimeout
 	Events  []string `yaml:"events,omitempty" json:"events,omitempty"`
 }

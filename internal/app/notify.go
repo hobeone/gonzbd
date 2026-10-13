@@ -76,13 +76,9 @@ func BuildNotifier(cfg config.NotificationConfig) *notifier.Dispatcher {
 	}
 
 	if cfg.Script.Enable {
-		timeout := time.Duration(cfg.Script.Timeout) * time.Second
-		if timeout <= 0 {
-			timeout = 30 * time.Second
-		}
 		d.Register(notifier.NewScriptNotifier(notifier.ScriptConfig{
 			Path:      cfg.Script.Path,
-			Timeout:   timeout,
+			Timeout:   time.Duration(cfg.Script.Timeout) * time.Second,
 			EventMask: parseEventMask(cfg.Script.Events),
 		}))
 	}

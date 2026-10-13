@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/testutil"
 )
 
@@ -159,6 +160,28 @@ func TestScriptNotifier_Name(t *testing.T) {
 	sn := NewScriptNotifier(ScriptConfig{Path: "/bin/echo", Timeout: 5 * time.Second})
 	if sn.Name() != "script" {
 		t.Errorf("Name() = %q, want %q", sn.Name(), "script")
+	}
+}
+
+func TestNewScriptNotifier_TimeoutDefault(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   time.Duration
+		want time.Duration
+	}{
+		{"zero takes the default", 0, constants.DefaultScriptTimeout},
+		{"negative takes the default", -time.Second, constants.DefaultScriptTimeout},
+		{"positive is kept", 7 * time.Second, 7 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := NewScriptNotifier(ScriptConfig{Path: "/bin/true", Timeout: tc.in}).Config().Timeout
+			if got != tc.want {
+				t.Errorf("Config().Timeout = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

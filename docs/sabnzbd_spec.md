@@ -828,7 +828,7 @@ Each server is a subsection of `[servers]`:
 | `apprise.events` | list | | List of subscribed event names (empty = all) |
 | `script.enable` | bool | `false` | Enable/disable custom script notifications |
 | `script.path` | path | | Path to executable script (env vars / ~ expanded) |
-| `script.timeout` | int | `30` | Timeout in seconds (0 = 30s default) |
+| `script.timeout` | int | `30` | Timeout in seconds (0 or negative = 30s, `constants.DefaultScriptTimeout`) |
 | `script.events` | list | | List of subscribed event names (empty = all) |
 
 ---
