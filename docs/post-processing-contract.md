@@ -894,6 +894,20 @@ recorded entirely through the fetch-policy discard, not through this field.
   `TestGoTar_FailedExtractionChangesNothing`). A publish that fails part way
   leaves the files it already renamed. `FileJoin` is not staged: it writes one
   temporary file and renames it into place only when the join completes.
+- **Not enough disk space (`FailDiskFull`)**: Before it writes, each
+  extraction by the `unpack` stage compares the unpacked size the archive's
+  headers declare with the free space on `DownloadDir`'s filesystem, and
+  refuses the archive (`unpack.ErrInsufficientSpace`) when it would leave less
+  than `downloads.min_free_space` free (`unpack.checkFreeSpace`, called by
+  every extractor and by `FileJoin`). An archive whose headers do not declare
+  their size (RAR headers encrypted without the password) is not checked. An
+  extraction that fills the disk anyway fails as `FailDiskFull` whichever
+  engine ran it. There is no compression-ratio or total-size limit besides
+  this (#901). DirectUnpack, which calls `unpack.ExtractStaged` directly, does
+  not run the check.
+  (`TestExtractors_RefuseWhatDoesNotFit`,
+  `TestExtractInStage_DiskFullIsFailDiskFull`,
+  `TestMinFreeSpace_ReachesUnpackStage`.)
 - **Insufficient Recovery Blocks**: When `par2` reports it needs more blocks
   than are on disk, `repair` sets `ParError = true` and leaves the block count
   in its own log line rather than on `Job` — `unpack` reads `ParError` to skip

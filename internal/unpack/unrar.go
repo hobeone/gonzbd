@@ -111,21 +111,11 @@ type Options struct {
 	// exec, with the full display-safe command line (passwords redacted).
 	OnCommand func(string) `json:"-"`
 
-	// MaxSize sets the maximum allowed uncompressed size in bytes, summed
-	// over every entry of one extraction (not per entry), enforced by GoTar
-	// and GoSevenZip to prevent decompression bombs. GoUnRAR does not read
-	// it; rarengine applies its own limits.
-	// If <= 0, default (250 GiB) is used.
-	MaxSize int64
-	// MaxRatio sets the maximum allowed ratio of the uncompressed bytes
-	// read so far to archive.MainFile's size, for decompression bomb
-	// protection in GoTar and GoSevenZip.
-	// If <= 0, default (250) is used.
-	MaxRatio int64
-	// MinBombThreshold sets the minimum uncompressed bytes extracted before
-	// ratio limit checking is enforced. If 0, default (10 MiB) is used.
-	// If negative (< 0), ratio checking is enforced immediately from byte 0.
-	MinBombThreshold int64
+	// MinFreeSpace is the free space, in bytes, an extraction must leave on
+	// the output directory's filesystem: downloads.min_free_space. An
+	// archive whose headers declare more unpacked bytes than the free space
+	// above it is refused before extraction starts (checkFreeSpace).
+	MinFreeSpace int64
 }
 
 // unrarSkipSymlinksVersion is the first unrar with -ol-, which skips symbolic
@@ -292,7 +282,7 @@ func unRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 		opts.OnCommand(cmdLine)
 	}
 
-	res, err := extractInStage(log, outDir, opts, func(stageDir string) (Result, error) {
+	res, err := extractInStage(ctx, log, archive, outDir, password, opts, func(stageDir string) (Result, error) {
 		execArgs := append(append([]string(nil), args...), archive.MainFile, stageDir+"/")
 		if password != "" {
 			execArgs[flagIdx] = "-p" + password

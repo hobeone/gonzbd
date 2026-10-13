@@ -9,8 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -20,7 +20,7 @@ type tarEntry struct {
 	name     string
 	typeflag byte // 0 defaults to tar.TypeReg
 	mode     int64
-	size     int64 // only used when content is nil (e.g. sparse-bomb claims)
+	size     int64 // only used when content is nil
 	content  []byte
 	linkname string
 	modTime  time.Time
@@ -362,94 +362,6 @@ func TestGoTar_SetuidSetgidBitsStripped(t *testing.T) {
 	}
 }
 
-// --- (e) sparse-bomb entry rejected ---
-
-func TestGoTar_SparseBombRejected(t *testing.T) {
-	t.Parallel()
-
-	srcDir := t.TempDir()
-	outDir := t.TempDir()
-
-	// Declare (and physically back) an entry whose size exceeds MaxSize.
-	// GNU/PAX sparse-file headers let Header.Size vastly exceed the
-	// physical bytes actually present in the stream (archive/tar
-	// synthesizes zero-filled holes on Read to reconstruct the declared
-	// logical size) -- the bomb check must trip on the *declared*
-	// Header.Size before ever reading/writing that many bytes, which is
-	// exactly what this asserts regardless of whether the backing bytes
-	// are physically present or sparse-synthesized.
-	const declaredSize = 2 * 1024 * 1024 // 2 MiB declared/written
-	const maxSize = 1024 * 1024          // 1 MiB ceiling
-
-	tarPath := buildTar(t, srcDir, "bomb.tar", []tarEntry{
-		{name: "huge-file", content: bytes.Repeat([]byte{0}, declaredSize)},
-	})
-
-	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{MaxSize: maxSize})
-	if err == nil {
-		t.Fatalf("expected bomb rejection, got success")
-	}
-	if res.Reason != FailCorrupt {
-		t.Errorf("Reason = %v, want FailCorrupt", res.Reason)
-	}
-	if _, statErr := os.Stat(filepath.Join(outDir, "huge-file")); statErr == nil {
-		t.Errorf("oversized entry was written to disk despite bomb rejection")
-	}
-}
-
-// --- (e2) genuine GNU sparse entry still trips the bomb check ---
-
-func TestGoTar_GenuineGNUSparseEntry(t *testing.T) {
-	t.Parallel()
-
-	// TestGoTar_SparseBombRejected above proves the declared-Header.Size
-	// bomb check, but its backing bytes are real (physically written)
-	// content matching the declared size -- it doesn't exercise
-	// archive/tar's actual GNU-sparse decode path, where the *reader*
-	// synthesizes zero bytes for holes that were never physically written.
-	//
-	// This test was meant to build a genuine sparse tar.Header (large
-	// logical Header.Size, backed by little physical data via declared
-	// hole regions) using archive/tar's own sparse-file support, per the
-	// task brief's suggested go doc archive/tar.Header /
-	// archive/tar.SparseEntry APIs.
-	//
-	// Verified against go1.27.2, go.mod's go version:
-	//
-	//   $ go doc archive/tar.Header    # no Sparse-related field at all
-	//   $ go doc archive/tar.SparseEntry
-	//   doc: no symbol SparseEntry in package archive/tar
-	//
-	// archive/tar in the current stdlib exposes no public API on
-	// tar.Writer for emitting a genuinely sparse GNU/PAX entry (no
-	// Header.SparseHoles field, no SparseEntry type, no WriteHeader
-	// option to declare holes). tar.Writer only ever writes the bytes
-	// given to it via Write; there is no supported way to make it emit an
-	// entry whose *physical* stream is smaller than its declared logical
-	// Header.Size through GNU sparse hole records. Fabricating one would
-	// require hand-rolling raw GNU sparse header bytes bypassing
-	// archive/tar's writer entirely -- exactly the "contrived workaround"
-	// the task brief says to avoid.
-	//
-	// Per the brief's explicit fallback ("If constructing a genuine
-	// sparse header proves awkward with the stdlib API, fall back to
-	// documenting why... and keep the existing declared-size-mismatch
-	// test as the primary proof"), TestGoTar_SparseBombRejected above
-	// remains the primary proof that go_tar.go's bomb-detection logic
-	// (opts.MaxSize/MaxRatio enforcement in extractTarFile, shared with
-	// GoSevenZip via boundReader) rejects an oversized declared
-	// Header.Size before reading/writing that many bytes -- which is the
-	// property that matters regardless of whether the backing bytes are
-	// physically present or hole-synthesized, since the check fires on
-	// the *declared* size alone (see extractTarFile's projTotal check,
-	// which runs before any byte of the entry is read).
-	t.Skip("archive/tar (checked on go1.27.2) has no public API " +
-		"for writing a genuine GNU sparse entry (no Header.SparseHoles, " +
-		"no SparseEntry type) -- see comment above; " +
-		"TestGoTar_SparseBombRejected covers the declared-size bomb check.")
-}
-
 // --- (f) OneFolder flattening ---
 
 func TestGoTar_OneFolderFlattens(t *testing.T) {
@@ -607,34 +519,29 @@ func TestGoTar_OnLineCallback_CorruptHeaderError(t *testing.T) {
 
 // TestGoTar_OnLineCallback_EntryError verifies opts.OnLine is invoked with
 // an "ERROR:" line when a single entry fails extraction (the entryErr != nil
-// branch in goTarInternal), using a sparse-bomb entry to trigger the failure.
+// branch in goTarInternal): a member under a path an earlier member wrote as
+// a regular file cannot be created.
 func TestGoTar_OnLineCallback_EntryError(t *testing.T) {
 	t.Parallel()
 
 	srcDir := t.TempDir()
 	outDir := t.TempDir()
 
-	const declaredSize = 2 * 1024 * 1024
-	const maxSize = 1024 * 1024
-
-	tarPath := buildTar(t, srcDir, "bomb-online.tar", []tarEntry{
-		{name: "huge-file", content: bytes.Repeat([]byte{0}, declaredSize)},
+	tarPath := buildTar(t, srcDir, "entry-error.tar", []tarEntry{
+		{name: "a", content: []byte("file")},
+		{name: "a/b", content: []byte("under a file")},
 	})
 
 	var lines []string
 	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
 	_, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{
-		MaxSize: maxSize,
-		OnLine:  func(line string) { lines = append(lines, line) },
+		OnLine: func(line string) { lines = append(lines, line) },
 	})
 	if err == nil {
-		t.Fatalf("expected bomb rejection, got success")
+		t.Fatalf("expected an entry error, got success")
 	}
-	if len(lines) == 0 {
-		t.Fatal("OnLine was never called for entry extraction error")
-	}
-	if !strings.Contains(lines[0], "ERROR:") {
-		t.Errorf("expected an ERROR line, got %v", lines)
+	if !slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(l, "ERROR: a/b: ") }) {
+		t.Errorf("expected an ERROR line for a/b, got %v", lines)
 	}
 }
 
@@ -669,57 +576,8 @@ func TestGoTar_DirectoryEntryBadPathSkipped(t *testing.T) {
 	}
 }
 
-// --- cumulative size tracking across entries ---
-
-// TestGoTar_CumulativeSizeAcrossEntriesTriggersBomb verifies the bomb
-// ceiling is enforced against the running total across multiple entries,
-// not just each entry's individual size: two entries that are each
-// individually under MaxSize must still trip the ceiling once their sum
-// exceeds it. This proves extractTarFile's projTotal computation actually
-// adds the prior running total (uint64(hdr.Size) + uint64(currTotal)),
-// rather than checking each entry in isolation.
-func TestGoTar_CumulativeSizeAcrossEntriesTriggersBomb(t *testing.T) {
-	t.Parallel()
-
-	srcDir := t.TempDir()
-	outDir := t.TempDir()
-
-	const perEntrySize = 700 * 1024 // 700 KiB, individually under maxSize
-	const maxSize = 1024 * 1024     // 1 MiB ceiling; two entries sum to 1.4 MiB
-
-	tarPath := buildTar(t, srcDir, "cumulative.tar", []tarEntry{
-		{name: "first.bin", content: bytes.Repeat([]byte{1}, perEntrySize)},
-		{name: "second.bin", content: bytes.Repeat([]byte{2}, perEntrySize)},
-	})
-
-	if perEntrySize >= maxSize {
-		t.Fatalf("test setup invalid: perEntrySize must be below maxSize alone")
-	}
-
-	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
-	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{MaxSize: maxSize})
-	if err == nil {
-		t.Fatalf("expected cumulative bomb rejection, got success")
-	}
-	if res.Reason != FailCorrupt {
-		t.Errorf("Reason = %v, want FailCorrupt", res.Reason)
-	}
-	if _, statErr := os.Stat(filepath.Join(outDir, "first.bin")); !os.IsNotExist(statErr) {
-		t.Errorf("expected first.bin to be cleaned up after bomb rejection, stat err = %v", statErr)
-	}
-}
-
-// --- extractTarFile direct-call coverage (boundaries, ratio, negative guards) ---
-//
-// These call extractTarFile directly (mirroring go_sevenzip_test.go's
-// TestExtractSevenZipFile_Direct pattern) because reproducing exact
-// declared-size/arcSize ratios through a real end-to-end .tar file is
-// impractical: arcSize is the whole physical tar file's on-disk size
-// (header/footer overhead included), so a real archive's entry-to-arcSize
-// ratio never lands exactly where a boundary test needs it. Calling
-// extractTarFile directly lets arcSize be passed in as an independent
-// parameter, matching the function's actual signature and the ratio check's
-// real inputs.
+// buildTarReaderEntry returns a one-entry tar reader positioned at a regular
+// file named name holding size bytes.
 func buildTarReaderEntry(t *testing.T, name string, size int) (*tar.Header, *tar.Reader) {
 	t.Helper()
 	content := bytes.Repeat([]byte{9}, size)
@@ -750,207 +608,6 @@ func buildTarReaderEntryFromHeader(t *testing.T, hdr *tar.Header, content []byte
 		t.Fatalf("tr.Next: %v", err)
 	}
 	return h, tr
-}
-
-func TestExtractTarFile_Direct(t *testing.T) {
-	t.Parallel()
-
-	outDir := t.TempDir()
-	root, err := os.OpenRoot(outDir)
-	if err != nil {
-		t.Fatalf("os.OpenRoot: %v", err)
-	}
-	defer root.Close() //nolint:errcheck // test cleanup, best-effort
-
-	// 1. Custom MaxRatio boundary: arcSize=100, maxRatio=2 (limit=200),
-	// minThreshold=-1 forces the check from byte 0.
-	{
-		totalRead := new(int64)
-		hdr, tr := buildTarReaderEntry(t, "r1", 200)
-		err := extractTarFile(t.Context(), root, "r1", filepath.Join(outDir, "r1"), tr, hdr, Options{MaxRatio: 2, MinBombThreshold: -1}, 100, totalRead, testLogger())
-		if errors.Is(err, errTarBomb) {
-			t.Errorf("expected no ratio bomb at exact limit (200), got: %v", err)
-		}
-	}
-	{
-		totalRead := new(int64)
-		hdr, tr := buildTarReaderEntry(t, "r2", 201)
-		err := extractTarFile(t.Context(), root, "r2", filepath.Join(outDir, "r2"), tr, hdr, Options{MaxRatio: 2, MinBombThreshold: -1}, 100, totalRead, testLogger())
-		if !errors.Is(err, errTarBomb) {
-			t.Errorf("expected ratio bomb just above limit (201), got: %v", err)
-		}
-	}
-
-	// 2. Ceiling boundary at a custom MaxSize.
-	{
-		totalRead := new(int64)
-		hdr, tr := buildTarReaderEntry(t, "c1", 500)
-		err := extractTarFile(t.Context(), root, "c1", filepath.Join(outDir, "c1"), tr, hdr, Options{MaxSize: 500}, 0, totalRead, testLogger())
-		if errors.Is(err, errTarBomb) {
-			t.Errorf("expected no bomb at exact MaxSize (500), got: %v", err)
-		}
-	}
-	{
-		totalRead := new(int64)
-		hdr, tr := buildTarReaderEntry(t, "c2", 501)
-		err := extractTarFile(t.Context(), root, "c2", filepath.Join(outDir, "c2"), tr, hdr, Options{MaxSize: 500}, 0, totalRead, testLogger())
-		if !errors.Is(err, errTarBomb) {
-			t.Errorf("expected bomb just above MaxSize (501), got: %v", err)
-		}
-	}
-
-	// 3. Cumulative currTotal addition (projTotal = hdr.Size + currTotal),
-	// mirroring TestExtractSevenZipFile_Direct's multi-file section.
-	{
-		totalRead := new(int64)
-		*totalRead = 100
-		hdr, tr := buildTarReaderEntry(t, "cum1", 50)
-		err := extractTarFile(t.Context(), root, "cum1", filepath.Join(outDir, "cum1"), tr, hdr, Options{MaxSize: 150}, 0, totalRead, testLogger())
-		if errors.Is(err, errTarBomb) {
-			t.Errorf("expected no bomb when projTotal == MaxSize (150), got: %v", err)
-		}
-	}
-	{
-		totalRead := new(int64)
-		*totalRead = 100
-		hdr, tr := buildTarReaderEntry(t, "cum2", 51)
-		err := extractTarFile(t.Context(), root, "cum2", filepath.Join(outDir, "cum2"), tr, hdr, Options{MaxSize: 150}, 0, totalRead, testLogger())
-		if !errors.Is(err, errTarBomb) {
-			t.Errorf("expected bomb when projTotal (151) > MaxSize (150), got: %v", err)
-		}
-	}
-
-	// 4. Negative totalRead guard.
-	{
-		totalRead := new(int64)
-		*totalRead = -1
-		hdr, tr := buildTarReaderEntry(t, "neg", 10)
-		err := extractTarFile(t.Context(), root, "neg", filepath.Join(outDir, "neg"), tr, hdr, Options{}, 0, totalRead, testLogger())
-		if err == nil || !strings.Contains(err.Error(), "invalid negative total read count") {
-			t.Errorf("expected negative total read count error, got: %v", err)
-		}
-	}
-
-	// 5. Negative declared hdr.Size guard. tar.Writer itself rejects a
-	// negative Size, so mutate a header obtained from a valid entry to
-	// simulate a corrupt/malicious declared size.
-	{
-		totalRead := new(int64)
-		hdr, tr := buildTarReaderEntry(t, "z", 0)
-		hdr.Size = -1
-		err := extractTarFile(t.Context(), root, "z", filepath.Join(outDir, "z"), tr, hdr, Options{}, 0, totalRead, testLogger())
-		if !errors.Is(err, errTarBomb) {
-			t.Errorf("expected bomb error for negative declared size, got: %v", err)
-		}
-	}
-
-	// 6. arcSize == 0 disables the ratio check entirely, regardless of
-	// MaxRatio, proving the "arcSize > 0" guard in the ratio condition.
-	{
-		totalRead := new(int64)
-		hdr, tr := buildTarReaderEntry(t, "noratio", 5000)
-		err := extractTarFile(t.Context(), root, "noratio", filepath.Join(outDir, "noratio"), tr, hdr, Options{MaxRatio: 1, MinBombThreshold: -1}, 0, totalRead, testLogger())
-		if errors.Is(err, errTarBomb) {
-			t.Errorf("expected ratio check disabled when arcSize == 0, got: %v", err)
-		}
-	}
-
-	// 7. maxRatio <= 0 (unset) falls back to the default (250 -- see
-	// defaultMaxRatio in extractTarFile). arcSize=1 makes the limit exactly
-	// 250 bytes; a 251-byte entry must still be rejected under the default,
-	// proving the "maxRatio <= 0" fallback assignment actually takes effect
-	// rather than leaving maxRatio at 0 (which would disable the check).
-	{
-		totalRead := new(int64)
-		hdr, tr := buildTarReaderEntry(t, "defaultratio", 251)
-		err := extractTarFile(t.Context(), root, "defaultratio", filepath.Join(outDir, "defaultratio"), tr, hdr, Options{MinBombThreshold: -1}, 1, totalRead, testLogger())
-		if !errors.Is(err, errTarBomb) {
-			t.Errorf("expected default MaxRatio (250) to reject a 251:1 ratio, got: %v", err)
-		}
-	}
-
-	// 8. Default MaxSize (250 GiB) exact boundary. The ceiling check reads
-	// hdr.Size before any bytes are read from tr, so hdr.Size can be
-	// overridden to an arbitrary declared value after building a small real
-	// entry -- exactly the "declared vs actually-present bytes" mismatch
-	// GNU/PAX sparse headers create, without needing to write 250 GiB of
-	// real content in a test.
-	const defaultMaxSize = 250 * 1024 * 1024 * 1024
-	{
-		totalRead := new(int64)
-		hdr, tr := buildTarReaderEntry(t, "defsize1", 1)
-		hdr.Size = defaultMaxSize
-		err := extractTarFile(t.Context(), root, "defsize1", filepath.Join(outDir, "defsize1"), tr, hdr, Options{}, 0, totalRead, testLogger())
-		if errors.Is(err, errTarBomb) {
-			t.Errorf("expected no bomb error at exact defaultMaxSize (250 GiB), got: %v", err)
-		}
-	}
-	{
-		totalRead := new(int64)
-		hdr, tr := buildTarReaderEntry(t, "defsize2", 1)
-		hdr.Size = defaultMaxSize + 1
-		err := extractTarFile(t.Context(), root, "defsize2", filepath.Join(outDir, "defsize2"), tr, hdr, Options{}, 0, totalRead, testLogger())
-		if !errors.Is(err, errTarBomb) {
-			t.Errorf("expected bomb error 1 byte above defaultMaxSize (250 GiB), got: %v", err)
-		}
-	}
-
-	// 9. Default MinBombThreshold (10 MiB) exact boundary, mirroring
-	// TestExtractSevenZipFile_Direct's equivalent section: with arcSize=100
-	// and default MaxRatio (250, limit=25000), an entry at exactly the
-	// 10 MiB threshold must NOT bomb (projTotal > minThreshold is false at
-	// equality), while one byte over trips both the threshold and ratio
-	// clauses.
-	const defaultMinThreshold = 10 * 1024 * 1024
-	{
-		totalRead := new(int64)
-		hdr, tr := buildTarReaderEntry(t, "deft1", 1)
-		hdr.Size = defaultMinThreshold
-		err := extractTarFile(t.Context(), root, "deft1", filepath.Join(outDir, "deft1"), tr, hdr, Options{}, 100, totalRead, testLogger())
-		if errors.Is(err, errTarBomb) {
-			t.Errorf("expected no bomb error at exact defaultMinThreshold (10 MiB), got: %v", err)
-		}
-	}
-	{
-		totalRead := new(int64)
-		hdr, tr := buildTarReaderEntry(t, "deft2", 1)
-		hdr.Size = defaultMinThreshold + 1
-		err := extractTarFile(t.Context(), root, "deft2", filepath.Join(outDir, "deft2"), tr, hdr, Options{}, 100, totalRead, testLogger())
-		if !errors.Is(err, errTarBomb) || !strings.Contains(err.Error(), "ratio exceeds limit") {
-			t.Errorf("expected ratio bomb error above default threshold, got: %v", err)
-		}
-	}
-
-	// 10. hdr.Size == 0 boundary: a legitimate empty file must not be
-	// treated as a negative-size bomb (proves "hdr.Size < 0" is a strict
-	// less-than, not <=, at the zero boundary).
-	{
-		totalRead := new(int64)
-		hdr, tr := buildTarReaderEntry(t, "zero", 0)
-		err := extractTarFile(t.Context(), root, "zero", filepath.Join(outDir, "zero"), tr, hdr, Options{}, 0, totalRead, testLogger())
-		if err != nil {
-			t.Errorf("expected zero-size entry to extract cleanly, got: %v", err)
-		}
-	}
-
-	// 11. maxRatio <= 0 boundary specifically (as opposed to the negation
-	// already covered by test 9): force the minThreshold clause true via
-	// MinBombThreshold=-1 so the ratio clause's outcome actually depends on
-	// whether the "maxRatio <= 0" fallback assigned the default (250) or
-	// left maxRatio at its unset zero value (which would make the ratio
-	// limit 0 and bomb on any positive size). A modest entry well under the
-	// default limit (arcSize*250) must NOT bomb; it WOULD incorrectly bomb
-	// under an "maxRatio < 0" (instead of "<= 0") boundary mutation, since
-	// that leaves maxRatio at 0 and collapses the ratio ceiling to zero.
-	{
-		totalRead := new(int64)
-		hdr, tr := buildTarReaderEntry(t, "ratioboundary", 1)
-		hdr.Size = 500
-		err := extractTarFile(t.Context(), root, "ratioboundary", filepath.Join(outDir, "ratioboundary"), tr, hdr, Options{MinBombThreshold: -1}, 1000, totalRead, testLogger())
-		if errors.Is(err, errTarBomb) {
-			t.Errorf("expected no bomb: default MaxRatio (250) should have been applied (limit=250000), got: %v", err)
-		}
-	}
 }
 
 // --- zero rw-bits skip Chmod ---
@@ -1084,19 +741,29 @@ func TestGoTar_SkipExistingFileOnLineCallback(t *testing.T) {
 // --- GoTar panic recovery ---
 
 // TestGoTar_PanicRecovery verifies that a panic inside goTarInternal (forced
-// here by passing a nil *slog.Logger, which panics on the first
-// log.With(...) call) is recovered by cmdutil.SafeEngineRun, surfaces as an
+// here by an OnLine that panics on its first call, the first entry's
+// "Extracting" line) is recovered by cmdutil.SafeEngineRun, surfaces as an
 // error mentioning "tar panic", sets res.Reason to FailCorrupt, and invokes
 // opts.OnLine with the panic message -- mirroring
 // TestGoSevenZip_PanicRecovery's equivalent proof for go_7z.
 func TestGoTar_PanicRecovery(t *testing.T) {
 	t.Parallel()
 
-	archive := Archive{Type: TarArchive, MainFile: "dummy.tar", Parts: []string{"dummy.tar"}}
+	tarPath := buildTar(t, t.TempDir(), "panic.tar", []tarEntry{
+		{name: "a.txt", content: []byte("a")},
+	})
+	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
 
 	var onlineMsg string
-	res, err := GoTar(context.Background(), nil, archive, t.TempDir(), Options{
-		OnLine: func(msg string) { onlineMsg = msg },
+	calls := 0
+	res, err := GoTar(context.Background(), testLogger(), archive, t.TempDir(), Options{
+		OnLine: func(msg string) {
+			calls++
+			if calls == 1 {
+				panic("first OnLine call")
+			}
+			onlineMsg = msg
+		},
 	})
 	if err == nil {
 		t.Fatal("expected error from panic recovery, got nil")
@@ -1123,10 +790,7 @@ func TestClassifyTarErrorDirect(t *testing.T) {
 		want FailReason
 	}{
 		{name: "nil error", err: nil, want: FailUnknown},
-		{name: "bomb error", err: errTarBomb, want: FailCorrupt},
-		{name: "wrapped bomb error", err: fmt.Errorf("wrap: %w", errTarBomb), want: FailCorrupt},
 		{name: "tar header error", err: tar.ErrHeader, want: FailCorrupt},
-		{name: "disk full (ENOSPC)", err: fmt.Errorf("write: %w", syscall.ENOSPC), want: FailDiskFull},
 		{name: "unclassified error", err: errors.New("some other error"), want: FailUnknown},
 	}
 
@@ -1403,7 +1067,7 @@ func TestGoTar_ContextCancellationMidExtraction(t *testing.T) {
 // internal/decoder/fuzz_test.go's FuzzDecodeArticle/FuzzDecodeUU harness
 // style: seed the corpus with byte-serialized versions of every
 // crafted-attack tar built in the named tests above (path traversal,
-// symlink, hardlink, device, FIFO, sparse-bomb, absolute-path, PAX-long-name,
+// symlink, hardlink, device, FIFO, oversized, absolute-path, PAX-long-name,
 // non-UTF8 filename), then let go test -fuzz mutate them.
 //
 // The only invariant asserted is "does not panic": TestGoTar_PanicRecovery
@@ -1456,8 +1120,7 @@ func FuzzGoTar(f *testing.F) {
 		{name: "evil-fifo", typeflag: tar.TypeFifo},
 		{name: "safe.txt", content: []byte("safe content")},
 	})
-	// Sparse/decompression-bomb-style entry: declared size far exceeds a
-	// plausible extraction budget.
+	// A large zero-filled entry.
 	seed([]tarEntry{
 		{name: "huge-file", content: bytes.Repeat([]byte{0}, 64*1024)},
 	})
@@ -1490,7 +1153,7 @@ func FuzzGoTar(f *testing.F) {
 
 		archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
 		// Only "does not panic" is asserted: errors (corrupt archive,
-		// rejected paths, bomb detection) are all expected and valid
+		// rejected paths) are all expected and valid
 		// outcomes for arbitrary mutated input.
 		_, _ = GoTar(context.Background(), testLogger(), archive, outDir, Options{})
 	})
@@ -1527,9 +1190,7 @@ func TestGoTarInternal_Direct(t *testing.T) {
 }
 
 // TestExtractTarEntry_Direct covers extractTarEntry's own dispatch logic
-// (type filtering: regular file, directory, symlink) directly, separately
-// from extractTarFile's per-entry write path (already covered by
-// TestExtractTarFile_Direct).
+// (type filtering: regular file, directory, symlink) directly.
 func TestExtractTarEntry_Direct(t *testing.T) {
 	t.Parallel()
 
@@ -1538,8 +1199,7 @@ func TestExtractTarEntry_Direct(t *testing.T) {
 		outDir, root := openTestRoot(t)
 
 		hdr, tr := buildTarReaderEntry(t, "entry.txt", 11)
-		var totalRead int64
-		extracted, err := extractTarEntry(t.Context(), root, outDir, tr, hdr, Options{}, 0, &totalRead, testLogger())
+		extracted, err := extractTarEntry(t.Context(), root, outDir, tr, hdr, Options{}, testLogger())
 		if err != nil {
 			t.Fatalf("extractTarEntry: %v", err)
 		}
@@ -1558,8 +1218,7 @@ func TestExtractTarEntry_Direct(t *testing.T) {
 		hdr := &tar.Header{Name: "subdir/", Typeflag: tar.TypeDir, Mode: 0o755, ModTime: time.Now()}
 		gotHdr, tr := buildTarReaderEntryFromHeader(t, hdr, nil)
 
-		var totalRead int64
-		extracted, err := extractTarEntry(t.Context(), root, outDir, tr, gotHdr, Options{}, 0, &totalRead, testLogger())
+		extracted, err := extractTarEntry(t.Context(), root, outDir, tr, gotHdr, Options{}, testLogger())
 		if err != nil {
 			t.Fatalf("extractTarEntry: %v", err)
 		}
@@ -1579,8 +1238,7 @@ func TestExtractTarEntry_Direct(t *testing.T) {
 		hdr := &tar.Header{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd", Mode: 0o777, ModTime: time.Now()}
 		gotHdr, tr := buildTarReaderEntryFromHeader(t, hdr, nil)
 
-		var totalRead int64
-		extracted, err := extractTarEntry(t.Context(), root, outDir, tr, gotHdr, Options{}, 0, &totalRead, testLogger())
+		extracted, err := extractTarEntry(t.Context(), root, outDir, tr, gotHdr, Options{}, testLogger())
 		if err != nil {
 			t.Fatalf("extractTarEntry: %v", err)
 		}

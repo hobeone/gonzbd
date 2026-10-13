@@ -1,6 +1,7 @@
 package unpack
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -124,10 +125,20 @@ func ExtractStaged(log *slog.Logger, outDir string, opts Options, extract func(s
 // ExtractedFiles it leaves empty: on success extractInStage sets it to what
 // the publish moved into outDir, relative to outDir.
 //
+// Before the attempt it refuses an archive whose declared unpacked size does
+// not fit above opts.MinFreeSpace (checkFreeSpace), and it classifies an
+// attempt that filled the disk as FailDiskFull (withDiskFull).
+//
 // Every archive extractor goes through it: `git grep -n 'extractInStag[e]('
 // -- 'internal/unpack/*.go' ':!*_test.go'` returns 6 lines, this definition
 // and the calls in GoUnRAR, GoSevenZip, GoTar, UnRAR and SevenZip.
-func extractInStage(log *slog.Logger, outDir string, opts Options, extract func(stageDir string) (Result, error)) (Result, error) {
+func extractInStage(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options, extract func(stageDir string) (Result, error)) (Result, error) {
+	if err := checkFreeSpace(ctx, log, archive, outDir, password, opts.MinFreeSpace); err != nil {
+		if opts.OnLine != nil {
+			opts.OnLine("ERROR: " + err.Error())
+		}
+		return withDiskFull(Result{}, err)
+	}
 	var res Result
 	published, err := ExtractStaged(log, outDir, opts, func(stageDir string) error {
 		var err error
@@ -135,7 +146,7 @@ func extractInStage(log *slog.Logger, outDir string, opts Options, extract func(
 		return err
 	})
 	if err != nil {
-		return res, err
+		return withDiskFull(res, err)
 	}
 	res.ExtractedFiles = published
 	return res, nil

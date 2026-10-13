@@ -127,7 +127,7 @@ func sevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 		opts.OnCommand(cmdLine)
 	}
 
-	res, err := extractInStage(log, outDir, opts, func(stageDir string) (Result, error) {
+	res, err := extractInStage(ctx, log, archive, outDir, password, opts, func(stageDir string) (Result, error) {
 		execArgs := append(append([]string(nil), args...), archive.MainFile, "-o"+stageDir, sscFlag)
 		if password != "" {
 			execArgs[flagIdx] = "-p" + password

@@ -29,13 +29,16 @@ const joinBufSize = 16 * 1024 * 1024 // 16 MiB write buffer (SABnzbd uses 24 MiB
 // partial output file.
 //
 // The Result's ExtractedFiles names the joined file relative to outDir.
+//
+// A join whose parts do not fit above opts.MinFreeSpace is refused before it
+// writes (checkFreeSpace), and one that fills the disk fails as FailDiskFull.
 func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
-	res, err := fileJoin(ctx, log.With("component", "filejoin"), archive, outDir, opts)
+	res, err := withDiskFull(fileJoin(ctx, log.With("component", "filejoin"), archive, outDir, opts))
 	res.Engine = "filejoin"
 	return res, err
 }
 
-func fileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir string, _ Options) (Result, error) {
+func fileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
 	if archive.Type != SplitArchive {
 		return Result{}, fmt.Errorf("filejoin: archive type is not SplitArchive")
 	}
@@ -85,6 +88,10 @@ func fileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	parts, err := sortedNumericParts(archive.Parts)
 	if err != nil {
 		return Result{}, fmt.Errorf("filejoin: %w", err)
+	}
+
+	if err := checkFreeSpace(ctx, log, archive, outDir, "", opts.MinFreeSpace); err != nil {
+		return Result{}, err
 	}
 
 	outFile, tmpRel, err := fsutil.RootedCreateTempPerm(ctx, root, outRel, 0o666)

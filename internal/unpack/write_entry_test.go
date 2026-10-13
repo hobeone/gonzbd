@@ -122,17 +122,15 @@ func TestWriteEntrySafely_SkipExisting_NoDrain(t *testing.T) {
 	}
 }
 
-// errReader is an io.Reader that always fails, simulating a bomb-detection
-// error (or any other read failure) from a src reader being drained on skip.
+// errReader is an io.Reader that always fails, simulating a read failure
+// from a src reader being drained on skip.
 type errReader struct{ err error }
 
 func (r errReader) Read([]byte) (int, error) { return 0, r.err }
 
 // TestWriteEntrySafely_SkipExisting_DrainErrorPropagates is a regression
-// guard: a read error while draining a skipped entry (e.g. a bomb-detection
-// error from a *boundReader-wrapped src) must be returned, not silently
-// discarded — src may still enforce safety limits during the drain even
-// though this entry's bytes aren't kept.
+// guard: a read error while draining a skipped entry (a corrupt stream, a
+// cancellation) must be returned, not silently discarded.
 func TestWriteEntrySafely_SkipExisting_DrainErrorPropagates(t *testing.T) {
 	t.Parallel()
 
@@ -147,7 +145,7 @@ func TestWriteEntrySafely_SkipExisting_DrainErrorPropagates(t *testing.T) {
 		t.Fatalf("seed file: %v", err)
 	}
 
-	wantErr := errors.New("simulated bomb-detection error during drain")
+	wantErr := errors.New("simulated read error during drain")
 	src := errReader{err: wantErr}
 
 	_, err = writeEntrySafely(

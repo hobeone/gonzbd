@@ -51,7 +51,7 @@ func goUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, pas
 	}
 
 	log.Info("go_unrar: detected RAR archive version, using rarengine", "rar_version", ver)
-	res, err := extractInStage(log, outDir, opts, func(stageDir string) (Result, error) {
+	res, err := extractInStage(ctx, log, archive, outDir, password, opts, func(stageDir string) (Result, error) {
 		return goUnRAREngine(ctx, log, archive, stageDir, password, opts)
 	})
 	res.CommandLine = fmt.Sprintf("go_unrar %s -> %s", archive.MainFile, outDir)
@@ -310,11 +310,10 @@ func extractEntryRarengine(ctx context.Context, root *os.Root, destRel, destPath
 		mode = 0
 	}
 
-	// No bomb-limit check here: rarengine enforces its own decompression-
-	// bomb limits internally (see rarengine.ErrRarBombDetected, surfaced via
-	// ClassifyRarEngineError). r is wrapped in rarEntryReader to tolerate
-	// unverifiable checksums (a key-derived MAC or no digest), but is not wrapped in a
-	// boundReader before writing.
+	// r is wrapped in rarEntryReader to tolerate unverifiable checksums (a
+	// key-derived MAC or no digest). rarengine caps a member's output at the
+	// unpacked size its header declares, the size the free-space check
+	// counted (checkFreeSpace).
 	entryReader := &rarEntryReader{r: r}
 	_, err := writeEntrySafely(ctx, root, destRel, destPath, entryReader, nil, true, mode, fh.ModificationTime, opts, fh.Name, "go_unrar", log, nil)
 	return err

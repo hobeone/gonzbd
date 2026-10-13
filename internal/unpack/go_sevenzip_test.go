@@ -3,13 +3,11 @@ package unpack
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 
 	"github.com/bodgit/sevenzip"
@@ -462,11 +460,6 @@ func TestClassifySevenZipErrorDirect(t *testing.T) {
 			want: FailCorrupt,
 		},
 		{
-			name: "disk full",
-			err:  syscall.ENOSPC,
-			want: FailDiskFull,
-		},
-		{
 			name: "other error",
 			err:  errors.New("something went wrong"),
 			want: FailUnknown,
@@ -485,18 +478,26 @@ func TestClassifySevenZipErrorDirect(t *testing.T) {
 
 // TestGoSevenZip_PanicRecovery verifies the top-level recover() in
 // GoSevenZip converts any panic into a FailCorrupt result with a
-// "sevenzip panic" error. The panic here comes from log.With on the
-// nil *slog.Logger (a convenient, deterministic trigger) rather than
-// from the sevenzip library itself, but it exercises the same generic
-// recover/format/Reason path that a real library panic would hit.
+// "sevenzip panic" error. The panic here comes from an OnLine that panics
+// on its first call, the first entry's "Extracting" line (a convenient,
+// deterministic trigger) rather than from the sevenzip library itself, but
+// it exercises the same generic recover/format/Reason path that a real
+// library panic would hit.
 func TestGoSevenZip_PanicRecovery(t *testing.T) {
 	archive := Archive{
 		Type:     SevenZipArchive,
-		MainFile: "dummy.7z",
+		MainFile: filepath.Join(sevenZipTestdata(t), "lzma2.7z"),
 	}
 	var onlineMsg string
-	res, err := GoSevenZip(context.Background(), nil, archive, t.TempDir(), "", Options{
-		OnLine: func(msg string) { onlineMsg = msg },
+	calls := 0
+	res, err := GoSevenZip(context.Background(), testLogger(), archive, t.TempDir(), "", Options{
+		OnLine: func(msg string) {
+			calls++
+			if calls == 1 {
+				panic("first OnLine call")
+			}
+			onlineMsg = msg
+		},
 	})
 	if err == nil {
 		t.Fatal("expected error from panic recovery, got nil")
@@ -529,179 +530,6 @@ func TestGoSevenZipInternal_Direct(t *testing.T) {
 	}
 	if got := dirTree(t, outDir); len(got) == 0 {
 		t.Fatal("goSevenZipInternal() wrote nothing into the directory it was given")
-	}
-}
-
-func TestGoSevenZip_DecompressionBomb_CeilingLimit(t *testing.T) {
-	td := sevenZipTestdata(t)
-	outDir := t.TempDir()
-	archive := Archive{
-		Type:     SevenZipArchive,
-		MainFile: filepath.Join(td, "lzma2.7z"),
-	}
-
-	// Set MaxSize to 5 bytes to simulate a ceiling limit violation.
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{
-		MaxSize: 5,
-	})
-	if err == nil {
-		t.Fatal("GoSevenZip() expected decompression bomb ceiling error, got nil")
-	}
-	if !strings.Contains(err.Error(), "decompression bomb") && !strings.Contains(err.Error(), "exceeds ceiling") {
-		t.Errorf("expected error to mention decompression bomb/ceiling, got: %v", err)
-	}
-	if res.Reason != FailCorrupt {
-		t.Errorf("Reason = %v, want FailCorrupt", res.Reason)
-	}
-}
-
-func TestGoSevenZip_DecompressionBomb_RatioLimit(t *testing.T) {
-	td := sevenZipTestdata(t)
-	outDir := t.TempDir()
-	archive := Archive{
-		Type:     SevenZipArchive,
-		MainFile: filepath.Join(td, "lzma2.7z"),
-	}
-
-	// Set MaxRatio to 1 and MinBombThreshold to -1 (to check from byte 0)
-	// to simulate a ratio limit violation.
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{
-		MaxRatio:         1,
-		MinBombThreshold: -1,
-	})
-	if err == nil {
-		t.Fatal("GoSevenZip() expected decompression bomb ratio error, got nil")
-	}
-	if !strings.Contains(err.Error(), "decompression bomb") && !strings.Contains(err.Error(), "ratio") {
-		t.Errorf("expected error to mention decompression bomb/ratio, got: %v", err)
-	}
-	if res.Reason != FailCorrupt {
-		t.Errorf("Reason = %v, want FailCorrupt", res.Reason)
-	}
-}
-
-func TestBoundReader_Direct(t *testing.T) {
-	t.Parallel()
-
-	// 1. Boundary on if n > 0 when totalRead already exceeds maxSize
-	// Read 0 bytes from empty reader when totalRead > maxSize
-	{
-		totalRead := new(int64)
-		*totalRead = 100
-		br := &boundReader{r: strings.NewReader(""), totalRead: totalRead, maxSize: 10, errBomb: errSevenZipBomb}
-		var buf [10]byte
-		n, err := br.Read(buf[:])
-		if n != 0 || !errors.Is(err, io.EOF) {
-			t.Errorf("expected 0, io.EOF on empty reader, got n=%d, err=%v", n, err)
-		}
-	}
-
-	// 2. Ceiling limit checks and boundary (currTotal > b.maxSize)
-	{
-		totalRead := new(int64)
-		br := &boundReader{r: strings.NewReader("0123456789abcdef"), totalRead: totalRead, maxSize: 10, errBomb: errSevenZipBomb}
-		var buf [10]byte
-		// Read exactly 10 bytes (currTotal == maxSize, should NOT error)
-		n, err := br.Read(buf[:])
-		if n != 10 || err != nil {
-			t.Fatalf("expected 10, nil for read up to maxSize, got n=%d, err=%v", n, err)
-		}
-		// Read 1 more byte (currTotal == 11 > 10, should return errSevenZipBomb)
-		n, err = br.Read(buf[:1])
-		if !errors.Is(err, errSevenZipBomb) || !strings.Contains(err.Error(), "exceeds ceiling") {
-			t.Errorf("expected errSevenZipBomb ceiling error, got n=%d, err=%v", n, err)
-		}
-	}
-
-	// 3. Ceiling limit disabled when maxSize <= 0
-	{
-		totalRead := new(int64)
-		br := &boundReader{r: strings.NewReader("0123456789"), totalRead: totalRead, maxSize: 0, errBomb: errSevenZipBomb}
-		var buf [10]byte
-		n, err := br.Read(buf[:])
-		if n != 10 || err != nil {
-			t.Errorf("expected 10, nil when maxSize is 0, got n=%d, err=%v", n, err)
-		}
-	}
-
-	// 4. Ratio limit checks and boundaries
-	// Boundary on currTotal > b.minThreshold
-	{
-		totalRead := new(int64)
-		// arcSize = 10, maxRatio = 2 (limit = 20), minThreshold = 25
-		br := &boundReader{r: strings.NewReader("012345678901234567890123456789"), totalRead: totalRead, arcSize: 10, maxRatio: 2, minThreshold: 25, errBomb: errSevenZipBomb}
-		var buf [25]byte
-		// Read 25 bytes: currTotal == 25, which is NOT > minThreshold (25). Should NOT error despite 25 > 20 ratio limit!
-		n, err := br.Read(buf[:])
-		if n != 25 || err != nil {
-			t.Fatalf("expected 25, nil when within minThreshold, got n=%d, err=%v", n, err)
-		}
-		// Read 1 more byte: currTotal == 26 > minThreshold (25) AND 26 > 20. Should return errSevenZipBomb!
-		n, err = br.Read(buf[:1])
-		if !errors.Is(err, errSevenZipBomb) || !strings.Contains(err.Error(), "ratio exceeds limit") {
-			t.Errorf("expected errSevenZipBomb ratio error, got n=%d, err=%v", n, err)
-		}
-	}
-
-	// Boundary on currTotal > b.arcSize*b.maxRatio and minThreshold < 0 (and minThreshold == 0)
-	{
-		totalRead := new(int64)
-		// arcSize = 10, maxRatio = 2 (limit = 20), minThreshold = -1 (checked from byte 0)
-		br := &boundReader{r: strings.NewReader("012345678901234567890123456789"), totalRead: totalRead, arcSize: 10, maxRatio: 2, minThreshold: -1, errBomb: errSevenZipBomb}
-		var buf [20]byte
-		// Read exactly 20 bytes: currTotal == 20, which is NOT > 20. Should NOT error!
-		n, err := br.Read(buf[:])
-		if n != 20 || err != nil {
-			t.Fatalf("expected 20, nil when at exact ratio limit, got n=%d, err=%v", n, err)
-		}
-		// Read 1 more byte: currTotal == 21 > 20. Should return errSevenZipBomb!
-		n, err = br.Read(buf[:1])
-		if !errors.Is(err, errSevenZipBomb) || !strings.Contains(err.Error(), "ratio exceeds limit") {
-			t.Errorf("expected errSevenZipBomb ratio error on byte 21, got n=%d, err=%v", n, err)
-		}
-
-		// Also test minThreshold == 0
-		*totalRead = 0
-		br = &boundReader{r: strings.NewReader("012345678901234567890123456789"), totalRead: totalRead, arcSize: 10, maxRatio: 2, minThreshold: 0, errBomb: errSevenZipBomb}
-		n, err = br.Read(buf[:]) // read 20 bytes
-		if n != 20 || err != nil {
-			t.Fatalf("expected 20, nil when at exact ratio limit with minThreshold=0, got n=%d, err=%v", n, err)
-		}
-		n, err = br.Read(buf[:1]) // byte 21
-		if !errors.Is(err, errSevenZipBomb) {
-			t.Errorf("expected bomb error at byte 21 when minThreshold=0, got n=%d, err=%v", n, err)
-		}
-	}
-
-	// Arithmetic base check on b.arcSize * b.maxRatio
-	{
-		totalRead := new(int64)
-		// arcSize = 2, maxRatio = 5 (limit = 10; notice 2+5=7, 2-5=-3, 2/5=0)
-		br := &boundReader{r: strings.NewReader("01234567890123456789"), totalRead: totalRead, arcSize: 2, maxRatio: 5, minThreshold: -1, errBomb: errSevenZipBomb}
-		var buf [10]byte
-		n, err := br.Read(buf[:])
-		if n != 10 || err != nil {
-			t.Fatalf("expected 10, nil when at ratio limit 10, got n=%d, err=%v", n, err)
-		}
-		n, err = br.Read(buf[:1])
-		if !errors.Is(err, errSevenZipBomb) {
-			t.Errorf("expected bomb error when exceeding ratio limit 10, got n=%d, err=%v", n, err)
-		}
-	}
-
-	// Disabled ratio limit when arcSize == 0 or maxRatio == 0
-	{
-		totalRead := new(int64)
-		br := &boundReader{r: strings.NewReader("0123456789"), totalRead: totalRead, arcSize: 0, maxRatio: 2, minThreshold: -1, errBomb: errSevenZipBomb}
-		var buf [10]byte
-		if n, err := br.Read(buf[:]); n != 10 || err != nil {
-			t.Errorf("expected success when arcSize is 0, got n=%d, err=%v", n, err)
-		}
-		*totalRead = 0
-		br = &boundReader{r: strings.NewReader("0123456789"), totalRead: totalRead, arcSize: 10, maxRatio: 0, minThreshold: -1, errBomb: errSevenZipBomb}
-		if n, err := br.Read(buf[:]); n != 10 || err != nil {
-			t.Errorf("expected success when maxRatio is 0, got n=%d, err=%v", n, err)
-		}
 	}
 }
 
@@ -738,8 +566,7 @@ func TestExtractSevenZipFile_ChecksumMismatchNeverPublishes(t *testing.T) {
 	f := *r.File[0]
 	f.CRC32 = f.CRC32 ^ 0xFFFFFFFF //nolint:staticcheck // deliberate: guarantee mismatch regardless of original value
 
-	totalRead := new(int64)
-	err = extractSevenZipFile(t.Context(), root, "out.txt", filepath.Join(outDir, "out.txt"), &f, Options{}, 0, totalRead, slog.Default())
+	err = extractSevenZipFile(t.Context(), root, "out.txt", filepath.Join(outDir, "out.txt"), &f, Options{}, slog.Default())
 	if !errors.Is(err, errSevenZipChecksum) {
 		t.Fatalf("extractSevenZipFile error = %v, want errSevenZipChecksum", err)
 	}
@@ -753,124 +580,6 @@ func TestExtractSevenZipFile_ChecksumMismatchNeverPublishes(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("outDir not empty after checksum mismatch: %v", entries)
-	}
-}
-
-func TestExtractSevenZipFile_Direct(t *testing.T) {
-	t.Parallel()
-
-	td := sevenZipTestdata(t)
-	archivePath := filepath.Join(td, "lzma2.7z")
-	r, err := sevenzip.OpenReader(archivePath)
-	if err != nil {
-		t.Fatalf("sevenzip.OpenReader: %v", err)
-	}
-	defer r.Close()
-
-	if len(r.File) == 0 {
-		t.Fatal("archive has no files")
-	}
-
-	outDir := t.TempDir()
-	root, err := os.OpenRoot(outDir)
-	if err != nil {
-		t.Fatalf("os.OpenRoot: %v", err)
-	}
-	defer root.Close()
-
-	// Helper to make a shallow copy of the file so we can tweak UncompressedSize
-	makeFile := func(size uint64) *sevenzip.File {
-		f := *r.File[0]
-		f.UncompressedSize = size
-		return &f
-	}
-
-	const defaultMaxSize = 250 * 1024 * 1024 * 1024 // 250 GiB
-	const defaultMinThreshold = 10 * 1024 * 1024    // 10 MiB
-	const defaultMaxRatio = 250
-
-	// 1. Default MaxSize (250 GiB) boundary and arithmetic checks
-	// Set arcSize=0 so ratio check does not interfere with ceiling check.
-	{
-		totalRead := new(int64)
-		*totalRead = 0
-		// Exactly 250 GiB should NOT return errSevenZipBomb at line 198
-		f := makeFile(defaultMaxSize)
-		err := extractSevenZipFile(t.Context(), root, "out1", filepath.Join(outDir, "out1"), f, Options{}, 0, totalRead, slog.Default())
-		if errors.Is(err, errSevenZipBomb) {
-			t.Errorf("expected no bomb error at exact defaultMaxSize (250 GiB), got: %v", err)
-		}
-
-		*totalRead = 0
-		// 250 GiB + 1 byte SHOULD return errSevenZipBomb
-		f = makeFile(defaultMaxSize + 1)
-		err = extractSevenZipFile(t.Context(), root, "out2", filepath.Join(outDir, "out2"), f, Options{}, 0, totalRead, slog.Default())
-		if !errors.Is(err, errSevenZipBomb) {
-			t.Errorf("expected bomb error when exceeding defaultMaxSize by 1 byte, got: %v", err)
-		}
-	}
-
-	// 2. Default MaxRatio (250) and MinBombThreshold (10 MiB) boundary checks
-	{
-		totalRead := new(int64)
-		arcSize := int64(100)
-		*totalRead = 0
-		// Exactly 10 MiB (defaultMinThreshold) should NOT trigger ratio bomb error even if ratio > 250
-		f := makeFile(defaultMinThreshold)
-		err := extractSevenZipFile(t.Context(), root, "out3", filepath.Join(outDir, "out3"), f, Options{}, arcSize, totalRead, slog.Default())
-		if errors.Is(err, errSevenZipBomb) {
-			t.Errorf("expected no bomb error at exact defaultMinThreshold (10 MiB), got: %v", err)
-		}
-
-		*totalRead = 0
-		// 10 MiB + 1 byte (> threshold AND > arcSize * 250) SHOULD trigger ratio bomb error
-		f = makeFile(defaultMinThreshold + 1)
-		err = extractSevenZipFile(t.Context(), root, "out4", filepath.Join(outDir, "out4"), f, Options{}, arcSize, totalRead, slog.Default())
-		if !errors.Is(err, errSevenZipBomb) || !strings.Contains(err.Error(), "ratio exceeds limit") {
-			t.Errorf("expected ratio bomb error above default threshold, got: %v", err)
-		}
-
-		*totalRead = 0
-		// Specifically test maxRatio=250 boundary with MinBombThreshold=-1
-		f = makeFile(uint64(arcSize) * defaultMaxRatio) // 25000 bytes
-		err = extractSevenZipFile(t.Context(), root, "out5", filepath.Join(outDir, "out5"), f, Options{MinBombThreshold: -1}, arcSize, totalRead, slog.Default())
-		if errors.Is(err, errSevenZipBomb) {
-			t.Errorf("expected no ratio bomb error at exact maxRatio (250), got: %v", err)
-		}
-
-		*totalRead = 0
-		f = makeFile(uint64(arcSize)*defaultMaxRatio + 1) // 25001 bytes
-		err = extractSevenZipFile(t.Context(), root, "out6", filepath.Join(outDir, "out6"), f, Options{MinBombThreshold: -1}, arcSize, totalRead, slog.Default())
-		if !errors.Is(err, errSevenZipBomb) {
-			t.Errorf("expected ratio bomb error at maxRatio + 1, got: %v", err)
-		}
-	}
-
-	// 3. Multi-file cumulative totalRead tracking (currTotal > 0 and projTotal addition)
-	{
-		totalRead := new(int64)
-		*totalRead = 100
-		// MaxSize = 150. If UncompressedSize is 50, projTotal = 150 (should NOT bomb).
-		f := makeFile(50)
-		err := extractSevenZipFile(t.Context(), root, "out7", filepath.Join(outDir, "out7"), f, Options{MaxSize: 150}, 0, totalRead, slog.Default())
-		if errors.Is(err, errSevenZipBomb) {
-			t.Errorf("expected no bomb error when projTotal == MaxSize (150), got: %v", err)
-		}
-
-		*totalRead = 100
-		// If UncompressedSize is 51, projTotal = 151 (> 150, SHOULD bomb).
-		f = makeFile(51)
-		err = extractSevenZipFile(t.Context(), root, "out8", filepath.Join(outDir, "out8"), f, Options{MaxSize: 150}, 0, totalRead, slog.Default())
-		if !errors.Is(err, errSevenZipBomb) || !strings.Contains(err.Error(), "exceeds ceiling") {
-			t.Errorf("expected ceiling bomb error when projTotal > MaxSize, got: %v", err)
-		}
-
-		*totalRead = -1
-		f = makeFile(50)
-		err = extractSevenZipFile(t.Context(), root, "out9", filepath.Join(outDir, "out9"), f, Options{}, 0, totalRead, slog.Default())
-		if err == nil || !strings.Contains(err.Error(), "invalid negative total read count") {
-			t.Errorf("expected negative total read count error, got: %v", err)
-		}
 	}
 }
 
@@ -891,14 +600,13 @@ func TestExtractSevenZipEntry_Coverage(t *testing.T) {
 	defer root.Close()
 
 	// Normal extraction via extractSevenZipEntry
-	totalRead := new(int64)
-	extracted, err := extractSevenZipEntry(t.Context(), r.File[0], outDir, root, Options{}, 0, totalRead, slog.Default())
+	extracted, err := extractSevenZipEntry(t.Context(), r.File[0], outDir, root, Options{}, slog.Default())
 	if err != nil || !extracted {
 		t.Errorf("expected successful extraction, got extracted=%v err=%v", extracted, err)
 	}
 
 	// OneFolder mode without overwrite (triggers uniquePath)
-	extracted, err = extractSevenZipEntry(t.Context(), r.File[0], outDir, root, Options{OneFolder: true}, 0, totalRead, slog.Default())
+	extracted, err = extractSevenZipEntry(t.Context(), r.File[0], outDir, root, Options{OneFolder: true}, slog.Default())
 	if err != nil || !extracted {
 		t.Errorf("expected OneFolder extraction, got extracted=%v err=%v", extracted, err)
 	}
@@ -909,7 +617,7 @@ func TestExtractSevenZipEntry_Coverage(t *testing.T) {
 	var onlineMsg string
 	extracted, err = extractSevenZipEntry(t.Context(), &badFile, outDir, root, Options{
 		OnLine: func(msg string) { onlineMsg = msg },
-	}, 0, totalRead, slog.Default())
+	}, slog.Default())
 	if err != nil || extracted {
 		t.Errorf("expected skip on bad path, got extracted=%v err=%v", extracted, err)
 	}
@@ -921,7 +629,7 @@ func TestExtractSevenZipEntry_Coverage(t *testing.T) {
 	dirFile := *r.File[0]
 	dirFile.Name = "testdir"
 	dirFile.Attributes = 0x10
-	extracted, err = extractSevenZipEntry(t.Context(), &dirFile, outDir, root, Options{}, 0, totalRead, slog.Default())
+	extracted, err = extractSevenZipEntry(t.Context(), &dirFile, outDir, root, Options{}, slog.Default())
 	if err != nil || extracted {
 		t.Errorf("expected directory skip, got extracted=%v err=%v", extracted, err)
 	}
@@ -932,7 +640,7 @@ func TestExtractSevenZipEntry_Coverage(t *testing.T) {
 	symFile.Attributes = 0xA0000000
 	extracted, err = extractSevenZipEntry(t.Context(), &symFile, outDir, root, Options{
 		OnLine: func(msg string) { onlineMsg = msg },
-	}, 0, totalRead, slog.Default())
+	}, slog.Default())
 	if err != nil || extracted {
 		t.Errorf("expected symlink skip, got extracted=%v err=%v", extracted, err)
 	}
@@ -946,7 +654,7 @@ func TestExtractSevenZipEntry_Coverage(t *testing.T) {
 	charFile.Attributes = 0x20000000
 	extracted, err = extractSevenZipEntry(t.Context(), &charFile, outDir, root, Options{
 		OnLine: func(msg string) { onlineMsg = msg },
-	}, 0, totalRead, slog.Default())
+	}, slog.Default())
 	if err != nil || extracted {
 		t.Errorf("expected non-regular skip, got extracted=%v err=%v", extracted, err)
 	}
@@ -968,11 +676,10 @@ func TestExtractSevenZipFile_Coverage(t *testing.T) {
 	}
 	defer root.Close()
 
-	totalRead := new(int64)
 	f := r.File[0]
 
 	// Extract first time
-	err = extractSevenZipFile(t.Context(), root, "exist_test", filepath.Join(outDir, "exist_test"), f, Options{}, 0, totalRead, slog.Default())
+	err = extractSevenZipFile(t.Context(), root, "exist_test", filepath.Join(outDir, "exist_test"), f, Options{}, slog.Default())
 	if err != nil {
 		t.Fatalf("extract first time: %v", err)
 	}
@@ -982,7 +689,7 @@ func TestExtractSevenZipFile_Coverage(t *testing.T) {
 	err = extractSevenZipFile(t.Context(), root, "exist_test", filepath.Join(outDir, "exist_test"), f, Options{
 		OverwriteFiles: false,
 		OnLine:         func(msg string) { onlineMsg = msg },
-	}, 0, totalRead, slog.Default())
+	}, slog.Default())
 	if err != nil {
 		t.Errorf("extract second time: %v", err)
 	}
@@ -994,7 +701,7 @@ func TestExtractSevenZipFile_Coverage(t *testing.T) {
 	err = extractSevenZipFile(t.Context(), root, "date_test", filepath.Join(outDir, "date_test"), f, Options{
 		OverwriteFiles:   true,
 		IgnoreUnrarDates: false,
-	}, 0, totalRead, slog.Default())
+	}, slog.Default())
 	if err != nil {
 		t.Errorf("extract with date: %v", err)
 	}
@@ -1072,7 +779,6 @@ func TestExtractSevenZipFile_TempFileUnlinkedMidWrite(t *testing.T) {
 	}
 	defer root.Close()
 
-	totalRead := new(int64)
 	f := r.File[0]
 
 	handler := &testDebugHandler{}
@@ -1085,7 +791,7 @@ func TestExtractSevenZipFile_TempFileUnlinkedMidWrite(t *testing.T) {
 	err = extractSevenZipFile(ctx, root, destRel, destPath, f, Options{
 		OverwriteFiles:   true,
 		IgnoreUnrarDates: false,
-	}, 0, totalRead, logger)
+	}, logger)
 	// dupcomment:ok the go_sevenzip and go_unrar backends are asserted
 	// against the same publish contract; the two copies must stay in step.
 	//

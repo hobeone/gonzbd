@@ -239,6 +239,9 @@ func (app *Application) SetMinFreeSpace(bytes int64) {
 	if app.assembler != nil {
 		app.assembler.SetMinFreeBytes(bytes)
 	}
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetMinFreeSpace(bytes)
+	}
 }
 
 // SetMaxArtTries updates per-article retry limit and related dispatch options.

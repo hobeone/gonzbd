@@ -7,101 +7,19 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
-// bombLimitDefaults resolves opts.MaxSize/MaxRatio/MinBombThreshold to their
-// effective values, applying the same fallback defaults go_tar and
-// go_sevenzip each hardcoded independently: 250 GiB absolute ceiling, 250:1
-// compression-ratio ceiling, and a 10 MiB minimum-size threshold below which
-// the ratio check is skipped (so a tiny archive containing a tiny file never
-// false-positives on ratio alone).
-func bombLimitDefaults(opts Options) (maxSize, maxRatio, minThreshold int64) {
-	maxSize = opts.MaxSize
-	if maxSize <= 0 {
-		maxSize = 250 * 1024 * 1024 * 1024 // 250 GiB
-	}
-	maxRatio = opts.MaxRatio
-	if maxRatio <= 0 {
-		maxRatio = 250
-	}
-	minThreshold = opts.MinBombThreshold
-	if minThreshold == 0 {
-		minThreshold = 10 * 1024 * 1024 // 10 MiB
-	}
-	return maxSize, maxRatio, minThreshold
-}
-
-// projectedBombCheck verifies that adding entrySize to the running
-// totalRead would not exceed either the absolute size ceiling or the
-// compression-ratio ceiling, before any bytes of the entry are actually
-// read. sizeLabel customizes the ceiling-violation message so each format
-// keeps its original wording (go_tar: "declared", go_sevenzip:
-// "uncompressed") since that reflects a real difference in what the number
-// represents (a tar header's claimed size vs 7z's parsed uncompressed
-// size).
-//
-// This is a projection only -- it does not itself read anything. Callers
-// still wrap their reader in a *boundReader (see newBoundReader) for the
-// continuous per-byte check as bytes are actually read, since a
-// sparse/streamed entry's declared size can lie (see errTarBomb's doc
-// comment on GNU/PAX sparse headers).
-func projectedBombCheck(entrySize uint64, arcSize int64, totalRead *int64, opts Options, entryName, sizeLabel string, errBomb error, errPrefix string) error {
-	maxSize, maxRatio, minThreshold := bombLimitDefaults(opts)
-
-	currTotal := atomic.LoadInt64(totalRead)
-	if currTotal < 0 {
-		return fmt.Errorf("%s: invalid negative total read count: %d", errPrefix, currTotal)
-	}
-	projTotal := entrySize + uint64(currTotal)
-	if projTotal > uint64(maxSize) { //nolint:gosec // maxSize is bombLimitDefaults' resolved value, always > 0
-		return fmt.Errorf("%w: entry %q %s size (%d) exceeds ceiling (%d)", errBomb, entryName, sizeLabel, entrySize, maxSize)
-	}
-	// minThreshold is only converted once the "minThreshold < 0" branch of
-	// the || has been ruled out, so uint64(minThreshold) is never negative
-	// here; arcSize > 0 and maxRatio is bombLimitDefaults' resolved value
-	// (always > 0), so both are also safe to convert.
-	if arcSize > 0 && (minThreshold < 0 || projTotal > uint64(minThreshold)) && projTotal > uint64(arcSize)*uint64(maxRatio) { //nolint:gosec // see comment above
-		return fmt.Errorf("%w: entry %q ratio exceeds limit (%d)", errBomb, entryName, maxRatio)
-	}
-	return nil
-}
-
-// newBoundReader wraps src in a boundReader configured from opts' resolved
-// bomb-limit defaults, so callers don't each re-derive maxSize/maxRatio/
-// minThreshold a second time (once for projectedBombCheck, once for the
-// boundReader's own fields).
-func newBoundReader(src io.Reader, totalRead *int64, arcSize int64, opts Options, entryName string, errBomb error, errPrefix string) *boundReader {
-	maxSize, maxRatio, minThreshold := bombLimitDefaults(opts)
-	return &boundReader{
-		r:            src,
-		totalRead:    totalRead,
-		maxSize:      maxSize,
-		maxRatio:     maxRatio,
-		arcSize:      arcSize,
-		minThreshold: minThreshold,
-		name:         entryName,
-		errBomb:      errBomb,
-		errPrefix:    errPrefix,
-	}
-}
-
 // writeEntrySafely writes a single archive entry (already sanitized and
 // type-checked by the caller) to disk through root, an os.Root anchored at
 // the extraction output directory. It centralizes the logic go_tar,
 // go_sevenzip, and go_unrar each independently duplicated: skip-if-exists,
 // os.Root-scoped file creation (which cannot escape outDir), context-aware
-// copy with disk-full classification, and permission/timestamp restoration.
-//
-// Decompression-bomb enforcement is the caller's responsibility to apply to
-// src *before* calling this function (see projectedBombCheck/
-// newBoundReader) -- go_unrar's rarengine library enforces its own bomb
-// limits internally (see rarengine.ErrRarBombDetected), so its call site has
-// nothing to wrap src in and passes it through unwrapped.
+// copy, and permission/timestamp restoration. It bounds nothing by size: the
+// free-space check before the extraction does (checkFreeSpace).
 //
 // extraWriter, if non-nil, receives a copy of every byte written via
 // io.MultiWriter. go_sevenzip is the only caller that uses this, to
@@ -167,11 +85,9 @@ func writeEntrySafely(
 				opts.OnLine("Skipping existing: " + entryName)
 			}
 			if drainOnSkip {
-				// Use contextCopy, not a bare io.Copy, so a bomb-detection
-				// error from a *boundReader-wrapped src, a cancellation, or
+				// Use contextCopy, not a bare io.Copy, so a cancellation or
 				// a genuine read failure during the drain is surfaced
-				// instead of silently discarded — src may still enforce
-				// safety limits even though this entry's bytes aren't kept.
+				// instead of silently discarded.
 				if _, err := contextCopy(ctx, io.Discard, src); err != nil {
 					return false, fmt.Errorf("%s: drain skipped entry %s: %w", errPrefix, destRel, err)
 				}

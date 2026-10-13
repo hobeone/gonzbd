@@ -35,6 +35,10 @@ type UnpackStage struct {
 
 	// cleanup is set atomically (by Apply) so it can be updated from any goroutine.
 	cleanup atomic.Bool
+	// minFreeSpace is downloads.min_free_space, set by SetMinFreeSpace. Run
+	// passes it to every extraction as Options.MinFreeSpace, in place of
+	// BaseOpts' own.
+	minFreeSpace atomic.Int64
 	// PasswordFile is the path to a text file with one password per line.
 	// These are appended after per-job passwords during extraction.
 	PasswordFile string
@@ -101,6 +105,12 @@ func (u *UnpackStage) Apply(c UnpackConfig) {
 	u.EnableRecursive = c.EnableRecursive
 }
 
+// SetMinFreeSpace sets the free space, in bytes, an extraction must leave on
+// the output filesystem (downloads.min_free_space). It is a download setting,
+// not a post-processing one, so it is set apart from Apply. Thread-safe;
+// takes effect for the next job.
+func (u *UnpackStage) SetMinFreeSpace(bytes int64) { u.minFreeSpace.Store(bytes) }
+
 // Name returns the stage identifier.
 func (*UnpackStage) Name() string { return "unpack" }
 
@@ -141,6 +151,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	enableTar := u.EnableTar
 	enableRecursive := u.EnableRecursive
 	u.mu.RUnlock()
+	opts.MinFreeSpace = u.minFreeSpace.Load()
 
 	opts = u.prepareOptions(ctx, log, job, opts, passwordFile)
 
