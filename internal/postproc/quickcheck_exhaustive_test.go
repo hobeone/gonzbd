@@ -5,6 +5,8 @@ import (
 	"go/parser"
 	"go/token"
 	"log/slog"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -91,7 +93,8 @@ func quickCheckConstantsFromSource(t *testing.T, filename string) map[string]Qui
 
 // TestRepairStage_HandlesEveryQuickCheckOutcome walks every declared outcome
 // through the stage and asserts each one reaches a decision the stage states
-// out loud.
+// out loud, and the decision it reaches: repair is skipped only for an outcome
+// in which quickcheck verified the job's par2 sets or deferred them.
 //
 // The switch in RepairStage.Run has no compiler-enforced exhaustiveness —
 // .golangci.yml does not enable the exhaustive linter — so a new outcome would
@@ -101,14 +104,25 @@ func quickCheckConstantsFromSource(t *testing.T, filename string) map[string]Qui
 func TestRepairStage_HandlesEveryQuickCheckOutcome(t *testing.T) {
 	t.Parallel()
 
+	wantRun := map[QuickCheckOutcome]bool{
+		QuickCheckNotRun:       true,
+		QuickCheckClean:        false,
+		QuickCheckDamaged:      true,
+		QuickCheckInconclusive: true,
+		QuickCheckUnidentified: false,
+	}
 	for _, outcome := range AllQuickCheckOutcomes() {
 		t.Run(outcome.String(), func(t *testing.T) {
 			t.Parallel()
+			want, ok := wantRun[outcome]
+			if !ok {
+				t.Fatalf("%s has no expectation here; say whether repair runs for it", outcome)
+			}
 
 			job, dir := stageJob(t)
 			copyPar2Fixtures(t, dir)
-			// DirectUnpack clean, so every outcome faces the same decision:
-			// whether its own verdict permits the shortcut.
+			// A DirectUnpack success beside every outcome. It says nothing
+			// about the files par2 protects, so no decision may depend on it.
 			job.DirectUnpackSets = map[string]directunpack.SuccessSet{
 				"ok": {RarParts: []string{"data.bin"}, ExtractedFiles: []string{"data.out"}},
 			}
@@ -124,8 +138,19 @@ func TestRepairStage_HandlesEveryQuickCheckOutcome(t *testing.T) {
 					t.Fatalf("%s reached the switch's default arm; add an explicit case for it in RepairStage.Run", outcome)
 				}
 			}
+			if got := repairScanned(job); got != want {
+				t.Errorf("repair ran = %v for %s, want %v; output: %v", got, outcome, want, job.OutputLines)
+			}
 		})
 	}
+}
+
+// repairScanned reports whether RepairStage.repairSets ran for job, by the
+// line it logs before it scans for par2 sets.
+func repairScanned(job *Job) bool {
+	return slices.ContainsFunc(job.OutputLines, func(line string) bool {
+		return strings.HasPrefix(line, "Scanning for par2 files in ")
+	})
 }
 
 // The default arm has to be reachable and has to say so, or the guard above
@@ -135,9 +160,6 @@ func TestRepairStage_UnhandledQuickCheckOutcomeSaysSo(t *testing.T) {
 
 	job, dir := stageJob(t)
 	copyPar2Fixtures(t, dir)
-	job.DirectUnpackSets = map[string]directunpack.SuccessSet{
-		"ok": {RarParts: []string{"data.bin"}, ExtractedFiles: []string{"data.out"}},
-	}
 	// A value no case names, standing in for one added to the enum later.
 	job.quickCheck = QuickCheckOutcome(99)
 
@@ -146,16 +168,10 @@ func TestRepairStage_UnhandledQuickCheckOutcomeSaysSo(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	warned := false
-	for _, line := range job.OutputLines {
-		if line == "[repair] Running: unhandled QuickCheck outcome unknown" {
-			warned = true
-		}
-		if line == "[repair] Skipped: Direct Unpack successfully extracted all archives during download" {
-			t.Error("an unrecognised outcome took the DirectUnpack shortcut; an unknown verdict must never authorise skipping verification")
-		}
-	}
-	if !warned {
+	if !slices.Contains(job.OutputLines, "[repair] Running: unhandled QuickCheck outcome unknown") {
 		t.Errorf("an unrecognised outcome passed through silently; output: %v", job.OutputLines)
+	}
+	if !repairScanned(job) {
+		t.Errorf("an unrecognised outcome skipped repair; an unknown verdict must never authorise skipping verification. output: %v", job.OutputLines)
 	}
 }
