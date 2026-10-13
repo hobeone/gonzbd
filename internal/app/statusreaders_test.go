@@ -98,8 +98,9 @@ func TestServerStatus_DelegatesToDownloaderStats(t *testing.T) {
 	}
 }
 
-// TestHandleLowDisk_PausesDownloader pins the non-nil branch: a real
-// downloader must be paused when free disk space drops below threshold.
+// TestHandleLowDisk_PausesDownloader pins that handleLowDisk pauses the
+// downloader, here an injected fake, when free disk space drops below the
+// threshold.
 func TestHandleLowDisk_PausesDownloader(t *testing.T) {
 	t.Parallel()
 	fd := newFakeDownloader()
