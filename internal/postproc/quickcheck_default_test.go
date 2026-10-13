@@ -60,7 +60,7 @@ func TestQuickCheckStage_EmptyManifestJobStillGetsPar2(t *testing.T) {
 		t.Fatalf("QuickCheckStage.Run: %v", err)
 	}
 
-	repair := &RepairStage{UseGoPar2: true, Log: slog.New(slog.DiscardHandler)}
+	repair := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	if err := repair.Run(t.Context(), job); err != nil {
 		t.Fatalf("RepairStage.Run: %v", err)
 	}

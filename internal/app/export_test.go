@@ -152,49 +152,40 @@ func (a *Application) Context() context.Context {
 // tests that call them. See issue #109 (dissolve the Application god object).
 
 // StageStrictSandbox reports the running UnpackStage's strict-sandbox
-// setting. Returns false if no unpack stage is configured.
-//
-// Reads the exported BaseOpts field directly without acquiring
-// UnpackStage's internal mutex (unexported, not reachable from this
-// package) -- same unlocked-read pattern already used by
-// TestApplication_ReloadPostProcOptions_AppliesStrictSandboxToRunningStage
-// prior to this change. Fine for single-goroutine test assertions taken
-// after the reload call has returned.
+// setting. Returns false if no unpack stage is configured. Each of these
+// accessors reads through the stage's Config, under the stage's own lock.
 func (a *Application) StageStrictSandbox() bool {
 	if a.stages.Unpack == nil {
 		return false
 	}
-	return a.stages.Unpack.BaseOpts.Sandbox.Strict
+	return a.stages.Unpack.Config().Base.Sandbox.Strict
 }
 
 // StageUseGoRAR reports the running UnpackStage's pure-Go RAR extraction
-// toggle. Returns false if no unpack stage is configured. See
-// StageStrictSandbox for the unlocked-read rationale.
+// toggle. Returns false if no unpack stage is configured.
 func (a *Application) StageUseGoRAR() bool {
 	if a.stages.Unpack == nil {
 		return false
 	}
-	return a.stages.Unpack.BaseOpts.UseGoRAR
+	return a.stages.Unpack.Config().Base.UseGoRAR
 }
 
 // StageEnableFileJoin reports the running UnpackStage's split-file-join
-// toggle. Returns false if no unpack stage is configured. See
-// StageStrictSandbox for the unlocked-read rationale.
+// toggle. Returns false if no unpack stage is configured.
 func (a *Application) StageEnableFileJoin() bool {
 	if a.stages.Unpack == nil {
 		return false
 	}
-	return a.stages.Unpack.EnableFileJoin
+	return a.stages.Unpack.Config().EnableFileJoin
 }
 
 // StagePar2Turbo reports the running RepairStage's par2cmdline-turbo
-// toggle. Returns false if no repair stage is configured. See
-// StageStrictSandbox for the unlocked-read rationale.
+// toggle. Returns false if no repair stage is configured.
 func (a *Application) StagePar2Turbo() bool {
 	if a.stages.Repair == nil {
 		return false
 	}
-	return a.stages.Repair.Par2Opts.Turbo
+	return a.stages.Repair.Config().Par2.Turbo
 }
 
 // AssemblerMinFreeBytes reports the running Assembler's low-disk-space

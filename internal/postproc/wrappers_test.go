@@ -319,7 +319,7 @@ func TestRepairStage_NoCleanupInRepair(t *testing.T) {
 		DownloadDir: dir,
 	}
 
-	stage := NewRepairStageWith(par2.RunOptions{Command: "/nonexistent/par2"})
+	stage := appliedRepairStage(RepairConfig{Par2: par2.RunOptions{Command: "/nonexistent/par2"}}, nil)
 	_ = stage.Run(t.Context(), job)
 
 	// Par2 files should still exist — repair stage no longer deletes them.

@@ -60,11 +60,11 @@ func layoutBJob(t *testing.T, payloadName string) (*Job, string) {
 // layoutStages returns quickcheck wired to an enabled native unpack stage, as
 // buildStages wires them, and a native repair stage.
 func layoutStages() (*QuickCheckStage, *RepairStage, *UnpackStage) {
-	up := NewUnpackStageWith(unpack.Options{UseGoRAR: true, UseGo7z: true}, false)
+	up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true, UseGo7z: true}, Cleanup: false})
 	up.SetEnabled(true)
 	qc := &QuickCheckStage{Log: slog.New(slog.DiscardHandler), Unpack: up}
 	qc.SetEnabled(true)
-	repair := &RepairStage{UseGoPar2: true, Log: slog.New(slog.DiscardHandler)}
+	repair := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	return qc, repair, up
 }
 
@@ -404,7 +404,7 @@ func TestRepairStage_DeclinesWhenQuickCheckUnidentified(t *testing.T) {
 	job, _ := layoutBJob(t, "release.rar")
 	job.quickCheck = QuickCheckUnidentified
 
-	stage := &RepairStage{UseGoPar2: true, Log: slog.New(slog.DiscardHandler)}
+	stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

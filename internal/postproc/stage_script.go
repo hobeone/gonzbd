@@ -17,9 +17,9 @@ import (
 // ScriptStage executes a user-defined post-processing script after extraction.
 type ScriptStage struct {
 	mu sync.RWMutex
-	// ScriptDir is the directory holding user scripts; the job's Script
+	// scriptDir is the directory holding user scripts; the job's Script
 	// field is resolved relative to it. May be absolute for portability.
-	ScriptDir string
+	scriptDir string
 
 	// CompleteDir is the root complete directory surfaced to scripts as
 	// SAB_COMPLETE_DIR and argv[1]. Distinct from Job.DownloadDir which
@@ -59,13 +59,13 @@ func (s *ScriptStage) SetRedactSecrets(v bool) { s.redactSecrets.Store(v) }
 func (s *ScriptStage) SetScriptDir(dir string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ScriptDir = dir
+	s.scriptDir = dir
 }
 
 // NewScriptStage constructs a ScriptStage.
 func NewScriptStage(scriptDir, completeDir, version, apiKey, apiURL string) *ScriptStage {
 	return &ScriptStage{
-		ScriptDir:   scriptDir,
+		scriptDir:   scriptDir,
 		CompleteDir: completeDir,
 		Version:     version,
 		APIKey:      apiKey,
@@ -84,7 +84,7 @@ func (*ScriptStage) Name() string { return "script" }
 // usable SAB_FILES list; after it, wrapping the RunScript error.
 func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	s.mu.RLock()
-	scriptDir := s.ScriptDir
+	scriptDir := s.scriptDir
 	s.mu.RUnlock()
 
 	log := s.Log

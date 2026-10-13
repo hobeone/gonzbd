@@ -112,10 +112,7 @@ func TestRepairStage_InconclusiveQuickCheckOverridesDirectUnpackSuccess(t *testi
 	// which is not the same as offering a clean one.
 	job.quickCheck = QuickCheckInconclusive
 
-	stage := &RepairStage{
-		UseGoPar2: true,
-		Log:       slog.New(slog.DiscardHandler),
-	}
+	stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -156,10 +153,7 @@ func TestRepairStage_CleanQuickCheckIsTheReportedSkipReason(t *testing.T) {
 	}
 	job.quickCheck = QuickCheckClean
 
-	stage := &RepairStage{
-		UseGoPar2: true,
-		Log:       slog.New(slog.DiscardHandler),
-	}
+	stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -194,10 +188,7 @@ func TestRepairStage_NotRunQuickCheckStillAllowsTheDirectUnpackSkip(t *testing.T
 	}
 	job.quickCheck = QuickCheckNotRun
 
-	stage := &RepairStage{
-		UseGoPar2: true,
-		Log:       slog.New(slog.DiscardHandler),
-	}
+	stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

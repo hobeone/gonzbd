@@ -21,8 +21,8 @@ import (
 // is skipped because NZBs may be re-queued.
 type ExtensionCleanupStage struct {
 	mu sync.RWMutex
-	// Extensions is the list of extensions (without dot) to delete.
-	Extensions []string
+	// extensions is the list of extensions (without dot) to delete.
+	extensions []string
 	// SkipNZB prevents removal of .nzb files even if listed.
 	SkipNZB bool
 	Log     *slog.Logger
@@ -51,7 +51,7 @@ func (s *ExtensionCleanupStage) SetExtensions(extensions []string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Extensions = normed
+	s.extensions = normed
 }
 
 // Name implements Stage.
@@ -67,7 +67,7 @@ func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 	log := s.logger(job)
 
 	s.mu.RLock()
-	extensions := s.Extensions
+	extensions := s.extensions
 	s.mu.RUnlock()
 
 	if len(extensions) == 0 {

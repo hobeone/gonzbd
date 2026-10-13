@@ -73,14 +73,14 @@ func intactLayoutARar(t *testing.T) string {
 // extension_cleanup, and finalize.
 func buildPipelineForDeferredCleanup(unpackCleanup, par2Cleanup bool, extraAfterUnpack ...Stage) []Stage {
 	discard := slog.New(slog.DiscardHandler)
-	up := NewUnpackStageWith(unpack.Options{UseGoRAR: true, UseGo7z: true}, unpackCleanup)
+	up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true, UseGo7z: true}, Cleanup: unpackCleanup})
 	up.SetEnabled(true)
 	up.Log = discard
 
 	qc := &QuickCheckStage{Log: discard, Unpack: up}
 	qc.SetEnabled(true)
 
-	repair := &RepairStage{UseGoPar2: true, Log: discard}
+	repair := appliedRepairStage(RepairConfig{UseGoPar2: true}, discard)
 
 	par2Clean := NewPar2CleanupStage(par2Cleanup)
 	par2Clean.Log = discard
@@ -195,7 +195,7 @@ func TestDeferredCleanup_RerunAfterCrashBeforeFinalize(t *testing.T) {
 		}
 
 		discard := slog.New(slog.DiscardHandler)
-		up := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true)
+		up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
 		up.SetEnabled(true)
 		up.Log = discard
 		finalize := NewFinalizeStage()
@@ -461,12 +461,12 @@ func TestDeferredCleanup_CleanupFlagsHonouredAtFinalize(t *testing.T) {
 			// archives/par2 files aren't rejected by the test's unwanted rule when
 			// cleanup is off.
 			discard := slog.New(slog.DiscardHandler)
-			up := NewUnpackStageWith(unpack.Options{UseGoRAR: true, UseGo7z: true}, tc.unpackCleanup)
+			up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true, UseGo7z: true}, Cleanup: tc.unpackCleanup})
 			up.SetEnabled(true)
 			up.Log = discard
 			qc := &QuickCheckStage{Log: discard, Unpack: up}
 			qc.SetEnabled(true)
-			repair := &RepairStage{UseGoPar2: true, Log: discard}
+			repair := appliedRepairStage(RepairConfig{UseGoPar2: true}, discard)
 			par2Clean := NewPar2CleanupStage(tc.par2Cleanup)
 			par2Clean.Log = discard
 			extClean := NewExtensionCleanupStage([]string{"sfv"})
@@ -612,9 +612,9 @@ func TestDeferredCleanup_CleanupFlagsHonouredAtFinalize(t *testing.T) {
 		}
 
 		discard := slog.New(slog.DiscardHandler)
-		up := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true)
+		up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
 		up.SetEnabled(true)
-		up.EnableRecursive = true
+		editUnpackConfig(up, func(c *UnpackConfig) { c.EnableRecursive = true })
 		up.Log = discard
 		finalize := NewFinalizeStage()
 		finalize.Log = discard
@@ -710,9 +710,9 @@ func TestDeferredCleanup_RerunAfterDeobfuscateOrPar2Rename(t *testing.T) {
 
 		discard := slog.New(slog.DiscardHandler)
 		makeStages := func(extra ...Stage) []Stage {
-			up := NewUnpackStageWith(unpack.Options{}, true)
+			up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, Cleanup: true})
 			up.SetEnabled(true)
-			up.EnableTar = true
+			editUnpackConfig(up, func(c *UnpackConfig) { c.EnableTar = true })
 			up.Log = discard
 			deob := NewDeobfuscateStage()
 			deob.SetEnabled(true)
@@ -778,9 +778,9 @@ func TestDeferredCleanup_RerunAfterDeobfuscateOrPar2Rename(t *testing.T) {
 
 		discard := slog.New(slog.DiscardHandler)
 		makeStages := func(extra ...Stage) []Stage {
-			up := NewUnpackStageWith(unpack.Options{}, true)
+			up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{}, Cleanup: true})
 			up.SetEnabled(true)
-			up.EnableTar = true
+			editUnpackConfig(up, func(c *UnpackConfig) { c.EnableTar = true })
 			up.Log = discard
 			par2Names := NewRecoverPar2NamesStage()
 			par2Names.Log = discard
@@ -844,9 +844,9 @@ func TestDeferredCleanup_RerunAfterDeobfuscateOrPar2Rename(t *testing.T) {
 		writeSingleFileTar(t, filepath.Join(dir, "extras.tar"), "notes.txt", []byte("extra release notes"))
 
 		discard := slog.New(slog.DiscardHandler)
-		up := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true)
+		up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
 		up.SetEnabled(true)
-		up.EnableTar = true
+		editUnpackConfig(up, func(c *UnpackConfig) { c.EnableTar = true })
 		up.Log = discard
 		deob := NewDeobfuscateStage()
 		deob.SetEnabled(true)
@@ -889,7 +889,7 @@ func TestDeferredCleanup_RerunAfterDeobfuscateOrPar2Rename(t *testing.T) {
 		discard := slog.New(slog.DiscardHandler)
 		par2Names := NewRecoverPar2NamesStage()
 		par2Names.Log = discard
-		up := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true)
+		up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
 		up.SetEnabled(true)
 		up.Log = discard
 		par2Clean := NewPar2CleanupStage(true)
@@ -921,7 +921,7 @@ func TestDeferredCleanup_RepairSetsExcludesPendingDeletionsFromDataFiles(t *test
 	}
 	job.recordPendingDeletion("pending_archive.rar")
 
-	repair := &RepairStage{UseGoPar2: true, Log: slog.New(slog.DiscardHandler)}
+	repair := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	if err := repair.Run(t.Context(), job); err != nil {
 		t.Fatalf("RepairStage.Run: %v", err)
 	}
@@ -979,9 +979,9 @@ func TestDeferredCleanup_ExcludedFromIntermediateStages(t *testing.T) {
 	writeMinimalPar2File(t, filepath.Join(dir, "movie.par2"), "Par2_Renamed.tar", tarBytes)
 
 	discard := slog.New(slog.DiscardHandler)
-	up := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true)
+	up := appliedUnpackStage(UnpackConfig{Base: unpack.Options{UseGoRAR: true}, Cleanup: true})
 	up.SetEnabled(true)
-	up.EnableTar = true
+	editUnpackConfig(up, func(c *UnpackConfig) { c.EnableTar = true })
 	up.Log = discard
 
 	sampleClean := NewSampleCleanupStage()

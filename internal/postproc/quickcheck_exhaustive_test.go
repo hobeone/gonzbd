@@ -114,7 +114,7 @@ func TestRepairStage_HandlesEveryQuickCheckOutcome(t *testing.T) {
 			}
 			job.quickCheck = outcome
 
-			stage := &RepairStage{UseGoPar2: true, Log: slog.New(slog.DiscardHandler)}
+			stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 			if err := stage.Run(t.Context(), job); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
@@ -141,7 +141,7 @@ func TestRepairStage_UnhandledQuickCheckOutcomeSaysSo(t *testing.T) {
 	// A value no case names, standing in for one added to the enum later.
 	job.quickCheck = QuickCheckOutcome(99)
 
-	stage := &RepairStage{UseGoPar2: true, Log: slog.New(slog.DiscardHandler)}
+	stage := appliedRepairStage(RepairConfig{UseGoPar2: true}, slog.New(slog.DiscardHandler))
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
