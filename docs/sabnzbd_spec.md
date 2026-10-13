@@ -907,7 +907,7 @@ and `change_opts` are real, but as `queue` sub-actions; see the table above.)
 | `pause_pp` | | 501 | Not implemented. gonzbd has no pause/resume control for post-processing independent of download pause; use `pause`/`resume` instead. Registered (not 404) for SABnzbd-API client compatibility. |
 | `resume_pp` | | 501 | Not implemented. See `pause_pp`. |
 | `disconnect` | | status | Force disconnect all NNTP |
-| `speedlimit` | `value=bytes_or_perc` | status | Set speed limit (top-level alias for `config&name=speedlimit`; same handler). Plain integers are KiB/s. Admin level. |
+| `speedlimit` | `value=bytes_or_perc` | status | Set speed limit (top-level alias for `config&name=speedlimit`; same handler). Plain integers are KiB/s. Saved as `bandwidth_max` with `bandwidth_perc` set to 100. Admin level. |
 
 #### Status and Information
 
@@ -947,7 +947,7 @@ and `change_opts` are real, but as `queue` sub-actions; see the table above.)
 | `set_config` | `section`, `keyword`, `value` | config value | Set one setting |
 | `set_config_default` | `keyword` | status | Reset to default — **NOT IMPLEMENTED** |
 | `config` + `name=test_server` | server params | connection result | Test NNTP server |
-| `config` + `name=speedlimit` | `value` | status | Speed limit |
+| `config` + `name=speedlimit` | `value` | status | Speed limit. Saved as `bandwidth_max` with `bandwidth_perc` set to 100, so a restart keeps the same rate |
 | `config` + `name=set_apikey` | | new_apikey | Regenerate API key — **NOT IMPLEMENTED** (400) |
 | `config` + `name=set_nzbkey` | | new_nzbkey | Regenerate NZB key — **NOT IMPLEMENTED** (400) |
 | `config` + `name=regenerate_certs` | | status | Create HTTPS certs — **NOT IMPLEMENTED** (400) |

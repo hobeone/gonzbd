@@ -123,6 +123,30 @@ func TestConfigSpeedLimit_Conversions(t *testing.T) {
 		})
 	}
 
+	t.Run("the saved config describes the rate in force", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := config.Default()
+		if err != nil {
+			t.Fatalf("Default(): %v", err)
+		}
+		cfg.With(func(c *config.Config) { c.Downloads.BandwidthPerc = 50 })
+		spy := &setConfigSpyApp{}
+		s := testServerWithConfig(t, cfg)
+		s.setAppServices(spy)
+
+		rr := directCall(t, s.configSpeedLimit, "/api?mode=config&name=speedlimit&value=1M")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
+		}
+		dl := cfg.GetDownloads()
+		if dl.BandwidthMax != 1<<20 || dl.BandwidthPerc != 100 {
+			t.Errorf("saved bandwidth_max = %d, bandwidth_perc = %d; want %d and 100", dl.BandwidthMax, dl.BandwidthPerc, 1<<20)
+		}
+		if got := dl.SpeedLimit(); got != 1<<20 {
+			t.Errorf("limit the saved config describes = %d, want the %d in force", got, 1<<20)
+		}
+	})
+
 	t.Run("application not running", func(t *testing.T) {
 		t.Parallel()
 		s := New(Options{Config: &config.Config{}})

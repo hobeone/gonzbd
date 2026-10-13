@@ -317,7 +317,9 @@ func (s *Server) modeConfig(w http.ResponseWriter, r *http.Request) {
 //   - "0" or empty disables limiting.
 //
 // The limit is applied immediately to the running downloader and also
-// persisted to the config so it survives a restart.
+// persisted to the config so it survives a restart: as bandwidth_max, with
+// bandwidth_perc set to 100 in the same locked step, so the saved config's
+// SpeedLimit is the rate this request put in force.
 func (s *Server) configSpeedLimit(w http.ResponseWriter, r *http.Request) {
 	if s.downloads == nil {
 		s.respondError(w, http.StatusServiceUnavailable, "application not running")
@@ -343,10 +345,20 @@ func (s *Server) configSpeedLimit(w http.ResponseWriter, r *http.Request) {
 
 	s.downloads.SetSpeedLimit(bytesPerSec)
 
-	// Persist as the new bandwidth_max so restarts honour the change.
 	if s.config != nil {
 		bsVal := config.ByteSize(bytesPerSec)
-		_ = s.config.Set("downloads", "bandwidth_max", bsVal.String()) //nolint:errcheck // in-memory update failure is ignored; Save will catch disk errors
+		var setErr error
+		s.config.With(func(c *config.Config) {
+			if setErr = c.SetLocked("downloads", "bandwidth_max", bsVal.String()); setErr == nil {
+				setErr = c.SetLocked("downloads", "bandwidth_perc", "100")
+			}
+		})
+		if setErr != nil {
+			// The running limit is already applied; only the saved copy is refused.
+			s.log.Warn("speed limit not saved to config", "bytes_per_sec", bytesPerSec, "error", setErr)
+		} else {
+			s.applySpeedLimit()
+		}
 		if s.configPath != "" {
 			if err := s.config.Save(s.configPath); err != nil {
 				s.log.Error("persist speed limit", "error", err)
