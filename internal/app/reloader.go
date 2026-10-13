@@ -88,10 +88,13 @@ func (app *Application) ReloadPostProcOptions(pp config.PostProcConfig, scriptDi
 // to the running pipeline. Same locking note as ReloadPostProcOptions: d must
 // be a value snapshot taken without holding config.Config's lock.
 //
-// SanitizeOptions are not applied here: they are read from config at
-// job-enqueue time, and the API has already written them to config before this
-// runs.
+// SanitizeOptions reach job names and post-processing by being read from
+// config at job-enqueue time; the API has already written them to config
+// before this runs. File names are chosen by the pipeline when a file is
+// first registered, so the options are handed to it here; a file already
+// named keeps its recorded name.
 func (app *Application) ReloadDownloadOptions(d config.DownloadConfig) {
+	app.pipeline.setSanitize(d.SanitizeOptions())
 	app.SetMinFreeSpace(int64(d.MinFreeSpace))
 	app.SetMaxArtTries(d.MaxArtTries)
 	app.SetMaxArtOpt(d.MaxArtOpt)

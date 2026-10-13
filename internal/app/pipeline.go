@@ -314,6 +314,14 @@ func (p *pipeline) setCompletions(ch <-chan *downloader.ArticleResult) {
 	}
 }
 
+// setSanitize sets the options newJobFileLocation names a file with from
+// here on. A file already named keeps its recorded name (jobFileLocation).
+func (p *pipeline) setSanitize(o fsutil.SanitizeOptions) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sanitize = o
+}
+
 // handleResult processes one downloader output, whose body the downloader has
 // already decoded: it drops a result for a job instance no longer registered,
 // and otherwise hands it to handleFailureResult or handleSuccessResult, which

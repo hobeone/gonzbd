@@ -61,3 +61,22 @@ func TestRecordedFileName_SurvivesASanitizeChange(t *testing.T) {
 		}
 	})
 }
+
+// TestReloadDownloadOptions_NamesNewFilesWithTheNewSanitizeOptions pins that
+// a sanitize change applied through ReloadDownloadOptions reaches the next
+// file the pipeline names, without a restart.
+func TestReloadDownloadOptions_NamesNewFilesWithTheNewSanitizeOptions(t *testing.T) {
+	t.Parallel()
+	application, j := newDurabilityTestAppSubjects(t, []string{"My Show.bin"}, 1)
+
+	d := application.config.GetDownloads()
+	d.ReplaceSpacesWith = "_"
+	application.ReloadDownloadOptions(d)
+
+	if err := application.pipeline.registerFile(j, 0); err != nil {
+		t.Fatalf("registerFile: %v", err)
+	}
+	if _, got := j.FileLocation(0); got != "My_Show.bin" {
+		t.Errorf("recorded filename = %q, want %q under replace_spaces_with=_", got, "My_Show.bin")
+	}
+}
