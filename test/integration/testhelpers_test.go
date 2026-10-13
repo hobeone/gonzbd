@@ -181,11 +181,13 @@ func buildAppConfig(mockAddr, downloadDir string) *config.Config {
 		c.General.AdminDir = downloadDir
 		c.Servers = []config.ServerConfig{
 			{
-				Name:        "test",
-				Host:        host,
-				Port:        port,
-				Connections: 2,
-				Enable:      true,
+				Name:               "test",
+				Host:               host,
+				Port:               port,
+				Connections:        2,
+				Enable:             true,
+				Timeout:            60,
+				PipeliningRequests: 1,
 			},
 		}
 	})

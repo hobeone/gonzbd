@@ -167,7 +167,7 @@ func TestProcessFetchedArticle_OffsetUnknownForPartIsTerminal(t *testing.T) {
 		log:         slog.New(slog.DiscardHandler),
 		tracker:     newDispatchTracker(),
 	}
-	srv := NewServer(config.ServerConfig{Name: "test-server"})
+	srv := checkedServer(config.ServerConfig{Name: "test-server"})
 	req := &articleRequest{
 		job: j, fileIdx: 0, artIdx: artIdx, messageID: "msg1@h", partNumber: 2,
 	}

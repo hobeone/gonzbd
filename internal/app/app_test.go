@@ -24,6 +24,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/history"
 	jobpkg "github.com/hobeone/gonzbd/internal/job"
+	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
 	"github.com/hobeone/gonzbd/internal/notifier"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
@@ -48,10 +49,13 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 		completeDir,
 		adminDir,
 		config.ServerConfig{
-			Name:   "mock",
-			Host:   mock.host,
-			Port:   mock.port,
-			Enable: true,
+			Name:               "mock",
+			Host:               mock.host,
+			Port:               mock.port,
+			Enable:             true,
+			Connections:        1,
+			Timeout:            60,
+			PipeliningRequests: 1,
 		},
 	)
 
@@ -143,10 +147,13 @@ func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
 		completeDir,
 		adminDir,
 		config.ServerConfig{
-			Name:   "mock",
-			Host:   mock.host,
-			Port:   mock.port,
-			Enable: true,
+			Name:               "mock",
+			Host:               mock.host,
+			Port:               mock.port,
+			Enable:             true,
+			Connections:        1,
+			Timeout:            60,
+			PipeliningRequests: 1,
 		},
 	)
 	appCfg.With(func(c *config.Config) {
@@ -240,10 +247,13 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 		completeDir,
 		adminDir,
 		config.ServerConfig{
-			Name:   "mock",
-			Host:   mock.host,
-			Port:   mock.port,
-			Enable: true,
+			Name:               "mock",
+			Host:               mock.host,
+			Port:               mock.port,
+			Enable:             true,
+			Connections:        1,
+			Timeout:            60,
+			PipeliningRequests: 1,
 		},
 	)
 
@@ -392,10 +402,13 @@ func TestRetryHistoryJob(t *testing.T) {
 		completeDir,
 		adminDir,
 		config.ServerConfig{
-			Name:   "mock",
-			Host:   mock.host,
-			Port:   mock.port,
-			Enable: true,
+			Name:               "mock",
+			Host:               mock.host,
+			Port:               mock.port,
+			Enable:             true,
+			Connections:        1,
+			Timeout:            60,
+			PipeliningRequests: 1,
 		},
 	)
 
@@ -509,10 +522,13 @@ func TestQueuePersistenceAcrossRestart(t *testing.T) {
 		completeDir,
 		adminDir,
 		config.ServerConfig{
-			Name:   "mock",
-			Host:   mock.host,
-			Port:   mock.port,
-			Enable: true,
+			Name:               "mock",
+			Host:               mock.host,
+			Port:               mock.port,
+			Enable:             true,
+			Connections:        1,
+			Timeout:            60,
+			PipeliningRequests: 1,
 		},
 	)
 
@@ -998,10 +1014,13 @@ func TestStart_DoubleStartReturnsError(t *testing.T) {
 		completeDir,
 		adminDir,
 		config.ServerConfig{
-			Name:   "mock",
-			Host:   mock.host,
-			Port:   mock.port,
-			Enable: true,
+			Name:               "mock",
+			Host:               mock.host,
+			Port:               mock.port,
+			Enable:             true,
+			Connections:        1,
+			Timeout:            60,
+			PipeliningRequests: 1,
 		},
 	)
 
@@ -1109,16 +1128,22 @@ func TestReloadDownloader_ServerChanges(t *testing.T) {
 	mock2 := startMockNNTP(t, nil)
 
 	cfg1 := config.ServerConfig{
-		Name:   "server1",
-		Host:   mock1.host,
-		Port:   mock1.port,
-		Enable: true,
+		Name:               "server1",
+		Host:               mock1.host,
+		Port:               mock1.port,
+		Enable:             true,
+		Connections:        1,
+		Timeout:            60,
+		PipeliningRequests: 1,
 	}
 	cfg2 := config.ServerConfig{
-		Name:   "server2",
-		Host:   mock2.host,
-		Port:   mock2.port,
-		Enable: true,
+		Name:               "server2",
+		Host:               mock2.host,
+		Port:               mock2.port,
+		Enable:             true,
+		Connections:        1,
+		Timeout:            60,
+		PipeliningRequests: 1,
 	}
 
 	appCfg := testConfig(
@@ -1142,17 +1167,17 @@ func TestReloadDownloader_ServerChanges(t *testing.T) {
 	defer application.Shutdown()
 
 	// Reload with both servers.
-	if err := application.ReloadDownloader([]config.ServerConfig{cfg1, cfg2}); err != nil {
+	if err := application.ReloadDownloader(checkedServers(t, cfg1, cfg2)); err != nil {
 		t.Errorf("ReloadDownloader(both): %v", err)
 	}
 
 	// Reload with only server 2.
-	if err := application.ReloadDownloader([]config.ServerConfig{cfg2}); err != nil {
+	if err := application.ReloadDownloader(checkedServers(t, cfg2)); err != nil {
 		t.Errorf("ReloadDownloader(server2 only): %v", err)
 	}
 
 	// Reload back to server 1 only.
-	if err := application.ReloadDownloader([]config.ServerConfig{cfg1}); err != nil {
+	if err := application.ReloadDownloader(checkedServers(t, cfg1)); err != nil {
 		t.Errorf("ReloadDownloader(server1 only): %v", err)
 	}
 }
@@ -1979,15 +2004,29 @@ func TestApplication_TestNNTPServer(t *testing.T) {
 	t.Parallel()
 	appInst := &app.Application{}
 	cfg := config.ServerConfig{
-		Host:    "127.0.0.1",
-		Port:    1,
-		Timeout: 1,
+		Host:               "127.0.0.1",
+		Port:               1,
+		Timeout:            1,
+		Connections:        1,
+		PipeliningRequests: 1,
 	}
-	res, err := appInst.TestNNTPServer(t.Context(), cfg)
+	res, err := appInst.TestNNTPServer(t.Context(), checkedServers(t, cfg)[0])
 	if err == nil {
 		t.Errorf("expected error connecting to port 1, got nil")
 	}
 	if res.ConnectionLimitExceeded {
 		t.Errorf("res.ConnectionLimitExceeded = true, want false for connection refused")
+	}
+}
+
+func TestApplication_TestNNTPServer_Reachable(t *testing.T) {
+	t.Parallel()
+	s := nntptest.New(t)
+	res, err := (&app.Application{}).TestNNTPServer(t.Context(), s.Server("scripted", 1))
+	if err != nil {
+		t.Fatalf("TestNNTPServer: %v", err)
+	}
+	if res.ConnectionLimitExceeded {
+		t.Errorf("res.ConnectionLimitExceeded = true, want false for a server that answered")
 	}
 }

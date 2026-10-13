@@ -376,8 +376,8 @@ Server:
   required    bool     # Never deactivate
   optional    bool     # Can deactivate temporarily
   retention   int      # Days; 0 = unlimited
-  timeout     int      # Seconds; default 60
-  pipelining  int      # In-flight requests; default 2
+  timeout     int      # Seconds; required, > 0 (no default)
+  pipelining  int      # In-flight requests; required, > 0 (samples use 2)
   enabled     bool
 ```
 

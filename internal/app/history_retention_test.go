@@ -18,7 +18,7 @@ func newRetentionApp(t *testing.T, retainDays, retainFailedDays int) (*app.Appli
 	t.Helper()
 	adminDir := t.TempDir()
 	cfg := testConfig(t.TempDir(), t.TempDir(), adminDir, config.ServerConfig{
-		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false,
+		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false, Connections: 1, Timeout: 5, PipeliningRequests: 1,
 	})
 	cfg.General.HistoryRetentionDays = retainDays
 	cfg.General.HistoryFailedRetentionDays = retainFailedDays

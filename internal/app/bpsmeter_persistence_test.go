@@ -52,7 +52,7 @@ func TestApplication_BPSMeterLifetimeTotalsSurviveRestart(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	if err := a1.ReloadDownloader([]config.ServerConfig{srv.ServerConfig("backup", 1)}); err != nil {
+	if err := a1.ReloadDownloader([]config.Server{srv.Server("backup", 1)}); err != nil {
 		t.Fatalf("ReloadDownloader: %v", err)
 	}
 

@@ -387,7 +387,10 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	maxActiveJobs := dl.MaxActiveJobs
 	maxComputeSlots := dl.MaxComputeSlots
 	sanitize := dl.SanitizeOptions()
-	serversConfig := snap.Servers
+	servers, err := snap.CheckedServers()
+	if err != nil {
+		return nil, fmt.Errorf("app: %w", err)
+	}
 
 	if dlDir == "" {
 		return nil, errors.New("app: DownloadDir is required")
@@ -483,7 +486,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.bandwidthPerc.Store(int32(dl.EffectiveBandwidthPerc())) //nolint:gosec // G115: EffectiveBandwidthPerc is 1-100
 	app.speedLimit = dl.SpeedLimit()
 	if app.downloader == nil {
-		realDL := app.newDownloaderLocked(serversConfig, app.buildDownloaderOptions())
+		realDL := app.newDownloaderLocked(servers, app.buildDownloaderOptions())
 		app.downloader = realDL
 		app.downloaderStats = realDL
 	} else {
@@ -3036,7 +3039,7 @@ func WithEventEmitter(e EventEmitter) func(*Application) {
 // `git grep -n 'downloader[.]New(' -- 'internal/app/*.go' ':!*_test.go'`
 // finds 1 line. The caller holds app.mu, or is New before the Application is
 // shared.
-func (app *Application) newDownloaderLocked(scs []config.ServerConfig, opts downloader.Options) *downloader.Downloader {
+func (app *Application) newDownloaderLocked(scs []config.Server, opts downloader.Options) *downloader.Downloader {
 	servers := make([]*downloader.Server, len(scs))
 	for i, sc := range scs {
 		servers[i] = downloader.NewServer(sc)
@@ -3544,13 +3547,13 @@ type NNTPTestResult struct {
 // TestNNTPServer dials an NNTP server to verify connectivity and credentials.
 //
 //testdouble:allow SABnzbd test_nntp_server API implementation
-func (a *Application) TestNNTPServer(ctx context.Context, cfg config.ServerConfig) (NNTPTestResult, error) {
+func (a *Application) TestNNTPServer(ctx context.Context, srv config.Server) (NNTPTestResult, error) {
 	start := time.Now()
 	log := slog.Default()
 	if a != nil && a.log != nil {
 		log = a.log.With("component", "nntp_test")
 	}
-	conn, err := nntp.Dial(ctx, cfg, nntp.WithLogger(log))
+	conn, err := nntp.Dial(ctx, srv, nntp.WithLogger(log))
 	if err != nil {
 		return NNTPTestResult{
 			ConnectionLimitExceeded: errors.Is(err, nntp.ErrServerUnavailable),

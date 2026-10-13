@@ -27,6 +27,21 @@ func testConfig(dl, comp, admin string, servers ...config.ServerConfig) *config.
 	return cfg
 }
 
+// checkedServers passes each entry through config.ServerConfig.Checked, the
+// form ReloadDownloader takes, and fails the test if one is refused.
+func checkedServers(t testing.TB, scs ...config.ServerConfig) []config.Server {
+	t.Helper()
+	out := make([]config.Server, len(scs))
+	for i, sc := range scs {
+		srv, err := sc.Checked()
+		if err != nil {
+			t.Fatalf("Checked(%q): %v", sc.Name, err)
+		}
+		out[i] = srv
+	}
+	return out
+}
+
 // restoreQueue restores a's dispatcher without starting it, so a test can add
 // jobs to an Application it never Starts. Start restores by itself when this
 // has not run, and skips the restore when it has.

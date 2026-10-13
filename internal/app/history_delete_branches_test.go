@@ -16,7 +16,7 @@ import (
 func TestRemoveHistoryJob_NoRepositoryWired(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir(), config.ServerConfig{
-		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false,
+		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false, Connections: 1, Timeout: 5, PipeliningRequests: 1,
 	})
 	application, err := app.New(cfg, nil)
 	if err != nil {
@@ -54,7 +54,7 @@ func TestRemoveHistoryJob_DeletesFilesWhenAsked(t *testing.T) {
 			adminDir := t.TempDir()
 			completeDir := t.TempDir()
 			cfg := testConfig(t.TempDir(), completeDir, adminDir, config.ServerConfig{
-				Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false,
+				Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false, Connections: 1, Timeout: 5, PipeliningRequests: 1,
 			})
 			db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 			if err != nil {

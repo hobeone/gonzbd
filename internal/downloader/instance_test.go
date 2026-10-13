@@ -48,7 +48,7 @@ func staleRequest(t *testing.T) (*dispatch.Dispatcher, *articleRequest, *job.Job
 // unreachableServer is an enabled server whose dial fails at once, so a test
 // can tell from the log whether fetchArticle got as far as dialing.
 func unreachableServer() *Server {
-	return NewServer(config.ServerConfig{Name: "s1", Enable: true, Host: "127.0.0.1", Port: 1, Connections: 1})
+	return checkedServer(config.ServerConfig{Name: "s1", Enable: true, Host: "127.0.0.1", Port: 1, Connections: 1})
 }
 
 // markEmittedOn sets j's Emitted bit for artIdx, failing the test if it cannot.
@@ -98,11 +98,11 @@ func TestDownloader_MarksOnlyTheInstanceAFetchWasDispatchedFor(t *testing.T) {
 		run  func(t *testing.T, d *Downloader, req *articleRequest)
 	}{
 		{"a successful fetch", func(t *testing.T, d *Downloader, req *articleRequest) {
-			d.processFetchedArticle(t.Context(), NewServer(config.ServerConfig{Name: "s1"}), req,
+			d.processFetchedArticle(t.Context(), checkedServer(config.ServerConfig{Name: "s1"}), req,
 				yencBody("test.bin", []byte("payload")))
 		}},
 		{"a terminal decode error", func(t *testing.T, d *Downloader, req *articleRequest) {
-			d.processFetchedArticle(t.Context(), NewServer(config.ServerConfig{Name: "s1"}), req,
+			d.processFetchedArticle(t.Context(), checkedServer(config.ServerConfig{Name: "s1"}), req,
 				[]byte("neither yEnc nor UU\r\n"))
 		}},
 		{"an exhausted try-list", func(t *testing.T, d *Downloader, req *articleRequest) {

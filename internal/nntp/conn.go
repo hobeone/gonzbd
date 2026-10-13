@@ -72,7 +72,7 @@ type Conn struct {
 	pending     []*pendingCmd
 
 	// sem bounds the number of in-flight commands. Cap equals
-	// PipeliningRequests; defaults to 1 when misconfigured.
+	// PipeliningRequests, which ServerConfig.Checked requires to be > 0.
 	sem chan struct{}
 
 	closed     atomic.Bool
@@ -202,24 +202,18 @@ type dialOptions struct {
 	handshakeFailedHook func()
 }
 
-// newDialOptions derives the per-dial knobs from a ServerConfig. The port
-// is dialled as given: what a port of 0 means is config's to decide
-// (ServerConfig.Checked), not this package's. A zero pipelining depth or
-// timeout still takes a floor here, since either would stall a connection
-// rather than fail it.
-func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
-	pipe := max(1, cfg.PipeliningRequests)
-	timeout := time.Duration(cfg.Timeout) * time.Second
-	if cfg.Timeout <= 0 {
-		timeout = 60 * time.Second
-	}
-
+// newDialOptions derives the per-dial knobs from a checked server, taking
+// its port, timeout and pipelining depth as they stand: config.Server can
+// only come from ServerConfig.Checked, which defaults the port and refuses a
+// non-positive timeout or depth, so this package keeps no fallbacks.
+func newDialOptions(srv config.Server) (*dialOptions, error) {
+	cfg := srv.Config()
 	opts := &dialOptions{
 		host:       cfg.Host,
 		port:       cfg.Port,
 		useTLS:     cfg.SSL,
-		dialer:     &net.Dialer{Timeout: timeout},
-		pipelining: pipe,
+		dialer:     &net.Dialer{Timeout: time.Duration(cfg.Timeout) * time.Second},
+		pipelining: cfg.PipeliningRequests,
 		readBuf:    256 * 1024,
 		log:        slog.Default(),
 	}
@@ -266,11 +260,12 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 // error. A handshake failure the server itself produced (an unexpected
 // status, a rejected credential) is returned unchanged even if ctx has since
 // ended.
-func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Conn, error) {
-	dopts, err := newDialOptions(cfg)
+func Dial(ctx context.Context, srv config.Server, opts ...DialOption) (*Conn, error) {
+	dopts, err := newDialOptions(srv)
 	if err != nil {
 		return nil, err
 	}
+	cfg := srv.Config()
 	for _, opt := range opts {
 		opt(dopts)
 	}

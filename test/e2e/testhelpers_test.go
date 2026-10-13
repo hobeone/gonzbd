@@ -270,7 +270,12 @@ func waitForArticle(t *testing.T, cfg config.ServerConfig, messageID string, tim
 
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-		conn, err := nntp.Dial(ctx, cfg)
+		srv, err := cfg.Checked()
+		if err != nil {
+			cancel()
+			t.Fatalf("waitForArticle: server config refused: %v", err)
+		}
+		conn, err := nntp.Dial(ctx, srv)
 		cancel()
 		if err != nil {
 			t.Logf("waitForArticle: dial failed (retrying): %v", err)

@@ -139,7 +139,7 @@ func (app *Application) ReloadGeneralOptions(g config.GeneralConfig) {
 // PauseDownloads, etc.) are never blocked on downloader shutdown. Start only
 // launches goroutines. See AGENTS.md "never hold a mutex during disk I/O or
 // network calls" and issue #118.
-func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
+func (app *Application) ReloadDownloader(scs []config.Server) error {
 	app.reloadMu.Lock()
 	defer app.reloadMu.Unlock()
 

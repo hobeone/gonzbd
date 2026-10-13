@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/types"
@@ -64,7 +63,7 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 
 	// Trigger reload.
 	cfg := h.server.ServerConfig("scenario", conns)
-	if err := h.app.ReloadDownloader([]config.ServerConfig{cfg}); err != nil {
+	if err := h.app.ReloadDownloader(checkedServers(t, cfg)); err != nil {
 		t.Fatalf("ReloadDownloader: %v", err)
 	}
 

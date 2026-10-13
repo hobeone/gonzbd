@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"gopkg.in/yaml.v3"
 )
@@ -95,16 +96,55 @@ func (s *ServerConfig) normalize() {
 	}
 }
 
+// Server is a server entry that passed ServerConfig.Checked. nntp.Dial and
+// downloader.NewServer take a Server rather than a ServerConfig, so what they
+// dial has been normalized and validated and they keep no fallbacks of their
+// own. Checked is the only writer of checked:
+// `git grep -n 'checked[:] true' -- '*.go'` finds 1 line, its return. The
+// zero value, which any package can write, holds no server, and Config
+// panics on it.
+type Server struct {
+	cfg     ServerConfig
+	checked bool
+}
+
+// Config returns the checked entry. It panics on a Server that Checked did
+// not produce: that is a programmer error, and dialling the zeroes such a
+// value holds would hang or fail far from the cause.
+func (s Server) Config() ServerConfig {
+	if !s.checked {
+		panic("config: Server used without ServerConfig.Checked")
+	}
+	return s.cfg
+}
+
 // Checked returns s as Config.finish leaves a configured server, normalized
 // and then validated, or the error validation reports. The API's test_server
 // builds its server through it (internal/api/config.go testServerConfig), so
 // the test dials what a saved entry with the same values would.
-func (s ServerConfig) Checked() (ServerConfig, error) {
+func (s ServerConfig) Checked() (Server, error) {
 	s.normalize()
 	if err := s.validate(); err != nil {
-		return ServerConfig{}, err
+		return Server{}, err
 	}
-	return s, nil
+	return Server{cfg: s, checked: true}, nil
+}
+
+// CheckedServers returns every configured server through Checked, in order,
+// or the first error. A Config that came through Load or Set holds only
+// servers Checked accepts; one whose Servers were assigned directly (With)
+// may not, and the error names the entry.
+func (c *Config) CheckedServers() ([]Server, error) {
+	servers := c.GetServers()
+	out := make([]Server, len(servers))
+	for i, sc := range servers {
+		s, err := sc.Checked()
+		if err != nil {
+			return nil, fmt.Errorf("servers[%d] (%q): %w", i, sc.Name, err)
+		}
+		out[i] = s
+	}
+	return out, nil
 }
 
 // UnmarshalJSON decodes a server entry onto DefaultServerConfig, so a key the

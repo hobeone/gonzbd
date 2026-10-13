@@ -14,10 +14,10 @@ file internal/config/servers.go
 file internal/config/servers.go
 --- anchor
 	if err := s.validate(); err != nil {
-		return ServerConfig{}, err
+		return Server{}, err
 --- replace
 	if err := s.validate(); false && err != nil {
-		return ServerConfig{}, err
+		return Server{}, err
 --- end
 
 [the SSL port default is swapped]

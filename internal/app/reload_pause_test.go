@@ -52,7 +52,7 @@ func TestReloadDownloader_KeepsAPause(t *testing.T) {
 				hookRan, pausedBeforeStart = true, dl.IsPaused()
 			}
 			application.mu.Unlock()
-			if err := application.ReloadDownloader([]config.ServerConfig{srv.ServerConfig("primary", 1)}); err != nil {
+			if err := application.ReloadDownloader([]config.Server{srv.Server("primary", 1)}); err != nil {
 				t.Fatalf("ReloadDownloader: %v", err)
 			}
 			if !hookRan {
@@ -151,7 +151,7 @@ func TestReloadDownloader_PauseOrResumeDuringReloadReachesTheNewDownloader(t *te
 			}
 			application.mu.Unlock()
 
-			if err := application.ReloadDownloader([]config.ServerConfig{srv.ServerConfig("primary", 1)}); err != nil {
+			if err := application.ReloadDownloader([]config.Server{srv.Server("primary", 1)}); err != nil {
 				t.Fatalf("ReloadDownloader: %v", err)
 			}
 			select {

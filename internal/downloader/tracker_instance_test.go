@@ -98,7 +98,7 @@ func retryInFlight(t *testing.T) (*Downloader, *dispatch.Dispatcher, *articleReq
 	disp, req, second := staleRequest(t)
 	// Two servers, so a second dispatch has somewhere to go once the retry's
 	// first is no longer counted.
-	backup := NewServer(config.ServerConfig{Name: "s2", Enable: true, Host: "127.0.0.1", Port: 1, Connections: 1})
+	backup := checkedServer(config.ServerConfig{Name: "s2", Enable: true, Host: "127.0.0.1", Port: 1, Connections: 1})
 	d := New(disp, []*Server{unreachableServer(), backup}, nil, Options{}, slog.New(slog.DiscardHandler))
 	d.pauseCtx = t.Context()
 
@@ -153,11 +153,11 @@ func TestTracker_ARemovedInstancesLateCompletionLeavesTheRetrysEntries(t *testin
 			d.handleRequest(t.Context(), d.servers[0], 0, &managedConn{}, req, "s1#0", nil)
 		}, true},
 		{"a successful fetch", func(t *testing.T, d *Downloader, req *articleRequest) {
-			d.processFetchedArticle(t.Context(), NewServer(config.ServerConfig{Name: "s1"}), req,
+			d.processFetchedArticle(t.Context(), checkedServer(config.ServerConfig{Name: "s1"}), req,
 				yencBody("test.bin", []byte("payload")))
 		}, false},
 		{"a terminal decode error", func(t *testing.T, d *Downloader, req *articleRequest) {
-			d.processFetchedArticle(t.Context(), NewServer(config.ServerConfig{Name: "s1"}), req,
+			d.processFetchedArticle(t.Context(), checkedServer(config.ServerConfig{Name: "s1"}), req,
 				[]byte("neither yEnc nor UU\r\n"))
 		}, false},
 		{"an exhausted try-list", func(t *testing.T, d *Downloader, req *articleRequest) {

@@ -187,7 +187,10 @@ func probeIndex(cfgPath string, doc *nzb.NZB, full bool) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	servers := cfg.GetServers()
+	servers, err := cfg.CheckedServers()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
 	if len(servers) == 0 {
 		return errors.New("config has no servers")
 	}
@@ -200,11 +203,12 @@ func probeIndex(cfgPath string, doc *nzb.NZB, full bool) error {
 	defer cancel()
 
 	var conn *nntp.Conn
-	for _, s := range servers {
+	for _, srv := range servers {
+		s := srv.Config()
 		if !s.Enable {
 			continue
 		}
-		c, dErr := nntp.Dial(ctx, s)
+		c, dErr := nntp.Dial(ctx, srv)
 		if dErr != nil {
 			fmt.Printf("  server %s: dial failed: %v\n", s.Host, dErr)
 			continue

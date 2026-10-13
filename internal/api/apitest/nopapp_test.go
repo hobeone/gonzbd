@@ -105,6 +105,9 @@ func TestNopApp_Contract(t *testing.T) {
 	if err := app.ReloadDownloader(nil); err != nil {
 		t.Errorf("ReloadDownloader() = %v, want nil", err)
 	}
+	if res, err := app.TestNNTPServer(ctx, config.Server{}); err != nil || res != (appkg.NNTPTestResult{}) {
+		t.Errorf("TestNNTPServer() = %+v, %v, want the zero result and nil", res, err)
+	}
 	if err := app.RetryHistoryJob(ctx, "job1"); err != nil {
 		t.Errorf("RetryHistoryJob() = %v, want nil", err)
 	}

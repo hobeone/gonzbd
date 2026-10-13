@@ -609,7 +609,7 @@ type setConfigSpyApp struct {
 	bandwidthPerc       int
 }
 
-func (a *setConfigSpyApp) ReloadDownloader(_ []config.ServerConfig) error {
+func (a *setConfigSpyApp) ReloadDownloader(_ []config.Server) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.reloadedDownloader++

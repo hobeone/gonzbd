@@ -251,7 +251,7 @@ func testServer(t *testing.T, name, addr string, opts ...func(*config.ServerConf
 	for _, o := range opts {
 		o(&cfg)
 	}
-	return NewServer(cfg)
+	return checkedServer(cfg)
 }
 
 // yencBody encodes payload as a yEnc article that always carries a genuine
@@ -906,7 +906,7 @@ func TestDownloaderStart_SkipsDisabledServers(t *testing.T) {
 func TestConnActivity_SetAndClear(t *testing.T) {
 	t.Parallel()
 	disp := newTestDispatcher(t)
-	srv := NewServer(config.ServerConfig{
+	srv := checkedServer(config.ServerConfig{
 		Name:        "test-srv",
 		Host:        "news.example.com",
 		Port:        563,
@@ -982,7 +982,7 @@ func TestConnActivity_SetAndClear(t *testing.T) {
 func TestConnActivity_PipelinedSlotBusyUntilLastArticle(t *testing.T) {
 	t.Parallel()
 	disp := newTestDispatcher(t)
-	srv := NewServer(config.ServerConfig{
+	srv := checkedServer(config.ServerConfig{
 		Name:               "pipelined",
 		Host:               "news.example.com",
 		Port:               563,
@@ -1054,7 +1054,7 @@ func TestConnActivity_PipelinedSlotBusyUntilLastArticle(t *testing.T) {
 func TestServerStatus_SnapshotFields(t *testing.T) {
 	t.Parallel()
 	disp := newTestDispatcher(t)
-	srv := NewServer(config.ServerConfig{
+	srv := checkedServer(config.ServerConfig{
 		Name:        "primary",
 		Host:        "news.example.com",
 		Port:        563,
@@ -1135,7 +1135,7 @@ func TestServerStatus_SnapshotFields(t *testing.T) {
 func TestServerStatus_PenaltyField(t *testing.T) {
 	t.Parallel()
 	disp := newTestDispatcher(t)
-	srv := NewServer(config.ServerConfig{
+	srv := checkedServer(config.ServerConfig{
 		Name:        "penalized",
 		Host:        "slow.example.com",
 		Port:        119,
@@ -1243,7 +1243,7 @@ func TestServerStatus_MeterFields(t *testing.T) {
 	t.Parallel()
 
 	disp := newTestDispatcher(t)
-	srv := NewServer(config.ServerConfig{
+	srv := checkedServer(config.ServerConfig{
 		Name:        "primary",
 		Host:        "news.example.com",
 		Connections: 1,
@@ -1360,7 +1360,7 @@ func TestSignalDispatch_CoalescesAndDoesNotBlock(t *testing.T) {
 func TestSetConnConnected_TogglesActivityAndHasActiveConnections(t *testing.T) {
 	t.Parallel()
 
-	srv := NewServer(config.ServerConfig{Name: "s1", Connections: 1, Enable: true})
+	srv := checkedServer(config.ServerConfig{Name: "s1", Connections: 1, Enable: true})
 	disp := newTestDispatcher(t)
 	d := New(disp, []*Server{srv}, nil, Options{}, nil)
 
@@ -1403,11 +1403,11 @@ func TestSetConnConnected_UnknownWorkerIsNoop(t *testing.T) {
 func TestCheckExpiredPenalties(t *testing.T) {
 	t.Parallel()
 
-	expired := NewServer(config.ServerConfig{Name: "expired", Optional: true, Connections: 1, Enable: true})
+	expired := checkedServer(config.ServerConfig{Name: "expired", Optional: true, Connections: 1, Enable: true})
 	expired.RecordBadConnection() // ratio 1.0 > OptionalDeactivationThreshold
 	expired.ApplyPenalty(-time.Hour)
 
-	stillPenalized := NewServer(config.ServerConfig{Name: "still-penalized", Optional: true, Connections: 1, Enable: true})
+	stillPenalized := checkedServer(config.ServerConfig{Name: "still-penalized", Optional: true, Connections: 1, Enable: true})
 	stillPenalized.RecordBadConnection()
 	stillPenalized.ApplyPenalty(time.Hour)
 

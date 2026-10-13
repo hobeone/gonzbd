@@ -54,12 +54,13 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 		c.Downloads.NoPenalties = false
 		c.Servers = []config.ServerConfig{
 			{
-				Name:        "chaos",
-				Host:        host,
-				Port:        port,
-				Connections: 4,
-				Timeout:     5,
-				Enable:      true,
+				Name:               "chaos",
+				Host:               host,
+				Port:               port,
+				Connections:        4,
+				Timeout:            5,
+				Enable:             true,
+				PipeliningRequests: 1,
 			},
 		}
 	})

@@ -1,17 +1,6 @@
 pkg ./internal/api/
 run ^TestConfigTestServer_RequestParameters$
 
-[test_server dials the request without config's check]
-file internal/api/config.go
---- anchor
-	return cfg.Checked()
---- replace
-	if cfg.Port == 0 {
-		cfg.Port = 119
-	}
-	return cfg, nil
---- end
-
 [a non-numeric port is replaced by the default]
 file internal/api/config.go
 --- anchor

@@ -74,11 +74,13 @@ func newTestEnvWithServer(t *testing.T) *testEnv {
 		},
 		Servers: []config.ServerConfig{
 			{
-				Name:        "test-server",
-				Host:        "news.example.test",
-				Port:        119,
-				Connections: 10,
-				Enable:      true,
+				Name:               "test-server",
+				Host:               "news.example.test",
+				Port:               119,
+				Connections:        10,
+				Enable:             true,
+				Timeout:            60,
+				PipeliningRequests: 1,
 			},
 		},
 		Categories: []config.CategoryConfig{},

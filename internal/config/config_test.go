@@ -873,9 +873,45 @@ func TestServerConfig_Checked(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Checked() error = %v", err)
 			}
-			if got.Port != tt.wantPort {
-				t.Errorf("Port = %d, want %d", got.Port, tt.wantPort)
+			if got.Config().Port != tt.wantPort {
+				t.Errorf("Port = %d, want %d", got.Config().Port, tt.wantPort)
 			}
 		})
+	}
+}
+
+// TestServer_ZeroValuePanics pins that a Server Checked did not produce
+// cannot be read, so nothing dials its zeroes.
+func TestServer_ZeroValuePanics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if recover() == nil {
+			t.Error("Server{}.Config() did not panic")
+		}
+	}()
+	_ = Server{}.Config()
+}
+
+func TestConfig_CheckedServers(t *testing.T) {
+	t.Parallel()
+	cfg, err := Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	ok := ServerConfig{Name: "a", Host: "news.example.com", Connections: 2, Timeout: 30, PipeliningRequests: 2, SSL: true}
+	cfg.With(func(c *Config) {
+		c.Servers = []ServerConfig{ok, {Name: "b", Host: "h", Connections: 1, Timeout: 30, PipeliningRequests: 1}}
+	})
+	got, err := cfg.CheckedServers()
+	if err != nil {
+		t.Fatalf("CheckedServers() error = %v", err)
+	}
+	if len(got) != 2 || got[0].Config().Name != "a" || got[0].Config().Port != 563 || got[1].Config().Port != 119 {
+		t.Errorf("CheckedServers() = %+v, want a (563) then b (119)", got)
+	}
+
+	cfg.With(func(c *Config) { c.Servers[1].PipeliningRequests = 0 })
+	if _, err := cfg.CheckedServers(); err == nil || !strings.Contains(err.Error(), `servers[1] ("b"): pipelining_requests: 0 must be > 0`) {
+		t.Errorf("CheckedServers() error = %v, want one naming servers[1] and pipelining_requests", err)
 	}
 }

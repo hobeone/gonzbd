@@ -142,7 +142,7 @@ func writePayload(t *testing.T, downloadDir, jobName string) {
 func startRouteApp(t *testing.T, repo *history.Repository, adminDir, downloadDir, completeDir string, beforeStart ...func(*app.Application)) (*app.Application, unassessedStage) {
 	t.Helper()
 	cfg := testConfig(downloadDir, completeDir, adminDir, config.ServerConfig{
-		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false,
+		Name: "mock", Host: "127.0.0.1", Port: 1119, Enable: false, Connections: 1, Timeout: 5, PipeliningRequests: 1,
 	})
 	cfg.With(func(c *config.Config) { c.Downloads.OnDemandPar2 = true })
 	stage := unassessedStage{app: new(atomic.Pointer[app.Application]), unassessed: make(chan string, 4)}

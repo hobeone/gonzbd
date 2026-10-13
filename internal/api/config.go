@@ -192,8 +192,11 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Hot-reload core components if their configuration changed.
 	if section == "servers" && s.reload != nil {
-		servers := s.config.GetServers()
-		if err := s.reload.ReloadDownloader(servers); err != nil {
+		servers, err := s.config.CheckedServers()
+		if err == nil {
+			err = s.reload.ReloadDownloader(servers)
+		}
+		if err != nil {
 			s.log.Error("reload servers", "error", err)
 			// Return 200 because the config was saved, but add a warning.
 			respondJSON(w, http.StatusOK, map[string]any{
@@ -379,7 +382,7 @@ const testServerTimeout = 15 * time.Second
 // server entry with those values holds, through config.ServerConfig.Checked.
 // A port or ssl_verify that is present but not a number is refused rather
 // than replaced by its default.
-func testServerConfig(r *http.Request, host string) (config.ServerConfig, error) {
+func testServerConfig(r *http.Request, host string) (config.Server, error) {
 	cfg := config.DefaultServerConfig()
 	cfg.Name = "test"
 	cfg.Host = host
@@ -393,14 +396,14 @@ func testServerConfig(r *http.Request, host string) (config.ServerConfig, error)
 	if v := formValue(r, "port"); v != "" {
 		port, err := strconv.Atoi(v)
 		if err != nil {
-			return config.ServerConfig{}, fmt.Errorf("port: %q is not a number", v)
+			return config.Server{}, fmt.Errorf("port: %q is not a number", v)
 		}
 		cfg.Port = port
 	}
 	if v := formValue(r, "ssl_verify"); v != "" {
 		level, err := strconv.ParseInt(v, 10, 8)
 		if err != nil {
-			return config.ServerConfig{}, fmt.Errorf("ssl_verify: %q is not a number", v)
+			return config.Server{}, fmt.Errorf("ssl_verify: %q is not a number", v)
 		}
 		cfg.SSLVerify = config.SSLVerify(level)
 	}
@@ -426,7 +429,7 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := testServerConfig(r, host)
+	srv, err := testServerConfig(r, host)
 	if err != nil {
 		s.respondError(w, http.StatusBadRequest, "invalid server: "+err.Error())
 		return
@@ -434,8 +437,8 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), testServerTimeout)
 	defer cancel()
 
-	if _, err := s.status.TestNNTPServer(ctx, cfg); err != nil {
-		s.log.Warn("test_server failed", "host", host, "port", cfg.Port, "error", err)
+	if _, err := s.status.TestNNTPServer(ctx, srv); err != nil {
+		s.log.Warn("test_server failed", "host", host, "port", srv.Config().Port, "error", err)
 		respondOK(w, "result", map[string]any{
 			"passed":  false,
 			"message": err.Error(),
@@ -443,7 +446,7 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.log.Info("test_server passed", "host", host, "port", cfg.Port)
+	s.log.Info("test_server passed", "host", host, "port", srv.Config().Port)
 	respondOK(w, "result", map[string]any{
 		"passed":  true,
 		"message": "Connection successful!",

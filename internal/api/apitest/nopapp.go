@@ -35,7 +35,7 @@ type NopApp struct {
 }
 
 // ReloadDownloader is a stub.
-func (n NopApp) ReloadDownloader([]config.ServerConfig) error { return nil }
+func (n NopApp) ReloadDownloader([]config.Server) error { return nil }
 
 // RetryHistoryJob is a stub.
 func (n NopApp) RetryHistoryJob(context.Context, string) error { return nil }
@@ -209,6 +209,6 @@ func (n NopApp) IsPipelineHealthy(context.Context) bool { return true }
 // TestNNTPServer is a stub.
 //
 //testdouble:allow implements AppServices.TestNNTPServer
-func (n NopApp) TestNNTPServer(context.Context, config.ServerConfig) (app.NNTPTestResult, error) {
+func (n NopApp) TestNNTPServer(context.Context, config.Server) (app.NNTPTestResult, error) {
 	return app.NNTPTestResult{}, nil
 }

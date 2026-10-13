@@ -112,6 +112,17 @@ func withDialerTimeout(d time.Duration) DialOption {
 	}
 }
 
+// checked passes cfg through config.ServerConfig.Checked, the only way to
+// get the config.Server Dial takes, and fails the test if it is refused.
+func checked(t testing.TB, cfg config.ServerConfig) config.Server {
+	t.Helper()
+	srv, err := cfg.Checked()
+	if err != nil {
+		t.Fatalf("Checked(%+v): %v", cfg, err)
+	}
+	return srv
+}
+
 func makeCfg(addr string) config.ServerConfig {
 	host, portStr, _ := net.SplitHostPort(addr)
 	var port int
@@ -144,7 +155,7 @@ func TestDialAndFetch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	conn, err := Dial(ctx, makeCfg(ms.addr))
+	conn, err := Dial(ctx, checked(t, makeCfg(ms.addr)))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -183,7 +194,7 @@ func TestDialAuthSuccess(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	conn, err := Dial(ctx, cfg)
+	conn, err := Dial(ctx, checked(t, cfg))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -205,7 +216,7 @@ func TestDialAuthRejected(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	_, err := Dial(ctx, cfg)
+	_, err := Dial(ctx, checked(t, cfg))
 	if !errors.Is(err, ErrAuthRejected) {
 		t.Fatalf("Dial err = %v, want ErrAuthRejected", err)
 	}
@@ -226,7 +237,7 @@ func TestDialOneShotAuth(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	conn, err := Dial(ctx, cfg)
+	conn, err := Dial(ctx, checked(t, cfg))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -244,7 +255,7 @@ func TestFetchNoArticle(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	conn, err := Dial(ctx, makeCfg(ms.addr))
+	conn, err := Dial(ctx, checked(t, makeCfg(ms.addr)))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -269,7 +280,7 @@ func TestStat(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	conn, err := Dial(ctx, makeCfg(ms.addr))
+	conn, err := Dial(ctx, checked(t, makeCfg(ms.addr)))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -303,7 +314,7 @@ func TestPipelinedFetches(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	conn, err := Dial(ctx, makeCfg(ms.addr))
+	conn, err := Dial(ctx, checked(t, makeCfg(ms.addr)))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -355,7 +366,7 @@ func TestFetchContextCancel(t *testing.T) {
 		c.send("222 0 <next@host> body follows")
 		c.sendRaw("next\r\n.\r\n")
 	})
-	conn, err := Dial(t.Context(), makeCfg(ms.addr))
+	conn, err := Dial(t.Context(), checked(t, makeCfg(ms.addr)))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -405,7 +416,7 @@ func TestGreetingRejected(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	_, err := Dial(ctx, makeCfg(ms.addr))
+	_, err := Dial(ctx, checked(t, makeCfg(ms.addr)))
 	if err == nil {
 		t.Fatal("Dial should have failed on 502 greeting")
 	}
@@ -429,7 +440,7 @@ func TestFetchStatAfterReaderError(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	conn, err := Dial(ctx, makeCfg(ms.addr))
+	conn, err := Dial(ctx, checked(t, makeCfg(ms.addr)))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -462,7 +473,7 @@ func TestFetchAfterClose(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	conn, err := Dial(ctx, makeCfg(ms.addr))
+	conn, err := Dial(ctx, checked(t, makeCfg(ms.addr)))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -684,7 +695,7 @@ func TestCloseUnblocksRateLimiter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	conn, err := Dial(ctx, makeCfg(ms.addr), WithLimiter(lim))
+	conn, err := Dial(ctx, checked(t, makeCfg(ms.addr)), WithLimiter(lim))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -732,7 +743,7 @@ func TestFetch_WriteFailure(t *testing.T) {
 		mc.sendCaps()
 	})
 
-	c, err := Dial(context.Background(), makeCfg(ms.addr))
+	c, err := Dial(context.Background(), checked(t, makeCfg(ms.addr)))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -765,7 +776,7 @@ func TestFetch_AfterReaderError(t *testing.T) {
 		mc.c.Close()
 	})
 
-	c, err := Dial(context.Background(), makeCfg(ms.addr))
+	c, err := Dial(context.Background(), checked(t, makeCfg(ms.addr)))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -832,7 +843,7 @@ func TestStat_ServerErrors(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	conn, err := Dial(ctx, makeCfg(ms.addr))
+	conn, err := Dial(ctx, checked(t, makeCfg(ms.addr)))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -901,7 +912,7 @@ func TestFetchMessageIDMismatch(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	conn, err := Dial(ctx, makeCfg(ms.addr))
+	conn, err := Dial(ctx, checked(t, makeCfg(ms.addr)))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -983,7 +994,7 @@ func TestStatMessageIDMismatchDropsConnection(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	conn, err := Dial(ctx, makeCfg(ms.addr))
+	conn, err := Dial(ctx, checked(t, makeCfg(ms.addr)))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -1065,7 +1076,7 @@ func TestDialAggregateHandshakeTimeoutAgainstSlowTrickle(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := Dial(ctx, cfg, withDialerTimeout(idleTimeout))
+		_, err := Dial(ctx, checked(t, cfg), withDialerTimeout(idleTimeout))
 		done <- err
 	}()
 
@@ -1124,7 +1135,7 @@ func TestDialAggregateHandshakeTimeoutAppliesToLimiterWait(t *testing.T) {
 	}
 	done := make(chan dialResult, 1)
 	go func() {
-		conn, err := Dial(ctx, cfg, WithLimiter(blockingLimiter{}))
+		conn, err := Dial(ctx, checked(t, cfg), WithLimiter(blockingLimiter{}))
 		done <- dialResult{conn, err}
 	}()
 
@@ -1190,7 +1201,7 @@ func TestDialResetsSocketDeadlineAfterSuccessfulHandshake(t *testing.T) {
 	cfg := makeCfg(ms.addr)
 	cfg.Timeout = idleTimeoutSeconds
 
-	conn, err := Dial(t.Context(), cfg)
+	conn, err := Dial(t.Context(), checked(t, cfg))
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -1249,7 +1260,7 @@ func TestDialHandshakeCtxCancelSurfacesAsContextCanceled(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := Dial(ctx, cfg, withHandshakeStartedHook(cancel))
+		_, err := Dial(ctx, checked(t, cfg), withHandshakeStartedHook(cancel))
 		done <- err
 	}()
 
@@ -1292,7 +1303,7 @@ func TestDialHandshakeCtxDeadlineSurfacesAsDeadlineExceeded(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := Dial(ctx, cfg)
+		_, err := Dial(ctx, checked(t, cfg))
 		done <- err
 	}()
 
@@ -1344,7 +1355,7 @@ func TestDialHandshakeServerRejectionNotWrappedWhenCtxEndsBeforeTheCheck(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	_, err := Dial(ctx, cfg, withHandshakeFailedHook(cancel))
+	_, err := Dial(ctx, checked(t, cfg), withHandshakeFailedHook(cancel))
 	if err == nil {
 		t.Fatal("Dial succeeded against a server that rejected the greeting, want an error")
 	}

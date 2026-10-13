@@ -22,7 +22,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 )
 
-// Server wraps a config.ServerConfig and tracks the runtime state of
+// Server wraps a checked config.Server and tracks the runtime state of
 // one NNTP server's connection pool: bad/good connection counters,
 // penalty-expiry timestamp, resolved addresses, and whether the server
 // has been administratively deactivated.
@@ -32,7 +32,9 @@ import (
 // handing work to a server and calls ApplyPenalty / RecordBadConnection
 // / RecordGoodConnection when connections complete or fail.
 type Server struct {
-	// cfg is the immutable configuration for this server.
+	// srv is the checked server, which nntp.Dial takes; cfg is its
+	// ServerConfig, read once here because Cfg is on the dispatch hot path.
+	srv config.Server
 	cfg config.ServerConfig
 
 	// badConns and goodConns are updated atomically. Using atomic.Int64
@@ -58,10 +60,12 @@ type Server struct {
 	deactivated bool
 }
 
-// NewServer creates a Server wrapping cfg. Counters start at zero and
-// no penalty is set; the server is considered active immediately.
-func NewServer(cfg config.ServerConfig) *Server {
-	return &Server{cfg: cfg}
+// NewServer creates a Server wrapping srv. Counters start at zero and
+// no penalty is set; the server is considered active immediately. srv comes
+// from config.ServerConfig.Checked, so its connection count, pipelining depth
+// and timeout are positive and this package applies no floors to them.
+func NewServer(srv config.Server) *Server {
+	return &Server{srv: srv, cfg: srv.Config()}
 }
 
 // Cfg returns the immutable ServerConfig for this server.

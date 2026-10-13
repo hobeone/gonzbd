@@ -163,10 +163,10 @@ type nntpProbeApp struct {
 	got config.ServerConfig
 }
 
-func (a *nntpProbeApp) TestNNTPServer(_ context.Context, cfg config.ServerConfig) (app.NNTPTestResult, error) {
+func (a *nntpProbeApp) TestNNTPServer(_ context.Context, srv config.Server) (app.NNTPTestResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.got = cfg
+	a.got = srv.Config()
 	return app.NNTPTestResult{}, nil
 }
 

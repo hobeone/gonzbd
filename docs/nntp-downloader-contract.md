@@ -128,7 +128,8 @@ of their failure ratio.
 ## Mandatory invariants
 
 1. **Strict connection cap**: For any server S, the total worker goroutines
-   (and thus maximum TCP connections) equals `max(S.Connections(), 1)`. Workers
+   (and thus maximum TCP connections) equals `S.Connections()`, which
+   `config.ServerConfig.Checked` requires to be at least 1. Workers
    are created once in `Start` and not resized.
 
 2. **Sequential in-flight invariant**: For any article identity
@@ -268,7 +269,8 @@ of their failure ratio.
 ## `nntp.Conn` pipelining contract
 
 Each `nntp.Conn` supports pipelined NNTP commands, bounded by a semaphore
-(`Conn.sem`) of capacity `max(1, ServerConfig.PipeliningRequests)`.
+(`Conn.sem`) of capacity `ServerConfig.PipeliningRequests`, which
+`config.ServerConfig.Checked` requires to be at least 1.
 
 - **Command submission**: `Fetch` (and the test/e2e-only `Stat` peer method)
   acquires a semaphore slot, appends a `pendingCmd` to a FIFO queue, and writes
@@ -402,7 +404,7 @@ a server that intermittently succeeds will never trigger auto-deactivation.
 |---|---|---|
 | **Article Request (`articleRequest`)** | Per-dispatch item | Allocated only after confirming `InFlight == 0`. ~68 bytes struct overhead + string backing (~100–200 bytes total with typical message-IDs). |
 | **Completions Channel (`completions`)** | Downloader-wide | Bounded buffer (`opts.CompletionsBuffer`, default 256). Backpressures dispatcher when assembler is slow. |
-| **Per-Server Work Queue (`workCh`)** | Per-server pool | Capacity = `2 × Connections × PipeliningRequests` (minimum 1). |
+| **Per-Server Work Queue (`workCh`)** | Per-server pool | Capacity = `2 × Connections × PipeliningRequests`; both factors are at least 1 for a checked server. |
 | **Per-Connection Goroutines** | Per-worker slot | Bounded to `pipelineDepth × 2` via local semaphore in `connWorker`. |
 | **Decoding Buffers** | Worker payload | Allocated via `decoder.GetBuffer`, returned to `sync.Pool` on failure or after downstream consumption. |
 | **Try-List (`serverMask`)** | Per-article | `uint64` bitmask for ≤64 servers (zero allocation); dynamic `[]uint64` slice only for >64 servers. |
