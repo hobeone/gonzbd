@@ -1607,7 +1607,8 @@ func TestCleanupContainmentViolation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanupContainmentViolation(dir, []string{"valid.txt", outsideFile}, slog.Default())
+	// ExtractedFiles is relative to outDir; one that climbs out is refused.
+	cleanupContainmentViolation(dir, []string{"valid.txt", "../outside.txt"}, slog.Default())
 
 	if _, err := os.Stat(validFile); !os.IsNotExist(err) {
 		t.Errorf("expected valid.txt to be deleted")
