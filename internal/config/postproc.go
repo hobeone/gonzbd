@@ -1,5 +1,11 @@
 package config
 
+import (
+	"fmt"
+
+	"github.com/hobeone/gonzbd/internal/cmdutil"
+)
+
 // PostProcConfig controls archive extraction, par2 repair, and related
 // post-download behavior. See spec §9.4.
 type PostProcConfig struct {
@@ -198,14 +204,16 @@ type PostProcConfig struct {
 	PasswordFile string `yaml:"password_file" json:"password_file"`
 
 	// ExtraUnrarParams holds additional command-line arguments appended to
-	// every unrar invocation. Validated on load and on every Set — each
-	// token must start with one of SABnzbd's allowlisted prefixes "-mlp",
-	// "-om" or "-ri" (cmdutil.ValidateUnrarParams). Example: "-ri10:5".
+	// every unrar invocation. Read through UnrarExtraArgs, which Validate
+	// runs on load and on every Set — each token must start with one of
+	// SABnzbd's allowlisted prefixes "-mlp", "-om" or "-ri"
+	// (cmdutil.ValidateUnrarParams). Example: "-ri10:5".
 	ExtraUnrarParams string `yaml:"extra_unrar_params" json:"extra_unrar_params"`
 
 	// ExtraPar2Params holds additional command-line arguments appended to
-	// every par2 invocation. Validated at startup — only flags starting
-	// with '-' are allowed. Example: "-m512" (limit memory to 512MB).
+	// every par2 invocation. Read through Par2ExtraArgs, which Validate runs
+	// on load and on every Set — only flags starting with '-' are allowed.
+	// Example: "-m512" (limit memory to 512MB).
 	// Matches SABnzbd's cfg.extra_par2_parameters().
 	ExtraPar2Params string `yaml:"extra_par2_params" json:"extra_par2_params"`
 
@@ -226,4 +234,32 @@ type PostProcConfig struct {
 	// Sonarr/Radarr import hooks, nzbToMedia) will break with HTTP 401
 	// if this is enabled. Default false preserves backward compatibility.
 	RedactScriptSecrets bool `yaml:"redact_script_secrets" json:"redact_script_secrets"`
+}
+
+// UnrarExtraArgs returns extra_unrar_params as the argv appended to an unrar
+// invocation: whitespace-separated flags, each starting with one of SABnzbd's
+// allowlisted prefixes (cmdutil.ValidateUnrarParams). Validate refuses a
+// value this rejects, so the error is reachable only for a PostProcConfig
+// that was never validated.
+func (p PostProcConfig) UnrarExtraArgs() ([]string, error) {
+	args, err := cmdutil.ParseExtraParams(p.ExtraUnrarParams)
+	if err == nil {
+		err = cmdutil.ValidateUnrarParams(args)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("extra_unrar_params: %w", err)
+	}
+	return args, nil
+}
+
+// Par2ExtraArgs returns extra_par2_params as the argv appended to a par2
+// invocation: whitespace-separated tokens, each starting with '-'
+// (cmdutil.ParseExtraParams). Validate refuses a value this rejects, so the
+// error is reachable only for a PostProcConfig that was never validated.
+func (p PostProcConfig) Par2ExtraArgs() ([]string, error) {
+	args, err := cmdutil.ParseExtraParams(p.ExtraPar2Params)
+	if err != nil {
+		return nil, fmt.Errorf("extra_par2_params: %w", err)
+	}
+	return args, nil
 }

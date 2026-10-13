@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -170,6 +171,43 @@ func TestApplication_ReloadOptions(t *testing.T) {
 		c.PostProc.ExtraPar2Params = "'unclosed quote"
 	})
 	app.ReloadPostProcOptions(cfg.PostProc, cfg.General.ScriptDir)
+}
+
+// TestApplication_ReloadPostProcOptions_RefusedArgsNotApplied pins that an
+// extra-args value config refuses never reaches the stage's argv on reload:
+// the stage runs with none rather than with the refused flags.
+func TestApplication_ReloadPostProcOptions_RefusedArgsNotApplied(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+	app, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if app.stages.Unpack == nil || app.stages.Repair == nil {
+		t.Fatal("New built no unpack or repair stage")
+	}
+
+	pp := cfg.GetPostProc()
+	pp.ExtraUnrarParams = "-ri1 -df"
+	pp.ExtraPar2Params = "-v notaflag"
+	app.ReloadPostProcOptions(pp, "")
+
+	if got := app.stages.Unpack.BaseOpts.ExtraArgs; got != nil {
+		t.Errorf("unrar ExtraArgs = %q, want nil for a value off the allowlist", got)
+	}
+	if got := app.stages.Repair.Par2Opts.ExtraArgs; got != nil {
+		t.Errorf("par2 ExtraArgs = %q, want nil for a token without '-'", got)
+	}
+
+	pp.ExtraUnrarParams = "-ri1"
+	pp.ExtraPar2Params = "-v"
+	app.ReloadPostProcOptions(pp, "")
+	if got := app.stages.Unpack.BaseOpts.ExtraArgs; !slices.Equal(got, []string{"-ri1"}) {
+		t.Errorf("unrar ExtraArgs = %q, want [-ri1]", got)
+	}
+	if got := app.stages.Repair.Par2Opts.ExtraArgs; !slices.Equal(got, []string{"-v"}) {
+		t.Errorf("par2 ExtraArgs = %q, want [-v]", got)
+	}
 }
 
 // TestApplication_ReloadPostProcOptions_NoDeadlockUnderReadLock guards against

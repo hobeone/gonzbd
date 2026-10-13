@@ -277,14 +277,10 @@ func (p *PostProcConfig) validateWithOS(goos string) error {
 		}
 	}
 
-	// Extra params must be valid flags (each token starts with '-'), and unrar
-	// params must only use SABnzbd allowlisted prefixes (-mlp, -om*, -ri*).
-	if args, err := cmdutil.ParseExtraParams(p.ExtraUnrarParams); err != nil {
-		errs = append(errs, fmt.Errorf("extra_unrar_params: %w", err))
-	} else if err := cmdutil.ValidateUnrarParams(args); err != nil {
-		errs = append(errs, fmt.Errorf("extra_unrar_params: %w", err))
+	if _, err := p.UnrarExtraArgs(); err != nil {
+		errs = append(errs, err)
 	}
-	if err := validateExtraParams("extra_par2_params", p.ExtraPar2Params); err != nil {
+	if _, err := p.Par2ExtraArgs(); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -301,21 +297,6 @@ func (p *PostProcConfig) validateWithOS(goos string) error {
 	}
 
 	return errors.Join(errs...)
-}
-
-// validateExtraParams checks that every whitespace-separated token in s
-// starts with '-'. This prevents accidental injection of non-flag
-// arguments into external tool invocations.
-func validateExtraParams(field, s string) error {
-	if s == "" {
-		return nil
-	}
-	for tok := range strings.FieldsSeq(s) {
-		if !strings.HasPrefix(tok, "-") {
-			return fmt.Errorf("%s: token %q does not start with '-'", field, tok)
-		}
-	}
-	return nil
 }
 
 // validateCleanupList checks that every pattern in the cleanup list is a valid regular expression.

@@ -167,30 +167,45 @@ func TestNumericBounds(t *testing.T) {
 	})
 }
 
-// ---------- validateExtraParams ----------
+// ---------- UnrarExtraArgs / Par2ExtraArgs ----------
 
-func TestValidateExtraParams(t *testing.T) {
+func TestExtraArgs(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
-		field   string
-		params  string
-		wantErr bool
+		pp      PostProcConfig
+		args    func(PostProcConfig) ([]string, error)
+		want    []string
+		wantErr string
 	}{
-		{"empty string", "extra_unrar_params", "", false},
-		{"valid flags", "extra_par2_params", "-v -q -N4", false},
-		{"non-flag token", "extra_unrar_params", "-sl100000 badarg", true},
+		{"unrar empty", PostProcConfig{}, PostProcConfig.UnrarExtraArgs, nil, ""},
+		{"unrar allowlisted", PostProcConfig{ExtraUnrarParams: " -ri10:5  -om- "}, PostProcConfig.UnrarExtraArgs, []string{"-ri10:5", "-om-"}, ""},
+		{"unrar non-flag token", PostProcConfig{ExtraUnrarParams: "-ri1 badarg"}, PostProcConfig.UnrarExtraArgs, nil, `extra_unrar_params: extra parameter "badarg" does not start with '-'`},
+		{"unrar flag off the allowlist", PostProcConfig{ExtraUnrarParams: "-ri1 -df"}, PostProcConfig.UnrarExtraArgs, nil, `extra_unrar_params: unrar parameter "-df" is not allowed`},
+		{"par2 empty", PostProcConfig{}, PostProcConfig.Par2ExtraArgs, nil, ""},
+		{"par2 flags", PostProcConfig{ExtraPar2Params: "-v -q -N4"}, PostProcConfig.Par2ExtraArgs, []string{"-v", "-q", "-N4"}, ""},
+		{"par2 non-flag token", PostProcConfig{ExtraPar2Params: "-v x"}, PostProcConfig.Par2ExtraArgs, nil, `extra_par2_params: extra parameter "x" does not start with '-'`},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateExtraParams(tc.field, tc.params)
-			if tc.wantErr && err == nil {
-				t.Errorf("validateExtraParams(%q, %q) = nil, want error", tc.field, tc.params)
-			} else if !tc.wantErr && err != nil {
-				t.Errorf("validateExtraParams(%q, %q) = %v, want nil", tc.field, tc.params, err)
+			got, err := tc.args(tc.pp)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want one containing %q", err, tc.wantErr)
+				}
+				if got != nil {
+					t.Errorf("args = %q alongside an error, want nil", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("args = %q, want %q", got, tc.want)
 			}
 		})
 	}
