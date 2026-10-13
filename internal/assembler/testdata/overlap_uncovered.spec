@@ -7,7 +7,7 @@ run ^(TestOwnedRanges_Covered|TestOverlap_RefusalReportsTheUncoveredBytes)$
 [the refusal reports the article's whole length]
 file internal/assembler/assembler.go
 --- anchor
-		uncovered := rng.Len - f.w.owned.covered(rng, id)
+		uncovered := rng.Len - f.w.owned.covered(rng)
 --- replace
 		uncovered := rng.Len
 --- end
@@ -26,14 +26,6 @@ file internal/assembler/assembler.go
 		return outcome{disposition: dispositionRejected, reason: reason, uncovered: WholeArticle}
 --- replace
 		return outcome{disposition: dispositionRejected, reason: reason, uncovered: 0}
---- end
-
-[the arriving article's own range counts as cover]
-file internal/assembler/ranges.go
---- anchor
-		if o.s[i].id.sameArticle(arriving) {
---- replace
-		if false {
 --- end
 
 [an owner's range is not clipped to the arriving range]

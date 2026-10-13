@@ -654,8 +654,13 @@ single owner of which article wrote which bytes of a file.
 - **An arrival whose `[off, off+len)` intersects a range another article owns
   is refused** (`acceptArticle`, through `ownerOf`) and failed permanently. Its
   part still counts toward `TotalParts`, and par2 is charged the bytes of its
-  range no other article's range covers (`ownedRanges.covered`, #432). A
-  range owned by the same `ArtIdx` is a re-accept, not a collision.
+  range no other article's range covers (`ownedRanges.covered`, #432).
+- **An owner never arrives at the overlap check again.** Claiming a range
+  resolves its article `Written`, which keeps it in the writer's `seenDone`,
+  and `admit` drops a redelivery of an article in `seenDone` before
+  `acceptArticle` runs. So a range is owned against every arrival, and `claim`
+  panics on any intersection
+  (`TestFileWriter_RangeOwnersStayAdmitted`, #930).
 - **A zero-length article claims nothing.** It is reported written with
   `n == 0`, and its row (length 0, CRC 0) is valid: the next verification
   verifies it, and `InstallFileVerification` installs it, as for any row
@@ -669,9 +674,8 @@ single owner of which article wrote which bytes of a file.
 restart it is enforced by seeding.** `pipeline.registerFile` passes the file's
 resident rows — those a restart verified, and any this process wrote since —
 as `FileInfo.Owned`, and `openTargetFile` hands them to `seedOwned` before any
-write. Seeded ranges are owned by `seededOwner`, whose
-`artIdx` is -1 — `articleID.sameArticle` compares the index alone, so a zero
-sentinel would wave article 0 through. A zero-length row is skipped silently
+write. Seeded ranges are owned by `seededOwner`, whose `artIdx` (-1) names
+no manifest article. A zero-length row is skipped silently
 (it claims no range). A malformed seeded range (negative offset or length, or an
 overflowing end) is dropped with a warning, which costs only a refetch of its
 articles.

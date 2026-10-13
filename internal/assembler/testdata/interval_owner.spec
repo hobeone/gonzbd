@@ -1,20 +1,12 @@
 pkg ./internal/assembler/
-run TestOverlap_PartialRangeOverlapIsRefused|TestOwnedRanges_IntersectionIsOwned|TestOwnedRanges_SeededRangeIsOwnedByEveryArrival|TestFileWriter_FaultedWriteOwnsNothing|TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused|TestOverlap_ZeroLengthArrivalInsideOwnedRangeIsAccepted
+run TestOverlap_PartialRangeOverlapIsRefused|TestOwnedRanges_IntersectionIsOwned|TestFileWriter_FaultedWriteOwnsNothing|TestOverlap_ArrivalStartingBeforeTheIncumbentIsRefused|TestOverlap_ZeroLengthArrivalInsideOwnedRangeIsAccepted
 
 [intersection never reported]
 file internal/assembler/ranges.go
 --- anchor
-		if o.s[i].r.intersects(r) && !o.s[i].id.sameArticle(arriving) {
+		if o.s[i].r.intersects(r) {
 --- replace
 		if false {
---- end
-
-[seed claims as the zero article]
-file internal/assembler/ranges.go
---- anchor
-		o.s = append(o.s, ownedRange{r: r, id: seededOwner})
---- replace
-		o.s = append(o.s, ownedRange{r: r, id: articleID{}})
 --- end
 
 [range claimed before the write returned]
@@ -29,9 +21,9 @@ file internal/assembler/filewriter.go
 [acceptArticle probes only the arrival's first byte]
 file internal/assembler/assembler.go
 --- anchor
-	if _, settled := f.w.owned.ownerOf(rng, id); settled {
+	if _, settled := f.w.owned.ownerOf(rng); settled {
 --- replace
-	if _, settled := f.w.owned.ownerOf(Range{Off: rng.Off, Len: min(rng.Len, 1)}, id); settled {
+	if _, settled := f.w.owned.ownerOf(Range{Off: rng.Off, Len: min(rng.Len, 1)}); settled {
 --- end
 
 [claim records an empty range]

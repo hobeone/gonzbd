@@ -24,37 +24,35 @@ type ownedRange struct {
 
 // ownedRanges records which article owns each written byte range of one file.
 // Ranges never intersect, and each of the two writers holds that itself:
-// claim replaces same-article entries and panics on a different-article
-// intersection, and seed merges intersecting or abutting ranges.
+// claim panics on any intersection, and seed merges intersecting or abutting
+// ranges.
 // `git grep -n 'o\.s.* = ' -- 'internal/assembler/*.go' ':!*_test.go'`
-// returns 5 lines, three in claim and two in seed; claim's copy is its other
-// write.
+// returns 3 lines, one in claim and two in seed.
+//
+// A range is owned against every arrival, its own owner included, because
+// its owner never arrives again: claiming a range resolves the article
+// Written, which keeps it in its writer's seenDone, and admit refuses an
+// article in seenDone before acceptArticle consults this set.
+// TestFileWriter_RangeOwnersStayAdmitted pins that.
 type ownedRanges struct{ s []ownedRange }
 
-// ownerOf returns the owner of a range intersecting r, unless that owner is
-// arriving itself.
-func (o *ownedRanges) ownerOf(r Range, arriving articleID) (articleID, bool) {
+// ownerOf returns the owner of a range intersecting r.
+func (o *ownedRanges) ownerOf(r Range) (articleID, bool) {
 	i := sort.Search(len(o.s), func(i int) bool { return o.s[i].r.end() > r.Off })
 	for ; i < len(o.s) && o.s[i].r.Off < r.end(); i++ {
-		if o.s[i].r.intersects(r) && !o.s[i].id.sameArticle(arriving) {
+		if o.s[i].r.intersects(r) {
 			return o.s[i].id, true
 		}
 	}
 	return articleID{}, false
 }
 
-// covered returns how many bytes of r lie inside ranges owned by an article
-// other than arriving. The ranges are disjoint, so their intersections with r
-// sum without counting a byte twice. A range arriving owns itself is not
-// cover: an article's own earlier write says nothing about whether its bytes
-// are on disk now.
-func (o *ownedRanges) covered(r Range, arriving articleID) int64 {
+// covered returns how many bytes of r lie inside owned ranges. The ranges are
+// disjoint, so their intersections with r sum without counting a byte twice.
+func (o *ownedRanges) covered(r Range) int64 {
 	var n int64
 	i := sort.Search(len(o.s), func(i int) bool { return o.s[i].r.end() > r.Off })
 	for ; i < len(o.s) && o.s[i].r.Off < r.end(); i++ {
-		if o.s[i].id.sameArticle(arriving) {
-			continue
-		}
 		if lo, hi := max(o.s[i].r.Off, r.Off), min(o.s[i].r.end(), r.end()); hi > lo {
 			n += hi - lo
 		}
@@ -66,11 +64,10 @@ func (o *ownedRanges) covered(r Range, arriving articleID) int64 {
 // of intersections: ownerOf's binary search is correct only while end order
 // equals offset order.
 //
-// Entries of the same article that intersect r are replaced by r (a retry may
-// write a different length). An intersecting entry of a DIFFERENT article
-// panics rather than being refused: the caller must have found no owner via
-// ownerOf first, and the one production path, acceptArticle, does so
-// immediately before accept on the file's single goroutine —
+// An intersecting entry panics rather than being refused: the caller must have
+// found no owner via ownerOf first, and the one production path,
+// acceptArticle, does so immediately before accept on the file's single
+// goroutine —
 // `git grep -n '\.claim(' -- 'internal/assembler/*.go' ':!*_test.go' ':!internal/assembler/diskprobe.go'`
 // finds 2 lines, this comment and the one call, in writeOne, reached from
 // accept, whose one non-test caller is acceptArticle.
@@ -81,19 +78,11 @@ func (o *ownedRanges) claim(r Range, id articleID) {
 		return
 	}
 	lo := sort.Search(len(o.s), func(i int) bool { return o.s[i].r.end() > r.Off })
-	hi := lo
-	for hi < len(o.s) && o.s[hi].r.Off < r.end() {
-		if !o.s[hi].id.sameArticle(id) {
-			panic(fmt.Sprintf("assembler: claim of %+v by article %d intersects %+v owned by article %d",
-				r, id.artIdx, o.s[hi].r, o.s[hi].id.artIdx))
-		}
-		hi++
+	if lo < len(o.s) && o.s[lo].r.Off < r.end() {
+		panic(fmt.Sprintf("assembler: claim of %+v by article %d intersects %+v owned by article %d",
+			r, id.artIdx, o.s[lo].r, o.s[lo].id.artIdx))
 	}
-	o.s = slices.Delete(o.s, lo, hi)
-	i := sort.Search(len(o.s), func(i int) bool { return o.s[i].r.Off >= r.Off })
-	o.s = append(o.s, ownedRange{})
-	copy(o.s[i+1:], o.s[i:])
-	o.s[i] = ownedRange{r: r, id: id}
+	o.s = slices.Insert(o.s, lo, ownedRange{r: r, id: id})
 }
 
 // maxEnd returns the largest end over all ranges, accepted and seeded alike, or
@@ -107,7 +96,7 @@ func (o *ownedRanges) maxEnd() int64 {
 }
 
 // seededOwner owns ranges verified before this process. Its index matches no
-// manifest article, so sameArticle never waves an arrival through.
+// manifest article, so a claim panic names a seeded range as one.
 var seededOwner = articleID{artIdx: -1}
 
 // errSeedNotEmpty is returned by seed on a set that already holds ranges.
@@ -119,9 +108,8 @@ var errSeedNotEmpty = errors.New("assembler: seed on a non-empty range set")
 // seed drops ranges with Len <= 0 and checks nothing else: a negative Off or an
 // Off+Len that overflows int64 must be rejected by the caller before seed.
 //
-// seededOwner stands for many independent verified articles, so seed does not
-// go through claim, whose same-article replace would drop earlier coverage.
-// Instead it sorts a copy of rs and merges intersecting or abutting ranges.
+// seed does not go through claim, which panics on an intersection. It sorts a
+// copy of rs and merges intersecting or abutting ranges.
 func (o *ownedRanges) seed(rs []Range) error {
 	if len(o.s) != 0 {
 		return errSeedNotEmpty

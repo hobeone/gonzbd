@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"slices"
 	"testing"
 )
 
@@ -122,22 +123,19 @@ func TestCollision_RangeStaysOwnedAfterSync(t *testing.T) {
 // arrival is refused, directly, including the ways it must answer "no".
 func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
 	owner := articleID{artIdx: 1}
-	arriving := articleID{artIdx: 2}
 
 	tests := []struct {
 		name      string
 		seed      func(w *fileWriter)
-		arriving  articleID
 		r         Range
 		wantOwned bool
 	}{
-		{"an unclaimed range is not owned", func(*fileWriter) {}, arriving, Range{0, 4}, false},
-		{"the same range is owned", func(w *fileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{0, 4}, true},
-		{"a partial overlap is owned", func(w *fileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{2, 4}, true},
-		{"a partial overlap into a range's head is owned", func(w *fileWriter) { w.owned.claim(Range{1000, 1000}, owner) }, arriving, Range{900, 1000}, true},
-		{"an abutting range is not owned", func(w *fileWriter) { w.owned.claim(Range{0, 4}, owner) }, arriving, Range{4, 4}, false},
-		{"a range abutting from below is not owned", func(w *fileWriter) { w.owned.claim(Range{1000, 1000}, owner) }, arriving, Range{0, 1000}, false},
-		{"the owner does not collide with ITSELF", func(w *fileWriter) { w.owned.claim(Range{0, 4}, owner) }, owner, Range{0, 4}, false},
+		{"an unclaimed range is not owned", func(*fileWriter) {}, Range{0, 4}, false},
+		{"the same range is owned", func(w *fileWriter) { w.owned.claim(Range{0, 4}, owner) }, Range{0, 4}, true},
+		{"a partial overlap is owned", func(w *fileWriter) { w.owned.claim(Range{0, 4}, owner) }, Range{2, 4}, true},
+		{"a partial overlap into a range's head is owned", func(w *fileWriter) { w.owned.claim(Range{1000, 1000}, owner) }, Range{900, 1000}, true},
+		{"an abutting range is not owned", func(w *fileWriter) { w.owned.claim(Range{0, 4}, owner) }, Range{4, 4}, false},
+		{"a range abutting from below is not owned", func(w *fileWriter) { w.owned.claim(Range{1000, 1000}, owner) }, Range{0, 1000}, false},
 	}
 
 	for _, tc := range tests {
@@ -145,7 +143,7 @@ func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
 			w := newTestFileWriter(t)
 			tc.seed(w)
 
-			got, owned := w.owned.ownerOf(tc.r, tc.arriving)
+			got, owned := w.owned.ownerOf(tc.r)
 
 			if owned != tc.wantOwned {
 				t.Fatalf("owned = %v, want %v", owned, tc.wantOwned)
@@ -157,103 +155,127 @@ func TestOwnedRanges_ArrivalVerdicts(t *testing.T) {
 	}
 }
 
-// TestCollision_FailedReacceptKeepsTheWrittenRange pins that the range survives
-// a re-accept by its own owner whose write then FAILS: the owner keeps the
-// range it wrote, so the next article to claim it is still refused.
-//
-// seenDone is keyed on ArtIdx, so admit answers "duplicate" for a PLAIN
-// redelivery and handleSuccessArticle returns before acceptArticle is called,
-// which is why this calls acceptArticle directly. The first roll-back is a
-// direct resolve that leaves the article's range owned: it deletes the
-// seenDone entry and never sets seenFailed, so the redelivery reaches a second
-// accept. That second accept's write is the one that faults. The state is
-// built by hand; what it pins is writeOne's, that a failed write leaves the
-// owned ranges as it found them.
-func TestCollision_FailedReacceptKeepsTheWrittenRange(t *testing.T) {
+// TestCollision_RetryAfterWriteFaultIsAccepted drives a write fault and the
+// faulted article's redelivery through handleSuccessArticle. The faulted write
+// claimed nothing, so the retry at the same offset finds no owner and is
+// written, rather than being refused as a collision with nothing.
+func TestCollision_RetryAfterWriteFaultIsAccepted(t *testing.T) {
 	c := newCollisionFixture(t)
-	id := articleID{artIdx: 1}
-	req := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 1, MessageID: "<first@x>", Offset: 0}
-
-	c.f.w.admit(id.artIdx)
-	req.Data = []byte("AAAA")
-	if o := c.a.acceptArticle(c.f, id, req); o.disposition != dispositionWritten {
-		t.Fatalf("accept incumbent: %s (%v)", o.disposition, o.fault)
-	}
-	c.f.w.resolve(id.artIdx, dispositionWritten)
-	if owner, owned := c.f.w.owned.ownerOf(Range{0, 4}, articleID{artIdx: 99}); !owned || owner != id {
-		t.Fatalf("precondition: ownerOf = %+v, %v; want the incumbent", owner, owned)
-	}
-
-	c.f.w.resolve(id.artIdx, dispositionRolledBack)
-	c.f.w.admit(id.artIdx)
+	realWrite := c.f.w.writeAt
 	c.f.w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
-	req.Data = []byte("AAAA")
-	if o := c.a.acceptArticle(c.f, id, req); o.disposition != dispositionRolledBack {
-		t.Fatalf("precondition: the injected write fault did not surface; got %s", o.disposition)
+	if c.accept(7, "<retry@x>", 0, bytes.Repeat([]byte{'A'}, 64)) {
+		t.Fatal("precondition: the faulted write was counted")
 	}
-	c.f.w.resolve(id.artIdx, dispositionRolledBack)
-
-	second := articleID{artIdx: 2}
-	req2 := WriteRequest{JobID: "job", FileIdx: 0, ArtIdx: 2, MessageID: "<second@x>", Offset: 0, Data: []byte("BBBB")}
-	c.f.w.admit(second.artIdx)
-	o := c.a.acceptArticle(c.f, second, req2)
-	c.f.w.resolve(second.artIdx, o.disposition)
-	c.a.routeOutcome(c.f, req2, o)
-
-	if len(c.rejected) != 1 || c.rejected[0] != 2 {
-		t.Errorf("OnArticleRejected = %v, want [2] — the failed re-accept released the "+
-			"range, so the arrival overwrote an article the recorder has described", c.rejected)
+	if !slices.Equal(c.unwritten, []int32{7}) {
+		t.Fatalf("precondition: OnArticlesUnwritten = %v, want [7]", c.unwritten)
 	}
-	if len(c.unwritten) != 0 {
-		t.Errorf("OnArticlesUnwritten = %v: acceptArticle does not route, so nothing "+
-			"may have reached the callback", c.unwritten)
+
+	c.f.w.writeAt = realWrite
+	if !c.accept(7, "<retry@x>", 0, bytes.Repeat([]byte{'A'}, 64)) {
+		t.Error("the retry was not counted toward the file's part total")
+	}
+	if len(c.rejected) != 0 {
+		t.Errorf("OnArticleRejected = %v, want none: the faulted write owned no range", c.rejected)
+	}
+	if got := ownedBy(c.f.w, 7); !slices.Equal(got, []Range{{0, 64}}) {
+		t.Errorf("article 7 owns %v after the retry, want [{0 64}]", got)
 	}
 }
 
-// TestFileWriter_ReacceptAfterRollbackIsNotACollision is the false-positive
-// guard, and the reason detection compares IDENTITY rather than occupancy.
+// TestFileWriter_RangeOwnersStayAdmitted pins the invariant that lets
+// ownedRanges own a range against every arrival: an article that owns a range
+// is in its writer's seenDone for the writer's life, so admit drops its
+// redelivery before acceptArticle consults the range set.
 //
-// A write fault rolls an article back and returns it to Outstanding. It is
-// re-dispatched and comes back at the same offset — req.ArtIdx is the manifest
-// index, so the redelivered articleID is identical. Under an occupancy check
-// every retry after a transient storage fault would report a collision with
-// itself, on a path that is common and where the current code is correct.
-func TestFileWriter_ReacceptAfterRollbackIsNotACollision(t *testing.T) {
-	w := newTestFileWriter(t)
-	id := articleID{artIdx: 7}
-
-	w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
-	w.admit(id.artIdx)
-	if err := w.accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err == nil {
-		t.Fatal("precondition: the injected write fault did not surface")
+// It drives every disposition, and a seeded range, through processRequest and
+// checks the invariant after each step. If the invariant broke, the owner's
+// redelivery would reach ownerOf, find its own range, and be refused as a
+// collision with itself.
+func TestFileWriter_RangeOwnersStayAdmitted(t *testing.T) {
+	a := newHelperAssembler()
+	var rejected, unwritten []int32
+	a.opts.OnArticleRejected = func(_ string, _ int, artIdx int32, _ string, _ int64) {
+		rejected = append(rejected, artIdx)
 	}
-	w.resolve(id.artIdx, dispositionRolledBack)
-	if w.parts() != 0 {
-		t.Fatalf("precondition: parts = %d after the rollback, want 0", w.parts())
+	a.opts.OnArticlesUnwritten = func(_ string, _ int, arts []int32) {
+		unwritten = append(unwritten, arts...)
+	}
+	f := newHelperFile(t, t.TempDir(), "owners.dat", 1<<20)
+	f.info.TotalParts = 100 // never completes, so the writer outlives every step
+	a.seedOwned(f.w, []Range{{Off: 100, Len: 10}})
+	open := map[fileKey]*openFile{{jobID: "job", fileIdx: 0}: f}
+	completed := map[fileKey]struct{}{}
+	send := func(artIdx int32, off int64, payload string, fatal error) {
+		var data []byte
+		if fatal == nil {
+			data = []byte(payload)
+		}
+		a.processRequest(WriteRequest{
+			JobID: "job", FileIdx: 0, ArtIdx: artIdx, MessageID: "m@x",
+			Offset: off, Data: data, FatalErr: fatal,
+		}, open, completed)
+	}
+	check := func(step string) {
+		t.Helper()
+		for _, o := range f.w.owned.s {
+			if o.id == seededOwner {
+				continue
+			}
+			if _, ok := f.w.seenDone[o.id.artIdx]; !ok {
+				t.Fatalf("after %s: article %d owns %+v but is not in seenDone, so its "+
+					"redelivery would reach the overlap check", step, o.id.artIdx, o.r)
+			}
+		}
 	}
 
-	// The re-dispatched copy, at the same offset.
-	w.writeAt = func(p []byte, _ int64) (int, error) { return len(p), nil }
-	w.admit(id.artIdx)
-	if err := w.accept(id, 0, append([]byte(nil), bytes.Repeat([]byte{'A'}, 64)...)); err != nil {
-		t.Fatalf("re-accept: %v", err)
-	}
+	send(0, 0, "AAAA", nil)
+	check("0 written")
+	realWrite := f.w.writeAt
+	f.w.writeAt = func([]byte, int64) (int, error) { return 0, errors.New("injected write fault") }
+	send(1, 4, "BBBB", nil)
+	f.w.writeAt = realWrite
+	check("1 rolled back")
+	send(1, 4, "BBBB", nil)
+	check("1 written on retry")
+	send(2, 2, "CCCC", nil)
+	check("2 rejected over 0 and 1")
+	send(3, -1, "DDDD", nil)
+	check("3 rejected out of range")
+	send(4, 102, "EEEE", nil)
+	check("4 rejected over the seeded range")
+	send(5, 0, "", errFatalProbe)
+	check("5 fetch-failed")
+	send(0, 0, "", errFatalProbe)
+	check("0 fetch-failed after being written")
+	send(0, 0, "ZZZZ", nil)
+	check("0 redelivered")
+	send(1, 4, "ZZZZ", nil)
+	check("1 redelivered")
 
-	if got := w.parts(); got != 1 {
-		t.Errorf("parts = %d after the re-accept, want 1: it was treated as a collision with itself", got)
+	if !slices.Equal(rejected, []int32{2, 3, 4}) {
+		t.Errorf("OnArticleRejected = %v, want [2 3 4]: a redelivered owner was refused "+
+			"against its own range", rejected)
+	}
+	if !slices.Equal(unwritten, []int32{1}) {
+		t.Errorf("OnArticlesUnwritten = %v, want [1]", unwritten)
+	}
+	got, err := os.ReadFile(f.w.path)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(got[:8]) != "AAAABBBB" {
+		t.Errorf("bytes [0,8) = %q, want AAAABBBB: a redelivery rewrote an owned range", got[:8])
 	}
 }
 
 // TestFileWriter_FaultedWriteOwnsNothing pins what a write fault leaves
 // behind: the article loses its part and its seenDone entry and, because its
 // range is claimed only after the write returned nil, owns nothing. A different
-// article at the same range is accepted, and once written it owns the range
-// against a third.
+// article at the same range is accepted, and once written it owns the range.
 func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 	w := newTestFileWriter(t)
 	first := articleID{artIdx: 1}
 	second := articleID{artIdx: 2}
-	third := articleID{artIdx: 3}
 	r := Range{0, 4}
 
 	realWrite := w.writeAt
@@ -266,11 +288,8 @@ func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 	if w.parts() != 0 {
 		t.Fatalf("parts = %d after the rollback, want 0", w.parts())
 	}
-	if owner, owned := w.owned.ownerOf(r, second); owned {
+	if owner, owned := w.owned.ownerOf(r); owned {
 		t.Fatalf("ownerOf = %+v after a faulted write, want no owner", owner)
-	}
-	if _, owned := w.owned.ownerOf(r, second); owned {
-		t.Fatal("a range whose only writer faulted was owned against a rival")
 	}
 
 	w.writeAt = realWrite
@@ -278,7 +297,7 @@ func TestFileWriter_FaultedWriteOwnsNothing(t *testing.T) {
 	if err := w.accept(second, 0, []byte("BBBB")); err != nil {
 		t.Fatalf("accept second: %v", err)
 	}
-	if got, owned := w.owned.ownerOf(r, third); !owned || got != second {
-		t.Errorf("ownerOf(third) = %+v, %v; want the second article to own it", got, owned)
+	if got, owned := w.owned.ownerOf(r); !owned || got != second {
+		t.Errorf("ownerOf = %+v, %v; want the second article to own it", got, owned)
 	}
 }

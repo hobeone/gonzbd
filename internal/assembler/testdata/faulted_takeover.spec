@@ -13,7 +13,7 @@ file internal/assembler/filewriter.go
 [the redelivery is let past the rival's written range]
 file internal/assembler/ranges.go
 --- anchor
-		if o.s[i].r.intersects(r) && !o.s[i].id.sameArticle(arriving) {
+		if o.s[i].r.intersects(r) {
 --- replace
 		if false {
 --- end
