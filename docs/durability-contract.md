@@ -397,8 +397,8 @@ parameter.
 **A job file is always a regular file with one link; any link in its place
 is refused.** Every open of a job file — the writer's and both of the
 verifier's — goes through `fsutil.OpenNoFollow` on an `os.Root` on the job
-directory, for the sanitized name `pipeline.jobFileLocation` resolves, which
-must be a single path component:
+directory, for the file's recorded name, which must be a single path
+component:
 
 - the open is one `openat(2)` on the directory with `O_NOFOLLOW`, so a
   **symlink** in the file's place fails with `ELOOP` wherever it points, out
@@ -416,9 +416,22 @@ must be a single path component:
 The `os.Root` confines the file name only. The job directory is `DownloadDir`
 joined with the job's name, already cleaned by `filepath.Join`, and it stays
 under `DownloadDir` because the dispatcher admits only a name that is one safe
-path component (`Dispatcher.admitNameLocked`). The sanitized file name is one
-component whatever the sanitize options hold, because the sanitizers never use
-a replacement string `fsutil.CheckReplacement` refuses.
+path component (`Dispatcher.admitNameLocked`).
+
+**A file's name is chosen once and recorded, and the writer and the verifier
+resolve it from the record verbatim afterwards.** The first time `registerFile` names a file,
+`pipeline.newJobFileLocation` sanitizes its subject under the sanitize options
+then in force — one component whatever they hold, because the sanitizers never
+use a replacement string `fsutil.CheckReplacement` refuses — and the name is
+recorded (`Job.RecordFileFilename`). A later registration and both verifiers
+resolve the recorded name with `pipeline.jobFileLocation`, which does not
+sanitize it again: the options may have changed since the file was named, and
+re-sanitizing would look for a file the writer never wrote, which the verifier
+reads as absent and refetches (`TestRecordedFileName_SurvivesASanitizeChange`).
+It only checks that the name is one path component
+(`fsutil.CheckOneComponent`, the check `OpenNoFollow` applies), since the name
+is joined into a path; a name it refuses is a verification fault, and a failed
+registration.
 
 On the verifier (`readBackFile`, `finishFileByPath`) a refusal is an open error
 other than `ENOENT`, so a verification fault on both paths — never absence, and
@@ -428,8 +441,9 @@ before the file. The job directory itself is opened as resolved: the download
 root and the sanitized job name are trusted configuration, and a symlink there
 is followed.
 
-On the writer, the pipeline names each file with the same resolver
-(`registerFile` calls `pipeline.jobFileLocation`) and hands the assembler the
+On the writer, `registerFile` resolves each file as above
+(`pipeline.newJobFileLocation` the first time, `pipeline.jobFileLocation`
+after) and hands the assembler the
 job directory and the name as `FileInfo.Dir` and `FileInfo.Name`.
 `openTargetFile` creates the directory, then opens the name `O_WRONLY|O_CREATE`
 (`openInDir`). A refusal takes the path of any other failed open: a routed

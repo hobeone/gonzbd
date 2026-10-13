@@ -29,6 +29,17 @@ import (
 // the assembler started.
 func newDurabilityTestApp(t *testing.T, nFiles, nArts int) (*Application, *job.Job) {
 	t.Helper()
+	subjects := make([]string, nFiles)
+	for f := range nFiles {
+		subjects[f] = fileFixtureName(f)
+	}
+	return newDurabilityTestAppSubjects(t, subjects, nArts)
+}
+
+// newDurabilityTestAppSubjects is newDurabilityTestApp with one file per
+// subject, named by it.
+func newDurabilityTestAppSubjects(t *testing.T, subjects []string, nArts int) (*Application, *job.Job) {
+	t.Helper()
 	application, _, _ := newLifecycleTestApp(t)
 	if err := application.assembler.Start(t.Context()); err != nil {
 		t.Fatalf("assembler.Start: %v", err)
@@ -36,8 +47,8 @@ func newDurabilityTestApp(t *testing.T, nFiles, nArts int) (*Application, *job.J
 	t.Cleanup(func() { _ = application.assembler.Stop() })
 
 	parsed := &nzb.NZB{}
-	for f := range nFiles {
-		file := nzb.File{Subject: fileFixtureName(f), Bytes: int64(nArts) * 100}
+	for f, subject := range subjects {
+		file := nzb.File{Subject: subject, Bytes: int64(nArts) * 100}
 		for a := range nArts {
 			file.Articles = append(file.Articles, nzb.Article{
 				ID: fileFixtureArticleID(f, a), Bytes: 100, Number: a + 1,

@@ -71,20 +71,21 @@ func (f jobFile) Path() string { return filepath.Join(f.Dir, f.Name) }
 // finds 3 lines, those two calls and its declaration.
 //
 // locate resolves a recorded filename to its job directory and name. Both
-// callers pass the writer's own resolver (pipeline.jobFileLocation), so the
-// verifier reads the file the writer wrote under whatever sanitize options
-// are configured. Both opens (readBackFile, finishFileByPath) go through
-// fsutil.OpenNoFollow on an os.Root on the job directory, which opens that
-// one file and never another through a link.
+// callers pass pipeline.jobFileLocation, which uses the recorded name
+// verbatim, so the verifier reads the file the writer wrote whatever the
+// sanitize options have become since; a name it refuses is a fault. Both
+// opens (readBackFile, finishFileByPath) go through fsutil.OpenNoFollow on an
+// os.Root on the job directory, which opens that one file and never another
+// through a link.
 //
 // Per file: an empty filename deletes every row, since none can be read
 // back; ENOENT deletes every row only when the file's directory exists — at a
 // hydration a missing directory (an unmounted download root) is a fault naming
 // it, while on a retry it is absence too, unmounted root or not
-// (readBackFile); a name that is not one path component, or any link
-// (symbolic or hard) in the file's place, is an open error other than ENOENT,
-// so a fault; an fsync error on the fresh descriptor deletes every row (the file
-// is untrusted); a row with an invalid shape (WrittenRow.HasValidShape) is
+// (readBackFile); a name locate refuses is a fault; a name that is not one
+// path component, or any link (symbolic or hard) in the file's place, is an
+// open error other than ENOENT, so a fault; an fsync error on the fresh
+// descriptor deletes every row (the file is untrusted); a row with an invalid shape (WrittenRow.HasValidShape) is
 // deleted unread, while a zero-length row is valid and verifies against CRC 0;
 // a CRC mismatch or a short read deletes that row. Of rows whose ranges
 // intersect, the first matching one in offset order is kept and
@@ -101,7 +102,7 @@ func (f jobFile) Path() string { return filepath.Join(f.Dir, f.Name) }
 // cancelled ctx — returns the zero result and an *errVerifyFault naming the
 // file or directory.
 func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.FileRow,
-	rows []durability.WrittenRow, locate func(filename string) jobFile, retry bool) (verifyResult, error) {
+	rows []durability.WrittenRow, locate func(filename string) (jobFile, error), retry bool) (verifyResult, error) {
 	byFile := rowsByFile(rows)
 	res := verifyResult{
 		Verified: make(map[int][]durability.WrittenRow),
@@ -122,8 +123,11 @@ func verifyJobFiles(ctx context.Context, m *job.Manifest, files []durability.Fil
 			res.Verdicts = append(res.Verdicts, durability.FileVerdict{FileIdx: fi, DeleteAll: true})
 			continue
 		}
-		loc := locate(f.Filename)
+		loc, err := locate(f.Filename)
 		path := loc.Path()
+		if err != nil {
+			return verifyResult{}, asVerifyFault(path, err)
+		}
 		if buf == nil {
 			buf = make([]byte, verifyBufSize)
 		}
@@ -418,25 +422,48 @@ func finishFileByPath(loc jobFile, maxEnd, prealloc int64) (err error) {
 	return nil
 }
 
-// jobFileLocation resolves where one of a job's files lives: the job
-// directory, and the sanitized name inside it. registerFile names the writer's
-// file with it and the restart verifier reads with it, so the two cannot
-// disagree about a file's directory or name — a verification that read a
-// different path than the writer used would find every file missing. The
-// sanitized name is the one fsutil.JoinSafe would join, a single path
-// component (TestJobFileLocation_AgreesWithTheWritersJoin).
-func (p *pipeline) jobFileLocation(jobName, filename string) jobFile {
+// newJobFileLocation chooses where a file registerFile names for the first time
+// lives: the job directory, and subject sanitized under the pipeline's current
+// options, with a numeric suffix when the name is taken (uniqueJobFileName).
+// registerFile records the name, and the app resolves the file from that
+// record afterwards (jobFileLocation). The name is one path component whatever
+// the options hold (fsutil.SanitizeFilename).
+//
+// This does disk I/O (uniqueJobFileName's Lstat loop), so it must not run
+// under p.mu.
+func (p *pipeline) newJobFileLocation(jobName, subject string) jobFile {
 	p.mu.RLock()
 	jobDir := filepath.Join(p.downloadDir, jobName)
 	sanitize := p.sanitize
 	p.mu.RUnlock()
 	// --- No lock held below this line ---
-	return jobFile{Dir: jobDir, Name: fsutil.SanitizeFilename(filename, sanitize)}
+	loc := jobFile{Dir: jobDir, Name: fsutil.SanitizeFilename(subject, sanitize)}
+	loc.Name = uniqueJobFileName(loc)
+	return loc
 }
 
-// jobFilePath is jobFileLocation's path.
-func (p *pipeline) jobFilePath(jobName, filename string) string {
-	return p.jobFileLocation(jobName, filename).Path()
+// jobFileLocation resolves a file's recorded name to where its writer put it:
+// the job directory, and the recorded name verbatim. Its callers are
+// registerFile on a registration after the first, the retry verifier and the
+// archive peek — `git grep -n '[.]jobFileLocation[(]' -- '*.go' ':!*_test.go'`
+// finds 3 lines — and New installs it as residency.locate, the hydration
+// verifier's resolver. So they agree with the writer about a file's directory
+// and name: a verification that read a different path than the writer used
+// would find the file missing and refetch it.
+//
+// The name is not sanitized again: newJobFileLocation applied the options in
+// force when it was chosen, and those may have changed since (#905).
+//
+// A recorded name that is not one path component is refused with an error
+// wrapping fsutil.ErrNotOneComponent, since the name is joined into a path.
+// The returned jobFile is filled in either way, so a caller can name the path
+// in its error.
+func (p *pipeline) jobFileLocation(jobName, recorded string) (jobFile, error) {
+	p.mu.RLock()
+	jobDir := filepath.Join(p.downloadDir, jobName)
+	p.mu.RUnlock()
+	loc := jobFile{Dir: jobDir, Name: recorded}
+	return loc, fsutil.CheckOneComponent(recorded)
 }
 
 // uniqueJobFileName returns loc.Name, or the first of its ".1", ".2"… variants that

@@ -2885,7 +2885,7 @@ func (app *Application) verifyRetry(ctx context.Context, j *job.Job, m *job.Mani
 			return nil, fmt.Errorf("clear complete: %w", err)
 		}
 	}
-	locate := func(fn string) jobFile { return app.pipeline.jobFileLocation(j.Name(), fn) }
+	locate := func(fn string) (jobFile, error) { return app.pipeline.jobFileLocation(j.Name(), fn) }
 	res, err := verifyJobFiles(ctx, m, files, rows, locate, true)
 	if err != nil {
 		return nil, fmt.Errorf("verify written articles: %w", err)

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -31,7 +30,7 @@ const verifyPrealloc = 4*verifyArt + 300
 // disk, and a row per article carrying the true CRC of its bytes.
 type verifyFixture struct {
 	dl, name, path string
-	resolve        func(filename string) jobFile // the writer's location for a recorded name
+	resolve        func(filename string) (jobFile, error) // the writer's location for a recorded name
 	m              *job.Manifest
 	data           []byte
 	rows           []durability.WrittenRow
@@ -44,8 +43,8 @@ func (f *verifyFixture) loc() jobFile {
 }
 
 // in resolves every recorded name inside dir.
-func in(dir string) func(string) jobFile {
-	return func(filename string) jobFile { return jobFile{Dir: dir, Name: filename} }
+func in(dir string) func(string) (jobFile, error) {
+	return func(filename string) (jobFile, error) { return jobFile{Dir: dir, Name: filename}, nil }
 }
 
 func newVerifyFixture(t *testing.T) *verifyFixture {
@@ -395,8 +394,8 @@ func TestVerifyJobFiles_OpensTheResolversPath(t *testing.T) {
 		t.Fatalf("rename: %v", err)
 	}
 	f.files[0].Filename = "a b.bin"
-	f.resolve = func(filename string) jobFile {
-		return jobFile{Dir: dir, Name: strings.ReplaceAll(filename, " ", "_")}
+	f.resolve = func(filename string) (jobFile, error) {
+		return jobFile{Dir: dir, Name: strings.ReplaceAll(filename, " ", "_")}, nil
 	}
 	res, err := f.run(t, t.Context(), pick(f.rows, 0, 1), false)
 	if err != nil {
@@ -1002,44 +1001,49 @@ func TestErrVerifyFault(t *testing.T) {
 	}
 }
 
-// TestJobFilePath_ResolvesUnderTheJobDirectory pins that verification reads a
-// file where the assembler wrote it, and that a name recorded in the queue
-// cannot walk out of the job's own directory.
-func TestJobFilePath_ResolvesUnderTheJobDirectory(t *testing.T) {
+// TestJobFileLocation_ResolvesTheRecordedNameVerbatim pins that a recorded
+// name resolves under the job's directory as it was recorded, unsanitized, and
+// that one which is not a single path component — and so could walk out of
+// the job directory — is refused.
+func TestJobFileLocation_ResolvesTheRecordedNameVerbatim(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
-	root := application.pipeline.downloadDir
-
-	if got, want := application.pipeline.jobFilePath("a job", "file.bin"),
-		filepath.Join(root, "a job", "file.bin"); got != want {
-		t.Errorf("jobFilePath = %q, want %q", got, want)
+	p := application.pipeline
+	jobDir := filepath.Join(p.downloadDir, "a job")
+	for _, name := range []string{"file.bin", "My Show Café.bin", "a b.1.rar"} {
+		got, err := p.jobFileLocation("a job", name)
+		if err != nil {
+			t.Errorf("%q: %v", name, err)
+		}
+		if got.Dir != jobDir || got.Name != name {
+			t.Errorf("%q: {Dir: %q, Name: %q}, want {Dir: %q, Name: %q}", name, got.Dir, got.Name, jobDir, name)
+		}
 	}
-
-	escape := application.pipeline.jobFilePath("a job", "../../etc/passwd")
-	jobDir := filepath.Join(root, "a job")
-	if !bytes.HasPrefix([]byte(escape), []byte(jobDir+string(os.PathSeparator))) {
-		t.Errorf("jobFilePath = %q, want it confined to %q", escape, jobDir)
+	for _, name := range []string{"", ".", "..", "../../etc/passwd", "sub/file.bin"} {
+		if _, err := p.jobFileLocation("a job", name); !errors.Is(err, fsutil.ErrNotOneComponent) {
+			t.Errorf("%q: err = %v, want ErrNotOneComponent", name, err)
+		}
 	}
 }
 
-// TestJobFileLocation_AgreesWithTheWritersJoin pins that jobFileLocation's
-// directory and name join to the path fsutil.JoinSafe gives for the same
-// name, and that the name is one path component.
-func TestJobFileLocation_AgreesWithTheWritersJoin(t *testing.T) {
+// TestNewJobFileLocation_AgreesWithTheWritersJoin pins that the name a file
+// is first given joins to the path fsutil.JoinSafe gives for its subject under
+// the pipeline's options, and is one path component.
+func TestNewJobFileLocation_AgreesWithTheWritersJoin(t *testing.T) {
 	t.Parallel()
 	application, _, _ := newLifecycleTestApp(t)
 	p := application.pipeline
 	jobDir := filepath.Join(p.downloadDir, "a job")
 	for _, name := range []string{"file.bin", "../../etc/passwd", "a b:c?.bin", "..", "con.txt", "trailing. "} {
-		got := p.jobFileLocation("a job", name)
+		got := p.newJobFileLocation("a job", name)
 		if got.Dir != jobDir {
 			t.Errorf("%q: Dir = %q, want %q", name, got.Dir, jobDir)
 		}
 		if want := fsutil.JoinSafe(jobDir, "", name, p.sanitize); got.Path() != want {
 			t.Errorf("%q: Path = %q, want the writer's %q", name, got.Path(), want)
 		}
-		if filepath.Base(got.Name) != got.Name {
-			t.Errorf("%q: Name = %q, want one path component", name, got.Name)
+		if err := fsutil.CheckOneComponent(got.Name); err != nil {
+			t.Errorf("%q: Name = %q: %v", name, got.Name, err)
 		}
 	}
 }

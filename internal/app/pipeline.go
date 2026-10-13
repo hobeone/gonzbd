@@ -586,21 +586,19 @@ func (p *pipeline) registerFileAttempt(j *job.Job, m *job.Manifest, fileIdx int)
 	// regex again would break filenames containing characters like '&'
 	// that aren't in the basic-filename regex's character class.
 	//
-	// jobFileLocation is the resolver the restart verifier reads with, so the
-	// writer and the verifier cannot disagree about a file's directory or
-	// name. It puts every file of a job in filepath.Join(downloadDir, job
-	// name), the directory postproc derives when scanning for par2 sets.
+	// Both resolvers put every file of a job in filepath.Join(downloadDir,
+	// job name), the directory postproc derives when scanning for par2 sets.
 	var loc jobFile
 	if filename != "" {
-		// Use the already-resolved and persisted filename directly, preventing
-		// duplicate renaming across daemon restarts.
-		loc = p.jobFileLocation(name, filename)
+		// The name this file was first written under, verbatim: the restart
+		// verifier resolves it the same way (jobFileLocation).
+		var err error
+		if loc, err = p.jobFileLocation(name, filename); err != nil {
+			return fmt.Errorf("recorded filename: %w", err)
+		}
 	} else {
-		// First time resolving this file. uniqueJobFileName appends ".1", ".2" etc.
-		// when the name is already taken on disk (e.g. naming collisions).
-		// This is real disk I/O (an Lstat loop) and must not run under p.mu.
-		loc = p.jobFileLocation(name, m.FileSubject(fileIdx))
-		loc.Name = uniqueJobFileName(loc)
+		// First time resolving this file; registerFile records the name below.
+		loc = p.newJobFileLocation(name, m.FileSubject(fileIdx))
 	}
 
 	// Count only unfinished articles — on resume/retry, already-done

@@ -45,7 +45,7 @@ type appResidency struct {
 	// whose failure message finished carries to the Resumed completion;
 	// parked receives the fault of a verification that could not complete. All
 	// five are set by New before anything can hydrate.
-	locate   func(jobName, filename string) jobFile
+	locate   func(jobName, filename string) (jobFile, error)
 	commit   func(ctx context.Context, j *job.Job, v []durability.FileVerdict) error
 	finished func(jobID string, fileIdx int, failMsg string)
 	peek     func(j *job.Job, fileIdx int) string
@@ -167,7 +167,7 @@ func (r *appResidency) verifyAndAttach(ctx context.Context, j *job.Job, m *job.M
 	if err != nil {
 		return r.fault(ctx, j, storagefault.Classify("read record", "", err), err)
 	}
-	locate := func(fn string) jobFile { return r.locate(j.Name(), fn) }
+	locate := func(fn string) (jobFile, error) { return r.locate(j.Name(), fn) }
 	res, err := verifyJobFiles(ctx, m, files, rows, locate, false)
 	if err != nil {
 		f := storagefault.Classify("verify", "", err)

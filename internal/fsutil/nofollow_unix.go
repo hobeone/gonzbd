@@ -16,6 +16,16 @@ import (
 // single path component.
 var ErrNotOneComponent = errors.New("name is not a single path component")
 
+// CheckOneComponent returns an *os.PathError wrapping ErrNotOneComponent when
+// name is not one path component: empty, "." or "..", or holding a separator.
+// It is the check OpenNoFollow applies to its name.
+func CheckOneComponent(name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsRune(name, filepath.Separator) {
+		return &os.PathError{Op: "open", Path: name, Err: ErrNotOneComponent}
+	}
+	return nil
+}
+
 // ErrMultiplyLinked is returned by OpenNoFollow for a file with more than one
 // hard link.
 var ErrMultiplyLinked = errors.New("file has more than one hard link")
@@ -57,8 +67,8 @@ var errNoTrunc = errors.New("O_TRUNC is not supported: it would truncate before 
 // Other errors are openat's own, wrapped in an *os.PathError, so a missing
 // file is still fs.ErrNotExist.
 func OpenNoFollow(root *os.Root, name string, flag int, perm os.FileMode) (*os.File, error) {
-	if name == "" || name == "." || name == ".." || strings.ContainsRune(name, filepath.Separator) {
-		return nil, &os.PathError{Op: "open", Path: name, Err: ErrNotOneComponent}
+	if err := CheckOneComponent(name); err != nil {
+		return nil, err
 	}
 	if flag&os.O_TRUNC != 0 {
 		// O_TRUNC would act at the open, before the inode check below.
