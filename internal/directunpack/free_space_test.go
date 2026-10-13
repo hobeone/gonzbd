@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
@@ -36,6 +38,42 @@ func TestDirectUnpack_RefusesASetThatDoesNotFit(t *testing.T) {
 	}
 	if got := dirNames(t, extractDir); len(got) != 0 {
 		t.Errorf("a refused set left %q in the extract dir", got)
+	}
+}
+
+// The bound counts every volume on disk from volume 1, not volume 1 alone.
+// late_member's second member starts in volume 3 and declares 256 MiB, so
+// with every volume added first it is counted; volume 1 alone declares only
+// the first member's 10000 bytes, which fit.
+func TestDirectUnpack_BoundCountsEveryLeadingVolume(t *testing.T) {
+	srcDir := testdataDir(t)
+	workDir := t.TempDir()
+	extractDir := t.TempDir()
+	var names []string
+	for i := 1; i <= 6; i++ {
+		name := fmt.Sprintf("late_member.part%d.rar", i)
+		copyRAR(t, srcDir, workDir, name)
+		names = append(names, name)
+	}
+	free, err := assembler.FreeBytes(t.Context(), extractDir)
+	if err != nil {
+		t.Fatalf("FreeBytes: %v", err)
+	}
+	const margin = 128 << 20 // between the first member's size and the set's
+	if free < 2*margin {
+		t.Skipf("%d bytes free; the test needs %d", free, 2*margin)
+	}
+
+	du := New(testLogger(t), "test-job", workDir, extractDir, Options{MinFreeSpace: free - 10000 - margin})
+	du.SetAllFilenames(names)
+	for _, name := range append(names[1:], names[0]) { // volume 1 last: every volume is on disk when it starts
+		du.Add(t.Context(), name, filepath.Join(workDir, name))
+	}
+	waitReturns(t, du, 10*time.Second)
+
+	f, ok := du.Failures()["late_member"]
+	if !ok || f.Kind != unpack.FailDiskFull {
+		t.Errorf("Failures()[late_member] = %+v, %v; want a disk-full refusal counting the member that starts in volume 3", f, ok)
 	}
 }
 

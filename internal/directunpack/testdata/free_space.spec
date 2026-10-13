@@ -1,5 +1,5 @@
 pkg ./internal/directunpack/
-run ^(TestDirectUnpack_RefusesASetThatDoesNotFit|TestDirectUnpack_ExtractsASetThatFits|TestSettleLocked_ClassifiesDiskFull|TestLeadingVolumes)$
+run ^(TestDirectUnpack_RefusesASetThatDoesNotFit|TestDirectUnpack_ExtractsASetThatFits|TestSettleLocked_ClassifiesDiskFull|TestLeadingVolumes|TestDirectUnpack_BoundCountsEveryLeadingVolume)$
 
 # DirectUnpack applies post-processing's free-space bound to a set, over the
 # volumes on disk when volume 1 is, and classifies a set refused for space or
@@ -29,4 +29,12 @@ file internal/directunpack/directunpack.go
 --- replace
 		p, ok := d.completedVols[setname][vol]
 		if !ok && vol > 8 {
+--- end
+
+[the bound counts volume 1 alone]
+file internal/directunpack/directunpack.go
+--- anchor
+		if err := unpack.CheckRarVolumesFreeSpace(ctx, d.log, setname, d.leadingVolumes(setname),
+--- replace
+		if err := unpack.CheckRarVolumesFreeSpace(ctx, d.log, setname, d.leadingVolumes(setname)[:1],
 --- end
