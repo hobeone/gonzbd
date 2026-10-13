@@ -70,6 +70,38 @@ file scripts/mutate/affected.go
 			continue
 --- end
 
+[a changed markdown file selects every spec instead of only whole-tree specs]
+file scripts/mutate/affected.go
+--- anchor
+		case strings.HasSuffix(c, ".md"):
+--- replace
+		case false && strings.HasSuffix(c, ".md"):
+--- end
+
+[a changed _test.go file is treated as a dependency change for every importer]
+file scripts/mutate/affected.go
+--- anchor
+		case strings.HasSuffix(c, "_test.go"):
+--- replace
+		case false && strings.HasSuffix(c, "_test.go"):
+--- end
+
+[a changed _test.go file in the spec's own package is ignored]
+file scripts/mutate/affected.go
+--- anchor
+	if _, ok := staticDir(deps.root, sp.pkg); ok && testDirs[path.Clean(sp.pkg)] {
+--- replace
+	if _, ok := staticDir(deps.root, sp.pkg); false && ok && testDirs[path.Clean(sp.pkg)] {
+--- end
+
+[docs/job-lifecycle.md does not mark internal/sched as changed]
+file scripts/mutate/affected.go
+--- anchor
+			if c == "docs/job-lifecycle.md" {
+--- replace
+			if false && c == "docs/job-lifecycle.md" {
+--- end
+
 [a change beside a mutated file in another package is not seen]
 file scripts/mutate/affected.go
 --- anchor

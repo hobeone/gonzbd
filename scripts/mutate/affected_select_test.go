@@ -22,17 +22,18 @@ func affectedModule(t *testing.T) (string, []string) {
 	t.Helper()
 	root := t.TempDir()
 	files := map[string]string{
-		"go.mod":            "module m\n\ngo 1.24\n",
-		"a/a.go":            "package a\n\nimport \"m/b\"\n\nfunc A() int { return b.B() }\n",
-		"a/a_test.go":       "package a\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) { _ = A() }\n",
-		"a/special_test.go": "//go:build special\n\npackage a\n\nimport (\n\t\"testing\"\n\n\t\"m/t\"\n)\n\nfunc TestT(x *testing.T) { _ = t.T() }\n",
-		"b/b.go":            "package b\n\nimport \"m/c\"\n\nfunc B() int { return c.C() }\n",
-		"c/c.go":            "package c\n\nfunc C() int { return 1 }\n",
-		"c/c_test.go":       "package c\n\nimport (\n\t\"os/exec\"\n\t\"testing\"\n)\n\nfunc TestC(t *testing.T) { _ = exec.Command(\"git\", \"status\") }\n",
-		"t/t.go":            "package t\n\nfunc T() int { return 1 }\n",
-		"u/u.go":            "package u\n\nfunc U() int { return 1 }\n",
-		"g/g.go":            "package g\n\nfunc G() int { return 1 }\n",
-		"g/g_test.go":       "package g\n\nimport (\n\t\"os/exec\"\n\t\"testing\"\n)\n\nfunc TestG(t *testing.T) { _ = exec.Command(\"git\", \"status\") }\n",
+		"go.mod":              "module m\n\ngo 1.24\n",
+		"a/a.go":              "package a\n\nimport \"m/b\"\n\nfunc A() int { return b.B() }\n",
+		"a/a_test.go":         "package a\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) { _ = A() }\n",
+		"a/special_test.go":   "//go:build special\n\npackage a\n\nimport (\n\t\"testing\"\n\n\t\"m/t\"\n)\n\nfunc TestT(x *testing.T) { _ = t.T() }\n",
+		"b/b.go":              "package b\n\nimport (\n\t\"m/c\"\n\t\"m/internal/sched\"\n)\n\nfunc B() int { return c.C() + sched.S() }\n",
+		"c/c.go":              "package c\n\nfunc C() int { return 1 }\n",
+		"c/c_test.go":         "package c\n\nimport (\n\t\"os/exec\"\n\t\"testing\"\n)\n\nfunc TestC(t *testing.T) { _ = exec.Command(\"git\", \"status\") }\n",
+		"t/t.go":              "package t\n\nfunc T() int { return 1 }\n",
+		"u/u.go":              "package u\n\nfunc U() int { return 1 }\n",
+		"g/g.go":              "package g\n\nfunc G() int { return 1 }\n",
+		"g/g_test.go":         "package g\n\nimport (\n\t\"os/exec\"\n\t\"testing\"\n)\n\nfunc TestG(t *testing.T) { _ = exec.Command(\"git\", \"status\") }\n",
+		"internal/sched/s.go": "package sched\n\nfunc S() int { return 1 }\n",
 	}
 	spec := func(head, file string) string {
 		return head + "[m]\nfile " + file + "\n--- anchor\nreturn 1\n--- replace\nreturn 2\n--- end\n"
@@ -41,6 +42,7 @@ func affectedModule(t *testing.T) (string, []string) {
 		"specs/a.spec":      spec("pkg ./a/\n", "c/c.go"),
 		"specs/cross.spec":  spec("pkg ./a/\n", "u/u.go"),
 		"specs/g.spec":      spec("pkg ./g/\n", "g/g.go"),
+		"specs/sched.spec":  spec("pkg ./internal/sched/\n", "internal/sched/s.go"),
 		"specs/tagged.spec": spec("pkg ./a/\ntags special\n", "c/c.go"),
 		"specs/u.spec":      spec("pkg ./u/\n", "u/u.go"),
 	}
@@ -71,6 +73,8 @@ func TestAffectedSpecs_SelectsThroughTheTestBinarysPackages(t *testing.T) {
 			[]string{"specs/a.spec", "specs/cross.spec", "specs/g.spec", "specs/tagged.spec"}},
 		{"the package's own test file", []string{"a/a_test.go"},
 			[]string{"specs/a.spec", "specs/cross.spec", "specs/g.spec", "specs/tagged.spec"}},
+		{"a dependency's test file", []string{"b/b_test.go"},
+			[]string{"specs/g.spec"}},
 		{"a package only the tagged build imports", []string{"t/t.go"},
 			[]string{"specs/g.spec", "specs/tagged.spec"}},
 		{"beside a cross-package spec's mutated file", []string{"u/other.go"},
@@ -80,7 +84,10 @@ func TestAffectedSpecs_SelectsThroughTheTestBinarysPackages(t *testing.T) {
 		{"the spec itself", []string{"specs/u.spec"},
 			[]string{"specs/g.spec", "specs/u.spec"}},
 		{"a data file", []string{"testdata/fixture.bin"}, specs},
-		{"a document", []string{"docs/x.md"}, specs},
+		{"a document", []string{"docs/x.md"},
+			[]string{"specs/g.spec"}},
+		{"docs/job-lifecycle.md", []string{"docs/job-lifecycle.md"},
+			[]string{"specs/g.spec", "specs/sched.spec"}},
 		{"go.mod", []string{"go.mod"}, specs},
 		{"nothing", nil, nil},
 	}
@@ -133,7 +140,7 @@ func TestDepCache_ListsOnlyThisModulesPackages(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := slices.Sorted(maps.Keys(d.dirs))
-	if want := []string{"a", "b", "c"}; !slices.Equal(got, want) {
+	if want := []string{"a", "b", "c", "internal/sched"}; !slices.Equal(got, want) {
 		t.Errorf("dirs = %v, want %v (standard library and other modules excluded)", got, want)
 	}
 	if d.wholeTree {

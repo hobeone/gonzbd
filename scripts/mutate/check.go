@@ -139,7 +139,7 @@ func runCheck(root string, display, actual []string) int {
 		if err != nil {
 			continue
 		}
-		if _, _, _, hasAlts := plainAlternation(sp.run); hasAlts {
+		if hasPlainAlternation(sp) {
 			k := pkgKey{pkg: sp.pkg, tags: sp.tags}
 			packages[k] = struct{}{}
 			pending = append(pending, pendingSpec{display: display[i], spec: sp, key: k})

@@ -119,18 +119,44 @@ func filterMatchesName(run, name string) bool {
 	return true
 }
 
+// runFilters returns the spec's top-level `run` pattern and every
+// per-mutation `run` pattern, in declaration order.
+func (sp *spec) runFilters() []string {
+	filters := make([]string, 0, 1+len(sp.mutations))
+	if sp.run != "" {
+		filters = append(filters, sp.run)
+	}
+	for _, m := range sp.mutations {
+		if m.run != "" {
+			filters = append(filters, m.run)
+		}
+	}
+	return filters
+}
+
+// hasPlainAlternation reports whether the spec or any of its mutations has a
+// plain-alternation `run` line that deadFilterAlternatives can check.
+func hasPlainAlternation(sp *spec) bool {
+	return slices.ContainsFunc(sp.runFilters(), func(r string) bool {
+		_, _, _, ok := plainAlternation(r)
+		return ok
+	})
+}
+
 // deadFilterAlternatives checks a list of test names against the spec's parsed
-// run filter alternatives. It returns nil for a run that is not a plain
+// run filter alternatives. It ignores any run pattern that is not a plain
 // alternation.
 func deadFilterAlternatives(listed []string, sp *spec) []string {
-	alts, startAnchored, endAnchored, ok := plainAlternation(sp.run)
-	if !ok {
-		return nil
-	}
 	var dead []string
-	for _, alt := range alts {
-		if !selects(listed, alt, startAnchored, endAnchored) {
-			dead = append(dead, alt)
+	for _, r := range sp.runFilters() {
+		alts, startAnchored, endAnchored, ok := plainAlternation(r)
+		if !ok {
+			continue
+		}
+		for _, alt := range alts {
+			if !selects(listed, alt, startAnchored, endAnchored) && !slices.Contains(dead, alt) {
+				dead = append(dead, alt)
+			}
 		}
 	}
 	return dead
@@ -138,10 +164,10 @@ func deadFilterAlternatives(listed []string, sp *spec) []string {
 
 // deadRunFilterNames names every alternative of a plain `run` line that
 // selects no test listTests finds in the spec's package. It returns
-// nil, nil for a `run` that is not a plain alternation (see
-// plainAlternation) or that names none at all.
+// nil, nil when neither the spec nor any mutation has a plain-alternation
+// `run` line (see plainAlternation) or when every alternative matches.
 func deadRunFilterNames(root string, sp *spec) ([]string, error) {
-	if _, _, _, ok := plainAlternation(sp.run); !ok {
+	if !hasPlainAlternation(sp) {
 		return nil, nil
 	}
 	listed, err := listTests(root, sp)

@@ -272,6 +272,107 @@ func TestTestArgs_PassesGcflagsOnlyWhenTheSpecSetsThem(t *testing.T) {
 	}
 }
 
+func TestTestArgs_PassesFailfastOnlyWhenTheSpecSetsIt(t *testing.T) {
+	t.Parallel()
+
+	args := testArgs(&spec{pkg: "./p/", failfast: true})
+	if !slices.Contains(args, "-failfast") {
+		t.Errorf("testArgs = %q, want -failfast", args)
+	}
+
+	if bare := strings.Join(testArgs(&spec{pkg: "./p/"}), " "); strings.Contains(bare, "-failfast") {
+		t.Errorf("testArgs = %q, want no -failfast when failfast is false", bare)
+	}
+}
+
+func TestRunSpec_StopsAfterFirstFailingTestOnMutation(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "go.mod"), "module mutatetest\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(root, "target.go"), "package mutatetest\n\nfunc Value() int {\n\treturn 1\n}\n")
+	mustWrite(t, filepath.Join(root, "target_test.go"), `package mutatetest
+
+import (
+	"os"
+	"testing"
+)
+
+func TestFirst(t *testing.T) {
+	if Value() != 1 {
+		t.Fatal("TestFirst caught the mutation")
+	}
+}
+
+func TestSecond(t *testing.T) {
+	if Value() == 1 {
+		_ = os.WriteFile("ran_second_baseline", []byte("1"), 0o600)
+		return
+	}
+	_ = os.WriteFile("ran_second_mutated", []byte("1"), 0o600)
+}
+`)
+
+	specPath := filepath.Join(root, "test.spec")
+	mustWrite(t, specPath, "pkg .\nrun TestFirst|TestSecond\n\n[mut]\nfile target.go\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
+
+	var code int
+	out, _ := captureOutput(t, func() {
+		code = runSpec(root, specPath, runOpts{skipRunfilter: true})
+	})
+	if code != 0 {
+		t.Fatalf("runSpec = %d, want 0; out:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "ran_second_baseline")); err != nil {
+		t.Errorf("TestSecond did not run in the baseline: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "ran_second_mutated")); !os.IsNotExist(err) {
+		t.Errorf("TestSecond ran after TestFirst already killed the mutation (stat err = %v); want -failfast on the mutated run", err)
+	}
+}
+
+func TestRunSpec_PerMutationRunOverridesSpecRun(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "go.mod"), "module mutatetest\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(root, "target.go"), "package mutatetest\n\nfunc One() int { return 1 }\nfunc Two() int { return 2 }\n")
+	mustWrite(t, filepath.Join(root, "target_test.go"), `package mutatetest
+
+import (
+	"os"
+	"testing"
+)
+
+func TestOne(t *testing.T) {
+	if Two() != 2 {
+		_ = os.WriteFile("one_saw_two_mutation", []byte("1"), 0o600)
+	}
+	if One() != 1 {
+		t.Fatal("One was mutated")
+	}
+}
+
+func TestTwo(t *testing.T) {
+	if Two() != 2 {
+		t.Fatal("Two was mutated")
+	}
+}
+`)
+
+	specPath := filepath.Join(root, "test.spec")
+	mustWrite(t, specPath, "pkg .\nrun TestOne|TestTwo\n\n"+
+		"[one]\nfile target.go\n--- anchor\nfunc One() int { return 1 }\n--- replace\nfunc One() int { return 0 }\n--- end\n"+
+		"[two]\nfile target.go\nrun TestTwo\n--- anchor\nfunc Two() int { return 2 }\n--- replace\nfunc Two() int { return 0 }\n--- end\n")
+
+	var code int
+	out, _ := captureOutput(t, func() {
+		code = runSpec(root, specPath, runOpts{skipRunfilter: true})
+	})
+	if code != 0 {
+		t.Fatalf("runSpec = %d, want 0; out:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "one_saw_two_mutation")); !os.IsNotExist(err) {
+		t.Errorf("TestOne ran during [two] despite `run TestTwo` on the block (stat err = %v)", err)
+	}
+}
+
 func TestRestore_ProvesTheBytesRatherThanTrustingTheWrite(t *testing.T) {
 	t.Parallel()
 

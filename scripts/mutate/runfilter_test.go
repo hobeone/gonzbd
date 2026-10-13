@@ -127,6 +127,41 @@ func TestDeadRunFilterNames_NamesTheAlternativeThatMatchesNoTest(t *testing.T) {
 	}
 }
 
+func TestDeadRunFilterNames_ChecksPerMutationRunLines(t *testing.T) {
+	t.Parallel()
+
+	root := mustModule(t, selectedPasses+omittedPasses)
+	sp := &spec{
+		pkg: ".",
+		run: "TestSelected",
+		mutations: []mutation{
+			{name: "m1", run: "TestOmitted"},
+			{name: "m2", run: "TestSelected|TestMissingFromMutation"},
+		},
+	}
+
+	got, err := deadRunFilterNames(root, sp)
+	if err != nil {
+		t.Fatalf("deadRunFilterNames: %v", err)
+	}
+	if !slices.Equal(got, []string{"TestMissingFromMutation"}) {
+		t.Errorf("deadRunFilterNames = %v, want [TestMissingFromMutation]", got)
+	}
+
+	// Also when top-level `run` is empty and only a mutation sets `run`.
+	spNoTop := &spec{
+		pkg:       ".",
+		mutations: []mutation{{name: "m", run: "TestMissingOnlyInBlock"}},
+	}
+	gotNoTop, err := deadRunFilterNames(root, spNoTop)
+	if err != nil {
+		t.Fatalf("deadRunFilterNames(no top run): %v", err)
+	}
+	if !slices.Equal(gotNoTop, []string{"TestMissingOnlyInBlock"}) {
+		t.Errorf("deadRunFilterNames(no top run) = %v, want [TestMissingOnlyInBlock]", gotNoTop)
+	}
+}
+
 func TestDeadRunFilterNames_ReportsNothingWhenEveryAlternativeExists(t *testing.T) {
 	t.Parallel()
 

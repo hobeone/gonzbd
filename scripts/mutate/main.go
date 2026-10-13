@@ -189,6 +189,7 @@ const survivedEvidence = "the assertion does not discriminate"
 type mutation struct {
 	name    string
 	file    string
+	run     string
 	anchor  string
 	replace string
 }
@@ -207,7 +208,17 @@ type spec struct {
 	// It applies to the package the spec names, which is the package every
 	// mutation is rebuilt through.
 	gcflags   string
+	failfast  bool
 	mutations []mutation
+}
+
+// runFor returns the -run pattern that evaluates m: the block's own `run`
+// line when it sets one, and the spec's top-level `run` otherwise.
+func (sp *spec) runFor(m mutation) string {
+	if m.run != "" {
+		return m.run
+	}
+	return sp.run
 }
 
 // runOpts is how the command line shapes one spec's run.
@@ -467,7 +478,10 @@ func run(root string, sp *spec, m mutation, verbose bool) result {
 		fatalRestoring(path, backup, original, "write %s: %v", m.file, err)
 	}
 
-	out, code, launchErr := goTest(root, sp)
+	mutSpec := *sp
+	mutSpec.run = sp.runFor(m)
+	mutSpec.failfast = true
+	out, code, launchErr := goTest(root, &mutSpec)
 	if launchErr != nil {
 		fatalRestoring(path, backup, original, "could not run go test: %v", launchErr)
 	}
@@ -506,7 +520,8 @@ func run(root string, sp *spec, m mutation, verbose bool) result {
 // mutation reaching here has already failed the command, so this only ever
 // lengthens a run that was going to exit non-zero.
 func widenOnPass(root string, sp *spec, m mutation, verbose bool) result {
-	if sp.run == "" {
+	effRun := sp.runFor(m)
+	if effRun == "" {
 		// The command already ran the whole package; there is no wider run to
 		// compare against and nothing was excluded.
 		return result{mutation: m, verdict: survived, evidence: survivedEvidence}
@@ -525,7 +540,7 @@ func widenOnPass(root string, sp *spec, m mutation, verbose bool) result {
 		return result{mutation: m, verdict: survived, evidence: survivedEvidence}
 	}
 
-	v, ev := classifyWiderFailure(sp.run, out)
+	v, ev := classifyWiderFailure(effRun, out)
 	return result{mutation: m, verdict: v, evidence: ev}
 }
 
@@ -870,6 +885,9 @@ func testArgs(sp *spec) []string {
 	}
 	if sp.gcflags != "" {
 		args = append(args, "-gcflags="+sp.gcflags)
+	}
+	if sp.failfast {
+		args = append(args, "-failfast")
 	}
 	return args
 }
@@ -1229,14 +1247,16 @@ a mutation that removes what the wait is for is killed in seconds.
 -affected REF prints the specs, one per line, that a change since REF can move.
 Tracked files are compared with the working tree, and untracked files that are
 not gitignored also count. A spec is selected when the spec file changed; when
-a changed .go file is in the directory of a file it mutates, or of any package
-of this module its test binary is built from (its own package, its tests, and
-everything they import, under its tags); or when its test binary runs go or
-git, which every change selects. A changed file that is neither .go nor a spec
-(a fixture, a document, go.mod) selects every spec, because tests read such
-files by path and the import graph cannot say which. It reads package
-metadata with go list and compiles nothing. It is a fast loop, not the gate:
-the full sweep stays the check before a merge.
+a changed non-test .go file is in the directory of a file it mutates, or of any
+package of this module its test binary is built from (its own package and
+everything it imports, under its tags); when a changed _test.go file is in the
+directory of the spec's own package; or when its test binary runs go or git,
+which every change selects. A changed .md file selects those go/git runners
+plus internal/sched when docs/job-lifecycle.md changes. Any other changed file
+that is neither .go, .md nor a spec (a fixture, go.mod) selects every spec,
+because tests read such files by path and the import graph cannot say which. It
+reads package metadata with go list and compiles nothing. It is a fast loop,
+not the gate: the full sweep stays the check before a merge.
 
 -q is for sweeping every spec: a spec that passes prints one line, and one that
 does not prints only its failing rows and the command to rerun it with the full

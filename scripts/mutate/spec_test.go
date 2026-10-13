@@ -93,6 +93,28 @@ func TestParseSpec_ParsesTimeoutAndMultipleMutations(t *testing.T) {
 	}
 }
 
+func TestParseSpec_ParsesPerMutationRun(t *testing.T) {
+	t.Parallel()
+
+	body := "pkg ./p/\nrun TestTop\n\n" +
+		"[inherited]\nfile a.go\n--- anchor\na\n--- replace\nb\n--- end\n" +
+		"[overridden]\nfile b.go\nrun TestNarrow\n--- anchor\nc\n--- replace\nd\n--- end\n"
+
+	sp, err := parseSpec(write(t, body))
+	if err != nil {
+		t.Fatalf("parseSpec: %v", err)
+	}
+	if sp.run != "TestTop" {
+		t.Errorf("sp.run = %q, want TestTop", sp.run)
+	}
+	if got := sp.runFor(sp.mutations[0]); got != "TestTop" {
+		t.Errorf("runFor(inherited) = %q, want TestTop", got)
+	}
+	if got := sp.runFor(sp.mutations[1]); got != "TestNarrow" {
+		t.Errorf("runFor(overridden) = %q, want TestNarrow", got)
+	}
+}
+
 func TestParseSpec_Rejects(t *testing.T) {
 	t.Parallel()
 
@@ -117,7 +139,7 @@ func TestParseSpec_Rejects(t *testing.T) {
 		want: "no `--- replace` section",
 	}, {
 		name: "global directive inside a mutation block",
-		body: "pkg ./p/\n[m]\nfile a.go\nrun TestFoo\n--- anchor\nx\n--- replace\ny\n--- end\n",
+		body: "pkg ./p/\n[m]\nfile a.go\ntimeout 1m\n--- anchor\nx\n--- replace\ny\n--- end\n",
 		want: "global directive",
 	}, {
 		// An empty anchor matches at every byte offset, so it would mutate

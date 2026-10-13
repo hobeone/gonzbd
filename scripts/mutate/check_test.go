@@ -138,6 +138,23 @@ func TestRunCheck_NamesDeadRunFilterAlternativeAndReturnsNonZero(t *testing.T) {
 	}
 }
 
+func TestRunCheck_NamesDeadPerMutationRunFilterAlternative(t *testing.T) {
+	root := mustModule(t, "func TestReal(t *testing.T) {}\n")
+	mustWrite(t, filepath.Join(root, "a.go"), "package m\n\nfunc one() {}\n")
+	specFile := write(t, "pkg .\n[m]\nfile a.go\nrun TestReal|TestDeadInBlock\n--- anchor\nfunc one() {}\n--- replace\nfunc oneX() {}\n--- end\n")
+
+	var code int
+	out := captureStdout(t, func() {
+		code = runCheck(root, []string{specFile}, []string{specFile})
+	})
+	if code != 1 {
+		t.Errorf("runCheck = %d, want 1", code)
+	}
+	if !strings.Contains(out, "TestDeadInBlock does not name a test") {
+		t.Errorf("runCheck output = %q, want it to report dead per-mutation test name", out)
+	}
+}
+
 func TestDiscoverSpecs_FindsTrackedAndUntrackedButNotOutsideTestdata(t *testing.T) {
 	t.Parallel()
 

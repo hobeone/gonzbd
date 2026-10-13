@@ -61,18 +61,23 @@ func changedSince(root, ref string) ([]string, error) {
 // A spec is selected when:
 //
 //   - the spec file itself changed;
-//   - a changed .go file sits in the directory of a file one of its mutations
-//     edits;
-//   - a changed .go file sits in the directory of a package of this module
-//     that the spec's test binary is built from (testDeps), which covers the
-//     spec's own package, its _test.go files and everything it transitively
-//     imports;
+//   - a changed non-test .go file sits in the directory of a file one of its
+//     mutations edits, or of a package of this module that the spec's test
+//     binary is built from (testDeps), which covers the spec's own package and
+//     everything it transitively imports;
+//   - a changed _test.go file sits in the directory of the spec's own package
+//     (a dependency's _test.go files are not compiled into this test binary);
 //   - its test binary runs `go` or `git` (testDeps' wholeTree), since such a
-//     test can read any file in the checkout — every change selects it.
+//     test can read any file in the checkout — every change selects it;
+//   - a changed .md file is docs/job-lifecycle.md and the spec's own package
+//     is internal/sched (`internal/sched/scenario_test.go:919` reads
+//     `../../docs/job-lifecycle.md`; `git grep -n '\.md' -- '*_test.go'`
+//     shows the remaining test matches are inline string fixtures or assertion
+//     messages, while scripts/check_doc_citations already sets wholeTree).
 //
-// Any other changed file — not .go and not a spec — selects every spec. Tests
-// read files by path at runtime: fixtures under test/fixtures/, another
-// package's testdata/, docs/job-lifecycle.md, ui/src/. None of those reads is
+// Any other changed file — not .go, not .md and not a spec — selects every
+// spec. Tests read data files by path at runtime: fixtures under
+// test/fixtures/, another package's testdata/, ui/src/. None of those reads is
 // visible in the import graph, so a data file is never attributed to a
 // package; go.mod and go.sum, which move every dependency, fall here too.
 //
@@ -90,12 +95,19 @@ func affectedSpecs(root string, specs, changed []string) ([]string, error) {
 	}
 	changedSpec := map[string]bool{}
 	goDirs := map[string]bool{}
+	testDirs := map[string]bool{}
 	for _, c := range changed {
 		switch {
 		case isSpec[c]:
 			changedSpec[c] = true
+		case strings.HasSuffix(c, "_test.go"):
+			testDirs[path.Dir(c)] = true
 		case strings.HasSuffix(c, ".go"):
 			goDirs[path.Dir(c)] = true
+		case strings.HasSuffix(c, ".md"):
+			if c == "docs/job-lifecycle.md" {
+				testDirs["internal/sched"] = true
+			}
 		default:
 			return specs, nil
 		}
@@ -112,7 +124,7 @@ func affectedSpecs(root string, specs, changed []string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", s, err)
 		}
-		hit, err := specTouched(sp, goDirs, deps)
+		hit, err := specTouched(sp, goDirs, testDirs, deps)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", s, err)
 		}
@@ -125,7 +137,7 @@ func affectedSpecs(root string, specs, changed []string) ([]string, error) {
 
 // specTouched applies affectedSpecs' rules to a spec whose own file did not
 // change.
-func specTouched(sp *spec, goDirs map[string]bool, deps *depCache) (bool, error) {
+func specTouched(sp *spec, goDirs, testDirs map[string]bool, deps *depCache) (bool, error) {
 	for _, m := range sp.mutations {
 		if goDirs[path.Dir(path.Clean(m.file))] {
 			return true, nil
@@ -136,6 +148,9 @@ func specTouched(sp *spec, goDirs map[string]bool, deps *depCache) (bool, error)
 		return false, err
 	}
 	if d.wholeTree {
+		return true, nil
+	}
+	if _, ok := staticDir(deps.root, sp.pkg); ok && testDirs[path.Clean(sp.pkg)] {
 		return true, nil
 	}
 	for dir := range goDirs {

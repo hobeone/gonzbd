@@ -141,11 +141,13 @@ func parseSpec(path string) (*spec, error) {
 		}
 		value = strings.TrimSpace(value)
 
-		// pkg, run, tags and timeout configure the whole run. Accepting one
-		// inside a [mutation] block would read as per-mutation scoping and
-		// silently rewrite the setting for the baseline and for every other
-		// mutation, including those already parsed.
-		if cur != nil && key != "file" {
+		// pkg, tags and timeout configure the whole run. Accepting one inside a
+		// [mutation] block would read as per-mutation scoping and silently
+		// rewrite the setting for the baseline and for every other mutation,
+		// including those already parsed. `run` is the exception: inside a
+		// block it narrows that block's filtered test run without touching
+		// sp.run.
+		if cur != nil && key != "file" && key != "run" {
 			return nil, fmt.Errorf("line %d: `%s` is a global directive and cannot appear inside [%s]", lineNo, key, cur.name)
 		}
 
@@ -153,7 +155,11 @@ func parseSpec(path string) (*spec, error) {
 		case "pkg":
 			sp.pkg = value
 		case "run":
-			sp.run = value
+			if cur != nil {
+				cur.run = value
+			} else {
+				sp.run = value
+			}
 		case "tags":
 			sp.tags = value
 		case "timeout":
