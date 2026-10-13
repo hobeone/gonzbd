@@ -3,7 +3,6 @@ package par2
 import (
 	"bytes"
 	"context"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -177,9 +176,10 @@ func TestGoRepair_DamagedBlockWhoseContentRecurs_IsRepairedNatively(t *testing.T
 }
 
 // symlinkAtProtectedName builds the par2 fixture set in a fresh directory and
-// replaces data.bin with a symlink to an intact copy. par2engine opens the
-// name through os.Root, which follows the link, so the engine finds nothing
-// to repair; gonzbd's own check requires a regular file at the name.
+// replaces data.bin with a symlink to an intact copy in the same directory.
+// par2engine opens the name through os.Root, which follows a link whose
+// target resolves inside the directory, so the engine finds nothing to
+// repair; gonzbd's own check requires a regular file at the name.
 func symlinkAtProtectedName(t *testing.T) (dir, mainFile string) {
 	t.Helper()
 	dir = t.TempDir()
@@ -228,53 +228,17 @@ func TestGoVerify_SymlinkAtProtectedName_IsNotAllFilesOK(t *testing.T) {
 
 // ---------- protectedFilesIntact ----------
 
-func newEngineVerified(names ...string) *engineVerified {
-	v := &engineVerified{names: make(map[string]struct{})}
-	for _, n := range names {
-		v.add(n)
-	}
-	return v
-}
-
-func TestProtectedFilesIntact_HashMatches(t *testing.T) {
+// TestProtectedFilesIntact_RegularFilePassesWithoutHashing pins that the
+// check judges what is at each name and leaves content to the engine: the
+// bytes here do not match the index, and the check still passes.
+func TestProtectedFilesIntact_RegularFilePassesWithoutHashing(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	payload := bytes.Repeat([]byte{0x11}, 32)
-	mainFile := buildMinimalPar2Index(t, dir, "present.bin", payload, 16)
-	writeFile(t, dir, "present.bin", payload)
+	mainFile := buildMinimalPar2Index(t, dir, "present.bin", bytes.Repeat([]byte{0x11}, 32), 16)
+	writeFile(t, dir, "present.bin", bytes.Repeat([]byte{0x12}, 32))
 
-	if problem := protectedFilesIntact(mainFile, nil); problem != "" {
-		t.Errorf("problem = %q; want none for a file whose MD5 matches", problem)
-	}
-}
-
-func TestProtectedFilesIntact_HashMismatch(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	payload := bytes.Repeat([]byte{0x33}, 32)
-	mainFile := buildMinimalPar2Index(t, dir, "bad.bin", payload, 16)
-	damaged := bytes.Clone(payload)
-	damaged[5] ^= 0xFF
-	writeFile(t, dir, "bad.bin", damaged)
-
-	problem := protectedFilesIntact(mainFile, newEngineVerified("other.bin"))
-	if !strings.Contains(problem, "bad.bin (hash mismatch)") {
-		t.Errorf("problem = %q; want it to name bad.bin as a hash mismatch", problem)
-	}
-}
-
-// TestProtectedFilesIntact_EngineVerifiedIsNotReread pins that a file the
-// engine's report logged as OK is not hashed a second time: the bytes on disk
-// here do not match, and only the recorded engine verdict makes it pass.
-func TestProtectedFilesIntact_EngineVerifiedIsNotReread(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	payload := bytes.Repeat([]byte{0x44}, 32)
-	mainFile := buildMinimalPar2Index(t, dir, "seen.bin", payload, 16)
-	writeFile(t, dir, "seen.bin", bytes.Repeat([]byte{0x45}, 32))
-
-	if problem := protectedFilesIntact(mainFile, newEngineVerified("seen.bin")); problem != "" {
-		t.Errorf("problem = %q; want none for a file the engine verified", problem)
+	if problem := protectedFilesIntact(mainFile); problem != "" {
+		t.Errorf("problem = %q; want none for a regular file at the protected name", problem)
 	}
 }
 
@@ -283,8 +247,7 @@ func TestProtectedFilesIntact_Missing(t *testing.T) {
 	dir := t.TempDir()
 	mainFile := buildMinimalPar2Index(t, dir, "absent.bin", bytes.Repeat([]byte{0x22}, 32), 16)
 
-	// Engine-verified does not excuse a file that is not on disk.
-	problem := protectedFilesIntact(mainFile, newEngineVerified("absent.bin"))
+	problem := protectedFilesIntact(mainFile)
 	if !strings.Contains(problem, "absent.bin (missing)") {
 		t.Errorf("problem = %q; want it to name absent.bin as missing", problem)
 	}
@@ -300,26 +263,8 @@ func TestProtectedFilesIntact_SymlinkIsMissing(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	if problem := protectedFilesIntact(mainFile, nil); !strings.Contains(problem, "link.bin (missing)") {
+	if problem := protectedFilesIntact(mainFile); !strings.Contains(problem, "link.bin (missing)") {
 		t.Errorf("problem = %q; want a symlink at the protected name to read as missing", problem)
-	}
-}
-
-func TestProtectedFilesIntact_Unreadable(t *testing.T) {
-	t.Parallel()
-	if os.Geteuid() == 0 {
-		t.Skip("root reads a mode-0 file")
-	}
-	dir := t.TempDir()
-	payload := bytes.Repeat([]byte{0x66}, 32)
-	mainFile := buildMinimalPar2Index(t, dir, "locked.bin", payload, 16)
-	writeFile(t, dir, "locked.bin", payload)
-	if err := os.Chmod(filepath.Join(dir, "locked.bin"), 0); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-
-	if problem := protectedFilesIntact(mainFile, nil); !strings.Contains(problem, "locked.bin (unreadable") {
-		t.Errorf("problem = %q; want an unreadable file reported, not passed", problem)
 	}
 }
 
@@ -329,57 +274,7 @@ func TestProtectedFilesIntact_IndexUnreadable_Refuses(t *testing.T) {
 	t.Parallel()
 	missingIndex := filepath.Join(t.TempDir(), "does-not-exist.par2")
 
-	if problem := protectedFilesIntact(missingIndex, nil); problem == "" {
+	if problem := protectedFilesIntact(missingIndex); problem == "" {
 		t.Error("problem is empty for an index that could not be read; want a refusal")
-	}
-}
-
-// ---------- verdictRecorder ----------
-
-// TestVerdictRecorder_RecordsEngineOKReport runs the real engine over an
-// intact set and requires that its report reached engineVerified. If a
-// par2engine upgrade rewords the report, this fails rather than every
-// protected file silently being hashed twice.
-func TestVerdictRecorder_RecordsEngineOKReport(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	mainFile := copyPar2Fixtures(t, dir)
-
-	d, verified, err := newDecoder(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir), nil, nil, nil)
-	if err != nil {
-		t.Fatalf("newDecoder: %v", err)
-	}
-	defer d.Close() //nolint:errcheck // read-only
-	if err := d.VerifyScans(context.Background(), nil); err != nil {
-		t.Fatalf("VerifyScans: %v", err)
-	}
-	if !verified.has("data.bin") {
-		t.Error("engine's OK report for data.bin was not recorded")
-	}
-}
-
-func TestVerdictRecorder_IgnoresOtherRecordsAndPassesThrough(t *testing.T) {
-	t.Parallel()
-	var buf bytes.Buffer
-	verified := newEngineVerified()
-	log := slog.New(&verdictRecorder{
-		Handler:  slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}),
-		verified: verified,
-	}).With("component", "go_par2").WithGroup("g")
-
-	log.Info("File status: OK", "file", "a.bin")
-	log.Warn("File status: CORRUPT (hash mismatch, all blocks present)", "file", "b.bin")
-
-	if !verified.has("a.bin") {
-		t.Error("OK record was not recorded though the wrapped handler is disabled at Info")
-	}
-	if verified.has("b.bin") {
-		t.Error("a CORRUPT record was recorded as verified")
-	}
-	if strings.Contains(buf.String(), "a.bin") {
-		t.Errorf("an Info record reached a Warn-level handler: %s", buf.String())
-	}
-	if !strings.Contains(buf.String(), "b.bin") {
-		t.Errorf("the Warn record did not reach the wrapped handler: %s", buf.String())
 	}
 }

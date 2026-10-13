@@ -624,7 +624,7 @@ func TestNewDecoder_ValidParfile_RegistersCandidatesAndReturnsDecoder(t *testing
 	mainFile := copyPar2Fixtures(t, dir)
 
 	var warnMsgs, infoMsgs, uiLines []string
-	d, _, err := newDecoder(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir),
+	d, err := newDecoder(context.Background(), discardLogger(), mainFile, candidatesIn(t, dir),
 		func(s string) { warnMsgs = append(warnMsgs, s) },
 		func(s string) { infoMsgs = append(infoMsgs, s) },
 		func(s string) { uiLines = append(uiLines, s) },
@@ -660,7 +660,7 @@ func TestNewDecoder_NoCandidates_SkipsRegistration(t *testing.T) {
 	mainFile := copyPar2Fixtures(t, dir)
 
 	var warnMsgs, infoMsgs []string
-	d, _, err := newDecoder(context.Background(), discardLogger(), mainFile, nil,
+	d, err := newDecoder(context.Background(), discardLogger(), mainFile, nil,
 		func(s string) { warnMsgs = append(warnMsgs, s) },
 		func(s string) { infoMsgs = append(infoMsgs, s) },
 		nil,
@@ -686,7 +686,7 @@ func TestNewDecoder_RefusedCandidate_WarnsButStillReturnsDecoder(t *testing.T) {
 	mainFile := copyPar2Fixtures(t, dir)
 
 	var warnMsgs []string
-	d, _, err := newDecoder(context.Background(), discardLogger(), mainFile, []string{"../outside.bin"},
+	d, err := newDecoder(context.Background(), discardLogger(), mainFile, []string{"../outside.bin"},
 		func(s string) { warnMsgs = append(warnMsgs, s) },
 		func(s string) {},
 		nil,
@@ -713,7 +713,7 @@ func TestNewDecoder_InvalidParfile_ReturnsError(t *testing.T) {
 		t.Fatalf("write bad.par2: %v", err)
 	}
 
-	d, _, err := newDecoder(context.Background(), discardLogger(), bad, candidatesIn(t, dir), nil, nil, nil)
+	d, err := newDecoder(context.Background(), discardLogger(), bad, candidatesIn(t, dir), nil, nil, nil)
 	if err == nil {
 		if d != nil {
 			d.Close() //nolint:errcheck // read-only

@@ -25,7 +25,8 @@ const (
 	StatusUnknown Status = iota
 	// StatusAllFilesOK means all files are correct: for the external par2,
 	// that its output said so; for go_par2 (GoVerify), that par2engine saw
-	// nothing to repair and protectedFilesIntact confirmed every file.
+	// nothing to repair and protectedFilesIntact found a regular file at
+	// every protected name.
 	StatusAllFilesOK
 	// StatusRepairRequired means par2 detected damage and repair is needed.
 	StatusRepairRequired
@@ -97,8 +98,8 @@ type RepairResult struct {
 	// Success is true when the set is intact after the run. For the external
 	// par2, that is its output reporting "Repair complete" or "All files are
 	// correct". For go_par2 (GoRepair), par2engine must report one of those
-	// and protectedFilesIntact must then confirm every protected file's
-	// full-file MD5.
+	// and protectedFilesIntact must then find a regular file at every
+	// protected name. Content correctness is par2engine's verdict alone.
 	Success bool
 	// ExitCode is the process exit code; 0 on success.
 	ExitCode int
