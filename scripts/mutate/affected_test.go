@@ -1,10 +1,15 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -101,5 +106,64 @@ func TestAffectedSpecs_AnUnreadableSpecIsAnError(t *testing.T) {
 
 	if _, err := affectedSpecs(t.TempDir(), []string{"specs/missing.spec"}, []string{"x.go"}); err == nil {
 		t.Fatal("affectedSpecs skipped a spec it could not read")
+	}
+}
+
+func TestAffectedSpecs_AllMarkdownReadsInRepoAreRouted(t *testing.T) {
+	t.Parallel()
+
+	root, err := repoRoot()
+	if err != nil {
+		t.Fatalf("repoRoot: %v", err)
+	}
+	testFiles := strings.Split(gitIn(t, root, "ls-files", "--", "*_test.go"), "\n")
+	fset := token.NewFileSet()
+	for _, relTest := range testFiles {
+		if relTest == "" {
+			continue
+		}
+		absTest := filepath.Join(root, filepath.FromSlash(relTest))
+		f, err := parser.ParseFile(fset, absTest, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", relTest, err)
+		}
+		pkgDir := path.Dir(relTest)
+		ast.Inspect(f, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			val, err := strconv.Unquote(lit.Value)
+			if err != nil || !strings.HasSuffix(val, ".md") || !strings.Contains(val, "/") {
+				return true
+			}
+			cand := filepath.Clean(filepath.Join(filepath.Dir(absTest), filepath.FromSlash(val)))
+			if _, err := os.Stat(cand); err != nil {
+				return true
+			}
+			relDoc, err := filepath.Rel(root, cand)
+			if err != nil || strings.HasPrefix(relDoc, "..") {
+				return true
+			}
+			relDoc = filepath.ToSlash(relDoc)
+			specRel := path.Join(pkgDir, "testdata", "probe.spec")
+			probeRoot := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(probeRoot, filepath.FromSlash(pkgDir), "testdata"), 0o750); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			mustWrite(t, filepath.Join(probeRoot, "go.mod"), "module m\n\ngo 1.24\n")
+			mustWrite(t, filepath.Join(probeRoot, filepath.FromSlash(pkgDir), "p.go"), "package p\n")
+			mustWrite(t, filepath.Join(probeRoot, filepath.FromSlash(specRel)),
+				"pkg ./"+pkgDir+"\n\n[m]\nfile "+pkgDir+"/p.go\n--- anchor\npackage p\n--- replace\npackage q\n--- end\n")
+			got, err := affectedSpecs(probeRoot, []string{specRel}, []string{relDoc})
+			if err != nil {
+				t.Fatalf("affectedSpecs(%s -> %s): %v", relTest, relDoc, err)
+			}
+			if !slices.Equal(got, []string{specRel}) {
+				t.Errorf("%s references %s, but affectedSpecs(%q) selected %v; add %s -> %s to affectedSpecs",
+					relTest, relDoc, relDoc, got, relDoc, pkgDir)
+			}
+			return true
+		})
 	}
 }

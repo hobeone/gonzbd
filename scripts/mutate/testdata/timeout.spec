@@ -30,9 +30,9 @@ file scripts/mutate/main.go
 [a timed-out baseline is not told apart from a failing one]
 file scripts/mutate/main.go
 --- anchor
-			if d, ok := timedOut(out); ok {
-				fmt.Fprintf(os.Stderr, "\nthe unmutated test ran out of time (-timeout %s). If it needs that\n"+
+				if d, ok := timedOut(out); ok {
+					fmt.Fprintf(os.Stderr, "\nthe unmutated test ran out of time (-timeout %s). If it needs that\n"+
 --- replace
-			if d, ok := timedOut(out); ok && false {
-				fmt.Fprintf(os.Stderr, "\nthe unmutated test ran out of time (-timeout %s). If it needs that\n"+
+				if d, ok := timedOut(out); ok && false {
+					fmt.Fprintf(os.Stderr, "\nthe unmutated test ran out of time (-timeout %s). If it needs that\n"+
 --- end

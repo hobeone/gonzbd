@@ -986,3 +986,90 @@ func TestRunSpec_ReturnsExitCodeTwoOnErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestRunSpec_BaselinesPerMutationRun(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "go.mod"), "module mutatetest\n\ngo 1.24\n")
+	mustWrite(t, filepath.Join(root, "target.go"), "package mutatetest\n\nfunc Value() int {\n\treturn 1\n}\n")
+	mustWrite(t, filepath.Join(root, "target_test.go"), `package mutatetest
+
+import (
+	"os"
+	"testing"
+)
+
+func TestOK(t *testing.T) {
+	if Value() != 1 {
+		_ = os.WriteFile("mutated_ran", []byte("1"), 0o600)
+		t.Fatal("Value was mutated")
+	}
+}
+
+func TestBroken(t *testing.T) {
+	if Value() != 1 {
+		_ = os.WriteFile("mutated_ran", []byte("1"), 0o600)
+	}
+	t.Fatal("TestBroken already fails unmutated")
+}
+`)
+
+	t.Run("per-mutation run naming an already-failing test fails baseline", func(t *testing.T) {
+		_ = os.Remove(filepath.Join(root, "mutated_ran"))
+		specPath := filepath.Join(root, "broken_block.spec")
+		mustWrite(t, specPath, "pkg .\nrun ^TestOK$\n\n[mut]\nfile target.go\nrun ^TestBroken$\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
+
+		var code int
+		out, errOut := captureOutput(t, func() {
+			code = runSpec(root, specPath, runOpts{skipRunfilter: true})
+		})
+		if code != 1 {
+			t.Errorf("runSpec = %d, want 1 (BASELINE FAILED); stdout:\n%s\nstderr:\n%s", code, out, errOut)
+		}
+		if !strings.Contains(errOut, "BASELINE FAILED") {
+			t.Errorf("stderr lacks 'BASELINE FAILED':\n%s", errOut)
+		}
+		if _, err := os.Stat(filepath.Join(root, "mutated_ran")); !os.IsNotExist(err) {
+			t.Errorf("mutation was applied despite a broken per-mutation baseline (stat err = %v)", err)
+		}
+	})
+
+	t.Run("per-mutation run regex matching no test fails baseline", func(t *testing.T) {
+		_ = os.Remove(filepath.Join(root, "mutated_ran"))
+		specPath := filepath.Join(root, "empty_block.spec")
+		mustWrite(t, specPath, "pkg .\nrun ^TestOK$\n\n[mut]\nfile target.go\nrun ^TestNoSuch.*$\n--- anchor\n\treturn 1\n--- replace\n\treturn 2\n--- end\n")
+
+		var code int
+		out, errOut := captureOutput(t, func() {
+			code = runSpec(root, specPath, runOpts{skipRunfilter: true})
+		})
+		if code != 1 {
+			t.Errorf("runSpec = %d, want 1 (BASELINE RAN NO TESTS); stdout:\n%s\nstderr:\n%s", code, out, errOut)
+		}
+		if !strings.Contains(errOut, "BASELINE RAN NO TESTS") {
+			t.Errorf("stderr lacks 'BASELINE RAN NO TESTS':\n%s", errOut)
+		}
+		if _, err := os.Stat(filepath.Join(root, "mutated_ran")); !os.IsNotExist(err) {
+			t.Errorf("mutation was applied despite a per-mutation run matching no test (stat err = %v)", err)
+		}
+	})
+
+	t.Run("covered per-mutation run is not re-run at baseline", func(t *testing.T) {
+		listed := []string{"TestOK", "TestBroken"}
+		spCovered := &spec{
+			pkg:       ".",
+			run:       "^(TestOK|TestBroken)$",
+			mutations: []mutation{{name: "m", run: "^TestOK$"}},
+		}
+		if got := spCovered.baselineRuns(listed); !slices.Equal(got, []string{"^(TestOK|TestBroken)$"}) {
+			t.Errorf("baselineRuns(covered) = %v, want only the top-level filter", got)
+		}
+		spSubtest := &spec{
+			pkg:       ".",
+			run:       "TestOK|TestOther/sub",
+			mutations: []mutation{{name: "m", run: "^TestOK$"}},
+		}
+		if got := spSubtest.baselineRuns(listed); !slices.Equal(got, []string{"TestOK|TestOther/sub", "^TestOK$"}) {
+			t.Errorf("baselineRuns(subtest) = %v, want both filters when '/' is present", got)
+		}
+	})
+}

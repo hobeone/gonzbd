@@ -221,6 +221,50 @@ func (sp *spec) runFor(m mutation) string {
 	return sp.run
 }
 
+// baselineRuns returns the distinct -run filters the baseline must verify, in
+// declaration order: the spec's top-level `run` followed by any per-mutation
+// `run` override whose selected tests are not already covered by the top-level
+// `run`.
+//
+// Do not combine them into a single `a|b` pattern: `go test` splits -run on
+// unbracketed `/`, so a union of subtest filters is not expressible as a
+// single -run flag.
+func (sp *spec) baselineRuns(listed []string) []string {
+	runs := []string{sp.run}
+	for _, m := range sp.mutations {
+		r := sp.runFor(m)
+		if !slices.Contains(runs, r) && !coveredByTopLevel(sp.run, r, listed) {
+			runs = append(runs, r)
+		}
+	}
+	return runs
+}
+
+// coveredByTopLevel reports whether blockRun selects at least one top-level
+// test in listed, every test it selects is also selected by topRun, and
+// neither filter restricts subtests via '/'. When true, a passing top-level
+// baseline has already executed every test blockRun will run.
+func coveredByTopLevel(topRun, blockRun string, listed []string) bool {
+	if strings.Contains(topRun+blockRun, "/") {
+		return false
+	}
+	topRe, errTop := regexp.Compile(topRun)
+	blockRe, errBlock := regexp.Compile(blockRun)
+	if errTop != nil || errBlock != nil {
+		return false
+	}
+	matched := false
+	for _, name := range listed {
+		if blockRe.MatchString(name) {
+			if !topRe.MatchString(name) {
+				return false
+			}
+			matched = true
+		}
+	}
+	return matched
+}
+
 // runOpts is how the command line shapes one spec's run.
 type runOpts struct {
 	verbose, quiet, skipRunfilter, skipBaseline bool
@@ -388,39 +432,49 @@ func runSpec(root, path string, opts runOpts) int {
 
 	// The baseline runs first and unmutated. Every verdict below is a claim
 	// about what the mutation changed, and that claim is empty if the test was
-	// not passing to begin with.
+	// not passing to begin with. Every distinct effective -run filter (the
+	// top-level `run` plus each per-mutation `run` override) is checked so a
+	// block override cannot point at an already-failing or non-matching test.
 	if !opts.skipBaseline {
-		baselineCmd := "go " + strings.Join(testArgs(sp), " ")
-		if !opts.quiet {
-			fmt.Printf("baseline: %s\n", baselineCmd)
+		var listed []string
+		if l, lerr := listTests(root, sp); lerr == nil {
+			listed = l
 		}
-		out, code, launchErr := goTest(root, sp)
-		if launchErr != nil {
-			return fail("could not run go test: %v", launchErr)
-		}
-		if code != 0 {
-			fmt.Fprintf(os.Stderr, "\nBASELINE FAILED — no mutation was applied.\n\n"+
-				"Every verdict this command produces is a statement about what the\n"+
-				"mutation changed. A test that already fails yields KILLED for any\n"+
-				"mutation, and none of them mean anything.\n\n"+
-				"command: %s\n\n%s\n", baselineCmd, indent(out))
-			if d, ok := timedOut(out); ok {
-				fmt.Fprintf(os.Stderr, "\nthe unmutated test ran out of time (-timeout %s). If it needs that\n"+
-					"long, give the spec a `timeout` line; one that sets none gets %s.\n", d, defaultTestTimeout)
+		for _, r := range sp.baselineRuns(listed) {
+			baseSpec := *sp
+			baseSpec.run = r
+			baselineCmd := "go " + strings.Join(testArgs(&baseSpec), " ")
+			if !opts.quiet {
+				fmt.Printf("baseline: %s\n", baselineCmd)
 			}
-			return 1
-		}
-		if ranNothing(out) {
-			// `go test -run TestTypo` exits 0 and prints "[no tests to run]", so
-			// a misspelled run filter reads as a green baseline and then reports
-			// every mutation SURVIVED — a full sweep of "nothing pins this",
-			// against a test that never executed.
-			fmt.Fprintf(os.Stderr, "\nBASELINE RAN NO TESTS — no mutation was applied.\n\n"+
-				"go test exited 0 without executing anything, which usually means the\n"+
-				"`run` pattern matches no test in %s. Left unchecked this reports every\n"+
-				"mutation as SURVIVED.\n\n"+
-				"command: %s\n\n%s\n", sp.pkg, baselineCmd, indent(out))
-			return 1
+			out, code, launchErr := goTest(root, &baseSpec)
+			if launchErr != nil {
+				return fail("could not run go test: %v", launchErr)
+			}
+			if code != 0 {
+				fmt.Fprintf(os.Stderr, "\nBASELINE FAILED — no mutation was applied.\n\n"+
+					"Every verdict this command produces is a statement about what the\n"+
+					"mutation changed. A test that already fails yields KILLED for any\n"+
+					"mutation, and none of them mean anything.\n\n"+
+					"command: %s\n\n%s\n", baselineCmd, indent(out))
+				if d, ok := timedOut(out); ok {
+					fmt.Fprintf(os.Stderr, "\nthe unmutated test ran out of time (-timeout %s). If it needs that\n"+
+						"long, give the spec a `timeout` line; one that sets none gets %s.\n", d, defaultTestTimeout)
+				}
+				return 1
+			}
+			if ranNothing(out) {
+				// `go test -run TestTypo` exits 0 and prints "[no tests to run]", so
+				// a misspelled run filter reads as a green baseline and then reports
+				// every mutation SURVIVED — a full sweep of "nothing pins this",
+				// against a test that never executed.
+				fmt.Fprintf(os.Stderr, "\nBASELINE RAN NO TESTS — no mutation was applied.\n\n"+
+					"go test exited 0 without executing anything, which usually means the\n"+
+					"`run` pattern matches no test in %s. Left unchecked this reports every\n"+
+					"mutation as SURVIVED.\n\n"+
+					"command: %s\n\n%s\n", sp.pkg, baselineCmd, indent(out))
+				return 1
+			}
 		}
 		if !opts.quiet {
 			fmt.Println("baseline: PASS")
@@ -1252,7 +1306,8 @@ package of this module its test binary is built from (its own package and
 everything it imports, under its tags); when a changed _test.go file is in the
 directory of the spec's own package; or when its test binary runs go or git,
 which every change selects. A changed .md file selects those go/git runners
-plus internal/sched when docs/job-lifecycle.md changes. Any other changed file
+plus internal/sched when docs/job-lifecycle.md changes (a new test that reads
+another .md file by path must be added to affectedSpecs). Any other changed file
 that is neither .go, .md nor a spec (a fixture, go.mod) selects every spec,
 because tests read such files by path and the import graph cannot say which. It
 reads package metadata with go list and compiles nothing. It is a fast loop,

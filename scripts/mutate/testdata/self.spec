@@ -546,15 +546,63 @@ file scripts/mutate/main.go
 [runSpec returns 0 on a baseline goTest launch error]
 file scripts/mutate/main.go
 --- anchor
-		out, code, launchErr := goTest(root, sp)
-		if launchErr != nil {
-			return fail("could not run go test: %v", launchErr)
+			out, code, launchErr := goTest(root, &baseSpec)
+			if launchErr != nil {
+				return fail("could not run go test: %v", launchErr)
+			}
+--- replace
+			out, code, launchErr := goTest(root, &baseSpec)
+			if launchErr != nil {
+				return 0
+			}
+--- end
+
+[baselineRuns ignores per-mutation run overrides]
+file scripts/mutate/main.go
+run ^TestRunSpec_BaselinesPerMutationRun$
+--- anchor
+		if !slices.Contains(runs, r) && !coveredByTopLevel(sp.run, r, listed) {
+			runs = append(runs, r)
 		}
 --- replace
-		out, code, launchErr := goTest(root, sp)
-		if launchErr != nil {
-			return 0
+		if false && !slices.Contains(runs, r) && !coveredByTopLevel(sp.run, r, listed) {
+			runs = append(runs, r)
 		}
+--- end
+
+[coveredByTopLevel treats an uncovered test as covered]
+file scripts/mutate/main.go
+run ^TestRunSpec_BaselinesPerMutationRun$
+--- anchor
+			if !topRe.MatchString(name) {
+				return false
+			}
+--- replace
+			if false && !topRe.MatchString(name) {
+				return false
+			}
+--- end
+
+[coveredByTopLevel treats a zero-match filter as covered]
+file scripts/mutate/main.go
+run ^TestRunSpec_BaselinesPerMutationRun$
+--- anchor
+	return matched
+--- replace
+	return matched || true
+--- end
+
+[coveredByTopLevel ignores subtest slashes]
+file scripts/mutate/main.go
+run ^TestRunSpec_BaselinesPerMutationRun$
+--- anchor
+	if strings.Contains(topRun+blockRun, "/") {
+		return false
+	}
+--- replace
+	if false && strings.Contains(topRun+blockRun, "/") {
+		return false
+	}
 --- end
 
 [runSpec returns 0 on a confirmExclusions error]
