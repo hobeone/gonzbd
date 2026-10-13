@@ -3,10 +3,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -110,6 +112,20 @@ func positive(field string, v int) error {
 	return nil
 }
 
+// fitsDuration returns an error when v units do not fit in a time.Duration:
+// a larger v wraps the consumer's time.Duration(v) * unit product to an
+// arbitrary value. The consumers:
+// `git grep -n -E 'time\.Duration\([^)]*\) ?\* ?time\.(Second|Minute)' -- '*.go' ':!*_test.go'`
+// returns 6 lines, covering dirscan_speed, server timeout, script timeout and
+// propagation_delay (twice), plus urlgrabber's Retry-After parse, which
+// converts an HTTP header rather than config.
+func fitsDuration(field string, v int, unit time.Duration) error {
+	if int64(v) > int64(math.MaxInt64/unit) {
+		return fmt.Errorf("%s: %d is too large (max %d)", field, v, int64(math.MaxInt64/unit))
+	}
+	return nil
+}
+
 // portInRange returns an error when p is outside the TCP port range.
 // Zero is permitted and indicates "disabled" by convention; callers that
 // require a real listener should check separately.
@@ -171,6 +187,9 @@ func (g *GeneralConfig) validate() error {
 		if err := positive("dirscan_speed", g.DirscanSpeed); err != nil {
 			errs = append(errs, err)
 		}
+		if err := fitsDuration("dirscan_speed", g.DirscanSpeed, time.Second); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	// An invalid level stops cmd/gonzbd at startup (configureLogging), so it
 	// is refused here, where set_config sees it before it is saved.
@@ -216,6 +235,9 @@ func (d *DownloadConfig) validate() error {
 		errs = append(errs, err)
 	}
 	if err := nonNegative("propagation_delay", d.PropagationDelay); err != nil {
+		errs = append(errs, err)
+	}
+	if err := fitsDuration("propagation_delay", d.PropagationDelay, time.Minute); err != nil {
 		errs = append(errs, err)
 	}
 	if err := validateCleanupList(d.CleanupList); err != nil {
@@ -333,6 +355,9 @@ func (s *ServerConfig) validate() error {
 	if err := positive("timeout", s.Timeout); err != nil {
 		errs = append(errs, err)
 	}
+	if err := fitsDuration("timeout", s.Timeout, time.Second); err != nil {
+		errs = append(errs, err)
+	}
 	if err := positive("pipelining_requests", s.PipeliningRequests); err != nil {
 		errs = append(errs, err)
 	}
@@ -442,6 +467,9 @@ func (s *ScriptNotificationConfig) validate() error {
 		errs = append(errs, fmt.Errorf("path: %w", errEmpty))
 	}
 	if err := nonNegative("timeout", s.Timeout); err != nil {
+		errs = append(errs, err)
+	}
+	if err := fitsDuration("timeout", s.Timeout, time.Second); err != nil {
 		errs = append(errs, err)
 	}
 	if err := validateEvents(s.Events); err != nil {

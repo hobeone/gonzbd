@@ -76,6 +76,14 @@ const (
 	DefaultDirScanRate = 5 * time.Second
 )
 
+// Notification defaults.
+const (
+	// DefaultScriptTimeout bounds one run of the notification script when
+	// notifications.script.timeout is zero or negative. Resolved by
+	// notifier.NewScriptNotifier.
+	DefaultScriptTimeout = 30 * time.Second
+)
+
 // Filesystem name limits. Some headroom is reserved on top of OS limits to
 // allow append-suffixes such as "_UNPACK_" or ".1" / ".2" disambiguators.
 const (

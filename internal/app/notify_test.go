@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/notifier"
 )
 
@@ -15,14 +16,14 @@ func TestBuildNotifier_ScriptTimeoutCases(t *testing.T) {
 		expectedTimeout time.Duration
 	}{
 		{
-			name:            "ZeroTimeoutDefaultsTo30s",
+			name:            "ZeroTimeoutTakesDefault",
 			inputTimeout:    0,
-			expectedTimeout: 30 * time.Second,
+			expectedTimeout: constants.DefaultScriptTimeout,
 		},
 		{
-			name:            "NegativeTimeoutDefaultsTo30s",
+			name:            "NegativeTimeoutTakesDefault",
 			inputTimeout:    -5,
-			expectedTimeout: 30 * time.Second,
+			expectedTimeout: constants.DefaultScriptTimeout,
 		},
 		{
 			name:            "PositiveTimeoutPreserved",
@@ -61,5 +62,73 @@ func TestBuildNotifier_ScriptTimeoutCases(t *testing.T) {
 				t.Errorf("Expected timeout %v, got %v", tc.expectedTimeout, scriptCfg.Timeout)
 			}
 		})
+	}
+}
+
+func TestBuildNotifier_SinksCarryConfig(t *testing.T) {
+	t.Parallel()
+	cfg := config.NotificationConfig{
+		Email: config.EmailNotificationConfig{
+			Enable:   true,
+			Host:     "smtp.invalid",
+			Port:     587,
+			Username: "u",
+			Password: "p",
+			From:     "from@invalid",
+			To:       []string{"to@invalid"},
+			UseTLS:   true,
+			Events:   []string{"DownloadFailed"},
+		},
+		Apprise: config.AppriseNotificationConfig{
+			Enable:     true,
+			URL:        "http://apprise.invalid/notify",
+			ServiceURL: "json://svc.invalid",
+			Events:     []string{"QueueDone"},
+		},
+		Script: config.ScriptNotificationConfig{
+			Enable: true,
+			Path:   "/bin/true",
+			Events: []string{"Warning"},
+		},
+	}
+	ns := BuildNotifier(cfg).Notifiers()
+	if len(ns) != 3 {
+		t.Fatalf("got %d notifiers, want 3", len(ns))
+	}
+
+	en, ok := ns[0].(*notifier.EmailNotifier)
+	if !ok {
+		t.Fatalf("notifier 0 is %T, want *notifier.EmailNotifier", ns[0])
+	}
+	ec := en.Config()
+	if ec.Host != "smtp.invalid" || ec.Port != 587 || ec.Username != "u" || ec.Password != "p" ||
+		ec.From != "from@invalid" || len(ec.To) != 1 || ec.To[0] != "to@invalid" || !ec.UseTLS || ec.UseSSL {
+		t.Errorf("email config not carried through: %+v", ec)
+	}
+	if !en.Accepts(notifier.DownloadFailed) || en.Accepts(notifier.QueueDone) {
+		t.Error("email event mask not taken from cfg.Email.Events")
+	}
+
+	an, ok := ns[1].(*notifier.AppriseNotifier)
+	if !ok {
+		t.Fatalf("notifier 1 is %T, want *notifier.AppriseNotifier", ns[1])
+	}
+	ac := an.Config()
+	if ac.URL != "http://apprise.invalid/notify" || ac.ServiceURL != "json://svc.invalid" {
+		t.Errorf("apprise config not carried through: %+v", ac)
+	}
+	if !an.Accepts(notifier.QueueDone) || an.Accepts(notifier.DownloadFailed) {
+		t.Error("apprise event mask not taken from cfg.Apprise.Events")
+	}
+
+	sn, ok := ns[2].(*notifier.ScriptNotifier)
+	if !ok {
+		t.Fatalf("notifier 2 is %T, want *notifier.ScriptNotifier", ns[2])
+	}
+	if sn.Config().Path != "/bin/true" {
+		t.Errorf("script path not carried through: %q", sn.Config().Path)
+	}
+	if !sn.Accepts(notifier.Warning) || sn.Accepts(notifier.DownloadFailed) || sn.Accepts(notifier.QueueDone) {
+		t.Error("script event mask not taken from cfg.Script.Events")
 	}
 }

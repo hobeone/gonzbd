@@ -515,10 +515,10 @@ func startDirScanner(ctx context.Context, cfg *config.Config, h *ingestHandler, 
 		return
 	}
 	store := dirscanner.NewStore()
+	// Positive: GeneralConfig.validate requires dirscan_speed > 0, and small
+	// enough that this product does not overflow, whenever dirscan_dir is
+	// set; config.Load validates after path expansion.
 	interval := time.Duration(cfg.General.DirscanSpeed) * time.Second
-	if interval <= 0 {
-		interval = 5 * time.Second
-	}
 	catFn := func() []string {
 		cats := cfg.GetCategories()
 		names := make([]string, len(cats))

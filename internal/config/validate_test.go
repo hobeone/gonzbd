@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -290,6 +291,51 @@ func TestValidateDownloads_NegativePropagationDelay(t *testing.T) {
 }
 
 // ---------- ServerConfig.validate ----------
+
+// TestValidate_DurationFieldsRefuseOverflow pins the upper bound on every
+// config integer a consumer multiplies by a time unit: one past the largest
+// value whose product fits an int64 time.Duration wraps, so it is refused.
+func TestValidate_DurationFieldsRefuseOverflow(t *testing.T) {
+	t.Parallel()
+	const (
+		maxSeconds = 9223372036 // floor(MaxInt64 / 1e9)
+		maxMinutes = 153722867  // floor(MaxInt64 / 6e10)
+	)
+	tests := []struct {
+		name  string
+		field string
+		set   func(*Config, int)
+		max   int
+	}{
+		{"dirscan_speed", "dirscan_speed", func(c *Config, v int) {
+			c.General.DirscanDir = "/tmp/watch"
+			c.General.DirscanSpeed = v
+		}, maxSeconds},
+		{"server timeout", "timeout", func(c *Config, v int) {
+			c.Servers = []ServerConfig{validServer("s1")}
+			c.Servers[0].Timeout = v
+		}, maxSeconds},
+		{"script timeout", "timeout", func(c *Config, v int) {
+			c.Notifications.Script = ScriptNotificationConfig{Enable: true, Path: "/bin/true", Timeout: v}
+		}, maxSeconds},
+		{"propagation_delay", "propagation_delay", func(c *Config, v int) {
+			c.Downloads.PropagationDelay = v
+		}, maxMinutes},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ok := mustDefault(t)
+			tc.set(ok, tc.max)
+			if err := ok.Validate(); err != nil {
+				t.Errorf("%s = %d (largest that fits) refused: %v", tc.field, tc.max, err)
+			}
+			bad := mustDefault(t)
+			tc.set(bad, tc.max+1)
+			requireValidateError(t, bad, fmt.Sprintf("%s: %d", tc.field, tc.max+1))
+		})
+	}
+}
 
 func TestValidateServer_RequiredAndOptionalConflict(t *testing.T) {
 	t.Parallel()

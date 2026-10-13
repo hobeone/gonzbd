@@ -10,12 +10,16 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 // ScriptConfig holds settings for the script notification runner.
 type ScriptConfig struct {
 	// Path is the absolute path to the executable. No shell is invoked.
-	Path      string
+	Path string
+	// Timeout bounds one Send. Zero or negative means
+	// constants.DefaultScriptTimeout, resolved by NewScriptNotifier.
 	Timeout   time.Duration
 	EventMask []EventType
 }
@@ -28,8 +32,12 @@ type ScriptNotifier struct {
 	run func(*exec.Cmd) error
 }
 
-// NewScriptNotifier creates a ScriptNotifier from cfg.
+// NewScriptNotifier creates a ScriptNotifier from cfg, replacing a zero or
+// negative cfg.Timeout with constants.DefaultScriptTimeout.
 func NewScriptNotifier(cfg ScriptConfig) *ScriptNotifier {
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = constants.DefaultScriptTimeout
+	}
 	return &ScriptNotifier{
 		cfg: cfg,
 		run: func(cmd *exec.Cmd) error { return cmd.Run() },
@@ -51,11 +59,7 @@ func (s *ScriptNotifier) Accepts(t EventType) bool {
 // argv: [script, event_type, title, body]
 // env: inherits os.Environ() plus SAB_EVENT, SAB_TITLE, SAB_BODY, SAB_JOB_NAME.
 func (s *ScriptNotifier) Send(ctx context.Context, e Event) error {
-	timeout := s.cfg.Timeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 
 	env := append(os.Environ(),

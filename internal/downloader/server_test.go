@@ -182,7 +182,7 @@ func TestShouldDeactivateOptional(t *testing.T) {
 			want:     true,
 		},
 		{
-			name:     "required server never deactivated even at high ratio",
+			name:     "required server (validation makes it non-optional) never deactivated",
 			required: true,
 			bad:      99,
 			conns:    10, // ratio 9.9 — would deactivate if optional
@@ -476,6 +476,27 @@ func TestBadConnsResetsOnGood(t *testing.T) {
 	}
 	if s.goodConnections() != 1 {
 		t.Errorf("expected 1 good connection, got %d", s.goodConnections())
+	}
+}
+
+func TestApplyPenalty_NonOptionalNotDeactivated(t *testing.T) {
+	t.Parallel()
+	for _, required := range []bool{false, true} {
+		s := newTestServer(config.ServerConfig{
+			Enable:      true,
+			Required:    required,
+			Connections: 10,
+		})
+		for range 9 { // ratio 0.9, far above OptionalDeactivationThreshold
+			s.RecordBadConnection()
+		}
+		s.ApplyPenalty(time.Hour)
+		s.mu.RLock()
+		deactivated := s.deactivated
+		s.mu.RUnlock()
+		if deactivated {
+			t.Errorf("required=%v: non-optional server deactivated by ApplyPenalty", required)
+		}
 	}
 }
 

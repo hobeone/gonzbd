@@ -388,11 +388,12 @@ reserved and not currently mapped by `PenaltyFor`.)*
 
 ### Optional server auto-deactivation
 
-`shouldDeactivateOptional` fires inside `ApplyPenalty` when a non-required
-optional server's bad-connection ratio exceeds
+`shouldDeactivateOptional` fires inside `ApplyPenalty` when an optional
+server's bad-connection ratio exceeds
 `constants.OptionalDeactivationThreshold` (0.3). Once deactivated, the server
 remains out of the pool until its penalty expires and `ClearDeactivation` is
-called by `checkExpiredPenalties`.
+called by `checkExpiredPenalties`. A required server is never optional:
+`ServerConfig.validate` refuses both flags together.
 
 `RecordGoodConnection` resets the bad-connection counter to zero atomically.
 A single successful fetch after N failures forgives all bad history. This means
