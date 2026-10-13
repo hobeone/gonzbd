@@ -202,6 +202,24 @@ func TestWidenOnPass_SkipsTheWiderRunWhenTheSpecHasNoFilter(t *testing.T) {
 	}
 }
 
+func TestWidenOnPass_UsesTheMutationsOwnRunFilter(t *testing.T) {
+	t.Parallel()
+
+	// The top-level `run` includes TestOmitted, or is empty, while the
+	// mutation's own `run` narrows to TestSelected alone. Widening must
+	// judge the mutation against the filter that actually ran it.
+	root := mustModule(t, selectedPasses+omittedFails)
+	got := widenOnPass(root, &spec{pkg: "./...", run: "TestSelected|TestOmitted"}, mutation{name: "m", run: "TestSelected"}, false)
+	if got.verdict != excluded || !strings.Contains(got.evidence, "TestOmitted") {
+		t.Errorf("got (%s, %q), want (EXCLUDED naming TestOmitted)", got.verdict, got.evidence)
+	}
+
+	gotNoTop := widenOnPass(root, &spec{pkg: "./..."}, mutation{name: "m", run: "TestSelected"}, false)
+	if gotNoTop.verdict != excluded || !strings.Contains(gotNoTop.evidence, "TestOmitted") {
+		t.Errorf("with empty sp.run and m.run set, got (%s, %q), want (EXCLUDED naming TestOmitted)", gotNoTop.verdict, gotNoTop.evidence)
+	}
+}
+
 func TestWidenOnPass_ReportsSurvivedWhenTheWiderRunCannotStart(t *testing.T) {
 	t.Parallel()
 
